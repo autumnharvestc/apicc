@@ -17,7 +17,7 @@ export class SqliteIndex {
   }
 
   rebuild(ws: Workspace): void {
-    const insert = this.db.prepare("INSERT OR REPLACE INTO objects VALUES (?, ?, ?, ?, ?)");
+    const insert = this.db.prepare("INSERT INTO objects VALUES (?, ?, ?, ?, ?)");
     const rows: Row[] = [];
     rows.push({ id: ws.id, type: "workspace", name: ws.name, parentId: null, path: "." });
     for (const g of ws.groups) {
@@ -59,7 +59,7 @@ export class SqliteIndex {
     })();
   }
 
-  byId(id: string): Omit<Row, never> | undefined {
+  byId(id: string): Row | undefined {
     return this.db.prepare("SELECT id, type, name, parentId, path FROM objects WHERE id = ?").get(id) as Row | undefined;
   }
 

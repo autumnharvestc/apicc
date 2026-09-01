@@ -54,12 +54,18 @@ describe("SqliteIndex", () => {
     idx.close();
   });
 
-  it("重复 rebuild 幂等", () => {
+  it("重复 rebuild 幂等，删除对象后不残留旧索引", () => {
     const db = join(mkdtempSync(join(tmpdir(), "apicc-idx-")), "index.db");
     const idx = new SqliteIndex(db);
     idx.rebuild(ws);
-    idx.rebuild(ws);
     expect(idx.byType("case")).toHaveLength(2);
+    // 第二轮传入删掉了 folder 内用例 tf1 的工作区，验证 DELETE 语义：旧对象不复现
+    const pruned: Workspace = structuredClone(ws);
+    pruned.groups[0].projects[0].collections[0].folders[0].apis[0].cases = [];
+    idx.rebuild(pruned);
+    expect(idx.byId("tf1")).toBeUndefined();
+    expect(idx.byType("case")).toHaveLength(1);
+    expect(idx.byId("t1")?.id).toBe("t1");
     idx.close();
   });
 });
