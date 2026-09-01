@@ -24,6 +24,7 @@ export interface HttpExecuteOptions {
 }
 
 export interface ProtocolClient {
+  name: string;
   canHandle(request: ExecutableRequest): boolean;
   execute(request: ExecutableRequest, opts: HttpExecuteOptions): Promise<ExecutionResponse>;
 }

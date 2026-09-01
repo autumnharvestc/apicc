@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createPluginRegistry } from "../../src/plugin/registry.js";
+import type { ProtocolClient } from "../../src/plugin/types.js";
 
 const fakeAssert = {
   op: "eq",
@@ -24,6 +25,18 @@ describe("PluginRegistry", () => {
     const second = { language: "javascript", run: () => { /* v2 */ } };
     reg.registerScriptEngine(second);
     expect(reg.getScriptEngine("javascript")).toBe(second);
+  });
+
+  it("不同 name 的协议客户端互不覆盖", () => {
+    const reg = createPluginRegistry();
+    const first: ProtocolClient = {
+      name: "first",
+      canHandle: () => true,
+      execute: async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 0 }),
+    };
+    reg.registerProtocol(first);
+    reg.registerProtocol({ name: "second", canHandle: () => false, execute: async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 0 }) });
+    expect(reg.getProtocol({ method: "GET", url: "https://example.com", headers: {}, query: [] })).toBe(first);
   });
 
   it("plugin(def) 执行 setup 完成自注册", () => {

@@ -1,5 +1,5 @@
 import type {
-  AssertOperator, AuthProvider, Importer, PluginContext, PluginDefinition,
+  AssertOperator, AuthProvider, ExecutableRequest, Importer, PluginContext, PluginDefinition,
   PluginRegistryApi, ProtocolClient, Reporter, ScriptEngine, StorageAdapter,
 } from "./types.js";
 
@@ -11,7 +11,7 @@ export interface PluginRegistry extends PluginRegistryApi {
   listImporters(): Importer[];
   getAuth(type: string): AuthProvider | undefined;
   getStorage(): StorageAdapter | undefined;
-  getProtocol(request: { url: string }): ProtocolClient | undefined;
+  getProtocol(request: ExecutableRequest): ProtocolClient | undefined;
   plugin(def: PluginDefinition): void;
 }
 
@@ -25,7 +25,7 @@ export function createPluginRegistry(): PluginRegistry {
   let storage: StorageAdapter | undefined;
 
   const api: PluginRegistry = {
-    registerProtocol(client) { protocols.set(client.constructor.name, client); },
+    registerProtocol(client) { protocols.set(client.name, client); },
     registerAuth(p) { auths.set(p.type, p); },
     registerAssert(o) { asserts.set(o.op, o); },
     registerScriptEngine(e) { engines.set(e.language, e); },
@@ -40,7 +40,7 @@ export function createPluginRegistry(): PluginRegistry {
     getAuth: (t) => auths.get(t),
     getStorage: () => storage,
     getProtocol(request) {
-      for (const client of protocols.values()) if (client.canHandle(request as never)) return client;
+      for (const client of protocols.values()) if (client.canHandle(request)) return client;
       return undefined;
     },
     plugin(def) {

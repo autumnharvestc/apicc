@@ -8,6 +8,9 @@ export function itCompliesWithAssertOperatorContract(op: AssertOperator) {
     expect(r.pass).toBe(false);
     expect(typeof r.message).toBe("string");
   });
+  it(`契约: ${op.op} 以匹配输入调用时 pass === true`, () => {
+    expect(op.evaluate("a", "a").pass).toBe(true);
+  });
   it(`契约: ${op.op} 的 message 非空`, () => {
     expect(op.evaluate("a", "a").message.length).toBeGreaterThan(0);
   });
