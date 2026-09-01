@@ -108,7 +108,7 @@ DAG 工作流与编排（M2）、压测并发模型（M2）、Mock 服务（M2 �
 执行生命周期事件：`beforeRun / beforeCase / beforeRequest / afterResponse / afterCase / afterRun`。
 插件与用户前后置脚本挂同一条总线；M3 服务端钩子沿用同一事件契约。事件携带只读快照 + 受控变更通道，避免插件间隐式耦合。
 
-**钩子失败极性**：用例级事件（beforeRequest / afterResponse / afterCase）处理器抛错 → 记为当用例失败，不中断集合；运行级事件（beforeRun / afterRun）处理器抛错 → 记入运行结果 warnings，不中断运行。载荷包含用例/运行标识与耗时（afterCase 带 apiId/caseId/row/durationMs/error，afterRun 携带结果引用），保证 M2/M3 沿用时无需破坏性变更。
+**钩子失败极性**：用例级事件（beforeCase / beforeRequest / afterResponse / afterCase）处理器抛错 → 记为当用例失败，不中断集合；运行级事件（beforeRun / afterRun）处理器抛错 → 记入运行结果 warnings，不中断运行。载荷包含用例/运行标识与耗时（afterCase 带 apiId/caseId/row/durationMs/error，afterRun 携带结果引用），保证 M2/M3 沿用时无需破坏性变更。
 
 ### 5.3 插件契约测试
 
