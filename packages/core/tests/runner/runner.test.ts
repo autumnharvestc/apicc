@@ -95,6 +95,65 @@ describe("CollectionRunner", () => {
     expect(result.total).toBe(1);
   });
 
+  it("同 ID 环境用例覆盖基座：仅执行环境版本而非重复执行（规格 §6）", async () => {
+    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl, who: "sit" } };
+    const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [] };
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [{
+        id: "a1", name: "override", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
+        cases: [
+          // 基座版：断言会通过——若它被执行，error 必为 undefined，即可据此区分执行的是哪个版本
+          { id: "t1", name: "base-version", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] },
+          // 环境版：同 ID，postScript 抛出特征 error 作为执行痕迹
+          { id: "t1", name: "sit-version", scope: "sit", parameters: {}, assertions: [], postScript: "throw new Error('sit 环境版特征标记');" },
+        ],
+      }],
+    };
+    const result = await buildDeps().run(col, sitEnv, sitProject, workspace, {});
+    expect(result.total).toBe(1);
+    expect(result.cases[0]!.caseName).toBe("sit-version");
+    expect(result.cases[0]!.error).toContain("sit 环境版特征标记");
+  });
+
+  it("运行未覆盖该 ID 的环境时仍执行基座版本（防过度去重）", async () => {
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [{
+        id: "a1", name: "base-fallback", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
+        cases: [
+          { id: "t1", name: "base-version", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] },
+          { id: "t1", name: "sit-version", scope: "sit", parameters: {}, assertions: [], postScript: "throw new Error('sit 环境版特征标记');" },
+        ],
+      }],
+    };
+    const result = await buildDeps().run(col, env, project, workspace, {});
+    expect(result.total).toBe(1);
+    expect(result.cases[0]!.caseName).toBe("base-version");
+    expect(result.cases[0]!.passed).toBe(true);
+  });
+
+  it("同 ID 出现两个环境版本时继承链更近者优先（规格 §6）", async () => {
+    const pressEnv: Environment = { id: "e3", name: "press", extends: "sit", variables: { baseUrl } };
+    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl } };
+    const chainProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv, pressEnv], collections: [] };
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [{
+        id: "a1", name: "nearest", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
+        cases: [
+          { id: "t1", name: "base-version", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] },
+          { id: "t1", name: "sit-version", scope: "sit", parameters: {}, assertions: [], postScript: "throw new Error('sit 版被执行');" },
+          { id: "t1", name: "press-version", scope: "press", parameters: {}, assertions: [], postScript: "throw new Error('press 版被执行');" },
+        ],
+      }],
+    };
+    const result = await buildDeps().run(col, pressEnv, chainProject, workspace, {});
+    expect(result.total).toBe(1);
+    expect(result.cases[0]!.caseName).toBe("press-version");
+    expect(result.cases[0]!.error).toContain("press 版被执行");
+  });
+
   it("数据驱动：CSV 每行执行一次并注入运行时变量", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-run-"));
     writeFileSync(join(dir, "data.csv"), "sku\nA1\nB2");

@@ -56,7 +56,19 @@ export class CollectionRunner {
 
     outer:
     for (const api of apis) {
-      for (const tc of api.cases.filter((c) => c.scope === "base" || chain.includes(c.scope))) {
+      const applicable = api.cases.filter((c) => c.scope === "base" || chain.includes(c.scope));
+      // 规格 §6：同 ID 用例仅执行环境版本（覆盖而非重复执行）；
+      // 同 ID 出现多个环境版本时继承链更近者优先（chain 靠前者更具体），base 视为最远。
+      const scopeRank = (scope: string): number => {
+        const i = chain.indexOf(scope);
+        return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+      };
+      const byId = new Map<string, TestCase>();
+      for (const c of applicable) {
+        const prev = byId.get(c.id);
+        if (!prev || scopeRank(c.scope) < scopeRank(prev.scope)) byId.set(c.id, c);
+      }
+      for (const tc of byId.values()) {
         // 数据源读取/解析失败折进当用例 outcome，不中断整轮（与单用例隔离语义一致）。
         let rows: Array<Record<string, string> | undefined>;
         try {
