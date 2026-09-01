@@ -4,7 +4,8 @@ import type { Workspace } from "../domain/model.js";
 
 interface Row { id: string; type: string; name: string; parentId: string | null; path: string }
 
-/** 可重建的查询缓存（规格 §4）：任何时刻删除 db 文件后由 rebuild 恢复。 */
+/** 可重建的查询缓存（规格 §4）：任何时刻删除 db 文件后由 rebuild 恢复。
+ *  path 与 fileStorage 的磁盘布局同口径：相对工作区根的完整路径（目录对象为目录路径，环境/用例为文件路径）。 */
 export class SqliteIndex {
   private db: Database.Database;
 
@@ -15,26 +16,38 @@ export class SqliteIndex {
     );
   }
 
-  rebuild(ws: Workspace, root: string): void {
+  rebuild(ws: Workspace): void {
     const insert = this.db.prepare("INSERT OR REPLACE INTO objects VALUES (?, ?, ?, ?, ?)");
     const rows: Row[] = [];
     rows.push({ id: ws.id, type: "workspace", name: ws.name, parentId: null, path: "." });
     for (const g of ws.groups) {
-      rows.push({ id: g.id, type: "group", name: g.name, parentId: ws.id, path: join("groups", g.name) });
+      const gPath = join("groups", g.name);
+      rows.push({ id: g.id, type: "group", name: g.name, parentId: ws.id, path: gPath });
       for (const p of g.projects) {
-        rows.push({ id: p.id, type: "project", name: p.name, parentId: g.id, path: join("groups", g.name, "projects", p.name) });
+        const pPath = join(gPath, "projects", p.name);
+        rows.push({ id: p.id, type: "project", name: p.name, parentId: g.id, path: pPath });
         for (const e of p.environments) {
-          rows.push({ id: e.id, type: "environment", name: e.name, parentId: p.id, path: join("environments", `${e.name}.yaml`) });
+          rows.push({ id: e.id, type: "environment", name: e.name, parentId: p.id, path: join(pPath, "environments", `${e.name}.yaml`) });
         }
         for (const c of p.collections) {
-          rows.push({ id: c.id, type: "collection", name: c.name, parentId: p.id, path: join("collections", c.name) });
+          const cPath = join(pPath, "collections", c.name);
+          rows.push({ id: c.id, type: "collection", name: c.name, parentId: p.id, path: cPath });
           for (const f of c.folders) {
-            rows.push({ id: f.id, type: "folder", name: f.name, parentId: c.id, path: join("collections", c.name, f.name) });
+            const fPath = join(cPath, "folders", f.name);
+            rows.push({ id: f.id, type: "folder", name: f.name, parentId: c.id, path: fPath });
+            for (const api of f.apis) {
+              const aPath = join(fPath, "apis", api.name);
+              rows.push({ id: api.id, type: "api", name: api.name, parentId: f.id, path: aPath });
+              for (const tc of api.cases) {
+                rows.push({ id: tc.id, type: "case", name: tc.name, parentId: api.id, path: join(aPath, "cases", tc.name) });
+              }
+            }
           }
           for (const api of c.apis) {
-            rows.push({ id: api.id, type: "api", name: api.name, parentId: c.id, path: join("collections", c.name, "apis", api.name) });
+            const aPath = join(cPath, "apis", api.name);
+            rows.push({ id: api.id, type: "api", name: api.name, parentId: c.id, path: aPath });
             for (const tc of api.cases) {
-              rows.push({ id: tc.id, type: "case", name: tc.name, parentId: api.id, path: join("cases", tc.name) });
+              rows.push({ id: tc.id, type: "case", name: tc.name, parentId: api.id, path: join(aPath, "cases", tc.name) });
             }
           }
         }
@@ -44,7 +57,6 @@ export class SqliteIndex {
       this.db.exec("DELETE FROM objects");
       for (const r of rows) insert.run(r.id, r.type, r.name, r.parentId, r.path);
     })();
-    void root;
   }
 
   byId(id: string): Omit<Row, never> | undefined {
