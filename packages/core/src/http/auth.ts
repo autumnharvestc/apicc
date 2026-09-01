@@ -3,10 +3,11 @@ import type { AuthProvider } from "../plugin/types.js";
 /** 整串 {{name}} 占位符（命名规则与 variables/resolver 一致）；解析失败保留原文。 */
 const WHOLE_PLACEHOLDER = /^\{\{\s*([A-Za-z0-9_.$-]+)\s*\}\}$/;
 
+/** 仅整串 {{name}} 查变量（未知保留原文）；普通字面量不进变量解析，原样返回。 */
 function resolveValue(value: string | undefined, getVar: (name: string) => string | undefined): string {
   if (value === undefined) return "";
-  const name = WHOLE_PLACEHOLDER.exec(value)?.[1] ?? value;
-  return getVar(name) ?? value;
+  const m = WHOLE_PLACEHOLDER.exec(value);
+  return (m && getVar(m[1])) ?? value;
 }
 
 export const builtinAuthProviders: AuthProvider[] = [

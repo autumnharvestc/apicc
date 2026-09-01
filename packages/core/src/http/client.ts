@@ -5,18 +5,22 @@ export type HttpErrorKind = "dns" | "refused" | "timeout" | "tls" | "unknown";
 
 export class HttpExecutionError extends Error {
   constructor(public kind: HttpErrorKind, cause: unknown) {
-    super(`请求失败（${kind}）: ${(cause as Error)?.message ?? String(cause)}`);
+    super(`请求失败（${kind}）: ${(cause as Error)?.message ?? String(cause)}`, { cause });
   }
 }
 
 export function classifyNetworkError(e: unknown): HttpErrorKind {
   const err = e as { code?: string; message?: string; cause?: { code?: string; message?: string } };
-  const code = err.code ?? err.cause?.code ?? "";
-  const msg = err.message ?? err.cause?.message ?? "";
-  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "dns";
-  if (code === "ECONNREFUSED") return "refused";
-  if (code.includes("TIMEOUT") || /timed?\s?out|timeout/i.test(msg)) return "timeout";
-  if (/TLS|CERT/i.test(code) || /tls|certificate/i.test(msg)) return "tls";
+  const codes = [err.code ?? "", err.cause?.code ?? ""];
+  const msg = `${err.message ?? ""} ${err.cause?.message ?? ""}`;
+  // 顶层与 cause 的 code 都扫描：undici 包装错误顶层恒为 UND_ERR_*，会遮蔽 cause 里更具体的 errno。
+  const precise = codes.find((c) => ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"].includes(c) || c.includes("TIMEOUT"));
+  if (precise === "ECONNREFUSED") return "refused";
+  if (precise === "ENOTFOUND" || precise === "EAI_AGAIN") return "dns";
+  if (precise) return "timeout";
+  if (/ECONNREFUSED/.test(msg)) return "refused";
+  if (/timed?\s?out|timeout/i.test(msg)) return "timeout";
+  if (/TLS|CERT/i.test(codes.join(" ")) || /tls|certificate/i.test(msg)) return "tls";
   return "unknown";
 }
 

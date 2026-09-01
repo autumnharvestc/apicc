@@ -14,6 +14,13 @@ describe("内置认证器", () => {
     expect(r.headers["Authorization"]).toBe("Bearer secret");
   });
 
+  it("非占位符字面量不进变量解析——同名变量不劫持", () => {
+    const provider = builtinAuthProviders.find((p) => p.type === "bearer")!;
+    const r = req();
+    provider.apply(r, { type: "bearer", token: "plain-token", placement: "header" }, (n) => (n === "plain-token" ? "hijacked" : undefined));
+    expect(r.headers["Authorization"]).toBe("Bearer plain-token");
+  });
+
   it("basic 写入 base64 凭证", () => {
     const provider = builtinAuthProviders.find((p) => p.type === "basic")!;
     const r = req();

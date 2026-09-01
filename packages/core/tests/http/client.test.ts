@@ -71,4 +71,10 @@ describe("httpClient", () => {
   it("classifyNetworkError 覆盖 DNS", () => {
     expect(classifyNetworkError({ code: "ENOTFOUND" })).toBe("dns");
   });
+
+  it("classifyNetworkError 扫描 cause——顶层 UND_ERR 包装码不遮蔽 errno", () => {
+    expect(classifyNetworkError({ code: "UND_ERR_SOCKET", message: "connect failed", cause: { code: "ECONNREFUSED" } })).toBe("refused");
+    expect(classifyNetworkError({ code: "UND_ERR_SOCKET", message: "connect failed", cause: { code: "ENOTFOUND" } })).toBe("dns");
+    expect(classifyNetworkError({ code: "UND_ERR_CONNECT_TIMEOUT", message: "Connect Timeout Error", cause: { code: "ECONNREFUSED" } })).toBe("timeout");
+  });
 });
