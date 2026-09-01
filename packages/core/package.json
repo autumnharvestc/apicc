@@ -21,6 +21,8 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "csv-parse": "^7.0.2",
+    "jsonpath-plus": "^10.4.0",
     "ulid": "^3.0.2",
     "undici": "^8.10.1",
     "yaml": "^2.9.0",
