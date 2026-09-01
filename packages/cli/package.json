@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "apicc": "./src/bin.ts"
+    "apicc": "./dist/bin.js"
   },
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "vitest run"
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm -C ../core build && vitest run"
   },
   "dependencies": {
     "@apicc/core": "workspace:*",
@@ -17,6 +18,8 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^5.9.2",
     "vitest": "^4.1.11"
   }
 }
