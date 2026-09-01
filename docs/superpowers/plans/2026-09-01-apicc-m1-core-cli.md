@@ -3194,4 +3194,4 @@ git commit -m "feat(cli): 设计导出、公共出口与 apicc validate/run/expo
 
 - 遵循品牌中立约束：任何新文件（含注释与测试数据）不得出现参考/竞品项目名
 - 每个任务结束必须全量回归 `pnpm -C packages/core vitest run` 后再 commit
-- Node ≥ 20；Windows 环境路径统一使用 `node:path` API，不手拼分隔符
+- Node ≥ 22；Windows 环境路径统一使用 `node:path` API，不手拼分隔符
