@@ -46,9 +46,19 @@ export const openapiImporter: Importer = {
         };
         // 域模型无独立 path 参数位：path/query 参数一并落入 query 列表（可编辑占位），URL 保留 {id} 占位符。
         const queryParams = (operation.parameters ?? []).filter((p) => p.in === "query" || p.in === "path");
-        const jsonSchema = operation.requestBody?.content?.["application/json"]?.schema;
+        // 2.0 的请求体定义在操作级 parameters（in: body / formData）；与 3.0 requestBody 同用时 requestBody 优先。
+        const bodyParam = (operation.parameters ?? []).find((p) => p.in === "body");
+        const formParams = (operation.parameters ?? []).filter((p) => p.in === "formData");
+        const jsonSchema = operation.requestBody?.content?.["application/json"]?.schema ?? bodyParam?.schema;
         if (operation.responses && !operation.responses["200"] && !operation.responses["201"]) {
           warnings.push(`接口 ${method.toUpperCase()} ${path} 无 2xx 响应定义`);
+        }
+        let body: ApiDefinition["body"];
+        if (jsonSchema) {
+          body = { kind: "json", content: JSON.stringify(jsonSchema, null, 2) };
+          if (formParams.length > 0) warnings.push(`接口 ${method.toUpperCase()} ${path} 的 formData 参数已忽略（存在请求体 schema）`);
+        } else if (formParams.length > 0) {
+          body = { kind: "form", content: "", form: formParams.map((p) => ({ key: p.name, value: "", enabled: true })) };
         }
         apis.push({
           id: randomUUID(),
@@ -59,7 +69,7 @@ export const openapiImporter: Importer = {
           url: `{{baseUrl}}${path}`,
           headers: [],
           query: queryParams.map((p) => ({ key: p.name, value: "", enabled: true })),
-          body: jsonSchema ? { kind: "json", content: JSON.stringify(jsonSchema, null, 2) } : undefined,
+          body,
           design: jsonSchema || operation.description
             ? `# 接口设计\n\n${operation.description ?? ""}\n\n## 请求体 schema\n\n\`\`\`yaml\n${jsonSchema ? stringifyYaml(jsonSchema) : "无"}\n\`\`\`\n`
             : undefined,

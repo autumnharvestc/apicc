@@ -58,4 +58,43 @@ describe("openapiImporter", () => {
     expect(project.environments[0]!.variables.baseUrl).toBe("https://api.example.com/v2");
     expect(project.collections[0]!.apis[0]!.url).toBe("{{baseUrl}}/ping");
   });
+
+  it("2.0：in body 参数映射为 json 请求体与 design", () => {
+    const v2Body = `
+swagger: "2.0"
+info: { title: 旧下单服务, version: 1.0.0 }
+host: api.example.com
+paths:
+  /orders:
+    post:
+      operationId: createOrderV2
+      parameters:
+        - { name: order, in: body, schema: { type: object, required: [sku] } }
+      responses: { "200": { description: ok } }
+`;
+    const { project, warnings } = openapiImporter.parse(v2Body);
+    const api = project.collections[0]!.apis[0]!;
+    expect(api.body?.kind).toBe("json");
+    expect(api.design).toContain("type: object");
+    expect(warnings).toEqual([]);
+  });
+
+  it("2.0：in formData 参数映射为 form 请求体", () => {
+    const v2Form = `
+swagger: "2.0"
+info: { title: 上传服务, version: 1.0.0 }
+host: api.example.com
+paths:
+  /upload:
+    post:
+      parameters:
+        - { name: name, in: formData, type: string }
+        - { name: file, in: formData, type: file }
+      responses: { "200": { description: ok } }
+`;
+    const { project } = openapiImporter.parse(v2Form);
+    const api = project.collections[0]!.apis[0]!;
+    expect(api.body?.kind).toBe("form");
+    expect(api.body?.form).toEqual([{ key: "name", value: "", enabled: true }, { key: "file", value: "", enabled: true }]);
+  });
 });

@@ -54,4 +54,34 @@ describe("collectionV21Importer", () => {
     const { warnings } = collectionV21Importer.parse(withEvents);
     expect(warnings.some((w) => w.includes("脚本"))).toBe(true);
   });
+
+  it("detect 兼容 URL 形态的 schema 标识", () => {
+    const urlSchema = JSON.stringify({
+      info: { name: "n", schema: "https://example.com/schemas/collection/v2.1.0/collection.json" },
+      item: [],
+    });
+    expect(collectionV21Importer.detect("c.json", urlSchema)).toBe(true);
+  });
+
+  it("formdata 表单映射并跳过文件项", () => {
+    const withForm = JSON.stringify({
+      info: { name: "f", schema: "v2.1.0" },
+      item: [{
+        name: "upload",
+        request: {
+          method: "POST",
+          url: { raw: "{{baseUrl}}/upload" },
+          body: { mode: "formdata", formdata: [{ key: "sku", value: "A1" }, { key: "count", value: "2" }, { key: "f", type: "file" }] },
+        },
+      }],
+    });
+    const { project, warnings } = collectionV21Importer.parse(withForm);
+    const api = project.collections[0]!.apis[0]!;
+    expect(api.body?.kind).toBe("form");
+    expect(api.body?.form).toEqual([
+      { key: "sku", value: "A1", enabled: true },
+      { key: "count", value: "2", enabled: true },
+    ]);
+    expect(warnings.filter((w) => w.includes("文件类型表单项不支持"))).toHaveLength(1);
+  });
 });

@@ -4,6 +4,8 @@ import { ProjectSchema } from "../domain/model.js";
 import type { ApiDefinition, Collection, Folder, Project } from "../domain/model.js";
 import type { Importer, ImportedProject } from "../plugin/types.js";
 
+interface V21FormEntry { key: string; value?: string; type?: string }
+
 interface V21Item {
   name: string;
   item?: V21Item[];
@@ -11,7 +13,7 @@ interface V21Item {
     method: string;
     url: { raw: string; query?: Array<{ key: string; value?: string; disabled?: boolean }> } | string;
     header?: Array<{ key: string; value?: string; disabled?: boolean }>;
-    body?: { mode: string; raw?: string; urlencoded?: Array<{ key: string; value?: string }> };
+    body?: { mode: string; raw?: string; urlencoded?: V21FormEntry[]; formdata?: V21FormEntry[] };
     description?: string;
   };
   event?: unknown[];
@@ -22,7 +24,7 @@ function newId(): string {
   return randomUUID();
 }
 
-function toApi(item: V21Item): ApiDefinition | null {
+function toApi(item: V21Item, warnings: string[]): ApiDefinition | null {
   const req = item.request;
   if (!req) return null;
   const rawUrl = typeof req.url === "string" ? req.url : req.url.raw;
@@ -35,7 +37,12 @@ function toApi(item: V21Item): ApiDefinition | null {
     const isJson = req.body.raw?.trimStart().startsWith("{") || req.body.raw?.trimStart().startsWith("[");
     body = { kind: isJson ? "json" : "raw", content: req.body.raw ?? "" };
   } else if (req.body?.mode === "urlencoded" || req.body?.mode === "formdata") {
-    body = { kind: "form", content: "", form: (req.body.urlencoded ?? []).map((kv) => ({ key: kv.key, value: kv.value ?? "", enabled: true })) };
+    // formdata 模式的条目在 formdata 数组（urlencoded 为回退）；文件类型表单项无法映射，跳过并提示。
+    const entries = req.body.mode === "formdata" ? (req.body.formdata ?? req.body.urlencoded ?? []) : (req.body.urlencoded ?? []);
+    const form = entries.filter((kv) => kv.type !== "file").map((kv) => ({ key: kv.key, value: kv.value ?? "", enabled: true }));
+    const fileCount = entries.length - form.length;
+    if (fileCount > 0) warnings.push(`接口「${item.name}」的文件类型表单项不支持，已跳过 ${fileCount} 项`);
+    body = { kind: "form", content: "", form };
   }
   return {
     id: newId(), name: item.name, version: "1.0.0", deprecated: false,
@@ -50,12 +57,12 @@ function walk(items: V21Item[], collection: Collection, warnings: string[]): voi
     if (item.item) {
       const folder: Folder = { id: newId(), name: item.name, apis: [] };
       for (const child of item.item) {
-        const api = toApi(child);
+        const api = toApi(child, warnings);
         if (api) folder.apis.push(api);
       }
       collection.folders.push(folder);
     } else {
-      const api = toApi(item);
+      const api = toApi(item, warnings);
       if (api) collection.apis.push(api);
     }
     if (item.event?.length) warnings.push(`接口「${item.name}」携带脚本事件，已跳过（可手动补写前置/后置脚本）`);
@@ -68,7 +75,9 @@ export const collectionV21Importer: Importer = {
   detect(_fileName, content) {
     try {
       const doc = parseYaml(content) as { info?: { schema?: string } };
-      return typeof doc?.info?.schema === "string" && doc.info.schema.startsWith("v2.");
+      // 兼容两种形态：短标识 "v2.1.0" 与真实导出的 URL 形态（…/collection/v2.1.0/collection.json）。
+      const schema = doc?.info?.schema;
+      return typeof schema === "string" && /v2\.\d/.test(schema);
     } catch {
       return false;
     }
