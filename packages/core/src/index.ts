@@ -1,1 +1,42 @@
-export const version = "0.1.0";
+export { version } from "./version.js";
+export * from "./domain/model.js";
+export { envChain } from "./domain/envChain.js";
+export { createEventBus } from "./events/bus.js";
+export type { RunEventMap } from "./events/bus.js";
+export * from "./plugin/types.js";
+export { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
+export { fileStorage } from "./storage/fileStorage.js";
+export { SqliteIndex } from "./storage/sqliteIndex.js";
+export { createVariableResolver, CyclicVariableError } from "./variables/resolver.js";
+export { CollectionRunner } from "./runner/runner.js";
+export { renderDesignMarkdown } from "./design/export.js";
+export { htmlReporter } from "./report/html.js";
+export { junitReporter } from "./report/junit.js";
+export { collectionV21Importer } from "./import/collection21.js";
+export { openapiImporter } from "./import/openapi.js";
+
+import { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
+import { fileStorage } from "./storage/fileStorage.js";
+import { httpClient } from "./http/client.js";
+import { builtinAuthProviders } from "./http/auth.js";
+import { builtinAssertOperators } from "./assert/operators.js";
+import { jsScriptEngine } from "./sandbox/jsEngine.js";
+import { htmlReporter } from "./report/html.js";
+import { junitReporter } from "./report/junit.js";
+import { collectionV21Importer } from "./import/collection21.js";
+import { openapiImporter } from "./import/openapi.js";
+
+/** 创建注册了全部内置插件的注册中心（内置功能即普通插件，规格 §4）。 */
+export function createDefaultRegistry(): PluginRegistry {
+  const registry = createPluginRegistry();
+  registry.registerStorage(fileStorage);
+  registry.registerProtocol(httpClient);
+  for (const p of builtinAuthProviders) registry.registerAuth(p);
+  for (const o of builtinAssertOperators) registry.registerAssert(o);
+  registry.registerScriptEngine(jsScriptEngine);
+  registry.registerReporter(htmlReporter);
+  registry.registerReporter(junitReporter);
+  registry.registerImporter(collectionV21Importer);
+  registry.registerImporter(openapiImporter);
+  return registry;
+}
