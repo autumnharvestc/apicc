@@ -11,6 +11,7 @@ import { builtinAuthProviders } from "../../src/http/auth.js";
 import { builtinAssertOperators } from "../../src/assert/operators.js";
 import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
 import type { Collection, Environment, Project, Workspace } from "../../src/domain/model.js";
+import type { RunResult } from "../../src/report/types.js";
 
 let server: Server;
 let baseUrl = "";
@@ -159,6 +160,45 @@ describe("CollectionRunner", () => {
     expect(result.total).toBe(3);
     expect(result.passed).toBe(3);
     expect(result.failed).toBe(0);
+  });
+
+  it("脚本异常/超时只失败当用例，后续用例与落盘不受影响", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-iso-"));
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [{
+        id: "a1", name: "iso", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
+        cases: [
+          { id: "t1", name: "bare-throw", scope: "base", parameters: {}, assertions: [], postScript: "throw 'boom';" },
+          { id: "t2", name: "timeout", scope: "base", parameters: {}, assertions: [], preScript: "while(true){}" },
+          { id: "t3", name: "after", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] },
+        ],
+      }],
+    };
+    const result = await buildDeps().run(col, env, project, workspace, { runsDir: dir });
+    expect(result.total).toBe(3);
+    expect(result.failed).toBe(2);
+    expect(result.passed).toBe(1);
+    expect(result.cases[0].passed).toBe(false);
+    expect(result.cases[0].error).toBe("boom");
+    expect(result.cases[1].passed).toBe(false);
+    expect(result.cases[1].error).toContain("脚本超时");
+    expect(result.cases[2].passed).toBe(true);
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBe(1);
+    const saved = JSON.parse(readFileSync(join(dir, files[0]), "utf8")) as RunResult;
+    expect(saved.total).toBe(3);
+    expect(saved.passed).toBe(1);
+  });
+
+  it("runsDir 落盘失败降级：不中断 run 返回", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-rfail-"));
+    writeFileSync(join(dir, "occupied"), "x");
+    const col = collectionWith([{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [] }]);
+    const result = await buildDeps().run(col, env, project, workspace, { runsDir: join(dir, "occupied") });
+    expect(result.total).toBe(1);
+    expect(result.passed).toBe(1);
   });
 
   it("runsDir 提供时原始结果 JSON 先行落盘", async () => {

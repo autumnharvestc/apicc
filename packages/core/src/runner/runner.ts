@@ -60,10 +60,15 @@ export class CollectionRunner {
       total: outcomes.length, passed: outcomes.filter((o) => o.passed).length,
       failed: outcomes.filter((o) => !o.passed).length, cases: outcomes,
     };
-    // 原始结果 JSON 先行落盘（规格 §8：报告失败不影响结果保存）
+    // 原始结果 JSON 先行落盘（规格 §8：报告失败不影响结果保存）；
+    // 落盘失败降级为告警，不中断 run() 返回，调用方仍拿到完整 RunResult。
     if (opts.runsDir) {
-      mkdirSync(opts.runsDir, { recursive: true });
-      writeFileSync(join(opts.runsDir, `run-${nextRunFileId()}.json`), JSON.stringify(result, null, 2));
+      try {
+        mkdirSync(opts.runsDir, { recursive: true });
+        writeFileSync(join(opts.runsDir, `run-${nextRunFileId()}.json`), JSON.stringify(result, null, 2));
+      } catch (e) {
+        console.warn(`运行结果落盘失败（${opts.runsDir}）: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
     await this.deps.bus.emit("afterRun", { total: result.total, passed: result.passed, failed: result.failed });
     return result;
@@ -130,7 +135,8 @@ export class CollectionRunner {
       ctx.pm.response = this.responseView(response);
       if (tc.postScript) engine.run(tc.postScript, ctx);
     } catch (e) {
-      error = (e as Error).message;
+      // 归一非 Error 抛出物（如脚本裸 throw 'boom'）：error 字段必须留痕，否则用例可能假通过。
+      error = e instanceof Error ? e.message : String(e);
     }
 
     const assertions = [...this.evaluateAssertions(tc, ctx), ...pmAsserts];
