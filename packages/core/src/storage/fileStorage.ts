@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ApiDefinition, Collection, Folder, Group, Project, Workspace } from "../domain/model.js";
 import type { LoadProblem, StorageAdapter } from "../plugin/types.js";
@@ -41,12 +41,17 @@ function saveApiDir(aDir: string, api: ApiDefinition): void {
   }
 }
 
-async function loadApiDir(dir: string, problems: LoadProblem[]): Promise<ApiDefinition | null> {
+/** 载入单个接口目录；relDir 为相对工作区根的目录路径，problem 的 file 一律用它拼接（规格 §8 可定位）。 */
+async function loadApiDir(relDir: string, dir: string, problems: LoadProblem[]): Promise<ApiDefinition | null> {
   const apiFile = join(dir, "api.yaml");
-  if (!existsSync(apiFile)) return null;
+  const relApiFile = join(relDir, "api.yaml");
+  if (!existsSync(apiFile)) {
+    problems.push({ file: relApiFile, message: "接口目录缺少 api.yaml，该目录已跳过" });
+    return null;
+  }
   const res = readYaml<ApiDefinition>(apiFile);
   if (!res.ok) {
-    problems.push({ file: relative(dir, apiFile), message: res.error });
+    problems.push({ file: relApiFile, message: res.error });
     return null;
   }
   const api = res.data;
@@ -58,7 +63,7 @@ async function loadApiDir(dir: string, problems: LoadProblem[]): Promise<ApiDefi
     for (const f of sortedNames(casesDir, (n) => n.endsWith(".yaml"))) {
       const cRes = readYaml<ApiDefinition["cases"][number]>(join(casesDir, f));
       if (!cRes.ok) {
-        problems.push({ file: join("cases", f), message: cRes.error });
+        problems.push({ file: join(relDir, "cases", f), message: cRes.error });
         continue;
       }
       api.cases.push(cRes.data);
@@ -84,9 +89,10 @@ export const fileStorage: StorageAdapter = {
 
     for (const gName of sortedNames(groupsDir)) {
       const gDir = join(groupsDir, gName);
+      const gRel = join("groups", gName);
       const gRes = readYaml<{ id: string; name: string }>(join(gDir, "group.yaml"));
       if (!gRes.ok) {
-        problems.push({ file: join("groups", gName, "group.yaml"), message: gRes.error });
+        problems.push({ file: join(gRel, "group.yaml"), message: gRes.error });
         continue;
       }
       const group: Group = { ...gRes.data, projects: [] };
@@ -94,11 +100,12 @@ export const fileStorage: StorageAdapter = {
       if (existsSync(projectsDir)) {
         for (const pName of sortedNames(projectsDir)) {
           const pDir = join(projectsDir, pName);
+          const pRel = join(gRel, "projects", pName);
           const pRes = readYaml<Omit<Project, "environments" | "collections">>(
             join(pDir, "project.yaml"),
           );
           if (!pRes.ok) {
-            problems.push({ file: join("groups", gName, "projects", pName, "project.yaml"), message: pRes.error });
+            problems.push({ file: join(pRel, "project.yaml"), message: pRes.error });
             continue;
           }
           const project: Project = { ...pRes.data, environments: [], collections: [] };
@@ -108,7 +115,7 @@ export const fileStorage: StorageAdapter = {
             for (const f of sortedNames(envDir, (n) => n.endsWith(".yaml"))) {
               const eRes = readYaml<(typeof project)["environments"][number]>(join(envDir, f));
               if (!eRes.ok) {
-                problems.push({ file: join("environments", f), message: eRes.error });
+                problems.push({ file: join(pRel, "environments", f), message: eRes.error });
                 continue;
               }
               project.environments.push(eRes.data);
@@ -122,7 +129,7 @@ export const fileStorage: StorageAdapter = {
                 join(collDir, cName, "collection.yaml"),
               );
               if (!cRes.ok) {
-                problems.push({ file: join("collections", cName, "collection.yaml"), message: cRes.error });
+                problems.push({ file: join(pRel, "collections", cName, "collection.yaml"), message: cRes.error });
                 continue;
               }
               const collection: Collection = { ...cRes.data, apis: [], folders: [] };
@@ -132,14 +139,18 @@ export const fileStorage: StorageAdapter = {
                   const fDir = join(foldersDir, fName);
                   const fRes = readYaml<Omit<Folder, "apis">>(join(fDir, "folder.yaml"));
                   if (!fRes.ok) {
-                    problems.push({ file: join("collections", cName, "folders", fName, "folder.yaml"), message: fRes.error });
+                    problems.push({ file: join(pRel, "collections", cName, "folders", fName, "folder.yaml"), message: fRes.error });
                     continue;
                   }
                   const folder: Folder = { ...fRes.data, apis: [] };
                   const fApisDir = join(fDir, "apis");
                   if (existsSync(fApisDir)) {
                     for (const aName of sortedNames(fApisDir)) {
-                      const api = await loadApiDir(join(fApisDir, aName), problems);
+                      const api = await loadApiDir(
+                        join(pRel, "collections", cName, "folders", fName, "apis", aName),
+                        join(fApisDir, aName),
+                        problems,
+                      );
                       if (api) folder.apis.push(api);
                     }
                   }
@@ -149,7 +160,11 @@ export const fileStorage: StorageAdapter = {
               const apisDir = join(collDir, cName, "apis");
               if (existsSync(apisDir)) {
                 for (const aName of sortedNames(apisDir)) {
-                  const api = await loadApiDir(join(apisDir, aName), problems);
+                  const api = await loadApiDir(
+                    join(pRel, "collections", cName, "apis", aName),
+                    join(apisDir, aName),
+                    problems,
+                  );
                   if (api) collection.apis.push(api);
                 }
               }

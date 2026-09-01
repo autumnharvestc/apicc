@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { fileStorage } from "../../src/storage/fileStorage.js";
+import { WorkspaceSchema } from "../../src/domain/model.js";
 import type { Workspace } from "../../src/domain/model.js";
 
 const workspace: Workspace = {
@@ -65,7 +66,9 @@ describe("fileStorage", () => {
     const { workspace: loaded, problems } = await fileStorage.load(root);
     expect(loaded.groups[0]!.projects[0]!.environments).toEqual([]);
     expect(problems).toHaveLength(1);
-    expect(problems[0]!.file).toContain("dev.yaml");
+    expect(problems[0]!.file).toBe(
+      join("groups", "ecommerce", "projects", "order-service", "environments", "dev.yaml"),
+    );
   });
 
   it("缺少 apicc.workspace.yaml 时抛错", async () => {
@@ -130,7 +133,9 @@ describe("fileStorage", () => {
     const { workspace: loaded, problems } = await fileStorage.load(root);
     expect(loaded.groups[0]!.projects[0]!.collections[0]!.folders).toEqual([]);
     expect(problems).toHaveLength(1);
-    expect(problems[0]!.file).toContain("folder.yaml");
+    expect(problems[0]!.file).toBe(
+      join("groups", "ecommerce", "projects", "order-service", "collections", "order-api", "folders", "支付", "folder.yaml"),
+    );
   });
 
   it("目录枚举按名称字典序排序，与创建顺序无关", async () => {
@@ -156,5 +161,94 @@ describe("fileStorage", () => {
     const project = loaded.groups[0]!.projects[0]!;
     expect(project.environments.map((e) => e.name)).toEqual(["alpha", "zeta"]);
     expect(project.collections.map((c) => c.name)).toEqual(["alpha-api", "zeta-api"]);
+  });
+
+  it("缺少 api.yaml 的孤儿 api 目录记 problem 而非静默丢弃", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    await fileStorage.save(root, workspace);
+    const orphanDir = join(root, "groups", "ecommerce", "projects", "order-service",
+      "collections", "order-api", "apis", "orphan");
+    mkdirSync(join(orphanDir, "cases"), { recursive: true });
+    writeFileSync(join(orphanDir, "cases", "x.yaml"), "id: t1");
+    const { workspace: loaded, problems } = await fileStorage.load(root);
+    expect(loaded.groups[0]!.projects[0]!.collections[0]!.apis).toEqual([]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.file).toBe(
+      join("groups", "ecommerce", "projects", "order-service", "collections", "order-api", "apis", "orphan", "api.yaml"),
+    );
+    expect(problems[0]!.message).toContain("api.yaml");
+    expect(problems[0]!.message).toContain("跳过");
+  });
+
+  it("全字段 save→load 深等价（toEqual + strict parse）", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    const ws: Workspace = {
+      id: "w1", name: "demo", variables: { region: "cn", env: "prod" },
+      groups: [{
+        id: "g1", name: "ecommerce",
+        projects: [{
+          id: "p1", name: "order-service", variables: { timeoutMs: "3000" },
+          environments: [
+            { id: "e1", name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" } },
+            { id: "e2", name: "sit", extends: "dev", variables: { baseUrl: "http://sit.example" } },
+          ],
+          collections: [{
+            id: "c1", name: "order-api", variables: { pageSize: "20" },
+            scripts: { pre: "pm.variables.set('k','v')", post: "pm.assert(true,'ok')" },
+            folders: [{
+              id: "f1", name: "支付", apis: [{
+                id: "a2", name: "pay-order", version: "1.0.0", deprecated: false,
+                method: "POST", url: "{{baseUrl}}/pay",
+                headers: [{ key: "X-Sign", value: "s", enabled: true }],
+                query: [], body: { kind: "json", content: '{"oid":"1"}' },
+                auth: { type: "bearer", token: "tk", placement: "header" },
+                design: "# 支付设计",
+                cases: [{
+                  id: "t3", name: "ok", scope: "base", parameters: { oid: "1" },
+                  dataDriver: { sourcePath: "d.csv", format: "csv" },
+                  preScript: "pm.variables.set('x','1')", postScript: "pm.assert(true,'y')",
+                  assertions: [{ id: "as1", target: "status", op: "eq", expected: "200" }],
+                }],
+              }],
+            }],
+            apis: [{
+              id: "a1", name: "create-order", version: "1.2.3", deprecated: true,
+              method: "POST", url: "{{baseUrl}}/orders",
+              headers: [{ key: "X-Trace", value: "t-1", enabled: true }],
+              query: [{ key: "dry", value: "1", enabled: false }],
+              body: { kind: "json", content: '{"sku":"A1"}' },
+              auth: { type: "bearer", token: "tk", placement: "header" },
+              design: "# 创建订单设计",
+              cases: [
+                { id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [] },
+                { id: "t2", name: "ok", scope: "sit", parameters: {}, assertions: [] },
+              ],
+            }],
+          }],
+        }],
+      }],
+    };
+    await fileStorage.save(root, ws);
+    const { workspace: loaded, problems } = await fileStorage.load(root);
+    expect(problems).toEqual([]);
+    // toEqual 忽略 undefined 属性 → 语义等价（undefined 字段 vs 缺失字段）
+    // 数组顺序由目录名承载（字典序），深比较前按 id 归一，不削弱字段级比较
+    const byId = <T extends { id: string }>(xs: T[]): T[] => [...xs].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const norm = (w: Workspace): Workspace => {
+      const c = JSON.parse(JSON.stringify(w)) as Workspace;
+      for (const g of c.groups) for (const p of g.projects) {
+        p.environments = byId(p.environments);
+        p.collections = byId(p.collections);
+        for (const col of p.collections) {
+          col.folders = byId(col.folders);
+          for (const f of col.folders) { f.apis = byId(f.apis); for (const a of f.apis) a.cases = byId(a.cases); }
+          col.apis = byId(col.apis);
+          for (const a of col.apis) a.cases = byId(a.cases);
+        }
+      }
+      return c;
+    };
+    expect(norm(loaded)).toEqual(norm(ws));
+    expect(() => WorkspaceSchema.parse(loaded)).not.toThrow();
   });
 });
