@@ -22,4 +22,6 @@ export interface RunResult {
   passed: number;
   failed: number;
   cases: CaseOutcome[];
+  /** 运行级钩子（beforeRun/afterRun）处理器失败的非致命告警，不中断运行（规格 §5.2）。 */
+  warnings?: string[];
 }

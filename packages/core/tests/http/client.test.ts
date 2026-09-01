@@ -13,7 +13,7 @@ beforeAll(async () => {
       req.on("end", () => {
         res.setHeader("x-echo", req.headers["x-token"] ?? "none");
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ method: req.method, body }));
+        res.end(JSON.stringify({ method: req.method, body, contentType: req.headers["content-type"] ?? null }));
       });
     } else if (req.url === "/slow") {
       setTimeout(() => res.end("late"), 5000);
@@ -37,8 +37,44 @@ describe("httpClient", () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers["x-echo"]).toBe("t1");
-    expect(JSON.parse(res.bodyText)).toEqual({ method: "POST", body: '{"a":1}' });
+    expect(JSON.parse(res.bodyText)).toEqual({ method: "POST", body: '{"a":1}', contentType: "application/json" });
     expect(res.timeMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("form 请求体以 urlencoded 编码发送，缺省时自动补 content-type（回归 C4）", async () => {
+    const res = await httpClient.execute(
+      {
+        method: "POST", url: `${baseUrl}/echo`, headers: {}, query: [],
+        body: {
+          kind: "form",
+          content: "",
+          form: [
+            { key: "user", value: "alice", enabled: true },
+            { key: "note", value: "a b&c=d", enabled: true },
+            { key: "off", value: "no", enabled: false },
+          ],
+        },
+      },
+      opts,
+    );
+    expect(res.status).toBe(200);
+    const echoed = JSON.parse(res.bodyText) as { body: string; contentType: string | null };
+    // enabled 项参与编码，disabled 项丢弃；空格按 application/x-www-form-urlencoded 约定编码为 "+"
+    expect(echoed.body).toBe("user=alice&note=a+b%26c%3Dd");
+    expect(echoed.contentType).toBe("application/x-www-form-urlencoded");
+  });
+
+  it("form 请求体已显式声明 content-type 时不覆盖", async () => {
+    const res = await httpClient.execute(
+      {
+        method: "POST", url: `${baseUrl}/echo`, headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" }, query: [],
+        body: { kind: "form", content: "", form: [{ key: "a", value: "1", enabled: true }] },
+      },
+      opts,
+    );
+    const echoed = JSON.parse(res.bodyText) as { body: string; contentType: string };
+    expect(echoed.body).toBe("a=1");
+    expect(echoed.contentType).toBe("application/x-www-form-urlencoded; charset=utf-8");
   });
 
   it("query 参数拼接到 URL", async () => {

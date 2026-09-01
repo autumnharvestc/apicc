@@ -45,6 +45,18 @@ function buildDeps(failFast = false) {
   });
 }
 
+/** 用自定义 bus 构造 Runner（钩子极性/事件契约测试用），其余插件与 buildDeps 相同。 */
+function buildRunnerWith(bus: ReturnType<typeof createEventBus>, failFast = false) {
+  const registry = createPluginRegistry();
+  registry.registerProtocol(httpClient);
+  for (const p of builtinAuthProviders) registry.registerAuth(p);
+  for (const o of builtinAssertOperators) registry.registerAssert(o);
+  registry.registerScriptEngine(jsScriptEngine);
+  return new CollectionRunner({
+    registry, bus, timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 }, failFast,
+  });
+}
+
 function collectionWith(cases: Collection["apis"][number]["cases"]): Collection {
   return {
     id: "c1", name: "c", variables: {}, folders: [],
@@ -207,5 +219,170 @@ describe("CollectionRunner", () => {
     await buildDeps().run(col, env, project, workspace, { runsDir: dir });
     const { readdirSync } = await import("node:fs");
     expect(readdirSync(dir).some((f) => f.endsWith(".json"))).toBe(true);
+  });
+
+  it("环境派生继承：sit extends dev 继承 baseUrl，子环境变量覆盖同名（回归 C3）", async () => {
+    // dev 有 baseUrl 而 sit 没有——URL 能解析即证明继承生效；who 由 sit 覆盖 dev。
+    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { who: "sit" } };
+    const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [] };
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [{
+        id: "a1", name: "inherit", version: "1", deprecated: false, method: "GET", url: "{{baseUrl}}/x", headers: [], query: [],
+        cases: [{
+          id: "t1", name: "ok", scope: "base", parameters: {},
+          preScript: "if (pm.environment.get('who') !== 'sit') throw new Error('pm.environment.get(who)=' + pm.environment.get('who'));",
+          assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }],
+        }],
+      }],
+    };
+    const result = await buildDeps().run(col, sitEnv, sitProject, workspace, {});
+    expect(result.failed).toBe(0);
+    expect(result.passed).toBe(1);
+    expect(result.cases[0]!.error).toBeUndefined();
+  });
+
+  it("form 请求体逐项变量解析并以 urlencoded 形态发出（回归 C4 Runner 侧）", async () => {
+    let seenBody = "";
+    let seenContentType = "";
+    const echo = createServer((req, res) => {
+      let b = "";
+      req.on("data", (c) => (b += c));
+      req.on("end", () => {
+        seenBody = b;
+        seenContentType = req.headers["content-type"] ?? "";
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
+    try {
+      const echoUrl = `http://127.0.0.1:${(echo.address() as { port: number }).port}/login`;
+      const col: Collection = {
+        id: "c1", name: "c", variables: {}, folders: [],
+        apis: [{
+          id: "a1", name: "login", version: "1", deprecated: false, method: "POST", url: echoUrl, headers: [], query: [],
+          body: {
+            kind: "form",
+            content: "",
+            form: [
+              { key: "user", value: "{{who}}", enabled: true },
+              { key: "pw", value: "static", enabled: true },
+              { key: "off", value: "no", enabled: false },
+            ],
+          },
+          cases: [{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] }],
+        }],
+      };
+      const result = await buildDeps().run(col, env, project, workspace, {});
+      expect(result.passed).toBe(1);
+      expect(seenBody).toBe("user=dev&pw=static");
+      expect(seenContentType).toBe("application/x-www-form-urlencoded");
+    } finally {
+      await new Promise<void>((r) => echo.close(() => r()));
+    }
+  });
+
+  it("数据源读取失败折进当用例 outcome，运行不中断（回归 I3）", async () => {
+    const missing = join(mkdtempSync(join(tmpdir(), "apicc-data-")), "nope.csv");
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [{
+        id: "a1", name: "dd", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
+        cases: [{
+          id: "t1", name: "missing-source", scope: "base", parameters: {},
+          dataDriver: { sourcePath: missing, format: "csv" },
+          assertions: [],
+        }],
+      }],
+    };
+    const result = await buildDeps().run(col, env, project, workspace, {});
+    expect(result.total).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.cases[0]!.passed).toBe(false);
+    expect(result.cases[0]!.error).toContain("数据源读取失败");
+  });
+
+  it("事件载荷契约增量：beforeCase/afterCase 带 apiId/caseId，afterCase 带耗时，afterRun 带结果引用（I4）", async () => {
+    const col = collectionWith([{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] }]);
+    const bus = createEventBus();
+    const beforePayloads: unknown[] = [];
+    const afterPayloads: unknown[] = [];
+    let afterRunPayload: unknown;
+    bus.on("beforeCase", (p) => { beforePayloads.push({ ...p }); });
+    bus.on("afterCase", (p) => { afterPayloads.push({ ...p }); });
+    bus.on("afterRun", (p) => { afterRunPayload = { ...p }; });
+    const result = await buildRunnerWith(bus).run(col, env, project, workspace, {});
+    expect(beforePayloads[0]).toMatchObject({ apiId: "a1", caseId: "t1", apiName: "get-ok", caseName: "ok" });
+    expect(afterPayloads[0]).toMatchObject({
+      apiId: "a1", caseId: "t1", apiName: "get-ok", caseName: "ok",
+      passed: true, durationMs: expect.any(Number),
+    });
+    expect((afterRunPayload as { result?: { total: number } }).result?.total).toBe(1);
+    expect(result.total).toBe(1);
+  });
+
+  it("beforeRun 钩子失败记入 warnings，运行与用例结果不受影响（钩子极性）", async () => {
+    const col = collectionWith([{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] }]);
+    const bus = createEventBus();
+    bus.on("beforeRun", () => { throw new Error("beforeRun 钩子炸了"); });
+    const result = await buildRunnerWith(bus).run(col, env, project, workspace, {});
+    expect(result.total).toBe(1);
+    expect(result.passed).toBe(1);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings![0]).toContain("beforeRun");
+    expect(result.cases[0]!.passed).toBe(true);
+  });
+
+  it("afterRun 钩子失败同样记入 warnings，不向调用方抛错（钩子极性）", async () => {
+    const col = collectionWith([{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [] }]);
+    const bus = createEventBus();
+    bus.on("afterRun", () => { throw new Error("afterRun 钩子炸了"); });
+    const result = await buildRunnerWith(bus).run(col, env, project, workspace, {});
+    expect(result.total).toBe(1);
+    expect(result.warnings?.join("\n")).toContain("afterRun");
+  });
+
+  it("beforeCase 钩子失败归当用例且请求不发送，后续用例继续（钩子极性）", async () => {
+    let hits = 0;
+    const counting = createServer((_req, res) => { hits += 1; res.end("{}"); });
+    await new Promise<void>((r) => counting.listen(0, "127.0.0.1", r));
+    try {
+      const col: Collection = {
+        id: "c1", name: "c", variables: {}, folders: [],
+        apis: [{
+          id: "a1", name: "hookfail", version: "1", deprecated: false,
+          method: "GET", url: `http://127.0.0.1:${(counting.address() as { port: number }).port}/x`, headers: [], query: [],
+          cases: [
+            { id: "t1", name: "first", scope: "base", parameters: {}, assertions: [] },
+            { id: "t2", name: "second", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] },
+          ],
+        }],
+      };
+      const bus = createEventBus();
+      bus.on("beforeCase", (p) => { if (p.caseName === "first") throw new Error("beforeCase 钩子失败"); });
+      const result = await buildRunnerWith(bus).run(col, env, project, workspace, {});
+      expect(result.total).toBe(2);
+      expect(result.cases[0]!.passed).toBe(false);
+      expect(result.cases[0]!.error).toContain("beforeCase");
+      expect(result.cases[1]!.passed).toBe(true);
+      expect(hits).toBe(1);
+    } finally {
+      await new Promise<void>((r) => counting.close(() => r()));
+    }
+  });
+
+  it("afterCase 钩子失败使当用例失败且不中断集合（钩子极性）", async () => {
+    const col = collectionWith([
+      { id: "t1", name: "hooked", scope: "base", parameters: {}, assertions: [] },
+      { id: "t2", name: "next", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] },
+    ]);
+    const bus = createEventBus();
+    bus.on("afterCase", (p) => { if (p.caseName === "hooked") throw new Error("afterCase 钩子失败"); });
+    const result = await buildRunnerWith(bus).run(col, env, project, workspace, {});
+    expect(result.total).toBe(2);
+    expect(result.cases[0]!.passed).toBe(false);
+    expect(result.cases[0]!.error).toContain("afterCase");
+    expect(result.cases[1]!.passed).toBe(true);
+    expect(result.passed).toBe(1);
   });
 });

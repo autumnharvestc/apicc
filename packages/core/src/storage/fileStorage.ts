@@ -1,6 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { z } from "zod";
+import {
+  ApiDefinitionSchema, CollectionSchema, EnvironmentSchema, FolderSchema, GroupSchema,
+  ProjectSchema, TestCaseSchema, WorkspaceSchema,
+} from "../domain/model.js";
 import type { ApiDefinition, Collection, Folder, Group, Project, Workspace } from "../domain/model.js";
 import type { LoadProblem, StorageAdapter } from "../plugin/types.js";
 
@@ -12,6 +17,26 @@ function readYaml<T>(file: string): { ok: true; data: T } | { ok: false; error: 
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
+}
+
+function zodErrorSummary(e: z.ZodError): string {
+  return e.issues
+    .map((i) => `${i.path.length > 0 ? i.path.map(String).join(".") : "(根字段)"}: ${i.message}`)
+    .join("; ");
+}
+
+/**
+ * 读入 YAML 并经对应 zod schema 严格校验（规格 §6：逐文件 schema 校验，失败进 problems；
+ * 校验通过后以解析结果（含 schema 默认值）构建域对象）。
+ */
+function loadYaml<S extends z.ZodType>(file: string, schema: S): { ok: true; data: z.output<S> } | { ok: false; error: string } {
+  const raw = readYaml<unknown>(file);
+  if (!raw.ok) return raw;
+  const parsed = schema.safeParse(raw.data);
+  if (!parsed.success) {
+    return { ok: false, error: `schema 校验失败: ${zodErrorSummary(parsed.error)}` };
+  }
+  return { ok: true, data: parsed.data };
 }
 
 function writeYaml(file: string, data: unknown): void {
@@ -49,19 +74,19 @@ async function loadApiDir(relDir: string, dir: string, problems: LoadProblem[]):
     problems.push({ file: relApiFile, message: "接口目录缺少 api.yaml，该目录已跳过" });
     return null;
   }
-  const res = readYaml<ApiDefinition>(apiFile);
+  const res = loadYaml(apiFile, ApiDefinitionSchema);
   if (!res.ok) {
     problems.push({ file: relApiFile, message: res.error });
     return null;
   }
-  const api = res.data;
+  const api: ApiDefinition = res.data;
   const designFile = join(dir, "design.md");
   if (existsSync(designFile)) api.design = readFileSync(designFile, "utf8");
   api.cases = [];
   const casesDir = join(dir, "cases");
   if (existsSync(casesDir)) {
     for (const f of sortedNames(casesDir, (n) => n.endsWith(".yaml"))) {
-      const cRes = readYaml<ApiDefinition["cases"][number]>(join(casesDir, f));
+      const cRes = loadYaml(join(casesDir, f), TestCaseSchema);
       if (!cRes.ok) {
         problems.push({ file: join(relDir, "cases", f), message: cRes.error });
         continue;
@@ -79,9 +104,10 @@ export const fileStorage: StorageAdapter = {
       throw new Error(`工作区根目录缺少 ${WORKSPACE_FILE}: ${root}`);
     }
     const problems: LoadProblem[] = [];
-    const wsRes = readYaml<Workspace>(wsFile);
+    // workspace.yaml 自身失败保持抛错语义（不进 problems 隔离）：没有它整个工作区无法定位。
+    const wsRes = loadYaml(wsFile, WorkspaceSchema);
     if (!wsRes.ok) throw new Error(`${WORKSPACE_FILE} 解析失败: ${wsRes.error}`);
-    const workspace = wsRes.data;
+    const workspace: Workspace = wsRes.data;
     workspace.groups = [];
 
     const groupsDir = join(root, "groups");
@@ -90,7 +116,7 @@ export const fileStorage: StorageAdapter = {
     for (const gName of sortedNames(groupsDir)) {
       const gDir = join(groupsDir, gName);
       const gRel = join("groups", gName);
-      const gRes = readYaml<{ id: string; name: string }>(join(gDir, "group.yaml"));
+      const gRes = loadYaml(join(gDir, "group.yaml"), GroupSchema);
       if (!gRes.ok) {
         problems.push({ file: join(gRel, "group.yaml"), message: gRes.error });
         continue;
@@ -101,9 +127,7 @@ export const fileStorage: StorageAdapter = {
         for (const pName of sortedNames(projectsDir)) {
           const pDir = join(projectsDir, pName);
           const pRel = join(gRel, "projects", pName);
-          const pRes = readYaml<Omit<Project, "environments" | "collections">>(
-            join(pDir, "project.yaml"),
-          );
+          const pRes = loadYaml(join(pDir, "project.yaml"), ProjectSchema);
           if (!pRes.ok) {
             problems.push({ file: join(pRel, "project.yaml"), message: pRes.error });
             continue;
@@ -113,7 +137,7 @@ export const fileStorage: StorageAdapter = {
           const envDir = join(pDir, "environments");
           if (existsSync(envDir)) {
             for (const f of sortedNames(envDir, (n) => n.endsWith(".yaml"))) {
-              const eRes = readYaml<(typeof project)["environments"][number]>(join(envDir, f));
+              const eRes = loadYaml(join(envDir, f), EnvironmentSchema);
               if (!eRes.ok) {
                 problems.push({ file: join(pRel, "environments", f), message: eRes.error });
                 continue;
@@ -125,19 +149,26 @@ export const fileStorage: StorageAdapter = {
           const collDir = join(pDir, "collections");
           if (existsSync(collDir)) {
             for (const cName of sortedNames(collDir)) {
-              const cRes = readYaml<Omit<Collection, "apis">>(
-                join(collDir, cName, "collection.yaml"),
-              );
+              const cFile = join(collDir, cName, "collection.yaml");
+              if (!existsSync(cFile)) {
+                // 与 apis 孤儿目录语义对齐：目录存在但缺 collection.yaml 必须留痕，不静默丢弃。
+                problems.push({
+                  file: join(pRel, "collections", cName, "collection.yaml"),
+                  message: "集合目录缺少 collection.yaml，该目录已跳过",
+                });
+                continue;
+              }
+              const cRes = loadYaml(cFile, CollectionSchema);
               if (!cRes.ok) {
                 problems.push({ file: join(pRel, "collections", cName, "collection.yaml"), message: cRes.error });
                 continue;
               }
-              const collection: Collection = { ...cRes.data, apis: [], folders: [] };
+              const collection: Collection = { ...cRes.data, folders: [], apis: [] };
               const foldersDir = join(collDir, cName, "folders");
               if (existsSync(foldersDir)) {
                 for (const fName of sortedNames(foldersDir)) {
                   const fDir = join(foldersDir, fName);
-                  const fRes = readYaml<Omit<Folder, "apis">>(join(fDir, "folder.yaml"));
+                  const fRes = loadYaml(join(fDir, "folder.yaml"), FolderSchema);
                   if (!fRes.ok) {
                     problems.push({ file: join(pRel, "collections", cName, "folders", fName, "folder.yaml"), message: fRes.error });
                     continue;

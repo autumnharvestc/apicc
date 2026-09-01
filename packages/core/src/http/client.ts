@@ -1,4 +1,5 @@
 import { Agent, request } from "undici";
+import type { BodyContent } from "../domain/model.js";
 import type { ExecutableRequest, ExecutionResponse, HttpExecuteOptions, ProtocolClient } from "../plugin/types.js";
 
 export type HttpErrorKind = "dns" | "refused" | "timeout" | "tls" | "unknown";
@@ -38,11 +39,31 @@ function buildUrl(req: ExecutableRequest): string {
   return qs ? `${req.url}${req.url.includes("?") ? "&" : "?"}${qs}` : req.url;
 }
 
+/** form 请求体的 enabled 项编码为 application/x-www-form-urlencoded。 */
+function urlencodedBody(form: BodyContent["form"]): string {
+  const params = new URLSearchParams();
+  for (const kv of form ?? []) {
+    if (kv.enabled) params.append(kv.key, kv.value);
+  }
+  return params.toString();
+}
+
 export const httpClient: ProtocolClient & { close(): void } = {
   name: "http",
   canHandle: (req) => req.url.startsWith("http://") || req.url.startsWith("https://"),
   async execute(req, opts) {
     const started = performance.now();
+    // form 走 urlencoded 编码；其余 kind 发送 content 字符串。
+    let body: string | undefined;
+    const sendHeaders = { ...req.headers };
+    if (req.body?.kind === "form") {
+      body = urlencodedBody(req.body.form);
+      if (!Object.keys(sendHeaders).some((k) => k.toLowerCase() === "content-type")) {
+        sendHeaders["content-type"] = "application/x-www-form-urlencoded";
+      }
+    } else if (req.body) {
+      body = req.body.content;
+    }
     try {
       const agent = new Agent({
         connect: { timeout: opts.connectTimeoutMs },
@@ -52,8 +73,8 @@ export const httpClient: ProtocolClient & { close(): void } = {
       try {
         const res = await request(buildUrl(req), {
           method: req.method,
-          headers: req.headers,
-          body: req.body && req.body.kind !== "form" ? req.body.content : undefined,
+          headers: sendHeaders,
+          body,
           dispatcher: agent,
         });
         const bodyText = await res.body.text();

@@ -76,6 +76,61 @@ describe("fileStorage", () => {
     await expect(fileStorage.load(root)).rejects.toThrow(/apicc\.workspace\.yaml/);
   });
 
+  it("collection.yaml 未知字段经 zod schema 校验记 problem 并跳过（回归 C2）", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    await fileStorage.save(root, workspace);
+    const cFile = join(root, "groups", "ecommerce", "projects", "order-service", "collections", "order-api", "collection.yaml");
+    writeFileSync(cFile, "id: c1\nname: order-api\nnonsense: 1\n");
+    const { workspace: loaded, problems } = await fileStorage.load(root);
+    expect(loaded.groups[0]!.projects[0]!.collections).toEqual([]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.file).toContain(join("collections", "order-api", "collection.yaml"));
+    expect(problems[0]!.message).toContain("nonsense");
+  });
+
+  it("collection.yaml 省略可选字段时以 schema 默认值构建域对象（回归 C2）", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    await fileStorage.save(root, workspace);
+    const cFile = join(root, "groups", "ecommerce", "projects", "order-service", "collections", "order-api", "collection.yaml");
+    writeFileSync(cFile, "id: c1\nname: order-api\n");
+    const { workspace: loaded, problems } = await fileStorage.load(root);
+    expect(problems).toEqual([]);
+    const collection = loaded.groups[0]!.projects[0]!.collections[0]!;
+    expect(collection.variables).toEqual({});
+    expect(collection.apis).toEqual([]);
+    expect(collection.folders).toEqual([]);
+  });
+
+  it("api.yaml 带未知字段同样记 problem（schema 校验覆盖全部文件类型）", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    await fileStorage.save(root, workspace);
+    const apiDir = join(root, "groups", "ecommerce", "projects", "order-service", "collections", "order-api", "apis", "a1");
+    mkdirSync(join(apiDir, "cases"), { recursive: true });
+    writeFileSync(join(apiDir, "api.yaml"), "id: a1\nname: broken-api\nmethod: GET\nurl: /\nspellingMistake: true\n");
+    const { workspace: loaded, problems } = await fileStorage.load(root);
+    expect(loaded.groups[0]!.projects[0]!.collections[0]!.apis).toEqual([]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.message).toContain("spellingMistake");
+  });
+
+  it("workspace.yaml 自身 schema 失败保持抛错语义", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    await fileStorage.save(root, workspace);
+    writeFileSync(join(root, "apicc.workspace.yaml"), "id: w1\nname: demo\nbogus: 1\n");
+    await expect(fileStorage.load(root)).rejects.toThrow(/apicc\.workspace\.yaml/);
+  });
+
+  it("collections 下缺 collection.yaml 的子目录记 problem（回归 I1，与 apis 孤儿目录语义对齐）", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    await fileStorage.save(root, workspace);
+    mkdirSync(join(root, "groups", "ecommerce", "projects", "order-service", "collections", "orphan"));
+    const { workspace: loaded, problems } = await fileStorage.load(root);
+    expect(loaded.groups[0]!.projects[0]!.collections.map((c) => c.name)).toEqual(["order-api"]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.file).toContain(join("collections", "orphan", "collection.yaml"));
+    expect(problems[0]!.message).toContain("缺少 collection.yaml");
+  });
+
   it("folder 层级落盘并读回（folder 内 api 的用例与设计完整保留）", async () => {
     const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
     const ws: Workspace = {
