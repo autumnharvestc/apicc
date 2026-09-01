@@ -5,7 +5,7 @@ describe("EventBus", () => {
   it("按注册顺序串行触发同类型处理器", async () => {
     const bus = createEventBus();
     const calls: string[] = [];
-    bus.on("beforeCase", async () => { calls.push("a"); });
+    bus.on("beforeCase", async () => { await new Promise(r => setTimeout(r, 0)); calls.push("a"); });
     bus.on("beforeCase", async () => { calls.push("b"); });
     await bus.emit("beforeCase", { apiName: "x", caseName: "y", row: undefined });
     expect(calls).toEqual(["a", "b"]);
