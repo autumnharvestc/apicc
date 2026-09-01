@@ -124,6 +124,8 @@ my-workspace/                      ← 一个 Git 仓库
     │   └── sit.yaml
     └── collections/order-api/
         ├── collection.yaml        ← 集合变量、集合级前后置脚本
+        ├── folders/<文件夹名>/     ← 文件夹（含 folder.yaml 与其下 apis/）
+        │   └── folder.yaml
         └── apis/create-order/
             ├── api.yaml           ← 接口定义（全局唯一，不随环境变）
             ├── design.md          ← 接口详细设计（agent 可消费）
@@ -134,6 +136,7 @@ my-workspace/                      ← 一个 Git 仓库
 
 规则：
 - **稳定标识**：每个对象携带 ULID；对象间引用一律用 ID，重命名/移动目录不破坏引用；文件路径仅负责人工可读
+- **确定性顺序**：目录枚举加载时按名称字典序排序，保证跨平台 save→load 顺序稳定（Git 友好布局的常规做法）
 - **环境切换**：接口 URL、鉴权等环境差异一律经变量表达（如 `{{baseUrl}}`），接口定义本身不存环境专属值
 - **环境用例覆盖**：环境用例文件与基座用例共用同一用例 ID，`.<env>` 后缀仅为文件命名约定；运行某环境时同 ID 用例优先取环境版本
 - **版本**：`api.yaml` 含语义化 `version` 与 `deprecated` 元数据；变更历史由 Git 承载；审批式「版本生效」流程推迟到 M3+ 评估
