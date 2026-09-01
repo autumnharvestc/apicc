@@ -1,6 +1,11 @@
-export class CyclicVariableError extends Error {}
+export class CyclicVariableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CyclicVariableError";
+  }
+}
 
-const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
+const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_.$-]+)\s*\}\}/g;
 
 const dynamic: Record<string, () => string> = {
   $timestamp: () => String(Date.now()),
@@ -27,10 +32,12 @@ export function createVariableResolver(opts: { layers: Array<Record<string, stri
 
   function raw(name: string): string | undefined {
     for (const layer of [Object.fromEntries(runtime), ...opts.layers]) {
+      if (!Object.hasOwn(layer, name)) continue;
       const v = layer[name];
       if (v !== undefined) return v;
     }
-    return dynamic[name]?.();
+    if (Object.hasOwn(dynamic, name)) return dynamic[name]?.();
+    return undefined;
   }
 
   function resolveName(name: string, seen: string[]): string | undefined {

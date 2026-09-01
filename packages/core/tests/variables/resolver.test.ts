@@ -44,4 +44,29 @@ describe("createVariableResolver", () => {
     expect(n).toBeGreaterThanOrEqual(0);
     expect(n).toBeLessThanOrEqual(1000);
   });
+
+  it("动态变量可经 {{ }} 占位符使用", () => {
+    const r = createVariableResolver({ layers: [] });
+    expect(r.resolve("{{$timestamp}}")).toMatch(/^\d+$/);
+    expect(r.resolve("{{$uuid}}")).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("Object.prototype 属性名不参与解析", () => {
+    const r = createVariableResolver({ layers: [] });
+    expect(r.resolve("{{toString}}")).toBe("{{toString}}");
+    expect(r.get("constructor")).toBeUndefined();
+  });
+
+  it("占位符允许两侧空白", () => {
+    const r = createVariableResolver({ layers: [{ host: "api.example" }] });
+    expect(r.resolve("{{ host }}")).toBe("api.example");
+  });
+
+  it("clearRuntime 后回落低层", () => {
+    const r = createVariableResolver({ layers: [{ host: "env.example" }] });
+    r.setRuntime("host", "runtime.example");
+    expect(r.get("host")).toBe("runtime.example");
+    r.clearRuntime();
+    expect(r.get("host")).toBe("env.example");
+  });
 });
