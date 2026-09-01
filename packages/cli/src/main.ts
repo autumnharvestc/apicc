@@ -83,12 +83,14 @@ export async function runCli(argv: string[], registry: PluginRegistry, log: (lin
         timeouts: { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 },
         failFast: opts.failFast,
       });
-      const result = await runner.run(collection, env, project, workspace, { runsDir: opts.runsDir });
+      // 生成物隔离（规格 §6）：运行历史与报告默认写工作区根 .apicc/runs，不污染 Git 友好的数据树；
+      // --runs-dir 仍可覆盖。原始结果 JSON 与报告同目录，run 后 validate 不会报假问题。
+      const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
+      const result = await runner.run(collection, env, project, workspace, { runsDir: runsOutDir });
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
         if (!reporter) throw new Error(`未注册报告格式: ${format}`);
-        const outDir = join(collectionDir!, "runs");
-        const file = await reporter.render(result, outDir);
+        const file = await reporter.render(result, runsOutDir);
         log(`报告已生成: ${file}`);
       }
       log(`总计 ${result.total} · 通过 ${result.passed} · 失败 ${result.failed}`);

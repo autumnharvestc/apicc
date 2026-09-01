@@ -117,4 +117,26 @@ describe("CLI 端到端", () => {
     expect(code).toBe(0);
     expect(logs.join("\n")).toContain("# 设计");
   });
+
+  it("run 未指定 --runs-dir 时产物默认写入 <workspaceRoot>/.apicc/runs，数据树零污染（回归 I1）", async () => {
+    const logs: string[] = [];
+    const code = await runCli(
+      ["run", "groups/demo/projects/svc/collections/xapi", "--env", "dev", "--reporters", "html,junit"],
+      createDefaultRegistry(),
+      (line) => logs.push(line),
+    );
+    expect(code).toBe(0);
+    const { readdirSync, existsSync } = await import("node:fs");
+    const defaultRunsDir = join(root, ".apicc", "runs");
+    const produced = readdirSync(defaultRunsDir);
+    expect(produced.some((f) => f.endsWith(".json"))).toBe(true);
+    expect(produced.some((f) => f.endsWith(".html"))).toBe(true);
+    expect(produced.some((f) => f.endsWith(".xml"))).toBe(true);
+    // 数据树内不留任何运行产物
+    expect(existsSync(join(root, "groups", "demo", "projects", "svc", "collections", "xapi", "runs"))).toBe(false);
+    // 产物落盘后重新加载工作区，validate 语义不受影响
+    const { problems } = await fileStorage.load(root);
+    expect(problems).toEqual([]);
+    expect(logs.join("\n")).toContain("报告已生成");
+  });
 });
