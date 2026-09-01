@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import type { ApiDefinition, Collection, Group, Project, Workspace } from "../domain/model.js";
+import type { ApiDefinition, Collection, Folder, Group, Project, Workspace } from "../domain/model.js";
 import type { LoadProblem, StorageAdapter } from "../plugin/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
@@ -19,6 +19,28 @@ function writeYaml(file: string, data: unknown): void {
   writeFileSync(file, stringifyYaml(JSON.parse(JSON.stringify(data))));
 }
 
+/** 目录枚举统一按名称逐码点字典序排序（默认 sort 即 UTF-16 码点比较），保证跨平台加载顺序确定（规格 §6）。 */
+function sortedNames(dir: string, filter?: (name: string) => boolean): string[] {
+  const names = readdirSync(dir).filter((n) => (filter ? filter(n) : true));
+  return names.sort();
+}
+
+function saveApiDir(aDir: string, api: ApiDefinition): void {
+  writeYaml(join(aDir, "api.yaml"), {
+    id: api.id, name: api.name, version: api.version, deprecated: api.deprecated,
+    method: api.method, url: api.url, headers: api.headers, query: api.query,
+    body: api.body, auth: api.auth,
+  });
+  if (api.design) {
+    mkdirSync(aDir, { recursive: true });
+    writeFileSync(join(aDir, "design.md"), api.design);
+  }
+  for (const tc of api.cases) {
+    const fileName = tc.scope === "base" ? `${tc.name}.yaml` : `${tc.name}.${tc.scope}.yaml`;
+    writeYaml(join(aDir, "cases", fileName), tc);
+  }
+}
+
 async function loadApiDir(dir: string, problems: LoadProblem[]): Promise<ApiDefinition | null> {
   const apiFile = join(dir, "api.yaml");
   if (!existsSync(apiFile)) return null;
@@ -33,7 +55,7 @@ async function loadApiDir(dir: string, problems: LoadProblem[]): Promise<ApiDefi
   api.cases = [];
   const casesDir = join(dir, "cases");
   if (existsSync(casesDir)) {
-    for (const f of readdirSync(casesDir).filter((n) => n.endsWith(".yaml"))) {
+    for (const f of sortedNames(casesDir, (n) => n.endsWith(".yaml"))) {
       const cRes = readYaml<ApiDefinition["cases"][number]>(join(casesDir, f));
       if (!cRes.ok) {
         problems.push({ file: join("cases", f), message: cRes.error });
@@ -60,7 +82,7 @@ export const fileStorage: StorageAdapter = {
     const groupsDir = join(root, "groups");
     if (!existsSync(groupsDir)) return { workspace, problems };
 
-    for (const gName of readdirSync(groupsDir)) {
+    for (const gName of sortedNames(groupsDir)) {
       const gDir = join(groupsDir, gName);
       const gRes = readYaml<{ id: string; name: string }>(join(gDir, "group.yaml"));
       if (!gRes.ok) {
@@ -70,7 +92,7 @@ export const fileStorage: StorageAdapter = {
       const group: Group = { ...gRes.data, projects: [] };
       const projectsDir = join(gDir, "projects");
       if (existsSync(projectsDir)) {
-        for (const pName of readdirSync(projectsDir)) {
+        for (const pName of sortedNames(projectsDir)) {
           const pDir = join(projectsDir, pName);
           const pRes = readYaml<Omit<Project, "environments" | "collections">>(
             join(pDir, "project.yaml"),
@@ -83,7 +105,7 @@ export const fileStorage: StorageAdapter = {
 
           const envDir = join(pDir, "environments");
           if (existsSync(envDir)) {
-            for (const f of readdirSync(envDir).filter((n) => n.endsWith(".yaml"))) {
+            for (const f of sortedNames(envDir, (n) => n.endsWith(".yaml"))) {
               const eRes = readYaml<(typeof project)["environments"][number]>(join(envDir, f));
               if (!eRes.ok) {
                 problems.push({ file: join("environments", f), message: eRes.error });
@@ -95,7 +117,7 @@ export const fileStorage: StorageAdapter = {
 
           const collDir = join(pDir, "collections");
           if (existsSync(collDir)) {
-            for (const cName of readdirSync(collDir)) {
+            for (const cName of sortedNames(collDir)) {
               const cRes = readYaml<Omit<Collection, "apis">>(
                 join(collDir, cName, "collection.yaml"),
               );
@@ -104,9 +126,29 @@ export const fileStorage: StorageAdapter = {
                 continue;
               }
               const collection: Collection = { ...cRes.data, apis: [], folders: [] };
+              const foldersDir = join(collDir, cName, "folders");
+              if (existsSync(foldersDir)) {
+                for (const fName of sortedNames(foldersDir)) {
+                  const fDir = join(foldersDir, fName);
+                  const fRes = readYaml<Omit<Folder, "apis">>(join(fDir, "folder.yaml"));
+                  if (!fRes.ok) {
+                    problems.push({ file: join("collections", cName, "folders", fName, "folder.yaml"), message: fRes.error });
+                    continue;
+                  }
+                  const folder: Folder = { ...fRes.data, apis: [] };
+                  const fApisDir = join(fDir, "apis");
+                  if (existsSync(fApisDir)) {
+                    for (const aName of sortedNames(fApisDir)) {
+                      const api = await loadApiDir(join(fApisDir, aName), problems);
+                      if (api) folder.apis.push(api);
+                    }
+                  }
+                  collection.folders.push(folder);
+                }
+              }
               const apisDir = join(collDir, cName, "apis");
               if (existsSync(apisDir)) {
-                for (const aName of readdirSync(apisDir)) {
+                for (const aName of sortedNames(apisDir)) {
                   const api = await loadApiDir(join(apisDir, aName), problems);
                   if (api) collection.apis.push(api);
                 }
@@ -141,19 +183,13 @@ export const fileStorage: StorageAdapter = {
             id: c.id, name: c.name, variables: c.variables, scripts: c.scripts,
           });
           for (const api of c.apis) {
-            const aDir = join(cDir, "apis", api.name);
-            writeYaml(join(aDir, "api.yaml"), {
-              id: api.id, name: api.name, version: api.version, deprecated: api.deprecated,
-              method: api.method, url: api.url, headers: api.headers, query: api.query,
-              body: api.body, auth: api.auth,
-            });
-            if (api.design) {
-              mkdirSync(aDir, { recursive: true });
-              writeFileSync(join(aDir, "design.md"), api.design);
-            }
-            for (const tc of api.cases) {
-              const fileName = tc.scope === "base" ? `${tc.name}.yaml` : `${tc.name}.${tc.scope}.yaml`;
-              writeYaml(join(aDir, "cases", fileName), tc);
+            saveApiDir(join(cDir, "apis", api.name), api);
+          }
+          for (const f of c.folders) {
+            const fDir = join(cDir, "folders", f.name);
+            writeYaml(join(fDir, "folder.yaml"), { id: f.id, name: f.name });
+            for (const api of f.apis) {
+              saveApiDir(join(fDir, "apis", api.name), api);
             }
           }
         }
