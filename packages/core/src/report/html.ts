@@ -1,10 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { monotonicFactory } from "ulid";
 import type { Reporter } from "../plugin/types.js";
 import type { RunResult } from "./types.js";
 
+const nextReportFileId = monotonicFactory();
+
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 export const htmlReporter: Reporter = {
@@ -24,7 +27,7 @@ export const htmlReporter: Reporter = {
 <table border="1" cellpadding="4"><tr><th>接口</th><th>用例</th><th>数据行</th><th>结果</th><th>耗时ms</th><th>详情</th></tr>${rows}</table>
 </body></html>`;
     mkdirSync(outDir, { recursive: true });
-    const file = join(outDir, `report-${Date.now()}.html`);
+    const file = join(outDir, `report-${nextReportFileId()}.html`);
     writeFileSync(file, html);
     return file;
   },
