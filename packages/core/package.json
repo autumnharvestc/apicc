@@ -13,12 +13,14 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.4.0",
     "@vitest/coverage-v8": "^4.1.11",
     "typescript": "^5.9.2",
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "ulid": "^3.0.2",
     "yaml": "^2.9.0",
     "zod": "^4.5.4"
