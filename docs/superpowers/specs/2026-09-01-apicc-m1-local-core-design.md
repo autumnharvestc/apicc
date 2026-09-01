@@ -180,6 +180,7 @@ UI 编辑请求 → 前置脚本（可修改请求/读取变量）→ `ProtocolC
 
 | 层 | 选型 |
 |----|------|
+| 运行时基线 | Node ≥ 22（LTS；Node 20 已于 2026-04 终止维护，better-sqlite3 亦要求 ≥22） |
 | 核心包 | TypeScript、zod（schema）、ULID |
 | 宿主 | Electron + Vue 3（M1 主宿主）；commander（CLI） |
 | HTTP 执行 | undici |
