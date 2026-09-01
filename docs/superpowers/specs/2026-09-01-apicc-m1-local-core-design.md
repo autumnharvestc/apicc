@@ -184,6 +184,7 @@ UI 编辑请求 → 前置脚本（可修改请求/读取变量）→ `ProtocolC
 | 脚本沙箱 | Node `vm` + 受控 `pm.*` 上下文 |
 | 测试 | vitest |
 | 在线后端（M3，仅记录） | Java 21（用户环境已指定 JDK `C:\Program Files\Java\jdk-21.0.12`）、Spring Boot；管理后台 Vue |
+| 命名约定 | Java 包前缀 `com.autumnharvestc`（如 `com.autumnharvestc.apicc.*`）；npm 包作用域 `@apicc`（如 `@apicc/core`） |
 
 ## 11. 路线图
 
