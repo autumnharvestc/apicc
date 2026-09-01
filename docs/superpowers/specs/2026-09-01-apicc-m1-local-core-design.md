@@ -7,7 +7,7 @@
 
 ## 1. 背景与定位
 
-apicc 是一个开源（MIT）的、**本地优先**的 API 全生命周期平台：接口定义、调试、测试、压测、在线协作、AI 设计导出。对标 Postman（调试/集合）+ JMeter（测试编排/压测）+ YApi（接口管理）的一体化体验。
+apicc 是一个开源（MIT）的、**本地优先**的 API 全生命周期平台：接口定义、调试、测试、压测、在线协作、AI 设计导出，一站式覆盖。
 
 **一句话定位**：本地优先、一切皆插件、定义驱动 AI 开发的开源 API 平台。
 
@@ -16,12 +16,12 @@ apicc 是一个开源（MIT）的、**本地优先**的 API 全生命周期平�
 - 第二公民：研发团队——可选开启在线模式获得协作、权限、分布式压测（M3 起）
 
 **四条差异化立场**：
-1. 本地模式功能完备，不设登录墙（对比 Postman/Apifox 强制账号体系）
+1. 本地模式功能完备，不设登录墙（对比主流 SaaS 平台的强制账号体系）
 2. API 定义即代码资产：纯文本 + Git 优先，可 diff、可评审、可离线
 3. 接口详细设计可导出为 agent 可消费的格式——人写设计、agent 实现代码
 4. 一切皆插件：协议、认证器、断言、脚本引擎、报告、导入器、存储适配器均为扩展点
 
-**M1 成功标准**：一位未接触过本平台的测试工程师，30 分钟内完成「导入 Swagger → 调试接口 → 编写测试用例 → 运行集合 → 查看报告」全流程；此后日常 API 调试工作不再需要 Postman。
+**M1 成功标准**：一位未接触过本平台的测试工程师，30 分钟内完成「导入 OpenAPI 定义 → 调试接口 → 编写测试用例 → 运行集合 → 查看报告」全流程；此后日常 API 调试与测试工作完全在本平台内完成。
 
 ## 2. 已确认的关键决策
 
@@ -52,7 +52,7 @@ apicc 是一个开源（MIT）的、**本地优先**的 API 全生命周期平�
 | 数据驱动 | 单请求模板用例遍历：CSV/JSON 数据源逐行展开执行 |
 | 集合运行 | 集合/文件夹顺序执行；运行历史落盘；测试报告（用例通过率、断言详情、耗时）可导出 HTML / JUnit |
 | 接口详细设计 | 接口挂 `design.md`（结构化 schema 段 + 自由文本）；可导出含定义、schema、校验规则、错误码、示例的 agent 友好 Markdown |
-| 导入 | Postman collection v2.1、OpenAPI/Swagger 2.0 与 3.0；导入前预览差异、不静默覆盖 |
+| 导入 | Collection v2.1 JSON 格式（业界通用集合导出格式）、OpenAPI 2.0 与 3.0；导入前预览差异、不静默覆盖 |
 | 插件底座 | §5 定义的 7 个扩展点 + 事件总线；所有内置功能以普通插件形态实现 |
 | CLI | `apicc run <集合> --env <环境> --reporters html,junit`，可用于 CI |
 
@@ -78,7 +78,7 @@ DAG 工作流与编排（M2）、压测并发模型（M2）、Mock 服务（M2 �
 │ 内置插件（同仓库交付，但只依赖公开插件接口）   │
 │  http-client / basic-auth / js-script-      │
 │  engine / html-reporter / junit-reporter /  │
-│  postman-importer / openapi-importer        │
+│  collection-importer / openapi-importer      │
 ├────────────────────────────────────────────┤
 │ 存储：工作区目录（YAML/JSON 文本，Git 友好）  │
 │      + .apicc/ SQLite 索引（缓存，可重建）    │
@@ -100,7 +100,7 @@ DAG 工作流与编排（M2）、压测并发模型（M2）、Mock 服务（M2 �
 | `AssertOperator` | 断言操作符（eq/contains/jsonPath/lt/gt/…） | 自定义断言 |
 | `ScriptEngine` | `run(code, ctx)`，默认实现 JS 沙箱 | Groovy/Python 引擎 |
 | `Reporter` | 消费执行结果事件流渲染报告 | 压测 TPS 报告（M2） |
-| `Importer` | `detect(file)` + `parse(file) → 域对象` | SoapUI/Insomnia 导入 |
+| `Importer` | `detect(file)` + `parse(file) → 域对象` | 其他平台集合导入 |
 | `StorageAdapter` | 工作区读写 | M3 在线数据库实现同一接口——可移植性的关键钩子 |
 
 ### 5.2 事件总线（钩子）
@@ -167,7 +167,7 @@ UI 编辑请求 → 前置脚本（可修改请求/读取变量）→ `ProtocolC
 
 ## 9. 测试策略
 
-- core 单元测试（vitest）：域模型、变量解析、断言操作符、导入器（使用真实 Postman/OpenAPI 样例文件）
+- core 单元测试（vitest）：域模型、变量解析、断言操作符、导入器（使用真实 Collection/OpenAPI 样例文件）
 - 插件契约测试：见 §5.3
 - 执行引擎集成测试：内置 httptest 起本地服务，端到端运行集合
 - CLI 冒烟测试
@@ -202,6 +202,6 @@ UI 编辑请求 → 前置脚本（可修改请求/读取变量）→ `ProtocolC
 - 工作流 DAG 语义、节点影响分析规则 → M2 规格
 - 压测指标体系（TPS/RT 分位/分布式汇聚协议）→ M2 规格
 - 在线模式数据库 schema 与同步冲突策略 → M3 规格
-- `pm.*` 脚本 API 的完整面向（对齐 Postman 兼容子集）→ M1 实现计划中定义
+- `pm.*` 脚本 API 的完整面向（兼容业界通用脚本 API 的常用子集）→ M1 实现计划中定义
 - UI 信息架构与交互稿 → M1 实现计划中定义
 - i18n 具体方案（界面中文优先，文案全部走 i18n 资源文件）→ M1 实现计划中定义
