@@ -4,7 +4,6 @@ import { builtinAssertOperators } from "../../src/assert/operators.js";
 import { itCompliesWithAssertOperatorContract } from "../contracts/assertOperator.contract.js";
 
 const eq = builtinAssertOperators.find((o) => o.op === "eq")!;
-const jsonEq = builtinAssertOperators.find((o) => o.op === "eq")!;
 
 // 契约正向探针固定调用 evaluate("a", "a")；对「实参与期望相同时语义上必须判 false」的操作符
 // （neq 及数值比较类），按任务 4 修复轮裁定，在本测试内以该操作符的合规匹配输入包装后接入契约：
@@ -52,8 +51,13 @@ describe("内置断言操作符", () => {
     expect(neq.evaluate("a", "b").pass).toBe(true);
   });
 
+  it("expected 缺失时全部操作符 fail", () => {
+    for (const op of builtinAssertOperators) {
+      expect(op.evaluate("hello", undefined).pass, op.op).toBe(false);
+    }
+  });
+
   for (const op of builtinAssertOperators) {
     itCompliesWithAssertOperatorContract(toContractView(op));
-    void jsonEq;
   }
 });

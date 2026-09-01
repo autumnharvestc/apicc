@@ -8,8 +8,12 @@ function make(op: string, test: (actual: unknown, expected: string | undefined) 
   return {
     op,
     evaluate(actual, expected) {
-      // 契约：actual 为 undefined 一律 fail（neq 等不等式操作符若不拦截会误判 pass）
-      const pass = actual !== undefined && test(actual, expected);
+      // fail-closed：actual 或 expected 缺失一律 fail（neq/contains 等若不拦截会把缺值误判为通过）
+      if (actual === undefined || expected === undefined) {
+        const missing = actual === undefined ? "缺少实际值" : "缺少期望值";
+        return { pass: false, message: `${op} 断言失败: ${missing}` };
+      }
+      const pass = test(actual, expected);
       return { pass, message: `${op} 断言${pass ? "通过" : "失败"}: actual=${JSON.stringify(actual)}, expected=${expected}` };
     },
   };
