@@ -135,6 +135,32 @@ describe("CollectionRunner", () => {
     expect(result.total).toBe(1);
   });
 
+  it("postScript 提取的变量跨用例持久，且可被本用例 parameters 遮蔽", async () => {
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [{
+        id: "a1", name: "flow", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
+        cases: [
+          { id: "t1", name: "login", scope: "base", parameters: {}, assertions: [], postScript: "pm.variables.set('token', 'abc');" },
+          {
+            id: "t2", name: "shadow", scope: "base", parameters: { token: "local" },
+            assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }],
+            preScript: "if (pm.variables.get('token') !== 'local') throw new Error('本用例 parameters 未遮蔽持久变量: ' + pm.variables.get('token'));",
+          },
+          {
+            id: "t3", name: "carry", scope: "base", parameters: {},
+            assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }],
+            preScript: "if (pm.variables.get('token') !== 'abc') throw new Error('持久变量丢失: ' + pm.variables.get('token'));",
+          },
+        ],
+      }],
+    };
+    const result = await buildDeps().run(col, env, project, workspace, {});
+    expect(result.total).toBe(3);
+    expect(result.passed).toBe(3);
+    expect(result.failed).toBe(0);
+  });
+
   it("runsDir 提供时原始结果 JSON 先行落盘", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-runs-"));
     const col = collectionWith([{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [] }]);

@@ -2,6 +2,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseCsv } from "csv-parse/sync";
 import { JSONPath } from "jsonpath-plus";
+import { monotonicFactory } from "ulid";
+
+/** runs 落盘文件名 ID：进程内单调递增，同毫秒多次运行不重名。 */
+const nextRunFileId = monotonicFactory();
 import { envChain } from "../domain/envChain.js";
 import type { ApiDefinition, Collection, Environment, Project, TestCase, Workspace } from "../domain/model.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
@@ -34,14 +38,16 @@ export class CollectionRunner {
 
     const outcomes: CaseOutcome[] = [];
     const apis = [...collection.apis, ...collection.folders.flatMap((f) => f.apis)];
-    if (collection.scripts?.pre) engine.run(collection.scripts.pre, this.buildContext(resolver, env));
+    // 脚本经 pm.variables.set 写入的变量跨用例持久（整个 run 生命周期），如「登录→取 token→调业务接口」流转。
+    const persisted = new Map<string, string>();
+    if (collection.scripts?.pre) engine.run(collection.scripts.pre, this.buildContext(resolver, env, undefined, undefined, persisted));
 
     outer:
     for (const api of apis) {
       for (const tc of api.cases.filter((c) => c.scope === "base" || chain.includes(c.scope))) {
         const rows = this.expandDataRows(tc);
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-          const outcome = await this.runCase(api, tc, rows[rowIndex], rowIndex, rows.length > 1, resolver, env, engine);
+          const outcome = await this.runCase(api, tc, rows[rowIndex], rowIndex, rows.length > 1, resolver, env, engine, persisted);
           outcomes.push(outcome);
           if (!outcome.passed && this.deps.failFast) break outer;
         }
@@ -57,7 +63,7 @@ export class CollectionRunner {
     // 原始结果 JSON 先行落盘（规格 §8：报告失败不影响结果保存）
     if (opts.runsDir) {
       mkdirSync(opts.runsDir, { recursive: true });
-      writeFileSync(join(opts.runsDir, `run-${Date.now()}.json`), JSON.stringify(result, null, 2));
+      writeFileSync(join(opts.runsDir, `run-${nextRunFileId()}.json`), JSON.stringify(result, null, 2));
     }
     await this.deps.bus.emit("afterRun", { total: result.total, passed: result.passed, failed: result.failed });
     return result;
@@ -78,13 +84,18 @@ export class CollectionRunner {
     api: ApiDefinition, tc: TestCase,
     row: Record<string, string> | undefined, rowIndex: number, isDataDriven: boolean,
     resolver: VariableResolver, env: Environment | undefined,
-    engine: ScriptEngine,
+    engine: ScriptEngine, persisted: Map<string, string>,
   ): Promise<CaseOutcome> {
     const started = performance.now();
-    // 每个用例行独立运行时层：先清空再注入本用例参数与当前行数据，
-    // 保证上一行/上一用例的数据不泄漏（clearRuntime 在注入之前，不会误清本行）。
+    // 每个用例行先清空运行时层，再按 persisted → tc.parameters → 行值 的顺序重放/注入：
+    // - persisted：脚本 pm.variables.set 写入的值，跨用例持久（整个 run 生命周期）；
+    // - parameters 与行值：仅限当用例/当行，且可遮蔽同名持久值（注入在后）。
     resolver.clearRuntime();
-    for (const [k, v] of Object.entries({ ...tc.parameters, ...(row ?? {}) })) resolver.setRuntime(k, v);
+    for (const [k, v] of persisted) resolver.setRuntime(k, v);
+    for (const [k, v] of Object.entries(tc.parameters)) resolver.setRuntime(k, v);
+    if (row) {
+      for (const [k, v] of Object.entries(row)) resolver.setRuntime(k, v);
+    }
 
     await this.deps.bus.emit("beforeCase", { apiName: api.name, caseName: tc.name, row: isDataDriven ? rowIndex : undefined });
 
@@ -98,7 +109,7 @@ export class CollectionRunner {
     };
 
     const pmAsserts: Array<{ pass: boolean; message: string }> = [];
-    const ctx = this.buildContext(resolver, env, request, pmAsserts);
+    const ctx = this.buildContext(resolver, env, request, pmAsserts, persisted);
 
     // 脚本超时/异常只捕获为 error 字段，让单个用例失败而不中断集合。
     let error: string | undefined;
@@ -176,9 +187,17 @@ export class CollectionRunner {
     resolver: VariableResolver, env: Environment | undefined,
     request?: ExecutableRequest,
     pmAsserts?: Array<{ pass: boolean; message: string }>,
+    persisted?: Map<string, string>,
   ): { pm: PmApi } {
     const pm: PmApi = {
-      variables: { get: (n) => resolver.get(n), set: (n, v) => resolver.setRuntime(n, v) },
+      variables: {
+        get: (n) => resolver.get(n),
+        // 脚本写入同时进运行时层与持久表：本用例立即可见，后续用例经 persisted 重放仍可见。
+        set: (n, v) => {
+          persisted?.set(n, v);
+          resolver.setRuntime(n, v);
+        },
+      },
       environment: { get: (n) => env?.variables[n] },
       request: request ?? { method: "GET", url: "", headers: {}, query: [] },
       response: undefined,
