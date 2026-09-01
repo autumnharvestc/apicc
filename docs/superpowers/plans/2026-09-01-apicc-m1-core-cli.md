@@ -6,7 +6,7 @@
 
 **架构：** 依据规格 `docs/superpowers/specs/2026-09-01-apicc-m1-local-core-design.md`。pnpm monorepo；core 不依赖宿主；一切功能以插件形态挂在 7 个扩展点上；工作区 = Git 友好的 YAML/JSON 文本目录，SQLite 仅作可重建索引。
 
-**技术栈：** TypeScript 5（ESM）、Node ≥ 20、pnpm ≥ 9、vitest 2、zod 3、yaml 2、ulid、undici 6、better-sqlite3 11、jsonpath-plus、csv-parse、commander 12。
+**技术栈：** TypeScript 5（ESM）、Node ≥ 22（LTS）、pnpm ≥ 9、vitest 2、zod 3、yaml 2、ulid、undici 6、better-sqlite3 13、jsonpath-plus、csv-parse、commander 12。
 
 **计划范围说明：** 本计划交付 core + CLI；Electron/Vue 桌面宿主、调试 UI、i18n 属于后续「计划 2」。品牌名不得出现在任何入库文件（见规格 §1 差异化约束与项目记忆）。
 
