@@ -1431,9 +1431,9 @@ const pm: PmApi = {
 const ctx: ScriptContext = { pm };
 
 describe("jsScriptEngine", () => {
-  it("可读写 pm 上下文", () => {
-    jsScriptEngine.run("pm.variables.set('token', 'abc');", ctx);
-    expect(ctx.pm.variables.get("token")).toBeUndefined(); // resolver 未接前 set 只进内部 map——见实现说明
+  it("把同一个 pm 对象传入沙箱（脚本的读写直接作用于该对象）", () => {
+    jsScriptEngine.run("pm.variables.set('token', 'abc'); pm.__probe = true;", ctx);
+    expect((ctx.pm as { __probe?: boolean }).__probe).toBe(true);
   });
 
   it("脚本异常向上传播", () => {
@@ -1506,7 +1506,7 @@ export const jsScriptEngine: ScriptEngine = {
 };
 ```
 
-实现说明（写入该文件尾部注释即可）：第一个测试中 `pm.variables.set` 作用于测试自建的 map 形实现，故 `get` 仍为 undefined——引擎只负责把 `pm` 原样传入沙箱；真正的读写联动由最后一个用例验证。
+实现说明（写入该文件尾部注释即可）：引擎只负责把 `pm` 原样传入沙箱——脚本对该对象的一切读写（含新增属性）都直接落在 `ctx.pm` 上，由第一个用例验证；`pm.variables` 与真实解析器的联动由最后一个用例验证。
 
 - [ ] **步骤 4：运行验证通过**
 
