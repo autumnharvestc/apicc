@@ -42,6 +42,26 @@ beforeAll(async () => {
               cases: [{ id: "t2", name: "fails", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "500" }] }],
             },
           ],
+        }, {
+          id: "c2", name: "xapi", variables: {}, folders: [],
+          apis: [{
+            id: "a3", name: "xok", version: "1", deprecated: false, method: "GET",
+            url: "{{baseUrl}}/x", headers: [], query: [],
+            cases: [{ id: "t3", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
+          }],
+        }],
+      }],
+    }, {
+      id: "g2", name: "demo2", projects: [{
+        id: "p2", name: "svc", variables: {},
+        environments: [{ id: "e2", name: "dev", variables: { baseUrl } }],
+        collections: [{
+          id: "c3", name: "api", variables: {}, folders: [],
+          apis: [{
+            id: "a4", name: "ok2", version: "1", deprecated: false, method: "GET",
+            url: "{{baseUrl}}/x", headers: [], query: [],
+            cases: [{ id: "t4", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
+          }],
         }],
       }],
     }],
@@ -72,6 +92,19 @@ describe("CLI 端到端", () => {
     expect(code).toBe(1);
     const { readdirSync } = await import("node:fs");
     expect(readdirSync(runsDir).some((f) => f.endsWith(".json"))).toBe(true);
+  });
+
+  it("run 传正斜杠相对路径正确定位，不误匹配 xapi、重名集合取首个", async () => {
+    const logs: string[] = [];
+    const code = await runCli(
+      ["run", "collections/api", "--env", "dev", "--reporters", "html"],
+      createDefaultRegistry(),
+      (line) => logs.push(line),
+    );
+    expect(code).toBe(1);
+    // 仅 demo/svc/collections/api（2 用例：1 过 1 败）应被运行；
+    // xapi 与 demo2 下重名 api 均 1 用例全过——命中其一则“总计/退出码”皆不符。
+    expect(logs.join("\n")).toContain("总计 2 · 通过 1 · 失败 1");
   });
 
   it("export-design 输出 Markdown 到 stdout", async () => {

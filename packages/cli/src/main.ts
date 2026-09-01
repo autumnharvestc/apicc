@@ -1,6 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import type { PluginRegistry } from "@apicc/core";
+
+/** 路径分隔符归一为 "/"，使集合目录匹配与用户输入的正/反斜杠形态无关（Windows 兼容）。 */
+function toSlash(p: string): string {
+  return p.split("\\").join("/");
+}
 
 /** 从起始目录向上查找 apicc.workspace.yaml。 */
 export function findWorkspaceRoot(start: string): string | null {
@@ -48,16 +53,22 @@ export async function runCli(argv: string[], registry: PluginRegistry, log: (lin
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
       const storage = registry.getStorage();
-      const { workspace } = await storage!.load(root);
+      if (!storage) throw new Error("未注册存储适配器");
+      const { workspace } = await storage.load(root);
       let collectionDir: string | undefined;
       let collection: import("@apicc/core").Collection | undefined;
       let project: import("@apicc/core").Project | undefined;
+      const target = toSlash(collectionPath);
+      search:
       for (const g of workspace.groups) {
         for (const p of g.projects) {
           for (const c of p.collections) {
             const dir = join(root, "groups", g.name, "projects", p.name, "collections", c.name);
-            if (dir.endsWith(collectionPath) || relative(dir, join(root, collectionPath)) === "") {
+            const normalized = toSlash(dir);
+            // 全等或按分隔符边界后缀匹配：避免 "api" 误命中 "xapi"；首个命中即止，重名集合取确定性首个。
+            if (normalized === target || normalized.endsWith(`/${target}`)) {
               collection = c; project = p; collectionDir = dir;
+              break search;
             }
           }
         }
