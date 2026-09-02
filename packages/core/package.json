@@ -1,0 +1,35 @@
+{
+  "name": "@apicc/core",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.4.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "csv-parse": "^7.0.2",
+    "jsonpath-plus": "^10.4.0",
+    "ulid": "^3.0.2",
+    "undici": "^8.10.1",
+    "yaml": "^2.9.0",
+    "zod": "^4.5.4"
+  }
+}
