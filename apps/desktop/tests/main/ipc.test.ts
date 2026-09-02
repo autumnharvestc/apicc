@@ -68,6 +68,31 @@ describe("IPC 处理器", () => {
     expect(fetched.api.url).toBe("/y");
   });
 
+  it("env:create 返回环境对象并落盘；env:vars:save 保存变量后重开读回", async () => {
+    const { deps, dir } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
+    // env:create → 返回环境对象；处理器显式 save 落盘（session 变更操作不自动落盘）
+    const env = await deps.handle("env:create", {}, { projectId: p.id, name: "sit", extends: "dev" });
+    expect(env).toMatchObject({ name: "sit", extends: "dev", variables: {} });
+    expect(env.id).toBeTruthy();
+    await expect(deps.handle("env:create", {}, { projectId: "不存在", name: "x" })).rejects.toThrow(/未找到项目/);
+    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir });
+    await fresh.handle("ws:open", {}, dir);
+    const tree = await fresh.handle("tree:get", {});
+    const projectNode = tree.children![0]!.children![0]!;
+    expect(projectNode.envs).toEqual([{ id: env.id, name: "sit" }]);
+    // env:vars:save → 变量覆盖 + 显式 save 落盘，重开读回验证
+    await fresh.handle("env:vars:save", {}, env.id, { baseUrl: "http://s" });
+    const rereadSession = createSession();
+    const reread = createIpcDeps({ session: rereadSession, pickDirectory: async () => dir });
+    await reread.handle("ws:open", {}, dir);
+    const sit = rereadSession.workspace!.groups[0]!.projects[0]!.environments[0]!;
+    expect(sit.variables).toEqual({ baseUrl: "http://s" });
+    expect(sit.extends).toBe("dev");
+  });
+
   it("未打开工作区时 tree:get 抛可读错误", async () => {
     const { deps } = setup();
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => "" });

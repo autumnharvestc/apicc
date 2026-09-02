@@ -82,6 +82,31 @@ describe("createSession", () => {
     expect(() => s.deleteNode("group", "不存在")).toThrow(/未找到/);
   });
 
+  it("createEnvironment 派生环境并继承父变量；setEnvironmentVariables 覆盖", async () => {
+    const s = createSession();
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const p = s.createProject(g.id, "p");
+    p.environments.push({ id: "e-dev", name: "dev", variables: { baseUrl: "http://d", token: "t" } });
+    const env = s.createEnvironment(p.id, { name: "sit", extends: "dev" });
+    await s.save();
+    const s2 = createSession();
+    await s2.open(dir);
+    const sit = s2.workspace!.groups[0]!.projects[0]!.environments.find((e) => e.name === "sit")!;
+    expect(sit.extends).toBe("dev");
+    await s2.setEnvironmentVariables(sit.id, { baseUrl: "http://s" });
+    // 简报修正：session 变更操作不自动落盘（承重语义备忘，IPC 层显式 save），
+    // 重开读回前须显式 save——与本文件 renameNode 用例的既有模式一致。
+    await s2.save();
+    const reopened = createSession();
+    await reopened.open(dir);
+    const sitVars = reopened.workspace!.groups[0]!.projects[0]!.environments.find((e) => e.name === "sit")!.variables;
+    expect(sitVars).toEqual({ baseUrl: "http://s" });
+    expect(env.name).toBe("sit");
+  });
+
   it("renameNode 重命名集合（盘上目录随 save 更新，旧目录清理）", async () => {
     const s = createSession();
     const dir = root();

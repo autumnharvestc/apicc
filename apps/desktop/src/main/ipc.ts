@@ -1,6 +1,6 @@
 import { type Workspace } from "@apicc/core";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import type { ApiDetail, DebugInput, DebugOutput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../shared/types.js";
+import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../shared/types.js";
 import { sendDebug } from "./debug.js";
 import type { createSession } from "./session.js";
 import { toTreeNode, type TreeNodeDTO } from "./tree.js";
@@ -102,6 +102,19 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.NodeDelete: {
         const [kind, id] = args as [Parameters<Session["deleteNode"]>[0], string];
         session.deleteNode(kind, id);
+        await session.save();
+        return undefined;
+      }
+      // 环境频道（任务 4）：session 变更操作不自动落盘，两分支均显式 save（语义备忘）。
+      case IpcChannel.EnvCreate: {
+        const input = args[0] as EnvCreateInput;
+        const env = session.createEnvironment(input.projectId, { name: input.name, extends: input.extends });
+        await session.save();
+        return env;
+      }
+      case IpcChannel.EnvVarsSave: {
+        const [envId, variables] = args as [string, Record<string, string>];
+        session.setEnvironmentVariables(envId, variables);
         await session.save();
         return undefined;
       }

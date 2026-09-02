@@ -7,6 +7,8 @@ export const IpcChannel = {
   NodeCreate: "node:create",
   NodeRename: "node:rename",
   NodeDelete: "node:delete",
+  EnvCreate: "env:create",
+  EnvVarsSave: "env:vars:save",
   ApiGet: "api:get",
   ApiSave: "api:save",
   DebugSend: "debug:send",

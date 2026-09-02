@@ -7,6 +7,7 @@ import {
   type ApiDefinition,
   type CaseOutcome,
   type Collection,
+  type Environment,
   type Folder,
   type Group,
   type LoadProblem,
@@ -15,7 +16,7 @@ import {
   type Workspace,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
-import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../../../shared/types.js";
+import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../../../shared/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
@@ -236,6 +237,26 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
         }
       }
       throw new Error(`未找到: ${id}`);
+    },
+
+    // 环境操作（任务 4）：语义对齐 session（未命中统一抛「未找到」）；与替身其余
+    // node 操作一致，成功后内部落盘（替身的落盘为最佳努力），主进程侧落盘由 IPC 分支显式 save。
+    async envCreate(input: EnvCreateInput): Promise<Environment> {
+      const ws = ensureOpen();
+      const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === input.projectId);
+      if (!project) throw new Error(`未找到项目: ${input.projectId}`);
+      const env: Environment = { id: randomUUID(), name: input.name, extends: input.extends, variables: {} };
+      project.environments.push(env);
+      await save();
+      return env;
+    },
+
+    async envVarsSave(envId: string, variables: Record<string, string>): Promise<void> {
+      const ws = ensureOpen();
+      const env = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === envId);
+      if (!env) throw new Error(`未找到环境: ${envId}`);
+      env.variables = variables;
+      await save();
     },
 
     async apiGet(apiId: string): Promise<ApiDetail> {

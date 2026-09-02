@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fileStorage, type ApiDefinition, type Collection, type Group, type Project, type Workspace, type LoadProblem, HttpMethod } from "@apicc/core";
+import { fileStorage, type ApiDefinition, type Collection, type Environment, type Group, type Project, type Workspace, type LoadProblem, HttpMethod } from "@apicc/core";
 import { randomUUID } from "node:crypto";
 
 export interface ApiLocation { api: ApiDefinition; collection: Collection; project: Project; group: Group; folder: { id: string; name: string; apis: ApiDefinition[] } | null }
@@ -94,6 +94,24 @@ export function createSession() {
     const index = list.findIndex((a) => a.id === api.id);
     list[index] = api;
     await save();
+  }
+
+  // 环境操作（任务 4）：与 create/createProject 同契约——只改内存模型不落盘，
+  // 落盘时机由 IPC 处理器显式 save()（语义备忘：session 变更操作不自动落盘）。
+  function createEnvironment(projectId: string, input: { name: string; extends?: string }): Environment {
+    const { workspace: ws } = ensureOpen();
+    const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+    if (!project) throw new Error(`未找到项目: ${projectId}`);
+    const env: Environment = { id: randomUUID(), name: input.name, extends: input.extends, variables: {} };
+    project.environments.push(env);
+    return env;
+  }
+
+  function setEnvironmentVariables(envId: string, variables: Record<string, string>): void {
+    const { workspace: ws } = ensureOpen();
+    const env = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === envId);
+    if (!env) throw new Error(`未找到环境: ${envId}`);
+    env.variables = variables;
   }
 
   function renameNode(kind: NodeKind, id: string, name: string): void {
@@ -201,6 +219,7 @@ export function createSession() {
       return (await fileStorage.load(r)).problems;
     },
     createGroup, createProject, createCollection, createFolder, createApi,
+    createEnvironment, setEnvironmentVariables,
     locateApi, saveApi, renameNode, deleteNode, save,
   };
 }

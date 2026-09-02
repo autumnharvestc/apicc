@@ -4,5 +4,6 @@
   "tree": { "newGroup": "New Group", "newProject": "New Project", "newCollection": "New Collection", "newFolder": "New Folder", "newApi": "New API", "rename": "Rename", "delete": "Delete", "deleteConfirm": "Delete \"{name}\"?", "empty": "Open a workspace to browse APIs", "namePlaceholder": "Name" },
   "editor": { "empty": "Select an API on the left to edit", "send": "Send", "sending": "Sending…", "method": "Method", "url": "URL", "params": "Params", "headers": "Headers", "auth": "Auth", "body": "Body", "save": "Save", "saved": "Saved", "name": "API name", "addRow": "Add row", "bodyKind": "Body type" },
   "response": { "status": "Status", "time": "Time", "body": "Body", "headers": "Headers", "assertions": "Assertions", "empty": "Click \"Send\" to see the response", "passed": "Passed", "failed": "Failed", "error": "Error" },
+  "env": { "empty": "Select a project to manage environment variables", "select": "Select environment", "new": "New Environment", "derive": "Derive from Existing", "parent": "Parent environment", "varName": "Variable", "varValue": "Value", "addVar": "Add variable", "saveVars": "Save variables", "saved": "Variables saved", "deleteConfirm": "Delete environment \"{name}\"?", "namePlaceholder": "Environment name" },
   "common": { "cancel": "Cancel", "confirm": "Confirm", "close": "Close" }
 }
