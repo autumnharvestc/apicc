@@ -63,6 +63,14 @@ describe("sendDebug", () => {
     await expect(sendDebug(s, { apiId: api.id, caseId: api.cases[0]!.id, envName: "ghost" })).rejects.toThrow(/未找到环境: ghost/);
   });
 
+  it("env-scope 用例无环境调试：可读报错而非 undefined outcome 打穿渲染层（宽审查修复 1）", async () => {
+    const { s, api } = await setup();
+    api.cases[0]!.scope = "dev"; // 仅 scope="dev" 用例，无环境调试时 Runner 会将其过滤
+    await expect(sendDebug(s, { apiId: api.id, caseId: api.cases[0]!.id, envName: undefined })).rejects.toThrow(
+      /不适用于当前调试环境/,
+    );
+  });
+
   it("网络错误进入 outcome.error 而非抛出", async () => {
     const { s, api } = await setup();
     api.url = "http://127.0.0.1:1/";

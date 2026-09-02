@@ -274,6 +274,19 @@ describe("ResponseViewer", () => {
     expect(headers.text()).toContain("application/json");
   });
 
+  it("带 response 时头部展示状态码与请求耗时；无 response 时不展示（宽审查修复 2）", async () => {
+    const withResponse = {
+      ...result,
+      response: { status: 201, headers: {}, bodyText: "created", timeMs: 12.4 },
+    };
+    const wrapper = mountWithI18n(ResponseViewer, { result: withResponse });
+    expect(wrapper.find('[data-testid="response-status"]').text()).toContain("201");
+    expect(wrapper.find('[data-testid="response-time"]').text()).toContain("12 ms");
+    await wrapper.setProps({ result });
+    expect(wrapper.find('[data-testid="response-status"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="response-time"]').exists()).toBe(false);
+  });
+
   it("error 属性非空时显示错误徽标", () => {
     const wrapper = mountWithI18n(ResponseViewer, { result, error: "网络不可达" });
     expect(wrapper.find('[data-testid="response-error"]').text()).toContain("网络不可达");

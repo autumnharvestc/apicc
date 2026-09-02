@@ -32,6 +32,22 @@ describe("runs 历史", () => {
     expect(readRun(dir, "../x.json")).toBeNull();
     expect(readRun(dir, join(dir, "run-a.json"))).toBeNull();
   });
+  it("合法 JSON 但形状不对：listRuns 跳过、readRun 返回 null（宽审查修复 3）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-runslist3-"));
+    mkdirSync(dir, { recursive: true });
+    // 合法 JSON，但缺 collectionName/startedAt/total/passed/failed/cases
+    writeFileSync(join(dir, "wrong-shape.json"), JSON.stringify({ hello: "world" }));
+    // total 非数字同样不匹配最小形状
+    writeFileSync(join(dir, "wrong-type.json"), JSON.stringify({ ...sample, total: "2" }));
+    expect(listRuns(dir)).toEqual([]);
+    expect(readRun(dir, "wrong-shape.json")).toBeNull();
+    expect(readRun(dir, "wrong-type.json")).toBeNull();
+    // 混合目录：形状不对的跳过，合法的照常列出
+    writeFileSync(join(dir, "good.json"), JSON.stringify(sample));
+    const list = listRuns(dir);
+    expect(list).toHaveLength(1);
+    expect(list[0]!.file).toBe("good.json");
+  });
 });
 
 // —— IPC run 频道（任务 6）：run:collection 走完整 Runner 并落盘 .apicc/runs，runs:list/get 读回 ——

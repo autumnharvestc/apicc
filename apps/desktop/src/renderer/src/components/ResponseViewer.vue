@@ -14,7 +14,8 @@ const ATypographyText = ATypography.Text;
  * timeMs 快照（main/debug.ts 经 afterResponse 事件捕获）——body tab 渲染 bodyText
  * （JSON 可解析时 pretty 缩进，否则原样展示），headers tab 渲染响应头表格；
  * response 缺失（如渲染层 memory 替身）时保留「—」占位，不臆造数据。
- * 有结果时展示 passed/durationMs、断言明细（消息 + 通过/失败徽标）与错误徽标。
+ * 有结果时展示 passed/durationMs、断言明细（消息 + 通过/失败徽标）与错误徽标；
+ * response 快照存在时头部另展示 status/timeMs（宽审查修复 2，快照已有数据此前未上 UI）。
  * antd 4 落地：passed/failed 徽标为 a-tag（success/error 语义色），断言列表与响应头
  * 均为 a-table（行 data-testid 经 customRow 保留），页签为 a-tabs（#tab slot 保留
  * 触发钩子），时长/发送中为 a-typography-text。断言为空时显示 antd 内建空态（原自研
@@ -67,6 +68,13 @@ const headerRows = computed(() =>
         </a-tag>
         <a-typography-text type="secondary" data-testid="response-duration">
           {{ Math.round(result.outcome.durationMs) }} ms
+        </a-typography-text>
+        <!-- 响应快照摘要（宽审查修复 2）：response 存在时在 outcome 徽标旁展示状态码与请求耗时 -->
+        <a-typography-text v-if="result.response" type="secondary" data-testid="response-status">
+          {{ t("response.status") }} {{ result.response.status }}
+        </a-typography-text>
+        <a-typography-text v-if="result.response" type="secondary" data-testid="response-time">
+          {{ t("response.time") }} {{ Math.round(result.response.timeMs) }} ms
         </a-typography-text>
         <a-typography-text v-if="sending" type="secondary">{{ t("editor.sending") }}</a-typography-text>
         <a-tag v-if="error" color="error" data-testid="response-error">{{ t("response.error") }}: {{ error }}</a-tag>

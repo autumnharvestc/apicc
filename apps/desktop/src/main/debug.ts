@@ -53,6 +53,7 @@ export async function sendDebug(
   if (!loc) throw new Error(`未找到接口: ${input.apiId}`);
   const api: ApiDefinition = { ...loc.api, cases: loc.api.cases.filter((c) => c.id === input.caseId) };
   if (api.cases.length === 0) throw new Error(`用例不存在: ${input.caseId}`);
+  const target = api.cases[0]!;
   const collection = {
     id: loc.collection.id, name: loc.collection.name, variables: loc.collection.variables,
     scripts: loc.collection.scripts, folders: [], apis: [api],
@@ -68,6 +69,15 @@ export async function sendDebug(
   const runner = new CollectionRunner({ registry, bus, timeouts, failFast: false });
   try {
     const run = await runner.run(collection, env, project, session.workspace!, {});
+    // env-scope 用例防护（宽审查修复 1）：无环境时 Runner 过滤掉非 base 用例 → run.cases
+    // 为空，直接取 [0] 会把 undefined 经 IPC 传给渲染层，打穿 ResponseViewer 模板。
+    if (run.cases.length === 0) {
+      const why = env ? `当前环境「${env.name}」的继承链不含该 scope` : "未选择环境";
+      throw new Error(
+        `用例「${target.name}」的 scope（${target.scope}）不适用于当前调试环境（${why}）` +
+          `——请在用例面板将其 scope 改为 base，或为调试选择环境（环境选择将于后续版本提供）`,
+      );
+    }
     const outcome = run.cases[0]!;
     return { run, outcome, response };
   } finally {
