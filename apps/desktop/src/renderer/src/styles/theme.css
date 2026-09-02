@@ -1,0 +1,9 @@
+:root {
+  --bg: #ffffff; --panel: #f5f6f8; --border: #d9dce1; --text: #1f2329;
+  --accent: #2563eb; --text-muted: #6b7280; --pass: #16a34a; --fail: #dc2626;
+}
+html[data-theme="dark"] {
+  --bg: #16181d; --panel: #1f2329; --border: #343a44; --text: #e6e8eb;
+  --accent: #4c8dff; --text-muted: #9aa1ab; --pass: #4ade80; --fail: #f87171;
+}
+html[data-theme] body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
