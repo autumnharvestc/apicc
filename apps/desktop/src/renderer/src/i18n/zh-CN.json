@@ -5,5 +5,6 @@
   "editor": { "empty": "在左侧选择一个接口后编辑", "send": "发送", "sending": "发送中…", "method": "方法", "url": "URL", "params": "参数", "headers": "请求头", "auth": "认证", "body": "请求体", "save": "保存", "saved": "已保存", "name": "接口名称", "addRow": "添加一行", "bodyKind": "体类型" },
   "response": { "status": "状态码", "time": "耗时", "body": "响应体", "headers": "响应头", "assertions": "断言", "empty": "点击「发送」查看响应", "passed": "通过", "failed": "失败", "error": "错误" },
   "env": { "empty": "选择项目后管理环境变量", "select": "选择环境", "new": "新建环境", "derive": "从现有环境派生", "parent": "父环境", "varName": "变量名", "varValue": "值", "addVar": "添加变量", "saveVars": "保存变量", "saved": "变量已保存", "deleteConfirm": "确定删除环境「{name}」？", "namePlaceholder": "环境名称" },
+  "case": { "empty": "在左侧选择一个接口后编辑用例", "add": "添加用例", "new": "新用例", "remove": "删除用例", "save": "保存用例", "scope": "scope", "assertions": "断言", "addAssert": "添加断言", "target": "目标", "op": "运算符", "expected": "期望值", "headerName": "头名称", "path": "路径", "preScript": "前置脚本", "postScript": "后置脚本" },
   "common": { "cancel": "取消", "confirm": "确定", "close": "关闭" }
 }
