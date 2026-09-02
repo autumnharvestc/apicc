@@ -1,0 +1,22 @@
+appId: com.autumnharvestc.apicc
+productName: apicc
+directories:
+  output: release
+files:
+  - dist-electron/**/*
+  - dist-renderer/**/*
+  - package.json
+  # workspace 包 @apicc/core 被 electron-builder 沿符号链接整包复制，排除其本地产物垃圾
+  - "!node_modules/@apicc/core/coverage"
+extraMetadata:
+  main: dist-electron/main/main.js
+# better-sqlite3 v13 自带全平台预编译绑定（prebuilds/，经 node-gyp-build 运行时加载），
+# Electron 端可直载（dev 冒烟已验证）；本机无 Visual Studio，禁用 electron-builder 的
+# node-gyp 重建（npmRebuild 默认 true 会触发 @electron/rebuild 而失败）。
+npmRebuild: false
+# 直接复用 electron postinstall 已下载的本机发行目录（44.1.0），绕开 electron-builder
+# 26.15.3 的 electron 下载路径——其依赖的 @electron/get 3.0.0 已移除
+# ElectronDownloadCacheMode 导出，下载分支必崩（上游 app-builder-lib 版本错配，见任务 9 报告）。
+electronDist: node_modules/electron/dist
+win:
+  target: dir

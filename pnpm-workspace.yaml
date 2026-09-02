@@ -9,3 +9,5 @@ allowBuilds:
   core-js: false
   # electron 的 postinstall（install.js）负责下载对应平台的 Electron 运行时二进制，必须放行。
   electron: true
+  # electron-builder 依赖链带入的 Squirrel 安装器工具，--dir 目标用不到其 install 脚本，显式忽略。
+  electron-winstaller: false

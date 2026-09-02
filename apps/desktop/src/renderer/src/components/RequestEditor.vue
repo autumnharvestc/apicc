@@ -79,7 +79,7 @@ const bodyKind = computed<BodyKind>({
   <section v-if="editor.api" class="editor" data-testid="request-editor">
     <div class="name-row">
       <a-input v-model:value="editor.api.name" class="name-input" data-testid="editor-name" :placeholder="t('editor.name')" />
-      <span v-if="editor.dirty" class="dirty" title="unsaved">●</span>
+      <span v-if="editor.dirty" class="dirty" :title="t('editor.unsaved')">●</span>
     </div>
     <div class="top-row">
       <a-select
