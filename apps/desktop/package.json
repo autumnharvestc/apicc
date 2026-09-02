@@ -2,6 +2,8 @@
   "name": "@apicc/desktop",
   "version": "0.1.0",
   "private": true,
+  "description": "开源、本地优先的 API 全生命周期平台（接口定义 · 调试 · 测试 · 设计导出）",
+  "author": "autumnharvestc",
   "type": "module",
   "main": "dist-electron/main/main.js",
   "engines": {
@@ -14,28 +16,30 @@
     "build:preload": "vite build --config vite.preload.config.ts",
     "build": "pnpm typecheck && pnpm build:renderer && pnpm build:electron && pnpm build:preload",
     "dev": "pnpm build && electron .",
+    "gen:icon": "node scripts/gen-icon.mjs",
     "dist:dir": "pnpm build && electron-builder --dir",
     "smoke:dir": "node scripts/smoke-dir.mjs",
     "test": "vitest run"
   },
   "dependencies": {
-    "@ant-design/icons-vue": "^7.0.1",
     "@apicc/core": "workspace:*",
-    "ant-design-vue": "^4.2.6",
-    "pinia": "^4.0.3",
-    "vue": "^3.5.42",
-    "vue-i18n": "^11.4.10",
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
     "@types/node": "^26.4.0",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/test-utils": "^2.5.0",
+    "ant-design-vue": "^4.2.6",
     "electron": "^44.1.0",
     "electron-builder": "^26.15.3",
     "jsdom": "^30.0.1",
+    "pinia": "^4.0.3",
+    "pngjs": "^7.0.0",
     "typescript": "^5.9.2",
     "vite": "^8.2.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "vue": "^3.5.42",
+    "vue-i18n": "^11.4.10"
   }
 }

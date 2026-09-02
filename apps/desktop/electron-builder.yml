@@ -1,5 +1,9 @@
 appId: com.autumnharvestc.apicc
 productName: apicc
+# 图标：build/icon.png（512×512）与 build/icon.ico（16-256 多尺寸）均由 `pnpm gen:icon`
+# 程序化生成（scripts/gen-icon.mjs，纯几何绘制，无文字、零第三方素材）。electron-builder
+# 对同格式 ico 源直接内嵌 exe 资源；不走其图标转换工具集下载路径（该路径依赖的
+# @electron/get 3.x 已移除 ElectronDownloadCacheMode 导出，见下方 electronDist 注释）。
 directories:
   output: release
 files:

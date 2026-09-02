@@ -21,8 +21,10 @@ node_modules/
 dist/
 apps/desktop/dist-electron/
 apps/desktop/dist-renderer/
-# electron-builder 打包产物（任务 9），不入库
+# electron-builder 打包产物（任务 9），不入库；build/ 仅入库程序化生成的图标（任务 3）
 apps/desktop/release/
-apps/desktop/build/
+apps/desktop/build/*
+!apps/desktop/build/icon.png
+!apps/desktop/build/icon.ico
 .apicc/
 coverage/
