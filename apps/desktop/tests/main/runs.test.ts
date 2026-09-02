@@ -28,6 +28,9 @@ describe("runs 历史", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "bad.json"), "{broken");
     expect(listRuns(dir)).toEqual([]);
+    // readRun 路径穿越防护：相对路径（含 /）与绝对路径（含 \ 或 /）一律拒绝返回 null
+    expect(readRun(dir, "../x.json")).toBeNull();
+    expect(readRun(dir, join(dir, "run-a.json"))).toBeNull();
   });
 });
 
@@ -62,10 +65,21 @@ describe("IPC run 频道", () => {
     expect(detail!.collectionName).toBe("c");
   });
 
-  it("run:collection 未命中集合抛「未找到」；runs:list 未打开工作区抛可读错误", async () => {
+  it("run:collection 未命中集合抛「未找到」；未知 envName 显式抛「未找到环境」；runs:list 未打开工作区抛可读错误", async () => {
     const { deps } = setup();
     await expect(deps.handle("run:collection", {}, { collectionId: "不存在" })).rejects.toThrow(/未打开工作区/);
     const { deps: fresh } = setup();
     await expect(fresh.handle("runs:list", {})).rejects.toThrow(/未打开工作区/);
+    // 未知 envName：显式拒绝而非静默降级为无环境运行（审查修复）
+    const { deps: full, dir: fullDir } = setup();
+    await full.handle("ws:create", {}, fullDir, "w");
+    const g = await full.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await full.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
+    const c = await full.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
+    await full.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
+    await expect(full.handle("run:collection", {}, { collectionId: c.id, envName: "ghost" })).rejects.toThrow(/未找到环境: ghost/);
+    // envName 为空 = 无环境运行，不抛（走完整 Runner，不可达地址 → 运行完成、用例失败）
+    const emptyEnvRun = await full.handle("run:collection", {}, { collectionId: c.id, envName: "" });
+    expect(emptyEnvRun.total).toBe(1);
   });
 });

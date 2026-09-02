@@ -54,6 +54,12 @@ const projectOfSelected = computed<TreeNodeDTO | undefined>(() => {
 
 // 环境按名称引用（run:collection 入参 envName），首项「无环境」= 不传 envName。
 const selectedEnv = ref("");
+// 环境列表随选中集合所属项目而变：项目切换后原选中环境名在新项目中不存在（残留失效值
+// 会被主进程「未找到环境」显式拒绝），故 projectOfSelected 变化即重置回「无环境」；
+// 同项目内切换集合不触发（computed 引用未变），环境列表不变可保留选中。
+watch(projectOfSelected, () => {
+  selectedEnv.value = "";
+});
 const envOptions = computed(() => [
   { label: t("run.envNone"), value: "" },
   ...(projectOfSelected.value?.envs ?? []).map((e) => ({ label: e.name, value: e.name })),

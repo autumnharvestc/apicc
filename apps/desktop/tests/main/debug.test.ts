@@ -58,6 +58,11 @@ describe("sendDebug", () => {
     expect(result.response!.timeMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("未知 envName 显式拒绝而非静默降级为无环境运行（审查修复）", async () => {
+    const { s, api } = await setup();
+    await expect(sendDebug(s, { apiId: api.id, caseId: api.cases[0]!.id, envName: "ghost" })).rejects.toThrow(/未找到环境: ghost/);
+  });
+
   it("网络错误进入 outcome.error 而非抛出", async () => {
     const { s, api } = await setup();
     api.url = "http://127.0.0.1:1/";

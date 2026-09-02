@@ -125,6 +125,39 @@ describe("RunView", () => {
     expect(run.result!.collectionName).toBe("示例集合");
   });
 
+  it("跨项目切换集合：环境下拉残留的失效环境名重置回「无环境」", async () => {
+    const { wrapper, api, run, workspace, collectionNode } = await mountRunView();
+    const rootNode = workspace.tree!.children![0]!;
+    const projectA = rootNode.children![0]!;
+    // 项目 A 建环境 dev；另建项目 B 及其集合（跨项目切换场景）
+    await api.envCreate({ projectId: projectA.id, name: "dev" });
+    const p2 = await api.nodeCreate({ kind: "project", parentId: rootNode.id, name: "p2" });
+    const c2 = await api.nodeCreate({ kind: "collection", parentId: p2.id, name: "c2" });
+    await workspace.refresh();
+    await flushPromises();
+    chooseSelect(wrapper, "run-collection-select", collectionNode.id);
+    chooseSelect(wrapper, "run-env-select", "dev");
+    await flushPromises();
+    // 切到项目 B 的集合：残留的 dev 在项目 B 不存在（会被主进程「未找到环境」拒绝），应重置回无环境
+    chooseSelect(wrapper, "run-collection-select", c2.id);
+    await flushPromises();
+    const envSelect = wrapper
+      .findAllComponents({ name: "ASelect" })
+      .find((c) => c.attributes("data-testid") === "run-env-select")!;
+    expect((envSelect.vm.$props as { value: unknown }).value).toBe("");
+    // 行为面断言：运行入参不再携带残留 envName
+    let captured: { collectionId: string; envName?: string } | null = null;
+    const original = api.runCollection.bind(api);
+    api.runCollection = async (input) => {
+      captured = { ...input };
+      return original(input);
+    };
+    await wrapper.find('[data-testid="run-btn"]').trigger("click");
+    await flushPromises();
+    expect(captured).toEqual({ collectionId: c2.id });
+    expect(run.result).not.toBeNull();
+  });
+
   it("运行链路拒绝时经 reportError 上报（宽审查 I1 同款收口）", async () => {
     const errors: unknown[] = [];
     const { wrapper, api, collectionNode } = await mountRunView({ reportError: (e: unknown) => { errors.push(e); } });
