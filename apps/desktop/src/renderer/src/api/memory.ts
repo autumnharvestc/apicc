@@ -21,11 +21,14 @@ const WORKSPACE_FILE = "apicc.workspace.yaml";
 
 /**
  * 渲染层测试替身：内存数据 + 与主进程 session 相同语义的树构建与落盘时机。
- * 持久化复用 @apicc/core 的 fileStorage（与 session 同一适配器），保证
- * wsOpen/wsCreate 的 apicc.workspace.yaml 存在性校验、validate 重读等语义一致；
- * debugSend 不走真实网络，固定返回成功结果。测试经 options.root 注入工作区目录。
+ * 持久化复用 @apicc/core 的 fileStorage（与 session 同一适配器）；内存态是唯一事实源，
+ * 落盘只是为 reopen/validate 同语义做的最佳努力。wsOpen 目标目录若没有
+ * apicc.workspace.yaml，则回退为直接打开当前内存工作区（路径仅作展示，不迁移落盘根）；
+ * 目录确为工作区时仍从盘加载，保持与 session 一致的重开语义。
+ * debugSend 不走真实网络，固定返回成功结果。测试经 options.root 注入工作区目录；
+ * 默认每实例独立临时目录，可安全并行。
  */
-export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedWorkspace(): void } {
+export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[] } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
@@ -94,14 +97,25 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
   }
 
   return {
+    // 载入问题列表读写口：测试直接赋值 api.problems 模拟「工作区带问题文件」。
+    get problems(): LoadProblem[] {
+      return problems;
+    },
+    set problems(value: LoadProblem[]) {
+      problems = value;
+    },
+
     async wsOpen(rootPath: string): Promise<OpenResult> {
-      if (!existsSync(join(rootPath, WORKSPACE_FILE))) {
-        throw new Error(`工作区根目录缺少 ${WORKSPACE_FILE}: ${rootPath}`);
+      if (existsSync(join(rootPath, WORKSPACE_FILE))) {
+        const loaded = await fileStorage.load(rootPath);
+        root = rootPath;
+        workspace = loaded.workspace;
+        problems = loaded.problems as LoadProblem[];
+        return { workspace: { id: workspace.id, name: workspace.name }, problems, root: rootPath };
       }
-      const loaded = await fileStorage.load(rootPath);
-      root = rootPath;
-      workspace = loaded.workspace;
-      problems = loaded.problems as LoadProblem[];
+      // 目标目录不是工作区：内存有工作区时回退为打开内存态（替身以内存为事实源）；
+      // 内存也为空时保留与 session 一致的「缺少工作区文件」错误。
+      if (!workspace) throw new Error(`工作区根目录缺少 ${WORKSPACE_FILE}: ${rootPath}`);
       return { workspace: { id: workspace.id, name: workspace.name }, problems, root: rootPath };
     },
 
