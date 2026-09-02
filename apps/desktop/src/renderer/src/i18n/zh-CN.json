@@ -1,5 +1,6 @@
 {
   "app": { "openWorkspace": "打开工作区", "newWorkspace": "新建工作区", "language": "语言", "theme": "主题", "workspaceName": "工作区名称", "error": "错误" },
+  "nav": { "debug": "调试", "cases": "用例", "envs": "环境", "run": "运行", "import": "导入", "design": "设计" },
   "workspace": { "problems": "问题文件", "pickDirectory": "选择目录", "createHere": "在此新建" },
   "tree": { "newGroup": "新建分组", "newProject": "新建项目", "newCollection": "新建集合", "newFolder": "新建文件夹", "newApi": "新建接口", "rename": "重命名", "delete": "删除", "deleteConfirm": "确定删除「{name}」？", "empty": "打开工作区后在此浏览接口", "namePlaceholder": "名称" },
   "editor": { "empty": "在左侧选择一个接口后编辑", "send": "发送", "sending": "发送中…", "method": "方法", "url": "URL", "params": "参数", "headers": "请求头", "auth": "认证", "body": "请求体", "save": "保存", "saved": "已保存", "name": "接口名称", "addRow": "添加一行", "bodyKind": "体类型" },
@@ -8,5 +9,6 @@
   "case": { "empty": "在左侧选择一个接口后编辑用例", "add": "添加用例", "new": "新用例", "remove": "删除用例", "save": "保存用例", "scope": "scope", "assertions": "断言", "addAssert": "添加断言", "target": "目标", "op": "运算符", "expected": "期望值", "headerName": "头名称", "path": "路径", "preScript": "前置脚本", "postScript": "后置脚本" },
   "run": { "empty": "打开工作区后选择集合并运行", "collectionPlaceholder": "选择集合", "envPlaceholder": "环境", "envNone": "无环境", "runBtn": "运行", "history": "运行历史", "historyEmpty": "暂无运行记录", "api": "接口", "case": "用例", "row": "数据行", "result": "结果", "duration": "耗时", "summary": "共 {total} 条 · 通过 {passed} · 失败 {failed}" },
   "import": { "title": "导入接口", "stepFile": "选择文件", "stepPreview": "预览确认", "stepDone": "完成", "pickFile": "选择导入文件", "project": "项目", "apiCount": "个接口", "warnings": "导入警告", "groupName": "目标分组", "groupPlaceholder": "导入到哪个分组（不存在则创建）", "apply": "导入", "prev": "上一步", "doneTitle": "导入完成", "doneText": "项目「{name}」已导入", "finish": "完成", "error": "导入失败" },
+  "design": { "empty": "在左侧选择一个接口后编辑详细设计", "save": "保存设计", "saved": "设计已保存", "export": "导出 agent 设计", "exported": "已导出: {path}", "placeholder": "编写业务规则、校验约定、错误码…", "previewEmpty": "（未编写详细设计）" },
   "common": { "cancel": "取消", "confirm": "确定", "close": "关闭" }
 }

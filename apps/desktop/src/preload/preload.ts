@@ -20,6 +20,7 @@ const api = {
   runsGet: (file: string) => ipcRenderer.invoke(IpcChannel.RunsGet, file),
   importPreview: (input: unknown) => ipcRenderer.invoke(IpcChannel.ImportPreview, input),
   importApply: (input: unknown) => ipcRenderer.invoke(IpcChannel.ImportApply, input),
+  designExport: (apiId: string) => ipcRenderer.invoke(IpcChannel.DesignExport, apiId),
 };
 
 contextBridge.exposeInMainWorld("apicc", api);

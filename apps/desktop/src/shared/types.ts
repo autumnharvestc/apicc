@@ -61,4 +61,6 @@ export interface ApiccApi {
   runsGet(file: string): Promise<RunResult | null>;
   importPreview(input: ImportPreviewInput): Promise<ImportPreviewResult>;
   importApply(input: ImportApplyInput): Promise<void>;
+  /** design:export：主进程渲染 agent 设计 md → showSaveDialog 落盘；返回保存路径（取消为空串）。 */
+  designExport(apiId: string): Promise<string>;
 }

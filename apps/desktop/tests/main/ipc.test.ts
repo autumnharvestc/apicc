@@ -9,7 +9,7 @@ import { createSession } from "../../src/main/session.js";
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-"));
   const session = createSession();
-  const deps = createIpcDeps({ session, pickDirectory: async () => dir });
+  const deps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
   return { deps, dir };
 }
 
@@ -29,7 +29,7 @@ const fixedImporter: Importer = {
 function setupWithImporters(importers: Importer[]) {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-"));
   const session = createSession();
-  const deps = createIpcDeps({ session, pickDirectory: async () => dir, importers });
+  const deps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "", importers });
   return { deps, dir };
 }
 
@@ -83,7 +83,7 @@ describe("IPC 处理器", () => {
     const detail = await deps.handle("api:get", {}, api.id);
     detail.api.url = "/y";
     await deps.handle("api:save", {}, detail.api);
-    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir });
+    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const fetched = await fresh.handle("api:get", {}, api.id);
     expect(fetched.api.url).toBe("/y");
@@ -99,7 +99,7 @@ describe("IPC 处理器", () => {
     expect(env).toMatchObject({ name: "sit", extends: "dev", variables: {} });
     expect(env.id).toBeTruthy();
     await expect(deps.handle("env:create", {}, { projectId: "不存在", name: "x" })).rejects.toThrow(/未找到项目/);
-    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir });
+    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
     const projectNode = tree.children![0]!.children![0]!;
@@ -107,7 +107,7 @@ describe("IPC 处理器", () => {
     // env:vars:save → 变量覆盖 + 显式 save 落盘，重开读回验证
     await fresh.handle("env:vars:save", {}, env.id, { baseUrl: "http://s" });
     const rereadSession = createSession();
-    const reread = createIpcDeps({ session: rereadSession, pickDirectory: async () => dir });
+    const reread = createIpcDeps({ session: rereadSession, pickDirectory: async () => dir, saveFile: async () => "" });
     await reread.handle("ws:open", {}, dir);
     const sit = rereadSession.workspace!.groups[0]!.projects[0]!.environments[0]!;
     expect(sit.variables).toEqual({ baseUrl: "http://s" });
@@ -116,7 +116,7 @@ describe("IPC 处理器", () => {
 
   it("未打开工作区时 tree:get 抛可读错误", async () => {
     const { deps } = setup();
-    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => "" });
+    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => "", saveFile: async () => "" });
     await expect(fresh.handle("tree:get", {})).rejects.toThrow(/未打开/);
   });
 
@@ -160,7 +160,7 @@ describe("IPC 处理器", () => {
     const preview = await deps.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
     await deps.handle("import:apply", {}, { groupName: "新分组", project: preview.project });
     // 重开读回：分组与项目均已落盘（apply 分支显式 save 语义）
-    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir });
+    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
     const importedGroup = tree.children!.find((n: { label: string }) => n.label === "新分组")!;
@@ -189,5 +189,50 @@ describe("IPC 处理器", () => {
     await expect(deps.handle("import:preview", {}, { content: "x" })).rejects.toThrow(/\[import:preview\]/);
     await expect(deps.handle("import:apply", {}, { groupName: "g", project: { id: "p" } })).rejects.toThrow(/\[import:apply\]/);
     await expect(deps.handle("import:apply", {}, { groupName: "g" })).rejects.toThrow(/\[import:apply\]/);
+  });
+
+  it("design:export 渲染 agent 设计 md 经注入的 saveFile 落盘并返回路径；取消返回空串", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-"));
+    const session = createSession();
+    const writes: Array<{ defaultName: string; content: string }> = [];
+    const deps = createIpcDeps({
+      session,
+      pickDirectory: async () => dir,
+      saveFile: async (defaultName, content) => {
+        writes.push({ defaultName, content });
+        return `C:\\fake\\${defaultName}`;
+      },
+    });
+    await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
+    const c = await deps.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
+    const api = await deps.handle("node:create", {}, { kind: "api", parentId: c.id, name: "下单", method: "POST", url: "/orders" });
+    const path = await deps.handle("design:export", {}, api.id);
+    expect(path).toBe("C:\\fake\\下单.design.md");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.defaultName).toBe("下单.design.md");
+    // 渲染产物 = core renderDesignMarkdown（agent 可消费的详细设计 md）
+    expect(writes[0]!.content).toContain("# 接口详细设计：下单");
+    expect(writes[0]!.content).toContain("**POST /orders**");
+    // 用户取消保存对话框：主进程 saveFile 回传空串，频道原样返回
+    const cancelDeps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
+    expect(await cancelDeps.handle("design:export", {}, api.id)).toBe("");
+    // 未找到接口：可读错误
+    await expect(deps.handle("design:export", {}, "不存在")).rejects.toThrow(/未找到接口/);
+  });
+
+  it("入参形状非法时抛带频道名的可读错误（单参/无参频道的类型与缺参）", async () => {
+    const { deps } = setup();
+    await expect(deps.handle("api:get", {}, 42)).rejects.toThrow(/\[api:get\] 入参校验失败/);
+    await expect(deps.handle("ws:open", {})).rejects.toThrow(/\[ws:open\] 入参校验失败/);
+    await expect(deps.handle("tree:get", {}, "多余参数")).rejects.toThrow(/\[tree:get\] 入参校验失败/);
+  });
+
+  it("入参形状非法时抛带频道名的可读错误（多参 tuple / 对象 / record 频道）", async () => {
+    const { deps } = setup();
+    await expect(deps.handle("ws:create", {}, "缺第二个参数")).rejects.toThrow(/\[ws:create\] 入参校验失败/);
+    await expect(deps.handle("node:create", {}, { kind: "bogus", parentId: null, name: "x" })).rejects.toThrow(/\[node:create\] 入参校验失败/);
+    await expect(deps.handle("env:vars:save", {}, "e1", { k: 42 })).rejects.toThrow(/\[env:vars:save\] 入参校验失败/);
   });
 });

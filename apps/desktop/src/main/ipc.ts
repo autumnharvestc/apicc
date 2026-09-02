@@ -1,8 +1,8 @@
-import { createDefaultRegistry, ProjectSchema, type Importer, type RunResult, type Workspace } from "@apicc/core";
+import { ApiDefinitionSchema, createDefaultRegistry, ProjectSchema, renderDesignMarkdown, type Importer, type RunResult, type Workspace } from "@apicc/core";
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../shared/types.js";
+import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../shared/types.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
 import { listRuns, readRun } from "./runs.js";
 import type { createSession } from "./session.js";
@@ -10,10 +10,45 @@ import { toTreeNode, type TreeNodeDTO } from "./tree.js";
 
 type Session = ReturnType<typeof createSession>;
 
-// 导入频道入参 zod 校验（任务 7 先行，任务 8 全面收口同模式）：preview 收文本+文件名；
-// apply 的 project 用 core 的 ProjectSchema 严格校验（多余字段 fail-fast，与导入器产物口径一致）。
+// —— 全频道入参 zod schema（任务 8 收口，与 shared/types.ts 字段一一对应）——
+// 多参频道包 tuple；对象频道沿用 core 严格 schema 的口径（import:apply 的 project
+// 多余字段 fail-fast，与导入器产物一致）；其余对象为最简 z.object。
+const NodeKindSchema = z.enum(["group", "project", "collection", "folder", "api", "environment"]);
+const NodeCreateInputSchema = z.object({
+  kind: z.enum(["group", "project", "collection", "folder", "api"]),
+  parentId: z.string().nullable(),
+  name: z.string(),
+  method: z.string().optional(),
+  url: z.string().optional(),
+});
+const EnvCreateInputSchema = z.object({ projectId: z.string(), name: z.string(), extends: z.string().optional() });
+const DebugInputSchema = z.object({ apiId: z.string(), caseId: z.string(), envName: z.string().optional() });
+const RunInputSchema = z.object({ collectionId: z.string(), envName: z.string().optional() });
 const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() });
 const ImportApplyInputSchema = z.object({ groupName: z.string(), project: ProjectSchema });
+
+/** 频道 → 入参 tuple schema 表：Record 键为全部频道名，新增频道漏配 schema 即编译错误。 */
+const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
+  [IpcChannel.WsOpen]: z.tuple([z.string()]),
+  [IpcChannel.WsCreate]: z.tuple([z.string(), z.string()]),
+  [IpcChannel.WsPickDirectory]: z.tuple([]),
+  [IpcChannel.WsValidate]: z.tuple([]),
+  [IpcChannel.TreeGet]: z.tuple([]),
+  [IpcChannel.NodeCreate]: z.tuple([NodeCreateInputSchema]),
+  [IpcChannel.NodeRename]: z.tuple([NodeKindSchema, z.string(), z.string()]),
+  [IpcChannel.NodeDelete]: z.tuple([NodeKindSchema, z.string()]),
+  [IpcChannel.EnvCreate]: z.tuple([EnvCreateInputSchema]),
+  [IpcChannel.EnvVarsSave]: z.tuple([z.string(), z.record(z.string(), z.string())]),
+  [IpcChannel.ApiGet]: z.tuple([z.string()]),
+  [IpcChannel.ApiSave]: z.tuple([ApiDefinitionSchema]),
+  [IpcChannel.DebugSend]: z.tuple([DebugInputSchema]),
+  [IpcChannel.RunCollection]: z.tuple([RunInputSchema]),
+  [IpcChannel.RunsList]: z.tuple([]),
+  [IpcChannel.RunsGet]: z.tuple([z.string()]),
+  [IpcChannel.ImportPreview]: z.tuple([ImportPreviewInputSchema]),
+  [IpcChannel.ImportApply]: z.tuple([ImportApplyInputSchema]),
+  [IpcChannel.DesignExport]: z.tuple([z.string()]),
+};
 
 /** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
 function validateArgs<T>(channel: IpcChannelName, schema: z.ZodType<T>, input: unknown): T {
@@ -29,12 +64,17 @@ function validateArgs<T>(channel: IpcChannelName, schema: z.ZodType<T>, input: u
 export interface IpcDepsOptions {
   session: Session;
   pickDirectory: () => Promise<string>;
+  /**
+   * 文件保存（design:export 用，任务 8）：生产实现 = dialog.showSaveDialog + 写盘，
+   * 返回保存路径（用户取消回传空串）；测试注入内存实现。
+   */
+  saveFile: (defaultName: string, content: string) => Promise<string>;
   /** 导入器列表（任务 7）：默认取内置注册中心的全部导入器，测试注入固定 importer 替身。 */
   importers?: Importer[];
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
-  const { session, pickDirectory } = options;
+  const { session, pickDirectory, saveFile } = options;
   const importers = options.importers ?? createDefaultRegistry().listImporters();
 
   /**
@@ -91,13 +131,16 @@ export function createIpcDeps(options: IpcDepsOptions) {
   // 返回值用 any：各频道返回各自 DTO（关键形状已在分支内 satisfies 校验），
   // 测试与渲染层按频道直取属性，统一 unknown 会迫使每处断言。
   async function handle(channel: IpcChannelName, _event: unknown, ...args: unknown[]): Promise<any> {
+    // 入参校验收口（任务 8）：所有频道在进入分支前统一按 tuple schema parse，
+    // 形状非法即抛带频道名的可读错误，分支内不再依赖裸 as 断言兜底形状。
+    const a = validateArgs(channel, schemas[channel]!, args) as unknown[];
     switch (channel) {
       case IpcChannel.WsOpen: {
-        const r = await session.open(args[0] as string);
+        const r = await session.open(a[0] as string);
         return r satisfies OpenResult;
       }
       case IpcChannel.WsCreate: {
-        const r = await session.create(args[0] as string, args[1] as string);
+        const r = await session.create(a[0] as string, a[1] as string);
         return r satisfies OpenResult;
       }
       case IpcChannel.WsPickDirectory:
@@ -111,38 +154,38 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.NodeCreate: {
         // 返回统一瘦 DTO（kind/id/label[/method]，宽审查 I2），渲染层据此定位与续操作。
-        const node = createNode(args[0] as NodeCreateInput);
+        const node = createNode(a[0] as NodeCreateInput);
         await session.save();
         return node;
       }
       case IpcChannel.NodeRename: {
-        const [kind, id, name] = args as [Parameters<Session["renameNode"]>[0], string, string];
+        const [kind, id, name] = a as [Parameters<Session["renameNode"]>[0], string, string];
         session.renameNode(kind, id, name);
         await session.save();
         return undefined;
       }
       case IpcChannel.NodeDelete: {
-        const [kind, id] = args as [Parameters<Session["deleteNode"]>[0], string];
+        const [kind, id] = a as [Parameters<Session["deleteNode"]>[0], string];
         session.deleteNode(kind, id);
         await session.save();
         return undefined;
       }
       // 环境频道（任务 4）：session 变更操作不自动落盘，两分支均显式 save（语义备忘）。
       case IpcChannel.EnvCreate: {
-        const input = args[0] as EnvCreateInput;
+        const input = a[0] as EnvCreateInput;
         const env = session.createEnvironment(input.projectId, { name: input.name, extends: input.extends });
         await session.save();
         return env;
       }
       case IpcChannel.EnvVarsSave: {
-        const [envId, variables] = args as [string, Record<string, string>];
+        const [envId, variables] = a as [string, Record<string, string>];
         session.setEnvironmentVariables(envId, variables);
         await session.save();
         return undefined;
       }
       case IpcChannel.ApiGet: {
-        const loc = session.locateApi(args[0] as string);
-        if (!loc) throw new Error(`未找到接口: ${args[0] as string}`);
+        const loc = session.locateApi(a[0] as string);
+        if (!loc) throw new Error(`未找到接口: ${a[0] as string}`);
         const detail: ApiDetail = {
           api: loc.api,
           envs: loc.project.environments.map((e) => ({ id: e.id, name: e.name })),
@@ -151,17 +194,17 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.ApiSave: {
         // saveApi 内部已落盘（替换 + save），此处不再重复 save。
-        await session.saveApi(args[0] as Parameters<Session["saveApi"]>[0]);
+        await session.saveApi(a[0] as Parameters<Session["saveApi"]>[0]);
         return undefined;
       }
       case IpcChannel.DebugSend: {
-        const result = await sendDebug(session, args[0] as DebugInput);
+        const result = await sendDebug(session, a[0] as DebugInput);
         return result satisfies DebugOutput;
       }
       // 运行频道（任务 6）：run:collection 走完整 Runner 并固定落盘 .apicc/runs；
       // runs:list/get 读历史（目录不存在/文件损坏已在 runs.ts 侧降级为 []/null）。
       case IpcChannel.RunCollection: {
-        const run = await runCollection(session, args[0] as RunCollectionInput);
+        const run = await runCollection(session, a[0] as RunCollectionInput);
         return run satisfies RunResult;
       }
       case IpcChannel.RunsList: {
@@ -170,21 +213,29 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.RunsGet: {
         if (!session.root) throw new Error("尚未打开工作区");
-        return readRun(workspaceRunsDir(session.root), args[0] as string);
+        return readRun(workspaceRunsDir(session.root), a[0] as string);
       }
       // 导入频道（任务 7）：preview 逐个 detect，命中即 parse（产物 id 均为新 UUID）；
       // apply 委派 session.importProject（缺分组建组、同分组重名拒绝），其内部显式落盘。
       case IpcChannel.ImportPreview: {
-        const input = validateArgs(channel, ImportPreviewInputSchema, args[0]);
+        const input = a[0] as ImportPreviewInput;
         const importer = importers.find((i) => i.detect(input.fileName, input.content));
         if (!importer) throw new Error("无法识别的导入格式");
         const { project, warnings } = importer.parse(input.content);
         return { importerName: importer.name, project, warnings };
       }
       case IpcChannel.ImportApply: {
-        const input = validateArgs(channel, ImportApplyInputSchema, args[0]);
+        const input = a[0] as ImportApplyInput;
         await session.importProject(input.groupName, { project: input.project });
         return undefined;
+      }
+      // 详细设计导出（任务 8）：取接口 → core renderDesignMarkdown 渲染 → 注入的
+      // saveFile（生产 = showSaveDialog + 写盘）落盘并返回路径（取消为空串）。
+      case IpcChannel.DesignExport: {
+        const apiId = a[0] as string;
+        const loc = session.locateApi(apiId);
+        if (!loc) throw new Error(`未找到接口: ${apiId}`);
+        return saveFile(`${loc.api.name}.design.md`, renderDesignMarkdown(loc.api));
       }
       default:
         throw new Error(`未知频道: ${channel}`);

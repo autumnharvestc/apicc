@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IpcChannel } from "../shared/channels.js";
@@ -37,7 +38,15 @@ app.whenReady().then(() => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
     return result.canceled || result.filePaths.length === 0 ? "" : result.filePaths[0]!;
   };
-  const deps = createIpcDeps({ session, pickDirectory });
+  const saveFile = async (defaultName: string, content: string): Promise<string> => {
+    // design:export（任务 8）：原生保存对话框（defaultPath = <接口名>.design.md），
+    // 取消回传空串；选择路径后写盘并返回完整路径。
+    const result = await dialog.showSaveDialog({ defaultPath: defaultName });
+    if (result.canceled || !result.filePath) return "";
+    await writeFile(result.filePath, content, "utf8");
+    return result.filePath;
+  };
+  const deps = createIpcDeps({ session, pickDirectory, saveFile });
   for (const channel of Object.values(IpcChannel)) {
     ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
   }

@@ -38,7 +38,7 @@ describe("runs 历史", () => {
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-runs-"));
   const session = createSession();
-  const deps = createIpcDeps({ session, pickDirectory: async () => dir });
+  const deps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
   return { deps, dir };
 }
 

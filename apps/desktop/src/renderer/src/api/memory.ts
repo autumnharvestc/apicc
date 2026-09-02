@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import {
   fileStorage,
+  renderDesignMarkdown,
   type ApiDefinition,
   type CaseOutcome,
   type Collection,
@@ -29,7 +30,7 @@ const WORKSPACE_FILE = "apicc.workspace.yaml";
  * debugSend 不走真实网络，固定返回成功结果。测试经 options.root 注入工作区目录；
  * 默认每实例独立临时目录，可安全并行。
  */
-export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ groupName: string; projectName: string }> } {
+export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ groupName: string; projectName: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }> } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
@@ -41,6 +42,8 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
   let runSeq = 0;
   // 导入向导（任务 7）：importApply 调用记录（供测试断言；语义对齐 session.importProject）。
   const importApplyCalls: Array<{ groupName: string; projectName: string }> = [];
+  // 详细设计导出（任务 8）：designExport 调用记录（供测试断言渲染产物）。
+  const designExportCalls: Array<{ file: string; content: string }> = [];
 
   function ensureOpen(): Workspace {
     if (!workspace) throw new Error("尚未打开工作区");
@@ -115,6 +118,11 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
     // importApply 调用记录读口：测试断言向导 apply 链路确实落到 api 层。
     get importApplyCalls(): ReadonlyArray<{ groupName: string; projectName: string }> {
       return importApplyCalls;
+    },
+
+    // designExport 调用记录读口：测试断言导出链路的渲染产物与目标文件名。
+    get designExportCalls(): ReadonlyArray<{ file: string; content: string }> {
+      return designExportCalls;
     },
 
     async wsOpen(rootPath: string): Promise<OpenResult> {
@@ -381,6 +389,17 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
       group.projects.push(input.project);
       importApplyCalls.push({ groupName: input.groupName, projectName: input.project.name });
       await save();
+    },
+
+    // 详细设计导出（任务 8）：用 core renderDesignMarkdown 渲染（与主进程同一实现），
+    // 记录渲染产物供测试断言；替身不落盘（主进程语义是 showSaveDialog 后写盘并返回
+    // 路径），返回「工作区根/<接口名>.design.md」占位路径。
+    async designExport(apiId: string): Promise<string> {
+      const loc = locateApi(apiId);
+      if (!loc) throw new Error(`未找到接口: ${apiId}`);
+      const file = join(root, `${loc.api.name}.design.md`);
+      designExportCalls.push({ file, content: renderDesignMarkdown(loc.api) });
+      return file;
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */
