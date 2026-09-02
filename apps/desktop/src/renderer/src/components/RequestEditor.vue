@@ -93,17 +93,19 @@ const bodyKind = computed<BodyKind>({
       />
       <a-input v-model:value="editor.api.url" class="url" data-testid="editor-url" :placeholder="t('editor.url')" />
       <!-- 调试环境/用例选择器（任务 1）：仅写 debug store 的选择状态，send 按钮仍调
-           debug.send(editor)（不传显式 envName，走 store 状态）；空值项表示无环境。 -->
+           debug.send(editor)（不传显式 envName，走 store 状态）；空值项表示无环境。
+           显示侧与 send 相同的存在性校验（宽审查修复 2）：切接口/删环境后失效的选择
+           不再渲染为裸字符串，与 send 的静默回退一致（显示 = 发送）。 -->
       <a-select
         data-testid="debug-env-select"
-        :value="debug.selectedEnvName ?? ''"
+        :value="(editor.envs ?? []).some((e) => e.name === debug.selectedEnvName) ? debug.selectedEnvName ?? '' : ''"
         :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: e.name }))]"
         style="min-width: 120px"
         @update:value="(v: string) => debug.selectEnv(v === '' ? null : v)"
       />
       <a-select
         data-testid="debug-case-select"
-        :value="debug.selectedCaseId ?? editor.api?.cases[0]?.id ?? ''"
+        :value="(editor.api?.cases ?? []).some((c) => c.id === debug.selectedCaseId) ? debug.selectedCaseId ?? '' : editor.api?.cases[0]?.id ?? ''"
         :options="(editor.api?.cases ?? []).map((c) => ({ label: `${c.name}（${c.scope}）`, value: c.id }))"
         style="min-width: 160px"
         @update:value="(v: string) => debug.selectCase(v)"

@@ -66,6 +66,10 @@ const headerRows = computed(() =>
         <a-tag :color="result.outcome.passed ? 'success' : 'error'" data-testid="response-outcome">
           {{ result.outcome.passed ? t("response.passed") : t("response.failed") }}
         </a-tag>
+        <!-- 结果归属用例名（宽审查修复顺带项）：outcome.caseName 字段已有，补上 UI 展示 -->
+        <a-typography-text type="secondary" data-testid="response-case-name">
+          {{ result.outcome.caseName }}
+        </a-typography-text>
         <a-typography-text type="secondary" data-testid="response-duration">
           {{ Math.round(result.outcome.durationMs) }} ms
         </a-typography-text>

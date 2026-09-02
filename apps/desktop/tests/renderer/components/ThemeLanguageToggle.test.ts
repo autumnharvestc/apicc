@@ -72,4 +72,12 @@ describe("ThemeLanguageToggle", () => {
     expect(localStorage.getItem("apicc.theme")).toBe("system");
     expect(i18n.global.locale.value).toBe("zh-CN"); // 主题切换不影响语言
   });
+
+  it("语言按钮与主题分段器带 i18n 悬浮提示（app.language/app.theme）", () => {
+    const { i18n } = initI18n();
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = mount(ThemeLanguageToggle, { global: { plugins: [i18n] } });
+    expect(wrapper.find('[data-testid="lang-toggle"]').attributes("title")).toBe("语言");
+    expect(wrapper.find('[data-testid="theme-toggle"]').attributes("title")).toBe("主题");
+  });
 });

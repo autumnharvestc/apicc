@@ -77,6 +77,15 @@ function chooseSelect(wrapper: VueWrapper, testid: string, value: string): void 
   select.vm.$emit("update:value", value);
 }
 
+/** 读取 a-select 受控 :value 绑定值（显示侧断言用，不经 antd 内部渲染）。 */
+function selectValue(wrapper: VueWrapper, testid: string): unknown {
+  const select = wrapper
+    .findAllComponents({ name: "ASelect" })
+    .find((c) => c.attributes("data-testid") === testid);
+  if (!select) throw new Error(`ASelect 未找到: ${testid}`);
+  return select.props("value");
+}
+
 /**
  * 显式装配辅助（组合根约定的测试形态）：
  * store 工厂每调用一次即新建独立 Pinia 实例、得到互不相通的状态副本——因此同一份
@@ -257,13 +266,40 @@ describe("RequestEditor", () => {
     expect(debug.error).toBeNull();
     expect(debug.sending).toBe(false);
   });
+
+  it("悬空用例选择显示回退：切接口后失效 id 不再显示，回退 cases[0]（显示与 send 一致）", async () => {
+    const { wrapper, editor, debug, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, assertions: [] });
+    chooseSelect(wrapper, "debug-case-select", "t2");
+    expect(debug.selectedCaseId).toBe("t2");
+    // 模拟切接口：cases 整体换成不含 t2 的集合（store 选择状态不清除，仍指向失效 id）
+    editor.api!.cases = [{ id: "t9", name: "other", scope: "base", parameters: {}, assertions: [] }];
+    await flushPromises();
+    // send 侧已静默回退 cases[0].id（stores/debug.ts），显示侧须同步回退而非渲染失效 id
+    expect(selectValue(wrapper, "debug-case-select")).toBe("t9");
+  });
+
+  it("悬空环境选择显示回退：删环境后失效名不再显示，回退「无环境」（显示与 send 一致）", async () => {
+    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    editor.envs.push({ id: "e1", name: "dev" });
+    chooseSelect(wrapper, "debug-env-select", "dev");
+    await flushPromises();
+    expect(selectValue(wrapper, "debug-env-select")).toBe("dev");
+    editor.envs.splice(0, editor.envs.length); // 删除所选环境（send 回退 undefined → 无环境）
+    await flushPromises();
+    expect(selectValue(wrapper, "debug-env-select")).toBe("");
+  });
 });
 
 describe("ResponseViewer", () => {
   const result = {
     run: { total: 1, passed: 1, failed: 0, cases: [], startedAt: "", finishedAt: "", collectionId: "c", collectionName: "c" },
     outcome: {
-      apiId: "a", apiName: "a", caseId: "t", caseName: "t", passed: true, durationMs: 5,
+      apiId: "a", apiName: "a", caseId: "t", caseName: "用例甲", passed: true, durationMs: 5,
       assertions: [{ pass: false, message: "eq 失败" }],
     },
   };
@@ -278,6 +314,8 @@ describe("ResponseViewer", () => {
     await wrapper.setProps({ result });
     expect(wrapper.find('[data-testid="response-empty"]').exists()).toBe(false);
     expect(wrapper.text()).toContain("eq 失败");
+    // 头部展示结果归属用例名（outcome.caseName 字段已有，此前未上 UI）
+    expect(wrapper.text()).toContain("用例甲");
     expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
   });
 

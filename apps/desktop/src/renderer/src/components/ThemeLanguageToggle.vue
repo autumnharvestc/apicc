@@ -35,7 +35,7 @@ onMounted(() => {
 <template>
   <div class="toggles">
     <Dropdown :trigger="['click']">
-      <Button data-testid="lang-toggle" size="small">
+      <Button data-testid="lang-toggle" size="small" :title="t('app.language')">
         <GlobalOutlined />
         {{ langLabel }}
       </Button>
@@ -50,6 +50,7 @@ onMounted(() => {
     <Segmented
       data-testid="theme-toggle"
       size="small"
+      :title="t('app.theme')"
       :options="themeOptions"
       :value="themePreference"
       @change="onThemeChange"

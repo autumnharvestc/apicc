@@ -75,7 +75,7 @@ export async function sendDebug(
       const why = env ? `当前环境「${env.name}」的继承链不含该 scope` : "未选择环境";
       throw new Error(
         `用例「${target.name}」的 scope（${target.scope}）不适用于当前调试环境（${why}）` +
-          `——请在用例面板将其 scope 改为 base，或为调试选择环境（环境选择将于后续版本提供）`,
+          `——请在用例面板将其 scope 改为 base，或为调试选择环境`,
       );
     }
     const outcome = run.cases[0]!;
