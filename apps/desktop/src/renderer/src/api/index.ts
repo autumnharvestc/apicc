@@ -6,9 +6,11 @@ import type { ApiccApi } from "../../../shared/types.js";
  *
  * 注意：内存替身必须经「动态 import + 异步转发 Proxy」惰性加载，不能静态 import——
  * memory.ts 依赖 node:fs/node:os 等内置模块，静态引入会被 vite externalize 成
- * 「访问即抛」的浏览器 stub，模块求值即炸掉 Electron 生产包（本任务冒烟实测）。
+ * 「访问即抛」的浏览器 stub，模块求值即炸掉 Electron 生产包（任务 8 冒烟实测）。
  * ApiccApi 全部方法返回 Promise，故异步转发与接口签名天然吻合。
  * 组合根（App.vue）必须经此单例一次装配全部 store；不得在此之外另建实例。
+ * 回归守门：tests/renderer/api/api-singleton.test.ts（回退单例转发语义）、
+ * tests/renderer/api/bundle-isolation.test.ts（产物层：静态引用混入入口即红）。
  */
 function lazyMemoryApi(): ApiccApi {
   let impl: Promise<ApiccApi> | null = null;
