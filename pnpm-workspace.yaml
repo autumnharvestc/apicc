@@ -5,5 +5,7 @@ packages:
 # 其 install 脚本（prebuild-install）对本机 Node ABI 会 404 并回退 gyp 编译——无需执行，显式忽略。
 allowBuilds:
   better-sqlite3: false
+  # core-js 的 install 脚本仅打印捐赠提示（antd 依赖链带入），无需执行。
+  core-js: false
   # electron 的 postinstall（install.js）负责下载对应平台的 Electron 运行时二进制，必须放行。
   electron: true

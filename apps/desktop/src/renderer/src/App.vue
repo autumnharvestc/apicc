@@ -2,8 +2,11 @@
 // 组合根（装配约定）：store 工厂每调用一次即新建独立 Pinia 实例、得到互不相通的
 // 状态副本——因此全部 store 只能在此一次性创建，再经 props 向下传递；
 // SideTree/RequestEditor/TopBar 等组件内部禁止重复调用工厂。
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useI18n } from "vue-i18n";
+import { ConfigProvider, theme as antdTheme } from "ant-design-vue";
+import zhCN from "ant-design-vue/es/locale/zh_CN";
+import enUS from "ant-design-vue/es/locale/en_US";
 import { apicc } from "./api";
 import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import TopBar from "./components/TopBar.vue";
@@ -14,6 +17,18 @@ import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
 import { useEditorStore } from "./stores/editor.js";
 import { useDebugStore } from "./stores/debug.js";
+import { currentLocale } from "./i18n/bridge.js";
+import { themePreference, resolveTheme } from "./theme.js";
+
+// —— antd ConfigProvider 联动（i18n / 主题算法）——
+// locale 源 = bridge 单例当前语言；algorithm 源 = theme.ts 响应式偏好 + 系统偏好解析。
+const antdLocale = computed(() => (currentLocale() === "zh-CN" ? zhCN : enUS));
+const antdThemeConfig = computed(() => ({
+  algorithm:
+    resolveTheme(themePreference.value, window.matchMedia("(prefers-color-scheme: dark)").matches) === "dark"
+      ? antdTheme.darkAlgorithm
+      : antdTheme.defaultAlgorithm,
+}));
 
 const { t } = useI18n();
 const workspace = useWorkspaceStore(apicc);
@@ -42,24 +57,26 @@ async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
 </script>
 
 <template>
-  <div class="app" data-testid="app-root">
-    <TopBar :workspace="workspace" :api="apicc" :report-error="reportError" />
-    <div v-if="errorMessage" class="app-error" data-testid="app-error">
-      <span class="app-error-text">{{ t("app.error") }}: {{ errorMessage }}</span>
-      <button data-testid="app-error-close" @click="dismissError">{{ t("common.close") }}</button>
-    </div>
-    <div class="main">
-      <SideTree class="side-col" :workspace="workspace" :tree="tree" :report-error="reportError" @select="onSelect" />
-      <div class="right-col" data-testid="main-split">
-        <div class="editor-pane" data-testid="editor-pane">
-          <RequestEditor :editor="editor" :debug="debug" />
-        </div>
-        <div class="viewer-pane" data-testid="viewer-pane">
-          <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
+  <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
+    <div class="app" data-testid="app-root">
+      <TopBar :workspace="workspace" :api="apicc" :report-error="reportError" />
+      <div v-if="errorMessage" class="app-error" data-testid="app-error">
+        <span class="app-error-text">{{ t("app.error") }}: {{ errorMessage }}</span>
+        <button data-testid="app-error-close" @click="dismissError">{{ t("common.close") }}</button>
+      </div>
+      <div class="main">
+        <SideTree class="side-col" :workspace="workspace" :tree="tree" :report-error="reportError" @select="onSelect" />
+        <div class="right-col" data-testid="main-split">
+          <div class="editor-pane" data-testid="editor-pane">
+            <RequestEditor :editor="editor" :debug="debug" />
+          </div>
+          <div class="viewer-pane" data-testid="viewer-pane">
+            <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
+          </div>
         </div>
       </div>
     </div>
-  </div>
+  </ConfigProvider>
 </template>
 
 <style>
