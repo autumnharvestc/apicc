@@ -19,6 +19,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
     "@apicc/core": "workspace:*",
     "ant-design-vue": "^4.2.6",
     "pinia": "^4.0.3",

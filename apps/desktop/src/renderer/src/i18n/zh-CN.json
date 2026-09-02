@@ -1,5 +1,5 @@
 {
-  "app": { "openWorkspace": "打开工作区", "newWorkspace": "新建工作区", "language": "语言", "theme": "主题", "workspaceName": "工作区名称", "error": "错误" },
+  "app": { "openWorkspace": "打开工作区", "newWorkspace": "新建工作区", "language": "语言", "theme": "主题", "themeAuto": "自动", "themeLight": "亮色", "themeDark": "暗色", "workspaceName": "工作区名称", "error": "错误" },
   "nav": { "debug": "调试", "cases": "用例", "envs": "环境", "run": "运行", "import": "导入", "design": "设计" },
   "workspace": { "problems": "问题文件", "pickDirectory": "选择目录", "createHere": "在此新建" },
   "tree": { "newGroup": "新建分组", "newProject": "新建项目", "newCollection": "新建集合", "newFolder": "新建文件夹", "newApi": "新建接口", "rename": "重命名", "delete": "删除", "deleteConfirm": "确定删除「{name}」？", "empty": "打开工作区后在此浏览接口", "namePlaceholder": "名称" },

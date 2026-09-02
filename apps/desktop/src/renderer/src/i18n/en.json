@@ -1,5 +1,5 @@
 {
-  "app": { "openWorkspace": "Open Workspace", "newWorkspace": "New Workspace", "language": "Language", "theme": "Theme", "workspaceName": "Workspace name", "error": "Error" },
+  "app": { "openWorkspace": "Open Workspace", "newWorkspace": "New Workspace", "language": "Language", "theme": "Theme", "themeAuto": "Auto", "themeLight": "Light", "themeDark": "Dark", "workspaceName": "Workspace name", "error": "Error" },
   "nav": { "debug": "Debug", "cases": "Cases", "envs": "Environments", "run": "Run", "import": "Import", "design": "Design" },
   "workspace": { "problems": "Problem files", "pickDirectory": "Choose directory", "createHere": "Create here" },
   "tree": { "newGroup": "New Group", "newProject": "New Project", "newCollection": "New Collection", "newFolder": "New Folder", "newApi": "New API", "rename": "Rename", "delete": "Delete", "deleteConfirm": "Delete \"{name}\"?", "empty": "Open a workspace to browse APIs", "namePlaceholder": "Name" },

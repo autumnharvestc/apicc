@@ -10,6 +10,8 @@
 //    body 作用域包装器查询（expectBody/bodyHas）。
 // 2. 其余 data-testid 触发元素（含 a-tabs #tab slot 的页签 span、a-alert 的
 //    app-error-close）仍在组件 DOM 内，照旧 wrapper.find。
+// TopBar 现代化（计划 2C 任务 2）适配：3. a-dropdown（语言切换）展开的菜单同样
+//    传送门渲染到 body，菜单项用 langOption（data-locale）查询。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
@@ -45,6 +47,13 @@ function expectBody(testid: string): DOMWrapper<Element> {
   const w = bodyFind(testid);
   if (!w) throw new Error(`document.body 中找不到 [data-testid="${testid}"]（Modal 传送门未渲染？）`);
   return w;
+}
+
+/** 语言下拉菜单项（a-dropdown 传送门渲染在 document.body，菜单项带 data-locale）。 */
+function langOption(locale: string): DOMWrapper<Element> {
+  const el = document.body.querySelector(`[data-locale="${locale}"]`);
+  if (!el) throw new Error(`document.body 中找不到 [data-locale="${locale}"]（语言下拉未展开？）`);
+  return new DOMWrapper(el);
 }
 
 /** 动态 import App：保证上方 window.apicc 注入先于 api/index.ts 的模块求值。 */
@@ -172,12 +181,17 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
     expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
     // zh-CN：ConfigProvider locale=zh_CN → a-table 空态内建文案「暂无数据」
     expect(wrapper.text()).toContain("暂无数据");
-    // 语言循环（ThemeLanguageToggle → bridge → ConfigProvider locale）→ antd 文案切英文
+    // 语言下拉（点 lang-toggle 展开 → 点选 English 菜单项，ThemeLanguageToggle →
+    // bridge → ConfigProvider locale）→ antd 文案切英文
     await wrapper.find('[data-testid="lang-toggle"]').trigger("click");
     await flushPromises();
+    await langOption("en").trigger("click");
+    await flushPromises();
     expect(wrapper.text()).toContain("No data");
-    // 还原语言，避免污染同文件其他用例与 localStorage
+    // 还原语言：重新展开下拉点选中文，避免污染同文件其他用例与 localStorage
     await wrapper.find('[data-testid="lang-toggle"]').trigger("click");
+    await flushPromises();
+    await langOption("zh-CN").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("暂无数据");
   });
