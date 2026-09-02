@@ -235,4 +235,28 @@ describe("IPC 处理器", () => {
     await expect(deps.handle("node:create", {}, { kind: "bogus", parentId: null, name: "x" })).rejects.toThrow(/\[node:create\] 入参校验失败/);
     await expect(deps.handle("env:vars:save", {}, "e1", { k: 42 })).rejects.toThrow(/\[env:vars:save\] 入参校验失败/);
   });
+
+  it("可选字符串字段接受显式 null（渲染层「无选中」惯例）：走无环境/无继承语义而非校验拒绝", async () => {
+    // 回归背景（修复轮 1）：代码库「无选中」惯例是 null（App.vue 的 string | null computed、
+    // selectedEnvId/selectedCollectionId），optional 只认 undefined——store 原样透传 null
+    // 会被全频道校验收口误伤，故 envName/extends 均为 nullish。
+    const { deps, dir } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
+    const c = await deps.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
+    const api = await deps.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
+    // debug:send envName=null → 通过校验，按无环境运行（resolveEnv 对 falsy 一视同仁）
+    const detail = await deps.handle("api:get", {}, api.id);
+    const result = await deps.handle("debug:send", {}, { apiId: api.id, caseId: detail.api.cases[0]!.id, envName: null });
+    expect(result.outcome.passed).toBe(false); // 不可达地址 → 运行完成、用例失败（无环境语义）
+    expect(result.run.total).toBe(1);
+    // env:create extends=null → 通过校验且不把 null 写进模型（严格 EnvironmentSchema 可重开）
+    const env = await deps.handle("env:create", {}, { projectId: p.id, name: "sit", extends: null });
+    expect(env.extends).toBeUndefined();
+    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
+    await fresh.handle("ws:open", {}, dir);
+    const tree = await fresh.handle("tree:get", {});
+    expect(tree.children![0]!.children![0]!.envs).toEqual([{ id: env.id, name: "sit", extends: undefined, variables: {} }]);
+  });
 });

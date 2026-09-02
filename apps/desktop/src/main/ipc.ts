@@ -21,9 +21,14 @@ const NodeCreateInputSchema = z.object({
   method: z.string().optional(),
   url: z.string().optional(),
 });
-const EnvCreateInputSchema = z.object({ projectId: z.string(), name: z.string(), extends: z.string().optional() });
-const DebugInputSchema = z.object({ apiId: z.string(), caseId: z.string(), envName: z.string().optional() });
-const RunInputSchema = z.object({ collectionId: z.string(), envName: z.string().optional() });
+// 可选字符串字段用 nullish（修复轮 1）：渲染层「无选中」惯例是 null（App.vue 的
+// string | null computed、selectedEnvId/selectedCollectionId），optional 只认 undefined，
+// store 原样透传 null 会被收口误伤。envName 的 null 由 resolveEnv 的 falsy 判断归一为
+// 无环境运行；extends 的 null 在 env:create 分支显式归一为 undefined（模型 strict schema
+// 拒绝 null，落盘不可带回）。
+const EnvCreateInputSchema = z.object({ projectId: z.string(), name: z.string(), extends: z.string().nullish() });
+const DebugInputSchema = z.object({ apiId: z.string(), caseId: z.string(), envName: z.string().nullish() });
+const RunInputSchema = z.object({ collectionId: z.string(), envName: z.string().nullish() });
 const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() });
 const ImportApplyInputSchema = z.object({ groupName: z.string(), project: ProjectSchema });
 
@@ -173,7 +178,8 @@ export function createIpcDeps(options: IpcDepsOptions) {
       // 环境频道（任务 4）：session 变更操作不自动落盘，两分支均显式 save（语义备忘）。
       case IpcChannel.EnvCreate: {
         const input = a[0] as EnvCreateInput;
-        const env = session.createEnvironment(input.projectId, { name: input.name, extends: input.extends });
+        // extends 显式 null 归一为 undefined：模型 strict schema 拒绝 null，不可写入后落盘。
+        const env = session.createEnvironment(input.projectId, { name: input.name, extends: input.extends ?? undefined });
         await session.save();
         return env;
       }

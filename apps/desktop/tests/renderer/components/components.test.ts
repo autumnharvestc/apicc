@@ -127,8 +127,8 @@ describe("SideTree", () => {
     await input.setValue("新接口");
     await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
-    // select 事件必须携带 "api"（App 据此加载编辑器；主进程 nodeCreate 返回体无 kind，
-    // 组件以发起请求的 kind 为准）
+    // select 事件必须携带 "api"（App 据此加载编辑器）：nodeCreate 返回统一瘦 DTO 含 kind
+    // （宽审查 I2），SideTree 以返回值的 kind 发事件，不再以发起请求的 kind 为准
     expect(wrapper.emitted("select")![0]).toEqual(["api", expect.any(String)]);
     expect(wrapper.text()).toContain("新接口");
   });
