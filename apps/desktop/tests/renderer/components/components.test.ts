@@ -49,7 +49,7 @@ async function mountWith(component: Parameters<typeof mount>[0], props: Record<s
   const debug = useDebugStore(api);
   const { i18n } = createI18nInstance();
   const wrapper = mount(component, {
-    props: { api, workspace, tree, editor, debug, ...props },
+    props: { api, workspace, tree, editor, debug, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
@@ -88,6 +88,19 @@ describe("SideTree", () => {
     // 组件以发起请求的 kind 为准）
     expect(wrapper.emitted("select")![0]).toEqual(["api", expect.any(String)]);
     expect(wrapper.text()).toContain("新接口");
+  });
+
+  it("对话框 run 拒绝时经 reportError 上报（宽审查 I1，不再静默吞没）", async () => {
+    const errors: unknown[] = [];
+    const { wrapper, api } = await mountWith(SideTree, { reportError: (e: unknown) => { errors.push(e); } });
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="new-api"]').trigger("click");
+    await wrapper.find('[data-testid="dialog-input"]').setValue("x");
+    api.nodeCreate = async () => { throw new Error("boom"); };
+    await wrapper.find('[data-testid="dialog-confirm"]').trigger("click");
+    await flushPromises();
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("boom");
   });
 
   it("删除接口：确认对话框放行后节点消失", async () => {
@@ -252,5 +265,15 @@ describe("TopBar", () => {
     expect(wrapper.find('[data-testid="dialog-input"]').exists()).toBe(true);
     await wrapper.find('[data-testid="dialog-cancel"]').trigger("click");
     expect(wrapper.find('[data-testid="dialog-input"]').exists()).toBe(false);
+  });
+
+  it("打开工作区失败时经 reportError 上报（宽审查 I1）", async () => {
+    const errors: unknown[] = [];
+    const { wrapper, api } = await mountWith(TopBar, { reportError: (e: unknown) => { errors.push(e); } });
+    api.wsOpen = async () => { throw new Error("打不开"); };
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("打不开");
   });
 });

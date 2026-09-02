@@ -10,11 +10,14 @@ import ConfirmDialog from "./ConfirmDialog.vue";
 /**
  * 左侧树：递归结构按 DTO 固定深度展开（分组→项目→集合→[文件夹→]接口）。
  * store 经 props 注入（组合根一次装配；组件内部禁止重复调用 store 工厂）。
+ * reportError 为组合根注入的最小错误反馈通道（宽审查 I1）：对话框链路的
+ * Promise 拒绝统一转报，不再作为未处理 rejection 静默吞没。
  * 选中接口 emit select(kind,id)；创建/重命名复用 ConfirmDialog 输入，删除先经确认。
  */
 const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
   tree: ReturnType<typeof useTreeStore>;
+  reportError: (e: unknown) => void;
 }>();
 const emit = defineEmits<{ select: [kind: TreeNodeDTO["kind"], id: string] }>();
 const { t } = useI18n();
@@ -58,7 +61,7 @@ interface DialogState {
   title: string;
   placeholder?: string;
   initialValue?: string;
-  run: (value: string | null) => void;
+  run: (value: string | null) => Promise<void> | void;
 }
 const dialog = ref<DialogState>({ open: false, title: "", run: () => {} });
 
@@ -73,7 +76,13 @@ function closeDialog() {
 async function onDialogConfirm(value: string | null) {
   const run = dialog.value.run;
   closeDialog();
-  await run(value);
+  // 宽审查 I1：先关对话框再执行 run；run 的拒绝统一转报组合根错误展示条，
+  // 不再是未处理的 rejection。创建/重命名/删除链路共用此收口点。
+  try {
+    await run(value);
+  } catch (e) {
+    props.reportError(e);
+  }
 }
 
 type CreateKind = "group" | "project" | "collection" | "folder" | "api";

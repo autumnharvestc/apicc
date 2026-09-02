@@ -9,10 +9,12 @@ import ConfirmDialog from "./ConfirmDialog.vue";
 /**
  * 顶栏：工作区名 + 打开/新建工作区 + 语言/主题切换。
  * store 与 api 经 props 注入（组合根一次装配；组件内部不调工厂、不持有第二个 api 实例）。
+ * reportError 为组合根注入的最小错误反馈通道（宽审查 I1）：Promise 拒绝转报，不静默吞没。
  */
 const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
   api: ApiccApi;
+  reportError: (e: unknown) => void;
 }>();
 const { t } = useI18n();
 
@@ -20,20 +22,33 @@ const dialogOpen = ref(false);
 const pendingRoot = ref("");
 
 async function openWorkspace() {
-  const dir = await props.api.wsPickDirectory();
-  if (dir) await props.workspace.open(dir);
+  try {
+    const dir = await props.api.wsPickDirectory();
+    if (dir) await props.workspace.open(dir);
+  } catch (e) {
+    props.reportError(e);
+  }
 }
 
 async function startCreate() {
-  const dir = await props.api.wsPickDirectory();
-  if (!dir) return; // 用户取消目录选择
-  pendingRoot.value = dir;
-  dialogOpen.value = true;
+  try {
+    const dir = await props.api.wsPickDirectory();
+    if (!dir) return; // 用户取消目录选择
+    pendingRoot.value = dir;
+    dialogOpen.value = true;
+  } catch (e) {
+    props.reportError(e);
+  }
 }
 
 async function onCreateConfirm(name: string | null) {
   dialogOpen.value = false;
-  if (name) await props.workspace.create(pendingRoot.value, name);
+  if (!name) return;
+  try {
+    await props.workspace.create(pendingRoot.value, name);
+  } catch (e) {
+    props.reportError(e);
+  }
 }
 </script>
 
