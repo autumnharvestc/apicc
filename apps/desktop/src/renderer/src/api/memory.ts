@@ -16,7 +16,7 @@ import {
   type Workspace,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
-import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../../../shared/types.js";
+import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../../../shared/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
@@ -35,6 +35,10 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
   let workspace: Workspace | null = null;
   let problems: LoadProblem[] = [];
+  // 运行历史内存样例（新→旧，与主进程 listRuns 排序一致）：runCollection 产出，
+  // runsList/runsGet 读回；runSeq 保证同毫秒多次运行不重名（对齐 Runner 落盘文件名语义）。
+  const runs: Array<{ file: string; result: RunResult }> = [];
+  let runSeq = 0;
 
   function ensureOpen(): Workspace {
     if (!workspace) throw new Error("尚未打开工作区");
@@ -299,6 +303,53 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
         cases: [outcome],
       };
       return { run, outcome };
+    },
+
+    // 集合运行（任务 6）：语义对齐 session——未命中集合抛「未找到」；不走真实网络，
+    // 固定返回单用例成功结果并记入运行历史（runs list/get 的内存样例由此产出）。
+    async runCollection(input: RunCollectionInput): Promise<RunResult> {
+      const ws = ensureOpen();
+      const collection = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.collectionId);
+      if (!collection) throw new Error(`未找到集合: ${input.collectionId}`);
+      const api = collection.apis[0] ?? collection.folders[0]?.apis[0];
+      const outcome: CaseOutcome = {
+        apiId: api?.id ?? "",
+        apiName: api?.name ?? "",
+        caseId: api?.cases[0]?.id ?? "",
+        caseName: api?.cases[0]?.name ?? "",
+        passed: true,
+        durationMs: 0,
+        assertions: [],
+      };
+      const startedAt = new Date().toISOString();
+      const run: RunResult = {
+        collectionId: collection.id,
+        collectionName: collection.name,
+        envName: input.envName,
+        startedAt,
+        finishedAt: startedAt,
+        total: 1,
+        passed: 1,
+        failed: 0,
+        cases: [outcome],
+      };
+      runs.unshift({ file: `run-memory-${String(++runSeq).padStart(4, "0")}.json`, result: run });
+      return run;
+    },
+
+    async runsList(): Promise<RunSummaryDTO[]> {
+      return runs.map(({ file, result }) => ({
+        file,
+        collectionName: result.collectionName,
+        startedAt: result.startedAt,
+        total: result.total,
+        passed: result.passed,
+        failed: result.failed,
+      }));
+    },
+
+    async runsGet(file: string): Promise<RunResult | null> {
+      return runs.find((r) => r.file === file)?.result ?? null;
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

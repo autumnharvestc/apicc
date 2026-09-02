@@ -15,6 +15,9 @@ const api = {
   apiGet: (apiId: string) => ipcRenderer.invoke(IpcChannel.ApiGet, apiId),
   apiSave: (api: unknown) => ipcRenderer.invoke(IpcChannel.ApiSave, api),
   debugSend: (input: unknown) => ipcRenderer.invoke(IpcChannel.DebugSend, input),
+  runCollection: (input: unknown) => ipcRenderer.invoke(IpcChannel.RunCollection, input),
+  runsList: () => ipcRenderer.invoke(IpcChannel.RunsList),
+  runsGet: (file: string) => ipcRenderer.invoke(IpcChannel.RunsGet, file),
 };
 
 contextBridge.exposeInMainWorld("apicc", api);

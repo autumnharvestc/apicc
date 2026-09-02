@@ -12,5 +12,8 @@ export const IpcChannel = {
   ApiGet: "api:get",
   ApiSave: "api:save",
   DebugSend: "debug:send",
+  RunCollection: "run:collection",
+  RunsList: "runs:list",
+  RunsGet: "runs:get",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];

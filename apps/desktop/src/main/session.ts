@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 
 export interface ApiLocation { api: ApiDefinition; collection: Collection; project: Project; group: Group; folder: { id: string; name: string; apis: ApiDefinition[] } | null }
 
+/** 集合定位结果：集合运行（run:collection）需集合本体 + 所属项目（环境解析）与分组。 */
+export interface CollectionLocation { collection: Collection; project: Project; group: Group }
+
 export type NodeKind = "group" | "project" | "collection" | "folder" | "api" | "environment";
 
 /** 主进程工作区会话：内存模型为唯一事实源，save() 全量落盘（规格 §4）。 */
@@ -81,6 +84,19 @@ export function createSession() {
             const fApi = folder.apis.find((a) => a.id === apiId);
             if (fApi) return { api: fApi, collection, project, group, folder };
           }
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /** 集合定位（同 locateApi 遍历模式）：集合运行入口按 id 取集合 + 所属项目/分组。 */
+  function locateCollection(collectionId: string): CollectionLocation | undefined {
+    const { workspace: ws } = ensureOpen();
+    for (const group of ws.groups) {
+      for (const project of group.projects) {
+        for (const collection of project.collections) {
+          if (collection.id === collectionId) return { collection, project, group };
         }
       }
     }
@@ -220,7 +236,7 @@ export function createSession() {
     },
     createGroup, createProject, createCollection, createFolder, createApi,
     createEnvironment, setEnvironmentVariables,
-    locateApi, saveApi, renameNode, deleteNode, save,
+    locateApi, locateCollection, saveApi, renameNode, deleteNode, save,
   };
 }
 

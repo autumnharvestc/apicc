@@ -16,6 +16,13 @@ export interface EnvCreateInput { projectId: string; name: string; extends?: str
 /** 响应快照：随 afterResponse 事件捕获，ResponseViewer 用真实数据替换「—」占位。 */
 export interface ResponseSnapshot { status: number; headers: Record<string, string>; bodyText: string; timeMs: number }
 export interface DebugOutput { run: RunResult; outcome: CaseOutcome; response?: ResponseSnapshot }
+/** run:collection 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
+export interface RunCollectionInput { collectionId: string; envName?: string }
+/**
+ * runs:list 行摘要：与 src/main/runs.ts 同名接口结构同构（IPC 结构化克隆传输，字段变更
+ * 需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
+ */
+export interface RunSummaryDTO { file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number }
 
 /**
  * nodeCreate 统一返回的瘦节点 DTO（宽审查 I2：ipc 与 memory 契约一致的单一事实源）。
@@ -42,4 +49,7 @@ export interface ApiccApi {
   apiGet(apiId: string): Promise<ApiDetail>;
   apiSave(api: ApiDefinition): Promise<void>;
   debugSend(input: DebugInput): Promise<DebugOutput>;
+  runCollection(input: RunCollectionInput): Promise<RunResult>;
+  runsList(): Promise<RunSummaryDTO[]>;
+  runsGet(file: string): Promise<RunResult | null>;
 }

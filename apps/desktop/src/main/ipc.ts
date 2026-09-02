@@ -1,7 +1,9 @@
-import { type Workspace } from "@apicc/core";
+import { type RunResult, type Workspace } from "@apicc/core";
+import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../shared/types.js";
-import { sendDebug } from "./debug.js";
+import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../shared/types.js";
+import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
+import { listRuns, readRun } from "./runs.js";
 import type { createSession } from "./session.js";
 import { toTreeNode, type TreeNodeDTO } from "./tree.js";
 
@@ -135,6 +137,20 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.DebugSend: {
         const result = await sendDebug(session, args[0] as DebugInput);
         return result satisfies DebugOutput;
+      }
+      // 运行频道（任务 6）：run:collection 走完整 Runner 并固定落盘 .apicc/runs；
+      // runs:list/get 读历史（目录不存在/文件损坏已在 runs.ts 侧降级为 []/null）。
+      case IpcChannel.RunCollection: {
+        const run = await runCollection(session, args[0] as RunCollectionInput);
+        return run satisfies RunResult;
+      }
+      case IpcChannel.RunsList: {
+        if (!session.root) throw new Error("尚未打开工作区");
+        return listRuns(workspaceRunsDir(session.root)) satisfies RunSummaryDTO[];
+      }
+      case IpcChannel.RunsGet: {
+        if (!session.root) throw new Error("尚未打开工作区");
+        return readRun(workspaceRunsDir(session.root), args[0] as string);
       }
       default:
         throw new Error(`未知频道: ${channel}`);

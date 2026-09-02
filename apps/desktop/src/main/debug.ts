@@ -1,5 +1,6 @@
 import type { ApiDefinition, Environment, Project, RunResult, CaseOutcome } from "@apicc/core";
 import { CollectionRunner, createDefaultRegistry, createEventBus } from "@apicc/core";
+import { join } from "node:path";
 import type { createSession } from "./session.js";
 import type { ResponseSnapshot } from "../shared/types.js";
 
@@ -9,6 +10,29 @@ const registry = createDefaultRegistry();
 const timeouts = { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 };
 
 export interface DebugResult { run: RunResult; outcome: CaseOutcome; response?: ResponseSnapshot }
+
+/** 运行历史落盘目录：固定于工作区根 .apicc/runs（与 CLI 默认 runsDir 一致，规格 §8）。 */
+export function workspaceRunsDir(root: string): string {
+  return join(root, ".apicc", "runs");
+}
+
+/**
+ * 集合运行（任务 6）：完整集合走 CollectionRunner（前置/后置脚本、断言、数据驱动、
+ * 环境继承语义与 CLI 一致），结果经 opts.runsDir 固定落盘 .apicc/runs 供历史读回。
+ */
+export async function runCollection(
+  session: Session,
+  input: { collectionId: string; envName?: string },
+): Promise<RunResult> {
+  const loc = session.locateCollection(input.collectionId);
+  if (!loc) throw new Error(`未找到集合: ${input.collectionId}`);
+  const env: Environment | undefined = input.envName
+    ? loc.project.environments.find((e) => e.name === input.envName)
+    : undefined;
+  const runner = new CollectionRunner({ registry, bus: createEventBus(), timeouts, failFast: false });
+  // locateCollection 内 ensureOpen 已保证会话打开，root/workspace 非空（与 sendDebug 同款断言）。
+  return runner.run(loc.collection, env, loc.project, session.workspace!, { runsDir: workspaceRunsDir(session.root!) });
+}
 
 /** 调试 = 用合成单接口集合走完整 Runner 语义（前置/后置脚本、断言、变量解析一致，规格 §7.1）。 */
 export async function sendDebug(
