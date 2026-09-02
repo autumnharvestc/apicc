@@ -1,8 +1,9 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IpcChannel } from "../shared/channels.js";
 import { createIpcDeps } from "./ipc.js";
+import { createSession } from "./session.js";
 
 // package.json 为 type:module，编译产物是 ESM，须用 import.meta 推导 __dirname。
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -27,7 +28,12 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
-  const deps = createIpcDeps();
+  const session = createSession();
+  const pickDirectory = async (): Promise<string> => {
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
+    return result.canceled || result.filePaths.length === 0 ? "" : result.filePaths[0]!;
+  };
+  const deps = createIpcDeps({ session, pickDirectory });
   for (const channel of Object.values(IpcChannel)) {
     ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
   }

@@ -1,9 +1,18 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IpcChannel } from "../shared/channels.js";
 
-contextBridge.exposeInMainWorld("electronInvoke", (channel: string, ...args: unknown[]) => {
-  if (!Object.values(IpcChannel).includes(channel as never)) {
-    return Promise.reject(new Error(`未允许的 IPC 频道: ${channel}`));
-  }
-  return ipcRenderer.invoke(channel, ...args);
-});
+const api = {
+  wsOpen: (rootPath: string) => ipcRenderer.invoke(IpcChannel.WsOpen, rootPath),
+  wsCreate: (rootPath: string, name: string) => ipcRenderer.invoke(IpcChannel.WsCreate, rootPath, name),
+  wsPickDirectory: () => ipcRenderer.invoke(IpcChannel.WsPickDirectory),
+  wsValidate: () => ipcRenderer.invoke(IpcChannel.WsValidate),
+  treeGet: () => ipcRenderer.invoke(IpcChannel.TreeGet),
+  nodeCreate: (input: unknown) => ipcRenderer.invoke(IpcChannel.NodeCreate, input),
+  nodeRename: (kind: string, id: string, name: string) => ipcRenderer.invoke(IpcChannel.NodeRename, kind, id, name),
+  nodeDelete: (kind: string, id: string) => ipcRenderer.invoke(IpcChannel.NodeDelete, kind, id),
+  apiGet: (apiId: string) => ipcRenderer.invoke(IpcChannel.ApiGet, apiId),
+  apiSave: (api: unknown) => ipcRenderer.invoke(IpcChannel.ApiSave, api),
+  debugSend: (input: unknown) => ipcRenderer.invoke(IpcChannel.DebugSend, input),
+};
+
+contextBridge.exposeInMainWorld("apicc", api);
