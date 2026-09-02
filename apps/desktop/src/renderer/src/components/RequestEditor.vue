@@ -15,6 +15,8 @@ const ATextarea = AInput.TextArea;
  * 组件内部禁止重复调用 store 工厂）。全部绑定直接改 editor.api 字段
  * （Pinia 响应式 + dirty 快照比对自动跟踪），显式保存按钮调 editor.save()；
  * 发送按钮调 debug.send(editor)（发送前自动保存脏编辑）。
+ * 调试选择器：URL 行内发送按钮左侧有环境选择器（debug-env-select，含「无环境」空值项）
+ * 与用例选择器（debug-case-select），仅写 debug store 的 selectedEnvName/selectedCaseId。
  * antd 4 落地：方法/认证类型/placement/体类型为 a-select，URL/名称/字段为 a-input，
  * 页签为 a-tabs（页签触发的 data-testid 经 #tab slot 保留在可点击的 span 上，
  * 点击冒泡到 a-tabs 内部处理器），行编辑为 a-input + a-checkbox + a-button。
@@ -90,6 +92,22 @@ const bodyKind = computed<BodyKind>({
         :title="t('editor.method')"
       />
       <a-input v-model:value="editor.api.url" class="url" data-testid="editor-url" :placeholder="t('editor.url')" />
+      <!-- 调试环境/用例选择器（任务 1）：仅写 debug store 的选择状态，send 按钮仍调
+           debug.send(editor)（不传显式 envName，走 store 状态）；空值项表示无环境。 -->
+      <a-select
+        data-testid="debug-env-select"
+        :value="debug.selectedEnvName ?? ''"
+        :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: e.name }))]"
+        style="min-width: 120px"
+        @update:value="(v: string) => debug.selectEnv(v === '' ? null : v)"
+      />
+      <a-select
+        data-testid="debug-case-select"
+        :value="debug.selectedCaseId ?? editor.api?.cases[0]?.id ?? ''"
+        :options="(editor.api?.cases ?? []).map((c) => ({ label: `${c.name}（${c.scope}）`, value: c.id }))"
+        style="min-width: 160px"
+        @update:value="(v: string) => debug.selectCase(v)"
+      />
       <a-button type="primary" data-testid="send-btn" :disabled="debug.sending" @click="debug.send(editor)">
         {{ debug.sending ? t("editor.sending") : t("editor.send") }}
       </a-button>

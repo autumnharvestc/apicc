@@ -43,4 +43,25 @@ describe("debug store", () => {
     expect(debug.error).toContain("网络不可达");
     expect(debug.sending).toBe(false);
   });
+
+  it("选择环境与用例后按选择发送；失效选择自动回退", async () => {
+    const { editor, debug } = await seeded();
+    // 注：memory 种子的基座用例 id 为 randomUUID（非简报示例中的固定 "t0"），以实际种子为准；
+    // 种子项目也无环境，dev 为测试自注入（selectEnv 的生效前提是 editor.envs 中存在该环境名）。
+    const baseCaseId = editor.api!.cases[0]!.id;
+    await debug.send(editor); // 现状基线：cases[0]
+    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, assertions: [] });
+    editor.envs = [{ id: "e1", name: "dev" }];
+    debug.selectCase("t2");
+    debug.selectEnv("dev");
+    let captured: { apiId: string; caseId: string; envName?: string } | null = null;
+    await debug.send(editor, (input) => { captured = input; return Promise.resolve({ run: { total: 1, passed: 1, failed: 0, cases: [], startedAt: "", finishedAt: "", collectionId: "c", collectionName: "c" }, outcome: { apiId: "a", apiName: "a", caseId: "t2", caseName: "t2", passed: true, durationMs: 1, assertions: [] } }); }, undefined);
+    expect(captured).toMatchObject({ caseId: "t2", envName: "dev" });
+    // 失效回退：选中的用例/环境不在当前接口/项目里时回退 cases[0]/无环境
+    editor.api!.cases = editor.api!.cases.filter((c) => c.id === baseCaseId);
+    editor.envs = [];
+    await debug.send(editor, (input) => { captured = input; return Promise.resolve({ run: { total: 1, passed: 1, failed: 0, cases: [], startedAt: "", finishedAt: "", collectionId: "c", collectionName: "c" }, outcome: { apiId: "a", apiName: "a", caseId: baseCaseId, caseName: "t0", passed: true, durationMs: 1, assertions: [] } }); }, undefined);
+    expect(captured).toMatchObject({ caseId: baseCaseId });
+    expect(captured!.envName).toBeUndefined();
+  });
 });

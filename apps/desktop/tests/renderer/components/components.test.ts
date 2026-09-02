@@ -230,6 +230,33 @@ describe("RequestEditor", () => {
     await wrapper.find('[data-testid="add-form-row"]').trigger("click");
     expect(editor.api!.body!.form).toHaveLength(1);
   });
+
+  it("调试选择器：选环境/用例后发送按选择传参（envName/caseId 走 store 状态）", async () => {
+    const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    // 种子项目无环境且仅一个用例（id 为 randomUUID）：注入 dev 环境并追加第二用例供选择
+    editor.envs.push({ id: "e1", name: "dev" });
+    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, assertions: [] });
+    // memory 替身未记录 debugSend 调用，按简报以 spy 覆写捕获入参（发送按钮不传显式 envName）
+    const sent: Array<{ apiId: string; caseId: string; envName?: string }> = [];
+    api.debugSend = async (input) => {
+      sent.push(input);
+      return {
+        run: { total: 1, passed: 1, failed: 0, cases: [], startedAt: "", finishedAt: "", collectionId: "c", collectionName: "c" },
+        outcome: { apiId: "a", apiName: "a", caseId: "t2", caseName: "second", passed: true, durationMs: 1, assertions: [] },
+      };
+    };
+    chooseSelect(wrapper, "debug-env-select", "dev");
+    chooseSelect(wrapper, "debug-case-select", "t2");
+    await wrapper.find('[data-testid="send-btn"]').trigger("click");
+    await flushPromises();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ caseId: "t2", envName: "dev" });
+    expect(debug.result).not.toBeNull();
+    expect(debug.error).toBeNull();
+    expect(debug.sending).toBe(false);
+  });
 });
 
 describe("ResponseViewer", () => {
