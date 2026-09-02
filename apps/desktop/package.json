@@ -15,6 +15,7 @@
     "build": "pnpm typecheck && pnpm build:renderer && pnpm build:electron && pnpm build:preload",
     "dev": "pnpm build && electron .",
     "dist:dir": "pnpm build && electron-builder --dir",
+    "smoke:dir": "node scripts/smoke-dir.mjs",
     "test": "vitest run"
   },
   "dependencies": {
