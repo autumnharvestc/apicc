@@ -74,6 +74,14 @@ describe("createSession", () => {
     expect(reopened.workspace.groups).toHaveLength(1);
   });
 
+  it("deleteNode group 未命中时抛「未找到」（与 memory 契约对齐，宽审查 I3）", async () => {
+    const s = createSession();
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    expect(() => s.deleteNode("group", "不存在")).toThrow(/未找到/);
+  });
+
   it("renameNode 重命名集合（盘上目录随 save 更新，旧目录清理）", async () => {
     const s = createSession();
     const dir = root();

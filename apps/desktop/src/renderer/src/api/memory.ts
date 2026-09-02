@@ -15,7 +15,7 @@ import {
   type Workspace,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
-import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, NodeCreateInput, OpenResult } from "../../../shared/types.js";
+import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../../../shared/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
@@ -143,7 +143,7 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
       return toTreeNodeDTO(ensureOpen());
     },
 
-    async nodeCreate(input: NodeCreateInput): Promise<TreeNodeDTO & { id: string }> {
+    async nodeCreate(input: NodeCreateInput): Promise<NodeCreatedDTO> {
       const ws = ensureOpen();
       if (input.kind === "group") {
         const g: Group = { id: randomUUID(), name: input.name, projects: [] };
@@ -175,10 +175,27 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
         await save();
         return { kind: "folder", id: f.id, label: f.name };
       }
-      const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.parentId);
-      if (!c) throw new Error(`未找到集合: ${input.parentId}`);
+      // api 分支父解析与主进程 IPC 同构（宽审查 C1）：parentId 先按文件夹命中（接口挂其
+      // apis），未命中再按集合解析（挂集合根）。此前只按集合解析，文件夹内新建接口必失败。
+      let target: { collection: Collection; folder: Folder | null } | null = null;
+      for (const g of ws.groups) {
+        for (const p of g.projects) {
+          for (const c of p.collections) {
+            const folder = c.folders.find((f) => f.id === input.parentId);
+            if (folder) { target = { collection: c, folder }; break; }
+          }
+          if (target) break;
+        }
+        if (target) break;
+      }
+      if (!target) {
+        const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.parentId);
+        if (!c) throw new Error(`未找到集合: ${input.parentId}`);
+        target = { collection: c, folder: null };
+      }
       const api = createApiDefinition(input.name, input.method ?? "GET", input.url ?? "/");
-      c.apis.push(api);
+      if (target.folder) target.folder.apis.push(api);
+      else target.collection.apis.push(api);
       await save();
       return { kind: "api", id: api.id, label: api.name, method: api.method };
     },

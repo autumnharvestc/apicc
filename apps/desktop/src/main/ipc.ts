@@ -1,12 +1,11 @@
-import { type ApiDefinition, type Collection, type Folder, type Group, type Project } from "@apicc/core";
+import { type Workspace } from "@apicc/core";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import type { ApiDetail, DebugInput, DebugOutput, NodeCreateInput, OpenResult } from "../shared/types.js";
+import type { ApiDetail, DebugInput, DebugOutput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../shared/types.js";
 import { sendDebug } from "./debug.js";
 import type { createSession } from "./session.js";
 import { toTreeNode, type TreeNodeDTO } from "./tree.js";
 
 type Session = ReturnType<typeof createSession>;
-type CreatedNode = Group | Project | Collection | Folder | ApiDefinition;
 
 export interface IpcDepsOptions {
   session: Session;
@@ -16,17 +15,54 @@ export interface IpcDepsOptions {
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory } = options;
 
-  function createNode(input: NodeCreateInput): CreatedNode {
+  /**
+   * api 分支父解析（宽审查 C1）：parentId 可能是文件夹 id——先在工作区中按文件夹命中
+   （取其所属集合 id 作 collectionId、文件夹 id 作 folderId）；未命中再按集合 id 解析
+   （folderId=null，挂集合根）。此前直接把 parentId 当集合 id 传给 createApi，
+   侧树文件夹行上的「新建接口」一按就抛「未找到集合」。
+   */
+  function resolveApiParent(ws: Workspace | null, parentId: string): { collectionId: string; folderId: string | null } {
+    if (ws) {
+      for (const group of ws.groups) {
+        for (const project of group.projects) {
+          for (const collection of project.collections) {
+            const folder = collection.folders.find((f) => f.id === parentId);
+            if (folder) return { collectionId: collection.id, folderId: folder.id };
+          }
+        }
+      }
+    }
+    return { collectionId: parentId, folderId: null };
+  }
+
+  // 返回统一瘦 DTO（宽审查 I2）：与 memory 替身同构，渲染层无需感知原生节点形状。
+  function createNode(input: NodeCreateInput): NodeCreatedDTO {
     switch (input.kind) {
-      case "group": return session.createGroup(input.name);
-      case "project": return session.createProject(input.parentId!, input.name);
-      case "collection": return session.createCollection(input.parentId!, input.name);
-      case "folder": return session.createFolder(input.parentId!, input.name);
-      case "api": return session.createApi(input.parentId!, null, {
-        name: input.name,
-        method: (input.method ?? "GET") as Parameters<Session["createApi"]>[2]["method"],
-        url: input.url ?? "/",
-      });
+      case "group": {
+        const g = session.createGroup(input.name);
+        return { kind: "group", id: g.id, label: g.name };
+      }
+      case "project": {
+        const p = session.createProject(input.parentId!, input.name);
+        return { kind: "project", id: p.id, label: p.name };
+      }
+      case "collection": {
+        const c = session.createCollection(input.parentId!, input.name);
+        return { kind: "collection", id: c.id, label: c.name };
+      }
+      case "folder": {
+        const f = session.createFolder(input.parentId!, input.name);
+        return { kind: "folder", id: f.id, label: f.name };
+      }
+      case "api": {
+        const parent = resolveApiParent(session.workspace, input.parentId!);
+        const a = session.createApi(parent.collectionId, parent.folderId, {
+          name: input.name,
+          method: (input.method ?? "GET") as Parameters<Session["createApi"]>[2]["method"],
+          url: input.url ?? "/",
+        });
+        return { kind: "api", id: a.id, label: a.name, method: a.method };
+      }
     }
   }
 
@@ -52,7 +88,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return toTreeNode(ws) as TreeNodeDTO;
       }
       case IpcChannel.NodeCreate: {
-        // 返回新建节点本体（含 id；api 还含 url/cases），渲染层据此定位与续操作。
+        // 返回统一瘦 DTO（kind/id/label[/method]，宽审查 I2），渲染层据此定位与续操作。
         const node = createNode(args[0] as NodeCreateInput);
         await session.save();
         return node;

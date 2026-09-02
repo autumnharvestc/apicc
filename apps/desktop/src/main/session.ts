@@ -115,7 +115,12 @@ export function createSession() {
       if (index >= 0) list.splice(index, 1);
       return index >= 0;
     };
-    if (kind === "group") { removeFrom(ws.groups, (x) => x.id === id); return; }
+    // group 与其余 kind 同契约：未命中抛「未找到」（宽审查 I3，与 memory 对齐），
+    // 不再静默成功——否则调用侧 save 误认为删除成功。
+    if (kind === "group") {
+      if (!removeFrom(ws.groups, (x) => x.id === id)) throw new Error(`未找到: ${id}`);
+      return;
+    }
     for (const g of ws.groups) {
       if (kind === "project" && removeFrom(g.projects, (x) => x.id === id)) return;
       for (const p of g.projects) {

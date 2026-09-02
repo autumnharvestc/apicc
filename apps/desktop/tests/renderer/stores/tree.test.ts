@@ -20,10 +20,28 @@ describe("tree store", () => {
     const groupNode = ws.tree!.children![0]!;
     const created = await tree.createNode({ kind: "project", parentId: groupNode.id, name: "新项目" });
     expect(created.id).toBeTruthy();
+    // 契约收紧（宽审查 I2）：返回统一瘦 DTO，kind 必在且与请求一致
+    expect(created.kind).toBe("project");
     // 修正：project 挂在分组之下（根的 children 是分组，见 toTreeNode 形状），
     // 简报原断言取根层 children 永远不含新项目。
     const names = ws.tree!.children![0]!.children!.map((c) => c.label);
     expect(names).toContain("新项目");
+  });
+
+  it("folder 内新建接口：parentId 指向文件夹时挂到文件夹下（与主进程同构，宽审查 C1）", async () => {
+    const { api: memoryApi, ws, tree } = await seeded();
+    const collectionNode = ws.tree!.children![0]!.children![0]!.children![0]!;
+    const folder = await tree.createNode({ kind: "folder", parentId: collectionNode.id, name: "文件夹" });
+    // 回归背景：memory nodeCreate 的 api 分支此前只按集合解析 parentId，此处必抛「未找到集合」
+    const created = await tree.createNode({ kind: "api", parentId: folder.id, name: "文件夹内接口" });
+    expect(created.kind).toBe("api");
+    // 创建成功 ⇒ apiGet 可定位
+    const detail = await memoryApi.apiGet(created.id);
+    expect(detail.api.name).toBe("文件夹内接口");
+    // 树中文件夹的 children 含该接口
+    const collection = ws.tree!.children![0]!.children![0]!.children![0]!;
+    const folderNode = collection.children!.find((n) => n.id === folder.id)!;
+    expect(folderNode.children!.map((c) => c.id)).toContain(created.id);
   });
 
   it("deleteNode 需确认回调放行才删除", async () => {

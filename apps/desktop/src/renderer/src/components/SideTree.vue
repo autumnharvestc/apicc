@@ -85,9 +85,9 @@ function startCreateGroup() {
     placeholder: t("tree.namePlaceholder"),
     run: async (value) => {
       if (!value) return;
-      // 注：主进程 nodeCreate 返回节点本体（api 无 kind 字段），kind 以发起请求时的值为准。
+      // nodeCreate 返回统一瘦 DTO（kind 必在，宽审查 I2），选中直接用返回值。
       const node = await props.tree.createNode({ kind: "group", parentId: null, name: value });
-      emit("select", "group", node.id);
+      emit("select", node.kind, node.id);
     },
   });
 }
@@ -99,10 +99,10 @@ function startCreate(parent: TreeNodeDTO, kind: CreateKind) {
     placeholder: t("tree.namePlaceholder"),
     run: async (value) => {
       if (!value) return;
-      // 注：主进程 nodeCreate 返回节点本体（api 无 kind 字段），kind 以发起请求时的值为准；
-      // 若此处改用返回值的 kind，接口创建后将不会触发 App 的 editor.load。
+      // nodeCreate 返回统一瘦 DTO（kind 必在，宽审查 I2）：选中用返回值的 kind，
+      // App 据此对 "api" 加载编辑器。
       const node = await props.tree.createNode({ kind, parentId: parent.id, name: value });
-      emit("select", kind, node.id);
+      emit("select", node.kind, node.id);
     },
   });
 }

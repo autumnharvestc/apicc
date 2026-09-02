@@ -17,7 +17,8 @@ export function useTreeStore(api: ApiccApi, workspace: ReturnType<typeof useWork
         this.selected = { kind, id };
       },
       async createNode(input: NodeCreateInput) {
-        const node = (await api.nodeCreate(input)) as unknown as { id: string };
+        // 契约收紧（宽审查 I2）：nodeCreate 返回统一瘦 DTO，直接使用，无需强转
+        const node = await api.nodeCreate(input);
         await workspace.refresh();
         this.select(input.kind, node.id);
         return node;
