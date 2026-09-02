@@ -8,10 +8,11 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build:preload": "vite build --config vite.preload.config.ts",
-    "build": "pnpm build:renderer && pnpm build:electron && pnpm build:preload",
+    "build": "pnpm typecheck && pnpm build:renderer && pnpm build:electron && pnpm build:preload",
     "dev": "pnpm build && electron .",
     "test": "vitest run"
   },
