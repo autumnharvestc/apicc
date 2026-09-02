@@ -11,7 +11,9 @@ export interface NodeCreateInput {
   url?: string;
 }
 export interface DebugInput { apiId: string; caseId: string; envName?: string }
-export interface DebugOutput { run: RunResult; outcome: CaseOutcome }
+/** 响应快照：随 afterResponse 事件捕获，ResponseViewer 用真实数据替换「—」占位。 */
+export interface ResponseSnapshot { status: number; headers: Record<string, string>; bodyText: string; timeMs: number }
+export interface DebugOutput { run: RunResult; outcome: CaseOutcome; response?: ResponseSnapshot }
 
 /**
  * nodeCreate 统一返回的瘦节点 DTO（宽审查 I2：ipc 与 memory 契约一致的单一事实源）。

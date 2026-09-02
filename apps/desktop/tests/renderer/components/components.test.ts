@@ -254,11 +254,24 @@ describe("ResponseViewer", () => {
     expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
   });
 
-  it("body/headers tab 显示占位「—」（DebugOutput 无响应体字段，不得臆造）", async () => {
+  it("无 response 时 body/headers tab 显示占位「—」（DebugOutput.response 缺失不得臆造）", async () => {
     const wrapper = mountWithI18n(ResponseViewer, { result });
     expect(wrapper.find('[data-testid="response-body"]').text()).toBe("—");
     await wrapper.find('[data-testid="response-tab-headers"]').trigger("click");
     expect(wrapper.find('[data-testid="response-headers"]').text()).toBe("—");
+  });
+
+  it("带 response 时 body 展示真实响应体（JSON pretty），headers 展示响应头表格", async () => {
+    const withResponse = {
+      ...result,
+      response: { status: 200, headers: { "content-type": "application/json" }, bodyText: '{"ok":true}', timeMs: 3 },
+    };
+    const wrapper = mountWithI18n(ResponseViewer, { result: withResponse });
+    expect(wrapper.find('[data-testid="response-body"]').text()).toContain('"ok": true');
+    await wrapper.find('[data-testid="response-tab-headers"]').trigger("click");
+    const headers = wrapper.find('[data-testid="response-headers"]');
+    expect(headers.text()).toContain("content-type");
+    expect(headers.text()).toContain("application/json");
   });
 
   it("error 属性非空时显示错误徽标", () => {

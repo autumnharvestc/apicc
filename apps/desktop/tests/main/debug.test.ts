@@ -48,6 +48,16 @@ describe("sendDebug", () => {
     expect(result.outcome.passed).toBe(true);
   });
 
+  it("DebugOutput 携带响应快照（status/headers/bodyText/timeMs）", async () => {
+    const { s, api } = await setup("set");
+    const result = await sendDebug(s, { apiId: api.id, caseId: api.cases[0]!.id, envName: "dev" });
+    expect(result.response).toBeDefined();
+    expect(result.response!.status).toBe(200);
+    expect(result.response!.bodyText).toContain("ok");
+    expect(result.response!.headers["content-type"]).toContain("application/json");
+    expect(result.response!.timeMs).toBeGreaterThanOrEqual(0);
+  });
+
   it("网络错误进入 outcome.error 而非抛出", async () => {
     const { s, api } = await setup();
     api.url = "http://127.0.0.1:1/";
