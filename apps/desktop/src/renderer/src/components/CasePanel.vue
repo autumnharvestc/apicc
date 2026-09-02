@@ -17,11 +17,13 @@ const ATextarea = AInput.TextArea;
  * 按目标条件显示，切换目标即清理无关字段——strict schema 不残留旧键）；
  * 前置/后置脚本 a-textarea。「添加用例」cases.addCase（新增即选中），「删除用例」
  * cases.removeCase（仅剩一个时禁用，store 同样拒绝），「保存用例」cases.save()
- * （委托 editor.save → apiSave 持久化 + 复位 dirty 快照）。
+ * （委托 editor.save → apiSave 持久化 + 复位 dirty 快照），保存链路拒绝经可选
+ * reportError 转报组合根错误通道（宽审查 I1，不静默吞没）。
  */
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
   cases: ReturnType<typeof useCasesStore>;
+  reportError?: (e: unknown) => void;
 }>();
 const { t } = useI18n();
 
@@ -52,6 +54,15 @@ const assertColumns = computed(() => [
 
 function addCase() {
   props.cases.addCase({ name: t("case.new"), scope: "base" });
+}
+
+// 保存链路收口（任务 8 补课）：拒绝经可选 reportError 转报，不再作为未处理 rejection 静默吞没。
+async function saveCases() {
+  try {
+    await props.cases.save();
+  } catch (e) {
+    props.reportError?.(e);
+  }
 }
 
 function removeSelected() {
@@ -91,7 +102,7 @@ function removeAssertion(index: number) {
         >
           {{ t("case.remove") }}
         </a-button>
-        <a-button size="small" type="primary" data-testid="case-save" @click="cases.save()">{{ t("case.save") }}</a-button>
+        <a-button size="small" type="primary" data-testid="case-save" @click="saveCases">{{ t("case.save") }}</a-button>
       </div>
 
       <!-- 用例列表：行内编辑名称/scope，行点击选中；断言数只读展示 -->

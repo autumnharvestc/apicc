@@ -99,6 +99,65 @@ describe("App 错误反馈通道（宽审查 I1）", () => {
   });
 });
 
+describe("App 视图切换装配（任务 8 收官）", () => {
+  it("未打开工作区时视图切换禁用（现状保留：只有打开/新建可用）", async () => {
+    const wrapper = await mountApp();
+    expect(wrapper.find('[data-testid="view-switch"]').exists()).toBe(true);
+    const radio = wrapper.find('input[value="cases"]');
+    expect(radio.exists()).toBe(true);
+    expect(radio.attributes("disabled")).toBeDefined();
+  });
+
+  it("打开工作区后可切换 调试/用例/环境/运行/设计/导入 各视图，导入取消回调试视图", async () => {
+    const wrapper = await mountApp();
+    // 打开工作区前切换钮禁用
+    expect(wrapper.find('input[value="cases"]').attributes("disabled")).toBeDefined();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    // 打开后可切换；默认调试视图 = 既有 编辑器 + 响应区
+    expect(wrapper.find('input[value="cases"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="viewer-pane"]').exists()).toBe(true);
+    // 用例视图
+    await wrapper.find('input[value="cases"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(false);
+    // 环境视图
+    await wrapper.find('input[value="envs"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="env-panel"]').exists()).toBe(true);
+    // 运行视图（RunView 内含运行历史抽屉）
+    await wrapper.find('input[value="run"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="run-view"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="runs-history-btn"]').exists()).toBe(true);
+    // 设计视图
+    await wrapper.find('input[value="design"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="design-panel"]').exists()).toBe(true);
+    // 导入视图 + 取消经 close 事件回调试视图
+    await wrapper.find('input[value="import"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="import-wizard"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="import-cancel"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
+  });
+
+  it("调试视图仍是默认视图且发送链路可用（装配不破坏既有行为）", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="send-btn"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
+  });
+});
+
 describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
   it("语言切换后 antd 内建文案随 locale 变化", async () => {
     const wrapper = await mountApp();

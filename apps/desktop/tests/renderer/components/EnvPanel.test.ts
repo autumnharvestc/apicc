@@ -200,6 +200,30 @@ describe("EnvPanel", () => {
     expect(envs.selectedEnvId).toBeNull();
   });
 
+  it("重挂水合（immediate watch）：挂载时选中态已在 store，首帧即水合已存变量", async () => {
+    // 任务 4 遗留、任务 8 装配补课：视图切换重挂后 selectedEnvId 不经变化直接有值，
+    // 不加 immediate 会等下次变化才水合，首次挂载变量表恒为空。
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const workspace = useWorkspaceStore(api);
+    await workspace.open("/tmp/ws");
+    const projectNode = workspace.tree!.children![0]!.children![0]!;
+    const created = await api.envCreate({ projectId: projectNode.id, name: "dev" });
+    await api.envVarsSave(created.id, { baseUrl: "http://d" });
+    const envs = useEnvsStore(api);
+    await envs.load(projectNode.id);
+    envs.selectedEnvId = created.id;
+    const { i18n } = createI18nInstance();
+    const wrapper = mount(EnvPanel, {
+      props: { envs, projectId: projectNode.id, reportError: () => {} },
+      global: { plugins: [i18n] },
+    });
+    await flushPromises();
+    const keys = wrapper.findAll('[data-testid="env-var-key"]');
+    expect(keys).toHaveLength(1);
+    expect((keys[0]!.element as HTMLInputElement).value).toBe("baseUrl");
+  });
+
   it("创建链路拒绝时经 reportError 上报（宽审查 I1）", async () => {
     const errors: unknown[] = [];
     const { wrapper, api } = await mountEnvPanel({ reportError: (e: unknown) => { errors.push(e); } });

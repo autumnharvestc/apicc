@@ -25,4 +25,11 @@ describe("i18n 键位齐全性", () => {
       expect(keys, `缺少键: ${key}`).toContain(key);
     }
   });
+  it("包含任务 8 视图切换与详细设计的核心键", () => {
+    const keys = flatKeys(zh);
+    for (const key of ["nav.debug", "nav.cases", "nav.envs", "nav.run", "nav.import", "nav.design",
+      "design.save", "design.saved", "design.export", "design.exported", "design.empty"]) {
+      expect(keys, `缺少键: ${key}`).toContain(key);
+    }
+  });
 });

@@ -10,6 +10,7 @@ import {
   LayoutSider as ALayoutSider,
   LayoutContent as ALayoutContent,
   Alert as AAlert,
+  Radio as ARadio,
   theme as antdTheme,
 } from "ant-design-vue";
 import zhCN from "ant-design-vue/es/locale/zh_CN";
@@ -20,12 +21,25 @@ import TopBar from "./components/TopBar.vue";
 import SideTree from "./components/SideTree.vue";
 import RequestEditor from "./components/RequestEditor.vue";
 import ResponseViewer from "./components/ResponseViewer.vue";
+import CasePanel from "./components/CasePanel.vue";
+import EnvPanel from "./components/EnvPanel.vue";
+import RunView from "./components/RunView.vue";
+import ImportWizard from "./components/ImportWizard.vue";
+import DesignPanel from "./components/DesignPanel.vue";
 import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
 import { useEditorStore } from "./stores/editor.js";
 import { useDebugStore } from "./stores/debug.js";
+import { useCasesStore } from "./stores/cases.js";
+import { useEnvsStore } from "./stores/envs.js";
+import { useRunStore } from "./stores/run.js";
+import { useImportWizardStore } from "./stores/importW.js";
+import { useDesignStore } from "./stores/design.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
+
+const ARadioGroup = ARadio.Group;
+const ARadioButton = ARadio.Button;
 
 // —— antd ConfigProvider 联动（i18n / 主题算法）——
 // locale 源 = bridge 单例当前语言；algorithm 源 = theme.ts 响应式偏好 + 系统偏好解析。
@@ -42,9 +56,21 @@ const workspace = useWorkspaceStore(apicc);
 const tree = useTreeStore(apicc, workspace);
 const editor = useEditorStore(apicc);
 const debug = useDebugStore(apicc);
+// —— 视图面板 store（任务 8 装配）：与既有 store 同一组合根一次性创建 ——
+const cases = useCasesStore(apicc, editor);
+const envs = useEnvsStore(apicc);
+const run = useRunStore(apicc);
+const importW = useImportWizardStore(apicc, workspace);
+const design = useDesignStore(apicc, editor);
+
+// —— 视图切换（任务 8 收官装配）——
+// 侧栏顶部 a-radio-group；未打开工作区时整组禁用（现状保留：只有打开/新建可用）。
+type View = "debug" | "cases" | "envs" | "run" | "import" | "design";
+const VIEWS: View[] = ["debug", "cases", "envs", "run", "import", "design"];
+const view = ref<View>("debug");
 
 // —— 最小错误反馈通道（宽审查 I1）——
-// SideTree/TopBar 链路的 Promise 拒绝统一转报到这里，集中展示、可手动关闭，
+// SideTree/TopBar/各面板链路的 Promise 拒绝统一转报到这里，集中展示、可手动关闭，
 // 不再作为未处理的 rejection 被静默吞没。
 // antd 4 落地：错误展示条为 a-alert type="error"；关闭钮（a-alert closeText slot）
 // 保留 data-testid="app-error-close"，点击冒泡到 a-alert 关闭处理器 → @close →
@@ -64,6 +90,46 @@ async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
   tree.select(kind, id);
   if (kind === "api") await editor.load(id);
 }
+
+/** 树选中节点所属项目 id：环境面板按它加载环境列表（接口/文件夹/集合向上归属）。 */
+const selectedProjectId = computed<string | null>(() => {
+  const sel = tree.selected;
+  const root = workspace.tree;
+  if (!sel || !root) return null;
+  if (sel.kind === "project") return sel.id;
+  if (sel.kind === "group") return null;
+  for (const group of root.children ?? []) {
+    for (const project of group.children ?? []) {
+      if (project.id === sel.id) return project.id;
+      for (const collection of project.children ?? []) {
+        if (collection.id === sel.id) return project.id;
+        for (const folder of collection.children ?? []) {
+          if (folder.id === sel.id) return project.id;
+        }
+      }
+    }
+  }
+  return null;
+});
+
+/** 树选中节点所属集合 id：运行视图的默认选中集合（文件夹/接口向上归属）。 */
+const selectedCollectionId = computed<string | null>(() => {
+  const sel = tree.selected;
+  const root = workspace.tree;
+  if (!sel || !root) return null;
+  if (sel.kind === "collection") return sel.id;
+  for (const group of root.children ?? []) {
+    for (const project of group.children ?? []) {
+      for (const collection of project.children ?? []) {
+        if (collection.id === sel.id) return collection.id;
+        for (const folder of collection.children ?? []) {
+          if (folder.id === sel.id) return collection.id;
+        }
+      }
+    }
+  }
+  return null;
+});
 </script>
 
 <template>
@@ -76,15 +142,52 @@ async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
       </a-alert>
       <a-layout has-sider class="main">
         <a-layout-sider :width="240" theme="light" class="sider">
+          <a-radio-group
+            v-model:value="view"
+            class="view-switch"
+            size="small"
+            :disabled="!workspace.opened"
+            data-testid="view-switch"
+          >
+            <a-radio-button v-for="v in VIEWS" :key="v" :value="v" :data-testid="`view-${v}`">
+              {{ t(`nav.${v}`) }}
+            </a-radio-button>
+          </a-radio-group>
           <SideTree class="side-col" :workspace="workspace" :tree="tree" :report-error="reportError" @select="onSelect" />
         </a-layout-sider>
         <a-layout-content class="right-col" data-testid="main-split">
-          <div class="editor-pane" data-testid="editor-pane">
-            <RequestEditor :editor="editor" :debug="debug" />
-          </div>
-          <div class="viewer-pane" data-testid="viewer-pane">
-            <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
-          </div>
+          <template v-if="view === 'debug'">
+            <div class="editor-pane" data-testid="editor-pane">
+              <RequestEditor :editor="editor" :debug="debug" />
+            </div>
+            <div class="viewer-pane" data-testid="viewer-pane">
+              <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
+            </div>
+          </template>
+          <CasePanel
+            v-else-if="view === 'cases'"
+            class="panel-view"
+            :editor="editor"
+            :cases="cases"
+            :report-error="reportError"
+          />
+          <EnvPanel
+            v-else-if="view === 'envs'"
+            class="panel-view"
+            :envs="envs"
+            :project-id="selectedProjectId"
+            :report-error="reportError"
+          />
+          <RunView
+            v-else-if="view === 'run'"
+            class="panel-view"
+            :run="run"
+            :workspace="workspace"
+            :selected-collection-id="selectedCollectionId"
+            :report-error="reportError"
+          />
+          <ImportWizard v-else-if="view === 'import'" class="panel-view" :import-w="importW" :report-error="reportError" @close="view = 'debug'" />
+          <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
         </a-layout-content>
       </a-layout>
     </a-layout>
@@ -99,4 +202,7 @@ html, body, #app { height: 100%; margin: 0; }
 .right-col { display: flex; flex-direction: column; min-width: 0; height: 100%; }
 .editor-pane { flex: 1; min-height: 0; overflow: auto; }
 .viewer-pane { flex: none; max-height: 45%; overflow: auto; border-top: 1px solid var(--border); }
+.panel-view { flex: 1; min-height: 0; overflow: auto; }
+.view-switch { display: flex; flex-wrap: wrap; padding: 6px 8px; gap: 0; }
+.view-switch .ant-radio-button-wrapper { flex: 1 1 33%; text-align: center; font-size: 12px; padding: 0 4px; }
 </style>

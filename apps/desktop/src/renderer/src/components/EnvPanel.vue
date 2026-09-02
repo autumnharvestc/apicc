@@ -44,6 +44,8 @@ interface VarRow { id: string; key: string; value: string }
 const rows = ref<VarRow[]>([]);
 const saved = ref(false);
 // 选中/切换环境：以已存 variables 水合行缓冲（而非清空）——已存值始终可见。
+// immediate（任务 4 遗留，任务 8 装配补课）：视图切换重挂时 selectedEnvId 已有值，
+// 不加 immediate 会等下次变化才水合，首次挂载变量表恒为空。
 watch(
   () => props.envs.selectedEnvId,
   (envId) => {
@@ -53,6 +55,7 @@ watch(
       ? Object.entries(env.variables ?? {}).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }))
       : [];
   },
+  { immediate: true },
 );
 const columns = computed(() => [
   { key: "key", title: t("env.varName"), dataIndex: "key" },
