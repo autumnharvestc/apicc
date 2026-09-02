@@ -1,4 +1,6 @@
 packages:
   - "packages/*"
+# better-sqlite3 v13 的 npm 包自带全平台预编译绑定（prebuilds/，运行时经 node-gyp-build 加载），
+# 其 install 脚本（prebuild-install）对本机 Node ABI 会 404 并回退 gyp 编译——无需执行，显式忽略。
 allowBuilds:
-  better-sqlite3: true
+  better-sqlite3: false
