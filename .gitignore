@@ -19,5 +19,7 @@ tmp/
 # 依赖与构建产物
 node_modules/
 dist/
+apps/desktop/dist-electron/
+apps/desktop/dist-renderer/
 .apicc/
 coverage/
