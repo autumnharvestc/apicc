@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,8 +45,15 @@ describe("createSession", () => {
     const api = s.createApi(c.id, null, { name: "a", method: "POST", url: "/" });
     expect(api.cases).toHaveLength(1);
     expect(api.cases[0]!.scope).toBe("base");
+    await s.save();
+    const apiDir = join(dir, "groups", "g", "projects", "p", "collections", "c", "apis", "a");
+    expect(existsSync(apiDir)).toBe(true);
     s.deleteNode("api", api.id);
+    await s.save();
     expect(s.locateApi(api.id)).toBeUndefined();
+    const s2 = createSession();
+    await s2.open(dir);
+    expect(existsSync(apiDir)).toBe(false);
   });
 
   it("saveApi 更新接口并落盘（重开读回验证）", async () => {
@@ -75,11 +82,15 @@ describe("createSession", () => {
     const g = s.createGroup("g");
     const p = s.createProject(g.id, "p");
     const c = s.createCollection(p.id, "old-name");
+    await s.save();
+    const oldDir = join(dir, "groups", "g", "projects", "p", "collections", "old-name");
+    expect(existsSync(oldDir)).toBe(true);
     s.renameNode("collection", c.id, "new-name");
     await s.save();
     const s2 = createSession();
     await s2.open(dir);
     const names = s2.workspace!.groups[0]!.projects[0]!.collections.map((x) => x.name);
     expect(names).toEqual(["new-name"]);
+    expect(existsSync(oldDir)).toBe(false);
   });
 });
