@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { isReactive } from "vue";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
@@ -52,5 +53,23 @@ describe("editor store", () => {
     const reEditor = useEditorStore(fresh);
     await reEditor.load(apiNode.id);
     expect(reEditor.api!.url).toBe("/v2");
+  });
+
+  it("save 传给 IPC 的是剥离响应式后的普通对象（结构化克隆不接受 Proxy）", async () => {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const ws = useWorkspaceStore(api);
+    await ws.open("/tmp/ws");
+    const apiNode = ws.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    const editor = useEditorStore(api);
+    await editor.load(apiNode.id);
+    let saved: unknown;
+    const original = api.apiSave.bind(api);
+    api.apiSave = async (input) => { saved = input; return original(input); };
+    editor.api!.url = "/v3";
+    await editor.save();
+    // 回归：直接传响应式 Proxy 会在 Electron 结构化克隆时 DataCloneError。
+    expect(isReactive(saved)).toBe(false);
+    expect(saved).toMatchObject({ url: "/v3" });
   });
 });

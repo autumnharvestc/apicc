@@ -30,7 +30,10 @@ export function useEditorStore(api: ApiccApi) {
       },
       async save() {
         if (!this.api) return;
-        await api.apiSave(this.api);
+        // Electron IPC 以结构化克隆传参：Pinia/Vue 的响应式 Proxy 无法被克隆
+        // （DataCloneError，Electron 冒烟实测），须先深拷贝为普通对象再过 IPC。
+        // JSON 往返即可：模型字段全为 string/boolean/number/array/plain object。
+        await api.apiSave(JSON.parse(JSON.stringify(this.api)) as ApiDefinition);
         this.snapshot = JSON.stringify(this.api);
       },
     },
