@@ -139,4 +139,57 @@ describe("CLI 端到端", () => {
     expect(problems).toEqual([]);
     expect(logs.join("\n")).toContain("报告已生成");
   });
+
+  it("import --yes 导入 OpenAPI 样例退出码 0，重开工作区断言项目存在；重复导入抛「项目已存在」", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const sample = join(root, "openapi-sample.yaml");
+    writeFileSync(sample, [
+      "openapi: 3.0.0",
+      "info:",
+      "  title: 宠物样例",
+      "  version: 1.0.0",
+      "servers:",
+      "  - url: http://127.0.0.1:1",
+      "paths:",
+      "  /pets:",
+      "    get:",
+      "      operationId: listPets",
+      "      responses:",
+      "        '200':",
+      "          description: ok",
+    ].join("\n"));
+    const logs: string[] = [];
+    const code = await runCli(["import", sample, "--group", "imported", "--yes"], createDefaultRegistry(), (l) => logs.push(l));
+    expect(code).toBe(0);
+    expect(logs.join("\n")).toContain("已导入项目「宠物样例」到分组「imported」");
+    // 重开工作区断言项目存在（分组不存在时由 import 创建；含导入集合与接口）
+    const { workspace } = await fileStorage.load(root);
+    const group = workspace.groups.find((g) => g.name === "imported");
+    expect(group).toBeDefined();
+    const project = group!.projects.find((p) => p.name === "宠物样例");
+    expect(project).toBeDefined();
+    expect(project!.collections[0]!.apis.map((a) => a.name)).toContain("listPets");
+    // 重复导入同名项目：拒绝
+    await expect(runCli(["import", sample, "--group", "imported", "--yes"], createDefaultRegistry())).rejects.toThrow(/项目已存在: 宠物样例/);
+  });
+
+  it("import 不带 --yes 只打印预览不写入工作区", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const sample = join(root, "preview-sample.yaml");
+    writeFileSync(sample, ["openapi: 3.0.0", "info:", "  title: 预览项目", "  version: 1.0.0", "paths: {}"].join("\n"));
+    const logs: string[] = [];
+    const code = await runCli(["import", sample, "--group", "preview-group"], createDefaultRegistry(), (l) => logs.push(l));
+    expect(code).toBe(0);
+    expect(logs.join("\n")).toContain("预览：将导入项目「预览项目」");
+    expect(logs.join("\n")).toContain("--yes");
+    const { workspace } = await fileStorage.load(root);
+    expect(workspace.groups.some((g) => g.name === "preview-group")).toBe(false);
+  });
+
+  it("import 无法识别的格式抛「无法识别的导入格式」", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const sample = join(root, "unknown-format.txt");
+    writeFileSync(sample, "既不是 OpenAPI 也不是 v2.1 集合的普通文本");
+    await expect(runCli(["import", sample, "--group", "g"], createDefaultRegistry())).rejects.toThrow(/无法识别的导入格式/);
+  });
 });

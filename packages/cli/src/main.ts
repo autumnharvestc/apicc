@@ -114,6 +114,36 @@ export async function runCli(argv: string[], registry: PluginRegistry, log: (lin
       log(renderDesignMarkdown(api));
     });
 
+  // 非交互导入（任务 7）：默认只预览，--yes 确认写入；分组不存在则创建，同名项目拒绝。
+  program
+    .command("import")
+    .argument("<file>", "导入文件路径")
+    .requiredOption("--group <name>", "目标分组名")
+    .option("--yes", "跳过预览直接写入", false)
+    .action(async (file: string, opts: { group: string; yes: boolean }) => {
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml");
+      const content = readFileSync(file, "utf8");
+      const importer = registry.listImporters().find((i) => i.detect(file, content));
+      if (!importer) throw new Error("无法识别的导入格式");
+      const { project, warnings } = importer.parse(content);
+      if (!opts.yes) {
+        log(`预览：将导入项目「${project.name}」（集合 ${project.collections.length} 个）`);
+        for (const w of warnings) log(`[警告] ${w}`);
+        log("非交互模式请加 --yes 确认写入");
+        return;
+      }
+      const storage = registry.getStorage()!;
+      const { workspace } = await storage.load(root);
+      let group = workspace.groups.find((x) => x.name === opts.group);
+      if (!group) { group = { id: crypto.randomUUID(), name: opts.group, projects: [] }; workspace.groups.push(group); }
+      if (group.projects.some((x) => x.name === project.name)) throw new Error(`项目已存在: ${project.name}`);
+      group.projects.push(project);
+      await storage.save(root, workspace);
+      for (const w of warnings) log(`[警告] ${w}`);
+      log(`已导入项目「${project.name}」到分组「${opts.group}」`);
+    });
+
   try {
     await program.parseAsync(argv, { from: "user" });
   } catch (e) {
