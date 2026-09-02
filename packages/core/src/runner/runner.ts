@@ -181,7 +181,11 @@ export class CollectionRunner {
       const client = this.deps.registry.getProtocol(request);
       if (!client) throw new Error(`无可用协议客户端处理 ${request.url}`);
       const response = await client.execute(request, this.deps.timeouts);
-      await this.deps.bus.emit("afterResponse", { status: response.status, timeMs: response.timeMs });
+      // 响应快照随事件外发（可选增量）：desktop 调试视图直接取用，无需二次协议调用。
+      await this.deps.bus.emit("afterResponse", {
+        status: response.status, timeMs: response.timeMs,
+        headers: response.headers, bodyText: response.bodyText,
+      });
 
       // 响应回填同一 pm 对象：后置脚本与断言评估共享（含 json 缓存）。
       ctx.pm.response = this.responseView(response);

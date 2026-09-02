@@ -380,6 +380,20 @@ describe("CollectionRunner", () => {
     expect(result.total).toBe(1);
   });
 
+  it("afterResponse 载荷携带响应快照：headers/bodyText 可选增量（debug 响应视图用）", async () => {
+    const col = collectionWith([{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [] }]);
+    const bus = createEventBus();
+    let payload: unknown;
+    bus.on("afterResponse", (p) => { payload = { ...p }; });
+    await buildRunnerWith(bus).run(col, env, project, workspace, {});
+    expect(payload).toMatchObject({
+      status: 200,
+      timeMs: expect.any(Number),
+      headers: { "content-type": "application/json" },
+      bodyText: JSON.stringify({ ok: true, n: 42 }),
+    });
+  });
+
   it("beforeRun 钩子失败记入 warnings，运行与用例结果不受影响（钩子极性）", async () => {
     const col = collectionWith([{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [{ id: "a", target: "status", op: "eq", expected: "200" }] }]);
     const bus = createEventBus();
