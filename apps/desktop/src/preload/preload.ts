@@ -18,6 +18,8 @@ const api = {
   runCollection: (input: unknown) => ipcRenderer.invoke(IpcChannel.RunCollection, input),
   runsList: () => ipcRenderer.invoke(IpcChannel.RunsList),
   runsGet: (file: string) => ipcRenderer.invoke(IpcChannel.RunsGet, file),
+  importPreview: (input: unknown) => ipcRenderer.invoke(IpcChannel.ImportPreview, input),
+  importApply: (input: unknown) => ipcRenderer.invoke(IpcChannel.ImportApply, input),
 };
 
 contextBridge.exposeInMainWorld("apicc", api);

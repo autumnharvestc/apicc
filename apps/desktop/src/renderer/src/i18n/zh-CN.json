@@ -7,5 +7,6 @@
   "env": { "empty": "选择项目后管理环境变量", "select": "选择环境", "new": "新建环境", "derive": "从现有环境派生", "parent": "父环境", "varName": "变量名", "varValue": "值", "addVar": "添加变量", "saveVars": "保存变量", "saved": "变量已保存", "deleteConfirm": "确定删除环境「{name}」？", "namePlaceholder": "环境名称" },
   "case": { "empty": "在左侧选择一个接口后编辑用例", "add": "添加用例", "new": "新用例", "remove": "删除用例", "save": "保存用例", "scope": "scope", "assertions": "断言", "addAssert": "添加断言", "target": "目标", "op": "运算符", "expected": "期望值", "headerName": "头名称", "path": "路径", "preScript": "前置脚本", "postScript": "后置脚本" },
   "run": { "empty": "打开工作区后选择集合并运行", "collectionPlaceholder": "选择集合", "envPlaceholder": "环境", "envNone": "无环境", "runBtn": "运行", "history": "运行历史", "historyEmpty": "暂无运行记录", "api": "接口", "case": "用例", "row": "数据行", "result": "结果", "duration": "耗时", "summary": "共 {total} 条 · 通过 {passed} · 失败 {failed}" },
+  "import": { "title": "导入接口", "stepFile": "选择文件", "stepPreview": "预览确认", "stepDone": "完成", "pickFile": "选择导入文件", "project": "项目", "apiCount": "个接口", "warnings": "导入警告", "groupName": "目标分组", "groupPlaceholder": "导入到哪个分组（不存在则创建）", "apply": "导入", "prev": "上一步", "doneTitle": "导入完成", "doneText": "项目「{name}」已导入", "finish": "完成", "error": "导入失败" },
   "common": { "cancel": "取消", "confirm": "确定", "close": "关闭" }
 }

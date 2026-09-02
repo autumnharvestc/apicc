@@ -130,6 +130,17 @@ export function createSession() {
     env.variables = variables;
   }
 
+  /** 导入项目（任务 7）：目标分组不存在则创建；同分组重名项目拒绝。导入器产物的 id 均为新生成 UUID，无 id 冲突风险。 */
+  async function importProject(groupName: string, imported: { project: Project }): Promise<void> {
+    const { workspace: ws } = ensureOpen();
+    let group = ws.groups.find((x) => x.name === groupName);
+    if (!group) { group = createGroup(groupName); }
+    const existing = group.projects.find((x) => x.name === imported.project.name);
+    if (existing) throw new Error(`项目已存在: ${imported.project.name}`);
+    group.projects.push(imported.project);
+    await save();
+  }
+
   function renameNode(kind: NodeKind, id: string, name: string): void {
     const { workspace: ws } = ensureOpen();
     if (kind === "group") { const n = ws.groups.find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; return; }
@@ -235,7 +246,7 @@ export function createSession() {
       return (await fileStorage.load(r)).problems;
     },
     createGroup, createProject, createCollection, createFolder, createApi,
-    createEnvironment, setEnvironmentVariables,
+    createEnvironment, setEnvironmentVariables, importProject,
     locateApi, locateCollection, saveApi, renameNode, deleteNode, save,
   };
 }

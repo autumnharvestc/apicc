@@ -15,5 +15,7 @@ export const IpcChannel = {
   RunCollection: "run:collection",
   RunsList: "runs:list",
   RunsGet: "runs:get",
+  ImportPreview: "import:preview",
+  ImportApply: "import:apply",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];

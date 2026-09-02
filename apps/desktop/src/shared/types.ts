@@ -1,4 +1,4 @@
-import type { ApiDefinition, CaseOutcome, Environment, LoadProblem, RunResult } from "@apicc/core";
+import type { ApiDefinition, CaseOutcome, Environment, LoadProblem, Project, RunResult } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
 
 export interface OpenResult { workspace: { id: string; name: string }; problems: LoadProblem[]; root: string }
@@ -23,6 +23,13 @@ export interface RunCollectionInput { collectionId: string; envName?: string }
  * 需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
  */
 export interface RunSummaryDTO { file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number }
+
+/** import:preview 入参：渲染层经 input[type=file] 读出文本与文件名（不新增文件选择 IPC）。 */
+export interface ImportPreviewInput { fileName: string; content: string }
+/** import:preview 返回：命中的导入器名 + 解析产物（id 均为新生成 UUID）+ 警告列表。 */
+export interface ImportPreviewResult { importerName: string; project: Project; warnings: string[] }
+/** import:apply 入参：目标分组（不存在则创建）+ 预览产出的项目。 */
+export interface ImportApplyInput { groupName: string; project: Project }
 
 /**
  * nodeCreate 统一返回的瘦节点 DTO（宽审查 I2：ipc 与 memory 契约一致的单一事实源）。
@@ -52,4 +59,6 @@ export interface ApiccApi {
   runCollection(input: RunCollectionInput): Promise<RunResult>;
   runsList(): Promise<RunSummaryDTO[]>;
   runsGet(file: string): Promise<RunResult | null>;
+  importPreview(input: ImportPreviewInput): Promise<ImportPreviewResult>;
+  importApply(input: ImportApplyInput): Promise<void>;
 }

@@ -16,7 +16,7 @@ import {
   type Workspace,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
-import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../../../shared/types.js";
+import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, ImportPreviewResult, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../../../shared/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
@@ -29,7 +29,7 @@ const WORKSPACE_FILE = "apicc.workspace.yaml";
  * debugSend 不走真实网络，固定返回成功结果。测试经 options.root 注入工作区目录；
  * 默认每实例独立临时目录，可安全并行。
  */
-export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[] } {
+export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ groupName: string; projectName: string }> } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
@@ -39,6 +39,8 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
   // runsList/runsGet 读回；runSeq 保证同毫秒多次运行不重名（对齐 Runner 落盘文件名语义）。
   const runs: Array<{ file: string; result: RunResult }> = [];
   let runSeq = 0;
+  // 导入向导（任务 7）：importApply 调用记录（供测试断言；语义对齐 session.importProject）。
+  const importApplyCalls: Array<{ groupName: string; projectName: string }> = [];
 
   function ensureOpen(): Workspace {
     if (!workspace) throw new Error("尚未打开工作区");
@@ -108,6 +110,11 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
     },
     set problems(value: LoadProblem[]) {
       problems = value;
+    },
+
+    // importApply 调用记录读口：测试断言向导 apply 链路确实落到 api 层。
+    get importApplyCalls(): ReadonlyArray<{ groupName: string; projectName: string }> {
+      return importApplyCalls;
     },
 
     async wsOpen(rootPath: string): Promise<OpenResult> {
@@ -350,6 +357,30 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
 
     async runsGet(file: string): Promise<RunResult | null> {
       return runs.find((r) => r.file === file)?.result ?? null;
+    },
+
+    // 导入向导（任务 7）：importPreview 返回固定样例（渲染层替身不做格式探测——替身
+    // 语义只钉「api.importPreview 返回结构入 store 状态」）；importApply 语义对齐
+    // session.importProject（缺分组时建组、同分组重名拒绝）并记录调用供测试断言。
+    async importPreview(_input: ImportPreviewInput): Promise<ImportPreviewResult> {
+      const project: Project = {
+        id: randomUUID(), name: "导入示例项目", variables: {}, environments: [],
+        collections: [{
+          id: randomUUID(), name: "导入示例集合", variables: {}, folders: [],
+          apis: [createApiDefinition("导入接口", "GET", "/imported")],
+        }],
+      };
+      return { importerName: "sample", project, warnings: ["示例警告"] };
+    },
+
+    async importApply(input: ImportApplyInput): Promise<void> {
+      const ws = ensureOpen();
+      let group = ws.groups.find((x) => x.name === input.groupName);
+      if (!group) { group = { id: randomUUID(), name: input.groupName, projects: [] }; ws.groups.push(group); }
+      if (group.projects.some((x) => x.name === input.project.name)) throw new Error(`项目已存在: ${input.project.name}`);
+      group.projects.push(input.project);
+      importApplyCalls.push({ groupName: input.groupName, projectName: input.project.name });
+      await save();
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

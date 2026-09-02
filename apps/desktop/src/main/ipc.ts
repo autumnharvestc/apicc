@@ -1,4 +1,5 @@
-import { type RunResult, type Workspace } from "@apicc/core";
+import { createDefaultRegistry, ProjectSchema, type Importer, type RunResult, type Workspace } from "@apicc/core";
+import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
 import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../shared/types.js";
@@ -9,13 +10,32 @@ import { toTreeNode, type TreeNodeDTO } from "./tree.js";
 
 type Session = ReturnType<typeof createSession>;
 
+// 导入频道入参 zod 校验（任务 7 先行，任务 8 全面收口同模式）：preview 收文本+文件名；
+// apply 的 project 用 core 的 ProjectSchema 严格校验（多余字段 fail-fast，与导入器产物口径一致）。
+const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() });
+const ImportApplyInputSchema = z.object({ groupName: z.string(), project: ProjectSchema });
+
+/** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
+function validateArgs<T>(channel: IpcChannelName, schema: z.ZodType<T>, input: unknown): T {
+  const result = schema.safeParse(input);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    const where = issue ? `${issue.path.join(".") || "(root)"} ${issue.message}` : "未知错误";
+    throw new Error(`[${channel}] 入参校验失败: ${where}`);
+  }
+  return result.data;
+}
+
 export interface IpcDepsOptions {
   session: Session;
   pickDirectory: () => Promise<string>;
+  /** 导入器列表（任务 7）：默认取内置注册中心的全部导入器，测试注入固定 importer 替身。 */
+  importers?: Importer[];
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory } = options;
+  const importers = options.importers ?? createDefaultRegistry().listImporters();
 
   /**
    * api 分支父解析（宽审查 C1）：parentId 可能是文件夹 id——先在工作区中按文件夹命中
@@ -151,6 +171,20 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.RunsGet: {
         if (!session.root) throw new Error("尚未打开工作区");
         return readRun(workspaceRunsDir(session.root), args[0] as string);
+      }
+      // 导入频道（任务 7）：preview 逐个 detect，命中即 parse（产物 id 均为新 UUID）；
+      // apply 委派 session.importProject（缺分组建组、同分组重名拒绝），其内部显式落盘。
+      case IpcChannel.ImportPreview: {
+        const input = validateArgs(channel, ImportPreviewInputSchema, args[0]);
+        const importer = importers.find((i) => i.detect(input.fileName, input.content));
+        if (!importer) throw new Error("无法识别的导入格式");
+        const { project, warnings } = importer.parse(input.content);
+        return { importerName: importer.name, project, warnings };
+      }
+      case IpcChannel.ImportApply: {
+        const input = validateArgs(channel, ImportApplyInputSchema, args[0]);
+        await session.importProject(input.groupName, { project: input.project });
+        return undefined;
       }
       default:
         throw new Error(`未知频道: ${channel}`);
