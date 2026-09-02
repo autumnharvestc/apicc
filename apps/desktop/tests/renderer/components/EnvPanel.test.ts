@@ -91,7 +91,33 @@ describe("EnvPanel", () => {
     await flushPromises();
     expect(wrapper.find('[data-testid="env-select"]').exists()).toBe(true);
     // a-select 收起态不渲染 option 文本，列表内容以 store 状态断言
-    expect(envs.envs).toEqual([{ id: created.id, name: "dev" }]);
+    expect(envs.envs).toEqual([{ id: created.id, name: "dev", variables: {} }]);
+  });
+
+  it("选中已存环境后变量表水合显示其已存变量（而非空表）", async () => {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const workspace = useWorkspaceStore(api);
+    await workspace.open("/tmp/ws");
+    const projectNode = workspace.tree!.children![0]!.children![0]!;
+    const created = await api.envCreate({ projectId: projectNode.id, name: "dev" });
+    await api.envVarsSave(created.id, { baseUrl: "http://d", token: "t" });
+    const envs = useEnvsStore(api);
+    const { i18n } = createI18nInstance();
+    const wrapper = mount(EnvPanel, {
+      props: { envs, projectId: projectNode.id, reportError: () => {} },
+      global: { plugins: [i18n] },
+    });
+    await flushPromises();
+    chooseSelect(wrapper, "env-select", created.id);
+    await flushPromises();
+    const keys = wrapper.findAll('[data-testid="env-var-key"]');
+    const values = wrapper.findAll('[data-testid="env-var-value"]');
+    expect(keys).toHaveLength(2);
+    expect((keys[0]!.element as HTMLInputElement).value).toBe("baseUrl");
+    expect((values[0]!.element as HTMLInputElement).value).toBe("http://d");
+    expect((keys[1]!.element as HTMLInputElement).value).toBe("token");
+    expect((values[1]!.element as HTMLInputElement).value).toBe("t");
   });
 
   it("新建环境：modal 输入名称确认后创建并选中", async () => {
@@ -148,10 +174,18 @@ describe("EnvPanel", () => {
     await flushPromises();
     expect(received).toEqual({ envId: dev.id, variables: { baseUrl: "http://s" } });
     expect(wrapper.find('[data-testid="env-vars-saved"]').exists()).toBe(true);
-    // 切换到另一环境：行缓冲重置，无残留输入行
-    chooseSelect(wrapper, "env-select", envs.envs.find((e) => e.name === "sit")!.id);
+    // 切换到另一环境（无已存变量）：行缓冲清空
+    const sit = envs.envs.find((e) => e.name === "sit")!;
+    chooseSelect(wrapper, "env-select", sit.id);
     await flushPromises();
     expect(wrapper.findAll('[data-testid="env-var-key"]').length).toBe(0);
+    // 再切回 dev：缓冲水合为已存值而非空（覆盖式保存不再静默丢数据）
+    chooseSelect(wrapper, "env-select", dev.id);
+    await flushPromises();
+    const keys = wrapper.findAll('[data-testid="env-var-key"]');
+    expect(keys).toHaveLength(1);
+    expect((keys[0]!.element as HTMLInputElement).value).toBe("baseUrl");
+    expect((wrapper.findAll('[data-testid="env-var-value"]')[0]!.element as HTMLInputElement).value).toBe("http://s");
   });
 
   it("删除选中环境：确认对话框放行后移除", async () => {

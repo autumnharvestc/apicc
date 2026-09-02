@@ -11,8 +11,9 @@ import ConfirmDialog from "./ConfirmDialog.vue";
  * （extends 按环境名引用，规格 §6）+ 删除确认（复用 ConfirmDialog）。
  * store 经 props 注入（组合根一次装配；组件内部禁止重复调用工厂）；projectId 由
  * 组合根随树选中项目下发，变化即重载环境列表；reportError 为组合根错误反馈通道。
- * 语义边界：api 无变量读取通道（envs 仅 id/name），变量表为本组件内的编辑缓冲，
- * 选中环境切换即重置；保存经 envs.saveVars 落盘（主进程 IPC 显式 save）。
+ * 语义边界：变量表是组件内编辑缓冲，选中/切换环境时以该环境已存 variables 水合
+ * （tree DTO project 节点 envs 携带已存值；saveVars 后 store 本地项同步，切回不丢）；
+ * 保存经 envs.saveVars 落盘（主进程 IPC 显式 save，全量替换语义）。
  */
 const props = defineProps<{
   envs: ReturnType<typeof useEnvsStore>;
@@ -42,11 +43,15 @@ function onSelectEnv(id: string) {
 interface VarRow { id: string; key: string; value: string }
 const rows = ref<VarRow[]>([]);
 const saved = ref(false);
+// 选中/切换环境：以已存 variables 水合行缓冲（而非清空）——已存值始终可见。
 watch(
   () => props.envs.selectedEnvId,
-  () => {
-    rows.value = [];
+  (envId) => {
     saved.value = false;
+    const env = props.envs.envs.find((e) => e.id === envId);
+    rows.value = env
+      ? Object.entries(env.variables ?? {}).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }))
+      : [];
   },
 );
 const columns = computed(() => [
@@ -60,6 +65,7 @@ function addRow() {
   rows.value.push({ id: crypto.randomUUID(), key: "", value: "" });
 }
 function removeRow(index: number) {
+  saved.value = false;
   rows.value.splice(index, 1);
 }
 

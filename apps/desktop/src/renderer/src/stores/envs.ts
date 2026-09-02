@@ -3,14 +3,15 @@ import type { ApiccApi, EnvCreateInput } from "../../../shared/types.js";
 
 type ConfirmFn = (message: string) => Promise<boolean>;
 
-/** 列表项与 TreeNodeDTO project 节点的 envs 形状对齐（id/name；api 无变量读取通道）。 */
-export interface EnvItem { id: string; name: string }
+/** 列表项与 TreeNodeDTO project 节点的 envs 形状对齐（含 extends 与已存 variables，供水合）。 */
+export interface EnvItem { id: string; name: string; extends?: string; variables: Record<string, string> }
 
 /**
  * 环境 store 工厂：接受依赖 api 参数（测试传新实例即天然隔离），每次工厂调用绑定
- * 独立 Pinia 实例。数据源 = treeGet 的 project 节点 envs 数组（控制者裁定：api 无
- * envList 通道）；projectId 记录当前加载的项目，供 remove 后刷新列表复用。
- * 变量编辑为组件内缓冲：saveVars 经 api.envVarsSave 落盘（主进程 IPC 显式 save）。
+ * 独立 Pinia 实例。数据源 = treeGet 的 project 节点 envs 数组（含已存 variables，
+ * 供组件层选中环境时水合行缓冲）；projectId 记录当前加载的项目，供 remove 后刷新复用。
+ * saveVars 落盘（主进程 IPC 显式 save）后同步更新本地项，保证切换环境再切回时
+ * 水合到已存值；load 末尾清理悬空 selectedEnvId（跨项目切换防误删/误写）。
  */
 export function useEnvsStore(api: ApiccApi) {
   return defineStore("envs", {
@@ -26,7 +27,11 @@ export function useEnvsStore(api: ApiccApi) {
           .flatMap((g) => g.children ?? [])
           .find((n) => n.kind === "project" && n.id === projectId);
         this.projectId = projectId;
-        this.envs = (project?.envs ?? []).map((e) => ({ id: e.id, name: e.name }));
+        this.envs = (project?.envs ?? []).map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: { ...e.variables } }));
+        // 悬空选中清理：新列表不含当前选中（跨项目切换/被并发删除）时置空。
+        if (this.selectedEnvId !== null && !this.envs.some((e) => e.id === this.selectedEnvId)) {
+          this.selectedEnvId = null;
+        }
       },
       async create(input: EnvCreateInput) {
         const env = await api.envCreate(input);
@@ -36,6 +41,9 @@ export function useEnvsStore(api: ApiccApi) {
       },
       async saveVars(envId: string, variables: Record<string, string>) {
         await api.envVarsSave(envId, variables);
+        // setEnvironmentVariables 为全量替换：同步本地项，行缓冲再水合即已存值。
+        const item = this.envs.find((e) => e.id === envId);
+        if (item) item.variables = { ...variables };
       },
       // 复用 tree store 的删除模式：确认回调放行才删除，删除后清选中并刷新。
       async remove(kind: "environment", id: string, confirm: ConfirmFn) {

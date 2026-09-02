@@ -17,13 +17,26 @@ async function seeded() {
 }
 
 describe("envs store", () => {
-  it("load 从 treeGet 的 project 节点 envs 取列表（api 无 envList 通道）", async () => {
+  it("load 从 treeGet 的 project 节点 envs 取列表（含已存 variables/extends，供面板水合）", async () => {
     const { api, envs, projectNode } = await seeded();
     const created = await api.envCreate({ projectId: projectNode.id, name: "dev" });
+    await api.envVarsSave(created.id, { baseUrl: "http://d" });
     await envs.load(projectNode.id);
-    expect(envs.envs).toEqual([{ id: created.id, name: "dev" }]);
+    expect(envs.envs).toEqual([{ id: created.id, name: "dev", variables: { baseUrl: "http://d" } }]);
     expect(envs.projectId).toBe(projectNode.id);
     expect(envs.selectedEnvId).toBeNull();
+  });
+
+  it("load 跨项目切换时清理悬空 selectedEnvId（防误删/误写）", async () => {
+    const { api, ws, envs, projectNode } = await seeded();
+    const dev = await envs.create({ projectId: projectNode.id, name: "dev" });
+    expect(envs.selectedEnvId).toBe(dev.id);
+    // 新建第二个项目并 load：旧选中不在新列表，应被清空
+    const groupNode = ws.tree!.children![0]!;
+    const p2 = await api.nodeCreate({ kind: "project", parentId: groupNode.id, name: "p2" });
+    await envs.load(p2.id);
+    expect(envs.selectedEnvId).toBeNull();
+    expect(envs.envs).toEqual([]);
   });
 
   it("create 后刷新列表并选中新环境，extends 透传", async () => {
@@ -35,7 +48,7 @@ describe("envs store", () => {
     expect(envs.selectedEnvId).toBe(sit.id);
   });
 
-  it("saveVars 委托 api.envVarsSave；未命中环境时上抛（与 session「未找到」语义对齐）", async () => {
+  it("saveVars 委托 api.envVarsSave 并同步本地项；未命中环境时上抛（与 session「未找到」语义对齐）", async () => {
     const { api, envs, projectNode } = await seeded();
     const created = await envs.create({ projectId: projectNode.id, name: "dev" });
     let received: { envId: string; variables: Record<string, string> } | null = null;
@@ -46,6 +59,8 @@ describe("envs store", () => {
     };
     await envs.saveVars(created.id, { baseUrl: "http://s" });
     expect(received).toEqual({ envId: created.id, variables: { baseUrl: "http://s" } });
+    // 全量替换语义同步到本地项：切换环境再切回时水合到已存值而非空
+    expect(envs.envs.find((e) => e.id === created.id)!.variables).toEqual({ baseUrl: "http://s" });
     await expect(envs.saveVars("不存在", { a: "b" })).rejects.toThrow(/未找到环境/);
   });
 

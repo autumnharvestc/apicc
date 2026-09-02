@@ -73,7 +73,7 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
         kind: "group" as const, id: g.id, label: g.name,
         children: g.projects.map((p) => ({
           kind: "project" as const, id: p.id, label: p.name,
-          envs: p.environments.map((e) => ({ id: e.id, name: e.name })),
+          envs: p.environments.map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: e.variables })),
           children: p.collections.map((c) => ({
             kind: "collection" as const, id: c.id, label: c.name,
             children: [

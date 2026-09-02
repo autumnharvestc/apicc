@@ -82,7 +82,7 @@ describe("IPC 处理器", () => {
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
     const projectNode = tree.children![0]!.children![0]!;
-    expect(projectNode.envs).toEqual([{ id: env.id, name: "sit" }]);
+    expect(projectNode.envs).toEqual([{ id: env.id, name: "sit", extends: "dev", variables: {} }]);
     // env:vars:save → 变量覆盖 + 显式 save 落盘，重开读回验证
     await fresh.handle("env:vars:save", {}, env.id, { baseUrl: "http://s" });
     const rereadSession = createSession();
