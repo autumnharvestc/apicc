@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import {
   fileStorage,
@@ -25,7 +26,9 @@ const WORKSPACE_FILE = "apicc.workspace.yaml";
  * debugSend 不走真实网络，固定返回成功结果。测试经 options.root 注入工作区目录。
  */
 export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedWorkspace(): void } {
-  let root = options?.root ?? "/tmp/apicc-memory";
+  // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
+  // 避免固定共享路径的多实例互相污染与并行测试并发写。
+  let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
   let workspace: Workspace | null = null;
   let problems: LoadProblem[] = [];
 
@@ -186,7 +189,7 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
         if (index >= 0) list.splice(index, 1);
         return index >= 0;
       };
-      if (kind === "group") { removeFrom(ws.groups, (x) => x.id === id); await save(); return; }
+      if (kind === "group" && removeFrom(ws.groups, (x) => x.id === id)) { await save(); return; }
       for (const g of ws.groups) {
         if (kind === "project" && removeFrom(g.projects, (x) => x.id === id)) { await save(); return; }
         for (const p of g.projects) {
@@ -262,7 +265,9 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
       p.collections.push(c);
       g.projects.push(p);
       ws.groups.push(g);
-      void save();
+      // 写盘失败就地消化、保留内存态：内存数组才是替身的语义核心，落盘只是为
+      // reopen/validate 同语义做的最佳努力；不用发射后不管，避免无关 unhandled rejection。
+      save().catch(() => undefined);
     },
   };
 }
