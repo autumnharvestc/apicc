@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useI18n } from "vue-i18n";
+import { Tree as ATree, Button as AButton } from "ant-design-vue";
 import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
@@ -13,6 +14,10 @@ import ConfirmDialog from "./ConfirmDialog.vue";
  * reportError 为组合根注入的最小错误反馈通道（宽审查 I1）：对话框链路的
  * Promise 拒绝统一转报，不再作为未处理 rejection 静默吞没。
  * 选中接口 emit select(kind,id)；创建/重命名复用 ConfirmDialog 输入，删除先经确认。
+ * antd 4 落地：树体为 a-tree（受控 expandedKeys/selectedKeys，treeData 由 DTO 构造，
+ * key=id、title=label，原始 DTO 挂在节点 dto 字段——#title slot 作用域展开树节点
+ * 数据，可直接解构 dto）。折叠/展开钮、动作钮保留在 title slot 内（hover 显隐不变）；
+ * a-tree 自带 switcher 缩进箭头经 :deep 样式隐藏，避免与自带折叠钮重复。
  */
 const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
@@ -25,6 +30,7 @@ const { t } = useI18n();
 // 折叠集合：默认全部折叠（分组/项目/集合/文件夹）；展开节点时递归展开其后代容器，
 // 一次点击即可从分组直达接口。
 const expanded = ref(new Set<string>());
+const selectedKeys = ref<string[]>([]);
 
 function descendantContainerIds(node: TreeNodeDTO): string[] {
   const ids: string[] = [];
@@ -46,11 +52,29 @@ function toggle(node: TreeNodeDTO) {
   expanded.value = next;
 }
 
-function isOpen(node: TreeNodeDTO): boolean {
-  return expanded.value.has(node.id);
+// —— a-tree 数据面：受控 keys + 由 DTO 构造的 treeData（key=id，dto 字段携带原节点） ——
+interface TreeDataNode {
+  key: string;
+  title: string;
+  isLeaf: boolean;
+  dto: TreeNodeDTO;
+  children?: TreeDataNode[];
 }
+const expandedKeys = computed(() => Array.from(expanded.value));
+const treeData = computed<TreeDataNode[]>(() => {
+  const mapNodes = (nodes?: TreeNodeDTO[]): TreeDataNode[] =>
+    (nodes ?? []).map((n) => ({
+      key: n.id,
+      title: n.label,
+      isLeaf: n.kind === "api",
+      dto: n,
+      children: mapNodes(n.children),
+    }));
+  return mapNodes(props.workspace.tree?.children);
+});
 
 function selectApi(node: TreeNodeDTO) {
+  selectedKeys.value = [node.id];
   props.tree.select(node.kind, node.id);
   emit("select", node.kind, node.id);
 }
@@ -145,85 +169,45 @@ function startDelete(node: TreeNodeDTO) {
     <template v-else>
       <div class="root-row">
         <span class="root-label">{{ workspace.tree.label }}</span>
-        <button class="act" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</button>
+        <a-button size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
       </div>
-      <ul class="tree">
-        <li v-for="group in workspace.tree.children" :key="group.id">
-          <div class="node">
-            <button class="toggle" data-testid="tree-group-toggle" @click="toggle(group)">{{ isOpen(group) ? "▾" : "▸" }}</button>
-            <span class="label">{{ group.label }}</span>
+      <a-tree
+        class="tree"
+        :tree-data="treeData"
+        :expanded-keys="expandedKeys"
+        :selected-keys="selectedKeys"
+        :virtual="false"
+        block-node
+      >
+        <template #title="{ dto }">
+          <!-- 接口叶子：整行 tree-api-row，选中经 tree-api 按钮 emit select -->
+          <div v-if="dto.kind === 'api'" class="node leaf" data-testid="tree-api-row">
+            <button class="api-btn" data-testid="tree-api" :data-node-id="dto.id" @click="selectApi(dto)">
+              <span class="method">{{ dto.method }}</span>{{ dto.label }}
+            </button>
             <span class="actions">
-              <button class="act" data-testid="new-project" @click="startCreate(group, 'project')">{{ t("tree.newProject") }}</button>
-              <button class="act" data-testid="node-rename" @click="startRename(group)">{{ t("tree.rename") }}</button>
-              <button class="act danger" data-testid="node-delete" @click="startDelete(group)">{{ t("tree.delete") }}</button>
+              <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
+              <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
             </span>
           </div>
-          <ul v-if="isOpen(group)">
-            <li v-for="project in group.children" :key="project.id">
-              <div class="node">
-                <button class="toggle" data-testid="tree-group-toggle" @click="toggle(project)">{{ isOpen(project) ? "▾" : "▸" }}</button>
-                <span class="label">{{ project.label }}</span>
-                <span class="actions">
-                  <button class="act" data-testid="new-collection" @click="startCreate(project, 'collection')">{{ t("tree.newCollection") }}</button>
-                  <button class="act" data-testid="node-rename" @click="startRename(project)">{{ t("tree.rename") }}</button>
-                  <button class="act danger" data-testid="node-delete" @click="startDelete(project)">{{ t("tree.delete") }}</button>
-                </span>
-              </div>
-              <ul v-if="isOpen(project)">
-                <li v-for="collection in project.children" :key="collection.id">
-                  <div class="node">
-                    <button class="toggle" data-testid="tree-group-toggle" @click="toggle(collection)">{{ isOpen(collection) ? "▾" : "▸" }}</button>
-                    <span class="label">{{ collection.label }}</span>
-                    <span class="actions">
-                      <button class="act" data-testid="new-api" @click="startCreate(collection, 'api')">{{ t("tree.newApi") }}</button>
-                      <button class="act" data-testid="new-folder" @click="startCreate(collection, 'folder')">{{ t("tree.newFolder") }}</button>
-                      <button class="act" data-testid="node-rename" @click="startRename(collection)">{{ t("tree.rename") }}</button>
-                      <button class="act danger" data-testid="node-delete" @click="startDelete(collection)">{{ t("tree.delete") }}</button>
-                    </span>
-                  </div>
-                  <ul v-if="isOpen(collection)">
-                    <li v-for="api in collection.children?.filter((c) => c.kind === 'api')" :key="api.id">
-                      <div class="node leaf" data-testid="tree-api-row">
-                        <button class="api-btn" data-testid="tree-api" :data-node-id="api.id" @click="selectApi(api)">
-                          <span class="method">{{ api.method }}</span>{{ api.label }}
-                        </button>
-                        <span class="actions">
-                          <button class="act" data-testid="node-rename" @click="startRename(api)">{{ t("tree.rename") }}</button>
-                          <button class="act danger" data-testid="node-delete" @click="startDelete(api)">{{ t("tree.delete") }}</button>
-                        </span>
-                      </div>
-                    </li>
-                    <li v-for="folder in collection.children?.filter((c) => c.kind === 'folder')" :key="folder.id">
-                      <div class="node">
-                        <button class="toggle" data-testid="tree-group-toggle" @click="toggle(folder)">{{ isOpen(folder) ? "▾" : "▸" }}</button>
-                        <span class="label">{{ folder.label }}</span>
-                        <span class="actions">
-                          <button class="act" data-testid="new-api" @click="startCreate(folder, 'api')">{{ t("tree.newApi") }}</button>
-                          <button class="act" data-testid="node-rename" @click="startRename(folder)">{{ t("tree.rename") }}</button>
-                          <button class="act danger" data-testid="node-delete" @click="startDelete(folder)">{{ t("tree.delete") }}</button>
-                        </span>
-                      </div>
-                      <ul v-if="isOpen(folder)">
-                        <li v-for="api in folder.children" :key="api.id">
-                          <div class="node leaf" data-testid="tree-api-row">
-                            <button class="api-btn" data-testid="tree-api" :data-node-id="api.id" @click="selectApi(api)">
-                              <span class="method">{{ api.method }}</span>{{ api.label }}
-                            </button>
-                            <span class="actions">
-                              <button class="act" data-testid="node-rename" @click="startRename(api)">{{ t("tree.rename") }}</button>
-                              <button class="act danger" data-testid="node-delete" @click="startDelete(api)">{{ t("tree.delete") }}</button>
-                            </span>
-                          </div>
-                        </li>
-                      </ul>
-                    </li>
-                  </ul>
-                </li>
-              </ul>
-            </li>
-          </ul>
-        </li>
-      </ul>
+          <!-- 容器节点：折叠钮 + 悬停动作钮（按层级保留原有钮集合） -->
+          <div v-else class="node">
+            <button class="toggle" data-testid="tree-group-toggle" @click="toggle(dto)">
+              {{ expanded.has(dto.id) ? "▾" : "▸" }}
+            </button>
+            <span class="label">{{ dto.label }}</span>
+            <span class="actions">
+              <button v-if="dto.kind === 'group'" class="act" data-testid="new-project" @click="startCreate(dto, 'project')">{{ t("tree.newProject") }}</button>
+              <button v-if="dto.kind === 'project'" class="act" data-testid="new-collection" @click="startCreate(dto, 'collection')">{{ t("tree.newCollection") }}</button>
+              <button v-if="dto.kind === 'collection'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
+              <button v-if="dto.kind === 'collection'" class="act" data-testid="new-folder" @click="startCreate(dto, 'folder')">{{ t("tree.newFolder") }}</button>
+              <button v-if="dto.kind === 'folder'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
+              <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
+              <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
+            </span>
+          </div>
+        </template>
+      </a-tree>
     </template>
     <ConfirmDialog
       :open="dialog.open"
@@ -252,12 +236,11 @@ function startDelete(node: TreeNodeDTO) {
   font-weight: 600;
   color: var(--text-muted);
 }
-.tree, .tree ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.tree ul { padding-left: 14px; }
+/* a-tree 自带的缩进箭头与我们的折叠钮重复，隐藏；节点行铺满整行 */
+.side :deep(.ant-tree-switcher) { display: none; }
+.side :deep(.ant-tree-node-content-wrapper) { flex: 1; min-width: 0; }
+.side :deep(.ant-tree-block-node) { width: 100%; }
+.side :deep(.ant-tree-indent) { display: none; }
 .node {
   display: flex;
   align-items: center;

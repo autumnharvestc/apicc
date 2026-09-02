@@ -1,10 +1,14 @@
 <script setup lang="ts">
-/** 空态占位：居中灰字。 */
+import { Empty as AEmpty } from "ant-design-vue";
+
+/** 空态占位：a-empty 承载，props text 保留为描述文案（契约不变）。 */
 defineProps<{ text: string }>();
 </script>
 
 <template>
-  <div class="empty-state" data-testid="empty-state">{{ text }}</div>
+  <div class="empty-state" data-testid="empty-state">
+    <a-empty :description="text" />
+  </div>
 </template>
 
 <style scoped>
@@ -15,8 +19,5 @@ defineProps<{ text: string }>();
   height: 100%;
   min-height: 120px;
   padding: 16px;
-  color: var(--text-muted);
-  font-size: 13px;
-  text-align: center;
 }
 </style>

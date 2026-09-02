@@ -4,7 +4,14 @@
 // SideTree/RequestEditor/TopBar 等组件内部禁止重复调用工厂。
 import { ref, computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { ConfigProvider, theme as antdTheme } from "ant-design-vue";
+import {
+  ConfigProvider,
+  Layout as ALayout,
+  LayoutSider as ALayoutSider,
+  LayoutContent as ALayoutContent,
+  Alert as AAlert,
+  theme as antdTheme,
+} from "ant-design-vue";
 import zhCN from "ant-design-vue/es/locale/zh_CN";
 import enUS from "ant-design-vue/es/locale/en_US";
 import { apicc } from "./api";
@@ -39,6 +46,9 @@ const debug = useDebugStore(apicc);
 // —— 最小错误反馈通道（宽审查 I1）——
 // SideTree/TopBar 链路的 Promise 拒绝统一转报到这里，集中展示、可手动关闭，
 // 不再作为未处理的 rejection 被静默吞没。
+// antd 4 落地：错误展示条为 a-alert type="error"；关闭钮（a-alert closeText slot）
+// 保留 data-testid="app-error-close"，点击冒泡到 a-alert 关闭处理器 → @close →
+// 走原 reportError 通道反向清空（errorMessage 置空后 v-if 卸载整条 alert）。
 const errorMessage = ref("");
 
 function reportError(e: unknown) {
@@ -58,57 +68,35 @@ async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
 
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
-    <div class="app" data-testid="app-root">
+    <a-layout class="app" data-testid="app-root">
       <TopBar :workspace="workspace" :api="apicc" :report-error="reportError" />
-      <div v-if="errorMessage" class="app-error" data-testid="app-error">
-        <span class="app-error-text">{{ t("app.error") }}: {{ errorMessage }}</span>
-        <button data-testid="app-error-close" @click="dismissError">{{ t("common.close") }}</button>
-      </div>
-      <div class="main">
-        <SideTree class="side-col" :workspace="workspace" :tree="tree" :report-error="reportError" @select="onSelect" />
-        <div class="right-col" data-testid="main-split">
+      <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
+        <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
+        <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
+      </a-alert>
+      <a-layout has-sider class="main">
+        <a-layout-sider :width="240" theme="light" class="sider">
+          <SideTree class="side-col" :workspace="workspace" :tree="tree" :report-error="reportError" @select="onSelect" />
+        </a-layout-sider>
+        <a-layout-content class="right-col" data-testid="main-split">
           <div class="editor-pane" data-testid="editor-pane">
             <RequestEditor :editor="editor" :debug="debug" />
           </div>
           <div class="viewer-pane" data-testid="viewer-pane">
             <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
           </div>
-        </div>
-      </div>
-    </div>
+        </a-layout-content>
+      </a-layout>
+    </a-layout>
   </ConfigProvider>
 </template>
 
 <style>
 html, body, #app { height: 100%; margin: 0; }
-.app { display: flex; flex-direction: column; height: 100%; background: var(--bg); color: var(--text); }
-.app-error {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--fail);
-  font-size: 12px;
-}
-.app-error-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.app-error button {
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 11px;
-}
-.main { display: flex; flex: 1; min-height: 0; }
-.side-col {
-  width: 240px; /* 左树固定宽 */
-  flex: none;
-  border-right: 1px solid var(--border);
-}
-.right-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.app { height: 100%; background: var(--bg); color: var(--text); }
+.app .ant-layout-sider { border-right: 1px solid var(--border); background: var(--bg); }
+.app .ant-layout-sider-children { height: 100%; }
+.right-col { display: flex; flex-direction: column; min-width: 0; height: 100%; }
 .editor-pane { flex: 1; min-height: 0; overflow: auto; }
 .viewer-pane { flex: none; max-height: 45%; overflow: auto; border-top: 1px solid var(--border); }
 </style>

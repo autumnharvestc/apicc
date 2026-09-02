@@ -5,8 +5,13 @@
 // 宽审查 I1：本文件在模块求值期把 window.apicc 换成「已 seed、nodeCreate 恒拒绝」的
 // 内存替身——api/index.ts 是惰性求值（首次 import App 时读 window.apicc），因此注入
 // 必须先于组件树的首次加载，故 App 以动态 import 方式在 mountApp 内引入。
-import { describe, expect, it, beforeAll } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+// antd 迁移后的选择器适配（task-2 步骤 2）：
+// 1. a-modal（ConfirmDialog）恒经传送门渲染到 document.body，对话框内元素用
+//    body 作用域包装器查询（expectBody/bodyHas）。
+// 2. 其余 data-testid 触发元素（含 a-tabs #tab slot 的页签 span、a-alert 的
+//    app-error-close）仍在组件 DOM 内，照旧 wrapper.find。
+import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
 import { createMemoryApi } from "../../src/renderer/src/api/memory.js";
 
@@ -26,6 +31,21 @@ beforeAll(() => {
   });
   localStorage.setItem("apicc.locale", "zh-CN");
 });
+
+// a-modal 传送门内容随组件卸载移除：每条用例后自动卸载，防止跨用例 body 残留。
+enableAutoUnmount(afterEach);
+
+/** body 作用域查询：a-modal（ConfirmDialog）传送门渲染在 document.body（见文件头说明）。 */
+function bodyFind(testid: string): DOMWrapper<Element> | null {
+  const el = document.body.querySelector(`[data-testid="${testid}"]`);
+  return el ? new DOMWrapper(el) : null;
+}
+
+function expectBody(testid: string): DOMWrapper<Element> {
+  const w = bodyFind(testid);
+  if (!w) throw new Error(`document.body 中找不到 [data-testid="${testid}"]（Modal 传送门未渲染？）`);
+  return w;
+}
 
 /** 动态 import App：保证上方 window.apicc 注入先于 api/index.ts 的模块求值。 */
 async function mountApp() {
@@ -67,14 +87,39 @@ describe("App 错误反馈通道（宽审查 I1）", () => {
     // 展开分组（一次点击递归展开后代容器）后点集合行的「新建接口」
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="new-api"]').trigger("click");
-    await wrapper.find('[data-testid="dialog-input"]').setValue("x");
-    await wrapper.find('[data-testid="dialog-confirm"]').trigger("click");
+    await expectBody("dialog-input").setValue("x");
+    await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     const bar = wrapper.find('[data-testid="app-error"]');
     expect(bar.exists()).toBe(true);
     expect(bar.text()).toContain("接口创建失败（测试注入）");
-    // 手动关闭后隐藏
+    // 手动关闭后隐藏（a-alert closeText 关闭钮 → @close → 清空 errorMessage）
     await wrapper.find('[data-testid="app-error-close"]').trigger("click");
     expect(wrapper.find('[data-testid="app-error"]').exists()).toBe(false);
+  });
+});
+
+describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
+  it("语言切换后 antd 内建文案随 locale 变化", async () => {
+    const wrapper = await mountApp();
+    // 打开工作区并选中接口，发送一次：memory 替身断言恒为空 → 断言表渲染 antd 内建空态
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="send-btn"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
+    // zh-CN：ConfigProvider locale=zh_CN → a-table 空态内建文案「暂无数据」
+    expect(wrapper.text()).toContain("暂无数据");
+    // 语言循环（ThemeLanguageToggle → bridge → ConfigProvider locale）→ antd 文案切英文
+    await wrapper.find('[data-testid="lang-toggle"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("No data");
+    // 还原语言，避免污染同文件其他用例与 localStorage
+    await wrapper.find('[data-testid="lang-toggle"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("暂无数据");
   });
 });

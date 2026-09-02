@@ -1,7 +1,18 @@
 // @vitest-environment jsdom
 // 注：渲染层组件测试用文件级 pragma 指定 jsdom 环境（vitest 4 已移除 environmentMatchGlobs）。
-import { describe, expect, it, beforeAll } from "vitest";
-import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
+//
+// antd 迁移后的选择器适配说明（task-2 步骤 2）：
+// 1. data-testid 仍是主钩子：所有留在组件自身 DOM 内的触发元素照旧 wrapper.find。
+// 2. a-modal（ConfirmDialog）在 antd 4 恒经传送门渲染到 document.body
+//    （Modal 把 getContainer=false 视为 falsy 回退到默认 portal），因此对话框内
+//    元素（dialog-input/dialog-confirm/dialog-cancel）用 body 作用域包装器查询，
+//    见下方 expectBody/bodyHas 辅助。
+// 3. a-select 的下拉展开依赖真实布局与动画，jsdom 中不稳定，统一用组件级
+//    update:value 事件驱动（chooseSelect 辅助），语义等效于用户在下拉中选中该项。
+// 4. a-tabs 的页签触发钩子（tab-*）经 #tab slot 渲染成可点击 span，点击冒泡到
+//    a-tabs 内部处理器完成切换，测试仍直接对该 data-testid trigger("click")。
+import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
@@ -16,7 +27,8 @@ import ConfirmDialog from "../../../src/renderer/src/components/ConfirmDialog.vu
 import TopBar from "../../../src/renderer/src/components/TopBar.vue";
 
 beforeAll(() => {
-  // jsdom 未实现 matchMedia；TopBar→ThemeLanguageToggle 挂载时解析主题偏好会调用它。
+  // jsdom 未实现 matchMedia；TopBar→ThemeLanguageToggle 挂载时解析主题偏好会调用它，
+  // antd 组件（响应式断点）亦然。
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     configurable: true,
@@ -32,6 +44,38 @@ beforeAll(() => {
   // 固定语言为 zh-CN，使文案断言与语言文件一致（jsdom navigator.language 为 en-US）。
   localStorage.setItem("apicc.locale", "zh-CN");
 });
+
+// a-modal 传送门内容随组件卸载移除：每条用例后自动卸载，防止跨用例 body 残留。
+enableAutoUnmount(afterEach);
+
+/** body 作用域查询：a-modal（ConfirmDialog）传送门渲染在 document.body（见文件头说明）。 */
+function bodyFind(testid: string): DOMWrapper<Element> | null {
+  const el = document.body.querySelector(`[data-testid="${testid}"]`);
+  return el ? new DOMWrapper(el) : null;
+}
+
+/** body 作用域断言取用：不存在时直接报错（代替 expectBody(...).exists() 的静默通过）。 */
+function expectBody(testid: string): DOMWrapper<Element> {
+  const w = bodyFind(testid);
+  if (!w) throw new Error(`document.body 中找不到 [data-testid="${testid}"]（Modal 传送门未渲染？）`);
+  return w;
+}
+
+function bodyHas(testid: string): boolean {
+  return bodyFind(testid) !== null;
+}
+
+/**
+ * a-select 交互适配：经组件实例发 update:value（v-model 通道），语义等效于用户
+ * 在下拉中选中该项。antd 4 Select 的根元素承载透传的 data-testid，据此定位。
+ */
+function chooseSelect(wrapper: VueWrapper, testid: string, value: string): void {
+  const select = wrapper
+    .findAllComponents({ name: "ASelect" })
+    .find((c) => c.attributes("data-testid") === testid);
+  if (!select) throw new Error(`ASelect 未找到: ${testid}`);
+  select.vm.$emit("update:value", value);
+}
 
 /**
  * 显式装配辅助（组合根约定的测试形态）：
@@ -78,11 +122,10 @@ describe("SideTree", () => {
     const { wrapper } = await mountWith(SideTree);
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="new-api"]').trigger("click");
-    // 创建走 ConfirmDialog 复用的输入对话框
-    const input = wrapper.find('[data-testid="dialog-input"]');
-    expect(input.exists()).toBe(true);
+    // 创建走 ConfirmDialog 复用的输入对话框（a-modal 渲染于 body）
+    const input = expectBody("dialog-input");
     await input.setValue("新接口");
-    await wrapper.find('[data-testid="dialog-confirm"]').trigger("click");
+    await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     // select 事件必须携带 "api"（App 据此加载编辑器；主进程 nodeCreate 返回体无 kind，
     // 组件以发起请求的 kind 为准）
@@ -95,9 +138,9 @@ describe("SideTree", () => {
     const { wrapper, api } = await mountWith(SideTree, { reportError: (e: unknown) => { errors.push(e); } });
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="new-api"]').trigger("click");
-    await wrapper.find('[data-testid="dialog-input"]').setValue("x");
+    await expectBody("dialog-input").setValue("x");
     api.nodeCreate = async () => { throw new Error("boom"); };
-    await wrapper.find('[data-testid="dialog-confirm"]').trigger("click");
+    await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     expect(errors).toHaveLength(1);
     expect((errors[0] as Error).message).toBe("boom");
@@ -110,7 +153,7 @@ describe("SideTree", () => {
     const row = wrapper.find('[data-testid="tree-api-row"]');
     const apiId = row.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
     await row.find('[data-testid="node-delete"]').trigger("click");
-    await wrapper.find('[data-testid="dialog-confirm"]').trigger("click");
+    await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     expect(JSON.stringify(workspace.tree)).not.toContain(apiId);
   });
@@ -119,8 +162,8 @@ describe("SideTree", () => {
     const { wrapper, workspace } = await mountWith(SideTree);
     const before = workspace.tree!.children!.length;
     await wrapper.find('[data-testid="new-group"]').trigger("click");
-    await wrapper.find('[data-testid="dialog-input"]').setValue("根层新分组");
-    await wrapper.find('[data-testid="dialog-confirm"]').trigger("click");
+    await expectBody("dialog-input").setValue("根层新分组");
+    await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     expect(workspace.tree!.children!.length).toBe(before + 1);
     expect(wrapper.text()).toContain("根层新分组");
@@ -167,8 +210,10 @@ describe("RequestEditor", () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
     const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
     await editor.load(apiNode.id);
+    // a-tabs 页签钩子为 #tab slot 内的 span，点击冒泡到 a-tabs 完成切换
     await wrapper.find('[data-testid="tab-auth"]').trigger("click");
-    await wrapper.find('[data-testid="auth-type"]').setValue("bearer");
+    chooseSelect(wrapper, "auth-type", "bearer");
+    await flushPromises();
     expect(editor.api!.auth).toMatchObject({ type: "bearer" });
     await wrapper.find('[data-testid="auth-token"]').setValue("t0");
     expect(editor.api!.auth!.token).toBe("t0");
@@ -179,7 +224,8 @@ describe("RequestEditor", () => {
     const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
     await editor.load(apiNode.id);
     await wrapper.find('[data-testid="tab-body"]').trigger("click");
-    await wrapper.find('[data-testid="body-kind"]').setValue("form");
+    chooseSelect(wrapper, "body-kind", "form");
+    await flushPromises();
     expect(editor.api!.body).toMatchObject({ kind: "form" });
     await wrapper.find('[data-testid="add-form-row"]').trigger("click");
     expect(editor.api!.body!.form).toHaveLength(1);
@@ -231,22 +277,27 @@ describe("EmptyState", () => {
 describe("ConfirmDialog", () => {
   it("带输入框时确认回传输入值", async () => {
     const wrapper = mountWithI18n(ConfirmDialog, { open: true, title: "新建接口", inputPlaceholder: "名称" });
-    await wrapper.find('[data-testid="dialog-input"]').setValue("abc");
-    await wrapper.find('[data-testid="dialog-confirm"]').trigger("click");
+    await flushPromises(); // a-modal 传送门渲染需要一帧
+    await expectBody("dialog-input").setValue("abc");
+    await expectBody("dialog-confirm").trigger("click");
     expect(wrapper.emitted("confirm")![0]).toEqual(["abc"]);
   });
 
   it("无输入框时确认回传 null，取消触发 cancel", async () => {
     const wrapper = mountWithI18n(ConfirmDialog, { open: true, title: "确认删除" });
-    await wrapper.find('[data-testid="dialog-confirm"]').trigger("click");
+    await flushPromises();
+    await expectBody("dialog-confirm").trigger("click");
     expect(wrapper.emitted("confirm")![0]).toEqual([null]);
-    await wrapper.find('[data-testid="dialog-cancel"]').trigger("click");
+    await expectBody("dialog-cancel").trigger("click");
     expect(wrapper.emitted("cancel")).toBeTruthy();
   });
 
   it("open=false 不渲染", () => {
     const wrapper = mountWithI18n(ConfirmDialog, { open: false, title: "x" });
     expect(wrapper.find('[data-testid="confirm-dialog"]').exists()).toBe(false);
+    // 传送门也不应产生任何对话框元素
+    expect(bodyHas("dialog-confirm")).toBe(false);
+    expect(bodyHas("dialog-input")).toBe(false);
   });
 });
 
@@ -262,9 +313,12 @@ describe("TopBar", () => {
   it("新建工作区先弹名称输入对话框，可取消", async () => {
     const { wrapper } = await mountWith(TopBar, {});
     await wrapper.find('[data-testid="new-workspace"]').trigger("click");
-    expect(wrapper.find('[data-testid="dialog-input"]').exists()).toBe(true);
-    await wrapper.find('[data-testid="dialog-cancel"]').trigger("click");
-    expect(wrapper.find('[data-testid="dialog-input"]').exists()).toBe(false);
+    await flushPromises();
+    expect(bodyHas("dialog-input")).toBe(true);
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    // 取消后对话框整体卸载（模板 v-if，无离场动画时序）
+    expect(bodyHas("dialog-input")).toBe(false);
   });
 
   it("打开工作区失败时经 reportError 上报（宽审查 I1）", async () => {
