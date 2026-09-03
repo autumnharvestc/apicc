@@ -18,7 +18,33 @@ describe("validateWorkflowStructure", () => {
     const issues = validateWorkflowStructure(wf([req("a"), req("b")], [
       { id: "e1", from: "a", to: "b" }, { id: "e2", from: "b", to: "a" },
     ]));
-    expect(issues.some((i) => i.level === "error" && i.code === "cycle" && /a/.test(i.message))).toBe(true);
+    expect(issues.some((i) => i.level === "error" && i.code === "cycle" && /检测到环: a → b → a/.test(i.message))).toBe(true);
+  });
+
+  it("单节点工作区不报 isolated-node", () => {
+    const issues = validateWorkflowStructure(wf([req("only")], []));
+    expect(issues.some((i) => i.level === "warning" && i.code === "isolated-node")).toBe(false);
+    expect(issues).toEqual([]);
+  });
+
+  it("同向不同条件的多条边合法（多条件分支，不报 duplicate-edge）", () => {
+    const issues = validateWorkflowStructure(wf([req("a"), req("b")], [
+      { id: "e1", from: "a", to: "b", condition: "prev.passed" },
+      { id: "e2", from: "a", to: "b", condition: "false" },
+    ]));
+    expect(issues.some((i) => i.level === "warning" && i.code === "duplicate-edge")).toBe(false);
+  });
+
+  it("幽灵端点的边不参与环检测（只报 edge-endpoint，不报 cycle）", () => {
+    const issues = validateWorkflowStructure(wf([req("a"), req("b")], [
+      { id: "e1", from: "a", to: "b" },
+      { id: "e2", from: "b", to: "ghost" },
+      { id: "e3", from: "ghost", to: "a" },
+    ]));
+    const errors = issues.filter((i) => i.level === "error");
+    expect(errors.length).toBe(2);
+    expect(errors.every((i) => i.code === "edge-endpoint")).toBe(true);
+    expect(issues.some((i) => i.code === "cycle")).toBe(false);
   });
 
   it("边端点不存在报 error", () => {
