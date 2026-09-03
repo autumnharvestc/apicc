@@ -134,11 +134,12 @@ function removeAssertion(index: number) {
         >
           <template #bodyCell="{ column, record, index }">
             <template v-if="column.key === 'target'">
+              <!-- 断言行 record 为表格槽宽类型、v 为 SelectValue：选项值恒为 target 联合内字符串，断言收窄。 -->
               <a-select
                 :value="record.target"
                 :options="TARGET_OPTIONS"
                 data-testid="assert-target"
-                @update:value="(v) => setTarget(record, v)"
+                @update:value="(v) => setTarget(record as Assertion, v as Assertion['target'])"
               />
             </template>
             <template v-else-if="column.key === 'op'">

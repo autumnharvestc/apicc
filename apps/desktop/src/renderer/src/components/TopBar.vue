@@ -2,7 +2,7 @@
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Space as ASpace, Button as AButton, Typography as ATypography } from "ant-design-vue";
-import type { ApiccApi } from "../../shared/types.js";
+import type { ApiccApi } from "../../../shared/types.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import ThemeLanguageToggle from "./ThemeLanguageToggle.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";

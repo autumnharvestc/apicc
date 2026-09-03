@@ -26,6 +26,7 @@ const api = {
   wfGet: (workflowId: string) => ipcRenderer.invoke(IpcChannel.WfGet, { workflowId }),
   wfCreate: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfCreate, input),
   wfDelete: (workflowId: string) => ipcRenderer.invoke(IpcChannel.WfDelete, { workflowId }),
+  wfRename: (workflowId: string, name: string) => ipcRenderer.invoke(IpcChannel.WfRename, { workflowId, name }),
   wfSave: (workflow: unknown) => ipcRenderer.invoke(IpcChannel.WfSave, { workflow }),
   wfSetStatus: (workflowId: string, next: string) => ipcRenderer.invoke(IpcChannel.WfSetStatus, { workflowId, next }),
   wfImpact: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfImpact, input),

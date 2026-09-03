@@ -38,6 +38,7 @@ const WfListInputSchema = z.object({ projectId: z.string() });
 const WfGetInputSchema = z.object({ workflowId: z.string() });
 const WfCreateInputSchema = z.object({ projectId: z.string(), name: z.string() });
 const WfDeleteInputSchema = z.object({ workflowId: z.string() });
+const WfRenameInputSchema = z.object({ workflowId: z.string(), name: z.string() });
 const WfSaveInputSchema = z.object({ workflow: WorkflowSchema });
 const WfSetStatusInputSchema = z.object({ workflowId: z.string(), next: WorkflowStatusSchema });
 const WfImpactInputSchema = z.object({ caseId: z.string().optional(), apiId: z.string().optional() });
@@ -68,6 +69,7 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.WfGet]: z.tuple([WfGetInputSchema]),
   [IpcChannel.WfCreate]: z.tuple([WfCreateInputSchema]),
   [IpcChannel.WfDelete]: z.tuple([WfDeleteInputSchema]),
+  [IpcChannel.WfRename]: z.tuple([WfRenameInputSchema]),
   [IpcChannel.WfSave]: z.tuple([WfSaveInputSchema]),
   [IpcChannel.WfSetStatus]: z.tuple([WfSetStatusInputSchema]),
   [IpcChannel.WfImpact]: z.tuple([WfImpactInputSchema]),
@@ -319,6 +321,12 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const input = a[0] as { workflowId: string };
         session.deleteWorkflow(input.workflowId);
         await session.save();
+        return undefined;
+      }
+      case IpcChannel.WfRename: {
+        // renameWorkflow 内部已落盘（改名 + save → cleanupOrphanDirs 清旧目录），不再重复 save。
+        const input = a[0] as { workflowId: string; name: string };
+        await session.renameWorkflow(input.workflowId, input.name);
         return undefined;
       }
       case IpcChannel.WfSave: {

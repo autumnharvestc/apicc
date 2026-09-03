@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Tabs as ATabs, Tag as ATag, Table as ATable, Typography as ATypography } from "ant-design-vue";
-import type { DebugOutput } from "../../shared/types.js";
+import type { DebugOutput } from "../../../shared/types.js";
 import EmptyState from "./EmptyState.vue";
 
 const ATabPane = ATabs.TabPane;
@@ -35,7 +35,19 @@ const assertionColumns = [
   { key: "message", dataIndex: "message", title: "" },
 ];
 // 行级测试钩子：customRow 把 data-testid 落到断言行 <tr> 上
-const assertionRowProps = () => ({ "data-testid": "assertion-row" });
+// （antd customRow 返回类型未建模 data-* 透传属性，any 索引签名对齐，运行时原样展开）。
+const assertionRowProps = (): Record<string, any> => ({ "data-testid": "assertion-row" });
+
+// AssertResult 无 id 字段（仅 pass/message）：断言表以索引为键，消除 antd row-key
+// dev 告警（2B T2①；EnvPanel row-key 告警同源教训）。
+function assertionRowKey(_record: unknown, index?: number): number {
+  return index ?? 0;
+}
+
+// 响应头行 { name, value } 同样无稳定 id（同名头可重复），索引自键（同上告警消除）。
+function headerRowKey(_record: unknown, index?: number): number {
+  return index ?? 0;
+}
 
 const headerColumns = [
   { key: "name", dataIndex: "name", title: "" },
@@ -90,6 +102,7 @@ const headerRows = computed(() =>
           :pagination="false"
           :columns="assertionColumns"
           :data-source="result.outcome.assertions"
+          :row-key="assertionRowKey"
           :custom-row="assertionRowProps"
         >
           <template #bodyCell="{ column, record }">
@@ -115,6 +128,7 @@ const headerRows = computed(() =>
             :pagination="false"
             :columns="headerColumns"
             :data-source="headerRows"
+            :row-key="headerRowKey"
             data-testid="response-headers"
           >
             <template #bodyCell="{ column, record }">
@@ -142,8 +156,9 @@ const headerRows = computed(() =>
 .muted { color: var(--text-muted); font-size: 12px; }
 .section-title { font-weight: 600; }
 .assertions { display: flex; flex-direction: column; gap: 4px; }
-.message { overflow-wrap: anywhere; }
-.header-name { font-weight: 600; overflow-wrap: anywhere; }
+/* 长错误/消息列防溢出：break-all 强断行（2B T7③），anywhere 兜底 min-content 收缩 */
+.message { word-break: break-all; overflow-wrap: anywhere; }
+.header-name { font-weight: 600; word-break: break-all; overflow-wrap: anywhere; }
 .payload {
   margin: 0;
   padding: 8px;

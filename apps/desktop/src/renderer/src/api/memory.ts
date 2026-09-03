@@ -120,10 +120,12 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
       label: ws.name,
       children: ws.groups.map((g) => ({
         kind: "group" as const, id: g.id, label: g.name,
-        children: g.projects.map((p) => ({
-          kind: "project" as const, id: p.id, label: p.name,
-          envs: p.environments.map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: e.variables })),
-          children: p.collections.map((c) => ({
+      children: g.projects.map((p) => ({
+        kind: "project" as const, id: p.id, label: p.name,
+        envs: p.environments.map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: e.variables })),
+        // 工作流摘要（M2-B 收口）：与主进程 tree.ts 同构，侧树入口数据源。
+        workflows: p.workflows.map((w) => ({ id: w.id, name: w.name, status: w.status })),
+        children: p.collections.map((c) => ({
             kind: "collection" as const, id: c.id, label: c.name,
             children: [
               ...c.apis.map((a) => ({ kind: "api" as const, id: a.id, label: a.name, method: a.method })),
@@ -482,6 +484,18 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
         }
       }
       throw new Error(`未找到工作流: ${workflowId}`);
+    },
+
+    // 重命名（M2-B 收口）：语义对齐 session.renameWorkflow——同项目重名拒绝（与 wfCreate
+    // 同文案）、改名后落盘（旧目录由 session 侧 cleanupOrphanDirs 对位清理；替身落盘为最佳努力）。
+    async wfRename(workflowId: string, name: string): Promise<void> {
+      const loc = locateWorkflow(workflowId);
+      if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
+      if (loc.project.workflows.some((w) => w.id !== workflowId && w.name === name)) {
+        throw new Error(`工作流已存在: ${name}`);
+      }
+      loc.workflow.name = name;
+      await save();
     },
 
     async wfSave(workflow: Workflow): Promise<Workflow> {

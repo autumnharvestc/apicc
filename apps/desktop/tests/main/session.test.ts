@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createSession } from "../../src/main/session.js";
+import { createSession, sameName } from "../../src/main/session.js";
 
 const root = () => mkdtempSync(join(tmpdir(), "apicc-ui-"));
 
@@ -105,6 +105,140 @@ describe("createSession", () => {
     const sitVars = reopened.workspace!.groups[0]!.projects[0]!.environments.find((e) => e.name === "sit")!.variables;
     expect(sitVars).toEqual({ baseUrl: "http://s" });
     expect(env.name).toBe("sit");
+  });
+
+  it("renameWorkflow 改名后旧目录清理、新目录可读", async () => {
+    // 简报骨架：建 g/p/workflow("旧名") → save（断言旧目录存在）→ renameWorkflow → save
+    // → 重开断言 workflows[0].name === "新名" 且 join(root, ..., "workflows", "旧名") 不存在。
+    // 盘上名刻意用中文（产品常态输入）：清理走 node:fs/promises rm——本机（Windows+Node24）
+    // 实测 rmSync 对非 ASCII 路径静默失效/硬崩，此用例同时钉住该修复不回退到 rmSync。
+    const s = createSession();
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const p = s.createProject(g.id, "p");
+    const wf = s.createWorkflow(p.id, "旧名");
+    await s.save();
+    const oldDir = join(dir, "groups", "g", "projects", "p", "workflows", "旧名");
+    expect(existsSync(oldDir)).toBe(true);
+    await s.renameWorkflow(wf.id, "新名");
+    expect(existsSync(oldDir)).toBe(false);
+    // 同项目重名拒绝（与 createWorkflow 同文案）：wf 已改名后，另一条流不得再改成「新名」
+    const other = s.createWorkflow(p.id, "另一条流");
+    await s.save();
+    await expect(s.renameWorkflow(other.id, "新名")).rejects.toThrow(/工作流已存在: 新名/);
+    expect(s.locateWorkflow(other.id)?.workflow.name).toBe("另一条流");
+    const s2 = createSession();
+    const reopened = await s2.open(dir);
+    // 重开读回：改名已持久化（按 id 取，不依赖盘上目录的字典序）
+    const reopenedWfs = reopened.workspace.groups[0]!.projects[0]!.workflows;
+    expect(reopenedWfs.find((w) => w.id === wf.id)!.name).toBe("新名");
+    expect(existsSync(join(dir, "groups", "g", "projects", "p", "workflows", "新名"))).toBe(true);
+    expect(s2.locateWorkflow(wf.id)?.workflow.name).toBe("新名");
+  });
+
+  it("cleanupOrphanDirs 清理已删除工作流的残留目录", async () => {
+    // 简报骨架：save 含 wf → 内存 deleteWorkflow → save → 旧目录不存在（中文盘上名同上）
+    const s = createSession();
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const p = s.createProject(g.id, "p");
+    const wf = s.createWorkflow(p.id, "残留流");
+    await s.save();
+    const wfDir = join(dir, "groups", "g", "projects", "p", "workflows", "残留流");
+    expect(existsSync(wfDir)).toBe(true);
+    s.deleteWorkflow(wf.id);
+    await s.save();
+    expect(existsSync(wfDir)).toBe(false);
+    expect(s.locateWorkflow(wf.id)).toBeUndefined();
+  });
+
+  // —— C1（Critical）回归：win32 大小写不敏感文件系统上的改名孤儿清理 ——
+  // NTFS 上 save 按 name 写盘时 `workflows\Flow` 解析命中既有 `flow` 目录（盘名保持
+  // flow），cleanup 若按 x.name === "Flow" 严格比较 readdir 得 ["flow"] 不匹配，会把
+  // 刚写入的目录当孤儿递归删除（数据破坏）。平台判定经 createSession({ platform })
+  // 注入（默认取 process.platform），本用例未注入——本机（Windows）即真实 NTFS 语义
+  // 端到端复现；POSIX 平台大小写敏感、save 正常新建目录，行为等价通过。
+  it("win32 大小写改名 flow→Flow：save 后重开工作流仍在、盘上目录不丢（C1 端到端）", async () => {
+    const s = createSession();
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const p = s.createProject(g.id, "p");
+    const wf = s.createWorkflow(p.id, "flow");
+    await s.save();
+    const flowDir = join(dir, "groups", "g", "projects", "p", "workflows", "flow");
+    expect(existsSync(flowDir)).toBe(true);
+    await s.renameWorkflow(wf.id, "Flow");
+    if (process.platform === "win32") {
+      // 修复前：刚写入（NTFS 解析到既有同名目录）的工作流目录被 cleanup 递归删除
+      expect(existsSync(flowDir)).toBe(true);
+    }
+    const s2 = createSession();
+    const reopened = await s2.open(dir);
+    const found = reopened.workspace.groups[0]!.projects[0]!.workflows.find((w) => w.id === wf.id);
+    expect(found?.name).toBe("Flow");
+  });
+
+  // 注入 win32 平台标志复现「模型名 Flow、盘上目录 flow」的 NTFS 解析态（C1 归一匹配）：
+  // cleanup 各层（workflows/collections/groups/projects/apis/folders）按 sameName 比较，
+  // 大小写变体目录不得被判孤儿。POSIX 上改名会真实新建 Flow 目录（大小写敏感语义），
+  // 本用例只钉「大小写变体不判孤儿」这一 win32 行为，任意平台可复现。
+  it("注入 win32：cleanupOrphanDirs 不把大小写变体目录当孤儿（C1 归一匹配）", async () => {
+    const s = createSession({ platform: "win32" });
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const p = s.createProject(g.id, "p");
+    const wf = s.createWorkflow(p.id, "flow");
+    await s.save();
+    await s.renameWorkflow(wf.id, "Flow");
+    await s.save();
+    // 修复前（严格比较）：flow 目录与模型名 Flow 不匹配 → 被递归删除
+    expect(existsSync(join(dir, "groups", "g", "projects", "p", "workflows", "flow"))).toBe(true);
+  });
+
+  it("注入 win32：createWorkflow/renameWorkflow 重名检查大小写归一（C1）", async () => {
+    const s = createSession({ platform: "win32" });
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const p = s.createProject(g.id, "p");
+    const flow = s.createWorkflow(p.id, "flow");
+    // win32 上 flow/FLOW 是同一盘上目录：重名拒绝（修复前严格比较放行 → save 双写同目录互覆）
+    expect(() => s.createWorkflow(p.id, "FLOW")).toThrow(/工作流已存在: FLOW/);
+    const other = s.createWorkflow(p.id, "其它流");
+    await expect(s.renameWorkflow(other.id, "Flow")).rejects.toThrow(/工作流已存在: Flow/);
+    // 自身大小写改名放行（id 排除自身）——修正大小写是最常见改名动机
+    await expect(s.renameWorkflow(flow.id, "Flow")).resolves.toBeUndefined();
+    expect(s.locateWorkflow(flow.id)?.workflow.name).toBe("Flow");
+    // 对照：非 win32 平台标志保持严格比较（POSIX 大小写敏感，变体名不冲突）
+    const s2 = createSession({ platform: "linux" });
+    const dir2 = root();
+    await s2.create(dir2, "w");
+    await s2.open(dir2);
+    const g2 = s2.createGroup("g");
+    const p2 = s2.createProject(g2.id, "p");
+    s2.createWorkflow(p2.id, "flow");
+    expect(() => s2.createWorkflow(p2.id, "FLOW")).not.toThrow();
+  });
+
+  it("sameName 纯函数：win32 两侧 toLowerCase 归一，其余平台严格相等", () => {
+    expect(sameName("Flow", "flow", "win32")).toBe(true);
+    expect(sameName("FLOW", "flow", "win32")).toBe(true);
+    expect(sameName("flow", "flow", "win32")).toBe(true);
+    expect(sameName("flow", "flowx", "win32")).toBe(false);
+    expect(sameName("Flow", "flow", "linux")).toBe(false);
+    expect(sameName("Flow", "Flow", "darwin")).toBe(true);
+    // 默认平台参数 = process.platform（win32 归一，其余严格）
+    expect(sameName("a", "a")).toBe(true);
+    expect(sameName("a", "A", process.platform)).toBe(process.platform === "win32");
   });
 
   it("renameNode 重命名集合（盘上目录随 save 更新，旧目录清理）", async () => {

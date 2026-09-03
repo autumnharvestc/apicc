@@ -50,6 +50,8 @@ import "@vue-flow/core/dist/theme-default.css";
 /**
  * 工作流设计器视图（M2-B 任务 4）：三区装配——顶栏（列表入口/新建/加节点/保存）+
  * 中央 Vue Flow 画布（受控 :nodes/:edges，经 wfCanvas 变换回写 store）+ 右侧属性面板。
+ * auto-pan 裁定（收口包任务 3，2A 任务 7 遗留观感项）：auto-pan-on-connect 关闭——
+ * 连边拖拽时视口不自动平移，小画布场景下平移干扰大于收益。
  * 组件内零 store 工厂调用（组合根 App.vue 一次创建经 props 下发）；bindIndex（绑定
  * 级联 + 名称索引）由组合根按当前项目树构造后传入。
  * 空态列表（审查 I3）：列表项悬停动作「删除」→ ConfirmDialog 确认后经 wfList.remove
@@ -531,6 +533,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           <VueFlow
             :nodes="flowNodes"
             :edges="flowEdges"
+            :auto-pan-on-connect="false"
             @node-click="onNodeClick"
             @edge-click="onEdgeClick"
             @pane-click="clearSelection"

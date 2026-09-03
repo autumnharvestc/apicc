@@ -36,6 +36,11 @@ watch(
 function confirm() {
   emit("confirm", props.inputPlaceholder !== undefined ? value.value : null);
 }
+
+// data-* 为 HTML 透传属性，antd 按钮 props 类型未建模；经 any 索引签名断言保留测试锚点
+// （运行时 Vue 原样透传到 ok/cancel 按钮上，行为不变，见 vue-tsc 收口）。
+const okButtonProps: Record<string, any> = { "data-testid": "dialog-confirm" };
+const cancelButtonProps: Record<string, any> = { "data-testid": "dialog-cancel" };
 </script>
 
 <template>
@@ -45,8 +50,8 @@ function confirm() {
     :title="title"
     :ok-text="t('common.confirm')"
     :cancel-text="t('common.cancel')"
-    :ok-button-props="{ 'data-testid': 'dialog-confirm' }"
-    :cancel-button-props="{ 'data-testid': 'dialog-cancel' }"
+    :ok-button-props="okButtonProps"
+    :cancel-button-props="cancelButtonProps"
     :width="360"
     data-testid="confirm-dialog"
     @ok="confirm"

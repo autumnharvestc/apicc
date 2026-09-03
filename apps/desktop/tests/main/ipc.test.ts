@@ -350,6 +350,27 @@ describe("工作流 IPC", () => {
     await expect(deps.handle("wf:set-status", {}, { workflowId: "不存在", next: "published" })).rejects.toThrow(/未找到工作流: 不存在/);
   });
 
+  it("wf:rename 改名后 wf:list 反映新名、树摘要同步且旧目录清理（落盘读回）；重名拒绝", async () => {
+    const { deps, dir, project } = await setupWf();
+    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "old-name-flow" });
+    await deps.handle("wf:rename", {}, { workflowId: wf.id, name: "new-name-flow" });
+    // wf:list 反映新名
+    expect((await deps.handle("wf:list", {}, { projectId: project.id })).map((w: { name: string }) => w.name)).toEqual(["new-name-flow"]);
+    // 树 DTO project 节点 workflows 摘要同步（侧树入口数据源）
+    const tree = await deps.handle("tree:get", {});
+    expect(tree.children![0]!.children![0]!.workflows).toEqual([{ id: wf.id, name: "new-name-flow", status: "draft" }]);
+    // 落盘读回：新目录可读、旧目录已清理（rename 分支显式 save → cleanupOrphanDirs 补层）
+    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
+    await fresh.handle("ws:open", {}, dir);
+    const reread = await fresh.handle("wf:get", {}, { workflowId: wf.id });
+    expect(reread.workflow.name).toBe("new-name-flow");
+    // 重名拒绝（与 wf:create 同文案）+ 未知 id 抛「未找到工作流」+ zod 入参校验
+    await deps.handle("wf:create", {}, { projectId: project.id, name: "placeholder-flow" });
+    await expect(deps.handle("wf:rename", {}, { workflowId: wf.id, name: "placeholder-flow" })).rejects.toThrow(/工作流已存在: placeholder-flow/);
+    await expect(deps.handle("wf:rename", {}, { workflowId: "不存在", name: "x" })).rejects.toThrow(/未找到工作流: 不存在/);
+    await expect(deps.handle("wf:rename", {}, { workflowId: 42, name: "x" })).rejects.toThrow(/\[wf:rename\] 入参校验失败/);
+  });
+
   it("wf:run：draft 拒绝运行；envName 未找到抛错；成功运行落盘 .apicc/runs/workflow-*.json", async () => {
     const { deps, dir, project, api } = await setupWf();
     const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "运行流" });

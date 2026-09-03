@@ -36,6 +36,20 @@ beforeAll(() => {
       addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
     }),
   });
+  // jsdom 未实现 ResizeObserver/DOMMatrixReadOnly：M2-B 侧树工作流入口用例点击节点后
+  // 渲染设计器画布（vue-flow 依赖二者），与 wfDesigner.test.ts 同款 stub。
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  (globalThis as Record<string, unknown>).DOMMatrixReadOnly = class {
+    m22: number;
+    constructor(transform?: string) {
+      const scale = transform?.match(/scale\(([1-9.]+)\)/)?.[1];
+      this.m22 = scale !== undefined ? +scale : 1;
+    }
+  };
   localStorage.setItem("apicc.locale", "zh-CN");
 });
 
@@ -202,6 +216,152 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
   });
 });
 
+// —— 审查 I1：侧树切换工作流必须过 dirty 确认，编辑不得静默丢失 ——
+describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
+  it("dirty 时点击另一工作流：确认前缓冲不变；取消保持；确认后新流载入", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    // 直连替身建两条流后重开工作区刷新树（failingApi 为本文件共享单例，按名定位节点）
+    const treeDto = await failingApi.treeGet();
+    const project = treeDto.children![0]!.children![0]!;
+    const wfA = await failingApi.wfCreate({ projectId: project.id, name: "脏缓冲流" });
+    const wfB = await failingApi.wfCreate({ projectId: project.id, name: "切换目标流" });
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const wfNode = (name: string) =>
+      wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
+    // 侧树打开流 A 并经设计器「加节点」制造 dirty
+    await wfNode("脏缓冲流").trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+    await flushPromises();
+    const designOf = () =>
+      wrapper.findComponent(WfDesigner).props("workflowDesign") as {
+        workflowId: string | null;
+        dirty: boolean;
+        workflow: { name: string } | null;
+      };
+    expect(designOf().dirty).toBe(true);
+
+    // dirty 时点击流 B：确认框弹出，缓冲仍是 A（修复前：直接 load，编辑静默丢失）
+    await wfNode("切换目标流").trigger("click");
+    await flushPromises();
+    expect(designOf().workflowId).toBe(wfA.id);
+    expect(designOf().dirty).toBe(true);
+    expect(expectBody("dialog-cancel").exists()).toBe(true);
+    expect(expectBody("dialog-confirm").exists()).toBe(true);
+
+    // 取消：缓冲不变、不载入 B
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    expect(designOf().workflowId).toBe(wfA.id);
+    expect(designOf().dirty).toBe(true);
+
+    // 再点流 B 并确认丢弃：新流载入、dirty 复位
+    await wfNode("切换目标流").trigger("click");
+    await flushPromises();
+    await expectBody("dialog-confirm").trigger("click");
+    await flushPromises();
+    expect(designOf().workflowId).toBe(wfB.id);
+    expect(designOf().workflow?.name).toBe("切换目标流");
+    expect(designOf().dirty).toBe(false);
+  });
+
+  it("非 dirty 时点击另一工作流：直接载入不弹确认（现状保持）", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    const treeDto = await failingApi.treeGet();
+    const project = treeDto.children![0]!.children![0]!;
+    await failingApi.wfCreate({ projectId: project.id, name: "干净流甲" });
+    const wfB = await failingApi.wfCreate({ projectId: project.id, name: "干净流乙" });
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const wfNode = (name: string) =>
+      wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
+    await wfNode("干净流甲").trigger("click");
+    await flushPromises();
+    await wfNode("干净流乙").trigger("click");
+    await flushPromises();
+    const design = wrapper.findComponent(WfDesigner).props("workflowDesign") as { workflowId: string | null };
+    expect(design.workflowId).toBe(wfB.id);
+    expect(document.body.querySelector('[data-testid="dialog-confirm"]')).toBeNull();
+  });
+});
+
+// —— 审查 I2：侧树重命名与设计器缓冲脱节 ——
+describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
+  it("重命名设计器正开的工作流：设计器会话卸载，再次打开重新 load 拿新名", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    const treeDto = await failingApi.treeGet();
+    const project = treeDto.children![0]!.children![0]!;
+    const wf = await failingApi.wfCreate({ projectId: project.id, name: "旧名流" });
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const wfNode = (name: string) =>
+      wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
+    // 侧树打开该流（设计器载入，缓冲持旧名）
+    await wfNode("旧名流").trigger("click");
+    await flushPromises();
+    const designOf = () =>
+      wrapper.findComponent(WfDesigner).props("workflowDesign") as {
+        workflowId: string | null;
+        workflow: { name: string } | null;
+      };
+    expect(designOf().workflowId).toBe(wf.id);
+    // 侧树重命名该流：workflow 行内动作钮（作用域限定 tree-workflow-row，避开容器节点同名钮）
+    const row = wrapper
+      .findAll('[data-testid="tree-workflow-row"]')
+      .find((r) => r.text().includes("旧名流"))!;
+    await row.find('[data-testid="node-rename"]').trigger("click");
+    await expectBody("dialog-input").setValue("新名流");
+    await expectBody("dialog-confirm").trigger("click");
+    await flushPromises();
+    // 修复前：缓冲仍持旧名（workflowId 不变）——此后保存按缓冲整体替换，改名被静默回滚
+    expect(designOf().workflowId).toBeNull();
+    expect(designOf().workflow).toBeNull();
+    // 再次打开（树已 refresh 显示新名）：走重新 load 拿新名
+    await wfNode("新名流").trigger("click");
+    await flushPromises();
+    expect(designOf().workflowId).toBe(wf.id);
+    expect(designOf().workflow?.name).toBe("新名流");
+  });
+
+  it("重命名未打开的工作流：不影响设计器会话（条件分支不误伤）", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    const treeDto = await failingApi.treeGet();
+    const project = treeDto.children![0]!.children![0]!;
+    const wfA = await failingApi.wfCreate({ projectId: project.id, name: "旁路流甲" });
+    await failingApi.wfCreate({ projectId: project.id, name: "旁路流乙" });
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const wfNode = (name: string) =>
+      wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
+    // 设计器开着流甲，重命名流乙
+    await wfNode("旁路流甲").trigger("click");
+    await flushPromises();
+    const row = wrapper
+      .findAll('[data-testid="tree-workflow-row"]')
+      .find((r) => r.text().includes("旁路流乙"))!;
+    await row.find('[data-testid="node-rename"]').trigger("click");
+    await expectBody("dialog-input").setValue("旁路流乙改");
+    await expectBody("dialog-confirm").trigger("click");
+    await flushPromises();
+    // 命中条件 workflowId === 被改名 id 不成立：流甲会话不受旁路重命名影响
+    const design = wrapper.findComponent(WfDesigner).props("workflowDesign") as { workflowId: string | null };
+    expect(design.workflowId).toBe(wfA.id);
+  });
+});
+
 // —— 宽范围审查 I2：项目内 API 增删后 bindIndex 必须随树刷新重建 ——
 // 修复前 watch 源仅 [selectedProjectId, opened]：项目内新增接口只改变 workspace.tree
 // 引用（refresh 换新对象、选中项目不变），watch 不触发 → 设计器拿到陈旧索引，
@@ -237,5 +397,85 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
     } finally {
       failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
     }
+  });
+});
+
+// —— M2-B 收口：侧树工作流入口（点击工作流节点 → 视图切 wf + 设计器载入该流） ——
+describe("App 侧树工作流入口", () => {
+  it("点击侧树工作流节点：视图切到工作流且设计器载入该流（selectedProjectId 保持所属项目）", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    // 直连替身建工作流后重开工作区刷新树（打开钮对非工作区目录回退内存态）
+    const tree = await failingApi.treeGet();
+    const project = tree.children![0]!.children![0]!;
+    const wf = await failingApi.wfCreate({ projectId: project.id, name: "侧树入口流" });
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="tree-workflow"]').trigger("click");
+    await flushPromises();
+    // 视图切到 wf（radio 选中态）
+    expect((wrapper.find('input[value="wf"]').element as HTMLInputElement).checked).toBe(true);
+    // 设计器载入点击的工作流（而非空态列表）
+    const designer = wrapper.findComponent(WfDesigner);
+    const design = designer.props("workflowDesign") as { workflowId: string | null };
+    expect(design.workflowId).toBe(wf.id);
+    // 选中节点归属项目解析含 workflows 摘要：selectedProjectId 不因 kind=workflow 落空
+    expect(designer.props("projectId")).toBe(project.id);
+  });
+
+  it("设计器列表新建工作流后侧树同步出现（树摘要随 wfList 变更刷新）", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    // 选中接口 → selectedProjectId 就绪 → 切到工作流视图（设计器是工作流唯一创建入口）
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await wrapper.find('input[value="wf"]').setValue(true);
+    await flushPromises();
+    // 建前树中无同名工作流（failingApi 是本文件共享单例，前面用例可能已建过别的流）
+    expect(wrapper.find('[data-testid="tree-workflow"]').text()).not.toContain("设计器新建流");
+    // 经设计器列表新建 → 侧树应同步出现该工作流（draft 色点）
+    await wrapper.find('[data-testid="wf-new-name"]').setValue("设计器新建流");
+    await wrapper.find('[data-testid="wf-new-create"]').trigger("click");
+    await flushPromises();
+    const nodes = wrapper.findAll('[data-testid="tree-workflow"]');
+    const created = nodes.find((n) => n.text().includes("设计器新建流"));
+    expect(created).toBeDefined();
+    expect(created!.attributes("data-status")).toBe("draft");
+  });
+
+  it("设计器发布工作流后侧树状态色点同步（data-status: draft → published）", async () => {
+    // 审查修复：生命周期迁移不改 wfList.items.length，树摘要须随设计器 status 变化刷新，
+    // 否则侧树色点陈旧。真实链路：wf-publish → store.setStatus → api.wfSetStatus → 树刷新。
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    // 直连替身建 draft 工作流后重开工作区刷新树（failingApi 为本文件共享单例，按名断言）
+    const tree = await failingApi.treeGet();
+    const project = tree.children![0]!.children![0]!;
+    const wf = await failingApi.wfCreate({ projectId: project.id, name: "生命周期流" });
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const findNode = () =>
+      wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("生命周期流"))!;
+    expect(findNode().attributes("data-status")).toBe("draft");
+    // 侧树打开工作流 → 设计器点「发布」
+    await findNode().trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="wf-publish"]').trigger("click");
+    await flushPromises();
+    // 侧树色点同步为 published（修复前：同引用赋值不触发响应式 + 无 status watcher，
+    // 树摘要陈旧为 draft）
+    expect(findNode().attributes("data-status")).toBe("published");
+    // 树 DTO 摘要确实重建（status 更新；failingApi 为共享单例，按 id 断言本流）
+    const dto = await failingApi.treeGet();
+    expect(dto.children![0]!.children![0]!.workflows!.find((w) => w.id === wf.id)).toEqual({
+      id: wf.id,
+      name: "生命周期流",
+      status: "published",
+    });
   });
 });
