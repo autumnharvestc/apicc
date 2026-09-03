@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WorkflowRunner } from "../../src/workflow/runner.js";
 import type { Workflow } from "../../src/workflow/model.js";
-import type { Workspace, Project } from "../../src/domain/model.js";
+import type { Workspace, Project, ApiDefinition } from "../../src/domain/model.js";
 import { createDefaultRegistry } from "../../src/index.js";
 
 let server: Server;
@@ -36,7 +36,14 @@ const apiOf = (id: string, url: string) => ({
   }],
 });
 const apis = [apiOf("a1", "{{baseUrl}}/one"), apiOf("a2", "{{baseUrl}}/two"), apiOf("a3", "{{baseUrl}}/three")];
+// 必失败接口（断言 500）：级联 skipped / failFast 用例的失败源。
+const badApi: ApiDefinition = {
+  id: "abad", name: "abad", version: "1", deprecated: false, method: "GET", url: "{{baseUrl}}/bad", headers: [], query: [],
+  cases: [{ id: "case-abad", name: "abad-用例", scope: "base", parameters: {}, assertions: [{ id: "as-abad", target: "status", op: "eq", expected: "500" }] }],
+};
 const resolve = (apiId: string) => apis.find((a) => a.id === apiId);
+/** 追加额外接口定义的 resolve（badApi/sitApi 等局部夹具用）。 */
+const resolveWith = (extras: ApiDefinition[]) => (apiId: string) => [...extras, ...apis].find((a) => a.id === apiId);
 const wf = (nodes: Workflow["nodes"], edges: Workflow["edges"]): Workflow =>
   ({ id: "wf", name: "条件流", status: "enabled", nodes, edges });
 
@@ -123,5 +130,95 @@ describe("WorkflowRunner", () => {
     await expect(new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "ghost", failFast: false })
       .run(wf([{ id: "n", kind: "request" as const, apiId: "a1", caseId: "case-a1" }], []), { project, workspace: ws }))
       .rejects.toThrow(/未找到环境/);
+  });
+
+  it("级联 skipped：首节点 failed 且边无条件，下游不执行", async () => {
+    const nodes = [
+      { id: "n1", kind: "request" as const, apiId: "abad", caseId: "case-abad", label: "坏" },
+      { id: "n2", kind: "request" as const, apiId: "a2", caseId: "case-a2", label: "two" },
+      { id: "n3", kind: "request" as const, apiId: "a3", caseId: "case-a3", label: "three" },
+    ];
+    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([badApi]), envName: "dev", failFast: false })
+      .run(wf(nodes, [{ id: "e1", from: "n1", to: "n2" }, { id: "e2", from: "n2", to: "n3" }]), { project, workspace: ws });
+    expect(r.nodeResults.map((n) => n.state)).toEqual(["failed", "skipped", "skipped"]);
+    expect(r.skipped).toBe(2);
+    expect(r.total).toBe(3);
+  });
+
+  it("级联多入区分性：任一上游通过即执行，失败上游不阻断", async () => {
+    const nodes = [
+      { id: "a", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "A" },
+      { id: "b", kind: "request" as const, apiId: "abad", caseId: "case-abad", label: "B" },
+      { id: "c", kind: "request" as const, apiId: "a3", caseId: "case-a3", label: "C" },
+    ];
+    const edges = [
+      { id: "e1", from: "a", to: "c" },
+      { id: "e2", from: "b", to: "c" },
+    ];
+    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([badApi]), envName: "dev", failFast: false })
+      .run(wf(nodes, edges), { project, workspace: ws });
+    const c = r.nodeResults.filter((n) => n.nodeId === "c");
+    expect(c).toHaveLength(1);
+    expect(c[0]!.state).toBe("passed");
+    expect(r.nodeResults.find((n) => n.nodeId === "b")!.state).toBe("failed");
+    expect(r.total).toBe(3);
+  });
+
+  it("failFast：首节点失败即中断，后续节点 skipped，部分结果照常返回", async () => {
+    const nodes = [
+      { id: "n1", kind: "request" as const, apiId: "abad", caseId: "case-abad", label: "坏" },
+      { id: "n2", kind: "request" as const, apiId: "a2", caseId: "case-a2", label: "two" },
+      { id: "n3", kind: "request" as const, apiId: "a3", caseId: "case-a3", label: "three" },
+    ];
+    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([badApi]), envName: "dev", failFast: true })
+      .run(wf(nodes, [{ id: "e1", from: "n1", to: "n2" }, { id: "e2", from: "n2", to: "n3" }]), { project, workspace: ws });
+    expect(r.nodeResults.map((n) => n.state)).toEqual(["failed", "skipped", "skipped"]);
+    expect(r.total).toBe(3);
+    expect(r.failed).toBe(1);
+    expect(r.passed).toBe(0);
+  });
+
+  it("悬空边端点：忽略该边并告警，不阻断运行", async () => {
+    const nodes = [{ id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "one" }];
+    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf(nodes, [{ id: "e-bad", from: "n1", to: "ghost" }]), { project, workspace: ws });
+    expect(r.nodeResults.map((n) => n.state)).toEqual(["passed"]);
+    expect(r.warnings.join("\n")).toContain("指向不存在的节点");
+    expect(r.passed).toBe(1);
+  });
+
+  it("用例 scope 与所选环境不匹配：可读失败而非崩溃", async () => {
+    const sitApi: ApiDefinition = {
+      id: "asit", name: "asit", version: "1", deprecated: false, method: "GET", url: "{{baseUrl}}/sit", headers: [], query: [],
+      cases: [{ id: "case-asit", name: "asit-用例", scope: "sit", parameters: {}, assertions: [{ id: "as-asit", target: "status", op: "eq", expected: "200" }] }],
+    };
+    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([sitApi]), envName: "dev", failFast: false })
+      .run(wf([{ id: "n1", kind: "request" as const, apiId: "asit", caseId: "case-asit", label: "sit" }], []), { project, workspace: ws });
+    expect(r.nodeResults[0]!.state).toBe("failed");
+    expect(r.nodeResults[0]!.error).toContain("用例不适用于当前环境");
+    expect(r.nodeResults[0]!.outcome?.passed).toBe(false);
+  });
+
+  it("条件上下文 env：环境变量在条件中可读；无环境时空对象", async () => {
+    const localProject: Project = {
+      ...project,
+      environments: [{ id: "e", name: "dev", variables: { baseUrl, deploy: "yes" } }],
+    };
+    const nodes = [
+      { id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "one" },
+      { id: "n2", kind: "request" as const, apiId: "a2", caseId: "case-a2", label: "two" },
+    ];
+    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf(nodes, [{ id: "e1", from: "n1", to: "n2", condition: "env.deploy === 'yes'" }]), { project: localProject, workspace: ws });
+    expect(r.nodeResults.map((n) => n.state)).toEqual(["passed", "passed"]);
+    // 无环境时 env 为空对象：deploy 未定义 → 条件为真 → 同样流转。
+    // 用 noop 节点避免请求节点在无环境下因 {{baseUrl}} 无法解析而自身失败（与本断言无关）。
+    const noopNodes = [
+      { id: "n1", kind: "noop" as const, label: "占位一" },
+      { id: "n2", kind: "noop" as const, label: "占位二" },
+    ];
+    const r2 = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: undefined, failFast: false })
+      .run(wf(noopNodes, [{ id: "e1", from: "n1", to: "n2", condition: "env.deploy === undefined" }]), { project: localProject, workspace: ws });
+    expect(r2.nodeResults.map((n) => n.state)).toEqual(["noop", "noop"]);
   });
 });

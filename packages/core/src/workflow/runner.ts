@@ -1,4 +1,4 @@
-import type { ApiDefinition, Collection, Environment, Project, Workspace } from "../domain/model.js";
+import type { ApiDefinition, Collection, Environment, Project, TestCase, Workspace } from "../domain/model.js";
 import type { PluginRegistry } from "../plugin/registry.js";
 import type { PmApi } from "../plugin/types.js";
 import { CollectionRunner } from "../runner/runner.js";
@@ -39,10 +39,11 @@ export interface WorkflowRunnerOptions {
   failFast?: boolean;
 }
 
-/** 条件求值沙箱上下文：在 PmApi 之上扩展只读的 prev/vars 与求值结果槽位 __value。 */
+/** 条件求值沙箱上下文：在 PmApi 之上扩展只读的 prev/vars/env 与求值结果槽位 __value。 */
 interface ConditionPm extends PmApi {
   prev: unknown;
   vars: Record<string, string>;
+  env: Record<string, string>;
   __value: unknown;
 }
 
@@ -55,13 +56,15 @@ export class WorkflowRunner {
   async run(workflow: Workflow, ctx: { project: Project; workspace: Workspace }): Promise<WorkflowRunResult> {
     const startedAt = new Date().toISOString();
     const warnings: string[] = [];
-    // 结构防御：环在执行前拒绝（端点/孤立等其余问题不阻断遍历）。
+    // 结构防御：环在执行前拒绝（环阻断遍历）；端点缺陷（悬空边）等其余问题不阻断——运行中忽略该边并告警。
     const structural = validateWorkflowStructure(workflow);
     const cycle = structural.find((i) => i.code === "cycle");
     if (cycle) throw new Error(cycle.message);
 
     const project = ctx.project;
     const env = resolveEnv(project, this.opts.envName);
+    // 条件求值上下文 env（规格 §4）：当前环境 variables 的只读快照；未选环境时空对象。
+    const envVars: Record<string, string> = env ? { ...env.variables } : {};
     const runner = new CollectionRunner({
       registry: this.opts.registry,
       bus: createEventBus(),
@@ -141,7 +144,7 @@ export class WorkflowRunner {
             folders: [],
             apis: [{ ...api, cases: [caseDef] }],
           };
-          const outcome = await runSingleNode(runner, collection, env, project, ctx.workspace, bridge);
+          const outcome = await runSingleNode(runner, collection, api, caseDef, env, project, ctx.workspace, bridge);
           const state: NodeState = outcome.passed ? "passed" : "failed";
           nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state, outcome, error: outcome.error });
         }
@@ -150,13 +153,18 @@ export class WorkflowRunner {
       // 出边求值：条件为假不流转（告警）；满足则下游入队（多入只入队一次）。
       for (const edge of outgoing.get(node.id) ?? []) {
         if (edge.condition) {
-          const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, this.carried, this.opts.registry, warnings);
+          const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, this.carried, envVars, this.opts.registry, warnings);
           if (!verdict) {
             warnings.push(`边 ${edge.from} → ${edge.to} 条件不满足: ${edge.condition}`);
             continue;
           }
         }
-        const target = workflow.nodes.find((n) => n.id === edge.to)!;
+        // 悬空 to 端点：忽略该边并告警，不以裸 TypeError 中断整轮（端点缺陷不阻断遍历）。
+        const target = workflow.nodes.find((n) => n.id === edge.to);
+        if (!target) {
+          warnings.push(`边 ${edge.id} 指向不存在的节点 ${edge.to}，已忽略`);
+          continue;
+        }
         if (!queue.some((n) => n.id === target.id) && !nodeResults.has(target.id) && !blocked(target.id)) {
           queue.push(target);
         }
@@ -206,22 +214,31 @@ function resolveEnv(project: Project, envName: string | undefined): Environment 
 
 /** request 节点单用例路径：CollectionRunner 完整语义（脚本/断言/变量/环境）跑合成单用例集合，取唯一用例结果。 */
 async function runSingleNode(
-  runner: CollectionRunner, collection: Collection, env: Environment | undefined,
-  project: Project, workspace: Workspace,
+  runner: CollectionRunner, collection: Collection, api: ApiDefinition, caseDef: TestCase,
+  env: Environment | undefined, project: Project, workspace: Workspace,
   bridge: { get(): Record<string, string>; set(v: Record<string, string>): void },
 ): Promise<CaseOutcome> {
   const result = await runner.run(collection, env, project, workspace, { runtimeBridge: bridge });
-  return result.cases[0]!;
+  const outcome = result.cases[0];
+  if (outcome) return outcome;
+  // 被引用用例 scope 与所选环境不匹配时，单用例被 CollectionRunner 的 scope 过滤剔除（cases 为空）——
+  // 构造可读 failed outcome 留痕，而非让 outcome undefined 裸崩（节点记 failed，遍历继续）。
+  return {
+    apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
+    passed: false, durationMs: 0, assertions: [],
+    error: `用例不适用于当前环境（scope=${caseDef.scope}），已按失败处理`,
+  };
 }
 
 /**
  * 条件边求值：JS 沙箱内 `pm.__value = Boolean((expr))`，结果必须为 true 才流转。
- * 求值上下文 prev（上游结果只读映射，noop 时 passed=true）/ vars（携带变量快照）以 pm 属性直传沙箱；
- * 表达式以裸标识符引用（如 prev.passed / vars.orderId），而沙箱只注入 pm 一个全局——
+ * 求值上下文（规格 §4）：prev（上游结果只读映射，noop 时 passed=true）、vars（携带变量快照）、
+ * env（当前环境 variables 只读快照，无环境时空对象）以 pm 属性直传沙箱；
+ * 表达式以裸标识符引用（如 prev.passed / vars.orderId / env.deploy），而沙箱只注入 pm 一个全局——
  * 故注入一行解构绑定使裸标识符可达（每次 engine.run 均为新沙箱上下文，无跨调用词法残留）。
  * 求值异常/缺引擎按 false 处理并告警（规格 D2/§边界）。
  */
-function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<string, string>, registry: PluginRegistry, warnings: string[]): boolean {
+function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<string, string>, envVars: Record<string, string>, registry: PluginRegistry, warnings: string[]): boolean {
   const engine = registry.getScriptEngine("javascript");
   if (!engine) { warnings.push("缺少 javascript 脚本引擎，条件按 false 处理"); return false; }
   const prev = upstream.outcome
@@ -234,10 +251,11 @@ function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<s
     assert: () => {},
     prev,
     vars: { ...carried },
+    env: envVars,
     __value: undefined,
   };
   try {
-    engine.run(`const { prev, vars } = pm; pm.__value = Boolean((${expr}));`, { pm });
+    engine.run(`const { prev, vars, env } = pm; pm.__value = Boolean((${expr}));`, { pm });
     return pm.__value === true;
   } catch (e) {
     warnings.push(`条件求值失败（按不通过处理）: ${expr} —— ${(e as Error).message}`);
