@@ -36,6 +36,20 @@ beforeAll(() => {
       addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
     }),
   });
+  // jsdom 未实现 ResizeObserver/DOMMatrixReadOnly：M2-B 侧树工作流入口用例点击节点后
+  // 渲染设计器画布（vue-flow 依赖二者），与 wfDesigner.test.ts 同款 stub。
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  (globalThis as Record<string, unknown>).DOMMatrixReadOnly = class {
+    m22: number;
+    constructor(transform?: string) {
+      const scale = transform?.match(/scale\(([1-9.]+)\)/)?.[1];
+      this.m22 = scale !== undefined ? +scale : 1;
+    }
+  };
   localStorage.setItem("apicc.locale", "zh-CN");
 });
 
@@ -237,5 +251,52 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
     } finally {
       failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
     }
+  });
+});
+
+// —— M2-B 收口：侧树工作流入口（点击工作流节点 → 视图切 wf + 设计器载入该流） ——
+describe("App 侧树工作流入口", () => {
+  it("点击侧树工作流节点：视图切到工作流且设计器载入该流（selectedProjectId 保持所属项目）", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    // 直连替身建工作流后重开工作区刷新树（打开钮对非工作区目录回退内存态）
+    const tree = await failingApi.treeGet();
+    const project = tree.children![0]!.children![0]!;
+    const wf = await failingApi.wfCreate({ projectId: project.id, name: "侧树入口流" });
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="tree-workflow"]').trigger("click");
+    await flushPromises();
+    // 视图切到 wf（radio 选中态）
+    expect((wrapper.find('input[value="wf"]').element as HTMLInputElement).checked).toBe(true);
+    // 设计器载入点击的工作流（而非空态列表）
+    const designer = wrapper.findComponent(WfDesigner);
+    const design = designer.props("workflowDesign") as { workflowId: string | null };
+    expect(design.workflowId).toBe(wf.id);
+    // 选中节点归属项目解析含 workflows 摘要：selectedProjectId 不因 kind=workflow 落空
+    expect(designer.props("projectId")).toBe(project.id);
+  });
+
+  it("设计器列表新建工作流后侧树同步出现（树摘要随 wfList 变更刷新）", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    // 选中接口 → selectedProjectId 就绪 → 切到工作流视图（设计器是工作流唯一创建入口）
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await wrapper.find('input[value="wf"]').setValue(true);
+    await flushPromises();
+    // 建前树中无同名工作流（failingApi 是本文件共享单例，前面用例可能已建过别的流）
+    expect(wrapper.find('[data-testid="tree-workflow"]').text()).not.toContain("设计器新建流");
+    // 经设计器列表新建 → 侧树应同步出现该工作流（draft 色点）
+    await wrapper.find('[data-testid="wf-new-name"]').setValue("设计器新建流");
+    await wrapper.find('[data-testid="wf-new-create"]').trigger("click");
+    await flushPromises();
+    const nodes = wrapper.findAll('[data-testid="tree-workflow"]');
+    const created = nodes.find((n) => n.text().includes("设计器新建流"));
+    expect(created).toBeDefined();
+    expect(created!.attributes("data-status")).toBe("draft");
   });
 });

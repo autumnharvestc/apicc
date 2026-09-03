@@ -22,6 +22,7 @@ export const IpcChannel = {
   WfGet: "wf:get",
   WfCreate: "wf:create",
   WfDelete: "wf:delete",
+  WfRename: "wf:rename",
   WfSave: "wf:save",
   WfSetStatus: "wf:set-status",
   WfImpact: "wf:impact",

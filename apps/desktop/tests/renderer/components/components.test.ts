@@ -134,6 +134,23 @@ function mountWithI18n(component: Parameters<typeof mount>[0], props: Record<str
   return mount(component, { props, global: { plugins: [i18n] } });
 }
 
+/**
+ * M2-B 收口夹具：在种子项目下创建一条工作流并刷新侧树（侧树工作流入口的数据前置）。
+ * 返回项目/接口/用例 id 供状态迁移与断言复用。
+ */
+async function seedTreeWorkflow(
+  api: ReturnType<typeof createMemoryApi>,
+  workspace: ReturnType<typeof useWorkspaceStore>,
+  name: string,
+): Promise<{ workflowId: string; projectId: string; apiId: string; caseId: string }> {
+  const project = workspace.tree!.children![0]!.children![0]!;
+  const apiNode = project.children![0]!.children![0]!;
+  const detail = await api.apiGet(apiNode.id);
+  const wf = await api.wfCreate({ projectId: project.id, name });
+  await workspace.refresh();
+  return { workflowId: wf.id, projectId: project.id, apiId: apiNode.id, caseId: detail.api.cases[0]!.id };
+}
+
 describe("SideTree", () => {
   it("渲染工作区树并支持选中接口", async () => {
     const { wrapper } = await mountWith(SideTree);
@@ -274,6 +291,74 @@ describe("SideTree", () => {
     workspace.opened = false;
     await flushPromises();
     expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(true);
+  });
+
+  // —— M2-B 收口：侧树工作流入口（project children 尾部渲染 + 状态徽标色点） ——
+  it("project children 尾部渲染工作流节点：label + 状态徽标色点（draft 灰/published 蓝/enabled 绿）", async () => {
+    const { wrapper, api, workspace } = await mountWith(SideTree);
+    const seeded = await seedTreeWorkflow(api, workspace, "草稿流");
+    const pub = await api.wfCreate({ projectId: seeded.projectId, name: "已发布流" });
+    await api.wfSetStatus(pub.id, "published");
+    // enabled 须过启用校验：绑定种子接口的真实用例（空流禁止启用）
+    const en = await api.wfCreate({ projectId: seeded.projectId, name: "已启用流" });
+    await api.wfSave({ ...en, nodes: [{ id: "n1", kind: "request", apiId: seeded.apiId, caseId: seeded.caseId }], edges: [] });
+    await api.wfSetStatus(en.id, "published");
+    await api.wfSetStatus(en.id, "enabled");
+    await workspace.refresh();
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const nodes = wrapper.findAll('[data-testid="tree-workflow"]');
+    expect(nodes.map((n) => n.text())).toEqual(["草稿流", "已发布流", "已启用流"]);
+    // 状态徽标色点契约：data-status + 色点 class（draft 灰/published 蓝/enabled 绿）
+    expect(nodes[0]!.attributes("data-status")).toBe("draft");
+    expect(nodes[1]!.attributes("data-status")).toBe("published");
+    expect(nodes[2]!.attributes("data-status")).toBe("enabled");
+    expect(nodes[0]!.find(".wf-dot").classes()).toContain("wf-dot-draft");
+    expect(nodes[1]!.find(".wf-dot").classes()).toContain("wf-dot-published");
+    expect(nodes[2]!.find(".wf-dot").classes()).toContain("wf-dot-enabled");
+    // 工作流节点渲染在 project children 尾部（接口行之后）
+    const apiEl = wrapper.find('[data-testid="tree-api-row"]').element;
+    const wfEl = wrapper.find('[data-testid="tree-workflow-row"]').element;
+    expect(apiEl.compareDocumentPosition(wfEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("点击工作流节点 emit select(\"workflow\", id)", async () => {
+    const { wrapper, api, workspace } = await mountWith(SideTree);
+    const seeded = await seedTreeWorkflow(api, workspace, "点击流");
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="tree-workflow"]').trigger("click");
+    // App 据此 kind 加载工作流设计器（onSelect → workflowDesign.load + 视图切 wf）
+    expect(wrapper.emitted("select")![0]).toEqual(["workflow", seeded.workflowId]);
+  });
+
+  it("工作流重命名：对话框输入后经 wfRename 改名并刷新树", async () => {
+    const { wrapper, api, workspace } = await mountWith(SideTree);
+    const seeded = await seedTreeWorkflow(api, workspace, "旧名流");
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const row = wrapper.find('[data-testid="tree-workflow-row"]');
+    await row.find('[data-testid="node-rename"]').trigger("click");
+    // 重命名复用 ConfirmDialog 输入先例（a-modal 传送门渲染于 body）
+    await expectBody("dialog-input").setValue("新名流");
+    await expectBody("dialog-confirm").trigger("click");
+    await flushPromises();
+    expect((await api.wfList(seeded.projectId)).map((w) => w.name)).toEqual(["新名流"]);
+    expect(wrapper.find('[data-testid="tree-workflow"]').text()).toContain("新名流");
+  });
+
+  it("工作流删除：确认对话框放行后经 wfDelete 删除并从树移除", async () => {
+    const { wrapper, api, workspace } = await mountWith(SideTree);
+    const seeded = await seedTreeWorkflow(api, workspace, "待删流");
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const row = wrapper.find('[data-testid="tree-workflow-row"]');
+    await row.find('[data-testid="node-delete"]').trigger("click");
+    await flushPromises();
+    // 删除确认文案复用 wf.deleteConfirm（含工作流名），确认前不删
+    expect(document.body.textContent).toContain("待删流");
+    expect((await api.wfList(seeded.projectId)).map((w) => w.name)).toEqual(["待删流"]);
+    await expectBody("dialog-confirm").trigger("click");
+    await flushPromises();
+    expect(await api.wfList(seeded.projectId)).toEqual([]);
+    expect(wrapper.find('[data-testid="tree-workflow"]').exists()).toBe(false);
   });
 });
 

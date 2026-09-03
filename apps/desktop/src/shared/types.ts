@@ -61,10 +61,11 @@ export interface WfRunInput { workflowId: string; envName?: string }
 
 /**
  * nodeCreate 统一返回的瘦节点 DTO（宽审查 I2：ipc 与 memory 契约一致的单一事实源）。
- * kind 与 TreeNodeDTO 的节点子集对齐（不含 root），与请求 input.kind 恒等。
+ * kind 与 TreeNodeDTO 的节点子集对齐（不含 root；workflow 亦非 node:create 产物，同样排除），
+ * 与请求 input.kind 恒等。
  */
 export interface NodeCreatedDTO {
-  kind: Exclude<TreeNodeDTO["kind"], "root">;
+  kind: Exclude<TreeNodeDTO["kind"], "root" | "workflow">;
   id: string;
   label: string;
   method?: string;
@@ -96,6 +97,8 @@ export interface ApiccApi {
   wfGet(workflowId: string): Promise<WorkflowDetail>;
   wfCreate(input: WfCreateInput): Promise<Workflow>;
   wfDelete(workflowId: string): Promise<void>;
+  /** wf:rename：同项目内改名（重名拒绝「工作流已存在: name」），落盘并清理旧目录。 */
+  wfRename(workflowId: string, name: string): Promise<void>;
   /** wf:save：恒保持当前 status 不变（生命周期只经 wf:set-status），返回落盘后的工作流。 */
   wfSave(workflow: Workflow): Promise<Workflow>;
   wfSetStatus(workflowId: string, next: WorkflowStatus): Promise<WfSetStatusResult>;

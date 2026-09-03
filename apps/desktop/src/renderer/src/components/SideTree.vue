@@ -11,7 +11,8 @@ import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
 /**
- * 左侧树：递归结构按 DTO 固定深度展开（分组→项目→集合→[文件夹→]接口）。
+ * 左侧树：递归结构按 DTO 固定深度展开（分组→项目→集合→[文件夹→]接口；project 末尾
+ * 另有由 workflows 摘要合成的工作流叶子，M2-B 收口）。
  * store 经 props 注入（组合根一次装配；组件内部禁止重复调用 store 工厂）。
  * reportError 为组合根注入的最小错误反馈通道（宽审查 I1）：对话框链路的
  * Promise 拒绝统一转报，不再作为未处理 rejection 静默吞没。
@@ -38,7 +39,8 @@ const selectedKeys = ref<string[]>([]);
 function descendantContainerIds(node: TreeNodeDTO): string[] {
   const ids: string[] = [];
   for (const child of node.children ?? []) {
-    if (child.kind !== "api") ids.push(child.id);
+    // api 与 workflow 均为叶子（workflow 由 project.workflows 摘要合成，不入 children）
+    if (child.kind !== "api" && child.kind !== "workflow") ids.push(child.id);
     ids.push(...descendantContainerIds(child));
   }
   return ids;
@@ -66,17 +68,34 @@ interface TreeDataNode {
 const expandedKeys = computed(() => Array.from(expanded.value));
 const treeData = computed<TreeDataNode[]>(() => {
   const mapNodes = (nodes?: TreeNodeDTO[]): TreeDataNode[] =>
-    (nodes ?? []).map((n) => ({
-      key: n.id,
-      title: n.label,
-      isLeaf: n.kind === "api",
-      dto: n,
-      children: mapNodes(n.children),
-    }));
+    (nodes ?? []).map((n) => {
+      // M2-B 收口：project 节点在 children 尾部追加工作流叶子（由 workflows 摘要合成，
+      // 状态随 DTO 带给色点渲染；树 refresh 后重算，重命名/删除自动反映）。
+      const children =
+        n.kind === "project"
+          ? [
+              ...mapNodes(n.children),
+              ...(n.workflows ?? []).map((w) => ({
+                key: w.id,
+                title: w.name,
+                isLeaf: true,
+                dto: { kind: "workflow" as const, id: w.id, label: w.name, status: w.status },
+                children: [],
+              })),
+            ]
+          : mapNodes(n.children);
+      return {
+        key: n.id,
+        title: n.label,
+        isLeaf: n.kind === "api" || n.kind === "workflow",
+        dto: n,
+        children,
+      };
+    });
   return mapNodes(props.workspace.tree?.children);
 });
 
-function selectApi(node: TreeNodeDTO) {
+function selectNode(node: TreeNodeDTO) {
   selectedKeys.value = [node.id];
   props.tree.select(node.kind, node.id);
   emit("select", node.kind, node.id);
@@ -185,6 +204,36 @@ async function startDelete(node: TreeNodeDTO) {
     },
   });
 }
+
+// —— 工作流动作（M2-B 收口）：走 wf:rename / wf:delete 专用频道（不经 node:rename 的
+// kind 路由——工作流是 project 内的命名目录，重命名需旧目录清理语义），其余链路
+// （ConfirmDialog 复用、拒绝经 reportError、refresh 换新树）与既有动作钮同构。重命名
+// 后的 status 恒不变（生命周期只经 wf:set-status）。删除暂不清 workflowDesign 会话态
+// （设计器打开中的工作流被侧树删除属边缘路径，随任务 3 清理项跟进）。
+function startWorkflowRename(node: TreeNodeDTO) {
+  openDialog({
+    title: t("tree.rename"),
+    placeholder: t("tree.namePlaceholder"),
+    initialValue: node.label,
+    run: async (value) => {
+      if (!value) return;
+      await props.api.wfRename(node.id, value);
+      await props.workspace.refresh();
+    },
+  });
+}
+
+function startWorkflowDelete(node: TreeNodeDTO) {
+  openDialog({
+    title: t("wf.deleteConfirm", { name: node.label }),
+    run: async () => {
+      // 已在对话框确认：放行回调恒真。
+      await props.api.wfDelete(node.id);
+      if (props.tree.selected?.id === node.id) props.tree.selected = null;
+      await props.workspace.refresh();
+    },
+  });
+}
 </script>
 
 <template>
@@ -206,12 +255,23 @@ async function startDelete(node: TreeNodeDTO) {
         <template #title="{ dto }">
           <!-- 接口叶子：整行 tree-api-row，选中经 tree-api 按钮 emit select -->
           <div v-if="dto.kind === 'api'" class="node leaf" data-testid="tree-api-row">
-            <button class="api-btn" data-testid="tree-api" :data-node-id="dto.id" @click="selectApi(dto)">
+            <button class="api-btn" data-testid="tree-api" :data-node-id="dto.id" @click="selectNode(dto)">
               <span class="method">{{ dto.method }}</span>{{ dto.label }}
             </button>
             <span class="actions">
               <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
               <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
+            </span>
+          </div>
+          <!-- 工作流叶子（M2-B 收口）：project children 尾部，label + 状态徽标色点
+               （draft 灰/published 蓝/enabled 绿），动作钮 重命名/删除 -->
+          <div v-else-if="dto.kind === 'workflow'" class="node leaf" data-testid="tree-workflow-row" :title="t('tree.workflows')">
+            <button class="api-btn" data-testid="tree-workflow" :data-node-id="dto.id" :data-status="dto.status" @click="selectNode(dto)">
+              <span class="wf-dot" :class="`wf-dot-${dto.status}`" :title="t(`wf.status.${dto.status}`)"></span>{{ dto.label }}
+            </button>
+            <span class="actions">
+              <button class="act" data-testid="node-rename" @click="startWorkflowRename(dto)">{{ t("tree.rename") }}</button>
+              <button class="act danger" data-testid="node-delete" @click="startWorkflowDelete(dto)">{{ t("tree.delete") }}</button>
             </span>
           </div>
           <!-- 容器节点：折叠钮 + 悬停动作钮（按层级保留原有钮集合） -->
@@ -328,6 +388,17 @@ async function startDelete(node: TreeNodeDTO) {
   font-weight: 600;
   color: var(--accent);
 }
+/* 工作流状态徽标色点（M2-B 收口）：draft 灰/published 蓝/enabled 绿 */
+.wf-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.wf-dot-draft { background: var(--text-muted); }
+.wf-dot-published { background: var(--accent); }
+.wf-dot-enabled { background: var(--pass); }
 /* 删除影响清单（ConfirmDialog 默认插槽内容，随 SideTree 作用域编译） */
 .impact-warning {
   margin: 0 0 6px;

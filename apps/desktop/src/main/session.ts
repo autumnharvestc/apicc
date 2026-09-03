@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   fileStorage,
@@ -167,6 +168,21 @@ export function createSession() {
   }
 
   /**
+   * 重命名工作流（M2-B 收口：侧树重命名入口）：按 id 定位 → 改名 → save() 落盘。
+   * 旧目录由 save 后的 cleanupOrphanDirs workflows 层清理（先写新、后删旧，与集合
+   * renameNode 同一盘上语义）；同项目重名拒绝（与 createWorkflow 同文案）。status 恒不变。
+   */
+  async function renameWorkflow(workflowId: string, name: string): Promise<void> {
+    const loc = locateWorkflow(workflowId);
+    if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
+    if (loc.project.workflows.some((w) => w.id !== workflowId && w.name === name)) {
+      throw new Error(`工作流已存在: ${name}`);
+    }
+    loc.workflow.name = name;
+    await save();
+  }
+
+  /**
    * 保存工作流：按 id 定位替换 + save() 落盘。恒保持当前 status 不变（裁定：生命周期
    * 只经 setWorkflowStatus；编辑已发布/已启用工作流的回退由 UI 显式询问，save 不掺和）。
    * 返回落盘后的工作流（含保留的 status），wf:save 频道原样回传给渲染层。
@@ -274,35 +290,47 @@ export function createSession() {
   async function save(): Promise<void> {
     const { root: r, workspace: ws } = ensureOpen();
     await fileStorage.save(r, ws);
-    cleanupOrphanDirs(r, ws);
+    await cleanupOrphanDirs(r, ws);
   }
 
-  /** 重命名后清理盘上旧目录（save 只写新路径；规格账本：孤儿清理在此收口）。 */
-  function cleanupOrphanDirs(rootDir: string, ws: Workspace): void {
+  /**
+   * 重命名后清理盘上旧目录（save 只写新路径；规格账本：孤儿清理在此收口）。
+   * 删除用 node:fs/promises 的 rm（而非 rmSync）：本机（Windows + Node 24）实测 rmSync
+   * 对含非 ASCII 祖先的路径会静默失效甚至硬崩（同步 uv_fs_rm 缺陷，任务 1 报告备案），
+   * 异步 rm 实测稳定；maxRetries 兼顾杀软扫描等瞬时句柄竞争。中文目录名是本产品的
+   * 常态输入，清理不得依赖一个对它失效的系统调用。
+   */
+  async function cleanupOrphanDirs(rootDir: string, ws: Workspace): Promise<void> {
     const groupsDir = join(rootDir, "groups");
     if (!existsSync(groupsDir)) return;
     for (const gName of readdirSafe(groupsDir)) {
       const gDir = join(groupsDir, gName);
       const g = ws.groups.find((x) => x.name === gName);
-      if (!g) { rmSync(gDir, { recursive: true, force: true }); continue; }
+      if (!g) { await rmOrphan(gDir); continue; }
       const projectsDir = join(gDir, "projects");
       for (const pName of readdirSafe(projectsDir)) {
         const p = g.projects.find((x) => x.name === pName);
-        if (!p) { rmSync(join(projectsDir, pName), { recursive: true, force: true }); continue; }
+        if (!p) { await rmOrphan(join(projectsDir, pName)); continue; }
+        const workflowsDir = join(projectsDir, pName, "workflows");
+        for (const wName of readdirSafe(workflowsDir)) {
+          if (!p.workflows.find((x) => x.name === wName)) {
+            await rmOrphan(join(workflowsDir, wName));
+          }
+        }
         const collectionsDir = join(projectsDir, pName, "collections");
         for (const cName of readdirSafe(collectionsDir)) {
           const c = p.collections.find((x) => x.name === cName);
-          if (!c) { rmSync(join(collectionsDir, cName), { recursive: true, force: true }); continue; }
+          if (!c) { await rmOrphan(join(collectionsDir, cName)); continue; }
           const apisDir = join(collectionsDir, cName, "apis");
           for (const aName of readdirSafe(apisDir)) {
             if (!c.apis.find((x) => x.name === aName) && !c.folders.find((x) => x.name === aName)) {
-              rmSync(join(apisDir, aName), { recursive: true, force: true });
+              await rmOrphan(join(apisDir, aName));
             }
           }
           const foldersDir = join(collectionsDir, cName, "folders");
           for (const fName of readdirSafe(foldersDir)) {
             if (!c.folders.find((x) => x.name === fName)) {
-              rmSync(join(foldersDir, fName), { recursive: true, force: true });
+              await rmOrphan(join(foldersDir, fName));
             }
           }
         }
@@ -336,7 +364,7 @@ export function createSession() {
     createGroup, createProject, createCollection, createFolder, createApi,
     createEnvironment, setEnvironmentVariables, importProject,
     locateApi, locateCollection, saveApi,
-    locateWorkflow, createWorkflow, deleteWorkflow, saveWorkflow, setWorkflowStatus,
+    locateWorkflow, createWorkflow, deleteWorkflow, saveWorkflow, setWorkflowStatus, renameWorkflow,
     renameNode, deleteNode, save,
   };
 }
@@ -347,4 +375,9 @@ function readdirSafe(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** 孤儿目录/文件删除：force 吞 ENOENT；maxRetries 抗瞬时句柄竞争（杀软扫描等）。 */
+function rmOrphan(path: string): Promise<void> {
+  return rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }

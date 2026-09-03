@@ -92,13 +92,27 @@ function dismissError() {
   errorMessage.value = "";
 }
 
-/** 侧树选中回调：接口节点加载进编辑器，其余节点仅记录选中态。 */
+/**
+ * 侧树选中回调：接口节点加载进编辑器；工作流节点（M2-B 收口）加载进工作流设计器并
+ * 切到工作流视图（load 失败经 reportError 上报，与对话框链路同一收口点）。
+ * 其余节点仅记录选中态。
+ */
 async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
   tree.select(kind, id);
   if (kind === "api") await editor.load(id);
+  if (kind === "workflow") {
+    view.value = "wf";
+    try {
+      await workflowDesign.load(id);
+    } catch (e) {
+      reportError(e);
+    }
+  }
 }
 
-/** 树选中节点所属项目 id：环境面板按它加载环境列表（接口/文件夹/集合向上归属）。 */
+/** 树选中节点所属项目 id：环境面板按它加载环境列表（接口/文件夹/集合向上归属）。
+ * 工作流节点（M2-B 收口）按 project.workflows 摘要归属——否则侧树打开工作流后
+ * selectedProjectId 落空，设计器的绑定级联索引与 wf 列表会丢失项目上下文。 */
 const selectedProjectId = computed<string | null>(() => {
   const sel = tree.selected;
   const root = workspace.tree;
@@ -108,6 +122,7 @@ const selectedProjectId = computed<string | null>(() => {
   for (const group of root.children ?? []) {
     for (const project of group.children ?? []) {
       if (project.id === sel.id) return project.id;
+      if (project.workflows?.some((w) => w.id === sel.id)) return project.id;
       for (const collection of project.children ?? []) {
         if (collection.id === sel.id) return project.id;
         for (const folder of collection.children ?? []) {
@@ -161,6 +176,22 @@ watch(
     }
   },
   { immediate: true },
+);
+
+// —— 工作流列表 → 侧树摘要同步（M2-B 收口）——
+// 设计器列表是工作流唯一创建/删除入口，而树 DTO 的 project.workflows 摘要只在
+// treeGet 时构建：不随刷新，设计器里新建的流在侧树永远不可见（「发现」落空）。
+// 监听 items.length（create/remove 必变；等长重拉不触发，避免无谓 treeGet）。
+watch(
+  () => wfList.items.length,
+  async () => {
+    if (!workspace.opened) return;
+    try {
+      await workspace.refresh();
+    } catch (e) {
+      reportError(e);
+    }
+  },
 );
 </script>
 
