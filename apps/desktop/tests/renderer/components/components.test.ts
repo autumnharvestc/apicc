@@ -19,6 +19,7 @@ import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js
 import { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
+import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
 import SideTree from "../../../src/renderer/src/components/SideTree.vue";
 import RequestEditor from "../../../src/renderer/src/components/RequestEditor.vue";
 import ResponseViewer from "../../../src/renderer/src/components/ResponseViewer.vue";
@@ -119,13 +120,15 @@ async function mountWith(component: Parameters<typeof mount>[0], props: Record<s
   const tree = useTreeStore(api, workspace);
   const editor = useEditorStore(api);
   const debug = useDebugStore(api);
+  // SideTree 需要设计器会话（审查 I2 重命名卸载）：同一份一次性装配经 props 注入
+  const workflowDesign = useWorkflowDesignStore(api);
   const { i18n } = createI18nInstance();
   const wrapper = mount(component, {
-    props: { api, workspace, tree, editor, debug, reportError: () => {}, ...props },
+    props: { api, workspace, tree, editor, debug, workflowDesign, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, workspace, tree, editor, debug };
+  return { wrapper, api, workspace, tree, editor, debug, workflowDesign };
 }
 
 /** 仅需 i18n 插件的挂载（组件只收普通 props，不消费 store）。 */

@@ -19,6 +19,7 @@ import { apicc } from "./api";
 import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import TopBar from "./components/TopBar.vue";
 import SideTree from "./components/SideTree.vue";
+import ConfirmDialog from "./components/ConfirmDialog.vue";
 import RequestEditor from "./components/RequestEditor.vue";
 import ResponseViewer from "./components/ResponseViewer.vue";
 import CasePanel from "./components/CasePanel.vue";
@@ -94,21 +95,52 @@ function dismissError() {
 
 /**
  * 侧树选中回调：接口节点加载进编辑器；工作流节点（M2-B 收口）加载进工作流设计器并
- * 切到工作流视图（load 失败经 reportError 上报，与对话框链路同一收口点）。
+ * 切到工作流视图——缓冲 dirty 时先经确认对话框放行（审查 I1 修复），确认丢弃后才载入
+ * 目标流，不再静默覆盖未保存编辑（先例同 WfDesigner requestUnload）。
  * 其余节点仅记录选中态。
  */
 async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
   tree.select(kind, id);
   if (kind === "api") await editor.load(id);
-  // 已知限制（任务 3 跟进）：侧树切换工作流直接 load，绕过设计器的 dirty 确认守卫。
   if (kind === "workflow") {
-    view.value = "wf";
-    try {
-      await workflowDesign.load(id);
-    } catch (e) {
-      reportError(e);
+    if (workflowDesign.dirty) {
+      pendingSwitchId = id;
+      wfSwitchConfirmOpen.value = true;
+      return;
     }
+    await openWorkflowInDesigner(id);
   }
+}
+// M2-C 跟进：树摘要/wfList/设计器三方同步协议 + dirty 确认（侧树切换的确认放行已随
+// 审查 I1 补齐；跨视图选中态/摘要一致性仍随协议收口）。
+
+// —— 侧树切换工作流的 dirty 确认（审查 I1）——
+// 确认前缓冲与会话态不动；确认丢弃后卸载旧会话再载入目标流；取消则留在原工作流，
+// 并把树选中项回退到设计器当前流，避免「树选中 B、设计器开着 A」的选中错位。
+const wfSwitchConfirmOpen = ref(false);
+let pendingSwitchId: string | null = null;
+
+/** 载入工作流进设计器并切到 wf 视图（load 失败经 reportError 上报，与对话框链路同一收口点）。 */
+async function openWorkflowInDesigner(id: string) {
+  view.value = "wf";
+  try {
+    await workflowDesign.load(id);
+  } catch (e) {
+    reportError(e);
+  }
+}
+
+function onWfSwitchConfirm() {
+  const id = pendingSwitchId;
+  pendingSwitchId = null;
+  wfSwitchConfirmOpen.value = false;
+  if (id) void openWorkflowInDesigner(id);
+}
+
+function onWfSwitchCancel() {
+  pendingSwitchId = null;
+  wfSwitchConfirmOpen.value = false;
+  if (workflowDesign.workflowId) tree.select("workflow", workflowDesign.workflowId);
 }
 
 /** 树选中节点所属项目 id：环境面板按它加载环境列表（接口/文件夹/集合向上归属）。
@@ -233,7 +265,16 @@ watch(
               {{ t(`nav.${v}`) }}
             </a-radio-button>
           </a-radio-group>
-          <SideTree class="side-col" :api="apicc" :workspace="workspace" :tree="tree" :report-error="reportError" @select="onSelect" />
+          <!-- workflow-design 注入（审查 I2）：侧树重命名命中设计器正开的流时强制卸载会话 -->
+          <SideTree
+            class="side-col"
+            :api="apicc"
+            :workspace="workspace"
+            :tree="tree"
+            :workflow-design="workflowDesign"
+            :report-error="reportError"
+            @select="onSelect"
+          />
         </a-layout-sider>
         <a-layout-content class="right-col" data-testid="main-split">
           <template v-if="view === 'debug'">
@@ -279,8 +320,15 @@ watch(
             :report-error="reportError"
           />
         </a-layout-content>
-      </a-layout>
     </a-layout>
+    <!-- 侧树切换工作流的 dirty 丢弃确认（审查 I1）：a-modal 传送门渲染于 body -->
+    <ConfirmDialog
+      :open="wfSwitchConfirmOpen"
+      :title="t('wf.discardConfirm')"
+      @confirm="onWfSwitchConfirm"
+      @cancel="onWfSwitchCancel"
+    />
+  </a-layout>
   </ConfigProvider>
 </template>
 

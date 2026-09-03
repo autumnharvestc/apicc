@@ -28,8 +28,23 @@ export interface WorkflowLocation { workflow: Workflow; project: Project; group:
 
 export type NodeKind = "group" | "project" | "collection" | "folder" | "api" | "environment";
 
+/**
+ * 名称比较（C1 修复）：win32 文件系统大小写不敏感——save 按 name 写盘时 NTFS 会把
+ * `workflows\Flow` 解析到既有 `flow` 目录（盘上名保持旧大小写），cleanup/重名检查若按
+ * === 严格比较，会把刚写入的目录误判为孤儿递归删除（数据破坏）。win32 下两侧
+ * toLowerCase 归一比较；其余平台保持严格相等（POSIX 大小写敏感，`Flow`/`flow` 是两个
+ * 不同目录）。platform 参数供测试注入（默认取当前进程平台）。
+ */
+export function sameName(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/** 会话选项：platform 仅注入目录名/重名比较的大小写语义（测试模拟 win32 判定路径）。 */
+export interface SessionOptions { platform?: NodeJS.Platform }
+
 /** 主进程工作区会话：内存模型为唯一事实源，save() 全量落盘（规格 §4）。 */
-export function createSession() {
+export function createSession(options: SessionOptions = {}) {
+  const platform = options.platform ?? process.platform;
   let root: string | null = null;
   let workspace: Workspace | null = null;
 
@@ -147,7 +162,9 @@ export function createSession() {
     const { workspace: ws } = ensureOpen();
     const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
     if (!project) throw new Error(`未找到项目: ${projectId}`);
-    if (project.workflows.some((w) => w.name === name)) throw new Error(`工作流已存在: ${name}`);
+    // 重名检查走 sameName（C1）：win32 上 flow/FLOW 是同一盘上目录，严格比较会放行
+    // 大小写变体重名 → save 双写同目录互相覆盖。
+    if (project.workflows.some((w) => sameName(w.name, name, platform))) throw new Error(`工作流已存在: ${name}`);
     const workflow: Workflow = { id: randomUUID(), name, status: "draft", nodes: [], edges: [] };
     project.workflows.push(workflow);
     return workflow;
@@ -175,7 +192,8 @@ export function createSession() {
   async function renameWorkflow(workflowId: string, name: string): Promise<void> {
     const loc = locateWorkflow(workflowId);
     if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
-    if (loc.project.workflows.some((w) => w.id !== workflowId && w.name === name)) {
+    // 重名检查走 sameName（C1）：win32 归一比较（自身大小写改名经 id 排除放行）。
+    if (loc.project.workflows.some((w) => w.id !== workflowId && sameName(w.name, name, platform))) {
       throw new Error(`工作流已存在: ${name}`);
     }
     loc.workflow.name = name;
@@ -295,6 +313,9 @@ export function createSession() {
 
   /**
    * 重命名后清理盘上旧目录（save 只写新路径；规格账本：孤儿清理在此收口）。
+   * 目录名匹配走 sameName（C1 修复）：win32 文件系统大小写不敏感——大小写改名（如
+   * flow→Flow）后 save 写 `Flow` 被 NTFS 解析到既有 `flow` 目录（盘名不变），严格比较
+   * 会把刚写入的目录误判为孤儿递归删除；win32 下归一比较，其余平台严格相等。
    * 删除用 node:fs/promises 的 rm（而非 rmSync）：本机（Windows + Node 24）实测 rmSync
    * 对含非 ASCII 祖先的路径会静默失效甚至硬崩（同步 uv_fs_rm 缺陷，任务 1 报告备案），
    * 异步 rm 实测稳定；maxRetries 兼顾杀软扫描等瞬时句柄竞争。中文目录名是本产品的
@@ -305,31 +326,31 @@ export function createSession() {
     if (!existsSync(groupsDir)) return;
     for (const gName of readdirSafe(groupsDir)) {
       const gDir = join(groupsDir, gName);
-      const g = ws.groups.find((x) => x.name === gName);
+      const g = ws.groups.find((x) => sameName(x.name, gName, platform));
       if (!g) { await rmOrphan(gDir); continue; }
       const projectsDir = join(gDir, "projects");
       for (const pName of readdirSafe(projectsDir)) {
-        const p = g.projects.find((x) => x.name === pName);
+        const p = g.projects.find((x) => sameName(x.name, pName, platform));
         if (!p) { await rmOrphan(join(projectsDir, pName)); continue; }
         const workflowsDir = join(projectsDir, pName, "workflows");
         for (const wName of readdirSafe(workflowsDir)) {
-          if (!p.workflows.find((x) => x.name === wName)) {
+          if (!p.workflows.find((x) => sameName(x.name, wName, platform))) {
             await rmOrphan(join(workflowsDir, wName));
           }
         }
         const collectionsDir = join(projectsDir, pName, "collections");
         for (const cName of readdirSafe(collectionsDir)) {
-          const c = p.collections.find((x) => x.name === cName);
+          const c = p.collections.find((x) => sameName(x.name, cName, platform));
           if (!c) { await rmOrphan(join(collectionsDir, cName)); continue; }
           const apisDir = join(collectionsDir, cName, "apis");
           for (const aName of readdirSafe(apisDir)) {
-            if (!c.apis.find((x) => x.name === aName) && !c.folders.find((x) => x.name === aName)) {
+            if (!c.apis.find((x) => sameName(x.name, aName, platform)) && !c.folders.find((x) => sameName(x.name, aName, platform))) {
               await rmOrphan(join(apisDir, aName));
             }
           }
           const foldersDir = join(collectionsDir, cName, "folders");
           for (const fName of readdirSafe(foldersDir)) {
-            if (!c.folders.find((x) => x.name === fName)) {
+            if (!c.folders.find((x) => sameName(x.name, fName, platform))) {
               await rmOrphan(join(foldersDir, fName));
             }
           }

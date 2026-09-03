@@ -7,6 +7,7 @@ import type { ApiccApi } from "../../../shared/types.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
+import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
 import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
@@ -26,6 +27,8 @@ const props = defineProps<{
   api: ApiccApi;
   workspace: ReturnType<typeof useWorkspaceStore>;
   tree: ReturnType<typeof useTreeStore>;
+  /** 工作流设计器会话（审查 I2）：重命名命中设计器正开的流时强制卸载，防缓冲持旧名回滚改名 */
+  workflowDesign: ReturnType<typeof useWorkflowDesignStore>;
   reportError: (e: unknown) => void;
 }>();
 const emit = defineEmits<{ select: [kind: TreeNodeDTO["kind"], id: string] }>();
@@ -214,8 +217,9 @@ async function startDelete(node: TreeNodeDTO) {
 // —— 工作流动作（M2-B 收口）：走 wf:rename / wf:delete 专用频道（不经 node:rename 的
 // kind 路由——工作流是 project 内的命名目录，重命名需旧目录清理语义），其余链路
 // （ConfirmDialog 复用、拒绝经 reportError、refresh 换新树）与既有动作钮同构。重命名
-// 后的 status 恒不变（生命周期只经 wf:set-status）。删除暂不清 workflowDesign 会话态
-// （设计器打开中的工作流被侧树删除属边缘路径，随任务 3 清理项跟进）。
+// 后的 status 恒不变（生命周期只经 wf:set-status）；重命名命中设计器正开的流时强制
+// unload 会话（审查 I2）。删除暂不清 workflowDesign 会话态（设计器打开中的工作流被
+// 侧树删除属边缘路径）——并入 M2-C 跟进：树摘要/wfList/设计器三方同步协议 + dirty 确认。
 function startWorkflowRename(node: TreeNodeDTO) {
   openDialog({
     title: t("tree.rename"),
@@ -224,6 +228,10 @@ function startWorkflowRename(node: TreeNodeDTO) {
     run: async (value) => {
       if (!value) return;
       await props.api.wfRename(node.id, value);
+      // 审查 I2：设计器正开着同一工作流时缓冲仍持旧名——此后保存按缓冲整体替换，
+      // 改名被静默回滚且树摘要滞留假值。强制卸载会话，下次打开重新 load 拿新名
+      // （避免「改了 id 同步、内容半同步」的中间态）。
+      if (props.workflowDesign.workflowId === node.id) props.workflowDesign.unload();
       await props.workspace.refresh();
     },
   });
