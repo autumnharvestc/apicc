@@ -75,7 +75,7 @@ function formatMs(ms: number): string {
           <template v-else-if="column.key === 'duration'">
             {{ record.outcome ? formatMs(record.outcome.durationMs) : "—" }}
           </template>
-          <template v-else-if="column.key === 'error'">{{ record.error ?? "—" }}</template>
+          <template v-else-if="column.key === 'error'"><span class="wf-result-error">{{ record.error ?? "—" }}</span></template>
         </template>
       </a-table>
     </template>
@@ -83,7 +83,10 @@ function formatMs(ms: number): string {
 </template>
 
 <style scoped>
-.wf-result-warnings { margin-bottom: 12px; }
+/* 长文本防溢出（2B T7③）：warnings 告警整体 break-all（word-break 可继承，覆盖
+ * message/列表全部子文本，li 上的显式规则保留兜底）；错误列单元格单独断行。 */
+.wf-result-warnings { margin-bottom: 12px; word-break: break-all; }
 .wf-result-warning-list { margin: 4px 0 0; padding-left: 18px; }
 .wf-result-warning-list li { word-break: break-all; }
+.wf-result-error { word-break: break-all; }
 </style>
