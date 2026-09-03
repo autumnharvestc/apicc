@@ -19,7 +19,7 @@ export interface RunnerOptions {
   runtimeBridge?: {
     /** 读取外部携带的运行时变量（进入本 run 前注入 persisted 层）。 */
     get(): Record<string, string>;
-    /** 本 run 结束后接收最终运行时变量（persisted 层快照）。 */
+    /** 本 run 结束后接收本次累计提取的运行时变量（仅脚本 pm.variables.set 写过的键）；外部携带者应做加法式合并。 */
     set(vars: Record<string, string>): void;
   };
 }
