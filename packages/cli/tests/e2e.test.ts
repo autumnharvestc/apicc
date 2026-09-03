@@ -194,4 +194,94 @@ describe("CLI 端到端", () => {
     writeFileSync(sample, "既不是 OpenAPI 也不是 v2.1 集合的普通文本");
     await expect(runCli(["import", sample, "--group", "g"], createDefaultRegistry())).rejects.toThrow(/无法识别的导入格式/);
   });
+
+  it("run-workflow 按条件流转执行并产出报告", async () => {
+    // 夹具：三节点条件工作流 one --prev.passed--> two --false--> three，workflow.yaml 手写落盘
+    // （nodes 引用既有夹具接口：a1/t1 通过、a3/t3 通过、a2/t2 失败——three 若被错误流转执行会致失败）。
+    const { mkdirSync, writeFileSync, readdirSync, readFileSync } = await import("node:fs");
+    const wfDir = join(root, "groups", "demo", "projects", "svc", "workflows", "条件流");
+    mkdirSync(wfDir, { recursive: true });
+    writeFileSync(join(wfDir, "workflow.yaml"), [
+      "id: wf-cond",
+      "name: 条件流",
+      "status: enabled",
+      "nodes:",
+      "  - id: one",
+      "    kind: request",
+      "    apiId: a1",
+      "    caseId: t1",
+      "    label: one",
+      "  - id: two",
+      "    kind: request",
+      "    apiId: a3",
+      "    caseId: t3",
+      "    label: two",
+      "  - id: three",
+      "    kind: request",
+      "    apiId: a2",
+      "    caseId: t2",
+      "    label: three",
+      "edges:",
+      "  - id: e1",
+      "    from: one",
+      "    to: two",
+      "    condition: prev.passed",
+      "  - id: e2",
+      "    from: two",
+      "    to: three",
+      '    condition: "false"',
+    ].join("\n"));
+    const logs: string[] = [];
+    const code = await runCli(
+      ["run-workflow", "groups/demo/projects/svc/workflows/条件流", "--env", "dev", "--reporters", "junit"],
+      createDefaultRegistry(),
+      (line) => logs.push(line),
+    );
+    expect(code).toBe(0);
+    // 报告生成：默认落 <root>/.apicc/runs；原始结果 JSON（workflow-*.json）与报告同目录
+    const runsDir = join(root, ".apicc", "runs");
+    const produced = readdirSync(runsDir);
+    expect(produced.some((f) => f.endsWith(".xml"))).toBe(true);
+    expect(logs.join("\n")).toContain("报告已生成");
+    const raws = produced.filter((f) => f.startsWith("workflow-") && f.endsWith(".json"));
+    expect(raws.length).toBeGreaterThan(0);
+    // three 节点被条件边挡下 → skipped；失败用例 t2 未被执行，退出码仍为 0
+    const wfr = JSON.parse(readFileSync(join(runsDir, raws[raws.length - 1]!), "utf8")) as {
+      failed: number;
+      nodeResults: Array<{ nodeId: string; state: string }>;
+    };
+    expect(wfr.nodeResults.find((n) => n.nodeId === "three")?.state).toBe("skipped");
+    expect(wfr.failed).toBe(0);
+    expect(logs.join("\n")).toContain("跳过 1");
+    expect(logs.join("\n")).toContain("条件不满足");
+  }, 30000);
+
+  it("run-workflow 草稿默认拒绝，--force-draft 放行；未知路径报「未找到工作流」", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const wfDir = join(root, "groups", "demo", "projects", "svc", "workflows", "草稿流");
+    mkdirSync(wfDir, { recursive: true });
+    writeFileSync(join(wfDir, "workflow.yaml"), [
+      "id: wf-draft",
+      "name: 草稿流",
+      "status: draft",
+      "nodes:",
+      "  - id: only",
+      "    kind: request",
+      "    apiId: a1",
+      "    caseId: t1",
+      "    label: only",
+      "edges: []",
+    ].join("\n"));
+    await expect(
+      runCli(["run-workflow", "groups/demo/projects/svc/workflows/草稿流", "--env", "dev"], createDefaultRegistry()),
+    ).rejects.toThrow(/工作流为草稿，请先发布启用或加 --force-draft/);
+    const code = await runCli(
+      ["run-workflow", "groups/demo/projects/svc/workflows/草稿流", "--env", "dev", "--force-draft"],
+      createDefaultRegistry(),
+    );
+    expect(code).toBe(0);
+    await expect(
+      runCli(["run-workflow", "groups/demo/projects/svc/workflows/不存在", "--env", "dev"], createDefaultRegistry()),
+    ).rejects.toThrow(/未找到工作流/);
+  });
 });

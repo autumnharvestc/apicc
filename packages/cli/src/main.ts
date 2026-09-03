@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PluginRegistry } from "@apicc/core";
 
@@ -95,6 +95,74 @@ export async function runCli(argv: string[], registry: PluginRegistry, log: (lin
       }
       log(`总计 ${result.total} · 通过 ${result.passed} · 失败 ${result.failed}`);
       process.exitCode = result.failed > 0 ? 1 : 0;
+    });
+
+  // 工作流运行（任务 8）：复用 run 命令的加载/定位/报告模式；结构校验（含环拒绝）由 WorkflowRunner
+  // 内部执行，CLI 只负责目录定位、env 解析与草稿状态门。
+  program
+    .command("run-workflow")
+    .argument("<workflowPath>", "工作流目录（相对工作区根，如 groups/g/projects/p/workflows/名）")
+    .option("--env <name>", "环境名称")
+    .option("--force-draft", "允许运行草稿（跳过生命周期与启用校验，仅结构校验）", false)
+    .option("--reporters <list>", "报告格式，逗号分隔", "html")
+    .option("--runs-dir <dir>", "运行历史输出目录")
+    .action(async (workflowPath: string, opts: { env?: string; forceDraft: boolean; reporters: string; runsDir?: string }) => {
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+      const storage = registry.getStorage();
+      if (!storage) throw new Error("未注册存储适配器");
+      const { workspace } = await storage.load(root);
+      let workflow: import("@apicc/core").Workflow | undefined;
+      let project: import("@apicc/core").Project | undefined;
+      const target = toSlash(workflowPath);
+      search:
+      for (const g of workspace.groups) {
+        for (const p of g.projects) {
+          for (const w of p.workflows) {
+            const dir = join(root, "groups", g.name, "projects", p.name, "workflows", w.name);
+            const normalized = toSlash(dir);
+            // 与 run 同款匹配：全等或按分隔符边界后缀（避免误命中同名前缀）；首个命中即止。
+            if (normalized === target || normalized.endsWith(`/${target}`)) {
+              workflow = w; project = p;
+              break search;
+            }
+          }
+        }
+      }
+      if (!workflow || !project) throw new Error(`未找到工作流: ${workflowPath}`);
+      // env 解析：未指定则不启用环境（执行器侧为空快照）；指定但未命中显式报错。
+      const env = opts.env ? project.environments.find((e) => e.name === opts.env) : undefined;
+      if (opts.env && !env) throw new Error(`未找到环境: ${opts.env}`);
+      // 状态门：草稿默认拒绝，--force-draft 放行（生命周期与启用校验跳过，仅剩结构校验）。
+      if (workflow.status === "draft" && !opts.forceDraft) {
+        throw new Error("工作流为草稿，请先发布启用或加 --force-draft");
+      }
+      const { WorkflowRunner, workflowToRunResult } = await import("@apicc/core");
+      // resolve：workspace 全树查找接口定义（含文件夹内接口）。
+      const findApi = (apiId: string) => {
+        for (const g of workspace.groups) for (const p of g.projects) for (const c of p.collections) {
+          const api = c.apis.find((a) => a.id === apiId);
+          if (api) return api;
+          for (const f of c.folders) { const fa = f.apis.find((a) => a.id === apiId); if (fa) return fa; }
+        }
+        return undefined;
+      };
+      const runner = new WorkflowRunner({ registry, resolve: findApi, envName: env?.name, failFast: false });
+      const wfr = await runner.run(workflow, { project, workspace });
+      // 生成物隔离（规格 §6）：原始结果 JSON 与报告同目录（对齐 run 命令产物口径），默认 .apicc/runs。
+      const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
+      mkdirSync(runsOutDir, { recursive: true });
+      writeFileSync(join(runsOutDir, `workflow-${wfr.workflowId}-${Date.now()}.json`), JSON.stringify(wfr, null, 2));
+      const result = workflowToRunResult(wfr);
+      for (const format of opts.reporters.split(",")) {
+        const reporter = registry.getReporter(format.trim());
+        if (!reporter) throw new Error(`未注册报告格式: ${format}`);
+        const file = await reporter.render(result, runsOutDir);
+        log(`报告已生成: ${file}`);
+      }
+      for (const w of wfr.warnings) log(`[警告] ${w}`);
+      log(`总计 ${wfr.total} · 通过 ${wfr.passed} · 失败 ${wfr.failed} · 跳过 ${wfr.skipped}`);
+      process.exitCode = wfr.failed > 0 ? 1 : 0;
     });
 
   program
