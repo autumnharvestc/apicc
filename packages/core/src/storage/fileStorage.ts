@@ -236,7 +236,7 @@ export const fileStorage: StorageAdapter = {
             id: e.id, name: e.name, extends: e.extends, variables: e.variables,
           });
         }
-        for (const wf of p.workflows) {
+        for (const wf of p.workflows ?? []) {
           writeYaml(join(pDir, "workflows", wf.name, "workflow.yaml"), {
             id: wf.id, name: wf.name, status: wf.status, nodes: wf.nodes, edges: wf.edges,
           });

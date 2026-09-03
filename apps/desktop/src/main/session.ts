@@ -31,7 +31,7 @@ export function createSession() {
     const { workspace: ws } = ensureOpen();
     const group = ws.groups.find((x) => x.id === groupId);
     if (!group) throw new Error(`未找到分组: ${groupId}`);
-    const project: Project = { id: randomUUID(), name, variables: {}, environments: [], collections: [] };
+    const project: Project = { id: randomUUID(), name, variables: {}, environments: [], collections: [], workflows: [] };
     group.projects.push(project);
     return project;
   }

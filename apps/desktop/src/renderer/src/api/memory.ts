@@ -174,7 +174,7 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
       if (input.kind === "project") {
         const g = ws.groups.find((x) => x.id === input.parentId);
         if (!g) throw new Error(`未找到分组: ${input.parentId}`);
-        const p: Project = { id: randomUUID(), name: input.name, variables: {}, environments: [], collections: [] };
+        const p: Project = { id: randomUUID(), name: input.name, variables: {}, environments: [], collections: [], workflows: [] };
         g.projects.push(p);
         await save();
         return { kind: "project", id: p.id, label: p.name };
@@ -372,7 +372,7 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
     // session.importProject（缺分组时建组、同分组重名拒绝）并记录调用供测试断言。
     async importPreview(_input: ImportPreviewInput): Promise<ImportPreviewResult> {
       const project: Project = {
-        id: randomUUID(), name: "导入示例项目", variables: {}, environments: [],
+        id: randomUUID(), name: "导入示例项目", variables: {}, environments: [], workflows: [],
         collections: [{
           id: randomUUID(), name: "导入示例集合", variables: {}, folders: [],
           apis: [createApiDefinition("导入接口", "GET", "/imported")],
@@ -411,7 +411,7 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
         problems = [];
       }
       const g: Group = { id: randomUUID(), name: "示例分组", projects: [] };
-      const p: Project = { id: randomUUID(), name: "示例项目", variables: {}, environments: [], collections: [] };
+      const p: Project = { id: randomUUID(), name: "示例项目", variables: {}, environments: [], collections: [], workflows: [] };
       const c: Collection = { id: randomUUID(), name: "示例集合", variables: {}, folders: [], apis: [] };
       const api = createApiDefinition("示例接口", "GET", "/");
       c.apis.push(api);

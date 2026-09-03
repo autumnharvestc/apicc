@@ -19,7 +19,7 @@ const fixedImporter: Importer = {
   detect: (_fileName, content) => content.includes("FIXED-MAGIC"),
   parse: () => ({
     project: {
-      id: "p-imported", name: "导入项目", variables: {}, environments: [],
+      id: "p-imported", name: "导入项目", variables: {}, environments: [], workflows: [],
       collections: [{ id: "c-imported", name: "导入集合", variables: {}, folders: [], apis: [] }],
     },
     warnings: ["示例警告"],
