@@ -105,4 +105,27 @@ describe("validateEnablement", () => {
     expect(r.errors.some((e) => /环/.test(e))).toBe(true);
     expect(r.errors.some((e) => /不存在/.test(e))).toBe(true);
   });
+
+  it("两个连通分量（a→b 与 c→d）：无单一起始节点可达全部 → ok=false 且 errors 含「不可达」", () => {
+    // 规格 §5.4 第 4 条：至少一个起始节点可达全部非孤立节点。
+    // 两分量均有边（非孤立），但任一起始节点都够不着另一个分量 → 启用校验必须失败。
+    const wf = wfFactory([req("a"), req("b"), req("c"), req("d")], [
+      { id: "e1", from: "a", to: "b" },
+      { id: "e2", from: "c", to: "d" },
+    ]);
+    const r = validateEnablement(wf, workspaceWith([], []));
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /不可达/.test(e))).toBe(true);
+  });
+
+  it("孤立节点不触发可达性 error：仍仅 warning，ok 不受影响", () => {
+    const wf = wfFactory([req("a"), req("b"), req("z")], [{ id: "e1", from: "a", to: "b" }]);
+    const r = validateEnablement(wf, workspaceWith(
+      [{ id: "a-a" }, { id: "a-b" }, { id: "a-z" }],
+      [{ id: "c-a", apiId: "a-a" }, { id: "c-b", apiId: "a-b" }, { id: "c-z", apiId: "a-z" }],
+    ));
+    expect(r.ok).toBe(true);
+    expect(r.errors.some((e) => /不可达/.test(e))).toBe(false);
+    expect(r.warnings.some((w) => /孤立节点/.test(w))).toBe(true);
+  });
 });
