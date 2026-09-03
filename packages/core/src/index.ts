@@ -15,6 +15,9 @@ export { htmlReporter } from "./report/html.js";
 export { junitReporter } from "./report/junit.js";
 export { collectionV21Importer } from "./import/collection21.js";
 export { openapiImporter } from "./import/openapi.js";
+export * from "./workflow/model.js";
+export { validateWorkflowStructure, transitionWorkflowStatus, validateEnablement, type ValidationIssue } from "./workflow/validate.js";
+export { workflowImpact, type WorkflowImpactEntry } from "./workflow/impact.js";
 
 import { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
 import { fileStorage } from "./storage/fileStorage.js";
