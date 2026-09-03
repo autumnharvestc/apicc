@@ -6,7 +6,7 @@ import { monotonicFactory } from "ulid";
 
 /** runs 落盘文件名 ID：进程内单调递增，同毫秒多次运行不重名。 */
 const nextRunFileId = monotonicFactory();
-import { envChain } from "../domain/envChain.js";
+import { envChain, mergedEnvVars } from "../domain/envChain.js";
 import type { ApiDefinition, Collection, Environment, Project, TestCase, Workspace } from "../domain/model.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
 import type { EventBus } from "../events/bus.js";
@@ -36,11 +36,8 @@ export class CollectionRunner {
     const startedAt = new Date();
     const chain = env ? envChain(env, project) : [];
     // 环境变量继承（规格 §3.1/§6）：按继承链从根到叶合并各环境变量为一层，子环境同名变量覆盖父环境。
-    const envByName = new Map(project.environments.map((e) => [e.name, e]));
-    const envVars: Record<string, string> = {};
-    for (const name of [...chain].reverse()) {
-      Object.assign(envVars, envByName.get(name)?.variables ?? {});
-    }
+    // 经 mergedEnvVars 统一口径，与工作流条件求值上下文 env 同源。
+    const envVars = mergedEnvVars(env, project);
     const resolver = createVariableResolver({
       layers: [envVars, collection.variables, project.variables, workspace.variables],
     });

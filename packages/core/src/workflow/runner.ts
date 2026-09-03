@@ -3,6 +3,7 @@ import type { PluginRegistry } from "../plugin/registry.js";
 import type { PmApi } from "../plugin/types.js";
 import { CollectionRunner } from "../runner/runner.js";
 import { createEventBus } from "../events/bus.js";
+import { mergedEnvVars } from "../domain/envChain.js";
 import { validateWorkflowStructure } from "./validate.js";
 import type { Workflow, WorkflowEdge, WorkflowNode } from "./model.js";
 import type { CaseOutcome } from "../report/types.js";
@@ -56,15 +57,20 @@ export class WorkflowRunner {
   async run(workflow: Workflow, ctx: { project: Project; workspace: Workspace }): Promise<WorkflowRunResult> {
     const startedAt = new Date().toISOString();
     const warnings: string[] = [];
-    // 结构防御：环在执行前拒绝（环阻断遍历）；端点缺陷（悬空边）等其余问题不阻断——运行中忽略该边并告警。
+    // 结构防御：环在执行前拒绝（环阻断遍历）；其余结构性 error（如悬空边端点）不阻断运行，
+    // 但必须折进 warnings 使诊断可见——悬空 from 边永远不会被边求值触达，下游被静默 skipped 时这是唯一线索。
     const structural = validateWorkflowStructure(workflow);
     const cycle = structural.find((i) => i.code === "cycle");
     if (cycle) throw new Error(cycle.message);
+    for (const i of structural) {
+      if (i.level === "error" && i.code !== "cycle") warnings.push(i.message);
+    }
 
     const project = ctx.project;
     const env = resolveEnv(project, this.opts.envName);
-    // 条件求值上下文 env（规格 §4）：当前环境 variables 的只读快照；未选环境时空对象。
-    const envVars: Record<string, string> = env ? { ...env.variables } : {};
+    // 条件求值上下文 env（规格 §4）：按继承链根→叶合并的环境变量只读快照（与 CollectionRunner
+    // 的环境层同源语义，规格 §3.1/§6）；sit extends dev 等继承场景父环境变量必须可见。未选环境时空对象。
+    const envVars = mergedEnvVars(env, project);
     const runner = new CollectionRunner({
       registry: this.opts.registry,
       bus: createEventBus(),
@@ -99,30 +105,60 @@ export class WorkflowRunner {
       outgoing.set(e.from, [...(outgoing.get(e.from) ?? []), e]);
       incoming.set(e.to, [...(incoming.get(e.to) ?? []), e]);
     }
+    // 条件为假未流转的边：该边对 to 端判定为「不可达」，就绪/阻塞裁决中视同已终态的否定来源。
+    const pruned = new Set<string>();
 
-    // 多入语义：任一上游 passed/noop 即就绪（简报实现更正指令 ⑥）。
+    // 多入语义：任一上游 passed/noop 即就绪（简报实现更正指令 ⑥）；
+    // 被剪枝边（条件为假）不参与就绪判定——其上游即使通过也不经该边流转。
     const ready = (nodeId: string): boolean => {
       const ins = incoming.get(nodeId) ?? [];
       if (ins.length === 0) return true;
       return ins.some((e) => {
+        if (pruned.has(e.id)) return false;
         const s = nodeResults.get(e.from);
         return s !== undefined && (s.state === "passed" || s.state === "noop");
       });
     };
-    // 级联跳过：上游全部终态且没有任何一条可达（passed/noop）。
+    // 级联跳过：每条入边均已定局（来源终态且失败/跳过，或被条件剪枝）且无任何可达来源。
     const blocked = (nodeId: string): boolean => {
       const ins = incoming.get(nodeId) ?? [];
       if (ins.length === 0) return false;
-      return ins.every((e) => nodeResults.has(e.from)) && !ready(nodeId);
+      return ins.every((e) => {
+        if (pruned.has(e.id)) return true;
+        const s = nodeResults.get(e.from);
+        return s !== undefined && s.state !== "passed" && s.state !== "noop";
+      }) && !ready(nodeId);
     };
 
     // 从入度 0 节点拓扑遍历（环已被拒绝，入度 0 节点必存在且覆盖全图）。
     const queue: WorkflowNode[] = workflow.nodes.filter((n) => (incoming.get(n.id) ?? []).length === 0);
     const order: string[] = [];
+    // 防活锁：连续延后计数。一轮队列全部被延后（无任何节点可执行、状态零进展）= 调度停滞。
+    let deferredInRow = 0;
 
     while (queue.length > 0) {
       const node = queue.shift()!;
       if (nodeResults.has(node.id)) continue;
+
+      // 出队终审（fan-in 修复）：入队时上游可能未决（当时 blocked=false 即放行入队），
+      // 执行前必须按「任一上游 passed/noop 即就绪」复核：
+      // - 上游全部定局（终态或被条件剪枝）且无一通过 → 级联 skipped（fan-in 双败在此兜底，下游不再对故障环境发出请求）；
+      // - 尚有未决上游 → 延后：放回队尾，待其终态后随下一轮出队再裁决。
+      if (!ready(node.id)) {
+        const allResolved = (incoming.get(node.id) ?? []).every((e) => pruned.has(e.id) || nodeResults.has(e.from));
+        if (allResolved) {
+          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: node.kind, state: "skipped" });
+          continue;
+        }
+        queue.push(node);
+        deferredInRow += 1;
+        if (deferredInRow >= queue.length) {
+          // 全队延后仍无进展：上游永远不会终态而队列已无别的可执行节点——图调度分析存在缺陷，显式拒绝。
+          throw new Error(`调度停滞: 节点「${node.label ?? node.id}」的上游始终未决且队列中无任何可执行节点`);
+        }
+        continue;
+      }
+      deferredInRow = 0;
       order.push(node.id);
 
       if (node.kind === "noop") {
@@ -150,12 +186,14 @@ export class WorkflowRunner {
         }
       }
 
-      // 出边求值：条件为假不流转（告警）；满足则下游入队（多入只入队一次）。
+      // 出边求值：条件为假不流转（告警）并把该边记为剪枝——to 端就绪裁决不再等待此上游；
+      // 满足则下游入队（多入只入队一次）。
       for (const edge of outgoing.get(node.id) ?? []) {
         if (edge.condition) {
           const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, this.carried, envVars, this.opts.registry, warnings);
           if (!verdict) {
             warnings.push(`边 ${edge.from} → ${edge.to} 条件不满足: ${edge.condition}`);
+            pruned.add(edge.id);
             continue;
           }
         }
@@ -169,7 +207,7 @@ export class WorkflowRunner {
           queue.push(target);
         }
       }
-      // 级联：上游全部终态且不可达的节点标记 skipped（扫描置于出边求值之后，简报更正指令 ⑤）。
+      // 级联：入边全部定局（来源终态否定或被条件剪枝）且不可达的节点标记 skipped（扫描置于出边求值之后，简报更正指令 ⑤）。
       for (const n of workflow.nodes) {
         if (!nodeResults.has(n.id) && blocked(n.id)) {
           nodeResults.set(n.id, { nodeId: n.id, label: n.label, kind: n.kind, state: "skipped" });
