@@ -87,7 +87,7 @@ edges:
 
 ## 5. 生命周期与校验
 
-状态机：`draft → published → enabled`（单向推进；任何编辑作用于 published/enabled 时：published 自动回 draft，enabled 拒绝编辑并提示先解除启用——解除启用回到 published）。
+状态机：`draft → published → enabled`（单向推进；**编辑缓冲保存（wf:save）不改变状态**——重新发布/启用走既有校验；enabled 下解除启用回到 published）。【M2-B 裁定修订：原「published 编辑自动回 draft」与桌面保存通道「恒保持状态」裁定统一为本口径】
 
 启用校验（全部通过才允许 enabled）：
 1. DAG 无环、边端点存在
