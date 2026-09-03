@@ -1,4 +1,4 @@
-import type { NodeState, Workflow, WorkflowEdge, WorkflowNode } from "@apicc/core";
+import type { NodeResult, NodeState, Workflow, WorkflowEdge, WorkflowNode, WorkflowRunResult } from "@apicc/core";
 
 /**
  * 工作流画布纯函数数据层（M2-B 任务 3，TDD 主战场）：Workflow ↔ Vue Flow 元素
@@ -72,6 +72,30 @@ export function colorForState(state?: NodeState): WfStateClass {
       return "wf-node-noop";
     default:
       return "";
+  }
+}
+
+/**
+ * 运行结果 → 着色入参（任务 7 消费）：nodeResults 逐条抽 nodeId→state，
+ * 产出 toFlowElements 的 nodeStates 映射（画布节点经 colorForState 注入 stateClass）。
+ */
+export function nodeStatesFromRunResult(result: Pick<WorkflowRunResult, "nodeResults">): Map<string, NodeState> {
+  const states = new Map<string, NodeState>();
+  for (const r of result.nodeResults as NodeResult[]) states.set(r.nodeId, r.state);
+  return states;
+}
+
+/** 状态 → 结果抽屉 Tag 色（复用 colorForState 语义：绿/红/灰/蓝；无状态缺省灰）。 */
+export function stateTagColor(state?: NodeState): "success" | "error" | "default" | "processing" {
+  switch (colorForState(state)) {
+    case "wf-node-passed":
+      return "success";
+    case "wf-node-failed":
+      return "error";
+    case "wf-node-noop":
+      return "processing";
+    default:
+      return "default";
   }
 }
 

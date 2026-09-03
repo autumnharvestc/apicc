@@ -182,6 +182,20 @@
     "run": "Run",
     "dirtySaveFirst": "Save first",
     "runDraftDisabled": "Workflow is a draft; publish and enable it first",
+    "envNone": "No environment",
+    "results": "Results",
+    "resultTitle": "Run Result",
+    "colNode": "Node",
+    "colState": "State",
+    "colDuration": "Duration",
+    "colError": "Error",
+    "warnings": "Warnings",
+    "nodeState": {
+      "passed": "Passed",
+      "failed": "Failed",
+      "skipped": "Skipped",
+      "noop": "Noop"
+    },
     "enableValidationFailed": "Enablement validation failed",
     "discardConfirm": "You have unsaved changes that will be discarded. Leave anyway?"
   }

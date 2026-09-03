@@ -17,10 +17,11 @@ import {
   Button as AButton,
   Input as AInput,
   LayoutSider as ALayoutSider,
+  Select as ASelect,
   Space as ASpace,
   Tag as ATag,
 } from "ant-design-vue";
-import type { WorkflowStatus } from "@apicc/core";
+import type { NodeState, WorkflowStatus } from "@apicc/core";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
 import type { useWfListStore } from "../stores/wfList.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
@@ -33,6 +34,7 @@ import {
   applyNodeMove,
   applyNodeRemove,
   applyNodeUpdate,
+  nodeStatesFromRunResult,
   toFlowElements,
   type WfNodePatch,
 } from "../wf/wfCanvas.js";
@@ -40,6 +42,7 @@ import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import WfNode from "./WfNode.vue";
 import WfPropertyPanel from "./WfPropertyPanel.vue";
+import WfResultDrawer from "./WfResultDrawer.vue";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
 
@@ -54,8 +57,13 @@ import "@vue-flow/core/dist/theme-default.css";
  * published→启用、enabled→解除启用），dirty 时全组禁用（防 setStatus 成功返回覆盖编辑
  * 缓冲）并以原生 title 提示先保存（与 dirty 圆点同款；禁用态原生 tooltip 仍可见）；
  * 在途迁移经 pendingAction 全组禁用、动作钮 loading。启用校验未过：store.validationErrors
- * 渲染为 a-alert 错误列表（可关闭）。运行按钮仅做门控（draft 禁用 + title 提示先发布，
- * 非 draft 可点；wf:run 接线属任务 7）。
+ * 渲染为 a-alert 错误列表（可关闭）。
+ * 运行接线（任务 7）：顶栏 运行环境 a-select（选项 = 当前项目树 envs，按名称引用、
+ * 首项「无环境」= 不传 envName，先例同 RunView）+「运行」按钮 → design.run(envName?)，
+ * loading=design.running（历史落盘由 wf:run 主进程自动完成，UI 不重复写）；运行完成
+ * runResult → toFlowElements(workflow, { nodeStates }) 重算画布节点着色 class
+ * （nodeStates 由 nodeResults 经 nodeStatesFromRunResult 映射；不触碰 position），
+ * 且结果抽屉自动打开（顶栏「结果」按钮可重开）；链路拒绝统一 reportError。
  */
 const props = defineProps<{
   workflowDesign: ReturnType<typeof useWorkflowDesignStore>;
@@ -130,6 +138,49 @@ function clearSelection() {
   selectedEdgeId.value = null;
 }
 
+// —— 运行接线（任务 7）：环境选择 + wf:run + 结果抽屉开关 ——
+// 环境按名称引用（wf:run 入参 envName），首项「无环境」= 不传 envName（先例同 RunView）；
+// 选项 = 当前项目树 envs（workspace/projectId 已在 props，无需另接 envs store）。
+const runEnv = ref("");
+const projectEnvs = computed<Array<{ id: string; name: string }>>(() => {
+  for (const group of props.workspace.tree?.children ?? []) {
+    for (const project of group.children ?? []) {
+      if (project.id === props.projectId) return project.envs ?? [];
+    }
+  }
+  return [];
+});
+const runEnvOptions = computed(() => [
+  { label: t("wf.envNone"), value: "" },
+  ...projectEnvs.value.map((e) => ({ label: e.name, value: e.name })),
+]);
+
+/** 结果抽屉开关：运行完成自动打开（裁定）；顶栏「结果」按钮重开；关闭由抽屉 emit。 */
+const resultOpen = ref(false);
+
+// 切流（load/unload 改 workflowId）即重置运行会话态：环境选择与抽屉开关不跨流残留
+// （残留失效环境名会被主进程「未找到环境」显式拒绝）。编辑不改 workflowId，不重置。
+watch(
+  () => design.value.workflowId,
+  () => {
+    runEnv.value = "";
+    resultOpen.value = false;
+  },
+);
+
+/** 顶栏「运行」：design.run 门控 draft/在途（store 内），链路拒绝统一转报错误通道。 */
+async function onRun() {
+  const targetId = design.value.workflowId;
+  try {
+    await design.value.run(runEnv.value || undefined);
+  } catch (e) {
+    props.reportError(e);
+    return;
+  }
+  // 运行完成自动打开结果抽屉；切流守卫同 store（await 期间换流，旧流结果不弹）。
+  if (design.value.runResult && design.value.workflowId === targetId) resultOpen.value = true;
+}
+
 // —— 工作流列表入口：进入视图/切换项目时拉取（选中与新建即 load 进设计器） ——
 // 换项目时先卸载旧项目已载工作流（审查修复：画布不得残留 A 流而绑 B 的索引），
 // dirty 时经确认对话框放行；列表拉取不受确认结果影响（树选中项已在新项目）。
@@ -176,10 +227,18 @@ watch(
 );
 
 // —— Workflow ↔ Vue Flow 元素（数据源唯一为 store 缓冲，经 wfCanvas 纯变换） ——
+// 运行着色（任务 7）：runResult.nodeResults → nodeStates（nodeId→state）注入 stateClass
+// （colorForState：passed 绿/failed 红/skipped 灰/noop 蓝）；纯重算不触碰 position。
+const nodeStates = computed<Map<string, NodeState> | undefined>(() =>
+  design.value.runResult ? nodeStatesFromRunResult(design.value.runResult) : undefined,
+);
 const flowNodes = computed(() => {
   const w = wf.value;
   if (!w) return [];
-  const { nodes } = toFlowElements(w, props.bindIndex ? { apiIds: props.bindIndex.apiIds } : undefined);
+  const { nodes } = toFlowElements(w, {
+    apiIds: props.bindIndex?.apiIds,
+    nodeStates: nodeStates.value,
+  });
   // 名称预注入契约：画布节点不做查找，apiName/caseName 在此解析进 data
   return nodes.map((n) => ({
     ...n,
@@ -385,14 +444,32 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           >
             {{ t("wf.retract") }}
           </a-button>
-          <!-- 运行门控（wf:run 接线属任务 7）：draft 禁用并提示先发布；本任务不做主按钮样式 -->
+          <!-- 运行接线（任务 7）：draft 禁用并提示先发布；环境按名称引用（首项=不传 envName） -->
+          <a-select
+            v-model:value="runEnv"
+            class="wf-run-env"
+            size="small"
+            :options="runEnvOptions"
+            data-testid="wf-run-env"
+          />
           <a-button
             size="small"
             data-testid="wf-run"
             :disabled="wf.status === 'draft'"
+            :loading="design.running"
             :title="wf.status === 'draft' ? t('wf.runDraftDisabled') : undefined"
+            @click="onRun"
           >
             {{ t("wf.run") }}
+          </a-button>
+          <!-- 「结果」：运行结果就绪后可打开结果抽屉（运行完成亦会自动打开） -->
+          <a-button
+            size="small"
+            data-testid="wf-results"
+            :disabled="!design.runResult"
+            @click="resultOpen = true"
+          >
+            {{ t("wf.results") }}
           </a-button>
         </a-space>
       </div>
@@ -460,6 +537,9 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           />
         </a-layout-sider>
       </div>
+
+      <!-- 运行结果抽屉（任务 7）：纯展示，开关状态在本组件（运行完成自动打开） -->
+      <WfResultDrawer :open="resultOpen" :result="design.runResult" @close="resultOpen = false" />
     </template>
 
     <!-- 离开确认（返回列表/换项目遇 dirty）：确认丢弃后卸载编辑会话 -->
@@ -497,6 +577,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
 .wf-title { font-weight: 600; }
 .wf-dirty { color: var(--accent); }
 .wf-actions { margin-left: auto; }
+.wf-run-env { width: 120px; }
 .wf-errors { margin: 8px 12px 0; }
 .wf-errors-title { font-weight: 600; }
 .wf-error-list { margin: 4px 0 0; padding-left: 18px; }

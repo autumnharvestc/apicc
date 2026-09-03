@@ -47,6 +47,7 @@ const { t } = useI18n();
 .wf-node-passed { border-color: var(--pass); box-shadow: 0 0 0 1px var(--pass); }
 .wf-node-failed { border-color: var(--fail); box-shadow: 0 0 0 1px var(--fail); }
 .wf-node-skipped { opacity: 0.55; }
-.wf-node-noop-state { border-color: var(--accent); }
+/* 运行 noop 状态描边（colorForState("noop") = "wf-node-noop"；与占位虚线 wf-node-noop-kind 叠加） */
+.wf-node-noop { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .wf-handle { width: 7px; height: 7px; background: var(--accent); }
 </style>

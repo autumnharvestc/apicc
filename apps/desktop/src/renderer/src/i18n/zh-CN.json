@@ -182,6 +182,20 @@
     "run": "运行",
     "dirtySaveFirst": "请先保存",
     "runDraftDisabled": "工作流为草稿，请先发布启用",
+    "envNone": "无环境",
+    "results": "结果",
+    "resultTitle": "运行结果",
+    "colNode": "节点",
+    "colState": "状态",
+    "colDuration": "耗时",
+    "colError": "错误",
+    "warnings": "警告",
+    "nodeState": {
+      "passed": "通过",
+      "failed": "失败",
+      "skipped": "跳过",
+      "noop": "空过"
+    },
     "enableValidationFailed": "启用校验未通过",
     "discardConfirm": "当前有未保存修改，离开将丢弃，确定离开？"
   }

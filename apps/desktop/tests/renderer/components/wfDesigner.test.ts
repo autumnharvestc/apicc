@@ -535,6 +535,205 @@ describe("WfDesigner 生命周期与校验错误", () => {
   });
 });
 
+// —— M2-B 任务 7：运行接线（wf:run）+ 画布着色（nodeStates）+ 结果抽屉 ——
+describe("WfDesigner 运行接线与结果抽屉", () => {
+  /** 可运行上下文：绑定请求节点 + 占位节点 → 保存 → 发布（memory wfRun 拒绝 draft）。 */
+  async function mountRunnableFlow(name = "运行流") {
+    const ctx = await mountDesigner();
+    await ctx.wrapper.props("wfList").create(name);
+    await ctx.wrapper.findAll('[data-testid="wf-list-item"]')[0]!.trigger("click");
+    await flushPromises();
+    await ctx.wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+    await ctx.wrapper.find('[data-testid="wf-add-noop"]').trigger("click");
+    ctx.design.update(applyNodeUpdate(ctx.design.workflow!, ctx.design.workflow!.nodes[0]!.id, {
+      apiId: [...ctx.bindIndex.apiIds][0]!,
+      caseId: [...ctx.bindIndex.caseNames.keys()][0]!,
+    }));
+    await ctx.wrapper.find('[data-testid="wf-save"]').trigger("click");
+    await flushPromises();
+    await ctx.wrapper.find('[data-testid="wf-publish"]').trigger("click");
+    await flushPromises();
+    expect(ctx.design.workflow!.status).toBe("published");
+    return ctx;
+  }
+
+  /** 抽屉传送门渲染于 document.body：body 作用域查询（先例同 RunView.test bodyFind）。 */
+  function bodyFind(testid: string): DOMWrapper<Element> | null {
+    const el = document.body.querySelector(`[data-testid="${testid}"]`);
+    return el ? new DOMWrapper(el) : null;
+  }
+
+  /**
+   * 抽屉开合状态：a-drawer 为 Teleport 多根组件，data-testid 不透传（先例同
+   * ConfirmDialog testid 不透传），以 .ant-drawer 根的 ant-drawer-open class 断言。
+   */
+  function drawerState(): "absent" | "open" | "closed" {
+    const root = document.body.querySelector(".ant-drawer");
+    if (!root) return "absent";
+    return root.classList.contains("ant-drawer-open") ? "open" : "closed";
+  }
+
+  /** a-select 交互适配：经组件实例发 update:value（v-model 通道，先例同 RunView.test）。 */
+  function chooseSelect(wrapper: ReturnType<typeof mount>, testid: string, value: string): void {
+    const select = wrapper
+      .findAllComponents({ name: "ASelect" })
+      .find((c) => c.attributes("data-testid") === testid);
+    if (!select) throw new Error(`ASelect 未找到: ${testid}`);
+    select.vm.$emit("update:value", value);
+  }
+
+  it("运行按钮接线 design.run：api.wfRun 携带 workflowId，完成后 runResult 按节点 id 就绪", async () => {
+    const ctx = await mountRunnableFlow();
+    const calls: unknown[][] = [];
+    const original = ctx.api.wfRun.bind(ctx.api);
+    ctx.api.wfRun = async (input) => { calls.push([input]); return original(input); };
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    expect(calls).toStrictEqual([[{ workflowId: ctx.design.workflowId, envName: undefined }]]);
+    expect(ctx.design.running).toBe(false);
+    expect(ctx.design.runResult).not.toBeNull();
+    expect(ctx.design.runResult!.nodeResults.map((n) => n.nodeId))
+      .toStrictEqual(ctx.design.workflow!.nodes.map((n) => n.id));
+  });
+
+  it("运行中 wf-run loading；running 门控下重复点击不重复发 wf:run；落地复位", async () => {
+    const ctx = await mountRunnableFlow();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    const original = ctx.api.wfRun.bind(ctx.api);
+    ctx.api.wfRun = async (input) => { calls += 1; await gate; return original(input); };
+
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await nextTick();
+    expect(ctx.design.running).toBe(true);
+    expect(ctx.wrapper.find('[data-testid="wf-run"]').classes()).toContain("ant-btn-loading");
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click"); // 在途重复点击
+    release();
+    await flushPromises();
+    expect(calls).toBe(1); // 门控吞掉第二次
+    expect(ctx.design.running).toBe(false);
+    expect(ctx.design.runResult).not.toBeNull();
+    // 每次运行仅此一次 IPC 调用（历史落盘由 wf:run 主进程自动完成，UI 不重复写）
+  });
+
+  it("运行完成 → 画布节点按 nodeResults 着色（passed/noop）；注入 failed/skipped 同样生效", async () => {
+    const ctx = await mountRunnableFlow();
+    expect(ctx.wrapper.find('[data-testid="wf-node"].wf-node-passed').exists()).toBe(false); // 运行前无着色
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    const nodes = ctx.wrapper.findAll('[data-testid="wf-node"]');
+    expect(nodes[0]!.classes()).toContain("wf-node-passed"); // memory wfRun: request → passed
+    expect(nodes[1]!.classes()).toContain("wf-node-noop"); // noop → noop
+
+    // 注入 failed/skipped：着色链路 runResult → nodeStates → toFlowElements 全程重算
+    const ids = ctx.design.workflow!.nodes.map((n) => n.id);
+    ctx.api.wfRun = async () => ({
+      workflowId: ctx.design.workflow!.id, workflowName: ctx.design.workflow!.name, status: "published",
+      nodeResults: [
+        { nodeId: ids[0]!, kind: "request", state: "failed", error: "期望 200 实际 500" },
+        { nodeId: ids[1]!, kind: "noop", state: "skipped" },
+      ],
+      total: 2, passed: 0, failed: 1, skipped: 1, warnings: [], startedAt: "", finishedAt: "",
+    });
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    const after = ctx.wrapper.findAll('[data-testid="wf-node"]');
+    expect(after[0]!.classes()).toContain("wf-node-failed");
+    expect(after[1]!.classes()).toContain("wf-node-skipped");
+  });
+
+  it("运行完成 → 结果抽屉自动打开：节点行 label/状态/耗时；关闭后「结果」按钮可重开", async () => {
+    const ctx = await mountRunnableFlow();
+    expect(drawerState()).toBe("absent"); // 未运行无抽屉
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    expect(drawerState()).toBe("open");
+    const rows = document.body.querySelectorAll('[data-testid="wf-result-node"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.textContent).toContain("请求节点"); // label 列
+    expect(rows[0]!.querySelector('[data-testid="wf-result-state"]')!.classList.contains("ant-tag-success"))
+      .toBe(true); // passed Tag 复用 colorForState 语义（绿）
+    expect(rows[1]!.querySelector('[data-testid="wf-result-state"]')!.classList.contains("ant-tag-processing"))
+      .toBe(true); // noop Tag（蓝）
+
+    // 关闭（抽屉关闭钮 emit close）→ 收起；顶栏「结果」按钮重开
+    await new DOMWrapper(document.body.querySelector(".ant-drawer-close")!).trigger("click");
+    await flushPromises();
+    expect(drawerState()).toBe("closed");
+    await ctx.wrapper.find('[data-testid="wf-results"]').trigger("click");
+    await flushPromises();
+    expect(drawerState()).toBe("open");
+  });
+
+  it("抽屉 warnings a-alert 置顶 + 失败行错误/耗时列；无 outcome 耗时占位 —", async () => {
+    const ctx = await mountRunnableFlow();
+    const ids = ctx.design.workflow!.nodes.map((n) => n.id);
+    ctx.api.wfRun = async () => ({
+      workflowId: ctx.design.workflow!.id, workflowName: ctx.design.workflow!.name, status: "published",
+      nodeResults: [
+        {
+          nodeId: ids[0]!, kind: "request", state: "failed", error: "连接超时",
+          outcome: { apiId: "a", apiName: "", caseId: "c", caseName: "", passed: false, durationMs: 12.4, assertions: [] },
+        },
+        { nodeId: ids[1]!, kind: "noop", state: "skipped" },
+      ],
+      total: 2, passed: 0, failed: 1, skipped: 1,
+      warnings: ["结构告警（测试注入）"], startedAt: "", finishedAt: "",
+    });
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    const warnings = bodyFind("wf-result-warnings");
+    expect(warnings).not.toBeNull();
+    expect(warnings!.text()).toContain("结构告警（测试注入）");
+    const rows = document.body.querySelectorAll('[data-testid="wf-result-node"]');
+    expect(rows[0]!.textContent).toContain("连接超时");
+    expect(rows[0]!.textContent).toContain("12ms"); // outcome.durationMs 取整
+    expect(rows[1]!.textContent).toContain("—"); // 无 outcome 占位
+  });
+
+  it("环境选择：选项来自当前项目 envs；选中后 wfRun 携带 envName；切流重置回无环境", async () => {
+    const ctx = await mountRunnableFlow();
+    await ctx.api.envCreate({ projectId: ctx.projectId, name: "dev" });
+    await ctx.workspace.refresh();
+    await flushPromises();
+    const select = ctx.wrapper.findAllComponents({ name: "ASelect" })
+      .find((c) => c.attributes("data-testid") === "wf-run-env");
+    expect(select!.props("options")).toStrictEqual([
+      { label: "无环境", value: "" },
+      { label: "dev", value: "dev" },
+    ]);
+
+    const calls: unknown[][] = [];
+    const original = ctx.api.wfRun.bind(ctx.api);
+    ctx.api.wfRun = async (input) => { calls.push([input]); return original(input); };
+    chooseSelect(ctx.wrapper, "wf-run-env", "dev");
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    expect(calls[0]).toStrictEqual([{ workflowId: ctx.design.workflowId, envName: "dev" }]);
+
+    // 切走再切回（load 重置会话态）：环境选择不跨流残留
+    await ctx.wrapper.find('[data-testid="wf-back-to-list"]').trigger("click");
+    await flushPromises();
+    await ctx.wrapper.findAll('[data-testid="wf-list-item"]')[0]!.trigger("click");
+    await flushPromises();
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    expect(calls[1]).toStrictEqual([{ workflowId: ctx.design.workflowId, envName: undefined }]);
+  });
+
+  it("运行链路拒绝 → reportError 上报；结果抽屉不自动打开", async () => {
+    const ctx = await mountRunnableFlow();
+    ctx.api.wfRun = async () => { throw new Error("运行失败（测试注入）"); };
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    expect(ctx.errors).toHaveLength(1);
+    expect((ctx.errors[0] as Error).message).toBe("运行失败（测试注入）");
+    expect(ctx.design.running).toBe(false);
+    expect(drawerState()).not.toBe("open"); // 结果抽屉不自动打开
+  });
+});
+
 // —— 审查修复 4：属性面板级联 change → node-change 载荷映射 ——
 describe("WfPropertyPanel 级联改绑映射", () => {
   const bindOptions: BindOption[] = [

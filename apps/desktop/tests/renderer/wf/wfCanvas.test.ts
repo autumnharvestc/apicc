@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { toFlowElements, applyNodeAdd, applyNodeRemove, applyNodeUpdate, applyNodeMove, applyEdgeAdd, applyEdgeCondition, applyEdgeRemove, colorForState } from "../../../src/renderer/src/wf/wfCanvas.js";
-import type { Workflow } from "@apicc/core";
+import { toFlowElements, applyNodeAdd, applyNodeRemove, applyNodeUpdate, applyNodeMove, applyEdgeAdd, applyEdgeCondition, applyEdgeRemove, colorForState, nodeStatesFromRunResult, stateTagColor } from "../../../src/renderer/src/wf/wfCanvas.js";
+import type { NodeResult, Workflow, WorkflowRunResult } from "@apicc/core";
 
 const wf: Workflow = {
   id: "w", name: "流", status: "enabled",
@@ -75,6 +75,34 @@ describe("colorForState", () => {
     expect(colorForState("skipped")).toBe("wf-node-skipped");
     expect(colorForState("noop")).toBe("wf-node-noop");
     expect(colorForState(undefined)).toBe("");
+  });
+});
+
+// —— 任务 7：运行结果 → 着色/抽屉的数据层映射辅助（WfDesigner 薄壳消费） ——
+describe("nodeStatesFromRunResult", () => {
+  it("nodeResults → nodeId→state Map（toFlowElements nodeStates 入参形状）", () => {
+    const results: NodeResult[] = [
+      { nodeId: "n1", kind: "request", state: "passed" },
+      { nodeId: "n2", kind: "noop", state: "noop" },
+      { nodeId: "n3", kind: "request", state: "failed", error: "断言未过" },
+      { nodeId: "n4", kind: "request", state: "skipped" },
+    ];
+    const states = nodeStatesFromRunResult({ nodeResults: results } as WorkflowRunResult);
+    expect(states.get("n1")).toBe("passed");
+    expect(states.get("n2")).toBe("noop");
+    expect(states.get("n3")).toBe("failed");
+    expect(states.get("n4")).toBe("skipped");
+    expect(states.size).toBe(4);
+  });
+});
+
+describe("stateTagColor", () => {
+  it("复用 colorForState 语义映射结果抽屉 Tag 色（绿/红/灰/蓝）", () => {
+    expect(stateTagColor("passed")).toBe("success");
+    expect(stateTagColor("failed")).toBe("error");
+    expect(stateTagColor("skipped")).toBe("default");
+    expect(stateTagColor("noop")).toBe("processing");
+    expect(stateTagColor(undefined)).toBe("default"); // 无状态缺省灰
   });
 });
 
