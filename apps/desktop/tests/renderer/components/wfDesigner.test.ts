@@ -4,18 +4,20 @@
 // 为准——节点/边选中经 VueFlow 真实事件冒泡（jsdom 下可触发），画布拖拽无法模拟，
 // position 写回的数据层语义在 wfCanvas.test.ts 锁定。组件内不加测试后门。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
-import { mount, flushPromises, enableAutoUnmount } from "@vue/test-utils";
+import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useWfListStore } from "../../../src/renderer/src/stores/wfList.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
-import { buildBindIndex, type WfBindIndex } from "../../../src/renderer/src/wf/wfBindings.js";
+import { buildBindIndex, type WfBindIndex, type BindOption } from "../../../src/renderer/src/wf/wfBindings.js";
+import type { WfNodeData } from "../../../src/renderer/src/wf/wfCanvas.js";
 import { applyEdgeAdd, applyNodeUpdate } from "../../../src/renderer/src/wf/wfCanvas.js";
 import type { WorkflowNode } from "@apicc/core";
 import WfDesigner from "../../../src/renderer/src/components/WfDesigner.vue";
 import WfPropertyPanel from "../../../src/renderer/src/components/WfPropertyPanel.vue";
+import { Cascader as ACascader } from "ant-design-vue";
 
 beforeAll(() => {
   // jsdom 未实现的能力（antd 响应式断点 / Vue Flow 尺寸与矩阵运算）按既有先例打桩。
@@ -74,6 +76,13 @@ async function mountDesigner() {
   });
   await flushPromises();
   return { wrapper, api, workspace, wfList, design: workflowDesign, bindIndex, errors, projectId: project.id };
+}
+
+/** Modal 传送门渲染于 document.body：body 作用域点击（先例同 components.test.ts expectBody）。 */
+async function bodyClick(testid: string) {
+  const el = document.body.querySelector(`[data-testid="${testid}"]`);
+  if (!el) throw new Error(`body 中找不到 [data-testid="${testid}"]`);
+  await new DOMWrapper(el).trigger("click");
 }
 
 /** 选中画布第 index 个节点（点击 WfNode 根元素，冒泡进 VueFlow nodeClick）。 */
@@ -276,5 +285,111 @@ describe("WfDesigner 装配", () => {
     await cond.setValue("vars.ok === true");
     expect(design.workflow!.edges[0]!.condition).toBe("vars.ok === true");
     expect(design.dirty).toBe(true);
+  });
+});
+// —— 审查修复 3：设计器入口持续导航（返回列表 + 换项目卸载，dirty 走确认） ——
+describe("WfDesigner 离开与切项目", () => {
+  /** 载入一条工作流后的上下文（画布渲染中）。 */
+  async function mountWithFlow() {
+    const ctx = await mountDesigner();
+    await ctx.wrapper.props("wfList").create("流程甲");
+    await ctx.wrapper.findAll('[data-testid="wf-list-item"]')[0]!.trigger("click");
+    await flushPromises();
+    expect(ctx.design.workflow).not.toBeNull();
+    return ctx;
+  }
+
+  /** 追加第二个项目并刷新树，返回其节点。 */
+  async function addProjectB(ctx: Awaited<ReturnType<typeof mountDesigner>>) {
+    const groupNode = ctx.workspace.tree!.children![0]!;
+    await ctx.api.nodeCreate({ kind: "project", parentId: groupNode.id, name: "项目B" });
+    await ctx.workspace.refresh();
+    return ctx.workspace.tree!.children![0]!.children!.find((p) => p.label === "项目B")!;
+  }
+
+  it("返回列表：非 dirty 直接卸载回空态；列表仍可见", async () => {
+    const { wrapper, design } = await mountWithFlow();
+    await wrapper.find('[data-testid="wf-back-to-list"]').trigger("click");
+    await flushPromises();
+    expect(design.workflow).toBeNull();
+    expect(design.dirty).toBe(false);
+    expect(wrapper.find('[data-testid="wf-empty"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-testid="wf-list-item"]').length).toBe(1);
+  });
+
+  it("切换项目 → 非 dirty 卸载旧项目工作流回空态", async () => {
+    const ctx = await mountWithFlow();
+    const projectB = await addProjectB(ctx);
+    await ctx.wrapper.setProps({ projectId: projectB.id });
+    await flushPromises();
+    expect(ctx.design.workflow).toBeNull();
+    expect(ctx.wrapper.find('[data-testid="wf-empty"]').exists()).toBe(true);
+  });
+
+  it("切换项目遇 dirty → 确认对话框：取消保留，确认丢弃", async () => {
+    const ctx = await mountWithFlow();
+    const projectB = await addProjectB(ctx);
+    await ctx.wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+    expect(ctx.design.dirty).toBe(true);
+
+    await ctx.wrapper.setProps({ projectId: projectB.id });
+    await flushPromises();
+    // 确认框出现（antd Modal 传送门渲染于 body；confirm-dialog testid 不透传，
+    // 以 dialog-confirm 为存在性钩子——先例同 components.test.ts expectBody），缓冲未动
+    expect(document.body.querySelector('[data-testid="dialog-confirm"]')).not.toBeNull();
+    expect(ctx.design.workflow).not.toBeNull();
+
+    // 取消 → 保留缓冲与画布
+    await bodyClick("dialog-cancel");
+    await flushPromises();
+    expect(document.body.querySelector('[data-testid="dialog-confirm"]')).toBeNull();
+    expect(ctx.design.workflow).not.toBeNull();
+
+    // 再次切换 → 确认 → 卸载回空态
+    await ctx.wrapper.setProps({ projectId: null });
+    await flushPromises();
+    await bodyClick("dialog-confirm");
+    await flushPromises();
+    expect(ctx.design.workflow).toBeNull();
+    expect(ctx.wrapper.find('[data-testid="wf-empty"]').exists()).toBe(true);
+  });
+});
+
+// —— 审查修复 4：属性面板级联 change → node-change 载荷映射 ——
+describe("WfPropertyPanel 级联改绑映射", () => {
+  const bindOptions: BindOption[] = [
+    {
+      value: "col1", label: "集合A",
+      children: [{ value: "a1", label: "登录", children: [{ value: "c1", label: "手机号" }] }],
+    },
+  ];
+  const nodeData: WfNodeData = {
+    node: { id: "n1", kind: "request", apiId: "a1", caseId: "c1", label: "登录节点" },
+    missing: false,
+    stateClass: "",
+  };
+
+  async function mountPanel() {
+    const { i18n } = createI18nInstance();
+    return mount(WfPropertyPanel, {
+      props: { nodeData, edgeData: null, bindOptions },
+      global: { plugins: [i18n] },
+    });
+  }
+
+  it("cascader change → node-change（path[1]→apiId、path[2]→caseId；两段=只绑接口）", async () => {
+    const wrapper = await mountPanel();
+    const cascader = wrapper.findComponent(ACascader);
+    cascader.vm.$emit("change", ["col1", "a1", "c1"]);
+    cascader.vm.$emit("change", ["col1", "a1"]);
+    const events = wrapper.emitted<{ apiId?: string; caseId?: string }>("node-change")!;
+    expect(events[0]).toStrictEqual([{ apiId: "a1", caseId: "c1" }]);
+    expect(events[1]).toStrictEqual([{ apiId: "a1", caseId: undefined }]);
+  });
+
+  it("清空级联 → 解除绑定（apiId/caseId 均清除）", async () => {
+    const wrapper = await mountPanel();
+    wrapper.findComponent(ACascader).vm.$emit("change", []);
+    expect(wrapper.emitted("node-change")![0]).toStrictEqual([{ apiId: undefined, caseId: undefined }]);
   });
 });

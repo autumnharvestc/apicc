@@ -30,6 +30,7 @@ import {
   type WfNodePatch,
 } from "../wf/wfCanvas.js";
 import EmptyState from "./EmptyState.vue";
+import ConfirmDialog from "./ConfirmDialog.vue";
 import WfNode from "./WfNode.vue";
 import WfPropertyPanel from "./WfPropertyPanel.vue";
 import "@vue-flow/core/dist/style.css";
@@ -56,15 +57,6 @@ const { t } = useI18n();
 
 const design = computed(() => props.workflowDesign);
 const wf = computed(() => props.workflowDesign.workflow);
-
-// —— 工作流列表入口：进入视图/切换项目时拉取（选中与新建即 load 进设计器） ——
-watch(
-  () => props.projectId,
-  (pid) => {
-    if (pid && props.wfList.projectId !== pid) props.wfList.load(pid).catch(props.reportError);
-  },
-  { immediate: true },
-);
 
 const newName = ref("");
 async function createAndOpen() {
@@ -104,6 +96,51 @@ function clearSelection() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
 }
+
+// —— 工作流列表入口：进入视图/切换项目时拉取（选中与新建即 load 进设计器） ——
+// 换项目时先卸载旧项目已载工作流（审查修复：画布不得残留 A 流而绑 B 的索引），
+// dirty 时经确认对话框放行；列表拉取不受确认结果影响（树选中项已在新项目）。
+const confirmOpen = ref(false);
+let pendingAfterUnload: (() => void) | null = null;
+function requestUnload(proceed: () => void) {
+  const design = props.workflowDesign;
+  if (!design.workflow) {
+    proceed();
+    return;
+  }
+  if (!design.dirty) {
+    design.unload();
+    clearSelection();
+    proceed();
+    return;
+  }
+  pendingAfterUnload = proceed;
+  confirmOpen.value = true;
+}
+function onDiscardConfirm() {
+  props.workflowDesign.unload();
+  clearSelection();
+  confirmOpen.value = false;
+  pendingAfterUnload?.();
+  pendingAfterUnload = null;
+}
+function onDiscardCancel() {
+  confirmOpen.value = false;
+  pendingAfterUnload = null;
+}
+/** 顶栏「返回列表」：卸载当前编辑会话回到空态列表（入口常驻可达）。 */
+function backToList() {
+  requestUnload(() => {});
+}
+
+watch(
+  () => props.projectId,
+  (pid, oldPid) => {
+    if (oldPid !== undefined && pid !== oldPid) requestUnload(() => {});
+    if (pid && props.wfList.projectId !== pid) props.wfList.load(pid).catch(props.reportError);
+  },
+  { immediate: true },
+);
 
 // —— Workflow ↔ Vue Flow 元素（数据源唯一为 store 缓冲，经 wfCanvas 纯变换） ——
 const flowNodes = computed(() => {
@@ -270,6 +307,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         <span class="wf-title" data-testid="wf-title">{{ wf.name }}</span>
         <a-tag :color="statusColors[wf.status]" data-testid="wf-status">{{ t(`wf.status.${wf.status}`) }}</a-tag>
         <span v-if="design.dirty" class="wf-dirty" data-testid="wf-dirty" :title="t('wf.unsaved')">●</span>
+        <a-button size="small" data-testid="wf-back-to-list" @click="backToList">{{ t("wf.backToList") }}</a-button>
         <a-space class="wf-actions">
           <a-button size="small" data-testid="wf-add-request" @click="addNode('request')">{{ t("wf.addRequest") }}</a-button>
           <a-button size="small" data-testid="wf-add-noop" @click="addNode('noop')">{{ t("wf.addNoop") }}</a-button>
@@ -325,6 +363,9 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         </a-layout-sider>
       </div>
     </template>
+
+    <!-- 离开确认（返回列表/换项目遇 dirty）：确认丢弃后卸载编辑会话 -->
+    <ConfirmDialog :open="confirmOpen" :title="t('wf.discardConfirm')" @confirm="onDiscardConfirm" @cancel="onDiscardCancel" />
   </div>
 </template>
 

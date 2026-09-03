@@ -173,6 +173,8 @@
     "condition": "Condition expression",
     "conditionPlaceholder": "prev.passed && vars.token !== undefined",
     "varsHint": "Available variables: prev.passed (previous node passed), vars.* (collection/project variables), env.* (environment variables)",
-    "syntaxHint": "Condition is a JS expression; evaluation errors count as not passed"
+    "syntaxHint": "Condition is a JS expression; evaluation errors count as not passed",
+    "backToList": "Back to List",
+    "discardConfirm": "You have unsaved changes that will be discarded. Leave anyway?"
   }
 }

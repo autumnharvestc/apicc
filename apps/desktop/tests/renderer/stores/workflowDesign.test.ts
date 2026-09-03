@@ -308,3 +308,21 @@ describe("workflowDesign store", () => {
     expect(other.workflowId).toBeNull();
   });
 });
+
+// —— 审查修复 3：卸载编辑会话（离开设计器/切换项目的最小语义） ——
+describe("unload", () => {
+  it("载入并编辑后卸载 → 回到未选工作流空态（dirty 复位、会话态清空）", async () => {
+    const { api, design, projectNode } = await seeded();
+    const wf = await seedWorkflow(api, projectNode.id, "流甲");
+    await design.load(wf.id);
+    design.update({ ...design.workflow!, nodes: [{ id: "nX", kind: "noop", label: "占位" }], edges: [] });
+    expect(design.dirty).toBe(true);
+    design.unload();
+    expect(design.workflowId).toBeNull();
+    expect(design.workflow).toBeNull();
+    expect(design.snapshot).toBe("");
+    expect(design.dirty).toBe(false);
+    expect(design.runResult).toBeNull();
+    expect(design.validationErrors).toEqual([]);
+  });
+});

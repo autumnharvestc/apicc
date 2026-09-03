@@ -115,3 +115,37 @@ export function findBindPath(options: BindOption[], apiId?: string, caseId?: str
   }
   return [];
 }
+
+/**
+ * 绑定索引装载器（组合根用，审查修复）：递增序号守护异步竞态——快速切换项目时，
+ * 先发起的构建若后完成即视为过期（结果丢弃、不落位），只有最新请求的结果落进
+ * `current`。projectId 为 null 视为显式清空（同样参与序号竞争）。
+ */
+export interface BindIndexLoader {
+  /** 当前已落位的索引（仅在最新请求完成后更新）。 */
+  readonly current: WfBindIndex | null;
+  /** 发起一次装载；返回 null = 被更新的请求过期，或入参为空/树未开。 */
+  load(projectId: string | null): Promise<WfBindIndex | null>;
+}
+
+export function createBindIndexLoader(getTree: () => TreeNodeDTO | null, fetchCases: FetchApiDetail): BindIndexLoader {
+  let seq = 0;
+  let current: WfBindIndex | null = null;
+  return {
+    get current() {
+      return current;
+    },
+    async load(projectId: string | null): Promise<WfBindIndex | null> {
+      const mine = ++seq;
+      if (!projectId || !getTree()) {
+        if (mine !== seq) return null;
+        current = null;
+        return null;
+      }
+      const index = await buildBindIndex(getTree(), projectId, fetchCases);
+      if (mine !== seq) return null; // 过期：期间又发起了新的装载
+      current = index;
+      return index;
+    },
+  };
+}

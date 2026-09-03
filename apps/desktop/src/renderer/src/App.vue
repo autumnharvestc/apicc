@@ -38,7 +38,7 @@ import { useImportWizardStore } from "./stores/importW.js";
 import { useDesignStore } from "./stores/design.js";
 import { useWfListStore } from "./stores/wfList.js";
 import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
-import { buildBindIndex, type WfBindIndex } from "./wf/wfBindings.js";
+import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
 
@@ -130,7 +130,7 @@ const selectedCollectionId = computed<string | null>(() => {
       for (const collection of project.children ?? []) {
         if (collection.id === sel.id) return collection.id;
         for (const folder of collection.children ?? []) {
-          if (folder.id === sel.id) return folder.id;
+          if (folder.id === sel.id) return collection.id;
         }
       }
     }
@@ -138,17 +138,22 @@ const selectedCollectionId = computed<string | null>(() => {
   return null;
 });
 
-// —— 工作流设计器的绑定级联索引（M2-B 任务 4）——
+// —— 工作流设计器的绑定级联索引（M2-B 任务 4 / 审查修复竞态）——
 // 树 DTO 不含用例目录：按当前项目逐接口 apiGet 补齐（wfBindings 注入式取数），
-// 产出 a-cascader options + 画布名称预注入 + missing 检测集合。随选中项目变化重建。
+// 产出 a-cascader options + 画布名称预注入 + missing 检测集合。随选中项目变化重建；
+// 装载器以递增序号守护竞态：快速切换项目时先发起的后完成结果被丢弃，不覆盖新索引。
+const bindIndexLoader = createBindIndexLoader(
+  () => workspace.tree,
+  (id) => apicc.apiGet(id),
+);
 const wfBindIndex = ref<WfBindIndex | null>(null);
 watch(
   [selectedProjectId, () => workspace.opened],
   async ([pid]) => {
     wfBindIndex.value = null;
-    if (!pid || !workspace.tree) return;
     try {
-      wfBindIndex.value = await buildBindIndex(workspace.tree, pid, (id) => apicc.apiGet(id));
+      const index = await bindIndexLoader.load(pid);
+      if (index) wfBindIndex.value = index; // 过期结果为 null：不覆盖（新请求已落位）
     } catch (e) {
       reportError(e);
     }

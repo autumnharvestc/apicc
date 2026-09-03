@@ -45,6 +45,21 @@ export function useWorkflowDesignStore(api: ApiccApi) {
       update(workflow: Workflow) {
         this.workflow = workflow;
       },
+      /**
+       * 卸载编辑会话（审查修复：离开设计器/切换项目时调用）：回到未选工作流空态，
+       * 缓冲、快照与运行/校验等会话态一并清空。同步动作，无在途守卫需求（与 load
+       * 的异步切流守卫互不干扰）。
+       */
+      unload() {
+        this.workflowId = null;
+        this.workflow = null;
+        this.snapshot = "";
+        this.saving = false;
+        this.validationErrors = [];
+        this.warnings = [];
+        this.runResult = null;
+        this.running = false;
+      },
       async save() {
         if (!this.workflow) return;
         // 在途切流守卫：await 期间 load(另一工作流) 可能完成，旧流的落盘返回值不得

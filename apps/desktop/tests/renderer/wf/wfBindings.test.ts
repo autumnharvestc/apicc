@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { ApiDetail } from "../../../src/shared/types.js";
 import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
-import { buildBindIndex, findBindPath } from "../../../src/renderer/src/wf/wfBindings.js";
+import { buildBindIndex, createBindIndexLoader, findBindPath, type FetchApiDetail } from "../../../src/renderer/src/wf/wfBindings.js";
 
 const tree: TreeNodeDTO = {
   kind: "root", id: "ws", label: "工作区",
@@ -125,5 +125,50 @@ describe("findBindPath", () => {
   it("未绑定/引用不在选项内 → 空路径", () => {
     expect(findBindPath(options)).toEqual([]);
     expect(findBindPath(options, "a4", "c9")).toEqual([]); // 他项目接口不可选
+  });
+});
+
+// —— 审查修复 2：装载器竞态守护（快速切换项目时仅最新请求落位） ——
+describe("createBindIndexLoader", () => {
+  /** 可控闸门取数替身：仅 gated 中列出的 apiId 挂起待放行，其余立即完成。 */
+  function gatedFetch(gated: string[]) {
+    const gates = new Map<string, () => void>();
+    const make = (apiId: string): ApiDetail => ({
+      api: {
+        id: apiId, name: apiId, version: "1.0.0", deprecated: false, method: "GET", url: "/",
+        headers: [], query: [],
+        cases: [{ id: `c-${apiId}`, name: `用例${apiId}`, scope: "base" as const, parameters: {}, assertions: [] }],
+      },
+      envs: [],
+    });
+    const fetch: FetchApiDetail = (apiId) => {
+      if (!gated.includes(apiId)) return Promise.resolve(make(apiId));
+      return new Promise((resolve) => {
+        gates.set(apiId, () => resolve(make(apiId)));
+      });
+    };
+    return { gates, fetch };
+  }
+
+  it("先发起的后完成 → 过期结果丢弃，最终索引来自后发起者", async () => {
+    const { gates, fetch } = gatedFetch(["a1"]); // 仅 p1 的接口挂闸门，p2 立即可完成
+    const loader = createBindIndexLoader(() => tree, fetch);
+    const p1 = loader.load("p1");
+    const p2 = loader.load("p2"); // 后发起
+    const r2 = await p2; // 后发起者先完成并落位
+    expect(r2?.apiIds.has("a4")).toBe(true);
+    expect(loader.current).toBe(r2);
+    gates.get("a1")!(); // 先发起的此刻才完成
+    expect(await p1).toBeNull(); // 过期：不落位、不覆盖
+    expect(loader.current).toBe(r2);
+  });
+
+  it("顺序装载正常落位；projectId null 清空当前索引", async () => {
+    const loader = createBindIndexLoader(() => tree, fakeFetch({ a1: [{ id: "c1", name: "手机号" }] }));
+    const r1 = await loader.load("p1");
+    expect(r1?.apiIds.has("a1")).toBe(true);
+    expect(loader.current).toBe(r1);
+    expect(await loader.load(null)).toBeNull();
+    expect(loader.current).toBeNull();
   });
 });
