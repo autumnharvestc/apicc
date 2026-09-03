@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiDefinitionSchema, TestCaseSchema } from "../../src/domain/model.js";
+import { ApiDefinitionSchema, ProjectSchema, TestCaseSchema } from "../../src/domain/model.js";
 
 describe("域 schema", () => {
   it("接受合法接口定义", () => {
@@ -24,5 +24,17 @@ describe("域 schema", () => {
     expect(() =>
       ApiDefinitionSchema.parse({ id: "x", name: "a", version: "1", method: "TELEPORT", url: "/", headers: [], query: [], cases: [] }),
     ).toThrow();
+  });
+});
+
+describe("Project.workflows 字段（M2-A）", () => {
+  it("缺省为空数组；接受工作流对象", () => {
+    const p = ProjectSchema.parse({ id: "p", name: "x", variables: {} });
+    expect(p.workflows).toEqual([]);
+    const p2 = ProjectSchema.parse({
+      id: "p", name: "x", variables: {}, environments: [], collections: [],
+      workflows: [{ id: "w", name: "wf", status: "draft", nodes: [], edges: [] }],
+    });
+    expect(p2.workflows).toHaveLength(1);
   });
 });

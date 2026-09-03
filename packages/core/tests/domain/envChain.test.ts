@@ -10,6 +10,7 @@ const project: Project = {
     { id: "e3", name: "press", extends: "sit", variables: {} },
   ],
   collections: [],
+  workflows: [],
 };
 
 describe("envChain", () => {

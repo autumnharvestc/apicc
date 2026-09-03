@@ -27,7 +27,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   // 夹具须在 baseUrl 就绪后构造：模块顶层求值会把空串快照进 env.variables。
   env = { id: "e1", name: "dev", variables: { baseUrl, who: "dev" } };
-  project = { id: "p1", name: "p", variables: {}, environments: [env], collections: [] };
+  project = { id: "p1", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
   workspace = { id: "w1", name: "ws", variables: { who: "global" }, groups: [] };
 });
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
@@ -97,7 +97,7 @@ describe("CollectionRunner", () => {
 
   it("同 ID 环境用例覆盖基座：仅执行环境版本而非重复执行（规格 §6）", async () => {
     const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl, who: "sit" } };
-    const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [] };
+    const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [], workflows: [] };
     const col: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
@@ -136,7 +136,7 @@ describe("CollectionRunner", () => {
   it("同 ID 出现两个环境版本时继承链更近者优先（规格 §6）", async () => {
     const pressEnv: Environment = { id: "e3", name: "press", extends: "sit", variables: { baseUrl } };
     const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl } };
-    const chainProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv, pressEnv], collections: [] };
+    const chainProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv, pressEnv], collections: [], workflows: [] };
     const col: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
@@ -283,7 +283,7 @@ describe("CollectionRunner", () => {
   it("环境派生继承：sit extends dev 继承 baseUrl，子环境变量覆盖同名（回归 C3）", async () => {
     // dev 有 baseUrl 而 sit 没有——URL 能解析即证明继承生效；who 由 sit 覆盖 dev。
     const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { who: "sit" } };
-    const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [] };
+    const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [], workflows: [] };
     const col: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{

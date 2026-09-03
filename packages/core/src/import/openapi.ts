@@ -82,6 +82,7 @@ export const openapiImporter: Importer = {
       id: randomUUID(), name: info.title, variables: {},
       environments: [{ id: randomUUID(), name: "imported", variables: { baseUrl } }],
       collections: [{ id: randomUUID(), name: info.title, variables: {}, folders: [], apis }],
+      workflows: [],
     };
     // 严格 schema 自校验：导入产物必须恰好匹配域模型字段（多余字段 fail-fast）。
     return { project: ProjectSchema.parse(project), warnings };

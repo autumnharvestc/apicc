@@ -10,6 +10,7 @@ const ws: Workspace = {
   groups: [{
     id: "g1", name: "g", projects: [{
       id: "p1", name: "p", variables: {},
+      workflows: [],
       environments: [{ id: "e1", name: "dev", variables: {} }],
       collections: [{
         id: "c1", name: "c", variables: {},

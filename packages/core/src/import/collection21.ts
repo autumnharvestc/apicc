@@ -87,7 +87,7 @@ export const collectionV21Importer: Importer = {
     const warnings: string[] = [];
     const collection: Collection = { id: newId(), name: doc.info.name, variables: {}, folders: [], apis: [] };
     walk(doc.item ?? [], collection, warnings);
-    const project: Project = { id: newId(), name: doc.info.name, variables: {}, environments: [], collections: [collection] };
+    const project: Project = { id: newId(), name: doc.info.name, variables: {}, environments: [], collections: [collection], workflows: [] };
     // 严格 schema 自校验：导入产物必须恰好匹配域模型字段（多余字段 fail-fast）。
     return { project: ProjectSchema.parse(project), warnings };
   },

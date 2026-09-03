@@ -12,6 +12,7 @@ const workspace: Workspace = {
     id: "g1", name: "ecommerce",
     projects: [{
       id: "p1", name: "order-service", variables: {},
+      workflows: [],
       environments: [{ id: "e1", name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" } }],
       collections: [{
         id: "c1", name: "order-api", variables: {}, folders: [], apis: [],
@@ -243,6 +244,7 @@ describe("fileStorage", () => {
         id: "g1", name: "ecommerce",
         projects: [{
           id: "p1", name: "order-service", variables: { timeoutMs: "3000" },
+          workflows: [],
           environments: [
             { id: "e1", name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" } },
             { id: "e2", name: "sit", extends: "dev", variables: { baseUrl: "http://sit.example" } },

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { WorkflowSchema } from "../workflow/model.js";
+
 // 所有域对象 schema 均为 strict：拒绝未知字段（而非静默丢弃），
 // 避免「解析→保存」链路上的静默数据丢失，并尽早暴露文件格式错误。
 // 该行为由 tests/domain/model.test.ts 的「拒绝未知字段」用例约定。
@@ -106,6 +108,7 @@ export const ProjectSchema = z.object({
   variables: z.record(z.string(), z.string()).default({}),
   environments: z.array(EnvironmentSchema).default([]),
   collections: z.array(CollectionSchema).default([]),
+  workflows: z.array(WorkflowSchema).default([]),
 }).strict();
 export type Project = z.infer<typeof ProjectSchema>;
 
