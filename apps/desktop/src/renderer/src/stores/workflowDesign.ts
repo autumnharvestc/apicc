@@ -87,12 +87,15 @@ export function useWorkflowDesignStore(api: ApiccApi) {
         const result = await api.wfSetStatus(this.workflowId, next);
         if (this.workflowId !== targetId) return;
         if (result.errors.length > 0) {
-          // 启用校验未过：错误可见、缓冲不动（api 返回状态不变的原工作流）
+          // 启用校验未过：错误可见、缓冲内容不动（api 返回状态不变的原工作流）
           this.validationErrors = result.errors;
           this.warnings = result.warnings;
           return;
         }
-        this.workflow = result.workflow;
+        // 浅拷贝换新引用再写入：api 层原地迁移 status 后回传同一对象，同引用赋值不触发
+        // 响应式（审查修复：设计器状态 Tag/侧树色点依赖 status 变化的 watcher 将失明；
+        // 与 save() 用 wfSave 新对象刷新缓冲的模式对齐）。
+        this.workflow = { ...result.workflow };
         this.snapshot = JSON.stringify(this.workflow);
         this.validationErrors = [];
         this.warnings = result.warnings;

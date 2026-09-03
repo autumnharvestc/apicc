@@ -299,4 +299,37 @@ describe("App 侧树工作流入口", () => {
     expect(created).toBeDefined();
     expect(created!.attributes("data-status")).toBe("draft");
   });
+
+  it("设计器发布工作流后侧树状态色点同步（data-status: draft → published）", async () => {
+    // 审查修复：生命周期迁移不改 wfList.items.length，树摘要须随设计器 status 变化刷新，
+    // 否则侧树色点陈旧。真实链路：wf-publish → store.setStatus → api.wfSetStatus → 树刷新。
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    // 直连替身建 draft 工作流后重开工作区刷新树（failingApi 为本文件共享单例，按名断言）
+    const tree = await failingApi.treeGet();
+    const project = tree.children![0]!.children![0]!;
+    const wf = await failingApi.wfCreate({ projectId: project.id, name: "生命周期流" });
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const findNode = () =>
+      wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("生命周期流"))!;
+    expect(findNode().attributes("data-status")).toBe("draft");
+    // 侧树打开工作流 → 设计器点「发布」
+    await findNode().trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="wf-publish"]').trigger("click");
+    await flushPromises();
+    // 侧树色点同步为 published（修复前：同引用赋值不触发响应式 + 无 status watcher，
+    // 树摘要陈旧为 draft）
+    expect(findNode().attributes("data-status")).toBe("published");
+    // 树 DTO 摘要确实重建（status 更新；failingApi 为共享单例，按 id 断言本流）
+    const dto = await failingApi.treeGet();
+    expect(dto.children![0]!.children![0]!.workflows!.find((w) => w.id === wf.id)).toEqual({
+      id: wf.id,
+      name: "生命周期流",
+      status: "published",
+    });
+  });
 });

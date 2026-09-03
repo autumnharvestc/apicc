@@ -100,6 +100,7 @@ function dismissError() {
 async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
   tree.select(kind, id);
   if (kind === "api") await editor.load(id);
+  // 已知限制（任务 3 跟进）：侧树切换工作流直接 load，绕过设计器的 dirty 确认守卫。
   if (kind === "workflow") {
     view.value = "wf";
     try {
@@ -186,6 +187,22 @@ watch(
   () => wfList.items.length,
   async () => {
     if (!workspace.opened) return;
+    try {
+      await workspace.refresh();
+    } catch (e) {
+      reportError(e);
+    }
+  },
+);
+
+// —— 生命周期迁移 → 侧树状态色点同步（审查修复：色点陈旧）——
+// 发布/启用（wf:set-status）不改列表长度，上面的 watcher 感知不到；单独监听设计器
+// 缓冲的 status 变化刷新树摘要，侧树色点才不滞留旧状态。unload（workflow=null）跳过，
+// 避免「返回列表」触发无谓 treeGet；启用校验未过时缓冲 status 不变，watcher 不触发。
+watch(
+  () => workflowDesign.workflow?.status,
+  async (status) => {
+    if (!workspace.opened || status === undefined) return;
     try {
       await workspace.refresh();
     } catch (e) {
