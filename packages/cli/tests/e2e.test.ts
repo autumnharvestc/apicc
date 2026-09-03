@@ -26,6 +26,7 @@ beforeAll(async () => {
     groups: [{
       id: "g1", name: "demo", projects: [{
         id: "p1", name: "svc", variables: {},
+        workflows: [],
         environments: [{ id: "e1", name: "dev", variables: { baseUrl } }],
         collections: [{
           id: "c1", name: "api", variables: {}, folders: [],
@@ -54,6 +55,7 @@ beforeAll(async () => {
     }, {
       id: "g2", name: "demo2", projects: [{
         id: "p2", name: "svc", variables: {},
+        workflows: [],
         environments: [{ id: "e2", name: "dev", variables: { baseUrl } }],
         collections: [{
           id: "c3", name: "api", variables: {}, folders: [],

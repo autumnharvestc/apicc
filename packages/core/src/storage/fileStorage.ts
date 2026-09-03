@@ -7,6 +7,7 @@ import {
   ProjectSchema, TestCaseSchema, WorkspaceSchema,
 } from "../domain/model.js";
 import type { ApiDefinition, Collection, Folder, Group, Project, Workspace } from "../domain/model.js";
+import { WorkflowSchema } from "../workflow/model.js";
 import type { LoadProblem, StorageAdapter } from "../plugin/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
@@ -132,7 +133,7 @@ export const fileStorage: StorageAdapter = {
             problems.push({ file: join(pRel, "project.yaml"), message: pRes.error });
             continue;
           }
-          const project: Project = { ...pRes.data, environments: [], collections: [] };
+          const project: Project = { ...pRes.data, environments: [], collections: [], workflows: [] };
 
           const envDir = join(pDir, "environments");
           if (existsSync(envDir)) {
@@ -143,6 +144,18 @@ export const fileStorage: StorageAdapter = {
                 continue;
               }
               project.environments.push(eRes.data);
+            }
+          }
+
+          const workflowsDir = join(pDir, "workflows");
+          if (existsSync(workflowsDir)) {
+            for (const wfName of sortedNames(workflowsDir)) {
+              const res = loadYaml(join(workflowsDir, wfName, "workflow.yaml"), WorkflowSchema);
+              if (!res.ok) {
+                problems.push({ file: join(pRel, "workflows", wfName, "workflow.yaml"), message: res.error });
+                continue;
+              }
+              project.workflows.push(res.data);
             }
           }
 
@@ -221,6 +234,11 @@ export const fileStorage: StorageAdapter = {
         for (const e of p.environments) {
           writeYaml(join(pDir, "environments", `${e.name}.yaml`), {
             id: e.id, name: e.name, extends: e.extends, variables: e.variables,
+          });
+        }
+        for (const wf of p.workflows) {
+          writeYaml(join(pDir, "workflows", wf.name, "workflow.yaml"), {
+            id: wf.id, name: wf.name, status: wf.status, nodes: wf.nodes, edges: wf.edges,
           });
         }
         for (const c of p.collections) {

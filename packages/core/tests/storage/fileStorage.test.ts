@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { fileStorage } from "../../src/storage/fileStorage.js";
 import { WorkspaceSchema } from "../../src/domain/model.js";
 import type { Workspace } from "../../src/domain/model.js";
+import type { Workflow } from "../../src/workflow/model.js";
 
 const workspace: Workspace = {
   id: "w1", name: "demo", variables: { region: "cn" },
@@ -307,5 +308,55 @@ describe("fileStorage", () => {
     };
     expect(norm(loaded)).toEqual(norm(ws));
     expect(() => WorkspaceSchema.parse(loaded)).not.toThrow();
+  });
+});
+
+describe("fileStorage workflows 读写（M2-A）", () => {
+  const workflow: Workflow = {
+    id: "wf1", name: "下单流程", status: "draft",
+    nodes: [{ id: "n1", kind: "request", apiId: "a1", caseId: "c1" }],
+    edges: [],
+  };
+
+  it("save 落盘 projects/<p>/workflows/<名>/workflow.yaml 并读回", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-wfio-"));
+    const ws: Workspace = {
+      ...workspace,
+      groups: [{
+        ...workspace.groups[0]!, projects: [{
+          ...workspace.groups[0]!.projects[0]!, workflows: [workflow],
+        }],
+      }],
+    };
+    await fileStorage.save(root, ws);
+    const { workspace: loaded, problems } = await fileStorage.load(root);
+    expect(problems).toEqual([]);
+    const loadedWf = loaded.groups[0]!.projects[0]!.workflows[0]!;
+    expect(loadedWf.name).toBe("下单流程");
+    expect(loadedWf.nodes).toEqual([{ id: "n1", kind: "request", apiId: "a1", caseId: "c1" }]);
+    expect(loadedWf.edges).toEqual([]);
+  });
+
+  it("坏 workflow.yaml 隔离为 problem", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-wfio2-"));
+    const ws: Workspace = {
+      ...workspace,
+      groups: [{
+        ...workspace.groups[0]!, projects: [{
+          ...workspace.groups[0]!.projects[0]!, workflows: [workflow],
+        }],
+      }],
+    };
+    await fileStorage.save(root, ws);
+    writeFileSync(
+      join(root, "groups", "ecommerce", "projects", "order-service", "workflows", "下单流程", "workflow.yaml"),
+      "id: [broken",
+    );
+    const { workspace: loaded, problems } = await fileStorage.load(root);
+    expect(loaded.groups[0]!.projects[0]!.workflows).toEqual([]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.file).toBe(
+      join("groups", "ecommerce", "projects", "order-service", "workflows", "下单流程", "workflow.yaml"),
+    );
   });
 });
