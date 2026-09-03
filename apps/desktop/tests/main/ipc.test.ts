@@ -298,7 +298,7 @@ describe("工作流 IPC", () => {
   });
 
   it("wf:set-status 启用校验失败返回 errors 且状态不变；非法迁移直接抛错", async () => {
-    const { deps, project } = await setupWf();
+    const { deps, project, api } = await setupWf();
     // request 节点引用不存在的用例：结构合法但启用校验必失败
     const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "坏引用流" });
     await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "n1", kind: "request", apiId: "ghost-api", caseId: "ghost-case" }] } });
@@ -309,9 +309,17 @@ describe("工作流 IPC", () => {
     const enabled = await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
     expect(enabled.workflow.status).toBe("published");
     expect(enabled.errors.length).toBeGreaterThan(0);
-    // 非法迁移（draft→enabled 跳级）由 core 守卫直接抛错（UI 按钮禁用本不应触发）
+    // 非法迁移（draft→enabled 跳级）由 core 守卫直接抛错（UI 按钮禁用本不应触发）；
+    // 流须含合法节点（启用校验可通过）才会到达迁移守卫——空流在启用校验即被拒（§5 第 5 条）
     const wf2 = await deps.handle("wf:create", {}, { projectId: project.id, name: "跳级流" });
+    await deps.handle("wf:save", {}, { workflow: { ...wf2, nodes: [{ id: "n1", kind: "request", apiId: api.id, caseId: api.cases[0]!.id }] } });
     await expect(deps.handle("wf:set-status", {}, { workflowId: wf2.id, next: "enabled" })).rejects.toThrow(/非法状态迁移/);
+    // 空流（0 节点）启用 → 启用校验失败返回 errors 且状态不变（不走迁移守卫抛错）
+    const wf3 = await deps.handle("wf:create", {}, { projectId: project.id, name: "空流" });
+    await deps.handle("wf:set-status", {}, { workflowId: wf3.id, next: "published" });
+    const emptyEnabled = await deps.handle("wf:set-status", {}, { workflowId: wf3.id, next: "enabled" });
+    expect(emptyEnabled.workflow.status).toBe("published");
+    expect(emptyEnabled.errors).toContain("工作流没有任何节点，无法启用");
     // 解除启用（enabled→published）合法；此处以 published 工作流验证 enabled 迁移守卫文案后补
     expect(await deps.handle("wf:get", {}, { workflowId: wf2.id })).toMatchObject({ workflow: { status: "draft" } });
   });

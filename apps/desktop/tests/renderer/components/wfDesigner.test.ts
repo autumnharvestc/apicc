@@ -451,8 +451,17 @@ describe("WfDesigner 生命周期与校验错误", () => {
     expect(ctx.wrapper.find('[data-testid="wf-errors"]').exists()).toBe(false);
   });
 
-  it("空流发布→启用成功→解除启用 → Tag 依次 已发布/已启用/已发布", async () => {
+  it("绑定节点的工作流发布→启用成功→解除启用 → Tag 依次 已发布/已启用/已发布", async () => {
     const ctx = await mountWithFlow("流程丙");
+    // 一个绑定种子接口/用例的请求节点：满足启用校验（不依赖「0 节点可启用」的旧语义）
+    await ctx.wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+    ctx.design.update(applyNodeUpdate(ctx.design.workflow!, ctx.design.workflow!.nodes[0]!.id, {
+      apiId: [...ctx.bindIndex.apiIds][0]!,
+      caseId: [...ctx.bindIndex.caseNames.keys()][0]!,
+    }));
+    await ctx.wrapper.find('[data-testid="wf-save"]').trigger("click");
+    await flushPromises();
+
     await clickStatus(ctx, "wf-publish");
     await clickStatus(ctx, "wf-enable");
     expect(ctx.design.workflow!.status).toBe("enabled");
@@ -467,6 +476,42 @@ describe("WfDesigner 生命周期与校验错误", () => {
     const retracted = lifecycleButtons(ctx);
     expect(retracted.enable.attributes("disabled")).toBeUndefined();
     expect(retracted.retract.attributes("disabled")).toBeDefined();
+  });
+
+  it("空工作流（0 节点）启用被拒 → wf-errors 含「没有任何节点」且状态不变（规格 §5 第 5 条）", async () => {
+    const ctx = await mountWithFlow("空流程");
+    await clickStatus(ctx, "wf-publish");
+    await clickStatus(ctx, "wf-enable");
+    expect(ctx.design.workflow!.status).toBe("published"); // API 层保证状态不变
+    expect(ctx.wrapper.find('[data-testid="wf-status"]').text()).toContain("已发布");
+    expect(ctx.design.validationErrors.some((e) => /没有任何节点/.test(e))).toBe(true);
+    const alert = ctx.wrapper.find('[data-testid="wf-errors"]');
+    expect(alert.exists()).toBe(true);
+    expect(alert.text()).toContain("没有任何节点");
+  });
+
+  it("启用失败 → 修复绑定 → 再启用成功 → wf-errors 消失（store 成功清空语义锁定）", async () => {
+    const ctx = await mountWithFlow("流程丁");
+    // 未绑定 request 节点：保存 → 发布 → 启用失败（errors 可见）
+    await ctx.wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+    await ctx.wrapper.find('[data-testid="wf-save"]').trigger("click");
+    await flushPromises();
+    await clickStatus(ctx, "wf-publish");
+    await clickStatus(ctx, "wf-enable");
+    expect(ctx.design.validationErrors.length).toBeGreaterThan(0);
+    expect(ctx.wrapper.find('[data-testid="wf-errors"]').exists()).toBe(true);
+
+    // 改绑种子接口/用例 → 保存 → 再启用：成功清空 validationErrors，alert 收起
+    ctx.design.update(applyNodeUpdate(ctx.design.workflow!, ctx.design.workflow!.nodes[0]!.id, {
+      apiId: [...ctx.bindIndex.apiIds][0]!,
+      caseId: [...ctx.bindIndex.caseNames.keys()][0]!,
+    }));
+    await ctx.wrapper.find('[data-testid="wf-save"]').trigger("click");
+    await flushPromises();
+    await clickStatus(ctx, "wf-enable");
+    expect(ctx.design.workflow!.status).toBe("enabled");
+    expect(ctx.design.validationErrors).toHaveLength(0);
+    expect(ctx.wrapper.find('[data-testid="wf-errors"]').exists()).toBe(false);
   });
 
   it("set-status 在途 → 三个生命周期按钮禁用；落地后恢复矩阵", async () => {
