@@ -16,9 +16,14 @@ import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
 import { createMemoryApi } from "../../src/renderer/src/api/memory.js";
+import WfDesigner from "../../src/renderer/src/components/WfDesigner.vue";
+import type { WfBindIndex } from "../../src/renderer/src/wf/wfBindings.js";
 
 const failingApi = createMemoryApi();
 failingApi.seedWorkspace();
+// 审查 I2 回归需要真实 nodeCreate（项目内新增接口后断言 bindIndex 重建）：
+// 先留存原实现再换成恒拒绝替身，I2 用例内换回、结束时还原。
+const realNodeCreate = failingApi.nodeCreate.bind(failingApi);
 failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
 window.apicc = failingApi;
 
@@ -194,5 +199,43 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
     await langOption("zh-CN").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("暂无数据");
+  });
+});
+
+// —— 宽范围审查 I2：项目内 API 增删后 bindIndex 必须随树刷新重建 ——
+// 修复前 watch 源仅 [selectedProjectId, opened]：项目内新增接口只改变 workspace.tree
+// 引用（refresh 换新对象、选中项目不变），watch 不触发 → 设计器拿到陈旧索引，
+// 改绑级联、画布 apiName/caseName 预注入与 missing 红框检测全部失真。
+describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
+  it("项目内新增接口后 bindIndex 重建并包含新接口", async () => {
+    failingApi.nodeCreate = realNodeCreate; // 本用例需要真实创建，结束时还原恒拒绝替身
+    try {
+      const wrapper = await mountApp();
+      await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+      await flushPromises();
+      // 选中种子接口 → selectedProjectId 就绪 → bindIndex 首次构建（仅种子 1 个接口）
+      await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+      await wrapper.find('[data-testid="tree-api"]').trigger("click");
+      await flushPromises();
+      await wrapper.find('input[value="wf"]').setValue(true);
+      await flushPromises();
+      const designer = wrapper.findComponent(WfDesigner);
+      const before = designer.props("bindIndex") as WfBindIndex | null;
+      expect(before).not.toBeNull();
+      expect(before!.apiIds.size).toBe(1);
+
+      // 项目内经侧树新增接口：nodeCreate + workspace.refresh 换新 tree 引用
+      await wrapper.find('[data-testid="new-api"]').trigger("click");
+      await expectBody("dialog-input").setValue("联动新接口");
+      await expectBody("dialog-confirm").trigger("click");
+      await flushPromises();
+
+      // watch 源含 workspace.tree：refresh 即重建索引，新接口进入 apiIds/名称表
+      const after = designer.props("bindIndex") as WfBindIndex | null;
+      expect(after!.apiIds.size).toBe(2); // 修复前索引陈旧仍为 1
+      expect([...after!.apiNames.values()]).toContain("联动新接口");
+    } finally {
+      failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
+    }
   });
 });

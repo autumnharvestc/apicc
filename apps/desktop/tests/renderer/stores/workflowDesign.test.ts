@@ -102,6 +102,39 @@ describe("workflowDesign store", () => {
     expect(design.workflow!.name).toBe("改名流");
   });
 
+  // —— 审查 Minor 采纳：编辑+保存后旧运行着色残留与新内容不符，成功落盘即清空 ——
+  it("save 成功清空 runResult（旧运行结果不再着色新内容）；save 失败保留", async () => {
+    const { api, design, projectNode, apiNode } = await seeded();
+    const wf = await seedWorkflow(api, projectNode.id, "着色流", {
+      nodes: [await validNode(api, apiNode.id)],
+    });
+    await design.load(wf.id);
+    await design.setStatus("published");
+    await design.setStatus("enabled");
+    await design.run();
+    expect(design.runResult).not.toBeNull();
+    design.update({ ...design.workflow!, name: "着色流改" });
+    await design.save();
+    expect(design.runResult).toBeNull();
+    expect(design.dirty).toBe(false);
+
+    // save 失败（未落盘成功）：缓冲内容未换基线，旧运行结果保留不误清
+    const wf2 = await seedWorkflow(api, projectNode.id, "着色流乙", {
+      nodes: [await validNode(api, apiNode.id)],
+    });
+    await design.load(wf2.id);
+    await design.setStatus("published");
+    await design.setStatus("enabled");
+    await design.run();
+    expect(design.runResult).not.toBeNull();
+    api.wfSave = async () => {
+      throw new Error("落盘失败");
+    };
+    design.update({ ...design.workflow!, name: "着色流乙改" });
+    await expect(design.save()).rejects.toThrow(/落盘失败/);
+    expect(design.runResult).not.toBeNull();
+  });
+
   it("setStatus 成功：刷新 workflow、清 validationErrors、dirty 不误报", async () => {
     const { api, design, projectNode, apiNode } = await seeded();
     const wf = await seedWorkflow(api, projectNode.id, "条件流", {

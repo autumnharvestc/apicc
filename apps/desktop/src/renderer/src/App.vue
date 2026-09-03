@@ -142,13 +142,15 @@ const selectedCollectionId = computed<string | null>(() => {
 // 树 DTO 不含用例目录：按当前项目逐接口 apiGet 补齐（wfBindings 注入式取数），
 // 产出 a-cascader options + 画布名称预注入 + missing 检测集合。随选中项目变化重建；
 // 装载器以递增序号守护竞态：快速切换项目时先发起的后完成结果被丢弃，不覆盖新索引。
+// 审查 I2：watch 源追加 workspace.tree——项目内经侧树新增/删除接口后 refresh 换新
+// tree 引用即触发重建，避免改绑级联/画布预注入/missing 检测基于陈旧索引。
 const bindIndexLoader = createBindIndexLoader(
   () => workspace.tree,
   (id) => apicc.apiGet(id),
 );
 const wfBindIndex = ref<WfBindIndex | null>(null);
 watch(
-  [selectedProjectId, () => workspace.opened],
+  [selectedProjectId, () => workspace.opened, () => workspace.tree],
   async ([pid]) => {
     wfBindIndex.value = null;
     try {

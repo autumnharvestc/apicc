@@ -74,6 +74,9 @@ export function useWorkflowDesignStore(api: ApiccApi) {
           if (this.workflowId !== targetId) return;
           this.workflow = stored;
           this.snapshot = JSON.stringify(this.workflow);
+          // 审查 Minor 采纳：保存成功即清空旧运行结果——编辑+保存后画布着色来自
+          // 旧 runResult，与新落盘内容不符；清空后「结果」钮随之禁用（未运行语义）。
+          this.runResult = null;
         } finally {
           this.saving = false;
         }

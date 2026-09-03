@@ -149,6 +149,8 @@
     "listEmpty": "No workflows in this project yet",
     "namePlaceholder": "Workflow name",
     "create": "Create",
+    "delete": "Delete",
+    "deleteConfirm": "Delete workflow \"{name}\"?",
     "addRequest": "Add Request Node",
     "addNoop": "Add Noop Node",
     "save": "Save",

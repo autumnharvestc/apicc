@@ -149,6 +149,8 @@
     "listEmpty": "当前项目暂无工作流",
     "namePlaceholder": "工作流名称",
     "create": "新建",
+    "delete": "删除",
+    "deleteConfirm": "确定删除工作流「{name}」？",
     "addRequest": "添加请求节点",
     "addNoop": "添加占位节点",
     "save": "保存",

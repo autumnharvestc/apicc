@@ -22,6 +22,7 @@ import {
   Tag as ATag,
 } from "ant-design-vue";
 import type { NodeState, WorkflowStatus } from "@apicc/core";
+import type { WorkflowSummary } from "../../../shared/types.js";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
 import type { useWfListStore } from "../stores/wfList.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
@@ -51,6 +52,8 @@ import "@vue-flow/core/dist/theme-default.css";
  * 中央 Vue Flow 画布（受控 :nodes/:edges，经 wfCanvas 变换回写 store）+ 右侧属性面板。
  * 组件内零 store 工厂调用（组合根 App.vue 一次创建经 props 下发）；bindIndex（绑定
  * 级联 + 名称索引）由组合根按当前项目树构造后传入。
+ * 空态列表（审查 I3）：列表项悬停动作「删除」→ ConfirmDialog 确认后经 wfList.remove
+ * 落库并重拉列表（先例同 SideTree 悬停动作钮）；重命名显式延后 M2-C。
  * 编辑即整体替换缓冲（store.update），dirty 由快照比对派生；拖拽落点经 applyNodeMove
  * 以新建 position 对象写回（任务 3 交接：阻断 Vue Flow 原地改写共享引用）。
  * 生命周期（任务 5）：顶栏按钮组 发布/启用/解除启用——可用性随 status 派生（draft→发布、
@@ -96,6 +99,30 @@ async function selectWorkflow(id: string) {
   try {
     await props.workflowDesign.load(id);
     clearSelection();
+  } catch (e) {
+    props.reportError(e);
+  }
+}
+
+// —— 列表项删除（审查 I3：规格 D3 承诺删除/重命名，删除入口在此补齐）——
+// 悬停动作钮先例同 SideTree；复用 wfList.remove(id, confirm) 确认回调模式 +
+// 既有 ConfirmDialog。删除入口仅在空态列表（未载工作流），不存在「删除正在编辑的流」
+// 的会话错位。重命名显式延后：M2-C 与侧树入口同批。
+const deleteTarget = ref<WorkflowSummary | null>(null);
+const deleteOpen = computed(() => deleteTarget.value !== null);
+function askDelete(item: WorkflowSummary) {
+  deleteTarget.value = item;
+}
+function onDeleteCancel() {
+  deleteTarget.value = null;
+}
+async function onDeleteConfirm() {
+  const target = deleteTarget.value;
+  deleteTarget.value = null;
+  if (!target) return;
+  try {
+    // 已在对话框确认：放行回调恒真（先例同 SideTree 删除）。
+    await props.wfList.remove(target.id, async () => true);
   } catch (e) {
     props.reportError(e);
   }
@@ -390,11 +417,17 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         </a-button>
       </div>
       <ul class="wf-items">
-        <li v-for="item in wfList.items" :key="item.id">
+        <!-- 行内悬停动作钮（审查 I3 删除）：li 承载 hover 显隐，按钮不嵌套在打开列表项内 -->
+        <li v-for="item in wfList.items" :key="item.id" class="wf-item-row">
           <button class="wf-item" data-testid="wf-list-item" :data-id="item.id" @click="selectWorkflow(item.id)">
             <span>{{ item.name }}</span>
             <a-tag :color="statusColors[item.status]" class="wf-item-status">{{ t(`wf.status.${item.status}`) }}</a-tag>
           </button>
+          <span class="wf-item-actions">
+            <button class="wf-item-act danger" data-testid="wf-item-delete" :data-id="item.id" @click="askDelete(item)">
+              {{ t("wf.delete") }}
+            </button>
+          </span>
         </li>
       </ul>
       <p v-if="wfList.items.length === 0" class="wf-list-empty">{{ t("wf.listEmpty") }}</p>
@@ -544,6 +577,14 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
 
     <!-- 离开确认（返回列表/换项目遇 dirty）：确认丢弃后卸载编辑会话 -->
     <ConfirmDialog :open="confirmOpen" :title="t('wf.discardConfirm')" @confirm="onDiscardConfirm" @cancel="onDiscardCancel" />
+
+    <!-- 列表项删除确认（审查 I3）：确认经 wfList.remove(id, confirm) 放行，取消不动列表 -->
+    <ConfirmDialog
+      :open="deleteOpen"
+      :title="t('wf.deleteConfirm', { name: deleteTarget?.name ?? '' })"
+      @confirm="onDeleteConfirm"
+      @cancel="onDeleteCancel"
+    />
   </div>
 </template>
 
@@ -552,6 +593,22 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
 .wf-empty { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: auto; }
 .wf-create { display: flex; gap: 8px; max-width: 420px; }
 .wf-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+/* 行内悬停动作区（审查 I3 删除钮）：默认隐藏，行悬停显示（先例同 SideTree .actions） */
+.wf-item-row { display: flex; align-items: center; gap: 4px; max-width: 420px; }
+.wf-item-row .wf-item { flex: 1; }
+.wf-item-actions { display: none; flex: none; }
+.wf-item-row:hover .wf-item-actions { display: inline-flex; }
+.wf-item-act {
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.wf-item-act.danger { color: var(--fail); }
+.wf-item-act:hover { background: var(--border); }
 .wf-item {
   display: inline-flex;
   align-items: center;

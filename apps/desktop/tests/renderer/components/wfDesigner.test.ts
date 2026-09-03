@@ -734,6 +734,59 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
   });
 });
 
+// —— 审查 I3：工作流列表删除入口（规格 D3；重命名显式延后，M2-C 与侧树入口同批） ——
+describe("WfDesigner 工作流列表删除", () => {
+  /** 空态列表含一条工作流的上下文。 */
+  async function mountWithItem(name: string) {
+    const ctx = await mountDesigner();
+    const created = await ctx.wrapper.props("wfList").create(name);
+    await flushPromises();
+    return { ...ctx, created };
+  }
+
+  it("列表项「删除」动作钮 → 确认对话框；确认后 wfDelete 被调、列表项消失", async () => {
+    const ctx = await mountWithItem("待删流");
+    const calls: string[] = [];
+    const original = ctx.api.wfDelete.bind(ctx.api);
+    ctx.api.wfDelete = async (id) => { calls.push(id); return original(id); };
+
+    const del = ctx.wrapper.findAll('[data-testid="wf-item-delete"]')
+      .find((n) => n.attributes("data-id") === ctx.created.id)!;
+    expect(del).toBeDefined();
+    await del.trigger("click");
+    // 确认框（ConfirmDialog）传送门渲染于 body：先出现且列表未动
+    expect(document.body.querySelector('[data-testid="dialog-confirm"]')).not.toBeNull();
+    expect(ctx.wrapper.findAll('[data-testid="wf-list-item"]').some((n) => n.text().includes("待删流"))).toBe(true);
+
+    await bodyClick("dialog-confirm");
+    await flushPromises();
+    expect(calls).toStrictEqual([ctx.created.id]);
+    expect(ctx.wrapper.findAll('[data-testid="wf-list-item"]').some((n) => n.text().includes("待删流"))).toBe(false);
+  });
+
+  it("删除确认取消 → 不调 wfDelete，列表项保留", async () => {
+    const ctx = await mountWithItem("保留流");
+    let calls = 0;
+    ctx.api.wfDelete = async () => { calls += 1; };
+    await ctx.wrapper.findAll('[data-testid="wf-item-delete"]')[0]!.trigger("click");
+    await bodyClick("dialog-cancel");
+    await flushPromises();
+    expect(calls).toBe(0);
+    expect(ctx.wrapper.findAll('[data-testid="wf-list-item"]').some((n) => n.text().includes("保留流"))).toBe(true);
+  });
+
+  it("删除链路拒绝 → reportError 上报且列表不动", async () => {
+    const ctx = await mountWithItem("拒删流");
+    ctx.api.wfDelete = async () => { throw new Error("删除失败（测试注入）"); };
+    await ctx.wrapper.findAll('[data-testid="wf-item-delete"]')[0]!.trigger("click");
+    await bodyClick("dialog-confirm");
+    await flushPromises();
+    expect(ctx.errors).toHaveLength(1);
+    expect((ctx.errors[0] as Error).message).toBe("删除失败（测试注入）");
+    expect(ctx.wrapper.findAll('[data-testid="wf-list-item"]')).toHaveLength(1);
+  });
+});
+
 // —— 审查修复 4：属性面板级联 change → node-change 载荷映射 ——
 describe("WfPropertyPanel 级联改绑映射", () => {
   const bindOptions: BindOption[] = [
