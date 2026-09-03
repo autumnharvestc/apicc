@@ -12,7 +12,14 @@ import {
   type NodeDragEvent,
   type NodeMouseEvent,
 } from "@vue-flow/core";
-import { Button as AButton, Input as AInput, LayoutSider as ALayoutSider, Space as ASpace, Tag as ATag } from "ant-design-vue";
+import {
+  Alert as AAlert,
+  Button as AButton,
+  Input as AInput,
+  LayoutSider as ALayoutSider,
+  Space as ASpace,
+  Tag as ATag,
+} from "ant-design-vue";
 import type { WorkflowStatus } from "@apicc/core";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
 import type { useWfListStore } from "../stores/wfList.js";
@@ -43,7 +50,12 @@ import "@vue-flow/core/dist/theme-default.css";
  * 级联 + 名称索引）由组合根按当前项目树构造后传入。
  * 编辑即整体替换缓冲（store.update），dirty 由快照比对派生；拖拽落点经 applyNodeMove
  * 以新建 position 对象写回（任务 3 交接：阻断 Vue Flow 原地改写共享引用）。
- * 生命周期按钮/运行着色属任务 5/7，此处不装配。
+ * 生命周期（任务 5）：顶栏按钮组 发布/启用/解除启用——可用性随 status 派生（draft→发布、
+ * published→启用、enabled→解除启用），dirty 时全组禁用（防 setStatus 成功返回覆盖编辑
+ * 缓冲）并以原生 title 提示先保存（与 dirty 圆点同款；禁用态原生 tooltip 仍可见）；
+ * 在途迁移经 pendingAction 全组禁用、动作钮 loading。启用校验未过：store.validationErrors
+ * 渲染为 a-alert 错误列表（可关闭）。运行按钮仅做门控（draft 禁用 + title 提示先发布，
+ * 非 draft 可点；wf:run 接线属任务 7）。
  */
 const props = defineProps<{
   workflowDesign: ReturnType<typeof useWorkflowDesignStore>;
@@ -86,6 +98,27 @@ async function save() {
     await props.workflowDesign.save();
   } catch (e) {
     props.reportError(e);
+  }
+}
+
+// —— 生命周期迁移（M2-B 任务 5）：意图 → 目标状态映射（解除启用 = 回 published） ——
+type LifecycleAction = "publish" | "enable" | "retract";
+const ACTION_TARGET: Record<LifecycleAction, WorkflowStatus> = {
+  publish: "published",
+  enable: "enabled",
+  retract: "published",
+};
+/** 在途迁移守卫：全组禁用防重复提交，动作钮单独 loading。 */
+const pendingAction = ref<LifecycleAction | null>(null);
+async function changeStatus(action: LifecycleAction) {
+  if (pendingAction.value) return;
+  pendingAction.value = action;
+  try {
+    await props.workflowDesign.setStatus(ACTION_TARGET[action]);
+  } catch (e) {
+    props.reportError(e);
+  } finally {
+    pendingAction.value = null;
   }
 }
 
@@ -270,6 +303,13 @@ function edgeGeom(p: { sourceX: number; sourceY: number; targetX: number; target
   return { path, labelX, labelY };
 }
 
+/** 生命周期组锁：dirty（防 setStatus 成功覆盖编辑缓冲）/保存或在途迁移时全组禁用。 */
+const lifecycleLocked = computed(
+  () => design.value.dirty || design.value.saving || pendingAction.value !== null,
+);
+/** dirty 提示（原生 title，禁用态仍可见）；非 dirty 不出提示。 */
+const dirtyHint = computed(() => (design.value.dirty ? t("wf.dirtySaveFirst") : undefined));
+
 const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "blue", enabled: "green" };
 </script>
 
@@ -302,7 +342,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
     </div>
 
     <template v-else>
-      <!-- 顶栏：名称 + 状态 + dirty 圆点 + 节点操作 + 保存 -->
+      <!-- 顶栏：名称 + 状态 + dirty 圆点 + 返回列表 + 节点操作 + 保存 + 生命周期 + 运行门控 -->
       <div class="wf-topbar" data-testid="wf-topbar">
         <span class="wf-title" data-testid="wf-title">{{ wf.name }}</span>
         <a-tag :color="statusColors[wf.status]" data-testid="wf-status">{{ t(`wf.status.${wf.status}`) }}</a-tag>
@@ -314,8 +354,66 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           <a-button size="small" type="primary" data-testid="wf-save" :loading="design.saving" @click="save">
             {{ t("wf.save") }}
           </a-button>
+          <!-- 生命周期组：可用性随 status；dirty/在途时全组禁用（title 仅 dirty 时提示先保存） -->
+          <a-button
+            size="small"
+            data-testid="wf-publish"
+            :disabled="lifecycleLocked || wf.status !== 'draft'"
+            :loading="pendingAction === 'publish'"
+            :title="dirtyHint"
+            @click="changeStatus('publish')"
+          >
+            {{ t("wf.publish") }}
+          </a-button>
+          <a-button
+            size="small"
+            data-testid="wf-enable"
+            :disabled="lifecycleLocked || wf.status !== 'published'"
+            :loading="pendingAction === 'enable'"
+            :title="dirtyHint"
+            @click="changeStatus('enable')"
+          >
+            {{ t("wf.enable") }}
+          </a-button>
+          <a-button
+            size="small"
+            data-testid="wf-retract"
+            :disabled="lifecycleLocked || wf.status !== 'enabled'"
+            :loading="pendingAction === 'retract'"
+            :title="dirtyHint"
+            @click="changeStatus('retract')"
+          >
+            {{ t("wf.retract") }}
+          </a-button>
+          <!-- 运行门控（wf:run 接线属任务 7）：draft 禁用并提示先发布；本任务不做主按钮样式 -->
+          <a-button
+            size="small"
+            data-testid="wf-run"
+            :disabled="wf.status === 'draft'"
+            :title="wf.status === 'draft' ? t('wf.runDraftDisabled') : undefined"
+          >
+            {{ t("wf.run") }}
+          </a-button>
         </a-space>
       </div>
+
+      <!-- 启用校验错误（set-status 返回 errors 非空）：逐条展示，可关闭（store.dismissValidation） -->
+      <a-alert
+        v-if="design.validationErrors.length > 0"
+        class="wf-errors"
+        type="error"
+        show-icon
+        data-testid="wf-errors"
+        @close="design.dismissValidation()"
+      >
+        <template #message>
+          <span class="wf-errors-title">{{ t("wf.enableValidationFailed") }}</span>
+          <ul class="wf-error-list">
+            <li v-for="(err, index) in design.validationErrors" :key="index" data-testid="wf-error-item">{{ err }}</li>
+          </ul>
+        </template>
+        <template #closeText><span data-testid="wf-errors-close">{{ t("common.close") }}</span></template>
+      </a-alert>
 
       <div class="wf-body">
         <!-- 中央画布（受控）：数据层唯一来源为 store 缓冲 -->
@@ -399,6 +497,10 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
 .wf-title { font-weight: 600; }
 .wf-dirty { color: var(--accent); }
 .wf-actions { margin-left: auto; }
+.wf-errors { margin: 8px 12px 0; }
+.wf-errors-title { font-weight: 600; }
+.wf-error-list { margin: 4px 0 0; padding-left: 18px; }
+.wf-error-list li { word-break: break-all; }
 .wf-body { display: flex; flex: 1; min-height: 0; }
 .wf-canvas-wrap { position: relative; flex: 1; min-width: 0; }
 .wf-canvas-wrap :deep(.vue-flow) { width: 100%; height: 100%; }

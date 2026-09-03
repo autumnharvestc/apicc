@@ -175,6 +175,13 @@
     "varsHint": "可用变量：prev.passed（上一节点是否通过）、vars.*（集合/项目变量）、env.*（环境变量）",
     "syntaxHint": "条件为 JS 表达式；求值异常按不通过处理",
     "backToList": "返回列表",
+    "publish": "发布",
+    "enable": "启用",
+    "retract": "解除启用",
+    "run": "运行",
+    "dirtySaveFirst": "请先保存",
+    "runDraftDisabled": "工作流为草稿，请先发布启用",
+    "enableValidationFailed": "启用校验未通过",
     "discardConfirm": "当前有未保存修改，离开将丢弃，确定离开？"
   }
 }

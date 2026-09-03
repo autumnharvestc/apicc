@@ -175,6 +175,13 @@
     "varsHint": "Available variables: prev.passed (previous node passed), vars.* (collection/project variables), env.* (environment variables)",
     "syntaxHint": "Condition is a JS expression; evaluation errors count as not passed",
     "backToList": "Back to List",
+    "publish": "Publish",
+    "enable": "Enable",
+    "retract": "Disable",
+    "run": "Run",
+    "dirtySaveFirst": "Save first",
+    "runDraftDisabled": "Workflow is a draft; publish and enable it first",
+    "enableValidationFailed": "Enablement validation failed",
     "discardConfirm": "You have unsaved changes that will be discarded. Leave anyway?"
   }
 }

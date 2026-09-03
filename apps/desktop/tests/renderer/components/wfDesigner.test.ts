@@ -355,6 +355,141 @@ describe("WfDesigner 离开与切项目", () => {
   });
 });
 
+// —— M2-B 任务 5：生命周期按钮组（禁用矩阵随 status/dirty）+ 启用校验错误列表 + 运行门控 ——
+describe("WfDesigner 生命周期与校验错误", () => {
+  /** 载入一条新建工作流后的上下文（画布渲染中，status=draft）。 */
+  async function mountWithFlow(name = "流程甲") {
+    const ctx = await mountDesigner();
+    await ctx.wrapper.props("wfList").create(name);
+    await ctx.wrapper.findAll('[data-testid="wf-list-item"]')[0]!.trigger("click");
+    await flushPromises();
+    expect(ctx.design.workflow).not.toBeNull();
+    return ctx;
+  }
+
+  /** 经顶栏按钮推进生命周期（点击后 flush），返回设计器缓冲工作流。 */
+  async function clickStatus(ctx: Awaited<ReturnType<typeof mountWithFlow>>, testid: string) {
+    await ctx.wrapper.find(`[data-testid="${testid}"]`).trigger("click");
+    await flushPromises();
+  }
+
+  function lifecycleButtons(ctx: Awaited<ReturnType<typeof mountWithFlow>>) {
+    return {
+      publish: ctx.wrapper.find('[data-testid="wf-publish"]'),
+      enable: ctx.wrapper.find('[data-testid="wf-enable"]'),
+      retract: ctx.wrapper.find('[data-testid="wf-retract"]'),
+      run: ctx.wrapper.find('[data-testid="wf-run"]'),
+    };
+  }
+
+  it("draft → 发布可用，启用/解除启用禁用；运行禁用并提示先发布", async () => {
+    const ctx = await mountWithFlow();
+    const btns = lifecycleButtons(ctx);
+    expect(btns.publish.attributes("disabled")).toBeUndefined();
+    expect(btns.enable.attributes("disabled")).toBeDefined();
+    expect(btns.retract.attributes("disabled")).toBeDefined();
+    expect(btns.run.attributes("disabled")).toBeDefined();
+    expect(btns.run.attributes("title")).toBe("工作流为草稿，请先发布启用");
+  });
+
+  it("发布成功 → wfSetStatus(id, published)，状态 Tag 翻转，按钮矩阵随行", async () => {
+    const ctx = await mountWithFlow();
+    const calls: unknown[][] = [];
+    const original = ctx.api.wfSetStatus.bind(ctx.api);
+    ctx.api.wfSetStatus = async (id, next) => { calls.push([id, next]); return original(id, next); };
+
+    await clickStatus(ctx, "wf-publish");
+    expect(calls).toStrictEqual([[ctx.design.workflowId, "published"]]);
+    expect(ctx.design.workflow!.status).toBe("published");
+    expect(ctx.wrapper.find('[data-testid="wf-status"]').text()).toContain("已发布");
+    const btns = lifecycleButtons(ctx);
+    expect(btns.publish.attributes("disabled")).toBeDefined();
+    expect(btns.enable.attributes("disabled")).toBeUndefined();
+    expect(btns.retract.attributes("disabled")).toBeDefined();
+    expect(btns.run.attributes("disabled")).toBeUndefined(); // 非 draft 即可运行
+  });
+
+  it("dirty → 三个生命周期按钮全部禁用并提示先保存（published 态的启用钮被 dirty 阻断）", async () => {
+    const ctx = await mountWithFlow();
+    // 先落盘发布（clean published），再加节点制造 dirty：此时状态本允许「启用」
+    await ctx.wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+    await ctx.wrapper.find('[data-testid="wf-save"]').trigger("click");
+    await flushPromises();
+    await clickStatus(ctx, "wf-publish");
+    expect(ctx.design.dirty).toBe(false);
+
+    await ctx.wrapper.find('[data-testid="wf-add-noop"]').trigger("click");
+    expect(ctx.design.dirty).toBe(true);
+    const btns = lifecycleButtons(ctx);
+    for (const key of ["publish", "enable", "retract"] as const) {
+      expect(btns[key].attributes("disabled")).toBeDefined();
+      expect(btns[key].attributes("title")).toBe("请先保存");
+    }
+  });
+
+  it("启用校验失败 → wf-errors 逐条展示错误且状态不变；关闭后收起", async () => {
+    const ctx = await mountWithFlow("流程乙");
+    // 未绑定接口/用例的请求节点：启用校验必出「缺少接口/用例引用」错误
+    await ctx.wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+    await ctx.wrapper.find('[data-testid="wf-save"]').trigger("click");
+    await flushPromises();
+    await clickStatus(ctx, "wf-publish");
+    expect(ctx.wrapper.find('[data-testid="wf-errors"]').exists()).toBe(false);
+
+    await clickStatus(ctx, "wf-enable");
+    expect(ctx.design.validationErrors.length).toBeGreaterThan(0);
+    const alert = ctx.wrapper.find('[data-testid="wf-errors"]');
+    expect(alert.exists()).toBe(true);
+    expect(alert.text()).toContain("缺少接口/用例引用");
+    expect(ctx.wrapper.findAll('[data-testid="wf-error-item"]')).toHaveLength(ctx.design.validationErrors.length);
+    expect(ctx.design.workflow!.status).toBe("published"); // API 层保证状态不变
+    expect(ctx.wrapper.find('[data-testid="wf-status"]').text()).toContain("已发布");
+
+    await ctx.wrapper.find('[data-testid="wf-errors-close"]').trigger("click");
+    await flushPromises();
+    expect(ctx.design.validationErrors).toHaveLength(0);
+    expect(ctx.wrapper.find('[data-testid="wf-errors"]').exists()).toBe(false);
+  });
+
+  it("空流发布→启用成功→解除启用 → Tag 依次 已发布/已启用/已发布", async () => {
+    const ctx = await mountWithFlow("流程丙");
+    await clickStatus(ctx, "wf-publish");
+    await clickStatus(ctx, "wf-enable");
+    expect(ctx.design.workflow!.status).toBe("enabled");
+    expect(ctx.wrapper.find('[data-testid="wf-status"]').text()).toContain("已启用");
+    const enabled = lifecycleButtons(ctx);
+    expect(enabled.retract.attributes("disabled")).toBeUndefined();
+    expect(enabled.enable.attributes("disabled")).toBeDefined();
+
+    await clickStatus(ctx, "wf-retract");
+    expect(ctx.design.workflow!.status).toBe("published");
+    expect(ctx.wrapper.find('[data-testid="wf-status"]').text()).toContain("已发布");
+    const retracted = lifecycleButtons(ctx);
+    expect(retracted.enable.attributes("disabled")).toBeUndefined();
+    expect(retracted.retract.attributes("disabled")).toBeDefined();
+  });
+
+  it("set-status 在途 → 三个生命周期按钮禁用；落地后恢复矩阵", async () => {
+    const ctx = await mountWithFlow();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = ctx.api.wfSetStatus.bind(ctx.api);
+    ctx.api.wfSetStatus = async (id, next) => { await gate; return original(id, next); };
+
+    await ctx.wrapper.find('[data-testid="wf-publish"]').trigger("click");
+    await nextTick();
+    const pending = lifecycleButtons(ctx);
+    for (const key of ["publish", "enable", "retract"] as const) {
+      expect(pending[key].attributes("disabled")).toBeDefined();
+    }
+
+    release();
+    await flushPromises();
+    expect(ctx.design.workflow!.status).toBe("published");
+    expect(lifecycleButtons(ctx).enable.attributes("disabled")).toBeUndefined();
+  });
+});
+
 // —— 审查修复 4：属性面板级联 change → node-change 载荷映射 ——
 describe("WfPropertyPanel 级联改绑映射", () => {
   const bindOptions: BindOption[] = [
