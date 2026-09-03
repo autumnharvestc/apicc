@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { isReactive } from "vue";
 import type { Workflow, WorkflowRunResult } from "@apicc/core";
+import type { WfSetStatusResult } from "../../../src/shared/types.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
@@ -214,6 +215,75 @@ describe("workflowDesign store", () => {
     await design.setStatus("enabled");
     await expect(design.run("不存在环境")).rejects.toThrow(/未找到环境/);
     expect(design.running).toBe(false);
+  });
+
+  it("save 在途期间 load 切流：旧流落盘结果不回写，缓冲保持新流（竞态守卫）", async () => {
+    const { api, design, projectNode } = await seeded();
+    const wfA = await seedWorkflow(api, projectNode.id, "流甲");
+    const wfB = await seedWorkflow(api, projectNode.id, "流乙");
+    await design.load(wfA.id);
+    design.update({ ...design.workflow!, name: "流甲改动" });
+    let release: (value: Workflow) => void = () => {};
+    api.wfSave = async () =>
+      new Promise<Workflow>((resolve) => {
+        release = resolve;
+      });
+    const saving = design.save();
+    // 落盘在途时切到流乙
+    await design.load(wfB.id);
+    expect(design.workflowId).toBe(wfB.id);
+    release({ ...wfA, name: "流甲改动" }); // 模拟旧流的落盘返回值
+    await saving;
+    // 守卫：旧流返回值不得覆盖——workflowId 与缓冲均保持流乙，不出现「id 是 B、内容是 A」错位
+    expect(design.workflowId).toBe(wfB.id);
+    expect(design.workflow!.name).toBe("流乙");
+    expect(design.dirty).toBe(false);
+    expect(design.saving).toBe(false);
+  });
+
+  it("setStatus/run 在途期间 load 切流：状态刷新与运行结果均不回写（竞态守卫）", async () => {
+    const { api, design, projectNode, apiNode } = await seeded();
+    const wfA = await seedWorkflow(api, projectNode.id, "流甲", {
+      nodes: [await validNode(api, apiNode.id)],
+    });
+    const wfB = await seedWorkflow(api, projectNode.id, "流乙");
+    await design.load(wfA.id);
+    // setStatus 在途切流：迁移成功结果（A published）丢弃，缓冲保持流乙 draft
+    const originalSetStatus = api.wfSetStatus.bind(api);
+    let releaseStatus: () => void = () => {};
+    api.wfSetStatus = async (_id, next) =>
+      new Promise<WfSetStatusResult>((resolve) => {
+        releaseStatus = () => resolve({ workflow: { ...wfA, status: next }, errors: [], warnings: [] });
+      });
+    const migrating = design.setStatus("published");
+    await design.load(wfB.id);
+    releaseStatus();
+    await migrating;
+    expect(design.workflowId).toBe(wfB.id);
+    expect(design.workflow!.name).toBe("流乙");
+    expect(design.workflow!.status).toBe("draft");
+    // run 在途切流：旧流运行结果不回填（恢复原 api 把流甲启用后加载）
+    api.wfSetStatus = originalSetStatus;
+    await api.wfSetStatus(wfA.id, "published");
+    await api.wfSetStatus(wfA.id, "enabled");
+    await design.load(wfA.id);
+    const finished: WorkflowRunResult = {
+      workflowId: wfA.id, workflowName: "流甲", status: "enabled", nodeResults: [],
+      total: 0, passed: 0, failed: 0, skipped: 0, warnings: [],
+      startedAt: "2026-09-03T00:00:00.000Z", finishedAt: "2026-09-03T00:00:00.000Z",
+    };
+    let releaseRun: () => void = () => {};
+    api.wfRun = async () =>
+      new Promise<WorkflowRunResult>((resolve) => {
+        releaseRun = () => resolve(finished);
+      });
+    const running = design.run();
+    await design.load(wfB.id);
+    releaseRun();
+    await running;
+    expect(design.runResult).toBeNull();
+    expect(design.running).toBe(false);
+    expect(design.workflow!.name).toBe("流乙");
   });
 
   it("load 切换工作流重置运行结果与校验状态；工厂每调用 createPinia 隔离", async () => {

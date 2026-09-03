@@ -47,11 +47,16 @@ export function useWorkflowDesignStore(api: ApiccApi) {
       },
       async save() {
         if (!this.workflow) return;
+        // 在途切流守卫：await 期间 load(另一工作流) 可能完成，旧流的落盘返回值不得
+        // 回写（否则 workflowId 是 B、缓冲内容是 A，dirty=false 掩盖错位，后续编辑
+        // 经 wfSave 按 input.id 落到 A 流，跨流数据错写）。
+        const targetId = this.workflowId;
         this.saving = true;
         try {
           // JSON 往返剥离响应式（模型字段全为 string/boolean/number/array/plain object，
           // 与 editor.save 同款注释依据）。
           const stored = await api.wfSave(JSON.parse(JSON.stringify(this.workflow)) as Workflow);
+          if (this.workflowId !== targetId) return;
           this.workflow = stored;
           this.snapshot = JSON.stringify(this.workflow);
         } finally {
@@ -60,7 +65,9 @@ export function useWorkflowDesignStore(api: ApiccApi) {
       },
       async setStatus(next: WorkflowStatus) {
         if (!this.workflowId) return;
+        const targetId = this.workflowId; // 在途切流守卫，同 save
         const result = await api.wfSetStatus(this.workflowId, next);
+        if (this.workflowId !== targetId) return;
         if (result.errors.length > 0) {
           // 启用校验未过：错误可见、缓冲不动（api 返回状态不变的原工作流）
           this.validationErrors = result.errors;
@@ -81,9 +88,12 @@ export function useWorkflowDesignStore(api: ApiccApi) {
           this.validationErrors = ["工作流为草稿，请先发布启用"];
           return;
         }
+        const targetId = this.workflowId; // 在途切流守卫，同 save（旧流运行结果不回填）
         this.running = true;
         try {
-          this.runResult = await api.wfRun({ workflowId: this.workflowId, envName });
+          const result = await api.wfRun({ workflowId: this.workflowId, envName });
+          if (this.workflowId !== targetId) return;
+          this.runResult = result;
         } finally {
           this.running = false;
         }
