@@ -101,14 +101,14 @@ const bodyKind = computed<BodyKind>({
         :value="(editor.envs ?? []).some((e) => e.name === debug.selectedEnvName) ? debug.selectedEnvName ?? '' : ''"
         :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: e.name }))]"
         style="min-width: 120px"
-        @update:value="(v: string) => debug.selectEnv(v === '' ? null : v)"
+        @update:value="(v) => debug.selectEnv(v === '' ? null : (v as string))"
       />
       <a-select
         data-testid="debug-case-select"
         :value="(editor.api?.cases ?? []).some((c) => c.id === debug.selectedCaseId) ? debug.selectedCaseId ?? '' : editor.api?.cases[0]?.id ?? ''"
         :options="(editor.api?.cases ?? []).map((c) => ({ label: `${c.name}（${c.scope}）`, value: c.id }))"
         style="min-width: 160px"
-        @update:value="(v: string) => debug.selectCase(v)"
+        @update:value="(v) => debug.selectCase(v as string)"
       />
       <a-button type="primary" data-testid="send-btn" :disabled="debug.sending" @click="debug.send(editor)">
         {{ debug.sending ? t("editor.sending") : t("editor.send") }}

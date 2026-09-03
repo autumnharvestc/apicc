@@ -39,6 +39,10 @@ function onSelectEnv(id: string) {
   props.envs.selectedEnvId = id;
 }
 
+// a-select 的 value/onChange 走 antd SelectValue（含 number/数组/undefined）：选项均为
+// 字符串 id，经窄化断言对齐类型（运行时行为不变）；空值 null 对 antd 等同 undefined。
+const selectEnvValue = computed(() => props.envs.selectedEnvId ?? undefined);
+
 // —— 变量行编辑缓冲（a-table 行编辑；rowKey 需稳定 id，ResponseViewer 缺 row-key 的告警不再复刻） ——
 interface VarRow { id: string; key: string; value: string }
 const rows = ref<VarRow[]>([]);
@@ -125,6 +129,11 @@ async function confirmModal() {
 // —— 删除当前选中环境（确认对话框放行） ——
 const deleteTarget = ref<{ id: string; name: string } | null>(null);
 
+// data-* 为 HTML 透传属性，antd 按钮 props 类型未建模；经 any 索引签名断言保留测试锚点
+// （运行时 Vue 原样透传到 ok/cancel 按钮上，行为不变，见 vue-tsc 收口）。
+const okButtonProps: Record<string, any> = { "data-testid": "env-modal-confirm" };
+const cancelButtonProps: Record<string, any> = { "data-testid": "env-modal-cancel" };
+
 async function onDeleteConfirm() {
   const target = deleteTarget.value;
   deleteTarget.value = null;
@@ -144,11 +153,11 @@ async function onDeleteConfirm() {
       <div class="toolbar">
         <a-select
           class="env-select"
-          :value="envs.selectedEnvId"
+          :value="selectEnvValue"
           :options="envOptions"
           :placeholder="t('env.select')"
           data-testid="env-select"
-          @update:value="onSelectEnv"
+          @update:value="(v) => onSelectEnv(v as string)"
         />
         <a-button size="small" data-testid="env-new" @click="openModal('new')">{{ t("env.new") }}</a-button>
         <a-button size="small" data-testid="env-derive" @click="openModal('derive')">{{ t("env.derive") }}</a-button>
@@ -199,8 +208,8 @@ async function onDeleteConfirm() {
       :title="modal.mode === 'derive' ? t('env.derive') : t('env.new')"
       :ok-text="t('common.confirm')"
       :cancel-text="t('common.cancel')"
-      :ok-button-props="{ 'data-testid': 'env-modal-confirm' }"
-      :cancel-button-props="{ 'data-testid': 'env-modal-cancel' }"
+      :ok-button-props="okButtonProps"
+      :cancel-button-props="cancelButtonProps"
       :width="420"
       data-testid="env-modal"
       @ok="confirmModal"

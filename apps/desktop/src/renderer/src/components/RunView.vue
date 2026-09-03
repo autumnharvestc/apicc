@@ -102,11 +102,11 @@ function formatMs(ms: number): string {
       <div class="toolbar">
         <a-select
           class="collection-select"
-          :value="selectedCollectionId"
+          :value="selectedCollectionId ?? undefined"
           :options="collectionOptions"
           :placeholder="t('run.collectionPlaceholder')"
           data-testid="run-collection-select"
-          @update:value="(id: string) => (selectedCollectionId = id)"
+          @update:value="(id) => (selectedCollectionId = id as string)"
         />
         <a-select
           class="env-select"

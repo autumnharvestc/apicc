@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Tabs as ATabs, Tag as ATag, Table as ATable, Typography as ATypography } from "ant-design-vue";
-import type { DebugOutput } from "../../shared/types.js";
+import type { DebugOutput } from "../../../shared/types.js";
 import EmptyState from "./EmptyState.vue";
 
 const ATabPane = ATabs.TabPane;
@@ -35,7 +35,8 @@ const assertionColumns = [
   { key: "message", dataIndex: "message", title: "" },
 ];
 // 行级测试钩子：customRow 把 data-testid 落到断言行 <tr> 上
-const assertionRowProps = () => ({ "data-testid": "assertion-row" });
+// （antd customRow 返回类型未建模 data-* 透传属性，any 索引签名对齐，运行时原样展开）。
+const assertionRowProps = (): Record<string, any> => ({ "data-testid": "assertion-row" });
 
 const headerColumns = [
   { key: "name", dataIndex: "name", title: "" },

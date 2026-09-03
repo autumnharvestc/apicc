@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Tree as ATree, Button as AButton } from "ant-design-vue";
 import type { WorkflowImpactEntry } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
-import type { TreeNodeDTO } from "../../shared/tree-dto.js";
+import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
 import EmptyState from "./EmptyState.vue";
@@ -30,6 +30,9 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ select: [kind: TreeNodeDTO["kind"], id: string] }>();
 const { t } = useI18n();
+
+// nodeRename/nodeDelete 频道接受的节点 kind（api 树节点；不含 root/workflow）。
+type NodeRenameKind = Parameters<ApiccApi["nodeRename"]>[0];
 
 // 折叠集合：默认全部折叠（分组/项目/集合/文件夹）；展开节点时递归展开其后代容器，
 // 一次点击即可从分组直达接口。
@@ -172,7 +175,9 @@ function startRename(node: TreeNodeDTO) {
     initialValue: node.label,
     run: async (value) => {
       if (!value) return;
-      await props.tree.renameNode(node.kind, node.id, value);
+      // renameNode 只接受 api 树 kind（不含 root/workflow）：本函数仅由 api 叶与容器
+      // 动作钮触达（workflow 叶走 startWorkflowRename，root 不渲染动作钮），断言恒成立。
+      await props.tree.renameNode(node.kind as NodeRenameKind, node.id, value);
     },
   });
 }
@@ -199,8 +204,9 @@ async function startDelete(node: TreeNodeDTO) {
     title: t("tree.deleteConfirm", { name: node.label }),
     impact,
     run: async () => {
-      // 已在对话框确认：放行回调恒真。
-      await props.tree.deleteNode(node.kind, node.id, async () => true);
+      // 已在对话框确认：放行回调恒真。kind 收窄依据同 startRename（workflow 叶走
+      // startWorkflowDelete，root 不渲染动作钮）。
+      await props.tree.deleteNode(node.kind as NodeRenameKind, node.id, async () => true);
     },
   });
 }

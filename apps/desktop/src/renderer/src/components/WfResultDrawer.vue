@@ -64,7 +64,7 @@ function formatMs(ms: number): string {
         :pagination="false"
         size="small"
         data-testid="wf-result-table"
-        :custom-row="() => ({ 'data-testid': 'wf-result-node' })"
+        :custom-row="(): Record<string, any> => ({ 'data-testid': 'wf-result-node' })"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'state'">
