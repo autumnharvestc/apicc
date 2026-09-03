@@ -6,7 +6,8 @@ import { Modal as AModal, Input as AInput } from "ant-design-vue";
 /**
  * 确认对话框（可复用为输入对话框）：open 控制显隐；
  * 传 inputPlaceholder 时显示输入框，confirm 回传输入值；否则回传 null（纯确认）。
- * 供重命名/创建/删除确认与 TopBar 新建工作区复用。
+ * 供重命名/创建/删除确认与 TopBar 新建工作区复用；默认插槽可注入额外正文
+ * （SideTree 删除影响清单）。
  * antd 4 落地：a-modal 承载（open/title/okText/cancelText 走 i18n，与原按钮文案一致），
  * 按钮 data-testid 经 okButtonProps/cancelButtonProps 保留在等效触发元素上；
  * 输入框为 a-input（v-model:value），Enter 提交走 @press-enter。
@@ -58,5 +59,7 @@ function confirm() {
       :placeholder="inputPlaceholder"
       @press-enter="confirm"
     />
+    <!-- 默认插槽：调用方注入额外正文（任务 6 删除影响清单 impact-list 由此进入弹窗）。 -->
+    <slot />
   </a-modal>
 </template>

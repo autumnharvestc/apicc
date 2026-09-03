@@ -87,6 +87,25 @@ function selectValue(wrapper: VueWrapper, testid: string): unknown {
 }
 
 /**
+ * 任务 6 夹具：经 memory api 种子一个引用指定接口首个用例的工作流请求节点，
+ * 使该接口的 wf:impact({ apiId }) 恰好命中一条（工作流名/状态/节点 label 可断言）。
+ */
+async function seedWorkflowReferencingApi(
+  api: ReturnType<typeof createMemoryApi>,
+  projectId: string,
+  apiId: string,
+): Promise<void> {
+  const detail = await api.apiGet(apiId);
+  const caseId = detail.api.cases[0]!.id;
+  const wf = await api.wfCreate({ projectId, name: "下单主流程" });
+  await api.wfSave({
+    ...wf,
+    nodes: [{ id: "n1", kind: "request", label: "创建订单", apiId, caseId }],
+    edges: [],
+  });
+}
+
+/**
  * 显式装配辅助（组合根约定的测试形态）：
  * store 工厂每调用一次即新建独立 Pinia 实例、得到互不相通的状态副本——因此同一份
  * store 在这里一次性创建，经 props 注入被测组件（简报原 mountWith 未向组件传 store，
@@ -165,6 +184,62 @@ describe("SideTree", () => {
     await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     expect(JSON.stringify(workspace.tree)).not.toContain(apiId);
+  });
+
+  it("删除被引用接口：先弹影响清单（工作流名（状态）—节点 label），确认后删除执行", async () => {
+    const { wrapper, api, workspace } = await mountWith(SideTree);
+    const group = workspace.tree!.children![0]!;
+    const project = group.children![0]!;
+    const apiNode = project.children![0]!.children![0]!;
+    await seedWorkflowReferencingApi(api, project.id, apiNode.id);
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const row = wrapper.find('[data-testid="tree-api-row"]');
+    await row.find('[data-testid="node-delete"]').trigger("click");
+    await flushPromises();
+    // 影响清单渲染在 a-modal 传送门内（ConfirmDialog 复用），body 作用域查询
+    const list = expectBody("impact-list");
+    expect(list.text()).toContain("下单主流程");
+    expect(list.text()).toContain("草稿"); // t("wf.status.draft")：工作流名（状态）
+    expect(list.text()).toContain("创建订单"); // 节点 label
+    // 规格给定警示文案（tree.impactWarning）随插槽渲染进对话框（impact-warning 与
+    // impact-list 同为插槽内容；confirm-dialog testid 不被 a-modal 透传，不作钩子）
+    expect(expectBody("impact-warning").text()).toContain("该用例被以下工作流引用");
+    // 确认后删除执行
+    await expectBody("dialog-confirm").trigger("click");
+    await flushPromises();
+    expect(JSON.stringify(workspace.tree)).not.toContain(apiNode.id);
+  });
+
+  it("删除未被引用接口：无影响清单（无额外弹窗），确认后直接删除", async () => {
+    const { wrapper, workspace } = await mountWith(SideTree);
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const row = wrapper.find('[data-testid="tree-api-row"]');
+    const apiId = row.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
+    await row.find('[data-testid="node-delete"]').trigger("click");
+    await flushPromises();
+    // 未命中：常规确认对话框放行即删，不得出现影响清单
+    expect(bodyHas("impact-list")).toBe(false);
+    await expectBody("dialog-confirm").trigger("click");
+    await flushPromises();
+    expect(JSON.stringify(workspace.tree)).not.toContain(apiId);
+  });
+
+  it("删除被引用接口：取消影响清单对话框则不删除", async () => {
+    const { wrapper, api, workspace } = await mountWith(SideTree);
+    const group = workspace.tree!.children![0]!;
+    const project = group.children![0]!;
+    const apiNode = project.children![0]!.children![0]!;
+    await seedWorkflowReferencingApi(api, project.id, apiNode.id);
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const row = wrapper.find('[data-testid="tree-api-row"]');
+    await row.find('[data-testid="node-delete"]').trigger("click");
+    await flushPromises();
+    expect(bodyHas("impact-list")).toBe(true);
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    // 取消：接口仍在树中，对话框关闭
+    expect(JSON.stringify(workspace.tree)).toContain(apiNode.id);
+    expect(bodyHas("impact-list")).toBe(false);
   });
 
   it("根层新建分组：空工作区也能从根创建顶层节点", async () => {

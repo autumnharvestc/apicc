@@ -33,6 +33,7 @@
     "rename": "Rename",
     "delete": "Delete",
     "deleteConfirm": "Delete \"{name}\"?",
+    "impactWarning": "This case is referenced by the following workflows; after deletion the affected nodes will be marked as missing (rebind to restore)",
     "empty": "Open a workspace to browse APIs",
     "namePlaceholder": "Name"
   },

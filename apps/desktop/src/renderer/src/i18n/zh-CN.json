@@ -33,6 +33,7 @@
     "rename": "重命名",
     "delete": "删除",
     "deleteConfirm": "确定删除「{name}」？",
+    "impactWarning": "该用例被以下工作流引用，删除后对应节点将标记为缺失（可改绑恢复）",
     "empty": "打开工作区后在此浏览接口",
     "namePlaceholder": "名称"
   },

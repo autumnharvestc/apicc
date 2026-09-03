@@ -2,6 +2,8 @@
 import { ref, computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Tree as ATree, Button as AButton } from "ant-design-vue";
+import type { WorkflowImpactEntry } from "@apicc/core";
+import type { ApiccApi } from "../../../shared/types.js";
 import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
@@ -20,6 +22,7 @@ import ConfirmDialog from "./ConfirmDialog.vue";
  * a-tree 自带 switcher 缩进箭头经 :deep 样式隐藏，避免与自带折叠钮重复。
  */
 const props = defineProps<{
+  api: ApiccApi;
   workspace: ReturnType<typeof useWorkspaceStore>;
   tree: ReturnType<typeof useTreeStore>;
   reportError: (e: unknown) => void;
@@ -85,12 +88,15 @@ interface DialogState {
   title: string;
   placeholder?: string;
   initialValue?: string;
+  /** 任务 6：删除影响命中清单（非删除对话框恒为空数组——slot 据长度决定渲染）。 */
+  impact: WorkflowImpactEntry[];
   run: (value: string | null) => Promise<void> | void;
 }
-const dialog = ref<DialogState>({ open: false, title: "", run: () => {} });
+const dialog = ref<DialogState>({ open: false, title: "", impact: [], run: () => {} });
 
 function openDialog(state: Omit<DialogState, "open">) {
-  dialog.value = { open: true, ...state };
+  // impact 默认空数组（创建/重命名不传即无影响清单）；state 显式携带时覆盖。
+  dialog.value = { impact: [], open: true, ...state };
 }
 
 function closeDialog() {
@@ -152,9 +158,27 @@ function startRename(node: TreeNodeDTO) {
   });
 }
 
-function startDelete(node: TreeNodeDTO) {
+/**
+ * 删除（任务 6 影响提醒）：接口类节点删除前置 api.wfImpact({ apiId }) 反查——
+ * 命中时确认对话框内列出「工作流名（状态）— 节点 label」清单（impact-list），
+ * 确认才删、取消不删；未命中维持原确认流程（无额外影响清单）。
+ * M2-B 简化（控制者裁定）：树 DTO 无用例节点（用例删除在 CasePanel 编辑缓冲内、
+ * 随接口保存持久化），故仅 kind=api 查 apiId；folder/集合/项目删除的级联影响提醒
+ * 延后，目前仅弹常规确认。反查失败经 reportError 上报并中止删除流程。
+ */
+async function startDelete(node: TreeNodeDTO) {
+  let impact: WorkflowImpactEntry[] = [];
+  if (node.kind === "api") {
+    try {
+      impact = await props.api.wfImpact({ apiId: node.id });
+    } catch (e) {
+      props.reportError(e);
+      return;
+    }
+  }
   openDialog({
     title: t("tree.deleteConfirm", { name: node.label }),
+    impact,
     run: async () => {
       // 已在对话框确认：放行回调恒真。
       await props.tree.deleteNode(node.kind, node.id, async () => true);
@@ -216,7 +240,17 @@ function startDelete(node: TreeNodeDTO) {
       :initial-value="dialog.initialValue"
       @confirm="onDialogConfirm"
       @cancel="closeDialog"
-    />
+    >
+      <!-- 任务 6：删除影响清单（命中时才渲染）——工作流名（状态）— 节点 label -->
+      <template v-if="dialog.impact.length">
+        <p class="impact-warning" data-testid="impact-warning">{{ t("tree.impactWarning") }}</p>
+        <ul class="impact-list" data-testid="impact-list">
+          <li v-for="entry in dialog.impact" :key="`${entry.workflowId}:${entry.nodeId}`">
+            {{ entry.workflowName }}（{{ t(`wf.status.${entry.status}`) }}）— {{ entry.nodeLabel ?? entry.nodeId }}
+          </li>
+        </ul>
+      </template>
+    </ConfirmDialog>
   </aside>
 </template>
 
@@ -293,5 +327,20 @@ function startDelete(node: TreeNodeDTO) {
   font-size: 10px;
   font-weight: 600;
   color: var(--accent);
+}
+/* 删除影响清单（ConfirmDialog 默认插槽内容，随 SideTree 作用域编译） */
+.impact-warning {
+  margin: 0 0 6px;
+  color: var(--fail);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.impact-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.7;
 }
 </style>

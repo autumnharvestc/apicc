@@ -183,7 +183,7 @@ watch(
               {{ t(`nav.${v}`) }}
             </a-radio-button>
           </a-radio-group>
-          <SideTree class="side-col" :workspace="workspace" :tree="tree" :report-error="reportError" @select="onSelect" />
+          <SideTree class="side-col" :api="apicc" :workspace="workspace" :tree="tree" :report-error="reportError" @select="onSelect" />
         </a-layout-sider>
         <a-layout-content class="right-col" data-testid="main-split">
           <template v-if="view === 'debug'">
