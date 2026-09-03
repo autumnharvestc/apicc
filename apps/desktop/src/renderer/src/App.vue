@@ -2,7 +2,7 @@
 // 组合根（装配约定）：store 工厂每调用一次即新建独立 Pinia 实例、得到互不相通的
 // 状态副本——因此全部 store 只能在此一次性创建，再经 props 向下传递；
 // SideTree/RequestEditor/TopBar 等组件内部禁止重复调用工厂。
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ConfigProvider,
@@ -26,6 +26,7 @@ import EnvPanel from "./components/EnvPanel.vue";
 import RunView from "./components/RunView.vue";
 import ImportWizard from "./components/ImportWizard.vue";
 import DesignPanel from "./components/DesignPanel.vue";
+import WfDesigner from "./components/WfDesigner.vue";
 import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
 import { useEditorStore } from "./stores/editor.js";
@@ -35,6 +36,9 @@ import { useEnvsStore } from "./stores/envs.js";
 import { useRunStore } from "./stores/run.js";
 import { useImportWizardStore } from "./stores/importW.js";
 import { useDesignStore } from "./stores/design.js";
+import { useWfListStore } from "./stores/wfList.js";
+import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
+import { buildBindIndex, type WfBindIndex } from "./wf/wfBindings.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
 
@@ -62,11 +66,14 @@ const envs = useEnvsStore(apicc);
 const run = useRunStore(apicc);
 const importW = useImportWizardStore(apicc, workspace);
 const design = useDesignStore(apicc, editor);
+// —— 工作流设计器 store（M2-B 任务 4 装配）：同一组合根一次性创建 ——
+const wfList = useWfListStore(apicc);
+const workflowDesign = useWorkflowDesignStore(apicc);
 
 // —— 视图切换（任务 8 收官装配）——
 // 侧栏顶部 a-radio-group；未打开工作区时整组禁用（现状保留：只有打开/新建可用）。
-type View = "debug" | "cases" | "envs" | "run" | "import" | "design";
-const VIEWS: View[] = ["debug", "cases", "envs", "run", "import", "design"];
+type View = "debug" | "cases" | "envs" | "run" | "import" | "design" | "wf";
+const VIEWS: View[] = ["debug", "cases", "envs", "run", "import", "design", "wf"];
 const view = ref<View>("debug");
 
 // —— 最小错误反馈通道（宽审查 I1）——
@@ -123,13 +130,31 @@ const selectedCollectionId = computed<string | null>(() => {
       for (const collection of project.children ?? []) {
         if (collection.id === sel.id) return collection.id;
         for (const folder of collection.children ?? []) {
-          if (folder.id === sel.id) return collection.id;
+          if (folder.id === sel.id) return folder.id;
         }
       }
     }
   }
   return null;
 });
+
+// —— 工作流设计器的绑定级联索引（M2-B 任务 4）——
+// 树 DTO 不含用例目录：按当前项目逐接口 apiGet 补齐（wfBindings 注入式取数），
+// 产出 a-cascader options + 画布名称预注入 + missing 检测集合。随选中项目变化重建。
+const wfBindIndex = ref<WfBindIndex | null>(null);
+watch(
+  [selectedProjectId, () => workspace.opened],
+  async ([pid]) => {
+    wfBindIndex.value = null;
+    if (!pid || !workspace.tree) return;
+    try {
+      wfBindIndex.value = await buildBindIndex(workspace.tree, pid, (id) => apicc.apiGet(id));
+    } catch (e) {
+      reportError(e);
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -187,7 +212,17 @@ const selectedCollectionId = computed<string | null>(() => {
             :report-error="reportError"
           />
           <ImportWizard v-else-if="view === 'import'" class="panel-view" :import-w="importW" :report-error="reportError" @close="view = 'debug'" />
-          <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
+          <DesignPanel v-else-if="view === 'design'" class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
+          <WfDesigner
+            v-else
+            class="wf-view"
+            :workflow-design="workflowDesign"
+            :wf-list="wfList"
+            :workspace="workspace"
+            :project-id="selectedProjectId"
+            :bind-index="wfBindIndex"
+            :report-error="reportError"
+          />
         </a-layout-content>
       </a-layout>
     </a-layout>
@@ -203,6 +238,8 @@ html, body, #app { height: 100%; margin: 0; }
 .editor-pane { flex: 1; min-height: 0; overflow: auto; }
 .viewer-pane { flex: none; max-height: 45%; overflow: auto; border-top: 1px solid var(--border); }
 .panel-view { flex: 1; min-height: 0; overflow: auto; }
+/* 设计器视图：三区布局占满内容区（画布需要确定高度的容器，否则 Vue Flow 视口失真） */
+.wf-view { flex: 1; min-height: 0; overflow: hidden; }
 .view-switch { display: flex; flex-wrap: wrap; padding: 6px 8px; gap: 0; }
 .view-switch .ant-radio-button-wrapper { flex: 1 1 33%; text-align: center; font-size: 12px; padding: 0 4px; }
 </style>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toFlowElements, applyNodeAdd, applyNodeRemove, applyEdgeAdd, applyEdgeRemove, colorForState } from "../../../src/renderer/src/wf/wfCanvas.js";
+import { toFlowElements, applyNodeAdd, applyNodeRemove, applyNodeUpdate, applyNodeMove, applyEdgeAdd, applyEdgeCondition, applyEdgeRemove, colorForState } from "../../../src/renderer/src/wf/wfCanvas.js";
 import type { Workflow } from "@apicc/core";
 
 const wf: Workflow = {
@@ -75,5 +75,37 @@ describe("colorForState", () => {
     expect(colorForState("skipped")).toBe("wf-node-skipped");
     expect(colorForState("noop")).toBe("wf-node-noop");
     expect(colorForState(undefined)).toBe("");
+  });
+});
+
+// —— 任务 4 交接补充：属性面板/拖拽写回的编辑变换（组件层薄壳消费） ——
+describe("编辑变换·属性面板与拖拽（任务 4）", () => {
+  it("applyNodeUpdate 不可变合并节点属性（label/apiId/caseId/kind）", () => {
+    const b = applyNodeUpdate(wf, "n1", { label: "改绑定", apiId: "a2", caseId: "c2" });
+    expect(b.nodes[0]).toMatchObject({ id: "n1", label: "改绑定", apiId: "a2", caseId: "c2", position: { x: 0, y: 0 } });
+    expect(b.nodes[1]).toBe(wf.nodes[1]); // 未命中的节点保持引用
+    expect(b).not.toBe(wf);
+    expect(wf.nodes[0]!.label).toBe("登录"); // 原缓冲不变
+  });
+  it("applyNodeUpdate 未命中 id 时等价于仅换缓冲引用", () => {
+    const b = applyNodeUpdate(wf, "nope", { label: "x" });
+    expect(b).not.toBe(wf);
+    expect(b.nodes).toHaveLength(2);
+  });
+  it("applyNodeMove 以新建 position 对象写回（任务 3 浅共享交接：不原地复用旧对象）", () => {
+    const original = wf.nodes[0]!.position!;
+    const b = applyNodeMove(wf, "n1", { x: 120, y: 80 });
+    const moved = b.nodes[0]!.position!;
+    expect(moved).toEqual({ x: 120, y: 80 });
+    expect(moved).not.toBe(original); // 新对象——Vue Flow 原地改旧引用不再波及缓冲
+    expect(wf.nodes[0]!.position).toBe(original); // 原缓冲不动
+  });
+  it("applyEdgeCondition 写回条件表达式（空串清除 condition 键）", () => {
+    const set = applyEdgeCondition(wf, "e1", "prev.failed");
+    expect(set.edges[0]!.condition).toBe("prev.failed");
+    const cleared = applyEdgeCondition(set, "e1", "");
+    expect(cleared.edges[0]).toEqual({ id: "e1", from: "n1", to: "n2" }); // 无 condition 键
+    expect(Object.keys(cleared.edges[0]!)).not.toContain("condition");
+    expect(wf.edges[0]!.condition).toBe("prev.passed"); // 原缓冲不变
   });
 });

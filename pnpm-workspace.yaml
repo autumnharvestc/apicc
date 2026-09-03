@@ -11,3 +11,6 @@ allowBuilds:
   electron: true
   # electron-builder 依赖链带入的 Squirrel 安装器工具，--dir 目标用不到其 install 脚本，显式忽略。
   electron-winstaller: false
+  # vue-demi（@vue-flow/core 依赖链带入）的 postinstall 仅做 Vue2/3 垫片切换，
+  # 包内默认产物即 Vue 3（isVue3=true），本项目 Vue 3 下无需执行，显式忽略。
+  vue-demi: false

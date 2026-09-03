@@ -21,6 +21,12 @@ export interface WfNodeData {
   /** request 节点引用的 apiId 不在当前项目接口集合内（红框标注）；noop 恒 false。 */
   missing: boolean;
   stateClass: WfStateClass;
+  /**
+   * 接口名/用例名（任务 4 预注入契约）：由调用方在 toFlowElements 之后按名称索引解析
+   * 填入，画布节点组件不做查找（简报裁定：resolve 移出画布）。
+   */
+  apiName?: string;
+  caseName?: string;
 }
 
 /** 画布边自定义 data（属性面板编辑 condition 时回写 applyEdgeAdd/缓冲用）。 */
@@ -152,4 +158,45 @@ export function applyEdgeAdd(workflow: Workflow, input: WfEdgeAddInput): Workflo
 /** 按 id 移除边（不可变）；id 未命中时等价于仅换缓冲引用。 */
 export function applyEdgeRemove(workflow: Workflow, edgeId: string): Workflow {
   return { ...workflow, edges: workflow.edges.filter((e) => e.id !== edgeId) };
+}
+
+// —— 任务 4：属性面板/拖拽写回的编辑变换（WfDesigner 薄壳消费，全部不可变） ——
+
+/** 属性面板可编辑的节点属性子集（画布不触达 id）。 */
+export type WfNodePatch = Partial<Pick<WorkflowNode, "label" | "kind" | "apiId" | "caseId">>;
+
+/** 合并节点属性（不可变）：patch 键覆盖原值，未命中 id 时等价于仅换缓冲引用。 */
+export function applyNodeUpdate(workflow: Workflow, nodeId: string, patch: WfNodePatch): Workflow {
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)),
+  };
+}
+
+/**
+ * 拖拽落点写回（不可变）。任务 3 交接的浅共享处理：Vue Flow 拖拽期间会原地改
+ * node.position（对象引用与缓冲共享），此处以**新建 position 对象**替换——缓冲的
+ * position 脱离画布引用，后续原地拖拽不再悄悄改写已保存快照比对所依赖的数据。
+ */
+export function applyNodeMove(workflow: Workflow, nodeId: string, position: { x: number; y: number }): Workflow {
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((n) =>
+      n.id === nodeId ? { ...n, position: { x: position.x, y: position.y } } : n,
+    ),
+  };
+}
+
+/** 写回边条件（不可变）：空串/undefined 清除 condition 键（对齐模型的 optional 语义）。 */
+export function applyEdgeCondition(workflow: Workflow, edgeId: string, condition: string | undefined): Workflow {
+  const text = condition?.trim();
+  return {
+    ...workflow,
+    edges: workflow.edges.map((e) => {
+      if (e.id !== edgeId) return e;
+      const next: WorkflowEdge = { id: e.id, from: e.from, to: e.to };
+      if (text) next.condition = text;
+      return next;
+    }),
+  };
 }
