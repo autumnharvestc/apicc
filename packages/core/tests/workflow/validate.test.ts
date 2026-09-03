@@ -91,6 +91,13 @@ describe("validateEnablement", () => {
   const workspaceWith = (apis: Array<{ id: string }>, cases: Array<{ id: string; apiId: string }>): Workspace =>
     ({ id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [{ id: "p", name: "p", variables: {}, environments: [], collections: apis.map((a) => ({ id: a.id, name: a.id, variables: {}, folders: [], apis: [{ id: a.id, name: a.id, version: "1", deprecated: false, method: "GET", url: "/", headers: [], query: [], cases: cases.filter((c) => c.apiId === a.id).map((c) => ({ id: c.id, name: c.id, scope: "base", parameters: {}, assertions: [] })) }] })), workflows: [] }] }] } as unknown as Workspace);
 
+  it("空工作流（0 节点）不可启用 → ok=false 且 errors 含「没有任何节点」", () => {
+    // 规格 §5 第 5 条（2026-09-03 增补）：空流没有可执行编排语义，启用必被拒
+    const r = validateEnablement(wfFactory([], []), workspaceWith([], []));
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /没有任何节点/.test(e))).toBe(true);
+  });
+
   it("全部节点引用存在且图合法 → ok", () => {
     const wf = wfFactory([req("n1")], []);
     // n1 引用 a-n1/c-n1（workspaceWith 已含）

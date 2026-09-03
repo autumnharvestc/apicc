@@ -91,6 +91,12 @@ export function transitionWorkflowStatus(
 export function validateEnablement(wf: Workflow, workspace: Workspace): EnablementResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+
+  // 非空规则（规格 §5 第 5 条，2026-09-03 增补）：空工作流没有可执行编排语义，禁止启用。
+  if (wf.nodes.length === 0) {
+    errors.push("工作流没有任何节点，无法启用");
+  }
+
   const issues = validateWorkflowStructure(wf);
   errors.push(...issues.filter((i) => i.level === "error").map((i) => i.message));
   warnings.push(...issues.filter((i) => i.level === "warning").map((i) => i.message));
