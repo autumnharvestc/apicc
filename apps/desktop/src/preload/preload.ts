@@ -21,6 +21,15 @@ const api = {
   importPreview: (input: unknown) => ipcRenderer.invoke(IpcChannel.ImportPreview, input),
   importApply: (input: unknown) => ipcRenderer.invoke(IpcChannel.ImportApply, input),
   designExport: (apiId: string) => ipcRenderer.invoke(IpcChannel.DesignExport, apiId),
+  // 工作流频道（M2-B 任务 1）：多参方法在 preload 侧包对象，主进程按对象 schema 校验。
+  wfList: (projectId: string) => ipcRenderer.invoke(IpcChannel.WfList, { projectId }),
+  wfGet: (workflowId: string) => ipcRenderer.invoke(IpcChannel.WfGet, { workflowId }),
+  wfCreate: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfCreate, input),
+  wfDelete: (workflowId: string) => ipcRenderer.invoke(IpcChannel.WfDelete, { workflowId }),
+  wfSave: (workflow: unknown) => ipcRenderer.invoke(IpcChannel.WfSave, { workflow }),
+  wfSetStatus: (workflowId: string, next: string) => ipcRenderer.invoke(IpcChannel.WfSetStatus, { workflowId, next }),
+  wfImpact: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfImpact, input),
+  wfRun: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfRun, input),
 };
 
 contextBridge.exposeInMainWorld("apicc", api);

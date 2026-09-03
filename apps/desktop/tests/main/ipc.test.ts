@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -258,5 +258,118 @@ describe("IPC 处理器", () => {
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
     expect(tree.children![0]!.children![0]!.envs).toEqual([{ id: env.id, name: "sit", extends: undefined, variables: {} }]);
+  });
+});
+
+describe("工作流 IPC", () => {
+  /** 共用夹具：工作区 + 分组 + 项目 + 集合 + 接口（含一个「冒烟」用例），返回 full api 供节点引用。 */
+  async function setupWf() {
+    const { deps, dir } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const group = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const project = await deps.handle("node:create", {}, { kind: "project", parentId: group.id, name: "p" });
+    const collection = await deps.handle("node:create", {}, { kind: "collection", parentId: project.id, name: "c" });
+    const api = await deps.handle("node:create", {}, { kind: "api", parentId: collection.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
+    const detail = await deps.handle("api:get", {}, api.id);
+    return { deps, dir, project, api: detail.api };
+  }
+
+  it("wf:create → wf:list → wf:get → wf:save → wf:set-status 全链路", async () => {
+    const { deps, dir, project, api } = await setupWf();
+    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "条件流" });
+    expect(wf.status).toBe("draft");
+    expect((await deps.handle("wf:list", {}, { projectId: project.id })).map((w: { name: string }) => w.name)).toEqual(["条件流"]);
+    const got = await deps.handle("wf:get", {}, { workflowId: wf.id });
+    expect(got.workflow.id).toBe(wf.id);
+    expect(got.projectId).toBe(project.id);
+    const saved = await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "n1", kind: "request", apiId: api.id, caseId: api.cases[0]!.id }] } });
+    expect(saved.status).toBe("draft");
+    const r = await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "published" });
+    expect(r.workflow.status).toBe("published");
+    const enabled = await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
+    expect(enabled.workflow.status).toBe("enabled");
+    expect(enabled.errors).toEqual([]);
+    // 全量落盘重开读回：节点与生命周期状态均持久化（save 走既有 fileStorage）
+    const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
+    await fresh.handle("ws:open", {}, dir);
+    const reread = await fresh.handle("wf:get", {}, { workflowId: wf.id });
+    expect(reread.workflow.status).toBe("enabled");
+    expect(reread.workflow.nodes.map((n: { id: string }) => n.id)).toEqual(["n1"]);
+  });
+
+  it("wf:set-status 启用校验失败返回 errors 且状态不变；非法迁移直接抛错", async () => {
+    const { deps, project } = await setupWf();
+    // request 节点引用不存在的用例：结构合法但启用校验必失败
+    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "坏引用流" });
+    await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "n1", kind: "request", apiId: "ghost-api", caseId: "ghost-case" }] } });
+    // 发布（draft→published）不做启用校验，正常迁移
+    const pub = await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "published" });
+    expect(pub.workflow.status).toBe("published");
+    // 启用：校验未过 → 返回状态不变 + errors 非空
+    const enabled = await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
+    expect(enabled.workflow.status).toBe("published");
+    expect(enabled.errors.length).toBeGreaterThan(0);
+    // 非法迁移（draft→enabled 跳级）由 core 守卫直接抛错（UI 按钮禁用本不应触发）
+    const wf2 = await deps.handle("wf:create", {}, { projectId: project.id, name: "跳级流" });
+    await expect(deps.handle("wf:set-status", {}, { workflowId: wf2.id, next: "enabled" })).rejects.toThrow(/非法状态迁移/);
+    // 解除启用（enabled→published）合法；此处以 published 工作流验证 enabled 迁移守卫文案后补
+    expect(await deps.handle("wf:get", {}, { workflowId: wf2.id })).toMatchObject({ workflow: { status: "draft" } });
+  });
+
+  it("wf:impact 反查引用；wf:delete 删除后列表为空", async () => {
+    const { deps, project, api } = await setupWf();
+    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "引用流" });
+    await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "n1", kind: "request", apiId: api.id, caseId: api.cases[0]!.id, label: "下单" }] } });
+    // 按用例反查：命中工作流/节点信息
+    const hits = await deps.handle("wf:impact", {}, { caseId: api.cases[0]!.id });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ workflowId: wf.id, workflowName: "引用流", status: "draft", nodeId: "n1", nodeLabel: "下单" });
+    // 按接口反查同样命中
+    expect(await deps.handle("wf:impact", {}, { apiId: api.id })).toHaveLength(1);
+    // 删除后列表为空，反查不再命中
+    await deps.handle("wf:delete", {}, { workflowId: wf.id });
+    expect(await deps.handle("wf:list", {}, { projectId: project.id })).toEqual([]);
+    expect(await deps.handle("wf:impact", {}, { caseId: api.cases[0]!.id })).toEqual([]);
+  });
+
+  it("重名创建拒绝；未知 workflowId 抛「未找到工作流」", async () => {
+    const { deps, project } = await setupWf();
+    await deps.handle("wf:create", {}, { projectId: project.id, name: "条件流" });
+    await expect(deps.handle("wf:create", {}, { projectId: project.id, name: "条件流" })).rejects.toThrow(/工作流已存在: 条件流/);
+    await expect(deps.handle("wf:get", {}, { workflowId: "不存在" })).rejects.toThrow(/未找到工作流: 不存在/);
+    await expect(deps.handle("wf:delete", {}, { workflowId: "不存在" })).rejects.toThrow(/未找到工作流: 不存在/);
+    await expect(deps.handle("wf:save", {}, { workflow: { id: "不存在", name: "x", status: "draft", nodes: [], edges: [] } })).rejects.toThrow(/未找到工作流: 不存在/);
+    await expect(deps.handle("wf:set-status", {}, { workflowId: "不存在", next: "published" })).rejects.toThrow(/未找到工作流: 不存在/);
+  });
+
+  it("wf:run：draft 拒绝运行；envName 未找到抛错；成功运行落盘 .apicc/runs/workflow-*.json", async () => {
+    const { deps, dir, project, api } = await setupWf();
+    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "运行流" });
+    await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "n1", kind: "request", apiId: api.id, caseId: api.cases[0]!.id }] } });
+    // draft 直接拒绝（UI 对 draft 禁用运行按钮，本错误为护栏）
+    await expect(deps.handle("wf:run", {}, { workflowId: wf.id })).rejects.toThrow(/工作流为草稿，请先发布启用/);
+    await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "published" });
+    await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
+    // 环境按名解析：未命中显式抛错（不静默降级为无环境运行）
+    await expect(deps.handle("wf:run", {}, { workflowId: wf.id, envName: "nope" })).rejects.toThrow(/未找到环境: nope/);
+    // 成功运行（不可达地址 → 节点 failed，但运行链路完整），结果落盘 workflow-<id>-<ts>.json
+    const result = await deps.handle("wf:run", {}, { workflowId: wf.id });
+    expect(result.workflowId).toBe(wf.id);
+    expect(result.total).toBe(1);
+    expect(result.nodeResults).toHaveLength(1);
+    const files = readdirSync(join(dir, ".apicc", "runs"));
+    expect(files.some((f) => f.startsWith(`workflow-${wf.id}-`) && f.endsWith(".json"))).toBe(true);
+  });
+
+  it("wf 频道入参形状非法时抛带频道名的可读错误（zod 校验入表）", async () => {
+    const { deps, project } = await setupWf();
+    await expect(deps.handle("wf:create", {}, { projectId: 42, name: "x" })).rejects.toThrow(/\[wf:create\] 入参校验失败/);
+    await expect(deps.handle("wf:list", {}, {})).rejects.toThrow(/\[wf:list\] 入参校验失败/);
+    await expect(deps.handle("wf:get", {}, "not-an-object")).rejects.toThrow(/\[wf:get\] 入参校验失败/);
+    // wf:save 走 WorkflowSchema 全量校验：未知字段/缺字段均拒绝（strict schema）
+    await expect(deps.handle("wf:save", {}, { workflow: { id: "w", name: "x", bogus: true } })).rejects.toThrow(/\[wf:save\] 入参校验失败/);
+    await expect(deps.handle("wf:set-status", {}, { workflowId: project.id, next: "bogus" })).rejects.toThrow(/\[wf:set-status\] 入参校验失败/);
+    await expect(deps.handle("wf:impact", {}, { caseId: 42 })).rejects.toThrow(/\[wf:impact\] 入参校验失败/);
+    await expect(deps.handle("wf:run", {}, { workflowId: "w" })).rejects.toThrow(/未找到工作流/);
   });
 });

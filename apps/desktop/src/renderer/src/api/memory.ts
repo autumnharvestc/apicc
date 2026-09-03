@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 import {
   fileStorage,
   renderDesignMarkdown,
+  transitionWorkflowStatus,
+  validateEnablement,
+  workflowImpact,
   type ApiDefinition,
   type CaseOutcome,
   type Collection,
@@ -12,12 +15,37 @@ import {
   type Folder,
   type Group,
   type LoadProblem,
+  type NodeResult,
   type Project,
   type RunResult,
+  type Workflow,
+  type WorkflowImpactEntry,
+  type WorkflowRunResult,
+  type WorkflowStatus,
   type Workspace,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
-import type { ApiDetail, ApiccApi, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, ImportPreviewResult, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../../../shared/types.js";
+import type {
+  ApiDetail,
+  ApiccApi,
+  DebugInput,
+  DebugOutput,
+  EnvCreateInput,
+  ImportApplyInput,
+  ImportPreviewInput,
+  ImportPreviewResult,
+  NodeCreateInput,
+  NodeCreatedDTO,
+  OpenResult,
+  RunCollectionInput,
+  RunSummaryDTO,
+  WfCreateInput,
+  WfImpactInput,
+  WfRunInput,
+  WorkflowDetail,
+  WorkflowSummary,
+  WfSetStatusResult,
+} from "../../../shared/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
@@ -68,6 +96,18 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
             if (fApi) return { api: fApi, collection: c, project: p, folder: f };
           }
         }
+      }
+    }
+    return undefined;
+  }
+
+  /** 工作流定位（M2-B 任务 1）：遍历模式同 locateApi；启用校验/生命周期用 workspace 全树。 */
+  function locateWorkflow(workflowId: string): { workflow: Workflow; project: Project } | undefined {
+    const ws = ensureOpen();
+    for (const g of ws.groups) {
+      for (const p of g.projects) {
+        const wf = p.workflows.find((w) => w.id === workflowId);
+        if (wf) return { workflow: wf, project: p };
       }
     }
     return undefined;
@@ -400,6 +440,107 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
       const file = join(root, `${loc.api.name}.design.md`);
       designExportCalls.push({ file, content: renderDesignMarkdown(loc.api) });
       return file;
+    },
+
+    // 工作流频道（M2-B 任务 1）：语义与主进程 session 一致（错误文案逐字对齐）——
+    // 生命周期迁移复用 core transitionWorkflowStatus/validateEnablement（与 session 同一实现），
+    // 启用校验未过返回状态不变 + errors；wf:run 不走真实网络，按实际节点生成固定成功样例。
+    async wfList(projectId: string): Promise<WorkflowSummary[]> {
+      const ws = ensureOpen();
+      const project = ws.groups.flatMap((g) => g.projects).find((p) => p.id === projectId);
+      if (!project) throw new Error(`未找到项目: ${projectId}`);
+      return project.workflows.map((w) => ({ id: w.id, name: w.name, status: w.status }));
+    },
+
+    async wfGet(workflowId: string): Promise<WorkflowDetail> {
+      const loc = locateWorkflow(workflowId);
+      if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
+      return { workflow: loc.workflow, projectId: loc.project.id };
+    },
+
+    async wfCreate(input: WfCreateInput): Promise<Workflow> {
+      const ws = ensureOpen();
+      const project = ws.groups.flatMap((g) => g.projects).find((p) => p.id === input.projectId);
+      if (!project) throw new Error(`未找到项目: ${input.projectId}`);
+      if (project.workflows.some((w) => w.name === input.name)) throw new Error(`工作流已存在: ${input.name}`);
+      const workflow: Workflow = { id: randomUUID(), name: input.name, status: "draft", nodes: [], edges: [] };
+      project.workflows.push(workflow);
+      await save();
+      return workflow;
+    },
+
+    async wfDelete(workflowId: string): Promise<void> {
+      const ws = ensureOpen();
+      for (const g of ws.groups) {
+        for (const p of g.projects) {
+          const index = p.workflows.findIndex((w) => w.id === workflowId);
+          if (index >= 0) {
+            p.workflows.splice(index, 1);
+            await save();
+            return;
+          }
+        }
+      }
+      throw new Error(`未找到工作流: ${workflowId}`);
+    },
+
+    async wfSave(workflow: Workflow): Promise<Workflow> {
+      const loc = locateWorkflow(workflow.id);
+      if (!loc) throw new Error(`未找到工作流: ${workflow.id}`);
+      // 恒保持当前 status 不变（生命周期只经 wfSetStatus），与 session.saveWorkflow 同语义。
+      const stored: Workflow = { ...workflow, status: loc.workflow.status };
+      const index = loc.project.workflows.findIndex((w) => w.id === workflow.id);
+      loc.project.workflows[index] = stored;
+      await save();
+      return stored;
+    },
+
+    async wfSetStatus(workflowId: string, next: WorkflowStatus): Promise<WfSetStatusResult> {
+      const loc = locateWorkflow(workflowId);
+      if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
+      const ws = ensureOpen();
+      const enablement = next === "enabled" ? validateEnablement(loc.workflow, ws) : undefined;
+      if (enablement && !enablement.ok) {
+        return { workflow: loc.workflow, errors: enablement.errors, warnings: enablement.warnings };
+      }
+      // 非法迁移（draft→enabled 跳级等）由 core 守卫直接抛错（与 session 同源）。
+      transitionWorkflowStatus(loc.workflow, next, enablement);
+      loc.workflow.status = next;
+      await save();
+      return { workflow: loc.workflow, errors: [], warnings: enablement?.warnings ?? [] };
+    },
+
+    async wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntry[]> {
+      return workflowImpact(ensureOpen(), { caseId: input.caseId, apiId: input.apiId });
+    },
+
+    async wfRun(input: WfRunInput): Promise<WorkflowRunResult> {
+      const loc = locateWorkflow(input.workflowId);
+      if (!loc) throw new Error(`未找到工作流: ${input.workflowId}`);
+      if (loc.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
+      if (input.envName) {
+        const env = loc.project.environments.find((e) => e.name === input.envName);
+        if (!env) throw new Error(`未找到环境: ${input.envName}`);
+      }
+      // 固定成功样例：request 节点 → passed（合成 outcome，不发请求）、noop 节点 → noop；
+      // nodeResults 按实际节点 id 生成，任务 7 运行着色可据此断言 stateClass 映射。
+      const startedAt = new Date().toISOString();
+      const nodeResults: NodeResult[] = loc.workflow.nodes.map((n) =>
+        n.kind === "noop"
+          ? { nodeId: n.id, label: n.label, kind: "noop", state: "noop" }
+          : {
+              nodeId: n.id, label: n.label, kind: "request", state: "passed",
+              outcome: {
+                apiId: n.apiId ?? "", apiName: "", caseId: n.caseId ?? "", caseName: "",
+                passed: true, durationMs: 0, assertions: [],
+              },
+            },
+      );
+      return {
+        workflowId: loc.workflow.id, workflowName: loc.workflow.name, status: loc.workflow.status,
+        nodeResults, total: nodeResults.length, passed: nodeResults.length, failed: 0, skipped: 0,
+        warnings: [], startedAt, finishedAt: startedAt,
+      };
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

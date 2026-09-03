@@ -9,6 +9,7 @@ const ws: Workspace = {
     projects: [{
       id: "p1", name: "项目B", variables: {},
       environments: [{ id: "e1", name: "dev", extends: "base", variables: { a: "1" } }],
+      workflows: [],
       collections: [{
         id: "c1", name: "集合C", variables: {}, folders: [],
         apis: [{ id: "a1", name: "接口D", version: "1", deprecated: false, method: "GET", url: "/", headers: [], query: [], cases: [] }],

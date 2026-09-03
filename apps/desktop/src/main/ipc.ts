@@ -1,8 +1,9 @@
-import { ApiDefinitionSchema, createDefaultRegistry, ProjectSchema, renderDesignMarkdown, type Importer, type RunResult, type Workspace } from "@apicc/core";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { ApiDefinitionSchema, createDefaultRegistry, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, type Importer, type RunResult, type WorkflowRunResult, type Workspace } from "@apicc/core";
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO } from "../shared/types.js";
+import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO, WfCreateInput, WfImpactInput, WfRunInput } from "../shared/types.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
 import { listRuns, readRun } from "./runs.js";
 import type { createSession } from "./session.js";
@@ -31,6 +32,16 @@ const DebugInputSchema = z.object({ apiId: z.string(), caseId: z.string(), envNa
 const RunInputSchema = z.object({ collectionId: z.string(), envName: z.string().nullish() });
 const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() });
 const ImportApplyInputSchema = z.object({ groupName: z.string(), project: ProjectSchema });
+// 工作流频道（M2-B 任务 1）：wf:save 复用 core WorkflowSchema 全量校验（strict，未知字段
+// fail-fast）；wf:run 的 envName 沿用 envName nullish 惯例（null 归一为无环境运行）。
+const WfListInputSchema = z.object({ projectId: z.string() });
+const WfGetInputSchema = z.object({ workflowId: z.string() });
+const WfCreateInputSchema = z.object({ projectId: z.string(), name: z.string() });
+const WfDeleteInputSchema = z.object({ workflowId: z.string() });
+const WfSaveInputSchema = z.object({ workflow: WorkflowSchema });
+const WfSetStatusInputSchema = z.object({ workflowId: z.string(), next: WorkflowStatusSchema });
+const WfImpactInputSchema = z.object({ caseId: z.string().optional(), apiId: z.string().optional() });
+const WfRunInputSchema = z.object({ workflowId: z.string(), envName: z.string().nullish() });
 
 /** 频道 → 入参 tuple schema 表：Record 键为全部频道名，新增频道漏配 schema 即编译错误。 */
 const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
@@ -53,6 +64,14 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.ImportPreview]: z.tuple([ImportPreviewInputSchema]),
   [IpcChannel.ImportApply]: z.tuple([ImportApplyInputSchema]),
   [IpcChannel.DesignExport]: z.tuple([z.string()]),
+  [IpcChannel.WfList]: z.tuple([WfListInputSchema]),
+  [IpcChannel.WfGet]: z.tuple([WfGetInputSchema]),
+  [IpcChannel.WfCreate]: z.tuple([WfCreateInputSchema]),
+  [IpcChannel.WfDelete]: z.tuple([WfDeleteInputSchema]),
+  [IpcChannel.WfSave]: z.tuple([WfSaveInputSchema]),
+  [IpcChannel.WfSetStatus]: z.tuple([WfSetStatusInputSchema]),
+  [IpcChannel.WfImpact]: z.tuple([WfImpactInputSchema]),
+  [IpcChannel.WfRun]: z.tuple([WfRunInputSchema]),
 };
 
 /** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
@@ -64,6 +83,37 @@ function validateArgs<T>(channel: IpcChannelName, schema: z.ZodType<T>, input: u
     throw new Error(`[${channel}] 入参校验失败: ${where}`);
   }
   return result.data;
+}
+
+/** wf:run 的接口解析注册中心：与 debug.ts 的集合/调试运行同一默认注册中心（脚本引擎、报告器）。 */
+const wfRegistry = createDefaultRegistry();
+
+/**
+ * 工作流运行（M2-B 任务 1，仿 CLI run-workflow）：draft 直接拒绝（UI 对 draft 禁用运行
+ * 按钮，此为护栏）；envName 传给 WorkflowRunner 按名解析（未命中抛「未找到环境: xxx」）；
+ * 结果固定落盘 .apicc/runs/workflow-<id>-<ts>.json（生成物隔离，规格 §6/§8）。
+ */
+async function runWorkflow(session: Session, input: WfRunInput): Promise<WorkflowRunResult> {
+  const loc = session.locateWorkflow(input.workflowId);
+  if (!loc) throw new Error(`未找到工作流: ${input.workflowId}`);
+  if (loc.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
+  // locateWorkflow 内 ensureOpen 已保证会话打开，root/workspace 非空（与 debug.ts 运行链路同款断言）。
+  const ws = session.workspace!;
+  // resolve：workspace 全树查找接口定义（含文件夹内接口，与 CLI run-workflow 同口径）。
+  const findApi = (apiId: string) => {
+    for (const g of ws.groups) for (const p of g.projects) for (const c of p.collections) {
+      const api = c.apis.find((a) => a.id === apiId);
+      if (api) return api;
+      for (const f of c.folders) { const fa = f.apis.find((a) => a.id === apiId); if (fa) return fa; }
+    }
+    return undefined;
+  };
+  const runner = new WorkflowRunner({ registry: wfRegistry, resolve: findApi, envName: input.envName ?? undefined, failFast: false });
+  const result = await runner.run(loc.workflow, { project: loc.project, workspace: ws });
+  const runsDir = workspaceRunsDir(session.root!);
+  mkdirSync(runsDir, { recursive: true });
+  writeFileSync(join(runsDir, `workflow-${result.workflowId}-${Date.now()}.json`), JSON.stringify(result, null, 2));
+  return result;
 }
 
 export interface IpcDepsOptions {
@@ -242,6 +292,54 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const loc = session.locateApi(apiId);
         if (!loc) throw new Error(`未找到接口: ${apiId}`);
         return saveFile(`${loc.api.name}.design.md`, renderDesignMarkdown(loc.api));
+      }
+      // 工作流频道（M2-B 任务 1）：变更分支显式 save（session 变更操作不自动落盘，
+      // 语义备忘同环境频道）；set-status 仅在迁移成功（errors 为空）时落盘。
+      case IpcChannel.WfList: {
+        const input = a[0] as { projectId: string };
+        const ws = session.workspace;
+        if (!ws) throw new Error("尚未打开工作区");
+        const project = ws.groups.flatMap((g) => g.projects).find((p) => p.id === input.projectId);
+        if (!project) throw new Error(`未找到项目: ${input.projectId}`);
+        return project.workflows.map((w) => ({ id: w.id, name: w.name, status: w.status }));
+      }
+      case IpcChannel.WfGet: {
+        const input = a[0] as { workflowId: string };
+        const loc = session.locateWorkflow(input.workflowId);
+        if (!loc) throw new Error(`未找到工作流: ${input.workflowId}`);
+        return { workflow: loc.workflow, projectId: loc.project.id };
+      }
+      case IpcChannel.WfCreate: {
+        const input = a[0] as WfCreateInput;
+        const workflow = session.createWorkflow(input.projectId, input.name);
+        await session.save();
+        return workflow;
+      }
+      case IpcChannel.WfDelete: {
+        const input = a[0] as { workflowId: string };
+        session.deleteWorkflow(input.workflowId);
+        await session.save();
+        return undefined;
+      }
+      case IpcChannel.WfSave: {
+        // saveWorkflow 内部已落盘（恒保持 status 替换 + save），此处不再重复 save。
+        const input = a[0] as { workflow: Parameters<Session["saveWorkflow"]>[0] };
+        return session.saveWorkflow(input.workflow);
+      }
+      case IpcChannel.WfSetStatus: {
+        const input = a[0] as { workflowId: string; next: Parameters<Session["setWorkflowStatus"]>[1] };
+        const result = session.setWorkflowStatus(input.workflowId, input.next);
+        if (result.errors.length === 0) await session.save();
+        return result;
+      }
+      case IpcChannel.WfImpact: {
+        const input = a[0] as WfImpactInput;
+        const ws = session.workspace;
+        if (!ws) throw new Error("尚未打开工作区");
+        return workflowImpact(ws, { caseId: input.caseId, apiId: input.apiId });
+      }
+      case IpcChannel.WfRun: {
+        return runWorkflow(session, a[0] as WfRunInput);
       }
       default:
         throw new Error(`未知频道: ${channel}`);

@@ -18,5 +18,13 @@ export const IpcChannel = {
   ImportPreview: "import:preview",
   ImportApply: "import:apply",
   DesignExport: "design:export",
+  WfList: "wf:list",
+  WfGet: "wf:get",
+  WfCreate: "wf:create",
+  WfDelete: "wf:delete",
+  WfSave: "wf:save",
+  WfSetStatus: "wf:set-status",
+  WfImpact: "wf:impact",
+  WfRun: "wf:run",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];

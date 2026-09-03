@@ -1,4 +1,15 @@
-import type { ApiDefinition, CaseOutcome, Environment, LoadProblem, Project, RunResult } from "@apicc/core";
+import type {
+  ApiDefinition,
+  CaseOutcome,
+  Environment,
+  LoadProblem,
+  Project,
+  RunResult,
+  Workflow,
+  WorkflowImpactEntry,
+  WorkflowRunResult,
+  WorkflowStatus,
+} from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
 
 export interface OpenResult { workspace: { id: string; name: string }; problems: LoadProblem[]; root: string }
@@ -30,6 +41,23 @@ export interface ImportPreviewInput { fileName: string; content: string }
 export interface ImportPreviewResult { importerName: string; project: Project; warnings: string[] }
 /** import:apply 入参：目标分组（不存在则创建）+ 预览产出的项目。 */
 export interface ImportApplyInput { groupName: string; project: Project }
+
+/** wf:list 行摘要：工作流列表（侧树「工作流」分组与列表视图共用，规格 §3）。 */
+export interface WorkflowSummary { id: string; name: string; status: WorkflowStatus }
+/** wf:get 返回：完整工作流 + 所属项目 id（设计器级联数据按项目定位）。 */
+export interface WorkflowDetail { workflow: Workflow; projectId: string }
+/** wf:create 入参：目标项目 + 工作流名（同项目重名拒绝「工作流已存在: name」）。 */
+export interface WfCreateInput { projectId: string; name: string }
+/**
+ * wf:set-status 返回：迁移后的工作流 + 启用校验错误/警告。
+ * published→enabled 校验未过时 workflow 为状态不变的原工作流、errors 非空；
+ * 非法迁移（如 draft→enabled 跳级）不落在此形状——session 直接抛错（UI 按钮禁用本不应触发）。
+ */
+export interface WfSetStatusResult { workflow: Workflow; errors: string[]; warnings: string[] }
+/** wf:impact 入参：按用例/接口 id 反查工作流引用（规格 §3.1 影响分析）。 */
+export interface WfImpactInput { caseId?: string; apiId?: string }
+/** wf:run 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
+export interface WfRunInput { workflowId: string; envName?: string }
 
 /**
  * nodeCreate 统一返回的瘦节点 DTO（宽审查 I2：ipc 与 memory 契约一致的单一事实源）。
@@ -63,4 +91,15 @@ export interface ApiccApi {
   importApply(input: ImportApplyInput): Promise<void>;
   /** design:export：主进程渲染 agent 设计 md → showSaveDialog 落盘；返回保存路径（取消为空串）。 */
   designExport(apiId: string): Promise<string>;
+  /** 工作流频道（M2-B 任务 1）：语义与主进程 session 一致，错误文案逐字对齐。 */
+  wfList(projectId: string): Promise<WorkflowSummary[]>;
+  wfGet(workflowId: string): Promise<WorkflowDetail>;
+  wfCreate(input: WfCreateInput): Promise<Workflow>;
+  wfDelete(workflowId: string): Promise<void>;
+  /** wf:save：恒保持当前 status 不变（生命周期只经 wf:set-status），返回落盘后的工作流。 */
+  wfSave(workflow: Workflow): Promise<Workflow>;
+  wfSetStatus(workflowId: string, next: WorkflowStatus): Promise<WfSetStatusResult>;
+  wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntry[]>;
+  /** wf:run：draft 拒绝（「工作流为草稿，请先发布启用」）；结果由主进程落盘 .apicc/runs。 */
+  wfRun(input: WfRunInput): Promise<WorkflowRunResult>;
 }

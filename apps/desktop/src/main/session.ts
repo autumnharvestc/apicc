@@ -1,12 +1,29 @@
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fileStorage, type ApiDefinition, type Collection, type Environment, type Group, type Project, type Workspace, type LoadProblem, HttpMethod } from "@apicc/core";
+import {
+  fileStorage,
+  transitionWorkflowStatus,
+  validateEnablement,
+  type ApiDefinition,
+  type Collection,
+  type Environment,
+  type Group,
+  type Project,
+  type Workflow,
+  type WorkflowStatus,
+  type Workspace,
+  type LoadProblem,
+  HttpMethod,
+} from "@apicc/core";
 import { randomUUID } from "node:crypto";
 
 export interface ApiLocation { api: ApiDefinition; collection: Collection; project: Project; group: Group; folder: { id: string; name: string; apis: ApiDefinition[] } | null }
 
 /** 集合定位结果：集合运行（run:collection）需集合本体 + 所属项目（环境解析）与分组。 */
 export interface CollectionLocation { collection: Collection; project: Project; group: Group }
+
+/** 工作流定位结果：wf:get/wf:set-status/wf:run 需工作流本体 + 所属项目（环境/级联数据）与分组。 */
+export interface WorkflowLocation { workflow: Workflow; project: Project; group: Group }
 
 export type NodeKind = "group" | "project" | "collection" | "folder" | "api" | "environment";
 
@@ -110,6 +127,77 @@ export function createSession() {
     const index = list.findIndex((a) => a.id === api.id);
     list[index] = api;
     await save();
+  }
+
+  // 工作流操作（M2-B 任务 1）：模式对齐 locateCollection/createCollection——只改内存模型
+  // 不自动落盘，落盘时机由 IPC 处理器显式 save()（saveWorkflow/setWorkflowStatus 语义见各自注释）。
+  function locateWorkflow(workflowId: string): WorkflowLocation | undefined {
+    const { workspace: ws } = ensureOpen();
+    for (const group of ws.groups) {
+      for (const project of group.projects) {
+        const workflow = project.workflows.find((w) => w.id === workflowId);
+        if (workflow) return { workflow, project, group };
+      }
+    }
+    return undefined;
+  }
+
+  function createWorkflow(projectId: string, name: string): Workflow {
+    const { workspace: ws } = ensureOpen();
+    const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+    if (!project) throw new Error(`未找到项目: ${projectId}`);
+    if (project.workflows.some((w) => w.name === name)) throw new Error(`工作流已存在: ${name}`);
+    const workflow: Workflow = { id: randomUUID(), name, status: "draft", nodes: [], edges: [] };
+    project.workflows.push(workflow);
+    return workflow;
+  }
+
+  function deleteWorkflow(workflowId: string): void {
+    const { workspace: ws } = ensureOpen();
+    for (const group of ws.groups) {
+      for (const project of group.projects) {
+        const index = project.workflows.findIndex((w) => w.id === workflowId);
+        if (index >= 0) {
+          project.workflows.splice(index, 1);
+          return;
+        }
+      }
+    }
+    throw new Error(`未找到工作流: ${workflowId}`);
+  }
+
+  /**
+   * 保存工作流：按 id 定位替换 + save() 落盘。恒保持当前 status 不变（裁定：生命周期
+   * 只经 setWorkflowStatus；编辑已发布/已启用工作流的回退由 UI 显式询问，save 不掺和）。
+   * 返回落盘后的工作流（含保留的 status），wf:save 频道原样回传给渲染层。
+   */
+  async function saveWorkflow(workflow: Workflow): Promise<Workflow> {
+    const loc = locateWorkflow(workflow.id);
+    if (!loc) throw new Error(`未找到工作流: ${workflow.id}`);
+    const stored: Workflow = { ...workflow, status: loc.workflow.status };
+    const index = loc.project.workflows.findIndex((w) => w.id === workflow.id);
+    loc.project.workflows[index] = stored;
+    await save();
+    return stored;
+  }
+
+  /**
+   * 生命周期迁移：draft→published / published→enabled 单向（enabled→published = 解除启用）。
+   * enabled 迁移先过 core validateEnablement——未过时返回 { workflow(状态不变), errors, warnings }
+   * （UI 展示错误列表）；非法迁移（如 draft→enabled 跳级）由 core transitionWorkflowStatus
+   * 直接抛错（UI 按钮禁用本不应触发）。成功时原地更新状态并返回（含校验 warnings 透传）。
+   */
+  function setWorkflowStatus(workflowId: string, next: WorkflowStatus): { workflow: Workflow; errors: string[]; warnings: string[] } {
+    const loc = locateWorkflow(workflowId);
+    if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
+    const { workspace: ws } = ensureOpen();
+    const enablement = next === "enabled" ? validateEnablement(loc.workflow, ws) : undefined;
+    if (enablement && !enablement.ok) {
+      return { workflow: loc.workflow, errors: enablement.errors, warnings: enablement.warnings };
+    }
+    transitionWorkflowStatus(loc.workflow, next, enablement);
+    loc.workflow.status = next;
+    return { workflow: loc.workflow, errors: [], warnings: enablement?.warnings ?? [] };
   }
 
   // 环境操作（任务 4）：与 create/createProject 同契约——只改内存模型不落盘，
@@ -247,7 +335,9 @@ export function createSession() {
     },
     createGroup, createProject, createCollection, createFolder, createApi,
     createEnvironment, setEnvironmentVariables, importProject,
-    locateApi, locateCollection, saveApi, renameNode, deleteNode, save,
+    locateApi, locateCollection, saveApi,
+    locateWorkflow, createWorkflow, deleteWorkflow, saveWorkflow, setWorkflowStatus,
+    renameNode, deleteNode, save,
   };
 }
 
