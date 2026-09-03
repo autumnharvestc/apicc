@@ -242,6 +242,22 @@ describe("SideTree", () => {
     expect(bodyHas("impact-list")).toBe(false);
   });
 
+  it("删除接口：wfImpact 反查拒绝时经 reportError 上报并中止（不开框、不删除）", async () => {
+    const errors: unknown[] = [];
+    const { wrapper, api, workspace } = await mountWith(SideTree, { reportError: (e: unknown) => { errors.push(e); } });
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const row = wrapper.find('[data-testid="tree-api-row"]');
+    const apiId = row.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
+    api.wfImpact = async () => { throw new Error("影响反查失败"); };
+    await row.find('[data-testid="node-delete"]').trigger("click");
+    await flushPromises();
+    // 拒绝上报 + 中止语义：确认对话框不打开、接口仍在树中
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("影响反查失败");
+    expect(bodyHas("dialog-confirm")).toBe(false);
+    expect(JSON.stringify(workspace.tree)).toContain(apiId);
+  });
+
   it("根层新建分组：空工作区也能从根创建顶层节点", async () => {
     const { wrapper, workspace } = await mountWith(SideTree);
     const before = workspace.tree!.children!.length;

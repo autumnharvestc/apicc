@@ -88,8 +88,8 @@ interface DialogState {
   title: string;
   placeholder?: string;
   initialValue?: string;
-  /** 任务 6：删除影响命中清单（非删除对话框恒为空数组——slot 据长度决定渲染）。 */
-  impact: WorkflowImpactEntry[];
+  /** 任务 6：删除影响命中清单（可选——openDialog 兜底空数组，非删除对话框无此键）。 */
+  impact?: WorkflowImpactEntry[];
   run: (value: string | null) => Promise<void> | void;
 }
 const dialog = ref<DialogState>({ open: false, title: "", impact: [], run: () => {} });
@@ -242,7 +242,7 @@ async function startDelete(node: TreeNodeDTO) {
       @cancel="closeDialog"
     >
       <!-- 任务 6：删除影响清单（命中时才渲染）——工作流名（状态）— 节点 label -->
-      <template v-if="dialog.impact.length">
+      <template v-if="dialog.impact?.length">
         <p class="impact-warning" data-testid="impact-warning">{{ t("tree.impactWarning") }}</p>
         <ul class="impact-list" data-testid="impact-list">
           <li v-for="entry in dialog.impact" :key="`${entry.workflowId}:${entry.nodeId}`">
