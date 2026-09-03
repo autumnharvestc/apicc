@@ -444,6 +444,29 @@ describe("CollectionRunner", () => {
     }
   });
 
+  it("runtimeBridge：跨 run 携带运行时变量（工作流节点间传值基座）", async () => {
+    const carried: Record<string, string> = {};
+    const bridge = {
+      get: () => ({ ...carried }),
+      set: (vars: Record<string, string>) => { Object.assign(carried, vars); },
+    };
+    const runner = buildDeps();
+    // 简报原稿 URL 为 http://127.0.0.1:1/（必然 ECONNREFUSED）：请求失败时 postScript 不会执行，
+    // 变量可读性断言无从评估，故改用本文件顶层夹具 server（对位既有夹具，语义不变）。
+    const col = (pre: string, post: string): Collection => ({
+      id: "c", name: "c", variables: {}, folders: [],
+      apis: [{ id: "a", name: "a", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
+        cases: [{ id: "t", name: "t", scope: "base", parameters: {}, preScript: pre, postScript: post, assertions: [] }] }],
+    });
+    const opts = { runtimeBridge: bridge };
+    // run1: 提取 token
+    await runner.run(col("pm.variables.set('token','abc');", ""), env, project, workspace, opts);
+    expect(carried.token).toBe("abc");
+    // run2: 读取 token（网络错误不影响变量断言——用后置脚本抛错检测可读性）
+    const r2 = await runner.run(col("", "if (pm.variables.get('token') !== 'abc') throw new Error('token 丢失');"), env, project, workspace, opts);
+    expect(r2.cases[0]!.error).toBeUndefined();
+  });
+
   it("afterCase 钩子失败使当用例失败且不中断集合（钩子极性）", async () => {
     const col = collectionWith([
       { id: "t1", name: "hooked", scope: "base", parameters: {}, assertions: [] },

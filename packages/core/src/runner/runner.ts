@@ -14,7 +14,15 @@ import type { PluginRegistry } from "../plugin/registry.js";
 import type { ExecutableRequest, ExecutionResponse, PmApi, ScriptEngine } from "../plugin/types.js";
 import type { CaseOutcome, RunResult } from "../report/types.js";
 
-export interface RunnerOptions { runsDir?: string }
+export interface RunnerOptions {
+  runsDir?: string;
+  runtimeBridge?: {
+    /** 读取外部携带的运行时变量（进入本 run 前注入 persisted 层）。 */
+    get(): Record<string, string>;
+    /** 本 run 结束后接收最终运行时变量（persisted 层快照）。 */
+    set(vars: Record<string, string>): void;
+  };
+}
 
 export class CollectionRunner {
   constructor(private deps: {
@@ -52,7 +60,16 @@ export class CollectionRunner {
     const apis = [...collection.apis, ...collection.folders.flatMap((f) => f.apis)];
     // 脚本经 pm.variables.set 写入的变量跨用例持久（整个 run 生命周期），如「登录→取 token→调业务接口」流转。
     const persisted = new Map<string, string>();
-    if (collection.scripts?.pre) engine.run(collection.scripts.pre, this.buildContext(resolver, envVars, undefined, undefined, persisted));
+    // 桥回写快照：只在 pm.variables.set 时增长（语义 =「本次运行累计提取的变量」），run 结束整体写回外部桥。
+    const persistedSnapshot: Record<string, string> = {};
+    // 运行时桥（工作流节点间传值基座）：进入本 run 前把外部携带变量注入持久层与运行时层——
+    // 注入 persisted 使其与脚本提取值同语义：经每用例 clearRuntime 重放存活，不被运行时层清空冲掉。
+    const carried = opts.runtimeBridge?.get() ?? {};
+    for (const [k, v] of Object.entries(carried)) {
+      persisted.set(k, v);
+      resolver.setRuntime(k, v);
+    }
+    if (collection.scripts?.pre) engine.run(collection.scripts.pre, this.buildContext(resolver, envVars, undefined, undefined, persisted, persistedSnapshot));
 
     outer:
     for (const api of apis) {
@@ -83,7 +100,7 @@ export class CollectionRunner {
           continue;
         }
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-          const outcome = await this.runCase(api, tc, rows[rowIndex], rowIndex, rows.length > 1, resolver, envVars, engine, persisted);
+          const outcome = await this.runCase(api, tc, rows[rowIndex], rowIndex, rows.length > 1, resolver, envVars, engine, persisted, persistedSnapshot);
           outcomes.push(outcome);
           if (!outcome.passed && this.deps.failFast) break outer;
         }
@@ -103,6 +120,8 @@ export class CollectionRunner {
     } catch (e) {
       (result.warnings ??= []).push(`afterRun 钩子失败: ${e instanceof Error ? e.message : String(e)}`);
     }
+    // 运行时桥回写（写盘之前）：本次累计提取的变量交还外部携带者，下一节点 run 经 get() 取用。
+    opts.runtimeBridge?.set({ ...persistedSnapshot });
     // 原始结果 JSON 先行落盘（规格 §8：报告失败不影响结果保存）；
     // 落盘失败降级为告警，不中断 run() 返回，调用方仍拿到完整 RunResult。
     if (opts.runsDir) {
@@ -132,6 +151,7 @@ export class CollectionRunner {
     row: Record<string, string> | undefined, rowIndex: number, isDataDriven: boolean,
     resolver: VariableResolver, envVars: Record<string, string>,
     engine: ScriptEngine, persisted: Map<string, string>,
+    persistedSnapshot: Record<string, string>,
   ): Promise<CaseOutcome> {
     const started = performance.now();
     // 每个用例行先清空运行时层，再按 persisted → tc.parameters → 行值 的顺序重放/注入：
@@ -161,7 +181,7 @@ export class CollectionRunner {
     };
 
     const pmAsserts: Array<{ pass: boolean; message: string }> = [];
-    const ctx = this.buildContext(resolver, envVars, request, pmAsserts, persisted);
+    const ctx = this.buildContext(resolver, envVars, request, pmAsserts, persisted, persistedSnapshot);
 
     // 脚本超时/异常只捕获为 error 字段，让单个用例失败而不中断集合。
     // 用例级事件（beforeCase/beforeRequest/afterResponse）失败极性相同：归当用例失败（规格 §5.2）。
@@ -260,13 +280,16 @@ export class CollectionRunner {
     request?: ExecutableRequest,
     pmAsserts?: Array<{ pass: boolean; message: string }>,
     persisted?: Map<string, string>,
+    persistedSnapshot?: Record<string, string>,
   ): { pm: PmApi } {
     const pm: PmApi = {
       variables: {
         get: (n) => resolver.get(n),
         // 脚本写入同时进运行时层与持久表：本用例立即可见，后续用例经 persisted 重放仍可见。
+        // 同步写快照（只增不减）：run 结束整体写回 runtimeBridge，供工作流下一节点跨 run 取用。
         set: (n, v) => {
           persisted?.set(n, v);
+          if (persistedSnapshot) persistedSnapshot[n] = v;
           resolver.setRuntime(n, v);
         },
       },
