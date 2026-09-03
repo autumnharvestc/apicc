@@ -20,11 +20,18 @@ export { validateWorkflowStructure, transitionWorkflowStatus, validateEnablement
 export { workflowImpact, type WorkflowImpactEntry } from "./workflow/impact.js";
 export { WorkflowRunner, type WorkflowRunResult, type NodeResult, type NodeState, type WorkflowRunnerOptions } from "./workflow/runner.js";
 export { workflowToRunResult } from "./workflow/adapter.js";
+export { mergedEnvVars } from "./domain/envChain.js";
+export * from "./stress/model.js";
+export { computeReport } from "./stress/aggregate.js";
+export { buildStressRequest } from "./stress/build.js";
+export { StressRunner, type StressRunnerOptions, type StressRunOptions } from "./stress/runner.js";
 
 import { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
 import { fileStorage } from "./storage/fileStorage.js";
 import { httpClient } from "./http/client.js";
 import { builtinAuthProviders } from "./http/auth.js";
+// 内置协议客户端与认证器同时对外导出：CLI run-stress 等消费方直接注入 StressRunner，无需绕注册中心取回。
+export { httpClient, builtinAuthProviders };
 import { builtinAssertOperators } from "./assert/operators.js";
 import { jsScriptEngine } from "./sandbox/jsEngine.js";
 import { htmlReporter } from "./report/html.js";

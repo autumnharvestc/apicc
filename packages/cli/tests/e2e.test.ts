@@ -284,4 +284,34 @@ describe("CLI 端到端", () => {
       runCli(["run-workflow", "groups/demo/projects/svc/workflows/不存在", "--env", "dev"], createDefaultRegistry()),
     ).rejects.toThrow(/未找到工作流/);
   });
+
+  it("run-stress 对接口用例并发压测并落盘 JSON", async () => {
+    // 夹具：既有临时工作区 + 本地 server（复用文件内既有 beforeAll 资源）。
+    const runsDir = join(root, "stress-runs");
+    const logs: string[] = [];
+    const code = await runCli(
+      [
+        "run-stress", "groups/demo/projects/svc/collections/api/apis/ok",
+        "--case", "t1", "--env", "dev", "--concurrency", "4", "--iterations", "12",
+        "--runs-dir", runsDir,
+      ],
+      createDefaultRegistry(),
+      (line) => logs.push(line),
+    );
+    expect(code).toBe(0);
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const files = readdirSync(runsDir).filter((f) => f.startsWith("stress-") && f.endsWith(".json"));
+    expect(files.length).toBeGreaterThan(0);
+    const report = JSON.parse(readFileSync(join(runsDir, files[files.length - 1]!), "utf8")) as {
+      totalRequests: number;
+      ok: number;
+      failed: number;
+      concurrency: number;
+    };
+    expect(report.totalRequests).toBe(12);
+    expect(report.concurrency).toBe(4);
+    expect(report.ok).toBe(12);
+    expect(report.failed).toBe(0);
+    expect(logs.join("\n")).toContain("RPS");
+  }, 30000);
 });

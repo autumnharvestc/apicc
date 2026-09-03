@@ -165,6 +165,89 @@ export async function runCli(argv: string[], registry: PluginRegistry, log: (lin
       process.exitCode = wfr.failed > 0 ? 1 : 0;
     });
 
+  // 压测运行（任务 4）：把 core 压测引擎（并发池执行 + 聚合报告）暴露为 CLI 命令；
+  // 工作区定位、路径匹配、环境解析、产物目录均沿用 run/run-workflow 模式。断言不参与采样（M2-C 明确推迟）。
+  program
+    .command("run-stress")
+    .argument("<apiPath>", "接口目录（相对工作区根）")
+    .requiredOption("--case <caseId>", "用例 ID")
+    .option("--env <name>", "环境名称")
+    .requiredOption("--concurrency <n>", "并发数", Number)
+    .option("--iterations <n>", "总迭代数", Number)
+    .option("--duration <s>", "持续秒数", Number)
+    .option("--runs-dir <dir>", "报告输出目录")
+    .action(async (apiPath: string, opts: { case: string; env?: string; concurrency: number; iterations?: number; duration?: number; runsDir?: string }) => {
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+      const storage = registry.getStorage();
+      if (!storage) throw new Error("未注册存储适配器");
+      const { workspace } = await storage.load(root);
+      // 全树定位接口（含 folders 内接口）：目录形态 groups/g/projects/p/collections/c[/folders/f]/apis/<名>；
+      // 匹配口径与 run 同款：全等或分隔符边界后缀（避免 "ok" 误命中 "xok"），首个命中即止。
+      let api: import("@apicc/core").ApiDefinition | undefined;
+      let project: import("@apicc/core").Project | undefined;
+      let collection: import("@apicc/core").Collection | undefined;
+      const target = toSlash(apiPath);
+      search:
+      for (const g of workspace.groups) {
+        for (const p of g.projects) {
+          for (const c of p.collections) {
+            const cDir = join(root, "groups", g.name, "projects", p.name, "collections", c.name);
+            const candidates = [
+              ...c.apis.map((a) => ({ api: a, dir: join(cDir, "apis", a.name) })),
+              ...c.folders.flatMap((f) => f.apis.map((a) => ({ api: a, dir: join(cDir, "folders", f.name, "apis", a.name) }))),
+            ];
+            for (const cand of candidates) {
+              const normalized = toSlash(cand.dir);
+              if (normalized === target || normalized.endsWith(`/${target}`)) {
+                api = cand.api; project = p; collection = c;
+                break search;
+              }
+            }
+          }
+        }
+      }
+      if (!api || !project || !collection) throw new Error(`未找到接口: ${apiPath}`);
+      const stressedApi = api; // const 别名：供工厂闭包捕获（let 的收窄不跨闭包生效）。
+      // 用例门：压测请求构造只依赖接口定义（case 参数/断言不参与采样），但目标用例必须存在。
+      if (!stressedApi.cases.some((tc) => tc.id === opts.case)) throw new Error(`未找到用例: ${opts.case}`);
+      // env 解析：未指定则不启用环境；指定但未命中显式报错（与 run-workflow 同款）。
+      const env = opts.env ? project.environments.find((e) => e.name === opts.env) : undefined;
+      if (opts.env && !env) throw new Error(`未找到环境: ${opts.env}`);
+      // 终止条件二选一校验（与 StressRunner 约束一致，前置到 CLI 以面向用户的文案报错）。
+      if (opts.iterations === undefined && opts.duration === undefined) {
+        throw new Error("需要 --iterations 或 --duration");
+      }
+      const { StressRunner, buildStressRequest, httpClient, builtinAuthProviders, mergedEnvVars, createVariableResolver } =
+        await import("@apicc/core");
+      // 变量层与 CollectionRunner 同源：[环境(继承链经 mergedEnvVars 合并), 集合, 项目, 全局]。
+      const resolver = createVariableResolver({
+        layers: [mergedEnvVars(env, project), collection.variables, project.variables, workspace.variables],
+      });
+      const runner = new StressRunner({
+        client: httpClient,
+        // 每次采样重跑工厂：动态变量（如 {{$uuid}}）逐请求变化，不做跨请求复用。
+        buildRequest: () => buildStressRequest(stressedApi, resolver, builtinAuthProviders),
+      });
+      const report = await runner.run({
+        concurrency: opts.concurrency,
+        maxIterations: opts.iterations,
+        durationMs: opts.duration === undefined ? undefined : opts.duration * 1000,
+      });
+      // 产物隔离（规格 §6，对齐 run-workflow）：StressReport JSON 落 runs 目录，默认 .apicc/runs。
+      const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
+      mkdirSync(runsOutDir, { recursive: true });
+      writeFileSync(join(runsOutDir, `stress-${stressedApi.id}-${Date.now()}.json`), JSON.stringify(report, null, 2));
+      const l = report.latency;
+      log(`压测完成：总计 ${report.totalRequests} · 成功 ${report.ok} · 失败 ${report.failed} · RPS ${report.rps.toFixed(1)}`);
+      log(
+        `时延 ms：min ${l.min.toFixed(1)} / avg ${l.avg.toFixed(1)} / p50 ${l.p50.toFixed(1)} / p90 ${l.p90.toFixed(1)}`
+          + ` / p95 ${l.p95.toFixed(1)} / p99 ${l.p99.toFixed(1)} / max ${l.max.toFixed(1)}`,
+      );
+      // 全部请求失败才视为压测失败退出（failed===total && total>0）：压测关注面是性能画像而非断言成败。
+      process.exitCode = report.failed === report.totalRequests && report.totalRequests > 0 ? 1 : 0;
+    });
+
   program
     .command("export-design")
     .argument("<apiPath>", "接口目录（相对工作区根）")
