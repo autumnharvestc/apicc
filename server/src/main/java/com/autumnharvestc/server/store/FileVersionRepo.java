@@ -65,6 +65,11 @@ public class FileVersionRepo {
         }
     }
 
+    /** 删除工作区时清空其全部版本行（裁定 D：DELETE 工作区的 DB 清理步骤）。 */
+    public void deleteByWorkspace(String workspaceId) {
+        jdbc.update("DELETE FROM file_versions WHERE workspace_id = ?", workspaceId);
+    }
+
     private static FileVersionRecord mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new FileVersionRecord(
                 rs.getString("workspace_id"),

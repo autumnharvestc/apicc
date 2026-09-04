@@ -7,6 +7,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
@@ -39,6 +40,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleUnreadable(HttpMessageNotReadableException ex) {
         return ResponseEntity.badRequest()
                 .body(new ApiError("bad_request", "请求体缺失或格式错误"));
+    }
+
+    /** 必填查询参数缺失（如 DELETE acl ?userId=）→ 400 bad_request（否则落入 500 兜底）。 */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiError> handleMissingParameter(MissingServletRequestParameterException ex) {
+        return ResponseEntity.badRequest()
+                .body(new ApiError("bad_request", "缺少必填查询参数: " + ex.getParameterName()));
     }
 
     /** @Valid @RequestBody 字段校验失败 → 400 validation_failed（message 取第一条字段错误，供客户端定位）。 */

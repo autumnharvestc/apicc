@@ -44,4 +44,39 @@ public class MembershipRepo {
                 "UPDATE memberships SET role = ? WHERE workspace_id = ? AND user_id = ?",
                 role.toDb(), workspaceId, userId) > 0;
     }
+
+    /** 成员清单（GET members，任务 4）：memberships ⋈ users，只投影安全字段，按加入时间稳定排序。 */
+    public List<MemberRow> listMembers(String workspaceId) {
+        return jdbc.query("""
+                SELECT m.user_id, u.username, u.display_name, m.role
+                FROM memberships m
+                JOIN users u ON u.id = m.user_id
+                WHERE m.workspace_id = ?
+                ORDER BY m.created_at, m.user_id
+                """, (rs, rowNum) -> new MemberRow(
+                        rs.getString("user_id"),
+                        rs.getString("username"),
+                        rs.getString("display_name"),
+                        Role.fromDb(rs.getString("role"))), workspaceId);
+    }
+
+    /** 成员计数（GET /workspaces/{id} 的 memberCount，任务 4）。 */
+    public long countByWorkspace(String workspaceId) {
+        Long count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM memberships WHERE workspace_id = ?",
+                Long.class, workspaceId);
+        return count == null ? 0 : count;
+    }
+
+    /** 移除单个成员（DELETE members，任务 4）。 */
+    public void delete(String workspaceId, String userId) {
+        jdbc.update(
+                "DELETE FROM memberships WHERE workspace_id = ? AND user_id = ?",
+                workspaceId, userId);
+    }
+
+    /** 删除工作区时清空其全部成员行（裁定 D：DELETE 工作区的第一个 DB 清理步骤）。 */
+    public void deleteByWorkspace(String workspaceId) {
+        jdbc.update("DELETE FROM memberships WHERE workspace_id = ?", workspaceId);
+    }
 }

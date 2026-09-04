@@ -120,6 +120,16 @@ class AuthApiContractTest {
                 .andExpect(jsonPath("$.code").value("validation_failed"));
     }
 
+    /** password 上限 72（bcrypt 仅处理前 72 字节，超出静默截断——任务 3 审查钉住）：73 字符 → 400。 */
+    @Test
+    void registerOverlongPasswordReturns400ValidationFailed() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registerBody("carol-73", "x".repeat(73), "C")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
+    }
+
     /** displayName 规则（裁定 C：必填，trim 后 1-32 字符）：空白与超长 → 400 validation_failed。 */
     @Test
     void registerInvalidDisplayNameReturns400ValidationFailed() throws Exception {

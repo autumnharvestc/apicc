@@ -27,6 +27,10 @@ public class AclRepo {
      * PUT ACL：置/覆盖 (workspace, project, user) 的角色。
      * 可移植 upsert（不用 H2 MERGE / Postgres ON CONFLICT）：先插后改；并发双插由主键约束兜底，
      * 落败方转 UPDATE，终态一致。updated_at 由本方法打点（UTC）。
+     * Postgres 注意（任务 2 审查留痕 + 任务 4 裁定 B 强化）：PG 中任一语句失败即 abort 当前事务，
+     * 本方法的 catch-DuplicateKey-then-UPDATE 若运行在显式事务（@Transactional）内会以
+     * 「current transaction is aborted」失败——因此本工程成员/ACL 写路径约定不使用 @Transactional，
+     * 各写操作以单条语句自持原子；未来迁移 PG 时应改写为 INSERT ... ON CONFLICT DO UPDATE。
      */
     public void upsert(String workspaceId, String projectId, String userId, AclRole role) {
         try {
@@ -55,5 +59,22 @@ public class AclRepo {
         jdbc.update(
                 "DELETE FROM project_acl WHERE workspace_id = ? AND project_id = ? AND user_id = ?",
                 workspaceId, projectId, userId);
+    }
+
+    /** 项目 ACL 清单（GET acl，任务 4），按 user_id 稳定排序。 */
+    public List<AclEntryRow> listByProject(String workspaceId, String projectId) {
+        return jdbc.query("""
+                SELECT user_id, role
+                FROM project_acl
+                WHERE workspace_id = ? AND project_id = ?
+                ORDER BY user_id
+                """, (rs, rowNum) -> new AclEntryRow(
+                        rs.getString("user_id"),
+                        AclRole.fromDb(rs.getString("role"))), workspaceId, projectId);
+    }
+
+    /** 删除工作区时清空其全部 ACL 行（裁定 D：DELETE 工作区的 DB 清理步骤）。 */
+    public void deleteByWorkspace(String workspaceId) {
+        jdbc.update("DELETE FROM project_acl WHERE workspace_id = ?", workspaceId);
     }
 }

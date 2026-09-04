@@ -1,5 +1,6 @@
 package com.autumnharvestc.server.store;
 
+import com.autumnharvestc.server.core.Role;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -56,5 +57,25 @@ public class WorkspaceRepo {
                 rs.getString("name"),
                 rs.getString("created_by"),
                 rs.getObject("created_at", OffsetDateTime.class).toInstant());
+    }
+
+    /** 「我参与的工作区」列表（GET /workspaces，任务 4）：workspaces ⋈ memberships，按创建时间稳定排序。 */
+    public List<WorkspaceWithRole> findByMember(String userId) {
+        return jdbc.query("""
+                SELECT w.id, w.name, w.created_at, m.role AS my_role
+                FROM workspaces w
+                JOIN memberships m ON m.workspace_id = w.id
+                WHERE m.user_id = ?
+                ORDER BY w.created_at, w.id
+                """, (rs, rowNum) -> new WorkspaceWithRole(
+                        rs.getString("id"),
+                        rs.getString("name"),
+                        rs.getObject("created_at", OffsetDateTime.class).toInstant(),
+                        Role.fromDb(rs.getString("my_role"))), userId);
+    }
+
+    /** 删除工作区行（DELETE /workspaces/{id} 的收尾 DB 步骤——裁定 D：此前应已清空 memberships/project_acl/file_versions）。 */
+    public void delete(String id) {
+        jdbc.update("DELETE FROM workspaces WHERE id = ?", id);
     }
 }
