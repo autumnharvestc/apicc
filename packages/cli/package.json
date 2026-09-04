@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm -C ../core build && vitest run"
+    "test": "pnpm -C ../core build && pnpm build && vitest run"
   },
   "dependencies": {
     "@apicc/core": "workspace:*",

@@ -48,9 +48,31 @@ function cliEntryPath(): string {
 }
 
 /**
+ * 从 worker stdout 全文按行从末解析 ShardOutcome（裁定 B①：可导出纯函数，供单测直测）。
+ * 日志污染行（非 JSON 或不过 schema）跳过，取末条合法协议行；全部非法时抛「协议输出无效」。
+ */
+export function parseShardOutcomeStdout(
+  stdout: string,
+  ctx: { shardId: string; exitCode?: number | null },
+): ShardOutcome {
+  const lines = stdout.split(/\r?\n/).filter((l) => l.trim() !== "");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = ShardOutcomeSchema.safeParse(JSON.parse(lines[i]!));
+      if (parsed.success) return parsed.data;
+    } catch {
+      // 非 JSON 行（日志污染）跳过，继续向前找末条可解析协议行。
+    }
+  }
+  throw new Error(
+    `shard ${ctx.shardId} 协议输出无效：stdout 末行不是合法 ShardOutcome（退出码 ${ctx.exitCode}）`,
+  );
+}
+
+/**
  * 默认 SpawnWorker 工厂（D2 MVP 本地子进程 stdio 传输）：spawn node + [bin.js, stress-worker, …]。
  * 裁定 A：自带与协调器同值的超时并 child.kill()——协调器放弃后真实子进程不得残留；kill 后仍按失败 shard 计。
- * 裁定 B：按行从末解析 stdout，以最后一条能通过 ShardOutcomeSchema 的行为准（防 worker 日志污染 stdout 致协议崩坏）；
+ * 裁定 B：按行从末解析 stdout（parseShardOutcomeStdout 纯函数，防 worker 日志污染 stdout 致协议崩坏）；
  * 子进程 stderr 透传父进程 stderr。
  */
 const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec) =>
@@ -83,19 +105,11 @@ const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec
     }, shardTimeoutMs);
     child.on("error", (e: Error) => settle(() => reject(e)));
     child.on("close", (code) => settle(() => {
-      const lines = stdout.split(/\r?\n/).filter((l) => l.trim() !== "");
-      for (let i = lines.length - 1; i >= 0; i -= 1) {
-        try {
-          const parsed = ShardOutcomeSchema.safeParse(JSON.parse(lines[i]!));
-          if (parsed.success) {
-            resolve(parsed.data);
-            return;
-          }
-        } catch {
-          // 非 JSON 行（日志污染）跳过，继续向前找末条可解析协议行。
-        }
+      try {
+        resolve(parseShardOutcomeStdout(stdout, { shardId: spec.shardId, exitCode: code }));
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)));
       }
-      reject(new Error(`shard ${spec.shardId} 协议输出无效：stdout 末行不是合法 ShardOutcome（退出码 ${code}）`));
     }));
   });
 

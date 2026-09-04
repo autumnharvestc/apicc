@@ -11,7 +11,7 @@ import {
   type StressWorkerSpec,
   type Workspace,
 } from "@apicc/core";
-import { runCli, type RunCliDeps } from "../src/main.js";
+import { parseShardOutcomeStdout, runCli, type RunCliDeps } from "../src/main.js";
 
 // 本文件覆盖 M2-D1 任务 2：stress-worker 子命令（stdout 末行 JSON 契约）与 run-stress --shards
 // 协调分支（spawn 实现可注入——真实子进程端到端留任务 3）。
@@ -234,5 +234,61 @@ describe("run-stress --shards", () => {
     };
     expect(distributed.perShard.map((p) => p.shardId)).toEqual(["shard-0"]);
     expect(distributed.shardErrors).toEqual([{ shardId: "shard-1", error: "注入的 shard 失败" }]);
+  });
+
+  it("--shards 0 / --shards 2.5 非法值：前置校验拒绝（shards 必须为正整数）", async () => {
+    await expect(runCli(
+      ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "2",
+        "--iterations", "4", "--shards", "0", "--runs-dir", join(root, "runs-invalid-0")],
+      createDefaultRegistry(),
+      () => {},
+    )).rejects.toThrow(/shards 必须为正整数，收到 0/);
+    await expect(runCli(
+      ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "2",
+        "--iterations", "4", "--shards", "2.5", "--runs-dir", join(root, "runs-invalid-2.5")],
+      createDefaultRegistry(),
+      () => {},
+    )).rejects.toThrow(/shards 必须为正整数，收到 2\.5/);
+  });
+});
+
+describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行解析纯函数）", () => {
+  const ctx = { shardId: "s0", exitCode: 0 } as const;
+
+  it("污染行 + 末行 JSON：跳过日志行取末条合法 ShardOutcome", () => {
+    const result: ShardResult = {
+      protocolVersion: 1, ok: true, shardId: "s0",
+      samples: [{ timeMs: 1, status: 200, ok: true }],
+    };
+    const stdout = [
+      "[INFO] worker 启动",
+      "压测完成：总计 1 · 成功 1 · 失败 0", // 人类日志意外串入 stdout 的污染行
+      JSON.stringify(result),
+    ].join("\n");
+    const outcome = parseShardOutcomeStdout(stdout, ctx);
+    expect(outcome).toEqual(result);
+  });
+
+  it("末行 ShardFailure 同样可解析（失败路径协议行）", () => {
+    const failure: ShardFailure = { protocolVersion: 1, ok: false, shardId: "s7", error: "未找到用例" };
+    const stdout = `noise\n${JSON.stringify(failure)}\n`;
+    const outcome = parseShardOutcomeStdout(stdout, { shardId: "s7", exitCode: 1 });
+    expect(outcome.ok).toBe(false);
+    expect(outcome).toEqual(failure);
+  });
+
+  it("全部行非法：抛「协议输出无效」，文案含 shard 标识与退出码", () => {
+    const garbage = "不是 JSON\n{\"ok\":true 但非法}\n";
+    expect(() => parseShardOutcomeStdout(garbage, { shardId: "s9", exitCode: 3 }))
+      .toThrow(/s9 协议输出无效.*退出码 3/s);
+    expect(() => parseShardOutcomeStdout("", { shardId: "s9", exitCode: null }))
+      .toThrow(/协议输出无效/);
+  });
+
+  it("非末行历史协议行不被回取：仅取从末第一条合法行（旧结果行被末行覆盖）", () => {
+    const stale: ShardFailure = { protocolVersion: 1, ok: false, shardId: "s0", error: "旧" };
+    const fresh: ShardResult = { protocolVersion: 1, ok: true, shardId: "s0", samples: [] };
+    const stdout = `${JSON.stringify(stale)}\n${JSON.stringify(fresh)}`;
+    expect(parseShardOutcomeStdout(stdout, ctx)).toEqual(fresh);
   });
 });
