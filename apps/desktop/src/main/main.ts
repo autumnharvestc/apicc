@@ -1,10 +1,12 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage } from "electron";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IpcChannel } from "../shared/channels.js";
 import { createIpcDeps } from "./ipc.js";
 import { createSession } from "./session.js";
+import { createOnlineClient } from "./online/client.js";
+import { createTokenStore } from "./online/tokenStore.js";
 
 // package.json 为 type:module，编译产物是 ESM，须用 import.meta 推导 __dirname。
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,7 +48,14 @@ app.whenReady().then(() => {
     await writeFile(result.filePath, content, "utf8");
     return result.filePath;
   };
-  const deps = createIpcDeps({ session, pickDirectory, saveFile });
+  // 在线依赖（M3-B 任务 1，规格 §2 D9）：token 存 userData 目录（safeStorage 加密，
+  // 不可用降级明文 + warn）；client 用全局 fetch（Node 22 内置），超时默认 15s。
+  const online = {
+    createClient: (baseUrl: string, hooks: { onUnauthorized: () => void }) =>
+      createOnlineClient({ baseUrl, fetch: globalThis.fetch, timeoutMs: 15_000, onUnauthorized: hooks.onUnauthorized }),
+    tokenStore: createTokenStore({ dir: app.getPath("userData"), storage: safeStorage }),
+  };
+  const deps = createIpcDeps({ session, pickDirectory, saveFile, online });
   for (const channel of Object.values(IpcChannel)) {
     ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
   }

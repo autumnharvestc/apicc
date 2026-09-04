@@ -4,6 +4,17 @@ import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
 import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO, StressRunInput, StressRunOutput, StressRunSummaryDTO, WfCreateInput, WfImpactInput, WfRunInput } from "../shared/types.js";
+import {
+  OnlineBaseUrlSchema,
+  OnlineBatchInputSchema,
+  OnlineGetFilesInputSchema,
+  OnlinePathSchema,
+  OnlineRegisterInputSchema,
+} from "../shared/online/contract.js";
+import type { OnlineFilesBatchInput } from "../shared/online/types.js";
+import { createOnlineSession, type OnlineSession } from "./online/session.js";
+import type { OnlineClient } from "./online/client.js";
+import type { TokenStore } from "./online/tokenStore.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
 import { listRuns, readRun } from "./runs.js";
 import { createStressController } from "./stress.js";
@@ -55,6 +66,25 @@ const StressRunInputSchema = z.object({
   maxIterations: z.number().int().positive().nullish(),
   durationMs: z.number().positive().nullish(),
 });
+// 在线频道（M3-B 任务 1）：复用 shared/online/contract.ts 的契约 schema（path 规则/批量上限/
+// register 校验单一来源），仅叠加频道定位字段（baseUrl/workspaceId）。未登录错误的可读文案
+// 由 online session 抛出（「尚未登录在线服务器」），此处只管形状。
+const OnlineRegisterChannelSchema = OnlineRegisterInputSchema.extend({ baseUrl: OnlineBaseUrlSchema });
+const OnlineLoginChannelSchema = z.object({ baseUrl: OnlineBaseUrlSchema, username: z.string(), password: z.string() });
+const OnlineWorkspaceIdSchema = z.object({ workspaceId: z.string().min(1) });
+const OnlineFilesGetChannelSchema = OnlineGetFilesInputSchema.extend({ workspaceId: z.string().min(1) });
+const OnlineFilePutChannelSchema = z.object({
+  workspaceId: z.string().min(1),
+  path: OnlinePathSchema,
+  content: z.string(),
+  baseVersion: z.number().int().nonnegative(),
+});
+const OnlineFilesBatchChannelSchema = OnlineBatchInputSchema.extend({ workspaceId: z.string().min(1) });
+const OnlineFileDeleteChannelSchema = z.object({
+  workspaceId: z.string().min(1),
+  path: OnlinePathSchema,
+  baseVersion: z.number().int().nonnegative(),
+});
 
 /** 频道 → 入参 tuple schema 表：Record 键为全部频道名，新增频道漏配 schema 即编译错误。 */
 const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
@@ -88,6 +118,18 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.WfRun]: z.tuple([WfRunInputSchema]),
   [IpcChannel.StressRun]: z.tuple([StressRunInputSchema]),
   [IpcChannel.StressStop]: z.tuple([]),
+  // 在线频道（M3-B 任务 1）：login/register 携 baseUrl；内容频道携 workspaceId 定位。
+  [IpcChannel.OnlineRegister]: z.tuple([OnlineRegisterChannelSchema]),
+  [IpcChannel.OnlineLogin]: z.tuple([OnlineLoginChannelSchema]),
+  [IpcChannel.OnlineLogout]: z.tuple([]),
+  [IpcChannel.OnlineMe]: z.tuple([]),
+  [IpcChannel.OnlineWorkspaceList]: z.tuple([]),
+  [IpcChannel.OnlineWorkspaceCreate]: z.tuple([z.object({ name: z.string().min(1) })]),
+  [IpcChannel.OnlineTreeGet]: z.tuple([OnlineWorkspaceIdSchema]),
+  [IpcChannel.OnlineFilesGet]: z.tuple([OnlineFilesGetChannelSchema]),
+  [IpcChannel.OnlineFilePut]: z.tuple([OnlineFilePutChannelSchema]),
+  [IpcChannel.OnlineFilesBatch]: z.tuple([OnlineFilesBatchChannelSchema]),
+  [IpcChannel.OnlineFileDelete]: z.tuple([OnlineFileDeleteChannelSchema]),
 };
 
 /** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
@@ -132,6 +174,13 @@ async function runWorkflow(session: Session, input: WfRunInput): Promise<Workflo
   return result;
 }
 
+export interface OnlineIpcDeps {
+  /** client 工厂（生产 = createOnlineClient + globalThis.fetch，测试 = 假 fetch）。 */
+  createClient: (baseUrl: string, hooks: { onUnauthorized: () => void }) => OnlineClient;
+  /** token 安全存储（生产 = userData 目录 + electron safeStorage）。 */
+  tokenStore: TokenStore;
+}
+
 export interface IpcDepsOptions {
   session: Session;
   pickDirectory: () => Promise<string>;
@@ -142,11 +191,21 @@ export interface IpcDepsOptions {
   saveFile: (defaultName: string, content: string) => Promise<string>;
   /** 导入器列表（任务 7）：默认取内置注册中心的全部导入器，测试注入固定 importer 替身。 */
   importers?: Importer[];
+  /** 在线依赖（M3-B 任务 1）：省略时 online:* 频道抛「在线功能未配置」可读错误。 */
+  online?: OnlineIpcDeps;
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory, saveFile } = options;
   const importers = options.importers ?? createDefaultRegistry().listImporters();
+  // 在线会话（M3-B 任务 1）：login→存 token→请求自动带头的串联体（见 online/session.ts）。
+  const online: OnlineSession | null = options.online
+    ? createOnlineSession({ createClient: options.online.createClient, tokenStore: options.online.tokenStore })
+    : null;
+  function requireOnline(): OnlineSession {
+    if (!online) throw new Error("在线功能未配置");
+    return online;
+  }
   // 压测控制器（M2-D3 任务 1）：状态挂 deps 闭包（进程内单例），ws:open/ws:create 切换
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
   const stress = createStressController(session);
@@ -379,6 +438,33 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const out = await stress.stop();
         return out satisfies StressRunOutput;
       }
+      // 在线频道（M3-B 任务 1）：全部委派 online session（登录态串联/冲突出口转换在其内聚）。
+      // login 出口不含 token（token 留 main 进程）；put/delete 的 409 转为 outcome 结果对象。
+      case IpcChannel.OnlineRegister: {
+        return requireOnline().register(a[0] as Parameters<OnlineSession["register"]>[0]);
+      }
+      case IpcChannel.OnlineLogin: {
+        return requireOnline().login(a[0] as Parameters<OnlineSession["login"]>[0]);
+      }
+      case IpcChannel.OnlineLogout:
+        await requireOnline().logout();
+        return undefined;
+      case IpcChannel.OnlineMe:
+        return requireOnline().me();
+      case IpcChannel.OnlineWorkspaceList:
+        return requireOnline().listWorkspaces();
+      case IpcChannel.OnlineWorkspaceCreate:
+        return requireOnline().createWorkspace(a[0] as Parameters<OnlineSession["createWorkspace"]>[0]);
+      case IpcChannel.OnlineTreeGet:
+        return requireOnline().getTree((a[0] as { workspaceId: string }).workspaceId);
+      case IpcChannel.OnlineFilesGet:
+        return requireOnline().getFiles(a[0] as Parameters<OnlineSession["getFiles"]>[0]);
+      case IpcChannel.OnlineFilePut:
+        return requireOnline().putFile(a[0] as Parameters<OnlineSession["putFile"]>[0]);
+      case IpcChannel.OnlineFilesBatch:
+        return requireOnline().batchPush(a[0] as OnlineFilesBatchInput);
+      case IpcChannel.OnlineFileDelete:
+        return requireOnline().deleteFile(a[0] as Parameters<OnlineSession["deleteFile"]>[0]);
       default:
         throw new Error(`未知频道: ${channel}`);
     }

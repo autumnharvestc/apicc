@@ -29,5 +29,17 @@ export const IpcChannel = {
   WfRun: "wf:run",
   StressRun: "stress:run",
   StressStop: "stress:stop",
+  // 在线频道（M3-B 任务 1，规格 §2 D9 / §3）：online:* 单源登记
+  OnlineRegister: "online:register",
+  OnlineLogin: "online:login",
+  OnlineLogout: "online:logout",
+  OnlineMe: "online:me",
+  OnlineWorkspaceList: "online:workspaces:list",
+  OnlineWorkspaceCreate: "online:workspaces:create",
+  OnlineTreeGet: "online:tree:get",
+  OnlineFilesGet: "online:files:get",
+  OnlineFilePut: "online:files:put",
+  OnlineFilesBatch: "online:files:batch",
+  OnlineFileDelete: "online:files:delete",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];

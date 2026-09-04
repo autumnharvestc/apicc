@@ -12,6 +12,24 @@ import type {
   WorkflowStatus,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
+import type {
+  OnlineBatchResult,
+  OnlineDeleteOutcome,
+  OnlineFilesGetInput,
+  OnlineFilesBatchInput,
+  OnlineFileDeleteInput,
+  OnlineFilePutInput,
+  OnlineFilesResult,
+  OnlineLoginInput,
+  OnlineLoginOutput,
+  OnlinePushOutcome,
+  OnlineRegisterChannelInput,
+  OnlineTree,
+  OnlineUser,
+  OnlineWorkspaceCreateInput,
+  OnlineWorkspaceCreated,
+  OnlineWorkspaceSummary,
+} from "./online/types.js";
 
 export interface OpenResult { workspace: { id: string; name: string }; problems: LoadProblem[]; root: string }
 export interface ApiDetail { api: ApiDefinition; envs: Array<{ id: string; name: string }> }
@@ -128,4 +146,21 @@ export interface ApiccApi {
   wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntry[]>;
   /** wf:run：draft 拒绝（「工作流为草稿，请先发布启用」）；结果由主进程落盘 .apicc/runs。 */
   wfRun(input: WfRunInput): Promise<WorkflowRunResult>;
+  // —— 在线频道（M3-B 任务 1，规格 §2 D9 / §3）：main 进程 onlineClient 的 IPC 出口 ——
+  /** 注册（不建立登录态）。 */
+  onlineRegister(input: OnlineRegisterChannelInput): Promise<OnlineUser>;
+  /** 登录：token 留在 main 进程（tokenStore 持久化），出口只含 expiresAt + user。 */
+  onlineLogin(input: OnlineLoginInput): Promise<OnlineLoginOutput>;
+  /** 登出：吊销服务端 token + 清本地登录态。 */
+  onlineLogout(): Promise<void>;
+  onlineMe(): Promise<OnlineUser>;
+  onlineWorkspaceList(): Promise<OnlineWorkspaceSummary[]>;
+  onlineWorkspaceCreate(input: OnlineWorkspaceCreateInput): Promise<OnlineWorkspaceCreated>;
+  onlineTreeGet(workspaceId: string): Promise<OnlineTree>;
+  onlineFilesGet(input: OnlineFilesGetInput): Promise<OnlineFilesResult>;
+  /** 推送单文件：409 冲突不抛错，返回 { outcome: "conflict", conflict }（服务端现状过 IPC 不丢字段）。 */
+  onlineFilePut(input: OnlineFilePutInput): Promise<OnlinePushOutcome>;
+  /** 批量推送（≤200/批）：逐文件结果（pushed/conflict/forbidden/invalid），部分成功语义。 */
+  onlineFilesBatch(input: OnlineFilesBatchInput): Promise<OnlineBatchResult>;
+  onlineFileDelete(input: OnlineFileDeleteInput): Promise<OnlineDeleteOutcome>;
 }
