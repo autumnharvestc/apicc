@@ -26,6 +26,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createOnlineClient, OnlineConflictError, type OnlineClient } from "../../../src/main/online/client.js";
+import { runCommand } from "./run-command.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // online → main → tests → desktop → apps → 仓库根：五层向上
@@ -106,18 +107,6 @@ function resolveMvn(): string {
   return "mvn";
 }
 
-/** 跨 shell 命令执行：win32 经 cmd /d /s /c（整行单参数，Node 对含空格参数自动加引号，/s 剥外层）；posix 直接 spawn。 */
-function runCommand(exe: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): { status: number | null; output: string } {
-  if (process.platform === "win32") {
-    const quote = (s: string) => (/\s/.test(s) ? `"${s}"` : s);
-    const line = [quote(exe), ...args.map(quote)].join(" ");
-    const r = spawnSync("cmd.exe", ["/d", "/s", "/c", line], { cwd: REPO_ROOT, env, timeout: timeoutMs, windowsHide: true, encoding: "utf8" });
-    return { status: r.status, output: `${r.stdout ?? ""}\n${r.stderr ?? ""}` };
-  }
-  const r = spawnSync(exe, args, { cwd: REPO_ROOT, env, timeout: timeoutMs, encoding: "utf8" });
-  return { status: r.status, output: `${r.stdout ?? ""}\n${r.stderr ?? ""}` };
-}
-
 /** jar 缺失或不新于 server/src、pom.xml 时自建（账本裁定①③）。 */
 function ensureJar(javaHome: string | undefined): string {
   const existing = findJar();
@@ -132,6 +121,7 @@ function ensureJar(javaHome: string | undefined): string {
     ["-s", join(SERVER_DIR, ".mvn", "settings.xml"), "-f", join(SERVER_DIR, "pom.xml"), "-q", "-DskipTests", "package"],
     env,
     600_000,
+    { cwd: REPO_ROOT },
   );
   if (r.status !== 0) {
     throw new Error(
