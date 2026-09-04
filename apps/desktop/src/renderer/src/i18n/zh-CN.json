@@ -17,7 +17,8 @@
     "run": "运行",
     "import": "导入",
     "design": "设计",
-    "wf": "工作流"
+    "wf": "工作流",
+    "stress": "压测"
   },
   "workspace": {
     "problems": "问题文件",
@@ -111,7 +112,38 @@
     "row": "数据行",
     "result": "结果",
     "duration": "耗时",
-    "summary": "共 {total} 条 · 通过 {passed} · 失败 {failed}"
+    "summary": "共 {total} 条 · 通过 {passed} · 失败 {failed}",
+    "kindCollection": "集合",
+    "kindStress": "压测",
+    "stressSummary": "共 {total} 请求 · 失败 {failed} · {rps} req/s",
+    "back": "返回",
+    "fileMissing": "该运行文件不存在"
+  },
+  "stress": {
+    "title": "压测",
+    "case": "用例",
+    "casePlaceholder": "选择用例",
+    "env": "环境",
+    "envNone": "无环境",
+    "concurrency": "并发",
+    "mode": "终止条件",
+    "modeIterations": "按迭代数",
+    "modeDuration": "按时长",
+    "iterations": "迭代数",
+    "duration": "时长（秒）",
+    "start": "开始",
+    "stop": "停止",
+    "running": "压测进行中…",
+    "savedTo": "报告已保存: {file}",
+    "summary": "共 {total} 次请求 · 成功 {ok} · 失败 {failed} · {rps} req/s · 总时长 {duration}",
+    "latency": "时延分位",
+    "statusCol": "状态码",
+    "errorCol": "错误类型",
+    "count": "次数",
+    "statusDist": "状态码分布",
+    "errorKinds": "错误分布",
+    "noSamples": "无样本",
+    "noCases": "无用例"
   },
   "import": {
     "title": "导入接口",

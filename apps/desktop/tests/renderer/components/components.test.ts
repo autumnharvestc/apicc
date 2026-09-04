@@ -20,12 +20,19 @@ import { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
+import { createStressStore } from "../../../src/renderer/src/stores/stress.js";
+import { useRunStore } from "../../../src/renderer/src/stores/run.js";
 import SideTree from "../../../src/renderer/src/components/SideTree.vue";
 import RequestEditor from "../../../src/renderer/src/components/RequestEditor.vue";
 import ResponseViewer from "../../../src/renderer/src/components/ResponseViewer.vue";
 import EmptyState from "../../../src/renderer/src/components/EmptyState.vue";
 import ConfirmDialog from "../../../src/renderer/src/components/ConfirmDialog.vue";
 import TopBar from "../../../src/renderer/src/components/TopBar.vue";
+import RunsHistory from "../../../src/renderer/src/components/RunsHistory.vue";
+import StressPanel from "../../../src/renderer/src/components/StressPanel.vue";
+import StressReportView from "../../../src/renderer/src/components/StressReportView.vue";
+import type { RunResult, StressReport } from "@apicc/core";
+import type { RunSummaryDTO, StressRunInput, StressRunOutput, StressRunSummaryDTO } from "../../../src/shared/types.js";
 
 beforeAll(() => {
   // jsdom 未实现 matchMedia；TopBar→ThemeLanguageToggle 挂载时解析主题偏好会调用它，
@@ -599,5 +606,440 @@ describe("TopBar", () => {
     await flushPromises();
     expect(errors).toHaveLength(1);
     expect((errors[0] as Error).message).toBe("打不开");
+  });
+});
+
+// —— M2-D3 任务 2：压测面板与报告展示（简报裁定 A/B/C/D） ——
+
+/** StressReport 夹具：数值带小数，供「毫秒取整、禁 NaN」断言（1200.6 → 1201 ms）。 */
+function makeReport(overrides: Partial<StressReport> = {}): StressReport {
+  return {
+    concurrency: 2,
+    totalRequests: 4,
+    ok: 3,
+    failed: 1,
+    durationMs: 1200.6,
+    rps: 3.333,
+    latency: { min: 5.4, avg: 10.5, max: 20.9, p50: 9.2, p90: 18.1, p95: 19.3, p99: 20.8 },
+    statusDist: { "200": 3, "500": 1 },
+    errorKinds: { HTTP_500: 1 },
+    startedAt: 0,
+    finishedAt: 1200,
+    ...overrides,
+  };
+}
+
+/**
+ * StressPanel 装配辅助（裁定 B）：store 工厂一次性调用，实例经 props 注入（组件内零工厂调用）；
+ * cases/envs 按「props 直接传列表」契约下发。种子：两用例（冒烟 + 第二用例）与环境 dev。
+ */
+async function mountStress(props: Record<string, unknown> = {}) {
+  const api = createMemoryApi();
+  api.seedWorkspace();
+  const tree = await api.treeGet();
+  const project = tree.children![0]!.children![0]!;
+  const apiId = project.children![0]!.children![0]!.id;
+  await api.envCreate({ projectId: project.id, name: "dev" });
+  const detail = await api.apiGet(apiId);
+  detail.api.cases.push({ id: "c2", name: "第二用例", scope: "base", parameters: {}, assertions: [] });
+  await api.apiSave(detail.api);
+  const fresh = await api.apiGet(apiId);
+  const stress = createStressStore({ api });
+  const errors: unknown[] = [];
+  const { i18n } = createI18nInstance();
+  const wrapper = mount(StressPanel, {
+    props: {
+      apiId,
+      cases: fresh.api.cases,
+      envs: fresh.envs,
+      stress,
+      reportError: (e: unknown) => { errors.push(e); },
+      ...props,
+    },
+    global: { plugins: [i18n] },
+  });
+  await flushPromises();
+  return { wrapper, api, apiId, stress, errors, cases: fresh.api.cases, envs: fresh.envs };
+}
+
+/** antd 组件定位（chooseSelect/selectValue 同款思路：按组件名 + data-testid，不经下拉展开）。
+ * data-testid 命中根元素或后代皆可：antd InputNumber 把透传 attrs 落在内部 <input> 而非根 div。 */
+function antdComponent(wrapper: VueWrapper, name: string, testid: string) {
+  const found = wrapper
+    .findAllComponents({ name })
+    .find((c) => c.attributes("data-testid") === testid || c.find(`[data-testid="${testid}"]`).exists());
+  if (!found) throw new Error(`${name} 未找到: ${testid}`);
+  return found;
+}
+
+/** 读取 a-select 的 :options prop（选项列表断言，jsdom 不展开下拉）。 */
+function selectOptions(wrapper: VueWrapper, testid: string): Array<{ label: string; value: string }> {
+  return antdComponent(wrapper, "ASelect", testid).props("options") as Array<{ label: string; value: string }>;
+}
+
+/** a-input-number 经组件级 update:value 写值（v-model 通道，语义等效用户输入）。 */
+function setNumber(wrapper: VueWrapper, testid: string, value: number): void {
+  antdComponent(wrapper, "AInputNumber", testid).vm.$emit("update:value", value);
+}
+
+/** 模式单选切换：经 ARadioGroup 组件级 update:value（与 chooseSelect 同理，jsdom 不点真实 radio）。 */
+function chooseMode(wrapper: VueWrapper, mode: "iterations" | "duration"): void {
+  antdComponent(wrapper, "ARadioGroup", "stress-mode").vm.$emit("update:value", mode);
+}
+
+describe("stressStore", () => {
+  it("工厂隔离：两实例 state（form/report）互不可见", () => {
+    const apiA = createMemoryApi();
+    apiA.seedWorkspace();
+    const apiB = createMemoryApi();
+    apiB.seedWorkspace();
+    const a = createStressStore({ api: apiA });
+    const b = createStressStore({ api: apiB });
+    // form 默认值集中定义：并发 1、iterations 模式；改 A 不影响 B
+    expect(a.form.concurrency).toBe(1);
+    expect(a.form.mode).toBe("iterations");
+    a.form.concurrency = 8;
+    a.form.mode = "duration";
+    a.form.caseId = "cx";
+    expect(b.form.concurrency).toBe(1);
+    expect(b.form.mode).toBe("iterations");
+    expect(b.form.caseId).toBeNull();
+    // report 状态同样不互通
+    expect(a.report).toBeNull();
+    expect(b.report).toBeNull();
+    a.report = makeReport();
+    expect(b.report).toBeNull();
+  });
+
+  it("运行中 clear（切接口）→ 旧 run 完成/拒绝均不上屏不外抛、running 复位（代际令牌防错挂）", async () => {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    let resolveRun!: (v: StressRunOutput) => void;
+    api.stressRun = (): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; });
+    const stress = createStressStore({ api });
+    stress.form.caseId = "c1";
+    const first = stress.start("api-a");
+    await flushPromises();
+    expect(stress.running).toBe(true);
+    // 组合根切接口时机：clear()（代际 +1、展示清空，running 仍 true）
+    stress.clear();
+    // 旧 run 排空完成：结果属于旧会话，不得写回（新接口面板不受污染）
+    resolveRun({ report: makeReport(), file: "stress-a.json" });
+    await first;
+    await flushPromises();
+    expect(stress.report).toBeNull();
+    expect(stress.file).toBeNull();
+    expect(stress.error).toBeNull();
+    expect(stress.running).toBe(false);
+    // 陈旧拒绝同样不污染：clear 后旧 run reject → error 不置位、不向组件层重抛
+    let rejectRun!: (e: Error) => void;
+    api.stressRun = (): Promise<StressRunOutput> => new Promise((_res, rej) => { rejectRun = rej; });
+    const second = stress.start("api-a");
+    await flushPromises();
+    stress.clear();
+    rejectRun(new Error("旧会话错误"));
+    await second;
+    await flushPromises();
+    expect(stress.error).toBeNull();
+  });
+});
+
+describe("StressPanel", () => {
+  it("挂载：用例/环境下拉列出用例与环境，模式单选可切换，并发默认 1", async () => {
+    const { wrapper, stress, cases } = await mountStress();
+    expect(selectOptions(wrapper, "stress-case-select").map((o) => o.label)).toEqual(["冒烟", "第二用例"]);
+    expect(selectOptions(wrapper, "stress-env-select").map((o) => o.label)).toEqual(["无环境", "dev"]);
+    // 并发默认 1；挂载即回填首个用例为默认选择
+    expect(antdComponent(wrapper, "AInputNumber", "stress-concurrency").props("value")).toBe(1);
+    expect(stress.form.caseId).toBe(cases[0]!.id);
+    // 模式单选切换：iterations（默认）→ duration 后迭代数输入退场、秒数输入登场
+    expect(wrapper.find('[data-testid="stress-iterations"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="stress-duration"]').exists()).toBe(false);
+    chooseMode(wrapper, "duration");
+    await flushPromises();
+    expect(stress.form.mode).toBe("duration");
+    expect(wrapper.find('[data-testid="stress-iterations"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="stress-duration"]').exists()).toBe(true);
+    chooseMode(wrapper, "iterations");
+    await flushPromises();
+    expect(stress.form.mode).toBe("iterations");
+  });
+
+  it("点「开始」：stressRun 以表单值调用（载荷按 mode 组装），运行中开始禁用+停止可用，resolve 后报告与 file 行上屏", async () => {
+    const sent: StressRunInput[] = [];
+    let resolveFirst!: (v: StressRunOutput) => void;
+    const { wrapper, api, apiId, cases } = await mountStress();
+    api.stressRun = (input: StressRunInput): Promise<StressRunOutput> => {
+      sent.push(input);
+      if (sent.length === 1) return new Promise<StressRunOutput>((res) => { resolveFirst = res; });
+      return Promise.resolve({ report: makeReport({ totalRequests: 2, ok: 2, failed: 0 }) });
+    };
+    // 初态：无活动运行，停止禁用
+    expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeDefined();
+    chooseSelect(wrapper, "stress-case-select", "c2");
+    chooseSelect(wrapper, "stress-env-select", "dev");
+    setNumber(wrapper, "stress-concurrency", 3);
+    await wrapper.find('[data-testid="stress-start"]').trigger("click");
+    await flushPromises();
+    // iterations 模式（默认 10 次）：载荷只带 maxIterations，durationMs 为 null
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toEqual({ apiId, caseId: "c2", envName: "dev", concurrency: 3, maxIterations: 10, durationMs: null });
+    // 运行中：开始禁用 + 停止可用 + 运行提示可见，报告未出
+    expect(wrapper.find('[data-testid="stress-start"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="stress-running"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(false);
+    resolveFirst({ report: makeReport(), file: `stress-${apiId}-1.json` });
+    await flushPromises();
+    // resolve 后：报告上屏（totalRequests=4）+ file 行显示 + 按钮态复位
+    expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="stress-report"]').text()).toContain("4");
+    expect(wrapper.find('[data-testid="stress-file"]').text()).toContain("stress-");
+    expect(wrapper.find('[data-testid="stress-start"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeDefined();
+    // duration 模式再来一轮（3 秒 → 3000ms）：载荷只带 durationMs，maxIterations 为 null；
+    // 该轮返回省略 file（落盘降级口径）→ file 行消失
+    chooseMode(wrapper, "duration");
+    await flushPromises();
+    setNumber(wrapper, "stress-duration", 3);
+    await wrapper.find('[data-testid="stress-start"]').trigger("click");
+    await flushPromises();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual({ apiId, caseId: "c2", envName: "dev", concurrency: 3, maxIterations: null, durationMs: 3000 });
+    expect(wrapper.find('[data-testid="stress-report"]').text()).toContain("2");
+    expect(wrapper.find('[data-testid="stress-file"]').exists()).toBe(false);
+  });
+
+  it("start reject：reportError 收到消息、旧报告与 file 保留（debug 错误语义）、错误上屏且 running 复位", async () => {
+    const reportA = makeReport();
+    let call = 0;
+    const { wrapper, api, stress, errors } = await mountStress();
+    api.stressRun = async (): Promise<StressRunOutput> => {
+      call += 1;
+      if (call === 1) return { report: reportA, file: "stress-a.json" };
+      throw new Error("已有压测进行中");
+    };
+    await wrapper.find('[data-testid="stress-start"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
+    // 第二轮 reject：错误经组件转报 reportError 通道
+    await wrapper.find('[data-testid="stress-start"]').trigger("click");
+    await flushPromises();
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("已有压测进行中");
+    // 旧报告保留 + 错误文案上屏 + running 复位（可再次发起）
+    expect(stress.report).toEqual(reportA);
+    expect(wrapper.find('[data-testid="stress-report"]').text()).toContain("4");
+    expect(stress.error).toBe("已有压测进行中");
+    expect(wrapper.find('[data-testid="stress-error"]').text()).toContain("已有压测进行中");
+    expect(wrapper.find('[data-testid="stress-file"]').text()).toContain("stress-a.json");
+    expect(stress.running).toBe(false);
+    expect(wrapper.find('[data-testid="stress-start"]').attributes("disabled")).toBeUndefined();
+  });
+
+  it("点「停止」：stressStop 调用且返回的部分报告上屏", async () => {
+    const partial = makeReport({ totalRequests: 2, ok: 2, failed: 0 });
+    let resolveRun!: (v: StressRunOutput) => void;
+    const { wrapper, api } = await mountStress();
+    // 挂起制造活动窗口；abort 后在途 run 收尾（与主进程 StressRunner signal 语义一致，
+    // store.start 的 finally 才能复位 running）
+    api.stressRun = (): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; });
+    api.stressStop = async (): Promise<StressRunOutput> => {
+      resolveRun({ report: partial, file: "stress-partial.json" });
+      return { report: partial, file: "stress-partial.json" };
+    };
+    await wrapper.find('[data-testid="stress-start"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeUndefined();
+    await wrapper.find('[data-testid="stress-stop"]').trigger("click");
+    await flushPromises();
+    // 部分报告上屏（totalRequests=2）+ file 行显示 + 停止复位禁用
+    expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="stress-report"]').text()).toContain("2");
+    expect(wrapper.find('[data-testid="stress-file"]').text()).toContain("stress-partial.json");
+    expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeDefined();
+  });
+
+  // —— M2-D3 任务 3 裁定 C（任务 2 审查折入顺修）——
+  it("数字输入清空产生 null：归一为表单默认值（并发 1 / 迭代 10 / 时长秒 10）（裁定 C①）", async () => {
+    const { wrapper, stress } = await mountStress();
+    // 并发清空 → 归一 1（后续 start 载荷不再携带 null 并发）
+    setNumber(wrapper, "stress-concurrency", 8);
+    await flushPromises();
+    expect(stress.form.concurrency).toBe(8);
+    setNumber(wrapper, "stress-concurrency", null as unknown as number);
+    await flushPromises();
+    expect(stress.form.concurrency).toBe(1);
+    // 迭代清空 → 归一 10
+    setNumber(wrapper, "stress-iterations", null as unknown as number);
+    await flushPromises();
+    expect(stress.form.iterations).toBe(10);
+    // 时长清空 → 归一 10
+    chooseMode(wrapper, "duration");
+    await flushPromises();
+    setNumber(wrapper, "stress-duration", null as unknown as number);
+    await flushPromises();
+    expect(stress.form.durationSeconds).toBe(10);
+  });
+
+  it("cases 为空：「无用例」空态提示，开始禁用（裁定 C②）", async () => {
+    const { wrapper, stress } = await mountStress({ cases: [], envs: [] });
+    expect(wrapper.find('[data-testid="stress-no-cases"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="stress-no-cases"]').text()).toBe("无用例");
+    expect(stress.form.caseId).toBeNull();
+    expect(wrapper.find('[data-testid="stress-start"]').attributes("disabled")).toBeDefined();
+  });
+});
+
+describe("StressReportView", () => {
+  it("纯展示：摘要/分位/状态分布/错误分布区块可断言，毫秒取整禁 NaN；空报告显无样本；null 整块不渲染", () => {
+    // 完整报告：摘要（total/ok/failed/rps/时长）+ 分位表 + 两分布表
+    const full = makeReport();
+    const w1 = mountWithI18n(StressReportView, { report: full });
+    const summary = w1.find('[data-testid="stress-summary"]');
+    expect(summary.exists()).toBe(true);
+    expect(summary.text()).toContain("4");
+    expect(summary.text()).toContain("1201"); // durationMs 1200.6 → 1201 ms（取整）
+    expect(summary.text()).toContain("3.33"); // rps 保留两位
+    const latency = w1.find('[data-testid="stress-latency"]');
+    expect(latency.exists()).toBe(true);
+    expect(latency.text()).toContain("11 ms"); // avg 10.5 → 11 ms
+    for (const key of ["min", "avg", "p50", "p90", "p95", "p99"]) {
+      expect(latency.text()).toContain(key);
+    }
+    expect(w1.find('[data-testid="stress-status-dist"]').text()).toContain("500");
+    expect(w1.find('[data-testid="stress-error-kinds"]').text()).toContain("HTTP_500");
+    expect(w1.text()).not.toContain("NaN");
+    // 空报告（totalRequests=0）：「无样本」态，不渲染摘要/分位，无 NaN
+    const empty = makeReport({
+      totalRequests: 0, ok: 0, failed: 0, rps: 0,
+      latency: { min: 0, avg: 0, max: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
+      statusDist: {}, errorKinds: {},
+    });
+    const w2 = mountWithI18n(StressReportView, { report: empty });
+    expect(w2.find('[data-testid="stress-no-samples"]').text()).toBe("无样本");
+    expect(w2.find('[data-testid="stress-summary"]').exists()).toBe(false);
+    expect(w2.find('[data-testid="stress-latency"]').exists()).toBe(false);
+    expect(w2.text()).not.toContain("NaN");
+    // 报告为 null：整块不渲染
+    const w3 = mountWithI18n(StressReportView, { report: null });
+    expect(w3.find('[data-testid="stress-report"]').exists()).toBe(false);
+  });
+});
+
+// —— M2-D3 任务 3：运行历史 kind 区分（简报裁定 B + 任务 1 内联中文 i18n 收口）——
+
+const collectionRow: RunSummaryDTO = {
+  kind: "collection", file: "run-a.json", collectionName: "示例集合",
+  startedAt: "2026-09-03T00:00:00.000Z", total: 3, passed: 2, failed: 1,
+};
+const stressRow: StressRunSummaryDTO = {
+  kind: "stress", file: "stress-x.json",
+  startedAt: "2026-09-03T01:00:00.000Z", totalRequests: 8, ok: 6, failed: 2, rps: 12.5,
+};
+
+const collectionRunResult: RunResult = {
+  collectionId: "c1", collectionName: "示例集合",
+  startedAt: "2026-09-03T00:00:00.000Z", finishedAt: "2026-09-03T00:00:01.000Z",
+  total: 3, passed: 2, failed: 1, cases: [],
+};
+
+/** RunsHistory 直挂（抽屉 a-drawer 传送门渲染于 document.body，行用 body 作用域查询）。 */
+async function mountHistory(props: Record<string, unknown> = {}) {
+  const api = createMemoryApi();
+  api.seedWorkspace();
+  const run = useRunStore(api);
+  const { i18n } = createI18nInstance();
+  const wrapper = mount(RunsHistory, {
+    props: { run, reportError: () => {}, ...props },
+    global: { plugins: [i18n] },
+  });
+  await flushPromises();
+  return { wrapper, api, run };
+}
+
+function bodyRows(): Element[] {
+  return Array.from(document.body.querySelectorAll('[data-testid="history-row"]'));
+}
+
+async function clickBody(testid: string): Promise<void> {
+  const el = document.body.querySelector(`[data-testid="${testid}"]`);
+  if (!el) throw new Error(`document.body 中找不到 [data-testid="${testid}"]`);
+  await new DOMWrapper(el).trigger("click");
+}
+
+describe("RunsHistory kind 区分（M2-D3 任务 3，裁定 B）", () => {
+  it("混合 kind：集合行渲染既有列 + 集合标签；压测行 totalRequests/failed/rps 摘要 + 压测标签（i18n 收口）", async () => {
+    const { api, run } = await mountHistory();
+    // 打开抽屉自动 loadHistory：经 runsList 替身注入混合 kind 行（同真实链路）
+    api.runsList = async () => [stressRow, collectionRow];
+    run.historyOpen = true;
+    await flushPromises();
+    const rows = bodyRows();
+    expect(rows).toHaveLength(2);
+    const [stressEl, collectionEl] = rows;
+    // 压测行：标签「压测」+ 摘要（totalRequests/failed/rps）——文案全部来自 i18n 键
+    expect(stressEl!.getAttribute("data-kind")).toBe("stress");
+    expect(stressEl!.querySelector('[data-testid="history-kind"]')!.textContent).toBe("压测");
+    expect(stressEl!.textContent).toContain("共 8 请求");
+    expect(stressEl!.textContent).toContain("失败 2");
+    expect(stressEl!.textContent).toContain("12.5 req/s");
+    // 集合行：既有列（集合名/时间/汇总）+ 标签「集合」
+    expect(collectionEl!.getAttribute("data-kind")).toBe("collection");
+    expect(collectionEl!.querySelector('[data-testid="history-kind"]')!.textContent).toBe("集合");
+    expect(collectionEl!.textContent).toContain("示例集合");
+    expect(collectionEl!.textContent).toContain("共 3 条 · 通过 2 · 失败 1");
+  });
+
+  it("点击压测行：runsGet 联合分支 → 内嵌 StressReportView 展示、返回复位；点击集合行仍回填结果并收起抽屉", async () => {
+    const { api, run } = await mountHistory();
+    const gotten: string[] = [];
+    api.runsList = async () => [stressRow, collectionRow];
+    api.runsGet = async (file: string) => {
+      gotten.push(file);
+      return file === "stress-x.json" ? { kind: "stress", report: makeReport() } : collectionRunResult;
+    };
+    run.historyOpen = true;
+    await flushPromises();
+    // 点击压测行（rows[0]）：抽屉保持打开，内嵌切到压测报告
+    await new DOMWrapper(bodyRows()[0]!).trigger("click");
+    await flushPromises();
+    expect(gotten).toContain("stress-x.json");
+    expect(run.historyOpen).toBe(true);
+    const report = bodyFind("stress-report");
+    expect(report).not.toBeNull();
+    expect(report!.text()).toContain("4");
+    expect(report!.text()).not.toContain("NaN");
+    // 返回列表：报告卸载、store 报告复位、行列表恢复
+    await clickBody("history-back");
+    await flushPromises();
+    expect(bodyFind("stress-report")).toBeNull();
+    expect(run.stressReport).toBeNull();
+    expect(bodyRows()).toHaveLength(2);
+    // 点击集合行：既有行为回归——回填 RunView 结果并收起抽屉
+    const collectionEl = bodyRows().find((r) => r.getAttribute("data-kind") === "collection")!;
+    await new DOMWrapper(collectionEl).trigger("click");
+    await flushPromises();
+    expect(run.historyOpen).toBe(false);
+    expect(run.result?.collectionName).toBe("示例集合");
+  });
+
+  it("runsGet 未命中（null）：保持列表视图并经 reportError 提示，不切出空白报告区（终审 Minor）", async () => {
+    const errors: unknown[] = [];
+    const { api, run } = await mountHistory({ reportError: (e: unknown) => { errors.push(e); } });
+    api.runsList = async () => [stressRow];
+    api.runsGet = async () => null;
+    run.historyOpen = true;
+    await flushPromises();
+    await new DOMWrapper(bodyRows()[0]!).trigger("click");
+    await flushPromises();
+    // 保持列表视图：不出现空报告区、抽屉不收起、行仍在
+    expect(bodyFind("stress-report")).toBeNull();
+    expect(bodyRows()).toHaveLength(1);
+    expect(run.historyOpen).toBe(true);
+    expect(run.stressReport).toBeNull();
+    // 经组合根错误通道提示
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("该运行文件不存在");
   });
 });

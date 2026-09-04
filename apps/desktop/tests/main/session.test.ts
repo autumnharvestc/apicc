@@ -1,8 +1,10 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { StressReportSchema, type ProtocolClient } from "@apicc/core";
 import { createSession, sameName } from "../../src/main/session.js";
+import { createStressController } from "../../src/main/stress.js";
 
 const root = () => mkdtempSync(join(tmpdir(), "apicc-ui-"));
 
@@ -259,5 +261,126 @@ describe("createSession", () => {
     const names = s2.workspace!.groups[0]!.projects[0]!.collections.map((x) => x.name);
     expect(names).toEqual(["new-name"]);
     expect(existsSync(oldDir)).toBe(false);
+  });
+});
+
+// —— 压测控制器（M2-D3 任务 1）：main 进程 StressRunner 执行/停止/单活动约束 ——
+/** 夹具：工作区 + 分组/项目/集合/接口各一（接口指向不可达地址，采样快速失败不依赖网络）。 */
+async function setupStress() {
+  const s = createSession();
+  const dir = root();
+  await s.create(dir, "w");
+  await s.open(dir);
+  const g = s.createGroup("g");
+  const p = s.createProject(g.id, "p");
+  const c = s.createCollection(p.id, "c");
+  const api = s.createApi(c.id, null, { name: "ping", method: "GET", url: "http://127.0.0.1:1/" });
+  return { s, dir, api };
+}
+
+/** 挂起假 client：execute 进入即计数并停在 gate 上，制造「活动运行窗口」供并发/停止断言。 */
+function hangingClient() {
+  let entered = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const client: ProtocolClient = {
+    name: "hanging",
+    canHandle: () => true,
+    execute: async () => {
+      entered += 1;
+      await gate;
+      return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
+    },
+  };
+  return { client, waitEntered: async () => { while (entered === 0) await new Promise((r) => setTimeout(r, 1)); }, release: () => release() };
+}
+
+describe("createStressController", () => {
+  it("迭代压测：报告过 StressReportSchema、totalRequests 与迭代数一致，落盘 .apicc/runs/stress-*.json", async () => {
+    const { s, dir, api } = await setupStress();
+    const controller = createStressController(s);
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 2, maxIterations: 4 });
+    expect(() => StressReportSchema.parse(out.report)).not.toThrow();
+    expect(out.report.totalRequests).toBe(4);
+    expect(out.file).toMatch(new RegExp(`^stress-${api.id}-\\d+\\.json$`));
+    expect(existsSync(join(dir, ".apicc", "runs", out.file!))).toBe(true);
+  });
+
+  it("单活动约束：活动运行未结束时再次 stressRun 抛「已有压测进行中」", async () => {
+    const { s, api } = await setupStress();
+    const fake = hangingClient();
+    const controller = createStressController(s, { client: fake.client });
+    const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2 });
+    await fake.waitEntered();
+    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2 })).rejects.toThrow(/已有压测进行中/);
+    fake.release();
+    expect((await first).report.totalRequests).toBe(2);
+  });
+
+  it("stress:stop：运行中 abort 返回部分报告（totalRequests ≤ maxIterations）并落盘；无活动运行抛「没有进行中的压测」", async () => {
+    const { s, dir, api } = await setupStress();
+    const fake = hangingClient();
+    const controller = createStressController(s, { client: fake.client });
+    await expect(controller.stop()).rejects.toThrow(/没有进行中的压测/);
+    const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 100 });
+    await fake.waitEntered();
+    const stopping = controller.stop();
+    fake.release(); // 信号语义：停止发起新采样、等在途请求完成后聚合
+    const stopped = await stopping;
+    expect(stopped.report.totalRequests).toBeGreaterThanOrEqual(1);
+    expect(stopped.report.totalRequests).toBeLessThanOrEqual(100);
+    expect(existsSync(join(dir, ".apicc", "runs", stopped.file!))).toBe(true);
+    await first;
+    // 完成后活动状态清空：再次 stop 回到「没有进行中的压测」
+    await expect(controller.stop()).rejects.toThrow(/没有进行中的压测/);
+  });
+
+  it("未找到接口/用例/环境：错误文案与 debug 频道同款", async () => {
+    const { s, api } = await setupStress();
+    const controller = createStressController(s);
+    await expect(controller.run({ apiId: "ghost", caseId: "x", concurrency: 1, maxIterations: 1 })).rejects.toThrow(/未找到接口: ghost/);
+    await expect(controller.run({ apiId: api.id, caseId: "ghost", concurrency: 1, maxIterations: 1 })).rejects.toThrow(/用例不存在: ghost/);
+    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, envName: "ghost", concurrency: 1, maxIterations: 1 })).rejects.toThrow(/未找到环境: ghost/);
+  });
+
+  it("迭代与时长都缺：抛「压测终止条件缺失」（沿用 core 文案）", async () => {
+    const { s, api } = await setupStress();
+    const controller = createStressController(s);
+    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1 })).rejects.toThrow(/压测终止条件缺失/);
+  });
+
+  it("落盘失败降级：写盘异常不阻断报告返回（file 省略）并 console.warn 含路径与原因（与集合运行口径一致）", async () => {
+    const { s, api } = await setupStress();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const controller = createStressController(s, {
+        // 注入写盘失败（代码库既有模式为控制器 deps 注入，同 client/pickDirectory/saveFile 先例）
+        writeReport: () => {
+          throw new Error("disk full");
+        },
+      });
+      const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1 });
+      expect(out.report.totalRequests).toBe(1);
+      expect(out.file).toBeUndefined();
+      expect("file" in out).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [msg] = warn.mock.calls[0]!;
+      expect(msg).toContain("落盘失败");
+      expect(msg).toContain("stress-"); // 文件路径
+      expect(msg).toContain("disk full"); // 原因
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("深拷贝回归：改动返回的报告对象不影响已落盘历史内容", async () => {
+    const { s, dir, api } = await setupStress();
+    const controller = createStressController(s);
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2 });
+    out.report.totalRequests = 999;
+    const onDisk = JSON.parse(readFileSync(join(dir, ".apicc", "runs", out.file!), "utf8")) as { totalRequests: number };
+    expect(onDisk.totalRequests).toBe(2);
   });
 });

@@ -36,8 +36,9 @@ export async function runCollection(
  * 按环境名解析项目环境（审查修复）：envName 为 undefined/空 = 无环境运行；
  * 提供了 envName 却未命中时显式抛「未找到环境」——静默降级为无环境运行会让用户
  * 误信已按所选环境完成验证（与 session「未找到」错误契约对齐）。
+ * 导出复用（M2-D3 任务 1）：stress.ts 的环境解析与此同源，不复制实现。
  */
-function resolveEnv(project: Project, envName: string | undefined): Environment | undefined {
+export function resolveEnv(project: Project, envName: string | undefined): Environment | undefined {
   if (!envName) return undefined;
   const env = project.environments.find((e) => e.name === envName);
   if (!env) throw new Error(`未找到环境: ${envName}`);

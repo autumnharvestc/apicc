@@ -3,9 +3,10 @@ import { ApiDefinitionSchema, createDefaultRegistry, ProjectSchema, renderDesign
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO, WfCreateInput, WfImpactInput, WfRunInput } from "../shared/types.js";
+import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO, StressRunInput, StressRunOutput, StressRunSummaryDTO, WfCreateInput, WfImpactInput, WfRunInput } from "../shared/types.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
 import { listRuns, readRun } from "./runs.js";
+import { createStressController } from "./stress.js";
 import type { createSession } from "./session.js";
 import { toTreeNode, type TreeNodeDTO } from "./tree.js";
 
@@ -43,6 +44,17 @@ const WfSaveInputSchema = z.object({ workflow: WorkflowSchema });
 const WfSetStatusInputSchema = z.object({ workflowId: z.string(), next: WorkflowStatusSchema });
 const WfImpactInputSchema = z.object({ caseId: z.string().optional(), apiId: z.string().optional() });
 const WfRunInputSchema = z.object({ workflowId: z.string(), envName: z.string().nullish() });
+// 压测频道（M2-D3 任务 1）：envName 沿用 nullish 惯例；maxIterations/durationMs 传 null
+// （antd InputNumber 清空口径）同样放行，null 由 stress.ts 归一为 undefined（终止条件
+// 二者都缺时由 StressRunner 抛「压测终止条件缺失」core 文案）。
+const StressRunInputSchema = z.object({
+  apiId: z.string(),
+  caseId: z.string(),
+  envName: z.string().nullish(),
+  concurrency: z.number().int().positive(),
+  maxIterations: z.number().int().positive().nullish(),
+  durationMs: z.number().positive().nullish(),
+});
 
 /** 频道 → 入参 tuple schema 表：Record 键为全部频道名，新增频道漏配 schema 即编译错误。 */
 const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
@@ -74,6 +86,8 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.WfSetStatus]: z.tuple([WfSetStatusInputSchema]),
   [IpcChannel.WfImpact]: z.tuple([WfImpactInputSchema]),
   [IpcChannel.WfRun]: z.tuple([WfRunInputSchema]),
+  [IpcChannel.StressRun]: z.tuple([StressRunInputSchema]),
+  [IpcChannel.StressStop]: z.tuple([]),
 };
 
 /** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
@@ -133,6 +147,9 @@ export interface IpcDepsOptions {
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory, saveFile } = options;
   const importers = options.importers ?? createDefaultRegistry().listImporters();
+  // 压测控制器（M2-D3 任务 1）：状态挂 deps 闭包（进程内单例），ws:open/ws:create 切换
+  // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
+  const stress = createStressController(session);
 
   /**
    * api 分支父解析（宽审查 C1）：parentId 可能是文件夹 id——先在工作区中按文件夹命中
@@ -193,10 +210,13 @@ export function createIpcDeps(options: IpcDepsOptions) {
     const a = validateArgs(channel, schemas[channel]!, args) as unknown[];
     switch (channel) {
       case IpcChannel.WsOpen: {
+        // 工作区切换清理点（M2-D3 任务 1）：活动压测先 abort，部分报告由其收尾异步落回原工作区。
+        stress.abortActive();
         const r = await session.open(a[0] as string);
         return r satisfies OpenResult;
       }
       case IpcChannel.WsCreate: {
+        stress.abortActive();
         const r = await session.create(a[0] as string, a[1] as string);
         return r satisfies OpenResult;
       }
@@ -267,7 +287,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.RunsList: {
         if (!session.root) throw new Error("尚未打开工作区");
-        return listRuns(workspaceRunsDir(session.root)) satisfies RunSummaryDTO[];
+        return listRuns(workspaceRunsDir(session.root)) satisfies Array<RunSummaryDTO | StressRunSummaryDTO>;
       }
       case IpcChannel.RunsGet: {
         if (!session.root) throw new Error("尚未打开工作区");
@@ -348,6 +368,16 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.WfRun: {
         return runWorkflow(session, a[0] as WfRunInput);
+      }
+      // 压测频道（M2-D3 任务 1）：run 返回最终报告 + 落盘文件名；stop 返回中止后的
+      // 部分报告（abort 语义见 stress.ts）。返回前报告已深拷贝（DataCloneError 防御）。
+      case IpcChannel.StressRun: {
+        const out = await stress.run(a[0] as StressRunInput);
+        return out satisfies StressRunOutput;
+      }
+      case IpcChannel.StressStop: {
+        const out = await stress.stop();
+        return out satisfies StressRunOutput;
       }
       default:
         throw new Error(`未知频道: ${channel}`);

@@ -17,7 +17,8 @@
     "run": "Run",
     "import": "Import",
     "design": "Design",
-    "wf": "Workflow"
+    "wf": "Workflow",
+    "stress": "Stress"
   },
   "workspace": {
     "problems": "Problem files",
@@ -111,7 +112,38 @@
     "row": "Data row",
     "result": "Result",
     "duration": "Duration",
-    "summary": "{total} total · {passed} passed · {failed} failed"
+    "summary": "{total} total · {passed} passed · {failed} failed",
+    "kindCollection": "Collection",
+    "kindStress": "Stress",
+    "stressSummary": "{total} requests · {failed} failed · {rps} req/s",
+    "back": "Back",
+    "fileMissing": "Run file not found"
+  },
+  "stress": {
+    "title": "Stress",
+    "case": "Case",
+    "casePlaceholder": "Select case",
+    "env": "Environment",
+    "envNone": "No environment",
+    "concurrency": "Concurrency",
+    "mode": "Stop condition",
+    "modeIterations": "Iterations",
+    "modeDuration": "Duration",
+    "iterations": "Iterations",
+    "duration": "Duration (s)",
+    "start": "Start",
+    "stop": "Stop",
+    "running": "Stress test running…",
+    "savedTo": "Report saved: {file}",
+    "summary": "{total} requests · {ok} ok · {failed} failed · {rps} req/s · duration {duration}",
+    "latency": "Latency percentiles",
+    "statusCol": "Status",
+    "errorCol": "Error kind",
+    "count": "Count",
+    "statusDist": "Status distribution",
+    "errorKinds": "Error distribution",
+    "noSamples": "No samples",
+    "noCases": "No cases"
   },
   "import": {
     "title": "Import APIs",

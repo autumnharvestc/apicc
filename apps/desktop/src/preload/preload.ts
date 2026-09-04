@@ -31,6 +31,9 @@ const api = {
   wfSetStatus: (workflowId: string, next: string) => ipcRenderer.invoke(IpcChannel.WfSetStatus, { workflowId, next }),
   wfImpact: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfImpact, input),
   wfRun: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfRun, input),
+  // 压测频道（M2-D3 任务 1）
+  stressRun: (input: unknown) => ipcRenderer.invoke(IpcChannel.StressRun, input),
+  stressStop: () => ipcRenderer.invoke(IpcChannel.StressStop),
 };
 
 contextBridge.exposeInMainWorld("apicc", api);

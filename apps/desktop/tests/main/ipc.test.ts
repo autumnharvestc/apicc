@@ -402,3 +402,44 @@ describe("工作流 IPC", () => {
     await expect(deps.handle("wf:run", {}, { workflowId: "w" })).rejects.toThrow(/未找到工作流/);
   });
 });
+
+describe("压测 IPC", () => {
+  // —— 压测频道（M2-D3 任务 1）：stress:run 主进程执行并落盘，runs:list/get 按 kind 判别 ——
+  it("stress:run 执行压测并落盘 stress-*.json；runs:list/get 按 kind 判别；无活动 stop 抛「没有进行中的压测」", async () => {
+    const { deps, dir } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
+    const c = await deps.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
+    const api = await deps.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
+    const detail = await deps.handle("api:get", {}, api.id);
+    // envName=null 兼容既有 nullish 口径：通过校验按无环境运行（不可达地址 → failed 采样，运行完成）
+    const out = await deps.handle("stress:run", {}, { apiId: api.id, caseId: detail.api.cases[0]!.id, envName: null, concurrency: 1, maxIterations: 1 });
+    expect(out.report.totalRequests).toBe(1);
+    expect(out.file).toMatch(new RegExp(`^stress-${api.id}-\\d+\\.json$`));
+    const list = await deps.handle("runs:list", {});
+    expect(list).toHaveLength(1);
+    expect(list[0].kind).toBe("stress");
+    expect(list[0].totalRequests).toBe(1);
+    const stressDetail = await deps.handle("runs:get", {}, out.file);
+    expect(stressDetail.kind).toBe("stress");
+    expect(stressDetail.report.totalRequests).toBe(1);
+    // 运行已结束：无活动运行时 stress:stop 抛「没有进行中的压测」
+    await expect(deps.handle("stress:stop", {})).rejects.toThrow(/没有进行中的压测/);
+  });
+
+  it("stress:run 入参校验：负并发/零并发/非整数并发 zod 拒绝；迭代与时长都缺走 core 文案（可空字段 null 兼容）", async () => {
+    const { deps, dir } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
+    const c = await deps.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
+    const api = await deps.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
+    await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: -1, maxIterations: 1 })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
+    await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: 0, maxIterations: 1 })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
+    await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: 1.5, maxIterations: 1 })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
+    // maxIterations/durationMs 传 null（antd InputNumber 清空口径）：通过 zod，运行层报 core 终止条件文案
+    const detail = await deps.handle("api:get", {}, api.id);
+    await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: detail.api.cases[0]!.id, concurrency: 1, maxIterations: null, durationMs: null })).rejects.toThrow(/压测终止条件缺失/);
+  });
+});
