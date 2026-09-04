@@ -137,7 +137,7 @@ describe("onlineClient 请求拼装", () => {
     expect(calls[1]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/members/u-2`);
   });
 
-  it("manageAcl：无 body → GET；带 { userId, role } → PUT", async () => {
+  it("manageAcl：无 body → GET；带 { userId, role } → PUT；{ userId, op: 'remove' } → DELETE ?userId=（契约修订：删 ACL 行=恢复工作区角色继承）", async () => {
     const entries = [{ userId: "u-2", role: "VIEWER" }];
     const { calls, impl } = fetchStub((req) => (req.method === "GET" ? json(200, entries) : new Response(null, { status: 204 })));
     const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
@@ -146,6 +146,10 @@ describe("onlineClient 请求拼装", () => {
     await client.manageAcl("ws-1", "p-1", { userId: "u-2", role: "NONE" });
     expect(calls[1]!.method).toBe("PUT");
     expect(calls[1]!.body).toEqual({ userId: "u-2", role: "NONE" });
+    await client.manageAcl("ws-1", "p-1", { userId: "u-2", op: "remove" });
+    expect(calls[2]!.method).toBe("DELETE");
+    expect(calls[2]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/projects/p-1/acl?userId=u-2`);
+    expect(await client.manageAcl("ws-1", "p-1", { userId: "u-2", op: "remove" })).toBeUndefined(); // 204 归一为 void
   });
 });
 

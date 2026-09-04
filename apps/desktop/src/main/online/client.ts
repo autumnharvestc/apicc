@@ -105,8 +105,12 @@ export interface OnlineClient {
   deleteFile(workspaceId: string, input: { path: string; baseVersion: number }): Promise<void>;
   /** 成员管理：role → PUT 变更角色；op=remove → DELETE 移除（§3.2，M3-B UI 不消费，契约面保留）。 */
   manageMembers(workspaceId: string, input: { userId: string; role: OnlineRole } | { userId: string; op: "remove" }): Promise<void>;
-  /** 项目 ACL：无 input → GET 清单；带 {userId, role} → PUT（§3.3，M3-B UI 不消费，契约面保留）。 */
-  manageAcl(workspaceId: string, projectId: string, input?: { userId: string; role: OnlineAclRole }): Promise<OnlineAclEntry[] | void>;
+  /**
+   * 项目 ACL（§3.3）：无 input → GET 清单；{ userId, role } → PUT 设角色（NONE=拒之门外）；
+   * { userId, op: "remove" } → DELETE ?userId=（契约修订 2026-09-03，删 ACL 行=恢复工作区
+   * 角色继承）。M3-B UI 不消费，契约面保留。
+   */
+  manageAcl(workspaceId: string, projectId: string, input?: { userId: string; role: OnlineAclRole } | { userId: string; op: "remove" }): Promise<OnlineAclEntry[] | void>;
 }
 
 /** 默认超时 15s（计划任务 1 裁定）。 */
@@ -297,6 +301,11 @@ export function createOnlineClient(deps: OnlineClientDeps): OnlineClient {
       const path = `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectId)}/acl`;
       if (input === undefined) {
         return (await request({ method: "GET", path, schema: z.array(OnlineAclEntrySchema) })) as OnlineAclEntry[];
+      }
+      if ("op" in input) {
+        // DELETE 行 = 恢复工作区角色继承（契约修订 2026-09-03）；与 manageMembers 的 remove 同构
+        await request({ method: "DELETE", path, query: { userId: input.userId } });
+        return;
       }
       await request({ method: "PUT", path, body: input });
     },
