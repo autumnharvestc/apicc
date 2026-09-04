@@ -21,6 +21,7 @@ import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
 import { createStressStore } from "../../../src/renderer/src/stores/stress.js";
+import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import { useRunStore } from "../../../src/renderer/src/stores/run.js";
 import SideTree from "../../../src/renderer/src/components/SideTree.vue";
 import RequestEditor from "../../../src/renderer/src/components/RequestEditor.vue";
@@ -67,6 +68,25 @@ function expectBody(testid: string): DOMWrapper<Element> {
   const w = bodyFind(testid);
   if (!w) throw new Error(`document.body 中找不到 [data-testid="${testid}"]（Modal 传送门未渲染？）`);
   return w;
+}
+
+/** 内存 Storage 替身（M3-B 任务 2）：online store 档案持久化注入，避免污染真实 localStorage。 */
+function memStorage(): Storage {
+  const map = new Map<string, string>();
+  return {
+    getItem: (key) => map.get(key) ?? null,
+    setItem: (key, value) => {
+      map.set(key, String(value));
+    },
+    removeItem: (key) => {
+      map.delete(key);
+    },
+    clear: () => map.clear(),
+    key: (index) => [...map.keys()][index] ?? null,
+    get length() {
+      return map.size;
+    },
+  } as Storage;
 }
 
 function bodyHas(testid: string): boolean {
@@ -129,13 +149,15 @@ async function mountWith(component: Parameters<typeof mount>[0], props: Record<s
   const debug = useDebugStore(api);
   // SideTree 需要设计器会话（审查 I2 重命名卸载）：同一份一次性装配经 props 注入
   const workflowDesign = useWorkflowDesignStore(api);
+  // TopBar 需要 online store（M3-B 任务 2 在线入口）：同一份一次性装配经 props 注入
+  const online = createOnlineStore({ api, storage: memStorage() });
   const { i18n } = createI18nInstance();
   const wrapper = mount(component, {
-    props: { api, workspace, tree, editor, debug, workflowDesign, reportError: () => {}, ...props },
+    props: { api, workspace, tree, editor, debug, workflowDesign, online, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, workspace, tree, editor, debug, workflowDesign };
+  return { wrapper, api, workspace, tree, editor, debug, workflowDesign, online };
 }
 
 /** 仅需 i18n 插件的挂载（组件只收普通 props，不消费 store）。 */
@@ -606,6 +628,21 @@ describe("TopBar", () => {
     await flushPromises();
     expect(errors).toHaveLength(1);
     expect((errors[0] as Error).message).toBe("打不开");
+  });
+
+  // —— M3-B 任务 2：顶栏在线模式入口 ——
+  it("在线入口：未登录显示「在线模式」，点击置 dialogOpen=true；已登录显示登录身份", async () => {
+    const { wrapper, online } = await mountWith(TopBar, {});
+    expect(wrapper.find('[data-testid="online-toggle"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="online-status"]').text()).toBe("在线模式");
+    await wrapper.find('[data-testid="online-toggle"]').trigger("click");
+    expect(online.dialogOpen).toBe(true);
+    // 已登录态（经 store login）→ 按钮文案切登录身份（用户 + 档案名）
+    online.addProfile("http://127.0.0.1:8080", "团队服务器");
+    await online.login("alice", "password8");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="online-status"]').text()).toContain("示例用户");
+    expect(wrapper.find('[data-testid="online-status"]').text()).toContain("团队服务器");
   });
 });
 

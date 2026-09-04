@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
 import {
   builtinAuthProviders,
   buildStressRequest,
@@ -32,6 +32,32 @@ import {
   type Workspace,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
+import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
+import { onlineTreeToDto } from "../../../main/online/session.js";
+import { scanDirFiles, writeFiles } from "../../../main/online/migrate.js";
+import type {
+  OnlineBatchResult,
+  OnlineDeleteOutcome,
+  OnlineFilesBatchInput,
+  OnlineFileDeleteInput,
+  OnlineFilePutInput,
+  OnlineFilesGetInput,
+  OnlineFilesResult,
+  OnlineLoginInput,
+  OnlineLoginOutput,
+  OnlineMigrateScanResult,
+  OnlineMigrateWriteInput,
+  OnlinePushOutcome,
+  OnlineRegisterChannelInput,
+  OnlineResumeInput,
+  OnlineResumeOutput,
+  OnlineUser,
+  OnlineWorkspaceCreateInput,
+  OnlineWorkspaceCreated,
+  OnlineWorkspaceOpenInput,
+  OnlineWorkspaceSummary,
+  OnlineWorkspaceView,
+} from "../../../shared/online/types.js";
 import type {
   ApiDetail,
   ApiccApi,
@@ -99,6 +125,77 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
   const importApplyCalls: Array<{ groupName: string; projectName: string }> = [];
   // 详细设计导出（任务 8）：designExport 调用记录（供测试断言渲染产物）。
   const designExportCalls: Array<{ file: string; content: string }> = [];
+  // 在线状态（M3-B 任务 1）：替身不发网络——登录态 + 内存工作区/文件版本模型，
+  // 载荷形状钉在 shared/online 契约上，与主进程 online session 同构（错误文案逐字对齐）。
+  let onlineUser: OnlineUser | null = null;
+  let onlineExpiresAt = "";
+  let onlineWorkspaceSeq = 0;
+  const onlineWorkspaces: OnlineWorkspaceSummary[] = [];
+  const onlineFiles = new Map<string, { content: string; version: number }>();
+
+  function requireOnlineUser(): OnlineUser {
+    if (!onlineUser) throw new Error("尚未登录在线服务器");
+    return onlineUser;
+  }
+
+  /** 与服务端同口径的内容指纹（§3.4 hash = sha-256 hex），put/batch/delete 共用。 */
+  function onlineHash(content: string): string {
+    return createHash("sha256").update(content, "utf8").digest("hex");
+  }
+
+  function onlineFileRow(path: string): { path: string; content: string; version: number; hash: string } {
+    const stored = onlineFiles.get(path)!;
+    return { path, content: stored.content, version: stored.version, hash: onlineHash(stored.content) };
+  }
+
+  /** tree 行多带 size（§3.4 files[] = path/hash/version/size），字节长按 UTF-8 计。 */
+  function onlineTreeRow(path: string) {
+    const row = onlineFileRow(path);
+    return { path: row.path, hash: row.hash, version: row.version, size: Buffer.byteLength(row.content, "utf8") };
+  }
+
+  /** 登录成功后初始化示例在线空间（幂等）：工作区清单与文件版本内存模型的种子数据。
+   *  路径按 M1 §6 目录约定（groups/<g>/projects/<p>/…），任务 3 树映射/迁移替身同构。 */
+  function seedOnlineWorkspace(): void {
+    if (onlineWorkspaces.length > 0) return;
+    const ws: OnlineWorkspaceSummary = {
+      id: `ws-online-${++onlineWorkspaceSeq}`,
+      name: "示例在线空间",
+      myRole: "OWNER",
+      createdAt: new Date().toISOString(),
+    };
+    onlineWorkspaces.push(ws);
+    onlineFiles.set("apicc.workspace.yaml", { content: `id: ${ws.id}\nname: ${ws.name}\n`, version: 1 });
+    onlineFiles.set("groups/示例分组/group.yaml", { content: "id: g-online-1\nname: 示例分组\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/project.yaml", { content: "id: p-online-1\nname: 示例项目\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/environments/dev.yaml", { content: "id: env-online-1\nname: dev\nvariables: {}\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/workflows/示例流/workflow.yaml", { content: "id: wf-online-1\nname: 示例流\nstatus: draft\nnodes: []\nedges: []\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/collections/示例集合/collection.yaml", { content: "id: c-online-1\nname: 示例集合\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml", { content: "id: api-online-1\nname: 示例接口\n", version: 1 });
+  }
+
+  /** 当前在线工作区（任务 3：open/close/tree:view 同构 main session 的纯状态语义）。 */
+  let onlineWs: { id: string; name: string; myRole: OnlineWorkspaceOpenInput["myRole"] } | null = null;
+
+  /** 构造在线工作区视图（经同一 onlineTreeToDto 映射，与 main 侧零漂移）。 */
+  function onlineWorkspaceView(): OnlineWorkspaceView {
+    if (!onlineWs) throw new Error("尚未打开在线工作区");
+    if (!onlineUser) throw new Error("尚未登录在线服务器");
+    const tree: OnlineTree = {
+      workspaceId: onlineWs.id,
+      rootVersion: onlineFiles.size,
+      files: [...onlineFiles.keys()].map(onlineTreeRow),
+      // 契约修订 2026-09-03：projects.path 必填（同名项目权限判定按 path 定位）
+      projects: [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" as const }],
+    };
+    return {
+      workspaceId: onlineWs.id,
+      name: onlineWs.name,
+      myRole: onlineWs.myRole,
+      projects: tree.projects,
+      tree: onlineTreeToDto(tree, onlineWs.name),
+    };
+  }
 
   function ensureOpen(): Workspace {
     if (!workspace) throw new Error("尚未打开工作区");
@@ -648,6 +745,141 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
         nodeResults, total: nodeResults.length, passed: nodeResults.length, failed: 0, skipped: 0,
         warnings: [], startedAt, finishedAt: startedAt,
       };
+    },
+
+    // —— 在线频道（M3-B 任务 1）：与主进程 online session 同构的替身（不发网络）——
+    // login 出口剥 token（与 IPC 契约一致）；put/delete 按服务端语义返回 conflict outcome
+    // （baseVersion 不匹配时带 currentVersion），供任务 2/3 UI 在替身上开发冲突分支。
+    async onlineRegister(input: OnlineRegisterChannelInput): Promise<OnlineUser> {
+      // 替身不做用户管理，按入参合成示例用户（形状同契约 201 载荷），不建立登录态
+      return { id: "u-online-1", username: input.username, displayName: input.displayName };
+    },
+
+    async onlineLogin(input: OnlineLoginInput): Promise<OnlineLoginOutput> {
+      onlineUser = { id: "u-online-1", username: input.username, displayName: "示例用户" };
+      onlineExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString(); // 登录态 30 天（§2 D4 同口径）
+      seedOnlineWorkspace();
+      return { expiresAt: onlineExpiresAt, user: onlineUser };
+    },
+
+    async onlineLogout(): Promise<void> {
+      onlineUser = null;
+      onlineExpiresAt = "";
+    },
+
+    // 登录态恢复（任务 2 裁定 A）替身：实例内已登录（此前 onlineLogin）→ restored 携用户；
+    // 否则 signed-out。main 进程的存档/清档/验活重启语义由 tests/main/online/session.test.ts
+    // 钉住（替身不建模跨重启持久化），这里只同构「resume 返回可辨别结果、不抛」的出口契约。
+    async onlineResume(_input: OnlineResumeInput): Promise<OnlineResumeOutput> {
+      return onlineUser ? { outcome: "restored", user: onlineUser } : { outcome: "signed-out" };
+    },
+
+    async onlineMe(): Promise<OnlineUser> {
+      return requireOnlineUser();
+    },
+
+    async onlineWorkspaceList(): Promise<OnlineWorkspaceSummary[]> {
+      requireOnlineUser();
+      return onlineWorkspaces.map((w) => ({ ...w }));
+    },
+
+    async onlineWorkspaceCreate(input: OnlineWorkspaceCreateInput): Promise<OnlineWorkspaceCreated> {
+      requireOnlineUser();
+      const created: OnlineWorkspaceCreated = { id: `ws-online-${++onlineWorkspaceSeq}`, name: input.name, myRole: "OWNER" };
+      onlineWorkspaces.push({ ...created, createdAt: new Date().toISOString() });
+      return created;
+    },
+
+    async onlineTreeGet(workspaceId: string): Promise<OnlineTree> {
+      requireOnlineUser();
+      const tree = {
+        workspaceId,
+        rootVersion: onlineFiles.size,
+        files: [...onlineFiles.keys()].map(onlineTreeRow),
+        // 契约修订 2026-09-03：projects.path 必填（同名项目权限判定按 path 定位）
+        projects: [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" as const }],
+      };
+      return OnlineTreeSchema.parse(tree); // 出口过契约校验（契约漂移即红）
+    },
+
+    async onlineFilesGet(input: OnlineFilesGetInput): Promise<OnlineFilesResult> {
+      requireOnlineUser();
+      const files: OnlineFilesResult["files"] = [];
+      const missing: string[] = [];
+      for (const path of input.paths) {
+        if (onlineFiles.has(path)) files.push(onlineFileRow(path));
+        else missing.push(path);
+      }
+      return { files, missing };
+    },
+
+    async onlineFilePut(input: OnlineFilePutInput): Promise<OnlinePushOutcome> {
+      requireOnlineUser();
+      const stored = onlineFiles.get(input.path);
+      if (stored && stored.version !== input.baseVersion) {
+        return { outcome: "conflict", conflict: { code: "version_conflict", currentVersion: stored.version, currentHash: onlineHash(stored.content) } };
+      }
+      const version = (stored?.version ?? 0) + 1;
+      onlineFiles.set(input.path, { content: input.content, version });
+      return { outcome: "pushed", result: { path: input.path, version, hash: onlineHash(input.content) } };
+    },
+
+    async onlineFilesBatch(input: OnlineFilesBatchInput): Promise<OnlineBatchResult> {
+      requireOnlineUser();
+      return {
+        results: input.files.map((entry) => {
+          const stored = onlineFiles.get(entry.path);
+          // 文件不存在但 baseVersion>0 → conflict/currentVersion=0（任务 2 裁定 D，对齐真实
+          // 服务端乐观并发语义：不存在 = 当前版本 0，任何 >0 的 baseVersion 都不匹配，
+          // 与 PUT 409 同一判定，绝不盲目落盘）。
+          if (!stored && entry.baseVersion > 0) {
+            return { path: entry.path, status: "conflict" as const, currentVersion: 0 };
+          }
+          if (stored && stored.version !== entry.baseVersion) {
+            return { path: entry.path, status: "conflict" as const, currentVersion: stored.version };
+          }
+          const version = (stored?.version ?? 0) + 1;
+          onlineFiles.set(entry.path, { content: entry.content, version });
+          return { path: entry.path, status: "pushed" as const, version };
+        }),
+      };
+    },
+
+    async onlineFileDelete(input: OnlineFileDeleteInput): Promise<OnlineDeleteOutcome> {
+      requireOnlineUser();
+      const stored = onlineFiles.get(input.path);
+      if (!stored) throw new Error(`未找到文件: ${input.path}`);
+      if (stored.version !== input.baseVersion) {
+        return { outcome: "conflict", conflict: { code: "version_conflict", currentVersion: stored.version, currentHash: onlineHash(stored.content) } };
+      }
+      onlineFiles.delete(input.path);
+      return { outcome: "deleted" };
+    },
+
+    // —— 在线工作区浏览/迁移（M3-B 任务 3，与 main IPC 面同构：open 后即取视图，
+    // 因此未登录 open 直接拒绝且不残留状态）——
+    async onlineWorkspaceOpen(input: OnlineWorkspaceOpenInput): Promise<OnlineWorkspaceView> {
+      requireOnlineUser();
+      onlineWs = { id: input.workspaceId, name: input.name, myRole: input.myRole };
+      return onlineWorkspaceView();
+    },
+
+    async onlineWorkspaceClose(): Promise<void> {
+      onlineWs = null;
+    },
+
+    async onlineTreeView(workspaceId: string): Promise<OnlineWorkspaceView> {
+      if (!onlineWs || onlineWs.id !== workspaceId) throw new Error("尚未打开在线工作区");
+      requireOnlineUser();
+      return onlineWorkspaceView();
+    },
+
+    async onlineMigrateScan(dir: string): Promise<OnlineMigrateScanResult> {
+      return { files: scanDirFiles(dir) };
+    },
+
+    async onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }> {
+      return { written: writeFiles(input.dir, input.files) };
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

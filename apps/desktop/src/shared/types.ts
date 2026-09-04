@@ -12,6 +12,30 @@ import type {
   WorkflowStatus,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
+import type {
+  OnlineBatchResult,
+  OnlineDeleteOutcome,
+  OnlineFilesGetInput,
+  OnlineFilesBatchInput,
+  OnlineFileDeleteInput,
+  OnlineFilePutInput,
+  OnlineFilesResult,
+  OnlineLoginInput,
+  OnlineLoginOutput,
+  OnlineMigrateScanResult,
+  OnlineMigrateWriteInput,
+  OnlinePushOutcome,
+  OnlineRegisterChannelInput,
+  OnlineResumeInput,
+  OnlineResumeOutput,
+  OnlineTree,
+  OnlineUser,
+  OnlineWorkspaceCreateInput,
+  OnlineWorkspaceCreated,
+  OnlineWorkspaceOpenInput,
+  OnlineWorkspaceSummary,
+  OnlineWorkspaceView,
+} from "./online/types.js";
 
 export interface OpenResult { workspace: { id: string; name: string }; problems: LoadProblem[]; root: string }
 export interface ApiDetail { api: ApiDefinition; envs: Array<{ id: string; name: string }> }
@@ -128,4 +152,34 @@ export interface ApiccApi {
   wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntry[]>;
   /** wf:run：draft 拒绝（「工作流为草稿，请先发布启用」）；结果由主进程落盘 .apicc/runs。 */
   wfRun(input: WfRunInput): Promise<WorkflowRunResult>;
+  // —— 在线频道（M3-B 任务 1，规格 §2 D9 / §3）：main 进程 onlineClient 的 IPC 出口 ——
+  /** 注册（不建立登录态）。 */
+  onlineRegister(input: OnlineRegisterChannelInput): Promise<OnlineUser>;
+  /** 登录：token 留在 main 进程（tokenStore 持久化），出口只含 expiresAt + user。 */
+  onlineLogin(input: OnlineLoginInput): Promise<OnlineLoginOutput>;
+  /** 登出：吊销服务端 token + 清本地登录态。 */
+  onlineLogout(): Promise<void>;
+  /** 登录态恢复（任务 2 裁定 A）：存档 token 验活通过 → restored 携用户；失败/无存档 → signed-out（已清档），不抛。 */
+  onlineResume(input: OnlineResumeInput): Promise<OnlineResumeOutput>;
+  onlineMe(): Promise<OnlineUser>;
+  onlineWorkspaceList(): Promise<OnlineWorkspaceSummary[]>;
+  onlineWorkspaceCreate(input: OnlineWorkspaceCreateInput): Promise<OnlineWorkspaceCreated>;
+  onlineTreeGet(workspaceId: string): Promise<OnlineTree>;
+  onlineFilesGet(input: OnlineFilesGetInput): Promise<OnlineFilesResult>;
+  /** 推送单文件：409 冲突不抛错，返回 { outcome: "conflict", conflict }（服务端现状过 IPC 不丢字段）。 */
+  onlineFilePut(input: OnlineFilePutInput): Promise<OnlinePushOutcome>;
+  /** 批量推送（≤200/批）：逐文件结果（pushed/conflict/forbidden/invalid），部分成功语义。 */
+  onlineFilesBatch(input: OnlineFilesBatchInput): Promise<OnlineBatchResult>;
+  onlineFileDelete(input: OnlineFileDeleteInput): Promise<OnlineDeleteOutcome>;
+  // —— 在线工作区浏览/迁移（M3-B 任务 3，裁定 A/D/E）——
+  /** 打开在线工作区：main 记录当前工作区（与本地互斥，ws:open 链路反向清理）并返回树视图。 */
+  onlineWorkspaceOpen(input: OnlineWorkspaceOpenInput): Promise<OnlineWorkspaceView>;
+  /** 关闭在线工作区：清 main 侧状态与树/文件缓存。 */
+  onlineWorkspaceClose(): Promise<void>;
+  /** 当前在线工作区视图（树缓存：首次取 /tree，之后复用；切换/推送后经此刷新）。 */
+  onlineTreeView(workspaceId: string): Promise<OnlineWorkspaceView>;
+  /** 扫描本地目录：/ 相对路径 + sha-256 + utf8 内容（跳过 .apicc/.git 生成物）。 */
+  onlineMigrateScan(dir: string): Promise<OnlineMigrateScanResult>;
+  /** 迁移拉取落盘：按相对路径写目标目录（≤200/批；路径过契约规则，越界拒绝）。 */
+  onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }>;
 }

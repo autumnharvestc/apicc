@@ -2,7 +2,7 @@
 // 组合根（装配约定）：store 工厂每调用一次即新建独立 Pinia 实例、得到互不相通的
 // 状态副本——因此全部 store 只能在此一次性创建，再经 props 向下传递；
 // SideTree/RequestEditor/TopBar 等组件内部禁止重复调用工厂。
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ConfigProvider,
@@ -20,6 +20,10 @@ import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import TopBar from "./components/TopBar.vue";
 import SideTree from "./components/SideTree.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import OnlineLoginDialog from "./components/OnlineLoginDialog.vue";
+import OnlineApiEditor from "./components/OnlineApiEditor.vue";
+import OnlineConflictDialog from "./components/OnlineConflictDialog.vue";
+import OnlineMigrateDialog from "./components/OnlineMigrateDialog.vue";
 import RequestEditor from "./components/RequestEditor.vue";
 import ResponseViewer from "./components/ResponseViewer.vue";
 import CasePanel from "./components/CasePanel.vue";
@@ -41,6 +45,7 @@ import { useDesignStore } from "./stores/design.js";
 import { useWfListStore } from "./stores/wfList.js";
 import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
 import { createStressStore } from "./stores/stress.js";
+import { createOnlineStore } from "./stores/online.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
@@ -74,9 +79,17 @@ const wfList = useWfListStore(apicc);
 const workflowDesign = useWorkflowDesignStore(apicc);
 // —— 压测 store（M2-D3 任务 3 装配，裁定 A）：同一组合根一次性创建，经 props 下传 ——
 const stress = createStressStore({ api: apicc });
+// —— 在线 store（M3-B 任务 2 装配）：同一组合根一次性创建；挂载后对上次激活的服务器
+// 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
+// TopBar 的在线入口按钮只置 online.dialogOpen。 ——
+const online = createOnlineStore({ api: apicc });
+onMounted(() => {
+  void online.init();
+});
 
 // —— 视图切换（任务 8 收官装配）——
-// 侧栏顶部 a-radio-group；未打开工作区时整组禁用（现状保留：只有打开/新建可用）。
+// 侧栏顶部 a-radio-group；未打开工作区或在线工作区激活时整组禁用（在线模式只提供
+// 浏览/编辑面板，不提供调试/运行/压测等本地视图，裁定 B/E）。
 type View = "debug" | "cases" | "envs" | "run" | "import" | "design" | "wf" | "stress";
 const VIEWS: View[] = ["debug", "cases", "envs", "run", "import", "design", "wf", "stress"];
 const view = ref<View>("debug");
@@ -109,12 +122,21 @@ function dismissError() {
 }
 
 /**
- * 侧树选中回调：接口节点加载进编辑器；工作流节点（M2-B 收口）加载进工作流设计器并
- * 切到工作流视图——缓冲 dirty 时先经确认对话框放行（审查 I1 修复），确认丢弃后才载入
- * 目标流，不再静默覆盖未保存编辑（先例同 WfDesigner requestUnload）。
- * 其余节点仅记录选中态。
+ * 侧树选中回调：在线工作区激活时路由到在线编辑链路（api → 取内容进在线编辑缓冲；
+ * file → 只读原文；其余仅记录选中，裁定 B）；本地模式保持原行为——接口节点加载进编辑器，
+ * 工作流节点加载进工作流设计器并切到工作流视图——缓冲 dirty 时先经确认对话框放行
+ * （审查 I1 修复），确认丢弃后才载入目标流，不再静默覆盖未保存编辑（先例同 WfDesigner
+ * requestUnload）。其余节点仅记录选中态。
  */
 async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
+  if (online.activeWorkspace) {
+    try {
+      await online.selectNode(kind, id);
+    } catch (e) {
+      reportError(e);
+    }
+    return;
+  }
   tree.select(kind, id);
   if (kind === "api") await editor.load(id);
   if (kind === "workflow") {
@@ -262,7 +284,7 @@ watch(
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :api="apicc" :report-error="reportError" />
+      <TopBar :workspace="workspace" :api="apicc" :online="online" :report-error="reportError" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
@@ -273,7 +295,7 @@ watch(
             v-model:value="view"
             class="view-switch"
             size="small"
-            :disabled="!workspace.opened"
+            :disabled="!workspace.opened || !!online.activeWorkspace"
             data-testid="view-switch"
           >
             <!-- 压测项（M2-D3 任务 3，裁定 A）：接口级视图，未选中接口时禁用（cases/envs 口径） -->
@@ -287,7 +309,8 @@ watch(
               {{ t(`nav.${v}`) }}
             </a-radio-button>
           </a-radio-group>
-          <!-- workflow-design 注入（审查 I2）：侧树重命名命中设计器正开的流时强制卸载会话 -->
+          <!-- workflow-design 注入（审查 I2）：侧树重命名命中设计器正开的流时强制卸载会话。
+               在线模式（任务 3）：treeRoot 切在线树视图、readonly 只读装饰、空态文案覆写 -->
           <SideTree
             class="side-col"
             :api="apicc"
@@ -295,11 +318,16 @@ watch(
             :tree="tree"
             :workflow-design="workflowDesign"
             :report-error="reportError"
+            :tree-root="online.activeWorkspace ? online.onlineTree : undefined"
+            :readonly="!!online.activeWorkspace"
+            :empty-text="online.activeWorkspace ? t('online.treeEmpty') : undefined"
             @select="onSelect"
           />
         </a-layout-sider>
         <a-layout-content class="right-col" data-testid="main-split">
-          <template v-if="view === 'debug'">
+          <!-- 在线工作区模式（任务 3）：只提供浏览/编辑面板，不提供调试/运行等本地视图 -->
+          <OnlineApiEditor v-if="online.activeWorkspace" class="panel-view" :online="online" />
+          <template v-else-if="view === 'debug'">
             <div class="editor-pane" data-testid="editor-pane">
               <RequestEditor :editor="editor" :debug="debug" />
             </div>
@@ -361,6 +389,14 @@ watch(
       @confirm="onWfSwitchConfirm"
       @cancel="onWfSwitchCancel"
     />
+    <!-- 在线登录与服务器配置对话框（M3-B 任务 2）：a-modal 传送门渲染于 body；
+         显隐由 online store 的 dialogOpen 驱动（TopBar 入口 / 对话框关闭双向读写）。
+         workspace 注入供任务 3 的工作区列表打开入口做模式互斥（先关本地工作区） -->
+    <OnlineLoginDialog :online="online" :workspace="workspace" />
+    <!-- 在线推送冲突对话框（任务 3 裁定 C）：online.conflict 驱动 -->
+    <OnlineConflictDialog :online="online" />
+    <!-- 在线工作区迁移向导（任务 3 裁定 D）：TopBar 迁移入口置 migrateDialogOpen -->
+    <OnlineMigrateDialog :online="online" :api="apicc" :report-error="reportError" />
   </a-layout>
   </ConfigProvider>
 </template>

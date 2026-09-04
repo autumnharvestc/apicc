@@ -29,5 +29,27 @@ export const IpcChannel = {
   WfRun: "wf:run",
   StressRun: "stress:run",
   StressStop: "stress:stop",
+  // 在线频道（M3-B 任务 1，规格 §2 D9 / §3）：online:* 单源登记
+  OnlineRegister: "online:register",
+  OnlineLogin: "online:login",
+  OnlineLogout: "online:logout",
+  OnlineMe: "online:me",
+  // 登录态恢复（M3-B 任务 2 裁定 A）：启动/档案激活时按 baseUrl 验活存档 token
+  OnlineResume: "online:resume",
+  OnlineWorkspaceList: "online:workspaces:list",
+  OnlineWorkspaceCreate: "online:workspaces:create",
+  OnlineTreeGet: "online:tree:get",
+  // 在线工作区浏览/迁移（M3-B 任务 3，裁定 A/D/E）：open 记录当前工作区（与本地互斥，
+  // ws:open/ws:create 反向清理）、close 会话清理、tree:view 取树缓存视图、
+  // migrate:scan/write 本地目录扫描与落盘（差异比对纯函数在 shared/online/migrate.ts）
+  OnlineWorkspaceOpen: "online:workspace:open",
+  OnlineWorkspaceClose: "online:workspace:close",
+  OnlineTreeView: "online:tree:view",
+  OnlineMigrateScan: "online:migrate:scan",
+  OnlineMigrateWrite: "online:migrate:write",
+  OnlineFilesGet: "online:files:get",
+  OnlineFilePut: "online:files:put",
+  OnlineFilesBatch: "online:files:batch",
+  OnlineFileDelete: "online:files:delete",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];

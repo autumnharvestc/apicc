@@ -2,7 +2,12 @@ import type { WorkflowStatus } from "@apicc/core";
 
 /** 渲染层树节点 DTO：主进程与渲染层共享的单一类型源。 */
 export interface TreeNodeDTO {
-  kind: "root" | "group" | "project" | "collection" | "folder" | "api" | "workflow";
+  /**
+   * kind：本地树使用 root/group/project/collection/folder/api/workflow；
+   * file（M3-B 任务 3）为在线工作区只读配置叶（工作流/环境/项目/集合配置等，
+   * 仅本地在线模式产生，id = 文件全路径），本地树永不产出。
+   */
+  kind: "root" | "group" | "project" | "collection" | "folder" | "api" | "workflow" | "file";
   id: string;
   label: string;
   method?: string;
