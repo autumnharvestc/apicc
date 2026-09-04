@@ -7,6 +7,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -96,5 +97,59 @@ class FileVersionRepoTest {
         assertThat(repo.find(wsA, "a.yaml")).hasValueSatisfying(v -> assertThat(v.version()).isEqualTo(2L));
         assertThat(repo.find(wsA, "b.yaml")).hasValueSatisfying(v -> assertThat(v.version()).isEqualTo(1L));
         assertThat(repo.find(wsB, "a.yaml")).hasValueSatisfying(v -> assertThat(v.version()).isEqualTo(1L));
+    }
+
+    // ---- 以下为任务 5 内容同步新增的用例方法 ----
+
+    /** 树清单数据源：只取本工作区行，按路径字典序稳定输出。 */
+    @Test
+    void listByWorkspaceReturnsOwnRowsSortedByPath() {
+        String ws = UUID.randomUUID().toString();
+        String other = UUID.randomUUID().toString();
+        repo.insertNew(ws, "b.yaml", "h-b", "user-1");
+        repo.insertNew(ws, "groups/g/projects/p/a.yaml", "h-a", "user-1");
+        repo.insertNew(ws, "apicc.workspace.yaml", "h-root", "user-1");
+        repo.insertNew(other, "a.yaml", "h-other", "user-1");
+
+        List<FileVersionRecord> rows = repo.listByWorkspace(ws);
+        assertThat(rows).extracting(FileVersionRecord::path)
+                .containsExactly("apicc.workspace.yaml", "b.yaml", "groups/g/projects/p/a.yaml");
+    }
+
+    /** rootVersion 口径（裁定 A 配套）：全部行 version 之和；空工作区 0；bump 后随之增长。 */
+    @Test
+    void sumVersionsAddsAllRowsAndStartsAtZero() {
+        String ws = UUID.randomUUID().toString();
+        assertThat(repo.sumVersions(ws)).isZero();
+
+        repo.insertNew(ws, "a.yaml", "h1", "user-1");
+        repo.insertNew(ws, "b.yaml", "h1", "user-1");
+        assertThat(repo.sumVersions(ws)).isEqualTo(2L);
+
+        repo.bumpVersion(ws, "a.yaml", 1L, "h2", "user-1");
+        assertThat(repo.sumVersions(ws)).isEqualTo(3L);
+
+        repo.delete(ws, "b.yaml");
+        assertThat(repo.sumVersions(ws)).isEqualTo(2L);
+    }
+
+    /** 单路径删除与精确恢复（落盘失败回滚的存储面）：restore 拨回原 hash/version/by/at。 */
+    @Test
+    void deleteRemovesRowAndRestorePutsItBack() {
+        String ws = UUID.randomUUID().toString();
+        repo.insertNew(ws, "a.yaml", "h1", "user-1");
+        FileVersionRecord original = repo.find(ws, "a.yaml").orElseThrow();
+
+        assertThat(repo.delete(ws, "a.yaml")).isTrue();
+        assertThat(repo.delete(ws, "a.yaml")).isFalse(); // 幂等：再删无行
+        assertThat(repo.find(ws, "a.yaml")).isEmpty();
+
+        assertThat(repo.restore(ws, original)).isTrue();
+        assertThat(repo.find(ws, "a.yaml")).hasValueSatisfying(restored -> {
+            assertThat(restored.version()).isEqualTo(original.version());
+            assertThat(restored.contentHash()).isEqualTo(original.contentHash());
+            assertThat(restored.updatedBy()).isEqualTo(original.updatedBy());
+            assertThat(restored.updatedAt()).isEqualTo(original.updatedAt());
+        });
     }
 }

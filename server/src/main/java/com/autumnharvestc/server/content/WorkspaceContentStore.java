@@ -68,4 +68,54 @@ public class WorkspaceContentStore {
                     "content_delete_failed", "工作区记录已删除，但内容目录清理失败");
         }
     }
+
+    // ---- 以下为任务 5 内容同步新增：相对路径 → 落盘的文件级操作 ----
+
+    /**
+     * 相对路径解析到工作区根内（第二层穿越防御；第一层为 ProjectPaths.validate 的字符规则）。
+     * resolve+normalize 后必须仍以工作区根为前缀——触发即校验缺口，按非法路径拒绝。
+     */
+    public Path resolveInRoot(Path root, String relativePath) {
+        try {
+            Path target = root.resolve(relativePath).normalize();
+            if (!target.startsWith(root)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "path_invalid", "非法路径");
+            }
+            return target;
+        } catch (java.nio.file.InvalidPathException ex) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "path_invalid", "非法路径");
+        }
+    }
+
+    /** 读文件字节；路径不存在或不是普通文件返回 null（调用方转 missing 语义）。 */
+    public byte[] readFile(Path root, String relativePath) throws IOException {
+        Path target = resolveInRoot(root, relativePath);
+        if (!Files.isRegularFile(target)) {
+            return null;
+        }
+        return Files.readAllBytes(target);
+    }
+
+    /** 写文件字节（自动建父目录；CREATE+TRUNCATE 覆盖写）。IO 异常上抛，由服务层回滚版本并转 io_error。 */
+    public void writeFile(Path root, String relativePath, byte[] bytes) throws IOException {
+        Path target = resolveInRoot(root, relativePath);
+        if (target.getParent() != null) {
+            Files.createDirectories(target.getParent());
+        }
+        Files.write(target, bytes);
+    }
+
+    /** 删文件；不存在视为已删（幂等）。IO 异常上抛，由服务层恢复版本行并转 io_error。 */
+    public boolean deleteFile(Path root, String relativePath) throws IOException {
+        return Files.deleteIfExists(resolveInRoot(root, relativePath));
+    }
+
+    /** 落盘文件真实字节数（裁定 A：tree 的 size 口径）；文件缺失/不可 stat 时按 0。 */
+    public long sizeOfFile(Path root, String relativePath) {
+        try {
+            return Files.size(resolveInRoot(root, relativePath));
+        } catch (IOException ex) {
+            return 0L;
+        }
+    }
 }

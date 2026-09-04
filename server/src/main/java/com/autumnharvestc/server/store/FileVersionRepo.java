@@ -1,5 +1,6 @@
 package com.autumnharvestc.server.store;
 
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -9,6 +10,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -68,6 +70,62 @@ public class FileVersionRepo {
     /** 删除工作区时清空其全部版本行（裁定 D：DELETE 工作区的 DB 清理步骤）。 */
     public void deleteByWorkspace(String workspaceId) {
         jdbc.update("DELETE FROM file_versions WHERE workspace_id = ?", workspaceId);
+    }
+
+    // ---- 以下为任务 5 内容同步新增（树清单/文件删除/落盘失败回滚）----
+
+    /** 树清单：工作区全部版本行，按路径字典序稳定输出（GET tree 的数据源）。 */
+    public List<FileVersionRecord> listByWorkspace(String workspaceId) {
+        return jdbc.query("""
+                SELECT workspace_id, path, content_hash, version, updated_by, updated_at
+                FROM file_versions WHERE workspace_id = ?
+                ORDER BY path
+                """, MAPPER, workspaceId);
+    }
+
+    /**
+     * rootVersion 口径（裁定 A 配套）：全部版本行 version 之和（空工作区 0）。
+     * 任一写入使之和单调不减（删除文件减去该行），客户端可作廉价变更探测。
+     */
+    public long sumVersions(String workspaceId) {
+        Long sum = jdbc.queryForObject(
+                "SELECT COALESCE(SUM(version), 0) FROM file_versions WHERE workspace_id = ?",
+                Long.class, workspaceId);
+        return sum == null ? 0L : sum;
+    }
+
+    /** 删除单路径版本行（DELETE 文件 / 新文件落盘失败回滚）。返回是否确有行被删。 */
+    public boolean delete(String workspaceId, String path) {
+        return jdbc.update(
+                "DELETE FROM file_versions WHERE workspace_id = ? AND path = ?",
+                workspaceId, path) > 0;
+    }
+
+    /**
+     * 精确恢复一行（落盘失败/删盘失败时把版本表拨回写入前状态——规格 m3 §2 D6 回滚口径）。
+     * UPDATE 无行（理论不可达的竞态）则重插原值兜底；主键再撞则放弃（终态仍是某次真实写入）。
+     */
+    public boolean restore(String workspaceId, FileVersionRecord record) {
+        OffsetDateTime updatedAt = OffsetDateTime.ofInstant(record.updatedAt(), ZoneOffset.UTC);
+        int updated = jdbc.update("""
+                UPDATE file_versions
+                SET content_hash = ?, version = ?, updated_by = ?, updated_at = ?
+                WHERE workspace_id = ? AND path = ?
+                """, record.contentHash(), record.version(), record.updatedBy(), updatedAt,
+                workspaceId, record.path());
+        if (updated > 0) {
+            return true;
+        }
+        try {
+            jdbc.update("""
+                    INSERT INTO file_versions (workspace_id, path, content_hash, version, updated_by, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, workspaceId, record.path(), record.contentHash(), record.version(),
+                    record.updatedBy(), updatedAt);
+            return true;
+        } catch (DuplicateKeyException ex) {
+            return false;
+        }
     }
 
     private static FileVersionRecord mapRow(ResultSet rs, int rowNum) throws SQLException {

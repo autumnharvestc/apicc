@@ -28,6 +28,25 @@ public class GlobalExceptionHandler {
                 .body(new ApiError(ex.getCode(), ex.getMessage()));
     }
 
+    /** 乐观并发冲突 → 409 {code, message, currentVersion, currentHash}（规格 m3 §3.4 契约形状）。 */
+    @ExceptionHandler(VersionConflictException.class)
+    public ResponseEntity<ConflictError> handleVersionConflict(VersionConflictException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ConflictError(ex.getCode(), ex.getMessage(), ex.getCurrentVersion(), ex.getCurrentHash()));
+    }
+
+    /** 409 响应体：错误形状 + 服务端现状（currentHash 为 null 表示文件尚不存在）。 */
+    public record ConflictError(String code, String message, long currentVersion, String currentHash) {
+    }
+
+    /** 查询/路径参数类型错（如 DELETE ?baseVersion=abc）→ 400 bad_request（否则落入 500 兜底）。 */
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiError> handleTypeMismatch(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex) {
+        return ResponseEntity.badRequest()
+                .body(new ApiError("bad_request", "参数类型错误: " + ex.getName()));
+    }
+
     /** 无匹配路由 → 404 not_found。 */
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<ApiError> handleNoResource(NoResourceFoundException ex) {

@@ -61,15 +61,23 @@ public class AuthFilter extends OncePerRequestFilter {
         String plainToken = extractBearerToken(request);
         if (plainToken != null) {
             String tokenHash = tokenService.sha256Hex(plainToken);
-            Optional<TokenRecord> token = tokens.findActiveByHash(tokenHash);
-            if (token.isPresent()) {
-                Optional<UserAccount> user = users.findById(token.get().userId());
-                if (user.isPresent()) {
-                    request.setAttribute(ATTR_USER, user.get());
-                    request.setAttribute(ATTR_TOKEN_HASH, tokenHash);
-                    chain.doFilter(request, response);
-                    return;
-                }
+            Optional<TokenRecord> token;
+            Optional<UserAccount> user;
+            // 裁定 C①（任务 3/4 审查留痕承接）：元数据库故障在过滤器内直写 500 {code:"internal_error"}——
+            // 过滤器先于 DispatcherServlet，@RestControllerAdvice 不覆盖过滤器，放任上抛会成为容器错误页。
+            // 只包 DB 查找段：chain 内控制器异常必须继续上抛给全局映射。
+            try {
+                token = tokens.findActiveByHash(tokenHash);
+                user = token.isPresent() ? users.findById(token.get().userId()) : Optional.empty();
+            } catch (RuntimeException ex) {
+                writeJson(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal_error", "服务端内部错误");
+                return;
+            }
+            if (token.isPresent() && user.isPresent()) {
+                request.setAttribute(ATTR_USER, user.get());
+                request.setAttribute(ATTR_TOKEN_HASH, tokenHash);
+                chain.doFilter(request, response);
+                return;
             }
         }
         writeUnauthorized(response);
@@ -90,10 +98,15 @@ public class AuthFilter extends OncePerRequestFilter {
      * 响应体仍为契约约定的 {code,message}，code=unauthorized。
      */
     private void writeUnauthorized(HttpServletResponse response) throws IOException {
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        writeJson(response, HttpServletResponse.SC_UNAUTHORIZED, "unauthorized", "缺少或无效的 Bearer token");
+    }
+
+    /** 过滤器面统一响应形状：{code,message}（401 认证失败 / 500 元数据库故障——裁定 C①）。 */
+    private void writeJson(HttpServletResponse response, int status, String code, String message) throws IOException {
+        response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.getWriter().write(objectMapper.writeValueAsString(
-                new GlobalExceptionHandler.ApiError("unauthorized", "缺少或无效的 Bearer token")));
+                new GlobalExceptionHandler.ApiError(code, message)));
     }
 }

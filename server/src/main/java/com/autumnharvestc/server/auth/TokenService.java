@@ -4,7 +4,6 @@ import org.springframework.stereotype.Service;
 
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.HexFormat;
 
 /**
  * 令牌材料（规格 m3 §2 D4，裁定 B）：明文 = 32 字节随机数的 base64url（无填充）；
@@ -25,15 +24,9 @@ public class TokenService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
     }
 
-    /** 明文 → SHA-256 hex 小写（HexFormat 默认小写），入库/查找唯一形态。 */
+    /** 明文 → SHA-256 hex 小写（统一走 core.Hashes——令牌指纹与内容哈希共用同一实现）。 */
     public String sha256Hex(String plainToken) {
-        byte[] digest;
-        try {
-            digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(plainToken.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
-        } catch (java.security.NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("JVM 缺少 SHA-256 算法", ex);
-        }
-        return HexFormat.of().formatHex(digest);
+        return com.autumnharvestc.server.core.Hashes.sha256Hex(
+                plainToken.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
     }
 }
