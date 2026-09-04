@@ -50,7 +50,7 @@ function setup(initial: (req: CapturedRequest) => Response) {
       createClient: (baseUrl, hooks) => createOnlineClient({ baseUrl, fetch: impl, timeoutMs: 5_000, onUnauthorized: hooks.onUnauthorized }),
       tokenStore,
     });
-  return { makeSession, setHandler, calls, saved, cleared, getClearedCount: () => cleared.length };
+  return { makeSession, setHandler, calls, saved, cleared, getSaved: (baseUrl: string) => memory.get(baseUrl) ?? null, getClearedCount: () => cleared.length };
 }
 
 const route = (req: CapturedRequest): Response => {
@@ -77,17 +77,34 @@ describe("online session resume（任务 2 裁定 A）", () => {
   });
 
   it("过期 token（resume 验活 401）→ 清档登出：tokenStore.clear(baseUrl)、current 为 null、后续调用抛「尚未登录」", async () => {
-    const { makeSession, setHandler, cleared, getClearedCount } = setup(route);
+    const { makeSession, setHandler, cleared, getSaved } = setup(route);
     await makeSession().login({ baseUrl: SERVER_A, username: "alice", password: "password8" });
     // 重启后服务端 token 已过期：/me 401
     setHandler((req) => (req.url.endsWith("/me") ? json(401, { code: "token_expired", message: "登录已过期" }) : route(req)));
     const fresh = makeSession();
     const out = await fresh.resume(SERVER_A);
     expect(out).toEqual({ outcome: "signed-out" });
-    expect(cleared).toEqual([SERVER_A]);
+    // 401 钩子与 resume 失败收口都按捕获的 baseUrl 清档（幂等）：A 的凭据不再被持有
+    expect(cleared.every((b) => b === SERVER_A)).toBe(true);
+    expect(getSaved(SERVER_A)).toBeNull();
     expect(fresh.current).toBeNull();
     await expect(fresh.me()).rejects.toThrow(/尚未登录/);
-    expect(getClearedCount()).toBe(1); // 失败链路只清一次，不重复清档
+  });
+
+  it("resume 验活 401 只清目标服务器存档，不串档清当前会话存档（审查重要 1）", async () => {
+    const { makeSession, setHandler, cleared, getSaved } = setup(route);
+    const session = makeSession();
+    await session.login({ baseUrl: SERVER_A, username: "alice", password: "password8" }); // A 存档 + current=A
+    await makeSession().login({ baseUrl: SERVER_B, username: "alice", password: "password8" }); // B 存档（此前登录过）
+    // B 的 token 已过期：仅对 B 的 /me 回 401
+    setHandler((req) => (req.url === `${SERVER_B}/api/v1/me` ? json(401, { code: "token_expired", message: "登录已过期" }) : route(req)));
+    // 修复前：resume 的 onUnauthorized 经 current 反查 → 把 A 的有效存档误清
+    await expect(session.resume(SERVER_B)).resolves.toEqual({ outcome: "signed-out" });
+    expect(getSaved(SERVER_B)).toBeNull(); // B 存档已清
+    expect(getSaved(SERVER_A)).toBe("tok-1"); // A 存档仍在
+    expect(cleared.every((b) => b === SERVER_B)).toBe(true); // 清档只落在目标 baseUrl
+    // 活动会话 A 也不被 resume 失败破坏：me 仍带 A 的 token
+    expect(await session.me()).toEqual(USER);
   });
 
   it("网络错误（服务端不可达）→ 清档保持登出态，resume 不抛（错误归一为结果对象）", async () => {

@@ -139,7 +139,9 @@ describe("online:* 频道接线", () => {
     const expired = setup((req) => (req.url.endsWith("/me") ? json(401, { code: "token_expired", message: "登录已过期" }) : json(200, USER)));
     expired.tokenStore.save("http://127.0.0.1:8080", "tok-stale");
     await expect(expired.deps.handle("online:resume", {}, { baseUrl: "http://127.0.0.1:8080" })).resolves.toEqual({ outcome: "signed-out" });
-    expect(expired.getCleared()).toEqual(["http://127.0.0.1:8080"]);
+    // 401 钩子与 resume 失败收口都按捕获的 baseUrl 清档（幂等，审查重要 1）：清档只落在目标
+    expect(expired.getCleared().every((b) => b === "http://127.0.0.1:8080")).toBe(true);
+    expect(expired.getCleared().length).toBeGreaterThan(0);
     const guest = setup(() => json(200, USER));
     await expect(guest.deps.handle("online:resume", {}, { baseUrl: "http://127.0.0.1:8080" })).resolves.toEqual({ outcome: "signed-out" });
     await expect(guest.deps.handle("online:resume", {}, { baseUrl: "ftp://x" })).rejects.toThrow(/入参校验失败/);

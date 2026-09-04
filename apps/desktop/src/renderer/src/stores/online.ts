@@ -130,16 +130,25 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         }
       },
 
-      /** 新增或更新档案（同 baseUrl = 改昵称）并激活；url 形态 store 侧再守一次。 */
+      /**
+       * 新增或更新档案（同 baseUrl = 改昵称）并激活；url 形态 store 侧再守一次。
+       * 换目标（含首次保存）与 setActive 同口径（审查重要 2）：清旧登录态（防止旧服务器的
+       * user 以新档案名呈现的假登录态）并对新目标 resume 验活；同 baseUrl 改昵称不动登录态。
+       */
       addProfile(baseUrl: string, name: string): boolean {
         const parsed = OnlineBaseUrlSchema.safeParse(baseUrl.trim());
         if (!parsed.success) return false;
         const url = parsed.data;
+        const switched = this.activeBaseUrl !== url;
         const existing = this.profiles.find((p) => p.baseUrl === url);
         if (existing) existing.name = name.trim();
         else this.profiles.push({ baseUrl: url, name: name.trim() });
         this.activeBaseUrl = url;
         this.persistProfiles();
+        if (switched) {
+          this.clearLoginState();
+          void this.resume(url);
+        }
         return true;
       },
 

@@ -76,6 +76,52 @@ describe("服务器档案（裁定 C：localStorage 持久化，增删改）", (
     expect(store.activeBaseUrl).toBeNull();
   });
 
+  it("addProfile 换目标与 setActive 同口径：清旧登录态并对新目标 resume（审查重要 2）", async () => {
+    const { api, store } = setup();
+    store.addProfile(SERVER_A, "甲");
+    await store.login("alice", "password8"); // 登录在 A
+    expect(store.loggedIn).toBe(true);
+    const resumes: string[] = [];
+    // 挂起 resume：观察「换目标即清旧登录态」的中间态，再放行验活结果
+    let resolveResume!: (out: OnlineResumeOutput) => void;
+    api.onlineResume = async (input): Promise<OnlineResumeOutput> => {
+      resumes.push(input.baseUrl);
+      return new Promise<OnlineResumeOutput>((resolve) => {
+        resolveResume = resolve;
+      });
+    };
+    // 修复前：activeBaseUrl 切到 B 但 loggedIn/user 仍是旧 A 的（假登录态）且不触发 resume
+    store.addProfile(SERVER_B, "乙");
+    await flush();
+    expect(store.activeBaseUrl).toBe(SERVER_B);
+    expect(store.loggedIn).toBe(false); // 中间态：旧 A 登录态已清
+    expect(store.user).toBeNull();
+    // 验活完成（B 存档有效）→ 恢复 B 的登录态（用户来自 B 的验活结果）
+    resolveResume({ outcome: "restored", user: { ...USER, username: SERVER_B } });
+    await flush();
+    expect(resumes).toEqual([SERVER_B]); // 档案激活即 resume
+    expect(store.loggedIn).toBe(true);
+    expect(store.user!.username).toBe(SERVER_B);
+  });
+
+  it("addProfile 同 baseUrl 改昵称：目标未变，不动登录态、不重复 resume（审查重要 2 同口径的反向面）", async () => {
+    const { api, store } = setup();
+    store.addProfile(SERVER_A, "甲");
+    await store.login("alice", "password8");
+    expect(store.loggedIn).toBe(true);
+    const resumes: string[] = [];
+    api.onlineResume = async (input): Promise<OnlineResumeOutput> => {
+      resumes.push(input.baseUrl);
+      return { outcome: "restored", user: USER };
+    };
+    expect(store.addProfile(SERVER_A, "改名")).toBe(true);
+    await flush();
+    expect(store.profiles[0]!.name).toBe("改名");
+    expect(store.loggedIn).toBe(true); // 登录态保留
+    expect(store.user).toEqual(USER);
+    expect(resumes).toEqual([]); // 目标未变不触发 resume
+  });
+
   it("removeProfile：删除档案并持久化；删除激活档案时清激活位与登录态（档案与登录态分离的反向操作）", async () => {
     const { api, store } = setup();
     store.addProfile(SERVER_A, "甲");

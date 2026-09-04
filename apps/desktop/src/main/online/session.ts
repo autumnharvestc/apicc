@@ -32,10 +32,14 @@ export interface OnlineSessionDeps {
 export function createOnlineSession(deps: OnlineSessionDeps) {
   let current: { baseUrl: string; client: OnlineClient } | null = null;
 
-  /** 会话失效清理：清当前 baseUrl 的 token 存档 + 摘掉当前 client（多服务器凭据互不波及）。 */
-  function invalidate(): void {
-    if (current) deps.tokenStore.clear(current.baseUrl);
-    current = null;
+  /**
+   * 会话失效清理（审查重要 1 修复）：清**指定**服务器的 token 存档；current 属于该服务器
+   * 时一并摘除。钩子按捕获的 baseUrl 调用、不经 current 反查——resume 验活期 current 可能
+   * 仍指旧会话，按 current 清会串档清掉旧服务器的有效存档（且误摘旧会话）。
+   */
+  function invalidate(baseUrl: string): void {
+    deps.tokenStore.clear(baseUrl);
+    if (current?.baseUrl === baseUrl) current = null;
   }
 
   function requireClient(): OnlineClient {
@@ -70,7 +74,8 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     },
 
     async login(input: OnlineLoginInput): Promise<OnlineLoginOutput> {
-      const client = deps.createClient(input.baseUrl, { onUnauthorized: invalidate });
+      // 401 钩子按捕获的 baseUrl 清档（审查重要 1）：不经 current 反查，避免串档。
+      const client = deps.createClient(input.baseUrl, { onUnauthorized: () => invalidate(input.baseUrl) });
       const result = await client.login({ username: input.username, password: input.password });
       deps.tokenStore.save(input.baseUrl, result.token); // 登录 → 按服务器存档（client 已注入，后续请求自动带头）
       current = { baseUrl: input.baseUrl, client };
@@ -82,29 +87,32 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
      * seed client → GET /me 验活：成功 = 建立 current 并返回 restored + 用户；失败
      * （401/网络错误/协议错误）= 清档（clear(baseUrl)）并保持登出态；无存档 = 直接登出态。
      * 任何失败都不抛（渲染层拿到可辨别的结果对象，引导重新登录而非裸错误）。
+     * 401 钩子按捕获的 baseUrl 清档（审查重要 1）：验活期 current 仍指旧会话（或 null），
+     * 钩子只清 resume 目标的存档、不摘未归属的 current——修复前会串档清旧会话的有效存档。
      */
     async resume(baseUrl: string): Promise<OnlineResumeOutput> {
       const token = deps.tokenStore.load(baseUrl);
       if (token === null) return { outcome: "signed-out" };
-      const client = deps.createClient(baseUrl, { onUnauthorized: invalidate });
+      const client = deps.createClient(baseUrl, { onUnauthorized: () => invalidate(baseUrl) });
       client.setToken(token);
       try {
         const user = await client.me();
         current = { baseUrl, client };
         return { outcome: "restored", user };
       } catch {
-        // 验活失败（过期/网络/协议）：清档保持登出态（裁定 A 原文语义）。
-        deps.tokenStore.clear(baseUrl);
+        // 验活失败（过期/网络/协议）：清档保持登出态（裁定 A 原文语义）。401 路径钩子已按
+        // 同一 baseUrl 清过（幂等），此处收口覆盖不经 401 钩子的网络/协议失败路径。
+        invalidate(baseUrl);
         return { outcome: "signed-out" };
       }
     },
 
     async logout(): Promise<void> {
       if (!current) return;
-      const client = current.client;
-      invalidate();
+      const { baseUrl, client } = current;
+      invalidate(baseUrl); // 先摘本地态再吊销；吊销失败（网络断等）不阻断本地登出——本地态已清，token 留服务端 30 天自然过期
       try {
-        await client.logout(); // 吊销失败（网络断等）不阻断本地登出——本地态已清，token 留服务端 30 天自然过期
+        await client.logout();
       } catch (e) {
         console.warn(`在线登出请求失败（本地登录态已清除）: ${e instanceof Error ? e.message : String(e)}`);
       }
