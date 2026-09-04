@@ -25,6 +25,12 @@ export * from "./stress/model.js";
 export { computeReport } from "./stress/aggregate.js";
 export { buildStressRequest } from "./stress/build.js";
 export { StressRunner, type StressRunnerOptions, type StressRunOptions } from "./stress/runner.js";
+export {
+  StressWorkerSpecSchema, ShardResultSchema, ShardFailureSchema, ShardOutcomeSchema,
+  planShards, mergeStressReport, DistributedStressCoordinator,
+  type StressWorkerSpec, type StressWorkerSpecBase, type ShardResult, type ShardFailure,
+  type ShardOutcome, type SpawnWorker, type ShardPlan, type DistributedRunOptions, type CoordinatorRunResult,
+} from "./stress/distributed.js";
 
 import { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
 import { fileStorage } from "./storage/fileStorage.js";
