@@ -1,6 +1,7 @@
-# CI 三 job 工作流（M2-D 规格决策 D7）：
+# CI 四 job 工作流（M2-D 规格决策 D7；M3-C 任务 2 增 server-test）：
 #   test          — 三包 build + test，core 另行 typecheck（覆盖测试文件类型；
 #                   build 的 tsc 只编译 src，vitest 转译不查类型）（ubuntu，跳过 Electron 二进制下载）
+#   server-test   — 服务端 mvn test（ubuntu，JDK 21，统一 settings.xml 镜像，Maven 仓库缓存）
 #   brand-gate    — 品牌中立门禁：脚本词表自检 + git 跟踪文件全树扫描
 #   package-smoke — Windows 打包冒烟（仅 main push；electron / electron-builder 双缓存）
 # 版本策略：action 锁 major tag（每个 uses 行尾注释显式 major）；SHA 锁定列为后续加固项。
@@ -56,6 +57,31 @@ jobs:
         # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 core build，序列自洽
         run: pnpm -r test
 
+  server-test:
+    name: 服务端测试（JDK 21）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5 # v5
+      - uses: actions/setup-java@v4 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+      # 服务端依赖缓存：key 绑 server/pom.xml 哈希（pom 变更即换新 key 全量重拉），
+      # restore-keys 兜底命中旧缓存做增量（缺失构件仍会按 settings.xml 回源下载）。
+      - name: 缓存 Maven 本地仓库
+        uses: actions/cache@v4 # v4
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ runner.os }}-${{ hashFiles('server/pom.xml') }}
+          restore-keys: |
+            m2-${{ runner.os }}-
+      - name: 服务端测试
+        # 与本地同口径：统一 -s server/.mvn/settings.xml（central 走 Aliyun public 镜像，
+        # 规格 m3 §2 D3）。JAVA_HOME/java 已由 setup-java 配好，无需手工 env；
+        # ubuntu runner 预装 mvn，无需 wrapper。surefire 的 Mockito/byte-buddy 动态
+        # agent JDK 告警暂不处理，观察首轮 CI 输出后再定（计划清单⑥备案项）。
+        run: mvn -s server/.mvn/settings.xml -f server/pom.xml test
+
   brand-gate:
     name: 品牌中立门禁
     runs-on: ubuntu-latest
@@ -110,6 +136,16 @@ jobs:
             electron-builder-cache-${{ runner.os }}-
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
+      - name: 构建 core 与 cli（desktop 构建的前置类型依赖）
+        # @apicc/core 的 types 指向构建产物 dist/index.d.ts（desktop 无 paths 映射），
+        # fresh runner 上 core/dist 缺失时 desktop 的 typecheck（dist:dir 首段）会以
+        # `Cannot find module '@apicc/core'` 崩溃并连锁 implicit any——首次 CI 红的根因。
+        # filter 按 package.json 的 name 匹配（pnpm filter 不认目录路径：目录形式
+        # "!apps/desktop" 匹配不到任何包，pnpm 11 实测退化为全量构建），故用包名否定，
+        # 只建 core+cli；desktop 由下方 dist:dir 自建（三段构建含 typecheck），避免重复。
+        # 注：否定 filter 会打印一行 `No projects matched the filters "…apps\desktop"` 告警，
+        # 是 pnpm 对被排除包的例行输出（exit 0），非失败，勿误读。
+        run: pnpm --filter "!@apicc/desktop" -r build
       - name: 生成应用图标
         run: pnpm -C apps/desktop gen:icon
       - name: 打包（dir 模式，含三段构建）

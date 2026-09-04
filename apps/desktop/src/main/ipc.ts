@@ -95,7 +95,8 @@ const OnlineWorkspaceOpenChannelSchema = z.object({
   name: z.string().min(1),
   myRole: OnlineRoleSchema,
 });
-const OnlineWorkspaceIdRequiredSchema = z.object({ workspaceId: z.string().min(1) });
+// M3-C 前置对齐顺带（M3-B 终审 Minor 6）：workspaceId 定位 schema 统一复用 OnlineWorkspaceIdSchema，
+// 消除 OnlineWorkspaceIdRequiredSchema 重复定义。
 const OnlineMigrateScanChannelSchema = z.object({ dir: z.string().min(1) });
 const OnlineMigrateWriteChannelSchema = z.object({
   dir: z.string().min(1),
@@ -150,7 +151,7 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   // 在线工作区/迁移频道（M3-B 任务 3）
   [IpcChannel.OnlineWorkspaceOpen]: z.tuple([OnlineWorkspaceOpenChannelSchema]),
   [IpcChannel.OnlineWorkspaceClose]: z.tuple([]),
-  [IpcChannel.OnlineTreeView]: z.tuple([OnlineWorkspaceIdRequiredSchema]),
+  [IpcChannel.OnlineTreeView]: z.tuple([OnlineWorkspaceIdSchema]),
   [IpcChannel.OnlineMigrateScan]: z.tuple([OnlineMigrateScanChannelSchema]),
   [IpcChannel.OnlineMigrateWrite]: z.tuple([OnlineMigrateWriteChannelSchema]),
 };

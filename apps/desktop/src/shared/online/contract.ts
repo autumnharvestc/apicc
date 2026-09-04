@@ -10,11 +10,13 @@ import { z } from "zod";
 // —— 错误与通用形状 ——
 /** §3 约定：错误响应统一 { code, message }。 */
 export const OnlineErrorSchema = z.object({ code: z.string(), message: z.string() });
-/** §3.4 PUT 409：`{ code: version_conflict, currentVersion, currentHash }`（message 为规格统一错误形状的可选兼容字段）。 */
+/** §3.4 PUT 409：`{ code: version_conflict, currentVersion, currentHash }`（message 为规格统一错误形状的可选兼容字段）。
+ * currentHash 可空（M3-C 前置对齐①）：服务端新文件并发删除场景抛 VersionConflictException(0, null)，
+ * 409 体序列化为 currentHash: null——strict string 会 parse 失败退化普通错误、冲突对话框不出现。 */
 export const OnlineVersionConflictSchema = z.object({
   code: z.literal("version_conflict"),
   currentVersion: z.number(),
-  currentHash: z.string(),
+  currentHash: z.string().nullable(),
   message: z.string().optional(),
 });
 
@@ -71,20 +73,25 @@ export const OnlineTreeSchema = z.object({
 export const OnlineFileContentSchema = z.object({ path: z.string(), content: z.string(), version: z.number(), hash: z.string() });
 export const OnlineFilesResultSchema = z.object({ files: z.array(OnlineFileContentSchema), missing: z.array(z.string()) });
 export const OnlinePutFileResultSchema = z.object({ path: z.string(), version: z.number(), hash: z.string() });
-/** §3.4 path 规则：禁止 ..、绝对路径、反斜杠、空段。 */
+/** §3.4 path 规则：禁止 ..、绝对路径、反斜杠、空段；另禁 `:`（M3-C 前置对齐③，对齐服务端
+ * ProjectPaths 的 Windows 盘符防御——客户端先拦可免一次必败往返）。 */
 export const OnlinePathSchema = z
   .string()
   .min(1)
   .refine((p) => !p.includes("\\"), "path 禁止反斜杠")
+  .refine((p) => !p.includes(":"), "path 禁止冒号")
   .refine((p) => !p.startsWith("/") && !p.endsWith("/"), "path 禁止绝对路径/尾空段")
   .refine((p) => p.split("/").every((seg) => seg.length > 0 && seg !== "." && seg !== ".."), "path 禁止空段与 . / ..");
 /** batch 条目：{ path, content, baseVersion }（新文件 baseVersion=0）。 */
 export const OnlineBatchEntrySchema = z.object({ path: OnlinePathSchema, content: z.string(), baseVersion: z.number().int().nonnegative() });
 /** batch 入参：≤200 条/批。 */
 export const OnlineBatchInputSchema = z.object({ files: z.array(OnlineBatchEntrySchema).min(1).max(200) });
+/** batch 逐文件结果：status 含 failed（M3-C 前置对齐②）——服务端单文件落盘 IO 失败以 failed 行
+ * 呈现（ContentService.pushOne 的 io_error 口径，部分成功语义），客户端不认则整批 parse 失败、
+ * 迁移推送中断。conflict 行仅携 currentVersion（currentHash 不出批量面）。 */
 export const OnlineBatchResultItemSchema = z.object({
   path: z.string(),
-  status: z.enum(["pushed", "conflict", "forbidden", "invalid"]),
+  status: z.enum(["pushed", "conflict", "forbidden", "invalid", "failed"]),
   version: z.number().optional(),
   currentVersion: z.number().optional(),
   message: z.string().optional(),

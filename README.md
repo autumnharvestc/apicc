@@ -70,11 +70,12 @@ pnpm -r build  # 全量构建
 | `packages/core` | 领域核心：数据模型、存储、执行引擎（集合/工作流/压测）、导入器、报告器 |
 | `packages/cli` | 命令行工具（`apicc`） |
 | `apps/desktop` | Electron 桌面端（设计器 UI、压测视图） |
+| `server/` | 在线协作服务端（Spring Boot + H2），运行与配置见 `server/README.md` |
 | `docs/` | 设计规格与实现计划 |
 
 ## CI
 
-推送与 PR 会自动触发三 job 门禁：三包构建与测试（core 另行类型检查，覆盖测试文件）、品牌中立扫描、（main 分支推送时）Windows 打包冒烟，见 `.github/workflows/ci.yml`。
+推送与 PR 会自动触发四 job 门禁：三包构建与测试（core 另行类型检查，覆盖测试文件）、服务端测试（JDK 21）、品牌中立扫描、（main 分支推送时）Windows 打包冒烟，见 `.github/workflows/ci.yml`。
 
 ## 许可证
 
