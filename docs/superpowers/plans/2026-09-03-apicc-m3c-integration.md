@@ -12,6 +12,9 @@
 
 ### 任务 1：端到端联调
 
+> **联调前置对齐清单（2026-09-05 并入，M3-A 终审汇总的跨轨咬合缺口——desktop `shared/online/contract.ts` 一处集中修 + 测试）**：①`currentHash` 改 `z.string().nullable()`（服务端新文件并发删除时 409 带 null hash，strict schema 现会退化冲突对话框）；②batch `status` 枚举补 `failed`（服务端 IO 失败行，现会令整批迁移推送中断）；③`OnlinePathSchema` 补禁 `:`（与服务端 path 规则对齐）；④顺带：删除死 i18n 键 `online.rawTitle`、`ipc.ts` 重复的 WorkspaceId schema 合并（M3-B 终审 Minor 5/6）。前置项各自补测试后再写 e2e。
+
+- [ ] **步骤 0：前置对齐**——落实上述清单（TDD，每项先红后绿），独立 commit `fix(desktop): 在线契约对齐服务端修订（nullable hash/failed 枚举/禁冒号）`。
 - [ ] **步骤 1：失败的测试**——集成测试（desktop 包内，注入真实 onlineClient 指向测试起的服务端进程）：
   1. 测试夹具启动服务端：`mvn -s .mvn/settings.xml -q -DskipTest package spring-boot:repackage` 后 `java -jar target/apicc-server-*.jar --server.port=<随机>`（或 `spring-boot:run`；选可确定性关闭者；health = GET /api/v1/ping 轮询就绪，超时 60s）。
   2. 场景链：注册两用户（A/OWNER、B）→ A 建工作区 → B 加入 EDITOR → A 推送含两项目的文件集 → B getTree（两项目可见）→ A 将项目 P2 对 B 设 NONE → B getTree 不再含 P2、读 P2 路径 missing → B 推送 P1 修改成功、构造 baseVersion 过期 → 409 → B 拉取全量到临时目录（与推送内容一致）。
