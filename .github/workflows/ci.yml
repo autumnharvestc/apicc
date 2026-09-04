@@ -1,5 +1,6 @@
 # CI 三 job 工作流（M2-D 规格决策 D7）：
-#   test          — 三包 typecheck/build/test 门禁（ubuntu，跳过 Electron 二进制下载）
+#   test          — 三包 build + test，core 另行 typecheck（覆盖测试文件类型；
+#                   build 的 tsc 只编译 src，vitest 转译不查类型）（ubuntu，跳过 Electron 二进制下载）
 #   brand-gate    — 品牌中立门禁：脚本词表自检 + git 跟踪文件全树扫描
 #   package-smoke — Windows 打包冒烟（仅 main push；electron / electron-builder 双缓存）
 # 版本策略：action 锁 major tag（每个 uses 行尾注释显式 major）；SHA 锁定列为后续加固项。
@@ -43,6 +44,12 @@ jobs:
           cache: pnpm
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
+      - name: core 类型检查（含测试文件）
+        # core 的 build 用 tsconfig.build.json 只编译 src（include: ["src"]），
+        # vitest 走 esbuild 转译不查类型——core 测试文件的类型错误只有
+        # `tsc --noEmit`（tsconfig.json include src+tests）能拦，故单列一步。
+        # desktop 的 typecheck/typecheck:vue 已含在其 build 首两段，无需单列。
+        run: pnpm -C packages/core typecheck
       - name: 构建全部包
         run: pnpm -r build
       - name: 全部包测试
