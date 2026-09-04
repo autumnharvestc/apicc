@@ -1,6 +1,7 @@
-// M3-B 任务 3：online session 工作区状态扩展——当前在线工作区 + 树缓存 + 文件内容缓存
+// M3-B 任务 3：online session 工作区状态扩展——当前在线工作区 + 树缓存
 // （plan 任务 3 步骤 2：main/online/session.ts 扩展）。open/close 为纯状态操作（不发网络）；
-// getTreeView 取树（缓存：第二次不重发请求）、映射 TreeNodeDTO（裁定 A）；切换/关闭清缓存。
+// getTreeView 取树（缓存：第二次不重发请求、内容变更即失效）、映射 TreeNodeDTO（裁定 A）；
+// 切换/关闭清缓存。文件版本由渲染层编辑缓冲自持，main 不做文件内容缓存（次要 5 顺修备案）。
 import { describe, expect, it } from "vitest";
 import { createOnlineSession, onlineTreeToDto } from "../../../src/main/online/session.js";
 import { createOnlineClient } from "../../../src/main/online/client.js";
@@ -18,7 +19,7 @@ const TREE = {
     { path: "apicc.workspace.yaml", hash: "h0", version: 1, size: 10 },
     { path: "groups/g/projects/p/collections/c/apis/a/api.yaml", hash: "h1", version: 2, size: 20 },
   ],
-  projects: [{ id: "p-1", name: "p", myRole: "EDITOR" as const }],
+  projects: [{ id: "p-1", name: "p", path: "groups/g/projects/p", myRole: "EDITOR" as const }],
 };
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
@@ -105,23 +106,13 @@ describe("online session 工作区状态（任务 3）", () => {
     expect(session.workspace).toEqual({ id: "ws-2", name: "另一空间", myRole: "VIEWER" });
   });
 
-  it("文件内容缓存：getFiles 命中入缓存、putFile 成功更新版本；closeWorkspace 清空", async () => {
-    const { session, calls } = setup();
+  it("putFile 成功前移版本；文件版本由渲染层自持（main 不缓存文件内容——次要 5 顺修备案）", async () => {
+    const { session } = setup();
     await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
     session.openWorkspace(WS);
-    const filesCallCount = () => calls.filter((c) => c.url.includes("/files?")).length;
-    await session.getFiles({ workspaceId: "ws-1", paths: ["groups/g/projects/p/collections/c/apis/a/api.yaml"] });
-    expect(session.getCachedFile("ws-1", "groups/g/projects/p/collections/c/apis/a/api.yaml")).toEqual({
-      content: "content-of-groups/g/projects/p/collections/c/apis/a/api.yaml",
-      version: 2,
-    });
-    expect(session.getCachedFile("ws-1", "missing.yaml")).toBeNull();
-    // putFile 成功 → 缓存版本随结果更新（后续冲突判定可用最新 baseVersion）
     await session.putFile({ workspaceId: "ws-1", path: "groups/g/projects/p/collections/c/apis/a/api.yaml", content: "new", baseVersion: 2 });
-    expect(session.getCachedFile("ws-1", "groups/g/projects/p/collections/c/apis/a/api.yaml")?.version).toBe(99);
-    session.closeWorkspace();
-    expect(session.getCachedFile("ws-1", "groups/g/projects/p/collections/c/apis/a/api.yaml")).toBeNull();
-    expect(filesCallCount()).toBe(1);
+    // 推送成功只前移树缓存失效标记与既有出口；main 不持文件内容缓存（版本号在渲染层编辑缓冲自持）
+    expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
   });
 
   it("内容变更使树缓存失效：putFile 成功后 getTreeView 重发 /tree（新 hash/新文件可见）", async () => {

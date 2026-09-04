@@ -76,20 +76,23 @@ describe("在线契约 schema（规格 §3 fixture 往返）", () => {
   });
 
   // —— §3.4 内容 ——
-  it("tree：{ workspaceId, rootVersion, files[path/hash/version/size], projects[id/name/myRole] }", () => {
+  it("tree：{ workspaceId, rootVersion, files[path/hash/version/size], projects[id/name/path/myRole] }（契约修订 2026-09-03：projects.path 必填，同名项目权限判定按 path 定位）", () => {
     const fixture = {
       workspaceId: "ws-1",
       rootVersion: 42,
       files: [{ path: "groups/后端/projects/订单/collections/接口/apis/登录/apicc.api.yaml", hash: "3f2a9c8b7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a", version: 7, size: 512 }],
-      projects: [{ id: "p-1", name: "订单", myRole: "EDITOR" }],
+      projects: [{ id: "p-1", name: "订单", path: "groups/后端/projects/订单", myRole: "EDITOR" }],
     };
     expect(OnlineTreeSchema.parse(fixture)).toEqual(fixture);
   });
 
-  it("tree 拒绝：file 缺 version / version 为字符串", () => {
+  it("tree 拒绝：file 缺 version / version 为字符串；project 缺 path（契约修订后必填）", () => {
     const base = { workspaceId: "ws-1", rootVersion: 1, projects: [] };
     expect(OnlineTreeSchema.safeParse({ ...base, files: [{ path: "a.yaml", hash: "h", size: 1 }] }).success).toBe(false);
     expect(OnlineTreeSchema.safeParse({ ...base, files: [{ path: "a.yaml", hash: "h", version: "7", size: 1 }] }).success).toBe(false);
+    expect(
+      OnlineTreeSchema.safeParse({ ...base, files: [], projects: [{ id: "p-1", name: "订单", myRole: "EDITOR" }] }).success,
+    ).toBe(false);
   });
 
   it("files：{ files[path/content/version/hash], missing[] }", () => {

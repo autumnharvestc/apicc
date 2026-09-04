@@ -6,10 +6,12 @@
  * （401/网络错误）= 清档并保持登出态。
  *
  * 任务 3 扩展：当前在线工作区状态（openWorkspace/closeWorkspace，纯状态操作不发网络）+
- * 树缓存（getTreeView 首取后缓存，切换/关闭重置）+ 文件内容缓存（getFiles/putFile 透写，
- * 供编辑链路复用版本号）。树映射 onlineTreeToDto 为纯函数（裁定 A）：服务端不回树结构，
- * 由 files path 清单按 M1 §6 目录约定推导 groups/projects/collections/folders/apis 层级，
- * 工作流/环境/配置文件映射为只读 file 叶（裁定 B：只读浏览，不做编辑器）。
+ * 树缓存（getTreeView 首取后缓存，内容变更（put/batch/delete 成功）即失效，切换/关闭重置）。
+ * 树映射 onlineTreeToDto 为纯函数（裁定 A）：服务端不回树结构，由 files path 清单按 M1 §6
+ * 目录约定推导 groups/projects/collections/folders/apis 层级，工作流/环境/配置文件映射为
+ * 只读 file 叶（裁定 B：只读浏览，不做编辑器）。
+ * **不持文件内容缓存**（审查次要 5 顺修）：文件版本号由渲染层编辑缓冲自持
+ * （selectNode 取数即入缓冲、saveApi 前移），main 侧只写不读的缓存已删除。
  */
 import type { OnlineClient } from "./client.js";
 import { OnlineConflictError } from "./client.js";
@@ -47,7 +49,7 @@ interface ParsedPath {
   project?: string;
   collection?: string;
   folder?: string;
-  kind: "group-config" | "project-config" | "env" | "workflow" | "collection-config" | "api";
+  kind: "group-config" | "project-config" | "env" | "workflow" | "collection-config" | "folder-config" | "api";
   /** 叶显示名：配置文件取文件名、环境取文件名、工作流/接口取目录名。 */
   name: string;
 }
@@ -67,6 +69,10 @@ function parseWorkspacePath(path: string): ParsedPath | null {
   if (segs[4] !== "collections" || segs.length < 7) return null;
   const collection = segs[5]!;
   if (segs.length === 7) return segs[6] === "collection.yaml" ? { group, project, collection, kind: "collection-config", name: "collection.yaml" } : null;
+  // 文件夹配置：collections/<c>/folders/<f>/folder.yaml（次要 3 顺修：与 group/project/collection.yaml 同口径只读叶）
+  if (segs.length === 9 && segs[6] === "folders" && segs[8] === "folder.yaml") {
+    return { group, project, collection, folder: segs[7]!, kind: "folder-config", name: "folder.yaml" };
+  }
   // 接口：collections/<c>/apis/<a>/api.yaml 与 folders/<f>/apis/<a>/api.yaml
   if (segs[6] === "apis" && segs.length === 9 && segs[8] === "api.yaml") {
     return { group, project, collection, kind: "api", name: segs[7]! };
@@ -134,11 +140,16 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string): TreeN
       collection.children!.push(leaf(file.path, parsed.name));
       continue;
     }
-    const parent = parsed.folder
+    const folderNode = parsed.folder
       ? ensure("folder", `groups/${parsed.group}/projects/${parsed.project}/collections/${parsed.collection}/folders/${parsed.folder}`, parsed.folder, collection)
       : collection;
+    if (parsed.kind === "folder-config") {
+      // folder.yaml 只读叶挂在 folder 节点（folder 仅为 folder.yaml 存在时也建容器，与 collection-config 同口径）
+      folderNode.children!.push(leaf(file.path, parsed.name));
+      continue;
+    }
     // api 叶 id = api.yaml 全路径：选中后渲染层按该路径 getFiles 取内容（裁定 B）
-    parent.children!.push({ kind: "api", id: file.path, label: parsed.name, children: [] });
+    folderNode.children!.push({ kind: "api", id: file.path, label: parsed.name, children: [] });
   }
   return sortTree(root);
 }
@@ -151,10 +162,10 @@ export interface OnlineSessionDeps {
 
 export function createOnlineSession(deps: OnlineSessionDeps) {
   let current: { baseUrl: string; client: OnlineClient } | null = null;
-  // 任务 3：当前在线工作区 + 树缓存 + 文件内容缓存（open/close/切换时整体重置——裁定 E 会话清理）
+  // 任务 3：当前在线工作区 + 树缓存（open/close/切换时重置；内容变更即失效）。
+  // 不持文件内容缓存（审查次要 5）：版本号在渲染层编辑缓冲自持，main 侧只写不读即死代码。
   let workspaceState: OnlineWorkspaceState | null = null;
   let treeCache: OnlineTree | null = null;
-  const fileCache = new Map<string, { content: string; version: number }>(); // key = 文件 path（单活动工作区，切换即清）
 
   function requireWorkspace(workspaceId: string): OnlineWorkspaceState {
     if (!workspaceState || workspaceState.id !== workspaceId) throw new Error("尚未打开在线工作区");
@@ -198,20 +209,18 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     },
 
     /**
-     * 打开在线工作区（纯状态操作，不发网络）：记录三元组并重置树/文件缓存。
+     * 打开在线工作区（纯状态操作，不发网络）：记录三元组并重置树缓存。
      * 与本地工作区互斥（裁定 E）由 IPC 组合层保证（ws:open 链路反向清理）。
      */
     openWorkspace(input: OnlineWorkspaceOpenInput): void {
       workspaceState = { id: input.workspaceId, name: input.name, myRole: input.myRole };
       treeCache = null;
-      fileCache.clear();
     },
 
-    /** 关闭在线工作区（裁定 E 退出清理）：清状态 + 树缓存 + 文件缓存 + 编辑态由渲染层同步清。 */
+    /** 关闭在线工作区（裁定 E 退出清理）：清状态 + 树缓存（编辑缓冲由渲染层同步清）。 */
     closeWorkspace(): void {
       workspaceState = null;
       treeCache = null;
-      fileCache.clear();
     },
 
     /**
@@ -229,12 +238,6 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
         projects: treeCache.projects,
         tree: onlineTreeToDto(treeCache, ws.name),
       };
-    },
-
-    /** 文件内容缓存读口（任务 3 编辑链路复用版本号；工作区不符/未缓存 → null）。 */
-    getCachedFile(workspaceId: string, path: string): { content: string; version: number } | null {
-      if (!workspaceState || workspaceState.id !== workspaceId) return null;
-      return fileCache.get(path) ?? null;
     },
 
     /** 会话失效清理（401 事件链的显式入口，测试与组合根可直呼）。 */
@@ -309,21 +312,16 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     },
 
     async getFiles(input: OnlineFilesGetInput): Promise<OnlineFilesResult> {
-      const result = await requireClient().getFiles(input.workspaceId, input.paths);
-      // 命中文件透写缓存（内容 + 版本，任务 3 编辑链路的 baseVersion 来源）
-      if (workspaceState?.id === input.workspaceId) {
-        for (const file of result.files) fileCache.set(file.path, { content: file.content, version: file.version });
-      }
-      return result;
+      // 直通出口（不缓存文件内容——版本号由渲染层编辑缓冲自持，审查次要 5 顺修备案）
+      return requireClient().getFiles(input.workspaceId, input.paths);
     },
 
     async putFile(input: OnlineFilePutInput): Promise<OnlinePushOutcome> {
       const { workspaceId, path, content, baseVersion } = input;
       const outcome = await pushOutcome(() => requireClient().putFile(workspaceId, { path, content, baseVersion }));
-      // 推送成功 → 缓存版本随结果前移（冲突不动缓存——服务端现状以冲突对象带回）；
-      // 内容变更使树缓存失效（推送后 refreshTreeView 取到新 hash/新文件）。
+      // 推送成功使树缓存失效（推送后 refreshTreeView 取到新 hash/新文件）；
+      // 冲突不动缓存——服务端现状以冲突对象带回。
       if (outcome.outcome === "pushed" && workspaceState?.id === workspaceId) {
-        fileCache.set(path, { content, version: outcome.result.version });
         treeCache = null;
       }
       return outcome;

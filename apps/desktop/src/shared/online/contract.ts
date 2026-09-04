@@ -57,7 +57,11 @@ export const OnlineAclEntrySchema = z.object({ userId: z.string(), role: OnlineA
 
 // —— 内容（§3.4，核心同步面）——
 export const OnlineTreeFileSchema = z.object({ path: z.string(), hash: z.string(), version: z.number(), size: z.number() });
-export const OnlineTreeProjectSchema = z.object({ id: z.string(), name: z.string(), myRole: OnlineProjectRoleSchema });
+/**
+ * tree.projects 行（契约修订 2026-09-03，main @ 3d8b3fc）：`path` 为项目目录相对工作区根的
+ * `/` 分隔路径，必填——同名项目按 name 匹配权限会张冠李戴，客户端 ACL 判定按 path 定位。
+ */
+export const OnlineTreeProjectSchema = z.object({ id: z.string(), name: z.string(), path: z.string(), myRole: OnlineProjectRoleSchema });
 export const OnlineTreeSchema = z.object({
   workspaceId: z.string(),
   rootVersion: z.number(),

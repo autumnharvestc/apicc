@@ -185,7 +185,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       workspaceId: onlineWs.id,
       rootVersion: onlineFiles.size,
       files: [...onlineFiles.keys()].map(onlineTreeRow),
-      projects: [{ id: "p-online-1", name: "示例项目", myRole: "EDITOR" as const }],
+      // 契约修订 2026-09-03：projects.path 必填（同名项目权限判定按 path 定位）
+      projects: [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" as const }],
     };
     return {
       workspaceId: onlineWs.id,
@@ -795,7 +796,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
         workspaceId,
         rootVersion: onlineFiles.size,
         files: [...onlineFiles.keys()].map(onlineTreeRow),
-        projects: [{ id: "p-online-1", name: "示例项目", myRole: "EDITOR" as const }],
+        // 契约修订 2026-09-03：projects.path 必填（同名项目权限判定按 path 定位）
+        projects: [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" as const }],
       };
       return OnlineTreeSchema.parse(tree); // 出口过契约校验（契约漂移即红）
     },

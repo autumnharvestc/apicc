@@ -35,9 +35,11 @@ async function leaveOnlineIfNeeded(): Promise<void> {
 
 async function openWorkspace() {
   try {
-    await leaveOnlineIfNeeded();
+    // 目录选定成功后再切模式（次要 4 顺修）：取消选择不动在线会话，避免落空态
     const dir = await props.api.wsPickDirectory();
-    if (dir) await props.workspace.open(dir);
+    if (!dir) return;
+    await leaveOnlineIfNeeded();
+    await props.workspace.open(dir);
   } catch (e) {
     props.reportError(e);
   }
@@ -45,9 +47,9 @@ async function openWorkspace() {
 
 async function startCreate() {
   try {
-    await leaveOnlineIfNeeded();
     const dir = await props.api.wsPickDirectory();
-    if (!dir) return; // 用户取消目录选择
+    if (!dir) return; // 用户取消目录选择：不切模式
+    await leaveOnlineIfNeeded();
     pendingRoot.value = dir;
     dialogOpen.value = true;
   } catch (e) {

@@ -48,7 +48,7 @@ describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级）", () => {
     expect(child(child(other, "project", "账户服务"), "collection", "账户API")).toBeDefined();
   });
 
-  it("只读 file 叶（裁定 B 只读浏览）：workspace/group/project 配置、环境、工作流、collection.yaml 挂对应父节点", () => {
+  it("只读 file 叶（裁定 B 只读浏览）：workspace/group/project 配置、环境、工作流、collection/folder.yaml 挂对应父节点", () => {
     const dto = onlineTreeToDto(
       treeOf([
         "apicc.workspace.yaml",
@@ -57,6 +57,8 @@ describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级）", () => {
         "groups/电商/projects/订单服务/environments/dev.yaml",
         "groups/电商/projects/订单服务/workflows/下单流/workflow.yaml",
         "groups/电商/projects/订单服务/collections/订单API/collection.yaml",
+        "groups/电商/projects/订单服务/collections/订单API/folders/内部/folder.yaml",
+        "groups/电商/projects/订单服务/collections/订单API/folders/内部/apis/create-order/api.yaml",
         "groups/电商/projects/订单服务/collections/订单API/apis/create-order/api.yaml",
       ]),
     );
@@ -72,6 +74,12 @@ describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级）", () => {
     expect(child(collection, "file", "collection.yaml").id).toBe(
       "groups/电商/projects/订单服务/collections/订单API/collection.yaml",
     );
+    // folder.yaml（次要 3 顺修）：与 group/project/collection.yaml 同口径只读叶，挂 folder 节点
+    const folder = child(collection, "folder", "内部");
+    expect(child(folder, "file", "folder.yaml").id).toBe(
+      "groups/电商/projects/订单服务/collections/订单API/folders/内部/folder.yaml",
+    );
+    expect(child(folder, "api", "create-order")).toBeDefined();
     expect(child(collection, "api", "create-order")).toBeDefined();
   });
 

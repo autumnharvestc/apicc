@@ -148,10 +148,10 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
     expect((wrapper.find('[data-testid="online-editor-name"]').element as HTMLInputElement).disabled).toBe(true);
   });
 
-  it("项目级 ACL 覆盖 VIEWER：该项目子树接口同样只读", async () => {
+  it("项目级 ACL 覆盖 VIEWER：该项目子树接口同样只读（按 projects.path 前缀定位）", async () => {
     const f = await fixture();
     await seedValidApi(f);
-    f.online.projects = [{ id: "p-online-1", name: "示例项目", myRole: "VIEWER" }];
+    f.online.projects = [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "VIEWER" }];
     await f.online.selectNode("api", API_PATH);
     const wrapper = await f.mount(OnlineApiEditor);
     expect(wrapper.find('[data-testid="online-save-btn"]').exists()).toBe(false);
@@ -295,7 +295,7 @@ describe("TopBar 模式徽标与互斥切换（裁定 E）", () => {
     expect(f.online.editorPath).toBeNull();
   });
 
-  it("在线激活时点「打开工作区」→ 先退出在线再走本地打开（互斥自动侧）", async () => {
+  it("在线激活时点「打开工作区」→ 目录选定后再退在线并打开本地（互斥自动侧）", async () => {
     const f = await fixture();
     let pickCount = 0;
     f.api.wsPickDirectory = async () => {
@@ -308,6 +308,16 @@ describe("TopBar 模式徽标与互斥切换（裁定 E）", () => {
     expect(f.online.activeWorkspace).toBeNull(); // 在线已退
     expect(pickCount).toBe(1);
     expect(f.workspace.opened).toBe(true);
+  });
+
+  it("在线激活时点「打开工作区」但取消目录选择 → 不切模式（不落空态，次要 4 顺修）", async () => {
+    const f = await fixture();
+    f.api.wsPickDirectory = async () => ""; // 用户取消
+    const wrapper = await f.mount(TopBar);
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    expect(f.online.activeWorkspace).not.toBeNull(); // 在线保持
+    expect(f.workspace.opened).toBe(false);
   });
 });
 

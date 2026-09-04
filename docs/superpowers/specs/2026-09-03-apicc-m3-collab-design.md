@@ -73,7 +73,7 @@ M1/M2 交付了完备的本地模式（接口定义/调试/测试/工作流/压�
 
 | 方法 路径 | 语义 | 权限 |
 |---|---|---|
-| GET `/api/v1/workspaces/{id}/tree` | `200 { workspaceId, rootVersion, files: [{ path, hash(sha-256 hex), version, size }], projects: [{ id, name, myRole }] }`——path 为相对工作区根的 `/` 分隔路径；无读权限的项目子树整体不出现 | 有效角色（NONE 项目过滤） |
+| GET `/api/v1/workspaces/{id}/tree` | `200 { workspaceId, rootVersion, files: [{ path, hash(sha-256 hex), version, size }], projects: [{ id, name, path, myRole }] }`——path 为相对工作区根的 `/` 分隔路径；projects.path 为该项目的目录相对路径（**契约修订 2026-09-03：M3-B 审查发现同名项目按 name 匹配会张冠李戴，客户端权限判定需 path 定位**）；无读权限的项目子树整体不出现 | 有效角色（NONE 项目过滤） |
 | GET `/api/v1/workspaces/{id}/files?paths=a,b` | `200 { files: [{ path, content(文本), version, hash }], missing: [path] }`（≤200 路径/批） | 同上（任一路径无读权 → 该路径进 missing） |
 | PUT `/api/v1/workspaces/{id}/files/{path}` | `{ content, baseVersion }`（新文件 baseVersion=0）→ `201 { path, version, hash }`；baseVersion 不匹配 → `409 { code: version_conflict, currentVersion, currentHash }` | EDITOR+（路径落入 NONE 项目 → 403 project_forbidden） |
 | POST `/api/v1/workspaces/{id}/files/batch` | `{ files: [{ path, content, baseVersion }] }` ≤200 → `200 { results: [{ path, status: pushed\|conflict\|forbidden\|invalid, version?, currentVersion?, message? }] }`（部分成功语义，迁移与推送用） | EDITOR+ |

@@ -11,7 +11,7 @@ import { createSession } from "../../../src/main/session.js";
 import { createOnlineClient } from "../../../src/main/online/client.js";
 import type { OnlineClient } from "../../../src/main/online/client.js";
 import type { TokenStore } from "../../../src/main/online/tokenStore.js";
-import { hashContent } from "../../../src/shared/online/migrate.js";
+import { hashContent } from "../../../src/main/online/migrate.js";
 
 const json = (status: number, payload: unknown): Response => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
 const USER = { id: "u-1", username: "alice", displayName: "Alice" };
@@ -19,7 +19,7 @@ const TREE = {
   workspaceId: "ws-1",
   rootVersion: 1,
   files: [{ path: "groups/g/projects/p/collections/c/apis/a/api.yaml", hash: "h1", version: 1, size: 2 }],
-  projects: [{ id: "p-1", name: "p", myRole: "EDITOR" as const }],
+  projects: [{ id: "p-1", name: "p", path: "groups/g/projects/p", myRole: "EDITOR" as const }],
 };
 
 function setup(handler: (url: string, method: string) => Response) {

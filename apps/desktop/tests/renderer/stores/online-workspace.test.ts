@@ -115,18 +115,33 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     expect(store.editorKind).toBe("api");
   });
 
-  it("canEdit：工作区 VIEWER → 恒只读；EDITOR + 项目 VIEWER/NONE 覆盖 → 该项目只读", async () => {
+  it("canEdit：工作区 VIEWER → 恒只读；EDITOR + 项目 VIEWER/NONE 覆盖 → 该项目只读（契约修订：按 projects.path 前缀定位）", async () => {
     const { store } = await opened();
     expect(store.canEdit(API_PATH)).toBe(true);
-    // 项目级 ACL 覆盖：tree.projects 里示例项目 myRole=EDITOR（继承 OWNER 工作区），改覆盖为 VIEWER
-    store.projects = [{ id: "p-online-1", name: "示例项目", myRole: "VIEWER" }];
+    // 项目级 ACL 覆盖：示例项目 path 命中 API_PATH 前缀，覆盖为 VIEWER/NONE → 只读
+    store.projects = [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "VIEWER" }];
     expect(store.canEdit(API_PATH)).toBe(false);
-    store.projects = [{ id: "p-online-1", name: "示例项目", myRole: "NONE" }];
+    store.projects = [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "NONE" }];
     expect(store.canEdit(API_PATH)).toBe(false);
+    // 路径前缀必须整段匹配：另一项目 path 是本 path 的字符串前缀但非目录前缀 → 不误伤
+    store.projects = [{ id: "p-other", name: "示例项目", path: "groups/示例分组/projects/示例项目其他", myRole: "NONE" }];
+    expect(store.canEdit(API_PATH)).toBe(true);
+    // 同名项目按 path 定位（重要 2 回归：按 name 匹配会张冠李戴）：
+    // 两个同名「示例项目」，path 甲 VIEWER、path 乙 EDITOR——API_PATH 属乙 → 可编辑
+    store.projects = [
+      { id: "p-a", name: "示例项目", path: "groups/甲/projects/示例项目", myRole: "VIEWER" },
+      { id: "p-b", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" },
+    ];
+    expect(store.canEdit(API_PATH)).toBe(true);
+    expect(store.canEdit("groups/甲/projects/示例项目/collections/c/apis/a/api.yaml")).toBe(false);
+    // 非项目子树（根配置）：不受项目 ACL 影响，按工作区角色可写
+    store.projects = [{ id: "p-a", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "VIEWER" }];
+    expect(store.canEdit("apicc.workspace.yaml")).toBe(true);
     // 工作区级 VIEWER：一切只读
     store.activeWorkspace = { ...store.activeWorkspace!, myRole: "VIEWER" };
     expect(store.canEdit(API_PATH)).toBe(false);
     expect(store.canEdit("apicc.workspace.yaml")).toBe(false);
+    expect(store.canEdit(null)).toBe(false);
   });
 
   it("saveApi：序列化回文本 putFile（baseVersion=当前 version）→ 版本前移、dirty 复位", async () => {

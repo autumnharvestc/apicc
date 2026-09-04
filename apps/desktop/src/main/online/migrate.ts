@@ -9,14 +9,23 @@
  *   再做包含性校验（resolve 后必须仍位于目标目录内），逐文件 mkdir -p 写入。
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { OnlinePathSchema } from "../../shared/online/contract.js";
-import { hashContent } from "../../shared/online/migrate.js";
 
 /** 生成物隔离目录（规格 §8）：迁移扫描/推送永不触碰。 */
 const SKIP_DIRS = new Set([".apicc", ".git"]);
 
 export interface ScannedFile { path: string; hash: string; content: string }
+
+/**
+ * 与服务端同口径的内容指纹（§3.4：sha-256 hex utf8）。
+ * **main 进程专用**（关键 1 修复备案）：渲染层 sandbox 无 node:crypto，hash 比对在渲染层
+ * 一律用上游产出的 hash（服务端 tree 自带 / 本函数扫描产出），绝不在客户端重算。
+ */
+export function hashContent(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
 
 /** 递归扫描目录下的文本文件（utf8）；目录不存在抛可读错误。 */
 export function scanDirFiles(root: string): ScannedFile[] {

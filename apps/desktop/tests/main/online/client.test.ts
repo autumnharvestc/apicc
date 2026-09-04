@@ -74,7 +74,7 @@ describe("onlineClient 请求拼装", () => {
   });
 
   it("getTree：GET /api/v1/workspaces/{id}/tree", async () => {
-    const tree = { workspaceId: "ws-1", rootVersion: 42, files: [], projects: [{ id: "p-1", name: "订单", myRole: "EDITOR" }] };
+    const tree = { workspaceId: "ws-1", rootVersion: 42, files: [], projects: [{ id: "p-1", name: "订单", path: "groups/后端/projects/订单", myRole: "EDITOR" }] };
     const { calls, impl } = fetchStub(() => json(200, tree));
     const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
     expect(await client.getTree("ws-1")).toEqual(tree);

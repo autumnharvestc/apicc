@@ -7,8 +7,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { chunk, hashContent, planPull, planPush } from "../../../src/shared/online/migrate.js";
-import { scanDirFiles, writeFiles } from "../../../src/main/online/migrate.js";
+import { chunk, planPull, planPush } from "../../../src/shared/online/migrate.js";
+import { hashContent, scanDirFiles, writeFiles } from "../../../src/main/online/migrate.js";
 
 const serverFile = (path: string, content: string, version = 1) => ({
   path,
@@ -17,7 +17,7 @@ const serverFile = (path: string, content: string, version = 1) => ({
   size: Buffer.byteLength(content, "utf8"),
 });
 
-describe("hashContent（§3.4 hash = sha-256 hex，与服务端同口径）", () => {
+describe("hashContent（§3.4 hash = sha-256 hex，与服务端同口径；main 侧 scan 专用——渲染层不 import node: 内置）", () => {
   it("对 utf8 内容取 sha-256 hex", () => {
     expect(hashContent("hello")).toBe(createHash("sha256").update("hello", "utf8").digest("hex"));
     expect(hashContent("你好")).toMatch(/^[0-9a-f]{64}$/);
@@ -32,9 +32,9 @@ describe("planPull（拉取差异：同 path 同 hash 跳过）", () => {
       serverFile("c/same.yaml", "same", 2),
     ];
     const local = [
-      { path: "b/changed.yaml", hash: hashContent("local-content") },
-      { path: "c/same.yaml", hash: hashContent("same") },
-      { path: "d/local-only.yaml", hash: hashContent("local") },
+      { path: "b/changed.yaml", content: "local-content", hash: hashContent("local-content") },
+      { path: "c/same.yaml", content: "same", hash: hashContent("same") },
+      { path: "d/local-only.yaml", content: "local", hash: hashContent("local") },
     ];
     const plan = planPull(server, local);
     expect(plan.toFetch).toEqual(["a/new.yaml", "b/changed.yaml"]);
@@ -46,18 +46,18 @@ describe("planPull（拉取差异：同 path 同 hash 跳过）", () => {
   });
 
   it("本地多出的文件不删（拉取永不删除本地文件）", () => {
-    const plan = planPull([serverFile("a.yaml", "x")], [{ path: "extra.yaml", hash: "h" }]);
+    const plan = planPull([serverFile("a.yaml", "x")], [{ path: "extra.yaml", content: "e", hash: "h" }]);
     expect(plan.toFetch).toEqual(["a.yaml"]);
     expect(plan.details.every((d) => d.path !== "extra.yaml")).toBe(true);
   });
 });
 
 describe("planPush（推送差异：D8 从不盲目覆盖）", () => {
-  it("新文件 baseVersion=0、已存在且不同带服务端 version、相同 hash 跳过", () => {
+  it("新文件 baseVersion=0、已存在且 hash 不同带服务端 version、相同 hash 跳过", () => {
     const local = [
-      { path: "a/new.yaml", content: "brand-new" },
-      { path: "b/changed.yaml", content: "pushed-content" },
-      { path: "c/same.yaml", content: "identical" },
+      { path: "a/new.yaml", content: "brand-new", hash: hashContent("brand-new") },
+      { path: "b/changed.yaml", content: "pushed-content", hash: hashContent("pushed-content") },
+      { path: "c/same.yaml", content: "identical", hash: hashContent("identical") },
     ];
     const server = [serverFile("b/changed.yaml", "server-old", 7), serverFile("c/same.yaml", "identical", 2)];
     const plan = planPush(local, server);
@@ -66,6 +66,15 @@ describe("planPush（推送差异：D8 从不盲目覆盖）", () => {
       { path: "b/changed.yaml", content: "pushed-content", baseVersion: 7 },
     ]);
     expect(plan.skipped).toEqual(["c/same.yaml"]);
+  });
+
+  it("hash 比对直接用 scan 产出的 hash（不在渲染层重算）：hash 相同 → 跳过，与 content 字段无关", () => {
+    // 关键 1 备案：planPush 不得在客户端重算 hash（渲染包无 node:crypto）——
+    // 本例 content 与服务端不同但 hash 相同（如大小写差异的等价内容）→ 按契约以 hash 为准跳过。
+    const local = [{ path: "x/same.yaml", content: "different-bytes", hash: hashContent("server-truth") }];
+    const plan = planPush(local, [serverFile("x/same.yaml", "server-truth", 3)]);
+    expect(plan.entries).toEqual([]);
+    expect(plan.skipped).toEqual(["x/same.yaml"]);
   });
 
   it("本地空目录 → 无 entries 无 skipped", () => {

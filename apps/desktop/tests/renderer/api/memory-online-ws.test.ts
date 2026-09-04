@@ -22,7 +22,7 @@ describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () =>
     const view = (await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: ws.myRole })) as OnlineWorkspaceView;
     expect(view.workspaceId).toBe(ws.id);
     expect(view.name).toBe(ws.name);
-    expect(view.projects).toEqual([{ id: "p-online-1", name: "示例项目", myRole: "EDITOR" }]);
+    expect(view.projects).toEqual([{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" }]);
     const root = view.tree;
     expect(root.kind).toBe("root");
     expect(root.label).toBe(ws.name);
