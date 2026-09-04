@@ -81,12 +81,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: 安装依赖
-        run: pnpm install --frozen-lockfile
       # 此 job 不设 ELECTRON_SKIP_BINARY_DOWNLOAD：electron-builder 打包需要
       # 真实 Electron dist。二进制走缓存 + 仓库 .npmrc 的 npmmirror 镜像
       # （GitHub runner 可达）；若未来镜像不可达，改设
       # ELECTRON_MIRROR=https://github.com/electron/electron/releases/ 官方源。
+      # 缓存恢复必须先于 pnpm install：electron 的 postinstall 在 install 期间
+      # 下载运行时二进制，缓存放在 install 之后将永远免不了首次下载。
       - name: 缓存 Electron 运行时二进制
         uses: actions/cache@v4 # v4
         with:
@@ -101,6 +101,8 @@ jobs:
           key: electron-builder-cache-${{ runner.os }}-v1
           restore-keys: |
             electron-builder-cache-${{ runner.os }}-
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
       - name: 生成应用图标
         run: pnpm -C apps/desktop gen:icon
       - name: 打包（dir 模式，含三段构建）

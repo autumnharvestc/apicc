@@ -50,9 +50,9 @@ function buildSelfCheckSamples() {
   const count = SEGMENTED_WORDS.length;
   SEGMENTED_WORDS.forEach(([head, tail], i) => {
     const word = head + tail;
-    // 正样本：完整词本身、内嵌句中（中日韩字符对 \b 属非词字符，可命中）、
-    // 大小写变体——三者都必须命中，漏一即词表/正则有错。
-    positives.push(word, `接口调试可用 ${word} 完成`, word.toUpperCase());
+    // 正样本：完整词本身、无空格中日韩字符包裹（\b 对 CJK 非词字符成立，
+    // 不给「靠空格凑边界」留余地）、大小写变体——三者都必须命中，漏一即词表/正则有错。
+    positives.push(word, `调试用${word}做接口联调`, word.toUpperCase());
     // 负样本一：段逆序拼接（tail+head），非竞品词，必须不命中。
     negatives.push(tail + head);
     // 负样本二：跨词段拼接（词 A 首段 + 相邻词 B 尾段），模拟「片段出现在
@@ -95,16 +95,24 @@ function selfCheck() {
 
 /** 列出仓库全部 git 跟踪文件（\0 分隔，避免路径含空格被拆错）。 */
 function listTrackedFiles() {
-  const out = execFileSync("git", ["ls-files", "-z"], {
-    cwd: REPO_ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return out.toString().split("\0").filter(Boolean);
+  try {
+    const out = execFileSync("git", ["ls-files", "-z"], {
+      cwd: REPO_ROOT,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return out.toString().split("\0").filter(Boolean);
+  } catch (err) {
+    // fail-closed：拿不到跟踪清单就无法证明树是干净的，抛错使进程非零退出。
+    throw new Error(
+      `无法获取 git 跟踪文件清单（git ls-files，cwd=${REPO_ROOT}）：${err?.message ?? err}`,
+    );
+  }
 }
 
-/** 逐文件逐行扫描，命中收集为 {file,line,text}。 */
+/** 逐文件逐行扫描，命中收集为 {file,line,text}，读取失败收集为 readErrors（fail-closed）。 */
 function scanTrackedFiles() {
   const hits = [];
+  const readErrors = [];
   for (const rel of listTrackedFiles()) {
     if (SKIP_FILES.has(rel)) continue;
     if (SKIP_EXTENSIONS.has(extname(rel).toLowerCase())) continue;
@@ -112,15 +120,15 @@ function scanTrackedFiles() {
     try {
       content = readFileSync(join(REPO_ROOT, rel), "utf8");
     } catch (err) {
-      // 读取失败（如 ls-files 与读取之间文件被删）不拦截门禁，但留痕便于排查。
-      console.error(`[warn] 无法读取 ${rel}：${err?.message ?? err}`);
+      // 读不到的文件无法证明其干净，不跳过放行——先收集，扫描结束后汇总非零退出。
+      readErrors.push({ file: rel, message: err?.message ?? String(err) });
       continue;
     }
     content.split(/\r?\n/).forEach((text, idx) => {
       if (PATTERN.test(text)) hits.push({ file: rel, line: idx + 1, text: text.trim() });
     });
   }
-  return hits;
+  return { hits, readErrors };
 }
 
 function main() {
@@ -128,12 +136,17 @@ function main() {
     selfCheck();
     return;
   }
-  const hits = scanTrackedFiles();
+  const { hits, readErrors } = scanTrackedFiles();
   if (hits.length > 0) {
     console.error(`品牌中立门禁：命中 ${hits.length} 处竞品词（file:line: 行内容）：`);
     for (const h of hits) console.error(`  ${h.file}:${h.line}: ${h.text}`);
     console.error("处理口径：开放标准命名（swagger/openapi/collection）不在词表；");
     console.error("确属竞品指称的请改用中性表述（如「开放 API 规范」「集合文件」）。");
+    process.exit(1);
+  }
+  if (readErrors.length > 0) {
+    console.error(`品牌中立门禁：${readErrors.length} 个跟踪文件读取失败，fail-closed 非零退出：`);
+    for (const e of readErrors) console.error(`  ${e.file}：${e.message}`);
     process.exit(1);
   }
   console.log(`品牌中立门禁通过：git 跟踪文件全树扫描无命中（词表 ${WORDS.length} 词）。`);
