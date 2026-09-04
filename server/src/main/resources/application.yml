@@ -1,0 +1,28 @@
+# apicc 在线协作服务端配置（规格 m3 §3.5）
+spring:
+  application:
+    name: apicc-server
+  datasource:
+    # 元数据 H2 文件库，相对运行目录（裁定④）；测试覆写为 jdbc:h2:mem:
+    url: jdbc:h2:file:./server-data/metadata
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      # 每次启动执行 schema.sql（幂等 DDL：CREATE TABLE IF NOT EXISTS）
+      mode: always
+  threads:
+    virtual:
+      # 规格 m3 §2 D2：MVC 开虚拟线程
+      enabled: true
+
+server:
+  port: 8080
+
+apicc:
+  server:
+    # 工作区内容与元数据的根目录（规格 m3 §2 D6：server-data/workspaces/<wsId>/）
+    data-dir: ./server-data
+    allow-registration: true
+    token-ttl-days: 30
