@@ -68,7 +68,13 @@ watch(
 
 async function onOpen(s: RunSummary) {
   try {
-    await props.run.openRun(s.file);
+    const read = await props.run.openRun(s.file);
+    // 文件未命中（已被清理等）：保持列表视图并经组合根错误通道提示，不切出空白报告区
+    // （终审 Minor；集合行同样不再盲目收起抽屉）。
+    if (!read) {
+      props.reportError(new Error(t("run.fileMissing")));
+      return;
+    }
     if (s.kind === "collection") {
       props.run.historyOpen = false;
     } else {

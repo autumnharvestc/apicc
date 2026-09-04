@@ -83,8 +83,8 @@ const view = ref<View>("debug");
 
 // —— 压测会话随接口切换清空（M2-D3 任务 3，裁定 A）——
 // 旧接口的压测报告不能带到新接口：editor.apiId 变化（含首次 null→id，此时本就是空会话）
-// 即调 store.clear()（只清报告/file/错误，form 保留）；同接口视图往返不动 apiId，
-// form/报告原样保留。
+// 即调 store.clear()（只清报告/file/错误，form 保留；同时代际 +1，在途旧 run 的完成/
+// 拒绝不再上屏——终审修复）；同接口视图往返不动 apiId，form/报告原样保留。
 watch(
   () => editor.apiId,
   () => {

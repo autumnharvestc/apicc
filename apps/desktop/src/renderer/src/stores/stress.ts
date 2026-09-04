@@ -28,6 +28,9 @@ export function createStressFormDefaults(): StressForm {
  * 失败置 error 且老报告保留（debug 错误语义），同时向组件层重抛（转报组合根 reportError
  * 通道，EnvPanel/RunView 同款收口）；running 无论成败都在 finally 复位。stop 返回的部分
  * 报告同样上屏。组件内零工厂调用：store 实例经 props 注入（任务 3 App 装配）。
+ * 代际令牌（终审修复）：clear() 自增 generation；start/stop 在 await 前捕获、返回后比对，
+ * 不等即视为陈旧会话（运行中切接口/切工作区被组合根 clear）——其完成结果与拒绝一律不上屏、
+ * 不置 error、不向组件层外抛，防止旧接口的报告/错误错挂进新面板。
  */
 export function createStressStore(deps: { api: ApiccApi }) {
   const { api } = deps;
@@ -38,6 +41,7 @@ export function createStressStore(deps: { api: ApiccApi }) {
       file: null as string | null,
       error: null as string | null,
       form: createStressFormDefaults(),
+      generation: 0,
     }),
     actions: {
       async start(apiId: string) {
@@ -46,6 +50,7 @@ export function createStressStore(deps: { api: ApiccApi }) {
         if (!caseId) return;
         this.running = true;
         this.error = null;
+        const gen = this.generation;
         try {
           const input: StressRunInput = {
             apiId,
@@ -56,9 +61,11 @@ export function createStressStore(deps: { api: ApiccApi }) {
             durationMs: this.form.mode === "duration" ? this.form.durationSeconds * 1000 : null,
           };
           const out = await api.stressRun(input);
+          if (gen !== this.generation) return;
           this.report = out.report;
           this.file = out.file ?? null;
         } catch (e) {
+          if (gen !== this.generation) return;
           this.error = e instanceof Error ? e.message : String(e);
           throw e;
         } finally {
@@ -66,18 +73,23 @@ export function createStressStore(deps: { api: ApiccApi }) {
         }
       },
       async stop() {
+        const gen = this.generation;
         try {
           const out = await api.stressStop();
+          if (gen !== this.generation) return;
           this.report = out.report;
           this.file = out.file ?? null;
           this.error = null;
         } catch (e) {
+          if (gen !== this.generation) return;
           this.error = e instanceof Error ? e.message : String(e);
           throw e;
         }
       },
-      /** 清空当前展示（报告/file/错误），form 保留——切换接口等场景由组合根按需调用。 */
+      /** 清空当前展示（报告/file/错误），form 保留；generation 自增使在途旧 run 失效——
+       * 切换接口/工作区等场景由组合根按需调用。 */
       clear() {
+        this.generation += 1;
         this.report = null;
         this.file = null;
         this.error = null;

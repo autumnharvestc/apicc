@@ -33,13 +33,15 @@ export function useRunStore(api: ApiccApi) {
       async loadHistory() {
         this.summaries = await api.runsList();
       },
-      async openRun(file: string) {
+      /** 按文件读回并按 kind 分派；返回读到的联合（未命中为 null，供调用方守卫提示——终审 Minor）。 */
+      async openRun(file: string): Promise<RunResult | StressReportDTO | null> {
         const run = await api.runsGet(file);
-        if (!run) return;
+        if (!run) return null;
         // kind 判别（M2-D3 任务 1 联合分支）：集合运行回填 RunView 表格；压测报告入
         // stressReport（任务 3 裁定 B：运行历史抽屉内嵌 StressReportView 展示）。
         if ("kind" in run) this.stressReport = run;
         else this.result = run;
+        return run;
       },
     },
   })(createPinia());

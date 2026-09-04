@@ -710,6 +710,38 @@ describe("stressStore", () => {
     a.report = makeReport();
     expect(b.report).toBeNull();
   });
+
+  it("运行中 clear（切接口）→ 旧 run 完成/拒绝均不上屏不外抛、running 复位（代际令牌防错挂）", async () => {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    let resolveRun!: (v: StressRunOutput) => void;
+    api.stressRun = (): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; });
+    const stress = createStressStore({ api });
+    stress.form.caseId = "c1";
+    const first = stress.start("api-a");
+    await flushPromises();
+    expect(stress.running).toBe(true);
+    // 组合根切接口时机：clear()（代际 +1、展示清空，running 仍 true）
+    stress.clear();
+    // 旧 run 排空完成：结果属于旧会话，不得写回（新接口面板不受污染）
+    resolveRun({ report: makeReport(), file: "stress-a.json" });
+    await first;
+    await flushPromises();
+    expect(stress.report).toBeNull();
+    expect(stress.file).toBeNull();
+    expect(stress.error).toBeNull();
+    expect(stress.running).toBe(false);
+    // 陈旧拒绝同样不污染：clear 后旧 run reject → error 不置位、不向组件层重抛
+    let rejectRun!: (e: Error) => void;
+    api.stressRun = (): Promise<StressRunOutput> => new Promise((_res, rej) => { rejectRun = rej; });
+    const second = stress.start("api-a");
+    await flushPromises();
+    stress.clear();
+    rejectRun(new Error("旧会话错误"));
+    await second;
+    await flushPromises();
+    expect(stress.error).toBeNull();
+  });
 });
 
 describe("StressPanel", () => {
@@ -913,13 +945,13 @@ const collectionRunResult: RunResult = {
 };
 
 /** RunsHistory 直挂（抽屉 a-drawer 传送门渲染于 document.body，行用 body 作用域查询）。 */
-async function mountHistory() {
+async function mountHistory(props: Record<string, unknown> = {}) {
   const api = createMemoryApi();
   api.seedWorkspace();
   const run = useRunStore(api);
   const { i18n } = createI18nInstance();
   const wrapper = mount(RunsHistory, {
-    props: { run, reportError: () => {} },
+    props: { run, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
@@ -990,5 +1022,24 @@ describe("RunsHistory kind 区分（M2-D3 任务 3，裁定 B）", () => {
     await flushPromises();
     expect(run.historyOpen).toBe(false);
     expect(run.result?.collectionName).toBe("示例集合");
+  });
+
+  it("runsGet 未命中（null）：保持列表视图并经 reportError 提示，不切出空白报告区（终审 Minor）", async () => {
+    const errors: unknown[] = [];
+    const { api, run } = await mountHistory({ reportError: (e: unknown) => { errors.push(e); } });
+    api.runsList = async () => [stressRow];
+    api.runsGet = async () => null;
+    run.historyOpen = true;
+    await flushPromises();
+    await new DOMWrapper(bodyRows()[0]!).trigger("click");
+    await flushPromises();
+    // 保持列表视图：不出现空报告区、抽屉不收起、行仍在
+    expect(bodyFind("stress-report")).toBeNull();
+    expect(bodyRows()).toHaveLength(1);
+    expect(run.historyOpen).toBe(true);
+    expect(run.stressReport).toBeNull();
+    // 经组合根错误通道提示
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("该运行文件不存在");
   });
 });

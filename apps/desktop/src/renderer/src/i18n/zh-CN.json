@@ -116,7 +116,8 @@
     "kindCollection": "集合",
     "kindStress": "压测",
     "stressSummary": "共 {total} 请求 · 失败 {failed} · {rps} req/s",
-    "back": "返回"
+    "back": "返回",
+    "fileMissing": "该运行文件不存在"
   },
   "stress": {
     "title": "压测",
