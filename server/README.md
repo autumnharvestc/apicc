@@ -50,7 +50,7 @@ java -jar server/target/apicc-server-0.1.0-SNAPSHOT.jar
 | `apicc.server.allow-registration` | `true` | 是否开放注册；`false` 时仅已有账号可登录 |
 | `apicc.server.token-ttl-days` | `30` | 登录令牌有效期（天） |
 
-覆盖方式为命令行参数 `--配置键=值`（或改 `server/src/main/resources/application.yml`）。注意：`apicc.server.*` 三项经 `@Value` 按精确键名注入，不支持环境变量的 relaxed binding（`SERVER_PORT` 等 Spring 标准变量仅对 `server.port` 有效）：
+覆盖方式为命令行参数 `--配置键=值`（或改 `server/src/main/resources/application.yml`）。注意：`apicc.server.*` 三项经 `@Value` 按精确键名注入，Boot 的驼峰 relaxed binding 不适用，但下划线大写风格的环境变量可用（Spring 会做 `.`/`-` → `_` 的名称翻译，如 `APICC_SERVER_DATA_DIR`、`APICC_SERVER_ALLOW_REGISTRATION`、`APICC_SERVER_TOKEN_TTL_DAYS`；`SERVER_PORT` 等标准变量仅对 `server.port` 生效）：
 
 ```bash
 java -jar server/target/apicc-server-0.1.0-SNAPSHOT.jar \

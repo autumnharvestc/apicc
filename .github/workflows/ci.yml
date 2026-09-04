@@ -143,6 +143,8 @@ jobs:
         # filter 按 package.json 的 name 匹配（pnpm filter 不认目录路径：目录形式
         # "!apps/desktop" 匹配不到任何包，pnpm 11 实测退化为全量构建），故用包名否定，
         # 只建 core+cli；desktop 由下方 dist:dir 自建（三段构建含 typecheck），避免重复。
+        # 注：否定 filter 会打印一行 `No projects matched the filters "…apps\desktop"` 告警，
+        # 是 pnpm 对被排除包的例行输出（exit 0），非失败，勿误读。
         run: pnpm --filter "!@apicc/desktop" -r build
       - name: 生成应用图标
         run: pnpm -C apps/desktop gen:icon

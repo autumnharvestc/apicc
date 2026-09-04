@@ -13,6 +13,8 @@ import { spawnSync } from "node:child_process";
  *   cmd 的 `/s /c` 语义恰好兜住外层：`/c` 后首字符是引号时，剥去行首与行尾各一个
  *   引号、内部引号原样保留——剥掉的正是外套层，行内引号原样抵达。
  * - posix：直接 spawn(exe, args)，无 shell 中转，无引号问题。
+ * - 行为边界：本机制不处理实参内嵌双引号与 cmd 元字符（& | < > ^ %）——调用方实参均为
+ *   受控的 mvn 旗标与仓库路径（本仓 e2e 场景），如需透传任意用户输入须先扩展引号策略。
  */
 export function runCommand(
   exe: string,
