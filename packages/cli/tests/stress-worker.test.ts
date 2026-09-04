@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -22,12 +22,14 @@ let server: Server;
 let baseUrl = "";
 let root: string;
 let prevCwd = "";
+/** 本文件创建的临时工作区根（afterAll 统一清理，模式与姊妹文件 stress-subprocess.test.ts 一致）。 */
+const tempRoots: string[] = [];
 
 const API_PATH = "groups/demo/projects/svc/collections/api/apis/ok";
 
-/** 读 runs 目录下最新的 stress-*.json 报告。 */
+/** 读 runs 目录下最新的 stress-*.json 报告（文件名排序取末位，不依赖 readdir 目录序假设）。 */
 function readLastReport(runsDir: string): Record<string, unknown> {
-  const files = readdirSync(runsDir).filter((f) => f.startsWith("stress-") && f.endsWith(".json"));
+  const files = readdirSync(runsDir).filter((f) => f.startsWith("stress-") && f.endsWith(".json")).sort();
   expect(files.length).toBeGreaterThan(0);
   return JSON.parse(readFileSync(join(runsDir, files[files.length - 1]!), "utf8")) as Record<string, unknown>;
 }
@@ -41,6 +43,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
   root = mkdtempSync(join(tmpdir(), "apicc-worker-"));
+  tempRoots.push(root);
   const ws: Workspace = {
     id: "w1", name: "worker-e2e", variables: {},
     groups: [{
@@ -66,6 +69,14 @@ beforeAll(async () => {
 });
 afterAll(() => {
   process.chdir(prevCwd);
+  // 临时工作区清理（best effort：单个删除失败不阻塞其余清理，也不致测试失败）。
+  for (const dir of tempRoots) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // 残留临时目录留给操作系统清理，不影响测试结论。
+    }
+  }
   return new Promise<void>((r) => server.close(() => r()));
 });
 
@@ -251,6 +262,19 @@ describe("run-stress --shards", () => {
       createDefaultRegistry(),
       () => {},
     )).rejects.toThrow(/shards 必须为正整数，收到 2\.5/);
+  });
+
+  it("--shards 2 非法数值参数：concurrency 0/NaN、iterations 3.5 前置守卫干净中文报错（不经 planShards 静默升级/ZodError）", async () => {
+    // 多 shard 路径历史分歧：concurrency 0 被 planShards 静默升为 [1,1]（单机路径是 StressRunner 中文报错）；
+    // concurrency/iterations 为 NaN 时在 StressWorkerSpecSchema.parse 抛裸英文 ZodError。
+    const base = ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--shards", "2",
+      "--runs-dir", join(root, "runs-invalid-numeric")];
+    await expect(runCli([...base, "--concurrency", "0", "--iterations", "4"],
+      createDefaultRegistry(), () => {})).rejects.toThrow(/concurrency 必须为正整数，收到 0/);
+    await expect(runCli([...base, "--concurrency", "abc", "--iterations", "4"],
+      createDefaultRegistry(), () => {})).rejects.toThrow(/concurrency 必须为正整数，收到 NaN/);
+    await expect(runCli([...base, "--concurrency", "2", "--iterations", "3.5"],
+      createDefaultRegistry(), () => {})).rejects.toThrow(/iterations 必须为正整数，收到 3\.5/);
   });
 });
 

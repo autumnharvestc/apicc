@@ -373,6 +373,15 @@ export async function runCli(
       if (!Number.isFinite(opts.shardTimeout) || opts.shardTimeout <= 0) {
         throw new Error(`shard-timeout 必须为正数，收到 ${opts.shardTimeout}`);
       }
+      // 数值参数守卫（终审顺修）：单/多 shard 路径口径必须一致——否则 concurrency 0 在多 shard 下被
+      // planShards 静默升为每 shard 1（单机路径是 StressRunner 中文报错），NaN 类值会漏到
+      // StressWorkerSpecSchema.parse 抛裸英文 ZodError。文案镜像 runner.ts 同款。
+      if (!Number.isInteger(opts.concurrency) || opts.concurrency < 1) {
+        throw new Error(`concurrency 必须为正整数，收到 ${opts.concurrency}`);
+      }
+      if (opts.iterations !== undefined && (!Number.isInteger(opts.iterations) || opts.iterations < 1)) {
+        throw new Error(`iterations 必须为正整数，收到 ${opts.iterations}`);
+      }
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
       // 终止条件二选一校验（与 StressRunner 约束一致，前置到 CLI 以面向用户的文案报错）。
