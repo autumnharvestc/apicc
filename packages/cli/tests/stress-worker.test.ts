@@ -6,7 +6,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createDefaultRegistry,
   fileStorage,
+  type ShardFailure,
   ShardFailureSchema,
+  type ShardResult,
   ShardResultSchema,
   type StressWorkerSpec,
   type Workspace,

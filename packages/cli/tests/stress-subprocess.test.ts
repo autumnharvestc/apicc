@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,15 +28,17 @@ function spawnCli(args: string[], cwd: string): Promise<SpawnResult> {
   });
 }
 
-/** 读 runs 目录下最新的 stress-*.json 报告。 */
+/** 读 runs 目录下最新的 stress-*.json 报告（文件名排序取末位，不依赖 readdir 目录序假设）。 */
 function readLastReport(runsDir: string): Record<string, unknown> {
-  const files = readdirSync(runsDir).filter((f) => f.startsWith("stress-") && f.endsWith(".json"));
+  const files = readdirSync(runsDir).filter((f) => f.startsWith("stress-") && f.endsWith(".json")).sort();
   expect(files.length).toBeGreaterThan(0);
   return JSON.parse(readFileSync(join(runsDir, files[files.length - 1]!), "utf8")) as Record<string, unknown>;
 }
 
 let server: Server;
 let baseUrl = "";
+/** 本文件各用例创建的临时工作区根（afterAll 统一清理）。 */
+const tempRoots: string[] = [];
 
 beforeAll(async () => {
   // 裁定 A：e2e 依赖构建产物先于测试存在；缺失时给可读修复指引（pnpm test 已自动前置构建）。
@@ -64,11 +66,22 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 });
-afterAll(() => new Promise<void>((r) => server.close(() => r())));
+afterAll(() => {
+  // 临时工作区清理（best effort：单个删除失败不阻塞其余清理，也不致测试失败）。
+  for (const dir of tempRoots) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // 残留临时目录留给操作系统清理，不影响测试结论。
+    }
+  }
+  return new Promise<void>((r) => server.close(() => r()));
+});
 
-/** 每用例独立临时工作区：ok 接口打 /x（200），bad 接口打 /boom（500）。 */
+/** 每用例独立临时工作区：ok 接口打 /x（200），bad 接口打 /boom（500），slow 接口打 /slow（挂起）。 */
 async function makeWorkspace(name: string): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), `apicc-subproc-${name}-`));
+  tempRoots.push(root);
   const ws: Workspace = {
     id: "w1", name: `subproc-${name}`, variables: {},
     groups: [{
