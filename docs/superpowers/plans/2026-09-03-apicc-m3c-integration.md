@@ -19,9 +19,11 @@
 - [ ] **步骤 2：实现**——`scripts/e2e-online.mjs`（或 ts 脚本，选与仓内脚本工具链一致者）封装服务端生命周期；vitest 集成测试文件（CI 与本地可跑；jar 不存在时给「先 mvn package」可读错误——与 cli e2e 先例一致，测试脚本前置构建）。
 - [ ] **步骤 3：全量回归（TS 三包 + mvn test）+ Commit** `test(desktop): 在线模式真服务端端到端集成`
 
-### 任务 2：CI Java job + 服务端文档
+### 任务 2：CI Java job + 打包冒烟修复 + 服务端文档
 
-- [ ] **步骤 1：核对清单**——①`.github/workflows/ci.yml` 增 job `server-test`（ubuntu、actions/setup-java@v4 temurin 21、`mvn -s server/.mvn/settings.xml -f server/pom.xml test`；依赖缓存：actions/cache `~/.m2/repository` key 含 pom 哈希）；②`server/README.md`：启动（mvnw/mvn 两种 + JAVA_HOME 21 要求）、配置项表（data-dir/allow-registration/token-ttl-days/端口）、默认端口 8080、数据目录结构说明、与桌面端对接（服务器地址填法）；③根 README 开发节补 server 一行。
+> **CI 失败修复（2026-09-05 并入，用户报告首次 CI 运行失败）**：package-smoke job 红——根因已定位：`@apicc/core` 的 types 指向构建产物 `./dist/index.d.ts`（desktop 无 paths 映射），而 package-smoke 未先构建 core 就跑 `dist:dir`，fresh runner 上 core/dist 缺失 → `Cannot find module '@apicc/core'` + 连锁 implicit any（10 errors）。test/brand 两 job 绿。修复：package-smoke 在 gen:icon 前补 `pnpm --filter "!apps/desktop" -r build`（core+cli 拓扑构建，desktop 由 dist:dir 自建，避免重复构建）；本任务合并后 main push 即真实验证。
+
+- [ ] **步骤 1：核对清单**——①**修复 package-smoke**：`gen:icon` 之前插入 `pnpm --filter "!apps/desktop" -r build` 步骤（注释注明根因：core 类型在构建产物 dist/，desktop typecheck 依赖它）；②`.github/workflows/ci.yml` 增 job `server-test`（ubuntu、actions/setup-java@v4 temurin 21、`mvn -s server/.mvn/settings.xml -f server/pom.xml test`；依赖缓存：actions/cache `~/.m2/repository` key 含 pom 哈希）；③`server/README.md`：启动（mvnw/mvn 两种 + JAVA_HOME 21 要求）、配置项表（data-dir/allow-registration/token-ttl-days/端口）、默认端口 8080、数据目录结构说明、与桌面端对接（服务器地址填法）；④根 README 开发节补 server 一行；⑤**wrapper distributionUrl 同步**：A 轨已改用 Aliyun central 仓库同构件 URL（规格原文 mirrors.aliyun.com/apache 404），README 用该实测 URL；⑥Mockito/byte-buddy 动态 agent JDK 告警：surefire 不强求处理，CI 观察后定（备案项）。
 - [ ] **步骤 2：验证 + Commit**——本地干跑 job 步骤序列（mvn test 已绿即等价）；`docs(server): CI Java job 与服务端运行文档`
 
 ---
