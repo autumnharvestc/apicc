@@ -1,7 +1,7 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StressReportSchema, type ProtocolClient } from "@apicc/core";
 import { createSession, sameName } from "../../src/main/session.js";
 import { createStressController } from "../../src/main/stress.js";
@@ -305,7 +305,7 @@ describe("createStressController", () => {
     expect(() => StressReportSchema.parse(out.report)).not.toThrow();
     expect(out.report.totalRequests).toBe(4);
     expect(out.file).toMatch(new RegExp(`^stress-${api.id}-\\d+\\.json$`));
-    expect(existsSync(join(dir, ".apicc", "runs", out.file))).toBe(true);
+    expect(existsSync(join(dir, ".apicc", "runs", out.file!))).toBe(true);
   });
 
   it("单活动约束：活动运行未结束时再次 stressRun 抛「已有压测进行中」", async () => {
@@ -331,7 +331,7 @@ describe("createStressController", () => {
     const stopped = await stopping;
     expect(stopped.report.totalRequests).toBeGreaterThanOrEqual(1);
     expect(stopped.report.totalRequests).toBeLessThanOrEqual(100);
-    expect(existsSync(join(dir, ".apicc", "runs", stopped.file))).toBe(true);
+    expect(existsSync(join(dir, ".apicc", "runs", stopped.file!))).toBe(true);
     await first;
     // 完成后活动状态清空：再次 stop 回到「没有进行中的压测」
     await expect(controller.stop()).rejects.toThrow(/没有进行中的压测/);
@@ -349,5 +349,38 @@ describe("createStressController", () => {
     const { s, api } = await setupStress();
     const controller = createStressController(s);
     await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1 })).rejects.toThrow(/压测终止条件缺失/);
+  });
+
+  it("落盘失败降级：写盘异常不阻断报告返回（file 省略）并 console.warn 含路径与原因（与集合运行口径一致）", async () => {
+    const { s, api } = await setupStress();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const controller = createStressController(s, {
+        // 注入写盘失败（代码库既有模式为控制器 deps 注入，同 client/pickDirectory/saveFile 先例）
+        writeReport: () => {
+          throw new Error("disk full");
+        },
+      });
+      const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1 });
+      expect(out.report.totalRequests).toBe(1);
+      expect(out.file).toBeUndefined();
+      expect("file" in out).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [msg] = warn.mock.calls[0]!;
+      expect(msg).toContain("落盘失败");
+      expect(msg).toContain("stress-"); // 文件路径
+      expect(msg).toContain("disk full"); // 原因
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("深拷贝回归：改动返回的报告对象不影响已落盘历史内容", async () => {
+    const { s, dir, api } = await setupStress();
+    const controller = createStressController(s);
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2 });
+    out.report.totalRequests = 999;
+    const onDisk = JSON.parse(readFileSync(join(dir, ".apicc", "runs", out.file!), "utf8")) as { totalRequests: number };
+    expect(onDisk.totalRequests).toBe(2);
   });
 });

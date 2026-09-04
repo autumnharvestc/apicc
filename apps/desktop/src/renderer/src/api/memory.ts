@@ -452,7 +452,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     },
 
     // 压测（M2-D3 任务 1，与主进程 stress.ts 同构）：单活动拒绝/abort 语义/错误文案逐字对齐；
-    // 报告收尾即入 stressRuns 历史（替代主进程落盘），返回前深拷贝。
+    // 历史收尾降级口径与主进程一致（异常仅告警不阻断报告返回，file 省略——内存 unshift 实际
+    // 不可失败，同构其契约与降级结构）；返回前深拷贝。
     async stressRun(input: StressRunInput): Promise<StressRunOutput> {
       if (stressActive) throw new Error("已有压测进行中");
       const ws = ensureOpen();
@@ -478,9 +479,15 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
             durationMs: input.durationMs ?? undefined,
             signal: controller.signal,
           });
+          const clone: StressReport = structuredClone(report);
           const file = `stress-${api.id}-${Date.now()}.json`;
-          stressRuns.unshift({ file, report: structuredClone(report) });
-          return { report: structuredClone(report), file };
+          try {
+            stressRuns.unshift({ file, report: structuredClone(report) });
+            return { report: clone, file };
+          } catch (e) {
+            console.warn(`压测报告历史记录失败（${file}）: ${e instanceof Error ? e.message : String(e)}`);
+            return { report: clone };
+          }
         } finally {
           clearStressActive(controller);
         }

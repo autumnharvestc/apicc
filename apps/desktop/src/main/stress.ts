@@ -17,8 +17,11 @@ import type { StressRunInput, StressRunOutput } from "../shared/types.js";
 
 type Session = ReturnType<typeof createSession>;
 
-/** 控制器依赖：client 供测试注入假实现（默认真实 httpClient），生产无需关心。 */
-export interface StressControllerDeps { client?: ProtocolClient }
+/**
+ * 控制器依赖：client/writeReport 供测试注入假实现（默认真实 httpClient 与 writeFileSync），
+ * 生产无需关心。writeReport 只包写盘动作（降级口径在 persist 内统一处理）。
+ */
+export interface StressControllerDeps { client?: ProtocolClient; writeReport?: (path: string, content: string) => void }
 
 /**
  * 压测控制器（M2-D3 任务 1，规格 §2 D10）：main 进程执行接口级压测，闭包持单活动 run
@@ -38,15 +41,23 @@ export function createStressController(session: Session, deps: StressControllerD
 
   /**
    * 报告落盘 runs 目录（D11，与 CLI 约定一致：stress-<apiId>-<Date.now()>.json）。
-   * 落盘失败不吞错（向上抛出）；runsDir 在 run 启动时快照，工作区切换后部分报告仍
-   * 落回原工作区目录。返回前深拷贝报告（IPC 载荷 DataCloneError 防御，全局约束）。
+   * 落盘降级不影响报告返回，与集合运行口径一致（core Runner 落盘失败仅告警仍返回完整
+   * 结果）：写盘异常 console.warn（含文件路径与原因）后 file 省略返回报告。
+   * runsDir 在 run 启动时快照，工作区切换后部分报告仍落回原工作区目录。
+   * 返回前深拷贝报告（IPC 载荷 DataCloneError 防御，全局约束）。
    */
   function persist(root: string, apiId: string, report: StressReport): StressRunOutput {
+    const clone: StressReport = structuredClone(report);
     const runsDir = workspaceRunsDir(root);
-    mkdirSync(runsDir, { recursive: true });
     const file = `stress-${apiId}-${Date.now()}.json`;
-    writeFileSync(join(runsDir, file), JSON.stringify(report, null, 2));
-    return { report: structuredClone(report), file };
+    try {
+      mkdirSync(runsDir, { recursive: true });
+      (deps.writeReport ?? ((path: string, content: string) => writeFileSync(path, content, "utf8")))(join(runsDir, file), JSON.stringify(report, null, 2));
+      return { report: clone, file };
+    } catch (e) {
+      console.warn(`压测报告落盘失败（${join(runsDir, file)}）: ${e instanceof Error ? e.message : String(e)}`);
+      return { report: clone };
+    }
   }
 
   async function run(input: StressRunInput): Promise<StressRunOutput> {

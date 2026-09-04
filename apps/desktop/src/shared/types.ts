@@ -45,8 +45,12 @@ export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
 /** stress:run 入参：maxIterations/durationMs 至少给其一（都给先到先停），二者可传 null（渲染层「清空」惯例）。 */
 export interface StressRunInput { apiId: string; caseId: string; envName?: string; concurrency: number; maxIterations?: number | null; durationMs?: number | null }
-/** stress:run / stress:stop 返回：最终（或中止后的部分）报告 + 落盘文件名。 */
-export interface StressRunOutput { report: StressReport; file: string }
+/**
+ * stress:run / stress:stop 返回：最终（或中止后的部分）报告 + 落盘文件名。
+ * 落盘降级不影响报告返回，与集合运行口径一致（core Runner 落盘失败仅告警仍返回完整结果）：
+ * file 落盘成功为文件名（.apicc/runs/stress-<apiId>-<ts>.json），降级时省略。
+ */
+export interface StressRunOutput { report: StressReport; file?: string }
 /** runs:get 对 stress 文件的返回：kind 判别 + 完整压测报告（集合文件返回既有 RunResult 形状）。 */
 export interface StressReportDTO { kind: "stress"; report: StressReport }
 

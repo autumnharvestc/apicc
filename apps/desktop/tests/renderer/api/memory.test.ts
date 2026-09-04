@@ -54,7 +54,7 @@ describe("memory 替身压测语义", () => {
     expect(list).toHaveLength(1);
     expect(list[0]!.kind).toBe("stress");
     expect(list[0]).toMatchObject({ totalRequests: 4, ok: 4, failed: 0 });
-    const detail = await api.runsGet(out.file);
+    const detail = await api.runsGet(out.file!);
     expect(detail).toEqual({ kind: "stress", report: out.report });
   });
 
@@ -84,5 +84,13 @@ describe("memory 替身压测语义", () => {
   it("终止条件缺失：沿用 core 文案「压测终止条件缺失」", async () => {
     const { api, apiId, caseId } = await seededMemory();
     await expect(api.stressRun({ apiId, caseId, concurrency: 1 })).rejects.toThrow(/压测终止条件缺失/);
+  });
+
+  it("深拷贝回归：改动返回的报告对象不影响内存历史读回内容", async () => {
+    const { api, apiId, caseId } = await seededMemory();
+    const out = await api.stressRun({ apiId, caseId, concurrency: 1, maxIterations: 2 });
+    out.report.totalRequests = 999;
+    const detail = await api.runsGet(out.file!);
+    expect(detail).toMatchObject({ kind: "stress", report: { totalRequests: 2 } });
   });
 });
