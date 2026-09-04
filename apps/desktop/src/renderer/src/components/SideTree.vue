@@ -22,6 +22,9 @@ import ConfirmDialog from "./ConfirmDialog.vue";
  * key=id、title=label，原始 DTO 挂在节点 dto 字段——#title slot 作用域展开树节点
  * 数据，可直接解构 dto）。折叠/展开钮、动作钮保留在 title slot 内（hover 显隐不变）；
  * a-tree 自带 switcher 缩进箭头经 :deep 样式隐藏，避免与自带折叠钮重复。
+ * 在线模式（M3-B 任务 3，裁定 A/E）：treeRoot 注入在线树视图（缺省回退本地工作区树）；
+ * readonly=true 时隐藏全部新建/重命名/删除入口（VIEWER 只读装饰），只读配置叶（kind=file）
+ * 渲染为无动作叶子，emptyText 注入在线空态文案。本地模式行为不变（不传新 props）。
  */
 const props = defineProps<{
   api: ApiccApi;
@@ -30,6 +33,12 @@ const props = defineProps<{
   /** 工作流设计器会话（审查 I2）：重命名命中设计器正开的流时强制卸载，防缓冲持旧名回滚改名 */
   workflowDesign: ReturnType<typeof useWorkflowDesignStore>;
   reportError: (e: unknown) => void;
+  /** 在线树视图（任务 3）：传入即以它为数据源（本地模式不传/undefined → 本地工作区树）。 */
+  treeRoot?: TreeNodeDTO | null;
+  /** 在线只读装饰：隐藏新建/动作钮，file 叶无动作。 */
+  readonly?: boolean;
+  /** 空态文案覆写（在线模式给「没有可见内容」文案）。 */
+  emptyText?: string;
 }>();
 const emit = defineEmits<{ select: [kind: TreeNodeDTO["kind"], id: string] }>();
 const { t } = useI18n();
@@ -72,6 +81,15 @@ interface TreeDataNode {
   children?: TreeDataNode[];
 }
 const expandedKeys = computed(() => Array.from(expanded.value));
+// 数据源（任务 3）：显式传入 treeRoot（undefined = 本地模式回退本地工作区树；null = 无树）
+const rootNode = computed<TreeNodeDTO | null>(() =>
+  props.treeRoot !== undefined ? props.treeRoot : props.workspace.tree,
+);
+// 空态判定：在线模式只看注入的树视图；本地模式保留原语义（opened && tree 双条件）
+const isEmpty = computed(() =>
+  props.treeRoot !== undefined ? !props.treeRoot : (!props.workspace.opened || !props.workspace.tree),
+);
+const emptyText = computed(() => props.emptyText ?? t("tree.empty"));
 const treeData = computed<TreeDataNode[]>(() => {
   const mapNodes = (nodes?: TreeNodeDTO[]): TreeDataNode[] =>
     (nodes ?? []).map((n) => {
@@ -93,17 +111,19 @@ const treeData = computed<TreeDataNode[]>(() => {
       return {
         key: n.id,
         title: n.label,
-        isLeaf: n.kind === "api" || n.kind === "workflow",
+        // file 叶（在线只读配置）与 api/workflow 同为叶子
+        isLeaf: n.kind === "api" || n.kind === "workflow" || n.kind === "file",
         dto: n,
         children,
       };
     });
-  return mapNodes(props.workspace.tree?.children);
+  return mapNodes(rootNode.value?.children);
 });
 
 function selectNode(node: TreeNodeDTO) {
   selectedKeys.value = [node.id];
-  props.tree.select(node.kind, node.id);
+  // 只读模式（在线）：不写本地树选中态，仅向上发选中事件（App 路由到在线编辑链路）
+  if (!props.readonly) props.tree.select(node.kind, node.id);
   emit("select", node.kind, node.id);
 }
 
@@ -252,11 +272,11 @@ function startWorkflowDelete(node: TreeNodeDTO) {
 
 <template>
   <aside class="side" data-testid="side-tree">
-    <EmptyState v-if="!workspace.opened || !workspace.tree" :text="t('tree.empty')" />
+    <EmptyState v-if="isEmpty || !rootNode" :text="emptyText" />
     <template v-else>
       <div class="root-row">
-        <span class="root-label">{{ workspace.tree.label }}</span>
-        <a-button size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
+        <span class="root-label">{{ rootNode.label }}</span>
+        <a-button v-if="!readonly" size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
       </div>
       <a-tree
         class="tree"
@@ -272,10 +292,16 @@ function startWorkflowDelete(node: TreeNodeDTO) {
             <button class="api-btn" data-testid="tree-api" :data-node-id="dto.id" @click="selectNode(dto)">
               <span class="method">{{ dto.method }}</span>{{ dto.label }}
             </button>
-            <span class="actions">
+            <span v-if="!readonly" class="actions">
               <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
               <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
             </span>
+          </div>
+          <!-- 只读配置叶（M3-B 任务 3）：在线工作区的工作流/环境/项目/集合配置等，仅选中浏览 -->
+          <div v-else-if="dto.kind === 'file'" class="node leaf" data-testid="tree-file-row">
+            <button class="api-btn file-btn" data-testid="tree-file" :data-node-id="dto.id" @click="selectNode(dto)">
+              {{ dto.label }}
+            </button>
           </div>
           <!-- 工作流叶子（M2-B 收口）：project children 尾部，label + 状态徽标色点
                （draft 灰/published 蓝/enabled 绿），动作钮 重命名/删除 -->
@@ -283,7 +309,7 @@ function startWorkflowDelete(node: TreeNodeDTO) {
             <button class="api-btn" data-testid="tree-workflow" :data-node-id="dto.id" :data-status="dto.status" @click="selectNode(dto)">
               <span class="wf-dot" :class="`wf-dot-${dto.status}`" :title="t(`wf.status.${dto.status}`)"></span>{{ dto.label }}
             </button>
-            <span class="actions">
+            <span v-if="!readonly" class="actions">
               <button class="act" data-testid="node-rename" @click="startWorkflowRename(dto)">{{ t("tree.rename") }}</button>
               <button class="act danger" data-testid="node-delete" @click="startWorkflowDelete(dto)">{{ t("tree.delete") }}</button>
             </span>
@@ -294,7 +320,7 @@ function startWorkflowDelete(node: TreeNodeDTO) {
               {{ expanded.has(dto.id) ? "▾" : "▸" }}
             </button>
             <span class="label">{{ dto.label }}</span>
-            <span class="actions">
+            <span v-if="!readonly" class="actions">
               <button v-if="dto.kind === 'group'" class="act" data-testid="new-project" @click="startCreate(dto, 'project')">{{ t("tree.newProject") }}</button>
               <button v-if="dto.kind === 'project'" class="act" data-testid="new-collection" @click="startCreate(dto, 'collection')">{{ t("tree.newCollection") }}</button>
               <button v-if="dto.kind === 'collection'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
@@ -397,6 +423,11 @@ function startWorkflowDelete(node: TreeNodeDTO) {
   text-align: left;
 }
 .api-btn:hover { background: var(--border); }
+/* 在线只读配置叶：弱化字重视觉区分（无动作钮） */
+.file-btn {
+  color: var(--text-muted);
+  font-size: 12px;
+}
 .method {
   font-size: 10px;
   font-weight: 600;

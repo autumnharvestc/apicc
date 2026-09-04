@@ -1,6 +1,10 @@
 import { createPinia, defineStore } from "pinia";
-import { OnlineBaseUrlSchema } from "../../../shared/online/contract.js";
-import type { OnlineServerProfile, OnlineUser, OnlineWorkspaceSummary } from "../../../shared/online/types.js";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { ApiDefinitionSchema, type ApiDefinition } from "@apicc/core";
+import { OnlineBaseUrlSchema, type OnlineRole, type OnlineTreeProject, type OnlineUser, type OnlineVersionConflict, type OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
+import { chunk, planPull, planPush } from "../../../shared/online/migrate.js";
+import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
+import type { MigrationResult, OnlineServerProfile } from "../../../shared/online/types.js";
 import type { ApiccApi } from "../../../shared/types.js";
 
 /**
@@ -75,6 +79,31 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       workspaces: [] as OnlineWorkspaceSummary[],
       /** 登录/配置对话框显隐（TopBar 打开、对话框关闭双向读写）。 */
       dialogOpen: false,
+
+      // —— 任务 3：在线工作区浏览/编辑/迁移（裁定 A–E）——
+      /** 当前在线工作区（null = 本地模式）。与本地工作区互斥（裁定 E）。 */
+      activeWorkspace: null as { id: string; name: string; myRole: OnlineRole } | null,
+      /** 在线树视图（main onlineTreeToDto 映射产物）。 */
+      onlineTree: null as TreeNodeDTO | null,
+      /** 项目角色清单（逐项目只读判定：myRole VIEWER/NONE 覆盖工作区角色）。 */
+      projects: [] as OnlineTreeProject[],
+      /** 编辑缓冲（裁定 B：仅 api.yaml 级编辑 + 只读文件原文浏览）。 */
+      editorPath: null as string | null,
+      editorKind: null as "api" | "file" | null,
+      editorApi: null as ApiDefinition | null,
+      editorRaw: "",
+      editorProblems: [] as string[],
+      editorVersion: 0,
+      editorSnapshot: "",
+      editorLoading: false,
+      /** 保存与冲突（裁定 C：409 → conflict 状态驱动冲突对话框）。 */
+      saving: false,
+      conflict: null as OnlineVersionConflict | null,
+      /** 迁移（裁定 D）：单活动护栏 + 分批进度 + 结果清单。 */
+      migrating: false,
+      migrationProgress: "",
+      migrationResult: null as MigrationResult | null,
+      migrateDialogOpen: false,
     }),
     getters: {
       /** 激活档案显示名：昵称为空回退 baseUrl（顶栏/对话框统一出口）。 */
@@ -82,6 +111,29 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         const profile = state.profiles.find((p) => p.baseUrl === state.activeBaseUrl);
         if (!profile) return state.activeBaseUrl ?? "";
         return profile.name || profile.baseUrl;
+      },
+
+      /**
+       * 在线编辑缓冲 dirty（快照比对，先例同本地 editor store）。
+       */
+      editorDirty(state): boolean {
+        return state.editorApi !== null && JSON.stringify(state.editorApi) !== state.editorSnapshot;
+      },
+
+      /**
+       * 可写判定（裁定 B：VIEWER 只读 vs EDITOR 可编辑）：工作区 VIEWER 恒只读；
+       * 项目级 ACL 覆盖（tree.projects 按 name 命中）VIEWER/NONE 时该项目子树只读。
+       */
+      canEdit(state): (path: string | null) => boolean {
+        return (path: string | null): boolean => {
+          if (!state.activeWorkspace || state.activeWorkspace.myRole === "VIEWER" || !path) return false;
+          const match = /^groups\/([^/]+)\/projects\/([^/]+)\//.exec(path);
+          if (match) {
+            const project = state.projects.find((p) => p.name === match[2]);
+            if (project) return project.myRole !== "VIEWER" && project.myRole !== "NONE";
+          }
+          return true;
+        };
       },
     },
     actions: {
@@ -214,8 +266,10 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         }
       },
 
-      /** 登出：吊销服务端 token（失败记入 error 不阻断）+ 清本地登录态；档案保留（裁定 C）。 */
+      /** 登出：吊销服务端 token（失败记入 error 不阻断）+ 清本地登录态；档案保留（裁定 C）。
+       *  在线工作区打开中先关闭（裁定 E：退出在线工作区 → 会话清理）。 */
       async logout(): Promise<void> {
+        if (this.activeWorkspace) await this.closeWorkspace();
         try {
           await api.onlineLogout();
         } catch (e) {
@@ -224,9 +278,277 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         this.clearLoginState();
       },
 
-      /** 在线工作区列表拉取（本任务只备 store 状态与动作，列表 UI 与错误呈现归任务 3）。 */
+      /** 在线工作区列表拉取：失败经 error 通道呈现（列表 UI 保留旧清单）。 */
       async refreshWorkspaces(): Promise<void> {
-        this.workspaces = await api.onlineWorkspaceList();
+        try {
+          this.workspaces = await api.onlineWorkspaceList();
+          this.error = null;
+        } catch (e) {
+          this.error = e instanceof Error ? e.message : String(e);
+        }
+      },
+
+      // —— 任务 3：在线工作区浏览/编辑/迁移（裁定 A–E）——
+
+      /** 编辑缓冲与会话清理（裁定 E：关闭在线工作区即清树缓存/编辑缓冲/文件态）。 */
+      clearEditor(): void {
+        this.editorPath = null;
+        this.editorKind = null;
+        this.editorApi = null;
+        this.editorRaw = "";
+        this.editorProblems = [];
+        this.editorVersion = 0;
+        this.editorSnapshot = "";
+        this.editorLoading = false;
+      },
+
+      /**
+       * 打开在线工作区（裁定 A/E）：main 记录工作区并返回树视图（与本地互斥的自动侧——
+       * 调用方先关本地工作区）；失败 error 上屏且状态不变（不开半开工作区）。
+       */
+      async openWorkspace(ws: OnlineWorkspaceSummary): Promise<void> {
+        this.error = null;
+        try {
+          const view = await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: ws.myRole });
+          this.activeWorkspace = { id: ws.id, name: ws.name, myRole: ws.myRole };
+          this.onlineTree = view.tree;
+          this.projects = view.projects;
+          this.clearEditor();
+          this.conflict = null;
+          this.migrationResult = null;
+        } catch (e) {
+          this.error = e instanceof Error ? e.message : String(e);
+        }
+      },
+
+      /** 关闭在线工作区（裁定 E）：main 会话清理 + 本地态全清；IPC 失败照常清本地（容错收口）。 */
+      async closeWorkspace(): Promise<void> {
+        try {
+          await api.onlineWorkspaceClose();
+        } catch {
+          // main 侧已无会话（或在线未配置）——本地照常清理，不阻断退出
+        }
+        this.activeWorkspace = null;
+        this.onlineTree = null;
+        this.projects = [];
+        this.clearEditor();
+        this.conflict = null;
+        this.migrationResult = null;
+        this.migrationProgress = "";
+      },
+
+      /** 刷新在线树视图（推送/迁移后调用；main 侧内容变更（put/batch/delete 成功）已使树缓存失效，此处取到的是新树）。 */
+      async refreshTreeView(): Promise<void> {
+        if (!this.activeWorkspace) return;
+        try {
+          const view = await api.onlineTreeView(this.activeWorkspace.id);
+          this.onlineTree = view.tree;
+          this.projects = view.projects;
+        } catch (e) {
+          this.error = e instanceof Error ? e.message : String(e);
+        }
+      },
+
+      /**
+       * 在线侧树选中（App.onSelect 的在线分支）：api → getFiles 取 api.yaml，YAML 解析 +
+       * core ApiDefinitionSchema 校验（裁定 B：坏数据进 problems 展示原文，禁崩）；
+       * file → 只读原文浏览；容器节点仅清空编辑区。
+       */
+      async selectNode(kind: TreeNodeDTO["kind"], id: string): Promise<void> {
+        if (!this.activeWorkspace || (kind !== "api" && kind !== "file")) {
+          this.clearEditor();
+          return;
+        }
+        this.editorLoading = true;
+        this.error = null;
+        try {
+          const result = await api.onlineFilesGet({ workspaceId: this.activeWorkspace.id, paths: [id] });
+          const file = result.files[0];
+          if (!file) {
+            this.clearEditor();
+            this.error = `文件不在可见清单中: ${id}`;
+            return;
+          }
+          this.editorPath = file.path;
+          this.editorVersion = file.version;
+          this.editorRaw = file.content;
+          if (kind === "file") {
+            this.editorKind = "file";
+            this.editorApi = null;
+            this.editorProblems = [];
+            this.editorSnapshot = "";
+            return;
+          }
+          this.editorKind = "api";
+          try {
+            const parsed = ApiDefinitionSchema.safeParse(parseYaml(file.content));
+            if (parsed.success) {
+              this.editorApi = parsed.data;
+              this.editorProblems = [];
+              this.editorSnapshot = JSON.stringify(parsed.data);
+            } else {
+              this.editorApi = null;
+              this.editorSnapshot = "";
+              this.editorProblems = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
+            }
+          } catch (e) {
+            // YAML 语法坏损：同走 problems（不崩，原文可读）
+            this.editorApi = null;
+            this.editorSnapshot = "";
+            this.editorProblems = [e instanceof Error ? e.message : String(e)];
+          }
+        } catch (e) {
+          this.error = e instanceof Error ? e.message : String(e);
+        } finally {
+          this.editorLoading = false;
+        }
+      },
+
+      /**
+       * 保存在线接口定义（裁定 B）：序列化回 YAML 文本 putFile（baseVersion=当前 version）；
+       * 成功 → 版本前移 + 快照复位；409 → conflict 入 store（冲突对话框由组合根渲染）。
+       */
+      async saveApi(): Promise<void> {
+        if (!this.activeWorkspace || !this.editorApi || !this.editorPath || this.saving || !this.canEdit(this.editorPath)) return;
+        this.saving = true;
+        this.error = null;
+        try {
+          const content = stringifyYaml(JSON.parse(JSON.stringify(this.editorApi)) as Record<string, unknown>);
+          const outcome = await api.onlineFilePut({
+            workspaceId: this.activeWorkspace.id,
+            path: this.editorPath,
+            content,
+            baseVersion: this.editorVersion,
+          });
+          if (outcome.outcome === "pushed") {
+            this.editorVersion = outcome.result.version;
+            this.editorSnapshot = JSON.stringify(this.editorApi);
+          } else {
+            this.conflict = outcome.conflict;
+          }
+        } catch (e) {
+          this.error = e instanceof Error ? e.message : String(e);
+        } finally {
+          this.saving = false;
+        }
+      },
+
+      /** 冲突-放弃（裁定 C）：清冲突态，本地编辑缓冲保留（可继续改或手动放弃）。 */
+      conflictDiscard(): void {
+        this.conflict = null;
+      },
+
+      /** 冲突-拉取覆盖我的（裁定 C）：丢弃本地编辑（对话框选择即确认），重取服务端最新并重新渲染。 */
+      async conflictPullOverwrite(): Promise<void> {
+        if (!this.conflict || !this.activeWorkspace || !this.editorPath) return;
+        const path = this.editorPath;
+        const kind = this.editorKind ?? "api";
+        this.conflict = null;
+        await this.selectNode(kind, path);
+      },
+
+      /**
+       * 迁移-拉取到本地目录（裁定 D）：getTree → 本地扫描 hash 比对（同 hash 跳过）→
+       * 分批（≤200）取内容 → 分批落盘 → 结果清单（新拉/更新/跳过计数 + 明细）。
+       * 单活动护栏：进行中二次调用直接返回。
+       */
+      async migratePull(dir: string): Promise<void> {
+        if (this.migrating || !this.activeWorkspace) return;
+        this.migrating = true;
+        this.migrationResult = null;
+        this.migrationProgress = "";
+        this.error = null;
+        try {
+          const workspaceId = this.activeWorkspace.id;
+          const [scan, tree] = await Promise.all([api.onlineMigrateScan(dir), api.onlineTreeGet(workspaceId)]);
+          const plan = planPull(tree.files, scan.files);
+          const contents: Array<{ path: string; content: string }> = [];
+          let done = 0;
+          for (const batch of chunk(plan.toFetch, 200)) {
+            const result = await api.onlineFilesGet({ workspaceId, paths: batch });
+            for (const file of result.files) contents.push({ path: file.path, content: file.content });
+            this.migrationProgress = `${(done += batch.length)}/${plan.toFetch.length}`;
+          }
+          const written: string[] = [];
+          for (const batch of chunk(contents, 200)) {
+            written.push(...(await api.onlineMigrateWrite({ dir, files: batch })).written);
+          }
+          // 取数批内 missing（权限恰变/文件刚删）按 failed 计，不入落盘清单
+          const writtenSet = new Set(written);
+          const details = plan.details.map((d) =>
+            d.action !== "skipped" && !writtenSet.has(d.path) ? { path: d.path, action: "failed" as const } : d,
+          );
+          this.migrationResult = {
+            direction: "pull",
+            pulled: details.filter((d) => d.action === "pulled").length,
+            updated: details.filter((d) => d.action === "updated").length,
+            skipped: details.filter((d) => d.action === "skipped").length,
+            pushed: 0,
+            conflicts: 0,
+            failed: details.filter((d) => d.action === "failed").length,
+            details,
+          };
+        } catch (e) {
+          this.error = e instanceof Error ? e.message : String(e);
+        } finally {
+          this.migrating = false;
+          this.migrationProgress = "";
+        }
+      },
+
+      /**
+       * 迁移-推送本地目录（裁定 D）：本地扫描 → 与服务端 tree 比对（新文件 baseVersion=0、
+       * 变更带服务端 version、同 hash 跳过——从不盲目覆盖）→ 分批 batch → 结果清单
+       * （冲突默认跳过并列出）→ 刷新在线树（新文件可见）。
+       */
+      async migratePush(dir: string): Promise<void> {
+        if (this.migrating || !this.activeWorkspace) return;
+        this.migrating = true;
+        this.migrationResult = null;
+        this.migrationProgress = "";
+        this.error = null;
+        try {
+          const workspaceId = this.activeWorkspace.id;
+          const [scan, tree] = await Promise.all([api.onlineMigrateScan(dir), api.onlineTreeGet(workspaceId)]);
+          const plan = planPush(scan.files, tree.files);
+          const details: MigrationResult["details"] = plan.skipped.map((path) => ({ path, action: "skipped" as const }));
+          let pushed = 0;
+          let conflicts = 0;
+          let failed = 0;
+          let done = 0;
+          for (const batch of chunk(plan.entries, 200)) {
+            const result = await api.onlineFilesBatch({ workspaceId, files: batch });
+            for (const item of result.results) {
+              if (item.status === "pushed") {
+                pushed += 1;
+                details.push({ path: item.path, action: "pushed" });
+              } else if (item.status === "conflict") {
+                conflicts += 1;
+                details.push({ path: item.path, action: "conflict" });
+              } else {
+                failed += 1;
+                details.push({ path: item.path, action: item.status });
+              }
+            }
+            this.migrationProgress = `${(done += batch.length)}/${plan.entries.length}`;
+          }
+          this.migrationResult = {
+            direction: "push",
+            pulled: 0,
+            updated: 0,
+            skipped: plan.skipped.length,
+            pushed,
+            conflicts,
+            failed,
+            details,
+          };
+          await this.refreshTreeView();
+        } catch (e) {
+          this.error = e instanceof Error ? e.message : String(e);
+        } finally {
+          this.migrating = false;
+          this.migrationProgress = "";
+        }
       },
     },
   })(createPinia());

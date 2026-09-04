@@ -22,6 +22,8 @@ import type {
   OnlineFilesResult,
   OnlineLoginInput,
   OnlineLoginOutput,
+  OnlineMigrateScanResult,
+  OnlineMigrateWriteInput,
   OnlinePushOutcome,
   OnlineRegisterChannelInput,
   OnlineResumeInput,
@@ -30,7 +32,9 @@ import type {
   OnlineUser,
   OnlineWorkspaceCreateInput,
   OnlineWorkspaceCreated,
+  OnlineWorkspaceOpenInput,
   OnlineWorkspaceSummary,
+  OnlineWorkspaceView,
 } from "./online/types.js";
 
 export interface OpenResult { workspace: { id: string; name: string }; problems: LoadProblem[]; root: string }
@@ -167,4 +171,15 @@ export interface ApiccApi {
   /** 批量推送（≤200/批）：逐文件结果（pushed/conflict/forbidden/invalid），部分成功语义。 */
   onlineFilesBatch(input: OnlineFilesBatchInput): Promise<OnlineBatchResult>;
   onlineFileDelete(input: OnlineFileDeleteInput): Promise<OnlineDeleteOutcome>;
+  // —— 在线工作区浏览/迁移（M3-B 任务 3，裁定 A/D/E）——
+  /** 打开在线工作区：main 记录当前工作区（与本地互斥，ws:open 链路反向清理）并返回树视图。 */
+  onlineWorkspaceOpen(input: OnlineWorkspaceOpenInput): Promise<OnlineWorkspaceView>;
+  /** 关闭在线工作区：清 main 侧状态与树/文件缓存。 */
+  onlineWorkspaceClose(): Promise<void>;
+  /** 当前在线工作区视图（树缓存：首次取 /tree，之后复用；切换/推送后经此刷新）。 */
+  onlineTreeView(workspaceId: string): Promise<OnlineWorkspaceView>;
+  /** 扫描本地目录：/ 相对路径 + sha-256 + utf8 内容（跳过 .apicc/.git 生成物）。 */
+  onlineMigrateScan(dir: string): Promise<OnlineMigrateScanResult>;
+  /** 迁移拉取落盘：按相对路径写目标目录（≤200/批；路径过契约规则，越界拒绝）。 */
+  onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }>;
 }

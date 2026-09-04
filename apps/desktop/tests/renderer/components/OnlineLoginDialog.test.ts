@@ -10,6 +10,7 @@ import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
+import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { createOnlineStore, STORAGE_KEY } from "../../../src/renderer/src/stores/online.js";
 import OnlineLoginDialog from "../../../src/renderer/src/components/OnlineLoginDialog.vue";
 import type { ApiccApi } from "../../../src/shared/types.js";
@@ -79,7 +80,8 @@ function memStorage(): Storage {
   } as Storage;
 }
 
-/** 装配：memory api + 注入 store 实例（组合根约定的测试形态），对话框默认开启并预置一份档案。 */
+/** 装配：memory api + 注入 store 实例（组合根约定的测试形态），对话框默认开启并预置一份档案。
+ *  workspace 注入（任务 3 工作区列表打开入口的模式互斥依赖）。 */
 async function mountDialog({ open = true, logins = 0 }: { open?: boolean; logins?: number } = {}) {
   const api = createMemoryApi();
   for (let i = 0; i < logins; i += 1) {
@@ -87,16 +89,17 @@ async function mountDialog({ open = true, logins = 0 }: { open?: boolean; logins
   }
   const storage = memStorage();
   const online = createOnlineStore({ api, storage });
+  const workspace = useWorkspaceStore(api);
   online.addProfile(SERVER_A, "团队服务器");
   if (logins > 0) await online.resume(SERVER_A); // 替身已登录 → store 恢复登录态（裁定 A 链路）
   online.dialogOpen = open;
   const { i18n } = createI18nInstance();
   const wrapper = mount(OnlineLoginDialog, {
-    props: { online },
+    props: { online, workspace },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api: api as ApiccApi, online, storage };
+  return { wrapper, api: api as ApiccApi, online, workspace, storage };
 }
 
 /** antd 组件定位（components.test.ts 同款：按组件名 + data-testid，不经下拉展开）。 */

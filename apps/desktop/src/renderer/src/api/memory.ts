@@ -33,6 +33,8 @@ import {
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
+import { onlineTreeToDto } from "../../../main/online/session.js";
+import { scanDirFiles, writeFiles } from "../../../main/online/migrate.js";
 import type {
   OnlineBatchResult,
   OnlineDeleteOutcome,
@@ -43,6 +45,8 @@ import type {
   OnlineFilesResult,
   OnlineLoginInput,
   OnlineLoginOutput,
+  OnlineMigrateScanResult,
+  OnlineMigrateWriteInput,
   OnlinePushOutcome,
   OnlineRegisterChannelInput,
   OnlineResumeInput,
@@ -50,7 +54,9 @@ import type {
   OnlineUser,
   OnlineWorkspaceCreateInput,
   OnlineWorkspaceCreated,
+  OnlineWorkspaceOpenInput,
   OnlineWorkspaceSummary,
+  OnlineWorkspaceView,
 } from "../../../shared/online/types.js";
 import type {
   ApiDetail,
@@ -148,7 +154,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     return { path: row.path, hash: row.hash, version: row.version, size: Buffer.byteLength(row.content, "utf8") };
   }
 
-  /** 登录成功后初始化示例在线空间（幂等）：工作区清单与文件版本内存模型的种子数据。 */
+  /** 登录成功后初始化示例在线空间（幂等）：工作区清单与文件版本内存模型的种子数据。
+   *  路径按 M1 §6 目录约定（groups/<g>/projects/<p>/…），任务 3 树映射/迁移替身同构。 */
   function seedOnlineWorkspace(): void {
     if (onlineWorkspaces.length > 0) return;
     const ws: OnlineWorkspaceSummary = {
@@ -159,7 +166,34 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     };
     onlineWorkspaces.push(ws);
     onlineFiles.set("apicc.workspace.yaml", { content: `id: ${ws.id}\nname: ${ws.name}\n`, version: 1 });
-    onlineFiles.set("groups/示例项目/collections/示例集合/apis/示例接口/apicc.api.yaml", { content: "id: api-online-1\nname: 示例接口\n", version: 1 });
+    onlineFiles.set("groups/示例分组/group.yaml", { content: "id: g-online-1\nname: 示例分组\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/project.yaml", { content: "id: p-online-1\nname: 示例项目\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/environments/dev.yaml", { content: "id: env-online-1\nname: dev\nvariables: {}\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/workflows/示例流/workflow.yaml", { content: "id: wf-online-1\nname: 示例流\nstatus: draft\nnodes: []\nedges: []\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/collections/示例集合/collection.yaml", { content: "id: c-online-1\nname: 示例集合\n", version: 1 });
+    onlineFiles.set("groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml", { content: "id: api-online-1\nname: 示例接口\n", version: 1 });
+  }
+
+  /** 当前在线工作区（任务 3：open/close/tree:view 同构 main session 的纯状态语义）。 */
+  let onlineWs: { id: string; name: string; myRole: OnlineWorkspaceOpenInput["myRole"] } | null = null;
+
+  /** 构造在线工作区视图（经同一 onlineTreeToDto 映射，与 main 侧零漂移）。 */
+  function onlineWorkspaceView(): OnlineWorkspaceView {
+    if (!onlineWs) throw new Error("尚未打开在线工作区");
+    if (!onlineUser) throw new Error("尚未登录在线服务器");
+    const tree: OnlineTree = {
+      workspaceId: onlineWs.id,
+      rootVersion: onlineFiles.size,
+      files: [...onlineFiles.keys()].map(onlineTreeRow),
+      projects: [{ id: "p-online-1", name: "示例项目", myRole: "EDITOR" as const }],
+    };
+    return {
+      workspaceId: onlineWs.id,
+      name: onlineWs.name,
+      myRole: onlineWs.myRole,
+      projects: tree.projects,
+      tree: onlineTreeToDto(tree, onlineWs.name),
+    };
   }
 
   function ensureOpen(): Workspace {
@@ -818,6 +852,32 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       }
       onlineFiles.delete(input.path);
       return { outcome: "deleted" };
+    },
+
+    // —— 在线工作区浏览/迁移（M3-B 任务 3，与 main IPC 面同构：open 后即取视图，
+    // 因此未登录 open 直接拒绝且不残留状态）——
+    async onlineWorkspaceOpen(input: OnlineWorkspaceOpenInput): Promise<OnlineWorkspaceView> {
+      requireOnlineUser();
+      onlineWs = { id: input.workspaceId, name: input.name, myRole: input.myRole };
+      return onlineWorkspaceView();
+    },
+
+    async onlineWorkspaceClose(): Promise<void> {
+      onlineWs = null;
+    },
+
+    async onlineTreeView(workspaceId: string): Promise<OnlineWorkspaceView> {
+      if (!onlineWs || onlineWs.id !== workspaceId) throw new Error("尚未打开在线工作区");
+      requireOnlineUser();
+      return onlineWorkspaceView();
+    },
+
+    async onlineMigrateScan(dir: string): Promise<OnlineMigrateScanResult> {
+      return { files: scanDirFiles(dir) };
+    },
+
+    async onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }> {
+      return { written: writeFiles(input.dir, input.files) };
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

@@ -5,7 +5,8 @@
  * ② put/delete 的 409 冲突不跨 IPC 抛错（Error 越结构化克隆通道会丢自定义字段），
  *    转为可辨别的 outcome 结果对象，渲染层按 outcome 分支渲染冲突对话框（任务 3）。
  */
-import type { OnlineBatchEntry, OnlinePutFileResult, OnlineRegisterInput, OnlineUser, OnlineVersionConflict } from "./contract.js";
+import type { OnlineBatchEntry, OnlinePutFileResult, OnlineRegisterInput, OnlineRole, OnlineTreeProject, OnlineUser, OnlineVersionConflict } from "./contract.js";
+import type { TreeNodeDTO } from "../tree-dto.js";
 
 export type {
   OnlineAclEntry,
@@ -67,3 +68,35 @@ export interface OnlineFilesBatchInput { workspaceId: string; files: OnlineBatch
 export interface OnlineFileDeleteInput { workspaceId: string; path: string; baseVersion: number }
 /** online:workspaces:create 入参。 */
 export interface OnlineWorkspaceCreateInput { name: string }
+
+// —— 在线工作区浏览/迁移（M3-B 任务 3，裁定 A/D/E）——
+/** online:workspace:open 入参：工作区摘要三元组（列表项原样回传，main 记录当前在线工作区）。 */
+export interface OnlineWorkspaceOpenInput { workspaceId: string; name: string; myRole: OnlineRole }
+/**
+ * 在线工作区视图：树 DTO（main 进程 onlineTreeToDto 由 path 清单映射，裁定 A）+
+ * 项目角色清单（渲染层按 projects[].myRole 判定逐项目只读/可写，NONE 项目已在服务端过滤）。
+ */
+export interface OnlineWorkspaceView {
+  workspaceId: string;
+  name: string;
+  myRole: OnlineRole;
+  projects: OnlineTreeProject[];
+  tree: TreeNodeDTO;
+}
+/** online:migrate:scan 出口：本地目录文本文件清单（/ 相对路径 + sha-256 + utf8 内容）。 */
+export interface OnlineMigrateScanResult { files: Array<{ path: string; hash: string; content: string }> }
+/** online:migrate:write 入参：迁移拉取的落盘批（≤200/批，路径过契约 path 规则）。 */
+export interface OnlineMigrateWriteInput { dir: string; files: Array<{ path: string; content: string }> }
+/** 迁移逐文件动作（拉取：pulled/updated/skipped/failed；推送：pushed/conflict/forbidden/invalid/skipped）。 */
+export type MigrationFileAction = "pulled" | "updated" | "skipped" | "failed" | "pushed" | "conflict" | "forbidden" | "invalid";
+/** 迁移结果清单（裁定 D：计数 + 明细；冲突默认跳过并列出）。 */
+export interface MigrationResult {
+  direction: "pull" | "push";
+  pulled: number;
+  updated: number;
+  skipped: number;
+  pushed: number;
+  conflicts: number;
+  failed: number;
+  details: Array<{ path: string; action: MigrationFileAction }>;
+}

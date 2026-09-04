@@ -48,6 +48,12 @@ const api = {
   onlineFilePut: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineFilePut, input),
   onlineFilesBatch: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineFilesBatch, input),
   onlineFileDelete: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineFileDelete, input),
+  // 在线工作区浏览/迁移（M3-B 任务 3）：单参频道包对象，主进程按契约 schema 校验
+  onlineWorkspaceOpen: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineWorkspaceOpen, input),
+  onlineWorkspaceClose: () => ipcRenderer.invoke(IpcChannel.OnlineWorkspaceClose),
+  onlineTreeView: (workspaceId: string) => ipcRenderer.invoke(IpcChannel.OnlineTreeView, { workspaceId }),
+  onlineMigrateScan: (dir: string) => ipcRenderer.invoke(IpcChannel.OnlineMigrateScan, { dir }),
+  onlineMigrateWrite: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineMigrateWrite, input),
 };
 
 contextBridge.exposeInMainWorld("apicc", api);

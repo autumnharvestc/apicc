@@ -11,6 +11,7 @@ import {
   Typography as ATypography,
 } from "ant-design-vue";
 import { OnlineBaseUrlSchema } from "../../../shared/online/contract.js";
+import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { createOnlineStore } from "../stores/online.js";
 
 const ATabPane = ATabs.TabPane;
@@ -23,13 +24,17 @@ const ATypographyText = ATypography.Text;
  *   （renderer localStorage，裁定 C，与 theme/i18n 偏好同先例）。
  * - 认证区（未登录时）：登录/注册双模式 a-tabs（简报允许「tab 或链接切换」，取 tab——
  *   既有 RequestEditor/ResponseViewer 页签先例，触发钩子经 #tab slot 保留）。
- * - 已登录：当前用户 + 激活服务器 + 退出登录（登出不清档案，裁定 C）。
+ * - 已登录：当前用户 + 激活服务器 + 退出登录（登出不清档案，裁定 C）+ 工作区列表
+ *   （M3-B 任务 3）：拉取「我参与的工作区」，点「打开」→ 先关本地目录工作区（裁定 E
+ *   模式互斥的自动侧）→ 打开在线工作区并收起对话框。
  * **组件内零工厂调用**：store 实例经 props 注入（App 组合根装配）。表单校验先行
  * （url 形态按契约 OnlineBaseUrlSchema、用户名密码必填、注册密码 ≥8 对齐契约），
  * api 失败经 store.error 上屏（plan 任务 2 步骤 1⑤）；组件自身 async 动作不重抛。
  */
 const props = defineProps<{
   online: ReturnType<typeof createOnlineStore>;
+  /** 本地工作区会话（任务 3 裁定 E）：打开在线工作区前先 reset 关闭本地上下文。 */
+  workspace: ReturnType<typeof useWorkspaceStore>;
 }>();
 const { t } = useI18n();
 
@@ -47,6 +52,7 @@ const serverOptions = computed(() =>
 );
 
 // 每次打开对话框重置本地表单（store 状态保留）；输入区回填当前激活档案便于直接改昵称保存。
+// 已登录时顺带刷新工作区列表（打开在线工作区的入口数据）。
 watch(
   () => props.online.dialogOpen,
   (open) => {
@@ -56,6 +62,7 @@ watch(
     mode.value = "login";
     serverUrl.value = props.online.activeBaseUrl ?? "";
     serverName.value = props.online.profiles.find((p) => p.baseUrl === props.online.activeBaseUrl)?.name ?? "";
+    if (props.online.loggedIn) void props.online.refreshWorkspaces();
   },
   { immediate: true },
 );
@@ -145,6 +152,19 @@ async function onRegister() {
     mode.value = "login";
   }
 }
+
+/**
+ * 打开在线工作区（任务 3，裁定 E 模式互斥的自动侧）：先关本地目录工作区会话再开在线；
+ * 打开成功（store.activeWorkspace 命中）即收起对话框，失败错误经 store.error 上屏留在对话框。
+ */
+async function onOpenWorkspace(workspaceId: string) {
+  const ws = props.online.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+  formError.value = "";
+  if (props.workspace.opened) props.workspace.reset();
+  await props.online.openWorkspace(ws);
+  if (props.online.activeWorkspace?.id === ws.id) props.online.dialogOpen = false;
+}
 </script>
 
 <template>
@@ -195,12 +215,32 @@ async function onRegister() {
         </div>
       </div>
 
-      <!-- 已登录：用户 + 退出登录 -->
+      <!-- 已登录：用户 + 退出登录 + 工作区列表（任务 3 打开在线工作区入口） -->
       <div v-if="online.loggedIn" class="section" data-testid="online-signed-in">
-        <a-typography-text data-testid="online-user">
-          {{ t("online.loggedInAs", { name: online.user?.displayName ?? "", server: online.activeName }) }}
-        </a-typography-text>
-        <a-button danger data-testid="online-logout" @click="online.logout()">{{ t("online.logout") }}</a-button>
+        <div class="signed-in-row">
+          <a-typography-text data-testid="online-user">
+            {{ t("online.loggedInAs", { name: online.user?.displayName ?? "", server: online.activeName }) }}
+          </a-typography-text>
+          <a-button danger data-testid="online-logout" @click="online.logout()">{{ t("online.logout") }}</a-button>
+        </div>
+        <!-- 工作区列表：刷新于对话框打开时；点「打开」→ 先关本地工作区再开在线 -->
+        <div class="section-title">{{ t("online.wsSection") }}</div>
+        <div class="ws-list" data-testid="online-ws-list">
+          <div v-if="online.workspaces.length === 0" class="ws-empty">{{ t("online.wsListEmpty") }}</div>
+          <div v-for="ws in online.workspaces" :key="ws.id" class="ws-row" :data-ws-id="ws.id">
+            <span class="ws-name">{{ ws.name }}</span>
+            <span class="ws-role">{{ ws.myRole }}</span>
+            <a-button
+              size="small"
+              type="primary"
+              data-testid="online-ws-open"
+              :disabled="online.activeWorkspace?.id === ws.id"
+              @click="onOpenWorkspace(ws.id)"
+            >
+              {{ t("online.wsOpen") }}
+            </a-button>
+          </div>
+        </div>
       </div>
 
       <!-- 未登录：登录 / 注册双模式 -->
@@ -285,9 +325,43 @@ async function onRegister() {
   flex-direction: column;
   gap: 8px;
 }
+.signed-in-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .section-title {
   font-weight: 600;
   font-size: 13px;
+}
+.ws-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+.ws-empty {
+  color: var(--text-muted, #666);
+  font-size: 12px;
+}
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ws-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.ws-role {
+  color: var(--text-muted, #666);
+  font-size: 11px;
 }
 .field {
   display: flex;
