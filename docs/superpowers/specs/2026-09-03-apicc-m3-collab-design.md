@@ -68,6 +68,7 @@ M1/M2 交付了完备的本地模式（接口定义/调试/测试/工作流/压�
 |---|---|---|
 | GET `/api/v1/workspaces/{id}/projects/{projectId}/acl` | `[{ userId, role }]`（role ∈ NONE/VIEWER/EDITOR/ADMIN） | ADMIN+ |
 | PUT 同路径 | `{ userId, role }`（NONE=拒之门外；DELETE 行=恢复继承） | ADMIN+ |
+| DELETE 同路径 `?userId=` | 删该用户 ACL 行=恢复工作区角色继承（**契约修订 2026-09-04：M3-A 实现发现 §3.3 缺 DELETE 行，规格补齐**） | ADMIN+ |
 
 ### 3.4 内容（核心同步面）
 
