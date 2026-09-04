@@ -37,8 +37,8 @@ apicc run groups/ecommerce/projects/order-service/collections/order-api --env de
 # 运行工作流（DAG 场景）
 apicc run-workflow groups/ecommerce/projects/order-service/workflows/checkout --env dev
 
-# 压测接口：并发 4、共 100 次迭代（也可用 --duration 按秒数施压）
-apicc run-stress groups/ecommerce/projects/order-service/apis/create-order --concurrency 4 --iterations 100
+# 压测接口（--case 与 --concurrency 必填）：并发 4、共 100 次迭代（也可用 --duration 按秒数施压）
+apicc run-stress groups/ecommerce/projects/order-service/apis/create-order --case ok --concurrency 4 --iterations 100
 
 # 导出接口设计（Markdown，供 AI 消费）
 apicc export-design groups/ecommerce/projects/order-service/apis/create-order
