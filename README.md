@@ -25,7 +25,7 @@ pnpm install
 pnpm -r build
 ```
 
-命令行入口为 `packages/cli/dist/bin.js`（下例以 `apicc` 指代，可自行设置别名）。所有命令均以本地工作区（含 `apicc.workspace.yaml` 的目录）为根。
+命令行入口为 `packages/cli/dist/bin.js`（下例以 `apicc` 指代，可自行设置别名）。所有命令均以本地工作区（含 `apicc.workspace.yaml` 的目录）为根。工作区本身是纯文本目录（分组 / 项目 / 集合 / 接口等层级），可手工编写、经 Git 版本化，或在桌面端中创建；层级约定见 `docs/` 下的设计规格。
 
 ```bash
 # 校验工作区结构
@@ -59,7 +59,7 @@ pnpm -C apps/desktop dist:dir   # 打包为本地目录（免安装运行）
 ## 开发
 
 ```bash
-pnpm -r test   # 各包单元测试（vitest）
+pnpm -r test   # 各包测试（vitest）
 pnpm -r build  # 全量构建
 ```
 
@@ -74,7 +74,7 @@ pnpm -r build  # 全量构建
 
 ## CI
 
-推送与 PR 会自动触发三 job 门禁：单元测试、品牌中立扫描、（main 分支推送时）Windows 打包冒烟，见 `.github/workflows/ci.yml`。
+推送与 PR 会自动触发三 job 门禁：三包构建与测试（core 另行类型检查，覆盖测试文件）、品牌中立扫描、（main 分支推送时）Windows 打包冒烟，见 `.github/workflows/ci.yml`。
 
 ## 许可证
 
