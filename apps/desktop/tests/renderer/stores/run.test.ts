@@ -28,7 +28,8 @@ describe("run store", () => {
     expect(run.result!.passed).toBe(run.result!.total);
     await run.loadHistory();
     expect(run.summaries).toHaveLength(1);
-    expect(run.summaries[0]!.collectionName).toBe("示例集合");
+    // kind 判别（M2-D3 任务 1）：集合运行摘要带 kind: "collection"
+    expect(run.summaries[0]).toMatchObject({ kind: "collection", collectionName: "示例集合" });
     expect(run.summaries[0]!.file).toMatch(/^run-memory-.*\.json$/);
   });
 

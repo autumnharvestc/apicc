@@ -5,6 +5,7 @@ import type {
   LoadProblem,
   Project,
   RunResult,
+  StressReport,
   Workflow,
   WorkflowImpactEntry,
   WorkflowRunResult,
@@ -30,10 +31,24 @@ export interface DebugOutput { run: RunResult; outcome: CaseOutcome; response?: 
 /** run:collection 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
 export interface RunCollectionInput { collectionId: string; envName?: string }
 /**
- * runs:list 行摘要：与 src/main/runs.ts 同名接口结构同构（IPC 结构化克隆传输，字段变更
- * 需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
+ * runs:list 行摘要（集合运行）：与 src/main/runs.ts 同名接口结构同构（IPC 结构化克隆传输，
+ * 字段变更需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
+ * kind 必填（M2-D3 任务 1）：运行历史按 kind 区分集合/压测两类报告（规格 §2 D11）。
  */
-export interface RunSummaryDTO { file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number }
+export interface RunSummaryDTO { kind: "collection"; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number }
+/**
+ * runs:list 行摘要（压测，M2-D3 任务 1）：startedAt 为 report.startedAt（epoch ms）格式化的
+ * ISO 字符串，与集合行的 startedAt 同口径排序。
+ */
+export interface StressRunSummaryDTO { kind: "stress"; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
+export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
+
+/** stress:run 入参：maxIterations/durationMs 至少给其一（都给先到先停），二者可传 null（渲染层「清空」惯例）。 */
+export interface StressRunInput { apiId: string; caseId: string; envName?: string; concurrency: number; maxIterations?: number | null; durationMs?: number | null }
+/** stress:run / stress:stop 返回：最终（或中止后的部分）报告 + 落盘文件名。 */
+export interface StressRunOutput { report: StressReport; file: string }
+/** runs:get 对 stress 文件的返回：kind 判别 + 完整压测报告（集合文件返回既有 RunResult 形状）。 */
+export interface StressReportDTO { kind: "stress"; report: StressReport }
 
 /** import:preview 入参：渲染层经 input[type=file] 读出文本与文件名（不新增文件选择 IPC）。 */
 export interface ImportPreviewInput { fileName: string; content: string }
@@ -86,8 +101,12 @@ export interface ApiccApi {
   apiSave(api: ApiDefinition): Promise<void>;
   debugSend(input: DebugInput): Promise<DebugOutput>;
   runCollection(input: RunCollectionInput): Promise<RunResult>;
-  runsList(): Promise<RunSummaryDTO[]>;
-  runsGet(file: string): Promise<RunResult | null>;
+  runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>>;
+  runsGet(file: string): Promise<RunResult | StressReportDTO | null>;
+  /** stress:run（M2-D3 任务 1）：main 进程执行压测，返回最终报告 + 落盘文件名；单活动约束（「已有压测进行中」）。 */
+  stressRun(input: StressRunInput): Promise<StressRunOutput>;
+  /** stress:stop：abort 活动运行（停发新采样、等在途完成），返回部分报告；无活动运行抛「没有进行中的压测」。 */
+  stressStop(): Promise<StressRunOutput>;
   importPreview(input: ImportPreviewInput): Promise<ImportPreviewResult>;
   importApply(input: ImportApplyInput): Promise<void>;
   /** design:export：主进程渲染 agent 设计 md → showSaveDialog 落盘；返回保存路径（取消为空串）。 */

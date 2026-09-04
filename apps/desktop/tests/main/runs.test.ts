@@ -20,8 +20,10 @@ describe("runs 历史", () => {
     const list = listRuns(dir);
     expect(list).toHaveLength(2);
     expect(list[0]!.file).toBe("run-a.json");
-    expect(list[0]!.collectionName).toBe("demo");
-    expect(readRun(dir, "run-a.json")!.total).toBe(2);
+    // kind 判别（M2-D3 任务 1）：联合摘要按 kind 收窄访问集合字段
+    expect(list[0]!.kind).toBe("collection");
+    expect(list[0]).toMatchObject({ collectionName: "demo" });
+    expect(readRun(dir, "run-a.json")).toMatchObject({ collectionName: "demo", total: 2 });
   });
   it("非法文件跳过不抛", () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-runslist2-"));
@@ -47,6 +49,47 @@ describe("runs 历史", () => {
     const list = listRuns(dir);
     expect(list).toHaveLength(1);
     expect(list[0]!.file).toBe("good.json");
+  });
+});
+
+// —— kind 判别（M2-D3 任务 1）：runs 目录混合集合运行与压测报告，listRuns/readRun 按内容判别 ——
+const stressReport = {
+  concurrency: 2, totalRequests: 4, ok: 3, failed: 1, durationMs: 100, rps: 40,
+  latency: { min: 1, avg: 2, max: 3, p50: 2, p90: 2.5, p95: 2.8, p99: 3 },
+  statusDist: { "200": 3, "500": 1 }, errorKinds: { HTTP_500: 1 },
+  startedAt: 1725300000000, finishedAt: 1725300000100,
+};
+
+describe("runs kind 判别", () => {
+  it("listRuns 判别 collection/stress 两行，形状不对的 JSON 跳过（不产 undefined 字段行）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-runs-kind-"));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "run-a.json"), JSON.stringify(sample));
+    writeFileSync(join(dir, "stress-api-1.json"), JSON.stringify(stressReport));
+    writeFileSync(join(dir, "wrong-shape.json"), JSON.stringify({ hello: "world" }));
+    const list = listRuns(dir);
+    expect(list).toHaveLength(2);
+    const collection = list.find((r) => r.kind === "collection")!;
+    expect(collection).toMatchObject({ kind: "collection", file: "run-a.json", collectionName: "demo", total: 2, passed: 1, failed: 1 });
+    const stress = list.find((r) => r.kind === "stress")!;
+    expect(stress).toEqual({
+      kind: "stress", file: "stress-api-1.json",
+      startedAt: new Date(1725300000000).toISOString(),
+      totalRequests: 4, ok: 3, failed: 1, rps: 40,
+    });
+  });
+
+  it("readRun 对 stress 文件返回 {kind:'stress', report}、对集合文件返回既有 RunResult 形状", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-runs-kind2-"));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "run-a.json"), JSON.stringify(sample));
+    writeFileSync(join(dir, "stress-api-1.json"), JSON.stringify(stressReport));
+    const collection = readRun(dir, "run-a.json");
+    // 既有 RunResult 形状：无 kind 包装字段
+    expect(collection).toMatchObject({ collectionName: "demo", total: 2 });
+    expect(collection).not.toHaveProperty("kind");
+    const stress = readRun(dir, "stress-api-1.json");
+    expect(stress).toEqual({ kind: "stress", report: stressReport });
   });
 });
 

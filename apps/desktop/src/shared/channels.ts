@@ -27,5 +27,7 @@ export const IpcChannel = {
   WfSetStatus: "wf:set-status",
   WfImpact: "wf:impact",
   WfRun: "wf:run",
+  StressRun: "stress:run",
+  StressStop: "stress:stop",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];

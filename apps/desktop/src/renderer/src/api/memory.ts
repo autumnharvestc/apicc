@@ -3,8 +3,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import {
+  builtinAuthProviders,
+  buildStressRequest,
+  createVariableResolver,
   fileStorage,
+  mergedEnvVars,
   renderDesignMarkdown,
+  StressRunner,
   transitionWorkflowStatus,
   validateEnablement,
   workflowImpact,
@@ -17,7 +22,9 @@ import {
   type LoadProblem,
   type NodeResult,
   type Project,
+  type ProtocolClient,
   type RunResult,
+  type StressReport,
   type Workflow,
   type WorkflowImpactEntry,
   type WorkflowRunResult,
@@ -39,6 +46,10 @@ import type {
   OpenResult,
   RunCollectionInput,
   RunSummaryDTO,
+  StressReportDTO,
+  StressRunInput,
+  StressRunOutput,
+  StressRunSummaryDTO,
   WfCreateInput,
   WfImpactInput,
   WfRunInput,
@@ -57,8 +68,10 @@ const WORKSPACE_FILE = "apicc.workspace.yaml";
  * 目录确为工作区时仍从盘加载，保持与 session 一致的重开语义。
  * debugSend 不走真实网络，固定返回成功结果。测试经 options.root 注入工作区目录；
  * 默认每实例独立临时目录，可安全并行。
+ * stressRun（M2-D3 任务 1）：进程内 StressRunner + 假 client 实现与主进程同构语义
+ * （单活动拒绝/stop/错误文案/历史 kind 判别），client 可注入、默认不发真实网络。
  */
-export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ groupName: string; projectName: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }> } {
+export function createMemoryApi(options?: { root?: string; stressClient?: ProtocolClient }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ groupName: string; projectName: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }> } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
@@ -68,6 +81,20 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
   // runsList/runsGet 读回；runSeq 保证同毫秒多次运行不重名（对齐 Runner 落盘文件名语义）。
   const runs: Array<{ file: string; result: RunResult }> = [];
   let runSeq = 0;
+  // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
+  const stressRuns: Array<{ file: string; report: StressReport }> = [];
+  // 单活动压测（与主进程 createStressController 同构）：闭包持 AbortController + 收尾 Promise。
+  let stressActive: { controller: AbortController; finished: Promise<StressRunOutput> } | null = null;
+  // 压测 client：默认假实现（200 成功、零时延），测试可注入挂起/自定义 client，不发真实网络。
+  const stressClient: ProtocolClient = options?.stressClient ?? {
+    name: "fake",
+    canHandle: () => true,
+    execute: async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 0 }),
+  };
+  /** 收尾清理：仅当仍是本次 run 时清空（防误清新活动）；独立函数避免闭包内 let 收窄问题。 */
+  function clearStressActive(controller: AbortController): void {
+    if (stressActive?.controller === controller) stressActive = null;
+  }
   // 导入向导（任务 7）：importApply 调用记录（供测试断言；语义对齐 session.importProject）。
   const importApplyCalls: Array<{ groupName: string; projectName: string }> = [];
   // 详细设计导出（任务 8）：designExport 调用记录（供测试断言渲染产物）。
@@ -394,8 +421,9 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
       return run;
     },
 
-    async runsList(): Promise<RunSummaryDTO[]> {
-      return runs.map(({ file, result }) => ({
+    async runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>> {
+      const collectionRows: RunSummaryDTO[] = runs.map(({ file, result }) => ({
+        kind: "collection",
         file,
         collectionName: result.collectionName,
         startedAt: result.startedAt,
@@ -403,10 +431,68 @@ export function createMemoryApi(options?: { root?: string }): ApiccApi & { seedW
         passed: result.passed,
         failed: result.failed,
       }));
+      // 压测行（M2-D3 任务 1）：startedAt 由 epoch ms 格式化为 ISO，与主进程 listRuns 同口径。
+      const stressRows: StressRunSummaryDTO[] = stressRuns.map(({ file, report }) => ({
+        kind: "stress",
+        file,
+        startedAt: new Date(report.startedAt).toISOString(),
+        totalRequests: report.totalRequests,
+        ok: report.ok,
+        failed: report.failed,
+        rps: report.rps,
+      }));
+      return [...collectionRows, ...stressRows].sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
     },
 
-    async runsGet(file: string): Promise<RunResult | null> {
-      return runs.find((r) => r.file === file)?.result ?? null;
+    async runsGet(file: string): Promise<RunResult | StressReportDTO | null> {
+      const collection = runs.find((r) => r.file === file);
+      if (collection) return collection.result;
+      const stress = stressRuns.find((r) => r.file === file);
+      return stress ? { kind: "stress", report: structuredClone(stress.report) } : null;
+    },
+
+    // 压测（M2-D3 任务 1，与主进程 stress.ts 同构）：单活动拒绝/abort 语义/错误文案逐字对齐；
+    // 报告收尾即入 stressRuns 历史（替代主进程落盘），返回前深拷贝。
+    async stressRun(input: StressRunInput): Promise<StressRunOutput> {
+      if (stressActive) throw new Error("已有压测进行中");
+      const ws = ensureOpen();
+      const loc = locateApi(input.apiId);
+      if (!loc) throw new Error(`未找到接口: ${input.apiId}`);
+      const api: ApiDefinition = { ...loc.api, cases: loc.api.cases.filter((c) => c.id === input.caseId) };
+      if (api.cases.length === 0) throw new Error(`用例不存在: ${input.caseId}`);
+      const env = input.envName ? loc.project.environments.find((e) => e.name === input.envName) : undefined;
+      if (input.envName && !env) throw new Error(`未找到环境: ${input.envName}`);
+      const resolver = createVariableResolver({
+        layers: [mergedEnvVars(env, loc.project), loc.collection.variables, loc.project.variables, ws.variables],
+      });
+      const runner = new StressRunner({
+        client: stressClient,
+        buildRequest: () => buildStressRequest(api, resolver, builtinAuthProviders),
+      });
+      const controller = new AbortController();
+      const finished = (async (): Promise<StressRunOutput> => {
+        try {
+          const report = await runner.run({
+            concurrency: input.concurrency,
+            maxIterations: input.maxIterations ?? undefined,
+            durationMs: input.durationMs ?? undefined,
+            signal: controller.signal,
+          });
+          const file = `stress-${api.id}-${Date.now()}.json`;
+          stressRuns.unshift({ file, report: structuredClone(report) });
+          return { report: structuredClone(report), file };
+        } finally {
+          clearStressActive(controller);
+        }
+      })();
+      stressActive = { controller, finished };
+      return finished;
+    },
+
+    async stressStop(): Promise<StressRunOutput> {
+      if (!stressActive) throw new Error("没有进行中的压测");
+      stressActive.controller.abort();
+      return stressActive.finished;
     },
 
     // 导入向导（任务 7）：importPreview 返回固定样例（渲染层替身不做格式探测——替身
