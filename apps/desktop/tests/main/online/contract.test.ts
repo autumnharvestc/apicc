@@ -111,6 +111,14 @@ describe("在线契约 schema（规格 §3 fixture 往返）", () => {
     expect(OnlineVersionConflictSchema.safeParse({ code: "other", currentVersion: 1, currentHash: "h" }).success).toBe(false);
   });
 
+  // M3-C 前置对齐①：fixture 逐字取自服务端真实行为——新文件带过期 baseVersion（并发删除场景）
+  // → ContentService 抛 VersionConflictException(0, null)，GlobalExceptionHandler 序列化为
+  // { code, message, currentVersion: 0, currentHash: null }（currentHash 为 JSON null）。
+  it("409 冲突 currentHash 可为 null（服务端新文件并发删除场景，M3-C 前置对齐①）", () => {
+    const conflict = { code: "version_conflict", message: "baseVersion 与服务端现状不一致", currentVersion: 0, currentHash: null };
+    expect(OnlineVersionConflictSchema.parse(conflict)).toEqual(conflict);
+  });
+
   it("batch：入参条目与逐文件结果（pushed/conflict/forbidden/invalid，可选字段）", () => {
     const entry = { path: "a.yaml", content: "x", baseVersion: 0 };
     expect(OnlineBatchEntrySchema.parse(entry)).toEqual(entry);
@@ -126,7 +134,15 @@ describe("在线契约 schema（规格 §3 fixture 往返）", () => {
     expect(OnlineBatchResultSchema.safeParse({ results: [{ path: "e.yaml", status: "merged" }] }).success).toBe(false);
   });
 
-  it("path 规则：禁止 ..、绝对路径、反斜杠、空段", () => {
+  // M3-C 前置对齐②：服务端单文件落盘 IO 失败以 failed 行呈现（ContentService.pushOne：
+  // io_error → status "failed"，不整批 500）——客户端不认 failed 会令整批 parse 失败、
+  // 迁移推送中断，故枚举必须补 failed。fixture 对应 BatchResultView.FileResult 实序列化形状。
+  it("batch 逐文件结果含 failed 行（服务端 io_error 口径，M3-C 前置对齐②）", () => {
+    const result = { results: [{ path: "a.yaml", status: "failed", message: "文件落盘失败，版本已回滚" }] };
+    expect(OnlineBatchResultSchema.parse(result)).toEqual(result);
+  });
+
+  it("path 规则：禁止 ..、绝对路径、反斜杠、空段；另禁冒号（M3-C 前置对齐③，对齐服务端 ProjectPaths Windows 盘符防御）", () => {
     expect(OnlinePathSchema.safeParse("groups/订单/apicc.workspace.yaml").success).toBe(true);
     expect(OnlinePathSchema.safeParse("../etc/passwd").success).toBe(false);
     expect(OnlinePathSchema.safeParse("a/../b").success).toBe(false);
@@ -134,5 +150,7 @@ describe("在线契约 schema（规格 §3 fixture 往返）", () => {
     expect(OnlinePathSchema.safeParse("a\\b").success).toBe(false);
     expect(OnlinePathSchema.safeParse("a//b").success).toBe(false);
     expect(OnlinePathSchema.safeParse("").success).toBe(false);
+    expect(OnlinePathSchema.safeParse("C:/etc/passwd").success).toBe(false);
+    expect(OnlinePathSchema.safeParse("a:b.yaml").success).toBe(false);
   });
 });

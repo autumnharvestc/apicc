@@ -217,7 +217,6 @@
     "editorEmpty": "Select an API on the left to view/edit its definition",
     "pullGuide": "Online workspaces do not provide debug/run: migrate (pull) to a local directory first to debug locally.",
     "problemsTitle": "API definition failed schema validation (raw text shown; pushing is disabled)",
-    "rawTitle": "Raw file (read-only)",
     "save": "Save & push",
     "saving": "Pushing…",
     "savedTip": "Pushed to server",

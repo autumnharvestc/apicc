@@ -99,11 +99,12 @@ describe("onlineClient 请求拼装", () => {
     expect(calls[0]!.body).toEqual({ content: "id: a\n", baseVersion: 7 });
   });
 
-  it("putFile 拒绝非法路径（..、绝对路径、反斜杠）", async () => {
+  it("putFile 拒绝非法路径（..、绝对路径、反斜杠、冒号——M3-C 前置对齐③）", async () => {
     const { calls, impl } = fetchStub(() => json(201, { path: "a", version: 1, hash: "h" }));
     const client = createOnlineClient({ baseUrl: BASE, fetch: impl });
     await expect(client.putFile("ws-1", { path: "../x", content: "", baseVersion: 0 })).rejects.toThrow(/path/);
     await expect(client.putFile("ws-1", { path: "/abs", content: "", baseVersion: 0 })).rejects.toThrow(/path/);
+    await expect(client.putFile("ws-1", { path: "C:/x", content: "", baseVersion: 0 })).rejects.toThrow(/path/);
     expect(calls).toHaveLength(0);
   });
 
@@ -171,6 +172,19 @@ describe("onlineClient 错误归一", () => {
     const err = await client.putFile("ws-1", { path: "a.yaml", content: "x", baseVersion: 7 }).catch((e) => e);
     expect(err).toBeInstanceOf(OnlineConflictError);
     expect(err.conflict).toEqual(conflict);
+  });
+
+  // M3-C 前置对齐①：服务端新文件并发删除场景 409 带 currentHash:null（真实响应形状取自
+  // GlobalExceptionHandler.ConflictError 序列化）。strict schema 修前 safeParse 失败会退化
+  // 为普通 OnlineApiError，冲突对话框不出现——修后必须走通冲突路径。
+  it("409 冲突 currentHash 为 null（服务端新文件并发删除）→ 仍走 OnlineConflictError（M3-C 前置对齐①）", async () => {
+    const conflict = { code: "version_conflict", message: "baseVersion 与服务端现状不一致", currentVersion: 0, currentHash: null };
+    const { impl } = fetchStub(() => json(409, conflict));
+    const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
+    const err = await client.putFile("ws-1", { path: "a.yaml", content: "x", baseVersion: 7 }).catch((e) => e);
+    expect(err).toBeInstanceOf(OnlineConflictError);
+    expect(err.conflict).toEqual(conflict);
+    expect(err.conflict.currentHash).toBeNull();
   });
 
   it("409 但 body 非 version_conflict → 按统一错误形状处理", async () => {
