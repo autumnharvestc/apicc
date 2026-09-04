@@ -48,6 +48,7 @@ export interface ShardPlan {
 /**
  * D3 分配纯函数：iterations 均分、余数给前 r 个（总数守恒）；并发每 shard
  * max(1, floor(C/n))、余数给前 r 个（每 shard 至少 1）；duration 模式各 shard 同截止各自跑满。
+ * 非法入参抛错：shards 非正整数、终止条件缺失、iterations 少于 shards（无法保证每 shard 至少 1 迭代）。
  */
 export function planShards(
   share: { concurrency: number; maxIterations?: number; durationMs?: number },
@@ -59,6 +60,10 @@ export function planShards(
   if (share.maxIterations === undefined && share.durationMs === undefined) {
     // 与 StressRunner 口径同文案。
     throw new Error("压测终止条件缺失：maxIterations 与 durationMs 必须给其一");
+  }
+  if (share.maxIterations !== undefined && share.maxIterations < shards) {
+    // 防 0 迭代 shard（均分后空份额会违反 StressWorkerSpecSchema 正整数约束），fail-fast。
+    throw new Error(`shards 不能大于总迭代数（${share.maxIterations}）`);
   }
   const iterBase = share.maxIterations === undefined ? 0 : Math.floor(share.maxIterations / shards);
   const iterRemainder = share.maxIterations === undefined ? 0 : share.maxIterations % shards;
@@ -133,6 +138,7 @@ export function mergeStressReport(
  * 多 shard 协调器：planShards 拆份额 → 并发 spawn 全部（allSettled 收集，单 shard 超时/抛错/
  * 协议坏输出均归入该 shard 失败，D4）→ 成功样本合并挂 distributed 段。任一 shard 失败不抛，
  * 失败数随结果返回供 CLI 决定退出码。
+ * 顺序口径：perShard 与 shardErrors 均按 shard 下标序（shard-0、shard-1…）稳定输出，与完成时序无关。
  */
 export class DistributedStressCoordinator {
   async run(specBase: StressWorkerSpecBase, opts: DistributedRunOptions): Promise<CoordinatorRunResult> {
@@ -154,6 +160,8 @@ export class DistributedStressCoordinator {
       specs.map((spec) => withTimeout(Promise.resolve().then(() => spawnWorker(spec)), spec.shardId, shardTimeoutMs)),
     );
     const finishedAt = Date.now();
+    // perShard rps 以协调窗口计（各 shard 同窗，为 shard 吞吐下界口径）。
+    const seconds = windowSeconds(startedAt, finishedAt);
 
     const merged: StressSample[] = [];
     const perShard: StressDistributed["perShard"] = [];
@@ -184,8 +192,6 @@ export class DistributedStressCoordinator {
       const samples = attempt.result.samples;
       merged.push(...samples);
       const okCount = samples.filter((s) => s.ok).length;
-      // perShard rps 以协调窗口计（各 shard 同窗，为 shard 吞吐下界口径）。
-      const seconds = windowSeconds(startedAt, finishedAt);
       perShard.push({
         shardId: spec.shardId,
         totalRequests: samples.length,

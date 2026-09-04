@@ -61,6 +61,13 @@ describe("planShards", () => {
     expect(() => planShards({ concurrency: 1 }, 2)).toThrow("maxIterations");
     expect(() => planShards({ concurrency: 1, maxIterations: 4 }, 0)).toThrow("shards");
   });
+
+  it("iterations 少于 shards：fail-fast 抛中文错误（不产 0 迭代 shard）；duration 模式不受影响", () => {
+    expect(() => planShards({ concurrency: 3, maxIterations: 2 }, 3)).toThrow(
+      "shards 不能大于总迭代数（2）",
+    );
+    expect(() => planShards({ concurrency: 3, durationMs: 1_000 }, 3)).not.toThrow();
+  });
 });
 
 describe("DistributedStressCoordinator", () => {
@@ -179,6 +186,36 @@ describe("DistributedStressCoordinator", () => {
     // 无成功 shard 时 concurrency 回退为分配总额（3），保证报告满足正整数约束、可落盘可回读
     expect(report.concurrency).toBe(3);
     expect(() => StressReportSchema.parse(report)).not.toThrow();
+  });
+
+  it("iterations 少于 shards：coordinator.run 同样 fail-fast 抛中文错误（planShards 闸口）", async () => {
+    await expect(
+      coordinator.run({ ...specBase, maxIterations: 2 }, { shards: 3, spawnWorker: async () => shardResult("shard-0", []) }),
+    ).rejects.toThrow("shards 不能大于总迭代数（2）");
+  });
+
+  it("对称失败：shard-0 失败、shard-1 成功——perShard/shardErrors 按 shard 下标序稳定输出（非完成序）", async () => {
+    const { report, shardFailureCount } = await coordinator.run(specBase, {
+      shards: 2,
+      spawnWorker: async (spec) => {
+        // shard-1 先完成、shard-0 后失败：证明结果顺序与完成时序无关
+        await new Promise((r) => setTimeout(r, spec.shardId === "shard-0" ? 30 : 1));
+        return spec.shardId === "shard-0"
+          ? shardFailure("shard-0", "shard-0 启动失败")
+          : shardResult("shard-1", [10, 20]);
+      },
+    });
+
+    expect(shardFailureCount).toBe(1);
+    expect(report.totalRequests).toBe(2);
+    // 分得 [2,1]，仅成功 shard-1 分得 1
+    expect(report.concurrency).toBe(1);
+    expect(report.distributed?.perShard).toEqual([
+      { shardId: "shard-1", totalRequests: 2, ok: 2, failed: 0, rps: expect.any(Number) },
+    ]);
+    expect(report.distributed?.shardErrors).toEqual([
+      { shardId: "shard-0", error: "shard-0 启动失败" },
+    ]);
   });
 
   it("超时：shardTimeoutMs 到期判 shard 失败（20ms 极短值 + 永不 resolve 替身，不真实长等）", async () => {
