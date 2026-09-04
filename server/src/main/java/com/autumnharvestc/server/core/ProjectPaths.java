@@ -19,6 +19,14 @@ public final class ProjectPaths {
     /** 工作区根配置文件（规格 §3.4：仅 ADMIN+ 可写）。 */
     public static final String WORKSPACE_CONFIG = "apicc.workspace.yaml";
 
+    /**
+     * 路径长度上限：与 schema.sql 的 path VARCHAR(512) 对齐（审查修复）。
+     * 口径为**字符数**（String.length，H2/Postgres VARCHAR 长度皆按字符计，非 UTF-8 字节）——
+     * 超长路径若放行将在 insertNew 处抛 DataIntegrityViolation：单 PUT 成 500，batch 面一条坏路径
+     * 令整批 500，D8 部分成功语义失效；在此拦为 400 path_invalid 后 batch 自然转 invalid 行。
+     */
+    public static final int MAX_PATH_LENGTH = 512;
+
     /** projectId 长度：SHA-256 hex 前 12 位（48 bit，碰撞概率工程可忽略）。 */
     private static final int PROJECT_ID_HEX_CHARS = 12;
 
@@ -29,6 +37,10 @@ public final class ProjectPaths {
     public static void validate(String path) {
         if (path == null || path.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "path_invalid", "路径不能为空");
+        }
+        if (path.length() > MAX_PATH_LENGTH) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "path_invalid",
+                    "路径长度超过上限 " + MAX_PATH_LENGTH + " 字符");
         }
         if (path.indexOf('\\') >= 0 || path.indexOf('\0') >= 0) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "path_invalid", "路径禁止反斜杠与控制字符");

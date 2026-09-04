@@ -80,6 +80,20 @@ class ProjectPathsTest {
         assertThat(ProjectPaths.projectId("groups/ecommerce/projects/other")).isNotEqualTo(expected);
     }
 
+    /** 长度上限与 DDL 对齐：VARCHAR(512) 按**字符**计（H2/Postgres 一致，非 UTF-8 字节）——恰 512 合法、513 拒绝。 */
+    @Test
+    void pathLengthLimitAlignsWithDdlVarchar512() {
+        assertThat(ProjectPaths.MAX_PATH_LENGTH).isEqualTo(512);
+        String base = "groups/g1/projects/p1/";
+        String suffix = ".yaml";
+        String exactly512 = base + "x".repeat(512 - base.length() - suffix.length()) + suffix;
+        String overlong513 = base + "x".repeat(512 - base.length() - suffix.length() + 1) + suffix;
+        assertThat(exactly512.length()).isEqualTo(512);
+        assertThat(ProjectPaths.isValid(exactly512)).isTrue();
+        assertThat(overlong513.length()).isEqualTo(513);
+        assertThat(ProjectPaths.isValid(overlong513)).isFalse();
+    }
+
     /** projectName = 项目目录末段。 */
     @Test
     void projectNameIsLastSegmentOfProjectDir() {

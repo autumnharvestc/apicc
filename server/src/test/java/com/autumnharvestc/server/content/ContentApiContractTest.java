@@ -369,7 +369,7 @@ class ContentApiContractTest {
                 .andExpect(jsonPath("$.currentHash").value(nullValue()));
     }
 
-    /** 非法路径族 → 400 path_invalid：..、反斜杠、尾斜杠、点段、盘符。
+    /** 非法路径族 → 400 path_invalid：..、反斜杠、尾斜杠、点段、盘符、超长（>512，与 DDL 对齐）。
      *  注：URL 面经 MockMvc/URI 链会折叠 //（空段与前导斜杠无法经 URL 表达）——
      *  绝对路径/空段拒绝由 ProjectPathsTest 与 batch 面（JSON 体不经 URL 机制）钉住。 */
     @Test
@@ -377,7 +377,9 @@ class ContentApiContractTest {
         String[] owner = newUser("c-t11-owner");
         String wsId = createWorkspace(owner[1], "PUT非法路径");
         for (String bad : new String[]{
-                "../evil.yaml", "a/../b.yaml", "a\\b.yaml", "a/b/", ".", "a/./b.yaml", "C:/evil.yaml"}) {
+                "../evil.yaml", "a/../b.yaml", "a\\b.yaml", "a/b/", ".", "a/./b.yaml", "C:/evil.yaml",
+                // 超长：519 字符 > DDL VARCHAR(512)——未钉时 insertNew 抛 DataIntegrityViolation → 500
+                "groups/g1/projects/p1/" + "x".repeat(492) + ".yaml"}) {
             MvcResult result = putFile(owner[1], wsId, bad, "x", 0);
             assertThat(result.getResponse().getStatus())
                     .as("path <%s> 应 400", bad)
@@ -521,6 +523,8 @@ class ContentApiContractTest {
                 + ",{\"path\":\"../evil.yaml\",\"content\":\"x\",\"baseVersion\":0}"
                 + ",{\"path\":\"/abs.yaml\",\"content\":\"x\",\"baseVersion\":0}"
                 + ",{\"path\":\"a//b.yaml\",\"content\":\"x\",\"baseVersion\":0}"
+                + ",{\"path\":\"" + "groups/g1/projects/p1/" + "x".repeat(492) + ".yaml"
+                + "\",\"content\":\"x\",\"baseVersion\":0}"
                 + ",{\"path\":\"groups/g1/projects/p1/exist.yaml\",\"content\":\"newer\",\"baseVersion\":99}"
                 + "]}";
         mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/files/batch")
@@ -528,7 +532,7 @@ class ContentApiContractTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(batch))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.results", hasSize(8)))
+                .andExpect(jsonPath("$.results", hasSize(9)))
                 .andExpect(jsonPath("$.results[0].status").value("pushed"))
                 .andExpect(jsonPath("$.results[0].version").value(1))
                 .andExpect(jsonPath("$.results[1].status").value("pushed"))
@@ -539,8 +543,9 @@ class ContentApiContractTest {
                 .andExpect(jsonPath("$.results[4].status").value("invalid"))
                 .andExpect(jsonPath("$.results[5].status").value("invalid"))
                 .andExpect(jsonPath("$.results[6].status").value("invalid"))
-                .andExpect(jsonPath("$.results[7].status").value("conflict"))
-                .andExpect(jsonPath("$.results[7].currentVersion").value(2));
+                .andExpect(jsonPath("$.results[7].status").value("invalid"))
+                .andExpect(jsonPath("$.results[8].status").value("conflict"))
+                .andExpect(jsonPath("$.results[8].currentVersion").value(2));
 
         // 部分成功落盘验证：p3/new.yaml 已建（v1）
         MvcResult files = getFiles(owner[1], wsId, "groups/g1/projects/p3/new.yaml");
