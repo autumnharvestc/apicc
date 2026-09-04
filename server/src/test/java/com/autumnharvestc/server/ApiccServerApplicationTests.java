@@ -47,10 +47,12 @@ class ApiccServerApplicationTests {
                 .andExpect(jsonPath("$.status").value("ok"));
     }
 
-    /** 全局错误契约骨架：未匹配路由 → 404 {"code":"not_found","message":...}（规格 §3 错误统一 {code,message}）。 */
+    /** 全局错误契约骨架：未匹配路由 → 404 {"code":"not_found","message":...}（规格 §3 错误统一 {code,message}）。
+     *  路径取非 /api/v1 面：任务 3 起 /api/v1/** 受 Bearer 认证保护，未认证的未知 v1 路由由过滤器先行 401
+     *  （该行为在 AuthApiContractTest 钉住），404 映射覆盖移到此面。 */
     @Test
     void unknownRouteReturns404WithCodeMessage() throws Exception {
-        mockMvc.perform(get("/api/v1/definitely-not-exists"))
+        mockMvc.perform(get("/definitely-not-exists"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("not_found"))
                 .andExpect(jsonPath("$.message").isNotEmpty());
@@ -59,7 +61,7 @@ class ApiccServerApplicationTests {
     /** 全局错误契约：@Valid @RequestBody 字段校验失败 → 400 {"code":"validation_failed",...}，不走 500 兜底。 */
     @Test
     void invalidRequestBodyReturns400WithValidationFailedCode() throws Exception {
-        mockMvc.perform(post("/api/v1/_test/validation-probe")
+        mockMvc.perform(post("/_test/validation-probe")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"\"}"))
                 .andExpect(status().isBadRequest())
@@ -68,8 +70,9 @@ class ApiccServerApplicationTests {
     }
 
     /**
-     * 请求体校验探针端点：仅在测试源码树中注册（@Import），模拟任务 3 起各接口的
-     * @Valid @RequestBody 校验路径；路径带 _test 段避免与真实端点冲突。
+     * 请求体校验探针端点：仅在测试源码树中注册（@Import），模拟各接口的
+     * @Valid @RequestBody 校验路径。路径须在 /api/v1 之外（任务 3 起 v1 面受 Bearer 认证保护，
+     * 探针不走过滤链），带 _test 段避免与真实端点冲突。
      */
     @RestController
     static class RequestBodyValidationProbeController {
@@ -77,7 +80,7 @@ class ApiccServerApplicationTests {
         record Payload(@NotBlank String name) {
         }
 
-        @PostMapping("/api/v1/_test/validation-probe")
+        @PostMapping("/_test/validation-probe")
         void accept(@Valid @RequestBody Payload payload) {
         }
     }

@@ -12,6 +12,10 @@ spring:
     init:
       # 每次启动执行 schema.sql（幂等 DDL：CREATE TABLE IF NOT EXISTS）
       mode: always
+  jackson:
+    serialization:
+      # 时间戳统一 ISO-8601 UTC 文本（裁定 B：Instant → "2026-10-04T08:00:00Z" 形态，契约测试钉住）
+      write-dates-as-timestamps: false
   threads:
     virtual:
       # 规格 m3 §2 D2：MVC 开虚拟线程
