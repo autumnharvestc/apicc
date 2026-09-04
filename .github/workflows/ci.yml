@@ -1,0 +1,110 @@
+# CI 三 job 工作流（M2-D 规格决策 D7）：
+#   test          — 三包 typecheck/build/test 门禁（ubuntu，跳过 Electron 二进制下载）
+#   brand-gate    — 品牌中立门禁：脚本词表自检 + git 跟踪文件全树扫描
+#   package-smoke — Windows 打包冒烟（仅 main push；electron / electron-builder 双缓存）
+# 版本策略：action 锁 major tag（每个 uses 行尾注释显式 major）；SHA 锁定列为后续加固项。
+name: CI
+
+# 触发：main 与 feature/** 的推送 + 全部 PR（裁定：feature 分支推送即出报告，不等 PR）
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+
+# 最小权限：门禁只需读源码与拉 action，不持有写权限
+permissions:
+  contents: read
+
+# 同引用新推送取消还在跑的旧 run，省 runner 时间
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 三包 build + test
+    runs-on: ubuntu-latest
+    env:
+      # 单测与构建不启动 Electron，跳过其运行时二进制下载省 ~100MB 与数分钟；
+      # 打包冒烟（package-smoke job）需要真实二进制，故该变量只在此 job 设置。
+      # 仓库 .npmrc 的镜像只影响二进制下载源，跳过后无谓，不必再设镜像变量。
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v5 # v5
+      - uses: pnpm/action-setup@v4 # v4
+        with:
+          # 与 lockfile v9 兼容；与本地开发版本一致，避免装出不同解析树
+          version: 11.21.0
+      - uses: actions/setup-node@v4 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+      - name: 构建全部包
+        run: pnpm -r build
+      - name: 全部包测试
+        # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 core build，序列自洽
+        run: pnpm -r test
+
+  brand-gate:
+    name: 品牌中立门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5 # v5
+        with:
+          # 脚本扫 git ls-files（索引内容），浅克隆足够，不取历史
+          fetch-depth: 1
+      - uses: actions/setup-node@v4 # v4
+        with:
+          # 仅跑零依赖 mjs 脚本，不装依赖、不配 pnpm 缓存
+          node-version: 22
+      - name: 词表自检
+        run: node scripts/check-brand-neutral.mjs --self-check
+      - name: 全树扫描
+        run: node scripts/check-brand-neutral.mjs
+
+  package-smoke:
+    name: Windows 打包冒烟
+    runs-on: windows-latest
+    # 打包冒烟分钟级耗时且依赖 electron-builder，仅对 main push 生效：
+    # PR 阶段由 test job 把关，合入 main 后才验证真实打包产物能起、能加载。
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v5 # v5
+      - uses: pnpm/action-setup@v4 # v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+      # 此 job 不设 ELECTRON_SKIP_BINARY_DOWNLOAD：electron-builder 打包需要
+      # 真实 Electron dist。二进制走缓存 + 仓库 .npmrc 的 npmmirror 镜像
+      # （GitHub runner 可达）；若未来镜像不可达，改设
+      # ELECTRON_MIRROR=https://github.com/electron/electron/releases/ 官方源。
+      - name: 缓存 Electron 运行时二进制
+        uses: actions/cache@v4 # v4
+        with:
+          path: ~\AppData\Local\electron\Cache
+          key: electron-cache-${{ runner.os }}-v1
+          restore-keys: |
+            electron-cache-${{ runner.os }}-
+      - name: 缓存 electron-builder 构建缓存
+        uses: actions/cache@v4 # v4
+        with:
+          path: ~\AppData\Local\electron-builder\Cache
+          key: electron-builder-cache-${{ runner.os }}-v1
+          restore-keys: |
+            electron-builder-cache-${{ runner.os }}-
+      - name: 生成应用图标
+        run: pnpm -C apps/desktop gen:icon
+      - name: 打包（dir 模式，含三段构建）
+        run: pnpm -C apps/desktop dist:dir
+      - name: 打包产物冒烟
+        # smoke:dir 对 release/win-unpacked/apicc.exe 做存活/致命错/加载三检
+        run: pnpm -C apps/desktop smoke:dir
