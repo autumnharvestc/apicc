@@ -7,6 +7,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -129,27 +130,85 @@ class FileVersionRepoTest {
         repo.bumpVersion(ws, "a.yaml", 1L, "h2", "user-1");
         assertThat(repo.sumVersions(ws)).isEqualTo(3L);
 
-        repo.delete(ws, "b.yaml");
+        assertThat(repo.deleteIfVersion(ws, "b.yaml", 1L)).isTrue();
         assertThat(repo.sumVersions(ws)).isEqualTo(2L);
     }
 
-    /** 单路径删除与精确恢复（落盘失败回滚的存储面）：restore 拨回原 hash/version/by/at。 */
+    // ---- 并发竞态原语（审查修复：DELETE 条件化与回滚精确性）----
+
+    /** 条件删除（DELETE 竞态封口）：仅当行仍处于期望版本时删；版本不符/行已删 → false 且行原样。 */
     @Test
-    void deleteRemovesRowAndRestorePutsItBack() {
+    void deleteIfVersionOnlyDeletesWhenVersionMatches() {
+        String ws = UUID.randomUUID().toString();
+        repo.insertNew(ws, "a.yaml", "h1", "user-1");
+
+        // DELETE×PUT 交错：PUT 先赢（v1→v2），携 baseVersion=1 的 DELETE 条件删除落空，行保持他人新值
+        assertThat(repo.bumpVersion(ws, "a.yaml", 1L, "h2", "user-2")).isTrue();
+        assertThat(repo.deleteIfVersion(ws, "a.yaml", 1L)).isFalse();
+        assertThat(repo.find(ws, "a.yaml")).hasValueSatisfying(r -> {
+            assertThat(r.version()).isEqualTo(2L);
+            assertThat(r.contentHash()).isEqualTo("h2");
+        });
+
+        // 正确版本删除成功
+        assertThat(repo.deleteIfVersion(ws, "a.yaml", 2L)).isTrue();
+        assertThat(repo.find(ws, "a.yaml")).isEmpty();
+
+        // 同版本并发双 DELETE：先删者赢（上一步），败者条件删除 0 行 → 服务层 re-read 转 409/404
+        assertThat(repo.deleteIfVersion(ws, "a.yaml", 2L)).isFalse();
+    }
+
+    /** 回滚精确性：restoreAfterBump 仅当行仍是我推进后的那一版（bumpedVersion）才拨回原值。 */
+    @Test
+    void restoreAfterBumpRollsBackOnlyWhenRowIsStillMine() {
         String ws = UUID.randomUUID().toString();
         repo.insertNew(ws, "a.yaml", "h1", "user-1");
         FileVersionRecord original = repo.find(ws, "a.yaml").orElseThrow();
+        assertThat(repo.bumpVersion(ws, "a.yaml", 1L, "h2", "user-1")).isTrue();
 
-        assertThat(repo.delete(ws, "a.yaml")).isTrue();
-        assertThat(repo.delete(ws, "a.yaml")).isFalse(); // 幂等：再删无行
-        assertThat(repo.find(ws, "a.yaml")).isEmpty();
+        // 无并发：行仍是我推进后的 v2 → 拨回原值（含 by/at 精确还原）
+        assertThat(repo.restoreAfterBump(ws, "a.yaml", original, 2L)).isTrue();
+        assertThat(repo.find(ws, "a.yaml")).hasValueSatisfying(r -> {
+            assertThat(r.version()).isEqualTo(1L);
+            assertThat(r.contentHash()).isEqualTo("h1");
+            assertThat(r.updatedBy()).isEqualTo(original.updatedBy());
+            assertThat(r.updatedAt()).isEqualTo(original.updatedAt());
+        });
 
-        assertThat(repo.restore(ws, original)).isTrue();
-        assertThat(repo.find(ws, "a.yaml")).hasValueSatisfying(restored -> {
-            assertThat(restored.version()).isEqualTo(original.version());
-            assertThat(restored.contentHash()).isEqualTo(original.contentHash());
-            assertThat(restored.updatedBy()).isEqualTo(original.updatedBy());
-            assertThat(restored.updatedAt()).isEqualTo(original.updatedAt());
+        // 并发后写者已把行推得更远（v2→v3）→ 我的回滚落空（false），不把他人新行拨回旧值（防库盘撕裂）
+        assertThat(repo.bumpVersion(ws, "a.yaml", 1L, "h2", "user-1")).isTrue();
+        assertThat(repo.bumpVersion(ws, "a.yaml", 2L, "h3", "user-2")).isTrue();
+        assertThat(repo.restoreAfterBump(ws, "a.yaml", original, 2L)).isFalse();
+        assertThat(repo.find(ws, "a.yaml")).hasValueSatisfying(r -> {
+            assertThat(r.version()).isEqualTo(3L);
+            assertThat(r.contentHash()).isEqualTo("h3");
+        });
+    }
+
+    /** 删盘失败回滚：restoreIfAbsent 仅当该路径无版本行（无人重建）时补回原行；并发重建不覆盖。 */
+    @Test
+    void restoreIfAbsentFillsOnlyWhenRowAbsent() {
+        String ws = UUID.randomUUID().toString();
+        FileVersionRecord mine = new FileVersionRecord(ws, "a.yaml", "h1", 1L, "user-1",
+                Instant.parse("2026-09-04T00:00:00Z"));
+
+        // 条件删除成功后行缺席 → 精确补回原行
+        assertThat(repo.restoreIfAbsent(ws, mine)).isTrue();
+        assertThat(repo.find(ws, "a.yaml")).hasValueSatisfying(r -> {
+            assertThat(r.version()).isEqualTo(1L);
+            assertThat(r.contentHash()).isEqualTo("h1");
+            assertThat(r.updatedAt()).isEqualTo(mine.updatedAt());
+        });
+
+        // 并发 PUT 已重建（insertNew v1/hashB）→ 放弃回滚，他人行原样
+        String ws2 = UUID.randomUUID().toString();
+        repo.insertNew(ws2, "a.yaml", "hB", "user-2");
+        FileVersionRecord stale = new FileVersionRecord(ws2, "a.yaml", "hOld", 1L, "user-1",
+                Instant.parse("2026-09-04T00:00:00Z"));
+        assertThat(repo.restoreIfAbsent(ws2, stale)).isFalse();
+        assertThat(repo.find(ws2, "a.yaml")).hasValueSatisfying(r -> {
+            assertThat(r.contentHash()).isEqualTo("hB");
+            assertThat(r.updatedBy()).isEqualTo("user-2");
         });
     }
 }

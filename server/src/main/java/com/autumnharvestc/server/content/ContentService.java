@@ -28,8 +28,9 @@ import java.util.TreeSet;
  * 内容同步用例（规格 m3 §3.4 契约 + §2 D6 写路径 + §2 D8 同步协议，任务 5 简报裁定 A–D）。
  *
  * 写路径顺序（D6 + 裁定 D）：校验 → 权限 → baseVersion 比对（先于 hash 判同）→ 同 hash 幂等返回现状 →
- * 版本表原子推进（条件 UPDATE 取胜者，不丢更新）→ 落盘 → 落盘失败精确回滚版本行（500 io_error，
- * 重试按原 baseVersion 可恢复——ContentIoFailureTest 钉住）。
+ * 版本表原子推进（条件 UPDATE 取胜者，不丢更新）→ 落盘 → 落盘失败条件化精确回滚版本行（500 io_error，
+ * 重试按原 baseVersion 可恢复——ContentIoFailureTest 钉住）。删除与回滚对称条件化（审查修复）：
+ * DELETE 走 DELETE ... WHERE version=?（败者 re-read 转 409/404），回滚仅在「行仍是我写入的那行」时执行。
  *
  * 权限面口径（裁定 C② 留痕）：「移除成员不级联清 project_acl」——内容面按 ACL 行判定，为任务 4 起的
  * 既定模型（D5 自洽）：工作区守卫 requireMember 先挡非成员，project_acl 行只对仍具成员关系者细分读/写；
@@ -184,10 +185,12 @@ public class ContentService {
         try {
             contentStore.writeFile(root, path, request.content().getBytes(StandardCharsets.UTF_8));
         } catch (IOException ex) {
+            // 回滚条件化（审查修复③）：仅当行仍是我写入的那一行才回滚——并发后写者若已把行推走，
+            // 放弃回滚保持其新值（新文件删行/既有文件拨回），不产生「库旧盘新」撕裂
             if (current == null) {
-                fileVersions.delete(workspaceId, path);
+                fileVersions.deleteIfVersion(workspaceId, path, 1L);
             } else {
-                fileVersions.restore(workspaceId, current);
+                fileVersions.restoreAfterBump(workspaceId, path, current, current.version() + 1);
             }
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "io_error", "文件落盘失败，版本已回滚");
         }
@@ -196,7 +199,11 @@ public class ContentService {
 
     // ---- DELETE files ----
 
-    /** 删文件（§3.4：同 PUT 并发语义）：先删版本行再删盘；删盘失败恢复版本行 → 500 io_error。 */
+    /**
+     * 删文件（§3.4：同 PUT 并发语义）：条件删除（DELETE ... WHERE version=?，与 PUT 条件更新同构——
+     * 同版本并发双 DELETE / DELETE×PUT 交错至多一方得手，败者 re-read 转 409 带现状 / 行已删转 404，
+     * 审查修复①）→ 删盘；删盘失败仅当无人重建版本行时补回原行（restoreIfAbsent，审查修复②）→ 500 io_error。
+     */
     public void deleteFile(UserAccount caller, String workspaceId, String path, long baseVersion) {
         guard.requireMember(workspaceId, caller);
         ProjectPaths.validate(path);
@@ -206,12 +213,17 @@ public class ContentService {
         if (current.version() != baseVersion) {
             throw new VersionConflictException(current.version(), current.contentHash());
         }
-        fileVersions.delete(workspaceId, path);
+        if (!fileVersions.deleteIfVersion(workspaceId, path, baseVersion)) {
+            // 条件删除落空：并发 PUT 已推进行 → 409 带现状；并发 DELETE 已删行 → 404（与顺序双 DELETE 同口径）
+            FileVersionRecord winner = fileVersions.find(workspaceId, path)
+                    .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "file_not_found", "文件已被并发删除"));
+            throw new VersionConflictException(winner.version(), winner.contentHash());
+        }
         try {
             contentStore.deleteFile(contentStore.workspaceRoot(workspaceId), path);
         } catch (IOException ex) {
-            fileVersions.restore(workspaceId, current);
-            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "io_error", "文件删除失败，版本已恢复");
+            fileVersions.restoreIfAbsent(workspaceId, current);
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "io_error", "文件删除失败");
         }
     }
 

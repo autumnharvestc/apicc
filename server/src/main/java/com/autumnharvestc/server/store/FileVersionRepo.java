@@ -1,6 +1,5 @@
 package com.autumnharvestc.server.store;
 
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -72,7 +71,7 @@ public class FileVersionRepo {
         jdbc.update("DELETE FROM file_versions WHERE workspace_id = ?", workspaceId);
     }
 
-    // ---- 以下为任务 5 内容同步新增（树清单/文件删除/落盘失败回滚）----
+    // ---- 以下为任务 5 内容同步新增（树清单/文件删除/落盘失败回滚）；审查修复后删除与回滚全部条件化 ----
 
     /** 树清单：工作区全部版本行，按路径字典序稳定输出（GET tree 的数据源）。 */
     public List<FileVersionRecord> listByWorkspace(String workspaceId) {
@@ -94,38 +93,47 @@ public class FileVersionRepo {
         return sum == null ? 0L : sum;
     }
 
-    /** 删除单路径版本行（DELETE 文件 / 新文件落盘失败回滚）。返回是否确有行被删。 */
-    public boolean delete(String workspaceId, String path) {
-        return jdbc.update(
-                "DELETE FROM file_versions WHERE workspace_id = ? AND path = ?",
-                workspaceId, path) > 0;
+    /**
+     * 条件删除（DELETE 端点与新文件回滚共用，审查修复①）：仅当行仍处于 expectedVersion 时删——
+     * 与 bumpVersion 的条件 UPDATE 同构，同版本并发双 DELETE / DELETE×PUT 交错至多一方得手。
+     * 返回 false = 有并发写者/删者抢先，服务层 re-read 转 409（有行）或 404（行已删）。
+     */
+    public boolean deleteIfVersion(String workspaceId, String path, long expectedVersion) {
+        return jdbc.update("""
+                DELETE FROM file_versions
+                WHERE workspace_id = ? AND path = ? AND version = ?
+                """, workspaceId, path, expectedVersion) > 0;
     }
 
     /**
-     * 精确恢复一行（落盘失败/删盘失败时把版本表拨回写入前状态——规格 m3 §2 D6 回滚口径）。
-     * UPDATE 无行（理论不可达的竞态）则重插原值兜底；主键再撞则放弃（终态仍是某次真实写入）。
+     * 落盘失败回滚（既有文件，审查修复③）：仅当行仍是我推进后的那一版（version = bumpedVersion）
+     * 才拨回写入前原值——并发后写者若已把行推得更远，回滚静默放弃（返回 false），
+     * 不把他人新行拨回旧值（防「库旧盘新」撕裂）。不设重插兜底：行消失即有人抢先，同样放弃。
      */
-    public boolean restore(String workspaceId, FileVersionRecord record) {
-        OffsetDateTime updatedAt = OffsetDateTime.ofInstant(record.updatedAt(), ZoneOffset.UTC);
-        int updated = jdbc.update("""
+    public boolean restoreAfterBump(String workspaceId, String path,
+                                    FileVersionRecord original, long bumpedVersion) {
+        return jdbc.update("""
                 UPDATE file_versions
                 SET content_hash = ?, version = ?, updated_by = ?, updated_at = ?
-                WHERE workspace_id = ? AND path = ?
-                """, record.contentHash(), record.version(), record.updatedBy(), updatedAt,
-                workspaceId, record.path());
-        if (updated > 0) {
-            return true;
-        }
-        try {
-            jdbc.update("""
-                    INSERT INTO file_versions (workspace_id, path, content_hash, version, updated_by, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """, workspaceId, record.path(), record.contentHash(), record.version(),
-                    record.updatedBy(), updatedAt);
-            return true;
-        } catch (DuplicateKeyException ex) {
-            return false;
-        }
+                WHERE workspace_id = ? AND path = ? AND version = ?
+                """, original.contentHash(), original.version(), original.updatedBy(),
+                OffsetDateTime.ofInstant(original.updatedAt(), ZoneOffset.UTC),
+                workspaceId, path, bumpedVersion) > 0;
+    }
+
+    /**
+     * 删盘失败回滚（DELETE 文件，审查修复②配套）：仅当该路径当前无版本行（无人重建）时补回原行——
+     * 并发 PUT 若已 insertNew 重建，其「行+盘内容」自洽，回滚放弃（返回 false）不覆盖。
+     * INSERT ... SELECT ... WHERE NOT EXISTS 为可移植写法（H2/Postgres 皆支持）。
+     */
+    public boolean restoreIfAbsent(String workspaceId, FileVersionRecord record) {
+        return jdbc.update("""
+                INSERT INTO file_versions (workspace_id, path, content_hash, version, updated_by, updated_at)
+                SELECT ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (SELECT 1 FROM file_versions WHERE workspace_id = ? AND path = ?)
+                """, workspaceId, record.path(), record.contentHash(), record.version(),
+                record.updatedBy(), OffsetDateTime.ofInstant(record.updatedAt(), ZoneOffset.UTC),
+                workspaceId, record.path()) > 0;
     }
 
     private static FileVersionRecord mapRow(ResultSet rs, int rowNum) throws SQLException {
