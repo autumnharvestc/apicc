@@ -3,6 +3,7 @@ package com.autumnharvestc.server.core;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
@@ -38,6 +39,17 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleUnreadable(HttpMessageNotReadableException ex) {
         return ResponseEntity.badRequest()
                 .body(new ApiError("bad_request", "请求体缺失或格式错误"));
+    }
+
+    /** @Valid @RequestBody 字段校验失败 → 400 validation_failed（message 取第一条字段错误，供客户端定位）。 */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiError> handleMethodArgumentNotValid(MethodArgumentNotValidException ex) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+                .findFirst()
+                .map(error -> error.getField() + " " + error.getDefaultMessage())
+                .orElse("请求载荷校验失败");
+        return ResponseEntity.badRequest()
+                .body(new ApiError("validation_failed", message));
     }
 
     /** 方法级参数校验失败（如 @PathVariable 上的约束）→ 400 validation_failed。 */

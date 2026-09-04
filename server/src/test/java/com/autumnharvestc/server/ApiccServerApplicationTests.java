@@ -1,13 +1,21 @@
 package com.autumnharvestc.server;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -17,6 +25,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@Import(ApiccServerApplicationTests.RequestBodyValidationProbeController.class)
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:apicc-test;DB_CLOSE_DELAY=-1",
         "apicc.server.data-dir=target/test-data"
@@ -45,5 +54,31 @@ class ApiccServerApplicationTests {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("not_found"))
                 .andExpect(jsonPath("$.message").isNotEmpty());
+    }
+
+    /** 全局错误契约：@Valid @RequestBody 字段校验失败 → 400 {"code":"validation_failed",...}，不走 500 兜底。 */
+    @Test
+    void invalidRequestBodyReturns400WithValidationFailedCode() throws Exception {
+        mockMvc.perform(post("/api/v1/_test/validation-probe")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"))
+                .andExpect(jsonPath("$.message").isNotEmpty());
+    }
+
+    /**
+     * 请求体校验探针端点：仅在测试源码树中注册（@Import），模拟任务 3 起各接口的
+     * @Valid @RequestBody 校验路径；路径带 _test 段避免与真实端点冲突。
+     */
+    @RestController
+    static class RequestBodyValidationProbeController {
+
+        record Payload(@NotBlank String name) {
+        }
+
+        @PostMapping("/api/v1/_test/validation-probe")
+        void accept(@Valid @RequestBody Payload payload) {
+        }
     }
 }
