@@ -17,7 +17,8 @@
     "run": "运行",
     "import": "导入",
     "design": "设计",
-    "wf": "工作流"
+    "wf": "工作流",
+    "stress": "压测"
   },
   "workspace": {
     "problems": "问题文件",
@@ -111,7 +112,11 @@
     "row": "数据行",
     "result": "结果",
     "duration": "耗时",
-    "summary": "共 {total} 条 · 通过 {passed} · 失败 {failed}"
+    "summary": "共 {total} 条 · 通过 {passed} · 失败 {failed}",
+    "kindCollection": "集合",
+    "kindStress": "压测",
+    "stressSummary": "共 {total} 请求 · 失败 {failed} · {rps} req/s",
+    "back": "返回"
   },
   "stress": {
     "title": "压测",
@@ -136,7 +141,8 @@
     "count": "次数",
     "statusDist": "状态码分布",
     "errorKinds": "错误分布",
-    "noSamples": "无样本"
+    "noSamples": "无样本",
+    "noCases": "无用例"
   },
   "import": {
     "title": "导入接口",

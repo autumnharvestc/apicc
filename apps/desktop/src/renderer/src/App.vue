@@ -28,6 +28,7 @@ import RunView from "./components/RunView.vue";
 import ImportWizard from "./components/ImportWizard.vue";
 import DesignPanel from "./components/DesignPanel.vue";
 import WfDesigner from "./components/WfDesigner.vue";
+import StressPanel from "./components/StressPanel.vue";
 import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
 import { useEditorStore } from "./stores/editor.js";
@@ -39,6 +40,7 @@ import { useImportWizardStore } from "./stores/importW.js";
 import { useDesignStore } from "./stores/design.js";
 import { useWfListStore } from "./stores/wfList.js";
 import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
+import { createStressStore } from "./stores/stress.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
@@ -70,12 +72,25 @@ const design = useDesignStore(apicc, editor);
 // —— 工作流设计器 store（M2-B 任务 4 装配）：同一组合根一次性创建 ——
 const wfList = useWfListStore(apicc);
 const workflowDesign = useWorkflowDesignStore(apicc);
+// —— 压测 store（M2-D3 任务 3 装配，裁定 A）：同一组合根一次性创建，经 props 下传 ——
+const stress = createStressStore({ api: apicc });
 
 // —— 视图切换（任务 8 收官装配）——
 // 侧栏顶部 a-radio-group；未打开工作区时整组禁用（现状保留：只有打开/新建可用）。
-type View = "debug" | "cases" | "envs" | "run" | "import" | "design" | "wf";
-const VIEWS: View[] = ["debug", "cases", "envs", "run", "import", "design", "wf"];
+type View = "debug" | "cases" | "envs" | "run" | "import" | "design" | "wf" | "stress";
+const VIEWS: View[] = ["debug", "cases", "envs", "run", "import", "design", "wf", "stress"];
 const view = ref<View>("debug");
+
+// —— 压测会话随接口切换清空（M2-D3 任务 3，裁定 A）——
+// 旧接口的压测报告不能带到新接口：editor.apiId 变化（含首次 null→id，此时本就是空会话）
+// 即调 store.clear()（只清报告/file/错误，form 保留）；同接口视图往返不动 apiId，
+// form/报告原样保留。
+watch(
+  () => editor.apiId,
+  () => {
+    stress.clear();
+  },
+);
 
 // —— 最小错误反馈通道（宽审查 I1）——
 // SideTree/TopBar/各面板链路的 Promise 拒绝统一转报到这里，集中展示、可手动关闭，
@@ -261,7 +276,14 @@ watch(
             :disabled="!workspace.opened"
             data-testid="view-switch"
           >
-            <a-radio-button v-for="v in VIEWS" :key="v" :value="v" :data-testid="`view-${v}`">
+            <!-- 压测项（M2-D3 任务 3，裁定 A）：接口级视图，未选中接口时禁用（cases/envs 口径） -->
+            <a-radio-button
+              v-for="v in VIEWS"
+              :key="v"
+              :value="v"
+              :data-testid="`view-${v}`"
+              :disabled="v === 'stress' && !editor.apiId"
+            >
               {{ t(`nav.${v}`) }}
             </a-radio-button>
           </a-radio-group>
@@ -309,6 +331,17 @@ watch(
           />
           <ImportWizard v-else-if="view === 'import'" class="panel-view" :import-w="importW" :report-error="reportError" @close="view = 'debug'" />
           <DesignPanel v-else-if="view === 'design'" class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
+          <!-- 压测视图（M2-D3 任务 3）：apiId/cases/envs 取 editor store 当前接口；切换控件
+               已按接口选中门控，此分支保证 apiId 非空（类型收窄 + 防御） -->
+          <StressPanel
+            v-else-if="view === 'stress' && editor.apiId"
+            class="panel-view"
+            :stress="stress"
+            :api-id="editor.apiId"
+            :cases="editor.api?.cases ?? []"
+            :envs="editor.envs"
+            :report-error="reportError"
+          />
           <WfDesigner
             v-else
             class="wf-view"

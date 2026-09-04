@@ -17,7 +17,8 @@
     "run": "Run",
     "import": "Import",
     "design": "Design",
-    "wf": "Workflow"
+    "wf": "Workflow",
+    "stress": "Stress"
   },
   "workspace": {
     "problems": "Problem files",
@@ -111,7 +112,11 @@
     "row": "Data row",
     "result": "Result",
     "duration": "Duration",
-    "summary": "{total} total · {passed} passed · {failed} failed"
+    "summary": "{total} total · {passed} passed · {failed} failed",
+    "kindCollection": "Collection",
+    "kindStress": "Stress",
+    "stressSummary": "{total} requests · {failed} failed · {rps} req/s",
+    "back": "Back"
   },
   "stress": {
     "title": "Stress",
@@ -136,7 +141,8 @@
     "count": "Count",
     "statusDist": "Status distribution",
     "errorKinds": "Error distribution",
-    "noSamples": "No samples"
+    "noSamples": "No samples",
+    "noCases": "No cases"
   },
   "import": {
     "title": "Import APIs",

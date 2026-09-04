@@ -8,7 +8,7 @@ import {
   RadioGroup as ARadioGroup,
   Select as ASelect,
 } from "ant-design-vue";
-import type { createStressStore } from "../stores/stress.js";
+import { createStressFormDefaults, type createStressStore } from "../stores/stress.js";
 import StressReportView from "./StressReportView.vue";
 
 /**
@@ -20,6 +20,9 @@ import StressReportView from "./StressReportView.vue";
  * 失效 caseId 回退首个用例、失效环境名复位「无环境」。运行/停止链路拒绝经 reportError
  * 转报组合根错误通道；store.error（debug 错误语义：老报告保留）同步在面板内可见。
  * file 字段（裁定 D）仅作落盘路径一行小字提示，file 省略（落盘降级）时不显示。
+ * 任务 3 裁定 C 顺修：① a-input-number 清空产生 null → update 通道按表单默认值归一
+ * （并发 1 / 迭代 10 / 秒 10，默认值以 createStressFormDefaults 为单一来源），start 载荷
+ * 不再携带 null；② cases 为空时显示「无用例」空态提示（开始按钮本就因无 caseId 禁用）。
  */
 const props = defineProps<{
   stress: ReturnType<typeof createStressStore>;
@@ -29,6 +32,9 @@ const props = defineProps<{
   reportError: (e: unknown) => void;
 }>();
 const { t } = useI18n();
+
+// 数字输入清空归一的默认值（与 form 初始默认同一来源，裁定 C①）
+const FORM_DEFAULTS = createStressFormDefaults();
 
 // —— 选项派生 ——
 const caseOptions = computed(() => props.cases.map((c) => ({ label: c.name, value: c.id })));
@@ -80,6 +86,7 @@ async function onStop() {
   <section class="stress-panel" data-testid="stress-panel">
     <h3 class="title">{{ t("stress.title") }}</h3>
     <div class="form" data-testid="stress-form">
+      <div v-if="cases.length === 0" class="no-cases" data-testid="stress-no-cases">{{ t("stress.noCases") }}</div>
       <label class="field">
         <span class="field-label">{{ t("stress.case") }}</span>
         <a-select
@@ -104,7 +111,13 @@ async function onStop() {
       </label>
       <label class="field">
         <span class="field-label">{{ t("stress.concurrency") }}</span>
-        <a-input-number v-model:value="stress.form.concurrency" :min="1" class="control" data-testid="stress-concurrency" />
+        <a-input-number
+          :value="stress.form.concurrency"
+          :min="1"
+          class="control"
+          data-testid="stress-concurrency"
+          @update:value="(v) => (stress.form.concurrency = (v as number | null) ?? FORM_DEFAULTS.concurrency)"
+        />
       </label>
       <div class="field">
         <span class="field-label">{{ t("stress.mode") }}</span>
@@ -120,11 +133,23 @@ async function onStop() {
       </div>
       <label v-if="stress.form.mode === 'iterations'" class="field">
         <span class="field-label">{{ t("stress.iterations") }}</span>
-        <a-input-number v-model:value="stress.form.iterations" :min="1" class="control" data-testid="stress-iterations" />
+        <a-input-number
+          :value="stress.form.iterations"
+          :min="1"
+          class="control"
+          data-testid="stress-iterations"
+          @update:value="(v) => (stress.form.iterations = (v as number | null) ?? FORM_DEFAULTS.iterations)"
+        />
       </label>
       <label v-else class="field">
         <span class="field-label">{{ t("stress.duration") }}</span>
-        <a-input-number v-model:value="stress.form.durationSeconds" :min="1" class="control" data-testid="stress-duration" />
+        <a-input-number
+          :value="stress.form.durationSeconds"
+          :min="1"
+          class="control"
+          data-testid="stress-duration"
+          @update:value="(v) => (stress.form.durationSeconds = (v as number | null) ?? FORM_DEFAULTS.durationSeconds)"
+        />
       </label>
       <div class="actions">
         <a-button
@@ -185,6 +210,9 @@ async function onStop() {
   gap: 8px;
 }
 .running {
+  color: var(--text-muted, #666);
+}
+.no-cases {
   color: var(--text-muted, #666);
 }
 .error {

@@ -21,16 +21,18 @@ import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
 import { createStressStore } from "../../../src/renderer/src/stores/stress.js";
+import { useRunStore } from "../../../src/renderer/src/stores/run.js";
 import SideTree from "../../../src/renderer/src/components/SideTree.vue";
 import RequestEditor from "../../../src/renderer/src/components/RequestEditor.vue";
 import ResponseViewer from "../../../src/renderer/src/components/ResponseViewer.vue";
 import EmptyState from "../../../src/renderer/src/components/EmptyState.vue";
 import ConfirmDialog from "../../../src/renderer/src/components/ConfirmDialog.vue";
 import TopBar from "../../../src/renderer/src/components/TopBar.vue";
+import RunsHistory from "../../../src/renderer/src/components/RunsHistory.vue";
 import StressPanel from "../../../src/renderer/src/components/StressPanel.vue";
 import StressReportView from "../../../src/renderer/src/components/StressReportView.vue";
-import type { StressReport } from "@apicc/core";
-import type { StressRunInput, StressRunOutput } from "../../../src/shared/types.js";
+import type { RunResult, StressReport } from "@apicc/core";
+import type { RunSummaryDTO, StressRunInput, StressRunOutput, StressRunSummaryDTO } from "../../../src/shared/types.js";
 
 beforeAll(() => {
   // jsdom 未实现 matchMedia；TopBar→ThemeLanguageToggle 挂载时解析主题偏好会调用它，
@@ -825,6 +827,36 @@ describe("StressPanel", () => {
     expect(wrapper.find('[data-testid="stress-file"]').text()).toContain("stress-partial.json");
     expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeDefined();
   });
+
+  // —— M2-D3 任务 3 裁定 C（任务 2 审查折入顺修）——
+  it("数字输入清空产生 null：归一为表单默认值（并发 1 / 迭代 10 / 时长秒 10）（裁定 C①）", async () => {
+    const { wrapper, stress } = await mountStress();
+    // 并发清空 → 归一 1（后续 start 载荷不再携带 null 并发）
+    setNumber(wrapper, "stress-concurrency", 8);
+    await flushPromises();
+    expect(stress.form.concurrency).toBe(8);
+    setNumber(wrapper, "stress-concurrency", null as unknown as number);
+    await flushPromises();
+    expect(stress.form.concurrency).toBe(1);
+    // 迭代清空 → 归一 10
+    setNumber(wrapper, "stress-iterations", null as unknown as number);
+    await flushPromises();
+    expect(stress.form.iterations).toBe(10);
+    // 时长清空 → 归一 10
+    chooseMode(wrapper, "duration");
+    await flushPromises();
+    setNumber(wrapper, "stress-duration", null as unknown as number);
+    await flushPromises();
+    expect(stress.form.durationSeconds).toBe(10);
+  });
+
+  it("cases 为空：「无用例」空态提示，开始禁用（裁定 C②）", async () => {
+    const { wrapper, stress } = await mountStress({ cases: [], envs: [] });
+    expect(wrapper.find('[data-testid="stress-no-cases"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="stress-no-cases"]').text()).toBe("无用例");
+    expect(stress.form.caseId).toBeNull();
+    expect(wrapper.find('[data-testid="stress-start"]').attributes("disabled")).toBeDefined();
+  });
 });
 
 describe("StressReportView", () => {
@@ -860,5 +892,103 @@ describe("StressReportView", () => {
     // 报告为 null：整块不渲染
     const w3 = mountWithI18n(StressReportView, { report: null });
     expect(w3.find('[data-testid="stress-report"]').exists()).toBe(false);
+  });
+});
+
+// —— M2-D3 任务 3：运行历史 kind 区分（简报裁定 B + 任务 1 内联中文 i18n 收口）——
+
+const collectionRow: RunSummaryDTO = {
+  kind: "collection", file: "run-a.json", collectionName: "示例集合",
+  startedAt: "2026-09-03T00:00:00.000Z", total: 3, passed: 2, failed: 1,
+};
+const stressRow: StressRunSummaryDTO = {
+  kind: "stress", file: "stress-x.json",
+  startedAt: "2026-09-03T01:00:00.000Z", totalRequests: 8, ok: 6, failed: 2, rps: 12.5,
+};
+
+const collectionRunResult: RunResult = {
+  collectionId: "c1", collectionName: "示例集合",
+  startedAt: "2026-09-03T00:00:00.000Z", finishedAt: "2026-09-03T00:00:01.000Z",
+  total: 3, passed: 2, failed: 1, cases: [],
+};
+
+/** RunsHistory 直挂（抽屉 a-drawer 传送门渲染于 document.body，行用 body 作用域查询）。 */
+async function mountHistory() {
+  const api = createMemoryApi();
+  api.seedWorkspace();
+  const run = useRunStore(api);
+  const { i18n } = createI18nInstance();
+  const wrapper = mount(RunsHistory, {
+    props: { run, reportError: () => {} },
+    global: { plugins: [i18n] },
+  });
+  await flushPromises();
+  return { wrapper, api, run };
+}
+
+function bodyRows(): Element[] {
+  return Array.from(document.body.querySelectorAll('[data-testid="history-row"]'));
+}
+
+async function clickBody(testid: string): Promise<void> {
+  const el = document.body.querySelector(`[data-testid="${testid}"]`);
+  if (!el) throw new Error(`document.body 中找不到 [data-testid="${testid}"]`);
+  await new DOMWrapper(el).trigger("click");
+}
+
+describe("RunsHistory kind 区分（M2-D3 任务 3，裁定 B）", () => {
+  it("混合 kind：集合行渲染既有列 + 集合标签；压测行 totalRequests/failed/rps 摘要 + 压测标签（i18n 收口）", async () => {
+    const { api, run } = await mountHistory();
+    // 打开抽屉自动 loadHistory：经 runsList 替身注入混合 kind 行（同真实链路）
+    api.runsList = async () => [stressRow, collectionRow];
+    run.historyOpen = true;
+    await flushPromises();
+    const rows = bodyRows();
+    expect(rows).toHaveLength(2);
+    const [stressEl, collectionEl] = rows;
+    // 压测行：标签「压测」+ 摘要（totalRequests/failed/rps）——文案全部来自 i18n 键
+    expect(stressEl!.getAttribute("data-kind")).toBe("stress");
+    expect(stressEl!.querySelector('[data-testid="history-kind"]')!.textContent).toBe("压测");
+    expect(stressEl!.textContent).toContain("共 8 请求");
+    expect(stressEl!.textContent).toContain("失败 2");
+    expect(stressEl!.textContent).toContain("12.5 req/s");
+    // 集合行：既有列（集合名/时间/汇总）+ 标签「集合」
+    expect(collectionEl!.getAttribute("data-kind")).toBe("collection");
+    expect(collectionEl!.querySelector('[data-testid="history-kind"]')!.textContent).toBe("集合");
+    expect(collectionEl!.textContent).toContain("示例集合");
+    expect(collectionEl!.textContent).toContain("共 3 条 · 通过 2 · 失败 1");
+  });
+
+  it("点击压测行：runsGet 联合分支 → 内嵌 StressReportView 展示、返回复位；点击集合行仍回填结果并收起抽屉", async () => {
+    const { api, run } = await mountHistory();
+    const gotten: string[] = [];
+    api.runsList = async () => [stressRow, collectionRow];
+    api.runsGet = async (file: string) => {
+      gotten.push(file);
+      return file === "stress-x.json" ? { kind: "stress", report: makeReport() } : collectionRunResult;
+    };
+    run.historyOpen = true;
+    await flushPromises();
+    // 点击压测行（rows[0]）：抽屉保持打开，内嵌切到压测报告
+    await new DOMWrapper(bodyRows()[0]!).trigger("click");
+    await flushPromises();
+    expect(gotten).toContain("stress-x.json");
+    expect(run.historyOpen).toBe(true);
+    const report = bodyFind("stress-report");
+    expect(report).not.toBeNull();
+    expect(report!.text()).toContain("4");
+    expect(report!.text()).not.toContain("NaN");
+    // 返回列表：报告卸载、store 报告复位、行列表恢复
+    await clickBody("history-back");
+    await flushPromises();
+    expect(bodyFind("stress-report")).toBeNull();
+    expect(run.stressReport).toBeNull();
+    expect(bodyRows()).toHaveLength(2);
+    // 点击集合行：既有行为回归——回填 RunView 结果并收起抽屉
+    const collectionEl = bodyRows().find((r) => r.getAttribute("data-kind") === "collection")!;
+    await new DOMWrapper(collectionEl).trigger("click");
+    await flushPromises();
+    expect(run.historyOpen).toBe(false);
+    expect(run.result?.collectionName).toBe("示例集合");
   });
 });
