@@ -80,4 +80,31 @@ describe("memory 替身 online:*", () => {
     const fetched = await api.onlineFilesGet({ workspaceId: ws.id, paths: ["groups/推送/a.yaml"] });
     expect(fetched.missing).toEqual(["groups/推送/a.yaml"]);
   });
+
+  // —— 任务 2 裁定 D：batch 对「文件不存在但 baseVersion>0」对齐服务端乐观并发语义 ——
+  it("batch：文件不存在但 baseVersion>0 → conflict（currentVersion=0，不存在 = 版本 0 不匹配）", async () => {
+    const api = createMemoryApi();
+    await api.onlineLogin(LOGIN_INPUT);
+    const ws = (await api.onlineWorkspaceList())[0]!;
+    const result = await api.onlineFilesBatch({
+      workspaceId: ws.id,
+      files: [
+        { path: "groups/推送/新建.yaml", content: "x", baseVersion: 3 },
+        { path: "groups/推送/新文件.yaml", content: "x", baseVersion: 0 },
+      ],
+    });
+    expect(result.results[0]).toEqual({ path: "groups/推送/新建.yaml", status: "conflict", currentVersion: 0 });
+    expect(result.results[1]).toMatchObject({ status: "pushed" });
+    // 冲突文件未被写入
+    const fetched = await api.onlineFilesGet({ workspaceId: ws.id, paths: ["groups/推送/新建.yaml"] });
+    expect(fetched.missing).toEqual(["groups/推送/新建.yaml"]);
+  });
+
+  // —— 任务 2 裁定 A：onlineResume 替身（实例内登录态语义） ——
+  it("onlineResume：已登录（此前 login）→ restored 携用户；未登录 → signed-out（不抛）", async () => {
+    const api = createMemoryApi();
+    await expect(api.onlineResume({ baseUrl: "http://127.0.0.1:8080" })).resolves.toEqual({ outcome: "signed-out" });
+    const login = await api.onlineLogin(LOGIN_INPUT);
+    await expect(api.onlineResume({ baseUrl: "http://127.0.0.1:8080" })).resolves.toEqual({ outcome: "restored", user: login.user });
+  });
 });

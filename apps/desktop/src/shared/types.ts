@@ -24,6 +24,8 @@ import type {
   OnlineLoginOutput,
   OnlinePushOutcome,
   OnlineRegisterChannelInput,
+  OnlineResumeInput,
+  OnlineResumeOutput,
   OnlineTree,
   OnlineUser,
   OnlineWorkspaceCreateInput,
@@ -153,6 +155,8 @@ export interface ApiccApi {
   onlineLogin(input: OnlineLoginInput): Promise<OnlineLoginOutput>;
   /** 登出：吊销服务端 token + 清本地登录态。 */
   onlineLogout(): Promise<void>;
+  /** 登录态恢复（任务 2 裁定 A）：存档 token 验活通过 → restored 携用户；失败/无存档 → signed-out（已清档），不抛。 */
+  onlineResume(input: OnlineResumeInput): Promise<OnlineResumeOutput>;
   onlineMe(): Promise<OnlineUser>;
   onlineWorkspaceList(): Promise<OnlineWorkspaceSummary[]>;
   onlineWorkspaceCreate(input: OnlineWorkspaceCreateInput): Promise<OnlineWorkspaceCreated>;

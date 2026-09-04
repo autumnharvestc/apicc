@@ -38,6 +38,8 @@ const api = {
   onlineRegister: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineRegister, input),
   onlineLogin: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineLogin, input),
   onlineLogout: () => ipcRenderer.invoke(IpcChannel.OnlineLogout),
+  // 登录态恢复（M3-B 任务 2 裁定 A）：启动/档案激活时按 baseUrl 验活存档 token
+  onlineResume: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineResume, input),
   onlineMe: () => ipcRenderer.invoke(IpcChannel.OnlineMe),
   onlineWorkspaceList: () => ipcRenderer.invoke(IpcChannel.OnlineWorkspaceList),
   onlineWorkspaceCreate: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineWorkspaceCreate, input),

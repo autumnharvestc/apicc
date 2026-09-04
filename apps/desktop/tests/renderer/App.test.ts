@@ -482,6 +482,59 @@ describe("App 侧树工作流入口", () => {
   });
 });
 
+// —— M3-B 任务 2：在线登录与服务器配置装配（入口在 TopBar，对话框由组合根渲染） ——
+describe("App 在线模式装配（M3-B 任务 2）", () => {
+  it("顶栏在线入口：点击打开登录对话框；保存档案 + 登录成功 → 入口显示登录身份；登出后回到未登录文案", async () => {
+    try {
+      const wrapper = await mountApp();
+      // 顶栏入口按钮（未登录文案）
+      expect(wrapper.find('[data-testid="online-toggle"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="online-status"]').text()).toBe("在线模式");
+      // 打开对话框（a-modal 传送门渲染于 body）
+      await wrapper.find('[data-testid="online-toggle"]').trigger("click");
+      await flushPromises();
+      expect(bodyFind("online-body")).not.toBeNull();
+      // 保存服务器档案（url + 昵称）
+      await expectBody("online-server-url").setValue("http://127.0.0.1:8080");
+      await expectBody("online-server-name").setValue("团队服务器");
+      await expectBody("online-server-save").trigger("click");
+      await flushPromises();
+      // 登录（memory 替身接受任意登录）→ 对话框切已登录区 + 顶栏入口显登录身份
+      await expectBody("online-username").setValue("alice");
+      await expectBody("online-password").setValue("password8");
+      await expectBody("online-login-submit").trigger("click");
+      await flushPromises();
+      expect(expectBody("online-user").text()).toContain("示例用户");
+      expect(wrapper.find('[data-testid="online-status"]').text()).toContain("示例用户");
+      // 退出登录：回登录表单，档案保留；顶栏入口回未登录文案
+      await expectBody("online-logout").trigger("click");
+      await flushPromises();
+      expect(bodyFind("online-login-form")).not.toBeNull();
+      expect(wrapper.find('[data-testid="online-status"]').text()).toBe("在线模式");
+    } finally {
+      // 清理：本用例写入的档案持久化不污染同文件后续用例
+      localStorage.removeItem("apicc.onlineServers");
+    }
+  });
+
+  it("App 挂载即尝试恢复登录态（init→resume）：替身已登录时入口直接显示身份", async () => {
+    // 预置：替身登录 + 档案存储含激活服务器（模拟上次会话）→ App init 恢复
+    await failingApi.onlineLogin({ baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
+    localStorage.setItem("apicc.onlineServers", JSON.stringify({
+      active: "http://127.0.0.1:8080",
+      servers: [{ baseUrl: "http://127.0.0.1:8080", name: "团队服务器" }],
+    }));
+    try {
+      const wrapper = await mountApp();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="online-status"]').text()).toContain("示例用户");
+    } finally {
+      localStorage.removeItem("apicc.onlineServers");
+      await failingApi.onlineLogout();
+    }
+  });
+});
+
 // —— M2-D3 任务 3：压测视图装配（简报裁定 A）——
 
 /** 压测报告夹具（App 装配链路用；字段与 core StressReportSchema 对齐）。 */

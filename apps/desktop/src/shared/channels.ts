@@ -34,6 +34,8 @@ export const IpcChannel = {
   OnlineLogin: "online:login",
   OnlineLogout: "online:logout",
   OnlineMe: "online:me",
+  // 登录态恢复（M3-B 任务 2 裁定 A）：启动/档案激活时按 baseUrl 验活存档 token
+  OnlineResume: "online:resume",
   OnlineWorkspaceList: "online:workspaces:list",
   OnlineWorkspaceCreate: "online:workspaces:create",
   OnlineTreeGet: "online:tree:get",

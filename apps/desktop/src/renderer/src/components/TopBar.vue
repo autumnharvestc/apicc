@@ -4,21 +4,25 @@ import { useI18n } from "vue-i18n";
 import { Space as ASpace, Button as AButton, Typography as ATypography } from "ant-design-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
+import type { createOnlineStore } from "../stores/online.js";
 import ThemeLanguageToggle from "./ThemeLanguageToggle.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
 const ATypographyText = ATypography.Text;
 
 /**
- * 顶栏：工作区名 + 打开/新建工作区 + 语言/主题切换。
+ * 顶栏：工作区名 + 打开/新建工作区 + 在线模式入口（M3-B 任务 2）+ 语言/主题切换。
  * antd 4 落地：a-typography-text（工作区名/问题数）+ a-space + a-button（按钮组），
  * data-testid 全部保留在等效触发元素/文本元素上。
  * store 与 api 经 props 注入（组合根一次装配；组件内部不调工厂、不持有第二个 api 实例）。
  * reportError 为组合根注入的最小错误反馈通道（宽审查 I1）：Promise 拒绝转报，不静默吞没。
+ * 在线入口（任务 2）：按钮置 online.dialogOpen=true（对话框由 App 组合根渲染）；
+ * 已登录时按钮文案切换为「已登录：用户（服务器）」，登录态与档案名取自 online store。
  */
 const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
   api: ApiccApi;
+  online: ReturnType<typeof createOnlineStore>;
   reportError: (e: unknown) => void;
 }>();
 const { t } = useI18n();
@@ -69,6 +73,14 @@ async function onCreateConfirm(name: string | null) {
     <a-space :size="8">
       <a-button data-testid="open-workspace" @click="openWorkspace">{{ t("app.openWorkspace") }}</a-button>
       <a-button data-testid="new-workspace" @click="startCreate">{{ t("app.newWorkspace") }}</a-button>
+      <!-- 在线模式入口（M3-B 任务 2）：低侵入点选顶栏（与打开/新建同列，恒可达）；
+           对话框本体由组合根渲染，按钮只置 online.dialogOpen -->
+      <a-button data-testid="online-toggle" @click="props.online.dialogOpen = true">
+        <span v-if="online.loggedIn" data-testid="online-status">
+          {{ t("online.loggedInAs", { name: online.user?.displayName ?? "", server: online.activeName }) }}
+        </span>
+        <span v-else data-testid="online-status">{{ t("online.title") }}</span>
+      </a-button>
       <ThemeLanguageToggle />
     </a-space>
     <ConfirmDialog

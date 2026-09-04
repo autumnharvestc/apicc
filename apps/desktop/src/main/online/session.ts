@@ -1,7 +1,9 @@
 /**
- * online 会话（M3-B 任务 1）：登录态串联——login 成功 → token 注入 client（请求自动带头）
- * → tokenStore 持久化；401 会话失效事件 → 清持久化 + 清当前 client。任务 3 将在此扩展
- * 当前在线工作区/树缓存（规格 §2 D9 onlineStore 的 main 侧对位）。
+ * online 会话（M3-B 任务 1/2）：登录态串联——login 成功 → token 注入 client（请求自动带头）
+ * → tokenStore 按 baseUrl 持久化（任务 2 裁定 A：多服务器凭据并存）；401 会话失效事件 →
+ * 清该服务器存档 + 清当前 client。任务 2 裁定 A：resume() 恢复链路——启动（或服务器档案
+ * 激活）时 load(baseUrl) 存档 → seed client → GET /me 验活：成功 = 登录态恢复；失败
+ * （401/网络错误）= 清档并保持登出态。任务 3 将在此扩展当前在线工作区/树缓存。
  */
 import type { OnlineClient } from "./client.js";
 import { OnlineConflictError } from "./client.js";
@@ -16,6 +18,7 @@ import type {
   OnlineLoginOutput,
   OnlinePushOutcome,
   OnlineRegisterChannelInput,
+  OnlineResumeOutput,
   OnlineWorkspaceCreateInput,
 } from "../../shared/online/types.js";
 import type { OnlineBatchResult, OnlineFilesResult, OnlinePutFileResult, OnlineTree, OnlineUser, OnlineWorkspaceCreated, OnlineWorkspaceSummary } from "../../shared/online/contract.js";
@@ -29,8 +32,9 @@ export interface OnlineSessionDeps {
 export function createOnlineSession(deps: OnlineSessionDeps) {
   let current: { baseUrl: string; client: OnlineClient } | null = null;
 
+  /** 会话失效清理：清当前 baseUrl 的 token 存档 + 摘掉当前 client（多服务器凭据互不波及）。 */
   function invalidate(): void {
-    deps.tokenStore.clear();
+    if (current) deps.tokenStore.clear(current.baseUrl);
     current = null;
   }
 
@@ -68,9 +72,31 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     async login(input: OnlineLoginInput): Promise<OnlineLoginOutput> {
       const client = deps.createClient(input.baseUrl, { onUnauthorized: invalidate });
       const result = await client.login({ username: input.username, password: input.password });
-      deps.tokenStore.save(result.token); // 登录 → 存 token（client 已注入，后续请求自动带头）
+      deps.tokenStore.save(input.baseUrl, result.token); // 登录 → 按服务器存档（client 已注入，后续请求自动带头）
       current = { baseUrl: input.baseUrl, client };
       return { expiresAt: result.expiresAt, user: result.user }; // token 不出 main 进程
+    },
+
+    /**
+     * 恢复登录态（任务 2 裁定 A）：启动或服务器档案激活时调用。load(baseUrl) 有存档 →
+     * seed client → GET /me 验活：成功 = 建立 current 并返回 restored + 用户；失败
+     * （401/网络错误/协议错误）= 清档（clear(baseUrl)）并保持登出态；无存档 = 直接登出态。
+     * 任何失败都不抛（渲染层拿到可辨别的结果对象，引导重新登录而非裸错误）。
+     */
+    async resume(baseUrl: string): Promise<OnlineResumeOutput> {
+      const token = deps.tokenStore.load(baseUrl);
+      if (token === null) return { outcome: "signed-out" };
+      const client = deps.createClient(baseUrl, { onUnauthorized: invalidate });
+      client.setToken(token);
+      try {
+        const user = await client.me();
+        current = { baseUrl, client };
+        return { outcome: "restored", user };
+      } catch {
+        // 验活失败（过期/网络/协议）：清档保持登出态（裁定 A 原文语义）。
+        deps.tokenStore.clear(baseUrl);
+        return { outcome: "signed-out" };
+      }
     },
 
     async logout(): Promise<void> {

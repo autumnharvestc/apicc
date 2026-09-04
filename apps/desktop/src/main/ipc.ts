@@ -71,6 +71,7 @@ const StressRunInputSchema = z.object({
 // 由 online session 抛出（「尚未登录在线服务器」），此处只管形状。
 const OnlineRegisterChannelSchema = OnlineRegisterInputSchema.extend({ baseUrl: OnlineBaseUrlSchema });
 const OnlineLoginChannelSchema = z.object({ baseUrl: OnlineBaseUrlSchema, username: z.string(), password: z.string() });
+const OnlineResumeChannelSchema = z.object({ baseUrl: OnlineBaseUrlSchema });
 const OnlineWorkspaceIdSchema = z.object({ workspaceId: z.string().min(1) });
 const OnlineFilesGetChannelSchema = OnlineGetFilesInputSchema.extend({ workspaceId: z.string().min(1) });
 const OnlineFilePutChannelSchema = z.object({
@@ -122,6 +123,7 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.OnlineRegister]: z.tuple([OnlineRegisterChannelSchema]),
   [IpcChannel.OnlineLogin]: z.tuple([OnlineLoginChannelSchema]),
   [IpcChannel.OnlineLogout]: z.tuple([]),
+  [IpcChannel.OnlineResume]: z.tuple([OnlineResumeChannelSchema]),
   [IpcChannel.OnlineMe]: z.tuple([]),
   [IpcChannel.OnlineWorkspaceList]: z.tuple([]),
   [IpcChannel.OnlineWorkspaceCreate]: z.tuple([z.object({ name: z.string().min(1) })]),
@@ -449,6 +451,8 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.OnlineLogout:
         await requireOnline().logout();
         return undefined;
+      case IpcChannel.OnlineResume:
+        return requireOnline().resume((a[0] as { baseUrl: string }).baseUrl);
       case IpcChannel.OnlineMe:
         return requireOnline().me();
       case IpcChannel.OnlineWorkspaceList:

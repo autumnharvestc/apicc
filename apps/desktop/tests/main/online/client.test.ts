@@ -203,6 +203,15 @@ describe("onlineClient 错误归一", () => {
     expect(err.code).toBe("network_error");
   });
 
+  it("baseUrl 不可解析 → network_error 归一（不裸抛 TypeError，任务 2 裁定 B②）", async () => {
+    const { impl } = fetchStub(() => json(200, USER));
+    const client = createOnlineClient({ baseUrl: "::not a url::", fetch: impl });
+    const err = await client.me().catch((e) => e);
+    expect(err).toBeInstanceOf(OnlineApiError);
+    expect(err.status).toBe(0);
+    expect(err.code).toBe("network_error");
+  });
+
   it("超时（AbortSignal.timeout 触发）→ network_error", async () => {
     const hanging: typeof fetch = (_input, init) =>
       new Promise<Response>((_resolve, reject) => {

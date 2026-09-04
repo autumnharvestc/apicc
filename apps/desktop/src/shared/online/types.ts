@@ -31,12 +31,24 @@ export type {
   OnlineWorkspaceSummary,
 } from "./contract.js";
 
-/** online:login 入参：baseUrl 定位自托管服务端（任务 2 的服务器档案按此字段切换）。 */
+/** online:login 入参：baseUrl 定位自托管服务端（服务器档案按此字段切换）。 */
 export interface OnlineLoginInput { baseUrl: string; username: string; password: string }
 /** online:register 入参：register 契约入参 + baseUrl（注册不需要也不建立登录态）。 */
 export type OnlineRegisterChannelInput = OnlineRegisterInput & { baseUrl: string };
 /** online:login 出口：剥掉 token 的 login 结果（expiresAt 供登录态过期展示）。 */
 export interface OnlineLoginOutput { expiresAt: string; user: OnlineUser }
+/**
+ * 服务器档案（任务 2 裁定 C）：url + 昵称，多档案并存；与登录态分离（登出不清档案）。
+ * 非敏感数据（token 不在其中，token 留 main 进程 tokenStore），渲染层 localStorage 持久化。
+ */
+export interface OnlineServerProfile { baseUrl: string; name: string }
+/** online:resume 入参：对指定服务器尝试恢复登录态。 */
+export interface OnlineResumeInput { baseUrl: string }
+/**
+ * online:resume 出口（任务 2 裁定 A）：restored = token 存档验活通过（登录态恢复，user 为
+ * 服务端 /me 结果）；signed-out = 无存档或验活失败（已清档），保持登出态。resume 不抛错。
+ */
+export type OnlineResumeOutput = { outcome: "restored"; user: OnlineUser } | { outcome: "signed-out" };
 /** online:files:put 出口：pushed 携带契约 PUT 结果；conflict 原样携带服务端 409 冲突对象。 */
 export type OnlinePushOutcome =
   | { outcome: "pushed"; result: OnlinePutFileResult }

@@ -130,7 +130,14 @@ export function createOnlineClient(deps: OnlineClientDeps): OnlineClient {
     /** 成功体 schema；省略 = 无内容端点（204）不做出口校验。 */
     schema?: z.ZodTypeAny;
   }): Promise<unknown> {
-    const url = new URL(`${baseUrl}${opts.path}`);
+    // URL 拼装同样归一进 network_error（任务 2 裁定 B②）：baseUrl 不可解析时 new URL
+    // 裸抛 TypeError 会越过错误契约，UI 拿不到可辨别的失败码。
+    let url: URL;
+    try {
+      url = new URL(`${baseUrl}${opts.path}`);
+    } catch (e) {
+      throw new OnlineApiError(0, "network_error", e instanceof Error ? e.message : String(e));
+    }
     for (const [key, value] of Object.entries(opts.query ?? {})) url.searchParams.set(key, value);
     const headers: Record<string, string> = {};
     if (opts.body !== undefined) headers["Content-Type"] = "application/json";

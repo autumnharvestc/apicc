@@ -45,6 +45,8 @@ import type {
   OnlineLoginOutput,
   OnlinePushOutcome,
   OnlineRegisterChannelInput,
+  OnlineResumeInput,
+  OnlineResumeOutput,
   OnlineUser,
   OnlineWorkspaceCreateInput,
   OnlineWorkspaceCreated,
@@ -730,6 +732,13 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       onlineExpiresAt = "";
     },
 
+    // 登录态恢复（任务 2 裁定 A）替身：实例内已登录（此前 onlineLogin）→ restored 携用户；
+    // 否则 signed-out。main 进程的存档/清档/验活重启语义由 tests/main/online/session.test.ts
+    // 钉住（替身不建模跨重启持久化），这里只同构「resume 返回可辨别结果、不抛」的出口契约。
+    async onlineResume(_input: OnlineResumeInput): Promise<OnlineResumeOutput> {
+      return onlineUser ? { outcome: "restored", user: onlineUser } : { outcome: "signed-out" };
+    },
+
     async onlineMe(): Promise<OnlineUser> {
       return requireOnlineUser();
     },
@@ -784,6 +793,12 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       return {
         results: input.files.map((entry) => {
           const stored = onlineFiles.get(entry.path);
+          // 文件不存在但 baseVersion>0 → conflict/currentVersion=0（任务 2 裁定 D，对齐真实
+          // 服务端乐观并发语义：不存在 = 当前版本 0，任何 >0 的 baseVersion 都不匹配，
+          // 与 PUT 409 同一判定，绝不盲目落盘）。
+          if (!stored && entry.baseVersion > 0) {
+            return { path: entry.path, status: "conflict" as const, currentVersion: 0 };
+          }
           if (stored && stored.version !== entry.baseVersion) {
             return { path: entry.path, status: "conflict" as const, currentVersion: stored.version };
           }

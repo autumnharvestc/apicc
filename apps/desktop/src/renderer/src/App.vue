@@ -2,7 +2,7 @@
 // 组合根（装配约定）：store 工厂每调用一次即新建独立 Pinia 实例、得到互不相通的
 // 状态副本——因此全部 store 只能在此一次性创建，再经 props 向下传递；
 // SideTree/RequestEditor/TopBar 等组件内部禁止重复调用工厂。
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ConfigProvider,
@@ -20,6 +20,7 @@ import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import TopBar from "./components/TopBar.vue";
 import SideTree from "./components/SideTree.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import OnlineLoginDialog from "./components/OnlineLoginDialog.vue";
 import RequestEditor from "./components/RequestEditor.vue";
 import ResponseViewer from "./components/ResponseViewer.vue";
 import CasePanel from "./components/CasePanel.vue";
@@ -41,6 +42,7 @@ import { useDesignStore } from "./stores/design.js";
 import { useWfListStore } from "./stores/wfList.js";
 import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
 import { createStressStore } from "./stores/stress.js";
+import { createOnlineStore } from "./stores/online.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
@@ -74,6 +76,13 @@ const wfList = useWfListStore(apicc);
 const workflowDesign = useWorkflowDesignStore(apicc);
 // —— 压测 store（M2-D3 任务 3 装配，裁定 A）：同一组合根一次性创建，经 props 下传 ——
 const stress = createStressStore({ api: apicc });
+// —— 在线 store（M3-B 任务 2 装配）：同一组合根一次性创建；挂载后对上次激活的服务器
+// 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
+// TopBar 的在线入口按钮只置 online.dialogOpen。 ——
+const online = createOnlineStore({ api: apicc });
+onMounted(() => {
+  void online.init();
+});
 
 // —— 视图切换（任务 8 收官装配）——
 // 侧栏顶部 a-radio-group；未打开工作区时整组禁用（现状保留：只有打开/新建可用）。
@@ -262,7 +271,7 @@ watch(
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :api="apicc" :report-error="reportError" />
+      <TopBar :workspace="workspace" :api="apicc" :online="online" :report-error="reportError" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
@@ -361,6 +370,9 @@ watch(
       @confirm="onWfSwitchConfirm"
       @cancel="onWfSwitchCancel"
     />
+    <!-- 在线登录与服务器配置对话框（M3-B 任务 2）：a-modal 传送门渲染于 body；
+         显隐由 online store 的 dialogOpen 驱动（TopBar 入口 / 对话框关闭双向读写） -->
+    <OnlineLoginDialog :online="online" />
   </a-layout>
   </ConfigProvider>
 </template>

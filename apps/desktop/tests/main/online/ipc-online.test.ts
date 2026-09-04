@@ -25,16 +25,16 @@ function setup(handler: (req: CapturedRequest) => Response) {
     calls.push(req);
     return handler(req);
   };
-  const savedTokens: string[] = [];
-  let cleared = 0;
+  const savedTokens = new Map<string, string>();
+  let cleared: string[] = [];
   const tokenStore: TokenStore = {
-    save: (token) => {
-      savedTokens.push(token);
+    save: (baseUrl, token) => {
+      savedTokens.set(baseUrl, token);
     },
-    load: () => savedTokens[savedTokens.length - 1] ?? null,
-    clear: () => {
-      cleared += 1;
-      savedTokens.length = 0;
+    load: (baseUrl) => savedTokens.get(baseUrl) ?? null,
+    clear: (baseUrl) => {
+      cleared = [...cleared, baseUrl];
+      savedTokens.delete(baseUrl);
     },
   };
   const deps = createIpcDeps({
@@ -59,7 +59,7 @@ describe("online:* 频道接线", () => {
     expect(result).toEqual({ expiresAt: "2026-10-03T00:00:00Z", user: USER });
     expect(result).not.toHaveProperty("token");
     expect(calls[0]!.url).toBe("http://127.0.0.1:8080/api/v1/auth/login");
-    expect(savedTokens).toEqual(["tok-1"]);
+    expect(savedTokens.get("http://127.0.0.1:8080")).toBe("tok-1");
     expect(await deps.handle("online:me", {})).toEqual(USER);
     expect(calls[1]!.headers["Authorization"]).toBe("Bearer tok-1");
   });
@@ -68,7 +68,7 @@ describe("online:* 频道接线", () => {
     const { deps, savedTokens } = setup(() => json(201, USER));
     const user = await deps.handle("online:register", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8", displayName: "Alice" });
     expect(user).toEqual(USER);
-    expect(savedTokens).toEqual([]);
+    expect(savedTokens.size).toBe(0);
   });
 
   it("online:files:put 遇 409 → 处理器返回 { outcome: conflict, conflict }（冲突对象过 IPC 不丢字段）", async () => {
@@ -96,7 +96,7 @@ describe("online:* 频道接线", () => {
     const { deps, getCleared } = setup((req) => (req.url.endsWith("/auth/login") ? json(200, { token: "tok-1", expiresAt: "2026-10-03T00:00:00Z", user: USER }) : json(401, { code: "token_expired", message: "登录已过期" })));
     await deps.handle("online:login", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
     await expect(deps.handle("online:me", {})).rejects.toMatchObject({ message: "登录已过期" });
-    expect(getCleared()).toBe(1);
+    expect(getCleared()).toEqual(["http://127.0.0.1:8080"]);
     await expect(deps.handle("online:me", {})).rejects.toThrow(/尚未登录/);
   });
 
@@ -106,7 +106,7 @@ describe("online:* 频道接线", () => {
     await deps.handle("online:logout", {});
     expect(calls[1]!.method).toBe("POST");
     expect(calls[1]!.url).toBe("http://127.0.0.1:8080/api/v1/auth/logout");
-    expect(getCleared()).toBe(1);
+    expect(getCleared()).toEqual(["http://127.0.0.1:8080"]);
     await expect(deps.handle("online:me", {})).rejects.toThrow(/尚未登录/);
   });
 
@@ -120,5 +120,28 @@ describe("online:* 频道接线", () => {
   it("online 依赖未注入 → 可读错误（在线功能未配置）", async () => {
     const deps = createIpcDeps({ session: createSession(), pickDirectory: async () => "", saveFile: async () => "" });
     await expect(deps.handle("online:me", {})).rejects.toThrow(/在线功能未配置/);
+  });
+
+  // —— 任务 2 裁定 A：online:resume 恢复链路频道 ——
+  it("online:resume：登录后有存档 → restored 携用户；换新 deps（重启语义）→ me 带恢复 token", async () => {
+    const first = setup((req) => (req.url.endsWith("/auth/login") ? json(200, { token: "tok-1", expiresAt: "2026-10-03T00:00:00Z", user: USER }) : json(200, USER)));
+    await first.deps.handle("online:login", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
+    // 重启语义：同一 tokenStore 存档 + 全新 ipc deps（main 进程重新组装）
+    const second = setup(() => json(200, USER));
+    second.tokenStore.save("http://127.0.0.1:8080", "tok-1");
+    const out = await second.deps.handle("online:resume", {}, { baseUrl: "http://127.0.0.1:8080" });
+    expect(out).toEqual({ outcome: "restored", user: USER });
+    const meCall = second.calls.find((c) => c.url.endsWith("/me"))!;
+    expect(meCall.headers["Authorization"]).toBe("Bearer tok-1");
+  });
+
+  it("online:resume：过期存档 → signed-out（已清档）；无存档 → signed-out；入参非法走 zod 校验", async () => {
+    const expired = setup((req) => (req.url.endsWith("/me") ? json(401, { code: "token_expired", message: "登录已过期" }) : json(200, USER)));
+    expired.tokenStore.save("http://127.0.0.1:8080", "tok-stale");
+    await expect(expired.deps.handle("online:resume", {}, { baseUrl: "http://127.0.0.1:8080" })).resolves.toEqual({ outcome: "signed-out" });
+    expect(expired.getCleared()).toEqual(["http://127.0.0.1:8080"]);
+    const guest = setup(() => json(200, USER));
+    await expect(guest.deps.handle("online:resume", {}, { baseUrl: "http://127.0.0.1:8080" })).resolves.toEqual({ outcome: "signed-out" });
+    await expect(guest.deps.handle("online:resume", {}, { baseUrl: "ftp://x" })).rejects.toThrow(/入参校验失败/);
   });
 });
