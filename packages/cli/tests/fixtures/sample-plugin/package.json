@@ -1,0 +1,5 @@
+{
+  "name": "sample-plugin",
+  "private": true,
+  "type": "module"
+}
