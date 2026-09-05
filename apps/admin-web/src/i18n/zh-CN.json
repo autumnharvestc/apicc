@@ -45,6 +45,23 @@
     "transferConfirm": "确认转让",
     "error": "请求失败"
   },
+  "acl": {
+    "title": "项目 ACL",
+    "projectLabel": "选择项目",
+    "myRoleLabel": "我的有效角色",
+    "colUserId": "用户 ID",
+    "colRole": "ACL 角色",
+    "colActions": "操作",
+    "roleNone": "拒绝访问（NONE）",
+    "noneHint": "NONE = 明确拒绝该用户访问本项目；删除行 = 恢复工作区角色继承。",
+    "deleteRow": "删除行",
+    "deleteRowTitle": "删除该行后，该用户将回到工作区角色继承，确认删除？",
+    "deleteRowOk": "恢复继承",
+    "userIdPlaceholder": "选择成员或输入用户 ID",
+    "addSubmit": "添加",
+    "userIdRequired": "请输入用户 ID",
+    "error": "请求失败"
+  },
   "ws": {
     "listTitle": "工作区",
     "colName": "名称",

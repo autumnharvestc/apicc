@@ -3,10 +3,12 @@
  * 成员管理视图（M4-A 任务 4，裁定 A/B/C/D6）：成员清单（displayName/username/role a-tag 色分
  * + 操作列）；改角色（a-select 即改，OWNER 行禁用——D6 体验层，后端 403 为准）；移除
  * （a-popconfirm 确认，OWNER 行禁用）；添加成员（userId + 角色——§3.2 PUT 对非成员即创建行；
- * 后端按 userId 寻址，契约无按名查 id 端点，输入框只接受 userId，placeholder 说明）；OWNER
+ * 后端按 userId 寻址，契约无按名查 id 端点，输入框只接受 userId，placeholder 说明；角色下拉
+ * 排除 OWNER——非成员直接授 OWNER 走不到转让确认，任务 5 审查顺修）；OWNER
  * 转让（把成员角色改为 OWNER）弹受控确认 a-modal（输入工作区名，文案明示自身降为 ADMIN 且
- * 不可逆，任务 3 受控弹窗先例）。403 直达 URL → membersError 上屏 + 弹回 /workspaces（列表页
- * 可见原因，裁定 C）；其他后端错误码（owner_immutable 等）→ 顶部 membersError alert（选顶部
+ * 不可逆，任务 3 受控弹窗先例；转让失败错误经 membersError 在 Modal 内就近呈现）。403 直达
+ * URL → membersError 上屏 + 弹回 /workspaces（原因仅在成员面通道，列表页不重复呈现——任务 5
+ * 审查注释更正）；其他后端错误码（owner_immutable 等）→ 顶部 membersError alert（选顶部
  * alert 而非行级提示：单通道单呈现面，实现最干净，报告注明）。组件内零工厂调用：workspaces
  * 经路由 props 注入。
  */
@@ -28,7 +30,7 @@ const workspaceId = computed(() => (typeof route.params.id === "string" ? route.
 onMounted(async () => {
   const res = await props.workspaces.loadMembers(workspaceId.value);
   if (!res.ok && res.forbidden) {
-    // 403 直达（非 ADMIN）：错误已同步列表页 error 通道，弹回 /workspaces（裁定 C）
+    // 403 直达（非 ADMIN）：原因入 membersError（仅成员面通道呈现，不外溢列表页），弹回 /workspaces（裁定 C）
     await router.push({ name: "workspaces" });
   }
 });
@@ -43,6 +45,9 @@ const columns = computed(() => [
 /** a-tag 色分（域内枚举值原样呈现，不翻译）。 */
 const ROLE_COLORS: Record<AdminRole, string> = { OWNER: "gold", ADMIN: "geekblue", EDITOR: "green", VIEWER: "default" };
 const ROLE_OPTIONS: AdminRole[] = ["OWNER", "ADMIN", "EDITOR", "VIEWER"];
+/** 添加成员角色下拉排除 OWNER（任务 5 审查顺修·重要）：非成员直接授 OWNER 走不到转让确认；
+ * 授 OWNER 唯一路径 = 行内改角色触发的受控确认（裁定 B）。 */
+const ADD_ROLE_OPTIONS: AdminRole[] = ["ADMIN", "EDITOR", "VIEWER"];
 
 function isOwnerRow(member: AdminMember): boolean {
   return member.role === "OWNER";
@@ -102,6 +107,7 @@ async function onAdd(): Promise<void> {
   if (ok) {
     addUserId.value = "";
     addRole.value = "VIEWER";
+    addError.value = ""; // 成功后复位本地校验错误（任务 4 审查顺修）
   }
 }
 </script>
@@ -134,7 +140,7 @@ async function onAdd(): Promise<void> {
         v-model:value="addRole"
         class="add-role"
         data-testid="members-add-role"
-        :options="ROLE_OPTIONS.map((r) => ({ value: r, label: r }))"
+        :options="ADD_ROLE_OPTIONS.map((r) => ({ value: r, label: r }))"
       />
       <a-button type="primary" :loading="workspaces.memberSubmitting" data-testid="members-add-submit" @click="onAdd">
         {{ t("members.addSubmit") }}
@@ -174,6 +180,7 @@ async function onAdd(): Promise<void> {
               :ok-button-props="removeOkButtonProps"
               @confirm="onRemove(record.userId)"
               @cancel="removeTargetUserId = null"
+              @open-change="(open: boolean) => { if (!open) removeTargetUserId = null; }"
             >
               <a-button
                 danger
@@ -196,6 +203,8 @@ async function onAdd(): Promise<void> {
         {{ t("members.transferHint", { user: transferTarget.displayName, name: workspaces.current?.name ?? "" }) }}
       </p>
       <a-input v-model:value="transferName" data-testid="members-transfer-name" :placeholder="t('ws.deleteNamePlaceholder')" />
+      <!-- 转让失败错误就近呈现（任务 4 审查备案顺手项：Modal 遮罩会挡住页面级 alert） -->
+      <div v-if="workspaces.membersError" class="form-error" data-testid="members-transfer-error">{{ workspaces.membersError }}</div>
       <template #footer>
         <a-button data-testid="members-transfer-cancel" @click="cancelTransfer">{{ t("common.cancel") }}</a-button>
         <a-button

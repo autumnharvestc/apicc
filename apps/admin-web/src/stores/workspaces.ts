@@ -10,7 +10,7 @@
  */
 import { createPinia, defineStore } from "pinia";
 import { AdminApiError, type AdminClient } from "../api/client.js";
-import type { AdminMember, AdminRole, AdminWorkspaceDetail, AdminWorkspaceSummary } from "../api/contract.js";
+import type { AdminAclEntry, AdminAclRole, AdminMember, AdminRole, AdminTree, AdminWorkspaceDetail, AdminWorkspaceSummary } from "../api/contract.js";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -24,6 +24,8 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
   const client = deps.client;
   /** 选中请求序号：竞态防护（任务 3 审查次要 1 顺修）——仅最新请求可落地结果。 */
   let selectSeq = 0;
+  /** ACL 清单请求序号（任务 4 审查备案 4 同口径）：项目切换乱序完成时丢弃旧结果。 */
+  let aclSeq = 0;
   return defineStore("admin-workspaces", {
     state: () => ({
       /** 工作区清单（GET /workspaces）。 */
@@ -52,6 +54,24 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
       memberBusyId: null as string | null,
       /** 添加成员提交在途。 */
       memberSubmitting: false,
+
+      // —— 项目 ACL（任务 5，裁定 A/B）——
+      /** 工作区树（GET tree；项目清单与 projects[].myRole 来源）。 */
+      tree: null as AdminTree | null,
+      /** 树拉取在途。 */
+      treeLoading: false,
+      /** 当前 ACL 行所属项目 id；null = 未加载。 */
+      aclProjectId: null as string | null,
+      /** 当前项目 ACL 行。 */
+      aclEntries: [] as AdminAclEntry[],
+      /** ACL 清单拉取在途。 */
+      aclLoading: false,
+      /** ACL 面失败文案（ACL 页顶部 alert 呈现）。 */
+      aclError: null as string | null,
+      /** ACL 行级在途（改角色/删行的行 loading 与防重复提交）。 */
+      aclBusyUserId: null as string | null,
+      /** 添加 ACL 行提交在途。 */
+      aclSubmitting: false,
     }),
     actions: {
       /** 清单拉取：失败 → error 上屏且不清旧清单（desktop 错误语义）。 */
@@ -196,6 +216,86 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
           return false;
         } finally {
           this.memberBusyId = null;
+        }
+      },
+
+      /**
+       * 拉取工作区树（任务 5，裁定 A/C）：项目清单与 projects[].myRole 来源；失败 → aclError
+       * 上屏（ACL 页顶部 alert 单通道）。
+       */
+      async loadTree(workspaceId: string): Promise<void> {
+        this.treeLoading = true;
+        try {
+          this.tree = await client.getTree(workspaceId);
+        } catch (e) {
+          this.aclError = errorMessage(e);
+        } finally {
+          this.treeLoading = false;
+        }
+      },
+
+      /**
+       * 拉取项目 ACL 行（任务 5，裁定 A）。竞态防护：项目切换乱序完成时以最新请求为准
+       * （select 同款序号口径，任务 4 审查备案 4）。
+       */
+      async loadAcl(workspaceId: string, projectId: string): Promise<void> {
+        const seq = ++aclSeq;
+        this.aclLoading = true;
+        try {
+          const entries = await client.listAcl(workspaceId, projectId);
+          if (seq !== aclSeq) return; // 乱序完成：已有更新的项目切换，丢弃本次结果
+          this.aclEntries = entries;
+          this.aclProjectId = projectId;
+        } catch (e) {
+          if (seq !== aclSeq) return;
+          this.aclError = errorMessage(e);
+        } finally {
+          if (seq === aclSeq) this.aclLoading = false;
+        }
+      },
+
+      /** ACL 变更成功后的统一收口：重载当前项目 ACL 行 + 重载树（myRole 变化联动，裁定 B/C）。
+       * 树重载以 tree.workspaceId 归属判定（防跨工作区覆写），不依赖选中详情 current。 */
+      async refreshAclAndTree(workspaceId: string, projectId: string): Promise<void> {
+        await this.loadAcl(workspaceId, projectId);
+        if (this.tree?.workspaceId === workspaceId) await this.loadTree(workspaceId);
+      },
+
+      /**
+       * 设置 ACL 行（PUT；NONE=拒之门外，任务 5 裁定 B——行仍在显示 NONE）。行级 busy 防重复提交。
+       */
+      async setAclEntry(workspaceId: string, projectId: string, input: { userId: string; role: AdminAclRole }): Promise<boolean> {
+        if (this.aclBusyUserId !== null) return false;
+        this.aclBusyUserId = input.userId;
+        this.aclError = null;
+        try {
+          await client.setAclEntry(workspaceId, projectId, input);
+          await this.refreshAclAndTree(workspaceId, projectId);
+          return true;
+        } catch (e) {
+          this.aclError = errorMessage(e);
+          return false;
+        } finally {
+          this.aclBusyUserId = null;
+        }
+      },
+
+      /**
+       * 删除 ACL 行（DELETE ?userId=，契约修订 2026-09-04：删行=恢复工作区角色继承——行消失）。
+       */
+      async removeAclEntry(workspaceId: string, projectId: string, userId: string): Promise<boolean> {
+        if (this.aclBusyUserId !== null) return false;
+        this.aclBusyUserId = userId;
+        this.aclError = null;
+        try {
+          await client.deleteAclEntry(workspaceId, projectId, userId);
+          await this.refreshAclAndTree(workspaceId, projectId);
+          return true;
+        } catch (e) {
+          this.aclError = errorMessage(e);
+          return false;
+        } finally {
+          this.aclBusyUserId = null;
         }
       },
     },

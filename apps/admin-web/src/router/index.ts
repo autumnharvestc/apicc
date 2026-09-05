@@ -32,9 +32,9 @@ export function createAppRoutes(deps: AppRouterDeps): RouteRecordRaw[] {
       children: [
         { path: "", redirect: { name: "workspaces" } },
         { path: "workspaces", name: "workspaces", component: WorkspacesView, props: { workspaces: deps.workspaces } },
-        // 成员/项目 ACL（任务 4/5 渐次填充）：members 真实视图注入 workspaces 实例；acl 仍占位
+        // 成员/项目 ACL（任务 4/5 渐次填充）：真实视图均注入 workspaces 实例
         { path: "workspaces/:id/members", name: "workspace-members", component: MembersView, props: { workspaces: deps.workspaces } },
-        { path: "workspaces/:id/acl", name: "workspace-acl", component: ProjectAclView },
+        { path: "workspaces/:id/acl", name: "workspace-acl", component: ProjectAclView, props: { workspaces: deps.workspaces } },
       ],
     },
   ];

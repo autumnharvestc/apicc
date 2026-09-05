@@ -2,7 +2,7 @@
 // M4-A 任务 4：MembersView 测试（裁定 A/B/C）——成员清单（displayName/username/role a-tag 色分
 // + 操作列）、改角色（a-select 即改、OWNER 行禁用）、移除（popconfirm、OWNER 行禁用）、添加成员
 // （userId + 角色，§3.2 对非成员即创建）、OWNER 转让受控确认（输入工作区名，文案明示降为 ADMIN
-// 且不可逆）、403 直达回列表（列表页可见原因）、后端错误码 membersError 上屏。
+// 且不可逆）、403 直达回列表（原因仅在成员面 membersError 通道呈现）、后端错误码 membersError 上屏。
 // 直达 URL 挂载（history.replaceState 到成员路径）；antd 传送门元素走 body 作用域查询；
 // a-select 经组件实例 update:value/change 事件驱动（desktop OnlineLoginDialog.test 先例）。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
@@ -245,5 +245,39 @@ describe("MembersView 错误面（裁定 C）", () => {
     expect(workspaces.membersError).toBe("不能变更 OWNER 的角色");
     expect(wrapper.find("[data-testid=members-error]").text()).toContain("不能变更 OWNER 的角色");
     expect(wrapper.findAll("tbody tr")).toHaveLength(3); // 清单不动
+  });
+});
+
+describe("MembersView 顺修（任务 5 审查）", () => {
+  it("添加成员角色下拉排除 OWNER（直接授 OWNER 必须经行内转让确认）", async () => {
+    const { wrapper } = await mountMembers(memberHandler());
+    const options = antdSelect(wrapper, "members-add-role").props("options") as Array<{ value: string }>;
+    expect(options.map((o) => o.value)).toEqual(["ADMIN", "EDITOR", "VIEWER"]);
+    expect(options.map((o) => o.value)).not.toContain("OWNER");
+  });
+
+  it("popconfirm 受控模式：openChange(false) → 受控状态关闭（点外关闭接线）", async () => {
+    const { wrapper } = await mountMembers(memberHandler());
+    await wrapper.find("[data-testid=members-remove-u-3]").trigger("click");
+    await waitForBody("members-remove-confirm");
+    const pc = wrapper.findAllComponents({ name: "APopconfirm" }).find((c) => c.props("open") === true);
+    expect(pc).toBeDefined();
+    pc!.vm.$emit("openChange", false);
+    await flushPromises();
+    await flushPromises();
+    expect(wrapper.findAllComponents({ name: "APopconfirm" }).every((c) => c.props("open") === false)).toBe(true);
+  });
+
+  it("转让失败 → Modal 内就近呈现 membersError（备案顺手项：Modal 遮罩会挡住页面级 alert）", async () => {
+    const { wrapper } = await mountMembers(memberHandler({ onPut: () => json(400, { code: "owner_immutable", message: "不能变更 OWNER 的角色" }) }));
+    antdSelect(wrapper, "members-role-u-2").vm.$emit("change", "OWNER");
+    await flushPromises();
+    await expectBody("members-transfer-name").setValue("团队空间");
+    await flushPromises();
+    await expectBody("members-transfer-confirm").trigger("click");
+    await flushPromises();
+    await flushPromises();
+    expect(expectBody("members-transfer-error").text()).toContain("不能变更 OWNER 的角色");
+    expect(bodyFind("members-transfer-name")).not.toBeNull(); // Modal 不关，错误可见
   });
 });

@@ -45,6 +45,23 @@
     "transferConfirm": "Transfer ownership",
     "error": "Request failed"
   },
+  "acl": {
+    "title": "Project ACL",
+    "projectLabel": "Project",
+    "myRoleLabel": "My effective role",
+    "colUserId": "User ID",
+    "colRole": "ACL role",
+    "colActions": "Actions",
+    "roleNone": "Deny access (NONE)",
+    "noneHint": "NONE = explicitly deny this user's access to the project; deleting a row = fall back to the workspace role.",
+    "deleteRow": "Delete row",
+    "deleteRowTitle": "Deleting this row makes the user fall back to the workspace role. Delete?",
+    "deleteRowOk": "Restore inheritance",
+    "userIdPlaceholder": "Pick a member or type a user ID",
+    "addSubmit": "Add",
+    "userIdRequired": "User ID is required",
+    "error": "Request failed"
+  },
   "ws": {
     "listTitle": "Workspaces",
     "colName": "Name",
