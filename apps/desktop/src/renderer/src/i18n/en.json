@@ -57,6 +57,16 @@
     "bodyKind": "Body type",
     "noEnv": "No env"
   },
+  "protocol": {
+    "http": "HTTP",
+    "websocket": "WebSocket",
+    "soap": "SOAP",
+    "message": "Message template",
+    "messagePlaceholder": "Text frame template sent after connect; leave empty to connect only",
+    "envelope": "SOAP envelope",
+    "envelopePlaceholder": "SOAP XML envelope template",
+    "soapAction": "SOAPAction"
+  },
   "response": {
     "status": "Status",
     "time": "Time",

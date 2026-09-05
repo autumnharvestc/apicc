@@ -1,6 +1,7 @@
 import { createPinia, defineStore } from "pinia";
 import type { ApiDefinition } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
+import type { MultiProtocolApi } from "../multi-protocol.js";
 
 /**
  * 编辑器 store 工厂：接受依赖 api 参数，每次工厂调用绑定独立 Pinia 实例。
@@ -8,12 +9,16 @@ import type { ApiccApi } from "../../../shared/types.js";
  * 测试与组件直接改 api 字段（不经 action）也能被跟踪；load/save 后重写快照即复位。
  * 简报原实现在 state 里放 dirty 且无任何置位路径，其自身测试（直接改 url 期望 dirty）
  * 无法通过。
+ * M5-B 任务 1（D2 契约 fixture）：api 状态取 MultiProtocolApi（protocol/message/
+ * envelope/soapAction 本地 fixture 形状）——dirty 为 JSON 快照比对，新字段自然进
+ * 缓冲与快照；保存载荷经 apiSave 出口携带新字段（本阶段旧 core strict schema 不
+ * 接线，落盘往返由任务 2 同步 main 后经新 schema 校验）。
  */
 export function useEditorStore(api: ApiccApi) {
   return defineStore("editor", {
     state: () => ({
       apiId: null as string | null,
-      api: null as ApiDefinition | null,
+      api: null as MultiProtocolApi | null,
       envs: [] as Array<{ id: string; name: string }>,
       snapshot: "",
     }),

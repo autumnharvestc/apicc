@@ -394,6 +394,26 @@ describe("SideTree", () => {
   });
 });
 
+// —— M5-B 任务 1：协议选择与字段适配（规格 D2/D8 契约 fixture——旧 core strict schema
+// 不接线，保存载荷仅作 fixture 观测；任务 2 同步 main 后真集成）——
+
+/** 协议单选切换：经 ARadioGroup 组件级 update:value（与 chooseMode 同理，jsdom 不点真实 radio）。 */
+function chooseProtocol(wrapper: VueWrapper, value: "http" | "websocket" | "soap"): void {
+  antdComponent(wrapper, "ARadioGroup", "editor-protocol").vm.$emit("update:value", value);
+}
+
+/** 读取协议单选组当前值（显示侧断言用，不经 antd 内部渲染）。 */
+function protocolValue(wrapper: VueWrapper): unknown {
+  return antdComponent(wrapper, "ARadioGroup", "editor-protocol").props("value");
+}
+
+/** 协议选项（值 + 标签）断言取用：jsdom 不点真实 radio，经 ARadioButton 组件 props/文本读取。 */
+function protocolOptionsOf(wrapper: VueWrapper): Array<{ value: unknown; label: string }> {
+  return wrapper
+    .findAllComponents({ name: "ARadioButton" })
+    .map((r) => ({ value: r.props("value"), label: r.text() }));
+}
+
 describe("RequestEditor", () => {
   it("编辑 URL 触发 update 且显示发送按钮", async () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
@@ -501,6 +521,99 @@ describe("RequestEditor", () => {
     await flushPromises();
     expect(selectValue(wrapper, "debug-env-select")).toBe("");
   });
+
+  it("M5-B 协议选择：三选单选组默认 http（旧数据无 protocol 字段显示侧回退，不回写数据），文案走 i18n", async () => {
+    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    // 种子接口无 protocol 字段（旧 schema 形状）：显示 http 但不得回写
+    expect(editor.api!.protocol).toBeUndefined();
+    expect(protocolValue(wrapper)).toBe("http");
+    expect(protocolOptionsOf(wrapper).map((o) => o.value)).toEqual(["http", "websocket", "soap"]);
+    expect(protocolOptionsOf(wrapper).map((o) => o.label)).toEqual(["HTTP", "WebSocket", "SOAP"]);
+  });
+
+  it("M5-B 切 WebSocket：method/参数/请求体退场、消息模板进场；已填 query/body 内容保留（裁定③）", async () => {
+    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    editor.api!.query.push({ key: "q1", value: "v1", enabled: true });
+    editor.api!.body = { kind: "json", content: '{"a":1}' };
+    chooseProtocol(wrapper, "websocket");
+    await flushPromises();
+    // D8 字段显隐：WS 隐藏 method 选择与 query/body 区，显示 message 文本域
+    expect(wrapper.find('[data-testid="editor-method"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tab-params"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tab-body"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tab-message"]').exists()).toBe(true);
+    const message = wrapper.find('[data-testid="editor-message"]');
+    expect(message.exists()).toBe(true);
+    await message.setValue("hello {{name}}");
+    expect(editor.api!.message).toBe("hello {{name}}");
+    // 裁定③：切协议只改显隐，query/body 原样保留
+    expect(editor.api!.query).toEqual([{ key: "q1", value: "v1", enabled: true }]);
+    expect(editor.api!.body).toEqual({ kind: "json", content: '{"a":1}' });
+    expect(editor.api!.protocol).toBe("websocket");
+  });
+
+  it("M5-B 切 SOAP：参数/请求体退场、envelope/soapAction 进场；method 固定 POST 且禁用（D2）", async () => {
+    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    expect(editor.api!.method).toBe("GET"); // 种子接口为 GET：切 SOAP 须落定为显式 POST
+    chooseProtocol(wrapper, "soap");
+    await flushPromises();
+    expect(editor.api!.method).toBe("POST");
+    expect(wrapper.find('[data-testid="tab-params"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tab-envelope"]').exists()).toBe(true);
+    // method 展示但禁用（裁定②：WS 隐藏、SOAP 禁用固定 POST——报告注明）
+    expect(antdComponent(wrapper, "ASelect", "editor-method").props("disabled")).toBe(true);
+    await wrapper.find('[data-testid="editor-envelope"]').setValue("<Envelope/>");
+    await wrapper.find('[data-testid="editor-soap-action"]').setValue("urn:do");
+    expect(editor.api!.envelope).toBe("<Envelope/>");
+    expect(editor.api!.soapAction).toBe("urn:do");
+  });
+
+  it("M5-B 来回切协议：message/envelope/query/body 各自内容互不丢失（裁定③）", async () => {
+    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    editor.api!.query.push({ key: "q1", value: "v1", enabled: true });
+    editor.api!.body = { kind: "json", content: '{"a":1}' };
+    chooseProtocol(wrapper, "websocket");
+    await flushPromises();
+    await wrapper.find('[data-testid="editor-message"]').setValue("首帧模板");
+    chooseProtocol(wrapper, "soap");
+    await flushPromises();
+    await wrapper.find('[data-testid="editor-envelope"]').setValue("<Envelope/>");
+    chooseProtocol(wrapper, "http");
+    await flushPromises();
+    // 切回 http：页签恢复，其余协议字段内容原样保留（不互删）
+    expect(protocolValue(wrapper)).toBe("http");
+    expect(wrapper.find('[data-testid="tab-params"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="tab-body"]').exists()).toBe(true);
+    expect(editor.api!.message).toBe("首帧模板");
+    expect(editor.api!.envelope).toBe("<Envelope/>");
+    expect(editor.api!.query).toEqual([{ key: "q1", value: "v1", enabled: true }]);
+    expect(editor.api!.body).toEqual({ kind: "json", content: '{"a":1}' });
+  });
+
+  it("M5-B 保存载荷 fixture：保存后 apiSave 载荷携带 protocol/message（旧 strict schema 不接线）", async () => {
+    const { wrapper, api, editor, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    const sent: unknown[] = [];
+    const original = api.apiSave.bind(api);
+    api.apiSave = async (input) => { sent.push(input); return original(input); };
+    chooseProtocol(wrapper, "websocket");
+    await flushPromises();
+    await wrapper.find('[data-testid="editor-message"]').setValue("ping");
+    await wrapper.find('[data-testid="save-btn"]').trigger("click");
+    await flushPromises();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ protocol: "websocket", message: "ping" });
+    expect(editor.dirty).toBe(false);
+  });
 });
 
 describe("ResponseViewer", () => {
@@ -563,6 +676,39 @@ describe("ResponseViewer", () => {
   it("error 属性非空时显示错误徽标", () => {
     const wrapper = mountWithI18n(ResponseViewer, { result, error: "网络不可达" });
     expect(wrapper.find('[data-testid="response-error"]').text()).toContain("网络不可达");
+  });
+
+  // —— M5-B 任务 1：D3 响应映射契约 fixture（零分支核验，组件零改动）——
+  it("M5-B D3 契约 fixture：WS 响应（status=101 握手 + bodyText=首帧）按既有渲染零分支呈现", async () => {
+    const wsResult = {
+      ...result,
+      response: {
+        status: 101,
+        headers: { upgrade: "websocket", "sec-websocket-accept": "abc==" },
+        bodyText: "first frame",
+        timeMs: 42.6,
+      },
+    };
+    const wrapper = mountWithI18n(ResponseViewer, { result: wsResult });
+    expect(wrapper.find('[data-testid="response-status"]').text()).toContain("101");
+    expect(wrapper.find('[data-testid="response-body"]').text()).toContain("first frame");
+    expect(wrapper.find('[data-testid="response-time"]').text()).toContain("43 ms");
+    await wrapper.find('[data-testid="response-tab-headers"]').trigger("click");
+    const headers = wrapper.find('[data-testid="response-headers"]');
+    expect(headers.text()).toContain("upgrade");
+    expect(headers.text()).toContain("websocket");
+  });
+
+  it("M5-B D3 契约 fixture：SOAP 响应（HTTP 语义 + XML 体原样展示不臆造）零分支呈现", async () => {
+    const xml = "<Envelope><Body><echo>ok</echo></Body></Envelope>";
+    const soapResult = {
+      ...result,
+      response: { status: 200, headers: { "content-type": "text/xml; charset=utf-8" }, bodyText: xml, timeMs: 7 },
+    };
+    const wrapper = mountWithI18n(ResponseViewer, { result: soapResult });
+    expect(wrapper.find('[data-testid="response-status"]').text()).toContain("200");
+    // XML 非 JSON：bodyText 原样展示（不 pretty、不丢内容）
+    expect(wrapper.find('[data-testid="response-body"]').text()).toBe(xml);
   });
 });
 
