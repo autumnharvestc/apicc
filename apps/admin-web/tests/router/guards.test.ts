@@ -1,10 +1,12 @@
-// M4-A 任务 2：路由守卫测试（裁定 C）——受保护路由（meta.requiresAuth）无 token 重定向
-// /login 且携带 redirect=原 fullPath（回到原目标）；登录后可直达。真实 createAppRouter +
-// 真实 session store（隔离 storage）+ 假 fetch。
+// M4-A 任务 2/3：路由守卫测试（裁定 C）——受保护路由（meta.requiresAuth，父路由 "/" 上声明、
+// 子路由随 meta 合并继承）无 token 重定向 /login 且携带 redirect=原 fullPath（回到原目标）；
+// 登录后放行落到工作区列表（任务 3 起 "/" 由布局壳接管，index 重定向 /workspaces）。
+// 真实 createAppRouter + 真实 session/workspaces store（隔离 storage）+ 假 fetch。
 import { describe, expect, it } from "vitest";
 import { createAdminClient } from "../../src/api/client.js";
 import { createAppRouter } from "../../src/router/index.js";
 import { createSessionStore, TOKEN_KEY } from "../../src/stores/session.js";
+import { createWorkspacesStore } from "../../src/stores/workspaces.js";
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 
@@ -39,34 +41,42 @@ function memStorage(): Storage {
 function setup() {
   const client = createAdminClient({
     baseUrl: "http://127.0.0.1:8080/api/v1",
-    fetch: fetchStub((req) => (req.url.endsWith("/auth/login") ? json(200, LOGIN_OK) : json(200, USER))),
+    fetch: fetchStub((req) =>
+      req.url.endsWith("/auth/login")
+        ? json(200, LOGIN_OK)
+        : req.url.endsWith("/workspaces") && req.method === "GET"
+          ? json(200, [])
+          : json(200, USER),
+    ),
   });
   const session = createSessionStore({ client, storage: memStorage() });
-  const router = createAppRouter({ session });
-  return { session, router };
+  const workspaces = createWorkspacesStore({ client });
+  const router = createAppRouter({ session, workspaces });
+  return { session, workspaces, router };
 }
 
 describe("路由守卫（裁定 C：requiresAuth + redirect 回跳）", () => {
   it("未登录访问受保护路由 / → 重定向 /login 且 query.redirect 携带原目标", async () => {
     const { router } = setup();
     await router.push("/");
+    // vue-router 在守卫前解析 index 重定向：守卫见到的是解析后目标 /workspaces
     expect(router.currentRoute.value.name).toBe("login");
-    expect(router.currentRoute.value.query.redirect).toBe("/");
+    expect(router.currentRoute.value.query.redirect).toBe("/workspaces");
   });
 
   it("未登录访问带查询串的受保护路径 → redirect 保留完整 fullPath", async () => {
     const { router } = setup();
     await router.push("/?x=1");
     expect(router.currentRoute.value.name).toBe("login");
-    expect(router.currentRoute.value.query.redirect).toBe("/?x=1");
+    expect(router.currentRoute.value.query.redirect).toBe("/workspaces?x=1");
   });
 
-  it("登录后访问受保护路由 → 放行落到 home", async () => {
+  it("登录后访问 / → 放行经布局壳 index 重定向落到工作区列表（任务 3 起）", async () => {
     const { session, router } = setup();
     await session.login({ username: "alice", password: "password8" });
     expect(session.isAuthenticated).toBe(true);
     await router.push("/");
-    expect(router.currentRoute.value.name).toBe("home");
+    expect(router.currentRoute.value.name).toBe("workspaces");
   });
 
   it("未登录访问 /login 本身 → 不重定向（登录页可直达）", async () => {

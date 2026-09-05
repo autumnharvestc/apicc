@@ -8,6 +8,7 @@ import { mount, flushPromises, enableAutoUnmount, type VueWrapper } from "@vue/t
 import { createAdminI18n } from "../../src/i18n/index.js";
 import { createAdminClient } from "../../src/api/client.js";
 import { createSessionStore } from "../../src/stores/session.js";
+import { createWorkspacesStore } from "../../src/stores/workspaces.js";
 import { createAppRouter } from "../../src/router/index.js";
 import App from "../../src/App.vue";
 
@@ -29,6 +30,13 @@ function fetchStub(handler: FetchHandler) {
 const json = (status: number, payload: unknown): Response => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
 const USER = { id: "u-1", username: "alice", displayName: "Alice" };
 const LOGIN_OK = { token: "tok-abc123", expiresAt: "2026-10-03T00:00:00Z", user: USER };
+
+/** 默认路由表：登录/me/工作区清单（登录成功落到 /workspaces 时清单拉取不失败）。 */
+function defaultHandler(req: CapturedRequest): Response {
+  if (req.url.endsWith("/auth/login")) return json(200, LOGIN_OK);
+  if (req.url.endsWith("/workspaces") && req.method === "GET") return json(200, []);
+  return json(200, USER);
+}
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -55,12 +63,13 @@ interface Mounted {
 }
 
 /** 挂装配根 App（真实路由/store/i18n；jsdom 初始 URL = http://localhost/ → 守卫送 /login）。 */
-async function mountApp(handler: FetchHandler = () => json(200, LOGIN_OK)): Promise<Mounted> {
+async function mountApp(handler: FetchHandler = defaultHandler): Promise<Mounted> {
   localStorage.clear();
   const stub = fetchStub(handler);
   const client = createAdminClient({ baseUrl: "http://127.0.0.1:8080/api/v1", fetch: stub.impl });
   const session = createSessionStore({ client, storage: localStorage });
-  const router = createAppRouter({ session });
+  const workspaces = createWorkspacesStore({ client });
+  const router = createAppRouter({ session, workspaces });
   const { i18n } = createAdminI18n();
   const wrapper = mount(App, { global: { plugins: [i18n, router] } });
   await router.isReady();
@@ -93,8 +102,9 @@ describe("LoginView 登录流", () => {
     expect(calls.some((c) => c.url.endsWith("/auth/login"))).toBe(true);
     expect(session.isAuthenticated).toBe(true);
     expect(localStorage.getItem("apicc.admin.token")).toBe("tok-abc123");
-    expect(router.currentRoute.value.path).toBe("/");
-    expect(wrapper.find("[data-testid=home-view]").exists()).toBe(true);
+    // 回跳 redirect 目标 "/"：经布局壳 index 重定向落到工作区列表（任务 3 起）
+    expect(router.currentRoute.value.path).toBe("/workspaces");
+    expect(wrapper.find("[data-testid=workspaces-view]").exists()).toBe(true);
   });
 
   it("登录成功（无 redirect）→ 默认回 /", async () => {
@@ -105,7 +115,7 @@ describe("LoginView 登录流", () => {
     await wrapper.find("[data-testid=login-submit]").trigger("click");
     await flushPromises();
     await flushPromises();
-    expect(router.currentRoute.value.path).toBe("/");
+    expect(router.currentRoute.value.path).toBe("/workspaces");
   });
 
   it("登录失败 401 → 错误上屏（api 通道）、留在登录页、不落 token", async () => {

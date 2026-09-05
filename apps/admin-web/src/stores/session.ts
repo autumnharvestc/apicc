@@ -10,7 +10,7 @@
  * （测试传内存替身）。组件内零工厂调用：实例由装配层创建后经路由 props 下传。
  */
 import { createPinia, defineStore } from "pinia";
-import type { AdminClient } from "../api/client.js";
+import { AdminApiError, type AdminClient } from "../api/client.js";
 import type { AdminRegisterInput, AdminUser } from "../api/contract.js";
 
 /** token 持久化键（裁定 B；与语言偏好 `apicc.admin.locale` 同命名空间）。 */
@@ -71,8 +71,9 @@ export function createSessionStore(deps: SessionStoreDeps) {
 
       /**
        * 启动验活（resume）：读档 → seed client → GET /me。成功恢复 authenticated；
-       * 无存档直接登出态；失败（401/网络/协议）清档保持登出态、不抛（desktop resume 同，
-       * 401 路径钩子已清过，此处收口覆盖网络/协议失败路径）。
+       * 无存档直接登出态；失败（401/网络/协议）清档保持登出态、不抛（desktop resume 同）。
+       * 401 已由 client 钩子触发会话失效回调（恰好一次）；网络/协议失败不经钩子，此处补调
+       * （任务 2 审查重要 1 顺修：守卫非响应式，验活失败须把用户送回登录页，否则滞留受保护页）。
        */
       async initialize(): Promise<void> {
         const saved = storage.getItem(TOKEN_KEY);
@@ -84,8 +85,9 @@ export function createSessionStore(deps: SessionStoreDeps) {
           this.user = await client.me();
           this.status = "authenticated";
           this.error = null;
-        } catch {
+        } catch (e) {
           this.clearSession();
+          if (!(e instanceof AdminApiError && e.status === 401)) deps.onSessionExpired?.();
         }
       },
 

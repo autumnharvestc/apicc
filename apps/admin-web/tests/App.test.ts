@@ -7,6 +7,7 @@ import App from "../src/App.vue";
 import { createAdminI18n } from "../src/i18n/index.js";
 import { createAdminClient } from "../src/api/client.js";
 import { createSessionStore } from "../src/stores/session.js";
+import { createWorkspacesStore } from "../src/stores/workspaces.js";
 import { createAppRouter } from "../src/router/index.js";
 import zhCN from "../src/i18n/zh-CN.json";
 import en from "../src/i18n/en.json";
@@ -30,10 +31,17 @@ function mountApp() {
   // 空存储下不应发起任何请求；fetch 替身兜底防止意外网络。
   const client = createAdminClient({
     baseUrl: "/api/v1",
-    fetch: (async () => new Response(JSON.stringify({ id: "u", username: "x", displayName: "x" }), { status: 200 })) as typeof fetch,
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/workspaces") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ id: "u", username: "x", displayName: "x" }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch,
   });
   const session = createSessionStore({ client, storage: localStorage });
-  const router = createAppRouter({ session });
+  const workspaces = createWorkspacesStore({ client });
+  const router = createAppRouter({ session, workspaces });
   const { i18n } = createAdminI18n();
   const wrapper = mount(App, { global: { plugins: [i18n, router] } });
   return { wrapper, router };

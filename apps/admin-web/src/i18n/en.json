@@ -2,6 +2,9 @@
   "app": {
     "title": "Admin Console"
   },
+  "common": {
+    "cancel": "Cancel"
+  },
   "login": {
     "tabLogin": "Sign in",
     "tabRegister": "Register",
@@ -19,6 +22,29 @@
     "failed": "Request failed"
   },
   "nav": {
-    "logout": "Sign out"
+    "logout": "Sign out",
+    "workspaces": "Workspaces",
+    "members": "Members",
+    "acl": "Project ACL"
+  },
+  "ws": {
+    "listTitle": "Workspaces",
+    "colName": "Name",
+    "colMyRole": "My role",
+    "colCreatedAt": "Created at",
+    "colActions": "Actions",
+    "create": "New workspace",
+    "createTitle": "New workspace",
+    "name": "Workspace name",
+    "nameRequired": "Workspace name is required",
+    "nameLength": "Name must be 1-64 characters",
+    "submitCreate": "Create",
+    "delete": "Delete",
+    "deleteTitle": "Delete workspace (irreversible)",
+    "deleteHint": "Deleting removes the workspace together with all of its content and cannot be undone. Type \"{name}\" to confirm.",
+    "deleteNamePlaceholder": "Type the workspace name to confirm",
+    "deleteConfirm": "Delete workspace",
+    "placeholder": "Coming soon",
+    "error": "Request failed"
   }
 }

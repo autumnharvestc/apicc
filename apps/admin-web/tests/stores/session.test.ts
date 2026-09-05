@@ -219,7 +219,7 @@ describe("initialize（启动验活：desktop resume 语义对齐）", () => {
     expect(onSessionExpired).toHaveBeenCalledTimes(1);
   });
 
-  it("有存档 + /me 网络错误：清档登出态（不经 401 钩子，回调不触发）", async () => {
+  it("有存档 + /me 网络错误：清档登出态 + 会话失效回调恰一次（任务 2 审查重要 1 顺修：守卫非响应式，须送回登录页）", async () => {
     const { calls, store, storage, onSessionExpired } = setup(() => {
       throw new TypeError("fetch failed");
     });
@@ -228,7 +228,7 @@ describe("initialize（启动验活：desktop resume 语义对齐）", () => {
     expect(calls[0]!.url).toBe(`${BASE}/me`);
     expect(store.status).toBe("idle");
     expect(storage.getItem(TOKEN_KEY)).toBeNull();
-    expect(onSessionExpired).not.toHaveBeenCalled();
+    expect(onSessionExpired).toHaveBeenCalledTimes(1);
   });
 });
 

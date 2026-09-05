@@ -2,6 +2,9 @@
   "app": {
     "title": "管理控制台"
   },
+  "common": {
+    "cancel": "取消"
+  },
   "login": {
     "tabLogin": "登录",
     "tabRegister": "注册",
@@ -19,6 +22,29 @@
     "failed": "请求失败"
   },
   "nav": {
-    "logout": "退出登录"
+    "logout": "退出登录",
+    "workspaces": "工作区",
+    "members": "成员管理",
+    "acl": "项目 ACL"
+  },
+  "ws": {
+    "listTitle": "工作区",
+    "colName": "名称",
+    "colMyRole": "我的角色",
+    "colCreatedAt": "创建时间",
+    "colActions": "操作",
+    "create": "新建工作区",
+    "createTitle": "新建工作区",
+    "name": "工作区名称",
+    "nameRequired": "请输入工作区名称",
+    "nameLength": "名称长度需为 1-64 字符",
+    "submitCreate": "创建",
+    "delete": "删除",
+    "deleteTitle": "删除工作区（不可逆）",
+    "deleteHint": "删除将连同工作区全部内容一并移除，不可恢复。请输入「{name}」以确认删除。",
+    "deleteNamePlaceholder": "输入工作区名称以确认",
+    "deleteConfirm": "确认删除",
+    "placeholder": "功能建设中",
+    "error": "请求失败"
   }
 }
