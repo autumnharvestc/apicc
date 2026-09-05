@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AiProviderError, createAiProvider } from "../../src/ai/provider.js";
 import { DEFAULT_AI_TIMEOUT_MS, type AiChatMessage } from "../../src/ai/types.js";
@@ -131,6 +131,30 @@ describe("createAiProvider（D1 provider 抽象）", () => {
       );
       expect(err.kind).toBe("response");
       expect(err.message).toMatch(new RegExp(c.fragment));
+    }
+  });
+
+  it("缺省 timeoutMs 接线（顺修④）：不传 timeoutMs 时 DEFAULT_AI_TIMEOUT_MS 生效——假定时器推进 60s 触发超时", async () => {
+    vi.useFakeTimers();
+    try {
+      const impl: typeof fetch = (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+          );
+        });
+      const provider = createAiProvider({ baseUrl: "https://ai.example.com", apiKey: "k", model: "m" }, { fetch: impl });
+      const settled = provider(messages).then(
+        () => { throw new Error("应当超时"); },
+        (e: unknown) => e as AiProviderError,
+      );
+      await vi.advanceTimersByTimeAsync(DEFAULT_AI_TIMEOUT_MS);
+      const err = await settled;
+      expect(err).toBeInstanceOf(AiProviderError);
+      expect(err.kind).toBe("timeout");
+      expect(err.message).toMatch(/60000/);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
