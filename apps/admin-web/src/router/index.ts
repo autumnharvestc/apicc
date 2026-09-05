@@ -23,16 +23,17 @@ export function createAppRoutes(deps: AppRouterDeps): RouteRecordRaw[] {
   return [
     { path: "/login", name: "login", component: LoginView, props: { session: deps.session } },
     {
+      // 父路由不具名（任务 3 审查次要 3 顺修）：无名父路由 + 空 path 子路由组合无 vue-router
+      // 命名告警；子路由经具名（workspaces/workspace-members/workspace-acl）导航。
       path: "/",
-      name: "layout",
       component: LayoutView,
       props: { session: deps.session, workspaces: deps.workspaces },
       meta: { requiresAuth: true },
       children: [
         { path: "", redirect: { name: "workspaces" } },
         { path: "workspaces", name: "workspaces", component: WorkspacesView, props: { workspaces: deps.workspaces } },
-        // 成员/项目 ACL（任务 4/5 填充）：本任务先接线路由与导航，占位视图给空态（裁定 C）
-        { path: "workspaces/:id/members", name: "workspace-members", component: MembersView },
+        // 成员/项目 ACL（任务 4/5 渐次填充）：members 真实视图注入 workspaces 实例；acl 仍占位
+        { path: "workspaces/:id/members", name: "workspace-members", component: MembersView, props: { workspaces: deps.workspaces } },
         { path: "workspaces/:id/acl", name: "workspace-acl", component: ProjectAclView },
       ],
     },

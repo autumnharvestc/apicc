@@ -27,6 +27,24 @@
     "members": "成员管理",
     "acl": "项目 ACL"
   },
+  "members": {
+    "title": "成员管理",
+    "colDisplayName": "显示名称",
+    "colUsername": "用户名",
+    "colRole": "角色",
+    "colActions": "操作",
+    "add": "添加成员",
+    "userIdPlaceholder": "输入用户 ID（userId）",
+    "addSubmit": "添加",
+    "userIdRequired": "请输入用户 ID",
+    "remove": "移除",
+    "removeTitle": "确认移除该成员？",
+    "removeOk": "移除",
+    "transferTitle": "转让 OWNER（不可逆）",
+    "transferHint": "把 {user} 设为 OWNER 后，你将降为 ADMIN，此操作不可逆。输入工作区名「{name}」以确认。",
+    "transferConfirm": "确认转让",
+    "error": "请求失败"
+  },
   "ws": {
     "listTitle": "工作区",
     "colName": "名称",

@@ -1,7 +1,7 @@
-// M4-A 任务 3：workspaces store 工厂测试（裁定 B/D）——清单/创建/删除 + loading/error 通道；
-// 选中工作区详情（myRole 驱动侧栏管理入口显隐，失败/未拉取 → current=null 防闪烁，裁定 C）；
-// 创建/删除成功后刷新清单（裁定 B）；删除 current → 清选中。错误语义沿 desktop：失败 error
-// 上屏不清旧态。client 用假 fetch 替身（任务 1 先例）。
+// M4-A 任务 3/4：workspaces store 工厂测试——清单/创建/删除 + 通道拆分（error=工作区面清单/选中、
+// actionError=创建/删除弹窗内、membersError=成员面，任务 3 审查次要 2 顺修）；选中竞态防护
+// （任务 3 审查次要 1 顺修：乱序完成以最新请求为准）；成员 actions（任务 4，裁定 D：清单/
+// 改角色/移除/添加 + 行级 busy + 成功后清单与 current 重选联动）。client 用假 fetch 替身。
 import { describe, expect, it } from "vitest";
 import { createAdminClient } from "../../src/api/client.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
@@ -30,6 +30,12 @@ const LIST = [
   { id: "ws-2", name: "访客空间", myRole: "VIEWER", createdAt: "2026-09-04T00:00:00Z" },
 ];
 const DETAIL_1 = { id: "ws-1", name: "团队空间", myRole: "OWNER", memberCount: 3 };
+const DETAIL_2 = { id: "ws-2", name: "访客空间", myRole: "VIEWER", memberCount: 1 };
+const DETAIL_1_AFTER_TRANSFER = { id: "ws-1", name: "团队空间", myRole: "ADMIN", memberCount: 2 };
+const MEMBERS = [
+  { userId: "u-1", username: "alice", displayName: "Alice", role: "OWNER" },
+  { userId: "u-2", username: "bob", displayName: "Bob", role: "EDITOR" },
+];
 
 function setup(handler: FetchHandler) {
   const stub = fetchStub(handler);
@@ -55,7 +61,6 @@ describe("refresh（清单 + loading/error 通道）", () => {
     const { calls, store } = setup((req) => (req.method === "GET" && req.url === `${BASE}/workspaces` ? json(200, LIST) : json(404, { code: "not_found", message: "x" })));
     await store.refresh();
     expect(calls[0]!.url).toBe(`${BASE}/workspaces`);
-    expect(calls[0]!.headers["Authorization"]).toBeUndefined(); // 清单拉取前无 token 由 client 层管——此处仅钉路径
     expect(store.list).toEqual(LIST);
     expect(store.error).toBeNull();
     expect(store.loading).toBe(false);
@@ -76,7 +81,7 @@ describe("refresh（清单 + loading/error 通道）", () => {
   });
 });
 
-describe("select（选中工作区详情，裁定 C 防闪烁）", () => {
+describe("select（选中工作区详情，裁定 C 防闪烁 + 竞态防护）", () => {
   it("成功：GET /workspaces/{id} → current 详情", async () => {
     const { calls, store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1` && req.method === "GET" ? json(200, DETAIL_1) : json(404, { code: "not_found", message: "x" })));
     await store.select("ws-1");
@@ -91,9 +96,28 @@ describe("select（选中工作区详情，裁定 C 防闪烁）", () => {
     expect(store.current).toBeNull();
     expect(store.error).toBe("无权访问");
   });
+
+  it("竞态：乱序完成时以最新请求为准，后到的旧结果丢弃（任务 3 审查次要 1 顺修）", async () => {
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<Response>((resolve) => {
+      releaseSlow = () => resolve(json(200, DETAIL_1));
+    });
+    const { store } = setup((req) => {
+      if (req.url === `${BASE}/workspaces/ws-1` && req.method === "GET") return slowGate; // 先发慢完成
+      if (req.url === `${BASE}/workspaces/ws-2` && req.method === "GET") return json(200, DETAIL_2); // 后发先至
+      return json(404, { code: "not_found", message: "x" });
+    });
+    const slow = store.select("ws-1");
+    await store.select("ws-2");
+    expect(store.current).toEqual(DETAIL_2);
+    releaseSlow(); // ws-1 结果此刻才回来
+    await slow;
+    expect(store.current).toEqual(DETAIL_2); // 旧结果被丢弃
+    expect(store.currentLoading).toBe(false);
+  });
 });
 
-describe("create（成功后刷新清单，裁定 B）", () => {
+describe("create（成功后刷新清单，裁定 B；错误走 actionError 弹窗通道）", () => {
   it("成功：POST { name } → true + 自动 refresh（清单再拉一次）", async () => {
     const list = [...LIST];
     const { calls, store } = setup((req) => {
@@ -110,14 +134,17 @@ describe("create（成功后刷新清单，裁定 B）", () => {
     expect(gets).toHaveLength(1); // create 内部自动 refresh（此前无清单拉取）
     expect(store.list).toHaveLength(3);
     expect(store.error).toBeNull();
+    expect(store.actionError).toBeNull();
   });
 
-  it("失败（400）：false + error 上屏，清单不动", async () => {
+  it("失败（400）：false + actionError（弹窗内呈现，任务 3 审查次要 2 顺修），清单 error 不受扰", async () => {
     const { calls, store } = setup((req) => (req.method === "POST" ? json(400, { code: "validation_failed", message: "名称不合法" }) : json(200, LIST)));
+    await store.refresh(); // 先建立清单错误通道状态（error=null）
     const ok = await store.create({ name: "x".repeat(65) });
     expect(ok).toBe(false);
-    expect(store.error).toBe("名称不合法");
-    expect(calls.filter((c) => c.method === "GET")).toHaveLength(0); // 失败不触发 refresh
+    expect(store.actionError).toBe("名称不合法");
+    expect(store.error).toBeNull(); // 弹窗错误不污染列表页通道
+    expect(calls.filter((c) => c.method === "GET")).toHaveLength(1); // 失败不触发 refresh
   });
 });
 
@@ -151,12 +178,137 @@ describe("remove（OWNER 删除；成功后刷新；删 current 清选中）", (
     expect(store.current).toBeNull();
   });
 
-  it("失败（403 非 OWNER）：false + error，清单不动", async () => {
+  it("失败（403 非 OWNER）：false + actionError（弹窗内呈现），清单不动", async () => {
     const { store } = setup((req) => (req.url === `${BASE}/workspaces/ws-2` && req.method === "DELETE" ? json(403, { code: "forbidden", message: "仅 OWNER 可删除" }) : json(200, LIST)));
-    await store.refresh(); // 先建立清单，再验证删除失败不清旧态
+    await store.refresh();
     const ok = await store.remove("ws-2");
     expect(ok).toBe(false);
-    expect(store.error).toBe("仅 OWNER 可删除");
+    expect(store.actionError).toBe("仅 OWNER 可删除");
+    expect(store.error).toBeNull();
     expect(store.list).toEqual(LIST);
+  });
+});
+
+describe("members（任务 4，裁定 D：清单/改角色/移除/添加）", () => {
+  it("loadMembers 成功：GET members → members 清单", async () => {
+    const { calls, store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/members` && req.method === "GET" ? json(200, MEMBERS) : json(404, { code: "not_found", message: "x" })));
+    const out = await store.loadMembers("ws-1");
+    expect(out).toEqual({ ok: true, forbidden: false });
+    expect(calls[0]!.url).toBe(`${BASE}/workspaces/ws-1/members`);
+    expect(store.members).toEqual(MEMBERS);
+    expect(store.membersError).toBeNull();
+    expect(store.membersLoading).toBe(false);
+  });
+
+  it("loadMembers 403（非 ADMIN 直达）：forbidden=true + membersError（成员面唯一通道，裁定 C）", async () => {
+    const { store } = setup(() => json(403, { code: "forbidden", message: "仅 ADMIN 可管理成员" }));
+    const out = await store.loadMembers("ws-1");
+    expect(out).toEqual({ ok: false, forbidden: true });
+    expect(store.membersError).toBe("仅 ADMIN 可管理成员");
+  });
+
+  it("loadMembers 其他失败：membersError 上屏，forbidden=false", async () => {
+    const { store } = setup(() => {
+      throw new TypeError("fetch failed");
+    });
+    const out = await store.loadMembers("ws-1");
+    expect(out).toEqual({ ok: false, forbidden: false });
+    expect(store.membersError).toContain("fetch failed");
+    expect(store.error).toBeNull(); // 非 403 不外溢到列表页通道
+  });
+
+  it("changeRole 成功：PUT { role } + members 刷新 + current 重选（转让后自身角色联动 Layout 显隐）", async () => {
+    let transferred = false;
+    const { calls, store } = setup((req) => {
+      if (req.url === `${BASE}/workspaces/ws-1/members` && req.method === "GET") return json(200, MEMBERS);
+      if (req.url === `${BASE}/workspaces/ws-1/members/u-2` && req.method === "PUT") {
+        transferred = true;
+        return noContent();
+      }
+      if (req.url === `${BASE}/workspaces/ws-1` && req.method === "GET") return json(200, transferred ? DETAIL_1_AFTER_TRANSFER : DETAIL_1);
+      return json(404, { code: "not_found", message: "x" });
+    });
+    await store.select("ws-1");
+    const ok = await store.changeRole("ws-1", "u-2", "ADMIN");
+    expect(ok).toBe(true);
+    const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-2`);
+    expect(put!.body).toEqual({ role: "ADMIN" });
+    expect(store.members).toEqual(MEMBERS); // 清单已刷新
+    expect(store.current).toEqual(DETAIL_1_AFTER_TRANSFER); // current 重选，myRole 联动
+    expect(store.memberBusyId).toBeNull();
+    expect(store.membersError).toBeNull();
+  });
+
+  it("changeRole 失败（owner_immutable）：false + membersError，清单与 current 不动", async () => {
+    const { store } = setup((req) => {
+      if (req.url === `${BASE}/workspaces/ws-1/members` && req.method === "GET") return json(200, MEMBERS);
+      if (req.url === `${BASE}/workspaces/ws-1/members/u-1` && req.method === "PUT") return json(400, { code: "owner_immutable", message: "不能变更 OWNER 的角色" });
+      if (req.url === `${BASE}/workspaces/ws-1` && req.method === "GET") return json(200, DETAIL_1);
+      return json(404, { code: "not_found", message: "x" });
+    });
+    await store.select("ws-1");
+    await store.loadMembers("ws-1");
+    const ok = await store.changeRole("ws-1", "u-1", "VIEWER");
+    expect(ok).toBe(false);
+    expect(store.membersError).toBe("不能变更 OWNER 的角色");
+    expect(store.members).toEqual(MEMBERS); // 清单不动
+    expect(store.current).toEqual(DETAIL_1); // current 不动
+    expect(store.memberBusyId).toBeNull();
+  });
+
+  it("addMember 成功（§3.2 对非成员即创建）：PUT { role } + members 刷新 + current 重选（memberCount 变化）", async () => {
+    const members = [MEMBERS[0]!];
+    const { calls, store } = setup((req) => {
+      if (req.url === `${BASE}/workspaces/ws-1/members` && req.method === "GET") return json(200, members);
+      if (req.url === `${BASE}/workspaces/ws-1/members/u-2` && req.method === "PUT") {
+        members.push({ userId: "u-2", username: "bob", displayName: "Bob", role: "EDITOR" });
+        return noContent();
+      }
+      if (req.url === `${BASE}/workspaces/ws-1` && req.method === "GET") return json(200, DETAIL_1);
+      return json(404, { code: "not_found", message: "x" });
+    });
+    await store.select("ws-1"); // 预选中：成功后 current 重选（memberCount 联动）
+    const ok = await store.addMember("ws-1", "u-2", "EDITOR");
+    expect(ok).toBe(true);
+    const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-2`);
+    expect(put!.body).toEqual({ role: "EDITOR" });
+    expect(store.members).toHaveLength(2);
+    expect(store.current).toEqual(DETAIL_1);
+    expect(store.memberSubmitting).toBe(false);
+  });
+
+  it("addMember 失败：false + membersError", async () => {
+    const { store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/members/u-9` && req.method === "PUT" ? json(404, { code: "user_not_found", message: "用户不存在" }) : json(200, MEMBERS)));
+    const ok = await store.addMember("ws-1", "u-9", "VIEWER");
+    expect(ok).toBe(false);
+    expect(store.membersError).toBe("用户不存在");
+  });
+
+  it("removeMember 成功：DELETE + members 刷新 + current 重选", async () => {
+    const members = [...MEMBERS];
+    const { calls, store } = setup((req) => {
+      if (req.url === `${BASE}/workspaces/ws-1/members` && req.method === "GET") return json(200, members);
+      if (req.url === `${BASE}/workspaces/ws-1/members/u-2` && req.method === "DELETE") {
+        members.splice(members.findIndex((m) => m.userId === "u-2"), 1);
+        return noContent();
+      }
+      if (req.url === `${BASE}/workspaces/ws-1` && req.method === "GET") return json(200, DETAIL_1);
+      return json(404, { code: "not_found", message: "x" });
+    });
+    await store.select("ws-1");
+    const ok = await store.removeMember("ws-1", "u-2");
+    expect(ok).toBe(true);
+    expect(calls.some((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1/members/u-2`)).toBe(true);
+    expect(store.members).toHaveLength(1);
+    expect(store.current).toEqual(DETAIL_1);
+  });
+
+  it("removeMember 失败（403）：false + membersError，清单不动", async () => {
+    const { store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/members/u-1` && req.method === "DELETE" ? json(403, { code: "forbidden", message: "不能移除 OWNER" }) : json(200, MEMBERS)));
+    await store.loadMembers("ws-1");
+    const ok = await store.removeMember("ws-1", "u-1");
+    expect(ok).toBe(false);
+    expect(store.membersError).toBe("不能移除 OWNER");
+    expect(store.members).toEqual(MEMBERS);
   });
 });

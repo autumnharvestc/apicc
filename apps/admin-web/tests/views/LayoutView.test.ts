@@ -39,6 +39,10 @@ const LIST = [
 ];
 const DETAIL_OWNER = { id: "ws-1", name: "团队空间", myRole: "OWNER", memberCount: 3 };
 const DETAIL_VIEWER = { id: "ws-2", name: "访客空间", myRole: "VIEWER", memberCount: 1 };
+const MEMBERS = [
+  { userId: "u-1", username: "alice", displayName: "Alice", role: "OWNER" },
+  { userId: "u-2", username: "bob", displayName: "Bob", role: "EDITOR" },
+];
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -64,6 +68,9 @@ function defaultHandler(req: CapturedRequest): Response {
   if (url === `${BASE}/workspaces` && method === "GET") return json(200, LIST);
   if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, DETAIL_OWNER);
   if (url === `${BASE}/workspaces/ws-2` && method === "GET") return json(200, DETAIL_VIEWER);
+  // 成员链路（任务 4 真实视图）：ws-1 可管理；ws-2（VIEWER）403 → 成员页弹回列表（裁定 C）
+  if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, MEMBERS);
+  if (url === `${BASE}/workspaces/ws-2/members` && method === "GET") return json(403, { code: "forbidden", message: "仅 ADMIN 可管理成员" });
   return json(404, { code: "not_found", message: "未匹配的测试路由" });
 }
 
@@ -99,7 +106,7 @@ describe("LayoutView 布局壳（裁定 A）", () => {
     expect(wrapper.find("[data-testid=menu-acl]").exists()).toBe(false);
   });
 
-  it("选中 OWNER 工作区 → 成员/ACL 入口可见；点击成员入口 → 占位路由", async () => {
+  it("选中 OWNER 工作区 → 成员/ACL 入口可见；点击成员入口 → 成员视图（真实清单，任务 4）", async () => {
     const { wrapper, router } = await mountLayout();
     await wrapper.find("[data-testid=ws-open]").trigger("click"); // 第一行 ws-1（OWNER）
     await flushPromises();
@@ -109,8 +116,10 @@ describe("LayoutView 布局壳（裁定 A）", () => {
     expect(wrapper.find("[data-testid=menu-acl]").exists()).toBe(true);
     await wrapper.find("[data-testid=menu-members]").trigger("click");
     await flushPromises();
+    await flushPromises();
     expect(router.currentRoute.value.path).toBe("/workspaces/ws-1/members");
     expect(wrapper.find("[data-testid=members-view]").exists()).toBe(true);
+    expect(wrapper.findAll("tbody tr").length).toBeGreaterThanOrEqual(2); // 成员清单已渲染
   });
 
   it("点击 ACL 入口 → /workspaces/{id}/acl 占位", async () => {
@@ -133,16 +142,17 @@ describe("LayoutView 布局壳（裁定 A）", () => {
     expect(wrapper.find("[data-testid=menu-acl]").exists()).toBe(false);
   });
 
-  it("直接 URL 进入成员占位 → 布局按 :id 参数选中工作区（菜单随角色显隐）", async () => {
+  it("直达 URL 进成员页：VIEWER 工作区 403 弹回列表（入口隐藏）→ OWNER 工作区正常进入（入口可见）", async () => {
     const { wrapper, router } = await mountLayout();
-    await router.push("/workspaces/ws-2/members"); // VIEWER 工作区
+    await router.push("/workspaces/ws-2/members"); // VIEWER 工作区：服务端 403 → 弹回列表（裁定 C）
+    await flushPromises();
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe("workspaces");
+    expect(wrapper.find("[data-testid=menu-members]").exists()).toBe(false);
+    await router.push("/workspaces/ws-1/members"); // OWNER 工作区：正常进入
     await flushPromises();
     await flushPromises();
     expect(wrapper.find("[data-testid=members-view]").exists()).toBe(true);
-    expect(wrapper.find("[data-testid=menu-members]").exists()).toBe(false);
-    await router.push("/workspaces/ws-1/members"); // OWNER 工作区
-    await flushPromises();
-    await flushPromises();
     expect(wrapper.find("[data-testid=menu-members]").exists()).toBe(true);
     expect(wrapper.find("[data-testid=menu-acl]").exists()).toBe(true);
   });

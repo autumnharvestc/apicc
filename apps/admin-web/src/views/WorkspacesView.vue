@@ -39,6 +39,7 @@ const createError = ref("");
 function openCreate(): void {
   createName.value = "";
   createError.value = "";
+  props.workspaces.actionError = null; // 弹窗内错误通道复位（任务 3 审查次要 2 顺修）
   createOpen.value = true;
 }
 
@@ -63,6 +64,7 @@ const deleteName = ref("");
 function openDelete(record: AdminWorkspaceSummary): void {
   deleteTarget.value = record;
   deleteName.value = "";
+  props.workspaces.actionError = null; // 弹窗内错误通道复位（任务 3 审查次要 2 顺修）
 }
 
 function cancelDelete(): void {
@@ -134,12 +136,12 @@ async function onDelete(): Promise<void> {
       />
       <div v-if="createError" class="form-error" data-testid="ws-create-error">{{ createError }}</div>
       <a-alert
-        v-if="workspaces.error"
+        v-if="workspaces.actionError"
         class="modal-api-error"
         type="error"
         show-icon
         :message="t('ws.error')"
-        :description="workspaces.error"
+        :description="workspaces.actionError"
         data-testid="ws-create-api-error"
       />
       <template #footer>
@@ -155,12 +157,12 @@ async function onDelete(): Promise<void> {
       <p class="delete-hint">{{ t("ws.deleteHint", { name: deleteTarget.name }) }}</p>
       <a-input v-model:value="deleteName" data-testid="ws-delete-name" :placeholder="t('ws.deleteNamePlaceholder')" />
       <a-alert
-        v-if="workspaces.error"
+        v-if="workspaces.actionError"
         class="modal-api-error"
         type="error"
         show-icon
         :message="t('ws.error')"
-        :description="workspaces.error"
+        :description="workspaces.actionError"
         data-testid="ws-delete-api-error"
       />
       <template #footer>

@@ -27,6 +27,24 @@
     "members": "Members",
     "acl": "Project ACL"
   },
+  "members": {
+    "title": "Members",
+    "colDisplayName": "Display name",
+    "colUsername": "Username",
+    "colRole": "Role",
+    "colActions": "Actions",
+    "add": "Add member",
+    "userIdPlaceholder": "Enter a user ID (userId)",
+    "addSubmit": "Add",
+    "userIdRequired": "User ID is required",
+    "remove": "Remove",
+    "removeTitle": "Remove this member?",
+    "removeOk": "Remove",
+    "transferTitle": "Transfer ownership (irreversible)",
+    "transferHint": "Making {user} the OWNER will demote you to ADMIN. This cannot be undone. Type \"{name}\" to confirm.",
+    "transferConfirm": "Transfer ownership",
+    "error": "Request failed"
+  },
   "ws": {
     "listTitle": "Workspaces",
     "colName": "Name",
