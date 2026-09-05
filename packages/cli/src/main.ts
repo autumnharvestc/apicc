@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ShardOutcomeSchema,
+  createAiProvider,
+  type AiProviderConfig,
+  type ApiDefinition,
+  type Collection,
   type PluginRegistry,
+  type Project,
   type ProtocolClient,
   type ShardFailure,
   type ShardOutcome,
@@ -14,6 +20,7 @@ import {
   type StressRunner,
   type StressSample,
   type StressWorkerSpecBase,
+  type Workspace,
 } from "@apicc/core";
 
 /** 路径分隔符归一为 "/"，使集合目录匹配与用户输入的正/反斜杠形态无关（Windows 兼容）。 */
@@ -32,6 +39,80 @@ export function findWorkspaceRoot(start: string): string | null {
   }
 }
 
+/**
+ * AI 配置解析（M6 D2，裁定⑤）：env 三件套 APICC_AI_BASE_URL/API_KEY/MODEL 齐全时优先，
+ * 否则回落用户级 ~/.apicc/ai.json（{"baseUrl","apiKey","model"}）；两者皆缺 → 可读错误指引两种方式。
+ * core 只认显式传入的 config；密钥只进 config，永不进日志（裁定⑦，测试断言）。
+ */
+export function resolveAiConfig(input: { env?: Record<string, string | undefined>; homeDir?: string }): AiProviderConfig {
+  const env = input.env ?? process.env;
+  const baseUrl = env.APICC_AI_BASE_URL;
+  const apiKey = env.APICC_AI_API_KEY;
+  const model = env.APICC_AI_MODEL;
+  if (baseUrl && apiKey && model) return { baseUrl, apiKey, model };
+
+  const file = join(input.homeDir ?? homedir(), ".apicc", "ai.json");
+  if (existsSync(file)) {
+    let raw: { baseUrl?: unknown; apiKey?: unknown; model?: unknown };
+    try {
+      raw = JSON.parse(readFileSync(file, "utf8")) as { baseUrl?: unknown; apiKey?: unknown; model?: unknown };
+    } catch {
+      throw new Error(`AI 配置文件不是合法 JSON: ${file}`);
+    }
+    if (typeof raw.baseUrl === "string" && raw.baseUrl && typeof raw.apiKey === "string" && raw.apiKey
+      && typeof raw.model === "string" && raw.model) {
+      return { baseUrl: raw.baseUrl, apiKey: raw.apiKey, model: raw.model };
+    }
+    throw new Error(`AI 配置文件不完整: ${file}（须含 baseUrl/apiKey/model 字符串字段）`);
+  }
+  if (baseUrl || apiKey || model) {
+    throw new Error("AI 配置不完整：env 三件套须同时设置 APICC_AI_BASE_URL、APICC_AI_API_KEY、APICC_AI_MODEL");
+  }
+  throw new Error(
+    "未找到 AI 配置：可设置环境变量 APICC_AI_BASE_URL、APICC_AI_API_KEY、APICC_AI_MODEL，"
+    + '或在 ~/.apicc/ai.json 写入 {"baseUrl":"...","apiKey":"...","model":"..."}',
+  );
+}
+
+/**
+ * 工作区接口定位（run-stress/stress-worker/ai suggest-cases 共享，不复制）：全树目录
+ * （含 folders 内接口）按「全等或分隔符边界后缀」匹配，首个命中即止；design.md 存在时
+ * 读入 api.design（与 export-design 同口径——api.yaml 不含设计正文，规格 §6/§8）。
+ */
+async function locateApiTarget(
+  registry: PluginRegistry,
+  root: string,
+  apiPath: string,
+): Promise<{ api: ApiDefinition; dir: string; project: Project; collection: Collection; workspace: Workspace }> {
+  const storage = registry.getStorage();
+  if (!storage) throw new Error("未注册存储适配器");
+  const { workspace } = await storage.load(root);
+  let hit: { api: ApiDefinition; dir: string; project: Project; collection: Collection } | undefined;
+  const target = toSlash(apiPath);
+  search:
+  for (const g of workspace.groups) {
+    for (const p of g.projects) {
+      for (const c of p.collections) {
+        const cDir = join(root, "groups", g.name, "projects", p.name, "collections", c.name);
+        const candidates = [
+          ...c.apis.map((a) => ({ api: a, dir: join(cDir, "apis", a.name) })),
+          ...c.folders.flatMap((f) => f.apis.map((a) => ({ api: a, dir: join(cDir, "folders", f.name, "apis", a.name) }))),
+        ];
+        for (const cand of candidates) {
+          const normalized = toSlash(cand.dir);
+          if (normalized === target || normalized.endsWith(`/${target}`)) {
+            hit = { ...cand, project: p, collection: c };
+            break search;
+          }
+        }
+      }
+    }
+  }
+  if (!hit) throw new Error(`未找到接口: ${apiPath}`);
+  if (existsSync(join(hit.dir, "design.md"))) hit.api.design = readFileSync(join(hit.dir, "design.md"), "utf8");
+  return { ...hit, workspace };
+}
+
 /** runCli 可注入依赖：worker 协议/日志通道与默认 SpawnWorker 工厂（测试注入替身即可进程内闭环）。 */
 export interface RunCliDeps {
   /** stress-worker 协议行输出通道（默认真实 stdout——协调器按行解析的契约通道，裁定 B）。 */
@@ -40,6 +121,10 @@ export interface RunCliDeps {
   workerErr?: (line: string) => void;
   /** 默认 SpawnWorker 工厂（默认本地子进程实现；入参为 shard 超时毫秒，与协调器同值）。 */
   spawnWorkerFactory?: (shardTimeoutMs: number) => SpawnWorker;
+  /** AI 配置解析注入：env 快照（裁定⑤；缺省 process.env，测试显式注入保证确定性）。 */
+  aiEnv?: Record<string, string | undefined>;
+  /** AI 配置解析注入：用户级配置根目录（裁定⑤；缺省 os.homedir()，测试指向临时目录）。 */
+  aiHomeDir?: string;
 }
 
 /** CLI 入口绝对路径（dist/bin.js）：由本模块编译产物位置推导，子进程 worker 与父进程同一份安装。 */
@@ -148,36 +233,8 @@ async function resolveStressTarget(
   caseId: string,
   envName: string | undefined,
 ): Promise<{ apiId: string; defaultClient: ProtocolClient; createRunner: (client?: ProtocolClient) => StressRunner }> {
-  const storage = registry.getStorage();
-  if (!storage) throw new Error("未注册存储适配器");
-  const { workspace } = await storage.load(root);
-  // 全树定位接口（含 folders 内接口）：目录形态 groups/g/projects/p/collections/c[/folders/f]/apis/<名>；
-  // 匹配口径与 run 同款：全等或分隔符边界后缀（避免 "ok" 误命中 "xok"），首个命中即止。
-  let api: import("@apicc/core").ApiDefinition | undefined;
-  let project: import("@apicc/core").Project | undefined;
-  let collection: import("@apicc/core").Collection | undefined;
-  const target = toSlash(apiPath);
-  search:
-  for (const g of workspace.groups) {
-    for (const p of g.projects) {
-      for (const c of p.collections) {
-        const cDir = join(root, "groups", g.name, "projects", p.name, "collections", c.name);
-        const candidates = [
-          ...c.apis.map((a) => ({ api: a, dir: join(cDir, "apis", a.name) })),
-          ...c.folders.flatMap((f) => f.apis.map((a) => ({ api: a, dir: join(cDir, "folders", f.name, "apis", a.name) }))),
-        ];
-        for (const cand of candidates) {
-          const normalized = toSlash(cand.dir);
-          if (normalized === target || normalized.endsWith(`/${target}`)) {
-            api = cand.api; project = p; collection = c;
-            break search;
-          }
-        }
-      }
-    }
-  }
-  if (!api || !project || !collection) throw new Error(`未找到接口: ${apiPath}`);
-  const stressedApi = api; // const 别名：供工厂闭包捕获（let 的收窄不跨闭包生效）。
+  // 定位/env/resolver 与 ai suggest-cases 共享 helper（不复制）。
+  const { api: stressedApi, project, collection, workspace } = await locateApiTarget(registry, root, apiPath);
   // 用例门：压测请求构造只依赖接口定义（case 参数/断言不参与采样），但目标用例必须存在。
   if (!stressedApi.cases.some((tc) => tc.id === caseId)) throw new Error(`未找到用例: ${caseId}`);
   // env 解析：未指定则不启用环境；指定但未命中显式报错（与 run-workflow 同款）。
@@ -540,6 +597,35 @@ export async function runCli(
           resolve();
         };
       });
+  // AI 用例建议（M6-A D8）：基于接口定义经用户自备的 OpenAI 兼容端点生成候选用例，
+  // YAML 输出供人工审阅后并入——绝不自动写回接口（D2 人审采用硬边界）；密钥只进 config 不进日志。
+  const ai = program.command("ai").description("AI 能力命令组");
+  ai
+    .command("suggest-cases")
+    .argument("<apiPath>", "接口目录（相对工作区根）")
+    .option("--instruction <text>", "用户补充指令（如「补充边界用例」）")
+    .option("--limit <n>", "候选用例条数上限", Number)
+    .option("--out <file>", "候选用例 YAML 输出文件（缺省打印 stdout）")
+    .action(async (apiPath: string, opts: { instruction?: string; limit?: number; out?: string }) => {
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+      // 裁定⑥：--limit 传给 core 前 clamp（正整数门，可读报错）。
+      if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) {
+        throw new Error(`limit 必须为正整数，收到 ${opts.limit}`);
+      }
+      const { api } = await locateApiTarget(registry, root, apiPath);
+      const provider = createAiProvider(resolveAiConfig({ env: deps.aiEnv, homeDir: deps.aiHomeDir }));
+      const { suggestCases } = await import("@apicc/core");
+      const cases = await suggestCases(api, { provider, instruction: opts.instruction, limit: opts.limit });
+      const { stringify: stringifyYaml } = await import("yaml");
+      const yamlText = stringifyYaml({ cases });
+      if (opts.out) {
+        writeFileSync(opts.out, yamlText);
+        log(`已生成 ${cases.length} 条 AI 候选用例（未写入接口，供人工审阅采用）→ ${opts.out}`);
+      } else {
+        log(`已生成 ${cases.length} 条 AI 候选用例（未写入接口，供人工审阅采用）：`);
+        log(yamlText);
+      }
     });
 
   // 非交互导入（任务 7）：默认只预览，--yes 确认写入；分组不存在则创建，同名项目拒绝。

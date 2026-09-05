@@ -31,6 +31,16 @@ export {
   type StressWorkerSpec, type StressWorkerSpecBase, type ShardResult, type ShardFailure,
   type ShardOutcome, type SpawnWorker, type ShardPlan, type DistributedRunOptions, type CoordinatorRunResult,
 } from "./stress/distributed.js";
+export {
+  createAiProvider, AiProviderError, type AiProviderDeps, type AiProviderErrorKind,
+} from "./ai/provider.js";
+export { suggestCases, AiSuggestError } from "./ai/suggest.js";
+export { AI_SUGGEST_SYSTEM_PROMPT, buildSuggestMessages } from "./ai/prompt.js";
+export {
+  DEFAULT_AI_TIMEOUT_MS, DEFAULT_SUGGEST_LIMIT, AiCaseDraftSchema, AiSuggestOutputSchema,
+  type AiProviderConfig, type AiChatMessage, type AiProvider, type AiCaseDraft, type AiSuggestedCase,
+  type AiSuggestResult, type AiSuggestOptions,
+} from "./ai/types.js";
 
 import { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
 import { fileStorage } from "./storage/fileStorage.js";
