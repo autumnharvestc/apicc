@@ -1,4 +1,4 @@
-import type { ApiDefinition, Environment, Project, RunResult, CaseOutcome } from "@apicc/core";
+import type { ApiDefinition, Environment, PluginRegistry, Project, RunResult, CaseOutcome } from "@apicc/core";
 import { CollectionRunner, createDefaultRegistry, createEventBus } from "@apicc/core";
 import { join } from "node:path";
 import type { createSession } from "./session.js";
@@ -6,7 +6,8 @@ import type { ResponseSnapshot } from "../shared/types.js";
 
 type Session = ReturnType<typeof createSession>;
 
-const registry = createDefaultRegistry();
+/** 默认运行注册中心（内置；M7-B 任务 2 起运行频道由 ipc 层注入插件扩展 registry 覆盖）。 */
+const defaultRegistry = createDefaultRegistry();
 const timeouts = { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 };
 
 export interface DebugResult { run: RunResult; outcome: CaseOutcome; response?: ResponseSnapshot }
@@ -19,10 +20,13 @@ export function workspaceRunsDir(root: string): string {
 /**
  * 集合运行（任务 6）：完整集合走 CollectionRunner（前置/后置脚本、断言、数据驱动、
  * 环境继承语义与 CLI 一致），结果经 opts.runsDir 固定落盘 .apicc/runs 供历史读回。
+ * registry 可注入（M7-B 任务 2）：ipc 层传插件运行时 registry（内置 + 插件贡献），
+ * 缺省内置注册中心（既有测试零扰动）。
  */
 export async function runCollection(
   session: Session,
   input: { collectionId: string; envName?: string },
+  registry: PluginRegistry = defaultRegistry,
 ): Promise<RunResult> {
   const loc = session.locateCollection(input.collectionId);
   if (!loc) throw new Error(`未找到集合: ${input.collectionId}`);
@@ -45,10 +49,12 @@ export function resolveEnv(project: Project, envName: string | undefined): Envir
   return env;
 }
 
-/** 调试 = 用合成单接口集合走完整 Runner 语义（前置/后置脚本、断言、变量解析一致，规格 §7.1）。 */
+/** 调试 = 用合成单接口集合走完整 Runner 语义（前置/后置脚本、断言、变量解析一致，规格 §7.1）。
+ *  registry 可注入（M7-B 任务 2）：ipc 层传插件运行时 registry，缺省内置（既有测试零扰动）。 */
 export async function sendDebug(
   session: Session,
   input: { apiId: string; caseId: string; envName?: string },
+  registry: PluginRegistry = defaultRegistry,
 ): Promise<DebugResult> {
   const loc = session.locateApi(input.apiId);
   if (!loc) throw new Error(`未找到接口: ${input.apiId}`);

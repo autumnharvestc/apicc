@@ -52,6 +52,7 @@ import { createOnlineStore } from "./stores/online.js";
 import { createAiStore } from "./stores/ai.js";
 import { createPluginsStore } from "./stores/plugins.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
+import { isViewDisabled, SWITCH_VIEWS, type SwitchView } from "./viewSwitch.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
 
@@ -101,13 +102,12 @@ onMounted(() => {
 });
 
 // —— 视图切换（任务 8 收官装配）——
-// 侧栏顶部 a-radio-group；工作区级视图（除 plugins 外全部）在未打开工作区或在线工作区
-// 激活时禁用（在线模式只提供浏览/编辑面板，不提供调试/运行/压测等本地视图，裁定 B/E）。
-// 插件视图例外（M7-B 任务 1，裁定①）：管理类视图定位（成员/ACL 同区），不依赖工作区，
-// 未打开工作区也可查看；在线模式仍禁用（内容区让位在线编辑链路，OnlineApiEditor 优先）。
-type View = "debug" | "cases" | "envs" | "run" | "import" | "design" | "wf" | "stress" | "plugins";
-const VIEWS: View[] = ["debug", "cases", "envs", "run", "import", "design", "wf", "stress", "plugins"];
-const view = ref<View>("debug");
+// 侧栏顶部 a-radio-group；禁用语义（M7-B 任务 2 折入项）抽至 viewSwitch.isViewDisabled
+// 单测钉住：在线工作区激活 → 全部禁用（含 plugins，内容区让位在线编辑链路）；plugins
+// （管理类视图，裁定①）不依赖工作区恒可用；其余工作区级视图未打开工作区禁用；压测
+// （接口级视图，裁定 A）未选中接口禁用。
+const VIEWS: SwitchView[] = SWITCH_VIEWS;
+const view = ref<SwitchView>("debug");
 
 // —— 压测会话随接口切换清空（M2-D3 任务 3，裁定 A）——
 // 旧接口的压测报告不能带到新接口：editor.apiId 变化（含首次 null→id，此时本就是空会话）
@@ -324,15 +324,14 @@ watch(
             size="small"
             data-testid="view-switch"
           >
-            <!-- 禁用移到按钮级（M7-B 任务 1）：工作区级视图沿用整组禁用条件；plugins
-                 （管理类视图）不依赖工作区恒可用；压测项（M2-D3 任务 3，裁定 A）接口级
-                 视图，未选中接口时禁用（cases/envs 口径） -->
+            <!-- 禁用语义（M7-B 任务 2 折入项）经 isViewDisabled 单测钉住：在线模式全部
+                 禁用（含 plugins）；plugins 管理类视图不依赖工作区恒可用；压测接口级门控 -->
             <a-radio-button
               v-for="v in VIEWS"
               :key="v"
               :value="v"
               :data-testid="`view-${v}`"
-              :disabled="(v !== 'plugins' && (!workspace.opened || !!online.activeWorkspace)) || (v === 'stress' && !editor.apiId)"
+              :disabled="isViewDisabled(v, { workspaceOpened: workspace.opened, onlineActive: !!online.activeWorkspace, apiSelected: !!editor.apiId })"
             >
               {{ t(`nav.${v}`) }}
             </a-radio-button>

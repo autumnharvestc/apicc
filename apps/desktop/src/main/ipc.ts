@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { ApiDefinitionSchema, createDefaultRegistry, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, type Importer, type RunResult, type WorkflowRunResult, type Workspace } from "@apicc/core";
+import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Workspace } from "@apicc/core";
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
@@ -25,7 +25,7 @@ import { toTreeNode, type TreeNodeDTO } from "./tree.js";
 import type { AiKeyStore } from "./ai/config.js";
 import { runAiSuggest, runAiTestConfig, type AiRuntimeDeps } from "./ai/suggest.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput } from "../shared/ai/contract.js";
-import { createPluginsListFixture } from "./plugins/fixture.js";
+import { createPluginsRuntime, type PluginsRuntime, type PluginsRuntimeOptions } from "./plugins/runtime.js";
 import type { PluginsListResult } from "../shared/plugins/contract.js";
 
 type Session = ReturnType<typeof createSession>;
@@ -197,15 +197,13 @@ function validateArgs<T>(channel: IpcChannelName, schema: z.ZodType<T>, input: u
   return result.data;
 }
 
-/** wf:run 的接口解析注册中心：与 debug.ts 的集合/调试运行同一默认注册中心（脚本引擎、报告器）。 */
-const wfRegistry = createDefaultRegistry();
-
 /**
  * 工作流运行（M2-B 任务 1，仿 CLI run-workflow）：draft 直接拒绝（UI 对 draft 禁用运行
  * 按钮，此为护栏）；envName 传给 WorkflowRunner 按名解析（未命中抛「未找到环境: xxx」）；
  * 结果固定落盘 .apicc/runs/workflow-<id>-<ts>.json（生成物隔离，规格 §6/§8）。
+ * registry 由调用方注入插件运行时的 registry（M7-B 任务 2：插件贡献在运行频道可选）。
  */
-async function runWorkflow(session: Session, input: WfRunInput): Promise<WorkflowRunResult> {
+async function runWorkflow(session: Session, input: WfRunInput, registry: PluginRegistry): Promise<WorkflowRunResult> {
   const loc = session.locateWorkflow(input.workflowId);
   if (!loc) throw new Error(`未找到工作流: ${input.workflowId}`);
   if (loc.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
@@ -220,7 +218,7 @@ async function runWorkflow(session: Session, input: WfRunInput): Promise<Workflo
     }
     return undefined;
   };
-  const runner = new WorkflowRunner({ registry: wfRegistry, resolve: findApi, envName: input.envName ?? undefined, failFast: false });
+  const runner = new WorkflowRunner({ registry, resolve: findApi, envName: input.envName ?? undefined, failFast: false });
   const result = await runner.run(loc.workflow, { project: loc.project, workspace: ws });
   const runsDir = workspaceRunsDir(session.root!);
   mkdirSync(runsDir, { recursive: true });
@@ -254,11 +252,23 @@ export interface IpcDepsOptions {
   online?: OnlineIpcDeps;
   /** AI 依赖（M6-C 任务 1）：省略时 ai:* 频道抛「AI 功能未配置」可读错误。 */
   ai?: AiIpcDeps;
+  /**
+   * 插件运行时（M7-B 任务 2，规格 §2 D4/D8）：homeDir + loadPlugins 注入面（与 CLI
+   * deps.pluginsHomeDir / deps.loadPlugins 对齐口径）。**省略 = 零加载零扰动**（既有桌面
+   * 测试不读真实 HOME）；生产由 main.ts 显式传入启用（main 进程建 registry 时装载用户级
+   * 清单）。运行频道（debug/集合/工作流）与 plugins:list、import:preview 探测共用其 registry。
+   */
+  plugins?: PluginsRuntimeOptions;
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory, saveFile } = options;
-  const importers = options.importers ?? createDefaultRegistry().listImporters();
+  // 插件运行时（M7-B 任务 2）：未配置 = loadPlugins:false（零加载零扰动）；summary/registry
+  // memoized 装载，运行频道与 plugins:list、导入探测共用同一 registry。
+  const pluginsRuntime = createPluginsRuntime(options.plugins ?? { loadPlugins: false });
+  // 导入探测（任务 7）：显式注入优先（既有测试替身）；未注入时改走插件运行时 registry
+  // （内置 + 插件贡献导入器参与探测，T1 去留口径的 T2 落地——组合期固定内置清单的硬编码消除）。
+  const injectedImporters = options.importers;
   // 在线会话（M3-B 任务 1）：login→存 token→请求自动带头的串联体（见 online/session.ts）。
   const online: OnlineSession | null = options.online
     ? createOnlineSession({ createClient: options.online.createClient, tokenStore: options.online.tokenStore })
@@ -407,13 +417,14 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return undefined;
       }
       case IpcChannel.DebugSend: {
-        const result = await sendDebug(session, a[0] as DebugInput);
+        const result = await sendDebug(session, a[0] as DebugInput, await pluginsRuntime.registry());
         return result satisfies DebugOutput;
       }
       // 运行频道（任务 6）：run:collection 走完整 Runner 并固定落盘 .apicc/runs；
       // runs:list/get 读历史（目录不存在/文件损坏已在 runs.ts 侧降级为 []/null）。
+      // registry 注入插件运行时（M7-B 任务 2）：插件协议/认证/断言/脚本在运行频道可选。
       case IpcChannel.RunCollection: {
-        const run = await runCollection(session, a[0] as RunCollectionInput);
+        const run = await runCollection(session, a[0] as RunCollectionInput, await pluginsRuntime.registry());
         return run satisfies RunResult;
       }
       case IpcChannel.RunsList: {
@@ -426,8 +437,11 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       // 导入频道（任务 7）：preview 逐个 detect，命中即 parse（产物 id 均为新 UUID）；
       // apply 委派 session.importProject（缺分组建组、同分组重名拒绝），其内部显式落盘。
+      // 探测清单（M7-B 任务 2）：显式注入优先（测试替身），否则插件运行时 registry
+      // （内置 + 插件贡献导入器参与探测——T1 去留口径的 T2 落地）。
       case IpcChannel.ImportPreview: {
         const input = a[0] as ImportPreviewInput;
+        const importers = injectedImporters ?? (await pluginsRuntime.registry()).listImporters();
         const importer = importers.find((i) => i.detect(input.fileName, input.content));
         if (!importer) throw new Error("无法识别的导入格式");
         const { project, warnings } = importer.parse(input.content);
@@ -498,7 +512,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return workflowImpact(ws, { caseId: input.caseId, apiId: input.apiId });
       }
       case IpcChannel.WfRun: {
-        return runWorkflow(session, a[0] as WfRunInput);
+        return runWorkflow(session, a[0] as WfRunInput, await pluginsRuntime.registry());
       }
       // 压测频道（M2-D3 任务 1）：run 返回最终报告 + 落盘文件名；stop 返回中止后的
       // 部分报告（abort 语义见 stress.ts）。返回前报告已深拷贝（DataCloneError 防御）。
@@ -581,15 +595,16 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.AiTestConfig:
         return runAiTestConfig(requireAi(), a[0] as AiTestConfigInput);
-      // 插件频道（M7-B 任务 1 fixture 桩，规格 §2 D3/D5）：返回混合 loaded/failed 清单 +
-      // registry 导入器枚举。出口经 structuredClone 快照化（与压测报告同口径的 DataCloneError
-      // 防御 + 桩数据不可被渲染层改动污染）。任务 2 同步 main 后切 core 加载器真实现。
+      // 插件频道（M7-B 任务 2 真实现，规格 §2 D3/D5/D8）：main 经 core loadUserPlugins
+      // 装载用户级清单（homeDir 注入 / loadPlugins:false 关闭通道），返回混合 loaded/failed
+      // 清单 + registry 导入器枚举。出口经 structuredClone 快照化（DataCloneError 防御 +
+      // memoized 状态不被渲染层改动污染）。
       case IpcChannel.PluginsList:
-        return structuredClone(createPluginsListFixture()) satisfies PluginsListResult;
+        return structuredClone(await pluginsRuntime.summary()) satisfies PluginsListResult;
       default:
         throw new Error(`未知频道: ${channel}`);
     }
   }
 
-  return { handle };
+  return { handle, pluginsRuntime };
 }
