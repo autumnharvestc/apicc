@@ -1,9 +1,12 @@
-import type { Protocol } from "../domain/model.js";
+import { ProtocolSchema, type Protocol } from "../domain/model.js";
 import type { PluginRegistry } from "../plugin/registry.js";
 import type { ExecutableRequest, ProtocolClient } from "../plugin/types.js";
 
-/** 已纳入的协议值（M5：http/websocket/soap；gRPC/MQTT 推迟，进枚举即 fail-fast）。 */
-export const KNOWN_PROTOCOLS = ["http", "websocket", "soap"] as const satisfies readonly Protocol[];
+/**
+ * 已纳入的协议值（M5：http/websocket/soap；gRPC/MQTT 推迟，进枚举即 fail-fast）。
+ * 由 ProtocolSchema 派生：枚举扩值时 fail-fast 集合自动跟随，杜绝两处漂移。
+ */
+export const KNOWN_PROTOCOLS = ProtocolSchema.options;
 
 /**
  * 请求的有效协议（D5）：未携带 protocol 字段的旧形状请求视为 http——

@@ -61,7 +61,9 @@ export const wsClient: ProtocolClient = {
         settled = true;
         clearTimeout(timer);
         if (ws.readyState === WebSocket.CONNECTING) {
-          ws.removeAllListeners();
+          // 不可 removeAllListeners：terminate 在 CONNECTING 态经 abortHandshake 异步补发 'error'
+          // （"WebSocket was closed before the connection was established"），无人监听 → Node
+          // 未处理错误 → 宿主进程退出。settled 守卫保证补发的 error/close 重入 fail 均为 no-op。
           ws.terminate();
         } else if (ws.readyState === WebSocket.OPEN) {
           const grace = setTimeout(() => ws.terminate(), 500);

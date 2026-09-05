@@ -1,3 +1,5 @@
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import { createServer as createNetServer, type Server as NetServer, type Socket as NetSocket } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { wsClient } from "../../src/protocol/websocket.js";
@@ -5,24 +7,28 @@ import type { ExecutableRequest } from "../../src/plugin/types.js";
 
 /**
  * 本地 ws server 夹具（风格对照 tests/http/client.test.ts 的 http server 夹具）：
- * behavior 控制连接后动作（回显/发二进制再发文本/沉默/即断），
- * connections 记录服务端视角的收帧与关闭事件。
+ * behavior 控制连接后动作（回显/发二进制再发文本/即断），
+ * connections 记录服务端视角的收帧与关闭事件；
+ * 另设两个裸 server：404 拒绝 upgrade 的 http server 与不响应 upgrade 的 TCP server。
  */
 const behavior = {
   echo: false as boolean,
   binaryThenText: false as boolean,
-  silent: false as boolean,
   closeImmediately: false as boolean,
 };
 const received: Array<{ socket: WsSocket; text: string }> = [];
 const closed: Array<{ code: number }> = [];
 let wss: WebSocketServer;
 let wsUrl = "";
+let reject404: HttpServer;
+let reject404Url = "";
+let hangingTcp: NetServer;
+let hangingTcpUrl = "";
+const trackedSockets = new Set<NetSocket>();
 
 function resetFixture() {
   behavior.echo = false;
   behavior.binaryThenText = false;
-  behavior.silent = false;
   behavior.closeImmediately = false;
   received.length = 0;
   closed.length = 0;
@@ -47,10 +53,30 @@ beforeAll(async () => {
   await new Promise<void>((r) => wss.once("listening", r));
   const addr = wss.address() as { address: string; port: number };
   wsUrl = `ws://${addr.address}:${addr.port}`;
+
+  // upgrade 一律回 404 的裸 http server：握手拒绝（非 101）路径夹具。
+  reject404 = createHttpServer((_req, res) => res.writeHead(404).end());
+  reject404.on("upgrade", (_req, socket) => {
+    socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+  });
+  await new Promise<void>((r) => reject404.listen(0, "127.0.0.1", r));
+  const httpAddr = reject404.address() as { address: string; port: number };
+  reject404Url = `ws://${httpAddr.address}:${httpAddr.port}/gone`;
+
+  // 接受 TCP 连接但不响应 upgrade 的裸 server：拖住 CONNECTING 态以覆盖总超时先于建连路径。
+  // 连接套接字显式登记，afterAll 统一销毁——否则半开连接令 server.close() 悬挂。
+  hangingTcp = createNetServer((socket) => {
+    trackedSockets.add(socket);
+    socket.on("close", () => trackedSockets.delete(socket));
+  });
+  await new Promise<void>((r) => hangingTcp.listen(0, "127.0.0.1", r));
+  const netAddr = hangingTcp.address() as { address: string; port: number };
+  hangingTcpUrl = `ws://${netAddr.address}:${netAddr.port}/hang`;
 });
 afterAll(() => new Promise<void>((r) => {
   for (const c of wss.clients) c.terminate(); // 清理沉默夹具留下的半开连接
-  wss.close(() => r());
+  for (const s of trackedSockets) s.destroy();
+  wss.close(() => reject404.close(() => hangingTcp.close(() => r())));
 }));
 
 const opts = { connectTimeoutMs: 2000, totalTimeoutMs: 3000 };
@@ -98,9 +124,31 @@ describe("wsClient（M5 D3 响应映射）", () => {
   });
 
   it("总超时内未收到帧 → 执行错误（错误信息含 websocket），非悬挂", async () => {
-    behavior.silent = true;
     try {
       await wsClient.execute(wsReq({ message: "ping" }), { connectTimeoutMs: 500, totalTimeoutMs: 400 });
+      expect.unreachable("应当抛错");
+    } catch (e) {
+      const err = e as Error & { kind?: string };
+      expect(err.message).toContain("websocket");
+      expect(err.kind).toBe("timeout");
+    }
+  });
+
+  it("服务端 upgrade 回非 101（404）→ 执行错误（handshake），非崩溃非悬挂", async () => {
+    try {
+      await wsClient.execute(wsReq({ url: reject404Url, message: "ping" }), opts);
+      expect.unreachable("应当抛错");
+    } catch (e) {
+      const err = e as Error & { kind?: string };
+      expect(err.message).toContain("websocket");
+      expect(err.message).toContain("404");
+      expect(err.kind).toBe("handshake");
+    }
+  });
+
+  it("总超时先于连接建立（服务端不响应 upgrade）→ 执行错误（timeout），非崩溃非悬挂", async () => {
+    try {
+      await wsClient.execute(wsReq({ url: hangingTcpUrl, message: "ping" }), { connectTimeoutMs: 5000, totalTimeoutMs: 400 });
       expect.unreachable("应当抛错");
     } catch (e) {
       const err = e as Error & { kind?: string };
