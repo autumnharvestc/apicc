@@ -33,7 +33,34 @@ import {
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
-import { AI_FIXTURE_SUGGESTIONS, type AiKeyStatus, type AiSaveConfigInput, type AiSuggestedCase, type AiSuggestInput } from "../../../shared/ai/contract.js";
+import type { AiSuggestedCase } from "@apicc/core";
+import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "../../../shared/ai/contract.js";
+
+/**
+ * 渲染层测试替身的固定建议（M6-C 任务 2）：形状收敛 core AiSuggestedCase（带本地生成的
+ * id——与 main 真链路 suggestCases 产物同构，供采用链路按 id 勾选/沿用）。仅替身使用；
+ * main 真链路走 core suggestCases，不经此数据。
+ */
+export const AI_FIXTURE_SUGGESTIONS: readonly AiSuggestedCase[] = [
+  {
+    id: "ai-fixture-case-1",
+    name: "AI 建议-正常请求 200",
+    scope: "base",
+    parameters: {},
+    assertions: [{ id: "ai-fixture-assert-1", target: "status", op: "eq", expected: "200" }],
+  },
+  {
+    id: "ai-fixture-case-2",
+    name: "AI 建议-非法参数 400",
+    scope: "base",
+    parameters: {},
+    assertions: [
+      { id: "ai-fixture-assert-2", target: "status", op: "eq", expected: "400" },
+      { id: "ai-fixture-assert-3", target: "bodyJson", op: "contains", path: "$.message", expected: "参数" },
+    ],
+    postScript: "console.log(\"AI 建议用例执行完毕\");",
+  },
+];
 import { onlineTreeToDto } from "../../../main/online/session.js";
 import { scanDirFiles, writeFiles } from "../../../main/online/migrate.js";
 import type {
@@ -892,9 +919,10 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       return { written: writeFiles(input.dir, input.files) };
     },
 
-    // —— AI 频道（M6-C 任务 1，与 main IPC 桩同构的替身）——
+    // —— AI 频道（M6-C 任务 2，与 main IPC 面同构的替身）——
     // key 明文不进替身内存（hasKey 布尔位足够，与「出口只含 hasKey」契约一致）；
-    // apiKey 省略/空串 = 保持既有；suggest 未配置抛与 main 桩逐字相同的可读错误。
+    // apiKey 省略/空串 = 保持既有；suggest/test-config 未配置抛与 main 桩逐字相同的可读
+    // 错误；建议形状收敛 core AiSuggestedCase（带 id），不发真实网络。
     async aiSaveConfig(input: AiSaveConfigInput): Promise<AiKeyStatus> {
       aiSaveConfigCalls.push({ ...input });
       if (input.apiKey) aiHasKey = true;
@@ -908,6 +936,11 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     async aiSuggest(_input: AiSuggestInput): Promise<AiSuggestedCase[]> {
       if (!aiHasKey) throw new Error("尚未配置 AI 密钥，请先在 AI 设置中保存配置");
       return AI_FIXTURE_SUGGESTIONS.map((s) => structuredClone(s) as AiSuggestedCase);
+    },
+
+    async aiTestConfig(_input: AiTestConfigInput): Promise<AiTestConfigResult> {
+      if (!aiHasKey) throw new Error("尚未配置 AI 密钥，请先在 AI 设置中保存配置");
+      return { ok: true };
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

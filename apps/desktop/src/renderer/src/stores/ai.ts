@@ -1,6 +1,6 @@
 import { createPinia, defineStore } from "pinia";
+import type { AiSuggestedCase } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
-import type { AiSuggestedCase } from "../../../shared/ai/contract.js";
 import type { useEditorStore } from "./editor.js";
 
 type Editor = ReturnType<typeof useEditorStore>;
@@ -14,9 +14,6 @@ export const AI_CONFIG_STORAGE_KEY = "apicc.ai.config";
 
 /** localStorage 持久化形状：仅非敏感的 baseUrl/model。 */
 export interface PersistedAiConfig { baseUrl: string; model: string }
-
-/** 建议行视图模型：contract 契约 + 本地行键（不信任 AI 侧 id，勾选/列表 :key 用行键）。 */
-export type AiSuggestionRow = AiSuggestedCase & { key: string };
 
 /** 读持久化配置（形状守卫：非 JSON/缺字段/类型不符 → 空白 + warn，不抛——先例同 online 档案）。 */
 export function readPersistedAiConfig(storage: Storage): PersistedAiConfig {
@@ -49,12 +46,13 @@ export function readPersistedAiConfig(storage: Storage): PersistedAiConfig {
  * 状态契约：
  * - 配置：baseUrl/model 入注入 storage（键 apicc.ai.config）；key 经 IPC 入 main 安全存储，
  *   出口只含 hasKey（裁定②）；saveConfig 的 apiKey 留空 = 保持既有。
- * - 连接测试（fixture 阶段）：经 ai:suggest 桩两态——resolve → success、reject → failure +
- *   可读 error（与「未配置」错误同源）。
- * - 建议：fetchSuggestions 成功 → 抽屉打开、默认未勾选；失败 → error 上屏、抽屉不动。
- * - 采用（裁定③）：勾选并入 editor.api.cases 后**不自动保存**——AI 产出永不静默落盘，
- *   dirty 点亮等待用户显式触发既有保存链路（editor.save）；关闭/丢弃零落盘（裁定④的
- *   反向：列表带「AI 生成」来源标注，采用与否都由用户显式决定）。
+ * - 连接测试（任务 2 真探测）：ai:test-config 轻量探测——本地护栏（未保存配置不发 IPC）
+ *   → resolve → success、reject（provider 归一化错误）→ failure + 可读 error。
+ * - 建议（任务 2 真链路出口）：core AiSuggestedCase（带本地 id，勾选/采用按 id）；
+ *   fetchSuggestions 成功 → 抽屉打开、默认未勾选；失败 → error 上屏、抽屉不动。
+ * - 采用（裁定③）：勾选并入 editor.api.cases（沿用 core 本地生成的 id——不信任 AI 生成
+ *   的 id 已由 core 兜住）后**不自动保存**——AI 产出永不静默落盘，dirty 点亮等待用户显式
+ *   触发既有保存链路（editor.save）；关闭/丢弃零落盘。
  */
 export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: Storage }) {
   const api = deps.api;
@@ -77,7 +75,7 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
       testResult: null as null | "success" | "failure",
       // —— 建议（抽屉）——
       drawerOpen: false,
-      suggestions: null as AiSuggestionRow[] | null,
+      suggestions: null as AiSuggestedCase[] | null,
       suggestLoading: false,
       selectedIds: [] as string[],
       /** 共享错误通道（保存/测试/拉取失败文案上屏）。 */
@@ -133,15 +131,21 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
       },
 
       /**
-       * 连接测试（fixture 阶段经 ai:suggest 桩两态）：resolve → success；reject → failure
-       * + 可读 error。任务 2 切真 provider 轻量调用后语义不变（出口仍两态）。
+       * 连接测试（任务 2 真探测）：本地护栏（未保存 baseUrl/model 不发 IPC）→
+       * ai:test-config 轻量探测——resolve → success；reject（provider 归一化错误）→
+       * failure + 可读 error。
        */
       async testConnection(): Promise<void> {
+        if (!this.baseUrl || !this.model) {
+          this.testResult = "failure";
+          this.error = "尚未配置 AI，请先在 AI 设置中保存配置";
+          return;
+        }
         this.testing = true;
         this.error = null;
         this.testResult = null;
         try {
-          await api.aiSuggest({ apiId: editor.apiId ?? "" });
+          await api.aiTestConfig({ baseUrl: this.baseUrl, model: this.model });
           this.testResult = "success";
         } catch (e) {
           this.testResult = "failure";
@@ -151,13 +155,21 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
         }
       },
 
-      /** 拉取 AI 建议并打开抽屉：成功 → 行键本地生成、默认未勾选；失败 → error 上屏、抽屉不动。 */
+      /**
+       * 拉取 AI 建议并打开抽屉（任务 2 真链路出口）：本地护栏（未选接口/未保存配置不发
+       * IPC，apiId 与已保存配置随调用携带，key 留 main）→ 成功 → 抽屉打开、默认未勾选；
+       * 失败 → error 上屏、抽屉不动。
+       */
       async fetchSuggestions(): Promise<void> {
+        if (!editor.apiId || !this.baseUrl || !this.model) {
+          this.error = "尚未配置 AI 或未选择接口，请先保存 AI 配置并选择接口";
+          return;
+        }
         this.suggestLoading = true;
         this.error = null;
         try {
-          const rows = await api.aiSuggest({ apiId: editor.apiId ?? "" });
-          this.suggestions = rows.map((s) => ({ ...s, key: crypto.randomUUID() }));
+          const rows = await api.aiSuggest({ apiId: editor.apiId, baseUrl: this.baseUrl, model: this.model });
+          this.suggestions = rows.map((s) => structuredClone(s));
           this.selectedIds = [];
           this.drawerOpen = true;
         } catch (e) {
@@ -167,16 +179,17 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
         }
       },
 
-      toggleSelect(key: string): void {
-        const index = this.selectedIds.indexOf(key);
+      toggleSelect(id: string): void {
+        const index = this.selectedIds.indexOf(id);
         if (index >= 0) this.selectedIds.splice(index, 1);
-        else this.selectedIds.push(key);
+        else this.selectedIds.push(id);
       },
 
       /**
-       * 采用勾选建议（裁定③）：并入 editor.api.cases（用例与断言 id 本地生成——不信任
-       * AI 生成的 id，规格 §2 D3），清空建议与勾选并关抽屉；**不自动保存**——dirty 点亮，
-       * 落盘由用户显式触发既有保存链路。未加载接口 / 未勾选时为空操作（返回 0）。
+       * 采用勾选建议（裁定③）：并入 editor.api.cases（id 沿用 core 本地生成的 ULID——
+       * 不信任 AI 生成 id 的边界由 core suggestCases 兜住），清空建议与勾选并关抽屉；
+       * **不自动保存**——dirty 点亮，落盘由用户显式触发既有保存链路。未加载接口 /
+       * 未勾选时为空操作（返回 0）。
        */
       adopt(): number {
         const target = editor.api;
@@ -184,13 +197,13 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
         const selected = new Set(this.selectedIds);
         let count = 0;
         for (const row of this.suggestions) {
-          if (!selected.has(row.key)) continue;
+          if (!selected.has(row.id)) continue;
           target.cases.push({
-            id: crypto.randomUUID(),
+            id: row.id,
             name: row.name,
             scope: row.scope,
             parameters: { ...row.parameters },
-            assertions: row.assertions.map((a) => ({ ...a, id: crypto.randomUUID() })),
+            assertions: row.assertions.map((a) => ({ ...a })),
             ...(row.postScript !== undefined ? { postScript: row.postScript } : {}),
           });
           count += 1;

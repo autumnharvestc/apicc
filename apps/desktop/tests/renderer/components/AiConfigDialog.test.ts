@@ -144,7 +144,7 @@ describe("AiConfigDialog", () => {
     await expectBody("ai-config-test").trigger("click");
     await flushPromises();
     expect(ai.testResult).toBe("failure");
-    expect(expectBody("ai-test-fail").text()).toContain("尚未配置 AI 密钥");
+    expect(expectBody("ai-test-fail").text()).toContain("尚未配置 AI");
     expect(bodyHas("ai-test-ok")).toBe(false);
 
     await expectBody("ai-config-baseurl").setValue("https://a");

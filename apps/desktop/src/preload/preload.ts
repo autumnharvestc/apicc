@@ -54,10 +54,11 @@ const api = {
   onlineTreeView: (workspaceId: string) => ipcRenderer.invoke(IpcChannel.OnlineTreeView, { workspaceId }),
   onlineMigrateScan: (dir: string) => ipcRenderer.invoke(IpcChannel.OnlineMigrateScan, { dir }),
   onlineMigrateWrite: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineMigrateWrite, input),
-  // AI 频道（M6-C 任务 1）：单参频道包对象，主进程按 AI 契约 schema 校验
+  // AI 频道（M6-C 任务 1 登记 / 任务 2 真链路）：单参频道包对象，主进程按 AI 契约 schema 校验
   aiSaveConfig: (input: unknown) => ipcRenderer.invoke(IpcChannel.AiSaveConfig, input),
   aiGetConfig: () => ipcRenderer.invoke(IpcChannel.AiGetConfig),
   aiSuggest: (input: unknown) => ipcRenderer.invoke(IpcChannel.AiSuggest, input),
+  aiTestConfig: (input: unknown) => ipcRenderer.invoke(IpcChannel.AiTestConfig, input),
 };
 
 contextBridge.exposeInMainWorld("apicc", api);

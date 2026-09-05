@@ -51,11 +51,11 @@ export const IpcChannel = {
   OnlineFilePut: "online:files:put",
   OnlineFilesBatch: "online:files:batch",
   OnlineFileDelete: "online:files:delete",
-  // AI 频道（M6-C 任务 1，规格 §2 D2/D4）：配置持久化与建议获取单点登记。
-  // ai:suggest 在任务 1（fixture 阶段）为桩——已存密钥返回固定建议、未配置抛可读错误；
-  // 任务 2 同步 main 后切真 provider 调用。
+  // AI 频道（M6-C 任务 1 登记 / 任务 2 真链路）：配置持久化、建议获取（core provider
+  // + suggestCases）、连接轻量探测（任务 2 新增，替代「借道 suggest 两态」）单点登记。
   AiSaveConfig: "ai:save-config",
   AiGetConfig: "ai:get-config",
   AiSuggest: "ai:suggest",
+  AiTestConfig: "ai:test-config",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];

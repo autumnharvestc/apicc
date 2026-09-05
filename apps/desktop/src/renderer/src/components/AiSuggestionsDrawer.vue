@@ -4,12 +4,12 @@ import { Button as AButton, Checkbox as ACheckbox, Drawer as ADrawer, Tag as ATa
 import type { createAiStore } from "../stores/ai.js";
 
 /**
- * AI 建议抽屉（M6-C 任务 1，规格 §2 D4，纯展示组件）：props 只收 open 语义的 ai store
- * 实例（App 组合根装配，组件内零工厂调用）；建议列表为只读预览——name/scope/断言数/
- * 后置脚本有无，并恒带「AI 生成」来源标注（裁定④）。勾选写回 store.selectedIds；
- * 「采用」调 store.adopt()（并入 editor.api.cases，不自动保存——裁定③）；关闭经
- * @close 调 dismissSuggestions 丢弃（零落盘）。
- * 行键用 store 生成的本地 key（不信任 AI 侧 id）；组件零 i18n 内联中文。
+ * AI 建议抽屉（M6-C 任务 1 组件 / 任务 2 真链路产物，规格 §2 D4，纯展示组件）：props 只收
+ * ai store 实例（App 组合根装配，组件内零工厂调用）；建议列表为只读预览——name/scope/
+ * 断言数/后置脚本有无，并恒带「AI 生成」来源标注（裁定④）。勾选写回 store.selectedIds
+ * （按 core AiSuggestedCase 本地生成的 id）；「采用」调 store.adopt()（并入
+ * editor.api.cases，不自动保存——裁定③）；关闭经 @close 调 dismissSuggestions 丢弃（零落盘）。
+ * 组件零 i18n 内联中文。
  */
 const props = defineProps<{ ai: ReturnType<typeof createAiStore> }>();
 const { t } = useI18n();
@@ -36,14 +36,14 @@ function hasPostScript(index: number): boolean {
     <div v-else class="list">
       <div
         v-for="(row, index) in ai.suggestions"
-        :key="row.key"
+        :key="row.id"
         class="row"
         data-testid="ai-suggest-item"
       >
         <a-checkbox
-          :checked="ai.selectedIds.includes(row.key)"
+          :checked="ai.selectedIds.includes(row.id)"
           data-testid="ai-suggest-check"
-          @update:checked="() => ai.toggleSelect(row.key)"
+          @update:checked="() => ai.toggleSelect(row.id)"
         />
         <div class="row-main">
           <span class="row-name" data-testid="ai-suggest-name">{{ row.name }}</span>

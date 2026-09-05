@@ -8,11 +8,10 @@
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
-import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
+import { createMemoryApi, AI_FIXTURE_SUGGESTIONS } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { createAiStore } from "../../../src/renderer/src/stores/ai.js";
-import { AI_FIXTURE_SUGGESTIONS } from "../../../src/shared/ai/contract.js";
 import AiSuggestionsDrawer from "../../../src/renderer/src/components/AiSuggestionsDrawer.vue";
 
 beforeAll(() => {
@@ -81,7 +80,8 @@ async function mountDrawer({ suggestions = false, open = true }: { suggestions?:
   await editor.load(apiNode.id);
   const ai = createAiStore({ api, editor, storage: memStorage() });
   if (suggestions) {
-    ai.suggestions = AI_FIXTURE_SUGGESTIONS.map((s) => ({ ...s, key: `row-${s.name}` }));
+    // 任务 2：建议形状收敛 core AiSuggestedCase（带本地 id），行键即 id
+    ai.suggestions = AI_FIXTURE_SUGGESTIONS.map((s) => ({ ...s }));
     ai.drawerOpen = open;
   } else {
     ai.drawerOpen = open;
@@ -122,11 +122,11 @@ describe("AiSuggestionsDrawer", () => {
     const checks = bodyFindAll("ai-suggest-check");
     expect(checks).toHaveLength(2);
     await checks[0]!.setValue(true);
-    expect(ai.selectedIds).toEqual([ai.suggestions![0]!.key]);
+    expect(ai.selectedIds).toEqual([ai.suggestions![0]!.id]);
     await checks[1]!.setValue(true);
     expect(ai.selectedIds).toHaveLength(2);
     await checks[0]!.setValue(false);
-    expect(ai.selectedIds).toEqual([ai.suggestions![1]!.key]);
+    expect(ai.selectedIds).toEqual([ai.suggestions![1]!.id]);
   });
 
   it("采用门控：未勾选禁用；勾选后可用，点击采用并入 editor.api.cases 且不自动保存（裁定③）", async () => {
