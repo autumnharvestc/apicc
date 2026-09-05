@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { generatePluginPackage } from "./create-plugin.js";
 import {
   ShardOutcomeSchema,
   createAiProvider,
@@ -703,6 +704,19 @@ export async function runCli(
         }
       }
       for (const pr of problems) log(`[加载失败] ${pr.file}: ${pr.message}`);
+    });
+
+  // M7-A D6：插件脚手架——生成本地目录（模板内联字符串，裁定①），名称前缀警告不阻断（约定非强制）。
+  program
+    .command("create-plugin")
+    .description("生成 apicc 插件包脚手架（package.json/src/test/tsconfig/README）")
+    .argument("<name>", "插件包名（约定 apicc-plugin- 前缀）")
+    .option("--dir <path>", "生成目标目录（缺省当前目录）", process.cwd())
+    .action(async (name: string, opts: { dir: string }) => {
+      const result = generatePluginPackage(name, opts.dir);
+      for (const w of result.warnings) log(`[警告] ${w}`);
+      log(`已生成插件脚手架: ${result.dir}`);
+      log("下一步：进入该目录 pnpm install → pnpm build → pnpm test（契约自检），详见目录内 README.md");
     });
 
   try {
