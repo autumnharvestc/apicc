@@ -63,6 +63,8 @@ export const AI_FIXTURE_SUGGESTIONS: readonly AiSuggestedCase[] = [
 ];
 import { onlineTreeToDto } from "../../../main/online/session.js";
 import { scanDirFiles, writeFiles } from "../../../main/online/migrate.js";
+import { createPluginsListFixture } from "../../../main/plugins/fixture.js";
+import type { PluginsListResult } from "../../../shared/plugins/contract.js";
 import type {
   OnlineBatchResult,
   OnlineDeleteOutcome,
@@ -942,6 +944,12 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     async aiTestConfig(_input: AiTestConfigInput): Promise<AiTestConfigResult> {
       if (!aiHasKey) throw new Error("尚未配置 AI 密钥，请先在 AI 设置中保存配置");
       return { ok: true };
+    },
+
+    // 插件频道（M7-B 任务 1）：与主进程 fixture 桩同一数据源（main/plugins/fixture.ts），
+    // 出口快照拷贝——替身只做契约同构（混合 loaded/failed 清单 + 导入器枚举），不做加载语义。
+    async pluginsList(): Promise<PluginsListResult> {
+      return structuredClone(createPluginsListFixture());
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

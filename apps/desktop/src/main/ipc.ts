@@ -25,6 +25,8 @@ import { toTreeNode, type TreeNodeDTO } from "./tree.js";
 import type { AiKeyStore } from "./ai/config.js";
 import { runAiSuggest, runAiTestConfig, type AiRuntimeDeps } from "./ai/suggest.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput } from "../shared/ai/contract.js";
+import { createPluginsListFixture } from "./plugins/fixture.js";
+import type { PluginsListResult } from "../shared/plugins/contract.js";
 
 type Session = ReturnType<typeof createSession>;
 
@@ -180,6 +182,8 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.AiGetConfig]: z.tuple([]),
   [IpcChannel.AiSuggest]: z.tuple([AiSuggestChannelSchema]),
   [IpcChannel.AiTestConfig]: z.tuple([AiTestConfigChannelSchema]),
+  // 插件频道（M7-B 任务 1）：无入参
+  [IpcChannel.PluginsList]: z.tuple([]),
 };
 
 /** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
@@ -577,6 +581,11 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.AiTestConfig:
         return runAiTestConfig(requireAi(), a[0] as AiTestConfigInput);
+      // 插件频道（M7-B 任务 1 fixture 桩，规格 §2 D3/D5）：返回混合 loaded/failed 清单 +
+      // registry 导入器枚举。出口经 structuredClone 快照化（与压测报告同口径的 DataCloneError
+      // 防御 + 桩数据不可被渲染层改动污染）。任务 2 同步 main 后切 core 加载器真实现。
+      case IpcChannel.PluginsList:
+        return structuredClone(createPluginsListFixture()) satisfies PluginsListResult;
       default:
         throw new Error(`未知频道: ${channel}`);
     }

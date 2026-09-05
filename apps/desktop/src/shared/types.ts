@@ -14,6 +14,7 @@ import type {
 import type { TreeNodeDTO } from "./tree-dto.js";
 import type { AiSuggestedCase } from "@apicc/core";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "./ai/contract.js";
+import type { PluginsListResult } from "./plugins/contract.js";
 import type {
   OnlineBatchResult,
   OnlineDeleteOutcome,
@@ -193,4 +194,11 @@ export interface ApiccApi {
   aiSuggest(input: AiSuggestInput): Promise<AiSuggestedCase[]>;
   /** 连接轻量探测（任务 2）：最小 completions（内容不解析）；resolve 即可用，失败抛 provider 归一化可读错误。 */
   aiTestConfig(input: AiTestConfigInput): Promise<AiTestConfigResult>;
+  // —— 插件频道（M7-B 任务 1 登记 / 任务 2 真加载器，规格 §2 D3/D5）——
+  /**
+   * 插件加载摘要：plugins 为 loaded/failed 混合清单（D3 诊断可见面），importers 为
+   * registry 导入器名枚举（内置 + 插件贡献，导入向导选择面动态枚举数据源，D5）。
+   * 任务 1 为 fixture 桩；任务 2 切 core 加载器真实现，出口形状不变。
+   */
+  pluginsList(): Promise<PluginsListResult>;
 }

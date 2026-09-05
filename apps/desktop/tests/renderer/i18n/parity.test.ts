@@ -42,4 +42,14 @@ describe("i18n 键位齐全性", () => {
       expect(keys, `缺少键: ${key}`).toContain(key);
     }
   });
+  it("包含 M7-B 插件视图与选择面动态枚举的核心键（zh/en 成对由第一条用例保证）", () => {
+    const keys = flatKeys(zh);
+    for (const key of ["nav.plugins", "plugins.title", "plugins.colName", "plugins.colVersion",
+      "plugins.colContrib", "plugins.colError", "plugins.status", "plugins.kindLoaded", "plugins.kindFailed",
+      "plugins.contrib.protocols", "plugins.contrib.auths", "plugins.contrib.asserts",
+      "plugins.contrib.scripts", "plugins.contrib.reporters", "plugins.contrib.importers",
+      "plugins.empty", "plugins.emptyGuide", "plugins.refresh", "import.formats"]) {
+      expect(keys, `缺少键: ${key}`).toContain(key);
+    }
+  });
 });

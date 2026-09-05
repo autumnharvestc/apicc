@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Alert as AAlert, Button as AButton, Input as AInput, Steps as ASteps, Tree as ATree } from "ant-design-vue";
+import { Alert as AAlert, Button as AButton, Input as AInput, Steps as ASteps, Tag as ATag, Tree as ATree } from "ant-design-vue";
 import type { useImportWizardStore } from "../stores/importW.js";
+import type { PluginsStore } from "../stores/plugins.js";
 
 /**
  * 导入向导（antd a-steps 三步，任务 7）：① 选择文件——渲染层 input[type=file] 读文本
@@ -12,9 +13,13 @@ import type { useImportWizardStore } from "../stores/importW.js";
  * store 经 props 注入（组合根一次装配，组件内零工厂调用）；取消/完成向组合根发
  * close 事件（向导挂载与视图切换装配留收官任务）。apply 拒绝时经 reportError 上报并
  * 留在第二步可重试；无法识别的格式经组件内错误提示留在第一步。
+ * 导入格式清单（M7-B 任务 1，规格 §2 D5）：改造走 plugins store 动态枚举——清单来自
+ * IPC plugins:list 出口的 importers（内置 registry + 插件贡献），向导内零硬编码格式名
+ * （既有硬编码口径见报告：import:preview 探测清单保持 core registry 注入不动）。
  */
 const props = defineProps<{
   importW: ReturnType<typeof useImportWizardStore>;
+  plugins: PluginsStore;
   reportError: (e: unknown) => void;
 }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -89,6 +94,12 @@ function closeWizard() {
     <a-steps :items="steps" :current="current" size="small" data-testid="import-steps" />
     <!-- 第一步：选择文件 -->
     <div v-if="current === 0" class="step-body">
+      <!-- 动态枚举的导入格式（M7-B 任务 1，D5）：内置 + 插件贡献，随 plugins:list 出口 -->
+      <div class="formats" data-testid="import-formats">
+        <span class="formats-label">{{ t("import.formats") }}</span>
+        <a-tag v-for="name in plugins.importers" :key="name" data-testid="import-format">{{ name }}</a-tag>
+        <span v-if="plugins.importers.length === 0" class="formats-empty">—</span>
+      </div>
       <input
         ref="fileInput"
         type="file"
@@ -168,6 +179,21 @@ function closeWizard() {
 }
 .hidden-input {
   display: none;
+}
+/* 动态枚举的导入格式清单（M7-B 任务 1）：文件选择上方轻量 tag 行 */
+.formats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.formats-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-inline-end: 2px;
+}
+.formats-empty {
+  color: var(--text-muted);
 }
 .group-row {
   display: flex;
