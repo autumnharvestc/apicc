@@ -8,6 +8,11 @@ import type { ApiccApi } from "../../../shared/types.js";
  * 测试与组件直接改 api 字段（不经 action）也能被跟踪；load/save 后重写快照即复位。
  * 简报原实现在 state 里放 dirty 且无任何置位路径，其自身测试（直接改 url 期望 dirty）
  * 无法通过。
+ * M5-B 任务 2（裁定 A，D2 保存链路接线）：api 即 core 的 ApiDefinition（protocol/
+ * message/envelope/soapAction 已由 core schema 正式承载）——任务 1 的本地契约 fixture
+ * 类型（multi-protocol.ts）收敛删除，消除双类型源。dirty 为 JSON 快照比对，新字段自然
+ * 进缓冲与快照；保存载荷经 apiSave → IPC api:save → session.saveApi → fileStorage
+ * 白名单落盘，reopen 过新 schema strict 校验（集成见 tests/main/multi-protocol-save.test.ts）。
  */
 export function useEditorStore(api: ApiccApi) {
   return defineStore("editor", {

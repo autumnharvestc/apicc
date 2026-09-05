@@ -383,4 +383,43 @@ describe("createStressController", () => {
     const onDisk = JSON.parse(readFileSync(join(dir, ".apicc", "runs", out.file!), "utf8")) as { totalRequests: number };
     expect(onDisk.totalRequests).toBe(2);
   });
+
+  it("M5 终审：非 HTTP 接口压测 fail-fast 拒绝（对齐 CLI 协议感知），HTTP 接口照常", async () => {
+    const { s, api } = await setupStress();
+    // 计数假 client：守卫必须在任何采样前拒绝（calls 恒 0），否则钉死 httpClient 的
+    // 桌面控制器会对非 HTTP 接口以错协议静默错执行（SOAP 无信封 POST / WS scheme 错）。
+    let calls = 0;
+    const counting: ProtocolClient = {
+      name: "counting",
+      canHandle: () => true,
+      execute: async () => {
+        calls += 1;
+        return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
+      },
+    };
+    const c = s.workspace!.groups[0]!.projects[0]!.collections[0]!;
+    const soapApi = s.createApi(c.id, null, { name: "soap-op", method: "POST", url: "http://127.0.0.1:1/soap" });
+    soapApi.protocol = "soap";
+    soapApi.envelope = "<Envelope/>";
+    await s.saveApi(soapApi);
+    const wsApi = s.createApi(c.id, null, { name: "ws-op", method: "GET", url: "ws://127.0.0.1:1/echo" });
+    wsApi.protocol = "websocket";
+    wsApi.message = "ping";
+    await s.saveApi(wsApi);
+
+    const controller = createStressController(s, { client: counting });
+    await expect(
+      controller.run({ apiId: soapApi.id, caseId: soapApi.cases[0]!.id, concurrency: 1, maxIterations: 1 }),
+    ).rejects.toThrow("桌面压测面板当前仅支持 HTTP 接口（WS/SOAP 压测请使用 CLI run-stress）");
+    await expect(
+      controller.run({ apiId: wsApi.id, caseId: wsApi.cases[0]!.id, concurrency: 1, maxIterations: 1 }),
+    ).rejects.toThrow(/桌面压测面板当前仅支持 HTTP 接口/);
+    expect(calls).toBe(0); // 拒绝发生在任何采样之前（fail-fast，不产出错协议报告）
+    expect(s.root && existsSync(join(s.root, ".apicc", "runs"))).toBe(false); // 无报告落盘
+
+    // HTTP 接口不受守卫影响，照常执行
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1 });
+    expect(out.report.totalRequests).toBe(1);
+    expect(calls).toBe(1);
+  });
 });

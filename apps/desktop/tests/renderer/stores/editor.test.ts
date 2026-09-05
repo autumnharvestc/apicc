@@ -73,3 +73,42 @@ describe("editor store", () => {
     expect(saved).toMatchObject({ url: "/v3" });
   });
 });
+
+// —— M5-B 任务 1：多协议字段进编辑缓冲与快照（规格 D2 契约 fixture——两阶段执行：
+// main 基线 core strict schema 尚无这些字段，保存链路不接线，载荷仅经 apiSave 出口观测；
+// 任务 2 同步 main 后由 core 新 schema 校验落盘往返）——
+describe("editor store 多协议 fixture（M5-B T1，D2）", () => {
+  it("protocol/message/envelope/soapAction 进编辑缓冲：修改即 dirty，save 后快照复位", async () => {
+    const { editor, apiNode } = await seeded();
+    await editor.load(apiNode.id);
+    editor.api!.protocol = "websocket";
+    editor.api!.message = "{{greeting}}";
+    expect(editor.dirty).toBe(true);
+    await editor.save();
+    expect(editor.dirty).toBe(false);
+    // soap 字段同样进缓冲与快照比对
+    editor.api!.protocol = "soap";
+    editor.api!.envelope = "<Envelope/>";
+    editor.api!.soapAction = "urn:do";
+    expect(editor.dirty).toBe(true);
+    await editor.save();
+    expect(editor.dirty).toBe(false);
+  });
+
+  it("保存载荷携带新字段（fixture 断言：经 apiSave 出口观测载荷形状）", async () => {
+    const { api, editor, apiNode } = await seeded();
+    await editor.load(apiNode.id);
+    let saved: unknown;
+    const original = api.apiSave.bind(api);
+    api.apiSave = async (input) => { saved = input; return original(input); };
+    editor.api!.protocol = "soap";
+    editor.api!.envelope = "<Envelope>{{payload}}</Envelope>";
+    editor.api!.soapAction = "urn:Action";
+    await editor.save();
+    expect(saved).toMatchObject({
+      protocol: "soap",
+      envelope: "<Envelope>{{payload}}</Envelope>",
+      soapAction: "urn:Action",
+    });
+  });
+});

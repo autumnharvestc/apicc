@@ -30,6 +30,7 @@
   "devDependencies": {
     "@ant-design/icons-vue": "^7.0.1",
     "@types/node": "^26.4.0",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue-flow/core": "^1.48.2",
     "@vue/test-utils": "^2.5.0",
@@ -44,6 +45,7 @@
     "vitest": "^4.1.11",
     "vue": "^3.5.42",
     "vue-i18n": "^11.4.10",
-    "vue-tsc": "^3.3.11"
+    "vue-tsc": "^3.3.11",
+    "ws": "8.21.3"
   }
 }

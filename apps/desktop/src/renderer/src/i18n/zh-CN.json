@@ -57,6 +57,16 @@
     "bodyKind": "体类型",
     "noEnv": "无环境"
   },
+  "protocol": {
+    "http": "HTTP",
+    "websocket": "WebSocket",
+    "soap": "SOAP",
+    "message": "消息模板",
+    "messagePlaceholder": "连接后发送的文本帧模板，留空仅连接",
+    "envelope": "SOAP 报文",
+    "envelopePlaceholder": "SOAP XML 报文模板",
+    "soapAction": "SOAPAction"
+  },
   "response": {
     "status": "状态码",
     "time": "耗时",

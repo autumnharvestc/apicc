@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Select as ASelect, Input as AInput, Button as AButton, Tabs as ATabs, Checkbox as ACheckbox } from "ant-design-vue";
-import type { AuthSpec, BodyContent, HttpMethod, KeyValuePair } from "@apicc/core";
+import { Select as ASelect, Input as AInput, Button as AButton, Tabs as ATabs, Checkbox as ACheckbox, RadioGroup as ARadioGroup, RadioButton as ARadioButton } from "ant-design-vue";
+import type { AuthSpec, BodyContent, HttpMethod, KeyValuePair, Protocol } from "@apicc/core";
 import type { useEditorStore } from "../stores/editor.js";
 import type { useDebugStore } from "../stores/debug.js";
 import EmptyState from "./EmptyState.vue";
@@ -20,6 +20,17 @@ const ATextarea = AInput.TextArea;
  * antd 4 落地：方法/认证类型/placement/体类型为 a-select，URL/名称/字段为 a-input，
  * 页签为 a-tabs（页签触发的 data-testid 经 #tab slot 保留在可点击的 span 上，
  * 点击冒泡到 a-tabs 内部处理器），行编辑为 a-input + a-checkbox + a-button。
+ * M5-B 任务 1（D8 协议选择与字段显隐，D2 契约 fixture）：URL 行左侧 a-radio-group
+ * （editor-protocol，三选 a-radio-button，缺省 http）——旧数据无 protocol 字段显示
+ * http 不回写；切换协议只改页签显隐（各自字段内容保留不互删）：WS 隐藏 method 选择
+ * 与参数/请求体、显消息模板（method 缺省 GET 不参与执行，UI 不显示 method——裁定②）；
+ * SOAP 隐藏参数/请求体、显 envelope/soapAction，method 落定显式 POST 且禁用（D2
+ * superRefine 前置的 UI 侧 fixture）；HTTP 原样。切协议后激活页签重置为该协议首个
+ * 页签（协议载荷页签居首），保证新协议字段立即可编辑。
+ * 审查预修：组件常驻挂载（App.vue 无 :key），editor.load 原地换 api——激活页签是
+ * 本地 ref，跨接口残留无效键时新协议页签集无对应面板 → 编辑区空白。watch 编辑对象
+ * 身份（apiId）与 protocol，重置激活页签为新对象协议的首签；同协议内常规互切不触发
+ * （apiId/protocol 不变化），radio 切协议经 protocol 源走同一重置路径。
  */
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
@@ -32,9 +43,40 @@ const METHOD_OPTIONS = METHODS.map((m) => ({ label: m, value: m }));
 const AUTH_KIND_OPTIONS = ["none", "bearer", "basic", "apikey"].map((v) => ({ label: v, value: v }));
 const AUTH_PLACEMENT_OPTIONS = ["header", "query"].map((v) => ({ label: v, value: v }));
 const BODY_KIND_OPTIONS = ["none", "json", "xml", "raw", "graphql", "form"].map((v) => ({ label: v, value: v }));
-const TABS = ["params", "headers", "auth", "body"] as const;
-type Tab = (typeof TABS)[number];
+
+// —— 协议：三选单选（标签走 i18n protocol.*）+ 按协议的页签清单（载荷页签居首） ——
+// ProtocolKind 与缺省值直接取 core 契约（M5-B 任务 2 裁定 A：本地 fixture 类型收敛删除）。
+const DEFAULT_PROTOCOL: Protocol = "http";
+const PROTOCOL_OPTIONS = computed(() =>
+  (["http", "websocket", "soap"] as const).map((p) => ({ value: p, label: t(`protocol.${p}`) })),
+);
+type Tab = "params" | "headers" | "auth" | "body" | "message" | "envelope";
+const TABS_BY_PROTOCOL: Record<Protocol, readonly Tab[]> = {
+  http: ["params", "headers", "auth", "body"],
+  websocket: ["message", "headers", "auth"],
+  soap: ["envelope", "headers", "auth"],
+};
 const activeTab = ref<Tab>("params");
+
+const protocol = computed<Protocol>({
+  get: () => props.editor.api?.protocol ?? DEFAULT_PROTOCOL,
+  set: (p) => {
+    const api = props.editor.api;
+    if (!api) return;
+    api.protocol = p;
+    // D2：soap → method 固定 POST 且必须显式 POST（UI 落定并禁用）；WS method 缺省
+    // GET 不参与执行——不写数据，仅 UI 隐藏；来回切不回改（裁定③只保字段内容）。
+    // 页签重置统一由下方 watch（protocol 在源中）完成，此处不重复。
+    if (p === "soap" && api.method !== "POST") api.method = "POST";
+  },
+});
+const isHttp = computed(() => protocol.value === "http");
+
+// 激活页签跟随编辑对象：切接口（apiId 变）或切协议（protocol 变）时回落到该协议
+// 页签集的首签，消除跨对象残留键的空白编辑区；常规页签互切不是源变化，不受扰。
+watch([() => props.editor.apiId, () => props.editor.api?.protocol], () => {
+  activeTab.value = TABS_BY_PROTOCOL[protocol.value][0]!;
+});
 
 function addRow(list: KeyValuePair[]) {
   list.push({ key: "", value: "", enabled: true });
@@ -84,11 +126,18 @@ const bodyKind = computed<BodyKind>({
       <span v-if="editor.dirty" class="dirty" :title="t('editor.unsaved')">●</span>
     </div>
     <div class="top-row">
+      <!-- 协议选择（D8）：三选单选，缺省 http；旧数据无 protocol 字段显示侧回退不回写 -->
+      <a-radio-group v-model:value="protocol" data-testid="editor-protocol" class="protocol-select">
+        <a-radio-button v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</a-radio-button>
+      </a-radio-group>
+      <!-- method：WS 隐藏（缺省 GET 不参与执行，裁定②选隐藏）；SOAP 固定 POST 禁用（D2） -->
       <a-select
+        v-if="protocol !== 'websocket'"
         v-model:value="editor.api.method"
         class="method-select"
         data-testid="editor-method"
         :options="METHOD_OPTIONS"
+        :disabled="protocol === 'soap'"
         :title="t('editor.method')"
       />
       <a-input v-model:value="editor.api.url" class="url" data-testid="editor-url" :placeholder="t('editor.url')" />
@@ -117,9 +166,10 @@ const bodyKind = computed<BodyKind>({
     </div>
 
     <a-tabs v-model:active-key="activeTab">
-      <!-- 参数 / 请求头：key/value/enabled 行编辑（两页签各持一份，data-testid 相同，
+      <!-- 参数 / 请求头：key/value/enabled 行编辑（参数页签仅 HTTP——D8：WS/SOAP 隐藏
+           query，字段内容保留不互删，裁定③；两页签各持一份，data-testid 相同，
            未激活页签不渲染，任一时刻仅有一份在 DOM 中） -->
-      <a-tab-pane key="params">
+      <a-tab-pane v-if="isHttp" key="params">
         <template #tab><span data-testid="tab-params">{{ t("editor.params") }}</span></template>
         <div class="panel">
           <div v-for="(row, index) in editor.api.query" :key="index" class="kv-row">
@@ -187,8 +237,8 @@ const bodyKind = computed<BodyKind>({
         </div>
       </a-tab-pane>
 
-      <!-- 请求体：kind 下拉 + 对应编辑器 -->
-      <a-tab-pane key="body">
+      <!-- 请求体：kind 下拉 + 对应编辑器（仅 HTTP——D8；SOAP 的载荷是 envelope） -->
+      <a-tab-pane v-if="isHttp" key="body">
         <template #tab><span data-testid="tab-body">{{ t("editor.body") }}</span></template>
         <div class="panel">
           <div class="field-row">
@@ -215,6 +265,38 @@ const bodyKind = computed<BodyKind>({
           </div>
         </div>
       </a-tab-pane>
+
+      <!-- 消息模板（仅 WebSocket，D8）：连接后发送的文本帧模板，缺省仅连接（D2） -->
+      <a-tab-pane v-if="protocol === 'websocket'" key="message">
+        <template #tab><span data-testid="tab-message">{{ t("protocol.message") }}</span></template>
+        <div class="panel">
+          <a-textarea
+            v-model:value="editor.api.message"
+            class="body-text"
+            data-testid="editor-message"
+            :rows="8"
+            :placeholder="t('protocol.messagePlaceholder')"
+          />
+        </div>
+      </a-tab-pane>
+
+      <!-- SOAP 报文（仅 SOAP，D8）：envelope XML 模板 + 可选 SOAPAction 头 -->
+      <a-tab-pane v-if="protocol === 'soap'" key="envelope">
+        <template #tab><span data-testid="tab-envelope">{{ t("protocol.envelope") }}</span></template>
+        <div class="panel">
+          <a-textarea
+            v-model:value="editor.api.envelope"
+            class="body-text"
+            data-testid="editor-envelope"
+            :rows="8"
+            :placeholder="t('protocol.envelopePlaceholder')"
+          />
+          <div class="field-row">
+            <label>{{ t("protocol.soapAction") }}</label>
+            <a-input v-model:value="editor.api.soapAction" class="field-input" data-testid="editor-soap-action" />
+          </div>
+        </div>
+      </a-tab-pane>
     </a-tabs>
   </section>
   <EmptyState v-else :text="t('editor.empty')" />
@@ -234,6 +316,7 @@ const bodyKind = computed<BodyKind>({
 .dirty { color: var(--accent); }
 .top-row { display: flex; gap: 8px; }
 .method-select { width: 96px; }
+.protocol-select { flex-shrink: 0; }
 .url { flex: 1; }
 .panel { display: flex; flex-direction: column; gap: 6px; overflow: auto; }
 .kv-row { display: flex; gap: 6px; align-items: center; }

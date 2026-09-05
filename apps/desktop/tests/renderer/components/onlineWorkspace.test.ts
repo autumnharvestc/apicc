@@ -159,11 +159,13 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
 
   it("坏数据（校验失败）→ problems 展示原文，不崩、无表单", async () => {
     const f = await fixture();
-    await f.online.selectNode("api", API_PATH); // 种子内容缺 method/url
+    // 种子内容缺 url/method——M5 D2 后 method 缺省 GET（websocket 可省略的零破坏演进），
+    // 缺 method 不再是校验问题，坏数据仅剩 url 必填缺失，断言随新 schema 契约更新。
+    await f.online.selectNode("api", API_PATH);
     const wrapper = await f.mount(OnlineApiEditor);
     const problems = wrapper.find('[data-testid="online-problems"]');
     expect(problems.exists()).toBe(true);
-    expect(problems.text()).toContain("method");
+    expect(problems.text()).toContain("url");
     expect(wrapper.find('[data-testid="online-raw"]').text()).toContain("api-online-1");
     expect(wrapper.find('[data-testid="online-editor-name"]').exists()).toBe(false);
   });

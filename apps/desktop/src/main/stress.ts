@@ -73,6 +73,15 @@ export function createStressController(session: Session, deps: StressControllerD
     const resolver = createVariableResolver({
       layers: [mergedEnvVars(env, loc.project), loc.collection.variables, loc.project.variables, session.workspace!.variables],
     });
+    // 桌面压测面协议守卫（M5 终审）：StressRunner 是单 client 面，桌面控制器钉死
+    // httpClient（协议感知的按 protocol 分发只有 CLI run-stress 有），而
+    // buildStressRequest 已透传 protocol/envelope/soapAction——非 HTTP 接口若放行，
+    // SOAP 会以空 body/无 SOAPAction 的普通 POST 错协议执行且可能产出绿色报告，
+    // WS 则逐样本抛 scheme 错误。此处 fail-fast 拒绝，与「压测面板仅 HTTP」备案口径
+    // （M5 规格 D9）及 CLI 侧协议感知 fail-fast 对齐。
+    if ((api.protocol ?? "http") !== "http") {
+      throw new Error("桌面压测面板当前仅支持 HTTP 接口（WS/SOAP 压测请使用 CLI run-stress）");
+    }
     const runner = new StressRunner({
       client: deps.client ?? httpClient,
       // 每次采样重跑工厂：动态变量（如 {{$uuid}}）逐请求变化，与 CLI run-stress 同口径。
