@@ -7,6 +7,7 @@ import { createIpcDeps } from "./ipc.js";
 import { createSession } from "./session.js";
 import { createOnlineClient } from "./online/client.js";
 import { createTokenStore } from "./online/tokenStore.js";
+import { createAiKeyStore } from "./ai/config.js";
 
 // package.json 为 type:module，编译产物是 ESM，须用 import.meta 推导 __dirname。
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -55,7 +56,12 @@ app.whenReady().then(() => {
       createOnlineClient({ baseUrl, fetch: globalThis.fetch, timeoutMs: 15_000, onUnauthorized: hooks.onUnauthorized }),
     tokenStore: createTokenStore({ dir: app.getPath("userData"), storage: safeStorage }),
   };
-  const deps = createIpcDeps({ session, pickDirectory, saveFile, online });
+  // AI 依赖（M6-C 任务 1，规格 §2 D2）：key 存 userData（safeStorage 加密，不可用降级
+  // 明文 + warn）；baseUrl/model 由渲染层 localStorage 持久化（非敏感配置）。
+  const ai = {
+    keyStore: createAiKeyStore({ dir: app.getPath("userData"), storage: safeStorage }),
+  };
+  const deps = createIpcDeps({ session, pickDirectory, saveFile, online, ai });
   for (const channel of Object.values(IpcChannel)) {
     ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
   }

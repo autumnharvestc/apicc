@@ -33,6 +33,8 @@ import ImportWizard from "./components/ImportWizard.vue";
 import DesignPanel from "./components/DesignPanel.vue";
 import WfDesigner from "./components/WfDesigner.vue";
 import StressPanel from "./components/StressPanel.vue";
+import AiConfigDialog from "./components/AiConfigDialog.vue";
+import AiSuggestionsDrawer from "./components/AiSuggestionsDrawer.vue";
 import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
 import { useEditorStore } from "./stores/editor.js";
@@ -46,6 +48,7 @@ import { useWfListStore } from "./stores/wfList.js";
 import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
 import { createStressStore } from "./stores/stress.js";
 import { createOnlineStore } from "./stores/online.js";
+import { createAiStore } from "./stores/ai.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
@@ -83,8 +86,12 @@ const stress = createStressStore({ api: apicc });
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
 // TopBar 的在线入口按钮只置 online.dialogOpen。 ——
 const online = createOnlineStore({ api: apicc });
+// —— AI store（M6-C 任务 1 装配）：同一组合根一次性创建；挂载后读持久化配置与 key
+// 状态（init 全程不抛）。对话框/抽屉本体在组合根渲染，调试视图入口按钮只置显隐/拉取。 ——
+const ai = createAiStore({ api: apicc, editor });
 onMounted(() => {
   void online.init();
+  void ai.init();
 });
 
 // —— 视图切换（任务 8 收官装配）——
@@ -119,6 +126,18 @@ function reportError(e: unknown) {
 
 function dismissError() {
   errorMessage.value = "";
+}
+
+/**
+ * 拉取 AI 建议用例（M6-C 任务 1，规格 §2 D4 调试视图入口）：成功 → store 打开建议抽屉；
+ * 失败（如未配置 AI 密钥）→ store.error 上屏于抽屉/对话框，此处兜底转报错误通道。
+ */
+async function onAiSuggest() {
+  try {
+    await ai.fetchSuggestions();
+  } catch (e) {
+    reportError(e);
+  }
 }
 
 /**
@@ -329,6 +348,23 @@ watch(
           <OnlineApiEditor v-if="online.activeWorkspace" class="panel-view" :online="online" />
           <template v-else-if="view === 'debug'">
             <div class="editor-pane" data-testid="editor-pane">
+              <!-- AI 入口（M6-C 任务 1，规格 §2 D4）：调试视图「AI 建议用例」（需选中接口）+
+                   「AI 设置」；对话框/抽屉本体在组合根根节点渲染。置于 editor-pane 内，
+                   保持 main-split 上下两栏结构契约（App 布局测试钉住） -->
+              <div class="debug-ai-bar">
+                <a-button
+                  size="small"
+                  data-testid="ai-suggest-btn"
+                  :disabled="!editor.apiId"
+                  :loading="ai.suggestLoading"
+                  @click="onAiSuggest"
+                >
+                  {{ t("ai.suggestBtn") }}
+                </a-button>
+                <a-button size="small" data-testid="ai-config-btn" @click="ai.configDialogOpen = true">
+                  {{ t("ai.configBtn") }}
+                </a-button>
+              </div>
               <RequestEditor :editor="editor" :debug="debug" />
             </div>
             <div class="viewer-pane" data-testid="viewer-pane">
@@ -397,6 +433,9 @@ watch(
     <OnlineConflictDialog :online="online" />
     <!-- 在线工作区迁移向导（任务 3 裁定 D）：TopBar 迁移入口置 migrateDialogOpen -->
     <OnlineMigrateDialog :online="online" :api="apicc" :report-error="reportError" />
+    <!-- AI 配置对话框与建议抽屉（M6-C 任务 1）：调试视图入口按钮置显隐/拉取 -->
+    <AiConfigDialog :ai="ai" />
+    <AiSuggestionsDrawer :ai="ai" />
   </a-layout>
   </ConfigProvider>
 </template>
@@ -409,6 +448,8 @@ html, body, #app { height: 100%; margin: 0; }
 .right-col { display: flex; flex-direction: column; min-width: 0; height: 100%; }
 .editor-pane { flex: 1; min-height: 0; overflow: auto; }
 .viewer-pane { flex: none; max-height: 45%; overflow: auto; border-top: 1px solid var(--border); }
+/* 调试视图 AI 入口条（M6-C 任务 1）：贴编辑区顶部的轻量工具条 */
+.debug-ai-bar { display: flex; gap: 8px; padding: 6px 10px 0; }
 .panel-view { flex: 1; min-height: 0; overflow: auto; }
 /* 设计器视图：三区布局占满内容区（画布需要确定高度的容器，否则 Vue Flow 视口失真） */
 .wf-view { flex: 1; min-height: 0; overflow: hidden; }

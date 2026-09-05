@@ -22,6 +22,9 @@ import { listRuns, readRun } from "./runs.js";
 import { createStressController } from "./stress.js";
 import type { createSession } from "./session.js";
 import { toTreeNode, type TreeNodeDTO } from "./tree.js";
+import type { AiKeyStore } from "./ai/config.js";
+import { runAiSuggest, runAiTestConfig, type AiRuntimeDeps } from "./ai/suggest.js";
+import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput } from "../shared/ai/contract.js";
 
 type Session = ReturnType<typeof createSession>;
 
@@ -102,6 +105,24 @@ const OnlineMigrateWriteChannelSchema = z.object({
   dir: z.string().min(1),
   files: z.array(z.object({ path: OnlinePathSchema, content: z.string() })).min(1).max(200),
 });
+// AI 频道（M6-C 任务 2 真链路）：save-config 形状校验（baseUrl/model 由渲染层表单与
+// localStorage 持久化，main 只收形状；apiKey 非空才入安全存储）；suggest 携 apiId（定位
+// 接口定义）与已保存配置（baseUrl/model，与 safeStorage key 合成 provider 配置）；
+// test-config 轻量探测（连接测试专用，无需选中接口）。
+const AiSaveConfigChannelSchema = z.object({
+  baseUrl: z.string().min(1),
+  model: z.string().min(1),
+  apiKey: z.string().optional(),
+});
+const AiSuggestChannelSchema = z.object({
+  apiId: z.string().min(1),
+  baseUrl: z.string().min(1),
+  model: z.string().min(1),
+});
+const AiTestConfigChannelSchema = z.object({
+  baseUrl: z.string().min(1),
+  model: z.string().min(1),
+});
 
 /** 频道 → 入参 tuple schema 表：Record 键为全部频道名，新增频道漏配 schema 即编译错误。 */
 const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
@@ -154,6 +175,11 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.OnlineTreeView]: z.tuple([OnlineWorkspaceIdSchema]),
   [IpcChannel.OnlineMigrateScan]: z.tuple([OnlineMigrateScanChannelSchema]),
   [IpcChannel.OnlineMigrateWrite]: z.tuple([OnlineMigrateWriteChannelSchema]),
+  // AI 频道（M6-C 任务 1 登记 / 任务 2 真链路）
+  [IpcChannel.AiSaveConfig]: z.tuple([AiSaveConfigChannelSchema]),
+  [IpcChannel.AiGetConfig]: z.tuple([]),
+  [IpcChannel.AiSuggest]: z.tuple([AiSuggestChannelSchema]),
+  [IpcChannel.AiTestConfig]: z.tuple([AiTestConfigChannelSchema]),
 };
 
 /** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
@@ -205,6 +231,11 @@ export interface OnlineIpcDeps {
   tokenStore: TokenStore;
 }
 
+export interface AiIpcDeps extends AiRuntimeDeps {
+  /** AI key 安全存储（生产 = userData 目录 + electron safeStorage）。 */
+  keyStore: AiKeyStore;
+}
+
 export interface IpcDepsOptions {
   session: Session;
   pickDirectory: () => Promise<string>;
@@ -217,6 +248,8 @@ export interface IpcDepsOptions {
   importers?: Importer[];
   /** 在线依赖（M3-B 任务 1）：省略时 online:* 频道抛「在线功能未配置」可读错误。 */
   online?: OnlineIpcDeps;
+  /** AI 依赖（M6-C 任务 1）：省略时 ai:* 频道抛「AI 功能未配置」可读错误。 */
+  ai?: AiIpcDeps;
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
@@ -229,6 +262,12 @@ export function createIpcDeps(options: IpcDepsOptions) {
   function requireOnline(): OnlineSession {
     if (!online) throw new Error("在线功能未配置");
     return online;
+  }
+  // AI 依赖（M6-C 任务 1）：keyStore 注入省略时 ai:* 频道给可读错误（与 requireOnline 同口径）。
+  const ai: AiIpcDeps | null = options.ai ?? null;
+  function requireAi(): AiIpcDeps {
+    if (!ai) throw new Error("AI 功能未配置");
+    return ai;
   }
   // 压测控制器（M2-D3 任务 1）：状态挂 deps 闭包（进程内单例），ws:open/ws:create 切换
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
@@ -521,6 +560,23 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const input = a[0] as { dir: string; files: Array<{ path: string; content: string }> };
         return { written: writeFiles(input.dir, input.files) };
       }
+      // AI 频道（M6-C 任务 2 真链路，规格 §2 D1/D2/D4）：save/get 只落 key（baseUrl/model
+      // 由渲染层 localStorage 持久化）；出口恒 { hasKey }（key 明文永不回传渲染层，裁定②）；
+      // apiKey 省略/空串 = 保持既有。suggest 委派 main/ai/suggest.ts 真链路（core provider +
+      // suggestCases；key 缺失 → 可读错误指引配置对话框，且不发请求）；test-config 轻量探测。
+      case IpcChannel.AiSaveConfig: {
+        const input = a[0] as AiSaveConfigInput;
+        if (input.apiKey) requireAi().keyStore.save(input.apiKey);
+        return { hasKey: requireAi().keyStore.load() !== null } satisfies AiKeyStatus;
+      }
+      case IpcChannel.AiGetConfig:
+        return { hasKey: requireAi().keyStore.load() !== null } satisfies AiKeyStatus;
+      case IpcChannel.AiSuggest: {
+        const input = a[0] as AiSuggestInput;
+        return runAiSuggest(requireAi(), input, (apiId) => session.locateApi(apiId)?.api);
+      }
+      case IpcChannel.AiTestConfig:
+        return runAiTestConfig(requireAi(), a[0] as AiTestConfigInput);
       default:
         throw new Error(`未知频道: ${channel}`);
     }

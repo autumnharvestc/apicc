@@ -32,4 +32,14 @@ describe("i18n 键位齐全性", () => {
       expect(keys, `缺少键: ${key}`).toContain(key);
     }
   });
+  it("包含 M6-C AI 配置与建议采用的核心键（zh/en 成对由第一条用例保证）", () => {
+    const keys = flatKeys(zh);
+    for (const key of ["ai.suggestBtn", "ai.configBtn", "ai.configTitle", "ai.baseUrl", "ai.model",
+      "ai.apiKey", "ai.keyPlaceholder", "ai.keySavedPlaceholder", "ai.hasKey", "ai.save", "ai.saved",
+      "ai.test", "ai.testOk", "ai.testFail", "ai.baseUrlRequired", "ai.modelRequired",
+      "ai.drawerTitle", "ai.sourceTag", "ai.colName", "ai.colScope", "ai.colAssertions",
+      "ai.adopt", "ai.empty"]) {
+      expect(keys, `缺少键: ${key}`).toContain(key);
+    }
+  });
 });

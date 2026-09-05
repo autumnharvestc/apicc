@@ -12,6 +12,8 @@ import type {
   WorkflowStatus,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
+import type { AiSuggestedCase } from "@apicc/core";
+import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "./ai/contract.js";
 import type {
   OnlineBatchResult,
   OnlineDeleteOutcome,
@@ -182,4 +184,13 @@ export interface ApiccApi {
   onlineMigrateScan(dir: string): Promise<OnlineMigrateScanResult>;
   /** 迁移拉取落盘：按相对路径写目标目录（≤200/批；路径过契约规则，越界拒绝）。 */
   onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }>;
+  // —— AI 频道（M6-C 任务 1 登记 / 任务 2 真链路，规格 §2 D2/D4）——
+  /** 保存 AI 配置：baseUrl/model 由渲染层 localStorage 持久化；apiKey 非空时经 main 入安全存储（省略/空串 = 保持既有）。 */
+  aiSaveConfig(input: AiSaveConfigInput): Promise<AiKeyStatus>;
+  /** 读取 AI 配置状态：key 只以 hasKey 表达，明文永不回传渲染层（裁定②）。 */
+  aiGetConfig(): Promise<AiKeyStatus>;
+  /** AI 建议用例（任务 2 真链路）：main 以 safeStorage key + 随调用的已保存配置构造 core provider → suggestCases；配置缺失抛可读错误。 */
+  aiSuggest(input: AiSuggestInput): Promise<AiSuggestedCase[]>;
+  /** 连接轻量探测（任务 2）：最小 completions（内容不解析）；resolve 即可用，失败抛 provider 归一化可读错误。 */
+  aiTestConfig(input: AiTestConfigInput): Promise<AiTestConfigResult>;
 }
