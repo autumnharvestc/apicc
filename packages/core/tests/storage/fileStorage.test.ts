@@ -256,7 +256,7 @@ describe("fileStorage", () => {
             folders: [{
               id: "f1", name: "支付", apis: [{
                 id: "a2", name: "pay-order", version: "1.0.0", deprecated: false,
-                method: "POST", url: "{{baseUrl}}/pay",
+                method: "POST", protocol: "http", url: "{{baseUrl}}/pay",
                 headers: [{ key: "X-Sign", value: "s", enabled: true }],
                 query: [], body: { kind: "json", content: '{"oid":"1"}' },
                 auth: { type: "bearer", token: "tk", placement: "header" },
@@ -271,7 +271,7 @@ describe("fileStorage", () => {
             }],
             apis: [{
               id: "a1", name: "create-order", version: "1.2.3", deprecated: true,
-              method: "POST", url: "{{baseUrl}}/orders",
+              method: "POST", protocol: "http", url: "{{baseUrl}}/orders",
               headers: [{ key: "X-Trace", value: "t-1", enabled: true }],
               query: [{ key: "dry", value: "1", enabled: false }],
               body: { kind: "json", content: '{"sku":"A1"}' },

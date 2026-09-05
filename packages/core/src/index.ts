@@ -35,9 +35,10 @@ export {
 import { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
 import { fileStorage } from "./storage/fileStorage.js";
 import { httpClient } from "./http/client.js";
+import { wsClient } from "./protocol/websocket.js";
 import { builtinAuthProviders } from "./http/auth.js";
 // 内置协议客户端与认证器同时对外导出：CLI run-stress 等消费方直接注入 StressRunner，无需绕注册中心取回。
-export { httpClient, builtinAuthProviders };
+export { httpClient, wsClient, builtinAuthProviders };
 import { builtinAssertOperators } from "./assert/operators.js";
 import { jsScriptEngine } from "./sandbox/jsEngine.js";
 import { htmlReporter } from "./report/html.js";
@@ -50,6 +51,7 @@ export function createDefaultRegistry(): PluginRegistry {
   const registry = createPluginRegistry();
   registry.registerStorage(fileStorage);
   registry.registerProtocol(httpClient);
+  registry.registerProtocol(wsClient);
   for (const p of builtinAuthProviders) registry.registerAuth(p);
   for (const o of builtinAssertOperators) registry.registerAssert(o);
   registry.registerScriptEngine(jsScriptEngine);

@@ -175,6 +175,10 @@ export class CollectionRunner {
           }
         : undefined,
       auth: api.auth,
+      // M5 D5/D7：协议分发键与 ws 消息模板随请求透传（message 变量解析与 url/body 同管线）；
+      // 旧 yaml 无 protocol/message → 请求形状不变（protocolOf 缺省 http），零破坏。
+      protocol: api.protocol,
+      message: api.message === undefined ? undefined : resolver.resolve(api.message),
     };
 
     const pmAsserts: Array<{ pass: boolean; message: string }> = [];

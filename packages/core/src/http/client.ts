@@ -1,6 +1,7 @@
 import { Agent, request } from "undici";
 import type { BodyContent } from "../domain/model.js";
 import type { ExecutableRequest, ExecutionResponse, HttpExecuteOptions, ProtocolClient } from "../plugin/types.js";
+import { canHandleProtocol } from "../protocol/index.js";
 
 export type HttpErrorKind = "dns" | "refused" | "timeout" | "tls" | "unknown";
 
@@ -50,7 +51,8 @@ function urlencodedBody(form: BodyContent["form"]): string {
 
 export const httpClient: ProtocolClient & { close(): void } = {
   name: "http",
-  canHandle: (req) => req.url.startsWith("http://") || req.url.startsWith("https://"),
+  // D5：按 protocol 显式分发（缺省视为 http），URL 前缀仍作兜底约束——旧形状行为不变。
+  canHandle: (req) => canHandleProtocol(req, "http") && (req.url.startsWith("http://") || req.url.startsWith("https://")),
   async execute(req, opts) {
     const started = performance.now();
     // form 走 urlencoded 编码；其余 kind 发送 content 字符串。
