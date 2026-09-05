@@ -1,0 +1,84 @@
+{
+  "app": {
+    "title": "Admin Console"
+  },
+  "common": {
+    "cancel": "Cancel"
+  },
+  "login": {
+    "tabLogin": "Sign in",
+    "tabRegister": "Register",
+    "username": "Username",
+    "password": "Password",
+    "displayName": "Display name",
+    "usernameRequired": "Username is required",
+    "passwordRequired": "Password is required",
+    "usernameInvalid": "Username must be 3-32 characters of letters, digits, underscore or hyphen",
+    "passwordMin": "Password must be at least 8 characters",
+    "displayNameInvalid": "Display name must be 1-32 non-blank characters",
+    "submitLogin": "Sign in",
+    "submitRegister": "Create account",
+    "registerOk": "Registered. Sign in to continue",
+    "failed": "Request failed"
+  },
+  "nav": {
+    "logout": "Sign out",
+    "workspaces": "Workspaces",
+    "members": "Members",
+    "acl": "Project ACL"
+  },
+  "members": {
+    "title": "Members",
+    "colDisplayName": "Display name",
+    "colUsername": "Username",
+    "colRole": "Role",
+    "colActions": "Actions",
+    "add": "Add member",
+    "userIdPlaceholder": "Enter a user ID (userId)",
+    "addSubmit": "Add",
+    "userIdRequired": "User ID is required",
+    "remove": "Remove",
+    "removeTitle": "Remove this member?",
+    "removeOk": "Remove",
+    "transferTitle": "Transfer ownership (irreversible)",
+    "transferHint": "Making {user} the OWNER will demote you to ADMIN. This cannot be undone. Type \"{name}\" to confirm.",
+    "transferConfirm": "Transfer ownership",
+    "error": "Request failed"
+  },
+  "acl": {
+    "title": "Project ACL",
+    "projectLabel": "Project",
+    "myRoleLabel": "My effective role",
+    "colUserId": "User ID",
+    "colRole": "ACL role",
+    "colActions": "Actions",
+    "roleNone": "Deny access (NONE)",
+    "noneHint": "NONE = explicitly deny this user's access to the project; deleting a row = fall back to the workspace role.",
+    "deleteRow": "Delete row",
+    "deleteRowTitle": "Deleting this row makes the user fall back to the workspace role. Delete?",
+    "deleteRowOk": "Restore inheritance",
+    "userIdPlaceholder": "Pick a member or type a user ID",
+    "addSubmit": "Add",
+    "userIdRequired": "User ID is required",
+    "error": "Request failed"
+  },
+  "ws": {
+    "listTitle": "Workspaces",
+    "colName": "Name",
+    "colMyRole": "My role",
+    "colCreatedAt": "Created at",
+    "colActions": "Actions",
+    "create": "New workspace",
+    "createTitle": "New workspace",
+    "name": "Workspace name",
+    "nameRequired": "Workspace name is required",
+    "nameLength": "Name must be 1-64 characters",
+    "submitCreate": "Create",
+    "delete": "Delete",
+    "deleteTitle": "Delete workspace (irreversible)",
+    "deleteHint": "Deleting removes the workspace together with all of its content and cannot be undone. Type \"{name}\" to confirm.",
+    "deleteNamePlaceholder": "Type the workspace name to confirm",
+    "deleteConfirm": "Delete workspace",
+    "error": "Request failed"
+  }
+}
