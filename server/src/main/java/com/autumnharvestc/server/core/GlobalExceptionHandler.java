@@ -10,6 +10,8 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import jakarta.servlet.http.HttpServletRequest;
+
 /**
  * 全局错误映射骨架（规格 m3 §3：错误统一 {code, message}）。
  * 各端点的语义化 code（如 username_taken/version_conflict）由服务层抛 ApiException 携带；
@@ -20,6 +22,12 @@ public class GlobalExceptionHandler {
 
     /** 错误响应体：{code, message}。 */
     public record ApiError(String code, String message) {
+    }
+
+    private final ConsoleLocator consoleLocator;
+
+    public GlobalExceptionHandler(ConsoleLocator consoleLocator) {
+        this.consoleLocator = consoleLocator;
     }
 
     @ExceptionHandler(ApiException.class)
@@ -47,9 +55,18 @@ public class GlobalExceptionHandler {
                 .body(new ApiError("bad_request", "参数类型错误: " + ex.getName()));
     }
 
-    /** 无匹配路由 → 404 not_found。 */
+    /**
+     * 无匹配路由 → 404 not_found（既有语义，/api 面保持不变——m4 裁定③）。
+     * 非 /api 面且 console 缺失（目录不存在或无 index.html）→ 404 console_not_found + 引导文案（m4 裁定③）。
+     * /api 判定须覆盖根路径 /api 本身（与解析器的 api||api/ 口径对称，审查顺修 1）。
+     */
     @ExceptionHandler(NoResourceFoundException.class)
-    public ResponseEntity<ApiError> handleNoResource(NoResourceFoundException ex) {
+    public ResponseEntity<ApiError> handleNoResource(NoResourceFoundException ex, HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        if (!uri.equals("/api") && !uri.startsWith("/api/") && !consoleLocator.isAvailable()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new ApiError("console_not_found", consoleLocator.notFoundMessage()));
+        }
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(new ApiError("not_found", "资源不存在"));
     }

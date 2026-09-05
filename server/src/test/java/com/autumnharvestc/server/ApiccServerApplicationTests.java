@@ -28,7 +28,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import(ApiccServerApplicationTests.RequestBodyValidationProbeController.class)
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:apicc-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data"
+        "apicc.server.data-dir=target/test-data",
+        "apicc.server.console-dir=target/no-such-console-dir"
 })
 class ApiccServerApplicationTests {
 
@@ -47,14 +48,17 @@ class ApiccServerApplicationTests {
                 .andExpect(jsonPath("$.status").value("ok"));
     }
 
-    /** 全局错误契约骨架：未匹配路由 → 404 {"code":"not_found","message":...}（规格 §3 错误统一 {code,message}）。
+    /** 全局错误契约骨架：未匹配路由 → 404 {"code":...,"message":...}（规格 m3 §3 错误统一 {code,message}）。
      *  路径取非 /api/v1 面：任务 3 起 /api/v1/** 受 Bearer 认证保护，未认证的未知 v1 路由由过滤器先行 401
-     *  （该行为在 AuthApiContractTest 钉住），404 映射覆盖移到此面。 */
+     *  （该行为在 AuthApiContractTest 钉住），404 映射覆盖移到此面。
+     *  M4-B 起（m4 裁定③）非 /api 面且 console 缺失 → code=console_not_found + 引导文案；
+     *  console 可用时的未知静态路由仍为 not_found（ConsoleStaticHostingTest 穿越探测钉住），
+     *  /api 面带 token 未命中保持 not_found（console 包契约测试钉住）。console-dir 显式指向缺失路径保证确定性。 */
     @Test
     void unknownRouteReturns404WithCodeMessage() throws Exception {
         mockMvc.perform(get("/definitely-not-exists"))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value("not_found"))
+                .andExpect(jsonPath("$.code").value("console_not_found"))
                 .andExpect(jsonPath("$.message").isNotEmpty());
     }
 
