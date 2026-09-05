@@ -81,6 +81,8 @@ export interface AdminClient {
   readonly token: string | undefined;
   setToken(token: string): void;
   clearToken(): void;
+  /** 运行期接线/覆盖会话失效钩子（组合根先建 client 后建 session store 的装配顺序需要）。 */
+  setOnUnauthorized(fn: () => void): void;
   register(input: AdminRegisterInput): Promise<AdminUser>;
   login(credentials: { username: string; password: string }): Promise<AdminLoginResult>;
   logout(): Promise<void>;
@@ -103,10 +105,12 @@ export interface AdminClient {
 /** 默认超时 15s（与桌面端 onlineClient 同裁定）。 */
 const DEFAULT_TIMEOUT_MS = 15_000;
 
-export function createAdminClient(deps: AdminClientDeps): AdminClient {
+export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
   const baseUrl = (deps.baseUrl ?? defaultApiBaseUrl()).replace(/\/+$/, "");
   const doFetch = deps.fetch ?? ((input: string, init?: RequestInit) => globalThis.fetch(input, init));
   let token: string | undefined = deps.token;
+  /** 会话失效钩子：deps.onUnauthorized 为初值，可经 setOnUnauthorized 运行期覆盖（组合根接线）。 */
+  let onUnauthorized: (() => void) | undefined = deps.onUnauthorized;
 
   /** URL 拼装：字符串拼接（baseUrl 可为同源相对路径，裁定③）+ 查询串经 URLSearchParams 编码。 */
   function buildUrl(path: string, query?: Record<string, string>): string {
@@ -154,7 +158,7 @@ export function createAdminClient(deps: AdminClientDeps): AdminClient {
       }
       const parsed = AdminErrorSchema.safeParse(body);
       if (!parsed.success) throw new AdminProtocolError(`错误响应缺少 { code, message }（HTTP ${response.status}）`, response.status);
-      if (response.status === 401 && tokenAttached) deps.onUnauthorized?.();
+      if (response.status === 401 && tokenAttached) onUnauthorized?.();
       throw new AdminApiError(response.status, parsed.data.code, parsed.data.message);
     }
 
@@ -199,6 +203,9 @@ export function createAdminClient(deps: AdminClientDeps): AdminClient {
     },
     clearToken() {
       token = undefined;
+    },
+    setOnUnauthorized(fn: () => void) {
+      onUnauthorized = fn;
     },
 
     async register(input) {

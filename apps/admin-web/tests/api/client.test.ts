@@ -144,12 +144,32 @@ describe("adminClient 请求拼装", () => {
     expect(calls[1]!.headers["Authorization"]).toBeUndefined();
   });
 
-  it("默认 baseUrl 同源 /api/v1（裁定③，开发经 vite 代理转发）", async () => {
+  it("默认 baseUrl 同源 /api/v1（裁定③）；VITE_API_BASE 覆盖生效（裁定 A：stub env 免疫 CI 环境）", async () => {
     const { calls, impl } = fetchStub(() => json(200, USER));
-    const client = createAdminClient({ fetch: impl, token: "tok-1" });
-    expect(client.baseUrl).toBe("/api/v1");
-    await client.me();
-    expect(calls[0]!.url).toBe("/api/v1/me");
+    vi.stubEnv("VITE_API_BASE", "https://stub.example.com/api/v1");
+    try {
+      const overridden = createAdminClient({ fetch: impl, token: "tok-1" });
+      expect(overridden.baseUrl).toBe("https://stub.example.com/api/v1");
+      await overridden.me();
+      expect(calls[0]!.url).toBe("https://stub.example.com/api/v1/me");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const fallback = createAdminClient({ fetch: impl });
+    expect(fallback.baseUrl).toBe("/api/v1");
+    await fallback.me();
+    expect(calls[1]!.url).toBe("/api/v1/me");
+  });
+
+  it("setOnUnauthorized：运行期接线/覆盖会话失效钩子（组合根先建 client 后建 store 的装配顺序）", async () => {
+    const early = vi.fn();
+    const late = vi.fn();
+    const { impl } = fetchStub(() => json(401, { code: "token_expired", message: "登录已过期" }));
+    const client = createAdminClient({ baseUrl: BASE, fetch: impl, token: "tok-1", onUnauthorized: early });
+    client.setOnUnauthorized(late);
+    await expect(client.me()).rejects.toMatchObject({ status: 401 });
+    expect(early).not.toHaveBeenCalled();
+    expect(late).toHaveBeenCalledTimes(1);
   });
 });
 

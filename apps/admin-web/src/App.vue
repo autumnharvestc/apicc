@@ -1,12 +1,4 @@
 <template>
-  <main class="app-root" data-testid="app-root">
-    <h1 class="app-title">{{ t("app.title") }}</h1>
-    <!-- 任务 2+ 起装配 router-view / 布局壳（App 为组合根，store 工厂只在装配层调用）。 -->
-  </main>
+  <!-- 组合根（M4-A 任务 2 起）：路由出口；store 实例由 main.ts 装配后经路由 props 下传视图。 -->
+  <router-view />
 </template>
-
-<script setup lang="ts">
-import { useI18n } from "vue-i18n";
-
-const { t } = useI18n();
-</script>

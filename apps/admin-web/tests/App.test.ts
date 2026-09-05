@@ -1,31 +1,67 @@
-// M4-A 任务 1：最小挂载冒烟——证明 vitest + jsdom + vue(+vue-i18n) 装配可用
-// （计划任务 1 步骤 1③）；顺带钉住 D8 全局约束「zh/en 成对」的键集一致。
-import { describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+// M4-A 任务 2：App 装配冒烟——App 为组合根渲染 router-view；未登录启动经守卫落在登录页。
+// 另钉 i18n 初始语言行为（localStorage 偏好优先 / navigator 回退）与 D8 zh/en 键集成对。
+// （任务 1 版本的「挂载渲染标题」断言随 App 装配面演进为登录页装配断言。）
+import { describe, expect, it, beforeAll } from "vitest";
+import { mount, flushPromises } from "@vue/test-utils";
 import App from "../src/App.vue";
 import { createAdminI18n } from "../src/i18n/index.js";
+import { createAdminClient } from "../src/api/client.js";
+import { createSessionStore } from "../src/stores/session.js";
+import { createAppRouter } from "../src/router/index.js";
 import zhCN from "../src/i18n/zh-CN.json";
 import en from "../src/i18n/en.json";
 
+beforeAll(() => {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    configurable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+    }),
+  });
+});
+
 function mountApp() {
+  // 空存储下不应发起任何请求；fetch 替身兜底防止意外网络。
+  const client = createAdminClient({
+    baseUrl: "/api/v1",
+    fetch: (async () => new Response(JSON.stringify({ id: "u", username: "x", displayName: "x" }), { status: 200 })) as typeof fetch,
+  });
+  const session = createSessionStore({ client, storage: localStorage });
+  const router = createAppRouter({ session });
   const { i18n } = createAdminI18n();
-  return mount(App, { global: { plugins: [i18n] } });
+  const wrapper = mount(App, { global: { plugins: [i18n, router] } });
+  return { wrapper, router };
 }
 
-describe("App 最小挂载冒烟", () => {
-  it("挂载渲染根容器与 i18n 标题：localStorage 语言偏好优先（zh-CN → 管理控制台）", () => {
-    // jsdom 的 navigator.language 固定 en-US——用存储偏好钉住 zh-CN 渲染路径，
-    // 同时证明偏好持久化键（apicc.admin.locale）被正确消费。
+describe("App 装配冒烟", () => {
+  it("未登录启动：初始导航 / 经守卫落在 /login，登录表单渲染（vitest+jsdom+vue+router 装配可用）", async () => {
+    localStorage.clear();
+    const { wrapper, router } = mountApp();
+    await router.isReady();
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe("login");
+    expect(wrapper.find("[data-testid=login-form]").exists()).toBe(true);
+  });
+});
+
+describe("i18n 初始语言（localStorage 偏好优先，navigator 回退）", () => {
+  it("存储偏好 zh-CN 生效", () => {
+    localStorage.clear();
     localStorage.setItem("apicc.admin.locale", "zh-CN");
-    const wrapper = mountApp();
-    expect(wrapper.find("[data-testid=app-root]").exists()).toBe(true);
-    expect(wrapper.text()).toContain("管理控制台");
+    const { i18n } = createAdminI18n();
+    expect(i18n.global.locale.value).toBe("zh-CN");
   });
 
-  it("无存储偏好 → 按 navigator 语言回退（jsdom en-US → Admin Console）", () => {
+  it("无存储偏好 → navigator 回退（jsdom en-US → en）", () => {
     localStorage.clear();
-    const wrapper = mountApp();
-    expect(wrapper.text()).toContain("Admin Console");
+    const { i18n } = createAdminI18n();
+    expect(i18n.global.locale.value).toBe("en");
   });
 });
 
