@@ -515,6 +515,33 @@ export async function runCli(
       log(renderDesignMarkdown(api));
     });
 
+  // stdio MCP 服务器（M6 规格 D5/D6）：把工作区能力暴露为 MCP 工具供 agent 客户端消费。
+  // stdout 是 MCP 协议通道——命令自身零 stdout 输出，日志一律 stderr（裁定⑤，server.ts 内实现）；
+  // run-case 执行类工具默认不注册，--allow-run 显式开启（裁定⑥）。连接前 fail-fast 校验工作区。
+  program
+    .command("mcp")
+    .description("启动 stdio MCP 服务器（list-apis/get-api-design 只读 + run-case 需 --allow-run）")
+    .requiredOption("--workspace <root>", "工作区根目录")
+    .option("--allow-run", "注册执行类工具 run-case（默认只读）", false)
+    .action(async (opts: { workspace: string; allowRun: boolean }) => {
+      if (!existsSync(join(opts.workspace, "apicc.workspace.yaml"))) {
+        throw new Error(`未找到 apicc.workspace.yaml: ${opts.workspace}`);
+      }
+      const { createMcpServer } = await import("./mcp/server.js");
+      const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+      const server = createMcpServer(opts.workspace, { allowRun: opts.allowRun });
+      const transport = new StdioServerTransport();
+      await server.connect(transport);
+      // 挂起至客户端断开：包装 SDK 的 onclose——先保留其内部清理，再放行命令返回（退出码 0）。
+      await new Promise<void>((resolve) => {
+        const priorOnClose = transport.onclose?.bind(transport);
+        transport.onclose = () => {
+          priorOnClose?.();
+          resolve();
+        };
+      });
+    });
+
   // 非交互导入（任务 7）：默认只预览，--yes 确认写入；分组不存在则创建，同名项目拒绝。
   program
     .command("import")
