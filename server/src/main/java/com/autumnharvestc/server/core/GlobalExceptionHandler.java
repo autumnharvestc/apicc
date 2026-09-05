@@ -58,10 +58,12 @@ public class GlobalExceptionHandler {
     /**
      * 无匹配路由 → 404 not_found（既有语义，/api 面保持不变——m4 裁定③）。
      * 非 /api 面且 console 缺失（目录不存在或无 index.html）→ 404 console_not_found + 引导文案（m4 裁定③）。
+     * /api 判定须覆盖根路径 /api 本身（与解析器的 api||api/ 口径对称，审查顺修 1）。
      */
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<ApiError> handleNoResource(NoResourceFoundException ex, HttpServletRequest request) {
-        if (!request.getRequestURI().startsWith("/api/") && !consoleLocator.isAvailable()) {
+        String uri = request.getRequestURI();
+        if (!uri.equals("/api") && !uri.startsWith("/api/") && !consoleLocator.isAvailable()) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new ApiError("console_not_found", consoleLocator.notFoundMessage()));
         }

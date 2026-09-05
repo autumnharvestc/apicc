@@ -80,6 +80,14 @@ class ConsoleMissingContractTest {
                 .andExpect(jsonPath("$.code").value("not_found"));
     }
 
+    /** /api 根路径（无尾斜杠）同属 API 面 → not_found，与解析器 api||api/ 口径对称（审查顺修 1）。 */
+    @Test
+    void apiRootPathKeepsJsonNotFound() throws Exception {
+        mockMvc.perform(get("/api"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("not_found"));
+    }
+
     /** /api 保护面不变：未认证 → 401（先于 404，裁定⑤）。 */
     @Test
     void protectedApiStillReturns401WithoutToken() throws Exception {
