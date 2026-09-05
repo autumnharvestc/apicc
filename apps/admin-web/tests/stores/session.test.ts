@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdminClient } from "../../src/api/client.js";
 import { createSessionStore, TOKEN_KEY } from "../../src/stores/session.js";
+import { createWorkspacesStore } from "../../src/stores/workspaces.js";
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 type FetchHandler = (req: CapturedRequest) => Response | Promise<Response>;
@@ -49,8 +50,9 @@ function setup(handler: FetchHandler) {
   const client = createAdminClient({ baseUrl: BASE, fetch: stub.impl });
   const storage = memStorage();
   const onSessionExpired = vi.fn();
-  const store = createSessionStore({ client, storage, onSessionExpired });
-  return { calls: stub.calls, client, storage, onSessionExpired, store };
+  const onSignedOut = vi.fn();
+  const store = createSessionStore({ client, storage, onSessionExpired, onSignedOut });
+  return { calls: stub.calls, client, storage, onSessionExpired, onSignedOut, store };
 }
 
 /** 预置登录态：真实走一遍 login（成功路径）。 */
@@ -243,5 +245,64 @@ describe("401 拦截钩子接线（工厂装到 client.setOnUnauthorized）", ()
     expect(ctx.store.isAuthenticated).toBe(false);
     expect(ctx.storage.getItem(TOKEN_KEY)).toBeNull();
     expect(ctx.onSessionExpired).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("会话销毁装配接线（终审 Important 2）", () => {
+  it("logout 完成 → onSignedOut 恰一次（吊销失败本地登出照常触发）", async () => {
+    let calls = 0;
+    const ctx = setup(() => {
+      calls += 1;
+      if (calls === 1) return json(200, LOGIN_OK);
+      throw new TypeError("fetch failed");
+    });
+    await ctx.store.login({ username: "alice", password: "password8" });
+    await ctx.store.logout();
+    expect(ctx.onSignedOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("未登录登出也触发 onSignedOut（装配层重置幂等无害）", async () => {
+    const { store, onSignedOut } = setup(() => noContent());
+    await store.logout();
+    expect(onSignedOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("带 token 请求 401 → onSessionExpired 触发、onSignedOut 不触发（两回调口径分离）", async () => {
+    const { store, storage, onSessionExpired, onSignedOut } = setup(() => json(401, { code: "token_expired", message: "登录已过期" }));
+    storage.setItem(TOKEN_KEY, "tok-dead");
+    await store.initialize();
+    expect(onSessionExpired).toHaveBeenCalledTimes(1);
+    expect(onSignedOut).not.toHaveBeenCalled();
+  });
+
+  it("登出后 workspaces 状态清空（装配口径 onSignedOut → workspaces.reset）", async () => {
+    const stub = fetchStub((req) => {
+      const { method, url } = req;
+      if (url === `${BASE}/auth/login`) return json(200, LOGIN_OK);
+      if (url.startsWith(`${BASE}/auth/logout`)) return noContent();
+      if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, { id: "ws-1", name: "团队空间", myRole: "OWNER", memberCount: 2 });
+      if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, [{ userId: "u-2", username: "bob", displayName: "Bob", role: "EDITOR" }]);
+      if (url === `${BASE}/workspaces/ws-1/tree` && method === "GET") {
+        return json(200, { workspaceId: "ws-1", rootVersion: 1, files: [], projects: [{ id: "p-1", name: "订单", path: "groups/后端/projects/订单", myRole: "OWNER" }] });
+      }
+      if (url === `${BASE}/workspaces` && method === "GET") return json(200, []);
+      return json(404, { code: "not_found", message: "x" });
+    });
+    const client = createAdminClient({ baseUrl: BASE, fetch: stub.impl });
+    const storage = memStorage();
+    const workspaces = createWorkspacesStore({ client });
+    const session = createSessionStore({ client, storage, onSignedOut: () => workspaces.reset() });
+    await session.login({ username: "alice", password: "password8" });
+    await workspaces.select("ws-1");
+    await workspaces.loadMembers("ws-1");
+    await workspaces.loadTree("ws-1");
+    expect(workspaces.current).not.toBeNull();
+    expect(workspaces.members.length).toBeGreaterThan(0);
+    expect(workspaces.tree).not.toBeNull();
+    await session.logout();
+    expect(workspaces.current).toBeNull(); // 上一账号上下文清空（防换账号呈现/操作错位）
+    expect(workspaces.members).toEqual([]);
+    expect(workspaces.tree).toBeNull();
+    expect(workspaces.aclEntries).toEqual([]);
   });
 });

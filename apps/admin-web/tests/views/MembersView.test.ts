@@ -147,6 +147,27 @@ describe("MembersView 清单与权限化操作（裁定 A/D6）", () => {
     expect(wrapper.find("[data-testid=members-remove-u-2]").attributes("disabled")).toBeUndefined();
   });
 
+  it("路由参数变化 → 重拉对应工作区成员（终审 Important 1：显示与操作目标不错位）", async () => {
+    const { wrapper, router, calls } = await mountMembers((req) => {
+      const { method, url } = req;
+      if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, MEMBERS);
+      if (url === `${BASE}/workspaces/ws-2/members` && method === "GET") {
+        return json(200, [{ userId: "u-9", username: "zoe", displayName: "Zoe", role: "ADMIN" }]);
+      }
+      if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, DETAIL_OWNER);
+      if (url === `${BASE}/workspaces/ws-2` && method === "GET") return json(200, { id: "ws-2", name: "另一空间", myRole: "OWNER", memberCount: 1 });
+      return json(404, { code: "not_found", message: "x" });
+    });
+    expect(wrapper.findAll("tbody tr")[0]!.text()).toContain("Alice"); // ws-1 清单
+    await router.push("/workspaces/ws-2/members");
+    await flushPromises();
+    await flushPromises();
+    expect(calls.some((c) => c.method === "GET" && c.url === `${BASE}/workspaces/ws-2/members`)).toBe(true);
+    const rows = wrapper.findAll("tbody tr");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.text()).toContain("Zoe"); // 显示切换为 ws-2 成员
+  });
+
   it("改角色（a-select 即改）→ PUT { role } + members 刷新", async () => {
     const { wrapper, workspaces, calls } = await mountMembers(memberHandler());
     antdSelect(wrapper, "members-role-u-2").vm.$emit("change", "ADMIN");

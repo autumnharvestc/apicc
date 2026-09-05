@@ -76,6 +76,10 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
       aclSubmitting: false,
     }),
     actions: {
+      /** 会话销毁后的状态重置（终审 Important 2）：装配层在登出/会话失效时调用，防换账号残留上一账号的选中/成员/树/ACL 上下文。 */
+      reset(): void {
+        this.$reset();
+      },
       /** 清单拉取：失败 → error 上屏且不清旧清单（desktop 错误语义）。 */
       async refresh(): Promise<void> {
         this.loading = true;

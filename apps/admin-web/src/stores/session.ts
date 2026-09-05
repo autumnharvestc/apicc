@@ -25,6 +25,8 @@ export interface SessionStoreDeps {
   storage?: Storage;
   /** 会话失效（401 拦截/验活失败）后的跳转回调（注入避免 store 依赖 router）。 */
   onSessionExpired?: () => void;
+  /** 登出完成后的回调（终审 Important 2：装配层据此重置工作区上下文，防换账号残留）。 */
+  onSignedOut?: () => void;
 }
 
 /** 统一错误文案出口：AdminApiError.message 即服务端 message，其余取 Error message。 */
@@ -133,7 +135,8 @@ export function createSessionStore(deps: SessionStoreDeps) {
 
       /**
        * 登出：先吊销服务端（client.logout 内 204 后自清 client token），失败不阻断——
-       * 本地登出照常完成（token 留服务端 30 天自然过期，desktop 同语义）；随后清本地三处。
+       * 本地登出照常完成（token 留服务端 30 天自然过期，desktop 同语义）；随后清本地三处
+       * 并触发 onSignedOut（终审 Important 2：装配层重置工作区上下文）。
        */
       async logout(): Promise<void> {
         if (this.token !== undefined) {
@@ -144,6 +147,7 @@ export function createSessionStore(deps: SessionStoreDeps) {
           }
         }
         this.clearSession();
+        deps.onSignedOut?.();
       },
     },
   })(createPinia());

@@ -9,7 +9,7 @@
  * a-auto-complete 自由输入）；角色域 NONE/VIEWER/EDITOR/ADMIN（无 OWNER——ACL 角色域即如此）。
  * 失败 → aclError 顶部 alert 单通道。组件内零工厂调用：workspaces 经子路由 props 注入。
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
 import { Alert as AAlert, AutoComplete as AAutoComplete, Button as AButton, Input as AInput, Popconfirm as APopconfirm, Select as ASelect, Table as ATable, Tag as ATag } from "ant-design-vue";
@@ -27,13 +27,21 @@ const projects = computed(() => props.workspaces.tree?.projects ?? []);
 const selectedProjectId = ref<string | null>(null);
 const selectedProject = computed(() => projects.value.find((p) => p.id === selectedProjectId.value) ?? null);
 
+// —— 添加行状态（声明先于 immediate watch：watch 回调首航即复位这些输入）——
+const addUserId = ref("");
+const addRole = ref<AdminAclRole>("VIEWER");
+const addError = ref("");
+
 // 路由参数驱动：进页/切工作区 → 拉树（项目清单）+ 拉成员清单（添加行下拉建议，任务 4 审查
-// 备案 4 口径：依赖选中工作区的数据随路由参数变化重拉）。
+// 备案 4 口径：依赖选中工作区的数据随路由参数变化重拉）；添加行输入随切换复位（终审顺手⑦）。
 watch(
   workspaceId,
   (id) => {
     if (!id) return;
     selectedProjectId.value = null;
+    addUserId.value = "";
+    addRole.value = "VIEWER";
+    addError.value = "";
     void props.workspaces.loadTree(id);
     void props.workspaces.loadMembers(id);
   },
@@ -52,6 +60,9 @@ watch(
 );
 
 watch(selectedProjectId, (projectId) => {
+  addUserId.value = "";
+  addRole.value = "VIEWER";
+  addError.value = ""; // 添加行输入随项目切换复位（终审顺手⑦）
   if (projectId && workspaceId.value) void props.workspaces.loadAcl(workspaceId.value, projectId);
 });
 
@@ -100,17 +111,9 @@ async function onRemoveRow(userId: string): Promise<void> {
 }
 
 // —— 添加行（裁定 A：成员下拉建议 + 手输非成员 userId；§3.3 ACL 可预设）——
-const addUserId = ref("");
-const addRole = ref<AdminAclRole>("VIEWER");
-const addError = ref("");
-
 const memberOptions = computed(() =>
   props.workspaces.members.map((m) => ({ value: m.userId, label: `${m.displayName}（${m.username}）` })),
 );
-
-onMounted(() => {
-  addError.value = "";
-});
 
 async function onAdd(): Promise<void> {
   const userId = addUserId.value.trim();

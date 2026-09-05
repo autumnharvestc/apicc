@@ -8,11 +8,12 @@
  * 转让（把成员角色改为 OWNER）弹受控确认 a-modal（输入工作区名，文案明示自身降为 ADMIN 且
  * 不可逆，任务 3 受控弹窗先例；转让失败错误经 membersError 在 Modal 内就近呈现）。403 直达
  * URL → membersError 上屏 + 弹回 /workspaces（原因仅在成员面通道，列表页不重复呈现——任务 5
- * 审查注释更正）；其他后端错误码（owner_immutable 等）→ 顶部 membersError alert（选顶部
+ * 审查注释更正）；成员清单随路由参数变化重拉（终审 Important 1）；其他后端错误码
+ * （owner_immutable 等）→ 顶部 membersError alert（选顶部
  * alert 而非行级提示：单通道单呈现面，实现最干净，报告注明）。组件内零工厂调用：workspaces
  * 经路由 props 注入。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import { Alert as AAlert, Button as AButton, Input as AInput, Modal as AModal, Popconfirm as APopconfirm, Select as ASelect, Table as ATable, Tag as ATag } from "ant-design-vue";
@@ -27,13 +28,22 @@ const router = useRouter();
 /** 路由参数工作区 id（成员页数据寻址）。 */
 const workspaceId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
 
-onMounted(async () => {
-  const res = await props.workspaces.loadMembers(workspaceId.value);
-  if (!res.ok && res.forbidden) {
-    // 403 直达（非 ADMIN）：原因入 membersError（仅成员面通道呈现，不外溢列表页），弹回 /workspaces（裁定 C）
-    await router.push({ name: "workspaces" });
-  }
-});
+/**
+ * 成员清单随路由参数变化重拉（终审 Important 1）：同路由记录参数变化复用组件实例、不重跑
+ * onMounted——immediate watch 兼顾首载；403 弹回逻辑复用（ProjectAclView 同款姊妹口径）。
+ */
+watch(
+  workspaceId,
+  async (id) => {
+    if (!id) return;
+    const res = await props.workspaces.loadMembers(id);
+    if (!res.ok && res.forbidden) {
+      // 403 直达（非 ADMIN）：原因入 membersError（仅成员面通道呈现，不外溢列表页），弹回 /workspaces（裁定 C）
+      await router.push({ name: "workspaces" });
+    }
+  },
+  { immediate: true },
+);
 
 const columns = computed(() => [
   { title: t("members.colDisplayName"), dataIndex: "displayName", key: "displayName" },

@@ -174,11 +174,13 @@ describe("ProjectAclView 项目选择（裁定 A/C）", () => {
     expect(wrapper.text()).toContain("暂无数据");
   });
 
-  it("切换项目 → 加载对应 ACL 行（p-2 一行 VIEWER）", async () => {
+  it("切换项目 → 加载对应 ACL 行（p-2 一行 VIEWER）；添加行输入随切换复位（终审顺手⑦）", async () => {
     const { wrapper } = await mountAcl();
+    await wrapper.find("[data-testid=acl-add-userid] input").setValue("u-9"); // 旧项目的添加行输入
     antdSelect(wrapper, "acl-project-select").vm.$emit("update:value", "p-2");
     await flushPromises();
     await flushPromises();
+    expect((wrapper.find("[data-testid=acl-add-userid] input").element as HTMLInputElement).value).toBe(""); // 复位
     const rows = wrapper.findAll("tbody tr");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text()).toContain("u-2");

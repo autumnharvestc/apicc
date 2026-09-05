@@ -478,6 +478,29 @@ describe("acl（任务 5，裁定 A/B：tree/acl/setAclEntry/removeAclEntry）",
     expect(store.aclEntries).toEqual(ACL_ROWS);
   });
 
+  it("reset 清空全部工作区上下文（终审 Important 2：装配层在登出/会话失效时调用）", async () => {
+    const { store } = setup(aclHandler());
+    await store.refresh();
+    await store.select("ws-1");
+    await store.loadMembers("ws-1");
+    await store.loadTree("ws-1");
+    await store.loadAcl("ws-1", "p-2");
+    store.reset();
+    expect(store.list).toEqual([]);
+    expect(store.current).toBeNull();
+    expect(store.members).toEqual([]);
+    expect(store.tree).toBeNull();
+    expect(store.aclEntries).toEqual([]);
+    expect(store.aclProjectId).toBeNull();
+    expect(store.error).toBeNull();
+    expect(store.actionError).toBeNull();
+    expect(store.membersError).toBeNull();
+    expect(store.aclError).toBeNull();
+    expect(store.loading).toBe(false);
+    expect(store.submitting).toBe(false);
+    expect(store.aclSubmitting).toBe(false);
+  });
+
   it("addAclEntry 在途 aclSubmitting=true 且防重复提交，完成复位（收口顺修：添加按钮 loading 生效）", async () => {
     let release!: () => void;
     const gate = new Promise<Response>((resolve) => {
