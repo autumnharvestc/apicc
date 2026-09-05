@@ -24,6 +24,8 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
   const client = deps.client;
   /** 选中请求序号：竞态防护（任务 3 审查次要 1 顺修）——仅最新请求可落地结果。 */
   let selectSeq = 0;
+  /** 树请求序号（收口顺修）：工作区切换乱序完成时丢弃旧结果，与 aclSeq/selectSeq 同口径。 */
+  let treeSeq = 0;
   /** ACL 清单请求序号（任务 4 审查备案 4 同口径）：项目切换乱序完成时丢弃旧结果。 */
   let aclSeq = 0;
   return defineStore("admin-workspaces", {
@@ -221,16 +223,21 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
 
       /**
        * 拉取工作区树（任务 5，裁定 A/C）：项目清单与 projects[].myRole 来源；失败 → aclError
-       * 上屏（ACL 页顶部 alert 单通道）。
+       * 上屏（ACL 页顶部 alert 单通道）。竞态防护（收口顺修）：工作区切换乱序完成时以最新
+       * 请求为准，与 aclSeq/selectSeq 同口径。
        */
       async loadTree(workspaceId: string): Promise<void> {
+        const seq = ++treeSeq;
         this.treeLoading = true;
         try {
-          this.tree = await client.getTree(workspaceId);
+          const tree = await client.getTree(workspaceId);
+          if (seq !== treeSeq) return; // 乱序完成：已有更新的工作区切换，丢弃本次结果
+          this.tree = tree;
         } catch (e) {
+          if (seq !== treeSeq) return;
           this.aclError = errorMessage(e);
         } finally {
-          this.treeLoading = false;
+          if (seq === treeSeq) this.treeLoading = false;
         }
       },
 
@@ -277,6 +284,26 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
           return false;
         } finally {
           this.aclBusyUserId = null;
+        }
+      },
+
+      /**
+       * 添加 ACL 行（收口顺修：对齐 members addMember 先例——aclSubmitting 在途/防重复提交，
+       * 添加按钮 loading 生效；与行级 aclBusyUserId 通道分离）。
+       */
+      async addAclEntry(workspaceId: string, projectId: string, input: { userId: string; role: AdminAclRole }): Promise<boolean> {
+        if (this.aclSubmitting) return false;
+        this.aclSubmitting = true;
+        this.aclError = null;
+        try {
+          await client.setAclEntry(workspaceId, projectId, input);
+          await this.refreshAclAndTree(workspaceId, projectId);
+          return true;
+        } catch (e) {
+          this.aclError = errorMessage(e);
+          return false;
+        } finally {
+          this.aclSubmitting = false;
         }
       },
 

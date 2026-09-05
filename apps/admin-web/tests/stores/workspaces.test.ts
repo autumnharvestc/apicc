@@ -2,7 +2,7 @@
 // actionError=创建/删除弹窗内、membersError=成员面，任务 3 审查次要 2 顺修）；选中竞态防护
 // （任务 3 审查次要 1 顺修：乱序完成以最新请求为准）；成员 actions（任务 4，裁定 D：清单/
 // 改角色/移除/添加 + 行级 busy + 成功后清单与 current 重选联动）。client 用假 fetch 替身。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAdminClient } from "../../src/api/client.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
 
@@ -369,6 +369,27 @@ describe("acl（任务 5，裁定 A/B：tree/acl/setAclEntry/removeAclEntry）",
     expect(store.aclError).toBe("无权读取");
   });
 
+  it("loadTree 竞态：工作区切换乱序完成以最新请求为准（收口顺修，与 aclSeq/selectSeq 同口径）", async () => {
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<Response>((resolve) => {
+      releaseSlow = () => resolve(json(200, TREE));
+    });
+    const { store } = setup((req) => {
+      if (req.url === `${BASE}/workspaces/ws-1/tree` && req.method === "GET") return slowGate; // 先发慢完成
+      if (req.url === `${BASE}/workspaces/ws-2/tree` && req.method === "GET") {
+        return json(200, { workspaceId: "ws-2", rootVersion: 1, files: [], projects: [] });
+      } // 后发先至
+      return json(404, { code: "not_found", message: "x" });
+    });
+    const slow = store.loadTree("ws-1");
+    await store.loadTree("ws-2");
+    expect(store.tree!.workspaceId).toBe("ws-2");
+    releaseSlow(); // ws-1 树迟到
+    await slow;
+    expect(store.tree!.workspaceId).toBe("ws-2"); // 旧结果丢弃
+    expect(store.treeLoading).toBe(false);
+  });
+
   it("loadAcl 成功：GET acl → entries + aclProjectId", async () => {
     const { calls, store } = setup(aclHandler());
     await store.loadAcl("ws-1", "p-2");
@@ -429,7 +450,9 @@ describe("acl（任务 5，裁定 A/B：tree/acl/setAclEntry/removeAclEntry）",
     const { calls, store } = setup((req) => {
       const { method, url } = req;
       if (url === `${BASE}/workspaces/ws-1/tree` && method === "GET") return json(200, p2Denied ? TREE_AFTER : TREE);
-      if (url === `${BASE}/workspaces/ws-1/projects/p-2/acl` && method === "GET") return json(200, p2Denied ? [{ userId: "u-2", role: "NONE" }] : ACL_ROWS);
+      // 保真（收口顺修·重要 1）：删行后 listAcl 返回空（冒烟实证 DELETE 后 listAcl=[]）——
+      // 恢复继承 = 行消失（回到工作区角色），而非残留一行
+      if (url === `${BASE}/workspaces/ws-1/projects/p-2/acl` && method === "GET") return json(200, p2Denied ? [{ userId: "u-2", role: "NONE" }] : []);
       if (url.startsWith(`${BASE}/workspaces/ws-1/projects/p-2/acl`) && method === "DELETE") {
         p2Denied = false;
         return noContent();
@@ -442,7 +465,7 @@ describe("acl（任务 5，裁定 A/B：tree/acl/setAclEntry/removeAclEntry）",
     expect(ok).toBe(true);
     const del = calls.find((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1/projects/p-2/acl?userId=u-2`);
     expect(del!.url).toBe(`${BASE}/workspaces/ws-1/projects/p-2/acl?userId=u-2`);
-    expect(store.aclEntries).toEqual(ACL_ROWS); // 行消失（恢复继承后回到工作区角色）
+    expect(store.aclEntries).toEqual([]); // 行消失（删行=恢复工作区角色继承）
     expect(store.tree!.projects.find((p) => p.id === "p-2")!.myRole).toBe("EDITOR");
   });
 
@@ -453,5 +476,26 @@ describe("acl（任务 5，裁定 A/B：tree/acl/setAclEntry/removeAclEntry）",
     expect(ok).toBe(false);
     expect(store.aclError).toBe("服务端异常");
     expect(store.aclEntries).toEqual(ACL_ROWS);
+  });
+
+  it("addAclEntry 在途 aclSubmitting=true 且防重复提交，完成复位（收口顺修：添加按钮 loading 生效）", async () => {
+    let release!: () => void;
+    const gate = new Promise<Response>((resolve) => {
+      release = () => resolve(noContent());
+    });
+    const { calls, store } = setup((req) => {
+      const { method, url } = req;
+      if (url === `${BASE}/workspaces/ws-1/projects/p-1/acl` && method === "PUT") return gate;
+      if (url === `${BASE}/workspaces/ws-1/projects/p-1/acl` && method === "GET") return json(200, []);
+      if (url === `${BASE}/workspaces/ws-1/tree` && method === "GET") return json(200, TREE);
+      return json(404, { code: "not_found", message: "x" });
+    });
+    const first = store.addAclEntry("ws-1", "p-1", { userId: "u-9", role: "VIEWER" });
+    await vi.waitFor(() => expect(store.aclSubmitting).toBe(true));
+    await store.addAclEntry("ws-1", "p-1", { userId: "u-9", role: "VIEWER" }); // 在途调用应被忽略
+    release();
+    await first;
+    expect(store.aclSubmitting).toBe(false);
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
   });
 });

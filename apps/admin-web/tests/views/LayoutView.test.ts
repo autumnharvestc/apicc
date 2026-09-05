@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // M4-A 任务 3：LayoutView（布局壳）测试——侧栏导航（工作区项常显；成员/项目 ACL 入口仅当前
 // 选中工作区 myRole ∈ {OWNER, ADMIN} 可见，详情未拉取时隐藏防闪烁，裁定 A/C）、顶栏当前用户 +
-// 登出、子路由挂内容区、路由参数驱动的选中（直接 URL 进成员/ACL 占位 → 布局按 :id 选中）。
+// 登出、子路由挂内容区、路由参数驱动的选中（直接 URL 进成员/ACL 页 → 布局按 :id 选中）。
 // 经 App 装配（真实路由/store/i18n）驱动；seed token 走 initialize 验活建立登录态。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, type VueWrapper } from "@vue/test-utils";
@@ -122,7 +122,7 @@ describe("LayoutView 布局壳（裁定 A）", () => {
     expect(wrapper.findAll("tbody tr").length).toBeGreaterThanOrEqual(2); // 成员清单已渲染
   });
 
-  it("点击 ACL 入口 → /workspaces/{id}/acl 占位", async () => {
+  it("点击 ACL 入口 → /workspaces/{id}/acl（项目 ACL 视图，任务 5）", async () => {
     const { wrapper, router } = await mountLayout();
     await wrapper.find("[data-testid=ws-open]").trigger("click");
     await flushPromises();

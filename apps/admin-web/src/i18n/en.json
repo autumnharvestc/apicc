@@ -79,7 +79,6 @@
     "deleteHint": "Deleting removes the workspace together with all of its content and cannot be undone. Type \"{name}\" to confirm.",
     "deleteNamePlaceholder": "Type the workspace name to confirm",
     "deleteConfirm": "Delete workspace",
-    "placeholder": "Coming soon",
     "error": "Request failed"
   }
 }

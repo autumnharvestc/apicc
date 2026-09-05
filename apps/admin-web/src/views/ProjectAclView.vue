@@ -119,7 +119,7 @@ async function onAdd(): Promise<void> {
     return;
   }
   if (!workspaceId.value || !selectedProjectId.value) return;
-  const ok = await props.workspaces.setAclEntry(workspaceId.value, selectedProjectId.value, { userId, role: addRole.value });
+  const ok = await props.workspaces.addAclEntry(workspaceId.value, selectedProjectId.value, { userId, role: addRole.value });
   if (ok) {
     addUserId.value = "";
     addRole.value = "VIEWER";
