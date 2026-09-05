@@ -597,6 +597,8 @@ export async function runCli(
           resolve();
         };
       });
+    });
+
   // AI 用例建议（M6-A D8）：基于接口定义经用户自备的 OpenAI 兼容端点生成候选用例，
   // YAML 输出供人工审阅后并入——绝不自动写回接口（D2 人审采用硬边界）；密钥只进 config 不进日志。
   const ai = program.command("ai").description("AI 能力命令组");
