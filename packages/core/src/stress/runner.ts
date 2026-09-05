@@ -64,7 +64,8 @@ export class StressRunner {
           samples.push({
             timeMs: performance.now() - t0,
             status: res.status,
-            ok: res.status >= 200 && res.status < 300,
+            // M5 D3：WS 响应 status=握手 HTTP 状态，101 即成功——豁免于 HTTP 2xx 口径。
+            ok: (res.status >= 200 && res.status < 300) || res.status === 101,
           });
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);

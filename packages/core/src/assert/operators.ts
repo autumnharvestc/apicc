@@ -1,6 +1,11 @@
 import { DOMParser } from "@xmldom/xmldom";
-import { isArrayOfNodes, select, type SelectedValue, type SelectReturnType } from "xpath";
+// xpath 包为 CommonJS 且具名导出不可被 cjs-module-lexer 静态探测——Node 原生 ESM（core dist
+// 被桌面端/子进程加载）下具名导入会 SyntaxError，必须经默认导出解构（vitest interop 会掩盖此问题）。
+import xpathDefault from "xpath";
 import type { AssertOperator, AssertResult } from "../plugin/types.js";
+import type { SelectedValue, SelectReturnType } from "xpath";
+
+const { select, isArrayOfNodes } = xpathDefault as typeof import("xpath");
 
 function num(v: unknown): number {
   return typeof v === "number" ? v : Number(v);

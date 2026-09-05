@@ -124,7 +124,6 @@ describe("多协议混合集合端到端（M5 验收）", () => {
       log,
       deps,
     );
-    console.log("RUN-LOG:", logLines.join(" || "));
     expect(exit).toBe(0);
     // 服务端视角：各协议请求形状正确（WS 帧内容 / SOAP 信封与 Content-Type）。
     expect(captured.wsMessages).toEqual(['{"ping":"m5"}']);
@@ -143,7 +142,6 @@ describe("多协议混合集合端到端（M5 验收）", () => {
       log,
       deps,
     );
-    console.log("STRESS-LOG:", logLines.join(" || "));
     expect(exit).toBe(0);
     // 6 次采样全部抵达 SOAP 端点且以 SOAP 口径（Content-Type text/xml）发送。
     expect(captured.soapBodies.length).toBeGreaterThanOrEqual(6);
