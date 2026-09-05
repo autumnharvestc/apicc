@@ -28,5 +28,7 @@ apicc:
   server:
     # 工作区内容与元数据的根目录（规格 m3 §2 D6：server-data/workspaces/<wsId>/）
     data-dir: ./server-data
+    # 管理后台静态产物目录（规格 m4 §2 D2：默认与运行目录同级；pnpm -C apps/admin-web build 的 dist 内容放入此处）
+    console-dir: ./console
     allow-registration: true
     token-ttl-days: 30
