@@ -1,4 +1,4 @@
-import type { AuthSpec, BodyContent, KeyValuePair, HttpMethod } from "../domain/model.js";
+import type { AuthSpec, BodyContent, KeyValuePair, HttpMethod, Protocol } from "../domain/model.js";
 import type { Workspace } from "../domain/model.js";
 import type { RunResult } from "../report/types.js";
 
@@ -9,6 +9,14 @@ export interface ExecutableRequest {
   query: KeyValuePair[];
   body?: BodyContent;
   auth?: AuthSpec;
+  /** 协议显式分发键（M5 D5）：缺省视为 http（旧形状请求零破坏）。 */
+  protocol?: Protocol;
+  /** websocket 连接后发送的文本帧（变量已解析，D7）；缺省仅连接不等待帧。 */
+  message?: string;
+  /** soap 请求体（XML 信封模板，变量已解析，D7）；soapClient 执行时必填。 */
+  envelope?: string;
+  /** soap 的 SOAPAction 头值（变量已解析，D7）；缺省不带该头。 */
+  soapAction?: string;
 }
 
 export interface ExecutionResponse {

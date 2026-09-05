@@ -147,7 +147,7 @@ async function resolveStressTarget(
   apiPath: string,
   caseId: string,
   envName: string | undefined,
-): Promise<{ apiId: string; createRunner: (client?: ProtocolClient) => StressRunner }> {
+): Promise<{ apiId: string; defaultClient: ProtocolClient; createRunner: (client?: ProtocolClient) => StressRunner }> {
   const storage = registry.getStorage();
   if (!storage) throw new Error("未注册存储适配器");
   const { workspace } = await storage.load(root);
@@ -183,15 +183,23 @@ async function resolveStressTarget(
   // env 解析：未指定则不启用环境；指定但未命中显式报错（与 run-workflow 同款）。
   const env = envName ? project.environments.find((e) => e.name === envName) : undefined;
   if (envName && !env) throw new Error(`未找到环境: ${envName}`);
-  const { StressRunner, buildStressRequest, httpClient, builtinAuthProviders, mergedEnvVars, createVariableResolver } =
+  const { StressRunner, buildStressRequest, builtinAuthProviders, mergedEnvVars, createVariableResolver } =
     await import("@apicc/core");
   // 变量层与 CollectionRunner 同源：[环境(继承链经 mergedEnvVars 合并), 集合, 项目, 全局]。
   const resolver = createVariableResolver({
     layers: [mergedEnvVars(env, project), collection.variables, project.variables, workspace.variables],
   });
+  // M5 D5：默认客户端按接口协议从注册中心解析（probe = 已解析变量的可执行请求）——
+  // WS/SOAP 接口压测由对应客户端承接，杜绝「SOAP 被静默按 HTTP 执行」；未知协议 fail-fast。
+  const probe = buildStressRequest(stressedApi, resolver, builtinAuthProviders);
+  const defaultClient = registry.getProtocol(probe);
+  if (!defaultClient) {
+    throw new Error(`未找到可处理该接口的协议客户端（protocol: ${probe.protocol ?? "http"}）`);
+  }
   return {
     apiId: stressedApi.id,
-    createRunner: (client = httpClient) => new StressRunner({
+    defaultClient,
+    createRunner: (client = defaultClient) => new StressRunner({
       client,
       // 每次采样重跑工厂：动态变量（如 {{$uuid}}）逐请求变化，不做跨请求复用。
       buildRequest: () => buildStressRequest(stressedApi, resolver, builtinAuthProviders),
@@ -472,11 +480,11 @@ export async function runCli(
         if (opts.iterations === undefined && opts.duration === undefined) {
           throw new Error("需要 --iterations 或 --duration");
         }
-        const { createRunner } = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
-        const { httpClient } = await import("@apicc/core");
+        const { defaultClient, createRunner } = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
         // 样本经记录客户端拦截采集（报告不含原始样本），跑完回传 ShardResult。
+        // 记录客户端委托协议感知的默认客户端（M5 D5：WS/SOAP 压测由对应客户端承接）。
         const samples: StressSample[] = [];
-        const runner = createRunner(recordingClient(httpClient, samples));
+        const runner = createRunner(recordingClient(defaultClient, samples));
         await runner.run({
           concurrency: opts.concurrency,
           maxIterations: opts.iterations,

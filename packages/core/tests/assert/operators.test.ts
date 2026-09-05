@@ -8,12 +8,14 @@ const eq = builtinAssertOperators.find((o) => o.op === "eq")!;
 // 契约正向探针固定调用 evaluate("a", "a")；对「实参与期望相同时语义上必须判 false」的操作符
 // （neq 及数值比较类），按任务 4 修复轮裁定，在本测试内以该操作符的合规匹配输入包装后接入契约：
 // 仅将探针输入映射为本操作符的合规匹配对，其余输入直通原操作符。
+// xpath 同类：actual 须为 XML 文本、"a" 非法 → 以合法 XML+表达式接入探针。
 const compliantProbe: Record<string, [actual: unknown, expected: string]> = {
   neq: ["a", "b"],
   lt: ["9", "10"],
   gt: ["10", "9"],
   lte: ["9", "10"],
   gte: ["10", "10"],
+  xpath: ["<User><id>42</id></User>", "//id[==42]"],
 };
 
 function toContractView(op: AssertOperator): AssertOperator {

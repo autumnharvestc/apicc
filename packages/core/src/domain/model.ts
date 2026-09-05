@@ -18,6 +18,10 @@ export type KeyValuePair = z.infer<typeof KeyValuePairSchema>;
 export const HttpMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
 export type HttpMethod = z.infer<typeof HttpMethodSchema>;
 
+/** 协议枚举（M5 D2）：http 为缺省值，websocket/soap 由对应 ProtocolClient 承接（D5）。 */
+export const ProtocolSchema = z.enum(["http", "websocket", "soap"]);
+export type Protocol = z.infer<typeof ProtocolSchema>;
+
 export const BodySchema = z.object({
   kind: z.enum(["json", "xml", "raw", "graphql", "form"]),
   content: z.string().default(""),
@@ -70,7 +74,8 @@ export const ApiDefinitionSchema = z.object({
   name: z.string(),
   version: z.string().default("1.0.0"),
   deprecated: z.boolean().default(false),
-  method: HttpMethodSchema,
+  // 缺省 GET（M5 D2/裁定④）：websocket 不参与执行可省略 method；旧 yaml 显式 method 完全不受影响。
+  method: HttpMethodSchema.default("GET"),
   url: z.string(),
   headers: z.array(KeyValuePairSchema).default([]),
   query: z.array(KeyValuePairSchema).default([]),
@@ -78,11 +83,47 @@ export const ApiDefinitionSchema = z.object({
   auth: AuthSpecSchema.optional(),
   design: z.string().optional(),
   cases: z.array(TestCaseSchema).default([]),
-}).strict();
-export type ApiDefinition = z.infer<typeof ApiDefinitionSchema>;
+  // —— M5 多协议演进（D2）：旧 yaml 无以下字段 → 完全不变（protocol 缺省 http，零破坏）——
+  protocol: ProtocolSchema.default("http"),
+  /** websocket：连接后发送的文本帧模板（变量经既有解析管线，D7）；缺省仅连接。 */
+  message: z.string().optional(),
+  /** soap：必填 XML 信封模板（superRefine 强制）。 */
+  envelope: z.string().optional(),
+  /** soap：可选，映射 SOAPAction 头。 */
+  soapAction: z.string().optional(),
+})
+.strict()
+.superRefine((api, ctx) => {
+  if (api.protocol !== "soap") return;
+  if (api.envelope === undefined) {
+    ctx.addIssue({ code: "custom", path: ["envelope"], message: "soap 接口必须提供 envelope（XML 信封模板）" });
+  }
+  if (api.method !== "POST") {
+    ctx.addIssue({ code: "custom", path: ["method"], message: "soap 接口 method 必须显式为 POST" });
+  }
+});
+
+// —— M5 类型兼容层（D2 + 零破坏红线）——
+// 运行时不变量：parse 输出恒有 protocol（default("http")）。但既有手写字面量（测试夹具/调用方，
+// 多数嵌套在 Workspace/Project/… 内）不允许被迫补 protocol。导出类型在 zod 推导之上把嵌套接口的
+// protocol 放宽为可选：strict 解析结果仍可赋值给这些类型，手写字面量免补字段（旧调用方零改动）。
+/** parse 后的完整接口形状（protocol 恒有值），供需要全量形状的调用方使用。 */
+export type ApiDefinitionParsed = z.infer<typeof ApiDefinitionSchema>;
+type LooseApi = Omit<ApiDefinitionParsed, "protocol"> & { protocol?: Protocol };
+export type ApiDefinition = LooseApi;
+
+type FolderParsed = z.infer<typeof FolderSchema>;
+export type Folder = Omit<FolderParsed, "apis"> & { apis: LooseApi[] };
+type CollectionParsed = z.infer<typeof CollectionSchema>;
+export type Collection = Omit<CollectionParsed, "apis" | "folders"> & { apis: LooseApi[]; folders: Folder[] };
+type ProjectParsed = z.infer<typeof ProjectSchema>;
+export type Project = Omit<ProjectParsed, "collections"> & { collections: Collection[] };
+type GroupParsed = z.infer<typeof GroupSchema>;
+export type Group = Omit<GroupParsed, "projects"> & { projects: Project[] };
+type WorkspaceParsed = z.infer<typeof WorkspaceSchema>;
+export type Workspace = Omit<WorkspaceParsed, "groups"> & { groups: Group[] };
 
 export const FolderSchema = z.object({ id: z.string(), name: z.string(), apis: z.array(ApiDefinitionSchema).default([]) }).strict();
-export type Folder = z.infer<typeof FolderSchema>;
 
 export const CollectionSchema = z.object({
   id: z.string(),
@@ -92,7 +133,6 @@ export const CollectionSchema = z.object({
   folders: z.array(FolderSchema).default([]),
   apis: z.array(ApiDefinitionSchema).default([]),
 }).strict();
-export type Collection = z.infer<typeof CollectionSchema>;
 
 export const EnvironmentSchema = z.object({
   id: z.string(),
@@ -110,10 +150,8 @@ export const ProjectSchema = z.object({
   collections: z.array(CollectionSchema).default([]),
   workflows: z.array(WorkflowSchema).default([]),
 }).strict();
-export type Project = z.infer<typeof ProjectSchema>;
 
 export const GroupSchema = z.object({ id: z.string(), name: z.string(), projects: z.array(ProjectSchema).default([]) }).strict();
-export type Group = z.infer<typeof GroupSchema>;
 
 export const WorkspaceSchema = z.object({
   id: z.string(),
@@ -121,4 +159,3 @@ export const WorkspaceSchema = z.object({
   variables: z.record(z.string(), z.string()).default({}),
   groups: z.array(GroupSchema).default([]),
 }).strict();
-export type Workspace = z.infer<typeof WorkspaceSchema>;
