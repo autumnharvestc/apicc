@@ -22,6 +22,9 @@ import { listRuns, readRun } from "./runs.js";
 import { createStressController } from "./stress.js";
 import type { createSession } from "./session.js";
 import { toTreeNode, type TreeNodeDTO } from "./tree.js";
+import type { AiKeyStore } from "./ai/config.js";
+import { AI_FIXTURE_SUGGESTIONS } from "../shared/ai/contract.js";
+import type { AiKeyStatus, AiSaveConfigInput, AiSuggestedCase } from "../shared/ai/contract.js";
 
 type Session = ReturnType<typeof createSession>;
 
@@ -102,6 +105,15 @@ const OnlineMigrateWriteChannelSchema = z.object({
   dir: z.string().min(1),
   files: z.array(z.object({ path: OnlinePathSchema, content: z.string() })).min(1).max(200),
 });
+// AI 频道（M6-C 任务 1）：save-config 形状校验（baseUrl/model 由渲染层表单与 localStorage
+// 持久化，main 只收形状；apiKey 非空才入安全存储）；suggest 入参宽松（fixture 桩不消费
+// apiId，任务 2 切真 provider 时按 core 契约收紧）。
+const AiSaveConfigChannelSchema = z.object({
+  baseUrl: z.string().min(1),
+  model: z.string().min(1),
+  apiKey: z.string().optional(),
+});
+const AiSuggestChannelSchema = z.object({ apiId: z.string() });
 
 /** 频道 → 入参 tuple schema 表：Record 键为全部频道名，新增频道漏配 schema 即编译错误。 */
 const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
@@ -154,6 +166,10 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.OnlineTreeView]: z.tuple([OnlineWorkspaceIdSchema]),
   [IpcChannel.OnlineMigrateScan]: z.tuple([OnlineMigrateScanChannelSchema]),
   [IpcChannel.OnlineMigrateWrite]: z.tuple([OnlineMigrateWriteChannelSchema]),
+  // AI 频道（M6-C 任务 1）
+  [IpcChannel.AiSaveConfig]: z.tuple([AiSaveConfigChannelSchema]),
+  [IpcChannel.AiGetConfig]: z.tuple([]),
+  [IpcChannel.AiSuggest]: z.tuple([AiSuggestChannelSchema]),
 };
 
 /** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
@@ -205,6 +221,11 @@ export interface OnlineIpcDeps {
   tokenStore: TokenStore;
 }
 
+export interface AiIpcDeps {
+  /** AI key 安全存储（生产 = userData 目录 + electron safeStorage）。 */
+  keyStore: AiKeyStore;
+}
+
 export interface IpcDepsOptions {
   session: Session;
   pickDirectory: () => Promise<string>;
@@ -217,6 +238,8 @@ export interface IpcDepsOptions {
   importers?: Importer[];
   /** 在线依赖（M3-B 任务 1）：省略时 online:* 频道抛「在线功能未配置」可读错误。 */
   online?: OnlineIpcDeps;
+  /** AI 依赖（M6-C 任务 1）：省略时 ai:* 频道抛「AI 功能未配置」可读错误。 */
+  ai?: AiIpcDeps;
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
@@ -229,6 +252,12 @@ export function createIpcDeps(options: IpcDepsOptions) {
   function requireOnline(): OnlineSession {
     if (!online) throw new Error("在线功能未配置");
     return online;
+  }
+  // AI 依赖（M6-C 任务 1）：keyStore 注入省略时 ai:* 频道给可读错误（与 requireOnline 同口径）。
+  const ai: AiIpcDeps | null = options.ai ?? null;
+  function requireAi(): AiIpcDeps {
+    if (!ai) throw new Error("AI 功能未配置");
+    return ai;
   }
   // 压测控制器（M2-D3 任务 1）：状态挂 deps 闭包（进程内单例），ws:open/ws:create 切换
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
@@ -520,6 +549,23 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.OnlineMigrateWrite: {
         const input = a[0] as { dir: string; files: Array<{ path: string; content: string }> };
         return { written: writeFiles(input.dir, input.files) };
+      }
+      // AI 频道（M6-C 任务 1，规格 §2 D2/D4）：save/get 只落 key（baseUrl/model 由渲染层
+      // localStorage 持久化）；出口恒 { hasKey }（key 明文永不回传渲染层，裁定②）；
+      // apiKey 省略/空串 = 保持既有。suggest 为 fixture 桩：已存密钥返回固定两条建议
+      // （深拷贝防内部引用泄漏），未配置抛可读错误（连接测试失败态同源）；任务 2 切真 provider。
+      case IpcChannel.AiSaveConfig: {
+        const input = a[0] as AiSaveConfigInput;
+        if (input.apiKey) requireAi().keyStore.save(input.apiKey);
+        return { hasKey: requireAi().keyStore.load() !== null } satisfies AiKeyStatus;
+      }
+      case IpcChannel.AiGetConfig:
+        return { hasKey: requireAi().keyStore.load() !== null } satisfies AiKeyStatus;
+      case IpcChannel.AiSuggest: {
+        if (requireAi().keyStore.load() === null) {
+          throw new Error("尚未配置 AI 密钥，请先在 AI 设置中保存配置");
+        }
+        return AI_FIXTURE_SUGGESTIONS.map((s) => structuredClone(s) as AiSuggestedCase);
       }
       default:
         throw new Error(`未知频道: ${channel}`);

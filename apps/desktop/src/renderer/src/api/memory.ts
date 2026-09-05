@@ -33,6 +33,7 @@ import {
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
+import { AI_FIXTURE_SUGGESTIONS, type AiKeyStatus, type AiSaveConfigInput, type AiSuggestedCase, type AiSuggestInput } from "../../../shared/ai/contract.js";
 import { onlineTreeToDto } from "../../../main/online/session.js";
 import { scanDirFiles, writeFiles } from "../../../main/online/migrate.js";
 import type {
@@ -97,7 +98,7 @@ const WORKSPACE_FILE = "apicc.workspace.yaml";
  * stressRun（M2-D3 任务 1）：进程内 StressRunner + 假 client 实现与主进程同构语义
  * （单活动拒绝/stop/错误文案/历史 kind 判别），client 可注入、默认不发真实网络。
  */
-export function createMemoryApi(options?: { root?: string; stressClient?: ProtocolClient }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ groupName: string; projectName: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }> } {
+export function createMemoryApi(options?: { root?: string; stressClient?: ProtocolClient }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ groupName: string; projectName: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
@@ -132,6 +133,10 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
   let onlineWorkspaceSeq = 0;
   const onlineWorkspaces: OnlineWorkspaceSummary[] = [];
   const onlineFiles = new Map<string, { content: string; version: number }>();
+  // AI 状态（M6-C 任务 1）：hasKey 内存位由 aiSaveConfig（apiKey 非空）置位，与主进程
+  // 「key 入安全存储」的可见出口同构——suggest 桩据此两态（未配置 → 同文案可读错误）。
+  let aiHasKey = false;
+  const aiSaveConfigCalls: Array<AiSaveConfigInput> = [];
 
   function requireOnlineUser(): OnlineUser {
     if (!onlineUser) throw new Error("尚未登录在线服务器");
@@ -289,6 +294,11 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     // designExport 调用记录读口：测试断言导出链路的渲染产物与目标文件名。
     get designExportCalls(): ReadonlyArray<{ file: string; content: string }> {
       return designExportCalls;
+    },
+
+    // aiSaveConfig 调用记录读口（M6-C 任务 1）：测试断言保存链路的载荷形状（key 留空不携字段）。
+    get aiSaveConfigCalls(): ReadonlyArray<AiSaveConfigInput> {
+      return aiSaveConfigCalls;
     },
 
     async wsOpen(rootPath: string): Promise<OpenResult> {
@@ -880,6 +890,24 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
 
     async onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }> {
       return { written: writeFiles(input.dir, input.files) };
+    },
+
+    // —— AI 频道（M6-C 任务 1，与 main IPC 桩同构的替身）——
+    // key 明文不进替身内存（hasKey 布尔位足够，与「出口只含 hasKey」契约一致）；
+    // apiKey 省略/空串 = 保持既有；suggest 未配置抛与 main 桩逐字相同的可读错误。
+    async aiSaveConfig(input: AiSaveConfigInput): Promise<AiKeyStatus> {
+      aiSaveConfigCalls.push({ ...input });
+      if (input.apiKey) aiHasKey = true;
+      return { hasKey: aiHasKey };
+    },
+
+    async aiGetConfig(): Promise<AiKeyStatus> {
+      return { hasKey: aiHasKey };
+    },
+
+    async aiSuggest(_input: AiSuggestInput): Promise<AiSuggestedCase[]> {
+      if (!aiHasKey) throw new Error("尚未配置 AI 密钥，请先在 AI 设置中保存配置");
+      return AI_FIXTURE_SUGGESTIONS.map((s) => structuredClone(s) as AiSuggestedCase);
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

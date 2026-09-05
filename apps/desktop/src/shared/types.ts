@@ -12,6 +12,7 @@ import type {
   WorkflowStatus,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
+import type { AiKeyStatus, AiSaveConfigInput, AiSuggestedCase, AiSuggestInput } from "./ai/contract.js";
 import type {
   OnlineBatchResult,
   OnlineDeleteOutcome,
@@ -182,4 +183,11 @@ export interface ApiccApi {
   onlineMigrateScan(dir: string): Promise<OnlineMigrateScanResult>;
   /** 迁移拉取落盘：按相对路径写目标目录（≤200/批；路径过契约规则，越界拒绝）。 */
   onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }>;
+  // —— AI 频道（M6-C 任务 1，规格 §2 D2/D4；fixture 阶段）——
+  /** 保存 AI 配置：baseUrl/model 由渲染层 localStorage 持久化；apiKey 非空时经 main 入安全存储（省略/空串 = 保持既有）。 */
+  aiSaveConfig(input: AiSaveConfigInput): Promise<AiKeyStatus>;
+  /** 读取 AI 配置状态：key 只以 hasKey 表达，明文永不回传渲染层（裁定②）。 */
+  aiGetConfig(): Promise<AiKeyStatus>;
+  /** AI 建议用例（任务 1 = fixture 桩：已存密钥返回固定两条建议，未配置抛可读错误；任务 2 切真 provider）。 */
+  aiSuggest(input: AiSuggestInput): Promise<AiSuggestedCase[]>;
 }
