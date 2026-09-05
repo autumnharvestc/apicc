@@ -2,10 +2,9 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Select as ASelect, Input as AInput, Button as AButton, Tabs as ATabs, Checkbox as ACheckbox, RadioGroup as ARadioGroup, RadioButton as ARadioButton } from "ant-design-vue";
-import type { AuthSpec, BodyContent, HttpMethod, KeyValuePair } from "@apicc/core";
+import type { AuthSpec, BodyContent, HttpMethod, KeyValuePair, Protocol } from "@apicc/core";
 import type { useEditorStore } from "../stores/editor.js";
 import type { useDebugStore } from "../stores/debug.js";
-import { DEFAULT_PROTOCOL, type ProtocolKind } from "../multi-protocol.js";
 import EmptyState from "./EmptyState.vue";
 
 const ATabPane = ATabs.TabPane;
@@ -46,18 +45,20 @@ const AUTH_PLACEMENT_OPTIONS = ["header", "query"].map((v) => ({ label: v, value
 const BODY_KIND_OPTIONS = ["none", "json", "xml", "raw", "graphql", "form"].map((v) => ({ label: v, value: v }));
 
 // —— 协议：三选单选（标签走 i18n protocol.*）+ 按协议的页签清单（载荷页签居首） ——
+// ProtocolKind 与缺省值直接取 core 契约（M5-B 任务 2 裁定 A：本地 fixture 类型收敛删除）。
+const DEFAULT_PROTOCOL: Protocol = "http";
 const PROTOCOL_OPTIONS = computed(() =>
   (["http", "websocket", "soap"] as const).map((p) => ({ value: p, label: t(`protocol.${p}`) })),
 );
 type Tab = "params" | "headers" | "auth" | "body" | "message" | "envelope";
-const TABS_BY_PROTOCOL: Record<ProtocolKind, readonly Tab[]> = {
+const TABS_BY_PROTOCOL: Record<Protocol, readonly Tab[]> = {
   http: ["params", "headers", "auth", "body"],
   websocket: ["message", "headers", "auth"],
   soap: ["envelope", "headers", "auth"],
 };
 const activeTab = ref<Tab>("params");
 
-const protocol = computed<ProtocolKind>({
+const protocol = computed<Protocol>({
   get: () => props.editor.api?.protocol ?? DEFAULT_PROTOCOL,
   set: (p) => {
     const api = props.editor.api;
