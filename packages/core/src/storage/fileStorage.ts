@@ -57,6 +57,10 @@ function saveApiDir(aDir: string, api: ApiDefinition): void {
     method: api.method, url: api.url, headers: api.headers, query: api.query,
     body: api.body, auth: api.auth,
     // M5 协议字段：非 http 时才落盘——http 接口的 yaml 形状与 M5 之前逐字节一致（零破坏）。
+    // 白名单不对称（M5 终审账本口径澄清，非疏漏）：message 按值落盘——编辑器裁定③切协议
+    // 保留各字段内容，切回 http 的接口残留 message 仍随值上盘（schema 对任意协议都允许可选
+    // message，读回行为不变）；envelope/soapAction 仅 protocol=soap 落盘——切回非 soap 后
+    // 这两字段只留内存不落盘，磁盘形状恒与协议一致（strict schema 下非 soap 接口不认这些字段）。
     ...(api.protocol && api.protocol !== "http" ? { protocol: api.protocol } : {}),
     ...(api.message !== undefined ? { message: api.message } : {}),
     ...(api.protocol === "soap" ? { envelope: api.envelope, ...(api.soapAction !== undefined ? { soapAction: api.soapAction } : {}) } : {}),

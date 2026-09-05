@@ -606,7 +606,7 @@ describe("RequestEditor", () => {
     expect(editor.api!.body).toEqual({ kind: "json", content: '{"a":1}' });
   });
 
-  it("M5-B 保存载荷 fixture：保存后 apiSave 载荷携带 protocol/message（旧 strict schema 不接线）", async () => {
+  it("M5-B 保存载荷：保存后 apiSave 载荷携带 protocol/message（任务 2 同步 main 后已真接线：api:save → session.saveApi → 新 schema 落盘往返）", async () => {
     const { wrapper, api, editor, workspace } = await mountWith(RequestEditor);
     const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
     await editor.load(apiNode.id);
