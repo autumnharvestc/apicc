@@ -3,12 +3,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { generatePluginPackage } from "./create-plugin.js";
 import {
   ShardOutcomeSchema,
   createAiProvider,
+  loadUserPlugins,
   type AiProviderConfig,
   type ApiDefinition,
   type Collection,
+  type LoadProblem,
+  type PluginLoadEntry,
   type PluginRegistry,
   type Project,
   type ProtocolClient,
@@ -125,6 +129,10 @@ export interface RunCliDeps {
   aiEnv?: Record<string, string | undefined>;
   /** AI 配置解析注入：用户级配置根目录（裁定⑤；缺省 os.homedir()，测试指向临时目录）。 */
   aiHomeDir?: string;
+  /** 插件加载注入：用户级目录（清单 <dir>/.apicc/plugins.json；缺省 os.homedir()，测试指向临时目录）。 */
+  pluginsHomeDir?: string;
+  /** 插件加载注入：false 关闭加载（--no-plugins 之外的编程关闭通道，供嵌入方与测试零扰动）。 */
+  loadPlugins?: boolean;
 }
 
 /** CLI 入口绝对路径（dist/bin.js）：由本模块编译产物位置推导，子进程 worker 与父进程同一份安装。 */
@@ -276,6 +284,19 @@ export async function runCli(
   const { Command } = await import("commander");
   const program = new Command();
   program.name("apicc").description("apicc 命令行——接口定义与测试驱动开发").version("0.1.0");
+
+  // M7-A D4：命令分发前加载用户级插件（~/.apicc/plugins.json）。--no-plugins 逃生开关（commander
+  // 布尔取反：缺省 opts.plugins === true，传旗标即 false）；deps.loadPlugins=false 为编程关闭通道
+  // （嵌入方/既有测试零扰动，裁定①）。加载失败已隔离为 problems，不阻断启动；摘要供 plugins list 展示。
+  let pluginLoad: { loaded: PluginLoadEntry[]; problems: LoadProblem[] } | undefined;
+  let pluginsDisabled = false;
+  program.option("--no-plugins", "跳过用户级插件加载（逃生开关）");
+  program.hook("preAction", async () => {
+    const enabled = (program.opts() as { plugins?: boolean }).plugins !== false && deps.loadPlugins !== false;
+    pluginsDisabled = !enabled;
+    if (!enabled) return;
+    pluginLoad = await loadUserPlugins(registry, { homeDir: deps.pluginsHomeDir });
+  });
 
   program
     .command("validate")
@@ -658,6 +679,44 @@ export async function runCli(
       await storage.save(root, workspace);
       for (const w of warnings) log(`[警告] ${w}`);
       log(`已导入项目「${project.name}」到分组「${opts.group}」`);
+    });
+
+  // M7-A：插件管理命令组——list 展示已加载（name/version/贡献计数）与失败项原因（D3/D5 展示口径）。
+  // 加载摘要来自命令分发前的 preAction 钩子；启用/停用 = 编辑用户级清单或 --no-plugins。
+  const pluginsCmd = program.command("plugins").description("插件管理命令组");
+  pluginsCmd
+    .command("list")
+    .description("列出用户级清单加载的插件与失败项")
+    .action(async () => {
+      if (pluginsDisabled) log("插件加载已关闭（--no-plugins 或注入关闭）");
+      const loaded = pluginLoad?.loaded ?? [];
+      const problems = pluginLoad?.problems ?? [];
+      if (loaded.length === 0) {
+        log("未加载任何插件");
+      } else {
+        log(`已加载 ${loaded.length} 个插件：`);
+        for (const p of loaded) {
+          const c = p.contributions;
+          log(
+            `  ${p.name}@${p.version}（协议 ${c.protocols} · 认证 ${c.auths} · 断言 ${c.asserts}`
+              + ` · 脚本 ${c.scriptEngines} · 报告 ${c.reporters} · 导入器 ${c.importers}）`,
+          );
+        }
+      }
+      for (const pr of problems) log(`[加载失败] ${pr.file}: ${pr.message}`);
+    });
+
+  // M7-A D6：插件脚手架——生成本地目录（模板内联字符串，裁定①），名称前缀警告不阻断（约定非强制）。
+  program
+    .command("create-plugin")
+    .description("生成 apicc 插件包脚手架（package.json/src/test/tsconfig/README）")
+    .argument("<name>", "插件包名（约定 apicc-plugin- 前缀）")
+    .option("--dir <path>", "生成目标目录（缺省当前目录）", process.cwd())
+    .action(async (name: string, opts: { dir: string }) => {
+      const result = generatePluginPackage(name, opts.dir);
+      for (const w of result.warnings) log(`[警告] ${w}`);
+      log(`已生成插件脚手架: ${result.dir}`);
+      log("下一步：进入该目录 pnpm install → pnpm build → pnpm test（契约自检），详见目录内 README.md");
     });
 
   try {

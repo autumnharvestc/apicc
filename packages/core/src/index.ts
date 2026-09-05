@@ -5,6 +5,10 @@ export { createEventBus } from "./events/bus.js";
 export type { RunEventMap } from "./events/bus.js";
 export * from "./plugin/types.js";
 export { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
+export { loadUserPlugins } from "./plugins/loader.js";
+export type {
+  PluginManifest, PluginContributionSummary, PluginLoadEntry, PluginLoadResult, PluginLoaderOptions,
+} from "./plugins/types.js";
 export { fileStorage } from "./storage/fileStorage.js";
 export { SqliteIndex } from "./storage/sqliteIndex.js";
 export { createVariableResolver, CyclicVariableError } from "./variables/resolver.js";
