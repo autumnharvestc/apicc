@@ -28,6 +28,12 @@ export function buildStressRequest(
         }
       : undefined,
     auth: api.auth,
+    // M5 D5/D7：协议分发键与 ws/soap 模板字段随请求透传（变量解析与 url/body 同管线）；
+    // 旧 yaml 无这些字段 → 请求形状不变（protocolOf 缺省 http），压测面零破坏。
+    protocol: api.protocol,
+    message: api.message === undefined ? undefined : resolver.resolve(api.message),
+    envelope: api.envelope === undefined ? undefined : resolver.resolve(api.envelope),
+    soapAction: api.soapAction === undefined ? undefined : resolver.resolve(api.soapAction),
   };
   const auth = api.auth;
   if (auth) {

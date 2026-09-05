@@ -56,6 +56,10 @@ function saveApiDir(aDir: string, api: ApiDefinition): void {
     id: api.id, name: api.name, version: api.version, deprecated: api.deprecated,
     method: api.method, url: api.url, headers: api.headers, query: api.query,
     body: api.body, auth: api.auth,
+    // M5 协议字段：非 http 时才落盘——http 接口的 yaml 形状与 M5 之前逐字节一致（零破坏）。
+    ...(api.protocol && api.protocol !== "http" ? { protocol: api.protocol } : {}),
+    ...(api.message !== undefined ? { message: api.message } : {}),
+    ...(api.protocol === "soap" ? { envelope: api.envelope, ...(api.soapAction !== undefined ? { soapAction: api.soapAction } : {}) } : {}),
   });
   if (api.design) {
     mkdirSync(aDir, { recursive: true });

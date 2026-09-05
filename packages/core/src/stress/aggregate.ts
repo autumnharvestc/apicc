@@ -34,7 +34,7 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
       bump(errorKinds, token);
     } else {
       bump(statusDist, String(s.status));
-      if (s.status < 200 || s.status >= 300) bump(errorKinds, `HTTP_${s.status}`);
+      if (s.status !== 101 && (s.status < 200 || s.status >= 300)) bump(errorKinds, `HTTP_${s.status}`); // 101=WS 握手成功（M5 D3），非错误
     }
   }
 
