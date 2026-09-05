@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Select as ASelect, Input as AInput, Button as AButton, Tabs as ATabs, Checkbox as ACheckbox, RadioGroup as ARadioGroup, RadioButton as ARadioButton } from "ant-design-vue";
 import type { AuthSpec, BodyContent, HttpMethod, KeyValuePair } from "@apicc/core";
@@ -28,6 +28,10 @@ const ATextarea = AInput.TextArea;
  * SOAP 隐藏参数/请求体、显 envelope/soapAction，method 落定显式 POST 且禁用（D2
  * superRefine 前置的 UI 侧 fixture）；HTTP 原样。切协议后激活页签重置为该协议首个
  * 页签（协议载荷页签居首），保证新协议字段立即可编辑。
+ * 审查预修：组件常驻挂载（App.vue 无 :key），editor.load 原地换 api——激活页签是
+ * 本地 ref，跨接口残留无效键时新协议页签集无对应面板 → 编辑区空白。watch 编辑对象
+ * 身份（apiId）与 protocol，重置激活页签为新对象协议的首签；同协议内常规互切不触发
+ * （apiId/protocol 不变化），radio 切协议经 protocol 源走同一重置路径。
  */
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
@@ -61,11 +65,17 @@ const protocol = computed<ProtocolKind>({
     api.protocol = p;
     // D2：soap → method 固定 POST 且必须显式 POST（UI 落定并禁用）；WS method 缺省
     // GET 不参与执行——不写数据，仅 UI 隐藏；来回切不回改（裁定③只保字段内容）。
+    // 页签重置统一由下方 watch（protocol 在源中）完成，此处不重复。
     if (p === "soap" && api.method !== "POST") api.method = "POST";
-    activeTab.value = TABS_BY_PROTOCOL[p][0]!;
   },
 });
 const isHttp = computed(() => protocol.value === "http");
+
+// 激活页签跟随编辑对象：切接口（apiId 变）或切协议（protocol 变）时回落到该协议
+// 页签集的首签，消除跨对象残留键的空白编辑区；常规页签互切不是源变化，不受扰。
+watch([() => props.editor.apiId, () => props.editor.api?.protocol], () => {
+  activeTab.value = TABS_BY_PROTOCOL[protocol.value][0]!;
+});
 
 function addRow(list: KeyValuePair[]) {
   list.push({ key: "", value: "", enabled: true });

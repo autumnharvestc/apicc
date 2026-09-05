@@ -414,6 +414,14 @@ function protocolOptionsOf(wrapper: VueWrapper): Array<{ value: unknown; label: 
     .map((r) => ({ value: r.props("value"), label: r.text() }));
 }
 
+/** 判定含指定标记的面板是否为激活面板：antd Tabs 对激活过的面板保留 DOM（去 -active 类），exists 不可作活跃判据。 */
+function paneActive(wrapper: VueWrapper, testid: string): boolean {
+  const pane = wrapper
+    .findAll(".ant-tabs-tabpane")
+    .find((p) => p.find(`[data-testid="${testid}"]`).exists());
+  return pane?.classes().includes("ant-tabs-tabpane-active") ?? false;
+}
+
 describe("RequestEditor", () => {
   it("编辑 URL 触发 update 且显示发送按钮", async () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
@@ -613,6 +621,55 @@ describe("RequestEditor", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ protocol: "websocket", message: "ping" });
     expect(editor.dirty).toBe(false);
+  });
+
+  // —— M5-B 审查预修：RequestEditor 常驻挂载（App.vue 无 :key），editor.load 原地换 api ——
+  // 旧缺陷：协议页签（如 WS message）下切接口，activeTab 本地 ref 无 watcher，无效键
+  // 无对应面板 → 编辑区空白。修复 = watch apiId/protocol 重置为新对象协议首签。
+  it("M5-B 预修①：WS 消息页签下切另一接口 → 页签回落新接口首签，编辑区可编辑", async () => {
+    const { wrapper, api, editor, workspace } = await mountWith(RequestEditor);
+    const apiA = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiA.id);
+    chooseProtocol(wrapper, "websocket");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="editor-message"]').exists()).toBe(true);
+    // 侧树选中新建接口 B：App.vue 对 api 节点即调 editor.load（组件常驻挂载无 remount）
+    const collectionNode = workspace.tree!.children![0]!.children![0]!.children![0]!;
+    const created = await api.nodeCreate({ kind: "api", parentId: collectionNode.id, name: "接口B" });
+    await editor.load(created.id);
+    await flushPromises();
+    // 新接口无 protocol（http 页签集）：message 面板不再渲染，激活页签回落 params
+    expect(wrapper.find('[data-testid="editor-message"]').exists()).toBe(false);
+    expect(protocolValue(wrapper)).toBe("http");
+    // add-param 仅在激活面板渲染：存在且激活 = params 面板可见 = 编辑区可编辑（修复前此处失败）
+    expect(wrapper.find('[data-testid="add-param"]').exists()).toBe(true);
+    expect(paneActive(wrapper, "add-param")).toBe(true);
+  });
+
+  it("M5-B 预修②：同协议页签集内常规互切（http params↔headers、WS message↔headers）不受重置干扰", async () => {
+    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
+    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+    await editor.load(apiNode.id);
+    // http：params（默认激活）→ headers → params（激活面板随点击迁移）
+    expect(paneActive(wrapper, "add-param")).toBe(true);
+    await wrapper.find('[data-testid="tab-headers"]').trigger("click");
+    await flushPromises();
+    expect(paneActive(wrapper, "add-header")).toBe(true);
+    expect(paneActive(wrapper, "add-param")).toBe(false);
+    await wrapper.find('[data-testid="tab-params"]').trigger("click");
+    await flushPromises();
+    expect(paneActive(wrapper, "add-param")).toBe(true);
+    // WS：message（切协议自动激活）→ headers → message（同协议内互切，apiId/protocol 不变）
+    chooseProtocol(wrapper, "websocket");
+    await flushPromises();
+    expect(paneActive(wrapper, "editor-message")).toBe(true);
+    await wrapper.find('[data-testid="tab-headers"]').trigger("click");
+    await flushPromises();
+    expect(paneActive(wrapper, "add-header")).toBe(true);
+    expect(paneActive(wrapper, "editor-message")).toBe(false);
+    await wrapper.find('[data-testid="tab-message"]').trigger("click");
+    await flushPromises();
+    expect(paneActive(wrapper, "editor-message")).toBe(true);
   });
 });
 
