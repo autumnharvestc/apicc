@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { createDefaultRegistry, CollectionRunner, createEventBus } from "../../src/index.js";
 import { httpClient } from "../../src/http/client.js";
+import { soapClient } from "../../src/protocol/soap.js";
 import { wsClient } from "../../src/protocol/websocket.js";
 import { canHandleProtocol, protocolOf, resolveProtocolClient } from "../../src/protocol/index.js";
 import type { Collection, Environment, Project, Workspace } from "../../src/domain/model.js";
@@ -31,6 +32,22 @@ describe("协议显式分发（M5 D5）", () => {
     expect(client).toBe(wsClient);
     const legacy = registry.getProtocol({ method: "GET", url: "http://x", headers: {}, query: [] });
     expect(legacy?.name).toBe("http");
+  });
+
+  it("canHandle 按 protocol 显式匹配：soap 请求由 soapClient 承接、http 客户端不再接", () => {
+    const soapReq: ExecutableRequest = { method: "POST", url: "http://x", headers: {}, query: [], protocol: "soap", envelope: "<e/>" };
+    expect(soapClient.canHandle(soapReq)).toBe(true);
+    expect(httpClient.canHandle(soapReq)).toBe(false);
+    expect(wsClient.canHandle(soapReq)).toBe(false);
+    // 旧形状 http 请求不受影响（回归口径）。
+    expect(soapClient.canHandle({ method: "POST", url: "http://x", headers: {}, query: [] })).toBe(false);
+  });
+
+  it("createDefaultRegistry 注册 soapClient：soap 请求由其承接（resolveProtocolClient 命中）", () => {
+    const registry = createDefaultRegistry();
+    const soapReq: ExecutableRequest = { method: "POST", url: "http://x", headers: {}, query: [], protocol: "soap", envelope: "<e/>" };
+    expect(registry.getProtocol(soapReq)).toBe(soapClient);
+    expect(resolveProtocolClient(registry, soapReq)).toBe(soapClient);
   });
 
   it("未知协议 → 明确错误（fail-fast）", () => {
