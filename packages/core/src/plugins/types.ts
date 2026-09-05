@@ -44,8 +44,8 @@ export interface PluginLoaderOptions {
    */
   homeDir?: string;
   /**
-   * 动态 import 注入（规格 D4：纯函数化便于测试）；缺省经 new Function 规避转译改写，
-   * 走真实 ESM 动态 import（裁定②）。
+   * 动态 import 注入（规格 D4：纯函数化便于测试）；缺省为源码原生 import()——
+   * TS 按 NodeNext/ESNext 编译不降级转译，产物即真实 Node ESM 加载（裁定②口径，报告已注明）。
    */
   importFn?: (specifier: string) => Promise<unknown>;
 }

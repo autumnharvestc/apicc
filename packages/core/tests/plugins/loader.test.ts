@@ -146,6 +146,20 @@ describe("loadUserPlugins 路径解析", () => {
     expect(dir).toBeDefined();
   });
 
+  it("Windows 反斜杠相对形态（..\\my-plugins\\x）同样按相对清单目录解析", async () => {
+    const home = mkdtempSync(join(tmpdir(), "apicc-plugins-"));
+    makeLocalPlugin(home, "backslash-plugin", "backslash-plugin", "backslashEq");
+    // 任务 1 审查顺修②：`.\\x` / `..\\x` 反斜杠形态须归一为相对路径而非误判为裸包名。
+    const entry = ["..", "my-plugins", "backslash-plugin"].join("\\");
+    writeManifest(home, JSON.stringify({ plugins: [entry] }));
+    const registry = createPluginRegistry();
+    const res = await loadUserPlugins(registry, { homeDir: home });
+    expect(res.problems).toEqual([]);
+    expect(res.loaded).toHaveLength(1);
+    expect(res.loaded[0]!.name).toBe("backslash-plugin");
+    expect(registry.getAssert("backslashEq")).toBeDefined();
+  });
+
   it("npm 包名（非 ./ 开头）按裸导入解析——specifier 原样传给 import", async () => {
     const home = mkdtempSync(join(tmpdir(), "apicc-plugins-"));
     writeManifest(home, JSON.stringify({ plugins: ["apicc-plugin-demo"] }));

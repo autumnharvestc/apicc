@@ -47,14 +47,16 @@ const message = (e: unknown): string => (e instanceof Error ? e.message : String
 
 /**
  * 清单条目 → import specifier：
- * - 本地路径（绝对路径或 ./ ../ 开头的相对路径）→ 相对清单文件所在目录解析（规格 D1），
+ * - 本地路径（绝对路径，或 ./ ../ 及其 Windows 反斜杠形态 .\ ..\ 开头的相对路径）→ 相对清单文件
+ *   所在目录解析（规格 D1；反斜杠先归一为正斜杠再判定，任务 1 审查顺修②），
  *   目录条目按 package.json main（缺省 index.js）定位入口文件，经 pathToFileURL 保证 Windows 可用；
  * - 其余视为 npm 包名，按裸导入原样传给 import（解析交给 Node，加载器零网络行为）。
  */
 function toImportSpecifier(source: string, manifestDir: string): string {
-  const isLocal = isAbsolute(source) || source.startsWith("./") || source.startsWith("../");
+  const normalized = source.split("\\").join("/");
+  const isLocal = isAbsolute(source) || normalized.startsWith("./") || normalized.startsWith("../");
   if (!isLocal) return source;
-  const absolute = isAbsolute(source) ? resolve(source) : resolve(manifestDir, source);
+  const absolute = isAbsolute(source) ? resolve(source) : resolve(manifestDir, normalized);
   return pathToFileURL(resolveLocalEntry(absolute)).href;
 }
 
