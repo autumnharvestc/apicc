@@ -153,11 +153,12 @@ jobs:
       - name: 下载 Electron 运行时二进制
         # pnpm 11 对依赖构建脚本的 allowBuilds 放行实测不生效（工作区配置仅作
         # 忽略登记），postinstall 被静默跳过——electron-builder 需要 electronDist，
-        # 故显式执行 install.js。走官方 releases（Azure runner 必达），产物落入
-        # 上方已恢复的 electron 缓存目录，后续运行秒级命中。
+        # 故显式执行 install.js。@electron/get 按 {mirror}/{version}/{filename} 拼接，
+        # 官方源须带 /download/ 段（2026-09-05 二轮实测：缺段 404）。产物落入上方
+        # 已恢复的 electron 缓存目录，后续运行秒级命中。
         working-directory: apps/desktop
         env:
-          ELECTRON_MIRROR: https://github.com/electron/electron/releases/
+          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
         run: node node_modules/electron/install.js
       - name: 构建 core 与 cli（desktop 构建的前置类型依赖）
         # @apicc/core 的 types 指向构建产物 dist/index.d.ts（desktop 无 paths 映射），
