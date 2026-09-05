@@ -7,7 +7,10 @@ allowBuilds:
   better-sqlite3: false
   # core-js 的 install 脚本仅打印捐赠提示（antd 依赖链带入），无需执行。
   core-js: false
-  # electron 的 postinstall（install.js）负责下载对应平台的 Electron 运行时二进制，必须放行。
+  # electron 的 postinstall（install.js）负责下载平台运行时二进制。⚠️ pnpm 11.21 实测：
+  # allowBuilds 在此仅作「忽略登记」语义（false 项消除 ERR_PNPM_IGNORED_BUILDS 硬错误，
+  # 2026-09-03 起首跑 CI 曾依赖它保证 install 退出码为 0），但 true 不会真正放行构建——
+  # Electron 二进制由 CI package-smoke 的显式 install.js 步骤与本地手动执行补齐。
   electron: true
   # electron-builder 依赖链带入的 Squirrel 安装器工具，--dir 目标用不到其 install 脚本，显式忽略。
   electron-winstaller: false
