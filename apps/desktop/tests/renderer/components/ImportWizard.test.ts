@@ -8,6 +8,7 @@ import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useImportWizardStore } from "../../../src/renderer/src/stores/importW.js";
+import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
 import ImportWizard from "../../../src/renderer/src/components/ImportWizard.vue";
 
 beforeAll(() => {
@@ -28,21 +29,26 @@ beforeAll(() => {
 
 enableAutoUnmount(afterEach);
 
-/** 显式装配辅助（组合根约定的测试形态）：store 一次性创建，经 props 注入被测组件。 */
-async function mountWizard(props: Record<string, unknown> = {}) {
+/** 显式装配辅助（组合根约定的测试形态）：store 一次性创建，经 props 注入被测组件。
+ *  apiOverride 供用例预配置替身（如 pluginsList 注入失败）后再装配。 */
+async function mountWizard(props: Record<string, unknown> = {}, apiOverride?: ReturnType<typeof createMemoryApi>) {
   const errors: unknown[] = [];
-  const api = createMemoryApi();
+  const api = apiOverride ?? createMemoryApi();
   api.seedWorkspace();
   const workspace = useWorkspaceStore(api);
   await workspace.open("/tmp/ws");
   const importW = useImportWizardStore(api, workspace);
+  // M7-B 任务 1：导入格式清单改走 plugins store 动态枚举（IPC plugins:list 出口），
+  // 组合根一次性创建后经 props 下传（组件内零工厂调用）。
+  const plugins = createPluginsStore({ api });
+  await plugins.init();
   const { i18n } = createI18nInstance();
   const wrapper = mount(ImportWizard, {
-    props: { importW, reportError: (e: unknown) => { errors.push(e); }, ...props },
+    props: { importW, plugins, reportError: (e: unknown) => { errors.push(e); }, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, workspace, importW, errors };
+  return { wrapper, api, workspace, importW, plugins, errors };
 }
 
 /** 文件选择适配：jsdom 无法真正弹文件对话框，直接向 input[type=file] 注入 File 并派发 change。 */
@@ -122,5 +128,26 @@ describe("ImportWizard", () => {
     expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="import-error"]').text()).toContain("无法识别的导入格式");
     expect(wrapper.find('[data-testid="import-group-input"]').exists()).toBe(false);
+  });
+
+  // M7-B 任务 1（规格 §2 D5）：导入格式清单改走 IPC 动态枚举——清单来自 plugins:list
+  // 出口的 importers（内置 registry + 插件贡献），向导内零硬编码格式名。
+  it("第一步展示动态枚举的导入格式：内置 + 插件贡献各一（来自 plugins:list）", async () => {
+    const { wrapper } = await mountWizard();
+    const formats = wrapper.findAll('[data-testid="import-format"]');
+    const names = formats.map((f) => f.text());
+    // 内置 registry 导入器
+    expect(names).toContain("collection-v21");
+    expect(names).toContain("openapi");
+    // 插件贡献导入器（fixture：apicc-plugin-example 贡献）
+    expect(names).toContain("example-csv");
+  });
+
+  it("plugins:list 拉取失败：格式清单空但不阻断文件选择链路", async () => {
+    const api = createMemoryApi();
+    api.pluginsList = async () => { throw new Error("清单不可用"); };
+    const { wrapper } = await mountWizard({}, api);
+    expect(wrapper.findAll('[data-testid="import-format"]').length).toBe(0);
+    expect(wrapper.find('[data-testid="import-file-button"]').exists()).toBe(true);
   });
 });

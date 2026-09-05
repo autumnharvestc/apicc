@@ -59,6 +59,8 @@ const api = {
   aiGetConfig: () => ipcRenderer.invoke(IpcChannel.AiGetConfig),
   aiSuggest: (input: unknown) => ipcRenderer.invoke(IpcChannel.AiSuggest, input),
   aiTestConfig: (input: unknown) => ipcRenderer.invoke(IpcChannel.AiTestConfig, input),
+  // 插件频道（M7-B 任务 1 登记 / 任务 2 真加载器）：无入参，出口为加载摘要 + 导入器枚举
+  pluginsList: () => ipcRenderer.invoke(IpcChannel.PluginsList),
 };
 
 contextBridge.exposeInMainWorld("apicc", api);

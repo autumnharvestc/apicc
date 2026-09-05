@@ -18,7 +18,8 @@
     "import": "Import",
     "design": "Design",
     "wf": "Workflow",
-    "stress": "Stress"
+    "stress": "Stress",
+    "plugins": "Plugins"
   },
   "workspace": {
     "problems": "Problem files",
@@ -171,7 +172,8 @@
     "doneTitle": "Import finished",
     "doneText": "Project \"{name}\" imported",
     "finish": "Finish",
-    "error": "Import failed"
+    "error": "Import failed",
+    "formats": "Available import formats"
   },
   "design": {
     "empty": "Select an API on the left to edit the design",
@@ -287,6 +289,27 @@
       "invalid": "Invalid",
       "failed": "Failed"
     }
+  },
+  "plugins": {
+    "title": "Plugins",
+    "colName": "Plugin",
+    "status": "Status",
+    "colVersion": "Version",
+    "colContrib": "Contributions",
+    "colError": "Failure reason",
+    "kindLoaded": "Loaded",
+    "kindFailed": "Failed",
+    "contrib": {
+      "protocols": "Protocols",
+      "auths": "Auth",
+      "asserts": "Assertions",
+      "scripts": "Scripts",
+      "reporters": "Reporters",
+      "importers": "Importers"
+    },
+    "empty": "No plugins registered",
+    "emptyGuide": "Register plugins in the user-level manifest ~/.apicc/plugins.json and restart to load them; failures never block startup and their reasons are shown here. See docs/plugins.md for authoring and publishing.",
+    "refresh": "Refresh"
   },
   "wf": {
     "empty": "Create or select a workflow to start orchestrating",

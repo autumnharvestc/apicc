@@ -535,6 +535,34 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
   });
 });
 
+// —— M7-B 任务 1：插件管理视图装配（裁定①：路由 /plugins + 侧栏入口，管理类视图）——
+describe("App 插件视图装配（M7-B 任务 1）", () => {
+  it("插件入口不依赖工作区：未打开工作区时工作区级视图禁用、插件视图可用且渲染混合清单", async () => {
+    const wrapper = await mountApp();
+    // 未打开工作区：工作区级视图（cases 等）禁用，插件视图恒可用（管理类视图定位）
+    expect(wrapper.find('input[value="cases"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('input[value="plugins"]').attributes("disabled")).toBeUndefined();
+    await wrapper.find('input[value="plugins"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugins-view"]').exists()).toBe(true);
+    // fixture 混合清单上屏（loaded/failed 各至少一）
+    expect(wrapper.findAll('[data-testid="plugins-row"]').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("打开工作区后插件视图与调试视图往返（编辑区/响应区结构契约不变）", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('input[value="plugins"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugins-view"]').exists()).toBe(true);
+    await wrapper.find('input[value="debug"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="viewer-pane"]').exists()).toBe(true);
+  });
+});
+
 // —— M2-D3 任务 3：压测视图装配（简报裁定 A）——
 
 /** 压测报告夹具（App 装配链路用；字段与 core StressReportSchema 对齐）。 */
@@ -624,15 +652,15 @@ describe("App 压测视图装配（M2-D3 任务 3，裁定 A）", () => {
     }
   });
 
-  it("视图切换回归：切换控件含全部 8 项，既有 6 视图全部仍可达", async () => {
+  it("视图切换回归：切换控件含全部 9 项，既有 6 视图全部仍可达", async () => {
     const wrapper = await mountApp();
     await wrapper.find('[data-testid="open-workspace"]').trigger("click");
     await flushPromises();
-    // 8 项（既有 7 项 + stress），顺序与 VIEWS 一致
+    // 9 项（既有 8 项 + plugins，M7-B 任务 1），顺序与 VIEWS 一致
     const values = wrapper
       .findAll(".view-switch input[type=radio]")
       .map((i) => (i.element as HTMLInputElement).value);
-    expect(values).toEqual(["debug", "cases", "envs", "run", "import", "design", "wf", "stress"]);
+    expect(values).toEqual(["debug", "cases", "envs", "run", "import", "design", "wf", "stress", "plugins"]);
     // 既有 6 视图逐一切换仍可达（切换控件增项不破坏既有断言）
     const reachable: Array<[string, string]> = [
       ["cases", "case-panel"],

@@ -35,6 +35,7 @@ import WfDesigner from "./components/WfDesigner.vue";
 import StressPanel from "./components/StressPanel.vue";
 import AiConfigDialog from "./components/AiConfigDialog.vue";
 import AiSuggestionsDrawer from "./components/AiSuggestionsDrawer.vue";
+import PluginsView from "./components/PluginsView.vue";
 import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
 import { useEditorStore } from "./stores/editor.js";
@@ -49,7 +50,9 @@ import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
 import { createStressStore } from "./stores/stress.js";
 import { createOnlineStore } from "./stores/online.js";
 import { createAiStore } from "./stores/ai.js";
+import { createPluginsStore } from "./stores/plugins.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
+import { isViewDisabled, SWITCH_VIEWS, type SwitchView } from "./viewSwitch.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
 
@@ -89,17 +92,22 @@ const online = createOnlineStore({ api: apicc });
 // —— AI store（M6-C 任务 1 装配）：同一组合根一次性创建；挂载后读持久化配置与 key
 // 状态（init 全程不抛）。对话框/抽屉本体在组合根渲染，调试视图入口按钮只置显隐/拉取。 ——
 const ai = createAiStore({ api: apicc, editor });
+// —— 插件 store（M7-B 任务 1 装配）：同一组合根一次性创建；挂载后拉取 plugins:list
+// （fixture 桩）——插件视图清单 + 导入向导的导入格式动态枚举共用此份状态。 ——
+const plugins = createPluginsStore({ api: apicc });
 onMounted(() => {
   void online.init();
   void ai.init();
+  void plugins.init();
 });
 
 // —— 视图切换（任务 8 收官装配）——
-// 侧栏顶部 a-radio-group；未打开工作区或在线工作区激活时整组禁用（在线模式只提供
-// 浏览/编辑面板，不提供调试/运行/压测等本地视图，裁定 B/E）。
-type View = "debug" | "cases" | "envs" | "run" | "import" | "design" | "wf" | "stress";
-const VIEWS: View[] = ["debug", "cases", "envs", "run", "import", "design", "wf", "stress"];
-const view = ref<View>("debug");
+// 侧栏顶部 a-radio-group；禁用语义（M7-B 任务 2 折入项）抽至 viewSwitch.isViewDisabled
+// 单测钉住：在线工作区激活 → 全部禁用（含 plugins，内容区让位在线编辑链路）；plugins
+// （管理类视图，裁定①）不依赖工作区恒可用；其余工作区级视图未打开工作区禁用；压测
+// （接口级视图，裁定 A）未选中接口禁用。
+const VIEWS: SwitchView[] = SWITCH_VIEWS;
+const view = ref<SwitchView>("debug");
 
 // —— 压测会话随接口切换清空（M2-D3 任务 3，裁定 A）——
 // 旧接口的压测报告不能带到新接口：editor.apiId 变化（含首次 null→id，此时本就是空会话）
@@ -314,16 +322,16 @@ watch(
             v-model:value="view"
             class="view-switch"
             size="small"
-            :disabled="!workspace.opened || !!online.activeWorkspace"
             data-testid="view-switch"
           >
-            <!-- 压测项（M2-D3 任务 3，裁定 A）：接口级视图，未选中接口时禁用（cases/envs 口径） -->
+            <!-- 禁用语义（M7-B 任务 2 折入项）经 isViewDisabled 单测钉住：在线模式全部
+                 禁用（含 plugins）；plugins 管理类视图不依赖工作区恒可用；压测接口级门控 -->
             <a-radio-button
               v-for="v in VIEWS"
               :key="v"
               :value="v"
               :data-testid="`view-${v}`"
-              :disabled="v === 'stress' && !editor.apiId"
+              :disabled="isViewDisabled(v, { workspaceOpened: workspace.opened, onlineActive: !!online.activeWorkspace, apiSelected: !!editor.apiId })"
             >
               {{ t(`nav.${v}`) }}
             </a-radio-button>
@@ -393,7 +401,7 @@ watch(
             :selected-collection-id="selectedCollectionId"
             :report-error="reportError"
           />
-          <ImportWizard v-else-if="view === 'import'" class="panel-view" :import-w="importW" :report-error="reportError" @close="view = 'debug'" />
+          <ImportWizard v-else-if="view === 'import'" class="panel-view" :import-w="importW" :plugins="plugins" :report-error="reportError" @close="view = 'debug'" />
           <DesignPanel v-else-if="view === 'design'" class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
           <!-- 压测视图（M2-D3 任务 3）：apiId/cases/envs 取 editor store 当前接口；切换控件
                已按接口选中门控，此分支保证 apiId 非空（类型收窄 + 防御） -->
@@ -406,6 +414,9 @@ watch(
             :envs="editor.envs"
             :report-error="reportError"
           />
+          <!-- 插件管理视图（M7-B 任务 1，裁定①）：只读清单 + 失败诊断（fixture 桩）。
+               置于兜底分支之前：内容区兜底仍是设计器（wf 视图与 stress 未选接口的防御路径不变） -->
+          <PluginsView v-else-if="view === 'plugins'" class="panel-view" :plugins="plugins" />
           <WfDesigner
             v-else
             class="wf-view"

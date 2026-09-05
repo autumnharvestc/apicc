@@ -18,7 +18,8 @@
     "import": "导入",
     "design": "设计",
     "wf": "工作流",
-    "stress": "压测"
+    "stress": "压测",
+    "plugins": "插件"
   },
   "workspace": {
     "problems": "问题文件",
@@ -171,7 +172,8 @@
     "doneTitle": "导入完成",
     "doneText": "项目「{name}」已导入",
     "finish": "完成",
-    "error": "导入失败"
+    "error": "导入失败",
+    "formats": "可用导入格式"
   },
   "design": {
     "empty": "在左侧选择一个接口后编辑详细设计",
@@ -287,6 +289,27 @@
       "invalid": "非法",
       "failed": "失败"
     }
+  },
+  "plugins": {
+    "title": "插件",
+    "colName": "插件",
+    "status": "状态",
+    "colVersion": "版本",
+    "colContrib": "贡献",
+    "colError": "失败原因",
+    "kindLoaded": "已加载",
+    "kindFailed": "失败",
+    "contrib": {
+      "protocols": "协议",
+      "auths": "认证",
+      "asserts": "断言",
+      "scripts": "脚本",
+      "reporters": "报告",
+      "importers": "导入器"
+    },
+    "empty": "未登记插件",
+    "emptyGuide": "在用户级清单 ~/.apicc/plugins.json 登记插件后重启即加载，失败不阻断且在此展示原因；开发与发布指南见 docs/plugins.md",
+    "refresh": "刷新"
   },
   "wf": {
     "empty": "创建或选择一个工作流开始编排",

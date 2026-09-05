@@ -57,5 +57,8 @@ export const IpcChannel = {
   AiGetConfig: "ai:get-config",
   AiSuggest: "ai:suggest",
   AiTestConfig: "ai:test-config",
+  // 插件频道（M7-B 任务 1 登记 / 任务 2 真加载器）：加载摘要清单（loaded/failed 混合）
+  // + registry 导入器枚举（导入向导选择面动态枚举数据源，规格 §2 D3/D5）。
+  PluginsList: "plugins:list",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];

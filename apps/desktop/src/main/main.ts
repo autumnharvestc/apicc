@@ -61,7 +61,12 @@ app.whenReady().then(() => {
   const ai = {
     keyStore: createAiKeyStore({ dir: app.getPath("userData"), storage: safeStorage }),
   };
-  const deps = createIpcDeps({ session, pickDirectory, saveFile, online, ai });
+  // 插件依赖（M7-B 任务 2，规格 §2 D4/D8）：main 进程建 registry 时装载用户级清单
+  // （~/.apicc/plugins.json，D4）；关闭通道 = IpcDepsOptions.plugins.loadPlugins:false
+  // （与 CLI --no-plugins 对齐口径的编程关闭面，桌面 MVP 无 UI 开关——启用/停用 = 编辑
+  // 用户级清单，D8）。createIpcDeps 未配置 plugins 时零加载（测试零扰动），生产必须显式启用。
+  const plugins = { homeDir: app.getPath("home") };
+  const deps = createIpcDeps({ session, pickDirectory, saveFile, online, ai, plugins });
   for (const channel of Object.values(IpcChannel)) {
     ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
   }
