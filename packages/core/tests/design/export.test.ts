@@ -26,3 +26,31 @@ describe("renderDesignMarkdown", () => {
     expect(md).toContain("conflict");
   });
 });
+
+describe("renderDesignMarkdown 多协议（M5 D5 最小适配）", () => {
+  it("websocket 接口：协议行 + 消息模板块（http 接口输出不含协议行）", () => {
+    const wsApi = {
+      id: "w1", name: "ws-rt", version: "1", deprecated: false,
+      protocol: "websocket", url: "{{wsUrl}}/rt", message: '{"ping":1}',
+      headers: [], query: [], cases: [],
+    } as unknown as ApiDefinition;
+    const md = renderDesignMarkdown(wsApi);
+    expect(md).toContain("- 协议：**websocket**");
+    expect(md).toContain("ws-rt");
+    expect(md).toContain("WebSocket：连接后发送以上消息模板");
+    expect(renderDesignMarkdown({ ...api, protocol: undefined })).not.toContain("- 协议：");
+  });
+
+  it("soap 接口：协议行 + 信封块 + SOAPAction", () => {
+    const soapApi = {
+      id: "s1", name: "soap-add", version: "1", deprecated: false, method: "POST",
+      protocol: "soap", url: "{{baseUrl}}/soap",
+      envelope: "<Envelope/>", soapAction: "urn:add",
+      headers: [], query: [], cases: [],
+    } as unknown as ApiDefinition;
+    const md = renderDesignMarkdown(soapApi);
+    expect(md).toContain("- 协议：**soap**");
+    expect(md).toContain("<Envelope/>");
+    expect(md).toContain("SOAPAction: urn:add");
+  });
+});
