@@ -8,7 +8,7 @@ import type { createAiStore } from "../stores/ai.js";
  * AI 配置对话框（M6-C 任务 1，规格 §2 D2/D4）：baseUrl/model 明文输入（渲染层
  * localStorage 持久化，由 store 负责）+ key 密码框（经 IPC 入 main 进程 safeStorage，
  * 留空 = 保持既有；出口只有 hasKey 徽标，明文永不回显——裁定②）。
- * 连接测试（fixture 阶段）：调 ai:suggest 桩两态——成功/失败告警上屏。
+ * 连接测试（ai:test-config 轻量探测，任务 2）：成功/失败告警上屏。
  * **组件内零工厂调用**：store 实例经 props 注入（App 组合根装配）。表单校验先行
  * （baseUrl/model 必填），保存失败经 store.error 上屏；组件自身 async 动作不重抛。
  * antd 4 落地：a-modal 承载（传送门渲染于 body，测试用 document.body 作用域查询，
@@ -112,7 +112,7 @@ function onTest() {
         </a-button>
       </div>
       <div v-if="ai.savedNotice" class="notice" data-testid="ai-saved">{{ t("ai.saved") }}</div>
-      <!-- 连接测试两态（fixture 阶段经 ai:suggest 桩）：成功/失败告警互斥上屏 -->
+      <!-- 连接测试两态（ai:test-config 轻量探测）：成功/失败告警互斥上屏 -->
       <a-alert v-if="ai.testResult === 'success'" type="success" show-icon :message="t('ai.testOk')" data-testid="ai-test-ok" />
       <a-alert v-if="ai.testResult === 'failure'" type="error" show-icon :message="`${t('ai.testFail')}: ${ai.error ?? ''}`" data-testid="ai-test-fail" />
       <!-- 保存失败（store.error）与本地表单校验分开呈现 -->

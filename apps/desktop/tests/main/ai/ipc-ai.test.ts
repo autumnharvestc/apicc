@@ -150,13 +150,17 @@ describe("ai:suggest 真链路（core provider + suggestCases，任务 2 步骤 
 });
 
 describe("ai:test-config 轻量探测（任务 2 步骤 1②）", () => {
-  it("已配置 → 最小 completions 探测成功，返回 { ok: true }；请求不带 apiId 语义（未选接口也可测）", async () => {
+  it("已配置 → 最小 completions 探测成功，返回 { ok: true }；探测消息含 \"JSON\"（适配 json_object 约束，审查修复·重要）", async () => {
     const { deps, calls } = setup();
     await deps.handle("ai:save-config", {}, { baseUrl: "https://ai.example.com/v1", model: "model-x", apiKey: "sk-probe" });
     const out = await deps.handle("ai:test-config", {}, { baseUrl: "https://ai.example.com/v1", model: "model-x" });
     expect(out).toEqual({ ok: true });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe("https://ai.example.com/v1/chat/completions");
+    // provider 恒带 response_format json_object：messages 缺 "JSON" 字样会被严格端点 400
+    const payload = JSON.parse(String(calls[0]!.init.body)) as { messages: Array<{ role: string; content: string }> };
+    expect(payload.messages).toHaveLength(1);
+    expect(payload.messages[0]!.content).toContain("JSON");
   });
 
   it("未存密钥 → 可读错误；端点 500 → provider 归一化错误冒泡", async () => {

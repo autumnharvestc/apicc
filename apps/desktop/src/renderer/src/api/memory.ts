@@ -13,6 +13,7 @@ import {
   transitionWorkflowStatus,
   validateEnablement,
   workflowImpact,
+  type AiSuggestedCase,
   type ApiDefinition,
   type CaseOutcome,
   type Collection,
@@ -33,7 +34,6 @@ import {
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
-import type { AiSuggestedCase } from "@apicc/core";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "../../../shared/ai/contract.js";
 
 /**
@@ -160,8 +160,9 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
   let onlineWorkspaceSeq = 0;
   const onlineWorkspaces: OnlineWorkspaceSummary[] = [];
   const onlineFiles = new Map<string, { content: string; version: number }>();
-  // AI 状态（M6-C 任务 1）：hasKey 内存位由 aiSaveConfig（apiKey 非空）置位，与主进程
-  // 「key 入安全存储」的可见出口同构——suggest 桩据此两态（未配置 → 同文案可读错误）。
+  // AI 状态（M6-C 任务 2）：hasKey 内存位由 aiSaveConfig（apiKey 非空）置位，与主进程
+  // 「key 入安全存储」的可见出口同构——suggest/test-config 替身据此两态（未配置 → 同文案
+  // 可读错误；连接探测已切独立 ai:test-config 频道，不再借道 suggest）。
   let aiHasKey = false;
   const aiSaveConfigCalls: Array<AiSaveConfigInput> = [];
 

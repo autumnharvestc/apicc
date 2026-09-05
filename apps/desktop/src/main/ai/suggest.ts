@@ -44,9 +44,21 @@ export async function runAiSuggest(
   return cases.map((c) => structuredClone(c));
 }
 
-/** ai:test-config 轻量探测：最小 completions（返回内容不解析——只验证请求面可用）；provider 错误归一化文案原样冒泡。 */
+/** 探测超时（审查顺修）：黑洞地址上不等满 provider 缺省 60s，10s 判失败（AiProviderConfig.timeoutMs）。 */
+const AI_TEST_TIMEOUT_MS = 10_000;
+
+/**
+ * ai:test-config 轻量探测（任务 2 步骤 1②）：最小 completions（返回内容不解析——只验证
+ * 连通/鉴权/响应面）；provider 错误归一化文案原样冒泡。
+ * 探测消息必须含 "JSON" 字样（审查修复·重要）：provider 恒带
+ * `response_format:{type:"json_object"}`（D1），OpenAI 官方及严格复刻端点会校验 messages
+ * 含 "JSON"，缺字样直接 400——合法配置会被误报连接失败。
+ */
 export async function runAiTestConfig(deps: AiRuntimeDeps, request: { baseUrl: string; model: string }): Promise<{ ok: true }> {
-  const provider = createAiProvider(requireProviderConfig(deps, request.baseUrl, request.model), { fetch: deps.fetch });
-  await provider([{ role: "user", content: "ping" }]);
+  const provider = createAiProvider(
+    { ...requireProviderConfig(deps, request.baseUrl, request.model), timeoutMs: AI_TEST_TIMEOUT_MS },
+    { fetch: deps.fetch },
+  );
+  await provider([{ role: "user", content: '请返回 JSON 对象 {"ok":true}' }]);
   return { ok: true };
 }
