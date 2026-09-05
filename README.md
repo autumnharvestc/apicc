@@ -57,6 +57,14 @@ pnpm -C apps/desktop dev        # 开发模式（内部先构建再启动 Electr
 pnpm -C apps/desktop dist:dir   # 打包为本地目录（免安装运行）
 ```
 
+## MCP 服务器（agent 接入）
+
+`apicc mcp --workspace <工作区根>` 启动 stdio MCP 服务器，把工作区能力暴露为 MCP 工具，供 Claude Desktop、Cursor 等 agent 客户端消费：`list-apis`（接口摘要）与 `get-api-design`（接口详细设计 Markdown）默认可用，执行类工具 `run-case` 需显式加 `--allow-run`（执行类工具默认关闭）。构建、客户端 JSON 配置示例与安全边界见 [docs/mcp.md](docs/mcp.md)。
+
+```bash
+apicc mcp --workspace /path/to/your-workspace [--allow-run]
+```
+
 ## 开发
 
 ```bash
