@@ -28,14 +28,17 @@ export function toPlain<T>(value: T): T {
   return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
 }
 
-/** Electron API 包装：每次调用深平化全部入参（动态取属性，测试中途换实现仍生效）。 */
+/** Electron API 包装：每次调用深平化全部入参。目标必须是普通空对象——contextBridge
+ * 暴露的属性不可配置（non-configurable），直接 Proxy 其本体时 get 陷阱返回新函数会触发
+ * Proxy 不变式报错（'get' on proxy: … did not return its actual value，2026-09-06
+ * 打开工作区实测）；以空对象为目标动态转发（与内存回退 lazyMemoryApi 同款模式）。 */
 export function withPlainArgs(api: ApiccApi): ApiccApi {
-  return new Proxy(api, {
-    get(target, prop: string) {
-      const value = (target as unknown as Record<string, unknown>)[prop];
+  return new Proxy({} as ApiccApi, {
+    get(_target, prop: string) {
+      const value = (api as unknown as Record<string, unknown>)[prop];
       if (typeof value !== "function") return value;
       return (...args: unknown[]) =>
-        (value as (...a: unknown[]) => unknown).apply(target, args.map(toPlain));
+        (value as (...a: unknown[]) => unknown).apply(api, args.map(toPlain));
     },
   });
 }

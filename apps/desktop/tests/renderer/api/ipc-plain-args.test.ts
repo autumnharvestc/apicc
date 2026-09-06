@@ -65,4 +65,15 @@ describe("IPC 入参深平化（withPlainArgs，回归：An object could not be 
     await wrapped.nodeDelete("api", "a1");
     expect(replacement).toHaveBeenCalledWith("api", "a1");
   });
+
+  it("withPlainArgs：目标为普通空对象——冻结对象（contextBridge 不可配置属性）可包装（打开工作区回归）", async () => {
+    // 复现场景：preload 经 contextBridge 暴露的属性不可配置，直接 Proxy 其本体时
+    // get 陷阱返回新函数触发不变式报错（'get' on proxy: … read-only and
+    // non-configurable …）。冻结对象复现同款属性描述符，钉住「空对象目标 + 动态转发」。
+    const pick = vi.fn(async () => "D:/ws");
+    const frozen = Object.freeze({ wsPickDirectory: pick }) as unknown as ApiccApi;
+    const wrapped = withPlainArgs(frozen);
+    await expect(wrapped.wsPickDirectory()).resolves.toBe("D:/ws");
+    expect(pick).toHaveBeenCalledTimes(1);
+  });
 });
