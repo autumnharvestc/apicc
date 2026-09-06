@@ -38,9 +38,21 @@ const projects = computed(() =>
     .filter((n) => n.kind === "project")
     .map((p) => ({ label: p.label, value: p.id })),
 );
-const activeProjectId = computed(() =>
-  props.tree.selected?.kind === "project" ? props.tree.selected.id : undefined,
-);
+// 选中任意节点时回溯其所属项目（与 App 的 selectedProjectId 同口径——仅选中项目节点
+// 时显示会让接口/集合选中后下拉退回占位符）。
+const activeProjectId = computed(() => {
+  const sel = props.tree.selected;
+  if (!sel || !props.workspace.tree) return undefined;
+  if (sel.kind === "project") return sel.id;
+  const contains = (node: { id: string; children?: Array<{ id: string; children?: unknown[] }> }): boolean =>
+    (node.children ?? []).some((c) => c.id === sel.id || contains(c as never));
+  for (const g of props.workspace.tree.children ?? []) {
+    for (const p of g.children ?? []) {
+      if (p.id === sel.id || contains(p)) return p.id;
+    }
+  }
+  return undefined;
+});
 
 function onProjectSelect(id: string) {
   props.tree.select("project", id);
