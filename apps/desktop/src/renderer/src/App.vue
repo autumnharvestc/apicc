@@ -131,6 +131,17 @@ const subGate = computed(() => ({ onlineActive: !!online.activeWorkspace, apiSel
 const treeFilter = ref("");
 const siderTitle = computed(() => t(`nav.${view.value}`));
 
+// —— 环境清单联动（M9-A1）：调试选择器读 editor.envs（选中接口时快照），环境管理里
+// 新建/删除环境后必须重拉，否则选择器看不到新环境（用户实测 bug）。环境增删只发生在
+// 环境模块（envs store 的 load/create/remove 必改 envs 数量），以其长度为触发源重拉；
+// saveVars 不改数量且不改名，无需触发。envs 指向别项目时重拉依旧按当前接口取数，无害。
+watch(
+  () => envs.envs.length,
+  () => {
+    void editor.reloadEnvs().catch(reportError);
+  },
+);
+
 // —— 压测会话随接口切换清空（M2-D3 任务 3，裁定 A）——
 // 旧接口的压测报告不能带到新接口：editor.apiId 变化（含首次 null→id，此时本就是空会话）
 // 即调 store.clear()（只清报告/file/错误，form 保留；同时代际 +1，在途旧 run 的完成/

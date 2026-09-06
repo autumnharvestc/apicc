@@ -10,6 +10,7 @@ export type {
   PluginManifest, PluginContributionSummary, PluginLoadEntry, PluginLoadResult, PluginLoaderOptions,
 } from "./plugins/types.js";
 export { fileStorage } from "./storage/fileStorage.js";
+export { sanitizeNodeName } from "./storage/sanitize.js";
 export { SqliteIndex } from "./storage/sqliteIndex.js";
 export { createVariableResolver, CyclicVariableError } from "./variables/resolver.js";
 export { CollectionRunner } from "./runner/runner.js";

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import { ProjectSchema } from "../domain/model.js";
+import { sanitizeNodeName } from "../storage/sanitize.js";
 import type { ApiDefinition, Collection, Folder, Project } from "../domain/model.js";
 import type { Importer, ImportedProject } from "../plugin/types.js";
 
@@ -45,17 +46,17 @@ function toApi(item: V21Item, warnings: string[]): ApiDefinition | null {
     body = { kind: "form", content: "", form };
   }
   return {
-    id: newId(), name: item.name, version: "1.0.0", deprecated: false,
+    id: newId(), name: sanitizeNodeName(item.name), version: "1.0.0", deprecated: false,
     method: (req.method ?? "GET").toUpperCase() as ApiDefinition["method"],
     url: rawUrl, headers, query, body,
-    cases: [{ id: newId(), name: `${item.name}-smoke`, scope: "base", parameters: {}, assertions: [] }],
+    cases: [{ id: newId(), name: sanitizeNodeName(`${item.name}-smoke`), scope: "base", parameters: {}, assertions: [] }],
   };
 }
 
 function walk(items: V21Item[], collection: Collection, warnings: string[]): void {
   for (const item of items) {
     if (item.item) {
-      const folder: Folder = { id: newId(), name: item.name, apis: [] };
+      const folder: Folder = { id: newId(), name: sanitizeNodeName(item.name), apis: [] };
       for (const child of item.item) {
         const api = toApi(child, warnings);
         if (api) folder.apis.push(api);
@@ -85,9 +86,9 @@ export const collectionV21Importer: Importer = {
   parse(content): ImportedProject {
     const doc = parseYaml(content) as { info: { name: string }; item: V21Item[] };
     const warnings: string[] = [];
-    const collection: Collection = { id: newId(), name: doc.info.name, variables: {}, folders: [], apis: [] };
+    const collection: Collection = { id: newId(), name: sanitizeNodeName(doc.info.name), variables: {}, folders: [], apis: [] };
     walk(doc.item ?? [], collection, warnings);
-    const project: Project = { id: newId(), name: doc.info.name, variables: {}, environments: [], collections: [collection], workflows: [] };
+    const project: Project = { id: newId(), name: sanitizeNodeName(doc.info.name), variables: {}, environments: [], collections: [collection], workflows: [] };
     // 严格 schema 自校验：导入产物必须恰好匹配域模型字段（多余字段 fail-fast）。
     return { project: ProjectSchema.parse(project), warnings };
   },

@@ -17,6 +17,7 @@ import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-u
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
 import { createMemoryApi } from "../../src/renderer/src/api/memory.js";
 import WfDesigner from "../../src/renderer/src/components/WfDesigner.vue";
+import RequestEditor from "../../src/renderer/src/components/RequestEditor.vue";
 import StressPanel from "../../src/renderer/src/components/StressPanel.vue";
 import type { WfBindIndex } from "../../src/renderer/src/wf/wfBindings.js";
 import type { StressReport } from "@apicc/core";
@@ -725,5 +726,33 @@ describe("App 压测视图装配（M2-D3 任务 3，裁定 A）", () => {
     await subRadio(wrapper, "debug").setValue(true);
     await flushPromises();
     expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
+  });
+});
+
+// —— M9-A1：环境管理新建环境后，调试环境选择器（editor.envs）同步刷新 ——
+describe("App 环境联动（M9-A1）", () => {
+  it("环境模块新建环境后，调试选择器可见该环境", async () => {
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await flushPromises();
+    // 选中接口时环境清单为空（种子项目无环境）
+    const editorOf = () =>
+      wrapper.findComponent(RequestEditor).props("editor") as { envs: Array<{ id: string; name: string }> };
+    expect(editorOf().envs).toEqual([]);
+    // 环境模块新建环境
+    await wrapper.find('[data-testid="rail-envs"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="env-new"]').trigger("click");
+    await flushPromises();
+    await expectBody("env-name-input").setValue("prod");
+    await expectBody("env-modal-confirm").trigger("click");
+    await flushPromises();
+    // 回调试模块：选择器数据源（editor.envs）已含新环境
+    await wrapper.find('[data-testid="rail-api"]').trigger("click");
+    await flushPromises();
+    expect(editorOf().envs.map((e) => e.name)).toContain("prod");
   });
 });
