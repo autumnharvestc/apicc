@@ -469,7 +469,8 @@ describe("RequestEditor", () => {
     const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
     await editor.load(apiNode.id);
     await wrapper.find('[data-testid="tab-body"]').trigger("click");
-    chooseSelect(wrapper, "body-kind", "form");
+    // M8：体类型改为胶囊单选组（a-radio-group，data-testid 保留）——选中 form 项
+    await wrapper.find('[data-testid="body-kind"] input[value="form"]').setValue(true);
     await flushPromises();
     expect(editor.api!.body).toMatchObject({ kind: "form" });
     await wrapper.find('[data-testid="add-form-row"]').trigger("click");
@@ -687,14 +688,18 @@ describe("ResponseViewer", () => {
     expect(wrapper.find('[data-testid="response-empty"]').exists()).toBe(true);
   });
 
-  it("有结果时显示状态徽标与断言明细", async () => {
+  it("有结果时显示状态徽标与断言明细（M8：断言收编为第三页签，点击后可见）", async () => {
     const wrapper = mountWithI18n(ResponseViewer, {});
     await wrapper.setProps({ result });
     expect(wrapper.find('[data-testid="response-empty"]').exists()).toBe(false);
-    expect(wrapper.text()).toContain("eq 失败");
     // 头部展示结果归属用例名（outcome.caseName 字段已有，此前未上 UI）
     expect(wrapper.text()).toContain("用例甲");
     expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
+    // 断言明细在断言页签内（懒渲染：未点击不在 DOM）
+    expect(wrapper.text()).not.toContain("eq 失败");
+    await wrapper.find('[data-testid="response-tab-assertions"]').trigger("click");
+    expect(wrapper.find('[data-testid="response-assertions"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("eq 失败");
   });
 
   it("无 response 时 body/headers tab 显示占位「—」（DebugOutput.response 缺失不得臆造）", async () => {
