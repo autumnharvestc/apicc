@@ -5,9 +5,9 @@ import type { Environment, Project } from "../../src/domain/model.js";
 const project: Project = {
   id: "p1", name: "proj", variables: {},
   environments: [
-    { id: "e1", name: "dev", variables: {} },
-    { id: "e2", name: "sit", extends: "dev", variables: {} },
-    { id: "e3", name: "press", extends: "sit", variables: {} },
+    { id: "e1", name: "dev", variables: {}, baseUrls: {} },
+    { id: "e2", name: "sit", extends: "dev", variables: {}, baseUrls: {} },
+    { id: "e3", name: "press", extends: "sit", variables: {}, baseUrls: {} },
   ],
   collections: [],
   workflows: [],

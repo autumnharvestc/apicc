@@ -22,6 +22,8 @@ import enUS from "ant-design-vue/es/locale/en_US";
 import { apicc } from "./api";
 import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import TopBar from "./components/TopBar.vue";
+import HomeView from "./components/HomeView.vue";
+import TestView from "./components/TestView.vue";
 import ModuleRail from "./components/ModuleRail.vue";
 import SideTree from "./components/SideTree.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
@@ -200,7 +202,12 @@ async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
     return;
   }
   tree.select(kind, id);
-  if (kind === "api") await editor.load(id);
+  if (kind === "api") {
+    // 主页是发起台：从主页点接口即进入接口模块（其余模块不跟随——M8 裁定：创建/选中
+    // 事件同走本通道，不把用户从当前模块踹走）
+    if (view.value === "home") view.value = "api";
+    await editor.load(id);
+  }
   if (kind === "workflow") {
     if (workflowDesign.dirty) {
       pendingSwitchId = id;
@@ -240,6 +247,29 @@ function onWfSwitchCancel() {
   pendingSwitchId = null;
   wfSwitchConfirmOpen.value = false;
   if (workflowDesign.workflowId) tree.select("workflow", workflowDesign.workflowId);
+}
+
+// —— 活动项目（M9-C）：树作用域化的依据。打开工作区后未选项目时自动选中首个项目
+// （工作区顶层即项目）；在线模式与作用域无涉（activeProjectId 仅本地树消费）。
+// 有任意选中节点时按其归属项目作用域化（selectedProjectId 已实现向上归属）；无选中 = 未作用域
+const activeProjectId = computed(() => (tree.selected ? selectedProjectId.value : null));
+
+// 打开工作区后无选中：自动选中首个项目（树作用域化后集合层直接可见）
+watch(
+  () => workspace.opened,
+  async (opened) => {
+    if (!opened || tree.selected) return;
+    await workspace.refresh().catch(() => undefined);
+    const firstProject = (workspace.tree?.children ?? []).flatMap((g) => g.children ?? []).find((n) => n.kind === "project");
+    if (firstProject) tree.select("project", firstProject.id);
+  },
+  { immediate: true },
+);
+
+/** 主页「打开项目」：选中项目节点并切到接口模块（与侧树选中项目同一路径）。 */
+function openProjectFromHome(id: string) {
+  tree.select("project", id);
+  view.value = "api";
 }
 
 /** 导入向导取消（close 事件）：回接口模块调试子视图（M8 前为回 debug 视图，语义等价）。 */
@@ -383,7 +413,7 @@ function onDividerDblClick() {
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :api="apicc" :online="online" :report-error="reportError" />
+      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :report-error="reportError" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
@@ -415,6 +445,7 @@ function onDividerDblClick() {
             :workflow-design="workflowDesign"
             :report-error="reportError"
             :filter="treeFilter"
+            :active-project-id="activeProjectId"
             :tree-root="online.activeWorkspace ? online.onlineTree : undefined"
             :readonly="!!online.activeWorkspace"
             :empty-text="online.activeWorkspace ? t('online.treeEmpty') : undefined"
@@ -422,8 +453,19 @@ function onDividerDblClick() {
           />
         </div>
         <div class="right-col" data-testid="main-split">
+          <!-- 主页（M9-C）：服务器/团队分组/项目管理，恒可用 -->
+          <HomeView
+            v-if="view === 'home'"
+            class="panel-view"
+            :api="apicc"
+            :workspace="workspace"
+            :tree="tree"
+            :online="online"
+            :report-error="reportError"
+            :open-project="openProjectFromHome"
+          />
           <!-- 在线工作区模式（任务 3）：只提供浏览/编辑面板，不提供调试/运行等本地模块 -->
-          <OnlineApiEditor v-if="online.activeWorkspace" class="panel-view" :online="online" />
+          <OnlineApiEditor v-else-if="online.activeWorkspace" class="panel-view" :online="online" />
           <!-- 接口模块（M8）：头部（子视图页签 + AI 入口）+ 调试/设计/用例子视图 -->
           <template v-else-if="view === 'api'">
             <div class="api-head" data-testid="api-head">
@@ -472,13 +514,13 @@ function onDividerDblClick() {
                 <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
               </div>
             </template>
-            <DesignPanel v-else-if="apiSubView === 'design'" class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
-            <CasePanel v-else class="panel-view" :editor="editor" :cases="cases" :report-error="reportError" />
+            <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
           </template>
           <EnvPanel
             v-else-if="view === 'envs'"
             class="panel-view"
             :envs="envs"
+            :workspace="workspace"
             :project-id="selectedProjectId"
             :report-error="reportError"
           />
@@ -491,20 +533,21 @@ function onDividerDblClick() {
             :report-error="reportError"
           />
           <ImportWizard v-else-if="view === 'import'" class="panel-view" :import-w="importW" :plugins="plugins" :report-error="reportError" @close="onImportClose" />
-          <!-- 压测模块（M2-D3 任务 3）：apiId/cases/envs 取 editor store 当前接口；rail 已按
-               接口选中门控，此分支保证 apiId 非空（类型收窄 + 防御） -->
-          <StressPanel
-            v-else-if="view === 'stress' && editor.apiId"
+          <!-- 测试模块（M9-D）：单接口用例（运行/压测）+ 场景用例，取代原压测栏 -->
+          <TestView
+            v-else-if="view === 'test'"
             class="panel-view"
+            :workspace="workspace"
+            :tree="tree"
+            :editor="editor"
+            :debug="debug"
+            :cases="cases"
+            :envs="envs"
             :stress="stress"
-            :api-id="editor.apiId"
-            :cases="editor.api?.cases ?? []"
-            :envs="editor.envs"
+            :active-project-id="activeProjectId"
             :report-error="reportError"
+            :open-workflow="openWorkflowInDesigner"
           />
-          <!-- 插件管理模块（M7-B 任务 1，裁定①）：只读清单 + 失败诊断（fixture 桩）。
-               置于兜底分支之前：内容区兜底仍是设计器（wf 模块与 stress 未选接口的防御路径不变） -->
-          <PluginsView v-else-if="view === 'plugins'" class="panel-view" :plugins="plugins" />
           <WfDesigner
             v-else
             class="wf-view"

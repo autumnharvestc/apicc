@@ -70,8 +70,11 @@ export function createStressController(session: Session, deps: StressControllerD
     const env = resolveEnv(loc.project, input.envName ?? undefined);
     // locateApi 内 ensureOpen 已保证会话打开，root/workspace 非空（与 debug.ts 运行链路同款断言）。
     const root = session.root!;
+    // M9-B 与集合运行同口径：环境按集合的前置 URL 注入 baseUrl 变量；工作区全局变量为最低层。
+    const baseUrl = env?.baseUrls?.[loc.collection.id];
+    const envVars = { ...mergedEnvVars(env, loc.project), ...(baseUrl ? { baseUrl } : {}) };
     const resolver = createVariableResolver({
-      layers: [mergedEnvVars(env, loc.project), loc.collection.variables, loc.project.variables, session.workspace!.variables],
+      layers: [envVars, loc.collection.variables, loc.project.variables, session.workspace!.variables, session.workspace!.globals?.variables ?? {}],
     });
     // 桌面压测面协议守卫（M5 终审）：StressRunner 是单 client 面，桌面控制器钉死
     // httpClient（协议感知的按 protocol 分发只有 CLI run-stress 有），而

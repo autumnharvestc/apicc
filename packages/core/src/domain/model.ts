@@ -139,6 +139,9 @@ export const EnvironmentSchema = z.object({
   name: z.string(),
   extends: z.string().optional(),
   variables: z.record(z.string(), z.string()).default({}),
+  // 前置 URL（M9-B）：按集合设置——key = collectionId，value = 该集合在此环境下的前置 URL。
+  // 运行时注入为内置变量 baseUrl（{{baseUrl}} 模板可用）并对相对 URL 自动拼接。
+  baseUrls: z.record(z.string(), z.string()).default({}),
 }).strict();
 export type Environment = z.infer<typeof EnvironmentSchema>;
 
@@ -153,9 +156,19 @@ export const ProjectSchema = z.object({
 
 export const GroupSchema = z.object({ id: z.string(), name: z.string(), projects: z.array(ProjectSchema).default([]) }).strict();
 
+// 工作区全局参数（M9-B）：跨环境公用——全局变量进变量链最低层（环境 > 全局），
+// 全局 query/header 追加到每个请求（请求同名项优先）。
+export const WorkspaceGlobalsSchema = z.object({
+  variables: z.record(z.string(), z.string()).default({}),
+  query: z.array(KeyValuePairSchema).default([]),
+  headers: z.array(KeyValuePairSchema).default([]),
+}).strict();
+export type WorkspaceGlobals = z.infer<typeof WorkspaceGlobalsSchema>;
+
 export const WorkspaceSchema = z.object({
   id: z.string(),
   name: z.string(),
   variables: z.record(z.string(), z.string()).default({}),
+  globals: WorkspaceGlobalsSchema.default({ variables: {}, query: [], headers: [] }),
   groups: z.array(GroupSchema).default([]),
 }).strict();

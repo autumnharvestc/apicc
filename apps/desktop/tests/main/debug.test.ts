@@ -25,7 +25,7 @@ async function setup(envUrl?: string) {
   await s.open(dir);
   const g = s.createGroup("g");
   const p = s.createProject(g.id, "p");
-  if (envUrl) p.environments.push({ id: "e1", name: "dev", variables: { baseUrl } });
+  if (envUrl) p.environments.push({ id: "e1", name: "dev", variables: { baseUrl }, baseUrls: {} });
   const c = s.createCollection(p.id, "c");
   const api = s.createApi(c.id, null, { name: "ping", method: "GET", url: "{{baseUrl}}/x" });
   return { s, api, project: p };

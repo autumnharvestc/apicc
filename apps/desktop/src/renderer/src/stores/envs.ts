@@ -1,10 +1,11 @@
 import { createPinia, defineStore } from "pinia";
 import type { ApiccApi, EnvCreateInput } from "../../../shared/types.js";
+import type { WorkspaceGlobals } from "@apicc/core";
 
 type ConfirmFn = (message: string) => Promise<boolean>;
 
 /** 列表项与 TreeNodeDTO project 节点的 envs 形状对齐（含 extends 与已存 variables，供水合）。 */
-export interface EnvItem { id: string; name: string; extends?: string; variables: Record<string, string> }
+export interface EnvItem { id: string; name: string; extends?: string; variables: Record<string, string>; baseUrls: Record<string, string> }
 
 /**
  * 环境 store 工厂：接受依赖 api 参数（测试传新实例即天然隔离），每次工厂调用绑定
@@ -19,6 +20,7 @@ export function useEnvsStore(api: ApiccApi) {
       projectId: null as string | null,
       envs: [] as EnvItem[],
       selectedEnvId: null as string | null,
+      globals: { variables: {}, query: [], headers: [] } as WorkspaceGlobals,
     }),
     actions: {
       async load(projectId: string) {
@@ -27,7 +29,9 @@ export function useEnvsStore(api: ApiccApi) {
           .flatMap((g) => g.children ?? [])
           .find((n) => n.kind === "project" && n.id === projectId);
         this.projectId = projectId;
-        this.envs = (project?.envs ?? []).map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: { ...e.variables } }));
+        this.envs = (project?.envs ?? []).map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: { ...e.variables }, baseUrls: { ...(e.baseUrls ?? {}) } }));
+        // 全局变量/全局参数（M9-B）：工作区级，随 load 一并水合（替换式落盘前的编辑基准）。
+        this.globals = await api.globalsGet();
         // 悬空选中清理：新列表不含当前选中（跨项目切换/被并发删除）时置空。
         if (this.selectedEnvId !== null && !this.envs.some((e) => e.id === this.selectedEnvId)) {
           this.selectedEnvId = null;
@@ -44,6 +48,17 @@ export function useEnvsStore(api: ApiccApi) {
         // setEnvironmentVariables 为全量替换：同步本地项，行缓冲再水合即已存值。
         const item = this.envs.find((e) => e.id === envId);
         if (item) item.variables = { ...variables };
+      },
+      /** 环境前置 URL 整体替换（M9-B）：落盘 + 本地项同步。 */
+      async saveBaseUrls(envId: string, baseUrls: Record<string, string>) {
+        await api.envBaseUrlsSave(envId, baseUrls);
+        const item = this.envs.find((e) => e.id === envId);
+        if (item) item.baseUrls = { ...baseUrls };
+      },
+      /** 全局设置整体替换（M9-B）：variables/query/headers 一起落盘。 */
+      async saveGlobals(globals: WorkspaceGlobals) {
+        await api.globalsSave(globals);
+        this.globals = globals;
       },
       // 复用 tree store 的删除模式：确认回调放行才删除，删除后清选中并刷新。
       async remove(kind: "environment", id: string, confirm: ConfirmFn) {

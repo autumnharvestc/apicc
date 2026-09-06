@@ -81,7 +81,7 @@ export const openapiImporter: Importer = {
 
     const project: Project = {
       id: randomUUID(), name: sanitizeNodeName(info.title), variables: {},
-      environments: [{ id: randomUUID(), name: "imported", variables: { baseUrl } }],
+      environments: [{ id: randomUUID(), name: "imported", variables: { baseUrl }, baseUrls: {} }],
       collections: [{ id: randomUUID(), name: sanitizeNodeName(info.title), variables: {}, folders: [], apis }],
       workflows: [],
     };

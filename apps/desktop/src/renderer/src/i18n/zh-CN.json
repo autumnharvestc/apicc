@@ -21,7 +21,9 @@
     "wf": "工作流",
     "stress": "压测",
     "plugins": "插件",
-    "api": "接口"
+    "api": "接口",
+    "home": "主页",
+    "test": "测试"
   },
   "workspace": {
     "problems": "问题文件",
@@ -86,7 +88,7 @@
   "env": {
     "empty": "选择项目后管理环境变量",
     "select": "选择环境",
-    "new": "新建环境",
+    "new": "新建",
     "derive": "从现有环境派生",
     "parent": "父环境",
     "varName": "变量名",
@@ -95,7 +97,17 @@
     "saveVars": "保存变量",
     "saved": "变量已保存",
     "deleteConfirm": "确定删除环境「{name}」？",
-    "namePlaceholder": "环境名称"
+    "namePlaceholder": "环境名称",
+    "globalSection": "全局",
+    "globalVars": "全局变量",
+    "globalParams": "全局参数",
+    "envSection": "环境",
+    "baseUrls": "前置 URL",
+    "baseUrlPlaceholder": "http:// 或 https:// 该集合的前置 URL",
+    "envVars": "环境变量",
+    "queryParams": "Query 参数",
+    "headerParams": "Header 参数",
+    "noCollections": "当前项目暂无集合"
   },
   "case": {
     "empty": "在左侧选择一个接口后编辑用例",
@@ -112,7 +124,9 @@
     "headerName": "头名称",
     "path": "路径",
     "preScript": "前置脚本",
-    "postScript": "后置脚本"
+    "postScript": "后置脚本",
+    "run": "运行",
+    "stress": "压测"
   },
   "run": {
     "empty": "打开工作区后选择集合并运行",
@@ -371,5 +385,41 @@
     },
     "enableValidationFailed": "启用校验未通过",
     "discardConfirm": "当前有未保存修改，离开将丢弃，确定离开？"
+  },
+  "home": {
+    "localServer": "本地服务器",
+    "openDir": "打开本地目录",
+    "newDir": "新建本地目录",
+    "localEmpty": "尚未打开本地目录——打开或新建后在此管理分组与项目",
+    "newGroup": "新建分组",
+    "newGroupName": "新分组",
+    "newProject": "新建项目",
+    "newProjectName": "新项目",
+    "noProjects": "该分组下暂无项目",
+    "remoteServer": "远程服务器",
+    "manageServers": "管理连接",
+    "noServers": "尚未添加远程服务器——点右上「管理连接」配置",
+    "active": "已连接",
+    "teamSpaces": "团队空间（分组）",
+    "refresh": "刷新",
+    "noWorkspaces": "暂无团队空间",
+    "remoteHint": "团队空间与项目归属在管理后台网页创建管理；此处打开项目进入在线模式。"
+  },
+  "topbar": {
+    "projectPlaceholder": "切换项目"
+  },
+  "settings": {
+    "title": "设置"
+  },
+  "test": {
+    "apiCases": "单接口用例",
+    "scenarios": "场景用例",
+    "noApis": "当前项目暂无接口",
+    "noScenarios": "暂无场景用例（工作流）",
+    "pickApi": "从左侧选择一个接口管理用例",
+    "backToCases": "返回用例",
+    "stressContext": "接口压测",
+    "scenarioHint": "选择场景用例（工作流）后点「运行」——场景在设计器中编排与执行。",
+    "scenarioStressDeferred": "场景级压测即将上线"
   }
 }

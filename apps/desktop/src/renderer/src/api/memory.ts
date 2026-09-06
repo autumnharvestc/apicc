@@ -32,6 +32,7 @@ import {
   type WorkflowRunResult,
   type WorkflowStatus,
   type Workspace,
+  type WorkspaceGlobals,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
@@ -282,7 +283,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
         kind: "group" as const, id: g.id, label: g.name,
       children: g.projects.map((p) => ({
         kind: "project" as const, id: p.id, label: p.name,
-        envs: p.environments.map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: e.variables })),
+        envs: p.environments.map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: e.variables, baseUrls: e.baseUrls })),
         // 工作流摘要（M2-B 收口）：与主进程 tree.ts 同构，侧树入口数据源。
         workflows: p.workflows.map((w) => ({ id: w.id, name: w.name, status: w.status })),
         children: p.collections.map((c) => ({
@@ -349,7 +350,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     async wsCreate(rootPath: string, name: string): Promise<OpenResult> {
       if (existsSync(join(rootPath, WORKSPACE_FILE))) throw new Error("目录已是工作区");
       mkdirSync(rootPath, { recursive: true });
-      const ws: Workspace = { id: randomUUID(), name, variables: {}, groups: [] };
+      const ws: Workspace = { id: randomUUID(), name, variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
       await fileStorage.save(rootPath, ws);
       root = rootPath;
       workspace = ws;
@@ -481,7 +482,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       const ws = ensureOpen();
       const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === input.projectId);
       if (!project) throw new Error(`未找到项目: ${input.projectId}`);
-      const env: Environment = { id: randomUUID(), name: input.name, extends: input.extends, variables: {} };
+      const env: Environment = { id: randomUUID(), name: sanitizeNodeName(input.name), extends: input.extends, variables: {}, baseUrls: {} };
       project.environments.push(env);
       await save();
       return env;
@@ -493,6 +494,24 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       if (!env) throw new Error(`未找到环境: ${envId}`);
       env.variables = variables;
       await save();
+    },
+
+    async envBaseUrlsSave(envId: string, baseUrls: Record<string, string>): Promise<void> {
+      const ws = ensureOpen();
+      const env = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === envId);
+      if (!env) throw new Error(`未找到环境: ${envId}`);
+      env.baseUrls = baseUrls;
+      await save();
+    },
+
+    async globalsSave(globals: WorkspaceGlobals): Promise<void> {
+      const ws = ensureOpen();
+      ws.globals = globals;
+      await save();
+    },
+
+    async globalsGet(): Promise<WorkspaceGlobals> {
+      return ensureOpen().globals;
     },
 
     async apiGet(apiId: string): Promise<ApiDetail> {
@@ -976,7 +995,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     seedWorkspace(): void {
       let ws = workspace;
       if (!ws) {
-        ws = { id: randomUUID(), name: "内存工作区", variables: {}, groups: [] };
+        ws = { id: randomUUID(), name: "内存工作区", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
         workspace = ws;
         problems = [];
       }

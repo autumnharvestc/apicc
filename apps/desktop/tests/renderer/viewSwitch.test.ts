@@ -15,31 +15,30 @@ import {
 
 const base = { workspaceOpened: false, onlineActive: false, apiSelected: false };
 
-describe("viewSwitch 模块禁用语义（M8 模块化）", () => {
-  it("模块清单：7 模块固定顺序（rail 渲染顺序契约）", () => {
-    expect(SWITCH_VIEWS).toEqual(["api", "run", "wf", "stress", "envs", "import", "plugins"]);
-    expect(API_SUB_VIEWS).toEqual(["debug", "design", "cases"]);
+describe("viewSwitch 模块禁用语义（M9-D：测试模块取代压测栏）", () => {
+  it("模块清单：7 模块固定顺序（rail 渲染顺序契约，主页固定最左）", () => {
+    expect(SWITCH_VIEWS).toEqual(["home", "api", "run", "wf", "test", "envs", "import"]);
+    expect(API_SUB_VIEWS).toEqual(["debug", "design"]);
   });
 
-  it("在线模式激活：全部模块禁用（含 plugins——内容区让位 OnlineApiEditor）", () => {
+  it("在线模式激活：除主页外全部模块禁用（内容区让位 OnlineApiEditor；主页管理连接恒可用）", () => {
     const online = { ...base, onlineActive: true };
     for (const v of SWITCH_VIEWS as SwitchView[]) {
-      expect(isViewDisabled(v, online), `在线模式下 ${v} 应禁用`).toBe(true);
+      expect(isViewDisabled(v, online), `在线模式下 ${v} 应禁用`).toBe(v === "home" ? false : true);
     }
   });
 
-  it("未打开工作区（非在线）：工作区级模块禁用，plugins（管理类视图，裁定①）恒可用", () => {
+  it("未打开工作区（非在线）：工作区级模块禁用，主页恒可用", () => {
     expect(isViewDisabled("api", base)).toBe(true);
     expect(isViewDisabled("run", base)).toBe(true);
-    expect(isViewDisabled("plugins", base)).toBe(false);
+    expect(isViewDisabled("home", base)).toBe(false);
   });
 
-  it("打开工作区：模块可用；压测未选中接口禁用（裁定 A），选中后可用", () => {
+  it("打开工作区：全部模块可用（测试模块的接口门控在其交互层，rail 不再按接口区分）", () => {
     const opened = { ...base, workspaceOpened: true };
     expect(isViewDisabled("api", opened)).toBe(false);
-    expect(isViewDisabled("plugins", opened)).toBe(false);
-    expect(isViewDisabled("stress", opened)).toBe(true);
-    expect(isViewDisabled("stress", { ...opened, apiSelected: true })).toBe(false);
+    expect(isViewDisabled("home", opened)).toBe(false);
+    expect(isViewDisabled("test", opened)).toBe(false);
   });
 });
 

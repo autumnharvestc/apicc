@@ -24,6 +24,7 @@ import { createStressStore } from "../../../src/renderer/src/stores/stress.js";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import { useRunStore } from "../../../src/renderer/src/stores/run.js";
 import SideTree from "../../../src/renderer/src/components/SideTree.vue";
+import HomeView from "../../../src/renderer/src/components/HomeView.vue";
 import RequestEditor from "../../../src/renderer/src/components/RequestEditor.vue";
 import ResponseViewer from "../../../src/renderer/src/components/ResponseViewer.vue";
 import EmptyState from "../../../src/renderer/src/components/EmptyState.vue";
@@ -808,18 +809,18 @@ describe("ConfirmDialog", () => {
   });
 });
 
-describe("TopBar", () => {
-  it("打开工作区：经 wsPickDirectory+wsOpen 后显示工作区名", async () => {
-    const { wrapper, workspace } = await mountWith(TopBar, {});
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页）", () => {
+  it("打开本地目录：经 wsPickDirectory+wsOpen 后显示工作区名", async () => {
+    const { wrapper, workspace } = await mountWith(HomeView, { openProject: () => {} });
+    await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
     expect(workspace.opened).toBe(true);
-    expect(wrapper.find('[data-testid="workspace-name"]').text()).toContain("内存工作区");
+    expect(wrapper.text()).toContain("内存工作区");
   });
 
-  it("新建工作区先弹名称输入对话框，可取消", async () => {
-    const { wrapper } = await mountWith(TopBar, {});
-    await wrapper.find('[data-testid="new-workspace"]').trigger("click");
+  it("新建本地目录先弹名称输入对话框，可取消", async () => {
+    const { wrapper } = await mountWith(HomeView, { openProject: () => {} });
+    await wrapper.find('[data-testid="home-new-dir"]').trigger("click");
     await flushPromises();
     expect(bodyHas("dialog-input")).toBe(true);
     await expectBody("dialog-cancel").trigger("click");
@@ -828,11 +829,11 @@ describe("TopBar", () => {
     expect(bodyHas("dialog-input")).toBe(false);
   });
 
-  it("打开工作区失败时经 reportError 上报（宽审查 I1）", async () => {
+  it("打开本地目录失败时经 reportError 上报（宽审查 I1）", async () => {
     const errors: unknown[] = [];
-    const { wrapper, api } = await mountWith(TopBar, { reportError: (e: unknown) => { errors.push(e); } });
+    const { wrapper, api } = await mountWith(HomeView, { openProject: () => {}, reportError: (e: unknown) => { errors.push(e); } });
     api.wsOpen = async () => { throw new Error("打不开"); };
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
     expect(errors).toHaveLength(1);
     expect((errors[0] as Error).message).toBe("打不开");

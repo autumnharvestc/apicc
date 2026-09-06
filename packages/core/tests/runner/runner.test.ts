@@ -26,9 +26,9 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   // 夹具须在 baseUrl 就绪后构造：模块顶层求值会把空串快照进 env.variables。
-  env = { id: "e1", name: "dev", variables: { baseUrl, who: "dev" } };
+  env = { id: "e1", name: "dev", variables: { baseUrl, who: "dev" }, baseUrls: {} };
   project = { id: "p1", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-  workspace = { id: "w1", name: "ws", variables: { who: "global" }, groups: [] };
+  workspace = { id: "w1", name: "ws", variables: { who: "global" }, globals: { variables: {}, query: [], headers: [] }, groups: [] };
 });
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
@@ -89,14 +89,14 @@ describe("CollectionRunner", () => {
   });
 
   it("环境继承链上 scope=父环境 的用例也执行", async () => {
-    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl, who: "sit" } };
+    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl, who: "sit" }, baseUrls: {} };
     const col = collectionWith([{ id: "t1", name: "dev-only", scope: "dev", parameters: {}, assertions: [] }]);
     const result = await buildDeps().run(col, sitEnv, project, workspace, {});
     expect(result.total).toBe(1);
   });
 
   it("同 ID 环境用例覆盖基座：仅执行环境版本而非重复执行（规格 §6）", async () => {
-    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl, who: "sit" } };
+    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl, who: "sit" }, baseUrls: {} };
     const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [], workflows: [] };
     const col: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
@@ -134,8 +134,8 @@ describe("CollectionRunner", () => {
   });
 
   it("同 ID 出现两个环境版本时继承链更近者优先（规格 §6）", async () => {
-    const pressEnv: Environment = { id: "e3", name: "press", extends: "sit", variables: { baseUrl } };
-    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl } };
+    const pressEnv: Environment = { id: "e3", name: "press", extends: "sit", variables: { baseUrl }, baseUrls: {} };
+    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl }, baseUrls: {} };
     const chainProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv, pressEnv], collections: [], workflows: [] };
     const col: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
@@ -282,7 +282,7 @@ describe("CollectionRunner", () => {
 
   it("环境派生继承：sit extends dev 继承 baseUrl，子环境变量覆盖同名（回归 C3）", async () => {
     // dev 有 baseUrl 而 sit 没有——URL 能解析即证明继承生效；who 由 sit 覆盖 dev。
-    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { who: "sit" } };
+    const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { who: "sit" }, baseUrls: {} };
     const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [], workflows: [] };
     const col: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
@@ -480,5 +480,80 @@ describe("CollectionRunner", () => {
     expect(result.cases[0]!.error).toContain("afterCase");
     expect(result.cases[1]!.passed).toBe(true);
     expect(result.passed).toBe(1);
+  });
+});
+
+// —— M9-B 环境模型：前置 URL（按集合）双通道 + 工作区全局变量/全局参数 ——
+describe("CollectionRunner 环境模型（M9-B）", () => {
+  let server: Server;
+  let base = "";
+  const seen: Array<{ path: string; headerG: string; query: string }> = [];
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      seen.push({ path: req.url ?? "", headerG: (req.headers["x-g"] as string | undefined) ?? "", query: new URL(req.url ?? "", base).search });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  });
+  afterAll(() => new Promise<void>((r) => server.close(() => r())));
+
+  function deps() {
+    const registry = createPluginRegistry();
+    registry.registerProtocol(httpClient);
+    for (const p of builtinAuthProviders) registry.registerAuth(p);
+    for (const o of builtinAssertOperators) registry.registerAssert(o);
+    registry.registerScriptEngine(jsScriptEngine);
+    return new CollectionRunner({ registry, bus: createEventBus(), timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 }, failFast: false });
+  }
+
+  function apiWith(url: string, extra: Partial<Collection["apis"][number]> = {}): Collection["apis"][number] {
+    return {
+      id: "a1", name: "a", version: "1", deprecated: false, method: "GET", url,
+      headers: [], query: [],
+      cases: [{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
+      ...extra,
+    };
+  }
+
+  it("前置 URL：相对 URL 自动拼接 + {{baseUrl}} 模板（环境按集合设置）", async () => {
+    const env: Environment = { id: "e", name: "dev", variables: { who: "dev" }, baseUrls: { c1: `${base}/prefix` } };
+    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
+    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+    const col: Collection = { id: "c1", name: "c", variables: {}, folders: [], apis: [apiWith("/rel/{{who}}"), apiWith("{{baseUrl}}/tpl")] };
+    const result = await deps().run(col, env, project, ws, {});
+    expect(result.failed).toBe(0);
+    expect(seen[0]!.path).toBe("/prefix/rel/dev");
+    expect(seen[1]!.path).toBe("/prefix/tpl");
+  });
+
+  it("全局变量/全局参数：变量链最低层，query/header 请求同名项优先", async () => {
+    seen.length = 0;
+    const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: { c1: base } };
+    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
+    const ws: Workspace = {
+      id: "w", name: "ws", variables: {},
+      globals: {
+        variables: { gvar: "G" },
+        query: [{ key: "gq", value: "from-global", enabled: true }, { key: "api-q", value: "gone", enabled: true }],
+        headers: [{ key: "x-g", value: "from-global", enabled: true }],
+      },
+      groups: [],
+    };
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [apiWith("{{baseUrl}}/g", {
+        url: "/g/{{gvar}}",
+        headers: [{ key: "x-g", value: "from-api", enabled: true }],
+        query: [{ key: "api-q", value: "from-api", enabled: true }],
+      })],
+    };
+    const result = await deps().run(col, env, project, ws, {});
+    expect(result.failed).toBe(0);
+    expect(seen[0]!.path).toBe("/g/G?gq=from-global&api-q=from-api");
+    expect(seen[0]!.headerG).toBe("from-api"); // 请求同名头优先
+    expect(seen[0]!.query).toContain("gq=from-global"); // 全局 query 追加
+    expect(seen[0]!.query).toContain("api-q=from-api"); // 请求同名 query 优先
   });
 });

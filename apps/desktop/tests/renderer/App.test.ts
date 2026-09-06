@@ -86,6 +86,14 @@ async function mountApp() {
   return wrapper;
 }
 
+/** 打开本地目录（M9-C：入口自 TopBar 迁至主页——rail-home → home-open-dir 两步）。 */
+async function openLocalDir(wrapper: import("@vue/test-utils").VueWrapper) {
+  await wrapper.find('[data-testid="rail-home"]').trigger("click");
+  await flushPromises();
+  await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
+  await flushPromises();
+}
+
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
   it("挂载并渲染 图标导航栏/顶栏/侧树/编辑区/响应区 各区域", async () => {
     const wrapper = await mountApp();
@@ -120,7 +128,7 @@ describe("App 错误反馈通道（宽审查 I1）", () => {
   it("对话框 run 拒绝时 app-error 展示错误并可手动关闭", async () => {
     const wrapper = await mountApp();
     // 打开工作区：memory 替身 wsOpen 对非工作区目录回退内存态（已 seed）
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     // 展开分组（一次点击递归展开后代容器）后点集合行的「新建接口」
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
@@ -145,39 +153,38 @@ function subRadio(wrapper: import("@vue/test-utils").VueWrapper, value: string) 
 }
 
 describe("App 视图切换装配（M8 模块化）", () => {
-  it("未打开工作区时：工作区级模块与子视图禁用（plugins 恒可用）", async () => {
+  it("未打开工作区时：工作区级模块与子视图禁用（主页恒可用）", async () => {
     const wrapper = await mountApp();
     expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
     // rail 原生 button：disabled 属性
     expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
-    expect(wrapper.find('[data-testid="rail-plugins"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="rail-home"]').attributes("disabled")).toBeUndefined();
     // 子视图（接口未选中）禁用
-    expect(subRadio(wrapper, "cases").attributes("disabled")).toBeDefined();
+    expect(subRadio(wrapper, "design").attributes("disabled")).toBeDefined();
   });
 
   it("打开工作区后可切换 运行/环境/导入 模块与 调试/用例/设计 子视图，导入取消回调试子视图", async () => {
     const wrapper = await mountApp();
     // 打开工作区前模块禁用
     expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
+    await flushPromises();
+    // 主页是打开后的缺省视图：切回接口模块再断言
+    await wrapper.find('[data-testid="rail-api"]').trigger("click");
     await flushPromises();
     // 打开后模块可用；缺省接口模块 + 调试子视图 = 编辑器 + 响应区（子视图需选中接口）
     expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeUndefined();
     expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="viewer-pane"]').exists()).toBe(true);
-    // 选中种子接口 → 子视图启用 → 用例子视图
+    // 选中种子接口 → 子视图（调试/设计）启用 → 设计子视图（M9-D：用例移入测试模块）
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
-    expect(subRadio(wrapper, "cases").attributes("disabled")).toBeUndefined();
-    await subRadio(wrapper, "cases").setValue(true);
-    await flushPromises();
-    expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(false);
-    // 设计子视图
+    expect(subRadio(wrapper, "design").attributes("disabled")).toBeUndefined();
     await subRadio(wrapper, "design").setValue(true);
     await flushPromises();
     expect(wrapper.find('[data-testid="design-panel"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(false);
     // 回调试子视图
     await subRadio(wrapper, "debug").setValue(true);
     await flushPromises();
@@ -202,7 +209,7 @@ describe("App 视图切换装配（M8 模块化）", () => {
 
   it("调试子视图仍是缺省且发送链路可用（装配不破坏既有行为）", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
@@ -217,7 +224,7 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
   it("语言切换后 antd 内建文案随 locale 变化", async () => {
     const wrapper = await mountApp();
     // 打开工作区并选中接口，发送一次：memory 替身断言恒为空 → 断言表渲染 antd 内建空态
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
@@ -250,14 +257,14 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
 describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
   it("dirty 时点击另一工作流：确认前缓冲不变；取消保持；确认后新流载入", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     // 直连替身建两条流后重开工作区刷新树（failingApi 为本文件共享单例，按名定位节点）
     const treeDto = await failingApi.treeGet();
     const project = treeDto.children![0]!.children![0]!;
     const wfA = await failingApi.wfCreate({ projectId: project.id, name: "脏缓冲流" });
     const wfB = await failingApi.wfCreate({ projectId: project.id, name: "切换目标流" });
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const wfNode = (name: string) =>
@@ -301,13 +308,13 @@ describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
 
   it("非 dirty 时点击另一工作流：直接载入不弹确认（现状保持）", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
     const project = treeDto.children![0]!.children![0]!;
     await failingApi.wfCreate({ projectId: project.id, name: "干净流甲" });
     const wfB = await failingApi.wfCreate({ projectId: project.id, name: "干净流乙" });
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const wfNode = (name: string) =>
@@ -326,12 +333,12 @@ describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
 describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
   it("重命名设计器正开的工作流：设计器会话卸载，再次打开重新 load 拿新名", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
     const project = treeDto.children![0]!.children![0]!;
     const wf = await failingApi.wfCreate({ projectId: project.id, name: "旧名流" });
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const wfNode = (name: string) =>
@@ -365,13 +372,13 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
 
   it("重命名未打开的工作流：不影响设计器会话（条件分支不误伤）", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
     const project = treeDto.children![0]!.children![0]!;
     const wfA = await failingApi.wfCreate({ projectId: project.id, name: "旁路流甲" });
     await failingApi.wfCreate({ projectId: project.id, name: "旁路流乙" });
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const wfNode = (name: string) =>
@@ -401,7 +408,7 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
     failingApi.nodeCreate = realNodeCreate; // 本用例需要真实创建，结束时还原恒拒绝替身
     try {
       const wrapper = await mountApp();
-      await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+      await openLocalDir(wrapper);
       await flushPromises();
       // 选中种子接口 → selectedProjectId 就绪 → bindIndex 首次构建（仅种子 1 个接口）
       await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
@@ -434,13 +441,13 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
 describe("App 侧树工作流入口", () => {
   it("点击侧树工作流节点：视图切到工作流且设计器载入该流（selectedProjectId 保持所属项目）", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     // 直连替身建工作流后重开工作区刷新树（打开钮对非工作区目录回退内存态）
     const tree = await failingApi.treeGet();
     const project = tree.children![0]!.children![0]!;
     const wf = await failingApi.wfCreate({ projectId: project.id, name: "侧树入口流" });
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="tree-workflow"]').trigger("click");
@@ -457,7 +464,7 @@ describe("App 侧树工作流入口", () => {
 
   it("设计器列表新建工作流后侧树同步出现（树摘要随 wfList 变更刷新）", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     // 选中接口 → selectedProjectId 就绪 → 切到工作流视图（设计器是工作流唯一创建入口）
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
@@ -480,13 +487,13 @@ describe("App 侧树工作流入口", () => {
     // 审查修复：生命周期迁移不改 wfList.items.length，树摘要须随设计器 status 变化刷新，
     // 否则侧树色点陈旧。真实链路：wf-publish → store.setStatus → api.wfSetStatus → 树刷新。
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     // 直连替身建 draft 工作流后重开工作区刷新树（failingApi 为本文件共享单例，按名断言）
     const tree = await failingApi.treeGet();
     const project = tree.children![0]!.children![0]!;
     const wf = await failingApi.wfCreate({ projectId: project.id, name: "生命周期流" });
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const findNode = () =>
@@ -565,33 +572,20 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
 
 // —— M7-B 任务 1：插件管理视图装配（裁定①：路由 /plugins + 侧栏入口，管理类视图）——
 describe("App 插件视图装配（M7-B 任务 1）", () => {
-  it("插件入口不依赖工作区：未打开工作区时工作区级模块禁用、插件模块可用且渲染混合清单", async () => {
+  it("插件入口（M9-C 裁定 D5）：顶栏设置抽屉打开插件管理，恒可用（不依赖工作区）", async () => {
     const wrapper = await mountApp();
-    // 未打开工作区：工作区级模块（run 等）禁用，插件模块恒可用（管理类视图定位）
+    // 未打开工作区：工作区级模块（run 等）禁用，主页恒可用
     expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
-    expect(wrapper.find('[data-testid="rail-plugins"]').attributes("disabled")).toBeUndefined();
-    await wrapper.find('[data-testid="rail-plugins"]').trigger("click");
+    expect(wrapper.find('[data-testid="rail-home"]').attributes("disabled")).toBeUndefined();
+    await wrapper.find('[data-testid="settings-toggle"]').trigger("click");
     await flushPromises();
-    expect(wrapper.find('[data-testid="plugins-view"]').exists()).toBe(true);
+    expect(bodyFind("plugins-view")).not.toBeNull();
     // fixture 混合清单上屏（loaded/failed 各至少一）
-    expect(wrapper.findAll('[data-testid="plugins-row"]').length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("打开工作区后插件模块与接口模块往返（编辑区/响应区结构契约不变）", async () => {
-    const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
-    await flushPromises();
-    await wrapper.find('[data-testid="rail-plugins"]').trigger("click");
-    await flushPromises();
-    expect(wrapper.find('[data-testid="plugins-view"]').exists()).toBe(true);
-    await wrapper.find('[data-testid="rail-api"]').trigger("click");
-    await flushPromises();
-    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="viewer-pane"]').exists()).toBe(true);
+    expect(document.body.querySelectorAll('[data-testid="plugins-row"]').length).toBeGreaterThanOrEqual(2);
   });
 });
 
-// —— M2-D3 任务 3：压测视图装配（简报裁定 A）——
+// —— M9-D：测试模块（单接口用例 运行/压测 + 场景用例），取代原压测栏 ——
 
 /** 压测报告夹具（App 装配链路用；字段与 core StressReportSchema 对齐）。 */
 function stressReportFixture(): StressReport {
@@ -610,122 +604,103 @@ function stressReportFixture(): StressReport {
   };
 }
 
-describe("App 压测视图装配（M2-D3 任务 3，裁定 A）", () => {
-  it("未选中接口时压测模块禁用；选中接口后可用，切入渲染 StressPanel（props 装配选中接口 apiId/store/cases）", async () => {
+describe("App 测试模块装配（M9-D）", () => {
+  it("rail-test 打开测试模块：单接口用例面板选接口后可编辑，case-run 运行结果内嵌上屏", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
-    // 未选中接口：压测项存在但禁用（接口级视图既有口径）
-    const stressBtn = wrapper.find('[data-testid="rail-stress"]');
-    expect(stressBtn.exists()).toBe(true);
-    expect(stressBtn.attributes("disabled")).toBeDefined();
-    // 选中接口后压测项可用
+    // 选中种子接口（作用域化树：collection 展开后点接口）
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
-    expect(wrapper.find('[data-testid="rail-stress"]').attributes("disabled")).toBeUndefined();
-    // 切到压测模块：StressPanel 渲染，props 为选中接口
-    await wrapper.find('[data-testid="rail-stress"]').trigger("click");
+    // 测试模块：用例面板渲染（用例列表来自当前接口）
+    await wrapper.find('[data-testid="rail-test"]').trigger("click");
     await flushPromises();
-    expect(wrapper.find('[data-testid="stress-panel"]').exists()).toBe(true);
-    const panel = wrapper.findComponent(StressPanel);
-    const apiId = wrapper.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
-    expect(panel.props("apiId")).toBe(apiId);
-    // store 实例（组合根一次性创建后经 props 下传）：带 form 状态与 start/clear 动作
-    const stress = panel.props("stress") as {
-      form: { concurrency: number; mode: string };
-      start: unknown;
-      clear: unknown;
-    };
-    expect(stress.form.concurrency).toBe(1);
-    expect(stress.form.mode).toBe("iterations");
-    expect(typeof stress.start).toBe("function");
-    expect(typeof stress.clear).toBe("function");
-    // cases/envs 经 editor store 下发（种子接口单用例「冒烟」、无环境）
-    expect((panel.props("cases") as Array<{ name: string }>).map((c) => c.name)).toEqual(["冒烟"]);
-    expect(panel.props("envs")).toEqual([]);
+    expect(wrapper.find('[data-testid="test-view"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(true);
+    // 单条用例「运行」：结果内嵌上屏（memory 替身断言恒通过）
+    const runBtn = wrapper.find('[data-testid^="case-run-"]');
+    await runBtn.trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="test-result"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
   });
 
-  it("压测报告上屏后同接口视图往返保留；切接口时压测会话清空（clear 裁定）", async () => {
-    failingApi.nodeCreate = realNodeCreate; // 本用例需要真实创建第二接口，结束还原恒拒绝替身
+  it("用例行「压测」：内嵌 StressPanel 渲染并绑定当前接口（apiId/cases/envs 预选该用例）", async () => {
+    failingApi.nodeCreate = realNodeCreate;
     try {
       const wrapper = await mountApp();
-      await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+      await openLocalDir(wrapper);
       await flushPromises();
       await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
       await wrapper.find('[data-testid="tree-api"]').trigger("click");
       await flushPromises();
-      // 压测一次出报告（替身立即返回固定报告；表单默认选中首个用例，可直接开始）
-      failingApi.stressRun = async () => ({ report: stressReportFixture(), file: "stress-x.json" });
-      await wrapper.find('[data-testid="rail-stress"]').trigger("click");
+      await wrapper.find('[data-testid="rail-test"]').trigger("click");
       await flushPromises();
+      failingApi.stressRun = async () => ({ report: stressReportFixture(), file: "stress-x.json" });
+      // 用例行点「压测」：内嵌 StressPanel + 预选该用例
+      const stressBtn = wrapper.find('[data-testid^="case-stress-"]');
+      const caseId = stressBtn.attributes("data-case-id") as string;
+      await stressBtn.trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="stress-panel"]').exists()).toBe(true);
+      const panel = wrapper.findComponent(StressPanel);
+      const apiId = wrapper.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
+      expect(panel.props("apiId")).toBe(apiId);
+      expect((panel.props("cases") as Array<{ name: string }>).map((c) => c.name)).toEqual(["冒烟"]);
+      const stress = panel.props("stress") as { form: { caseId: string; concurrency: number } };
+      expect(stress.form.caseId).toBe(caseId);
+      // 压测跑一轮出报告，返回用例再进入保留（store 会话不随视图切换清空）
       await wrapper.find('[data-testid="stress-start"]').trigger("click");
       await flushPromises();
       expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
-      // 同接口视图往返（stress → 接口模块 → stress）：form/报告保留
-      await wrapper.find('[data-testid="rail-api"]').trigger("click");
+      await wrapper.find('[data-testid="test-back-to-cases"]').trigger("click");
       await flushPromises();
-      await wrapper.find('[data-testid="rail-stress"]').trigger("click");
-      await flushPromises();
-      expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
-      // 新建并选中另一个接口：切接口触发 store.clear() → 旧报告不再上屏
+      expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(true);
+      // 切接口：压测会话清空（clear 裁定）——新建第二接口并选中
       await wrapper.find('[data-testid="new-api"]').trigger("click");
       await expectBody("dialog-input").setValue("第二接口");
       await expectBody("dialog-confirm").trigger("click");
       await flushPromises();
-      expect(wrapper.find('[data-testid="stress-panel"]').exists()).toBe(true);
+      // 新接口在测试模块：进入压测上下文前报告已清空
+      const newApiBtn = wrapper.findAll('[data-testid^="test-api-"]').at(-1)!;
+      await newApiBtn.trigger("click");
+      await flushPromises();
+      const stressBtn2 = wrapper.find('[data-testid^="case-stress-"]');
+      await stressBtn2.trigger("click");
+      await flushPromises();
       expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(false);
     } finally {
       failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
     }
   });
 
-  it("模块/子视图回归：rail 含全部 7 模块，子视图含 3 页签，既有面板全部仍可达", async () => {
+  it("场景用例：项目工作流清单渲染，点击「运行」切工作流模块并载入；场景压测为禁用态", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
-    // 7 模块 rail 按钮（顺序与 SWITCH_VIEWS 一致）
-    const railItems = wrapper
-      .findAll('[data-testid="module-rail"] button.rail-item')
-      .map((b) => b.attributes("data-testid"));
-    expect(railItems).toEqual([
-      "rail-api", "rail-run", "rail-wf", "rail-stress", "rail-envs", "rail-import", "rail-plugins",
-    ]);
-    // 选中接口 → 子视图 3 页签（顺序与 API_SUB_VIEWS 一致）
+    // 建（或复用）一条工作流后进入测试模块场景页签
+    const treeDto = await failingApi.treeGet();
+    const project = treeDto.children![0]!.children![0]!;
+    const wf = await failingApi.wfCreate({ projectId: project.id, name: "场景流" });
+    // 直建工作流后重开目录刷新树摘要（场景清单取自 workspace.tree）
+    await openLocalDir(wrapper);
+    await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
-    const subValues = wrapper
-      .findAll('[data-testid="api-sub-tabs"] input[type=radio]')
-      .map((i) => (i.element as HTMLInputElement).value);
-    expect(subValues).toEqual(["debug", "design", "cases"]);
-    // 既有面板逐一切换仍可达
-    const reachable: Array<[string, string]> = [
-      ["cases", "case-panel"],
-      ["design", "design-panel"],
-    ];
-    for (const [view, testid] of reachable) {
-      await subRadio(wrapper, view).setValue(true);
-      await flushPromises();
-      expect(wrapper.find(`[data-testid="${testid}"]`).exists()).toBe(true);
-    }
-    const railReachable: Array<[string, string]> = [
-      ["envs", "env-panel"],
-      ["run", "run-view"],
-      ["import", "import-wizard"],
-      ["plugins", "plugins-view"],
-    ];
-    for (const [mod, testid] of railReachable) {
-      await wrapper.find(`[data-testid="rail-${mod}"]`).trigger("click");
-      await flushPromises();
-      expect(wrapper.find(`[data-testid="${testid}"]`).exists()).toBe(true);
-    }
-    // 回接口模块（缺省保留上次子视图，此处为 cases；点调试页签回编辑器）
-    await wrapper.find('[data-testid="rail-api"]').trigger("click");
+    await wrapper.find('[data-testid="rail-test"]').trigger("click");
     await flushPromises();
-    await subRadio(wrapper, "debug").setValue(true);
+    await wrapper.find('[data-testid="test-tab-scenario"]').trigger("click");
     await flushPromises();
-    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
+    // 场景压测禁用（裁定 D2：延后不做假入口）
+    expect(wrapper.find('[data-testid="test-scenario-stress"]').attributes("disabled")).toBeDefined();
+    // 运行：切到工作流模块且设计器载入该流
+    await wrapper.find(`[data-testid="test-scenario-run-${wf.id}"]`).trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="rail-wf"]').classes()).toContain("active");
+    const design = wrapper.findComponent(WfDesigner).props("workflowDesign") as { workflowId: string | null };
+    expect(design.workflowId).toBe(wf.id);
   });
 });
 
@@ -733,7 +708,7 @@ describe("App 压测视图装配（M2-D3 任务 3，裁定 A）", () => {
 describe("App 环境联动（M9-A1）", () => {
   it("环境模块新建环境后，调试选择器可见该环境", async () => {
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="tree-api"]').trigger("click");

@@ -21,7 +21,9 @@
     "wf": "Workflow",
     "stress": "Stress",
     "plugins": "Plugins",
-    "api": "APIs"
+    "api": "APIs",
+    "home": "Home",
+    "test": "Test"
   },
   "workspace": {
     "problems": "Problem files",
@@ -86,7 +88,7 @@
   "env": {
     "empty": "Select a project to manage environment variables",
     "select": "Select environment",
-    "new": "New Environment",
+    "new": "New",
     "derive": "Derive from Existing",
     "parent": "Parent environment",
     "varName": "Variable",
@@ -95,7 +97,17 @@
     "saveVars": "Save variables",
     "saved": "Variables saved",
     "deleteConfirm": "Delete environment \"{name}\"?",
-    "namePlaceholder": "Environment name"
+    "namePlaceholder": "Environment name",
+    "globalSection": "Global",
+    "globalVars": "Global Variables",
+    "globalParams": "Global Params",
+    "envSection": "Environments",
+    "baseUrls": "Base URLs",
+    "baseUrlPlaceholder": "http:// or https:// base URL for this collection",
+    "envVars": "Environment Variables",
+    "queryParams": "Query Params",
+    "headerParams": "Header Params",
+    "noCollections": "No collections in this project"
   },
   "case": {
     "empty": "Select an API on the left to edit cases",
@@ -112,7 +124,9 @@
     "headerName": "Header",
     "path": "Path",
     "preScript": "Pre-request script",
-    "postScript": "Post-response script"
+    "postScript": "Post-response script",
+    "run": "Run",
+    "stress": "Stress"
   },
   "run": {
     "empty": "Open a workspace, then select a collection and run",
@@ -371,5 +385,41 @@
     },
     "enableValidationFailed": "Enablement validation failed",
     "discardConfirm": "You have unsaved changes that will be discarded. Leave anyway?"
+  },
+  "home": {
+    "localServer": "Local Server",
+    "openDir": "Open Directory",
+    "newDir": "New Directory",
+    "localEmpty": "No local directory open — open or create one to manage groups & projects",
+    "newGroup": "New Group",
+    "newGroupName": "New Group",
+    "newProject": "New Project",
+    "newProjectName": "New Project",
+    "noProjects": "No projects in this group",
+    "remoteServer": "Remote Servers",
+    "manageServers": "Manage",
+    "noServers": "No remote servers — click Manage to add one",
+    "active": "Connected",
+    "teamSpaces": "Team Spaces (Groups)",
+    "refresh": "Refresh",
+    "noWorkspaces": "No team spaces",
+    "remoteHint": "Team spaces & project ownership are managed in the admin console; open a project to enter online mode."
+  },
+  "topbar": {
+    "projectPlaceholder": "Switch project"
+  },
+  "settings": {
+    "title": "Settings"
+  },
+  "test": {
+    "apiCases": "API Cases",
+    "scenarios": "Scenarios",
+    "noApis": "No APIs in this project",
+    "noScenarios": "No scenarios (workflows) yet",
+    "pickApi": "Pick an API on the left to manage cases",
+    "backToCases": "Back to cases",
+    "stressContext": "API stress",
+    "scenarioHint": "Pick a scenario (workflow) and click Run — scenarios are orchestrated in the designer.",
+    "scenarioStressDeferred": "Scenario stress is coming soon"
   }
 }

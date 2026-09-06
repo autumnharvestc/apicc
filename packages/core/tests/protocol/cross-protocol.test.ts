@@ -44,8 +44,8 @@ describe("跨协议变量携带（WS → HTTP）", () => {
 
   it("WS 首帧经后置脚本提取变量，HTTP 节点以 {{token}} 引用", async () => {
     // 夹具在服务端就绪后的测试体内构造（模块顶层求值会把空串快照进 env.variables——runner.test.ts 先例注释）。
-    const ws: Workspace = { id: "w", name: "w", variables: {}, groups: [] };
-    const env: Environment = { id: "e", name: "dev", variables: { wsUrl: wssUrl, httpUrl: httpBaseUrl } };
+    const ws: Workspace = { id: "w", name: "w", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+    const env: Environment = { id: "e", name: "dev", variables: { wsUrl: wssUrl, httpUrl: httpBaseUrl }, baseUrls: {} };
     const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
     const collection: Collection = {
       id: "c", name: "mixed", variables: {}, folders: [],

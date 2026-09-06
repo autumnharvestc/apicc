@@ -94,9 +94,9 @@ describe("runner 分发与 message 变量解析（M5 D5+D7）", () => {
   }));
 
   it("CollectionRunner：ws 接口走 wsClient，message 模板经变量解析，首帧经 pm.response.text()", async () => {
-    const env: Environment = { id: "e1", name: "dev", variables: { who: "m5" } };
+    const env: Environment = { id: "e1", name: "dev", variables: { who: "m5" }, baseUrls: {} };
     const project: Project = { id: "p1", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-    const workspace: Workspace = { id: "w1", name: "ws", variables: {}, groups: [] };
+    const workspace: Workspace = { id: "w1", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
     const collection: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
