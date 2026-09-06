@@ -10,6 +10,7 @@ import type {
   WorkflowImpactEntry,
   WorkflowRunResult,
   WorkflowStatus,
+  WorkspaceGlobals,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
 import type { AiSuggestedCase } from "@apicc/core";
@@ -128,6 +129,9 @@ export interface ApiccApi {
   nodeDelete(kind: "group" | "project" | "collection" | "folder" | "api" | "environment", id: string): Promise<void>;
   envCreate(input: EnvCreateInput): Promise<Environment>;
   envVarsSave(envId: string, variables: Record<string, string>): Promise<void>;
+  envBaseUrlsSave(envId: string, baseUrls: Record<string, string>): Promise<void>;
+  globalsSave(globals: WorkspaceGlobals): Promise<void>;
+  globalsGet(): Promise<WorkspaceGlobals>;
   apiGet(apiId: string): Promise<ApiDetail>;
   apiSave(api: ApiDefinition): Promise<void>;
   debugSend(input: DebugInput): Promise<DebugOutput>;

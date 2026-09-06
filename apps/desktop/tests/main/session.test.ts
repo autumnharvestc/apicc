@@ -91,7 +91,7 @@ describe("createSession", () => {
     await s.open(dir);
     const g = s.createGroup("g");
     const p = s.createProject(g.id, "p");
-    p.environments.push({ id: "e-dev", name: "dev", variables: { baseUrl: "http://d", token: "t" } });
+    p.environments.push({ id: "e-dev", name: "dev", variables: { baseUrl: "http://d", token: "t" }, baseUrls: {} });
     const env = s.createEnvironment(p.id, { name: "sit", extends: "dev" });
     await s.save();
     const s2 = createSession();
@@ -478,5 +478,33 @@ describe("session 名称净化（M9-A2）", () => {
     expect(() => s.createApi(c.id, null, { name: "A", method: "GET", url: "/" })).toThrow("接口已存在: A");
     const c2 = s.createCollection(p.id, "c2");
     expect(() => s.renameNode("collection", c2.id, "c")).toThrow("集合已存在: c");
+  });
+});
+
+// —— M9-B：环境前置 URL 与工作区全局设置通道（落盘重开读回） ——
+describe("session 环境模型（M9-B）", () => {
+  it("setEnvironmentBaseUrls 落盘重开读回；setWorkspaceGlobals 整体替换并读回", async () => {
+    const s = createSession();
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const p = s.createProject(g.id, "p");
+    const c = s.createCollection(p.id, "c");
+    const env = s.createEnvironment(p.id, { name: "dev" });
+    s.setEnvironmentBaseUrls(env.id, { [c.id]: "http://base" });
+    s.setWorkspaceGlobals({ variables: { gvar: "G" }, query: [{ key: "q", value: "1", enabled: true }], headers: [] });
+    await s.save();
+    const s2 = createSession();
+    await s2.open(dir);
+    const project = s2.workspace!.groups[0]!.projects[0]!;
+    expect(project.environments[0]!.baseUrls).toEqual({ [c.id]: "http://base" });
+    expect(s2.workspace!.globals).toEqual({
+      variables: { gvar: "G" },
+      query: [{ key: "q", value: "1", enabled: true }],
+      headers: [],
+    });
+    // 未命中环境照旧抛「未找到」
+    expect(() => s2.setEnvironmentBaseUrls("nope", {})).toThrow("未找到环境");
   });
 });

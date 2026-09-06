@@ -232,7 +232,7 @@ export const fileStorage: StorageAdapter = {
   },
 
   async save(root: string, ws: Workspace) {
-    writeYaml(join(root, WORKSPACE_FILE), { id: ws.id, name: ws.name, variables: ws.variables });
+    writeYaml(join(root, WORKSPACE_FILE), { id: ws.id, name: ws.name, variables: ws.variables, globals: ws.globals });
     for (const g of ws.groups) {
       const gDir = join(root, "groups", g.name);
       writeYaml(join(gDir, "group.yaml"), { id: g.id, name: g.name });
@@ -241,7 +241,7 @@ export const fileStorage: StorageAdapter = {
         writeYaml(join(pDir, "project.yaml"), { id: p.id, name: p.name, variables: p.variables });
         for (const e of p.environments) {
           writeYaml(join(pDir, "environments", `${e.name}.yaml`), {
-            id: e.id, name: e.name, extends: e.extends, variables: e.variables,
+            id: e.id, name: e.name, extends: e.extends, variables: e.variables, baseUrls: e.baseUrls,
           });
         }
         for (const wf of p.workflows ?? []) {

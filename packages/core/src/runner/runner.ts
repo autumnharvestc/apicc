@@ -9,6 +9,8 @@ const nextRunFileId = monotonicFactory();
 import { envChain, mergedEnvVars } from "../domain/envChain.js";
 import type { ApiDefinition, Collection, Environment, Project, TestCase, Workspace } from "../domain/model.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
+import { withBaseUrl } from "../variables/baseUrl.js";
+import type { KeyValuePair } from "../domain/model.js";
 import type { EventBus } from "../events/bus.js";
 import type { PluginRegistry } from "../plugin/registry.js";
 import type { ExecutableRequest, ExecutionResponse, PmApi, ScriptEngine } from "../plugin/types.js";
@@ -25,6 +27,10 @@ export interface RunnerOptions {
 }
 
 export class CollectionRunner {
+  /** 全局参数（M9-B）：run() 时从 workspace.globals 取，runCase 合并进请求（同名项请求侧优先）。 */
+  private globalQuery: KeyValuePair[] = [];
+  private globalHeaders: KeyValuePair[] = [];
+
   constructor(private deps: {
     registry: PluginRegistry;
     bus: EventBus;
@@ -37,9 +43,16 @@ export class CollectionRunner {
     const chain = env ? envChain(env, project) : [];
     // 环境变量继承（规格 §3.1/§6）：按继承链从根到叶合并各环境变量为一层，子环境同名变量覆盖父环境。
     // 经 mergedEnvVars 统一口径，与工作流条件求值上下文 env 同源。
-    const envVars = mergedEnvVars(env, project);
+    // M9-B：环境按集合设置的前置 URL 注入为内置变量 baseUrl（{{baseUrl}} 模板可用；
+    // 相对 URL 自动拼接由 runCase 内 withBaseUrl 完成）；工作区全局变量为变量链最低层
+    // （环境 > 集合 > 项目 > 工作区 > 全局变量），全局 query/header 由 runCase 合并（请求同名项优先）。
+    const globals = workspace.globals ?? { variables: {}, query: [], headers: [] };
+    const baseUrl = env?.baseUrls?.[collection.id];
+    const envVars = { ...mergedEnvVars(env, project), ...(baseUrl ? { baseUrl } : {}) };
+    this.globalQuery = globals.query;
+    this.globalHeaders = globals.headers;
     const resolver = createVariableResolver({
-      layers: [envVars, collection.variables, project.variables, workspace.variables],
+      layers: [envVars, collection.variables, project.variables, workspace.variables, globals.variables],
     });
     const engine = this.deps.registry.getScriptEngine("javascript");
     if (!engine) throw new Error("缺少 javascript 脚本引擎插件");
@@ -163,9 +176,20 @@ export class CollectionRunner {
 
     const request: ExecutableRequest = {
       method: api.method,
-      url: resolver.resolve(api.url),
-      headers: Object.fromEntries(api.headers.filter((h) => h.enabled).map((h) => [h.key, resolver.resolve(h.value)])),
-      query: api.query.map((q) => ({ ...q, value: resolver.resolve(q.value) })),
+      url: withBaseUrl(resolver.resolve(api.url), resolver.get("baseUrl")),
+      // M9-B：全局 query/header 追加（请求同名项优先——api 侧同 key 即便禁用也视为显式关闭全局项）。
+      headers: Object.fromEntries(
+        [
+          ...(this.globalHeaders ?? []).filter((h) => h.enabled && h.key && !api.headers.some((a) => a.key === h.key)),
+          ...api.headers.filter((h) => h.enabled),
+        ].map((h) => [h.key, resolver.resolve(h.value)]),
+      ),
+      query: [
+        ...(this.globalQuery ?? [])
+          .filter((q) => q.enabled && q.key && !api.query.some((a) => a.key === q.key))
+          .map((q) => ({ ...q, value: resolver.resolve(q.value) })),
+        ...api.query.map((q) => ({ ...q, value: resolver.resolve(q.value) })),
+      ],
       // form 请求体逐项解析变量值（JSON/xml/raw/graphql 走 content 字符串；form 可省略 content）。
       body: api.body
         ? {

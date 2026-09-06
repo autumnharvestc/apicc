@@ -138,6 +138,9 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.NodeDelete]: z.tuple([NodeKindSchema, z.string()]),
   [IpcChannel.EnvCreate]: z.tuple([EnvCreateInputSchema]),
   [IpcChannel.EnvVarsSave]: z.tuple([z.string(), z.record(z.string(), z.string())]),
+  [IpcChannel.EnvBaseUrlsSave]: z.tuple([z.string(), z.record(z.string(), z.string())]),
+  [IpcChannel.GlobalsSave]: z.tuple([z.record(z.string(), z.unknown())]),
+  [IpcChannel.GlobalsGet]: z.tuple([]),
   [IpcChannel.ApiGet]: z.tuple([z.string()]),
   [IpcChannel.ApiSave]: z.tuple([ApiDefinitionSchema]),
   [IpcChannel.DebugSend]: z.tuple([DebugInputSchema]),
@@ -401,6 +404,20 @@ export function createIpcDeps(options: IpcDepsOptions) {
         session.setEnvironmentVariables(envId, variables);
         await session.save();
         return undefined;
+      }
+      case IpcChannel.EnvBaseUrlsSave: {
+        const [envId, baseUrls] = a as [string, Record<string, string>];
+        session.setEnvironmentBaseUrls(envId, baseUrls);
+        await session.save();
+        return undefined;
+      }
+      case IpcChannel.GlobalsSave: {
+        session.setWorkspaceGlobals(a[0] as Workspace["globals"]);
+        await session.save();
+        return undefined;
+      }
+      case IpcChannel.GlobalsGet: {
+        return session.workspace!.globals;
       }
       case IpcChannel.ApiGet: {
         const loc = session.locateApi(a[0] as string);

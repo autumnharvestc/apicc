@@ -22,7 +22,7 @@ describe("envs store", () => {
     const created = await api.envCreate({ projectId: projectNode.id, name: "dev" });
     await api.envVarsSave(created.id, { baseUrl: "http://d" });
     await envs.load(projectNode.id);
-    expect(envs.envs).toEqual([{ id: created.id, name: "dev", variables: { baseUrl: "http://d" } }]);
+    expect(envs.envs).toEqual([{ id: created.id, name: "dev", variables: { baseUrl: "http://d" }, baseUrls: {} }]);
     expect(envs.projectId).toBe(projectNode.id);
     expect(envs.selectedEnvId).toBeNull();
   });

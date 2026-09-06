@@ -255,9 +255,23 @@ export function createSession(options: SessionOptions = {}) {
     const { workspace: ws } = ensureOpen();
     const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
     if (!project) throw new Error(`未找到项目: ${projectId}`);
-    const env: Environment = { id: randomUUID(), name: sanitizeNodeName(input.name), extends: input.extends, variables: {} };
+    const env: Environment = { id: randomUUID(), name: sanitizeNodeName(input.name), extends: input.extends, variables: {}, baseUrls: {} };
     project.environments.push(env);
     return env;
+  }
+
+  /** 环境前置 URL（M9-B）：按集合整体替换该环境的 baseUrls 映射（collectionId → 前置 URL）。 */
+  function setEnvironmentBaseUrls(envId: string, baseUrls: Record<string, string>): void {
+    const { workspace: ws } = ensureOpen();
+    const env = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === envId);
+    if (!env) throw new Error(`未找到环境: ${envId}`);
+    env.baseUrls = baseUrls;
+  }
+
+  /** 工作区全局设置（M9-B）：整体替换 globals（全局变量 + 全局 query/header 参数）。 */
+  function setWorkspaceGlobals(globals: Workspace["globals"]): void {
+    const { workspace: ws } = ensureOpen();
+    ws.globals = globals;
   }
 
   function setEnvironmentVariables(envId: string, variables: Record<string, string>): void {
@@ -439,7 +453,7 @@ export function createSession(options: SessionOptions = {}) {
     async create(dir: string, name: string) {
       if (existsSync(join(dir, "apicc.workspace.yaml"))) throw new Error("目录已是工作区");
       mkdirSync(dir, { recursive: true });
-      const ws: Workspace = { id: randomUUID(), name, variables: {}, groups: [] };
+      const ws: Workspace = { id: randomUUID(), name, variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
       await fileStorage.save(dir, ws);
       root = dir;
       workspace = ws;
@@ -450,7 +464,7 @@ export function createSession(options: SessionOptions = {}) {
       return (await fileStorage.load(r)).problems;
     },
     createGroup, createProject, createCollection, createFolder, createApi,
-    createEnvironment, setEnvironmentVariables, importProject,
+    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setWorkspaceGlobals, importProject,
     locateApi, locateCollection, saveApi,
     locateWorkflow, createWorkflow, deleteWorkflow, saveWorkflow, setWorkflowStatus, renameWorkflow,
     renameNode, deleteNode, save,

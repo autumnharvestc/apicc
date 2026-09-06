@@ -1,10 +1,12 @@
 import type { ApiDefinition } from "../domain/model.js";
 import type { AuthProvider, ExecutableRequest } from "../plugin/types.js";
 import type { VariableResolver } from "../variables/resolver.js";
+import { withBaseUrl } from "../variables/baseUrl.js";
 
 /**
  * 将接口定义解析为压测可执行请求：变量解析 + 启用项过滤 + 认证应用。
- * query 仅保留启用项，URL 拼接沿用 http client buildUrl 语义（此处不拼）。
+ * query 仅保留启用项；URL 相对路径时自动拼接前置 URL（M9-B：环境按集合的 baseUrl
+ * 已由调用方注入变量层，{{baseUrl}} 模板与相对 URL 两通道同效，与调试/集合运行同口径）。
  * 认证遍历 providers 取首个 type 匹配者应用；无 auth 或无匹配 provider 时不改写请求。
  */
 export function buildStressRequest(
@@ -14,7 +16,7 @@ export function buildStressRequest(
 ): ExecutableRequest {
   const request: ExecutableRequest = {
     method: api.method,
-    url: resolver.resolve(api.url),
+    url: withBaseUrl(resolver.resolve(api.url), resolver.get("baseUrl")),
     headers: Object.fromEntries(
       api.headers.filter((h) => h.enabled).map((h) => [h.key, resolver.resolve(h.value)]),
     ),

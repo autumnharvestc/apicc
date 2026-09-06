@@ -479,6 +479,7 @@ function onDividerDblClick() {
             v-else-if="view === 'envs'"
             class="panel-view"
             :envs="envs"
+            :workspace="workspace"
             :project-id="selectedProjectId"
             :report-error="reportError"
           />

@@ -241,14 +241,15 @@ describe("fileStorage", () => {
     const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
     const ws: Workspace = {
       id: "w1", name: "demo", variables: { region: "cn", env: "prod" },
+      globals: { variables: { global: "1" }, query: [{ key: "q", value: "1", enabled: true }], headers: [{ key: "h", value: "1", enabled: true }] },
       groups: [{
         id: "g1", name: "ecommerce",
         projects: [{
           id: "p1", name: "order-service", variables: { timeoutMs: "3000" },
           workflows: [],
           environments: [
-            { id: "e1", name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" } },
-            { id: "e2", name: "sit", extends: "dev", variables: { baseUrl: "http://sit.example" } },
+            { id: "e1", name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" }, baseUrls: { c1: "http://b1" } },
+            { id: "e2", name: "sit", extends: "dev", variables: { baseUrl: "http://sit.example" }, baseUrls: {} },
           ],
           collections: [{
             id: "c1", name: "order-api", variables: { pageSize: "20" },

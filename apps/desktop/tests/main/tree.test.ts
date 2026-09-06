@@ -3,12 +3,12 @@ import { toTreeNode } from "../../src/main/tree.js";
 import type { Workspace } from "@apicc/core";
 
 const ws: Workspace = {
-  id: "w", name: "ws", variables: {},
+  id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] },
   groups: [{
     id: "g1", name: "分组A",
     projects: [{
       id: "p1", name: "项目B", variables: {},
-      environments: [{ id: "e1", name: "dev", extends: "base", variables: { a: "1" } }],
+      environments: [{ id: "e1", name: "dev", extends: "base", variables: { a: "1" }, baseUrls: {} }],
       workflows: [],
       collections: [{
         id: "c1", name: "集合C", variables: {}, folders: [],
@@ -27,7 +27,7 @@ describe("toTreeNode", () => {
     const project = group.children![0]!;
     expect(project.kind).toBe("project");
     // 环境 DTO 携带 extends 与已存 variables（环境面板水合数据源，修复轮 1）
-    expect(project.envs).toEqual([{ id: "e1", name: "dev", extends: "base", variables: { a: "1" } }]);
+    expect(project.envs).toEqual([{ id: "e1", name: "dev", extends: "base", variables: { a: "1" }, baseUrls: {} }]);
     const collection = project.children![0]!;
     const api = collection.children![0]!;
     expect(api).toMatchObject({ kind: "api", id: "a1", label: "接口D", method: "GET" });

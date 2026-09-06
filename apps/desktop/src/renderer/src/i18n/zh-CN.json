@@ -86,7 +86,7 @@
   "env": {
     "empty": "选择项目后管理环境变量",
     "select": "选择环境",
-    "new": "新建环境",
+    "new": "新建",
     "derive": "从现有环境派生",
     "parent": "父环境",
     "varName": "变量名",
@@ -95,7 +95,17 @@
     "saveVars": "保存变量",
     "saved": "变量已保存",
     "deleteConfirm": "确定删除环境「{name}」？",
-    "namePlaceholder": "环境名称"
+    "namePlaceholder": "环境名称",
+    "globalSection": "全局",
+    "globalVars": "全局变量",
+    "globalParams": "全局参数",
+    "envSection": "环境",
+    "baseUrls": "前置 URL",
+    "baseUrlPlaceholder": "http:// 或 https:// 该集合的前置 URL",
+    "envVars": "环境变量",
+    "queryParams": "Query 参数",
+    "headerParams": "Header 参数",
+    "noCollections": "当前项目暂无集合"
   },
   "case": {
     "empty": "在左侧选择一个接口后编辑用例",

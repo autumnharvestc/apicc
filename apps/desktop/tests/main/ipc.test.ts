@@ -103,7 +103,7 @@ describe("IPC 处理器", () => {
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
     const projectNode = tree.children![0]!.children![0]!;
-    expect(projectNode.envs).toEqual([{ id: env.id, name: "sit", extends: "dev", variables: {} }]);
+    expect(projectNode.envs).toEqual([{ id: env.id, name: "sit", extends: "dev", variables: {}, baseUrls: {} }]);
     // env:vars:save → 变量覆盖 + 显式 save 落盘，重开读回验证
     await fresh.handle("env:vars:save", {}, env.id, { baseUrl: "http://s" });
     const rereadSession = createSession();
@@ -257,7 +257,7 @@ describe("IPC 处理器", () => {
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
-    expect(tree.children![0]!.children![0]!.envs).toEqual([{ id: env.id, name: "sit", extends: undefined, variables: {} }]);
+    expect(tree.children![0]!.children![0]!.envs).toEqual([{ id: env.id, name: "sit", extends: undefined, variables: {}, baseUrls: {} }]);
   });
 });
 

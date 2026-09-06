@@ -86,7 +86,7 @@
   "env": {
     "empty": "Select a project to manage environment variables",
     "select": "Select environment",
-    "new": "New Environment",
+    "new": "New",
     "derive": "Derive from Existing",
     "parent": "Parent environment",
     "varName": "Variable",
@@ -95,7 +95,17 @@
     "saveVars": "Save variables",
     "saved": "Variables saved",
     "deleteConfirm": "Delete environment \"{name}\"?",
-    "namePlaceholder": "Environment name"
+    "namePlaceholder": "Environment name",
+    "globalSection": "Global",
+    "globalVars": "Global Variables",
+    "globalParams": "Global Params",
+    "envSection": "Environments",
+    "baseUrls": "Base URLs",
+    "baseUrlPlaceholder": "http:// or https:// base URL for this collection",
+    "envVars": "Environment Variables",
+    "queryParams": "Query Params",
+    "headerParams": "Header Params",
+    "noCollections": "No collections in this project"
   },
   "case": {
     "empty": "Select an API on the left to edit cases",

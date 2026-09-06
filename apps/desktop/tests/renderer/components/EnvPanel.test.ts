@@ -42,7 +42,12 @@ function expectBody(testid: string): DOMWrapper<Element> {
   return w;
 }
 
-/** a-select 交互适配：经组件实例发 update:value（v-model 通道），见文件头说明。 */
+/** 环境选择适配（M9-B 重做后为左侧清单条目）：点击 env-item 切换选中环境。 */
+async function chooseEnv(wrapper: VueWrapper, envId: string): Promise<void> {
+  await wrapper.find(`[data-testid="env-item-${envId}"]`).trigger("click");
+}
+
+/** a-select 交互适配（派生对话框父环境选择仍在用）：经组件实例发 update:value。 */
 function chooseSelect(wrapper: VueWrapper, testid: string, value: string): void {
   const select = wrapper
     .findAllComponents({ name: "ASelect" })
@@ -61,7 +66,7 @@ async function mountEnvPanel(props: Record<string, unknown> = {}) {
   const envs = useEnvsStore(api);
   const { i18n } = createI18nInstance();
   const wrapper = mount(EnvPanel, {
-    props: { envs, projectId: projectNode.id, reportError: () => {}, ...props },
+    props: { envs, workspace, projectId: projectNode.id, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
@@ -72,7 +77,7 @@ describe("EnvPanel", () => {
   it("无 projectId 时渲染空态", async () => {
     const { wrapper } = await mountEnvPanel({ projectId: null });
     expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="env-select"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="env-tab-globals-vars"]').exists()).toBe(false);
   });
 
   it("挂载即按 projectId 加载项目环境列表", async () => {
@@ -85,13 +90,13 @@ describe("EnvPanel", () => {
     const envs = useEnvsStore(api);
     const { i18n } = createI18nInstance();
     const wrapper = mount(EnvPanel, {
-      props: { envs, projectId: projectNode.id, reportError: () => {} },
+      props: { envs, workspace, projectId: projectNode.id, reportError: () => {} },
       global: { plugins: [i18n] },
     });
     await flushPromises();
-    expect(wrapper.find('[data-testid="env-select"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="env-tab-globals-vars"]').exists()).toBe(true);
     // a-select 收起态不渲染 option 文本，列表内容以 store 状态断言
-    expect(envs.envs).toEqual([{ id: created.id, name: "dev", variables: {} }]);
+    expect(envs.envs).toEqual([{ id: created.id, name: "dev", variables: {}, baseUrls: {} }]);
   });
 
   it("选中已存环境后变量表水合显示其已存变量（而非空表）", async () => {
@@ -105,11 +110,11 @@ describe("EnvPanel", () => {
     const envs = useEnvsStore(api);
     const { i18n } = createI18nInstance();
     const wrapper = mount(EnvPanel, {
-      props: { envs, projectId: projectNode.id, reportError: () => {} },
+      props: { envs, workspace, projectId: projectNode.id, reportError: () => {} },
       global: { plugins: [i18n] },
     });
     await flushPromises();
-    chooseSelect(wrapper, "env-select", created.id);
+    await chooseEnv(wrapper, created.id);
     await flushPromises();
     const keys = wrapper.findAll('[data-testid="env-var-key"]');
     const values = wrapper.findAll('[data-testid="env-var-value"]');
@@ -157,8 +162,7 @@ describe("EnvPanel", () => {
     const dev = await envs.create({ projectId: projectNode.id, name: "dev" });
     await envs.create({ projectId: projectNode.id, name: "sit" });
     await flushPromises();
-    chooseSelect(wrapper, "env-select", dev.id);
-    // a-select 的 value 通道更新后需一帧渲染，动作钮的 disabled 才解除
+    await chooseEnv(wrapper, dev.id);
     await flushPromises();
     await wrapper.find('[data-testid="env-var-add"]').trigger("click");
     await flushPromises();
@@ -176,11 +180,11 @@ describe("EnvPanel", () => {
     expect(wrapper.find('[data-testid="env-vars-saved"]').exists()).toBe(true);
     // 切换到另一环境（无已存变量）：行缓冲清空
     const sit = envs.envs.find((e) => e.name === "sit")!;
-    chooseSelect(wrapper, "env-select", sit.id);
+    await chooseEnv(wrapper, sit.id);
     await flushPromises();
     expect(wrapper.findAll('[data-testid="env-var-key"]').length).toBe(0);
     // 再切回 dev：缓冲水合为已存值而非空（覆盖式保存不再静默丢数据）
-    chooseSelect(wrapper, "env-select", dev.id);
+    await chooseEnv(wrapper, dev.id);
     await flushPromises();
     const keys = wrapper.findAll('[data-testid="env-var-key"]');
     expect(keys).toHaveLength(1);
@@ -191,7 +195,7 @@ describe("EnvPanel", () => {
   it("删除选中环境：确认对话框放行后移除", async () => {
     const { wrapper, envs, projectNode } = await mountEnvPanel();
     const dev = await envs.create({ projectId: projectNode.id, name: "dev" });
-    chooseSelect(wrapper, "env-select", dev.id);
+    await chooseEnv(wrapper, dev.id);
     await flushPromises();
     await wrapper.find('[data-testid="env-delete"]').trigger("click");
     await expectBody("dialog-confirm").trigger("click");
@@ -215,7 +219,7 @@ describe("EnvPanel", () => {
     envs.selectedEnvId = created.id;
     const { i18n } = createI18nInstance();
     const wrapper = mount(EnvPanel, {
-      props: { envs, projectId: projectNode.id, reportError: () => {} },
+      props: { envs, workspace, projectId: projectNode.id, reportError: () => {} },
       global: { plugins: [i18n] },
     });
     await flushPromises();

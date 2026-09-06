@@ -482,3 +482,78 @@ describe("CollectionRunner", () => {
     expect(result.passed).toBe(1);
   });
 });
+
+// —— M9-B 环境模型：前置 URL（按集合）双通道 + 工作区全局变量/全局参数 ——
+describe("CollectionRunner 环境模型（M9-B）", () => {
+  let server: Server;
+  let base = "";
+  const seen: Array<{ path: string; headerG: string | undefined; query: string }> = [];
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      seen.push({ path: req.url ?? "", headerG: req.headers["x-g"], query: new URL(req.url ?? "", base).search });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  });
+  afterAll(() => new Promise<void>((r) => server.close(() => r())));
+
+  function deps() {
+    const registry = createPluginRegistry();
+    registry.registerProtocol(httpClient);
+    for (const p of builtinAuthProviders) registry.registerAuth(p);
+    for (const o of builtinAssertOperators) registry.registerAssert(o);
+    registry.registerScriptEngine(jsScriptEngine);
+    return new CollectionRunner({ registry, bus: createEventBus(), timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 }, failFast: false });
+  }
+
+  function apiWith(url: string, extra: Partial<Collection["apis"][number]> = {}): Collection["apis"][number] {
+    return {
+      id: "a1", name: "a", version: "1", deprecated: false, method: "GET", url,
+      headers: [], query: [],
+      cases: [{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
+      ...extra,
+    };
+  }
+
+  it("前置 URL：相对 URL 自动拼接 + {{baseUrl}} 模板（环境按集合设置）", async () => {
+    const env: Environment = { id: "e", name: "dev", variables: { who: "dev" }, baseUrls: { c1: `${base}/prefix` } };
+    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
+    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+    const col: Collection = { id: "c1", name: "c", variables: {}, folders: [], apis: [apiWith("/rel/{{who}}"), apiWith("{{baseUrl}}/tpl")] };
+    const result = await deps().run(col, env, project, ws, {});
+    expect(result.failed).toBe(0);
+    expect(seen[0]!.path).toBe("/prefix/rel/dev");
+    expect(seen[1]!.path).toBe("/prefix/tpl");
+  });
+
+  it("全局变量/全局参数：变量链最低层，query/header 请求同名项优先", async () => {
+    seen.length = 0;
+    const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: { c1: base } };
+    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
+    const ws: Workspace = {
+      id: "w", name: "ws", variables: {},
+      globals: {
+        variables: { gvar: "G" },
+        query: [{ key: "gq", value: "from-global", enabled: true }, { key: "api-q", value: "gone", enabled: true }],
+        headers: [{ key: "x-g", value: "from-global", enabled: true }],
+      },
+      groups: [],
+    };
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [],
+      apis: [apiWith("{{baseUrl}}/g", {
+        url: "/g/{{gvar}}",
+        headers: [{ key: "x-g", value: "from-api", enabled: true }],
+        query: [{ key: "api-q", value: "from-api", enabled: true }],
+      })],
+    };
+    const result = await deps().run(col, env, project, ws, {});
+    expect(result.failed).toBe(0);
+    expect(seen[0]!.path).toBe("/g/G?gq=from-global&api-q=from-api");
+    expect(seen[0]!.headerG).toBe("from-api"); // 请求同名头优先
+    expect(seen[0]!.query).toContain("gq=from-global"); // 全局 query 追加
+    expect(seen[0]!.query).toContain("api-q=from-api"); // 请求同名 query 优先
+  });
+});

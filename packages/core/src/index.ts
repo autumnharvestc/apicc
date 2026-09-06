@@ -13,6 +13,7 @@ export { fileStorage } from "./storage/fileStorage.js";
 export { sanitizeNodeName } from "./storage/sanitize.js";
 export { SqliteIndex } from "./storage/sqliteIndex.js";
 export { createVariableResolver, CyclicVariableError } from "./variables/resolver.js";
+export { withBaseUrl } from "./variables/baseUrl.js";
 export { CollectionRunner } from "./runner/runner.js";
 export type { RunResult, CaseOutcome } from "./report/types.js";
 export { renderDesignMarkdown } from "./design/export.js";
