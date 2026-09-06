@@ -8,7 +8,8 @@
     "themeLight": "亮色",
     "themeDark": "暗色",
     "workspaceName": "工作区名称",
-    "error": "错误"
+    "error": "错误",
+    "splitDivider": "拖拽调整响应区高度，双击复位"
   },
   "nav": {
     "debug": "调试",
@@ -19,7 +20,8 @@
     "design": "设计",
     "wf": "工作流",
     "stress": "压测",
-    "plugins": "插件"
+    "plugins": "插件",
+    "api": "接口"
   },
   "workspace": {
     "problems": "问题文件",
@@ -38,7 +40,9 @@
     "impactWarning": "该用例被以下工作流引用，删除后对应节点将标记为缺失（可改绑恢复）",
     "workflows": "工作流",
     "empty": "打开工作区后在此浏览接口",
-    "namePlaceholder": "名称"
+    "namePlaceholder": "名称",
+    "search": "搜索接口、工作流",
+    "noMatch": "无匹配节点"
   },
   "editor": {
     "empty": "在左侧选择一个接口后编辑",

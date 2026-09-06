@@ -39,6 +39,9 @@ const props = defineProps<{
   readonly?: boolean;
   /** 空态文案覆写（在线模式给「没有可见内容」文案）。 */
   emptyText?: string;
+  /** 前端搜索过滤（M8）：按节点 label 不区分大小写过滤；命中节点保留其完整子树，
+   * 容器自身未命中但有命中后代时保留为路径；过滤激活时可见容器全部自动展开。 */
+  filter?: string;
 }>();
 const emit = defineEmits<{ select: [kind: TreeNodeDTO["kind"], id: string] }>();
 const { t } = useI18n();
@@ -117,8 +120,38 @@ const treeData = computed<TreeDataNode[]>(() => {
         children,
       };
     });
-  return mapNodes(rootNode.value?.children);
+  const all = mapNodes(rootNode.value?.children);
+  // 搜索过滤（M8）：label 不区分大小写；命中保留完整子树，未命中但有命中后代则保留为路径
+  const kw = props.filter?.trim().toLowerCase();
+  if (!kw) return all;
+  const prune = (nodes: TreeDataNode[]): TreeDataNode[] =>
+    nodes.flatMap((n) => {
+      const self = n.title.toLowerCase().includes(kw);
+      const children = prune(n.children ?? []);
+      if (!self && children.length === 0) return [];
+      return [{ ...n, children: self ? (n.children ?? []) : children }];
+    });
+  return prune(all);
 });
+// 过滤激活时可见容器全部展开（否则命中叶子的祖先链处于折叠态，过滤结果不可见）
+const effectiveExpandedKeys = computed(() => {
+  if (!props.filter?.trim()) return expandedKeys.value;
+  const keys = new Set(expanded.value);
+  const collect = (nodes: TreeDataNode[]) => {
+    for (const n of nodes) {
+      if (!n.isLeaf) {
+        keys.add(n.key);
+        collect(n.children ?? []);
+      }
+    }
+  };
+  collect(treeData.value);
+  return Array.from(keys);
+});
+// 节点 label 是否处于过滤命中（过滤激活且当前节点被剪枝掉 → 空态提示「无匹配」）
+const filterNoMatch = computed(
+  () => !!props.filter?.trim() && treeData.value.length === 0,
+);
 
 function selectNode(node: TreeNodeDTO) {
   selectedKeys.value = [node.id];
@@ -273,6 +306,7 @@ function startWorkflowDelete(node: TreeNodeDTO) {
 <template>
   <aside class="side" data-testid="side-tree">
     <EmptyState v-if="isEmpty || !rootNode" :text="emptyText" />
+    <EmptyState v-else-if="filterNoMatch" :text="t('tree.noMatch')" />
     <template v-else>
       <div class="root-row">
         <span class="root-label">{{ rootNode.label }}</span>
@@ -281,7 +315,7 @@ function startWorkflowDelete(node: TreeNodeDTO) {
       <a-tree
         class="tree"
         :tree-data="treeData"
-        :expanded-keys="expandedKeys"
+        :expanded-keys="effectiveExpandedKeys"
         :selected-keys="selectedKeys"
         :virtual="false"
         block-node
@@ -290,7 +324,8 @@ function startWorkflowDelete(node: TreeNodeDTO) {
           <!-- 接口叶子：整行 tree-api-row，选中经 tree-api 按钮 emit select -->
           <div v-if="dto.kind === 'api'" class="node leaf" data-testid="tree-api-row">
             <button class="api-btn" data-testid="tree-api" :data-node-id="dto.id" @click="selectNode(dto)">
-              <span class="method">{{ dto.method }}</span>{{ dto.label }}
+              <!-- 在线树 api 叶无 method 字段（只读浏览），徽标仅本地接口渲染 -->
+              <span v-if="dto.method" class="method" :class="`m-${dto.method.toLowerCase()}`">{{ dto.method }}</span>{{ dto.label }}
             </button>
             <span v-if="!readonly" class="actions">
               <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
@@ -433,6 +468,14 @@ function startWorkflowDelete(node: TreeNodeDTO) {
   font-weight: 600;
   color: var(--accent);
 }
+/* M8：方法语义色徽标（与调试 URL 栏方法着色同表） */
+.method.m-get { color: var(--pass); }
+.method.m-post { color: #fa8c16; }
+.method.m-put { color: var(--accent); }
+.method.m-patch { color: #722ed1; }
+.method.m-delete { color: var(--fail); }
+.method.m-head,
+.method.m-options { color: var(--text-muted); }
 /* 工作流状态徽标色点（M2-B 收口）：draft 灰/published 蓝/enabled 绿 */
 .wf-dot {
   flex: none;

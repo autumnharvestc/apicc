@@ -130,11 +130,13 @@ const bodyKind = computed<BodyKind>({
       <a-radio-group v-model:value="protocol" data-testid="editor-protocol" class="protocol-select">
         <a-radio-button v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</a-radio-button>
       </a-radio-group>
-      <!-- method：WS 隐藏（缺省 GET 不参与执行，裁定②选隐藏）；SOAP 固定 POST 禁用（D2） -->
+      <!-- method：WS 隐藏（缺省 GET 不参与执行，裁定②选隐藏）；SOAP 固定 POST 禁用（D2）。
+           M8：方法名按语义着色（GET 绿/POST 橙/PUT 蓝/DELETE 红…，method-* class） -->
       <a-select
         v-if="protocol !== 'websocket'"
         v-model:value="editor.api.method"
         class="method-select"
+        :class="`method-${editor.api.method.toLowerCase()}`"
         data-testid="editor-method"
         :options="METHOD_OPTIONS"
         :disabled="protocol === 'soap'"
@@ -241,10 +243,10 @@ const bodyKind = computed<BodyKind>({
       <a-tab-pane v-if="isHttp" key="body">
         <template #tab><span data-testid="tab-body">{{ t("editor.body") }}</span></template>
         <div class="panel">
-          <div class="field-row">
-            <label>{{ t("editor.bodyKind") }}</label>
-            <a-select v-model:value="bodyKind" class="field-input" data-testid="body-kind" :options="BODY_KIND_OPTIONS" />
-          </div>
+          <!-- M8：体类型胶囊单选（借鉴参考布局，替代原下拉；testid body-kind 保留） -->
+          <a-radio-group v-model:value="bodyKind" size="small" data-testid="body-kind" class="body-kind-pills">
+            <a-radio-button v-for="k in BODY_KIND_OPTIONS" :key="k.value" :value="k.value">{{ k.label }}</a-radio-button>
+          </a-radio-group>
           <a-textarea
             v-if="editor.api.body && editor.api.body.kind !== 'form'"
             v-model:value="editor.api.body.content"
@@ -319,6 +321,18 @@ const bodyKind = computed<BodyKind>({
 .protocol-select { flex-shrink: 0; }
 .url { flex: 1; }
 .panel { display: flex; flex-direction: column; gap: 6px; overflow: auto; }
+/* M8：方法语义色（方法选择框内文字 + 下拉选中项；深浅主题共用高对比色值） */
+.method-select :deep(.ant-select-selection-item) { font-weight: 700; }
+.method-get :deep(.ant-select-selection-item) { color: var(--pass); }
+.method-post :deep(.ant-select-selection-item) { color: #fa8c16; }
+.method-put :deep(.ant-select-selection-item) { color: var(--accent); }
+.method-patch :deep(.ant-select-selection-item) { color: #722ed1; }
+.method-delete :deep(.ant-select-selection-item) { color: var(--fail); }
+.method-head :deep(.ant-select-selection-item),
+.method-options :deep(.ant-select-selection-item) { color: var(--text-muted); }
+/* M8：体类型胶囊行 */
+.body-kind-pills { margin-bottom: 2px; }
+.body-kind-pills :deep(.ant-radio-button-wrapper) { font-size: 12px; }
 .kv-row { display: flex; gap: 6px; align-items: center; }
 .kv-row :deep(.ant-input) { flex: 1; }
 .field-row { display: flex; align-items: center; gap: 8px; }

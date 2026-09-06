@@ -8,7 +8,8 @@
     "themeLight": "Light",
     "themeDark": "Dark",
     "workspaceName": "Workspace name",
-    "error": "Error"
+    "error": "Error",
+    "splitDivider": "Drag to resize response panel, double-click to reset"
   },
   "nav": {
     "debug": "Debug",
@@ -19,7 +20,8 @@
     "design": "Design",
     "wf": "Workflow",
     "stress": "Stress",
-    "plugins": "Plugins"
+    "plugins": "Plugins",
+    "api": "APIs"
   },
   "workspace": {
     "problems": "Problem files",
@@ -38,7 +40,9 @@
     "impactWarning": "This case is referenced by the following workflows; after deletion the affected nodes will be marked as missing (rebind to restore)",
     "workflows": "Workflows",
     "empty": "Open a workspace to browse APIs",
-    "namePlaceholder": "Name"
+    "namePlaceholder": "Name",
+    "search": "Search APIs & workflows",
+    "noMatch": "No matching nodes"
   },
   "editor": {
     "empty": "Select an API on the left to edit",
