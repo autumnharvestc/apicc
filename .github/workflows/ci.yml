@@ -7,12 +7,14 @@
 # 版本策略：action 锁 major tag（每个 uses 行尾注释显式 major）；SHA 锁定列为后续加固项。
 name: CI
 
-# 触发：main 与 feature/** 的推送 + 全部 PR（裁定：feature 分支推送即出报告，不等 PR）
+# 触发：main 与 feature/**、fix/** 的推送 + 全部 PR（裁定：feature 分支推送即出报告，不等 PR；
+# fix/** 同权——2026-09-06 修复分支 fix/ipc-plain-args 不触发 CI 的漏配补齐）
 on:
   push:
     branches:
       - main
       - "feature/**"
+      - "fix/**"
   pull_request:
 
 # 最小权限：门禁只需读源码与拉 action，不持有写权限
