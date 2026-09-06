@@ -1,6 +1,9 @@
 import { createPinia, defineStore } from "pinia";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { ApiDefinitionSchema, type ApiDefinition } from "@apicc/core";
+// core 主入口含 native 索引面（better-sqlite3）——渲染层沙箱求值即崩（白屏，2026-09-06 用户报告）。
+// 纯 schema 一律走 ./schema 子路径（依赖闭包仅 zod）。
+import { ApiDefinitionSchema } from "@apicc/core/schema";
+import type { ApiDefinition } from "@apicc/core";
 import { OnlineBaseUrlSchema, type OnlineRole, type OnlineTreeProject, type OnlineUser, type OnlineVersionConflict, type OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
 import { chunk, planPull, planPush } from "../../../shared/online/migrate.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";

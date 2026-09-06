@@ -53,3 +53,41 @@ describe("渲染层不 import node:/electron: 内置模块（关键 1 守卫）"
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * @apicc/core 主入口含 native 索引面（storage/sqliteIndex → better-sqlite3，模块求值即
+ * 调 node:util 的 promisify）——渲染层沙箱里 promisify 是空 stub，任何「值导入」core 主入口
+ * 都会把这条副作用链拖进 bundle，模块求值期直接白屏（2026-09-06 用户报告实录）。
+ * 守卫：renderer/** 与 shared/** 对 core 主入口只允许 `import type`；
+ * 纯 schema（依赖闭包仅 zod）走 `@apicc/core/schema` 子路径不受限。
+ */
+describe("@apicc/core 主入口渲染层零值导入（白屏守卫）", () => {
+  it("renderer/** 与 shared/** 的 core 主入口导入必须全部为 import type（./schema 子路径不受限）", () => {
+    const srcRoot = join(__dirname, "..", "..", "src");
+    const files = [
+      ...collectSourceFiles(join(srcRoot, "renderer", "src")),
+      ...collectSourceFiles(join(srcRoot, "shared")),
+    ];
+    const offenders: string[] = [];
+    for (const file of files) {
+      // memory.ts 与 node: 守卫同款豁免：动态加载的测试替身（生产 preload 存在时永不求值，
+      // bundle-isolation 产物层钉其独立分包不加载）——其 core 值导入不进主 chunk。
+      if (EXCEPTIONS.has(relFromDesktopRoot(file))) continue;
+      const content = readFileSync(file, "utf8");
+      // 多行/单行 import 的 type-only 判定：`import type …` 或 `import { … type X … }` 中
+      // 非类型具名导入都会让打包器保留 core 主入口——用保守口径：出现
+      // `from "@apicc/core"` 的 import 语句，若不含 `import type` 且包含非 type 的具名/默认导入即违规。
+      const stmts = content.match(/import[^;]*from\s*["']@apicc\/core["'];?/g) ?? [];
+      for (const stmt of stmts) {
+        if (/import\s+type\s/.test(stmt)) continue;
+        if (stmt.includes("@apicc/core/schema")) continue;
+        // 整条语句里每个具名成员是否都带 type 前缀（多行 import 逐段检查）
+        const body = stmt.replace(/import\s*/, "").replace(/from\s*["']@apicc\/core["'];?/, "");
+        const members = body.split(",").map((m) => m.trim()).filter(Boolean);
+        const allTyped = members.every((m) => m === "{}" || m.startsWith("type ") || m.startsWith("{}"));
+        if (!allTyped) offenders.push(`${relFromDesktopRoot(file)}: ${stmt.split("\n")[0]}…`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});

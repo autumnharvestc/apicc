@@ -109,10 +109,50 @@ try {
     }
     if (!targets) {
       fail(`${CDP_TIMEOUT_MS / 1000}s 内未在 CDP 发现 dist-renderer 页面${cdpError ? `（${cdpError}）` : ""}`);
-    } else if (String(targets.title).includes(PRODUCT_NAME)) {
-      ok(`renderer 加载成功：title="${targets.title}" url=${targets.url}`);
     } else {
-      fail(`renderer 页 title="${targets.title}" 不含 "${PRODUCT_NAME}"`);
+      if (String(targets.title).includes(PRODUCT_NAME)) {
+        ok(`renderer 加载成功：title="${targets.title}" url=${targets.url}`);
+      } else {
+        fail(`renderer 页 title="${targets.title}" 不含 "${PRODUCT_NAME}"`);
+      }
+      // —— 4. 挂载非空：title 只证 index.html，渲染层模块求值崩溃（如 native 面误入渲染
+      // bundle）会让 #app 空白而 title 照常——本检查由 2026-09-06 用户白屏报告引入。
+      try {
+        const ws = new WebSocket(targets.webSocketDebuggerUrl);
+        await new Promise((r, j) => {
+          ws.onopen = r;
+          ws.onerror = () => j(new Error("CDP WebSocket 连接失败"));
+        });
+        let mid = 0;
+        const pending = new Map();
+        ws.onmessage = (ev) => {
+          const m = JSON.parse(ev.data);
+          if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+        };
+        const send = (method, params = {}) =>
+          new Promise((resolve, reject) => {
+            const myId = ++mid;
+            pending.set(myId, resolve);
+            ws.send(JSON.stringify({ id: myId, method, params }));
+            setTimeout(() => {
+              if (pending.has(myId)) { pending.delete(myId); reject(new Error("CDP evaluate 超时")); }
+            }, 5000);
+          });
+        await send("Runtime.enable");
+        const r = await send("Runtime.evaluate", {
+          expression: "document.querySelector('#app')?.children.length ?? -1",
+          returnByValue: true,
+        });
+        const children = r.result?.result?.value;
+        if (typeof children === "number" && children > 0) {
+          ok(`renderer 挂载非空：#app 子元素 ${children} 个`);
+        } else {
+          fail(`renderer 挂载为空（#app 子元素 ${children}）——渲染层模块求值期崩溃`);
+        }
+        ws.close();
+      } catch (e) {
+        fail(`挂载非空检查未执行：${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   }
 } finally {
