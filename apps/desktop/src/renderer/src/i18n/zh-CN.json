@@ -21,7 +21,8 @@
     "wf": "工作流",
     "stress": "压测",
     "plugins": "插件",
-    "api": "接口"
+    "api": "接口",
+    "home": "主页"
   },
   "workspace": {
     "problems": "问题文件",
@@ -381,5 +382,30 @@
     },
     "enableValidationFailed": "启用校验未通过",
     "discardConfirm": "当前有未保存修改，离开将丢弃，确定离开？"
+  },
+  "home": {
+    "localServer": "本地服务器",
+    "openDir": "打开本地目录",
+    "newDir": "新建本地目录",
+    "localEmpty": "尚未打开本地目录——打开或新建后在此管理分组与项目",
+    "newGroup": "新建分组",
+    "newGroupName": "新分组",
+    "newProject": "新建项目",
+    "newProjectName": "新项目",
+    "noProjects": "该分组下暂无项目",
+    "remoteServer": "远程服务器",
+    "manageServers": "管理连接",
+    "noServers": "尚未添加远程服务器——点右上「管理连接」配置",
+    "active": "已连接",
+    "teamSpaces": "团队空间（分组）",
+    "refresh": "刷新",
+    "noWorkspaces": "暂无团队空间",
+    "remoteHint": "团队空间与项目归属在管理后台网页创建管理；此处打开项目进入在线模式。"
+  },
+  "topbar": {
+    "projectPlaceholder": "切换项目"
+  },
+  "settings": {
+    "title": "设置"
   }
 }

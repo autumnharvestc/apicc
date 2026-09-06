@@ -45,10 +45,10 @@ describe("WorkflowRunner 跨协议（WS → 条件边 → HTTP）", () => {
 
   it("WS 节点提取 token → 条件边 → HTTP 节点引用 carried 变量", async () => {
     // 夹具在服务端就绪后构造（模块顶层求值会把空串快照进 env.variables——runner.test.ts 先例）。
-    const ws: Workspace = { id: "w", name: "w", variables: {}, groups: [] };
+    const ws: Workspace = { id: "w", name: "w", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
     const project: Project = {
       id: "p", name: "p", variables: {},
-      environments: [{ id: "e", name: "dev", variables: { wsUrl: wssUrl, httpUrl: httpBaseUrl } }],
+      environments: [{ id: "e", name: "dev", variables: { wsUrl: wssUrl, httpUrl: httpBaseUrl }, baseUrls: {} }],
       collections: [], workflows: [],
     };
     const wsApi: ApiDefinition = {

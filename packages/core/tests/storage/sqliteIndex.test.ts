@@ -6,12 +6,12 @@ import { SqliteIndex } from "../../src/storage/sqliteIndex.js";
 import type { Workspace } from "../../src/domain/model.js";
 
 const ws: Workspace = {
-  id: "w1", name: "demo", variables: {},
+  id: "w1", name: "demo", variables: {}, globals: { variables: {}, query: [], headers: [] },
   groups: [{
     id: "g1", name: "g", projects: [{
       id: "p1", name: "p", variables: {},
       workflows: [],
-      environments: [{ id: "e1", name: "dev", variables: {} }],
+      environments: [{ id: "e1", name: "dev", variables: {}, baseUrls: {} }],
       collections: [{
         id: "c1", name: "c", variables: {},
         folders: [{

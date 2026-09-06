@@ -129,9 +129,9 @@ describe("soapClient（M5 D3/D4，裁定 A）", () => {
 
 describe("runner 分发与 envelope 变量解析（M5 D5+D7）", () => {
   it("CollectionRunner：soap 接口走 soapClient，envelope 模板经变量解析后作为请求体", async () => {
-    const env: Environment = { id: "e1", name: "dev", variables: { who: "m5-soap" } };
+    const env: Environment = { id: "e1", name: "dev", variables: { who: "m5-soap" }, baseUrls: {} };
     const project: Project = { id: "p1", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-    const workspace: Workspace = { id: "w1", name: "ws", variables: {}, groups: [] };
+    const workspace: Workspace = { id: "w1", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
     const collection: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{

@@ -8,7 +8,7 @@ import {
   ThunderboltOutlined,
   GlobalOutlined,
   ImportOutlined,
-  AppstoreOutlined,
+  HomeOutlined,
 } from "@ant-design/icons-vue";
 import { SWITCH_VIEWS, isViewDisabled, type SwitchView } from "../viewSwitch.js";
 
@@ -26,13 +26,13 @@ const emit = defineEmits<{ "update:view": [view: SwitchView] }>();
 const { t } = useI18n();
 
 const ICONS: Record<SwitchView, ReturnType<typeof ApiOutlined>> = {
+  home: HomeOutlined,
   api: ApiOutlined,
   run: PlayCircleOutlined,
   wf: DeploymentUnitOutlined,
   stress: ThunderboltOutlined,
   envs: GlobalOutlined,
   import: ImportOutlined,
-  plugins: AppstoreOutlined,
 };
 
 function disabled(v: SwitchView): boolean {

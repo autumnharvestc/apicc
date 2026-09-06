@@ -21,10 +21,10 @@ afterAll(() => new Promise<void>((r) => server.close(() => r())));
 let ws: Workspace;
 let project: Project;
 beforeAll(async () => {
-  ws = { id: "w", name: "w", variables: {}, groups: [] };
+  ws = { id: "w", name: "w", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
   project = {
     id: "p", name: "p", variables: {},
-    environments: [{ id: "e", name: "dev", variables: { baseUrl } }],
+    environments: [{ id: "e", name: "dev", variables: { baseUrl }, baseUrls: {} }],
     collections: [], workflows: [],
   };
 });
@@ -336,8 +336,8 @@ describe("WorkflowRunner", () => {
     const chainProject: Project = {
       ...project,
       environments: [
-        { id: "e-dev", name: "dev", variables: { baseUrl, tier: "base" } },
-        { id: "e-sit", name: "sit", extends: "dev", variables: {} },
+        { id: "e-dev", name: "dev", variables: { baseUrl, tier: "base" }, baseUrls: {} },
+        { id: "e-sit", name: "sit", extends: "dev", variables: {}, baseUrls: {} },
       ],
     };
     const nodes = [
@@ -363,7 +363,7 @@ describe("WorkflowRunner", () => {
   it("条件上下文 env：环境变量在条件中可读；无环境时空对象", async () => {
     const localProject: Project = {
       ...project,
-      environments: [{ id: "e", name: "dev", variables: { baseUrl, deploy: "yes" } }],
+      environments: [{ id: "e", name: "dev", variables: { baseUrl, deploy: "yes" }, baseUrls: {} }],
     };
     const nodes = [
       { id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "one" },

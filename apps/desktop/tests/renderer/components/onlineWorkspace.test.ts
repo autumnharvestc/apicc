@@ -12,6 +12,9 @@ import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-u
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
+import { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
+import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
+import HomeView from "../../../src/renderer/src/components/HomeView.vue";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import OnlineApiEditor from "../../../src/renderer/src/components/OnlineApiEditor.vue";
 import OnlineConflictDialog from "../../../src/renderer/src/components/OnlineConflictDialog.vue";
@@ -100,9 +103,11 @@ async function fixture(): Promise<Fixture> {
   await online.refreshWorkspaces();
   await online.openWorkspace(online.workspaces[0]!);
   const workspace = useWorkspaceStore(api);
+  const tree = useTreeStore(api, workspace);
+  const plugins = createPluginsStore({ api });
   const { i18n } = createI18nInstance();
   const mountWith = async (component: Parameters<typeof mount>[0], props: Record<string, unknown> = {}) =>
-    mount(component, { props: { api, workspace, online, reportError: () => {}, ...props }, global: { plugins: [i18n] } });
+    mount(component, { props: { api, workspace, tree, online, plugins, reportError: () => {}, openProject: () => {}, ...props }, global: { plugins: [i18n] } });
   return { api, workspace, online, mount: mountWith };
 }
 
@@ -297,26 +302,26 @@ describe("TopBar 模式徽标与互斥切换（裁定 E）", () => {
     expect(f.online.editorPath).toBeNull();
   });
 
-  it("在线激活时点「打开工作区」→ 目录选定后再退在线并打开本地（互斥自动侧）", async () => {
+  it("在线激活时点「打开本地目录」→ 目录选定后再退在线并打开本地（互斥自动侧，M9-C 入口在主页）", async () => {
     const f = await fixture();
     let pickCount = 0;
     f.api.wsPickDirectory = async () => {
       pickCount += 1;
       return "/tmp/ws";
     };
-    const wrapper = await f.mount(TopBar);
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    const wrapper = await f.mount(HomeView);
+    await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
     expect(f.online.activeWorkspace).toBeNull(); // 在线已退
     expect(pickCount).toBe(1);
     expect(f.workspace.opened).toBe(true);
   });
 
-  it("在线激活时点「打开工作区」但取消目录选择 → 不切模式（不落空态，次要 4 顺修）", async () => {
+  it("在线激活时点「打开本地目录」但取消目录选择 → 不切模式（不落空态，次要 4 顺修）", async () => {
     const f = await fixture();
     f.api.wsPickDirectory = async () => ""; // 用户取消
-    const wrapper = await f.mount(TopBar);
-    await wrapper.find('[data-testid="open-workspace"]').trigger("click");
+    const wrapper = await f.mount(HomeView);
+    await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
     expect(f.online.activeWorkspace).not.toBeNull(); // 在线保持
     expect(f.workspace.opened).toBe(false);

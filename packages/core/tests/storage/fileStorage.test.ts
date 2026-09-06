@@ -8,13 +8,13 @@ import type { Workspace } from "../../src/domain/model.js";
 import type { Workflow } from "../../src/workflow/model.js";
 
 const workspace: Workspace = {
-  id: "w1", name: "demo", variables: { region: "cn" },
+  id: "w1", name: "demo", variables: { region: "cn" }, globals: { variables: {}, query: [], headers: [] },
   groups: [{
     id: "g1", name: "ecommerce",
     projects: [{
       id: "p1", name: "order-service", variables: {},
       workflows: [],
-      environments: [{ id: "e1", name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" } }],
+      environments: [{ id: "e1", name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" }, baseUrls: {} }],
       collections: [{
         id: "c1", name: "order-api", variables: {}, folders: [], apis: [],
       }],
@@ -203,8 +203,8 @@ describe("fileStorage", () => {
         ...workspace.groups[0]!, projects: [{
           ...workspace.groups[0]!.projects[0]!,
           environments: [
-            { id: "e2", name: "zeta", extends: undefined, variables: {} },
-            { id: "e1", name: "alpha", extends: undefined, variables: {} },
+            { id: "e2", name: "zeta", extends: undefined, variables: {}, baseUrls: {} },
+            { id: "e1", name: "alpha", extends: undefined, variables: {}, baseUrls: {} },
           ],
           collections: [
             { id: "c2", name: "zeta-api", variables: {}, folders: [], apis: [] },

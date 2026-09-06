@@ -43,8 +43,9 @@ describe("ModuleRail（M8 图标导航栏）", () => {
     const wrapper = mountRail("api", { workspaceOpened: true, onlineActive: false, apiSelected: false });
     const items = wrapper.findAll("button.rail-item").map((b) => b.attributes("data-testid"));
     expect(items).toEqual([
-      "rail-api", "rail-run", "rail-wf", "rail-stress", "rail-envs", "rail-import", "rail-plugins",
+      "rail-home", "rail-api", "rail-run", "rail-wf", "rail-stress", "rail-envs", "rail-import",
     ]);
+    expect(wrapper.find('[data-testid="rail-home"]').text()).toContain("主页");
     expect(wrapper.find('[data-testid="rail-api"]').text()).toContain("接口");
     expect(wrapper.find('[data-testid="rail-run"]').text()).toContain("运行");
   });
@@ -53,18 +54,19 @@ describe("ModuleRail（M8 图标导航栏）", () => {
     const wrapper = mountRail("run", { workspaceOpened: true, onlineActive: false, apiSelected: false });
     expect(wrapper.find('[data-testid="rail-run"]').classes()).toContain("active");
     expect(wrapper.find('[data-testid="rail-api"]').classes()).not.toContain("active");
-    await wrapper.find('[data-testid="rail-api"]').trigger("click");
-    expect(wrapper.emitted("update:view")![0]).toEqual(["api"]);
+    await wrapper.find('[data-testid="rail-home"]').trigger("click");
+    expect(wrapper.emitted("update:view")![0]).toEqual(["home"]);
   });
 
-  it("门控：未打开工作区时工作区级模块禁用、plugins 恒可用；在线全禁用", () => {
+  it("门控：未打开工作区时工作区级模块禁用、主页恒可用；在线除主页外全禁用", () => {
     const closed = mountRail("api", { workspaceOpened: false, onlineActive: false, apiSelected: false });
     expect(closed.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
-    expect(closed.find('[data-testid="rail-plugins"]').attributes("disabled")).toBeUndefined();
+    expect(closed.find('[data-testid="rail-home"]').attributes("disabled")).toBeUndefined();
     const online = mountRail("api", { workspaceOpened: true, onlineActive: true, apiSelected: true });
-    for (const v of ["api", "run", "wf", "stress", "envs", "import", "plugins"]) {
+    for (const v of ["api", "run", "wf", "stress", "envs", "import"]) {
       expect(online.find(`[data-testid="rail-${v}"]`).attributes("disabled")).toBeDefined();
     }
+    expect(online.find('[data-testid="rail-home"]').attributes("disabled")).toBeUndefined();
   });
 });
 

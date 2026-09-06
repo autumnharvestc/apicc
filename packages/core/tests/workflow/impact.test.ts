@@ -3,7 +3,7 @@ import { workflowImpact } from "../../src/workflow/impact.js";
 import type { Workspace } from "../../src/domain/model.js";
 
 const ws: Workspace = {
-  id: "w", name: "w", variables: {},
+  id: "w", name: "w", variables: {}, globals: { variables: {}, query: [], headers: [] },
   groups: [{
     id: "g", name: "g", projects: [{
       id: "p", name: "p", variables: {}, environments: [], collections: [],

@@ -21,7 +21,8 @@
     "wf": "Workflow",
     "stress": "Stress",
     "plugins": "Plugins",
-    "api": "APIs"
+    "api": "APIs",
+    "home": "Home"
   },
   "workspace": {
     "problems": "Problem files",
@@ -381,5 +382,30 @@
     },
     "enableValidationFailed": "Enablement validation failed",
     "discardConfirm": "You have unsaved changes that will be discarded. Leave anyway?"
+  },
+  "home": {
+    "localServer": "Local Server",
+    "openDir": "Open Directory",
+    "newDir": "New Directory",
+    "localEmpty": "No local directory open — open or create one to manage groups & projects",
+    "newGroup": "New Group",
+    "newGroupName": "New Group",
+    "newProject": "New Project",
+    "newProjectName": "New Project",
+    "noProjects": "No projects in this group",
+    "remoteServer": "Remote Servers",
+    "manageServers": "Manage",
+    "noServers": "No remote servers — click Manage to add one",
+    "active": "Connected",
+    "teamSpaces": "Team Spaces (Groups)",
+    "refresh": "Refresh",
+    "noWorkspaces": "No team spaces",
+    "remoteHint": "Team spaces & project ownership are managed in the admin console; open a project to enter online mode."
+  },
+  "topbar": {
+    "projectPlaceholder": "Switch project"
+  },
+  "settings": {
+    "title": "Settings"
   }
 }

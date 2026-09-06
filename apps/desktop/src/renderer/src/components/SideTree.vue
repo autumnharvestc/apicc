@@ -42,6 +42,9 @@ const props = defineProps<{
   /** 前端搜索过滤（M8）：按节点 label 不区分大小写过滤；命中节点保留其完整子树，
    * 容器自身未命中但有命中后代时保留为路径；过滤激活时可见容器全部自动展开。 */
   filter?: string;
+  /** 活动项目（M9-C 层级调整）：本地模式传入即把树作用域化至该项目子树
+   * （工作区顶层即项目；分组层在主页管理）。空/未选 = 空态提示选择项目。 */
+  activeProjectId?: string | null;
 }>();
 const emit = defineEmits<{ select: [kind: TreeNodeDTO["kind"], id: string] }>();
 const { t } = useI18n();
@@ -84,14 +87,31 @@ interface TreeDataNode {
   children?: TreeDataNode[];
 }
 const expandedKeys = computed(() => Array.from(expanded.value));
-// 数据源（任务 3）：显式传入 treeRoot（undefined = 本地模式回退本地工作区树；null = 无树）
-const rootNode = computed<TreeNodeDTO | null>(() =>
-  props.treeRoot !== undefined ? props.treeRoot : props.workspace.tree,
-);
-// 空态判定：在线模式只看注入的树视图；本地模式保留原语义（opened && tree 双条件）
-const isEmpty = computed(() =>
-  props.treeRoot !== undefined ? !props.treeRoot : (!props.workspace.opened || !props.workspace.tree),
-);
+// 数据源（任务 3）：显式传入 treeRoot（undefined = 本地模式回退本地工作区树；null = 无树）。
+// M9-C 作用域化：本地模式且 activeProjectId 命中时，根 = 该项目节点（顶层即项目；
+// 分组层不进侧树，在主页管理）。在线模式不受影响。
+const activeProjectNode = computed<TreeNodeDTO | null>(() => {
+  if (props.treeRoot !== undefined || !props.activeProjectId || !props.workspace.tree) return null;
+  for (const g of props.workspace.tree.children ?? []) {
+    for (const p of g.children ?? []) {
+      if (p.id === props.activeProjectId) return p;
+    }
+  }
+  return null;
+});
+const scoped = computed(() => props.treeRoot === undefined && activeProjectNode.value !== null);
+const rootNode = computed<TreeNodeDTO | null>(() => {
+  if (props.treeRoot !== undefined) return props.treeRoot;
+  if (activeProjectNode.value) return activeProjectNode.value;
+  return props.workspace.tree;
+});
+// 空态判定：在线模式只看注入的树视图；本地模式保留原语义 + 作用域开启但未选项目时空态提示
+const isEmpty = computed(() => {
+  if (props.treeRoot !== undefined) return !props.treeRoot;
+  if (!props.workspace.opened || !props.workspace.tree) return true;
+  if (props.activeProjectId != null && !activeProjectNode.value) return true;
+  return false;
+});
 const emptyText = computed(() => props.emptyText ?? t("tree.empty"));
 const treeData = computed<TreeDataNode[]>(() => {
   const mapNodes = (nodes?: TreeNodeDTO[]): TreeDataNode[] =>
@@ -120,7 +140,8 @@ const treeData = computed<TreeDataNode[]>(() => {
         children,
       };
     });
-  const all = mapNodes(rootNode.value?.children);
+  // 作用域化：项目节点本身作为顶层容器过 mapNodes——project.workflows 叶合成逻辑同口径复用。
+  const all = mapNodes(scoped.value && rootNode.value ? [rootNode.value] : rootNode.value?.children);
   // 搜索过滤（M8）：label 不区分大小写；命中保留完整子树，未命中但有命中后代则保留为路径
   const kw = props.filter?.trim().toLowerCase();
   if (!kw) return all;
@@ -135,8 +156,11 @@ const treeData = computed<TreeDataNode[]>(() => {
 });
 // 过滤激活时可见容器全部展开（否则命中叶子的祖先链处于折叠态，过滤结果不可见）
 const effectiveExpandedKeys = computed(() => {
-  if (!props.filter?.trim()) return expandedKeys.value;
   const keys = new Set(expanded.value);
+  // 作用域化：项目根（顶层即项目）恒展开，集合层直接可见
+  if (scoped.value && rootNode.value) keys.add(rootNode.value.id);
+  // 搜索过滤激活：可见容器全部自动展开（否则命中叶子的祖先链折叠，结果不可见）
+  if (!props.filter?.trim()) return Array.from(keys);
   const collect = (nodes: TreeDataNode[]) => {
     for (const n of nodes) {
       if (!n.isLeaf) {
@@ -308,7 +332,8 @@ function startWorkflowDelete(node: TreeNodeDTO) {
     <EmptyState v-if="isEmpty || !rootNode" :text="emptyText" />
     <EmptyState v-else-if="filterNoMatch" :text="t('tree.noMatch')" />
     <template v-else>
-      <div class="root-row">
+      <!-- 作用域化（M9-C）：根行隐藏——项目名即顶层容器行，分组在主页管理 -->
+      <div v-if="!scoped" class="root-row">
         <span class="root-label">{{ rootNode.label }}</span>
         <a-button v-if="!readonly" size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
       </div>
