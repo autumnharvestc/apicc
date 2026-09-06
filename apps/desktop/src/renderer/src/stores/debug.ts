@@ -30,6 +30,11 @@ export function useDebugStore(api: ApiccApi) {
       selectCase(id: string | null) {
         this.selectedCaseId = id;
       },
+      /** 指定用例运行（M9-D 测试模块）：选中该用例后走既有 send 管线（结果上屏共享）。 */
+      async runCase(editor: Editor, caseId: string) {
+        this.selectedCaseId = caseId;
+        await this.send(editor);
+      },
       async send(editor: Editor, sendFn: SendFn = (input) => api.debugSend(input), explicitEnvName?: string) {
         const cases = editor.api?.cases ?? [];
         const caseId =

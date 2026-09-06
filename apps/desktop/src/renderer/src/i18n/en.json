@@ -22,7 +22,8 @@
     "stress": "Stress",
     "plugins": "Plugins",
     "api": "APIs",
-    "home": "Home"
+    "home": "Home",
+    "test": "Test"
   },
   "workspace": {
     "problems": "Problem files",
@@ -123,7 +124,9 @@
     "headerName": "Header",
     "path": "Path",
     "preScript": "Pre-request script",
-    "postScript": "Post-response script"
+    "postScript": "Post-response script",
+    "run": "Run",
+    "stress": "Stress"
   },
   "run": {
     "empty": "Open a workspace, then select a collection and run",
@@ -407,5 +410,16 @@
   },
   "settings": {
     "title": "Settings"
+  },
+  "test": {
+    "apiCases": "API Cases",
+    "scenarios": "Scenarios",
+    "noApis": "No APIs in this project",
+    "noScenarios": "No scenarios (workflows) yet",
+    "pickApi": "Pick an API on the left to manage cases",
+    "backToCases": "Back to cases",
+    "stressContext": "API stress",
+    "scenarioHint": "Pick a scenario (workflow) and click Run — scenarios are orchestrated in the designer.",
+    "scenarioStressDeferred": "Scenario stress is coming soon"
   }
 }

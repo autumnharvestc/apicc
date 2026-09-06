@@ -5,7 +5,7 @@ import {
   ApiOutlined,
   PlayCircleOutlined,
   DeploymentUnitOutlined,
-  ThunderboltOutlined,
+  ExperimentOutlined,
   GlobalOutlined,
   ImportOutlined,
   HomeOutlined,
@@ -30,7 +30,7 @@ const ICONS: Record<SwitchView, ReturnType<typeof ApiOutlined>> = {
   api: ApiOutlined,
   run: PlayCircleOutlined,
   wf: DeploymentUnitOutlined,
-  stress: ThunderboltOutlined,
+  test: ExperimentOutlined,
   envs: GlobalOutlined,
   import: ImportOutlined,
 };

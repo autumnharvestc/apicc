@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Button as AButton, Input as AInput, Select as ASelect, Table as ATable } from "ant-design-vue";
 import type { Assertion } from "@apicc/core";
 import type { useCasesStore } from "../stores/cases.js";
+import type { useDebugStore } from "../stores/debug.js";
 import type { useEditorStore } from "../stores/editor.js";
 import EmptyState from "./EmptyState.vue";
 
@@ -23,8 +24,11 @@ const ATextarea = AInput.TextArea;
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
   cases: ReturnType<typeof useCasesStore>;
+  /** 调试 store（M9-D 测试模块）：单条用例「运行」复用既有发送管线，结果共享上屏。 */
+  debug?: ReturnType<typeof useDebugStore>;
   reportError?: (e: unknown) => void;
 }>();
+const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
 const { t } = useI18n();
 
 const TARGET_OPTIONS = (["status", "header", "bodyJson", "responseTime"] as const).map((v) => ({ label: v, value: v }));
@@ -54,6 +58,17 @@ const assertColumns = computed(() => [
 
 function addCase() {
   props.cases.addCase({ name: t("case.new"), scope: "base" });
+}
+
+/** 单条用例运行（M9-D）：存编辑缓冲后按该用例发送（结果经共享 debug store 上屏）。 */
+async function runCase(caseId: string) {
+  if (!props.debug) return;
+  try {
+    await props.editor.save();
+    await props.debug.runCase(props.editor, caseId);
+  } catch (e) {
+    props.reportError?.(e);
+  }
 }
 
 // 保存链路收口（任务 8 补课）：拒绝经可选 reportError 转报，不再作为未处理 rejection 静默吞没。
@@ -118,6 +133,26 @@ function removeAssertion(index: number) {
           <a-input v-model:value="c.name" class="case-name" data-testid="case-name" :placeholder="t('tree.namePlaceholder')" />
           <a-select v-model:value="c.scope" class="scope-select" :options="scopeOptions" data-testid="case-scope" />
           <span class="assert-count" :title="t('case.assertions')">{{ c.assertions.length }}</span>
+          <a-button
+            v-if="debug"
+            size="small"
+            type="text"
+            :data-testid="`case-run-${c.id}`"
+            :data-case-id="c.id"
+            @click.stop="runCase(c.id)"
+          >
+            {{ t("case.run") }}
+          </a-button>
+          <a-button
+            v-if="debug"
+            size="small"
+            type="text"
+            :data-testid="`case-stress-${c.id}`"
+            :data-case-id="c.id"
+            @click.stop="emit('stress', c.id)"
+          >
+            {{ t("case.stress") }}
+          </a-button>
         </div>
       </div>
 

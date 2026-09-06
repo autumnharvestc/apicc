@@ -22,7 +22,8 @@
     "stress": "压测",
     "plugins": "插件",
     "api": "接口",
-    "home": "主页"
+    "home": "主页",
+    "test": "测试"
   },
   "workspace": {
     "problems": "问题文件",
@@ -123,7 +124,9 @@
     "headerName": "头名称",
     "path": "路径",
     "preScript": "前置脚本",
-    "postScript": "后置脚本"
+    "postScript": "后置脚本",
+    "run": "运行",
+    "stress": "压测"
   },
   "run": {
     "empty": "打开工作区后选择集合并运行",
@@ -407,5 +410,16 @@
   },
   "settings": {
     "title": "设置"
+  },
+  "test": {
+    "apiCases": "单接口用例",
+    "scenarios": "场景用例",
+    "noApis": "当前项目暂无接口",
+    "noScenarios": "暂无场景用例（工作流）",
+    "pickApi": "从左侧选择一个接口管理用例",
+    "backToCases": "返回用例",
+    "stressContext": "接口压测",
+    "scenarioHint": "选择场景用例（工作流）后点「运行」——场景在设计器中编排与执行。",
+    "scenarioStressDeferred": "场景级压测即将上线"
   }
 }

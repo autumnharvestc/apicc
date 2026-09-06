@@ -1,22 +1,19 @@
 /**
- * 视图切换模型（M9-C 层级调整）：rail 模块收敛为「主页（固定最左）+ 六模块」——
+ * 视图切换模型（M9-D）：rail 模块 =「主页（固定最左）+ 六模块」——
  * - home（主页）：服务器/团队分组/项目管理，恒可用；
- * - api（接口）模块内含子视图页签（调试/设计；用例页签 M9-D 移入测试模块）；
- * - run/wf/stress/envs/import 内容面板挂到各自模块；
- * - 插件移出 rail → TopBar 齿轮设置抽屉（M9-C 裁定 D5）。
- * 禁用语义（单测钉住）：
- * - home 恒可用；在线工作区激活 → 其余模块禁用（内容区让位 OnlineApiEditor）；
- * - 其余模块为工作区级：未打开工作区禁用；
- * - 压测（接口级）已打开工作区但未选中接口时禁用。
+ * - api（接口）模块子视图收敛为 调试/设计（接口栏聚焦接口定义，裁定⑥）；
+ * - test（测试）：单接口用例管理（用例项运行/压测）+ 场景用例（裁定 D2），取代原压测栏；
+ * - run/wf/envs/import 内容面板挂到各自模块；插件在设置抽屉（M9-C 裁定 D5）。
+ * 禁用语义（单测钉住）：home 恒可用；在线 → 除主页外全禁用；其余工作区级。
  */
-export type SwitchView = "home" | "api" | "run" | "wf" | "stress" | "envs" | "import";
+export type SwitchView = "home" | "api" | "run" | "wf" | "test" | "envs" | "import";
 
-export const SWITCH_VIEWS: SwitchView[] = ["home", "api", "run", "wf", "stress", "envs", "import"];
+export const SWITCH_VIEWS: SwitchView[] = ["home", "api", "run", "wf", "test", "envs", "import"];
 
-/** 接口模块子视图（M8 用例页签暂留，M9-D 移入测试模块后收敛为 调试/设计）。 */
-export type ApiSubView = "debug" | "design" | "cases";
+/** 接口模块子视图（M9-D：用例页签移入测试模块，接口栏聚焦定义）。 */
+export type ApiSubView = "debug" | "design";
 
-export const API_SUB_VIEWS: ApiSubView[] = ["debug", "design", "cases"];
+export const API_SUB_VIEWS: ApiSubView[] = ["debug", "design"];
 
 export interface ViewGateContext {
   workspaceOpened: boolean;
@@ -27,7 +24,7 @@ export interface ViewGateContext {
 export function isViewDisabled(view: SwitchView, ctx: ViewGateContext): boolean {
   if (view === "home") return false;
   if (ctx.onlineActive) return true;
-  return !ctx.workspaceOpened || (view === "stress" && !ctx.apiSelected);
+  return !ctx.workspaceOpened;
 }
 
 export function isApiSubViewDisabled(ctx: Pick<ViewGateContext, "onlineActive" | "apiSelected">): boolean {

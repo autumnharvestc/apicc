@@ -23,6 +23,7 @@ import { apicc } from "./api";
 import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import TopBar from "./components/TopBar.vue";
 import HomeView from "./components/HomeView.vue";
+import TestView from "./components/TestView.vue";
 import ModuleRail from "./components/ModuleRail.vue";
 import SideTree from "./components/SideTree.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
@@ -513,8 +514,7 @@ function onDividerDblClick() {
                 <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
               </div>
             </template>
-            <DesignPanel v-else-if="apiSubView === 'design'" class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
-            <CasePanel v-else class="panel-view" :editor="editor" :cases="cases" :report-error="reportError" />
+            <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
           </template>
           <EnvPanel
             v-else-if="view === 'envs'"
@@ -533,16 +533,20 @@ function onDividerDblClick() {
             :report-error="reportError"
           />
           <ImportWizard v-else-if="view === 'import'" class="panel-view" :import-w="importW" :plugins="plugins" :report-error="reportError" @close="onImportClose" />
-          <!-- 压测模块（M2-D3 任务 3）：apiId/cases/envs 取 editor store 当前接口；rail 已按
-               接口选中门控，此分支保证 apiId 非空（类型收窄 + 防御） -->
-          <StressPanel
-            v-else-if="view === 'stress' && editor.apiId"
+          <!-- 测试模块（M9-D）：单接口用例（运行/压测）+ 场景用例，取代原压测栏 -->
+          <TestView
+            v-else-if="view === 'test'"
             class="panel-view"
+            :workspace="workspace"
+            :tree="tree"
+            :editor="editor"
+            :debug="debug"
+            :cases="cases"
+            :envs="envs"
             :stress="stress"
-            :api-id="editor.apiId"
-            :cases="editor.api?.cases ?? []"
-            :envs="editor.envs"
+            :active-project-id="activeProjectId"
             :report-error="reportError"
+            :open-workflow="openWorkflowInDesigner"
           />
           <WfDesigner
             v-else
