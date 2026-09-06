@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   fileStorage,
+  sanitizeNodeName,
   transitionWorkflowStatus,
   validateEnablement,
   type ApiDefinition,
@@ -53,35 +54,44 @@ export function createSession(options: SessionOptions = {}) {
     return { root, workspace: workspace! };
   }
 
-  function createGroup(name: string): Group {
+  function createGroup(rawName: string): Group {
     const { workspace: ws } = ensureOpen();
+    const name = sanitizeNodeName(rawName);
+    // 同级重名拒绝（M9-A2）：名称即盘上目录名，重名双写同目录互相覆盖（与工作流 sameName 同口径）。
+    if (ws.groups.some((x) => sameName(x.name, name, platform))) throw new Error(`分组已存在: ${name}`);
     const group: Group = { id: randomUUID(), name, projects: [] };
     ws.groups.push(group);
     return group;
   }
 
-  function createProject(groupId: string, name: string): Project {
+  function createProject(groupId: string, rawName: string): Project {
     const { workspace: ws } = ensureOpen();
+    const name = sanitizeNodeName(rawName);
     const group = ws.groups.find((x) => x.id === groupId);
     if (!group) throw new Error(`未找到分组: ${groupId}`);
+    if (group.projects.some((x) => sameName(x.name, name, platform))) throw new Error(`项目已存在: ${name}`);
     const project: Project = { id: randomUUID(), name, variables: {}, environments: [], collections: [], workflows: [] };
     group.projects.push(project);
     return project;
   }
 
-  function createCollection(projectId: string, name: string): Collection {
+  function createCollection(projectId: string, rawName: string): Collection {
     const { workspace: ws } = ensureOpen();
+    const name = sanitizeNodeName(rawName);
     const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
     if (!project) throw new Error(`未找到项目: ${projectId}`);
+    if (project.collections.some((x) => sameName(x.name, name, platform))) throw new Error(`集合已存在: ${name}`);
     const collection: Collection = { id: randomUUID(), name, variables: {}, folders: [], apis: [] };
     project.collections.push(collection);
     return collection;
   }
 
-  function createFolder(collectionId: string, name: string): { id: string; name: string; apis: ApiDefinition[] } {
+  function createFolder(collectionId: string, rawName: string): { id: string; name: string; apis: ApiDefinition[] } {
     const { workspace: ws } = ensureOpen();
+    const name = sanitizeNodeName(rawName);
     const collection = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === collectionId);
     if (!collection) throw new Error(`未找到集合: ${collectionId}`);
+    if (collection.folders.some((x) => sameName(x.name, name, platform))) throw new Error(`文件夹已存在: ${name}`);
     const folder = { id: randomUUID(), name, apis: [] };
     collection.folders.push(folder);
     return folder;
@@ -89,20 +99,25 @@ export function createSession(options: SessionOptions = {}) {
 
   function createApi(collectionId: string, folderId: string | null, input: { name: string; method: HttpMethod; url: string }): ApiDefinition {
     const { workspace: ws } = ensureOpen();
+    const name = sanitizeNodeName(input.name);
     const collection = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === collectionId);
     if (!collection) throw new Error(`未找到集合: ${collectionId}`);
-    const api: ApiDefinition = {
-      id: randomUUID(), name: input.name, version: "1.0.0", deprecated: false,
+    const makeApi = (): ApiDefinition => ({
+      id: randomUUID(), name, version: "1.0.0", deprecated: false,
       method: input.method, url: input.url, headers: [], query: [],
       cases: [{ id: randomUUID(), name: "冒烟", scope: "base", parameters: {}, assertions: [] }],
-    };
+    });
     if (folderId) {
       const folder = collection.folders.find((f) => f.id === folderId);
       if (!folder) throw new Error(`未找到文件夹: ${folderId}`);
+      if (folder.apis.some((x) => sameName(x.name, name, platform))) throw new Error(`接口已存在: ${name}`);
+      const api = makeApi();
       folder.apis.push(api);
-    } else {
-      collection.apis.push(api);
+      return api;
     }
+    if (collection.apis.some((x) => sameName(x.name, name, platform))) throw new Error(`接口已存在: ${name}`);
+    const api = makeApi();
+    collection.apis.push(api);
     return api;
   }
 
@@ -240,7 +255,7 @@ export function createSession(options: SessionOptions = {}) {
     const { workspace: ws } = ensureOpen();
     const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
     if (!project) throw new Error(`未找到项目: ${projectId}`);
-    const env: Environment = { id: randomUUID(), name: input.name, extends: input.extends, variables: {} };
+    const env: Environment = { id: randomUUID(), name: sanitizeNodeName(input.name), extends: input.extends, variables: {} };
     project.environments.push(env);
     return env;
   }
@@ -252,26 +267,78 @@ export function createSession(options: SessionOptions = {}) {
     env.variables = variables;
   }
 
-  /** 导入项目（任务 7）：目标分组不存在则创建；同分组重名项目拒绝。导入器产物的 id 均为新生成 UUID，无 id 冲突风险。 */
+  /** 导入项目（任务 7）：目标分组不存在则创建；同分组重名项目拒绝。导入器产物的 id 均为新生成 UUID，无 id 冲突风险。
+   * M9-A2：分组名与导入树内全部实体名经 sanitizeNodeName 深度净化（内置导入器已净化；
+   * 此处兜底插件导入器——其产物名称不受控，非法字符同样会打穿盘上目录布局）。 */
   async function importProject(groupName: string, imported: { project: Project }): Promise<void> {
     const { workspace: ws } = ensureOpen();
-    let group = ws.groups.find((x) => x.name === groupName);
-    if (!group) { group = createGroup(groupName); }
-    const existing = group.projects.find((x) => x.name === imported.project.name);
-    if (existing) throw new Error(`项目已存在: ${imported.project.name}`);
-    group.projects.push(imported.project);
+    const sanitizedGroup = sanitizeNodeName(groupName);
+    let group = ws.groups.find((x) => x.name === sanitizedGroup);
+    if (!group) { group = createGroup(sanitizedGroup); }
+    const project = imported.project;
+    project.name = sanitizeNodeName(project.name);
+    const existing = group.projects.find((x) => sameName(x.name, project.name, platform));
+    if (existing) throw new Error(`项目已存在: ${project.name}`);
+    project.environments = (project.environments ?? []).map((e) => ({ ...e, name: sanitizeNodeName(e.name) }));
+    project.collections = project.collections.map((c) => ({
+      ...c,
+      name: sanitizeNodeName(c.name),
+      folders: c.folders.map((f) => ({
+        ...f,
+        name: sanitizeNodeName(f.name),
+        apis: f.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name), cases: a.cases.map((tc) => ({ ...tc, name: sanitizeNodeName(tc.name) })) })),
+      })),
+      apis: c.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name), cases: a.cases.map((tc) => ({ ...tc, name: sanitizeNodeName(tc.name) })) })),
+    }));
+    project.workflows = (project.workflows ?? []).map((w) => ({ ...w, name: sanitizeNodeName(w.name) }));
+    group.projects.push(project);
     await save();
   }
 
-  function renameNode(kind: NodeKind, id: string, name: string): void {
+  function renameNode(kind: NodeKind, id: string, rawName: string): void {
     const { workspace: ws } = ensureOpen();
-    if (kind === "group") { const n = ws.groups.find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; return; }
-    if (kind === "project") { const n = ws.groups.flatMap((g) => g.projects).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; return; }
-    if (kind === "collection") { const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; return; }
-    if (kind === "folder") { const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).flatMap((c) => c.folders).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; return; }
-    if (kind === "environment") { const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; return; }
+    const name = sanitizeNodeName(rawName);
+    if (kind === "group") {
+      const n = ws.groups.find((x) => x.id === id);
+      if (!n) throw new Error(`未找到: ${id}`);
+      if (ws.groups.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`分组已存在: ${name}`);
+      n.name = name;
+      return;
+    }
+    if (kind === "project") {
+      const n = ws.groups.flatMap((g) => g.projects).find((x) => x.id === id);
+      if (!n) throw new Error(`未找到: ${id}`);
+      const parent = ws.groups.find((g) => g.projects.some((x) => x.id === id));
+      if (parent && parent.projects.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`项目已存在: ${name}`);
+      n.name = name;
+      return;
+    }
+    if (kind === "collection") {
+      const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === id);
+      if (!n) throw new Error(`未找到: ${id}`);
+      const parent = ws.groups.flatMap((g) => g.projects).find((p) => p.collections.some((x) => x.id === id));
+      if (parent && parent.collections.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`集合已存在: ${name}`);
+      n.name = name;
+      return;
+    }
+    if (kind === "folder") {
+      const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).flatMap((c) => c.folders).find((x) => x.id === id);
+      if (!n) throw new Error(`未找到: ${id}`);
+      const parent = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((c) => c.folders.some((x) => x.id === id));
+      if (parent && parent.folders.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`文件夹已存在: ${name}`);
+      n.name = name;
+      return;
+    }
+    if (kind === "environment") {
+      const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === id);
+      if (!n) throw new Error(`未找到: ${id}`);
+      n.name = name;
+      return;
+    }
     const loc = locateApi(id);
     if (!loc) throw new Error(`未找到: ${id}`);
+    const siblings = loc.folder ? loc.folder.apis : loc.collection.apis;
+    if (siblings.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`接口已存在: ${name}`);
     loc.api.name = name;
   }
 

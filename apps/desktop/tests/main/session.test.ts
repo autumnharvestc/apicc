@@ -423,3 +423,60 @@ describe("createStressController", () => {
     expect(calls).toBe(1);
   });
 });
+
+// —— M9-A2：名称净化与同级重名拒绝（名称即盘上目录名，非法字符 mkdir ENOENT 用户回归） ——
+describe("session 名称净化（M9-A2）", () => {
+  it("createApi 名称含路径非法字符：净化为盘上安全目录并重开可读（用户 ENOENT 回归）", async () => {
+    const s = createSession();
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const p = s.createProject(g.id, "p");
+    const c = s.createCollection(p.id, "c");
+    const api = s.createApi(c.id, null, { name: "http://localhost:8080/api/health", method: "GET", url: "/health" });
+    for (const ch of ["/", ":", String.fromCharCode(92)]) expect(api.name).not.toContain(ch);
+    expect(api.name).toContain("http");
+    await s.save();
+    const apiDir = join(dir, "groups", "g", "projects", "p", "collections", "c", "apis", api.name);
+    expect(existsSync(apiDir)).toBe(true);
+    const s2 = createSession();
+    await s2.open(dir);
+    expect(s2.locateApi(api.id)?.api.name).toBe(api.name);
+  });
+
+  it("create*/renameNode 统一净化：非法字符替换、结尾点清理、空名回退", async () => {
+    const s = createSession();
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("  ");
+    expect(g.name).toBe("未命名");
+    const p = s.createProject(g.id, 'a*b<c>?"|');
+    expect(p.name).toBe("a-b-c----");
+    const c = s.createCollection(p.id, "dir.");
+    expect(c.name).toBe("dir");
+    const api = s.createApi(c.id, null, { name: "x", method: "GET", url: "/" });
+    s.renameNode("api", api.id, "y/z:*");
+    expect(s.locateApi(api.id)?.api.name).toBe("y-z--");
+  });
+
+  it("同级重名拒绝：分组/项目/集合/接口创建与重命名（win32 大小写归一口径）", async () => {
+    const s = createSession({ platform: "win32" });
+    const dir = root();
+    await s.create(dir, "w");
+    await s.open(dir);
+    const g = s.createGroup("g");
+    const g2 = s.createGroup("G2");
+    expect(() => s.createGroup("G")).toThrow("分组已存在: G");
+    const p = s.createProject(g.id, "p");
+    expect(() => s.createProject(g.id, "P")).toThrow("项目已存在: P");
+    expect(() => s.createProject(g2.id, "p")).not.toThrow(); // 不同分组互不影响
+    const c = s.createCollection(p.id, "c");
+    expect(() => s.createCollection(p.id, "C")).toThrow("集合已存在: C");
+    s.createApi(c.id, null, { name: "a", method: "GET", url: "/" });
+    expect(() => s.createApi(c.id, null, { name: "A", method: "GET", url: "/" })).toThrow("接口已存在: A");
+    const c2 = s.createCollection(p.id, "c2");
+    expect(() => s.renameNode("collection", c2.id, "c")).toThrow("集合已存在: c");
+  });
+});

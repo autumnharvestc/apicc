@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ProjectSchema } from "../domain/model.js";
+import { sanitizeNodeName } from "../storage/sanitize.js";
 import type { ApiDefinition, Project } from "../domain/model.js";
 import type { Importer, ImportedProject } from "../plugin/types.js";
 
@@ -62,7 +63,7 @@ export const openapiImporter: Importer = {
         }
         apis.push({
           id: randomUUID(),
-          name: operation.operationId ?? operation.summary ?? `${method.toUpperCase()} ${path}`,
+          name: sanitizeNodeName(operation.operationId ?? operation.summary ?? `${method.toUpperCase()} ${path}`),
           version: String((doc.info as AnyDoc).version ?? "1.0.0"),
           deprecated: false,
           method: method.toUpperCase() as ApiDefinition["method"],
@@ -73,15 +74,15 @@ export const openapiImporter: Importer = {
           design: jsonSchema || operation.description
             ? `# 接口设计\n\n${operation.description ?? ""}\n\n## 请求体 schema\n\n\`\`\`yaml\n${jsonSchema ? stringifyYaml(jsonSchema) : "无"}\n\`\`\`\n`
             : undefined,
-          cases: [{ id: randomUUID(), name: `${operation.operationId ?? path}-smoke`, scope: "base", parameters: {}, assertions: [] }],
+          cases: [{ id: randomUUID(), name: sanitizeNodeName(`${operation.operationId ?? path}-smoke`), scope: "base", parameters: {}, assertions: [] }],
         });
       }
     }
 
     const project: Project = {
-      id: randomUUID(), name: info.title, variables: {},
+      id: randomUUID(), name: sanitizeNodeName(info.title), variables: {},
       environments: [{ id: randomUUID(), name: "imported", variables: { baseUrl } }],
-      collections: [{ id: randomUUID(), name: info.title, variables: {}, folders: [], apis }],
+      collections: [{ id: randomUUID(), name: sanitizeNodeName(info.title), variables: {}, folders: [], apis }],
       workflows: [],
     };
     // 严格 schema 自校验：导入产物必须恰好匹配域模型字段（多余字段 fail-fast）。

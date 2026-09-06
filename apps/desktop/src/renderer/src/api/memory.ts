@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   builtinAuthProviders,
+  sanitizeNodeName,
   buildStressRequest,
   createVariableResolver,
   fileStorage,
@@ -371,8 +372,12 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
 
     async nodeCreate(input: NodeCreateInput): Promise<NodeCreatedDTO> {
       const ws = ensureOpen();
+      const name = sanitizeNodeName(input.name);
+      // 与主进程 session 同契约（M9-A2）：名称净化 + 同级重名拒绝（名称即盘上目录名）。
+      const sameName = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
       if (input.kind === "group") {
-        const g: Group = { id: randomUUID(), name: input.name, projects: [] };
+        if (ws.groups.some((x) => sameName(x.name, name))) throw new Error(`分组已存在: ${name}`);
+        const g: Group = { id: randomUUID(), name, projects: [] };
         ws.groups.push(g);
         await save();
         return { kind: "group", id: g.id, label: g.name };
@@ -380,7 +385,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       if (input.kind === "project") {
         const g = ws.groups.find((x) => x.id === input.parentId);
         if (!g) throw new Error(`未找到分组: ${input.parentId}`);
-        const p: Project = { id: randomUUID(), name: input.name, variables: {}, environments: [], collections: [], workflows: [] };
+        if (g.projects.some((x) => sameName(x.name, name))) throw new Error(`项目已存在: ${name}`);
+        const p: Project = { id: randomUUID(), name, variables: {}, environments: [], collections: [], workflows: [] };
         g.projects.push(p);
         await save();
         return { kind: "project", id: p.id, label: p.name };
@@ -388,7 +394,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       if (input.kind === "collection") {
         const p = ws.groups.flatMap((g) => g.projects).find((x) => x.id === input.parentId);
         if (!p) throw new Error(`未找到项目: ${input.parentId}`);
-        const c: Collection = { id: randomUUID(), name: input.name, variables: {}, folders: [], apis: [] };
+        if (p.collections.some((x) => sameName(x.name, name))) throw new Error(`集合已存在: ${name}`);
+        const c: Collection = { id: randomUUID(), name, variables: {}, folders: [], apis: [] };
         p.collections.push(c);
         await save();
         return { kind: "collection", id: c.id, label: c.name };
@@ -396,7 +403,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       if (input.kind === "folder") {
         const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.parentId);
         if (!c) throw new Error(`未找到集合: ${input.parentId}`);
-        const f: Folder = { id: randomUUID(), name: input.name, apis: [] };
+        if (c.folders.some((x) => sameName(x.name, name))) throw new Error(`文件夹已存在: ${name}`);
+        const f: Folder = { id: randomUUID(), name, apis: [] };
         c.folders.push(f);
         await save();
         return { kind: "folder", id: f.id, label: f.name };
@@ -419,15 +427,18 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
         if (!c) throw new Error(`未找到集合: ${input.parentId}`);
         target = { collection: c, folder: null };
       }
-      const api = createApiDefinition(input.name, input.method ?? "GET", input.url ?? "/");
+      const siblings = target.folder ? target.folder.apis : target.collection.apis;
+      if (siblings.some((x) => sameName(x.name, name))) throw new Error(`接口已存在: ${name}`);
+      const api = createApiDefinition(name, input.method ?? "GET", input.url ?? "/");
       if (target.folder) target.folder.apis.push(api);
       else target.collection.apis.push(api);
       await save();
       return { kind: "api", id: api.id, label: api.name, method: api.method };
     },
 
-    async nodeRename(kind: "group" | "project" | "collection" | "folder" | "api" | "environment", id: string, name: string): Promise<void> {
+    async nodeRename(kind: "group" | "project" | "collection" | "folder" | "api" | "environment", id: string, rawName: string): Promise<void> {
       const ws = ensureOpen();
+      const name = sanitizeNodeName(rawName);
       if (kind === "group") { const n = ws.groups.find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; await save(); return; }
       if (kind === "project") { const n = ws.groups.flatMap((g) => g.projects).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; await save(); return; }
       if (kind === "collection") { const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; await save(); return; }
@@ -655,11 +666,20 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
 
     async importApply(input: ImportApplyInput): Promise<void> {
       const ws = ensureOpen();
-      let group = ws.groups.find((x) => x.name === input.groupName);
-      if (!group) { group = { id: randomUUID(), name: input.groupName, projects: [] }; ws.groups.push(group); }
-      if (group.projects.some((x) => x.name === input.project.name)) throw new Error(`项目已存在: ${input.project.name}`);
-      group.projects.push(input.project);
-      importApplyCalls.push({ groupName: input.groupName, projectName: input.project.name });
+      const groupName = sanitizeNodeName(input.groupName);
+      const project = input.project;
+      project.name = sanitizeNodeName(project.name);
+      project.collections = project.collections.map((c) => ({
+        ...c,
+        name: sanitizeNodeName(c.name),
+        folders: c.folders.map((f) => ({ ...f, name: sanitizeNodeName(f.name), apis: f.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name) })) })),
+        apis: c.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name) })),
+      }));
+      let group = ws.groups.find((x) => x.name === groupName);
+      if (!group) { group = { id: randomUUID(), name: groupName, projects: [] }; ws.groups.push(group); }
+      if (group.projects.some((x) => x.name === project.name)) throw new Error(`项目已存在: ${project.name}`);
+      group.projects.push(project);
+      importApplyCalls.push({ groupName, projectName: project.name });
       await save();
     },
 

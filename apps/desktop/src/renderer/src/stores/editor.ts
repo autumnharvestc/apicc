@@ -33,6 +33,16 @@ export function useEditorStore(api: ApiccApi) {
         this.envs = detail.envs;
         this.snapshot = JSON.stringify(this.api);
       },
+      /**
+       * 环境清单重拉（M9-A1）：调试环境选择器读 editor.envs，但它只在 load（选中接口）
+       * 时载入——环境管理里新建/删除环境后选择器不刷新（用户实测 bug）。由组合根在
+       * 环境增删后调用，按当前接口重拉所属项目环境清单；api 快照不动（不标脏）。
+       */
+      async reloadEnvs() {
+        if (!this.apiId) return;
+        const detail = await api.apiGet(this.apiId);
+        this.envs = detail.envs;
+      },
       async save() {
         if (!this.api) return;
         // Electron IPC 以结构化克隆传参：Pinia/Vue 的响应式 Proxy 无法被克隆
