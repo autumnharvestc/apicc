@@ -36,9 +36,18 @@
 
 | ID | 名称 | 说明 | data-testid |
 |---|---|---|---|
-| `home` | 主页 | 整页视图，无 API 栏 | `home-view` |
-| `home.local-card` | 本地服务器卡片 | 打开/新建本地目录；分组清单（新建项目 / 重命名 / 删除——仅空分组可删；默认分组不可删改）与项目打开 | `home-local` |
-| `home.remote-card` | 远程服务器卡片 | 服务器档案与团队空间清单（只读），打开进入在线模式 | `home-remote` |
+| `home` | 主页 | 内部左栏（落点选择）+ 右栏（内容视图），整页无 API 栏 | `home-view` |
+| `home.sidebar` | 主页左栏 | 落点选择：我的团队（本地工作区+分组树）/ 服务器 / 底部「管理连接」 | `home-sidebar` |
+| `home.sidebar.local` | 我的团队 | 本地工作区节点（选中=右栏全部项目）；子项=分组（选中=过滤）+ 新建分组；常驻打开/新建本地目录 | `home-side-local` |
+| `home.sidebar.group` | 分组节点 | 行内 重命名 / 删除（仅空分组可删） | `home-side-group` |
+| `home.sidebar.server` | 服务器节点 | 每条在线档案一项，选中=右栏该服务器团队空间只读清单 | `home-side-server-{baseUrl}` |
+| `home.content` | 主页右栏 | 内容视图：项目网格 / 服务器视图 / 连接管理面板 三态切换 | `home-content` |
+| `home.content.toolbar` | 项目区工具栏 | 导入项目（project 模式向导）+ 新建项目（带分组选择器） | `home-import-project` / `home-new-project-top` |
+| `home.content.card` | 项目卡片 | 色块头像（按 id 确定性生成）+ 名称 + 菜单（修改名称/克隆/移动/删除）；预留标签插槽 | `project-card-{id}` / `project-menu-*` |
+| `home.connections` | 连接管理面板 | 连接列表（头像/昵称/地址/登录态）+ 新增/编辑/删除/登录/浏览——档案管理唯一入口 | `connections-panel` / `connection-*` |
+| `home.import-modal` | 导入项目向导 | project 模式：目标分组下拉（默认「默认分组」）+ 项目名（预填可改） | `home-import-modal` / `import-group-select` |
+| `home.move-dialog` | 移动项目对话框 | 目标分组下拉 | `home-move-dialog` / `home-move-dialog-group` |
+| `home.project-dialog` | 新建项目对话框 | 分组选择器（默认「默认分组」）+ 项目名 | `home-project-dialog` |
 
 ## 三、侧栏（API 栏，按模块专用）
 

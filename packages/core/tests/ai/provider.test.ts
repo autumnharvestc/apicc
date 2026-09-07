@@ -175,9 +175,11 @@ describe("createAiProvider（D1 provider 抽象）", () => {
 });
 
 describe("index 导出面（裁定⑦）", () => {
+  // 全量 barrel 动态 import 在整仓并行负载下 Windows 冷加载可超默认 5s（既有备案，
+  // 与桌面端 antd barrel 同因）——单用例放宽至 30s，只影响本用例超时上限。
   it("createAiProvider / suggestCases 从 core index 可用", async () => {
     const mod = await import("../../src/index.js");
     expect(typeof mod.createAiProvider).toBe("function");
     expect(typeof mod.suggestCases).toBe("function");
-  });
+  }, 30000);
 });
