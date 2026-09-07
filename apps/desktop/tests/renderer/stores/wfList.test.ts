@@ -28,15 +28,16 @@ describe("wfList store", () => {
     expect(list.items[0]).toMatchObject({ name: "流甲", status: "draft" });
   });
 
-  it("create(name) 返回新工作流（draft）并刷新列表；重名拒绝上抛", async () => {
+  it("create(name) 返回新工作流（draft）并刷新列表；同名并存（轨二）", async () => {
     const { list, projectNode } = await seeded();
     await list.load(projectNode.id);
     const wf = await list.create("新流");
     expect(wf.status).toBe("draft");
     expect(list.items.map((i) => i.name)).toContain("新流");
-    // 同项目重名拒绝（api 层抛「工作流已存在」，store 透传调用方）
-    await expect(list.create("新流")).rejects.toThrow(/工作流已存在/);
-    expect(list.items).toHaveLength(1);
+    // 同名放开（轨二）：同名工作流并存（id 不同）
+    const dup = await list.create("新流");
+    expect(dup.id).not.toBe(wf.id);
+    expect(list.items).toHaveLength(2);
   });
 
   it("remove(id, confirm)：确认回调放行后删除并刷新列表", async () => {

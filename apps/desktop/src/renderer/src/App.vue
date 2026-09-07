@@ -596,7 +596,7 @@ function onDividerDblClick() {
           />
         </div>
         <div class="right-col" data-testid="main-split">
-          <!-- 主页（M9-C）：服务器/团队分组/项目管理，恒可用 -->
+          <!-- 主页（M9-C；轨三左右栏）：落点选择/项目卡片/连接管理，恒可用 -->
           <HomeView
             v-if="view === 'home'"
             class="panel-view"
@@ -604,6 +604,8 @@ function onDividerDblClick() {
             :workspace="workspace"
             :tree="tree"
             :online="online"
+            :import-w="importW"
+            :plugins="plugins"
             :report-error="reportError"
             :open-project="openProjectFromHome"
           />
@@ -643,10 +645,13 @@ function onDividerDblClick() {
                 </a-button>
               </a-space>
             </div>
-            <!-- 导入向导（M10 归接口模块）：打开时替代子视图区域 -->
+            <!-- 导入向导（M10 归接口模块；轨二 module 模式）：打开时替代子视图区域——
+                 产物集合并入当前项目（baseUrl 进模块变量、不造环境），无落点选择 -->
             <ImportWizard
               v-if="importOpen"
               class="panel-view"
+              mode="module"
+              :target-project-id="activeProjectId"
               :import-w="importW"
               :plugins="plugins"
               :report-error="reportError"

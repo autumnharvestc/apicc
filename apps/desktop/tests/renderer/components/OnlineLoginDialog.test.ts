@@ -3,11 +3,11 @@
 //
 // M3-B 任务 2：OnlineLoginDialog 组件测试——表单校验（url 形态/用户名密码必填）、提交调
 // store（组件内零工厂调用：store 实例经 props 注入）、api 错误上屏、注册/登录双模式
-// （a-tabs）、服务器档案管理（增删切换）、已登录态与退出登录。
+// （a-tabs）、已登录态与退出登录。档案管理用例迁移至 ConnectionPanel.test.ts（轨三收口）。
 // antd 适配沿用 components.test.ts 约定：a-modal 传送门渲染到 document.body → body 作用域
-// 查询；a-tabs 页签触发钩子经 #tab slot 的 span；a-select 经组件级 update:value 事件驱动。
+// 查询；a-tabs 页签触发钩子经 #tab slot 的 span。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
-import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
+import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
@@ -102,41 +102,20 @@ async function mountDialog({ open = true, logins = 0 }: { open?: boolean; logins
   return { wrapper, api: api as ApiccApi, online, workspace, storage };
 }
 
-/** antd 组件定位（components.test.ts 同款：按组件名 + data-testid，不经下拉展开）。 */
-function antdSelect(wrapper: VueWrapper, testid: string) {
-  const found = wrapper.findAllComponents({ name: "ASelect" }).find((c) => c.attributes("data-testid") === testid);
-  if (!found) throw new Error(`ASelect 未找到: ${testid}`);
-  return found;
-}
-
 describe("OnlineLoginDialog", () => {
-  it("dialogOpen=false 不渲染；true 经传送门渲染（标题 + 服务器档案区 + 登录页签默认）", async () => {
+  it("dialogOpen=false 不渲染；true 经传送门渲染（登录页签默认；档案区已收口至主页管理连接）", async () => {
     const { online } = await mountDialog({ open: false });
     // a-modal 不透传 data-testid（components.test.ts 既有备案），挂载判据用对话框内层 online-body
     expect(bodyHas("online-body")).toBe(false);
     online.dialogOpen = true;
     await flushPromises();
-    // 模态标题在 a-modal 头部（不在 body 插槽内），档案区/页签在内层 body
+    // 模态标题在 a-modal 头部（不在 body 插槽内），登录页签在内层 body
     expect(document.body.textContent).toContain("在线模式");
-    expect(expectBody("online-body").text()).toContain("已存档案");
-    expect(bodyHas("online-server-select")).toBe(true);
-    expect(bodyHas("online-server-url")).toBe(true);
-    expect(bodyHas("online-server-name")).toBe(true);
+    // 轨三收口：档案增删改不在对话框内（唯一入口 = 主页管理连接面板）
+    expect(bodyHas("online-server-select")).toBe(false);
+    expect(bodyHas("online-server-url")).toBe(false);
     expect(bodyHas("online-login-form")).toBe(true);
     expect(bodyActiveHas("online-register-form")).toBe(false); // 注册页签未激活（懒渲染且未触达）
-    // 输入区回填当前激活档案
-    expect((expectBody("online-server-url").element as HTMLInputElement).value).toBe(SERVER_A);
-  });
-
-  it("表单校验：url 缺 http(s) / 为空 → online-form-error 且不落 store", async () => {
-    const { online } = await mountDialog();
-    await expectBody("online-server-url").setValue("ftp://bad");
-    await expectBody("online-server-save").trigger("click");
-    expect(expectBody("online-form-error").text()).toContain("http://");
-    expect(online.profiles).toHaveLength(1); // 未新增
-    await expectBody("online-server-url").setValue("   ");
-    await expectBody("online-server-save").trigger("click");
-    expect(expectBody("online-form-error").text()).toContain("服务器地址");
   });
 
   it("登录校验：用户名/密码必填 → online-form-error 且登录未发起", async () => {
@@ -218,41 +197,6 @@ describe("OnlineLoginDialog", () => {
     await expectBody("online-register-submit").trigger("click");
     expect(expectBody("online-form-error").text()).toContain("显示名称");
     expect(online.loggedIn).toBe(false);
-  });
-
-  it("服务器档案管理：保存新档案进下拉并持久化到注入 storage；删除档案从下拉消失", async () => {
-    const { online, wrapper, storage } = await mountDialog();
-    await expectBody("online-server-url").setValue("http://10.0.0.8:9000");
-    await expectBody("online-server-name").setValue("备用");
-    await expectBody("online-server-save").trigger("click");
-    await flushPromises();
-    expect(online.profiles.map((p) => p.baseUrl)).toEqual([SERVER_A, "http://10.0.0.8:9000"]);
-    expect(online.activeBaseUrl).toBe("http://10.0.0.8:9000"); // 新档案即激活
-    const options = antdSelect(wrapper, "online-server-select").props("options") as Array<{ value: string }>;
-    expect(options.map((o) => o.value)).toContain("http://10.0.0.8:9000");
-    // 持久化落在注入的 storage（组件测试不写真实 localStorage）
-    expect(JSON.parse(storage.getItem(STORAGE_KEY)!).servers).toHaveLength(2);
-    // 删除当前激活档案（备用）→ 从档案列表消失、激活位回退
-    await expectBody("online-server-delete").trigger("click");
-    await flushPromises();
-    expect(online.profiles.map((p) => p.baseUrl)).toEqual([SERVER_A]);
-    expect(online.activeBaseUrl).toBeNull();
-  });
-
-  it("档案切换：下拉选另一档案 → setActive（resume 由 store 负责）+ 输入区回填该档案", async () => {
-    const resumes: string[] = [];
-    const { api, online, wrapper } = await mountDialog();
-    online.addProfile("http://10.0.0.8:9000", "备用");
-    const original = api.onlineResume.bind(api);
-    api.onlineResume = async (input) => {
-      resumes.push(input.baseUrl);
-      return original(input);
-    };
-    antdSelect(wrapper, "online-server-select").vm.$emit("update:value", "http://10.0.0.8:9000");
-    await flushPromises();
-    expect(online.activeBaseUrl).toBe("http://10.0.0.8:9000");
-    expect(resumes).toContain("http://10.0.0.8:9000");
-    expect((expectBody("online-server-name").element as HTMLInputElement).value).toBe("备用");
   });
 
   it("已登录态：退出登录按钮 → store.logout（档案保留），回到登录表单", async () => {

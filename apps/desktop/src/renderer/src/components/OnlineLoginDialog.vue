@@ -42,16 +42,11 @@ const mode = ref<"login" | "register">("login");
 const username = ref("");
 const password = ref("");
 const displayName = ref("");
-const serverUrl = ref("");
-const serverName = ref("");
 const formError = ref("");
 const registerOk = ref(false);
 
-const serverOptions = computed(() =>
-  props.online.profiles.map((p) => ({ label: p.name || p.baseUrl, value: p.baseUrl })),
-);
-
-// 每次打开对话框重置本地表单（store 状态保留）；输入区回填当前激活档案便于直接改昵称保存。
+// 每次打开对话框重置本地表单（store 状态保留）；目标服务器 = 当前激活档案
+// （档案管理唯一入口在主页「管理连接」面板——轨三收口）。
 // 已登录时顺带刷新工作区列表（打开在线工作区的入口数据）。
 watch(
   () => props.online.dialogOpen,
@@ -60,50 +55,10 @@ watch(
     formError.value = "";
     registerOk.value = false;
     mode.value = "login";
-    serverUrl.value = props.online.activeBaseUrl ?? "";
-    serverName.value = props.online.profiles.find((p) => p.baseUrl === props.online.activeBaseUrl)?.name ?? "";
     if (props.online.loggedIn) void props.online.refreshWorkspaces();
   },
   { immediate: true },
 );
-
-function onSelectServer(baseUrl: string) {
-  formError.value = "";
-  if (!baseUrl) return;
-  props.online.setActive(baseUrl);
-  serverUrl.value = baseUrl;
-  serverName.value = props.online.profiles.find((p) => p.baseUrl === baseUrl)?.name ?? "";
-}
-
-function onSaveServer() {
-  formError.value = "";
-  registerOk.value = false;
-  const url = serverUrl.value.trim();
-  if (!url) {
-    formError.value = t("online.serverRequired");
-    return;
-  }
-  if (!OnlineBaseUrlSchema.safeParse(url).success) {
-    formError.value = t("online.serverUrlInvalid");
-    return;
-  }
-  props.online.addProfile(url, serverName.value);
-}
-
-function onRemoveServer() {
-  formError.value = "";
-  registerOk.value = false;
-  const url = serverUrl.value.trim();
-  if (!url) {
-    formError.value = t("online.serverRequired");
-    return;
-  }
-  if (!props.online.profiles.some((p) => p.baseUrl === url)) {
-    formError.value = t("online.serverMissing");
-    return;
-  }
-  props.online.removeProfile(url);
-}
 
 async function onLogin() {
   formError.value = "";
@@ -177,44 +132,7 @@ async function onOpenWorkspace(workspaceId: string) {
     @cancel="online.dialogOpen = false"
   >
     <div class="online-body" data-testid="online-body">
-      <!-- 服务器档案区（增删切换） -->
-      <div class="section">
-        <div class="section-title">{{ t("online.serverSection") }}</div>
-        <label class="field">
-          <span class="field-label">{{ t("online.savedServers") }}</span>
-          <a-select
-            class="control"
-            :value="online.activeBaseUrl ?? undefined"
-            :options="serverOptions"
-            :placeholder="t('online.serverNone')"
-            data-testid="online-server-select"
-            @update:value="(v) => onSelectServer(v as string)"
-          />
-        </label>
-        <label class="field">
-          <span class="field-label">{{ t("online.serverUrl") }}</span>
-          <a-input
-            v-model:value="serverUrl"
-            class="control"
-            data-testid="online-server-url"
-            :placeholder="t('online.serverUrlPlaceholder')"
-          />
-        </label>
-        <label class="field">
-          <span class="field-label">{{ t("online.serverName") }}</span>
-          <a-input
-            v-model:value="serverName"
-            class="control"
-            data-testid="online-server-name"
-            :placeholder="t('online.serverNamePlaceholder')"
-          />
-        </label>
-        <div class="actions">
-          <a-button data-testid="online-server-save" @click="onSaveServer">{{ t("online.serverSave") }}</a-button>
-          <a-button danger data-testid="online-server-delete" @click="onRemoveServer">{{ t("online.serverDelete") }}</a-button>
-        </div>
-      </div>
-
+      <!-- 服务器档案区已收口至主页「管理连接」面板（轨三）：目标服务器 = 当前激活档案 -->
       <!-- 已登录：用户 + 退出登录 + 工作区列表（任务 3 打开在线工作区入口） -->
       <div v-if="online.loggedIn" class="section" data-testid="online-signed-in">
         <div class="signed-in-row">

@@ -61,46 +61,83 @@ async function pickFile(wrapper: Awaited<ReturnType<typeof mountWizard>>["wrappe
 }
 
 describe("ImportWizard", () => {
-  it("三步推进：选文件进预览 → 填分组名导入 → 完成态（api 已落库、树已刷新）", async () => {
-    const { wrapper, api, workspace, importW } = await mountWizard();
-    // 第一步：只有文件选择，没有预览内容
+  it("project 模式三步推进：选文件进预览 → 选分组/项目名导入 → 完成态（整包落库、树已刷新）", async () => {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const seeded = await api.treeGet();
+    const gId = seeded.children![0]!.id; // 示例分组（种子）
+    const { wrapper, workspace, importW } = await mountWizard({
+      mode: "project",
+      groups: [{ id: gId, label: "示例分组" }],
+      defaultGroupId: gId,
+    }, api);
+    // 第一步：只有文件选择，没有落点表单
     expect(wrapper.find('[data-testid="import-file-input"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="import-group-input"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="import-name-input"]').exists()).toBe(false);
     await pickFile(wrapper, "sample.yaml", "openapi: 3.0.0");
-    // 第二步：预览树 + 警告 + 分组名输入出现
+    // 第二步：预览树 + 警告 + 分组下拉（预选默认分组）+ 项目名（预填 title）
     expect(wrapper.find('[data-testid="import-preview-tree"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="import-warnings"]').text()).toContain("示例警告");
-    expect(wrapper.find('[data-testid="import-group-input"]').exists()).toBe(true);
-    // 分组名为空时导入按钮禁用
-    expect(wrapper.find('[data-testid="import-apply"]').attributes("disabled")).toBeDefined();
-    await wrapper.find('[data-testid="import-group-input"]').setValue("导入分组");
+    expect(wrapper.find('[data-testid="import-group-select"]').exists()).toBe(true);
+    expect((wrapper.find('[data-testid="import-name-input"]').element as HTMLInputElement).value).toBe("导入示例项目");
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     await flushPromises();
-    // 第三步：完成态；apply 记录调用、工作区树已刷新出导入分组与项目
+    // 第三步：完成态；apply 记录 project 模式调用、树已刷新出导入项目
     expect(wrapper.find('[data-testid="import-done"]').exists()).toBe(true);
-    expect(api.importApplyCalls).toEqual([{ groupName: "导入分组", projectName: "导入示例项目" }]);
-    const groupNode = workspace.tree!.children!.find((n) => n.label === "导入分组");
-    expect(groupNode).toBeDefined();
+    expect(api.importApplyCalls).toEqual([{ mode: "project", groupId: gId, name: "导入示例项目" }]);
+    const groupNode = workspace.tree!.children!.find((n) => n.id === gId);
     expect(groupNode!.children!.map((n) => n.label)).toContain("导入示例项目");
     expect(importW.applying).toBe(false);
   });
 
+  it("project 模式无可用分组时导入按钮禁用（防无落点提交）", async () => {
+    const { wrapper } = await mountWizard({ mode: "project", groups: [], defaultGroupId: null });
+    await pickFile(wrapper, "sample.yaml", "x");
+    expect(wrapper.find('[data-testid="import-apply"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("module 模式：无落点选择，仅模块名（预填 title），并入目标项目", async () => {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const seeded = await api.treeGet();
+    const pId = seeded.children![0]!.children![0]!.id; // 示例项目（种子）
+    const { wrapper, workspace } = await mountWizard({ mode: "module", targetProjectId: pId }, api);
+    await pickFile(wrapper, "sample.yaml", "openapi: 3.0.0");
+    // module 模式不出现分组下拉
+    expect(wrapper.find('[data-testid="import-group-select"]').exists()).toBe(false);
+    expect((wrapper.find('[data-testid="import-name-input"]').element as HTMLInputElement).value).toBe("导入示例项目");
+    await wrapper.find('[data-testid="import-name-input"]').setValue("并入模块");
+    await wrapper.find('[data-testid="import-apply"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="import-done"]').exists()).toBe(true);
+    expect(api.importApplyCalls).toEqual([{ mode: "module", projectId: pId, name: "并入模块" }]);
+    const projectNode = workspace.tree!.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目");
+    expect(projectNode!.children!.map((c) => c.label)).toContain("并入模块");
+  });
+
   it("取消：清空 preview 并向组合根发 close 事件", async () => {
-    const { wrapper, importW } = await mountWizard();
+    const { wrapper, importW } = await mountWizard({ mode: "project", groups: [{ id: "g", label: "g" }] });
     await pickFile(wrapper, "sample.yaml", "x");
     expect(importW.preview).not.toBeNull();
     await wrapper.find('[data-testid="import-cancel"]').trigger("click");
     await flushPromises();
     expect(importW.preview).toBeNull();
     expect(wrapper.emitted("close")).toHaveLength(1);
-    // 回到第一步：预览内容不再展示
-    expect(wrapper.find('[data-testid="import-group-input"]').exists()).toBe(false);
+    // 回到第一步：落点表单不再展示
+    expect(wrapper.find('[data-testid="import-name-input"]').exists()).toBe(false);
   });
 
   it("完成态点完成后关闭向导（close 事件 + 回到第一步）", async () => {
-    const { wrapper } = await mountWizard();
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const seeded = await api.treeGet();
+    const gId = seeded.children![0]!.id;
+    const { wrapper } = await mountWizard({
+      mode: "project",
+      groups: [{ id: gId, label: "示例分组" }],
+      defaultGroupId: gId,
+    }, api);
     await pickFile(wrapper, "sample.yaml", "x");
-    await wrapper.find('[data-testid="import-group-input"]').setValue("g");
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="import-finish"]').trigger("click");
@@ -110,30 +147,33 @@ describe("ImportWizard", () => {
   });
 
   it("apply 拒绝时经 reportError 上报且不进入完成态（可修改后重试）", async () => {
-    const { wrapper, api, errors } = await mountWizard();
-    api.importApply = async () => { throw new Error("项目已存在: 导入示例项目"); };
+    const { wrapper, api, errors } = await mountWizard({
+      mode: "project",
+      groups: [{ id: "g", label: "g" }],
+      defaultGroupId: "g",
+    });
+    api.importApply = async () => { throw new Error("落库失败（注入）"); };
     await pickFile(wrapper, "sample.yaml", "x");
-    await wrapper.find('[data-testid="import-group-input"]').setValue("g");
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     await flushPromises();
     expect(errors).toHaveLength(1);
-    expect((errors[0] as Error).message).toContain("项目已存在");
+    expect((errors[0] as Error).message).toContain("落库失败");
     expect(wrapper.find('[data-testid="import-done"]').exists()).toBe(false);
   });
 
   it("无法识别的格式：留在第一步并展示错误（不推进向导）", async () => {
-    const { wrapper, api } = await mountWizard();
+    const { wrapper, api } = await mountWizard({ mode: "project", groups: [{ id: "g", label: "g" }] });
     api.importPreview = async () => { throw new Error("无法识别的导入格式"); };
     await pickFile(wrapper, "unknown.txt", "随便什么内容");
     expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="import-error"]').text()).toContain("无法识别的导入格式");
-    expect(wrapper.find('[data-testid="import-group-input"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="import-name-input"]').exists()).toBe(false);
   });
 
   // M7-B 任务 1（规格 §2 D5）：导入格式清单改走 IPC 动态枚举——清单来自 plugins:list
   // 出口的 importers（内置 registry + 插件贡献），向导内零硬编码格式名。
   it("第一步展示动态枚举的导入格式：内置 + 插件贡献各一（来自 plugins:list）", async () => {
-    const { wrapper } = await mountWizard();
+    const { wrapper } = await mountWizard({ mode: "project", groups: [{ id: "g", label: "g" }] });
     const formats = wrapper.findAll('[data-testid="import-format"]');
     const names = formats.map((f) => f.text());
     // 内置 registry 导入器
@@ -146,7 +186,7 @@ describe("ImportWizard", () => {
   it("plugins:list 拉取失败：格式清单空但不阻断文件选择链路", async () => {
     const api = createMemoryApi();
     api.pluginsList = async () => { throw new Error("清单不可用"); };
-    const { wrapper } = await mountWizard({}, api);
+    const { wrapper } = await mountWizard({ mode: "project", groups: [{ id: "g", label: "g" }] }, api);
     expect(wrapper.findAll('[data-testid="import-format"]').length).toBe(0);
     expect(wrapper.find('[data-testid="import-file-button"]').exists()).toBe(true);
   });

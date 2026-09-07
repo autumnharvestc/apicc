@@ -544,21 +544,24 @@ describe("App 侧树工作流入口", () => {
 
 // —— M3-B 任务 2：在线登录与服务器配置装配（入口在 TopBar，对话框由组合根渲染） ——
 describe("App 在线模式装配（M3-B 任务 2）", () => {
-  it("顶栏在线入口：点击打开登录对话框；保存档案 + 登录成功 → 入口显示登录身份；登出后回到未登录文案", async () => {
+  it("顶栏在线入口：主页管理连接新增档案 + 行内登录打开对话框 → 登录成功显示身份；登出后回未登录文案", async () => {
     try {
       const wrapper = await mountApp();
       // 顶栏入口按钮（未登录文案）
       expect(wrapper.find('[data-testid="online-toggle"]').exists()).toBe(true);
       expect(wrapper.find('[data-testid="online-status"]').text()).toBe("在线模式");
-      // 打开对话框（a-modal 传送门渲染于 body）
-      await wrapper.find('[data-testid="online-toggle"]').trigger("click");
+      // 主页 → 管理连接面板：新增连接（url + 昵称；轨三档案管理唯一入口）
+      await wrapper.find('[data-testid="home-manage-connections"]').trigger("click");
+      await flushPromises();
+      await wrapper.find('[data-testid="connections-add"]').trigger("click");
+      await wrapper.find('[data-testid="connections-url"]').setValue("http://127.0.0.1:8080");
+      await wrapper.find('[data-testid="connections-name"]').setValue("团队服务器");
+      await wrapper.find('[data-testid="connections-save"]').trigger("click");
+      await flushPromises();
+      // 行内「登录」：激活档案 + 打开登录对话框（a-modal 传送门渲染于 body）
+      await wrapper.find('[data-testid="connection-login"]').trigger("click");
       await flushPromises();
       expect(bodyFind("online-body")).not.toBeNull();
-      // 保存服务器档案（url + 昵称）
-      await expectBody("online-server-url").setValue("http://127.0.0.1:8080");
-      await expectBody("online-server-name").setValue("团队服务器");
-      await expectBody("online-server-save").trigger("click");
-      await flushPromises();
       // 登录（memory 替身接受任意登录）→ 对话框切已登录区 + 顶栏入口显登录身份
       await expectBody("online-username").setValue("alice");
       await expectBody("online-password").setValue("password8");
