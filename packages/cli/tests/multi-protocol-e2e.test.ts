@@ -68,33 +68,33 @@ beforeAll(async () => {
   prevCwd = process.cwd();
   process.chdir(root);
   await fileStorage.save(root, {
-    id: "ws-mixed", name: "ws-mixed", variables: {},
+    id: "00000000-0000-4000-8000-000000000041", name: "ws-mixed", variables: {},
     groups: [{
-      id: "g", name: "demo", projects: [{
-        id: "pmixed", name: "mixed", variables: {},
-        environments: [{ id: "e1", name: "dev", variables: {} }],
+      id: "00000000-0000-4000-8000-000000000042", name: "demo", projects: [{
+        id: "00000000-0000-4000-8000-000000000043", name: "mixed", variables: {},
+        environments: [{ id: "00000000-0000-4000-8000-000000000044", name: "dev", variables: {} }],
         collections: [{
-          id: "cmixed", name: "mixed", variables: {}, folders: [],
+          id: "00000000-0000-4000-8000-000000000045", name: "mixed", variables: {}, folders: [],
           apis: [
             {
-              id: "a-http", name: "http-one", version: "1", deprecated: false, method: "GET",
+              id: "00000000-0000-4000-8000-000000000046", name: "http-one", version: "1", deprecated: false, method: "GET",
               url: `${httpBaseUrl}/one`, headers: [], query: [],
-              cases: [{ id: "t-http", name: "http-用例", scope: "base", parameters: {}, assertions: [{ id: "as1", target: "status", op: "eq", expected: "200" }] }],
+              cases: [{ id: "00000000-0000-4000-8000-000000000051", name: "http-用例", scope: "base", parameters: {}, assertions: [{ id: "as1", target: "status", op: "eq", expected: "200" }] }],
             },
             {
-              id: "a-ws", name: "ws-rt", version: "1", deprecated: false, protocol: "websocket",
+              id: "00000000-0000-4000-8000-000000000047", name: "ws-rt", version: "1", deprecated: false, protocol: "websocket",
               url: wssUrl, message: '{"ping":"m5"}', headers: [], query: [],
               cases: [{
-                id: "t-ws", name: "ws-用例", scope: "base", parameters: {},
+                id: "00000000-0000-4000-8000-000000000048", name: "ws-用例", scope: "base", parameters: {},
                 assertions: [{ id: "as2", target: "bodyJson", op: "eq", expected: "ws-ok", path: "pong" }],
               }],
             },
             {
-              id: "a-soap", name: "soap-add", version: "1", deprecated: false, method: "POST", protocol: "soap",
+              id: "00000000-0000-4000-8000-000000000049", name: "soap-add", version: "1", deprecated: false, method: "POST", protocol: "soap",
               url: `${httpBaseUrl}/soap`, envelope: '<Envelope><Body><AddUser name="m5"/></Body></Envelope>', soapAction: "urn:add",
               headers: [], query: [],
               cases: [{
-                id: "t-soap", name: "soap-用例", scope: "base", parameters: {},
+                id: "00000000-0000-4000-8000-000000000050", name: "soap-用例", scope: "base", parameters: {},
                 // SOAP 响应是 XML——bodyJson 断言不适用，用后置脚本 + 内置 xpath 操作符（M5 D6）。
         assertions: [],
         postScript: 'pm.assert(pm.response.text().includes("<id>7</id>"), "SOAP 响应应含 id=7");',
@@ -135,7 +135,7 @@ describe("多协议混合集合端到端（M5 验收）", () => {
     const exit = await runCli(
       [
         "run-stress", "groups/demo/projects/mixed/collections/mixed/apis/soap-add",
-        "--case", "t-soap", "--env", "dev", "--concurrency", "2", "--iterations", "6",
+        "--case", "00000000-0000-4000-8000-000000000050", "--env", "dev", "--concurrency", "2", "--iterations", "6",
         "--runs-dir", join(root, "runs"),
       ],
       (await import("@apicc/core")).createDefaultRegistry(),

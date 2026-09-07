@@ -83,29 +83,29 @@ async function makeWorkspace(name: string): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), `apicc-subproc-${name}-`));
   tempRoots.push(root);
   const ws: Workspace = {
-    id: "w1", name: `subproc-${name}`, variables: {},
+    id: "00000000-0000-4000-8000-000000000001", name: `subproc-${name}`, variables: {},
     groups: [{
-      id: "g1", name: "demo", projects: [{
-        id: "p1", name: "svc", variables: {},
+      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
+        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {},
         workflows: [],
-        environments: [{ id: "e1", name: "dev", variables: { baseUrl } }],
+        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
         collections: [{
-          id: "c1", name: "api", variables: {}, folders: [],
+          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {}, folders: [],
           apis: [
             {
-              id: "a1", name: "ok", version: "1", deprecated: false, method: "GET",
+              id: "00000000-0000-4000-8000-000000000011", name: "ok", version: "1", deprecated: false, method: "GET",
               url: "{{baseUrl}}/x", headers: [], query: [],
-              cases: [{ id: "t1", name: "passes", scope: "base", parameters: {}, assertions: [] }],
+              cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "passes", scope: "base", parameters: {}, assertions: [] }],
             },
             {
-              id: "a2", name: "bad", version: "1", deprecated: false, method: "GET",
+              id: "00000000-0000-4000-8000-000000000012", name: "bad", version: "1", deprecated: false, method: "GET",
               url: "{{baseUrl}}/boom", headers: [], query: [],
-              cases: [{ id: "t2", name: "fails", scope: "base", parameters: {}, assertions: [] }],
+              cases: [{ id: "00000000-0000-4000-8000-000000000016", name: "fails", scope: "base", parameters: {}, assertions: [] }],
             },
             {
-              id: "a3", name: "slow", version: "1", deprecated: false, method: "GET",
+              id: "00000000-0000-4000-8000-000000000013", name: "slow", version: "1", deprecated: false, method: "GET",
               url: "{{baseUrl}}/slow", headers: [], query: [],
-              cases: [{ id: "t3", name: "hangs", scope: "base", parameters: {}, assertions: [] }],
+              cases: [{ id: "00000000-0000-4000-8000-000000000017", name: "hangs", scope: "base", parameters: {}, assertions: [] }],
             },
           ],
         }],
@@ -121,7 +121,7 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     const root = await makeWorkspace("ok");
     const runsDir = join(root, "runs");
     const res = await spawnCli(
-      ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "2",
+      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
         "--iterations", "8", "--shards", "2", "--runs-dir", runsDir],
       root,
     );
@@ -150,7 +150,7 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     const root = await makeWorkspace("bad");
     const runsDir = join(root, "runs");
     const res = await spawnCli(
-      ["run-stress", "groups/demo/projects/svc/collections/api/apis/bad", "--case", "t2", "--env", "dev",
+      ["run-stress", "groups/demo/projects/svc/collections/api/apis/bad", "--case", "00000000-0000-4000-8000-000000000016", "--env", "dev",
         "--concurrency", "2", "--iterations", "4", "--shards", "2", "--runs-dir", runsDir],
       root,
     );
@@ -192,7 +192,7 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     const root = await makeWorkspace("timeout");
     const runsDir = join(root, "runs");
     const res = await spawnCli(
-      ["run-stress", "groups/demo/projects/svc/collections/api/apis/slow", "--case", "t3", "--env", "dev",
+      ["run-stress", "groups/demo/projects/svc/collections/api/apis/slow", "--case", "00000000-0000-4000-8000-000000000017", "--env", "dev",
         "--concurrency", "2", "--iterations", "4", "--shards", "2", "--shard-timeout", "1", "--runs-dir", runsDir],
       root,
     );

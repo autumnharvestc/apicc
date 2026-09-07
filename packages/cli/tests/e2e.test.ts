@@ -22,47 +22,47 @@ beforeAll(async () => {
 
   root = mkdtempSync(join(tmpdir(), "apicc-e2e-"));
   const ws: Workspace = {
-    id: "w1", name: "e2e", variables: {},
+    id: "00000000-0000-4000-8000-000000000001", name: "e2e", variables: {},
     groups: [{
-      id: "g1", name: "demo", projects: [{
-        id: "p1", name: "svc", variables: {},
+      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
+        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {},
         workflows: [],
-        environments: [{ id: "e1", name: "dev", variables: { baseUrl } }],
+        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
         collections: [{
-          id: "c1", name: "api", variables: {}, folders: [],
+          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {}, folders: [],
           apis: [
             {
-              id: "a1", name: "ok", version: "1", deprecated: false, method: "GET",
+              id: "00000000-0000-4000-8000-000000000011", name: "ok", version: "1", deprecated: false, method: "GET",
               url: "{{baseUrl}}/x", headers: [], query: [],
               design: "# 设计",
-              cases: [{ id: "t1", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
+              cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
             },
             {
-              id: "a2", name: "bad", version: "1", deprecated: false, method: "GET",
+              id: "00000000-0000-4000-8000-000000000012", name: "bad", version: "1", deprecated: false, method: "GET",
               url: "{{baseUrl}}/x", headers: [], query: [],
-              cases: [{ id: "t2", name: "fails", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "500" }] }],
+              cases: [{ id: "00000000-0000-4000-8000-000000000016", name: "fails", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "500" }] }],
             },
           ],
         }, {
-          id: "c2", name: "xapi", variables: {}, folders: [],
+          id: "00000000-0000-4000-8000-000000000009", name: "xapi", variables: {}, folders: [],
           apis: [{
-            id: "a3", name: "xok", version: "1", deprecated: false, method: "GET",
+            id: "00000000-0000-4000-8000-000000000013", name: "xok", version: "1", deprecated: false, method: "GET",
             url: "{{baseUrl}}/x", headers: [], query: [],
-            cases: [{ id: "t3", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
+            cases: [{ id: "00000000-0000-4000-8000-000000000017", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
           }],
         }],
       }],
     }, {
-      id: "g2", name: "demo2", projects: [{
-        id: "p2", name: "svc", variables: {},
+      id: "00000000-0000-4000-8000-000000000003", name: "demo2", projects: [{
+        id: "00000000-0000-4000-8000-000000000005", name: "svc", variables: {},
         workflows: [],
-        environments: [{ id: "e2", name: "dev", variables: { baseUrl } }],
+        environments: [{ id: "00000000-0000-4000-8000-000000000007", name: "dev", variables: { baseUrl } }],
         collections: [{
-          id: "c3", name: "api", variables: {}, folders: [],
+          id: "00000000-0000-4000-8000-000000000010", name: "api", variables: {}, folders: [],
           apis: [{
-            id: "a4", name: "ok2", version: "1", deprecated: false, method: "GET",
+            id: "00000000-0000-4000-8000-000000000014", name: "ok2", version: "1", deprecated: false, method: "GET",
             url: "{{baseUrl}}/x", headers: [], query: [],
-            cases: [{ id: "t4", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
+            cases: [{ id: "00000000-0000-4000-8000-000000000018", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
           }],
         }],
       }],
@@ -134,15 +134,15 @@ describe("CLI 端到端", () => {
     expect(produced.some((f) => f.endsWith(".json"))).toBe(true);
     expect(produced.some((f) => f.endsWith(".html"))).toBe(true);
     expect(produced.some((f) => f.endsWith(".xml"))).toBe(true);
-    // 数据树内不留任何运行产物
-    expect(existsSync(join(root, "groups", "demo", "projects", "svc", "collections", "xapi", "runs"))).toBe(false);
+    // 数据树内不留任何运行产物（id 布局：xapi 集合目录名为其 id）
+    expect(existsSync(join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "collections", "00000000-0000-4000-8000-000000000009", "runs"))).toBe(false);
     // 产物落盘后重新加载工作区，validate 语义不受影响
     const { problems } = await fileStorage.load(root);
     expect(problems).toEqual([]);
     expect(logs.join("\n")).toContain("报告已生成");
   });
 
-  it("import --yes 导入 OpenAPI 样例退出码 0，重开工作区断言项目存在；重复导入抛「项目已存在」", async () => {
+  it("import --yes 导入 OpenAPI 样例退出码 0，重开工作区断言项目存在；重复导入同名并存（轨一同名放开）", async () => {
     const { writeFileSync } = await import("node:fs");
     const sample = join(root, "openapi-sample.yaml");
     writeFileSync(sample, [
@@ -171,8 +171,13 @@ describe("CLI 端到端", () => {
     const project = group!.projects.find((p) => p.name === "宠物样例");
     expect(project).toBeDefined();
     expect(project!.collections[0]!.apis.map((a) => a.name)).toContain("listPets");
-    // 重复导入同名项目：拒绝
-    await expect(runCli(["import", sample, "--group", "imported", "--yes"], createDefaultRegistry())).rejects.toThrow(/项目已存在: 宠物样例/);
+    // 重复导入同名项目：同名放开（轨一）后并存，不再拒绝——两个同名项目 id 不同
+    const code2 = await runCli(["import", sample, "--group", "imported", "--yes"], createDefaultRegistry());
+    expect(code2).toBe(0);
+    const { workspace: ws2 } = await fileStorage.load(root);
+    const same = ws2.groups.find((g) => g.name === "imported")!.projects.filter((p) => p.name === "宠物样例");
+    expect(same).toHaveLength(2);
+    expect(same[0]!.id).not.toBe(same[1]!.id);
   });
 
   it("import 不带 --yes 只打印预览不写入工作区", async () => {
@@ -199,27 +204,28 @@ describe("CLI 端到端", () => {
     // 夹具：三节点条件工作流 one --prev.passed--> two --false--> three，workflow.yaml 手写落盘
     // （nodes 引用既有夹具接口：a1/t1 通过、a3/t3 通过、a2/t2 失败——three 若被错误流转执行会致失败）。
     const { mkdirSync, writeFileSync, readdirSync, readFileSync } = await import("node:fs");
-    const wfDir = join(root, "groups", "demo", "projects", "svc", "workflows", "条件流");
+    // id 布局（轨一）：工作流目录名=工作流 id；apiId/caseId 引用夹具接口的 UUID id
+    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", "00000000-0000-4000-8000-000000000019");
     mkdirSync(wfDir, { recursive: true });
     writeFileSync(join(wfDir, "workflow.yaml"), [
-      "id: wf-cond",
+      "id: 00000000-0000-4000-8000-000000000019",
       "name: 条件流",
       "status: enabled",
       "nodes:",
       "  - id: one",
       "    kind: request",
-      "    apiId: a1",
-      "    caseId: t1",
+      "    apiId: 00000000-0000-4000-8000-000000000011",
+      "    caseId: 00000000-0000-4000-8000-000000000015",
       "    label: one",
       "  - id: two",
       "    kind: request",
-      "    apiId: a3",
-      "    caseId: t3",
+      "    apiId: 00000000-0000-4000-8000-000000000013",
+      "    caseId: 00000000-0000-4000-8000-000000000017",
       "    label: two",
       "  - id: three",
       "    kind: request",
-      "    apiId: a2",
-      "    caseId: t2",
+      "    apiId: 00000000-0000-4000-8000-000000000012",
+      "    caseId: 00000000-0000-4000-8000-000000000016",
       "    label: three",
       "edges:",
       "  - id: e1",
@@ -258,17 +264,17 @@ describe("CLI 端到端", () => {
 
   it("run-workflow 草稿默认拒绝，--force-draft 放行；未知路径报「未找到工作流」", async () => {
     const { mkdirSync, writeFileSync } = await import("node:fs");
-    const wfDir = join(root, "groups", "demo", "projects", "svc", "workflows", "草稿流");
+    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", "00000000-0000-4000-8000-000000000020");
     mkdirSync(wfDir, { recursive: true });
     writeFileSync(join(wfDir, "workflow.yaml"), [
-      "id: wf-draft",
+      "id: 00000000-0000-4000-8000-000000000020",
       "name: 草稿流",
       "status: draft",
       "nodes:",
       "  - id: only",
       "    kind: request",
-      "    apiId: a1",
-      "    caseId: t1",
+      "    apiId: 00000000-0000-4000-8000-000000000011",
+      "    caseId: 00000000-0000-4000-8000-000000000015",
       "    label: only",
       "edges: []",
     ].join("\n"));
@@ -292,7 +298,7 @@ describe("CLI 端到端", () => {
     const code = await runCli(
       [
         "run-stress", "groups/demo/projects/svc/collections/api/apis/ok",
-        "--case", "t1", "--env", "dev", "--concurrency", "4", "--iterations", "12",
+        "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "4", "--iterations", "12",
         "--runs-dir", runsDir,
       ],
       createDefaultRegistry(),

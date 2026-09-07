@@ -55,21 +55,21 @@ beforeAll(async () => {
   // 工作区夹具（fileStorage 落盘）：含 design 与既有用例的 POST 接口
   root = mkdtempSync(join(tmpdir(), "apicc-ai-e2e-"));
   const ws: Workspace = {
-    id: "w1", name: "ai-e2e", variables: {},
+    id: "00000000-0000-4000-8000-000000000001", name: "ai-e2e", variables: {},
     groups: [{
-      id: "g1", name: "demo", projects: [{
-        id: "p1", name: "svc", variables: {}, workflows: [],
+      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
+        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {}, workflows: [],
         environments: [],
         collections: [{
-          id: "c1", name: "api", variables: {}, folders: [],
+          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {}, folders: [],
           apis: [{
-            id: "a1", name: "orders", version: "1.0.0", deprecated: false, method: "POST",
+            id: "00000000-0000-4000-8000-000000000011", name: "orders", version: "1.0.0", deprecated: false, method: "POST",
             url: "https://api.example.com/orders",
             headers: [{ key: "content-type", value: "application/json", enabled: true }],
             query: [],
             body: { kind: "json", content: '{"sku":"A1","qty":1}' },
             design: "# 创建订单\n- qty 必须为正整数",
-            cases: [{ id: "t1", name: "正常创建订单", scope: "base", parameters: {}, assertions: [] }],
+            cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "正常创建订单", scope: "base", parameters: {}, assertions: [] }],
           }],
         }],
       }],

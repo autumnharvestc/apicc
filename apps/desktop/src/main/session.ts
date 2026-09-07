@@ -474,10 +474,9 @@ export function createSession(options: SessionOptions = {}) {
   }
 
   /**
-   * 重命名后清理盘上旧目录（save 只写新路径；规格账本：孤儿清理在此收口）。
-   * 目录名匹配走 sameName（C1 修复）：win32 文件系统大小写不敏感——大小写改名（如
-   * flow→Flow）后 save 写 `Flow` 被 NTFS 解析到既有 `flow` 目录（盘名不变），严格比较
-   * 会把刚写入的目录误判为孤儿递归删除；win32 下归一比较，其余平台严格相等。
+   * 清理盘上孤儿目录（save 只写现存实体；重命名/删除后的旧目录在此收口）。
+   * id 布局（轨一）后目录名=实体 id，按 id 精确匹配——名称制时代的 win32 大小写归一
+   * 特判随目录名消失（UUID 恒为小写且逐字符精确）。
    * 删除用 node:fs/promises 的 rm（而非 rmSync）：本机（Windows + Node 24）实测 rmSync
    * 对含非 ASCII 祖先的路径会静默失效甚至硬崩（同步 uv_fs_rm 缺陷，任务 1 报告备案），
    * 异步 rm 实测稳定；maxRetries 兼顾杀软扫描等瞬时句柄竞争。中文目录名是本产品的
@@ -486,34 +485,34 @@ export function createSession(options: SessionOptions = {}) {
   async function cleanupOrphanDirs(rootDir: string, ws: Workspace): Promise<void> {
     const groupsDir = join(rootDir, "groups");
     if (!existsSync(groupsDir)) return;
-    for (const gName of readdirSafe(groupsDir)) {
-      const gDir = join(groupsDir, gName);
-      const g = ws.groups.find((x) => sameName(x.name, gName, platform));
+    for (const gId of readdirSafe(groupsDir)) {
+      const gDir = join(groupsDir, gId);
+      const g = ws.groups.find((x) => x.id === gId);
       if (!g) { await rmOrphan(gDir); continue; }
       const projectsDir = join(gDir, "projects");
-      for (const pName of readdirSafe(projectsDir)) {
-        const p = g.projects.find((x) => sameName(x.name, pName, platform));
-        if (!p) { await rmOrphan(join(projectsDir, pName)); continue; }
-        const workflowsDir = join(projectsDir, pName, "workflows");
-        for (const wName of readdirSafe(workflowsDir)) {
-          if (!p.workflows.find((x) => sameName(x.name, wName, platform))) {
-            await rmOrphan(join(workflowsDir, wName));
+      for (const pId of readdirSafe(projectsDir)) {
+        const p = g.projects.find((x) => x.id === pId);
+        if (!p) { await rmOrphan(join(projectsDir, pId)); continue; }
+        const workflowsDir = join(projectsDir, pId, "workflows");
+        for (const wId of readdirSafe(workflowsDir)) {
+          if (!p.workflows.find((x) => x.id === wId)) {
+            await rmOrphan(join(workflowsDir, wId));
           }
         }
-        const collectionsDir = join(projectsDir, pName, "collections");
-        for (const cName of readdirSafe(collectionsDir)) {
-          const c = p.collections.find((x) => sameName(x.name, cName, platform));
-          if (!c) { await rmOrphan(join(collectionsDir, cName)); continue; }
-          const apisDir = join(collectionsDir, cName, "apis");
-          for (const aName of readdirSafe(apisDir)) {
-            if (!c.apis.find((x) => sameName(x.name, aName, platform)) && !c.folders.find((x) => sameName(x.name, aName, platform))) {
-              await rmOrphan(join(apisDir, aName));
+        const collectionsDir = join(projectsDir, pId, "collections");
+        for (const cId of readdirSafe(collectionsDir)) {
+          const c = p.collections.find((x) => x.id === cId);
+          if (!c) { await rmOrphan(join(collectionsDir, cId)); continue; }
+          const apisDir = join(collectionsDir, cId, "apis");
+          for (const aId of readdirSafe(apisDir)) {
+            if (!c.apis.find((x) => x.id === aId)) {
+              await rmOrphan(join(apisDir, aId));
             }
           }
-          const foldersDir = join(collectionsDir, cName, "folders");
-          for (const fName of readdirSafe(foldersDir)) {
-            if (!c.folders.find((x) => sameName(x.name, fName, platform))) {
-              await rmOrphan(join(foldersDir, fName));
+          const foldersDir = join(collectionsDir, cId, "folders");
+          for (const fId of readdirSafe(foldersDir)) {
+            if (!c.folders.find((x) => x.id === fId)) {
+              await rmOrphan(join(foldersDir, fId));
             }
           }
         }

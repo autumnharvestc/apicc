@@ -462,7 +462,8 @@ describe("App 侧树工作流入口", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
-    await wrapper.find('[data-testid="tree-workflow"]').trigger("click");
+    // id 布局（轨一）后树内工作流按 id 字典序排列（名称制时代的名称序不再保证）——按名称点选目标流
+    await wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("侧树入口流"))!.trigger("click");
     await flushPromises();
     // 视图切到 wf（rail 选中态）
     expect(wrapper.find('[data-testid="rail-wf"]').classes()).toContain("active");

@@ -1050,8 +1050,9 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       p.collections.push(c);
       g.projects.push(p);
       ws.groups.push(g);
-      // M10 默认分组：追加在尾部（示例分组保持首位——既有测试按下标定位）
-      ws.groups.push({ id: "g-default", name: "默认分组", default: true, projects: [] });
+      // M10 默认分组：追加在尾部（示例分组保持首位——既有测试按下标定位）；
+      // id 布局（轨一）后 id 落盘即目录名，必须 randomUUID（旧 "g-default" 会被 fail-fast 守卫拒绝）
+      ws.groups.push({ id: randomUUID(), name: "默认分组", default: true, projects: [] });
       // 写盘失败就地消化、保留内存态：内存数组才是替身的语义核心，落盘只是为
       // reopen/validate 同语义做的最佳努力；不用发射后不管，避免无关 unhandled rejection。
       save().catch(() => undefined);

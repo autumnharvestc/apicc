@@ -51,6 +51,22 @@ function sortedNames(dir: string, filter?: (name: string) => boolean): string[] 
   return names.sort();
 }
 
+// —— id 布局（桌面端批次轨一，specs/2026-09-08-apicc-desktop-batch-design.md）：盘上目录/文件名
+// 一律用实体 id（UUID），名称仅为 yaml 内容属性；同级同名因此得以放开。 ——
+const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * 旧「名称制」布局 fail-fast 守卫：任一层基名非 UUID 即拒绝打开（不做自动迁移——用户裁定）。
+ * 静默加载旧布局不可接受：保存侧写 id 目录后，同一实体会以名称/id 两份形态并存于盘上。
+ */
+function requireId(name: string, rel: string): void {
+  if (!ID_RE.test(name)) {
+    throw new Error(
+      `该工作区由旧版布局创建（目录/文件名应为 id）：${rel}。请新建工作区使用，旧内容可经接口设计导出/导入迁移。`,
+    );
+  }
+}
+
 function saveApiDir(aDir: string, api: ApiDefinition): void {
   writeYaml(join(aDir, "api.yaml"), {
     id: api.id, name: api.name, version: api.version, deprecated: api.deprecated,
@@ -70,7 +86,8 @@ function saveApiDir(aDir: string, api: ApiDefinition): void {
     writeFileSync(join(aDir, "design.md"), api.design);
   }
   for (const tc of api.cases) {
-    const fileName = tc.scope === "base" ? `${tc.name}.yaml` : `${tc.name}.${tc.scope}.yaml`;
+    // 用例文件名 = `<用例id>[.<scope>].yaml`（scope 可含环境后缀的点，取首段判 id）
+    const fileName = tc.scope === "base" ? `${tc.id}.yaml` : `${tc.id}.${tc.scope}.yaml`;
     writeYaml(join(aDir, "cases", fileName), tc);
   }
 }
@@ -120,6 +137,7 @@ async function loadApiDir(relDir: string, dir: string, problems: LoadProblem[]):
   const casesDir = join(dir, "cases");
   if (existsSync(casesDir)) {
     for (const f of sortedNames(casesDir, (n) => n.endsWith(".yaml"))) {
+      requireId(f.replace(/\.yaml$/, "").split(".")[0], join(relDir, "cases", f));
       const cRes = loadYaml(join(casesDir, f), TestCaseSchema);
       if (!cRes.ok) {
         problems.push({ file: join(relDir, "cases", f), message: cRes.error });
@@ -152,6 +170,7 @@ export const fileStorage: StorageAdapter = {
     for (const gName of sortedNames(groupsDir)) {
       const gDir = join(groupsDir, gName);
       const gRel = join("groups", gName);
+      requireId(gName, gRel);
       const gRes = loadYaml(join(gDir, "group.yaml"), GroupSchema);
       if (!gRes.ok) {
         problems.push({ file: join(gRel, "group.yaml"), message: gRes.error });
@@ -163,6 +182,7 @@ export const fileStorage: StorageAdapter = {
         for (const pName of sortedNames(projectsDir)) {
           const pDir = join(projectsDir, pName);
           const pRel = join(gRel, "projects", pName);
+          requireId(pName, pRel);
           const pRes = loadYaml(join(pDir, "project.yaml"), ProjectSchema);
           if (!pRes.ok) {
             problems.push({ file: join(pRel, "project.yaml"), message: pRes.error });
@@ -173,6 +193,7 @@ export const fileStorage: StorageAdapter = {
           const envDir = join(pDir, "environments");
           if (existsSync(envDir)) {
             for (const f of sortedNames(envDir, (n) => n.endsWith(".yaml"))) {
+              requireId(f.replace(/\.yaml$/, ""), join(pRel, "environments", f));
               const eRes = loadYaml(join(envDir, f), EnvironmentSchema);
               if (!eRes.ok) {
                 problems.push({ file: join(pRel, "environments", f), message: eRes.error });
@@ -185,6 +206,7 @@ export const fileStorage: StorageAdapter = {
           const workflowsDir = join(pDir, "workflows");
           if (existsSync(workflowsDir)) {
             for (const wfName of sortedNames(workflowsDir)) {
+              requireId(wfName, join(pRel, "workflows", wfName));
               const res = loadYaml(join(workflowsDir, wfName, "workflow.yaml"), WorkflowSchema);
               if (!res.ok) {
                 problems.push({ file: join(pRel, "workflows", wfName, "workflow.yaml"), message: res.error });
@@ -197,6 +219,7 @@ export const fileStorage: StorageAdapter = {
           const collDir = join(pDir, "collections");
           if (existsSync(collDir)) {
             for (const cName of sortedNames(collDir)) {
+              requireId(cName, join(pRel, "collections", cName));
               const cFile = join(collDir, cName, "collection.yaml");
               if (!existsSync(cFile)) {
                 // 与 apis 孤儿目录语义对齐：目录存在但缺 collection.yaml 必须留痕，不静默丢弃。
@@ -226,6 +249,7 @@ export const fileStorage: StorageAdapter = {
                   const fApisDir = join(dir, "apis");
                   if (existsSync(fApisDir)) {
                     for (const aName of sortedNames(fApisDir)) {
+                      requireId(aName, join(relBase, "apis", aName));
                       const api = await loadApiDir(
                         join(relBase, "apis", aName),
                         join(fApisDir, aName),
@@ -237,6 +261,7 @@ export const fileStorage: StorageAdapter = {
                   const subDirs = join(dir, "folders");
                   if (existsSync(subDirs)) {
                     for (const subName of sortedNames(subDirs)) {
+                      requireId(subName, join(relBase, "folders", subName));
                       const sub = await loadFolder(join(relBase, "folders", subName), join(subDirs, subName));
                       if (sub) folder.folders!.push(sub);
                     }
@@ -244,6 +269,7 @@ export const fileStorage: StorageAdapter = {
                   return folder;
                 };
                 for (const fName of sortedNames(foldersDir)) {
+                  requireId(fName, join(pRel, "collections", cName, "folders", fName));
                   const folder = await loadFolder(join(pRel, "collections", cName, "folders", fName), join(foldersDir, fName));
                   if (folder) collection.folders.push(folder);
                 }
@@ -251,6 +277,7 @@ export const fileStorage: StorageAdapter = {
               const apisDir = join(collDir, cName, "apis");
               if (existsSync(apisDir)) {
                 for (const aName of sortedNames(apisDir)) {
+                  requireId(aName, join(pRel, "collections", cName, "apis", aName));
                   const api = await loadApiDir(
                     join(pRel, "collections", cName, "apis", aName),
                     join(apisDir, aName),
@@ -271,46 +298,47 @@ export const fileStorage: StorageAdapter = {
   },
 
   async save(root: string, ws: Workspace) {
+    // id 布局（轨一）：目录/文件名一律实体 id；孤儿清理在桌面主进程按 id 精确匹配。
     // M10：workspace 级 globals 弃用——不再写入（字段仅为旧文件读兼容保留在 schema）。
     writeYaml(join(root, WORKSPACE_FILE), { id: ws.id, name: ws.name, variables: ws.variables });
     for (const g of ws.groups) {
-      const gDir = join(root, "groups", g.name);
+      const gDir = join(root, "groups", g.id);
       // M10：默认分组标记落盘（自建分组 undefined 不写键）
       writeYaml(join(gDir, "group.yaml"), { id: g.id, name: g.name, ...(g.default ? { default: true } : {}) });
       for (const p of g.projects) {
-        const pDir = join(gDir, "projects", p.name);
+        const pDir = join(gDir, "projects", p.id);
         // M10：项目级全局参数随 project.yaml 落盘（全局变量 = variables 字段本身）
         writeYaml(join(pDir, "project.yaml"), {
           id: p.id, name: p.name, variables: p.variables, globals: p.globals,
         });
         for (const e of p.environments) {
-          writeYaml(join(pDir, "environments", `${e.name}.yaml`), {
+          writeYaml(join(pDir, "environments", `${e.id}.yaml`), {
             id: e.id, name: e.name, extends: e.extends, variables: e.variables, baseUrls: e.baseUrls,
           });
         }
         for (const wf of p.workflows ?? []) {
-          writeYaml(join(pDir, "workflows", wf.name, "workflow.yaml"), {
+          writeYaml(join(pDir, "workflows", wf.id, "workflow.yaml"), {
             id: wf.id, name: wf.name, status: wf.status, nodes: wf.nodes, edges: wf.edges,
           });
         }
         for (const c of p.collections) {
-          const cDir = join(pDir, "collections", c.name);
+          const cDir = join(pDir, "collections", c.id);
           // M10：只写新形态操作（旧 scripts 已在 load 归一，内存模型不再携带）
           writeYaml(join(cDir, "collection.yaml"), {
             id: c.id, name: c.name, variables: c.variables,
             preOperations: c.preOperations, postOperations: c.postOperations,
           });
           for (const api of c.apis) {
-            saveApiDir(join(cDir, "apis", api.name), api);
+            saveApiDir(join(cDir, "apis", api.id), api);
           }
           const saveFolder = (folder: Folder, baseDir: string): void => {
-            const fDir = join(baseDir, "folders", folder.name);
+            const fDir = join(baseDir, "folders", folder.id);
             writeYaml(join(fDir, "folder.yaml"), {
               id: folder.id, name: folder.name,
               preOperations: folder.preOperations, postOperations: folder.postOperations,
             });
             for (const api of folder.apis) {
-              saveApiDir(join(fDir, "apis", api.name), api);
+              saveApiDir(join(fDir, "apis", api.id), api);
             }
             for (const sub of folder.folders ?? []) {
               saveFolder(sub, fDir);

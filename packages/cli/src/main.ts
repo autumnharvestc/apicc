@@ -8,6 +8,7 @@ import {
   ShardOutcomeSchema,
   createAiProvider,
   loadUserPlugins,
+  renderDesignMarkdown,
   type AiProviderConfig,
   type ApiDefinition,
   type Collection,
@@ -97,14 +98,15 @@ async function locateApiTarget(
   for (const g of workspace.groups) {
     for (const p of g.projects) {
       for (const c of p.collections) {
-        const cDir = join(root, "groups", g.name, "projects", p.name, "collections", c.name);
+        // id 布局（轨一）：盘上目录名是 id；用户参数仍按名称制虚拟路径匹配，design.md 读物理 id 目录
+        const matchBase = toSlash(join("groups", g.name, "projects", p.name, "collections", c.name));
+        const cDir = join(root, "groups", g.id, "projects", p.id, "collections", c.id);
         const candidates = [
-          ...c.apis.map((a) => ({ api: a, dir: join(cDir, "apis", a.name) })),
-          ...c.folders.flatMap((f) => f.apis.map((a) => ({ api: a, dir: join(cDir, "folders", f.name, "apis", a.name) }))),
+          ...c.apis.map((a) => ({ api: a, dir: join(cDir, "apis", a.id), match: toSlash(join(matchBase, "apis", a.name)) })),
+          ...c.folders.flatMap((f) => f.apis.map((a) => ({ api: a, dir: join(cDir, "folders", f.id, "apis", a.id), match: toSlash(join(matchBase, "folders", f.name, "apis", a.name)) }))),
         ];
         for (const cand of candidates) {
-          const normalized = toSlash(cand.dir);
-          if (normalized === target || normalized.endsWith(`/${target}`)) {
+          if (cand.match === target || cand.match.endsWith(`/${target}`)) {
             hit = { ...cand, project: p, collection: c };
             break search;
           }
@@ -331,7 +333,6 @@ export async function runCli(
       const storage = registry.getStorage();
       if (!storage) throw new Error("未注册存储适配器");
       const { workspace } = await storage.load(root);
-      let collectionDir: string | undefined;
       let collection: import("@apicc/core").Collection | undefined;
       let project: import("@apicc/core").Project | undefined;
       const target = toSlash(collectionPath);
@@ -339,11 +340,11 @@ export async function runCli(
       for (const g of workspace.groups) {
         for (const p of g.projects) {
           for (const c of p.collections) {
-            const dir = join(root, "groups", g.name, "projects", p.name, "collections", c.name);
-            const normalized = toSlash(dir);
+            // id 布局（轨一）：按名称制虚拟路径匹配（盘上目录名已是 id，此处不碰文件系统）
+            const matchPath = toSlash(join("groups", g.name, "projects", p.name, "collections", c.name));
             // 全等或按分隔符边界后缀匹配：避免 "api" 误命中 "xapi"；首个命中即止，重名集合取确定性首个。
-            if (normalized === target || normalized.endsWith(`/${target}`)) {
-              collection = c; project = p; collectionDir = dir;
+            if (matchPath === target || matchPath.endsWith(`/${target}`)) {
+              collection = c; project = p;
               break search;
             }
           }
@@ -395,10 +396,9 @@ export async function runCli(
       for (const g of workspace.groups) {
         for (const p of g.projects) {
           for (const w of p.workflows) {
-            const dir = join(root, "groups", g.name, "projects", p.name, "workflows", w.name);
-            const normalized = toSlash(dir);
-            // 与 run 同款匹配：全等或按分隔符边界后缀（避免误命中同名前缀）；首个命中即止。
-            if (normalized === target || normalized.endsWith(`/${target}`)) {
+            // 与 run 同款匹配（id 布局轨一：名称制虚拟路径，不碰文件系统）：全等或按分隔符边界后缀；首个命中即止。
+            const matchPath = toSlash(join("groups", g.name, "projects", p.name, "workflows", w.name));
+            if (matchPath === target || matchPath.endsWith(`/${target}`)) {
               workflow = w; project = p;
               break search;
             }
@@ -582,18 +582,13 @@ export async function runCli(
 
   program
     .command("export-design")
-    .argument("<apiPath>", "接口目录（相对工作区根）")
+    .argument("<apiPath>", "接口路径（名称制虚拟路径，与 run/ai 同匹配口径，可为全路径或分隔符边界后缀）")
     .action(async (apiPath: string) => {
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml");
-      const dir = join(root, apiPath);
-      const { parse: parseYaml } = await import("yaml");
-      const { ApiDefinitionSchema, renderDesignMarkdown } = await import("@apicc/core");
-      const api = ApiDefinitionSchema.parse(parseYaml(readFileSync(join(dir, "api.yaml"), "utf8")));
-      // 注：详细设计存于 design.md（api.yaml 不含 design 字段，规格 §6/§8），
-      // 与 fileStorage.loadApiDir 的读取口径一致；简报测试要求导出内容包含设计正文。
-      const designFile = join(dir, "design.md");
-      if (existsSync(designFile)) api.design = readFileSync(designFile, "utf8");
+      // id 布局（轨一）收口到 locateApiTarget：名称匹配 + design.md 自物理 id 目录读取，
+      // 与 fileStorage.loadApiDir 读取口径一致；简报测试要求导出内容包含设计正文。
+      const { api } = await locateApiTarget(registry, root, apiPath);
       log(renderDesignMarkdown(api));
     });
 
@@ -655,7 +650,7 @@ export async function runCli(
       }
     });
 
-  // 非交互导入（任务 7）：默认只预览，--yes 确认写入；分组不存在则创建，同名项目拒绝。
+  // 非交互导入（任务 7）：默认只预览，--yes 确认写入；分组不存在则创建，同名项目并存（轨一同名放开）。
   program
     .command("import")
     .argument("<file>", "导入文件路径")
@@ -678,7 +673,7 @@ export async function runCli(
       const { workspace } = await storage.load(root);
       let group = workspace.groups.find((x) => x.name === opts.group);
       if (!group) { group = { id: crypto.randomUUID(), name: opts.group, projects: [] }; workspace.groups.push(group); }
-      if (group.projects.some((x) => x.name === project.name)) throw new Error(`项目已存在: ${project.name}`);
+      // 同名放开（轨一）：同名项目直接并存（id 为身份），不再拒绝
       group.projects.push(project);
       await storage.save(root, workspace);
       for (const w of warnings) log(`[警告] ${w}`);

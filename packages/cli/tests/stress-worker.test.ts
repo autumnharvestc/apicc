@@ -45,18 +45,18 @@ beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "apicc-worker-"));
   tempRoots.push(root);
   const ws: Workspace = {
-    id: "w1", name: "worker-e2e", variables: {},
+    id: "00000000-0000-4000-8000-000000000001", name: "worker-e2e", variables: {},
     groups: [{
-      id: "g1", name: "demo", projects: [{
-        id: "p1", name: "svc", variables: {},
+      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
+        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {},
         workflows: [],
-        environments: [{ id: "e1", name: "dev", variables: { baseUrl } }],
+        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
         collections: [{
-          id: "c1", name: "api", variables: {}, folders: [],
+          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {}, folders: [],
           apis: [{
-            id: "a1", name: "ok", version: "1", deprecated: false, method: "GET",
+            id: "00000000-0000-4000-8000-000000000011", name: "ok", version: "1", deprecated: false, method: "GET",
             url: "{{baseUrl}}/x", headers: [], query: [],
-            cases: [{ id: "t1", name: "passes", scope: "base", parameters: {}, assertions: [] }],
+            cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "passes", scope: "base", parameters: {}, assertions: [] }],
           }],
         }],
       }],
@@ -86,7 +86,7 @@ describe("stress-worker 子命令", () => {
     const err: string[] = [];
     const deps: RunCliDeps = { workerOut: (l) => out.push(l), workerErr: (l) => err.push(l) };
     const code = await runCli(
-      ["stress-worker", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "2",
+      ["stress-worker", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
         "--iterations", "4", "--shard-id", "s0", "--workspace", root],
       createDefaultRegistry(),
       () => {},
@@ -138,7 +138,7 @@ describe("run-stress --shards", () => {
     const runsDir = join(root, "runs-single");
     const logs: string[] = [];
     const code = await runCli(
-      ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "2",
+      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
         "--iterations", "4", "--runs-dir", runsDir, "--shards", "1"],
       createDefaultRegistry(),
       (l) => logs.push(l),
@@ -172,7 +172,7 @@ describe("run-stress --shards", () => {
     const runsDir = join(root, "runs-shards");
     const logs: string[] = [];
     const code = await runCli(
-      ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "4",
+      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "4",
         "--iterations", "8", "--shards", "2", "--runs-dir", runsDir],
       createDefaultRegistry(),
       (l) => logs.push(l),
@@ -189,7 +189,7 @@ describe("run-stress --shards", () => {
     for (const s of specs) {
       expect(s.protocolVersion).toBe(1);
       expect(s.apiPath).toBe(API_PATH);
-      expect(s.caseId).toBe("t1");
+      expect(s.caseId).toBe("00000000-0000-4000-8000-000000000015");
       expect(s.envName).toBe("dev");
       expect(s.workspaceRoot).toBe(root);
     }
@@ -228,7 +228,7 @@ describe("run-stress --shards", () => {
     const runsDir = join(root, "runs-partial");
     const logs: string[] = [];
     const code = await runCli(
-      ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "4",
+      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "4",
         "--iterations", "8", "--shards", "2", "--shard-timeout", "7", "--runs-dir", runsDir],
       createDefaultRegistry(),
       (l) => logs.push(l),
@@ -251,13 +251,13 @@ describe("run-stress --shards", () => {
 
   it("--shards 0 / --shards 2.5 非法值：前置校验拒绝（shards 必须为正整数）", async () => {
     await expect(runCli(
-      ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "2",
+      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
         "--iterations", "4", "--shards", "0", "--runs-dir", join(root, "runs-invalid-0")],
       createDefaultRegistry(),
       () => {},
     )).rejects.toThrow(/shards 必须为正整数，收到 0/);
     await expect(runCli(
-      ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--concurrency", "2",
+      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
         "--iterations", "4", "--shards", "2.5", "--runs-dir", join(root, "runs-invalid-2.5")],
       createDefaultRegistry(),
       () => {},
@@ -267,7 +267,7 @@ describe("run-stress --shards", () => {
   it("--shards 2 非法数值参数：concurrency 0/NaN、iterations 3.5 前置守卫干净中文报错（不经 planShards 静默升级/ZodError）", async () => {
     // 多 shard 路径历史分歧：concurrency 0 被 planShards 静默升为 [1,1]（单机路径是 StressRunner 中文报错）；
     // concurrency/iterations 为 NaN 时在 StressWorkerSpecSchema.parse 抛裸英文 ZodError。
-    const base = ["run-stress", API_PATH, "--case", "t1", "--env", "dev", "--shards", "2",
+    const base = ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--shards", "2",
       "--runs-dir", join(root, "runs-invalid-numeric")];
     await expect(runCli([...base, "--concurrency", "0", "--iterations", "4"],
       createDefaultRegistry(), () => {})).rejects.toThrow(/concurrency 必须为正整数，收到 0/);

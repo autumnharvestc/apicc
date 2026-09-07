@@ -55,35 +55,35 @@ beforeAll(async () => {
   const wsA: Workspace = {
     id: "wa", name: "mcp-a", variables: {},
     groups: [{
-      id: "g1", name: "demo", projects: [{
-        id: "p1", name: "svc", variables: { baseUrl }, workflows: [], environments: [],
+      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
+        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: { baseUrl }, workflows: [], environments: [],
         collections: [{
-          id: "c1", name: "api", variables: {},
+          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {},
           folders: [{
-            id: "f1", name: "sub", apis: [{
-              id: "a-deep", name: "deep", version: "1", deprecated: false, method: "POST",
+            id: "00000000-0000-4000-8000-000000000031", name: "sub", apis: [{
+              id: "00000000-0000-4000-8000-000000000032", name: "deep", version: "1", deprecated: false, method: "POST",
               url: "{{baseUrl}}/deep", headers: [], query: [],
               body: { kind: "json", content: "{\"n\":1}" },
-              cases: [{ id: "tdeep", name: "deep-ok", scope: "base", parameters: {}, assertions: [] }],
+              cases: [{ id: "00000000-0000-4000-8000-000000000033", name: "deep-ok", scope: "base", parameters: {}, assertions: [] }],
             }],
           }],
           apis: [
             {
-              id: "a-ok", name: "ok", version: "1", deprecated: false, method: "GET",
+              id: "00000000-0000-4000-8000-000000000034", name: "ok", version: "1", deprecated: false, method: "GET",
               url: "{{baseUrl}}/x", headers: [], query: [],
               design: "ok 接口的业务规则说明（design.md 正文）。",
               cases: [
-                { id: "t1", name: "passes", scope: "base", parameters: {}, assertions: [
+                { id: "00000000-0000-4000-8000-000000000015", name: "passes", scope: "base", parameters: {}, assertions: [
                   { id: "as1", target: "status", op: "eq", expected: "200" },
                   { id: "as2", target: "bodyJson", path: "$.ok", op: "eq", expected: "true" },
                 ] },
-                { id: "t2", name: "dev-only", scope: "dev", parameters: {}, assertions: [] },
+                { id: "00000000-0000-4000-8000-000000000016", name: "dev-only", scope: "dev", parameters: {}, assertions: [] },
               ],
             },
             {
-              id: "a-xok", name: "xok", version: "1", deprecated: false, method: "GET",
+              id: "00000000-0000-4000-8000-000000000037", name: "xok", version: "1", deprecated: false, method: "GET",
               url: "{{baseUrl}}/y", headers: [], query: [],
-              cases: [{ id: "tx", name: "x-passes", scope: "base", parameters: {}, assertions: [] }],
+              cases: [{ id: "00000000-0000-4000-8000-000000000038", name: "x-passes", scope: "base", parameters: {}, assertions: [] }],
             },
           ],
         }],
@@ -98,14 +98,14 @@ beforeAll(async () => {
   const wsB: Workspace = {
     id: "wb", name: "mcp-b", variables: {},
     groups: [{
-      id: "g2", name: "other", projects: [{
-        id: "p2", name: "bee", variables: {}, workflows: [], environments: [],
+      id: "00000000-0000-4000-8000-000000000003", name: "other", projects: [{
+        id: "00000000-0000-4000-8000-000000000005", name: "bee", variables: {}, workflows: [], environments: [],
         collections: [{
-          id: "c2", name: "col", variables: {}, folders: [],
+          id: "00000000-0000-4000-8000-000000000009", name: "col", variables: {}, folders: [],
           apis: [{
-            id: "a-bee", name: "bee", version: "1", deprecated: false, method: "GET",
+            id: "00000000-0000-4000-8000-000000000035", name: "bee", version: "1", deprecated: false, method: "GET",
             url: "http://bee.example", headers: [], query: [],
-            cases: [{ id: "tb", name: "bee-passes", scope: "base", parameters: {}, assertions: [] }],
+            cases: [{ id: "00000000-0000-4000-8000-000000000036", name: "bee-passes", scope: "base", parameters: {}, assertions: [] }],
           }],
         }],
       }],
@@ -137,10 +137,10 @@ describe("只读工具（list-apis / get-api-design）", () => {
     const rows = JSON.parse(textOf(res as never)) as Array<Record<string, string>>;
     expect(rows).toHaveLength(3);
     const byId = new Map(rows.map((r) => [r.id, r]));
-    expect(byId.get("a-ok")).toMatchObject({ name: "ok", protocol: "http", url: "{{baseUrl}}/x", apiPath: OK_PATH });
+    expect(byId.get("00000000-0000-4000-8000-000000000034")).toMatchObject({ name: "ok", protocol: "http", url: "{{baseUrl}}/x", apiPath: OK_PATH });
     // folder 内接口在列，apiPath 含 folders 段。
-    expect(byId.get("a-deep")).toMatchObject({ name: "deep", protocol: "http", url: "{{baseUrl}}/deep", apiPath: DEEP_PATH });
-    expect(byId.get("a-xok")).toMatchObject({ name: "xok", url: "{{baseUrl}}/y" });
+    expect(byId.get("00000000-0000-4000-8000-000000000032")).toMatchObject({ name: "deep", protocol: "http", url: "{{baseUrl}}/deep", apiPath: DEEP_PATH });
+    expect(byId.get("00000000-0000-4000-8000-000000000037")).toMatchObject({ name: "xok", url: "{{baseUrl}}/y" });
     await client.close();
   });
 
@@ -150,7 +150,7 @@ describe("只读工具（list-apis / get-api-design）", () => {
     expect(res.isError).toBeFalsy();
     // 期望值取自同一工作区加载产物（fileStorage 会把 design.md 读回 api.design）。
     const { workspace } = await fileStorage.load(rootA);
-    const api = workspace.groups[0]!.projects[0]!.collections[0]!.apis.find((a) => a.id === "a-ok")!;
+    const api = workspace.groups[0]!.projects[0]!.collections[0]!.apis.find((a) => a.id === "00000000-0000-4000-8000-000000000034")!;
     expect(textOf(res as never)).toBe(renderDesignMarkdown(api));
     await client.close();
   });
@@ -180,7 +180,7 @@ describe("run-case（opt-in 执行类工具）", () => {
     const tools = await client.listTools();
     expect(tools.tools.map((t) => t.name)).toEqual(["list-apis", "get-api-design"]);
     // SDK 1.30 未知工具返回 isError 结果（协议层 -32602），而非 reject。
-    const res = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: "t1" } });
+    const res = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: "00000000-0000-4000-8000-000000000015" } });
     expect(res.isError).toBe(true);
     expect(textOf(res as never)).toContain("Tool run-case not found");
     await client.close();
@@ -190,14 +190,14 @@ describe("run-case（opt-in 执行类工具）", () => {
     const { client } = await connectClient(rootA, { allowRun: true });
     const tools = await client.listTools();
     expect(tools.tools.map((t) => t.name)).toContain("run-case");
-    const res = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: "t1" } });
+    const res = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: "00000000-0000-4000-8000-000000000015" } });
     expect(res.isError).toBeFalsy();
     const outcome = JSON.parse(textOf(res as never)) as {
       apiId: string; caseId: string; passed: boolean; error?: string;
       assertions: Array<{ pass: boolean }>;
     };
-    expect(outcome.apiId).toBe("a-ok");
-    expect(outcome.caseId).toBe("t1");
+    expect(outcome.apiId).toBe("00000000-0000-4000-8000-000000000034");
+    expect(outcome.caseId).toBe("00000000-0000-4000-8000-000000000015");
     expect(outcome.passed).toBe(true);
     expect(outcome.error).toBeUndefined();
     expect(outcome.assertions).toHaveLength(2);
@@ -207,10 +207,10 @@ describe("run-case（opt-in 执行类工具）", () => {
 
   it("run-case 执行 folder 内接口用例（本地 http 夹具真实往返）", async () => {
     const { client } = await connectClient(rootA, { allowRun: true });
-    const res = await client.callTool({ name: "run-case", arguments: { apiPath: DEEP_PATH, caseId: "tdeep" } });
+    const res = await client.callTool({ name: "run-case", arguments: { apiPath: DEEP_PATH, caseId: "00000000-0000-4000-8000-000000000033" } });
     expect(res.isError).toBeFalsy();
     const outcome = JSON.parse(textOf(res as never)) as { apiId: string; passed: boolean };
-    expect(outcome.apiId).toBe("a-deep");
+    expect(outcome.apiId).toBe("00000000-0000-4000-8000-000000000032");
     expect(outcome.passed).toBe(true);
     await client.close();
   });
@@ -225,7 +225,7 @@ describe("run-case（opt-in 执行类工具）", () => {
 
   it("run-case 非 base scope 用例显式报错（run-case 未选环境，env 链不含该 scope，不静默空跑）", async () => {
     const { client } = await connectClient(rootA, { allowRun: true });
-    const res = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: "t2" } });
+    const res = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: "00000000-0000-4000-8000-000000000016" } });
     expect(res.isError).toBe(true);
     expect(textOf(res as never)).toContain("scope");
     await client.close();
@@ -237,7 +237,7 @@ describe("安全边界与日志通道", () => {
     const { client } = await connectClient(rootA);
     const res = await client.callTool({ name: "list-apis", arguments: {} });
     const rows = JSON.parse(textOf(res as never)) as Array<Record<string, string>>;
-    expect(rows.map((r) => r.id)).not.toContain("a-bee");
+    expect(rows.map((r) => r.id)).not.toContain("00000000-0000-4000-8000-000000000035");
     expect(rows.map((r) => r.apiPath)).not.toContain("groups/other/projects/bee/collections/col/apis/bee");
     await client.close();
     // 反向：rootB 服务器同样只见自己的接口。
@@ -245,7 +245,7 @@ describe("安全边界与日志通道", () => {
     const resB = await clientB.callTool({ name: "list-apis", arguments: {} });
     const rowsB = JSON.parse(textOf(resB as never)) as Array<Record<string, string>>;
     expect(rowsB).toHaveLength(1);
-    expect(rowsB[0]!.id).toBe("a-bee");
+    expect(rowsB[0]!.id).toBe("00000000-0000-4000-8000-000000000035");
     await clientB.close();
   });
 
@@ -271,7 +271,7 @@ describe("安全边界与日志通道", () => {
     await client.listTools();
     await client.callTool({ name: "list-apis", arguments: {} });
     await client.callTool({ name: "get-api-design", arguments: { apiPath: OK_PATH } });
-    await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: "t1" } });
+    await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: "00000000-0000-4000-8000-000000000015" } });
     expect(logSpy).not.toHaveBeenCalled();
     await client.close();
   });

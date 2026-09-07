@@ -37,9 +37,9 @@ async function seededSession() {
   return { s, dir, collectionId: c.id };
 }
 
-/** 集合根接口的落盘 yaml 文本（白名单核验用）。 */
-function apiYaml(dir: string, name: string): string {
-  return readFileSync(join(dir, "groups", "g", "projects", "p", "collections", "c", "apis", name, "api.yaml"), "utf8");
+/** 集合根接口的落盘 yaml 文本（白名单核验用）。id 布局（轨一）：目录名=实体 id。 */
+function apiYaml(dir: string, gId: string, pId: string, cId: string, apiId: string): string {
+  return readFileSync(join(dir, "groups", gId, "projects", pId, "collections", cId, "apis", apiId, "api.yaml"), "utf8");
 }
 
 describe("M5-B 任务 2 保存链路：WS/SOAP 经新 schema 落盘往返（真 core）", () => {
@@ -49,9 +49,12 @@ describe("M5-B 任务 2 保存链路：WS/SOAP 经新 schema 落盘往返（真 
     api.protocol = "websocket";
     api.message = "ping-{{token}}";
     await s.saveApi(api);
+    // id 布局（轨一）：目录名=实体 id，自内存模型取链路 id
+    const g = s.workspace!.groups.find((x) => x.projects.some((p) => p.collections.some((c) => c.id === collectionId)))!;
+    const p = g.projects[0]!;
 
     // 落盘形状（白名单口径）：非 http 才写 protocol；message 随值写。
-    const yaml = apiYaml(dir, "ws-echo");
+    const yaml = apiYaml(dir, g.id, p.id, collectionId, api.id);
     expect(yaml).toContain("protocol: websocket");
     expect(yaml).toContain("message:");
 
@@ -71,8 +74,9 @@ describe("M5-B 任务 2 保存链路：WS/SOAP 经新 schema 落盘往返（真 
     api.envelope = "<Envelope><body>{{payload}}</body></Envelope>";
     api.soapAction = "urn:Ping";
     await s.saveApi(api);
+    const g = s.workspace!.groups.find((x) => x.projects.some((p) => p.collections.some((c) => c.id === collectionId)))!;
 
-    const yaml = apiYaml(dir, "soap-do");
+    const yaml = apiYaml(dir, g.id, g.projects[0]!.id, collectionId, api.id);
     expect(yaml).toContain("protocol: soap");
     expect(yaml).toContain("soapAction: urn:Ping");
 
@@ -93,7 +97,7 @@ describe("M5-B 任务 2 保存链路：WS/SOAP 经新 schema 落盘往返（真 
 
     const s2 = createSession();
     const reopened = await s2.open(dir);
-    const apiProblems = reopened.problems.filter((pr) => pr.file.includes("soap-bad"));
+    const apiProblems = reopened.problems.filter((pr) => pr.message.includes("envelope"));
     expect(apiProblems).toHaveLength(1);
     expect(apiProblems[0]!.message).toContain("schema 校验失败");
     expect(apiProblems[0]!.message).toContain("envelope");
@@ -106,8 +110,9 @@ describe("M5-B 任务 2 保存链路：WS/SOAP 经新 schema 落盘往返（真 
     const { s, dir, collectionId } = await seededSession();
     const api = s.createApi(collectionId, null, { name: "plain", method: "GET", url: "http://127.0.0.1:9/x" });
     await s.saveApi(api);
+    const g = s.workspace!.groups.find((x) => x.projects.some((p) => p.collections.some((c) => c.id === collectionId)))!;
 
-    expect(apiYaml(dir, "plain")).not.toContain("protocol:");
+    expect(apiYaml(dir, g.id, g.projects[0]!.id, collectionId, api.id)).not.toContain("protocol:");
 
     const s2 = createSession();
     const reopened = await s2.open(dir);

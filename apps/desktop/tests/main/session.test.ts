@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -50,7 +51,8 @@ describe("createSession", () => {
     expect(api.cases).toHaveLength(1);
     expect(api.cases[0]!.scope).toBe("base");
     await s.save();
-    const apiDir = join(dir, "groups", "g", "projects", "p", "collections", "c", "apis", "a");
+    // id 布局（轨一）：盘上目录名=实体 id
+    const apiDir = join(dir, "groups", g.id, "projects", p.id, "collections", c.id, "apis", api.id);
     expect(existsSync(apiDir)).toBe(true);
     s.deleteNode("api", api.id);
     await s.save();
@@ -93,7 +95,8 @@ describe("createSession", () => {
     await s.open(dir);
     const g = s.createGroup("g");
     const p = s.createProject(g.id, "p");
-    p.environments.push({ id: "e-dev", name: "dev", variables: { baseUrl: "http://d", token: "t" }, baseUrls: {} });
+    // id 布局（轨一）：环境文件名=环境 id，夹具 id 须 UUID 形态
+    p.environments.push({ id: randomUUID(), name: "dev", variables: { baseUrl: "http://d", token: "t" }, baseUrls: {} });
     const env = s.createEnvironment(p.id, { name: "sit", extends: "dev" });
     await s.save();
     const s2 = createSession();
@@ -111,11 +114,10 @@ describe("createSession", () => {
     expect(env.name).toBe("sit");
   });
 
-  it("renameWorkflow 改名后旧目录清理、新目录可读", async () => {
-    // 简报骨架：建 g/p/workflow("旧名") → save（断言旧目录存在）→ renameWorkflow → save
-    // → 重开断言 workflows[0].name === "新名" 且 join(root, ..., "workflows", "旧名") 不存在。
-    // 盘上名刻意用中文（产品常态输入）：清理走 node:fs/promises rm——本机（Windows+Node24）
-    // 实测 rmSync 对非 ASCII 路径静默失效/硬崩，此用例同时钉住该修复不回退到 rmSync。
+  it("renameWorkflow 改名后仅名称变化、盘上 id 目录不丢", async () => {
+    // id 布局（轨一）：目录名=工作流 id，改名只改 yaml 内名称——目录恒在、重开读回新名。
+    // 清理语义仍由 node:fs/promises rm 承担（本机 Windows+Node24 对非 ASCII 路径 rmSync
+    // 静默失效/硬崩的修复不回退），删除工作流场景见下一用例。
     const s = createSession();
     const dir = root();
     await s.create(dir, "w");
@@ -124,10 +126,11 @@ describe("createSession", () => {
     const p = s.createProject(g.id, "p");
     const wf = s.createWorkflow(p.id, "旧名");
     await s.save();
-    const oldDir = join(dir, "groups", "g", "projects", "p", "workflows", "旧名");
-    expect(existsSync(oldDir)).toBe(true);
+    const wfDir = join(dir, "groups", g.id, "projects", p.id, "workflows", wf.id);
+    expect(existsSync(wfDir)).toBe(true);
     await s.renameWorkflow(wf.id, "新名");
-    expect(existsSync(oldDir)).toBe(false);
+    // 改名不动盘上目录（id 目录恒在）
+    expect(existsSync(wfDir)).toBe(true);
     // 同项目重名拒绝（与 createWorkflow 同文案）：wf 已改名后，另一条流不得再改成「新名」
     const other = s.createWorkflow(p.id, "另一条流");
     await s.save();
@@ -138,7 +141,6 @@ describe("createSession", () => {
     // 重开读回：改名已持久化（按 id 取，不依赖盘上目录的字典序）
     const reopenedWfs = reopened.workspace.groups.find((x) => x.name === "g")!.projects[0]!.workflows;
     expect(reopenedWfs.find((w) => w.id === wf.id)!.name).toBe("新名");
-    expect(existsSync(join(dir, "groups", "g", "projects", "p", "workflows", "新名"))).toBe(true);
     expect(s2.locateWorkflow(wf.id)?.workflow.name).toBe("新名");
   });
 
@@ -152,7 +154,7 @@ describe("createSession", () => {
     const p = s.createProject(g.id, "p");
     const wf = s.createWorkflow(p.id, "残留流");
     await s.save();
-    const wfDir = join(dir, "groups", "g", "projects", "p", "workflows", "残留流");
+    const wfDir = join(dir, "groups", g.id, "projects", p.id, "workflows", wf.id);
     expect(existsSync(wfDir)).toBe(true);
     s.deleteWorkflow(wf.id);
     await s.save();
@@ -160,53 +162,10 @@ describe("createSession", () => {
     expect(s.locateWorkflow(wf.id)).toBeUndefined();
   });
 
-  // —— C1（Critical）回归：win32 大小写不敏感文件系统上的改名孤儿清理 ——
-  // NTFS 上 save 按 name 写盘时 `workflows\Flow` 解析命中既有 `flow` 目录（盘名保持
-  // flow），cleanup 若按 x.name === "Flow" 严格比较 readdir 得 ["flow"] 不匹配，会把
-  // 刚写入的目录当孤儿递归删除（数据破坏）。平台判定经 createSession({ platform })
-  // 注入（默认取 process.platform），本用例未注入——本机（Windows）即真实 NTFS 语义
-  // 端到端复现；POSIX 平台大小写敏感、save 正常新建目录，行为等价通过。
-  it("win32 大小写改名 flow→Flow：save 后重开工作流仍在、盘上目录不丢（C1 端到端）", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const wf = s.createWorkflow(p.id, "flow");
-    await s.save();
-    const flowDir = join(dir, "groups", "g", "projects", "p", "workflows", "flow");
-    expect(existsSync(flowDir)).toBe(true);
-    await s.renameWorkflow(wf.id, "Flow");
-    if (process.platform === "win32") {
-      // 修复前：刚写入（NTFS 解析到既有同名目录）的工作流目录被 cleanup 递归删除
-      expect(existsSync(flowDir)).toBe(true);
-    }
-    const s2 = createSession();
-    const reopened = await s2.open(dir);
-    const found = reopened.workspace.groups.find((x) => x.name === "g")!.projects[0]!.workflows.find((w) => w.id === wf.id);
-    expect(found?.name).toBe("Flow");
-  });
-
-  // 注入 win32 平台标志复现「模型名 Flow、盘上目录 flow」的 NTFS 解析态（C1 归一匹配）：
-  // cleanup 各层（workflows/collections/groups/projects/apis/folders）按 sameName 比较，
-  // 大小写变体目录不得被判孤儿。POSIX 上改名会真实新建 Flow 目录（大小写敏感语义），
-  // 本用例只钉「大小写变体不判孤儿」这一 win32 行为，任意平台可复现。
-  it("注入 win32：cleanupOrphanDirs 不把大小写变体目录当孤儿（C1 归一匹配）", async () => {
-    const s = createSession({ platform: "win32" });
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const wf = s.createWorkflow(p.id, "flow");
-    await s.save();
-    await s.renameWorkflow(wf.id, "Flow");
-    await s.save();
-    // 修复前（严格比较）：flow 目录与模型名 Flow 不匹配 → 被递归删除
-    expect(existsSync(join(dir, "groups", "g", "projects", "p", "workflows", "flow"))).toBe(true);
-  });
-
+  // —— C1（Critical）回归的两条 NTFS 大小写用例随 id 布局（轨一）移除：目录名=UUID 后
+  // 「模型名 Flow / 盘上目录 flow」的解析态这一错误类别整体消亡，rename 仅改 yaml 名称
+  // 且 id 目录恒在（由 renameWorkflow 用例钉住）。sameName 归一比较仍保留于重名拒绝语义
+  // （见下方「重名检查大小写归一」用例；轨二放开同名后一并移除）。 ——
   it("注入 win32：createWorkflow/renameWorkflow 重名检查大小写归一（C1）", async () => {
     const s = createSession({ platform: "win32" });
     const dir = root();
@@ -245,7 +204,7 @@ describe("createSession", () => {
     expect(sameName("a", "A", process.platform)).toBe(process.platform === "win32");
   });
 
-  it("renameNode 重命名集合（盘上目录随 save 更新，旧目录清理）", async () => {
+  it("renameNode 重命名集合（仅名称变化，id 目录恒在）", async () => {
     const s = createSession();
     const dir = root();
     await s.create(dir, "w");
@@ -254,15 +213,15 @@ describe("createSession", () => {
     const p = s.createProject(g.id, "p");
     const c = s.createCollection(p.id, "old-name");
     await s.save();
-    const oldDir = join(dir, "groups", "g", "projects", "p", "collections", "old-name");
-    expect(existsSync(oldDir)).toBe(true);
+    const cDir = join(dir, "groups", g.id, "projects", p.id, "collections", c.id);
+    expect(existsSync(cDir)).toBe(true);
     s.renameNode("collection", c.id, "new-name");
     await s.save();
     const s2 = createSession();
     await s2.open(dir);
     const names = s2.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.collections.map((x) => x.name);
     expect(names).toEqual(["new-name"]);
-    expect(existsSync(oldDir)).toBe(false);
+    expect(existsSync(cDir)).toBe(true);
   });
 });
 
@@ -426,9 +385,10 @@ describe("createStressController", () => {
   });
 });
 
-// —— M9-A2：名称净化与同级重名拒绝（名称即盘上目录名，非法字符 mkdir ENOENT 用户回归） ——
+// —— M9-A2：名称净化（非法字符 mkdir ENOENT 用户回归）。id 布局（轨一）后名称不再
+// 上盘，净化保留为名称卫生（显示/导出口径）；同级重名拒绝仍在（轨二放开后移除） ——
 describe("session 名称净化（M9-A2）", () => {
-  it("createApi 名称含路径非法字符：净化为盘上安全目录并重开可读（用户 ENOENT 回归）", async () => {
+  it("createApi 名称含路径非法字符：净化为安全名称并重开可读（用户 ENOENT 回归）", async () => {
     const s = createSession();
     const dir = root();
     await s.create(dir, "w");
@@ -440,7 +400,8 @@ describe("session 名称净化（M9-A2）", () => {
     for (const ch of ["/", ":", String.fromCharCode(92)]) expect(api.name).not.toContain(ch);
     expect(api.name).toContain("http");
     await s.save();
-    const apiDir = join(dir, "groups", "g", "projects", "p", "collections", "c", "apis", api.name);
+    // id 布局：盘上目录=接口 id，名称仅存 yaml 内容
+    const apiDir = join(dir, "groups", g.id, "projects", p.id, "collections", c.id, "apis", api.id);
     expect(existsSync(apiDir)).toBe(true);
     const s2 = createSession();
     await s2.open(dir);
