@@ -551,7 +551,7 @@ function onDividerDblClick() {
         <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；在线模式全禁用 -->
         <ModuleRail :view="view === 'home' ? 'api' : view" :gate="railGate" @update:view="(v: SwitchView) => (view = v)" />
         <!-- API 栏（M11 按模块专用）：接口=树；测试=用例/场景导航；运行/工作流/环境与主页隐藏 -->
-        <div v-show="view === 'api' && !online.activeWorkspace" class="sider-col-wrap">
+        <div v-show="view === 'api' && !online.activeWorkspace" class="sider-col-wrap" data-testid="sidebar-api">
           <div class="sider-head">
             <span class="sider-title" data-testid="sider-title">{{ siderTitle }}</span>
           </div>
@@ -582,7 +582,7 @@ function onDividerDblClick() {
           />
         </div>
         <!-- 测试模块侧栏（M11）：与接口树各自独立记忆 -->
-        <div v-show="view === 'test' && !online.activeWorkspace" class="sider-col-wrap">
+        <div v-show="view === 'test' && !online.activeWorkspace" class="sider-col-wrap" data-testid="sidebar-test">
           <TestSidebar
             :workspace="workspace"
             :active-project-id="selectedProjectId"
