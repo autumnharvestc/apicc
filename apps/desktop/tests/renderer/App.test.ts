@@ -80,39 +80,47 @@ function langOption(locale: string): DOMWrapper<Element> {
 
 /** 动态 import App：保证上方 window.apicc 注入先于 api/index.ts 的模块求值。 */
 async function mountApp() {
+  // M11 启动恢复会读持久化键——测试间清理保证互不影响
+  for (const k of ["apicc.lastWorkspace", "apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory"]) localStorage.removeItem(k);
   const { default: App } = await import("../../src/renderer/src/App.vue");
   const wrapper = mount(App, { global: { plugins: [initI18n().i18n] } });
   await flushPromises();
   return wrapper;
 }
 
-/** 打开本地目录（M9-C：入口自 TopBar 迁至主页——rail-home → home-open-dir 两步）。 */
+/** 打开本地目录（M11：主页入口 → topbar-home → Open Directory → 切接口模块）。 */
 async function openLocalDir(wrapper: import("@vue/test-utils").VueWrapper) {
-  await wrapper.find('[data-testid="rail-home"]').trigger("click");
+  await wrapper.find('[data-testid="topbar-home"]').trigger("click");
   await flushPromises();
   await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
+  await flushPromises();
+  await wrapper.find('[data-testid="rail-api"]').trigger("click");
   await flushPromises();
 }
 
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
-  it("挂载并渲染 图标导航栏/顶栏/侧树/编辑区/响应区 各区域", async () => {
+  it("挂载缺省主页（无打开记录）；顶栏主页入口可见；rail 五项", async () => {
     const wrapper = await mountApp();
     expect(wrapper.find('[data-testid="app-root"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="topbar"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="side-tree"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="viewer-pane"]').exists()).toBe(true);
-    // 工作区未打开（内存替身未 seed 打开）：侧树与编辑器均为空态，响应区为空态
-    const empties = wrapper.findAll('[data-testid="empty-state"]');
-    expect(empties.length).toBeGreaterThanOrEqual(2);
-    expect(wrapper.find('[data-testid="response-empty"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="topbar-home"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mode-badge"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+    // 主页无 API 栏（M11 澄清①）——v-show 隐藏（组件常驻保状态），可见性断言
+    expect(wrapper.find('[data-testid="side-tree"]').isVisible()).toBe(false);
+    // rail 五项（主页不在 rail——顶栏入口）
+    const items = wrapper.findAll('[data-testid="module-rail"] button.rail-item').map((b) => b.attributes("data-testid"));
+    expect(items).toEqual(["rail-api", "rail-run", "rail-wf", "rail-test", "rail-envs"]);
+    // 未打开工作区：rail 模块禁用
+    expect(wrapper.find('[data-testid="rail-api"]').attributes("disabled")).toBeDefined();
   });
 
-  it("接口模块缺省渲染：子视图页签（调试/设计/用例）+ 调试子视图 上编辑器/分割条/下响应", async () => {
+  it("接口模块渲染：API 栏（树）+ 子视图页签（调试/设计）+ 调试子视图 上编辑器/分割条/下响应", async () => {
     const wrapper = await mountApp();
+    await openLocalDir(wrapper);
     const side = wrapper.find('[data-testid="side-tree"]');
     expect(side.classes()).toContain("side-col");
+    expect(side.isVisible()).toBe(true);
     expect(wrapper.find('[data-testid="sider-title"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="api-head"]').exists()).toBe(true);
     const split = wrapper.find('[data-testid="main-split"]');
@@ -153,13 +161,15 @@ function subRadio(wrapper: import("@vue/test-utils").VueWrapper, value: string) 
 }
 
 describe("App 视图切换装配（M8 模块化）", () => {
-  it("未打开工作区时：工作区级模块与子视图禁用（主页恒可用）", async () => {
+  it("未打开工作区时：工作区级模块与子视图禁用（顶栏主页入口恒在）", async () => {
     const wrapper = await mountApp();
     expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
     // rail 原生 button：disabled 属性
     expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
-    expect(wrapper.find('[data-testid="rail-home"]').attributes("disabled")).toBeUndefined();
-    // 子视图（接口未选中）禁用
+    // 顶栏主页入口恒在（M11：主页不在 rail）
+    expect(wrapper.find('[data-testid="topbar-home"]').exists()).toBe(true);
+    // 子视图（接口未选中）禁用：打开工作区、切接口模块、未选接口 → design 禁用
+    await openLocalDir(wrapper);
     expect(subRadio(wrapper, "design").attributes("disabled")).toBeDefined();
   });
 
@@ -576,9 +586,8 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
 describe("App 插件视图装配（M7-B 任务 1）", () => {
   it("插件入口（M9-C 裁定 D5）：顶栏设置抽屉打开插件管理，恒可用（不依赖工作区）", async () => {
     const wrapper = await mountApp();
-    // 未打开工作区：工作区级模块（run 等）禁用，主页恒可用
+    // 未打开工作区：工作区级模块（run 等）禁用
     expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
-    expect(wrapper.find('[data-testid="rail-home"]').attributes("disabled")).toBeUndefined();
     await wrapper.find('[data-testid="settings-toggle"]').trigger("click");
     await flushPromises();
     expect(bodyFind("plugins-view")).not.toBeNull();

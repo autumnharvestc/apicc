@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Space as ASpace, Button as AButton, Tag as ATag, Typography as ATypography, Select as ASelect, Drawer as ADrawer } from "ant-design-vue";
-import { SettingOutlined } from "@ant-design/icons-vue";
+import { SettingOutlined, HomeOutlined } from "@ant-design/icons-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
@@ -27,6 +27,7 @@ const props = defineProps<{
   plugins: ReturnType<typeof createPluginsStore>;
   reportError: (e: unknown) => void;
 }>();
+const emit = defineEmits<{ "open-home": [] }>();
 const { t } = useI18n();
 
 const settingsOpen = ref(false);
@@ -72,15 +73,11 @@ async function exitOnline() {
     <a-typography-text strong data-testid="workspace-name">
       {{ online.activeWorkspace?.name ?? (workspace.name || t("app.openWorkspace")) }}
     </a-typography-text>
-    <!-- 模式徽标：顶栏当前工作区标识旁可辨「本地/在线」 -->
-    <a-tag
-      v-if="workspace.opened || online.activeWorkspace"
-      class="mode-badge"
-      :color="online.activeWorkspace ? 'blue' : 'default'"
-      data-testid="mode-badge"
-    >
-      {{ online.activeWorkspace ? t("online.modeOnline") : t("online.modeLocal") }}
-    </a-tag>
+    <!-- 主页入口（M11）：取代本地/在线徽标位置——模式由打开项目的来源决定 -->
+    <a-button size="small" data-testid="topbar-home" @click="emit('open-home')">
+      <HomeOutlined />
+      {{ t("nav.home") }}
+    </a-button>
     <!-- 项目切换（M9-C，本地模式）：归属项目的栏目随项目切换 -->
     <a-select
       v-if="!online.activeWorkspace && workspace.opened"

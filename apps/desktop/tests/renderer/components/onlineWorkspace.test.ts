@@ -273,20 +273,19 @@ describe("OnlineMigrateDialog（裁定 D：目录选择 + 进度 + 结果清单�
   });
 });
 
-describe("TopBar 模式徽标与互斥切换（裁定 E）", () => {
-  it("本地模式：徽标「本地」；在线工作区激活：徽标「在线」、名称切在线工作区名", async () => {
+describe("TopBar 主页入口与互斥切换（M11 取代模式徽标）", () => {
+  it("主页入口恒在（无模式徽标）；在线工作区激活：名称切在线工作区名", async () => {
     const f = await fixture();
     await f.online.closeWorkspace(); // 先回到无工作区上下文（fixture 默认在线已开）
     const wrapper = await f.mount(TopBar);
-    // 未打开任何工作区：无徽标
-    expect(wrapper.find('[data-testid="mode-badge"]').exists()).toBe(false);
+    // 主页按钮恒在（M11：取代本地/在线徽标位置，模式由项目来源决定）
+    expect(wrapper.find('[data-testid="topbar-home"]').exists()).toBe(true);
     await f.workspace.open("/tmp/ws");
     await flushPromises();
-    expect(wrapper.find('[data-testid="mode-badge"]').text()).toBe("本地");
-    // 打开在线工作区 → 徽标「在线」、顶栏名称切在线工作区名（互斥：本地已关）
+    expect(wrapper.find('[data-testid="topbar-home"]').exists()).toBe(true);
+    // 打开在线工作区 → 顶栏名称切在线工作区名（互斥：本地已关）
     await f.online.openWorkspace(f.online.workspaces[0]!);
     await flushPromises();
-    expect(wrapper.find('[data-testid="mode-badge"]').text()).toBe("在线");
     expect(wrapper.find('[data-testid="workspace-name"]').text()).toContain(f.online.activeWorkspace!.name);
     expect(wrapper.find('[data-testid="online-migrate"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="online-exit"]').exists()).toBe(true);

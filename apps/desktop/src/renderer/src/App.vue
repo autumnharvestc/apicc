@@ -9,6 +9,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ConfigProvider,
+  Tag as ATag,
   Layout as ALayout,
   Alert as AAlert,
   Radio as ARadio,
@@ -24,6 +25,7 @@ import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import TopBar from "./components/TopBar.vue";
 import HomeView from "./components/HomeView.vue";
 import TestView from "./components/TestView.vue";
+import TestSidebar from "./components/TestSidebar.vue";
 import ModuleRail from "./components/ModuleRail.vue";
 import SideTree from "./components/SideTree.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
@@ -58,6 +60,7 @@ import { createStressStore } from "./stores/stress.js";
 import { createOnlineStore } from "./stores/online.js";
 import { createAiStore } from "./stores/ai.js";
 import { createPluginsStore } from "./stores/plugins.js";
+import { useModuleMemoryStore } from "./stores/moduleMemory.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import {
   isViewDisabled,
@@ -109,10 +112,93 @@ const ai = createAiStore({ api: apicc, editor });
 // —— 插件 store（M7-B 任务 1 装配）：同一组合根一次性创建；挂载后拉取 plugins:list
 // （fixture 桩）——插件视图清单 + 导入向导的导入格式动态枚举共用此份状态。 ——
 const plugins = createPluginsStore({ api: apicc });
-onMounted(() => {
-  void online.init();
-  void ai.init();
-  void plugins.init();
+// —— 启动恢复（M11）：唯一「上次打开」记录，指向哪恢复哪；降级路径均落主页 ——
+const LAST_WS_KEY = "apicc.lastWorkspace";
+const LAST_API_KEY = "apicc.lastApi";
+
+/** 记录当前打开（在线优先写；本地打开覆盖为本地）。关闭不清理——下次启动仍恢复。 */
+watch(
+  () => [workspace.opened, workspace.root, online.activeWorkspace?.id] as const,
+  () => {
+    if (online.activeWorkspace) {
+      localStorage.setItem(LAST_WS_KEY, JSON.stringify({
+        source: "online", workspaceId: online.activeWorkspace.id, name: online.activeWorkspace.name,
+      }));
+    } else if (workspace.opened && workspace.root) {
+      localStorage.setItem(LAST_WS_KEY, JSON.stringify({ source: "local", dir: workspace.root }));
+    }
+  },
+);
+
+/** 恢复侧树选中的接口进编辑器（M11：侧栏状态重启保留的配套——侧树与编辑器一致）。 */
+async function restoreLastApi(): Promise<void> {
+  try {
+    const last = JSON.parse(localStorage.getItem(LAST_API_KEY) ?? "null") as { id: string } | null;
+    if (!last?.id) return;
+    const findApi = (nodes: TreeNodeDTO[] | undefined): TreeNodeDTO | null => {
+      for (const n of nodes ?? []) {
+        if (n.kind === "api" && n.id === last.id) return n;
+        const hit = findApi(n.children);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    if (findApi(workspace.tree?.children)) {
+      tree.select("api", last.id);
+      await editor.load(last.id);
+    }
+  } catch {
+    // 恢复失败静默（无碍主流程）
+  }
+}
+
+onMounted(async () => {
+  ai.init().catch(() => undefined);
+  plugins.init().catch(() => undefined);
+  // 在线静默恢复（token 续登）优先——命中即恢复在线模式
+  try {
+    await online.init();
+  } catch {
+    // init 内部已消化错误
+  }
+  if (online.activeWorkspace) {
+    view.value = "api";
+    return;
+  }
+  let record: { source?: string; dir?: string; workspaceId?: string } | null = null;
+  try {
+    record = JSON.parse(localStorage.getItem(LAST_WS_KEY) ?? "null");
+  } catch {
+    record = null;
+  }
+  if (record?.source === "local" && record.dir) {
+    try {
+      await workspace.open(record.dir);
+      view.value = "api";
+      await restoreLastApi();
+      return;
+    } catch (e) {
+      // 目录失效 → 主页 + 错误提示（M11 澄清②降级路径）
+      reportError(e);
+      return;
+    }
+  }
+  if (record?.source === "online" && record.workspaceId) {
+    try {
+      await online.refreshWorkspaces();
+      const target = online.workspaces.find((w) => w.id === record.workspaceId);
+      if (target) {
+        await online.openWorkspace(target);
+        view.value = "api";
+        return;
+      }
+    } catch (e) {
+      // 登录态失效/团队空间不可达 → 主页 + 提示
+      reportError(e);
+      return;
+    }
+  }
+  // 无记录：停留主页
 });
 
 // —— 视图切换（M8 模块化）：ModuleRail v-model:view；接口模块子视图独立状态 ——
@@ -120,7 +206,8 @@ onMounted(() => {
 // 视图恒可用；其余工作区级；压测接口级。
 const VIEWS: SwitchView[] = SWITCH_VIEWS;
 const SUB_VIEWS: ApiSubView[] = API_SUB_VIEWS;
-const view = ref<SwitchView>("api");
+// M11：视图含 home（顶栏入口；非 rail 模块）。缺省 home——启动恢复逻辑成功后切 api。
+const view = ref<SwitchView | "home">("home");
 const apiSubView = ref<ApiSubView>("debug");
 const railGate = computed(() => ({
   workspaceOpened: workspace.opened,
@@ -130,7 +217,15 @@ const railGate = computed(() => ({
 const subGate = computed(() => ({ onlineActive: !!online.activeWorkspace, apiSelected: !!editor.apiId }));
 
 // —— 树面板头（M8）：模块标题 + 前端搜索（SideTree 按 label 过滤）——
-const treeFilter = ref("");
+// 模块侧栏记忆（M11）：接口树过滤、测试页签/选中接口——重启保留
+const moduleMemory = useModuleMemoryStore();
+const treeFilter = computed({
+  get: () => moduleMemory.apiTree.filter,
+  set: (v: string) => {
+    moduleMemory.apiTree.filter = v;
+    moduleMemory.touch();
+  },
+});
 // 导入向导（M10 归接口模块）：显隐状态
 const importOpen = ref(false);
 const siderTitle = computed(() => t(`nav.${view.value}`));
@@ -273,6 +368,32 @@ function openProjectFromHome(id: string) {
   tree.select("project", id);
   view.value = "api";
 }
+
+// —— 测试模块（M11）：压测上下文 + 场景清单 + 侧栏选接口载入编辑器 ——
+const testStressOpen = ref(false);
+
+function onTestStress(caseId: string) {
+  if (!editor.apiId) return;
+  stress.form.caseId = caseId;
+  stress.form.envName = debug.selectedEnvName; // 与调试共享项目环境选中态
+  testStressOpen.value = true;
+}
+
+function onTestPickApi(apiId: string) {
+  testStressOpen.value = false;
+  moduleMemory.test.apiId = apiId;
+  moduleMemory.touch();
+  tree.select("api", apiId);
+  editor.load(apiId).catch(reportError);
+}
+
+/** 场景清单（活动项目工作流摘要）：测试侧栏数据源。 */
+const testScenarios = computed(() => {
+  const project = (workspace.tree?.children ?? [])
+    .flatMap((g) => g.children ?? [])
+    .find((p) => p.id === selectedProjectId.value);
+  return project?.workflows ?? [];
+});
 
 // 导入向导显隐（M10 归接口模块）：向导 close 事件由模板内联 importOpen=false 处理。
 
@@ -421,16 +542,16 @@ function onDividerDblClick() {
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :report-error="reportError" />
+      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :report-error="reportError" @open-home="view = 'home'" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
       </a-alert>
       <div class="body">
-        <!-- 图标导航栏（M8）：v-model:view + 门控上下文；在线模式全禁用 -->
-        <ModuleRail v-model:view="view" :gate="railGate" />
-        <!-- 树面板（M8）：模块标题 + 搜索（本地模式开放；在线只读树同样可搜索过滤） -->
-        <div class="sider-col-wrap">
+        <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；在线模式全禁用 -->
+        <ModuleRail :view="view === 'home' ? 'api' : view" :gate="railGate" @update:view="(v: SwitchView) => (view = v)" />
+        <!-- API 栏（M11 按模块专用）：接口=树；测试=用例/场景导航；运行/工作流/环境与主页隐藏 -->
+        <div v-show="view === 'api' && !online.activeWorkspace" class="sider-col-wrap">
           <div class="sider-head">
             <span class="sider-title" data-testid="sider-title">{{ siderTitle }}</span>
           </div>
@@ -458,6 +579,20 @@ function onDividerDblClick() {
             :readonly="!!online.activeWorkspace"
             :empty-text="online.activeWorkspace ? t('online.treeEmpty') : undefined"
             @select="onSelect"
+          />
+        </div>
+        <!-- 测试模块侧栏（M11）：与接口树各自独立记忆 -->
+        <div v-show="view === 'test' && !online.activeWorkspace" class="sider-col-wrap">
+          <TestSidebar
+            :workspace="workspace"
+            :active-project-id="selectedProjectId"
+            :active-api-id="editor.apiId"
+            :pane="moduleMemory.test.pane"
+            :scenarios="testScenarios"
+            :report-error="reportError"
+            @update:pane="(p) => { moduleMemory.test.pane = p; moduleMemory.touch(); }"
+            @pick-api="onTestPickApi"
+            @open-workflow="openWorkflowInDesigner"
           />
         </div>
         <div class="right-col" data-testid="main-split">
@@ -552,21 +687,36 @@ function onDividerDblClick() {
             :selected-collection-id="selectedCollectionId"
             :report-error="reportError"
           />
-          <!-- 测试模块（M9-D）：单接口用例（运行/压测）+ 场景用例，取代原压测栏 -->
-          <TestView
-            v-else-if="view === 'test'"
-            class="panel-view"
-            :workspace="workspace"
-            :tree="tree"
-            :editor="editor"
-            :debug="debug"
-            :cases="cases"
-            :envs="envs"
-            :stress="stress"
-            :active-project-id="activeProjectId"
-            :report-error="reportError"
-            :open-workflow="openWorkflowInDesigner"
-          />
+          <!-- 测试模块（M11）：侧栏导航 + 主区用例面板/压测上下文 -->
+          <template v-else-if="view === 'test'">
+            <template v-if="testStressOpen && editor.apiId">
+              <div class="api-head">
+                <a-button size="small" data-testid="test-back-to-cases" @click="testStressOpen = false">{{ t("test.backToCases") }}</a-button>
+                <a-tag color="orange">{{ t("test.stressContext") }}</a-tag>
+              </div>
+              <StressPanel
+                class="panel-view"
+                :stress="stress"
+                :api-id="editor.apiId"
+                :cases="editor.api?.cases ?? []"
+                :envs="editor.envs"
+                :debug="debug"
+                :report-error="reportError"
+              />
+            </template>
+            <TestView
+              v-else
+              class="panel-view"
+              :editor="editor"
+              :debug="debug"
+              :cases="cases"
+              :envs="envs"
+              :stress="stress"
+              :pane="moduleMemory.test.pane"
+              :report-error="reportError"
+              @stress="onTestStress"
+            />
+          </template>
           <WfDesigner
             v-else
             class="wf-view"

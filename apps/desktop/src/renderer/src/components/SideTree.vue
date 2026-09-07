@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Tree as ATree, Button as AButton } from "ant-design-vue";
+import { AppstoreOutlined, FolderOutlined, ProjectOutlined } from "@ant-design/icons-vue";
 import type { WorkflowImpactEntry } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
@@ -53,9 +54,10 @@ const { t } = useI18n();
 // nodeRename/nodeDelete 频道接受的节点 kind（api 树节点；不含 root/workflow）。
 type NodeRenameKind = Parameters<ApiccApi["nodeRename"]>[0];
 
-// 折叠集合：默认全部折叠（分组/项目/集合/文件夹）；展开节点时递归展开其后代容器，
-// 一次点击即可从分组直达接口。
-const expanded = ref(new Set<string>());
+// 折叠集合：默认读取上次会话（M11 侧栏状态重启保留），展开节点时递归展开其后代容器，
+// 一次点击即可从分组直达接口；变化即落 localStorage（应用本地，不进工作区文件）。
+const EXPANDED_KEY = "apicc.tree.expanded";
+const expanded = ref(new Set<string>(safeParseExpanded()));
 const selectedKeys = ref<string[]>([]);
 
 function descendantContainerIds(node: TreeNodeDTO): string[] {
@@ -155,6 +157,12 @@ const treeData = computed<TreeDataNode[]>(() => {
     });
   return prune(all);
 });
+// 展开集合持久化（M11）：序列化比对避免同值重写
+watch(
+  () => JSON.stringify([...expanded.value].sort()),
+  (v) => localStorage.setItem("apicc.tree.expanded", v),
+);
+
 // 过滤激活时可见容器全部展开（否则命中叶子的祖先链处于折叠态，过滤结果不可见）
 const effectiveExpandedKeys = computed(() => {
   const keys = new Set(expanded.value);
@@ -178,10 +186,23 @@ const filterNoMatch = computed(
   () => !!props.filter?.trim() && treeData.value.length === 0,
 );
 
+function safeParseExpanded(): string[] {
+  try {
+    const raw = localStorage.getItem("apicc.tree.expanded");
+    return raw ? (JSON.parse(raw) as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function selectNode(node: TreeNodeDTO) {
   selectedKeys.value = [node.id];
   // 只读模式（在线）：不写本地树选中态，仅向上发选中事件（App 路由到在线编辑链路）
-  if (!props.readonly) props.tree.select(node.kind, node.id);
+  if (!props.readonly) {
+    props.tree.select(node.kind, node.id);
+    // M11：记录最后选中（重启恢复选中接口进编辑器）
+    if (node.kind === "api") localStorage.setItem("apicc.lastApi", JSON.stringify({ id: node.id }));
+  }
   emit("select", node.kind, node.id);
 }
 
@@ -383,11 +404,14 @@ function startWorkflowDelete(node: TreeNodeDTO) {
               <button class="act danger" data-testid="node-delete" @click="startWorkflowDelete(dto)">{{ t("tree.delete") }}</button>
             </span>
           </div>
-          <!-- 容器节点：折叠钮 + 悬停动作钮（按层级保留原有钮集合） -->
+          <!-- 容器节点：折叠钮 + 层级图标（M11：模块/文件夹/项目 图标区分）+ 悬停动作钮 -->
           <div v-else class="node">
             <button class="toggle" data-testid="tree-group-toggle" @click="toggle(dto)">
               {{ expanded.has(dto.id) ? "▾" : "▸" }}
             </button>
+            <AppstoreOutlined v-if="dto.kind === 'collection'" class="kind-icon mod" />
+            <FolderOutlined v-else-if="dto.kind === 'folder'" class="kind-icon dir" />
+            <ProjectOutlined v-else-if="dto.kind === 'project'" class="kind-icon proj" />
             <span class="label">{{ dto.label }}</span>
             <span v-if="!readonly" class="actions">
               <button v-if="dto.kind === 'group'" class="act" data-testid="new-project" @click="startCreate(dto, 'project')">{{ t("tree.newProject") }}</button>
@@ -451,11 +475,10 @@ function startWorkflowDelete(node: TreeNodeDTO) {
   font-weight: 600;
   color: var(--text-muted);
 }
-/* a-tree 自带的缩进箭头与我们的折叠钮重复，隐藏；节点行铺满整行 */
+/* a-tree 自带的切换箭头隐藏（自绘折叠钮）；缩进保留——M11 用户澄清④：层级不平铺 */
 .side :deep(.ant-tree-switcher) { display: none; }
 .side :deep(.ant-tree-node-content-wrapper) { flex: 1; min-width: 0; }
 .side :deep(.ant-tree-block-node) { width: 100%; }
-.side :deep(.ant-tree-indent) { display: none; }
 .node {
   display: flex;
   align-items: center;
@@ -477,6 +500,9 @@ function startWorkflowDelete(node: TreeNodeDTO) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* M11：层级图标——模块（服务）与文件夹视觉区分 */
+.kind-icon { flex: none; font-size: 13px; color: var(--text-muted); }
+.kind-icon.mod { color: var(--accent); }
 .actions {
   margin-left: auto;
   display: none;
