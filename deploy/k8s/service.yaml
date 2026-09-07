@@ -1,0 +1,17 @@
+# NodePort 直出（部署线澄清口径：本期不做 Ingress/TLS）。
+# 桌面端添加连接填 http://<节点IP>:30080；集群内服务名 http://apicc-server:8080。
+apiVersion: v1
+kind: Service
+metadata:
+  name: apicc-server
+  labels:
+    app: apicc-server
+spec:
+  type: NodePort
+  selector:
+    app: apicc-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      nodePort: 30080

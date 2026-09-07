@@ -36,7 +36,7 @@ public class AuthService {
     public AuthService(UserRepo users,
                        TokenRepo tokens,
                        TokenService tokenService,
-                       @Value("${apicc.server.allow-registration:true}") boolean allowRegistration,
+                       @Value("${apicc.server.allow-registration:false}") boolean allowRegistration,
                        @Value("${apicc.server.token-ttl-days:30}") int tokenTtlDays) {
         this.users = users;
         this.tokens = tokens;

@@ -1,0 +1,62 @@
+# 单副本 Deployment（D1）：Recreate 避免滚动更新期间双 Pod 抢 RWO 卷；
+# 探针复用无认证 /api/v1/ping（D8）；uid/gid 10001 与镜像内用户对齐，fsGroup 保证空卷可写。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apicc-server
+  labels:
+    app: apicc-server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: apicc-server
+  template:
+    metadata:
+      labels:
+        app: apicc-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: server
+          image: apicc-server:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: apicc-server-config
+            - secretRef:
+                name: apicc-server-admin
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /api/v1/ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/ping
+              port: http
+            initialDelaySeconds: 40
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: apicc-server-data

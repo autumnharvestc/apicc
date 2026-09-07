@@ -1,6 +1,9 @@
 # 本地工作目录（需求笔记等，不入库）
 local/
 
+# 部署本地凭据（deploy/.env.example 是入库样例；.env 含真实口令，不入库）
+deploy/.env
+
 # 操作系统
 Thumbs.db
 Desktop.ini

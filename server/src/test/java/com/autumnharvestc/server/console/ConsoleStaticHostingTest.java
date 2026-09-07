@@ -39,7 +39,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = "spring.datasource.url=jdbc:h2:mem:apicc-console-static-test;DB_CLOSE_DELAY=-1")
+@TestPropertySource(properties = {"spring.datasource.url=jdbc:h2:mem:apicc-console-static-test;DB_CLOSE_DELAY=-1", "apicc.server.allow-registration=true"})
 class ConsoleStaticHostingTest {
 
     /** console 产物目录：@TempDir 静态字段在上下文创建前就绪，经 DynamicPropertySource 注入 console-dir（裁定①）。 */

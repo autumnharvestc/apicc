@@ -41,6 +41,8 @@ java -jar server/target/apicc-server-0.1.0-SNAPSHOT.jar
 
 就绪自检：`GET /api/v1/ping` 返回 `{"status":"ok"}`。
 
+容器化部署（Docker Compose / k8s，含首个管理员引导与数据卷说明）见 [docs/deploy.md](../docs/deploy.md)。
+
 ## 配置项
 
 | 配置键 | 默认值 | 说明 |
@@ -48,7 +50,9 @@ java -jar server/target/apicc-server-0.1.0-SNAPSHOT.jar
 | `server.port` | `8080` | HTTP 监听端口 |
 | `apicc.server.data-dir` | `./server-data` | 工作区内容根目录（相对 java 进程的运行目录） |
 | `apicc.server.console-dir` | `./console` | 管理后台静态产物目录（相对运行目录；部署见「管理后台部署」节） |
-| `apicc.server.allow-registration` | `true` | 是否开放注册；`false` 时仅已有账号可登录 |
+| `apicc.server.allow-registration` | `false` | 是否开放注册；`false` 时仅已有账号可登录（部署线 D5 默认关，批量拉人时临时开启） |
+| `apicc.server.admin-username` | 空 | 首个管理员用户名（部署线 D6：仅用户表为空时生效；未设则 `admin`） |
+| `apicc.server.admin-password` | 空 | 首个管理员口令；未设则随机生成并以 WARN 打印日志（仅一次） |
 | `apicc.server.token-ttl-days` | `30` | 登录令牌有效期（天） |
 
 覆盖方式为命令行参数 `--配置键=值`（或改 `server/src/main/resources/application.yml`）。注意：`apicc.server.*` 四项经 `@Value` 按精确键名注入，Boot 的驼峰 relaxed binding 不适用，但下划线大写风格的环境变量可用（Spring 会做 `.`/`-` → `_` 的名称翻译，如 `APICC_SERVER_DATA_DIR`、`APICC_SERVER_CONSOLE_DIR`、`APICC_SERVER_ALLOW_REGISTRATION`、`APICC_SERVER_TOKEN_TTL_DAYS`；`SERVER_PORT` 等标准变量仅对 `server.port` 生效）：

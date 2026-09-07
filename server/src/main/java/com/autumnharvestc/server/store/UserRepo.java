@@ -27,6 +27,12 @@ public class UserRepo {
 
     private static final RowMapper<UserAccount> MAPPER = UserRepo::mapRow;
 
+    /** users 表行数（部署线 D6：管理员启动引导判空专用，禁他处泛用）。 */
+    public long count() {
+        Long n = jdbc.queryForObject("SELECT COUNT(*) FROM users", Long.class);
+        return n == null ? 0L : n;
+    }
+
     /** 注册落库。username 唯一约束冲突以 DuplicateKeyException 上抛，服务层转 409 username_taken。 */
     public void insert(UserAccount user) {
         jdbc.update("""

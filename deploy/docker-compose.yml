@@ -1,0 +1,25 @@
+# apicc 服务端单机部署（部署线 D3：本地构建镜像，不推远端仓库）
+# 用法（仓库根执行）：
+#   cp deploy/.env.example deploy/.env   # 改好管理员口令
+#   docker compose -f deploy/docker-compose.yml up -d --build
+# 数据全部落在命名卷 apicc-data（H2 元数据 + 工作区内容 + 管理后台由镜像内置）；
+# 健康检查来自镜像 HEALTHCHECK（GET /api/v1/ping）。
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: apicc-server:local
+    container_name: apicc-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - apicc-data:/data
+    # .env 不存在时 compose 仍可启动（引导器走随机口令，docker logs 取初始密码）
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+
+volumes:
+  apicc-data:

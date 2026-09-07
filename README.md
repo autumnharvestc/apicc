@@ -39,6 +39,8 @@ pnpm -r build
 
 命令行入口为 `packages/cli/dist/bin.js`（下例以 `apicc` 指代，可自行设置别名）。所有命令均以本地工作区（含 `apicc.workspace.yaml` 的目录）为根。工作区本身是纯文本目录（分组 / 项目 / 集合 / 接口等层级），可手工编写、经 Git 版本化，或在桌面端中创建；层级约定见 `docs/` 下的设计规格。
 
+服务端（团队协作/管理后台）支持 Docker Compose 与 k8s 一键部署（含首个管理员引导），见 [docs/deploy.md](docs/deploy.md)。
+
 ```bash
 # 校验工作区结构
 apicc validate my-workspace

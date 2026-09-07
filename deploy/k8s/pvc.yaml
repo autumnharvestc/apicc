@@ -1,0 +1,13 @@
+# 数据卷（部署线 D1/D7）：H2 元数据 + 工作区内容。单机环境可用 local-path 等默认 StorageClass。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: apicc-server-data
+  labels:
+    app: apicc-server
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

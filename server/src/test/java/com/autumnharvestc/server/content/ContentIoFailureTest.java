@@ -32,6 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
+        "apicc.server.allow-registration=true",
         "spring.datasource.url=jdbc:h2:mem:apicc-content-io-test;DB_CLOSE_DELAY=-1",
         "apicc.server.data-dir=target/test-data-content-io"
 })

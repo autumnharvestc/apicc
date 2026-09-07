@@ -1,0 +1,13 @@
+# apicc 服务端 k8s 部署（部署线 D7）：纯 manifests，按序 kubectl apply -f deploy/k8s/
+# 单副本 + Recreate（H2 文件库与本地文件存储不可水平扩展，卷 RWO，D1）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apicc-server-config
+  labels:
+    app: apicc-server
+data:
+  SERVER_PORT: "8080"
+  APICC_SERVER_ALLOW_REGISTRATION: "false"
+  # 元数据库固定卷内绝对路径（镜像 ENV 已设，此处显式声明便于审计与覆盖）
+  SPRING_DATASOURCE_URL: "jdbc:h2:file:/data/metadata"

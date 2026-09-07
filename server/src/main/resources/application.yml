@@ -30,5 +30,10 @@ apicc:
     data-dir: ./server-data
     # 管理后台静态产物目录（规格 m4 §2 D2：默认与运行目录同级；pnpm -C apps/admin-web build 的 dist 内容放入此处）
     console-dir: ./console
-    allow-registration: true
+    # 注册默认关闭（部署线 D5）：首个账号走启动引导（AdminBootstrap），批量拉人时用环境变量临时开启
+    allow-registration: false
+    # 首个管理员启动引导（部署线 D6）：users 空表时按以下凭据建号；口令未设则随机生成并 WARN 打印日志（仅一次）
+    # 容器环境变量（下划线形态）：APICC_SERVER_ADMIN_USERNAME / APICC_SERVER_ADMIN_PASSWORD
+    admin-username: ""
+    admin-password: ""
     token-ttl-days: 30

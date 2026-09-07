@@ -28,7 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = "spring.datasource.url=jdbc:h2:mem:apicc-console-missing-test;DB_CLOSE_DELAY=-1")
+@TestPropertySource(properties = {"spring.datasource.url=jdbc:h2:mem:apicc-console-missing-test;DB_CLOSE_DELAY=-1", "apicc.server.allow-registration=true"})
 class ConsoleMissingContractTest {
 
     /** 每次构建随机路径，保证目录必然不存在（实现方承诺从不创建该目录）。 */
