@@ -174,6 +174,8 @@ async function startServer(jar: string, javaExe: string): Promise<void> {
       `--server.port=${serverPort}`,
       `--apicc.server.data-dir=${join(dataRoot, "server-data")}`,
       `--apicc.server.console-dir=${DIST_DIR}`, // 静态托管指向控制台构建产物（裁定 D③）
+      // 本冒烟走「注册 → 建区 → …」管理链路；部署线 D5 起注册默认关，此处显式开启
+      "--apicc.server.allow-registration=true",
     ],
     { cwd: dataRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
   );
