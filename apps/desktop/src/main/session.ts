@@ -18,6 +18,7 @@ import {
   HttpMethod,
 } from "@apicc/core";
 import { randomUUID } from "node:crypto";
+import type { ProjectGlobalSettings } from "../shared/types.js";
 
 export interface ApiLocation { api: ApiDefinition; collection: Collection; project: Project; group: Group; folder: { id: string; name: string; apis: ApiDefinition[] } | null }
 
@@ -70,7 +71,7 @@ export function createSession(options: SessionOptions = {}) {
     const group = ws.groups.find((x) => x.id === groupId);
     if (!group) throw new Error(`未找到分组: ${groupId}`);
     if (group.projects.some((x) => sameName(x.name, name, platform))) throw new Error(`项目已存在: ${name}`);
-    const project: Project = { id: randomUUID(), name, variables: {}, environments: [], collections: [], workflows: [] };
+    const project: Project = { id: randomUUID(), name, variables: {}, globals: { query: [], headers: [], cookies: [], body: [] }, environments: [], collections: [], workflows: [] };
     group.projects.push(project);
     return project;
   }
@@ -268,10 +269,38 @@ export function createSession(options: SessionOptions = {}) {
     env.baseUrls = baseUrls;
   }
 
-  /** 工作区全局设置（M9-B）：整体替换 globals（全局变量 + 全局 query/header 参数）。 */
-  function setWorkspaceGlobals(globals: Workspace["globals"]): void {
+  /** 项目级全局设置（M10 取代工作区级）：复合包络 = 全局变量（project.variables）+ 四类参数（project.globals）。 */
+  function setProjectGlobals(projectId: string, settings: ProjectGlobalSettings): void {
     const { workspace: ws } = ensureOpen();
-    ws.globals = globals;
+    const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+    if (!project) throw new Error(`未找到项目: ${projectId}`);
+    project.variables = settings.variables;
+    project.globals = { query: settings.query, headers: settings.headers, cookies: settings.cookies, body: settings.body };
+  }
+
+  function getProjectGlobals(projectId: string): ProjectGlobalSettings {
+    const { workspace: ws } = ensureOpen();
+    const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+    if (!project) throw new Error(`未找到项目: ${projectId}`);
+    const g = project.globals ?? { query: [], headers: [], cookies: [], body: [] };
+    return { variables: project.variables, query: g.query, headers: g.headers, cookies: g.cookies, body: g.body };
+  }
+
+  /**
+   * 默认分组保障（M10）：打开工作区后调用——按标记定位；缺失时同名「默认分组」就地补标记；
+   * 再缺失才创建。只在发生变更时落盘（只读打开零写入）。
+   */
+  async function ensureDefaultGroup(): Promise<void> {
+    const { workspace: ws } = ensureOpen();
+    if (ws.groups.some((x) => x.default === true)) return;
+    const byName = ws.groups.find((x) => sameName(x.name, "默认分组", platform));
+    if (byName) {
+      byName.default = true;
+      await save();
+      return;
+    }
+    ws.groups.push({ id: randomUUID(), name: "默认分组", default: true, projects: [] });
+    await save();
   }
 
   function setEnvironmentVariables(envId: string, variables: Record<string, string>): void {
@@ -315,6 +344,7 @@ export function createSession(options: SessionOptions = {}) {
     if (kind === "group") {
       const n = ws.groups.find((x) => x.id === id);
       if (!n) throw new Error(`未找到: ${id}`);
+      if (n.default === true) throw new Error("默认分组不可改名");
       if (ws.groups.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`分组已存在: ${name}`);
       n.name = name;
       return;
@@ -366,7 +396,10 @@ export function createSession(options: SessionOptions = {}) {
     // group 与其余 kind 同契约：未命中抛「未找到」（宽审查 I3，与 memory 对齐），
     // 不再静默成功——否则调用侧 save 误认为删除成功。
     if (kind === "group") {
-      if (!removeFrom(ws.groups, (x) => x.id === id)) throw new Error(`未找到: ${id}`);
+      const g = ws.groups.find((x) => x.id === id);
+      if (!g) throw new Error(`未找到: ${id}`);
+      if (g.default === true) throw new Error("默认分组不可删除");
+      removeFrom(ws.groups, (x) => x.id === id);
       return;
     }
     for (const g of ws.groups) {
@@ -448,12 +481,15 @@ export function createSession(options: SessionOptions = {}) {
       const loaded = await storage.load(dir);
       root = dir;
       workspace = loaded.workspace;
+      await ensureDefaultGroup();
       return { workspace: loaded.workspace, problems: loaded.problems as LoadProblem[], root: dir };
     },
     async create(dir: string, name: string) {
       if (existsSync(join(dir, "apicc.workspace.yaml"))) throw new Error("目录已是工作区");
       mkdirSync(dir, { recursive: true });
-      const ws: Workspace = { id: randomUUID(), name, variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+      const g: Group = { id: randomUUID(), name: "默认分组", default: true, projects: [] };
+      const ws: Workspace = { id: randomUUID(), name, variables: {}, groups: [g] };
+      await fileStorage.save(dir, ws);
       await fileStorage.save(dir, ws);
       root = dir;
       workspace = ws;
@@ -464,7 +500,7 @@ export function createSession(options: SessionOptions = {}) {
       return (await fileStorage.load(r)).problems;
     },
     createGroup, createProject, createCollection, createFolder, createApi,
-    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setWorkspaceGlobals, importProject,
+    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setProjectGlobals, getProjectGlobals, ensureDefaultGroup, importProject,
     locateApi, locateCollection, saveApi,
     locateWorkflow, createWorkflow, deleteWorkflow, saveWorkflow, setWorkflowStatus, renameWorkflow,
     renameNode, deleteNode, save,

@@ -302,6 +302,16 @@ const selectedProjectId = computed<string | null>(() => {
   return null;
 });
 
+// 环境选中态项目记忆（M10）：项目切换即换挡（恢复该项目记忆值或「无环境」）；
+// 调试与压测共享同一状态源（StressPanel 传 debug）。
+watch(
+  () => selectedProjectId.value,
+  (pid) => {
+    debug.setProject(pid);
+  },
+  { immediate: true },
+);
+
 /** 树选中节点所属集合 id：运行视图的默认选中集合（文件夹/接口向上归属）。 */
 const selectedCollectionId = computed<string | null>(() => {
   const sel = tree.selected;

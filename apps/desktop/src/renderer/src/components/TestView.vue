@@ -75,6 +75,8 @@ async function pickApi(id: string) {
 function onStress(caseId: string) {
   if (!props.editor.apiId) return;
   props.stress.form.caseId = caseId;
+  // M10：压测与调试共享项目环境选中态（start 读 form.envName——发起时同步一次）
+  props.stress.form.envName = props.debug.selectedEnvName;
   stressContext.value = true;
 }
 
@@ -149,6 +151,7 @@ function onStress(caseId: string) {
           <StressPanel
             class="stress-embed"
             :stress="stress"
+            :debug="debug"
             :api-id="editor.apiId"
             :cases="editor.api?.cases ?? []"
             :envs="editor.envs"

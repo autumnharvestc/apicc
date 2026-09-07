@@ -156,7 +156,7 @@ export interface Group extends Omit<GroupParsed, "projects" | "default"> {
   default?: boolean;
 }
 type WorkspaceParsed = z.infer<typeof WorkspaceSchema>;
-export type Workspace = Omit<WorkspaceParsed, "groups"> & { groups: Group[] };
+export type Workspace = Omit<WorkspaceParsed, "groups" | "globals"> & { groups: Group[]; globals?: WorkspaceGlobals };
 
 export const FolderSchema: z.ZodType<Folder> = z.object({
   id: z.string(),

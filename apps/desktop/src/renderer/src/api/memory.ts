@@ -32,8 +32,8 @@ import {
   type WorkflowRunResult,
   type WorkflowStatus,
   type Workspace,
-  type WorkspaceGlobals,
 } from "@apicc/core";
+import type { ProjectGlobalSettings } from "../../../shared/types.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "../../../shared/ai/contract.js";
@@ -350,7 +350,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     async wsCreate(rootPath: string, name: string): Promise<OpenResult> {
       if (existsSync(join(rootPath, WORKSPACE_FILE))) throw new Error("目录已是工作区");
       mkdirSync(rootPath, { recursive: true });
-      const ws: Workspace = { id: randomUUID(), name, variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+      const ws: Workspace = { id: randomUUID(), name, variables: {}, groups: [] };
+      ws.groups.push({ id: randomUUID(), name: "默认分组", default: true, projects: [] });
       await fileStorage.save(rootPath, ws);
       root = rootPath;
       workspace = ws;
@@ -504,14 +505,21 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       await save();
     },
 
-    async globalsSave(globals: WorkspaceGlobals): Promise<void> {
+    async globalsSave(projectId: string, settings: ProjectGlobalSettings): Promise<void> {
       const ws = ensureOpen();
-      ws.globals = globals;
+      const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+      if (!project) throw new Error(`未找到项目: ${projectId}`);
+      project.variables = settings.variables;
+      project.globals = { query: settings.query, headers: settings.headers, cookies: settings.cookies, body: settings.body };
       await save();
     },
 
-    async globalsGet(): Promise<WorkspaceGlobals> {
-      return ensureOpen().globals;
+    async globalsGet(projectId: string): Promise<ProjectGlobalSettings> {
+      const ws = ensureOpen();
+      const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+      if (!project) throw new Error(`未找到项目: ${projectId}`);
+      const g = project.globals ?? { query: [], headers: [], cookies: [], body: [] };
+      return { variables: project.variables, query: g.query, headers: g.headers, cookies: g.cookies, body: g.body };
     },
 
     async apiGet(apiId: string): Promise<ApiDetail> {
@@ -993,12 +1001,11 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */
     seedWorkspace(): void {
-      let ws = workspace;
-      if (!ws) {
-        ws = { id: randomUUID(), name: "内存工作区", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
-        workspace = ws;
+      if (!workspace) {
+        workspace = { id: randomUUID(), name: "内存工作区", variables: {}, groups: [] };
         problems = [];
       }
+      const ws = workspace;
       const g: Group = { id: randomUUID(), name: "示例分组", projects: [] };
       const p: Project = { id: randomUUID(), name: "示例项目", variables: {}, environments: [], collections: [], workflows: [] };
       const c: Collection = { id: randomUUID(), name: "示例集合", variables: {}, folders: [], apis: [] };
@@ -1007,6 +1014,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       p.collections.push(c);
       g.projects.push(p);
       ws.groups.push(g);
+      // M10 默认分组：追加在尾部（示例分组保持首位——既有测试按下标定位）
+      ws.groups.push({ id: "g-default", name: "默认分组", default: true, projects: [] });
       // 写盘失败就地消化、保留内存态：内存数组才是替身的语义核心，落盘只是为
       // reopen/validate 同语义做的最佳努力；不用发射后不管，避免无关 unhandled rejection。
       save().catch(() => undefined);

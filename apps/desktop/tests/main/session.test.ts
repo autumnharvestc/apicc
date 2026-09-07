@@ -15,7 +15,9 @@ describe("createSession", () => {
     const created = await s.create(dir, "演示");
     expect(created.workspace.name).toBe("演示");
     const opened = await s.open(dir);
-    expect(opened.workspace.groups).toEqual([]);
+    // M10：新建目录自带默认分组
+    expect(opened.workspace.groups).toHaveLength(1);
+    expect(opened.workspace.groups[0]).toMatchObject({ name: "默认分组", default: true });
     expect(s.root).toBe(dir);
   });
 
@@ -73,7 +75,7 @@ describe("createSession", () => {
     const reopened = await s2.open(dir);
     const found = s2.locateApi(api.id);
     expect(found?.api.url).toBe("/changed");
-    expect(reopened.workspace.groups).toHaveLength(1);
+    expect(reopened.workspace.groups).toHaveLength(2); // 默认分组 + 自建分组
   });
 
   it("deleteNode group 未命中时抛「未找到」（与 memory 契约对齐，宽审查 I3）", async () => {
@@ -96,7 +98,7 @@ describe("createSession", () => {
     await s.save();
     const s2 = createSession();
     await s2.open(dir);
-    const sit = s2.workspace!.groups[0]!.projects[0]!.environments.find((e) => e.name === "sit")!;
+    const sit = s2.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.environments.find((e) => e.name === "sit")!;
     expect(sit.extends).toBe("dev");
     await s2.setEnvironmentVariables(sit.id, { baseUrl: "http://s" });
     // 简报修正：session 变更操作不自动落盘（承重语义备忘，IPC 层显式 save），
@@ -104,7 +106,7 @@ describe("createSession", () => {
     await s2.save();
     const reopened = createSession();
     await reopened.open(dir);
-    const sitVars = reopened.workspace!.groups[0]!.projects[0]!.environments.find((e) => e.name === "sit")!.variables;
+    const sitVars = reopened.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.environments.find((e) => e.name === "sit")!.variables;
     expect(sitVars).toEqual({ baseUrl: "http://s" });
     expect(env.name).toBe("sit");
   });
@@ -134,7 +136,7 @@ describe("createSession", () => {
     const s2 = createSession();
     const reopened = await s2.open(dir);
     // 重开读回：改名已持久化（按 id 取，不依赖盘上目录的字典序）
-    const reopenedWfs = reopened.workspace.groups[0]!.projects[0]!.workflows;
+    const reopenedWfs = reopened.workspace.groups.find((x) => x.name === "g")!.projects[0]!.workflows;
     expect(reopenedWfs.find((w) => w.id === wf.id)!.name).toBe("新名");
     expect(existsSync(join(dir, "groups", "g", "projects", "p", "workflows", "新名"))).toBe(true);
     expect(s2.locateWorkflow(wf.id)?.workflow.name).toBe("新名");
@@ -182,7 +184,7 @@ describe("createSession", () => {
     }
     const s2 = createSession();
     const reopened = await s2.open(dir);
-    const found = reopened.workspace.groups[0]!.projects[0]!.workflows.find((w) => w.id === wf.id);
+    const found = reopened.workspace.groups.find((x) => x.name === "g")!.projects[0]!.workflows.find((w) => w.id === wf.id);
     expect(found?.name).toBe("Flow");
   });
 
@@ -258,7 +260,7 @@ describe("createSession", () => {
     await s.save();
     const s2 = createSession();
     await s2.open(dir);
-    const names = s2.workspace!.groups[0]!.projects[0]!.collections.map((x) => x.name);
+    const names = s2.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.collections.map((x) => x.name);
     expect(names).toEqual(["new-name"]);
     expect(existsSync(oldDir)).toBe(false);
   });
@@ -397,7 +399,7 @@ describe("createStressController", () => {
         return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
       },
     };
-    const c = s.workspace!.groups[0]!.projects[0]!.collections[0]!;
+    const c = s.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.collections[0]!;
     const soapApi = s.createApi(c.id, null, { name: "soap-op", method: "POST", url: "http://127.0.0.1:1/soap" });
     soapApi.protocol = "soap";
     soapApi.envelope = "<Envelope/>";
@@ -493,16 +495,18 @@ describe("session 环境模型（M9-B）", () => {
     const c = s.createCollection(p.id, "c");
     const env = s.createEnvironment(p.id, { name: "dev" });
     s.setEnvironmentBaseUrls(env.id, { [c.id]: "http://base" });
-    s.setWorkspaceGlobals({ variables: { gvar: "G" }, query: [{ key: "q", value: "1", enabled: true }], headers: [] });
+    // M10：项目级全局设置（参数四类；全局变量=project.variables 另行编辑）
+    s.setProjectGlobals(p.id, { variables: {}, query: [{ key: "q", value: "1", enabled: true }], headers: [], cookies: [], body: [] });
     await s.save();
     const s2 = createSession();
     await s2.open(dir);
-    const project = s2.workspace!.groups[0]!.projects[0]!;
+    // 打开即保障默认分组：seed 无任何带标记分组 → 同名就地补标记（不新建、不覆盖）
+    const defaultGroup = s2.workspace!.groups.find((x) => x.default === true);
+    expect(defaultGroup).toBeDefined();
+    const project = s2.workspace!.groups.find((x) => x.name === "g")!.projects[0]!;
     expect(project.environments[0]!.baseUrls).toEqual({ [c.id]: "http://base" });
-    expect(s2.workspace!.globals).toEqual({
-      variables: { gvar: "G" },
-      query: [{ key: "q", value: "1", enabled: true }],
-      headers: [],
+    expect(s2.getProjectGlobals(p.id)).toEqual({
+      variables: {}, query: [{ key: "q", value: "1", enabled: true }], headers: [], cookies: [], body: [],
     });
     // 未命中环境照旧抛「未找到」
     expect(() => s2.setEnvironmentBaseUrls("nope", {})).toThrow("未找到环境");

@@ -11,8 +11,19 @@ import type {
   WorkflowRunResult,
   WorkflowStatus,
   WorkspaceGlobals,
+  ProjectGlobals,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
+import type { KeyValuePair } from "@apicc/core";
+
+/** 项目级全局设置（M10）：全局变量（=project.variables）+ 四类全局参数的复合包络。 */
+export interface ProjectGlobalSettings {
+  variables: Record<string, string>;
+  query: KeyValuePair[];
+  headers: KeyValuePair[];
+  cookies: KeyValuePair[];
+  body: KeyValuePair[];
+}
 import type { AiSuggestedCase } from "@apicc/core";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "./ai/contract.js";
 import type { PluginsListResult } from "./plugins/contract.js";
@@ -130,8 +141,8 @@ export interface ApiccApi {
   envCreate(input: EnvCreateInput): Promise<Environment>;
   envVarsSave(envId: string, variables: Record<string, string>): Promise<void>;
   envBaseUrlsSave(envId: string, baseUrls: Record<string, string>): Promise<void>;
-  globalsSave(globals: WorkspaceGlobals): Promise<void>;
-  globalsGet(): Promise<WorkspaceGlobals>;
+  globalsSave(projectId: string, globals: ProjectGlobalSettings): Promise<void>;
+  globalsGet(projectId: string): Promise<ProjectGlobalSettings>;
   apiGet(apiId: string): Promise<ApiDetail>;
   apiSave(api: ApiDefinition): Promise<void>;
   debugSend(input: DebugInput): Promise<DebugOutput>;

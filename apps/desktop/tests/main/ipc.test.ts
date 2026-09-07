@@ -39,7 +39,9 @@ describe("IPC 处理器", () => {
     const opened = await deps.handle("ws:create", {}, dir, "演示");
     expect(opened.workspace.name).toBe("演示");
     let tree = await deps.handle("tree:get", {});
-    expect(tree.children).toEqual([]);
+    // M10：默认分组是唯一顶层节点
+    expect(tree.children).toHaveLength(1);
+    expect(tree.children![0]).toMatchObject({ kind: "group", label: "默认分组" });
     const group = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
     const project = await deps.handle("node:create", {}, { kind: "project", parentId: group.id, name: "p" });
     const collection = await deps.handle("node:create", {}, { kind: "collection", parentId: project.id, name: "c" });
@@ -48,7 +50,8 @@ describe("IPC 处理器", () => {
     expect(group).toEqual({ kind: "group", id: group.id, label: "g" });
     expect(api).toEqual({ kind: "api", id: api.id, label: "a", method: "GET" });
     tree = await deps.handle("tree:get", {});
-    const apiNode = tree.children![0]!.children![0]!.children![0]!.children![0]!;
+    const gNode = tree.children!.find((x: { label: string }) => x.label === "g")!;
+    const apiNode = gNode.children![0]!.children![0]!.children![0]!;
     expect(apiNode.id).toBe(api.id);
     const fetched = await deps.handle("api:get", {}, api.id);
     expect(fetched.api.name).toBe("a");
@@ -68,7 +71,8 @@ describe("IPC 处理器", () => {
     const fetched = await deps.handle("api:get", {}, api.id);
     expect(fetched.api.name).toBe("a");
     const tree = await deps.handle("tree:get", {});
-    const folderNode = tree.children![0]!.children![0]!.children![0]!.children!.find((n: { kind: string }) => n.kind === "folder")!;
+    const gNode = tree.children!.find((x: { label: string }) => x.label === "g")!;
+    const folderNode = gNode.children![0]!.children![0]!.children!.find((n: { kind: string }) => n.kind === "folder")!;
     expect(folderNode.children!.map((c: { id: string }) => c.id)).toContain(api.id);
   });
 
@@ -109,7 +113,7 @@ describe("IPC 处理器", () => {
     const rereadSession = createSession();
     const reread = createIpcDeps({ session: rereadSession, pickDirectory: async () => dir, saveFile: async () => "" });
     await reread.handle("ws:open", {}, dir);
-    const sit = rereadSession.workspace!.groups[0]!.projects[0]!.environments[0]!;
+    const sit = rereadSession.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.environments[0]!;
     expect(sit.variables).toEqual({ baseUrl: "http://s" });
     expect(sit.extends).toBe("dev");
   });
@@ -177,9 +181,9 @@ describe("IPC 处理器", () => {
     const preview = await deps.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
     await deps.handle("import:apply", {}, { groupName: "已有分组", project: preview.project });
     const tree = await deps.handle("tree:get", {});
-    expect(tree.children).toHaveLength(1);
-    expect(tree.children![0]!.id).toBe(g.id);
-    expect(tree.children![0]!.children!.map((n: { label: string }) => n.label)).toContain("导入项目");
+    expect(tree.children).toHaveLength(2); // 默认分组 + 已有分组
+    const existingGroup = tree.children!.find((n: { id: string }) => n.id === g.id)!;
+    expect(existingGroup.children!.map((n: { label: string }) => n.label)).toContain("导入项目");
   });
 
   it("import:preview/apply 入参形状非法时抛带频道名的可读错误（zod 校验先行）", async () => {
@@ -358,7 +362,8 @@ describe("工作流 IPC", () => {
     expect((await deps.handle("wf:list", {}, { projectId: project.id })).map((w: { name: string }) => w.name)).toEqual(["new-name-flow"]);
     // 树 DTO project 节点 workflows 摘要同步（侧树入口数据源）
     const tree = await deps.handle("tree:get", {});
-    expect(tree.children![0]!.children![0]!.workflows).toEqual([{ id: wf.id, name: "new-name-flow", status: "draft" }]);
+    const gNodeWf = tree.children!.find((x: { label: string }) => x.label === "g")!;
+    expect(gNodeWf.children![0]!.workflows).toEqual([{ id: wf.id, name: "new-name-flow", status: "draft" }]);
     // 落盘读回：新目录可读、旧目录已清理（rename 分支显式 save → cleanupOrphanDirs 补层）
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);

@@ -97,7 +97,7 @@ async function saveGlobalVars() {
     if (key) variables[key] = row.value;
   }
   try {
-    await props.envs.saveGlobals({ ...props.envs.globals, variables });
+    await props.envs.saveGlobals(props.projectId!, { ...props.envs.globals, variables });
     gvarsSaved.value = true;
   } catch (e) {
     props.reportError(e);
@@ -112,7 +112,7 @@ async function saveGlobalParams() {
   const toParams = (rows: ParamRow[]): KeyValuePair[] =>
     rows.filter((r) => r.key.trim()).map((r) => ({ key: r.key.trim(), value: r.value, enabled: r.enabled }));
   try {
-    await props.envs.saveGlobals({
+    await props.envs.saveGlobals(props.projectId!, {
       ...props.envs.globals,
       query: toParams(gqueryRows.value),
       headers: toParams(gheaderRows.value),
