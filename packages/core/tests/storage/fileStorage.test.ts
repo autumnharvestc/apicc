@@ -45,8 +45,8 @@ describe("fileStorage", () => {
               method: "POST", url: "{{baseUrl}}/orders", headers: [], query: [],
               design: "# 创建订单设计",
               cases: [
-                { id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [] },
-                { id: "t2", name: "ok", scope: "sit", parameters: {}, assertions: [] },
+                { id: "t1", name: "ok", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
+                { id: "t2", name: "ok", scope: "sit", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
               ],
             }],
           }],
@@ -241,11 +241,13 @@ describe("fileStorage", () => {
     const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
     const ws: Workspace = {
       id: "w1", name: "demo", variables: { region: "cn", env: "prod" },
-      globals: { variables: { global: "1" }, query: [{ key: "q", value: "1", enabled: true }], headers: [{ key: "h", value: "1", enabled: true }] },
+      // M10 弃用字段：schema 保留仅为旧文件读兼容（parse default 必填出现在输出），运行器/写入不再使用
+      globals: { variables: {}, query: [], headers: [] },
       groups: [{
         id: "g1", name: "ecommerce",
         projects: [{
           id: "p1", name: "order-service", variables: { timeoutMs: "3000" },
+          globals: { query: [{ key: "gq", value: "1", enabled: true }], headers: [], cookies: [{ key: "sid", value: "abc", enabled: true }], body: [] },
           workflows: [],
           environments: [
             { id: "e1", name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" }, baseUrls: { c1: "http://b1" } },
@@ -253,9 +255,10 @@ describe("fileStorage", () => {
           ],
           collections: [{
             id: "c1", name: "order-api", variables: { pageSize: "20" },
-            scripts: { pre: "pm.variables.set('k','v')", post: "pm.assert(true,'ok')" },
+            preOperations: [{ id: "c1-pre-legacy", type: "script", content: "pm.variables.set('k','v')" }],
+            postOperations: [{ id: "c1-post-legacy", type: "script", content: "pm.assert(true,'ok')" }],
             folders: [{
-              id: "f1", name: "支付", apis: [{
+              id: "f1", name: "支付", folders: [], preOperations: [], postOperations: [], apis: [{
                 id: "a2", name: "pay-order", version: "1.0.0", deprecated: false,
                 method: "POST", protocol: "http", url: "{{baseUrl}}/pay",
                 headers: [{ key: "X-Sign", value: "s", enabled: true }],
@@ -266,6 +269,8 @@ describe("fileStorage", () => {
                   id: "t3", name: "ok", scope: "base", parameters: { oid: "1" },
                   dataDriver: { sourcePath: "d.csv", format: "csv" },
                   preScript: "pm.variables.set('x','1')", postScript: "pm.assert(true,'y')",
+                  preOperations: [{ id: "t3-pre-legacy", type: "script", content: "pm.variables.set('x','1')" }],
+                  postOperations: [{ id: "t3-post-legacy", type: "script", content: "pm.assert(true,'y')" }],
                   assertions: [{ id: "as1", target: "status", op: "eq", expected: "200" }],
                 }],
               }],
@@ -279,8 +284,8 @@ describe("fileStorage", () => {
               auth: { type: "bearer", token: "tk", placement: "header" },
               design: "# 创建订单设计",
               cases: [
-                { id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [] },
-                { id: "t2", name: "ok", scope: "sit", parameters: {}, assertions: [] },
+                { id: "t1", name: "ok", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
+                { id: "t2", name: "ok", scope: "sit", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
               ],
             }],
           }],

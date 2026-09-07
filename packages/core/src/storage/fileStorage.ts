@@ -6,7 +6,7 @@ import {
   ApiDefinitionSchema, CollectionSchema, EnvironmentSchema, FolderSchema, GroupSchema,
   ProjectSchema, TestCaseSchema, WorkspaceSchema,
 } from "../domain/model.js";
-import type { ApiDefinition, Collection, Folder, Group, Project, Workspace } from "../domain/model.js";
+import type { ApiDefinition, Collection, Folder, Group, Operation, Project, TestCase, Workspace } from "../domain/model.js";
 import { WorkflowSchema } from "../workflow/model.js";
 import type { LoadProblem, StorageAdapter } from "../plugin/types.js";
 
@@ -75,6 +75,31 @@ function saveApiDir(aDir: string, api: ApiDefinition): void {
   }
 }
 
+// —— M10 操作归一：旧「脚本」字段读取时转换为一条自定义脚本操作（写回只写新形态） ——
+function scriptToOperation(id: string, content: string): Operation {
+  return { id, type: "script", content };
+}
+
+function normalizeCaseOperations(tc: TestCase): void {
+  if (tc.preScript && (tc.preOperations ?? []).length === 0) {
+    tc.preOperations = [scriptToOperation(`${tc.id}-pre-legacy`, tc.preScript)];
+  }
+  if (tc.postScript && (tc.postOperations ?? []).length === 0) {
+    tc.postOperations = [scriptToOperation(`${tc.id}-post-legacy`, tc.postScript)];
+  }
+}
+
+function normalizeContainerOperations(container: Collection | Folder, legacy?: { pre?: string; post?: string }): void {
+  const pre = legacy?.pre;
+  const post = legacy?.post;
+  if (pre && (container.preOperations ?? []).length === 0) {
+    container.preOperations = [scriptToOperation(`${container.id}-pre-legacy`, pre)];
+  }
+  if (post && (container.postOperations ?? []).length === 0) {
+    container.postOperations = [scriptToOperation(`${container.id}-post-legacy`, post)];
+  }
+}
+
 /** 载入单个接口目录；relDir 为相对工作区根的目录路径，problem 的 file 一律用它拼接（规格 §8 可定位）。 */
 async function loadApiDir(relDir: string, dir: string, problems: LoadProblem[]): Promise<ApiDefinition | null> {
   const apiFile = join(dir, "api.yaml");
@@ -100,7 +125,9 @@ async function loadApiDir(relDir: string, dir: string, problems: LoadProblem[]):
         problems.push({ file: join(relDir, "cases", f), message: cRes.error });
         continue;
       }
-      api.cases.push(cRes.data);
+      const tc = cRes.data;
+      normalizeCaseOperations(tc);
+      api.cases.push(tc);
     }
   }
   return api;
@@ -185,28 +212,40 @@ export const fileStorage: StorageAdapter = {
                 continue;
               }
               const collection: Collection = { ...cRes.data, folders: [], apis: [] };
+              normalizeContainerOperations(collection, collection.scripts);
               const foldersDir = join(collDir, cName, "folders");
               if (existsSync(foldersDir)) {
-                for (const fName of sortedNames(foldersDir)) {
-                  const fDir = join(foldersDir, fName);
-                  const fRes = loadYaml(join(fDir, "folder.yaml"), FolderSchema);
+                // M10：文件夹可嵌套——递归读取（folder.yaml 的 folders 字段由 parse default 兜空）
+                const loadFolder = async (relBase: string, dir: string): Promise<Folder | null> => {
+                  const fRes = loadYaml(join(dir, "folder.yaml"), FolderSchema);
                   if (!fRes.ok) {
-                    problems.push({ file: join(pRel, "collections", cName, "folders", fName, "folder.yaml"), message: fRes.error });
-                    continue;
+                    problems.push({ file: join(relBase, "folder.yaml"), message: fRes.error });
+                    return null;
                   }
-                  const folder: Folder = { ...fRes.data, apis: [] };
-                  const fApisDir = join(fDir, "apis");
+                  const folder: Folder = { ...fRes.data, folders: [], apis: [] };
+                  const fApisDir = join(dir, "apis");
                   if (existsSync(fApisDir)) {
                     for (const aName of sortedNames(fApisDir)) {
                       const api = await loadApiDir(
-                        join(pRel, "collections", cName, "folders", fName, "apis", aName),
+                        join(relBase, "apis", aName),
                         join(fApisDir, aName),
                         problems,
                       );
                       if (api) folder.apis.push(api);
                     }
                   }
-                  collection.folders.push(folder);
+                  const subDirs = join(dir, "folders");
+                  if (existsSync(subDirs)) {
+                    for (const subName of sortedNames(subDirs)) {
+                      const sub = await loadFolder(join(relBase, "folders", subName), join(subDirs, subName));
+                      if (sub) folder.folders!.push(sub);
+                    }
+                  }
+                  return folder;
+                };
+                for (const fName of sortedNames(foldersDir)) {
+                  const folder = await loadFolder(join(pRel, "collections", cName, "folders", fName), join(foldersDir, fName));
+                  if (folder) collection.folders.push(folder);
                 }
               }
               const apisDir = join(collDir, cName, "apis");
@@ -232,13 +271,18 @@ export const fileStorage: StorageAdapter = {
   },
 
   async save(root: string, ws: Workspace) {
-    writeYaml(join(root, WORKSPACE_FILE), { id: ws.id, name: ws.name, variables: ws.variables, globals: ws.globals });
+    // M10：workspace 级 globals 弃用——不再写入（字段仅为旧文件读兼容保留在 schema）。
+    writeYaml(join(root, WORKSPACE_FILE), { id: ws.id, name: ws.name, variables: ws.variables });
     for (const g of ws.groups) {
       const gDir = join(root, "groups", g.name);
-      writeYaml(join(gDir, "group.yaml"), { id: g.id, name: g.name });
+      // M10：默认分组标记落盘（自建分组 undefined 不写键）
+      writeYaml(join(gDir, "group.yaml"), { id: g.id, name: g.name, ...(g.default ? { default: true } : {}) });
       for (const p of g.projects) {
         const pDir = join(gDir, "projects", p.name);
-        writeYaml(join(pDir, "project.yaml"), { id: p.id, name: p.name, variables: p.variables });
+        // M10：项目级全局参数随 project.yaml 落盘（全局变量 = variables 字段本身）
+        writeYaml(join(pDir, "project.yaml"), {
+          id: p.id, name: p.name, variables: p.variables, globals: p.globals,
+        });
         for (const e of p.environments) {
           writeYaml(join(pDir, "environments", `${e.name}.yaml`), {
             id: e.id, name: e.name, extends: e.extends, variables: e.variables, baseUrls: e.baseUrls,
@@ -251,18 +295,29 @@ export const fileStorage: StorageAdapter = {
         }
         for (const c of p.collections) {
           const cDir = join(pDir, "collections", c.name);
+          // M10：只写新形态操作（旧 scripts 已在 load 归一，内存模型不再携带）
           writeYaml(join(cDir, "collection.yaml"), {
-            id: c.id, name: c.name, variables: c.variables, scripts: c.scripts,
+            id: c.id, name: c.name, variables: c.variables,
+            preOperations: c.preOperations, postOperations: c.postOperations,
           });
           for (const api of c.apis) {
             saveApiDir(join(cDir, "apis", api.name), api);
           }
-          for (const f of c.folders) {
-            const fDir = join(cDir, "folders", f.name);
-            writeYaml(join(fDir, "folder.yaml"), { id: f.id, name: f.name });
-            for (const api of f.apis) {
+          const saveFolder = (folder: Folder, baseDir: string): void => {
+            const fDir = join(baseDir, "folders", folder.name);
+            writeYaml(join(fDir, "folder.yaml"), {
+              id: folder.id, name: folder.name,
+              preOperations: folder.preOperations, postOperations: folder.postOperations,
+            });
+            for (const api of folder.apis) {
               saveApiDir(join(fDir, "apis", api.name), api);
             }
+            for (const sub of folder.folders ?? []) {
+              saveFolder(sub, fDir);
+            }
+          };
+          for (const f of c.folders) {
+            saveFolder(f, cDir);
           }
         }
       }

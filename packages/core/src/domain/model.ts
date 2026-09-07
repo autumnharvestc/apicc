@@ -56,6 +56,17 @@ export const DataDriverSchema = z.object({
 }).strict();
 export type DataDriver = z.infer<typeof DataDriverSchema>;
 
+/** 前置/后置操作（M10）：有序列表，脚本为第一版操作类型（后续可扩展延时/数据库等）。 */
+export const OperationSchema = z.object({
+  id: z.string(),
+  type: z.literal("script"),
+  content: z.string().default(""),
+}).strict();
+export type Operation = z.infer<typeof OperationSchema>;
+
+/** 操作列表字段（读兼容旧「脚本」字段的归一在 fileStorage load 侧完成，schema 不收旧字段）。 */
+export const OperationListSchema = z.array(OperationSchema).default([]);
+
 /** scope 为字符串 "base" 或环境名（引用 Environment.name）。 */
 export const TestCaseSchema = z.object({
   id: z.string(),
@@ -63,11 +74,18 @@ export const TestCaseSchema = z.object({
   scope: z.string().default("base"),
   parameters: z.record(z.string(), z.string()).default({}),
   dataDriver: DataDriverSchema.optional(),
+  // M10：前置/后置操作（读兼容——preScript/postScript 仍可选保留，load 归一后写新形态）
   preScript: z.string().optional(),
   postScript: z.string().optional(),
+  preOperations: OperationListSchema.default([]),
+  postOperations: OperationListSchema.default([]),
   assertions: z.array(AssertionSchema).default([]),
 }).strict();
-export type TestCase = z.infer<typeof TestCaseSchema>;
+type TestCaseParsed = z.infer<typeof TestCaseSchema>;
+export type TestCase = Omit<TestCaseParsed, "preOperations" | "postOperations"> & {
+  preOperations?: Operation[];
+  postOperations?: Operation[];
+};
 
 export const ApiDefinitionSchema = z.object({
   id: z.string(),
@@ -109,27 +127,56 @@ export const ApiDefinitionSchema = z.object({
 // protocol 放宽为可选：strict 解析结果仍可赋值给这些类型，手写字面量免补字段（旧调用方零改动）。
 /** parse 后的完整接口形状（protocol 恒有值），供需要全量形状的调用方使用。 */
 export type ApiDefinitionParsed = z.infer<typeof ApiDefinitionSchema>;
-type LooseApi = Omit<ApiDefinitionParsed, "protocol"> & { protocol?: Protocol };
+type LooseApi = Omit<ApiDefinitionParsed, "protocol" | "cases"> & { protocol?: Protocol; cases: TestCase[] };
 export type ApiDefinition = LooseApi;
 
-type FolderParsed = z.infer<typeof FolderSchema>;
-export type Folder = Omit<FolderParsed, "apis"> & { apis: LooseApi[] };
+export interface Folder {
+  id: string;
+  name: string;
+  apis: LooseApi[];
+  folders?: Folder[];
+  preOperations?: Operation[];
+  postOperations?: Operation[];
+}
 type CollectionParsed = z.infer<typeof CollectionSchema>;
-export type Collection = Omit<CollectionParsed, "apis" | "folders"> & { apis: LooseApi[]; folders: Folder[] };
+export interface Collection extends Omit<CollectionParsed, "apis" | "folders" | "preOperations" | "postOperations"> {
+  apis: LooseApi[];
+  folders: Folder[];
+  preOperations?: Operation[];
+  postOperations?: Operation[];
+}
 type ProjectParsed = z.infer<typeof ProjectSchema>;
-export type Project = Omit<ProjectParsed, "collections"> & { collections: Collection[] };
+export interface Project extends Omit<ProjectParsed, "collections" | "globals"> {
+  collections: Collection[];
+  globals?: ProjectGlobals;
+}
 type GroupParsed = z.infer<typeof GroupSchema>;
-export type Group = Omit<GroupParsed, "projects"> & { projects: Project[] };
+export interface Group extends Omit<GroupParsed, "projects" | "default"> {
+  projects: Project[];
+  default?: boolean;
+}
 type WorkspaceParsed = z.infer<typeof WorkspaceSchema>;
 export type Workspace = Omit<WorkspaceParsed, "groups"> & { groups: Group[] };
 
-export const FolderSchema = z.object({ id: z.string(), name: z.string(), apis: z.array(ApiDefinitionSchema).default([]) }).strict();
+export const FolderSchema: z.ZodType<Folder> = z.object({
+  id: z.string(),
+  name: z.string(),
+  apis: z.array(ApiDefinitionSchema).default([]),
+  // M10：文件夹可嵌套且任意层级可挂前置/后置操作（无变量）。自引用经 z.lazy（显式注解破循环推导）。
+  folders: z.lazy(() => z.array(FolderSchema)).default([]),
+  preOperations: OperationListSchema.default([]),
+  postOperations: OperationListSchema.default([]),
+}).strict();
 
+// 模块（M10 更名：UI 术语「模块」，存储 kind/字段名保持 collection 兼容）= 项目内一个服务。
 export const CollectionSchema = z.object({
   id: z.string(),
   name: z.string(),
   variables: z.record(z.string(), z.string()).default({}),
+  // 读兼容（M10）：旧 scripts 字段仍可解析（load 侧归一为操作），新写入只写 operations。
   scripts: z.object({ pre: z.string().optional(), post: z.string().optional() }).strict().optional(),
+  preOperations: OperationListSchema.default([]),
+  postOperations: OperationListSchema.default([]),
   folders: z.array(FolderSchema).default([]),
   apis: z.array(ApiDefinitionSchema).default([]),
 }).strict();
@@ -145,19 +192,37 @@ export const EnvironmentSchema = z.object({
 }).strict();
 export type Environment = z.infer<typeof EnvironmentSchema>;
 
+// 项目级全局参数（M10，四类）：归属项目。全局变量即 project.variables（UI 名「全局变量」），不在此处。
+// body 仅对 form-data / x-www-form-urlencoded 请求合并；cookies 序列化为 Cookie 头（接口自有 Cookie 整头优先）。
+export const ProjectGlobalsSchema = z.object({
+  query: z.array(KeyValuePairSchema).default([]),
+  headers: z.array(KeyValuePairSchema).default([]),
+  cookies: z.array(KeyValuePairSchema).default([]),
+  body: z.array(KeyValuePairSchema).default([]),
+}).strict();
+export type ProjectGlobalsParsed = z.infer<typeof ProjectGlobalsSchema>;
+export type ProjectGlobals = ProjectGlobalsParsed;
+
 export const ProjectSchema = z.object({
   id: z.string(),
   name: z.string(),
   variables: z.record(z.string(), z.string()).default({}),
+  globals: ProjectGlobalsSchema.default({ query: [], headers: [], cookies: [], body: [] }),
   environments: z.array(EnvironmentSchema).default([]),
   collections: z.array(CollectionSchema).default([]),
   workflows: z.array(WorkflowSchema).default([]),
 }).strict();
 
-export const GroupSchema = z.object({ id: z.string(), name: z.string(), projects: z.array(ProjectSchema).default([]) }).strict();
+export const GroupSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  // 默认分组标记（M10）：持久化识别（不靠名字）；默认分组不可删除不可改名。
+  default: z.boolean().optional(),
+  projects: z.array(ProjectSchema).default([]),
+}).strict();
 
-// 工作区全局参数（M9-B）：跨环境公用——全局变量进变量链最低层（环境 > 全局），
-// 全局 query/header 追加到每个请求（请求同名项优先）。
+// 【弃用（M10）】工作区级 globals 已被 Project.globals 取代：字段仅为旧文件 strict 解析兼容
+// 而保留，运行器与 UI 不再读写。
 export const WorkspaceGlobalsSchema = z.object({
   variables: z.record(z.string(), z.string()).default({}),
   query: z.array(KeyValuePairSchema).default([]),
