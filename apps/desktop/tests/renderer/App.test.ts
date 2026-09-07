@@ -198,8 +198,10 @@ describe("App 视图切换装配（M8 模块化）", () => {
     await flushPromises();
     expect(wrapper.find('[data-testid="run-view"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="runs-history-btn"]').exists()).toBe(true);
-    // 导入模块 + 取消经 close 事件回接口模块调试子视图
-    await wrapper.find('[data-testid="rail-import"]').trigger("click");
+    // 导入（M10 归接口模块）：接口头按钮打开向导，取消回调试子视图
+    await wrapper.find('[data-testid="rail-api"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="api-import-btn"]').trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="import-wizard"]').exists()).toBe(true);
     await wrapper.find('[data-testid="import-cancel"]').trigger("click");

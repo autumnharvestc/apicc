@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Workspace } from "@apicc/core";
+import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Project, type Workspace } from "@apicc/core";
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
@@ -13,6 +13,7 @@ import {
   OnlineRoleSchema,
 } from "../shared/online/contract.js";
 import type { OnlineFilesBatchInput, OnlineWorkspaceOpenInput } from "../shared/online/types.js";
+import type { ContainerSaveInput, ProjectGlobalSettings } from "../shared/types.js";
 import { createOnlineSession, type OnlineSession } from "./online/session.js";
 import { scanDirFiles, writeFiles } from "./online/migrate.js";
 import type { OnlineClient } from "./online/client.js";
@@ -139,8 +140,10 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.EnvCreate]: z.tuple([EnvCreateInputSchema]),
   [IpcChannel.EnvVarsSave]: z.tuple([z.string(), z.record(z.string(), z.string())]),
   [IpcChannel.EnvBaseUrlsSave]: z.tuple([z.string(), z.record(z.string(), z.string())]),
-  [IpcChannel.GlobalsSave]: z.tuple([z.record(z.string(), z.unknown())]),
-  [IpcChannel.GlobalsGet]: z.tuple([]),
+  [IpcChannel.ContainerSave]: z.tuple([z.record(z.string(), z.unknown())]),
+  [IpcChannel.ContainerGet]: z.tuple([z.enum(["collection", "folder"]), z.string()]),
+  [IpcChannel.GlobalsSave]: z.tuple([z.string(), z.record(z.string(), z.unknown())]),
+  [IpcChannel.GlobalsGet]: z.tuple([z.string()]),
   [IpcChannel.ApiGet]: z.tuple([z.string()]),
   [IpcChannel.ApiSave]: z.tuple([ApiDefinitionSchema]),
   [IpcChannel.DebugSend]: z.tuple([DebugInputSchema]),
@@ -412,12 +415,23 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return undefined;
       }
       case IpcChannel.GlobalsSave: {
-        session.setWorkspaceGlobals(a[0] as Workspace["globals"]);
+        const [projectId, globals] = a as [string, ProjectGlobalSettings];
+        session.setProjectGlobals(projectId, globals);
         await session.save();
         return undefined;
       }
       case IpcChannel.GlobalsGet: {
-        return session.workspace!.globals;
+        return session.getProjectGlobals(a[0] as string);
+      }
+      case IpcChannel.ContainerGet: {
+        const [kind, id] = a as ["collection" | "folder", string];
+        return session.getContainer(kind, id);
+      }
+      case IpcChannel.ContainerSave: {
+        const input = a[0] as ContainerSaveInput;
+        session.saveContainer(input);
+        await session.save();
+        return undefined;
       }
       case IpcChannel.ApiGet: {
         const loc = session.locateApi(a[0] as string);

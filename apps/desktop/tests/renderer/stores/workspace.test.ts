@@ -16,7 +16,7 @@ describe("workspace store", () => {
     api.seedWorkspace();
     await store.open("/tmp/ws");
     expect(store.opened).toBe(true);
-    expect(store.tree?.children).toHaveLength(1);
+    expect(store.tree?.children).toHaveLength(2); // 示例分组 + 默认分组（M10）
   });
 
   it("打开带问题文件的工作区时 problems 可见", async () => {

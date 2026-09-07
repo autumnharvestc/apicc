@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Input as AInput, Select as ASelect, Table as ATable } from "ant-design-vue";
-import type { Assertion } from "@apicc/core";
+import type { Assertion, TestCase } from "@apicc/core";
 import type { useCasesStore } from "../stores/cases.js";
 import type { useDebugStore } from "../stores/debug.js";
 import type { useEditorStore } from "../stores/editor.js";
@@ -95,6 +95,31 @@ function setTarget(record: Assertion, target: Assertion["target"]) {
 
 function addAssertion() {
   selected.value?.assertions.push({ id: crypto.randomUUID(), target: "status", op: "eq", expected: "" });
+}
+
+// —— M10 操作列表：增删/排序（数组不存在时先初始化——旧数据兼容） ——
+type CaseOperation = NonNullable<TestCase["preOperations"]>[number];
+
+function opsList(kind: "pre" | "post"): CaseOperation[] {
+  const target = selected.value!;
+  if (kind === "pre") {
+    target.preOperations ??= [];
+    return target.preOperations;
+  }
+  target.postOperations ??= [];
+  return target.postOperations;
+}
+
+function addOp(kind: "pre" | "post") {
+  opsList(kind).push({ id: crypto.randomUUID(), type: "script", content: "" });
+}
+
+function moveOp(kind: "pre" | "post", index: number, delta: -1 | 1) {
+  const list = opsList(kind);
+  const target = index + delta;
+  if (target < 0 || target >= list.length) return;
+  const [item] = list.splice(index, 1);
+  list.splice(target, 0, item!);
 }
 
 function removeAssertion(index: number) {
@@ -198,14 +223,35 @@ function removeAssertion(index: number) {
         </a-table>
         <a-button size="small" data-testid="assert-add" @click="addAssertion">{{ t("case.addAssert") }}</a-button>
 
+        <!-- M10：前置/后置操作（有序脚本操作列表；legacy preScript/postScript 保留只读迁移提示） -->
         <div class="scripts">
           <div class="script-row">
-            <label>{{ t("case.preScript") }}</label>
-            <a-textarea v-model:value="selected.preScript" :rows="3" data-testid="pre-script" class="script-text" />
+            <label>{{ t("container.preOperations") }}</label>
+            <div class="ops-list" data-testid="case-pre-ops">
+              <div v-for="(op, index) in selected.preOperations ?? []" :key="op.id" class="op-row">
+                <div class="op-btns">
+                  <a-button size="small" type="text" :disabled="index === 0" @click="moveOp('pre', index, -1)">↑</a-button>
+                  <a-button size="small" type="text" :disabled="index === (selected!.preOperations?.length ?? 0) - 1" @click="moveOp('pre', index, 1)">↓</a-button>
+                  <a-button size="small" danger type="text" data-testid="case-op-delete" @click="opsList('pre').splice(index, 1)">×</a-button>
+                </div>
+                <a-textarea v-model:value="op.content" :rows="3" class="script-text" data-testid="case-op-content" />
+              </div>
+              <a-button size="small" data-testid="case-pre-op-add" @click="addOp('pre')">{{ t("container.addOperation") }}</a-button>
+            </div>
           </div>
           <div class="script-row">
-            <label>{{ t("case.postScript") }}</label>
-            <a-textarea v-model:value="selected.postScript" :rows="3" data-testid="post-script" class="script-text" />
+            <label>{{ t("container.postOperations") }}</label>
+            <div class="ops-list" data-testid="case-post-ops">
+              <div v-for="(op, index) in selected.postOperations ?? []" :key="op.id" class="op-row">
+                <div class="op-btns">
+                  <a-button size="small" type="text" :disabled="index === 0" @click="moveOp('post', index, -1)">↑</a-button>
+                  <a-button size="small" type="text" :disabled="index === (selected!.postOperations?.length ?? 0) - 1" @click="moveOp('post', index, 1)">↓</a-button>
+                  <a-button size="small" danger type="text" data-testid="case-op-delete" @click="opsList('post').splice(index, 1)">×</a-button>
+                </div>
+                <a-textarea v-model:value="op.content" :rows="3" class="script-text" data-testid="case-op-content" />
+              </div>
+              <a-button size="small" data-testid="case-post-op-add" @click="addOp('post')">{{ t("container.addOperation") }}</a-button>
+            </div>
           </div>
         </div>
       </template>
@@ -277,4 +323,7 @@ function removeAssertion(index: number) {
   font-family: ui-monospace, monospace;
   resize: vertical;
 }
+.ops-list { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.op-row { display: flex; gap: 6px; align-items: flex-start; }
+.op-btns { display: flex; flex-direction: column; }
 </style>

@@ -10,6 +10,7 @@ import type { useTreeStore } from "../stores/tree.js";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
 import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
+import ContainerManageDialog from "./ContainerManageDialog.vue";
 
 /**
  * 左侧树：递归结构按 DTO 固定深度展开（分组→项目→集合→[文件夹→]接口；project 末尾
@@ -182,6 +183,14 @@ function selectNode(node: TreeNodeDTO) {
   // 只读模式（在线）：不写本地树选中态，仅向上发选中事件（App 路由到在线编辑链路）
   if (!props.readonly) props.tree.select(node.kind, node.id);
   emit("select", node.kind, node.id);
+}
+
+// —— 容器管理对话框（M10）：模块（变量/操作）、文件夹（操作） ——
+const manageState = ref<{ open: boolean; kind: "collection" | "folder"; id: string; name: string }>({
+  open: false, kind: "collection", id: "", name: "",
+});
+function openManage(kind: "collection" | "folder", id: string, name: string) {
+  manageState.value = { open: true, kind, id, name };
 }
 
 // —— 对话框（创建/重命名/删除共用一个 ConfirmDialog 实例） ——
@@ -383,8 +392,10 @@ function startWorkflowDelete(node: TreeNodeDTO) {
             <span v-if="!readonly" class="actions">
               <button v-if="dto.kind === 'group'" class="act" data-testid="new-project" @click="startCreate(dto, 'project')">{{ t("tree.newProject") }}</button>
               <button v-if="dto.kind === 'project'" class="act" data-testid="new-collection" @click="startCreate(dto, 'collection')">{{ t("tree.newCollection") }}</button>
+              <button v-if="dto.kind === 'collection'" class="act" data-testid="container-manage" @click="openManage('collection', dto.id, dto.label)">{{ t("container.manage") }}</button>
               <button v-if="dto.kind === 'collection'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
               <button v-if="dto.kind === 'collection'" class="act" data-testid="new-folder" @click="startCreate(dto, 'folder')">{{ t("tree.newFolder") }}</button>
+              <button v-if="dto.kind === 'folder'" class="act" data-testid="container-manage" @click="openManage('folder', dto.id, dto.label)">{{ t("container.manage") }}</button>
               <button v-if="dto.kind === 'folder'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
               <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
               <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
@@ -393,6 +404,16 @@ function startWorkflowDelete(node: TreeNodeDTO) {
         </template>
       </a-tree>
     </template>
+    <ContainerManageDialog
+      v-if="manageState.open"
+      :api="api"
+      :kind="manageState.kind"
+      :id="manageState.id"
+      :name="manageState.name"
+      :report-error="reportError"
+      @close="manageState.open = false"
+      @saved="workspace.refresh().catch(() => undefined)"
+    />
     <ConfirmDialog
       :open="dialog.open"
       :title="dialog.title"

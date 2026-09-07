@@ -33,7 +33,7 @@
   "tree": {
     "newGroup": "新建分组",
     "newProject": "新建项目",
-    "newCollection": "新建集合",
+    "newCollection": "新建模块",
     "newFolder": "新建文件夹",
     "newApi": "新建接口",
     "rename": "重命名",
@@ -126,7 +126,9 @@
     "preScript": "前置脚本",
     "postScript": "后置脚本",
     "run": "运行",
-    "stress": "压测"
+    "stress": "压测",
+    "preOperations": "前置操作",
+    "postOperations": "后置操作"
   },
   "run": {
     "empty": "打开工作区后选择集合并运行",
@@ -403,7 +405,9 @@
     "teamSpaces": "团队空间（分组）",
     "refresh": "刷新",
     "noWorkspaces": "暂无团队空间",
-    "remoteHint": "团队空间与项目归属在管理后台网页创建管理；此处打开项目进入在线模式。"
+    "remoteHint": "团队空间与项目归属在管理后台网页创建管理；此处打开项目进入在线模式。",
+    "groupNotEmpty": "请先删除分组下全部项目",
+    "deleteGroupHint": "仅空分组可删除；默认分组不可删除。"
   },
   "topbar": {
     "projectPlaceholder": "切换项目"
@@ -420,6 +424,21 @@
     "backToCases": "返回用例",
     "stressContext": "接口压测",
     "scenarioHint": "选择场景用例（工作流）后点「运行」——场景在设计器中编排与执行。",
-    "scenarioStressDeferred": "场景级压测即将上线"
+    "scenarioStressDeferred": "场景级压测即将上线",
+    "title": "测试"
+  },
+  "api": {
+    "import": "导入"
+  },
+  "container": {
+    "manage": "管理",
+    "variables": "模块变量",
+    "preOperations": "前置操作",
+    "postOperations": "后置操作",
+    "addOperation": "添加脚本操作",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "save": "保存",
+    "saved": "已保存"
   }
 }

@@ -20,12 +20,28 @@ export function useDebugStore(api: ApiccApi) {
       sending: false,
       result: null as DebugOutput | null,
       error: null as string | null,
+      // 环境选中态项目记忆（M10）：envByProject[projectId] = 该项目上次选的环境名；
+      // activeProjectId 由组合根随项目切换写入。调试与压测共享同一状态源。
+      activeProjectId: null as string | null,
+      envByProject: {} as Record<string, string | null>,
       selectedEnvName: null as string | null,
       selectedCaseId: null as string | null,
     }),
+    getters: {
+      /** 当前项目的环境选中（项目未激活或该项目从未选择过 = null/「无环境」）。 */
+      projectEnvName(state): string | null {
+        return state.activeProjectId ? state.envByProject[state.activeProjectId] ?? null : null;
+      },
+    },
     actions: {
+      /** 项目切换（M10）：activeProjectId 换挡；selectedEnvName 同步为该项目记忆值。 */
+      setProject(projectId: string | null) {
+        this.activeProjectId = projectId;
+        this.selectedEnvName = projectId ? this.envByProject[projectId] ?? null : null;
+      },
       selectEnv(name: string | null) {
         this.selectedEnvName = name;
+        if (this.activeProjectId) this.envByProject[this.activeProjectId] = name;
       },
       selectCase(id: string | null) {
         this.selectedCaseId = id;

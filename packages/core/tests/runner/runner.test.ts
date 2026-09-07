@@ -10,7 +10,7 @@ import { httpClient } from "../../src/http/client.js";
 import { builtinAuthProviders } from "../../src/http/auth.js";
 import { builtinAssertOperators } from "../../src/assert/operators.js";
 import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
-import type { Collection, Environment, Project, Workspace } from "../../src/domain/model.js";
+import type { Collection, Environment, Operation, Project, Workspace } from "../../src/domain/model.js";
 import type { RunResult } from "../../src/report/types.js";
 
 let server: Server;
@@ -487,12 +487,23 @@ describe("CollectionRunner", () => {
 describe("CollectionRunner 环境模型（M9-B）", () => {
   let server: Server;
   let base = "";
-  const seen: Array<{ path: string; headerG: string; query: string }> = [];
+  const seen: Array<{ path: string; headerG: string; query: string; cookie: string; bodyG: string; bodyApiK: string }> = [];
   beforeAll(async () => {
     server = createServer((req, res) => {
-      seen.push({ path: req.url ?? "", headerG: (req.headers["x-g"] as string | undefined) ?? "", query: new URL(req.url ?? "", base).search });
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ ok: true }));
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        seen.push({
+          path: req.url ?? "",
+          headerG: (req.headers["x-g"] as string | undefined) ?? "",
+          query: new URL(req.url ?? "", base).search,
+          cookie: (req.headers.cookie as string | undefined) ?? "",
+          bodyG: /(?:^|&)gk=([^&]*)/.exec(raw)?.[1] ?? "",
+          bodyApiK: /(?:^|&)api-k=([^&]*)/.exec(raw)?.[1] ?? "",
+        });
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true }));
+      });
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -517,7 +528,55 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
     };
   }
 
+  it("操作执行：模块/文件夹前置自上而下、后置自下而上，用例级操作夹请求（M10）", async () => {
+    seen.length = 0;
+    const ap = (id: string) => `pm.variables.set('trace', (pm.variables.get('trace') ?? '') + '${id}')`;
+    const op = (id: string): Operation => ({ id, type: "script", content: ap(id) });
+    const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: {} };
+    const project: Project = {
+      id: "p", name: "p", variables: {},
+      globals: { query: [], headers: [], cookies: [], body: [] },
+      environments: [env], collections: [], workflows: [],
+    };
+    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+    // 用例前置操作改写 pm.request（与 legacy preScript 同能力口径）；trace 变量跨用例经 persisted 流转
+    const mkCase = (id: string, path: string) => ({
+      id, name: id, scope: "base", parameters: {},
+      preOperations: [{ id: `${id}-pre`, type: "script" as const, content: `${ap(`${id}-pre`)}; pm.request.url = pm.request.url + '-' + (pm.variables.get('trace') ?? '')` }],
+      postOperations: [op(`${id}-post`)],
+      assertions: [{ id: `as-${id}`, target: "status" as const, op: "eq" as const, expected: "200" }],
+    });
+    const apiIn = (id: string): Collection["apis"][number] => ({
+      id, name: id, version: "1", deprecated: false, method: "GET", url: `${base}/${id}`,
+      headers: [], query: [], cases: [mkCase(id, `/${id}`)],
+    });
+    const col: Collection = {
+      id: "c1", name: "c", variables: {},
+      preOperations: [op("m1"), op("m2")],
+      postOperations: [op("M")],
+      folders: [
+        {
+          id: "f1", name: "f1", preOperations: [op("f1")], postOperations: [op("F1")],
+          apis: [],
+          folders: [{
+            id: "f2", name: "f2", preOperations: [op("f2")], postOperations: [op("F2")],
+            apis: [apiIn("b")], folders: [],
+          }],
+        },
+        { id: "f3", name: "f3", preOperations: [op("f3")], postOperations: [], apis: [apiIn("c")], folders: [] },
+      ],
+      apis: [],
+    };
+    // 前置链：m1 m2 → f1 → f2 →（b 用例 pre→请求）→ F2 → F1 → f3 →（c 用例 pre→请求）
+    // 请求 b 的 trace = m1m2f1f2b-pre；请求 c 的 trace 再加上 b-post F2 F1（后置自下而上）+ f3
+    const result = await deps().run(col, env, project, ws, {});
+    expect(result.failed, result.cases.map((c) => c.error ?? "ok").join(" | ")).toBe(0);
+    expect(seen[0]!.path).toBe("/b-m1m2f1f2b-pre");
+    expect(seen[1]!.path).toBe("/c-m1m2f1f2b-preb-postF2F1f3c-pre");
+  });
+
   it("前置 URL：相对 URL 自动拼接 + {{baseUrl}} 模板（环境按集合设置）", async () => {
+    seen.length = 0;
     const env: Environment = { id: "e", name: "dev", variables: { who: "dev" }, baseUrls: { c1: `${base}/prefix` } };
     const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
     const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
@@ -528,32 +587,38 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
     expect(seen[1]!.path).toBe("/prefix/tpl");
   });
 
-  it("全局变量/全局参数：变量链最低层，query/header 请求同名项优先", async () => {
+  it("全局变量=项目变量（链：环境>模块>全局）+ 全局参数 query/header/cookie/body 合并（M10）", async () => {
     seen.length = 0;
     const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: { c1: base } };
-    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-    const ws: Workspace = {
-      id: "w", name: "ws", variables: {},
+    // 全局变量即 project.variables（M10 合一）：gvar 在变量链最低层可被 {{gvar}} 引用
+    const project: Project = {
+      id: "p", name: "p", variables: { gvar: "G" },
       globals: {
-        variables: { gvar: "G" },
         query: [{ key: "gq", value: "from-global", enabled: true }, { key: "api-q", value: "gone", enabled: true }],
         headers: [{ key: "x-g", value: "from-global", enabled: true }],
+        cookies: [{ key: "sid", value: "from-cookie", enabled: true }],
+        body: [{ key: "gk", value: "from-global", enabled: true }, { key: "api-k", value: "gone", enabled: true }],
       },
-      groups: [],
+      environments: [env], collections: [], workflows: [],
     };
+    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
     const col: Collection = {
       id: "c1", name: "c", variables: {}, folders: [],
-      apis: [apiWith("{{baseUrl}}/g", {
+      apis: [{
+        id: "a1", name: "a", version: "1", deprecated: false, method: "POST",
         url: "/g/{{gvar}}",
         headers: [{ key: "x-g", value: "from-api", enabled: true }],
         query: [{ key: "api-q", value: "from-api", enabled: true }],
-      })],
+        body: { kind: "form", content: "", form: [{ key: "api-k", value: "from-api", enabled: true }] },
+        cases: [{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
+      }],
     };
     const result = await deps().run(col, env, project, ws, {});
     expect(result.failed).toBe(0);
-    expect(seen[0]!.path).toBe("/g/G?gq=from-global&api-q=from-api");
+    expect(seen[0]!.path).toBe("/g/G?gq=from-global&api-q=from-api"); // 全局 query 追加 + 请求同名优先
     expect(seen[0]!.headerG).toBe("from-api"); // 请求同名头优先
-    expect(seen[0]!.query).toContain("gq=from-global"); // 全局 query 追加
-    expect(seen[0]!.query).toContain("api-q=from-api"); // 请求同名 query 优先
+    expect(seen[0]!.cookie).toBe("sid=from-cookie"); // 全局 cookie 序列化
+    expect(seen[0]!.bodyG).toBe("from-global"); // 全局 body 追加进 form
+    expect(seen[0]!.bodyApiK).toBe("from-api"); // form 同名 key 优先
   });
 });

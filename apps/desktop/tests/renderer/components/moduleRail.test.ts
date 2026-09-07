@@ -43,7 +43,7 @@ describe("ModuleRail（M8 图标导航栏）", () => {
     const wrapper = mountRail("api", { workspaceOpened: true, onlineActive: false, apiSelected: false });
     const items = wrapper.findAll("button.rail-item").map((b) => b.attributes("data-testid"));
     expect(items).toEqual([
-      "rail-home", "rail-api", "rail-run", "rail-wf", "rail-test", "rail-envs", "rail-import",
+      "rail-home", "rail-api", "rail-run", "rail-wf", "rail-test", "rail-envs",
     ]);
     expect(wrapper.find('[data-testid="rail-home"]').text()).toContain("主页");
     expect(wrapper.find('[data-testid="rail-api"]').text()).toContain("接口");
@@ -63,7 +63,7 @@ describe("ModuleRail（M8 图标导航栏）", () => {
     expect(closed.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
     expect(closed.find('[data-testid="rail-home"]').attributes("disabled")).toBeUndefined();
     const online = mountRail("api", { workspaceOpened: true, onlineActive: true, apiSelected: true });
-    for (const v of ["api", "run", "wf", "test", "envs", "import"]) {
+    for (const v of ["api", "run", "wf", "test", "envs"]) {
       expect(online.find(`[data-testid="rail-${v}"]`).attributes("disabled")).toBeDefined();
     }
     expect(online.find('[data-testid="rail-home"]').attributes("disabled")).toBeUndefined();

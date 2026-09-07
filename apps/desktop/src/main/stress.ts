@@ -88,7 +88,7 @@ export function createStressController(session: Session, deps: StressControllerD
     const runner = new StressRunner({
       client: deps.client ?? httpClient,
       // 每次采样重跑工厂：动态变量（如 {{$uuid}}）逐请求变化，与 CLI run-stress 同口径。
-      buildRequest: () => buildStressRequest(api, resolver, builtinAuthProviders),
+      buildRequest: () => buildStressRequest(api, resolver, builtinAuthProviders, loc.project.globals),
     });
     const controller = new AbortController();
     const finished = (async (): Promise<StressRunOutput> => {

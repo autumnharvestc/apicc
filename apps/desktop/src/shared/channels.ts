@@ -10,6 +10,9 @@ export const IpcChannel = {
   EnvCreate: "env:create",
   EnvVarsSave: "env:vars:save",
   EnvBaseUrlsSave: "env:base-urls:save",
+  ContainerSave: "container:save",
+  ContainerGet: "container:get",
+  // M10：项目级——GlobalsSave 载荷 [projectId, globals]；GlobalsGet 载荷 [projectId]
   GlobalsSave: "globals:save",
   GlobalsGet: "globals:get",
   ApiGet: "api:get",

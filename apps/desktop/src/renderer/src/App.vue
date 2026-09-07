@@ -131,6 +131,8 @@ const subGate = computed(() => ({ onlineActive: !!online.activeWorkspace, apiSel
 
 // —— 树面板头（M8）：模块标题 + 前端搜索（SideTree 按 label 过滤）——
 const treeFilter = ref("");
+// 导入向导（M10 归接口模块）：显隐状态
+const importOpen = ref(false);
 const siderTitle = computed(() => t(`nav.${view.value}`));
 
 // —— 环境清单联动（M9-A1）：调试选择器读 editor.envs（选中接口时快照），环境管理里
@@ -272,11 +274,7 @@ function openProjectFromHome(id: string) {
   view.value = "api";
 }
 
-/** 导入向导取消（close 事件）：回接口模块调试子视图（M8 前为回 debug 视图，语义等价）。 */
-function onImportClose() {
-  view.value = "api";
-  apiSubView.value = "debug";
-}
+// 导入向导显隐（M10 归接口模块）：向导 close 事件由模板内联 importOpen=false 处理。
 
 /** 树选中节点所属项目 id：环境面板按它加载环境列表（接口/文件夹/集合向上归属）。
  * 工作流节点（M2-B 收口）按 project.workflows 摘要归属——否则侧树打开工作流后
@@ -301,6 +299,16 @@ const selectedProjectId = computed<string | null>(() => {
   }
   return null;
 });
+
+// 环境选中态项目记忆（M10）：项目切换即换挡（恢复该项目记忆值或「无环境」）；
+// 调试与压测共享同一状态源（StressPanel 传 debug）。
+watch(
+  () => selectedProjectId.value,
+  (pid) => {
+    debug.setProject(pid);
+  },
+  { immediate: true },
+);
 
 /** 树选中节点所属集合 id：运行视图的默认选中集合（文件夹/接口向上归属）。 */
 const selectedCollectionId = computed<string | null>(() => {
@@ -483,6 +491,9 @@ function onDividerDblClick() {
               <span class="head-spacer"></span>
               <!-- AI 入口（M6-C 任务 1）自 debug-ai-bar 收编于接口头部：全子视图可达 -->
               <a-space :size="8">
+                <a-button size="small" data-testid="api-import-btn" @click="importOpen = true">
+                  {{ t("api.import") }}
+                </a-button>
                 <a-button
                   size="small"
                   data-testid="ai-suggest-btn"
@@ -497,8 +508,17 @@ function onDividerDblClick() {
                 </a-button>
               </a-space>
             </div>
+            <!-- 导入向导（M10 归接口模块）：打开时替代子视图区域 -->
+            <ImportWizard
+              v-if="importOpen"
+              class="panel-view"
+              :import-w="importW"
+              :plugins="plugins"
+              :report-error="reportError"
+              @close="importOpen = false"
+            />
             <!-- 调试子视图：上编辑器 / 可拖拽分割条 / 下响应（结构契约：main-split 四子元素） -->
-            <template v-if="apiSubView === 'debug'">
+            <template v-else-if="apiSubView === 'debug'">
               <div class="editor-pane" data-testid="editor-pane">
                 <RequestEditor :editor="editor" :debug="debug" />
               </div>
@@ -532,7 +552,6 @@ function onDividerDblClick() {
             :selected-collection-id="selectedCollectionId"
             :report-error="reportError"
           />
-          <ImportWizard v-else-if="view === 'import'" class="panel-view" :import-w="importW" :plugins="plugins" :report-error="reportError" @close="onImportClose" />
           <!-- 测试模块（M9-D）：单接口用例（运行/压测）+ 场景用例，取代原压测栏 -->
           <TestView
             v-else-if="view === 'test'"

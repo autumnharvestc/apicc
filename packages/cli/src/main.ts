@@ -250,13 +250,17 @@ async function resolveStressTarget(
   if (envName && !env) throw new Error(`未找到环境: ${envName}`);
   const { StressRunner, buildStressRequest, builtinAuthProviders, mergedEnvVars, createVariableResolver } =
     await import("@apicc/core");
-  // 变量层与 CollectionRunner 同源：[环境(继承链经 mergedEnvVars 合并), 集合, 项目, 全局]。
+  // 变量层与 CollectionRunner 同源（M10 收敛）：[环境(含模块前置URL baseUrl 注入), 模块, 全局变量(项目)]。
+  // workspace 层弃用；全局参数（query/header/cookie/body）经 project.globals 由 buildStressRequest 合并。
+  const baseUrl = env?.baseUrls?.[collection.id];
+  const envVars = { ...mergedEnvVars(env, project), ...(baseUrl ? { baseUrl } : {}) };
   const resolver = createVariableResolver({
-    layers: [mergedEnvVars(env, project), collection.variables, project.variables, workspace.variables],
+    layers: [envVars, collection.variables, project.variables],
   });
+  void workspace;
   // M5 D5：默认客户端按接口协议从注册中心解析（probe = 已解析变量的可执行请求）——
   // WS/SOAP 接口压测由对应客户端承接，杜绝「SOAP 被静默按 HTTP 执行」；未知协议 fail-fast。
-  const probe = buildStressRequest(stressedApi, resolver, builtinAuthProviders);
+  const probe = buildStressRequest(stressedApi, resolver, builtinAuthProviders, project.globals);
   const defaultClient = registry.getProtocol(probe);
   if (!defaultClient) {
     throw new Error(`未找到可处理该接口的协议客户端（protocol: ${probe.protocol ?? "http"}）`);
@@ -267,7 +271,7 @@ async function resolveStressTarget(
     createRunner: (client = defaultClient) => new StressRunner({
       client,
       // 每次采样重跑工厂：动态变量（如 {{$uuid}}）逐请求变化，不做跨请求复用。
-      buildRequest: () => buildStressRequest(stressedApi, resolver, builtinAuthProviders),
+      buildRequest: () => buildStressRequest(stressedApi, resolver, builtinAuthProviders, project.globals),
     }),
   };
 }

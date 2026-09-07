@@ -7,7 +7,7 @@ import { monotonicFactory } from "ulid";
 /** runs 落盘文件名 ID：进程内单调递增，同毫秒多次运行不重名。 */
 const nextRunFileId = monotonicFactory();
 import { envChain, mergedEnvVars } from "../domain/envChain.js";
-import type { ApiDefinition, Collection, Environment, Project, TestCase, Workspace } from "../domain/model.js";
+import type { ApiDefinition, BodyContent, Collection, Environment, Folder, Operation, Project, TestCase, Workspace } from "../domain/model.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
 import { withBaseUrl } from "../variables/baseUrl.js";
 import type { KeyValuePair } from "../domain/model.js";
@@ -27,9 +27,12 @@ export interface RunnerOptions {
 }
 
 export class CollectionRunner {
-  /** 全局参数（M9-B）：run() 时从 workspace.globals 取，runCase 合并进请求（同名项请求侧优先）。 */
+  /** 全局参数（M10）：run() 时从 project.globals 取，runCase 合并进请求（同名项请求侧优先）；
+   * cookies 序列化为 Cookie 头（接口自有 Cookie 头整头优先）；body 仅合并进 form 请求体。 */
   private globalQuery: KeyValuePair[] = [];
   private globalHeaders: KeyValuePair[] = [];
+  private globalCookies: KeyValuePair[] = [];
+  private globalBody: KeyValuePair[] = [];
 
   constructor(private deps: {
     registry: PluginRegistry;
@@ -43,16 +46,20 @@ export class CollectionRunner {
     const chain = env ? envChain(env, project) : [];
     // 环境变量继承（规格 §3.1/§6）：按继承链从根到叶合并各环境变量为一层，子环境同名变量覆盖父环境。
     // 经 mergedEnvVars 统一口径，与工作流条件求值上下文 env 同源。
-    // M9-B：环境按集合设置的前置 URL 注入为内置变量 baseUrl（{{baseUrl}} 模板可用；
-    // 相对 URL 自动拼接由 runCase 内 withBaseUrl 完成）；工作区全局变量为变量链最低层
-    // （环境 > 集合 > 项目 > 工作区 > 全局变量），全局 query/header 由 runCase 合并（请求同名项优先）。
-    const globals = workspace.globals ?? { variables: {}, query: [], headers: [] };
+    // M9-B：环境按模块设置的前置 URL 注入为内置变量 baseUrl（{{baseUrl}} 模板可用；
+    // 相对 URL 自动拼接由 runCase 内 withBaseUrl 完成）。
+    // M10：变量链收敛为 环境 > 模块 > 全局变量（= project.variables，两层来源合一）；
+    // workspace 级变量层与 globals.variables 弃用。全局参数（query/header/cookie/body）
+    // 归属 project.globals，由 runCase 合并（请求同名项优先）。
+    const globals = project.globals ?? { query: [], headers: [], cookies: [], body: [] };
     const baseUrl = env?.baseUrls?.[collection.id];
     const envVars = { ...mergedEnvVars(env, project), ...(baseUrl ? { baseUrl } : {}) };
     this.globalQuery = globals.query;
     this.globalHeaders = globals.headers;
+    this.globalCookies = globals.cookies;
+    this.globalBody = globals.body;
     const resolver = createVariableResolver({
-      layers: [envVars, collection.variables, project.variables, workspace.variables, globals.variables],
+      layers: [envVars, collection.variables, project.variables],
     });
     const engine = this.deps.registry.getScriptEngine("javascript");
     if (!engine) throw new Error("缺少 javascript 脚本引擎插件");
@@ -67,7 +74,6 @@ export class CollectionRunner {
     }
 
     const outcomes: CaseOutcome[] = [];
-    const apis = [...collection.apis, ...collection.folders.flatMap((f) => f.apis)];
     // 脚本经 pm.variables.set 写入的变量跨用例持久（整个 run 生命周期），如「登录→取 token→调业务接口」流转。
     const persisted = new Map<string, string>();
     // 桥回写快照：只在 pm.variables.set 时增长（语义 =「本次运行累计提取的变量」），run 结束整体写回外部桥。
@@ -79,10 +85,22 @@ export class CollectionRunner {
       persisted.set(k, v);
       resolver.setRuntime(k, v);
     }
-    if (collection.scripts?.pre) engine.run(collection.scripts.pre, this.buildContext(resolver, envVars, undefined, undefined, persisted, persistedSnapshot));
+    // M10 操作执行：run 级上下文（无请求）；容器前置操作自上而下、后置操作自下而上。
+    const runLevelCtx = () => this.buildContext(resolver, envVars, undefined, undefined, persisted, persistedSnapshot);
+    // 旧 scripts 字段为读兼容遗留（loader 归一后内存模型不再携带；直接构造容器直调 run 的
+    // 调用方仍可能携带——legacy 优先于操作列表执行，顺序确定）。
+    const runLegacyOrOps = (legacy: string | undefined, ops: Operation[] | undefined): void => {
+      if (legacy) engine.run(legacy, runLevelCtx());
+      for (const op of ops ?? []) {
+        if (op.type === "script") engine.run(op.content, runLevelCtx());
+      }
+    };
 
-    outer:
-    for (const api of apis) {
+    // failFast 停止标记：递归遍历中处处检查（替代原 label break，文件夹嵌套后无法单层 break）。
+    const state = { stopped: false };
+
+    /** 单接口的用例去重/数据驱动/failFast（原 apis 平铺循环体，逻辑不变）。 */
+    const runApi = async (api: ApiDefinition): Promise<void> => {
       const applicable = api.cases.filter((c) => c.scope === "base" || chain.includes(c.scope));
       // 规格 §6：同 ID 用例仅执行环境版本（覆盖而非重复执行）；
       // 同 ID 出现多个环境版本时继承链更近者优先（chain 靠前者更具体），base 视为最远。
@@ -96,6 +114,7 @@ export class CollectionRunner {
         if (!prev || scopeRank(c.scope) < scopeRank(prev.scope)) byId.set(c.id, c);
       }
       for (const tc of byId.values()) {
+        if (state.stopped) return;
         // 数据源读取/解析失败折进当用例 outcome，不中断整轮（与单用例隔离语义一致）。
         let rows: Array<Record<string, string> | undefined>;
         try {
@@ -106,16 +125,46 @@ export class CollectionRunner {
             passed: false, durationMs: 0, assertions: [],
             error: `数据源读取失败: ${e instanceof Error ? e.message : String(e)}`,
           });
-          if (this.deps.failFast) break outer;
+          if (this.deps.failFast) state.stopped = true;
           continue;
         }
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
           const outcome = await this.runCase(api, tc, rows[rowIndex], rowIndex, rows.length > 1, resolver, envVars, engine, persisted, persistedSnapshot);
           outcomes.push(outcome);
-          if (!outcome.passed && this.deps.failFast) break outer;
+          if (!outcome.passed && this.deps.failFast) {
+            state.stopped = true;
+            return;
+          }
         }
       }
+    };
+
+    /** 容器遍历：直属接口 → 子文件夹递归（前置自上而下、后置自下而上）。 */
+    const processFolder = async (folder: Folder): Promise<void> => {
+      runLegacyOrOps(undefined, folder.preOperations);
+      for (const api of folder.apis) {
+        if (state.stopped) return;
+        await runApi(api);
+      }
+      for (const sub of folder.folders ?? []) {
+        if (state.stopped) return;
+        await processFolder(sub);
+      }
+      runLegacyOrOps(undefined, folder.postOperations);
+    };
+
+    // 模块级前置（legacy scripts.pre → preOperations）
+    runLegacyOrOps(collection.scripts?.pre, collection.preOperations);
+    for (const api of collection.apis) {
+      if (state.stopped) break;
+      await runApi(api);
     }
+    for (const folder of collection.folders) {
+      if (state.stopped) break;
+      await processFolder(folder);
+    }
+    // 模块级后置（postOperations → legacy scripts.post）
+    runLegacyOrOps(collection.scripts?.post, collection.postOperations);
 
     const result: RunResult = {
       collectionId: collection.id, collectionName: collection.name, envName: env?.name,
@@ -143,6 +192,30 @@ export class CollectionRunner {
       }
     }
     return result;
+  }
+
+  /** M10：请求体变量解析 + form 请求体合并全局 body 参数（接口同名 key 优先；
+   * 非 form/缺失请求体不合并全局 body——全局参数是补充，不改变请求形态）。 */
+  private mergeGlobalForm(body: BodyContent | undefined, resolver: VariableResolver): ExecutableRequest["body"] {
+    if (body === undefined) return undefined;
+    const form = (body.form ?? []).map((kv) => ({ ...kv, value: resolver.resolve(kv.value) }));
+    if (body.kind !== "form") return { kind: body.kind, content: resolver.resolve(body.content), form };
+    const existing = new Set(form.map((f) => f.key));
+    const extra = (this.globalBody ?? [])
+      .filter((b) => b.enabled && b.key && !existing.has(b.key))
+      .map((b) => ({ key: b.key, value: resolver.resolve(b.value), enabled: true }));
+    return { kind: body.kind, content: resolver.resolve(body.content), form: [...form, ...extra] };
+  }
+
+  /** M10：全局 cookie 序列化为 Cookie 头；接口自有 Cookie 头（不区分大小写）整头优先。 */
+  private injectGlobalCookie(headers: Record<string, string>, resolver: VariableResolver): void {
+    const hasCookie = Object.keys(headers).some((k) => k.toLowerCase() === "cookie");
+    if (hasCookie) return;
+    const cookie = (this.globalCookies ?? [])
+      .filter((c) => c.enabled && c.key)
+      .map((c) => `${resolver.resolve(c.key)}=${resolver.resolve(c.value)}`)
+      .join("; ");
+    if (cookie) headers["Cookie"] = cookie;
   }
 
   /** 数据驱动逐行展开；无数据源或空数据按单行处理。 */
@@ -191,13 +264,9 @@ export class CollectionRunner {
         ...api.query.map((q) => ({ ...q, value: resolver.resolve(q.value) })),
       ],
       // form 请求体逐项解析变量值（JSON/xml/raw/graphql 走 content 字符串；form 可省略 content）。
-      body: api.body
-        ? {
-            ...api.body,
-            content: resolver.resolve(api.body.content ?? ""),
-            form: api.body.form?.map((kv) => ({ ...kv, value: resolver.resolve(kv.value) })),
-          }
-        : undefined,
+      // M10：全局 body 参数仅合并进 form 请求体（form-data/x-www-form-urlencoded 的统一
+      // 模型），接口同名 key 优先；其余 kind 与 none 不受全局 body 影响（解析在 helper 内）。
+      body: this.mergeGlobalForm(api.body, resolver),
       auth: api.auth,
       // M5 D5/D7：协议分发键与 ws/soap 模板字段随请求透传（message/envelope/soapAction
       // 变量解析与 url/body 同管线）；旧 yaml 无这些字段 → 请求形状不变（protocolOf 缺省
@@ -207,12 +276,16 @@ export class CollectionRunner {
       envelope: api.envelope === undefined ? undefined : resolver.resolve(api.envelope),
       soapAction: api.soapAction === undefined ? undefined : resolver.resolve(api.soapAction),
     };
+    this.injectGlobalCookie(request.headers, resolver);
 
     const pmAsserts: Array<{ pass: boolean; message: string }> = [];
     const ctx = this.buildContext(resolver, envVars, request, pmAsserts, persisted, persistedSnapshot);
 
     // 脚本超时/异常只捕获为 error 字段，让单个用例失败而不中断集合。
     // 用例级事件（beforeCase/beforeRequest/afterResponse）失败极性相同：归当用例失败（规格 §5.2）。
+    // M10 时序说明：请求先构造、用例前置操作（含 legacy preScript）持请求上下文执行——
+    // 操作可直接改写请求对象（pm.request）；跨用例变量经 persisted 流转。同用例内
+    // 「前置操作产出变量 → URL 模板消费」不支持（与 legacy preScript 语义一致）。
     let error: string | undefined;
     try {
       await this.deps.bus.emit("beforeCase", {
@@ -220,6 +293,9 @@ export class CollectionRunner {
         row: isDataDriven ? rowIndex : undefined,
       });
       if (tc.preScript) engine.run(tc.preScript, ctx);
+      for (const op of tc.preOperations ?? []) {
+        if (op.type === "script") engine.run(op.content, ctx);
+      }
       await this.deps.bus.emit("beforeRequest", { request });
 
       if (request.auth) {
@@ -235,8 +311,11 @@ export class CollectionRunner {
         headers: response.headers, bodyText: response.bodyText,
       });
 
-      // 响应回填同一 pm 对象：后置脚本与断言评估共享（含 json 缓存）。
+      // 响应回填同一 pm 对象：后置操作/脚本与断言评估共享（含 json 缓存）。
       ctx.pm.response = this.responseView(response);
+      for (const op of tc.postOperations ?? []) {
+        if (op.type === "script") engine.run(op.content, ctx);
+      }
       if (tc.postScript) engine.run(tc.postScript, ctx);
     } catch (e) {
       // 归一非 Error 抛出物（如脚本裸 throw 'boom'）：error 字段必须留痕，否则用例可能假通过。

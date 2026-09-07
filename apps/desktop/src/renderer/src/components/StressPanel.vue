@@ -30,6 +30,9 @@ const props = defineProps<{
   cases: Array<{ id: string; name: string }>;
   envs: Array<{ id: string; name: string }>;
   reportError: (e: unknown) => void;
+
+  /** 环境选中共享源（M10）：传入则环境下拉读写调试 store 的项目记忆。 */
+  debug?: { selectedEnvName: string | null; selectEnv(name: string | null): void };
 }>();
 const { t } = useI18n();
 
@@ -102,11 +105,11 @@ async function onStop() {
         <span class="field-label">{{ t("stress.env") }}</span>
         <a-select
           class="control"
-          :value="stress.form.envName ?? ''"
+          :value="(debug ? debug.selectedEnvName : stress.form.envName) ?? ''"
           :options="envOptions"
           :placeholder="t('stress.env')"
           data-testid="stress-env-select"
-          @update:value="(v) => (stress.form.envName = (v as string) || null)"
+          @update:value="(v) => ((v as string) ? (debug ? debug.selectEnv(v as string) : (stress.form.envName = v as string)) : (debug ? debug.selectEnv(null) : (stress.form.envName = null)))"
         />
       </label>
       <label class="field">

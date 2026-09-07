@@ -7,7 +7,6 @@ import {
   DeploymentUnitOutlined,
   ExperimentOutlined,
   GlobalOutlined,
-  ImportOutlined,
   HomeOutlined,
 } from "@ant-design/icons-vue";
 import { SWITCH_VIEWS, isViewDisabled, type SwitchView } from "../viewSwitch.js";
@@ -32,7 +31,6 @@ const ICONS: Record<SwitchView, ReturnType<typeof ApiOutlined>> = {
   wf: DeploymentUnitOutlined,
   test: ExperimentOutlined,
   envs: GlobalOutlined,
-  import: ImportOutlined,
 };
 
 function disabled(v: SwitchView): boolean {

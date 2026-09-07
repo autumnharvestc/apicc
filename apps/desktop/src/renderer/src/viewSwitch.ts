@@ -3,12 +3,12 @@
  * - home（主页）：服务器/团队分组/项目管理，恒可用；
  * - api（接口）模块子视图收敛为 调试/设计（接口栏聚焦接口定义，裁定⑥）；
  * - test（测试）：单接口用例管理（用例项运行/压测）+ 场景用例（裁定 D2），取代原压测栏；
- * - run/wf/envs/import 内容面板挂到各自模块；插件在设置抽屉（M9-C 裁定 D5）。
+ * - run/wf/envs 内容面板挂到各自模块；导入（M10）归接口模块头部按钮；插件在设置抽屉。
  * 禁用语义（单测钉住）：home 恒可用；在线 → 除主页外全禁用；其余工作区级。
  */
-export type SwitchView = "home" | "api" | "run" | "wf" | "test" | "envs" | "import";
+export type SwitchView = "home" | "api" | "run" | "wf" | "test" | "envs";
 
-export const SWITCH_VIEWS: SwitchView[] = ["home", "api", "run", "wf", "test", "envs", "import"];
+export const SWITCH_VIEWS: SwitchView[] = ["home", "api", "run", "wf", "test", "envs"];
 
 /** 接口模块子视图（M9-D：用例页签移入测试模块，接口栏聚焦定义）。 */
 export type ApiSubView = "debug" | "design";

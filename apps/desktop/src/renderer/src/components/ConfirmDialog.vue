@@ -21,6 +21,8 @@ const props = defineProps<{
   title: string;
   inputPlaceholder?: string;
   initialValue?: string;
+  /** 行内错误（M10）：创建/重命名重名等校验失败显示在输入框下方，对话框保持打开。 */
+  error?: string;
 }>();
 const emit = defineEmits<{ confirm: [value: string | null]; cancel: [] }>();
 const { t } = useI18n();
@@ -64,7 +66,16 @@ const cancelButtonProps: Record<string, any> = { "data-testid": "dialog-cancel" 
       :placeholder="inputPlaceholder"
       @press-enter="confirm"
     />
+    <p v-if="error" class="dialog-error" data-testid="dialog-error">{{ error }}</p>
     <!-- 默认插槽：调用方注入额外正文（任务 6 删除影响清单 impact-list 由此进入弹窗）。 -->
     <slot />
   </a-modal>
 </template>
+
+<style scoped>
+.dialog-error {
+  margin: 8px 0 0;
+  color: var(--fail, #dc2626);
+  font-size: 12px;
+}
+</style>
