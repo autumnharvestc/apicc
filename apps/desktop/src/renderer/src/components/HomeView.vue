@@ -63,11 +63,15 @@ const defaultGroupId = computed(() => groups.value.find((g) => g.name === "默�
 
 /** 右栏可见项目：选 local → 全部；选 group → 该分组。 */
 const visibleProjects = computed(() => {
-  if (selection.value.kind === "group") {
-    return groups.value.find((g) => g.id === selection.value.groupId)?.projects ?? [];
+  const sel = selection.value;
+  if (sel.kind === "group") {
+    return groups.value.find((g) => g.id === sel.groupId)?.projects ?? [];
   }
   return groups.value.flatMap((g) => g.projects);
 });
+
+const selectedGroupId = computed(() => (selection.value.kind === "group" ? selection.value.groupId : ""));
+const selectedBaseUrl = computed(() => (selection.value.kind === "server" ? selection.value.baseUrl : ""));
 
 function selectLocal() {
   selection.value = { kind: "local" };
@@ -180,11 +184,11 @@ const dialogTitle = computed(() => {
 // —— 工具栏「新建项目」（带分组选择器，默认「默认分组」） ——
 const newProjectOpen = ref(false);
 const newProjectName = ref("");
-const newProjectGroupId = ref<string | null>(null);
+const newProjectGroupId = ref<string | undefined>(undefined);
 const newProjectError = ref("");
 
 function openNewProject() {
-  newProjectGroupId.value = selection.value.kind === "group" ? selection.value.groupId : defaultGroupId.value;
+  newProjectGroupId.value = selection.value.kind === "group" ? selection.value.groupId : defaultGroupId.value ?? undefined;
   newProjectName.value = "";
   newProjectError.value = "";
   newProjectOpen.value = true;
@@ -209,11 +213,11 @@ const newProjectGroupOptions = computed(() => groups.value.map((g) => ({ label: 
 // —— 项目卡片动作：克隆 / 移动 / 删除（同名放开：克隆与重命名都可直接落） ——
 const moveOpen = ref(false);
 const moveProjectId = ref("");
-const moveTargetGroupId = ref<string | null>(null);
+const moveTargetGroupId = ref<string | undefined>(undefined);
 
 function openMoveProject(p: { id: string }) {
   moveProjectId.value = p.id;
-  moveTargetGroupId.value = groups.value.find((g) => g.projects.some((x) => x.id === p.id))?.id ?? defaultGroupId.value;
+  moveTargetGroupId.value = groups.value.find((g) => g.projects.some((x) => x.id === p.id))?.id ?? defaultGroupId.value ?? undefined;
   moveOpen.value = true;
 }
 
@@ -326,7 +330,7 @@ async function onCreateWsConfirm(name: string | null) {
             v-for="g in groups"
             :key="g.id"
             class="side-item child"
-            :class="{ active: selection.kind === 'group' && selection.groupId === g.id }"
+            :class="{ active: selection.kind === 'group' && selectedGroupId === g.id }"
             data-testid="home-side-group"
             @click="selectGroup(g.id)"
           >
@@ -372,7 +376,7 @@ async function onCreateWsConfirm(name: string | null) {
           v-for="s in remoteProfiles"
           :key="s.baseUrl"
           class="side-item"
-          :class="{ active: selection.kind === 'server' && selection.baseUrl === s.baseUrl }"
+          :class="{ active: selection.kind === 'server' && selectedBaseUrl === s.baseUrl }"
           :data-testid="`home-side-server-${s.baseUrl}`"
           @click="selectServer(s.baseUrl)"
         >
@@ -402,11 +406,11 @@ async function onCreateWsConfirm(name: string | null) {
       <template v-else-if="selection.kind === 'server'">
         <div class="content-head">
           <span class="content-title" data-testid="home-server-title">
-            {{ remoteProfiles.find((s) => s.baseUrl === selection.baseUrl)?.name || selection.baseUrl }}
+            {{ remoteProfiles.find((s) => s.baseUrl === selectedBaseUrl)?.name || selectedBaseUrl }}
           </span>
-          <a-tag v-if="online.loggedIn && online.activeBaseUrl === selection.baseUrl" color="blue">{{ t("home.active") }}</a-tag>
+          <a-tag v-if="online.loggedIn && online.activeBaseUrl === selectedBaseUrl" color="blue">{{ t("home.active") }}</a-tag>
         </div>
-        <template v-if="online.loggedIn && online.activeBaseUrl === selection.baseUrl">
+        <template v-if="online.loggedIn && online.activeBaseUrl === selectedBaseUrl">
           <div class="content-toolbar">
             <span class="muted">{{ t("home.serverWorkspaces") }}</span>
             <span class="spacer"></span>
@@ -427,7 +431,7 @@ async function onCreateWsConfirm(name: string | null) {
           </div>
         </template>
         <EmptyState v-else :text="t('home.loginToBrowse')" />
-        <div class="login-row" v-if="!(online.loggedIn && online.activeBaseUrl === selection.baseUrl)">
+        <div class="login-row" v-if="!(online.loggedIn && online.activeBaseUrl === selectedBaseUrl)">
           <a-button size="small" type="primary" data-testid="home-server-login" @click="loginServer(selection.baseUrl)">
             {{ t("home.connectionLogin") }}
           </a-button>
@@ -438,7 +442,7 @@ async function onCreateWsConfirm(name: string | null) {
       <template v-else>
         <div class="content-head">
           <span class="content-title" data-testid="home-content-title">
-            {{ selection.kind === "group" ? groups.find((g) => g.id === selection.groupId)?.name : workspace.name }}
+            {{ selection.kind === "group" ? groups.find((g) => g.id === selectedGroupId)?.name : workspace.name }}
           </span>
           <span class="spacer"></span>
           <a-button size="small" data-testid="home-import-project" :disabled="!workspace.opened" @click="openImportProject">

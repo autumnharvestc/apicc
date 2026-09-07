@@ -44,7 +44,7 @@ async function mountWizard(props: Record<string, unknown> = {}, apiOverride?: Re
   await plugins.init();
   const { i18n } = createI18nInstance();
   const wrapper = mount(ImportWizard, {
-    props: { importW, plugins, reportError: (e: unknown) => { errors.push(e); }, ...props },
+    props: { mode: "project", importW, plugins, reportError: (e: unknown) => { errors.push(e); }, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();

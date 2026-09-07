@@ -35,7 +35,7 @@ const { t } = useI18n();
 
 const current = ref(0);
 const targetName = ref("");
-const groupId = ref<string | null>(null);
+const groupId = ref<string | undefined>(undefined);
 const stepError = ref("");
 
 const steps = computed(() => [
@@ -76,7 +76,7 @@ async function onFileChange(event: Event) {
     await props.importW.previewFile(file.name, content);
     // 预填可编辑名称：project=项目名 / module=模块名（均取文件 title）
     targetName.value = props.importW.preview?.project.name ?? "";
-    groupId.value = props.defaultGroupId ?? props.groups?.[0]?.id ?? null;
+    groupId.value = props.defaultGroupId ?? props.groups?.[0]?.id ?? undefined;
     stepError.value = "";
     current.value = 1;
   } catch (e) {
@@ -110,7 +110,7 @@ async function applyImport() {
 function closeWizard() {
   props.importW.reset();
   targetName.value = "";
-  groupId.value = null;
+  groupId.value = undefined;
   stepError.value = "";
   current.value = 0;
   emit("close");
