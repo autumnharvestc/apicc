@@ -286,6 +286,54 @@ export function createSession(options: SessionOptions = {}) {
     return { variables: project.variables, query: g.query, headers: g.headers, cookies: g.cookies, body: g.body };
   }
 
+  /** 容器读取（M10）：管理对话框水合。返回与 ContainerSaveInput 同形（含 name 显示用）。 */
+  function getContainer(kind: "collection" | "folder", id: string): {
+    kind: "collection" | "folder"; id: string; name: string;
+    variables?: Record<string, string>;
+    preOperations: Array<{ id: string; type: "script"; content: string }>;
+    postOperations: Array<{ id: string; type: "script"; content: string }>;
+  } {
+    const { workspace: ws } = ensureOpen();
+    if (kind === "collection") {
+      const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === id);
+      if (!c) throw new Error(`未找到集合: ${id}`);
+      return {
+        kind, id, name: c.name, variables: c.variables,
+        preOperations: c.preOperations ?? [], postOperations: c.postOperations ?? [],
+      };
+    }
+    const f = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).flatMap((c) => c.folders).find((x) => x.id === id);
+    if (!f) throw new Error(`未找到文件夹: ${id}`);
+    return { kind, id, name: f.name, preOperations: f.preOperations ?? [], postOperations: f.postOperations ?? [] };
+  }
+
+  /** 容器保存（M10）：模块（集合）= 变量 + 前置/后置操作；文件夹 = 前置/后置操作。id 定位整体替换。 */
+  function saveContainer(input: {
+    kind: "collection" | "folder";
+    id: string;
+    variables?: Record<string, string>;
+    preOperations: Array<{ id: string; type: "script"; content: string }>;
+    postOperations: Array<{ id: string; type: "script"; content: string }>;
+  }): void {
+    const { workspace: ws } = ensureOpen();
+    if (input.kind === "collection") {
+      const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.id);
+      if (!c) throw new Error(`未找到集合: ${input.id}`);
+      if (input.variables) c.variables = input.variables;
+      c.preOperations = input.preOperations;
+      c.postOperations = input.postOperations;
+      return;
+    }
+    const f = ws.groups
+      .flatMap((g) => g.projects)
+      .flatMap((p) => p.collections)
+      .flatMap((c) => c.folders)
+      .find((x) => x.id === input.id);
+    if (!f) throw new Error(`未找到文件夹: ${input.id}`);
+    f.preOperations = input.preOperations;
+    f.postOperations = input.postOperations;
+  }
+
   /**
    * 默认分组保障（M10）：打开工作区后调用——按标记定位；缺失时同名「默认分组」就地补标记；
    * 再缺失才创建。只在发生变更时落盘（只读打开零写入）。
@@ -500,7 +548,7 @@ export function createSession(options: SessionOptions = {}) {
       return (await fileStorage.load(r)).problems;
     },
     createGroup, createProject, createCollection, createFolder, createApi,
-    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setProjectGlobals, getProjectGlobals, ensureDefaultGroup, importProject,
+    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setProjectGlobals, getProjectGlobals, getContainer, saveContainer, ensureDefaultGroup, importProject,
     locateApi, locateCollection, saveApi,
     locateWorkflow, createWorkflow, deleteWorkflow, saveWorkflow, setWorkflowStatus, renameWorkflow,
     renameNode, deleteNode, save,

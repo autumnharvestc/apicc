@@ -17,7 +17,7 @@ const base = { workspaceOpened: false, onlineActive: false, apiSelected: false }
 
 describe("viewSwitch 模块禁用语义（M9-D：测试模块取代压测栏）", () => {
   it("模块清单：7 模块固定顺序（rail 渲染顺序契约，主页固定最左）", () => {
-    expect(SWITCH_VIEWS).toEqual(["home", "api", "run", "wf", "test", "envs", "import"]);
+    expect(SWITCH_VIEWS).toEqual(["home", "api", "run", "wf", "test", "envs"]); // 导入归接口模块（M10）
     expect(API_SUB_VIEWS).toEqual(["debug", "design"]);
   });
 

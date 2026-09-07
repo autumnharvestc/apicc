@@ -126,7 +126,9 @@
     "preScript": "Pre-request script",
     "postScript": "Post-response script",
     "run": "Run",
-    "stress": "Stress"
+    "stress": "Stress",
+    "preOperations": "Pre-operations",
+    "postOperations": "Post-operations"
   },
   "run": {
     "empty": "Open a workspace, then select a collection and run",
@@ -403,7 +405,9 @@
     "teamSpaces": "Team Spaces (Groups)",
     "refresh": "Refresh",
     "noWorkspaces": "No team spaces",
-    "remoteHint": "Team spaces & project ownership are managed in the admin console; open a project to enter online mode."
+    "remoteHint": "Team spaces & project ownership are managed in the admin console; open a project to enter online mode.",
+    "groupNotEmpty": "Delete all projects in this group first",
+    "deleteGroupHint": "Only empty groups can be deleted; the default group cannot."
   },
   "topbar": {
     "projectPlaceholder": "Switch project"
@@ -420,6 +424,21 @@
     "backToCases": "Back to cases",
     "stressContext": "API stress",
     "scenarioHint": "Pick a scenario (workflow) and click Run — scenarios are orchestrated in the designer.",
-    "scenarioStressDeferred": "Scenario stress is coming soon"
+    "scenarioStressDeferred": "Scenario stress is coming soon",
+    "title": "Test"
+  },
+  "api": {
+    "import": "Import"
+  },
+  "container": {
+    "manage": "Manage",
+    "variables": "Module Variables",
+    "preOperations": "Pre-operations",
+    "postOperations": "Post-operations",
+    "addOperation": "Add script operation",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "save": "Save",
+    "saved": "Saved"
   }
 }

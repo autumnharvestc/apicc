@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button as AButton, Input as AInput, Tag as ATag } from "ant-design-vue";
-import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
+import { Button as AButton, Tag as ATag } from "ant-design-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
@@ -11,14 +10,11 @@ import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
 /**
- * 主页（M9-C 层级调整）：rail 最左侧的固定入口，管理「服务器 → 团队分组 → 项目」。
- * - 本地服务器（= 当前打开的本地工作区目录）：分组清单（可新建）+ 分组下项目（可新建/打开）；
- *   未打开目录时提供 打开本地目录 / 新建本地目录（原 TopBar 按钮迁移至此）。
- * - 远程服务器（在线档案）：登录状态 + 团队空间（服务端工作空间）清单——客户端只读，
- *   分组/项目在管理后台网页创建管理（裁定）；打开 → 进入在线模式（既有链路）。
- * 「打开项目」= tree.select(project) + 切到接口模块（组合根 onSelect 同构）。
- * store 经 props 注入（组合根一次装配；组件内部禁止重复调用工厂）；reportError 为
- * 组合根错误反馈通道。
+ * 主页（M9-C/M10）：服务器 → 团队分组 → 项目管理。
+ * - 本地服务器：分组卡片清单——新建分组/项目走命名对话框（重名错误显示在对话框内，
+ *   M10 澄清①）；自建分组仅空（无项目）时可删、可重命名（M10 澄清②）。
+ * - 远程服务器：档案/登录态/团队空间只读清单（管理在后台），打开进入在线模式。
+ * store 经 props 注入（组合根一次装配）；reportError 为组合根错误反馈通道。
  */
 const props = defineProps<{
   api: ApiccApi;
@@ -31,33 +27,92 @@ const props = defineProps<{
 }>();
 const { t } = useI18n();
 
-// —— 本地：分组/项目视图模型 ——
-const groups = computed(() =>
+interface GroupView {
+  id: string;
+  name: string;
+  projects: Array<{ id: string; name: string }>;
+}
+
+const groups = computed<GroupView[]>(() =>
   (props.workspace.tree?.children ?? []).map((g) => ({
     id: g.id,
     name: g.label,
     projects: (g.children ?? []).filter((n) => n.kind === "project").map((p) => ({ id: p.id, name: p.label })),
   })),
 );
-const activeProjectId = computed(() => props.tree.selected?.kind === "project" ? props.tree.selected.id : null);
+const activeProjectId = computed(() => (props.tree.selected?.kind === "project" ? props.tree.selected.id : null));
 
-async function createGroup() {
+// —— 命名对话框（M10 澄清①）：创建分组 / 创建项目 / 重命名分组 / 删除分组确认 共用 ——
+type DialogKind = "create-group" | "create-project" | "rename-group" | "delete-group";
+const dialog = ref<{
+  open: boolean;
+  kind: DialogKind;
+  groupId: string;
+  name: string;
+  error: string;
+}>({ open: false, kind: "create-group", groupId: "", name: "", error: "" });
+
+function openCreateGroup() {
+  dialog.value = { open: true, kind: "create-group", groupId: "", name: "", error: "" };
+}
+function openCreateProject(groupId: string) {
+  dialog.value = { open: true, kind: "create-project", groupId, name: "", error: "" };
+}
+function openRenameGroup(g: GroupView) {
+  dialog.value = { open: true, kind: "rename-group", groupId: g.id, name: g.name, error: "" };
+}
+function openDeleteGroup(g: GroupView) {
+  dialog.value = { open: true, kind: "delete-group", groupId: g.id, name: g.name, error: "" };
+}
+function closeDialog() {
+  dialog.value = { ...dialog.value, open: false };
+}
+
+async function onDialogConfirm(name: string | null) {
+  const kind = dialog.value.kind;
   try {
-    await props.tree.createNode({ kind: "group", parentId: null, name: t("home.newGroupName") });
+    if (kind === "create-group") {
+      await props.tree.createNode({ kind: "group", parentId: null, name: (name ?? "").trim() });
+      closeDialog();
+      return;
+    }
+    if (kind === "create-project") {
+      const node = await props.tree.createNode({ kind: "project", parentId: dialog.value.groupId, name: (name ?? "").trim() });
+      closeDialog();
+      props.openProject(node.id); // 创建即打开（参考产品行为：建完进项目）
+      return;
+    }
+    if (kind === "rename-group") {
+      await props.api.nodeRename("group", dialog.value.groupId, (name ?? "").trim());
+      await props.workspace.refresh();
+      closeDialog();
+      return;
+    }
+    if (kind === "delete-group") {
+      const g = groups.value.find((x) => x.id === dialog.value.groupId);
+      if (g && g.projects.length > 0) {
+        dialog.value.error = t("home.groupNotEmpty");
+        return;
+      }
+      await props.api.nodeDelete("group", dialog.value.groupId);
+      await props.workspace.refresh();
+      closeDialog();
+    }
   } catch (e) {
-    props.reportError(e);
+    // 重名/守卫错误显示在对话框内（M10 澄清①），可改后重试
+    dialog.value.error = e instanceof Error ? e.message : String(e);
   }
 }
 
-async function createProject(groupId: string) {
-  try {
-    await props.tree.createNode({ kind: "project", parentId: groupId, name: t("home.newProjectName") });
-  } catch (e) {
-    props.reportError(e);
-  }
-}
+const dialogTitle = computed(() => {
+  const k = dialog.value.kind;
+  if (k === "create-group") return t("home.newGroup");
+  if (k === "create-project") return t("home.newProject");
+  if (k === "rename-group") return t("tree.rename");
+  return t("tree.delete");
+});
 
-// —— 远程服务器（在线档案）：仅展示 + 打开；分组/项目管理在管理后台（裁定 D5） ——
+// —— 远程服务器 ——
 const remoteProfiles = computed(() => props.online.profiles);
 const remoteWorkspaces = computed(() => props.online.workspaces);
 
@@ -69,7 +124,6 @@ async function refreshOnline() {
   }
 }
 
-/** 打开远程团队空间：进入在线模式（既有链路），与本地项目打开分道。 */
 async function openRemote(ws: { id: string; name: string; myRole: string; createdAt: string }) {
   try {
     await props.online.openWorkspace(ws as never);
@@ -78,8 +132,8 @@ async function openRemote(ws: { id: string; name: string; myRole: string; create
   }
 }
 
-// —— 本地目录 打开/新建（自 TopBar 迁移；模式互斥语义保持：先退出在线） ——
-const dialogOpen = ref(false);
+// —— 本地目录 打开/新建（模式互斥语义保持：先退出在线） ——
+const wsDialogOpen = ref(false);
 const pendingRoot = ref("");
 
 async function openLocalDir() {
@@ -99,14 +153,14 @@ async function startCreateLocal() {
     if (!dir) return;
     if (props.online.activeWorkspace) await props.online.closeWorkspace();
     pendingRoot.value = dir;
-    dialogOpen.value = true;
+    wsDialogOpen.value = true;
   } catch (e) {
     props.reportError(e);
   }
 }
 
-async function onCreateConfirm(name: string | null) {
-  dialogOpen.value = false;
+async function onCreateWsConfirm(name: string | null) {
+  wsDialogOpen.value = false;
   if (!name) return;
   try {
     await props.workspace.create(pendingRoot.value, name);
@@ -132,7 +186,19 @@ async function onCreateConfirm(name: string | null) {
         <div v-for="g in groups" :key="g.id" class="group-block" data-testid="home-group">
           <div class="group-row">
             <span class="group-name">{{ g.name }}</span>
-            <a-button size="small" type="text" data-testid="home-new-project" @click="createProject(g.id)">{{ t("home.newProject") }}</a-button>
+            <a-button size="small" type="text" data-testid="home-new-project" @click="openCreateProject(g.id)">{{ t("home.newProject") }}</a-button>
+            <a-button size="small" type="text" data-testid="home-rename-group" @click="openRenameGroup(g)">{{ t("tree.rename") }}</a-button>
+            <a-button
+              size="small"
+              type="text"
+              danger
+              :disabled="g.projects.length > 0"
+              :title="g.projects.length > 0 ? t('home.groupNotEmpty') : undefined"
+              data-testid="home-delete-group"
+              @click="openDeleteGroup(g)"
+            >
+              {{ t("tree.delete") }}
+            </a-button>
           </div>
           <div class="project-list">
             <button
@@ -150,7 +216,7 @@ async function onCreateConfirm(name: string | null) {
           </div>
         </div>
         <div class="group-row">
-          <a-button size="small" type="text" data-testid="home-new-group" @click="createGroup">{{ t("home.newGroup") }}</a-button>
+          <a-button size="small" type="text" data-testid="home-new-group" @click="openCreateGroup">{{ t("home.newGroup") }}</a-button>
         </div>
       </template>
     </div>
@@ -192,12 +258,26 @@ async function onCreateConfirm(name: string | null) {
       </template>
     </div>
 
+    <!-- 分组/项目命名与删除确认（M10：重名/守卫错误显示在对话框内） -->
     <ConfirmDialog
-      :open="dialogOpen"
+      :open="dialog.open"
+      :title="dialogTitle"
+      :input-placeholder="t('tree.namePlaceholder')"
+      :initial-value="dialog.kind === 'rename-group' ? dialog.name : undefined"
+      :error="dialog.error"
+      @confirm="onDialogConfirm"
+      @cancel="closeDialog"
+    >
+      <p v-if="dialog.kind === 'delete-group'" class="muted">{{ t("home.deleteGroupHint") }}</p>
+    </ConfirmDialog>
+
+    <!-- 新建本地目录 -->
+    <ConfirmDialog
+      :open="wsDialogOpen"
       :title="t('app.newWorkspace')"
       :input-placeholder="t('app.workspaceName')"
-      @confirm="onCreateConfirm"
-      @cancel="dialogOpen = false"
+      @confirm="onCreateWsConfirm"
+      @cancel="wsDialogOpen = false"
     />
   </section>
 </template>
@@ -227,8 +307,8 @@ async function onCreateConfirm(name: string | null) {
 .card-title { font-weight: 600; font-size: 14px; }
 .spacer { flex: 1; }
 .group-block { margin-bottom: 6px; }
-.group-row { display: flex; align-items: center; gap: 6px; }
-.group-name { font-weight: 600; }
+.group-row { display: flex; align-items: center; gap: 4px; }
+.group-name { font-weight: 600; margin-right: 4px; }
 .project-list {
   display: flex;
   flex-wrap: wrap;

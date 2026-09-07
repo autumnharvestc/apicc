@@ -16,6 +16,17 @@ import type {
 import type { TreeNodeDTO } from "./tree-dto.js";
 import type { KeyValuePair } from "@apicc/core";
 
+/** 容器保存载荷（M10）：模块（集合）= 变量+操作；文件夹 = 操作。id 定位，整体替换。 */
+export interface ContainerSaveInput {
+  kind: "collection" | "folder";
+  id: string;
+  /** 仅 containerGet 回填供对话框标题展示；save 侧忽略。 */
+  name?: string;
+  variables?: Record<string, string>;
+  preOperations: Array<{ id: string; type: "script"; content: string }>;
+  postOperations: Array<{ id: string; type: "script"; content: string }>;
+}
+
 /** 项目级全局设置（M10）：全局变量（=project.variables）+ 四类全局参数的复合包络。 */
 export interface ProjectGlobalSettings {
   variables: Record<string, string>;
@@ -142,6 +153,8 @@ export interface ApiccApi {
   envVarsSave(envId: string, variables: Record<string, string>): Promise<void>;
   envBaseUrlsSave(envId: string, baseUrls: Record<string, string>): Promise<void>;
   globalsSave(projectId: string, globals: ProjectGlobalSettings): Promise<void>;
+  containerSave(input: ContainerSaveInput): Promise<void>;
+  containerGet(kind: "collection" | "folder", id: string): Promise<ContainerSaveInput>;
   globalsGet(projectId: string): Promise<ProjectGlobalSettings>;
   apiGet(apiId: string): Promise<ApiDetail>;
   apiSave(api: ApiDefinition): Promise<void>;

@@ -33,7 +33,7 @@ import {
   type WorkflowStatus,
   type Workspace,
 } from "@apicc/core";
-import type { ProjectGlobalSettings } from "../../../shared/types.js";
+import type { ContainerSaveInput, ProjectGlobalSettings } from "../../../shared/types.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "../../../shared/ai/contract.js";
@@ -520,6 +520,42 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       if (!project) throw new Error(`未找到项目: ${projectId}`);
       const g = project.globals ?? { query: [], headers: [], cookies: [], body: [] };
       return { variables: project.variables, query: g.query, headers: g.headers, cookies: g.cookies, body: g.body };
+    },
+
+    async containerGet(kind: "collection" | "folder", id: string): Promise<ContainerSaveInput> {
+      const ws = ensureOpen();
+      if (kind === "collection") {
+        const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === id);
+        if (!c) throw new Error(`未找到集合: ${id}`);
+        return {
+          kind, id, name: c.name, variables: { ...c.variables },
+          preOperations: c.preOperations ?? [], postOperations: c.postOperations ?? [],
+        };
+      }
+      const f = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).flatMap((c) => c.folders).find((x) => x.id === id);
+      if (!f) throw new Error(`未找到文件夹: ${id}`);
+      return { kind, id, name: f.name, preOperations: f.preOperations ?? [], postOperations: f.postOperations ?? [] };
+    },
+
+    async containerSave(input: ContainerSaveInput): Promise<void> {
+      const ws = ensureOpen();
+      if (input.kind === "collection") {
+        const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.id);
+        if (!c) throw new Error(`未找到集合: ${input.id}`);
+        if (input.variables) c.variables = input.variables;
+        c.preOperations = input.preOperations;
+        c.postOperations = input.postOperations;
+      } else {
+        const f = ws.groups
+          .flatMap((g) => g.projects)
+          .flatMap((p) => p.collections)
+          .flatMap((c) => c.folders)
+          .find((x) => x.id === input.id);
+        if (!f) throw new Error(`未找到文件夹: ${input.id}`);
+        f.preOperations = input.preOperations;
+        f.postOperations = input.postOperations;
+      }
+      await save();
     },
 
     async apiGet(apiId: string): Promise<ApiDetail> {
