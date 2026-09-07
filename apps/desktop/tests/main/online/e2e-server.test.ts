@@ -151,7 +151,8 @@ async function startServer(jar: string, javaExe: string): Promise<void> {
   serverPort = await freePort();
   dataRoot = mkdtempSync(join(tmpdir(), "apicc-e2e-server-"));
   const tail: string[] = [];
-  serverProcess = spawn(javaExe, ["-jar", jar, `--server.port=${serverPort}`, `--apicc.server.data-dir=${join(dataRoot, "server-data")}`], {
+  // 8 步场景链以注册起头；部署线 D5 起注册默认关，此处显式开启
+  serverProcess = spawn(javaExe, ["-jar", jar, `--server.port=${serverPort}`, `--apicc.server.data-dir=${join(dataRoot, "server-data")}`, "--apicc.server.allow-registration=true"], {
     cwd: dataRoot, // H2 元数据 URL 相对 cwd（jdbc:h2:file:./server-data/metadata）——数据全部落在临时目录
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
