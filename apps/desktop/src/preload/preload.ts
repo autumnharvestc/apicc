@@ -25,6 +25,8 @@ const api = {
   runsGet: (file: string) => ipcRenderer.invoke(IpcChannel.RunsGet, file),
   importPreview: (input: unknown) => ipcRenderer.invoke(IpcChannel.ImportPreview, input),
   importApply: (input: unknown) => ipcRenderer.invoke(IpcChannel.ImportApply, input),
+  projectClone: (projectId: string) => ipcRenderer.invoke(IpcChannel.ProjectClone, projectId),
+  projectMove: (projectId: string, targetGroupId: string) => ipcRenderer.invoke(IpcChannel.ProjectMove, { projectId, targetGroupId }),
   designExport: (apiId: string) => ipcRenderer.invoke(IpcChannel.DesignExport, apiId),
   // 工作流频道（M2-B 任务 1）：多参方法在 preload 侧包对象，主进程按对象 schema 校验。
   wfList: (projectId: string) => ipcRenderer.invoke(IpcChannel.WfList, { projectId }),

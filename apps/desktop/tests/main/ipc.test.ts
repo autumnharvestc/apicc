@@ -30,7 +30,7 @@ function setupWithImporters(importers: Importer[]) {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-"));
   const session = createSession();
   const deps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "", importers });
-  return { deps, dir };
+  return { deps, dir, session };
 }
 
 describe("IPC 处理器", () => {
@@ -106,7 +106,8 @@ describe("IPC 处理器", () => {
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
-    const projectNode = tree.children![0]!.children![0]!;
+    // id 布局（轨一）：重开加载按目录名（=UUID）字典序，分组顺序随机——按 id 定位，禁用下标
+    const projectNode = tree.children!.find((n: { id: string }) => n.id === g.id)!.children![0]!;
     expect(projectNode.envs).toEqual([{ id: env.id, name: "sit", extends: "dev", variables: {}, baseUrls: {} }]);
     // env:vars:save → 变量覆盖 + 显式 save 落盘，重开读回验证
     await fresh.handle("env:vars:save", {}, env.id, { baseUrl: "http://s" });
@@ -158,28 +159,63 @@ describe("IPC 处理器", () => {
     expect(preview.project.name).toBe("默认导入");
   });
 
-  it("import:apply 缺分组时创建分组并入项目、落盘可重开；重复导入拒绝「项目已存在」", async () => {
-    const { deps, dir } = setupWithImporters([fixedImporter]);
+  it("import:apply project 模式落到所选分组（按 id 选择）、落盘可重开；重复导入同名并存（轨二）", async () => {
+    const { deps, dir, session } = setupWithImporters([fixedImporter]);
     await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "目标分组" });
     const preview = await deps.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
-    await deps.handle("import:apply", {}, { groupName: "新分组", project: preview.project });
+    await deps.handle("import:apply", {}, { mode: "project", groupId: g.id, name: "导入项目", project: preview.project });
     // 重开读回：分组与项目均已落盘（apply 分支显式 save 语义）
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
-    const importedGroup = tree.children!.find((n: { label: string }) => n.label === "新分组")!;
+    const importedGroup = tree.children!.find((n: { id: string }) => n.id === g.id)!;
     expect(importedGroup).toBeDefined();
     expect(importedGroup.children!.map((n: { label: string }) => n.label)).toContain("导入项目");
-    // 同分组重复导入同名项目：拒绝
-    await expect(deps.handle("import:apply", {}, { groupName: "新分组", project: preview.project })).rejects.toThrow(/项目已存在: 导入项目/);
+    // 同分组重复导入同名项目：同名放开（轨二）并存，两次导入 id 不同
+    await deps.handle("import:apply", {}, { mode: "project", groupId: g.id, name: "导入项目", project: preview.project });
+    const tree2 = await deps.handle("tree:get", {});
+    const dup = tree2.children!.find((n: { id: string }) => n.id === g.id)!.children!.filter((n: { label: string }) => n.label === "导入项目");
+    expect(dup).toHaveLength(2);
+    // 固定 importer 复用同一 project 对象（id 相同）——并存条数即语义；真实导入器 id 均为新 UUID
+    const proj = session.workspace!.groups.find((x) => x.id === g.id)!.projects;
+    expect(proj.filter((x) => x.name === "导入项目")).toHaveLength(2);
   });
 
-  it("import:apply 目标分组已存在时合并进该分组（不新建）", async () => {
+  it("import:apply module 模式并入目标项目（baseUrl 进模块变量、不造环境）", async () => {
+    const { deps, dir, session } = setupWithImporters([fixedImporter]);
+    await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "宿主项目" });
+    // 产物带 imported 环境（baseUrl）——module 模式应把它写进模块变量而不是落环境
+    const importer: Importer = {
+      name: "fixed",
+      detect: (_fileName, content) => content.includes("FIXED-MAGIC"),
+      parse: () => ({
+        project: {
+          id: "00000000-0000-4000-8000-000000000201", name: "导入项目", variables: {}, workflows: [],
+          environments: [{ id: "00000000-0000-4000-8000-000000000202", name: "imported", variables: { baseUrl: "http://from-file" }, baseUrls: {} }],
+          collections: [{ id: "00000000-0000-4000-8000-000000000203", name: "导入集合", variables: {}, folders: [], apis: [] }],
+        },
+        warnings: [],
+      }),
+    };
+    const deps2 = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "", importers: [importer] });
+    const preview = await deps2.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
+    await deps2.handle("import:apply", {}, { mode: "module", projectId: p.id, name: "并入模块", project: preview.project });
+    const ws = session.workspace!;
+    const host = ws.groups.find((x) => x.id === g.id)!.projects.find((x) => x.id === p.id)!;
+    expect(host.collections.map((c) => c.name)).toEqual(["并入模块"]);
+    expect(host.collections[0]!.variables.baseUrl).toBe("http://from-file");
+    expect(host.environments).toEqual([]); // 不造环境
+  });
+
+  it("import:apply 目标分组已存在时合并进该分组（按 id，不新建）", async () => {
     const { deps, dir } = setupWithImporters([fixedImporter]);
     await deps.handle("ws:create", {}, dir, "w");
     const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "已有分组" });
     const preview = await deps.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
-    await deps.handle("import:apply", {}, { groupName: "已有分组", project: preview.project });
+    await deps.handle("import:apply", {}, { mode: "project", groupId: g.id, name: "导入项目", project: preview.project });
     const tree = await deps.handle("tree:get", {});
     expect(tree.children).toHaveLength(2); // 默认分组 + 已有分组
     const existingGroup = tree.children!.find((n: { id: string }) => n.id === g.id)!;
@@ -191,8 +227,9 @@ describe("IPC 处理器", () => {
     await deps.handle("ws:create", {}, dir, "w");
     await expect(deps.handle("import:preview", {}, { fileName: 42, content: "x" })).rejects.toThrow(/\[import:preview\]/);
     await expect(deps.handle("import:preview", {}, { content: "x" })).rejects.toThrow(/\[import:preview\]/);
-    await expect(deps.handle("import:apply", {}, { groupName: "g", project: { id: "p" } })).rejects.toThrow(/\[import:apply\]/);
-    await expect(deps.handle("import:apply", {}, { groupName: "g" })).rejects.toThrow(/\[import:apply\]/);
+    await expect(deps.handle("import:apply", {}, { mode: "project", groupId: "g", project: { id: "p" } })).rejects.toThrow(/\[import:apply\]/);
+    await expect(deps.handle("import:apply", {}, { mode: "module", projectId: "p", name: "n" })).rejects.toThrow(/\[import:apply\]/);
+    await expect(deps.handle("import:apply", {}, { mode: "bogus" })).rejects.toThrow(/\[import:apply\]/);
   });
 
   it("design:export 渲染 agent 设计 md 经注入的 saveFile 落盘并返回路径；取消返回空串", async () => {
@@ -261,7 +298,9 @@ describe("IPC 处理器", () => {
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const tree = await fresh.handle("tree:get", {});
-    expect(tree.children![0]!.children![0]!.envs).toEqual([{ id: env.id, name: "sit", extends: undefined, variables: {}, baseUrls: {} }]);
+    // id 布局（轨一）：重开后分组顺序=UUID 字典序（随机）——按 id 定位
+    const gNode = tree.children!.find((n: { id: string }) => n.id === g.id)!;
+    expect(gNode.children![0]!.envs).toEqual([{ id: env.id, name: "sit", extends: undefined, variables: {}, baseUrls: {} }]);
   });
 });
 
@@ -344,17 +383,18 @@ describe("工作流 IPC", () => {
     expect(await deps.handle("wf:impact", {}, { caseId: api.cases[0]!.id })).toEqual([]);
   });
 
-  it("重名创建拒绝；未知 workflowId 抛「未找到工作流」", async () => {
+  it("同名创建并存（轨二同名放开）；未知 workflowId 抛「未找到工作流」", async () => {
     const { deps, project } = await setupWf();
-    await deps.handle("wf:create", {}, { projectId: project.id, name: "条件流" });
-    await expect(deps.handle("wf:create", {}, { projectId: project.id, name: "条件流" })).rejects.toThrow(/工作流已存在: 条件流/);
+    const first = await deps.handle("wf:create", {}, { projectId: project.id, name: "条件流" });
+    const second = await deps.handle("wf:create", {}, { projectId: project.id, name: "条件流" });
+    expect(second.id).not.toBe(first.id);
     await expect(deps.handle("wf:get", {}, { workflowId: "不存在" })).rejects.toThrow(/未找到工作流: 不存在/);
     await expect(deps.handle("wf:delete", {}, { workflowId: "不存在" })).rejects.toThrow(/未找到工作流: 不存在/);
     await expect(deps.handle("wf:save", {}, { workflow: { id: "不存在", name: "x", status: "draft", nodes: [], edges: [] } })).rejects.toThrow(/未找到工作流: 不存在/);
     await expect(deps.handle("wf:set-status", {}, { workflowId: "不存在", next: "published" })).rejects.toThrow(/未找到工作流: 不存在/);
   });
 
-  it("wf:rename 改名后 wf:list 反映新名、树摘要同步且旧目录清理（落盘读回）；重名拒绝", async () => {
+  it("wf:rename 改名后 wf:list 反映新名、树摘要同步（落盘读回）；同名放开", async () => {
     const { deps, dir, project } = await setupWf();
     const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "old-name-flow" });
     await deps.handle("wf:rename", {}, { workflowId: wf.id, name: "new-name-flow" });
@@ -364,14 +404,15 @@ describe("工作流 IPC", () => {
     const tree = await deps.handle("tree:get", {});
     const gNodeWf = tree.children!.find((x: { label: string }) => x.label === "g")!;
     expect(gNodeWf.children![0]!.workflows).toEqual([{ id: wf.id, name: "new-name-flow", status: "draft" }]);
-    // 落盘读回：新目录可读、旧目录已清理（rename 分支显式 save → cleanupOrphanDirs 补层）
+    // 落盘读回：改名已持久化（id 布局后目录=工作流 id，改名只改 yaml 名称）
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const reread = await fresh.handle("wf:get", {}, { workflowId: wf.id });
     expect(reread.workflow.name).toBe("new-name-flow");
-    // 重名拒绝（与 wf:create 同文案）+ 未知 id 抛「未找到工作流」+ zod 入参校验
+    // 同名放开（轨二）：改名到已存在名称直接成功；未知 id 抛「未找到工作流」+ zod 入参校验
     await deps.handle("wf:create", {}, { projectId: project.id, name: "placeholder-flow" });
-    await expect(deps.handle("wf:rename", {}, { workflowId: wf.id, name: "placeholder-flow" })).rejects.toThrow(/工作流已存在: placeholder-flow/);
+    await deps.handle("wf:rename", {}, { workflowId: wf.id, name: "placeholder-flow" });
+    expect((await deps.handle("wf:get", {}, { workflowId: wf.id })).workflow.name).toBe("placeholder-flow");
     await expect(deps.handle("wf:rename", {}, { workflowId: "不存在", name: "x" })).rejects.toThrow(/未找到工作流: 不存在/);
     await expect(deps.handle("wf:rename", {}, { workflowId: 42, name: "x" })).rejects.toThrow(/\[wf:rename\] 入参校验失败/);
   });

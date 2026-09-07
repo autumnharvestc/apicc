@@ -16,6 +16,7 @@ import {
   workflowImpact,
   type AiSuggestedCase,
   type ApiDefinition,
+  type TestCase,
   type CaseOutcome,
   type Collection,
   type Environment,
@@ -129,7 +130,7 @@ const WORKSPACE_FILE = "apicc.workspace.yaml";
  * stressRun（M2-D3 任务 1）：进程内 StressRunner + 假 client 实现与主进程同构语义
  * （单活动拒绝/stop/错误文案/历史 kind 判别），client 可注入、默认不发真实网络。
  */
-export function createMemoryApi(options?: { root?: string; stressClient?: ProtocolClient }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ groupName: string; projectName: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
+export function createMemoryApi(options?: { root?: string; stressClient?: ProtocolClient }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
@@ -154,7 +155,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     if (stressActive?.controller === controller) stressActive = null;
   }
   // 导入向导（任务 7）：importApply 调用记录（供测试断言；语义对齐 session.importProject）。
-  const importApplyCalls: Array<{ groupName: string; projectName: string }> = [];
+  const importApplyCalls: Array<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }> = [];
   // 详细设计导出（任务 8）：designExport 调用记录（供测试断言渲染产物）。
   const designExportCalls: Array<{ file: string; content: string }> = [];
   // 在线状态（M3-B 任务 1）：替身不发网络——登录态 + 内存工作区/文件版本模型，
@@ -319,7 +320,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     },
 
     // importApply 调用记录读口：测试断言向导 apply 链路确实落到 api 层。
-    get importApplyCalls(): ReadonlyArray<{ groupName: string; projectName: string }> {
+    get importApplyCalls(): ReadonlyArray<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }> {
       return importApplyCalls;
     },
 
@@ -375,10 +376,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     async nodeCreate(input: NodeCreateInput): Promise<NodeCreatedDTO> {
       const ws = ensureOpen();
       const name = sanitizeNodeName(input.name);
-      // 与主进程 session 同契约（M9-A2）：名称净化 + 同级重名拒绝（名称即盘上目录名）。
-      const sameName = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
+      // 与主进程 session 同契约（轨二）：名称净化保留；同名放开——不再做同级重名拒绝。
       if (input.kind === "group") {
-        if (ws.groups.some((x) => sameName(x.name, name))) throw new Error(`分组已存在: ${name}`);
         const g: Group = { id: randomUUID(), name, projects: [] };
         ws.groups.push(g);
         await save();
@@ -387,7 +386,6 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       if (input.kind === "project") {
         const g = ws.groups.find((x) => x.id === input.parentId);
         if (!g) throw new Error(`未找到分组: ${input.parentId}`);
-        if (g.projects.some((x) => sameName(x.name, name))) throw new Error(`项目已存在: ${name}`);
         const p: Project = { id: randomUUID(), name, variables: {}, environments: [], collections: [], workflows: [] };
         g.projects.push(p);
         await save();
@@ -396,7 +394,6 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       if (input.kind === "collection") {
         const p = ws.groups.flatMap((g) => g.projects).find((x) => x.id === input.parentId);
         if (!p) throw new Error(`未找到项目: ${input.parentId}`);
-        if (p.collections.some((x) => sameName(x.name, name))) throw new Error(`集合已存在: ${name}`);
         const c: Collection = { id: randomUUID(), name, variables: {}, folders: [], apis: [] };
         p.collections.push(c);
         await save();
@@ -405,7 +402,6 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       if (input.kind === "folder") {
         const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.parentId);
         if (!c) throw new Error(`未找到集合: ${input.parentId}`);
-        if (c.folders.some((x) => sameName(x.name, name))) throw new Error(`文件夹已存在: ${name}`);
         const f: Folder = { id: randomUUID(), name, apis: [] };
         c.folders.push(f);
         await save();
@@ -429,8 +425,6 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
         if (!c) throw new Error(`未找到集合: ${input.parentId}`);
         target = { collection: c, folder: null };
       }
-      const siblings = target.folder ? target.folder.apis : target.collection.apis;
-      if (siblings.some((x) => sameName(x.name, name))) throw new Error(`接口已存在: ${name}`);
       const api = createApiDefinition(name, input.method ?? "GET", input.url ?? "/");
       if (target.folder) target.folder.apis.push(api);
       else target.collection.apis.push(api);
@@ -715,7 +709,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
 
     // 导入向导（任务 7）：importPreview 返回固定样例（渲染层替身不做格式探测——替身
     // 语义只钉「api.importPreview 返回结构入 store 状态」）；importApply 语义对齐
-    // session.importProject（缺分组时建组、同分组重名拒绝）并记录调用供测试断言。
+    // session 双模式（轨二：project=按分组 id 整包落库；module=集合并入目标项目、
+    // baseUrl 进模块变量不造环境）并记录调用供测试断言。
     async importPreview(_input: ImportPreviewInput): Promise<ImportPreviewResult> {
       const project: Project = {
         id: randomUUID(), name: "导入示例项目", variables: {}, environments: [], workflows: [],
@@ -729,20 +724,66 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
 
     async importApply(input: ImportApplyInput): Promise<void> {
       const ws = ensureOpen();
-      const groupName = sanitizeNodeName(input.groupName);
       const project = input.project;
-      project.name = sanitizeNodeName(project.name);
+      if (input.mode === "module") {
+        const target = ws.groups.flatMap((g) => g.projects).find((x) => x.id === input.projectId);
+        if (!target) throw new Error(`未找到项目: ${input.projectId}`);
+        const baseUrl = project.environments?.[0]?.variables?.baseUrl;
+        for (const c of project.collections) {
+          target.collections.push({
+            ...c,
+            name: sanitizeNodeName(input.name.trim() || c.name),
+            variables: { ...c.variables, ...(baseUrl ? { baseUrl } : {}) },
+          });
+        }
+        importApplyCalls.push({ mode: "module", projectId: input.projectId, name: input.name });
+        await save();
+        return;
+      }
+      const group = ws.groups.find((x) => x.id === input.groupId);
+      if (!group) throw new Error(`未找到分组: ${input.groupId}`);
+      project.name = sanitizeNodeName(input.name.trim() || project.name);
       project.collections = project.collections.map((c) => ({
         ...c,
         name: sanitizeNodeName(c.name),
         folders: c.folders.map((f) => ({ ...f, name: sanitizeNodeName(f.name), apis: f.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name) })) })),
         apis: c.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name) })),
       }));
-      let group = ws.groups.find((x) => x.name === groupName);
-      if (!group) { group = { id: randomUUID(), name: groupName, projects: [] }; ws.groups.push(group); }
-      if (group.projects.some((x) => x.name === project.name)) throw new Error(`项目已存在: ${project.name}`);
       group.projects.push(project);
-      importApplyCalls.push({ groupName, projectName: project.name });
+      importApplyCalls.push({ mode: "project", groupId: input.groupId, name: project.name });
+      await save();
+    },
+
+    /** project:clone（轨二）：整项目深拷贝、全部实体新 id，落回原分组（名称不变）。 */
+    async projectClone(projectId: string): Promise<Project> {
+      const ws = ensureOpen();
+      const group = ws.groups.find((g) => g.projects.some((p) => p.id === projectId));
+      const source = group?.projects.find((p) => p.id === projectId);
+      if (!group || !source) throw new Error(`未找到项目: ${projectId}`);
+      const clone = JSON.parse(JSON.stringify(source)) as Project;
+      const reidCase = (tc: TestCase): TestCase => ({ ...tc, id: randomUUID() });
+      const reidApi = (a: ApiDefinition): ApiDefinition => ({ ...a, id: randomUUID(), cases: a.cases.map(reidCase) });
+      const reidFolder = (f: Folder): Folder => ({ ...f, id: randomUUID(), apis: f.apis.map(reidApi), folders: (f.folders ?? []).map(reidFolder) });
+      clone.id = randomUUID();
+      clone.environments = (clone.environments ?? []).map((e) => ({ ...e, id: randomUUID() }));
+      clone.collections = clone.collections.map((c) => ({ ...c, id: randomUUID(), apis: c.apis.map(reidApi), folders: c.folders.map(reidFolder) }));
+      clone.workflows = (clone.workflows ?? []).map((w) => ({ ...w, id: randomUUID() }));
+      group.projects.push(clone);
+      await save();
+      return clone;
+    },
+
+    /** project:move（轨二）：项目移入目标分组。 */
+    async projectMove(projectId: string, targetGroupId: string): Promise<void> {
+      const ws = ensureOpen();
+      const source = ws.groups.find((g) => g.projects.some((p) => p.id === projectId));
+      if (!source) throw new Error(`未找到项目: ${projectId}`);
+      const target = ws.groups.find((g) => g.id === targetGroupId);
+      if (!target) throw new Error(`未找到分组: ${targetGroupId}`);
+      if (target.id === source.id) return;
+      const index = source.projects.findIndex((p) => p.id === projectId);
+      const [project] = source.projects.splice(index, 1);
+      target.projects.push(project);
       await save();
     },
 
@@ -777,7 +818,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       const ws = ensureOpen();
       const project = ws.groups.flatMap((g) => g.projects).find((p) => p.id === input.projectId);
       if (!project) throw new Error(`未找到项目: ${input.projectId}`);
-      if (project.workflows.some((w) => w.name === input.name)) throw new Error(`工作流已存在: ${input.name}`);
+      // 同名放开（轨二）：同项目同名工作流并存
       const workflow: Workflow = { id: randomUUID(), name: input.name, status: "draft", nodes: [], edges: [] };
       project.workflows.push(workflow);
       await save();
@@ -799,14 +840,11 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       throw new Error(`未找到工作流: ${workflowId}`);
     },
 
-    // 重命名（M2-B 收口）：语义对齐 session.renameWorkflow——同项目重名拒绝（与 wfCreate
-    // 同文案）、改名后落盘（旧目录由 session 侧 cleanupOrphanDirs 对位清理；替身落盘为最佳努力）。
+    // 重命名（M2-B 收口）：语义对齐 session.renameWorkflow——同名放开（轨二）后仅改名
+    // 并落盘（id 布局后盘上目录=工作流 id，改名不动目录；替身落盘为最佳努力）。
     async wfRename(workflowId: string, name: string): Promise<void> {
       const loc = locateWorkflow(workflowId);
       if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
-      if (loc.project.workflows.some((w) => w.id !== workflowId && w.name === name)) {
-        throw new Error(`工作流已存在: ${name}`);
-      }
       loc.workflow.name = name;
       await save();
     },

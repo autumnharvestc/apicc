@@ -44,11 +44,11 @@ describe("IPC 入参深平化（withPlainArgs，回归：An object could not be 
       format: "openapi",
       project: reactive({ name: "商店 API", apis: [{ name: "updatePet", method: "PUT" }] }),
     });
-    await wrapped.importApply({ groupName: "group-1", project: preview.project as unknown as ImportProject });
+    await wrapped.importApply({ mode: "project", groupId: "group-1", name: "商店 API", project: preview.project as unknown as ImportProject });
     expect(received).toHaveLength(1);
     // 判定器：入参能过结构化克隆（真实 Electron 场景即不再抛 An object could not be cloned）
     expect(() => structuredClone(received[0])).not.toThrow();
-    expect(received[0]).toEqual({ groupName: "group-1", project: { name: "商店 API", apis: [{ name: "updatePet", method: "PUT" }] } });
+    expect(received[0]).toEqual({ mode: "project", groupId: "group-1", name: "商店 API", project: { name: "商店 API", apis: [{ name: "updatePet", method: "PUT" }] } });
   });
 
   it("withPlainArgs：多参/基本类型/undefined 参原样透传；属性动态取（中途换实现仍生效）", async () => {

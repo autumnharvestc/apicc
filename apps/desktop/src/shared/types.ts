@@ -108,8 +108,11 @@ export interface StressReportDTO { kind: "stress"; report: StressReport }
 export interface ImportPreviewInput { fileName: string; content: string }
 /** import:preview 返回：命中的导入器名 + 解析产物（id 均为新生成 UUID）+ 警告列表。 */
 export interface ImportPreviewResult { importerName: string; project: Project; warnings: string[] }
-/** import:apply 入参：目标分组（不存在则创建）+ 预览产出的项目。 */
-export interface ImportApplyInput { groupName: string; project: Project }
+/** import:apply 入参（轨二双模式）：project=整包落到所选分组（name=项目名，预填 title 可改）；
+ * module=产物集合改名后并入目标项目（baseUrl 进模块变量、不造环境）。同名并存（同名放开）。 */
+export type ImportApplyInput =
+  | { mode: "project"; groupId: string; name: string; project: Project }
+  | { mode: "module"; projectId: string; name: string; project: Project };
 
 /** wf:list 行摘要：工作流列表（侧树「工作流」分组与列表视图共用，规格 §3）。 */
 export interface WorkflowSummary { id: string; name: string; status: WorkflowStatus }
@@ -168,6 +171,10 @@ export interface ApiccApi {
   stressStop(): Promise<StressRunOutput>;
   importPreview(input: ImportPreviewInput): Promise<ImportPreviewResult>;
   importApply(input: ImportApplyInput): Promise<void>;
+  /** project:clone：整项目深拷贝新 id 落回原分组，返回克隆体。 */
+  projectClone(projectId: string): Promise<Project>;
+  /** project:move：项目移入目标分组。 */
+  projectMove(projectId: string, targetGroupId: string): Promise<void>;
   /** design:export：主进程渲染 agent 设计 md → showSaveDialog 落盘；返回保存路径（取消为空串）。 */
   designExport(apiId: string): Promise<string>;
   /** 工作流频道（M2-B 任务 1）：语义与主进程 session 一致，错误文案逐字对齐。 */

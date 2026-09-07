@@ -88,14 +88,30 @@ async function mountApp() {
   return wrapper;
 }
 
-/** 打开本地目录（M11：主页入口 → topbar-home → Open Directory → 切接口模块）。 */
+/** 打开本地目录（M11：主页入口 → topbar-home → Open Directory → 切接口模块）。
+ * wsOpen 走真实磁盘 IO（替身重载），高负载下单次 flushPromises 可能早于 open 完成——
+ * 轮询等待 tree 就绪（上限 ~2s）后再切接口模块，消除时序边缘。 */
 async function openLocalDir(wrapper: import("@vue/test-utils").VueWrapper) {
   await wrapper.find('[data-testid="topbar-home"]').trigger("click");
   await flushPromises();
   await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
+  for (let i = 0; i < 100 && wrapper.find('[data-testid="rail-api"]').attributes("disabled") !== undefined; i++) await new Promise((r) => setTimeout(r, 20));
   await flushPromises();
   await wrapper.find('[data-testid="rail-api"]').trigger("click");
+  // 打开链路（真实磁盘重载 + 树渲染）是多拍宏任务，单次 flushPromises 会早于树数据就绪：
+  // 直接等首个树节点出现（上限 ~2s），不 sleep 凑拍。
+  for (let i = 0; i < 100 && !wrapper.find('[data-testid="tree-group-toggle"]').exists(); i++) {
+    await flushPromises();
+    await new Promise((r) => setTimeout(r, 20));
+  }
   await flushPromises();
+  // id 布局（轨一）：重开后分组顺序=UUID 字典序（随机），首个分组可能是空的默认分组——
+  // 展开全部分组并等种子接口节点出现，不依赖顺序
+  for (let round = 0; round < 5 && !wrapper.find('[data-testid="tree-api"]').exists(); round++) {
+    for (const t of wrapper.findAll('[data-testid="tree-group-toggle"]')) await t.trigger("click");
+    await flushPromises();
+    await new Promise((r) => setTimeout(r, 20));
+  }
 }
 
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
@@ -139,7 +155,6 @@ describe("App 错误反馈通道（宽审查 I1）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     // 展开分组（一次点击递归展开后代容器）后点集合行的「新建接口」
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     await wrapper.find('[data-testid="new-api"]').trigger("click");
     await expectBody("dialog-input").setValue("x");
     await expectBody("dialog-confirm").trigger("click");
@@ -187,7 +202,8 @@ describe("App 视图切换装配（M8 模块化）", () => {
     expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="viewer-pane"]').exists()).toBe(true);
     // 选中种子接口 → 子视图（调试/设计）启用 → 设计子视图（M9-D：用例移入测试模块）
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await flushPromises();
+    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     expect(subRadio(wrapper, "design").attributes("disabled")).toBeUndefined();
@@ -223,7 +239,8 @@ describe("App 视图切换装配（M8 模块化）", () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await flushPromises();
+    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="send-btn"]').trigger("click");
@@ -238,7 +255,8 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
     // 打开工作区并选中接口，发送一次：memory 替身断言恒为空 → 断言表渲染 antd 内建空态
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await flushPromises();
+    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="send-btn"]').trigger("click");
@@ -273,12 +291,11 @@ describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
     await flushPromises();
     // 直连替身建两条流后重开工作区刷新树（failingApi 为本文件共享单例，按名定位节点）
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children![0]!.children![0]!;
+    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
     const wfA = await failingApi.wfCreate({ projectId: project.id, name: "脏缓冲流" });
     const wfB = await failingApi.wfCreate({ projectId: project.id, name: "切换目标流" });
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const wfNode = (name: string) =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
     // 侧树打开流 A 并经设计器「加节点」制造 dirty
@@ -323,12 +340,11 @@ describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children![0]!.children![0]!;
+    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
     await failingApi.wfCreate({ projectId: project.id, name: "干净流甲" });
     const wfB = await failingApi.wfCreate({ projectId: project.id, name: "干净流乙" });
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const wfNode = (name: string) =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
     await wfNode("干净流甲").trigger("click");
@@ -348,11 +364,10 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children![0]!.children![0]!;
+    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
     const wf = await failingApi.wfCreate({ projectId: project.id, name: "旧名流" });
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const wfNode = (name: string) =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
     // 侧树打开该流（设计器载入，缓冲持旧名）
@@ -387,12 +402,11 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children![0]!.children![0]!;
+    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
     const wfA = await failingApi.wfCreate({ projectId: project.id, name: "旁路流甲" });
     await failingApi.wfCreate({ projectId: project.id, name: "旁路流乙" });
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const wfNode = (name: string) =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
     // 设计器开着流甲，重命名流乙
@@ -423,8 +437,7 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
       await openLocalDir(wrapper);
       await flushPromises();
       // 选中种子接口 → selectedProjectId 就绪 → bindIndex 首次构建（仅种子 1 个接口）
-      await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
-      await wrapper.find('[data-testid="tree-api"]').trigger("click");
+        await wrapper.find('[data-testid="tree-api"]').trigger("click");
       await flushPromises();
       await wrapper.find('[data-testid="rail-wf"]').trigger("click");
       await flushPromises();
@@ -457,11 +470,10 @@ describe("App 侧树工作流入口", () => {
     await flushPromises();
     // 直连替身建工作流后重开工作区刷新树（打开钮对非工作区目录回退内存态）
     const tree = await failingApi.treeGet();
-    const project = tree.children![0]!.children![0]!;
+    const project = tree.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
     const wf = await failingApi.wfCreate({ projectId: project.id, name: "侧树入口流" });
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     // id 布局（轨一）后树内工作流按 id 字典序排列（名称制时代的名称序不再保证）——按名称点选目标流
     await wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("侧树入口流"))!.trigger("click");
     await flushPromises();
@@ -480,7 +492,8 @@ describe("App 侧树工作流入口", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     // 选中接口 → selectedProjectId 就绪 → 切到工作流视图（设计器是工作流唯一创建入口）
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await flushPromises();
+    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await wrapper.find('[data-testid="rail-wf"]').trigger("click");
     await flushPromises();
@@ -504,11 +517,10 @@ describe("App 侧树工作流入口", () => {
     await flushPromises();
     // 直连替身建 draft 工作流后重开工作区刷新树（failingApi 为本文件共享单例，按名断言）
     const tree = await failingApi.treeGet();
-    const project = tree.children![0]!.children![0]!;
+    const project = tree.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
     const wf = await failingApi.wfCreate({ projectId: project.id, name: "生命周期流" });
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
     const findNode = () =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("生命周期流"))!;
     expect(findNode().attributes("data-status")).toBe("draft");
@@ -522,7 +534,7 @@ describe("App 侧树工作流入口", () => {
     expect(findNode().attributes("data-status")).toBe("published");
     // 树 DTO 摘要确实重建（status 更新；failingApi 为共享单例，按 id 断言本流）
     const dto = await failingApi.treeGet();
-    expect(dto.children![0]!.children![0]!.workflows!.find((w) => w.id === wf.id)).toEqual({
+    expect(dto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!.workflows!.find((w) => w.id === wf.id)).toEqual({
       id: wf.id,
       name: "生命周期流",
       status: "published",
@@ -622,7 +634,8 @@ describe("App 测试模块装配（M9-D）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     // 选中种子接口（作用域化树：collection 展开后点接口）
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await flushPromises();
+    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     // 测试模块：用例面板渲染（用例列表来自当前接口）
@@ -644,8 +657,7 @@ describe("App 测试模块装配（M9-D）", () => {
       const wrapper = await mountApp();
       await openLocalDir(wrapper);
       await flushPromises();
-      await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
-      await wrapper.find('[data-testid="tree-api"]').trigger("click");
+        await wrapper.find('[data-testid="tree-api"]').trigger("click");
       await flushPromises();
       await wrapper.find('[data-testid="rail-test"]').trigger("click");
       await flushPromises();
@@ -693,12 +705,13 @@ describe("App 测试模块装配（M9-D）", () => {
     await flushPromises();
     // 建（或复用）一条工作流后进入测试模块场景页签
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children![0]!.children![0]!;
+    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
     const wf = await failingApi.wfCreate({ projectId: project.id, name: "场景流" });
     // 直建工作流后重开目录刷新树摘要（场景清单取自 workspace.tree）
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await flushPromises();
+    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="rail-test"]').trigger("click");
@@ -722,7 +735,8 @@ describe("App 环境联动（M9-A1）", () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await flushPromises();
+    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     // 选中接口时环境清单为空（种子项目无环境）

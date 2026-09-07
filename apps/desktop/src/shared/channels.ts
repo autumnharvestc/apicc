@@ -23,6 +23,9 @@ export const IpcChannel = {
   RunsGet: "runs:get",
   ImportPreview: "import:preview",
   ImportApply: "import:apply",
+  // 项目克隆/移动（桌面端批次轨二）：克隆=整项目深拷贝新 id；移动=换分组
+  ProjectClone: "project:clone",
+  ProjectMove: "project:move",
   DesignExport: "design:export",
   WfList: "wf:list",
   WfGet: "wf:get",

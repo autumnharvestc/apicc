@@ -51,7 +51,11 @@ const EnvCreateInputSchema = z.object({ projectId: z.string(), name: z.string(),
 const DebugInputSchema = z.object({ apiId: z.string(), caseId: z.string(), envName: z.string().nullish() });
 const RunInputSchema = z.object({ collectionId: z.string(), envName: z.string().nullish() });
 const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() });
-const ImportApplyInputSchema = z.object({ groupName: z.string(), project: ProjectSchema });
+const ImportApplyInputSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("project"), groupId: z.string(), name: z.string(), project: ProjectSchema }),
+  z.object({ mode: z.literal("module"), projectId: z.string(), name: z.string(), project: ProjectSchema }),
+]);
+const ProjectMoveInputSchema = z.object({ projectId: z.string(), targetGroupId: z.string() });
 // 工作流频道（M2-B 任务 1）：wf:save 复用 core WorkflowSchema 全量校验（strict，未知字段
 // fail-fast）；wf:run 的 envName 沿用 envName nullish 惯例（null 归一为无环境运行）。
 const WfListInputSchema = z.object({ projectId: z.string() });
@@ -152,6 +156,8 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.RunsGet]: z.tuple([z.string()]),
   [IpcChannel.ImportPreview]: z.tuple([ImportPreviewInputSchema]),
   [IpcChannel.ImportApply]: z.tuple([ImportApplyInputSchema]),
+  [IpcChannel.ProjectClone]: z.tuple([z.string()]),
+  [IpcChannel.ProjectMove]: z.tuple([ProjectMoveInputSchema]),
   [IpcChannel.DesignExport]: z.tuple([z.string()]),
   [IpcChannel.WfList]: z.tuple([WfListInputSchema]),
   [IpcChannel.WfGet]: z.tuple([WfGetInputSchema]),
@@ -480,7 +486,23 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.ImportApply: {
         const input = a[0] as ImportApplyInput;
-        await session.importProject(input.groupName, { project: input.project });
+        // 轨二双模式：project=整包落库到所选分组；module=产物集合改名后并入目标项目
+        // （baseUrl 进模块变量、不造环境）。同名并存（同名放开）。
+        if (input.mode === "module") {
+          await session.importModuleToProject(input.projectId, input.name, { project: input.project });
+        } else {
+          await session.importProjectToGroup(input.groupId, input.name, { project: input.project });
+        }
+        return undefined;
+      }
+      // 项目克隆/移动（轨二）：克隆=整项目深拷贝新 id 落回原分组；移动=换分组。
+      case IpcChannel.ProjectClone: {
+        const projectId = a[0] as string;
+        return session.cloneProject(projectId);
+      }
+      case IpcChannel.ProjectMove: {
+        const input = a[0] as { projectId: string; targetGroupId: string };
+        await session.moveProject(input.projectId, input.targetGroupId);
         return undefined;
       }
       // 详细设计导出（任务 8）：取接口 → core renderDesignMarkdown 渲染 → 注入的

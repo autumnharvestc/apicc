@@ -9,8 +9,10 @@ import {
   type ApiDefinition,
   type Collection,
   type Environment,
+  type Folder,
   type Group,
   type Project,
+  type TestCase,
   type Workflow,
   type WorkflowStatus,
   type Workspace,
@@ -58,8 +60,7 @@ export function createSession(options: SessionOptions = {}) {
   function createGroup(rawName: string): Group {
     const { workspace: ws } = ensureOpen();
     const name = sanitizeNodeName(rawName);
-    // 同级重名拒绝（M9-A2）：名称即盘上目录名，重名双写同目录互相覆盖（与工作流 sameName 同口径）。
-    if (ws.groups.some((x) => sameName(x.name, name, platform))) throw new Error(`分组已存在: ${name}`);
+    // 同名放开（轨二）：id 为身份、目录名=UUID，同级同名并存不再拒绝
     const group: Group = { id: randomUUID(), name, projects: [] };
     ws.groups.push(group);
     return group;
@@ -70,7 +71,6 @@ export function createSession(options: SessionOptions = {}) {
     const name = sanitizeNodeName(rawName);
     const group = ws.groups.find((x) => x.id === groupId);
     if (!group) throw new Error(`未找到分组: ${groupId}`);
-    if (group.projects.some((x) => sameName(x.name, name, platform))) throw new Error(`项目已存在: ${name}`);
     const project: Project = { id: randomUUID(), name, variables: {}, globals: { query: [], headers: [], cookies: [], body: [] }, environments: [], collections: [], workflows: [] };
     group.projects.push(project);
     return project;
@@ -81,7 +81,6 @@ export function createSession(options: SessionOptions = {}) {
     const name = sanitizeNodeName(rawName);
     const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
     if (!project) throw new Error(`未找到项目: ${projectId}`);
-    if (project.collections.some((x) => sameName(x.name, name, platform))) throw new Error(`集合已存在: ${name}`);
     const collection: Collection = { id: randomUUID(), name, variables: {}, folders: [], apis: [] };
     project.collections.push(collection);
     return collection;
@@ -92,7 +91,6 @@ export function createSession(options: SessionOptions = {}) {
     const name = sanitizeNodeName(rawName);
     const collection = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === collectionId);
     if (!collection) throw new Error(`未找到集合: ${collectionId}`);
-    if (collection.folders.some((x) => sameName(x.name, name, platform))) throw new Error(`文件夹已存在: ${name}`);
     const folder = { id: randomUUID(), name, apis: [] };
     collection.folders.push(folder);
     return folder;
@@ -111,12 +109,10 @@ export function createSession(options: SessionOptions = {}) {
     if (folderId) {
       const folder = collection.folders.find((f) => f.id === folderId);
       if (!folder) throw new Error(`未找到文件夹: ${folderId}`);
-      if (folder.apis.some((x) => sameName(x.name, name, platform))) throw new Error(`接口已存在: ${name}`);
       const api = makeApi();
       folder.apis.push(api);
       return api;
     }
-    if (collection.apis.some((x) => sameName(x.name, name, platform))) throw new Error(`接口已存在: ${name}`);
     const api = makeApi();
     collection.apis.push(api);
     return api;
@@ -178,9 +174,7 @@ export function createSession(options: SessionOptions = {}) {
     const { workspace: ws } = ensureOpen();
     const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
     if (!project) throw new Error(`未找到项目: ${projectId}`);
-    // 重名检查走 sameName（C1）：win32 上 flow/FLOW 是同一盘上目录，严格比较会放行
-    // 大小写变体重名 → save 双写同目录互相覆盖。
-    if (project.workflows.some((w) => sameName(w.name, name, platform))) throw new Error(`工作流已存在: ${name}`);
+    // 同名放开（轨二）：id 为身份、目录名=UUID，同项目同名工作流并存
     const workflow: Workflow = { id: randomUUID(), name, status: "draft", nodes: [], edges: [] };
     project.workflows.push(workflow);
     return workflow;
@@ -202,16 +196,12 @@ export function createSession(options: SessionOptions = {}) {
 
   /**
    * 重命名工作流（M2-B 收口：侧树重命名入口）：按 id 定位 → 改名 → save() 落盘。
-   * 旧目录由 save 后的 cleanupOrphanDirs workflows 层清理（先写新、后删旧，与集合
-   * renameNode 同一盘上语义）；同项目重名拒绝（与 createWorkflow 同文案）。status 恒不变。
+   * id 布局（轨一）后目录名=工作流 id，改名仅改 yaml 名称、盘上目录恒在。
+   * 同名放开（轨二）：同项目同名工作流并存，不再拒绝。status 恒不变。
    */
   async function renameWorkflow(workflowId: string, name: string): Promise<void> {
     const loc = locateWorkflow(workflowId);
     if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
-    // 重名检查走 sameName（C1）：win32 归一比较（自身大小写改名经 id 排除放行）。
-    if (loc.project.workflows.some((w) => w.id !== workflowId && sameName(w.name, name, platform))) {
-      throw new Error(`工作流已存在: ${name}`);
-    }
     loc.workflow.name = name;
     await save();
   }
@@ -358,18 +348,17 @@ export function createSession(options: SessionOptions = {}) {
     env.variables = variables;
   }
 
-  /** 导入项目（任务 7）：目标分组不存在则创建；同分组重名项目拒绝。导入器产物的 id 均为新生成 UUID，无 id 冲突风险。
-   * M9-A2：分组名与导入树内全部实体名经 sanitizeNodeName 深度净化（内置导入器已净化；
-   * 此处兜底插件导入器——其产物名称不受控，非法字符同样会打穿盘上目录布局）。 */
-  async function importProject(groupName: string, imported: { project: Project }): Promise<void> {
+  /**
+   * 导入项目（轨二 project 模式）：目标分组按 id 选择；同名项目并存不再拒绝。
+   * 导入树内全部实体名经 sanitizeNodeName 净化（名称卫生；id 布局后不再承担盘上安全职责）。
+   * 产物环境（如 OpenAPI 的 imported baseUrl 环境）随项目整包落库。
+   */
+  async function importProjectToGroup(groupId: string, projectName: string, imported: { project: Project }): Promise<Project> {
     const { workspace: ws } = ensureOpen();
-    const sanitizedGroup = sanitizeNodeName(groupName);
-    let group = ws.groups.find((x) => x.name === sanitizedGroup);
-    if (!group) { group = createGroup(sanitizedGroup); }
+    const group = ws.groups.find((x) => x.id === groupId);
+    if (!group) throw new Error(`未找到分组: ${groupId}`);
     const project = imported.project;
-    project.name = sanitizeNodeName(project.name);
-    const existing = group.projects.find((x) => sameName(x.name, project.name, platform));
-    if (existing) throw new Error(`项目已存在: ${project.name}`);
+    project.name = sanitizeNodeName(projectName.trim() || project.name);
     project.environments = (project.environments ?? []).map((e) => ({ ...e, name: sanitizeNodeName(e.name) }));
     project.collections = project.collections.map((c) => ({
       ...c,
@@ -384,40 +373,112 @@ export function createSession(options: SessionOptions = {}) {
     project.workflows = (project.workflows ?? []).map((w) => ({ ...w, name: sanitizeNodeName(w.name) }));
     group.projects.push(project);
     await save();
+    return project;
+  }
+
+  /**
+   * 导入模块（轨二 module 模式）：把导入产物的每个集合改名后追加为目标项目的模块；
+   * 产物环境里的 baseUrl 变量写入该模块的模块变量（变量链=环境>模块>全局，任何环境可
+   * 直接跑通、按环境可覆盖），**不创建环境**——避免多次导入灌水 imported 环境；产物
+   * 环境与工作流在 module 模式丢弃。同名模块并存（同名放开）。
+   */
+  async function importModuleToProject(projectId: string, moduleName: string, imported: { project: Project }): Promise<Collection[]> {
+    const { workspace: ws } = ensureOpen();
+    const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+    if (!project) throw new Error(`未找到项目: ${projectId}`);
+    const baseUrl = imported.project.environments?.[0]?.variables?.baseUrl;
+    const imported0 = imported.project.collections.map((c) => ({
+      ...c,
+      name: sanitizeNodeName(moduleName.trim() || c.name),
+      variables: { ...c.variables, ...(baseUrl ? { baseUrl } : {}) },
+      folders: c.folders.map((f) => ({
+        ...f,
+        name: sanitizeNodeName(f.name),
+        apis: f.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name), cases: a.cases.map((tc) => ({ ...tc, name: sanitizeNodeName(tc.name) })) })),
+      })),
+      apis: c.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name), cases: a.cases.map((tc) => ({ ...tc, name: sanitizeNodeName(tc.name) })) })),
+    }));
+    project.collections.push(...imported0);
+    await save();
+    return imported0;
+  }
+
+  /**
+   * 克隆项目（轨二）：整项目深拷贝、全部实体发新 UUID（含环境/模块/目录/接口/用例/
+   * 工作流），变量/全局参数/操作列表随结构带走；落回原分组，名称=原名（同名放开）。
+   */
+  async function cloneProject(projectId: string): Promise<Project> {
+    const { workspace: ws } = ensureOpen();
+    const group = ws.groups.find((g) => g.projects.some((p) => p.id === projectId));
+    const source = group?.projects.find((p) => p.id === projectId);
+    if (!group || !source) throw new Error(`未找到项目: ${projectId}`);
+    const clone = JSON.parse(JSON.stringify(source)) as Project;
+    const reidCase = (tc: TestCase): TestCase => ({ ...tc, id: randomUUID() });
+    const reidApi = (a: ApiDefinition): ApiDefinition => ({ ...a, id: randomUUID(), cases: a.cases.map(reidCase) });
+    const reidFolder = (f: Folder): Folder => ({ ...f, id: randomUUID(), apis: f.apis.map(reidApi), folders: (f.folders ?? []).map(reidFolder) });
+    clone.id = randomUUID();
+    clone.environments = (clone.environments ?? []).map((e) => ({ ...e, id: randomUUID() }));
+    clone.collections = clone.collections.map((c) => ({
+      ...c, id: randomUUID(), apis: c.apis.map(reidApi), folders: c.folders.map(reidFolder),
+      preOperations: c.preOperations?.map((o) => ({ ...o, id: randomUUID() })),
+      postOperations: c.postOperations?.map((o) => ({ ...o, id: randomUUID() })),
+    }));
+    for (const c of clone.collections) {
+      for (const f of c.folders) {
+        for (const o of f.preOperations ?? []) o.id = randomUUID();
+        for (const o of f.postOperations ?? []) o.id = randomUUID();
+        for (const sub of f.folders ?? []) {
+          for (const o of sub.preOperations ?? []) o.id = randomUUID();
+          for (const o of sub.postOperations ?? []) o.id = randomUUID();
+        }
+      }
+    }
+    clone.workflows = (clone.workflows ?? []).map((w) => ({ ...w, id: randomUUID() }));
+    group.projects.push(clone);
+    await save();
+    return clone;
+  }
+
+  /** 移动项目（轨二）：按 id 从原分组移入目标分组（落盘）。 */
+  async function moveProject(projectId: string, targetGroupId: string): Promise<void> {
+    const { workspace: ws } = ensureOpen();
+    const source = ws.groups.find((g) => g.projects.some((p) => p.id === projectId));
+    if (!source) throw new Error(`未找到项目: ${projectId}`);
+    const target = ws.groups.find((g) => g.id === targetGroupId);
+    if (!target) throw new Error(`未找到分组: ${targetGroupId}`);
+    if (target.id === source.id) return;
+    const index = source.projects.findIndex((p) => p.id === projectId);
+    const [project] = source.projects.splice(index, 1);
+    target.projects.push(project);
+    await save();
   }
 
   function renameNode(kind: NodeKind, id: string, rawName: string): void {
     const { workspace: ws } = ensureOpen();
     const name = sanitizeNodeName(rawName);
+    // 同名放开（轨二）：仅默认分组守卫与「未找到」保留，其余重名检查全部移除
     if (kind === "group") {
       const n = ws.groups.find((x) => x.id === id);
       if (!n) throw new Error(`未找到: ${id}`);
       if (n.default === true) throw new Error("默认分组不可改名");
-      if (ws.groups.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`分组已存在: ${name}`);
       n.name = name;
       return;
     }
     if (kind === "project") {
       const n = ws.groups.flatMap((g) => g.projects).find((x) => x.id === id);
       if (!n) throw new Error(`未找到: ${id}`);
-      const parent = ws.groups.find((g) => g.projects.some((x) => x.id === id));
-      if (parent && parent.projects.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`项目已存在: ${name}`);
       n.name = name;
       return;
     }
     if (kind === "collection") {
       const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === id);
       if (!n) throw new Error(`未找到: ${id}`);
-      const parent = ws.groups.flatMap((g) => g.projects).find((p) => p.collections.some((x) => x.id === id));
-      if (parent && parent.collections.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`集合已存在: ${name}`);
       n.name = name;
       return;
     }
     if (kind === "folder") {
       const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).flatMap((c) => c.folders).find((x) => x.id === id);
       if (!n) throw new Error(`未找到: ${id}`);
-      const parent = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((c) => c.folders.some((x) => x.id === id));
-      if (parent && parent.folders.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`文件夹已存在: ${name}`);
       n.name = name;
       return;
     }
@@ -429,8 +490,6 @@ export function createSession(options: SessionOptions = {}) {
     }
     const loc = locateApi(id);
     if (!loc) throw new Error(`未找到: ${id}`);
-    const siblings = loc.folder ? loc.folder.apis : loc.collection.apis;
-    if (siblings.some((x) => x.id !== id && sameName(x.name, name, platform))) throw new Error(`接口已存在: ${name}`);
     loc.api.name = name;
   }
 
@@ -547,7 +606,8 @@ export function createSession(options: SessionOptions = {}) {
       return (await fileStorage.load(r)).problems;
     },
     createGroup, createProject, createCollection, createFolder, createApi,
-    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setProjectGlobals, getProjectGlobals, getContainer, saveContainer, ensureDefaultGroup, importProject,
+    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setProjectGlobals, getProjectGlobals, getContainer, saveContainer, ensureDefaultGroup,
+    importProjectToGroup, importModuleToProject, cloneProject, moveProject,
     locateApi, locateCollection, saveApi,
     locateWorkflow, createWorkflow, deleteWorkflow, saveWorkflow, setWorkflowStatus, renameWorkflow,
     renameNode, deleteNode, save,

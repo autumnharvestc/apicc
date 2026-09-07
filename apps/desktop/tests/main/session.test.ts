@@ -131,11 +131,6 @@ describe("createSession", () => {
     await s.renameWorkflow(wf.id, "新名");
     // 改名不动盘上目录（id 目录恒在）
     expect(existsSync(wfDir)).toBe(true);
-    // 同项目重名拒绝（与 createWorkflow 同文案）：wf 已改名后，另一条流不得再改成「新名」
-    const other = s.createWorkflow(p.id, "另一条流");
-    await s.save();
-    await expect(s.renameWorkflow(other.id, "新名")).rejects.toThrow(/工作流已存在: 新名/);
-    expect(s.locateWorkflow(other.id)?.workflow.name).toBe("另一条流");
     const s2 = createSession();
     const reopened = await s2.open(dir);
     // 重开读回：改名已持久化（按 id 取，不依赖盘上目录的字典序）
@@ -164,34 +159,8 @@ describe("createSession", () => {
 
   // —— C1（Critical）回归的两条 NTFS 大小写用例随 id 布局（轨一）移除：目录名=UUID 后
   // 「模型名 Flow / 盘上目录 flow」的解析态这一错误类别整体消亡，rename 仅改 yaml 名称
-  // 且 id 目录恒在（由 renameWorkflow 用例钉住）。sameName 归一比较仍保留于重名拒绝语义
-  // （见下方「重名检查大小写归一」用例；轨二放开同名后一并移除）。 ——
-  it("注入 win32：createWorkflow/renameWorkflow 重名检查大小写归一（C1）", async () => {
-    const s = createSession({ platform: "win32" });
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const flow = s.createWorkflow(p.id, "flow");
-    // win32 上 flow/FLOW 是同一盘上目录：重名拒绝（修复前严格比较放行 → save 双写同目录互覆）
-    expect(() => s.createWorkflow(p.id, "FLOW")).toThrow(/工作流已存在: FLOW/);
-    const other = s.createWorkflow(p.id, "其它流");
-    await expect(s.renameWorkflow(other.id, "Flow")).rejects.toThrow(/工作流已存在: Flow/);
-    // 自身大小写改名放行（id 排除自身）——修正大小写是最常见改名动机
-    await expect(s.renameWorkflow(flow.id, "Flow")).resolves.toBeUndefined();
-    expect(s.locateWorkflow(flow.id)?.workflow.name).toBe("Flow");
-    // 对照：非 win32 平台标志保持严格比较（POSIX 大小写敏感，变体名不冲突）
-    const s2 = createSession({ platform: "linux" });
-    const dir2 = root();
-    await s2.create(dir2, "w");
-    await s2.open(dir2);
-    const g2 = s2.createGroup("g");
-    const p2 = s2.createProject(g2.id, "p");
-    s2.createWorkflow(p2.id, "flow");
-    expect(() => s2.createWorkflow(p2.id, "FLOW")).not.toThrow();
-  });
-
+  // 且 id 目录恒在（由 renameWorkflow 用例钉住）。同名放开（轨二）后重名拒绝整体移除，
+  // sameName 归一比较仅剩 ensureDefaultGroup 的同名补标记在用。 ——
   it("sameName 纯函数：win32 两侧 toLowerCase 归一，其余平台严格相等", () => {
     expect(sameName("Flow", "flow", "win32")).toBe(true);
     expect(sameName("FLOW", "flow", "win32")).toBe(true);
@@ -424,23 +393,38 @@ describe("session 名称净化（M9-A2）", () => {
     expect(s.locateApi(api.id)?.api.name).toBe("y-z--");
   });
 
-  it("同级重名拒绝：分组/项目/集合/接口创建与重命名（win32 大小写归一口径）", async () => {
-    const s = createSession({ platform: "win32" });
+  it("同级同名并存：分组/项目/集合/接口创建与重命名（轨二同名放开，id 为身份）", async () => {
+    const s = createSession();
     const dir = root();
     await s.create(dir, "w");
     await s.open(dir);
     const g = s.createGroup("g");
-    const g2 = s.createGroup("G2");
-    expect(() => s.createGroup("G")).toThrow("分组已存在: G");
+    const g2 = s.createGroup("g");
+    expect(g2.id).not.toBe(g.id); // 同名分组并存
     const p = s.createProject(g.id, "p");
-    expect(() => s.createProject(g.id, "P")).toThrow("项目已存在: P");
-    expect(() => s.createProject(g2.id, "p")).not.toThrow(); // 不同分组互不影响
+    const pDup = s.createProject(g.id, "p");
+    expect(pDup.id).not.toBe(p.id); // 同分组同名项目并存
     const c = s.createCollection(p.id, "c");
-    expect(() => s.createCollection(p.id, "C")).toThrow("集合已存在: C");
+    const cDup = s.createCollection(p.id, "c");
+    expect(cDup.id).not.toBe(c.id); // 同名模块并存
     s.createApi(c.id, null, { name: "a", method: "GET", url: "/" });
-    expect(() => s.createApi(c.id, null, { name: "A", method: "GET", url: "/" })).toThrow("接口已存在: A");
-    const c2 = s.createCollection(p.id, "c2");
-    expect(() => s.renameNode("collection", c2.id, "c")).toThrow("集合已存在: c");
+    const aDup = s.createApi(c.id, null, { name: "a", method: "GET", url: "/" });
+    expect(aDup.name).toBe("a"); // 同目录同名接口并存
+    // 重命名到已存在名称直接成功（默认分组守卫与「未找到」仍保留）
+    s.renameNode("collection", cDup.id, "c");
+    expect(s.locateCollection(cDup.id)!.collection.name).toBe("c");
+    await s.save();
+    const s2 = createSession();
+    await s2.open(dir);
+    // id 布局（轨一）：重开加载按目录名（=UUID）字典序，分组顺序随机——按名称聚合断言
+    const groups = s2.workspace!.groups.filter((x) => x.name === "g");
+    expect(groups).toHaveLength(2);
+    const withProjects = groups.filter((x) => x.projects.length === 2);
+    expect(withProjects).toHaveLength(1); // 两个同名分组中，仅先建的承载项目；后建的为空壳并存
+    expect(withProjects[0]!.projects.filter((x) => x.name === "p")).toHaveLength(2);
+    // 项目内模块顺序同为 UUID 字典序（随机）——按内容定位承载集合的项目
+    const hostProject = withProjects[0]!.projects.find((x) => x.collections.length === 2)!;
+    expect(hostProject.collections.filter((x) => x.name === "c")).toHaveLength(2);
   });
 });
 
