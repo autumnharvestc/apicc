@@ -1,8 +1,9 @@
 # apicc 服务端部署
 
 apicc 服务端为单容器架构：API 与管理后台同进程（管理后台托管在根路径 `/`），
-元数据（H2 文件库）与工作区内容全部落在数据目录（容器内 `/data`）。
-**单副本部署**——H2 文件库与本地文件存储不支持多实例共享，扩容选项后置。
+一切状态（用户/令牌/工作区/分组/项目/ACL/文件版本含内容字节）都在 H2 元数据库
+（单文件，容器内 `/data/metadata.mv.db`）。
+**单副本部署**——H2 文件库不支持多实例共享，扩容选项后置。
 
 ## 前置要求
 
@@ -60,7 +61,6 @@ curl http://localhost:8080/api/v1/ping    # {"status":"ok"}
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `SERVER_PORT` | `8080` | 服务端口 |
-| `APICC_SERVER_DATADIR` | `./server-data`（容器内已设 `/data`） | 元数据与工作区内容根目录 |
 | `APICC_SERVER_CONSOLEDIR` | `./console`（容器内已设 `/app/console`） | 管理后台静态产物目录 |
 | `APICC_SERVER_ALLOW_REGISTRATION` | `false` | 注册开关。公网部署保持关闭；批量拉人临时开启 |
 | `APICC_SERVER_ADMIN_USERNAME` | 空 | 首个管理员用户名（仅用户表为空时生效） |
@@ -75,8 +75,10 @@ curl http://localhost:8080/api/v1/ping    # {"status":"ok"}
 
 ## 数据与备份
 
-一切状态都在数据目录（容器内 `/data`）：H2 元数据库 + 工作区内容文件 + 版本元数据。
-备份 = 停写状态下快照该目录/卷（compose 命名卷可用 `docker run --rm -v apicc-data:/data …`
+一切状态都在 H2 元数据库（单文件，容器内 `/data/metadata.mv.db`）：
+用户 / 令牌 / 工作区 / 分组 / 项目 / ACL / 文件版本（含内容字节，`file_versions.content` 列）——
+工作区内容不再落盘为目录树。
+备份 = 停写状态下快照该文件 / 卷（compose 命名卷可用 `docker run --rm -v apicc-data:/data …`
 打包；k8s 按 StorageClass 快照能力操作）。
 
 ## 升级

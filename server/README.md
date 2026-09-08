@@ -1,6 +1,6 @@
 # apicc 服务端
 
-在线协作服务端（Spring Boot 3 + H2）：账号、工作区、成员与 ACL 管理，工作区文件同步（推送 / 拉取）。与本地优先模式互补——数据仍以 Git 友好的文本文件存于服务端数据目录。
+在线协作服务端（Spring Boot 3 + H2）：账号、工作区、成员与 ACL 管理，工作区文件同步（推送 / 拉取）。与本地优先模式互补——工作区内容（含文件版本字节）统一存于 H2 元数据库（`file_versions.content` 列），经桌面端在线模式读写。
 
 ## 环境要求
 
@@ -48,36 +48,35 @@ java -jar server/target/apicc-server-0.1.0-SNAPSHOT.jar
 | 配置键 | 默认值 | 说明 |
 |---|---|---|
 | `server.port` | `8080` | HTTP 监听端口 |
-| `apicc.server.data-dir` | `./server-data` | 工作区内容根目录（相对 java 进程的运行目录） |
 | `apicc.server.console-dir` | `./console` | 管理后台静态产物目录（相对运行目录；部署见「管理后台部署」节） |
 | `apicc.server.allow-registration` | `false` | 是否开放注册；`false` 时仅已有账号可登录（部署线 D5 默认关，批量拉人时临时开启） |
 | `apicc.server.admin-username` | 空 | 首个管理员用户名（部署线 D6：仅用户表为空时生效；未设则 `admin`） |
 | `apicc.server.admin-password` | 空 | 首个管理员口令；未设则随机生成并以 WARN 打印日志（仅一次） |
 | `apicc.server.token-ttl-days` | `30` | 登录令牌有效期（天） |
 
-覆盖方式为命令行参数 `--配置键=值`（或改 `server/src/main/resources/application.yml`）。注意：`apicc.server.*` 四项经 `@Value` 按精确键名注入，Boot 的驼峰 relaxed binding 不适用，但下划线大写风格的环境变量可用（Spring 会做 `.`/`-` → `_` 的名称翻译，如 `APICC_SERVER_DATA_DIR`、`APICC_SERVER_CONSOLE_DIR`、`APICC_SERVER_ALLOW_REGISTRATION`、`APICC_SERVER_TOKEN_TTL_DAYS`；`SERVER_PORT` 等标准变量仅对 `server.port` 生效）：
+覆盖方式为命令行参数 `--配置键=值`（或改 `server/src/main/resources/application.yml`）。注意：`apicc.server.*` 三项经 `@Value` 按精确键名注入，Boot 的驼峰 relaxed binding 不适用，但下划线大写风格的环境变量可用（Spring 会做 `.`/`-` → `_` 的名称翻译，如 `APICC_SERVER_CONSOLE_DIR`、`APICC_SERVER_ALLOW_REGISTRATION`、`APICC_SERVER_TOKEN_TTL_DAYS`；`SERVER_PORT` 等标准变量仅对 `server.port` 生效）：
 
 ```bash
 java -jar server/target/apicc-server-0.1.0-SNAPSHOT.jar \
   --server.port=9090 \
-  --apicc.server.data-dir=D:/apicc-data \
   --apicc.server.allow-registration=false
 ```
 
 ## 数据目录
 
-默认 `./server-data/`（相对 java 进程的运行目录）：
+默认 `./server-data/`（相对 java 进程的运行目录），**只放一个文件**：
 
 ```
 server-data/
-├── metadata.mv.db            # H2 元数据库：用户 / 工作区 / 成员 / ACL / 文件版本
-└── workspaces/<工作区id>/     # 工作区内容：与本地工作区同构的文本树（纯文本、可 Git）
+└── metadata.mv.db            # H2 元数据库（单文件）：用户 / 令牌 / 工作区 / 分组 / 项目 / ACL / 文件版本（含内容字节）
 ```
+
+工作区内容不再是磁盘目录树：文件字节存在元数据库 `file_versions.content` 列里，内容经桌面端在线模式读写，形态由服务端管理。
 
 两点注意：
 
-- 元数据库路径固定按 `jdbc:h2:file:./server-data/metadata`（相对运行目录）解析，**不随** `apicc.server.data-dir` 迁移；需整体挪机时建议停服后连同运行目录一起处理，或同步改 `application.yml` 的 datasource url。
-- 备份即备份 `server-data/`（H2 建议停服拷贝，避免写入中途取到不一致快照）。
+- 元数据库路径固定按 `jdbc:h2:file:./server-data/metadata`（相对运行目录）解析；需整体挪机时建议停服后连同运行目录一起处理，或同步改 `application.yml` 的 datasource url（或以 `SPRING_DATASOURCE_URL` 环境变量覆盖）。
+- 备份 = 停服快照 `server-data/metadata.mv.db`（H2 建议停服拷贝，避免写入中途取到不一致快照；或直接备份整个 `server-data/` 目录——里面只有这一个文件）。
 
 **未发布阶段（0.x）不做数据迁移**：schema / 数据目录结构变更均不做迁移与兼容——从旧版本原地升级后，若启动报「旧版布局」「未知列」之类结构错误，直接删除 `server-data/`（或换一个全新的运行目录）重开即可；生产化前的破坏性变更都会走这个口径。
 
