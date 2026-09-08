@@ -1,5 +1,10 @@
 package com.autumnharvestc.server.workspace;
 
+import com.autumnharvestc.server.store.FileVersionRepo;
+import com.autumnharvestc.server.store.GroupRecord;
+import com.autumnharvestc.server.store.GroupRepo;
+import com.autumnharvestc.server.store.ProjectRecord;
+import com.autumnharvestc.server.store.ProjectRepo;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,6 +17,7 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -26,14 +32,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * 任务 4 工作区 API 契约测试（规格 m3 §3.2 逐字对齐）：
  * GET/POST /api/v1/workspaces、GET/DELETE /api/v1/workspaces/{id}。
- * 含裁定 D：DELETE 先删库表行再递归删内容目录；目录生命周期以 data-dir 文件系统断言钉住。
+ * 内容入库（规格 §5）后磁盘内容树退役：建区不建目录（钉 notExists）、删区清版本行（含 content）。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
         "spring.datasource.url=jdbc:h2:mem:apicc-ws-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data-ws"
+        "apicc.server.admin-username=admin",
+        "apicc.server.admin-password=admin-pass-2026"
 })
 class WorkspaceApiContractTest {
 
@@ -42,7 +49,26 @@ class WorkspaceApiContractTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private GroupRepo groupRepo;
+
+    @Autowired
+    private ProjectRepo projectRepo;
+
+    @Autowired
+    private FileVersionRepo fileVersions;
+
     // ---- 测试脚手架 ----
+
+    /** 登录并提取 token（admin 走 AdminBootstrap 属性凭据，见 AdminUsersApiTest 同款夹具）。 */
+    private String loginAndGetToken(String username, String password) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        return JsonPath.read(result.getResponse().getContentAsString(), "$.token");
+    }
 
     /** 注册并登录，返回 [userId, token]。 */
     private String[] newUser(String username) throws Exception {
@@ -84,9 +110,31 @@ class WorkspaceApiContractTest {
 
     // ---- POST /api/v1/workspaces（规格 §3.2：201 {id, name, myRole:"OWNER"}，创建者自动 OWNER）----
 
-    /** 创建成功：201 + OWNER 角色 + 内容目录 data-dir/workspaces/<id>/ 已建立（规格 §2 D6）。 */
+    /** 规格 §1/§4：建区自动建「默认分组」（不可删语义在 Org 面验证）；ws.name 唯一约束。 */
     @Test
-    void createReturns201OwnerRoleAndCreatesContentDir() throws Exception {
+    void createSeedsDefaultGroupAndRejectsDuplicateName() throws Exception {
+        String admin = loginAndGetToken("admin", "admin-pass-2026");
+        MvcResult created = mockMvc.perform(post("/api/v1/workspaces")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"ws-b\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String wsId = JsonPath.read(created.getResponse().getContentAsString(), "$.id");
+        // 同名工作区 → 409 workspace_name_taken
+        mockMvc.perform(post("/api/v1/workspaces").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"ws-b\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("workspace_name_taken"));
+        // 默认分组已就位：经 detail 或清单接口断言（以 Org 面任务 2 的端点为准——此处经 DB repo 断言）
+        // 实现后改为经 GET /api/v1/workspaces/{id}/groups 断言（任务 2 提供端点后回填此断言）
+        GroupRecord group = groupRepo.findByName(wsId, "默认分组").orElseThrow();
+        assertThat(group.workspaceId()).isEqualTo(wsId);
+        assertThat(group.isDefault()).isTrue();
+    }
+
+    /** 创建成功：201 + OWNER 角色（规格 §3.2）；内容入库后建区不再建磁盘目录（§5 内容树退役）。 */
+    @Test
+    void createReturns201OwnerRoleAndLeavesNoDiskTree() throws Exception {
         String token = newUser("ws-alice")[1];
         MvcResult result = mockMvc.perform(post("/api/v1/workspaces")
                         .header("Authorization", "Bearer " + token)
@@ -99,7 +147,9 @@ class WorkspaceApiContractTest {
                 .andReturn();
 
         String wsId = JsonPath.read(result.getResponse().getContentAsString(), "$.id");
-        assertThat(Files.isDirectory(workspaceDir(wsId))).isTrue();
+        assertThat(Files.notExists(workspaceDir(wsId)))
+                .as("内容入库后建区不应再产生磁盘内容目录")
+                .isTrue();
     }
 
     /** name 空白 / 超 64 字符 → 400 validation_failed。 */
@@ -188,18 +238,17 @@ class WorkspaceApiContractTest {
                 .andExpect(jsonPath("$.code").value("workspace_not_found"));
     }
 
-    // ---- DELETE /api/v1/workspaces/{id}（规格 §3.2：OWNER；含内容目录；裁定 D 顺序）----
+    // ---- DELETE /api/v1/workspaces/{id}（规格 §3.2：OWNER；版本行含 content 随删区清空）----
 
-    /** OWNER 删除：204；工作区记录消失（再读 404）；内容目录连同其中文件一并递归删除。 */
+    /** OWNER 删除：204；工作区记录消失（再读 404）；内容版本行（含入库 content）一并清空。 */
     @Test
-    void deleteByOwnerRemovesRecordsAndContentDir() throws Exception {
+    void deleteByOwnerRemovesRecordsAndVersionRows() throws Exception {
         String[] owner = newUser("ws-judy");
         String wsId = createWorkspace(owner[1], "Epsilon");
 
-        // 预置内容目录非空——递归删除的直接证据
-        Path dir = workspaceDir(wsId);
-        Files.createDirectories(dir.resolve("groups/demo"));
-        Files.writeString(dir.resolve("groups/demo/project.config"), "demo");
+        // 预置内容版本行（内容入库面）——删除清理的直接证据
+        fileVersions.insertNew(wsId, "apicc.workspace.yaml", "root: demo", "h-demo", owner[0]);
+        assertThat(fileVersions.listByWorkspace(wsId)).isNotEmpty();
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNoContent());
@@ -207,7 +256,29 @@ class WorkspaceApiContractTest {
         mockMvc.perform(get("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNotFound());
 
-        assertThat(Files.notExists(dir)).isTrue();
+        assertThat(fileVersions.listByWorkspace(wsId)).isEmpty();
+    }
+
+    /** 删区连带清空 groups/projects 行（审查修复：projects → groups 顺序清 fk_projects_group 引用）。 */
+    @Test
+    void deleteByOwnerAlsoClearsGroupsAndProjects() throws Exception {
+        String[] owner = newUser("ws-nadia");
+        String wsId = createWorkspace(owner[1], "Theta");
+        // 预置：create 联动的默认分组 + 直插一多余分组与两个项目（分挂两组；任务 2 前无端点，经 repo 造数）
+        GroupRecord defaultGroup = groupRepo.findByName(wsId, "默认分组").orElseThrow();
+        GroupRecord spareGroup = new GroupRecord(
+                UUID.randomUUID().toString(), wsId, "备选组", false, Instant.now());
+        groupRepo.insert(spareGroup);
+        projectRepo.insert(new ProjectRecord(
+                UUID.randomUUID().toString(), wsId, defaultGroup.id(), "挂默认组项目", Instant.now()));
+        projectRepo.insert(new ProjectRecord(
+                UUID.randomUUID().toString(), wsId, spareGroup.id(), "挂备选组项目", Instant.now()));
+
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
+                .andExpect(status().isNoContent());
+
+        assertThat(projectRepo.listByWorkspace(wsId)).isEmpty();
+        assertThat(groupRepo.listByWorkspace(wsId)).isEmpty();
     }
 
     /** 非 OWNER 删除（ADMIN/非成员）→ 403 forbidden，工作区仍在；不存在 → 404 workspace_not_found。 */

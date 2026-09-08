@@ -120,6 +120,13 @@ import type {
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
 /**
+ * 在线替身种子实体 id（path 实体化 2026-09-08：内容 path 首段=项目实体 UUID；分组为管理面
+ * 实体、不再有 group.yaml 内容文件）。导出供测试引用种子路径（防字面量漂移）。
+ */
+export const ONLINE_SEED_GROUP_ID = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+export const ONLINE_SEED_PROJECT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+/**
  * 渲染层测试替身：内存数据 + 与主进程 session 相同语义的树构建与落盘时机。
  * 持久化复用 @apicc/core 的 fileStorage（与 session 同一适配器）；内存态是唯一事实源，
  * 落盘只是为 reopen/validate 同语义做的最佳努力。wsOpen 目标目录若没有
@@ -193,7 +200,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
   }
 
   /** 登录成功后初始化示例在线空间（幂等）：工作区清单与文件版本内存模型的种子数据。
-   *  路径按 M1 §6 目录约定（groups/<g>/projects/<p>/…），任务 3 树映射/迁移替身同构。 */
+   *  path 实体化（2026-09-08）：内容 path 首段=项目实体 UUID（<projectId>/…），与主进程
+   *  onlineTreeToDto 同判据；项目/分组为管理面实体，内容清单无 group.yaml。 */
   function seedOnlineWorkspace(): void {
     if (onlineWorkspaces.length > 0) return;
     const ws: OnlineWorkspaceSummary = {
@@ -203,13 +211,21 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       createdAt: new Date().toISOString(),
     };
     onlineWorkspaces.push(ws);
+    const p = ONLINE_SEED_PROJECT_ID;
     onlineFiles.set("apicc.workspace.yaml", { content: `id: ${ws.id}\nname: ${ws.name}\n`, version: 1 });
-    onlineFiles.set("groups/示例分组/group.yaml", { content: "id: g-online-1\nname: 示例分组\n", version: 1 });
-    onlineFiles.set("groups/示例分组/projects/示例项目/project.yaml", { content: "id: p-online-1\nname: 示例项目\n", version: 1 });
-    onlineFiles.set("groups/示例分组/projects/示例项目/environments/dev.yaml", { content: "id: env-online-1\nname: dev\nvariables: {}\n", version: 1 });
-    onlineFiles.set("groups/示例分组/projects/示例项目/workflows/示例流/workflow.yaml", { content: "id: wf-online-1\nname: 示例流\nstatus: draft\nnodes: []\nedges: []\n", version: 1 });
-    onlineFiles.set("groups/示例分组/projects/示例项目/collections/示例集合/collection.yaml", { content: "id: c-online-1\nname: 示例集合\n", version: 1 });
-    onlineFiles.set("groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml", { content: "id: api-online-1\nname: 示例接口\n", version: 1 });
+    onlineFiles.set(`${p}/project.yaml`, { content: "id: p-online-1\nname: 示例项目\n", version: 1 });
+    onlineFiles.set(`${p}/environments/dev.yaml`, { content: "id: env-online-1\nname: dev\nvariables: {}\n", version: 1 });
+    onlineFiles.set(`${p}/workflows/示例流/workflow.yaml`, { content: "id: wf-online-1\nname: 示例流\nstatus: draft\nnodes: []\nedges: []\n", version: 1 });
+    onlineFiles.set(`${p}/collections/示例集合/collection.yaml`, { content: "id: c-online-1\nname: 示例集合\n", version: 1 });
+    onlineFiles.set(`${p}/collections/示例集合/apis/示例接口/api.yaml`, { content: "id: api-online-1\nname: 示例接口\n", version: 1 });
+  }
+
+  /** 在线替身的项目实体行（唯一数据源）：path 实体化（2026-09-08）后为实体表产出
+   *  {id, name, groupId, myRole}。onlineWorkspaceView（树视图）与 onlineTreeGet（迁移取树）
+   *  必须共用同一套项目身份——旧「"p-online-1" + 目录 path」行已退役，双形态会让迁移流
+   *  消费到 canEdit（id 前缀匹配）认不出的项目行。 */
+  function onlineProjectsRows(): OnlineTree["projects"] {
+    return [{ id: ONLINE_SEED_PROJECT_ID, name: "示例项目", groupId: ONLINE_SEED_GROUP_ID, myRole: "EDITOR" as const }];
   }
 
   /** 当前在线工作区（任务 3：open/close/tree:view 同构 main session 的纯状态语义）。 */
@@ -223,8 +239,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       workspaceId: onlineWs.id,
       rootVersion: onlineFiles.size,
       files: [...onlineFiles.keys()].map(onlineTreeRow),
-      // 契约修订 2026-09-03：projects.path 必填（同名项目权限判定按 path 定位）
-      projects: [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" as const }],
+      // path 实体化修订 2026-09-08：projects 行 = 实体表产出（与 onlineTreeGet 同一数据源）
+      projects: onlineProjectsRows(),
     };
     return {
       workspaceId: onlineWs.id,
@@ -957,8 +973,9 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
         workspaceId,
         rootVersion: onlineFiles.size,
         files: [...onlineFiles.keys()].map(onlineTreeRow),
-        // 契约修订 2026-09-03：projects.path 必填（同名项目权限判定按 path 定位）
-        projects: [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" as const }],
+        // path 实体化（2026-09-08）：projects 行 = 实体表产出 {id, name, groupId, myRole}，
+        // 与 onlineWorkspaceView 共用 onlineProjectsRows()（迁移流消费同一套项目身份）
+        projects: onlineProjectsRows(),
       };
       return OnlineTreeSchema.parse(tree); // 出口过契约校验（契约漂移即红）
     },

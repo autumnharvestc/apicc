@@ -29,6 +29,12 @@ public class WorkspaceRepo {
 
     private static final RowMapper<WorkspaceRecord> MAPPER = WorkspaceRepo::mapRow;
 
+    /** workspaces 表行数（规格 2026-09-08 §1：默认工作区启动种子判空专用，禁他处泛用）。 */
+    public long count() {
+        Long n = jdbc.queryForObject("SELECT COUNT(*) FROM workspaces", Long.class);
+        return n == null ? 0L : n;
+    }
+
     /** 创建工作区。 */
     public void insert(WorkspaceRecord workspace) {
         jdbc.update("""
@@ -37,6 +43,21 @@ public class WorkspaceRepo {
                 """,
                 workspace.id(), workspace.name(), workspace.createdBy(),
                 OffsetDateTime.ofInstant(workspace.createdAt(), ZoneOffset.UTC));
+    }
+
+    /**
+     * 区内第一个工作区（握手 GET /connect 专用，规格 2026-09-08 §6「本期恒返默认工作区」）：
+     * 默认工作区为首个种子行（created_at 最早）；空库返回 empty（服务层转 404 workspace_not_found）。
+     */
+    public Optional<WorkspaceRecord> findFirst() {
+        try {
+            return Optional.ofNullable(jdbc.queryForObject("""
+                    SELECT id, name, created_by, created_at
+                    FROM workspaces ORDER BY created_at, id LIMIT 1
+                    """, MAPPER));
+        } catch (EmptyResultDataAccessException ex) {
+            return Optional.empty();
+        }
     }
 
     /** 工作区详情/删除前的存在性校验。 */

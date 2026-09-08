@@ -20,7 +20,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:apicc-auth-disabled-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data-auth",
         "apicc.server.allow-registration=false"
 })
 class AuthRegistrationDisabledTest {

@@ -10,6 +10,7 @@ import { createAdminClient } from "../../src/api/client.js";
 import { createSessionStore, TOKEN_KEY } from "../../src/stores/session.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
 import { createUsersStore } from "../../src/stores/users.js";
+import { createOrgStore } from "../../src/stores/org.js";
 import { createAppRouter } from "../../src/router/index.js";
 import App from "../../src/App.vue";
 
@@ -85,7 +86,8 @@ async function mountLayout(handler: FetchHandler = defaultHandler) {
   const session = createSessionStore({ client, storage: localStorage });
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
-  const router = createAppRouter({ session, workspaces, users });
+  const org = createOrgStore({ client });
+  const router = createAppRouter({ session, workspaces, users, org });
   const { i18n } = createAdminI18n();
   await session.initialize(); // main.ts 装配同款：验活同步前缀落 token，守卫首航即见确定态
   const wrapper: VueWrapper = mount(App, { global: { plugins: [i18n, router] } });

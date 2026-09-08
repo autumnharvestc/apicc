@@ -12,14 +12,17 @@ const USER = { id: "u-1", username: "alice", displayName: "Alice" };
 const SERVER = "http://127.0.0.1:8080";
 const LOGIN_OK = (): Response => json(200, { token: "tok-1", expiresAt: "2026-10-03T00:00:00Z", user: USER });
 
+// path 实体化（2026-09-08）形态：内容 path 首段=项目实体 UUID；projects 行 = 实体表产出
+// {id, name, groupId, myRole}（旧 path 目录字段已退役）。
+const PID = "0f8d3a2c-a1b2-c3d4-e5f6-0123456789ab";
 const TREE = {
   workspaceId: "ws-1",
   rootVersion: 2,
   files: [
     { path: "apicc.workspace.yaml", hash: "h0", version: 1, size: 10 },
-    { path: "groups/g/projects/p/collections/c/apis/a/api.yaml", hash: "h1", version: 2, size: 20 },
+    { path: `${PID}/collections/c/apis/a/api.yaml`, hash: "h1", version: 2, size: 20 },
   ],
-  projects: [{ id: "p-1", name: "p", path: "groups/g/projects/p", myRole: "EDITOR" as const }],
+  projects: [{ id: PID, name: "p", groupId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", myRole: "EDITOR" as const }],
 };
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
@@ -110,7 +113,7 @@ describe("online session 工作区状态（任务 3）", () => {
     const { session } = setup();
     await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
     session.openWorkspace(WS);
-    await session.putFile({ workspaceId: "ws-1", path: "groups/g/projects/p/collections/c/apis/a/api.yaml", content: "new", baseVersion: 2 });
+    await session.putFile({ workspaceId: "ws-1", path: `${PID}/collections/c/apis/a/api.yaml`, content: "new", baseVersion: 2 });
     // 推送成功只前移树缓存失效标记与既有出口；main 不持文件内容缓存（版本号在渲染层编辑缓冲自持）
     expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
   });
@@ -123,7 +126,7 @@ describe("online session 工作区状态（任务 3）", () => {
     await session.getTreeView("ws-1"); // 缓存命中：/tree 仍只发过 1 次
     expect(calls.filter((c) => c.url.endsWith("/tree"))).toHaveLength(1);
     // 推送成功 → 树缓存失效，下次取视图重发 /tree
-    await session.putFile({ workspaceId: "ws-1", path: "groups/g/projects/p/collections/c/apis/a/api.yaml", content: "new", baseVersion: 2 });
+    await session.putFile({ workspaceId: "ws-1", path: `${PID}/collections/c/apis/a/api.yaml`, content: "new", baseVersion: 2 });
     await session.getTreeView("ws-1");
     expect(calls.filter((c) => c.url.endsWith("/tree"))).toHaveLength(2);
   });

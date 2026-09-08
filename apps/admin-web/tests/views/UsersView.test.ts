@@ -11,6 +11,7 @@ import { createAdminClient } from "../../src/api/client.js";
 import { createSessionStore, TOKEN_KEY } from "../../src/stores/session.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
 import { createUsersStore } from "../../src/stores/users.js";
+import { createOrgStore } from "../../src/stores/org.js";
 import { createAppRouter } from "../../src/router/index.js";
 import App from "../../src/App.vue";
 
@@ -120,6 +121,7 @@ async function mountUsers(
   const session = createSessionStore({ client, storage: localStorage });
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
+  const org = createOrgStore({ client });
   // productionTiming=true 模拟 main.ts 真实时序（任务 5 审查重要 1 回归锚点）：initialize 不等待
   // 即装配路由，守卫 await 其收口后再评估 requiresSuperadmin；缺省 = 先 await initialize 再 mount
   // （首航前会话已确定的便捷时序）。
@@ -129,7 +131,7 @@ async function mountUsers(
   } else {
     await session.initialize(); // 验活落 token + role，守卫首航即见确定态
   }
-  const router = createAppRouter({ session, workspaces, users, sessionReady });
+  const router = createAppRouter({ session, workspaces, users, org, sessionReady });
   const { i18n } = createAdminI18n();
   const wrapper: VueWrapper = mount(App, { global: { plugins: [i18n, router] } });
   await router.isReady();

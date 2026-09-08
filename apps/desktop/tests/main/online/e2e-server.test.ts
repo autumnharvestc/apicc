@@ -26,6 +26,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createOnlineClient, OnlineConflictError, type OnlineClient } from "../../../src/main/online/client.js";
+import { onlineTreeToDto } from "../../../src/main/online/session.js";
 import { runCommand } from "./run-command.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -208,17 +209,17 @@ const rand = Math.random().toString(36).slice(2, 8);
 const USER_A = { username: `e2e-owner-${rand}`, password: "password8", displayName: "所有者 A" };
 const USER_B = { username: `e2e-member-${rand}`, password: "password8", displayName: "成员 B" };
 
-/** 项目目录规则（M1 §6 结构 + 服务端 ProjectPaths.projectDir）：groups/<组>/projects/<名>。 */
-const P1_DIR = "groups/后端/projects/订单";
-const P2_DIR = "groups/后端/projects/库存";
-const P1_ID = sha256Hex(P1_DIR).slice(0, 12); // 裁定：projectId = 项目目录路径 UTF-8 SHA-256 hex 前 12 位
-const P2_ID = sha256Hex(P2_DIR).slice(0, 12);
+/** 组织实体夹具（path 实体化 2026-09-08）：内容 path 首段=管理面创建的项目实体 UUID，
+ *  在场景步骤 2b 经组织 API（默认分组下建两项目）取实体 id 后赋值。 */
+let groupId = "";
+let P1_ID = "";
+let P2_ID = "";
 
-/** 项目内文件须 ≥5 段（groups/g/projects/n/…）才被服务端归属到项目。 */
-const P1_FILE_A = `${P1_DIR}/collections/订单/apis/创建/apicc.api.yaml`;
-const P1_FILE_B = `${P1_DIR}/collections/订单/apis/查询/apicc.api.yaml`;
-const P2_FILE = `${P2_DIR}/collections/入库/apis/入库单/apicc.api.yaml`;
-const FILE_F = `${P1_DIR}/collections/订单/apis/作废/apicc.api.yaml`; // null-hash 冲突路径专用文件
+/** 项目内文件：首段为项目实体 UUID（<projectId>/…）才归属项目。 */
+let P1_FILE_A = "";
+let P1_FILE_B = "";
+let P2_FILE = "";
+let FILE_F = ""; // null-hash 冲突路径专用文件
 
 const apiYaml = (name: string, version: string) => `id: api-${name}\nname: ${name}\nversion: "${version}"\nmethod: POST\nurl: "{{baseUrl}}/${name}"\n`;
 const P1_A_V1 = apiYaml("创建", "1");
@@ -233,9 +234,34 @@ function fileEntry(tree: { files: Array<{ path: string; version: number; hash: s
   return row;
 }
 
-/** 服务端 tree.projects 按目录路径 TreeSet（码点）序返回——两侧同序化后再比对，断言不钉服务端排序实现。 */
-const byPath = <T extends { path: string }>(a: T, b: T) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+/** 服务端 tree.projects 按实体表创建序（created_at,id）返回——两侧同序化后再比对，断言不钉服务端排序实现。 */
+const byId = <T extends { id: string }>(a: T, b: T) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
+/** 组织 API 直连（OnlineClient 未含组织面方法；M3-B 客户端仅内容同步面）。 */
+async function orgJson(method: string, path: string, token: string | null, body?: unknown): Promise<Record<string, unknown>> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (token) headers.authorization = `Bearer ${token}`;
+  const res = await fetch(`${serverBase}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const text = await res.text();
+  if (res.status !== 200 && res.status !== 201) throw new Error(`组织 API ${method} ${path} → ${res.status}: ${text}`);
+  return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+}
+
+/** 场景内解析夹具：登录取 token → 建区种子默认分组下建两项目 → 内容路径常量赋值（步骤 2b 调用）。 */
+async function seedOrgProjects(wsId: string, ownerCredentials: { username: string; password: string }): Promise<void> {
+  const login = await orgJson("POST", "/api/v1/auth/login", null, ownerCredentials);
+  const tokenA = String(login.token);
+  const groups = (await orgJson("GET", `/api/v1/workspaces/${wsId}/groups`, tokenA)) as unknown as Array<Record<string, unknown>>;
+  groupId = String(groups[0]!.id);
+  P1_ID = String((await orgJson("POST", `/api/v1/workspaces/${wsId}/projects`, tokenA, { groupId, name: "订单" })).id);
+  P2_ID = String((await orgJson("POST", `/api/v1/workspaces/${wsId}/projects`, tokenA, { groupId, name: "库存" })).id);
+  P1_FILE_A = `${P1_ID}/collections/订单/apis/创建/api.yaml`;
+  P1_FILE_B = `${P1_ID}/collections/订单/apis/查询/api.yaml`;
+  P2_FILE = `${P2_ID}/collections/入库/apis/入库单/api.yaml`;
+  FILE_F = `${P1_ID}/collections/订单/apis/作废/api.yaml`;
+}
+
+let serverBase = "";
 let clientA: OnlineClient;
 let clientB: OnlineClient;
 
@@ -244,6 +270,7 @@ beforeAll(async () => {
   const jar = ensureJar(java.home);
   await startServer(jar, java.exe);
   const base = `http://127.0.0.1:${serverPort}`;
+  serverBase = base;
   clientA = createOnlineClient({ baseUrl: base, timeoutMs: 10_000 });
   clientB = createOnlineClient({ baseUrl: base, timeoutMs: 10_000 });
 }, 600_000); // 含可能的首次 mvn package（Aliyun 依赖下载）
@@ -269,6 +296,10 @@ describe("在线模式真服务端端到端（onlineClient × spawn jar）", () 
     const ws = await clientA.createWorkspace({ name: "联调空间" });
     expect(ws.myRole).toBe("OWNER");
 
+    // 步骤 2b：组织实体夹具——建区已种子默认分组，其下建两项目；内容 path 首段=项目实体 UUID
+    await seedOrgProjects(ws.id, USER_A);
+    expect(P1_ID).not.toEqual(P2_ID);
+
     // 步骤 3：B 加入 EDITOR（成员管理契约面）+ B 工作区列表可见其角色
     await clientA.manageMembers(ws.id, { userId: b.id, role: "EDITOR" });
     const bList = await clientB.listWorkspaces();
@@ -288,15 +319,27 @@ describe("在线模式真服务端端到端（onlineClient × spawn jar）", () 
       [P2_FILE, "pushed", 1],
     ]);
 
-    // 步骤 5：B getTree 两项目可见（projects[].myRole 继承 EDITOR；projectId = 目录路径 hash 前 12 位）
+    // 步骤 5：B getTree 两项目可见（projects 来自实体表 {id, name, groupId, myRole}；myRole 继承 EDITOR）
     const treeB1 = await clientB.getTree(ws.id);
-    expect([...treeB1.projects].sort(byPath)).toEqual(
+    expect([...treeB1.projects].sort(byId)).toEqual(
       [
-        { id: P1_ID, name: "订单", path: P1_DIR, myRole: "EDITOR" },
-        { id: P2_ID, name: "库存", path: P2_DIR, myRole: "EDITOR" },
-      ].sort(byPath),
+        { id: P1_ID, name: "订单", groupId, myRole: "EDITOR" },
+        { id: P2_ID, name: "库存", groupId, myRole: "EDITOR" },
+      ].sort(byId),
     );
     expect(treeB1.files.map((f) => f.path).sort()).toEqual([P1_FILE_A, P1_FILE_B, P2_FILE].sort());
+
+    // 步骤 5b：DTO 层（桌面侧树组装）——真服 raw tree 喂生产映射 onlineTreeToDto：项目节点以
+    // projectId 关联（id=实体 id、label=实体行 name），推入文件进树且 api 叶 id=文件全路径
+    // （OnlineApiEditor 选中机制）；叶名须为约定文件名 api.yaml 才进树（非约定名=杂散文件）
+    const dtoB1 = onlineTreeToDto(treeB1, "联调空间");
+    expect(dtoB1.label).toBe("联调空间");
+    const p1Node = dtoB1.children!.find((c) => c.kind === "project" && c.id === P1_ID);
+    expect(p1Node?.label).toBe("订单");
+    const p1Collection = p1Node!.children!.find((c) => c.kind === "collection" && c.label === "订单")!;
+    expect(p1Collection.children!.find((c) => c.kind === "api" && c.id === P1_FILE_A)?.label).toBe("创建");
+    expect(p1Collection.children!.find((c) => c.kind === "api" && c.id === P1_FILE_B)?.label).toBe("查询");
+    expect(dtoB1.children!.find((c) => c.kind === "project" && c.id === P2_ID)).toBeDefined();
 
     // 步骤 6：A 将 P2 对 B 设 NONE → B tree 过滤 + 读 P2 路径 missing（不泄露存在性）
     await clientA.manageAcl(ws.id, P2_ID, { userId: b.id, role: "NONE" });
@@ -305,6 +348,9 @@ describe("在线模式真服务端端到端（onlineClient × spawn jar）", () 
     const treeB2 = await clientB.getTree(ws.id);
     expect(treeB2.projects.map((p) => p.id)).toEqual([P1_ID]);
     expect(treeB2.files.map((f) => f.path).sort()).toEqual([P1_FILE_A, P1_FILE_B].sort());
+    // DTO 层同步复核：P2 被过滤后桌面侧树同样不含该 projectId 节点（不泄露存在性）
+    const dtoB2 = onlineTreeToDto(treeB2, "联调空间");
+    expect(dtoB2.children!.some((c) => c.kind === "project" && c.id === P2_ID)).toBe(false);
     const hidden = await clientB.getFiles(ws.id, [P2_FILE]);
     expect(hidden.files).toEqual([]);
     expect(hidden.missing).toEqual([P2_FILE]);

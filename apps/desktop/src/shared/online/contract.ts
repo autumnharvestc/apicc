@@ -60,10 +60,12 @@ export const OnlineAclEntrySchema = z.object({ userId: z.string(), role: OnlineA
 // —— 内容（§3.4，核心同步面）——
 export const OnlineTreeFileSchema = z.object({ path: z.string(), hash: z.string(), version: z.number(), size: z.number() });
 /**
- * tree.projects 行（契约修订 2026-09-03，main @ 3d8b3fc）：`path` 为项目目录相对工作区根的
- * `/` 分隔路径，必填——同名项目按 name 匹配权限会张冠李戴，客户端 ACL 判定按 path 定位。
+ * tree.projects 行（path 实体化修订 2026-09-08）：服务端不再回项目目录路径——内容 path
+ * 首段即项目实体 UUID（`<projectId>/...` 前缀可推导），`path` 退役为可选兼容字段；
+ * 消费方按 `id` 前缀定位文件所属项目。`groupId` 为所属分组实体 id（服务端已下发，
+ * 原任务 7 计划的 schema 声明随 e2e 断言先行落地——zod 严格按声明键透传，未声明会被剥离）。
  */
-export const OnlineTreeProjectSchema = z.object({ id: z.string(), name: z.string(), path: z.string(), myRole: OnlineProjectRoleSchema });
+export const OnlineTreeProjectSchema = z.object({ id: z.string(), name: z.string(), path: z.string().optional(), groupId: z.string().optional(), myRole: OnlineProjectRoleSchema });
 export const OnlineTreeSchema = z.object({
   workspaceId: z.string(),
   rootVersion: z.number(),
@@ -73,13 +75,12 @@ export const OnlineTreeSchema = z.object({
 export const OnlineFileContentSchema = z.object({ path: z.string(), content: z.string(), version: z.number(), hash: z.string() });
 export const OnlineFilesResultSchema = z.object({ files: z.array(OnlineFileContentSchema), missing: z.array(z.string()) });
 export const OnlinePutFileResultSchema = z.object({ path: z.string(), version: z.number(), hash: z.string() });
-/** §3.4 path 规则：禁止 ..、绝对路径、反斜杠、空段；另禁 `:`（M3-C 前置对齐③，对齐服务端
- * ProjectPaths 的 Windows 盘符防御——客户端先拦可免一次必败往返）。 */
+/** §3.4 path 规则：禁止 ..、绝对路径、反斜杠、空段。禁冒号已放开（任务 7，对齐服务端
+ * 实体化 2026-09-08：盘符形态由服务端「首段非 UUID」规则拦，客户端不再预拦冒号）。 */
 export const OnlinePathSchema = z
   .string()
   .min(1)
   .refine((p) => !p.includes("\\"), "path 禁止反斜杠")
-  .refine((p) => !p.includes(":"), "path 禁止冒号")
   .refine((p) => !p.startsWith("/") && !p.endsWith("/"), "path 禁止绝对路径/尾空段")
   .refine((p) => p.split("/").every((seg) => seg.length > 0 && seg !== "." && seg !== ".."), "path 禁止空段与 . / ..");
 /** batch 条目：{ path, content, baseVersion }（新文件 baseVersion=0）。 */

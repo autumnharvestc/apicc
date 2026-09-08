@@ -28,8 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
-        "spring.datasource.url=jdbc:h2:mem:apicc-matrix-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data-matrix"
+        "spring.datasource.url=jdbc:h2:mem:apicc-matrix-test;DB_CLOSE_DELAY=-1"
 })
 class WorkspacePermissionMatrixTest {
 
@@ -147,32 +146,48 @@ class WorkspacePermissionMatrixTest {
         mockMvc.perform(get("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + scratch[1]))
                 .andExpect(status().isForbidden());
 
+        // ---- 读ACL/改ACL 前置（任务 5 ACL 挂实体）：ACL 操作对象须为实体项目——先经管理面建分组+项目 ----
+        MvcResult groupResult = mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/groups")
+                        .header("Authorization", "Bearer " + ownerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"矩阵分组\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String matrixGroupId = JsonPath.read(groupResult.getResponse().getContentAsString(), "$.id");
+        MvcResult projectResult = mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/projects")
+                        .header("Authorization", "Bearer " + ownerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"groupId\":\"" + matrixGroupId + "\",\"name\":\"矩阵项目\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String projectId = JsonPath.read(projectResult.getResponse().getContentAsString(), "$.id");
+
         // ---- 读ACL GET acl：OWNER/ADMIN 200，EDITOR/VIEWER/非成员 403 ----
         for (String token : new String[]{ownerToken, adminToken}) {
-            mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/p1/acl")
+            mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                             .header("Authorization", "Bearer " + token))
                     .andExpect(status().isOk());
         }
         for (String token : new String[]{editorToken, viewerToken, outsiderToken}) {
-            mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/p1/acl")
+            mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                             .header("Authorization", "Bearer " + token))
                     .andExpect(status().isForbidden());
         }
 
         // ---- 改ACL PUT acl：OWNER/ADMIN 200，EDITOR/VIEWER/非成员 403 ----
         for (String token : new String[]{editorToken, viewerToken, outsiderToken}) {
-            mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/p1/acl")
+            mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                             .header("Authorization", "Bearer " + token)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"NONE\"}"))
                     .andExpect(status().isForbidden());
         }
-        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/p1/acl")
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"NONE\"}"))
                 .andExpect(status().isOk());
-        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/p1/acl")
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"EDITOR\"}"))

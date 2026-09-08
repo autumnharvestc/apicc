@@ -77,4 +77,10 @@ public class AclRepo {
     public void deleteByWorkspace(String workspaceId) {
         jdbc.update("DELETE FROM project_acl WHERE workspace_id = ?", workspaceId);
     }
+
+    /** 删除项目时级联清空其全部 ACL 行（任务 2，规格 2026-09-08 §4）；幂等。 */
+    public void deleteByProject(String workspaceId, String projectId) {
+        jdbc.update("DELETE FROM project_acl WHERE workspace_id = ? AND project_id = ?",
+                workspaceId, projectId);
+    }
 }

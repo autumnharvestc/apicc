@@ -9,14 +9,14 @@ import com.autumnharvestc.server.store.FileVersionRecord;
 import com.autumnharvestc.server.store.FileVersionRepo;
 import com.autumnharvestc.server.store.MembershipRepo;
 import com.autumnharvestc.server.store.PlatformRole;
+import com.autumnharvestc.server.store.ProjectRecord;
+import com.autumnharvestc.server.store.ProjectRepo;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.WorkspaceRecord;
 import com.autumnharvestc.server.workspace.WorkspaceGuard;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Optional;
 
@@ -25,22 +25,22 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
  * DELETE 竞态对称性（审查修复）：DELETE 与 PUT 的条件更新路径同构——
- * ①同版本并发双 DELETE：败者条件删除 0 行 → re-read 有行转 409 带现状 / 行已删转 404；
- * ②删盘失败回滚只做「缺席补回」（restoreIfAbsent），不覆盖并发后写者重建的行。
+ * ①同版本并发双 DELETE：败者条件删除 0 行 → re-read 有行转 409 带现状 / 行已删转 404。
+ * 内容入库（规格 §5）后版本行含 content 随条件语句同生灭，磁盘回滚补偿面（restoreAfterBump/
+ * restoreIfAbsent）退役；条件化并发语义由 deleteIfVersion 与本类/仓储单测承担。
  * 以 Mockito 在 find 与条件删除之间确定性注入并发交错，不依赖真多线程。
  */
 class ContentServiceDeleteRaceTest {
 
     private static final String WS = "ws-1";
-    private static final String PATH = "a.yaml";
+    /** 项目实体 UUID（内容 path 首段实体化）。 */
+    private static final String PROJECT_ID = "123e4567-e89b-12d3-a456-426614174000";
+    private static final String PATH = PROJECT_ID + "/a.yaml";
 
     private final UserAccount caller =
             new UserAccount("user-1", "owner", "bcrypt-hash", "owner",
@@ -59,8 +59,11 @@ class ContentServiceDeleteRaceTest {
         memberships = mock(MembershipRepo.class);
         when(memberships.findRole(WS, caller.id())).thenReturn(Optional.of(Role.OWNER));
         fileVersions = mock(FileVersionRepo.class);
-        service = new ContentService(guard, permissions(), fileVersions,
-                new WorkspaceContentStore("target/delete-race-test-data"));
+        // path 实体化写面校验：首段项目 UUID 须指向本工作区实体（DELETE 前置校验用）
+        ProjectRepo projects = mock(ProjectRepo.class);
+        when(projects.find(PROJECT_ID)).thenReturn(Optional.of(
+                new ProjectRecord(PROJECT_ID, WS, "g-1", "p", Instant.EPOCH)));
+        service = new ContentService(guard, permissions(), projects, fileVersions);
     }
 
     private PermissionService permissions() {
@@ -69,7 +72,7 @@ class ContentServiceDeleteRaceTest {
 
     private static FileVersionRecord record(long version, String hash) {
         return new FileVersionRecord(WS, PATH, hash, version, "user-" + version,
-                Instant.parse("2026-09-04T00:00:0" + version + "Z"));
+                Instant.parse("2026-09-04T00:00:0" + version + "Z"), 0L, "body-" + version);
     }
 
     /** 败者路径①：条件删除前并发 PUT 已把行推进（v1→v2）→ 409 version_conflict 携服务端现状。 */
@@ -102,31 +105,12 @@ class ContentServiceDeleteRaceTest {
                 });
     }
 
-    /** 赢家路径：条件删除成功、正常删盘、不触发任何回滚。 */
+    /** 赢家路径：条件删除成功即完成（版本行含 content 随语句同删），无任何补偿分支。 */
     @Test
     void deleteWinnerPerformsConditionalDeleteWithoutRollback() {
         when(fileVersions.find(WS, PATH)).thenReturn(Optional.of(record(1L, "h1")));
         when(fileVersions.deleteIfVersion(WS, PATH, 1L)).thenReturn(true);
 
         assertThatCode(() -> service.deleteFile(caller, WS, PATH, 1L)).doesNotThrowAnyException();
-        verify(fileVersions, never()).restoreIfAbsent(any(), any());
-    }
-
-    /** 删盘失败：io_error 且回滚只走「缺席补回」原行（不覆盖并发重建行）。 */
-    @Test
-    void deleteDiskFailureRollsBackViaRestoreIfAbsentOnly() throws IOException {
-        WorkspaceContentStore store = mock(WorkspaceContentStore.class);
-        when(store.workspaceRoot(WS)).thenReturn(Path.of("target/delete-race-test-data/workspaces/" + WS));
-        doThrow(new IOException("盘故障")).when(store).deleteFile(any(), eq(PATH));
-        ContentService failingStoreService = new ContentService(guard, permissions(), fileVersions, store);
-        when(fileVersions.find(WS, PATH)).thenReturn(Optional.of(record(1L, "h1")));
-        when(fileVersions.deleteIfVersion(WS, PATH, 1L)).thenReturn(true);
-
-        assertThatThrownBy(() -> failingStoreService.deleteFile(caller, WS, PATH, 1L))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.getCode()).isEqualTo("io_error");
-                    assertThat(ex.getStatus().value()).isEqualTo(500);
-                });
-        verify(fileVersions).restoreIfAbsent(WS, record(1L, "h1"));
     }
 }

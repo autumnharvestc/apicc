@@ -28,7 +28,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import(ApiccServerApplicationTests.RequestBodyValidationProbeController.class)
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:apicc-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data",
         "apicc.server.console-dir=target/no-such-console-dir"
 })
 class ApiccServerApplicationTests {

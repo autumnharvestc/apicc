@@ -7,8 +7,9 @@
  *
  * 任务 3 扩展：当前在线工作区状态（openWorkspace/closeWorkspace，纯状态操作不发网络）+
  * 树缓存（getTreeView 首取后缓存，内容变更（put/batch/delete 成功）即失效，切换/关闭重置）。
- * 树映射 onlineTreeToDto 为纯函数（裁定 A）：服务端不回树结构，由 files path 清单按 M1 §6
- * 目录约定推导 groups/projects/collections/folders/apis 层级，工作流/环境/配置文件映射为
+ * 树映射 onlineTreeToDto 为纯函数（裁定 A）：服务端不回树结构，由 files path 清单推导
+ * projects/collections/folders/apis 层级（path 实体化 2026-09-08：首段=项目实体 UUID，
+ * 项目节点以 projectId 关联直接挂根——见下方解析判据），工作流/环境/配置文件映射为
  * 只读 file 叶（裁定 B：只读浏览，不做编辑器）。
  * **不持文件内容缓存**（审查次要 5 顺修）：文件版本号由渲染层编辑缓冲自持
  * （selectNode 取数即入缓冲、saveApi 前移），main 侧只写不读的缓存已删除。
@@ -42,43 +43,47 @@ export interface OnlineWorkspaceState {
 }
 
 // —— onlineTreeToDto（裁定 A：path 清单 → 侧树层级，纯函数）——
+// path 实体化（2026-09-08）：内容 path 首段=项目实体 UUID，服务端已无 groups/<组>/projects/<名>
+// 名称目录（旧形态服务端 400 path_invalid、不再产出）；tree.projects 行（实体表产出）携带项目
+// 名称与 groupId，分组名不再经 tree 下发——侧树项目节点以 projectId 关联（id=项目 id）直接挂根。
 
-/** path 解析产物：M1 §6 布局逐段匹配；未匹配 = 杂散文件，不进树。 */
+/** 项目 id 形态：UUID（8-4-4-4-12 hex，与服务端 ContentPaths.PROJECT_ID_PATTERN 同口径）。 */
+const PROJECT_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** path 解析产物：项目内布局逐段匹配；未匹配 = 杂散文件，不进树。 */
 interface ParsedPath {
-  group: string;
-  project?: string;
+  project: string;
   collection?: string;
   folder?: string;
-  kind: "group-config" | "project-config" | "env" | "workflow" | "collection-config" | "folder-config" | "api";
+  kind: "project-config" | "env" | "workflow" | "collection-config" | "folder-config" | "api";
   /** 叶显示名：配置文件取文件名、环境取文件名、工作流/接口取目录名。 */
   name: string;
 }
 
 function parseWorkspacePath(path: string): ParsedPath | null {
   const segs = path.split("/");
-  if (segs[0] !== "groups" || segs.length < 3) return null;
-  const group = segs[1]!;
-  if (segs.length === 3) return segs[2] === "group.yaml" ? { group, kind: "group-config", name: "group.yaml" } : null;
-  if (segs[2] !== "projects" || segs.length < 5) return null;
-  const project = segs[3]!;
-  if (segs.length === 5) return segs[4] === "project.yaml" ? { group, project, kind: "project-config", name: "project.yaml" } : null;
-  if (segs.length === 6 && segs[4] === "environments") return { group, project, kind: "env", name: segs[5]! };
-  if (segs.length === 7 && segs[4] === "workflows" && segs[6] === "workflow.yaml") {
-    return { group, project, kind: "workflow", name: segs[5]! };
+  // 首段为合法 UUID（且至少两层）即视为项目内文件；裸 UUID 单段不归属（防文件占位目录，
+  // 与服务端 parseProject 同口径）；根级仅 apicc.workspace.yaml（onlineTreeToDto 直取）。
+  if (segs.length < 2 || !PROJECT_ID_PATTERN.test(segs[0]!)) return null;
+  const project = segs[0]!;
+  if (segs.length === 2) return segs[1] === "project.yaml" ? { project, kind: "project-config", name: "project.yaml" } : null;
+  if (segs.length === 3 && segs[1] === "environments") return { project, kind: "env", name: segs[2]! };
+  if (segs.length === 4 && segs[1] === "workflows" && segs[3] === "workflow.yaml") {
+    return { project, kind: "workflow", name: segs[2]! };
   }
-  if (segs[4] !== "collections" || segs.length < 7) return null;
-  const collection = segs[5]!;
-  if (segs.length === 7) return segs[6] === "collection.yaml" ? { group, project, collection, kind: "collection-config", name: "collection.yaml" } : null;
-  // 文件夹配置：collections/<c>/folders/<f>/folder.yaml（次要 3 顺修：与 group/project/collection.yaml 同口径只读叶）
-  if (segs.length === 9 && segs[6] === "folders" && segs[8] === "folder.yaml") {
-    return { group, project, collection, folder: segs[7]!, kind: "folder-config", name: "folder.yaml" };
+  if (segs[1] !== "collections" || segs.length < 4) return null;
+  const collection = segs[2]!;
+  if (segs.length === 4) return segs[3] === "collection.yaml" ? { project, collection, kind: "collection-config", name: "collection.yaml" } : null;
+  // 文件夹配置：<projectId>/collections/<c>/folders/<f>/folder.yaml（次要 3 顺修：与 project/collection.yaml 同口径只读叶）
+  if (segs.length === 6 && segs[3] === "folders" && segs[5] === "folder.yaml") {
+    return { project, collection, folder: segs[4]!, kind: "folder-config", name: "folder.yaml" };
   }
   // 接口：collections/<c>/apis/<a>/api.yaml 与 folders/<f>/apis/<a>/api.yaml
-  if (segs[6] === "apis" && segs.length === 9 && segs[8] === "api.yaml") {
-    return { group, project, collection, kind: "api", name: segs[7]! };
+  if (segs[3] === "apis" && segs.length === 6 && segs[5] === "api.yaml") {
+    return { project, collection, kind: "api", name: segs[4]! };
   }
-  if (segs[6] === "folders" && segs.length === 11 && segs[8] === "apis" && segs[10] === "api.yaml") {
-    return { group, project, collection, folder: segs[7]!, kind: "api", name: segs[9]! };
+  if (segs[3] === "folders" && segs.length === 8 && segs[5] === "apis" && segs[7] === "api.yaml") {
+    return { project, collection, folder: segs[4]!, kind: "api", name: segs[6]! };
   }
   return null;
 }
@@ -92,8 +97,10 @@ function sortTree(node: TreeNodeDTO): TreeNodeDTO {
 }
 
 /**
- * 服务端 tree → 侧树根 DTO。容器节点 id 取目录路径（groups/<g>/…，树内唯一）；
- * api/file 叶 id 取文件全路径（渲染层据此 getFiles 取内容）。root label 优先取工作区名。
+ * 服务端 tree → 侧树根 DTO。path 实体化（2026-09-08）后项目节点 id=项目实体 id（树内唯一，
+ * 名称取 tree.projects 行、缺席回退 id）、直接挂根（分组名不再经 tree 下发，分组归属见
+ * OnlineWorkspaceView.projects[].groupId——计划 C 全面适配再上分组层）；api/file 叶 id 取
+ * 文件全路径（渲染层据此 getFiles 取内容，OnlineApiEditor 选中机制不变）。root label 优先取工作区名。
  */
 export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string): TreeNodeDTO {
   const root: TreeNodeDTO = { kind: "root", id: tree.workspaceId, label: workspaceName ?? tree.workspaceId, children: [] };
@@ -112,16 +119,12 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string): TreeN
   if (tree.files.some((f: OnlineTreeFile) => f.path === "apicc.workspace.yaml")) {
     root.children!.push(leaf("apicc.workspace.yaml", "apicc.workspace.yaml"));
   }
+  const projectRows = new Map(tree.projects.map((p) => [p.id, p]));
   for (const file of tree.files) {
     if (file.path === "apicc.workspace.yaml") continue;
     const parsed = parseWorkspacePath(file.path);
     if (!parsed) continue;
-    const group = ensure("group", `groups/${parsed.group}`, parsed.group, root);
-    if (parsed.kind === "group-config") {
-      group.children!.push(leaf(file.path, parsed.name));
-      continue;
-    }
-    const project = ensure("project", `groups/${parsed.group}/projects/${parsed.project}`, parsed.project!, group);
+    const project = ensure("project", parsed.project, projectRows.get(parsed.project)?.name ?? parsed.project, root);
     if (parsed.kind === "project-config") {
       project.children!.push(leaf(file.path, parsed.name));
       continue;
@@ -132,7 +135,7 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string): TreeN
     }
     const collection = ensure(
       "collection",
-      `groups/${parsed.group}/projects/${parsed.project}/collections/${parsed.collection}`,
+      `${parsed.project}/collections/${parsed.collection}`,
       parsed.collection!,
       project,
     );
@@ -141,7 +144,7 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string): TreeN
       continue;
     }
     const folderNode = parsed.folder
-      ? ensure("folder", `groups/${parsed.group}/projects/${parsed.project}/collections/${parsed.collection}/folders/${parsed.folder}`, parsed.folder, collection)
+      ? ensure("folder", `${parsed.project}/collections/${parsed.collection}/folders/${parsed.folder}`, parsed.folder, collection)
       : collection;
     if (parsed.kind === "folder-config") {
       // folder.yaml 只读叶挂在 folder 节点（folder 仅为 folder.yaml 存在时也建容器，与 collection-config 同口径）

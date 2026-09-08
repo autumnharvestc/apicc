@@ -2,15 +2,15 @@
 // @vitest-environment node
 // M4-A 任务 5（裁定 D，收口）：真服务端管理链路冒烟——spawn 真实 jar（含 M4-B 静态托管，
 // main @ 04cfa6c 合入后本分支已同步），生产路径 createAdminClient（globalThis.fetch）跑通
-// 「注册两用户 → 建区 → B 加 EDITOR → A 推文件造两项目 → B tree 可见 → P2 对 B 设 NONE →
-// B tree 不含 P2 → A 删 ACL 行恢复继承 → B tree 复见 P2」管理链；再验控制台构建产物托管
+// 「注册两用户 → 建区 → B 加 EDITOR → 组织 API 建两项目 + 推文件入项目（path 实体化
+// 2026-09-08：路径首段=项目实体 UUID）→ B tree 可见 → P2 对 B 设 NONE → B tree 不含 P2 →
+// A 删 ACL 行恢复继承 → B tree 复见 P2」管理链；再验控制台构建产物托管
 // （--apicc.server.console-dir 指向 dist）：GET / 200 含 index.html 内容、/workspaces 深链
 // SPA 回退 200、/api/v1/ping 不受扰。内容写面（files PUT）不属管理契约层（裁定⑤）——冒烟内
 // 直接 fetch 调用，不入契约层。
 // 服务端生命周期与 JDK/mvn 解析逻辑与 desktop e2e-server.test.ts 同构复制（包隔离：不 import
 // desktop 代码）；win32 批处理经 cmd /d /s /c 中转的引号机制为行为契约（desktop run-command 先例）。
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
@@ -229,20 +229,18 @@ const rand = Math.random().toString(36).slice(2, 8);
 const USER_A = { username: `adm-owner-${rand}`, password: "password8", displayName: "管理员 A" };
 const USER_B = { username: `adm-member-${rand}`, password: "password8", displayName: "成员 B" };
 
-/** 项目目录规则（M1 §6 + 服务端 ProjectPaths.projectDir）：groups/<组>/projects/<名>。 */
-const P1_DIR = "groups/后端/projects/订单";
-const P2_DIR = "groups/后端/projects/库存";
-const P1_ID = createSha256Hex(P1_DIR).slice(0, 12); // 控制者裁定：projectId = 目录路径 SHA-256 hex 前 12 位
-const P2_ID = createSha256Hex(P2_DIR).slice(0, 12);
-const P1_FILE = `${P1_DIR}/collections/订单/apis/创建/apicc.api.yaml`;
-const P2_FILE = `${P2_DIR}/collections/入库/apis/入库单/apicc.api.yaml`;
+/** 组织实体夹具（path 实体化 2026-09-08）：内容 path 首段=管理面创建的项目实体 UUID，
+ *  在场景步骤 3 经组织 API（默认分组下建两项目）取实体 id 后赋值。 */
+let groupId = "";
+let P1_ID = "";
+let P2_ID = "";
+let P1_FILE = "";
+let P2_FILE = "";
+
 const apiYaml = (name: string) => `id: api-${name}\nname: ${name}\nversion: "1"\nmethod: POST\nurl: "{{baseUrl}}/${name}"\n`;
 
-function createSha256Hex(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
-}
-
-const byPath = <T extends { path: string }>(a: T, b: T) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+// path 实体化：tree.projects 行 = 实体表产出 {id, name, groupId, myRole}——按实体 id 同序化后比对，断言不钉服务端排序实现。
+const byId = <T extends { id: string }>(a: T, b: T) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 let clientA: AdminClient;
 let clientB: AdminClient;
@@ -277,8 +275,21 @@ async function putFileAs(client: AdminClient, workspaceId: string, path: string,
   await res.body?.cancel();
 }
 
+/** 组织实体夹具（步骤 3）：建区已种子默认分组，取 isDefault 组 id 下建两项目 → 内容路径
+ *  常量赋值（path 实体化 2026-09-08：推送路径首段=项目实体 UUID，旧名称目录形态 400）。 */
+async function seedOrgProjects(wsId: string): Promise<void> {
+  const groups = await clientA.orgListGroups(wsId);
+  const def = groups.find((g) => g.isDefault);
+  if (!def) throw new Error("建区未种子默认分组（组织面握手异常）");
+  groupId = def.id;
+  P1_ID = (await clientA.orgCreateProject(wsId, { groupId, name: "订单" })).id;
+  P2_ID = (await clientA.orgCreateProject(wsId, { groupId, name: "库存" })).id;
+  P1_FILE = `${P1_ID}/collections/订单/apis/创建/apicc.api.yaml`;
+  P2_FILE = `${P2_ID}/collections/入库/apis/入库单/apicc.api.yaml`;
+}
+
 describe("管理链路真服务端冒烟（adminClient × spawn jar，裁定 D②）", () => {
-  it("注册 → 建区 → B 加 EDITOR → 推文件造两项目 → tree 可见 → P2 对 B 设 NONE 过滤 → 删 ACL 行恢复继承", async () => {
+  it("注册 → 建区 → B 加 EDITOR → 建两项目推文件 → tree 可见 → P2 对 B 设 NONE 过滤 → 删 ACL 行恢复继承", async () => {
     // 步骤 1：注册两用户（201 形状）+ 登录（client 持 token）
     const a = await clientA.register(USER_A);
     const b = await clientB.register(USER_B);
@@ -295,18 +306,22 @@ describe("管理链路真服务端冒烟（adminClient × spawn jar，裁定 D�
     const members = await clientA.listMembers(ws.id);
     expect(members.find((m) => m.userId === b.id)?.role).toBe("EDITOR");
 
-    // 步骤 3：A 推文件造两项目（内容写面直接 fetch，不入契约层）
+    // 步骤 3：组织实体夹具——默认分组下建两项目，再推文件入项目（内容写面直接 fetch，不入契约层；
+    // path 实体化：推送路径首段=项目实体 UUID，旧 groups/<组>/projects/<名>/… 形态服务端 400）
+    await seedOrgProjects(ws.id);
+    expect(P1_ID).not.toEqual(P2_ID);
     await putFileAs(clientA, ws.id, P1_FILE, apiYaml("创建"));
     await putFileAs(clientA, ws.id, P2_FILE, apiYaml("入库单"));
 
-    // 步骤 4：B tree 两项目可见（projects[].path 必备，myRole 继承 EDITOR）
+    // 步骤 4：B tree 两项目可见（projects 来自实体表 {id, name, groupId, myRole}；myRole 继承 EDITOR）
     const treeB1 = await clientB.getTree(ws.id);
-    expect([...treeB1.projects].sort(byPath)).toEqual(
+    expect([...treeB1.projects].sort(byId)).toEqual(
       [
-        { id: P1_ID, name: "订单", path: P1_DIR, myRole: "EDITOR" },
-        { id: P2_ID, name: "库存", path: P2_DIR, myRole: "EDITOR" },
-      ].sort(byPath),
+        { id: P1_ID, name: "订单", groupId, myRole: "EDITOR" },
+        { id: P2_ID, name: "库存", groupId, myRole: "EDITOR" },
+      ].sort(byId),
     );
+    expect(treeB1.files.map((f) => f.path).sort()).toEqual([P1_FILE, P2_FILE].sort());
 
     // 步骤 5：A 将 P2 对 B 设 NONE → ACL 行在（NONE=明确拒绝）+ B tree 不含 P2
     await clientA.setAclEntry(ws.id, P2_ID, { userId: b.id, role: "NONE" });
@@ -319,8 +334,8 @@ describe("管理链路真服务端冒烟（adminClient × spawn jar，裁定 D�
     await clientA.deleteAclEntry(ws.id, P2_ID, b.id);
     expect(await clientA.listAcl(ws.id, P2_ID)).toEqual([]); // 行已消失
     const treeB3 = await clientB.getTree(ws.id);
-    expect(treeB3.projects.find((p) => p.id === P2_ID)).toEqual({ id: P2_ID, name: "库存", path: P2_DIR, myRole: "EDITOR" });
-    expect(treeB3.projects.find((p) => p.id === P1_ID)).toEqual({ id: P1_ID, name: "订单", path: P1_DIR, myRole: "EDITOR" });
+    expect(treeB3.projects.find((p) => p.id === P2_ID)).toEqual({ id: P2_ID, name: "库存", groupId, myRole: "EDITOR" });
+    expect(treeB3.projects.find((p) => p.id === P1_ID)).toEqual({ id: P1_ID, name: "订单", groupId, myRole: "EDITOR" });
   }, 120_000);
 });
 
