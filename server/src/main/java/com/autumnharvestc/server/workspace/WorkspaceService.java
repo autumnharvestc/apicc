@@ -8,12 +8,14 @@ import com.autumnharvestc.server.store.FileVersionRepo;
 import com.autumnharvestc.server.store.GroupRecord;
 import com.autumnharvestc.server.store.GroupRepo;
 import com.autumnharvestc.server.store.MembershipRepo;
+import com.autumnharvestc.server.store.ProjectRepo;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.WorkspaceRecord;
 import com.autumnharvestc.server.store.WorkspaceRepo;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -21,12 +23,13 @@ import java.util.UUID;
 
 /**
  * 工作区用例（规格 m3 §3.2）：列表/创建/详情/删除。
- * 事务约定（裁定 B）：不使用 @Transactional——各写步骤以单条语句自持原子；
- * 创建按「建目录 → 工作区行 → OWNER 成员行 → 默认分组行」顺序，任一失败不产生半可用状态
- * （目录失败则无 DB 写入；同名工作区行失败 → 清掉刚建的目录转 409 workspace_name_taken；
- * 成员行/默认分组行无冲突风险（新工作区 id 下成员主键与 (workspace_id, name) 均不可能已存在），
- * 插入失败概率可忽略，注释留痕）。
- * 删除按裁定 D：逻辑校验 OWNER → 清 memberships/project_acl/file_versions → 删工作区行 → 递归删内容目录；
+ * 事务约定（裁定 B + 计划要求的例外）：默认不使用 @Transactional——各写步骤以单条语句自持原子；
+ * 例外是 create：三次 DB 写（工作区行/OWNER 成员行/默认分组行）包裹同一事务，任一失败全部回滚，
+ * 不产生「有工作区、无默认分组」的永久半状态（审查修复）。目录补偿保持现状语义：
+ * 同名工作区 409 路径清掉刚建目录；其余中途失败（回滚）目录留存——目录建立发生在事务首条 DB 写之前，
+ * 目录失败同样无 DB 写入。删除按裁定 D（维持逐条自持，不包事务）：
+ * 逻辑校验 OWNER → 清 memberships/project_acl/file_versions → projects → groups
+ * （fk_projects_group 依赖顺序：先删引用行再删被引用行）→ 删工作区行 → 递归删内容目录；
  * 任一 DB 步失败即中止不触盘，删盘失败 → 500 content_delete_failed（记录已删，取舍见报告）。
  */
 @Service
@@ -40,6 +43,7 @@ public class WorkspaceService {
     private final AclRepo acl;
     private final FileVersionRepo fileVersions;
     private final GroupRepo groups;
+    private final ProjectRepo projects;
     private final WorkspaceGuard guard;
     private final WorkspaceContentStore contentStore;
 
@@ -48,6 +52,7 @@ public class WorkspaceService {
                             AclRepo acl,
                             FileVersionRepo fileVersions,
                             GroupRepo groups,
+                            ProjectRepo projects,
                             WorkspaceGuard guard,
                             WorkspaceContentStore contentStore) {
         this.workspaces = workspaces;
@@ -55,11 +60,16 @@ public class WorkspaceService {
         this.acl = acl;
         this.fileVersions = fileVersions;
         this.groups = groups;
+        this.projects = projects;
         this.guard = guard;
         this.contentStore = contentStore;
     }
 
-    /** 创建工作区（规格 §3.2：创建者自动 OWNER；§2 D6：建内容目录；规格 2026-09-08 §4：联动建「默认分组」）。 */
+    /**
+     * 创建工作区（规格 §3.2：创建者自动 OWNER；§2 D6：建内容目录；规格 2026-09-08 §4：联动建「默认分组」）。
+     * 三次 DB 写同事务（见类头）：任一失败全回滚。同名冲突路径在此清目录后抛 409（事务随之回滚）。
+     */
+    @Transactional
     public WorkspaceView create(UserAccount caller, CreateWorkspaceRequest request) {
         WorkspaceRecord workspace = new WorkspaceRecord(
                 UUID.randomUUID().toString(), request.name().trim(), caller.id(), Instant.now());
@@ -102,6 +112,9 @@ public class WorkspaceService {
         memberships.deleteByWorkspace(workspaceId);
         acl.deleteByWorkspace(workspaceId);
         fileVersions.deleteByWorkspace(workspaceId);
+        // groups/projects 一并清理（审查修复）：projects 先于 groups——fk_projects_group 引用顺序
+        projects.deleteByWorkspace(workspaceId);
+        groups.deleteByWorkspace(workspaceId);
         workspaces.delete(workspaceId);
         // 记录已删后再删盘；失败 → 500 content_delete_failed（取舍见任务 4 报告）
         contentStore.deleteWorkspaceDirRecursively(workspaceId);

@@ -14,8 +14,8 @@ import java.util.Optional;
 
 /**
  * projects 表仓储（用例化方法——裁定 C）。
- * 项目名允许同名（规格 §4，身份=id）；挂载分组存在性由 fk_projects_group 兜底（挂到不存在分组
- * 时 DuplicateKeyException/约束异常上抛，服务层转语义化错误）。
+ * 项目名允许同名（规格 §4，身份=id）；fk_projects_group 仅保证 group_id 指向全局存在的分组——
+ * 「分组须落在同一工作区」属业务规则，校验职责在服务层（任务 2 落），仓储不判业务。
  */
 @Repository
 public class ProjectRepo {
@@ -28,7 +28,7 @@ public class ProjectRepo {
 
     private static final RowMapper<ProjectRecord> MAPPER = ProjectRepo::mapRow;
 
-    /** 创建项目（group_id 须为同工作区内已存在分组）。 */
+    /** 创建项目（外键仅保证 group_id 全局存在；「须为同工作区分组」的校验在服务层，任务 2 落）。 */
     public void insert(ProjectRecord project) {
         jdbc.update("""
                 INSERT INTO projects (id, workspace_id, group_id, name, created_at)
@@ -73,7 +73,7 @@ public class ProjectRepo {
         jdbc.update("UPDATE projects SET name = ? WHERE id = ?", newName, id);
     }
 
-    /** 移动分组（跨组拖拽；目标分组存在性由外键兜底）。 */
+    /** 移动分组（跨组拖拽；外键仅保证目标分组全局存在，「同工作区」校验在服务层，任务 2 落）。 */
     public void moveGroup(String id, String newGroupId) {
         jdbc.update("UPDATE projects SET group_id = ? WHERE id = ?", newGroupId, id);
     }
@@ -81,6 +81,11 @@ public class ProjectRepo {
     /** 删除项目（实体行；内容清理在任务 3 的内容面，此处只删行）。 */
     public void delete(String id) {
         jdbc.update("DELETE FROM projects WHERE id = ?", id);
+    }
+
+    /** 删除工作区时清空其全部项目行（裁定 D：DELETE 工作区的 DB 清理步骤，先于 groups 行删除）。 */
+    public void deleteByWorkspace(String workspaceId) {
+        jdbc.update("DELETE FROM projects WHERE workspace_id = ?", workspaceId);
     }
 
     /** 分组内项目计数（删除空分组守卫的判据，任务 2）。 */

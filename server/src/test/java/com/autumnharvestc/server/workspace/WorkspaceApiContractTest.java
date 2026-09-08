@@ -2,6 +2,8 @@ package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.store.GroupRecord;
 import com.autumnharvestc.server.store.GroupRepo;
+import com.autumnharvestc.server.store.ProjectRecord;
+import com.autumnharvestc.server.store.ProjectRepo;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,6 +16,7 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,6 +51,9 @@ class WorkspaceApiContractTest {
 
     @Autowired
     private GroupRepo groupRepo;
+
+    @Autowired
+    private ProjectRepo projectRepo;
 
     // ---- 测试脚手架 ----
 
@@ -247,6 +253,28 @@ class WorkspaceApiContractTest {
                 .andExpect(status().isNotFound());
 
         assertThat(Files.notExists(dir)).isTrue();
+    }
+
+    /** 删区连带清空 groups/projects 行（审查修复：projects → groups 顺序清 fk_projects_group 引用）。 */
+    @Test
+    void deleteByOwnerAlsoClearsGroupsAndProjects() throws Exception {
+        String[] owner = newUser("ws-nadia");
+        String wsId = createWorkspace(owner[1], "Theta");
+        // 预置：create 联动的默认分组 + 直插一多余分组与两个项目（分挂两组；任务 2 前无端点，经 repo 造数）
+        GroupRecord defaultGroup = groupRepo.findByName(wsId, "默认分组").orElseThrow();
+        GroupRecord spareGroup = new GroupRecord(
+                UUID.randomUUID().toString(), wsId, "备选组", false, Instant.now());
+        groupRepo.insert(spareGroup);
+        projectRepo.insert(new ProjectRecord(
+                UUID.randomUUID().toString(), wsId, defaultGroup.id(), "挂默认组项目", Instant.now()));
+        projectRepo.insert(new ProjectRecord(
+                UUID.randomUUID().toString(), wsId, spareGroup.id(), "挂备选组项目", Instant.now()));
+
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
+                .andExpect(status().isNoContent());
+
+        assertThat(projectRepo.listByWorkspace(wsId)).isEmpty();
+        assertThat(groupRepo.listByWorkspace(wsId)).isEmpty();
     }
 
     /** 非 OWNER 删除（ADMIN/非成员）→ 403 forbidden，工作区仍在；不存在 → 404 workspace_not_found。 */

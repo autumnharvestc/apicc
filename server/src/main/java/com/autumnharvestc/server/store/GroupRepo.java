@@ -81,6 +81,11 @@ public class GroupRepo {
         jdbc.update("DELETE FROM groups WHERE id = ?", id);
     }
 
+    /** 删除工作区时清空其全部分组行（裁定 D：DELETE 工作区的 DB 清理步骤；调用方须先清 projects 引用行）。 */
+    public void deleteByWorkspace(String workspaceId) {
+        jdbc.update("DELETE FROM groups WHERE workspace_id = ?", workspaceId);
+    }
+
     private static GroupRecord mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new GroupRecord(
                 rs.getString("id"),
