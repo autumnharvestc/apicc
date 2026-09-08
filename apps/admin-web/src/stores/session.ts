@@ -43,6 +43,11 @@ export function createSessionStore(deps: SessionStoreDeps) {
       token: undefined as string | undefined,
       /** 登录用户；null = 未登录。 */
       user: null as AdminUser | null,
+      /**
+       * 平台角色（任务 5，规格 2026-09-08 §6：/me 返回 role）——超管菜单显隐与 /users
+       * 路由守卫的唯一依据。缺省 USER（服务端未返回 role 的旧口径/登出态一律按非超管）。
+       */
+      role: "USER" as "USER" | "SUPERADMIN",
       status: "idle" as SessionStatus,
       /** api 失败文案（登录/注册共享一条错误通道；组件上屏）。 */
       error: null as string | null,
@@ -56,12 +61,13 @@ export function createSessionStore(deps: SessionStoreDeps) {
       },
     },
     actions: {
-      /** 本地会话清空：client 内存 token、storage 存档、state 三处同步。 */
+      /** 本地会话清空：client 内存 token、storage 存档、state 三处同步（role 复位非超管）。 */
       clearSession(): void {
         client.clearToken();
         storage.removeItem(TOKEN_KEY);
         this.token = undefined;
         this.user = null;
+        this.role = "USER";
         this.status = "idle";
       },
 
@@ -85,6 +91,7 @@ export function createSessionStore(deps: SessionStoreDeps) {
         this.status = "authenticating";
         try {
           this.user = await client.me();
+          this.role = this.user.role ?? "USER"; // 任务 5：/me role 落 state（缺省非超管）
           this.status = "authenticated";
           this.error = null;
         } catch (e) {
@@ -105,6 +112,7 @@ export function createSessionStore(deps: SessionStoreDeps) {
           this.token = result.token;
           storage.setItem(TOKEN_KEY, result.token);
           this.user = result.user;
+          this.role = result.user.role ?? "USER"; // 任务 5：login 载荷 role 落 state（与 /me 同口径）
           this.status = "authenticated";
         } catch (e) {
           this.error = errorMessage(e);

@@ -73,7 +73,7 @@ public class AuthFilter extends OncePerRequestFilter {
                 writeJson(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal_error", "服务端内部错误");
                 return;
             }
-            if (token.isPresent() && user.isPresent()) {
+            if (token.isPresent() && user.isPresent() && !user.get().disabled()) {
                 request.setAttribute(ATTR_USER, user.get());
                 request.setAttribute(ATTR_TOKEN_HASH, tokenHash);
                 chain.doFilter(request, response);

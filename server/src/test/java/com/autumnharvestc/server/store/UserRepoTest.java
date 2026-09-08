@@ -28,7 +28,8 @@ class UserRepoTest {
 
     private static UserAccount newUser(String username) {
         return new UserAccount(UUID.randomUUID().toString(), username, "$2a$10$hash",
-                "显示名-" + username, Instant.now().truncatedTo(ChronoUnit.MICROS));
+                "显示名-" + username, PlatformRole.USER, false,
+                Instant.now().truncatedTo(ChronoUnit.MICROS));
     }
 
     /** insert → findByUsername 全字段往返一致（createdAt 以微秒精度存取，UTC 瞬时值不漂移）。 */
@@ -42,6 +43,8 @@ class UserRepoTest {
         assertThat(out.username()).isEqualTo("alice");
         assertThat(out.passwordHash()).isEqualTo("$2a$10$hash");
         assertThat(out.displayName()).isEqualTo("显示名-alice");
+        assertThat(out.role()).isEqualTo(PlatformRole.USER);
+        assertThat(out.disabled()).isFalse();
         assertThat(out.createdAt()).isEqualTo(in.createdAt());
     }
 

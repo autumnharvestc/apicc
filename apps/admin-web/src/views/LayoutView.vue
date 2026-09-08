@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
- * 布局壳（M4-A 任务 3，裁定 A）：a-layout 侧栏（a-menu——工作区项常显；成员/项目 ACL 管理
+ * 布局壳（M4-A 任务 3，任务 5 增补）：a-layout 侧栏（a-menu——工作区项常显；成员/项目 ACL 管理
  * 入口仅当前选中工作区 myRole ∈ {OWNER, ADMIN} 可见，按 workspaces.current 动态，详情未拉取
- * 时隐藏防闪烁，裁定 C）+ 顶栏（当前用户 displayName + 登出）。子路由挂内容区。
+ * 时隐藏防闪烁，裁定 C；「用户管理」入口仅 session.role === SUPERADMIN 可见——role 由 /me/login
+ * 写入会话 store，规格 2026-09-08 §6）+ 顶栏（当前用户 displayName + 登出）。子路由挂内容区。
  * 工作区上下文：路由参数驱动的选中（watch :id → workspaces.select）+ 列表行点选（不换页，
  * 选中后菜单按角色出现）。组件内零工厂调用：session/workspaces 经路由 props 注入。
  */
@@ -53,6 +54,10 @@ function goAcl(): void {
   if (current) void router.push(`/workspaces/${encodeURIComponent(current.id)}/acl`);
 }
 
+function goUsers(): void {
+  void router.push({ name: "users" });
+}
+
 async function onLogout(): Promise<void> {
   await props.session.logout();
   await router.push({ name: "login" });
@@ -72,6 +77,9 @@ async function onLogout(): Promise<void> {
         </a-menu-item>
         <a-menu-item v-if="manageVisible" key="acl" data-testid="menu-acl" @click="goAcl">
           {{ t("nav.acl") }}
+        </a-menu-item>
+        <a-menu-item v-if="session.role === 'SUPERADMIN'" key="users" data-testid="menu-users" @click="goUsers">
+          {{ t("nav.users") }}
         </a-menu-item>
       </a-menu>
     </a-layout-sider>

@@ -1,5 +1,6 @@
 package com.autumnharvestc.server.auth;
 
+import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.UserRepo;
 import org.slf4j.Logger;
@@ -24,7 +25,8 @@ import java.util.UUID;
  * 宽松绑定 apicc.server.admin-username / apicc.server.admin-password；用户名给了而口令空
  * 同样走随机口令）；完全未配置时用户名 admin + 随机口令（SecureRandom 16 字节 base64url），
  * 口令以 WARN 仅此一次打印日志，提示立即登录修改。
- * 「管理员」语义 = 第一个账号：建工作区成 OWNER（schema.sql 工作区级角色体系），不引入全局角色列。
+ * 「管理员」语义 = 第一个账号：平台角色即 SUPERADMIN（users.role，规格 2026-09-08 §2「启动引导
+ * 创建的首个账号自动 SUPERADMIN」）；建工作区成 OWNER（schema.sql 工作区级角色体系）语义不变。
  */
 @Component
 public class AdminBootstrap implements ApplicationRunner {
@@ -61,7 +63,8 @@ public class AdminBootstrap implements ApplicationRunner {
         String password = fromEnv ? configuredPassword : randomPassword();
         users.insert(new UserAccount(
                 UUID.randomUUID().toString(), username,
-                passwordEncoder.encode(password), username, Instant.now()));
+                passwordEncoder.encode(password), username,
+                PlatformRole.SUPERADMIN, false, Instant.now()));
         if (fromEnv) {
             log.info("首次启动：已创建管理员账号 {}（凭据来自环境变量），请妥善保管", username);
         } else {

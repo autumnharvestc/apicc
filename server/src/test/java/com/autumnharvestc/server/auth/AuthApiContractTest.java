@@ -1,5 +1,7 @@
 package com.autumnharvestc.server.auth;
 
+import com.autumnharvestc.server.store.TokenRepo;
+import com.autumnharvestc.server.store.UserRepo;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +37,12 @@ class AuthApiContractTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private UserRepo users;
+
+    @Autowired
+    private TokenRepo tokens;
 
     /** ISO-8601 UTC 时间戳形状（裁定 B：expiresAt 序列化为 ISO-8601 UTC）。 */
     private static final String ISO_UTC = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z";
@@ -201,9 +209,9 @@ class AuthApiContractTest {
                 .andExpect(jsonPath("$.code").value("invalid_credentials"));
     }
 
-    // ---- /me（规格 §3.1：200 {id, username, displayName}；401）----
+    // ---- /me（规格 §3.1 + §6：200 {id, username, displayName, role}；401）----
 
-    /** 有效 Bearer token → 200 用户安全视图。 */
+    /** 有效 Bearer token → 200 用户安全视图；普通注册账号 role=USER（超管侧见 AdminBootstrapTest）。 */
     @Test
     void meReturnsCurrentUserWithValidToken() throws Exception {
         registerUser("grace", "password123", "Grace");
@@ -214,6 +222,7 @@ class AuthApiContractTest {
                 .andExpect(jsonPath("$.id").isNotEmpty())
                 .andExpect(jsonPath("$.username").value("grace"))
                 .andExpect(jsonPath("$.displayName").value("Grace"))
+                .andExpect(jsonPath("$.role").value("USER")) // 普通注册账号
                 .andExpect(jsonPath("$.passwordHash").doesNotExist());
     }
 
@@ -285,5 +294,42 @@ class AuthApiContractTest {
         mockMvc.perform(get("/api/v1/definitely-not-exists"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("unauthorized"));
+    }
+
+    // ---- 停用账号（规格 §2：停用=拒绝登录+吊销令牌）----
+
+    /**
+     * 停用账号：登录 403 account_disabled；既有令牌一并失效（吊销）。
+     * 拆两步钉纵深（审查修复）：第一步只停用、不吊销——旧 token /me 即 401，
+     * 此时令牌在库仍有效，401 只能来自 AuthFilter 的 !disabled() 分支（钉死该纵深防线）；
+     * 第二步再吊销全部令牌（停用端点的完整语义，见 AdminUsersApiTest 经 API 的端到端用例）。
+     */
+    @Test
+    void disabledAccountRejectsLoginAndRevokesTokens() throws Exception {
+        registerUser("paused", "password123", "暂停号");
+        String token = loginAndGetToken("paused", "password123");
+        // 既有令牌仍可用
+        mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+        // 经 repo 停用（管理端点在任务 4）：第一步只停用、不吊销
+        String userId = users.findByUsername("paused").orElseThrow().id();
+        users.setDisabled(userId, true);
+        // 只停用不吊销 → 旧 token /me 也 401（AuthFilter !disabled() 纵深分支被真实求值）
+        mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("unauthorized"));
+        // 第二步补吊销全部有效令牌
+        tokens.revokeAllByUser(userId);
+        mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(loginBody("paused", "password123")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("account_disabled"));
+        // 停用 + 错误密码 → 仍 401 invalid_credentials（密码校验在前，不向无凭据者泄露停用态）
+        mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(loginBody("paused", "wrongpass1")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("invalid_credentials"));
+        mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized());
     }
 }

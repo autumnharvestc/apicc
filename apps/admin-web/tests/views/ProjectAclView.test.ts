@@ -10,6 +10,7 @@ import { createAdminI18n } from "../../src/i18n/index.js";
 import { createAdminClient } from "../../src/api/client.js";
 import { createSessionStore, TOKEN_KEY } from "../../src/stores/session.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
+import { createUsersStore } from "../../src/stores/users.js";
 import { createAppRouter } from "../../src/router/index.js";
 import App from "../../src/App.vue";
 
@@ -147,7 +148,8 @@ async function mountAcl(handler: FetchHandler = aclHandler()) {
   const client = createAdminClient({ baseUrl: BASE, fetch: stub.impl });
   const session = createSessionStore({ client, storage: localStorage });
   const workspaces = createWorkspacesStore({ client });
-  const router = createAppRouter({ session, workspaces });
+  const users = createUsersStore({ client });
+  const router = createAppRouter({ session, workspaces, users });
   const { i18n } = createAdminI18n();
   await session.initialize();
   const wrapper: VueWrapper = mount(App, { global: { plugins: [i18n, router] } });
