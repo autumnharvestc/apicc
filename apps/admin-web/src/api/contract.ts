@@ -78,10 +78,10 @@ export const AdminAccountSchema = AdminUserSchema.extend({
 // —— 树（§3.4，管理面只读消费：项目清单来自 tree.projects）——
 export const AdminTreeFileSchema = z.object({ path: z.string(), hash: z.string(), version: z.number(), size: z.number() });
 /**
- * tree.projects 行（契约修订 2026-09-03）：`path` 为项目目录相对工作区根的 `/` 分隔路径，
- * 必填——同名项目按 name 匹配权限会张冠李戴，ACL 管理按 path 展示与定位项目。
+ * tree.projects 行（path 实体化修订 2026-09-08）：服务端不再回项目目录路径——内容 path
+ * 首段即项目实体 UUID，`path` 退役为可选兼容字段（内容定位按 `id` 前缀推导）。
  */
-export const AdminTreeProjectSchema = z.object({ id: z.string(), name: z.string(), path: z.string(), myRole: AdminProjectRoleSchema });
+export const AdminTreeProjectSchema = z.object({ id: z.string(), name: z.string(), path: z.string().optional(), myRole: AdminProjectRoleSchema });
 export const AdminTreeSchema = z.object({
   workspaceId: z.string(),
   rootVersion: z.number(),

@@ -67,7 +67,8 @@ watch(selectedProjectId, (projectId) => {
 });
 
 const projectOptions = computed(() =>
-  projects.value.map((p) => ({ value: p.id, label: `${p.name}（${p.path}）· ${t("acl.myRoleLabel")}: ${p.myRole}` })),
+  // path 实体化后服务端不再回目录路径——回退展示内容前缀 `<projectId>/`（定位口径同步）
+  projects.value.map((p) => ({ value: p.id, label: `${p.name}（${p.path ?? `${p.id}/`}）· ${t("acl.myRoleLabel")}: ${p.myRole}` })),
 );
 
 /** ACL 角色域（§3.3）：NONE 标签文案显式（裁定 B）；域内无 OWNER。 */
@@ -145,7 +146,7 @@ async function onAdd(): Promise<void> {
       data-testid="acl-error"
     />
 
-    <!-- 项目选择（tree.projects；name+path+myRole 显式，裁定 A/C） -->
+    <!-- 项目选择（tree.projects；name+内容前缀+myRole 显式——path 实体化后回退 `<projectId>/`） -->
     <div class="project-row">
       <span class="project-label">{{ t("acl.projectLabel") }}</span>
       <a-select

@@ -83,23 +83,26 @@ describe("管理面契约 schema（M3 规格 §3 fixture 往返）", () => {
     expect(AdminAclEntrySchema.safeParse({ userId: "u-2", role: "OWNER" }).success).toBe(false);
   });
 
-  // —— §3.4 tree（管理面只读消费；projects.path 为契约修订 2026-09-03 的必填字段）——
-  it("tree：{ workspaceId, rootVersion, files[path/hash/version/size], projects[id/name/path/myRole] }——projects.path 必填（修订 2026-09-03，同名项目权限判定按 path 定位）", () => {
+  // —— §3.4 tree（管理面只读消费；path 实体化修订 2026-09-08：projects.path 退役为可选，按 id 前缀定位）——
+  it("tree：{ workspaceId, rootVersion, files[path/hash/version/size], projects[id/name/myRole] }——projects.path 可选（实体化修订 2026-09-08）", () => {
     const fixture = {
       workspaceId: "ws-1",
       rootVersion: 42,
-      files: [{ path: "groups/订单/a.yaml", hash: "deadbeef", version: 8, size: 128 }],
+      files: [{ path: "p-1/collections/订单/apis/登录/apicc.api.yaml", hash: "deadbeef", version: 8, size: 128 }],
       projects: [
-        { id: "p-1", name: "订单", path: "groups/订单/projects/订单", myRole: "EDITOR" },
-        { id: "p-2", name: "网关", path: "groups/网关/projects/网关", myRole: "NONE" },
+        { id: "p-1", name: "订单", myRole: "EDITOR" },
+        { id: "p-2", name: "网关", myRole: "NONE" },
       ],
     };
     expect(AdminTreeSchema.parse(fixture)).toEqual(fixture);
+    // 兼容：旧替身/服务端仍回 path 字段也可解析
+    expect(AdminTreeSchema.parse({ ...fixture, projects: [{ id: "p-1", name: "订单", path: "groups/订单/projects/订单", myRole: "EDITOR" }] }).projects[0]!.path)
+      .toBe("groups/订单/projects/订单");
   });
 
-  it("tree 拒绝：projects 行缺 path（钉住修订 2026-09-03）与 myRole 越界", () => {
+  it("tree 拒绝：projects 行缺 id（path 可选——实体化后按 id 前缀定位）与 myRole 越界", () => {
     const base = { workspaceId: "ws-1", rootVersion: 1, files: [] };
-    expect(AdminTreeSchema.safeParse({ ...base, projects: [{ id: "p-1", name: "订单", myRole: "EDITOR" }] }).success).toBe(false);
+    expect(AdminTreeSchema.safeParse({ ...base, projects: [{ name: "订单", myRole: "EDITOR" }] }).success).toBe(false);
     expect(AdminTreeSchema.safeParse({ ...base, projects: [{ id: "p-1", name: "订单", path: "p", myRole: "GUEST" }] }).success).toBe(false);
   });
 });

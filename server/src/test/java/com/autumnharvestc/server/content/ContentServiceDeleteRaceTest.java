@@ -9,6 +9,8 @@ import com.autumnharvestc.server.store.FileVersionRecord;
 import com.autumnharvestc.server.store.FileVersionRepo;
 import com.autumnharvestc.server.store.MembershipRepo;
 import com.autumnharvestc.server.store.PlatformRole;
+import com.autumnharvestc.server.store.ProjectRecord;
+import com.autumnharvestc.server.store.ProjectRepo;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.WorkspaceRecord;
 import com.autumnharvestc.server.workspace.WorkspaceGuard;
@@ -40,7 +42,9 @@ import static org.mockito.Mockito.when;
 class ContentServiceDeleteRaceTest {
 
     private static final String WS = "ws-1";
-    private static final String PATH = "a.yaml";
+    /** 项目实体 UUID（内容 path 首段实体化）。 */
+    private static final String PROJECT_ID = "123e4567-e89b-12d3-a456-426614174000";
+    private static final String PATH = PROJECT_ID + "/a.yaml";
 
     private final UserAccount caller =
             new UserAccount("user-1", "owner", "bcrypt-hash", "owner",
@@ -59,7 +63,11 @@ class ContentServiceDeleteRaceTest {
         memberships = mock(MembershipRepo.class);
         when(memberships.findRole(WS, caller.id())).thenReturn(Optional.of(Role.OWNER));
         fileVersions = mock(FileVersionRepo.class);
-        service = new ContentService(guard, permissions(), fileVersions,
+        // path 实体化写面校验：首段项目 UUID 须指向本工作区实体（DELETE 前置校验用）
+        ProjectRepo projects = mock(ProjectRepo.class);
+        when(projects.find(PROJECT_ID)).thenReturn(Optional.of(
+                new ProjectRecord(PROJECT_ID, WS, "g-1", "p", Instant.EPOCH)));
+        service = new ContentService(guard, permissions(), projects, fileVersions,
                 new WorkspaceContentStore("target/delete-race-test-data"));
     }
 
@@ -118,7 +126,10 @@ class ContentServiceDeleteRaceTest {
         WorkspaceContentStore store = mock(WorkspaceContentStore.class);
         when(store.workspaceRoot(WS)).thenReturn(Path.of("target/delete-race-test-data/workspaces/" + WS));
         doThrow(new IOException("盘故障")).when(store).deleteFile(any(), eq(PATH));
-        ContentService failingStoreService = new ContentService(guard, permissions(), fileVersions, store);
+        ProjectRepo projects = mock(ProjectRepo.class);
+        when(projects.find(PROJECT_ID)).thenReturn(Optional.of(
+                new ProjectRecord(PROJECT_ID, WS, "g-1", "p", Instant.EPOCH)));
+        ContentService failingStoreService = new ContentService(guard, permissions(), projects, fileVersions, store);
         when(fileVersions.find(WS, PATH)).thenReturn(Optional.of(record(1L, "h1")));
         when(fileVersions.deleteIfVersion(WS, PATH, 1L)).thenReturn(true);
 

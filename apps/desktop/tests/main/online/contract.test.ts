@@ -76,22 +76,25 @@ describe("在线契约 schema（规格 §3 fixture 往返）", () => {
   });
 
   // —— §3.4 内容 ——
-  it("tree：{ workspaceId, rootVersion, files[path/hash/version/size], projects[id/name/path/myRole] }（契约修订 2026-09-03：projects.path 必填，同名项目权限判定按 path 定位）", () => {
+  it("tree：{ workspaceId, rootVersion, files[path/hash/version/size], projects[id/name/myRole] }（path 实体化修订 2026-09-08：projects.path 退役为可选，按 id 前缀定位项目）", () => {
     const fixture = {
       workspaceId: "ws-1",
       rootVersion: 42,
-      files: [{ path: "groups/后端/projects/订单/collections/接口/apis/登录/apicc.api.yaml", hash: "3f2a9c8b7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a", version: 7, size: 512 }],
-      projects: [{ id: "p-1", name: "订单", path: "groups/后端/projects/订单", myRole: "EDITOR" }],
+      files: [{ path: "p-1/collections/接口/apis/登录/apicc.api.yaml", hash: "3f2a9c8b7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a", version: 7, size: 512 }],
+      projects: [{ id: "p-1", name: "订单", myRole: "EDITOR" }],
     };
     expect(OnlineTreeSchema.parse(fixture)).toEqual(fixture);
+    // 兼容：旧服务端/替身仍回 path 字段也可解析
+    expect(OnlineTreeSchema.parse({ ...fixture, projects: [{ id: "p-1", name: "订单", path: "groups/后端/projects/订单", myRole: "EDITOR" }] }).projects[0]!.path)
+      .toBe("groups/后端/projects/订单");
   });
 
-  it("tree 拒绝：file 缺 version / version 为字符串；project 缺 path（契约修订后必填）", () => {
+  it("tree 拒绝：file 缺 version / version 为字符串；project 缺 id（path 可选——实体化后按 id 前缀定位）", () => {
     const base = { workspaceId: "ws-1", rootVersion: 1, projects: [] };
     expect(OnlineTreeSchema.safeParse({ ...base, files: [{ path: "a.yaml", hash: "h", size: 1 }] }).success).toBe(false);
     expect(OnlineTreeSchema.safeParse({ ...base, files: [{ path: "a.yaml", hash: "h", version: "7", size: 1 }] }).success).toBe(false);
     expect(
-      OnlineTreeSchema.safeParse({ ...base, files: [], projects: [{ id: "p-1", name: "订单", myRole: "EDITOR" }] }).success,
+      OnlineTreeSchema.safeParse({ ...base, files: [], projects: [{ name: "订单", myRole: "EDITOR" }] }).success,
     ).toBe(false);
   });
 
@@ -142,7 +145,7 @@ describe("在线契约 schema（规格 §3 fixture 往返）", () => {
     expect(OnlineBatchResultSchema.parse(result)).toEqual(result);
   });
 
-  it("path 规则：禁止 ..、绝对路径、反斜杠、空段；另禁冒号（M3-C 前置对齐③，对齐服务端 ProjectPaths Windows 盘符防御）", () => {
+  it("path 规则：禁止 ..、绝对路径、反斜杠、空段；另禁冒号（客户端仍拦——服务端已移除禁冒号改由首段 UUID 规则拦盘符形态，客户端放开留待任务 7）", () => {
     expect(OnlinePathSchema.safeParse("groups/订单/apicc.workspace.yaml").success).toBe(true);
     expect(OnlinePathSchema.safeParse("../etc/passwd").success).toBe(false);
     expect(OnlinePathSchema.safeParse("a/../b").success).toBe(false);

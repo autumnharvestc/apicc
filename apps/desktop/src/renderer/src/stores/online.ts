@@ -125,14 +125,14 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
 
       /**
        * 可写判定（裁定 B：VIEWER 只读 vs EDITOR 可编辑）：工作区 VIEWER 恒只读；
-       * 项目级 ACL 覆盖按 `projects[].path` 前缀（整段目录前缀）定位文件所属项目——
-       * 契约修订 2026-09-03：同名项目按 name 匹配会张冠李戴，一律以 path 定位；
-       * VIEWER/NONE 时该项目子树只读；非项目子树（根/分组配置）按工作区角色。
+       * 项目级 ACL 覆盖按 path 首段项目 id 定位文件所属项目（path 实体化修订 2026-09-08：
+       * 内容 path = `<projectId>/...`，服务端不再回 projects[].path 目录路径）；
+       * VIEWER/NONE 时该项目子树只读；非项目子树（根配置）按工作区角色。
        */
       canEdit(state): (path: string | null) => boolean {
         return (path: string | null): boolean => {
           if (!state.activeWorkspace || state.activeWorkspace.myRole === "VIEWER" || !path) return false;
-          const project = state.projects.find((p) => path === p.path || path.startsWith(`${p.path}/`));
+          const project = state.projects.find((p) => path === p.id || path.startsWith(`${p.id}/`));
           if (project) return project.myRole !== "VIEWER" && project.myRole !== "NONE";
           return true;
         };

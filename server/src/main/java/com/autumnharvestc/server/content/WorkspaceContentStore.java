@@ -72,7 +72,7 @@ public class WorkspaceContentStore {
     // ---- 以下为任务 5 内容同步新增：相对路径 → 落盘的文件级操作 ----
 
     /**
-     * 相对路径解析到工作区根内（第二层穿越防御；第一层为 ProjectPaths.validate 的字符规则）。
+     * 相对路径解析到工作区根内（第二层穿越防御；第一层为 ContentPaths.validate 的字符规则）。
      * resolve+normalize 后必须仍以工作区根为前缀——触发即校验缺口，按非法路径拒绝。
      */
     public Path resolveInRoot(Path root, String relativePath) {

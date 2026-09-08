@@ -229,7 +229,8 @@ const rand = Math.random().toString(36).slice(2, 8);
 const USER_A = { username: `adm-owner-${rand}`, password: "password8", displayName: "管理员 A" };
 const USER_B = { username: `adm-member-${rand}`, password: "password8", displayName: "成员 B" };
 
-/** 项目目录规则（M1 §6 + 服务端 ProjectPaths.projectDir）：groups/<组>/projects/<名>。 */
+/** 旧「项目目录规则」夹具（groups/<组>/projects/<名> + 路径哈希 id）——服务端 path 已实体化
+ *  （首段=项目实体 UUID），本文件推送面对新服务端为已知断点，夹具改造在任务 7（计划 B）。 */
 const P1_DIR = "groups/后端/projects/订单";
 const P2_DIR = "groups/后端/projects/库存";
 const P1_ID = createSha256Hex(P1_DIR).slice(0, 12); // 控制者裁定：projectId = 目录路径 SHA-256 hex 前 12 位
@@ -242,7 +243,8 @@ function createSha256Hex(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-const byPath = <T extends { path: string }>(a: T, b: T) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+// path 已实体化为可选（服务端不再回目录路径）——排序键放宽为可选；夹具改造在任务 7
+const byPath = <T extends { path?: string }>(a: T, b: T) => ((a.path ?? "") < (b.path ?? "") ? -1 : (a.path ?? "") > (b.path ?? "") ? 1 : 0);
 
 let clientA: AdminClient;
 let clientB: AdminClient;

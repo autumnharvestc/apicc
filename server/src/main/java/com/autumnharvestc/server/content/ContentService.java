@@ -1,13 +1,15 @@
 package com.autumnharvestc.server.content;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.ContentPaths;
 import com.autumnharvestc.server.core.Hashes;
 import com.autumnharvestc.server.core.PermissionService;
-import com.autumnharvestc.server.core.ProjectPaths;
 import com.autumnharvestc.server.core.Role;
 import com.autumnharvestc.server.core.VersionConflictException;
 import com.autumnharvestc.server.store.FileVersionRecord;
 import com.autumnharvestc.server.store.FileVersionRepo;
+import com.autumnharvestc.server.store.ProjectRecord;
+import com.autumnharvestc.server.store.ProjectRepo;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.workspace.WorkspaceGuard;
 import org.springframework.dao.DuplicateKeyException;
@@ -22,22 +24,27 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
 
 /**
- * 内容同步用例（规格 m3 §3.4 契约 + §2 D6 写路径 + §2 D8 同步协议，任务 5 简报裁定 A–D）。
+ * 内容同步用例（规格 m3 §3.4 契约 + §2 D6 写路径 + §2 D8 同步协议，任务 5 简报裁定 A–D；
+ * 2026-09-08 内容 path 实体化：首段=项目 UUID）。
  *
- * 写路径顺序（D6 + 裁定 D）：校验 → 权限 → baseVersion 比对（先于 hash 判同）→ 同 hash 幂等返回现状 →
- * 版本表原子推进（条件 UPDATE 取胜者，不丢更新）→ 落盘 → 落盘失败条件化精确回滚版本行（500 io_error，
- * 重试按原 baseVersion 可恢复——ContentIoFailureTest 钉住）。删除与回滚对称条件化（审查修复）：
- * DELETE 走 DELETE ... WHERE version=?（败者 re-read 转 409/404），回滚仅在「行仍是我写入的那行」时执行。
+ * <p>path 规则（ContentPaths）：首段必须是<b>存在的项目 UUID</b>，根级仅允许 apicc.workspace.yaml——
+ * 首段非 UUID 400 path_invalid；首段 UUID 但项目不存在（含跨工作区）404 project_not_found。
+ * 读面不 404：tree/files 按有效角色过滤与 missing 呈现，不泄露实体存在性。</p>
  *
- * 权限面口径（裁定 C② 留痕）：「移除成员不级联清 project_acl」——内容面按 ACL 行判定，为任务 4 起的
+ * <p>写路径顺序（D6 + 裁定 D）：校验（含项目实体存在性）→ 权限 → baseVersion 比对（先于 hash 判同）→
+ * 同 hash 幂等返回现状 → 版本表原子推进（条件 UPDATE 取胜者，不丢更新）→ 落盘 → 落盘失败条件化精确
+ * 回滚版本行（500 io_error，重试按原 baseVersion 可恢复——ContentIoFailureTest 钉住）。删除与回滚
+ * 对称条件化（审查修复）：DELETE 走 DELETE ... WHERE version=?（败者 re-read 转 409/404），回滚仅在
+ * 「行仍是我写入的那行」时执行。</p>
+ *
+ * <p>权限面口径（裁定 C② 留痕）：「移除成员不级联清 project_acl」——内容面按 ACL 行判定，为任务 4 起的
  * 既定模型（D5 自洽）：工作区守卫 requireMember 先挡非成员，project_acl 行只对仍具成员关系者细分读/写；
- * 成员被移除后保留的 ACL 行不清理，其重新加入工作区即自动恢复效力。
+ * 成员被移除后保留的 ACL 行不清理，其重新加入工作区即自动恢复效力。</p>
  *
- * 读面过滤：NONE 项目（有效角色为空）在 tree 的 files+projects 两面整体不出现，在 files 批量取中
- * 进 missing（不 403、不泄露存在性）。
+ * <p>读面过滤：NONE 项目（有效角色为空）——tree 的 projects（实体表产出）与 files 两面整体不出现，
+ * 在 files 批量取中进 missing（不 403、不泄露存在性）。</p>
  */
 @Service
 public class ContentService {
@@ -47,49 +54,54 @@ public class ContentService {
 
     private final WorkspaceGuard guard;
     private final PermissionService permissions;
+    private final ProjectRepo projects;
     private final FileVersionRepo fileVersions;
     private final WorkspaceContentStore contentStore;
 
     public ContentService(WorkspaceGuard guard,
                           PermissionService permissions,
+                          ProjectRepo projects,
                           FileVersionRepo fileVersions,
                           WorkspaceContentStore contentStore) {
         this.guard = guard;
         this.permissions = permissions;
+        this.projects = projects;
         this.fileVersions = fileVersions;
         this.contentStore = contentStore;
     }
 
     // ---- GET tree ----
 
-    /** 树清单（§3.4）：files 按路径字典序；projects 由版本行路径推导（裁定 B）并按读权过滤。 */
+    /**
+     * 树清单（§3.4 + 实体化修订）：files 按路径字典序（repo 保证）并按读权过滤；
+     * projects 来自 projects 实体表（{id, name, groupId, myRole}，path 字段退役——内容 path
+     * 首段即 id 可推导），NONE/不可读项目行不出现。
+     */
     public TreeView tree(UserAccount caller, String workspaceId) {
         guard.requireMember(workspaceId, caller);
         Path root = contentStore.workspaceRoot(workspaceId);
         List<FileVersionRecord> rows = fileVersions.listByWorkspace(workspaceId);
 
         List<TreeView.FileEntry> files = new ArrayList<>();
-        TreeSet<String> projectDirs = new TreeSet<>();
         for (FileVersionRecord row : rows) {
-            ProjectPaths.projectDir(row.path()).ifPresent(projectDirs::add);
             if (!readable(workspaceId, caller.id(), row.path())) {
-                continue;
+                continue; // NONE 项目：子树文件整体不出现（读面按无权过滤，不泄露存在性）
             }
             // 裁定 A：size 取落盘文件真实字节数（file_versions 不加列，读取时 stat）
             files.add(new TreeView.FileEntry(row.path(), row.contentHash(), row.version(),
                     contentStore.sizeOfFile(root, row.path())));
         }
 
-        List<TreeView.ProjectEntry> projects = new ArrayList<>();
-        for (String dir : projectDirs) {
-            String projectId = ProjectPaths.projectId(dir);
-            Optional<Role> role = permissions.effectiveRole(workspaceId, caller.id(), projectId);
+        List<TreeView.ProjectEntry> projectEntries = new ArrayList<>();
+        for (ProjectRecord project : projects.listByWorkspace(workspaceId)) {
+            Optional<Role> role = permissions.effectiveRole(workspaceId, caller.id(), project.id());
             if (role.isEmpty() || !permissions.canRead(role.get())) {
-                continue; // NONE 项目：子树整体不出现
+                continue; // NONE 项目：整体不出现
             }
-            projects.add(new TreeView.ProjectEntry(projectId, ProjectPaths.projectName(dir), dir, role.get().toDb()));
+            projectEntries.add(new TreeView.ProjectEntry(
+                    project.id(), project.name(), project.groupId(), role.get().toDb()));
         }
-        return new TreeView(workspaceId, fileVersions.sumVersions(workspaceId), files, projects);
+        return new TreeView(workspaceId, fileVersions.sumVersions(workspaceId), files, projectEntries);
     }
 
     // ---- GET files（批量取）----
@@ -131,7 +143,7 @@ public class ContentService {
 
     // ---- PUT files（乐观并发写）----
 
-    /** 单文件写：201 新建/变更；200 同 hash 幂等（裁定 D）；409 冲突带现状；400 非法路径；403 越权。 */
+    /** 单文件写：201 新建/变更；200 同 hash 幂等（裁定 D）；409 冲突带现状；400 非法路径；404 项目不存在；403 越权。 */
     public PutOutcome putFile(UserAccount caller, String workspaceId, String path, PutFileRequest request) {
         guard.requireMember(workspaceId, caller);
         return putChecked(caller, workspaceId, path, request);
@@ -139,7 +151,7 @@ public class ContentService {
 
     /** 写主体（入口守卫已过的检查与落库落盘；batch 逐文件复用，避免重复工作区守卫查询）。 */
     private PutOutcome putChecked(UserAccount caller, String workspaceId, String path, PutFileRequest request) {
-        ProjectPaths.validate(path);
+        ContentPaths.validate(path, projectId -> projectExists(workspaceId, projectId));
         if (request == null || request.content() == null) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "validation_failed", "content 必填");
         }
@@ -206,7 +218,7 @@ public class ContentService {
      */
     public void deleteFile(UserAccount caller, String workspaceId, String path, long baseVersion) {
         guard.requireMember(workspaceId, caller);
-        ProjectPaths.validate(path);
+        ContentPaths.validate(path, projectId -> projectExists(workspaceId, projectId));
         requireWriteAccess(workspaceId, caller.id(), path);
         FileVersionRecord current = fileVersions.find(workspaceId, path)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "file_not_found", "文件不存在"));
@@ -232,7 +244,8 @@ public class ContentService {
     /**
      * 批推送（D8 迁移/推送面）：逐文件独立 try/catch 部分成功。
      * 状态口径：pushed / conflict / forbidden / invalid / failed（单文件 io 失败以 failed 行呈现，
-     * 不整批 500——§2 D8「逐文件结果 failed」；联调轨对齐口径）。
+     * 不整批 500——§2 D8「逐文件结果 failed」；联调轨对齐口径）。项目不存在（project_not_found）
+     * 与非法路径同转 invalid 行——该条目在项目建好前不可推，客户端修复后重推。
      */
     public BatchResultView batchPush(UserAccount caller, String workspaceId, BatchPushRequest request) {
         guard.requireMember(workspaceId, caller);
@@ -260,7 +273,7 @@ public class ContentService {
             return new BatchResultView.FileResult(path, "conflict", null, ex.getCurrentVersion(), "baseVersion 过期");
         } catch (ApiException ex) {
             return switch (ex.getCode()) {
-                case "path_invalid", "validation_failed" ->
+                case "path_invalid", "validation_failed", "project_not_found" ->
                         new BatchResultView.FileResult(path, "invalid", null, null, ex.getMessage());
                 case "project_forbidden", "forbidden" ->
                         new BatchResultView.FileResult(path, "forbidden", null, null, ex.getMessage());
@@ -273,9 +286,9 @@ public class ContentService {
 
     // ---- 权限判定 ----
 
-    /** 路径生效角色：项目内路径按推导 projectId（ACL 覆盖），根级路径按工作区角色继承。 */
+    /** 路径生效角色：项目内路径按首段 projectId（ACL 覆盖），根级路径（根配置）按工作区角色继承。 */
     private Optional<Role> effectiveRoleFor(String workspaceId, String userId, String path) {
-        String projectId = ProjectPaths.projectDir(path).map(ProjectPaths::projectId).orElse(null);
+        String projectId = ContentPaths.parseProject(path).orElse(null);
         return permissions.effectiveRole(workspaceId, userId, projectId);
     }
 
@@ -304,7 +317,7 @@ public class ContentService {
      * VIEWER 只读 403 forbidden；根配置 apicc.workspace.yaml 仅 ADMIN+（§3.4 path 规则）。
      */
     private void requireWriteAccess(String workspaceId, String userId, String path) {
-        boolean inProject = ProjectPaths.projectDir(path).isPresent();
+        boolean inProject = ContentPaths.parseProject(path).isPresent();
         Role role = effectiveRoleFor(workspaceId, userId, path).orElseThrow(() ->
                 inProject
                         ? new ApiException(HttpStatus.FORBIDDEN, "project_forbidden", "该项目对你不可见（NONE）")
@@ -312,8 +325,15 @@ public class ContentService {
         if (!permissions.canWrite(role)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "forbidden", "需要 EDITOR 及以上角色");
         }
-        if (ProjectPaths.WORKSPACE_CONFIG.equals(path) && !permissions.isAdmin(role)) {
+        if (ContentPaths.WORKSPACE_CONFIG.equals(path) && !permissions.isAdmin(role)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "forbidden", "apicc.workspace.yaml 仅 ADMIN+ 可写");
         }
+    }
+
+    /** 项目实体存在性（含工作区归属）：跨工作区项目对当前工作区即「不存在」。 */
+    private boolean projectExists(String workspaceId, String projectId) {
+        return projects.find(projectId)
+                .filter(project -> project.workspaceId().equals(workspaceId))
+                .isPresent();
     }
 }

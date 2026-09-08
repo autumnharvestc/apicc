@@ -68,6 +68,28 @@ class ContentIoFailureTest {
         return JsonPath.read(result.getResponse().getContentAsString(), "$.id");
     }
 
+    /** 建分组（ADMIN+），返回分组 id。 */
+    private String createGroup(String token, String wsId, String name) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/groups")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + name + "\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return JsonPath.read(result.getResponse().getContentAsString(), "$.id");
+    }
+
+    /** 建项目（ADMIN+），返回实体项目 id——内容 path 首段即此 id（path 实体化）。 */
+    private String createProject(String token, String wsId, String groupId, String name) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/projects")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"groupId\":\"" + groupId + "\",\"name\":\"" + name + "\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return JsonPath.read(result.getResponse().getContentAsString(), "$.id");
+    }
+
     private MvcResult putFile(String token, String wsId, String path, String content, long baseVersion)
             throws Exception {
         return mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/files/" + path)
@@ -97,16 +119,18 @@ class ContentIoFailureTest {
     void diskWriteFailureOnExistingFileRollsBackVersionAndRecoversOnRetry() throws Exception {
         String[] owner = newUser("c-io1-owner");
         String wsId = createWorkspace(owner[1], "落盘回滚");
-        assertThat(putFile(owner[1], wsId, "groups/g1/projects/p1/f.yaml", "v1", 0)
+        String p1 = createProject(owner[1], wsId, createGroup(owner[1], wsId, "g1"), "p1");
+        String filePath = p1 + "/f.yaml";
+        assertThat(putFile(owner[1], wsId, filePath, "v1", 0)
                 .getResponse().getStatus()).isEqualTo(201);
         String h1 = sha256Hex("v1");
 
         // 目录占位目标路径 → 后续写文件必然 IO 失败（跨平台纯 JDK 手法）
-        Path target = diskPath(wsId, "groups/g1/projects/p1/f.yaml");
+        Path target = diskPath(wsId, filePath);
         Files.delete(target);
         Files.createDirectory(target);
         try {
-            mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/files/groups/g1/projects/p1/f.yaml")
+            mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/files/" + filePath)
                             .header("Authorization", "Bearer " + owner[1])
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"content\":\"v2\",\"baseVersion\":1}"))
@@ -133,7 +157,7 @@ class ContentIoFailureTest {
             }
         }
 
-        MvcResult retry = putFile(owner[1], wsId, "groups/g1/projects/p1/f.yaml", "v2", 1);
+        MvcResult retry = putFile(owner[1], wsId, filePath, "v2", 1);
         assertThat(retry.getResponse().getStatus()).isEqualTo(201);
         mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/tree")
                         .header("Authorization", "Bearer " + owner[1]))
@@ -141,15 +165,18 @@ class ContentIoFailureTest {
                 .andExpect(jsonPath("$.files[0].version").value(2));
     }
 
-    /** 新文件落盘失败：500 io_error 且不留版本行（树中不出现，rootVersion 不变）。 */
+    /** 新文件落盘失败：500 io_error 且不留版本行（树中不出现，rootVersion 不变）。
+     *  手法：项目内文件占位父段名（<projectId>/blocker）→ <projectId>/blocker/inner.yaml 建父目录必然失败。 */
     @Test
     void diskWriteFailureOnNewFileLeavesNoVersionRowBehind() throws Exception {
         String[] owner = newUser("c-io2-owner");
         String wsId = createWorkspace(owner[1], "落盘新文件");
-        assertThat(putFile(owner[1], wsId, "blocker", "root file", 0).getResponse().getStatus()).isEqualTo(201);
+        String p1 = createProject(owner[1], wsId, createGroup(owner[1], wsId, "g1"), "p1");
+        String blocker = p1 + "/blocker";
+        assertThat(putFile(owner[1], wsId, blocker, "blocker file", 0).getResponse().getStatus()).isEqualTo(201);
 
         // 父段「blocker」是普通文件 → blocker/inner.yaml 建父目录必然失败
-        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/files/blocker/inner.yaml")
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/files/" + blocker + "/inner.yaml")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"content\":\"x\",\"baseVersion\":0}"))
@@ -161,6 +188,6 @@ class ContentIoFailureTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.rootVersion").value(1))
                 .andExpect(jsonPath("$.files", org.hamcrest.Matchers.hasSize(1)))
-                .andExpect(jsonPath("$.files[0].path").value("blocker"));
+                .andExpect(jsonPath("$.files[0].path").value(blocker));
     }
 }
