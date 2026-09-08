@@ -6,7 +6,9 @@
 --      关联表用自然复合主键；后续任务全部经由仓储接口存取，不感知列型；
 --   4. 时间戳列（裁定 B）：一律 TIMESTAMP WITH TIME ZONE 存绝对时刻，写入统一经 OffsetDateTime(UTC)，
 --      读取以 OffsetDateTime → Instant 还原；API 序列化形状（ISO-8601 UTC）由任务 3-5 契约测试钉住；
---   5. 角色列：VARCHAR + CHECK IN（可移植写法），枚举外脏值在库层拦下。
+--   5. 角色列：VARCHAR + CHECK IN（可移植写法），枚举外脏值在库层拦下；
+--   6. 未发布阶段（规格 §8）表结构变更不做迁移：旧库启动若因结构不符报错（未知列等），
+--      删库重开（删 server-data）即可，生产化前的破坏性变更均走此口径。
 
 -- 账号（规格 §3.1：bcrypt 哈希入库，服务端不存明文密码；§2：role/disabled 支撑账号管家）
 CREATE TABLE IF NOT EXISTS users (

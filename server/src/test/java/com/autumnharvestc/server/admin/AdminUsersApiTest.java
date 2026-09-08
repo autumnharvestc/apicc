@@ -198,4 +198,62 @@ class AdminUsersApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.username=='bob')].role").value("ADMIN"));
     }
+
+    // ---- 入区定角色校验（审查修复：OWNER 不可经此端点授予/变更；workspace 须存在）----
+
+    /**
+     * 载荷 role=OWNER → 400 validation_failed（@Pattern 收窄为 ADMIN|EDITOR|VIEWER）：
+     * OWNER 的产生与转让只走成员 API 转让流程，堵住「改离现职 OWNER → 区内永久无 OWNER /
+     * 授 OWNER → 永久双 OWNER」两条绕过 OWNER 不可变不变量的路径。
+     */
+    @Test
+    @Order(3)
+    void workspaceRoleRejectsOwnerAndUnknownWorkspace() throws Exception {
+        String admin = superadminToken();
+        String bobId = createBobAndGetId();
+        // role=OWNER → 校验层 400（先于 service，无须真实 workspace）
+        mockMvc.perform(put("/api/v1/admin/users/" + bobId + "/workspace-role")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"workspaceId\":\"whatever\",\"role\":\"OWNER\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
+        // workspaceId 不存在 → 404 workspace_not_found（对齐 user 侧与工作区面口径）
+        mockMvc.perform(put("/api/v1/admin/users/" + bobId + "/workspace-role")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"workspaceId\":\"no-such-workspace\",\"role\":\"ADMIN\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("workspace_not_found"));
+    }
+
+    // ---- 停用→令牌失效（审查修复：全程经真实 API，不手工经 repo 吊销）----
+
+    /**
+     * 经 API 停用后：既有令牌 /me 401（令牌失效链路）+ 登录 403 account_disabled——
+     * 钉住 AdminService.setDisabled 内「停用 + 吊销全部令牌」的真实接线（此前用例系手工经 repo，
+     * 删掉 service 里的吊销调用不会有任何测试变红）。
+     */
+    @Test
+    @Order(4)
+    void disableViaApiInvalidatesExistingTokenAndBlocksLogin() throws Exception {
+        String admin = superadminToken();
+        String bobId = createBobAndGetId();
+        String bobToken = loginToken("bob", "password123");
+        // 停用前令牌可用（基线）
+        mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + bobToken))
+                .andExpect(status().isOk());
+        // 经 API 停用（不手工吊销）：204
+        mockMvc.perform(post("/api/v1/admin/users/" + bobId + "/disable")
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        // 腿 1：旧令牌立即失效 → 401
+        mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + bobToken))
+                .andExpect(status().isUnauthorized());
+        // 腿 2：登录被拒 → 403 account_disabled
+        mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(loginBody("bob", "password123")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("account_disabled"));
+    }
 }

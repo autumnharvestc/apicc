@@ -298,7 +298,12 @@ class AuthApiContractTest {
 
     // ---- 停用账号（规格 §2：停用=拒绝登录+吊销令牌）----
 
-    /** 停用账号：登录 403 account_disabled；既有令牌一并失效（吊销）。 */
+    /**
+     * 停用账号：登录 403 account_disabled；既有令牌一并失效（吊销）。
+     * 拆两步钉纵深（审查修复）：第一步只停用、不吊销——旧 token /me 即 401，
+     * 此时令牌在库仍有效，401 只能来自 AuthFilter 的 !disabled() 分支（钉死该纵深防线）；
+     * 第二步再吊销全部令牌（停用端点的完整语义，见 AdminUsersApiTest 经 API 的端到端用例）。
+     */
     @Test
     void disabledAccountRejectsLoginAndRevokesTokens() throws Exception {
         registerUser("paused", "password123", "暂停号");
@@ -306,9 +311,14 @@ class AuthApiContractTest {
         // 既有令牌仍可用
         mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk());
-        // 直接经 repo 停用（管理端点在任务 5）：停用 + 吊销其全部有效令牌
+        // 经 repo 停用（管理端点在任务 4）：第一步只停用、不吊销
         String userId = users.findByUsername("paused").orElseThrow().id();
         users.setDisabled(userId, true);
+        // 只停用不吊销 → 旧 token /me 也 401（AuthFilter !disabled() 纵深分支被真实求值）
+        mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("unauthorized"));
+        // 第二步补吊销全部有效令牌
         tokens.revokeAllByUser(userId);
         mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
                         .content(loginBody("paused", "password123")))

@@ -15,7 +15,11 @@ public final class AdminRequests {
     public record ResetPasswordRequest(@NotBlank @Size(min = 8, max = 72) String newPassword) {
     }
 
+    /**
+     * 「入区定角色」只授执行角色（ADMIN/EDITOR/VIEWER）；OWNER 不可经此端点授予或变更——
+     * OWNER 的产生与转让只走成员 API 的转让流程（裁定 C：先升后降，不会出现无 OWNER 窗口）。
+     */
     public record SetWorkspaceRoleRequest(@NotBlank String workspaceId,
-                                          @NotBlank @Pattern(regexp = "OWNER|ADMIN|EDITOR|VIEWER") String role) {
+                                          @NotBlank @Pattern(regexp = "ADMIN|EDITOR|VIEWER") String role) {
     }
 }

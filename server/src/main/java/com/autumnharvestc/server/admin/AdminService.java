@@ -6,6 +6,7 @@ import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.TokenRepo;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.UserRepo;
+import com.autumnharvestc.server.store.WorkspaceRepo;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -26,12 +27,14 @@ public class AdminService {
     private final UserRepo users;
     private final TokenRepo tokens;
     private final MembershipRepo memberships;
+    private final WorkspaceRepo workspaces;
     private final PasswordEncoder encoder = new BCryptPasswordEncoder(BCRYPT_STRENGTH);
 
-    public AdminService(UserRepo users, TokenRepo tokens, MembershipRepo memberships) {
+    public AdminService(UserRepo users, TokenRepo tokens, MembershipRepo memberships, WorkspaceRepo workspaces) {
         this.users = users;
         this.tokens = tokens;
         this.memberships = memberships;
+        this.workspaces = workspaces;
     }
 
     private void requireSuperadmin(UserAccount caller) {
@@ -80,10 +83,17 @@ public class AdminService {
         if (disabled) tokens.revokeAllByUser(userId);
     }
 
-    /** 入区定角色（规格§2「分配使用」）：直接写 memberships（超管意志，无需目标区管理员同意）。 */
+    /**
+     * 入区定角色（规格§2「分配使用」）：直接写 memberships（超管意志，无需目标区管理员同意）。
+     * 载荷角色域限 ADMIN/EDITOR/VIEWER（AdminRequests 校验层拦 OWNER——OWNER 不可经此端点变更，
+     * 否则现职 OWNER 被改离 → 区内永久无 OWNER；授 OWNER 又绕过转让的先升后降，会永久双 OWNER）。
+     * workspace 不存在 → 404 workspace_not_found（对齐 user 侧与工作区面 404 口径）。
+     */
     public void setWorkspaceRole(UserAccount caller, String userId, String workspaceId, String role) {
         requireSuperadmin(caller);
         users.findById(userId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "未找到账号"));
+        workspaces.findById(workspaceId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "workspace_not_found", "工作区不存在"));
         memberships.upsert(workspaceId, userId, role);
     }
 }

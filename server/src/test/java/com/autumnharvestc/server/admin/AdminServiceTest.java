@@ -6,6 +6,7 @@ import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.TokenRepo;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.UserRepo;
+import com.autumnharvestc.server.store.WorkspaceRepo;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DuplicateKeyException;
@@ -33,7 +34,8 @@ class AdminServiceTest {
     private final UserRepo users = mock(UserRepo.class);
     private final TokenRepo tokens = mock(TokenRepo.class);
     private final MembershipRepo memberships = mock(MembershipRepo.class);
-    private final AdminService service = new AdminService(users, tokens, memberships);
+    private final WorkspaceRepo workspaces = mock(WorkspaceRepo.class);
+    private final AdminService service = new AdminService(users, tokens, memberships, workspaces);
 
     private UserAccount caller(PlatformRole role) {
         return new UserAccount("caller-id", "admin", "hash", "管理员", role, false, Instant.now());
