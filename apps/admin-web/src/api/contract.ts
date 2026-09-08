@@ -2,7 +2,8 @@
  * 管理面契约 zod schema（M4-A 任务 1）：对齐 M3 规格 `2026-09-03-apicc-m3-collab-design.md`
  * §3 API 契约（v1，含五次修订）中管理控制台消费的端点子集（裁定⑤：auth 四端点、工作区与
  * 成员 §3.2 全部、项目 ACL §3.3 三行含 DELETE 修订、tree GET——内容写面 batch/files PUT
- * 不属管理面，不建 schema）。本文件是客户端实现面的单一事实源——client 出口先 safeParse
+ * 不属管理面，不建 schema；任务 5 起追加规格 `2026-09-08-server-accounts-roles.md` §2
+ * 账号管理五端点的消费面）。本文件是客户端实现面的单一事实源——client 出口先 safeParse
  * 再放行（形状不符 → protocol_error），后续 store/视图复用同批推断类型，避免两处漂移。
  * 约定（§3 开头）：认证端点外全部要求 `Authorization: Bearer <token>`；错误统一
  * `{ code, message }`；时间戳 ISO-8601 UTC；不臆造规格未列字段。
@@ -25,8 +26,21 @@ export const AdminAclRoleSchema = z.enum(["NONE", "VIEWER", "EDITOR", "ADMIN"]);
  */
 export const AdminProjectRoleSchema = z.enum(["OWNER", "ADMIN", "EDITOR", "VIEWER", "NONE"]);
 
+// —— 平台角色（规格 2026-09-08 §2 账号管理；/me role）——
+/** 平台角色：USER / SUPERADMIN（首个账号启动引导为 SUPERADMIN，规格 §2）。 */
+export const AdminPlatformRoleSchema = z.enum(["USER", "SUPERADMIN"]);
+
 // —— 用户与认证（§3.1）——
-export const AdminUserSchema = z.object({ id: z.string(), username: z.string(), displayName: z.string() });
+/**
+ * 认证面用户形状：register/login/me 共用。role 为可选（规格 2026-09-08 §6 起 /me 返回，
+ * session store 据此显隐超管入口；缺省视为 USER，保持 parse 往返与旧 fixture 兼容）。
+ */
+export const AdminUserSchema = z.object({
+  id: z.string(),
+  username: z.string(),
+  displayName: z.string(),
+  role: AdminPlatformRoleSchema.optional(),
+});
 /** register 入参：username 3-32 字符 [a-zA-Z0-9_-]，password ≥8。 */
 export const AdminRegisterInputSchema = z.object({
   username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_-]+$/),
@@ -50,6 +64,17 @@ export const AdminMemberSchema = z.object({ userId: z.string(), username: z.stri
 // —— 项目 ACL（§3.3）——
 export const AdminAclEntrySchema = z.object({ userId: z.string(), role: AdminAclRoleSchema });
 
+// —— 平台账号管理（规格 2026-09-08 §2，超管专属）——
+/**
+ * 账号管理行：GET/POST /admin/users 成功载荷。永不投影 password；disabled=true 即被停用
+ * （登录/token 全部失效）；createdAt ISO-8601 UTC。role 必填（管理面清单恒带平台角色）。
+ */
+export const AdminAccountSchema = AdminUserSchema.extend({
+  role: AdminPlatformRoleSchema,
+  disabled: z.boolean(),
+  createdAt: z.string(),
+});
+
 // —— 树（§3.4，管理面只读消费：项目清单来自 tree.projects）——
 export const AdminTreeFileSchema = z.object({ path: z.string(), hash: z.string(), version: z.number(), size: z.number() });
 /**
@@ -70,6 +95,8 @@ export type AdminRole = z.infer<typeof AdminRoleSchema>;
 export type AdminAclRole = z.infer<typeof AdminAclRoleSchema>;
 export type AdminProjectRole = z.infer<typeof AdminProjectRoleSchema>;
 export type AdminUser = z.infer<typeof AdminUserSchema>;
+export type AdminPlatformRole = z.infer<typeof AdminPlatformRoleSchema>;
+export type AdminAccount = z.infer<typeof AdminAccountSchema>;
 export type AdminRegisterInput = z.infer<typeof AdminRegisterInputSchema>;
 export type AdminLoginResult = z.infer<typeof AdminLoginResultSchema>;
 export type AdminWorkspaceSummary = z.infer<typeof AdminWorkspaceSummarySchema>;

@@ -7,6 +7,7 @@ import { createAdminClient } from "../../src/api/client.js";
 import { createAppRouter } from "../../src/router/index.js";
 import { createSessionStore, TOKEN_KEY } from "../../src/stores/session.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
+import { createUsersStore } from "../../src/stores/users.js";
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 
@@ -51,7 +52,8 @@ function setup() {
   });
   const session = createSessionStore({ client, storage: memStorage() });
   const workspaces = createWorkspacesStore({ client });
-  const router = createAppRouter({ session, workspaces });
+  const users = createUsersStore({ client });
+  const router = createAppRouter({ session, workspaces, users });
   return { session, workspaces, router };
 }
 

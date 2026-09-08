@@ -25,7 +25,8 @@
     "logout": "退出登录",
     "workspaces": "工作区",
     "members": "成员管理",
-    "acl": "项目 ACL"
+    "acl": "项目 ACL",
+    "users": "用户管理"
   },
   "members": {
     "title": "成员管理",
@@ -79,6 +80,28 @@
     "deleteHint": "删除将连同工作区全部内容一并移除，不可恢复。请输入「{name}」以确认删除。",
     "deleteNamePlaceholder": "输入工作区名称以确认",
     "deleteConfirm": "确认删除",
+    "error": "请求失败"
+  },
+  "users": {
+    "title": "用户管理",
+    "create": "新建账号",
+    "createTitle": "新建账号",
+    "colUsername": "用户名",
+    "colDisplayName": "显示名称",
+    "colRole": "平台角色",
+    "colStatus": "状态",
+    "colCreatedAt": "创建时间",
+    "colActions": "操作",
+    "statusActive": "正常",
+    "statusDisabled": "已停用",
+    "resetPassword": "重置密码",
+    "disable": "停用",
+    "enable": "启用",
+    "resetTitle": "重置密码（{user}）",
+    "resetHint": "为 {user} 设置新密码，重置后其全部登录态将失效。",
+    "newPassword": "新密码（至少 8 位）",
+    "submitCreate": "创建",
+    "submitReset": "重置",
     "error": "请求失败"
   }
 }

@@ -25,7 +25,8 @@
     "logout": "Sign out",
     "workspaces": "Workspaces",
     "members": "Members",
-    "acl": "Project ACL"
+    "acl": "Project ACL",
+    "users": "Users"
   },
   "members": {
     "title": "Members",
@@ -79,6 +80,28 @@
     "deleteHint": "Deleting removes the workspace together with all of its content and cannot be undone. Type \"{name}\" to confirm.",
     "deleteNamePlaceholder": "Type the workspace name to confirm",
     "deleteConfirm": "Delete workspace",
+    "error": "Request failed"
+  },
+  "users": {
+    "title": "Users",
+    "create": "New account",
+    "createTitle": "New account",
+    "colUsername": "Username",
+    "colDisplayName": "Display name",
+    "colRole": "Platform role",
+    "colStatus": "Status",
+    "colCreatedAt": "Created at",
+    "colActions": "Actions",
+    "statusActive": "Active",
+    "statusDisabled": "Disabled",
+    "resetPassword": "Reset password",
+    "disable": "Disable",
+    "enable": "Enable",
+    "resetTitle": "Reset password ({user})",
+    "resetHint": "Set a new password for {user}. All their sessions will be revoked.",
+    "newPassword": "New password (min 8 characters)",
+    "submitCreate": "Create",
+    "submitReset": "Reset",
     "error": "Request failed"
   }
 }

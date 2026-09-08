@@ -17,6 +17,7 @@
  */
 import { z } from "zod";
 import {
+  AdminAccountSchema,
   AdminAclEntrySchema,
   AdminErrorSchema,
   AdminLoginResultSchema,
@@ -27,6 +28,7 @@ import {
   AdminWorkspaceCreatedSchema,
   AdminWorkspaceDetailSchema,
   AdminWorkspaceSummarySchema,
+  type AdminAccount,
   type AdminAclEntry,
   type AdminAclRole,
   type AdminLoginResult,
@@ -75,7 +77,7 @@ export interface AdminClientDeps {
   onUnauthorized?: () => void;
 }
 
-/** 管理面端点（裁定⑤子集）：auth 四端点 + §3.2 工作区/成员 + §3.3 ACL（含 DELETE 修订）+ tree。 */
+/** 管理面端点（裁定⑤子集）：auth 四端点 + §3.2 工作区/成员 + §3.3 ACL（含 DELETE 修订）+ tree + 规格 2026-09-08 §2 账号管理（任务 5）。 */
 export interface AdminClient {
   readonly baseUrl: string;
   readonly token: string | undefined;
@@ -100,6 +102,17 @@ export interface AdminClient {
   setAclEntry(workspaceId: string, projectId: string, input: { userId: string; role: AdminAclRole }): Promise<void>;
   /** DELETE ACL 行 ?userId=：删行=恢复工作区角色继承（契约修订 2026-09-04）。 */
   deleteAclEntry(workspaceId: string, projectId: string, userId: string): Promise<void>;
+  // —— 平台账号管理（规格 2026-09-08 §2，超管专属；403/401 由服务端裁决）——
+  /** GET /admin/users：账号清单（不含 password）。 */
+  adminListUsers(): Promise<AdminAccount[]>;
+  /** POST /admin/users：创建账号（校验口径同注册；409 username_taken / 400 validation_failed）。 */
+  adminCreateUser(input: { username: string; password: string; displayName: string }): Promise<AdminAccount>;
+  /** POST /admin/users/{id}/password-reset { newPassword }：重置并踢下线（204）。 */
+  adminResetPassword(userId: string, newPassword: string): Promise<void>;
+  /** POST /admin/users/{id}/disable | /enable：停用/启用（204；停用同时吊销全部令牌）。 */
+  adminSetDisabled(userId: string, disabled: boolean): Promise<void>;
+  /** PUT /admin/users/{id}/workspace-role { workspaceId, role }：入区定角色（204）。 */
+  adminSetWorkspaceRole(userId: string, workspaceId: string, role: AdminRole): Promise<void>;
 }
 
 /** 默认超时 15s（与桌面端 onlineClient 同裁定）。 */
@@ -193,6 +206,11 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
     return workspacePath(workspaceId, `/projects/${encodeURIComponent(projectId)}/acl`);
   }
 
+  /** 账号管理子路径（规格 §2，段内逐个编码，同 workspacePath 口径）。 */
+  function adminUserPath(userId: string, suffix: string): string {
+    return `/admin/users/${encodeURIComponent(userId)}${suffix}`;
+  }
+
   return {
     baseUrl,
     get token() {
@@ -271,6 +289,28 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
 
     async deleteAclEntry(workspaceId, projectId, userId) {
       await request({ method: "DELETE", path: aclPath(workspaceId, projectId), query: { userId } });
+    },
+
+    // —— 平台账号管理（规格 2026-09-08 §2）——
+    async adminListUsers() {
+      return (await request({ method: "GET", path: "/admin/users", schema: z.array(AdminAccountSchema) })) as AdminAccount[];
+    },
+
+    async adminCreateUser(input) {
+      AdminRegisterInputSchema.parse(input); // 入参护栏：校验口径同注册（§2「校验同注册」，非法形状不发请求）
+      return (await request({ method: "POST", path: "/admin/users", body: input, schema: AdminAccountSchema })) as AdminAccount;
+    },
+
+    async adminResetPassword(userId, newPassword) {
+      await request({ method: "POST", path: adminUserPath(userId, "/password-reset"), body: { newPassword } });
+    },
+
+    async adminSetDisabled(userId, disabled) {
+      await request({ method: "POST", path: adminUserPath(userId, disabled ? "/disable" : "/enable") });
+    },
+
+    async adminSetWorkspaceRole(userId, workspaceId, role) {
+      await request({ method: "PUT", path: adminUserPath(userId, "/workspace-role"), body: { workspaceId, role } });
     },
   };
 }
