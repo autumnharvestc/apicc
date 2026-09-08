@@ -8,7 +8,7 @@ import java.util.List;
  */
 public record FilesBatchView(List<FileContent> files, List<String> missing) {
 
-    /** content 为按 UTF-8 解码的文本（服务端只当字节管家，二进制内容不在本契约保证范围）。 */
+    /** content 为入库文本（file_versions.content，PUT 原文逐字一致；服务端只当字节管家，二进制内容不在本契约保证范围）。 */
     public record FileContent(String path, String content, long version, String hash) {
     }
 }

@@ -1,6 +1,5 @@
 package com.autumnharvestc.server.workspace;
 
-import com.autumnharvestc.server.content.WorkspaceContentStore;
 import com.autumnharvestc.server.core.ApiException;
 import com.autumnharvestc.server.core.Role;
 import com.autumnharvestc.server.store.AclRepo;
@@ -25,12 +24,10 @@ import java.util.UUID;
  * 工作区用例（规格 m3 §3.2）：列表/创建/详情/删除。
  * 事务约定（裁定 B + 计划要求的例外）：默认不使用 @Transactional——各写步骤以单条语句自持原子；
  * 例外是 create：三次 DB 写（工作区行/OWNER 成员行/默认分组行）包裹同一事务，任一失败全部回滚，
- * 不产生「有工作区、无默认分组」的永久半状态（审查修复）。目录补偿保持现状语义：
- * 同名工作区 409 路径清掉刚建目录；其余中途失败（回滚）目录留存——目录建立发生在事务首条 DB 写之前，
- * 目录失败同样无 DB 写入。删除按裁定 D（维持逐条自持，不包事务）：
- * 逻辑校验 OWNER → 清 memberships/project_acl/file_versions → projects → groups
- * （fk_projects_group 依赖顺序：先删引用行再删被引用行）→ 删工作区行 → 递归删内容目录；
- * 任一 DB 步失败即中止不触盘，删盘失败 → 500 content_delete_failed（记录已删，取舍见报告）。
+ * 不产生「有工作区、无默认分组」的永久半状态（审查修复）。
+ * 删除按裁定 D（维持逐条自持，不包事务）：逻辑校验 OWNER → 清 memberships/project_acl/file_versions
+ * → projects → groups（fk_projects_group 依赖顺序：先删引用行再删被引用行）→ 删工作区行。
+ * 内容随 file_versions.content 入库（规格 §5），磁盘内容树退役——建区/删区不再有任何目录操作。
  */
 @Service
 public class WorkspaceService {
@@ -45,7 +42,6 @@ public class WorkspaceService {
     private final GroupRepo groups;
     private final ProjectRepo projects;
     private final WorkspaceGuard guard;
-    private final WorkspaceContentStore contentStore;
 
     public WorkspaceService(WorkspaceRepo workspaces,
                             MembershipRepo memberships,
@@ -53,8 +49,7 @@ public class WorkspaceService {
                             FileVersionRepo fileVersions,
                             GroupRepo groups,
                             ProjectRepo projects,
-                            WorkspaceGuard guard,
-                            WorkspaceContentStore contentStore) {
+                            WorkspaceGuard guard) {
         this.workspaces = workspaces;
         this.memberships = memberships;
         this.acl = acl;
@@ -62,24 +57,20 @@ public class WorkspaceService {
         this.groups = groups;
         this.projects = projects;
         this.guard = guard;
-        this.contentStore = contentStore;
     }
 
     /**
-     * 创建工作区（规格 §3.2：创建者自动 OWNER；§2 D6：建内容目录；规格 2026-09-08 §4：联动建「默认分组」）。
-     * 三次 DB 写同事务（见类头）：任一失败全回滚。同名冲突路径在此清目录后抛 409（事务随之回滚）。
+     * 创建工作区（规格 §3.2：创建者自动 OWNER；规格 2026-09-08 §4：联动建「默认分组」）。
+     * 三次 DB 写同事务（见类头）：任一失败全回滚。
      */
     @Transactional
     public WorkspaceView create(UserAccount caller, CreateWorkspaceRequest request) {
         WorkspaceRecord workspace = new WorkspaceRecord(
                 UUID.randomUUID().toString(), request.name().trim(), caller.id(), Instant.now());
-        contentStore.createWorkspaceDir(workspace.id());
         try {
             workspaces.insert(workspace);
         } catch (DuplicateKeyException ex) {
-            // 并发同名工作区兜底：uk_workspaces_name（预检不预占，唯一约束是唯一事实源）；
-            // 目录先于库行建立（裁定 B 顺序），此处清掉刚建的空目录再转 409，不留无主目录
-            contentStore.deleteWorkspaceDirRecursively(workspace.id());
+            // 并发同名工作区兜底：uk_workspaces_name（预检不预占，唯一约束是唯一事实源）→ 409
             throw new ApiException(HttpStatus.CONFLICT, "workspace_name_taken", "工作区名称已存在");
         }
         memberships.insert(workspace.id(), caller.id(), Role.OWNER);
@@ -105,10 +96,9 @@ public class WorkspaceService {
                 memberships.countByWorkspace(workspaceId));
     }
 
-    /** 删除工作区（规格 §3.2：OWNER；含内容目录——裁定 D 顺序）。 */
+    /** 删除工作区（规格 §3.2：OWNER；内容随版本行同删，无磁盘面）。 */
     public void delete(UserAccount caller, String workspaceId) {
         guard.requireOwner(workspaceId, caller);
-        // 先库后盘：任一 DB 步失败即中止（异常上抛），不触碰内容目录
         memberships.deleteByWorkspace(workspaceId);
         acl.deleteByWorkspace(workspaceId);
         fileVersions.deleteByWorkspace(workspaceId);
@@ -116,7 +106,5 @@ public class WorkspaceService {
         projects.deleteByWorkspace(workspaceId);
         groups.deleteByWorkspace(workspaceId);
         workspaces.delete(workspaceId);
-        // 记录已删后再删盘；失败 → 500 content_delete_failed（取舍见任务 4 报告）
-        contentStore.deleteWorkspaceDirRecursively(workspaceId);
     }
 }

@@ -1,6 +1,5 @@
 package com.autumnharvestc.server.workspace;
 
-import com.autumnharvestc.server.content.WorkspaceContentStore;
 import com.autumnharvestc.server.core.Role;
 import com.autumnharvestc.server.store.GroupRecord;
 import com.autumnharvestc.server.store.GroupRepo;
@@ -32,7 +31,7 @@ import java.util.UUID;
  * 理论不可达，出现则以 WARN 留痕并跳过——connect 对非成员 403 由守卫自然处理）。
  * created_by 存空串：系统种子无创建者（列 NOT NULL 但无外键；规格 §1 工作区退化为内部实现，
  * 创建者语义只属于用户经 API 建区的路径）。
- * 内容目录按 §2 D6「建区建目录」同款建立，保持树读取对目录存在性的既有假设（任务 3 入库后随磁盘树退役）。
+ * 内容入库（规格 §5）后磁盘内容树退役：种子不再做任何目录操作。
  */
 @Component
 @Order(2)
@@ -47,18 +46,15 @@ public class DefaultWorkspaceSeeder implements ApplicationRunner {
     private final GroupRepo groups;
     private final MembershipRepo memberships;
     private final UserRepo users;
-    private final WorkspaceContentStore contentStore;
 
     public DefaultWorkspaceSeeder(WorkspaceRepo workspaces,
                                   GroupRepo groups,
                                   MembershipRepo memberships,
-                                  UserRepo users,
-                                  WorkspaceContentStore contentStore) {
+                                  UserRepo users) {
         this.workspaces = workspaces;
         this.groups = groups;
         this.memberships = memberships;
         this.users = users;
-        this.contentStore = contentStore;
     }
 
     @Override
@@ -68,12 +64,10 @@ public class DefaultWorkspaceSeeder implements ApplicationRunner {
         }
         WorkspaceRecord workspace = new WorkspaceRecord(
                 UUID.randomUUID().toString(), DEFAULT_WORKSPACE_NAME, "", Instant.now());
-        contentStore.createWorkspaceDir(workspace.id());
         try {
             workspaces.insert(workspace);
         } catch (DuplicateKeyException ex) {
-            // 并发兜底：另一实例已建默认工作区（uk_workspaces_name）——清掉本实例刚建的目录，视为已就位
-            contentStore.deleteWorkspaceDirRecursively(workspace.id());
+            // 并发兜底：另一实例已建默认工作区（uk_workspaces_name）——视为已就位
             return;
         }
         groups.insert(new GroupRecord(

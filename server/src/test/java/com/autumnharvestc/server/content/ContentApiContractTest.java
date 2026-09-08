@@ -6,11 +6,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
@@ -36,19 +39,24 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 覆盖：tree（清单形状/hash/version/size、projects 来自实体表 {id,name,groupId,myRole}、
  * NONE 过滤）；files 批量取（missing 语义/≤200）；PUT（新文件 201/变更递增/同 hash 幂等 200/
  * 409 现状/非法路径 400/项目不存在 404/apicc.workspace.yaml 仅 ADMIN+/VIEWER 只读）；
- * DELETE 并发语义与重建；batch 混合部分成功与上限；UTF-8 字节口径。
+ * DELETE 并发语义与重建；batch 混合部分成功与上限；UTF-8 字节口径；
+ * 内容入库（规格 §5）：PUT 直写 file_versions.content，磁盘内容树退役。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
         "spring.datasource.url=jdbc:h2:mem:apicc-content-test;DB_CLOSE_DELAY=-1",
+        // data-dir 仅为内容入库断言钉住「历史落盘位置」（磁盘内容树退役后无组件再写此目录）
         "apicc.server.data-dir=target/test-data-content"
 })
 class ContentApiContractTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private JdbcTemplate jdbc;
 
     // ---- 测试脚手架 ----
 
@@ -690,6 +698,34 @@ class ContentApiContractTest {
         MvcResult files = getFiles(owner[1], wsId, p1 + "/unicode.yaml");
         String body = files.getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat((String) JsonPath.read(body, "$.files[0].content")).isEqualTo("你好");
+    }
+
+    /** 规格 §5 内容入库：PUT 后 file_versions.content 即有字节；盘上无文件（磁盘内容树退役）。 */
+    @Test
+    void putPersistsContentInDbWithoutDiskTree() throws Exception {
+        String[] owner = newUser("c-t21-owner");
+        String wsId = createWorkspace(owner[1], "内容入库");
+        String p1 = newProject(owner[1], wsId, "g1", "p1");
+        String path = p1 + "/db-roundtrip.yaml";
+        String content = "入库内容 round-trip 中文与 ASCII 混排 123";
+
+        // 首写：content 列逐字一致（insertNew 与内容同一条 INSERT）
+        assertThat(putFile(owner[1], wsId, path, content, 0).getResponse().getStatus()).isEqualTo(201);
+        assertThat(jdbc.queryForObject(
+                "SELECT content FROM file_versions WHERE workspace_id = ? AND path = ?",
+                String.class, wsId, path)).isEqualTo(content);
+
+        // 变更推进：bump 与内容写入同一条 UPDATE——同事务天然无撕裂，content 列随版本同步刷新
+        String v2 = "第二版内容 changed 456";
+        assertThat(putFile(owner[1], wsId, path, v2, 1).getResponse().getStatus()).isEqualTo(201);
+        assertThat(jdbc.queryForObject(
+                "SELECT content FROM file_versions WHERE workspace_id = ? AND path = ?",
+                String.class, wsId, path)).isEqualTo(v2);
+
+        // 磁盘内容树退役：历史落盘位置无文件（workspaces 根目录可能因历史运行残留，只断言文件路径不存在）
+        assertThat(Files.notExists(Path.of("target", "test-data-content", "workspaces", wsId, path)))
+                .as("内容入库后盘上不应再有内容文件")
+                .isTrue();
     }
 
     /** 访问面：非成员 403 forbidden（先于 path 校验）；未知工作区 404 workspace_not_found。 */

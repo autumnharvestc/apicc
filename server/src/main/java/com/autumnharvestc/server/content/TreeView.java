@@ -9,7 +9,7 @@ import java.util.List;
  */
 public record TreeView(String workspaceId, long rootVersion, List<FileEntry> files, List<ProjectEntry> projects) {
 
-    /** 文件行：path 为相对工作区根的 / 分隔路径（首段=项目 UUID）；hash=sha-256 hex；size=落盘文件真实字节（裁定 A）。 */
+    /** 文件行：path 为相对工作区根的 / 分隔路径（首段=项目 UUID）；hash=sha-256 hex；size=content 列 UTF-8 字节长（OCTET_LENGTH，§5 内容入库）。 */
     public record FileEntry(String path, String hash, long version, long size) {
     }
 

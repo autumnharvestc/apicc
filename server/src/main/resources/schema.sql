@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS tokens (
     CONSTRAINT pk_tokens PRIMARY KEY (token_hash)
 );
 
--- 团队工作区（规格 §3.2；内容目录 server-data/workspaces/<id>/ 在服务层创建，规格 §2 D6）
+-- 团队工作区（规格 §3.2；内容随 file_versions.content 入库，规格 §5——磁盘内容树已退役）
 -- 规格 2026-09-08 §1：首启自动建唯一「默认工作区」；name 全局唯一（并发安全靠唯一约束）
 CREATE TABLE IF NOT EXISTS workspaces (
     id         VARCHAR(36) NOT NULL,
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS project_acl (
     CONSTRAINT pk_project_acl PRIMARY KEY (workspace_id, project_id, user_id)
 );
 
--- 文件版本元数据（规格 §2 D6：每 (workspace, path) 一份；version 从 1 起，
+-- 文件版本行 = 元数据 + 内容正文（规格 §2 D6 + §5：每 (workspace, path) 一份；version 从 1 起，
 -- 乐观并发以 UPDATE ... WHERE version = ? 单条 SQL 原子递增；version 仅供并发比对，不追溯历史）
 CREATE TABLE IF NOT EXISTS file_versions (
     workspace_id VARCHAR(36)  NOT NULL,
