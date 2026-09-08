@@ -32,8 +32,10 @@ const session = createSessionStore({
   },
   onSignedOut: resetStoresContext,
 });
-const router = createAppRouter({ session, workspaces, users });
-// 启动先跑验活的同步前缀（读档落 token，守卫首航即见确定会话态），验活异步收口（失败清档回登录页）。
+// 首航验活（main.ts 时序，任务 5 审查重要 1 修复）：initialize 不等待即装配路由并 mount——
+// 守卫 await 其返回的 promise（deps.sessionReady）收口后再评估 requiresSuperadmin，超管
+// F5/深链 /users 不因 role 未落地被误弹回工作区；验活失败自清档并经 onSessionExpired 回登录页。
+// onSessionExpired 闭包引用的 router 在同一同步块内随后赋值，回调只会微任务后触发，无 TDZ。
+const router = createAppRouter({ session, workspaces, users, sessionReady: session.initialize() });
 // 组件内零工厂调用：store 实例经路由 props 下传视图（desktop App.vue 装配先例）。
-void session.initialize();
 createApp(App).use(i18n).use(router).mount("#app");

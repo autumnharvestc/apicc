@@ -109,7 +109,7 @@ function usersHandler(opts?: {
 /** 直达 URL 装配：replaceState 到目标路径 → mount（initialize + 初始导航即目标页）。 */
 async function mountUsers(
   handler: FetchHandler,
-  opts: { me?: typeof ME_SUPER | typeof ME_USER; path?: string } = {},
+  opts: { me?: typeof ME_SUPER | typeof ME_USER; path?: string; productionTiming?: boolean } = {},
 ) {
   localStorage.clear();
   localStorage.setItem(TOKEN_KEY, "tok-abc123");
@@ -120,9 +120,17 @@ async function mountUsers(
   const session = createSessionStore({ client, storage: localStorage });
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
-  const router = createAppRouter({ session, workspaces, users });
+  // productionTiming=true 模拟 main.ts 真实时序（任务 5 审查重要 1 回归锚点）：initialize 不等待
+  // 即装配路由，守卫 await 其收口后再评估 requiresSuperadmin；缺省 = 先 await initialize 再 mount
+  // （首航前会话已确定的便捷时序）。
+  let sessionReady: Promise<void> | undefined;
+  if (opts.productionTiming === true) {
+    sessionReady = session.initialize(); // 不等待
+  } else {
+    await session.initialize(); // 验活落 token + role，守卫首航即见确定态
+  }
+  const router = createAppRouter({ session, workspaces, users, sessionReady });
   const { i18n } = createAdminI18n();
-  await session.initialize(); // main.ts 装配同款：验活落 token + role，守卫首航即见确定态
   const wrapper: VueWrapper = mount(App, { global: { plugins: [i18n, router] } });
   await router.isReady();
   await flushPromises();
@@ -276,5 +284,21 @@ describe("用户管理入口显隐与守卫（session.role）", () => {
     await flushPromises();
     expect(router.currentRoute.value.name).toBe("workspaces"); // 守卫重定向
     expect(wrapper.find('[data-testid="users-view"]').exists()).toBe(false);
+  });
+
+  it("生产装配时序（审查重要 1 回归）：超管深链 /users——守卫等验活收口，稳定落在 /users 不弹回", async () => {
+    // mount 前不预先 await initialize（main.ts 真实时序）：首航时 /me 尚未落地
+    const { wrapper, router, session } = await mountUsers(usersHandler(), { path: "/users", productionTiming: true });
+    expect(session.role).toBe("SUPERADMIN"); // 验活已收口
+    expect(router.currentRoute.value.path).toBe("/users"); // 未被弹回工作区列表
+    expect(wrapper.find('[data-testid="users-view"]').exists()).toBe(true);
+    expect(wrapper.findAll("tbody tr")).toHaveLength(2); // 清单已渲染
+  });
+
+  it("生产装配时序：普通用户深链 /users 验活落地后仍被守卫弹回工作区列表", async () => {
+    const { router, session } = await mountUsers(usersHandler(), { me: ME_USER, path: "/users", productionTiming: true });
+    expect(session.role).toBe("USER");
+    expect(router.currentRoute.value.name).toBe("workspaces"); // role 落地判 USER → 弹回
+    expect(router.currentRoute.value.path).toBe("/workspaces");
   });
 });
