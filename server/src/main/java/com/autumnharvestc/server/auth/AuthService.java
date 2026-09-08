@@ -75,6 +75,9 @@ public class AuthService {
     public LoginResponse login(LoginRequest request) {
         UserAccount account = users.findByUsername(request.username())
                 .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "invalid_credentials", "用户名或密码错误"));
+        if (account.disabled()) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "account_disabled", "账号已停用");
+        }
         if (!passwordEncoder.matches(request.password(), account.passwordHash())) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "invalid_credentials", "用户名或密码错误");
         }

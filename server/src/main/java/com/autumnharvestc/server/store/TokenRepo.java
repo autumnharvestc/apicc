@@ -53,6 +53,11 @@ public class TokenRepo {
         jdbc.update("UPDATE tokens SET revoked = TRUE WHERE token_hash = ?", tokenHash);
     }
 
+    /** 停用账号时吊销其全部有效令牌（规格§2：停用=拒绝登录+吊销令牌）。 */
+    public void revokeAllByUser(String userId) {
+        jdbc.update("UPDATE tokens SET revoked = TRUE WHERE user_id = ? AND revoked = FALSE", userId);
+    }
+
     private static TokenRecord mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new TokenRecord(
                 rs.getString("token_hash"),

@@ -1,5 +1,7 @@
 package com.autumnharvestc.server.auth;
 
+import com.autumnharvestc.server.store.TokenRepo;
+import com.autumnharvestc.server.store.UserRepo;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +37,12 @@ class AuthApiContractTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private UserRepo users;
+
+    @Autowired
+    private TokenRepo tokens;
 
     /** ISO-8601 UTC 时间戳形状（裁定 B：expiresAt 序列化为 ISO-8601 UTC）。 */
     private static final String ISO_UTC = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z";
@@ -285,5 +293,27 @@ class AuthApiContractTest {
         mockMvc.perform(get("/api/v1/definitely-not-exists"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("unauthorized"));
+    }
+
+    // ---- 停用账号（规格 §2：停用=拒绝登录+吊销令牌）----
+
+    /** 停用账号：登录 403 account_disabled；既有令牌一并失效（吊销）。 */
+    @Test
+    void disabledAccountRejectsLoginAndRevokesTokens() throws Exception {
+        registerUser("paused", "password123", "暂停号");
+        String token = loginAndGetToken("paused", "password123");
+        // 既有令牌仍可用
+        mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+        // 直接经 repo 停用（管理端点在任务 5）：停用 + 吊销其全部有效令牌
+        String userId = users.findByUsername("paused").orElseThrow().id();
+        users.setDisabled(userId, true);
+        tokens.revokeAllByUser(userId);
+        mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(loginBody("paused", "password123")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("account_disabled"));
+        mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized());
     }
 }
