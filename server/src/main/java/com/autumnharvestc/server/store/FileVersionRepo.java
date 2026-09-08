@@ -71,6 +71,16 @@ public class FileVersionRepo {
         jdbc.update("DELETE FROM file_versions WHERE workspace_id = ?", workspaceId);
     }
 
+    /**
+     * 删除项目时级联清空其内容版本行（任务 2，规格 2026-09-08 §4）：按 {@code <projectId>/%} 前缀删。
+     * projectId 为 UUID 文本（不含 % / _ 通配字符），直接拼接 LIKE 安全；尾随 / 使前缀精确，
+     * 不会误伤同前缀开头的其他项目 id。
+     */
+    public void deleteByProjectPrefix(String workspaceId, String projectId) {
+        jdbc.update("DELETE FROM file_versions WHERE workspace_id = ? AND path LIKE ?",
+                workspaceId, projectId + "/%");
+    }
+
     // ---- 以下为任务 5 内容同步新增（树清单/文件删除/落盘失败回滚）；审查修复后删除与回滚全部条件化 ----
 
     /** 树清单：工作区全部版本行，按路径字典序稳定输出（GET tree 的数据源）。 */

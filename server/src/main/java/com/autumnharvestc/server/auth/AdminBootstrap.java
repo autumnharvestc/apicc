@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
@@ -29,6 +30,7 @@ import java.util.UUID;
  * 创建的首个账号自动 SUPERADMIN」）；建工作区成 OWNER（schema.sql 工作区级角色体系）语义不变。
  */
 @Component
+@Order(1) // 先于 DefaultWorkspaceSeeder（@Order(2)）：种子器的 OWNER 行依赖超管账号先建
 public class AdminBootstrap implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(AdminBootstrap.class);

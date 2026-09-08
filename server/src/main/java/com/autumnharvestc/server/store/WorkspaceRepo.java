@@ -45,6 +45,21 @@ public class WorkspaceRepo {
                 OffsetDateTime.ofInstant(workspace.createdAt(), ZoneOffset.UTC));
     }
 
+    /**
+     * 区内第一个工作区（握手 GET /connect 专用，规格 2026-09-08 §6「本期恒返默认工作区」）：
+     * 默认工作区为首个种子行（created_at 最早）；空库返回 empty（服务层转 404 workspace_not_found）。
+     */
+    public Optional<WorkspaceRecord> findFirst() {
+        try {
+            return Optional.ofNullable(jdbc.queryForObject("""
+                    SELECT id, name, created_by, created_at
+                    FROM workspaces ORDER BY created_at, id LIMIT 1
+                    """, MAPPER));
+        } catch (EmptyResultDataAccessException ex) {
+            return Optional.empty();
+        }
+    }
+
     /** 工作区详情/删除前的存在性校验。 */
     public Optional<WorkspaceRecord> findById(String id) {
         try {
