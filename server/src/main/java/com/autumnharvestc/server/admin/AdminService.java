@@ -6,6 +6,7 @@ import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.TokenRepo;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.UserRepo;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -44,6 +45,7 @@ public class AdminService {
         return users.findAll();
     }
 
+    /** 创建账号（校验同注册）：重名 → 409 username_taken（含唯一约束竞态兜底，与 AuthService.register 对齐）。 */
     public UserAccount create(UserAccount caller, AdminRequests.CreateUserRequest request) {
         requireSuperadmin(caller);
         users.findByUsername(request.username()).ifPresent(existing -> {
@@ -52,7 +54,12 @@ public class AdminService {
         UserAccount account = new UserAccount(UUID.randomUUID().toString(), request.username(),
                 encoder.encode(request.password()), request.displayName().trim(),
                 PlatformRole.USER, false, Instant.now());
-        users.insert(account);
+        try {
+            users.insert(account);
+        } catch (DuplicateKeyException ex) {
+            // 并发同名创建兜底：users.username 唯一约束
+            throw new ApiException(HttpStatus.CONFLICT, "username_taken", "用户名已存在");
+        }
         return account;
     }
 
