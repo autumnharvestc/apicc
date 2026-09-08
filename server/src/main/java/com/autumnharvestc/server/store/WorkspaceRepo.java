@@ -29,6 +29,12 @@ public class WorkspaceRepo {
 
     private static final RowMapper<WorkspaceRecord> MAPPER = WorkspaceRepo::mapRow;
 
+    /** workspaces 表行数（规格 2026-09-08 §1：默认工作区启动种子判空专用，禁他处泛用）。 */
+    public long count() {
+        Long n = jdbc.queryForObject("SELECT COUNT(*) FROM workspaces", Long.class);
+        return n == null ? 0L : n;
+    }
+
     /** 创建工作区。 */
     public void insert(WorkspaceRecord workspace) {
         jdbc.update("""

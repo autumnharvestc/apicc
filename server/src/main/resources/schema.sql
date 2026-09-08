@@ -35,12 +35,14 @@ CREATE TABLE IF NOT EXISTS tokens (
 );
 
 -- 团队工作区（规格 §3.2；内容目录 server-data/workspaces/<id>/ 在服务层创建，规格 §2 D6）
+-- 规格 2026-09-08 §1：首启自动建唯一「默认工作区」；name 全局唯一（并发安全靠唯一约束）
 CREATE TABLE IF NOT EXISTS workspaces (
     id         VARCHAR(36) NOT NULL,
     name       VARCHAR(64) NOT NULL,
     created_by VARCHAR(36) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    CONSTRAINT pk_workspaces PRIMARY KEY (id)
+    CONSTRAINT pk_workspaces PRIMARY KEY (id),
+    CONSTRAINT uk_workspaces_name UNIQUE (name)
 );
 
 -- 工作区成员角色（规格 §2 D5 第一层：OWNER > ADMIN > EDITOR > VIEWER）
@@ -71,6 +73,37 @@ CREATE TABLE IF NOT EXISTS file_versions (
     version      BIGINT       NOT NULL,
     updated_by   VARCHAR(36)  NOT NULL,
     updated_at   TIMESTAMP WITH TIME ZONE NOT NULL,
+    content      CLOB,
     CONSTRAINT pk_file_versions PRIMARY KEY (workspace_id, path),
     CONSTRAINT ck_file_versions_version CHECK (version >= 1)
 );
+
+-- 分组（规格 2026-09-08 §4）：同工作区内名称唯一；默认分组 name='默认分组' 不可删改
+CREATE TABLE IF NOT EXISTS groups (
+    id           VARCHAR(36) NOT NULL,
+    workspace_id VARCHAR(36) NOT NULL,
+    name         VARCHAR(64) NOT NULL,
+    is_default   BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT pk_groups PRIMARY KEY (id),
+    CONSTRAINT uk_groups_ws_name UNIQUE (workspace_id, name)
+);
+
+-- 项目（规格 §4）：允许同名（身份=id）；挂分组；内容树按项目挂载
+CREATE TABLE IF NOT EXISTS projects (
+    id           VARCHAR(36) NOT NULL,
+    workspace_id VARCHAR(36) NOT NULL,
+    group_id     VARCHAR(36) NOT NULL,
+    name         VARCHAR(64) NOT NULL,
+    created_at   TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT pk_projects PRIMARY KEY (id),
+    CONSTRAINT fk_projects_group FOREIGN KEY (group_id) REFERENCES groups(id)
+);
+
+-- groups 增默认分组标记（seeder/create 落 TRUE；改名/删除守卫判据）
+-- ALTER 仅服务既有库兼容（新库 CREATE TABLE 已含 is_default；未发布阶段口径=删库重开，此处双保险）
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- file_versions 扩内容列（规格 §5 内容入库）：一行 = 元数据 + 字节（CLOB/PG text）
+-- ALTER 形态（幂等：H2 支持 ADD COLUMN IF NOT EXISTS；新库走 CREATE TABLE 已含）：
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS content CLOB;

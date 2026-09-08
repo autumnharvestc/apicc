@@ -1,5 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
+import com.autumnharvestc.server.store.GroupRecord;
+import com.autumnharvestc.server.store.GroupRepo;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,7 +35,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
         "spring.datasource.url=jdbc:h2:mem:apicc-ws-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data-ws"
+        "apicc.server.data-dir=target/test-data-ws",
+        "apicc.server.admin-username=admin",
+        "apicc.server.admin-password=admin-pass-2026"
 })
 class WorkspaceApiContractTest {
 
@@ -42,7 +46,20 @@ class WorkspaceApiContractTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private GroupRepo groupRepo;
+
     // ---- 测试脚手架 ----
+
+    /** 登录并提取 token（admin 走 AdminBootstrap 属性凭据，见 AdminUsersApiTest 同款夹具）。 */
+    private String loginAndGetToken(String username, String password) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        return JsonPath.read(result.getResponse().getContentAsString(), "$.token");
+    }
 
     /** 注册并登录，返回 [userId, token]。 */
     private String[] newUser(String username) throws Exception {
@@ -83,6 +100,28 @@ class WorkspaceApiContractTest {
     }
 
     // ---- POST /api/v1/workspaces（规格 §3.2：201 {id, name, myRole:"OWNER"}，创建者自动 OWNER）----
+
+    /** 规格 §1/§4：建区自动建「默认分组」（不可删语义在 Org 面验证）；ws.name 唯一约束。 */
+    @Test
+    void createSeedsDefaultGroupAndRejectsDuplicateName() throws Exception {
+        String admin = loginAndGetToken("admin", "admin-pass-2026");
+        MvcResult created = mockMvc.perform(post("/api/v1/workspaces")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"ws-b\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String wsId = JsonPath.read(created.getResponse().getContentAsString(), "$.id");
+        // 同名工作区 → 409 workspace_name_taken
+        mockMvc.perform(post("/api/v1/workspaces").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"ws-b\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("workspace_name_taken"));
+        // 默认分组已就位：经 detail 或清单接口断言（以 Org 面任务 2 的端点为准——此处经 DB repo 断言）
+        // 实现后改为经 GET /api/v1/workspaces/{id}/groups 断言（任务 2 提供端点后回填此断言）
+        GroupRecord group = groupRepo.findByName(wsId, "默认分组").orElseThrow();
+        assertThat(group.workspaceId()).isEqualTo(wsId);
+        assertThat(group.isDefault()).isTrue();
+    }
 
     /** 创建成功：201 + OWNER 角色 + 内容目录 data-dir/workspaces/<id>/ 已建立（规格 §2 D6）。 */
     @Test
