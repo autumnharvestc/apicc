@@ -23,7 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 任务 5 组织管理 API 契约测试（规格 2026-09-08 §4 + 计划 B 任务 2）：
+ * 计划 B 任务 2 组织管理 API 契约测试（规格 2026-09-08 §4）：
  * 分组 CRUD（ADMIN+ 守卫/默认分组不可改删/同工作区重名守卫）、项目 CRUD（同名允许/移动/删除级联内容）、
  * 连接握手 GET /api/v1/connect（默认工作区 + myRole）。
  * 独立内存库名 + admin 凭据走属性配置（AdminBootstrap 引导建号）；默认工作区/默认分组由
@@ -34,7 +34,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
         "spring.datasource.url=jdbc:h2:mem:apicc-org-api-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data-org-api",
         "apicc.server.admin-username=admin",
         "apicc.server.admin-password=admin-pass-2026"
 })

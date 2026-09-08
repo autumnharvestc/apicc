@@ -30,8 +30,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
-        "spring.datasource.url=jdbc:h2:mem:apicc-auth-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data-auth"
+        "spring.datasource.url=jdbc:h2:mem:apicc-auth-test;DB_CLOSE_DELAY=-1"
 })
 class AuthApiContractTest {
 

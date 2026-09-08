@@ -28,8 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
-        "spring.datasource.url=jdbc:h2:mem:apicc-matrix-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data-matrix"
+        "spring.datasource.url=jdbc:h2:mem:apicc-matrix-test;DB_CLOSE_DELAY=-1"
 })
 class WorkspacePermissionMatrixTest {
 

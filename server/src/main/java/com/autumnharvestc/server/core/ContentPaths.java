@@ -7,7 +7,7 @@ import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 /**
- * 内容 path 校验与项目段解析（2026-09-08 内容 path 实体化，替代退役的 ProjectPaths）。
+ * 内容 path 校验与项目段解析（2026-09-08 内容 path 实体化）。
  *
  * <p>新 path 规则：首段必须是<b>存在的项目 UUID</b>（{@code <projectId>/...}）；根级仅允许
  * {@link #WORKSPACE_CONFIG}（工作区配置，仅 ADMIN+ 可写）。项目 id 为管理面创建的实体

@@ -46,9 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
-        "spring.datasource.url=jdbc:h2:mem:apicc-content-test;DB_CLOSE_DELAY=-1",
-        // data-dir 仅为内容入库断言钉住「历史落盘位置」（磁盘内容树退役后无组件再写此目录）
-        "apicc.server.data-dir=target/test-data-content"
+        "spring.datasource.url=jdbc:h2:mem:apicc-content-test;DB_CLOSE_DELAY=-1"
 })
 class ContentApiContractTest {
 
@@ -722,8 +720,8 @@ class ContentApiContractTest {
                 "SELECT content FROM file_versions WHERE workspace_id = ? AND path = ?",
                 String.class, wsId, path)).isEqualTo(v2);
 
-        // 磁盘内容树退役：历史落盘位置无文件（workspaces 根目录可能因历史运行残留，只断言文件路径不存在）
-        assertThat(Files.notExists(Path.of("target", "test-data-content", "workspaces", wsId, path)))
+        // 磁盘内容树退役：历史落盘位置（data-dir 旧默认值 ./server-data）无文件（workspaces 根目录可能因历史运行残留，只断言文件路径不存在）
+        assertThat(Files.notExists(Path.of("server-data", "workspaces", wsId, path)))
                 .as("内容入库后盘上不应再有内容文件")
                 .isTrue();
     }

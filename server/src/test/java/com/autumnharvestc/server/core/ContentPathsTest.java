@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 内容 path 校验器与项目段解析单测（2026-09-08 path 实体化规则）。
- * 通用结构规则沿用旧 ProjectPaths（长度/空段/../绝对/控制字符），禁冒号移除由
+ * 通用结构规则（长度/空段/../绝对/控制字符）保留，禁冒号移除由
  * 「含冒号路径过通用校验」钉住；首段规则（UUID/存在性/根配置特判）由写面 validate 两参形态钉住。
  */
 class ContentPathsTest {

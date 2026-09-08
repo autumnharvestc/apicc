@@ -42,7 +42,6 @@ class AdminBootstrapTest {
     @AutoConfigureMockMvc
     @TestPropertySource(properties = {
             "spring.datasource.url=jdbc:h2:mem:apicc-admin-env-test;DB_CLOSE_DELAY=-1",
-            "apicc.server.data-dir=target/test-data-admin-env",
             "apicc.server.admin-username=boss",
             "apicc.server.admin-password=secret123"
     })
@@ -73,8 +72,7 @@ class AdminBootstrapTest {
     @SpringBootTest
     @AutoConfigureMockMvc
     @TestPropertySource(properties = {
-            "spring.datasource.url=jdbc:h2:mem:apicc-admin-random-test;DB_CLOSE_DELAY=-1",
-            "apicc.server.data-dir=target/test-data-admin-random"
+            "spring.datasource.url=jdbc:h2:mem:apicc-admin-random-test;DB_CLOSE_DELAY=-1"
     })
     @ExtendWith(OutputCaptureExtension.class)
     static class RandomPasswordTest {
@@ -103,8 +101,7 @@ class AdminBootstrapTest {
     @SpringBootTest
     @AutoConfigureMockMvc
     @TestPropertySource(properties = {
-            "spring.datasource.url=jdbc:h2:mem:apicc-register-default-test;DB_CLOSE_DELAY=-1",
-            "apicc.server.data-dir=target/test-data-register-default"
+            "spring.datasource.url=jdbc:h2:mem:apicc-register-default-test;DB_CLOSE_DELAY=-1"
     })
     static class RegisterDisabledByDefaultTest {
 

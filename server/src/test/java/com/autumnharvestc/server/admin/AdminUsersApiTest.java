@@ -34,7 +34,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         "apicc.server.allow-registration=true",
         "spring.datasource.url=jdbc:h2:mem:apicc-admin-api-test;DB_CLOSE_DELAY=-1",
-        "apicc.server.data-dir=target/test-data-admin-api",
         "apicc.server.admin-username=admin",
         "apicc.server.admin-password=admin-pass-2026"
 })
