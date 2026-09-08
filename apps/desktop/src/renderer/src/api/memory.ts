@@ -220,6 +220,14 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     onlineFiles.set(`${p}/collections/示例集合/apis/示例接口/api.yaml`, { content: "id: api-online-1\nname: 示例接口\n", version: 1 });
   }
 
+  /** 在线替身的项目实体行（唯一数据源）：path 实体化（2026-09-08）后为实体表产出
+   *  {id, name, groupId, myRole}。onlineWorkspaceView（树视图）与 onlineTreeGet（迁移取树）
+   *  必须共用同一套项目身份——旧「"p-online-1" + 目录 path」行已退役，双形态会让迁移流
+   *  消费到 canEdit（id 前缀匹配）认不出的项目行。 */
+  function onlineProjectsRows(): OnlineTree["projects"] {
+    return [{ id: ONLINE_SEED_PROJECT_ID, name: "示例项目", groupId: ONLINE_SEED_GROUP_ID, myRole: "EDITOR" as const }];
+  }
+
   /** 当前在线工作区（任务 3：open/close/tree:view 同构 main session 的纯状态语义）。 */
   let onlineWs: { id: string; name: string; myRole: OnlineWorkspaceOpenInput["myRole"] } | null = null;
 
@@ -231,9 +239,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       workspaceId: onlineWs.id,
       rootVersion: onlineFiles.size,
       files: [...onlineFiles.keys()].map(onlineTreeRow),
-      // path 实体化修订 2026-09-08：projects 行 = 实体表产出 {id, name, groupId, myRole}
-      // （旧 path 目录字段退役，内容所属项目按 id 前缀推导）
-      projects: [{ id: ONLINE_SEED_PROJECT_ID, name: "示例项目", groupId: ONLINE_SEED_GROUP_ID, myRole: "EDITOR" as const }],
+      // path 实体化修订 2026-09-08：projects 行 = 实体表产出（与 onlineTreeGet 同一数据源）
+      projects: onlineProjectsRows(),
     };
     return {
       workspaceId: onlineWs.id,
@@ -966,8 +973,9 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
         workspaceId,
         rootVersion: onlineFiles.size,
         files: [...onlineFiles.keys()].map(onlineTreeRow),
-        // 契约修订 2026-09-03：projects.path 必填（同名项目权限判定按 path 定位）
-        projects: [{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" as const }],
+        // path 实体化（2026-09-08）：projects 行 = 实体表产出 {id, name, groupId, myRole}，
+        // 与 onlineWorkspaceView 共用 onlineProjectsRows()（迁移流消费同一套项目身份）
+        projects: onlineProjectsRows(),
       };
       return OnlineTreeSchema.parse(tree); // 出口过契约校验（契约漂移即红）
     },

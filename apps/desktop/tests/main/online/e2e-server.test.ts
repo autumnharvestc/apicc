@@ -26,6 +26,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createOnlineClient, OnlineConflictError, type OnlineClient } from "../../../src/main/online/client.js";
+import { onlineTreeToDto } from "../../../src/main/online/session.js";
 import { runCommand } from "./run-command.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -254,10 +255,10 @@ async function seedOrgProjects(wsId: string, ownerCredentials: { username: strin
   groupId = String(groups[0]!.id);
   P1_ID = String((await orgJson("POST", `/api/v1/workspaces/${wsId}/projects`, tokenA, { groupId, name: "订单" })).id);
   P2_ID = String((await orgJson("POST", `/api/v1/workspaces/${wsId}/projects`, tokenA, { groupId, name: "库存" })).id);
-  P1_FILE_A = `${P1_ID}/collections/订单/apis/创建/apicc.api.yaml`;
-  P1_FILE_B = `${P1_ID}/collections/订单/apis/查询/apicc.api.yaml`;
-  P2_FILE = `${P2_ID}/collections/入库/apis/入库单/apicc.api.yaml`;
-  FILE_F = `${P1_ID}/collections/订单/apis/作废/apicc.api.yaml`;
+  P1_FILE_A = `${P1_ID}/collections/订单/apis/创建/api.yaml`;
+  P1_FILE_B = `${P1_ID}/collections/订单/apis/查询/api.yaml`;
+  P2_FILE = `${P2_ID}/collections/入库/apis/入库单/api.yaml`;
+  FILE_F = `${P1_ID}/collections/订单/apis/作废/api.yaml`;
 }
 
 let serverBase = "";
@@ -328,6 +329,18 @@ describe("在线模式真服务端端到端（onlineClient × spawn jar）", () 
     );
     expect(treeB1.files.map((f) => f.path).sort()).toEqual([P1_FILE_A, P1_FILE_B, P2_FILE].sort());
 
+    // 步骤 5b：DTO 层（桌面侧树组装）——真服 raw tree 喂生产映射 onlineTreeToDto：项目节点以
+    // projectId 关联（id=实体 id、label=实体行 name），推入文件进树且 api 叶 id=文件全路径
+    // （OnlineApiEditor 选中机制）；叶名须为约定文件名 api.yaml 才进树（非约定名=杂散文件）
+    const dtoB1 = onlineTreeToDto(treeB1, "联调空间");
+    expect(dtoB1.label).toBe("联调空间");
+    const p1Node = dtoB1.children!.find((c) => c.kind === "project" && c.id === P1_ID);
+    expect(p1Node?.label).toBe("订单");
+    const p1Collection = p1Node!.children!.find((c) => c.kind === "collection" && c.label === "订单")!;
+    expect(p1Collection.children!.find((c) => c.kind === "api" && c.id === P1_FILE_A)?.label).toBe("创建");
+    expect(p1Collection.children!.find((c) => c.kind === "api" && c.id === P1_FILE_B)?.label).toBe("查询");
+    expect(dtoB1.children!.find((c) => c.kind === "project" && c.id === P2_ID)).toBeDefined();
+
     // 步骤 6：A 将 P2 对 B 设 NONE → B tree 过滤 + 读 P2 路径 missing（不泄露存在性）
     await clientA.manageAcl(ws.id, P2_ID, { userId: b.id, role: "NONE" });
     const aclRows = await clientA.manageAcl(ws.id, P2_ID);
@@ -335,6 +348,9 @@ describe("在线模式真服务端端到端（onlineClient × spawn jar）", () 
     const treeB2 = await clientB.getTree(ws.id);
     expect(treeB2.projects.map((p) => p.id)).toEqual([P1_ID]);
     expect(treeB2.files.map((f) => f.path).sort()).toEqual([P1_FILE_A, P1_FILE_B].sort());
+    // DTO 层同步复核：P2 被过滤后桌面侧树同样不含该 projectId 节点（不泄露存在性）
+    const dtoB2 = onlineTreeToDto(treeB2, "联调空间");
+    expect(dtoB2.children!.some((c) => c.kind === "project" && c.id === P2_ID)).toBe(false);
     const hidden = await clientB.getFiles(ws.id, [P2_FILE]);
     expect(hidden.files).toEqual([]);
     expect(hidden.missing).toEqual([P2_FILE]);

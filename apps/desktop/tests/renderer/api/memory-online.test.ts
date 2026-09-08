@@ -2,7 +2,7 @@
 // （登录态串联/树与文件版本内存模型/put 版本递增/登录前可读错误），不发真实网络。
 import { describe, expect, it } from "vitest";
 import { OnlineTreeSchema, type OnlineUser } from "../../../src/shared/online/contract.js";
-import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
+import { createMemoryApi, ONLINE_SEED_GROUP_ID, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
 
 const USER: OnlineUser = { id: "u-online-1", username: "alice", displayName: "示例用户" };
 const LOGIN_INPUT = { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" };
@@ -45,6 +45,9 @@ describe("memory 替身 online:*", () => {
     const tree = await api.onlineTreeGet(ws.id);
     // 替身载荷钉在契约 schema 上（契约漂移即红）
     expect(OnlineTreeSchema.parse(tree)).toEqual(tree);
+    // path 实体化（2026-09-08）：getTree（迁移取树）与树视图同一套项目实体行
+    // {id, name, groupId, myRole}——旧 "p-online-1"+目录 path 行已退役，防替身内双形态漂移
+    expect(tree.projects).toEqual([{ id: ONLINE_SEED_PROJECT_ID, name: "示例项目", groupId: ONLINE_SEED_GROUP_ID, myRole: "EDITOR" }]);
     expect(tree.files.length).toBeGreaterThan(0);
     const target = tree.files[0]!;
     const fetched = await api.onlineFilesGet({ workspaceId: ws.id, paths: [target.path, "groups/不存在.yaml"] });
