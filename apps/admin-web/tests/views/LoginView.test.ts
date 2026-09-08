@@ -10,6 +10,7 @@ import { createAdminClient } from "../../src/api/client.js";
 import { createSessionStore } from "../../src/stores/session.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
 import { createUsersStore } from "../../src/stores/users.js";
+import { createOrgStore } from "../../src/stores/org.js";
 import { createAppRouter } from "../../src/router/index.js";
 import App from "../../src/App.vue";
 
@@ -71,7 +72,8 @@ async function mountApp(handler: FetchHandler = defaultHandler): Promise<Mounted
   const session = createSessionStore({ client, storage: localStorage });
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
-  const router = createAppRouter({ session, workspaces, users });
+  const org = createOrgStore({ client });
+  const router = createAppRouter({ session, workspaces, users, org });
   const { i18n } = createAdminI18n();
   const wrapper = mount(App, { global: { plugins: [i18n, router] } });
   await router.isReady();

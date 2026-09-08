@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * 布局壳（M4-A 任务 3，任务 5 增补）：a-layout 侧栏（a-menu——工作区项常显；成员/项目 ACL 管理
- * 入口仅当前选中工作区 myRole ∈ {OWNER, ADMIN} 可见，按 workspaces.current 动态，详情未拉取
+ * 布局壳（M4-A 任务 3，任务 5/6 增补）：a-layout 侧栏（a-menu——工作区项常显；组织管理入口仅
+ * 当前选中工作区已拉取详情时可见（所有成员可读，页面内操作按钮再按 myRole ADMIN+ 显隐，任务 6）；
+ * 成员/项目 ACL 管理入口仅 myRole ∈ {OWNER, ADMIN} 可见，按 workspaces.current 动态，详情未拉取
  * 时隐藏防闪烁，裁定 C；「用户管理」入口仅 session.role === SUPERADMIN 可见——role 由 /me/login
  * 写入会话 store，规格 2026-09-08 §6）+ 顶栏（当前用户 displayName + 登出）。子路由挂内容区。
  * 工作区上下文：路由参数驱动的选中（watch :id → workspaces.select）+ 列表行点选（不换页，
@@ -54,6 +55,12 @@ function goAcl(): void {
   if (current) void router.push(`/workspaces/${encodeURIComponent(current.id)}/acl`);
 }
 
+/** 组织管理（任务 6）：所有成员可读（页面内操作按钮按 myRole ADMIN+ 显隐）。 */
+function goOrg(): void {
+  const current = props.workspaces.current;
+  if (current) void router.push(`/workspaces/${encodeURIComponent(current.id)}/org`);
+}
+
 function goUsers(): void {
   void router.push({ name: "users" });
 }
@@ -77,6 +84,9 @@ async function onLogout(): Promise<void> {
         </a-menu-item>
         <a-menu-item v-if="manageVisible" key="acl" data-testid="menu-acl" @click="goAcl">
           {{ t("nav.acl") }}
+        </a-menu-item>
+        <a-menu-item v-if="workspaces.current !== null" key="org" data-testid="menu-org" @click="goOrg">
+          {{ t("nav.org") }}
         </a-menu-item>
         <a-menu-item v-if="session.role === 'SUPERADMIN'" key="users" data-testid="menu-users" @click="goUsers">
           {{ t("nav.users") }}

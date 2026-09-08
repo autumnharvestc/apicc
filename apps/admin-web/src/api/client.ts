@@ -20,8 +20,10 @@ import {
   AdminAccountSchema,
   AdminAclEntrySchema,
   AdminErrorSchema,
+  AdminGroupSchema,
   AdminLoginResultSchema,
   AdminMemberSchema,
+  AdminProjectSchema,
   AdminRegisterInputSchema,
   AdminTreeSchema,
   AdminUserSchema,
@@ -31,8 +33,10 @@ import {
   type AdminAccount,
   type AdminAclEntry,
   type AdminAclRole,
+  type AdminGroup,
   type AdminLoginResult,
   type AdminMember,
+  type AdminProject,
   type AdminRegisterInput,
   type AdminRole,
   type AdminTree,
@@ -113,6 +117,26 @@ export interface AdminClient {
   adminSetDisabled(userId: string, disabled: boolean): Promise<void>;
   /** PUT /admin/users/{id}/workspace-role { workspaceId, role }：入区定角色（204）。 */
   adminSetWorkspaceRole(userId: string, workspaceId: string, role: AdminRole): Promise<void>;
+  // —— 组织管理（规格 2026-09-08 §4，计划 B 任务 2 端点逐字对齐；清单成员可读，写动作 ADMIN+，
+  // 403/400/404/409 由服务端裁决，错误形状 {code,message}）——
+  /** GET /workspaces/{id}/groups：分组清单。 */
+  orgListGroups(workspaceId: string): Promise<AdminGroup[]>;
+  /** POST /workspaces/{id}/groups { name }：建分组（201；409 group_name_taken）。 */
+  orgCreateGroup(workspaceId: string, input: { name: string }): Promise<AdminGroup>;
+  /** POST /workspaces/{id}/groups/{gid}/rename { name }：分组改名（200；400 default_group_immutable）。 */
+  orgRenameGroup(workspaceId: string, groupId: string, name: string): Promise<AdminGroup>;
+  /** DELETE /workspaces/{id}/groups/{gid}：删分组（204；400 default_group_immutable / 409 group_not_empty）。 */
+  orgDeleteGroup(workspaceId: string, groupId: string): Promise<void>;
+  /** GET /workspaces/{id}/projects：项目清单。 */
+  orgListProjects(workspaceId: string): Promise<AdminProject[]>;
+  /** POST /workspaces/{id}/projects { groupId, name }：建项目（201；同名允许）。 */
+  orgCreateProject(workspaceId: string, input: { groupId: string; name: string }): Promise<AdminProject>;
+  /** POST /workspaces/{id}/projects/{pid}/rename { name }：项目改名（200；同名允许）。 */
+  orgRenameProject(workspaceId: string, projectId: string, name: string): Promise<AdminProject>;
+  /** POST /workspaces/{id}/projects/{pid}/move { groupId }：移动项目（204）。 */
+  orgMoveProject(workspaceId: string, projectId: string, groupId: string): Promise<void>;
+  /** DELETE /workspaces/{id}/projects/{pid}：删项目（204；级联内容版本行与 ACL 行）。 */
+  orgDeleteProject(workspaceId: string, projectId: string): Promise<void>;
 }
 
 /** 默认超时 15s（与桌面端 onlineClient 同裁定）。 */
@@ -209,6 +233,16 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
   /** 账号管理子路径（规格 §2，段内逐个编码，同 workspacePath 口径）。 */
   function adminUserPath(userId: string, suffix: string): string {
     return `/admin/users/${encodeURIComponent(userId)}${suffix}`;
+  }
+
+  /** 组织面子路径（规格 §4，分组段；段内逐个编码，同 adminUserPath 口径）。 */
+  function orgGroupPath(workspaceId: string, groupId: string, suffix: string): string {
+    return workspacePath(workspaceId, `/groups/${encodeURIComponent(groupId)}${suffix}`);
+  }
+
+  /** 组织面子路径（规格 §4，项目段）。 */
+  function orgProjectPath(workspaceId: string, projectId: string, suffix: string): string {
+    return workspacePath(workspaceId, `/projects/${encodeURIComponent(projectId)}${suffix}`);
   }
 
   return {
@@ -311,6 +345,43 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
 
     async adminSetWorkspaceRole(userId, workspaceId, role) {
       await request({ method: "PUT", path: adminUserPath(userId, "/workspace-role"), body: { workspaceId, role } });
+    },
+
+    // —— 组织管理（规格 2026-09-08 §4，端点逐字对齐计划 B 任务 2）——
+    async orgListGroups(workspaceId) {
+      return (await request({ method: "GET", path: workspacePath(workspaceId, "/groups"), schema: z.array(AdminGroupSchema) })) as AdminGroup[];
+    },
+
+    async orgCreateGroup(workspaceId, input) {
+      return (await request({ method: "POST", path: workspacePath(workspaceId, "/groups"), body: input, schema: AdminGroupSchema })) as AdminGroup;
+    },
+
+    async orgRenameGroup(workspaceId, groupId, name) {
+      return (await request({ method: "POST", path: orgGroupPath(workspaceId, groupId, "/rename"), body: { name }, schema: AdminGroupSchema })) as AdminGroup;
+    },
+
+    async orgDeleteGroup(workspaceId, groupId) {
+      await request({ method: "DELETE", path: orgGroupPath(workspaceId, groupId, "") });
+    },
+
+    async orgListProjects(workspaceId) {
+      return (await request({ method: "GET", path: workspacePath(workspaceId, "/projects"), schema: z.array(AdminProjectSchema) })) as AdminProject[];
+    },
+
+    async orgCreateProject(workspaceId, input) {
+      return (await request({ method: "POST", path: workspacePath(workspaceId, "/projects"), body: input, schema: AdminProjectSchema })) as AdminProject;
+    },
+
+    async orgRenameProject(workspaceId, projectId, name) {
+      return (await request({ method: "POST", path: orgProjectPath(workspaceId, projectId, "/rename"), body: { name }, schema: AdminProjectSchema })) as AdminProject;
+    },
+
+    async orgMoveProject(workspaceId, projectId, groupId) {
+      await request({ method: "POST", path: orgProjectPath(workspaceId, projectId, "/move"), body: { groupId } });
+    },
+
+    async orgDeleteProject(workspaceId, projectId) {
+      await request({ method: "DELETE", path: orgProjectPath(workspaceId, projectId, "") });
     },
   };
 }

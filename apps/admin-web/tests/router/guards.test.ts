@@ -8,6 +8,7 @@ import { createAppRouter } from "../../src/router/index.js";
 import { createSessionStore, TOKEN_KEY } from "../../src/stores/session.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
 import { createUsersStore } from "../../src/stores/users.js";
+import { createOrgStore } from "../../src/stores/org.js";
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 
@@ -53,7 +54,8 @@ function setup() {
   const session = createSessionStore({ client, storage: memStorage() });
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
-  const router = createAppRouter({ session, workspaces, users });
+  const org = createOrgStore({ client });
+  const router = createAppRouter({ session, workspaces, users, org });
   return { session, workspaces, router };
 }
 

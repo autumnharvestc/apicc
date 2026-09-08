@@ -3,7 +3,8 @@
  * §3 API 契约（v1，含五次修订）中管理控制台消费的端点子集（裁定⑤：auth 四端点、工作区与
  * 成员 §3.2 全部、项目 ACL §3.3 三行含 DELETE 修订、tree GET——内容写面 batch/files PUT
  * 不属管理面，不建 schema；任务 5 起追加规格 `2026-09-08-server-accounts-roles.md` §2
- * 账号管理五端点的消费面）。本文件是客户端实现面的单一事实源——client 出口先 safeParse
+ * 账号管理五端点的消费面，计划 B 任务 6 起追加规格 2026-08 §4 组织管理（分组/项目）端点的
+ * 消费面）。本文件是客户端实现面的单一事实源——client 出口先 safeParse
  * 再放行（形状不符 → protocol_error），后续 store/视图复用同批推断类型，避免两处漂移。
  * 约定（§3 开头）：认证端点外全部要求 `Authorization: Bearer <token>`；错误统一
  * `{ code, message }`；时间戳 ISO-8601 UTC；不臆造规格未列字段。
@@ -75,6 +76,26 @@ export const AdminAccountSchema = AdminUserSchema.extend({
   createdAt: z.string(),
 });
 
+// —— 组织管理（规格 2026-09-08 §4，计划 B 任务 2 端点/任务 6 消费面）——
+/**
+ * 分组视图：GET/POST /workspaces/{id}/groups、POST .../groups/{gid}/rename 成功载荷。
+ * 与服务端 GroupView 逐字对齐（id/name/isDefault/createdAt；workspaceId 由路径锚定，
+ * 服务端视图不回传，不臆造字段）。
+ */
+export const AdminGroupSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  isDefault: z.boolean(),
+  createdAt: z.string(),
+});
+/** 项目视图：GET/POST .../projects、POST .../projects/{pid}/rename 成功载荷（ProjectView 同口径）。 */
+export const AdminProjectSchema = z.object({
+  id: z.string(),
+  groupId: z.string(),
+  name: z.string(),
+  createdAt: z.string(),
+});
+
 // —— 树（§3.4，管理面只读消费：项目清单来自 tree.projects）——
 export const AdminTreeFileSchema = z.object({ path: z.string(), hash: z.string(), version: z.number(), size: z.number() });
 /**
@@ -97,6 +118,8 @@ export type AdminProjectRole = z.infer<typeof AdminProjectRoleSchema>;
 export type AdminUser = z.infer<typeof AdminUserSchema>;
 export type AdminPlatformRole = z.infer<typeof AdminPlatformRoleSchema>;
 export type AdminAccount = z.infer<typeof AdminAccountSchema>;
+export type AdminGroup = z.infer<typeof AdminGroupSchema>;
+export type AdminProject = z.infer<typeof AdminProjectSchema>;
 export type AdminRegisterInput = z.infer<typeof AdminRegisterInputSchema>;
 export type AdminLoginResult = z.infer<typeof AdminLoginResultSchema>;
 export type AdminWorkspaceSummary = z.infer<typeof AdminWorkspaceSummarySchema>;
