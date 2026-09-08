@@ -8,15 +8,18 @@
 --      读取以 OffsetDateTime → Instant 还原；API 序列化形状（ISO-8601 UTC）由任务 3-5 契约测试钉住；
 --   5. 角色列：VARCHAR + CHECK IN（可移植写法），枚举外脏值在库层拦下。
 
--- 账号（规格 §3.1：bcrypt 哈希入库，服务端不存明文密码）
+-- 账号（规格 §3.1：bcrypt 哈希入库，服务端不存明文密码；§2：role/disabled 支撑账号管家）
 CREATE TABLE IF NOT EXISTS users (
     id            VARCHAR(36)  NOT NULL,
     username      VARCHAR(32)  NOT NULL,
     password_hash VARCHAR(100) NOT NULL,
     display_name  VARCHAR(64)  NOT NULL,
+    role          VARCHAR(16)  NOT NULL DEFAULT 'USER',
+    disabled      BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at    TIMESTAMP WITH TIME ZONE NOT NULL,
     CONSTRAINT pk_users PRIMARY KEY (id),
-    CONSTRAINT uk_users_username UNIQUE (username)
+    CONSTRAINT uk_users_username UNIQUE (username),
+    CONSTRAINT ck_users_role CHECK (role IN ('USER','SUPERADMIN'))
 );
 
 -- 认证令牌（规格 §2 D4：不透明 Bearer token，仅存 SHA-256 哈希；token_hash 即自然主键）

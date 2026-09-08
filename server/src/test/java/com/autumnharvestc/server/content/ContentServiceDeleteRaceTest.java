@@ -8,6 +8,7 @@ import com.autumnharvestc.server.store.AclRepo;
 import com.autumnharvestc.server.store.FileVersionRecord;
 import com.autumnharvestc.server.store.FileVersionRepo;
 import com.autumnharvestc.server.store.MembershipRepo;
+import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.WorkspaceRecord;
 import com.autumnharvestc.server.workspace.WorkspaceGuard;
@@ -42,7 +43,8 @@ class ContentServiceDeleteRaceTest {
     private static final String PATH = "a.yaml";
 
     private final UserAccount caller =
-            new UserAccount("user-1", "owner", "bcrypt-hash", "owner", Instant.EPOCH);
+            new UserAccount("user-1", "owner", "bcrypt-hash", "owner",
+                    PlatformRole.USER, false, Instant.EPOCH);
 
     private WorkspaceGuard guard;
     private MembershipRepo memberships;

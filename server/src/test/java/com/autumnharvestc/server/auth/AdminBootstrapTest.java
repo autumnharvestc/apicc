@@ -2,6 +2,7 @@ package com.autumnharvestc.server.auth;
 
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.UserRepo;
+import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -14,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.regex.Pattern;
 
@@ -23,6 +25,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -50,12 +53,19 @@ class AdminBootstrapTest {
 
         @Test
         void bootstrapsConfiguredAdminAndLoginSucceeds() throws Exception {
-            mockMvc.perform(post("/api/v1/auth/login")
+            MvcResult result = mockMvc.perform(post("/api/v1/auth/login")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"username\":\"boss\",\"password\":\"secret123\"}"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.token").isNotEmpty())
-                    .andExpect(jsonPath("$.user.username").value("boss"));
+                    .andExpect(jsonPath("$.user.username").value("boss"))
+                    .andReturn();
+            String token = JsonPath.read(result.getResponse().getContentAsString(), "$.token");
+
+            // 平台超管（规格§2）：启动引导创建的首个账号自动 SUPERADMIN
+            mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.role").value("SUPERADMIN"));
         }
     }
 

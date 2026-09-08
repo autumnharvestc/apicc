@@ -43,7 +43,7 @@ public class AuthController {
         return ResponseEntity.noContent().build();
     }
 
-    /** 200 {id, username, displayName}；401。 */
+    /** 200 {id, username, displayName, role}；401。 */
     @GetMapping("/api/v1/me")
     public UserView me(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount user) {
         return UserView.of(user);

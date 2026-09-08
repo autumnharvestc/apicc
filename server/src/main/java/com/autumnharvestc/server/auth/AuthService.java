@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.auth;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.TokenRecord;
 import com.autumnharvestc.server.store.TokenRepo;
 import com.autumnharvestc.server.store.UserAccount;
@@ -58,6 +59,8 @@ public class AuthService {
                 request.username(),
                 passwordEncoder.encode(request.password()),
                 request.displayName().trim(),
+                PlatformRole.USER,
+                false,
                 Instant.now());
         try {
             users.insert(account);
