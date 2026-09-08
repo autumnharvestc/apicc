@@ -19,9 +19,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 任务 4 项目 ACL API 契约测试（规格 m3 §3.3）：GET/PUT /workspaces/{id}/projects/{projectId}/acl，
+ * 任务 4/5 项目 ACL API 契约测试（规格 m3 §3.3）：GET/PUT /workspaces/{id}/projects/{projectId}/acl，
  * ADMIN+；role ∈ NONE/VIEWER/EDITOR/ADMIN；NONE=显式拒之门外；DELETE 行=恢复继承（契约括注）。
- * 裁定 A：ACL 按 projectId 寻址、服务端不做 projectId→目录校验——任意 id 可预设。
+ * 任务 5 ACL 挂实体：ACL 操作的项目须经管理面创建（先建分组+项目再操作）；对不存在的项目 UUID，
+ * PUT/GET/DELETE 皆 404 project_not_found（历史「任意 id 可预设」语义随实体化收紧）。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -31,9 +32,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "apicc.server.data-dir=target/test-data-acl"
 })
 class ProjectAclApiContractTest {
-
-    /** 项目 id 用 UUID 形态（2026-09-08 path/ACL 实体化对齐；本任务服务端仍可对任意 id 预设，任务 5 收紧为 404）。 */
-    private static final String PROJECT_ID = "0b9c1c2e-a1b2-c3d4-e5f6-0123456789ab";
 
     @Autowired
     private MockMvc mockMvc;
@@ -74,6 +72,34 @@ class ProjectAclApiContractTest {
                 .andExpect(status().isOk());
     }
 
+    /** 建分组（项目创建的前置：项目须挂同工作区分组）。 */
+    private String createGroup(String token, String wsId, String name) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/groups")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + name + "\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return JsonPath.read(result.getResponse().getContentAsString(), "$.id");
+    }
+
+    /** 经管理面建实体项目，返回项目 id（任务 5：ACL 只对实体项目可操作）。 */
+    private String createProject(String token, String wsId, String groupId, String name) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/projects")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"groupId\":\"" + groupId + "\",\"name\":\"" + name + "\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return JsonPath.read(result.getResponse().getContentAsString(), "$.id");
+    }
+
+    /** 建分组+项目并返回项目 id（ACL 夹具一步到位）。 */
+    private String createProjectFixture(String token, String wsId, String name) throws Exception {
+        String groupId = createGroup(token, wsId, name + "分组");
+        return createProject(token, wsId, groupId, name);
+    }
+
     private MvcResult putAcl(String callerToken, String wsId, String projectId, String targetUserId, String role)
             throws Exception {
         return mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
@@ -93,8 +119,9 @@ class ProjectAclApiContractTest {
         String[] viewer = newUser("a-viewer");
         String wsId = createWorkspace(owner[1], "ACL写入");
         putMember(owner[1], wsId, admin[0], "ADMIN");
+        String projectId = createProjectFixture(owner[1], wsId, "ACL写入项目");
 
-        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + admin[1])
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"NONE\"}"))
@@ -102,7 +129,7 @@ class ProjectAclApiContractTest {
                 .andExpect(jsonPath("$.userId").value(viewer[0]))
                 .andExpect(jsonPath("$.role").value("NONE"));
 
-        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"EDITOR\"}"))
@@ -110,7 +137,7 @@ class ProjectAclApiContractTest {
                 .andExpect(jsonPath("$.role").value("EDITOR"));
     }
 
-    /** EDITOR/VIEWER/非成员写 ACL → 403 forbidden。 */
+    /** EDITOR/VIEWER/非成员写 ACL → 403 forbidden（守卫先于项目存在性校验）。 */
     @Test
     void putAclForbiddenBelowAdmin() throws Exception {
         String[] owner = newUser("a-bob");
@@ -120,9 +147,10 @@ class ProjectAclApiContractTest {
         String wsId = createWorkspace(owner[1], "ACL写权限");
         putMember(owner[1], wsId, editor[0], "EDITOR");
         putMember(owner[1], wsId, viewer[0], "VIEWER");
+        String projectId = createProjectFixture(owner[1], wsId, "ACL写权限项目");
 
         for (String token : new String[]{editor[1], viewer[1], outsider}) {
-            mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+            mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                             .header("Authorization", "Bearer " + token)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"NONE\"}"))
@@ -136,30 +164,49 @@ class ProjectAclApiContractTest {
     void putAclValidatesTargetUserAndRole() throws Exception {
         String[] owner = newUser("a-erin");
         String wsId = createWorkspace(owner[1], "ACL校验");
+        String projectId = createProjectFixture(owner[1], wsId, "ACL校验项目");
 
-        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userId\":\"" + java.util.UUID.randomUUID() + "\",\"role\":\"VIEWER\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("user_not_found"));
 
-        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userId\":\"" + owner[0] + "\",\"role\":\"SUPERUSER\"}"))
                 .andExpect(status().isBadRequest());
     }
 
-    /** 裁定 A：ACL 可对任意 projectId 预设（服务端不做 projectId→内容目录校验）。 */
-    @Test
-    void putAclAcceptsArbitraryProjectId() throws Exception {
-        String[] owner = newUser("a-frank");
-        String[] viewer = newUser("a-grace");
-        String wsId = createWorkspace(owner[1], "任意项目ID");
+    // ---- 项目存在性校验（任务 5 ACL 挂实体）----
 
-        MvcResult result = putAcl(owner[1], wsId, "no-such-content-project", viewer[0], "VIEWER");
-        org.assertj.core.api.Assertions.assertThat(result.getResponse().getStatus()).isEqualTo(200);
+    /** 项目不存在（未建实体的 UUID）→ PUT/GET/DELETE ACL 皆 404 project_not_found。 */
+    @Test
+    void aclOnMissingProjectReturns404() throws Exception {
+        String[] owner = newUser("a-vin");
+        String[] viewer = newUser("a-wanda");
+        String wsId = createWorkspace(owner[1], "ACL项目404");
+        String missingProjectId = java.util.UUID.randomUUID().toString();
+
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + missingProjectId + "/acl")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"VIEWER\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("project_not_found"));
+
+        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + missingProjectId + "/acl")
+                        .header("Authorization", "Bearer " + owner[1]))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("project_not_found"));
+
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + missingProjectId
+                        + "/acl?userId=" + viewer[0])
+                        .header("Authorization", "Bearer " + owner[1]))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("project_not_found"));
     }
 
     // ---- GET acl（ADMIN+）----
@@ -176,34 +223,36 @@ class ProjectAclApiContractTest {
         putMember(owner[1], wsId, admin[0], "ADMIN");
         putMember(owner[1], wsId, editor[0], "EDITOR");
         putMember(owner[1], wsId, viewer[0], "VIEWER");
-        putAcl(owner[1], wsId, PROJECT_ID, viewer[0], "NONE");
+        String projectId = createProjectFixture(owner[1], wsId, "ACL读权限项目");
+        putAcl(owner[1], wsId, projectId, viewer[0], "NONE");
 
-        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + admin[1]))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].userId").value(viewer[0]))
                 .andExpect(jsonPath("$[0].role").value("NONE"));
 
-        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isOk());
 
         for (String token : new String[]{editor[1], viewer[1], outsider}) {
-            mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+            mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                             .header("Authorization", "Bearer " + token))
                     .andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.code").value("forbidden"));
         }
     }
 
-    /** 空清单 → 200 []。 */
+    /** 实体项目无 ACL 行 → 200 []（对比：项目不存在 → 404，见 aclOnMissingProjectReturns404）。 */
     @Test
     void getAclEmptyWhenNoRows() throws Exception {
         String[] owner = newUser("a-lisa");
         String wsId = createWorkspace(owner[1], "ACL空清单");
+        String projectId = createProjectFixture(owner[1], wsId, "ACL空清单项目");
 
-        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isEmpty());
@@ -219,18 +268,19 @@ class ProjectAclApiContractTest {
         String[] viewer = newUser("a-olivia");
         String wsId = createWorkspace(owner[1], "ACL删行");
         putMember(owner[1], wsId, admin[0], "ADMIN");
-        putAcl(owner[1], wsId, PROJECT_ID, viewer[0], "NONE");
+        String projectId = createProjectFixture(owner[1], wsId, "ACL删行项目");
+        putAcl(owner[1], wsId, projectId, viewer[0], "NONE");
 
-        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl?userId=" + viewer[0])
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl?userId=" + viewer[0])
                         .header("Authorization", "Bearer " + admin[1]))
                 .andExpect(status().isNoContent());
 
-        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl")
+        mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(jsonPath("$").isEmpty());
 
         // 幂等
-        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl?userId=" + viewer[0])
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl?userId=" + viewer[0])
                         .header("Authorization", "Bearer " + admin[1]))
                 .andExpect(status().isNoContent());
     }
@@ -243,9 +293,10 @@ class ProjectAclApiContractTest {
         String[] viewer = newUser("a-rob");
         String wsId = createWorkspace(owner[1], "ACL删行权限");
         putMember(owner[1], wsId, editor[0], "EDITOR");
-        putAcl(owner[1], wsId, PROJECT_ID, viewer[0], "NONE");
+        String projectId = createProjectFixture(owner[1], wsId, "ACL删行权限项目");
+        putAcl(owner[1], wsId, projectId, viewer[0], "NONE");
 
-        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + PROJECT_ID + "/acl?userId=" + viewer[0])
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl?userId=" + viewer[0])
                         .header("Authorization", "Bearer " + editor[1]))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("forbidden"));

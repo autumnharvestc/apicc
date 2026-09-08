@@ -18,7 +18,8 @@ import java.util.List;
 /**
  * 项目 ACL 端点（规格 m3 §3.3）：GET/PUT 同路径 + DELETE 行（「DELETE 行=恢复继承」的载体，
  * ?userId= 定位行——契约未明示方法面，取 RESTful 语义，联调轨对齐口径）。
- * ADMIN+（按工作区角色判，裁定口径见 ProjectAclService）；projectId 不做内容校验（裁定 A）。
+ * ADMIN+（按工作区角色判，裁定口径见 ProjectAclService）；项目须存在（任务 5 ACL 挂实体，
+ * 404 project_not_found）。
  */
 @RestController
 public class ProjectAclController {
@@ -29,7 +30,7 @@ public class ProjectAclController {
         this.acl = acl;
     }
 
-    /** 200 [{userId, role}]（role ∈ NONE/VIEWER/EDITOR/ADMIN）；403 非 ADMIN+。 */
+    /** 200 [{userId, role}]（role ∈ NONE/VIEWER/EDITOR/ADMIN）；403 非 ADMIN+；404 project_not_found。 */
     @GetMapping("/api/v1/workspaces/{id}/projects/{projectId}/acl")
     public List<AclEntryView> list(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                                    @PathVariable String id,
@@ -37,7 +38,7 @@ public class ProjectAclController {
         return acl.list(caller, id, projectId);
     }
 
-    /** 200 行视图；NONE=拒之门外；403 非 ADMIN+；404 user_not_found。 */
+    /** 200 行视图；NONE=拒之门外；403 非 ADMIN+；404 project_not_found/user_not_found。 */
     @PutMapping("/api/v1/workspaces/{id}/projects/{projectId}/acl")
     public AclEntryView put(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                             @PathVariable String id,
@@ -46,7 +47,7 @@ public class ProjectAclController {
         return acl.put(caller, id, projectId, request);
     }
 
-    /** 204 删行=恢复继承（幂等）；403 非 ADMIN+。 */
+    /** 204 删行=恢复继承（幂等）；403 非 ADMIN+；404 project_not_found。 */
     @DeleteMapping("/api/v1/workspaces/{id}/projects/{projectId}/acl")
     public ResponseEntity<Void> delete(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                                        @PathVariable String id,
