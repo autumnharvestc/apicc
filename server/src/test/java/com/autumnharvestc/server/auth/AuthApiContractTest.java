@@ -209,9 +209,9 @@ class AuthApiContractTest {
                 .andExpect(jsonPath("$.code").value("invalid_credentials"));
     }
 
-    // ---- /me（规格 §3.1：200 {id, username, displayName}；401）----
+    // ---- /me（规格 §3.1 + §6：200 {id, username, displayName, role}；401）----
 
-    /** 有效 Bearer token → 200 用户安全视图。 */
+    /** 有效 Bearer token → 200 用户安全视图；普通注册账号 role=USER（超管侧见 AdminBootstrapTest）。 */
     @Test
     void meReturnsCurrentUserWithValidToken() throws Exception {
         registerUser("grace", "password123", "Grace");
@@ -222,6 +222,7 @@ class AuthApiContractTest {
                 .andExpect(jsonPath("$.id").isNotEmpty())
                 .andExpect(jsonPath("$.username").value("grace"))
                 .andExpect(jsonPath("$.displayName").value("Grace"))
+                .andExpect(jsonPath("$.role").value("USER")) // 普通注册账号
                 .andExpect(jsonPath("$.passwordHash").doesNotExist());
     }
 
