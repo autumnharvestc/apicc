@@ -1,13 +1,16 @@
 // M3-B 任务 3：memory 替身 online 工作区/迁移方法——与主进程同构（树视图经同一
 // onlineTreeToDto 映射、open/close 状态、scan/write 真实文件面），载荷钉在契约上。
+// path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（<projectId>/…），
+// 树节点以 projectId 关联（项目直接挂根——分组名不再经 tree 下发）。
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
+import { createMemoryApi, ONLINE_SEED_GROUP_ID, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
 import type { OnlineWorkspaceView } from "../../../src/shared/online/types.js";
 
 const LOGIN_INPUT = { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" };
+const SEED_API_PATH = `${ONLINE_SEED_PROJECT_ID}/collections/示例集合/apis/示例接口/api.yaml`;
 
 async function loggedIn() {
   const api = createMemoryApi();
@@ -17,25 +20,25 @@ async function loggedIn() {
 }
 
 describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () => {
-  it("open 记录工作区并返回视图：树 DTO（root label = 工作区名，M1 §6 层级 + 只读 file 叶）+ projects", async () => {
+  it("open 记录工作区并返回视图：树 DTO（root label = 工作区名，项目挂根层级 + 只读 file 叶）+ projects 实体行", async () => {
     const { api, ws } = await loggedIn();
     const view = (await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: ws.myRole })) as OnlineWorkspaceView;
     expect(view.workspaceId).toBe(ws.id);
     expect(view.name).toBe(ws.name);
-    expect(view.projects).toEqual([{ id: "p-online-1", name: "示例项目", path: "groups/示例分组/projects/示例项目", myRole: "EDITOR" }]);
+    // path 实体化：projects 行 = 实体表产出 {id, name, groupId, myRole}
+    expect(view.projects).toEqual([{ id: ONLINE_SEED_PROJECT_ID, name: "示例项目", groupId: ONLINE_SEED_GROUP_ID, myRole: "EDITOR" }]);
     const root = view.tree;
     expect(root.kind).toBe("root");
     expect(root.label).toBe(ws.name);
     const labels = (root.children ?? []).map((c) => `${c.kind}:${c.label}`);
     expect(labels).toContain("file:apicc.workspace.yaml");
-    expect(labels).toContain("group:示例分组");
-    const group = root.children!.find((c) => c.label === "示例分组")!;
-    const project = group.children!.find((c) => c.kind === "project")!;
-    expect(project.label).toBe("示例项目");
+    expect(labels).toContain("project:示例项目");
+    const project = root.children!.find((c) => c.kind === "project")!;
+    expect(project.id).toBe(ONLINE_SEED_PROJECT_ID); // 树节点以 projectId 关联
     const collection = project.children!.find((c) => c.kind === "collection")!;
     const apiNode = collection.children!.find((c) => c.kind === "api")!;
     expect(apiNode.label).toBe("示例接口");
-    expect(apiNode.id).toBe("groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml");
+    expect(apiNode.id).toBe(SEED_API_PATH); // api 叶 id = api.yaml 全路径（选中机制不变）
     // 只读叶：项目配置 / 环境 / 工作流
     const projectFiles = project.children!.filter((c) => c.kind === "file").map((c) => c.label);
     expect(projectFiles).toContain("project.yaml");
@@ -58,12 +61,11 @@ describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () =>
   it("tree:view 反映最新内容（put 后版本前移），出口仍过契约形状", async () => {
     const { api, ws } = await loggedIn();
     await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: "EDITOR" });
-    const target = "groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml";
+    const target = SEED_API_PATH;
     await api.onlineFilePut({ workspaceId: ws.id, path: target, content: "id: api-online-1\nname: 改名\n", baseVersion: 1 });
     const view = await api.onlineTreeView(ws.id);
     const apiNode = view.tree
-      .children!.find((c) => c.kind === "group")! // 示例分组（file:group.yaml 也在 root 下排序）
-      .children!.find((c) => c.kind === "project")!
+      .children!.find((c) => c.kind === "project")! // 示例项目（file:apicc.workspace.yaml 也在 root 下排序）
       .children!.find((c) => c.kind === "collection")!
       .children!.find((c) => c.kind === "api")!;
     expect(apiNode.id).toBe(target);

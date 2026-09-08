@@ -99,13 +99,16 @@ describe("onlineClient 请求拼装", () => {
     expect(calls[0]!.body).toEqual({ content: "id: a\n", baseVersion: 7 });
   });
 
-  it("putFile 拒绝非法路径（..、绝对路径、反斜杠、冒号——M3-C 前置对齐③）", async () => {
+  it("putFile 拒绝非法路径（..、绝对路径、反斜杠）；冒号不再客户端预拦（任务 7 对齐服务端实体化，盘符形态由服务端首段规则拦）", async () => {
     const { calls, impl } = fetchStub(() => json(201, { path: "a", version: 1, hash: "h" }));
     const client = createOnlineClient({ baseUrl: BASE, fetch: impl });
     await expect(client.putFile("ws-1", { path: "../x", content: "", baseVersion: 0 })).rejects.toThrow(/path/);
     await expect(client.putFile("ws-1", { path: "/abs", content: "", baseVersion: 0 })).rejects.toThrow(/path/);
-    await expect(client.putFile("ws-1", { path: "C:/x", content: "", baseVersion: 0 })).rejects.toThrow(/path/);
+    await expect(client.putFile("ws-1", { path: "a\\b", content: "", baseVersion: 0 })).rejects.toThrow(/path/);
     expect(calls).toHaveLength(0);
+    // 含冒号路径客户端放行照发（服务端 400 path_invalid 为准）
+    await expect(client.putFile("ws-1", { path: "C:/x", content: "", baseVersion: 0 })).resolves.toEqual({ path: "a", version: 1, hash: "h" });
+    expect(calls).toHaveLength(1);
   });
 
   it("batchPush：POST /files/batch + { files: [...] } 体", async () => {

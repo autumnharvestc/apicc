@@ -7,12 +7,13 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
+import { createMemoryApi, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import type { OnlineBatchResult } from "../../../src/shared/online/contract.js";
 
 const SERVER = "http://127.0.0.1:8080";
-const API_PATH = "groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml";
+// path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（memory 替身种子常量防漂移）
+const API_PATH = `${ONLINE_SEED_PROJECT_ID}/collections/示例集合/apis/示例接口/api.yaml`;
 const VALID_API_YAML = [
   "id: api-online-1",
   "name: 示例接口",
@@ -214,14 +215,14 @@ describe("迁移-拉取（步骤 1③：进度 + 计数 + 落盘）", () => {
       await store.migratePull(dir);
       expect(store.error).toBeNull();
       expect(store.migrationResult?.direction).toBe("pull");
-      expect(store.migrationResult?.pulled).toBe(7); // 种子文件数（含只读配置叶）
+      expect(store.migrationResult?.pulled).toBe(6); // 种子文件数（根配置+项目内 5；分组已实体化，无 group.yaml）
       expect(store.migrationResult?.skipped).toBe(0);
       expect(readFileSync(join(dir, "apicc.workspace.yaml"), "utf8")).toContain("ws-online-1");
       expect(readFileSync(join(dir, API_PATH), "utf8")).toContain("api-online-1");
       // 第二次拉取：同 hash 全部跳过
       await store.migratePull(dir);
       expect(store.migrationResult?.pulled).toBe(0);
-      expect(store.migrationResult?.skipped).toBe(7);
+      expect(store.migrationResult?.skipped).toBe(6);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

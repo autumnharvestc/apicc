@@ -1,11 +1,20 @@
 // M3-B 任务 3（简报裁定 A）：onlineTreeToDto——服务端 files path 清单 → 侧树 TreeNodeDTO
 // 映射纯函数。服务端不回树结构（§3.4 tree 只有 path+hash+version 清单与 projects 角色），
-// 客户端按 M1 §6 目录约定推导 groups/projects/collections/folders/apis 层级；
+// 客户端按目录约定推导 projects/collections/folders/apis 层级；
 // 工作流/环境/项目/集合配置等非接口文件映射为只读 file 叶（裁定 B：只读浏览，不做编辑器）。
+// path 实体化（2026-09-08）：内容 path 首段=项目实体 UUID（服务端已无 groups/<组>/projects/<名>
+// 名称目录，旧形态服务端 400 path_invalid）；树节点以 projectId 关联（project 节点 id=项目 id，
+// 名称取 tree.projects 行；分组名不再下发，侧树项目直接挂根）。api/file 叶 id 仍=文件全路径
+// （OnlineApiEditor 依赖选中后按该路径 getFiles 取内容，机制不变）。
 import { describe, expect, it } from "vitest";
 import { onlineTreeToDto } from "../../../src/main/online/session.js";
 import type { OnlineTree } from "../../../src/shared/online/contract.js";
 import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
+
+// 项目实体 UUID 夹具（服务端管理面创建；内容 path 首段即此 id）
+const P1 = "0f8d3a2c-a1b2-c3d4-e5f6-0123456789ab";
+const P2 = "1a2b3c4d-e5f6-a7b8-c9d0-112233445566";
+const GID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
 function treeOf(files: string[], projects: OnlineTree["projects"] = []): OnlineTree {
   return {
@@ -23,62 +32,64 @@ function child(node: TreeNodeDTO, kind: TreeNodeDTO["kind"], label: string): Tre
   return found;
 }
 
-describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级）", () => {
-  it("完整层级：groups/projects/collections/apis + folders/api.yaml → 四层树；api 节点 id = api.yaml 全路径", () => {
+describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级，path 实体化形态）", () => {
+  it("完整层级：<projectId>/collections/apis/folders → 项目直接挂根；api 节点 id = api.yaml 全路径；项目名取 projects 行", () => {
     const dto = onlineTreeToDto(
-      treeOf([
-        "groups/电商/projects/订单服务/collections/订单API/apis/create-order/api.yaml",
-        "groups/电商/projects/订单服务/collections/订单API/folders/内部/apis/query-order/api.yaml",
-        "groups/用户中心/projects/账户服务/collections/账户API/apis/login/api.yaml",
-      ]),
+      treeOf(
+        [
+          `${P1}/collections/订单API/apis/create-order/api.yaml`,
+          `${P1}/collections/订单API/folders/内部/apis/query-order/api.yaml`,
+          `${P2}/collections/账户API/apis/login/api.yaml`,
+        ],
+        [
+          { id: P1, name: "订单服务", groupId: GID, myRole: "EDITOR" },
+          { id: P2, name: "账户服务", groupId: GID, myRole: "EDITOR" },
+        ],
+      ),
     );
     expect(dto.kind).toBe("root");
     expect(dto.id).toBe("ws-1");
-    const group = child(dto, "group", "电商");
-    const project = child(group, "project", "订单服务");
+    // 项目节点 id = 项目实体 id（树节点以 projectId 关联）；label = projects 行名称（非 path 段）
+    const project = child(dto, "project", "订单服务");
+    expect(project.id).toBe(P1);
     const collection = child(project, "collection", "订单API");
     const api = child(collection, "api", "create-order");
-    expect(api.id).toBe("groups/电商/projects/订单服务/collections/订单API/apis/create-order/api.yaml");
+    expect(api.id).toBe(`${P1}/collections/订单API/apis/create-order/api.yaml`);
     const folder = child(collection, "folder", "内部");
-    expect(child(folder, "api", "query-order").id).toBe(
-      "groups/电商/projects/订单服务/collections/订单API/folders/内部/apis/query-order/api.yaml",
-    );
-    // 第二个分组独立成子树（无权项目天然不在输入清单里，映射不凭空造节点）
-    const other = child(dto, "group", "用户中心");
-    expect(child(child(other, "project", "账户服务"), "collection", "账户API")).toBeDefined();
+    expect(child(folder, "api", "query-order").id).toBe(`${P1}/collections/订单API/folders/内部/apis/query-order/api.yaml`);
+    // 第二个项目独立成子树（无权项目天然不在输入清单里，映射不凭空造节点）
+    const other = child(dto, "project", "账户服务");
+    expect(other.id).toBe(P2);
+    expect(child(other, "collection", "账户API")).toBeDefined();
   });
 
-  it("只读 file 叶（裁定 B 只读浏览）：workspace/group/project 配置、环境、工作流、collection/folder.yaml 挂对应父节点", () => {
+  it("只读 file 叶（裁定 B 只读浏览）：workspace/project 配置、环境、工作流、collection/folder.yaml 挂对应父节点", () => {
     const dto = onlineTreeToDto(
-      treeOf([
-        "apicc.workspace.yaml",
-        "groups/电商/group.yaml",
-        "groups/电商/projects/订单服务/project.yaml",
-        "groups/电商/projects/订单服务/environments/dev.yaml",
-        "groups/电商/projects/订单服务/workflows/下单流/workflow.yaml",
-        "groups/电商/projects/订单服务/collections/订单API/collection.yaml",
-        "groups/电商/projects/订单服务/collections/订单API/folders/内部/folder.yaml",
-        "groups/电商/projects/订单服务/collections/订单API/folders/内部/apis/create-order/api.yaml",
-        "groups/电商/projects/订单服务/collections/订单API/apis/create-order/api.yaml",
-      ]),
+      treeOf(
+        [
+          "apicc.workspace.yaml",
+          `${P1}/project.yaml`,
+          `${P1}/environments/dev.yaml`,
+          `${P1}/workflows/下单流/workflow.yaml`,
+          `${P1}/collections/订单API/collection.yaml`,
+          `${P1}/collections/订单API/folders/内部/folder.yaml`,
+          `${P1}/collections/订单API/folders/内部/apis/create-order/api.yaml`,
+          `${P1}/collections/订单API/apis/create-order/api.yaml`,
+        ],
+        [{ id: P1, name: "订单服务", groupId: GID, myRole: "EDITOR" }],
+      ),
     );
     expect(child(dto, "file", "apicc.workspace.yaml").id).toBe("apicc.workspace.yaml");
-    const group = child(dto, "group", "电商");
-    expect(child(group, "file", "group.yaml").id).toBe("groups/电商/group.yaml");
-    const project = child(group, "project", "订单服务");
-    expect(child(project, "file", "project.yaml").id).toBe("groups/电商/projects/订单服务/project.yaml");
-    expect(child(project, "file", "dev.yaml").id).toBe("groups/电商/projects/订单服务/environments/dev.yaml");
+    const project = child(dto, "project", "订单服务");
+    expect(child(project, "file", "project.yaml").id).toBe(`${P1}/project.yaml`);
+    expect(child(project, "file", "dev.yaml").id).toBe(`${P1}/environments/dev.yaml`);
     // 工作流叶 label = 目录名（workflow.yaml 固定文件名无信息量）
-    expect(child(project, "file", "下单流").id).toBe("groups/电商/projects/订单服务/workflows/下单流/workflow.yaml");
+    expect(child(project, "file", "下单流").id).toBe(`${P1}/workflows/下单流/workflow.yaml`);
     const collection = child(project, "collection", "订单API");
-    expect(child(collection, "file", "collection.yaml").id).toBe(
-      "groups/电商/projects/订单服务/collections/订单API/collection.yaml",
-    );
-    // folder.yaml（次要 3 顺修）：与 group/project/collection.yaml 同口径只读叶，挂 folder 节点
+    expect(child(collection, "file", "collection.yaml").id).toBe(`${P1}/collections/订单API/collection.yaml`);
+    // folder.yaml（次要 3 顺修）：与 project/collection.yaml 同口径只读叶，挂 folder 节点
     const folder = child(collection, "folder", "内部");
-    expect(child(folder, "file", "folder.yaml").id).toBe(
-      "groups/电商/projects/订单服务/collections/订单API/folders/内部/folder.yaml",
-    );
+    expect(child(folder, "file", "folder.yaml").id).toBe(`${P1}/collections/订单API/folders/内部/folder.yaml`);
     expect(child(folder, "api", "create-order")).toBeDefined();
     expect(child(collection, "api", "create-order")).toBeDefined();
   });
@@ -86,25 +97,38 @@ describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级）", () => {
   it("接口目录内的 cases/*.yaml 与 design.md 不进树（仅 api.yaml 级编辑，裁定 B）", () => {
     const dto = onlineTreeToDto(
       treeOf([
-        "groups/g/projects/p/collections/c/apis/a/api.yaml",
-        "groups/g/projects/p/collections/c/apis/a/cases/ok.yaml",
-        "groups/g/projects/p/collections/c/apis/a/cases/ok.sit.yaml",
-        "groups/g/projects/p/collections/c/apis/a/design.md",
+        `${P1}/collections/c/apis/a/api.yaml`,
+        `${P1}/collections/c/apis/a/cases/ok.yaml`,
+        `${P1}/collections/c/apis/a/cases/ok.sit.yaml`,
+        `${P1}/collections/c/apis/a/design.md`,
       ]),
     );
-    const api = child(child(child(child(dto, "group", "g"), "project", "p"), "collection", "c"), "api", "a");
+    const api = child(child(child(dto, "project", P1), "collection", "c"), "api", "a");
     expect(api.children ?? []).toEqual([]);
   });
 
-  it("children 排序确定（同层 file/collection/api 等按 label 字典序），输入乱序不影响输出", () => {
+  it("projects 行缺席的项目（清单外杂散 UUID 文件）→ 项目节点回退以 id 命名，不抛", () => {
+    const dto = onlineTreeToDto(treeOf([`${P1}/collections/c/apis/a/api.yaml`]));
+    const project = child(dto, "project", P1);
+    expect(project.id).toBe(P1);
+    expect(child(project, "collection", "c")).toBeDefined();
+  });
+
+  it("children 排序确定（同层 file/project/collection/api 等按 label 字典序），输入乱序不影响输出", () => {
     const dto = onlineTreeToDto(
-      treeOf([
-        "groups/b/projects/p/collections/c/apis/a2/api.yaml",
-        "groups/a/projects/p/collections/c/apis/a1/api.yaml",
-        "apicc.workspace.yaml",
-      ]),
+      treeOf(
+        [
+          `${P2}/collections/c/apis/a2/api.yaml`,
+          `${P1}/collections/c/apis/a1/api.yaml`,
+          "apicc.workspace.yaml",
+        ],
+        [
+          { id: P2, name: "p2", groupId: GID, myRole: "EDITOR" },
+          { id: P1, name: "p1", groupId: GID, myRole: "EDITOR" },
+        ],
+      ),
     );
-    expect((dto.children ?? []).map((c) => c.label)).toEqual(["a", "apicc.workspace.yaml", "b"]);
+    expect((dto.children ?? []).map((c) => c.label)).toEqual(["apicc.workspace.yaml", "p1", "p2"]);
   });
 
   it("空清单 → 只有 root（label 取工作区名入参），无 children", () => {
@@ -114,8 +138,17 @@ describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级）", () => {
     expect(dto.children ?? []).toEqual([]);
   });
 
-  it("非 M1 §6 布局的杂散路径不进树（映射只认约定层级），不抛", () => {
-    const dto = onlineTreeToDto(treeOf(["README.md", "groups/orphan.yaml", "groups/g/projects/p/random.txt"]));
+  it("非项目布局的杂散路径不进树（映射只认约定层级），不抛——含实体化前旧 groups/ 形态（服务端不再产出）", () => {
+    const dto = onlineTreeToDto(
+      treeOf([
+        "README.md",
+        "groups/orphan.yaml",
+        "groups/电商/projects/订单服务/collections/订单API/apis/create-order/api.yaml", // 旧名称目录形态
+        `${P1}`, // 裸 UUID 单段（与服务端同口径：不归属项目）
+        `${P1}/random.txt`, // 项目内约定外文件
+        "not-a-uuid/collections/c/apis/a/api.yaml", // 首段非 UUID
+      ]),
+    );
     expect((dto.children ?? []).filter((c) => c.kind !== "file")).toEqual([]);
   });
 });

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
-import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
+import { createMemoryApi, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
 import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
@@ -25,7 +25,8 @@ import OnlineLoginDialog from "../../../src/renderer/src/components/OnlineLoginD
 import type { ApiccApi } from "../../../src/shared/types.js";
 
 const SERVER = "http://127.0.0.1:8080";
-const API_PATH = "groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml";
+// path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（memory 替身种子常量防漂移）
+const API_PATH = `${ONLINE_SEED_PROJECT_ID}/collections/示例集合/apis/示例接口/api.yaml`;
 const VALID_API_YAML = [
   "id: api-online-1",
   "name: 示例接口",
@@ -229,7 +230,7 @@ describe("OnlineMigrateDialog（裁定 D：目录选择 + 进度 + 结果清单�
       await expectBody("migrate-pull-btn").trigger("click");
       await flushPromises();
       expect(f.online.migrationResult?.direction).toBe("pull");
-      expect(expectBody("migrate-result").text()).toContain("7"); // 新拉 7
+      expect(expectBody("migrate-result").text()).toContain("6"); // 新拉 6（种子文件数：根配置+项目内 5，无 group.yaml——分组已实体化）
       expect(bodyHas("migrate-result-list")).toBe(true);
       expect(expectBody("migrate-result-list").text()).toContain("apicc.workspace.yaml");
     } finally {

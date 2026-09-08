@@ -75,13 +75,12 @@ export const OnlineTreeSchema = z.object({
 export const OnlineFileContentSchema = z.object({ path: z.string(), content: z.string(), version: z.number(), hash: z.string() });
 export const OnlineFilesResultSchema = z.object({ files: z.array(OnlineFileContentSchema), missing: z.array(z.string()) });
 export const OnlinePutFileResultSchema = z.object({ path: z.string(), version: z.number(), hash: z.string() });
-/** §3.4 path 规则：禁止 ..、绝对路径、反斜杠、空段；另禁 `:`（客户端先拦可免一次必败往返；
- * 服务端实体化后已移除禁冒号——盘符形态由「首段非 UUID」规则拦，客户端放开留待任务 7）。 */
+/** §3.4 path 规则：禁止 ..、绝对路径、反斜杠、空段。禁冒号已放开（任务 7，对齐服务端
+ * 实体化 2026-09-08：盘符形态由服务端「首段非 UUID」规则拦，客户端不再预拦冒号）。 */
 export const OnlinePathSchema = z
   .string()
   .min(1)
   .refine((p) => !p.includes("\\"), "path 禁止反斜杠")
-  .refine((p) => !p.includes(":"), "path 禁止冒号")
   .refine((p) => !p.startsWith("/") && !p.endsWith("/"), "path 禁止绝对路径/尾空段")
   .refine((p) => p.split("/").every((seg) => seg.length > 0 && seg !== "." && seg !== ".."), "path 禁止空段与 . / ..");
 /** batch 条目：{ path, content, baseVersion }（新文件 baseVersion=0）。 */

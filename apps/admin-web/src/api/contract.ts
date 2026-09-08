@@ -101,8 +101,9 @@ export const AdminTreeFileSchema = z.object({ path: z.string(), hash: z.string()
 /**
  * tree.projects 行（path 实体化修订 2026-09-08）：服务端不再回项目目录路径——内容 path
  * 首段即项目实体 UUID，`path` 退役为可选兼容字段（内容定位按 `id` 前缀推导）。
+ * `groupId` 为所属分组实体 id（服务端实体表已下发；zod 严格按声明键透传，未声明会被剥离）。
  */
-export const AdminTreeProjectSchema = z.object({ id: z.string(), name: z.string(), path: z.string().optional(), myRole: AdminProjectRoleSchema });
+export const AdminTreeProjectSchema = z.object({ id: z.string(), name: z.string(), path: z.string().optional(), groupId: z.string().optional(), myRole: AdminProjectRoleSchema });
 export const AdminTreeSchema = z.object({
   workspaceId: z.string(),
   rootVersion: z.number(),
