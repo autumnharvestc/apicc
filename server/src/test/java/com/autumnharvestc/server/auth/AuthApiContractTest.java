@@ -313,6 +313,11 @@ class AuthApiContractTest {
                         .content(loginBody("paused", "password123")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("account_disabled"));
+        // 停用 + 错误密码 → 仍 401 invalid_credentials（密码校验在前，不向无凭据者泄露停用态）
+        mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(loginBody("paused", "wrongpass1")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("invalid_credentials"));
         mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
                 .andExpect(status().isUnauthorized());
     }

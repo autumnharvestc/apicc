@@ -71,15 +71,18 @@ public class AuthService {
         return UserView.of(account);
     }
 
-    /** 登录：凭据不符一律 401 invalid_credentials（用户不存在与密码错误同响应，不泄露存在性）。 */
+    /**
+     * 登录：密码不符一律 401 invalid_credentials（用户不存在与密码错误同响应，不泄露存在性，
+     * 也不向无凭据者泄露停用态）；凭据正确但账号已停用 → 403 account_disabled（仅持正确凭据者可见）。
+     */
     public LoginResponse login(LoginRequest request) {
         UserAccount account = users.findByUsername(request.username())
                 .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "invalid_credentials", "用户名或密码错误"));
-        if (account.disabled()) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "account_disabled", "账号已停用");
-        }
         if (!passwordEncoder.matches(request.password(), account.passwordHash())) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "invalid_credentials", "用户名或密码错误");
+        }
+        if (account.disabled()) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "account_disabled", "账号已停用");
         }
         String plainToken = tokenService.issue();
         Instant expiresAt = Instant.now().plus(tokenTtl);
