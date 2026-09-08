@@ -38,6 +38,19 @@ public class MembershipRepo {
         return roles.isEmpty() ? Optional.empty() : Optional.of(Role.fromDb(roles.get(0)));
     }
 
+    /** 入区定角色（规格§2「分配使用」，超管直派）：有成员关系则改角色，无则建行（两步 MERGE 语义，主键 (workspace_id, user_id)）。 */
+    public void upsert(String workspaceId, String userId, String role) {
+        int updated = jdbc.update(
+                "UPDATE memberships SET role = ? WHERE workspace_id = ? AND user_id = ?",
+                role, workspaceId, userId);
+        if (updated == 0) {
+            jdbc.update("""
+                    INSERT INTO memberships (workspace_id, user_id, role, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """, workspaceId, userId, role, OffsetDateTime.now(ZoneOffset.UTC));
+        }
+    }
+
     /** 变更成员角色（PUT members 变更分支）。返回 false = 无此成员关系（服务层转 404）。 */
     public boolean updateRole(String workspaceId, String userId, Role role) {
         return jdbc.update(
