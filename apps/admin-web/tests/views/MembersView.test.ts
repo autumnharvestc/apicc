@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // M4-A 任务 4：MembersView 测试（裁定 A/B/C）——成员清单（displayName/username/role a-tag 色分
 // + 操作列）、改角色（a-select 即改、OWNER 行禁用）、移除（popconfirm、OWNER 行禁用）、添加成员
-// （userId + 角色，§3.2 对非成员即创建）、OWNER 转让受控确认（输入工作区名，文案明示降为 ADMIN
-// 且不可逆）、403 直达回列表（原因仅在成员面 membersError 通道呈现）、后端错误码 membersError 上屏。
+// （规格 2026-09-09：用户名搜索下拉选中 username，提交解析为 id——id 不再手输；§3.2 对非成员
+// 即创建）、OWNER 转让受控确认（输入工作区名，文案明示降为 ADMIN 且不可逆）、403 直达回列表
+// （原因仅在成员面 membersError 通道呈现）、后端错误码 membersError 上屏、候选搜索失败就地上屏。
 // 直达 URL 挂载（history.replaceState 到成员路径）；antd 传送门元素走 body 作用域查询；
 // a-select 经组件实例 update:value/change 事件驱动（desktop OnlineLoginDialog.test 先例）。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
@@ -81,6 +82,16 @@ async function waitForBody(testid: string): Promise<DOMWrapper<Element>> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`document.body 中未出现 [data-testid="${testid}"]（轮询超时）`);
+}
+
+/** 轮询等待条件成立（真实定时器，供 debounce 落地；120×25ms 上限 3s）。 */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 120; i += 1) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 25));
+    await flushPromises();
+  }
+  throw new Error("条件未在时限内满足");
 }
 
 /** a-select 非原生控件：按 testid 找组件实例后经事件驱动（desktop 先例）。 */
@@ -221,30 +232,69 @@ describe("MembersView 清单与权限化操作（裁定 A/D6）", () => {
   });
 });
 
-describe("MembersView 添加成员（§3.2 对非成员即创建）", () => {
-  it("空 userId 提交 → 本地校验错误、零请求；填 userId + 角色 → PUT + 刷新", async () => {
+describe("添加成员：用户名搜索下拉（规格 2026-09-09，id 不再手输）", () => {
+  it("输入触发候选搜索（debounce 后）；选中 username 提交解析为 id", async () => {
     const members = [...MEMBERS];
     const { wrapper, calls } = await mountMembers((req) => {
-      if (req.url === `${BASE}/workspaces/ws-1/members` && req.method === "GET") return json(200, members);
-      if (req.url === `${BASE}/workspaces/ws-1/members/u-9` && req.method === "PUT") {
-        members.push({ userId: "u-9", username: "zoe", displayName: "Zoe", role: "VIEWER" });
+      const { method, url } = req;
+      if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, members);
+      if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, DETAIL_OWNER);
+      if (url.includes("member-candidates")) return json(200, [{ id: "u-9", username: "dave", displayName: "Dave" }]);
+      if (url === `${BASE}/workspaces/ws-1/members/u-9` && method === "PUT") {
+        members.push({ userId: "u-9", username: "dave", displayName: "Dave", role: "VIEWER" });
         return noContent();
       }
-      if (req.url === `${BASE}/workspaces/ws-1` && req.method === "GET") return json(200, DETAIL_OWNER);
       return json(404, { code: "not_found", message: "x" });
     });
-    await wrapper.find("[data-testid=members-add-submit]").trigger("click");
+    const input = wrapper.find('[data-testid="members-add-user"] input');
+    await input.setValue("dav");
+    // debounce 300ms（真实定时器，轮询等 fetch 调用出现）
+    await until(() => calls.some((c) => c.url.includes("member-candidates")));
     await flushPromises();
-    expect(wrapper.find("[data-testid=members-add-error]").exists()).toBe(true);
-    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
-    await wrapper.find("[data-testid=members-add-userid]").setValue("u-9");
-    antdSelect(wrapper, "members-add-role").vm.$emit("change", "VIEWER");
-    await wrapper.find("[data-testid=members-add-submit]").trigger("click");
+    await input.setValue("dave"); // 模拟从下拉选中（v-model=username）
+    await wrapper.find('[data-testid="members-add-submit"]').trigger("click");
     await flushPromises();
     await flushPromises();
-    const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-9`);
+    const put = calls.find((c) => c.method === "PUT" && c.url.includes("/members/u-9"));
+    expect(put).toBeDefined();
     expect(put!.body).toEqual({ role: "VIEWER" });
-    expect(wrapper.findAll("tbody tr")).toHaveLength(4);
+    expect(wrapper.findAll("tbody tr")).toHaveLength(4); // 添加成功刷新清单
+    const after = wrapper.find('[data-testid="members-add-user"] input');
+    expect((after.element as HTMLInputElement).value).toBe(""); // 成功后输入复位
+  });
+
+  it("手输未命中文本提交 → 校验错误、不发 PUT", async () => {
+    const { wrapper, calls } = await mountMembers((req) => {
+      const { method, url } = req;
+      if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, MEMBERS);
+      if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, DETAIL_OWNER);
+      if (url.includes("member-candidates")) return json(200, []);
+      return json(404, { code: "not_found", message: "x" });
+    });
+    const input = wrapper.find('[data-testid="members-add-user"] input');
+    await input.setValue("ghost-name");
+    await flushPromises();
+    await wrapper.find('[data-testid="members-add-submit"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="members-add-error"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="members-add-error"]').text()).toContain("请从下拉中选择用户");
+    expect(calls.some((c) => c.method === "PUT" && c.url.includes("/members/"))).toBe(false);
+  });
+
+  it("候选搜索失败 → candidatesError 就地上屏（members-candidates-error）", async () => {
+    const { wrapper, calls, workspaces } = await mountMembers((req) => {
+      const { method, url } = req;
+      if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, MEMBERS);
+      if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, DETAIL_OWNER);
+      if (url.includes("member-candidates")) return json(500, { code: "server_error", message: "候选服务暂不可用" });
+      return json(404, { code: "not_found", message: "x" });
+    });
+    await wrapper.find('[data-testid="members-add-user"] input').setValue("dav");
+    await until(() => calls.some((c) => c.url.includes("member-candidates")));
+    await flushPromises();
+    expect(workspaces.candidatesError).toBe("候选服务暂不可用");
+    expect(wrapper.find('[data-testid="members-candidates-error"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="members-candidates-error"]').text()).toContain("候选服务暂不可用");
   });
 });
 

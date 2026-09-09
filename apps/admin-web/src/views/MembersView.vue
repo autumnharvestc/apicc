@@ -2,22 +2,24 @@
 /**
  * 成员管理视图（M4-A 任务 4，裁定 A/B/C/D6）：成员清单（displayName/username/role a-tag 色分
  * + 操作列）；改角色（a-select 即改，OWNER 行禁用——D6 体验层，后端 403 为准）；移除
- * （a-popconfirm 确认，OWNER 行禁用）；添加成员（userId + 角色——§3.2 PUT 对非成员即创建行；
- * 后端按 userId 寻址，契约无按名查 id 端点，输入框只接受 userId，placeholder 说明；角色下拉
+ * （a-popconfirm 确认，OWNER 行禁用）；添加成员（规格 2026-09-09：用户名搜索下拉——内部 id
+ * 不许手输（先例级教训），a-auto-complete 接 userPicker（成员+非成员候选合并，候选远搜
+ * debounce 300ms），选中 username 提交时解析为 userId，§3.2 PUT 对非成员即创建行；角色下拉
  * 排除 OWNER——非成员直接授 OWNER 走不到转让确认，任务 5 审查顺修）；OWNER
  * 转让（把成员角色改为 OWNER）弹受控确认 a-modal（输入工作区名，文案明示自身降为 ADMIN 且
  * 不可逆，任务 3 受控弹窗先例；转让失败错误经 membersError 在 Modal 内就近呈现）。403 直达
  * URL → membersError 上屏 + 弹回 /workspaces（原因仅在成员面通道，列表页不重复呈现——任务 5
  * 审查注释更正）；成员清单随路由参数变化重拉（终审 Important 1）；其他后端错误码
  * （owner_immutable 等）→ 顶部 membersError alert（选顶部
- * alert 而非行级提示：单通道单呈现面，实现最干净，报告注明）。组件内零工厂调用：workspaces
- * 经路由 props 注入。
+ * alert 而非行级提示：单通道单呈现面，实现最干净，报告注明）；候选搜索失败经 candidatesError
+ * 在添加行下方就地上屏。组件内零工厂调用：workspaces 经路由 props 注入。
  */
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
-import { Alert as AAlert, Button as AButton, Input as AInput, Modal as AModal, Popconfirm as APopconfirm, Select as ASelect, Table as ATable, Tag as ATag } from "ant-design-vue";
+import { Alert as AAlert, AutoComplete as AAutoComplete, Button as AButton, Input as AInput, Modal as AModal, Popconfirm as APopconfirm, Select as ASelect, Table as ATable, Tag as ATag } from "ant-design-vue";
 import type { AdminMember, AdminRole } from "../api/contract.js";
+import { createUserPicker } from "../composables/userPicker.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
 
 const props = defineProps<{ workspaces: WorkspacesStore }>();
@@ -96,8 +98,9 @@ async function onRemove(userId: string): Promise<void> {
   removeTargetUserId.value = null; // 确认后收起气泡（受控 open）
 }
 
-// —— 添加成员（裁定 A：userId 直填；§3.2 PUT 对非成员即创建）——
-const addUserId = ref("");
+// —— 添加成员（规格 2026-09-09：用户名搜索下拉，id 不再手输——先例级教训）——
+// composable 返回的 refs 在 script 顶层解构后保持响应式，template 自动解包（v-model 可直接绑定）。
+const { username: addUserName, options: candidateOptions, onSearch: onSearchUser, resolveId, reset: resetPicker } = createUserPicker(props.workspaces, workspaceId);
 const addRole = ref<AdminRole>("VIEWER");
 const addError = ref("");
 
@@ -108,14 +111,15 @@ const removeTargetUserId = ref<string | null>(null);
 const removeOkButtonProps: Record<string, any> = { "data-testid": "members-remove-confirm" };
 
 async function onAdd(): Promise<void> {
-  const userId = addUserId.value.trim();
+  const userId = resolveId();
   if (!userId) {
-    addError.value = t("members.userIdRequired");
+    addError.value = t("members.selectUserRequired");
     return;
   }
   const ok = await props.workspaces.addMember(workspaceId.value, userId, addRole.value);
   if (ok) {
-    addUserId.value = "";
+    resetPicker();
+    props.workspaces.clearCandidates();
     addRole.value = "VIEWER";
     addError.value = ""; // 成功后复位本地校验错误（任务 4 审查顺修）
   }
@@ -137,14 +141,15 @@ async function onAdd(): Promise<void> {
       data-testid="members-error"
     />
 
-    <!-- 添加成员：userId + 角色（§3.2 PUT 对非成员即创建行） -->
+    <!-- 添加成员：用户名搜索下拉（userPicker 合并成员+候选；提交解析为 userId）+ 角色（§3.2 PUT 对非成员即创建行） -->
     <div class="add-row" data-testid="members-add">
-      <a-input
-        v-model:value="addUserId"
+      <a-auto-complete
+        v-model:value="addUserName"
         class="add-userid"
-        data-testid="members-add-userid"
-        :placeholder="t('members.userIdPlaceholder')"
-        @press-enter="onAdd"
+        data-testid="members-add-user"
+        :options="candidateOptions"
+        :placeholder="t('members.searchPlaceholder')"
+        @search="onSearchUser"
       />
       <a-select
         v-model:value="addRole"
@@ -157,6 +162,8 @@ async function onAdd(): Promise<void> {
       </a-button>
     </div>
     <div v-if="addError" class="form-error" data-testid="members-add-error">{{ addError }}</div>
+    <!-- 候选搜索失败就地上屏（与顶部 membersError 分通道，互不覆盖） -->
+    <div v-if="workspaces.candidatesError" class="form-error" data-testid="members-candidates-error">{{ workspaces.candidatesError }}</div>
 
     <a-table
       :columns="columns"
