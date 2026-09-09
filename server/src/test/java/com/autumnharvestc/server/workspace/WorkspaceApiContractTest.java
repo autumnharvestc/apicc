@@ -18,7 +18,6 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.matchesPattern;
@@ -127,12 +126,13 @@ class WorkspaceApiContractTest {
                 .andExpect(jsonPath("$.code").value("workspace_name_taken"));
         // 默认分组已就位：经 detail 或清单接口断言（以 Org 面任务 2 的端点为准——此处经 DB repo 断言）
         // 实现后改为经 GET /api/v1/workspaces/{id}/groups 断言（任务 2 提供端点后回填此断言）
-        GroupRecord group = groupRepo.findByName(wsId, "默认分组").orElseThrow();
-        assertThat(group.workspaceId()).isEqualTo(wsId);
+        GroupRecord group = groupRepo.findByName(Long.parseLong(wsId), "默认分组").orElseThrow();
+        assertThat(group.workspaceId()).isEqualTo(Long.parseLong(wsId));
         assertThat(group.isDefault()).isTrue();
     }
 
-    /** 创建成功：201 + OWNER 角色（规格 §3.2）；内容入库后建区不再建磁盘目录（§5 内容树退役）。 */
+    /** 创建成功：201 + OWNER 角色（规格 §3.2）；内容入库后建区不再建磁盘目录（§5 内容树退役）。
+     * id 形态钉子：对外 $.id 为字符串化数字（2026-09-09 BIGINT 化，全局不变量 1/5）。 */
     @Test
     void createReturns201OwnerRoleAndLeavesNoDiskTree() throws Exception {
         String token = newUser("ws-alice")[1];
@@ -141,12 +141,13 @@ class WorkspaceApiContractTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Alpha\"}"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").isNotEmpty())
+                .andExpect(jsonPath("$.id").value(matchesPattern("^\\d+$")))
                 .andExpect(jsonPath("$.name").value("Alpha"))
                 .andExpect(jsonPath("$.myRole").value("OWNER"))
                 .andReturn();
 
         String wsId = JsonPath.read(result.getResponse().getContentAsString(), "$.id");
+        assertThat(wsId).matches("^\\d+$");
         assertThat(Files.notExists(workspaceDir(wsId)))
                 .as("内容入库后建区不应再产生磁盘内容目录")
                 .isTrue();
@@ -206,7 +207,7 @@ class WorkspaceApiContractTest {
 
         mockMvc.perform(get("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value(wsId))
+                .andExpect(jsonPath("$.id").value(matchesPattern("^\\d+$")))
                 .andExpect(jsonPath("$.name").value("Gamma"))
                 .andExpect(jsonPath("$.myRole").value("OWNER"))
                 .andExpect(jsonPath("$.memberCount").value(1));
@@ -222,7 +223,8 @@ class WorkspaceApiContractTest {
                 .andExpect(jsonPath("$.myRole").value("VIEWER"));
     }
 
-    /** 非成员读详情 → 403 forbidden；不存在的工作区 → 404 workspace_not_found。 */
+    /** 非成员读详情 → 403 forbidden；不存在的工作区 → 404 workspace_not_found（幽灵 id=不存在的大数字）；
+     * 非数字 id → 400 validation_failed（EntityIds.parse 守卫，BIGINT 化口径 5）。 */
     @Test
     void detailForbiddenForOutsiderAnd404ForMissing() throws Exception {
         String[] owner = newUser("ws-heidi");
@@ -233,9 +235,13 @@ class WorkspaceApiContractTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("forbidden"));
 
-        mockMvc.perform(get("/api/v1/workspaces/" + UUID.randomUUID()).header("Authorization", "Bearer " + owner[1]))
+        mockMvc.perform(get("/api/v1/workspaces/999999").header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("workspace_not_found"));
+
+        mockMvc.perform(get("/api/v1/workspaces/not-a-number").header("Authorization", "Bearer " + owner[1]))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
     }
 
     // ---- DELETE /api/v1/workspaces/{id}（规格 §3.2：OWNER；版本行含 content 随删区清空）----
@@ -247,8 +253,8 @@ class WorkspaceApiContractTest {
         String wsId = createWorkspace(owner[1], "Epsilon");
 
         // 预置内容版本行（内容入库面）——删除清理的直接证据
-        fileVersions.insertNew(wsId, "apicc.workspace.yaml", "root: demo", "h-demo", owner[0]);
-        assertThat(fileVersions.listByWorkspace(wsId)).isNotEmpty();
+        fileVersions.insertNew(Long.parseLong(wsId), "apicc.workspace.yaml", "root: demo", "h-demo", Long.parseLong(owner[0]));
+        assertThat(fileVersions.listByWorkspace(Long.parseLong(wsId))).isNotEmpty();
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNoContent());
@@ -256,7 +262,7 @@ class WorkspaceApiContractTest {
         mockMvc.perform(get("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNotFound());
 
-        assertThat(fileVersions.listByWorkspace(wsId)).isEmpty();
+        assertThat(fileVersions.listByWorkspace(Long.parseLong(wsId))).isEmpty();
     }
 
     /** 删区连带清空 groups/projects 行（审查修复：projects → groups 顺序清 fk_projects_group 引用）。 */
@@ -264,21 +270,21 @@ class WorkspaceApiContractTest {
     void deleteByOwnerAlsoClearsGroupsAndProjects() throws Exception {
         String[] owner = newUser("ws-nadia");
         String wsId = createWorkspace(owner[1], "Theta");
-        // 预置：create 联动的默认分组 + 直插一多余分组与两个项目（分挂两组；任务 2 前无端点，经 repo 造数）
-        GroupRecord defaultGroup = groupRepo.findByName(wsId, "默认分组").orElseThrow();
-        GroupRecord spareGroup = new GroupRecord(
-                UUID.randomUUID().toString(), wsId, "备选组", false, Instant.now());
-        groupRepo.insert(spareGroup);
+        // 预置：create 联动的默认分组 + 直插一多余分组与两个项目（分挂两组；BIGINT 化后直构用 null id，
+        // 从 insert 返回值取真实 id——全局不变量 7）
+        GroupRecord defaultGroup = groupRepo.findByName(Long.parseLong(wsId), "默认分组").orElseThrow();
+        GroupRecord spareGroup = groupRepo.insert(new GroupRecord(
+                null, Long.parseLong(wsId), "备选组", false, Instant.now()));
         projectRepo.insert(new ProjectRecord(
-                UUID.randomUUID().toString(), wsId, defaultGroup.id(), "挂默认组项目", Instant.now()));
+                null, Long.parseLong(wsId), defaultGroup.id(), "挂默认组项目", Instant.now()));
         projectRepo.insert(new ProjectRecord(
-                UUID.randomUUID().toString(), wsId, spareGroup.id(), "挂备选组项目", Instant.now()));
+                null, Long.parseLong(wsId), spareGroup.id(), "挂备选组项目", Instant.now()));
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNoContent());
 
-        assertThat(projectRepo.listByWorkspace(wsId)).isEmpty();
-        assertThat(groupRepo.listByWorkspace(wsId)).isEmpty();
+        assertThat(projectRepo.listByWorkspace(Long.parseLong(wsId))).isEmpty();
+        assertThat(groupRepo.listByWorkspace(Long.parseLong(wsId))).isEmpty();
     }
 
     /** 非 OWNER 删除（ADMIN/非成员）→ 403 forbidden，工作区仍在；不存在 → 404 workspace_not_found。 */
@@ -300,7 +306,7 @@ class WorkspaceApiContractTest {
         mockMvc.perform(get("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(delete("/api/v1/workspaces/" + UUID.randomUUID())
+        mockMvc.perform(delete("/api/v1/workspaces/999999")
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("workspace_not_found"));

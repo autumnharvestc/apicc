@@ -33,8 +33,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * 内容同步 API 契约测试（规格 m3 §3.4 逐条 + 2026-09-08 path 实体化修订 + 裁定 A–D）。
- * path 新规则：首段必须是**存在的项目 UUID**（{@code <projectId>/...}），根级仅允许
- * apicc.workspace.yaml——首段非 UUID 400 path_invalid；首段 UUID 但项目不存在 404
+ * path 新规则：首段必须是**存在的项目数字 id**（{@code <projectId>/...}，BIGINT 化实体主键），
+ * 根级仅允许 apicc.workspace.yaml——首段非数字 400 path_invalid；首段为数字但项目不存在 404
  * project_not_found（写面；读面不 404，按无权/missing 处理）。
  * 覆盖：tree（清单形状/hash/version/size、projects 来自实体表 {id,name,groupId,myRole}、
  * NONE 过滤）；files 批量取（missing 语义/≤200）；PUT（新文件 201/变更递增/同 hash 幂等 200/
@@ -95,7 +95,7 @@ class ContentApiContractTest {
         return JsonPath.read(result.getResponse().getContentAsString(), "$.id");
     }
 
-    /** 建项目（ADMIN+），返回实体项目 id（UUID）——内容 path 首段即此 id。 */
+    /** 建项目（ADMIN+），返回实体项目 id（数字字符串）——内容 path 首段即此 id。 */
     private String createProject(String token, String wsId, String groupId, String name) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/projects")
                         .header("Authorization", "Bearer " + token)
@@ -170,8 +170,8 @@ class ContentApiContractTest {
     // ---- path 实体化规则 ----
 
     /**
-     * 新 path 规则：首段必须是存在的项目 UUID；根级仅允许 apicc.workspace.yaml。
-     * 首段非 UUID → 400 path_invalid；首段 UUID 但项目不存在 → 404 project_not_found（写面，
+     * 新 path 规则：首段必须是存在的项目数字 id；根级仅允许 apicc.workspace.yaml。
+     * 首段非数字 → 400 path_invalid；首段为数字但项目不存在 → 404 project_not_found（写面，
      * DELETE 对称）；读面不 404（ghost 项目路径批量取进 missing，不泄露存在性）。
      */
     @Test
@@ -181,16 +181,17 @@ class ContentApiContractTest {
         String groupId = createGroup(owner[1], wsId, "g1");
         String projectId = createProject(owner[1], wsId, groupId, "实体项目");
 
-        // 首段非 UUID（多段）→ 400 path_invalid
-        MvcResult badShape = putFile(owner[1], wsId, "not-a-uuid/apis/a.yaml", "x", 0);
-        assertThat(badShape.getResponse().getStatus()).as("非 UUID 首段应 400").isEqualTo(400);
+        // 首段非数字（多段）→ 400 path_invalid
+        MvcResult badShape = putFile(owner[1], wsId, "not-a-number/apis/a.yaml", "x", 0);
+        assertThat(badShape.getResponse().getStatus()).as("非数字首段应 400").isEqualTo(400);
         assertThat(JsonPath.<String>read(badShape.getResponse().getContentAsString(), "$.code"))
                 .isEqualTo("path_invalid");
         // 单段根级文件亦不允许（根级仅 apicc.workspace.yaml）
         assertThat(putFile(owner[1], wsId, "a.yaml", "x", 0).getResponse().getStatus()).isEqualTo(400);
 
-        // 首段 UUID 但项目不存在 → 404 project_not_found（PUT 与 DELETE 写面对称）
-        String ghost = java.util.UUID.randomUUID().toString();
+        // 首段为数字但项目不存在 → 404 project_not_found（PUT 与 DELETE 写面对称；
+        // 幽灵 id 用不存在的大数字——BIGINT 化口径 5）
+        String ghost = "999999";
         MvcResult ghostPut = putFile(owner[1], wsId, ghost + "/x.yaml", "x", 0);
         assertThat(ghostPut.getResponse().getStatus()).as("不存在项目应 404").isEqualTo(404);
         assertThat(JsonPath.<String>read(ghostPut.getResponse().getContentAsString(), "$.code"))
@@ -221,8 +222,81 @@ class ContentApiContractTest {
         @SuppressWarnings("unchecked")
         List<String> groupIdsOfSameName = JsonPath.read(body, "$.projects[?(@.name=='同名项目')].groupId");
         assertThat(groupIdsOfSameName).containsOnly(groupId);
-        // 推导 id 退役：同名项目 id 互异（实体 UUID，不再是路径哈希）
+        // 推导 id 退役：同名项目 id 互异（实体数字主键，不再是路径哈希）
         assertThat(sameNameIds.get(0)).isNotEqualTo(sameNameIds.get(1));
+    }
+
+    /**
+     * 越界数字首段（20 位，匹配 \d+ 但超 long 值域）按「项目不存在」处理（BIGINT 化审查修复）：
+     * 单写 PUT → 404 project_not_found（不得 NumberFormatException → 500）；读面批量取进 missing
+     * （空有效角色）；batch 含该路径 → 该文件 invalid 行、其余 pushed——D8 逐文件部分成功不被击穿。
+     */
+    @Test
+    void overflowProjectIdSegmentIsProjectNotFoundNever500() throws Exception {
+        String[] owner = newUser("c-t22-owner");
+        String wsId = createWorkspace(owner[1], "越界首段");
+        String p1 = newProject(owner[1], wsId, "g1", "p1");
+        String overflow = "99999999999999999999"; // 20 位：形态合法、Long.parseLong 越界
+
+        // 单写 PUT → 404 project_not_found（写面守卫先于权限/落库；非 500）
+        MvcResult put = putFile(owner[1], wsId, overflow + "/x.yaml", "x", 0);
+        assertThat(put.getResponse().getStatus()).as("越界首段应 404 而非 500").isEqualTo(404);
+        assertThat(JsonPath.<String>read(put.getResponse().getContentAsString(), "$.code"))
+                .isEqualTo("project_not_found");
+        // DELETE 写面对称：同样 404
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/files/" + overflow + "/x.yaml?baseVersion=0")
+                        .header("Authorization", "Bearer " + owner[1]))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("project_not_found"));
+
+        // 读面不 404 亦不 500：无有效角色 → 批量取进 missing
+        MvcResult read = getFiles(owner[1], wsId, overflow + "/x.yaml");
+        assertThat(read.getResponse().getStatus()).isEqualTo(200);
+        assertThat((String) JsonPath.read(read.getResponse().getContentAsString(), "$.missing[0]"))
+                .isEqualTo(overflow + "/x.yaml");
+
+        // batch：越界行 invalid、其余 pushed——逐文件部分成功不被 NFE 整批 500
+        String batch = "{\"files\":["
+                + "{\"path\":\"" + p1 + "/ok.yaml\",\"content\":\"n\",\"baseVersion\":0}"
+                + ",{\"path\":\"" + overflow + "/bad.yaml\",\"content\":\"x\",\"baseVersion\":0}"
+                + "]}";
+        mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/files/batch")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batch))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results", hasSize(2)))
+                .andExpect(jsonPath("$.results[0].status").value("pushed"))
+                .andExpect(jsonPath("$.results[1].status").value("invalid"));
+    }
+
+    /**
+     * 规范形守卫（审查修复）：非规范数字别名（前导零，如 007/0123）按「项目不存在」404 拒绝——
+     * 即便 parse 后命中真实项目也不放行，杜绝同项目双 path 别名（deleteByProjectPrefix 前缀
+     * 清不尽孤儿行）；真实项目 id 的规范形寻址不受影响。
+     */
+    @Test
+    void nonCanonicalProjectIdAliasIsRejected() throws Exception {
+        String[] owner = newUser("c-t23-owner");
+        String wsId = createWorkspace(owner[1], "规范形首段");
+        String p1 = newProject(owner[1], wsId, "g1", "p1");
+
+        // 真实项目规范形 → 正常写入（201）
+        assertThat(putFile(owner[1], wsId, p1 + "/x.yaml", "x", 0).getResponse().getStatus())
+                .as("规范形 id 寻址不受守卫影响").isEqualTo(201);
+
+        // 前导零别名（parse 后命中真实项目 p1）→ 404 project_not_found（非 500、非 201）
+        String alias = "0" + p1;
+        MvcResult aliasPut = putFile(owner[1], wsId, alias + "/x.yaml", "x", 0);
+        assertThat(aliasPut.getResponse().getStatus()).as("别名首段应 404").isEqualTo(404);
+        assertThat(JsonPath.<String>read(aliasPut.getResponse().getContentAsString(), "$.code"))
+                .isEqualTo("project_not_found");
+
+        // 字面 007 同样拒绝（无论是否存在项目 7）
+        MvcResult alias007 = putFile(owner[1], wsId, "007/x.yaml", "x", 0);
+        assertThat(alias007.getResponse().getStatus()).isEqualTo(404);
+        assertThat(JsonPath.<String>read(alias007.getResponse().getContentAsString(), "$.code"))
+                .isEqualTo("project_not_found");
     }
 
     // ---- GET tree ----
@@ -265,7 +339,7 @@ class ContentApiContractTest {
                 .isEqualTo(5);
         assertThat(filterSingle(body, "$.files[?(@.path=='apicc.workspace.yaml')].size", Integer.class))
                 .isEqualTo("root: config".getBytes(StandardCharsets.UTF_8).length);
-        // 实体化：projects[].id 即管理面创建的实体 UUID（不再从路径推导）
+        // 实体化：projects[].id 即管理面创建的实体 id（不再从路径推导；BIGINT 化后对外为字符串化数字）
         assertThat(filterSingle(body, "$.projects[?(@.name=='p1')].id", String.class)).isEqualTo(p1);
     }
 
@@ -463,8 +537,8 @@ class ContentApiContractTest {
                 .andExpect(jsonPath("$.currentHash").value(nullValue()));
     }
 
-    /** 非法路径族 → 400 path_invalid：..、反斜杠、尾斜杠、点段、盘符、非 UUID 首段、超长（>512）。
-     *  注：盘符 "C:/evil.yaml" 现由「首段非 UUID」规则拦截（通用校验已移除禁冒号——id 段无冒号风险）；
+    /** 非法路径族 → 400 path_invalid：..、反斜杠、尾斜杠、点段、盘符、非数字首段、超长（>512）。
+     *  注：盘符 "C:/evil.yaml" 现由「首段非数字 id」规则拦截（通用校验已移除禁冒号——id 段无冒号风险）；
      *  绝对路径/空段仍由通用校验拒绝（URL 面经 MockMvc/URI 链折叠 //，故空段经 batch 面 JSON 体钉住）。 */
     @Test
     void putRejectsInvalidPathsWithPathInvalid() throws Exception {
@@ -473,7 +547,7 @@ class ContentApiContractTest {
         String p1 = newProject(owner[1], wsId, "g1", "p1");
         for (String bad : new String[]{
                 "../evil.yaml", "a/../b.yaml", "a\\b.yaml", "a/b/", ".", "a/./b.yaml", "C:/evil.yaml",
-                "not-a-uuid/apis/a.yaml", "a.yaml",
+                "not-a-number/apis/a.yaml", "a.yaml",
                 // 超长：>512（与 DDL VARCHAR(512) 对齐）——未钉时 insertNew 抛 DataIntegrityViolation → 500
                 p1 + "/" + "x".repeat(520) + ".yaml"}) {
             MvcResult result = putFile(owner[1], wsId, bad, "x", 0);
@@ -598,7 +672,7 @@ class ContentApiContractTest {
 
     // ---- POST files/batch ----
 
-    /** 混合结果部分成功：pushed/conflict/forbidden/invalid 逐文件独立（含项目不存在与非 UUID 首段行）。 */
+    /** 混合结果部分成功：pushed/conflict/forbidden/invalid 逐文件独立（含项目不存在与非数字首段行）。 */
     @Test
     void batchPushReturnsPartialSuccessWithMixedStatuses() throws Exception {
         String[] owner = newUser("c-t16-owner");
@@ -614,7 +688,8 @@ class ContentApiContractTest {
         assertThat(putFile(owner[1], wsId, p2 + "/seed.yaml", "s", 0).getResponse().getStatus()).isEqualTo(201);
         setAcl(owner[1], wsId, p2, editor[0], "NONE");
 
-        String ghost = java.util.UUID.randomUUID().toString();
+        // 幽灵项目 id 用不存在的大数字（BIGINT 化口径 5）；与非数字首段 → 逐文件 invalid 行，不整批失败
+        String ghost = "999999";
         String batch = "{\"files\":["
                 + "{\"path\":\"" + p3 + "/new.yaml\",\"content\":\"n\",\"baseVersion\":0}"
                 + ",{\"path\":\"" + p1 + "/exist.yaml\",\"content\":\"new\",\"baseVersion\":1}"
@@ -625,9 +700,9 @@ class ContentApiContractTest {
                 + ",{\"path\":\"a//b.yaml\",\"content\":\"x\",\"baseVersion\":0}"
                 + ",{\"path\":\"" + p1 + "/" + "x".repeat(520) + ".yaml\",\"content\":\"x\",\"baseVersion\":0}"
                 + ",{\"path\":\"" + p1 + "/exist.yaml\",\"content\":\"newer\",\"baseVersion\":99}"
-                // 项目不存在（写面 404）与非 UUID 首段 → 逐文件 invalid 行，不整批失败
+                // 项目不存在（写面 404）与非数字首段 → 逐文件 invalid 行，不整批失败
                 + ",{\"path\":\"" + ghost + "/new.yaml\",\"content\":\"x\",\"baseVersion\":0}"
-                + ",{\"path\":\"not-a-uuid/new.yaml\",\"content\":\"x\",\"baseVersion\":0}"
+                + ",{\"path\":\"not-a-number/new.yaml\",\"content\":\"x\",\"baseVersion\":0}"
                 + "]}";
         mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/files/batch")
                         .header("Authorization", "Bearer " + editor[1])
@@ -711,14 +786,14 @@ class ContentApiContractTest {
         assertThat(putFile(owner[1], wsId, path, content, 0).getResponse().getStatus()).isEqualTo(201);
         assertThat(jdbc.queryForObject(
                 "SELECT content FROM file_versions WHERE workspace_id = ? AND path = ?",
-                String.class, wsId, path)).isEqualTo(content);
+                String.class, Long.parseLong(wsId), path)).isEqualTo(content);
 
         // 变更推进：bump 与内容写入同一条 UPDATE——同事务天然无撕裂，content 列随版本同步刷新
         String v2 = "第二版内容 changed 456";
         assertThat(putFile(owner[1], wsId, path, v2, 1).getResponse().getStatus()).isEqualTo(201);
         assertThat(jdbc.queryForObject(
                 "SELECT content FROM file_versions WHERE workspace_id = ? AND path = ?",
-                String.class, wsId, path)).isEqualTo(v2);
+                String.class, Long.parseLong(wsId), path)).isEqualTo(v2);
 
         // 磁盘内容树退役：历史落盘位置（data-dir 旧默认值 ./server-data）无文件（workspaces 根目录可能因历史运行残留，只断言文件路径不存在）
         assertThat(Files.notExists(Path.of("server-data", "workspaces", wsId, path)))
@@ -739,7 +814,7 @@ class ContentApiContractTest {
                 .andExpect(jsonPath("$.code").value("forbidden"));
         assertThat(putFile(outsider[1], wsId, "a.yaml", "x", 0).getResponse().getStatus()).isEqualTo(403);
 
-        mockMvc.perform(get("/api/v1/workspaces/" + java.util.UUID.randomUUID() + "/tree")
+        mockMvc.perform(get("/api/v1/workspaces/999999/tree")
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("workspace_not_found"));

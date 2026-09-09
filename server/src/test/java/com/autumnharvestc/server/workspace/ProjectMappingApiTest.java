@@ -335,11 +335,12 @@ class ProjectMappingApiTest {
                 .isEqualTo(200);
 
         // 非成员 → 403 forbidden（守卫先于一切）；未知工作区 → 404 workspace_not_found
+        // （幽灵 id 用不存在的大数字——BIGINT 化口径 5，id 为数字）
         String outsider = registerAndGetToken("oscar-mapping");
         postMapping(outsider, wsId, entriesOf(entry("任意组", "任意项目", false)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("forbidden"));
-        postMapping(admin, java.util.UUID.randomUUID().toString(), entriesOf(entry("组", "项目", false)))
+        postMapping(admin, "999999", entriesOf(entry("组", "项目", false)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("workspace_not_found"));
     }

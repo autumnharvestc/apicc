@@ -217,11 +217,12 @@ class AdminUsersApiTest {
                         .content("{\"workspaceId\":\"whatever\",\"role\":\"OWNER\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("validation_failed"));
-        // workspaceId 不存在 → 404 workspace_not_found（对齐 user 侧与工作区面口径）
+        // workspaceId 不存在 → 404 workspace_not_found（对齐 user 侧与工作区面口径；
+        // 幽灵 id 用不存在的大数字——2026-09-09 BIGINT 化后 id 为数字，非数字在 parse 层即 400）
         mockMvc.perform(put("/api/v1/admin/users/" + bobId + "/workspace-role")
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"workspaceId\":\"no-such-workspace\",\"role\":\"ADMIN\"}"))
+                        .content("{\"workspaceId\":\"999999\",\"role\":\"ADMIN\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("workspace_not_found"));
     }

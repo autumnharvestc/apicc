@@ -15,7 +15,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.UUID;
 
 /**
  * 认证用例（规格 m3 §2 D4 / §3.1）：注册（bcrypt + 开关）、登录（签发不透明 token）、登出（吊销）。
@@ -59,21 +58,23 @@ public class AuthService {
         users.findByUsername(request.username()).ifPresent(existing -> {
             throw new ApiException(HttpStatus.CONFLICT, "username_taken", "用户名已存在");
         });
+        // id 待生成（null = insert 后由仓储回填，规格 2026-09-09 BIGINT 化全局不变量 6）
         UserAccount account = new UserAccount(
-                UUID.randomUUID().toString(),
+                null,
                 request.username(),
                 passwordEncoder.encode(request.password()),
                 request.displayName().trim(),
                 PlatformRole.USER,
                 false,
                 Instant.now());
+        UserAccount saved;
         try {
-            users.insert(account);
+            saved = users.insert(account);
         } catch (DuplicateKeyException ex) {
             // 并发同名注册兜底：users.username 唯一约束
             throw new ApiException(HttpStatus.CONFLICT, "username_taken", "用户名已存在");
         }
-        return UserView.of(account);
+        return UserView.of(saved);
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.admin;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.store.MembershipRepo;
 import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.TokenRepo;
@@ -15,7 +16,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 
 /** 账号生命周期用例（规格§2）：超管守卫 + 创建/重置密码/停用启用/入区定角色。 */
 @Service
@@ -48,39 +48,41 @@ public class AdminService {
         return users.findAll();
     }
 
-    /** 创建账号（校验同注册）：重名 → 409 username_taken（含唯一约束竞态兜底，与 AuthService.register 对齐）。 */
+    /** 创建账号（校验同注册）：重名 → 409 username_taken（含唯一约束竞态兜底，与 AuthService.register 对齐）。
+     * id 待生成（null = insert 后由仓储回填，规格 2026-09-09 BIGINT 化全局不变量 6），返回带生成 id 的记录。 */
     public UserAccount create(UserAccount caller, AdminRequests.CreateUserRequest request) {
         requireSuperadmin(caller);
         users.findByUsername(request.username()).ifPresent(existing -> {
             throw new ApiException(HttpStatus.CONFLICT, "username_taken", "用户名已存在");
         });
-        UserAccount account = new UserAccount(UUID.randomUUID().toString(), request.username(),
+        UserAccount account = new UserAccount(null, request.username(),
                 encoder.encode(request.password()), request.displayName().trim(),
                 PlatformRole.USER, false, Instant.now());
         try {
-            users.insert(account);
+            return users.insert(account);
         } catch (DuplicateKeyException ex) {
             // 并发同名创建兜底：users.username 唯一约束
             throw new ApiException(HttpStatus.CONFLICT, "username_taken", "用户名已存在");
         }
-        return account;
     }
 
     public void resetPassword(UserAccount caller, String userId, String newPassword) {
         requireSuperadmin(caller);
-        users.findById(userId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "未找到账号"));
-        users.updatePassword(userId, encoder.encode(newPassword));
-        tokens.revokeAllByUser(userId); // 重置即踢下线
+        long targetId = EntityIds.parse(userId);
+        users.findById(targetId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "未找到账号"));
+        users.updatePassword(targetId, encoder.encode(newPassword));
+        tokens.revokeAllByUser(targetId); // 重置即踢下线
     }
 
     public void setDisabled(UserAccount caller, String userId, boolean disabled) {
         requireSuperadmin(caller);
-        if (caller.id().equals(userId) && disabled) {
+        long targetId = EntityIds.parse(userId);
+        if (caller.id() != null && caller.id() == targetId && disabled) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "cannot_disable_self", "不能停用自己的账号");
         }
-        users.findById(userId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "未找到账号"));
-        users.setDisabled(userId, disabled);
-        if (disabled) tokens.revokeAllByUser(userId);
+        users.findById(targetId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "未找到账号"));
+        users.setDisabled(targetId, disabled);
+        if (disabled) tokens.revokeAllByUser(targetId);
     }
 
     /**
@@ -91,9 +93,12 @@ public class AdminService {
      */
     public void setWorkspaceRole(UserAccount caller, String userId, String workspaceId, String role) {
         requireSuperadmin(caller);
-        users.findById(userId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "未找到账号"));
-        workspaces.findById(workspaceId)
+        long targetId = EntityIds.parse(userId);
+        users.findById(targetId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "未找到账号"));
+        // workspaceId 为字符串化数字（workspaces.id BIGINT 化，2026-09-09 任务 3 收口）：先鉴权后 parse
+        long wsId = EntityIds.parse(workspaceId);
+        workspaces.findById(wsId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "workspace_not_found", "工作区不存在"));
-        memberships.upsert(workspaceId, userId, role);
+        memberships.upsert(wsId, targetId, role);
     }
 }

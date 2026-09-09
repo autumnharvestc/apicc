@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.core.PermissionService;
 import com.autumnharvestc.server.core.Role;
 import com.autumnharvestc.server.store.MembershipRepo;
@@ -41,19 +42,24 @@ public class MemberService {
 
     /** 成员清单（规格 §3.2：[{userId, username, displayName, role}]，权限=成员）。 */
     public List<MemberView> list(UserAccount caller, String workspaceId) {
-        guard.requireMember(workspaceId, caller);
-        return memberships.listMembers(workspaceId).stream()
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireMember(wsId, caller);
+        return memberships.listMembers(wsId).stream()
                 .map(MemberView::of)
                 .toList();
     }
 
-    /** 添加/变更成员角色（规格 §3.2：ADMIN+；规则见类注）。返回成员视图（变更后的角色）。 */
+    /** 添加/变更成员角色（规格 §3.2：ADMIN+；规则见类注）。返回成员视图（变更后的角色）。
+     * 路径 userId 为字符串化数字；先鉴权后 parse（与 AdminService 口径一致：无权调用者 403，
+     * 鉴权通过者传非数字才 400 validation_failed——BIGINT 化口径 5）。 */
     public MemberView put(UserAccount caller, String workspaceId, String targetUserId, SetMemberRoleRequest request) {
-        WorkspaceGuard.Access access = guard.requireAdmin(workspaceId, caller);
-        UserAccount target = users.findById(targetUserId)
+        long wsId = EntityIds.parse(workspaceId);
+        WorkspaceGuard.Access access = guard.requireAdmin(wsId, caller);
+        long targetId = EntityIds.parse(targetUserId);
+        UserAccount target = users.findById(targetId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "目标用户不存在"));
 
-        Optional<Role> currentRole = memberships.findRole(workspaceId, targetUserId);
+        Optional<Role> currentRole = memberships.findRole(wsId, targetId);
         if (currentRole.isPresent() && currentRole.get() == Role.OWNER) {
             // 裁定 C 平规则：OWNER 不可被变更（含 OWNER 自我降权——自我降权须走转让）
             throw new ApiException(HttpStatus.FORBIDDEN, "owner_immutable", "不能变更 OWNER 的角色");
@@ -64,41 +70,44 @@ public class MemberService {
             }
             // 转让（裁定 C）：先确保新 OWNER 就位，再把原 OWNER 降为 ADMIN（单次 PUT 完成）
             if (currentRole.isPresent()) {
-                memberships.updateRole(workspaceId, targetUserId, Role.OWNER);
+                memberships.updateRole(wsId, targetId, Role.OWNER);
             } else {
-                memberships.insert(workspaceId, targetUserId, Role.OWNER);
+                memberships.insert(wsId, targetId, Role.OWNER);
             }
-            memberships.updateRole(workspaceId, caller.id(), Role.ADMIN);
+            memberships.updateRole(wsId, caller.id(), Role.ADMIN);
         } else if (currentRole.isPresent()) {
-            memberships.updateRole(workspaceId, targetUserId, request.role());
+            memberships.updateRole(wsId, targetId, request.role());
         } else {
             // 裁定 C：非成员添加 = 直接创建 membership 行
-            memberships.insert(workspaceId, targetUserId, request.role());
+            memberships.insert(wsId, targetId, request.role());
         }
-        return new MemberView(target.id(), target.username(), target.displayName(), request.role());
+        return new MemberView(String.valueOf(target.id()), target.username(), target.displayName(), request.role());
     }
 
-    /** 移除成员（规格 §3.2：ADMIN+，不能移除 OWNER）。 */
+    /** 移除成员（规格 §3.2：ADMIN+，不能移除 OWNER）。先鉴权后 parse 路径 userId（BIGINT 化口径 5）。 */
     public void delete(UserAccount caller, String workspaceId, String targetUserId) {
-        guard.requireAdmin(workspaceId, caller);
-        Role targetRole = memberships.findRole(workspaceId, targetUserId)
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
+        long targetId = EntityIds.parse(targetUserId);
+        Role targetRole = memberships.findRole(wsId, targetId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "member_not_found", "目标不是工作区成员"));
         if (targetRole == Role.OWNER) {
             throw new ApiException(HttpStatus.FORBIDDEN, "owner_immutable", "不能移除 OWNER");
         }
-        memberships.delete(workspaceId, targetUserId);
+        memberships.delete(wsId, targetId);
     }
 
     /** 成员候选搜索（规格 2026-09-09）：权限同添加成员（ADMIN+）；q 必填非空、trim 后 ≤32 字符，
      * limit 缺省 10、夹取 1..50。只回非成员候选（排除停用账号在 SQL 层）。 */
     public List<UserCandidateView> candidates(UserAccount caller, String workspaceId, String q, Integer limit) {
-        guard.requireAdmin(workspaceId, caller);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
         String keyword = q == null ? "" : q.trim();
         if (keyword.isEmpty() || keyword.length() > 32) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "validation_failed", "搜索关键字必填且不超过 32 字符");
         }
         int capped = limit == null ? 10 : Math.max(1, Math.min(50, limit));
-        return users.searchCandidates(workspaceId, keyword, capped).stream()
+        return users.searchCandidates(wsId, keyword, capped).stream()
                 .map(UserCandidateView::of)
                 .toList();
     }

@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.store.AclRepo;
 import com.autumnharvestc.server.store.ProjectRepo;
 import com.autumnharvestc.server.store.UserAccount;
@@ -34,36 +35,45 @@ public class ProjectAclService {
         this.guard = guard;
     }
 
-    /** ACL 清单（规格 §3.3：[{userId, role}]）。 */
+    /** ACL 清单（规格 §3.3：[{userId, role}]）。先鉴权后 parse（BIGINT 化口径 5）。 */
     public List<AclEntryView> list(UserAccount caller, String workspaceId, String projectId) {
-        guard.requireAdmin(workspaceId, caller);
-        requireProjectInWorkspace(workspaceId, projectId);
-        return acl.listByProject(workspaceId, projectId).stream()
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
+        long pid = EntityIds.parse(projectId);
+        requireProjectInWorkspace(wsId, pid);
+        return acl.listByProject(wsId, pid).stream()
                 .map(AclEntryView::of)
                 .toList();
     }
 
-    /** 置/覆盖 ACL 行（规格 §3.3：PUT {userId, role}）。 */
+    /** 置/覆盖 ACL 行（规格 §3.3：PUT {userId, role}）。请求体 userId 为字符串化数字；
+     * 先鉴权后 parse（与 AdminService 口径一致——无权调用者 403，非数字 id 不泄露解析层）。 */
     public AclEntryView put(UserAccount caller, String workspaceId, String projectId, SetAclRequest request) {
-        guard.requireAdmin(workspaceId, caller);
-        requireProjectInWorkspace(workspaceId, projectId);
-        UserAccount target = users.findById(request.userId())
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
+        long pid = EntityIds.parse(projectId);
+        requireProjectInWorkspace(wsId, pid);
+        long targetUserId = EntityIds.parse(request.userId());
+        UserAccount target = users.findById(targetUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "目标用户不存在"));
-        acl.upsert(workspaceId, projectId, target.id(), request.role());
-        return new AclEntryView(target.id(), request.role());
+        acl.upsert(wsId, pid, targetUserId, request.role());
+        return new AclEntryView(String.valueOf(target.id()), request.role());
     }
 
-    /** 删 ACL 行=恢复工作区角色继承（规格 §3.3 括注；DELETE 同路径 ?userId=；幂等 204）。 */
+    /** 删 ACL 行=恢复工作区角色继承（规格 §3.3 括注；DELETE 同路径 ?userId=；幂等 204）。先鉴权后 parse。 */
     public void delete(UserAccount caller, String workspaceId, String projectId, String targetUserId) {
-        guard.requireAdmin(workspaceId, caller);
-        requireProjectInWorkspace(workspaceId, projectId);
-        acl.delete(workspaceId, projectId, targetUserId);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
+        long pid = EntityIds.parse(projectId);
+        requireProjectInWorkspace(wsId, pid);
+        long targetId = EntityIds.parse(targetUserId);
+        acl.delete(wsId, pid, targetId);
     }
 
     /** 项目须存在于该工作区（跨工作区项目 id 按 404 project_not_found 处理，口径同 ProjectService）。 */
-    private void requireProjectInWorkspace(String workspaceId, String projectId) {
+    private void requireProjectInWorkspace(long workspaceId, long projectId) {
         projects.find(projectId)
-                .filter(project -> project.workspaceId().equals(workspaceId))
+                .filter(project -> project.workspaceId() == workspaceId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "project_not_found", "项目不存在"));
     }
 }

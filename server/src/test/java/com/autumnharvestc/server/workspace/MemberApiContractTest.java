@@ -14,7 +14,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.time.Instant;
-import java.util.UUID;
 
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
@@ -272,12 +271,20 @@ class MemberApiContractTest {
                     .andExpect(jsonPath("$.code").value("forbidden"));
         }
 
-        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + UUID.randomUUID())
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + "999999")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\":\"VIEWER\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("user_not_found"));
+
+        // 非数字 userId（BIGINT 化口径 5）：400 validation_failed（EntityIds.parse 守卫）
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/not-a-number")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"role\":\"VIEWER\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
 
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + editor[0])
                         .header("Authorization", "Bearer " + owner[1])
@@ -336,7 +343,7 @@ class MemberApiContractTest {
         String[] owner = newUser("m-zoe");
         String[] editor = newUser("m-aa");
         String[] viewer = newUser("m-bb");
-        String outsider = newUser("m-outsider3")[1];
+        String[] outsider = newUser("m-outsider3");
         String wsId = createWorkspace(owner[1], "DELETE校验");
         putMember(owner[1], wsId, editor[0], "EDITOR");
         putMember(owner[1], wsId, viewer[0], "VIEWER");
@@ -347,10 +354,11 @@ class MemberApiContractTest {
                 .andExpect(jsonPath("$.code").value("forbidden"));
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + viewer[0])
-                        .header("Authorization", "Bearer " + outsider))
+                        .header("Authorization", "Bearer " + outsider[1]))
                 .andExpect(status().isForbidden());
 
-        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + outsider)
+        // 注册但非成员的 userId → 404 member_not_found（id 为字符串化数字，经 EntityIds.parse）
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + outsider[0])
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("member_not_found"));
@@ -409,7 +417,8 @@ class MemberApiContractTest {
     void candidatesExcludeDisabledUsers() throws Exception {
         String[] owner = newUser("scd-owner");
         String ws = createWorkspace(owner[1], "停用候选工作区");
-        users.insert(new UserAccount(UUID.randomUUID().toString(), "scd-dead",
+        // 直构 id=null（待生成，全局不变量 7）
+        users.insert(new UserAccount(null, "scd-dead",
                 "$2a$10$disabledplaceholderhashdeadbeefcafebabe0000000000000000", "停用者",
                 PlatformRole.USER, true, Instant.now()));
 

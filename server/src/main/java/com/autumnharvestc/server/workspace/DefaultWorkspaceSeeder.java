@@ -17,7 +17,6 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
-import java.util.UUID;
 
 /**
  * 默认工作区启动种子（规格 2026-09-08 §1/§4）：服务端首次启动自动创建唯一「默认工作区」
@@ -29,8 +28,8 @@ import java.util.UUID;
  * uk_workspaces_name 唯一约束兜底，落败方收 DuplicateKeyException 视为「已被对端建好」静默忽略。
  * @Order(2) 钉在 AdminBootstrap（@Order(1)）之后：OWNER 行插入依赖超管账号先建（启动时无超管
  * 理论不可达，出现则以 WARN 留痕并跳过——connect 对非成员 403 由守卫自然处理）。
- * created_by 存空串：系统种子无创建者（列 NOT NULL 但无外键；规格 §1 工作区退化为内部实现，
- * 创建者语义只属于用户经 API 建区的路径）。
+ * created_by 存 0：系统种子无创建者（列 NOT NULL 但无外键；规格 §1 工作区退化为内部实现，
+ * 创建者语义只属于用户经 API 建区的路径；BIGINT 化后以 0 作「无创建者」哨兵）。
  * 内容入库（规格 §5）后磁盘内容树退役：种子不再做任何目录操作。
  */
 @Component
@@ -41,6 +40,9 @@ public class DefaultWorkspaceSeeder implements ApplicationRunner {
 
     /** 规格 2026-09-08 §1：默认工作区名称固定。 */
     public static final String DEFAULT_WORKSPACE_NAME = "默认工作区";
+
+    /** created_by 的「系统种子无创建者」哨兵（列 NOT NULL 但无外键，规格 §1）。 */
+    private static final long NO_CREATOR = 0L;
 
     private final WorkspaceRepo workspaces;
     private final GroupRepo groups;
@@ -62,16 +64,17 @@ public class DefaultWorkspaceSeeder implements ApplicationRunner {
         if (workspaces.count() > 0) {
             return;
         }
-        WorkspaceRecord workspace = new WorkspaceRecord(
-                UUID.randomUUID().toString(), DEFAULT_WORKSPACE_NAME, "", Instant.now());
+        // BIGINT 化（规格 2026-09-09）：id 由 IDENTITY 生成，insert 返回补全 id 的记录供联动行引用
+        WorkspaceRecord workspace;
         try {
-            workspaces.insert(workspace);
+            workspace = workspaces.insert(new WorkspaceRecord(
+                    null, DEFAULT_WORKSPACE_NAME, NO_CREATOR, Instant.now()));
         } catch (DuplicateKeyException ex) {
             // 并发兜底：另一实例已建默认工作区（uk_workspaces_name）——视为已就位
             return;
         }
         groups.insert(new GroupRecord(
-                UUID.randomUUID().toString(), workspace.id(),
+                null, workspace.id(),
                 WorkspaceService.DEFAULT_GROUP_NAME, true, Instant.now()));
         grantOwnerToFirstSuperadmin(workspace.id());
         log.info("首次启动：已创建默认工作区「{}」与默认分组「{}」",
@@ -79,7 +82,7 @@ public class DefaultWorkspaceSeeder implements ApplicationRunner {
     }
 
     /** 裁定②：首个超管自动入区 OWNER（幂等：已有成员关系即跳过；无超管 WARN 跳过，见类注）。 */
-    private void grantOwnerToFirstSuperadmin(String workspaceId) {
+    private void grantOwnerToFirstSuperadmin(long workspaceId) {
         users.findAll().stream()
                 .filter(user -> user.role() == PlatformRole.SUPERADMIN)
                 .findFirst()

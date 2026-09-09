@@ -8,7 +8,8 @@
  * 任务 3 扩展：当前在线工作区状态（openWorkspace/closeWorkspace，纯状态操作不发网络）+
  * 树缓存（getTreeView 首取后缓存，内容变更（put/batch/delete 成功）即失效，切换/关闭重置）。
  * 树映射 onlineTreeToDto 为纯函数（裁定 A）：服务端不回树结构，由 files path 清单推导
- * projects/collections/folders/apis 层级（path 实体化 2026-09-08：首段=项目实体 UUID），
+ * projects/collections/folders/apis 层级（path 实体化 2026-09-08：首段=项目实体 id；
+ * 2026-09-09 服务端 BIGINT 化后项目 id 为数字，对外字符串化数字），
  * 工作流/环境/配置文件映射为只读 file 叶（裁定 B：只读浏览，不做编辑器）。
  * 计划 C 任务 3 分组层：getTreeView 同取 /groups 清单（groupId→组名反查表，失败降级空表）
  * 注入映射——有组归属且组名可得的项目挂 `group:<groupId>` 合成组节点，孤儿项目直挂根。
@@ -45,12 +46,13 @@ export interface OnlineWorkspaceState {
 }
 
 // —— onlineTreeToDto（裁定 A：path 清单 → 侧树层级，纯函数）——
-// path 实体化（2026-09-08）：内容 path 首段=项目实体 UUID，服务端已无 groups/<组>/projects/<名>
-// 名称目录（旧形态服务端 400 path_invalid、不再产出）；tree.projects 行（实体表产出）携带项目
-// 名称与 groupId，分组名不再经 tree 下发——侧树项目节点以 projectId 关联（id=项目 id）直接挂根。
+// path 实体化（2026-09-08）：内容 path 首段=项目实体 id（2026-09-09 服务端 BIGINT 化后为数字），
+// 服务端已无 groups/<组>/projects/<名> 名称目录（旧形态服务端 400 path_invalid、不再产出）；
+// tree.projects 行（实体表产出）携带项目名称与 groupId，分组名不再经 tree 下发——侧树项目节点
+// 以 projectId 关联（id=项目 id）直接挂根。
 
-/** 项目 id 形态：UUID（8-4-4-4-12 hex，与服务端 ContentPaths.PROJECT_ID_PATTERN 同口径）。 */
-const PROJECT_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+/** 项目 id 形态：十进制数字（服务端 BIGINT 实体主键，与服务端 ContentPaths.PROJECT_ID_PATTERN 同口径）。 */
+const PROJECT_ID_PATTERN = /^\d+$/;
 
 /** path 解析产物：项目内布局逐段匹配；未匹配 = 杂散文件，不进树。 */
 interface ParsedPath {
@@ -64,7 +66,7 @@ interface ParsedPath {
 
 function parseWorkspacePath(path: string): ParsedPath | null {
   const segs = path.split("/");
-  // 首段为合法 UUID（且至少两层）即视为项目内文件；裸 UUID 单段不归属（防文件占位目录，
+  // 首段为合法数字 id（且至少两层）即视为项目内文件；裸数字单段不归属（防文件占位目录，
   // 与服务端 parseProject 同口径）；根级仅 apicc.workspace.yaml（onlineTreeToDto 直取）。
   if (segs.length < 2 || !PROJECT_ID_PATTERN.test(segs[0]!)) return null;
   const project = segs[0]!;

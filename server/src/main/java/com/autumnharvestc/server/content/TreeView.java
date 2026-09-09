@@ -9,13 +9,13 @@ import java.util.List;
  */
 public record TreeView(String workspaceId, long rootVersion, List<FileEntry> files, List<ProjectEntry> projects) {
 
-    /** 文件行：path 为相对工作区根的 / 分隔路径（首段=项目 UUID）；hash=sha-256 hex；size=content 列 UTF-8 字节长（OCTET_LENGTH，§5 内容入库）。 */
+    /** 文件行：path 为相对工作区根的 / 分隔路径（首段=项目数字 id，BIGINT 化）；hash=sha-256 hex；size=content 列 UTF-8 字节长（OCTET_LENGTH，§5 内容入库）。 */
     public record FileEntry(String path, String hash, long version, long size) {
     }
 
     /**
-     * 项目行：id 为管理面创建的实体项目 UUID（同名项目各异）；groupId 为所属分组实体 id；
-     * myRole 为调用者在该项目的有效角色（NONE/不可读行不出现）。
+     * 项目行：id 为管理面创建的实体项目主键（同名项目各异；BIGINT 化后对外字符串化数字，全局不变量 1）；
+     * groupId 为所属分组实体 id；myRole 为调用者在该项目的有效角色（NONE/不可读行不出现）。
      */
     public record ProjectEntry(String id, String name, String groupId, String myRole) {
     }

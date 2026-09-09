@@ -30,8 +30,8 @@ public class WorkspaceGuard {
         this.permissions = permissions;
     }
 
-    /** 成员可访问（任意角色）；返回工作区与角色。 */
-    public Access requireMember(String workspaceId, UserAccount caller) {
+    /** 成员可访问（任意角色）；返回工作区与角色。workspaceId 为 BIGINT（2026-09-09 BIGINT 化）。 */
+    public Access requireMember(long workspaceId, UserAccount caller) {
         WorkspaceRecord workspace = workspaces.findById(workspaceId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "workspace_not_found", "工作区不存在"));
         Role role = permissions.effectiveRole(workspaceId, caller.id())
@@ -40,7 +40,7 @@ public class WorkspaceGuard {
     }
 
     /** ADMIN+ 可访问（管理成员与项目 ACL，D5；isAdmin 含 OWNER）。 */
-    public Access requireAdmin(String workspaceId, UserAccount caller) {
+    public Access requireAdmin(long workspaceId, UserAccount caller) {
         Access access = requireMember(workspaceId, caller);
         if (!permissions.isAdmin(access.role())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "forbidden", "需要 ADMIN 及以上角色");
@@ -49,7 +49,7 @@ public class WorkspaceGuard {
     }
 
     /** 仅 OWNER（删除/转让工作区，D5）。 */
-    public Access requireOwner(String workspaceId, UserAccount caller) {
+    public Access requireOwner(long workspaceId, UserAccount caller) {
         Access access = requireMember(workspaceId, caller);
         if (!permissions.isOwner(access.role())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "forbidden", "仅工作区 OWNER 可执行");

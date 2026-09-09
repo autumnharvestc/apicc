@@ -8,13 +8,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 任务 2 仓储层单测：tokens 表（H2 内存 + 真实 SQL）。
  * 契约（规格 m3 §2 D4）：服务端只存 SHA-256 哈希；认证查找只接受「未吊销且未过期」的令牌；logout 吊销。
+ * 2026-09-09 BIGINT 化：userId 夹具用小整数（1L/2L）。
  */
 @JdbcTest
 @Import(TokenRepo.class)
@@ -25,7 +25,11 @@ class TokenRepoTest {
     private TokenRepo repo;
 
     private static TokenRecord newToken(String hash, Instant expiresAt) {
-        return new TokenRecord(hash, UUID.randomUUID().toString(), expiresAt, false,
+        return newToken(hash, 1L, expiresAt);
+    }
+
+    private static TokenRecord newToken(String hash, Long userId, Instant expiresAt) {
+        return new TokenRecord(hash, userId, expiresAt, false,
                 Instant.now().truncatedTo(ChronoUnit.MICROS));
     }
 
@@ -66,5 +70,18 @@ class TokenRepoTest {
     @Test
     void unknownHashReturnsEmpty() {
         assertThat(repo.findActiveByHash("d".repeat(64))).isEmpty();
+    }
+
+    /** 停用账号面：revokeAllByUser 只吊销目标用户的活动令牌（BIGINT userId）。 */
+    @Test
+    void revokeAllByUserRevokesOnlyThatUsersTokens() {
+        Instant expires = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MICROS);
+        repo.insert(newToken("e".repeat(64), 1L, expires));
+        repo.insert(newToken("f".repeat(64), 2L, expires));
+
+        repo.revokeAllByUser(1L);
+
+        assertThat(repo.findActiveByHash("e".repeat(64))).isEmpty();
+        assertThat(repo.findActiveByHash("f".repeat(64))).isPresent();
     }
 }

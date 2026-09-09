@@ -162,7 +162,7 @@ class AdminBootstrapTest {
         when(repo.existsSuperadmin()).thenReturn(false);
         when(repo.count()).thenReturn(3L);
         when(repo.findByUsername("admin")).thenReturn(java.util.Optional.of(
-                new UserAccount("legacy", "admin", "$2legacy", "旧账号", PlatformRole.USER, false, Instant.now())));
+                new UserAccount(null, "admin", "$2legacy", "旧账号", PlatformRole.USER, false, Instant.now())));
         new AdminBootstrap(repo, "", "").run(null);
         var captor = ArgumentCaptor.forClass(UserAccount.class);
         verify(repo).insert(captor.capture());

@@ -145,15 +145,15 @@ describe("在线契约 schema（规格 §3 fixture 往返）", () => {
     expect(OnlineBatchResultSchema.parse(result)).toEqual(result);
   });
 
-  it("path 规则：禁止 ..、绝对路径、反斜杠、空段；禁冒号已放开（任务 7 对齐服务端实体化——盘符/首段合法性由服务端「首段非 UUID」规则拦）", () => {
+  it("path 规则：禁止 ..、绝对路径、反斜杠、空段；禁冒号已放开（任务 7 对齐服务端实体化——盘符/首段合法性由服务端「首段非数字 id」规则拦）", () => {
     expect(OnlinePathSchema.safeParse("../etc/passwd").success).toBe(false);
     expect(OnlinePathSchema.safeParse("a/../b").success).toBe(false);
     expect(OnlinePathSchema.safeParse("/abs/path").success).toBe(false);
     expect(OnlinePathSchema.safeParse("a\\b").success).toBe(false);
     expect(OnlinePathSchema.safeParse("a//b").success).toBe(false);
     expect(OnlinePathSchema.safeParse("").success).toBe(false);
-    // 实体化形态（首段=项目 UUID）与含冒号路径均过客户端结构校验（首段合法性服务端为准）
-    expect(OnlinePathSchema.safeParse("0f8d3a2c-a1b2-c3d4-e5f6-0123456789ab/collections/c/apis/a/api.yaml").success).toBe(true);
+    // 实体化形态（首段=项目数字 id，2026-09-09 BIGINT 化）与含冒号路径均过客户端结构校验（首段合法性服务端为准）
+    expect(OnlinePathSchema.safeParse("101/collections/c/apis/a/api.yaml").success).toBe(true);
     expect(OnlinePathSchema.safeParse("apicc.workspace.yaml").success).toBe(true);
     expect(OnlinePathSchema.safeParse("C:/etc/passwd").success).toBe(true);
     expect(OnlinePathSchema.safeParse("a:b.yaml").success).toBe(true);
