@@ -544,13 +544,16 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           }
           const projectIdByDir = new Map<string, string>();
           for (const batch of chunk([...dirs.values()], 200)) {
-            const result = await api.onlineProjectMapping({
-              workspaceId,
-              entries: batch.map((d) => ({ group: d.group, project: d.project, createIfMissing: true })),
-            });
-            for (const row of result.mappings) {
-              if (row.projectId) projectIdByDir.set(`${row.group}/${row.project}`, row.projectId);
-              // missing/forbidden 行（三态之二）不进映射表 → 该项目文件在下方按 failed 呈现
+            const entries = batch.map((d) => ({ group: d.group, project: d.project, createIfMissing: true }));
+            const result = await api.onlineProjectMapping({ workspaceId, entries });
+            // 行按**条目位置**关联（服务端 ProjectMappingService 按 entries 顺序逐行产出，任务 1
+            // 已核实），映射表 key 取本地目录原名（entries 即 scan 产物）——不按服务端回显名回查：
+            // 服务端对名称 trim() 后回显（审查重要 1），本地目录名带首尾空格时按名回查恒 miss →
+            // 映射实际成功（且已留建实体副作用）却整项目误计 failed 且重试复现。
+            for (let i = 0; i < entries.length; i++) {
+              const row = result.mappings[i];
+              if (row?.projectId) projectIdByDir.set(`${entries[i]!.group}/${entries[i]!.project}`, row.projectId);
+              // missing/forbidden 行（三态之二）与缺行（协议异常防护）不进映射表 → 该项目文件按 failed 呈现
             }
           }
           // 2. 路径换算：项目内文件 → <projectId>/<项目内相对路径>；实体→本地对照表供明细

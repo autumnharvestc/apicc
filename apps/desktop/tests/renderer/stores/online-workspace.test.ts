@@ -353,6 +353,30 @@ describe("迁移-推送（步骤 1④ + 计划 C 任务 2：映射桥换算 <pro
     expect(store.onlineTree?.label).toBe(store.activeWorkspace!.name);
   });
 
+  it("推送：本地目录名带首尾空格（服务端 trim 回显）→ 按条目位置关联换算成功，不误报 failed", async () => {
+    // 审查重要 1：服务端对名称 trim() 后回显并建实体——旧实现按回显名回查，本地目录名带
+    // 首尾空格时回查恒 miss → 映射实际成功却整项目误计 failed 且重试复现。修后按条目位置
+    // 关联（mappings[i] ↔ entries[i]，服务端顺序保证），映射表 key 用本地目录原名。
+    const { api, store } = await opened();
+    const localApi = "groups/ 示例分组 /projects/ 示例项目 /空格目录/api.yaml";
+    api.onlineMigrateScan = async () => ({
+      files: [{ path: localApi, hash: "h1", content: "a\n", projectDir: { group: " 示例分组 ", project: " 示例项目 " } }],
+    });
+    const batchCalls: string[][] = [];
+    const originalBatch = api.onlineFilesBatch.bind(api);
+    api.onlineFilesBatch = async (input) => {
+      batchCalls.push(input.files.map((f) => f.path));
+      return originalBatch(input);
+    };
+    await store.migratePush(join(tmpdir(), "apicc-push-trim"));
+    const result = store.migrationResult!;
+    expect(result.failed).toBe(0); // 不再误报 failed（映射实际成功）
+    expect(result.pushed).toBe(1);
+    expect(batchCalls.flat()).toEqual([`${ONLINE_SEED_PROJECT_ID}/空格目录/api.yaml`]); // 已换算实体路径
+    expect(result.details).toEqual([{ path: localApi, action: "pushed" }]); // 明细保持本地原名路径
+    expect(store.error).toBeNull();
+  });
+
   it("推送：映射 missing 行（替身只解析种子目录）→ 该项目全部文件计 failed（本地路径明细，不进 batch）", async () => {
     const { api, store } = await opened();
     api.onlineMigrateScan = async () => ({

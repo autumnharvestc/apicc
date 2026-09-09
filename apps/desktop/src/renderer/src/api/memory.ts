@@ -1072,14 +1072,18 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     // 命中种子目录返回对应实体行（created=false 解析命中，幂等）；未知目录一律 missing:true
     //（不建模按需建实体——真服 createIfMissing 语义由真服 E2E 覆盖）；forbidden 行为真服
     // 越权语义，替身 OWNER 登录态不产出（store 侧三态换算由测试覆写桩钉住）。
+    // 名称按服务端 ProjectMappingService 同语义 **trim() 后解析并回显**（审查重要 1：回显名
+    // ≠ 本地原名是换算按名回查 miss 的缺陷场景锚点，替身必须同构才能复现/守卫该缺陷）。
     async onlineProjectMapping(input: OnlineProjectMappingInput): Promise<OnlineMappingResult> {
       requireOnlineUser();
       return {
-        mappings: input.entries.map((entry) =>
-          entry.group === "示例分组" && entry.project === "示例项目"
-            ? { group: entry.group, project: entry.project, groupId: ONLINE_SEED_GROUP_ID, projectId: ONLINE_SEED_PROJECT_ID, created: false }
-            : { group: entry.group, project: entry.project, missing: true },
-        ),
+        mappings: input.entries.map((entry) => {
+          const group = entry.group.trim();
+          const project = entry.project.trim();
+          return group === "示例分组" && project === "示例项目"
+            ? { group, project, groupId: ONLINE_SEED_GROUP_ID, projectId: ONLINE_SEED_PROJECT_ID, created: false }
+            : { group, project, missing: true };
+        }),
       };
     },
 

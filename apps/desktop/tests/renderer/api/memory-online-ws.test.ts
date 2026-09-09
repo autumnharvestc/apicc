@@ -127,6 +127,18 @@ describe("memory 替身迁移映射桥 + 组清单（计划 C 任务 2，服务�
     ]);
   });
 
+  it("onlineProjectMapping：名称 trim 后解析与回显（服务端 ProjectMappingService 同语义——审查重要 1 缺陷场景锚点）", async () => {
+    const { api } = await loggedIn();
+    const result = await api.onlineProjectMapping({
+      workspaceId: "ws-online-1",
+      entries: [{ group: " 示例分组 ", project: " 示例项目 ", createIfMissing: true }],
+    });
+    // 带首尾空格的本地目录名：替身按 trim 后解析种子实体并回显 trim 名（回显名 ≠ 本地原名）
+    expect(result.mappings).toEqual([
+      { group: "示例分组", project: "示例项目", groupId: ONLINE_SEED_GROUP_ID, projectId: ONLINE_SEED_PROJECT_ID, created: false },
+    ]);
+  });
+
   it("onlineGroupsList：种子分组清单（groupId → 组名反查数据源）；未登录拒绝", async () => {
     const { api } = await loggedIn();
     expect(await api.onlineGroupsList("ws-online-1")).toEqual([
