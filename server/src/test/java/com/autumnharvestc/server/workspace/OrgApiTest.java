@@ -15,6 +15,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -220,8 +221,8 @@ class OrgApiTest {
                 .andExpect(jsonPath("$.code").value("group_not_empty"));
         String temporary = idOf(postGroup(admin, wsId, "临时组").andExpect(status().isCreated()));
         deleteGroup(admin, wsId, temporary).andExpect(status().isNoContent());
-        // 不存在的分组改名/删除 → 404 group_not_found
-        String ghost = java.util.UUID.randomUUID().toString();
+        // 不存在的分组改名/删除 → 404 group_not_found（幽灵 id 用不存在的大数字，BIGINT 化口径 5）
+        String ghost = "999999";
         renameGroup(admin, wsId, ghost, "幻影").andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("group_not_found"));
         deleteGroup(admin, wsId, ghost).andExpect(status().isNotFound())
@@ -252,11 +253,12 @@ class OrgApiTest {
                         .content("{\"groupId\":\"" + g + "\",\"name\":\"" + "p".repeat(65) + "\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("validation_failed"));
-        // 项目建在别的工作区/不存在的分组 → 404 group_not_found（外键不保证同工作区，服务层校验）
+        // 项目建在别的工作区/不存在的分组 → 404 group_not_found（外键不保证同工作区，服务层校验；
+        // 幽灵分组 id 用不存在的大数字——BIGINT 化后 id 为数字）
         mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/projects")
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"groupId\":\"" + java.util.UUID.randomUUID() + "\",\"name\":\"孤儿\"}"))
+                        .content("{\"groupId\":\"999999\",\"name\":\"孤儿\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("group_not_found"));
         // 项目清单：两同名项目均在列且 groupId 正确
@@ -268,20 +270,20 @@ class OrgApiTest {
         // 移动分组 → 204；目标分组不存在 → 404 group_not_found
         String g2 = idOf(postGroup(admin, wsId, "g2").andExpect(status().isCreated()));
         moveProject(admin, wsId, idOf(p2), g2).andExpect(status().isNoContent());
-        moveProject(admin, wsId, idOf(p2), java.util.UUID.randomUUID().toString())
+        moveProject(admin, wsId, idOf(p2), "999999")
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("group_not_found"));
         // 推一个文件进 p1 再删除 p1 → 204；文件行随之消失（file_versions 按 project_id 前缀删除）
         String p1Path = idOf(p1) + "/apis/a/api.yaml";
         putFile(admin, wsId, p1Path, "hello");
-        assertThat(fileVersions.find(wsId, p1Path)).isPresent(); // 级联前基线：行在
+        assertThat(fileVersions.find(Long.parseLong(wsId), p1Path)).isPresent(); // 级联前基线：行在
         deleteProject(admin, wsId, idOf(p1));
-        assertThat(fileVersions.find(wsId, p1Path)).isEmpty(); // 级联后：版本行消失
+        assertThat(fileVersions.find(Long.parseLong(wsId), p1Path)).isEmpty(); // 级联后：版本行消失
         mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/tree").header("Authorization", "Bearer " + admin))
                 .andExpect(jsonPath("$.projects[?(@.id=='" + idOf(p1) + "')]").isEmpty())
                 .andExpect(jsonPath("$.files[?(@.path=='" + p1Path + "')]").isEmpty());
-        // 删除不存在的项目 → 404 project_not_found
-        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + java.util.UUID.randomUUID())
+        // 删除不存在的项目 → 404 project_not_found（幽灵 id 用不存在的大数字）
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/999999")
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("project_not_found"));
@@ -293,9 +295,10 @@ class OrgApiTest {
     void connectReturnsDefaultWorkspace() throws Exception {
         String admin = loginToken("admin", "admin-pass-2026");
         // myRole 按夹具实际对齐：默认工作区由 seeder 建立，首个超管自动 OWNER（裁定②）
+        // workspaceId 形态钉子：对外为字符串化数字（2026-09-09 BIGINT 化，全局不变量 1）
         mockMvc.perform(get("/api/v1/connect").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.workspaceId").isNotEmpty())
+                .andExpect(jsonPath("$.workspaceId").value(matchesPattern("^\\d+$")))
                 .andExpect(jsonPath("$.workspaceName").value("默认工作区"))
                 .andExpect(jsonPath("$.myRole").value("OWNER"));
         // 非成员 → 403 forbidden（裁定②兜底语义：守卫自然处理）

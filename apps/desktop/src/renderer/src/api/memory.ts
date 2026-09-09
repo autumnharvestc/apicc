@@ -123,11 +123,12 @@ import type {
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
 /**
- * 在线替身种子实体 id（path 实体化 2026-09-08：内容 path 首段=项目实体 UUID；分组为管理面
- * 实体、不再有 group.yaml 内容文件）。导出供测试引用种子路径（防字面量漂移）。
+ * 在线替身种子实体 id（path 实体化 2026-09-08：内容 path 首段=项目实体 id；2026-09-09 服务端
+ * BIGINT 化后为数字字符串——树映射 PROJECT_ID_PATTERN 认数字首段；分组为管理面实体、
+ * 不再有 group.yaml 内容文件）。导出供测试引用种子路径（防字面量漂移）。
  */
-export const ONLINE_SEED_GROUP_ID = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
-export const ONLINE_SEED_PROJECT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+export const ONLINE_SEED_GROUP_ID = "301";
+export const ONLINE_SEED_PROJECT_ID = "300";
 
 /**
  * 渲染层测试替身：内存数据 + 与主进程 session 相同语义的树构建与落盘时机。

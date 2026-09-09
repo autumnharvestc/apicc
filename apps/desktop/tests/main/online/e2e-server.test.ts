@@ -211,13 +211,13 @@ const rand = Math.random().toString(36).slice(2, 8);
 const USER_A = { username: `e2e-owner-${rand}`, password: "password8", displayName: "所有者 A" };
 const USER_B = { username: `e2e-member-${rand}`, password: "password8", displayName: "成员 B" };
 
-/** 组织实体夹具（path 实体化 2026-09-08）：内容 path 首段=管理面创建的项目实体 UUID，
- *  在场景步骤 2b 经组织 API（默认分组下建两项目）取实体 id 后赋值。 */
+/** 组织实体夹具（path 实体化 2026-09-08；2026-09-09 BIGINT 化：实体 id 为字符串化数字）：
+ *  内容 path 首段=管理面创建的项目实体 id，在场景步骤 2b 经组织 API（默认分组下建两项目）取实体 id 后赋值。 */
 let groupId = "";
 let P1_ID = "";
 let P2_ID = "";
 
-/** 项目内文件：首段为项目实体 UUID（<projectId>/…）才归属项目。 */
+/** 项目内文件：首段为项目实体数字 id（<projectId>/…）才归属项目。 */
 let P1_FILE_A = "";
 let P1_FILE_B = "";
 let P2_FILE = "";

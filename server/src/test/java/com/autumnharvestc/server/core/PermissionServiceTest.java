@@ -9,7 +9,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
-import java.util.UUID;
+
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 任务 2 权限判定单测（规格 m3 §2 D5，裁定 D）：
  * effectiveRole——project_acl 行存在 → 该值生效（NONE 即拒读）；无行 → 继承工作区角色；projectId 为 null → 工作区角色。
  * 谓词——canRead ∈ {OWNER,ADMIN,EDITOR,VIEWER}；canWrite ∈ {OWNER,ADMIN,EDITOR}；isAdmin/isOwner 显式。
- * 2026-09-09 BIGINT 化口径（全局不变量 7）：userId 夹具用小整数（1L-4L）；ws/projectId 仍字符串（任务 3 收口）。
+ * 2026-09-09 BIGINT 化口径（全局不变量 7）：userId/workspaceId/projectId 夹具均用小整数 Long（任务 3 收口）。
  */
 @JdbcTest
 @Import({PermissionService.class, MembershipRepo.class, AclRepo.class})
@@ -36,7 +36,7 @@ class PermissionServiceTest {
     /** projectId 为 null（工作区级操作）→ 直接取工作区角色。 */
     @Test
     void nullProjectIdYieldsWorkspaceRole() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         memberships.insert(ws, 1L, Role.EDITOR);
 
         assertThat(service.effectiveRole(ws, 1L, null)).contains(Role.EDITOR);
@@ -46,56 +46,56 @@ class PermissionServiceTest {
     /** 无 ACL 行 → 继承工作区角色（D5：无行 = 按工作区角色继承）。 */
     @Test
     void noAclRowInheritsWorkspaceRole() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         memberships.insert(ws, 2L, Role.VIEWER);
 
-        assertThat(service.effectiveRole(ws, 2L, "proj-1")).contains(Role.VIEWER);
+        assertThat(service.effectiveRole(ws, 2L, 201L)).contains(Role.VIEWER);
     }
 
     /** ACL 行存在 → 覆盖生效，即使相对工作区角色是降级（ADMIN → VIEWER）。 */
     @Test
     void aclRowOverridesEvenToLowerRole() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         memberships.insert(ws, 3L, Role.ADMIN);
-        acl.upsert(ws, "proj-1", 3L, AclRole.VIEWER);
+        acl.upsert(ws, 201L, 3L, AclRole.VIEWER);
 
-        assertThat(service.effectiveRole(ws, 3L, "proj-1")).contains(Role.VIEWER);
+        assertThat(service.effectiveRole(ws, 3L, 201L)).contains(Role.VIEWER);
     }
 
     /** ACL 行存在 → 覆盖生效，也可以是提权（VIEWER → EDITOR）。 */
     @Test
     void aclRowOverridesEvenToHigherRole() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         memberships.insert(ws, 2L, Role.VIEWER);
-        acl.upsert(ws, "proj-1", 2L, AclRole.EDITOR);
+        acl.upsert(ws, 201L, 2L, AclRole.EDITOR);
 
-        assertThat(service.effectiveRole(ws, 2L, "proj-1")).contains(Role.EDITOR);
+        assertThat(service.effectiveRole(ws, 2L, 201L)).contains(Role.EDITOR);
     }
 
     /** ACL 行为 NONE → 拒读（empty 表示无任何有效角色，三面全挡）。 */
     @Test
     void aclNoneYieldsNoEffectiveRole() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         memberships.insert(ws, 1L, Role.EDITOR);
-        acl.upsert(ws, "proj-1", 1L, AclRole.NONE);
+        acl.upsert(ws, 201L, 1L, AclRole.NONE);
 
-        assertThat(service.effectiveRole(ws, 1L, "proj-1")).isEmpty();
+        assertThat(service.effectiveRole(ws, 1L, 201L)).isEmpty();
     }
 
     /** 非成员但有 ACL 行 → 该行生效（覆盖优先于成员关系判断）。 */
     @Test
     void aclRowGrantsNonMember() {
-        String ws = UUID.randomUUID().toString();
-        acl.upsert(ws, "proj-1", 4L, AclRole.ADMIN);
+        long ws = 11L;
+        acl.upsert(ws, 201L, 4L, AclRole.ADMIN);
 
-        assertThat(service.effectiveRole(ws, 4L, "proj-1")).contains(Role.ADMIN);
+        assertThat(service.effectiveRole(ws, 4L, 201L)).contains(Role.ADMIN);
     }
 
     /** 非成员且无 ACL 行 → empty（未授权访问的判定基础）。 */
     @Test
     void nonMemberWithoutAclRowHasNoEffectiveRole() {
-        String ws = UUID.randomUUID().toString();
-        assertThat(service.effectiveRole(ws, 4L, "proj-1")).isEmpty();
+        long ws = 11L;
+        assertThat(service.effectiveRole(ws, 4L, 201L)).isEmpty();
         assertThat(service.effectiveRole(ws, 4L, null)).isEmpty();
     }
 

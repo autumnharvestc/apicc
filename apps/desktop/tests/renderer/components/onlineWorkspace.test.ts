@@ -156,8 +156,9 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
 
   it("项目级 ACL 覆盖 VIEWER：该项目子树接口同样只读（path 实体化：按 projects.id 前缀定位）", async () => {
     const f = await fixture();
-    // path 实体化（2026-09-08）：项目内 path 首段=项目实体 UUID；内存替身按 baseVersion=0 建新文件
-    const pid = "0f8d3a2c-a1b2-c3d4-e5f6-0123456789ab";
+    // path 实体化（2026-09-08）：项目内 path 首段=项目实体 id（2026-09-09 BIGINT 化后为数字字符串）；
+    // 内存替身按 baseVersion=0 建新文件
+    const pid = "101";
     const pidPath = `${pid}/collections/示例集合/apis/示例接口/api.yaml`;
     await f.api.onlineFilePut({ workspaceId: f.online.activeWorkspace!.id, path: pidPath, content: VALID_API_YAML, baseVersion: 0 });
     f.online.projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];

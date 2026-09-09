@@ -39,7 +39,7 @@ public class FileVersionRepo {
      * 新文件首写落版本（契约：新文件 baseVersion=0 → 服务端写入 version=1），内容随行同条 INSERT。
      * (workspace_id, path) 唯一——并发首写时落败方收 DuplicateKeyException，由服务层转冲突语义。
      */
-    public void insertNew(String workspaceId, String path, String content,
+    public void insertNew(Long workspaceId, String path, String content,
                           String contentHash, Long updatedBy) {
         jdbc.update("""
                 INSERT INTO file_versions (workspace_id, path, content, content_hash, version, updated_by, updated_at)
@@ -53,7 +53,7 @@ public class FileVersionRepo {
      * 天然同事务（规格 §5），不存在「版本已进、内容未进」的中间态。
      * 单条 SQL 带 version 条件——两个并发写者至多一个成功，其余返回 false。
      */
-    public boolean bumpVersion(String workspaceId, String path, long baseVersion,
+    public boolean bumpVersion(Long workspaceId, String path, long baseVersion,
                                String newContent, String newContentHash, Long updatedBy) {
         return jdbc.update("""
                 UPDATE file_versions
@@ -64,7 +64,7 @@ public class FileVersionRepo {
     }
 
     /** 读当前版本行（baseVersion 比对/读面内容取用，含 content 正文）。 */
-    public Optional<FileVersionRecord> find(String workspaceId, String path) {
+    public Optional<FileVersionRecord> find(Long workspaceId, String path) {
         try {
             return Optional.ofNullable(jdbc.queryForObject("""
                     SELECT workspace_id, path, content_hash, version, updated_by, updated_at,
@@ -77,16 +77,16 @@ public class FileVersionRepo {
     }
 
     /** 删除工作区时清空其全部版本行（裁定 D：DELETE 工作区的 DB 清理步骤）。 */
-    public void deleteByWorkspace(String workspaceId) {
+    public void deleteByWorkspace(Long workspaceId) {
         jdbc.update("DELETE FROM file_versions WHERE workspace_id = ?", workspaceId);
     }
 
     /**
      * 删除项目时级联清空其内容版本行（任务 2，规格 2026-09-08 §4）：按 {@code <projectId>/%} 前缀删。
-     * projectId 为 UUID 文本（不含 % / _ 通配字符），直接拼接 LIKE 安全；尾随 / 使前缀精确，
-     * 不会误伤同前缀开头的其他项目 id。
+     * projectId 为 BIGINT 数字（2026-09-09 BIGINT 化）——十进制文本不含 % / _ 通配字符，
+     * 拼接 LIKE 安全；尾随 / 使前缀精确，不会误伤同前缀开头的其他项目 id（如 11/ 不命中 110/）。
      */
-    public void deleteByProjectPrefix(String workspaceId, String projectId) {
+    public void deleteByProjectPrefix(Long workspaceId, Long projectId) {
         jdbc.update("DELETE FROM file_versions WHERE workspace_id = ? AND path LIKE ?",
                 workspaceId, projectId + "/%");
     }
@@ -95,7 +95,7 @@ public class FileVersionRepo {
      * 树清单：工作区全部版本行，按路径字典序稳定输出（GET tree 的数据源）。
      * 不拉 content 正文（tree 面不需要）；size 口径取 OCTET_LENGTH(content) 的 UTF-8 字节长。
      */
-    public List<FileVersionRecord> listByWorkspace(String workspaceId) {
+    public List<FileVersionRecord> listByWorkspace(Long workspaceId) {
         return jdbc.query("""
                 SELECT workspace_id, path, content_hash, version, updated_by, updated_at,
                        OCTET_LENGTH(content) AS content_size
@@ -108,7 +108,7 @@ public class FileVersionRepo {
      * rootVersion 口径（裁定 A 配套）：全部版本行 version 之和（空工作区 0）。
      * 任一写入使之和单调不减（删除文件减去该行），客户端可作廉价变更探测。
      */
-    public long sumVersions(String workspaceId) {
+    public long sumVersions(Long workspaceId) {
         Long sum = jdbc.queryForObject(
                 "SELECT COALESCE(SUM(version), 0) FROM file_versions WHERE workspace_id = ?",
                 Long.class, workspaceId);
@@ -121,7 +121,7 @@ public class FileVersionRepo {
      * 返回 false = 有并发写者/删者抢先，服务层 re-read 转 409（有行）或 404（行已删）。
      * 行内 content 随行同删——版本与内容的生灭同表同语句，无独立撤销面。
      */
-    public boolean deleteIfVersion(String workspaceId, String path, long expectedVersion) {
+    public boolean deleteIfVersion(Long workspaceId, String path, long expectedVersion) {
         return jdbc.update("""
                 DELETE FROM file_versions
                 WHERE workspace_id = ? AND path = ? AND version = ?
@@ -131,7 +131,7 @@ public class FileVersionRepo {
     /** 读面行映射：content 正文与字节长都取。 */
     private static FileVersionRecord mapFullRow(ResultSet rs, int rowNum) throws SQLException {
         return new FileVersionRecord(
-                rs.getString("workspace_id"),
+                rs.getLong("workspace_id"),
                 rs.getString("path"),
                 rs.getString("content_hash"),
                 rs.getLong("version"),
@@ -144,7 +144,7 @@ public class FileVersionRepo {
     /** 树清单行映射：content 不取（null），仅 content_size（OCTET_LENGTH，NULL 内容按 0）。 */
     private static FileVersionRecord mapListRow(ResultSet rs, int rowNum) throws SQLException {
         return new FileVersionRecord(
-                rs.getString("workspace_id"),
+                rs.getLong("workspace_id"),
                 rs.getString("path"),
                 rs.getString("content_hash"),
                 rs.getLong("version"),

@@ -9,17 +9,18 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 内容 path 校验器与项目段解析单测（2026-09-08 path 实体化规则）。
+ * 内容 path 校验器与项目段解析单测（2026-09-08 path 实体化规则；2026-09-09 BIGINT 化：项目 id 为数字）。
  * 通用结构规则（长度/空段/../绝对/控制字符）保留，禁冒号移除由
- * 「含冒号路径过通用校验」钉住；首段规则（UUID/存在性/根配置特判）由写面 validate 两参形态钉住。
+ * 「含冒号路径过通用校验」钉住；首段规则（数字 id 形态/存在性/根配置特判）由写面 validate 两参形态钉住，
+ * 存在性谓词与 ContentService 同型（Predicate&lt;Long&gt;，入参为解析后的项目主键）。
  */
 class ContentPathsTest {
 
-    /** 形态合法的项目 UUID（8-4-4-4-12 hex）。 */
-    private static final String PROJECT_ID = "123e4567-e89b-12d3-a456-426614174000";
-    /** 恒真/恒假存在性判定（写面单测用）。 */
-    private static final Predicate<String> EXISTS = id -> true;
-    private static final Predicate<String> MISSING = id -> false;
+    /** 形态合法的项目数字 id（BIGINT 化实体主键的十进制文本）。 */
+    private static final String PROJECT_ID = "77";
+    /** 恒真/恒假存在性判定（写面单测用；入参为解析后的项目主键）。 */
+    private static final Predicate<Long> EXISTS = id -> true;
+    private static final Predicate<Long> MISSING = id -> false;
 
     // ---- validate（通用结构规则）----
 
@@ -73,21 +74,21 @@ class ContentPathsTest {
 
     // ---- parseProject ----
 
-    /** 首段 UUID 形态且后随 / → 返回该段（项目内任意深度同值）。 */
+    /** 首段数字 id 形态且后随 / → 返回该段（项目内任意深度同值）。 */
     @Test
-    void parseProjectReturnsFirstSegmentWhenUuidShaped() {
+    void parseProjectReturnsFirstSegmentWhenNumericShaped() {
         assertThat(ContentPaths.parseProject(PROJECT_ID + "/a.yaml")).hasValue(PROJECT_ID);
         assertThat(ContentPaths.parseProject(PROJECT_ID + "/collections/c/apis/a/api.yaml"))
                 .hasValue(PROJECT_ID);
     }
 
-    /** 根配置/单段文件/非 UUID 首段/裸 UUID（无后随 /）/非法路径 → empty。 */
+    /** 根配置/单段文件/非数字首段/裸数字（无后随 /）/非法路径 → empty。 */
     @Test
     void parseProjectEmptyForNonProjectPaths() {
         assertThat(ContentPaths.parseProject(ContentPaths.WORKSPACE_CONFIG)).isEmpty();
         assertThat(ContentPaths.parseProject("a.yaml")).isEmpty();
-        assertThat(ContentPaths.parseProject("not-a-uuid/apis/a.yaml")).isEmpty();
-        // 裸 UUID 单段不归属项目（防文件占位项目目录的盘上碰撞）
+        assertThat(ContentPaths.parseProject("not-a-number/apis/a.yaml")).isEmpty();
+        // 裸数字单段不归属项目（防文件占位项目目录的盘上碰撞）
         assertThat(ContentPaths.parseProject(PROJECT_ID)).isEmpty();
         assertThat(ContentPaths.parseProject("../groups/g/x.yaml")).isEmpty();
         assertThat(ContentPaths.parseProject(null)).isEmpty();
@@ -95,11 +96,11 @@ class ContentPathsTest {
 
     // ---- validate(path, projectIdExists)（写面首段规则）----
 
-    /** 首段非 UUID（且非根配置）→ 400 path_invalid：多段别名/单段根文件/盘符形态/裸 UUID。 */
+    /** 首段非数字 id（且非根配置）→ 400 path_invalid：多段别名/单段根文件/盘符形态/裸数字。 */
     @Test
-    void writeFaceRejectsNonUuidFirstSegmentWithPathInvalid() {
+    void writeFaceRejectsNonNumericFirstSegmentWithPathInvalid() {
         for (String bad : new String[]{
-                "not-a-uuid/apis/a.yaml", "a.yaml", "C:/evil.yaml", "groups/g/projects/p/x.yaml", PROJECT_ID}) {
+                "not-a-number/apis/a.yaml", "a.yaml", "C:/evil.yaml", "groups/g/projects/p/x.yaml", PROJECT_ID}) {
             assertThatThrownBy(() -> ContentPaths.validate(bad, EXISTS))
                     .as("path <%s> 应 400 path_invalid", bad)
                     .isInstanceOf(ApiException.class)
@@ -111,7 +112,7 @@ class ContentPathsTest {
         }
     }
 
-    /** 首段 UUID 但项目不存在 → 404 project_not_found（非路径非法）。 */
+    /** 首段数字 id 但项目不存在 → 404 project_not_found（非路径非法）。 */
     @Test
     void writeFaceReturnsProjectNotFoundWhenProjectMissing() {
         assertThatThrownBy(() -> ContentPaths.validate(PROJECT_ID + "/x.yaml", MISSING))

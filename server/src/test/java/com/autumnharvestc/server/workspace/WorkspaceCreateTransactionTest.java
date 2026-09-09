@@ -81,7 +81,7 @@ class WorkspaceCreateTransactionTest {
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.code").value("internal_error"));
 
-        String wsId = attempted.get().workspaceId();
+        long wsId = attempted.get().workspaceId();
         assertThat(workspaces.findById(wsId)).isEmpty();
         assertThat(memberships.countByWorkspace(wsId)).isZero();
         assertThat(groupRepo.listByWorkspace(wsId)).isEmpty();

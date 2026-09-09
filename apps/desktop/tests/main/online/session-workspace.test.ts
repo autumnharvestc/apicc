@@ -12,9 +12,9 @@ const USER = { id: "u-1", username: "alice", displayName: "Alice" };
 const SERVER = "http://127.0.0.1:8080";
 const LOGIN_OK = (): Response => json(200, { token: "tok-1", expiresAt: "2026-10-03T00:00:00Z", user: USER });
 
-// path 实体化（2026-09-08）形态：内容 path 首段=项目实体 UUID；projects 行 = 实体表产出
-// {id, name, groupId, myRole}（旧 path 目录字段已退役）。
-const PID = "0f8d3a2c-a1b2-c3d4-e5f6-0123456789ab";
+// path 实体化（2026-09-08）形态：内容 path 首段=项目实体 id（2026-09-09 服务端 BIGINT 化后为
+// 数字字符串）；projects 行 = 实体表产出 {id, name, groupId, myRole}（旧 path 目录字段已退役）。
+const PID = "101";
 const TREE = {
   workspaceId: "ws-1",
   rootVersion: 2,
@@ -22,7 +22,7 @@ const TREE = {
     { path: "apicc.workspace.yaml", hash: "h0", version: 1, size: 10 },
     { path: `${PID}/collections/c/apis/a/api.yaml`, hash: "h1", version: 2, size: 20 },
   ],
-  projects: [{ id: PID, name: "p", groupId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", myRole: "EDITOR" as const }],
+  projects: [{ id: PID, name: "p", groupId: "201", myRole: "EDITOR" as const }],
 };
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }

@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.core.Role;
 import com.autumnharvestc.server.store.AclRepo;
 import com.autumnharvestc.server.store.FileVersionRepo;
@@ -18,7 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * 工作区用例（规格 m3 §3.2）：列表/创建/详情/删除。
@@ -28,6 +28,8 @@ import java.util.UUID;
  * 删除按裁定 D（维持逐条自持，不包事务）：逻辑校验 OWNER → 清 memberships/project_acl/file_versions
  * → projects → groups（fk_projects_group 依赖顺序：先删引用行再删被引用行）→ 删工作区行。
  * 内容随 file_versions.content 入库（规格 §5），磁盘内容树退役——建区/删区不再有任何目录操作。
+ * id 口径（规格 2026-09-09 BIGINT 化）：对外路径 id 为字符串化数字，控制器接 String、
+ * 服务层首行 EntityIds.parse；服务间内调直接传 long。
  */
 @Service
 public class WorkspaceService {
@@ -61,23 +63,23 @@ public class WorkspaceService {
 
     /**
      * 创建工作区（规格 §3.2：创建者自动 OWNER；规格 2026-09-08 §4：联动建「默认分组」）。
-     * 三次 DB 写同事务（见类头）：任一失败全回滚。
+     * 三次 DB 写同事务（见类头）：任一失败全回滚。id 由数据库 IDENTITY 生成（BIGINT 化：
+     * insert 返回补全 id 的记录，联动行直接用返回值 id）。
      */
     @Transactional
     public WorkspaceView create(UserAccount caller, CreateWorkspaceRequest request) {
-        // created_by 列本轮仍 VARCHAR（任务 3 收口）：users.id 已 BIGINT 化，此处暂以字符串桥接
-        WorkspaceRecord workspace = new WorkspaceRecord(
-                UUID.randomUUID().toString(), request.name().trim(), String.valueOf(caller.id()), Instant.now());
+        WorkspaceRecord workspace;
         try {
-            workspaces.insert(workspace);
+            workspace = workspaces.insert(new WorkspaceRecord(
+                    null, request.name().trim(), caller.id(), Instant.now()));
         } catch (DuplicateKeyException ex) {
             // 并发同名工作区兜底：uk_workspaces_name（预检不预占，唯一约束是唯一事实源）→ 409
             throw new ApiException(HttpStatus.CONFLICT, "workspace_name_taken", "工作区名称已存在");
         }
         memberships.insert(workspace.id(), caller.id(), Role.OWNER);
         groups.insert(new GroupRecord(
-                UUID.randomUUID().toString(), workspace.id(), DEFAULT_GROUP_NAME, true, Instant.now()));
-        return new WorkspaceView(workspace.id(), workspace.name(), Role.OWNER, workspace.createdAt());
+                null, workspace.id(), DEFAULT_GROUP_NAME, true, Instant.now()));
+        return new WorkspaceView(String.valueOf(workspace.id()), workspace.name(), Role.OWNER, workspace.createdAt());
     }
 
     /** 我参与的工作区列表（规格 §3.2）。 */
@@ -89,23 +91,25 @@ public class WorkspaceService {
 
     /** 工作区详情（规格 §3.2：{id, name, myRole, memberCount}，成员可读）。 */
     public WorkspaceDetailView detail(UserAccount caller, String workspaceId) {
-        WorkspaceGuard.Access access = guard.requireMember(workspaceId, caller);
+        long wsId = EntityIds.parse(workspaceId);
+        WorkspaceGuard.Access access = guard.requireMember(wsId, caller);
         return new WorkspaceDetailView(
-                access.workspace().id(),
+                String.valueOf(access.workspace().id()),
                 access.workspace().name(),
                 access.role(),
-                memberships.countByWorkspace(workspaceId));
+                memberships.countByWorkspace(wsId));
     }
 
     /** 删除工作区（规格 §3.2：OWNER；内容随版本行同删，无磁盘面）。 */
     public void delete(UserAccount caller, String workspaceId) {
-        guard.requireOwner(workspaceId, caller);
-        memberships.deleteByWorkspace(workspaceId);
-        acl.deleteByWorkspace(workspaceId);
-        fileVersions.deleteByWorkspace(workspaceId);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireOwner(wsId, caller);
+        memberships.deleteByWorkspace(wsId);
+        acl.deleteByWorkspace(wsId);
+        fileVersions.deleteByWorkspace(wsId);
         // groups/projects 一并清理（审查修复）：projects 先于 groups——fk_projects_group 引用顺序
-        projects.deleteByWorkspace(workspaceId);
-        groups.deleteByWorkspace(workspaceId);
-        workspaces.delete(workspaceId);
+        projects.deleteByWorkspace(wsId);
+        groups.deleteByWorkspace(wsId);
+        workspaces.delete(wsId);
     }
 }

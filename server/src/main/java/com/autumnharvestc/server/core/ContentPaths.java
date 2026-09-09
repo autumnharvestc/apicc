@@ -7,16 +7,16 @@ import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 /**
- * 内容 path 校验与项目段解析（2026-09-08 内容 path 实体化）。
+ * 内容 path 校验与项目段解析（2026-09-08 内容 path 实体化；2026-09-09 BIGINT 化：项目 id 为数字）。
  *
- * <p>新 path 规则：首段必须是<b>存在的项目 UUID</b>（{@code <projectId>/...}）；根级仅允许
- * {@link #WORKSPACE_CONFIG}（工作区配置，仅 ADMIN+ 可写）。项目 id 为管理面创建的实体
- * UUID——旧「groups/&lt;组&gt;/projects/&lt;名&gt;/… 目录推导 + 路径哈希 id」随实体化退役，
- * 项目名不再上盘。</p>
+ * <p>path 规则：首段必须是<b>存在的项目数字 id</b>（{@code <projectId>/...}，十进制正整数——
+ * BIGINT 化后实体主键）；根级仅允许 {@link #WORKSPACE_CONFIG}（工作区配置，仅 ADMIN+ 可写）。
+ * 项目 id 为管理面创建的实体主键——旧「groups/&lt;组&gt;/projects/&lt;名&gt;/… 目录推导 +
+ * 路径哈希 id」随实体化退役，项目名不再上盘。</p>
  *
  * <p>通用校验保留：长度 512（与 schema.sql path VARCHAR(512) 字符数对齐）、空段、{@code .}/{@code ..}、
  * 绝对路径/尾斜杠、反斜杠与控制字符；<b>禁冒号移除</b>——id 段无冒号风险、名称不再上盘，
- * Windows 盘符形态（如 {@code C:/evil.yaml}）由「首段非 UUID」规则拦截，穿越/逃逸防御不回退。</p>
+ * Windows 盘符形态（如 {@code C:/evil.yaml}）由「首段非数字 id」规则拦截，穿越/逃逸防御不回退。</p>
  */
 public final class ContentPaths {
 
@@ -30,9 +30,9 @@ public final class ContentPaths {
      */
     public static final int MAX_PATH_LENGTH = 512;
 
-    /** 项目 id 形态：UUID（8-4-4-4-12 hex，大小写不限——存在性按实体表精确匹配判定）。 */
+    /** 项目 id 形态：十进制数字（BIGINT 化实体主键，2026-09-09——存在性按实体表精确匹配判定）。 */
     private static final Pattern PROJECT_ID_PATTERN =
-            Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+            Pattern.compile("\\d+");
 
     private ContentPaths() {
     }
@@ -70,9 +70,9 @@ public final class ContentPaths {
     }
 
     /**
-     * 解析路径所属项目：首段为 UUID 形态且后随 {@code /}（项目内至少一层文件）即返回该段；
-     * 根配置/其余根级路径/裸 UUID 单段 → empty。裸 UUID 不属项目——防「文件占位项目目录」的
-     * 盘上目录/文件碰撞（{@code <uuid>} 既是落盘目录名又是文件路径时 writeFile 必然 IO 失败）。
+     * 解析路径所属项目：首段为数字 id 形态且后随 {@code /}（项目内至少一层文件）即返回该段；
+     * 根配置/其余根级路径/裸数字单段 → empty。裸数字不属项目——防「文件占位项目目录」的
+     * 盘上目录/文件碰撞（{@code <projectId>} 既是落盘目录名又是文件路径时 writeFile 必然 IO 失败）。
      */
     public static Optional<String> parseProject(String path) {
         if (path == null) {
@@ -80,7 +80,7 @@ public final class ContentPaths {
         }
         int slash = path.indexOf('/');
         if (slash <= 0) {
-            return Optional.empty(); // 无段分隔：单段路径（含裸 UUID）不归属项目
+            return Optional.empty(); // 无段分隔：单段路径（含裸数字项目 id）不归属项目
         }
         String first = path.substring(0, slash);
         if (PROJECT_ID_PATTERN.matcher(first).matches()) {
@@ -90,21 +90,22 @@ public final class ContentPaths {
     }
 
     /**
-     * 写面全量校验：通用规则 → 首段规则。首段非 UUID（且非根配置）→ 400 path_invalid；
-     * 首段 UUID 但项目不存在 → 404 project_not_found（projectIdExists 由服务层查实体表判定，
+     * 写面全量校验：通用规则 → 首段规则。首段非数字 id（且非根配置）→ 400 path_invalid；
+     * 首段为数字 id 但项目不存在 → 404 project_not_found（projectIdExists 由服务层查实体表判定，
      * 含「项目属于其他工作区」的跨区形态——对当前工作区即不存在）。
+     * 谓词入参为解析后的项目主键（首段形态由 pattern 保证为数字，parse 不败）。
      */
-    public static void validate(String path, Predicate<String> projectIdExists) {
+    public static void validate(String path, Predicate<Long> projectIdExists) {
         validate(path);
         Optional<String> projectId = parseProject(path);
         if (projectId.isEmpty()) {
             if (!WORKSPACE_CONFIG.equals(path)) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "path_invalid",
-                        "路径首段必须是项目 id（UUID），根级仅允许 " + WORKSPACE_CONFIG);
+                        "路径首段必须是项目 id（数字），根级仅允许 " + WORKSPACE_CONFIG);
             }
             return;
         }
-        if (!projectIdExists.test(projectId.get())) {
+        if (!projectIdExists.test(Long.parseLong(projectId.get()))) {
             throw new ApiException(HttpStatus.NOT_FOUND, "project_not_found", "项目不存在");
         }
     }

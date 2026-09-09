@@ -2,6 +2,7 @@ package com.autumnharvestc.server.content;
 
 import com.autumnharvestc.server.core.ApiException;
 import com.autumnharvestc.server.core.ContentPaths;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.core.Hashes;
 import com.autumnharvestc.server.core.PermissionService;
 import com.autumnharvestc.server.core.Role;
@@ -24,10 +25,10 @@ import java.util.Set;
 
 /**
  * 内容同步用例（规格 m3 §3.4 契约 + §2 D6 写路径 + §2 D8 同步协议 + §5 内容入库，裁定 A–D；
- * 2026-09-08 内容 path 实体化：首段=项目 UUID）。
+ * 2026-09-08 内容 path 实体化：首段=项目实体 id；2026-09-09 BIGINT 化：项目 id 为数字）。
  *
- * <p>path 规则（ContentPaths）：首段必须是<b>存在的项目 UUID</b>，根级仅允许 apicc.workspace.yaml——
- * 首段非 UUID 400 path_invalid；首段 UUID 但项目不存在（含跨工作区）404 project_not_found。
+ * <p>path 规则（ContentPaths）：首段必须是<b>存在的项目数字 id</b>，根级仅允许 apicc.workspace.yaml——
+ * 首段非数字 400 path_invalid；首段为数字但项目不存在（含跨工作区）404 project_not_found。
  * 读面不 404：tree/files 按有效角色过滤与 missing 呈现，不泄露实体存在性。</p>
  *
  * <p>写路径（D6 + §5 内容入库）：校验（含项目实体存在性）→ 权限 → baseVersion 比对（先于 hash 判同）→
@@ -71,12 +72,13 @@ public class ContentService {
      * 首段即 id 可推导），NONE/不可读项目行不出现。
      */
     public TreeView tree(UserAccount caller, String workspaceId) {
-        guard.requireMember(workspaceId, caller);
-        List<FileVersionRecord> rows = fileVersions.listByWorkspace(workspaceId);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireMember(wsId, caller);
+        List<FileVersionRecord> rows = fileVersions.listByWorkspace(wsId);
 
         List<TreeView.FileEntry> files = new ArrayList<>();
         for (FileVersionRecord row : rows) {
-            if (!readable(workspaceId, caller.id(), row.path())) {
+            if (!readable(wsId, caller.id(), row.path())) {
                 continue; // NONE 项目：子树文件整体不出现（读面按无权过滤，不泄露存在性）
             }
             // size 口径：content 列 UTF-8 字节长（OCTET_LENGTH，repo 列表面填充；与 hash 同为字节口径）
@@ -85,22 +87,24 @@ public class ContentService {
         }
 
         List<TreeView.ProjectEntry> projectEntries = new ArrayList<>();
-        for (ProjectRecord project : projects.listByWorkspace(workspaceId)) {
-            Optional<Role> role = permissions.effectiveRole(workspaceId, caller.id(), project.id());
+        for (ProjectRecord project : projects.listByWorkspace(wsId)) {
+            Optional<Role> role = permissions.effectiveRole(wsId, caller.id(), project.id());
             if (role.isEmpty() || !permissions.canRead(role.get())) {
                 continue; // NONE 项目：整体不出现
             }
             projectEntries.add(new TreeView.ProjectEntry(
-                    project.id(), project.name(), project.groupId(), role.get().toDb()));
+                    String.valueOf(project.id()), project.name(),
+                    String.valueOf(project.groupId()), role.get().toDb()));
         }
-        return new TreeView(workspaceId, fileVersions.sumVersions(workspaceId), files, projectEntries);
+        return new TreeView(String.valueOf(wsId), fileVersions.sumVersions(wsId), files, projectEntries);
     }
 
     // ---- GET files（批量取）----
 
     /** 批量取（§3.4）：命中给入库内容；不存在/无读权/非法/内容缺列 → missing。 */
     public FilesBatchView readFiles(UserAccount caller, String workspaceId, String pathsParam) {
-        guard.requireMember(workspaceId, caller);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireMember(wsId, caller);
         if (pathsParam == null || pathsParam.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "bad_request", "paths 不能为空");
         }
@@ -120,7 +124,7 @@ public class ContentService {
         List<FilesBatchView.FileContent> files = new ArrayList<>();
         List<String> missing = new ArrayList<>();
         for (String path : paths) {
-            FileVersionRecord row = readableRow(workspaceId, caller.id(), path);
+            FileVersionRecord row = readableRow(wsId, caller.id(), path);
             if (row == null || row.content() == null) {
                 missing.add(path); // 无版本行或内容缺列（历史遗留）按 missing 处理（读面不 500）
                 continue;
@@ -134,12 +138,13 @@ public class ContentService {
 
     /** 单文件写：201 新建/变更；200 同 hash 幂等（裁定 D）；409 冲突带现状；400 非法路径；404 项目不存在；403 越权。 */
     public PutOutcome putFile(UserAccount caller, String workspaceId, String path, PutFileRequest request) {
-        guard.requireMember(workspaceId, caller);
-        return putChecked(caller, workspaceId, path, request);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireMember(wsId, caller);
+        return putChecked(caller, wsId, path, request);
     }
 
     /** 写主体（入口守卫已过的检查与落库；batch 逐文件复用，避免重复工作区守卫查询）。 */
-    private PutOutcome putChecked(UserAccount caller, String workspaceId, String path, PutFileRequest request) {
+    private PutOutcome putChecked(UserAccount caller, long workspaceId, String path, PutFileRequest request) {
         ContentPaths.validate(path, projectId -> projectExists(workspaceId, projectId));
         if (request == null || request.content() == null) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "validation_failed", "content 必填");
@@ -193,17 +198,18 @@ public class ContentService {
      * 审查修复①）。版本行（含 content）随语句同删，无独立磁盘面。
      */
     public void deleteFile(UserAccount caller, String workspaceId, String path, long baseVersion) {
-        guard.requireMember(workspaceId, caller);
-        ContentPaths.validate(path, projectId -> projectExists(workspaceId, projectId));
-        requireWriteAccess(workspaceId, caller.id(), path);
-        FileVersionRecord current = fileVersions.find(workspaceId, path)
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireMember(wsId, caller);
+        ContentPaths.validate(path, projectId -> projectExists(wsId, projectId));
+        requireWriteAccess(wsId, caller.id(), path);
+        FileVersionRecord current = fileVersions.find(wsId, path)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "file_not_found", "文件不存在"));
         if (current.version() != baseVersion) {
             throw new VersionConflictException(current.version(), current.contentHash());
         }
-        if (!fileVersions.deleteIfVersion(workspaceId, path, baseVersion)) {
+        if (!fileVersions.deleteIfVersion(wsId, path, baseVersion)) {
             // 条件删除落空：并发 PUT 已推进行 → 409 带现状；并发 DELETE 已删行 → 404（与顺序双 DELETE 同口径）
-            FileVersionRecord winner = fileVersions.find(workspaceId, path)
+            FileVersionRecord winner = fileVersions.find(wsId, path)
                     .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "file_not_found", "文件已被并发删除"));
             throw new VersionConflictException(winner.version(), winner.contentHash());
         }
@@ -218,7 +224,8 @@ public class ContentService {
      * 与非法路径同转 invalid 行——该条目在项目建好前不可推，客户端修复后重推。
      */
     public BatchResultView batchPush(UserAccount caller, String workspaceId, BatchPushRequest request) {
-        guard.requireMember(workspaceId, caller);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireMember(wsId, caller);
         List<BatchPushRequest.Item> files = request == null ? List.of() : request.files();
         if (files == null || files.isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "validation_failed", "files 不能为空");
@@ -228,12 +235,12 @@ public class ContentService {
         }
         List<BatchResultView.FileResult> results = new ArrayList<>(files.size());
         for (BatchPushRequest.Item item : files) {
-            results.add(pushOne(caller, workspaceId, item));
+            results.add(pushOne(caller, wsId, item));
         }
         return new BatchResultView(results);
     }
 
-    private BatchResultView.FileResult pushOne(UserAccount caller, String workspaceId, BatchPushRequest.Item item) {
+    private BatchResultView.FileResult pushOne(UserAccount caller, long workspaceId, BatchPushRequest.Item item) {
         String path = item == null ? null : item.path();
         try {
             PutOutcome outcome = putChecked(caller, workspaceId, path, item == null ? null
@@ -255,18 +262,18 @@ public class ContentService {
     // ---- 权限判定 ----
 
     /** 路径生效角色：项目内路径按首段 projectId（ACL 覆盖），根级路径（根配置）按工作区角色继承。
-     * userId 为 users.id（BIGINT 化，任务 2 切 Long；projectId 链任务 3 收口）。 */
-    private Optional<Role> effectiveRoleFor(String workspaceId, Long userId, String path) {
-        String projectId = ContentPaths.parseProject(path).orElse(null);
+     * userId/projectId 均为 BIGINT（2026-09-09 BIGINT 化；首段形态由 pattern 保证数字，parse 不败）。 */
+    private Optional<Role> effectiveRoleFor(long workspaceId, Long userId, String path) {
+        Long projectId = ContentPaths.parseProject(path).map(Long::parseLong).orElse(null);
         return permissions.effectiveRole(workspaceId, userId, projectId);
     }
 
-    private boolean readable(String workspaceId, Long userId, String path) {
+    private boolean readable(long workspaceId, Long userId, String path) {
         return effectiveRoleFor(workspaceId, userId, path).filter(permissions::canRead).isPresent();
     }
 
     /** 可读且存在版本行的行（读面用）；否则 null。 */
-    private FileVersionRecord readableRow(String workspaceId, Long userId, String path) {
+    private FileVersionRecord readableRow(long workspaceId, Long userId, String path) {
         if (!readable(workspaceId, userId, path)) {
             return null;
         }
@@ -277,7 +284,7 @@ public class ContentService {
      * 写权限（D5）：有效角色为空 → NONE 项目 403 project_forbidden（根级不可达，防御保留）；
      * VIEWER 只读 403 forbidden；根配置 apicc.workspace.yaml 仅 ADMIN+（§3.4 path 规则）。
      */
-    private void requireWriteAccess(String workspaceId, Long userId, String path) {
+    private void requireWriteAccess(long workspaceId, Long userId, String path) {
         boolean inProject = ContentPaths.parseProject(path).isPresent();
         Role role = effectiveRoleFor(workspaceId, userId, path).orElseThrow(() ->
                 inProject
@@ -291,10 +298,11 @@ public class ContentService {
         }
     }
 
-    /** 项目实体存在性（含工作区归属）：跨工作区项目对当前工作区即「不存在」。 */
-    private boolean projectExists(String workspaceId, String projectId) {
+    /** 项目实体存在性（含工作区归属）：跨工作区项目对当前工作区即「不存在」。
+     * 入参为 BIGINT 项目主键（2026-09-09 BIGINT 化，与 ContentPaths.validate 谓词同型 Predicate<Long>）。 */
+    private boolean projectExists(long workspaceId, long projectId) {
         return projects.find(projectId)
-                .filter(project -> project.workspaceId().equals(workspaceId))
+                .filter(project -> project.workspaceId() == workspaceId)
                 .isPresent();
     }
 }

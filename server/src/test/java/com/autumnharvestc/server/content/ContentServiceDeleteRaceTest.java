@@ -37,9 +37,10 @@ import static org.mockito.Mockito.when;
  */
 class ContentServiceDeleteRaceTest {
 
-    private static final String WS = "ws-1";
-    /** 项目实体 UUID（内容 path 首段实体化）。 */
-    private static final String PROJECT_ID = "123e4567-e89b-12d3-a456-426614174000";
+    /** 工作区主键夹具（2026-09-09 BIGINT 化：小整数 Long）。 */
+    private static final long WS = 5L;
+    /** 项目实体主键夹具（内容 path 首段实体化 + BIGINT 化）。 */
+    private static final long PROJECT_ID = 77L;
     private static final String PATH = PROJECT_ID + "/a.yaml";
 
     private final UserAccount caller =
@@ -54,16 +55,15 @@ class ContentServiceDeleteRaceTest {
     @BeforeEach
     void setUp() {
         guard = mock(WorkspaceGuard.class);
-        // created_by 列本轮仍 String（任务 3 收口）：users.id 已 BIGINT 化，暂以字符串桥接
         when(guard.requireMember(eq(WS), any(UserAccount.class))).thenReturn(new WorkspaceGuard.Access(
-                new WorkspaceRecord(WS, "ws", String.valueOf(caller.id()), Instant.EPOCH), Role.OWNER));
+                new WorkspaceRecord(WS, "ws", caller.id(), Instant.EPOCH), Role.OWNER));
         memberships = mock(MembershipRepo.class);
         when(memberships.findRole(WS, caller.id())).thenReturn(Optional.of(Role.OWNER));
         fileVersions = mock(FileVersionRepo.class);
-        // path 实体化写面校验：首段项目 UUID 须指向本工作区实体（DELETE 前置校验用）
+        // path 实体化写面校验：首段项目 id 须指向本工作区实体（DELETE 前置校验用）
         ProjectRepo projects = mock(ProjectRepo.class);
         when(projects.find(PROJECT_ID)).thenReturn(Optional.of(
-                new ProjectRecord(PROJECT_ID, WS, "g-1", "p", Instant.EPOCH)));
+                new ProjectRecord(PROJECT_ID, WS, 1L, "p", Instant.EPOCH)));
         service = new ContentService(guard, permissions(), projects, fileVersions);
     }
 
@@ -84,7 +84,7 @@ class ContentServiceDeleteRaceTest {
                 .thenReturn(Optional.of(record(2L, "h2")));
         when(fileVersions.deleteIfVersion(WS, PATH, 1L)).thenReturn(false);
 
-        assertThatThrownBy(() -> service.deleteFile(caller, WS, PATH, 1L))
+        assertThatThrownBy(() -> service.deleteFile(caller, String.valueOf(WS), PATH, 1L))
                 .isInstanceOfSatisfying(VersionConflictException.class, ex -> {
                     assertThat(ex.getCurrentVersion()).isEqualTo(2L);
                     assertThat(ex.getCurrentHash()).isEqualTo("h2");
@@ -99,7 +99,7 @@ class ContentServiceDeleteRaceTest {
                 .thenReturn(Optional.empty());
         when(fileVersions.deleteIfVersion(WS, PATH, 1L)).thenReturn(false);
 
-        assertThatThrownBy(() -> service.deleteFile(caller, WS, PATH, 1L))
+        assertThatThrownBy(() -> service.deleteFile(caller, String.valueOf(WS), PATH, 1L))
                 .isInstanceOfSatisfying(ApiException.class, ex -> {
                     assertThat(ex.getCode()).isEqualTo("file_not_found");
                     assertThat(ex.getStatus().value()).isEqualTo(404);
@@ -112,6 +112,6 @@ class ContentServiceDeleteRaceTest {
         when(fileVersions.find(WS, PATH)).thenReturn(Optional.of(record(1L, "h1")));
         when(fileVersions.deleteIfVersion(WS, PATH, 1L)).thenReturn(true);
 
-        assertThatCode(() -> service.deleteFile(caller, WS, PATH, 1L)).doesNotThrowAnyException();
+        assertThatCode(() -> service.deleteFile(caller, String.valueOf(WS), PATH, 1L)).doesNotThrowAnyException();
     }
 }

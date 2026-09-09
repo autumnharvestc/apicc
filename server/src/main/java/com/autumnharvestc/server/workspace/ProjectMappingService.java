@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.core.PermissionService;
 import com.autumnharvestc.server.store.GroupRecord;
 import com.autumnharvestc.server.store.GroupRepo;
@@ -15,7 +16,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 
 /**
  * 项目映射用例（计划 C 任务 1，迁移桥）：本地名称目录（groups/&lt;组&gt;/projects/&lt;项目&gt;）
@@ -29,6 +29,8 @@ import java.util.UUID;
  * （listByGroup ORDER BY created_at, id 决定性稳定，同名并存映射创建序首个，同刻并列由 id 决定性落位）。
  * 新建分组 is_default=FALSE；并发同名建组由 uk_groups_ws_name 兜底——落败方重按名解析（存在即取，
  * 桥语义不因并发落败方收 409）。不引事务（裁定 B：单行插入各自原子，批量部分成功本就不要求整批原子）。
+ * id 口径（规格 2026-09-09 BIGINT 化）：路径 id 字符串接参、首行 parse；实体 id 由 IDENTITY 生成
+ * （insert 返回补全 id 的记录）；对外行仍字符串化数字（MappingView 保持 String）。
  */
 @Service
 public class ProjectMappingService {
@@ -51,7 +53,8 @@ public class ProjectMappingService {
 
     /** 批量映射（部分成功）：守卫 → 上限 → 逐条解析/按需建。request/entries 非 null 由 @RequestBody required + @NotEmpty 保证。 */
     public MappingView map(UserAccount caller, String workspaceId, MappingRequest request) {
-        WorkspaceGuard.Access access = guard.requireMember(workspaceId, caller);
+        long wsId = EntityIds.parse(workspaceId);
+        WorkspaceGuard.Access access = guard.requireMember(wsId, caller);
         List<MappingRequest.Item> entries = request.entries();
         if (entries.size() > MAX_BATCH) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "batch_too_large", "单批最多 " + MAX_BATCH + " 条映射");
@@ -59,13 +62,13 @@ public class ProjectMappingService {
         boolean canCreate = permissions.isAdmin(access.role());
         List<MappingView.Row> rows = new ArrayList<>(entries.size());
         for (MappingRequest.Item item : entries) {
-            rows.add(mapOne(workspaceId, canCreate, item));
+            rows.add(mapOne(wsId, canCreate, item));
         }
         return new MappingView(rows);
     }
 
     /** 逐条映射：组解析/按需建 → 项目按名解析/按需建（行级 missing/forbidden，不抛业务异常）。 */
-    private MappingView.Row mapOne(String workspaceId, boolean canCreate, MappingRequest.Item item) {
+    private MappingView.Row mapOne(long workspaceId, boolean canCreate, MappingRequest.Item item) {
         String groupName = item.group() == null ? null : item.group().trim();
         String projectName = item.project() == null ? null : item.project().trim();
         boolean createIfMissing = Boolean.TRUE.equals(item.createIfMissing());
@@ -92,20 +95,19 @@ public class ProjectMappingService {
             if (!canCreate) {
                 return forbidden(groupName, projectName);
             }
-            ProjectRecord created = new ProjectRecord(
-                    UUID.randomUUID().toString(), workspaceId, groupRecord.id(), projectName, Instant.now());
-            projects.insert(created);
-            return new MappingView.Row(groupName, projectName, groupRecord.id(), created.id(), true, null, null);
+            ProjectRecord created = projects.insert(new ProjectRecord(
+                    null, workspaceId, groupRecord.id(), projectName, Instant.now()));
+            return new MappingView.Row(groupName, projectName,
+                    String.valueOf(groupRecord.id()), String.valueOf(created.id()), true, null, null);
         }
-        return new MappingView.Row(groupName, projectName, groupRecord.id(), project.get().id(), false, null, null);
+        return new MappingView.Row(groupName, projectName,
+                String.valueOf(groupRecord.id()), String.valueOf(project.get().id()), false, null, null);
     }
 
     /** 建组（is_default=FALSE）：并发同名建组由 uk_groups_ws_name 兜底——落败方重按名解析（存在即取）。 */
-    private GroupRecord createGroup(String workspaceId, String name) {
-        GroupRecord group = new GroupRecord(UUID.randomUUID().toString(), workspaceId, name, false, Instant.now());
+    private GroupRecord createGroup(long workspaceId, String name) {
         try {
-            groups.insert(group);
-            return group;
+            return groups.insert(new GroupRecord(null, workspaceId, name, false, Instant.now()));
         } catch (DuplicateKeyException ex) {
             return groups.findByName(workspaceId, name)
                     .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "group_name_taken", "分组名称已存在"));

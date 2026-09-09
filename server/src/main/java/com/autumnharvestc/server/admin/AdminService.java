@@ -95,8 +95,10 @@ public class AdminService {
         requireSuperadmin(caller);
         long targetId = EntityIds.parse(userId);
         users.findById(targetId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "未找到账号"));
-        workspaces.findById(workspaceId)
+        // workspaceId 为字符串化数字（workspaces.id BIGINT 化，2026-09-09 任务 3 收口）：先鉴权后 parse
+        long wsId = EntityIds.parse(workspaceId);
+        workspaces.findById(wsId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "workspace_not_found", "工作区不存在"));
-        memberships.upsert(workspaceId, targetId, role);
+        memberships.upsert(wsId, targetId, role);
     }
 }

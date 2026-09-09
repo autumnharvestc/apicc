@@ -9,7 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.UUID;
+
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 契约（规格 m3 §2 D6/§3.4 + §5 内容入库）：(workspace_id, path) 唯一——每路径一份版本行（元数据+正文）；
  * 新文件首写 version=1；乐观并发递增与内容写入同一条 UPDATE ... WHERE version = ? 原子完成（裁定 C）。
  * 读面 find 携 content 正文；树清单 listByWorkspace 仅携 OCTET_LENGTH 字节长、不拉正文。
- * 2026-09-09 BIGINT 化口径（全局不变量 7）：updatedBy 夹具用小整数（1L/2L）；workspaceId 仍 UUID 字符串。
+ * 2026-09-09 BIGINT 化口径（全局不变量 7）：updatedBy/workspaceId 夹具均用小整数 Long（任务 3 收口）。
  */
 @JdbcTest
 @Import(FileVersionRepo.class)
@@ -32,7 +32,7 @@ class FileVersionRepoTest {
     /** 首写落版本：version=1，content/hash/by 记录正确。 */
     @Test
     void insertNewStartsAtVersionOne() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         repo.insertNew(ws, "groups/auth/projects/login/api.yaml", "首写正文", "hash-1", 1L);
 
         FileVersionRecord out = repo.find(ws, "groups/auth/projects/login/api.yaml").orElseThrow();
@@ -48,7 +48,7 @@ class FileVersionRepoTest {
     /** baseVersion 匹配 → 版本递增与内容写入同一条 UPDATE：hash/by/content 一并刷新。 */
     @Test
     void bumpVersionIncrementsWhenBaseMatches() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         String path = "groups/auth/api.yaml";
         repo.insertNew(ws, path, "v1", "hash-1", 1L);
 
@@ -65,7 +65,7 @@ class FileVersionRepoTest {
     /** baseVersion 不匹配 → 返回 false 且现状（版本与内容）不动（409 version_conflict 的存储面基础）。 */
     @Test
     void bumpVersionWithStaleBaseIsRejectedAndKeepsCurrentState() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         String path = "groups/auth/api.yaml";
         repo.insertNew(ws, path, "v1", "hash-1", 1L);
         repo.bumpVersion(ws, path, 1L, "v2", "hash-2", 1L);
@@ -80,7 +80,7 @@ class FileVersionRepoTest {
     /** (workspace_id, path) 唯一：同路径重复首写被拦（并发首写由服务层转冲突语义）。 */
     @Test
     void duplicatePathInsertRejectedByUniqueConstraint() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         repo.insertNew(ws, "apicc.workspace.yaml", "a", "hash-1", 1L);
         assertThatThrownBy(() -> repo.insertNew(ws, "apicc.workspace.yaml", "b", "hash-2", 2L))
                 .isInstanceOf(DuplicateKeyException.class);
@@ -94,8 +94,8 @@ class FileVersionRepoTest {
     /** 同工作区不同路径版本独立递增；同路径跨工作区隔离。 */
     @Test
     void versionsAreIndependentPerPathAndWorkspace() {
-        String wsA = UUID.randomUUID().toString();
-        String wsB = UUID.randomUUID().toString();
+        long wsA = 21L;
+        long wsB = 22L;
         repo.insertNew(wsA, "a.yaml", "a1", "hash-a1", 1L);
         repo.insertNew(wsA, "b.yaml", "b1", "hash-b1", 1L);
         repo.insertNew(wsB, "a.yaml", "other", "hash-a1", 1L);
@@ -111,7 +111,7 @@ class FileVersionRepoTest {
     /** 读面：find 携 content 正文与 contentSize（UTF-8 字节长，多字节内容按字节计）。 */
     @Test
     void findCarriesContentAndUtf8ByteSize() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         repo.insertNew(ws, "p/unicode.yaml", "你好", "hash-1", 1L);
 
         FileVersionRecord out = repo.find(ws, "p/unicode.yaml").orElseThrow();
@@ -124,8 +124,8 @@ class FileVersionRepoTest {
     /** 树清单：按路径字典序输出、不拉 content（null）、contentSize 为 OCTET_LENGTH 字节长。 */
     @Test
     void listByWorkspaceCarriesByteSizeWithoutContentSortedByPath() {
-        String ws = UUID.randomUUID().toString();
-        String other = UUID.randomUUID().toString();
+        long ws = 11L;
+        long other = 22L;
         repo.insertNew(ws, "b.yaml", "正文b", "h-b", 1L);
         repo.insertNew(ws, "groups/g/projects/p/a.yaml", "正文a", "h-a", 1L);
         repo.insertNew(ws, "apicc.workspace.yaml", "root: 1", "h-root", 1L);
@@ -147,7 +147,7 @@ class FileVersionRepoTest {
     /** rootVersion 口径（裁定 A 配套）：全部行 version 之和；空工作区 0；bump 后随之增长。 */
     @Test
     void sumVersionsAddsAllRowsAndStartsAtZero() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         assertThat(repo.sumVersions(ws)).isZero();
 
         repo.insertNew(ws, "a.yaml", "a", "h1", 1L);
@@ -166,7 +166,7 @@ class FileVersionRepoTest {
     /** 条件删除（DELETE 竞态封口）：仅当行仍处于期望版本时删；版本不符/行已删 → false 且行原样。 */
     @Test
     void deleteIfVersionOnlyDeletesWhenVersionMatches() {
-        String ws = UUID.randomUUID().toString();
+        long ws = 11L;
         repo.insertNew(ws, "a.yaml", "a1", "h1", 1L);
 
         // DELETE×PUT 交错：PUT 先赢（v1→v2），携 baseVersion=1 的 DELETE 条件删除落空，行保持他人新值

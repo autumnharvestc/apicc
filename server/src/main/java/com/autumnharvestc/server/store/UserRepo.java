@@ -112,8 +112,9 @@ public class UserRepo {
     }
 
     /** 成员候选搜索（规格 2026-09-09 成员搜索）：username/display_name 大小写不敏感包含匹配，
-     * 排除已有成员与停用账号，username 升序截前 limit 条。LIKE 通配符转义防关键字注入语义。 */
-    public List<UserAccount> searchCandidates(String workspaceId, String keyword, int limit) {
+     * 排除已有成员与停用账号，username 升序截前 limit 条。LIKE 通配符转义防关键字注入语义。
+     * workspaceId 为 workspaces.id（2026-09-09 BIGINT 化，任务 3 收口 Long）。 */
+    public List<UserAccount> searchCandidates(Long workspaceId, String keyword, int limit) {
         String escaped = keyword.toLowerCase()
                 .replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
         String like = "%" + escaped + "%";

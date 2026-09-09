@@ -21,8 +21,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * 任务 4/5 项目 ACL API 契约测试（规格 m3 §3.3）：GET/PUT /workspaces/{id}/projects/{projectId}/acl，
  * ADMIN+；role ∈ NONE/VIEWER/EDITOR/ADMIN；NONE=显式拒之门外；DELETE 行=恢复继承（契约括注）。
- * 任务 5 ACL 挂实体：ACL 操作的项目须经管理面创建（先建分组+项目再操作）；对不存在的项目 UUID，
- * PUT/GET/DELETE 皆 404 project_not_found（历史「任意 id 可预设」语义随实体化收紧）。
+ * 任务 5 ACL 挂实体：ACL 操作的项目须经管理面创建（先建分组+项目再操作）；对不存在的项目 id
+ * （不存在的大数字，BIGINT 化口径），PUT/GET/DELETE 皆 404 project_not_found
+ * （历史「任意 id 可预设」语义随实体化收紧）。
  */
 @SpringBootTest
 @AutoConfigureMockMvc

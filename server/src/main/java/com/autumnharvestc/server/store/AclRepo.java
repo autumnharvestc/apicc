@@ -32,7 +32,7 @@ public class AclRepo {
      * 「current transaction is aborted」失败——因此本工程成员/ACL 写路径约定不使用 @Transactional，
      * 各写操作以单条语句自持原子；未来迁移 PG 时应改写为 INSERT ... ON CONFLICT DO UPDATE。
      */
-    public void upsert(String workspaceId, String projectId, Long userId, AclRole role) {
+    public void upsert(Long workspaceId, Long projectId, Long userId, AclRole role) {
         try {
             jdbc.update("""
                     INSERT INTO project_acl (workspace_id, project_id, user_id, role, updated_at)
@@ -47,7 +47,7 @@ public class AclRepo {
     }
 
     /** 权限判定用：查覆盖行；无行返回 empty（继承工作区角色的信号）。 */
-    public Optional<AclRole> findRole(String workspaceId, String projectId, Long userId) {
+    public Optional<AclRole> findRole(Long workspaceId, Long projectId, Long userId) {
         List<String> roles = jdbc.queryForList(
                 "SELECT role FROM project_acl WHERE workspace_id = ? AND project_id = ? AND user_id = ?",
                 String.class, workspaceId, projectId, userId);
@@ -55,14 +55,14 @@ public class AclRepo {
     }
 
     /** 删除覆盖行（恢复继承）；幂等。 */
-    public void delete(String workspaceId, String projectId, Long userId) {
+    public void delete(Long workspaceId, Long projectId, Long userId) {
         jdbc.update(
                 "DELETE FROM project_acl WHERE workspace_id = ? AND project_id = ? AND user_id = ?",
                 workspaceId, projectId, userId);
     }
 
     /** 项目 ACL 清单（GET acl，任务 4），按 user_id 稳定排序。 */
-    public List<AclEntryRow> listByProject(String workspaceId, String projectId) {
+    public List<AclEntryRow> listByProject(Long workspaceId, Long projectId) {
         return jdbc.query("""
                 SELECT user_id, role
                 FROM project_acl
@@ -74,12 +74,12 @@ public class AclRepo {
     }
 
     /** 删除工作区时清空其全部 ACL 行（裁定 D：DELETE 工作区的 DB 清理步骤）。 */
-    public void deleteByWorkspace(String workspaceId) {
+    public void deleteByWorkspace(Long workspaceId) {
         jdbc.update("DELETE FROM project_acl WHERE workspace_id = ?", workspaceId);
     }
 
     /** 删除项目时级联清空其全部 ACL 行（任务 2，规格 2026-09-08 §4）；幂等。 */
-    public void deleteByProject(String workspaceId, String projectId) {
+    public void deleteByProject(Long workspaceId, Long projectId) {
         jdbc.update("DELETE FROM project_acl WHERE workspace_id = ? AND project_id = ?",
                 workspaceId, projectId);
     }

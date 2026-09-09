@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.core.Role;
 import com.autumnharvestc.server.store.AclRepo;
 import com.autumnharvestc.server.store.FileVersionRepo;
@@ -15,7 +16,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * 项目管理用例（规格 2026-09-08 §4，计划 B 任务 2）+ 连接握手（§6）。
@@ -24,10 +24,12 @@ import java.util.UUID;
  * 项目名允许同名（§4，身份=id，不查重）；分组归属校验在服务层——fk_projects_group 仅保证
  * 分组全局存在，「项目须挂同工作区分组」是业务规则（404 group_not_found，外键不保证，留痕）。
  * 删除级联（裁定 D 逐条自持，不包事务——失败中断留部分行可重试删除）：先内容版本行
- * （file_versions 按 {@code <projectId>/%} 前缀删，UUID 无 SQL 通配字符，LIKE 安全），
+ * （file_versions 按 {@code <projectId>/%} 前缀删，数字 id 无 SQL 通配字符，LIKE 安全），
  * 再项目 ACL 行，最后实体行。
  * connect：取唯一工作区（空库 404 workspace_not_found）→ 成员守卫（非成员 403 forbidden）
  * → {workspaceId, workspaceName, myRole}。
+ * id 口径（规格 2026-09-09 BIGINT 化）：路径/请求体 id 字符串接参、守卫先行后再 parse
+ * （先鉴权后 parse，同 GroupService）；服务间内调直接传 long。
  */
 @Service
 public class ProjectService {
@@ -39,11 +41,13 @@ public class ProjectService {
     private final WorkspaceRepo workspaces;
     private final WorkspaceGuard guard;
 
-    /** 项目视图（{id, groupId, name, createdAt}）。 */
+    /** 项目视图（{id, groupId, name, createdAt}）。id/groupId 保持 String：对外字符串化数字
+     * （规格 2026-09-09 BIGINT 化，全局不变量 1）。 */
     public record ProjectView(String id, String groupId, String name, Instant createdAt) {
 
         public static ProjectView of(ProjectRecord project) {
-            return new ProjectView(project.id(), project.groupId(), project.name(), project.createdAt());
+            return new ProjectView(String.valueOf(project.id()), String.valueOf(project.groupId()),
+                    project.name(), project.createdAt());
         }
     }
 
@@ -63,8 +67,9 @@ public class ProjectService {
 
     /** 项目清单（成员可读），按创建时间稳定排序（repo 保证）。 */
     public List<ProjectView> list(UserAccount caller, String workspaceId) {
-        guard.requireMember(workspaceId, caller);
-        return projects.listByWorkspace(workspaceId).stream()
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireMember(wsId, caller);
+        return projects.listByWorkspace(wsId).stream()
                 .map(ProjectView::of)
                 .toList();
     }
@@ -72,40 +77,48 @@ public class ProjectService {
     /** 建项目（ADMIN+）：分组须属于该工作区（404 group_not_found）；同名允许。 */
     public ProjectView create(UserAccount caller, String workspaceId,
                               OrgRequests.CreateProjectRequest request) {
-        guard.requireAdmin(workspaceId, caller);
-        requireGroupInWorkspace(workspaceId, request.groupId());
-        ProjectRecord project = new ProjectRecord(
-                UUID.randomUUID().toString(), workspaceId, request.groupId(), request.name().trim(), Instant.now());
-        projects.insert(project);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
+        long groupId = EntityIds.parse(request.groupId());
+        requireGroupInWorkspace(wsId, groupId);
+        ProjectRecord project = projects.insert(new ProjectRecord(
+                null, wsId, groupId, request.name().trim(), Instant.now()));
         return ProjectView.of(project);
     }
 
     /** 改名（ADMIN+）：同名允许，不查重（规格 §4）。 */
     public ProjectView rename(UserAccount caller, String workspaceId, String projectId,
                               OrgRequests.RenameProjectRequest request) {
-        guard.requireAdmin(workspaceId, caller);
-        ProjectRecord project = findInWorkspace(workspaceId, projectId);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
+        long pid = EntityIds.parse(projectId);
+        ProjectRecord project = findInWorkspace(wsId, pid);
         String newName = request.name().trim();
-        projects.updateName(projectId, newName);
-        return new ProjectView(projectId, project.groupId(), newName, project.createdAt());
+        projects.updateName(pid, newName);
+        return new ProjectView(String.valueOf(pid), String.valueOf(project.groupId()), newName, project.createdAt());
     }
 
     /** 移动分组（ADMIN+）：目标分组须属于该工作区（404 group_not_found）。 */
     public void move(UserAccount caller, String workspaceId, String projectId,
                      OrgRequests.MoveProjectRequest request) {
-        guard.requireAdmin(workspaceId, caller);
-        findInWorkspace(workspaceId, projectId);
-        requireGroupInWorkspace(workspaceId, request.groupId());
-        projects.moveGroup(projectId, request.groupId());
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
+        long pid = EntityIds.parse(projectId);
+        findInWorkspace(wsId, pid);
+        long targetGroupId = EntityIds.parse(request.groupId());
+        requireGroupInWorkspace(wsId, targetGroupId);
+        projects.moveGroup(pid, targetGroupId);
     }
 
     /** 删除（ADMIN+）：级联内容版本行（前缀删）→ ACL 行 → 实体行（依赖顺序）。 */
     public void delete(UserAccount caller, String workspaceId, String projectId) {
-        guard.requireAdmin(workspaceId, caller);
-        findInWorkspace(workspaceId, projectId);
-        fileVersions.deleteByProjectPrefix(workspaceId, projectId);
-        acl.deleteByProject(workspaceId, projectId);
-        projects.delete(projectId);
+        long wsId = EntityIds.parse(workspaceId);
+        guard.requireAdmin(wsId, caller);
+        long pid = EntityIds.parse(projectId);
+        findInWorkspace(wsId, pid);
+        fileVersions.deleteByProjectPrefix(wsId, pid);
+        acl.deleteByProject(wsId, pid);
+        projects.delete(pid);
     }
 
     /**
@@ -116,20 +129,20 @@ public class ProjectService {
         WorkspaceRecord workspace = workspaces.findFirst()
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "workspace_not_found", "默认工作区不存在"));
         Role role = guard.requireMember(workspace.id(), caller).role();
-        return new ConnectView(workspace.id(), workspace.name(), role.toDb());
+        return new ConnectView(String.valueOf(workspace.id()), workspace.name(), role.toDb());
     }
 
     /** 区内项目（跨工作区项目 id 按 404 project_not_found 处理）。 */
-    private ProjectRecord findInWorkspace(String workspaceId, String projectId) {
+    private ProjectRecord findInWorkspace(long workspaceId, long projectId) {
         return projects.find(projectId)
-                .filter(project -> project.workspaceId().equals(workspaceId))
+                .filter(project -> project.workspaceId() == workspaceId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "project_not_found", "项目不存在"));
     }
 
     /** 分组须落在同一工作区（外键只保证全局存在——业务规则在服务层校验，404 group_not_found）。 */
-    private void requireGroupInWorkspace(String workspaceId, String groupId) {
+    private void requireGroupInWorkspace(long workspaceId, long groupId) {
         groups.find(groupId)
-                .filter(group -> group.workspaceId().equals(workspaceId))
+                .filter(group -> group.workspaceId() == workspaceId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "group_not_found", "分组不存在"));
     }
 }

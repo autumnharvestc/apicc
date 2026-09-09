@@ -27,13 +27,13 @@ public class PermissionService {
         this.acl = acl;
     }
 
-    /** 工作区级有效角色（projectId 为 null 的便捷重载）。userId 为 users.id（BIGINT 化，任务 2 切 Long）。 */
-    public Optional<Role> effectiveRole(String workspaceId, Long userId) {
+    /** 工作区级有效角色（projectId 为 null 的便捷重载）。userId/workspaceId 均为 BIGINT（2026-09-09 BIGINT 化）。 */
+    public Optional<Role> effectiveRole(Long workspaceId, Long userId) {
         return effectiveRole(workspaceId, userId, null);
     }
 
     /** 项目级有效角色（projectId 可为 null → 工作区角色）。 */
-    public Optional<Role> effectiveRole(String workspaceId, Long userId, String projectId) {
+    public Optional<Role> effectiveRole(Long workspaceId, Long userId, Long projectId) {
         Optional<Role> workspaceRole = memberships.findRole(workspaceId, userId);
         if (projectId == null) {
             return workspaceRole;
