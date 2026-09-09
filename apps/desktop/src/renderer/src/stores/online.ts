@@ -50,9 +50,10 @@ function writePersisted(storage: Storage, state: PersistedOnlineServers): void {
 }
 
 /**
- * 在线编辑缓冲（计划 C 任务 2 会话表化）：随工作区会话驻留——每个驻留工作区一份，
- * 切工作区零丢失零确认（计划全局不变量 2）。字段与旧单槽扁平态一一对应（裁定 B：
- * 仅 api.yaml 级编辑 + 只读文件原文浏览）。
+ * 在线编辑缓冲（计划 C 任务 2 会话表化 → 任务 4 按 editorPath 表化）：随工作区会话驻留
+ * 且按文件路径多槽并存——同工作区双项目（乃至同项目多接口）草稿互不污染（任务 3 重要 1
+ * 裁定的核心验收），切接口/切项目签零丢失零确认（计划全局不变量 2）。字段与旧单槽扁平态
+ * 一一对应（裁定 B：仅 api.yaml 级编辑 + 只读文件原文浏览）。
  */
 export interface OnlineEditorBuffer {
   path: string | null;
@@ -70,17 +71,25 @@ function emptyBuffer(): OnlineEditorBuffer {
 }
 
 /** 在线工作区驻留会话（计划 C 任务 2，与 main online session 同构）：工作区态 + 树视图 +
- *  项目角色清单 + 编辑缓冲（草稿随会话走）。 */
+ *  项目角色清单 + 编辑缓冲表（key = editorPath 实体路径；活跃指针 activeEditorPath）。 */
 export interface OnlineSession {
   workspace: { id: string; name: string; myRole: OnlineRole };
   tree: TreeNodeDTO | null;
   projects: OnlineTreeProject[];
-  buffer: OnlineEditorBuffer;
+  buffers: Record<string, OnlineEditorBuffer>;
+  activeEditorPath: string | null;
 }
 
 /** 活跃驻留会话定位（getter/action 共用的表语义中枢）；无活跃指针 → null。 */
 function activeSessionOf(state: { sessions: Record<string, OnlineSession>; activeWorkspaceId: string | null }): OnlineSession | null {
   return state.activeWorkspaceId !== null ? state.sessions[state.activeWorkspaceId] ?? null : null;
+}
+
+/** 活跃编辑缓冲定位（任务 4 表语义中枢）：活跃会话的活跃路径槽；无会话/无活跃路径 → null。 */
+function activeBufferOf(state: { sessions: Record<string, OnlineSession>; activeWorkspaceId: string | null }): OnlineEditorBuffer | null {
+  const session = activeSessionOf(state);
+  if (!session || session.activeEditorPath === null) return null;
+  return session.buffers[session.activeEditorPath] ?? null;
 }
 
 /**
@@ -142,9 +151,10 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
 
       /**
        * 兼容面（计划 C 任务 2：TopBar/视图层零改动）：以下扁平 getter 全部转发活跃驻留
-       * 会话——activeWorkspace/onlineTree/projects（工作区上下文）与编辑缓冲八字段
-       * （editorPath/editorKind/editorApi/editorRaw/editorProblems/editorVersion/
-       * editorSnapshot/editorLoading）。无活跃会话时回落到旧单槽「空态」形状。
+       * 会话的**活跃路径槽**（任务 4 缓冲表化）——activeWorkspace/onlineTree/projects
+       * （工作区上下文）与编辑缓冲八字段（editorPath/editorKind/editorApi/editorRaw/
+       * editorProblems/editorVersion/editorSnapshot/editorLoading）。无活跃会话/无活跃
+       * 路径时回落到旧单槽「空态」形状。
        */
       activeWorkspace(state): OnlineSession["workspace"] | null {
         return activeSessionOf(state)?.workspace ?? null;
@@ -156,36 +166,36 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         return activeSessionOf(state)?.projects ?? [];
       },
       editorPath(state): string | null {
-        return activeSessionOf(state)?.buffer.path ?? null;
+        return activeBufferOf(state)?.path ?? null;
       },
       editorKind(state): "api" | "file" | null {
-        return activeSessionOf(state)?.buffer.kind ?? null;
+        return activeBufferOf(state)?.kind ?? null;
       },
       editorApi(state): ApiDefinition | null {
-        return activeSessionOf(state)?.buffer.api ?? null;
+        return activeBufferOf(state)?.api ?? null;
       },
       editorRaw(state): string {
-        return activeSessionOf(state)?.buffer.raw ?? "";
+        return activeBufferOf(state)?.raw ?? "";
       },
       editorProblems(state): string[] {
-        return activeSessionOf(state)?.buffer.problems ?? [];
+        return activeBufferOf(state)?.problems ?? [];
       },
       editorVersion(state): number {
-        return activeSessionOf(state)?.buffer.version ?? 0;
+        return activeBufferOf(state)?.version ?? 0;
       },
       editorSnapshot(state): string {
-        return activeSessionOf(state)?.buffer.snapshot ?? "";
+        return activeBufferOf(state)?.snapshot ?? "";
       },
       editorLoading(state): boolean {
-        return activeSessionOf(state)?.buffer.loading ?? false;
+        return activeBufferOf(state)?.loading ?? false;
       },
 
       /**
-       * 在线编辑缓冲 dirty（快照比对，先例同本地 editor store）——按活跃会话缓冲判定。
+       * 在线编辑缓冲 dirty（快照比对，先例同本地 editor store）——按活跃会话活跃槽判定。
        */
       editorDirty(state): boolean {
-        const buffer = activeSessionOf(state)?.buffer;
-        return buffer !== undefined && buffer.api !== null && JSON.stringify(buffer.api) !== buffer.snapshot;
+        const buffer = activeBufferOf(state);
+        return buffer !== null && buffer.api !== null && JSON.stringify(buffer.api) !== buffer.snapshot;
       },
 
       /**
@@ -370,18 +380,23 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
 
       // —— 任务 3：在线工作区浏览/编辑/迁移（裁定 A–E）；计划 C 任务 2 会话表化 ——
 
-      /** 清活跃会话的编辑缓冲（无活跃会话时 no-op；草稿清除仅作用于当前活跃上下文）。 */
+      /**
+       * 显式清场（任务 4 范围控制保留）：清空活跃会话的**整张**缓冲表 + 活跃指针。
+       * selectNode 不再调用它（切接口/选容器只切活跃指针，草稿驻留）；工作区级清场由
+       * closeWorkspace/logout 出表释放缓冲表，本动作保留给显式丢弃语义。
+       */
       clearEditor(): void {
         const session = activeSessionOf(this);
         if (!session) return;
-        session.buffer = emptyBuffer();
+        session.buffers = {};
+        session.activeEditorPath = null;
       },
 
       /**
        * 打开在线工作区（裁定 A；计划 C 任务 2 表语义）：入表不覆盖——已驻留工作区刷新
-       * 树/项目角色并**保留其编辑缓冲**（草稿随会话驻留），其他驻留工作区不受影响；
-       * 成功后活跃指针切到该工作区。失败 error 上屏且不入表；若 main 侧活跃指针已被
-       * 失败的 open 移走（表非空不回滚，任务 1 口径），显式 activate 归还原活跃——
+       * 树/项目角色并**保留其编辑缓冲表**（任务 4：草稿随会话驻留），其他驻留工作区不受
+       * 影响；成功后活跃指针切到该工作区。失败 error 上屏且不入表；若 main 侧活跃指针
+       * 已被失败的 open 移走（表非空不回滚，任务 1 口径），显式 activate 归还原活跃——
        * 失败不抢活跃。
        */
       async openWorkspace(ws: OnlineWorkspaceSummary): Promise<void> {
@@ -394,7 +409,8 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             workspace: { id: ws.id, name: ws.name, myRole: ws.myRole },
             tree: view.tree,
             projects: view.projects,
-            buffer: existing?.buffer ?? emptyBuffer(),
+            buffers: existing?.buffers ?? {},
+            activeEditorPath: existing?.activeEditorPath ?? null,
           };
           this.activeWorkspaceId = ws.id;
           this.conflict = null;
@@ -462,72 +478,93 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       },
 
       /**
-       * 在线侧树选中（App.onSelect 的在线分支）：api → getFiles 取 api.yaml，YAML 解析 +
-       * core ApiDefinitionSchema 校验（裁定 B：坏数据进 problems 展示原文，禁崩）；
-       * file → 只读原文浏览；容器节点仅清空编辑区。写入定向到发起选中的会话缓冲
-       * （计划 C 任务 2：在途切活跃不串槽）。
+       * 在线侧树选中（App.onSelect 的在线分支 / tabs 激活编排的项目选中，任务 4 表语义）：
+       * api/file → 已驻留路径仅切活跃指针（草稿零扰动，不重拉——重拉会以服务端内容覆盖
+       * 草稿；强制重取走 conflictPullOverwrite 的 force 分支），未驻留路径建槽拉取；
+       * 容器节点（project 等）→ 活跃指针置空（编辑区空白，旧清场 UX 保留）但缓冲表驻留
+       * （切项目签草稿零丢失）。坏数据进 problems 展示原文，禁崩。拉取失败/文件缺失不驻留
+       * 空槽（重试可重拉）。
        */
-      async selectNode(kind: TreeNodeDTO["kind"], id: string): Promise<void> {
+      async selectNode(kind: TreeNodeDTO["kind"], id: string, opts?: { force?: boolean }): Promise<void> {
         const wsId = this.activeWorkspaceId;
-        const buffer = wsId !== null ? this.sessions[wsId]?.buffer : undefined;
-        if (wsId === null || !buffer || (kind !== "api" && kind !== "file")) {
-          this.clearEditor();
+        if (wsId === null || (kind !== "api" && kind !== "file")) {
+          const pending = wsId !== null ? this.sessions[wsId] : undefined;
+          if (pending) pending.activeEditorPath = null;
           return;
         }
-        buffer.loading = true;
+        const session = this.sessions[wsId];
+        if (!session) return;
+        const existing = session.buffers[id];
+        if (existing && existing.path !== null && !opts?.force) {
+          session.activeEditorPath = id; // 已驻留：仅切指针
+          return;
+        }
+        const slot = existing ?? emptyBuffer();
+        session.buffers[id] = slot;
+        session.activeEditorPath = id;
+        slot.loading = true;
         this.error = null;
         try {
           const result = await api.onlineFilesGet({ workspaceId: wsId, paths: [id] });
           const file = result.files[0];
           if (!file) {
-            Object.assign(buffer, emptyBuffer());
+            if (slot.path === null) {
+              // 全新空槽即弃：避免「空槽短路」让重试永远拉不到内容
+              delete session.buffers[id];
+              if (session.activeEditorPath === id) session.activeEditorPath = null;
+            }
             this.error = `文件不在可见清单中: ${id}`;
             return;
           }
-          buffer.path = file.path;
-          buffer.version = file.version;
-          buffer.raw = file.content;
+          slot.path = file.path;
+          slot.version = file.version;
+          slot.raw = file.content;
           if (kind === "file") {
-            buffer.kind = "file";
-            buffer.api = null;
-            buffer.problems = [];
-            buffer.snapshot = "";
+            slot.kind = "file";
+            slot.api = null;
+            slot.problems = [];
+            slot.snapshot = "";
             return;
           }
-          buffer.kind = "api";
+          slot.kind = "api";
           try {
             const parsed = ApiDefinitionSchema.safeParse(parseYaml(file.content));
             if (parsed.success) {
-              buffer.api = parsed.data;
-              buffer.problems = [];
-              buffer.snapshot = JSON.stringify(parsed.data);
+              slot.api = parsed.data;
+              slot.problems = [];
+              slot.snapshot = JSON.stringify(parsed.data);
             } else {
-              buffer.api = null;
-              buffer.snapshot = "";
-              buffer.problems = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
+              slot.api = null;
+              slot.snapshot = "";
+              slot.problems = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
             }
           } catch (e) {
             // YAML 语法坏损：同走 problems（不崩，原文可读）
-            buffer.api = null;
-            buffer.snapshot = "";
-            buffer.problems = [e instanceof Error ? e.message : String(e)];
+            slot.api = null;
+            slot.snapshot = "";
+            slot.problems = [e instanceof Error ? e.message : String(e)];
           }
         } catch (e) {
           this.error = e instanceof Error ? e.message : String(e);
+          if (slot.path === null) {
+            delete session.buffers[id];
+            if (session.activeEditorPath === id) session.activeEditorPath = null;
+          }
         } finally {
-          buffer.loading = false;
+          slot.loading = false;
         }
       },
 
       /**
        * 保存在线接口定义（裁定 B）：序列化回 YAML 文本 putFile（baseVersion=当前 version）；
        * 成功 → 版本前移 + 快照复位；409 → conflict 入 store（冲突对话框由组合根渲染）。
-       * 走活跃会话缓冲（计划 C 任务 2）。
+       * 写活跃会话的活跃路径槽（计划 C 任务 4）。
        */
       async saveApi(): Promise<void> {
         const wsId = this.activeWorkspaceId;
-        const buffer = wsId !== null ? this.sessions[wsId]?.buffer : undefined;
-        if (wsId === null || !buffer || this.saving) return;
+        const session = wsId !== null ? this.sessions[wsId] : undefined;
+        const buffer = session && session.activeEditorPath !== null ? session.buffers[session.activeEditorPath] : undefined;
+        if (wsId === null || !session || !buffer || this.saving) return;
         const apiDef = buffer.api;
         const path = buffer.path;
         if (!apiDef || !path || !this.canEdit(path)) return;
@@ -559,13 +596,30 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         this.conflict = null;
       },
 
-      /** 冲突-拉取覆盖我的（裁定 C）：丢弃本地编辑（对话框选择即确认），重取服务端最新并重新渲染。 */
+      /** 冲突-拉取覆盖我的（裁定 C）：丢弃本地编辑（对话框选择即确认），强制重取服务端最新并重新渲染（force 绕过已驻留短路）。 */
       async conflictPullOverwrite(): Promise<void> {
         if (!this.conflict || this.activeWorkspaceId === null || !this.editorPath) return;
         const path = this.editorPath;
         const kind = this.editorKind ?? "api";
         this.conflict = null;
-        await this.selectNode(kind, path);
+        await this.selectNode(kind, path, { force: true });
+      },
+
+      /**
+       * 关签驱逐（计划 C 任务 4，不变量 3：关签=项目关闭）：按 `<projectId>/` 前缀驱逐
+       * 指定驻留工作区缓冲表的该项目槽；根级配置叶（apicc.workspace.yaml）无项目前缀不受
+       * 牵连；活跃槽被逐则指针复位 null。指定会话不存在时 no-op。
+       */
+      evictProjectBuffers(workspaceId: string, projectId: string): void {
+        const session = this.sessions[workspaceId];
+        if (!session) return;
+        const prefix = `${projectId}/`;
+        for (const path of Object.keys(session.buffers)) {
+          if (path.startsWith(prefix)) delete session.buffers[path];
+        }
+        if (session.activeEditorPath !== null && session.buffers[session.activeEditorPath] === undefined) {
+          session.activeEditorPath = null;
+        }
       },
 
       /**

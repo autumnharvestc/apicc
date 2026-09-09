@@ -9,8 +9,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
 import type { OnlineSession } from "../../../src/renderer/src/stores/online.js";
+import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
+import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
+import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import {
   STORAGE_KEY,
+  createEvictProjectSessions,
   createTabsStore,
   readPersistedTabs,
   type ProjectTab,
@@ -44,7 +48,8 @@ function sessionStub(id: string): OnlineSession {
     workspace: { id, name: "在线一", myRole: "OWNER" },
     tree: null,
     projects: [],
-    buffer: { path: null, kind: null, api: null, raw: "", problems: [], version: 0, snapshot: "", loading: false },
+    buffers: {},
+    activeEditorPath: null,
   };
 }
 
@@ -403,5 +408,72 @@ describe("持久化与恢复（localStorage apicc.projectTabs）", () => {
     await tabs.restore();
     expect(tabs.tabs.map((t) => t.projectId)).toEqual(["p-2"]);
     expect(tabs.activeTabId).toBeNull();
+  });
+});
+
+// —— 计划 C 任务 4：关签驱逐真实实现（createEvictProjectSessions，deps 装配体）——
+// 本地 ref：按 tree 收集该项目 api 集合驱逐 editor 会话槽；在线 ref：按 projectId 前缀
+// 驱逐驻留会话缓冲槽；实现内部不抛（任务 3 钩子防护口径：closeTab 调用方不 try/catch）。
+describe("关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessions）", () => {
+  /** 真实 store 上下文：种子项目（含接口A）+ 第二项目（接口B），供跨项目驱逐隔离验证。 */
+  async function localContext() {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const workspace = useWorkspaceStore(api);
+    await workspace.open("/tmp/ws");
+    const groupNode = workspace.tree!.children![0]!;
+    const projectNode = groupNode.children![0]!;
+    const collectionNode = projectNode.children![0]!;
+    const project2 = await api.nodeCreate({ kind: "project", parentId: groupNode.id, name: "项目二" });
+    const collection2 = await api.nodeCreate({ kind: "collection", parentId: project2.id, name: "集合乙" });
+    const apiB = await api.nodeCreate({ kind: "api", parentId: collection2.id, name: "接口B" });
+    await workspace.refresh(); // 驱逐收集按当前树（nodeCreate 后刷新）
+    const editor = useEditorStore(api);
+    const online = createOnlineStoreStub();
+    return { api, workspace, editor, online, projectNode, collectionNode, apiB };
+  }
+
+  /** 在线驱逐只路由不实现（真实现归 online store，已由 online-workspace.test 钉住）。 */
+  function createOnlineStoreStub() {
+    const calls: Array<[string, string]> = [];
+    return {
+      calls,
+      evictProjectBuffers: (workspaceId: string, projectId: string) => {
+        calls.push([workspaceId, projectId]);
+      },
+    };
+  }
+
+  it("本地 ref：按 tree 收集该项目 api 集合驱逐 editor 会话槽；其他项目会话驻留、活跃不受牵连", async () => {
+    const ctx = await localContext();
+    const apiA = ctx.collectionNode.children![0]!.id; // 种子项目（项目一）的接口
+    await ctx.editor.load(apiA);
+    await ctx.editor.load(ctx.apiB.id);
+    ctx.editor.api!.url = "/draft-b"; // 活跃在接口B（项目二）
+    const evict = createEvictProjectSessions({ workspace: ctx.workspace, editor: ctx.editor, online: ctx.online });
+    evict({ kind: "local", dir: ctx.workspace.root }, ctx.projectNode.id);
+    expect(ctx.editor.sessions[apiA]).toBeUndefined(); // 项目一槽被逐
+    expect(ctx.editor.sessions[ctx.apiB.id]).toBeDefined(); // 项目二会话驻留
+    expect(ctx.editor.activeApiId).toBe(ctx.apiB.id); // 活跃不在驱逐集合 → 不动
+  });
+
+  it("在线 ref：路由到 online.evictProjectBuffers(workspaceId, projectId)", async () => {
+    const ctx = await localContext();
+    const evict = createEvictProjectSessions({ workspace: ctx.workspace, editor: ctx.editor, online: ctx.online });
+    evict({ kind: "online", workspaceId: "ws-9", name: "在线九" }, "p-9");
+    expect(ctx.online.calls).toEqual([["ws-9", "p-9"]]);
+  });
+
+  it("防护口径：本地项目节点缺失（树无此 id）→ 不驱逐任何槽；钩子实现内部不抛", async () => {
+    const ctx = await localContext();
+    const apiA = ctx.collectionNode.children![0]!.id;
+    await ctx.editor.load(apiA);
+    const evict = createEvictProjectSessions({ workspace: ctx.workspace, editor: ctx.editor, online: ctx.online });
+    expect(() => evict({ kind: "local", dir: "/tmp/ws" }, "不存在的项目")).not.toThrow();
+    expect(ctx.editor.sessions[apiA]).toBeDefined(); // 无收集 → 不驱逐
+    // 在线驱逐体抛错（替身层契约被破坏）也被吸收：closeTab 驱逐钩子不阻断关签
+    const bomb = { evictProjectBuffers: () => { throw new Error("替身契约破坏"); } };
+    const evictBomb = createEvictProjectSessions({ workspace: ctx.workspace, editor: ctx.editor, online: bomb });
+    expect(() => evictBomb({ kind: "online", workspaceId: "ws-9", name: "在线九" }, "p-1")).not.toThrow();
   });
 });

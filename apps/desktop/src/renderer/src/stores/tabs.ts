@@ -1,7 +1,9 @@
 import { createPinia, defineStore } from "pinia";
 import type { useTreeStore } from "./tree.js";
 import type { useWorkspaceStore } from "./workspace.js";
+import type { useEditorStore } from "./editor.js";
 import type { OnlineStore } from "./online.js";
+import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 
 /**
  * 工作区引用（计划 C 任务 3）：签归属的工作区身份——本地目录或在线工作区。
@@ -94,7 +96,8 @@ export interface TabsStoreDeps {
   online: Pick<OnlineStore, "sessions" | "activeWorkspaceId" | "error" | "activateWorkspace" | "selectNode">;
   /**
    * 关签驱逐钩子（不变量 3：关签=项目关闭）：驱逐该项目的编辑器会话（本地 editor 会话）
-   * 与在线编辑缓冲。计划 C 任务 4 落地具体驱逐；任务 3 缺省 no-op（留接口）。
+   * 与在线编辑缓冲。计划 C 任务 4 落地：用 createEvictProjectSessions 装配真实实现
+   * （App 组合根任务 5 接 ProjectTabs 时传入）。
    */
   evictProjectSessions?: (workspaceRef: WorkspaceRef, projectId: string) => void;
   /**
@@ -288,3 +291,59 @@ export function createTabsStore(deps: TabsStoreDeps) {
 }
 
 export type TabsStore = ReturnType<typeof createTabsStore>;
+
+/** createEvictProjectSessions 依赖（结构化最小面，测试可传真实 store 或 spy）。 */
+export interface EvictProjectSessionsDeps {
+  /** 本地工作区 store：按 tree 定位项目节点并收集其 api 集合（任务 4：本地 apiId 集合由 tree 取）。 */
+  workspace: { tree: TreeNodeDTO | null };
+  /** 本地编辑器 store：驱逐该项目的编辑会话槽。 */
+  editor: Pick<ReturnType<typeof useEditorStore>, "evictProject">;
+  /** 在线 store：按 `<projectId>/` 前缀驱逐驻留工作区缓冲槽。 */
+  online: Pick<OnlineStore, "evictProjectBuffers">;
+}
+
+/** 树中定位项目节点（按 id，任意分组下）。 */
+function findProjectNode(root: TreeNodeDTO | null, projectId: string): TreeNodeDTO | null {
+  for (const group of root?.children ?? []) {
+    for (const project of group.children ?? []) {
+      if (project.kind === "project" && project.id === projectId) return project;
+    }
+  }
+  return null;
+}
+
+/** 递归收集项目子树内全部接口 id（驱逐集合，先序无影响）。 */
+function collectApiIds(node: TreeNodeDTO, out: string[]): void {
+  for (const child of node.children ?? []) {
+    if (child.kind === "api") out.push(child.id);
+    collectApiIds(child, out);
+  }
+}
+
+/**
+ * 关签驱逐真实实现（计划 C 任务 4，不变量 3：关签=项目关闭）——组装出 tabs deps 的
+ * `evictProjectSessions` 钩子（App 组合根任务 5 接 ProjectTabs 时传入 createTabsStore）：
+ * - 本地签：按 workspace.tree 收集该项目的 api id 集合 → `editor.evictProject` 驱逐会话槽；
+ * - 在线签：按 projectId 前缀（`<projectId>/`）驱逐该驻留工作区缓冲表槽（`online.evictProjectBuffers`）。
+ * 防护口径（任务 3 钩子契约）：实现内部不抛——驱逐失败只 warn 不阻断关签（closeTab
+ * 调用方不 try/catch）。
+ */
+export function createEvictProjectSessions(
+  deps: EvictProjectSessionsDeps,
+): (workspaceRef: WorkspaceRef, projectId: string) => void {
+  return (workspaceRef, projectId) => {
+    try {
+      if (workspaceRef.kind === "online") {
+        deps.online.evictProjectBuffers(workspaceRef.workspaceId, projectId);
+        return;
+      }
+      const project = findProjectNode(deps.workspace.tree, projectId);
+      if (!project) return; // 树中无此项目（已删/未刷新）：无可驱逐集合，不抛
+      const apiIds: string[] = [];
+      collectApiIds(project, apiIds);
+      deps.editor.evictProject(projectId, apiIds);
+    } catch (e) {
+      console.warn(`关签驱逐项目编辑会话失败（projectId=${projectId}）: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+}

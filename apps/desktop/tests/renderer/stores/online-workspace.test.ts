@@ -77,7 +77,8 @@ describe("打开/关闭在线工作区（计划 C 任务 2：会话表语义）"
     expect(session.tree?.kind).toBe("root");
     expect(session.tree?.label).toBe(ws.name);
     expect(session.projects).toHaveLength(1);
-    expect(session.buffer.path).toBeNull();
+    expect(session.activeEditorPath).toBeNull(); // 计划 C 任务 4：缓冲按 editorPath 表化
+    expect(session.buffers).toEqual({});
     // 兼容面（TopBar/视图层零改动）：扁平 getter 转发活跃会话
     expect(store.activeWorkspace).toEqual({ id: ws.id, name: ws.name, myRole: "OWNER" });
     expect(store.onlineTree?.label).toBe(ws.name);
@@ -230,7 +231,7 @@ describe("编辑缓冲按工作区隔离（计划 C 任务 2：缓冲随会话�
     await store.activateWorkspace(first.id);
     expect(store.editorApi!.name).toBe("ws1 改名");
     expect(store.editorDirty).toBe(true);
-    expect(store.sessions[second.id]!.buffer.api!.name).toBe("示例接口"); // ws-2 缓冲独立驻留
+    expect(store.sessions[second.id]!.buffers[API_PATH]!.api!.name).toBe("示例接口"); // ws-2 缓冲独立驻留
   });
 
   it("closeWorkspace(id) 出表即弃其缓冲：被关会话草稿清除，另一驻留会话缓冲不受影响", async () => {
@@ -252,6 +253,123 @@ describe("编辑缓冲按工作区隔离（计划 C 任务 2：缓冲随会话�
     expect(store.activeWorkspaceId).toBeNull();
     expect(store.editorPath).toBeNull();
     expect(store.sessions).toEqual({});
+  });
+});
+
+// —— 计划 C 任务 4：在线编辑缓冲按 editorPath 表化（任务 3 重要 1 裁定的核心验收：
+// 同工作区双项目草稿互不污染；切接口/切项目签零丢失）——
+describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath 表化）", () => {
+  const PID2 = "999";
+  const PATH2 = `${PID2}/collections/乙集合/apis/接口乙/api.yaml`;
+  const API2_YAML = [
+    "id: api-online-2",
+    "name: 接口乙",
+    "version: 1.0.0",
+    "deprecated: false",
+    "method: POST",
+    'url: "/pong"',
+    "headers: []",
+    "query: []",
+    "cases: []",
+    "",
+  ].join("\n");
+
+  /** 种子项目（300）与合成第二项目（999）各放一份合法 api.yaml（替身按 path 存取，无可见性校验）。 */
+  async function openedTwoProjects() {
+    const ctx = await opened();
+    const wsId = ctx.store.activeWorkspace!.id;
+    await ctx.api.onlineFilePut({ workspaceId: wsId, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
+    await ctx.api.onlineFilePut({ workspaceId: wsId, path: PATH2, content: API2_YAML, baseVersion: 0 });
+    return { ...ctx, wsId };
+  }
+
+  it("双项目各自缓冲：甲项目草稿 → 切乙项目接口互不污染 → 切回甲草稿原样驻留（已驻留路径不重拉）", async () => {
+    const { api, store, wsId } = await openedTwoProjects();
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "甲项目草稿";
+    expect(store.editorDirty).toBe(true);
+    await store.selectNode("api", PATH2); // 未驻留路径：拉取建槽
+    expect(store.editorApi!.name).toBe("接口乙");
+    expect(store.editorDirty).toBe(false); // 乙槽干净，甲草稿不串扰
+    const session = store.sessions[wsId]!;
+    expect(Object.keys(session.buffers).sort()).toEqual([API_PATH, PATH2].sort());
+    expect(session.activeEditorPath).toBe(PATH2);
+    // 切回甲：草稿回显且不重拉（取数计数不增——重拉会以服务端内容覆盖草稿）
+    let gets = 0;
+    const originalGet = api.onlineFilesGet.bind(api);
+    api.onlineFilesGet = async (input) => {
+      gets += 1;
+      return originalGet(input);
+    };
+    await store.selectNode("api", API_PATH);
+    expect(store.editorApi!.name).toBe("甲项目草稿");
+    expect(store.editorDirty).toBe(true);
+    expect(gets).toBe(0);
+  });
+
+  it("容器节点（project）选中：活跃指针置空（编辑区空白）但缓冲表驻留——切项目签草稿零丢失", async () => {
+    const { store, wsId } = await openedTwoProjects();
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "甲项目草稿";
+    // 项目签激活编排（tabs.activateTab → online.selectNode("project", id)）同路径
+    await store.selectNode("project", ONLINE_SEED_PROJECT_ID);
+    expect(store.editorPath).toBeNull();
+    expect(store.editorApi).toBeNull();
+    expect(store.editorDirty).toBe(false);
+    expect(Object.keys(store.sessions[wsId]!.buffers)).toEqual([API_PATH]); // 草稿槽保留
+    await store.selectNode("api", API_PATH); // 再点接口：草稿回显，不重拉
+    expect(store.editorApi!.name).toBe("甲项目草稿");
+  });
+
+  it("拉取失败/文件缺失：不驻留空槽（重试可重拉），活跃指针复位（编辑区空白）", async () => {
+    const { store, wsId } = await openedTwoProjects();
+    await store.selectNode("file", "apicc.workspace.yaml");
+    await store.selectNode("api", `${PID2}/不存在/api.yaml`);
+    expect(store.error).toContain("文件不在可见清单中");
+    const session = store.sessions[wsId]!;
+    expect(session.buffers[`${PID2}/不存在/api.yaml`]).toBeUndefined(); // 空槽即弃
+    expect(session.activeEditorPath).toBeNull(); // 编辑区空白（旧清场 UX 保留）
+    expect(session.buffers["apicc.workspace.yaml"]).toBeDefined(); // 原槽驻留
+  });
+
+  it("clearEditor 显式清场（任务 4 范围控制保留）：清空活跃会话整张缓冲表 + 指针；selectNode 不再走全清", async () => {
+    const { store, wsId } = await openedTwoProjects();
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "甲项目草稿";
+    store.clearEditor();
+    const session = store.sessions[wsId]!;
+    expect(session.buffers).toEqual({});
+    expect(session.activeEditorPath).toBeNull();
+    expect(store.editorPath).toBeNull();
+    expect(store.editorDirty).toBe(false);
+  });
+
+  it("evictProjectBuffers：按 <projectId>/ 前缀驱逐；根级配置叶与其它项目缓冲驻留；活跃槽被逐则指针复位", async () => {
+    const { store, wsId } = await openedTwoProjects();
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "甲项目草稿";
+    await store.selectNode("api", PATH2);
+    store.editorApi!.name = "乙项目草稿";
+    await store.selectNode("file", "apicc.workspace.yaml");
+    expect(store.editorPath).toBe("apicc.workspace.yaml");
+    // 驱逐乙项目（999）：乙槽清除；甲槽与根级配置叶驻留；活跃（根级叶）不动
+    store.evictProjectBuffers(wsId, PID2);
+    const session = store.sessions[wsId]!;
+    expect(Object.keys(session.buffers).sort()).toEqual([API_PATH, "apicc.workspace.yaml"].sort());
+    expect(session.activeEditorPath).toBe("apicc.workspace.yaml");
+    // 驱逐甲项目：甲槽清除，根级叶驻留（无 <projectId>/ 前缀不受任何项目驱逐牵连）
+    store.evictProjectBuffers(wsId, ONLINE_SEED_PROJECT_ID);
+    expect(Object.keys(session.buffers)).toEqual(["apicc.workspace.yaml"]);
+    expect(store.editorPath).toBe("apicc.workspace.yaml");
+    // 无匹配前缀：no-op 不抛
+    store.evictProjectBuffers(wsId, "无此项目");
+    expect(store.editorPath).toBe("apicc.workspace.yaml");
+    // 活跃槽被逐：指针复位 null（编辑区空白），缓冲表随会话继续驻留
+    await store.selectNode("api", API_PATH);
+    expect(store.editorPath).toBe(API_PATH);
+    store.evictProjectBuffers(wsId, ONLINE_SEED_PROJECT_ID);
+    expect(session.activeEditorPath).toBeNull();
+    expect(store.editorPath).toBeNull();
   });
 });
 
