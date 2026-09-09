@@ -46,6 +46,11 @@ public class AuthService {
         this.tokenTtl = Duration.ofDays(tokenTtlDays);
     }
 
+    /** 注册开关对外暴露（登录页按此隐藏注册入口——独立部署/非注册模式不显示不可用的功能）。 */
+    public boolean registrationOpen() {
+        return allowRegistration;
+    }
+
     /** 注册：开关关闭 → 403 registration_disabled；重名 → 409 username_taken（含唯一约束竞态兜底）。 */
     public UserView register(RegisterRequest request) {
         if (!allowRegistration) {

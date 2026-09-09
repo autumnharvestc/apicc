@@ -1,5 +1,6 @@
 package com.autumnharvestc.server.auth;
 
+import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.UserRepo;
 import com.jayway.jsonpath.JsonPath;
@@ -17,6 +18,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.time.Instant;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -118,20 +120,20 @@ class AdminBootstrapTest {
         }
     }
 
-    /** no-op 分支纯单测：非空表绝不插入；插入载荷按配置/随机两形态核对。 */
+    /** no-op 分支纯单测：有启用超管绝不插入；插入载荷按配置/随机两形态核对。 */
     @Test
     void skipsInsertWhenUsersExistAndBuildsExpectedPayloads() {
         UserRepo repo = mock(UserRepo.class);
         var encoder = new BCryptPasswordEncoder();
 
-        // 非空表：no-op
-        when(repo.count()).thenReturn(1L);
+        // 有启用超管：no-op（判据已从「表空」扩为「无启用超管」，重引导回归另测）
+        when(repo.existsSuperadmin()).thenReturn(true);
         new AdminBootstrap(repo, "boss", "secret123").run(null);
-        verify(repo).count();
+        verify(repo).existsSuperadmin();
         verify(repo, never()).insert(org.mockito.ArgumentMatchers.any());
-        verifyNoMoreInteractions(repo);
 
-        // 空表 + 环境变量凭据：按配置建号，哈希可验证
+        // 无超管 + 表空：环境变量凭据建号，哈希可验证
+        when(repo.existsSuperadmin()).thenReturn(false);
         when(repo.count()).thenReturn(0L);
         new AdminBootstrap(repo, "boss", "secret123").run(null);
         var envCaptor = ArgumentCaptor.forClass(UserAccount.class);
@@ -139,7 +141,7 @@ class AdminBootstrapTest {
         assertThat(envCaptor.getValue().username()).isEqualTo("boss");
         assertThat(encoder.matches("secret123", envCaptor.getValue().passwordHash())).isTrue();
 
-        // 空表 + 未配置：admin + 随机口令（base64url），哈希可验证且两次口令互不相同
+        // 无超管 + 表空 + 未配置：admin + 随机口令（base64url），哈希可验证且两次口令互不相同
         when(repo.count()).thenReturn(0L);
         new AdminBootstrap(repo, "", "").run(null);
         var randomCaptor = ArgumentCaptor.forClass(UserAccount.class);
@@ -149,5 +151,24 @@ class AdminBootstrapTest {
         assertThat(randomCaptor.getAllValues().get(1).passwordHash()).startsWith("$2");
         assertThat(randomCaptor.getAllValues().get(1).passwordHash())
                 .isNotEqualTo(randomCaptor.getAllValues().get(0).passwordHash());
+    }
+
+    /** 重引导回归（用户实测：计划 A 前存量库 admin role=USER，注册关闭+无超管 → 无人能管理）：
+     * 表非空但无启用超管 → 重新引导；同名存量账号占用时用户名避让为 <名>-sys。 */
+    @Test
+    void rebootstrapsWhenNoActiveSuperadminAndAvoidsNameClash() {
+        UserRepo repo = mock(UserRepo.class);
+        var encoder = new BCryptPasswordEncoder();
+        when(repo.existsSuperadmin()).thenReturn(false);
+        when(repo.count()).thenReturn(3L);
+        when(repo.findByUsername("admin")).thenReturn(java.util.Optional.of(
+                new UserAccount("legacy", "admin", "$2legacy", "旧账号", PlatformRole.USER, false, Instant.now())));
+        new AdminBootstrap(repo, "", "").run(null);
+        var captor = ArgumentCaptor.forClass(UserAccount.class);
+        verify(repo).insert(captor.capture());
+        assertThat(captor.getValue().username()).isEqualTo("admin-sys");
+        assertThat(captor.getValue().role()).isEqualTo(PlatformRole.SUPERADMIN);
+        // 随机口令不可预知：仅验证哈希形态
+        assertThat(captor.getValue().passwordHash()).startsWith("$2");
     }
 }

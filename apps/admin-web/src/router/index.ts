@@ -9,6 +9,7 @@
  * 向视图注入 store 实例（组件内零工厂调用，沿 desktop 装配先例）。
  */
 import { createRouter, createWebHistory, type Router, type RouteRecordRaw } from "vue-router";
+import type { AdminClient } from "../api/client.js";
 import type { SessionStore } from "../stores/session.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
 import type { UsersStore } from "../stores/users.js";
@@ -23,6 +24,8 @@ import OrgView from "../views/OrgView.vue";
 
 export interface AppRouterDeps {
   session: SessionStore;
+  /** 登录页注册开关探测（auth/config）所需。 */
+  client: AdminClient;
   workspaces: WorkspacesStore;
   users: UsersStore;
   /** 组织管理（任务 6）：分组/项目清单成员可读、写动作 ADMIN+ 由服务端裁决。 */
@@ -38,7 +41,7 @@ export interface AppRouterDeps {
 
 export function createAppRoutes(deps: AppRouterDeps): RouteRecordRaw[] {
   return [
-    { path: "/login", name: "login", component: LoginView, props: { session: deps.session } },
+    { path: "/login", name: "login", component: LoginView, props: { session: deps.session, client: deps.client } },
     {
       // 父路由不具名（任务 3 审查次要 3 顺修）：无名父路由 + 空 path 子路由组合无 vue-router
       // 命名告警；子路由经具名（workspaces/workspace-members/workspace-acl）导航。

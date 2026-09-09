@@ -53,10 +53,17 @@ public class AdminBootstrap implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
-        if (users.count() > 0) {
+        if (users.existsSuperadmin()) {
             return;
         }
+        // 判据从「表空」扩为「无启用超管」（用户实测回归：计划 A 前的存量库 admin role=USER，
+        // 注册关闭+无超管 → 无人能管理；重引导让系统永远可被接管）
+        boolean rebootstrap = users.count() > 0;
         String username = configuredUsername.isBlank() ? "admin" : configuredUsername.trim();
+        // 存量库可能已有同名账号（role=USER）：重引导换用 admin-sys 避开唯一约束
+        if (rebootstrap && users.findByUsername(username).isPresent()) {
+            username = username + "-sys";
+        }
         if (username.length() > 32) {
             // users.username VARCHAR(32)，配置错误 fail-fast 于启动期而非落库期
             throw new IllegalStateException("apicc.server.admin-username 超过 32 字符: " + username);
@@ -68,10 +75,11 @@ public class AdminBootstrap implements ApplicationRunner {
                 passwordEncoder.encode(password), username,
                 PlatformRole.SUPERADMIN, false, Instant.now()));
         if (fromEnv) {
-            log.info("首次启动：已创建管理员账号 {}（凭据来自环境变量），请妥善保管", username);
+            log.info("{}：已创建管理员账号 {}（凭据来自环境变量），请妥善保管",
+                    rebootstrap ? "检测到无启用超管，重新引导" : "首次启动", username);
         } else {
-            log.warn("首次启动：已创建管理员账号 {}，初始密码：{}（仅此一次打印，请立即登录并修改密码）",
-                    username, password);
+            log.warn("{}：已创建管理员账号 {}，初始密码：{}（仅此一次打印，请立即登录并修改密码）",
+                    rebootstrap ? "检测到无启用超管，重新引导" : "首次启动", username, password);
         }
     }
 

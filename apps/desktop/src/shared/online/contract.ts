@@ -34,6 +34,9 @@ export const OnlineProjectRoleSchema = z.enum(["OWNER", "ADMIN", "EDITOR", "VIEW
 
 // —— 用户与认证（§3.1）——
 export const OnlineUserSchema = z.object({ id: z.string(), username: z.string(), displayName: z.string() });
+/** 认证面公开配置（无认证端点 /api/v1/auth/config）：登录对话框按此隐藏注册入口。 */
+export const OnlineAuthConfigSchema = z.object({ allowRegistration: z.boolean() });
+export type OnlineAuthConfig = z.infer<typeof OnlineAuthConfigSchema>;
 /** register 入参：username 3-32 字符 [a-zA-Z0-9_-]，password ≥8。 */
 export const OnlineRegisterInputSchema = z.object({
   username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_-]+$/),

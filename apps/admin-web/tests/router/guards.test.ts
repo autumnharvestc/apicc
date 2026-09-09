@@ -55,7 +55,7 @@ function setup() {
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
   const org = createOrgStore({ client });
-  const router = createAppRouter({ session, workspaces, users, org });
+  const router = createAppRouter({ session, workspaces, users, org, client });
   return { session, workspaces, router };
 }
 

@@ -45,7 +45,7 @@ function mountApp() {
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
   const org = createOrgStore({ client });
-  const router = createAppRouter({ session, workspaces, users, org });
+  const router = createAppRouter({ session, workspaces, users, org, client });
   const { i18n } = createAdminI18n();
   const wrapper = mount(App, { global: { plugins: [i18n, router] } });
   return { wrapper, router };

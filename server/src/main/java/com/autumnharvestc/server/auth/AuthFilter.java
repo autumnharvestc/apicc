@@ -35,7 +35,7 @@ public class AuthFilter extends OncePerRequestFilter {
     public static final String ATTR_TOKEN_HASH = "apicc.tokenHash";
 
     private static final Set<String> PUBLIC_PATHS =
-            Set.of("/api/v1/ping", "/api/v1/auth/register", "/api/v1/auth/login");
+            Set.of("/api/v1/ping", "/api/v1/auth/config", "/api/v1/auth/register", "/api/v1/auth/login");
 
     private final TokenRepo tokens;
     private final UserRepo users;

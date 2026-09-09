@@ -89,6 +89,7 @@ export interface AdminClient {
   clearToken(): void;
   /** 运行期接线/覆盖会话失效钩子（组合根先建 client 后建 session store 的装配顺序需要）。 */
   setOnUnauthorized(fn: () => void): void;
+  authConfig(): Promise<{ allowRegistration: boolean }>;
   register(input: AdminRegisterInput): Promise<AdminUser>;
   login(credentials: { username: string; password: string }): Promise<AdminLoginResult>;
   logout(): Promise<void>;
@@ -258,6 +259,10 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
     },
     setOnUnauthorized(fn: () => void) {
       onUnauthorized = fn;
+    },
+
+    async authConfig() {
+      return (await request({ method: "GET", path: "/auth/config", schema: z.object({ allowRegistration: z.boolean() }) })) as { allowRegistration: boolean };
     },
 
     async register(input) {

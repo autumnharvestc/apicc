@@ -10,9 +10,11 @@ import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
+
 /**
- * 认证端点（规格 m3 §3.1）：register / login / logout / me。
- * register 与 login 在过滤器放行清单（裁定 A）；logout 与 me 需认证，
+ * 认证端点（规格 m3 §3.1）：config / register / login / logout / me。
+ * config 与 register、login 在过滤器放行清单（裁定 A）；logout 与 me 需认证，
  * 身份与令牌哈希由 AuthFilter 以请求属性注入。
  */
 @RestController
@@ -22,6 +24,12 @@ public class AuthController {
 
     public AuthController(AuthService auth) {
         this.auth = auth;
+    }
+
+    /** 认证面公开配置（无认证）：登录页按 registrationOpen 决定是否显示注册入口。 */
+    @GetMapping("/api/v1/auth/config")
+    public Map<String, Boolean> config() {
+        return Map.of("allowRegistration", auth.registrationOpen());
     }
 
     /** 201 {id, username, displayName}；409 username_taken；403 registration_disabled；400 校验。 */

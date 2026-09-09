@@ -33,12 +33,23 @@ const ATypographyText = ATypography.Text;
  */
 const props = defineProps<{
   online: ReturnType<typeof createOnlineStore>;
+  apicc: import("../../../shared/types.js").ApiccApi;
   /** 本地工作区会话（任务 3 裁定 E）：打开在线工作区前先 reset 关闭本地上下文。 */
   workspace: ReturnType<typeof useWorkspaceStore>;
 }>();
 const { t } = useI18n();
 
 const mode = ref<"login" | "register">("login");
+// 注册开关（服务端 auth/config）：关闭时隐藏注册页签（独立部署/非注册模式不显示不可用的功能）
+const allowRegistration = ref(false);
+void fetchAllowRegistration();
+async function fetchAllowRegistration() {
+  try {
+    allowRegistration.value = (await props.apicc.authConfig()).allowRegistration;
+  } catch {
+    allowRegistration.value = false; // 探测失败按关闭处理
+  }
+}
 const username = ref("");
 const password = ref("");
 const displayName = ref("");
@@ -185,7 +196,7 @@ async function onOpenWorkspace(workspaceId: string) {
               </a-button>
             </div>
           </a-tab-pane>
-          <a-tab-pane key="register">
+          <a-tab-pane v-if="allowRegistration" key="register">
             <template #tab><span data-testid="online-tab-register">{{ t("online.registerTab") }}</span></template>
             <div class="auth-form" data-testid="online-register-form">
               <a-input v-model:value="username" data-testid="online-reg-username" :placeholder="t('online.username')" />

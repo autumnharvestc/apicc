@@ -131,7 +131,7 @@ async function mountUsers(
   } else {
     await session.initialize(); // 验活落 token + role，守卫首航即见确定态
   }
-  const router = createAppRouter({ session, workspaces, users, org, sessionReady });
+  const router = createAppRouter({ session, workspaces, users, org, client, sessionReady });
   const { i18n } = createAdminI18n();
   const wrapper: VueWrapper = mount(App, { global: { plugins: [i18n, router] } });
   await router.isReady();

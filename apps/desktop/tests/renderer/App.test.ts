@@ -95,9 +95,10 @@ async function openLocalDir(wrapper: import("@vue/test-utils").VueWrapper) {
   await wrapper.find('[data-testid="topbar-home"]').trigger("click");
   await flushPromises();
   await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
-  for (let i = 0; i < 100 && wrapper.find('[data-testid="rail-api"]').attributes("disabled") !== undefined; i++) await new Promise((r) => setTimeout(r, 20));
+  // 主页视图不渲染 rail（用户裁定）：打开后经首个项目卡片进入接口模块
+  for (let i = 0; i < 100 && !wrapper.find('[data-testid^="project-card-"]').exists(); i++) await new Promise((r) => setTimeout(r, 20));
   await flushPromises();
-  await wrapper.find('[data-testid="rail-api"]').trigger("click");
+  await wrapper.find('[data-testid^="project-card-"]').trigger("click");
   // 打开链路（真实磁盘重载 + 树渲染）是多拍宏任务，单次 flushPromises 会早于树数据就绪：
   // 直接等首个树节点出现（上限 ~2s），不 sleep 凑拍。
   for (let i = 0; i < 100 && !wrapper.find('[data-testid="tree-group-toggle"]').exists(); i++) {
@@ -115,7 +116,7 @@ async function openLocalDir(wrapper: import("@vue/test-utils").VueWrapper) {
 }
 
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
-  it("挂载缺省主页（无打开记录）；顶栏主页入口可见；rail 五项", async () => {
+  it("挂载缺省主页（无打开记录）；顶栏主页入口可见；主页视图不渲染 rail（用户裁定）", async () => {
     const wrapper = await mountApp();
     expect(wrapper.find('[data-testid="app-root"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="topbar"]').exists()).toBe(true);
@@ -124,11 +125,8 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
     // 主页无 API 栏（M11 澄清①）——v-show 隐藏（组件常驻保状态），可见性断言
     expect(wrapper.find('[data-testid="side-tree"]').isVisible()).toBe(false);
-    // rail 五项（主页不在 rail——顶栏入口）
-    const items = wrapper.findAll('[data-testid="module-rail"] button.rail-item').map((b) => b.attributes("data-testid"));
-    expect(items).toEqual(["rail-api", "rail-run", "rail-wf", "rail-test", "rail-envs"]);
-    // 未打开工作区：rail 模块禁用
-    expect(wrapper.find('[data-testid="rail-api"]').attributes("disabled")).toBeDefined();
+    // 主页视图不渲染 rail（用户裁定 2026-09-09）：离开主页经项目打开/页签，不经 rail
+    expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(false);
   });
 
   it("接口模块渲染：API 栏（树）+ 子视图页签（调试/设计）+ 调试子视图 上编辑器/分割条/下响应", async () => {
@@ -176,11 +174,10 @@ function subRadio(wrapper: import("@vue/test-utils").VueWrapper, value: string) 
 }
 
 describe("App 视图切换装配（M8 模块化）", () => {
-  it("未打开工作区时：工作区级模块与子视图禁用（顶栏主页入口恒在）", async () => {
+  it("未打开工作区时：主页不渲染 rail（导航经项目打开）；打开后子视图按选中禁用", async () => {
     const wrapper = await mountApp();
-    expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
-    // rail 原生 button：disabled 属性
-    expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
+    // 主页视图不渲染 rail（用户裁定）——门控（railGate）逻辑保留在组件内
+    expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(false);
     // 顶栏主页入口恒在（M11：主页不在 rail）
     expect(wrapper.find('[data-testid="topbar-home"]').exists()).toBe(true);
     // 子视图（接口未选中）禁用：打开工作区、切接口模块、未选接口 → design 禁用
@@ -190,20 +187,17 @@ describe("App 视图切换装配（M8 模块化）", () => {
 
   it("打开工作区后可切换 运行/环境/导入 模块与 调试/用例/设计 子视图，导入取消回调试子视图", async () => {
     const wrapper = await mountApp();
-    // 打开工作区前模块禁用
-    expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
+    // 主页视图不渲染 rail（用户裁定）——缺失即断言
+    expect(wrapper.find('[data-testid="rail-run"]').exists()).toBe(false);
     await openLocalDir(wrapper);
     await flushPromises();
-    // 主页是打开后的缺省视图：切回接口模块再断言
-    await wrapper.find('[data-testid="rail-api"]').trigger("click");
-    await flushPromises();
+    // openLocalDir 经项目卡片已直达接口模块
     // 打开后模块可用；缺省接口模块 + 调试子视图 = 编辑器 + 响应区（子视图需选中接口）
     expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeUndefined();
     expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="viewer-pane"]').exists()).toBe(true);
     // 选中种子接口 → 子视图（调试/设计）启用 → 设计子视图（M9-D：用例移入测试模块）
     await flushPromises();
-    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     expect(subRadio(wrapper, "design").attributes("disabled")).toBeUndefined();
@@ -240,7 +234,6 @@ describe("App 视图切换装配（M8 模块化）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="send-btn"]').trigger("click");
@@ -256,7 +249,6 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="send-btn"]').trigger("click");
@@ -493,7 +485,6 @@ describe("App 侧树工作流入口", () => {
     await flushPromises();
     // 选中接口 → selectedProjectId 就绪 → 切到工作流视图（设计器是工作流唯一创建入口）
     await flushPromises();
-    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await wrapper.find('[data-testid="rail-wf"]').trigger("click");
     await flushPromises();
@@ -602,8 +593,7 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
 describe("App 插件视图装配（M7-B 任务 1）", () => {
   it("插件入口（M9-C 裁定 D5）：顶栏设置抽屉打开插件管理，恒可用（不依赖工作区）", async () => {
     const wrapper = await mountApp();
-    // 未打开工作区：工作区级模块（run 等）禁用
-    expect(wrapper.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
+    // 主页视图不渲染 rail（用户裁定）——设置抽屉不依赖工作区
     await wrapper.find('[data-testid="settings-toggle"]').trigger("click");
     await flushPromises();
     expect(bodyFind("plugins-view")).not.toBeNull();
@@ -638,7 +628,6 @@ describe("App 测试模块装配（M9-D）", () => {
     await flushPromises();
     // 选中种子接口（作用域化树：collection 展开后点接口）
     await flushPromises();
-    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     // 测试模块：用例面板渲染（用例列表来自当前接口）
@@ -714,7 +703,6 @@ describe("App 测试模块装配（M9-D）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="rail-test"]').trigger("click");
@@ -739,7 +727,6 @@ describe("App 环境联动（M9-A1）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    console.log("PROBE-SIDE:", wrapper.find('[data-testid="side-tree"]').html().slice(0, 1200));
     await wrapper.find('[data-testid="tree-api"]').trigger("click");
     await flushPromises();
     // 选中接口时环境清单为空（种子项目无环境）

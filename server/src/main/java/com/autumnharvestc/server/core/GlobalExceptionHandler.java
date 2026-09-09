@@ -1,5 +1,7 @@
 package com.autumnharvestc.server.core;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -19,6 +21,8 @@ import jakarta.servlet.http.HttpServletRequest;
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     /** 错误响应体：{code, message}。 */
     public record ApiError(String code, String message) {
@@ -103,9 +107,10 @@ public class GlobalExceptionHandler {
                 .body(new ApiError("validation_failed", "请求参数校验失败"));
     }
 
-    /** 兜底 → 500 internal_error。 */
+    /** 兜底 → 500 internal_error。意外异常必须记堆栈（用户实测：登录 500 但日志无痕，无从排查）。 */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> handleUnexpected(Exception ex) {
+        log.error("未处理异常：{}", ex.toString(), ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ApiError("internal_error", "服务端内部错误"));
     }

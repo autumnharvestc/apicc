@@ -35,6 +35,7 @@ const LOGIN_OK = { token: "tok-abc123", expiresAt: "2026-10-03T00:00:00Z", user:
 
 /** 默认路由表：登录/me/工作区清单（登录成功落到 /workspaces 时清单拉取不失败）。 */
 function defaultHandler(req: CapturedRequest): Response {
+  if (req.url.endsWith("/auth/config")) return json(200, { allowRegistration: true });
   if (req.url.endsWith("/auth/login")) return json(200, LOGIN_OK);
   if (req.url.endsWith("/workspaces") && req.method === "GET") return json(200, []);
   return json(200, USER);
@@ -73,7 +74,7 @@ async function mountApp(handler: FetchHandler = defaultHandler): Promise<Mounted
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
   const org = createOrgStore({ client });
-  const router = createAppRouter({ session, workspaces, users, org });
+  const router = createAppRouter({ session, workspaces, users, org, client });
   const { i18n } = createAdminI18n();
   const wrapper = mount(App, { global: { plugins: [i18n, router] } });
   await router.isReady();
@@ -140,7 +141,7 @@ describe("LoginView 登录流", () => {
     const gate = new Promise<Response>((resolve) => {
       release = () => resolve(json(200, LOGIN_OK));
     });
-    const { wrapper, session } = await mountApp(() => gate);
+    const { wrapper, session } = await mountApp(() => gate.then(() => json(200, LOGIN_OK)));
     await fillLogin(wrapper, "alice", "password8");
     const click = wrapper.find("[data-testid=login-submit]").trigger("click");
     await flushPromises();
@@ -160,7 +161,7 @@ describe("LoginView 本地校验（裁定 D：不经 error 通道、不发请求
     await wrapper.find("[data-testid=login-submit]").trigger("click");
     await flushPromises();
     expect(wrapper.find("[data-testid=login-form-error]").exists()).toBe(true);
-    expect(calls).toHaveLength(0);
+    expect(calls.filter((c) => !c.url.endsWith("/auth/config"))).toHaveLength(0);
   });
 
   it("注册页签：非法用户名（a.b）→ 表单错误，零请求", async () => {
@@ -169,7 +170,7 @@ describe("LoginView 本地校验（裁定 D：不经 error 通道、不发请求
     await wrapper.find("[data-testid=register-submit]").trigger("click");
     await flushPromises();
     expect(wrapper.find("[data-testid=login-form-error]").exists()).toBe(true);
-    expect(calls).toHaveLength(0);
+    expect(calls.filter((c) => !c.url.endsWith("/auth/config"))).toHaveLength(0);
   });
 
   it("注册页签：密码过短 / 显示名称空白 → 表单错误，零请求", async () => {
@@ -182,13 +183,13 @@ describe("LoginView 本地校验（裁定 D：不经 error 通道、不发请求
     await wrapper.find("[data-testid=register-submit]").trigger("click");
     await flushPromises();
     expect(wrapper.find("[data-testid=login-form-error]").exists()).toBe(true);
-    expect(calls).toHaveLength(0);
+    expect(calls.filter((c) => !c.url.endsWith("/auth/config"))).toHaveLength(0);
   });
 });
 
 describe("LoginView 注册流（不建立登录态）", () => {
   it("注册成功 → 提示上屏 + 切回登录页签 + 用户名保留 + 会话仍为空", async () => {
-    const { wrapper, router, session, calls } = await mountApp((req) => (req.url.endsWith("/auth/register") ? json(201, USER) : json(200, LOGIN_OK)));
+    const { wrapper, router, session, calls } = await mountApp((req) => (req.url.endsWith("/auth/config") ? json(200, { allowRegistration: true }) : req.url.endsWith("/auth/register") ? json(201, USER) : json(200, LOGIN_OK)));
     await fillRegister(wrapper, "alice", "Alice", "password8");
     await wrapper.find("[data-testid=register-submit]").trigger("click");
     await flushPromises();
@@ -204,8 +205,14 @@ describe("LoginView 注册流（不建立登录态）", () => {
     expect(router.currentRoute.value.name).toBe("login");
   });
 
+  it("注册开关关闭（auth/config false）→ 注册页签不渲染（独立部署口径）", async () => {
+    const { wrapper } = await mountApp((req) => (req.url.endsWith("/auth/config") ? json(200, { allowRegistration: false }) : json(200, LOGIN_OK)));
+    await flushPromises();
+    expect(wrapper.find("[data-testid=register-tab]").exists()).toBe(false);
+  });
+
   it("注册失败 409 username_taken → api 错误上屏", async () => {
-    const { wrapper, session } = await mountApp(() => json(409, { code: "username_taken", message: "用户名已被占用" }));
+    const { wrapper, session } = await mountApp((req) => (req.url.endsWith("/auth/config") ? json(200, { allowRegistration: true }) : req.url.endsWith("/auth/register") ? json(409, { code: "username_taken", message: "用户名已被占用" }) : json(401, { code: "invalid_credentials", message: "x" })));
     await fillRegister(wrapper, "alice", "Alice", "password8");
     await wrapper.find("[data-testid=register-submit]").trigger("click");
     await flushPromises();

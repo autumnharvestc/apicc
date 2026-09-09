@@ -936,6 +936,11 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     // —— 在线频道（M3-B 任务 1）：与主进程 online session 同构的替身（不发网络）——
     // login 出口剥 token（与 IPC 契约一致）；put/delete 按服务端语义返回 conflict outcome
     // （baseVersion 不匹配时带 currentVersion），供任务 2/3 UI 在替身上开发冲突分支。
+    async authConfig(): Promise<{ allowRegistration: boolean }> {
+      // 替身默认开放注册（既有注册流用例依赖）；关闭态由用例覆写本方法
+      return { allowRegistration: true };
+    },
+
     async onlineRegister(input: OnlineRegisterChannelInput): Promise<OnlineUser> {
       // 替身不做用户管理，按入参合成示例用户（形状同契约 201 载荷），不建立登录态
       return { id: "u-online-1", username: input.username, displayName: input.displayName };

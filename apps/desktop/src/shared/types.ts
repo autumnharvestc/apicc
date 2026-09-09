@@ -195,6 +195,7 @@ export interface ApiccApi {
   wfRun(input: WfRunInput): Promise<WorkflowRunResult>;
   // —— 在线频道（M3-B 任务 1，规格 §2 D9 / §3）：main 进程 onlineClient 的 IPC 出口 ——
   /** 注册（不建立登录态）。 */
+  authConfig(): Promise<{ allowRegistration: boolean }>;
   onlineRegister(input: OnlineRegisterChannelInput): Promise<OnlineUser>;
   /** 登录：token 留在 main 进程（tokenStore 持久化），出口只含 expiresAt + user。 */
   onlineLogin(input: OnlineLoginInput): Promise<OnlineLoginOutput>;

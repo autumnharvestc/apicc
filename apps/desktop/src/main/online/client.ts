@@ -14,6 +14,7 @@
  */
 import {
   OnlineAclEntrySchema,
+  OnlineAuthConfigSchema,
   OnlineBatchInputSchema,
   OnlineBatchResultSchema,
   OnlineErrorSchema,
@@ -97,6 +98,7 @@ export interface OnlineClient {
   readonly token: string | undefined;
   setToken(token: string): void;
   clearToken(): void;
+  authConfig(): Promise<{ allowRegistration: boolean }>;
   register(input: OnlineRegisterInput): Promise<OnlineUser>;
   login(credentials: { username: string; password: string }): Promise<OnlineLoginResult>;
   logout(): Promise<void>;
@@ -224,6 +226,10 @@ export function createOnlineClient(deps: OnlineClientDeps): OnlineClient {
     },
     clearToken() {
       token = undefined;
+    },
+
+    async authConfig() {
+      return (await request({ method: "GET", path: "/api/v1/auth/config", schema: OnlineAuthConfigSchema })) as { allowRegistration: boolean };
     },
 
     async register(input) {

@@ -151,7 +151,7 @@ async function mountAcl(handler: FetchHandler = aclHandler()) {
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
   const org = createOrgStore({ client });
-  const router = createAppRouter({ session, workspaces, users, org });
+  const router = createAppRouter({ session, workspaces, users, org, client });
   const { i18n } = createAdminI18n();
   await session.initialize();
   const wrapper: VueWrapper = mount(App, { global: { plugins: [i18n, router] } });

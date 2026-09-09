@@ -16,12 +16,22 @@ import type { SessionStore } from "../stores/session.js";
 
 const ATabPane = ATabs.TabPane;
 
-const props = defineProps<{ session: SessionStore }>();
+const props = defineProps<{ session: SessionStore; client: import("../api/client.js").AdminClient }>();
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 
 const mode = ref<"login" | "register">("login");
+// 注册开关（服务端 auth/config）：关闭时隐藏注册页签（独立部署/非注册模式不显示不可用的功能）
+const allowRegistration = ref(false);
+void fetchAllowRegistration();
+async function fetchAllowRegistration() {
+  try {
+    allowRegistration.value = (await props.client.authConfig()).allowRegistration;
+  } catch {
+    allowRegistration.value = false; // 探测失败按关闭处理：不显示可能不可用的注册入口
+  }
+}
 const username = ref("");
 const password = ref("");
 const displayName = ref("");
@@ -107,7 +117,7 @@ async function onRegister() {
             </a-button>
           </div>
         </a-tab-pane>
-        <a-tab-pane key="register">
+        <a-tab-pane v-if="allowRegistration" key="register">
           <template #tab><span data-testid="register-tab">{{ t("login.tabRegister") }}</span></template>
           <div class="auth-form" data-testid="register-form">
             <a-input v-model:value="username" data-testid="register-username" :placeholder="t('login.username')" />

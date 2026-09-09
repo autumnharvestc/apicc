@@ -87,7 +87,7 @@ async function mountLayout(handler: FetchHandler = defaultHandler) {
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
   const org = createOrgStore({ client });
-  const router = createAppRouter({ session, workspaces, users, org });
+  const router = createAppRouter({ session, workspaces, users, org, client });
   const { i18n } = createAdminI18n();
   await session.initialize(); // main.ts 装配同款：验活同步前缀落 token，守卫首航即见确定态
   const wrapper: VueWrapper = mount(App, { global: { plugins: [i18n, router] } });

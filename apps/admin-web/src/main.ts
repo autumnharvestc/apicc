@@ -40,6 +40,6 @@ const session = createSessionStore({
 // 守卫 await 其返回的 promise（deps.sessionReady）收口后再评估 requiresSuperadmin，超管
 // F5/深链 /users 不因 role 未落地被误弹回工作区；验活失败自清档并经 onSessionExpired 回登录页。
 // onSessionExpired 闭包引用的 router 在同一同步块内随后赋值，回调只会微任务后触发，无 TDZ。
-const router = createAppRouter({ session, workspaces, users, org, sessionReady: session.initialize() });
+const router = createAppRouter({ session, workspaces, users, org, client, sessionReady: session.initialize() });
 // 组件内零工厂调用：store 实例经路由 props 下传视图（desktop App.vue 装配先例）。
 createApp(App).use(i18n).use(router).mount("#app");

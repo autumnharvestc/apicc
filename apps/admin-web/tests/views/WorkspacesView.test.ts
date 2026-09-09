@@ -84,7 +84,7 @@ async function mountWorkspaces(workspaceHandler: FetchHandler = () => json(200, 
   const workspaces = createWorkspacesStore({ client });
   const users = createUsersStore({ client });
   const org = createOrgStore({ client });
-  const router = createAppRouter({ session, workspaces, users, org });
+  const router = createAppRouter({ session, workspaces, users, org, client });
   const { i18n } = createAdminI18n();
   await session.initialize(); // main.ts 装配同款：验活落 token，守卫放行
   const wrapper: VueWrapper = mount(App, { global: { plugins: [i18n, router] } });

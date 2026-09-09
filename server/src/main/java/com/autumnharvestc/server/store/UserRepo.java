@@ -33,6 +33,13 @@ public class UserRepo {
         return n == null ? 0L : n;
     }
 
+    /** 是否存在启用中的平台超管（启动重引导判据：有超管则引导让位，防超管丢失锁死）。 */
+    public boolean existsSuperadmin() {
+        Long n = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM users WHERE role = 'SUPERADMIN' AND disabled = FALSE", Long.class);
+        return n != null && n > 0;
+    }
+
     /** 注册落库。username 唯一约束冲突以 DuplicateKeyException 上抛，服务层转 409 username_taken。 */
     public void insert(UserAccount user) {
         jdbc.update("""

@@ -95,7 +95,7 @@ async function mountDialog({ open = true, logins = 0 }: { open?: boolean; logins
   online.dialogOpen = open;
   const { i18n } = createI18nInstance();
   const wrapper = mount(OnlineLoginDialog, {
-    props: { online, workspace },
+    props: { online, apicc: api, workspace },
     global: { plugins: [i18n] },
   });
   await flushPromises();
@@ -197,6 +197,20 @@ describe("OnlineLoginDialog", () => {
     await expectBody("online-register-submit").trigger("click");
     expect(expectBody("online-form-error").text()).toContain("显示名称");
     expect(online.loggedIn).toBe(false);
+  });
+
+  it("注册开关关闭（auth/config false）→ 注册页签不渲染（独立部署口径）", async () => {
+    const api = createMemoryApi();
+    api.authConfig = async () => ({ allowRegistration: false });
+    const storage = memStorage();
+    const online = createOnlineStore({ api, storage });
+    online.addProfile(SERVER_A, "团队服务器");
+    online.dialogOpen = true;
+    const { i18n } = createI18nInstance();
+    const wrapper = mount(OnlineLoginDialog, { props: { online, apicc: api, workspace: useWorkspaceStore(api) }, global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(bodyHas("online-tab-register")).toBe(false);
+    expect(bodyHas("online-login-form")).toBe(true);
   });
 
   it("已登录态：退出登录按钮 → store.logout（档案保留），回到登录表单", async () => {
