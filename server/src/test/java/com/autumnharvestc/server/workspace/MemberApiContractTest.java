@@ -385,13 +385,16 @@ class MemberApiContractTest {
                 .andExpect(jsonPath("$[*].username", hasItem("sc-bob")))
                 .andExpect(jsonPath("$[*].username", not(hasItem("sc-member"))));
 
-        // displayName 命中（注册 displayName = "显示名-" + username）
+        // displayName 命中（注册 displayName = "显示名-" + username）；出参形状钉死 id/displayName
+        // （终审顺手④：出参字段被删而测试全绿的洞）
         mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
                         .header("Authorization", "Bearer " + owner[1])
                         .param("q", "显示名-sc-alice"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(1)))
-                .andExpect(jsonPath("$[0].username").value("sc-alice"));
+                .andExpect(jsonPath("$[0].id").exists())
+                .andExpect(jsonPath("$[0].username").value("sc-alice"))
+                .andExpect(jsonPath("$[0].displayName").value("显示名-sc-alice"));
 
         // limit 截断（默认 10，可显式收窄）
         mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
