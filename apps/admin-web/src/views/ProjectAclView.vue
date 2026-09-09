@@ -5,15 +5,20 @@
  * 服务端已滤）；ACL 行表（userId/role + 操作：改角色 a-select 即改含 NONE、删行 popconfirm）。
  * **NONE 与删行语义显式区分（裁定 B/i18n 审校点）**：NONE=明确拒绝（行仍在、显示「拒绝访问
  * （NONE）」）；删行=恢复工作区角色继承（独立按钮 + popconfirm 文案说明，DELETE ?userId=）。
- * 添加行：userId 从成员列表下拉建议 + 支持手输非成员 userId（§3.3 ACL 可预设，D5 语义；
- * a-auto-complete 自由输入）；角色域 NONE/VIEWER/EDITOR/ADMIN（无 OWNER——ACL 角色域即如此）。
- * 失败 → aclError 顶部 alert 单通道。组件内零工厂调用：workspaces 经子路由 props 注入。
+ * 添加行：用户名搜索下拉（规格 2026-09-09，任务 6 同款 userPicker：成员+非成员候选合并、候选
+ * 远搜 debounce，内部 id 不许手输——先例级教训），选中 username 提交时解析为 userId
+ * （§3.3 ACL 可预设，D5 语义；未命中置错不发请求）；角色域 NONE/VIEWER/EDITOR/ADMIN
+ * （无 OWNER——ACL 角色域即如此）。
+ * ACL 面失败 → aclError 顶部 alert；候选搜索失败经 candidatesError 在添加行下方就地上屏
+ * （双通道口径，与 MembersView members-candidates-error 同构——终审 Important 1）。
+ * 组件内零工厂调用：workspaces 经子路由 props 注入。
  */
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
 import { Alert as AAlert, AutoComplete as AAutoComplete, Button as AButton, Input as AInput, Popconfirm as APopconfirm, Select as ASelect, Table as ATable, Tag as ATag } from "ant-design-vue";
 import type { AdminAclRole } from "../api/contract.js";
+import { createUserPicker } from "../composables/userPicker.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
 
 const props = defineProps<{ workspaces: WorkspacesStore }>();
@@ -28,18 +33,22 @@ const selectedProjectId = ref<string | null>(null);
 const selectedProject = computed(() => projects.value.find((p) => p.id === selectedProjectId.value) ?? null);
 
 // —— 添加行状态（声明先于 immediate watch：watch 回调首航即复位这些输入）——
-const addUserId = ref("");
+// userPicker（任务 6，同 MembersView 任务 5 先例）：成员+候选合并选项，username 作键，
+// 提交时 resolveId 解析为内部 id——id 全程不进输入框；解构出的 refs 保持响应式，模板自动解包。
+const { username: addUserName, options: userOptions, onSearch: onSearchUser, resolveId, reset: resetPicker } = createUserPicker(props.workspaces, workspaceId);
 const addRole = ref<AdminAclRole>("VIEWER");
 const addError = ref("");
 
-// 路由参数驱动：进页/切工作区 → 拉树（项目清单）+ 拉成员清单（添加行下拉建议，任务 4 审查
-// 备案 4 口径：依赖选中工作区的数据随路由参数变化重拉）；添加行输入随切换复位（终审顺手⑦）。
+// 路由参数驱动：进页/切工作区 → 拉树（项目清单）+ 拉成员清单（添加行下拉选项源，任务 4 审查
+// 备案 4 口径：依赖选中工作区的数据随路由参数变化重拉）；添加行输入随切换复位（终审顺手⑦，
+// 连带清空在途候选搜索——picker 复位 + clearCandidates，双 watch 同口径）。
 watch(
   workspaceId,
   (id) => {
     if (!id) return;
     selectedProjectId.value = null;
-    addUserId.value = "";
+    resetPicker();
+    props.workspaces.clearCandidates();
     addRole.value = "VIEWER";
     addError.value = "";
     void props.workspaces.loadTree(id);
@@ -60,7 +69,8 @@ watch(
 );
 
 watch(selectedProjectId, (projectId) => {
-  addUserId.value = "";
+  resetPicker();
+  props.workspaces.clearCandidates();
   addRole.value = "VIEWER";
   addError.value = ""; // 添加行输入随项目切换复位（终审顺手⑦）
   if (projectId && workspaceId.value) void props.workspaces.loadAcl(workspaceId.value, projectId);
@@ -111,21 +121,18 @@ async function onRemoveRow(userId: string): Promise<void> {
   removeRowUserId.value = null;
 }
 
-// —— 添加行（裁定 A：成员下拉建议 + 手输非成员 userId；§3.3 ACL 可预设）——
-const memberOptions = computed(() =>
-  props.workspaces.members.map((m) => ({ value: m.userId, label: `${m.displayName}（${m.username}）` })),
-);
-
+// —— 添加行（任务 6：userPicker 搜索下拉，§3.3 ACL 可预设；id 不许手输——先例级教训）——
 async function onAdd(): Promise<void> {
-  const userId = addUserId.value.trim();
+  const userId = resolveId(); // username → 内部 id；未命中（手输任意文本）返回 null
   if (!userId) {
-    addError.value = t("acl.userIdRequired");
+    addError.value = t("acl.selectUserRequired");
     return;
   }
   if (!workspaceId.value || !selectedProjectId.value) return;
   const ok = await props.workspaces.addAclEntry(workspaceId.value, selectedProjectId.value, { userId, role: addRole.value });
   if (ok) {
-    addUserId.value = "";
+    resetPicker();
+    props.workspaces.clearCandidates();
     addRole.value = "VIEWER";
     addError.value = "";
   }
@@ -206,14 +213,15 @@ async function onAdd(): Promise<void> {
       </template>
     </a-table>
 
-    <!-- 添加 ACL 行（成员下拉建议 + 手输非成员 userId） -->
+    <!-- 添加 ACL 行（userPicker 用户名搜索下拉——成员+候选合并，选中解析为内部 id） -->
     <div class="add-row" data-testid="acl-add">
       <a-auto-complete
-        v-model:value="addUserId"
+        v-model:value="addUserName"
         class="add-userid"
         data-testid="acl-add-userid"
-        :options="memberOptions"
-        :placeholder="t('acl.userIdPlaceholder')"
+        :options="userOptions"
+        :placeholder="t('acl.searchPlaceholder')"
+        @search="onSearchUser"
       />
       <a-select
         v-model:value="addRole"
@@ -226,6 +234,8 @@ async function onAdd(): Promise<void> {
       </a-button>
     </div>
     <div v-if="addError" class="form-error" data-testid="acl-add-error">{{ addError }}</div>
+    <!-- 候选搜索失败就地上屏（双通道：与顶部 aclError 分通道，MembersView members-candidates-error 同构——终审 Important 1） -->
+    <div v-if="workspaces.candidatesError" class="form-error" data-testid="acl-candidates-error">{{ workspaces.candidatesError }}</div>
   </div>
 </template>
 

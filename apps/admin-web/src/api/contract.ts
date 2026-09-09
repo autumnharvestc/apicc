@@ -61,6 +61,8 @@ export const AdminWorkspaceSummarySchema = z.object({ id: z.string(), name: z.st
 export const AdminWorkspaceCreatedSchema = z.object({ id: z.string(), name: z.string(), myRole: AdminRoleSchema });
 export const AdminWorkspaceDetailSchema = z.object({ id: z.string(), name: z.string(), myRole: AdminRoleSchema, memberCount: z.number() });
 export const AdminMemberSchema = z.object({ userId: z.string(), username: z.string(), displayName: z.string(), role: AdminRoleSchema });
+/** 成员候选行（规格 2026-09-09 成员搜索）：添加成员/项目 ACL 搜索下拉数据源——无 role（候选尚非成员）。 */
+export const AdminUserCandidateSchema = z.object({ id: z.string(), username: z.string(), displayName: z.string() });
 
 // —— 项目 ACL（§3.3）——
 export const AdminAclEntrySchema = z.object({ userId: z.string(), role: AdminAclRoleSchema });
@@ -127,6 +129,7 @@ export type AdminWorkspaceSummary = z.infer<typeof AdminWorkspaceSummarySchema>;
 export type AdminWorkspaceCreated = z.infer<typeof AdminWorkspaceCreatedSchema>;
 export type AdminWorkspaceDetail = z.infer<typeof AdminWorkspaceDetailSchema>;
 export type AdminMember = z.infer<typeof AdminMemberSchema>;
+export type AdminUserCandidate = z.infer<typeof AdminUserCandidateSchema>;
 export type AdminAclEntry = z.infer<typeof AdminAclEntrySchema>;
 export type AdminTreeFile = z.infer<typeof AdminTreeFileSchema>;
 export type AdminTreeProject = z.infer<typeof AdminTreeProjectSchema>;

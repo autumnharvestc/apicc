@@ -522,3 +522,66 @@ describe("acl（任务 5，裁定 A/B：tree/acl/setAclEntry/removeAclEntry）",
     expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
   });
 });
+
+describe("searchCandidates（规格 2026-09-09 成员搜索）", () => {
+  it("关键字搜索落 candidates；空关键字不发请求并清空", async () => {
+    const { calls, store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/member-candidates?q=da&limit=10` && req.method === "GET" ? json(200, [{ id: "u-9", username: "dave", displayName: "Dave" }]) : json(404, { code: "not_found", message: "x" })));
+    await store.searchCandidates("ws-1", "da");
+    expect(store.candidates).toEqual([{ id: "u-9", username: "dave", displayName: "Dave" }]);
+    expect(store.candidatesError).toBeNull();
+    expect(store.candidatesLoading).toBe(false);
+    calls.length = 0;
+    await store.searchCandidates("ws-1", "   ");
+    expect(store.candidates).toEqual([]);
+    expect(calls.filter((c) => c.url.includes("member-candidates"))).toHaveLength(0);
+  });
+
+  it("失败置 candidatesError 并清空候选（下拉场景就地呈现，不入 membersError 通道）", async () => {
+    const { store } = setup(() => json(403, { code: "forbidden", message: "无权" }));
+    await store.searchCandidates("ws-1", "da");
+    expect(store.candidates).toEqual([]);
+    expect(store.candidatesError).toBe("无权");
+    expect(store.membersError).toBeNull(); // 不污染成员面顶部通道
+  });
+
+  it("clearCandidates 复位候选与错误", async () => {
+    const { store } = setup((req) => (req.url.startsWith(`${BASE}/workspaces/ws-1/member-candidates`) && req.method === "GET" ? json(200, [{ id: "u-9", username: "dave", displayName: "Dave" }]) : json(404, { code: "not_found", message: "x" })));
+    await store.searchCandidates("ws-1", "da");
+    store.clearCandidates();
+    expect(store.candidates).toEqual([]);
+    expect(store.candidatesError).toBeNull();
+  });
+
+  it("竞态：在途请求未完成时空关键字调用立即复位 loading，旧请求完成后不落地也不复活 loading（审查重要 1）", async () => {
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<Response>((resolve) => {
+      releaseSlow = () => resolve(json(200, [{ id: "u-9", username: "dave", displayName: "Dave" }]));
+    });
+    const { store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/member-candidates?q=d&limit=10` && req.method === "GET" ? slowGate : json(404, { code: "not_found", message: "x" })));
+    const slow = store.searchCandidates("ws-1", "d"); // 防抖输入「d」后立刻删空的场景
+    await vi.waitFor(() => expect(store.candidatesLoading).toBe(true));
+    await store.searchCandidates("ws-1", "   "); // 空关键字：序号作废在途请求
+    expect(store.candidatesLoading).toBe(false); // 立即复位（修复前滞留 true）
+    expect(store.candidates).toEqual([]);
+    releaseSlow(); // 旧请求此刻才回来
+    await slow;
+    expect(store.candidates).toEqual([]); // 旧结果不落地
+    expect(store.candidatesLoading).toBe(false); // 不复活 loading
+  });
+
+  it("复位：在途请求未完成时 clearCandidates 同样立即复位 loading，旧请求完成后不落地（审查重要 1）", async () => {
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<Response>((resolve) => {
+      releaseSlow = () => resolve(json(200, [{ id: "u-9", username: "dave", displayName: "Dave" }]));
+    });
+    const { store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/member-candidates?q=d&limit=10` && req.method === "GET" ? slowGate : json(404, { code: "not_found", message: "x" })));
+    const slow = store.searchCandidates("ws-1", "d");
+    await vi.waitFor(() => expect(store.candidatesLoading).toBe(true));
+    store.clearCandidates(); // 添加成功后的复位路径：序号作废 + loading 亲手复位
+    expect(store.candidatesLoading).toBe(false);
+    releaseSlow();
+    await slow;
+    expect(store.candidates).toEqual([]); // 旧结果不落地
+    expect(store.candidatesLoading).toBe(false);
+  });
+});

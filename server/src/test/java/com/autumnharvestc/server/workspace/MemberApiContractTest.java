@@ -1,5 +1,8 @@
 package com.autumnharvestc.server.workspace;
 
+import com.autumnharvestc.server.store.PlatformRole;
+import com.autumnharvestc.server.store.UserAccount;
+import com.autumnharvestc.server.store.UserRepo;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,10 +13,12 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -355,5 +360,101 @@ class MemberApiContractTest {
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + editor[0])
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNoContent());
+    }
+
+    // ---- GET member-candidates（规格 2026-09-09 成员搜索：ADMIN+、排除已有成员与停用账号）----
+
+    @Autowired
+    private UserRepo users;
+
+    @Test
+    void candidatesMatchUsernameOrDisplayNameExcludeMembersAndHonorLimit() throws Exception {
+        String[] owner = newUser("sc-owner");
+        String ws = createWorkspace(owner[1], "候选搜索工作区");
+        String[] member = newUser("sc-member");
+        putMember(owner[1], ws, member[0], "EDITOR"); // 已是成员 → 不入候选
+        newUser("sc-alice");
+        newUser("sc-bob");
+
+        // 关键字命中 username；已成员被排除
+        mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .param("q", "sc-"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].username", hasItem("sc-alice")))
+                .andExpect(jsonPath("$[*].username", hasItem("sc-bob")))
+                .andExpect(jsonPath("$[*].username", not(hasItem("sc-member"))));
+
+        // displayName 命中（注册 displayName = "显示名-" + username）；出参形状钉死 id/displayName
+        // （终审顺手④：出参字段被删而测试全绿的洞）
+        mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .param("q", "显示名-sc-alice"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].id").exists())
+                .andExpect(jsonPath("$[0].username").value("sc-alice"))
+                .andExpect(jsonPath("$[0].displayName").value("显示名-sc-alice"));
+
+        // limit 截断（默认 10，可显式收窄）
+        mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .param("q", "sc-")
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)));
+    }
+
+    @Test
+    void candidatesExcludeDisabledUsers() throws Exception {
+        String[] owner = newUser("scd-owner");
+        String ws = createWorkspace(owner[1], "停用候选工作区");
+        users.insert(new UserAccount(UUID.randomUUID().toString(), "scd-dead",
+                "$2a$10$disabledplaceholderhashdeadbeefcafebabe0000000000000000", "停用者",
+                PlatformRole.USER, true, Instant.now()));
+
+        mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .param("q", "scd-dead"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+    }
+
+    @Test
+    void candidatesRequireWorkspaceAdmin() throws Exception {
+        String[] owner = newUser("sca-owner");
+        String ws = createWorkspace(owner[1], "候选权限工作区");
+        String[] viewer = newUser("sca-viewer");
+        putMember(owner[1], ws, viewer[0], "VIEWER");
+
+        mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
+                        .header("Authorization", "Bearer " + viewer[1])
+                        .param("q", "sca"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void candidatesValidateQuery() throws Exception {
+        String[] owner = newUser("scv-owner");
+        String ws = createWorkspace(owner[1], "候选校验工作区");
+        String token = owner[1];
+
+        // q 缺省 → 400 validation_failed
+        mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
+        // 纯空白 → 400
+        mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
+                        .header("Authorization", "Bearer " + token)
+                        .param("q", "   "))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
+        // 超长（>32）→ 400
+        mockMvc.perform(get("/api/v1/workspaces/" + ws + "/member-candidates")
+                        .header("Authorization", "Bearer " + token)
+                        .param("q", "x".repeat(33)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
     }
 }

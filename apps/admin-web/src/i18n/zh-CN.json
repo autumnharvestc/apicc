@@ -69,9 +69,9 @@
     "colRole": "角色",
     "colActions": "操作",
     "add": "添加成员",
-    "userIdPlaceholder": "输入用户 ID（userId）",
     "addSubmit": "添加",
-    "userIdRequired": "请输入用户 ID",
+    "searchPlaceholder": "搜索用户名或昵称",
+    "selectUserRequired": "请从下拉中选择用户",
     "remove": "移除",
     "removeTitle": "确认移除该成员？",
     "removeOk": "移除",
@@ -92,9 +92,9 @@
     "deleteRow": "删除行",
     "deleteRowTitle": "删除该行后，该用户将回到工作区角色继承，确认删除？",
     "deleteRowOk": "恢复继承",
-    "userIdPlaceholder": "选择成员或输入用户 ID",
     "addSubmit": "添加",
-    "userIdRequired": "请输入用户 ID",
+    "searchPlaceholder": "搜索用户名或昵称",
+    "selectUserRequired": "请从下拉中选择用户",
     "error": "请求失败"
   },
   "ws": {

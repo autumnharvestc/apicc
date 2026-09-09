@@ -69,9 +69,9 @@
     "colRole": "Role",
     "colActions": "Actions",
     "add": "Add member",
-    "userIdPlaceholder": "Enter a user ID (userId)",
     "addSubmit": "Add",
-    "userIdRequired": "User ID is required",
+    "searchPlaceholder": "Search by username or display name",
+    "selectUserRequired": "Pick a user from the dropdown",
     "remove": "Remove",
     "removeTitle": "Remove this member?",
     "removeOk": "Remove",
@@ -92,9 +92,9 @@
     "deleteRow": "Delete row",
     "deleteRowTitle": "Deleting this row makes the user fall back to the workspace role. Delete?",
     "deleteRowOk": "Restore inheritance",
-    "userIdPlaceholder": "Pick a member or type a user ID",
     "addSubmit": "Add",
-    "userIdRequired": "User ID is required",
+    "searchPlaceholder": "Search by username or display name",
+    "selectUserRequired": "Pick a user from the dropdown",
     "error": "Request failed"
   },
   "ws": {

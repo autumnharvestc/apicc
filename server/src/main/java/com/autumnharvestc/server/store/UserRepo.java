@@ -76,6 +76,24 @@ public class UserRepo {
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 
+    /** 成员候选搜索（规格 2026-09-09 成员搜索）：username/display_name 大小写不敏感包含匹配，
+     * 排除已有成员与停用账号，username 升序截前 limit 条。LIKE 通配符转义防关键字注入语义。 */
+    public List<UserAccount> searchCandidates(String workspaceId, String keyword, int limit) {
+        String escaped = keyword.toLowerCase()
+                .replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+        String like = "%" + escaped + "%";
+        return jdbc.query("""
+                SELECT u.id, u.username, u.password_hash, u.display_name, u.role, u.disabled, u.created_at
+                FROM users u
+                WHERE u.disabled = FALSE
+                  AND NOT EXISTS (SELECT 1 FROM memberships m
+                                  WHERE m.workspace_id = ? AND m.user_id = u.id)
+                  AND (LOWER(u.username) LIKE ? ESCAPE '\\' OR LOWER(u.display_name) LIKE ? ESCAPE '\\')
+                ORDER BY u.username
+                LIMIT ?
+                """, MAPPER, workspaceId, like, like, limit);
+    }
+
     /** 认证过滤器装载身份：token → userId → 用户（/me 与受保护端点共用）。 */
     public Optional<UserAccount> findById(String id) {
         try {

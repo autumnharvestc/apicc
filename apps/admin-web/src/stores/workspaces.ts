@@ -2,7 +2,8 @@
  * 工作区 store 工厂（M4-A 任务 3/4，裁定 B/D）：清单/创建/删除 + 选中工作区上下文 + 成员管理
  * actions。错误通道按呈现面拆分（任务 3 审查次要 2 顺修）：`error`=工作区清单/选中失败（列表页
  * alert）；`actionError`=创建/删除失败（弹窗内就近呈现，取消不残留）；`membersError`=成员面
- * 失败（成员页顶部 alert）。语义沿用 desktop 先例：失败 error 上屏且不清旧态、创建/删除成功后
+ * 失败（成员页顶部 alert）；`candidatesError`=候选搜索失败（添加行就地呈现，终审顺手⑥补记
+ * 第四通道——不入 membersError 顶部通道）。语义沿用 desktop 先例：失败 error 上屏且不清旧态、创建/删除成功后
  * 自动刷新、删除 current 清选中、防重复提交。选中竞态防护（任务 3 审查次要 1 顺修）：序号
  * 校验，乱序完成的旧结果丢弃。成员 actions（任务 4，裁定 D）：清单/改角色/移除/添加（§3.2
  * PUT 对非成员即创建）+ 行级 memberBusyId；成功后刷新成员清单并重选 current（转让后自身
@@ -10,7 +11,7 @@
  */
 import { createPinia, defineStore } from "pinia";
 import { AdminApiError, type AdminClient } from "../api/client.js";
-import type { AdminAclEntry, AdminAclRole, AdminMember, AdminRole, AdminTree, AdminWorkspaceDetail, AdminWorkspaceSummary } from "../api/contract.js";
+import type { AdminAclEntry, AdminAclRole, AdminMember, AdminRole, AdminTree, AdminUserCandidate, AdminWorkspaceDetail, AdminWorkspaceSummary } from "../api/contract.js";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -28,6 +29,8 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
   let treeSeq = 0;
   /** ACL 清单请求序号（任务 4 审查备案 4 同口径）：项目切换乱序完成时丢弃旧结果。 */
   let aclSeq = 0;
+  /** 候选搜索请求序号：乱序完成的旧结果丢弃（selectSeq 同口径）。 */
+  let candidateSeq = 0;
   return defineStore("admin-workspaces", {
     state: () => ({
       /** 工作区清单（GET /workspaces）。 */
@@ -56,6 +59,12 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
       memberBusyId: null as string | null,
       /** 添加成员提交在途。 */
       memberSubmitting: false,
+      /** 非成员候选（GET member-candidates；规格 2026-09-09 成员搜索）——搜索下拉数据源。 */
+      candidates: [] as AdminUserCandidate[],
+      /** 候选搜索在途。 */
+      candidatesLoading: false,
+      /** 候选搜索失败文案（添加行就地呈现，不入成员面顶部通道）。 */
+      candidatesError: null as string | null,
 
       // —— 项目 ACL（任务 5，裁定 A/B）——
       /** 工作区树（GET tree；项目清单与 projects[].myRole 来源）。 */
@@ -206,6 +215,41 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
         } finally {
           this.memberSubmitting = false;
         }
+      },
+
+      /** 候选搜索（规格 2026-09-09）：空关键字不发请求直接清空；limit 固定 10（服务端上限 50）。 */
+      async searchCandidates(workspaceId: string, q: string): Promise<void> {
+        const keyword = q.trim();
+        const seq = ++candidateSeq;
+        if (!keyword) {
+          this.candidates = [];
+          this.candidatesError = null;
+          this.candidatesLoading = false; // 在途请求已被序号作废，此处不复位将滞留 true（任务 3 审查重要 1）
+          return;
+        }
+        this.candidatesLoading = true;
+        try {
+          const rows = await client.searchUserCandidates(workspaceId, keyword, 10);
+          if (seq === candidateSeq) {
+            this.candidates = rows;
+            this.candidatesError = null;
+          }
+        } catch (e) {
+          if (seq === candidateSeq) {
+            this.candidates = [];
+            this.candidatesError = errorMessage(e);
+          }
+        } finally {
+          if (seq === candidateSeq) this.candidatesLoading = false;
+        }
+      },
+
+      /** 添加成功后由视图调用复位候选区。 */
+      clearCandidates(): void {
+        candidateSeq += 1; // 在途响应作废
+        this.candidates = [];
+        this.candidatesError = null;
+        this.candidatesLoading = false; // 同上：作废在途请求后必须亲手复位 loading（任务 3 审查重要 1）
       },
 
       /** 移除成员（行级 busy；OWNER 行由 UI 禁用）。 */

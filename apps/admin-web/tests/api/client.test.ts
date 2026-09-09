@@ -111,6 +111,14 @@ describe("adminClient 请求拼装", () => {
     expect(calls[2]!.url).toBe(`${BASE}/workspaces/ws-1/members/u-2`);
   });
 
+  it("searchUserCandidates：GET member-candidates 携 q/limit 并解析数组", async () => {
+    const { calls, impl } = fetchStub(() => json(200, [{ id: "u-9", username: "dave", displayName: "Dave" }]));
+    const client = createAdminClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
+    expect(await client.searchUserCandidates("ws-1", "da", 10)).toEqual([{ id: "u-9", username: "dave", displayName: "Dave" }]);
+    expect(calls[0]!.method).toBe("GET");
+    expect(calls[0]!.url).toBe(`${BASE}/workspaces/ws-1/member-candidates?q=da&limit=10`);
+  });
+
   it("getTree：GET /api/v1/workspaces/{id}/tree（管理面项目清单来源，projects[].path 必备）", async () => {
     const tree = { workspaceId: "ws-1", rootVersion: 42, files: [], projects: [{ id: "p-1", name: "订单", path: "groups/订单/projects/订单", myRole: "EDITOR" }] };
     const { calls, impl } = fetchStub(() => json(200, tree));
