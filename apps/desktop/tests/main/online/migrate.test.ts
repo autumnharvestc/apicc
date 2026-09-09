@@ -75,6 +75,30 @@ describe("restoreLocalPaths（pull 还原：<projectId>/... → 本地名称树�
     // 根级文件恒非孤儿
     expect(byPath.get("apicc.workspace.yaml")!.orphan).toBe(false);
   });
+
+  it("同组同名项目并存（不同 projectId 还原同一条本地路径）→ 同路径后行者标 conflict（先到者得）", () => {
+    // 计划 B：服务端允许同组同名项目并存——两实体还原出同一路径时后行者必须让位，
+    // 否则取数换算表后行覆盖先行（先行者内容取不回）且落盘后写覆盖先写（审查发现 1）。
+    // 护栏按 localPath 逐行判定（廉价护栏，非同名实体整盘合并语义）。
+    const rows = restoreLocalPaths(
+      [serverFile("p-1/a.yaml"), serverFile("p-2/a.yaml"), serverFile("p-2/b.yaml")],
+      [
+        { id: "p-1", name: "同名项目", groupId: "g-1", myRole: "EDITOR" },
+        { id: "p-2", name: "同名项目", groupId: "g-1", myRole: "EDITOR" },
+      ],
+      new Map([["g-1", "电商"]]),
+    );
+    expect(rows.map((r) => r.localPath)).toEqual([
+      "groups/电商/projects/同名项目/a.yaml",
+      "groups/电商/projects/同名项目/a.yaml",
+      "groups/电商/projects/同名项目/b.yaml",
+    ]);
+    // 先行者不标（toEqual 对 undefined 字段不敏感，逐键断言）
+    expect(rows[0]!.conflict).toBeUndefined();
+    // 同路径后行者（p-2 的 a.yaml）标 conflict；不碰撞的行（p-2 的 b.yaml）不受影响
+    expect(rows[1]!.conflict).toBe(true);
+    expect(rows[2]!.conflict).toBeUndefined();
+  });
 });
 
 describe("hashContent（§3.4 hash = sha-256 hex，与服务端同口径；main 侧 scan 专用——渲染层不 import node: 内置）", () => {

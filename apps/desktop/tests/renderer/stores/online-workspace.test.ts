@@ -279,6 +279,71 @@ describe("迁移-拉取（步骤 1③ + 计划 C 任务 2：实体路径还原�
     }
   });
 
+  it("拉取：同组同名项目并存（两实体还原同一路径）→ 先行者正常 pulled，后行者 failed+冲突注记，落盘为先行者内容", async () => {
+    // 计划 B：服务端允许同组同名项目并存（不同 projectId）——两实体还原出同一条本地路径。
+    // 护栏（宽范围审查发现 1）：后行者不进取数/落盘清单（否则取数换算表后行覆盖先行、
+    // 先行者内容取不回且落盘后写覆盖先写），计 failed + 冲突注记；先行者正常取数落盘。
+    // 替身内存库是单实体模型，双实体树与逐实体取数在此桩出。
+    const { api, store } = await opened();
+    const P1 = "11111111-1111-1111-1111-111111111111";
+    const P2 = "22222222-2222-2222-2222-222222222222";
+    api.onlineTreeGet = async () => ({
+      workspaceId: store.activeWorkspace!.id,
+      rootVersion: 2,
+      files: [
+        { path: `${P1}/project.yaml`, hash: "h1", version: 1, size: 18 },
+        { path: `${P2}/project.yaml`, hash: "h2", version: 1, size: 18 },
+      ],
+      projects: [
+        { id: P1, name: "同名项目", groupId: "g-1", myRole: "OWNER" },
+        { id: P2, name: "同名项目", groupId: "g-1", myRole: "OWNER" },
+      ],
+    });
+    api.onlineGroupsList = async () => [{ id: "g-1", name: "电商", isDefault: false, createdAt: "2026-09-09T00:00:00Z" }];
+    // 钉取数寻址：两实体只取先行者（后行者不进取数清单，不发生后行覆盖先行的换算错位）
+    const fetched: string[] = [];
+    api.onlineFilesGet = async (input) => {
+      fetched.push(...input.paths);
+      return {
+        files: input.paths.map((p) => ({
+          path: p,
+          content: p.startsWith(P1) ? "先行者内容\n" : "后行者内容\n",
+          version: 1,
+          hash: p.startsWith(P1) ? "h1" : "h2",
+        })),
+        missing: [],
+      };
+    };
+    const writes: Array<Array<{ path: string; content: string }>> = [];
+    const originalWrite = api.onlineMigrateWrite.bind(api);
+    api.onlineMigrateWrite = async (input) => {
+      writes.push(input.files.map((f) => ({ ...f })));
+      return originalWrite(input);
+    };
+    const dir = mkdtempSync(join(tmpdir(), "apicc-pull-clash-"));
+    try {
+      await store.migratePull(dir);
+      expect(store.error).toBeNull();
+      const result = store.migrationResult!;
+      expect(result.pulled).toBe(1); // 先行者
+      expect(result.failed).toBe(1); // 后行者（同名冲突）
+      expect(fetched).toEqual([`${P1}/project.yaml`]); // 只取先行者实体（先行者内容不被挤掉）
+      // 落盘恰一行：本地名称路径 + 先行者内容（非后写覆盖）
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toEqual([{ path: "groups/电商/projects/同名项目/project.yaml", content: "先行者内容\n" }]);
+      expect(readFileSync(join(dir, "groups", "电商", "projects", "同名项目", "project.yaml"), "utf8")).toBe("先行者内容\n");
+      // 明细：先行者 pulled、后行者 failed + 冲突注记（同一路径两行，路径统一本地名称形态）
+      const pulledRow = result.details.find((d) => d.action === "pulled")!;
+      expect(pulledRow.path).toBe("groups/电商/projects/同名项目/project.yaml");
+      const failedRow = result.details.find((d) => d.action === "failed")!;
+      expect(failedRow.path).toBe("groups/电商/projects/同名项目/project.yaml");
+      expect(failedRow.note).toContain("同名项目冲突");
+      expect(failedRow.note).toContain("groups/电商/projects/同名项目/project.yaml");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("迁移单活动护栏：进行中二次启动被拒（scan 只调一次）", async () => {
     const { api, store } = await opened();
     let scans = 0;

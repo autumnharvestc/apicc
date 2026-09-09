@@ -109,10 +109,10 @@ async function runMigrate(direction: "pull" | "push") {
         <div class="detail">
           <div class="detail-title">{{ t("online.resultDetail") }}</div>
           <ul class="detail-list" data-testid="migrate-result-list">
-            <li v-for="entry in result.details" :key="entry.path">
+            <li v-for="(entry, index) in result.details" :key="`${entry.path}:${index}`">
               <span class="detail-path">{{ entry.path }}</span>
               <span class="detail-action">{{ actionText(entry.action) }}</span>
-              <!-- 退化注记（计划 C 任务 2）：拉取孤儿 projectId 按服务端实体路径原样落盘时标注 -->
+              <!-- 退化/冲突注记：孤儿退化按实体路径落盘、同名项目冲突后行者计 failed 时标注 -->
               <span v-if="entry.note" class="detail-note">{{ entry.note }}</span>
             </li>
           </ul>

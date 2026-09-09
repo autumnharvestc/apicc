@@ -458,9 +458,11 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       /**
        * 迁移-拉取到本地目录（裁定 D + 计划 C 任务 2 映射桥）：getTree（实体寻址）+ groups
        * 清单（groupId → 组名反查）→ `<projectId>/...` 还原本地名称树路径（项目名取
-       * tree.projects；孤儿 projectId 退化为实体路径原样落盘并在明细注记）→ 本地扫描 hash
-       * 比对（同 hash 跳过）→ 分批（≤200）按实体路径取内容 → 按本地名称路径落盘 → 结果
-       * 清单（明细 path 统一本地名称形态）。单活动护栏：进行中二次调用直接返回。
+       * tree.projects；孤儿 projectId 退化为实体路径原样落盘并在明细注记；同组同名项目碰撞
+       * ——两个实体还原同一条本地路径——后行者计 failed + 冲突注记，不进取数/落盘清单，保
+       * 先行者）→ 本地扫描 hash 比对（同 hash 跳过）→ 分批（≤200）按实体路径取内容 → 按
+       * 本地名称路径落盘 → 结果清单（明细 path 统一本地名称形态）。单活动护栏：进行中二次
+       * 调用直接返回。
        */
       async migratePull(dir: string): Promise<void> {
         if (this.migrating || !this.activeWorkspace) return;
@@ -476,12 +478,18 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             api.onlineGroupsList(workspaceId),
           ]);
           // 实体路径 → 本地名称路径还原（项目名=tree.projects、组名=groups 清单；双向对照表
-          // 同时服务取数（本地→实体）与取回内容落盘行（实体→本地）的路径换算）
+          // 同时服务取数（本地→实体）与取回内容落盘行（实体→本地）的路径换算）。
+          // 同名碰撞行（conflict，后行者）不进任何对照表与取数清单——否则对照表后行覆盖先行，
+          // 两行取数都指到同一实体（先行者内容取不回）且同路径落盘后写覆盖先写（审查发现 1）
           const rows = restoreLocalPaths(tree.files, tree.projects, new Map(groups.map((g: OnlineGroup) => [g.id, g.name])));
-          const entityByLocal = new Map(rows.map((r) => [r.localPath, r.serverPath]));
-          const localByEntity = new Map(rows.map((r) => [r.serverPath, r.localPath]));
-          const orphanLocals = new Set(rows.filter((r) => r.orphan).map((r) => r.localPath));
-          const restored = tree.files.map((file) => ({ ...file, path: localByEntity.get(file.path) ?? file.path }));
+          const usable = rows.filter((r) => !r.conflict);
+          const entityByLocal = new Map(usable.map((r) => [r.localPath, r.serverPath]));
+          const localByEntity = new Map(usable.map((r) => [r.serverPath, r.localPath]));
+          const orphanLocals = new Set(usable.filter((r) => r.orphan).map((r) => r.localPath));
+          // 树行与还原行按序一一对应，冲突行从比对/取数面整体剔除（明细单独计 failed）
+          const restored = tree.files
+            .filter((_, i) => !rows[i]!.conflict)
+            .map((file) => ({ ...file, path: localByEntity.get(file.path) ?? file.path }));
           const plan = planPull(restored, scan.files);
           const contents: Array<{ path: string; content: string }> = [];
           let done = 0;
@@ -505,6 +513,10 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             }
             return { path: d.path, action: "failed" as const };
           });
+          // 同名项目冲突明细（审查发现 1）：后行者计 failed 并注明冲突路径（不计入落盘）
+          for (const row of rows) {
+            if (row.conflict) details.push({ path: row.localPath, action: "failed", note: `同名项目冲突，路径 ${row.localPath}` });
+          }
           this.migrationResult = {
             direction: "pull",
             pulled: details.filter((d) => d.action === "pulled").length,

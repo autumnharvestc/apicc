@@ -39,8 +39,10 @@ export function toEntityPath(localPath: string, projectId: string): string | nul
   return parsed ? `${projectId}/${parsed.rest}` : null;
 }
 
-/** pull 还原逐行产物：localPath = 还原结果；orphan = 项目内文件但项目/组名不可得（退化为实体路径原样落盘）。 */
-export interface LocalPathRow { serverPath: string; localPath: string; orphan: boolean }
+/** pull 还原逐行产物：localPath = 还原结果；orphan = 项目内文件但项目/组名不可得（退化为实体路径原样落盘）；
+ *  conflict = 同组同名项目碰撞的后行者（两个不同 projectId 的同名实体还原出**同一条**本地路径，
+ *  按服务端清单顺序后行者标注——调用方计 failed + note，不进取数/落盘清单，保先行者正常还原）。 */
+export interface LocalPathRow { serverPath: string; localPath: string; orphan: boolean; conflict?: boolean }
 
 /**
  * pull 还原（服务端实体寻址 → 本地名称树）：`<projectId>/...` 首段查 tree.projects 得项目名、
@@ -55,7 +57,7 @@ export function restoreLocalPaths(
 ): LocalPathRow[] {
   const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
   const groupIdByProject = new Map(projects.filter((p) => p.groupId !== undefined).map((p) => [p.id, p.groupId as string]));
-  return serverFiles.map((file) => {
+  const rows = serverFiles.map((file): LocalPathRow => {
     const [head, ...rest] = file.path.split("/");
     const projectName = rest.length > 0 && head !== undefined ? projectNameById.get(head) : undefined;
     const groupId = rest.length > 0 && head !== undefined ? groupIdByProject.get(head) : undefined;
@@ -66,6 +68,15 @@ export function restoreLocalPaths(
     }
     return { serverPath: file.path, localPath: `groups/${groupName}/projects/${projectName}/${rest.join("/")}`, orphan: false };
   });
+  // 同组同名项目碰撞护栏（计划 B：服务端允许同名并存；宽范围审查发现 1）：两个实体还原出
+  // 同一条本地路径时，若两行都进取数/落盘，取数换算表后行覆盖先行（先行者内容取不回）且
+  // 两行同路径落盘后写覆盖先写——静默丢内容。按服务端清单顺序后行者标 conflict，先到者得。
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.localPath)) row.conflict = true;
+    else seen.add(row.localPath);
+  }
+  return rows;
 }
 
 export type PullFileAction = "pulled" | "updated" | "skipped";
