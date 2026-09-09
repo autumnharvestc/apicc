@@ -128,11 +128,16 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 可写判定（裁定 B：VIEWER 只读 vs EDITOR 可编辑）：工作区 VIEWER 恒只读；
        * 项目级 ACL 覆盖按 path 首段项目 id 定位文件所属项目（path 实体化修订 2026-09-08：
        * 内容 path = `<projectId>/...`，服务端不再回 projects[].path 目录路径）；
-       * VIEWER/NONE 时该项目子树只读；非项目子树（根配置）按工作区角色。
+       * VIEWER/NONE 时该项目子树只读；工作区配置叶（根级 apicc.workspace.yaml）对齐
+       * 服务端 ADMIN+ 守卫（计划 C 任务 4 / B-任务 7 遗留④）：仅 ADMIN/OWNER 可编辑，
+       * 否则 EDITOR 编辑推送必中途 403。
        */
       canEdit(state): (path: string | null) => boolean {
         return (path: string | null): boolean => {
           if (!state.activeWorkspace || state.activeWorkspace.myRole === "VIEWER" || !path) return false;
+          if (path === "apicc.workspace.yaml") {
+            return state.activeWorkspace.myRole === "ADMIN" || state.activeWorkspace.myRole === "OWNER";
+          }
           const project = state.projects.find((p) => path === p.id || path.startsWith(`${p.id}/`));
           if (project) return project.myRole !== "VIEWER" && project.myRole !== "NONE";
           return true;

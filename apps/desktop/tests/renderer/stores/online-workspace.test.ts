@@ -138,9 +138,17 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     ];
     expect(store.canEdit(pidPath)).toBe(true);
     expect(store.canEdit(`aaaaaaaa-a1b2-c3d4-e5f6-0123456789ab/collections/c/apis/a/api.yaml`)).toBe(false);
-    // 非项目子树（根配置）：不受项目 ACL 影响，按工作区角色可写
+    // 工作区配置叶（apicc.workspace.yaml）：不受项目 ACL 影响；对齐服务端 ADMIN+ 守卫
+    // （计划 C 任务 4 / B-任务 7 遗留④）：仅 ADMIN/OWNER 可编辑，EDITOR 也只读
     store.projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];
+    expect(store.canEdit("apicc.workspace.yaml")).toBe(true); // 默认 OWNER
+    store.activeWorkspace = { ...store.activeWorkspace!, myRole: "ADMIN" };
     expect(store.canEdit("apicc.workspace.yaml")).toBe(true);
+    store.activeWorkspace = { ...store.activeWorkspace!, myRole: "EDITOR" };
+    expect(store.canEdit("apicc.workspace.yaml")).toBe(false); // 收紧：EDITOR 推送服务端 403
+    // 收紧只影响配置叶：EDITOR 工作区角色下项目内 api 叶仍按项目 ACL 放行
+    store.projects = [{ id: pid, name: "示例项目", myRole: "EDITOR" }];
+    expect(store.canEdit(pidPath)).toBe(true);
     // 工作区级 VIEWER：一切只读
     store.activeWorkspace = { ...store.activeWorkspace!, myRole: "VIEWER" };
     expect(store.canEdit(pidPath)).toBe(false);
