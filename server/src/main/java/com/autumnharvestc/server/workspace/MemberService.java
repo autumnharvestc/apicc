@@ -88,4 +88,18 @@ public class MemberService {
         }
         memberships.delete(workspaceId, targetUserId);
     }
+
+    /** 成员候选搜索（规格 2026-09-09）：权限同添加成员（ADMIN+）；q 必填非空、trim 后 ≤32 字符，
+     * limit 缺省 10、夹取 1..50。只回非成员候选（排除停用账号在 SQL 层）。 */
+    public List<UserCandidateView> candidates(UserAccount caller, String workspaceId, String q, Integer limit) {
+        guard.requireAdmin(workspaceId, caller);
+        String keyword = q == null ? "" : q.trim();
+        if (keyword.isEmpty() || keyword.length() > 32) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "validation_failed", "搜索关键字必填且不超过 32 字符");
+        }
+        int capped = limit == null ? 10 : Math.max(1, Math.min(50, limit));
+        return users.searchCandidates(workspaceId, keyword, capped).stream()
+                .map(UserCandidateView::of)
+                .toList();
+    }
 }
