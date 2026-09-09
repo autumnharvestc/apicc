@@ -49,10 +49,10 @@ public class ProjectMappingService {
         this.permissions = permissions;
     }
 
-    /** 批量映射（部分成功）：守卫 → 上限 → 逐条解析/按需建。 */
+    /** 批量映射（部分成功）：守卫 → 上限 → 逐条解析/按需建。request/entries 非 null 由 @RequestBody required + @NotEmpty 保证。 */
     public MappingView map(UserAccount caller, String workspaceId, MappingRequest request) {
         WorkspaceGuard.Access access = guard.requireMember(workspaceId, caller);
-        List<MappingRequest.Item> entries = request == null ? List.of() : request.entries();
+        List<MappingRequest.Item> entries = request.entries();
         if (entries.size() > MAX_BATCH) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "batch_too_large", "单批最多 " + MAX_BATCH + " 条映射");
         }

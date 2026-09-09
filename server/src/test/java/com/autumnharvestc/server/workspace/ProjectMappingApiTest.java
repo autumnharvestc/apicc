@@ -281,6 +281,10 @@ class ProjectMappingApiTest {
         postMapping(admin, wsId, entriesOf(entry("组", "p".repeat(65), true)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("validation_failed"));
+        // entries 元素为 null → 400 validation_failed（容器元素 @NotNull 钉住，不得落 500——审查修复①）
+        postMapping(admin, wsId, "{\"entries\":[null]}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
 
         // 201 条 → 400 batch_too_large；200 条整边界 → 200（缺失行 missing 呈现，不建）
         StringBuilder tooMany = new StringBuilder("{\"entries\":[");
