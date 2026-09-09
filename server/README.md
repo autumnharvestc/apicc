@@ -53,7 +53,7 @@ java -jar server/target/apicc-server-0.1.0-SNAPSHOT.jar
 | `apicc.server.admin-username` | 空 | 首个管理员用户名（部署线 D6：仅用户表为空时生效；未设则 `admin`） |
 | `apicc.server.admin-password` | 空 | 首个管理员口令；未设则随机生成并以 WARN 打印日志（仅一次） |
 | `apicc.server.token-ttl-days` | `30` | 登录令牌有效期（天） |
-| `apicc.id-generation` | `identity` | 实体 id 生成策略；仅接受 `identity`（数据库自增，其他值启动即失败）。外部策略（如雪花）不走此开关，提供自定义 `IdGeneration` Bean 覆盖 |
+| `apicc.id-generation` | `identity` | 实体 id 生成策略；仅接受 `identity`（数据库自增，其他值启动即失败）。外部策略（如雪花）不走此开关：定义自定义 `IdGeneration` Bean 即覆盖默认实现（无需 `@Primary`，注册即生效）；本配置项仅在走默认实现时做 fail-fast 校验 |
 
 覆盖方式为命令行参数 `--配置键=值`（或改 `server/src/main/resources/application.yml`）。注意：`apicc.server.*` 三项经 `@Value` 按精确键名注入，Boot 的驼峰 relaxed binding 不适用，但下划线大写风格的环境变量可用（Spring 会做 `.`/`-` → `_` 的名称翻译，如 `APICC_SERVER_CONSOLE_DIR`、`APICC_SERVER_ALLOW_REGISTRATION`、`APICC_SERVER_TOKEN_TTL_DAYS`；`SERVER_PORT` 等标准变量仅对 `server.port` 生效）：
 

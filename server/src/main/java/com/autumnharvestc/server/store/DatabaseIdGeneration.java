@@ -2,14 +2,15 @@ package com.autumnharvestc.server.store;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 
 /**
  * 默认策略：数据库 IDENTITY 自增（规格 2026-09-09）。配置 apicc.id-generation 仅接受
  * identity（默认）；显式配置其他值即启动失败——外部策略应提供自定义 IdGeneration Bean，
  * 而非在此硬编码开关。
+ * 不再自标 @Component（终审 2026-09-09）：注册点收口到 IdGenerationConfiguration 的
+ * @Bean @ConditionalOnMissingBean(IdGeneration.class)——部署方定义自定义 Bean（无需 @Primary）
+ * 即整体覆盖默认，避免双实现按类型注入冲突。
  */
-@Component
 public class DatabaseIdGeneration implements IdGeneration {
 
     /** 无参形态 = 配置缺省（等价 @Value 默认值 identity），供直接构造与单测使用。 */
