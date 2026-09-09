@@ -262,10 +262,15 @@ public class ContentService {
     // ---- 权限判定 ----
 
     /** 路径生效角色：项目内路径按首段 projectId（ACL 覆盖），根级路径（根配置）按工作区角色继承。
-     * userId/projectId 均为 BIGINT（2026-09-09 BIGINT 化；首段形态由 pattern 保证数字，parse 不败）。 */
+     * 首段越界（超 long 的长数字）或非规范别名（007，2026-09-09 BIGINT 化）→ 项目不存在 →
+     * 空有效角色（读面 missing、写面 403）——不得以 NumberFormatException 击穿为 500。 */
     private Optional<Role> effectiveRoleFor(long workspaceId, Long userId, String path) {
-        Long projectId = ContentPaths.parseProject(path).map(Long::parseLong).orElse(null);
-        return permissions.effectiveRole(workspaceId, userId, projectId);
+        Optional<String> projectId = ContentPaths.parseProject(path);
+        if (projectId.isEmpty()) {
+            return permissions.effectiveRole(workspaceId, userId, null);
+        }
+        return ContentPaths.parseProjectId(projectId.get())
+                .flatMap(key -> permissions.effectiveRole(workspaceId, userId, key));
     }
 
     private boolean readable(long workspaceId, Long userId, String path) {

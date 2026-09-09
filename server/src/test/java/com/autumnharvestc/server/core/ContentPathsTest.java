@@ -94,6 +94,17 @@ class ContentPathsTest {
         assertThat(ContentPaths.parseProject(null)).isEmpty();
     }
 
+    /** parseProjectId：规范十进制段 → 主键；越界（20 位超 long）/非规范别名（前导零 007）→ empty——
+     * 2026-09-09 BIGINT 化审查修复：形态匹配 \d+ 不代表可 parse，越界与别名都按「项目不存在」。 */
+    @Test
+    void parseProjectIdGuardsRangeAndCanonicalForm() {
+        assertThat(ContentPaths.parseProjectId("77")).hasValue(77L);
+        assertThat(ContentPaths.parseProjectId("0")).hasValue(0L);
+        assertThat(ContentPaths.parseProjectId("007")).isEmpty(); // 前导零别名（同项目双 path 之源）
+        assertThat(ContentPaths.parseProjectId("99999999999999999999")).isEmpty(); // 20 位越界
+        assertThat(ContentPaths.parseProjectId("abc")).isEmpty();
+    }
+
     // ---- validate(path, projectIdExists)（写面首段规则）----
 
     /** 首段非数字 id（且非根配置）→ 400 path_invalid：多段别名/单段根文件/盘符形态/裸数字。 */
@@ -122,6 +133,23 @@ class ContentPathsTest {
                     assertThat(api.getCode()).isEqualTo("project_not_found");
                     assertThat(api.getStatus().value()).isEqualTo(404);
                 });
+    }
+
+    /** 越界（20 位超 long）/非规范别名（前导零 007）首段：形态合法但按「项目不存在」→
+     * 404 project_not_found（审查修复：不得以 NumberFormatException 击穿为 500，
+     * 也不作为 path_invalid——结构合规、实体缺席；存在性谓词不因越界触发）。 */
+    @Test
+    void writeFaceTreatsOutOfRangeOrAliasSegmentAsProjectMissing() {
+        for (String ghost : new String[]{"007/x.yaml", "99999999999999999999/x.yaml"}) {
+            assertThatThrownBy(() -> ContentPaths.validate(ghost, EXISTS))
+                    .as("path <%s> 应 404 project_not_found", ghost)
+                    .isInstanceOf(ApiException.class)
+                    .satisfies(ex -> {
+                        ApiException api = (ApiException) ex;
+                        assertThat(api.getCode()).isEqualTo("project_not_found");
+                        assertThat(api.getStatus().value()).isEqualTo(404);
+                    });
+        }
     }
 
     /** 项目存在 → 放行；根配置不查实体（任何存在性判定下皆过——角色门在服务层）。 */

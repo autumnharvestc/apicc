@@ -226,6 +226,79 @@ class ContentApiContractTest {
         assertThat(sameNameIds.get(0)).isNotEqualTo(sameNameIds.get(1));
     }
 
+    /**
+     * 越界数字首段（20 位，匹配 \d+ 但超 long 值域）按「项目不存在」处理（BIGINT 化审查修复）：
+     * 单写 PUT → 404 project_not_found（不得 NumberFormatException → 500）；读面批量取进 missing
+     * （空有效角色）；batch 含该路径 → 该文件 invalid 行、其余 pushed——D8 逐文件部分成功不被击穿。
+     */
+    @Test
+    void overflowProjectIdSegmentIsProjectNotFoundNever500() throws Exception {
+        String[] owner = newUser("c-t22-owner");
+        String wsId = createWorkspace(owner[1], "越界首段");
+        String p1 = newProject(owner[1], wsId, "g1", "p1");
+        String overflow = "99999999999999999999"; // 20 位：形态合法、Long.parseLong 越界
+
+        // 单写 PUT → 404 project_not_found（写面守卫先于权限/落库；非 500）
+        MvcResult put = putFile(owner[1], wsId, overflow + "/x.yaml", "x", 0);
+        assertThat(put.getResponse().getStatus()).as("越界首段应 404 而非 500").isEqualTo(404);
+        assertThat(JsonPath.<String>read(put.getResponse().getContentAsString(), "$.code"))
+                .isEqualTo("project_not_found");
+        // DELETE 写面对称：同样 404
+        mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/files/" + overflow + "/x.yaml?baseVersion=0")
+                        .header("Authorization", "Bearer " + owner[1]))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("project_not_found"));
+
+        // 读面不 404 亦不 500：无有效角色 → 批量取进 missing
+        MvcResult read = getFiles(owner[1], wsId, overflow + "/x.yaml");
+        assertThat(read.getResponse().getStatus()).isEqualTo(200);
+        assertThat((String) JsonPath.read(read.getResponse().getContentAsString(), "$.missing[0]"))
+                .isEqualTo(overflow + "/x.yaml");
+
+        // batch：越界行 invalid、其余 pushed——逐文件部分成功不被 NFE 整批 500
+        String batch = "{\"files\":["
+                + "{\"path\":\"" + p1 + "/ok.yaml\",\"content\":\"n\",\"baseVersion\":0}"
+                + ",{\"path\":\"" + overflow + "/bad.yaml\",\"content\":\"x\",\"baseVersion\":0}"
+                + "]}";
+        mockMvc.perform(post("/api/v1/workspaces/" + wsId + "/files/batch")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batch))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results", hasSize(2)))
+                .andExpect(jsonPath("$.results[0].status").value("pushed"))
+                .andExpect(jsonPath("$.results[1].status").value("invalid"));
+    }
+
+    /**
+     * 规范形守卫（审查修复）：非规范数字别名（前导零，如 007/0123）按「项目不存在」404 拒绝——
+     * 即便 parse 后命中真实项目也不放行，杜绝同项目双 path 别名（deleteByProjectPrefix 前缀
+     * 清不尽孤儿行）；真实项目 id 的规范形寻址不受影响。
+     */
+    @Test
+    void nonCanonicalProjectIdAliasIsRejected() throws Exception {
+        String[] owner = newUser("c-t23-owner");
+        String wsId = createWorkspace(owner[1], "规范形首段");
+        String p1 = newProject(owner[1], wsId, "g1", "p1");
+
+        // 真实项目规范形 → 正常写入（201）
+        assertThat(putFile(owner[1], wsId, p1 + "/x.yaml", "x", 0).getResponse().getStatus())
+                .as("规范形 id 寻址不受守卫影响").isEqualTo(201);
+
+        // 前导零别名（parse 后命中真实项目 p1）→ 404 project_not_found（非 500、非 201）
+        String alias = "0" + p1;
+        MvcResult aliasPut = putFile(owner[1], wsId, alias + "/x.yaml", "x", 0);
+        assertThat(aliasPut.getResponse().getStatus()).as("别名首段应 404").isEqualTo(404);
+        assertThat(JsonPath.<String>read(aliasPut.getResponse().getContentAsString(), "$.code"))
+                .isEqualTo("project_not_found");
+
+        // 字面 007 同样拒绝（无论是否存在项目 7）
+        MvcResult alias007 = putFile(owner[1], wsId, "007/x.yaml", "x", 0);
+        assertThat(alias007.getResponse().getStatus()).isEqualTo(404);
+        assertThat(JsonPath.<String>read(alias007.getResponse().getContentAsString(), "$.code"))
+                .isEqualTo("project_not_found");
+    }
+
     // ---- GET tree ----
 
     /** 多项目清单：files[path,hash,version,size] + projects[id,name,groupId,myRole]（实体表产出）。 */

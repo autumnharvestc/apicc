@@ -90,10 +90,29 @@ public final class ContentPaths {
     }
 
     /**
+     * 路径首段 → 项目主键（2026-09-09 BIGINT 化）：数字段落进 long 值域且为规范十进制形
+     * （{@code String.valueOf(parseLong(段))} 与原段相等——拦前导零别名，如 {@code 007}）才返回主键。
+     * 越界（如 20 位数字，形态匹配 {@code \d+} 但超 long）与非规范别名 → empty：调用方按
+     * 「项目不存在」处理（写面 404 project_not_found / 读面空有效角色）——绝不以
+     * NumberFormatException 击穿为 500，也不放行别名致同项目双 path（否则 deleteByProjectPrefix
+     * 的 {@code <id>/%} 前缀清理漏删别名行留孤儿）。与 {@link EntityIds#parse} 语义不同：
+     * 那里是对外请求 id，非数字即 400；这里是内容 path 段，形态已合法、只判实体可及性。
+     */
+    public static Optional<Long> parseProjectId(String segment) {
+        long key;
+        try {
+            key = Long.parseLong(segment);
+        } catch (NumberFormatException ex) {
+            return Optional.empty();
+        }
+        return String.valueOf(key).equals(segment) ? Optional.of(key) : Optional.empty();
+    }
+
+    /**
      * 写面全量校验：通用规则 → 首段规则。首段非数字 id（且非根配置）→ 400 path_invalid；
-     * 首段为数字 id 但项目不存在 → 404 project_not_found（projectIdExists 由服务层查实体表判定，
-     * 含「项目属于其他工作区」的跨区形态——对当前工作区即不存在）。
-     * 谓词入参为解析后的项目主键（首段形态由 pattern 保证为数字，parse 不败）。
+     * 首段为数字 id 但项目不存在（含越界/非规范别名，见 {@link #parseProjectId}）→
+     * 404 project_not_found（projectIdExists 由服务层查实体表判定，含「项目属于其他工作区」的
+     * 跨区形态——对当前工作区即不存在）。谓词入参为解析后的项目主键（与 ContentService 同型）。
      */
     public static void validate(String path, Predicate<Long> projectIdExists) {
         validate(path);
@@ -105,7 +124,8 @@ public final class ContentPaths {
             }
             return;
         }
-        if (!projectIdExists.test(Long.parseLong(projectId.get()))) {
+        Long key = parseProjectId(projectId.get()).orElse(null);
+        if (key == null || !projectIdExists.test(key)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "project_not_found", "项目不存在");
         }
     }
