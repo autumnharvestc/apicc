@@ -11,7 +11,7 @@ import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
 import type { OnlineSession } from "../../../src/renderer/src/stores/online.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
-import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import { findProjectIdByApiId, useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import {
   STORAGE_KEY,
   createEvictProjectSessions,
@@ -429,7 +429,8 @@ describe("关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessi
     const collection2 = await api.nodeCreate({ kind: "collection", parentId: project2.id, name: "集合乙" });
     const apiB = await api.nodeCreate({ kind: "api", parentId: collection2.id, name: "接口B" });
     await workspace.refresh(); // 驱逐收集按当前树（nodeCreate 后刷新）
-    const editor = useEditorStore(api);
+    // 槽元数据归属解析器（任务 5 审查重要 1）：组合根同款装配
+    const editor = useEditorStore(api, (apiId) => findProjectIdByApiId(workspace.tree, apiId));
     const online = createOnlineStoreStub();
     return { api, workspace, editor, online, projectNode, collectionNode, apiB };
   }
@@ -445,13 +446,13 @@ describe("关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessi
     };
   }
 
-  it("本地 ref：按 tree 收集该项目 api 集合驱逐 editor 会话槽；其他项目会话驻留、活跃不受牵连", async () => {
+  it("本地 ref：按槽元数据 projectId 过滤驱逐 editor 会话槽；其他项目会话驻留、活跃不受牵连", async () => {
     const ctx = await localContext();
     const apiA = ctx.collectionNode.children![0]!.id; // 种子项目（项目一）的接口
     await ctx.editor.load(apiA);
     await ctx.editor.load(ctx.apiB.id);
     ctx.editor.api!.url = "/draft-b"; // 活跃在接口B（项目二）
-    const evict = createEvictProjectSessions({ workspace: ctx.workspace, editor: ctx.editor, online: ctx.online });
+    const evict = createEvictProjectSessions({ editor: ctx.editor, online: ctx.online });
     evict({ kind: "local", dir: ctx.workspace.root }, ctx.projectNode.id);
     expect(ctx.editor.sessions[apiA]).toBeUndefined(); // 项目一槽被逐
     expect(ctx.editor.sessions[ctx.apiB.id]).toBeDefined(); // 项目二会话驻留
@@ -460,21 +461,95 @@ describe("关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessi
 
   it("在线 ref：路由到 online.evictProjectBuffers(workspaceId, projectId)", async () => {
     const ctx = await localContext();
-    const evict = createEvictProjectSessions({ workspace: ctx.workspace, editor: ctx.editor, online: ctx.online });
+    const evict = createEvictProjectSessions({ editor: ctx.editor, online: ctx.online });
     evict({ kind: "online", workspaceId: "ws-9", name: "在线九" }, "p-9");
     expect(ctx.online.calls).toEqual([["ws-9", "p-9"]]);
   });
 
-  it("防护口径：本地项目节点缺失（树无此 id）→ 不驱逐任何槽；钩子实现内部不抛", async () => {
+  it("防护口径：无归属匹配的槽不被误逐（未知项目/无归属 null 槽）；钩子实现内部不抛", async () => {
     const ctx = await localContext();
     const apiA = ctx.collectionNode.children![0]!.id;
     await ctx.editor.load(apiA);
-    const evict = createEvictProjectSessions({ workspace: ctx.workspace, editor: ctx.editor, online: ctx.online });
+    ctx.editor.sessions[apiA]!.projectId = null; // 无归属槽（建槽时树缺失场景）
+    const evict = createEvictProjectSessions({ editor: ctx.editor, online: ctx.online });
     expect(() => evict({ kind: "local", dir: "/tmp/ws" }, "不存在的项目")).not.toThrow();
-    expect(ctx.editor.sessions[apiA]).toBeDefined(); // 无收集 → 不驱逐
+    expect(ctx.editor.sessions[apiA]).toBeDefined(); // null 归属不被驱逐牵连
     // 在线驱逐体抛错（替身层契约被破坏）也被吸收：closeTab 驱逐钩子不阻断关签
     const bomb = { evictProjectBuffers: () => { throw new Error("替身契约破坏"); } };
-    const evictBomb = createEvictProjectSessions({ workspace: ctx.workspace, editor: ctx.editor, online: bomb });
+    const evictBomb = createEvictProjectSessions({ editor: ctx.editor, online: bomb });
     expect(() => evictBomb({ kind: "online", workspaceId: "ws-9", name: "在线九" }, "p-1")).not.toThrow();
+  });
+});
+
+// —— 任务 5 审查重要 1（裁定修法：元数据驱动）：跨目录本地签的关签 dirty 判定与驱逐
+// 不再依赖「当前树恰好还开着该项目」——槽归属在建槽时写入（projectId 元数据），
+// 开目录 B 后目录 A 项目的草稿签关签仍拦截、驱逐仍生效。
+describe("关签判定与驱逐的元数据语义（任务 5 审查重要 1：跨目录本地签）", () => {
+  /** 真实 store 上下文：目录 A 种子项目 PA（接口甲）+ 注入归属解析器的 editor。 */
+  async function localContextA() {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const workspace = useWorkspaceStore(api);
+    await workspace.open("/tmp/ws-a");
+    const projectA = workspace.tree!.children![0]!.children![0]!; // 项目一
+    const apiA = projectA.children![0]!.children![0]!.id; // 接口甲
+    const editor = useEditorStore(api, (apiId) => findProjectIdByApiId(workspace.tree, apiId));
+    const tree = { select: vi.fn(async () => {}) };
+    const online = {
+      sessions: {} as TabsStoreDeps["online"]["sessions"],
+      activeWorkspaceId: null as string | null,
+      error: null as string | null,
+      activateWorkspace: vi.fn(async () => {}),
+      selectNode: vi.fn(async () => {}),
+      evictProjectBuffers: vi.fn(),
+    };
+    return { api, workspace, editor, tree, online, projectA, apiA };
+  }
+
+  it("跨目录本地签：目录 A 项目 PA 有草稿 → 开目录 B（当前树已不含 PA）→ projectHasDrafts(tab-PA) 仍为 true，确认驱逐后 PA 会话消失", async () => {
+    const ctx = await localContextA();
+    await ctx.editor.load(ctx.apiA);
+    ctx.editor.api!.url = "/draft-a"; // PA 草稿
+    // 开目录 B（替身层直接换树引用模拟——内存替身对任意目录回退同一份种子，无法造第二棵真树；
+    // 本用例钉的正是「判定/驱逐不依赖当前树」）
+    ctx.workspace.tree = { id: "root-b", kind: "root", label: "目录B工作区", children: [] };
+    const deps: TabsStoreDeps = {
+      workspace: ctx.workspace,
+      tree: ctx.tree,
+      online: ctx.online,
+      editor: ctx.editor,
+      evictProjectSessions: createEvictProjectSessions({ editor: ctx.editor, online: ctx.online }),
+      storage: memStorage(),
+    };
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab({ kind: "local", dir: "/tmp/ws-a" }, { id: ctx.projectA.id, name: "项目一" });
+    // 修复前：按当前树 findProjectNode(PA) → null → 不弹确认直关、驱逐 no-op（脏会话滞留）
+    expect(tabs.projectHasDrafts(tabs.activeTabId!)).toBe(true);
+    await tabs.closeTab(tabs.activeTabId!); // 组件层确认后的关签
+    expect(tabs.tabs).toHaveLength(0);
+    expect(ctx.editor.sessions[ctx.apiA]).toBeUndefined(); // PA 草稿槽已被驱逐
+    expect(ctx.editor.activeApiId).toBeNull();
+  });
+
+  it("slot.projectId=null 的脏槽保守计入判定（防漏报），但驱逐不牵连（防误伤未知归属）", async () => {
+    const ctx = await localContextA();
+    // 无归属脏槽（建槽时树里找不到归属）
+    ctx.editor.sessions["api-orphan"] = { api: null, envs: [], snapshot: "", projectId: null };
+    ctx.editor.sessions["api-orphan"]!.api = { id: "api-orphan", name: "孤儿接口" } as never;
+    ctx.editor.sessions["api-orphan"]!.snapshot = "{}"; // 脏
+    const deps: TabsStoreDeps = {
+      workspace: ctx.workspace,
+      tree: ctx.tree,
+      online: ctx.online,
+      editor: ctx.editor,
+      evictProjectSessions: createEvictProjectSessions({ editor: ctx.editor, online: ctx.online }),
+      storage: memStorage(),
+    };
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab({ kind: "local", dir: "/tmp/ws-a" }, { id: ctx.projectA.id, name: "项目一" });
+    expect(tabs.projectHasDrafts(tabs.activeTabId!)).toBe(true); // null 归属脏槽保守计入
+    await tabs.closeTab(tabs.activeTabId!);
+    expect(ctx.editor.sessions["api-orphan"]).toBeDefined(); // 驱逐不牵连无归属槽
+    expect(tabs.tabs).toHaveLength(0); // PA 自身无草稿槽（接口甲未载入）→ 签已关
   });
 });

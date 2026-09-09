@@ -134,14 +134,14 @@ function sessionStub(id: string): OnlineSession {
 }
 
 /** 干净会话槽：api 与快照一致。 */
-function cleanSession(apiId: string): EditorSession {
+function cleanSession(apiId: string, projectId: string | null): EditorSession {
   const api = { id: apiId, name: `接口-${apiId}` } as EditorSession["api"];
-  return { api, envs: [], snapshot: JSON.stringify(api) };
+  return { api, envs: [], snapshot: JSON.stringify(api), projectId };
 }
 
 /** 脏会话槽：缓冲相对快照有未保存修改。 */
-function dirtySession(apiId: string): EditorSession {
-  const session = cleanSession(apiId);
+function dirtySession(apiId: string, projectId: string | null): EditorSession {
+  const session = cleanSession(apiId, projectId);
   session.api!.name = "未保存的改名";
   return session;
 }
@@ -256,8 +256,8 @@ describe("ProjectTabs 关签（dirty 确认两分支，不变量 3）", () => {
 
   it("非活跃槽脏也拦截：活跃编辑槽干净、同项目非活跃槽脏 → 弹「未保存的修改将丢弃」；取消保留、确认后关签驱逐", async () => {
     const { deps, evictProjectSessions } = makeDeps();
-    deps.editor!.sessions["a-1"] = dirtySession("a-1"); // 项目一非活跃槽：脏
-    deps.editor!.sessions["a-2"] = cleanSession("a-2"); // 项目一活跃槽：干净
+    deps.editor!.sessions["a-1"] = dirtySession("a-1", "p-1"); // 项目一非活跃槽：脏（槽元数据归属项目一）
+    deps.editor!.sessions["a-2"] = cleanSession("a-2", "p-1"); // 项目一活跃槽：干净
     const { wrapper, tabs } = await mountTabs(deps);
     await tabs.openProjectTab(LOCAL_REF, P1); // tab-1（项目一，非活跃签）
     await tabs.openProjectTab(LOCAL_REF, P2); // tab-2（活跃）
@@ -303,8 +303,24 @@ describe("ProjectTabs 关签（dirty 确认两分支，不变量 3）", () => {
     expect(bodyHas("dialog-confirm")).toBe(false);
   });
 
+  it("slot.projectId=null 的脏槽保守计入（防漏报）：任何本地项目签关签都拦截确认", async () => {
+    const { deps } = makeDeps();
+    // 建槽时树里找不到归属（罕见）→ projectId null：判定保守计入，任何本地签关签都需确认
+    deps.editor!.sessions["a-x"] = dirtySession("a-x", null);
+    const { wrapper, tabs } = await mountTabs(deps);
+    await tabs.openProjectTab(LOCAL_REF, P2); // 项目二自身无任何槽
+    await flushPromises();
+    await wrapper.find('[data-testid="tab-close-0"]').trigger("click");
+    await flushPromises();
+    expect(tabs.tabs).toHaveLength(1); // 确认前不关
+    expect(bodyHas("dialog-confirm")).toBe(true);
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    expect(tabs.tabs).toHaveLength(1);
+  });
+
   it("在线签：`<projectId>/` 前缀缓冲槽任一 dirty 拦截（其他前缀不牵连）", async () => {
-    const { deps, workspace, editor, online } = makeDeps();
+    const { deps, editor, online } = makeDeps();
     online.sessions["ws-1"] = sessionStub("ws-1");
     online.activeWorkspaceId = "ws-1";
     online.sessions["ws-1"].buffers["p-1/collections/c/apis/a/api.yaml"] = {
@@ -328,7 +344,7 @@ describe("ProjectTabs 关签（dirty 确认两分支，不变量 3）", () => {
       loading: false,
     };
     // 真实驱逐组装（与 App 组合根同款）：在线签驱逐按前缀删缓冲槽
-    deps.evictProjectSessions = createEvictProjectSessions({ workspace, editor, online: deps.online as never });
+    deps.evictProjectSessions = createEvictProjectSessions({ editor, online });
     const { wrapper, tabs } = await mountTabs(deps);
     await tabs.openProjectTab(ONLINE_REF, P1); // tab-1（在线项目一，缓冲脏）
     await flushPromises();

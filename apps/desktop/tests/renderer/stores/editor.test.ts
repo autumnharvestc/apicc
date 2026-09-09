@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { isReactive } from "vue";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
-import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import { findProjectIdByApiId, useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 
 async function seeded() {
   const api = createMemoryApi();
@@ -18,7 +18,8 @@ async function seeded() {
   const projectNode = groupNode.children![0]!;
   const collectionNode = projectNode.children![0]!;
   const apiNode = collectionNode.children![0]!;
-  const editor = useEditorStore(api);
+  // 槽元数据归属解析器（任务 5 审查重要 1）：组合根同款装配——按当前树定位 apiId 所属项目
+  const editor = useEditorStore(api, (apiId) => findProjectIdByApiId(ws.tree, apiId));
   return { api, ws, editor, groupNode, projectNode, collectionNode, apiNode };
 }
 
@@ -172,24 +173,44 @@ describe("editor 会话表化（计划 C 任务 4）", () => {
     expect(ctx.editor.dirty).toBe(true); // reloadEnvs 只动 envs，api 快照不动（A 草稿仍脏）
   });
 
-  it("evictProject：按 apiIds 驱逐会话槽；活跃槽被逐则 activeApiId 复位 null；其余会话驻留不受牵连", async () => {
+  it("load 建槽写元数据 projectId（按注入解析器查当前树归属）；树中找不到 → null（判定保守计入）", async () => {
     const ctx = await seeded();
     const apiB = await createApi(ctx, "接口B");
     await ctx.editor.load(ctx.apiNode.id);
-    ctx.editor.api!.url = "/draft-a";
+    expect(ctx.editor.sessions[ctx.apiNode.id]!.projectId).toBe(ctx.projectNode.id); // 当前树归属
+    // 树里找不到（罕见：建槽时树未含该接口）→ projectId null，判定侧保守计入
+    ctx.ws.tree = null;
     await ctx.editor.load(apiB.id);
-    ctx.editor.api!.url = "/draft-b"; // 活跃在 B
-    // 驱逐活跃槽 B：指针复位 null（编辑区空白），A 会话驻留不受牵连
-    ctx.editor.evictProject("project-b", [apiB.id]);
-    expect(ctx.editor.sessions[apiB.id]).toBeUndefined();
-    expect(ctx.editor.sessions[ctx.apiNode.id]).toBeDefined(); // A 会话驻留
+    expect(ctx.editor.sessions[apiB.id]!.projectId).toBeNull();
+  });
+
+  it("evictProject：按槽元数据 projectId 过滤驱逐（不依赖当前树）；活跃槽被逐则 activeApiId 复位 null；其他项目与无归属槽驻留不受牵连", async () => {
+    const ctx = await seeded();
+    // 同替身再建第二项目（项目二/集合乙/接口乙2）：载入后槽元数据各归其项目
+    const project2 = await ctx.api.nodeCreate({ kind: "project", parentId: ctx.groupNode.id, name: "项目二" });
+    const collection2 = await ctx.api.nodeCreate({ kind: "collection", parentId: project2.id, name: "集合乙" });
+    const apiB2 = await ctx.api.nodeCreate({ kind: "api", parentId: collection2.id, name: "接口乙2" });
+    await ctx.ws.refresh(); // 解析器按当前树归属：刷新后载入才能拿到项目二归属
+    await ctx.editor.load(ctx.apiNode.id);
+    ctx.editor.api!.url = "/draft-a";
+    await ctx.editor.load(apiB2.id);
+    ctx.editor.api!.url = "/draft-b2"; // 活跃在项目二的接口
+    // 驱逐项目二：活跃槽被逐 → 指针复位 null（编辑区空白）；项目一会话驻留不受牵连
+    ctx.editor.evictProject(project2.id);
+    expect(ctx.editor.sessions[apiB2.id]).toBeUndefined();
+    expect(ctx.editor.sessions[ctx.apiNode.id]).toBeDefined(); // 项目一会话驻留
     expect(ctx.editor.activeApiId).toBeNull(); // 活跃槽被逐 → 复位
     expect(ctx.editor.api).toBeNull();
     expect(ctx.editor.dirty).toBe(false);
     // 活跃槽不在驱逐集合：指针不动，草稿驻留
     await ctx.editor.load(ctx.apiNode.id);
     expect(ctx.editor.api?.url).toBe("/draft-a");
-    ctx.editor.evictProject("project-a", ["不存在的 id"]);
+    ctx.editor.evictProject("不存在的项目");
     expect(ctx.editor.activeApiId).toBe(ctx.apiNode.id);
+    // 无归属槽（projectId null，建槽时树缺失）：驱逐不牵连（防误伤未知归属）
+    ctx.editor.sessions[apiB2.id] = { api: null, envs: [], snapshot: "", projectId: null };
+    ctx.editor.evictProject(ctx.projectNode.id);
+    expect(ctx.editor.sessions[apiB2.id]).toBeDefined(); // null 归属不被误逐
+    expect(ctx.editor.sessions[ctx.apiNode.id]).toBeUndefined(); // 项目一槽被逐
   });
 });

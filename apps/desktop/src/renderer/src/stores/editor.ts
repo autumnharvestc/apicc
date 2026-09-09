@@ -1,6 +1,7 @@
 import { createPinia, defineStore } from "pinia";
 import type { ApiDefinition } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
+import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 
 /**
  * 本地编辑器驻留会话（计划 C 任务 4 会话表化）：api 编辑缓冲 + 环境清单 + 已保存快照，
@@ -10,11 +11,33 @@ export interface EditorSession {
   api: ApiDefinition | null;
   envs: Array<{ id: string; name: string }>;
   snapshot: string;
+  /**
+   * 槽元数据（任务 5 审查重要 1，裁定修法）：建槽时按注入解析器写下的项目归属——跨目录
+   * 开工作区后，关签 dirty 判定与驱逐按它过滤，不再依赖「当前树恰好还开着该项目」。
+   * null=建槽时树里找不到归属（罕见）：dirty 判定保守计入任何本地项目签（防漏报），
+   * 驱逐不牵连（防误伤未知归属）。
+   */
+  projectId: string | null;
 }
 
 /** 活跃会话定位（getter/action 共用的表语义中枢，先例同 online.ts activeSessionOf）。 */
 function activeSessionOf(state: { sessions: Record<string, EditorSession>; activeApiId: string | null }): EditorSession | null {
   return state.activeApiId !== null ? state.sessions[state.activeApiId] ?? null : null;
+}
+
+/**
+ * 反查 apiId 所属项目 id（groups→projects→子树包含；槽元数据归属解析器的默认实现，
+ * 组合根按当前树装配：`useEditorStore(api, (id) => findProjectIdByApiId(workspace.tree, id))`）。
+ */
+export function findProjectIdByApiId(root: TreeNodeDTO | null, apiId: string): string | null {
+  const hasApi = (node: TreeNodeDTO): boolean =>
+    (node.children ?? []).some((child) => (child.kind === "api" && child.id === apiId) || hasApi(child));
+  for (const group of root?.children ?? []) {
+    for (const project of group.children ?? []) {
+      if (project.kind === "project" && hasApi(project)) return project.id;
+    }
+  }
+  return null;
 }
 
 /**
@@ -29,7 +52,7 @@ function activeSessionOf(state: { sessions: Record<string, EditorSession>; activ
  * D2）：api 即 core 的 ApiDefinition；保存载荷经 apiSave → IPC api:save → session.saveApi
  * → fileStorage 白名单落盘。
  */
-export function useEditorStore(api: ApiccApi) {
+export function useEditorStore(api: ApiccApi, resolveProjectId?: (apiId: string) => string | null) {
   return defineStore("editor", {
     state: () => ({
       /** 驻留编辑会话表（key = apiId）：草稿随会话驻留，切接口/切项目签不丢。 */
@@ -58,7 +81,8 @@ export function useEditorStore(api: ApiccApi) {
     actions: {
       /**
        * 载入接口进活跃槽：已驻留 → 仅切活跃指针（定位槽，不重拉——回切草稿原样驻留，
-       * 不被服务端内容覆盖）；未驻留 → 拉取建槽并置活跃。
+       * 不被服务端内容覆盖）；未驻留 → 拉取建槽并置活跃。建槽即写归属元数据 projectId
+       * （按注入解析器查建槽时的当前树；跨目录判定/驱逐的数据源，任务 5 审查重要 1）。
        */
       async load(apiId: string) {
         if (this.sessions[apiId]) {
@@ -66,7 +90,12 @@ export function useEditorStore(api: ApiccApi) {
           return;
         }
         const detail = await api.apiGet(apiId);
-        this.sessions[apiId] = { api: detail.api, envs: detail.envs, snapshot: JSON.stringify(detail.api) };
+        this.sessions[apiId] = {
+          api: detail.api,
+          envs: detail.envs,
+          snapshot: JSON.stringify(detail.api),
+          projectId: resolveProjectId ? resolveProjectId(apiId) : null,
+        };
         this.activeApiId = apiId;
       },
       /**
@@ -90,13 +119,19 @@ export function useEditorStore(api: ApiccApi) {
         session.snapshot = JSON.stringify(session.api);
       },
       /**
-       * 关签驱逐（计划 C 任务 4，不变量 3：关签=项目关闭）：按调用方收集的 apiIds 驱逐
-       * 该项目的编辑会话槽；活跃槽被逐则指针复位 null（编辑区空白）。projectId 形参为
-       * 驱逐语义标注（apiIds 由组合根按 tree 收集，见 tabs.ts createEvictProjectSessions）。
+       * 关签驱逐（计划 C 任务 4，不变量 3：关签=项目关闭；任务 5 审查重要 1 改元数据
+       * 过滤）：按槽元数据 projectId 驱逐该项目的编辑会话槽——不依赖当前树（跨目录开
+       * 工作区后仍命中建槽时写下的归属）；活跃槽被逐则指针复位 null（编辑区空白）。
+       * projectId=null 的无归属槽不被牵连（归属未知，误逐即丢他会话草稿）。
        */
-      evictProject(projectId: string, apiIds: string[]) {
-        for (const apiId of apiIds) delete this.sessions[apiId];
-        if (this.activeApiId !== null && apiIds.includes(this.activeApiId)) this.activeApiId = null;
+      evictProject(projectId: string) {
+        let activeEvicted = false;
+        for (const [apiId, session] of Object.entries(this.sessions)) {
+          if (session.projectId !== projectId) continue;
+          delete this.sessions[apiId];
+          if (this.activeApiId === apiId) activeEvicted = true;
+        }
+        if (activeEvicted) this.activeApiId = null;
       },
     },
   })(createPinia());

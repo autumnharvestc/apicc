@@ -48,7 +48,7 @@ import AiSuggestionsDrawer from "./components/AiSuggestionsDrawer.vue";
 import PluginsView from "./components/PluginsView.vue";
 import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
-import { useEditorStore } from "./stores/editor.js";
+import { findProjectIdByApiId, useEditorStore } from "./stores/editor.js";
 import { useDebugStore } from "./stores/debug.js";
 import { useCasesStore } from "./stores/cases.js";
 import { useEnvsStore } from "./stores/envs.js";
@@ -65,7 +65,6 @@ import {
   createTabsStore,
   createEvictProjectSessions,
   findProjectNode,
-  collectApiIds,
   readPersistedTabs,
   type ProjectTab,
 } from "./stores/tabs.js";
@@ -98,7 +97,9 @@ const antdThemeConfig = computed(() => ({
 const { t } = useI18n();
 const workspace = useWorkspaceStore(apicc);
 const tree = useTreeStore(apicc, workspace);
-const editor = useEditorStore(apicc);
+// 计划 C 任务 5 审查重要 1（裁定修法）：建槽时按当前树写归属元数据（slot.projectId）——
+// 跨目录开工作区后，关签 dirty 判定与驱逐按元数据过滤，不再依赖当前树恰好还开着该项目
+const editor = useEditorStore(apicc, (apiId) => findProjectIdByApiId(workspace.tree, apiId));
 // 计划 C 任务 4：debug 结果按 apiId 驻留——注入 editor 使 result getter 跟随活跃接口
 const debug = useDebugStore(apicc, editor);
 // —— 视图面板 store（任务 8 装配）：与既有 store 同一组合根一次性创建 ——
@@ -142,19 +143,15 @@ const LAST_API_KEY = "apicc.lastApi";
 
 /**
  * 活跃签项目驱动编辑器上下文（tabs.onProjectActivated 钩子）：apicc.lastApi 记忆仅当属于
- * 活跃签项目时恢复（按树收集该项目 api 集合过滤，与关签驱逐同款收集逻辑）——跨项目/
- * 跨工作区的旧记忆不再串扰。在线签不消费（该键仅本地侧树写入，见 SideTree selectNode）。
+ * 活跃签项目时恢复（按当前树反查接口归属项目过滤，findProjectIdByApiId）——跨项目/跨
+ * 工作区的旧记忆不再串扰。在线签不消费（该键仅本地侧树写入，见 SideTree selectNode）。
  */
 async function restoreLastApiForTab(tab: ProjectTab): Promise<void> {
   if (tab.workspaceRef.kind !== "local") return;
   try {
     const last = JSON.parse(localStorage.getItem(LAST_API_KEY) ?? "null") as { id: string } | null;
     if (!last?.id) return;
-    const project = findProjectNode(workspace.tree, tab.projectId);
-    if (!project) return;
-    const apiIds: string[] = [];
-    collectApiIds(project, apiIds);
-    if (!apiIds.includes(last.id)) return;
+    if (findProjectIdByApiId(workspace.tree, last.id) !== tab.projectId) return;
     tree.select("api", last.id);
     await editor.load(last.id);
   } catch {

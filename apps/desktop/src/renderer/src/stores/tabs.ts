@@ -89,15 +89,16 @@ function writePersistedTabs(storage: Storage, state: PersistedProjectTabs): void
  * 测试传内存 stub（可控行为、不发 IPC）即天然隔离。
  */
 export interface TabsStoreDeps {
-  /** 本地工作区 store（单例即驻留，不变量 4/8）：本地签上下文未就位时兜底重开目录；tree 供关签 dirty 判定收集项目 api 集合。 */
+  /** 本地工作区 store（单例即驻留，不变量 4/8）：本地签上下文未就位时兜底重开目录；tree 供 workflowDesign 草稿归属过滤。 */
   workspace: Pick<ReturnType<typeof useWorkspaceStore>, "open" | "opened" | "root" | "tree">;
   /** 本地树选中：本地项目选中走 tree.select("project", id)（App.vue:367-370 先例）。 */
   tree: Pick<ReturnType<typeof useTreeStore>, "select">;
   /** 在线 store：会话表存在性（分歧防御）+ 显式激活 + 在线树项目选中 + 缓冲表（关签 dirty 判定）。 */
   online: Pick<OnlineStore, "sessions" | "activeWorkspaceId" | "error" | "activateWorkspace" | "selectNode">;
   /**
-   * 本地编辑器会话表（任务 5 关签 dirty 判定聚合源之一）：该项目 apiIds 的任一会话槽
-   * dirty 即需确认。App 组合根注入；未注入（store 单测省略）时跳过该草稿源。
+   * 本地编辑器会话表（任务 5 关签 dirty 判定聚合源之一，审查重要 1 改元数据驱动）：按槽
+   * 元数据 projectId 过滤后任一脏槽即需确认。App 组合根注入；未注入（store 单测省略）
+   * 时跳过该草稿源。
    */
   editor?: Pick<ReturnType<typeof useEditorStore>, "sessions">;
   /**
@@ -239,9 +240,11 @@ export function createTabsStore(deps: TabsStoreDeps) {
       },
 
       /**
-       * 关签 dirty 判定（不变量 3 确认口径，任务 5）：聚合该项目**全部**草稿源——
-       * - 本地签：editor 中该项目 apiIds 的任一会话槽 dirty（apiIds 由 workspace.tree 收集，
-       *   与 createEvictProjectSessions 同款收集逻辑；非活跃槽脏同样拦截）；
+       * 关签 dirty 判定（不变量 3 确认口径，任务 5；审查重要 1 改元数据驱动）：聚合该
+       * 项目**全部**草稿源——
+       * - 本地签：editor 会话槽按建槽时写下的归属元数据（slot.projectId）过滤，任一脏槽
+       *   即 true——不依赖当前树（跨目录开工作区后，其他目录项目的草稿签照样拦截）；
+       *   projectId=null 的无归属脏槽保守计入任何本地项目签（防漏报）；
        * - 在线签：该驻留会话缓冲表中 `<projectId>/` 前缀槽任一 dirty（先例同 editorDirty）；
        * - 外加 workflowDesign 单会话（规格勘误口径）：活跃工作流属于该项目且 dirty（归属按
        *   树 workflows 摘要过滤——别的项目的草稿流不牵连本项目关签）。
@@ -266,14 +269,13 @@ export function createTabsStore(deps: TabsStoreDeps) {
           }
           return false;
         }
-        const project = findProjectNode(deps.workspace.tree, tab.projectId);
-        if (!project || !deps.editor) return false;
-        const apiIds: string[] = [];
-        collectApiIds(project, apiIds);
-        return apiIds.some((apiId) => {
-          const session = deps.editor!.sessions[apiId];
-          return session !== undefined && session.api !== null && JSON.stringify(session.api) !== session.snapshot;
-        });
+        if (!deps.editor) return false;
+        for (const session of Object.values(deps.editor.sessions)) {
+          if (session.api === null) continue;
+          if (session.projectId !== null && session.projectId !== tab.projectId) continue;
+          if (JSON.stringify(session.api) !== session.snapshot) return true;
+        }
+        return false;
       },
 
       /**
@@ -350,15 +352,13 @@ export type TabsStore = ReturnType<typeof createTabsStore>;
 
 /** createEvictProjectSessions 依赖（结构化最小面，测试可传真实 store 或 spy）。 */
 export interface EvictProjectSessionsDeps {
-  /** 本地工作区 store：按 tree 定位项目节点并收集其 api 集合（任务 4：本地 apiId 集合由 tree 取）。 */
-  workspace: { tree: TreeNodeDTO | null };
-  /** 本地编辑器 store：驱逐该项目的编辑会话槽。 */
+  /** 本地编辑器 store：按槽元数据 projectId 驱逐该项目的编辑会话槽（任务 5 审查重要 1）。 */
   editor: Pick<ReturnType<typeof useEditorStore>, "evictProject">;
   /** 在线 store：按 `<projectId>/` 前缀驱逐驻留工作区缓冲槽。 */
   online: Pick<OnlineStore, "evictProjectBuffers">;
 }
 
-/** 树中定位项目节点（按 id，任意分组下；导出供组合根成签取项目名与 lastApi 过滤复用）。 */
+/** 树中定位项目节点（按 id，任意分组下；导出供组合根成签取项目名复用）。 */
 export function findProjectNode(root: TreeNodeDTO | null, projectId: string): TreeNodeDTO | null {
   for (const group of root?.children ?? []) {
     for (const project of group.children ?? []) {
@@ -368,18 +368,12 @@ export function findProjectNode(root: TreeNodeDTO | null, projectId: string): Tr
   return null;
 }
 
-/** 递归收集项目子树内全部接口 id（驱逐集合/lastApi 归属过滤，先序无影响；导出同上）。 */
-export function collectApiIds(node: TreeNodeDTO, out: string[]): void {
-  for (const child of node.children ?? []) {
-    if (child.kind === "api") out.push(child.id);
-    collectApiIds(child, out);
-  }
-}
-
 /**
- * 关签驱逐真实实现（计划 C 任务 4，不变量 3：关签=项目关闭）——组装出 tabs deps 的
- * `evictProjectSessions` 钩子（App 组合根任务 5 接 ProjectTabs 时传入 createTabsStore）：
- * - 本地签：按 workspace.tree 收集该项目的 api id 集合 → `editor.evictProject` 驱逐会话槽；
+ * 关签驱逐真实实现（计划 C 任务 4，不变量 3：关签=项目关闭；任务 5 审查重要 1 改元数据
+ * 驱动）——组装出 tabs deps 的 `evictProjectSessions` 钩子（App 组合根接 ProjectTabs 时
+ * 传入 createTabsStore）：
+ * - 本地签：`editor.evictProject(projectId)` 按槽元数据 projectId 驱逐会话槽（归属在
+ *   建槽时由组合根注入的解析器按当时树写下——跨目录开工作区后仍命中，不再查当前树）；
  * - 在线签：按 projectId 前缀（`<projectId>/`）驱逐该驻留工作区缓冲表槽（`online.evictProjectBuffers`）。
  * 防护口径（任务 3 钩子契约）：实现内部不抛——驱逐失败只 warn 不阻断关签（closeTab
  * 调用方不 try/catch）。
@@ -393,11 +387,7 @@ export function createEvictProjectSessions(
         deps.online.evictProjectBuffers(workspaceRef.workspaceId, projectId);
         return;
       }
-      const project = findProjectNode(deps.workspace.tree, projectId);
-      if (!project) return; // 树中无此项目（已删/未刷新）：无可驱逐集合，不抛
-      const apiIds: string[] = [];
-      collectApiIds(project, apiIds);
-      deps.editor.evictProject(projectId, apiIds);
+      deps.editor.evictProject(projectId);
     } catch (e) {
       console.warn(`关签驱逐项目编辑会话失败（projectId=${projectId}）: ${e instanceof Error ? e.message : String(e)}`);
     }
