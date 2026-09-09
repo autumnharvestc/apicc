@@ -223,6 +223,7 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
         if (!keyword) {
           this.candidates = [];
           this.candidatesError = null;
+          this.candidatesLoading = false; // 在途请求已被序号作废，此处不复位将滞留 true（任务 3 审查重要 1）
           return;
         }
         this.candidatesLoading = true;
@@ -247,6 +248,7 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
         candidateSeq += 1; // 在途响应作废
         this.candidates = [];
         this.candidatesError = null;
+        this.candidatesLoading = false; // 同上：作废在途请求后必须亲手复位 loading（任务 3 审查重要 1）
       },
 
       /** 移除成员（行级 busy；OWNER 行由 UI 禁用）。 */

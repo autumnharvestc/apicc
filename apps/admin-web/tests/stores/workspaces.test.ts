@@ -551,4 +551,37 @@ describe("searchCandidates（规格 2026-09-09 成员搜索）", () => {
     expect(store.candidates).toEqual([]);
     expect(store.candidatesError).toBeNull();
   });
+
+  it("竞态：在途请求未完成时空关键字调用立即复位 loading，旧请求完成后不落地也不复活 loading（审查重要 1）", async () => {
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<Response>((resolve) => {
+      releaseSlow = () => resolve(json(200, [{ id: "u-9", username: "dave", displayName: "Dave" }]));
+    });
+    const { store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/member-candidates?q=d&limit=10` && req.method === "GET" ? slowGate : json(404, { code: "not_found", message: "x" })));
+    const slow = store.searchCandidates("ws-1", "d"); // 防抖输入「d」后立刻删空的场景
+    await vi.waitFor(() => expect(store.candidatesLoading).toBe(true));
+    await store.searchCandidates("ws-1", "   "); // 空关键字：序号作废在途请求
+    expect(store.candidatesLoading).toBe(false); // 立即复位（修复前滞留 true）
+    expect(store.candidates).toEqual([]);
+    releaseSlow(); // 旧请求此刻才回来
+    await slow;
+    expect(store.candidates).toEqual([]); // 旧结果不落地
+    expect(store.candidatesLoading).toBe(false); // 不复活 loading
+  });
+
+  it("复位：在途请求未完成时 clearCandidates 同样立即复位 loading，旧请求完成后不落地（审查重要 1）", async () => {
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<Response>((resolve) => {
+      releaseSlow = () => resolve(json(200, [{ id: "u-9", username: "dave", displayName: "Dave" }]));
+    });
+    const { store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/member-candidates?q=d&limit=10` && req.method === "GET" ? slowGate : json(404, { code: "not_found", message: "x" })));
+    const slow = store.searchCandidates("ws-1", "d");
+    await vi.waitFor(() => expect(store.candidatesLoading).toBe(true));
+    store.clearCandidates(); // 添加成功后的复位路径：序号作废 + loading 亲手复位
+    expect(store.candidatesLoading).toBe(false);
+    releaseSlow();
+    await slow;
+    expect(store.candidates).toEqual([]); // 旧结果不落地
+    expect(store.candidatesLoading).toBe(false);
+  });
 });
