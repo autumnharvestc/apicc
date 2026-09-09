@@ -88,9 +88,11 @@ docker compose -f deploy/docker-compose.yml up -d --build   # 重建镜像并滚
 ```
 
 数据库 schema 为幂等 DDL（`CREATE TABLE IF NOT EXISTS`），启动时自动就位，无独立迁移步骤。
-**未发布阶段（0.x）schema 变更不做迁移**：升级后启动若报结构类错误（旧版布局 / 未知列等），
-删数据卷重开——compose 执行 `docker compose -f deploy/docker-compose.yml down -v`（连同卷删除，
-随后照常 `up -d --build` 并重新引导管理员）；k8s 删除 PVC 中的数据或重建 PVC。
+**未发布阶段（0.x）schema 变更不做迁移**：幂等 DDL 不会重建已存在的旧表，旧库直接起新版
+不一定在启动期报错（如 2026-09 起实体主键由 UUID 字符串改为数字 BIGINT，旧列型下运行期写入
+才会出错）——从旧版本升级一律删数据卷重开，不要沿用：compose 执行
+`docker compose -f deploy/docker-compose.yml down -v`（连同卷删除，随后照常 `up -d --build`
+并重新引导管理员）；k8s 删除 PVC 中的数据或重建 PVC。
 
 ## 安全提示
 
