@@ -11,7 +11,6 @@ import {
   Typography as ATypography,
 } from "ant-design-vue";
 import { OnlineBaseUrlSchema } from "../../../shared/online/contract.js";
-import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { createOnlineStore } from "../stores/online.js";
 
 const ATabPane = ATabs.TabPane;
@@ -25,8 +24,8 @@ const ATypographyText = ATypography.Text;
  * - 认证区（未登录时）：登录/注册双模式 a-tabs（简报允许「tab 或链接切换」，取 tab——
  *   既有 RequestEditor/ResponseViewer 页签先例，触发钩子经 #tab slot 保留）。
  * - 已登录：当前用户 + 激活服务器 + 退出登录（登出不清档案，裁定 C）+ 工作区列表
- *   （M3-B 任务 3）：拉取「我参与的工作区」，点「打开」→ 先关本地目录工作区（裁定 E
- *   模式互斥的自动侧）→ 打开在线工作区并收起对话框。
+ *   （M3-B 任务 3）：拉取「我参与的工作区」，点「打开」→ 打开在线工作区并收起对话框
+ *   （计划 C 任务 2：裁定 E 互斥退役——不再先关本地工作区，本地 1 + 在线 N 并存驻留）。
  * **组件内零工厂调用**：store 实例经 props 注入（App 组合根装配）。表单校验先行
  * （url 形态按契约 OnlineBaseUrlSchema、用户名密码必填、注册密码 ≥8 对齐契约），
  * api 失败经 store.error 上屏（plan 任务 2 步骤 1⑤）；组件自身 async 动作不重抛。
@@ -34,8 +33,6 @@ const ATypographyText = ATypography.Text;
 const props = defineProps<{
   online: ReturnType<typeof createOnlineStore>;
   apicc: import("../../../shared/types.js").ApiccApi;
-  /** 本地工作区会话（任务 3 裁定 E）：打开在线工作区前先 reset 关闭本地上下文。 */
-  workspace: ReturnType<typeof useWorkspaceStore>;
 }>();
 const { t } = useI18n();
 
@@ -120,14 +117,14 @@ async function onRegister() {
 }
 
 /**
- * 打开在线工作区（任务 3，裁定 E 模式互斥的自动侧）：先关本地目录工作区会话再开在线；
- * 打开成功（store.activeWorkspace 命中）即收起对话框，失败错误经 store.error 上屏留在对话框。
+ * 打开在线工作区（任务 3；计划 C 任务 2 互斥退役）：直接开在线工作区，本地工作区原样
+ * 驻留（并存）；打开成功（store.activeWorkspace 命中）即收起对话框，失败错误经
+ * store.error 上屏留在对话框。
  */
 async function onOpenWorkspace(workspaceId: string) {
   const ws = props.online.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return;
   formError.value = "";
-  if (props.workspace.opened) props.workspace.reset();
   await props.online.openWorkspace(ws);
   if (props.online.activeWorkspace?.id === ws.id) props.online.dialogOpen = false;
 }
@@ -152,7 +149,7 @@ async function onOpenWorkspace(workspaceId: string) {
           </a-typography-text>
           <a-button danger data-testid="online-logout" @click="online.logout()">{{ t("online.logout") }}</a-button>
         </div>
-        <!-- 工作区列表：刷新于对话框打开时；点「打开」→ 先关本地工作区再开在线 -->
+        <!-- 工作区列表：刷新于对话框打开时；点「打开」→ 开在线（本地原样驻留，并存） -->
         <div class="section-title">{{ t("online.wsSection") }}</div>
         <div class="ws-list" data-testid="online-ws-list">
           <div v-if="online.workspaces.length === 0" class="ws-empty">{{ t("online.wsListEmpty") }}</div>

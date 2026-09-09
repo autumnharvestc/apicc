@@ -755,8 +755,8 @@ function onDividerDblClick() {
     />
     <!-- 在线登录与服务器配置对话框（M3-B 任务 2）：a-modal 传送门渲染于 body；
          显隐由 online store 的 dialogOpen 驱动（TopBar 入口 / 对话框关闭双向读写）。
-         workspace 注入供任务 3 的工作区列表打开入口做模式互斥（先关本地工作区） -->
-    <OnlineLoginDialog :online="online" :apicc="apicc" :workspace="workspace" />
+         计划 C 任务 2：打开在线工作区不再关本地（并存驻留），无需 workspace 注入 -->
+    <OnlineLoginDialog :online="online" :apicc="apicc" />
     <!-- 在线推送冲突对话框（任务 3 裁定 C）：online.conflict 驱动 -->
     <OnlineConflictDialog :online="online" />
     <!-- 在线工作区迁移向导（任务 3 裁定 D）：TopBar 迁移入口置 migrateDialogOpen -->

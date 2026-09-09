@@ -1,9 +1,9 @@
 // M3-B 任务 3：online 工作区/迁移新频道接线——online:workspace:open（打开即取树映射，
 // stress 清理链同 ws:open）、online:workspace:close、online:tree:view（树缓存）、
 // online:migrate:scan / online:migrate:write（本地目录扫描与落盘）。
-// 以及裁定 E 互斥：ws:create / ws:open（含失败路径）必须先关闭在线工作区会话。
 // 计划 C 任务 1：会话表化——online:workspace:activate 显式切换活跃；close 载荷可带
 // workspaceId（无参关活跃）；open 失败仅当表空才回滚（防误关其他驻留工作区）。
+// 计划 C 任务 2（裁定 E 互斥退役）：ws:create / ws:open 不再关闭在线会话——本地/在线并存驻留。
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -208,15 +208,17 @@ describe("online:migrate:scan / online:migrate:write（裁定 D 本地面）", (
   });
 });
 
-describe("模式互斥（裁定 E）：本地 ws:create / ws:open 复用既有清理链关闭在线工作区", () => {
-  it("ws:create 成功路径：在线工作区被关闭（tree:view 拒绝）", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "apicc-mutex-"));
-    const other = mkdtempSync(join(tmpdir(), "apicc-mutex-"));
+describe("本地/在线并存（裁定 E 互斥退役，计划 C 任务 2）：ws:create / ws:open 不再关闭在线会话", () => {
+  it("ws:create 成功路径：在线工作区原样驻留（tree:view 仍放行）——本地/在线互不驱逐", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-coexist-"));
+    const other = mkdtempSync(join(tmpdir(), "apicc-coexist-"));
     try {
       const { deps } = setup((url) => (url.endsWith("/auth/login") ? json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER }) : json(200, TREE)));
       await loginAndOpen(deps);
       await deps.handle("ws:create", {}, other, "本地工作区");
-      await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+      // 在线会话未被本地打开牵连：视图照常（表内驻留 + 活跃指针未动）
+      const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
+      expect(view.workspaceId).toBe("ws-1");
       void dir;
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -224,14 +226,15 @@ describe("模式互斥（裁定 E）：本地 ws:create / ws:open 复用既有�
     }
   });
 
-  it("ws:create 失败路径（目录已是工作区）：清理链先行，在线工作区仍被关闭", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "apicc-mutex-"));
+  it("ws:create 失败路径（目录已是工作区）：在线工作区同样不受牵连", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-coexist-"));
     try {
       const { deps } = setup((url) => (url.endsWith("/auth/login") ? json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER }) : json(200, TREE)));
       await deps.handle("ws:create", {}, dir, "本地工作区");
       await loginAndOpen(deps);
       await expect(deps.handle("ws:create", {}, dir, "再次创建")).rejects.toThrow(/目录已是工作区/);
-      await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+      const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
+      expect(view.workspaceId).toBe("ws-1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

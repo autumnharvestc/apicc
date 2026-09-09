@@ -273,7 +273,7 @@ function loginServer(baseUrl: string) {
   props.online.dialogOpen = true;
 }
 
-// —— 本地目录 打开/新建（模式互斥语义保持：先退出在线） ——
+// —— 本地目录 打开/新建（计划 C 任务 2：裁定 E 互斥退役——本地打开不退在线，并存驻留） ——
 const wsDialogOpen = ref(false);
 const pendingRoot = ref("");
 
@@ -281,7 +281,6 @@ async function openLocalDir() {
   try {
     const dir = await props.api.wsPickDirectory();
     if (!dir) return;
-    if (props.online.activeWorkspace) await props.online.closeWorkspace();
     await props.workspace.open(dir);
   } catch (e) {
     props.reportError(e);
@@ -292,7 +291,6 @@ async function startCreateLocal() {
   try {
     const dir = await props.api.wsPickDirectory();
     if (!dir) return;
-    if (props.online.activeWorkspace) await props.online.closeWorkspace();
     pendingRoot.value = dir;
     wsDialogOpen.value = true;
   } catch (e) {
