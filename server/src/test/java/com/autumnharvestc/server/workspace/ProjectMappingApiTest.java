@@ -203,6 +203,28 @@ class ProjectMappingApiTest {
         assertThat(projectCount(admin, wsId)).isEqualTo(projectsBefore);
     }
 
+    // ---- trim 回显语义钉（服务端前提契约）：mapOne 对名称 trim() 后解析既有实体并回显 trim 名 ----
+
+    @Test
+    void resolvesExistingEntityByNameTrimmedAndEchoesTrimmedName() throws Exception {
+        // desktop 迁移映射桥依赖此契约：本地目录名带首尾空格时，服务端 trim() 后解析既有实体
+        // （不误判 missing）且回显 trim 名（服务端路径不出 UI，回显名仅可读）。
+        // 名称不可与 mappingResolvesCreatesAndIsIdempotent 重叠（同测试类共用一份 H2 内存库，
+        // 先跑者建实体后跑者 409——同类先例 sameNameProjectsMapStably 同款唯一名规避）。
+        String admin = loginToken("admin", "admin-pass-2026");
+        String wsId = defaultWorkspaceId(admin);
+        String groupId = createGroup(admin, wsId, "回显组");
+        String projectId = createProject(admin, wsId, groupId, "回显项目");
+
+        postMapping(admin, wsId, entriesOf(entry(" 回显组 ", " 回显项目 ", false)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mappings[0].group").value("回显组"))
+                .andExpect(jsonPath("$.mappings[0].project").value("回显项目"))
+                .andExpect(jsonPath("$.mappings[0].groupId").value(groupId))
+                .andExpect(jsonPath("$.mappings[0].projectId").value(projectId))
+                .andExpect(jsonPath("$.mappings[0].created").value(false));
+    }
+
     // ---- 同名项目并存：映射稳定（重放同 id；listByGroup 按 created_at,id 决定性排序）----
 
     @Test
