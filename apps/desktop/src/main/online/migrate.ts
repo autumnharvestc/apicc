@@ -12,11 +12,17 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { OnlinePathSchema } from "../../shared/online/contract.js";
+import { parseProjectPrefix, type ProjectDirRef } from "../../shared/online/migrate.js";
 
 /** 生成物隔离目录（规格 §8）：迁移扫描/推送永不触碰。 */
 const SKIP_DIRS = new Set([".apicc", ".git"]);
 
-export interface ScannedFile { path: string; hash: string; content: string }
+/**
+ * 扫描产物行：path/hash/content 之上再带 projectDir（计划 C 任务 2）——
+ * `groups/<组>/projects/<名>/` 前缀解析出的目录二元组（映射桥载荷单元）；
+ * 根级文件（apicc.workspace.yaml）与 groups/ 下散文件为 null（不过映射，原路径直推）。
+ */
+export interface ScannedFile { path: string; hash: string; content: string; projectDir: ProjectDirRef | null }
 
 /**
  * 与服务端同口径的内容指纹（§3.4：sha-256 hex utf8）。
@@ -41,7 +47,8 @@ export function scanDirFiles(root: string): ScannedFile[] {
         continue;
       }
       const content = readFileSync(full, "utf8");
-      files.push({ path: relative(root, full).split(sep).join("/"), hash: hashContent(content), content });
+      const path = relative(root, full).split(sep).join("/");
+      files.push({ path, hash: hashContent(content), content, projectDir: parseProjectPrefix(path)?.dir ?? null });
     }
   };
   walk(root);

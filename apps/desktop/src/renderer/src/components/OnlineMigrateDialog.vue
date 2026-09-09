@@ -109,9 +109,11 @@ async function runMigrate(direction: "pull" | "push") {
         <div class="detail">
           <div class="detail-title">{{ t("online.resultDetail") }}</div>
           <ul class="detail-list" data-testid="migrate-result-list">
-            <li v-for="entry in result.details" :key="entry.path">
+            <li v-for="(entry, index) in result.details" :key="`${entry.path}:${index}`">
               <span class="detail-path">{{ entry.path }}</span>
               <span class="detail-action">{{ actionText(entry.action) }}</span>
+              <!-- 退化/冲突注记：孤儿退化按实体路径落盘、同名项目冲突后行者计 failed 时标注 -->
+              <span v-if="entry.note" class="detail-note">{{ entry.note }}</span>
             </li>
           </ul>
         </div>
@@ -164,6 +166,11 @@ async function runMigrate(direction: "pull" | "push") {
 }
 .detail-action {
   color: var(--text-muted, #666);
+}
+.detail-note {
+  display: block;
+  color: var(--text-muted, #999);
+  font-size: 11px;
 }
 .hint {
   font-size: 12px;

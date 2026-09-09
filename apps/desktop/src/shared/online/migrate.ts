@@ -10,10 +10,74 @@
  * planPush 直接比对 `remote.hash !== file.hash`，绝不在客户端重算。
  * 分批（chunk）对齐契约 ≤200/批上限。
  */
-import type { OnlineTreeFile } from "./contract.js";
+import type { OnlineTreeFile, OnlineTreeProject } from "./contract.js";
 
 /** 本地文件行（scan 产物：/ 相对路径 + sha-256 hex + utf8 内容，结构对齐 main scanDirFiles）。 */
 export interface LocalFileRow { path: string; hash: string; content: string }
+
+// —— 迁移映射桥换算（计划 C 任务 2）：本地名称树 ↔ 服务端实体寻址，纯函数（渲染层可引入）——
+
+/** 本地名称树项目目录二元组（groups/<组>/projects/<名>/ 前缀；迁移映射桥的载荷单元）。 */
+export interface ProjectDirRef { group: string; project: string }
+
+/**
+ * 本地名称路径的项目前缀解析：`groups/<组>/projects/<名>/...` → 目录二元组 + 项目内相对路径；
+ * 非项目内路径（根级 apicc.workspace.yaml、groups/ 下散文件）→ null。
+ */
+export function parseProjectPrefix(path: string): { dir: ProjectDirRef; rest: string } | null {
+  const match = /^groups\/([^/]+)\/projects\/([^/]+)\/(.+)$/.exec(path);
+  if (!match) return null;
+  return { dir: { group: match[1]!, project: match[2]! }, rest: match[3]! };
+}
+
+/**
+ * push 换算：本地名称路径 → `<projectId>/<项目内相对路径>`（服务端实体寻址）；
+ * 非项目内路径返回 null（根级文件不过映射、原样直推）。
+ */
+export function toEntityPath(localPath: string, projectId: string): string | null {
+  const parsed = parseProjectPrefix(localPath);
+  return parsed ? `${projectId}/${parsed.rest}` : null;
+}
+
+/** pull 还原逐行产物：localPath = 还原结果；orphan = 项目内文件但项目/组名不可得（退化为实体路径原样落盘）；
+ *  conflict = 同组同名项目碰撞的后行者（两个不同 projectId 的同名实体还原出**同一条**本地路径，
+ *  按服务端清单顺序后行者标注——调用方计 failed + note，不进取数/落盘清单，保先行者正常还原）。 */
+export interface LocalPathRow { serverPath: string; localPath: string; orphan: boolean; conflict?: boolean }
+
+/**
+ * pull 还原（服务端实体寻址 → 本地名称树）：`<projectId>/...` 首段查 tree.projects 得项目名、
+ * 经 groupId 查 groups 清单得组名 → `groups/<组名>/projects/<项目名>/<项目内相对路径>`；
+ * 根级文件（单段路径）原样且非孤儿；项目内文件但项目行缺席 / groupId 缺席 / 组名不在清单
+ * （孤儿 projectId）→ 原样保留实体路径 + orphan 标注（调用方落盘退化并在 details 注记）。
+ */
+export function restoreLocalPaths(
+  serverFiles: readonly OnlineTreeFile[],
+  projects: readonly OnlineTreeProject[],
+  groupNames: ReadonlyMap<string, string>,
+): LocalPathRow[] {
+  const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
+  const groupIdByProject = new Map(projects.filter((p) => p.groupId !== undefined).map((p) => [p.id, p.groupId as string]));
+  const rows = serverFiles.map((file): LocalPathRow => {
+    const [head, ...rest] = file.path.split("/");
+    const projectName = rest.length > 0 && head !== undefined ? projectNameById.get(head) : undefined;
+    const groupId = rest.length > 0 && head !== undefined ? groupIdByProject.get(head) : undefined;
+    const groupName = groupId !== undefined ? groupNames.get(groupId) : undefined;
+    if (rest.length === 0 || !projectName || !groupName) {
+      // 根级文件（单段）原样合法；多段但名不可得 → 孤儿退化
+      return { serverPath: file.path, localPath: file.path, orphan: rest.length > 0 };
+    }
+    return { serverPath: file.path, localPath: `groups/${groupName}/projects/${projectName}/${rest.join("/")}`, orphan: false };
+  });
+  // 同组同名项目碰撞护栏（计划 B：服务端允许同名并存；宽范围审查发现 1）：两个实体还原出
+  // 同一条本地路径时，若两行都进取数/落盘，取数换算表后行覆盖先行（先行者内容取不回）且
+  // 两行同路径落盘后写覆盖先写——静默丢内容。按服务端清单顺序后行者标 conflict，先到者得。
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.localPath)) row.conflict = true;
+    else seen.add(row.localPath);
+  }
+  return rows;
+}
 
 export type PullFileAction = "pulled" | "updated" | "skipped";
 

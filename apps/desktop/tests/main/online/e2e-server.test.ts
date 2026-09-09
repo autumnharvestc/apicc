@@ -26,7 +26,9 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createOnlineClient, OnlineConflictError, type OnlineClient } from "../../../src/main/online/client.js";
+import { scanDirFiles, writeFiles } from "../../../src/main/online/migrate.js";
 import { onlineTreeToDto } from "../../../src/main/online/session.js";
+import { planPull, planPush, restoreLocalPaths, toEntityPath } from "../../../src/shared/online/migrate.js";
 import { runCommand } from "./run-command.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -408,5 +410,146 @@ describe("在线模式真服务端端到端（onlineClient × spawn jar）", () 
     // 落盘目录已随 dataRoot 建好（pull-b / pull-a 存在即写入成功）
     expect(existsSync(join(dataRoot, "pull-b", ...P1_FILE_A.split("/")))).toBe(true);
     expect(existsSync(join(dataRoot, "pull-a", ...P2_FILE.split("/")))).toBe(true);
+  }, 120_000);
+});
+
+// —— 计划 C 任务 3：迁移双向真服 E2E（映射桥 push / 同 hash 跳过 / pull 名称树还原）——
+const USER_MIG = { username: `e2e-migrate-${rand}`, password: "password8", displayName: "迁移用户" };
+
+describe("迁移双向真服端到端（计划 C 任务 3：映射桥 × spawn jar）", () => {
+  /**
+   * 测试分层裁定（任务 3 简报）：迁移编排 migratePush/migratePull 在渲染层 store
+   * （stores/online.ts——main 进程测试不可 import 渲染层代码）。本用例以生产原语复现 store
+   * 的**相同步骤序列**做端到端验证：
+   *   push = scanDirFiles → 映射桥（createIfMissing=true 按需建）→ toEntityPath 换算
+   *          → planPush（差异/baseVersion）→ batchPush；
+   *   pull = getTree + listGroups → restoreLocalPaths 还原本地名称路径 → planPull（空目录全量）
+   *          → getFiles（实体路径取内容）→ writeFiles（本地名称路径落盘）。
+   * store 编排自身的分支语义（映射 missing/forbidden → 整项目 failed、分批进度、明细本地名
+   * 还原）已由任务 2 的 migrate.test.ts / stores 单测覆盖；此处断言「真服 × 生产换算 × 生产
+   * 落盘」的端到端行为，含树 DTO 分组层（真服 groups 清单注入）。
+   */
+  it("push：名称树→实体寻址落库且本地不动；再推同 hash 跳过、变更 pushed；pull 还原本地名称树", async () => {
+    // 步骤 1：独立用户与工作区（与前 describe 的 8 步链互不共享实体）
+    const client = createOnlineClient({ baseUrl: serverBase, timeoutMs: 10_000 });
+    await client.register(USER_MIG);
+    await client.login({ username: USER_MIG.username, password: USER_MIG.password });
+    const ws = await client.createWorkspace({ name: "迁移空间" });
+    expect(ws.myRole).toBe("OWNER"); // 工作区创建者 OWNER：映射桥按需建（ADMIN+）与根配置写（ADMIN+）均放行
+
+    // 步骤 2：造本地临时名称树（中文目录 + 根级 apicc.workspace.yaml + 同组两项目）
+    const srcDir = join(dataRoot, "migrate-src");
+    const localFiles: Array<[string, string]> = [
+      ["apicc.workspace.yaml", "workspace: 迁移空间\n"],
+      ["groups/电商组/projects/宠物商店/project.yaml", "name: 宠物商店\n"],
+      ["groups/电商组/projects/宠物商店/collections/基础/apis/查询/api.yaml", apiYaml("查询", "1")],
+      ["groups/电商组/projects/进销存/collections/仓储/apis/入库/api.yaml", apiYaml("入库", "1")],
+    ];
+    for (const [path, content] of localFiles) {
+      const target = join(srcDir, ...path.split("/"));
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, content, "utf8");
+    }
+
+    // 步骤 3：push 编排（store migratePush 同步序）：扫描 → 映射桥 → 换算 → 差异 → 分批推送
+    const scan1 = scanDirFiles(srcDir);
+    expect(scan1.map((f) => f.path).sort()).toEqual(localFiles.map(([p]) => p).sort());
+    const tree0 = await client.getTree(ws.id);
+    expect(tree0.files).toEqual([]); // 空工作区起步
+    const dirs = new Map<string, { group: string; project: string }>();
+    for (const file of scan1) {
+      if (file.projectDir) dirs.set(`${file.projectDir.group}/${file.projectDir.project}`, file.projectDir);
+    }
+    const mapping = await client.onlineProjectMapping(ws.id, [...dirs.values()].map((d) => ({ ...d, createIfMissing: true })));
+    expect(mapping.mappings).toHaveLength(2);
+    expect(mapping.mappings.every((m) => m.created === true && m.groupId !== undefined && m.projectId !== undefined)).toBe(true);
+    const gid = mapping.mappings[0]!.groupId!;
+    expect(mapping.mappings.map((m) => m.groupId)).toEqual([gid, gid]); // 同组两项目
+    const projectIdByDir = new Map(mapping.mappings.map((m) => [`${m.group}/${m.project}`, m.projectId!]));
+    const petShopId = projectIdByDir.get("电商组/宠物商店")!;
+    const stockId = projectIdByDir.get("电商组/进销存")!;
+
+    // 换算（store 同款 toEntityPath：项目内 → <projectId>/<项目内相对路径>，根级原路径直推）
+    const convert = (scan: typeof scan1) => {
+      const rows: Array<{ path: string; hash: string; content: string }> = [];
+      for (const file of scan) {
+        const projectId = file.projectDir ? projectIdByDir.get(`${file.projectDir.group}/${file.projectDir.project}`) : undefined;
+        const entityPath = projectId !== undefined ? toEntityPath(file.path, projectId) : null;
+        if (entityPath === null) {
+          if (!file.projectDir) rows.push(file); // 根级文件不过映射
+          continue;
+        }
+        rows.push({ path: entityPath, hash: file.hash, content: file.content });
+      }
+      return rows;
+    };
+    const plan1 = planPush(convert(scan1), tree0.files);
+    expect(plan1.skipped).toEqual([]); // 空服务端起步：全为新文件
+    expect(plan1.entries.every((e) => e.baseVersion === 0)).toBe(true);
+    const batch1 = await client.batchPush(ws.id, { files: plan1.entries });
+    expect(batch1.results.map((r) => [r.path, r.status, r.version])).toEqual(plan1.entries.map((e) => [e.path, "pushed", 1]));
+
+    // 步骤 4：真服 tree 出现实体行（名称/groupId 桥接产出）+ 实体文件（<projectId>/...），根级文件原路径
+    const petShopApi = `${petShopId}/collections/基础/apis/查询/api.yaml`;
+    const stockApi = `${stockId}/collections/仓储/apis/入库/api.yaml`;
+    const tree1 = await client.getTree(ws.id);
+    expect(tree1.files.map((f) => f.path).sort()).toEqual(
+      ["apicc.workspace.yaml", `${petShopId}/project.yaml`, petShopApi, stockApi].sort(),
+    );
+    expect(tree1.projects).toContainEqual(expect.objectContaining({ id: petShopId, name: "宠物商店", groupId: gid }));
+    expect(tree1.projects).toContainEqual(expect.objectContaining({ id: stockId, name: "进销存", groupId: gid }));
+
+    // 步骤 5：本地目录未被改动（推送是复制不是移动——迁移语义）
+    expect(scanDirFiles(srcDir)).toEqual(scan1);
+
+    // 步骤 6：改本地一个文件再 push → 同 hash 跳过（skipped=3）+ 变更文件带服务端版本 pushed
+    const changedLocal = "groups/电商组/projects/宠物商店/collections/基础/apis/查询/api.yaml";
+    const v2 = apiYaml("查询", "2");
+    writeFileSync(join(srcDir, ...changedLocal.split("/")), v2, "utf8");
+    const scan2 = scanDirFiles(srcDir);
+    const plan2 = planPush(convert(scan2), tree1.files);
+    expect(plan2.skipped.sort()).toEqual(["apicc.workspace.yaml", `${petShopId}/project.yaml`, stockApi].sort());
+    expect(plan2.entries).toEqual([{ path: petShopApi, content: v2, baseVersion: 1 }]); // baseVersion = 服务端现版本
+    const batch2 = await client.batchPush(ws.id, { files: plan2.entries });
+    expect(batch2.results).toEqual([{ path: petShopApi, status: "pushed", version: 2 }]);
+
+    // 步骤 7：pull 到另一空目录（store migratePull 同步序）：tree + groups → 还原本地名称路径 →
+    // 空目录全量 pulled → 按实体路径取内容 → 按本地名称路径落盘
+    const dstDir = join(dataRoot, "migrate-dst");
+    mkdirSync(dstDir, { recursive: true });
+    expect(scanDirFiles(dstDir)).toEqual([]); // 空目录起步
+    const tree2 = await client.getTree(ws.id);
+    const groups = await client.listGroups(ws.id);
+    expect(groups).toContainEqual(expect.objectContaining({ id: gid, name: "电商组" }));
+    const restored = restoreLocalPaths(tree2.files, tree2.projects, new Map(groups.map((g) => [g.id, g.name])));
+    const localByEntity = new Map(restored.map((r) => [r.serverPath, r.localPath]));
+    expect(restored.every((r) => !r.orphan)).toBe(true); // 映射桥建出的实体组名/项目名齐全，无孤儿
+    expect(localByEntity.get(petShopApi)).toBe(changedLocal);
+    const pullPlan = planPull(tree2.files, scanDirFiles(dstDir));
+    expect(pullPlan.details.every((d) => d.action === "pulled")).toBe(true);
+    const got = await client.getFiles(ws.id, pullPlan.toFetch);
+    expect(got.missing).toEqual([]);
+    writeFiles(dstDir, got.files.map((f) => ({ path: localByEntity.get(f.path) ?? f.path, content: f.content })));
+
+    // 步骤 8：落盘为本地名称树形态（groups/电商组/projects/...）且内容与当前本地源逐文件一致
+    const pulled = scanDirFiles(dstDir);
+    expect(pulled.map((f) => f.path).sort()).toEqual(scan2.map((f) => f.path).sort());
+    const srcByPath = new Map(scan2.map((f) => [f.path, f]));
+    for (const file of pulled) {
+      expect(file.hash, `hash 对账：${file.path}`).toBe(srcByPath.get(file.path)!.hash);
+    }
+    expect(existsSync(join(dstDir, "groups", "电商组", "projects", "宠物商店", "collections", "基础", "apis", "查询", "api.yaml"))).toBe(true);
+    expect(readFileSync(join(dstDir, ...changedLocal.split("/")), "utf8")).toBe(v2); // 拉回的是修改后内容
+    expect(readFileSync(join(dstDir, "apicc.workspace.yaml"), "utf8")).toBe("workspace: 迁移空间\n"); // 根级文件原路径还原
+
+    // 步骤 9：真服 tree + groups 清单喂生产树映射的分组层（任务 3 在线侧树分组层）——项目挂
+    // group:<groupId> 合成组节点（label=组名），api 叶 id=文件全路径（OnlineApiEditor 选中链路不变）
+    const dto = onlineTreeToDto(tree2, "迁移空间", new Map(groups.map((g) => [g.id, g.name])));
+    const groupNode = dto.children!.find((c) => c.kind === "group" && c.id === `group:${gid}`);
+    expect(groupNode?.label).toBe("电商组");
+    expect(groupNode!.children!.map((c) => c.id).sort()).toEqual([petShopId, stockId].sort());
+    const petShopNode = groupNode!.children!.find((c) => c.kind === "project" && c.id === petShopId)!;
+    const apiLeaf = petShopNode.children!.find((c) => c.kind === "collection" && c.label === "基础")!.children!.find((c) => c.kind === "api")!;
+    expect(apiLeaf.id).toBe(petShopApi);
   }, 120_000);
 });

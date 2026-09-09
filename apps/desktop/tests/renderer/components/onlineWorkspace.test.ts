@@ -242,7 +242,7 @@ describe("OnlineMigrateDialog（裁定 D：目录选择 + 进度 + 结果清单�
     const f = await fixture();
     f.online.migrateDialogOpen = true;
     f.api.onlineMigrateScan = async () => ({
-      files: [{ path: "groups/g/new.yaml", hash: "hn", content: "new\n" }],
+      files: [{ path: "groups/g/new.yaml", hash: "hn", content: "new\n", projectDir: null }],
     });
     f.api.onlineFilesBatch = async () => ({ results: [{ path: "groups/g/new.yaml", status: "pushed", version: 1 }] });
     await f.mount(OnlineMigrateDialog);

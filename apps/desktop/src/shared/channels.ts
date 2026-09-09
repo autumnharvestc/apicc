@@ -56,6 +56,9 @@ export const IpcChannel = {
   OnlineTreeView: "online:tree:view",
   OnlineMigrateScan: "online:migrate:scan",
   OnlineMigrateWrite: "online:migrate:write",
+  // 迁移映射桥 + 组织分组只读清单（计划 C 任务 2）：本地名称目录 ↔ 服务端实体 id 换算与组名反查
+  OnlineProjectMapping: "online:project-mapping",
+  OnlineGroupsList: "online:groups:list",
   OnlineFilesGet: "online:files:get",
   OnlineFilePut: "online:files:put",
   OnlineFilesBatch: "online:files:batch",

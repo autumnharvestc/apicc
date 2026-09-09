@@ -284,8 +284,8 @@ async function seedOrgProjects(wsId: string): Promise<void> {
   groupId = def.id;
   P1_ID = (await clientA.orgCreateProject(wsId, { groupId, name: "订单" })).id;
   P2_ID = (await clientA.orgCreateProject(wsId, { groupId, name: "库存" })).id;
-  P1_FILE = `${P1_ID}/collections/订单/apis/创建/apicc.api.yaml`;
-  P2_FILE = `${P2_ID}/collections/入库/apis/入库单/apicc.api.yaml`;
+  P1_FILE = `${P1_ID}/collections/订单/apis/创建/api.yaml`;
+  P2_FILE = `${P2_ID}/collections/入库/apis/入库单/api.yaml`;
 }
 
 describe("管理链路真服务端冒烟（adminClient × spawn jar，裁定 D②）", () => {

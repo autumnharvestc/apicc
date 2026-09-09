@@ -4,8 +4,9 @@
 // 工作流/环境/项目/集合配置等非接口文件映射为只读 file 叶（裁定 B：只读浏览，不做编辑器）。
 // path 实体化（2026-09-08）：内容 path 首段=项目实体 UUID（服务端已无 groups/<组>/projects/<名>
 // 名称目录，旧形态服务端 400 path_invalid）；树节点以 projectId 关联（project 节点 id=项目 id，
-// 名称取 tree.projects 行；分组名不再下发，侧树项目直接挂根）。api/file 叶 id 仍=文件全路径
-// （OnlineApiEditor 依赖选中后按该路径 getFiles 取内容，机制不变）。
+// 名称取 tree.projects 行）。计划 C 任务 3 分组层：getTreeView 注入 groupNames（groupId→组名，
+// listGroups 清单反查）时项目挂 group:<groupId> 合成组节点；未注入时项目直接挂根（既有口径）。
+// api/file 叶 id 仍=文件全路径（OnlineApiEditor 依赖选中后按该路径 getFiles 取内容，机制不变）。
 import { describe, expect, it } from "vitest";
 import { onlineTreeToDto } from "../../../src/main/online/session.js";
 import type { OnlineTree } from "../../../src/shared/online/contract.js";
@@ -150,5 +151,88 @@ describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级，path 实�
       ]),
     );
     expect((dto.children ?? []).filter((c) => c.kind !== "file")).toEqual([]);
+  });
+});
+
+// —— 计划 C 任务 3：在线侧树分组层（groupNames 提供 → 项目挂 group:<groupId> 合成组节点）——
+describe("onlineTreeToDto 分组层（计划 C 任务 3：groupNames → group:<groupId> 合成节点）", () => {
+  // 排序用例的可分辨性设计：文件清单 P2 在前（懒建序 [P2, P1]）；label 字典序「乙(U+4E59) <
+  // 甲(U+7532)」也是 [P2, P1]；唯有「组内按 projects 行序」（P1 行在前）产出 [P1, P2]——三序可分辨。
+  it("项目节点挂 group:<groupId> 合成组节点（label=组名，id 前缀 group: 不与文件路径 id 空间重叠），组内按 projects 行序", () => {
+    const dto = onlineTreeToDto(
+      treeOf(
+        [
+          "apicc.workspace.yaml",
+          `${P2}/collections/账户API/apis/login/api.yaml`,
+          `${P1}/collections/订单API/apis/create/api.yaml`,
+        ],
+        [
+          { id: P1, name: "甲项目", groupId: GID, myRole: "EDITOR" },
+          { id: P2, name: "乙项目", groupId: GID, myRole: "EDITOR" },
+        ],
+      ),
+      "团队空间",
+      new Map([[GID, "电商组"]]),
+    );
+    // 根层：根配置叶 + 组节点（根层仍按 label 序混排）；组节点 id 带合成前缀 group:
+    expect((dto.children ?? []).map((c) => c.id)).toEqual([
+      "apicc.workspace.yaml",
+      `group:${GID}`,
+    ]);
+    const group = child(dto, "group", "电商组");
+    // 组内按 projects 行序：[P1, P2]（懒建序与 label 序均为 [P2, P1]，行序是唯一正解）
+    expect(group.children!.map((c) => c.id)).toEqual([P1, P2]);
+    // api 叶 id = 文件全路径（OnlineApiEditor 选中链路在新层级下不变）
+    const api = child(child(child(group, "project", "甲项目"), "collection", "订单API"), "api", "create");
+    expect(api.id).toBe(`${P1}/collections/订单API/apis/create/api.yaml`);
+  });
+
+  it("孤儿项目保持直挂根：groupId 缺席 / projects 行缺席；清单中无项目的组不造空组节点；不抛", () => {
+    const P3 = "2b2b3c4d-e5f6-a7b8-c9d0-112233445566";
+    const dto = onlineTreeToDto(
+      treeOf(
+        [
+          `${P1}/collections/c/apis/a/api.yaml`,
+          `${P2}/collections/c/apis/b/api.yaml`,
+          `${P3}/collections/c/apis/c/api.yaml`,
+        ],
+        [
+          { id: P1, name: "有组项目", groupId: GID, myRole: "EDITOR" },
+          { id: P2, name: "无组项目", myRole: "EDITOR" }, // groupId 缺席
+          // P3 行缺席 → 项目节点回退 id 命名
+        ],
+      ),
+      undefined,
+      new Map([
+        [GID, "电商组"],
+        ["g-empty", "空组"], // 清单中存在但无项目文件引用 → 不造节点
+      ]),
+    );
+    expect(dto.children!.some((c) => c.kind === "group" && c.id === `group:${GID}`)).toBe(true);
+    expect(dto.children!.some((c) => c.kind === "group" && c.id === "group:g-empty")).toBe(false);
+    expect(dto.children!.some((c) => c.kind === "project" && c.id === P1)).toBe(false); // 有组项目已入组
+    expect(dto.children!.some((c) => c.kind === "project" && c.id === P2)).toBe(true);
+    expect(dto.children!.some((c) => c.kind === "project" && c.id === P3)).toBe(true);
+  });
+
+  it("组名可得但组内无文件的项目（projects 行在、内容清单空）→ 不造空项目节点（文件驱动口径不变）", () => {
+    const dto = onlineTreeToDto(
+      treeOf([`${P1}/collections/c/apis/a/api.yaml`], [
+        { id: P1, name: "有文件", groupId: GID, myRole: "EDITOR" },
+        { id: P2, name: "空项目", groupId: GID, myRole: "EDITOR" },
+      ]),
+      undefined,
+      new Map([[GID, "电商组"]]),
+    );
+    const group = child(dto, "group", "电商组");
+    expect(group.children!.map((c) => c.id)).toEqual([P1]);
+  });
+
+  it("未提供组清单（第三参缺席）→ 项目直挂根（既有扁平口径不变，既有调用零破坏）", () => {
+    const dto = onlineTreeToDto(
+      treeOf([`${P1}/collections/c/apis/a/api.yaml`], [{ id: P1, name: "订单服务", groupId: GID, myRole: "EDITOR" }]),
+    );
+    expect(dto.children!.some((c) => c.kind === "group")).toBe(false);
+    expect(dto.children!.some((c) => c.kind === "project" && c.id === P1)).toBe(true);
   });
 });

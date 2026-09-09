@@ -19,7 +19,10 @@ import {
   OnlineErrorSchema,
   OnlineFilesResultSchema,
   OnlineGetFilesInputSchema,
+  OnlineGroupSchema,
   OnlineLoginResultSchema,
+  OnlineMappingInputSchema,
+  OnlineMappingResultSchema,
   OnlinePathSchema,
   OnlinePutFileResultSchema,
   OnlineRegisterInputSchema,
@@ -34,7 +37,10 @@ import {
   type OnlineBatchInput,
   type OnlineBatchResult,
   type OnlineFilesResult,
+  type OnlineGroup,
   type OnlineLoginResult,
+  type OnlineMappingEntry,
+  type OnlineMappingResult,
   type OnlinePutFileResult,
   type OnlineRegisterInput,
   type OnlineRole,
@@ -103,6 +109,13 @@ export interface OnlineClient {
   putFile(workspaceId: string, input: { path: string; content: string; baseVersion: number }): Promise<OnlinePutFileResult>;
   batchPush(workspaceId: string, input: OnlineBatchInput): Promise<OnlineBatchResult>;
   deleteFile(workspaceId: string, input: { path: string; baseVersion: number }): Promise<void>;
+  /**
+   * 迁移映射桥（计划 C 任务 1/2）：本地名称目录二元组清单 → 服务端实体（≤200 条/批）。
+   * 响应行三态（解析/建成、missing、forbidden——部分成功）见 OnlineMappingResultSchema。
+   */
+  onlineProjectMapping(workspaceId: string, entries: OnlineMappingEntry[]): Promise<OnlineMappingResult>;
+  /** 组织分组只读清单（§4 GET groups，成员可读；迁移拉取 groupId → 组名反查数据源）。 */
+  listGroups(workspaceId: string): Promise<OnlineGroup[]>;
   /** 成员管理：role → PUT 变更角色；op=remove → DELETE 移除（§3.2，M3-B UI 不消费，契约面保留）。 */
   manageMembers(workspaceId: string, input: { userId: string; role: OnlineRole } | { userId: string; op: "remove" }): Promise<void>;
   /**
@@ -278,6 +291,24 @@ export function createOnlineClient(deps: OnlineClientDeps): OnlineClient {
         body: input,
         schema: OnlineBatchResultSchema,
       })) as OnlineBatchResult;
+    },
+
+    async onlineProjectMapping(workspaceId, entries) {
+      OnlineMappingInputSchema.parse({ entries }); // ≤200 条/批 + 名称约束护栏
+      return (await request({
+        method: "POST",
+        path: `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/project-mapping`,
+        body: { entries },
+        schema: OnlineMappingResultSchema,
+      })) as OnlineMappingResult;
+    },
+
+    async listGroups(workspaceId) {
+      return (await request({
+        method: "GET",
+        path: `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/groups`,
+        schema: z.array(OnlineGroupSchema),
+      })) as OnlineGroup[];
     },
 
     async deleteFile(workspaceId, input) {

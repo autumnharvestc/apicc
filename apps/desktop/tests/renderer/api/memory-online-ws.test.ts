@@ -1,7 +1,8 @@
 // M3-B 任务 3：memory 替身 online 工作区/迁移方法——与主进程同构（树视图经同一
 // onlineTreeToDto 映射、open/close 状态、scan/write 真实文件面），载荷钉在契约上。
 // path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（<projectId>/…），
-// 树节点以 projectId 关联（项目直接挂根——分组名不再经 tree 下发）。
+// 树节点以 projectId 关联。计划 C 任务 3 分组层：视图注入组名表 → 项目挂 group:<groupId>
+// 合成组节点（与 main session.getTreeView 同口径）。
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,7 +21,7 @@ async function loggedIn() {
 }
 
 describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () => {
-  it("open 记录工作区并返回视图：树 DTO（root label = 工作区名，项目挂根层级 + 只读 file 叶）+ projects 实体行", async () => {
+  it("open 记录工作区并返回视图：树 DTO（root label = 工作区名，分组层 + 只读 file 叶）+ projects 实体行", async () => {
     const { api, ws } = await loggedIn();
     const view = (await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: ws.myRole })) as OnlineWorkspaceView;
     expect(view.workspaceId).toBe(ws.id);
@@ -30,10 +31,12 @@ describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () =>
     const root = view.tree;
     expect(root.kind).toBe("root");
     expect(root.label).toBe(ws.name);
+    // 分组层（计划 C 任务 3）：项目挂 group:<groupId> 合成组节点（label=种子组名）
     const labels = (root.children ?? []).map((c) => `${c.kind}:${c.label}`);
-    expect(labels).toContain("file:apicc.workspace.yaml");
-    expect(labels).toContain("project:示例项目");
-    const project = root.children!.find((c) => c.kind === "project")!;
+    expect(labels).toEqual(["file:apicc.workspace.yaml", "group:示例分组"]);
+    const group = root.children!.find((c) => c.kind === "group")!;
+    expect(group.id).toBe(`group:${ONLINE_SEED_GROUP_ID}`);
+    const project = group.children!.find((c) => c.kind === "project")!;
     expect(project.id).toBe(ONLINE_SEED_PROJECT_ID); // 树节点以 projectId 关联
     const collection = project.children!.find((c) => c.kind === "collection")!;
     const apiNode = collection.children!.find((c) => c.kind === "api")!;
@@ -65,7 +68,8 @@ describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () =>
     await api.onlineFilePut({ workspaceId: ws.id, path: target, content: "id: api-online-1\nname: 改名\n", baseVersion: 1 });
     const view = await api.onlineTreeView(ws.id);
     const apiNode = view.tree
-      .children!.find((c) => c.kind === "project")! // 示例项目（file:apicc.workspace.yaml 也在 root 下排序）
+      .children!.find((c) => c.kind === "group")! // 分组层（计划 C 任务 3）：项目挂合成组节点下
+      .children!.find((c) => c.kind === "project")!
       .children!.find((c) => c.kind === "collection")!
       .children!.find((c) => c.kind === "api")!;
     expect(apiNode.id).toBe(target);
@@ -92,5 +96,58 @@ describe("memory 替身 onlineMigrateScan/Write（任务 3，真实文件面）"
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("scan 产物带 projectDir（groups/<组>/projects/<名> 二元组；根级文件 null）", async () => {
+    const { api } = await loggedIn();
+    const dir = mkdtempSync(join(tmpdir(), "apicc-mem-scan-dir-"));
+    try {
+      mkdirSync(join(dir, "groups", "电商", "projects", "宠物商店"), { recursive: true });
+      writeFileSync(join(dir, "apicc.workspace.yaml"), "id: ws\n", "utf8");
+      writeFileSync(join(dir, "groups", "电商", "projects", "宠物商店", "project.yaml"), "name: 宠物商店\n", "utf8");
+      const scan = await api.onlineMigrateScan(dir);
+      const byPath = new Map(scan.files.map((f) => [f.path, f]));
+      expect(byPath.get("apicc.workspace.yaml")!.projectDir).toBeNull();
+      expect(byPath.get("groups/电商/projects/宠物商店/project.yaml")!.projectDir).toEqual({ group: "电商", project: "宠物商店" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("memory 替身迁移映射桥 + 组清单（计划 C 任务 2，服务端同语义简化建模）", () => {
+  it("onlineProjectMapping：种子目录（示例分组/示例项目）→ 实体行（created=false 解析命中）；未知目录 → missing:true", async () => {
+    const { api } = await loggedIn();
+    const result = await api.onlineProjectMapping({
+      workspaceId: "ws-online-1",
+      entries: [
+        { group: "示例分组", project: "示例项目", createIfMissing: true },
+        { group: "新分组", project: "新项目", createIfMissing: true },
+      ],
+    });
+    expect(result.mappings).toEqual([
+      { group: "示例分组", project: "示例项目", groupId: ONLINE_SEED_GROUP_ID, projectId: ONLINE_SEED_PROJECT_ID, created: false },
+      { group: "新分组", project: "新项目", missing: true },
+    ]);
+  });
+
+  it("onlineProjectMapping：名称 trim 后解析与回显（服务端 ProjectMappingService 同语义——审查重要 1 缺陷场景锚点）", async () => {
+    const { api } = await loggedIn();
+    const result = await api.onlineProjectMapping({
+      workspaceId: "ws-online-1",
+      entries: [{ group: " 示例分组 ", project: " 示例项目 ", createIfMissing: true }],
+    });
+    // 带首尾空格的本地目录名：替身按 trim 后解析种子实体并回显 trim 名（回显名 ≠ 本地原名）
+    expect(result.mappings).toEqual([
+      { group: "示例分组", project: "示例项目", groupId: ONLINE_SEED_GROUP_ID, projectId: ONLINE_SEED_PROJECT_ID, created: false },
+    ]);
+  });
+
+  it("onlineGroupsList：种子分组清单（groupId → 组名反查数据源）；未登录拒绝", async () => {
+    const { api } = await loggedIn();
+    expect(await api.onlineGroupsList("ws-online-1")).toEqual([
+      { id: ONLINE_SEED_GROUP_ID, name: "示例分组", isDefault: true, createdAt: expect.any(String) },
+    ]);
+    await expect(createMemoryApi().onlineGroupsList("ws-online-1")).rejects.toThrow(/尚未登录/);
   });
 });

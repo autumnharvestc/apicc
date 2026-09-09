@@ -4,7 +4,7 @@
 // 推送 + 成功前移）与 409 冲突（拉取覆盖我的/放弃）③迁移拉取（计数 + 落盘）④迁移推送
 // （batch 差异 + 冲突跳过列出）⑤⑥关闭清理与迁移单活动护栏。坏数据进 problems 不崩。
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryApi, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
@@ -138,9 +138,17 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     ];
     expect(store.canEdit(pidPath)).toBe(true);
     expect(store.canEdit(`aaaaaaaa-a1b2-c3d4-e5f6-0123456789ab/collections/c/apis/a/api.yaml`)).toBe(false);
-    // 非项目子树（根配置）：不受项目 ACL 影响，按工作区角色可写
+    // 工作区配置叶（apicc.workspace.yaml）：不受项目 ACL 影响；对齐服务端 ADMIN+ 守卫
+    // （计划 C 任务 4 / B-任务 7 遗留④）：仅 ADMIN/OWNER 可编辑，EDITOR 也只读
     store.projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];
+    expect(store.canEdit("apicc.workspace.yaml")).toBe(true); // 默认 OWNER
+    store.activeWorkspace = { ...store.activeWorkspace!, myRole: "ADMIN" };
     expect(store.canEdit("apicc.workspace.yaml")).toBe(true);
+    store.activeWorkspace = { ...store.activeWorkspace!, myRole: "EDITOR" };
+    expect(store.canEdit("apicc.workspace.yaml")).toBe(false); // 收紧：EDITOR 推送服务端 403
+    // 收紧只影响配置叶：EDITOR 工作区角色下项目内 api 叶仍按项目 ACL 放行
+    store.projects = [{ id: pid, name: "示例项目", myRole: "EDITOR" }];
+    expect(store.canEdit(pidPath)).toBe(true);
     // 工作区级 VIEWER：一切只读
     store.activeWorkspace = { ...store.activeWorkspace!, myRole: "VIEWER" };
     expect(store.canEdit(pidPath)).toBe(false);
@@ -207,22 +215,130 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
   });
 });
 
-describe("迁移-拉取（步骤 1③：进度 + 计数 + 落盘）", () => {
-  it("拉取到本地目录：全部新拉 → 计数与文件落盘；再拉 → 全部 skipped", async () => {
-    const { store } = await opened();
+describe("迁移-拉取（步骤 1③ + 计划 C 任务 2：实体路径还原本地名称形态 + 进度 + 计数 + 落盘）", () => {
+  it("拉取：<projectId>/... 还原为 groups/<组名>/projects/<项目名>/... 落盘（根级文件原样）；再拉 → 全部 skipped", async () => {
+    const { api, store } = await opened();
     const dir = mkdtempSync(join(tmpdir(), "apicc-pull-"));
+    // 钉落盘路径形态：migrateWrite 收到的必须是本地名称树路径（服务端实体路径不出 IPC 写面）
+    const writes: string[][] = [];
+    const originalWrite = api.onlineMigrateWrite.bind(api);
+    api.onlineMigrateWrite = async (input) => {
+      writes.push(input.files.map((f) => f.path));
+      return originalWrite(input);
+    };
     try {
       await store.migratePull(dir);
       expect(store.error).toBeNull();
-      expect(store.migrationResult?.direction).toBe("pull");
-      expect(store.migrationResult?.pulled).toBe(6); // 种子文件数（根配置+项目内 5；分组已实体化，无 group.yaml）
-      expect(store.migrationResult?.skipped).toBe(0);
+      const result = store.migrationResult!;
+      expect(result.direction).toBe("pull");
+      expect(result.pulled).toBe(6); // 种子文件数（根配置+项目内 5；分组已实体化，无 group.yaml）
+      expect(result.skipped).toBe(0);
+      expect(writes).toHaveLength(1); // 单批（≤200）
+      expect(writes[0]!.sort()).toEqual([
+        "apicc.workspace.yaml",
+        "groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml",
+        "groups/示例分组/projects/示例项目/collections/示例集合/collection.yaml",
+        "groups/示例分组/projects/示例项目/environments/dev.yaml",
+        "groups/示例分组/projects/示例项目/project.yaml",
+        "groups/示例分组/projects/示例项目/workflows/示例流/workflow.yaml",
+      ]);
+      // 落盘内容按本地名称路径可读回
       expect(readFileSync(join(dir, "apicc.workspace.yaml"), "utf8")).toContain("ws-online-1");
-      expect(readFileSync(join(dir, API_PATH), "utf8")).toContain("api-online-1");
+      expect(
+        readFileSync(join(dir, "groups", "示例分组", "projects", "示例项目", "collections", "示例集合", "apis", "示例接口", "api.yaml"), "utf8"),
+      ).toContain("api-online-1");
+      // 明细 path 统一本地名称形态
+      expect(result.details.some((d) => d.path === API_PATH)).toBe(false);
       // 第二次拉取：同 hash 全部跳过
       await store.migratePull(dir);
       expect(store.migrationResult?.pulled).toBe(0);
       expect(store.migrationResult?.skipped).toBe(6);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("拉取：组名不可得（孤儿 projectId，groups 清单为空）→ 退化为实体路径原样落盘并在明细注记", async () => {
+    const { api, store } = await opened();
+    api.onlineGroupsList = async () => [];
+    const dir = mkdtempSync(join(tmpdir(), "apicc-pull-orphan-"));
+    try {
+      await store.migratePull(dir);
+      expect(store.error).toBeNull();
+      const result = store.migrationResult!;
+      expect(result.pulled).toBe(6); // 孤儿仍落盘（退化为实体路径），不算失败
+      const projectRows = result.details.filter((d) => d.path !== "apicc.workspace.yaml");
+      expect(projectRows.length).toBe(5);
+      expect(projectRows.every((d) => d.path.startsWith(`${ONLINE_SEED_PROJECT_ID}/`))).toBe(true);
+      expect(projectRows.every((d) => d.note !== undefined)).toBe(true); // details 标注退化
+      expect(result.details.find((d) => d.path === "apicc.workspace.yaml")!.note).toBeUndefined(); // 根级文件非孤儿
+      // 落盘退化为 <projectId>/... 原样
+      expect(existsSync(join(dir, ...`${ONLINE_SEED_PROJECT_ID}/project.yaml`.split("/")))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("拉取：同组同名项目并存（两实体还原同一路径）→ 先行者正常 pulled，后行者 failed+冲突注记，落盘为先行者内容", async () => {
+    // 计划 B：服务端允许同组同名项目并存（不同 projectId）——两实体还原出同一条本地路径。
+    // 护栏（宽范围审查发现 1）：后行者不进取数/落盘清单（否则取数换算表后行覆盖先行、
+    // 先行者内容取不回且落盘后写覆盖先写），计 failed + 冲突注记；先行者正常取数落盘。
+    // 替身内存库是单实体模型，双实体树与逐实体取数在此桩出。
+    const { api, store } = await opened();
+    const P1 = "11111111-1111-1111-1111-111111111111";
+    const P2 = "22222222-2222-2222-2222-222222222222";
+    api.onlineTreeGet = async () => ({
+      workspaceId: store.activeWorkspace!.id,
+      rootVersion: 2,
+      files: [
+        { path: `${P1}/project.yaml`, hash: "h1", version: 1, size: 18 },
+        { path: `${P2}/project.yaml`, hash: "h2", version: 1, size: 18 },
+      ],
+      projects: [
+        { id: P1, name: "同名项目", groupId: "g-1", myRole: "OWNER" },
+        { id: P2, name: "同名项目", groupId: "g-1", myRole: "OWNER" },
+      ],
+    });
+    api.onlineGroupsList = async () => [{ id: "g-1", name: "电商", isDefault: false, createdAt: "2026-09-09T00:00:00Z" }];
+    // 钉取数寻址：两实体只取先行者（后行者不进取数清单，不发生后行覆盖先行的换算错位）
+    const fetched: string[] = [];
+    api.onlineFilesGet = async (input) => {
+      fetched.push(...input.paths);
+      return {
+        files: input.paths.map((p) => ({
+          path: p,
+          content: p.startsWith(P1) ? "先行者内容\n" : "后行者内容\n",
+          version: 1,
+          hash: p.startsWith(P1) ? "h1" : "h2",
+        })),
+        missing: [],
+      };
+    };
+    const writes: Array<Array<{ path: string; content: string }>> = [];
+    const originalWrite = api.onlineMigrateWrite.bind(api);
+    api.onlineMigrateWrite = async (input) => {
+      writes.push(input.files.map((f) => ({ ...f })));
+      return originalWrite(input);
+    };
+    const dir = mkdtempSync(join(tmpdir(), "apicc-pull-clash-"));
+    try {
+      await store.migratePull(dir);
+      expect(store.error).toBeNull();
+      const result = store.migrationResult!;
+      expect(result.pulled).toBe(1); // 先行者
+      expect(result.failed).toBe(1); // 后行者（同名冲突）
+      expect(fetched).toEqual([`${P1}/project.yaml`]); // 只取先行者实体（先行者内容不被挤掉）
+      // 落盘恰一行：本地名称路径 + 先行者内容（非后写覆盖）
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toEqual([{ path: "groups/电商/projects/同名项目/project.yaml", content: "先行者内容\n" }]);
+      expect(readFileSync(join(dir, "groups", "电商", "projects", "同名项目", "project.yaml"), "utf8")).toBe("先行者内容\n");
+      // 明细：先行者 pulled、后行者 failed + 冲突注记（同一路径两行，路径统一本地名称形态）
+      const pulledRow = result.details.find((d) => d.action === "pulled")!;
+      expect(pulledRow.path).toBe("groups/电商/projects/同名项目/project.yaml");
+      const failedRow = result.details.find((d) => d.action === "failed")!;
+      expect(failedRow.path).toBe("groups/电商/projects/同名项目/project.yaml");
+      expect(failedRow.note).toContain("同名项目冲突");
+      expect(failedRow.note).toContain("groups/电商/projects/同名项目/project.yaml");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -238,7 +354,7 @@ describe("迁移-拉取（步骤 1③：进度 + 计数 + 落盘）", () => {
     api.onlineMigrateScan = async (dir: string) => {
       scans += 1;
       await gate;
-      return { files: [{ path: "a.yaml", hash: "h", content: "a" }] };
+      return { files: [{ path: "a.yaml", hash: "h", content: "a", projectDir: null }] };
     };
     const first = store.migratePull(join(tmpdir(), "apicc-pull-guard"));
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -261,20 +377,29 @@ describe("迁移-拉取（步骤 1③：进度 + 计数 + 落盘）", () => {
   });
 });
 
-describe("迁移-推送（步骤 1④：差异 batch + 冲突默认跳过列出）", () => {
-  it("推送：新/变更/同 hash 跳过 → 计数与明细；推送后刷新树", async () => {
+describe("迁移-推送（步骤 1④ + 计划 C 任务 2：映射桥换算 <projectId>/... + 差异 batch + 冲突默认跳过列出）", () => {
+  it("推送：本地名称路径经映射桥换算 <projectId>/<项目内相对路径> 推 batch；明细 path 保持本地名称形态", async () => {
     const { api, store } = await opened();
     const wsYaml = "apicc.workspace.yaml";
+    const LOCAL_API = "groups/示例分组/projects/示例项目/collections/示例集合/apis/示例接口/api.yaml";
     // 服务端现内容：API_PATH 保持原样（同 hash → 跳过）；wsYaml 本地改内容（→ 带服务端版本推送）
     const serverFiles = await api.onlineFilesGet({ workspaceId: store.activeWorkspace!.id, paths: [wsYaml, API_PATH] });
     const same = serverFiles.files.find((f) => f.path === API_PATH)!;
     api.onlineMigrateScan = async () => ({
       files: [
-        { path: wsYaml, hash: "different", content: "changed-local\n" },
-        { path: API_PATH, hash: same.hash, content: same.content },
-        { path: "groups/新分组/新接口/api.yaml", hash: "new", content: "brand: new\n" },
+        { path: wsYaml, hash: "different", content: "changed-local\n", projectDir: null },
+        { path: LOCAL_API, hash: same.hash, content: same.content, projectDir: { group: "示例分组", project: "示例项目" } },
+        { path: "groups/示例分组/projects/示例项目/新接口/api.yaml", hash: "new", content: "brand: new\n", projectDir: { group: "示例分组", project: "示例项目" } },
       ],
     });
+    // 钉映射桥载荷：去重目录清单 + createIfMissing=true（根级文件不参与映射）
+    const mappingCalls: Array<{ group: string; project: string; createIfMissing: boolean }> = [];
+    const originalMapping = api.onlineProjectMapping.bind(api);
+    api.onlineProjectMapping = async (input) => {
+      for (const entry of input.entries) mappingCalls.push({ ...entry });
+      return originalMapping(input);
+    };
+    // 钉 batch 载荷：必须已换算 <projectId>/...（直发名称路径服务端 400 path_invalid）
     const batchCalls: Array<Array<{ path: string; baseVersion: number }>> = [];
     const originalBatch = api.onlineFilesBatch.bind(api);
     api.onlineFilesBatch = async (input) => {
@@ -284,24 +409,95 @@ describe("迁移-推送（步骤 1④：差异 batch + 冲突默认跳过列出�
     await store.migratePush(join(tmpdir(), "apicc-push-noop"));
     const result = store.migrationResult!;
     expect(result.direction).toBe("push");
-    expect(result.pushed).toBe(2); // 新文件 + 变更文件
-    expect(result.skipped).toBe(1); // 同 hash
+    expect(result.pushed).toBe(2); // 根级变更文件 + 项目内新文件
+    expect(result.skipped).toBe(1); // 同 hash（内容未变）
     expect(result.conflicts).toBe(0);
+    expect(mappingCalls).toEqual([{ group: "示例分组", project: "示例项目", createIfMissing: true }]);
+    const flat = batchCalls.flat();
+    expect(flat.find((e) => e.path === `${ONLINE_SEED_PROJECT_ID}/新接口/api.yaml`)!.baseVersion).toBe(0); // 新文件 baseVersion=0
+    expect(flat.some((e) => e.path.includes("groups/"))).toBe(false); // 绝不直发名称路径
+    // 明细 path 统一本地名称形态（用户可读；服务端实体路径不出 UI）
     const actions = Object.fromEntries(result.details.map((d) => [d.path, d.action]));
     expect(actions[wsYaml]).toBe("pushed");
-    expect(actions[API_PATH]).toBe("skipped");
-    expect(actions["groups/新分组/新接口/api.yaml"]).toBe("pushed");
-    // 新文件 baseVersion=0；变更文件带服务端当前版本（D8 从不盲目覆盖）
-    const flat = batchCalls.flat();
-    expect(flat.find((e) => e.path === "groups/新分组/新接口/api.yaml")!.baseVersion).toBe(0);
+    expect(actions[LOCAL_API]).toBe("skipped");
+    expect(actions["groups/示例分组/projects/示例项目/新接口/api.yaml"]).toBe("pushed");
+    expect(result.details.some((d) => d.path === API_PATH)).toBe(false);
     // 推送后树已刷新（缓存失效重取，root label 仍为工作区名）
     expect(store.onlineTree?.label).toBe(store.activeWorkspace!.name);
   });
 
-  it("推送冲突：conflict 计数与明细列出（默认跳过，不重试不覆盖）", async () => {
+  it("推送：本地目录名带首尾空格（服务端 trim 回显）→ 按条目位置关联换算成功，不误报 failed", async () => {
+    // 审查重要 1：服务端对名称 trim() 后回显并建实体——旧实现按回显名回查，本地目录名带
+    // 首尾空格时回查恒 miss → 映射实际成功却整项目误计 failed 且重试复现。修后按条目位置
+    // 关联（mappings[i] ↔ entries[i]，服务端顺序保证），映射表 key 用本地目录原名。
+    const { api, store } = await opened();
+    const localApi = "groups/ 示例分组 /projects/ 示例项目 /空格目录/api.yaml";
+    api.onlineMigrateScan = async () => ({
+      files: [{ path: localApi, hash: "h1", content: "a\n", projectDir: { group: " 示例分组 ", project: " 示例项目 " } }],
+    });
+    const batchCalls: string[][] = [];
+    const originalBatch = api.onlineFilesBatch.bind(api);
+    api.onlineFilesBatch = async (input) => {
+      batchCalls.push(input.files.map((f) => f.path));
+      return originalBatch(input);
+    };
+    await store.migratePush(join(tmpdir(), "apicc-push-trim"));
+    const result = store.migrationResult!;
+    expect(result.failed).toBe(0); // 不再误报 failed（映射实际成功）
+    expect(result.pushed).toBe(1);
+    expect(batchCalls.flat()).toEqual([`${ONLINE_SEED_PROJECT_ID}/空格目录/api.yaml`]); // 已换算实体路径
+    expect(result.details).toEqual([{ path: localApi, action: "pushed" }]); // 明细保持本地原名路径
+    expect(store.error).toBeNull();
+  });
+
+  it("推送：映射 missing 行（替身只解析种子目录）→ 该项目全部文件计 failed（本地路径明细，不进 batch）", async () => {
     const { api, store } = await opened();
     api.onlineMigrateScan = async () => ({
-      files: [{ path: "groups/g/conflict.yaml", hash: "h1", content: "mine\n" }],
+      files: [
+        { path: "groups/新分组/新项目/api.yaml", hash: "h1", content: "a\n", projectDir: { group: "新分组", project: "新项目" } },
+        { path: "groups/新分组/新项目/other.yaml", hash: "h2", content: "b\n", projectDir: { group: "新分组", project: "新项目" } },
+        { path: "apicc.workspace.yaml", hash: "h3", content: "ws\n", projectDir: null },
+      ],
+    });
+    const batches: string[][] = [];
+    const originalBatch = api.onlineFilesBatch.bind(api);
+    api.onlineFilesBatch = async (input) => {
+      batches.push(input.files.map((f) => f.path));
+      return originalBatch(input);
+    };
+    await store.migratePush(join(tmpdir(), "apicc-push-missing"));
+    const result = store.migrationResult!;
+    expect(result.failed).toBe(2);
+    expect(result.pushed).toBe(1); // 根级 wsYaml（tree 同名文件 hash 不同 → 变更推送）
+    expect(result.details.filter((d) => d.action === "failed").map((d) => d.path).sort()).toEqual([
+      "groups/新分组/新项目/api.yaml",
+      "groups/新分组/新项目/other.yaml",
+    ]);
+    // 缺失项目无处可推：不进任何 batch
+    expect(batches.flat().every((p) => !p.includes("新项目"))).toBe(true);
+    expect(store.error).toBeNull();
+  });
+
+  it("推送：映射 forbidden 行（无权建）→ 该项目文件计 failed，不吞不静默跳过", async () => {
+    const { api, store } = await opened();
+    api.onlineMigrateScan = async () => ({
+      files: [{ path: "groups/别组/别项目/api.yaml", hash: "h1", content: "a\n", projectDir: { group: "别组", project: "别项目" } }],
+    });
+    api.onlineProjectMapping = async (input) => ({
+      mappings: input.entries.map((e) => ({ group: e.group, project: e.project, forbidden: true })),
+    });
+    await store.migratePush(join(tmpdir(), "apicc-push-forbidden"));
+    const result = store.migrationResult!;
+    expect(result.failed).toBe(1);
+    expect(result.details).toEqual([{ path: "groups/别组/别项目/api.yaml", action: "failed" }]);
+    expect(store.error).toBeNull();
+  });
+
+  it("推送冲突：conflict 计数与明细列出（默认跳过，不重试不覆盖；明细还原本地名称路径）", async () => {
+    const { api, store } = await opened();
+    const LOCAL_CONFLICT = "groups/示例分组/projects/示例项目/conflict.yaml";
+    api.onlineMigrateScan = async () => ({
+      files: [{ path: LOCAL_CONFLICT, hash: "h1", content: "mine\n", projectDir: { group: "示例分组", project: "示例项目" } }],
     });
     api.onlineFilesBatch = async (input): Promise<OnlineBatchResult> => ({
       results: input.files.map((f) => ({ path: f.path, status: "conflict" as const, currentVersion: 4 })),
@@ -310,7 +506,7 @@ describe("迁移-推送（步骤 1④：差异 batch + 冲突默认跳过列出�
     const result = store.migrationResult!;
     expect(result.conflicts).toBe(1);
     expect(result.pushed).toBe(0);
-    expect(result.details).toEqual([{ path: "groups/g/conflict.yaml", action: "conflict" }]);
+    expect(result.details).toEqual([{ path: LOCAL_CONFLICT, action: "conflict" }]);
     expect(store.error).toBeNull();
   });
 

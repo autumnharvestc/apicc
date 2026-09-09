@@ -7,14 +7,98 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { chunk, planPull, planPush } from "../../../src/shared/online/migrate.js";
+import { chunk, parseProjectPrefix, planPull, planPush, restoreLocalPaths, toEntityPath } from "../../../src/shared/online/migrate.js";
 import { hashContent, scanDirFiles, writeFiles } from "../../../src/main/online/migrate.js";
+import type { OnlineTreeProject } from "../../../src/shared/online/contract.js";
 
 const serverFile = (path: string, content: string, version = 1) => ({
   path,
   hash: hashContent(content),
   version,
   size: Buffer.byteLength(content, "utf8"),
+});
+
+describe("parseProjectPrefix / toEntityPath（计划 C 任务 2：本地名称树 ↔ 服务端实体寻址换算）", () => {
+  it("groups/<组>/projects/<名>/ 前缀 → 目录二元组 + 项目内相对路径；非项目内路径 → null", () => {
+    expect(parseProjectPrefix("groups/电商/projects/宠物商店/collections/c/apis/a/api.yaml")).toEqual({
+      dir: { group: "电商", project: "宠物商店" },
+      rest: "collections/c/apis/a/api.yaml",
+    });
+    expect(parseProjectPrefix("groups/电商/projects/宠物商店/project.yaml")).toEqual({
+      dir: { group: "电商", project: "宠物商店" },
+      rest: "project.yaml",
+    });
+    // groups/ 下无 projects 段的散文件不是项目内文件
+    expect(parseProjectPrefix("groups/电商/散文件.txt")).toBeNull();
+    // 根级文件（apicc.workspace.yaml 等）→ null
+    expect(parseProjectPrefix("apicc.workspace.yaml")).toBeNull();
+  });
+
+  it("toEntityPath：<projectId>/<项目内相对路径>；非项目内路径 → null（根级文件不过映射）", () => {
+    expect(toEntityPath("groups/电商/projects/宠物商店/project.yaml", "p-1")).toBe("p-1/project.yaml");
+    expect(toEntityPath("groups/电商/projects/宠物商店/collections/c/api.yaml", "p-1")).toBe("p-1/collections/c/api.yaml");
+    expect(toEntityPath("apicc.workspace.yaml", "p-1")).toBeNull();
+  });
+});
+
+describe("restoreLocalPaths（pull 还原：<projectId>/... → 本地名称树路径，孤儿退化原样+标注）", () => {
+  const serverFile = (path: string) => ({ path, hash: "h", version: 1, size: 1 });
+
+  it("项目内文件还原 groups/<组名>/projects/<项目名>/...；根级文件原样且非孤儿", () => {
+    const rows = restoreLocalPaths(
+      [serverFile("p-1/collections/c/api.yaml"), serverFile("apicc.workspace.yaml")],
+      [{ id: "p-1", name: "宠物商店", groupId: "g-1", myRole: "EDITOR" }],
+      new Map([["g-1", "电商"]]),
+    );
+    expect(rows.map((r) => r.localPath)).toEqual(["groups/电商/projects/宠物商店/collections/c/api.yaml", "apicc.workspace.yaml"]);
+    expect(rows.every((r) => !r.orphan)).toBe(true);
+    expect(rows.map((r) => r.serverPath)).toEqual(["p-1/collections/c/api.yaml", "apicc.workspace.yaml"]);
+  });
+
+  it("孤儿 projectId（projects 无行 / groupId 缺席 / 组名不在清单）→ 原样保留实体路径 + orphan 标注", () => {
+    const rows = restoreLocalPaths(
+      [serverFile("p-x/a.yaml"), serverFile("p-1/a.yaml"), serverFile("p-2/a.yaml"), serverFile("apicc.workspace.yaml")],
+      [
+        { id: "p-1", name: "宠物商店", groupId: "g-1", myRole: "EDITOR" },
+        { id: "p-2", name: "无组项目", myRole: "EDITOR" },
+      ],
+      new Map([["g-1", "电商"]]),
+    );
+    const byPath = new Map(rows.map((r) => [r.serverPath, r]));
+    // projects 清单无此项目行 → 孤儿
+    expect(byPath.get("p-x/a.yaml")).toEqual({ serverPath: "p-x/a.yaml", localPath: "p-x/a.yaml", orphan: true });
+    // 项目行 + 组名齐全 → 正常还原
+    expect(byPath.get("p-1/a.yaml")).toEqual({ serverPath: "p-1/a.yaml", localPath: "groups/电商/projects/宠物商店/a.yaml", orphan: false });
+    // 项目行在但 groupId 缺席（无分组归属）→ 孤儿退化
+    expect(byPath.get("p-2/a.yaml")!.orphan).toBe(true);
+    expect(byPath.get("p-2/a.yaml")!.localPath).toBe("p-2/a.yaml");
+    // 根级文件恒非孤儿
+    expect(byPath.get("apicc.workspace.yaml")!.orphan).toBe(false);
+  });
+
+  it("同组同名项目并存（不同 projectId 还原同一条本地路径）→ 同路径后行者标 conflict（先到者得）", () => {
+    // 计划 B：服务端允许同组同名项目并存——两实体还原出同一路径时后行者必须让位，
+    // 否则取数换算表后行覆盖先行（先行者内容取不回）且落盘后写覆盖先写（审查发现 1）。
+    // 护栏按 localPath 逐行判定（廉价护栏，非同名实体整盘合并语义）。
+    const rows = restoreLocalPaths(
+      [serverFile("p-1/a.yaml"), serverFile("p-2/a.yaml"), serverFile("p-2/b.yaml")],
+      [
+        { id: "p-1", name: "同名项目", groupId: "g-1", myRole: "EDITOR" },
+        { id: "p-2", name: "同名项目", groupId: "g-1", myRole: "EDITOR" },
+      ],
+      new Map([["g-1", "电商"]]),
+    );
+    expect(rows.map((r) => r.localPath)).toEqual([
+      "groups/电商/projects/同名项目/a.yaml",
+      "groups/电商/projects/同名项目/a.yaml",
+      "groups/电商/projects/同名项目/b.yaml",
+    ]);
+    // 先行者不标（toEqual 对 undefined 字段不敏感，逐键断言）
+    expect(rows[0]!.conflict).toBeUndefined();
+    // 同路径后行者（p-2 的 a.yaml）标 conflict；不碰撞的行（p-2 的 b.yaml）不受影响
+    expect(rows[1]!.conflict).toBe(true);
+    expect(rows[2]!.conflict).toBeUndefined();
+  });
 });
 
 describe("hashContent（§3.4 hash = sha-256 hex，与服务端同口径；main 侧 scan 专用——渲染层不 import node: 内置）", () => {
@@ -115,6 +199,27 @@ describe("scanDirFiles（main 侧目录扫描：相对 / 路径 + hash + utf8 �
 
   it("目录不存在 → 可读错误（不返回空清单假装成功）", () => {
     expect(() => scanDirFiles(join(tmpdir(), "apicc-not-exists-xyz"))).toThrow(/不存在|目录/);
+  });
+
+  it("扫描产物带 projectDir（groups/<组>/projects/<名> 二元组；根级/非项目内文件为 null，供映射桥载荷）", () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-scan-dir-"));
+    try {
+      mkdirSync(join(root, "groups", "电商", "projects", "宠物商店", "collections", "c"), { recursive: true });
+      writeFileSync(join(root, "apicc.workspace.yaml"), "id: ws\n", "utf8");
+      writeFileSync(join(root, "groups", "电商", "projects", "宠物商店", "project.yaml"), "name: 宠物商店\n", "utf8");
+      writeFileSync(join(root, "groups", "电商", "projects", "宠物商店", "collections", "c", "api.yaml"), "method: GET\n", "utf8");
+      writeFileSync(join(root, "groups", "散文件.txt"), "x\n", "utf8");
+      const files = scanDirFiles(root);
+      const byPath = new Map(files.map((f) => [f.path, f]));
+      // 根级文件与 groups/ 散文件：projectDir=null（不过映射桥，原路径直推）
+      expect(byPath.get("apicc.workspace.yaml")!.projectDir).toBeNull();
+      expect(byPath.get("groups/散文件.txt")!.projectDir).toBeNull();
+      // 项目内文件：提取 (组, 项目) 二元组（多层相对路径共用同一目录归属）
+      expect(byPath.get("groups/电商/projects/宠物商店/project.yaml")!.projectDir).toEqual({ group: "电商", project: "宠物商店" });
+      expect(byPath.get("groups/电商/projects/宠物商店/collections/c/api.yaml")!.projectDir).toEqual({ group: "电商", project: "宠物商店" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

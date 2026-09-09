@@ -97,7 +97,7 @@ describe("online:workspace:open / online:tree:view（裁定 A/E）", () => {
 });
 
 describe("online:migrate:scan / online:migrate:write（裁定 D 本地面）", () => {
-  it("scan 返回相对 / 路径 + hash + 内容；跳过 .apicc/.git", async () => {
+  it("scan 返回相对 / 路径 + hash + 内容（+projectDir 目录归属）；跳过 .apicc/.git", async () => {
     const { deps } = setup(() => json(200, []));
     const root = mkdtempSync(join(tmpdir(), "apicc-ipc-scan-"));
     try {
@@ -106,9 +106,12 @@ describe("online:migrate:scan / online:migrate:write（裁定 D 本地面）", (
       writeFileSync(join(root, "groups", "g", "api.yaml"), "method: GET\n", "utf8");
       writeFileSync(join(root, ".apicc", "x.json"), "{}", "utf8");
       const result = (await deps.handle("online:migrate:scan", {}, { dir: root })) as {
-        files: Array<{ path: string; hash: string; content: string }>;
+        files: Array<{ path: string; hash: string; content: string; projectDir: { group: string; project: string } | null }>;
       };
-      expect(result.files).toEqual([{ path: "groups/g/api.yaml", hash: hashContent("method: GET\n"), content: "method: GET\n" }]);
+      // groups/g/api.yaml 无 projects 段 → 非项目内文件，projectDir=null（根级口径直推）
+      expect(result.files).toEqual([
+        { path: "groups/g/api.yaml", hash: hashContent("method: GET\n"), content: "method: GET\n", projectDir: null },
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -5,8 +5,9 @@
  * ② put/delete 的 409 冲突不跨 IPC 抛错（Error 越结构化克隆通道会丢自定义字段），
  *    转为可辨别的 outcome 结果对象，渲染层按 outcome 分支渲染冲突对话框（任务 3）。
  */
-import type { OnlineBatchEntry, OnlinePutFileResult, OnlineRegisterInput, OnlineRole, OnlineTreeProject, OnlineUser, OnlineVersionConflict } from "./contract.js";
+import type { OnlineBatchEntry, OnlineMappingEntry, OnlinePutFileResult, OnlineRegisterInput, OnlineRole, OnlineTreeProject, OnlineUser, OnlineVersionConflict } from "./contract.js";
 import type { TreeNodeDTO } from "../tree-dto.js";
+import type { ProjectDirRef } from "./migrate.js";
 
 export type {
   OnlineAclEntry,
@@ -16,7 +17,11 @@ export type {
   OnlineBatchResult,
   OnlineError,
   OnlineFilesResult,
+  OnlineGroup,
   OnlineLoginResult,
+  OnlineMappingEntry,
+  OnlineMappingResult,
+  OnlineMappingRow,
   OnlineMember,
   OnlineProjectRole,
   OnlinePutFileResult,
@@ -83,13 +88,24 @@ export interface OnlineWorkspaceView {
   projects: OnlineTreeProject[];
   tree: TreeNodeDTO;
 }
-/** online:migrate:scan 出口：本地目录文本文件清单（/ 相对路径 + sha-256 + utf8 内容）。 */
-export interface OnlineMigrateScanResult { files: Array<{ path: string; hash: string; content: string }> }
+/**
+ * online:migrate:scan 出口：本地目录文本文件清单（/ 相对路径 + sha-256 + utf8 内容 + 项目目录
+ * 归属——groups/<组>/projects/<名> 二元组，根级/非项目内文件为 null，供迁移映射桥载荷提取）。
+ */
+export interface OnlineMigrateScanResult {
+  files: Array<{ path: string; hash: string; content: string; projectDir: ProjectDirRef | null }>;
+}
 /** online:migrate:write 入参：迁移拉取的落盘批（≤200/批，路径过契约 path 规则）。 */
 export interface OnlineMigrateWriteInput { dir: string; files: Array<{ path: string; content: string }> }
+/** online:project-mapping 入参：本地名称目录清单（≤200/批，与映射端点批量上限一致）。 */
+export interface OnlineProjectMappingInput { workspaceId: string; entries: OnlineMappingEntry[] }
 /** 迁移逐文件动作（拉取：pulled/updated/skipped/failed；推送：pushed/conflict/forbidden/invalid/skipped）。 */
 export type MigrationFileAction = "pulled" | "updated" | "skipped" | "failed" | "pushed" | "conflict" | "forbidden" | "invalid";
-/** 迁移结果清单（裁定 D：计数 + 明细；冲突默认跳过并列出）。 */
+/**
+ * 迁移结果清单（裁定 D：计数 + 明细；冲突默认跳过并列出）。details.path 统一**本地名称路径**
+ * （计划 C 任务 2：push=原扫描路径、pull=还原后落盘路径——服务端实体路径对用户无意义不出 UI）；
+ * note = 可选退化注记（拉取孤儿 projectId 按实体路径原样落盘时标注）。
+ */
 export interface MigrationResult {
   direction: "pull" | "push";
   pulled: number;
@@ -98,5 +114,5 @@ export interface MigrationResult {
   pushed: number;
   conflicts: number;
   failed: number;
-  details: Array<{ path: string; action: MigrationFileAction }>;
+  details: Array<{ path: string; action: MigrationFileAction; note?: string }>;
 }

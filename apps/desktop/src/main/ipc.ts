@@ -8,11 +8,12 @@ import {
   OnlineBaseUrlSchema,
   OnlineBatchInputSchema,
   OnlineGetFilesInputSchema,
+  OnlineMappingInputSchema,
   OnlinePathSchema,
   OnlineRegisterInputSchema,
   OnlineRoleSchema,
 } from "../shared/online/contract.js";
-import type { OnlineFilesBatchInput, OnlineWorkspaceOpenInput } from "../shared/online/types.js";
+import type { OnlineFilesBatchInput, OnlineProjectMappingInput, OnlineWorkspaceOpenInput } from "../shared/online/types.js";
 import type { ContainerSaveInput, ProjectGlobalSettings } from "../shared/types.js";
 import { createOnlineSession, type OnlineSession } from "./online/session.js";
 import { scanDirFiles, writeFiles } from "./online/migrate.js";
@@ -112,6 +113,10 @@ const OnlineMigrateWriteChannelSchema = z.object({
   dir: z.string().min(1),
   files: z.array(z.object({ path: OnlinePathSchema, content: z.string() })).min(1).max(200),
 });
+// 迁移映射桥 + 组清单频道（计划 C 任务 2）：载荷复用映射契约（≤200 条/批 + 名称约束），
+// 组清单单参包对象（workspaceId）。
+const OnlineProjectMappingChannelSchema = OnlineMappingInputSchema.extend({ workspaceId: z.string().min(1) });
+const OnlineGroupsListChannelSchema = OnlineWorkspaceIdSchema;
 // AI 频道（M6-C 任务 2 真链路）：save-config 形状校验（baseUrl/model 由渲染层表单与
 // localStorage 持久化，main 只收形状；apiKey 非空才入安全存储）；suggest 携 apiId（定位
 // 接口定义）与已保存配置（baseUrl/model，与 safeStorage key 合成 provider 配置）；
@@ -189,6 +194,9 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.OnlineTreeView]: z.tuple([OnlineWorkspaceIdSchema]),
   [IpcChannel.OnlineMigrateScan]: z.tuple([OnlineMigrateScanChannelSchema]),
   [IpcChannel.OnlineMigrateWrite]: z.tuple([OnlineMigrateWriteChannelSchema]),
+  // 迁移映射桥 + 组清单（计划 C 任务 2）
+  [IpcChannel.OnlineProjectMapping]: z.tuple([OnlineProjectMappingChannelSchema]),
+  [IpcChannel.OnlineGroupsList]: z.tuple([OnlineGroupsListChannelSchema]),
   // AI 频道（M6-C 任务 1 登记 / 任务 2 真链路）
   [IpcChannel.AiSaveConfig]: z.tuple([AiSaveConfigChannelSchema]),
   [IpcChannel.AiGetConfig]: z.tuple([]),
@@ -631,6 +639,11 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const input = a[0] as { dir: string; files: Array<{ path: string; content: string }> };
         return { written: writeFiles(input.dir, input.files) };
       }
+      // 迁移映射桥 + 组清单（计划 C 任务 2）：委派 online session（映射行级三态换算在渲染层编排）。
+      case IpcChannel.OnlineProjectMapping:
+        return requireOnline().projectMapping(a[0] as OnlineProjectMappingInput);
+      case IpcChannel.OnlineGroupsList:
+        return requireOnline().listGroups((a[0] as { workspaceId: string }).workspaceId);
       // AI 频道（M6-C 任务 2 真链路，规格 §2 D1/D2/D4）：save/get 只落 key（baseUrl/model
       // 由渲染层 localStorage 持久化）；出口恒 { hasKey }（key 明文永不回传渲染层，裁定②）；
       // apiKey 省略/空串 = 保持既有。suggest 委派 main/ai/suggest.ts 真链路（core provider +
