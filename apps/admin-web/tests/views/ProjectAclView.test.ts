@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 // M4-A 任务 5：ProjectAclView 测试（裁定 A/B/C）——项目选择来自 tree.projects（name+path+myRole
 // 展示，裁定 C）；NONE 与「删行恢复继承」语义显式区分（NONE 行仍在显示 NONE；DELETE 行消失；
-// 页面 noneHint 文案钉住，裁定 B/i18n 审校点）；添加行（成员下拉 + 手输非成员 userId，§3.3 可预设）。
+// 页面 noneHint 文案钉住，裁定 B/i18n 审校点）；添加行（任务 6：userPicker 用户名搜索下拉——
+// 成员+非成员候选合并，选中 username 提交解析为 userId，id 不再手输，§3.3 可预设）。
 // 直达 URL 挂载（replaceState 到 ACL 路径）；antd 传送门走 body 作用域查询 + waitForBody 轮询；
-// a-select 经组件实例事件驱动（desktop 先例）。
+// a-select 经组件实例事件驱动（desktop 先例）；候选 debounce 用 until 真实定时器轮询（同 MembersView）。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createAdminI18n } from "../../src/i18n/index.js";
@@ -88,6 +89,16 @@ async function waitForBody(testid: string): Promise<DOMWrapper<Element>> {
   throw new Error(`document.body 中未出现 [data-testid="${testid}"]（轮询超时）`);
 }
 
+/** 轮询等待条件成立（真实定时器，供候选 debounce 落地；120×25ms 上限 3s，同 MembersView）。 */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 120; i += 1) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 25));
+    await flushPromises();
+  }
+  throw new Error("条件未在时限内满足");
+}
+
 function antdSelect(wrapper: VueWrapper, testid: string) {
   const found = wrapper.findAllComponents({ name: "ASelect" }).find((c) => c.attributes("data-testid") === testid);
   if (!found) throw new Error(`ASelect 未找到: ${testid}`);
@@ -95,7 +106,10 @@ function antdSelect(wrapper: VueWrapper, testid: string) {
 }
 
 /** ACL 面可变链路：P2 的 ACL 行与 tree.projects[].myRole 随 PUT/DELETE 联动。 */
-function aclHandler(opts?: { onPut?: (req: CapturedRequest) => Response | Promise<Response> }): FetchHandler {
+function aclHandler(opts?: {
+  onPut?: (req: CapturedRequest) => Response | Promise<Response>;
+  candidates?: Array<{ id: string; username: string; displayName: string }>;
+}): FetchHandler {
   let p2Denied = false;
   const aclByProject: Record<string, Array<{ userId: string; role: string }>> = { "p-1": [], "p-2": [{ userId: "u-2", role: "VIEWER" }] };
   return (req) => {
@@ -103,6 +117,7 @@ function aclHandler(opts?: { onPut?: (req: CapturedRequest) => Response | Promis
     if (url === `${BASE}/me`) return json(200, USER);
     if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, { id: "ws-1", name: "团队空间", myRole: "OWNER", memberCount: 2 });
     if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, MEMBERS);
+    if (url.includes("member-candidates")) return json(200, opts?.candidates ?? []);
     if (url === `${BASE}/workspaces/ws-1/tree` && method === "GET") {
       return json(200, {
         ...TREE,
@@ -236,25 +251,59 @@ describe("ProjectAclView NONE 与删行语义（裁定 B：显式区分）", () 
   });
 });
 
-describe("ProjectAclView 添加行（裁定 A：成员下拉 + 手输非成员 userId）", () => {
-  it("手输非成员 userId + 角色 → PUT { userId, role } → 行出现", async () => {
+describe("ProjectAclView 添加行（任务 6：userPicker 搜索下拉，id 不再手输）", () => {
+  it("下拉选中现有成员（username 作键）→ PUT 携解析后的 userId → 行出现", async () => {
     const { wrapper, calls } = await mountAcl();
     antdSelect(wrapper, "acl-project-select").vm.$emit("update:value", "p-1"); // p-1 无行
     await flushPromises();
     await flushPromises();
-    await wrapper.find("[data-testid=acl-add-userid] input").setValue("u-9");
-    antdSelect(wrapper, "acl-add-role").vm.$emit("change", "VIEWER");
+    await wrapper.find("[data-testid=acl-add-userid] input").setValue("bob"); // 成员选项 value=username
+    antdSelect(wrapper, "acl-add-role").vm.$emit("update:value", "EDITOR"); // v-model:value 绑定（emit change 不改模型）
     await wrapper.find("[data-testid=acl-add-submit]").trigger("click");
     await flushPromises();
     await flushPromises();
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/projects/p-1/acl`);
-    expect(put!.body).toEqual({ userId: "u-9", role: "VIEWER" });
+    expect(put!.body).toEqual({ userId: "u-2", role: "EDITOR" }); // username=bob 解析回内部 id
+    const rows = wrapper.findAll("tbody tr");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.text()).toContain("u-2");
+  });
+
+  it("ACL 添加行：候选搜索选中非成员 → PUT acl 携解析后的 id", async () => {
+    const { wrapper, calls } = await mountAcl(aclHandler({ candidates: [{ id: "u-9", username: "dave", displayName: "Dave" }] }));
+    antdSelect(wrapper, "acl-project-select").vm.$emit("update:value", "p-1");
+    await flushPromises();
+    await flushPromises();
+    const input = wrapper.find('[data-testid="acl-add-userid"] input');
+    await input.setValue("dav"); // 触发候选搜索（debounce 300ms 后远搜）
+    await until(() => calls.some((c) => c.url.includes("member-candidates")));
+    await flushPromises();
+    await input.setValue("dave"); // 模拟从下拉选中（v-model=username）
+    await wrapper.find('[data-testid="acl-add-submit"]').trigger("click");
+    await flushPromises();
+    await flushPromises();
+    expect(
+      calls.some((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/projects/p-1/acl` && JSON.stringify(c.body ?? {}).includes("u-9")),
+    ).toBe(true);
     const rows = wrapper.findAll("tbody tr");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text()).toContain("u-9");
   });
 
-  it("添加行角色选项含 NONE 不含 OWNER（ACL 角色域 NONE/VIEWER/EDITOR/ADMIN）；空 userId 本地校验", async () => {
+  it("手输未命中文本提交 → 校验错误（请从下拉中选择用户）、不发 PUT（id 不再直提）", async () => {
+    const { wrapper, calls } = await mountAcl();
+    antdSelect(wrapper, "acl-project-select").vm.$emit("update:value", "p-1");
+    await flushPromises();
+    await flushPromises();
+    await wrapper.find("[data-testid=acl-add-userid] input").setValue("u-9"); // 任意手输（非 username）
+    await wrapper.find("[data-testid=acl-add-submit]").trigger("click");
+    await flushPromises();
+    expect(wrapper.find("[data-testid=acl-add-error]").exists()).toBe(true);
+    expect(wrapper.find("[data-testid=acl-add-error]").text()).toContain("请从下拉中选择用户");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  it("添加行角色选项含 NONE 不含 OWNER（ACL 角色域 NONE/VIEWER/EDITOR/ADMIN）；空选提交本地校验", async () => {
     const { wrapper, calls } = await mountAcl();
     const options = antdSelect(wrapper, "acl-add-role").props("options") as Array<{ value: string }>;
     expect(options.map((o) => o.value)).toEqual(["NONE", "VIEWER", "EDITOR", "ADMIN"]);
