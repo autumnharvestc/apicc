@@ -27,7 +27,10 @@ const TREE = {
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 
-function setup(tree: typeof TREE = TREE) {
+/** 组清单行形状（§4 GET groups，OnlineGroupSchema 同款）。 */
+interface GroupRow { id: string; name: string; isDefault: boolean; createdAt: string }
+
+function setup(tree: typeof TREE = TREE, groups: GroupRow[] = []) {
   const calls: CapturedRequest[] = [];
   const impl: typeof fetch = async (input, init) => {
     const req: CapturedRequest = {
@@ -39,6 +42,7 @@ function setup(tree: typeof TREE = TREE) {
     calls.push(req);
     if (req.url.endsWith("/auth/login")) return LOGIN_OK();
     if (req.url.endsWith("/tree")) return json(200, tree);
+    if (req.method === "GET" && req.url.includes("/groups")) return json(200, groups);
     if (req.method === "GET" && req.url.includes("/files?")) {
       const paths = (req.url.split("paths=")[1] ?? "").split(",").map(decodeURIComponent);
       return json(200, {
@@ -136,5 +140,52 @@ describe("online session 工作区状态（任务 3）", () => {
     session.openWorkspace(WS);
     expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
     await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未登录/);
+  });
+
+  it("getTreeView 分组层（计划 C 任务 3）：/groups 清单注入 groupNames → 项目挂 group:<groupId> 合成组节点（树+组同取同缓存）", async () => {
+    const gid = TREE.projects[0]!.groupId!;
+    const groups: GroupRow[] = [{ id: gid, name: "电商组", isDefault: false, createdAt: "2026-01-01T00:00:00Z" }];
+    const { session, calls } = setup(TREE, groups);
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    session.openWorkspace(WS);
+    const view = await session.getTreeView("ws-1");
+    // 与纯函数映射同口径（传入组名表）；组节点 id 带合成前缀、label=组名
+    expect(view.tree).toEqual(onlineTreeToDto(TREE, "团队空间", new Map([[gid, "电商组"]])));
+    const group = view.tree.children!.find((c) => c.kind === "group");
+    expect(group).toMatchObject({ id: `group:${gid}`, label: "电商组" });
+    expect(group!.children!.map((c) => c.id)).toEqual([TREE.projects[0]!.id]);
+    // 缓存：第二次 getTreeView 树与组清单都不重发（/tree 与 /groups 各只 1 次）
+    await session.getTreeView("ws-1");
+    expect(calls.filter((c) => c.url.endsWith("/tree"))).toHaveLength(1);
+    expect(calls.filter((c) => c.url.includes("/groups"))).toHaveLength(1);
+  });
+
+  it("组清单失败（非 200/形状不符）降级空表：孤儿项目直挂根，树浏览不被阻断", async () => {
+    // setup 默认 groups=[] 的 /groups 端点返回空清单；此处换成协议坏体模拟清单面故障
+    const gid = TREE.projects[0]!.groupId!;
+    const calls: CapturedRequest[] = [];
+    const badImpl: typeof fetch = async (input, init) => {
+      const req: CapturedRequest = { url: String(input), method: init?.method ?? "GET", headers: {} };
+      calls.push(req);
+      if (req.url.endsWith("/auth/login")) return LOGIN_OK();
+      if (req.url.endsWith("/tree")) return json(200, TREE);
+      if (req.method === "GET" && req.url.includes("/groups")) return json(200, { not: "a-group-list" });
+      return json(200, USER);
+    };
+    const memory = new Map<string, string>([[SERVER, "tok-1"]]);
+    const session = createOnlineSession({
+      createClient: (baseUrl, hooks) => createOnlineClient({ baseUrl, fetch: badImpl, timeoutMs: 5_000, onUnauthorized: hooks.onUnauthorized }),
+      tokenStore: {
+        save: (baseUrl, token) => void memory.set(baseUrl, token),
+        load: (baseUrl) => memory.get(baseUrl) ?? null,
+        clear: (baseUrl) => void memory.delete(baseUrl),
+      },
+    });
+    session.openWorkspace(WS);
+    // 未登录 → 先登录（login 走 badImpl 的 LOGIN_OK 分支）
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    const view = await session.getTreeView("ws-1");
+    expect(view.tree.children!.some((c) => c.kind === "group" && c.id === `group:${gid}`)).toBe(false);
+    expect(view.tree.children!.some((c) => c.kind === "project" && c.id === TREE.projects[0]!.id)).toBe(true);
   });
 });

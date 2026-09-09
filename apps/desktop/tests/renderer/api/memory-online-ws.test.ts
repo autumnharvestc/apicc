@@ -1,7 +1,8 @@
 // M3-B 任务 3：memory 替身 online 工作区/迁移方法——与主进程同构（树视图经同一
 // onlineTreeToDto 映射、open/close 状态、scan/write 真实文件面），载荷钉在契约上。
 // path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（<projectId>/…），
-// 树节点以 projectId 关联（项目直接挂根——分组名不再经 tree 下发）。
+// 树节点以 projectId 关联。计划 C 任务 3 分组层：视图注入组名表 → 项目挂 group:<groupId>
+// 合成组节点（与 main session.getTreeView 同口径）。
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,7 +21,7 @@ async function loggedIn() {
 }
 
 describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () => {
-  it("open 记录工作区并返回视图：树 DTO（root label = 工作区名，项目挂根层级 + 只读 file 叶）+ projects 实体行", async () => {
+  it("open 记录工作区并返回视图：树 DTO（root label = 工作区名，分组层 + 只读 file 叶）+ projects 实体行", async () => {
     const { api, ws } = await loggedIn();
     const view = (await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: ws.myRole })) as OnlineWorkspaceView;
     expect(view.workspaceId).toBe(ws.id);
@@ -30,10 +31,12 @@ describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () =>
     const root = view.tree;
     expect(root.kind).toBe("root");
     expect(root.label).toBe(ws.name);
+    // 分组层（计划 C 任务 3）：项目挂 group:<groupId> 合成组节点（label=种子组名）
     const labels = (root.children ?? []).map((c) => `${c.kind}:${c.label}`);
-    expect(labels).toContain("file:apicc.workspace.yaml");
-    expect(labels).toContain("project:示例项目");
-    const project = root.children!.find((c) => c.kind === "project")!;
+    expect(labels).toEqual(["file:apicc.workspace.yaml", "group:示例分组"]);
+    const group = root.children!.find((c) => c.kind === "group")!;
+    expect(group.id).toBe(`group:${ONLINE_SEED_GROUP_ID}`);
+    const project = group.children!.find((c) => c.kind === "project")!;
     expect(project.id).toBe(ONLINE_SEED_PROJECT_ID); // 树节点以 projectId 关联
     const collection = project.children!.find((c) => c.kind === "collection")!;
     const apiNode = collection.children!.find((c) => c.kind === "api")!;
@@ -65,7 +68,8 @@ describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () =>
     await api.onlineFilePut({ workspaceId: ws.id, path: target, content: "id: api-online-1\nname: 改名\n", baseVersion: 1 });
     const view = await api.onlineTreeView(ws.id);
     const apiNode = view.tree
-      .children!.find((c) => c.kind === "project")! // 示例项目（file:apicc.workspace.yaml 也在 root 下排序）
+      .children!.find((c) => c.kind === "group")! // 分组层（计划 C 任务 3）：项目挂合成组节点下
+      .children!.find((c) => c.kind === "project")!
       .children!.find((c) => c.kind === "collection")!
       .children!.find((c) => c.kind === "api")!;
     expect(apiNode.id).toBe(target);

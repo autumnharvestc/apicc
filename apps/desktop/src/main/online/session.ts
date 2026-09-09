@@ -8,9 +8,10 @@
  * 任务 3 扩展：当前在线工作区状态（openWorkspace/closeWorkspace，纯状态操作不发网络）+
  * 树缓存（getTreeView 首取后缓存，内容变更（put/batch/delete 成功）即失效，切换/关闭重置）。
  * 树映射 onlineTreeToDto 为纯函数（裁定 A）：服务端不回树结构，由 files path 清单推导
- * projects/collections/folders/apis 层级（path 实体化 2026-09-08：首段=项目实体 UUID，
- * 项目节点以 projectId 关联直接挂根——见下方解析判据），工作流/环境/配置文件映射为
- * 只读 file 叶（裁定 B：只读浏览，不做编辑器）。
+ * projects/collections/folders/apis 层级（path 实体化 2026-09-08：首段=项目实体 UUID），
+ * 工作流/环境/配置文件映射为只读 file 叶（裁定 B：只读浏览，不做编辑器）。
+ * 计划 C 任务 3 分组层：getTreeView 同取 /groups 清单（groupId→组名反查表，失败降级空表）
+ * 注入映射——有组归属且组名可得的项目挂 `group:<groupId>` 合成组节点，孤儿项目直挂根。
  * **不持文件内容缓存**（审查次要 5 顺修）：文件版本号由渲染层编辑缓冲自持
  * （selectNode 取数即入缓冲、saveApi 前移），main 侧只写不读的缓存已删除。
  */
@@ -89,21 +90,33 @@ function parseWorkspacePath(path: string): ParsedPath | null {
   return null;
 }
 
-function sortTree(node: TreeNodeDTO): TreeNodeDTO {
+function sortTree(node: TreeNodeDTO, projectRowOrder?: ReadonlyMap<string, number>): TreeNodeDTO {
   if (node.children?.length) {
-    node.children.sort((a, b) => (a.label === b.label ? (a.id < b.id ? -1 : 1) : a.label < b.label ? -1 : 1));
-    for (const child of node.children) sortTree(child);
+    if (node.kind === "group" && projectRowOrder) {
+      // 组内按 projects 行序（服务端实体表 (created_at,id) 决定性稳定序——与组织管理面创建序
+      // 一致），不按 label 字典序（计划 C 任务 3 分组层裁定）
+      const rank = (id: string) => projectRowOrder.get(id) ?? Number.MAX_SAFE_INTEGER;
+      node.children.sort((a, b) => rank(a.id) - rank(b.id));
+    } else {
+      node.children.sort((a, b) => (a.label === b.label ? (a.id < b.id ? -1 : 1) : a.label < b.label ? -1 : 1));
+    }
+    for (const child of node.children) sortTree(child, projectRowOrder);
   }
   return node;
 }
 
 /**
  * 服务端 tree → 侧树根 DTO。path 实体化（2026-09-08）后项目节点 id=项目实体 id（树内唯一，
- * 名称取 tree.projects 行、缺席回退 id）、直接挂根（分组名不再经 tree 下发，分组归属见
- * OnlineWorkspaceView.projects[].groupId——计划 C 全面适配再上分组层）；api/file 叶 id 取
- * 文件全路径（渲染层据此 getFiles 取内容，OnlineApiEditor 选中机制不变）。root label 优先取工作区名。
+ * 名称取 tree.projects 行、缺席回退 id）；api/file 叶 id 取文件全路径（渲染层据此 getFiles
+ * 取内容，OnlineApiEditor 选中机制不变）。root label 优先取工作区名。
+ *
+ * 分组层（计划 C 任务 3）：groupNames（groupId → 组名，session.getTreeView 经 listGroups
+ * 清单反查注入）提供时，有组归属且组名可得的项目节点挂到 `group:<groupId>` 合成组节点
+ * （kind="group"，label=组名；id 合成前缀 `group:`——文件路径 id 空间不含此形态，绝不重叠），
+ * 组内按 projects 行序；组名不可得（groupId 缺席/清单无此组）的孤儿项目保持直挂根；未提供
+ * groupNames 时项目直挂根（既有扁平口径，e2e/旧调用零破坏）。
  */
-export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string): TreeNodeDTO {
+export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string, groupNames?: ReadonlyMap<string, string>): TreeNodeDTO {
   const root: TreeNodeDTO = { kind: "root", id: tree.workspaceId, label: workspaceName ?? tree.workspaceId, children: [] };
   const containers = new Map<string, TreeNodeDTO>();
   const ensure = (kind: TreeNodeDTO["kind"], id: string, label: string, parent: TreeNodeDTO): TreeNodeDTO => {
@@ -121,11 +134,28 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string): TreeN
     root.children!.push(leaf("apicc.workspace.yaml", "apicc.workspace.yaml"));
   }
   const projectRows = new Map(tree.projects.map((p) => [p.id, p]));
+  // 分组节点懒建（有项目文件挂入才存在——清单中无项目的组不造空组节点）
+  const groupNode = (groupId: string): TreeNodeDTO | null => {
+    const name = groupNames?.get(groupId);
+    if (name === undefined) return null; // 组名不可得 → 孤儿项目直挂根
+    const id = `group:${groupId}`;
+    const existing = containers.get(id);
+    if (existing) return existing;
+    const node: TreeNodeDTO = { kind: "group", id, label: name, children: [] };
+    containers.set(id, node);
+    root.children!.push(node);
+    return node;
+  };
+  // 项目节点的挂载父节点：组归属 + 组名可得 → 合成组节点；否则根
+  const projectParent = (projectId: string): TreeNodeDTO => {
+    const groupId = projectRows.get(projectId)?.groupId;
+    return (groupId !== undefined ? groupNode(groupId) : null) ?? root;
+  };
   for (const file of tree.files) {
     if (file.path === "apicc.workspace.yaml") continue;
     const parsed = parseWorkspacePath(file.path);
     if (!parsed) continue;
-    const project = ensure("project", parsed.project, projectRows.get(parsed.project)?.name ?? parsed.project, root);
+    const project = ensure("project", parsed.project, projectRows.get(parsed.project)?.name ?? parsed.project, projectParent(parsed.project));
     if (parsed.kind === "project-config") {
       project.children!.push(leaf(file.path, parsed.name));
       continue;
@@ -155,7 +185,8 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string): TreeN
     // api 叶 id = api.yaml 全路径：选中后渲染层按该路径 getFiles 取内容（裁定 B）
     folderNode.children!.push({ kind: "api", id: file.path, label: parsed.name, children: [] });
   }
-  return sortTree(root);
+  // 组内排序的行序表（projects 行下标）：仅注入了组名表时启用组内行序
+  return sortTree(root, groupNames ? new Map(tree.projects.map((p, i) => [p.id, i])) : undefined);
 }
 
 export interface OnlineSessionDeps {
@@ -167,9 +198,10 @@ export interface OnlineSessionDeps {
 export function createOnlineSession(deps: OnlineSessionDeps) {
   let current: { baseUrl: string; client: OnlineClient } | null = null;
   // 任务 3：当前在线工作区 + 树缓存（open/close/切换时重置；内容变更即失效）。
+  // 计划 C 任务 3：缓存扩展为 { tree, groups }（组清单与树同取——分组层反查表数据源）。
   // 不持文件内容缓存（审查次要 5）：版本号在渲染层编辑缓冲自持，main 侧只写不读即死代码。
   let workspaceState: OnlineWorkspaceState | null = null;
-  let treeCache: OnlineTree | null = null;
+  let treeCache: { tree: OnlineTree; groups: OnlineGroup[] } | null = null;
 
   function requireWorkspace(workspaceId: string): OnlineWorkspaceState {
     if (!workspaceState || workspaceState.id !== workspaceId) throw new Error("尚未打开在线工作区");
@@ -228,19 +260,26 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     },
 
     /**
-     * 在线工作区视图（裁定 A）：首次取服务端 /tree 并缓存，映射为侧树 TreeNodeDTO，
-     * 附带项目角色清单（渲染层逐项目只读判定）。workspaceId 与当前工作区不符 → 可读错误。
+     * 在线工作区视图（裁定 A）：首次取服务端 /tree 并缓存（组清单 /groups 同取同缓存——
+     * 分组层 groupId→组名反查表，清单失败降级空表：孤儿项目直挂根，树浏览不被阻断），
+     * 映射为侧树 TreeNodeDTO，附带项目角色清单（渲染层逐项目只读判定）。
+     * workspaceId 与当前工作区不符 → 可读错误。
      */
     async getTreeView(workspaceId: string): Promise<OnlineWorkspaceView> {
       const ws = requireWorkspace(workspaceId);
       const client = requireClient();
-      treeCache ??= await client.getTree(workspaceId);
+      treeCache ??= await (async () => {
+        const tree = await client.getTree(workspaceId);
+        const groups = await client.listGroups(workspaceId).catch(() => [] as OnlineGroup[]);
+        return { tree, groups };
+      })();
+      const groupNames = new Map(treeCache.groups.map((g) => [g.id, g.name]));
       return {
         workspaceId: ws.id,
         name: ws.name,
         myRole: ws.myRole,
-        projects: treeCache.projects,
-        tree: onlineTreeToDto(treeCache, ws.name),
+        projects: treeCache.tree.projects,
+        tree: onlineTreeToDto(treeCache.tree, ws.name, groupNames),
       };
     },
 

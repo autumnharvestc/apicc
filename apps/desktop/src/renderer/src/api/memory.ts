@@ -239,7 +239,8 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
   /** 当前在线工作区（任务 3：open/close/tree:view 同构 main session 的纯状态语义）。 */
   let onlineWs: { id: string; name: string; myRole: OnlineWorkspaceOpenInput["myRole"] } | null = null;
 
-  /** 构造在线工作区视图（经同一 onlineTreeToDto 映射，与 main 侧零漂移）。 */
+  /** 构造在线工作区视图（经同一 onlineTreeToDto 映射，与 main 侧零漂移）。计划 C 任务 3
+   *  分组层：同 main session.getTreeView 注入组名表——项目挂 group:<groupId> 合成组节点。 */
   function onlineWorkspaceView(): OnlineWorkspaceView {
     if (!onlineWs) throw new Error("尚未打开在线工作区");
     if (!onlineUser) throw new Error("尚未登录在线服务器");
@@ -255,7 +256,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       name: onlineWs.name,
       myRole: onlineWs.myRole,
       projects: tree.projects,
-      tree: onlineTreeToDto(tree, onlineWs.name),
+      tree: onlineTreeToDto(tree, onlineWs.name, new Map(onlineGroupsRows().map((g) => [g.id, g.name] as const))),
     };
   }
 
