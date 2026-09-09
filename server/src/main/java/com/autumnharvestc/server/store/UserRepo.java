@@ -3,26 +3,44 @@ package com.autumnharvestc.server.store;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
 
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
  * users 表仓储（用例化方法，禁泛用 DAO——裁定 C）。
  * 事务边界约定：本任务不引 @Transactional；方法内均为单条 SQL。
+ * insert 双分支（规格 2026-09-09 BIGINT 化，全局不变量 4/6）：identity = 不带 id 插入 +
+ * GeneratedKeyHolder 取回生成键回填；appAssigned = nextId() 显式带 id 插入（外部策略预留）。
  */
 @Repository
 public class UserRepo {
 
-    private final JdbcTemplate jdbc;
+    private static final String INSERT_SQL = """
+            INSERT INTO users (username, password_hash, display_name, role, disabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """;
 
-    public UserRepo(JdbcTemplate jdbc) {
+    private static final String INSERT_WITH_ID_SQL = """
+            INSERT INTO users (id, username, password_hash, display_name, role, disabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """;
+
+    private final JdbcTemplate jdbc;
+    private final IdGeneration ids;
+
+    public UserRepo(JdbcTemplate jdbc, IdGeneration ids) {
         this.jdbc = jdbc;
+        this.ids = ids;
     }
 
     private static final RowMapper<UserAccount> MAPPER = UserRepo::mapRow;
@@ -40,15 +58,32 @@ public class UserRepo {
         return n != null && n > 0;
     }
 
-    /** 注册落库。username 唯一约束冲突以 DuplicateKeyException 上抛，服务层转 409 username_taken。 */
-    public void insert(UserAccount user) {
-        jdbc.update("""
-                INSERT INTO users (id, username, password_hash, display_name, role, disabled, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                user.id(), user.username(), user.passwordHash(), user.displayName(),
-                user.role().name(), user.disabled(),
-                OffsetDateTime.ofInstant(user.createdAt(), ZoneOffset.UTC));
+    /**
+     * 注册落库，返回补全 id 的新记录（全局不变量 6）。username 唯一约束冲突以
+     * DuplicateKeyException 上抛，服务层转 409 username_taken。
+     */
+    public UserAccount insert(UserAccount user) {
+        OffsetDateTime createdAt = OffsetDateTime.ofInstant(user.createdAt(), ZoneOffset.UTC);
+        if (ids.appAssigned()) {
+            long assigned = ids.nextId();
+            jdbc.update(INSERT_WITH_ID_SQL, assigned, user.username(), user.passwordHash(),
+                    user.displayName(), user.role().name(), user.disabled(), createdAt);
+            return user.withId(assigned);
+        }
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+        jdbc.update(con -> {
+            PreparedStatement ps = con.prepareStatement(INSERT_SQL, new String[]{"id"});
+            ps.setString(1, user.username());
+            ps.setString(2, user.passwordHash());
+            ps.setString(3, user.displayName());
+            ps.setString(4, user.role().name());
+            ps.setBoolean(5, user.disabled());
+            ps.setObject(6, createdAt);
+            return ps;
+        }, keyHolder);
+        // 生成键形态随驱动可能是 BigInteger/Long，统一 .longValue()
+        Number key = Objects.requireNonNull(keyHolder.getKey(), "users INSERT 未返回生成主键");
+        return user.withId(key.longValue());
     }
 
     /** 账号管理（规格§2）：全量清单（created_at 升序）。 */
@@ -59,11 +94,11 @@ public class UserRepo {
                 """, MAPPER);
     }
 
-    public void setDisabled(String id, boolean disabled) {
+    public void setDisabled(Long id, boolean disabled) {
         jdbc.update("UPDATE users SET disabled = ? WHERE id = ?", disabled, id);
     }
 
-    public void updatePassword(String id, String passwordHash) {
+    public void updatePassword(Long id, String passwordHash) {
         jdbc.update("UPDATE users SET password_hash = ? WHERE id = ?", passwordHash, id);
     }
 
@@ -95,7 +130,7 @@ public class UserRepo {
     }
 
     /** 认证过滤器装载身份：token → userId → 用户（/me 与受保护端点共用）。 */
-    public Optional<UserAccount> findById(String id) {
+    public Optional<UserAccount> findById(Long id) {
         try {
             return Optional.ofNullable(jdbc.queryForObject("""
                     SELECT id, username, password_hash, display_name, role, disabled, created_at
@@ -108,7 +143,7 @@ public class UserRepo {
 
     private static UserAccount mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new UserAccount(
-                rs.getString("id"),
+                rs.getLong("id"),
                 rs.getString("username"),
                 rs.getString("password_hash"),
                 rs.getString("display_name"),

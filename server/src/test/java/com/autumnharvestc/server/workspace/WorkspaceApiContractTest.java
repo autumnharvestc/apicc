@@ -247,7 +247,7 @@ class WorkspaceApiContractTest {
         String wsId = createWorkspace(owner[1], "Epsilon");
 
         // 预置内容版本行（内容入库面）——删除清理的直接证据
-        fileVersions.insertNew(wsId, "apicc.workspace.yaml", "root: demo", "h-demo", owner[0]);
+        fileVersions.insertNew(wsId, "apicc.workspace.yaml", "root: demo", "h-demo", Long.parseLong(owner[0]));
         assertThat(fileVersions.listByWorkspace(wsId)).isNotEmpty();
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + owner[1]))

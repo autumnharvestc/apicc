@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.store.AclRepo;
 import com.autumnharvestc.server.store.ProjectRepo;
 import com.autumnharvestc.server.store.UserAccount;
@@ -43,21 +44,23 @@ public class ProjectAclService {
                 .toList();
     }
 
-    /** 置/覆盖 ACL 行（规格 §3.3：PUT {userId, role}）。 */
+    /** 置/覆盖 ACL 行（规格 §3.3：PUT {userId, role}）。请求体 userId 为字符串化数字——首行 parse（BIGINT 化口径 5）。 */
     public AclEntryView put(UserAccount caller, String workspaceId, String projectId, SetAclRequest request) {
+        long targetUserId = EntityIds.parse(request.userId());
         guard.requireAdmin(workspaceId, caller);
         requireProjectInWorkspace(workspaceId, projectId);
-        UserAccount target = users.findById(request.userId())
+        UserAccount target = users.findById(targetUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "目标用户不存在"));
-        acl.upsert(workspaceId, projectId, target.id(), request.role());
-        return new AclEntryView(target.id(), request.role());
+        acl.upsert(workspaceId, projectId, targetUserId, request.role());
+        return new AclEntryView(String.valueOf(target.id()), request.role());
     }
 
-    /** 删 ACL 行=恢复工作区角色继承（规格 §3.3 括注；DELETE 同路径 ?userId=；幂等 204）。 */
+    /** 删 ACL 行=恢复工作区角色继承（规格 §3.3 括注；DELETE 同路径 ?userId=；幂等 204）。userId 首行 parse。 */
     public void delete(UserAccount caller, String workspaceId, String projectId, String targetUserId) {
+        long targetId = EntityIds.parse(targetUserId);
         guard.requireAdmin(workspaceId, caller);
         requireProjectInWorkspace(workspaceId, projectId);
-        acl.delete(workspaceId, projectId, targetUserId);
+        acl.delete(workspaceId, projectId, targetId);
     }
 
     /** 项目须存在于该工作区（跨工作区项目 id 按 404 project_not_found 处理，口径同 ProjectService）。 */

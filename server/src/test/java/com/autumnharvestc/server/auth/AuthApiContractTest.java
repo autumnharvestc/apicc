@@ -49,6 +49,9 @@ class AuthApiContractTest {
     /** base64url（无填充）形状——token 明文由 32 字节随机数编码而来（裁定 B）。 */
     private static final String BASE64URL = "[A-Za-z0-9_-]{40,}";
 
+    /** 对外 id 形状（规格 2026-09-09 BIGINT 化，全局不变量 1）：字符串化数字。 */
+    private static final String NUMERIC_ID = "^\\d+$";
+
     private static String registerBody(String username, String password, String displayName) {
         return "{\"username\":\"" + username + "\",\"password\":\"" + password
                 + "\",\"displayName\":\"" + displayName + "\"}";
@@ -84,6 +87,7 @@ class AuthApiContractTest {
                         .content(registerBody("alice", "password123", "Alice")))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.id").isNotEmpty())
+                .andExpect(jsonPath("$.id").value(matchesPattern(NUMERIC_ID)))
                 .andExpect(jsonPath("$.username").value("alice"))
                 .andExpect(jsonPath("$.displayName").value("Alice"))
                 .andExpect(jsonPath("$.password").doesNotExist())
@@ -175,6 +179,7 @@ class AuthApiContractTest {
                 .andExpect(jsonPath("$.token").value(matchesPattern(BASE64URL)))
                 .andExpect(jsonPath("$.expiresAt").value(matchesPattern(ISO_UTC)))
                 .andExpect(jsonPath("$.user.id").isNotEmpty())
+                .andExpect(jsonPath("$.user.id").value(matchesPattern(NUMERIC_ID)))
                 .andExpect(jsonPath("$.user.username").value("erin"))
                 .andExpect(jsonPath("$.user.displayName").value("Erin"))
                 .andExpect(jsonPath("$.user.passwordHash").doesNotExist())
@@ -219,6 +224,7 @@ class AuthApiContractTest {
         mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").isNotEmpty())
+                .andExpect(jsonPath("$.id").value(matchesPattern(NUMERIC_ID)))
                 .andExpect(jsonPath("$.username").value("grace"))
                 .andExpect(jsonPath("$.displayName").value("Grace"))
                 .andExpect(jsonPath("$.role").value("USER")) // 普通注册账号
@@ -310,8 +316,8 @@ class AuthApiContractTest {
         // 既有令牌仍可用
         mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk());
-        // 经 repo 停用（管理端点在任务 4）：第一步只停用、不吊销
-        String userId = users.findByUsername("paused").orElseThrow().id();
+        // 经 repo 停用（管理端点在任务 4）：第一步只停用、不吊销（userId 为 BIGINT 化的 Long）
+        Long userId = users.findByUsername("paused").orElseThrow().id();
         users.setDisabled(userId, true);
         // 只停用不吊销 → 旧 token /me 也 401（AuthFilter !disabled() 纵深分支被真实求值）
         mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + token))

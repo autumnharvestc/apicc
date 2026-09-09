@@ -16,7 +16,6 @@ import org.springframework.stereotype.Component;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.UUID;
 
 /**
  * 首个管理员启动引导（部署线 D6，规格 docs/superpowers/specs/2026-09-06-apicc-server-deploy-design.md）：
@@ -70,8 +69,9 @@ public class AdminBootstrap implements ApplicationRunner {
         }
         boolean fromEnv = !configuredPassword.isBlank();
         String password = fromEnv ? configuredPassword : randomPassword();
+        // id 待生成（null = insert 由 IDENTITY 自增/策略生成，规格 2026-09-09 BIGINT 化）；返回值无需回用
         users.insert(new UserAccount(
-                UUID.randomUUID().toString(), username,
+                null, username,
                 passwordEncoder.encode(password), username,
                 PlatformRole.SUPERADMIN, false, Instant.now()));
         if (fromEnv) {

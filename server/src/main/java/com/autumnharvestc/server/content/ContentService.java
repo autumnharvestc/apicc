@@ -254,18 +254,19 @@ public class ContentService {
 
     // ---- 权限判定 ----
 
-    /** 路径生效角色：项目内路径按首段 projectId（ACL 覆盖），根级路径（根配置）按工作区角色继承。 */
-    private Optional<Role> effectiveRoleFor(String workspaceId, String userId, String path) {
+    /** 路径生效角色：项目内路径按首段 projectId（ACL 覆盖），根级路径（根配置）按工作区角色继承。
+     * userId 为 users.id（BIGINT 化，任务 2 切 Long；projectId 链任务 3 收口）。 */
+    private Optional<Role> effectiveRoleFor(String workspaceId, Long userId, String path) {
         String projectId = ContentPaths.parseProject(path).orElse(null);
         return permissions.effectiveRole(workspaceId, userId, projectId);
     }
 
-    private boolean readable(String workspaceId, String userId, String path) {
+    private boolean readable(String workspaceId, Long userId, String path) {
         return effectiveRoleFor(workspaceId, userId, path).filter(permissions::canRead).isPresent();
     }
 
     /** 可读且存在版本行的行（读面用）；否则 null。 */
-    private FileVersionRecord readableRow(String workspaceId, String userId, String path) {
+    private FileVersionRecord readableRow(String workspaceId, Long userId, String path) {
         if (!readable(workspaceId, userId, path)) {
             return null;
         }
@@ -276,7 +277,7 @@ public class ContentService {
      * 写权限（D5）：有效角色为空 → NONE 项目 403 project_forbidden（根级不可达，防御保留）；
      * VIEWER 只读 403 forbidden；根配置 apicc.workspace.yaml 仅 ADMIN+（§3.4 path 规则）。
      */
-    private void requireWriteAccess(String workspaceId, String userId, String path) {
+    private void requireWriteAccess(String workspaceId, Long userId, String path) {
         boolean inProject = ContentPaths.parseProject(path).isPresent();
         Role role = effectiveRoleFor(workspaceId, userId, path).orElseThrow(() ->
                 inProject

@@ -43,7 +43,7 @@ class ContentServiceDeleteRaceTest {
     private static final String PATH = PROJECT_ID + "/a.yaml";
 
     private final UserAccount caller =
-            new UserAccount("user-1", "owner", "bcrypt-hash", "owner",
+            new UserAccount(1L, "owner", "bcrypt-hash", "owner",
                     PlatformRole.USER, false, Instant.EPOCH);
 
     private WorkspaceGuard guard;
@@ -54,8 +54,9 @@ class ContentServiceDeleteRaceTest {
     @BeforeEach
     void setUp() {
         guard = mock(WorkspaceGuard.class);
+        // created_by 列本轮仍 String（任务 3 收口）：users.id 已 BIGINT 化，暂以字符串桥接
         when(guard.requireMember(eq(WS), any(UserAccount.class))).thenReturn(new WorkspaceGuard.Access(
-                new WorkspaceRecord(WS, "ws", caller.id(), Instant.EPOCH), Role.OWNER));
+                new WorkspaceRecord(WS, "ws", String.valueOf(caller.id()), Instant.EPOCH), Role.OWNER));
         memberships = mock(MembershipRepo.class);
         when(memberships.findRole(WS, caller.id())).thenReturn(Optional.of(Role.OWNER));
         fileVersions = mock(FileVersionRepo.class);
@@ -71,7 +72,7 @@ class ContentServiceDeleteRaceTest {
     }
 
     private static FileVersionRecord record(long version, String hash) {
-        return new FileVersionRecord(WS, PATH, hash, version, "user-" + version,
+        return new FileVersionRecord(WS, PATH, hash, version, 1L,
                 Instant.parse("2026-09-04T00:00:0" + version + "Z"), 0L, "body-" + version);
     }
 

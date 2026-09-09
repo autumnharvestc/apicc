@@ -80,8 +80,11 @@ public class WorkspaceRepo {
                 rs.getObject("created_at", OffsetDateTime.class).toInstant());
     }
 
-    /** 「我参与的工作区」列表（GET /workspaces，任务 4）：workspaces ⋈ memberships，按创建时间稳定排序。 */
-    public List<WorkspaceWithRole> findByMember(String userId) {
+    /**
+     * 「我参与的工作区」列表（GET /workspaces，任务 4）：workspaces ⋈ memberships，按创建时间稳定排序。
+     * userId 为 users.id（2026-09-09 BIGINT 化，任务 2 切 Long；workspaceId 侧任务 3 收口）。
+     */
+    public List<WorkspaceWithRole> findByMember(Long userId) {
         return jdbc.query("""
                 SELECT w.id, w.name, w.created_at, m.role AS my_role
                 FROM workspaces w

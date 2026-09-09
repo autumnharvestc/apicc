@@ -32,7 +32,7 @@ public class AclRepo {
      * 「current transaction is aborted」失败——因此本工程成员/ACL 写路径约定不使用 @Transactional，
      * 各写操作以单条语句自持原子；未来迁移 PG 时应改写为 INSERT ... ON CONFLICT DO UPDATE。
      */
-    public void upsert(String workspaceId, String projectId, String userId, AclRole role) {
+    public void upsert(String workspaceId, String projectId, Long userId, AclRole role) {
         try {
             jdbc.update("""
                     INSERT INTO project_acl (workspace_id, project_id, user_id, role, updated_at)
@@ -47,7 +47,7 @@ public class AclRepo {
     }
 
     /** 权限判定用：查覆盖行；无行返回 empty（继承工作区角色的信号）。 */
-    public Optional<AclRole> findRole(String workspaceId, String projectId, String userId) {
+    public Optional<AclRole> findRole(String workspaceId, String projectId, Long userId) {
         List<String> roles = jdbc.queryForList(
                 "SELECT role FROM project_acl WHERE workspace_id = ? AND project_id = ? AND user_id = ?",
                 String.class, workspaceId, projectId, userId);
@@ -55,7 +55,7 @@ public class AclRepo {
     }
 
     /** 删除覆盖行（恢复继承）；幂等。 */
-    public void delete(String workspaceId, String projectId, String userId) {
+    public void delete(String workspaceId, String projectId, Long userId) {
         jdbc.update(
                 "DELETE FROM project_acl WHERE workspace_id = ? AND project_id = ? AND user_id = ?",
                 workspaceId, projectId, userId);
@@ -69,7 +69,7 @@ public class AclRepo {
                 WHERE workspace_id = ? AND project_id = ?
                 ORDER BY user_id
                 """, (rs, rowNum) -> new AclEntryRow(
-                        rs.getString("user_id"),
+                        rs.getLong("user_id"),
                         AclRole.fromDb(rs.getString("role"))), workspaceId, projectId);
     }
 

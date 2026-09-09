@@ -65,8 +65,9 @@ public class WorkspaceService {
      */
     @Transactional
     public WorkspaceView create(UserAccount caller, CreateWorkspaceRequest request) {
+        // created_by 列本轮仍 VARCHAR（任务 3 收口）：users.id 已 BIGINT 化，此处暂以字符串桥接
         WorkspaceRecord workspace = new WorkspaceRecord(
-                UUID.randomUUID().toString(), request.name().trim(), caller.id(), Instant.now());
+                UUID.randomUUID().toString(), request.name().trim(), String.valueOf(caller.id()), Instant.now());
         try {
             workspaces.insert(workspace);
         } catch (DuplicateKeyException ex) {

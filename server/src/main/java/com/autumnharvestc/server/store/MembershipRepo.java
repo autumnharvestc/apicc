@@ -23,7 +23,7 @@ public class MembershipRepo {
     }
 
     /** 加入成员（创建工作区时创建者自动 OWNER 也走此方法）。复合主键冲突以 DuplicateKeyException 上抛。 */
-    public void insert(String workspaceId, String userId, Role role) {
+    public void insert(String workspaceId, Long userId, Role role) {
         jdbc.update("""
                 INSERT INTO memberships (workspace_id, user_id, role, created_at)
                 VALUES (?, ?, ?, ?)
@@ -31,7 +31,7 @@ public class MembershipRepo {
     }
 
     /** 权限判定用：查成员在指定工作区的角色。 */
-    public Optional<Role> findRole(String workspaceId, String userId) {
+    public Optional<Role> findRole(String workspaceId, Long userId) {
         List<String> roles = jdbc.queryForList(
                 "SELECT role FROM memberships WHERE workspace_id = ? AND user_id = ?",
                 String.class, workspaceId, userId);
@@ -39,7 +39,7 @@ public class MembershipRepo {
     }
 
     /** 入区定角色（规格§2「分配使用」，超管直派）：有成员关系则改角色，无则建行（两步 MERGE 语义，主键 (workspace_id, user_id)）。 */
-    public void upsert(String workspaceId, String userId, String role) {
+    public void upsert(String workspaceId, Long userId, String role) {
         int updated = jdbc.update(
                 "UPDATE memberships SET role = ? WHERE workspace_id = ? AND user_id = ?",
                 role, workspaceId, userId);
@@ -52,7 +52,7 @@ public class MembershipRepo {
     }
 
     /** 变更成员角色（PUT members 变更分支）。返回 false = 无此成员关系（服务层转 404）。 */
-    public boolean updateRole(String workspaceId, String userId, Role role) {
+    public boolean updateRole(String workspaceId, Long userId, Role role) {
         return jdbc.update(
                 "UPDATE memberships SET role = ? WHERE workspace_id = ? AND user_id = ?",
                 role.toDb(), workspaceId, userId) > 0;
@@ -67,7 +67,7 @@ public class MembershipRepo {
                 WHERE m.workspace_id = ?
                 ORDER BY m.created_at, m.user_id
                 """, (rs, rowNum) -> new MemberRow(
-                        rs.getString("user_id"),
+                        rs.getLong("user_id"),
                         rs.getString("username"),
                         rs.getString("display_name"),
                         Role.fromDb(rs.getString("role"))), workspaceId);
@@ -82,7 +82,7 @@ public class MembershipRepo {
     }
 
     /** 移除单个成员（DELETE members，任务 4）。 */
-    public void delete(String workspaceId, String userId) {
+    public void delete(String workspaceId, Long userId) {
         jdbc.update(
                 "DELETE FROM memberships WHERE workspace_id = ? AND user_id = ?",
                 workspaceId, userId);

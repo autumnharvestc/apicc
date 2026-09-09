@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.core.PermissionService;
 import com.autumnharvestc.server.core.Role;
 import com.autumnharvestc.server.store.MembershipRepo;
@@ -47,13 +48,15 @@ public class MemberService {
                 .toList();
     }
 
-    /** 添加/变更成员角色（规格 §3.2：ADMIN+；规则见类注）。返回成员视图（变更后的角色）。 */
+    /** 添加/变更成员角色（规格 §3.2：ADMIN+；规则见类注）。返回成员视图（变更后的角色）。
+     * 路径 userId 为字符串化数字——首行 parse（规格 2026-09-09 BIGINT 化，非数字 400 validation_failed）。 */
     public MemberView put(UserAccount caller, String workspaceId, String targetUserId, SetMemberRoleRequest request) {
+        long targetId = EntityIds.parse(targetUserId);
         WorkspaceGuard.Access access = guard.requireAdmin(workspaceId, caller);
-        UserAccount target = users.findById(targetUserId)
+        UserAccount target = users.findById(targetId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "目标用户不存在"));
 
-        Optional<Role> currentRole = memberships.findRole(workspaceId, targetUserId);
+        Optional<Role> currentRole = memberships.findRole(workspaceId, targetId);
         if (currentRole.isPresent() && currentRole.get() == Role.OWNER) {
             // 裁定 C 平规则：OWNER 不可被变更（含 OWNER 自我降权——自我降权须走转让）
             throw new ApiException(HttpStatus.FORBIDDEN, "owner_immutable", "不能变更 OWNER 的角色");
@@ -64,29 +67,30 @@ public class MemberService {
             }
             // 转让（裁定 C）：先确保新 OWNER 就位，再把原 OWNER 降为 ADMIN（单次 PUT 完成）
             if (currentRole.isPresent()) {
-                memberships.updateRole(workspaceId, targetUserId, Role.OWNER);
+                memberships.updateRole(workspaceId, targetId, Role.OWNER);
             } else {
-                memberships.insert(workspaceId, targetUserId, Role.OWNER);
+                memberships.insert(workspaceId, targetId, Role.OWNER);
             }
             memberships.updateRole(workspaceId, caller.id(), Role.ADMIN);
         } else if (currentRole.isPresent()) {
-            memberships.updateRole(workspaceId, targetUserId, request.role());
+            memberships.updateRole(workspaceId, targetId, request.role());
         } else {
             // 裁定 C：非成员添加 = 直接创建 membership 行
-            memberships.insert(workspaceId, targetUserId, request.role());
+            memberships.insert(workspaceId, targetId, request.role());
         }
-        return new MemberView(target.id(), target.username(), target.displayName(), request.role());
+        return new MemberView(String.valueOf(target.id()), target.username(), target.displayName(), request.role());
     }
 
-    /** 移除成员（规格 §3.2：ADMIN+，不能移除 OWNER）。 */
+    /** 移除成员（规格 §3.2：ADMIN+，不能移除 OWNER）。路径 userId 首行 parse（BIGINT 化口径 5）。 */
     public void delete(UserAccount caller, String workspaceId, String targetUserId) {
+        long targetId = EntityIds.parse(targetUserId);
         guard.requireAdmin(workspaceId, caller);
-        Role targetRole = memberships.findRole(workspaceId, targetUserId)
+        Role targetRole = memberships.findRole(workspaceId, targetId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "member_not_found", "目标不是工作区成员"));
         if (targetRole == Role.OWNER) {
             throw new ApiException(HttpStatus.FORBIDDEN, "owner_immutable", "不能移除 OWNER");
         }
-        memberships.delete(workspaceId, targetUserId);
+        memberships.delete(workspaceId, targetId);
     }
 
     /** 成员候选搜索（规格 2026-09-09）：权限同添加成员（ADMIN+）；q 必填非空、trim 后 ≤32 字符，

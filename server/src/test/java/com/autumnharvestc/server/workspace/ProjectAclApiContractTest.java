@@ -158,19 +158,28 @@ class ProjectAclApiContractTest {
         }
     }
 
-    /** 目标用户不存在 → 404 user_not_found；role 非法值 → 400。 */
+    /** 目标用户不存在 → 404 user_not_found；非数字 userId → 400 validation_failed（BIGINT 化口径 5）；role 非法值 → 400。 */
     @Test
     void putAclValidatesTargetUserAndRole() throws Exception {
         String[] owner = newUser("a-erin");
         String wsId = createWorkspace(owner[1], "ACL校验");
         String projectId = createProjectFixture(owner[1], wsId, "ACL校验项目");
 
+        // 幽灵 userId：不存在的大数字（2026-09-09 BIGINT 化口径，替代随机 UUID）
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + java.util.UUID.randomUUID() + "\",\"role\":\"VIEWER\"}"))
+                        .content("{\"userId\":\"999999\",\"role\":\"VIEWER\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("user_not_found"));
+
+        // 非数字 userId：400 validation_failed（EntityIds.parse 守卫）
+        mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
+                        .header("Authorization", "Bearer " + owner[1])
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"not-a-number\",\"role\":\"VIEWER\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_failed"));
 
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
@@ -181,13 +190,13 @@ class ProjectAclApiContractTest {
 
     // ---- 项目存在性校验（任务 5 ACL 挂实体）----
 
-    /** 项目不存在（未建实体的 UUID）→ PUT/GET/DELETE ACL 皆 404 project_not_found。 */
+    /** 项目不存在 → PUT/GET/DELETE ACL 皆 404 project_not_found（幽灵 id 用不存在的大数字）。 */
     @Test
     void aclOnMissingProjectReturns404() throws Exception {
         String[] owner = newUser("a-vin");
         String[] viewer = newUser("a-wanda");
         String wsId = createWorkspace(owner[1], "ACL项目404");
-        String missingProjectId = java.util.UUID.randomUUID().toString();
+        String missingProjectId = "999999";
 
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + missingProjectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])

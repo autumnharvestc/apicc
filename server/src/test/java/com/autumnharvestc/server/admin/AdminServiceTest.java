@@ -38,7 +38,8 @@ class AdminServiceTest {
     private final AdminService service = new AdminService(users, tokens, memberships, workspaces);
 
     private UserAccount caller(PlatformRole role) {
-        return new UserAccount("caller-id", "admin", "hash", "管理员", role, false, Instant.now());
+        // 2026-09-09 BIGINT 化口径：直构实体 id 用小整数（1L）
+        return new UserAccount(1L, "admin", "hash", "管理员", role, false, Instant.now());
     }
 
     private AdminRequests.CreateUserRequest createBob() {
@@ -70,10 +71,12 @@ class AdminServiceTest {
         verifyNoInteractions(users, tokens, memberships);
     }
 
-    /** 顺带钉成功路径：超管创建落库为 USER + 未停用， displayName trim。 */
+    /** 顺带钉成功路径：超管创建落库为 USER + 未停用， displayName trim；insert 契约=返回补全 id 的新记录。 */
     @Test
     void createBySuperadminInsertsUserAccount() {
         when(users.findByUsername("bob")).thenReturn(java.util.Optional.empty());
+        // 仓储契约打桩：返回「同一账号 + 生成 id」（identity/策略生成后回填，全局不变量 6）
+        when(users.insert(any())).thenAnswer(inv -> ((UserAccount) inv.getArgument(0)).withId(7L));
 
         UserAccount created = service.create(caller(PlatformRole.SUPERADMIN),
                 new AdminRequests.CreateUserRequest("bob", "password123", "  Bob  "));
@@ -84,7 +87,8 @@ class AdminServiceTest {
         assertThat(captor.getValue().role()).isEqualTo(PlatformRole.USER);
         assertThat(captor.getValue().disabled()).isFalse();
         assertThat(captor.getValue().displayName()).isEqualTo("Bob");
-        assertThat(created.id()).isNotEmpty();
+        assertThat(captor.getValue().id()).as("insert 前待生成（null）").isNull();
+        assertThat(created.id()).isEqualTo(7L);
         verify(tokens, never()).revokeAllByUser(any());
     }
 }

@@ -40,7 +40,7 @@ public class FileVersionRepo {
      * (workspace_id, path) 唯一——并发首写时落败方收 DuplicateKeyException，由服务层转冲突语义。
      */
     public void insertNew(String workspaceId, String path, String content,
-                          String contentHash, String updatedBy) {
+                          String contentHash, Long updatedBy) {
         jdbc.update("""
                 INSERT INTO file_versions (workspace_id, path, content, content_hash, version, updated_by, updated_at)
                 VALUES (?, ?, ?, ?, 1, ?, ?)
@@ -54,7 +54,7 @@ public class FileVersionRepo {
      * 单条 SQL 带 version 条件——两个并发写者至多一个成功，其余返回 false。
      */
     public boolean bumpVersion(String workspaceId, String path, long baseVersion,
-                               String newContent, String newContentHash, String updatedBy) {
+                               String newContent, String newContentHash, Long updatedBy) {
         return jdbc.update("""
                 UPDATE file_versions
                 SET version = version + 1, content = ?, content_hash = ?, updated_by = ?, updated_at = ?
@@ -135,7 +135,7 @@ public class FileVersionRepo {
                 rs.getString("path"),
                 rs.getString("content_hash"),
                 rs.getLong("version"),
-                rs.getString("updated_by"),
+                rs.getLong("updated_by"),
                 rs.getObject("updated_at", OffsetDateTime.class).toInstant(),
                 rs.getLong("content_size"),
                 rs.getString("content"));
@@ -148,7 +148,7 @@ public class FileVersionRepo {
                 rs.getString("path"),
                 rs.getString("content_hash"),
                 rs.getLong("version"),
-                rs.getString("updated_by"),
+                rs.getLong("updated_by"),
                 rs.getObject("updated_at", OffsetDateTime.class).toInstant(),
                 rs.getLong("content_size"),
                 null);
