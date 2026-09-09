@@ -12,7 +12,10 @@
  * 审查注释更正）；成员清单随路由参数变化重拉（终审 Important 1）；其他后端错误码
  * （owner_immutable 等）→ 顶部 membersError alert（选顶部
  * alert 而非行级提示：单通道单呈现面，实现最干净，报告注明）；候选搜索失败经 candidatesError
- * 在添加行下方就地上屏。组件内零工厂调用：workspaces 经路由 props 注入。
+ * 在添加行下方就地上屏。切换工作区即复位添加行输入与在途候选（终审 Important 2，ProjectAclView
+ * 同款口径——防旧工作区候选并入新下拉、被 resolveId 误命中提交错误 id）；a-auto-complete 无
+ * press-enter 事件透传，Enter 直提经原生 keyup.enter 修饰符（终审 Important 3，全库
+ * @press-enter 惯例在 a-auto-complete 上的等价接线）。组件内零工厂调用：workspaces 经路由 props 注入。
  */
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -30,14 +33,23 @@ const router = useRouter();
 /** 路由参数工作区 id（成员页数据寻址）。 */
 const workspaceId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
 
+// —— 添加成员（规格 2026-09-09：用户名搜索下拉，id 不再手输——先例级教训）——
+// composable 返回的 refs 在 script 顶层解构后保持响应式，template 自动解包（v-model 可直接绑定）。
+// 声明先于 immediate watch：watch 回调首航即复位这些输入（ProjectAclView 同款先例）。
+const { username: addUserName, options: candidateOptions, onSearch: onSearchUser, resolveId, reset: resetPicker } = createUserPicker(props.workspaces, workspaceId);
+
 /**
  * 成员清单随路由参数变化重拉（终审 Important 1）：同路由记录参数变化复用组件实例、不重跑
  * onMounted——immediate watch 兼顾首载；403 弹回逻辑复用（ProjectAclView 同款姊妹口径）。
+ * 切换工作区即复位添加行（终审 Important 2）：输入与在途候选一并清空——旧工作区候选若残留，
+ * 会并入新工作区下拉并可能被 resolveId 误命中、提交错误 id（ProjectAclView 双 watch 同口径）。
  */
 watch(
   workspaceId,
   async (id) => {
     if (!id) return;
+    resetPicker();
+    props.workspaces.clearCandidates();
     const res = await props.workspaces.loadMembers(id);
     if (!res.ok && res.forbidden) {
       // 403 直达（非 ADMIN）：原因入 membersError（仅成员面通道呈现，不外溢列表页），弹回 /workspaces（裁定 C）
@@ -98,9 +110,6 @@ async function onRemove(userId: string): Promise<void> {
   removeTargetUserId.value = null; // 确认后收起气泡（受控 open）
 }
 
-// —— 添加成员（规格 2026-09-09：用户名搜索下拉，id 不再手输——先例级教训）——
-// composable 返回的 refs 在 script 顶层解构后保持响应式，template 自动解包（v-model 可直接绑定）。
-const { username: addUserName, options: candidateOptions, onSearch: onSearchUser, resolveId, reset: resetPicker } = createUserPicker(props.workspaces, workspaceId);
 const addRole = ref<AdminRole>("VIEWER");
 const addError = ref("");
 
@@ -143,6 +152,8 @@ async function onAdd(): Promise<void> {
 
     <!-- 添加成员：用户名搜索下拉（userPicker 合并成员+候选；提交解析为 userId）+ 角色（§3.2 PUT 对非成员即创建行） -->
     <div class="add-row" data-testid="members-add">
+      <!-- Enter 直提（终审 Important 3）：a-auto-complete 无 press-enter 事件，经原生 keyup.enter——
+           keyup 自内层 input 冒泡至 BaseSelect 根元素后统一转发 props.onKeyup -->
       <a-auto-complete
         v-model:value="addUserName"
         class="add-userid"
@@ -150,6 +161,7 @@ async function onAdd(): Promise<void> {
         :options="candidateOptions"
         :placeholder="t('members.searchPlaceholder')"
         @search="onSearchUser"
+        @keyup.enter="onAdd"
       />
       <a-select
         v-model:value="addRole"

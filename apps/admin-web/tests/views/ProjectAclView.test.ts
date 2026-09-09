@@ -4,7 +4,8 @@
 // 页面 noneHint 文案钉住，裁定 B/i18n 审校点）；添加行（任务 6：userPicker 用户名搜索下拉——
 // 成员+非成员候选合并，选中 username 提交解析为 userId，id 不再手输，§3.3 可预设）。
 // 直达 URL 挂载（replaceState 到 ACL 路径）；antd 传送门走 body 作用域查询 + waitForBody 轮询；
-// a-select 经组件实例事件驱动（desktop 先例）；候选 debounce 用 until 真实定时器轮询（同 MembersView）。
+// a-select 经组件实例事件驱动（desktop 先例）；候选 debounce 用 until 真实定时器轮询（同 MembersView）；
+// 候选搜索失败 → candidatesError 就地上屏（acl-candidates-error，双通道口径，终审 Important 1）。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createAdminI18n } from "../../src/i18n/index.js";
@@ -109,6 +110,8 @@ function antdSelect(wrapper: VueWrapper, testid: string) {
 function aclHandler(opts?: {
   onPut?: (req: CapturedRequest) => Response | Promise<Response>;
   candidates?: Array<{ id: string; username: string; displayName: string }>;
+  /** 置位后 member-candidates 返回 500（候选搜索失败用例，同 MembersView candidatesError 口径）。 */
+  candidatesError?: string;
 }): FetchHandler {
   let p2Denied = false;
   const aclByProject: Record<string, Array<{ userId: string; role: string }>> = { "p-1": [], "p-2": [{ userId: "u-2", role: "VIEWER" }] };
@@ -117,7 +120,10 @@ function aclHandler(opts?: {
     if (url === `${BASE}/me`) return json(200, USER);
     if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, { id: "ws-1", name: "团队空间", myRole: "OWNER", memberCount: 2 });
     if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, MEMBERS);
-    if (url.includes("member-candidates")) return json(200, opts?.candidates ?? []);
+    if (url.includes("member-candidates")) {
+      if (opts?.candidatesError) return json(500, { code: "server_error", message: opts.candidatesError });
+      return json(200, opts?.candidates ?? []);
+    }
     if (url === `${BASE}/workspaces/ws-1/tree` && method === "GET") {
       return json(200, {
         ...TREE,
@@ -311,5 +317,15 @@ describe("ProjectAclView 添加行（任务 6：userPicker 搜索下拉，id 不
     await flushPromises();
     expect(wrapper.find("[data-testid=acl-add-error]").exists()).toBe(true);
     expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  it("候选搜索失败 → candidatesError 就地上屏（acl-candidates-error，与顶部 aclError 双通道）", async () => {
+    const { wrapper, calls, workspaces } = await mountAcl(aclHandler({ candidatesError: "候选服务暂不可用" }));
+    await wrapper.find('[data-testid="acl-add-userid"] input').setValue("dav");
+    await until(() => calls.some((c) => c.url.includes("member-candidates")));
+    await flushPromises();
+    expect(workspaces.candidatesError).toBe("候选服务暂不可用");
+    expect(wrapper.find('[data-testid="acl-candidates-error"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="acl-candidates-error"]').text()).toContain("候选服务暂不可用");
   });
 });

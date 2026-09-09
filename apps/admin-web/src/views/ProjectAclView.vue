@@ -9,7 +9,9 @@
  * 远搜 debounce，内部 id 不许手输——先例级教训），选中 username 提交时解析为 userId
  * （§3.3 ACL 可预设，D5 语义；未命中置错不发请求）；角色域 NONE/VIEWER/EDITOR/ADMIN
  * （无 OWNER——ACL 角色域即如此）。
- * 失败 → aclError 顶部 alert 单通道。组件内零工厂调用：workspaces 经子路由 props 注入。
+ * ACL 面失败 → aclError 顶部 alert；候选搜索失败经 candidatesError 在添加行下方就地上屏
+ * （双通道口径，与 MembersView members-candidates-error 同构——终审 Important 1）。
+ * 组件内零工厂调用：workspaces 经子路由 props 注入。
  */
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -232,6 +234,8 @@ async function onAdd(): Promise<void> {
       </a-button>
     </div>
     <div v-if="addError" class="form-error" data-testid="acl-add-error">{{ addError }}</div>
+    <!-- 候选搜索失败就地上屏（双通道：与顶部 aclError 分通道，MembersView members-candidates-error 同构——终审 Important 1） -->
+    <div v-if="workspaces.candidatesError" class="form-error" data-testid="acl-candidates-error">{{ workspaces.candidatesError }}</div>
   </div>
 </template>
 

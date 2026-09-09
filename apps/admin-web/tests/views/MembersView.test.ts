@@ -3,7 +3,8 @@
 // + 操作列）、改角色（a-select 即改、OWNER 行禁用）、移除（popconfirm、OWNER 行禁用）、添加成员
 // （规格 2026-09-09：用户名搜索下拉选中 username，提交解析为 id——id 不再手输；§3.2 对非成员
 // 即创建）、OWNER 转让受控确认（输入工作区名，文案明示降为 ADMIN 且不可逆）、403 直达回列表
-// （原因仅在成员面 membersError 通道呈现）、后端错误码 membersError 上屏、候选搜索失败就地上屏。
+// （原因仅在成员面 membersError 通道呈现）、后端错误码 membersError 上屏、候选搜索失败就地上屏、
+// 切换工作区复位添加行输入与候选（终审 Important 2）、输入框 Enter 直提（终审 Important 3）。
 // 直达 URL 挂载（history.replaceState 到成员路径）；antd 传送门元素走 body 作用域查询；
 // a-select 经组件实例 update:value/change 事件驱动（desktop OnlineLoginDialog.test 先例）。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
@@ -295,6 +296,44 @@ describe("添加成员：用户名搜索下拉（规格 2026-09-09，id 不再�
     expect(workspaces.candidatesError).toBe("候选服务暂不可用");
     expect(wrapper.find('[data-testid="members-candidates-error"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="members-candidates-error"]').text()).toContain("候选服务暂不可用");
+  });
+
+  it("切换工作区 → 添加行输入复位、旧候选清空（不渗漏新工作区下拉，终审 Important 2）", async () => {
+    const { wrapper, router, workspaces, calls } = await mountMembers((req) => {
+      const { method, url } = req;
+      if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, MEMBERS);
+      if (url === `${BASE}/workspaces/ws-2/members` && method === "GET") return json(200, [{ userId: "u-9", username: "zoe", displayName: "Zoe", role: "ADMIN" }]);
+      if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, DETAIL_OWNER);
+      if (url === `${BASE}/workspaces/ws-2` && method === "GET") return json(200, { id: "ws-2", name: "另一空间", myRole: "OWNER", memberCount: 1 });
+      if (url.includes("member-candidates")) return json(200, [{ id: "u-8", username: "dave", displayName: "Dave" }]);
+      return json(404, { code: "not_found", message: "x" });
+    });
+    const input = wrapper.find('[data-testid="members-add-user"] input');
+    await input.setValue("dav");
+    await until(() => calls.some((c) => c.url.includes("member-candidates")));
+    await flushPromises();
+    expect(workspaces.candidates.map((c) => c.username)).toEqual(["dave"]); // ws-1 候选已就位
+    await router.push("/workspaces/ws-2/members");
+    await flushPromises();
+    await flushPromises();
+    expect((wrapper.find('[data-testid="members-add-user"] input').element as HTMLInputElement).value).toBe(""); // 输入复位
+    expect(workspaces.candidates).toHaveLength(0); // 旧工作区候选清空
+    const ac = wrapper.findAllComponents({ name: "AAutoComplete" }).find((c) => c.attributes("data-testid") === "members-add-user");
+    expect(((ac!.props("options") as Array<{ value: string }>).map((o) => o.value))).not.toContain("dave"); // 下拉不含 ws-1 候选
+  });
+
+  it("输入框内按 Enter 直提（a-auto-complete 无 press-enter 事件，经原生 keyup.enter，终审 Important 3）→ 提交解析后的 id", async () => {
+    const { wrapper, calls } = await mountMembers(memberHandler());
+    const input = wrapper.find('[data-testid="members-add-user"] input');
+    await input.setValue("bob"); // 成员选项 value=username（resolveId 解析回 u-2）
+    await flushPromises();
+    await input.trigger("keyup.enter");
+    await flushPromises();
+    await flushPromises();
+    const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-2`);
+    expect(put).toBeDefined();
+    expect(put!.body).toEqual({ role: "VIEWER" });
+    expect((wrapper.find('[data-testid="members-add-user"] input').element as HTMLInputElement).value).toBe(""); // 成功后复位
   });
 });
 
