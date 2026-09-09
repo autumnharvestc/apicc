@@ -26,6 +26,7 @@ import {
   AdminProjectSchema,
   AdminRegisterInputSchema,
   AdminTreeSchema,
+  AdminUserCandidateSchema,
   AdminUserSchema,
   AdminWorkspaceCreatedSchema,
   AdminWorkspaceDetailSchema,
@@ -41,6 +42,7 @@ import {
   type AdminRole,
   type AdminTree,
   type AdminUser,
+  type AdminUserCandidate,
   type AdminWorkspaceCreated,
   type AdminWorkspaceDetail,
   type AdminWorkspaceSummary,
@@ -99,6 +101,8 @@ export interface AdminClient {
   getWorkspace(workspaceId: string): Promise<AdminWorkspaceDetail>;
   deleteWorkspace(workspaceId: string): Promise<void>;
   listMembers(workspaceId: string): Promise<AdminMember[]>;
+  /** GET /workspaces/{id}/member-candidates?q=&limit=：非成员候选（ADMIN+；400/403 由服务端裁决）。 */
+  searchUserCandidates(workspaceId: string, q: string, limit?: number): Promise<AdminUserCandidate[]>;
   setMemberRole(workspaceId: string, userId: string, role: AdminRole): Promise<void>;
   removeMember(workspaceId: string, userId: string): Promise<void>;
   getTree(workspaceId: string): Promise<AdminTree>;
@@ -304,6 +308,17 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
 
     async listMembers(workspaceId) {
       return (await request({ method: "GET", path: workspacePath(workspaceId, "/members"), schema: z.array(AdminMemberSchema) })) as AdminMember[];
+    },
+
+    async searchUserCandidates(workspaceId, q, limit) {
+      const query: Record<string, string> = { q };
+      if (limit !== undefined) query["limit"] = String(limit);
+      return (await request({
+        method: "GET",
+        path: workspacePath(workspaceId, "/member-candidates"),
+        query,
+        schema: z.array(AdminUserCandidateSchema),
+      })) as AdminUserCandidate[];
     },
 
     async setMemberRole(workspaceId, userId, role) {
