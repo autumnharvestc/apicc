@@ -80,8 +80,8 @@ function langOption(locale: string): DOMWrapper<Element> {
 
 /** 动态 import App：保证上方 window.apicc 注入先于 api/index.ts 的模块求值。 */
 async function mountApp() {
-  // M11 启动恢复会读持久化键——测试间清理保证互不影响
-  for (const k of ["apicc.lastWorkspace", "apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory"]) localStorage.removeItem(k);
+  // M11 启动恢复会读持久化键——测试间清理保证互不影响（计划 C 任务 3 补签表键）
+  for (const k of ["apicc.lastWorkspace", "apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory", "apicc.projectTabs"]) localStorage.removeItem(k);
   const { default: App } = await import("../../src/renderer/src/App.vue");
   const wrapper = mount(App, { global: { plugins: [initI18n().i18n] } });
   await flushPromises();
