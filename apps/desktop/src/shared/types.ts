@@ -214,10 +214,12 @@ export interface ApiccApi {
   onlineFilesBatch(input: OnlineFilesBatchInput): Promise<OnlineBatchResult>;
   onlineFileDelete(input: OnlineFileDeleteInput): Promise<OnlineDeleteOutcome>;
   // —— 在线工作区浏览/迁移（M3-B 任务 3，裁定 A/D/E）——
-  /** 打开在线工作区：main 记录当前工作区（与本地互斥，ws:open 链路反向清理）并返回树视图。 */
+  /** 打开在线工作区：main 入表驻留并置活跃（计划 C 任务 1：不覆盖其他驻留工作区）并返回树视图。 */
   onlineWorkspaceOpen(input: OnlineWorkspaceOpenInput): Promise<OnlineWorkspaceView>;
-  /** 关闭在线工作区：清 main 侧状态与树/文件缓存。 */
-  onlineWorkspaceClose(): Promise<void>;
+  /** 显式激活驻留工作区（计划 C 任务 1）：纯切活跃指针；未驻留/未登录抛「尚未打开在线工作区」。 */
+  onlineWorkspaceActivate(workspaceId: string): Promise<void>;
+  /** 关闭在线工作区（计划 C 任务 1）：可带 workspaceId 出表指定工作区；无参关活跃。 */
+  onlineWorkspaceClose(input?: { workspaceId?: string }): Promise<void>;
   /** 当前在线工作区视图（树缓存：首次取 /tree，之后复用；切换/推送后经此刷新）。 */
   onlineTreeView(workspaceId: string): Promise<OnlineWorkspaceView>;
   /** 扫描本地目录：/ 相对路径 + sha-256 + utf8 内容（跳过 .apicc/.git 生成物）+ 项目目录归属。 */

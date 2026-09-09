@@ -2,6 +2,8 @@
 // stress 清理链同 ws:open）、online:workspace:close、online:tree:view（树缓存）、
 // online:migrate:scan / online:migrate:write（本地目录扫描与落盘）。
 // 以及裁定 E 互斥：ws:create / ws:open（含失败路径）必须先关闭在线工作区会话。
+// 计划 C 任务 1：会话表化——online:workspace:activate 显式切换活跃；close 载荷可带
+// workspaceId（无参关活跃）；open 失败仅当表空才回滚（防误关其他驻留工作区）。
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,6 +95,76 @@ describe("online:workspace:open / online:tree:view（裁定 A/E）", () => {
     await expect(loginAndOpen(deps)).rejects.toThrow(/network_error|fetch failed/);
     // 失败后会话已关：重新取视图必须先重新 open（不残留半开会话）
     await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+  });
+});
+
+describe("online:workspace:activate / close 带 id（计划 C 任务 1 会话表化）", () => {
+  // /tree 按请求 URL 回显 workspaceId（表语义：多工作区各自的树可辨别）
+  function echoTreeHandler(url: string): Response {
+    if (url.endsWith("/auth/login")) return json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER });
+    const wsId = decodeURIComponent(url.match(/workspaces\/([^/?]+)\/tree/)?.[1] ?? "ws-?");
+    return json(200, { ...TREE, workspaceId: wsId });
+  }
+
+  async function openTwo(deps: ReturnType<typeof setup>["deps"]) {
+    await deps.handle("online:login", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
+    await deps.handle("online:workspace:open", {}, { workspaceId: "ws-1", name: "团队空间", myRole: "EDITOR" });
+    await deps.handle("online:workspace:open", {}, { workspaceId: "ws-2", name: "另一空间", myRole: "VIEWER" });
+  }
+
+  it("activate 通道：双工作区驻留下显式切换活跃——切换后 tree:view 按新活跃放行，未知 id 拒绝", async () => {
+    const { deps, calls } = setup(echoTreeHandler);
+    await openTwo(deps); // open 置活跃 → 当前活跃 ws-2
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" });
+    const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
+    expect(view.workspaceId).toBe("ws-1");
+    // ws-1 的树缓存保留（activate 纯切指针不清缓存）：/tree 各工作区只取过一次
+    expect(calls.filter((c) => c.url.endsWith("/tree"))).toHaveLength(2);
+    await expect(deps.handle("online:workspace:activate", {}, { workspaceId: "ws-404" })).rejects.toThrow(/尚未打开在线工作区/);
+  });
+
+  it("close 带 workspaceId：出表指定工作区不动活跃——其余驻留工作区不受影响", async () => {
+    const { deps } = setup(echoTreeHandler);
+    await openTwo(deps);
+    await deps.handle("online:workspace:close", {}, { workspaceId: "ws-1" });
+    // ws-1 已出表：视图与激活都拒绝
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    // ws-2 活跃未动：视图照常
+    const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })) as { workspaceId: string };
+    expect(view.workspaceId).toBe("ws-2");
+  });
+
+  it("close 无参：关活跃工作区，活跃置空且不自动切其他驻留工作区（显式 activate 后恢复）", async () => {
+    const { deps } = setup(echoTreeHandler);
+    await openTwo(deps);
+    await deps.handle("online:workspace:close", {});
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })).rejects.toThrow(/尚未打开在线工作区/);
+    // ws-1 仍驻留：显式激活后恢复
+    await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" });
+    const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
+    expect(view.workspaceId).toBe("ws-1");
+  });
+
+  it("open 失败仅当表空才回滚：表非空时失败不误关其他驻留工作区（半开工作区留表可重试）", async () => {
+    const { deps, calls } = setup((url) => {
+      if (url.endsWith("/auth/login")) return json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER });
+      if (url.includes("workspaces/ws-2/tree")) throw new TypeError("fetch failed");
+      return json(200, { ...TREE, workspaceId: decodeURIComponent(url.match(/workspaces\/([^/?]+)\/tree/)?.[1] ?? "ws-?") });
+    });
+    await deps.handle("online:login", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
+    await deps.handle("online:workspace:open", {}, { workspaceId: "ws-1", name: "团队空间", myRole: "EDITOR" });
+    await expect(
+      deps.handle("online:workspace:open", {}, { workspaceId: "ws-2", name: "另一空间", myRole: "VIEWER" }),
+    ).rejects.toThrow(/network_error|fetch failed/);
+    // ws-1 驻留未被误关：激活后视图照常（缓存命中不重发 /tree）
+    await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" });
+    await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" });
+    expect(calls.filter((c) => c.url.endsWith("/tree") && !c.url.includes("ws-2"))).toHaveLength(1);
+    // 表非空不回滚：ws-2 半开留表（可显式激活后重试视图）
+    await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-2" });
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })).rejects.toThrow(/network_error|fetch failed/);
   });
 });
 

@@ -52,6 +52,9 @@ export const IpcChannel = {
   // ws:open/ws:create 反向清理）、close 会话清理、tree:view 取树缓存视图、
   // migrate:scan/write 本地目录扫描与落盘（差异比对纯函数在 shared/online/migrate.ts）
   OnlineWorkspaceOpen: "online:workspace:open",
+  // 计划 C 任务 1 会话表化：activate 显式切换活跃驻留工作区；close 载荷可带 workspaceId
+  // （出表指定工作区；无参关活跃）
+  OnlineWorkspaceActivate: "online:workspace:activate",
   OnlineWorkspaceClose: "online:workspace:close",
   OnlineTreeView: "online:tree:view",
   OnlineMigrateScan: "online:migrate:scan",

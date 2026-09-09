@@ -188,9 +188,11 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.OnlineFilePut]: z.tuple([OnlineFilePutChannelSchema]),
   [IpcChannel.OnlineFilesBatch]: z.tuple([OnlineFilesBatchChannelSchema]),
   [IpcChannel.OnlineFileDelete]: z.tuple([OnlineFileDeleteChannelSchema]),
-  // 在线工作区/迁移频道（M3-B 任务 3）
+  // 在线工作区/迁移频道（M3-B 任务 3）。计划 C 任务 1 会话表化：activate 载荷 {workspaceId}；
+  // close 可带 {workspaceId?}（可选元素兼容无参——关活跃）。
   [IpcChannel.OnlineWorkspaceOpen]: z.tuple([OnlineWorkspaceOpenChannelSchema]),
-  [IpcChannel.OnlineWorkspaceClose]: z.tuple([]),
+  [IpcChannel.OnlineWorkspaceActivate]: z.tuple([OnlineWorkspaceIdSchema]),
+  [IpcChannel.OnlineWorkspaceClose]: z.tuple([z.object({ workspaceId: z.string().min(1).optional() }).optional()]),
   [IpcChannel.OnlineTreeView]: z.tuple([OnlineWorkspaceIdSchema]),
   [IpcChannel.OnlineMigrateScan]: z.tuple([OnlineMigrateScanChannelSchema]),
   [IpcChannel.OnlineMigrateWrite]: z.tuple([OnlineMigrateWriteChannelSchema]),
@@ -615,21 +617,28 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.OnlineFileDelete:
         return requireOnline().deleteFile(a[0] as Parameters<OnlineSession["deleteFile"]>[0]);
       // 在线工作区/迁移频道（M3-B 任务 3）：open 与 ws:open 同一清理链（先 abort 活动压测，
-      // 裁定 E 互斥的接线点）；树取回失败不残留半开会话（closeWorkspace 后原样上抛）。
+      // 裁定 E 互斥的接线点）。计划 C 任务 1 会话表化：树取回失败仅当表空才回滚（防误关
+      // 其他驻留工作区；表非空时半开工作区留表，可显式激活后重试视图）。
       case IpcChannel.OnlineWorkspaceOpen: {
         stress.abortActive();
         const input = a[0] as OnlineWorkspaceOpenInput;
         const sessionOnline = requireOnline();
+        const tableWasEmpty = sessionOnline.residentIds.length === 0;
         sessionOnline.openWorkspace(input);
         try {
           return await sessionOnline.getTreeView(input.workspaceId);
         } catch (e) {
-          sessionOnline.closeWorkspace();
+          if (tableWasEmpty) sessionOnline.closeWorkspace(input.workspaceId);
           throw e;
         }
       }
+      // 计划 C 任务 1 会话表化：activate 显式切换活跃驻留工作区；close 载荷可带 workspaceId
+      // （出表指定工作区），无参关活跃。
+      case IpcChannel.OnlineWorkspaceActivate:
+        requireOnline().activateWorkspace((a[0] as { workspaceId: string }).workspaceId);
+        return undefined;
       case IpcChannel.OnlineWorkspaceClose:
-        requireOnline().closeWorkspace();
+        requireOnline().closeWorkspace((a[0] as { workspaceId?: string } | undefined)?.workspaceId);
         return undefined;
       case IpcChannel.OnlineTreeView:
         return requireOnline().getTreeView((a[0] as { workspaceId: string }).workspaceId);

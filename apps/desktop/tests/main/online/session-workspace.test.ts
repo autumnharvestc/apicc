@@ -1,7 +1,10 @@
-// M3-B 任务 3：online session 工作区状态扩展——当前在线工作区 + 树缓存
-// （plan 任务 3 步骤 2：main/online/session.ts 扩展）。open/close 为纯状态操作（不发网络）；
-// getTreeView 取树（缓存：第二次不重发请求、内容变更即失效）、映射 TreeNodeDTO（裁定 A）；
-// 切换/关闭清缓存。文件版本由渲染层编辑缓冲自持，main 不做文件内容缓存（次要 5 顺修备案）。
+// 计划 C 任务 1：online session 会话表化——工作区驻留与显式激活。
+// 单槽（workspaceState/treeCache 单值）→ Map<workspaceId, {workspaceState, treeCache}> + 活跃指针：
+// openWorkspace 入表激活（已驻留则更新状态并清该工作区树缓存）；activateWorkspace 纯切指针
+// （表中有且已登录）；closeWorkspace 带 id 出表/无参关活跃，出表不自动切活跃；
+// requireWorkspace 仍限活跃工作区（防跨工作区误写）；logout 清全表；树缓存按工作区隔离。
+// open/close 为纯状态操作（不发网络）；getTreeView 首取后按工作区缓存、内容变更即失效。
+// 文件版本由渲染层编辑缓冲自持，main 不做文件内容缓存（次要 5 顺修备案）。
 import { describe, expect, it } from "vitest";
 import { createOnlineSession, onlineTreeToDto } from "../../../src/main/online/session.js";
 import { createOnlineClient } from "../../../src/main/online/client.js";
@@ -41,7 +44,10 @@ function setup(tree: typeof TREE = TREE, groups: GroupRow[] = []) {
     };
     calls.push(req);
     if (req.url.endsWith("/auth/login")) return LOGIN_OK();
-    if (req.url.endsWith("/tree")) return json(200, tree);
+    // /tree 按请求 URL 回显 workspaceId（表语义：多工作区各自的树可辨别）
+    const wsMatch = req.url.match(/workspaces\/([^/?]+)\/tree/);
+    const wsId = wsMatch ? decodeURIComponent(wsMatch[1]!) : tree.workspaceId;
+    if (req.url.endsWith("/tree")) return json(200, { ...tree, workspaceId: wsId });
     if (req.method === "GET" && req.url.includes("/groups")) return json(200, groups);
     if (req.method === "GET" && req.url.includes("/files?")) {
       const paths = (req.url.split("paths=")[1] ?? "").split(",").map(decodeURIComponent);
@@ -70,15 +76,16 @@ function setup(tree: typeof TREE = TREE, groups: GroupRow[] = []) {
 }
 
 const WS = { workspaceId: "ws-1", name: "团队空间", myRole: "EDITOR" as const };
+const WS2 = { workspaceId: "ws-2", name: "另一空间", myRole: "VIEWER" as const };
+const treeCalls = (calls: CapturedRequest[]) => calls.filter((c) => c.url.endsWith("/tree")).length;
 
-describe("online session 工作区状态（任务 3）", () => {
-  it("openWorkspace 记录状态（不发网络）；getTreeView 首取服务端树并映射 DTO + 项目角色，树缓存生效（第二次不再发 /tree）", async () => {
+describe("online session 工作区会话表（计划 C 任务 1）", () => {
+  it("openWorkspace 入表并置活跃（不发网络）；getTreeView 首取服务端树并映射 DTO + 项目角色，树缓存生效（第二次不再发 /tree）", async () => {
     const { session, calls } = setup();
     await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
-    const treeCallsBefore = calls.filter((c) => c.url.endsWith("/tree")).length;
     session.openWorkspace(WS);
     expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
-    expect(calls.filter((c) => c.url.endsWith("/tree")).length).toBe(treeCallsBefore);
+    expect(treeCalls(calls)).toBe(0);
     const view = await session.getTreeView("ws-1");
     expect(view.workspaceId).toBe("ws-1");
     expect(view.name).toBe("团队空间");
@@ -88,29 +95,115 @@ describe("online session 工作区状态（任务 3）", () => {
     expect(view.tree.label).toBe("团队空间");
     // 缓存：第二次 getTreeView 不重发 /tree 请求
     await session.getTreeView("ws-1");
-    expect(calls.filter((c) => c.url.endsWith("/tree")).length).toBe(treeCallsBefore + 1);
+    expect(treeCalls(calls)).toBe(1);
   });
 
-  it("closeWorkspace 清状态与树缓存；之后 getTreeView 抛「尚未打开在线工作区」", async () => {
+  it("双工作区驻留：open 第二个工作区不清第一个——树缓存按工作区隔离，activate 来回切换各自命中缓存", async () => {
+    const { session, calls } = setup();
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    session.openWorkspace(WS);
+    const view1 = await session.getTreeView("ws-1");
+    session.openWorkspace(WS2);
+    const view2 = await session.getTreeView("ws-2");
+    expect(treeCalls(calls)).toBe(2); // 各工作区首取一次
+    // ws-1 驻留未被覆盖（open 不再是覆盖式单槽）：切回后缓存命中、树内容按工作区隔离
+    session.activateWorkspace("ws-1");
+    const view1Again = await session.getTreeView("ws-1");
+    expect(treeCalls(calls)).toBe(2);
+    expect(view1Again).toEqual(view1);
+    expect(view1Again.tree.id).toBe("ws-1");
+    session.activateWorkspace("ws-2");
+    expect(await session.getTreeView("ws-2")).toEqual(view2);
+    expect(treeCalls(calls)).toBe(2);
+  });
+
+  it("requireWorkspace 仍限活跃工作区：驻留但非活跃的 id 取视图拒绝「尚未打开在线工作区」（防跨工作区误写）", async () => {
     const { session } = setup();
     await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
     session.openWorkspace(WS);
-    await session.getTreeView("ws-1");
-    session.closeWorkspace();
-    expect(session.workspace).toBeNull();
+    session.openWorkspace(WS2);
+    // ws-1 仍驻留但非活跃：视图请求拒绝（切换只由 activateWorkspace 显式驱动）
     await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未打开在线工作区/);
+    session.activateWorkspace("ws-1");
+    await expect(session.getTreeView("ws-2")).rejects.toThrow(/尚未打开在线工作区/);
+    expect((await session.getTreeView("ws-1")).workspaceId).toBe("ws-1");
   });
 
-  it("切换工作区（openWorkspace 覆盖）重置树缓存：对新 id 重发 /tree；不匹配的 id 拒绝", async () => {
+  it("activateWorkspace：表中有且已登录才切活跃；表中无/未登录 → 「尚未打开在线工作区」口径错误", async () => {
+    const { session } = setup();
+    session.openWorkspace(WS);
+    // 未登录：即使表中已有也不切（激活前提 = 登录态 + 驻留）
+    expect(() => session.activateWorkspace("ws-1")).toThrow(/尚未打开在线工作区/);
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    session.openWorkspace(WS2);
+    session.activateWorkspace("ws-1"); // 表中有且已登录 → 纯切指针
+    expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
+    expect(() => session.activateWorkspace("ws-404")).toThrow(/尚未打开在线工作区/); // 表中无
+  });
+
+  it("closeWorkspace(id) 出表指定工作区：非活跃出表不动活跃指针（不自动切）", async () => {
     const { session, calls } = setup();
     await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
     session.openWorkspace(WS);
     await session.getTreeView("ws-1");
-    session.openWorkspace({ workspaceId: "ws-2", name: "另一空间", myRole: "VIEWER" });
+    session.openWorkspace(WS2);
     await session.getTreeView("ws-2");
-    expect(calls.filter((c) => c.url.endsWith("/tree")).length).toBe(2);
-    await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未打开在线工作区/);
+    session.closeWorkspace("ws-1");
+    // 活跃指针不动：仍是 ws-2；ws-1 已出表（activate 拒绝）
     expect(session.workspace).toEqual({ id: "ws-2", name: "另一空间", myRole: "VIEWER" });
+    expect(() => session.activateWorkspace("ws-1")).toThrow(/尚未打开在线工作区/);
+    // ws-2 的缓存不受影响：视图命中不重发 /tree
+    await session.getTreeView("ws-2");
+    expect(treeCalls(calls)).toBe(2);
+  });
+
+  it("closeWorkspace() 无参关活跃：出表后活跃置 null 且不自动切其他驻留工作区", async () => {
+    const { session } = setup();
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    session.openWorkspace(WS);
+    await session.getTreeView("ws-1");
+    session.openWorkspace(WS2);
+    await session.getTreeView("ws-2");
+    session.closeWorkspace();
+    expect(session.workspace).toBeNull();
+    // 不自动切：ws-1 仍驻留但活跃为 null，取视图/未显式激活前拒绝
+    await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未打开在线工作区/);
+    // ws-1 仍在表中：显式激活后恢复
+    session.activateWorkspace("ws-1");
+    expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
+    expect(await session.getTreeView("ws-1")).toBeDefined();
+  });
+
+  it("openWorkspace 已驻留工作区：更新 workspaceState 且只清该工作区树缓存（重开重发 /tree，其他工作区缓存保留）", async () => {
+    const { session, calls } = setup();
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    session.openWorkspace(WS);
+    await session.getTreeView("ws-1");
+    session.openWorkspace(WS2);
+    await session.getTreeView("ws-2");
+    expect(treeCalls(calls)).toBe(2);
+    // 重开 ws-1（改名）：更新状态 + 清 ws-1 缓存 + 置活跃
+    session.openWorkspace({ ...WS, name: "改名空间" });
+    expect(session.workspace).toEqual({ id: "ws-1", name: "改名空间", myRole: "EDITOR" });
+    const reopened = await session.getTreeView("ws-1");
+    expect(reopened.name).toBe("改名空间");
+    expect(treeCalls(calls)).toBe(3); // ws-1 缓存被清 → 重发
+    // ws-2 缓存保留：切回不重发
+    session.activateWorkspace("ws-2");
+    await session.getTreeView("ws-2");
+    expect(treeCalls(calls)).toBe(3);
+  });
+
+  it("logout 清全表：全部驻留工作区出表、活跃指针清空", async () => {
+    const { session } = setup();
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    session.openWorkspace(WS);
+    session.openWorkspace(WS2);
+    await session.logout();
+    expect(session.workspace).toBeNull();
+    await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未打开在线工作区/);
+    expect(() => session.activateWorkspace("ws-1")).toThrow(/尚未打开在线工作区/);
+    expect(() => session.activateWorkspace("ws-2")).toThrow(/尚未打开在线工作区/);
   });
 
   it("putFile 成功前移版本；文件版本由渲染层自持（main 不缓存文件内容——次要 5 顺修备案）", async () => {
@@ -128,11 +221,29 @@ describe("online session 工作区状态（任务 3）", () => {
     session.openWorkspace(WS);
     await session.getTreeView("ws-1");
     await session.getTreeView("ws-1"); // 缓存命中：/tree 仍只发过 1 次
-    expect(calls.filter((c) => c.url.endsWith("/tree"))).toHaveLength(1);
+    expect(treeCalls(calls)).toBe(1);
     // 推送成功 → 树缓存失效，下次取视图重发 /tree
     await session.putFile({ workspaceId: "ws-1", path: `${PID}/collections/c/apis/a/api.yaml`, content: "new", baseVersion: 2 });
     await session.getTreeView("ws-1");
-    expect(calls.filter((c) => c.url.endsWith("/tree"))).toHaveLength(2);
+    expect(treeCalls(calls)).toBe(2);
+  });
+
+  it("内容变更只失效对应工作区的树缓存：put ws-1 不清 ws-2 缓存（按工作区隔离）", async () => {
+    const { session, calls } = setup();
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    session.openWorkspace(WS);
+    await session.getTreeView("ws-1");
+    session.openWorkspace(WS2);
+    await session.getTreeView("ws-2");
+    expect(treeCalls(calls)).toBe(2);
+    await session.putFile({ workspaceId: "ws-1", path: `${PID}/collections/c/apis/a/api.yaml`, content: "new", baseVersion: 2 });
+    // ws-1 缓存失效 → 重发；ws-2 缓存保留
+    session.activateWorkspace("ws-1");
+    await session.getTreeView("ws-1");
+    expect(treeCalls(calls)).toBe(3);
+    session.activateWorkspace("ws-2");
+    await session.getTreeView("ws-2");
+    expect(treeCalls(calls)).toBe(3);
   });
 
   it("未登录时 openWorkspace 可记录状态，但 getTreeView 抛「尚未登录」（内容 API 需 token）", async () => {

@@ -57,7 +57,9 @@ const api = {
   onlineFileDelete: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineFileDelete, input),
   // 在线工作区浏览/迁移（M3-B 任务 3）：单参频道包对象，主进程按契约 schema 校验
   onlineWorkspaceOpen: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineWorkspaceOpen, input),
-  onlineWorkspaceClose: () => ipcRenderer.invoke(IpcChannel.OnlineWorkspaceClose),
+  // 计划 C 任务 1 会话表化：activate 显式切换活跃驻留工作区；close 可带 workspaceId（无参关活跃）
+  onlineWorkspaceActivate: (workspaceId: string) => ipcRenderer.invoke(IpcChannel.OnlineWorkspaceActivate, { workspaceId }),
+  onlineWorkspaceClose: (input?: { workspaceId?: string }) => ipcRenderer.invoke(IpcChannel.OnlineWorkspaceClose, input),
   onlineTreeView: (workspaceId: string) => ipcRenderer.invoke(IpcChannel.OnlineTreeView, { workspaceId }),
   onlineMigrateScan: (dir: string) => ipcRenderer.invoke(IpcChannel.OnlineMigrateScan, { dir }),
   onlineMigrateWrite: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineMigrateWrite, input),
