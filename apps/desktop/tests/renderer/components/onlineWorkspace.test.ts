@@ -367,7 +367,7 @@ describe("OnlineLoginDialog 工作区列表（打开在线工作区入口）", (
     const { i18n } = createI18nInstance();
     f.online.dialogOpen = true;
     const wrapper = mount(OnlineLoginDialog, {
-      props: { online: f.online, workspace: f.workspace },
+      props: { online: f.online, apicc: f.api, workspace: f.workspace },
       global: { plugins: [i18n] },
     });
     await flushPromises();
