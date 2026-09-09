@@ -14,9 +14,17 @@ async function seeded() {
   api.seedWorkspace();
   const ws = useWorkspaceStore(api);
   await ws.open("/tmp/ws");
-  const apiNode = ws.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
+  const groupNode = ws.tree!.children![0]!;
+  const projectNode = groupNode.children![0]!;
+  const collectionNode = projectNode.children![0]!;
+  const apiNode = collectionNode.children![0]!;
   const editor = useEditorStore(api);
-  return { api, ws, editor, apiNode };
+  return { api, ws, editor, groupNode, projectNode, collectionNode, apiNode };
+}
+
+/** 经替身再建一个接口（计划 C 任务 4 会话表化用例的第二会话）。 */
+async function createApi(ctx: Awaited<ReturnType<typeof seeded>>, name: string) {
+  return ctx.api.nodeCreate({ kind: "api", parentId: ctx.collectionNode.id, name });
 }
 
 describe("editor store", () => {
@@ -110,5 +118,78 @@ describe("editor store 多协议 fixture（M5-B T1，D2）", () => {
       envelope: "<Envelope>{{payload}}</Envelope>",
       soapAction: "urn:Action",
     });
+  });
+});
+
+// —— 计划 C 任务 4：编辑器会话表化——草稿按 apiId 驻留（不变量 2：切签免确认、草稿驻留）——
+describe("editor 会话表化（计划 C 任务 4）", () => {
+  it("双接口会话并存：load A 改 url → load B（api 换槽且非脏）→ load A 回切草稿原样驻留（定位槽不重拉）", async () => {
+    const ctx = await seeded();
+    const apiB = await createApi(ctx, "接口B");
+    const gets: string[] = [];
+    const originalGet = ctx.api.apiGet.bind(ctx.api);
+    ctx.api.apiGet = async (id: string) => {
+      gets.push(id);
+      return originalGet(id);
+    };
+    await ctx.editor.load(ctx.apiNode.id);
+    ctx.editor.api!.url = "{{baseUrl}}/draft-a";
+    expect(ctx.editor.dirty).toBe(true);
+    await ctx.editor.load(apiB.id); // 未驻留：拉取建槽
+    expect(ctx.editor.api?.name).toBe("接口B");
+    expect(ctx.editor.dirty).toBe(false); // B 的会话是干净槽
+    await ctx.editor.load(ctx.apiNode.id); // 已驻留：仅切活跃指针
+    expect(ctx.editor.api?.url).toBe("{{baseUrl}}/draft-a"); // 草稿驻留
+    expect(ctx.editor.dirty).toBe(true);
+    expect(gets).toEqual([ctx.apiNode.id, apiB.id]); // 回切 A 不重拉
+    // 会话表形状：双槽驻留
+    expect(Object.keys(ctx.editor.sessions).sort()).toEqual([ctx.apiNode.id, apiB.id].sort());
+    expect(ctx.editor.activeApiId).toBe(ctx.apiNode.id);
+  });
+
+  it("save/reloadEnvs 写活跃槽：B 活跃时 save 只落 B，A 草稿与快照不受牵连", async () => {
+    const ctx = await seeded();
+    const apiB = await createApi(ctx, "接口B");
+    const savedIds: string[] = [];
+    const originalSave = ctx.api.apiSave.bind(ctx.api);
+    ctx.api.apiSave = async (input) => {
+      savedIds.push((input as { id: string }).id);
+      return originalSave(input);
+    };
+    await ctx.editor.load(ctx.apiNode.id);
+    ctx.editor.api!.url = "/draft-a"; // A 脏
+    await ctx.editor.load(apiB.id);
+    ctx.editor.api!.url = "/draft-b"; // B 脏
+    await ctx.editor.save(); // 只保存活跃槽 B
+    expect(savedIds).toEqual([apiB.id]);
+    expect(ctx.editor.dirty).toBe(false); // B 快照复位
+    // reloadEnvs 同样只动活跃槽（M9-A1 语义保持：envs 重拉、api 快照不动）
+    ctx.editor.sessions[ctx.apiNode.id]!.envs = [{ id: "e1", name: "dev" }]; // A 槽预置旧清单
+    await ctx.editor.load(ctx.apiNode.id); // 切回 A（定位槽，envs 保留旧清单）
+    expect(ctx.editor.envs).toEqual([{ id: "e1", name: "dev" }]);
+    await ctx.editor.reloadEnvs(); // 按活跃接口重拉 → A 所属项目环境为空
+    expect(ctx.editor.envs).toEqual([]);
+    expect(ctx.editor.dirty).toBe(true); // reloadEnvs 只动 envs，api 快照不动（A 草稿仍脏）
+  });
+
+  it("evictProject：按 apiIds 驱逐会话槽；活跃槽被逐则 activeApiId 复位 null；其余会话驻留不受牵连", async () => {
+    const ctx = await seeded();
+    const apiB = await createApi(ctx, "接口B");
+    await ctx.editor.load(ctx.apiNode.id);
+    ctx.editor.api!.url = "/draft-a";
+    await ctx.editor.load(apiB.id);
+    ctx.editor.api!.url = "/draft-b"; // 活跃在 B
+    // 驱逐活跃槽 B：指针复位 null（编辑区空白），A 会话驻留不受牵连
+    ctx.editor.evictProject("project-b", [apiB.id]);
+    expect(ctx.editor.sessions[apiB.id]).toBeUndefined();
+    expect(ctx.editor.sessions[ctx.apiNode.id]).toBeDefined(); // A 会话驻留
+    expect(ctx.editor.activeApiId).toBeNull(); // 活跃槽被逐 → 复位
+    expect(ctx.editor.api).toBeNull();
+    expect(ctx.editor.dirty).toBe(false);
+    // 活跃槽不在驱逐集合：指针不动，草稿驻留
+    await ctx.editor.load(ctx.apiNode.id);
+    expect(ctx.editor.api?.url).toBe("/draft-a");
+    ctx.editor.evictProject("project-a", ["不存在的 id"]);
+    expect(ctx.editor.activeApiId).toBe(ctx.apiNode.id);
   });
 });

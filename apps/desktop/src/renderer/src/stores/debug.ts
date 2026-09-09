@@ -13,12 +13,18 @@ type SendFn = (input: DebugInput) => Promise<DebugOutput>;
  * send 取值——显式传入的 envName 参数优先（既有调用点不受影响），其次 selectedEnvName
  * （须在 editor.envs 中存在，否则回退 undefined）；用例取 selectedCaseId（须在当前
  * 接口 cases 中存在，否则回退 cases[0].id），无用例维持静默 return。
+ * 计划 C 任务 4：result 按 apiId 表化驻留——results: Record<apiId, DebugOutput>，send
+ * 写发送时接口的槽；result getter 按活跃接口读（注入 editor 依赖时跟随 editor.activeApiId，
+ * 未注入回落最近发送槽——旧装配面兼容）。切项目（setProject）不清其他接口结果。
  */
-export function useDebugStore(api: ApiccApi) {
+export function useDebugStore(api: ApiccApi, editor?: Editor) {
   return defineStore("debug", {
     state: () => ({
       sending: false,
-      result: null as DebugOutput | null,
+      /** 调试结果驻留表（key = apiId）：切接口/切项目签零丢失（计划全局不变量 2）。 */
+      results: {} as Record<string, DebugOutput>,
+      /** 最近发送的接口 id：未注入 editor 依赖时 result getter 的回落键（兼容面）。 */
+      lastResultApiId: null as string | null,
       error: null as string | null,
       // 环境选中态项目记忆（M10）：envByProject[projectId] = 该项目上次选的环境名；
       // activeProjectId 由组合根随项目切换写入。调试与压测共享同一状态源。
@@ -28,13 +34,22 @@ export function useDebugStore(api: ApiccApi) {
       selectedCaseId: null as string | null,
     }),
     getters: {
+      /**
+       * 活跃接口的调试结果（驻留表按活跃 apiId 取槽；无则 null）。
+       * 注入 editor 依赖 → 跟随 editor 活跃接口（组合根装配：useDebugStore(api, editor)）。
+       */
+      result(state): DebugOutput | null {
+        const apiId = editor ? editor.activeApiId : state.lastResultApiId;
+        return apiId !== null ? state.results[apiId] ?? null : null;
+      },
       /** 当前项目的环境选中（项目未激活或该项目从未选择过 = null/「无环境」）。 */
       projectEnvName(state): string | null {
         return state.activeProjectId ? state.envByProject[state.activeProjectId] ?? null : null;
       },
     },
     actions: {
-      /** 项目切换（M10）：activeProjectId 换挡；selectedEnvName 同步为该项目记忆值。 */
+      /** 项目切换（M10）：activeProjectId 换挡；selectedEnvName 同步为该项目记忆值。
+       *  结果驻留表不清（任务 4：切项目不清其他项目结果，驻留键是接口而非项目）。 */
       setProject(projectId: string | null) {
         this.activeProjectId = projectId;
         this.selectedEnvName = projectId ? this.envByProject[projectId] ?? null : null;
@@ -61,11 +76,14 @@ export function useDebugStore(api: ApiccApi) {
             ? this.selectedEnvName
             : undefined);
         if (!editor.api || !caseId) return;
+        const apiId = editor.apiId;
         this.sending = true;
         this.error = null;
         try {
           if (editor.dirty) await editor.save();
-          this.result = await sendFn({ apiId: editor.api.id, caseId, envName });
+          const output = await sendFn({ apiId: editor.api.id, caseId, envName });
+          this.results[apiId!] = output; // 驻留到发送时接口的槽（apiId 已由上方 editor.api 守卫非空）
+          this.lastResultApiId = apiId;
         } catch (e) {
           this.error = e instanceof Error ? e.message : String(e);
         } finally {

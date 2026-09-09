@@ -90,7 +90,8 @@ const { t } = useI18n();
 const workspace = useWorkspaceStore(apicc);
 const tree = useTreeStore(apicc, workspace);
 const editor = useEditorStore(apicc);
-const debug = useDebugStore(apicc);
+// 计划 C 任务 4：debug 结果按 apiId 驻留——注入 editor 使 result getter 跟随活跃接口
+const debug = useDebugStore(apicc, editor);
 // —— 视图面板 store（任务 8 装配）：与既有 store 同一组合根一次性创建 ——
 const cases = useCasesStore(apicc, editor);
 const envs = useEnvsStore(apicc);
