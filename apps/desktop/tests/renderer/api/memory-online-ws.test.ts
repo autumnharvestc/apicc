@@ -93,4 +93,45 @@ describe("memory 替身 onlineMigrateScan/Write（任务 3，真实文件面）"
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("scan 产物带 projectDir（groups/<组>/projects/<名> 二元组；根级文件 null）", async () => {
+    const { api } = await loggedIn();
+    const dir = mkdtempSync(join(tmpdir(), "apicc-mem-scan-dir-"));
+    try {
+      mkdirSync(join(dir, "groups", "电商", "projects", "宠物商店"), { recursive: true });
+      writeFileSync(join(dir, "apicc.workspace.yaml"), "id: ws\n", "utf8");
+      writeFileSync(join(dir, "groups", "电商", "projects", "宠物商店", "project.yaml"), "name: 宠物商店\n", "utf8");
+      const scan = await api.onlineMigrateScan(dir);
+      const byPath = new Map(scan.files.map((f) => [f.path, f]));
+      expect(byPath.get("apicc.workspace.yaml")!.projectDir).toBeNull();
+      expect(byPath.get("groups/电商/projects/宠物商店/project.yaml")!.projectDir).toEqual({ group: "电商", project: "宠物商店" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("memory 替身迁移映射桥 + 组清单（计划 C 任务 2，服务端同语义简化建模）", () => {
+  it("onlineProjectMapping：种子目录（示例分组/示例项目）→ 实体行（created=false 解析命中）；未知目录 → missing:true", async () => {
+    const { api } = await loggedIn();
+    const result = await api.onlineProjectMapping({
+      workspaceId: "ws-online-1",
+      entries: [
+        { group: "示例分组", project: "示例项目", createIfMissing: true },
+        { group: "新分组", project: "新项目", createIfMissing: true },
+      ],
+    });
+    expect(result.mappings).toEqual([
+      { group: "示例分组", project: "示例项目", groupId: ONLINE_SEED_GROUP_ID, projectId: ONLINE_SEED_PROJECT_ID, created: false },
+      { group: "新分组", project: "新项目", missing: true },
+    ]);
+  });
+
+  it("onlineGroupsList：种子分组清单（groupId → 组名反查数据源）；未登录拒绝", async () => {
+    const { api } = await loggedIn();
+    expect(await api.onlineGroupsList("ws-online-1")).toEqual([
+      { id: ONLINE_SEED_GROUP_ID, name: "示例分组", isDefault: true, createdAt: expect.any(String) },
+    ]);
+    await expect(createMemoryApi().onlineGroupsList("ws-online-1")).rejects.toThrow(/尚未登录/);
+  });
 });

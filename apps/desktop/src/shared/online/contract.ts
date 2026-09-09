@@ -101,6 +101,36 @@ export const OnlineBatchResultSchema = z.object({ results: z.array(OnlineBatchRe
 /** GET files 查询：≤200 路径/批。 */
 export const OnlineGetFilesInputSchema = z.object({ paths: z.array(z.string()).min(1).max(200) });
 
+// —— 组织分组只读面（计划 C 任务 2 迁移拉取：groupId → 组名反查；§4 GET groups，成员可读）——
+export const OnlineGroupSchema = z.object({ id: z.string(), name: z.string(), isDefault: z.boolean(), createdAt: z.string() });
+
+// —— 迁移映射桥（计划 C 任务 1 服务端端点 / 任务 2 客户端消费）——
+/** POST /workspaces/{id}/project-mapping 载荷条目：本地名称目录二元组 + 按需建开关（名称约束与组织 API 一致，≤200 条/批）。 */
+export const OnlineMappingEntrySchema = z.object({
+  group: z.string().min(1).max(64),
+  project: z.string().min(1).max(64),
+  createIfMissing: z.boolean(),
+});
+/** 载荷：{ entries: [...] }（服务端 @NotEmpty + 容器元素校验；批量上限 200 → batch_too_large）。 */
+export const OnlineMappingInputSchema = z.object({ entries: z.array(OnlineMappingEntrySchema).min(1).max(200) });
+/**
+ * 响应行三态（服务端 NON_NULL——缺席字段不序列化，故除 group/project 外全部 optional）：
+ * ①解析/建成 {group, project, groupId, projectId, created}（created=true 仅本轮新建过实体）；
+ * ②缺失未建（createIfMissing=false 或替身简化建模）{group, project, missing: true}；
+ * ③请求创建但权限不足 {group, project, forbidden: true}（行级 403 语义，部分成功不整批失败）。
+ */
+export const OnlineMappingRowSchema = z.object({
+  group: z.string(),
+  project: z.string(),
+  groupId: z.string().optional(),
+  projectId: z.string().optional(),
+  created: z.boolean().optional(),
+  missing: z.boolean().optional(),
+  forbidden: z.boolean().optional(),
+});
+/** 响应：{ mappings: [...] }（逐条目部分成功——单行不建实体不整批失败）。 */
+export const OnlineMappingResultSchema = z.object({ mappings: z.array(OnlineMappingRowSchema) });
+
 /** IPC/客户端共用的 baseUrl 形状：自托管服务端，http/https 均可（尾随 / 由 client 归一）。 */
 export const OnlineBaseUrlSchema = z
   .string()
@@ -129,3 +159,7 @@ export type OnlinePutFileResult = z.infer<typeof OnlinePutFileResultSchema>;
 export type OnlineBatchEntry = z.infer<typeof OnlineBatchEntrySchema>;
 export type OnlineBatchInput = z.infer<typeof OnlineBatchInputSchema>;
 export type OnlineBatchResult = z.infer<typeof OnlineBatchResultSchema>;
+export type OnlineGroup = z.infer<typeof OnlineGroupSchema>;
+export type OnlineMappingEntry = z.infer<typeof OnlineMappingEntrySchema>;
+export type OnlineMappingRow = z.infer<typeof OnlineMappingRowSchema>;
+export type OnlineMappingResult = z.infer<typeof OnlineMappingResultSchema>;

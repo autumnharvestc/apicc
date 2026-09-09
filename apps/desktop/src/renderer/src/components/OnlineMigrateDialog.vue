@@ -112,6 +112,8 @@ async function runMigrate(direction: "pull" | "push") {
             <li v-for="entry in result.details" :key="entry.path">
               <span class="detail-path">{{ entry.path }}</span>
               <span class="detail-action">{{ actionText(entry.action) }}</span>
+              <!-- 退化注记（计划 C 任务 2）：拉取孤儿 projectId 按服务端实体路径原样落盘时标注 -->
+              <span v-if="entry.note" class="detail-note">{{ entry.note }}</span>
             </li>
           </ul>
         </div>
@@ -164,6 +166,11 @@ async function runMigrate(direction: "pull" | "push") {
 }
 .detail-action {
   color: var(--text-muted, #666);
+}
+.detail-note {
+  display: block;
+  color: var(--text-muted, #999);
+  font-size: 11px;
 }
 .hint {
   font-size: 12px;

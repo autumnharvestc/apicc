@@ -121,6 +121,37 @@ describe("onlineClient 请求拼装", () => {
     expect(calls[0]!.body).toEqual({ files: [{ path: "a.yaml", content: "x", baseVersion: 0 }] });
   });
 
+  it("onlineProjectMapping：POST /workspaces/{id}/project-mapping + { entries: [...] } 体（迁移映射桥，计划 C 任务 1 契约）", async () => {
+    // 响应行三态：建成行（created 标记本轮新建）+ 缺失行 + 越权行（NON_NULL 缺席字段不序列化）
+    const result = {
+      mappings: [
+        { group: "电商", project: "宠物商店", groupId: "g-1", projectId: "p-1", created: true },
+        { group: "电商", project: "缺项目", missing: true },
+        { group: "电商", project: "无权项目", forbidden: true },
+      ],
+    };
+    const { calls, impl } = fetchStub(() => json(200, result));
+    const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
+    const entries = [
+      { group: "电商", project: "宠物商店", createIfMissing: true },
+      { group: "电商", project: "缺项目", createIfMissing: false },
+    ];
+    expect(await client.onlineProjectMapping("ws-1", entries)).toEqual(result);
+    expect(calls[0]!.method).toBe("POST");
+    expect(calls[0]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/project-mapping`);
+    expect(calls[0]!.headers["Authorization"]).toBe("Bearer tok-1");
+    expect(calls[0]!.body).toEqual({ entries });
+  });
+
+  it("listGroups：GET /workspaces/{id}/groups（迁移拉取 groupId → 组名反查数据源）", async () => {
+    const rows = [{ id: "g-1", name: "默认分组", isDefault: true, createdAt: "2026-09-09T00:00:00Z" }];
+    const { calls, impl } = fetchStub(() => json(200, rows));
+    const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
+    expect(await client.listGroups("ws-1")).toEqual(rows);
+    expect(calls[0]!.method).toBe("GET");
+    expect(calls[0]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/groups`);
+  });
+
   it("deleteFile：DELETE ?baseVersion= → 204 → void", async () => {
     const { calls, impl } = fetchStub(() => new Response(null, { status: 204 }));
     const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });

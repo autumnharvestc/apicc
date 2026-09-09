@@ -46,10 +46,13 @@ import type {
   OnlineFileDeleteInput,
   OnlineFilePutInput,
   OnlineFilesResult,
+  OnlineGroup,
   OnlineLoginInput,
   OnlineLoginOutput,
+  OnlineMappingResult,
   OnlineMigrateScanResult,
   OnlineMigrateWriteInput,
+  OnlineProjectMappingInput,
   OnlinePushOutcome,
   OnlineRegisterChannelInput,
   OnlineResumeInput,
@@ -216,10 +219,14 @@ export interface ApiccApi {
   onlineWorkspaceClose(): Promise<void>;
   /** 当前在线工作区视图（树缓存：首次取 /tree，之后复用；切换/推送后经此刷新）。 */
   onlineTreeView(workspaceId: string): Promise<OnlineWorkspaceView>;
-  /** 扫描本地目录：/ 相对路径 + sha-256 + utf8 内容（跳过 .apicc/.git 生成物）。 */
+  /** 扫描本地目录：/ 相对路径 + sha-256 + utf8 内容（跳过 .apicc/.git 生成物）+ 项目目录归属。 */
   onlineMigrateScan(dir: string): Promise<OnlineMigrateScanResult>;
   /** 迁移拉取落盘：按相对路径写目标目录（≤200/批；路径过契约规则，越界拒绝）。 */
   onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }>;
+  /** 迁移映射桥（计划 C 任务 2）：本地名称目录二元组 → 服务端实体（行级三态：建成/missing/forbidden）。 */
+  onlineProjectMapping(input: OnlineProjectMappingInput): Promise<OnlineMappingResult>;
+  /** 组织分组只读清单（计划 C 任务 2 迁移拉取：groupId → 组名反查）。 */
+  onlineGroupsList(workspaceId: string): Promise<OnlineGroup[]>;
   // —— AI 频道（M6-C 任务 1 登记 / 任务 2 真链路，规格 §2 D2/D4）——
   /** 保存 AI 配置：baseUrl/model 由渲染层 localStorage 持久化；apiKey 非空时经 main 入安全存储（省略/空串 = 保持既有）。 */
   aiSaveConfig(input: AiSaveConfigInput): Promise<AiKeyStatus>;

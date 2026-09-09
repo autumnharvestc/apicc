@@ -5,7 +5,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ApiDefinitionSchema } from "@apicc/core/schema";
 import type { ApiDefinition } from "@apicc/core";
 import { OnlineBaseUrlSchema, type OnlineRole, type OnlineTreeProject, type OnlineUser, type OnlineVersionConflict, type OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
-import { chunk, planPull, planPush } from "../../../shared/online/migrate.js";
+import { chunk, planPull, planPush, restoreLocalPaths, toEntityPath, type LocalFileRow, type ProjectDirRef } from "../../../shared/online/migrate.js";
+import type { OnlineGroup } from "../../../shared/online/contract.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { MigrationResult, OnlineServerProfile } from "../../../shared/online/types.js";
 import type { ApiccApi } from "../../../shared/types.js";
@@ -450,9 +451,11 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       },
 
       /**
-       * 迁移-拉取到本地目录（裁定 D）：getTree → 本地扫描 hash 比对（同 hash 跳过）→
-       * 分批（≤200）取内容 → 分批落盘 → 结果清单（新拉/更新/跳过计数 + 明细）。
-       * 单活动护栏：进行中二次调用直接返回。
+       * 迁移-拉取到本地目录（裁定 D + 计划 C 任务 2 映射桥）：getTree（实体寻址）+ groups
+       * 清单（groupId → 组名反查）→ `<projectId>/...` 还原本地名称树路径（项目名取
+       * tree.projects；孤儿 projectId 退化为实体路径原样落盘并在明细注记）→ 本地扫描 hash
+       * 比对（同 hash 跳过）→ 分批（≤200）按实体路径取内容 → 按本地名称路径落盘 → 结果
+       * 清单（明细 path 统一本地名称形态）。单活动护栏：进行中二次调用直接返回。
        */
       async migratePull(dir: string): Promise<void> {
         if (this.migrating || !this.activeWorkspace) return;
@@ -462,24 +465,41 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         this.error = null;
         try {
           const workspaceId = this.activeWorkspace.id;
-          const [scan, tree] = await Promise.all([api.onlineMigrateScan(dir), api.onlineTreeGet(workspaceId)]);
-          const plan = planPull(tree.files, scan.files);
+          const [scan, tree, groups] = await Promise.all([
+            api.onlineMigrateScan(dir),
+            api.onlineTreeGet(workspaceId),
+            api.onlineGroupsList(workspaceId),
+          ]);
+          // 实体路径 → 本地名称路径还原（项目名=tree.projects、组名=groups 清单；双向对照表
+          // 同时服务取数（本地→实体）与取回内容落盘行（实体→本地）的路径换算）
+          const rows = restoreLocalPaths(tree.files, tree.projects, new Map(groups.map((g: OnlineGroup) => [g.id, g.name])));
+          const entityByLocal = new Map(rows.map((r) => [r.localPath, r.serverPath]));
+          const localByEntity = new Map(rows.map((r) => [r.serverPath, r.localPath]));
+          const orphanLocals = new Set(rows.filter((r) => r.orphan).map((r) => r.localPath));
+          const restored = tree.files.map((file) => ({ ...file, path: localByEntity.get(file.path) ?? file.path }));
+          const plan = planPull(restored, scan.files);
           const contents: Array<{ path: string; content: string }> = [];
           let done = 0;
           for (const batch of chunk(plan.toFetch, 200)) {
-            const result = await api.onlineFilesGet({ workspaceId, paths: batch });
-            for (const file of result.files) contents.push({ path: file.path, content: file.content });
+            const result = await api.onlineFilesGet({ workspaceId, paths: batch.map((p) => entityByLocal.get(p) ?? p) });
+            for (const file of result.files) contents.push({ path: localByEntity.get(file.path) ?? file.path, content: file.content });
             this.migrationProgress = `${(done += batch.length)}/${plan.toFetch.length}`;
           }
           const written: string[] = [];
           for (const batch of chunk(contents, 200)) {
             written.push(...(await api.onlineMigrateWrite({ dir, files: batch })).written);
           }
-          // 取数批内 missing（权限恰变/文件刚删）按 failed 计，不入落盘清单
+          // 取数批内 missing（权限恰变/文件刚删）按 failed 计，不入落盘清单；
+          // 孤儿退化行（按实体路径原样落盘）在明细注记
           const writtenSet = new Set(written);
-          const details = plan.details.map((d) =>
-            d.action !== "skipped" && !writtenSet.has(d.path) ? { path: d.path, action: "failed" as const } : d,
-          );
+          const details = plan.details.map((d): MigrationResult["details"][number] => {
+            if (d.action === "skipped" || writtenSet.has(d.path)) {
+              return orphanLocals.has(d.path)
+                ? { ...d, note: `分组/项目名不可得，按服务端实体路径落盘: ${entityByLocal.get(d.path) ?? d.path}` }
+                : d;
+            }
+            return { path: d.path, action: "failed" as const };
+          });
           this.migrationResult = {
             direction: "pull",
             pulled: details.filter((d) => d.action === "pulled").length,
@@ -499,9 +519,14 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       },
 
       /**
-       * 迁移-推送本地目录（裁定 D）：本地扫描 → 与服务端 tree 比对（新文件 baseVersion=0、
-       * 变更带服务端 version、同 hash 跳过——从不盲目覆盖）→ 分批 batch → 结果清单
-       * （冲突默认跳过并列出）→ 刷新在线树（新文件可见）。
+       * 迁移-推送本地目录（裁定 D + 计划 C 任务 2 映射桥）：本地扫描（名称树）→ 提取去重
+       * 项目目录清单 → 映射端点（createIfMissing=true 按需建，≤200/批）→ 项目内文件路径
+       * 换算 `<projectId>/<项目内相对路径>`（服务端实体寻址）→ 与服务端 tree 比对（新文件
+       * baseVersion=0、变更带服务端 version、同 hash 跳过——从不盲目覆盖）→ 分批 batch →
+       * 结果清单。根级文件（projectDir=null，如 apicc.workspace.yaml）不过映射、原路径直推；
+       * 映射行 missing/forbidden（缺失/无权建）→ 该项目全部文件计 failed（明细 path 统一
+       * 本地名称路径——用户可读，服务端实体路径不出 UI）。编排不缓存跨调用状态：同一本地
+       * 目录重复迁移映射到同一实体（幂等由服务端同 (组,项目) 解析保证）。
        */
       async migratePush(dir: string): Promise<void> {
         if (this.migrating || !this.activeWorkspace) return;
@@ -512,24 +537,62 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         try {
           const workspaceId = this.activeWorkspace.id;
           const [scan, tree] = await Promise.all([api.onlineMigrateScan(dir), api.onlineTreeGet(workspaceId)]);
-          const plan = planPush(scan.files, tree.files);
-          const details: MigrationResult["details"] = plan.skipped.map((path) => ({ path, action: "skipped" as const }));
+          // 1. 去重项目目录清单（扫描产物 projectDir；根级文件不参与映射）→ 映射桥（≤200/批）
+          const dirs = new Map<string, ProjectDirRef>();
+          for (const file of scan.files) {
+            if (file.projectDir) dirs.set(`${file.projectDir.group}/${file.projectDir.project}`, file.projectDir);
+          }
+          const projectIdByDir = new Map<string, string>();
+          for (const batch of chunk([...dirs.values()], 200)) {
+            const result = await api.onlineProjectMapping({
+              workspaceId,
+              entries: batch.map((d) => ({ group: d.group, project: d.project, createIfMissing: true })),
+            });
+            for (const row of result.mappings) {
+              if (row.projectId) projectIdByDir.set(`${row.group}/${row.project}`, row.projectId);
+              // missing/forbidden 行（三态之二）不进映射表 → 该项目文件在下方按 failed 呈现
+            }
+          }
+          // 2. 路径换算：项目内文件 → <projectId>/<项目内相对路径>；实体→本地对照表供明细
+          //    还原（batch 行 path 与 skipped 均为服务端路径，回显必须转回名称路径）
+          const localByEntity = new Map<string, string>();
+          const failedLocals: string[] = [];
+          const converted: LocalFileRow[] = [];
+          for (const file of scan.files) {
+            const projectId = file.projectDir ? projectIdByDir.get(`${file.projectDir.group}/${file.projectDir.project}`) : undefined;
+            const entityPath = projectId !== undefined ? toEntityPath(file.path, projectId) : null;
+            if (entityPath === null) {
+              if (file.projectDir) failedLocals.push(file.path); // 映射缺失/无权建（含路径-目录不一致的防护兜底）
+              else converted.push(file); // 根级文件原路径直推（不过映射）
+              continue;
+            }
+            converted.push({ path: entityPath, hash: file.hash, content: file.content });
+            localByEntity.set(entityPath, file.path);
+          }
+          // 3. 差异比对 + 分批推送（D8：新文件 baseVersion=0、变更带服务端 version、同 hash 跳过）
+          const plan = planPush(converted, tree.files);
+          const details: MigrationResult["details"] = plan.skipped.map((entityPath) => ({
+            path: localByEntity.get(entityPath) ?? entityPath,
+            action: "skipped" as const,
+          }));
+          for (const path of failedLocals) details.push({ path, action: "failed" });
           let pushed = 0;
           let conflicts = 0;
-          let failed = 0;
+          let failed = failedLocals.length;
           let done = 0;
           for (const batch of chunk(plan.entries, 200)) {
             const result = await api.onlineFilesBatch({ workspaceId, files: batch });
             for (const item of result.results) {
+              const path = localByEntity.get(item.path) ?? item.path;
               if (item.status === "pushed") {
                 pushed += 1;
-                details.push({ path: item.path, action: "pushed" });
+                details.push({ path, action: "pushed" });
               } else if (item.status === "conflict") {
                 conflicts += 1;
-                details.push({ path: item.path, action: "conflict" });
+                details.push({ path, action: "conflict" });
               } else {
                 failed += 1;
-                details.push({ path: item.path, action: item.status });
+                details.push({ path, action: item.status });
               }
             }
             this.migrationProgress = `${(done += batch.length)}/${plan.entries.length}`;

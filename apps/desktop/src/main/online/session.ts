@@ -26,6 +26,7 @@ import type {
   OnlineFilesGetInput,
   OnlineLoginInput,
   OnlineLoginOutput,
+  OnlineProjectMappingInput,
   OnlinePushOutcome,
   OnlineRegisterChannelInput,
   OnlineResumeOutput,
@@ -33,7 +34,7 @@ import type {
   OnlineWorkspaceOpenInput,
   OnlineWorkspaceView,
 } from "../../shared/online/types.js";
-import type { OnlineBatchResult, OnlineFilesResult, OnlinePutFileResult, OnlineTree, OnlineTreeFile, OnlineUser, OnlineWorkspaceCreated, OnlineWorkspaceSummary } from "../../shared/online/contract.js";
+import type { OnlineBatchResult, OnlineFilesResult, OnlineGroup, OnlineMappingResult, OnlinePutFileResult, OnlineTree, OnlineTreeFile, OnlineUser, OnlineWorkspaceCreated, OnlineWorkspaceSummary } from "../../shared/online/contract.js";
 
 /** 当前在线工作区状态（渲染层顶栏徽标/只读判定的数据源）。 */
 export interface OnlineWorkspaceState {
@@ -349,6 +350,16 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
         if (e instanceof OnlineConflictError) return { outcome: "conflict", conflict: e.conflict };
         throw e;
       }
+    },
+
+    /** 迁移映射桥（计划 C 任务 2）：本地名称目录 → 服务端实体（直通出口，行级三态由渲染层换算）。 */
+    async projectMapping(input: OnlineProjectMappingInput): Promise<OnlineMappingResult> {
+      return requireClient().onlineProjectMapping(input.workspaceId, input.entries);
+    },
+
+    /** 组织分组只读清单（计划 C 任务 2 迁移拉取：groupId → 组名反查数据源）。 */
+    async listGroups(workspaceId: string): Promise<OnlineGroup[]> {
+      return requireClient().listGroups(workspaceId);
     },
   };
 }

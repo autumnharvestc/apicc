@@ -76,10 +76,13 @@ import type {
   OnlineFilePutInput,
   OnlineFilesGetInput,
   OnlineFilesResult,
+  OnlineGroup,
   OnlineLoginInput,
   OnlineLoginOutput,
+  OnlineMappingResult,
   OnlineMigrateScanResult,
   OnlineMigrateWriteInput,
+  OnlineProjectMappingInput,
   OnlinePushOutcome,
   OnlineRegisterChannelInput,
   OnlineResumeInput,
@@ -226,6 +229,11 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
    *  消费到 canEdit（id 前缀匹配）认不出的项目行。 */
   function onlineProjectsRows(): OnlineTree["projects"] {
     return [{ id: ONLINE_SEED_PROJECT_ID, name: "示例项目", groupId: ONLINE_SEED_GROUP_ID, myRole: "EDITOR" as const }];
+  }
+
+  /** 在线替身的分组实体行（计划 C 任务 2）：groupId → 组名反查数据源，与项目行的 groupId 同源。 */
+  function onlineGroupsRows(): OnlineGroup[] {
+    return [{ id: ONLINE_SEED_GROUP_ID, name: "示例分组", isDefault: true, createdAt: new Date(0).toISOString() }];
   }
 
   /** 当前在线工作区（任务 3：open/close/tree:view 同构 main session 的纯状态语义）。 */
@@ -1058,6 +1066,26 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
 
     async onlineMigrateWrite(input: OnlineMigrateWriteInput): Promise<{ written: string[] }> {
       return { written: writeFiles(input.dir, input.files) };
+    },
+
+    // 迁移映射桥替身（计划 C 任务 2，服务端同语义简化建模）：替身工作区只有种子组/项目——
+    // 命中种子目录返回对应实体行（created=false 解析命中，幂等）；未知目录一律 missing:true
+    //（不建模按需建实体——真服 createIfMissing 语义由真服 E2E 覆盖）；forbidden 行为真服
+    // 越权语义，替身 OWNER 登录态不产出（store 侧三态换算由测试覆写桩钉住）。
+    async onlineProjectMapping(input: OnlineProjectMappingInput): Promise<OnlineMappingResult> {
+      requireOnlineUser();
+      return {
+        mappings: input.entries.map((entry) =>
+          entry.group === "示例分组" && entry.project === "示例项目"
+            ? { group: entry.group, project: entry.project, groupId: ONLINE_SEED_GROUP_ID, projectId: ONLINE_SEED_PROJECT_ID, created: false }
+            : { group: entry.group, project: entry.project, missing: true },
+        ),
+      };
+    },
+
+    async onlineGroupsList(_workspaceId: string): Promise<OnlineGroup[]> {
+      requireOnlineUser();
+      return onlineGroupsRows().map((g) => ({ ...g }));
     },
 
     // —— AI 频道（M6-C 任务 2，与 main IPC 面同构的替身）——
