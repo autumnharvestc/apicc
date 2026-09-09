@@ -132,7 +132,7 @@ const tabs = createTabsStore({
   online,
   editor,
   workflowDesign,
-  evictProjectSessions: createEvictProjectSessions({ workspace, editor, online }),
+  evictProjectSessions: createEvictProjectSessions({ editor, online }),
   onProjectActivated: restoreLastApiForTab,
 });
 
