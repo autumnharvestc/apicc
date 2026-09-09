@@ -23,6 +23,7 @@ import enUS from "ant-design-vue/es/locale/en_US";
 import { apicc } from "./api";
 import type { TreeNodeDTO } from "../../shared/tree-dto.js";
 import TopBar from "./components/TopBar.vue";
+import ProjectTabs from "./components/ProjectTabs.vue";
 import HomeView from "./components/HomeView.vue";
 import TestView from "./components/TestView.vue";
 import TestSidebar from "./components/TestSidebar.vue";
@@ -60,6 +61,14 @@ import { createStressStore } from "./stores/stress.js";
 import { createOnlineStore } from "./stores/online.js";
 import { createAiStore } from "./stores/ai.js";
 import { createPluginsStore } from "./stores/plugins.js";
+import {
+  createTabsStore,
+  createEvictProjectSessions,
+  findProjectNode,
+  collectApiIds,
+  readPersistedTabs,
+  type ProjectTab,
+} from "./stores/tabs.js";
 import { useModuleMemoryStore } from "./stores/moduleMemory.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import {
@@ -113,93 +122,80 @@ const ai = createAiStore({ api: apicc, editor });
 // —— 插件 store（M7-B 任务 1 装配）：同一组合根一次性创建；挂载后拉取 plugins:list
 // （fixture 桩）——插件视图清单 + 导入向导的导入格式动态枚举共用此份状态。 ——
 const plugins = createPluginsStore({ api: apicc });
-// —— 启动恢复（M11）：唯一「上次打开」记录，指向哪恢复哪；降级路径均落主页 ——
-const LAST_WS_KEY = "apicc.lastWorkspace";
+// —— 项目页签 store（计划 C 任务 5 装配）：签注册表 + 激活编排 + 关签驱逐真实实现 ——
+// 关签驱逐按 createEvictProjectSessions 组装（不变量 3：关签=项目关闭）；onProjectActivated
+// 钩子 = lastApi 记忆按活跃签项目过滤恢复（restoreLastApiForTab，编排第③步 editor 上下文）。
+const tabs = createTabsStore({
+  workspace,
+  tree,
+  online,
+  editor,
+  workflowDesign,
+  evictProjectSessions: createEvictProjectSessions({ workspace, editor, online }),
+  onProjectActivated: restoreLastApiForTab,
+});
+
+// —— 启动恢复（计划 C 任务 5）：签表驱动（不变量 5）——lastWorkspace 单槽退役：
+// 该单槽键的读写删除（持久化职责移交签表 apicc.projectTabs）；apicc.lastApi
+// 保留（SideTree 写入），消费按活跃签项目过滤（restoreLastApiForTab）。
 const LAST_API_KEY = "apicc.lastApi";
 
-/** 记录当前打开（在线优先写；本地打开覆盖为本地）。关闭不清理——下次启动仍恢复。 */
-watch(
-  () => [workspace.opened, workspace.root, online.activeWorkspace?.id] as const,
-  () => {
-    if (online.activeWorkspace) {
-      localStorage.setItem(LAST_WS_KEY, JSON.stringify({
-        source: "online", workspaceId: online.activeWorkspace.id, name: online.activeWorkspace.name,
-      }));
-    } else if (workspace.opened && workspace.root) {
-      localStorage.setItem(LAST_WS_KEY, JSON.stringify({ source: "local", dir: workspace.root }));
-    }
-  },
-);
-
-/** 恢复侧树选中的接口进编辑器（M11：侧栏状态重启保留的配套——侧树与编辑器一致）。 */
-async function restoreLastApi(): Promise<void> {
+/**
+ * 活跃签项目驱动编辑器上下文（tabs.onProjectActivated 钩子）：apicc.lastApi 记忆仅当属于
+ * 活跃签项目时恢复（按树收集该项目 api 集合过滤，与关签驱逐同款收集逻辑）——跨项目/
+ * 跨工作区的旧记忆不再串扰。在线签不消费（该键仅本地侧树写入，见 SideTree selectNode）。
+ */
+async function restoreLastApiForTab(tab: ProjectTab): Promise<void> {
+  if (tab.workspaceRef.kind !== "local") return;
   try {
     const last = JSON.parse(localStorage.getItem(LAST_API_KEY) ?? "null") as { id: string } | null;
     if (!last?.id) return;
-    const findApi = (nodes: TreeNodeDTO[] | undefined): TreeNodeDTO | null => {
-      for (const n of nodes ?? []) {
-        if (n.kind === "api" && n.id === last.id) return n;
-        const hit = findApi(n.children);
-        if (hit) return hit;
-      }
-      return null;
-    };
-    if (findApi(workspace.tree?.children)) {
-      tree.select("api", last.id);
-      await editor.load(last.id);
-    }
+    const project = findProjectNode(workspace.tree, tab.projectId);
+    if (!project) return;
+    const apiIds: string[] = [];
+    collectApiIds(project, apiIds);
+    if (!apiIds.includes(last.id)) return;
+    tree.select("api", last.id);
+    await editor.load(last.id);
   } catch {
     // 恢复失败静默（无碍主流程）
+  }
+}
+
+/**
+ * 在线签重建前置（重启后 main/渲染层在线会话表为空）：按持久化签引用重开驻留在线工作区
+ * （登录态已由 online.init/resume 验活；重开失败由 tabs.restore 标记离线，可再激活）。
+ * 已驻留的工作区跳过；refreshWorkspaces/openWorkspace 内部消化错误，全程不抛。
+ */
+async function reopenOnlineWorkspaces(): Promise<void> {
+  if (!online.loggedIn) return;
+  const workspaceIds = new Set<string>();
+  for (const row of readPersistedTabs(localStorage).tabs) {
+    if (row.workspaceRef.kind === "online") workspaceIds.add(row.workspaceRef.workspaceId);
+  }
+  if (workspaceIds.size === 0) return;
+  await online.refreshWorkspaces();
+  for (const workspaceId of workspaceIds) {
+    if (online.sessions[workspaceId]) continue;
+    const target = online.workspaces.find((w) => w.id === workspaceId);
+    if (target) await online.openWorkspace(target);
   }
 }
 
 onMounted(async () => {
   ai.init().catch(() => undefined);
   plugins.init().catch(() => undefined);
-  // 在线静默恢复（token 续登）优先——命中即恢复在线模式
+  // 在线静默恢复（token 续登）优先——登录态是在线签重建的前置
   try {
     await online.init();
   } catch {
     // init 内部已消化错误
   }
-  if (online.activeWorkspace) {
-    view.value = "api";
-    return;
-  }
-  let record: { source?: string; dir?: string; workspaceId?: string } | null = null;
-  try {
-    record = JSON.parse(localStorage.getItem(LAST_WS_KEY) ?? "null");
-  } catch {
-    record = null;
-  }
-  if (record?.source === "local" && record.dir) {
-    try {
-      await workspace.open(record.dir);
-      view.value = "api";
-      await restoreLastApi();
-      return;
-    } catch (e) {
-      // 目录失效 → 主页 + 错误提示（M11 澄清②降级路径）
-      reportError(e);
-      return;
-    }
-  }
-  if (record?.source === "online" && record.workspaceId) {
-    try {
-      await online.refreshWorkspaces();
-      const target = online.workspaces.find((w) => w.id === record.workspaceId);
-      if (target) {
-        await online.openWorkspace(target);
-        view.value = "api";
-        return;
-      }
-    } catch (e) {
-      // 登录态失效/团队空间不可达 → 主页 + 提示
-      reportError(e);
-      return;
-    }
-  }
-  // 无记录：停留主页
+  await reopenOnlineWorkspaces();
+  // 启动按签恢复（不变量 5）：本地签重开目录、活跃签走完整激活编排（含 lastApi 按项目
+  // 过滤恢复）；失败签标记离线（可再激活），活跃落空 → 停留主页
+  await tabs.restore();
+  if (tabs.activeTab) view.value = "api";
 });
 
 // —— 视图切换（M8 模块化）：ModuleRail v-model:view；接口模块子视图独立状态 ——
@@ -210,12 +206,36 @@ const SUB_VIEWS: ApiSubView[] = API_SUB_VIEWS;
 // M11：视图含 home（顶栏入口；非 rail 模块）。缺省 home——启动恢复逻辑成功后切 api。
 const view = ref<SwitchView | "home">("home");
 const apiSubView = ref<ApiSubView>("debug");
+// —— 内容上下文由活跃签驱动（计划 C 任务 5）：活跃签是本地签 → 本地内容；活跃签是在线签
+// （或无签但有活跃在线工作区——主页打开在线工作区尚未成签的过渡态）→ 在线内容。切到本地
+// 签不退在线会话（驻留，不变量 4：工作区级关闭唯一入口=退出在线工作区按钮）。
+const onlineMode = computed(() => online.activeWorkspace !== null && tabs.activeTab?.workspaceRef.kind !== "local");
 const railGate = computed(() => ({
   workspaceOpened: workspace.opened,
-  onlineActive: !!online.activeWorkspace,
+  onlineActive: onlineMode.value,
   apiSelected: !!editor.apiId,
 }));
-const subGate = computed(() => ({ onlineActive: !!online.activeWorkspace, apiSelected: !!editor.apiId }));
+const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !!editor.apiId }));
+// 主页项目卡片高亮（任务 5 D）：该项目签存在且激活（从 tabs store 算，不再看树选中）
+const homeActiveProjectId = computed(() =>
+  tabs.activeTab?.workspaceRef.kind === "local" ? tabs.activeTab.projectId : null,
+);
+
+// 活跃签变化：从主页点签直接进入项目内容（主页仅经 topbar-home / 点签离开）
+watch(
+  () => tabs.activeTab,
+  (tab) => {
+    if (tab && view.value === "home") view.value = "api";
+  },
+);
+
+// 激活失败文案（离线标记等）上屏到既有错误通道（tabs store 契约：error 组件上屏）
+watch(
+  () => tabs.error,
+  (message) => {
+    if (message) reportError(new Error(message));
+  },
+);
 
 // —— 树面板头（M8）：模块标题 + 前端搜索（SideTree 按 label 过滤）——
 // 模块侧栏记忆（M11）：接口树过滤、测试页签/选中接口——重启保留
@@ -291,7 +311,13 @@ async function onAiSuggest() {
  * 不再静默覆盖未保存编辑。其余节点仅记录选中态。
  */
 async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
-  if (online.activeWorkspace) {
+  // 不变量 1（项目选中即成签）：项目节点选中统一入签（openProjectTab 去重：已存在仅激活）。
+  // 在线只读树不经 tree.select，两模式统一在此分流。
+  if (kind === "project") {
+    openProjectTabFor(id);
+    return;
+  }
+  if (onlineMode.value) {
     try {
       await online.selectNode(kind, id);
     } catch (e) {
@@ -352,21 +378,44 @@ function onWfSwitchCancel() {
 // 有任意选中节点时按其归属项目作用域化（selectedProjectId 已实现向上归属）；无选中 = 未作用域
 const activeProjectId = computed(() => (tree.selected ? selectedProjectId.value : null));
 
-// 打开工作区后无选中：自动选中首个项目（树作用域化后集合层直接可见）
+// M9-C 的「打开工作区后自动选中首个项目」随签表化退役（计划 C 任务 5）：项目上下文一律
+// 由活跃签承载（不变量 1：不存在「选中项目但不入签」的状态——自动选中恰会制造该状态，
+// 且会在打开目录后把用户从主页踹进项目）。打开目录后停留主页，经项目卡片/侧树点选成签。
+
+// 不变量 1（项目选中即成签）兜底：任何本地树的项目选中（侧树点击、新建项目的内部选中）
+// 统一转换成 openProjectTab（已存在仅激活）。在线上下文不走本地树（onSelect 已显式分流）；
+// 启动恢复期避让。openProjectTab 去重保证激活编排内的 tree.select 不产生回路。
 watch(
-  () => workspace.opened,
-  async (opened) => {
-    if (!opened || tree.selected) return;
-    await workspace.refresh().catch(() => undefined);
-    const firstProject = (workspace.tree?.children ?? []).flatMap((g) => g.children ?? []).find((n) => n.kind === "project");
-    if (firstProject) tree.select("project", firstProject.id);
+  () => tree.selected,
+  (selected) => {
+    if (!selected || selected.kind !== "project" || tabs.restoring || onlineMode.value) return;
+    openProjectTabFor(selected.id);
   },
-  { immediate: true },
 );
 
-/** 主页「打开项目」：选中项目节点并切到接口模块（与侧树选中项目同一路径）。 */
+/**
+ * 项目选中即成签（不变量 1）：按当前内容上下文解析 workspaceRef（在线=活跃驻留会话 /
+ * 本地=单例目录）与项目名后入签；同签已存在则仅激活（openProjectTab 去重）。
+ */
+function openProjectTabFor(projectId: string): void {
+  if (onlineMode.value && online.activeWorkspace) {
+    const node = findProjectNode(online.onlineTree, projectId);
+    if (!node) return;
+    void tabs.openProjectTab(
+      { kind: "online", workspaceId: online.activeWorkspace.id, name: online.activeWorkspace.name },
+      { id: node.id, name: node.label },
+    );
+    return;
+  }
+  const node = findProjectNode(workspace.tree, projectId);
+  if (!node) return;
+  void tabs.openProjectTab({ kind: "local", dir: workspace.root }, { id: node.id, name: node.label });
+}
+
+/** 主页「打开项目」：本地项目成签并激活（不变量 1，选中由激活编排承接），切接口模块保持既有行为。 */
 function openProjectFromHome(id: string) {
-  tree.select("project", id);
+  const node = findProjectNode(workspace.tree, id);
+  if (node) void tabs.openProjectTab({ kind: "local", dir: workspace.root }, { id: node.id, name: node.label });
   view.value = "api";
 }
 
@@ -544,6 +593,8 @@ function onDividerDblClick() {
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
       <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :report-error="reportError" @open-home="view = 'home'" />
+      <!-- 项目页签栏（计划 C 任务 5）：顶栏第二行，成签/切签/关签确认/离线态 -->
+      <ProjectTabs :tabs="tabs" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
@@ -561,7 +612,7 @@ function onDividerDblClick() {
              在线模式侧栏必须可见（回归修复：M11 的 !online.activeWorkspace 条件把在线树整个藏死，
              导致在线工作区无任何项目入口——在线时 treeRoot 已切在线树，侧栏跟随显示） -->
         <div
-          v-show="online.activeWorkspace ? view !== 'home' : view === 'api'"
+          v-show="onlineMode ? view !== 'home' : view === 'api'"
           class="sider-col-wrap"
           data-testid="sidebar-api"
         >
@@ -578,7 +629,8 @@ function onDividerDblClick() {
             />
           </div>
           <!-- workflow-design 注入（审查 I2）：侧树重命名命中设计器正开的流时强制卸载会话。
-               在线模式（任务 3）：treeRoot 切在线树视图、readonly 只读装饰、空态文案覆写 -->
+               在线上下文（任务 5：内容上下文由活跃签驱动）：treeRoot 切在线树视图、readonly
+               只读装饰、空态文案覆写 -->
           <SideTree
             class="side-col"
             :api="apicc"
@@ -588,14 +640,14 @@ function onDividerDblClick() {
             :report-error="reportError"
             :filter="treeFilter"
             :active-project-id="activeProjectId"
-            :tree-root="online.activeWorkspace ? online.onlineTree : undefined"
-            :readonly="!!online.activeWorkspace"
-            :empty-text="online.activeWorkspace ? t('online.treeEmpty') : undefined"
+            :tree-root="onlineMode ? online.onlineTree : undefined"
+            :readonly="onlineMode"
+            :empty-text="onlineMode ? t('online.treeEmpty') : undefined"
             @select="onSelect"
           />
         </div>
         <!-- 测试模块侧栏（M11）：与接口树各自独立记忆 -->
-        <div v-show="view === 'test' && !online.activeWorkspace" class="sider-col-wrap" data-testid="sidebar-test">
+        <div v-show="view === 'test' && !onlineMode" class="sider-col-wrap" data-testid="sidebar-test">
           <TestSidebar
             :workspace="workspace"
             :active-project-id="selectedProjectId"
@@ -621,9 +673,10 @@ function onDividerDblClick() {
             :plugins="plugins"
             :report-error="reportError"
             :open-project="openProjectFromHome"
+            :active-project-id="homeActiveProjectId"
           />
-          <!-- 在线工作区模式（任务 3）：只提供浏览/编辑面板，不提供调试/运行等本地模块 -->
-          <OnlineApiEditor v-else-if="online.activeWorkspace" class="panel-view" :online="online" />
+          <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
+          <OnlineApiEditor v-else-if="onlineMode" class="panel-view" :online="online" />
           <!-- 接口模块（M8）：头部（子视图页签 + AI 入口）+ 调试/设计/用例子视图 -->
           <template v-else-if="view === 'api'">
             <div class="api-head" data-testid="api-head">

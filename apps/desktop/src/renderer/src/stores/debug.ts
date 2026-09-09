@@ -81,7 +81,9 @@ export function useDebugStore(api: ApiccApi, editor?: Editor) {
         this.error = null;
         try {
           if (editor.dirty) await editor.save();
-          const output = await sendFn({ apiId: editor.api.id, caseId, envName });
+          // 载荷用已捕获的 apiId（任务 4 审查移交的一行修）：await save() 期间若编辑器
+          // 切换槽位，editor.api.id 已是新槽——按它发请求会把结果存错槽
+          const output = await sendFn({ apiId: apiId!, caseId, envName });
           this.results[apiId!] = output; // 驻留到发送时接口的槽（apiId 已由上方 editor.api 守卫非空）
           this.lastResultApiId = apiId;
         } catch (e) {

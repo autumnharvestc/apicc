@@ -441,6 +441,11 @@
     "loggedInAs": "已登录",
     "notLoggedIn": "未登录"
   },
+  "tabs": {
+    "closeConfirm": "该项目有未保存的草稿，关闭页签后未保存的修改将丢弃，确定关闭？",
+    "scrollLeft": "向左滚动",
+    "scrollRight": "向右滚动"
+  },
   "topbar": {
     "projectPlaceholder": "切换项目"
   },

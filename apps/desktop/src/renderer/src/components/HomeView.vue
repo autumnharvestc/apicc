@@ -32,8 +32,10 @@ const props = defineProps<{
   importW: ReturnType<typeof useImportWizardStore>;
   plugins: PluginsStore;
   reportError: (e: unknown) => void;
-  /** 打开项目回调：组合根执行树选中 + 切接口模块（与侧树选中同一路径）。 */
+  /** 打开项目回调：组合根成签并激活（不变量 1）+ 切接口模块。 */
   openProject: (id: string) => void;
+  /** 活动项目 id（计划 C 任务 5 D）：该项目签存在且激活——组合根从 tabs store 计算。 */
+  activeProjectId?: string | null;
 }>();
 const { t } = useI18n();
 
@@ -58,7 +60,6 @@ const groups = computed<GroupView[]>(() =>
     projects: (g.children ?? []).filter((n) => n.kind === "project").map((p) => ({ id: p.id, name: p.label })),
   })),
 );
-const activeProjectId = computed(() => (props.tree.selected?.kind === "project" ? props.tree.selected.id : null));
 const defaultGroupId = computed(() => groups.value.find((g) => g.name === "默认分组")?.id ?? groups.value[0]?.id ?? null);
 
 /** 右栏可见项目：选 local → 全部；选 group → 该分组。 */

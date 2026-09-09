@@ -60,6 +60,7 @@ function makeDeps() {
   const workspace = {
     opened: false,
     root: "",
+    tree: null as TreeNodeDTO | null, // 关签 dirty 判定（任务 5 projectHasDrafts）按树收集
     openFails: false,
     open: vi.fn(async (dir: string) => {
       log.push(`ws.open:${dir}`);

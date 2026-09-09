@@ -441,6 +441,11 @@
     "loggedInAs": "Signed in",
     "notLoggedIn": "Not signed in"
   },
+  "tabs": {
+    "closeConfirm": "This project has unsaved drafts. Closing the tab will discard unsaved changes. Close anyway?",
+    "scrollLeft": "Scroll left",
+    "scrollRight": "Scroll right"
+  },
   "topbar": {
     "projectPlaceholder": "Switch project"
   },

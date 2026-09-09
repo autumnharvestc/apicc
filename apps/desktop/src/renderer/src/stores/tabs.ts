@@ -2,6 +2,7 @@ import { createPinia, defineStore } from "pinia";
 import type { useTreeStore } from "./tree.js";
 import type { useWorkspaceStore } from "./workspace.js";
 import type { useEditorStore } from "./editor.js";
+import type { useWorkflowDesignStore } from "./workflowDesign.js";
 import type { OnlineStore } from "./online.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 
@@ -88,12 +89,22 @@ function writePersistedTabs(storage: Storage, state: PersistedProjectTabs): void
  * 测试传内存 stub（可控行为、不发 IPC）即天然隔离。
  */
 export interface TabsStoreDeps {
-  /** 本地工作区 store（单例即驻留，不变量 4/8）：本地签上下文未就位时兜底重开目录。 */
-  workspace: Pick<ReturnType<typeof useWorkspaceStore>, "open" | "opened" | "root">;
+  /** 本地工作区 store（单例即驻留，不变量 4/8）：本地签上下文未就位时兜底重开目录；tree 供关签 dirty 判定收集项目 api 集合。 */
+  workspace: Pick<ReturnType<typeof useWorkspaceStore>, "open" | "opened" | "root" | "tree">;
   /** 本地树选中：本地项目选中走 tree.select("project", id)（App.vue:367-370 先例）。 */
   tree: Pick<ReturnType<typeof useTreeStore>, "select">;
-  /** 在线 store：会话表存在性（分歧防御）+ 显式激活 + 在线树项目选中。 */
+  /** 在线 store：会话表存在性（分歧防御）+ 显式激活 + 在线树项目选中 + 缓冲表（关签 dirty 判定）。 */
   online: Pick<OnlineStore, "sessions" | "activeWorkspaceId" | "error" | "activateWorkspace" | "selectNode">;
+  /**
+   * 本地编辑器会话表（任务 5 关签 dirty 判定聚合源之一）：该项目 apiIds 的任一会话槽
+   * dirty 即需确认。App 组合根注入；未注入（store 单测省略）时跳过该草稿源。
+   */
+  editor?: Pick<ReturnType<typeof useEditorStore>, "sessions">;
+  /**
+   * 工作流设计器单会话（任务 5 关签 dirty 判定聚合源之一，规格勘误口径）：活跃工作流
+   * 属于该项目且 dirty 即需确认。App 组合根注入；未注入时跳过该草稿源。
+   */
+  workflowDesign?: Pick<ReturnType<typeof useWorkflowDesignStore>, "dirty" | "workflowId">;
   /**
    * 关签驱逐钩子（不变量 3：关签=项目关闭）：驱逐该项目的编辑器会话（本地 editor 会话）
    * 与在线编辑缓冲。计划 C 任务 4 落地：用 createEvictProjectSessions 装配真实实现
@@ -131,6 +142,8 @@ export function createTabsStore(deps: TabsStoreDeps) {
       seq: 0,
       /** 激活失败文案（组件上屏）。 */
       error: null as string | null,
+      /** 恢复在途（restore 运行期）：组合根的派生监听（首项目自动选中等）避让，防恢复中途插入成签竞态。 */
+      restoring: false,
     }),
     getters: {
       activeTab(state): ProjectTab | null {
@@ -226,6 +239,44 @@ export function createTabsStore(deps: TabsStoreDeps) {
       },
 
       /**
+       * 关签 dirty 判定（不变量 3 确认口径，任务 5）：聚合该项目**全部**草稿源——
+       * - 本地签：editor 中该项目 apiIds 的任一会话槽 dirty（apiIds 由 workspace.tree 收集，
+       *   与 createEvictProjectSessions 同款收集逻辑；非活跃槽脏同样拦截）；
+       * - 在线签：该驻留会话缓冲表中 `<projectId>/` 前缀槽任一 dirty（先例同 editorDirty）；
+       * - 外加 workflowDesign 单会话（规格勘误口径）：活跃工作流属于该项目且 dirty（归属按
+       *   树 workflows 摘要过滤——别的项目的草稿流不牵连本项目关签）。
+       * editor/workflowDesign 依赖未注入时对应草稿源跳过（App 组合根必注入，store 单测可省）。
+       */
+      projectHasDrafts(tabId: string): boolean {
+        const tab = this.tabs.find((t) => t.tabId === tabId);
+        if (!tab) return false;
+        const wf = deps.workflowDesign;
+        if (wf?.dirty && wf.workflowId !== null) {
+          const owner = findProjectNode(deps.workspace.tree, tab.projectId);
+          if (owner?.workflows?.some((w) => w.id === wf.workflowId)) return true;
+        }
+        if (tab.workspaceRef.kind === "online") {
+          const session = deps.online.sessions[tab.workspaceRef.workspaceId];
+          if (!session) return false;
+          const prefix = `${tab.projectId}/`;
+          for (const path of Object.keys(session.buffers)) {
+            if (!path.startsWith(prefix)) continue;
+            const buffer = session.buffers[path]!;
+            if (buffer.api !== null && JSON.stringify(buffer.api) !== buffer.snapshot) return true;
+          }
+          return false;
+        }
+        const project = findProjectNode(deps.workspace.tree, tab.projectId);
+        if (!project || !deps.editor) return false;
+        const apiIds: string[] = [];
+        collectApiIds(project, apiIds);
+        return apiIds.some((apiId) => {
+          const session = deps.editor!.sessions[apiId];
+          return session !== undefined && session.api !== null && JSON.stringify(session.api) !== session.snapshot;
+        });
+      },
+
+      /**
        * 关签（不变量 3：关签=项目关闭；dirty 确认由调用方负责）：驱逐该项目的编辑器
        * 会话（deps.evictProjectSessions，任务 4 落地）→ 签出表；关的是活跃签 → 活跃切
        * 相邻签（右邻优先、尾签回左邻，相邻激活失败保持 null），无签则 null（回主页）。
@@ -261,30 +312,35 @@ export function createTabsStore(deps: TabsStoreDeps) {
        * 全程不抛（存储损坏降级空签表；恢复失败以离线态呈现，不阻塞启动）。
        */
       async restore(): Promise<void> {
-        const persisted = readPersistedTabs(storage);
-        this.tabs = [];
-        this.activeTabId = null;
-        this.offlineTabIds = [];
-        this.seq = 0;
-        const rebuiltTabIds: string[] = [];
-        for (const row of persisted.tabs) {
-          const tab: ProjectTab = {
-            tabId: `tab-${++this.seq}`,
-            workspaceRef: row.workspaceRef,
-            projectId: row.projectId,
-            projectName: row.projectName,
-          };
-          this.tabs.push(tab);
-          rebuiltTabIds.push(tab.tabId);
-          // 逐签重建工作区上下文（非活跃签不选项目——选中留给激活时）
-          await this.ensureWorkspaceContext(tab);
+        this.restoring = true;
+        try {
+          const persisted = readPersistedTabs(storage);
+          this.tabs = [];
+          this.activeTabId = null;
+          this.offlineTabIds = [];
+          this.seq = 0;
+          const rebuiltTabIds: string[] = [];
+          for (const row of persisted.tabs) {
+            const tab: ProjectTab = {
+              tabId: `tab-${++this.seq}`,
+              workspaceRef: row.workspaceRef,
+              projectId: row.projectId,
+              projectName: row.projectName,
+            };
+            this.tabs.push(tab);
+            rebuiltTabIds.push(tab.tabId);
+            // 逐签重建工作区上下文（非活跃签不选项目——选中留给激活时）
+            await this.ensureWorkspaceContext(tab);
+          }
+          const activeId = persisted.activeIndex !== null ? rebuiltTabIds[persisted.activeIndex] : undefined;
+          if (activeId !== undefined && !this.offlineTabIds.includes(activeId)) {
+            await this.activateTab(activeId);
+            return;
+          }
+          this.activeTabId = null; // 活跃签离线/无活跃记录 → 回主页
+        } finally {
+          this.restoring = false;
         }
-        const activeId = persisted.activeIndex !== null ? rebuiltTabIds[persisted.activeIndex] : undefined;
-        if (activeId !== undefined && !this.offlineTabIds.includes(activeId)) {
-          await this.activateTab(activeId);
-          return;
-        }
-        this.activeTabId = null; // 活跃签离线/无活跃记录 → 回主页
       },
     },
   })(createPinia());
@@ -302,8 +358,8 @@ export interface EvictProjectSessionsDeps {
   online: Pick<OnlineStore, "evictProjectBuffers">;
 }
 
-/** 树中定位项目节点（按 id，任意分组下）。 */
-function findProjectNode(root: TreeNodeDTO | null, projectId: string): TreeNodeDTO | null {
+/** 树中定位项目节点（按 id，任意分组下；导出供组合根成签取项目名与 lastApi 过滤复用）。 */
+export function findProjectNode(root: TreeNodeDTO | null, projectId: string): TreeNodeDTO | null {
   for (const group of root?.children ?? []) {
     for (const project of group.children ?? []) {
       if (project.kind === "project" && project.id === projectId) return project;
@@ -312,8 +368,8 @@ function findProjectNode(root: TreeNodeDTO | null, projectId: string): TreeNodeD
   return null;
 }
 
-/** 递归收集项目子树内全部接口 id（驱逐集合，先序无影响）。 */
-function collectApiIds(node: TreeNodeDTO, out: string[]): void {
+/** 递归收集项目子树内全部接口 id（驱逐集合/lastApi 归属过滤，先序无影响；导出同上）。 */
+export function collectApiIds(node: TreeNodeDTO, out: string[]): void {
   for (const child of node.children ?? []) {
     if (child.kind === "api") out.push(child.id);
     collectApiIds(child, out);

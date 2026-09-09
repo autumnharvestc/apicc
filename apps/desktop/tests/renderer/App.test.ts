@@ -80,25 +80,34 @@ function langOption(locale: string): DOMWrapper<Element> {
 
 /** 动态 import App：保证上方 window.apicc 注入先于 api/index.ts 的模块求值。 */
 async function mountApp() {
-  // M11 启动恢复会读持久化键——测试间清理保证互不影响（计划 C 任务 3 补签表键）
-  for (const k of ["apicc.lastWorkspace", "apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory", "apicc.projectTabs"]) localStorage.removeItem(k);
+  // M11 启动恢复会读持久化键——测试间清理保证互不影响。
+  // 计划 C 任务 5：apicc.lastWorkspace 单槽退役，不再读写也无须清理；签表键 apicc.projectTabs
+  // 为启动恢复的数据源（恢复用例自行播种后由 mountApp 清理隔离）。
+  for (const k of ["apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory", "apicc.projectTabs"]) localStorage.removeItem(k);
   const { default: App } = await import("../../src/renderer/src/App.vue");
   const wrapper = mount(App, { global: { plugins: [initI18n().i18n] } });
   await flushPromises();
   return wrapper;
 }
 
-/** 打开本地目录（M11：主页入口 → topbar-home → Open Directory → 切接口模块）。
+/** 打开本地目录（M11：主页入口 → topbar-home → Open Directory → 成签 → 切接口模块）。
  * wsOpen 走真实磁盘 IO（替身重载），高负载下单次 flushPromises 可能早于 open 完成——
- * 轮询等待 tree 就绪（上限 ~2s）后再切接口模块，消除时序边缘。 */
+ * 轮询等待 tree 就绪（上限 ~2s）后再切接口模块，消除时序边缘。
+ * 计划 C 任务 5：项目卡片点开走成签链路（openProjectTab → activateTab 编排）——
+ * 轮询等待首个项目签出现后再等树节点。 */
 async function openLocalDir(wrapper: import("@vue/test-utils").VueWrapper) {
   await wrapper.find('[data-testid="topbar-home"]').trigger("click");
   await flushPromises();
   await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
-  // 主页视图不渲染 rail（用户裁定）：打开后经首个项目卡片进入接口模块
+  // 主页视图不渲染 rail（用户裁定）：打开后经首个项目卡片成签进入接口模块
   for (let i = 0; i < 100 && !wrapper.find('[data-testid^="project-card-"]').exists(); i++) await new Promise((r) => setTimeout(r, 20));
   await flushPromises();
   await wrapper.find('[data-testid^="project-card-"]').trigger("click");
+  // 成签链路（openProjectTab → activateTab → 项目选中）是多拍宏任务：先等签栏出现
+  for (let i = 0; i < 100 && !wrapper.find('[data-testid^="project-tab-"]').exists(); i++) {
+    await flushPromises();
+    await new Promise((r) => setTimeout(r, 20));
+  }
   // 打开链路（真实磁盘重载 + 树渲染）是多拍宏任务，单次 flushPromises 会早于树数据就绪：
   // 直接等首个树节点出现（上限 ~2s），不 sleep 凑拍。
   for (let i = 0; i < 100 && !wrapper.find('[data-testid="tree-group-toggle"]').exists(); i++) {
@@ -585,6 +594,62 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
     } finally {
       localStorage.removeItem("apicc.onlineServers");
       await failingApi.onlineLogout();
+    }
+  });
+});
+
+// —— 计划 C 任务 5：启动按签恢复（apicc.projectTabs 签表驱动；lastWorkspace 单槽退役）——
+// 本组用例需在挂载前播种持久化键，而 mountApp 会清签表键——用不清键的挂装变体（App.vue
+// 模块此时已被其他用例求值，window.apicc 注入先于模块求值的约束早已满足）。
+async function mountAppKeepingStorage() {
+  const { default: App } = await import("../../src/renderer/src/App.vue");
+  const wrapper = mount(App, { global: { plugins: [initI18n().i18n] } });
+  await flushPromises();
+  return wrapper;
+}
+
+describe("App 启动按签恢复（计划 C 任务 5：签表驱动）", () => {
+  it("持久化本地签 → 挂载重开目录并激活该签（视图离开主页）；lastApi 按活跃签项目过滤恢复", async () => {
+    const treeDto = await failingApi.treeGet();
+    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
+    const collection = project.children!.find((c) => c.kind === "collection")!;
+    const apiNode = collection.children!.find((n) => n.kind === "api")!;
+    // 模拟上次会话持久化：本地签（内存替身对非工作区目录回退种子内存态）+ lastApi 记忆（同项目接口）
+    localStorage.setItem("apicc.projectTabs", JSON.stringify({
+      tabs: [{ workspaceRef: { kind: "local", dir: "/tmp/ws-restored" }, projectId: project.id, projectName: "示例项目" }],
+      activeIndex: 0,
+    }));
+    localStorage.setItem("apicc.lastApi", JSON.stringify({ id: apiNode.id }));
+    try {
+      const wrapper = await mountAppKeepingStorage();
+      await flushPromises();
+      // 签栏恢复：持久化签渲染且处于激活态
+      expect(wrapper.find('[data-testid="project-tab-0"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="project-tab-0"]').attributes("data-active")).toBe("true");
+      // 视图离开主页（签驱动重开），接口模块就位
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
+      // lastApi 记忆属于活跃签项目 → 恢复进编辑器
+      await flushPromises();
+      const editorOf = () => wrapper.findComponent(RequestEditor).props("editor") as { apiId: string | null };
+      expect(editorOf().apiId).toBe(apiNode.id);
+    } finally {
+      localStorage.removeItem("apicc.projectTabs");
+      localStorage.removeItem("apicc.lastApi");
+    }
+  });
+
+  it("lastWorkspace 单槽退役：残留键不再驱动恢复（无签表 → 停留主页，键值原样不被改写）", async () => {
+    localStorage.setItem("apicc.lastWorkspace", JSON.stringify({ source: "local", dir: "/tmp/whatever" }));
+    try {
+      const wrapper = await mountAppKeepingStorage();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid^="project-tab-"]').exists()).toBe(false);
+      expect(localStorage.getItem("apicc.lastWorkspace")).toBe(JSON.stringify({ source: "local", dir: "/tmp/whatever" }));
+    } finally {
+      localStorage.removeItem("apicc.lastWorkspace");
     }
   });
 });
