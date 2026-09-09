@@ -16,6 +16,14 @@ class IdGenerationTest {
         assertThat(gen.appAssigned()).isFalse();
     }
 
+    /** 配置守卫：非 identity 值必须启动失败（fail-fast），消息点名配置键 apicc.id-generation。 */
+    @Test
+    void guardRejectsNonIdentityStrategy() {
+        assertThatThrownBy(() -> new DatabaseIdGeneration("snowflake"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("apicc.id-generation");
+    }
+
     @Test
     void entityIdsParsesDigitStrings() {
         assertThat(EntityIds.parse("1")).isEqualTo(1L);

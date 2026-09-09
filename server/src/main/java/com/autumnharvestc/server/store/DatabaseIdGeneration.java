@@ -1,5 +1,6 @@
 package com.autumnharvestc.server.store;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -16,6 +17,8 @@ public class DatabaseIdGeneration implements IdGeneration {
         this("identity");
     }
 
+    /** 标 @Autowired 确保 Spring 选此构造器（否则多构造器时回退无参，@Value 守卫不执行）。 */
+    @Autowired
     public DatabaseIdGeneration(@Value("${apicc.id-generation:identity}") String strategy) {
         if (!"identity".equals(strategy)) {
             throw new IllegalStateException("不支持的 apicc.id-generation: " + strategy + "（当前仅 identity；外部策略请提供自定义 IdGeneration Bean）");
