@@ -166,7 +166,7 @@ describe("激活编排（activateTab）", () => {
   });
 
   it("分歧防御（任务 2 审查裁定接线点）：渲染层会话表无此工作区 → 不调 activate、标记离线、error 上屏、不切换", async () => {
-    const { deps, online, log } = makeDeps(); // sessions 为空（main/渲染层分歧场景）
+    const { deps, storage, online, log } = makeDeps(); // sessions 为空（main/渲染层分歧场景）
     const tabs = createTabsStore(deps);
     await tabs.openProjectTab(ONLINE_REF, P1);
     expect(log).toEqual([]); // tabs 层直接拦截，不发起 activateWorkspace
@@ -175,6 +175,11 @@ describe("激活编排（activateTab）", () => {
     expect(tabs.activeTabId).toBeNull(); // 不切换
     expect(tabs.error).toContain("离线");
     expect(online.activeWorkspaceId).toBeNull();
+    // 成签即落盘：首激活失败的签也驻留持久层（activeIndex null），重启可恢复后再激活
+    expect(JSON.parse(storage.getItem(STORAGE_KEY)!)).toEqual({
+      tabs: [{ workspaceRef: ONLINE_REF, projectId: "p-1", projectName: "项目一" }],
+      activeIndex: null,
+    });
   });
 
   it("activateWorkspace 失败（token 验证失败）→ 标记离线、error 上屏、不切换", async () => {
@@ -241,19 +246,44 @@ describe("关签（closeTab，不变量 3：关签=项目关闭，dirty 确认�
     expect(persisted.tabs).toEqual([{ workspaceRef: LOCAL_REF, projectId: "p-2", projectName: "项目二" }]);
   });
 
-  it("关活跃签 → 活跃切相邻签（右邻优先，尾签回左邻）；签全关 → null（回主页）", async () => {
+  it("关非活跃签不动活跃；关活跃尾签回左邻（Math.min 尾分支）；签全关 → null（回主页）", async () => {
     const { deps } = makeDeps();
     const tabs = createTabsStore(deps);
     await tabs.openProjectTab(LOCAL_REF, P1); // tab-1
     await tabs.openProjectTab(LOCAL_REF, P2); // tab-2
     await tabs.openProjectTab(LOCAL_REF, P3); // tab-3（活跃）
     await tabs.closeTab("tab-2");
-    expect(tabs.activeTabId).toBe("tab-3"); // 右邻
+    expect(tabs.activeTabId).toBe("tab-3"); // 非活跃签关闭：不动活跃（相邻切换分支不执行）
     await tabs.closeTab("tab-3");
-    expect(tabs.activeTabId).toBe("tab-1"); // 尾签回左邻
+    expect(tabs.activeTabId).toBe("tab-1"); // 关活跃尾签：回左邻
     await tabs.closeTab("tab-1");
     expect(tabs.activeTabId).toBeNull(); // 无签回主页
     expect(tabs.tabs).toEqual([]);
+  });
+
+  it("关活跃首签 → 右邻接任（Math.min 右邻分支，closeTab JSDoc 承诺的相邻切换主路径）", async () => {
+    const { deps } = makeDeps();
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(LOCAL_REF, P1); // tab-1（活跃）
+    await tabs.openProjectTab(LOCAL_REF, P2); // tab-2
+    await tabs.closeTab("tab-1");
+    expect(tabs.activeTabId).toBe("tab-2"); // 右邻接任
+    expect(tabs.tabs.map((t) => t.tabId)).toEqual(["tab-2"]);
+  });
+
+  it("关活跃签且相邻激活失败 → activeTabId 置 null（回主页）+ error 上屏，离线相邻签保留", async () => {
+    const WS2_REF: WorkspaceRef = { kind: "online", workspaceId: "ws-2", name: "在线二" };
+    const { deps, online, evictions } = makeDeps();
+    online.sessions["ws-1"] = sessionStub("ws-1"); // 仅 ws-1 驻留（ws-2 分歧缺席）
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab({ kind: "online", workspaceId: "ws-1", name: "在线一" }, P1); // tab-1 活跃
+    await tabs.openProjectTab(WS2_REF, P2); // tab-2 分歧 → 离线，活跃仍是 tab-1
+    expect(tabs.activeTabId).toBe("tab-1");
+    await tabs.closeTab("tab-1"); // 关活跃首签 → 相邻 tab-2 激活失败（分歧）→ 活跃落 null
+    expect(tabs.activeTabId).toBeNull();
+    expect(tabs.error).toContain("离线");
+    expect(tabs.tabs.map((t) => t.tabId)).toEqual(["tab-2"]); // 离线签保留（禁用态可再激活）
+    expect(evictions).toEqual([{ workspaceRef: { kind: "online", workspaceId: "ws-1", name: "在线一" }, projectId: "p-1" }]);
   });
 
   it("相邻激活切走工作区上下文：活跃在线签关闭后本地相邻签接任（本地项目选中被重跑）", async () => {

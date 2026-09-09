@@ -197,6 +197,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
           projectName: project.name,
         };
         this.tabs.push(tab);
+        this.persist(); // 成签即落盘：首激活失败的签（如离线）也驻留持久层，重启可恢复后再激活
         await this.activateTab(tab.tabId);
       },
 
