@@ -3,13 +3,17 @@
 // 覆盖 plan 任务 3 步骤 1：①打开在线工作区（树/项目角色入 store）②编辑保存（baseVersion
 // 推送 + 成功前移）与 409 冲突（拉取覆盖我的/放弃）③迁移拉取（计数 + 落盘）④迁移推送
 // （batch 差异 + 冲突跳过列出）⑤⑥关闭清理与迁移单活动护栏。坏数据进 problems 不崩。
+// 计划 C 任务 2（会话表化）：开/关/激活改表语义——多工作区并存驻留、activateWorkspace 显式
+// 切换、编辑缓冲按工作区隔离（切工作区草稿零丢失）、open 失败不抢活跃、closeWorkspace(id)
+// 出表、logout 全清。裁定 E 互斥退役：本地/在线并存驻留。
 import { describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryApi, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
-import type { OnlineBatchResult } from "../../../src/shared/online/contract.js";
+import type { OnlineBatchResult, OnlineWorkspaceSummary } from "../../../src/shared/online/contract.js";
+import type { ApiccApi } from "../../../src/shared/types.js";
 
 const SERVER = "http://127.0.0.1:8080";
 // path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（memory 替身种子常量防漂移）
@@ -56,19 +60,82 @@ async function opened() {
   return ctx;
 }
 
-describe("打开/关闭在线工作区（步骤 1①⑥）", () => {
-  it("openWorkspace：activeWorkspace/树视图/项目角色入 store；树 root label = 工作区名", async () => {
+/** 经替身再建一个在线工作区（会话表多驻留用例的第二工作区）。 */
+async function createSecondWorkspace(api: ApiccApi): Promise<OnlineWorkspaceSummary> {
+  const created = await api.onlineWorkspaceCreate({ name: "第二空间" });
+  return { ...created, createdAt: new Date().toISOString() };
+}
+
+describe("打开/关闭在线工作区（计划 C 任务 2：会话表语义）", () => {
+  it("openWorkspace 入表：sessions[id] 驻留 + activeWorkspaceId 指向；兼容面 activeWorkspace/onlineTree/projects 转发活跃会话", async () => {
     const { store } = await setup();
     const ws = store.workspaces[0]!;
     await store.openWorkspace(ws);
+    expect(store.activeWorkspaceId).toBe(ws.id);
+    const session = store.sessions[ws.id]!;
+    expect(session.workspace).toEqual({ id: ws.id, name: ws.name, myRole: "OWNER" });
+    expect(session.tree?.kind).toBe("root");
+    expect(session.tree?.label).toBe(ws.name);
+    expect(session.projects).toHaveLength(1);
+    expect(session.activeEditorPath).toBeNull(); // 计划 C 任务 4：缓冲按 editorPath 表化
+    expect(session.buffers).toEqual({});
+    // 兼容面（TopBar/视图层零改动）：扁平 getter 转发活跃会话
     expect(store.activeWorkspace).toEqual({ id: ws.id, name: ws.name, myRole: "OWNER" });
-    expect(store.onlineTree?.kind).toBe("root");
     expect(store.onlineTree?.label).toBe(ws.name);
     expect(store.projects).toHaveLength(1);
     expect(store.error).toBeNull();
   });
 
-  it("closeWorkspace：清工作区态 + 树 + 编辑缓冲（裁定 E 会话清理）", async () => {
+  it("双工作区并存驻留：先后 open 互不覆盖，活跃指向后开者，先开者树/项目原样驻留", async () => {
+    const { api, store } = await setup();
+    const first = store.workspaces[0]!;
+    await store.openWorkspace(first);
+    const second = await createSecondWorkspace(api);
+    await store.openWorkspace(second);
+    expect(store.activeWorkspaceId).toBe(second.id);
+    expect(Object.keys(store.sessions).sort()).toEqual([first.id, second.id].sort());
+    expect(store.sessions[first.id]!.tree?.label).toBe(first.name);
+    expect(store.sessions[first.id]!.projects).toHaveLength(1);
+    // 兼容面读活跃：树/项目切到第二工作区
+    expect(store.onlineTree?.label).toBe(second.name);
+    expect(store.activeWorkspace?.name).toBe(second.name);
+  });
+
+  it("activateWorkspace：驻留工作区显式切换——兼容面随活跃换挡；未驻留 id 拒绝且不切换", async () => {
+    const { api, store } = await setup();
+    const first = store.workspaces[0]!;
+    await store.openWorkspace(first);
+    const second = await createSecondWorkspace(api);
+    await store.openWorkspace(second);
+    await store.activateWorkspace(first.id);
+    expect(store.activeWorkspaceId).toBe(first.id);
+    expect(store.onlineTree?.label).toBe(first.name);
+    // 未驻留 id：error 上屏、活跃不动
+    await store.activateWorkspace("ws-404");
+    expect(store.error).toContain("尚未打开在线工作区");
+    expect(store.activeWorkspaceId).toBe(first.id);
+  });
+
+  it("closeWorkspace(id)：出表指定工作区不动活跃；closeWorkspace() 无参关活跃且不自动切其他驻留", async () => {
+    const { api, store } = await setup();
+    const first = store.workspaces[0]!;
+    await store.openWorkspace(first);
+    const second = await createSecondWorkspace(api);
+    await store.openWorkspace(second);
+    // 关非活跃（first）：出表 first，活跃 second 不动
+    await store.closeWorkspace(first.id);
+    expect(store.sessions[first.id]).toBeUndefined();
+    expect(store.activeWorkspaceId).toBe(second.id);
+    expect(store.onlineTree?.label).toBe(second.name);
+    // 无参关活跃：出表 + 活跃置 null（不自动切——first 已不在表）
+    await store.closeWorkspace();
+    expect(store.activeWorkspaceId).toBeNull();
+    expect(store.sessions).toEqual({});
+    expect(store.activeWorkspace).toBeNull();
+    expect(store.onlineTree).toBeNull();
+  });
+
+  it("closeWorkspace：清活跃会话态 + 树 + 编辑缓冲 + 冲突（兼容面归零，裁定 E 会话清理口径保留）", async () => {
     const { store } = await opened();
     await store.selectNode("file", "apicc.workspace.yaml");
     expect(store.editorPath).toBe("apicc.workspace.yaml");
@@ -82,7 +149,7 @@ describe("打开/关闭在线工作区（步骤 1①⑥）", () => {
     expect(store.conflict).toBeNull();
   });
 
-  it("openWorkspace 失败（api 抛错）→ error 通道、状态不变", async () => {
+  it("openWorkspace 失败（api 抛错）→ error 通道、状态不变（无活跃时不留半开会话）", async () => {
     const { api, store } = await setup();
     api.onlineWorkspaceOpen = async () => {
       throw new Error("服务器失联");
@@ -90,6 +157,219 @@ describe("打开/关闭在线工作区（步骤 1①⑥）", () => {
     await store.openWorkspace(store.workspaces[0]!);
     expect(store.error).toBe("服务器失联");
     expect(store.activeWorkspace).toBeNull();
+    expect(store.sessions).toEqual({});
+  });
+
+  it("openWorkspace 失败不抢活跃：既有活跃会话原样驻留，main 侧活跃指针经 activate 归还", async () => {
+    const { api, store } = await setup();
+    const first = store.workspaces[0]!;
+    await store.openWorkspace(first);
+    const second = await createSecondWorkspace(api);
+    const activations: string[] = [];
+    const originalActivate = api.onlineWorkspaceActivate.bind(api);
+    api.onlineWorkspaceActivate = async (id) => {
+      activations.push(id);
+      return originalActivate(id);
+    };
+    api.onlineWorkspaceOpen = async (input) => {
+      if (input.workspaceId === second.id) throw new Error("服务器失联");
+      throw new Error("不应重开已驻留工作区");
+    };
+    await store.openWorkspace(second);
+    expect(store.error).toBe("服务器失联");
+    expect(store.activeWorkspaceId).toBe(first.id); // 失败不抢活跃
+    expect(store.sessions[first.id]).toBeDefined(); // 原会话驻留不被动
+    expect(store.sessions[second.id]).toBeUndefined(); // 失败者不入表
+    expect(activations).toEqual([first.id]); // 指针归还（main 侧 open 已移指针）
+  });
+
+  it("重开已驻留工作区：入表不覆盖——树刷新但编辑缓冲（草稿）保留", async () => {
+    const { api, store } = await opened();
+    const first = store.workspaces[0]!;
+    await api.onlineFilePut({ workspaceId: first.id, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "草稿改名";
+    const before = store.sessions[first.id]!.tree;
+    await store.openWorkspace(first);
+    expect(store.sessions[first.id]!.tree).not.toBe(before); // 树随 open 重取
+    expect(store.editorApi?.name).toBe("草稿改名"); // 草稿保留
+    expect(store.editorDirty).toBe(true);
+  });
+
+  it("logout 全清：驻留表/活跃指针/冲突清空 + 登录态清除（档案保留）", async () => {
+    const { api, store } = await setup();
+    await store.openWorkspace(store.workspaces[0]!);
+    await store.openWorkspace(await createSecondWorkspace(api));
+    await store.logout();
+    expect(store.sessions).toEqual({});
+    expect(store.activeWorkspaceId).toBeNull();
+    expect(store.activeWorkspace).toBeNull();
+    expect(store.loggedIn).toBe(false);
+    expect(store.profiles).toHaveLength(1); // 档案与登录态分离（裁定 C）
+  });
+});
+
+describe("编辑缓冲按工作区隔离（计划 C 任务 2：缓冲随会话驻留，切工作区草稿零丢失）", () => {
+  it("双工作区各自缓冲：ws-1 编辑脏 → 开 ws-2 活跃缓冲为空 → 切回 ws-1 脏缓冲原样驻留", async () => {
+    const { api, store } = await opened();
+    const first = store.workspaces[0]!;
+    await api.onlineFilePut({ workspaceId: first.id, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "ws1 改名";
+    expect(store.editorDirty).toBe(true);
+    // 打开第二个工作区：活跃切走，活跃缓冲为空（不见 ws-1 草稿）
+    const second = await createSecondWorkspace(api);
+    await store.openWorkspace(second);
+    expect(store.editorPath).toBeNull();
+    expect(store.editorApi).toBeNull();
+    expect(store.editorDirty).toBe(false);
+    // ws-2 选同路径文件：各自缓冲，ws-1 的改名不串扰
+    await store.selectNode("api", API_PATH);
+    expect(store.editorApi!.name).toBe("示例接口");
+    expect(store.editorDirty).toBe(false);
+    // 切回 ws-1：草稿原样驻留（零丢失零确认）
+    await store.activateWorkspace(first.id);
+    expect(store.editorApi!.name).toBe("ws1 改名");
+    expect(store.editorDirty).toBe(true);
+    expect(store.sessions[second.id]!.buffers[API_PATH]!.api!.name).toBe("示例接口"); // ws-2 缓冲独立驻留
+  });
+
+  it("closeWorkspace(id) 出表即弃其缓冲：被关会话草稿清除，另一驻留会话缓冲不受影响", async () => {
+    const { api, store } = await opened();
+    const first = store.workspaces[0]!;
+    await api.onlineFilePut({ workspaceId: first.id, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "ws1 草稿";
+    const second = await createSecondWorkspace(api);
+    await store.openWorkspace(second);
+    await store.selectNode("file", "apicc.workspace.yaml");
+    expect(store.editorPath).toBe("apicc.workspace.yaml");
+    // 关非活跃 ws-1：其草稿随出表丢弃，活跃 ws-2 缓冲在
+    await store.closeWorkspace(first.id);
+    expect(store.sessions[first.id]).toBeUndefined();
+    expect(store.editorPath).toBe("apicc.workspace.yaml");
+    // 关活跃 ws-2（无参）：兼容面归零，表空
+    await store.closeWorkspace();
+    expect(store.activeWorkspaceId).toBeNull();
+    expect(store.editorPath).toBeNull();
+    expect(store.sessions).toEqual({});
+  });
+});
+
+// —— 计划 C 任务 4：在线编辑缓冲按 editorPath 表化（任务 3 重要 1 裁定的核心验收：
+// 同工作区双项目草稿互不污染；切接口/切项目签零丢失）——
+describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath 表化）", () => {
+  const PID2 = "999";
+  const PATH2 = `${PID2}/collections/乙集合/apis/接口乙/api.yaml`;
+  const API2_YAML = [
+    "id: api-online-2",
+    "name: 接口乙",
+    "version: 1.0.0",
+    "deprecated: false",
+    "method: POST",
+    'url: "/pong"',
+    "headers: []",
+    "query: []",
+    "cases: []",
+    "",
+  ].join("\n");
+
+  /** 种子项目（300）与合成第二项目（999）各放一份合法 api.yaml（替身按 path 存取，无可见性校验）。 */
+  async function openedTwoProjects() {
+    const ctx = await opened();
+    const wsId = ctx.store.activeWorkspace!.id;
+    await ctx.api.onlineFilePut({ workspaceId: wsId, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
+    await ctx.api.onlineFilePut({ workspaceId: wsId, path: PATH2, content: API2_YAML, baseVersion: 0 });
+    return { ...ctx, wsId };
+  }
+
+  it("双项目各自缓冲：甲项目草稿 → 切乙项目接口互不污染 → 切回甲草稿原样驻留（已驻留路径不重拉）", async () => {
+    const { api, store, wsId } = await openedTwoProjects();
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "甲项目草稿";
+    expect(store.editorDirty).toBe(true);
+    await store.selectNode("api", PATH2); // 未驻留路径：拉取建槽
+    expect(store.editorApi!.name).toBe("接口乙");
+    expect(store.editorDirty).toBe(false); // 乙槽干净，甲草稿不串扰
+    const session = store.sessions[wsId]!;
+    expect(Object.keys(session.buffers).sort()).toEqual([API_PATH, PATH2].sort());
+    expect(session.activeEditorPath).toBe(PATH2);
+    // 切回甲：草稿回显且不重拉（取数计数不增——重拉会以服务端内容覆盖草稿）
+    let gets = 0;
+    const originalGet = api.onlineFilesGet.bind(api);
+    api.onlineFilesGet = async (input) => {
+      gets += 1;
+      return originalGet(input);
+    };
+    await store.selectNode("api", API_PATH);
+    expect(store.editorApi!.name).toBe("甲项目草稿");
+    expect(store.editorDirty).toBe(true);
+    expect(gets).toBe(0);
+  });
+
+  it("容器节点（project）选中：活跃指针置空（编辑区空白）但缓冲表驻留——切项目签草稿零丢失", async () => {
+    const { store, wsId } = await openedTwoProjects();
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "甲项目草稿";
+    // 项目签激活编排（tabs.activateTab → online.selectNode("project", id)）同路径
+    await store.selectNode("project", ONLINE_SEED_PROJECT_ID);
+    expect(store.editorPath).toBeNull();
+    expect(store.editorApi).toBeNull();
+    expect(store.editorDirty).toBe(false);
+    expect(Object.keys(store.sessions[wsId]!.buffers)).toEqual([API_PATH]); // 草稿槽保留
+    await store.selectNode("api", API_PATH); // 再点接口：草稿回显，不重拉
+    expect(store.editorApi!.name).toBe("甲项目草稿");
+  });
+
+  it("拉取失败/文件缺失：不驻留空槽（重试可重拉），活跃指针复位（编辑区空白）", async () => {
+    const { store, wsId } = await openedTwoProjects();
+    await store.selectNode("file", "apicc.workspace.yaml");
+    await store.selectNode("api", `${PID2}/不存在/api.yaml`);
+    expect(store.error).toContain("文件不在可见清单中");
+    const session = store.sessions[wsId]!;
+    expect(session.buffers[`${PID2}/不存在/api.yaml`]).toBeUndefined(); // 空槽即弃
+    expect(session.activeEditorPath).toBeNull(); // 编辑区空白（旧清场 UX 保留）
+    expect(session.buffers["apicc.workspace.yaml"]).toBeDefined(); // 原槽驻留
+  });
+
+  it("clearEditor 显式清场（任务 4 范围控制保留）：清空活跃会话整张缓冲表 + 指针；selectNode 不再走全清", async () => {
+    const { store, wsId } = await openedTwoProjects();
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "甲项目草稿";
+    store.clearEditor();
+    const session = store.sessions[wsId]!;
+    expect(session.buffers).toEqual({});
+    expect(session.activeEditorPath).toBeNull();
+    expect(store.editorPath).toBeNull();
+    expect(store.editorDirty).toBe(false);
+  });
+
+  it("evictProjectBuffers：按 <projectId>/ 前缀驱逐；根级配置叶与其它项目缓冲驻留；活跃槽被逐则指针复位", async () => {
+    const { store, wsId } = await openedTwoProjects();
+    await store.selectNode("api", API_PATH);
+    store.editorApi!.name = "甲项目草稿";
+    await store.selectNode("api", PATH2);
+    store.editorApi!.name = "乙项目草稿";
+    await store.selectNode("file", "apicc.workspace.yaml");
+    expect(store.editorPath).toBe("apicc.workspace.yaml");
+    // 驱逐乙项目（999）：乙槽清除；甲槽与根级配置叶驻留；活跃（根级叶）不动
+    store.evictProjectBuffers(wsId, PID2);
+    const session = store.sessions[wsId]!;
+    expect(Object.keys(session.buffers).sort()).toEqual([API_PATH, "apicc.workspace.yaml"].sort());
+    expect(session.activeEditorPath).toBe("apicc.workspace.yaml");
+    // 驱逐甲项目：甲槽清除，根级叶驻留（无 <projectId>/ 前缀不受任何项目驱逐牵连）
+    store.evictProjectBuffers(wsId, ONLINE_SEED_PROJECT_ID);
+    expect(Object.keys(session.buffers)).toEqual(["apicc.workspace.yaml"]);
+    expect(store.editorPath).toBe("apicc.workspace.yaml");
+    // 无匹配前缀：no-op 不抛
+    store.evictProjectBuffers(wsId, "无此项目");
+    expect(store.editorPath).toBe("apicc.workspace.yaml");
+    // 活跃槽被逐：指针复位 null（编辑区空白），缓冲表随会话继续驻留
+    await store.selectNode("api", API_PATH);
+    expect(store.editorPath).toBe(API_PATH);
+    store.evictProjectBuffers(wsId, ONLINE_SEED_PROJECT_ID);
+    expect(session.activeEditorPath).toBeNull();
+    expect(store.editorPath).toBeNull();
   });
 });
 
@@ -121,18 +401,20 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     const pid = "101";
     const pidPath = `${pid}/collections/示例集合/apis/示例接口/api.yaml`;
     const { store } = await opened();
+    // 会话表化后项目角色清单/工作区角色驻留在活跃会话内（表语义测试夹具直接改会话槽）
+    const activeSession = () => store.sessions[store.activeWorkspaceId!]!;
     expect(store.canEdit(pidPath)).toBe(true);
     // 项目级 ACL 覆盖：pidPath 首段命中示例项目 id，覆盖为 VIEWER/NONE → 只读
-    store.projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];
+    activeSession().projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];
     expect(store.canEdit(pidPath)).toBe(false);
-    store.projects = [{ id: pid, name: "示例项目", myRole: "NONE" }];
+    activeSession().projects = [{ id: pid, name: "示例项目", myRole: "NONE" }];
     expect(store.canEdit(pidPath)).toBe(false);
     // 前缀必须整段命中：另一项目（不同 id）→ 不误伤（相邻数字 id 亦不前缀串扰）
-    store.projects = [{ id: "999", name: "示例项目", myRole: "NONE" }];
+    activeSession().projects = [{ id: "999", name: "示例项目", myRole: "NONE" }];
     expect(store.canEdit(pidPath)).toBe(true);
     // 同名项目按 id 定位（同名回归：按 name 匹配会张冠李戴）：
     // 两个同名「示例项目」，甲 VIEWER、乙 EDITOR——pidPath 属乙（id=pid）→ 可编辑
-    store.projects = [
+    activeSession().projects = [
       { id: "102", name: "示例项目", myRole: "VIEWER" },
       { id: pid, name: "示例项目", myRole: "EDITOR" },
     ];
@@ -140,17 +422,17 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     expect(store.canEdit(`102/collections/c/apis/a/api.yaml`)).toBe(false);
     // 工作区配置叶（apicc.workspace.yaml）：不受项目 ACL 影响；对齐服务端 ADMIN+ 守卫
     // （计划 C 任务 4 / B-任务 7 遗留④）：仅 ADMIN/OWNER 可编辑，EDITOR 也只读
-    store.projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];
+    activeSession().projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];
     expect(store.canEdit("apicc.workspace.yaml")).toBe(true); // 默认 OWNER
-    store.activeWorkspace = { ...store.activeWorkspace!, myRole: "ADMIN" };
+    activeSession().workspace.myRole = "ADMIN";
     expect(store.canEdit("apicc.workspace.yaml")).toBe(true);
-    store.activeWorkspace = { ...store.activeWorkspace!, myRole: "EDITOR" };
+    activeSession().workspace.myRole = "EDITOR";
     expect(store.canEdit("apicc.workspace.yaml")).toBe(false); // 收紧：EDITOR 推送服务端 403
     // 收紧只影响配置叶：EDITOR 工作区角色下项目内 api 叶仍按项目 ACL 放行
-    store.projects = [{ id: pid, name: "示例项目", myRole: "EDITOR" }];
+    activeSession().projects = [{ id: pid, name: "示例项目", myRole: "EDITOR" }];
     expect(store.canEdit(pidPath)).toBe(true);
     // 工作区级 VIEWER：一切只读
-    store.activeWorkspace = { ...store.activeWorkspace!, myRole: "VIEWER" };
+    activeSession().workspace.myRole = "VIEWER";
     expect(store.canEdit(pidPath)).toBe(false);
     expect(store.canEdit("apicc.workspace.yaml")).toBe(false);
     expect(store.canEdit(null)).toBe(false);

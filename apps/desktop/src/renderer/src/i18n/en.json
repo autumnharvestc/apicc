@@ -264,6 +264,7 @@
     "register": "Register",
     "registerOk": "Registered. Sign in to continue",
     "logout": "Sign out",
+    "logoutConfirmDesc": "Signing out closes all online project tabs; unsaved drafts in the following {count} tab(s) will be discarded.",
     "loggedInAs": "Signed in: {name} ({server})",
     "usernameRequired": "Enter your username",
     "passwordRequired": "Enter your password",
@@ -272,6 +273,9 @@
     "modeLocal": "Local",
     "modeOnline": "Online",
     "exitOnline": "Leave online workspace",
+    "exitConfirmDesc": "The {count} project tab(s) of this workspace will be closed; unsaved drafts in them will be discarded.",
+    "exitNoTabs": "No project tabs are open in this workspace.",
+    "exitHasDraft": "unsaved draft",
     "migrate": "Migrate",
     "treeEmpty": "Nothing visible in this online workspace",
     "wsSection": "Workspaces",
@@ -440,6 +444,11 @@
     "connectionEmpty": "No remote servers yet",
     "loggedInAs": "Signed in",
     "notLoggedIn": "Not signed in"
+  },
+  "tabs": {
+    "closeConfirm": "This project has unsaved drafts. Closing the tab will discard unsaved changes. Close anyway?",
+    "scrollLeft": "Scroll left",
+    "scrollRight": "Scroll right"
   },
   "topbar": {
     "projectPlaceholder": "Switch project"

@@ -79,6 +79,41 @@ describe("memory 替身 onlineWorkspaceOpen/Close/TreeView（任务 3）", () =>
   });
 });
 
+describe("memory 替身 onlineWorkspace 会话表（计划 C 任务 1，与 main session 同构）", () => {
+  it("双工作区驻留：open 第二个不清第一个；activate 显式切换；非活跃工作区 tree:view 拒绝", async () => {
+    const { api, ws } = await loggedIn();
+    await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: "EDITOR" });
+    await api.onlineWorkspaceOpen({ workspaceId: "ws-other", name: "另一空间", myRole: "VIEWER" });
+    // 活跃 = ws-other（open 置活跃）：ws-1 驻留但非活跃 → 拒绝（语义与 main requireWorkspace 同口径）
+    await expect(api.onlineTreeView(ws.id)).rejects.toThrow(/尚未打开在线工作区/);
+    const other = await api.onlineTreeView("ws-other");
+    expect(other.workspaceId).toBe("ws-other");
+    // 显式激活切回：视图按新活跃放行
+    await api.onlineWorkspaceActivate(ws.id);
+    expect((await api.onlineTreeView(ws.id)).workspaceId).toBe(ws.id);
+    // 未知 id 激活拒绝
+    await expect(api.onlineWorkspaceActivate("ws-404")).rejects.toThrow(/尚未打开在线工作区/);
+  });
+
+  it("close 带 workspaceId 出表指定工作区（不动活跃）；无参关活跃置空且不自动切其他驻留", async () => {
+    const { api, ws } = await loggedIn();
+    await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: "EDITOR" });
+    await api.onlineWorkspaceOpen({ workspaceId: "ws-other", name: "另一空间", myRole: "VIEWER" });
+    await api.onlineWorkspaceClose({ workspaceId: ws.id });
+    await expect(api.onlineTreeView(ws.id)).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(api.onlineWorkspaceActivate(ws.id)).rejects.toThrow(/尚未打开在线工作区/); // 已出表
+    expect((await api.onlineTreeView("ws-other")).workspaceId).toBe("ws-other"); // 活跃未动
+    // 无参关活跃：置空不自动切（ws-1 已出表，无处可切）
+    await api.onlineWorkspaceClose();
+    await expect(api.onlineTreeView("ws-other")).rejects.toThrow(/尚未打开在线工作区/);
+  });
+
+  it("未登录 activate 拒绝「尚未打开在线工作区」（激活前提 = 登录态 + 驻留，与 main 同口径）", async () => {
+    const api = createMemoryApi();
+    await expect(api.onlineWorkspaceActivate("ws-x")).rejects.toThrow(/尚未打开在线工作区/);
+  });
+});
+
 describe("memory 替身 onlineMigrateScan/Write（任务 3，真实文件面）", () => {
   it("scan 递归扫描（跳过 .apicc/.git）；write 落盘并返回 written", async () => {
     const { api } = await loggedIn();

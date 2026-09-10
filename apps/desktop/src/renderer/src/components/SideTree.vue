@@ -412,7 +412,14 @@ function startWorkflowDelete(node: TreeNodeDTO) {
             <AppstoreOutlined v-if="dto.kind === 'collection'" class="kind-icon mod" />
             <FolderOutlined v-else-if="dto.kind === 'folder'" class="kind-icon dir" />
             <ProjectOutlined v-else-if="dto.kind === 'project'" class="kind-icon proj" />
-            <span class="label">{{ dto.label }}</span>
+            <!-- 项目名可点击（计划 C 不变量 1 补全，任务 7 冒烟修复）：本地 → tree.select 经
+                 组合根兜底监听成签；在线（readonly）→ 仅 emit select，App 路由到在线成签。
+                 此前容器节点只有折叠钮，在线项目签在界面上没有任何成签入口。 -->
+            <span
+              class="label"
+              :class="{ 'label-link': dto.kind === 'project' }"
+              @click="dto.kind === 'project' && selectNode(dto)"
+            >{{ dto.label }}</span>
             <span v-if="!readonly" class="actions">
               <button v-if="dto.kind === 'group'" class="act" data-testid="new-project" @click="startCreate(dto, 'project')">{{ t("tree.newProject") }}</button>
               <button v-if="dto.kind === 'project'" class="act" data-testid="new-collection" @click="startCreate(dto, 'collection')">{{ t("tree.newCollection") }}</button>
@@ -499,6 +506,13 @@ function startWorkflowDelete(node: TreeNodeDTO) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 项目名可点（成签入口）：指针 + 弱高亮提示可交互 */
+.label-link {
+  cursor: pointer;
+}
+.label-link:hover {
+  color: var(--accent);
 }
 /* M11：层级图标——模块（服务）与文件夹视觉区分 */
 .kind-icon { flex: none; font-size: 13px; color: var(--text-muted); }

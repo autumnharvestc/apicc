@@ -7,6 +7,9 @@
  *
  * 任务 3 扩展：当前在线工作区状态（openWorkspace/closeWorkspace，纯状态操作不发网络）+
  * 树缓存（getTreeView 首取后缓存，内容变更（put/batch/delete 成功）即失效，切换/关闭重置）。
+ * 计划 C 任务 1 会话表化：单槽 → Map<workspaceId, {workspaceState, treeCache}> + 活跃指针——
+ * open 入表激活、activateWorkspace 显式切活跃、closeWorkspace 带 id 出表/无参关活跃
+ * （出表不自动切活跃）、logout 清全表；树缓存按工作区隔离。
  * 树映射 onlineTreeToDto 为纯函数（裁定 A）：服务端不回树结构，由 files path 清单推导
  * projects/collections/folders/apis 层级（path 实体化 2026-09-08：首段=项目实体 id；
  * 2026-09-09 服务端 BIGINT 化后项目 id 为数字，对外字符串化数字），
@@ -197,17 +200,29 @@ export interface OnlineSessionDeps {
   tokenStore: TokenStore;
 }
 
+/** 在线工作区驻留会话（计划 C 任务 1）：状态 + 按工作区隔离的树缓存。 */
+interface OnlineWorkspaceSession {
+  workspaceState: OnlineWorkspaceState;
+  treeCache: { tree: OnlineTree; groups: OnlineGroup[] } | null;
+}
+
 export function createOnlineSession(deps: OnlineSessionDeps) {
   let current: { baseUrl: string; client: OnlineClient } | null = null;
-  // 任务 3：当前在线工作区 + 树缓存（open/close/切换时重置；内容变更即失效）。
-  // 计划 C 任务 3：缓存扩展为 { tree, groups }（组清单与树同取——分组层反查表数据源）。
+  // 计划 C 任务 1：会话表——Map<workspaceId, {workspaceState, treeCache}> + 活跃指针。
+  // 工作区驻留：open 入表（不覆盖其他驻留工作区）；切换只由 activateWorkspace 显式驱动；
+  // 出表后活跃指针置 null（不自动切）。树缓存随表项走（按工作区隔离，内容变更只失效对应项）。
   // 不持文件内容缓存（审查次要 5）：版本号在渲染层编辑缓冲自持，main 侧只写不读即死代码。
-  let workspaceState: OnlineWorkspaceState | null = null;
-  let treeCache: { tree: OnlineTree; groups: OnlineGroup[] } | null = null;
+  const sessions = new Map<string, OnlineWorkspaceSession>(); // key = workspaceState.id
+  let activeId: string | null = null;
+
+  function activeSession(): OnlineWorkspaceSession | null {
+    return activeId !== null ? sessions.get(activeId) ?? null : null;
+  }
 
   function requireWorkspace(workspaceId: string): OnlineWorkspaceState {
-    if (!workspaceState || workspaceState.id !== workspaceId) throw new Error("尚未打开在线工作区");
-    return workspaceState;
+    const active = activeSession();
+    if (!active || active.workspaceState.id !== workspaceId) throw new Error("尚未打开在线工作区");
+    return active.workspaceState;
   }
 
   /**
@@ -241,24 +256,47 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
       return current ? { baseUrl: current.baseUrl } : null;
     },
 
-    /** 当前在线工作区（任务 3）：null = 未打开。 */
+    /** 活跃在线工作区（渲染层顶栏徽标/只读判定的数据源）；null = 无活跃工作区。 */
     get workspace(): OnlineWorkspaceState | null {
-      return workspaceState;
+      return activeSession()?.workspaceState ?? null;
+    },
+
+    /** 驻留工作区 id 快照（计划 C 任务 1：IPC open 失败回滚按「表空才回滚」判定用）。 */
+    get residentIds(): string[] {
+      return [...sessions.keys()];
     },
 
     /**
-     * 打开在线工作区（纯状态操作，不发网络）：记录三元组并重置树缓存。
-     * 与本地工作区互斥（裁定 E）由 IPC 组合层保证（ws:open 链路反向清理）。
+     * 打开在线工作区（纯状态操作，不发网络）：入表（已驻留则更新 workspaceState）+ 置活跃
+     * + 清该工作区树缓存（重开重取）。计划 C 任务 1：不再是覆盖式单槽——其他驻留工作区
+     * 不受影响。与本地工作区的互斥（裁定 E）由 IPC 组合层保证。
      */
     openWorkspace(input: OnlineWorkspaceOpenInput): void {
-      workspaceState = { id: input.workspaceId, name: input.name, myRole: input.myRole };
-      treeCache = null;
+      sessions.set(input.workspaceId, {
+        workspaceState: { id: input.workspaceId, name: input.name, myRole: input.myRole },
+        treeCache: null,
+      });
+      activeId = input.workspaceId;
     },
 
-    /** 关闭在线工作区（裁定 E 退出清理）：清状态 + 树缓存（编辑缓冲由渲染层同步清）。 */
-    closeWorkspace(): void {
-      workspaceState = null;
-      treeCache = null;
+    /**
+     * 显式激活驻留工作区（计划 C 任务 1）：纯切活跃指针，不动树缓存。
+     * 表中有且已登录才切换；否则抛既有「尚未打开在线工作区」口径错误。
+     */
+    activateWorkspace(workspaceId: string): void {
+      if (!current || !sessions.has(workspaceId)) throw new Error("尚未打开在线工作区");
+      activeId = workspaceId;
+    },
+
+    /**
+     * 关闭在线工作区：无参关活跃、带 id 出表指定工作区。出表后活跃指针若指向被关工作区
+     * 则置 null——**不自动切**到其他驻留工作区（切换只由 activateWorkspace 显式驱动，
+     * 计划 C 任务 1）。
+     */
+    closeWorkspace(workspaceId?: string): void {
+      const target = workspaceId ?? activeId;
+      if (target === null || !sessions.delete(target)) return;
+      if (activeId === target) activeId = null;
     },
 
     /**
@@ -270,18 +308,19 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     async getTreeView(workspaceId: string): Promise<OnlineWorkspaceView> {
       const ws = requireWorkspace(workspaceId);
       const client = requireClient();
-      treeCache ??= await (async () => {
+      const entry = sessions.get(workspaceId)!; // requireWorkspace 已保证活跃驻留
+      entry.treeCache ??= await (async () => {
         const tree = await client.getTree(workspaceId);
         const groups = await client.listGroups(workspaceId).catch(() => [] as OnlineGroup[]);
         return { tree, groups };
       })();
-      const groupNames = new Map(treeCache.groups.map((g) => [g.id, g.name]));
+      const groupNames = new Map(entry.treeCache.groups.map((g) => [g.id, g.name]));
       return {
         workspaceId: ws.id,
         name: ws.name,
         myRole: ws.myRole,
-        projects: treeCache.tree.projects,
-        tree: onlineTreeToDto(treeCache.tree, ws.name, groupNames),
+        projects: entry.treeCache.tree.projects,
+        tree: onlineTreeToDto(entry.treeCache.tree, ws.name, groupNames),
       };
     },
 
@@ -330,6 +369,9 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     },
 
     async logout(): Promise<void> {
+      // 计划 C 任务 1：登出清全表（工作区驻留随登录态失效——token 已不可用，缓存无意义）。
+      sessions.clear();
+      activeId = null;
       if (!current) return;
       const { baseUrl, client } = current;
       invalidate(baseUrl); // 先摘本地态再吊销；吊销失败（网络断等）不阻断本地登出——本地态已清，token 留服务端 30 天自然过期
@@ -364,10 +406,11 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     async putFile(input: OnlineFilePutInput): Promise<OnlinePushOutcome> {
       const { workspaceId, path, content, baseVersion } = input;
       const outcome = await pushOutcome(() => requireClient().putFile(workspaceId, { path, content, baseVersion }));
-      // 推送成功使树缓存失效（推送后 refreshTreeView 取到新 hash/新文件）；
-      // 冲突不动缓存——服务端现状以冲突对象带回。
-      if (outcome.outcome === "pushed" && workspaceState?.id === workspaceId) {
-        treeCache = null;
+      // 推送成功使该工作区的树缓存失效（推送后 refreshTreeView 取到新 hash/新文件）；
+      // 冲突不动缓存——服务端现状以冲突对象带回。按工作区失效（计划 C 任务 1），不扰其他驻留项。
+      if (outcome.outcome === "pushed") {
+        const entry = sessions.get(workspaceId);
+        if (entry) entry.treeCache = null;
       }
       return outcome;
     },
@@ -375,9 +418,10 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     async batchPush(input: OnlineFilesBatchInput): Promise<OnlineBatchResult> {
       const { workspaceId, files } = input;
       const result = await requireClient().batchPush(workspaceId, { files });
-      // 任一文件推送成功即树缓存失效（迁移推送后的树刷新必须见到新文件/新 hash）。
-      if (workspaceState?.id === workspaceId && result.results.some((r) => r.status === "pushed")) {
-        treeCache = null;
+      // 任一文件推送成功即该工作区树缓存失效（迁移推送后的树刷新必须见到新文件/新 hash）。
+      if (result.results.some((r) => r.status === "pushed")) {
+        const entry = sessions.get(workspaceId);
+        if (entry) entry.treeCache = null;
       }
       return result;
     },
@@ -385,7 +429,8 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     async deleteFile(input: OnlineFileDeleteInput): Promise<OnlineDeleteOutcome> {
       try {
         await requireClient().deleteFile(input.workspaceId, { path: input.path, baseVersion: input.baseVersion });
-        if (workspaceState?.id === input.workspaceId) treeCache = null;
+        const entry = sessions.get(input.workspaceId);
+        if (entry) entry.treeCache = null;
         return { outcome: "deleted" };
       } catch (e) {
         if (e instanceof OnlineConflictError) return { outcome: "conflict", conflict: e.conflict };

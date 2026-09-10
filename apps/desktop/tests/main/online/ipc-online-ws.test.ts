@@ -1,7 +1,9 @@
 // M3-B 任务 3：online 工作区/迁移新频道接线——online:workspace:open（打开即取树映射，
 // stress 清理链同 ws:open）、online:workspace:close、online:tree:view（树缓存）、
 // online:migrate:scan / online:migrate:write（本地目录扫描与落盘）。
-// 以及裁定 E 互斥：ws:create / ws:open（含失败路径）必须先关闭在线工作区会话。
+// 计划 C 任务 1：会话表化——online:workspace:activate 显式切换活跃；close 载荷可带
+// workspaceId（无参关活跃）；open 失败仅当表空才回滚（防误关其他驻留工作区）。
+// 计划 C 任务 2（裁定 E 互斥退役）：ws:create / ws:open 不再关闭在线会话——本地/在线并存驻留。
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -96,6 +98,76 @@ describe("online:workspace:open / online:tree:view（裁定 A/E）", () => {
   });
 });
 
+describe("online:workspace:activate / close 带 id（计划 C 任务 1 会话表化）", () => {
+  // /tree 按请求 URL 回显 workspaceId（表语义：多工作区各自的树可辨别）
+  function echoTreeHandler(url: string): Response {
+    if (url.endsWith("/auth/login")) return json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER });
+    const wsId = decodeURIComponent(url.match(/workspaces\/([^/?]+)\/tree/)?.[1] ?? "ws-?");
+    return json(200, { ...TREE, workspaceId: wsId });
+  }
+
+  async function openTwo(deps: ReturnType<typeof setup>["deps"]) {
+    await deps.handle("online:login", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
+    await deps.handle("online:workspace:open", {}, { workspaceId: "ws-1", name: "团队空间", myRole: "EDITOR" });
+    await deps.handle("online:workspace:open", {}, { workspaceId: "ws-2", name: "另一空间", myRole: "VIEWER" });
+  }
+
+  it("activate 通道：双工作区驻留下显式切换活跃——切换后 tree:view 按新活跃放行，未知 id 拒绝", async () => {
+    const { deps, calls } = setup(echoTreeHandler);
+    await openTwo(deps); // open 置活跃 → 当前活跃 ws-2
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" });
+    const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
+    expect(view.workspaceId).toBe("ws-1");
+    // ws-1 的树缓存保留（activate 纯切指针不清缓存）：/tree 各工作区只取过一次
+    expect(calls.filter((c) => c.url.endsWith("/tree"))).toHaveLength(2);
+    await expect(deps.handle("online:workspace:activate", {}, { workspaceId: "ws-404" })).rejects.toThrow(/尚未打开在线工作区/);
+  });
+
+  it("close 带 workspaceId：出表指定工作区不动活跃——其余驻留工作区不受影响", async () => {
+    const { deps } = setup(echoTreeHandler);
+    await openTwo(deps);
+    await deps.handle("online:workspace:close", {}, { workspaceId: "ws-1" });
+    // ws-1 已出表：视图与激活都拒绝
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    // ws-2 活跃未动：视图照常
+    const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })) as { workspaceId: string };
+    expect(view.workspaceId).toBe("ws-2");
+  });
+
+  it("close 无参：关活跃工作区，活跃置空且不自动切其他驻留工作区（显式 activate 后恢复）", async () => {
+    const { deps } = setup(echoTreeHandler);
+    await openTwo(deps);
+    await deps.handle("online:workspace:close", {});
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })).rejects.toThrow(/尚未打开在线工作区/);
+    // ws-1 仍驻留：显式激活后恢复
+    await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" });
+    const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
+    expect(view.workspaceId).toBe("ws-1");
+  });
+
+  it("open 失败仅当表空才回滚：表非空时失败不误关其他驻留工作区（半开工作区留表可重试）", async () => {
+    const { deps, calls } = setup((url) => {
+      if (url.endsWith("/auth/login")) return json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER });
+      if (url.includes("workspaces/ws-2/tree")) throw new TypeError("fetch failed");
+      return json(200, { ...TREE, workspaceId: decodeURIComponent(url.match(/workspaces\/([^/?]+)\/tree/)?.[1] ?? "ws-?") });
+    });
+    await deps.handle("online:login", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
+    await deps.handle("online:workspace:open", {}, { workspaceId: "ws-1", name: "团队空间", myRole: "EDITOR" });
+    await expect(
+      deps.handle("online:workspace:open", {}, { workspaceId: "ws-2", name: "另一空间", myRole: "VIEWER" }),
+    ).rejects.toThrow(/network_error|fetch failed/);
+    // ws-1 驻留未被误关：激活后视图照常（缓存命中不重发 /tree）
+    await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" });
+    await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" });
+    expect(calls.filter((c) => c.url.endsWith("/tree") && !c.url.includes("ws-2"))).toHaveLength(1);
+    // 表非空不回滚：ws-2 半开留表（可显式激活后重试视图）
+    await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-2" });
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })).rejects.toThrow(/network_error|fetch failed/);
+  });
+});
+
 describe("online:migrate:scan / online:migrate:write（裁定 D 本地面）", () => {
   it("scan 返回相对 / 路径 + hash + 内容（+projectDir 目录归属）；跳过 .apicc/.git", async () => {
     const { deps } = setup(() => json(200, []));
@@ -136,15 +208,17 @@ describe("online:migrate:scan / online:migrate:write（裁定 D 本地面）", (
   });
 });
 
-describe("模式互斥（裁定 E）：本地 ws:create / ws:open 复用既有清理链关闭在线工作区", () => {
-  it("ws:create 成功路径：在线工作区被关闭（tree:view 拒绝）", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "apicc-mutex-"));
-    const other = mkdtempSync(join(tmpdir(), "apicc-mutex-"));
+describe("本地/在线并存（裁定 E 互斥退役，计划 C 任务 2）：ws:create / ws:open 不再关闭在线会话", () => {
+  it("ws:create 成功路径：在线工作区原样驻留（tree:view 仍放行）——本地/在线互不驱逐", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-coexist-"));
+    const other = mkdtempSync(join(tmpdir(), "apicc-coexist-"));
     try {
       const { deps } = setup((url) => (url.endsWith("/auth/login") ? json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER }) : json(200, TREE)));
       await loginAndOpen(deps);
       await deps.handle("ws:create", {}, other, "本地工作区");
-      await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+      // 在线会话未被本地打开牵连：视图照常（表内驻留 + 活跃指针未动）
+      const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
+      expect(view.workspaceId).toBe("ws-1");
       void dir;
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -152,14 +226,15 @@ describe("模式互斥（裁定 E）：本地 ws:create / ws:open 复用既有�
     }
   });
 
-  it("ws:create 失败路径（目录已是工作区）：清理链先行，在线工作区仍被关闭", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "apicc-mutex-"));
+  it("ws:create 失败路径（目录已是工作区）：在线工作区同样不受牵连", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-coexist-"));
     try {
       const { deps } = setup((url) => (url.endsWith("/auth/login") ? json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER }) : json(200, TREE)));
       await deps.handle("ws:create", {}, dir, "本地工作区");
       await loginAndOpen(deps);
       await expect(deps.handle("ws:create", {}, dir, "再次创建")).rejects.toThrow(/目录已是工作区/);
-      await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+      const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
+      expect(view.workspaceId).toBe("ws-1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

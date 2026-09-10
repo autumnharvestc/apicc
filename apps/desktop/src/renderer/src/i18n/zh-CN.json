@@ -264,6 +264,7 @@
     "register": "注册",
     "registerOk": "注册成功，请登录",
     "logout": "退出登录",
+    "logoutConfirmDesc": "退出登录将关闭全部在线项目签，以下 {count} 个签的未保存草稿将丢弃。",
     "loggedInAs": "已登录：{name}（{server}）",
     "usernameRequired": "请输入用户名",
     "passwordRequired": "请输入密码",
@@ -272,6 +273,9 @@
     "modeLocal": "本地",
     "modeOnline": "在线",
     "exitOnline": "退出在线工作区",
+    "exitConfirmDesc": "将关闭该工作区的 {count} 个项目签，其中的未保存草稿将丢弃。",
+    "exitNoTabs": "该工作区没有打开的项目签。",
+    "exitHasDraft": "有未保存草稿",
     "migrate": "迁移",
     "treeEmpty": "在线工作区没有可见内容",
     "wsSection": "工作区",
@@ -440,6 +444,11 @@
     "connectionEmpty": "尚未添加远程服务器",
     "loggedInAs": "已登录",
     "notLoggedIn": "未登录"
+  },
+  "tabs": {
+    "closeConfirm": "该项目有未保存的草稿，关闭页签后未保存的修改将丢弃，确定关闭？",
+    "scrollLeft": "向左滚动",
+    "scrollRight": "向右滚动"
   },
   "topbar": {
     "projectPlaceholder": "切换项目"

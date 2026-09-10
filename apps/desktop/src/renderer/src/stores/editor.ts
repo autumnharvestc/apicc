@@ -1,55 +1,145 @@
 import { createPinia, defineStore } from "pinia";
 import type { ApiDefinition } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
+import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
+
+/**
+ * 本地编辑器驻留会话（计划 C 任务 4 会话表化）：api 编辑缓冲 + 环境清单 + 已保存快照，
+ * 按接口 id 表化驻留——切签/切接口零丢失零确认（计划全局不变量 2：草稿按 apiId 驻留）。
+ */
+export interface EditorSession {
+  api: ApiDefinition | null;
+  envs: Array<{ id: string; name: string }>;
+  snapshot: string;
+  /**
+   * 槽元数据（任务 5 审查重要 1，裁定修法）：建槽时按注入解析器写下的项目归属——跨目录
+   * 开工作区后，关签 dirty 判定与驱逐按它过滤，不再依赖「当前树恰好还开着该项目」。
+   * null=建槽时树里找不到归属（罕见）：dirty 判定保守计入任何本地项目签（防漏报），
+   * 驱逐不牵连（防误伤未知归属）。
+   */
+  projectId: string | null;
+}
+
+/** 活跃会话定位（getter/action 共用的表语义中枢，先例同 online.ts activeSessionOf）。 */
+function activeSessionOf(state: { sessions: Record<string, EditorSession>; activeApiId: string | null }): EditorSession | null {
+  return state.activeApiId !== null ? state.sessions[state.activeApiId] ?? null : null;
+}
+
+/**
+ * 反查 apiId 所属项目 id（groups→projects→子树包含；槽元数据归属解析器的默认实现，
+ * 组合根按当前树装配：`useEditorStore(api, (id) => findProjectIdByApiId(workspace.tree, id))`）。
+ */
+export function findProjectIdByApiId(root: TreeNodeDTO | null, apiId: string): string | null {
+  const hasApi = (node: TreeNodeDTO): boolean =>
+    (node.children ?? []).some((child) => (child.kind === "api" && child.id === apiId) || hasApi(child));
+  for (const group of root?.children ?? []) {
+    for (const project of group.children ?? []) {
+      if (project.kind === "project" && hasApi(project)) return project.id;
+    }
+  }
+  return null;
+}
 
 /**
  * 编辑器 store 工厂：接受依赖 api 参数，每次工厂调用绑定独立 Pinia 实例。
- * 修正（相对简报实现）：dirty 改为「当前 api 与已保存快照比对」的 getter 派生——
- * 测试与组件直接改 api 字段（不经 action）也能被跟踪；load/save 后重写快照即复位。
- * 简报原实现在 state 里放 dirty 且无任何置位路径，其自身测试（直接改 url 期望 dirty）
- * 无法通过。
- * M5-B 任务 2（裁定 A，D2 保存链路接线）：api 即 core 的 ApiDefinition（protocol/
- * message/envelope/soapAction 已由 core schema 正式承载）——任务 1 的本地契约 fixture
- * 类型（multi-protocol.ts）收敛删除，消除双类型源。dirty 为 JSON 快照比对，新字段自然
- * 进缓冲与快照；保存载荷经 apiSave → IPC api:save → session.saveApi → fileStorage
- * 白名单落盘，reopen 过新 schema strict 校验（集成见 tests/main/multi-protocol-save.test.ts）。
+ * 计划 C 任务 4 会话表化：状态从单会话 {apiId, api, envs, snapshot} 改为
+ * sessions: Record<apiId, EditorSession> + activeApiId 活跃指针；load 定位槽（无则拉取
+ * 建槽，已驻留仅切指针——草稿不被服务端内容覆盖）、save/reloadEnvs 写活跃槽；对外
+ * getters（apiId/api/envs/snapshot/dirty）转发活跃槽——消费者 cases/design/debug/ai
+ * 与 RequestEditor 零改动（嵌套字段直接改 api 对象仍由快照比对跟踪）。
+ * 历史口径（保留）：dirty 为「当前 api 与已保存快照比对」的 getter 派生——测试与组件
+ * 直接改 api 字段（不经 action）也能被跟踪；load/save 后重写快照即复位。M5-B（裁定 A，
+ * D2）：api 即 core 的 ApiDefinition；保存载荷经 apiSave → IPC api:save → session.saveApi
+ * → fileStorage 白名单落盘。
  */
-export function useEditorStore(api: ApiccApi) {
+export function useEditorStore(api: ApiccApi, resolveProjectId?: (apiId: string) => string | null) {
   return defineStore("editor", {
     state: () => ({
-      apiId: null as string | null,
-      api: null as ApiDefinition | null,
-      envs: [] as Array<{ id: string; name: string }>,
-      snapshot: "",
+      /** 驻留编辑会话表（key = apiId）：草稿随会话驻留，切接口/切项目签不丢。 */
+      sessions: {} as Record<string, EditorSession>,
+      /** 活跃接口 id；null = 无活跃（编辑区空白）。 */
+      activeApiId: null as string | null,
     }),
     getters: {
-      dirty: (state) => state.api !== null && JSON.stringify(state.api) !== state.snapshot,
+      apiId(state): string | null {
+        return state.activeApiId;
+      },
+      api(state): ApiDefinition | null {
+        return activeSessionOf(state)?.api ?? null;
+      },
+      envs(state): Array<{ id: string; name: string }> {
+        return activeSessionOf(state)?.envs ?? [];
+      },
+      snapshot(state): string {
+        return activeSessionOf(state)?.snapshot ?? "";
+      },
+      dirty(state): boolean {
+        const session = activeSessionOf(state);
+        return session !== null && session.api !== null && JSON.stringify(session.api) !== session.snapshot;
+      },
     },
     actions: {
+      /**
+       * 载入接口进活跃槽：已驻留 → 仅切活跃指针（定位槽，不重拉——回切草稿原样驻留，
+       * 不被服务端内容覆盖）；未驻留 → 拉取建槽并置活跃。建槽即写归属元数据 projectId
+       * （按注入解析器查建槽时的当前树；跨目录判定/驱逐的数据源，任务 5 审查重要 1）。
+       */
       async load(apiId: string) {
+        if (this.sessions[apiId]) {
+          this.activeApiId = apiId;
+          return;
+        }
         const detail = await api.apiGet(apiId);
-        this.apiId = apiId;
-        this.api = detail.api;
-        this.envs = detail.envs;
-        this.snapshot = JSON.stringify(this.api);
+        this.sessions[apiId] = {
+          api: detail.api,
+          envs: detail.envs,
+          snapshot: JSON.stringify(detail.api),
+          projectId: resolveProjectId ? resolveProjectId(apiId) : null,
+        };
+        this.activeApiId = apiId;
       },
       /**
        * 环境清单重拉（M9-A1）：调试环境选择器读 editor.envs，但它只在 load（选中接口）
        * 时载入——环境管理里新建/删除环境后选择器不刷新（用户实测 bug）。由组合根在
-       * 环境增删后调用，按当前接口重拉所属项目环境清单；api 快照不动（不标脏）。
+       * 环境增删后调用，按活跃接口重拉所属项目环境清单；api 快照不动（不标脏）。
        */
       async reloadEnvs() {
-        if (!this.apiId) return;
-        const detail = await api.apiGet(this.apiId);
-        this.envs = detail.envs;
+        if (!this.activeApiId) return;
+        const detail = await api.apiGet(this.activeApiId);
+        const session = this.sessions[this.activeApiId];
+        if (session) session.envs = detail.envs;
       },
       async save() {
-        if (!this.api) return;
+        const session = activeSessionOf(this);
+        if (!session?.api) return;
         // Electron IPC 以结构化克隆传参：Pinia/Vue 的响应式 Proxy 无法被克隆
         // （DataCloneError，Electron 冒烟实测），须先深拷贝为普通对象再过 IPC。
         // JSON 往返即可：模型字段全为 string/boolean/number/array/plain object。
-        await api.apiSave(JSON.parse(JSON.stringify(this.api)) as ApiDefinition);
-        this.snapshot = JSON.stringify(this.api);
+        await api.apiSave(JSON.parse(JSON.stringify(session.api)) as ApiDefinition);
+        session.snapshot = JSON.stringify(session.api);
+      },
+      /**
+       * 清空活跃指针（会话表驻留语义的配套面，任务 7 冒烟补）：切到的项目签没有可恢复的
+       * 接口记忆时由组合根调用——会话槽全部驻留不动（草稿零丢失），仅编辑区回空白，
+       * 不把上一项目的活跃会话串显到当前签下。
+       */
+      deactivate() {
+        this.activeApiId = null;
+      },
+      /**
+       * 关签驱逐（计划 C 任务 4，不变量 3：关签=项目关闭；任务 5 审查重要 1 改元数据
+       * 过滤）：按槽元数据 projectId 驱逐该项目的编辑会话槽——不依赖当前树（跨目录开
+       * 工作区后仍命中建槽时写下的归属）；活跃槽被逐则指针复位 null（编辑区空白）。
+       * projectId=null 的无归属槽不被牵连（归属未知，误逐即丢他会话草稿）。
+       */
+      evictProject(projectId: string) {
+        let activeEvicted = false;
+        for (const [apiId, session] of Object.entries(this.sessions)) {
+          if (session.projectId !== projectId) continue;
+          delete this.sessions[apiId];
+          if (this.activeApiId === apiId) activeEvicted = true;
+        }
+        if (activeEvicted) this.activeApiId = null;
       },
     },
   })(createPinia());

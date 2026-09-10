@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // M3-B 任务 3 组件测试：OnlineApiEditor（在线接口编辑/只读/坏数据 problems/引导文案）、
 // OnlineConflictDialog（裁定 C 冲突两选项）、OnlineMigrateDialog（裁定 D 进度+结果清单）、
-// TopBar 模式徽标与互斥切换（裁定 E）、SideTree 在线只读装饰（file 叶/无动作钮）、
-// OnlineLoginDialog 工作区列表（打开在线工作区入口，先关本地工作区）。
+// TopBar 工作区名显示（多工作区驻留时活跃在线工作区名优先）、SideTree 在线只读装饰
+// （file 叶/无动作钮）、OnlineLoginDialog 工作区列表（打开在线工作区入口）。
+// 计划 C 任务 2（裁定 E 互斥退役）：本地打开/在线打开并存驻留——另一侧会话原样保留。
 // antd 适配沿用既有约定：a-modal 传送门内容用 body 作用域查询（expectBody/bodyHas）。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,6 +14,9 @@ import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
+import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
+import { createTabsStore } from "../../../src/renderer/src/stores/tabs.js";
 import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
 import HomeView from "../../../src/renderer/src/components/HomeView.vue";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
@@ -91,13 +95,14 @@ interface Fixture {
   api: ApiccApi;
   workspace: ReturnType<typeof useWorkspaceStore>;
   online: ReturnType<typeof createOnlineStore>;
+  tabs: ReturnType<typeof createTabsStore>;
   mount: (component: Parameters<typeof mount>[0], props?: Record<string, unknown>) => Promise<ReturnType<typeof mount>>;
 }
 
 /** 在线 store 已登录 + 已打开在线工作区的装配（各组件共享）。 */
 async function fixture(): Promise<Fixture> {
   const api = createMemoryApi();
-  api.seedWorkspace(); // 本地内存工作区（TopBar 本地打开/互斥用例的 wsOpen 回退语义）
+  api.seedWorkspace(); // 本地内存工作区（TopBar 本地打开用例的 wsOpen 回退语义）
   const online = createOnlineStore({ api, storage: memStorage() });
   online.addProfile(SERVER, "团队服务器");
   await online.login("alice", "password8");
@@ -106,10 +111,14 @@ async function fixture(): Promise<Fixture> {
   const workspace = useWorkspaceStore(api);
   const tree = useTreeStore(api, workspace);
   const plugins = createPluginsStore({ api });
+  // 计划 C 任务 6：TopBar 退出在线工作区确认需要 tabs store（签列表/草稿态统计 + 关签编排）
+  const editor = useEditorStore(api);
+  const workflowDesign = useWorkflowDesignStore(api);
+  const tabs = createTabsStore({ workspace, tree, online, editor, workflowDesign, storage: memStorage() });
   const { i18n } = createI18nInstance();
   const mountWith = async (component: Parameters<typeof mount>[0], props: Record<string, unknown> = {}) =>
-    mount(component, { props: { api, workspace, tree, online, plugins, reportError: () => {}, openProject: () => {}, ...props }, global: { plugins: [i18n] } });
-  return { api, workspace, online, mount: mountWith };
+    mount(component, { props: { api, workspace, tree, online, plugins, tabs, reportError: () => {}, openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {}, ...props }, global: { plugins: [i18n] } });
+  return { api, workspace, online, tabs, mount: mountWith };
 }
 
 /** 预置合法 api.yaml 内容（推到在线替身），返回版本 2。 */
@@ -146,7 +155,7 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
   it("VIEWER（工作区只读）：无保存钮、输入禁用、只读徽标", async () => {
     const f = await fixture();
     await seedValidApi(f);
-    f.online.activeWorkspace = { ...f.online.activeWorkspace!, myRole: "VIEWER" };
+    f.online.sessions[f.online.activeWorkspaceId!]!.workspace.myRole = "VIEWER";
     await f.online.selectNode("api", API_PATH);
     const wrapper = await f.mount(OnlineApiEditor);
     expect(wrapper.find('[data-testid="online-save-btn"]').exists()).toBe(false);
@@ -161,7 +170,7 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
     const pid = "101";
     const pidPath = `${pid}/collections/示例集合/apis/示例接口/api.yaml`;
     await f.api.onlineFilePut({ workspaceId: f.online.activeWorkspace!.id, path: pidPath, content: VALID_API_YAML, baseVersion: 0 });
-    f.online.projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];
+    f.online.sessions[f.online.activeWorkspaceId!]!.projects = [{ id: pid, name: "示例项目", myRole: "VIEWER" }];
     await f.online.selectNode("api", pidPath);
     const wrapper = await f.mount(OnlineApiEditor);
     expect(wrapper.find('[data-testid="online-save-btn"]').exists()).toBe(false);
@@ -278,8 +287,8 @@ describe("OnlineMigrateDialog（裁定 D：目录选择 + 进度 + 结果清单�
   });
 });
 
-describe("TopBar 主页入口与互斥切换（M11 取代模式徽标）", () => {
-  it("主页入口恒在（无模式徽标）；在线工作区激活：名称切在线工作区名", async () => {
+describe("TopBar 主页入口与工作区名（本地/在线并存驻留，计划 C 任务 2）", () => {
+  it("主页入口恒在（无模式徽标）；本地打开后开在线：并存驻留，名称切在线工作区名", async () => {
     const f = await fixture();
     await f.online.closeWorkspace(); // 先回到无工作区上下文（fixture 默认在线已开）
     const wrapper = await f.mount(TopBar);
@@ -288,46 +297,60 @@ describe("TopBar 主页入口与互斥切换（M11 取代模式徽标）", () =>
     await f.workspace.open("/tmp/ws");
     await flushPromises();
     expect(wrapper.find('[data-testid="topbar-home"]').exists()).toBe(true);
-    // 打开在线工作区 → 顶栏名称切在线工作区名（互斥：本地已关）
+    // 打开在线工作区 → 顶栏名称切在线工作区名；本地工作区原样驻留（互斥退役）
     await f.online.openWorkspace(f.online.workspaces[0]!);
     await flushPromises();
+    expect(f.workspace.opened).toBe(true); // 并存：本地不退
     expect(wrapper.find('[data-testid="workspace-name"]').text()).toContain(f.online.activeWorkspace!.name);
     expect(wrapper.find('[data-testid="online-migrate"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="online-exit"]').exists()).toBe(true);
   });
 
-  it("退出在线工作区 → 会话清理（store 状态清空）", async () => {
+  it("退出在线工作区 → 确认弹窗先行（计划 C 任务 6）：取消保持驻留，确认后会话清理", async () => {
     const f = await fixture();
     const wrapper = await f.mount(TopBar);
     await wrapper.find('[data-testid="online-exit"]').trigger("click");
+    await flushPromises();
+    // 确认弹窗先行（列出受影响签；本用例无签 → 空签文案），取消不动
+    expect(bodyFind("online-exit-impact")).not.toBeNull();
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    expect(f.online.activeWorkspace).not.toBeNull();
+    // 再点并确认：会话出表清场
+    await wrapper.find('[data-testid="online-exit"]').trigger("click");
+    await flushPromises();
+    await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     expect(f.online.activeWorkspace).toBeNull();
     expect(f.online.onlineTree).toBeNull();
     expect(f.online.editorPath).toBeNull();
   });
 
-  it("在线激活时点「打开本地目录」→ 目录选定后再退在线并打开本地（互斥自动侧，M9-C 入口在主页）", async () => {
+  it("在线激活时点「打开本地目录」→ 本地打开且在线会话原样驻留（并存，互斥退役）", async () => {
     const f = await fixture();
     let pickCount = 0;
     f.api.wsPickDirectory = async () => {
       pickCount += 1;
       return "/tmp/ws";
     };
+    const activeBefore = f.online.activeWorkspaceId;
     const wrapper = await f.mount(HomeView);
     await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
-    expect(f.online.activeWorkspace).toBeNull(); // 在线已退
     expect(pickCount).toBe(1);
-    expect(f.workspace.opened).toBe(true);
+    expect(f.workspace.opened).toBe(true); // 本地已打开
+    expect(f.online.activeWorkspaceId).toBe(activeBefore); // 在线会话原样驻留（不退在线）
+    expect(f.online.sessions[activeBefore!]).toBeDefined();
   });
 
-  it("在线激活时点「打开本地目录」但取消目录选择 → 不切模式（不落空态，次要 4 顺修）", async () => {
+  it("在线激活时点「打开本地目录」但取消目录选择 → 双方不变（本地未开、在线驻留原样）", async () => {
     const f = await fixture();
     f.api.wsPickDirectory = async () => ""; // 用户取消
+    const activeBefore = f.online.activeWorkspaceId;
     const wrapper = await f.mount(HomeView);
     await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
-    expect(f.online.activeWorkspace).not.toBeNull(); // 在线保持
+    expect(f.online.activeWorkspaceId).toBe(activeBefore); // 在线保持
     expect(f.workspace.opened).toBe(false);
   });
 });
@@ -347,6 +370,12 @@ describe("SideTree 在线只读装饰（裁定 A/E）", () => {
     expect(fileBtn.exists()).toBe(true);
     await apiBtn.trigger("click");
     expect(wrapper.emitted("select")?.[0]).toEqual(["api", API_PATH]);
+    // 项目名可点（任务 7 冒烟修复：在线项目签成签入口）——readonly 下不发 tree.select，仅 emit select("project")
+    const projLabel = wrapper.findAll(".label").find((e) => e.text() === "示例项目");
+    expect(projLabel).toBeDefined();
+    await projLabel!.trigger("click");
+    const selects = wrapper.emitted("select") ?? [];
+    expect(selects.at(-1)).toEqual(["project", ONLINE_SEED_PROJECT_ID]);
   });
 
   it("无 treeRoot 且本地未打开 → 空态用注入文案", async () => {
@@ -358,17 +387,16 @@ describe("SideTree 在线只读装饰（裁定 A/E）", () => {
 });
 
 describe("OnlineLoginDialog 工作区列表（打开在线工作区入口）", () => {
-  it("已登录打开对话框 → 列出工作区；点「打开」→ 先关本地工作区再开在线并收起对话框", async () => {
+  it("已登录打开对话框 → 列出工作区；点「打开」→ 在线打开并收起对话框，本地工作区原样驻留（互斥退役）", async () => {
     const f = await fixture();
     await f.online.closeWorkspace(); // 退出在线（打开钮才可用——当前工作区打开中时禁用防重复）
-    // 预置本地工作区（应被互斥关闭）
-    f.workspace.reset();
+    // 预置本地工作区（并存驻留：在线打开不得关闭本地）
     await f.workspace.open("/tmp/ws");
     expect(f.workspace.opened).toBe(true);
     const { i18n } = createI18nInstance();
     f.online.dialogOpen = true;
     const wrapper = mount(OnlineLoginDialog, {
-      props: { online: f.online, apicc: f.api, workspace: f.workspace },
+      props: { online: f.online, apicc: f.api, tabs: f.tabs },
       global: { plugins: [i18n] },
     });
     await flushPromises();
@@ -376,7 +404,7 @@ describe("OnlineLoginDialog 工作区列表（打开在线工作区入口）", (
     expect(list.text()).toContain(f.online.workspaces[0]!.name);
     await bodyFind("online-ws-open")!.trigger("click");
     await flushPromises();
-    expect(f.workspace.opened).toBe(false); // 本地先关（互斥）
+    expect(f.workspace.opened).toBe(true); // 本地原样驻留（不再先关本地）
     expect(f.online.activeWorkspace?.name).toBe(f.online.workspaces[0]!.name);
     expect(f.online.dialogOpen).toBe(false); // 成功后收起
   });

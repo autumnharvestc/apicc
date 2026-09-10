@@ -22,6 +22,7 @@ import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
 import { createStressStore } from "../../../src/renderer/src/stores/stress.js";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
+import { createTabsStore } from "../../../src/renderer/src/stores/tabs.js";
 import { useImportWizardStore } from "../../../src/renderer/src/stores/importW.js";
 import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
 import { useRunStore } from "../../../src/renderer/src/stores/run.js";
@@ -154,16 +155,18 @@ async function mountWith(component: Parameters<typeof mount>[0], props: Record<s
   const workflowDesign = useWorkflowDesignStore(api);
   // TopBar 需要 online store（M3-B 任务 2 在线入口）：同一份一次性装配经 props 注入
   const online = createOnlineStore({ api, storage: memStorage() });
+  // 计划 C 任务 6：TopBar 退出在线确认需要 tabs store（签列表/草稿态统计 + 关签编排）
+  const tabs = createTabsStore({ workspace, tree, online, editor, workflowDesign, storage: memStorage() });
   // HomeView 轨三 props：导入向导 store 与插件清单（其余组件不消费，注入无副作用）
   const importW = useImportWizardStore(api, workspace);
   const plugins = createPluginsStore({ api });
   const { i18n } = createI18nInstance();
   const wrapper = mount(component, {
-    props: { api, workspace, tree, editor, debug, workflowDesign, online, importW, plugins, reportError: () => {}, ...props },
+    props: { api, workspace, tree, editor, debug, workflowDesign, online, tabs, importW, plugins, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, workspace, tree, editor, debug, workflowDesign, online };
+  return { wrapper, api, workspace, tree, editor, debug, workflowDesign, online, tabs };
 }
 
 /** 仅需 i18n 插件的挂载（组件只收普通 props，不消费 store）。 */
@@ -816,7 +819,7 @@ describe("ConfirmDialog", () => {
 
 describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页）", () => {
   it("打开本地目录：经 wsPickDirectory+wsOpen 后显示工作区名", async () => {
-    const { wrapper, workspace } = await mountWith(HomeView, { openProject: () => {} });
+    const { wrapper, workspace } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {} });
     await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
     expect(workspace.opened).toBe(true);
@@ -824,7 +827,7 @@ describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至�
   });
 
   it("新建本地目录先弹名称输入对话框，可取消", async () => {
-    const { wrapper } = await mountWith(HomeView, { openProject: () => {} });
+    const { wrapper } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {} });
     await wrapper.find('[data-testid="home-new-dir"]').trigger("click");
     await flushPromises();
     expect(bodyHas("dialog-input")).toBe(true);
@@ -836,7 +839,7 @@ describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至�
 
   it("打开本地目录失败时经 reportError 上报（宽审查 I1）", async () => {
     const errors: unknown[] = [];
-    const { wrapper, api } = await mountWith(HomeView, { openProject: () => {}, reportError: (e: unknown) => { errors.push(e); } });
+    const { wrapper, api } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {}, reportError: (e: unknown) => { errors.push(e); } });
     api.wsOpen = async () => { throw new Error("打不开"); };
     await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();

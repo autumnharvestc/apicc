@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Input as AInput, Modal as AModal, Select as ASelect, Tag as ATag } from "ant-design-vue";
 import type { ApiccApi } from "../../../shared/types.js";
+import type { OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
 import type { createOnlineStore } from "../stores/online.js";
@@ -32,8 +33,19 @@ const props = defineProps<{
   importW: ReturnType<typeof useImportWizardStore>;
   plugins: PluginsStore;
   reportError: (e: unknown) => void;
-  /** 打开项目回调：组合根执行树选中 + 切接口模块（与侧树选中同一路径）。 */
+  /** 打开项目回调：组合根成签并激活（不变量 1）+ 切接口模块。 */
   openProject: (id: string) => void;
+  /** 打开在线工作区回调（计划 C 终审 Important 1 ①，open-project 同款组合根模式）：组合根
+   * 打开驻留会话并切接口模块——纯在线用户（无本地工作区）从主页打开在线工作区后由此离开
+   * 主页（否则侧栏 v-show 与 ModuleRail v-if 双双隐藏，在线树/成签入口不可达）。 */
+  openOnlineWorkspace: (ws: OnlineWorkspaceSummary) => void;
+  /** 在线项目卡片成签回调（终审 Important 1 ②）：组合根直连 tabs.openProjectTab
+   * （online 分支 workspaceRef），纯在线用户在主页即可点项目成签。 */
+  openOnlineProject: (projectId: string) => void;
+  /** 活动项目 id（计划 C 任务 5 D）：该项目签存在且激活——组合根从 tabs store 计算。 */
+  activeProjectId?: string | null;
+  /** 活跃在线项目 id（终审 Important 1 ②）：活跃签为在线签时的 projectId——卡片高亮。 */
+  activeOnlineProjectId?: string | null;
 }>();
 const { t } = useI18n();
 
@@ -58,7 +70,6 @@ const groups = computed<GroupView[]>(() =>
     projects: (g.children ?? []).filter((n) => n.kind === "project").map((p) => ({ id: p.id, name: p.label })),
   })),
 );
-const activeProjectId = computed(() => (props.tree.selected?.kind === "project" ? props.tree.selected.id : null));
 const defaultGroupId = computed(() => groups.value.find((g) => g.name === "默认分组")?.id ?? groups.value[0]?.id ?? null);
 
 /** 右栏可见项目：选 local → 全部；选 group → 该分组。 */
@@ -260,12 +271,10 @@ async function refreshOnline() {
   }
 }
 
-async function openRemote(ws: { id: string; name: string; myRole: string; createdAt: string }) {
-  try {
-    await props.online.openWorkspace(ws as never);
-  } catch (e) {
-    props.reportError(e);
-  }
+/** 打开在线工作区（终审 Important 1 ①）：经组合根回调——组合根打开驻留会话并切接口模块
+ * （视图态在组合根手里），失败由组合根上屏错误通道；组件内零 store 写、零工厂调用。 */
+function openRemote(ws: OnlineWorkspaceSummary) {
+  props.openOnlineWorkspace(ws);
 }
 
 function loginServer(baseUrl: string) {
@@ -273,7 +282,7 @@ function loginServer(baseUrl: string) {
   props.online.dialogOpen = true;
 }
 
-// —— 本地目录 打开/新建（模式互斥语义保持：先退出在线） ——
+// —— 本地目录 打开/新建（计划 C 任务 2：裁定 E 互斥退役——本地打开不退在线，并存驻留） ——
 const wsDialogOpen = ref(false);
 const pendingRoot = ref("");
 
@@ -281,7 +290,6 @@ async function openLocalDir() {
   try {
     const dir = await props.api.wsPickDirectory();
     if (!dir) return;
-    if (props.online.activeWorkspace) await props.online.closeWorkspace();
     await props.workspace.open(dir);
   } catch (e) {
     props.reportError(e);
@@ -292,7 +300,6 @@ async function startCreateLocal() {
   try {
     const dir = await props.api.wsPickDirectory();
     if (!dir) return;
-    if (props.online.activeWorkspace) await props.online.closeWorkspace();
     pendingRoot.value = dir;
     wsDialogOpen.value = true;
   } catch (e) {
@@ -417,16 +424,33 @@ async function onCreateWsConfirm(name: string | null) {
             <a-button size="small" data-testid="home-refresh-online" @click="refreshOnline">{{ t("home.refresh") }}</a-button>
           </div>
           <div class="ws-list" data-testid="home-ws-list">
-            <button
-              v-for="w in online.workspaces"
-              :key="w.id"
-              type="button"
-              class="ws-row"
-              :data-testid="`home-ws-${w.id}`"
-              @click="openRemote(w)"
-            >
-              {{ w.name }}
-            </button>
+            <template v-for="w in online.workspaces" :key="w.id">
+              <button
+                type="button"
+                class="ws-row"
+                :data-testid="`home-ws-${w.id}`"
+                @click="openRemote(w)"
+              >
+                {{ w.name }}
+              </button>
+              <!-- 终审 Important 1 ②：活跃工作区下列出其项目卡片（online.projects 随活跃会话），
+                   点卡片经组合根回调直达成签——纯在线用户在主页即可进入项目，不经工作区行中转 -->
+              <div
+                v-if="online.activeWorkspace?.id === w.id && online.projects.length > 0"
+                class="ws-projects"
+                :data-testid="`home-ws-projects-${w.id}`"
+              >
+                <ProjectCard
+                  v-for="p in online.projects"
+                  :key="p.id"
+                  :project-id="p.id"
+                  :project-name="p.name"
+                  :active="p.id === activeOnlineProjectId"
+                  plain
+                  @open="openOnlineProject(p.id)"
+                />
+              </div>
+            </template>
             <span v-if="online.workspaces.length === 0" class="muted">{{ t("home.noWorkspaces") }}</span>
           </div>
         </template>
@@ -721,6 +745,16 @@ async function onCreateWsConfirm(name: string | null) {
 .ws-row:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+/* 活跃工作区的项目卡片行（终审 Important 1 ②）：缩进排布于工作区行下 */
+.ws-projects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0 4px 12px;
+}
+.ws-projects :deep(.project-card) {
+  background: var(--bg);
 }
 .login-row {
   display: flex;

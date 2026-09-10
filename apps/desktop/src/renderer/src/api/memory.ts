@@ -237,27 +237,31 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     return [{ id: ONLINE_SEED_GROUP_ID, name: "示例分组", isDefault: true, createdAt: new Date(0).toISOString() }];
   }
 
-  /** 当前在线工作区（任务 3：open/close/tree:view 同构 main session 的纯状态语义）。 */
-  let onlineWs: { id: string; name: string; myRole: OnlineWorkspaceOpenInput["myRole"] } | null = null;
+  // 计划 C 任务 1 会话表化（与 main session 同构）：open 入表激活、activate 纯切指针
+  // （表中有且已登录）、close 带 id 出表/无参关活跃、出表不自动切活跃。
+  type OnlineWsSession = { id: string; name: string; myRole: OnlineWorkspaceOpenInput["myRole"] };
+  const onlineSessions = new Map<string, OnlineWsSession>();
+  let onlineActiveId: string | null = null;
 
-  /** 构造在线工作区视图（经同一 onlineTreeToDto 映射，与 main 侧零漂移）。计划 C 任务 3
+  /** 构造活跃在线工作区视图（经同一 onlineTreeToDto 映射，与 main 侧零漂移）。计划 C 任务 3
    *  分组层：同 main session.getTreeView 注入组名表——项目挂 group:<groupId> 合成组节点。 */
   function onlineWorkspaceView(): OnlineWorkspaceView {
-    if (!onlineWs) throw new Error("尚未打开在线工作区");
+    const ws = onlineActiveId !== null ? onlineSessions.get(onlineActiveId) : undefined;
+    if (!ws) throw new Error("尚未打开在线工作区");
     if (!onlineUser) throw new Error("尚未登录在线服务器");
     const tree: OnlineTree = {
-      workspaceId: onlineWs.id,
+      workspaceId: ws.id,
       rootVersion: onlineFiles.size,
       files: [...onlineFiles.keys()].map(onlineTreeRow),
       // path 实体化修订 2026-09-08：projects 行 = 实体表产出（与 onlineTreeGet 同一数据源）
       projects: onlineProjectsRows(),
     };
     return {
-      workspaceId: onlineWs.id,
-      name: onlineWs.name,
-      myRole: onlineWs.myRole,
+      workspaceId: ws.id,
+      name: ws.name,
+      myRole: ws.myRole,
       projects: tree.projects,
-      tree: onlineTreeToDto(tree, onlineWs.name, new Map(onlineGroupsRows().map((g) => [g.id, g.name] as const))),
+      tree: onlineTreeToDto(tree, ws.name, new Map(onlineGroupsRows().map((g) => [g.id, g.name] as const))),
     };
   }
 
@@ -1050,20 +1054,31 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     },
 
     // —— 在线工作区浏览/迁移（M3-B 任务 3，与 main IPC 面同构：open 后即取视图，
-    // 因此未登录 open 直接拒绝且不残留状态）——
+    // 因此未登录 open 直接拒绝且不残留状态）。计划 C 任务 1 会话表化：open 入表激活
+    // （不覆盖其他驻留工作区）、activate 显式切换、close 带 id 出表/无参关活跃——
+    // 语义与 main session 同构（错误文案逐字对齐）。——
     async onlineWorkspaceOpen(input: OnlineWorkspaceOpenInput): Promise<OnlineWorkspaceView> {
       requireOnlineUser();
-      onlineWs = { id: input.workspaceId, name: input.name, myRole: input.myRole };
+      onlineSessions.set(input.workspaceId, { id: input.workspaceId, name: input.name, myRole: input.myRole });
+      onlineActiveId = input.workspaceId;
       return onlineWorkspaceView();
     },
 
-    async onlineWorkspaceClose(): Promise<void> {
-      onlineWs = null;
+    async onlineWorkspaceActivate(workspaceId: string): Promise<void> {
+      if (!onlineUser || !onlineSessions.has(workspaceId)) throw new Error("尚未打开在线工作区");
+      onlineActiveId = workspaceId;
+    },
+
+    async onlineWorkspaceClose(input?: { workspaceId?: string }): Promise<void> {
+      const target = input?.workspaceId ?? onlineActiveId;
+      if (target === null || !onlineSessions.delete(target)) return;
+      if (onlineActiveId === target) onlineActiveId = null; // 不自动切其他驻留工作区
     },
 
     async onlineTreeView(workspaceId: string): Promise<OnlineWorkspaceView> {
-      if (!onlineWs || onlineWs.id !== workspaceId) throw new Error("尚未打开在线工作区");
-      requireOnlineUser();
+      if (!onlineUser || onlineActiveId !== workspaceId || !onlineSessions.has(workspaceId)) {
+        throw new Error("尚未打开在线工作区");
+      }
       return onlineWorkspaceView();
     },
 
@@ -1127,6 +1142,12 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     // 出口快照拷贝——替身只做契约同构（混合 loaded/failed 清单 + 导入器枚举），不做加载语义。
     async pluginsList(): Promise<PluginsListResult> {
       return structuredClone(createPluginsListFixture());
+    },
+
+    // 退出程序 dirty 拦截（计划 C 任务 6）：登记 no-op——jsdom/浏览器调试无 main 关窗
+    // 询问链路，聚合 dirty 的真实计算在组合根（App.vue），preload 才是 main↔渲染层桥。
+    onDirtyCheck(_handler: () => boolean): void {
+      void _handler;
     },
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */

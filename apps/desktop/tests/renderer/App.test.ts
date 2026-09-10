@@ -80,25 +80,34 @@ function langOption(locale: string): DOMWrapper<Element> {
 
 /** 动态 import App：保证上方 window.apicc 注入先于 api/index.ts 的模块求值。 */
 async function mountApp() {
-  // M11 启动恢复会读持久化键——测试间清理保证互不影响
-  for (const k of ["apicc.lastWorkspace", "apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory"]) localStorage.removeItem(k);
+  // M11 启动恢复会读持久化键——测试间清理保证互不影响。
+  // 计划 C 任务 5：apicc.lastWorkspace 单槽退役，不再读写也无须清理；签表键 apicc.projectTabs
+  // 为启动恢复的数据源（恢复用例自行播种后由 mountApp 清理隔离）。
+  for (const k of ["apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory", "apicc.projectTabs"]) localStorage.removeItem(k);
   const { default: App } = await import("../../src/renderer/src/App.vue");
   const wrapper = mount(App, { global: { plugins: [initI18n().i18n] } });
   await flushPromises();
   return wrapper;
 }
 
-/** 打开本地目录（M11：主页入口 → topbar-home → Open Directory → 切接口模块）。
+/** 打开本地目录（M11：主页入口 → topbar-home → Open Directory → 成签 → 切接口模块）。
  * wsOpen 走真实磁盘 IO（替身重载），高负载下单次 flushPromises 可能早于 open 完成——
- * 轮询等待 tree 就绪（上限 ~2s）后再切接口模块，消除时序边缘。 */
+ * 轮询等待 tree 就绪（上限 ~2s）后再切接口模块，消除时序边缘。
+ * 计划 C 任务 5：项目卡片点开走成签链路（openProjectTab → activateTab 编排）——
+ * 轮询等待首个项目签出现后再等树节点。 */
 async function openLocalDir(wrapper: import("@vue/test-utils").VueWrapper) {
   await wrapper.find('[data-testid="topbar-home"]').trigger("click");
   await flushPromises();
   await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
-  // 主页视图不渲染 rail（用户裁定）：打开后经首个项目卡片进入接口模块
+  // 主页视图不渲染 rail（用户裁定）：打开后经首个项目卡片成签进入接口模块
   for (let i = 0; i < 100 && !wrapper.find('[data-testid^="project-card-"]').exists(); i++) await new Promise((r) => setTimeout(r, 20));
   await flushPromises();
   await wrapper.find('[data-testid^="project-card-"]').trigger("click");
+  // 成签链路（openProjectTab → activateTab → 项目选中）是多拍宏任务：先等签栏出现
+  for (let i = 0; i < 100 && !wrapper.find('[data-testid^="project-tab-"]').exists(); i++) {
+    await flushPromises();
+    await new Promise((r) => setTimeout(r, 20));
+  }
   // 打开链路（真实磁盘重载 + 树渲染）是多拍宏任务，单次 flushPromises 会早于树数据就绪：
   // 直接等首个树节点出现（上限 ~2s），不 sleep 凑拍。
   for (let i = 0; i < 100 && !wrapper.find('[data-testid="tree-group-toggle"]').exists(); i++) {
@@ -589,6 +598,62 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
   });
 });
 
+// —— 计划 C 任务 5：启动按签恢复（apicc.projectTabs 签表驱动；lastWorkspace 单槽退役）——
+// 本组用例需在挂载前播种持久化键，而 mountApp 会清签表键——用不清键的挂装变体（App.vue
+// 模块此时已被其他用例求值，window.apicc 注入先于模块求值的约束早已满足）。
+async function mountAppKeepingStorage() {
+  const { default: App } = await import("../../src/renderer/src/App.vue");
+  const wrapper = mount(App, { global: { plugins: [initI18n().i18n] } });
+  await flushPromises();
+  return wrapper;
+}
+
+describe("App 启动按签恢复（计划 C 任务 5：签表驱动）", () => {
+  it("持久化本地签 → 挂载重开目录并激活该签（视图离开主页）；lastApi 按活跃签项目过滤恢复", async () => {
+    const treeDto = await failingApi.treeGet();
+    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
+    const collection = project.children!.find((c) => c.kind === "collection")!;
+    const apiNode = collection.children!.find((n) => n.kind === "api")!;
+    // 模拟上次会话持久化：本地签（内存替身对非工作区目录回退种子内存态）+ lastApi 记忆（同项目接口）
+    localStorage.setItem("apicc.projectTabs", JSON.stringify({
+      tabs: [{ workspaceRef: { kind: "local", dir: "/tmp/ws-restored" }, projectId: project.id, projectName: "示例项目" }],
+      activeIndex: 0,
+    }));
+    localStorage.setItem("apicc.lastApi", JSON.stringify({ id: apiNode.id }));
+    try {
+      const wrapper = await mountAppKeepingStorage();
+      await flushPromises();
+      // 签栏恢复：持久化签渲染且处于激活态
+      expect(wrapper.find('[data-testid="project-tab-0"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="project-tab-0"]').attributes("data-active")).toBe("true");
+      // 视图离开主页（签驱动重开），接口模块就位
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
+      // lastApi 记忆属于活跃签项目 → 恢复进编辑器
+      await flushPromises();
+      const editorOf = () => wrapper.findComponent(RequestEditor).props("editor") as { apiId: string | null };
+      expect(editorOf().apiId).toBe(apiNode.id);
+    } finally {
+      localStorage.removeItem("apicc.projectTabs");
+      localStorage.removeItem("apicc.lastApi");
+    }
+  });
+
+  it("lastWorkspace 单槽退役：残留键不再驱动恢复（无签表 → 停留主页，键值原样不被改写）", async () => {
+    localStorage.setItem("apicc.lastWorkspace", JSON.stringify({ source: "local", dir: "/tmp/whatever" }));
+    try {
+      const wrapper = await mountAppKeepingStorage();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid^="project-tab-"]').exists()).toBe(false);
+      expect(localStorage.getItem("apicc.lastWorkspace")).toBe(JSON.stringify({ source: "local", dir: "/tmp/whatever" }));
+    } finally {
+      localStorage.removeItem("apicc.lastWorkspace");
+    }
+  });
+});
+
 // —— M7-B 任务 1：插件管理视图装配（裁定①：路由 /plugins + 侧栏入口，管理类视图）——
 describe("App 插件视图装配（M7-B 任务 1）", () => {
   it("插件入口（M9-C 裁定 D5）：顶栏设置抽屉打开插件管理，恒可用（不依赖工作区）", async () => {
@@ -745,5 +810,241 @@ describe("App 环境联动（M9-A1）", () => {
     await wrapper.find('[data-testid="rail-api"]').trigger("click");
     await flushPromises();
     expect(editorOf().envs.map((e) => e.name)).toContain("prod");
+  });
+});
+
+
+// —— 计划 C 任务 6（规格勘误口径）：切项目签的工作流草稿确认——tabs.activateTab 离开当前
+// 项目上下文前经 confirmWorkflowDraft 钩子弹既有 ConfirmDialog；确认丢弃 = 设计器会话卸载。
+// 注意（轨一 id 布局）：项目在树/主页卡片按 UUID 字典序——首签不保证是示例项目，本组用例
+// 一律按项目名定位签。置于文件末尾：用例会向共享替身工作区直建第二项目（结束即删，但与
+// 仍挂载组件的收尾写盘存在竞态），不把该足迹暴露给文件内更早的既有用例。
+describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
+  async function seedSecondProject(name: string): Promise<string> {
+    const treeDto = await failingApi.treeGet();
+    failingApi.nodeCreate = realNodeCreate;
+    try {
+      const created = await failingApi.nodeCreate({ kind: "project", parentId: treeDto.children![0]!.id, name });
+      return created.id;
+    } finally {
+      failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
+    }
+  }
+
+  /** 按项目名定位签元素（轮询等成签渲染；签文本=项目名）。 */
+  async function tabFor(wrapper: import("@vue/test-utils").VueWrapper, name: string) {
+    for (let i = 0; i < 100; i++) {
+      const found = wrapper.findAll('[data-testid^="project-tab-"]').find((t) => t.text().includes(name));
+      if (found) return found;
+      await flushPromises();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`项目签未找到: ${name}`);
+  }
+
+  /** 主页点目标项目卡片成签并激活（无草稿源时干净切换；已活跃则 no-op）。 */
+  async function openSecondProjectTab(wrapper: import("@vue/test-utils").VueWrapper, name: string) {
+    await wrapper.find('[data-testid="topbar-home"]').trigger("click");
+    await flushPromises();
+    const card = wrapper.findAll('[data-testid^="project-card-"]').find((c) => c.text().includes(name))!;
+    await card.trigger("click");
+    const tab = await tabFor(wrapper, name);
+    expect(tab.classes()).toContain("active");
+  }
+
+  it("dirty 时切走当前签：确认前不切换；取消保持；确认丢弃后切签且设计器会话卸载", async () => {
+    const projectId = await seedSecondProject("切签目标项目");
+    // 脏流建在示例项目（被离开的签）名下——确认钩子的归属过滤按树 workflows 摘要判定
+    const treeDto = await failingApi.treeGet();
+    const demoProject = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
+    const wfA = await failingApi.wfCreate({ projectId: demoProject.id, name: "切签脏流" });
+    try {
+      const wrapper = await mountApp();
+      await openLocalDir(wrapper);
+      await flushPromises();
+      const designOf = () =>
+        wrapper.findComponent(WfDesigner).props("workflowDesign") as {
+          workflowId: string | null;
+          dirty: boolean;
+        };
+      // 两个项目各成签（首卡随机——openLocalDir 只点首卡；均无草稿源，干净切换）
+      await openSecondProjectTab(wrapper, "切签目标项目");
+      await openSecondProjectTab(wrapper, "示例项目");
+      const tabA = await tabFor(wrapper, "示例项目");
+      expect(tabA.classes()).toContain("active");
+      await wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("切签脏流"))!.trigger("click");
+      await flushPromises();
+      await wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+      await flushPromises();
+      expect(designOf().dirty).toBe(true);
+      expect(designOf().workflowId).toBe(wfA.id);
+      // dirty 时切到目标项目签：确认框弹出，活跃签与缓冲不变（修复前：直切，编辑静默丢失）
+      const tabB = await tabFor(wrapper, "切签目标项目");
+      await tabB.trigger("click");
+      await flushPromises();
+      expect(expectBody("dialog-cancel").exists()).toBe(true);
+      expect(designOf().workflowId).toBe(wfA.id);
+      expect(designOf().dirty).toBe(true);
+      expect(tabA.classes()).toContain("active");
+      // 取消：不切换，草稿原样
+      await expectBody("dialog-cancel").trigger("click");
+      await flushPromises();
+      expect(tabA.classes()).toContain("active");
+      expect(designOf().dirty).toBe(true);
+      // 再切并确认丢弃：切签完成 + 设计器会话卸载（dirty 复位，避免下次切签重复纠缠）
+      await tabB.trigger("click");
+      await flushPromises();
+      await expectBody("dialog-confirm").trigger("click");
+      await flushPromises();
+      expect(tabB.classes()).toContain("active");
+      expect(designOf().workflowId).toBeNull();
+      expect(designOf().dirty).toBe(false);
+    } finally {
+      await failingApi.wfDelete(wfA.id).catch(() => undefined);
+      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+    }
+  });
+
+  it("非 dirty 时切签：直接切换不弹确认（现状保持）", async () => {
+    const projectId = await seedSecondProject("干净目标项目");
+    try {
+      const wrapper = await mountApp();
+      await openLocalDir(wrapper);
+      await flushPromises();
+      await openSecondProjectTab(wrapper, "干净目标项目");
+      expect(document.body.querySelector('[data-testid="dialog-confirm"]')).toBeNull();
+    } finally {
+      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+    }
+  });
+
+  it("切到无接口记忆的项目签：编辑区不串显上一项目活跃会话；切回草稿驻留（任务 7 冒烟修复）", async () => {
+    const projectId = await seedSecondProject("无记忆目标项目");
+    try {
+      const wrapper = await mountApp();
+      await openLocalDir(wrapper);
+      await flushPromises();
+      // 确保示例项目签活跃（openLocalDir 打开的首卡按 UUID 序不保证是示例项目）
+      await openSecondProjectTab(wrapper, "示例项目");
+      // 展开作用域树至 api 叶可见并载入示例接口
+      for (let round = 0; round < 5 && !wrapper.find('[data-testid="tree-api"]').exists(); round++) {
+        for (const t of wrapper.findAll('[data-testid="tree-group-toggle"]')) await t.trigger("click");
+        await flushPromises();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await wrapper.find('[data-testid="tree-api"]').trigger("click");
+      await flushPromises();
+      const nameInput = wrapper.find('[data-testid="editor-name"]');
+      expect(nameInput.exists()).toBe(true);
+      await nameInput.setValue("串显回归草稿");
+      // 切到无任何接口记忆的目标项目签：编辑区必须回空白
+      // （修复前：上一项目的活跃会话串显到当前签下——内容上下文未随签驱动）
+      await openSecondProjectTab(wrapper, "无记忆目标项目");
+      expect(wrapper.find('[data-testid="request-editor"]').exists()).toBe(false);
+      // 切回示例项目：草稿按会话驻留原样恢复（不变量 2）
+      const tabA = await tabFor(wrapper, "示例项目");
+      await tabA.trigger("click");
+      await flushPromises();
+      const back = wrapper.find('[data-testid="editor-name"]');
+      expect(back.exists()).toBe(true);
+      expect((back.element as HTMLInputElement).value).toBe("串显回归草稿");
+    } finally {
+      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+    }
+  });
+});
+
+// —— 计划 C 终审 Important 1：纯在线用户主页死胡同——在线项目成签入口在主页视图不可达 ——
+// 修复后：①主页开在线工作区 → 组合根回调切接口模块（侧栏 v-show 与 ModuleRail v-if 随
+// onlineMode 亮起，在线树/成签入口可达）；②主页在线区在活跃工作区下列项目卡片，点卡片
+// 直连 tabs.openProjectTab（online 分支 workspaceRef）成签激活。
+// 置于文件末尾：用例预置在线登录态（apicc.onlineServers），结束即清，不污染文件内更早用例。
+const ONLINE_SERVER = "http://127.0.0.1:8080";
+
+async function seedOnlineLogin() {
+  await failingApi.onlineLogin({ baseUrl: ONLINE_SERVER, username: "alice", password: "password8" });
+  localStorage.setItem("apicc.onlineServers", JSON.stringify({
+    active: ONLINE_SERVER,
+    servers: [{ baseUrl: ONLINE_SERVER, name: "团队服务器" }],
+  }));
+}
+
+async function cleanupOnlineLogin() {
+  localStorage.removeItem("apicc.onlineServers");
+  await failingApi.onlineLogout();
+}
+
+/** 主页 → 服务器视图 → 等工作区行出现（refreshOnline 异步）。 */
+async function gotoServerWorkspaces(wrapper: import("@vue/test-utils").VueWrapper) {
+  await wrapper.find(`[data-testid="home-side-server-${ONLINE_SERVER}"]`).trigger("click");
+  await flushPromises();
+  for (let i = 0; i < 100 && !wrapper.find('[data-testid="home-ws-ws-online-1"]').exists(); i++) {
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** 等待激活态项目签出现（成签链路是多拍宏任务：签元素先于激活完成渲染）。 */
+async function activeTabElement(wrapper: import("@vue/test-utils").VueWrapper) {
+  for (let i = 0; i < 100; i++) {
+    const tab = wrapper.findAll('[data-testid^="project-tab-"]').find((t) => t.attributes("data-active") === "true");
+    if (tab) return tab;
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("激活态项目签未出现");
+}
+
+describe("App 主页在线入口（终审 Important 1：纯在线用户死胡同修复）", () => {
+  it("主页开在线工作区 → 视图离开主页（侧栏/在线编辑区亮起），在线树点项目名即可成签", async () => {
+    await seedOnlineLogin();
+    try {
+      const wrapper = await mountApp();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      await gotoServerWorkspaces(wrapper);
+      // 打开在线工作区：组合根回调切接口模块（修复前 view 停留 home 且侧栏/rail 双隐藏——死胡同）
+      await wrapper.find('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sidebar-api"]').isVisible()).toBe(true);
+      expect(wrapper.find('[data-testid="online-guide"]').exists()).toBe(true);
+      // 成签路径可达：在线侧树展开 → 项目名入口（任务 7）→ 项目签创建并激活
+      await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+      await flushPromises();
+      const projLabel = wrapper.findAll(".label").find((e) => e.text() === "示例项目");
+      expect(projLabel).toBeDefined();
+      await projLabel!.trigger("click");
+      // 成签链路（openProjectTab → activateTab 编排）是多拍宏任务：签元素先于激活完成渲染，
+      // 直接等「激活态」出现，不凑拍
+      const activeTab = await activeTabElement(wrapper);
+      expect(activeTab.text()).toContain("示例项目");
+    } finally {
+      await cleanupOnlineLogin();
+    }
+  });
+
+  it("主页在线区活跃工作区下项目卡片 → 点卡片直达成签激活并离开主页", async () => {
+    await seedOnlineLogin();
+    try {
+      const wrapper = await mountApp();
+      await gotoServerWorkspaces(wrapper);
+      await wrapper.find('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false); // ① 开工作区即切离主页
+      // 回主页 → 服务器视图：活跃工作区下列出其项目卡片（online.projects，ProjectCard 复用）
+      await wrapper.find('[data-testid="topbar-home"]').trigger("click");
+      await flushPromises();
+      await gotoServerWorkspaces(wrapper);
+      const card = wrapper.find('[data-testid="project-card-300"]');
+      expect(card.exists()).toBe(true);
+      // 点卡片：直连 tabs.openProjectTab（online 分支）→ 成签激活，视图随活跃签离开主页
+      await card.trigger("click");
+      const activeTab = await activeTabElement(wrapper);
+      expect(activeTab.text()).toContain("示例项目");
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+    } finally {
+      await cleanupOnlineLogin();
+    }
   });
 });

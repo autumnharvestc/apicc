@@ -50,6 +50,49 @@ function writePersisted(storage: Storage, state: PersistedOnlineServers): void {
 }
 
 /**
+ * 在线编辑缓冲（计划 C 任务 2 会话表化 → 任务 4 按 editorPath 表化）：随工作区会话驻留
+ * 且按文件路径多槽并存——同工作区双项目（乃至同项目多接口）草稿互不污染（任务 3 重要 1
+ * 裁定的核心验收），切接口/切项目签零丢失零确认（计划全局不变量 2）。字段与旧单槽扁平态
+ * 一一对应（裁定 B：仅 api.yaml 级编辑 + 只读文件原文浏览）。
+ */
+export interface OnlineEditorBuffer {
+  path: string | null;
+  kind: "api" | "file" | null;
+  api: ApiDefinition | null;
+  raw: string;
+  problems: string[];
+  version: number;
+  snapshot: string;
+  loading: boolean;
+}
+
+function emptyBuffer(): OnlineEditorBuffer {
+  return { path: null, kind: null, api: null, raw: "", problems: [], version: 0, snapshot: "", loading: false };
+}
+
+/** 在线工作区驻留会话（计划 C 任务 2，与 main online session 同构）：工作区态 + 树视图 +
+ *  项目角色清单 + 编辑缓冲表（key = editorPath 实体路径；活跃指针 activeEditorPath）。 */
+export interface OnlineSession {
+  workspace: { id: string; name: string; myRole: OnlineRole };
+  tree: TreeNodeDTO | null;
+  projects: OnlineTreeProject[];
+  buffers: Record<string, OnlineEditorBuffer>;
+  activeEditorPath: string | null;
+}
+
+/** 活跃驻留会话定位（getter/action 共用的表语义中枢）；无活跃指针 → null。 */
+function activeSessionOf(state: { sessions: Record<string, OnlineSession>; activeWorkspaceId: string | null }): OnlineSession | null {
+  return state.activeWorkspaceId !== null ? state.sessions[state.activeWorkspaceId] ?? null : null;
+}
+
+/** 活跃编辑缓冲定位（任务 4 表语义中枢）：活跃会话的活跃路径槽；无会话/无活跃路径 → null。 */
+function activeBufferOf(state: { sessions: Record<string, OnlineSession>; activeWorkspaceId: string | null }): OnlineEditorBuffer | null {
+  const session = activeSessionOf(state);
+  if (!session || session.activeEditorPath === null) return null;
+  return session.buffers[session.activeEditorPath] ?? null;
+}
+
+/**
  * 在线 store 工厂（M3-B 任务 2）：服务器档案（增删改 + localStorage 持久化）+ 登录态 +
  * 登录/注册/登出 + init/resume 恢复链路（裁定 A）。接受依赖注入（api + storage，测试传
  * 新实例即天然隔离）；每次工厂调用绑定独立 Pinia 实例。组件内零工厂调用：实例由 App
@@ -84,22 +127,11 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       /** 登录/配置对话框显隐（TopBar 打开、对话框关闭双向读写）。 */
       dialogOpen: false,
 
-      // —— 任务 3：在线工作区浏览/编辑/迁移（裁定 A–E）——
-      /** 当前在线工作区（null = 本地模式）。与本地工作区互斥（裁定 E）。 */
-      activeWorkspace: null as { id: string; name: string; myRole: OnlineRole } | null,
-      /** 在线树视图（main onlineTreeToDto 映射产物）。 */
-      onlineTree: null as TreeNodeDTO | null,
-      /** 项目角色清单（逐项目只读判定：myRole VIEWER/NONE 覆盖工作区角色）。 */
-      projects: [] as OnlineTreeProject[],
-      /** 编辑缓冲（裁定 B：仅 api.yaml 级编辑 + 只读文件原文浏览）。 */
-      editorPath: null as string | null,
-      editorKind: null as "api" | "file" | null,
-      editorApi: null as ApiDefinition | null,
-      editorRaw: "",
-      editorProblems: [] as string[],
-      editorVersion: 0,
-      editorSnapshot: "",
-      editorLoading: false,
+      // —— 任务 3：在线工作区浏览/编辑/迁移（裁定 A–E）；计划 C 任务 2 会话表化 ——
+      /** 驻留在线工作区会话表（key = workspaceId）：本地 1 + 在线 N 并存驻留（裁定 E 互斥退役）。 */
+      sessions: {} as Record<string, OnlineSession>,
+      /** 活跃在线工作区 id；null = 无活跃（在线树/编辑面走本地上下文）。切换只由 activateWorkspace 显式驱动。 */
+      activeWorkspaceId: null as string | null,
       /** 保存与冲突（裁定 C：409 → conflict 状态驱动冲突对话框）。 */
       saving: false,
       conflict: null as OnlineVersionConflict | null,
@@ -118,10 +150,52 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       },
 
       /**
-       * 在线编辑缓冲 dirty（快照比对，先例同本地 editor store）。
+       * 兼容面（计划 C 任务 2：TopBar/视图层零改动）：以下扁平 getter 全部转发活跃驻留
+       * 会话的**活跃路径槽**（任务 4 缓冲表化）——activeWorkspace/onlineTree/projects
+       * （工作区上下文）与编辑缓冲八字段（editorPath/editorKind/editorApi/editorRaw/
+       * editorProblems/editorVersion/editorSnapshot/editorLoading）。无活跃会话/无活跃
+       * 路径时回落到旧单槽「空态」形状。
+       */
+      activeWorkspace(state): OnlineSession["workspace"] | null {
+        return activeSessionOf(state)?.workspace ?? null;
+      },
+      onlineTree(state): TreeNodeDTO | null {
+        return activeSessionOf(state)?.tree ?? null;
+      },
+      projects(state): OnlineTreeProject[] {
+        return activeSessionOf(state)?.projects ?? [];
+      },
+      editorPath(state): string | null {
+        return activeBufferOf(state)?.path ?? null;
+      },
+      editorKind(state): "api" | "file" | null {
+        return activeBufferOf(state)?.kind ?? null;
+      },
+      editorApi(state): ApiDefinition | null {
+        return activeBufferOf(state)?.api ?? null;
+      },
+      editorRaw(state): string {
+        return activeBufferOf(state)?.raw ?? "";
+      },
+      editorProblems(state): string[] {
+        return activeBufferOf(state)?.problems ?? [];
+      },
+      editorVersion(state): number {
+        return activeBufferOf(state)?.version ?? 0;
+      },
+      editorSnapshot(state): string {
+        return activeBufferOf(state)?.snapshot ?? "";
+      },
+      editorLoading(state): boolean {
+        return activeBufferOf(state)?.loading ?? false;
+      },
+
+      /**
+       * 在线编辑缓冲 dirty（快照比对，先例同本地 editor store）——按活跃会话活跃槽判定。
        */
       editorDirty(state): boolean {
-        return state.editorApi !== null && JSON.stringify(state.editorApi) !== state.editorSnapshot;
+        const buffer = activeBufferOf(state);
+        return buffer !== null && buffer.api !== null && JSON.stringify(buffer.api) !== buffer.snapshot;
       },
 
       /**
@@ -130,15 +204,16 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 内容 path = `<projectId>/...`，服务端不再回 projects[].path 目录路径）；
        * VIEWER/NONE 时该项目子树只读；工作区配置叶（根级 apicc.workspace.yaml）对齐
        * 服务端 ADMIN+ 守卫（计划 C 任务 4 / B-任务 7 遗留④）：仅 ADMIN/OWNER 可编辑，
-       * 否则 EDITOR 编辑推送必中途 403。
+       * 否则 EDITOR 编辑推送必中途 403。按活跃会话的工作区角色与项目清单判定。
        */
       canEdit(state): (path: string | null) => boolean {
         return (path: string | null): boolean => {
-          if (!state.activeWorkspace || state.activeWorkspace.myRole === "VIEWER" || !path) return false;
+          const session = activeSessionOf(state);
+          if (!session || session.workspace.myRole === "VIEWER" || !path) return false;
           if (path === "apicc.workspace.yaml") {
-            return state.activeWorkspace.myRole === "ADMIN" || state.activeWorkspace.myRole === "OWNER";
+            return session.workspace.myRole === "ADMIN" || session.workspace.myRole === "OWNER";
           }
-          const project = state.projects.find((p) => path === p.id || path.startsWith(`${p.id}/`));
+          const project = session.projects.find((p) => path === p.id || path.startsWith(`${p.id}/`));
           if (project) return project.myRole !== "VIEWER" && project.myRole !== "NONE";
           return true;
         };
@@ -274,15 +349,22 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         }
       },
 
-      /** 登出：吊销服务端 token（失败记入 error 不阻断）+ 清本地登录态；档案保留（裁定 C）。
-       *  在线工作区打开中先关闭（裁定 E：退出在线工作区 → 会话清理）。 */
+      /**
+       * 登出：吊销服务端 token（失败记入 error 不阻断）+ 清本地登录态；档案保留（裁定 C）。
+       * 驻留会话全清（计划 C 任务 2：main 侧 online:logout 清会话全表，本地随动全清——
+       * 不再逐会话 closeWorkspace，出表即弃各会话编辑缓冲）。
+       */
       async logout(): Promise<void> {
-        if (this.activeWorkspace) await this.closeWorkspace();
         try {
           await api.onlineLogout();
         } catch (e) {
           this.error = e instanceof Error ? e.message : String(e);
         }
+        this.sessions = {};
+        this.activeWorkspaceId = null;
+        this.conflict = null;
+        this.migrationResult = null;
+        this.migrationProgress = "";
         this.clearLoginState();
       },
 
@@ -296,141 +378,211 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         }
       },
 
-      // —— 任务 3：在线工作区浏览/编辑/迁移（裁定 A–E）——
+      // —— 任务 3：在线工作区浏览/编辑/迁移（裁定 A–E）；计划 C 任务 2 会话表化 ——
 
-      /** 编辑缓冲与会话清理（裁定 E：关闭在线工作区即清树缓存/编辑缓冲/文件态）。 */
+      /**
+       * 显式清场（任务 4 范围控制保留）：清空活跃会话的**整张**缓冲表 + 活跃指针。
+       * selectNode 不再调用它（切接口/选容器只切活跃指针，草稿驻留）；工作区级清场由
+       * closeWorkspace/logout 出表释放缓冲表，本动作保留给显式丢弃语义。
+       */
       clearEditor(): void {
-        this.editorPath = null;
-        this.editorKind = null;
-        this.editorApi = null;
-        this.editorRaw = "";
-        this.editorProblems = [];
-        this.editorVersion = 0;
-        this.editorSnapshot = "";
-        this.editorLoading = false;
+        const session = activeSessionOf(this);
+        if (!session) return;
+        session.buffers = {};
+        session.activeEditorPath = null;
       },
 
       /**
-       * 打开在线工作区（裁定 A/E）：main 记录工作区并返回树视图（与本地互斥的自动侧——
-       * 调用方先关本地工作区）；失败 error 上屏且状态不变（不开半开工作区）。
+       * 打开在线工作区（裁定 A；计划 C 任务 2 表语义）：入表不覆盖——已驻留工作区刷新
+       * 树/项目角色并**保留其编辑缓冲表**（任务 4：草稿随会话驻留），其他驻留工作区不受
+       * 影响；成功后活跃指针切到该工作区。失败 error 上屏且不入表；若 main 侧活跃指针
+       * 已被失败的 open 移走（表非空不回滚，任务 1 口径），显式 activate 归还原活跃——
+       * 失败不抢活跃。
        */
       async openWorkspace(ws: OnlineWorkspaceSummary): Promise<void> {
         this.error = null;
+        const previousActiveId = this.activeWorkspaceId;
         try {
           const view = await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: ws.myRole });
-          this.activeWorkspace = { id: ws.id, name: ws.name, myRole: ws.myRole };
-          this.onlineTree = view.tree;
-          this.projects = view.projects;
-          this.clearEditor();
+          const existing = this.sessions[ws.id];
+          this.sessions[ws.id] = {
+            workspace: { id: ws.id, name: ws.name, myRole: ws.myRole },
+            tree: view.tree,
+            projects: view.projects,
+            buffers: existing?.buffers ?? {},
+            activeEditorPath: existing?.activeEditorPath ?? null,
+          };
+          this.activeWorkspaceId = ws.id;
           this.conflict = null;
           this.migrationResult = null;
         } catch (e) {
           this.error = e instanceof Error ? e.message : String(e);
+          if (previousActiveId !== null && previousActiveId !== ws.id) {
+            await api.onlineWorkspaceActivate(previousActiveId).catch(() => undefined);
+          }
         }
       },
 
-      /** 关闭在线工作区（裁定 E）：main 会话清理 + 本地态全清；IPC 失败照常清本地（容错收口）。 */
-      async closeWorkspace(): Promise<void> {
+      /**
+       * 显式激活驻留工作区（计划 C 任务 2）：调 IPC activate（main 切活跃指针）成功后
+       * 本地指针随动——树/项目/编辑缓冲经兼容面自动换挡。未驻留/未登录：error 上屏且
+       * 不切换（失败不抢活跃；任务 3 tabs 激活编排据此标记离线签）。
+       */
+      async activateWorkspace(workspaceId: string): Promise<void> {
+        this.error = null;
         try {
-          await api.onlineWorkspaceClose();
-        } catch {
-          // main 侧已无会话（或在线未配置）——本地照常清理，不阻断退出
-        }
-        this.activeWorkspace = null;
-        this.onlineTree = null;
-        this.projects = [];
-        this.clearEditor();
-        this.conflict = null;
-        this.migrationResult = null;
-        this.migrationProgress = "";
-      },
-
-      /** 刷新在线树视图（推送/迁移后调用；main 侧内容变更（put/batch/delete 成功）已使树缓存失效，此处取到的是新树）。 */
-      async refreshTreeView(): Promise<void> {
-        if (!this.activeWorkspace) return;
-        try {
-          const view = await api.onlineTreeView(this.activeWorkspace.id);
-          this.onlineTree = view.tree;
-          this.projects = view.projects;
+          await api.onlineWorkspaceActivate(workspaceId);
+          this.activeWorkspaceId = workspaceId;
+          this.conflict = null; // 编辑上下文换挡：跨工作区冲突态不残留
         } catch (e) {
           this.error = e instanceof Error ? e.message : String(e);
         }
       },
 
       /**
-       * 在线侧树选中（App.onSelect 的在线分支）：api → getFiles 取 api.yaml，YAML 解析 +
-       * core ApiDefinitionSchema 校验（裁定 B：坏数据进 problems 展示原文，禁崩）；
-       * file → 只读原文浏览；容器节点仅清空编辑区。
+       * 关闭在线工作区（裁定 E 会话清理）：main 会话出表（带 id 关指定驻留工作区、无参
+       * 关活跃）+ 本地出表并弃其编辑缓冲；活跃指针指向被关工作区时置 null（不自动切其他
+       * 驻留，切换只由 activateWorkspace 显式驱动）。IPC 失败照常清本地（容错收口）。
+       * 仅关的是活跃工作区时复位冲突/迁移展示态（非活跃出表不抢全局 UI 态）。
        */
-      async selectNode(kind: TreeNodeDTO["kind"], id: string): Promise<void> {
-        if (!this.activeWorkspace || (kind !== "api" && kind !== "file")) {
-          this.clearEditor();
+      async closeWorkspace(workspaceId?: string): Promise<void> {
+        try {
+          await api.onlineWorkspaceClose(workspaceId !== undefined ? { workspaceId } : undefined);
+        } catch {
+          // main 侧已无会话（或在线未配置）——本地照常清理，不阻断退出
+        }
+        const target = workspaceId ?? this.activeWorkspaceId;
+        if (target === null) return;
+        delete this.sessions[target];
+        if (this.activeWorkspaceId === target) {
+          this.activeWorkspaceId = null;
+          this.conflict = null;
+          this.migrationResult = null;
+          this.migrationProgress = "";
+        }
+      },
+
+      /** 刷新活跃工作区树视图（推送/迁移后调用；main 侧内容变更（put/batch/delete 成功）已使树缓存失效，此处取到的是新树）。 */
+      async refreshTreeView(): Promise<void> {
+        const workspaceId = this.activeWorkspaceId;
+        if (workspaceId === null) return;
+        try {
+          const view = await api.onlineTreeView(workspaceId);
+          const session = this.sessions[workspaceId];
+          if (!session) return; // 刷新在途会话已被关：丢弃迟到视图
+          session.tree = view.tree;
+          session.projects = view.projects;
+        } catch (e) {
+          this.error = e instanceof Error ? e.message : String(e);
+        }
+      },
+
+      /**
+       * 在线侧树选中（App.onSelect 的在线分支 / tabs 激活编排的项目选中，任务 4 表语义）：
+       * api/file → 已驻留路径仅切活跃指针（草稿零扰动，不重拉——重拉会以服务端内容覆盖
+       * 草稿；强制重取走 conflictPullOverwrite 的 force 分支），未驻留路径建槽拉取；
+       * 容器节点（project 等）→ 活跃指针置空（编辑区空白，旧清场 UX 保留）但缓冲表驻留
+       * （切项目签草稿零丢失）。坏数据进 problems 展示原文，禁崩。拉取失败/文件缺失不驻留
+       * 空槽（重试可重拉）。
+       */
+      async selectNode(kind: TreeNodeDTO["kind"], id: string, opts?: { force?: boolean }): Promise<void> {
+        const wsId = this.activeWorkspaceId;
+        if (wsId === null || (kind !== "api" && kind !== "file")) {
+          const pending = wsId !== null ? this.sessions[wsId] : undefined;
+          if (pending) {
+            pending.activeEditorPath = null;
+          }
           return;
         }
-        this.editorLoading = true;
+        const session = this.sessions[wsId];
+        if (!session) return;
+        const existing = session.buffers[id];
+        if (existing && existing.path !== null && !opts?.force) {
+          session.activeEditorPath = id; // 已驻留：仅切指针
+          return;
+        }
+        const slot = existing ?? emptyBuffer();
+        session.buffers[id] = slot;
+        session.activeEditorPath = id;
+        slot.loading = true;
         this.error = null;
         try {
-          const result = await api.onlineFilesGet({ workspaceId: this.activeWorkspace.id, paths: [id] });
+          const result = await api.onlineFilesGet({ workspaceId: wsId, paths: [id] });
           const file = result.files[0];
           if (!file) {
-            this.clearEditor();
+            if (slot.path === null) {
+              // 全新空槽即弃：避免「空槽短路」让重试永远拉不到内容
+              delete session.buffers[id];
+              if (session.activeEditorPath === id) session.activeEditorPath = null;
+            }
             this.error = `文件不在可见清单中: ${id}`;
             return;
           }
-          this.editorPath = file.path;
-          this.editorVersion = file.version;
-          this.editorRaw = file.content;
+          slot.path = file.path;
+          slot.version = file.version;
+          slot.raw = file.content;
           if (kind === "file") {
-            this.editorKind = "file";
-            this.editorApi = null;
-            this.editorProblems = [];
-            this.editorSnapshot = "";
+            slot.kind = "file";
+            slot.api = null;
+            slot.problems = [];
+            slot.snapshot = "";
             return;
           }
-          this.editorKind = "api";
+          slot.kind = "api";
           try {
             const parsed = ApiDefinitionSchema.safeParse(parseYaml(file.content));
             if (parsed.success) {
-              this.editorApi = parsed.data;
-              this.editorProblems = [];
-              this.editorSnapshot = JSON.stringify(parsed.data);
+              slot.api = parsed.data;
+              slot.problems = [];
+              slot.snapshot = JSON.stringify(parsed.data);
             } else {
-              this.editorApi = null;
-              this.editorSnapshot = "";
-              this.editorProblems = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
+              slot.api = null;
+              slot.snapshot = "";
+              slot.problems = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
             }
           } catch (e) {
             // YAML 语法坏损：同走 problems（不崩，原文可读）
-            this.editorApi = null;
-            this.editorSnapshot = "";
-            this.editorProblems = [e instanceof Error ? e.message : String(e)];
+            slot.api = null;
+            slot.snapshot = "";
+            slot.problems = [e instanceof Error ? e.message : String(e)];
           }
         } catch (e) {
           this.error = e instanceof Error ? e.message : String(e);
+          if (slot.path === null) {
+            delete session.buffers[id];
+            if (session.activeEditorPath === id) session.activeEditorPath = null;
+          }
         } finally {
-          this.editorLoading = false;
+          slot.loading = false;
         }
       },
 
       /**
        * 保存在线接口定义（裁定 B）：序列化回 YAML 文本 putFile（baseVersion=当前 version）；
        * 成功 → 版本前移 + 快照复位；409 → conflict 入 store（冲突对话框由组合根渲染）。
+       * 写活跃会话的活跃路径槽（计划 C 任务 4）。
        */
       async saveApi(): Promise<void> {
-        if (!this.activeWorkspace || !this.editorApi || !this.editorPath || this.saving || !this.canEdit(this.editorPath)) return;
+        const wsId = this.activeWorkspaceId;
+        const session = wsId !== null ? this.sessions[wsId] : undefined;
+        const buffer = session && session.activeEditorPath !== null ? session.buffers[session.activeEditorPath] : undefined;
+        if (wsId === null || !session || !buffer || this.saving) return;
+        const apiDef = buffer.api;
+        const path = buffer.path;
+        if (!apiDef || !path || !this.canEdit(path)) return;
         this.saving = true;
         this.error = null;
         try {
-          const content = stringifyYaml(JSON.parse(JSON.stringify(this.editorApi)) as Record<string, unknown>);
+          const content = stringifyYaml(JSON.parse(JSON.stringify(apiDef)) as Record<string, unknown>);
           const outcome = await api.onlineFilePut({
-            workspaceId: this.activeWorkspace.id,
-            path: this.editorPath,
+            workspaceId: wsId,
+            path,
             content,
-            baseVersion: this.editorVersion,
+            baseVersion: buffer.version,
           });
           if (outcome.outcome === "pushed") {
-            this.editorVersion = outcome.result.version;
-            this.editorSnapshot = JSON.stringify(this.editorApi);
+            buffer.version = outcome.result.version;
+            buffer.snapshot = JSON.stringify(apiDef);
           } else {
             this.conflict = outcome.conflict;
           }
@@ -446,13 +598,30 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         this.conflict = null;
       },
 
-      /** 冲突-拉取覆盖我的（裁定 C）：丢弃本地编辑（对话框选择即确认），重取服务端最新并重新渲染。 */
+      /** 冲突-拉取覆盖我的（裁定 C）：丢弃本地编辑（对话框选择即确认），强制重取服务端最新并重新渲染（force 绕过已驻留短路）。 */
       async conflictPullOverwrite(): Promise<void> {
-        if (!this.conflict || !this.activeWorkspace || !this.editorPath) return;
+        if (!this.conflict || this.activeWorkspaceId === null || !this.editorPath) return;
         const path = this.editorPath;
         const kind = this.editorKind ?? "api";
         this.conflict = null;
-        await this.selectNode(kind, path);
+        await this.selectNode(kind, path, { force: true });
+      },
+
+      /**
+       * 关签驱逐（计划 C 任务 4，不变量 3：关签=项目关闭）：按 `<projectId>/` 前缀驱逐
+       * 指定驻留工作区缓冲表的该项目槽；根级配置叶（apicc.workspace.yaml）无项目前缀不受
+       * 牵连；活跃槽被逐则指针复位 null。指定会话不存在时 no-op。
+       */
+      evictProjectBuffers(workspaceId: string, projectId: string): void {
+        const session = this.sessions[workspaceId];
+        if (!session) return;
+        const prefix = `${projectId}/`;
+        for (const path of Object.keys(session.buffers)) {
+          if (path.startsWith(prefix)) delete session.buffers[path];
+        }
+        if (session.activeEditorPath !== null && session.buffers[session.activeEditorPath] === undefined) {
+          session.activeEditorPath = null;
+        }
       },
 
       /**
@@ -465,13 +634,13 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 调用直接返回。
        */
       async migratePull(dir: string): Promise<void> {
-        if (this.migrating || !this.activeWorkspace) return;
+        if (this.migrating || this.activeWorkspaceId === null) return;
         this.migrating = true;
         this.migrationResult = null;
         this.migrationProgress = "";
         this.error = null;
         try {
-          const workspaceId = this.activeWorkspace.id;
+          const workspaceId = this.activeWorkspaceId;
           const [scan, tree, groups] = await Promise.all([
             api.onlineMigrateScan(dir),
             api.onlineTreeGet(workspaceId),
@@ -546,13 +715,13 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 目录重复迁移映射到同一实体（幂等由服务端同 (组,项目) 解析保证）。
        */
       async migratePush(dir: string): Promise<void> {
-        if (this.migrating || !this.activeWorkspace) return;
+        if (this.migrating || this.activeWorkspaceId === null) return;
         this.migrating = true;
         this.migrationResult = null;
         this.migrationProgress = "";
         this.error = null;
         try {
-          const workspaceId = this.activeWorkspace.id;
+          const workspaceId = this.activeWorkspaceId;
           const [scan, tree] = await Promise.all([api.onlineMigrateScan(dir), api.onlineTreeGet(workspaceId)]);
           // 1. 去重项目目录清单（扫描产物 projectDir；根级文件不参与映射）→ 映射桥（≤200/批）
           const dirs = new Map<string, ProjectDirRef>();
