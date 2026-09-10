@@ -117,6 +117,14 @@ export interface TabsStoreDeps {
    * 计划 C 任务 4 接线；任务 3 缺省 no-op（留接口）。
    */
   onProjectActivated?: (tab: ProjectTab) => Promise<void> | void;
+  /**
+   * 切签工作流草稿确认钩子（计划 C 任务 6，规格勘误口径：workflowDesign 单会话的 dirty
+   * 确认扩展覆盖「切项目签」）：离开当前签时若活跃工作流属于当前（离开的）项目且 dirty，
+   * 由组合根弹既有 ConfirmDialog（App.vue wfSwitchConfirmOpen 先例）——返回 true=确认丢弃
+   * （组合根负责卸载设计器会话）放行切换，false=取消不切换。未注入时跳过该草稿源
+   * （App 组合根必注入；store 单测可省）。
+   */
+  confirmWorkflowDraft?: () => Promise<boolean>;
   /** 持久化存储（缺省 localStorage；测试注入内存 Storage 隔离）。 */
   storage?: Storage;
 }
@@ -223,11 +231,19 @@ export function createTabsStore(deps: TabsStoreDeps) {
        * 见 ensureWorkspaceContext）；②项目选中（本地 tree.select 项目节点 / 在线
        * selectNode 项目节点）；③editor 上下文由活跃项目驱动（任务 4 接线钩子）。
        * 已活跃签 no-op（切签免确认、草稿驻留，不变量 2）。成功后移出离线表并 persist。
+       * 编排最前（离开当前项目上下文之前）接工作流草稿确认（任务 6，规格勘误口径）：
+       * 活跃工作流属于当前（离开的）项目且 dirty → confirmWorkflowDraft；取消不切换，
+       * 草稿与树选中零扰动。closeTab 的相邻激活不经此门（closeTab 先置空活跃，
+       * 且该签的 dirty 已由组件层确认）。
        */
       async activateTab(tabId: string): Promise<void> {
         this.error = null;
         const tab = this.tabs.find((t) => t.tabId === tabId);
         if (!tab || this.activeTabId === tabId) return;
+        const leaving = this.activeTab;
+        if (deps.confirmWorkflowDraft && leaving && this.leavingTabHasWorkflowDraft(leaving)) {
+          if (!(await deps.confirmWorkflowDraft())) return;
+        }
         if (!(await this.ensureWorkspaceContext(tab))) return;
         // ② 项目选中（工作区上下文就位后）
         if (tab.workspaceRef.kind === "online") await deps.online.selectNode("project", tab.projectId);
@@ -237,6 +253,19 @@ export function createTabsStore(deps: TabsStoreDeps) {
         this.persist();
         // ③ editor 上下文由活跃项目驱动（任务 4 接线点）
         await deps.onProjectActivated?.(tab);
+      },
+
+      /**
+       * 离开签的工作流草稿判定（任务 6 切签确认口径，与 projectHasDrafts 的工作流分支
+       * 同源）：活跃工作流 dirty 且按树 workflows 摘要属于该签项目才拦截——别的项目的
+       * 草稿流不牵连切签。仅本地树可归属（workflowDesign 只在本地上下文装载，在线签的
+       * 服务端实体 id 不会命中本地树）。
+       */
+      leavingTabHasWorkflowDraft(tab: ProjectTab): boolean {
+        const wf = deps.workflowDesign;
+        if (!wf?.dirty || wf.workflowId === null) return false;
+        const owner = findProjectNode(deps.workspace.tree, tab.projectId);
+        return owner?.workflows?.some((w) => w.id === wf.workflowId) ?? false;
       },
 
       /**
@@ -276,6 +305,17 @@ export function createTabsStore(deps: TabsStoreDeps) {
           if (JSON.stringify(session.api) !== session.snapshot) return true;
         }
         return false;
+      },
+
+      /**
+       * 工作区级关闭（计划 C 任务 6，不变量 4：工作区级关闭唯一入口=退出在线工作区按钮，
+       * 且按钮已过确认弹窗——本动作不再做签级 dirty 确认）：关该工作区全部签并逐签驱逐
+       * 项目会话（复用 closeTab 的驱逐与相邻激活编排），其他工作区签不受影响。
+       */
+      async closeWorkspaceTabs(ref: WorkspaceRef): Promise<void> {
+        for (const tab of this.tabs.filter((t) => sameRef(t.workspaceRef, ref))) {
+          await this.closeTab(tab.tabId);
+        }
       },
 
       /**

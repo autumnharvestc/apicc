@@ -1144,6 +1144,12 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       return structuredClone(createPluginsListFixture());
     },
 
+    // 退出程序 dirty 拦截（计划 C 任务 6）：登记 no-op——jsdom/浏览器调试无 main 关窗
+    // 询问链路，聚合 dirty 的真实计算在组合根（App.vue），preload 才是 main↔渲染层桥。
+    onDirtyCheck(_handler: () => boolean): void {
+      void _handler;
+    },
+
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */
     seedWorkspace(): void {
       if (!workspace) {

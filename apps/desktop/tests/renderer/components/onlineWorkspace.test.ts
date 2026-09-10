@@ -14,6 +14,9 @@ import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
+import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
+import { createTabsStore } from "../../../src/renderer/src/stores/tabs.js";
 import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
 import HomeView from "../../../src/renderer/src/components/HomeView.vue";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
@@ -107,9 +110,13 @@ async function fixture(): Promise<Fixture> {
   const workspace = useWorkspaceStore(api);
   const tree = useTreeStore(api, workspace);
   const plugins = createPluginsStore({ api });
+  // 计划 C 任务 6：TopBar 退出在线工作区确认需要 tabs store（签列表/草稿态统计 + 关签编排）
+  const editor = useEditorStore(api);
+  const workflowDesign = useWorkflowDesignStore(api);
+  const tabs = createTabsStore({ workspace, tree, online, editor, workflowDesign, storage: memStorage() });
   const { i18n } = createI18nInstance();
   const mountWith = async (component: Parameters<typeof mount>[0], props: Record<string, unknown> = {}) =>
-    mount(component, { props: { api, workspace, tree, online, plugins, reportError: () => {}, openProject: () => {}, ...props }, global: { plugins: [i18n] } });
+    mount(component, { props: { api, workspace, tree, online, plugins, tabs, reportError: () => {}, openProject: () => {}, ...props }, global: { plugins: [i18n] } });
   return { api, workspace, online, mount: mountWith };
 }
 
@@ -298,10 +305,20 @@ describe("TopBar 主页入口与工作区名（本地/在线并存驻留，计�
     expect(wrapper.find('[data-testid="online-exit"]').exists()).toBe(true);
   });
 
-  it("退出在线工作区 → 会话清理（store 状态清空）", async () => {
+  it("退出在线工作区 → 确认弹窗先行（计划 C 任务 6）：取消保持驻留，确认后会话清理", async () => {
     const f = await fixture();
     const wrapper = await f.mount(TopBar);
     await wrapper.find('[data-testid="online-exit"]').trigger("click");
+    await flushPromises();
+    // 确认弹窗先行（列出受影响签；本用例无签 → 空签文案），取消不动
+    expect(bodyFind("online-exit-impact")).not.toBeNull();
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    expect(f.online.activeWorkspace).not.toBeNull();
+    // 再点并确认：会话出表清场
+    await wrapper.find('[data-testid="online-exit"]').trigger("click");
+    await flushPromises();
+    await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     expect(f.online.activeWorkspace).toBeNull();
     expect(f.online.onlineTree).toBeNull();

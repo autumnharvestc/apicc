@@ -812,3 +812,109 @@ describe("App 环境联动（M9-A1）", () => {
     expect(editorOf().envs.map((e) => e.name)).toContain("prod");
   });
 });
+
+
+// —— 计划 C 任务 6（规格勘误口径）：切项目签的工作流草稿确认——tabs.activateTab 离开当前
+// 项目上下文前经 confirmWorkflowDraft 钩子弹既有 ConfirmDialog；确认丢弃 = 设计器会话卸载。
+// 注意（轨一 id 布局）：项目在树/主页卡片按 UUID 字典序——首签不保证是示例项目，本组用例
+// 一律按项目名定位签。置于文件末尾：用例会向共享替身工作区直建第二项目（结束即删，但与
+// 仍挂载组件的收尾写盘存在竞态），不把该足迹暴露给文件内更早的既有用例。
+describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
+  async function seedSecondProject(name: string): Promise<string> {
+    const treeDto = await failingApi.treeGet();
+    failingApi.nodeCreate = realNodeCreate;
+    try {
+      const created = await failingApi.nodeCreate({ kind: "project", parentId: treeDto.children![0]!.id, name });
+      return created.id;
+    } finally {
+      failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
+    }
+  }
+
+  /** 按项目名定位签元素（轮询等成签渲染；签文本=项目名）。 */
+  async function tabFor(wrapper: import("@vue/test-utils").VueWrapper, name: string) {
+    for (let i = 0; i < 100; i++) {
+      const found = wrapper.findAll('[data-testid^="project-tab-"]').find((t) => t.text().includes(name));
+      if (found) return found;
+      await flushPromises();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`项目签未找到: ${name}`);
+  }
+
+  /** 主页点目标项目卡片成签并激活（无草稿源时干净切换；已活跃则 no-op）。 */
+  async function openSecondProjectTab(wrapper: import("@vue/test-utils").VueWrapper, name: string) {
+    await wrapper.find('[data-testid="topbar-home"]').trigger("click");
+    await flushPromises();
+    const card = wrapper.findAll('[data-testid^="project-card-"]').find((c) => c.text().includes(name))!;
+    await card.trigger("click");
+    const tab = await tabFor(wrapper, name);
+    expect(tab.classes()).toContain("active");
+  }
+
+  it("dirty 时切走当前签：确认前不切换；取消保持；确认丢弃后切签且设计器会话卸载", async () => {
+    const projectId = await seedSecondProject("切签目标项目");
+    // 脏流建在示例项目（被离开的签）名下——确认钩子的归属过滤按树 workflows 摘要判定
+    const treeDto = await failingApi.treeGet();
+    const demoProject = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
+    const wfA = await failingApi.wfCreate({ projectId: demoProject.id, name: "切签脏流" });
+    try {
+      const wrapper = await mountApp();
+      await openLocalDir(wrapper);
+      await flushPromises();
+      const designOf = () =>
+        wrapper.findComponent(WfDesigner).props("workflowDesign") as {
+          workflowId: string | null;
+          dirty: boolean;
+        };
+      // 两个项目各成签（首卡随机——openLocalDir 只点首卡；均无草稿源，干净切换）
+      await openSecondProjectTab(wrapper, "切签目标项目");
+      await openSecondProjectTab(wrapper, "示例项目");
+      const tabA = await tabFor(wrapper, "示例项目");
+      expect(tabA.classes()).toContain("active");
+      await wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("切签脏流"))!.trigger("click");
+      await flushPromises();
+      await wrapper.find('[data-testid="wf-add-request"]').trigger("click");
+      await flushPromises();
+      expect(designOf().dirty).toBe(true);
+      expect(designOf().workflowId).toBe(wfA.id);
+      // dirty 时切到目标项目签：确认框弹出，活跃签与缓冲不变（修复前：直切，编辑静默丢失）
+      const tabB = await tabFor(wrapper, "切签目标项目");
+      await tabB.trigger("click");
+      await flushPromises();
+      expect(expectBody("dialog-cancel").exists()).toBe(true);
+      expect(designOf().workflowId).toBe(wfA.id);
+      expect(designOf().dirty).toBe(true);
+      expect(tabA.classes()).toContain("active");
+      // 取消：不切换，草稿原样
+      await expectBody("dialog-cancel").trigger("click");
+      await flushPromises();
+      expect(tabA.classes()).toContain("active");
+      expect(designOf().dirty).toBe(true);
+      // 再切并确认丢弃：切签完成 + 设计器会话卸载（dirty 复位，避免下次切签重复纠缠）
+      await tabB.trigger("click");
+      await flushPromises();
+      await expectBody("dialog-confirm").trigger("click");
+      await flushPromises();
+      expect(tabB.classes()).toContain("active");
+      expect(designOf().workflowId).toBeNull();
+      expect(designOf().dirty).toBe(false);
+    } finally {
+      await failingApi.wfDelete(wfA.id).catch(() => undefined);
+      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+    }
+  });
+
+  it("非 dirty 时切签：直接切换不弹确认（现状保持）", async () => {
+    const projectId = await seedSecondProject("干净目标项目");
+    try {
+      const wrapper = await mountApp();
+      await openLocalDir(wrapper);
+      await flushPromises();
+      await openSecondProjectTab(wrapper, "干净目标项目");
+      expect(document.body.querySelector('[data-testid="dialog-confirm"]')).toBeNull();
+    } finally {
+      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+    }
+  });
+});

@@ -8,6 +8,7 @@ import { createSession } from "./session.js";
 import { createOnlineClient } from "./online/client.js";
 import { createTokenStore } from "./online/tokenStore.js";
 import { createAiKeyStore } from "./ai/config.js";
+import { attachQuitGuard } from "./quitGuard.js";
 
 // package.json 为 type:module，编译产物是 ESM，须用 import.meta 推导 __dirname。
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,23 @@ function createWindow(): BrowserWindow {
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) void win.loadURL(devUrl);
   else void win.loadFile(join(__dirname, "../../dist-renderer/index.html"));
+  // 退出程序 dirty 拦截（计划 C 任务 6，不变量 6）：close 一律先 preventDefault 扣住窗口，
+  // 经渲染层聚合 dirty 问答决定放行/确认（编排与测试面见 quitGuard.ts）。darwin 下同样生效
+  // （点红关窗=同一确认流程）；window-all-closed 既有行为不变（非 darwin 才 quit）。
+  // 挂在 createWindow 内：darwin activate 重建的窗口同样被守卫。
+  attachQuitGuard(win, {
+    confirmDiscard: async () => {
+      const { response } = await dialog.showMessageBox(win, {
+        type: "warning",
+        message: "有未保存的修改",
+        detail: "接口/工作流/在线编辑存在未保存的草稿，退出后将丢弃。确定退出吗？",
+        buttons: ["丢弃修改并退出", "取消"],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      return response === 0;
+    },
+  });
   return win;
 }
 

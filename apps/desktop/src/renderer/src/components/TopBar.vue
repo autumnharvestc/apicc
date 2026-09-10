@@ -8,8 +8,10 @@ import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
 import type { createOnlineStore } from "../stores/online.js";
 import type { createPluginsStore } from "../stores/plugins.js";
+import type { createTabsStore, ProjectTab } from "../stores/tabs.js";
 import ThemeLanguageToggle from "./ThemeLanguageToggle.vue";
 import PluginsView from "./PluginsView.vue";
+import ConfirmDialog from "./ConfirmDialog.vue";
 
 const ATypographyText = ATypography.Text;
 
@@ -18,6 +20,9 @@ const ATypographyText = ATypography.Text;
  * 项目——侧树作用域化至该项目）+ 在线模式入口 + 设置抽屉（插件管理，插件归应用设置项）
  * + 语言/主题。本地目录的 打开/新建 迁至主页（HomeView）；远程在线仍走既有登录对话框。
  * store 与 api 经 props 注入（组合根一次装配）；reportError 为组合根错误反馈通道。
+ * 计划 C 任务 6（不变量 4）：退出在线工作区 = 工作区级关闭唯一入口，改为确认 Modal——
+ * 列出该工作区的签（项目名 + 草稿态，tabs store 的 projectHasDrafts 统计），确认后先
+ * tabs.closeWorkspaceTabs（关其全部签+驱逐各项目会话，签级不再确认）再 online.closeWorkspace。
  */
 const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
@@ -25,6 +30,7 @@ const props = defineProps<{
   api: ApiccApi;
   online: ReturnType<typeof createOnlineStore>;
   plugins: ReturnType<typeof createPluginsStore>;
+  tabs: ReturnType<typeof createTabsStore>;
   reportError: (e: unknown) => void;
 }>();
 const emit = defineEmits<{ "open-home": [] }>();
@@ -59,12 +65,36 @@ function onProjectSelect(id: string) {
   props.tree.select("project", id);
 }
 
-async function exitOnline() {
+// —— 退出在线工作区（计划 C 任务 6，不变量 4：工作区级关闭唯一入口，确认弹窗列出受影响签）——
+const exitConfirmOpen = ref(false);
+/** 打开确认时快照受影响签（确认期间签表变化不漂移展示）。 */
+const exitAffectedTabs = ref<ProjectTab[]>([]);
+
+function requestExitOnline() {
+  const ws = props.online.activeWorkspace;
+  if (!ws) return;
+  exitAffectedTabs.value = props.tabs.tabs.filter(
+    (tab) => tab.workspaceRef.kind === "online" && tab.workspaceRef.workspaceId === ws.id,
+  );
+  exitConfirmOpen.value = true;
+}
+
+async function onExitConfirm() {
+  exitConfirmOpen.value = false;
+  const ws = props.online.activeWorkspace;
+  if (!ws) return;
   try {
-    await props.online.closeWorkspace();
+    // 先关该工作区全部签（逐签驱逐项目会话；工作区级关闭本身已经确认，签级不再拦截），
+    // 再出表关闭工作区会话（在线树/编辑缓冲随会话释放，顶栏工作区名随 activeWorkspace 复位）。
+    await props.tabs.closeWorkspaceTabs({ kind: "online", workspaceId: ws.id, name: ws.name });
+    await props.online.closeWorkspace(ws.id);
   } catch (e) {
     props.reportError(e);
   }
+}
+
+function onExitCancel() {
+  exitConfirmOpen.value = false;
 }
 </script>
 
@@ -97,7 +127,7 @@ async function exitOnline() {
       <a-button v-if="online.activeWorkspace" data-testid="online-migrate" @click="online.migrateDialogOpen = true">
         {{ t("online.migrate") }}
       </a-button>
-      <a-button v-if="online.activeWorkspace" data-testid="online-exit" @click="exitOnline">
+      <a-button v-if="online.activeWorkspace" data-testid="online-exit" @click="requestExitOnline">
         {{ t("online.exitOnline") }}
       </a-button>
       <!-- 在线模式入口：对话框本体由组合根渲染，按钮只置 online.dialogOpen -->
@@ -121,6 +151,28 @@ async function exitOnline() {
     >
       <PluginsView :plugins="plugins" />
     </a-drawer>
+    <!-- 退出在线工作区确认（计划 C 任务 6）：a-modal 传送门渲染于 body，受影响签清单走默认插槽 -->
+    <ConfirmDialog
+      :open="exitConfirmOpen"
+      :title="t('online.exitOnline')"
+      @confirm="onExitConfirm"
+      @cancel="onExitCancel"
+    >
+      <div data-testid="online-exit-impact">
+        <p>{{ t("online.exitConfirmDesc", { count: exitAffectedTabs.length }) }}</p>
+        <ul v-if="exitAffectedTabs.length > 0" class="exit-impact-list">
+          <li
+            v-for="(tab, index) in exitAffectedTabs"
+            :key="tab.tabId"
+            :data-testid="`online-exit-tab-${index}`"
+          >
+            {{ tab.projectName }}
+            <span v-if="tabs.projectHasDrafts(tab.tabId)" data-testid="online-exit-draft">（{{ t("online.exitHasDraft") }}）</span>
+          </li>
+        </ul>
+        <p v-else>{{ t("online.exitNoTabs") }}</p>
+      </div>
+    </ConfirmDialog>
   </header>
 </template>
 
@@ -138,4 +190,9 @@ async function exitOnline() {
   margin-inline-end: 0;
 }
 .project-switch { min-width: 180px; max-width: 260px; }
+/* 退出在线确认的受影响签清单（ConfirmDialog 默认插槽内容） */
+.exit-impact-list {
+  margin: 4px 0 0;
+  padding-inline-start: 18px;
+}
 </style>

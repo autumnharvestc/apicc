@@ -125,7 +125,8 @@ const ai = createAiStore({ api: apicc, editor });
 const plugins = createPluginsStore({ api: apicc });
 // —— 项目页签 store（计划 C 任务 5 装配）：签注册表 + 激活编排 + 关签驱逐真实实现 ——
 // 关签驱逐按 createEvictProjectSessions 组装（不变量 3：关签=项目关闭）；onProjectActivated
-// 钩子 = lastApi 记忆按活跃签项目过滤恢复（restoreLastApiForTab，编排第③步 editor 上下文）。
+// 钩子 = lastApi 记忆按活跃签项目过滤恢复（restoreLastApiForTab，编排第③步 editor 上下文）；
+// confirmWorkflowDraft = 切签工作流草稿确认（任务 6 规格勘误口径，弹窗与钩子实现见下文）。
 const tabs = createTabsStore({
   workspace,
   tree,
@@ -134,6 +135,7 @@ const tabs = createTabsStore({
   workflowDesign,
   evictProjectSessions: createEvictProjectSessions({ editor, online }),
   onProjectActivated: restoreLastApiForTab,
+  confirmWorkflowDraft,
 });
 
 // —— 启动恢复（计划 C 任务 5）：签表驱动（不变量 5）——lastWorkspace 单槽退役：
@@ -370,6 +372,52 @@ function onWfSwitchCancel() {
   if (workflowDesign.workflowId) tree.select("workflow", workflowDesign.workflowId);
 }
 
+// —— 切签工作流草稿确认（计划 C 任务 6，规格勘误口径）——
+// tabs.activateTab 在「离开当前项目上下文」时机回调 confirmWorkflowDraft（仅当活跃工作流
+// 属于离开的项目且 dirty）：弹既有 ConfirmDialog；确认丢弃 → 卸载设计器会话（草稿丢弃、
+// dirty 复位，避免下次切签重复纠缠）并放行切换；取消 → 不切换（树选中尚未被编排改动，
+// 无需回退——与侧树切流确认的选中回退不同）。
+const wfTabSwitchConfirmOpen = ref(false);
+let wfTabSwitchResolve: ((ok: boolean) => void) | null = null;
+
+function confirmWorkflowDraft(): Promise<boolean> {
+  wfTabSwitchConfirmOpen.value = true;
+  return new Promise<boolean>((resolve) => {
+    wfTabSwitchResolve = resolve;
+  });
+}
+
+function onWfTabSwitchConfirm() {
+  workflowDesign.unload();
+  wfTabSwitchConfirmOpen.value = false;
+  wfTabSwitchResolve?.(true);
+  wfTabSwitchResolve = null;
+}
+
+function onWfTabSwitchCancel() {
+  wfTabSwitchConfirmOpen.value = false;
+  wfTabSwitchResolve?.(false);
+  wfTabSwitchResolve = null;
+}
+
+// —— 退出程序 dirty 拦截（计划 C 任务 6，不变量 6）——
+// main 关窗询问（app:dirty-check）的渲染层应答器：聚合全部草稿源——本地 editor 任一会话
+// 槽 dirty + workflowDesign 单会话 + online 各驻留会话任一缓冲槽 dirty（遍历全表，任务 4
+// 移交口径；判定先例同 editorDirty/projectHasDrafts 的快照比对）。
+function aggregateHasDrafts(): boolean {
+  for (const session of Object.values(editor.sessions)) {
+    if (session.api !== null && JSON.stringify(session.api) !== session.snapshot) return true;
+  }
+  if (workflowDesign.dirty) return true;
+  for (const session of Object.values(online.sessions)) {
+    for (const buffer of Object.values(session.buffers)) {
+      if (buffer.api !== null && JSON.stringify(buffer.api) !== buffer.snapshot) return true;
+    }
+  }
+  return false;
+}
+apicc.onDirtyCheck(aggregateHasDrafts);
+
 // —— 活动项目（M9-C）：树作用域化的依据。打开工作区后未选项目时自动选中首个项目
 // （工作区顶层即项目）；在线模式与作用域无涉（activeProjectId 仅本地树消费）。
 // 有任意选中节点时按其归属项目作用域化（selectedProjectId 已实现向上归属）；无选中 = 未作用域
@@ -589,7 +637,7 @@ function onDividerDblClick() {
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :report-error="reportError" @open-home="view = 'home'" />
+      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :report-error="reportError" @open-home="view = 'home'" />
       <!-- 项目页签栏（计划 C 任务 5）：顶栏第二行，成签/切签/关签确认/离线态 -->
       <ProjectTabs :tabs="tabs" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
@@ -803,6 +851,13 @@ function onDividerDblClick() {
       :title="t('wf.discardConfirm')"
       @confirm="onWfSwitchConfirm"
       @cancel="onWfSwitchCancel"
+    />
+    <!-- 切签工作流草稿确认（计划 C 任务 6，规格勘误口径）：tabs.activateTab 离开当前项目前经此放行 -->
+    <ConfirmDialog
+      :open="wfTabSwitchConfirmOpen"
+      :title="t('wf.discardConfirm')"
+      @confirm="onWfTabSwitchConfirm"
+      @cancel="onWfTabSwitchCancel"
     />
     <!-- 在线登录与服务器配置对话框（M3-B 任务 2）：a-modal 传送门渲染于 body；
          显隐由 online store 的 dialogOpen 驱动（TopBar 入口 / 对话框关闭双向读写）。

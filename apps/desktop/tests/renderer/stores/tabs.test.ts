@@ -553,3 +553,138 @@ describe("关签判定与驱逐的元数据语义（任务 5 审查重要 1：�
     expect(tabs.tabs).toHaveLength(0); // PA 自身无草稿槽（接口甲未载入）→ 签已关
   });
 });
+
+// —— 计划 C 任务 6：工作区级关闭 + 切签工作流草稿确认 ——
+
+/** 带工作流摘要的本地树夹具：项目一（p-1）持 wf-1，项目二（p-2）无工作流。 */
+const WF_TREE: TreeNodeDTO = {
+  id: "root",
+  kind: "root",
+  label: "工作区",
+  children: [
+    {
+      id: "g-1",
+      kind: "group",
+      label: "分组",
+      children: [
+        {
+          id: "p-1",
+          kind: "project",
+          label: "项目一",
+          workflows: [{ id: "wf-1", name: "流一", status: "draft" }],
+          children: [],
+        },
+        { id: "p-2", kind: "project", label: "项目二", children: [] },
+      ],
+    },
+  ],
+};
+
+describe("工作区级关闭（closeWorkspaceTabs，任务 6，不变量 4）", () => {
+  it("关该工作区全部签并逐签驱逐；其他工作区与本地签保留；签级无 dirty 确认入口（工作区级已确认）", async () => {
+    const { deps, evictions } = makeDeps();
+    deps.online.sessions["ws-1"] = sessionStub("ws-1");
+    deps.online.sessions["ws-2"] = sessionStub("ws-2");
+    deps.online.activeWorkspaceId = "ws-1";
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(ONLINE_REF, P1); // tab-1 ws-1
+    await tabs.openProjectTab(ONLINE_REF, P2); // tab-2 ws-1
+    await tabs.openProjectTab({ kind: "online", workspaceId: "ws-2", name: "在线二" }, P3); // tab-3
+    await tabs.openProjectTab(LOCAL_REF, P1); // tab-4 本地（活跃）
+    await tabs.closeWorkspaceTabs(ONLINE_REF);
+    // ws-1 两签出表（驱逐按 (ref, projectId) 逐签落地），ws-2 与本地签不动，活跃不受牵连
+    expect(tabs.tabs.map((t) => `${t.workspaceRef.kind}:${t.projectId}`)).toEqual(["online:p-3", "local:p-1"]);
+    expect(evictions.filter((e) => e.workspaceRef.kind === "online" && e.workspaceRef.workspaceId === "ws-1")).toHaveLength(2);
+    expect(tabs.activeTabId).toBe("tab-4");
+  });
+
+  it("关的是活跃签所在工作区：活跃迁移到相邻驻留签；全部签随工作区清空时回主页", async () => {
+    const { deps } = makeDeps();
+    deps.online.sessions["ws-1"] = sessionStub("ws-1");
+    deps.online.activeWorkspaceId = "ws-1";
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(ONLINE_REF, P1); // tab-1
+    await tabs.openProjectTab(ONLINE_REF, P2); // tab-2（活跃）
+    await tabs.closeWorkspaceTabs(ONLINE_REF);
+    expect(tabs.tabs).toHaveLength(0);
+    expect(tabs.activeTabId).toBeNull(); // 无相邻签 → 回主页
+  });
+
+  it("空签工作区 no-op 不抛", async () => {
+    const { deps } = makeDeps();
+    const tabs = createTabsStore(deps);
+    await expect(tabs.closeWorkspaceTabs(ONLINE_REF)).resolves.toBeUndefined();
+    expect(tabs.activeTabId).toBeNull();
+  });
+});
+
+describe("切签工作流草稿确认（任务 6，规格勘误口径：workflowDesign 单会话）", () => {
+  function makeWfDeps() {
+    const ctx = makeDeps();
+    ctx.deps.workspace.tree = WF_TREE;
+    ctx.deps.workflowDesign = { dirty: true, workflowId: "wf-1" };
+    return ctx;
+  }
+
+  it("离开签的工作流 dirty 且归属当前项目 → 确认钩子被调；false 取消不切换（项目选中未发生）", async () => {
+    const { deps, tree } = makeWfDeps();
+    const confirmWorkflowDraft = vi.fn(async () => false);
+    deps.confirmWorkflowDraft = confirmWorkflowDraft;
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" }); // tab-1（首个成签，无离开上下文）
+    expect(confirmWorkflowDraft).not.toHaveBeenCalled();
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" }); // 成签即切：离开 p-1（wf-1 归属）→ 拦截
+    expect(confirmWorkflowDraft).toHaveBeenCalledTimes(1);
+    expect(tabs.tabs.map((t) => t.projectId)).toEqual(["p-1", "p-2"]); // 签已入表，仅激活被拦
+    expect(tabs.activeTabId).toBe("tab-1"); // 取消：不切换
+    tree.select.mockClear();
+    await tabs.activateTab("tab-2");
+    expect(confirmWorkflowDraft).toHaveBeenCalledTimes(2);
+    expect(tabs.activeTabId).toBe("tab-1");
+    expect(tree.select).not.toHaveBeenCalled(); // 取消在编排最前：项目选中未发生
+  });
+
+  it("确认放行（true）→ 切换完成；切回持有草稿的项目签不拦截（工作流仍归属活跃项目）", async () => {
+    const { deps } = makeWfDeps();
+    const confirmWorkflowDraft = vi.fn(async () => true);
+    deps.confirmWorkflowDraft = confirmWorkflowDraft;
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" });
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" }); // 离开 p-1 → 确认放行
+    expect(confirmWorkflowDraft).toHaveBeenCalledTimes(1);
+    expect(tabs.activeTabId).toBe("tab-2");
+    await tabs.activateTab("tab-1"); // 离开 p-2（无归属流）→ 直切；p-1 的草稿流随激活回到当前项目
+    expect(confirmWorkflowDraft).toHaveBeenCalledTimes(1);
+    expect(tabs.activeTabId).toBe("tab-1");
+  });
+
+  it("活跃工作流不属于离开签项目（树摘要归属过滤）→ 不牵连直切", async () => {
+    const { deps } = makeWfDeps();
+    deps.workflowDesign = { dirty: true, workflowId: "wf-other" }; // 不在 p-1 树摘要里
+    const confirmWorkflowDraft = vi.fn(async () => false);
+    deps.confirmWorkflowDraft = confirmWorkflowDraft;
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" });
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" });
+    expect(confirmWorkflowDraft).not.toHaveBeenCalled();
+    expect(tabs.activeTabId).toBe("tab-2");
+  });
+
+  it("workflowDesign 不 dirty → 不确认；确认钩子未注入 → 跳过该草稿源直切（store 单测省略面）", async () => {
+    const { deps } = makeWfDeps();
+    deps.workflowDesign = { dirty: false, workflowId: "wf-1" };
+    const confirmWorkflowDraft = vi.fn(async () => false);
+    deps.confirmWorkflowDraft = confirmWorkflowDraft;
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" });
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" });
+    expect(confirmWorkflowDraft).not.toHaveBeenCalled();
+    expect(tabs.activeTabId).toBe("tab-2");
+
+    const noHook = makeWfDeps(); // 不注入 confirmWorkflowDraft
+    const tabs2 = createTabsStore(noHook.deps);
+    await tabs2.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" });
+    await tabs2.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" });
+    expect(tabs2.activeTabId).toBe("tab-2");
+  });
+});

@@ -66,6 +66,18 @@ describe("IPC 入参深平化（withPlainArgs，回归：An object could not be 
     expect(replacement).toHaveBeenCalledWith("api", "a1");
   });
 
+  it("withPlainArgs：函数型入参原样透传（onDirtyCheck 应答器回调——JSON 平化会把函数抹成 undefined）", () => {
+    const handler = () => true;
+    const received: unknown[] = [];
+    const fake = {
+      onDirtyCheck: (h: () => boolean) => {
+        received.push(h);
+      },
+    } as unknown as ApiccApi;
+    withPlainArgs(fake).onDirtyCheck(handler);
+    expect(received[0]).toBe(handler); // 同一引用：回调直通不克隆
+  });
+
   it("withPlainArgs：目标为普通空对象——冻结对象（contextBridge 不可配置属性）可包装（打开工作区回归）", async () => {
     // 复现场景：preload 经 contextBridge 暴露的属性不可配置，直接 Proxy 其本体时
     // get 陷阱返回新函数触发不变式报错（'get' on proxy: … read-only and

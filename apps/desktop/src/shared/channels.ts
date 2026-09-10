@@ -77,3 +77,15 @@ export const IpcChannel = {
   PluginsList: "plugins:list",
 } as const;
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];
+
+/**
+ * 退出程序 dirty 拦截事件通道（计划 C 任务 6，不变量 6）——**事件问答语义，非 invoke**，
+ * 不入 IpcChannel（该清单被 main.ts 全量 ipcMain.handle 转发 deps.handle）：
+ * - AppDirtyCheck（main → 渲染层）：窗口 close 被 preventDefault 后下行询问聚合 dirty；
+ * - AppDirtyCheckReply（渲染层 → main，ipcRenderer.send）：渲染层应答器（组合根经 preload
+ *   onDirtyCheck 注册）回传聚合 dirty 布尔。
+ */
+export const IpcEvent = {
+  AppDirtyCheck: "app:dirty-check",
+  AppDirtyCheckReply: "app:dirty-check:reply",
+} as const;

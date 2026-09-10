@@ -246,4 +246,11 @@ export interface ApiccApi {
    * 任务 1 为 fixture 桩；任务 2 切 core 加载器真实现，出口形状不变。
    */
   pluginsList(): Promise<PluginsListResult>;
+  // —— 退出程序 dirty 拦截（计划 C 任务 6，不变量 6）——
+  /**
+   * 注册渲染层 dirty 应答器：main 关窗拦截后经 app:dirty-check 下行询问，handler 同步
+   * 计算聚合 dirty（editor 任一会话槽 + workflowDesign + online 各驻留会话任一缓冲槽）
+   * 经 app:dirty-check:reply 上行回传。内存替身为登记 no-op（jsdom 无 main 询问链路）。
+   */
+  onDirtyCheck(handler: () => boolean): void;
 }

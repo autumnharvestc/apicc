@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { IpcChannel } from "../shared/channels.js";
+import { IpcChannel, IpcEvent } from "../shared/channels.js";
 
 const api = {
   wsOpen: (rootPath: string) => ipcRenderer.invoke(IpcChannel.WsOpen, rootPath),
@@ -73,6 +73,12 @@ const api = {
   aiTestConfig: (input: unknown) => ipcRenderer.invoke(IpcChannel.AiTestConfig, input),
   // 插件频道（M7-B 任务 1 登记 / 任务 2 真加载器）：无入参，出口为加载摘要 + 导入器枚举
   pluginsList: () => ipcRenderer.invoke(IpcChannel.PluginsList),
+  // 退出程序 dirty 拦截（计划 C 任务 6，不变量 6）：注册渲染层应答器——main 关窗下行询问
+  // （app:dirty-check）时同步计算聚合 dirty 布尔并上行回传（app:dirty-check:reply）。
+  // handler 由组合根提供（聚合 editor/workflowDesign/online 各驻留会话缓冲）。
+  onDirtyCheck: (handler: () => boolean) => {
+    ipcRenderer.on(IpcEvent.AppDirtyCheck, () => ipcRenderer.send(IpcEvent.AppDirtyCheckReply, handler()));
+  },
 };
 
 contextBridge.exposeInMainWorld("apicc", api);
