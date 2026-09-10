@@ -489,7 +489,9 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         const wsId = this.activeWorkspaceId;
         if (wsId === null || (kind !== "api" && kind !== "file")) {
           const pending = wsId !== null ? this.sessions[wsId] : undefined;
-          if (pending) pending.activeEditorPath = null;
+          if (pending) {
+            pending.activeEditorPath = null;
+          }
           return;
         }
         const session = this.sessions[wsId];

@@ -213,4 +213,19 @@ describe("editor 会话表化（计划 C 任务 4）", () => {
     expect(ctx.editor.sessions[apiB2.id]).toBeDefined(); // null 归属不被误逐
     expect(ctx.editor.sessions[ctx.apiNode.id]).toBeUndefined(); // 项目一槽被逐
   });
+
+  it("deactivate：清活跃指针回空白（切到无记忆接口的项目签不串显上一项目）；会话槽驻留不动，回切草稿原样（任务 7 冒烟修复）", async () => {
+    const ctx = await seeded();
+    await ctx.editor.load(ctx.apiNode.id);
+    ctx.editor.api!.url = "/draft-a"; // 制造草稿
+    ctx.editor.deactivate();
+    expect(ctx.editor.activeApiId).toBeNull();
+    expect(ctx.editor.api).toBeNull(); // 编辑区回空白
+    expect(ctx.editor.dirty).toBe(false);
+    expect(ctx.editor.sessions[ctx.apiNode.id]).toBeDefined(); // 会话槽驻留不动
+    expect(ctx.editor.sessions[ctx.apiNode.id]!.api!.url).toBe("/draft-a"); // 草稿零丢失
+    // 回切：指针复位，驻留草稿原样（定位槽不重拉）
+    await ctx.editor.load(ctx.apiNode.id);
+    expect(ctx.editor.api?.url).toBe("/draft-a");
+  });
 });

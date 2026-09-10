@@ -119,6 +119,14 @@ export function useEditorStore(api: ApiccApi, resolveProjectId?: (apiId: string)
         session.snapshot = JSON.stringify(session.api);
       },
       /**
+       * 清空活跃指针（会话表驻留语义的配套面，任务 7 冒烟补）：切到的项目签没有可恢复的
+       * 接口记忆时由组合根调用——会话槽全部驻留不动（草稿零丢失），仅编辑区回空白，
+       * 不把上一项目的活跃会话串显到当前签下。
+       */
+      deactivate() {
+        this.activeApiId = null;
+      },
+      /**
        * 关签驱逐（计划 C 任务 4，不变量 3：关签=项目关闭；任务 5 审查重要 1 改元数据
        * 过滤）：按槽元数据 projectId 驱逐该项目的编辑会话槽——不依赖当前树（跨目录开
        * 工作区后仍命中建槽时写下的归属）；活跃槽被逐则指针复位 null（编辑区空白）。

@@ -147,18 +147,22 @@ const LAST_API_KEY = "apicc.lastApi";
  * 活跃签项目驱动编辑器上下文（tabs.onProjectActivated 钩子）：apicc.lastApi 记忆仅当属于
  * 活跃签项目时恢复（按当前树反查接口归属项目过滤，findProjectIdByApiId）——跨项目/跨
  * 工作区的旧记忆不再串扰。在线签不消费（该键仅本地侧树写入，见 SideTree selectNode）。
+ * 任务 7 冒烟修复：切到的项目没有可恢复的接口记忆时，编辑器上下文清空回空白
+ * （editor.deactivate，会话槽驻留不动）——否则上一项目的活跃会话串显到当前签下。
  */
 async function restoreLastApiForTab(tab: ProjectTab): Promise<void> {
   if (tab.workspaceRef.kind !== "local") return;
   try {
     const last = JSON.parse(localStorage.getItem(LAST_API_KEY) ?? "null") as { id: string } | null;
-    if (!last?.id) return;
-    if (findProjectIdByApiId(workspace.tree, last.id) !== tab.projectId) return;
-    tree.select("api", last.id);
-    await editor.load(last.id);
+    if (last?.id && findProjectIdByApiId(workspace.tree, last.id) === tab.projectId) {
+      tree.select("api", last.id);
+      await editor.load(last.id);
+      return;
+    }
   } catch {
     // 恢复失败静默（无碍主流程）
   }
+  editor.deactivate();
 }
 
 /**

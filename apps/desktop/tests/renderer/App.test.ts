@@ -917,4 +917,39 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       await failingApi.nodeDelete("project", projectId).catch(() => undefined);
     }
   });
+
+  it("切到无接口记忆的项目签：编辑区不串显上一项目活跃会话；切回草稿驻留（任务 7 冒烟修复）", async () => {
+    const projectId = await seedSecondProject("无记忆目标项目");
+    try {
+      const wrapper = await mountApp();
+      await openLocalDir(wrapper);
+      await flushPromises();
+      // 确保示例项目签活跃（openLocalDir 打开的首卡按 UUID 序不保证是示例项目）
+      await openSecondProjectTab(wrapper, "示例项目");
+      // 展开作用域树至 api 叶可见并载入示例接口
+      for (let round = 0; round < 5 && !wrapper.find('[data-testid="tree-api"]').exists(); round++) {
+        for (const t of wrapper.findAll('[data-testid="tree-group-toggle"]')) await t.trigger("click");
+        await flushPromises();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await wrapper.find('[data-testid="tree-api"]').trigger("click");
+      await flushPromises();
+      const nameInput = wrapper.find('[data-testid="editor-name"]');
+      expect(nameInput.exists()).toBe(true);
+      await nameInput.setValue("串显回归草稿");
+      // 切到无任何接口记忆的目标项目签：编辑区必须回空白
+      // （修复前：上一项目的活跃会话串显到当前签下——内容上下文未随签驱动）
+      await openSecondProjectTab(wrapper, "无记忆目标项目");
+      expect(wrapper.find('[data-testid="request-editor"]').exists()).toBe(false);
+      // 切回示例项目：草稿按会话驻留原样恢复（不变量 2）
+      const tabA = await tabFor(wrapper, "示例项目");
+      await tabA.trigger("click");
+      await flushPromises();
+      const back = wrapper.find('[data-testid="editor-name"]');
+      expect(back.exists()).toBe(true);
+      expect((back.element as HTMLInputElement).value).toBe("串显回归草稿");
+    } finally {
+      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+    }
+  });
 });

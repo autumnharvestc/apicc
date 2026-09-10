@@ -369,6 +369,12 @@ describe("SideTree 在线只读装饰（裁定 A/E）", () => {
     expect(fileBtn.exists()).toBe(true);
     await apiBtn.trigger("click");
     expect(wrapper.emitted("select")?.[0]).toEqual(["api", API_PATH]);
+    // 项目名可点（任务 7 冒烟修复：在线项目签成签入口）——readonly 下不发 tree.select，仅 emit select("project")
+    const projLabel = wrapper.findAll(".label").find((e) => e.text() === "示例项目");
+    expect(projLabel).toBeDefined();
+    await projLabel!.trigger("click");
+    const selects = wrapper.emitted("select") ?? [];
+    expect(selects.at(-1)).toEqual(["project", ONLINE_SEED_PROJECT_ID]);
   });
 
   it("无 treeRoot 且本地未打开 → 空态用注入文案", async () => {
