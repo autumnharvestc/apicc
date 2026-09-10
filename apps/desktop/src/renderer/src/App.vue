@@ -22,6 +22,7 @@ import zhCN from "ant-design-vue/es/locale/zh_CN";
 import enUS from "ant-design-vue/es/locale/en_US";
 import { apicc } from "./api";
 import type { TreeNodeDTO } from "../../shared/tree-dto.js";
+import type { OnlineWorkspaceSummary } from "../../shared/online/contract.js";
 import TopBar from "./components/TopBar.vue";
 import ProjectTabs from "./components/ProjectTabs.vue";
 import HomeView from "./components/HomeView.vue";
@@ -222,6 +223,10 @@ const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !
 // 主页项目卡片高亮（任务 5 D）：该项目签存在且激活（从 tabs store 算，不再看树选中）
 const homeActiveProjectId = computed(() =>
   tabs.activeTab?.workspaceRef.kind === "local" ? tabs.activeTab.projectId : null,
+);
+// 主页在线项目卡片高亮（终审 Important 1 ②）：活跃签为在线签时的 projectId
+const homeActiveOnlineProjectId = computed(() =>
+  tabs.activeTab?.workspaceRef.kind === "online" ? tabs.activeTab.projectId : null,
 );
 
 // 活跃签变化：从主页点签直接进入项目内容（主页仅经 topbar-home / 点签离开）
@@ -466,6 +471,34 @@ function openProjectFromHome(id: string) {
   const node = findProjectNode(workspace.tree, id);
   if (node) void tabs.openProjectTab({ kind: "local", dir: workspace.root }, { id: node.id, name: node.label });
   view.value = "api";
+}
+
+/**
+ * 主页「打开在线工作区」（终审 Important 1 ①，open-project 同款组合根回调模式）：打开
+ * 驻留会话后切接口模块——纯在线用户（无本地工作区）从主页打开在线工作区后由此离开主页，
+ * 在线侧栏（v-show）与 ModuleRail（v-if）随之亮起，在线树/成签入口可达（修复前 view 停留
+ * home 的死胡同）。失败（openWorkspace 不抛但活跃指针未随动）上屏错误通道并停留主页。
+ */
+async function openOnlineWorkspaceFromHome(ws: OnlineWorkspaceSummary) {
+  await online.openWorkspace(ws);
+  if (online.activeWorkspace?.id === ws.id) view.value = "api";
+  else if (online.error) reportError(new Error(online.error));
+}
+
+/**
+ * 主页在线项目卡片成签（终审 Important 1 ②）：直连 tabs.openProjectTab（online 分支
+ * workspaceRef，项目名取活跃会话 projects 清单）——纯在线用户在主页即可点项目成签；
+ * 激活编排完成项目选中，活跃签变化 watcher 随之把视图带离主页。
+ */
+function openOnlineProjectFromHome(projectId: string) {
+  const ws = online.activeWorkspace;
+  if (!ws) return;
+  const project = online.projects.find((p) => p.id === projectId);
+  if (!project) return;
+  void tabs.openProjectTab(
+    { kind: "online", workspaceId: ws.id, name: ws.name },
+    { id: project.id, name: project.name },
+  );
 }
 
 // —— 测试模块（M11）：压测上下文 + 场景清单 + 侧栏选接口载入编辑器 ——
@@ -723,6 +756,9 @@ function onDividerDblClick() {
             :report-error="reportError"
             :open-project="openProjectFromHome"
             :active-project-id="homeActiveProjectId"
+            :open-online-workspace="openOnlineWorkspaceFromHome"
+            :open-online-project="openOnlineProjectFromHome"
+            :active-online-project-id="homeActiveOnlineProjectId"
           />
           <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
           <OnlineApiEditor v-else-if="onlineMode" class="panel-view" :online="online" />
@@ -865,8 +901,9 @@ function onDividerDblClick() {
     />
     <!-- 在线登录与服务器配置对话框（M3-B 任务 2）：a-modal 传送门渲染于 body；
          显隐由 online store 的 dialogOpen 驱动（TopBar 入口 / 对话框关闭双向读写）。
-         计划 C 任务 2：打开在线工作区不再关本地（并存驻留），无需 workspace 注入 -->
-    <OnlineLoginDialog :online="online" :apicc="apicc" />
+         计划 C 任务 2：打开在线工作区不再关本地（并存驻留），无需 workspace 注入。
+         终审 Important 2：登出前草稿确认需要签表（受影响签聚合 + 逐工作区关签），注入 tabs -->
+    <OnlineLoginDialog :online="online" :apicc="apicc" :tabs="tabs" />
     <!-- 在线推送冲突对话框（任务 3 裁定 C）：online.conflict 驱动 -->
     <OnlineConflictDialog :online="online" />
     <!-- 在线工作区迁移向导（任务 3 裁定 D）：TopBar 迁移入口置 migrateDialogOpen -->

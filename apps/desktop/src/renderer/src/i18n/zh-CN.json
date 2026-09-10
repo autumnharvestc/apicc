@@ -264,6 +264,7 @@
     "register": "注册",
     "registerOk": "注册成功，请登录",
     "logout": "退出登录",
+    "logoutConfirmDesc": "退出登录将关闭全部在线项目签，以下 {count} 个签的未保存草稿将丢弃。",
     "loggedInAs": "已登录：{name}（{server}）",
     "usernameRequired": "请输入用户名",
     "passwordRequired": "请输入密码",

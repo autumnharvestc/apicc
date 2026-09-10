@@ -12,6 +12,8 @@ import {
 } from "ant-design-vue";
 import { OnlineBaseUrlSchema } from "../../../shared/online/contract.js";
 import type { createOnlineStore } from "../stores/online.js";
+import type { createTabsStore, ProjectTab, WorkspaceRef } from "../stores/tabs.js";
+import ConfirmDialog from "./ConfirmDialog.vue";
 
 const ATabPane = ATabs.TabPane;
 const ATypographyText = ATypography.Text;
@@ -29,10 +31,17 @@ const ATypographyText = ATypography.Text;
  * **组件内零工厂调用**：store 实例经 props 注入（App 组合根装配）。表单校验先行
  * （url 形态按契约 OnlineBaseUrlSchema、用户名密码必填、注册密码 ≥8 对齐契约），
  * api 失败经 store.error 上屏（plan 任务 2 步骤 1⑤）；组件自身 async 动作不重抛。
+ * 终审 Important 2：退出登录前过草稿确认——logout 清全部在线会话（渲染层+main 全表），
+ * 指向在线工作区的签若还有编辑缓冲草稿将一次性静默丢弃；故先聚合全部在线签的草稿态
+ * （tabs.projectHasDrafts），有草稿 → 确认弹窗（列出有草稿的签，复用 TopBar 退出在线
+ * 确认形态）→ 确认后逐工作区 tabs.closeWorkspaceTabs（签表同步 + 逐签驱逐会话）再登出；
+ * 无草稿直接登出（现状保持）。
  */
 const props = defineProps<{
   online: ReturnType<typeof createOnlineStore>;
   apicc: import("../../../shared/types.js").ApiccApi;
+  /** 签 store（终审 Important 2）：在线签草稿聚合 + 登出前逐工作区关签同步签表。 */
+  tabs: ReturnType<typeof createTabsStore>;
 }>();
 const { t } = useI18n();
 
@@ -128,6 +137,50 @@ async function onOpenWorkspace(workspaceId: string) {
   await props.online.openWorkspace(ws);
   if (props.online.activeWorkspace?.id === ws.id) props.online.dialogOpen = false;
 }
+
+// —— 退出登录前草稿确认（终审 Important 2）——
+// logout 一次清掉全部在线会话（渲染层+main 全表）：各工作区编辑缓冲草稿一次性丢弃、
+// 指向在线工作区的签留在签栏呈正常态（点击才报错）。故登出前聚合在线签草稿态：
+// 有草稿先确认（列出有草稿的签，TopBar 退出在线确认同形态），确认后逐工作区关签
+// （closeWorkspaceTabs 逐签驱逐项目会话并同步签表）再 logout；无草稿直接登出。
+const logoutConfirmOpen = ref(false);
+/** 打开确认时快照有草稿的在线签（确认期间签表变化不漂移展示）。 */
+const logoutDraftTabs = ref<ProjectTab[]>([]);
+
+/** 在线签按工作区引用去重（logout 牵连全部驻留工作区，不止有草稿的那些）。 */
+function onlineWorkspaceRefs(): WorkspaceRef[] {
+  const refs = new Map<string, WorkspaceRef>();
+  for (const tab of props.tabs.tabs) {
+    if (tab.workspaceRef.kind === "online") refs.set(tab.workspaceRef.workspaceId, tab.workspaceRef);
+  }
+  return [...refs.values()];
+}
+
+function requestLogout() {
+  logoutDraftTabs.value = props.tabs.tabs.filter(
+    (tab) => tab.workspaceRef.kind === "online" && props.tabs.projectHasDrafts(tab.tabId),
+  );
+  if (logoutDraftTabs.value.length === 0) {
+    void doLogout();
+    return;
+  }
+  logoutConfirmOpen.value = true;
+}
+
+async function doLogout() {
+  logoutConfirmOpen.value = false;
+  // 逐工作区关签（签级确认不拦——登出确认已覆盖；驱逐各项目会话），再清全部在线会话
+  for (const ref of onlineWorkspaceRefs()) await props.tabs.closeWorkspaceTabs(ref);
+  await props.online.logout();
+}
+
+function onLogoutConfirm() {
+  void doLogout();
+}
+
+function onLogoutCancel() {
+  logoutConfirmOpen.value = false;
+}
 </script>
 
 <template>
@@ -147,7 +200,7 @@ async function onOpenWorkspace(workspaceId: string) {
           <a-typography-text data-testid="online-user">
             {{ t("online.loggedInAs", { name: online.user?.displayName ?? "", server: online.activeName }) }}
           </a-typography-text>
-          <a-button danger data-testid="online-logout" @click="online.logout()">{{ t("online.logout") }}</a-button>
+          <a-button danger data-testid="online-logout" @click="requestLogout">{{ t("online.logout") }}</a-button>
         </div>
         <!-- 工作区列表：刷新于对话框打开时；点「打开」→ 开在线（本地原样驻留，并存） -->
         <div class="section-title">{{ t("online.wsSection") }}</div>
@@ -238,6 +291,26 @@ async function onOpenWorkspace(workspaceId: string) {
       <a-button data-testid="online-close" @click="online.dialogOpen = false">{{ t("common.close") }}</a-button>
     </template>
   </a-modal>
+  <!-- 退出登录草稿确认（终审 Important 2）：a-modal 传送门渲染于 body，列出有草稿的在线签 -->
+  <ConfirmDialog
+    :open="logoutConfirmOpen"
+    :title="t('online.logout')"
+    @confirm="onLogoutConfirm"
+    @cancel="onLogoutCancel"
+  >
+    <div data-testid="online-logout-impact">
+      <p>{{ t("online.logoutConfirmDesc", { count: logoutDraftTabs.length }) }}</p>
+      <ul class="logout-impact-list">
+        <li
+          v-for="(tab, index) in logoutDraftTabs"
+          :key="tab.tabId"
+          :data-testid="`online-logout-tab-${index}`"
+        >
+          {{ tab.workspaceRef.kind === "online" ? tab.workspaceRef.name : "" }} / {{ tab.projectName }}
+        </li>
+      </ul>
+    </div>
+  </ConfirmDialog>
 </template>
 
 <style scoped>
@@ -288,6 +361,11 @@ async function onOpenWorkspace(workspaceId: string) {
 .ws-role {
   color: var(--text-muted, #666);
   font-size: 11px;
+}
+/* 登出确认的受影响签清单（ConfirmDialog 默认插槽内容，形态同 TopBar 退出在线确认） */
+.logout-impact-list {
+  margin: 4px 0 0;
+  padding-inline-start: 18px;
 }
 .field {
   display: flex;

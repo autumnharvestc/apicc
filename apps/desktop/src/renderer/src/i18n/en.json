@@ -264,6 +264,7 @@
     "register": "Register",
     "registerOk": "Registered. Sign in to continue",
     "logout": "Sign out",
+    "logoutConfirmDesc": "Signing out closes all online project tabs; unsaved drafts in the following {count} tab(s) will be discarded.",
     "loggedInAs": "Signed in: {name} ({server})",
     "usernameRequired": "Enter your username",
     "passwordRequired": "Enter your password",

@@ -953,3 +953,98 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
     }
   });
 });
+
+// —— 计划 C 终审 Important 1：纯在线用户主页死胡同——在线项目成签入口在主页视图不可达 ——
+// 修复后：①主页开在线工作区 → 组合根回调切接口模块（侧栏 v-show 与 ModuleRail v-if 随
+// onlineMode 亮起，在线树/成签入口可达）；②主页在线区在活跃工作区下列项目卡片，点卡片
+// 直连 tabs.openProjectTab（online 分支 workspaceRef）成签激活。
+// 置于文件末尾：用例预置在线登录态（apicc.onlineServers），结束即清，不污染文件内更早用例。
+const ONLINE_SERVER = "http://127.0.0.1:8080";
+
+async function seedOnlineLogin() {
+  await failingApi.onlineLogin({ baseUrl: ONLINE_SERVER, username: "alice", password: "password8" });
+  localStorage.setItem("apicc.onlineServers", JSON.stringify({
+    active: ONLINE_SERVER,
+    servers: [{ baseUrl: ONLINE_SERVER, name: "团队服务器" }],
+  }));
+}
+
+async function cleanupOnlineLogin() {
+  localStorage.removeItem("apicc.onlineServers");
+  await failingApi.onlineLogout();
+}
+
+/** 主页 → 服务器视图 → 等工作区行出现（refreshOnline 异步）。 */
+async function gotoServerWorkspaces(wrapper: import("@vue/test-utils").VueWrapper) {
+  await wrapper.find(`[data-testid="home-side-server-${ONLINE_SERVER}"]`).trigger("click");
+  await flushPromises();
+  for (let i = 0; i < 100 && !wrapper.find('[data-testid="home-ws-ws-online-1"]').exists(); i++) {
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** 等待激活态项目签出现（成签链路是多拍宏任务：签元素先于激活完成渲染）。 */
+async function activeTabElement(wrapper: import("@vue/test-utils").VueWrapper) {
+  for (let i = 0; i < 100; i++) {
+    const tab = wrapper.findAll('[data-testid^="project-tab-"]').find((t) => t.attributes("data-active") === "true");
+    if (tab) return tab;
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("激活态项目签未出现");
+}
+
+describe("App 主页在线入口（终审 Important 1：纯在线用户死胡同修复）", () => {
+  it("主页开在线工作区 → 视图离开主页（侧栏/在线编辑区亮起），在线树点项目名即可成签", async () => {
+    await seedOnlineLogin();
+    try {
+      const wrapper = await mountApp();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      await gotoServerWorkspaces(wrapper);
+      // 打开在线工作区：组合根回调切接口模块（修复前 view 停留 home 且侧栏/rail 双隐藏——死胡同）
+      await wrapper.find('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sidebar-api"]').isVisible()).toBe(true);
+      expect(wrapper.find('[data-testid="online-guide"]').exists()).toBe(true);
+      // 成签路径可达：在线侧树展开 → 项目名入口（任务 7）→ 项目签创建并激活
+      await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+      await flushPromises();
+      const projLabel = wrapper.findAll(".label").find((e) => e.text() === "示例项目");
+      expect(projLabel).toBeDefined();
+      await projLabel!.trigger("click");
+      // 成签链路（openProjectTab → activateTab 编排）是多拍宏任务：签元素先于激活完成渲染，
+      // 直接等「激活态」出现，不凑拍
+      const activeTab = await activeTabElement(wrapper);
+      expect(activeTab.text()).toContain("示例项目");
+    } finally {
+      await cleanupOnlineLogin();
+    }
+  });
+
+  it("主页在线区活跃工作区下项目卡片 → 点卡片直达成签激活并离开主页", async () => {
+    await seedOnlineLogin();
+    try {
+      const wrapper = await mountApp();
+      await gotoServerWorkspaces(wrapper);
+      await wrapper.find('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false); // ① 开工作区即切离主页
+      // 回主页 → 服务器视图：活跃工作区下列出其项目卡片（online.projects，ProjectCard 复用）
+      await wrapper.find('[data-testid="topbar-home"]').trigger("click");
+      await flushPromises();
+      await gotoServerWorkspaces(wrapper);
+      const card = wrapper.find('[data-testid="project-card-300"]');
+      expect(card.exists()).toBe(true);
+      // 点卡片：直连 tabs.openProjectTab（online 分支）→ 成签激活，视图随活跃签离开主页
+      await card.trigger("click");
+      const activeTab = await activeTabElement(wrapper);
+      expect(activeTab.text()).toContain("示例项目");
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+    } finally {
+      await cleanupOnlineLogin();
+    }
+  });
+});

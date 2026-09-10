@@ -14,6 +14,9 @@ const props = defineProps<{
   projectId: string;
   projectName: string;
   active?: boolean;
+  /** 纯展示卡片（终审 Important 1 ②主页在线项目卡片）：重命名/克隆/移动/删除是本地目录
+   * 管理动作，在线项目无对应能力——隐藏「更多」菜单，卡片点击=打开（成签）。 */
+  plain?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "open"): void;
@@ -42,7 +45,7 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
   >
     <div class="card-top">
       <span class="avatar" :style="{ background: avatarColor }">{{ avatarChar }}</span>
-      <span class="card-actions" @click.stop>
+      <span v-if="!plain" class="card-actions" @click.stop>
         <a-dropdown>
           <a-button size="small" type="text" data-testid="project-card-more">
             <EllipsisOutlined />

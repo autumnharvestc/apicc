@@ -95,6 +95,7 @@ interface Fixture {
   api: ApiccApi;
   workspace: ReturnType<typeof useWorkspaceStore>;
   online: ReturnType<typeof createOnlineStore>;
+  tabs: ReturnType<typeof createTabsStore>;
   mount: (component: Parameters<typeof mount>[0], props?: Record<string, unknown>) => Promise<ReturnType<typeof mount>>;
 }
 
@@ -116,8 +117,8 @@ async function fixture(): Promise<Fixture> {
   const tabs = createTabsStore({ workspace, tree, online, editor, workflowDesign, storage: memStorage() });
   const { i18n } = createI18nInstance();
   const mountWith = async (component: Parameters<typeof mount>[0], props: Record<string, unknown> = {}) =>
-    mount(component, { props: { api, workspace, tree, online, plugins, tabs, reportError: () => {}, openProject: () => {}, ...props }, global: { plugins: [i18n] } });
-  return { api, workspace, online, mount: mountWith };
+    mount(component, { props: { api, workspace, tree, online, plugins, tabs, reportError: () => {}, openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {}, ...props }, global: { plugins: [i18n] } });
+  return { api, workspace, online, tabs, mount: mountWith };
 }
 
 /** 预置合法 api.yaml 内容（推到在线替身），返回版本 2。 */
@@ -395,7 +396,7 @@ describe("OnlineLoginDialog 工作区列表（打开在线工作区入口）", (
     const { i18n } = createI18nInstance();
     f.online.dialogOpen = true;
     const wrapper = mount(OnlineLoginDialog, {
-      props: { online: f.online, apicc: f.api },
+      props: { online: f.online, apicc: f.api, tabs: f.tabs },
       global: { plugins: [i18n] },
     });
     await flushPromises();

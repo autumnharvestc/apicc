@@ -10,7 +10,8 @@ import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
-import { createOnlineStore, STORAGE_KEY } from "../../../src/renderer/src/stores/online.js";
+import { createOnlineStore, STORAGE_KEY, type OnlineSession } from "../../../src/renderer/src/stores/online.js";
+import { createTabsStore } from "../../../src/renderer/src/stores/tabs.js";
 import OnlineLoginDialog from "../../../src/renderer/src/components/OnlineLoginDialog.vue";
 import type { ApiccApi } from "../../../src/shared/types.js";
 
@@ -79,7 +80,11 @@ function memStorage(): Storage {
   } as Storage;
 }
 
-/** 装配：memory api + 注入 store 实例（组合根约定的测试形态），对话框默认开启并预置一份档案。 */
+/**
+ * 装配：memory api + 注入 store 实例（组合根约定的测试形态），对话框默认开启并预置一份档案。
+ * 终审 Important 2：登出前草稿确认需要签表（受影响签聚合 + 逐工作区关签）——真实构造
+ * tabs store（deps 全内存 stub，与 online store 同一实例）经 props 注入。
+ */
 async function mountDialog({ open = true, logins = 0 }: { open?: boolean; logins?: number } = {}) {
   const api = createMemoryApi();
   for (let i = 0; i < logins; i += 1) {
@@ -89,14 +94,20 @@ async function mountDialog({ open = true, logins = 0 }: { open?: boolean; logins
   const online = createOnlineStore({ api, storage });
   online.addProfile(SERVER_A, "团队服务器");
   if (logins > 0) await online.resume(SERVER_A); // 替身已登录 → store 恢复登录态（裁定 A 链路）
+  const tabs = createTabsStore({
+    workspace: { open: async () => {}, opened: false, root: "", tree: null },
+    tree: { select: async () => {} },
+    online,
+    storage: memStorage(),
+  });
   online.dialogOpen = open;
   const { i18n } = createI18nInstance();
   const wrapper = mount(OnlineLoginDialog, {
-    props: { online, apicc: api },
+    props: { online, apicc: api, tabs },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api: api as ApiccApi, online, storage };
+  return { wrapper, api: api as ApiccApi, online, tabs, storage };
 }
 
 describe("OnlineLoginDialog", () => {
@@ -204,7 +215,13 @@ describe("OnlineLoginDialog", () => {
     online.addProfile(SERVER_A, "团队服务器");
     online.dialogOpen = true;
     const { i18n } = createI18nInstance();
-    const wrapper = mount(OnlineLoginDialog, { props: { online, apicc: api }, global: { plugins: [i18n] } });
+    const tabs = createTabsStore({
+      workspace: { open: async () => {}, opened: false, root: "", tree: null },
+      tree: { select: async () => {} },
+      online,
+      storage: memStorage(),
+    });
+    const wrapper = mount(OnlineLoginDialog, { props: { online, apicc: api, tabs }, global: { plugins: [i18n] } });
     await flushPromises();
     expect(bodyHas("online-tab-register")).toBe(false);
     expect(bodyHas("online-login-form")).toBe(true);
@@ -227,5 +244,87 @@ describe("OnlineLoginDialog", () => {
     await flushPromises();
     expect(online.dialogOpen).toBe(false);
     expect(bodyHas("online-body")).toBe(false);
+  });
+});
+
+// —— 终审 Important 2：登出绕过签表同步——logout 一次清全部在线会话，指向在线工作区的
+// 签的编辑缓冲草稿被静默丢弃。修复后：登出前聚合在线签草稿态（tabs.projectHasDrafts），
+// 有草稿先确认（列出有草稿的签），确认后逐工作区 tabs.closeWorkspaceTabs（签表同步 +
+// 逐签驱逐会话）再登出；无草稿直接登出（现状保持）。
+describe("OnlineLoginDialog 登出前草稿确认（终审 Important 2）", () => {
+  /** 脏缓冲槽：api 相对快照有未保存修改（判定先例同 topBar.test.ts / online editorDirty）。 */
+  function dirtyBuffer(path: string): OnlineSession["buffers"][string] {
+    return {
+      path,
+      kind: "api",
+      api: { id: "a-1", name: "改过的接口" } as never,
+      raw: "",
+      problems: [],
+      version: 2,
+      snapshot: JSON.stringify({ id: "a-1", name: "原接口" }),
+      loading: false,
+    };
+  }
+
+  /** 装配：已登录 + 已驻留在线工作区 + 一个在线项目签（draft=true 时该签含脏缓冲）。 */
+  async function mountWithOnlineTab(draft: boolean) {
+    const ctx = await mountDialog({ logins: 1 });
+    await ctx.online.refreshWorkspaces();
+    await ctx.online.openWorkspace(ctx.online.workspaces[0]!);
+    const wsId = ctx.online.activeWorkspace!.id;
+    await ctx.tabs.openProjectTab(
+      { kind: "online", workspaceId: wsId, name: ctx.online.workspaces[0]!.name },
+      { id: "p-1", name: "项目甲" },
+    );
+    await flushPromises();
+    if (draft) {
+      ctx.online.sessions[wsId]!.buffers["p-1/collections/c/apis/a/api.yaml"] =
+        dirtyBuffer("p-1/collections/c/apis/a/api.yaml");
+    }
+    return { ...ctx, wsId };
+  }
+
+  it("有草稿在线签：登出先弹确认并列出有草稿的签；取消 → 登出不发生、会话与签原样", async () => {
+    const { online, tabs, wsId } = await mountWithOnlineTab(true);
+    await expectBody("online-logout").trigger("click");
+    await flushPromises();
+    // 确认弹窗先行（TopBar 退出在线确认同形态）：登出未发生，列出有草稿的签（工作区 / 项目）
+    expect(expectBody("online-logout-impact").exists()).toBe(true);
+    expect(expectBody("online-logout-tab-0").text()).toContain("项目甲");
+    expect(online.loggedIn).toBe(true);
+    expect(tabs.tabs).toHaveLength(1);
+    // 取消：弹窗关闭，登录态/驻留会话/签表原样
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    expect(online.loggedIn).toBe(true);
+    expect(tabs.tabs).toHaveLength(1);
+    expect(tabs.tabs[0]!.workspaceRef).toEqual({ kind: "online", workspaceId: wsId, name: "示例在线空间" });
+    expect(online.sessions[wsId]).toBeDefined();
+    expect(bodyFind("online-logout-impact")).toBeNull();
+  });
+
+  it("确认登出：先逐工作区关签（签清空 + 缓冲驱逐）再登出（会话清空、登录态清除）", async () => {
+    const { online, tabs, wsId } = await mountWithOnlineTab(true);
+    await expectBody("online-logout").trigger("click");
+    await flushPromises();
+    await expectBody("dialog-confirm").trigger("click");
+    await flushPromises();
+    // 登出完成：会话全表清空（渲染层），登录态清除
+    expect(online.loggedIn).toBe(false);
+    expect(online.sessions).toEqual({});
+    expect(online.activeWorkspaceId).toBeNull();
+    // 签表同步：指向在线工作区的签已随登出关闭，不再残留正常态死签
+    expect(tabs.tabs).toHaveLength(0);
+    expect(bodyFind("online-logout-impact")).toBeNull();
+  });
+
+  it("无草稿在线签：直接登出不弹确认（现状保持）", async () => {
+    const { online, tabs } = await mountWithOnlineTab(false);
+    await expectBody("online-logout").trigger("click");
+    await flushPromises();
+    expect(bodyHas("online-logout-impact")).toBe(false);
+    expect(online.loggedIn).toBe(false);
+    expect(tabs.tabs).toHaveLength(0); // 无草稿也关签：登出牵连全部在线工作区，签表同步
+    expect(online.sessions).toEqual({});
   });
 });

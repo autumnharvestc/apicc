@@ -819,7 +819,7 @@ describe("ConfirmDialog", () => {
 
 describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页）", () => {
   it("打开本地目录：经 wsPickDirectory+wsOpen 后显示工作区名", async () => {
-    const { wrapper, workspace } = await mountWith(HomeView, { openProject: () => {} });
+    const { wrapper, workspace } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {} });
     await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
     expect(workspace.opened).toBe(true);
@@ -827,7 +827,7 @@ describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至�
   });
 
   it("新建本地目录先弹名称输入对话框，可取消", async () => {
-    const { wrapper } = await mountWith(HomeView, { openProject: () => {} });
+    const { wrapper } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {} });
     await wrapper.find('[data-testid="home-new-dir"]').trigger("click");
     await flushPromises();
     expect(bodyHas("dialog-input")).toBe(true);
@@ -839,7 +839,7 @@ describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至�
 
   it("打开本地目录失败时经 reportError 上报（宽审查 I1）", async () => {
     const errors: unknown[] = [];
-    const { wrapper, api } = await mountWith(HomeView, { openProject: () => {}, reportError: (e: unknown) => { errors.push(e); } });
+    const { wrapper, api } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {}, reportError: (e: unknown) => { errors.push(e); } });
     api.wsOpen = async () => { throw new Error("打不开"); };
     await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
     await flushPromises();
