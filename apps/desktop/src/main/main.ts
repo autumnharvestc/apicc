@@ -15,6 +15,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 process.env.APP_ROOT = join(__dirname);
 
+// Cmd+Q/app.quit 的 close 会被退出守卫 preventDefault 中止既有 quit 流程——守卫放行销毁后
+// 经此标志补刀 app.quit()（darwin 销毁后无窗不自动 quit，不补刀则应用无窗僵留）。取消/
+// 手动关窗由守卫消费并复位标志，不继承退出意图（darwin 红点关窗保持「无窗驻留」习惯）。
+let quitRequested = false;
+app.on("before-quit", () => {
+  quitRequested = true;
+});
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
@@ -45,6 +53,12 @@ function createWindow(): BrowserWindow {
       });
       return response === 0;
     },
+    shouldQuitAfterClose: () => {
+      const requested = quitRequested;
+      quitRequested = false;
+      return requested;
+    },
+    quit: () => void app.quit(),
   });
   return win;
 }
