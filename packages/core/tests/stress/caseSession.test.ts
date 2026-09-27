@@ -247,6 +247,39 @@ describe("createStressCaseSession", () => {
     ] } }, base, { workerId: 4 })).toThrow(/多个/);
   });
 
+  it("直属 API 的 collection hooks 只执行一次且不重复容器链", async () => {
+    const events: string[] = [];
+    const directCollection: Collection = {
+      ...collection,
+      scripts: { pre: "collection-script-pre", post: "collection-script-post" },
+      preOperations: [{ id: "collection-pre", type: "script", content: "collection-pre" }],
+      postOperations: [{ id: "collection-post", type: "script", content: "collection-post" }],
+    };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const client: ManagedProtocolClient = {
+      name: "http",
+      canHandle: () => true,
+      execute: async () => { events.push("request"); return response; },
+      close: async () => {},
+    };
+    const session = createStressCaseSession({ ...target(testCase), collection: directCollection }, {
+      createManagedClient: () => client,
+      resolveProtocol: () => client,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run(code) { events.push(code); } },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0 });
+
+    await session.execute();
+    await session.close();
+
+    expect(events).toEqual([
+      "collection-script-pre", "collection-pre", "request",
+      "collection-post", "collection-script-post",
+    ]);
+  });
+
   it("显式 containerChain 必须以 collection 开始且父子连续、叶节点包含 API", async () => {
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
     const folder: Folder = { id: "folder", name: "folder", apis: [api], folders: [] };

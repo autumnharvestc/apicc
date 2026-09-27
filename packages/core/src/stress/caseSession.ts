@@ -32,7 +32,7 @@ export interface StressCaseSessionDeps extends Omit<CaseExecutionDeps, "beforeSe
 
 function findContainerChain(collection: Collection, api: ApiDefinition): StressCaseContainer[] {
   const matches: StressCaseContainer[][] = [];
-  if (collection.apis.some((candidate) => candidate === api)) matches.push([collection]);
+  if (collection.apis.some((candidate) => candidate === api)) matches.push([]);
   const visit = (folders: Folder[], path: StressCaseContainer[]): void => {
     for (const folder of folders) {
       const next = [...path, folder];
