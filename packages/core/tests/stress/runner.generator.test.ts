@@ -16,6 +16,31 @@ function collector(stop: () => StressGeneratorMetrics): GeneratorMetricsCollecto
   return { recordSchedulerBacklog: vi.fn(), stop };
 }
 
+class FakeScheduler {
+  nowValue = 0;
+  lastDelay = 0;
+  private nextId = 0;
+  private readonly timers = new Map<number, { at: number; callback: () => void }>();
+  now = () => this.nowValue;
+  setTimeout = (callback: () => void, delay: number): NodeJS.Timeout => {
+    this.lastDelay = delay;
+    const id = ++this.nextId;
+    this.timers.set(id, { at: this.nowValue + delay, callback });
+    return { unref: vi.fn(), id } as unknown as NodeJS.Timeout;
+  };
+  clearTimeout = (timer: NodeJS.Timeout): void => {
+    this.timers.delete((timer as unknown as { id: number }).id);
+  };
+  hasTimers(): boolean { return this.timers.size > 0; }
+  advanceToNextTimer(): void {
+    const next = [...this.timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (!next) throw new Error("no scheduled timer");
+    this.nowValue = next[1].at;
+    this.timers.delete(next[0]);
+    next[1].callback();
+  }
+}
+
 describe("StressRunner generator lifecycle and safety rate", () => {
   it.each(["normal", "abort", "error"])("stops collector exactly once on %s path", async (path) => {
     const stop = vi.fn<() => StressGeneratorMetrics>(() => ({
@@ -47,22 +72,190 @@ describe("StressRunner generator lifecycle and safety rate", () => {
   });
 
   it("limits all workers to maxRps over a sliding one-second window", async () => {
+    const scheduler = new FakeScheduler();
     const starts: number[] = [];
     const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
       createWorker: () => ({
         execute: async () => {
-          starts.push(Date.now());
+          starts.push(scheduler.nowValue);
           return result();
         },
         close: async () => {},
       }),
     });
-    await runner.run({ concurrency: 3, maxIterations: 10, maxRps: 5 });
+    let settled = false;
+    const pending = runner.run({ concurrency: 3, maxIterations: 10, maxRps: 5 }).finally(() => { settled = true; });
+    for (let i = 0; i < 8 && !settled; i += 1) {
+      for (let microtask = 0; microtask < 8; microtask += 1) await Promise.resolve();
+      if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
+    }
+    await pending;
     for (let i = 0; i < starts.length; i += 1) {
       const windowStart = starts[i]!;
       const count = starts.filter((at) => at >= windowStart && at < windowStart + 1_000).length;
-      expect(count).toBeLessThanOrEqual(5);
+      expect(count, JSON.stringify(starts)).toBeLessThanOrEqual(5);
     }
+  });
+
+  it("keeps reciprocal spacing after a long iteration for maxRps below one", async () => {
+    const scheduler = new FakeScheduler();
+    const starts: number[] = [];
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
+      createWorker: () => ({
+        execute: async () => { starts.push(scheduler.nowValue); scheduler.nowValue += 1_100; return result(); },
+        close: async () => {},
+      }),
+    });
+    let settled = false;
+    const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: 0.5 }).finally(() => { settled = true; });
+    for (let i = 0; i < 8 && !settled; i += 1) {
+      await Promise.resolve();
+      if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
+    }
+    await pending;
+    expect(starts).toEqual([0, 2_000]);
+  });
+
+  it("uses ref'd control timers and still completes a fake-clock maxRps run", async () => {
+    const scheduler = new FakeScheduler();
+    const unrefs: ReturnType<typeof vi.fn>[] = [];
+    const setTimeout = (callback: () => void, delay: number): NodeJS.Timeout => {
+      const timer = scheduler.setTimeout(callback, delay);
+      const unref = vi.fn();
+      unrefs.push(unref);
+      return { ...(timer as unknown as object), unref, id: (timer as unknown as { id: number }).id } as unknown as NodeJS.Timeout;
+    };
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout, clearTimeout: scheduler.clearTimeout,
+      createWorker: () => ({ execute: async () => result(), close: async () => {} }),
+    });
+    let settled = false;
+    const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: 1 }).finally(() => { settled = true; });
+    for (let i = 0; i < 8 && !settled; i += 1) {
+      await Promise.resolve();
+      if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
+    }
+    const report = await pending;
+    expect(report.totalRequests).toBe(2);
+    expect(unrefs.every((unref) => unref.mock.calls.length === 0)).toBe(true);
+  });
+
+  it("creates a fresh collector on every run", async () => {
+    const collectors: GeneratorMetricsCollector[] = [];
+    const runner = new StressRunner({
+      createGeneratorCollector: () => {
+        const stop = vi.fn(() => ({ cpuUserMs: 0, cpuSystemMs: 0, cpuPercent: 0, rssStartBytes: 0, rssPeakBytes: 0, eventLoopDelayP95Ms: 0, schedulerBacklogMax: 0, saturated: false, reasons: [], limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 } }));
+        const value = collector(stop);
+        collectors.push(value);
+        return value;
+      },
+      createWorker: () => ({ execute: async () => result(), close: async () => {} }),
+    });
+    await runner.run({ concurrency: 1, maxIterations: 1 });
+    await runner.run({ concurrency: 1, maxIterations: 1 });
+    expect(collectors).toHaveLength(2);
+    expect(collectors[0]).not.toBe(collectors[1]);
+  });
+
+  it("aborts waiting workers promptly without starting another iteration", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const runner = new StressRunner({
+      createWorker: () => ({
+        execute: async () => { calls += 1; controller.abort(); return result(); },
+        close: async () => {},
+      }),
+    });
+    const report = await runner.run({ concurrency: 3, maxIterations: 10, maxRps: 1, signal: controller.signal });
+    expect(calls).toBe(1);
+    expect(report.totalRequests).toBe(1);
+  });
+
+  it("keeps FIFO worker fairness with a fake monotonic clock", async () => {
+    const scheduler = new FakeScheduler();
+    const order: number[] = [];
+    let workerId = 0;
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
+      createWorker: () => {
+        const id = workerId++;
+        return { execute: async () => { order.push(id); return result(); }, close: async () => {} };
+      },
+    });
+    let settled = false;
+    const pending = runner.run({ concurrency: 3, maxIterations: 3, maxRps: 1 }).finally(() => { settled = true; });
+    for (let i = 0; i < 8 && !settled; i += 1) {
+      await Promise.resolve();
+      if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
+    }
+    await pending;
+    expect(order).toEqual([0, 1, 2]);
+  });
+
+  it("clamps a backwards injected clock instead of releasing early", async () => {
+    const scheduler = new FakeScheduler();
+    const starts: number[] = [];
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
+      createWorker: () => ({
+        execute: async () => { starts.push(scheduler.nowValue); if (starts.length === 1) scheduler.nowValue = -500; return result(); },
+        close: async () => {},
+      }),
+    });
+    let settled = false;
+    const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: 1 }).finally(() => { settled = true; });
+    for (let i = 0; i < 8 && !settled; i += 1) {
+      await Promise.resolve();
+      if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
+    }
+    await pending;
+    expect(starts).toEqual([0, 1_000]);
+  });
+
+  it("clamps a finite tiny-rate delay instead of scheduling Infinity or a 1ms spin", async () => {
+    const scheduler = new FakeScheduler();
+    const controller = new AbortController();
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
+      createWorker: () => ({ execute: async () => result(), close: async () => {} }),
+    });
+    const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: Number.MIN_VALUE, signal: controller.signal });
+    for (let i = 0; i < 4; i += 1) {
+      await Promise.resolve();
+      if (scheduler.hasTimers()) { controller.abort(); break; }
+    }
+    await pending;
+    expect(scheduler.lastDelay).toBeGreaterThan(1);
+    expect(scheduler.lastDelay).toBeLessThanOrEqual(2_147_000_000);
+  });
+
+  it("cleans sessions when collector initialization fails", async () => {
+    const createWorker = vi.fn(() => ({ execute: async () => result(), close: async () => {} }));
+    const runner = new StressRunner({ createWorker, createGeneratorCollector: () => { throw new Error("collector init failed"); } });
+    await expect(runner.run({ concurrency: 1, maxIterations: 1 })).rejects.toThrow("collector init failed");
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
+  it("preserves session close error over collector stop error", async () => {
+    const stop = vi.fn(() => { throw new Error("collector stop failed"); });
+    const runner = new StressRunner({
+      createGeneratorCollector: () => collector(stop as unknown as () => StressGeneratorMetrics),
+      createWorker: () => ({ execute: async () => result(), close: async () => { throw new Error("close failed"); } }),
+    });
+    await expect(runner.run({ concurrency: 1, maxIterations: 1 })).rejects.toThrow("close failed");
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves body error over session close and collector stop errors", async () => {
+    const stop = vi.fn(() => { throw new Error("collector stop failed"); });
+    const runner = new StressRunner({
+      createGeneratorCollector: () => collector(stop as unknown as () => StressGeneratorMetrics),
+      createWorker: () => ({ execute: async () => { throw new Error("body failed"); }, close: async () => { throw new Error("close failed"); } }),
+    });
+    await expect(runner.run({ concurrency: 1, maxIterations: 1 })).rejects.toThrow("body failed");
+    expect(stop).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a non-positive maxRps before starting workers", async () => {

@@ -5,6 +5,21 @@ import {
 } from "../../src/stress/generatorMetrics.js";
 
 describe("generator metrics collector", () => {
+  it("samples RSS on the injected interval and keeps the observed peak", () => {
+    let sample: (() => void) | undefined;
+    let rss = 10;
+    const collector = createGeneratorMetricsCollector({
+      cpuUsage: () => ({ user: 0, system: 0 }), rss: () => rss,
+      eventLoopDelayP95Ms: () => 0,
+      setInterval: (callback) => { sample = callback; return { unref: vi.fn() } as unknown as NodeJS.Timeout; },
+      clearInterval: vi.fn(),
+    });
+    rss = 50;
+    sample?.();
+    rss = 20;
+    expect(collector.stop().rssPeakBytes).toBe(50);
+  });
+
   it("computes raw CPU time and allows cpuPercent above 100", () => {
     let now = 100;
     let rss = 10;
@@ -72,6 +87,21 @@ describe("generator metrics collector", () => {
     });
     collector.recordSchedulerBacklog(0);
     expect(collector.stop().schedulerBacklogMax).toBe(0);
+  });
+
+  it("cleans timer and disables histogram once when a stop probe throws", () => {
+    const clearInterval = vi.fn();
+    const disable = vi.fn();
+    const histogram = { percentile: vi.fn(() => { throw new Error("percentile failed"); }), disable };
+    const collector = createGeneratorMetricsCollector({
+      cpuUsage: () => ({ user: 0, system: 0 }), rss: () => 1,
+      eventLoopHistogram: histogram,
+      setInterval: () => ({ unref: vi.fn() } as unknown as NodeJS.Timeout), clearInterval,
+    });
+    expect(() => collector.stop()).toThrow("percentile failed");
+    expect(() => collector.stop()).toThrow("percentile failed");
+    expect(clearInterval).toHaveBeenCalledTimes(1);
+    expect(disable).toHaveBeenCalledTimes(1);
   });
 });
 

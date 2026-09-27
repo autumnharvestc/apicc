@@ -4,6 +4,9 @@ import { createGeneratorMetricsCollector, type GeneratorMetricsCollector, type G
 import type { StressReport, StressSample, StressThresholds } from "./model.js";
 import type { StressWorkerSession } from "./caseSession.js";
 
+type StressSetTimeout = (handler: () => void, timeout: number) => NodeJS.Timeout;
+type StressClearTimeout = (timer: NodeJS.Timeout) => void;
+
 export interface StressRunnerOptions {
   /** Creates one isolated virtual-user session for each concurrent worker. */
   createWorker: (workerId: number) => Promise<StressWorkerSession> | StressWorkerSession;
@@ -13,9 +16,8 @@ export interface StressRunnerOptions {
   createGeneratorMetricsCollector?: () => GeneratorMetricsCollector;
   generatorMetricsProbe?: GeneratorMetricsProbe;
   now?: () => number;
-  setTimeout?: typeof setTimeout;
-  clearTimeout?: typeof clearTimeout;
-  generatorCollector?: GeneratorMetricsCollector | (() => GeneratorMetricsCollector);
+  setTimeout?: StressSetTimeout;
+  clearTimeout?: StressClearTimeout;
 }
 export interface StressRunOptions {
   concurrency: number;
@@ -34,21 +36,38 @@ interface PermitWaiter {
   onAbort?: () => void;
 }
 
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
+
 /** A shared sliding-window limiter. Waiting for a permit is not scheduler backlog. */
 class SlidingWindowPermitLimiter {
   private readonly timestamps: number[] = [];
   private readonly waiters: PermitWaiter[] = [];
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private timer: NodeJS.Timeout | undefined;
   private stopped = false;
   private readonly capacity: number;
+  private nextPermitAt: number | undefined;
+  private lastClock = Number.NEGATIVE_INFINITY;
+  private readonly reciprocalIntervalMs: number | undefined;
 
   constructor(
     private readonly maxRps: number,
     private readonly now: () => number,
-    private readonly setTimeoutFn: typeof setTimeout,
-    private readonly clearTimeoutFn: typeof clearTimeout,
+    private readonly setTimeoutFn: StressSetTimeout,
+    private readonly clearTimeoutFn: StressClearTimeout,
   ) {
     this.capacity = Math.max(1, Math.floor(maxRps));
+    if (maxRps < 1) {
+      const interval = 1_000 / maxRps;
+      this.reciprocalIntervalMs = Number.isFinite(interval) ? interval : Number.MAX_VALUE;
+    }
+  }
+
+  private monotonicNow(): number {
+    const observed = this.now();
+    if (!Number.isFinite(observed)) return this.lastClock === Number.NEGATIVE_INFINITY ? 0 : this.lastClock;
+    if (observed < this.lastClock) return this.lastClock;
+    this.lastClock = observed;
+    return observed;
   }
 
   acquire(signal?: AbortSignal): Promise<boolean> {
@@ -80,8 +99,10 @@ class SlidingWindowPermitLimiter {
 
   private process(): void {
     if (this.stopped) return;
-    const current = this.now();
-    while (this.timestamps.length > 0 && current - this.timestamps[0]! >= 1_000) this.timestamps.shift();
+    const current = this.monotonicNow();
+    if (this.maxRps >= 1) {
+      while (this.timestamps.length > 0 && current - this.timestamps[0]! >= 1_000) this.timestamps.shift();
+    }
     // For rates below one request per second, a single permit is spaced by the
     // reciprocal rate. For ordinary rates, the timestamp window is the bound.
     while (this.waiters.length > 0) {
@@ -91,14 +112,12 @@ class SlidingWindowPermitLimiter {
         next.resolve(false);
         continue;
       }
-      const earliest = this.maxRps < 1 && this.timestamps.length > 0
-        ? this.timestamps[this.timestamps.length - 1]! + (1_000 / this.maxRps)
-        : undefined;
-      if (earliest !== undefined && current < earliest) break;
+      if (this.maxRps < 1 && this.nextPermitAt !== undefined && current < this.nextPermitAt) break;
       if (this.maxRps >= 1 && this.timestamps.length >= this.capacity) break;
       this.waiters.shift();
       if (next.signal && next.onAbort) next.signal.removeEventListener("abort", next.onAbort);
-      this.timestamps.push(current);
+      if (this.maxRps < 1) this.nextPermitAt = current + this.reciprocalIntervalMs!;
+      else this.timestamps.push(current);
       next.resolve(true);
     }
     if (this.waiters.length === 0) {
@@ -107,12 +126,11 @@ class SlidingWindowPermitLimiter {
       return;
     }
     const oldest = this.maxRps < 1
-      ? (this.timestamps[this.timestamps.length - 1] ?? current) + (1_000 / this.maxRps)
+      ? (this.nextPermitAt ?? current + this.reciprocalIntervalMs!)
       : (this.timestamps[0] ?? current) + 1_000;
-    const delay = Math.max(0, oldest - current);
+    const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(1, oldest - current));
     if (this.timer !== undefined) this.clearTimeoutFn(this.timer);
     this.timer = this.setTimeoutFn(() => { this.timer = undefined; this.process(); }, delay);
-    this.timer.unref?.();
   }
 }
 
@@ -151,22 +169,17 @@ export class StressRunner {
       throw new Error(`maxRps 必须为正数，收到 ${maxRps}`);
     }
 
-    let createCollector: () => GeneratorMetricsCollector = this.opts.createGeneratorCollector
+    const createCollector: () => GeneratorMetricsCollector = this.opts.createGeneratorCollector
       ?? this.opts.createGeneratorMetricsCollector
       ?? (() => createGeneratorMetricsCollector(this.opts.generatorMetricsProbe));
-    if (!this.opts.createGeneratorCollector && !this.opts.createGeneratorMetricsCollector && this.opts.generatorCollector !== undefined) {
-      createCollector = typeof this.opts.generatorCollector === "function"
-        ? this.opts.generatorCollector
-        : () => this.opts.generatorCollector as GeneratorMetricsCollector;
-    }
     const collector = createCollector();
     const limiter = maxRps === undefined
       ? undefined
       : new SlidingWindowPermitLimiter(
         maxRps,
-        this.opts.now ?? Date.now,
-        this.opts.setTimeout ?? setTimeout,
-        this.opts.clearTimeout ?? clearTimeout,
+        this.opts.now ?? (() => performance.now()),
+        this.opts.setTimeout ?? ((handler, timeout) => setTimeout(handler, timeout)),
+        this.opts.clearTimeout ?? ((timer) => clearTimeout(timer)),
       );
 
     const samples: StressSample[] = [];
@@ -175,14 +188,23 @@ export class StressRunner {
     let primaryError: unknown;
     let hasCleanupError = false;
     let cleanupError: unknown;
+    let cleanupPriority = 0;
+    const stopCleanup = (error: unknown, priority = 1): void => {
+      stopped = true;
+      if (!hasCleanupError || priority > cleanupPriority) {
+        hasCleanupError = true;
+        cleanupError = error;
+        cleanupPriority = priority;
+      }
+    };
+    const stopLimiter = (): void => {
+      try { limiter?.stop(); }
+      catch (error) { stopCleanup(error); }
+    };
     const stopPrimary = (error: unknown): void => {
       stopped = true;
-      limiter?.stop();
+      stopLimiter();
       if (!hasPrimaryError) { hasPrimaryError = true; primaryError = error; }
-    };
-    const stopCleanup = (error: unknown): void => {
-      stopped = true;
-      if (!hasCleanupError) { hasCleanupError = true; cleanupError = error; }
     };
 
     const sessions: StressWorkerSession[] = [];
@@ -190,12 +212,22 @@ export class StressRunner {
     let report: StressReport | undefined;
     let deadlineTimer: NodeJS.Timeout | undefined;
 
+    const clearDeadlineTimer = (): void => {
+      if (deadlineTimer === undefined) return;
+      const timer = deadlineTimer;
+      deadlineTimer = undefined;
+      try {
+        if (this.opts.clearTimeout) this.opts.clearTimeout(timer);
+        else clearTimeout(timer);
+      } catch (error) { stopCleanup(error); }
+    };
+
     const closeSessions = async (): Promise<void> => {
       if (sessionsClosed) return;
       sessionsClosed = true;
       for (const session of sessions) {
         try { await session.close(); }
-        catch (error) { stopCleanup(error); }
+        catch (error) { stopCleanup(error, 2); }
       }
     };
 
@@ -220,11 +252,10 @@ export class StressRunner {
       const startedAt = Date.now();
       const deadline = durationMs === undefined ? Number.POSITIVE_INFINITY : startedAt + durationMs;
       if (limiter && durationMs !== undefined) {
-        const setDeadline: (handler: () => void, timeout: number) => NodeJS.Timeout = this.opts.setTimeout
-          ? ((handler, timeout) => this.opts.setTimeout!(handler, timeout) as unknown as NodeJS.Timeout)
+        const setDeadline: StressSetTimeout = this.opts.setTimeout
+          ? ((handler, timeout) => this.opts.setTimeout!(handler, timeout))
           : ((handler, timeout) => setTimeout(handler, timeout));
-        deadlineTimer = setDeadline(() => limiter.stop(), Math.max(0, durationMs));
-        deadlineTimer.unref?.();
+        deadlineTimer = setDeadline(() => stopLimiter(), Math.max(0, durationMs));
       }
       let remaining = maxIterations;
       const worker = async (session: StressWorkerSession): Promise<void> => {
@@ -247,26 +278,22 @@ export class StressRunner {
 
       await Promise.all(sessions.map((session) => worker(session)));
       const finishedAt = Date.now();
-      if (deadlineTimer !== undefined) {
-        if (this.opts.clearTimeout) this.opts.clearTimeout(deadlineTimer);
-        else clearTimeout(deadlineTimer);
-        deadlineTimer = undefined;
-      }
       await closeSessions();
+      clearDeadlineTimer();
       if (hasPrimaryError) throw primaryError;
       if (hasCleanupError) throw cleanupError;
       report = computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds });
       return report;
     } finally {
-      limiter?.stop();
-      if (deadlineTimer !== undefined) {
-        if (this.opts.clearTimeout) this.opts.clearTimeout(deadlineTimer);
-        else clearTimeout(deadlineTimer);
-        deadlineTimer = undefined;
-      }
       if (!sessionsClosed) await closeSessions();
-      const generator = collector.stop();
-      if (report) report.generator = generator;
+      stopLimiter();
+      clearDeadlineTimer();
+      try {
+        const generator = collector.stop();
+        if (report) report.generator = generator;
+      } catch (error) { stopCleanup(error); }
+      if (hasPrimaryError) throw primaryError;
+      if (hasCleanupError) throw cleanupError;
     }
   }
 }

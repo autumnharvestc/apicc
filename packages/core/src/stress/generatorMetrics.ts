@@ -86,6 +86,10 @@ export function createGeneratorMetricsCollector(probe: GeneratorMetricsProbe = {
   let backlogMax = 0;
   let stopped = false;
   let snapshot: StressGeneratorMetrics | undefined;
+  let stopError: unknown;
+  let hasStopError = false;
+  let samplingProbeError: unknown;
+  let hasSamplingProbeError = false;
 
   let histogram: Pick<IntervalHistogram, "percentile" | "disable"> & Partial<Pick<IntervalHistogram, "enable">> | undefined = probe.eventLoopHistogram;
   if (!histogram && !probe.eventLoopDelayP95Ms) {
@@ -94,7 +98,11 @@ export function createGeneratorMetricsCollector(probe: GeneratorMetricsProbe = {
   }
 
   const sampleRss = (): void => {
-    peakRss = Math.max(peakRss, asFiniteNonNegative(rss()));
+    try {
+      peakRss = Math.max(peakRss, asFiniteNonNegative(rss()));
+    } catch (error) {
+      if (!hasSamplingProbeError) { hasSamplingProbeError = true; samplingProbeError = error; }
+    }
   };
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -102,8 +110,8 @@ export function createGeneratorMetricsCollector(probe: GeneratorMetricsProbe = {
     // Sampling must not keep a CLI process alive after all work has completed.
     timer.unref?.();
   } catch (error) {
-    if (timer !== undefined) clearIntervalFn(timer);
-    histogram?.disable();
+    try { if (timer !== undefined) clearIntervalFn(timer); } catch { /* preserve initialization error */ }
+    try { histogram?.disable(); } catch { /* preserve initialization error */ }
     throw error;
   }
   const samplingTimer = timer;
@@ -114,30 +122,48 @@ export function createGeneratorMetricsCollector(probe: GeneratorMetricsProbe = {
 
   const stop = (): StressGeneratorMetrics => {
     if (snapshot) return snapshot;
+    if (hasStopError) throw stopError;
     stopped = true;
-    clearIntervalFn(samplingTimer);
-    sampleRss();
-    const elapsedMs = Math.max(0, now() - initialNow);
-    const finalCpu = cpuUsage();
+    let firstError: unknown;
+    let hasFirstError = false;
+    const attempt = (operation: () => void): void => {
+      try { operation(); }
+      catch (error) { if (!hasFirstError) { hasFirstError = true; firstError = error; } }
+    };
+    attempt(() => clearIntervalFn(samplingTimer));
+    attempt(sampleRss);
+    if (hasSamplingProbeError && !hasFirstError) {
+      hasFirstError = true;
+      firstError = samplingProbeError;
+    }
+    let elapsedMs = 0;
+    attempt(() => { elapsedMs = Math.max(0, now() - initialNow); });
+    let finalCpu = initialCpu;
+    attempt(() => { finalCpu = cpuUsage(); });
     const [initialUserMs, initialSystemMs] = cpuMilliseconds(initialCpu, cpuUnit);
     const [finalUserMs, finalSystemMs] = cpuMilliseconds(finalCpu, cpuUnit);
     const cpuUserMs = Math.max(0, finalUserMs - initialUserMs);
     const cpuSystemMs = Math.max(0, finalSystemMs - initialSystemMs);
     const cpuPercent = elapsedMs > 0 ? ((cpuUserMs + cpuSystemMs) / elapsedMs) * 100 : 0;
     const eventLoopProbe = probe.eventLoopDelayP95Ms ?? probe.eventLoopDelayP95;
-    const eventLoopDelayP95Ms = eventLoopProbe
-      ? asFiniteNonNegative(eventLoopProbe())
-      : asFiniteNonNegative((histogram?.percentile(95) ?? 0) / 1_000_000);
-    histogram?.disable();
+    let eventLoopDelayP95Ms = 0;
+    if (eventLoopProbe) attempt(() => { eventLoopDelayP95Ms = asFiniteNonNegative(eventLoopProbe()); });
+    else if (histogram) attempt(() => { eventLoopDelayP95Ms = asFiniteNonNegative(histogram!.percentile(95) / 1_000_000); });
+    if (histogram) attempt(() => histogram!.disable());
     const backlogProbe = probe.schedulerBacklogMax ?? probe.schedulerBacklog;
     if (backlogProbe) {
-      backlogMax = Math.max(backlogMax, asFiniteNonNegative(backlogProbe()));
+      attempt(() => { backlogMax = Math.max(backlogMax, asFiniteNonNegative(backlogProbe())); });
     }
 
     const reasons: StressGeneratorMetrics["reasons"] = [];
     if (cpuPercent >= DEFAULT_GENERATOR_LIMITS.cpuPercent) reasons.push("cpu");
     if (eventLoopDelayP95Ms > DEFAULT_GENERATOR_LIMITS.eventLoopDelayP95Ms) reasons.push("event-loop-delay");
     if (backlogMax > DEFAULT_GENERATOR_LIMITS.schedulerBacklog) reasons.push("scheduler-backlog");
+    if (hasFirstError) {
+      stopError = firstError;
+      hasStopError = true;
+      throw firstError;
+    }
     snapshot = {
       cpuUserMs,
       cpuSystemMs,
