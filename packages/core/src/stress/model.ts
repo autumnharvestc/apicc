@@ -32,7 +32,7 @@ export interface StressVerdict {
   violations: StressViolation[];
 }
 
-/** Optional metadata slots populated by later generator/safety execution layers. */
+/** Stable local generator resource metadata; legacy reports may omit this field. */
 export interface StressGeneratorMetrics {
   cpuUserMs: number;
   cpuSystemMs: number;

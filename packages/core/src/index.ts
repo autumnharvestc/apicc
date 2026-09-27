@@ -37,6 +37,16 @@ export { evaluateStressThresholds } from "./stress/thresholds.js";
 export { buildStressRequest } from "./stress/build.js";
 export { StressRunner, type StressRunnerOptions, type StressRunOptions } from "./stress/runner.js";
 export {
+  createGeneratorMetricsCollector,
+  createStressGeneratorMetricsCollector,
+  createGeneratorCollector,
+  DEFAULT_GENERATOR_LIMITS,
+  type GeneratorMetricsCollector,
+  type GeneratorMetricsProbe,
+  type GeneratorCpuUsage,
+  type GeneratorCpuUsageMs,
+} from "./stress/generatorMetrics.js";
+export {
   createStressCaseSession,
   type StressCaseTarget, StressCaseContainer, StressCaseSessionDeps, StressWorkerSession,
 } from "./stress/caseSession.js";
