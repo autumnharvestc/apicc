@@ -107,6 +107,28 @@ describe("StressRunner", () => {
     expect(report.failed).toBe(2);
     expect(report.statusDist).toEqual({ "500": 2 });
     expect(report.errorKinds).toEqual({ HTTP_500: 2 });
+    expect(report.failures.http).toBe(2);
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.verdict?.violations[0]?.metric).toBe("businessFailures");
+  });
+
+  it("HTTP 200 但断言失败归类 assertion 并导致 verdict 失败", async () => {
+    const runner = new StressRunner({
+      createWorker: () => ({
+        execute: async () => ({
+          request: { method: "GET" as const, url: "http://fake/", headers: {}, query: [] },
+          response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 2, iterationTimeMs: 3,
+          outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 3, assertions: [{ pass: false, message: "expected" }], failureKind: "assertion" as const },
+          failureKind: "assertion" as const,
+        }),
+        close: async () => {},
+      }),
+    });
+    const report = await runner.run({ concurrency: 1, maxIterations: 1 });
+    expect(report.ok).toBe(0);
+    expect(report.failures.assertion).toBe(1);
+    expect(report.statusDist).toEqual({ "200": 1 });
+    expect(report.verdict?.passed).toBe(false);
   });
 
   it("signal aborted 后停止发起新采样（MVP 不中断进行中请求）", async () => {

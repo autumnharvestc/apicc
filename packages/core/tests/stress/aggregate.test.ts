@@ -5,6 +5,16 @@ import type { StressSample } from "../../src/stress/model.js";
 const sample = (timeMs: number, status = 200, error?: string): StressSample =>
   ({ timeMs, status, ok: status >= 200 && status < 400 && !error, error });
 
+const classifiedSample = (requestTimeMs: number, failureKind?: StressSample["failureKind"], status = 200): StressSample => ({
+  requestTimeMs,
+  scriptTimeMs: 3,
+  iterationTimeMs: requestTimeMs + 3,
+  status,
+  ok: failureKind === undefined,
+  failureKind,
+  error: failureKind === undefined ? undefined : `${failureKind} failed`,
+});
+
 describe("computeReport", () => {
   it("聚合计数/RPS/时长", () => {
     const r = computeReport(
@@ -45,5 +55,30 @@ describe("computeReport", () => {
     expect(r.totalRequests).toBe(0);
     expect(r.rps).toBe(0);
     expect(r.latency.p50).toBe(0);
+  });
+
+  it("按业务失败分类并分别聚合请求、脚本和完整迭代耗时", () => {
+    const r = computeReport([
+      classifiedSample(10),
+      classifiedSample(20, "assertion"),
+      classifiedSample(30, "http", 500),
+      classifiedSample(40, "script"),
+      classifiedSample(50, "transport"),
+      classifiedSample(60, "config"),
+      classifiedSample(70, "aborted"),
+    ], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+
+    expect(r.failures).toEqual({ transport: 1, http: 1, script: 1, assertion: 1, config: 1, aborted: 1 });
+    expect(r.latency.p95).toBe(70);
+    expect(r.scriptLatency.avg).toBe(3);
+    expect(r.iterationLatency.p95).toBe(73);
+    expect(r.incomplete).toBe(true);
+  });
+
+  it("HTTP 200 断言失败不计业务成功，且主动停止未发请求不产生样本", () => {
+    const r = computeReport([classifiedSample(10, "assertion")], { concurrency: 1, startedAt: 0, finishedAt: 100 });
+    expect(r.ok).toBe(0);
+    expect(r.failures.assertion).toBe(1);
+    expect(r.totalRequests).toBe(1);
   });
 });

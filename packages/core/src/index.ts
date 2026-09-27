@@ -33,6 +33,7 @@ export { workflowToRunResult } from "./workflow/adapter.js";
 export { mergedEnvVars } from "./domain/envChain.js";
 export * from "./stress/model.js";
 export { computeReport } from "./stress/aggregate.js";
+export { evaluateStressThresholds } from "./stress/thresholds.js";
 export { buildStressRequest } from "./stress/build.js";
 export { StressRunner, type StressRunnerOptions, type StressRunOptions } from "./stress/runner.js";
 export {

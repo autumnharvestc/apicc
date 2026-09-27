@@ -1,6 +1,6 @@
 import type { CaseExecutionResult } from "../runner/caseExecutor.js";
 import { computeReport } from "./aggregate.js";
-import type { StressReport, StressSample } from "./model.js";
+import type { StressReport, StressSample, StressThresholds } from "./model.js";
 import type { StressWorkerSession } from "./caseSession.js";
 
 export interface StressRunnerOptions {
@@ -13,6 +13,7 @@ export interface StressRunOptions {
   durationMs?: number;
   /** Stops starting new iterations; the same signal is forwarded to the session. */
   signal?: AbortSignal;
+  thresholds?: StressThresholds;
 }
 
 function sampleFromResult(result: CaseExecutionResult): StressSample {
@@ -95,6 +96,6 @@ export class StressRunner {
     await Promise.all(Array.from({ length: concurrency }, (_, workerId) => worker(workerId)));
     if (hasPrimaryError) throw primaryError;
     if (hasCleanupError) throw cleanupError;
-    return computeReport(samples, { concurrency, startedAt, finishedAt: Date.now() });
+    return computeReport(samples, { concurrency, startedAt, finishedAt: Date.now(), thresholds: runOpts.thresholds });
   }
 }
