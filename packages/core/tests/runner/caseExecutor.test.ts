@@ -243,6 +243,26 @@ describe("executeCase", () => {
     expect(result.failureKind).toBe("transport");
   });
 
+  it("keeps nullish and primitive protocol throws as transport without replacing diagnostics", async () => {
+    const nullResult = await executeCase(input(), {
+      ...deps({ name: "plugin", canHandle: () => true, async execute() { throw null; } }),
+    });
+    expect(nullResult.failureKind).toBe("transport");
+    expect(nullResult.outcome.error).toBe("null");
+
+    const undefinedResult = await executeCase(input(), {
+      ...deps({ name: "plugin", canHandle: () => true, async execute() { throw undefined; } }),
+    });
+    expect(undefinedResult.failureKind).toBe("transport");
+    expect(undefinedResult.outcome.error).toBe("undefined");
+
+    const primitiveResult = await executeCase(input(), {
+      ...deps({ name: "plugin", canHandle: () => true, async execute() { throw "wire failure"; } }),
+    });
+    expect(primitiveResult.failureKind).toBe("transport");
+    expect(primitiveResult.outcome.error).toBe("wire failure");
+  });
+
   it("classifies an aborted protocol execution from the signal and passes that signal to the client", async () => {
     const controller = new AbortController();
     controller.abort();

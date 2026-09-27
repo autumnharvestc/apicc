@@ -121,6 +121,7 @@ function validFailureKind(value: unknown): CaseFailureKind | undefined {
 }
 
 function protocolFailureKind(error: unknown): CaseFailureKind {
+  if ((typeof error !== "object" || error === null) && typeof error !== "function") return "transport";
   const tagged = error as { caseFailureKind?: unknown; failureKind?: unknown; code?: unknown; name?: unknown };
   const marked = validFailureKind(tagged.caseFailureKind) ?? validFailureKind(tagged.failureKind);
   if (marked) return marked;
