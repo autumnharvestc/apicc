@@ -60,7 +60,6 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
       connect: { timeout: opts.connectTimeoutMs },
       headersTimeout: opts.totalTimeoutMs,
       bodyTimeout: opts.totalTimeoutMs,
-      connections: 1,
     });
   }
 
@@ -99,6 +98,8 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
             signal: opts.signal,
           });
           const bodyText = await res.body.text();
+          // Allow Undici to mark the response socket idle before a subsequent sequential call.
+          await new Promise<void>((resolve) => setImmediate(resolve));
           const headers: Record<string, string> = {};
           for (const [k, v] of Object.entries(res.headers)) headers[k] = String(v);
           return { status: res.statusCode, headers, bodyText, timeMs: performance.now() - started };

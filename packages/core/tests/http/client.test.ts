@@ -17,6 +17,8 @@ beforeAll(async () => {
       });
     } else if (req.url === "/slow") {
       setTimeout(() => res.end("late"), 5000);
+    } else if (req.url === "/parallel") {
+      setTimeout(() => res.end("parallel"), 120);
     } else {
       res.statusCode = 404;
       res.end("nope");
@@ -136,6 +138,17 @@ describe("managed HTTP client lifecycle", () => {
     expect(connections).toBe(2);
     await fresh.close();
     server.off("connection", onConnection);
+  });
+
+  it("pooled 模式允许并发请求使用多个连接，不被单连接串行化", async () => {
+    const client = createHttpClient({ connectionMode: "pooled" });
+    const started = performance.now();
+    await Promise.all([
+      client.execute({ ...req(), url: `${baseUrl}/parallel` }, opts),
+      client.execute({ ...req(), url: `${baseUrl}/parallel` }, opts),
+    ]);
+    expect(performance.now() - started).toBeLessThan(220);
+    await client.close();
   });
 
   it("close 后最终关闭 socket，且重复 close 幂等", async () => {
