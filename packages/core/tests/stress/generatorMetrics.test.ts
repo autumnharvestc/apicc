@@ -103,6 +103,54 @@ describe("generator metrics collector", () => {
     expect(clearInterval).toHaveBeenCalledTimes(1);
     expect(disable).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["rss", () => ({ rss: (() => { let first = true; return () => { if (first) { first = false; return 1; } throw new Error("rss failed"); }; })() })],
+    ["clock", () => ({ now: (() => { let first = true; return () => { if (first) { first = false; return 0; } throw new Error("clock failed"); }; })() })],
+    ["cpu", () => ({ cpuUsage: (() => { let first = true; return () => { if (first) { first = false; return { user: 0, system: 0 }; } throw new Error("cpu failed"); }; })() })],
+    ["backlog", () => ({ schedulerBacklogMax: () => { throw new Error("backlog failed"); } })],
+  ])("caches first %s probe error and still cleans resources", (_name, createProbe) => {
+    const clearInterval = vi.fn();
+    const disable = vi.fn();
+    const collector = createGeneratorMetricsCollector({
+      ...createProbe(),
+      eventLoopHistogram: { percentile: () => 0, disable: disable as unknown as () => boolean },
+      setInterval: () => ({ unref: vi.fn() } as unknown as NodeJS.Timeout), clearInterval,
+    });
+    expect(() => collector.stop()).toThrow();
+    expect(() => collector.stop()).toThrow();
+    expect(clearInterval).toHaveBeenCalledTimes(1);
+    expect(disable).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["clear", () => { throw new Error("clear failed"); }],
+    ["disable", undefined],
+  ])("cleans all resources when %s cleanup fails during stop", (_name, clear) => {
+    const disable = vi.fn(() => { if (_name === "disable") throw new Error("disable failed"); });
+    const clearInterval: (timer: NodeJS.Timeout) => void = clear
+      ? (() => { throw new Error("clear failed"); })
+      : (() => {});
+    const collector = createGeneratorMetricsCollector({
+      cpuUsage: () => ({ user: 0, system: 0 }), rss: () => 1,
+      eventLoopHistogram: { percentile: () => 0, disable: disable as unknown as () => boolean },
+      setInterval: () => ({ unref: vi.fn() } as unknown as NodeJS.Timeout), clearInterval,
+    });
+    expect(() => collector.stop()).toThrow();
+    expect(disable).toHaveBeenCalledTimes(1);
+    expect(() => collector.stop()).toThrow();
+    expect(disable).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables a histogram if interval initialization fails after histogram creation", () => {
+    const disable = vi.fn();
+    expect(() => createGeneratorMetricsCollector({
+      eventLoopHistogram: { percentile: () => 0, disable },
+      setInterval: () => { throw new Error("timer init failed"); },
+      clearInterval: vi.fn(),
+    })).toThrow("timer init failed");
+    expect(disable).toHaveBeenCalledTimes(1);
+  });
 });
 
 export type { GeneratorMetricsCollector };

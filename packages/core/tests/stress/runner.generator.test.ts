@@ -41,6 +41,14 @@ class FakeScheduler {
   }
 }
 
+class ThrowingClearScheduler extends FakeScheduler {
+  private clearCalls = 0;
+  clearTimeout = (timer: NodeJS.Timeout): void => {
+    this.clearCalls += 1;
+    if (this.clearCalls > 1) throw new Error("clear failed");
+  };
+}
+
 describe("StressRunner generator lifecycle and safety rate", () => {
   it.each(["normal", "abort", "error"])("stops collector exactly once on %s path", async (path) => {
     const stop = vi.fn<() => StressGeneratorMetrics>(() => ({
@@ -229,6 +237,51 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     await pending;
     expect(scheduler.lastDelay).toBeGreaterThan(1);
     expect(scheduler.lastDelay).toBeLessThanOrEqual(2_147_000_000);
+  });
+
+  it("drives multiple long-delay chunks until a tiny finite rate grants the next permit", async () => {
+    const scheduler = new FakeScheduler();
+    const starts: number[] = [];
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
+      createWorker: () => ({ execute: async () => { starts.push(scheduler.nowValue); return result(); }, close: async () => {} }),
+    });
+    let settled = false;
+    const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: 1e-9 }).finally(() => { settled = true; });
+    for (let i = 0; i < 600 && !settled; i += 1) {
+      for (let microtask = 0; microtask < 4; microtask += 1) await Promise.resolve();
+      if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
+    }
+    await pending;
+    expect(starts).toHaveLength(2);
+    expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(1e12 - 1);
+  });
+
+  it("preserves a limiter stop error while settling every pending waiter", async () => {
+    const scheduler = new ThrowingClearScheduler();
+    let closed = 0;
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
+      createWorker: () => ({
+        execute: async () => { throw new Error("body failed"); },
+        close: async () => { closed += 1; },
+      }),
+    });
+    await expect(runner.run({ concurrency: 3, maxIterations: 10, maxRps: 1 })).rejects.toThrow("body failed");
+    expect(closed).toBe(3);
+  });
+
+  it("preserves a limiter schedule error over collector stop cleanup", async () => {
+    const stop = vi.fn(() => { throw new Error("collector stop failed"); });
+    let closed = 0;
+    const runner = new StressRunner({
+      createGeneratorCollector: () => collector(stop as unknown as () => StressGeneratorMetrics),
+      setTimeout: () => { throw new Error("schedule failed"); },
+      createWorker: () => ({ execute: async () => result(), close: async () => { closed += 1; } }),
+    });
+    await expect(runner.run({ concurrency: 2, maxIterations: 4, maxRps: 1 })).rejects.toThrow("schedule failed");
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(closed).toBe(2);
   });
 
   it("cleans sessions when collector initialization fails", async () => {

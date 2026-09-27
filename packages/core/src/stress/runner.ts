@@ -32,6 +32,7 @@ export interface StressRunOptions {
 
 interface PermitWaiter {
   resolve: (granted: boolean) => void;
+  reject: (error: unknown) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
 }
@@ -48,6 +49,10 @@ class SlidingWindowPermitLimiter {
   private nextPermitAt: number | undefined;
   private lastClock = Number.NEGATIVE_INFINITY;
   private readonly reciprocalIntervalMs: number | undefined;
+  private runtimeError: unknown;
+  private hasRuntimeError = false;
+  private stopError: unknown;
+  private hasStopError = false;
 
   constructor(
     private readonly maxRps: number,
@@ -71,14 +76,16 @@ class SlidingWindowPermitLimiter {
   }
 
   acquire(signal?: AbortSignal): Promise<boolean> {
+    if (this.hasRuntimeError) return Promise.reject(this.runtimeError);
     if (this.stopped || signal?.aborted) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
-      const waiter: PermitWaiter = { resolve, signal };
+    return new Promise<boolean>((resolve, reject) => {
+      const waiter: PermitWaiter = { resolve, reject, signal };
       waiter.onAbort = () => {
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
         resolve(false);
-        this.process();
+        try { this.process(); }
+        catch (error) { this.failRuntime(error); }
       };
       if (signal) signal.addEventListener("abort", waiter.onAbort, { once: true });
       this.waiters.push(waiter);
@@ -87,13 +94,42 @@ class SlidingWindowPermitLimiter {
   }
 
   stop(): void {
-    if (this.stopped) return;
+    if (this.stopped) {
+      if (this.hasStopError) throw this.stopError;
+      if (this.hasRuntimeError) throw this.runtimeError;
+      return;
+    }
     this.stopped = true;
-    if (this.timer !== undefined) this.clearTimeoutFn(this.timer);
+    let firstError: unknown;
+    let hasError = false;
+    if (this.timer !== undefined) {
+      try { this.clearTimeoutFn(this.timer); }
+      catch (error) { hasError = true; firstError = error; }
+    }
     this.timer = undefined;
     for (const waiter of this.waiters.splice(0)) {
       if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
       waiter.resolve(false);
+    }
+    if (hasError) {
+      this.stopError = firstError;
+      this.hasStopError = true;
+      throw firstError;
+    }
+  }
+
+  private failRuntime(error: unknown): void {
+    if (this.hasRuntimeError) return;
+    this.runtimeError = error;
+    this.hasRuntimeError = true;
+    this.stopped = true;
+    if (this.timer !== undefined) {
+      try { this.clearTimeoutFn(this.timer); } catch { /* preserve runtime error */ }
+    }
+    this.timer = undefined;
+    for (const waiter of this.waiters.splice(0)) {
+      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+      waiter.reject(error);
     }
   }
 
@@ -130,7 +166,11 @@ class SlidingWindowPermitLimiter {
       : (this.timestamps[0] ?? current) + 1_000;
     const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(1, oldest - current));
     if (this.timer !== undefined) this.clearTimeoutFn(this.timer);
-    this.timer = this.setTimeoutFn(() => { this.timer = undefined; this.process(); }, delay);
+    this.timer = this.setTimeoutFn(() => {
+      this.timer = undefined;
+      try { this.process(); }
+      catch (error) { this.failRuntime(error); }
+    }, delay);
   }
 }
 
@@ -265,7 +305,14 @@ export class StressRunner {
             remaining -= 1;
           }
           if (Date.now() >= deadline) break;
-          if (limiter && !await limiter.acquire(signal)) break;
+          if (limiter) {
+            try {
+              if (!await limiter.acquire(signal)) break;
+            } catch (error) {
+              stopPrimary(error);
+              break;
+            }
+          }
           if (signal?.aborted || stopped) break;
           try {
             samples.push(sampleFromResult(await session.execute(signal)));
