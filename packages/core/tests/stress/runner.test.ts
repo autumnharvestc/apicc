@@ -166,7 +166,8 @@ describe("StressRunner", () => {
       return {
         execute: async () => {
           calls += 1;
-          if (index === 1) throw new Error("worker failed");
+          if (index === 1) return { request: { method: "GET" as const, url: "worker-failed", headers: {}, query: [] }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+            outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 1, assertions: [], error: "worker failed", failureKind: "transport" as const }, failureKind: "transport" as const };
           const request = { method: "GET" as const, url: `worker-${index}-${calls}`, headers: {}, query: [] };
           return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
             outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] }, };
@@ -214,5 +215,22 @@ describe("StressRunner", () => {
     await expect(runner.run({ concurrency: 2, maxIterations: 100, durationMs: 50 })).rejects.toThrow("close failed");
     expect(calls).toBeLessThan(100);
     expect(closed).toBe(2);
+  });
+
+  it("falsy factory rejection 也会 stop 并以原值 reject", async () => {
+    const runner = new StressRunner({ createWorker: (workerId) => workerId === 1
+      ? Promise.reject(undefined)
+      : { execute: async () => { await new Promise((resolve) => setTimeout(resolve, 5)); throw new Error("should stop"); }, close: async () => {} } });
+    await expect(runner.run({ concurrency: 2, maxIterations: 10 })).rejects.toBeUndefined();
+  });
+
+  it("worker 主体错误优先于 close 错误，且所有已建 session 仍 close", async () => {
+    let closed = 0;
+    const runner = new StressRunner({ createWorker: () => ({
+      execute: async () => { throw new Error("body failed"); },
+      close: async () => { closed += 1; throw new Error("close failed"); },
+    }) });
+    await expect(runner.run({ concurrency: 1, maxIterations: 1 })).rejects.toThrow("body failed");
+    expect(closed).toBe(1);
   });
 });

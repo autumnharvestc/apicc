@@ -15,10 +15,6 @@ export interface StressRunOptions {
   signal?: AbortSignal;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function sampleFromResult(result: CaseExecutionResult): StressSample {
   const status = result.response?.status ?? 0;
   const error = result.outcome.error;
@@ -34,11 +30,6 @@ function sampleFromResult(result: CaseExecutionResult): StressSample {
     failureKind,
     outcome: result.outcome,
   };
-}
-
-function sampleFromError(error: unknown): StressSample {
-  const message = errorMessage(error);
-  return { timeMs: 0, requestTimeMs: 0, scriptTimeMs: 0, iterationTimeMs: 0, status: 0, ok: false, error: message, failureKind: "transport" };
 }
 
 /** Runs a bounded pool of virtual-user sessions with deterministic cleanup. */
@@ -58,16 +49,19 @@ export class StressRunner {
     const deadline = durationMs === undefined ? Number.POSITIVE_INFINITY : startedAt + durationMs;
     let remaining = maxIterations;
     const samples: StressSample[] = [];
+    let stopped = false;
     let fatalError: unknown;
-    const stopWith = (error: unknown): void => { fatalError ??= error; };
+    const stopWith = (error: unknown): void => {
+      if (!stopped) { stopped = true; fatalError = error; }
+    };
 
     const worker = async (workerId: number): Promise<void> => {
       let session: StressWorkerSession | undefined;
       try {
-        if (fatalError) return;
+        if (stopped) return;
         session = await this.opts.createWorker(workerId);
         for (;;) {
-          if (signal?.aborted || fatalError) break;
+          if (signal?.aborted || stopped) break;
           if (remaining !== undefined) {
             if (remaining <= 0) break;
             remaining -= 1;
@@ -76,7 +70,8 @@ export class StressRunner {
           try {
             samples.push(sampleFromResult(await session.execute(signal)));
           } catch (error) {
-            samples.push(sampleFromError(error));
+            stopWith(error);
+            break;
           }
         }
       } finally {
@@ -91,7 +86,7 @@ export class StressRunner {
       try { await worker(workerId); }
       catch (error) { stopWith(error); }
     }));
-    if (fatalError !== undefined) throw fatalError;
+    if (stopped) throw fatalError;
     return computeReport(samples, { concurrency, startedAt, finishedAt: Date.now() });
   }
 }

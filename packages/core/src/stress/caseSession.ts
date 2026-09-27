@@ -31,16 +31,42 @@ export interface StressCaseSessionDeps extends Omit<CaseExecutionDeps, "beforeSe
 }
 
 function findContainerChain(collection: Collection, api: ApiDefinition): StressCaseContainer[] {
-  const visit = (folders: Folder[], path: StressCaseContainer[]): StressCaseContainer[] | undefined => {
+  if (collection.apis.some((candidate) => candidate === api)) return [collection];
+  const matches: StressCaseContainer[][] = [];
+  const visit = (folders: Folder[], path: StressCaseContainer[]): void => {
     for (const folder of folders) {
       const next = [...path, folder];
-      if (folder.apis.some((candidate) => candidate === api || candidate.id === api.id)) return next;
-      const nested = visit(folder.folders ?? [], next);
-      if (nested) return nested;
+      if (folder.apis.some((candidate) => candidate === api)) matches.push(next);
+      visit(folder.folders ?? [], next);
     }
-    return undefined;
   };
-  return [collection, ...(visit(collection.folders ?? [], []) ?? [])];
+  visit(collection.folders ?? [], []);
+  if (matches.length === 0) throw new Error(`配置错误: 未找到目标接口 ${api.id} 的容器路径`);
+  if (matches.length > 1) throw new Error(`配置错误: 目标接口 ${api.id} 匹配多个容器路径`);
+  return [collection, ...matches[0]!];
+}
+
+function validateContainerChain(target: StressCaseTarget, supplied: StressCaseContainer[]): StressCaseContainer[] {
+  if (supplied.length === 0 || supplied[0] !== target.collection) throw new Error("配置错误: containerChain 必须以目标 collection 开始");
+  const seen = new Set<StressCaseContainer>();
+  const seenIds = new Set<string>();
+  for (const container of supplied) {
+    if (seen.has(container) || seenIds.has(container.id)) throw new Error("配置错误: containerChain 存在重复容器");
+    seen.add(container);
+    seenIds.add(container.id);
+  }
+  for (let i = 1; i < supplied.length; i += 1) {
+    const parent = supplied[i - 1]!;
+    const child = supplied[i]!;
+    if (!("folders" in parent) || !(parent.folders ?? []).some((folder) => folder === child)) {
+      throw new Error("配置错误: containerChain 的父子容器不连续");
+    }
+  }
+  const leaf = supplied[supplied.length - 1]!;
+  if (!("apis" in leaf) || !leaf.apis.some((candidate) => candidate === target.api)) {
+    throw new Error(`配置错误: containerChain 叶节点不包含目标接口 ${target.api.id}`);
+  }
+  return supplied;
 }
 
 function operationContext(
@@ -67,14 +93,21 @@ function runContainerOperations(
   resolver: VariableResolver, envVars: Record<string, string>, persisted: Map<string, string>, persistedSnapshot: Record<string, string>,
 ): void {
   const ordered = phase === "pre" ? containers : [...containers].reverse();
+  let firstError: unknown;
   for (const container of ordered) {
-    const scripts = container === containers[0] && "scripts" in container ? container.scripts : undefined;
-    if (phase === "pre" && scripts?.pre) deps.scriptEngine.run(scripts.pre, operationContext(resolver, envVars, persisted, persistedSnapshot));
-    for (const operation of phase === "pre" ? container.preOperations ?? [] : container.postOperations ?? []) {
-      if (operation.type === "script") deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot));
+    try {
+      const scripts = container === containers[0] && "scripts" in container ? container.scripts : undefined;
+      if (phase === "pre" && scripts?.pre) deps.scriptEngine.run(scripts.pre, operationContext(resolver, envVars, persisted, persistedSnapshot));
+      for (const operation of phase === "pre" ? container.preOperations ?? [] : container.postOperations ?? []) {
+        if (operation.type === "script") deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot));
+      }
+      if (phase === "post" && scripts?.post) deps.scriptEngine.run(scripts.post, operationContext(resolver, envVars, persisted, persistedSnapshot));
+    } catch (error) {
+      if (phase === "pre") throw error;
+      firstError ??= error;
     }
-    if (phase === "post" && scripts?.post) deps.scriptEngine.run(scripts.post, operationContext(resolver, envVars, persisted, persistedSnapshot));
   }
+  if (firstError !== undefined) throw firstError;
 }
 
 function parseDataRows(sourcePath: string, format: "csv" | "json"): Array<Record<string, string> | undefined> {
@@ -115,7 +148,7 @@ export function createStressCaseSession(
   const envVars = sessionEnv(target);
   const suppliedContainers = target.containerChain;
   const containers = suppliedContainers
-    ? (suppliedContainers[0]?.id === target.collection.id ? suppliedContainers : [target.collection, ...suppliedContainers])
+    ? validateContainerChain(target, suppliedContainers)
     : findContainerChain(target.collection, target.api);
   const folderLayers = containers.slice(1).reverse().map((container) => container.variables ?? {});
   const resolver: VariableResolver = createVariableResolver({
@@ -138,7 +171,7 @@ export function createStressCaseSession(
     if (client && client.canHandle(request)) return client;
     // HTTP is always session-owned. A registry fallback is reserved for WS,
     // SOAP, and explicitly plugin-defined protocol requests.
-    if ((request.protocol ?? "http") === "http" || /^https?:\/\//i.test(request.url)) return undefined;
+    if (request.protocol === undefined || request.protocol === "http") return undefined;
     return deps.resolveProtocol(request);
   };
 
