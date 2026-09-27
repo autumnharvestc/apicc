@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { StressRunner } from "../../src/stress/runner.js";
 import { httpClient } from "../../src/http/client.js";
+import type { CaseExecutionResult } from "../../src/runner/caseExecutor.js";
 import type { ExecutableRequest, ExecutionResponse, ProtocolClient } from "../../src/plugin/types.js";
 
 let server: Server;
@@ -18,7 +19,32 @@ beforeAll(async () => {
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
 const makeRunner = (buildRequest: () => ExecutableRequest) =>
-  new StressRunner({ client: httpClient, buildRequest });
+  new StressRunner({ createWorker: () => {
+    let closed = false;
+    return {
+      async execute(signal?: AbortSignal): Promise<CaseExecutionResult> {
+        const request = buildRequest();
+        const started = performance.now();
+        try {
+          const response = await httpClient.execute(request, { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000, signal });
+          const passed = (response.status >= 200 && response.status < 300) || response.status === 101;
+          return {
+            request, response, requestTimeMs: performance.now() - started, scriptTimeMs: 0,
+            iterationTimeMs: performance.now() - started,
+            outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed, durationMs: performance.now() - started, assertions: [], failureKind: passed ? undefined : "http" },
+            failureKind: passed ? undefined : "http",
+          };
+        } catch (error) {
+          return {
+            request, requestTimeMs: performance.now() - started, scriptTimeMs: 0, iterationTimeMs: performance.now() - started,
+            outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: performance.now() - started, assertions: [], error: error instanceof Error ? error.message : String(error), failureKind: "transport" },
+            failureKind: "transport",
+          };
+        }
+      },
+      async close() { if (!closed) closed = true; },
+    };
+  } });
 
 const fakeClient = (
   respond: (req: ExecutableRequest) => ExecutionResponse | Promise<ExecutionResponse>,
@@ -67,8 +93,14 @@ describe("StressRunner", () => {
   it("非 2xx：ok=false 且不写 error（HTTP_ 分类由聚合派生，statusDist 保留状态）", async () => {
     const client = fakeClient(() => ({ status: 500, headers: {}, bodyText: "", timeMs: 1 }));
     const runner = new StressRunner({
-      client,
-      buildRequest: () => ({ method: "GET", url: "http://fake/", headers: {}, query: [] }),
+      createWorker: () => ({
+        execute: async () => {
+          const request = { method: "GET" as const, url: "http://fake/", headers: {}, query: [] };
+          const res = await client.execute(request, { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 });
+          return { request, response: res, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+            outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 1, assertions: [], failureKind: "http" as const }, failureKind: "http" as const };
+        }, close: async () => {},
+      }),
     });
     const report = await runner.run({ concurrency: 2, maxIterations: 2 });
     expect(report.ok).toBe(0);
@@ -80,6 +112,7 @@ describe("StressRunner", () => {
   it("signal aborted 后停止发起新采样（MVP 不中断进行中请求）", async () => {
     const controller = new AbortController();
     let calls = 0;
+    let closed = 0;
     const client = fakeClient(async () => {
       calls += 1;
       await new Promise((r) => setTimeout(r, 20));
@@ -87,12 +120,20 @@ describe("StressRunner", () => {
       return { status: 200, headers: {}, bodyText: "", timeMs: 1 };
     });
     const runner = new StressRunner({
-      client,
-      buildRequest: () => ({ method: "GET", url: "http://fake/", headers: {}, query: [] }),
+      createWorker: () => ({ execute: async (signal) => {
+        expect(signal).toBe(controller.signal);
+        calls += 1;
+        await new Promise((r) => setTimeout(r, 20));
+        controller.abort();
+        const request = { method: "GET" as const, url: "http://fake/", headers: {}, query: [] };
+        return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+          outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] }, };
+      }, close: async () => { closed += 1; } }),
     });
     const report = await runner.run({ concurrency: 1, maxIterations: 100, signal: controller.signal });
     expect(calls).toBe(1);
     expect(report.totalRequests).toBe(1);
+    expect(closed).toBe(1);
   });
 
   it("buildRequest 工厂每次采样调用（动态变量每请求变化）", async () => {
@@ -103,11 +144,38 @@ describe("StressRunner", () => {
     });
     let i = 0;
     const runner = new StressRunner({
-      client,
-      buildRequest: () => ({ method: "GET", url: `req-${++i}`, headers: {}, query: [] }),
+      createWorker: () => ({ execute: async () => {
+        const request = { method: "GET" as const, url: `req-${++i}`, headers: {}, query: [] };
+        seen.push(request.url);
+        return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+          outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] }, };
+      }, close: async () => {} }),
     });
     await runner.run({ concurrency: 3, maxIterations: 6 });
     expect(seen).toHaveLength(6);
     expect(new Set(seen).size).toBe(6);
+  });
+
+  it("每个 worker 只创建一次 session，并在成功、异常、中止路径各关闭一次", async () => {
+    const closeCounts: number[] = [];
+    let created = 0;
+    const runner = new StressRunner({ createWorker: () => {
+      const index = created++;
+      closeCounts[index] = 0;
+      let calls = 0;
+      return {
+        execute: async () => {
+          calls += 1;
+          if (index === 1) throw new Error("worker failed");
+          const request = { method: "GET" as const, url: `worker-${index}-${calls}`, headers: {}, query: [] };
+          return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+            outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] }, };
+        }, close: async () => { closeCounts[index] += 1; },
+      };
+    } });
+    const report = await runner.run({ concurrency: 3, maxIterations: 3 });
+    expect(report.totalRequests).toBe(3);
+    expect(created).toBe(3);
+    expect(closeCounts).toEqual([1, 1, 1]);
   });
 });

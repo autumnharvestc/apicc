@@ -36,6 +36,10 @@ export { computeReport } from "./stress/aggregate.js";
 export { buildStressRequest } from "./stress/build.js";
 export { StressRunner, type StressRunnerOptions, type StressRunOptions } from "./stress/runner.js";
 export {
+  createStressCaseSession,
+  type StressCaseTarget, StressCaseSessionDeps, StressWorkerSession,
+} from "./stress/caseSession.js";
+export {
   StressWorkerSpecSchema, ShardResultSchema, ShardFailureSchema, ShardOutcomeSchema,
   planShards, mergeStressReport, DistributedStressCoordinator,
   type StressWorkerSpec, type StressWorkerSpecBase, type ShardResult, type ShardFailure,

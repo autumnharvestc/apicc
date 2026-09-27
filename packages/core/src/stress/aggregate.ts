@@ -28,12 +28,16 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
   for (const s of samples) {
     sum += s.timeMs;
     if (s.ok) ok += 1;
+    if (s.status !== 0 && (!s.error || s.failureKind === "http")) bump(statusDist, String(s.status));
     if (s.error) {
       // 网络错误：取 error 首个冒号前 token（如 ECONNREFUSED），空则记 unknown。
-      const token = s.error.split(":", 1)[0].trim() || "unknown";
-      bump(errorKinds, token);
+      if (s.failureKind === "http" && s.status !== 0) bump(errorKinds, `HTTP_${s.status}`);
+      else if (s.failureKind) bump(errorKinds, s.failureKind);
+      else {
+        const token = s.error.split(":", 1)[0].trim() || "unknown";
+        bump(errorKinds, token);
+      }
     } else {
-      bump(statusDist, String(s.status));
       if (s.status !== 101 && (s.status < 200 || s.status >= 300)) bump(errorKinds, `HTTP_${s.status}`); // 101=WS 握手成功（M5 D3），非错误
     }
   }

@@ -6,6 +6,12 @@ export interface StressSample {
   status: number;
   ok: boolean;
   error?: string;
+  /** Execution-kernel timings. `timeMs` remains request latency for compatibility. */
+  requestTimeMs?: number;
+  scriptTimeMs?: number;
+  iterationTimeMs?: number;
+  failureKind?: string;
+  outcome?: { passed: boolean; error?: string; failureKind?: string };
 }
 
 /** distributed 段：多 shard 汇聚信息（M2-D）。shardErrors 无失败时省略。 */
