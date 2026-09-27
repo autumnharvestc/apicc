@@ -31,8 +31,8 @@ export interface StressCaseSessionDeps extends Omit<CaseExecutionDeps, "beforeSe
 }
 
 function findContainerChain(collection: Collection, api: ApiDefinition): StressCaseContainer[] {
-  if (collection.apis.some((candidate) => candidate === api)) return [collection];
   const matches: StressCaseContainer[][] = [];
+  if (collection.apis.some((candidate) => candidate === api)) matches.push([collection]);
   const visit = (folders: Folder[], path: StressCaseContainer[]): void => {
     for (const folder of folders) {
       const next = [...path, folder];
@@ -49,11 +49,9 @@ function findContainerChain(collection: Collection, api: ApiDefinition): StressC
 function validateContainerChain(target: StressCaseTarget, supplied: StressCaseContainer[]): StressCaseContainer[] {
   if (supplied.length === 0 || supplied[0] !== target.collection) throw new Error("配置错误: containerChain 必须以目标 collection 开始");
   const seen = new Set<StressCaseContainer>();
-  const seenIds = new Set<string>();
   for (const container of supplied) {
-    if (seen.has(container) || seenIds.has(container.id)) throw new Error("配置错误: containerChain 存在重复容器");
+    if (seen.has(container)) throw new Error("配置错误: containerChain 存在重复容器");
     seen.add(container);
-    seenIds.add(container.id);
   }
   for (let i = 1; i < supplied.length; i += 1) {
     const parent = supplied[i - 1]!;
@@ -94,20 +92,21 @@ function runContainerOperations(
 ): void {
   const ordered = phase === "pre" ? containers : [...containers].reverse();
   let firstError: unknown;
+  let hasError = false;
+  const runHook = (hook: () => void): void => {
+    if (phase === "pre") { hook(); return; }
+    try { hook(); }
+    catch (error) { if (!hasError) { hasError = true; firstError = error; } }
+  };
   for (const container of ordered) {
-    try {
-      const scripts = container === containers[0] && "scripts" in container ? container.scripts : undefined;
-      if (phase === "pre" && scripts?.pre) deps.scriptEngine.run(scripts.pre, operationContext(resolver, envVars, persisted, persistedSnapshot));
-      for (const operation of phase === "pre" ? container.preOperations ?? [] : container.postOperations ?? []) {
-        if (operation.type === "script") deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot));
-      }
-      if (phase === "post" && scripts?.post) deps.scriptEngine.run(scripts.post, operationContext(resolver, envVars, persisted, persistedSnapshot));
-    } catch (error) {
-      if (phase === "pre") throw error;
-      firstError ??= error;
+    const scripts = container === containers[0] && "scripts" in container ? container.scripts : undefined;
+    if (phase === "pre" && scripts?.pre) runHook(() => deps.scriptEngine.run(scripts.pre!, operationContext(resolver, envVars, persisted, persistedSnapshot)));
+    for (const operation of phase === "pre" ? container.preOperations ?? [] : container.postOperations ?? []) {
+      if (operation.type === "script") runHook(() => deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot)));
     }
+    if (phase === "post" && scripts?.post) runHook(() => deps.scriptEngine.run(scripts.post!, operationContext(resolver, envVars, persisted, persistedSnapshot)));
   }
-  if (firstError !== undefined) throw firstError;
+  if (hasError) throw firstError;
 }
 
 function parseDataRows(sourcePath: string, format: "csv" | "json"): Array<Record<string, string> | undefined> {
@@ -168,11 +167,11 @@ export function createStressCaseSession(
   let closePromise: Promise<void> | undefined;
 
   const resolveProtocol = (request: ExecutableRequest) => {
-    if (client && client.canHandle(request)) return client;
     // HTTP is always session-owned. A registry fallback is reserved for WS,
     // SOAP, and explicitly plugin-defined protocol requests.
-    if (request.protocol === undefined || request.protocol === "http") return undefined;
-    return deps.resolveProtocol(request);
+    if (request.protocol !== undefined && request.protocol !== "http") return deps.resolveProtocol(request);
+    if (client && client.canHandle(request)) return client;
+    return undefined;
   };
 
   return {
@@ -202,13 +201,14 @@ export function createStressCaseSession(
       if (closePromise) return closePromise;
       closePromise = (async () => {
         let firstError: unknown;
+        let hasError = false;
         try { runContainerOperations(containers, "post", deps, resolver, envVars, persisted, persistedSnapshot); }
-        catch (error) { firstError = error; }
+        catch (error) { hasError = true; firstError = error; }
         try {
           client ??= await clientPromise;
           await client.close();
-        } catch (error) { firstError ??= error; }
-        if (firstError !== undefined) throw firstError;
+        } catch (error) { if (!hasError) firstError = error; hasError = true; }
+        if (hasError) throw firstError;
       })();
       return closePromise;
     },

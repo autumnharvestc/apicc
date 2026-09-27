@@ -137,10 +137,12 @@ describe("createStressCaseSession", () => {
   });
 
   it("HTTP session client 不处理 WS，协议 registry fallback 仍可执行", async () => {
-    const managed: ManagedProtocolClient = { name: "http", canHandle: (request) => request.protocol === "http", execute: async () => response, close: async () => {} };
-    const plugin: ManagedProtocolClient = { name: "ws-plugin", canHandle: () => true, execute: async () => response, close: async () => {} };
+    let managedCalls = 0;
+    let registryCalls = 0;
+    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute: async () => { managedCalls += 1; return { ...response, status: 201 }; }, close: async () => {} };
+    const plugin: ManagedProtocolClient = { name: "ws-plugin", canHandle: () => true, execute: async () => { registryCalls += 1; return response; }, close: async () => {} };
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
-    const wsApi = { ...api, protocol: "websocket" as const, message: "hello" };
+    const wsApi = { ...api, url: "https://plugin.example/orders", protocol: "websocket" as const, message: "hello" };
     const session = createStressCaseSession({ ...target(testCase), api: wsApi, collection: { ...collection, apis: [wsApi] } }, {
       createManagedClient: () => managed,
       resolveProtocol: () => plugin,
@@ -150,12 +152,16 @@ describe("createStressCaseSession", () => {
       timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
     }, { workerId: 0 });
     expect((await session.execute()).outcome.passed).toBe(true);
+    expect(managedCalls).toBe(0);
+    expect(registryCalls).toBe(1);
     await session.close();
   });
 
   it("显式 SOAP/HTTPS 委托 registry，不误用 session HTTP client", async () => {
-    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute: async () => response, close: async () => {} };
-    const soap: ManagedProtocolClient = { name: "soap", canHandle: () => true, execute: async () => response, close: async () => {} };
+    let managedCalls = 0;
+    let registryCalls = 0;
+    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute: async () => { managedCalls += 1; return { ...response, status: 201 }; }, close: async () => {} };
+    const soap: ManagedProtocolClient = { name: "soap", canHandle: () => true, execute: async () => { registryCalls += 1; return response; }, close: async () => {} };
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
     const soapApi = { ...api, protocol: "soap" as const, method: "POST" as const, url: "https://soap.example", envelope: "<Envelope/>" };
     const session = createStressCaseSession({ ...target(testCase), api: soapApi, collection: { ...collection, apis: [soapApi] } }, {
@@ -167,6 +173,8 @@ describe("createStressCaseSession", () => {
       timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
     }, { workerId: 0 });
     expect((await session.execute()).outcome.passed).toBe(true);
+    expect(managedCalls).toBe(0);
+    expect(registryCalls).toBe(1);
     await session.close();
   });
 
@@ -233,6 +241,10 @@ describe("createStressCaseSession", () => {
     expect(() => createStressCaseSession({ ...target(testCase), api: duplicateA, collection: { ...collection, apis: [], folders: [
       { id: "a", name: "a", apis: [duplicateA], folders: [] }, { id: "b", name: "b", apis: [duplicateA], folders: [] },
     ] } }, base, { workerId: 3 })).toThrow(/多个/);
+    const directAndNested = { ...api, id: "direct-and-nested" };
+    expect(() => createStressCaseSession({ ...target(testCase), api: directAndNested, collection: { ...collection, apis: [directAndNested], folders: [
+      { id: "nested-match", name: "nested-match", apis: [directAndNested], folders: [] },
+    ] } }, base, { workerId: 4 })).toThrow(/多个/);
   });
 
   it("显式 containerChain 必须以 collection 开始且父子连续、叶节点包含 API", async () => {
@@ -264,6 +276,31 @@ describe("createStressCaseSession", () => {
     expect(events).toEqual(["inner", "outer", "client"]);
   });
 
+  it("同一容器每个 post operation 与 scripts.post 都尝试，falsy 首错仍保留", async () => {
+    const events: string[] = [];
+    const inner: Folder = { id: "inner-falsy", name: "inner-falsy", apis: [api], folders: [],
+      postOperations: [
+        { id: "first", type: "script", content: "first" },
+        { id: "second", type: "script", content: "second" },
+      ] };
+    const collectionWithHooks: Collection = {
+      ...collection, apis: [], folders: [inner], scripts: { post: "collection-script" },
+      postOperations: [{ id: "collection-post", type: "script", content: "collection-post" }],
+    };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const client: ManagedProtocolClient = { name: "http", canHandle: () => true, execute: async () => response, close: async () => { events.push("client"); throw "client-error"; } };
+    const session = createStressCaseSession({ ...target(testCase), collection: collectionWithHooks }, {
+      createManagedClient: () => client,
+      resolveProtocol: () => client,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run(code) { events.push(code); if (code === "first") throw undefined; } },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0 });
+    await expect(session.close()).rejects.toBeUndefined();
+    expect(events).toEqual(["first", "second", "collection-post", "collection-script", "client"]);
+  });
+
   it("每个 session 通过 factory 获取不同 managed client，HTTP 不回退共享 client", async () => {
     const clients: ManagedProtocolClient[] = [];
     const closeCounts: number[] = [];
@@ -284,5 +321,16 @@ describe("createStressCaseSession", () => {
     expect(clients[0]).not.toBe(clients[1]);
     await Promise.all([sessionA.close(), sessionA.close(), sessionB.close(), sessionB.close()]);
     expect(closeCounts).toEqual([1, 1]);
+  });
+
+  it("containerChain 允许不同容器复用同一 ID，但不允许重复同一对象", async () => {
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const sameIdInner: Folder = { id: "same-id", name: "inner", apis: [api], folders: [] };
+    const sameIdOuter: Folder = { id: "same-id", name: "outer", apis: [], folders: [sameIdInner] };
+    const linkedCollection: Collection = { ...collection, apis: [], folders: [sameIdOuter] };
+    const base = deps([], async () => {}, vi.fn());
+    const session = createStressCaseSession({ ...target(testCase), collection: linkedCollection, containerChain: [linkedCollection, sameIdOuter, sameIdInner] }, base, { workerId: 0 });
+    await session.close();
+    expect(() => createStressCaseSession({ ...target(testCase), collection: linkedCollection, containerChain: [linkedCollection, sameIdOuter, sameIdOuter] }, base, { workerId: 1 })).toThrow(/重复/);
   });
 });

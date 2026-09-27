@@ -50,9 +50,17 @@ export class StressRunner {
     let remaining = maxIterations;
     const samples: StressSample[] = [];
     let stopped = false;
-    let fatalError: unknown;
-    const stopWith = (error: unknown): void => {
-      if (!stopped) { stopped = true; fatalError = error; }
+    let hasPrimaryError = false;
+    let primaryError: unknown;
+    let hasCleanupError = false;
+    let cleanupError: unknown;
+    const stopPrimary = (error: unknown): void => {
+      stopped = true;
+      if (!hasPrimaryError) { hasPrimaryError = true; primaryError = error; }
+    };
+    const stopCleanup = (error: unknown): void => {
+      stopped = true;
+      if (!hasCleanupError) { hasCleanupError = true; cleanupError = error; }
     };
 
     const worker = async (workerId: number): Promise<void> => {
@@ -70,23 +78,23 @@ export class StressRunner {
           try {
             samples.push(sampleFromResult(await session.execute(signal)));
           } catch (error) {
-            stopWith(error);
+            stopPrimary(error);
             break;
           }
         }
+      } catch (error) {
+        stopPrimary(error);
       } finally {
         if (session) {
           try { await session.close(); }
-          catch (error) { stopWith(error); }
+          catch (error) { stopCleanup(error); }
         }
       }
     };
 
-    await Promise.all(Array.from({ length: concurrency }, async (_, workerId) => {
-      try { await worker(workerId); }
-      catch (error) { stopWith(error); }
-    }));
-    if (stopped) throw fatalError;
+    await Promise.all(Array.from({ length: concurrency }, (_, workerId) => worker(workerId)));
+    if (hasPrimaryError) throw primaryError;
+    if (hasCleanupError) throw cleanupError;
     return computeReport(samples, { concurrency, startedAt, finishedAt: Date.now() });
   }
 }

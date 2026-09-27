@@ -233,4 +233,22 @@ describe("StressRunner", () => {
     await expect(runner.run({ concurrency: 1, maxIterations: 1 })).rejects.toThrow("body failed");
     expect(closed).toBe(1);
   });
+
+  it("跨 worker cleanup 先失败也不能覆盖稍后到达的主体错误", async () => {
+    const events: string[] = [];
+    const runner = new StressRunner({ createWorker: (workerId) => ({
+      execute: async () => {
+        if (workerId === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          return { request: { method: "GET" as const, url: "a", headers: {}, query: [] }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+            outcome: { apiId: "a", apiName: "a", caseId: "a", caseName: "a", passed: true, durationMs: 1, assertions: [] } };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        throw new Error("body later");
+      },
+      close: async () => { events.push(`close-${workerId}`); if (workerId === 0) throw new Error("cleanup first"); },
+    }) });
+    await expect(runner.run({ concurrency: 2, maxIterations: 2 })).rejects.toThrow("body later");
+    expect(events).toEqual(["close-0", "close-1"]);
+  });
 });
