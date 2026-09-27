@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { CaseFailureKind } from "../runner/caseExecutor.js";
+import type { CaseOutcome } from "../report/types.js";
 
 /** 单次压测请求的采样结果（由并发池产生，aggregate 消费）。 */
 export interface StressSample {
@@ -10,8 +12,8 @@ export interface StressSample {
   requestTimeMs?: number;
   scriptTimeMs?: number;
   iterationTimeMs?: number;
-  failureKind?: string;
-  outcome?: { passed: boolean; error?: string; failureKind?: string };
+  failureKind?: CaseFailureKind;
+  outcome?: CaseOutcome;
 }
 
 /** distributed 段：多 shard 汇聚信息（M2-D）。shardErrors 无失败时省略。 */

@@ -2,15 +2,10 @@ import type { CaseExecutionResult } from "../runner/caseExecutor.js";
 import { computeReport } from "./aggregate.js";
 import type { StressReport, StressSample } from "./model.js";
 import type { StressWorkerSession } from "./caseSession.js";
-import type { ExecutableRequest, ProtocolClient } from "../plugin/types.js";
 
 export interface StressRunnerOptions {
   /** Creates one isolated virtual-user session for each concurrent worker. */
-  createWorker?: (workerId: number) => Promise<StressWorkerSession> | StressWorkerSession;
-  /** @deprecated Transitional adapter for callers not yet migrated to case sessions. */
-  client?: ProtocolClient;
-  /** @deprecated Transitional adapter for callers not yet migrated to case sessions. */
-  buildRequest?: () => ExecutableRequest;
+  createWorker: (workerId: number) => Promise<StressWorkerSession> | StressWorkerSession;
 }
 export interface StressRunOptions {
   concurrency: number;
@@ -18,34 +13,6 @@ export interface StressRunOptions {
   durationMs?: number;
   /** Stops starting new iterations; the same signal is forwarded to the session. */
   signal?: AbortSignal;
-}
-
-const EXECUTE_OPTS = { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 };
-
-function legacySession(client: ProtocolClient, buildRequest: () => ExecutableRequest): StressWorkerSession {
-  return {
-    async execute(signal) {
-      const request = buildRequest();
-      const started = performance.now();
-      try {
-        const response = await client.execute(request, { ...EXECUTE_OPTS, signal });
-        const passed = (response.status >= 200 && response.status < 300) || response.status === 101;
-        return {
-          request, response, requestTimeMs: performance.now() - started, scriptTimeMs: 0,
-          iterationTimeMs: performance.now() - started,
-          outcome: { apiId: "", apiName: "", caseId: "", caseName: "", passed, durationMs: performance.now() - started, assertions: [], failureKind: passed ? undefined : "http" },
-          failureKind: passed ? undefined : "http",
-        };
-      } catch (error) {
-        return {
-          request, requestTimeMs: performance.now() - started, scriptTimeMs: 0, iterationTimeMs: performance.now() - started,
-          outcome: { apiId: "", apiName: "", caseId: "", caseName: "", passed: false, durationMs: performance.now() - started, assertions: [], error: errorMessage(error), failureKind: "transport" },
-          failureKind: "transport",
-        };
-      }
-    },
-    async close() {},
-  };
 }
 
 function errorMessage(error: unknown): string {
@@ -65,7 +32,7 @@ function sampleFromResult(result: CaseExecutionResult): StressSample {
     ok: result.outcome.passed,
     error,
     failureKind,
-    outcome: { passed: result.outcome.passed, error, failureKind },
+    outcome: result.outcome,
   };
 }
 
@@ -76,13 +43,7 @@ function sampleFromError(error: unknown): StressSample {
 
 /** Runs a bounded pool of virtual-user sessions with deterministic cleanup. */
 export class StressRunner {
-  private readonly createWorker: (workerId: number) => Promise<StressWorkerSession> | StressWorkerSession;
-
-  constructor(private readonly opts: StressRunnerOptions) {
-    if (opts.createWorker) this.createWorker = opts.createWorker;
-    else if (opts.client && opts.buildRequest) this.createWorker = () => legacySession(opts.client!, opts.buildRequest!);
-    else throw new Error("StressRunner 需要 createWorker session 工厂");
-  }
+  constructor(private readonly opts: StressRunnerOptions) {}
 
   async run(runOpts: StressRunOptions): Promise<StressReport> {
     const { concurrency, maxIterations, durationMs, signal } = runOpts;
@@ -97,12 +58,16 @@ export class StressRunner {
     const deadline = durationMs === undefined ? Number.POSITIVE_INFINITY : startedAt + durationMs;
     let remaining = maxIterations;
     const samples: StressSample[] = [];
+    let fatalError: unknown;
+    const stopWith = (error: unknown): void => { fatalError ??= error; };
 
     const worker = async (workerId: number): Promise<void> => {
-      const session = await this.createWorker(workerId);
+      let session: StressWorkerSession | undefined;
       try {
+        if (fatalError) return;
+        session = await this.opts.createWorker(workerId);
         for (;;) {
-          if (signal?.aborted) break;
+          if (signal?.aborted || fatalError) break;
           if (remaining !== undefined) {
             if (remaining <= 0) break;
             remaining -= 1;
@@ -115,11 +80,18 @@ export class StressRunner {
           }
         }
       } finally {
-        await session.close();
+        if (session) {
+          try { await session.close(); }
+          catch (error) { stopWith(error); }
+        }
       }
     };
 
-    await Promise.all(Array.from({ length: concurrency }, (_, workerId) => worker(workerId)));
+    await Promise.all(Array.from({ length: concurrency }, async (_, workerId) => {
+      try { await worker(workerId); }
+      catch (error) { stopWith(error); }
+    }));
+    if (fatalError !== undefined) throw fatalError;
     return computeReport(samples, { concurrency, startedAt, finishedAt: Date.now() });
   }
 }

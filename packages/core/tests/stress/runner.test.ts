@@ -178,4 +178,41 @@ describe("StressRunner", () => {
     expect(created).toBe(3);
     expect(closeCounts).toEqual([1, 1, 1]);
   });
+
+  it("factory reject 会停止施压，等待已创建 worker close 后再抛错", async () => {
+    let calls = 0;
+    let closed = 0;
+    const runner = new StressRunner({ createWorker: (workerId) => {
+      if (workerId === 1) return Promise.reject(new Error("factory failed"));
+      return {
+        execute: async () => {
+          calls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          const request = { method: "GET" as const, url: "worker", headers: {}, query: [] };
+          return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+            outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] } };
+        }, close: async () => { closed += 1; },
+      };
+    } });
+    await expect(runner.run({ concurrency: 2, maxIterations: 100 })).rejects.toThrow("factory failed");
+    expect(calls).toBeLessThan(100);
+    expect(closed).toBe(1);
+  });
+
+  it("close reject 会停止其他 worker 的新迭代，并等待其他 worker close 后再抛错", async () => {
+    let calls = 0;
+    let closed = 0;
+    const runner = new StressRunner({ createWorker: (workerId) => ({
+      execute: async () => {
+        calls += 1;
+        await new Promise((resolve) => setTimeout(resolve, workerId === 0 ? 5 : 15));
+        const request = { method: "GET" as const, url: `worker-${workerId}`, headers: {}, query: [] };
+        return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+          outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] } };
+      }, close: async () => { closed += 1; if (workerId === 0) throw new Error("close failed"); },
+    }) });
+    await expect(runner.run({ concurrency: 2, maxIterations: 100, durationMs: 50 })).rejects.toThrow("close failed");
+    expect(calls).toBeLessThan(100);
+    expect(closed).toBe(2);
+  });
 });
