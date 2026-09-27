@@ -12,7 +12,6 @@ export interface StressWorkerSession {
   execute(signal?: AbortSignal): Promise<CaseExecutionResult>;
   close(): Promise<void>;
 }
-
 export interface StressCaseTarget {
   api: ApiDefinition;
   testCase: TestCase;

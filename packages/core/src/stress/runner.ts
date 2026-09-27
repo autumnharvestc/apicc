@@ -12,7 +12,6 @@ export interface StressRunnerOptions {
   /** @deprecated Transitional adapter for callers not yet migrated to case sessions. */
   buildRequest?: () => ExecutableRequest;
 }
-
 export interface StressRunOptions {
   concurrency: number;
   maxIterations?: number;
