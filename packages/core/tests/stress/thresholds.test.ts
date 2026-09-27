@@ -54,4 +54,18 @@ describe("evaluateStressThresholds", () => {
     const parsed = StressReportSchema.parse(legacy);
     expect(parsed.verdict).toBeUndefined();
   });
+
+  it("拒绝负数/小数 latency 与计数，避免报告伪造", () => {
+    const base = {
+      concurrency: 1, totalRequests: 1, ok: 1, failed: 0, durationMs: 1000, rps: 1,
+      latency: { min: 1, avg: 1, max: 1, p50: 1, p90: 1, p95: 1, p99: 1 },
+      statusDist: { "200": 1 }, errorKinds: {}, startedAt: 0, finishedAt: 1000,
+      failures: { transport: 0, http: 0, script: 0, assertion: 0, config: 0, aborted: 0 },
+      scriptLatency: { min: 0, avg: 0, max: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
+      iterationLatency: { min: 1, avg: 1, max: 1, p50: 1, p90: 1, p95: 1, p99: 1 },
+    };
+    expect(() => StressReportSchema.parse({ ...base, latency: { ...base.latency, p95: -1 } })).toThrow();
+    expect(() => StressReportSchema.parse({ ...base, statusDist: { "200": 0.5 } })).toThrow();
+    expect(() => StressReportSchema.parse({ ...base, failures: { ...base.failures, http: -1 } })).toThrow();
+  });
 });

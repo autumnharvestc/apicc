@@ -25,6 +25,8 @@ function sampleFromResult(result: CaseExecutionResult): StressSample {
     requestTimeMs: result.requestTimeMs,
     scriptTimeMs: result.scriptTimeMs,
     iterationTimeMs: result.iterationTimeMs,
+    requestStarted: result.requestStarted,
+    requestCompleted: result.requestCompleted,
     status,
     ok: result.outcome.passed,
     error,
@@ -46,9 +48,6 @@ export class StressRunner {
       throw new Error(`concurrency 必须为正整数，收到 ${concurrency}`);
     }
 
-    const startedAt = Date.now();
-    const deadline = durationMs === undefined ? Number.POSITIVE_INFINITY : startedAt + durationMs;
-    let remaining = maxIterations;
     const samples: StressSample[] = [];
     let stopped = false;
     let hasPrimaryError = false;
@@ -64,38 +63,55 @@ export class StressRunner {
       if (!hasCleanupError) { hasCleanupError = true; cleanupError = error; }
     };
 
-    const worker = async (workerId: number): Promise<void> => {
-      let session: StressWorkerSession | undefined;
+    const sessions: StressWorkerSession[] = [];
+    for (let workerId = 0; workerId < concurrency; workerId += 1) {
+      if (stopped) break;
       try {
-        if (stopped) return;
-        session = await this.opts.createWorker(workerId);
-        for (;;) {
-          if (signal?.aborted || stopped) break;
-          if (remaining !== undefined) {
-            if (remaining <= 0) break;
-            remaining -= 1;
-          }
-          if (Date.now() >= deadline) break;
-          try {
-            samples.push(sampleFromResult(await session.execute(signal)));
-          } catch (error) {
-            stopPrimary(error);
-            break;
-          }
-        }
+        sessions.push(await this.opts.createWorker(workerId));
       } catch (error) {
         stopPrimary(error);
-      } finally {
-        if (session) {
-          try { await session.close(); }
-          catch (error) { stopCleanup(error); }
+        break;
+      }
+    }
+
+    const closeSessions = async (): Promise<void> => {
+      for (const session of sessions) {
+        try { await session.close(); }
+        catch (error) { stopCleanup(error); }
+      }
+    };
+
+    if (hasPrimaryError) {
+      await closeSessions();
+      throw primaryError;
+    }
+
+    // Only the interval between all sessions being ready and all worker loops ending
+    // is the measurement window. Setup and teardown must not distort RPS.
+    const startedAt = Date.now();
+    const deadline = durationMs === undefined ? Number.POSITIVE_INFINITY : startedAt + durationMs;
+    let remaining = maxIterations;
+    const worker = async (session: StressWorkerSession): Promise<void> => {
+      while (!signal?.aborted && !stopped) {
+        if (remaining !== undefined) {
+          if (remaining <= 0) break;
+          remaining -= 1;
+        }
+        if (Date.now() >= deadline) break;
+        try {
+          samples.push(sampleFromResult(await session.execute(signal)));
+        } catch (error) {
+          stopPrimary(error);
+          break;
         }
       }
     };
 
-    await Promise.all(Array.from({ length: concurrency }, (_, workerId) => worker(workerId)));
+    await Promise.all(sessions.map((session) => worker(session)));
+    const finishedAt = Date.now();
+    await closeSessions();
     if (hasPrimaryError) throw primaryError;
     if (hasCleanupError) throw cleanupError;
-    return computeReport(samples, { concurrency, startedAt, finishedAt: Date.now(), thresholds: runOpts.thresholds });
+    return computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds });
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computeReport } from "../../src/stress/aggregate.js";
+import { evaluateStressThresholds } from "../../src/stress/thresholds.js";
 import type { StressSample } from "../../src/stress/model.js";
 
 const sample = (timeMs: number, status = 200, error?: string): StressSample =>
@@ -80,5 +81,34 @@ describe("computeReport", () => {
     expect(r.ok).toBe(0);
     expect(r.failures.assertion).toBe(1);
     expect(r.totalRequests).toBe(1);
+  });
+
+  it("未实际发包的 request latency 不进入 p95，95 个 pre-I/O 失败加 5 个请求时 p95 为请求耗时", () => {
+    const preIoFailures = Array.from({ length: 95 }, () => ({
+      requestTimeMs: 0, scriptTimeMs: 5, iterationTimeMs: 5, requestStarted: false,
+      status: 0, ok: false, failureKind: "script" as const, error: "preflight",
+    }));
+    const requests = Array.from({ length: 5 }, () => ({
+      requestTimeMs: 1_000, scriptTimeMs: 0, iterationTimeMs: 1_000, requestStarted: true, requestCompleted: true,
+      status: 200, ok: true,
+    }));
+    const r = computeReport([...preIoFailures, ...requests], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+    expect(r.latency.p95).toBe(1_000);
+    expect(r.latency.max).toBe(1_000);
+    expect(r.scriptLatency.p95).toBe(5);
+    expect(evaluateStressThresholds(r, { maxP95Ms: 500 }).violations.map((v) => v.metric)).toContain("p95");
+  });
+
+  it("RPS 只计算实际发出且非 aborted 的完成尝试", () => {
+    const samples: StressSample[] = [
+      { requestStarted: false, requestCompleted: false, requestTimeMs: 0, scriptTimeMs: 10, iterationTimeMs: 10, status: 0, ok: false, failureKind: "config" },
+      { requestStarted: true, requestCompleted: false, requestTimeMs: 100, scriptTimeMs: 0, iterationTimeMs: 100, status: 0, ok: false, failureKind: "aborted" },
+      { requestStarted: true, requestCompleted: true, requestTimeMs: 100, scriptTimeMs: 0, iterationTimeMs: 100, status: 0, ok: false, failureKind: "transport" },
+      { requestStarted: true, requestCompleted: true, requestTimeMs: 100, scriptTimeMs: 0, iterationTimeMs: 100, status: 500, ok: false, failureKind: "http" },
+      { requestStarted: true, requestCompleted: true, requestTimeMs: 100, scriptTimeMs: 0, iterationTimeMs: 100, status: 200, ok: true },
+      { requestStarted: true, requestCompleted: true, requestTimeMs: 100, scriptTimeMs: 0, iterationTimeMs: 100, status: 200, ok: false, failureKind: "assertion" },
+    ];
+    const r = computeReport(samples, { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+    expect(r.rps).toBe(4);
   });
 });

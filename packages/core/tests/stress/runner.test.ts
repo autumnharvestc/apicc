@@ -158,6 +158,30 @@ describe("StressRunner", () => {
     expect(closed).toBe(1);
   });
 
+  it("measurement window 排除慢 session setup 与 teardown", async () => {
+    const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const runner = new StressRunner({
+      createWorker: async () => {
+        await pause(50);
+        return {
+          execute: async () => {
+            await pause(10);
+            return {
+              request: { method: "GET" as const, url: "http://fake/", headers: {}, query: [] },
+              response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+              outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] },
+            };
+          },
+          close: async () => { await pause(50); },
+        };
+      },
+    });
+    const report = await runner.run({ concurrency: 1, maxIterations: 1, thresholds: { minRps: 10 } });
+    expect(report.durationMs).toBeLessThan(40);
+    expect(report.rps).toBeGreaterThanOrEqual(10);
+    expect(report.verdict?.passed).toBe(true);
+  });
+
   it("buildRequest 工厂每次采样调用（动态变量每请求变化）", async () => {
     const seen: string[] = [];
     const client = fakeClient((req) => {

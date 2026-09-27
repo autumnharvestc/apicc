@@ -44,6 +44,10 @@ export interface CaseExecutionResult {
   requestTimeMs: number;
   scriptTimeMs: number;
   iterationTimeMs: number;
+  /** True only once protocol client execution is entered. */
+  requestStarted?: boolean;
+  /** True once an entered protocol client attempt settles (success or error). */
+  requestCompleted?: boolean;
   failureKind?: CaseFailureKind;
 }
 
@@ -162,6 +166,8 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
 
   let response: ExecutionResponse | undefined;
   let requestTimeMs = 0;
+  let requestStarted = false;
+  let requestCompleted = false;
   let scriptTimeMs = 0;
   let error: string | undefined;
   let failureKind: CaseFailureKind | undefined;
@@ -217,14 +223,16 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     const client = deps.resolveProtocol(request);
     if (!client) throw Object.assign(new Error(`无可用协议客户端处理 ${request.url}`), { caseFailureKind: "config" });
     stage = "request";
-    const requestStarted = now();
+    requestStarted = true;
+    const requestStartAt = now();
     try {
       response = await client.execute(request, timeouts);
     } catch (e) {
       failureKind = isAbort(e, timeouts.signal) ? "aborted" : protocolFailureKind(e);
       throw e;
     } finally {
-      requestTimeMs = now() - requestStarted;
+      requestTimeMs = now() - requestStartAt;
+      requestCompleted = true;
     }
     await emit("afterResponse", { status: response.status, timeMs: response.timeMs, headers: response.headers, bodyText: response.bodyText });
     pm.response = responseView(response);
@@ -274,5 +282,5 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     outcome.failureKind ??= "config";
     failureKind ??= outcome.failureKind;
   }
-  return { outcome, request, response, requestTimeMs, scriptTimeMs, iterationTimeMs, failureKind };
+  return { outcome, request, response, requestTimeMs, scriptTimeMs, iterationTimeMs, requestStarted, requestCompleted, failureKind };
 }

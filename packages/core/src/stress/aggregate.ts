@@ -37,6 +37,15 @@ function effectiveRequestTime(sample: StressSample): number {
   return sample.requestTimeMs ?? sample.timeMs ?? 0;
 }
 
+function requestWasStarted(sample: StressSample): boolean {
+  // Legacy reports have no flag and represent completed request samples.
+  return sample.requestStarted ?? true;
+}
+
+function requestAttemptCompleted(sample: StressSample): boolean {
+  return requestWasStarted(sample) && (sample.requestCompleted ?? true) && sample.failureKind !== "aborted";
+}
+
 /** 聚合采样为报告：计数/RPS/时长、nearest-rank 分位、状态分布与错误分类计数；空样本全 0。 */
 export function computeReport(samples: StressSample[], opts: ComputeReportOptions): StressReport {
   const durationMs = Math.max(0, opts.finishedAt - opts.startedAt);
@@ -48,14 +57,16 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
   const requestTimes: number[] = [];
   const scriptTimes: number[] = [];
   const iterationTimes: number[] = [];
+  let completedAttempts = 0;
 
   for (const s of samples) {
     const requestTimeMs = effectiveRequestTime(s);
     const scriptTimeMs = s.scriptTimeMs ?? 0;
     const iterationTimeMs = s.iterationTimeMs ?? requestTimeMs + scriptTimeMs;
-    requestTimes.push(requestTimeMs);
+    if (requestWasStarted(s)) requestTimes.push(requestTimeMs);
     scriptTimes.push(scriptTimeMs);
     iterationTimes.push(iterationTimeMs);
+    if (requestAttemptCompleted(s)) completedAttempts += 1;
     if (s.ok) ok += 1;
     if (s.status !== 0 && (!s.error || s.failureKind === "http" || s.failureKind === "assertion")) bump(statusDist, String(s.status));
     const failureKind = s.failureKind
@@ -80,7 +91,8 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
     ok,
     failed: totalRequests - ok,
     durationMs,
-    rps: durationMs > 0 ? totalRequests / (durationMs / 1000) : 0,
+    // RPS is measured over the execution window, excluding pre-I/O failures and aborted attempts.
+    rps: durationMs > 0 ? completedAttempts / (durationMs / 1000) : 0,
     latency: {
       ...latency(requestTimes),
     },

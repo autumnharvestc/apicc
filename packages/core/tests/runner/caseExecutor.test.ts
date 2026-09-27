@@ -75,6 +75,8 @@ describe("executeCase", () => {
     expect(result.iterationTimeMs).toBeGreaterThanOrEqual(result.requestTimeMs);
     expect(state.persisted.get("nextToken")).toBe("next");
     expect(result.failureKind).toBeUndefined();
+    expect(result.requestStarted).toBe(true);
+    expect(result.requestCompleted).toBe(true);
   });
 
   it("passes final request to beforeSend and does not execute when hook rejects", async () => {
@@ -90,6 +92,8 @@ describe("executeCase", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(result.outcome.passed).toBe(false);
     expect(result.failureKind).toBe("config");
+    expect(result.requestStarted).toBe(false);
+    expect(result.requestCompleted).toBe(false);
   });
 
   it("keeps globals isolated for concurrent executions", async () => {
@@ -276,6 +280,8 @@ describe("executeCase", () => {
     });
     expect(result.failureKind).toBe("aborted");
     expect(receivedSignal).toBe(controller.signal);
+    expect(result.requestStarted).toBe(true);
+    expect(result.requestCompleted).toBe(true);
   });
 
   it("classifies an AbortError even when its signal is not aborted", async () => {

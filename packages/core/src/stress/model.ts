@@ -67,12 +67,17 @@ export interface StressSample {
   requestTimeMs?: number;
   scriptTimeMs?: number;
   iterationTimeMs?: number;
+  /** Explicit protocol-I/O qualification; omitted means legacy sample semantics. */
+  requestStarted?: boolean;
+  /** Whether an entered protocol attempt settled; omitted means legacy completed semantics. */
+  requestCompleted?: boolean;
   failureKind?: StressFailureKind;
   outcome?: CaseOutcome;
 }
 
 const latencySchema = z.object({
-  min: z.number(), avg: z.number(), max: z.number(), p50: z.number(), p90: z.number(), p95: z.number(), p99: z.number(),
+  min: z.number().finite().nonnegative(), avg: z.number().finite().nonnegative(), max: z.number().finite().nonnegative(),
+  p50: z.number().finite().nonnegative(), p90: z.number().finite().nonnegative(), p95: z.number().finite().nonnegative(), p99: z.number().finite().nonnegative(),
 }).strict();
 
 export const StressFailureCountsSchema = z.object({
@@ -123,8 +128,8 @@ export const StressReportSchema = z.object({
   durationMs: z.number().nonnegative(),
   rps: z.number().nonnegative(),
   latency: latencySchema,
-  statusDist: z.record(z.string(), z.number()),
-  errorKinds: z.record(z.string(), z.number()),
+  statusDist: z.record(z.string(), z.number().int().nonnegative()),
+  errorKinds: z.record(z.string(), z.number().int().nonnegative()),
   startedAt: z.number(), finishedAt: z.number(),
   // M2-D 分布式段：optional 保证 M2-C 旧报告（无 distributed）继续可解析（D6）。
   distributed: StressDistributedSchema.optional(),
