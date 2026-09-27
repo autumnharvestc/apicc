@@ -29,6 +29,7 @@ export interface ExecutionResponse {
 export interface HttpExecuteOptions {
   connectTimeoutMs: number; // 默认 10000
   totalTimeoutMs: number;   // 默认 30000
+  signal?: AbortSignal;
 }
 
 export interface ProtocolClient {

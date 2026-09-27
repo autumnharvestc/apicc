@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { httpClient, classifyNetworkError } from "../../src/http/client.js";
+import { createHttpClient, httpClient, classifyNetworkError, HttpExecutionError } from "../../src/http/client.js";
 
 let server: Server;
 let baseUrl = "";
@@ -112,5 +112,50 @@ describe("httpClient", () => {
     expect(classifyNetworkError({ code: "UND_ERR_SOCKET", message: "connect failed", cause: { code: "ECONNREFUSED" } })).toBe("refused");
     expect(classifyNetworkError({ code: "UND_ERR_SOCKET", message: "connect failed", cause: { code: "ENOTFOUND" } })).toBe("dns");
     expect(classifyNetworkError({ code: "UND_ERR_CONNECT_TIMEOUT", message: "Connect Timeout Error", cause: { code: "ECONNREFUSED" } })).toBe("timeout");
+  });
+});
+
+describe("managed HTTP client lifecycle", () => {
+  const req = () => ({ method: "GET" as const, url: `${baseUrl}/echo`, headers: {}, query: [] });
+
+  it("pooled 模式复用连接，fresh 模式逐请求建连", async () => {
+    let connections = 0;
+    const onConnection = () => { connections += 1; };
+    server.on("connection", onConnection);
+
+    const pooled = createHttpClient({ connectionMode: "pooled" });
+    await pooled.execute(req(), opts);
+    await pooled.execute(req(), opts);
+    expect(connections).toBe(1);
+    await pooled.close();
+
+    connections = 0;
+    const fresh = createHttpClient({ connectionMode: "fresh" });
+    await fresh.execute(req(), opts);
+    await fresh.execute(req(), opts);
+    expect(connections).toBe(2);
+    await fresh.close();
+    server.off("connection", onConnection);
+  });
+
+  it("close 后最终关闭 socket，且重复 close 幂等", async () => {
+    let socketClosed = 0;
+    const onClose = () => { socketClosed += 1; };
+    server.on("connection", (socket) => socket.on("close", onClose));
+    const client = createHttpClient();
+    await client.execute(req(), opts);
+    await client.close();
+    await client.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(socketClosed).toBeGreaterThanOrEqual(1);
+  });
+
+  it("将 AbortSignal 传递到请求层并中止慢请求", async () => {
+    const controller = new AbortController();
+    const client = createHttpClient();
+    const pending = client.execute({ ...req(), url: `${baseUrl}/slow` }, { ...opts, signal: controller.signal });
+    setTimeout(() => controller.abort(), 30);
+    await expect(pending).rejects.toBeInstanceOf(HttpExecutionError);
+    await client.close();
   });
 });

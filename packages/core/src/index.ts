@@ -50,12 +50,12 @@ export {
 
 import { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
 import { fileStorage } from "./storage/fileStorage.js";
-import { httpClient } from "./http/client.js";
+import { createHttpClient, httpClient } from "./http/client.js";
 import { wsClient } from "./protocol/websocket.js";
 import { soapClient } from "./protocol/soap.js";
 import { builtinAuthProviders } from "./http/auth.js";
 // 内置协议客户端与认证器同时对外导出：CLI run-stress 等消费方直接注入 StressRunner，无需绕注册中心取回。
-export { httpClient, wsClient, soapClient, builtinAuthProviders };
+export { createHttpClient, httpClient, wsClient, soapClient, builtinAuthProviders };
 import { builtinAssertOperators } from "./assert/operators.js";
 import { jsScriptEngine } from "./sandbox/jsEngine.js";
 import { htmlReporter } from "./report/html.js";
