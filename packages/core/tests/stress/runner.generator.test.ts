@@ -20,7 +20,7 @@ class FakeScheduler {
   nowValue = 0;
   lastDelay = 0;
   private nextId = 0;
-  private readonly timers = new Map<number, { at: number; callback: () => void }>();
+  protected readonly timers = new Map<number, { at: number; callback: () => void }>();
   now = () => this.nowValue;
   setTimeout = (callback: () => void, delay: number): NodeJS.Timeout => {
     this.lastDelay = delay;
@@ -46,6 +46,15 @@ class ThrowingClearScheduler extends FakeScheduler {
   clearTimeout = (timer: NodeJS.Timeout): void => {
     this.clearCalls += 1;
     if (this.clearCalls > 1) throw new Error("clear failed");
+  };
+}
+
+class AcquireClearFailureScheduler extends FakeScheduler {
+  private clearCalls = 0;
+  clearTimeout = (timer: NodeJS.Timeout): void => {
+    this.clearCalls += 1;
+    this.timers.delete((timer as unknown as { id: number }).id);
+    if (this.clearCalls === 1) throw new Error("clear during acquire");
   };
 }
 
@@ -220,6 +229,39 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     }
     await pending;
     expect(starts).toEqual([0, 1_000]);
+  });
+
+  it("reports acquire-phase timer clear failure as primary after a clock jump", async () => {
+    const scheduler = new AcquireClearFailureScheduler();
+    let jumped = false;
+    let closed = 0;
+    const stop = vi.fn(() => ({ cpuUserMs: 0, cpuSystemMs: 0, cpuPercent: 0, rssStartBytes: 0, rssPeakBytes: 0, eventLoopDelayP95Ms: 0, schedulerBacklogMax: 0, saturated: false, reasons: [], limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 } }));
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
+      createGeneratorCollector: () => collector(stop),
+      createWorker: () => ({
+        execute: async () => { if (!jumped) { await Promise.resolve(); jumped = true; scheduler.nowValue = 1_000; } return result(); },
+        close: async () => { closed += 1; },
+      }),
+    });
+    await expect(runner.run({ concurrency: 3, maxIterations: 4, maxRps: 2 })).rejects.toThrow("clear during acquire");
+    expect(closed).toBe(3);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(scheduler.hasTimers()).toBe(false);
+  });
+
+  it("handles a large forward clock jump without releasing a stale permit", async () => {
+    const scheduler = new FakeScheduler();
+    const starts: number[] = [];
+    const runner = new StressRunner({
+      now: scheduler.now, setTimeout: scheduler.setTimeout, clearTimeout: scheduler.clearTimeout,
+      createWorker: () => ({
+        execute: async () => { starts.push(scheduler.nowValue); if (starts.length === 1) scheduler.nowValue = 5_000; return result(); },
+        close: async () => {},
+      }),
+    });
+    await runner.run({ concurrency: 1, maxIterations: 2, maxRps: 1 });
+    expect(starts).toEqual([0, 5_000]);
   });
 
   it("clamps a finite tiny-rate delay instead of scheduling Infinity or a 1ms spin", async () => {

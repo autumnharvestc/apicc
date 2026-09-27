@@ -46,6 +46,7 @@ class SlidingWindowPermitLimiter {
   private timer: NodeJS.Timeout | undefined;
   private stopped = false;
   private readonly capacity: number;
+  private timerVersion = 0;
   private nextPermitAt: number | undefined;
   private lastClock = Number.NEGATIVE_INFINITY;
   private readonly reciprocalIntervalMs: number | undefined;
@@ -103,6 +104,7 @@ class SlidingWindowPermitLimiter {
     let firstError: unknown;
     let hasError = false;
     if (this.timer !== undefined) {
+      this.timerVersion += 1;
       try { this.clearTimeoutFn(this.timer); }
       catch (error) { hasError = true; firstError = error; }
     }
@@ -124,6 +126,7 @@ class SlidingWindowPermitLimiter {
     this.hasRuntimeError = true;
     this.stopped = true;
     if (this.timer !== undefined) {
+      this.timerVersion += 1;
       try { this.clearTimeoutFn(this.timer); } catch { /* preserve runtime error */ }
     }
     this.timer = undefined;
@@ -135,6 +138,23 @@ class SlidingWindowPermitLimiter {
 
   private process(): void {
     if (this.stopped) return;
+    // Cancel the old wake-up before resolving any permit. A stale callback may
+    // still be queued, but it cannot retain a live timer reference or race a
+    // newly scheduled wake-up after this point.
+    if (this.timer !== undefined) {
+      const scheduledTimer = this.timer;
+      this.timer = undefined;
+      this.timerVersion += 1;
+      try { this.clearTimeoutFn(scheduledTimer); }
+      catch (error) {
+        // A failed clear is retried once for hosts whose first clear reports an
+        // error after releasing the native handle. The first error remains the
+        // primary runtime failure either way.
+        try { this.clearTimeoutFn(scheduledTimer); } catch { /* preserve first error */ }
+        this.failRuntime(error);
+        return;
+      }
+    }
     const current = this.monotonicNow();
     if (this.maxRps >= 1) {
       while (this.timestamps.length > 0 && current - this.timestamps[0]! >= 1_000) this.timestamps.shift();
@@ -165,8 +185,9 @@ class SlidingWindowPermitLimiter {
       ? (this.nextPermitAt ?? current + this.reciprocalIntervalMs!)
       : (this.timestamps[0] ?? current) + 1_000;
     const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(1, oldest - current));
-    if (this.timer !== undefined) this.clearTimeoutFn(this.timer);
+    const version = ++this.timerVersion;
     this.timer = this.setTimeoutFn(() => {
+      if (version !== this.timerVersion) return;
       this.timer = undefined;
       try { this.process(); }
       catch (error) { this.failRuntime(error); }
