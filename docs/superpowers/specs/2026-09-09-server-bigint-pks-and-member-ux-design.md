@@ -1,8 +1,8 @@
 # 服务端 BIGINT 主键化 + 成员按用户名搜索 设计
 
 日期：2026-09-09
-状态：口径已获用户确认（2026-09-09 缺陷反馈），规格终审中
-关联：org-rbac 设计（2026-09-08）§2/§3/§4；两批均未实现
+状态：已实现并合并；成员搜索批次 `ebad257`，BIGINT 批次 `066b637`
+关联：org-rbac 设计（2026-09-08）§2/§3/§4；成员搜索实施计划 `docs/superpowers/plans/2026-09-09-admin-member-search.md`
 
 ## 缺陷一：主键禁用 UUID，全表切 64 位整数
 
@@ -45,13 +45,14 @@
   - 返回 `[{id, username, displayName}]`（id 同缺陷一口径=字符串化数字）。
 - 现有 `PUT /api/v1/workspaces/{id}/members/{userId}` 契约不动（选中候选项后前端持其 id 调用）。
 
-### 桌面端
+### 管理端 Web
 
-- 契约：`shared/online/contract.ts` 增候选行 schema（复用 OnlineUserSchema 形状）+ client 增 `memberCandidates` 方法（主进程 online session 透传）。
-- MembersView：userId 直填输入框替换为远程搜索下拉——输入 ≥1 字符即 debounce（约 300ms）拉候选，选项展示 `username（displayName）`，选中后界面仅回显用户名，id 不见即用；维持既有角色选择与提交链路。
-- mock 替身（memory.ts）同步补候选行为（按夹具用户过滤），供组件测试。
+- 契约：`apps/admin-web/src/api/contract.ts` 增候选行 schema，API client 增 `searchUserCandidates` 方法，直接访问服务端候选端点。
+- `MembersView`：userId 直填输入框替换为远程搜索下拉——输入 ≥1 字符即 debounce（约 300ms）拉候选，选项展示 `username（displayName）`，选中后界面仅回显用户名，id 不见即用；维持既有角色选择与提交链路。
+- `ProjectAclView`：同类添加行复用 `userPicker`，消除项目 ACL 中手输 userId 的相同缺陷。
+- workspaces store 管理候选、加载、错误和竞态状态；组件测试使用 fetch stub 验证搜索、选择、提交、错误与上下文复位。
 
 ### 测试口径
 
 - 服务端 MockMvc：命中/排除已有成员/limit 截断/无权 403/q 空 400。
-- 桌面组件：搜索下拉出候选、选中回填、提交载荷携带所选 id。
+- admin-web 组件：搜索下拉出候选、选中回填、提交载荷携带所选 id；成员和项目 ACL 两个入口均覆盖。
