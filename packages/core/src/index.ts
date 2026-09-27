@@ -15,6 +15,10 @@ export { SqliteIndex } from "./storage/sqliteIndex.js";
 export { createVariableResolver, CyclicVariableError } from "./variables/resolver.js";
 export { withBaseUrl } from "./variables/baseUrl.js";
 export { CollectionRunner } from "./runner/runner.js";
+export {
+  executeCase,
+  type CaseExecutionDeps, CaseExecutionInput, CaseExecutionResult, CaseFailureKind,
+} from "./runner/caseExecutor.js";
 export type { RunResult, CaseOutcome } from "./report/types.js";
 export { renderDesignMarkdown } from "./design/export.js";
 export { htmlReporter } from "./report/html.js";

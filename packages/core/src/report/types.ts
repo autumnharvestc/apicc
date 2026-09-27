@@ -1,4 +1,5 @@
 import type { AssertResult } from "../plugin/types.js";
+import type { CaseFailureKind } from "../runner/caseExecutor.js";
 
 export interface CaseOutcome {
   apiId: string;
@@ -10,6 +11,8 @@ export interface CaseOutcome {
   durationMs: number;
   assertions: AssertResult[];
   error?: string;
+  /** 分类后的执行失败；旧报告可省略该字段。 */
+  failureKind?: CaseFailureKind;
 }
 
 export interface RunResult {
