@@ -123,4 +123,3 @@ export class StressRunner {
     return computeReport(samples, { concurrency, startedAt, finishedAt: Date.now() });
   }
 }
-
