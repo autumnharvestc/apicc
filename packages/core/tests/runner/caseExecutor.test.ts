@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createVariableResolver } from "../../src/variables/resolver.js";
+import { createEventBus } from "../../src/events/bus.js";
 import { executeCase, type CaseExecutionDeps } from "../../src/runner/caseExecutor.js";
 import type { ApiDefinition, TestCase } from "../../src/domain/model.js";
 import type { ExecutableRequest, ExecutionResponse, ProtocolClient, ScriptEngine } from "../../src/plugin/types.js";
@@ -171,6 +172,18 @@ describe("executeCase", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("emits afterCase once for construction errors", async () => {
+    const bus = createEventBus();
+    let afterCaseCount = 0;
+    bus.on("afterCase", () => { afterCaseCount += 1; });
+    const state = input();
+    state.api = { ...api, url: "{{loop}}/orders" };
+    state.resolver = createVariableResolver({ layers: [{ loop: "{{loop}}" }] });
+    const result = await executeCase(state, { ...deps({ name: "test", canHandle: () => true, execute: async () => response }), bus });
+    expect(result.failureKind).toBe("config");
+    expect(afterCaseCount).toBe(1);
+  });
+
   it("classifies unknown and throwing assertion operators as config errors", async () => {
     const unknown = await executeCase({
       ...input(), testCase: { ...testCase, assertions: [{ id: "unknown", target: "status", op: "missing" as never, expected: "200" }] },
@@ -207,12 +220,50 @@ describe("executeCase", () => {
     expect(result.outcome.error).toBe("plugin request shape invalid");
   });
 
-  it("classifies an aborted protocol execution", async () => {
+  it("keeps malformed plugin error metadata as transport", async () => {
+    const numericCode = await executeCase(input(), {
+      ...deps({ name: "plugin", canHandle: () => true, async execute() {
+        throw Object.assign(new Error("numeric code network failure"), { code: 503 });
+      } }),
+    });
+    expect(numericCode.failureKind).toBe("transport");
+
+    const illegalKind = await executeCase(input(), {
+      ...deps({ name: "plugin", canHandle: () => true, async execute() {
+        throw Object.assign(new Error("illegal marker network failure"), { failureKind: "mystery" });
+      } }),
+    });
+    expect(illegalKind.failureKind).toBe("transport");
+  });
+
+  it("keeps an unmarked SOAP I/O error as transport even when its message mentions envelope", async () => {
+    const result = await executeCase({ ...input(), api: { ...api, method: "POST", protocol: "soap", envelope: "<Envelope/>" } }, {
+      ...deps({ name: "soap", canHandle: () => true, async execute() { throw new Error("remote envelope stream reset"); } }),
+    });
+    expect(result.failureKind).toBe("transport");
+  });
+
+  it("classifies an aborted protocol execution from the signal and passes that signal to the client", async () => {
     const controller = new AbortController();
     controller.abort();
+    let receivedSignal: AbortSignal | undefined;
     const result = await executeCase(input(), {
-      ...deps({ name: "test", canHandle: () => true, execute: async () => { throw Object.assign(new Error("cancelled"), { name: "AbortError" }); } }),
+      ...deps({ name: "test", canHandle: () => true, execute: async (_request, options) => {
+        receivedSignal = options.signal;
+        throw new Error("cancelled by signal");
+      } }),
       timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100, signal: controller.signal },
+    });
+    expect(result.failureKind).toBe("aborted");
+    expect(receivedSignal).toBe(controller.signal);
+  });
+
+  it("classifies an AbortError even when its signal is not aborted", async () => {
+    const result = await executeCase(input(), {
+      ...deps({ name: "test", canHandle: () => true, execute: async () => {
+        throw Object.assign(new Error("cancelled"), { name: "AbortError" });
+      } }),
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100, signal: new AbortController().signal },
     });
     expect(result.failureKind).toBe("aborted");
   });

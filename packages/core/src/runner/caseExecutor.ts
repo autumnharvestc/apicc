@@ -11,6 +11,8 @@ import { withBaseUrl } from "../variables/baseUrl.js";
 
 export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "config" | "aborted";
 
+const CASE_FAILURE_KINDS = new Set<CaseFailureKind>(["transport", "http", "script", "assertion", "config", "aborted"]);
+
 /** Run-scoped state for one case. Nothing here is read from CollectionRunner. */
 export interface CaseExecutionInput {
   api: ApiDefinition;
@@ -112,12 +114,18 @@ function evaluateAssertions(
   });
 }
 
-function protocolFailureKind(error: unknown, protocol: ExecutableRequest["protocol"]): CaseFailureKind {
-  const tagged = error as { caseFailureKind?: CaseFailureKind; failureKind?: CaseFailureKind; code?: string; name?: string };
-  if (tagged.caseFailureKind) return tagged.caseFailureKind;
-  if (tagged.failureKind) return tagged.failureKind;
-  if (tagged.code?.toUpperCase() === "CONFIG" || tagged.name === "ConfigurationError") return "config";
-  if (protocol === "soap" && errorMessage(error).includes("envelope")) return "config";
+function validFailureKind(value: unknown): CaseFailureKind | undefined {
+  return typeof value === "string" && CASE_FAILURE_KINDS.has(value as CaseFailureKind)
+    ? value as CaseFailureKind
+    : undefined;
+}
+
+function protocolFailureKind(error: unknown): CaseFailureKind {
+  const tagged = error as { caseFailureKind?: unknown; failureKind?: unknown; code?: unknown; name?: unknown };
+  const marked = validFailureKind(tagged.caseFailureKind) ?? validFailureKind(tagged.failureKind);
+  if (marked) return marked;
+  const code = typeof tagged.code === "string" ? tagged.code : undefined;
+  if (code?.toUpperCase() === "CONFIG" || tagged.name === "ConfigurationError") return "config";
   return "transport";
 }
 
@@ -212,7 +220,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     try {
       response = await client.execute(request, timeouts);
     } catch (e) {
-      failureKind = isAbort(e, timeouts.signal) ? "aborted" : protocolFailureKind(e, request.protocol);
+      failureKind = isAbort(e, timeouts.signal) ? "aborted" : protocolFailureKind(e);
       throw e;
     } finally {
       requestTimeMs = now() - requestStarted;
