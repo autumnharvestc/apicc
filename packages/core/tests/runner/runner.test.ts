@@ -621,4 +621,45 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
     expect(seen[0]!.bodyG).toBe("from-global"); // 全局 body 追加进 form
     expect(seen[0]!.bodyApiK).toBe("from-api"); // form 同名 key 优先
   });
+
+  it("请求构造配置错误折进 config outcome，并继续后续用例", async () => {
+    const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: { c1: base } };
+    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
+    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+    const col: Collection = {
+      id: "c1", name: "c", variables: { loop: "{{loop}}" }, folders: [],
+      apis: [
+        {
+          ...apiWith("{{loop}}/broken"),
+          id: "broken", name: "broken",
+          cases: [{ id: "bad", name: "bad", scope: "base", parameters: {}, assertions: [] }],
+        },
+        {
+          ...apiWith("/healthy"),
+          id: "healthy", name: "healthy",
+          cases: [{ id: "good", name: "good", scope: "base", parameters: {}, assertions: [{ id: "s", target: "status", op: "eq", expected: "200" }] }],
+        },
+      ],
+    };
+    const result = await deps().run(col, env, project, ws, {});
+    expect(result.total).toBe(2);
+    expect(result.cases[0]!.failureKind).toBe("config");
+    expect(result.cases[1]!.passed).toBe(true);
+  });
+
+  it("数据源读取失败保留 config failureKind", async () => {
+    const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: { c1: base } };
+    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
+    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+    const col: Collection = {
+      id: "c1", name: "c", variables: {}, folders: [], apis: [{
+        ...apiWith("/data"), cases: [{
+          id: "missing", name: "missing", scope: "base", parameters: {},
+          dataDriver: { sourcePath: "C:/definitely-missing-apicc-data.csv", format: "csv" }, assertions: [],
+        }],
+      }],
+    };
+    const result = await deps().run(col, env, project, ws, {});
+    expect(result.cases[0]!.failureKind).toBe("config");
+  });
 });

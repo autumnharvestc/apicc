@@ -91,7 +91,9 @@ function evaluateAssertions(
   const response = ctx.pm.response;
   return testCase.assertions.map((assertion) => {
     const op = resolveAssert(assertion.op);
-    if (!op) return { pass: false, message: `未知断言操作符: ${assertion.op}` };
+    if (!op) {
+      throw Object.assign(new Error(`未知断言操作符: ${assertion.op}`), { caseFailureKind: "config" as const });
+    }
     let actual: unknown;
     switch (assertion.target) {
       case "status": actual = response?.status; break;
@@ -102,8 +104,21 @@ function evaluateAssertions(
         catch { actual = undefined; }
         break;
     }
-    return op.evaluate(actual, assertion.expected);
+    try {
+      return op.evaluate(actual, assertion.expected);
+    } catch (e) {
+      throw Object.assign(new Error(errorMessage(e)), { caseFailureKind: "config" as const });
+    }
   });
+}
+
+function protocolFailureKind(error: unknown, protocol: ExecutableRequest["protocol"]): CaseFailureKind {
+  const tagged = error as { caseFailureKind?: CaseFailureKind; failureKind?: CaseFailureKind; code?: string; name?: string };
+  if (tagged.caseFailureKind) return tagged.caseFailureKind;
+  if (tagged.failureKind) return tagged.failureKind;
+  if (tagged.code?.toUpperCase() === "CONFIG" || tagged.name === "ConfigurationError") return "config";
+  if (protocol === "soap" && errorMessage(error).includes("envelope")) return "config";
+  return "transport";
 }
 
 /** Execute one case with only explicitly supplied run/session state. */
@@ -112,32 +127,16 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   const timeouts: HttpExecuteOptions = deps.timeouts ?? { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 };
   const { api, testCase, resolver, envVars, persisted, persistedSnapshot } = input;
   const globals = input.globals ?? {};
-  resolver.clearRuntime();
-  for (const [key, value] of persisted) resolver.setRuntime(key, value);
-  for (const [key, value] of Object.entries(testCase.parameters)) resolver.setRuntime(key, value);
-  for (const [key, value] of Object.entries(input.row ?? {})) resolver.setRuntime(key, value);
-
+  // The diagnostic request is always available, even when variable resolution fails.
+  // Every nested request object is owned by this invocation; scripts/plugins may mutate it.
   const request: ExecutableRequest = {
     method: api.method,
-    url: withBaseUrl(resolver.resolve(api.url), resolver.get("baseUrl")),
-    headers: Object.fromEntries([
-      ...(globals.headers ?? EMPTY_GLOBALS.headers).filter((h) => h.enabled && h.key && !api.headers.some((a) => a.key === h.key)),
-      ...api.headers.filter((h) => h.enabled),
-    ].map((h: KeyValuePair) => [h.key, resolver.resolve(h.value)])),
-    query: [
-      ...(globals.query ?? EMPTY_GLOBALS.query)
-        .filter((q) => q.enabled && q.key && !api.query.some((a) => a.key === q.key))
-        .map((q) => ({ ...q, value: resolver.resolve(q.value) })),
-      ...api.query.map((q) => ({ ...q, value: resolver.resolve(q.value) })),
-    ],
-    body: mergeGlobalForm(api.body, resolver, globals),
-    auth: api.auth,
+    url: api.url,
+    headers: {},
+    query: [],
+    auth: api.auth ? { ...api.auth } : undefined,
     protocol: api.protocol,
-    message: api.message === undefined ? undefined : resolver.resolve(api.message),
-    envelope: api.envelope === undefined ? undefined : resolver.resolve(api.envelope),
-    soapAction: api.soapAction === undefined ? undefined : resolver.resolve(api.soapAction),
   };
-  injectGlobalCookie(request.headers, resolver, globals);
 
   const pmAsserts: Array<{ pass: boolean; message: string }> = [];
   const pm: PmApi = {
@@ -169,12 +168,37 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   };
 
   try {
+    resolver.clearRuntime();
+    for (const [key, value] of persisted) resolver.setRuntime(key, value);
+    for (const [key, value] of Object.entries(testCase.parameters)) resolver.setRuntime(key, value);
+    for (const [key, value] of Object.entries(input.row ?? {})) resolver.setRuntime(key, value);
+    Object.assign(request, {
+      url: withBaseUrl(resolver.resolve(api.url), resolver.get("baseUrl")),
+      headers: Object.fromEntries([
+        ...(globals.headers ?? EMPTY_GLOBALS.headers).filter((h) => h.enabled && h.key && !api.headers.some((a) => a.key === h.key)),
+        ...api.headers.filter((h) => h.enabled),
+      ].map((h: KeyValuePair) => [h.key, resolver.resolve(h.value)])),
+      query: [
+        ...(globals.query ?? EMPTY_GLOBALS.query)
+          .filter((q) => q.enabled && q.key && !api.query.some((a) => a.key === q.key))
+          .map((q) => ({ ...q, value: resolver.resolve(q.value) })),
+        ...api.query.map((q) => ({ ...q, value: resolver.resolve(q.value) })),
+      ],
+      body: mergeGlobalForm(api.body, resolver, globals),
+      message: api.message === undefined ? undefined : resolver.resolve(api.message),
+      envelope: api.envelope === undefined ? undefined : resolver.resolve(api.envelope),
+      soapAction: api.soapAction === undefined ? undefined : resolver.resolve(api.soapAction),
+    });
+    injectGlobalCookie(request.headers, resolver, globals);
     await emit("beforeCase", { apiName: api.name, caseName: testCase.name, apiId: api.id, caseId: testCase.id, row: input.isDataDriven ? input.rowIndex : undefined });
     if (testCase.preScript) runScript(testCase.preScript);
     for (const operation of testCase.preOperations ?? []) if (operation.type === "script") runScript(operation.content);
     stage = "config";
     await emit("beforeRequest", { request });
 
+    if (request.protocol === "soap" && request.envelope === undefined) {
+      throw Object.assign(new Error("soap 请求必须提供 envelope（XML 信封模板）"), { caseFailureKind: "config" as const });
+    }
     if (request.auth) {
       const auth = deps.resolveAuth(request.auth.type);
       if (!auth) throw Object.assign(new Error(`无可用认证提供方: ${request.auth.type}`), { caseFailureKind: "config" });
@@ -188,7 +212,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     try {
       response = await client.execute(request, timeouts);
     } catch (e) {
-      failureKind = isAbort(e, timeouts.signal) ? "aborted" : "transport";
+      failureKind = isAbort(e, timeouts.signal) ? "aborted" : protocolFailureKind(e, request.protocol);
       throw e;
     } finally {
       requestTimeMs = now() - requestStarted;
@@ -204,7 +228,15 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       : ((e as { caseFailureKind?: CaseFailureKind }).caseFailureKind ?? (String(stage) === "script" ? "script" : "config"));
   }
 
-  const assertions = [...evaluateAssertions(testCase, ctx, deps.resolveAssert), ...pmAsserts];
+  let assertions: Array<{ pass: boolean; message: string }> = [];
+  try {
+    assertions = [...evaluateAssertions(testCase, ctx, deps.resolveAssert), ...pmAsserts];
+  } catch (e) {
+    if (error === undefined) {
+      error = errorMessage(e);
+      failureKind = (e as { caseFailureKind?: CaseFailureKind }).caseFailureKind ?? "config";
+    }
+  }
   if (error === undefined && response && response.status >= 400) {
     error = `HTTP 响应失败: ${response.status}`;
     failureKind = "http";

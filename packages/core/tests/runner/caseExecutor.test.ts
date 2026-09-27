@@ -130,4 +130,103 @@ describe("executeCase", () => {
     }));
     expect(assertion.failureKind).toBe("assertion");
   });
+
+  it("clones auth for concurrent executions of one shared API", async () => {
+    const sharedApi = { ...api, auth: { type: "bearer" as const, token: "shared", placement: "header" as const } };
+    const seen: string[] = [];
+    const client: ProtocolClient = {
+      name: "test", canHandle: () => true,
+      async execute(request) {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        seen.push(request.auth?.token ?? "missing");
+        return response;
+      },
+    };
+    const engine: ScriptEngine = {
+      language: "javascript",
+      run(code, ctx) { ctx.pm.request.auth!.token = code; },
+    };
+    const make = (token: string) => ({
+      ...input(), api: sharedApi, testCase: { ...testCase, preScript: token },
+    });
+    const makeDeps = (): CaseExecutionDeps => ({
+      ...deps(client), scriptEngine: engine,
+      resolveAuth: () => ({ type: "bearer", apply(request, auth) { request.headers.Authorization = auth.token ?? ""; } }),
+    });
+    await Promise.all([executeCase(make("A"), makeDeps()), executeCase(make("B"), makeDeps())]);
+    expect(seen.sort()).toEqual(["A", "B"]);
+    expect(sharedApi.auth?.token).toBe("shared");
+  });
+
+  it("returns a config outcome when request construction fails", async () => {
+    const state = input();
+    state.api = { ...api, url: "{{loop}}/orders" };
+    state.resolver = createVariableResolver({ layers: [{ loop: "{{loop}}" }] });
+    const execute = vi.fn(async () => response);
+    const result = await executeCase(state, deps({ name: "test", canHandle: () => true, execute }));
+    expect(result.outcome.passed).toBe(false);
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("变量循环引用");
+    expect(result.request.url).toBe("{{loop}}/orders");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("classifies unknown and throwing assertion operators as config errors", async () => {
+    const unknown = await executeCase({
+      ...input(), testCase: { ...testCase, assertions: [{ id: "unknown", target: "status", op: "missing" as never, expected: "200" }] },
+    }, { ...deps({ name: "test", canHandle: () => true, execute: async () => response }), resolveAssert: () => undefined });
+    expect(unknown.failureKind).toBe("config");
+    expect(unknown.outcome.error).toContain("未知断言操作符");
+
+    const throwing = await executeCase(input(), {
+      ...deps({ name: "test", canHandle: () => true, execute: async () => response }),
+      resolveAssert: () => ({ op: "eq", evaluate() { throw new Error("assert plugin exploded"); } }),
+    });
+    expect(throwing.failureKind).toBe("config");
+    expect(throwing.outcome.error).toBe("assert plugin exploded");
+  });
+
+  it("classifies missing SOAP envelope as config without protocol I/O", async () => {
+    const execute = vi.fn(async () => response);
+    const result = await executeCase({ ...input(), api: { ...api, method: "POST", protocol: "soap" } }, {
+      ...deps({ name: "soap", canHandle: () => true, execute }),
+    });
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("soap 请求必须提供 envelope");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("preserves a plugin's explicit configuration error classification", async () => {
+    const result = await executeCase(input(), {
+      ...deps({
+        name: "plugin", canHandle: () => true,
+        async execute() { throw Object.assign(new Error("plugin request shape invalid"), { code: "CONFIG" }); },
+      }),
+    });
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toBe("plugin request shape invalid");
+  });
+
+  it("classifies an aborted protocol execution", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await executeCase(input(), {
+      ...deps({ name: "test", canHandle: () => true, execute: async () => { throw Object.assign(new Error("cancelled"), { name: "AbortError" }); } }),
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100, signal: controller.signal },
+    });
+    expect(result.failureKind).toBe("aborted");
+  });
+
+  it("keeps protocol timing separate from pre/post script timing", async () => {
+    const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    const result = await executeCase({
+      ...input(), testCase: { ...testCase, preScript: "pre", postScript: "post" },
+    }, {
+      ...deps({ name: "test", canHandle: () => true, async execute() { pause(5); return response; } }),
+      scriptEngine: { language: "javascript", run(code) { pause(code === "pre" ? 4 : 6); } },
+    });
+    expect(result.requestTimeMs).toBeGreaterThanOrEqual(4);
+    expect(result.scriptTimeMs).toBeGreaterThanOrEqual(8);
+    expect(result.iterationTimeMs).toBeGreaterThanOrEqual(result.requestTimeMs + result.scriptTimeMs - 1);
+  });
 });

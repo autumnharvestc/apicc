@@ -111,6 +111,7 @@ export class CollectionRunner {
             apiId: api.id, apiName: api.name, caseId: tc.id, caseName: tc.name,
             passed: false, durationMs: 0, assertions: [],
             error: `数据源读取失败: ${e instanceof Error ? e.message : String(e)}`,
+            failureKind: "config",
           });
           if (this.deps.failFast) state.stopped = true;
           continue;
