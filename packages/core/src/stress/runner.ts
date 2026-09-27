@@ -18,6 +18,8 @@ export interface StressRunnerOptions {
   now?: () => number;
   setTimeout?: StressSetTimeout;
   clearTimeout?: StressClearTimeout;
+  /** Optional wire-protocol hook receiving each complete Task 4 sample. */
+  onSample?: (sample: StressSample) => void;
 }
 export interface StressRunOptions {
   concurrency: number;
@@ -336,7 +338,9 @@ export class StressRunner {
           }
           if (signal?.aborted || stopped) break;
           try {
-            samples.push(sampleFromResult(await session.execute(signal)));
+            const sample = sampleFromResult(await session.execute(signal));
+            samples.push(sample);
+            this.opts.onSample?.(sample);
           } catch (error) {
             stopPrimary(error);
             break;

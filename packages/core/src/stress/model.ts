@@ -75,6 +75,23 @@ export interface StressSample {
   outcome?: CaseOutcome;
 }
 
+/** v2 worker wire format for a single Task 4 execution sample. */
+export const StressSampleSchema = z.object({
+  timeMs: z.number().finite().nonnegative().optional(),
+  requestTimeMs: z.number().finite().nonnegative(),
+  scriptTimeMs: z.number().finite().nonnegative(),
+  iterationTimeMs: z.number().finite().nonnegative(),
+  status: z.number().int().nonnegative(),
+  ok: z.boolean(),
+  error: z.string().optional(),
+  requestStarted: z.boolean().optional(),
+  requestCompleted: z.boolean().optional(),
+  failureKind: z.enum(["transport", "http", "script", "assertion", "config", "aborted"]).optional(),
+  // CaseOutcome is already validated by the execution kernel. Keep it opaque on the wire
+  // so the worker protocol does not duplicate the report model's recursive details.
+  outcome: z.any().optional(),
+}).strict();
+
 const latencySchema = z.object({
   min: z.number().finite().nonnegative(), avg: z.number().finite().nonnegative(), max: z.number().finite().nonnegative(),
   p50: z.number().finite().nonnegative(), p90: z.number().finite().nonnegative(), p95: z.number().finite().nonnegative(), p99: z.number().finite().nonnegative(),
@@ -101,11 +118,11 @@ const verdictSchema = z.object({
 }).strict();
 
 export const StressGeneratorSchema = z.object({
-  cpuUserMs: z.number().nonnegative(), cpuSystemMs: z.number().nonnegative(), cpuPercent: z.number().nonnegative(),
-  rssStartBytes: z.number().nonnegative(), rssPeakBytes: z.number().nonnegative(), eventLoopDelayP95Ms: z.number().nonnegative(),
-  schedulerBacklogMax: z.number().int().nonnegative(), saturated: z.boolean(),
+  cpuUserMs: z.number().finite().nonnegative(), cpuSystemMs: z.number().finite().nonnegative(), cpuPercent: z.number().finite().nonnegative(),
+  rssStartBytes: z.number().finite().nonnegative(), rssPeakBytes: z.number().finite().nonnegative(), eventLoopDelayP95Ms: z.number().finite().nonnegative(),
+  schedulerBacklogMax: z.number().finite().int().nonnegative(), saturated: z.boolean(),
   reasons: z.array(z.enum(["cpu", "event-loop-delay", "scheduler-backlog"])),
-  limits: z.object({ cpuPercent: z.number().nonnegative(), eventLoopDelayP95Ms: z.number().nonnegative(), schedulerBacklog: z.number().int().nonnegative() }).strict(),
+  limits: z.object({ cpuPercent: z.number().finite().nonnegative(), eventLoopDelayP95Ms: z.number().finite().nonnegative(), schedulerBacklog: z.number().finite().int().nonnegative() }).strict(),
 }).strict();
 
 export const StressSafetySchema = z.object({
@@ -114,8 +131,17 @@ export const StressSafetySchema = z.object({
 
 /** distributed 段：多 shard 汇聚信息（M2-D）。shardErrors 无失败时省略。 */
 export const StressDistributedSchema = z.object({
+  protocolVersion: z.literal(2),
+  dataComplete: z.boolean(),
   shards: z.number().int().positive(),
-  perShard: z.array(z.object({ shardId: z.string(), totalRequests: z.number().int().nonnegative(), ok: z.number().int().nonnegative(), failed: z.number().int().nonnegative(), rps: z.number().nonnegative() })),
+  perShard: z.array(z.object({
+    shardId: z.string(),
+    totalRequests: z.number().int().nonnegative(),
+    ok: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    rps: z.number().finite().nonnegative(),
+    generator: StressGeneratorSchema,
+  }).strict()),
   shardErrors: z.array(z.object({ shardId: z.string(), error: z.string() })).optional(),
 }).strict();
 export type StressDistributed = z.infer<typeof StressDistributedSchema>;

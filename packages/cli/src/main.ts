@@ -16,7 +16,6 @@ import {
   type PluginLoadEntry,
   type PluginRegistry,
   type Project,
-  type ProtocolClient,
   type ShardFailure,
   type ShardOutcome,
   type ShardResult,
@@ -26,6 +25,8 @@ import {
   type StressSample,
   type StressWorkerSpecBase,
   type Workspace,
+  createHttpClient,
+  createStressCaseSession,
 } from "@apicc/core";
 
 /** 路径分隔符归一为 "/"，使集合目录匹配与用户输入的正/反斜杠形态无关（Windows 兼容）。 */
@@ -181,6 +182,7 @@ const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec
       ...(spec.envName !== undefined ? ["--env", spec.envName] : []),
       ...(spec.maxIterations !== undefined ? ["--iterations", String(spec.maxIterations)] : []),
       ...(spec.durationMs !== undefined ? ["--duration", String(spec.durationMs / 1000)] : []),
+      ...(spec.maxRps !== undefined ? ["--max-rps", String(spec.maxRps)] : []),
     ];
     const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     child.stderr?.pipe(process.stderr);
@@ -209,32 +211,9 @@ const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec
   });
 
 /**
- * 采样记录客户端：委托内部客户端执行并按 StressRunner 同口径记录样本。
- * StressReport 不含原始样本（aggregate 只出聚合），worker 回传 ShardResult 需在客户端层拦截采集。
- */
-function recordingClient(inner: ProtocolClient, samples: StressSample[]): ProtocolClient {
-  return {
-    name: `${inner.name}-recording`,
-    canHandle: (request) => inner.canHandle(request),
-    async execute(request, opts) {
-      const t0 = performance.now();
-      try {
-        const res = await inner.execute(request, opts);
-        samples.push({ timeMs: performance.now() - t0, status: res.status, ok: res.status >= 200 && res.status < 300 });
-        return res;
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        samples.push({ timeMs: performance.now() - t0, status: 0, ok: false, error: message });
-        throw e;
-      }
-    },
-  };
-}
-
-/**
  * 压测目标解析（run-stress 与 stress-worker 共享，不复制）：工作区加载、接口定位（与 run 命令
  * 同款分隔符边界后缀匹配）、用例门、env 解析、变量层组装与 StressRunner 工厂。
- * createRunner 可注入客户端——worker 模式传采样记录客户端以回传 ShardResult 样本。
+ * createRunner 为每个并发 worker 创建独立的真实用例 session，保证参数、脚本和断言结果进入样本。
  */
 async function resolveStressTarget(
   registry: PluginRegistry,
@@ -242,7 +221,7 @@ async function resolveStressTarget(
   apiPath: string,
   caseId: string,
   envName: string | undefined,
-): Promise<{ apiId: string; defaultClient: ProtocolClient; createRunner: (client?: ProtocolClient) => StressRunner }> {
+): Promise<{ apiId: string; createRunner: (onSample?: (sample: StressSample) => void) => StressRunner }> {
   // 定位/env/resolver 与 ai suggest-cases 共享 helper（不复制）。
   const { api: stressedApi, project, collection, workspace } = await locateApiTarget(registry, root, apiPath);
   // 用例门：压测请求构造只依赖接口定义（case 参数/断言不参与采样），但目标用例必须存在。
@@ -267,13 +246,22 @@ async function resolveStressTarget(
   if (!defaultClient) {
     throw new Error(`未找到可处理该接口的协议客户端（protocol: ${probe.protocol ?? "http"}）`);
   }
+  const testCase = stressedApi.cases.find((candidate) => candidate.id === caseId)!;
+  const target = { api: stressedApi, testCase, env, project, collection, workspace };
   return {
     apiId: stressedApi.id,
-    defaultClient,
-    createRunner: (client = defaultClient) => new StressRunner({
-      client,
-      // 每次采样重跑工厂：动态变量（如 {{$uuid}}）逐请求变化，不做跨请求复用。
-      buildRequest: () => buildStressRequest(stressedApi, resolver, builtinAuthProviders, project.globals),
+    createRunner: (onSample) => new StressRunner({
+      onSample,
+      createWorker: (workerId) => createStressCaseSession(target, {
+        resolveProtocol: (request) => registry.getProtocol(request),
+        resolveAuth: (type) => registry.getAuth(type),
+        resolveAssert: (op) => registry.getAssert(op),
+        scriptEngine: registry.getScriptEngine("javascript")!,
+        createManagedClient: () => {
+          if (defaultClient.name === "http") return createHttpClient();
+          return { ...defaultClient, close: async () => {} };
+        },
+      }, { workerId }),
     }),
   };
 }
@@ -452,16 +440,20 @@ export async function runCli(
     .requiredOption("--concurrency <n>", "并发数", Number)
     .option("--iterations <n>", "总迭代数", Number)
     .option("--duration <s>", "持续秒数", Number)
+    .option("--max-rps <n>", "全局每秒请求启动安全上限", Number)
     .option("--shards <n>", "分片数（>1 走多 shard 协调）", Number, 1)
     .option("--shard-timeout <s>", "单 shard 超时秒数", Number, 300)
     .option("--runs-dir <dir>", "报告输出目录")
-    .action(async (apiPath: string, opts: { case: string; env?: string; concurrency: number; iterations?: number; duration?: number; shards: number; shardTimeout: number; runsDir?: string }) => {
+    .action(async (apiPath: string, opts: { case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number; shards: number; shardTimeout: number; runsDir?: string }) => {
       // 分片参数校验（正整数/正数）；maxIterations < shards 的 fail-fast 由 core planShards 中文报错，直接透传不拦截。
       if (!Number.isInteger(opts.shards) || opts.shards < 1) {
         throw new Error(`shards 必须为正整数，收到 ${opts.shards}`);
       }
       if (!Number.isFinite(opts.shardTimeout) || opts.shardTimeout <= 0) {
         throw new Error(`shard-timeout 必须为正数，收到 ${opts.shardTimeout}`);
+      }
+      if (opts.maxRps !== undefined && (!Number.isFinite(opts.maxRps) || opts.maxRps <= 0)) {
+        throw new Error(`maxRps 必须为正数，收到 ${opts.maxRps}`);
       }
       // 数值参数守卫（终审顺修）：单/多 shard 路径口径必须一致——否则 concurrency 0 在多 shard 下被
       // planShards 静默升为每 shard 1（单机路径是 StressRunner 中文报错），NaN 类值会漏到
@@ -489,7 +481,7 @@ export async function runCli(
       let shardFailureCount = 0;
       if (opts.shards === 1) {
         // 单 shard：既有进程内路径，零行为变化（裁定 C：不挂 distributed 段，保持 M2-C 报告原样）。
-        report = await createRunner().run({ concurrency: opts.concurrency, maxIterations: opts.iterations, durationMs });
+        report = await createRunner().run({ concurrency: opts.concurrency, maxIterations: opts.iterations, durationMs, maxRps: opts.maxRps });
       } else {
         // 多 shard：构造 specBase（workspaceRoot 显式传给子进程 worker），协调器拆分/并发/汇聚。
         const { DistributedStressCoordinator } = await import("@apicc/core");
@@ -501,6 +493,7 @@ export async function runCli(
           workspaceRoot: root,
           ...(opts.iterations !== undefined ? { maxIterations: opts.iterations } : {}),
           ...(durationMs !== undefined ? { durationMs } : {}),
+          ...(opts.maxRps !== undefined ? { maxRps: opts.maxRps } : {}),
         };
         const shardTimeoutMs = opts.shardTimeout * 1000;
         const coordinator = new DistributedStressCoordinator();
@@ -530,6 +523,7 @@ export async function runCli(
       // 退出码：任一 shard 失败 → 1；否则沿用「全部请求失败且 total>0 → 1」
       // （压测关注面是性能画像而非断言成败）。
       process.exitCode = shardFailureCount > 0
+        || report.verdict?.passed === false
         || (report.failed === report.totalRequests && report.totalRequests > 0) ? 1 : 0;
     });
 
@@ -544,14 +538,15 @@ export async function runCli(
     .requiredOption("--concurrency <n>", "并发数", Number)
     .option("--iterations <n>", "迭代数", Number)
     .option("--duration <s>", "持续秒数", Number)
+    .option("--max-rps <n>", "本 shard 每秒请求启动安全上限", Number)
     .requiredOption("--shard-id <id>", "shard 标识（由协调端分配）")
     .requiredOption("--workspace <root>", "工作区根目录（由协调端传入）")
-    .action(async (apiPath: string, opts: { case: string; env?: string; concurrency: number; iterations?: number; duration?: number; shardId: string; workspace: string }) => {
+    .action(async (apiPath: string, opts: { case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number; shardId: string; workspace: string }) => {
       const out = deps.workerOut ?? ((line: string) => { process.stdout.write(`${line}\n`); });
       const err = deps.workerErr ?? ((line: string) => { console.error(line); });
       const fail = (message: string): void => {
         err(`[stress-worker ${opts.shardId}] ${message}`);
-        const failure: ShardFailure = { protocolVersion: 1, ok: false, shardId: opts.shardId, error: message };
+        const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: opts.shardId, error: message };
         out(JSON.stringify(failure));
         process.exitCode = 1;
       };
@@ -562,17 +557,23 @@ export async function runCli(
         if (opts.iterations === undefined && opts.duration === undefined) {
           throw new Error("需要 --iterations 或 --duration");
         }
-        const { defaultClient, createRunner } = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
-        // 样本经记录客户端拦截采集（报告不含原始样本），跑完回传 ShardResult。
-        // 记录客户端委托协议感知的默认客户端（M5 D5：WS/SOAP 压测由对应客户端承接）。
-        const samples: StressSample[] = [];
-        const runner = createRunner(recordingClient(defaultClient, samples));
-        await runner.run({
+        const { createRunner } = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
+        const samples: ShardResult["samples"] = [];
+        const report = await createRunner((sample) => samples.push({
+          ...sample,
+          requestTimeMs: sample.requestTimeMs ?? sample.timeMs ?? 0,
+          scriptTimeMs: sample.scriptTimeMs ?? 0,
+          iterationTimeMs: sample.iterationTimeMs ?? sample.requestTimeMs ?? sample.timeMs ?? 0,
+          status: sample.status,
+          ok: sample.ok,
+        })).run({
           concurrency: opts.concurrency,
           maxIterations: opts.iterations,
           durationMs: opts.duration === undefined ? undefined : opts.duration * 1000,
+          maxRps: opts.maxRps,
         });
-        const result: ShardResult = { protocolVersion: 1, ok: true, shardId: opts.shardId, samples };
+        if (!report.generator) throw new Error("worker 未生成 generator 指标");
+        const result: ShardResult = { protocolVersion: 2, ok: true, shardId: opts.shardId, samples, generator: report.generator };
         out(JSON.stringify(result));
         process.exitCode = 0;
       } catch (e) {

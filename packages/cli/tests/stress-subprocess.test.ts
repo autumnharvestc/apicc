@@ -103,6 +103,11 @@ async function makeWorkspace(name: string): Promise<string> {
               cases: [{ id: "00000000-0000-4000-8000-000000000016", name: "fails", scope: "base", parameters: {}, assertions: [] }],
             },
             {
+              id: "00000000-0000-4000-8000-000000000014", name: "assert-bad", version: "1", deprecated: false, method: "GET",
+              url: "{{baseUrl}}/x", headers: [], query: [],
+              cases: [{ id: "00000000-0000-4000-8000-000000000018", name: "assertion-fails", scope: "base", parameters: {}, assertions: [{ id: "status", target: "status", op: "eq", expected: "201" }] }],
+            },
+            {
               id: "00000000-0000-4000-8000-000000000013", name: "slow", version: "1", deprecated: false, method: "GET",
               url: "{{baseUrl}}/slow", headers: [], query: [],
               cases: [{ id: "00000000-0000-4000-8000-000000000017", name: "hangs", scope: "base", parameters: {}, assertions: [] }],
@@ -169,6 +174,21 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     expect(distributed.perShard.every((p) => p.ok === 0 && p.failed === 2)).toBe(true);
     // worker 本身成功回传（ShardResult），不算 shard 失败。
     expect(distributed.shardErrors).toBeUndefined();
+  }, 60000);
+
+  it("HTTP 200 但断言失败：多 shard 合并 assertion 计数、verdict=false、CLI exit 1", async () => {
+    const root = await makeWorkspace("assertion-failure");
+    const runsDir = join(root, "runs");
+    const res = await spawnCli(
+      ["run-stress", "groups/demo/projects/svc/collections/api/apis/assert-bad", "--case", "00000000-0000-4000-8000-000000000018", "--env", "dev",
+        "--concurrency", "2", "--iterations", "4", "--shards", "2", "--runs-dir", runsDir],
+      root,
+    );
+    expect(res.code).toBe(1);
+    const report = readLastReport(runsDir) as { failures: { assertion: number }; verdict?: { passed: boolean }; distributed?: { dataComplete: boolean } };
+    expect(report.failures.assertion).toBe(4);
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.distributed?.dataComplete).toBe(true);
   }, 60000);
 
   it("坏 caseId：run-stress 前置用例门拒绝（不 spawn worker、不落报告），exit 1 且错误走 stderr", async () => {

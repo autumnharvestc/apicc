@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { computeReport, type ComputeReportOptions } from "./aggregate.js";
-import type { StressDistributed, StressReport, StressSample } from "./model.js";
+import type { StressDistributed, StressGeneratorMetrics, StressReport, StressSample } from "./model.js";
+import { StressGeneratorSchema, StressSampleSchema } from "./model.js";
 
 /** 协调端下发给 shard worker 的规格消息（protocolVersion 为前向兼容锚点，D5）。 */
 export const StressWorkerSpecSchema = z.object({
-  protocolVersion: z.literal(1),
+  protocolVersion: z.literal(2),
   shardId: z.string(),
   apiPath: z.string(),
   caseId: z.string(),
@@ -12,22 +13,24 @@ export const StressWorkerSpecSchema = z.object({
   concurrency: z.number().int().positive(),
   maxIterations: z.number().int().positive().optional(),
   durationMs: z.number().positive().optional(),
+  maxRps: z.number().finite().positive().optional(),
   workspaceRoot: z.string(),
 }).strict();
 export type StressWorkerSpec = z.infer<typeof StressWorkerSpecSchema>;
 
 /** 成功 shard 回传的原始样本批（样本结构与其余 StressSample 同构，D1：合并后统一算分位）。 */
 export const ShardResultSchema = z.object({
-  protocolVersion: z.literal(1),
+  protocolVersion: z.literal(2),
   ok: z.literal(true),
   shardId: z.string(),
-  samples: z.array(z.object({ timeMs: z.number().nonnegative(), status: z.number(), ok: z.boolean(), error: z.string().optional() })),
+  samples: z.array(StressSampleSchema),
+  generator: StressGeneratorSchema,
 }).strict();
 export type ShardResult = z.infer<typeof ShardResultSchema>;
 
 /** 失败 shard 回传的错误消息。 */
 export const ShardFailureSchema = z.object({
-  protocolVersion: z.literal(1),
+  protocolVersion: z.literal(2),
   ok: z.literal(false),
   shardId: z.string(),
   error: z.string(),
@@ -43,6 +46,7 @@ export interface ShardPlan {
   concurrency: number;
   maxIterations?: number;
   durationMs?: number;
+  maxRps?: number;
 }
 
 /**
@@ -51,7 +55,7 @@ export interface ShardPlan {
  * 非法入参抛错：shards 非正整数、终止条件缺失、iterations 少于 shards（无法保证每 shard 至少 1 迭代）。
  */
 export function planShards(
-  share: { concurrency: number; maxIterations?: number; durationMs?: number },
+  share: { concurrency: number; maxIterations?: number; durationMs?: number; maxRps?: number },
   shards: number,
 ): ShardPlan[] {
   if (!Number.isInteger(shards) || shards < 1) {
@@ -61,18 +65,26 @@ export function planShards(
     // 与 StressRunner 口径同文案。
     throw new Error("压测终止条件缺失：maxIterations 与 durationMs 必须给其一");
   }
+  if (share.maxRps !== undefined && (!Number.isFinite(share.maxRps) || share.maxRps <= 0)) {
+    throw new Error(`maxRps 必须为正数，收到 ${share.maxRps}`);
+  }
   if (share.maxIterations !== undefined && share.maxIterations < shards) {
     // 防 0 迭代 shard（均分后空份额会违反 StressWorkerSpecSchema 正整数约束），fail-fast。
     throw new Error(`shards 不能大于总迭代数（${share.maxIterations}）`);
   }
   const iterBase = share.maxIterations === undefined ? 0 : Math.floor(share.maxIterations / shards);
   const iterRemainder = share.maxIterations === undefined ? 0 : share.maxIterations % shards;
+  const rpsBase = share.maxRps === undefined ? undefined : share.maxRps / shards;
+  const rpsExcess = rpsBase === undefined ? 0 : Math.max(0, rpsBase * shards - share.maxRps!);
   const plans: ShardPlan[] = [];
   for (let i = 0; i < shards; i += 1) {
     plans.push({
       concurrency: Math.max(1, Math.floor(share.concurrency / shards) + (i < share.concurrency % shards ? 1 : 0)),
       ...(share.maxIterations !== undefined ? { maxIterations: iterBase + (i < iterRemainder ? 1 : 0) } : {}),
       ...(share.durationMs !== undefined ? { durationMs: share.durationMs } : {}),
+      ...(rpsBase !== undefined
+        ? { maxRps: i === shards - 1 ? Math.max(Number.MIN_VALUE, rpsBase - rpsExcess) : rpsBase }
+        : {}),
     });
   }
   return plans;
@@ -125,6 +137,8 @@ export function mergeStressReport(
 ): StressReport {
   const report = computeReport(samples, meta);
   report.distributed = {
+    protocolVersion: 2,
+    dataComplete: distributed.dataComplete,
     shards: distributed.shards,
     perShard: distributed.perShard,
     ...(distributed.shardErrors !== undefined && distributed.shardErrors.length > 0
@@ -148,9 +162,10 @@ export class DistributedStressCoordinator {
     const startedAt = Date.now();
 
     const specs = plans.map((plan, i): StressWorkerSpec => {
-      const spec: StressWorkerSpec = { ...specBase, protocolVersion: 1, shardId: `shard-${i}`, concurrency: plan.concurrency };
+      const spec: StressWorkerSpec = { ...specBase, protocolVersion: 2, shardId: `shard-${i}`, concurrency: plan.concurrency };
       if (plan.maxIterations !== undefined) spec.maxIterations = plan.maxIterations;
       if (plan.durationMs !== undefined) spec.durationMs = plan.durationMs;
+      if (plan.maxRps !== undefined) spec.maxRps = plan.maxRps;
       // 自产协议消息过 schema：specBase 非法（如终止条件缺失）在此暴露。
       return StressWorkerSpecSchema.parse(spec);
     });
@@ -166,6 +181,7 @@ export class DistributedStressCoordinator {
     const merged: StressSample[] = [];
     const perShard: StressDistributed["perShard"] = [];
     const shardErrors: { shardId: string; error: string }[] = [];
+    const generators: StressGeneratorMetrics[] = [];
     let successConcurrency = 0;
 
     specs.forEach((spec, i) => {
@@ -191,6 +207,7 @@ export class DistributedStressCoordinator {
       }
       const samples = attempt.result.samples;
       merged.push(...samples);
+      generators.push(attempt.result.generator);
       const okCount = samples.filter((s) => s.ok).length;
       perShard.push({
         shardId: spec.shardId,
@@ -198,6 +215,7 @@ export class DistributedStressCoordinator {
         ok: okCount,
         failed: samples.length - okCount,
         rps: seconds > 0 ? samples.length / seconds : 0,
+        generator: attempt.result.generator,
       });
       successConcurrency += plans[i].concurrency;
     });
@@ -208,7 +226,48 @@ export class DistributedStressCoordinator {
       ? successConcurrency
       : plans.reduce((sum, plan) => sum + plan.concurrency, 0);
 
-    const report = mergeStressReport(merged, { shards, perShard, shardErrors }, { concurrency, startedAt, finishedAt });
+    const dataComplete = shardErrors.length === 0;
+    const report = mergeStressReport(
+      merged,
+      { shards, perShard, shardErrors, dataComplete, protocolVersion: 2 },
+      { concurrency, startedAt, finishedAt },
+    );
+    if (generators.length > 0) report.generator = aggregateGeneratorMetrics(generators);
+    if (!dataComplete) {
+      const violations = report.verdict?.violations ?? [];
+      report.verdict = {
+        passed: false,
+        violations: [
+          ...violations,
+          { metric: "businessFailures", actual: shardErrors.length, expected: 0, message: `${shardErrors.length} shard(s) failed; report data is incomplete` },
+        ],
+      };
+    }
     return { report, shardFailureCount: shardErrors.length };
   }
+}
+
+/** Aggregate independent process metrics without averaging resource peaks. */
+function aggregateGeneratorMetrics(generators: StressGeneratorMetrics[]): StressGeneratorMetrics {
+  const reasons: StressGeneratorMetrics["reasons"] = [];
+  for (const generator of generators) {
+    for (const reason of generator.reasons) if (!reasons.includes(reason)) reasons.push(reason);
+  }
+  return {
+    cpuUserMs: generators.reduce((sum, generator) => sum + generator.cpuUserMs, 0),
+    cpuSystemMs: generators.reduce((sum, generator) => sum + generator.cpuSystemMs, 0),
+    cpuPercent: generators.reduce((sum, generator) => sum + generator.cpuPercent, 0),
+    // RSS start describes the combined baseline footprint; peak is explicitly a process peak.
+    rssStartBytes: generators.reduce((sum, generator) => sum + generator.rssStartBytes, 0),
+    rssPeakBytes: Math.max(...generators.map((generator) => generator.rssPeakBytes)),
+    eventLoopDelayP95Ms: Math.max(...generators.map((generator) => generator.eventLoopDelayP95Ms)),
+    schedulerBacklogMax: Math.max(...generators.map((generator) => generator.schedulerBacklogMax)),
+    saturated: generators.some((generator) => generator.saturated),
+    reasons,
+    limits: {
+      cpuPercent: Math.max(...generators.map((generator) => generator.limits.cpuPercent)),
+      eventLoopDelayP95Ms: Math.max(...generators.map((generator) => generator.limits.eventLoopDelayP95Ms)),
+      schedulerBacklog: Math.max(...generators.map((generator) => generator.limits.schedulerBacklog)),
+    },
+  };
 }

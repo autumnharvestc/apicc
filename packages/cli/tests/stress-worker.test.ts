@@ -27,6 +27,13 @@ const tempRoots: string[] = [];
 
 const API_PATH = "groups/demo/projects/svc/collections/api/apis/ok";
 
+const generator = () => ({
+  cpuUserMs: 1, cpuSystemMs: 2, cpuPercent: 3, rssStartBytes: 10, rssPeakBytes: 20,
+  eventLoopDelayP95Ms: 4, schedulerBacklogMax: 0, saturated: false, reasons: [] as [],
+  limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
+});
+const sample = (timeMs: number) => ({ timeMs, requestTimeMs: timeMs, scriptTimeMs: 0, iterationTimeMs: timeMs, status: 200, ok: true });
+
 /** 读 runs 目录下最新的 stress-*.json 报告（文件名排序取末位，不依赖 readdir 目录序假设）。 */
 function readLastReport(runsDir: string): Record<string, unknown> {
   const files = readdirSync(runsDir).filter((f) => f.startsWith("stress-") && f.endsWith(".json")).sort();
@@ -99,7 +106,7 @@ describe("stress-worker 子命令", () => {
     const outcome = ShardResultSchema.parse(JSON.parse(out[0]!));
     expect(outcome.ok).toBe(true);
     expect(outcome.shardId).toBe("s0");
-    expect(outcome.protocolVersion).toBe(1);
+    expect(outcome.protocolVersion).toBe(2);
     // totalRequests 以 samples.length 验证（计划步骤 1 测试 1 的口径）。
     expect(outcome.samples).toHaveLength(4);
     expect(outcome.samples.every((s) => s.ok && s.status === 200)).toBe(true);
@@ -165,7 +172,7 @@ describe("run-stress --shards", () => {
           const samples = Array.from({ length: spec.maxIterations ?? 0 }, (_, i) => ({
             timeMs: 5 + i, status: 200, ok: true,
           }));
-          return { protocolVersion: 1, ok: true as const, shardId: spec.shardId, samples };
+          return { protocolVersion: 2, ok: true as const, shardId: spec.shardId, samples: samples.map((s) => ({ ...s, requestTimeMs: s.timeMs, scriptTimeMs: 0, iterationTimeMs: s.timeMs })), generator: generator() };
         };
       },
     };
@@ -187,7 +194,7 @@ describe("run-stress --shards", () => {
     expect(specs.map((s) => s.concurrency).sort()).toEqual([2, 2]);
     expect(specs.map((s) => s.shardId)).toEqual(["shard-0", "shard-1"]);
     for (const s of specs) {
-      expect(s.protocolVersion).toBe(1);
+      expect(s.protocolVersion).toBe(2);
       expect(s.apiPath).toBe(API_PATH);
       expect(s.caseId).toBe("00000000-0000-4000-8000-000000000015");
       expect(s.envName).toBe("dev");
@@ -216,12 +223,12 @@ describe("run-stress --shards", () => {
         factoryTimeoutMs = ms;
         return async (spec) => {
           if (spec.shardId === "shard-1") {
-            return { protocolVersion: 1, ok: false as const, shardId: spec.shardId, error: "注入的 shard 失败" };
+            return { protocolVersion: 2, ok: false as const, shardId: spec.shardId, error: "注入的 shard 失败" };
           }
           const samples = Array.from({ length: spec.maxIterations ?? 0 }, (_, i) => ({
             timeMs: 3 + i, status: 200, ok: true,
           }));
-          return { protocolVersion: 1, ok: true as const, shardId: spec.shardId, samples };
+          return { protocolVersion: 2, ok: true as const, shardId: spec.shardId, samples: samples.map((s) => ({ ...s, requestTimeMs: s.timeMs, scriptTimeMs: 0, iterationTimeMs: s.timeMs })), generator: generator() };
         };
       },
     };
@@ -283,8 +290,8 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
 
   it("污染行 + 末行 JSON：跳过日志行取末条合法 ShardOutcome", () => {
     const result: ShardResult = {
-      protocolVersion: 1, ok: true, shardId: "s0",
-      samples: [{ timeMs: 1, status: 200, ok: true }],
+      protocolVersion: 2, ok: true, shardId: "s0",
+      samples: [sample(1)], generator: generator(),
     };
     const stdout = [
       "[INFO] worker 启动",
@@ -296,7 +303,7 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
   });
 
   it("末行 ShardFailure 同样可解析（失败路径协议行）", () => {
-    const failure: ShardFailure = { protocolVersion: 1, ok: false, shardId: "s7", error: "未找到用例" };
+    const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: "s7", error: "未找到用例" };
     const stdout = `noise\n${JSON.stringify(failure)}\n`;
     const outcome = parseShardOutcomeStdout(stdout, { shardId: "s7", exitCode: 1 });
     expect(outcome.ok).toBe(false);
@@ -312,8 +319,8 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
   });
 
   it("非末行历史协议行不被回取：仅取从末第一条合法行（旧结果行被末行覆盖）", () => {
-    const stale: ShardFailure = { protocolVersion: 1, ok: false, shardId: "s0", error: "旧" };
-    const fresh: ShardResult = { protocolVersion: 1, ok: true, shardId: "s0", samples: [] };
+    const stale: ShardFailure = { protocolVersion: 2, ok: false, shardId: "s0", error: "旧" };
+    const fresh: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [], generator: generator() };
     const stdout = `${JSON.stringify(stale)}\n${JSON.stringify(fresh)}`;
     expect(parseShardOutcomeStdout(stdout, ctx)).toEqual(fresh);
   });

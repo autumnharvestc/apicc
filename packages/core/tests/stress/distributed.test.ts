@@ -14,22 +14,33 @@ import { StressReportSchema } from "../../src/stress/model.js";
 import type { StressSample } from "../../src/stress/model.js";
 
 /** 成功 shard 替身回传：固定样本批。 */
-const shardResult = (shardId: string, timeMsList: number[]): ShardResult => ({
-  protocolVersion: 1,
+const shardResult = (shardId: string, timeMsList: number[], metrics?: Partial<ShardResult["generator"]>): ShardResult => ({
+  protocolVersion: 2,
   ok: true,
   shardId,
-  samples: timeMsList.map((t) => ({ timeMs: t, status: 200, ok: true })),
+  samples: timeMsList.map((t) => ({ timeMs: t, requestTimeMs: t, scriptTimeMs: 0, iterationTimeMs: t, status: 200, ok: true })),
+  generator: {
+    cpuUserMs: 1, cpuSystemMs: 2, cpuPercent: 3, rssStartBytes: 10, rssPeakBytes: 20,
+    eventLoopDelayP95Ms: 4, schedulerBacklogMax: 0, saturated: false, reasons: [],
+    limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
+    ...metrics,
+  },
 });
 
 /** 失败 shard 替身回传。 */
 const shardFailure = (shardId: string, error: string): ShardFailure => ({
-  protocolVersion: 1,
+  protocolVersion: 2,
   ok: false,
   shardId,
   error,
 });
 
 describe("planShards", () => {
+  it("maxRps 按 shard 均分且配额总和不超过全局上限", () => {
+    const plans = planShards({ concurrency: 2, maxIterations: 8, maxRps: 1 }, 3);
+    expect(plans.map((p) => p.maxRps)).toEqual([1 / 3, 1 / 3, 1 / 3]);
+    expect(plans.reduce((sum, p) => sum + (p.maxRps ?? 0), 0)).toBeLessThanOrEqual(1);
+  });
   it("iterations 均分：12/3 → [4,4,4]", () => {
     const plans = planShards({ concurrency: 3, maxIterations: 12 }, 3);
     expect(plans.map((p) => p.maxIterations)).toEqual([4, 4, 4]);
@@ -106,7 +117,7 @@ describe("DistributedStressCoordinator", () => {
     expect(
       seen.every(
         (s) =>
-          s.protocolVersion === 1 &&
+          s.protocolVersion === 2 &&
           s.apiPath === "/api/pet" &&
           s.caseId === "c1" &&
           s.workspaceRoot === "/ws",
@@ -117,8 +128,8 @@ describe("DistributedStressCoordinator", () => {
     expect(report.concurrency).toBe(3); // 各成功 shard 分得并发之和
     expect(report.distributed?.shards).toBe(2);
     expect(report.distributed?.perShard).toEqual([
-      { shardId: "shard-0", totalRequests: 4, ok: 4, failed: 0, rps: expect.any(Number) },
-      { shardId: "shard-1", totalRequests: 4, ok: 4, failed: 0, rps: expect.any(Number) },
+      expect.objectContaining({ shardId: "shard-0", totalRequests: 4, ok: 4, failed: 0, rps: expect.any(Number) }),
+      expect.objectContaining({ shardId: "shard-1", totalRequests: 4, ok: 4, failed: 0, rps: expect.any(Number) }),
     ]);
     // perShard rps 口径 = shard 请求数 ÷ 协调窗口秒（与整体 rps 同窗）
     for (const s of report.distributed?.perShard ?? []) {
@@ -164,7 +175,7 @@ describe("DistributedStressCoordinator", () => {
     expect(report.ok).toBe(2);
     expect(report.concurrency).toBe(3);
     expect(report.distributed?.perShard).toEqual([
-      { shardId: "shard-0", totalRequests: 2, ok: 2, failed: 0, rps: expect.any(Number) },
+      expect.objectContaining({ shardId: "shard-0", totalRequests: 2, ok: 2, failed: 0, rps: expect.any(Number) }),
     ]);
     expect(report.distributed?.shardErrors).toEqual([
       { shardId: "shard-1", error: "worker 进程崩溃" },
@@ -211,7 +222,7 @@ describe("DistributedStressCoordinator", () => {
     // 分得 [2,1]，仅成功 shard-1 分得 1
     expect(report.concurrency).toBe(1);
     expect(report.distributed?.perShard).toEqual([
-      { shardId: "shard-1", totalRequests: 2, ok: 2, failed: 0, rps: expect.any(Number) },
+      expect.objectContaining({ shardId: "shard-1", totalRequests: 2, ok: 2, failed: 0, rps: expect.any(Number) }),
     ]);
     expect(report.distributed?.shardErrors).toEqual([
       { shardId: "shard-0", error: "shard-0 启动失败" },
@@ -244,6 +255,35 @@ describe("DistributedStressCoordinator", () => {
     expect(shardFailureCount).toBe(1);
     expect(report.distributed?.shardErrors?.[0]?.shardId).toBe("shard-0");
     expect(report.distributed?.shardErrors?.[0]?.error).toContain("协议");
+  });
+
+  it("v1 输出被明确拒绝，且失败使 dataComplete=false、verdict=false", async () => {
+    const { report, shardFailureCount } = await coordinator.run(specBase, {
+      shards: 1,
+      spawnWorker: async () => ({ protocolVersion: 1, ok: false, shardId: "shard-0", error: "legacy" } as unknown as ShardOutcome),
+    });
+    expect(shardFailureCount).toBe(1);
+    expect(report.distributed?.dataComplete).toBe(false);
+    expect(report.distributed?.shardErrors?.[0]?.error).toContain("协议");
+    expect(report.verdict?.passed).toBe(false);
+  });
+
+  it("跨 shard 合并 assertion failure 并聚合 generator 指标", async () => {
+    const result = (id: string, user: number, rss: number): ShardResult => ({
+      ...shardResult(id, [10]),
+      samples: [{ requestTimeMs: 10, scriptTimeMs: 0, iterationTimeMs: 10, status: 200, ok: false, failureKind: "assertion" }],
+      generator: { ...shardResult(id, [10]).generator, cpuUserMs: user, rssPeakBytes: rss, reasons: ["cpu"], saturated: true },
+    });
+    const { report } = await coordinator.run({ ...specBase, maxIterations: 2 }, {
+      shards: 2,
+      spawnWorker: async (spec) => result(spec.shardId, spec.shardId === "shard-0" ? 3 : 5, spec.shardId === "shard-0" ? 20 : 30),
+    });
+    expect(report.failures.assertion).toBe(2);
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.generator?.cpuUserMs).toBe(8);
+    expect(report.generator?.rssPeakBytes).toBe(30);
+    expect(report.generator?.reasons).toEqual(["cpu"]);
+    expect(report.generator?.saturated).toBe(true);
   });
 });
 
