@@ -10,13 +10,14 @@ import type { ExecutionResponse } from "../../src/plugin/types.js";
 const response: ExecutionResponse = { status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 };
 
 const api: ApiDefinition = {
-  id: "api-1", name: "orders", version: "1.0.0", deprecated: false, method: "GET", url: "/orders/{{row}}?vu={{counter}}&row={{row}}",
+  id: "api-1", name: "orders", version: "1.0.0", deprecated: false, method: "GET", url: "http://trusted.example/orders/{{row}}?vu={{counter}}&row={{row}}",
   headers: [], query: [], cases: [], protocol: "http",
 };
 
 const project: Project = {
   id: "project-1", name: "project", variables: {}, environments: [], collections: [], workflows: [],
   globals: { query: [], headers: [], cookies: [], body: [] },
+  stressPolicy: { trustedOrigins: ["http://trusted.example"], deniedOrigins: [] },
 };
 const collection: Collection = { id: "collection-1", name: "collection", variables: {}, folders: [], apis: [api] };
 const workspace: Workspace = { id: "workspace-1", name: "workspace", variables: {}, groups: [] };
@@ -72,8 +73,8 @@ describe("createStressCaseSession", () => {
     expect((await sessionB.execute()).outcome.passed).toBe(true);
     expect((await sessionB.execute()).outcome.passed).toBe(true);
     expect(seen).toEqual([
-      "/orders/A?vu=1&row=A", "/orders/B?vu=2&row=B",
-      "/orders/A?vu=1&row=A", "/orders/B?vu=2&row=B",
+      "http://trusted.example/orders/A?vu=1&row=A", "http://trusted.example/orders/B?vu=2&row=B",
+      "http://trusted.example/orders/A?vu=1&row=A", "http://trusted.example/orders/B?vu=2&row=B",
     ]);
     expect(created).toHaveBeenCalledTimes(2);
     await Promise.all([sessionA.close(), sessionA.close(), sessionB.close()]);
@@ -95,7 +96,7 @@ describe("createStressCaseSession", () => {
     const session = createStressCaseSession(target(testCase), baseDeps, {
       workerId: 0,
       authorizeRequest(request) {
-        expect(request.url).toBe("/orders/{{row}}?vu={{counter}}&row={{row}}");
+        expect(request.url).toBe("http://trusted.example/orders/{{row}}?vu={{counter}}&row={{row}}");
         throw new Error("target rejected");
       },
     });
@@ -103,6 +104,63 @@ describe("createStressCaseSession", () => {
     expect(result.outcome.passed).toBe(false);
     expect(result.failureKind).toBe("config");
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["http", "/relative/orders"],
+    ["http", "ftp://example.com/orders"],
+    [undefined, "/relative/orders"],
+    [undefined, "ftp://example.com/orders"],
+  ] as const)("HTTP/缺省协议的最终 URL %s %s 非绝对 HTTP(S) 时在 resolveProtocol 前 config 拒绝", async (protocol, url) => {
+    const execute = vi.fn(async () => response);
+    const resolveProtocol = vi.fn((): ManagedProtocolClient => ({ name: "registry", canHandle: () => true, execute, close: async () => {} }));
+    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const invalidApi = { ...api, protocol, url };
+    const session = createStressCaseSession({
+      ...target(testCase), api: invalidApi, collection: { ...collection, apis: [invalidApi] },
+    }, {
+      createManagedClient: () => managed,
+      resolveProtocol,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0 });
+    const result = await session.execute();
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.passed).toBe(false);
+    expect(resolveProtocol).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("显式 websocket/plugin 协议即使 URL 恰为 HTTPS 也保持原文直达 registry，不套 allow-target", async () => {
+    const managedExecute = vi.fn(async () => response);
+    const pluginExecute = vi.fn(async (request: ExecutableRequest) => {
+      expect(request.url).toBe("HTTPS://Plugin.Example/orders");
+      return response;
+    });
+    const plugin: ManagedProtocolClient = { name: "plugin", canHandle: () => true, execute: pluginExecute, close: async () => {} };
+    const resolveProtocol = vi.fn(() => plugin);
+    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute: managedExecute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const pluginApi = { ...api, protocol: "websocket" as const, url: "HTTPS://Plugin.Example/orders" };
+    const session = createStressCaseSession({
+      ...target(testCase), api: pluginApi, collection: { ...collection, apis: [pluginApi] },
+    }, {
+      createManagedClient: () => managed,
+      resolveProtocol,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0 });
+    const result = await session.execute();
+    expect(result.outcome.passed).toBe(true);
+    expect(resolveProtocol).toHaveBeenCalledTimes(1);
+    expect(pluginExecute).toHaveBeenCalledTimes(1);
+    expect(managedExecute).not.toHaveBeenCalled();
+    expect(result.safety).toBeUndefined();
   });
 
   it("数据、脚本和认证改写最终 origin 后仍由 authorizeRequest 拒绝且不发包", async () => {
@@ -341,7 +399,7 @@ describe("createStressCaseSession", () => {
     }, { workerId: 0 });
     const result = await session.execute();
     expect(result.failureKind).toBe("config");
-    expect(result.outcome.error).toContain("SOAP");
+    expect(result.outcome.error).toContain("HTTP(S)");
     expect(resolveProtocol).not.toHaveBeenCalled();
   });
 

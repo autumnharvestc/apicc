@@ -138,21 +138,23 @@ function sessionEnv(target: StressCaseTarget): Record<string, string> {
 
 /** Parse the post-script/auth URL with WHATWG semantics before any protocol I/O. */
 function parseFinalUrl(url: string, protocol?: string): URL | undefined {
+  const requiresHttpUrl = protocol === undefined || protocol === "http" || protocol === "soap";
+  if (!requiresHttpUrl) {
+    // Explicit non-HTTP(S) domains own URL parsing and canonicalization. In
+    // particular, a websocket/plugin request with an HTTPS-looking URL must
+    // retain its original URL and continue through the registry.
+    return undefined;
+  }
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    if (protocol === "soap") {
-      throw Object.assign(new Error("SOAP 请求 URL 必须是绝对 HTTP(S) URL"), { caseFailureKind: "config" as const });
-    }
-    // Non-HTTP(S) plugin protocols retain their existing registry behavior;
-    // they are not forced through HTTP origin policy or URL parsing.
-    return undefined;
+    throw Object.assign(new Error("HTTP(S) 请求 URL 必须是绝对 HTTP(S) URL"), { caseFailureKind: "config" as const });
   }
   const normalizedProtocol = parsed.protocol.toLowerCase();
   const isHttp = normalizedProtocol === "http:" || normalizedProtocol === "https:";
-  if (protocol === "soap" && !isHttp) {
-    throw Object.assign(new Error("SOAP 请求 URL 必须是绝对 HTTP(S) URL"), { caseFailureKind: "config" as const });
+  if (!isHttp) {
+    throw Object.assign(new Error("HTTP(S) 请求 URL 必须是绝对 HTTP(S) URL"), { caseFailureKind: "config" as const });
   }
   return isHttp ? parsed : undefined;
 }
