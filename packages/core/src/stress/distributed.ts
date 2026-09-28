@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { computeReport, type ComputeReportOptions } from "./aggregate.js";
 import type { StressDistributed, StressGeneratorMetrics, StressReport, StressSample, StressThresholds } from "./model.js";
-import { StressGeneratorSchema, StressSampleSchema } from "./model.js";
+import { CurrentStressReportSchema, StressGeneratorSchema, StressSampleSchema } from "./model.js";
 
 /** 协调端下发给 shard worker 的规格消息（protocolVersion 为前向兼容锚点，D5）。 */
 export const StressWorkerSpecSchema = z.object({
@@ -205,7 +205,7 @@ export function mergeStressReport(
     .map((sample) => sample.safety)
     .filter((target): target is NonNullable<typeof target> => target !== undefined);
   const uniqueSafety = safetyTargets.filter((target, index, all) => all.findIndex((candidate) => candidate.origin === target.origin) === index);
-  if (uniqueSafety.length > 0) report.safety = { targetOrigins: uniqueSafety };
+  report.safety = { targetOrigins: uniqueSafety };
   return report;
 }
 
@@ -274,6 +274,17 @@ export class DistributedStressCoordinator {
       }
       const samples = attempt.result.samples;
       if (samples.length === 0) {
+        // Empty successful shard still has a real Task-5 collector snapshot;
+        // preserve it so the no-data report remains a valid current report.
+        generators.push(attempt.result.generator);
+        perShard.push({
+          shardId: spec.shardId,
+          totalRequests: 0,
+          ok: 0,
+          failed: 0,
+          rps: 0,
+          generator: attempt.result.generator,
+        });
         shardErrors.push({ shardId: spec.shardId, error: `协议错误[NO_DATA]：shard ${spec.shardId} 未返回可评估样本` });
         return;
       }
@@ -305,6 +316,7 @@ export class DistributedStressCoordinator {
       {
         concurrency, startedAt, finishedAt,
         thresholds: specBaseToThresholds(specBase),
+        connectionMode: specBase.connectionMode,
       },
     );
     if (generators.length > 0) report.generator = aggregateGeneratorMetrics(generators);
@@ -322,7 +334,12 @@ export class DistributedStressCoordinator {
         ],
       };
     }
-    return { report, shardFailureCount: shardErrors.length };
+    const current = CurrentStressReportSchema.safeParse(report);
+    if (!current.success) {
+      const detail = current.error.issues.map((issue) => `${issue.path.join(".") || "(根字段)"}: ${issue.message}`).join("; ");
+      throw new Error(`压测报告契约校验失败[current_report_invalid]：${detail}`);
+    }
+    return { report: current.data, shardFailureCount: shardErrors.length };
   }
 }
 

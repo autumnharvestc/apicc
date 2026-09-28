@@ -172,7 +172,7 @@ describe("createStressCaseSession", () => {
       resolveAssert: () => undefined,
       scriptEngine: { language: "javascript", run() {} },
       timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
-    }, { workerId: 0 });
+    }, { workerId: 0, confirmedTargetOrigins: ["https://plugin.example"] });
     expect((await session.execute()).outcome.passed).toBe(true);
     expect(managedCalls).toBe(0);
     expect(registryCalls).toBe(1);
@@ -193,11 +193,36 @@ describe("createStressCaseSession", () => {
       resolveAssert: () => undefined,
       scriptEngine: { language: "javascript", run() {} },
       timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
-    }, { workerId: 0 });
+    }, { workerId: 0, confirmedTargetOrigins: ["https://soap.example"] });
     expect((await session.execute()).outcome.passed).toBe(true);
     expect(managedCalls).toBe(0);
     expect(registryCalls).toBe(1);
     await session.close();
+  });
+
+  it("SOAP 的 HTTPS 最终目标同样在协议 I/O 前执行安全裁定", async () => {
+    const execute = vi.fn(async () => response);
+    const managed: ManagedProtocolClient = { name: "session-http", canHandle: () => true, execute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const soapApi = {
+      ...api, protocol: "soap" as const, method: "POST" as const,
+      url: "https://soap-untrusted.example/orders", envelope: "<Envelope/>",
+    };
+    const session = createStressCaseSession({
+      ...target(testCase), api: soapApi, collection: { ...collection, apis: [soapApi] },
+    }, {
+      createManagedClient: () => managed,
+      resolveProtocol: () => managed,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0 });
+    const result = await session.execute();
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("target_confirmation_required");
+    expect(result.safety).toMatchObject({ origin: "https://soap-untrusted.example", confirmation: "rejected" });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("空数据源按单行 undefined，并在创建时校验数据文件", async () => {

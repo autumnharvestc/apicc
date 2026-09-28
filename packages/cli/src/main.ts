@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { generatePluginPackage } from "./create-plugin.js";
 import {
   ShardOutcomeSchema,
+  CurrentStressReportSchema,
   createAiProvider,
   loadUserPlugins,
   renderDesignMarkdown,
@@ -27,6 +28,7 @@ import {
   type StressWorkerSpecBase,
   type Workspace,
   createHttpClient,
+  createSoapClient,
   createStressCaseSession,
   normalizeStressOrigin,
   StressSafetyError,
@@ -293,6 +295,7 @@ async function resolveStressTarget(
   project: Project;
   workspace: Workspace;
   env?: import("@apicc/core").Environment;
+  targetOrigin?: string;
   createRunner: (options?: {
     concurrency?: number;
     maxRps?: number;
@@ -330,28 +333,40 @@ async function resolveStressTarget(
     throw new Error(`未找到可处理该接口的协议客户端（protocol: ${probe.protocol ?? "http"}）`);
   }
   const target = { api: stressedApi, testCase, env, project, collection, workspace };
+  const targetOrigin = /^https?:\/\//i.test(probe.url) ? normalizeStressOrigin(probe.url) : undefined;
   return {
     apiId: stressedApi.id,
     api: stressedApi, testCase, collection, project, workspace, env,
+    ...(targetOrigin !== undefined ? { targetOrigin } : {}),
     createRunner: (options = {}) => {
       const maxRps = options.maxRps ?? project.stressPolicy?.maxRps;
       return new StressRunner({
         onSample: options.onSample,
-        createWorker: (workerId) => createStressCaseSession(target, {
-          resolveProtocol: (request) => registry.getProtocol(request),
-          resolveAuth: (type) => registry.getAuth(type),
-          resolveAssert: (op) => registry.getAssert(op),
-          scriptEngine: registry.getScriptEngine("javascript")!,
-          createManagedClient: () => {
-            if (defaultClient.name === "http") return createHttpClient({ connectionMode: options.connectionMode });
-            return { ...defaultClient, close: async () => {} };
-          },
-        }, {
-          workerId,
-          concurrency: options.concurrency,
-          maxRps,
-          confirmedTargetOrigins: options.confirmedTargetOrigins,
-        }),
+        createWorker: (workerId) => {
+          let ownedHttp: ReturnType<typeof createHttpClient> | undefined;
+          let ownedSoap: ReturnType<typeof createSoapClient> | undefined;
+          const createOwnedHttp = () => ownedHttp ??= createHttpClient({ connectionMode: options.connectionMode });
+          return createStressCaseSession(target, {
+            resolveProtocol: (request) => {
+              if (request.protocol === "soap" && defaultClient.name === "soap") {
+                ownedSoap ??= createSoapClient(createOwnedHttp());
+                return ownedSoap;
+              }
+              return registry.getProtocol(request);
+            },
+            resolveAuth: (type) => registry.getAuth(type),
+            resolveAssert: (op) => registry.getAssert(op),
+            scriptEngine: registry.getScriptEngine("javascript")!,
+            createManagedClient: () => defaultClient.name === "http" || defaultClient.name === "soap"
+              ? createOwnedHttp()
+              : { ...defaultClient, close: async () => {} },
+          }, {
+            workerId,
+            concurrency: options.concurrency,
+            maxRps,
+            confirmedTargetOrigins: options.confirmedTargetOrigins,
+          });
+        },
       });
     },
   };
@@ -582,6 +597,7 @@ export async function runCli(
         throw new StressSafetyError(
           "concurrency_policy_exceeded",
           `并发数 ${opts.concurrency} 超过项目上限 ${targetInfo.project.stressPolicy.maxConcurrency}`,
+          targetInfo.targetOrigin,
         );
       }
       const thresholds: StressThresholds = {
@@ -606,6 +622,7 @@ export async function runCli(
         }).run({
           concurrency: opts.concurrency, maxIterations: opts.iterations, durationMs,
           maxRps: effectiveMaxRps, ...(hasThresholds ? { thresholds } : {}),
+          connectionMode: opts.connectionMode,
         });
       } else {
         // 多 shard：构造 specBase（workspaceRoot 显式传给子进程 worker），协调器拆分/并发/汇聚。
@@ -635,6 +652,14 @@ export async function runCli(
           spawnWorker: (deps.spawnWorkerFactory ?? defaultSpawnWorkerFactory)(shardTimeoutMs),
         }));
       }
+      const currentReport = CurrentStressReportSchema.safeParse(report);
+      if (!currentReport.success) {
+        const detail = currentReport.error.issues
+          .map((issue) => `${issue.path.join(".") || "(根字段)"}: ${issue.message}`)
+          .join("; ");
+        throw new Error(`压测报告契约校验失败[current_report_invalid]：${detail}`);
+      }
+      report = currentReport.data;
       writeFileSync(join(runsOutDir, `stress-${apiId}-${Date.now()}.json`), JSON.stringify(report, null, 2));
       const l = report.latency;
       log(`压测完成：总计 ${report.totalRequests} · 成功 ${report.ok} · 失败 ${report.failed} · RPS ${report.rps.toFixed(1)}`);
@@ -655,9 +680,13 @@ export async function runCli(
         log(`verdict: ${report.verdict.passed ? "passed" : "failed"}`);
         for (const violation of report.verdict.violations) log(`[阈值失败] ${violation.message}`);
       }
-      const failureCategories = Object.entries(report.errorKinds).filter(([, count]) => count > 0);
+      const failureCategories = Object.entries(report.failures ?? {}).filter(([, count]) => count > 0);
       if (failureCategories.length > 0) {
         log(`失败分类: ${failureCategories.map(([kind, count]) => `${kind}=${count}`).join(", ")}`);
+      }
+      const errorKinds = Object.entries(report.errorKinds).filter(([, count]) => count > 0);
+      if (errorKinds.length > 0) {
+        log(`错误明细: ${errorKinds.map(([kind, count]) => `${kind}=${count}`).join(", ")}`);
       }
       if (report.safety?.targetOrigins.length) {
         log(`target origins: ${report.safety.targetOrigins.map((target) => target.origin).join(", ")}`);
@@ -721,7 +750,11 @@ export async function runCli(
           : targetInfo.project.stressPolicy?.maxRps === undefined
             ? opts.maxRps : Math.min(opts.maxRps, targetInfo.project.stressPolicy.maxRps);
         if (targetInfo.project.stressPolicy?.maxConcurrency !== undefined && opts.concurrency > targetInfo.project.stressPolicy.maxConcurrency) {
-          throw new Error(`并发数 ${opts.concurrency} 超过项目上限 ${targetInfo.project.stressPolicy.maxConcurrency}`);
+          throw new StressSafetyError(
+            "concurrency_policy_exceeded",
+            `并发数 ${opts.concurrency} 超过项目上限 ${targetInfo.project.stressPolicy.maxConcurrency}`,
+            targetInfo.targetOrigin,
+          );
         }
         const samples: ShardResult["samples"] = [];
         const thresholds: StressThresholds = {
@@ -751,10 +784,11 @@ export async function runCli(
           durationMs: opts.duration === undefined ? undefined : opts.duration * 1000,
           maxRps: effectiveMaxRps,
           ...(Object.keys(thresholds).length > 0 ? { thresholds } : {}),
+          connectionMode: opts.connectionMode,
         });
         if (!report.generator) throw new Error("worker 未生成 generator 指标");
         const result: ShardResult = { protocolVersion: 2, ok: true, shardId: opts.shardId, samples, generator: report.generator };
-        out(JSON.stringify(result));
+        out(JSON.stringify(ShardOutcomeSchema.parse(result)));
         process.exitCode = 0;
       } catch (e) {
         fail(e instanceof Error ? e.message : String(e));

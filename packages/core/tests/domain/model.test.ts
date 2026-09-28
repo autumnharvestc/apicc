@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiDefinitionSchema, ProjectSchema, TestCaseSchema } from "../../src/domain/model.js";
+import { ApiDefinitionSchema, ProjectSchema, StressPolicySchema, TestCaseSchema } from "../../src/domain/model.js";
 
 describe("域 schema", () => {
   it("接受合法接口定义", () => {
@@ -58,5 +58,17 @@ describe("Project.stressPolicy 字段", () => {
       maxConcurrency: 4,
       maxRps: 12.5,
     });
+  });
+
+  it("非法 origin 通过 safeParse 返回 Zod issue，而不是抛 StressSafetyError", () => {
+    const parsed = StressPolicySchema.safeParse({ trustedOrigins: ["ftp://not-http.example"] });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues.length).toBeGreaterThan(0);
+  });
+
+  it("非法 URL/协议让 ProjectSchema.safeParse 失败", () => {
+    expect(ProjectSchema.safeParse({
+      id: "p", name: "x", variables: {}, stressPolicy: { deniedOrigins: ["not a url"] },
+    }).success).toBe(false);
   });
 });

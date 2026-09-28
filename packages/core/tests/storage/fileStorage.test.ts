@@ -43,6 +43,35 @@ describe("fileStorage", () => {
     expect(loaded.groups[0]?.projects[0]?.collections[0]?.id).toBe(C1);
   });
 
+  it("合法 YAML 的 BOM/引号 stressPolicy 键在 load→save 后不丢失", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    await fileStorage.save(root, workspace);
+    const pFile = join(projectDir(root), "project.yaml");
+    writeFileSync(pFile, `\uFEFF"id": ${P1}\n"name": order-service\n"variables": {}\n"stressPolicy":\n  "trustedOrigins":\n    - "HTTPS://Example.COM:443/path"\n`);
+    const loaded = await fileStorage.load(root);
+    expect(loaded.problems).toEqual([]);
+    expect(loaded.workspace.groups[0]!.projects[0]!.stressPolicy).toEqual({
+      trustedOrigins: ["https://example.com"], deniedOrigins: [],
+    });
+    await fileStorage.save(root, loaded.workspace);
+    const reloaded = await fileStorage.load(root);
+    expect(reloaded.problems).toEqual([]);
+    expect(reloaded.workspace.groups[0]!.projects[0]!.stressPolicy).toEqual({
+      trustedOrigins: ["https://example.com"], deniedOrigins: [],
+    });
+  });
+
+  it("项目 stressPolicy 非法时记 LoadProblem，不中断其余工作区加载", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
+    await fileStorage.save(root, workspace);
+    const pFile = join(projectDir(root), "project.yaml");
+    writeFileSync(pFile, `id: ${P1}\nname: order-service\nvariables: {}\nstressPolicy:\n  trustedOrigins:\n    - ftp://not-http.example\n`);
+    const loaded = await fileStorage.load(root);
+    expect(loaded.workspace.groups[0]!.projects).toEqual([]);
+    expect(loaded.problems.some((problem) => problem.file.endsWith("project.yaml"))).toBe(true);
+    expect(loaded.problems.some((problem) => problem.message.includes("stressPolicy"))).toBe(true);
+  });
+
   it("接口 design.md 与用例环境后缀落盘并读回", async () => {
     const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
     const ws: Workspace = {

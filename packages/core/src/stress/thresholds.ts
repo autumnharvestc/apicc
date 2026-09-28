@@ -28,7 +28,15 @@ export function evaluateStressThresholds(report: StressReport, thresholds: Stres
   if (thresholds.minRps !== undefined && report.rps < thresholds.minRps) {
     violations.push({ metric: "rps", actual: report.rps, expected: thresholds.minRps, message: `rps ${report.rps} is below ${thresholds.minRps}` });
   }
-  if (businessFailures > 0 && Object.values(thresholds).every((value) => value === undefined)) {
+  // Performance thresholds are orthogonal to business correctness. A failure
+  // is governed only when an applicable failure-rate threshold exists: the
+  // global error rate governs every non-aborted failure, while assertion rate
+  // governs assertion failures only. Any remaining failure keeps the verdict
+  // failed even when p95/minRps happen to pass.
+  const governedFailures = thresholds.maxErrorRate !== undefined
+    ? businessFailures
+    : thresholds.maxAssertionFailureRate !== undefined ? failures.assertion : 0;
+  if (businessFailures > governedFailures) {
     violations.push({ metric: "businessFailures", actual: businessFailures, expected: 0, message: `${businessFailures} business request(s) failed` });
   }
 

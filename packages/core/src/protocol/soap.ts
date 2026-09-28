@@ -1,4 +1,4 @@
-import { httpClient } from "../http/client.js";
+import { httpClient, type ManagedProtocolClient } from "../http/client.js";
 import type { ExecutableRequest, ExecutionResponse, HttpExecuteOptions, ProtocolClient } from "../plugin/types.js";
 import { canHandleProtocol } from "./index.js";
 
@@ -14,23 +14,27 @@ import { canHandleProtocol } from "./index.js";
  * 响应映射：status/headers/bodyText/timeMs 即 HTTP 语义透传——SOAP fault（非 2xx）是
  * 合法响应而非执行错误，由断言层处理。
  */
-export const soapClient: ProtocolClient = {
-  name: "soap",
-  canHandle: (req) => canHandleProtocol(req, "soap"),
-  async execute(req: ExecutableRequest, opts: HttpExecuteOptions): Promise<ExecutionResponse> {
-    if (req.envelope === undefined) {
-      throw new Error("soap 请求必须提供 envelope（XML 信封模板）");
-    }
-    const headers = { ...req.headers };
-    if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
-      headers["content-type"] = "text/xml; charset=utf-8";
-    }
-    if (req.soapAction !== undefined) {
-      headers["SOAPAction"] = req.soapAction;
-    }
-    return await httpClient.execute(
-      { ...req, method: "POST", headers, body: { kind: "xml", content: req.envelope } },
-      opts,
-    );
-  },
-};
+export function createSoapClient(transport: ManagedProtocolClient): ProtocolClient {
+  return {
+    name: "soap",
+    canHandle: (req) => canHandleProtocol(req, "soap"),
+    async execute(req: ExecutableRequest, opts: HttpExecuteOptions): Promise<ExecutionResponse> {
+      if (req.envelope === undefined) {
+        throw new Error("soap 请求必须提供 envelope（XML 信封模板）");
+      }
+      const headers = { ...req.headers };
+      if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
+        headers["content-type"] = "text/xml; charset=utf-8";
+      }
+      if (req.soapAction !== undefined) {
+        headers["SOAPAction"] = req.soapAction;
+      }
+      return await transport.execute(
+        { ...req, method: "POST", headers, body: { kind: "xml", content: req.envelope } },
+        opts,
+      );
+    },
+  };
+}
+
+export const soapClient: ProtocolClient = createSoapClient(httpClient);

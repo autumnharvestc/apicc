@@ -136,6 +136,7 @@ describe("多协议混合集合端到端（M5 验收）", () => {
       [
         "run-stress", "groups/demo/projects/mixed/collections/mixed/apis/soap-add",
         "--case", "00000000-0000-4000-8000-000000000050", "--env", "dev", "--concurrency", "2", "--iterations", "6",
+        "--allow-target", httpBaseUrl,
         "--runs-dir", join(root, "runs"),
       ],
       (await import("@apicc/core")).createDefaultRegistry(),

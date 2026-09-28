@@ -30,6 +30,7 @@ export interface StressRunOptions {
   thresholds?: StressThresholds;
   /** Safety upper bound shared by all workers. It is not an arrival-rate target. */
   maxRps?: number;
+  connectionMode?: "pooled" | "fresh";
 }
 
 interface PermitWaiter {
@@ -356,11 +357,15 @@ export class StressRunner {
       if (hasPrimaryError) throw primaryError;
       if (hasCleanupError) throw cleanupError;
       report = computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds });
+      if (runOpts.connectionMode !== undefined) report.connectionMode = runOpts.connectionMode;
       const safetyTargets = samples
         .map((sample) => sample.safety)
         .filter((target): target is NonNullable<typeof target> => target !== undefined);
       const uniqueSafety = safetyTargets.filter((target, index, all) => all.findIndex((candidate) => candidate.origin === target.origin) === index);
-      if (uniqueSafety.length > 0) report.safety = { targetOrigins: uniqueSafety };
+      // Current reports always carry a safety section.  An empty list is the
+      // explicit no-data/no-I/O shape; legacy callers still read through the
+      // optional StressReportSchema.
+      report.safety = { targetOrigins: uniqueSafety };
       if (samples.length === 0) {
         report.verdict = {
           passed: false,

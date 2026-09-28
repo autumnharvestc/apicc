@@ -61,6 +61,13 @@ describe("StressRunner", () => {
     expect(report.concurrency).toBe(4);
   });
 
+  it("报告记录实际 connectionMode 配置", async () => {
+    const report = await makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] })).run({
+      concurrency: 1, maxIterations: 1, connectionMode: "fresh",
+    });
+    expect(report.connectionMode).toBe("fresh");
+  });
+
   it("时长模式：deadline 后停止且至少完成一次采样", async () => {
     hit = 0;
     const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));

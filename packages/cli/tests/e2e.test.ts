@@ -356,6 +356,7 @@ describe("CLI 端到端", () => {
     ], createDefaultRegistry(), (line) => logs.push(line));
     expect(code).toBe(1);
     expect(logs.join("\n")).toContain("verdict: failed");
+    expect(logs.join("\n")).toContain("失败分类: assertion=1");
     expect(logs.join("\n")).toContain("target origins");
   }, 30000);
 

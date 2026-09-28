@@ -217,7 +217,13 @@ const RawStressPolicySchema = z.object({
   deniedOrigins: z.array(z.string()).default([]),
   maxConcurrency: z.number().int().positive().optional(),
   maxRps: z.number().finite().positive().optional(),
-}).strict();
+}).strict().superRefine((policy, ctx) => {
+  try {
+    normalizeStressPolicy(policy);
+  } catch (error) {
+    ctx.addIssue({ code: "custom", path: [], message: error instanceof Error ? error.message : String(error) });
+  }
+});
 export const StressPolicySchema = z.preprocess(
   (input) => input === undefined ? {} : input,
   RawStressPolicySchema.transform((policy) => normalizeStressPolicy(policy)),

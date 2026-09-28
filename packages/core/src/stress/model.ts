@@ -181,7 +181,22 @@ export const StressReportSchema = z.object({
   incomplete: z.boolean().optional(),
   generator: StressGeneratorSchema.optional(),
   safety: StressSafetySchema.optional(),
+  connectionMode: z.enum(["pooled", "fresh"]).optional(),
 }).strict();
+/**
+ * Contract for reports produced by a current stress run.  StressReportSchema
+ * intentionally remains permissive so historical JSON can still be read; all
+ * new CLI/worker output must pass this stricter shape before it is emitted.
+ */
+export const CurrentStressReportSchema = StressReportSchema.extend({
+  failures: StressFailureCountsSchema,
+  scriptLatency: latencySchema,
+  iterationLatency: latencySchema,
+  verdict: verdictSchema,
+  generator: StressGeneratorSchema,
+  safety: StressSafetySchema,
+});
+export type CurrentStressReport = z.infer<typeof CurrentStressReportSchema>;
 type ParsedStressReport = z.infer<typeof StressReportSchema>;
 /** New reports always include the aggregate fields; parser fields remain optional for legacy files. */
 export type StressReport = Omit<ParsedStressReport, "failures" | "scriptLatency" | "iterationLatency"> & {

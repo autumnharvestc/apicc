@@ -30,14 +30,14 @@ function zodErrorSummary(e: z.ZodError): string {
  * 读入 YAML 并经对应 zod schema 严格校验（规格 §6：逐文件 schema 校验，失败进 problems；
  * 校验通过后以解析结果（含 schema 默认值）构建域对象）。
  */
-function loadYaml<S extends z.ZodType>(file: string, schema: S): { ok: true; data: z.output<S> } | { ok: false; error: string } {
+function loadYaml<S extends z.ZodType>(file: string, schema: S): { ok: true; data: z.output<S>; raw: unknown } | { ok: false; error: string } {
   const raw = readYaml<unknown>(file);
   if (!raw.ok) return raw;
   const parsed = schema.safeParse(raw.data);
   if (!parsed.success) {
     return { ok: false, error: `schema 校验失败: ${zodErrorSummary(parsed.error)}` };
   }
-  return { ok: true, data: parsed.data };
+  return { ok: true, data: parsed.data, raw: raw.data };
 }
 
 function writeYaml(file: string, data: unknown): void {
@@ -192,7 +192,11 @@ export const fileStorage: StorageAdapter = {
           // Keep the in-memory shape of legacy projects stable while ProjectSchema
           // still supplies an empty policy to new callers. Safety treats undefined
           // exactly as the empty policy, so old files need no migration write.
-          if (!/^(?:stressPolicy)\s*:/m.test(readFileSync(join(pDir, "project.yaml"), "utf8"))) {
+          // ProjectSchema 为兼容旧项目会提供空策略默认值；只有解析后的 YAML
+          // 对象确实拥有 stressPolicy 自有属性时才保留该字段，避免原始文本
+          // 正则漏掉 BOM/引号键或误判注释，并确保合法 YAML 键永不静默丢失。
+          if (typeof pRes.raw !== "object" || pRes.raw === null
+            || !Object.prototype.hasOwnProperty.call(pRes.raw, "stressPolicy")) {
             delete project.stressPolicy;
           }
 

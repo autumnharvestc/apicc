@@ -45,6 +45,19 @@ describe("evaluateStressThresholds", () => {
     ]));
   });
 
+  it("性能阈值不能掩盖 HTTP 业务失败", () => {
+    const report = computeReport([s(10, "http", 500)], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+    expect(evaluateStressThresholds(report, { maxP95Ms: 100, minRps: 0.1 }).passed).toBe(false);
+    expect(evaluateStressThresholds(report, { maxAssertionFailureRate: 1 }).passed).toBe(false);
+  });
+
+  it("maxErrorRate 明确治理全部非 aborted 失败，容忍范围内可通过", () => {
+    const report = computeReport([s(10, "http", 500), s(10)], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+    const verdict = evaluateStressThresholds(report, { maxErrorRate: 0.5 });
+    expect(verdict.passed).toBe(true);
+    expect(verdict.violations).toEqual([]);
+  });
+
   it("旧报告仍可解析，且没有 verdict 时保持未评估", () => {
     const legacy = {
       concurrency: 1, totalRequests: 1, ok: 1, failed: 0, durationMs: 1000, rps: 1,

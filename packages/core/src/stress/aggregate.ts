@@ -6,6 +6,7 @@ export interface ComputeReportOptions {
   startedAt: number;
   finishedAt: number;
   thresholds?: StressThresholds;
+  connectionMode?: "pooled" | "fresh";
 }
 
 /** nearest-rank 分位：sorted 为升序数组，取第 ceil(p/100*n) 个（1-based）；空数组返回 0。 */
@@ -105,6 +106,7 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
     iterationLatency: latency(iterationTimes),
     incomplete: failures.aborted > 0,
     thresholds: opts.thresholds,
+    connectionMode: opts.connectionMode,
   };
   report.verdict = evaluateStressThresholds(report, opts.thresholds);
   return report;

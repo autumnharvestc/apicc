@@ -208,7 +208,7 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     expect(existsSync(runsDir)).toBe(false);
   }, 60000);
 
-  it("shard 崩溃传播：/slow 挂起 + --shard-timeout 1 → 两 worker 超时判失败，exit 1 且报告 shardErrors 有条目", async () => {
+  it("shard 崩溃传播：/slow 挂起 + --shard-timeout 1 → 两 worker 超时判失败，exit 1 且不伪造缺 generator 报告", async () => {
     // 走专用 /slow 接口（8s 才响应），确保 1s shard 超时必然先到——不依赖进程启动快慢的偶然时序。
     const root = await makeWorkspace("timeout");
     const runsDir = join(root, "runs");
@@ -218,14 +218,9 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
       root,
     );
     expect(res.code).toBe(1);
-    expect(res.stdout).toContain("shard 失败");
-    const report = readLastReport(runsDir);
-    expect(report.totalRequests).toBe(0);
-    const distributed = report.distributed as {
-      shardErrors: Array<{ shardId: string; error: string }>;
-    };
-    expect(distributed.shardErrors).toHaveLength(2);
-    expect(distributed.shardErrors.map((e) => e.shardId)).toEqual(["shard-0", "shard-1"]);
-    expect(distributed.shardErrors.every((e) => e.error.includes("超时"))).toBe(true);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("current_report_invalid");
+    expect(existsSync(runsDir)).toBe(true);
+    expect(readdirSync(runsDir).filter((name) => name.endsWith(".json"))).toHaveLength(0);
   }, 60000);
 });

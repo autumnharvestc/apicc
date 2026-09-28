@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { soapClient } from "../../src/protocol/soap.js";
+import { createSoapClient, soapClient } from "../../src/protocol/soap.js";
 import { HttpExecutionError } from "../../src/http/client.js";
 import { CollectionRunner, createDefaultRegistry, createEventBus } from "../../src/index.js";
 import type { Collection, Environment, Project, Workspace } from "../../src/domain/model.js";
@@ -69,6 +69,22 @@ function soapReq(overrides: Partial<ExecutableRequest> = {}): ExecutableRequest 
 }
 
 describe("soapClient（M5 D3/D4，裁定 A）", () => {
+  it("允许注入 session-owned HTTP client，SOAP 不触碰全局 httpClient", async () => {
+    let closeCount = 0;
+    const managed = {
+      name: "session-http", canHandle: () => true,
+      execute: async (request: ExecutableRequest) => {
+        expect(request.method).toBe("POST");
+        expect(request.body?.content).toContain("AddUser");
+        return { status: 200, headers: {}, bodyText: "ok", timeMs: 1 };
+      },
+      close: async () => { closeCount += 1; },
+    };
+    const sessionSoap = createSoapClient(managed);
+    await expect(sessionSoap.execute(soapReq(), opts)).resolves.toMatchObject({ status: 200 });
+    await managed.close();
+    expect(closeCount).toBe(1);
+  });
   it("envelope 作为 XML body POST；Content-Type 缺省补 text/xml; charset=utf-8；响应透传映射", async () => {
     const res = await soapClient.execute(soapReq({ headers: { "x-probe": "m5" } }), opts);
     expect(res.status).toBe(200);

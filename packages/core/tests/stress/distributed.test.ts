@@ -10,7 +10,7 @@ import type {
   ShardResult,
   StressWorkerSpec,
 } from "../../src/stress/distributed.js";
-import { StressReportSchema, StressSampleSchema } from "../../src/stress/model.js";
+import { CurrentStressReportSchema, StressReportSchema, StressSampleSchema } from "../../src/stress/model.js";
 import type { StressSample } from "../../src/stress/model.js";
 
 /** 成功 shard 替身回传：固定样本批。 */
@@ -198,21 +198,11 @@ describe("DistributedStressCoordinator", () => {
     ]);
   });
 
-  it("全部失败：空样本报告落盘形状（totalRequests=0、shardErrors=2 条）且不抛", async () => {
-    const { report, shardFailureCount } = await coordinator.run(specBase, {
+  it("全部 shard 失败：无法伪造 generator，当前报告契约拒绝输出", async () => {
+    await expect(coordinator.run(specBase, {
       shards: 2,
       spawnWorker: async (spec) => shardFailure(spec.shardId, `case ${spec.caseId} 不存在`),
-    });
-
-    expect(shardFailureCount).toBe(2);
-    expect(report.totalRequests).toBe(0);
-    expect(report.ok).toBe(0);
-    expect(report.rps).toBe(0);
-    expect(report.distributed?.perShard).toEqual([]);
-    expect(report.distributed?.shardErrors).toHaveLength(2);
-    // 无成功 shard 时 concurrency 回退为分配总额（3），保证报告满足正整数约束、可落盘可回读
-    expect(report.concurrency).toBe(3);
-    expect(() => StressReportSchema.parse(report)).not.toThrow();
+    })).rejects.toThrow(/current_report_invalid.*generator/);
   });
 
   it("iterations 少于 shards：coordinator.run 同样 fail-fast 抛中文错误（planShards 闸口）", async () => {
@@ -247,41 +237,27 @@ describe("DistributedStressCoordinator", () => {
 
   it("超时：shardTimeoutMs 到期判 shard 失败（20ms 极短值 + 永不 resolve 替身，不真实长等）", async () => {
     const t0 = Date.now();
-    const { report, shardFailureCount } = await coordinator.run(specBase, {
+    await expect(coordinator.run(specBase, {
       shards: 2,
       shardTimeoutMs: 20,
       spawnWorker: () => new Promise<ShardOutcome>(() => undefined),
-    });
+    })).rejects.toThrow(/current_report_invalid.*generator/);
     const elapsed = Date.now() - t0;
-
-    expect(shardFailureCount).toBe(2);
-    expect(report.distributed?.shardErrors).toHaveLength(2);
-    for (const e of report.distributed?.shardErrors ?? []) {
-      expect(e.error).toContain("超时");
-    }
     expect(elapsed).toBeLessThan(5_000);
   });
 
   it("协议坏输出：载荷未通过 ShardOutcomeSchema → 判失败且 error 含「协议」", async () => {
-    const { report, shardFailureCount } = await coordinator.run(specBase, {
+    await expect(coordinator.run(specBase, {
       shards: 1,
       spawnWorker: async () => ({ junk: true }) as unknown as ShardOutcome,
-    });
-
-    expect(shardFailureCount).toBe(1);
-    expect(report.distributed?.shardErrors?.[0]?.shardId).toBe("shard-0");
-    expect(report.distributed?.shardErrors?.[0]?.error).toContain("协议");
+    })).rejects.toThrow(/current_report_invalid.*generator/);
   });
 
   it("v1 输出被明确拒绝，且失败使 dataComplete=false、verdict=false", async () => {
-    const { report, shardFailureCount } = await coordinator.run(specBase, {
+    await expect(coordinator.run(specBase, {
       shards: 1,
       spawnWorker: async () => ({ protocolVersion: 1, ok: false, shardId: "shard-0", error: "legacy" } as unknown as ShardOutcome),
-    });
-    expect(shardFailureCount).toBe(1);
-    expect(report.distributed?.dataComplete).toBe(false);
-    expect(report.distributed?.shardErrors?.[0]?.error).toContain("协议");
-    expect(report.verdict?.passed).toBe(false);
+    })).rejects.toThrow(/current_report_invalid.*generator/);
   });
 
   it("跨 shard 合并 assertion failure 并聚合 generator 指标", async () => {
@@ -349,6 +325,28 @@ describe("StressReportSchema 旧报告兼容（D6）", () => {
     };
     const parsed = StressReportSchema.parse(legacy);
     expect(parsed.distributed).toBeUndefined();
+  });
+
+  it("当前报告契约要求 verdict/generator/safety，但旧报告仍可读", () => {
+    const legacy = {
+      concurrency: 2, totalRequests: 0, ok: 0, failed: 0, durationMs: 0, rps: 0,
+      latency: { min: 0, avg: 0, max: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
+      statusDist: {}, errorKinds: {}, startedAt: 1_000, finishedAt: 1_000,
+    };
+    expect(CurrentStressReportSchema.safeParse(legacy).success).toBe(false);
+    const current = {
+      ...legacy,
+      failures: { transport: 0, http: 0, script: 0, assertion: 0, config: 0, aborted: 0 },
+      scriptLatency: legacy.latency, iterationLatency: legacy.latency,
+      verdict: { passed: false, violations: [{ metric: "noData", actual: 0, expected: 1, message: "NO_DATA" }] },
+      generator: {
+        cpuUserMs: 0, cpuSystemMs: 0, cpuPercent: 0, rssStartBytes: 0, rssPeakBytes: 0,
+        eventLoopDelayP95Ms: 0, schedulerBacklogMax: 0, saturated: false, reasons: [],
+        limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
+      },
+      safety: { targetOrigins: [] },
+    };
+    expect(CurrentStressReportSchema.safeParse(current).success).toBe(true);
   });
 });
 

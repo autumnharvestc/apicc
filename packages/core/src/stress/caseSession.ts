@@ -194,7 +194,7 @@ export function createStressCaseSession(
           // Preserve the embedding hook, then make the core safety decision against
           // the request after scripts, data, variables and auth have all run.
           await options.authorizeRequest?.(request);
-          if ((request.protocol === undefined || request.protocol === "http") && /^https?:\/\//i.test(request.url)) {
+          if (/^https?:\/\//i.test(request.url)) {
             try {
               const decision = assertStressTargetAllowed({
                 url: request.url,
