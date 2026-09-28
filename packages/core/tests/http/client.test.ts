@@ -32,6 +32,30 @@ afterAll(() => new Promise<void>((r) => server.close(() => r())));
 const opts = { connectTimeoutMs: 2000, totalTimeoutMs: 3000 };
 
 describe("httpClient", () => {
+  it.each([
+    "https:example.com/orders",
+    "\thttps:example.com/orders \n",
+    String.raw`https:\example.com\orders`,
+    "HTTPS://EXAMPLE.COM/orders",
+  ])("canHandle 按 WHATWG 识别 HTTP(S) special URL：%s", (url) => {
+    const request = { method: "GET" as const, url, headers: {}, query: [] };
+    expect(httpClient.canHandle(request)).toBe(true);
+    expect(httpClient.canHandle({ ...request, protocol: "http" })).toBe(true);
+  });
+
+  it.each(["ftp://example.com/orders", "example.com/orders", "/relative/orders"])(
+    "canHandle 拒绝非 HTTP(S)/relative URL：%s",
+    (url) => {
+      expect(httpClient.canHandle({ method: "GET", url, headers: {}, query: [] })).toBe(false);
+    },
+  );
+
+  it("显式协议字段优先，HTTPS-looking websocket/SOAP 不由 HTTP client 承接", () => {
+    const request = { method: "GET" as const, url: "https:example.com/orders", headers: {}, query: [] };
+    expect(httpClient.canHandle({ ...request, protocol: "websocket" })).toBe(false);
+    expect(httpClient.canHandle({ ...request, protocol: "soap" })).toBe(false);
+  });
+
   it("发送 POST JSON 并读取响应头/体/耗时", async () => {
     const res = await httpClient.execute(
       { method: "POST", url: `${baseUrl}/echo`, headers: { "content-type": "application/json", "x-token": "t1" }, query: [], body: { kind: "json", content: '{"a":1}' } },

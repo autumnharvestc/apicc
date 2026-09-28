@@ -65,8 +65,17 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
 
   return {
     name: "http",
-    // D5：按 protocol 显式分发（缺省视为 http），URL 前缀仍作兜底约束——旧形状行为不变。
-    canHandle: (req) => canHandleProtocol(req, "http") && (req.url.startsWith("http://") || req.url.startsWith("https://")),
+    // D5：按 protocol 显式分发（缺省视为 http）；HTTP(S) URL 采用 WHATWG
+    // 解析，以覆盖省略 `//`、ASCII 空白、反斜杠和大小写等等价写法。
+    canHandle: (req) => {
+      if (!canHandleProtocol(req, "http")) return false;
+      try {
+        const protocol = new URL(req.url).protocol;
+        return protocol === "http:" || protocol === "https:";
+      } catch {
+        return false;
+      }
+    },
     async execute(req, opts) {
       const started = performance.now();
       // form 走 urlencoded 编码；其余 kind 发送 content 字符串。

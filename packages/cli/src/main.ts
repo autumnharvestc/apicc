@@ -80,6 +80,26 @@ function validateStressRunOptions(opts: {
   }
 }
 
+/**
+ * Resolve the static HTTP(S) target used by run-stress's client probe and
+ * policy preflight. WHATWG parsing is deliberately limited to the protocols
+ * whose transport is HTTP-owned: explicit websocket/plugin requests retain
+ * their URL text, while SOAP still uses the HTTP(S) safety gate but keeps its
+ * SOAP protocol selection.
+ */
+function resolveStaticStressTarget(url: string, protocol?: string): { url: string; origin?: string } {
+  if (protocol !== undefined && protocol !== "http" && protocol !== "soap") return { url };
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return { url };
+    return { url: parsed.href, origin: parsed.origin };
+  } catch {
+    // Relative/malformed URLs remain visible to the protocol resolver so it
+    // can reject them; they must not be misclassified as HTTP(S) targets.
+    return { url };
+  }
+}
+
 /** 从起始目录向上查找 apicc.workspace.yaml。 */
 export function findWorkspaceRoot(start: string): string | null {
   let dir = start;
@@ -323,9 +343,11 @@ async function resolveStressTarget(
   void workspace;
   // M5 D5：默认客户端按接口协议从注册中心解析。仅构造协议探针；真实请求
   // 始终由 StressCaseSession/executeCase 逐次解析用例参数、脚本、认证和断言。
+  const rawProbeUrl = withBaseUrl(resolver.resolve(stressedApi.url), resolver.get("baseUrl"));
+  const staticTarget = resolveStaticStressTarget(rawProbeUrl, stressedApi.protocol);
   const probe = {
     method: stressedApi.method,
-    url: withBaseUrl(resolver.resolve(stressedApi.url), resolver.get("baseUrl")),
+    url: staticTarget.url,
     headers: {}, query: [], protocol: stressedApi.protocol,
   } as import("@apicc/core").ExecutableRequest;
   const defaultClient = registry.getProtocol(probe);
@@ -333,7 +355,7 @@ async function resolveStressTarget(
     throw new Error(`未找到可处理该接口的协议客户端（protocol: ${probe.protocol ?? "http"}）`);
   }
   const target = { api: stressedApi, testCase, env, project, collection, workspace };
-  const targetOrigin = /^https?:\/\//i.test(probe.url) ? normalizeStressOrigin(probe.url) : undefined;
+  const targetOrigin = staticTarget.origin;
   return {
     apiId: stressedApi.id,
     api: stressedApi, testCase, collection, project, workspace, env,
