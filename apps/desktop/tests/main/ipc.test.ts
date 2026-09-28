@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { Importer } from "@apicc/core";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
+import { createStressPreloadApi } from "../../src/preload/stressBridge.js";
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-"));
@@ -498,6 +499,28 @@ describe("压测 IPC", () => {
     expect(retried.ok).toBe(true);
     if (!retried.ok) throw new Error("expected confirmed stress report");
     expect(retried.report.totalRequests).toBe(1);
+  });
+
+  it("ipcMain.handle → ipcRenderer.invoke → preload 暴露 API 边界校验安全 DTO，非法输出拒绝且未知异常继续 reject", async () => {
+    const { deps, dir } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
+    const c = await deps.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
+    const api = await deps.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
+    const detail = await deps.handle("api:get", {}, api.id);
+    const input = { apiId: api.id, caseId: detail.api.cases[0]!.id, concurrency: 1, maxIterations: 1 };
+    const exposed = createStressPreloadApi({
+      invoke: async (channel, ...args) => structuredClone(await deps.handle(channel, {}, ...args)),
+    });
+    const refused = await exposed.stressRun(input);
+    expect(refused).toMatchObject({ ok: false, error: { code: "target_confirmation_required", targetOrigin: "http://127.0.0.1:1" } });
+
+    const invalidOutput = createStressPreloadApi({ invoke: async () => ({ ok: false, error: { code: "target_denied", message: "denied", targetOrigin: "http://127.0.0.1:1", extra: true } }) });
+    await expect(invalidOutput.stressRun(input)).rejects.toThrow(/extra|Unrecognized key/);
+    const unknownFailure = new Error("unknown main failure");
+    const rejectingInvoke = createStressPreloadApi({ invoke: async () => { throw unknownFailure; } });
+    await expect(rejectingInvoke.stressRun(input)).rejects.toBe(unknownFailure);
   });
 
   it("stress:run 入参校验：负并发/零并发/非整数并发 zod 拒绝；迭代与时长都缺走 core 文案（可空字段 null 兼容）", async () => {

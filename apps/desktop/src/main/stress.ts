@@ -141,7 +141,7 @@ export function createStressController(session: Session, deps: StressControllerD
       try {
         // maxIterations/durationMs 的 null（渲染层「清空」惯例）归一为 undefined；
         // 二者都缺时 StressRunner 抛「压测终止条件缺失：maxIterations 与 durationMs 必须给其一」。
-        const report = await runner.run({
+        const report = CurrentStressReportSchema.parse(await runner.run({
           concurrency: input.concurrency,
           maxIterations: input.maxIterations ?? undefined,
           durationMs: input.durationMs ?? undefined,
@@ -149,7 +149,7 @@ export function createStressController(session: Session, deps: StressControllerD
           thresholds: input.thresholds,
           maxRps: policy?.maxRps,
           connectionMode: input.connectionMode,
-        });
+        }));
         if (safetyFailure) throw safetyFailure;
         CurrentStressReportSchema.parse(report);
         return persist(root, api.id, report);

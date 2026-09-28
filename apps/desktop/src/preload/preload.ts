@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IpcChannel, IpcEvent } from "../shared/channels.js";
-import type { StressRunInput, StressRunOutput, StressRunResult } from "../shared/types.js";
+import { createStressPreloadApi } from "./stressBridge.js";
+
+const stressApi = createStressPreloadApi(ipcRenderer);
 
 const api = {
   wsOpen: (rootPath: string) => ipcRenderer.invoke(IpcChannel.WsOpen, rootPath),
@@ -41,8 +43,8 @@ const api = {
   wfImpact: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfImpact, input),
   wfRun: (input: unknown) => ipcRenderer.invoke(IpcChannel.WfRun, input),
   // 压测频道（M2-D3 任务 1）
-  stressRun: (input: StressRunInput): Promise<StressRunResult> => ipcRenderer.invoke(IpcChannel.StressRun, input),
-  stressStop: (): Promise<StressRunOutput> => ipcRenderer.invoke(IpcChannel.StressStop),
+  stressRun: stressApi.stressRun,
+  stressStop: stressApi.stressStop,
   // 在线频道（M3-B 任务 1）：单参频道包对象，主进程按 online 契约 schema 校验
   onlineRegister: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineRegister, input),
   onlineLogin: (input: unknown) => ipcRenderer.invoke(IpcChannel.OnlineLogin, input),

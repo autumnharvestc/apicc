@@ -44,13 +44,17 @@ export function useWorkspaceStore(api: ApiccApi) {
         this.tree = await api.treeGet();
       },
       projectIdForApi(apiId: string): string | null {
+        const owners: string[] = [];
         for (const group of this.tree?.children ?? []) {
           for (const project of group.children ?? []) {
-            const contains = (node: TreeNodeDTO): boolean => node.id === apiId || (node.children ?? []).some(contains);
-            if ((project.children ?? []).some(contains)) return project.id;
+            const collect = (node: TreeNodeDTO): void => {
+              if (node.kind === "api" && node.id === apiId) owners.push(project.id);
+              for (const child of node.children ?? []) collect(child);
+            };
+            for (const child of project.children ?? []) collect(child);
           }
         }
-        return null;
+        return owners.length === 1 ? owners[0]! : null;
       },
       /** Save only the active project's safety policy; never persist one-run confirmations. */
       async saveStressPolicy(projectId: string, policy: StressTargetPolicy): Promise<StressTargetPolicy> {

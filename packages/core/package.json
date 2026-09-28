@@ -8,8 +8,8 @@
       "default": "./dist/index.js"
     },
     "./schema": {
-      "types": "./dist/domain/model.d.ts",
-      "default": "./dist/domain/model.js"
+      "types": "./dist/schema.d.ts",
+      "default": "./dist/schema.js"
     }
   },
   "engines": {

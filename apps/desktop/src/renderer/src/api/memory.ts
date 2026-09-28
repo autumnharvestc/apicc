@@ -6,6 +6,7 @@ import {
   builtinAuthProviders,
   createDefaultRegistry,
   createStressCaseSession,
+  CurrentStressReportSchema,
   sanitizeNodeName,
   buildStressRequest,
   createVariableResolver,
@@ -124,6 +125,7 @@ import type {
   WorkflowSummary,
   WfSetStatusResult,
 } from "../../../shared/types.js";
+import { StressRunResultSchema } from "../../../shared/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
@@ -748,7 +750,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
       });
       const finished = (async (): Promise<StressRunResult> => {
         try {
-          const report = await runner.run({
+          const report = CurrentStressReportSchema.parse(await runner.run({
             concurrency: input.concurrency,
             maxIterations: input.maxIterations ?? undefined,
             durationMs: input.durationMs ?? undefined,
@@ -756,7 +758,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
             thresholds: input.thresholds,
             maxRps: loc.project.stressPolicy?.maxRps,
             connectionMode: input.connectionMode,
-          });
+          }));
           if (safetyFailure) throw safetyFailure;
           const clone: StressReport = structuredClone(report);
           const file = `stress-${api.id}-${Date.now()}.json`;
@@ -769,9 +771,10 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
           }
         } catch (error) {
           if (error instanceof StressSafetyError) {
+            if (!error.targetOrigin) throw new Error("安全错误缺少目标 origin");
             return {
               ok: false,
-              error: { code: error.code, message: error.message, ...(error.targetOrigin ? { targetOrigin: error.targetOrigin } : {}) },
+              error: { code: error.code, message: error.message, targetOrigin: error.targetOrigin },
             };
           }
           throw error;
@@ -780,7 +783,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
         }
       })();
       stressActive = { controller, finished };
-      return finished;
+      return StressRunResultSchema.parse(await finished);
     },
 
     async stressStop(): Promise<StressRunOutput> {

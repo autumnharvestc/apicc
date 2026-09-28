@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
+import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
 
 function freshStore() {
   const api = createMemoryApi();
@@ -42,5 +43,33 @@ describe("workspace store", () => {
     expect(saved.deniedOrigins).toEqual(["https://example.com"]);
     expect(saved.maxConcurrency).toBe(2);
     expect(store.tree!.children![0]!.children![0]!.stressPolicy).toEqual(saved);
+  });
+
+  it("API 所属项目只接受 kind=api 且恰好唯一：0/1/重复 API 与 collection/folder ID 碰撞均拒绝", () => {
+    const { store } = freshStore();
+    const api = (id: string): TreeNodeDTO => ({ kind: "api", id, label: id });
+    const tree = (children: TreeNodeDTO[]): TreeNodeDTO => ({
+      kind: "root", id: "root", label: "root", children: [{
+        kind: "group", id: "g", label: "g", children: [{ kind: "project", id: "p", label: "p", children }],
+      }],
+    });
+    store.tree = tree([{ kind: "collection", id: "same", label: "c", children: [] }, { kind: "folder", id: "api-1", label: "f", children: [] }]);
+    expect(store.projectIdForApi("missing")).toBeNull();
+    expect(store.projectIdForApi("same")).toBeNull();
+    expect(store.projectIdForApi("api-1")).toBeNull();
+    store.tree = tree([{ kind: "collection", id: "c", label: "c", children: [api("api-1")] }]);
+    expect(store.projectIdForApi("api-1")).toBe("p");
+    store.tree = tree([
+      { kind: "collection", id: "c", label: "c", children: [api("api-1")] },
+      { kind: "folder", id: "f", label: "f", children: [api("api-1")] },
+    ]);
+    expect(store.projectIdForApi("api-1")).toBeNull();
+    store.tree = {
+      kind: "root", id: "root", label: "root", children: [
+        { kind: "group", id: "g1", label: "g1", children: [{ kind: "project", id: "p1", label: "p1", children: [{ kind: "collection", id: "c1", label: "c1", children: [api("api-1")] }] }] },
+        { kind: "group", id: "g2", label: "g2", children: [{ kind: "project", id: "p2", label: "p2", children: [{ kind: "collection", id: "c2", label: "c2", children: [api("api-1")] }] }] },
+      ],
+    };
+    expect(store.projectIdForApi("api-1")).toBeNull();
   });
 });

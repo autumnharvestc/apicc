@@ -3,7 +3,7 @@ import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunne
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO, StressRunInput, StressRunOutput, StressRunResult, StressRunSummaryDTO, WfCreateInput, WfImpactInput, WfRunInput } from "../shared/types.js";
+import { StressRunResultSchema, type ApiDetail, type DebugInput, type DebugOutput, type EnvCreateInput, type ImportApplyInput, type ImportPreviewInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput } from "../shared/types.js";
 import {
   OnlineBaseUrlSchema,
   OnlineBatchInputSchema,
@@ -617,13 +617,14 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.StressRun: {
         try {
           const out = await stress.run(a[0] as StressRunInput);
-          return out satisfies StressRunResult;
+          return StressRunResultSchema.parse(out) satisfies StressRunResult;
         } catch (error) {
           if (error instanceof StressSafetyError) {
-            return {
+            if (!error.targetOrigin) throw new Error("安全错误缺少目标 origin");
+            return StressRunResultSchema.parse({
               ok: false,
               error: { code: error.code, message: error.message, ...(error.targetOrigin ? { targetOrigin: error.targetOrigin } : {}) },
-            } satisfies StressRunResult;
+            }) satisfies StressRunResult;
           }
           throw error;
         }

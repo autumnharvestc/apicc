@@ -321,6 +321,45 @@ describe("createStressController", () => {
     expect(refusedMetrics.stopped()).toBe(1);
   });
 
+  it.each([
+    { name: "origin mismatch", policy: undefined, confirmed: ["http://127.0.0.1:2"], concurrency: 1, code: "target_confirmation_required" },
+    { name: "denied", policy: { deniedOrigins: ["http://127.0.0.1:1"] }, confirmed, concurrency: 1, code: "target_denied" },
+    { name: "maxConcurrency", policy: { maxConcurrency: 1 }, confirmed, concurrency: 2, code: "concurrency_policy_exceeded" },
+    { name: "invalid maxRps policy", policy: { maxRps: 0 }, confirmed, concurrency: 1, code: undefined, ordinary: true },
+  ])("策略门在 $name 下 I/O 为 0 且资源各清理一次", async ({ policy, confirmed: origins, concurrency, code, ordinary }) => {
+    const { s, api } = await setupStress();
+    const project = s.locateApi(api.id)!.project;
+    if (policy) s.setStressPolicy(project.id, policy);
+    let calls = 0;
+    let closes = 0;
+    let collectorStops = 0;
+    const controller = createStressController(s, {
+      createManagedClient: () => ({
+        name: "policy-guard",
+        canHandle: () => true,
+        execute: async () => { calls += 1; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; },
+        close: async () => { closes += 1; },
+      }),
+      createGeneratorCollector: () => ({
+        recordSchedulerBacklog: () => {},
+        stop: () => {
+          collectorStops += 1;
+          return {
+            cpuUserMs: 0, cpuSystemMs: 0, cpuPercent: 0, rssStartBytes: 1, rssPeakBytes: 1,
+            eventLoopDelayP95Ms: 0, schedulerBacklogMax: 0, saturated: false, reasons: [],
+            limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
+          };
+        },
+      }),
+    });
+    const run = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency, maxIterations: 1, confirmedTargetOrigins: origins });
+    if (ordinary) await expect(run).rejects.toThrow(/maxRps 必须为正数/);
+    else await expect(run).rejects.toMatchObject({ code });
+    expect(calls).toBe(0);
+    expect(closes).toBe(ordinary ? 0 : concurrency);
+    expect(collectorStops).toBe(ordinary ? 0 : 1);
+  });
+
   it("单活动约束：活动运行未结束时再次 stressRun 抛「已有压测进行中」", async () => {
     const { s, api } = await setupStress();
     const fake = hangingClient();

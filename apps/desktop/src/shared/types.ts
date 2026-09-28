@@ -15,10 +15,11 @@ import type {
   ProjectGlobals,
   StressThresholds,
   StressTargetPolicy,
-  StressSafetyErrorCode,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
 import type { KeyValuePair } from "@apicc/core";
+import { CurrentStressReportSchema } from "@apicc/core/schema";
+import { z } from "zod";
 
 /** 容器保存载荷（M10）：模块（集合）= 变量+操作；文件夹 = 操作。id 定位，整体替换。 */
 export interface ContainerSaveInput {
@@ -118,10 +119,36 @@ export interface StressRunInput {
  * 落盘降级不影响报告返回，与集合运行口径一致（core Runner 落盘失败仅告警仍返回完整结果）：
  * file 落盘成功为文件名（.apicc/runs/stress-<apiId>-<ts>.json），降级时省略。
  */
-export interface StressRunOutput { ok: true; report: StressReport; file?: string }
+const StressRunErrorCodeSchema = z.enum([
+  "invalid_target_origin",
+  "target_confirmation_required",
+  "target_denied",
+  "concurrency_policy_exceeded",
+  "max_rps_policy_exceeded",
+  "invalid_stress_policy",
+]);
+// Runtime validation uses the strict current-report contract; the public renderer
+// type remains the historical StressReport supertype so deterministic test doubles
+// and report viewers can still represent legacy-shaped data.
+const StressRunCurrentReportSchema = CurrentStressReportSchema.transform((report) => report as StressReport);
+const StressRunSuccessSchema = z.object({
+  ok: z.literal(true),
+  report: StressRunCurrentReportSchema,
+  file: z.string().optional(),
+}).strict();
+const StressRunErrorSchema = z.object({
+  ok: z.literal(false),
+  error: z.object({
+    code: StressRunErrorCodeSchema,
+    message: z.string(),
+    targetOrigin: z.string(),
+  }).strict(),
+}).strict();
 /** Structured-clone-safe outcome for stress start; unknown main exceptions still reject IPC. */
-export interface StressRunError { ok: false; error: { code: StressSafetyErrorCode; message: string; targetOrigin?: string } }
-export type StressRunResult = StressRunOutput | StressRunError;
+export const StressRunResultSchema = z.discriminatedUnion("ok", [StressRunSuccessSchema, StressRunErrorSchema]);
+export type StressRunOutput = z.infer<typeof StressRunSuccessSchema>;
+export type StressRunError = z.infer<typeof StressRunErrorSchema>;
+export type StressRunResult = z.infer<typeof StressRunResultSchema>;
 /** runs:get 对 stress 文件的返回：kind 判别 + 完整压测报告（集合文件返回既有 RunResult 形状）。 */
 export type DesktopStressReport = Omit<StressReport, "failures" | "scriptLatency" | "iterationLatency"> & {
   /** Historical reports may omit fields introduced after their creation. */

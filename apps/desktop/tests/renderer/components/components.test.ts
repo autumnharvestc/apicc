@@ -1148,7 +1148,8 @@ describe("StressPanel", () => {
   });
 
   it("实际点击仅本次确认与信任项目：显示风险文案并走精确 origin", async () => {
-    const { wrapper, api, stress } = await mountStress();
+    let confirmOnlyTrustCalls = 0;
+    const { wrapper, api, stress } = await mountStress({}, { trustOrigin: async () => { confirmOnlyTrustCalls += 1; } });
     const outputs = [
       { ok: false as const, error: { code: "target_confirmation_required" as const, message: "confirm", targetOrigin: "https://example.com" } },
       { ok: true as const, report: makeReport() },
@@ -1162,10 +1163,13 @@ describe("StressPanel", () => {
     await wrapper.find('[data-testid="stress-confirm-once"]').trigger("click");
     await flushPromises();
     expect(calls[1]?.confirmedTargetOrigins).toEqual(["https://example.com"]);
+    expect(confirmOnlyTrustCalls).toBe(0);
     expect(stress.pendingTargetOrigin).toBeNull();
 
     let trustedProject = "";
-    const second = await mountStress({}, { trustOrigin: async (projectId) => { trustedProject = projectId; } });
+    let trustedOrigin = "";
+    let trustCalls = 0;
+    const second = await mountStress({}, { trustOrigin: async (projectId, origin) => { trustCalls += 1; trustedProject = projectId; trustedOrigin = origin; } });
     const secondOutputs = [
       { ok: false as const, error: { code: "target_confirmation_required" as const, message: "confirm", targetOrigin: "https://example.com" } },
       { ok: true as const, report: makeReport() },
@@ -1176,6 +1180,8 @@ describe("StressPanel", () => {
     await second.wrapper.find('[data-testid="stress-trust-project"]').trigger("click");
     await flushPromises();
     expect(trustedProject).toBe("project");
+    expect(trustedOrigin).toBe("https://example.com");
+    expect(trustCalls).toBe(1);
     expect(second.stress.pendingTargetOrigin).toBeNull();
   });
 });
