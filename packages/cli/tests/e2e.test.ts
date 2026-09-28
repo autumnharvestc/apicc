@@ -73,16 +73,16 @@ beforeAll(async () => {
           id: "00000000-0000-4000-8000-000000000021", name: "credibility", variables: {}, folders: [],
           apis: [{
             id: "00000000-0000-4000-8000-000000000022", name: "rich", version: "1", deprecated: false, method: "POST",
-            url: "{{baseUrl}}/credibility/{{item}}", headers: [], query: [],
-            body: { kind: "json", content: '{"payload":"{{payload}}"}' },
+            url: "{{baseUrl}}/credibility/{{parameterItem}}/{{rowItem}}", headers: [], query: [],
+            body: { kind: "json", content: '{"parameterPayload":"{{parameterPayload}}","rowPayload":"{{rowPayload}}"}' },
             cases: [{
               id: "00000000-0000-4000-8000-000000000023", name: "rich-case", scope: "base",
-              parameters: { item: "parameter-item", payload: "parameter-payload" },
+              parameters: { parameterItem: "parameter-item", parameterPayload: "parameter-payload", parameterHeader: "from-script-parameter" },
               dataDriver: { sourcePath: join(root, "credibility.csv"), format: "csv" },
-              preScript: 'pm.request.headers["X-Pre-Script"] = "from-script";',
-              preOperations: [{ id: "rich-pre", type: "script", content: 'pm.request.headers["X-Pre-Operation"] = "from-operation"; pm.request.url += "?marker=operation";' }],
-              postOperations: [{ id: "rich-post", type: "script", content: 'pm.assert(pm.response.status === 200, "post operation");' }],
-              postScript: 'pm.assert(pm.response.text().includes("\\"ok\\":true"), "post script");',
+              preScript: 'pm.request.headers["X-Pre-Script"] = pm.variables.get("parameterHeader") ?? "";',
+              preOperations: [{ id: "rich-pre", type: "script", content: 'pm.request.headers["X-Pre-Operation"] = pm.variables.get("rowHeader") ?? ""; pm.request.url += "?marker=" + (pm.variables.get("rowMarker") ?? "");' }],
+              postOperations: [{ id: "rich-post", type: "script", content: 'pm.assert(pm.response.status === 200, "post operation: status");' }],
+              postScript: 'pm.assert(pm.response.text().includes("\\"ok\\":true"), "post script: body");',
               assertions: [
                 { id: "rich-status", target: "status", op: "eq", expected: "200" },
                 { id: "rich-body", target: "bodyJson", op: "eq", path: "$.ok", expected: "true" },
@@ -107,7 +107,7 @@ beforeAll(async () => {
       }],
     }],
   };
-  writeFileSync(join(root, "credibility.csv"), "item,payload\nrow-item,row-payload\n");
+  writeFileSync(join(root, "credibility.csv"), "rowItem,rowPayload,rowMarker,rowHeader\nrow-item,row-payload,row-marker,from-operation-row\n");
   await fileStorage.save(root, ws);
   // 注：CLI 的 run/export-design 按“从 cwd 向上查找 apicc.workspace.yaml”定位工作区；
   // 临时工作区无法从测试 cwd 上溯可达，故模拟真实用户“在工作区内执行 CLI”（用后还原）。
@@ -479,6 +479,12 @@ describe("CLI 端到端", () => {
     expect(functionalResult).toMatchObject({ total: 1, passed: 1, failed: 0 });
     expect(functionalResult.cases?.[0]?.assertions?.length).toBeGreaterThanOrEqual(4);
     const functionalObservedRequest = normalizeRequest(receivedRequests[functionalBefore]!);
+    expect(functionalObservedRequest).toEqual({
+      method: "POST",
+      url: "/credibility/parameter-item/row-item?marker=row-marker",
+      headers: { "x-pre-script": "from-script-parameter", "x-pre-operation": "from-operation-row" },
+      body: '{"parameterPayload":"parameter-payload","rowPayload":"row-payload"}',
+    });
 
     const stressDir = join(root, "stress-credibility-stress");
     const stressBefore = receivedRequests.length;
@@ -495,11 +501,22 @@ describe("CLI 端到端", () => {
       totalRequests: number; ok: number; failed: number; verdict?: { passed: boolean };
     };
     const stressObservedRequest = normalizeRequest(receivedRequests[stressBefore]!);
-    expect(stressObservedRequest).toEqual(functionalObservedRequest);
+    expect(stressObservedRequest).toEqual({
+      method: "POST",
+      url: "/credibility/parameter-item/row-item?marker=row-marker",
+      headers: { "x-pre-script": "from-script-parameter", "x-pre-operation": "from-operation-row" },
+      body: '{"parameterPayload":"parameter-payload","rowPayload":"row-payload"}',
+    });
     expect(stressReport.ok).toBe(functionalResult.passed ? 1 : 0);
     expect(stressReport.verdict?.passed).toBe(functionalResult.passed === 1);
     expect(stressReport).toMatchObject({ totalRequests: 1, failed: 0 });
     expect(stressLogs.join("\n")).toContain("verdict: passed");
+    expect(functionalResult.cases?.[0]?.assertions).toEqual([
+      { pass: true, message: "eq 断言通过: actual=200, expected=200" },
+      { pass: true, message: "eq 断言通过: actual=true, expected=true" },
+      { pass: true, message: "post operation: status" },
+      { pass: true, message: "post script: body" },
+    ]);
   }, 30000);
 
   it("目标确认只匹配精确 origin：path 可变、scheme/host/port 必须重确认，denylist 和阈值失败仍优先", async () => {
@@ -507,7 +524,7 @@ describe("CLI 端到端", () => {
     const project = workspace.groups[0]!.projects[0]!;
     const api = project.collections.find((collection) => collection.name === "credibility")!.apis[0]!;
     const dataPath = join(root, "credibility.csv");
-    const originalData = "item,payload\nrow-item,row-payload\n";
+    const originalData = "rowItem,rowPayload,rowMarker,rowHeader\nrow-item,row-payload,row-marker,from-operation-row\n";
     const originalUrl = api.url;
     const originalPolicy = project.stressPolicy;
     const originalEnvironments = project.environments;
@@ -517,7 +534,7 @@ describe("CLI 端到端", () => {
       "--allow-target", baseUrl, "--runs-dir", runsDir, ...extra,
     ];
     try {
-      writeFileSync(dataPath, "item,payload\nfirst,p1\nsecond,p2\n");
+      writeFileSync(dataPath, "rowItem,rowPayload,rowMarker,rowHeader\nfirst,p1,first-marker,first-header\nsecond,p2,second-marker,second-header\n");
       project.stressPolicy = { trustedOrigins: [], deniedOrigins: [] };
       await fileStorage.save(root, workspace);
       const pathLogs: string[] = [];
@@ -526,15 +543,15 @@ describe("CLI 端到端", () => {
         ...runArgs("dev", join(root, "stress-origin-path"), ["--iterations", "2"]),
       ], createDefaultRegistry(), (line) => pathLogs.push(line))).toBe(0);
       expect(receivedRequests.slice(pathBefore).map((request) => request.url)).toEqual([
-        "/credibility/first?marker=operation", "/credibility/second?marker=operation",
+        "/credibility/parameter-item/first?marker=first-marker", "/credibility/parameter-item/second?marker=second-marker",
       ]);
       expect(pathLogs.join("\n")).toContain(`target origins: ${baseUrl}`);
 
       const port = Number(new URL(baseUrl).port);
       for (const [label, targetUrl] of [
-        ["scheme", `https://127.0.0.1:${port}/credibility/{{item}}`],
-        ["host", `http://localhost:${port}/credibility/{{item}}`],
-        ["port", `http://127.0.0.1:${port + 1}/credibility/{{item}}`],
+        ["scheme", `https://127.0.0.1:${port}/credibility/{{parameterItem}}/{{rowItem}}`],
+        ["host", `http://localhost:${port}/credibility/{{parameterItem}}/{{rowItem}}`],
+        ["port", `http://127.0.0.1:${port + 1}/credibility/{{parameterItem}}/{{rowItem}}`],
       ] as const) {
         api.url = targetUrl;
         await fileStorage.save(root, workspace);
@@ -584,7 +601,9 @@ describe("CLI 端到端", () => {
     const singleCode = await runCli(runArgs(singleDir), createDefaultRegistry(), (line) => singleLogs.push(line));
     const singleFile = readdirSync(singleDir).find((name) => name.endsWith(".json"))!;
     const single = JSON.parse(readFileSync(join(singleDir, singleFile), "utf8")) as {
-      failures: Record<string, number>; verdict?: { passed: boolean };
+      totalRequests: number; ok: number; failed: number; failures: Record<string, number>; statusDist: Record<string, number>;
+      latency: Record<string, number>; scriptLatency: Record<string, number>; iterationLatency: Record<string, number>;
+      verdict?: { passed: boolean; violations: Array<{ metric: string; actual: number; expected: number }> };
     };
 
     const multiDir = join(root, "stress-consistency-multi");
@@ -608,12 +627,41 @@ describe("CLI 端到端", () => {
     const multiCode = await runCli(runArgs(multiDir, ["--shards", "2"]), createDefaultRegistry(), (line) => multiLogs.push(line), { spawnWorkerFactory });
     const multiFile = readdirSync(multiDir).find((name) => name.endsWith(".json"))!;
     const multi = JSON.parse(readFileSync(join(multiDir, multiFile), "utf8")) as {
-      failures: Record<string, number>; verdict?: { passed: boolean }; distributed?: { dataComplete: boolean };
+      totalRequests: number; ok: number; failed: number; failures: Record<string, number>; statusDist: Record<string, number>;
+      latency: Record<string, number>; scriptLatency: Record<string, number>; iterationLatency: Record<string, number>;
+      verdict?: { passed: boolean; violations: Array<{ metric: string; actual: number; expected: number }> };
+      distributed?: { dataComplete: boolean };
     };
+    const expectedFailures = { transport: 0, http: 0, script: 0, assertion: 2, config: 0, aborted: 0 };
+    const expectedStatusDist = { "200": 2 };
+    for (const report of [single, multi]) {
+      expect(report.totalRequests).toBe(2);
+      expect(report.ok).toBe(0);
+      expect(report.failed).toBe(2);
+      expect(report.failures).toEqual(expectedFailures);
+      expect(report.statusDist).toEqual(expectedStatusDist);
+      for (const latency of [report.latency, report.scriptLatency, report.iterationLatency]) {
+        expect(Object.values(latency).every((value) => Number.isFinite(value) && value >= 0)).toBe(true);
+        expect(latency.min).toBeLessThanOrEqual(latency.avg);
+        expect(latency.avg).toBeLessThanOrEqual(latency.max);
+        expect(latency.min).toBeLessThanOrEqual(latency.p50);
+        expect(latency.p50).toBeLessThanOrEqual(latency.p95);
+        expect(latency.p95).toBeLessThanOrEqual(latency.max);
+        // Both paths have exactly two samples: nearest-rank quantiles and avg
+        // must therefore reflect a merge of both, while wall-clock values may differ.
+        expect(latency.p50).toBe(latency.min);
+        expect(latency.p90).toBe(latency.max);
+        expect(latency.p95).toBe(latency.max);
+        expect(latency.p99).toBe(latency.max);
+        expect(latency.avg).toBeCloseTo((latency.min + latency.max) / 2, 8);
+      }
+      expect(report.verdict?.violations).toEqual(expect.arrayContaining([
+        { metric: "businessFailures", actual: 2, expected: 0, message: "2 business request(s) failed" },
+      ]));
+      expect(report.verdict?.violations.some((violation) => violation.metric === "noData")).toBe(false);
+    }
     expect(singleCode).toBe(1);
     expect(multiCode).toBe(singleCode);
-    expect(single.failures.assertion).toBeGreaterThan(0);
-    expect(multi.failures.assertion).toBeGreaterThan(0);
     expect(multi.verdict?.passed).toBe(single.verdict?.passed);
     expect(multi.distributed?.dataComplete).toBe(true);
     expect(singleLogs.join("\n")).toContain("失败分类: assertion=");

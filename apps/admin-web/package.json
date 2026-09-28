@@ -12,6 +12,7 @@
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "build": "pnpm typecheck && vite build",
+    "pretest": "pnpm build",
     "preview": "vite preview",
     "test": "vitest run"
   },
