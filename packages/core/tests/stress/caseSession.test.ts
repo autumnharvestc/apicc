@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiDefinition, Collection, Folder, Project, TestCase, Workspace } from "../../src/domain/model.js";
 import { createStressCaseSession, type StressCaseSessionDeps } from "../../src/stress/caseSession.js";
 import type { ManagedProtocolClient } from "../../src/http/client.js";
-import type { ExecutionResponse } from "../../src/plugin/types.js";
+import type { ExecutableRequest, ExecutionResponse } from "../../src/plugin/types.js";
 
 const response: ExecutionResponse = { status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 };
 
