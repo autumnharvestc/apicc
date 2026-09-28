@@ -56,6 +56,7 @@ beforeAll(async () => {
     groups: [{
       id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
         id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {},
+        stressPolicy: { trustedOrigins: [baseUrl] },
         workflows: [],
         environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
         collections: [{

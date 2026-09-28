@@ -136,6 +136,28 @@ describe("createStressCaseSession", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("每次执行都在最终请求前进行安全裁定，脚本改 origin 被拒绝且不触发 I/O", async () => {
+    const execute = vi.fn(async () => response);
+    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, preScript: "rewrite", assertions: [] };
+    const safeApi = { ...api, url: "https://trusted.example/orders" };
+    const session = createStressCaseSession({
+      ...target(testCase), api: safeApi, collection: { ...collection, apis: [safeApi] },
+      project: { ...project, stressPolicy: { trustedOrigins: ["https://trusted.example"] } },
+    }, {
+      createManagedClient: () => managed,
+      resolveProtocol: () => managed,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run(code, ctx) { if (code === "rewrite") ctx.pm.request.url = "https://untrusted.example/final"; } },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0, concurrency: 1 });
+    const result = await session.execute();
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("目标需要确认");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("HTTP session client 不处理 WS，协议 registry fallback 仍可执行", async () => {
     let managedCalls = 0;
     let registryCalls = 0;

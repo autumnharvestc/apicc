@@ -7,6 +7,7 @@ import { executeCase } from "../runner/caseExecutor.js";
 import type { ManagedProtocolClient } from "../http/client.js";
 import type { ExecutableRequest, PmApi } from "../plugin/types.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
+import { assertStressTargetAllowed, StressSafetyError } from "./safety.js";
 
 export interface StressWorkerSession {
   execute(signal?: AbortSignal): Promise<CaseExecutionResult>;
@@ -142,7 +143,13 @@ function sessionEnv(target: StressCaseTarget): Record<string, string> {
 export function createStressCaseSession(
   target: StressCaseTarget,
   deps: StressCaseSessionDeps,
-  options: { workerId: number; authorizeRequest?(request: ExecutableRequest): void | Promise<void> },
+  options: {
+    workerId: number;
+    concurrency?: number;
+    maxRps?: number;
+    confirmedTargetOrigins?: string[];
+    authorizeRequest?(request: ExecutableRequest): void | Promise<void>;
+  },
 ): StressWorkerSession {
   const envVars = sessionEnv(target);
   const suppliedContainers = target.containerChain;
@@ -178,13 +185,45 @@ export function createStressCaseSession(
     async execute(signal) {
       client ??= await clientPromise;
       const rowIndex = cursor++ % rows.length;
+      let safety: CaseExecutionResult["safety"];
       const executionDeps: CaseExecutionDeps = {
         ...deps,
         resolveProtocol,
         timeouts: { ...(deps.timeouts ?? { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 }), signal },
-        beforeSend: options.authorizeRequest,
+        beforeSend: async (request) => {
+          // Preserve the embedding hook, then make the core safety decision against
+          // the request after scripts, data, variables and auth have all run.
+          await options.authorizeRequest?.(request);
+          if ((request.protocol === undefined || request.protocol === "http") && /^https?:\/\//i.test(request.url)) {
+            try {
+              const decision = assertStressTargetAllowed({
+                url: request.url,
+                confirmedTargetOrigins: options.confirmedTargetOrigins,
+                policy: target.project.stressPolicy,
+                concurrency: options.concurrency ?? 1,
+                maxRps: options.maxRps,
+              });
+              safety = {
+                origin: decision.targetOrigin,
+                confirmation: decision.confirmation,
+                policy: decision.confirmation === "project-policy" ? "trusted" : "none",
+                loopback: decision.loopback,
+              };
+            } catch (error) {
+              if (error instanceof StressSafetyError && error.targetOrigin) {
+                safety = {
+                  origin: error.targetOrigin,
+                  confirmation: "rejected",
+                  policy: error.code,
+                  loopback: /localhost|127\.\d+\.\d+\.\d+|\[?::1\]?/.test(error.targetOrigin),
+                };
+              }
+              throw error;
+            }
+          }
+        },
       };
-      return executeCase({
+      const result = await executeCase({
         api: target.api,
         testCase: target.testCase,
         row: rows[rowIndex],
@@ -196,6 +235,8 @@ export function createStressCaseSession(
         persisted,
         persistedSnapshot,
       }, executionDeps);
+      if (safety) result.safety = safety;
+      return result;
     },
     async close() {
       if (closePromise) return closePromise;

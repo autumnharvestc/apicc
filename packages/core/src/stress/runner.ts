@@ -213,6 +213,7 @@ function sampleFromResult(result: CaseExecutionResult): StressSample {
     error,
     failureKind,
     outcome: result.outcome,
+    safety: result.safety,
   };
 }
 
@@ -355,6 +356,11 @@ export class StressRunner {
       if (hasPrimaryError) throw primaryError;
       if (hasCleanupError) throw cleanupError;
       report = computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds });
+      const safetyTargets = samples
+        .map((sample) => sample.safety)
+        .filter((target): target is NonNullable<typeof target> => target !== undefined);
+      const uniqueSafety = safetyTargets.filter((target, index, all) => all.findIndex((candidate) => candidate.origin === target.origin) === index);
+      if (uniqueSafety.length > 0) report.safety = { targetOrigins: uniqueSafety };
       if (samples.length === 0) {
         report.verdict = {
           passed: false,

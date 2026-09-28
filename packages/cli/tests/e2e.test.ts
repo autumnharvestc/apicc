@@ -26,6 +26,7 @@ beforeAll(async () => {
     groups: [{
       id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
         id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {},
+        stressPolicy: { trustedOrigins: [baseUrl] },
         workflows: [],
         environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
         collections: [{
@@ -320,4 +321,50 @@ describe("CLI 端到端", () => {
     expect(report.failed).toBe(0);
     expect(logs.join("\n")).toContain("RPS");
   }, 30000);
+
+  it("run-stress 首次目标（包括 loopback）无确认时在发包前拒绝，并保留结构化 origin", async () => {
+    const { workspace } = await fileStorage.load(root);
+    const project = workspace.groups[0]!.projects[0]!;
+    project.stressPolicy = { trustedOrigins: [], deniedOrigins: [] };
+    await fileStorage.save(root, workspace);
+    const runsDir = join(root, "stress-unconfirmed");
+    const logs: string[] = [];
+    const code = await runCli([
+      "run-stress", "groups/demo/projects/svc/collections/api/apis/ok", "--case", "00000000-0000-4000-8000-000000000015",
+      "--env", "dev", "--concurrency", "1", "--iterations", "1", "--runs-dir", runsDir,
+    ], createDefaultRegistry(), (line) => logs.push(line));
+    expect(code).toBe(1);
+    expect(logs.join("\n")).toContain("target_confirmation_required");
+    expect(logs.join("\n")).toContain(baseUrl);
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const file = readdirSync(runsDir).find((name) => name.endsWith(".json"))!;
+    const report = JSON.parse(readFileSync(join(runsDir, file), "utf8")) as {
+      totalRequests: number; safety?: { targetOrigins: Array<{ origin: string; loopback?: boolean; confirmation: string }> };
+    };
+    expect(report.totalRequests).toBe(1);
+    expect(report.safety?.targetOrigins).toEqual([{ origin: baseUrl, confirmation: "rejected", policy: "target_confirmation_required", loopback: true }]);
+    project.stressPolicy = { trustedOrigins: [baseUrl] };
+    await fileStorage.save(root, workspace);
+  }, 30000);
+
+  it("run-stress 精确 allow-target 放行，HTTP 200 但断言失败仍以 verdict 失败退出", async () => {
+    const runsDir = join(root, "stress-assertion");
+    const logs: string[] = [];
+    const code = await runCli([
+      "run-stress", "groups/demo/projects/svc/collections/api/apis/bad", "--case", "00000000-0000-4000-8000-000000000016",
+      "--env", "dev", "--concurrency", "1", "--iterations", "1", "--allow-target", baseUrl, "--runs-dir", runsDir,
+    ], createDefaultRegistry(), (line) => logs.push(line));
+    expect(code).toBe(1);
+    expect(logs.join("\n")).toContain("verdict: failed");
+    expect(logs.join("\n")).toContain("target origins");
+  }, 30000);
+
+  it.each(["https://example.com/path", "https://user:pass@example.com", "ftp://example.com"])(
+    "run-stress 拒绝非 origin allow-target %s", async (origin) => {
+      await expect(runCli([
+        "run-stress", "groups/demo/projects/svc/collections/api/apis/ok", "--case", "00000000-0000-0000-0000-000000000015",
+        "--env", "dev", "--concurrency", "1", "--iterations", "1", "--allow-target", origin,
+      ], createDefaultRegistry(), () => {})).rejects.toThrow(/allow-target/);
+    },
+  );
 });

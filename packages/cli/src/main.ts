@@ -21,17 +21,61 @@ import {
   type ShardResult,
   type SpawnWorker,
   type StressReport,
+  type StressThresholds,
   type StressRunner,
   type StressSample,
   type StressWorkerSpecBase,
   type Workspace,
   createHttpClient,
   createStressCaseSession,
+  normalizeStressOrigin,
+  StressSafetyError,
+  withBaseUrl,
 } from "@apicc/core";
 
 /** 路径分隔符归一为 "/"，使集合目录匹配与用户输入的正/反斜杠形态无关（Windows 兼容）。 */
 function toSlash(p: string): string {
   return p.split("\\").join("/");
+}
+
+function collectOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function validateStressOriginOption(value: string): string {
+  let parsed: URL;
+  try { parsed = new URL(value); }
+  catch { throw new Error(`allow-target 必须是 HTTP(S) origin: ${value}`); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`allow-target 必须是 HTTP(S) origin: ${value}`);
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== "" && parsed.pathname !== "/")) {
+    throw new Error(`allow-target 必须是无路径/查询/片段/用户信息的 HTTP(S) origin: ${value}`);
+  }
+  return normalizeStressOrigin(value);
+}
+
+function validateStressRunOptions(opts: {
+  maxErrorRate?: number;
+  maxAssertionFailureRate?: number;
+  maxP95Ms?: number;
+  minRps?: number;
+  maxRps?: number;
+  connectionMode?: string;
+}): void {
+  for (const [name, value] of [["max-error-rate", opts.maxErrorRate], ["max-assertion-failure-rate", opts.maxAssertionFailureRate]] as const) {
+    if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 1)) {
+      throw new Error(`${name} 必须是 0 到 1 之间的比例，收到 ${value}`);
+    }
+  }
+  for (const [name, value] of [["max-p95-ms", opts.maxP95Ms], ["min-rps", opts.minRps], ["max-rps", opts.maxRps]] as const) {
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+      throw new Error(`${name} 必须为正数，收到 ${value}`);
+    }
+  }
+  if (opts.connectionMode !== undefined && opts.connectionMode !== "pooled" && opts.connectionMode !== "fresh") {
+    throw new Error(`connection-mode 必须为 pooled 或 fresh，收到 ${opts.connectionMode}`);
+  }
 }
 
 /** 从起始目录向上查找 apicc.workspace.yaml。 */
@@ -197,6 +241,12 @@ const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec
       ...(spec.maxIterations !== undefined ? ["--iterations", String(spec.maxIterations)] : []),
       ...(spec.durationMs !== undefined ? ["--duration", String(spec.durationMs / 1000)] : []),
       ...(spec.maxRps !== undefined ? ["--max-rps", String(spec.maxRps)] : []),
+      ...(spec.maxErrorRate !== undefined ? ["--max-error-rate", String(spec.maxErrorRate)] : []),
+      ...(spec.maxAssertionFailureRate !== undefined ? ["--max-assertion-failure-rate", String(spec.maxAssertionFailureRate)] : []),
+      ...(spec.maxP95Ms !== undefined ? ["--max-p95-ms", String(spec.maxP95Ms)] : []),
+      ...(spec.minRps !== undefined ? ["--min-rps", String(spec.minRps)] : []),
+      ...(spec.connectionMode !== undefined ? ["--connection-mode", spec.connectionMode] : []),
+      ...((spec.confirmedTargetOrigins ?? []).flatMap((origin) => ["--allow-target", origin])),
     ];
     const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     child.stderr?.pipe(process.stderr);
@@ -235,48 +285,75 @@ async function resolveStressTarget(
   apiPath: string,
   caseId: string,
   envName: string | undefined,
-): Promise<{ apiId: string; createRunner: (onSample?: (sample: StressSample) => void) => StressRunner }> {
+): Promise<{
+  apiId: string;
+  api: ApiDefinition;
+  testCase: import("@apicc/core").TestCase;
+  collection: Collection;
+  project: Project;
+  workspace: Workspace;
+  env?: import("@apicc/core").Environment;
+  createRunner: (options?: {
+    concurrency?: number;
+    maxRps?: number;
+    confirmedTargetOrigins?: string[];
+    connectionMode?: "pooled" | "fresh";
+    onSample?: (sample: StressSample) => void;
+  }) => StressRunner;
+}> {
   // 定位/env/resolver 与 ai suggest-cases 共享 helper（不复制）。
   const { api: stressedApi, project, collection, workspace } = await locateApiTarget(registry, root, apiPath);
-  // 用例门：压测请求构造只依赖接口定义（case 参数/断言不参与采样），但目标用例必须存在。
-  if (!stressedApi.cases.some((tc) => tc.id === caseId)) throw new Error(`未找到用例: ${caseId}`);
+  const testCase = stressedApi.cases.find((tc) => tc.id === caseId);
+  if (!testCase) throw new Error(`未找到用例: ${caseId}`);
   // env 解析：未指定则不启用环境；指定但未命中显式报错（与 run-workflow 同款）。
   const env = envName ? project.environments.find((e) => e.name === envName) : undefined;
   if (envName && !env) throw new Error(`未找到环境: ${envName}`);
-  const { StressRunner, buildStressRequest, builtinAuthProviders, mergedEnvVars, createVariableResolver } =
+  const { StressRunner, mergedEnvVars, createVariableResolver } =
     await import("@apicc/core");
   // 变量层与 CollectionRunner 同源（M10 收敛）：[环境(含模块前置URL baseUrl 注入), 模块, 全局变量(项目)]。
-  // workspace 层弃用；全局参数（query/header/cookie/body）经 project.globals 由 buildStressRequest 合并。
+  // workspace 层弃用；全局参数（query/header/cookie/body）由 executeCase 合并。
   const baseUrl = env?.baseUrls?.[collection.id];
   const envVars = { ...mergedEnvVars(env, project), ...(baseUrl ? { baseUrl } : {}) };
   const resolver = createVariableResolver({
     layers: [envVars, collection.variables, project.variables],
   });
   void workspace;
-  // M5 D5：默认客户端按接口协议从注册中心解析（probe = 已解析变量的可执行请求）——
-  // WS/SOAP 接口压测由对应客户端承接，杜绝「SOAP 被静默按 HTTP 执行」；未知协议 fail-fast。
-  const probe = buildStressRequest(stressedApi, resolver, builtinAuthProviders, project.globals);
+  // M5 D5：默认客户端按接口协议从注册中心解析。仅构造协议探针；真实请求
+  // 始终由 StressCaseSession/executeCase 逐次解析用例参数、脚本、认证和断言。
+  const probe = {
+    method: stressedApi.method,
+    url: withBaseUrl(resolver.resolve(stressedApi.url), resolver.get("baseUrl")),
+    headers: {}, query: [], protocol: stressedApi.protocol,
+  } as import("@apicc/core").ExecutableRequest;
   const defaultClient = registry.getProtocol(probe);
   if (!defaultClient) {
     throw new Error(`未找到可处理该接口的协议客户端（protocol: ${probe.protocol ?? "http"}）`);
   }
-  const testCase = stressedApi.cases.find((candidate) => candidate.id === caseId)!;
   const target = { api: stressedApi, testCase, env, project, collection, workspace };
   return {
     apiId: stressedApi.id,
-    createRunner: (onSample) => new StressRunner({
-      onSample,
-      createWorker: (workerId) => createStressCaseSession(target, {
-        resolveProtocol: (request) => registry.getProtocol(request),
-        resolveAuth: (type) => registry.getAuth(type),
-        resolveAssert: (op) => registry.getAssert(op),
-        scriptEngine: registry.getScriptEngine("javascript")!,
-        createManagedClient: () => {
-          if (defaultClient.name === "http") return createHttpClient();
-          return { ...defaultClient, close: async () => {} };
-        },
-      }, { workerId }),
-    }),
+    api: stressedApi, testCase, collection, project, workspace, env,
+    createRunner: (options = {}) => {
+      const maxRps = options.maxRps ?? project.stressPolicy?.maxRps;
+      return new StressRunner({
+        onSample: options.onSample,
+        createWorker: (workerId) => createStressCaseSession(target, {
+          resolveProtocol: (request) => registry.getProtocol(request),
+          resolveAuth: (type) => registry.getAuth(type),
+          resolveAssert: (op) => registry.getAssert(op),
+          scriptEngine: registry.getScriptEngine("javascript")!,
+          createManagedClient: () => {
+            if (defaultClient.name === "http") return createHttpClient({ connectionMode: options.connectionMode });
+            return { ...defaultClient, close: async () => {} };
+          },
+        }, {
+          workerId,
+          concurrency: options.concurrency,
+          maxRps,
+          confirmedTargetOrigins: options.confirmedTargetOrigins,
+        }),
+      });
+    },
   };
 }
 
@@ -455,10 +532,20 @@ export async function runCli(
     .option("--iterations <n>", "总迭代数", Number)
     .option("--duration <s>", "持续秒数", Number)
     .option("--max-rps <n>", "全局每秒请求启动安全上限", Number)
+    .option("--max-error-rate <ratio>", "最大错误率阈值", Number)
+    .option("--max-assertion-failure-rate <ratio>", "最大断言失败率阈值", Number)
+    .option("--max-p95-ms <ms>", "最大 p95 时延阈值", Number)
+    .option("--min-rps <n>", "最低 RPS 阈值", Number)
+    .option("--connection-mode <mode>", "连接模式 pooled 或 fresh", "pooled")
+    .option("--allow-target <origin>", "本次运行确认的 HTTP(S) origin（可重复）", collectOption, [])
     .option("--shards <n>", "分片数（>1 走多 shard 协调）", Number, 1)
     .option("--shard-timeout <s>", "单 shard 超时秒数", Number, 300)
     .option("--runs-dir <dir>", "报告输出目录")
-    .action(async (apiPath: string, opts: { case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number; shards: number; shardTimeout: number; runsDir?: string }) => {
+    .action(async (apiPath: string, opts: {
+      case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number;
+      maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
+      connectionMode: "pooled" | "fresh"; allowTarget: string[]; shards: number; shardTimeout: number; runsDir?: string;
+    }) => {
       // 分片参数校验（正整数/正数）；maxIterations < shards 的 fail-fast 由 core planShards 中文报错，直接透传不拦截。
       if (!Number.isInteger(opts.shards) || opts.shards < 1) {
         throw new Error(`shards 必须为正整数，收到 ${opts.shards}`);
@@ -466,9 +553,8 @@ export async function runCli(
       if (!Number.isFinite(opts.shardTimeout) || opts.shardTimeout <= 0) {
         throw new Error(`shard-timeout 必须为正数，收到 ${opts.shardTimeout}`);
       }
-      if (opts.maxRps !== undefined && (!Number.isFinite(opts.maxRps) || opts.maxRps <= 0)) {
-        throw new Error(`maxRps 必须为正数，收到 ${opts.maxRps}`);
-      }
+      validateStressRunOptions(opts);
+      const confirmedTargetOrigins = [...new Set((opts.allowTarget ?? []).map(validateStressOriginOption))];
       // 数值参数守卫（终审顺修）：单/多 shard 路径口径必须一致——否则 concurrency 0 在多 shard 下被
       // planShards 静默升为每 shard 1（单机路径是 StressRunner 中文报错），NaN 类值会漏到
       // StressWorkerSpecSchema.parse 抛裸英文 ZodError。文案镜像 runner.ts 同款。
@@ -485,7 +571,26 @@ export async function runCli(
         throw new Error("需要 --iterations 或 --duration");
       }
       // 定位/env/resolver 与 stress-worker 共享 helper（不复制）；校验通过才落协调或进程内执行。
-      const { apiId, createRunner } = await resolveStressTarget(registry, root, apiPath, opts.case, opts.env);
+      const targetInfo = await resolveStressTarget(registry, root, apiPath, opts.case, opts.env);
+      const { apiId, createRunner } = targetInfo;
+      const projectMaxRps = targetInfo.project.stressPolicy?.maxRps;
+      const effectiveMaxRps = opts.maxRps === undefined
+        ? projectMaxRps
+        : projectMaxRps === undefined ? opts.maxRps : Math.min(opts.maxRps, projectMaxRps);
+      if (targetInfo.project.stressPolicy?.maxConcurrency !== undefined
+        && opts.concurrency > targetInfo.project.stressPolicy.maxConcurrency) {
+        throw new StressSafetyError(
+          "concurrency_policy_exceeded",
+          `并发数 ${opts.concurrency} 超过项目上限 ${targetInfo.project.stressPolicy.maxConcurrency}`,
+        );
+      }
+      const thresholds: StressThresholds = {
+        ...(opts.maxErrorRate !== undefined ? { maxErrorRate: opts.maxErrorRate } : {}),
+        ...(opts.maxAssertionFailureRate !== undefined ? { maxAssertionFailureRate: opts.maxAssertionFailureRate } : {}),
+        ...(opts.maxP95Ms !== undefined ? { maxP95Ms: opts.maxP95Ms } : {}),
+        ...(opts.minRps !== undefined ? { minRps: opts.minRps } : {}),
+      };
+      const hasThresholds = Object.keys(thresholds).length > 0;
       const durationMs = opts.duration === undefined ? undefined : opts.duration * 1000;
       // 产物隔离（规格 §6，对齐 run-workflow）：StressReport JSON 落 runs 目录，默认 .apicc/runs。
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
@@ -495,7 +600,13 @@ export async function runCli(
       let shardFailureCount = 0;
       if (opts.shards === 1) {
         // 单 shard：既有进程内路径，零行为变化（裁定 C：不挂 distributed 段，保持 M2-C 报告原样）。
-        report = await createRunner().run({ concurrency: opts.concurrency, maxIterations: opts.iterations, durationMs, maxRps: opts.maxRps });
+        report = await createRunner({
+          concurrency: opts.concurrency, maxRps: effectiveMaxRps, confirmedTargetOrigins,
+          connectionMode: opts.connectionMode,
+        }).run({
+          concurrency: opts.concurrency, maxIterations: opts.iterations, durationMs,
+          maxRps: effectiveMaxRps, ...(hasThresholds ? { thresholds } : {}),
+        });
       } else {
         // 多 shard：构造 specBase（workspaceRoot 显式传给子进程 worker），协调器拆分/并发/汇聚。
         const { DistributedStressCoordinator } = await import("@apicc/core");
@@ -507,7 +618,13 @@ export async function runCli(
           workspaceRoot: root,
           ...(opts.iterations !== undefined ? { maxIterations: opts.iterations } : {}),
           ...(durationMs !== undefined ? { durationMs } : {}),
-          ...(opts.maxRps !== undefined ? { maxRps: opts.maxRps } : {}),
+          ...(effectiveMaxRps !== undefined ? { maxRps: effectiveMaxRps } : {}),
+          ...(opts.maxErrorRate !== undefined ? { maxErrorRate: opts.maxErrorRate } : {}),
+          ...(opts.maxAssertionFailureRate !== undefined ? { maxAssertionFailureRate: opts.maxAssertionFailureRate } : {}),
+          ...(opts.maxP95Ms !== undefined ? { maxP95Ms: opts.maxP95Ms } : {}),
+          ...(opts.minRps !== undefined ? { minRps: opts.minRps } : {}),
+          ...(opts.connectionMode !== undefined ? { connectionMode: opts.connectionMode } : {}),
+          ...(confirmedTargetOrigins.length > 0 ? { confirmedTargetOrigins } : {}),
         };
         const shardTimeoutMs = opts.shardTimeout * 1000;
         const coordinator = new DistributedStressCoordinator();
@@ -534,11 +651,26 @@ export async function runCli(
           log(`[shard 失败] ${e.shardId}: ${e.error}`);
         }
       }
+      if (report.verdict) {
+        log(`verdict: ${report.verdict.passed ? "passed" : "failed"}`);
+        for (const violation of report.verdict.violations) log(`[阈值失败] ${violation.message}`);
+      }
+      const failureCategories = Object.entries(report.errorKinds).filter(([, count]) => count > 0);
+      if (failureCategories.length > 0) {
+        log(`失败分类: ${failureCategories.map(([kind, count]) => `${kind}=${count}`).join(", ")}`);
+      }
+      if (report.safety?.targetOrigins.length) {
+        log(`target origins: ${report.safety.targetOrigins.map((target) => target.origin).join(", ")}`);
+        for (const target of report.safety.targetOrigins) {
+          if (target.confirmation === "rejected") log(`[安全拒绝][${target.policy}] ${target.origin}`);
+        }
+      }
+      if (report.generator?.saturated) {
+        log(`[警告] generator saturation: ${report.generator.reasons.join(", ") || "unknown"}`);
+      }
       // 退出码：任一 shard 失败 → 1；否则沿用「全部请求失败且 total>0 → 1」
       // （压测关注面是性能画像而非断言成败）。
-      process.exitCode = shardFailureCount > 0
-        || report.verdict?.passed === false
-        || (report.failed === report.totalRequests && report.totalRequests > 0) ? 1 : 0;
+      process.exitCode = shardFailureCount > 0 || report.verdict?.passed === false ? 1 : 0;
     });
 
   // 分布式压测 worker（M2-D 任务 2）：由 run-stress --shards 协调端以子进程方式调起，也可手工单独运行。
@@ -553,9 +685,19 @@ export async function runCli(
     .option("--iterations <n>", "迭代数", Number)
     .option("--duration <s>", "持续秒数", Number)
     .option("--max-rps <n>", "本 shard 每秒请求启动安全上限", Number)
+    .option("--max-error-rate <ratio>", "最大错误率阈值", Number)
+    .option("--max-assertion-failure-rate <ratio>", "最大断言失败率阈值", Number)
+    .option("--max-p95-ms <ms>", "最大 p95 时延阈值", Number)
+    .option("--min-rps <n>", "最低 RPS 阈值", Number)
+    .option("--connection-mode <mode>", "连接模式 pooled 或 fresh", "pooled")
+    .option("--allow-target <origin>", "本次运行确认的 HTTP(S) origin（可重复）", collectOption, [])
     .requiredOption("--shard-id <id>", "shard 标识（由协调端分配）")
     .requiredOption("--workspace <root>", "工作区根目录（由协调端传入）")
-    .action(async (apiPath: string, opts: { case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number; shardId: string; workspace: string }) => {
+    .action(async (apiPath: string, opts: {
+      case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number;
+      maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
+      connectionMode: "pooled" | "fresh"; allowTarget: string[]; shardId: string; workspace: string;
+    }) => {
       const out = deps.workerOut ?? ((line: string) => { process.stdout.write(`${line}\n`); });
       const err = deps.workerErr ?? ((line: string) => { console.error(line); });
       const fail = (message: string): void => {
@@ -571,9 +713,25 @@ export async function runCli(
         if (opts.iterations === undefined && opts.duration === undefined) {
           throw new Error("需要 --iterations 或 --duration");
         }
-        const { createRunner } = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
+        validateStressRunOptions(opts);
+        const confirmedTargetOrigins = [...new Set((opts.allowTarget ?? []).map(validateStressOriginOption))];
+        const targetInfo = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
+        const effectiveMaxRps = opts.maxRps === undefined
+          ? targetInfo.project.stressPolicy?.maxRps
+          : targetInfo.project.stressPolicy?.maxRps === undefined
+            ? opts.maxRps : Math.min(opts.maxRps, targetInfo.project.stressPolicy.maxRps);
+        if (targetInfo.project.stressPolicy?.maxConcurrency !== undefined && opts.concurrency > targetInfo.project.stressPolicy.maxConcurrency) {
+          throw new Error(`并发数 ${opts.concurrency} 超过项目上限 ${targetInfo.project.stressPolicy.maxConcurrency}`);
+        }
         const samples: ShardResult["samples"] = [];
-        const report = await createRunner((sample) => samples.push({
+        const thresholds: StressThresholds = {
+          ...(opts.maxErrorRate !== undefined ? { maxErrorRate: opts.maxErrorRate } : {}),
+          ...(opts.maxAssertionFailureRate !== undefined ? { maxAssertionFailureRate: opts.maxAssertionFailureRate } : {}),
+          ...(opts.maxP95Ms !== undefined ? { maxP95Ms: opts.maxP95Ms } : {}),
+          ...(opts.minRps !== undefined ? { minRps: opts.minRps } : {}),
+        };
+        const report = await targetInfo.createRunner({
+          onSample: (sample) => samples.push({
           requestTimeMs: sample.requestTimeMs ?? sample.timeMs ?? 0,
           scriptTimeMs: sample.scriptTimeMs ?? 0,
           iterationTimeMs: sample.iterationTimeMs ?? sample.requestTimeMs ?? sample.timeMs ?? 0,
@@ -584,11 +742,15 @@ export async function runCli(
           ...(sample.requestStarted !== undefined ? { requestStarted: sample.requestStarted } : {}),
           ...(sample.requestCompleted !== undefined ? { requestCompleted: sample.requestCompleted } : {}),
           ...(sample.failureKind !== undefined ? { failureKind: sample.failureKind } : {}),
-        })).run({
+          ...(sample.safety !== undefined ? { safety: sample.safety } : {}),
+        }), concurrency: opts.concurrency, maxRps: effectiveMaxRps,
+        confirmedTargetOrigins, connectionMode: opts.connectionMode,
+        }).run({
           concurrency: opts.concurrency,
           maxIterations: opts.iterations,
           durationMs: opts.duration === undefined ? undefined : opts.duration * 1000,
-          maxRps: opts.maxRps,
+          maxRps: effectiveMaxRps,
+          ...(Object.keys(thresholds).length > 0 ? { thresholds } : {}),
         });
         if (!report.generator) throw new Error("worker 未生成 generator 指标");
         const result: ShardResult = { protocolVersion: 2, ok: true, shardId: opts.shardId, samples, generator: report.generator };

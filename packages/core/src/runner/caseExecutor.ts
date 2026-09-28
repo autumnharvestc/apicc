@@ -7,6 +7,7 @@ import type {
 } from "../plugin/types.js";
 import type { CaseOutcome } from "../report/types.js";
 import type { VariableResolver } from "../variables/resolver.js";
+import type { StressSafetyTarget } from "../stress/model.js";
 import { withBaseUrl } from "../variables/baseUrl.js";
 
 export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "config" | "aborted";
@@ -49,6 +50,7 @@ export interface CaseExecutionResult {
   /** True once an entered protocol client attempt settles (success or error). */
   requestCompleted?: boolean;
   failureKind?: CaseFailureKind;
+  safety?: StressSafetyTarget;
 }
 
 const EMPTY_GLOBALS: Required<ProjectGlobals> = { query: [], headers: [], cookies: [], body: [] };

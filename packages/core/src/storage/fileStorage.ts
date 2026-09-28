@@ -189,6 +189,12 @@ export const fileStorage: StorageAdapter = {
             continue;
           }
           const project: Project = { ...pRes.data, environments: [], collections: [], workflows: [] };
+          // Keep the in-memory shape of legacy projects stable while ProjectSchema
+          // still supplies an empty policy to new callers. Safety treats undefined
+          // exactly as the empty policy, so old files need no migration write.
+          if (!/^(?:stressPolicy)\s*:/m.test(readFileSync(join(pDir, "project.yaml"), "utf8"))) {
+            delete project.stressPolicy;
+          }
 
           const envDir = join(pDir, "environments");
           if (existsSync(envDir)) {
@@ -310,6 +316,7 @@ export const fileStorage: StorageAdapter = {
         // M10：项目级全局参数随 project.yaml 落盘（全局变量 = variables 字段本身）
         writeYaml(join(pDir, "project.yaml"), {
           id: p.id, name: p.name, variables: p.variables, globals: p.globals,
+          ...(p.stressPolicy ? { stressPolicy: p.stressPolicy } : {}),
         });
         for (const e of p.environments) {
           writeYaml(join(pDir, "environments", `${e.id}.yaml`), {

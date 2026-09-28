@@ -38,3 +38,25 @@ describe("Project.workflows 字段（M2-A）", () => {
     expect(p2.workflows).toHaveLength(1);
   });
 });
+
+describe("Project.stressPolicy 字段", () => {
+  it("缺省为空策略，并规范化 origin、去重", () => {
+    const p = ProjectSchema.parse({ id: "p", name: "x", variables: {} });
+    expect(p.stressPolicy).toEqual({ trustedOrigins: [], deniedOrigins: [] });
+    const configured = ProjectSchema.parse({
+      id: "p", name: "x", variables: {},
+      stressPolicy: {
+        trustedOrigins: ["HTTPS://Example.COM:443/path", "https://example.com", "http://[::1]:80"],
+        deniedOrigins: ["http://127.0.0.1:80/a", "http://127.0.0.1"],
+        maxConcurrency: 4,
+        maxRps: 12.5,
+      },
+    });
+    expect(configured.stressPolicy).toEqual({
+      trustedOrigins: ["https://example.com", "http://[::1]"],
+      deniedOrigins: ["http://127.0.0.1"],
+      maxConcurrency: 4,
+      maxRps: 12.5,
+    });
+  });
+});

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { computeReport, type ComputeReportOptions } from "./aggregate.js";
-import type { StressDistributed, StressGeneratorMetrics, StressReport, StressSample } from "./model.js";
+import type { StressDistributed, StressGeneratorMetrics, StressReport, StressSample, StressThresholds } from "./model.js";
 import { StressGeneratorSchema, StressSampleSchema } from "./model.js";
 
 /** 协调端下发给 shard worker 的规格消息（protocolVersion 为前向兼容锚点，D5）。 */
@@ -14,6 +14,12 @@ export const StressWorkerSpecSchema = z.object({
   maxIterations: z.number().int().positive().optional(),
   durationMs: z.number().positive().optional(),
   maxRps: z.number().finite().positive().optional(),
+  maxErrorRate: z.number().min(0).max(1).optional(),
+  maxAssertionFailureRate: z.number().min(0).max(1).optional(),
+  maxP95Ms: z.number().nonnegative().optional(),
+  minRps: z.number().nonnegative().optional(),
+  confirmedTargetOrigins: z.array(z.string()).optional(),
+  connectionMode: z.enum(["pooled", "fresh"]).optional(),
   workspaceRoot: z.string(),
 }).strict();
 export type StressWorkerSpec = z.infer<typeof StressWorkerSpecSchema>;
@@ -144,6 +150,16 @@ export interface DistributedRunOptions {
 /** 协调器 specBase：除 protocolVersion/shardId 外的完整 worker 规格（并发与终止条件为总额，按 shard 拆分）。 */
 export type StressWorkerSpecBase = Omit<StressWorkerSpec, "protocolVersion" | "shardId">;
 
+function specBaseToThresholds(spec: StressWorkerSpecBase): StressThresholds | undefined {
+  const thresholds: StressThresholds = {
+    ...(spec.maxErrorRate !== undefined ? { maxErrorRate: spec.maxErrorRate } : {}),
+    ...(spec.maxAssertionFailureRate !== undefined ? { maxAssertionFailureRate: spec.maxAssertionFailureRate } : {}),
+    ...(spec.maxP95Ms !== undefined ? { maxP95Ms: spec.maxP95Ms } : {}),
+    ...(spec.minRps !== undefined ? { minRps: spec.minRps } : {}),
+  };
+  return Object.keys(thresholds).length > 0 ? thresholds : undefined;
+}
+
 /** run 结果：报告 + 失败 shard 数（退出语义留在 CLI，core 不携带）。 */
 export interface CoordinatorRunResult {
   report: StressReport;
@@ -185,6 +201,11 @@ export function mergeStressReport(
       ? { shardErrors: distributed.shardErrors }
       : {}),
   };
+  const safetyTargets = samples
+    .map((sample) => sample.safety)
+    .filter((target): target is NonNullable<typeof target> => target !== undefined);
+  const uniqueSafety = safetyTargets.filter((target, index, all) => all.findIndex((candidate) => candidate.origin === target.origin) === index);
+  if (uniqueSafety.length > 0) report.safety = { targetOrigins: uniqueSafety };
   return report;
 }
 
@@ -266,6 +287,7 @@ export class DistributedStressCoordinator {
         failed: samples.length - okCount,
         rps: seconds > 0 ? samples.length / seconds : 0,
         generator: attempt.result.generator,
+        ...(safetyForSamples(samples) ? { safety: safetyForSamples(samples) } : {}),
       });
       successConcurrency += plans[i].concurrency;
     });
@@ -280,7 +302,10 @@ export class DistributedStressCoordinator {
     const report = mergeStressReport(
       merged,
       { shards, perShard, shardErrors, dataComplete, protocolVersion: 2 },
-      { concurrency, startedAt, finishedAt },
+      {
+        concurrency, startedAt, finishedAt,
+        thresholds: specBaseToThresholds(specBase),
+      },
     );
     if (generators.length > 0) report.generator = aggregateGeneratorMetrics(generators);
     if (!dataComplete || merged.length === 0) {
@@ -299,6 +324,14 @@ export class DistributedStressCoordinator {
     }
     return { report, shardFailureCount: shardErrors.length };
   }
+}
+
+function safetyForSamples(samples: StressSample[]): StressDistributed["perShard"][number]["safety"] {
+  const targets = samples
+    .map((sample) => sample.safety)
+    .filter((target): target is NonNullable<typeof target> => target !== undefined);
+  const unique = targets.filter((target, index, all) => all.findIndex((candidate) => candidate.origin === target.origin) === index);
+  return unique.length > 0 ? { targetOrigins: unique } : undefined;
 }
 
 /** Aggregate independent process metrics without averaging resource peaks. */

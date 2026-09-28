@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { WorkflowSchema } from "../workflow/model.js";
+import { normalizeStressPolicy } from "../stress/safety.js";
 
 // 所有域对象 schema 均为 strict：拒绝未知字段（而非静默丢弃），
 // 避免「解析→保存」链路上的静默数据丢失，并尽早暴露文件格式错误。
@@ -146,9 +147,10 @@ export interface Collection extends Omit<CollectionParsed, "apis" | "folders" | 
   postOperations?: Operation[];
 }
 type ProjectParsed = z.infer<typeof ProjectSchema>;
-export interface Project extends Omit<ProjectParsed, "collections" | "globals"> {
+export interface Project extends Omit<ProjectParsed, "collections" | "globals" | "stressPolicy"> {
   collections: Collection[];
   globals?: ProjectGlobals;
+  stressPolicy?: StressTargetPolicy;
 }
 type GroupParsed = z.infer<typeof GroupSchema>;
 export interface Group extends Omit<GroupParsed, "projects" | "default"> {
@@ -203,6 +205,24 @@ export const ProjectGlobalsSchema = z.object({
 export type ProjectGlobalsParsed = z.infer<typeof ProjectGlobalsSchema>;
 export type ProjectGlobals = ProjectGlobalsParsed;
 
+export interface StressTargetPolicy {
+  trustedOrigins?: string[];
+  deniedOrigins?: string[];
+  maxConcurrency?: number;
+  maxRps?: number;
+}
+
+const RawStressPolicySchema = z.object({
+  trustedOrigins: z.array(z.string()).default([]),
+  deniedOrigins: z.array(z.string()).default([]),
+  maxConcurrency: z.number().int().positive().optional(),
+  maxRps: z.number().finite().positive().optional(),
+}).strict();
+export const StressPolicySchema = z.preprocess(
+  (input) => input === undefined ? {} : input,
+  RawStressPolicySchema.transform((policy) => normalizeStressPolicy(policy)),
+);
+
 export const ProjectSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -211,6 +231,7 @@ export const ProjectSchema = z.object({
   environments: z.array(EnvironmentSchema).default([]),
   collections: z.array(CollectionSchema).default([]),
   workflows: z.array(WorkflowSchema).default([]),
+  stressPolicy: StressPolicySchema,
 }).strict();
 
 export const GroupSchema = z.object({

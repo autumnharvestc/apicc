@@ -50,6 +50,7 @@ export interface StressSafetyTarget {
   origin: string;
   confirmation: string;
   policy: string;
+  loopback?: boolean;
 }
 
 export interface StressSafety {
@@ -73,6 +74,7 @@ export interface StressSample {
   requestCompleted?: boolean;
   failureKind?: StressFailureKind;
   outcome?: CaseOutcome;
+  safety?: StressSafetyTarget;
 }
 
 /** v2 worker wire format for a single Task 4 execution sample. */
@@ -87,6 +89,7 @@ export const StressSampleSchema = z.object({
   requestStarted: z.boolean().optional(),
   requestCompleted: z.boolean().optional(),
   failureKind: z.enum(["transport", "http", "script", "assertion", "config", "aborted"]).optional(),
+  safety: z.object({ origin: z.string(), confirmation: z.string(), policy: z.string(), loopback: z.boolean().optional() }).strict().optional(),
 }).strict().superRefine((sample, ctx) => {
   if (sample.ok && sample.failureKind !== undefined) {
     ctx.addIssue({ code: "custom", path: ["failureKind"], message: "successful sample cannot carry failureKind" });
@@ -136,7 +139,7 @@ export const StressGeneratorSchema = z.object({
 }).strict();
 
 export const StressSafetySchema = z.object({
-  targetOrigins: z.array(z.object({ origin: z.string(), confirmation: z.string(), policy: z.string() }).strict()),
+  targetOrigins: z.array(z.object({ origin: z.string(), confirmation: z.string(), policy: z.string(), loopback: z.boolean().optional() }).strict()),
 }).strict();
 
 /** distributed 段：多 shard 汇聚信息（M2-D）。shardErrors 无失败时省略。 */
@@ -151,6 +154,7 @@ export const StressDistributedSchema = z.object({
     failed: z.number().int().nonnegative(),
     rps: z.number().finite().nonnegative(),
     generator: StressGeneratorSchema,
+    safety: StressSafetySchema.optional(),
   }).strict()),
   shardErrors: z.array(z.object({ shardId: z.string(), error: z.string() })).optional(),
 }).strict();
