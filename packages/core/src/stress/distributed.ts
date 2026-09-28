@@ -384,15 +384,17 @@ function safetyForSamples(samples: StressSample[]): StressDistributed["perShard"
   return unique.length > 0 ? { targetOrigins: unique } : undefined;
 }
 
-/** Union worker-owned windows using comparable wall timestamps.  If a worker's
- * wall clock moves backwards, its monotonic duration supplies a synthetic end. */
+/** Union worker-owned pressure windows.  In the normal v2 path the comparable
+ * interval is startWallMs + monotonicDurationMs; raw endWallMs is retained by
+ * each worker only as a diagnostic and is a controlled fallback when a zero
+ * monotonic duration leaves no pressure interval to compare. */
 function unionMeasurementWindows(windows: StressMeasurementWindow[]): StressMeasurementWindow | undefined {
   if (windows.length === 0) return undefined;
   const intervals = windows.map((window) => ({
     start: window.startWallMs,
-    end: window.endWallMs >= window.startWallMs
-      ? window.endWallMs
-      : window.startWallMs + window.monotonicDurationMs,
+    end: window.monotonicDurationMs > 0
+      ? window.startWallMs + window.monotonicDurationMs
+      : window.endWallMs >= window.startWallMs ? window.endWallMs : window.startWallMs,
     monotonicDurationMs: window.monotonicDurationMs,
     eligibleCompletedAttempts: window.eligibleCompletedAttempts,
   })).sort((a, b) => a.start - b.start);

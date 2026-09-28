@@ -399,6 +399,95 @@ describe("CLI 端到端", () => {
     expect(logs.join("\n")).toContain("target origins");
   }, 30000);
 
+  it("混合 target confirmation rejection 与成功请求时 CLI 仍 exit 1", async () => {
+    const { workspace } = await fileStorage.load(root);
+    const project = workspace.groups[0]!.projects.find((candidate) => candidate.name === "svc")!;
+    const api = project.collections.find((collection) => collection.name === "credibility")!.apis[0]!;
+    const testCase = api.cases[0]!;
+    const originalPreScript = testCase.preScript;
+    const runsDir = join(root, "stress-mixed-safety");
+    const before = receivedRequests.length;
+    testCase.preScript = [
+      'if (pm.variables.get("safetyOnce") !== "yes") {',
+      '  pm.variables.set("safetyOnce", "yes");',
+      '  pm.request.url = "http://127.0.0.1:1/blocked";',
+      '}',
+      originalPreScript ?? "",
+    ].join("\n");
+    await fileStorage.save(root, workspace);
+    try {
+      const logs: string[] = [];
+      const code = await runCli([
+        "run-stress", "groups/demo/projects/svc/collections/credibility/apis/rich",
+        "--case", "00000000-0000-4000-8000-000000000023", "--env", "dev", "--concurrency", "1", "--iterations", "2",
+        "--allow-target", baseUrl, "--runs-dir", runsDir,
+      ], createDefaultRegistry(), (line) => logs.push(line));
+      expect(code).toBe(1);
+      expect(receivedRequests.length).toBe(before + 1);
+      const { readdirSync, readFileSync } = await import("node:fs");
+      const file = readdirSync(runsDir).find((name) => name.endsWith(".json"))!;
+      const report = JSON.parse(readFileSync(join(runsDir, file), "utf8")) as {
+        totalRequests: number; ok: number; failed: number; failures: Record<string, number>;
+        verdict?: { passed: boolean; violations: Array<{ metric: string; actual: number }> };
+        safety?: { targetOrigins: Array<{ origin: string; confirmation: string }> };
+      };
+      expect(report).toMatchObject({ totalRequests: 2, ok: 1, failed: 1, failures: { config: 1 } });
+      expect(report.verdict?.passed).toBe(false);
+      expect(report.verdict?.violations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ metric: "businessFailures", actual: 1 }),
+      ]));
+      expect(report.safety?.targetOrigins).toEqual(expect.arrayContaining([
+        expect.objectContaining({ origin: "http://127.0.0.1:1", confirmation: "rejected" }),
+        expect.objectContaining({ origin: baseUrl, confirmation: expect.any(String) }),
+      ]));
+      expect(logs.join("\n")).toContain("verdict: failed");
+    } finally {
+      testCase.preScript = originalPreScript;
+      await fileStorage.save(root, workspace);
+    }
+  }, 30000);
+
+  it("混合 pre-script failure 与成功请求时 CLI 仍 exit 1", async () => {
+    const { workspace } = await fileStorage.load(root);
+    const project = workspace.groups[0]!.projects.find((candidate) => candidate.name === "svc")!;
+    const api = project.collections.find((collection) => collection.name === "credibility")!.apis[0]!;
+    const testCase = api.cases[0]!;
+    const originalPreScript = testCase.preScript;
+    const runsDir = join(root, "stress-mixed-script");
+    const before = receivedRequests.length;
+    testCase.preScript = [
+      'if (pm.variables.get("scriptOnce") !== "yes") {',
+      '  pm.variables.set("scriptOnce", "yes");',
+      '  throw new Error("pre-script failed");',
+      '}',
+      originalPreScript ?? "",
+    ].join("\n");
+    await fileStorage.save(root, workspace);
+    try {
+      const code = await runCli([
+        "run-stress", "groups/demo/projects/svc/collections/credibility/apis/rich",
+        "--case", "00000000-0000-4000-8000-000000000023", "--env", "dev", "--concurrency", "1", "--iterations", "2",
+        "--allow-target", baseUrl, "--runs-dir", runsDir,
+      ], createDefaultRegistry());
+      expect(code).toBe(1);
+      expect(receivedRequests.length).toBe(before + 1);
+      const { readdirSync, readFileSync } = await import("node:fs");
+      const file = readdirSync(runsDir).find((name) => name.endsWith(".json"))!;
+      const report = JSON.parse(readFileSync(join(runsDir, file), "utf8")) as {
+        totalRequests: number; ok: number; failed: number; failures: Record<string, number>;
+        verdict?: { passed: boolean; violations: Array<{ metric: string; actual: number }> };
+      };
+      expect(report).toMatchObject({ totalRequests: 2, ok: 1, failed: 1, failures: { script: 1 } });
+      expect(report.verdict?.passed).toBe(false);
+      expect(report.verdict?.violations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ metric: "businessFailures", actual: 1 }),
+      ]));
+    } finally {
+      testCase.preScript = originalPreScript;
+      await fileStorage.save(root, workspace);
+    }
+  }, 30000);
+
   it.each(["https://example.com/path", "https://user:pass@example.com", "ftp://example.com"])(
     "run-stress 拒绝非 origin allow-target %s", async (origin) => {
       await expect(runCli([

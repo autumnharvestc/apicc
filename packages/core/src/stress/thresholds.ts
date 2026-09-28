@@ -7,21 +7,17 @@ const failureCounts = (report: StressReport): StressFailureCounts => report.fail
   transport: 0, http: 0, script: 0, assertion: 0, config: 0, aborted: 0,
 };
 
-const eligibleFailureCounts = (report: StressReport): StressFailureCounts => report.eligibleFailureCounts ?? failureCounts(report);
-
 /** Evaluate performance and business-result thresholds without mutating the report. */
 export function evaluateStressThresholds(report: StressReport, thresholds: StressThresholds = {}): StressVerdict {
   const failures = failureCounts(report);
-  const eligibleFailures = eligibleFailureCounts(report);
   const denominator = completedCount(report);
-  const eligibleBusinessFailures = eligibleFailures.transport + eligibleFailures.http + eligibleFailures.script + eligibleFailures.assertion + eligibleFailures.config;
-  // A current report carries the exact eligible failure counts. Legacy
-  // reports fall back to their historical failure/aborted approximation.
-  const businessFailures = report.eligibleFailureCounts
-    ? eligibleBusinessFailures
-    : Math.max(0, report.failed - failures.aborted);
+  // Eligibility only defines the throughput/latency boundary and rate
+  // denominator. Correctness must retain every non-aborted failure, including
+  // pre-I/O config/script/safety rejection samples which are intentionally not
+  // eligible request attempts.
+  const businessFailures = failures.transport + failures.http + failures.script + failures.assertion + failures.config;
   const errorRate = denominator === 0 ? 0 : businessFailures / denominator;
-  const assertionFailureRate = denominator === 0 ? 0 : (report.eligibleFailureCounts ? eligibleFailures.assertion : failures.assertion) / denominator;
+  const assertionFailureRate = denominator === 0 ? 0 : failures.assertion / denominator;
   const violations: StressViolation[] = [];
 
   if (denominator === 0) {
@@ -47,7 +43,7 @@ export function evaluateStressThresholds(report: StressReport, thresholds: Stres
   // failed even when p95/minRps happen to pass.
   const governedFailures = thresholds.maxErrorRate !== undefined
     ? businessFailures
-    : thresholds.maxAssertionFailureRate !== undefined ? (report.eligibleFailureCounts ? eligibleFailures.assertion : failures.assertion) : 0;
+    : thresholds.maxAssertionFailureRate !== undefined ? failures.assertion : 0;
   if (businessFailures > governedFailures) {
     violations.push({ metric: "businessFailures", actual: businessFailures, expected: 0, message: `${businessFailures} business request(s) failed` });
   }

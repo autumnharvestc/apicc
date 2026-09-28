@@ -97,8 +97,49 @@ describe("computeReport", () => {
     expect(r.latency.max).toBe(1_000);
     expect(r.scriptLatency.p95).toBe(5);
     expect(r.eligibleFailureCounts?.script).toBe(0);
-    expect(evaluateStressThresholds(r, { maxErrorRate: 0 }).passed).toBe(true);
+    expect(evaluateStressThresholds(r, { maxErrorRate: 0 }).passed).toBe(false);
+    expect(evaluateStressThresholds(r, { maxErrorRate: 0 }).violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ metric: "errorRate", actual: 19 }),
+    ]));
     expect(evaluateStressThresholds(r, { maxP95Ms: 500 }).violations.map((v) => v.metric)).toContain("p95");
+  });
+
+  it("target confirmation rejection remains a correctness failure beside a successful request", () => {
+    const r = computeReport([
+      {
+        requestTimeMs: 0, scriptTimeMs: 0, iterationTimeMs: 1, requestStarted: false, requestCompleted: false,
+        status: 0, ok: false, failureKind: "config", error: "target_confirmation_required",
+        safety: {
+          origin: "https://example.com", confirmation: "rejected", policy: "target_confirmation_required",
+          loopback: false, appliedPolicy: { trustedOrigins: [], deniedOrigins: [] },
+        },
+      },
+      { requestTimeMs: 10, scriptTimeMs: 0, iterationTimeMs: 10, requestStarted: true, requestCompleted: true, status: 200, ok: true },
+    ], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+
+    const verdict = evaluateStressThresholds(r, {});
+    expect(r.failures.config).toBe(1);
+    expect(r.eligibleFailureCounts?.config).toBe(0);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ metric: "businessFailures", actual: 1 }),
+    ]));
+  });
+
+  it.each(["script", "config"] as const)("pre-I/O %s failure stays in correctness verdict, while explicit error-rate tolerance governs it", (failureKind) => {
+    const r = computeReport([
+      {
+        requestTimeMs: 0, scriptTimeMs: 5, iterationTimeMs: 5, requestStarted: false, requestCompleted: false,
+        status: 0, ok: false, failureKind, error: `${failureKind} failed before I/O`,
+      },
+      { requestTimeMs: 10, scriptTimeMs: 0, iterationTimeMs: 10, requestStarted: true, requestCompleted: true, status: 200, ok: true },
+    ], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+
+    expect(evaluateStressThresholds(r, {}).passed).toBe(false);
+    expect(evaluateStressThresholds(r, { maxErrorRate: 1 }).passed).toBe(true);
+    expect(evaluateStressThresholds(r, { maxErrorRate: 0.5 }).violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ metric: "errorRate", actual: 1, expected: 0.5 }),
+    ]));
   });
 
   it("RPS 只计算实际发出且非 aborted 的完成尝试", () => {

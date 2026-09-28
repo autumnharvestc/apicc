@@ -11,16 +11,24 @@ import type {
   ShardResult,
   StressWorkerSpec,
 } from "../../src/stress/distributed.js";
-import { CurrentStressReportSchema, StressGeneratorSchema, StressReportSchema, StressSampleSchema } from "../../src/stress/model.js";
+import { CurrentStressReportSchema, StressGeneratorSchema, StressMeasurementWindowSchema, StressReportSchema, StressSampleSchema } from "../../src/stress/model.js";
 import type { StressSample } from "../../src/stress/model.js";
 
 /** 成功 shard 替身回传：固定样本批。 */
-const shardResult = (shardId: string, timeMsList: number[], metrics?: Partial<ShardResult["generator"]>): ShardResult => ({
+const shardResult = (
+  shardId: string,
+  timeMsList: number[],
+  metrics?: Partial<ShardResult["generator"]>,
+  window?: Partial<ShardResult["measurementWindow"]>,
+): ShardResult => ({
   protocolVersion: 2,
   ok: true,
   shardId,
   samples: timeMsList.map((t) => ({ timeMs: t, requestTimeMs: t, scriptTimeMs: 0, iterationTimeMs: t, requestStarted: true, requestCompleted: true, status: 200, ok: true })),
-  measurementWindow: { startWallMs: 1_000, endWallMs: 1_100, monotonicDurationMs: 100, eligibleCompletedAttempts: timeMsList.length },
+  measurementWindow: {
+    startWallMs: 1_000, endWallMs: 1_100, monotonicDurationMs: 100, eligibleCompletedAttempts: timeMsList.length,
+    ...window,
+  },
   generator: {
     cpuUserMs: 1, cpuSystemMs: 2, cpuPercent: 3, rssStartBytes: 10, rssPeakBytes: 20,
     eventLoopDelayP95Ms: 4, schedulerBacklogMax: 0, saturated: false, reasons: [],
@@ -173,6 +181,98 @@ describe("DistributedStressCoordinator", () => {
     expect(report.latency).toEqual(direct.latency);
     // 含 distributed 段的报告整体可被 schema 校验
     expect(() => StressReportSchema.parse(report)).not.toThrow();
+  });
+
+  it("顶层与 per-shard RPS 都使用 startWall + monotonicDuration，minRps 不被 raw endWall 覆盖", async () => {
+    const { report } = await coordinator.run(
+      { ...specBase, concurrency: 1, maxIterations: 1, minRps: 8 },
+      {
+        shards: 1,
+        spawnWorker: async (spec) => shardResult(spec.shardId, [10], undefined, {
+          startWallMs: 1_000, endWallMs: 1_100, monotonicDurationMs: 200,
+        }),
+      },
+    );
+
+    expect(report.distributed?.perShard[0]?.rps).toBe(5);
+    expect(report.measurementWindow).toMatchObject({ startWallMs: 1_000, endWallMs: 1_200, monotonicDurationMs: 200 });
+    expect(report.rps).toBe(5);
+    expect(report.verdict?.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ metric: "rps", actual: 5, expected: 8 }),
+    ]));
+  });
+
+  it("联合窗口按 worker 压力区间计算，分别覆盖重叠与非重叠 shard", async () => {
+    const runWithWindows = async (windows: Array<[number, number, number]>) => coordinator.run(
+      { ...specBase, concurrency: 2, maxIterations: 2 },
+      {
+        shards: 2,
+        spawnWorker: async (spec) => {
+          const [startWallMs, endWallMs, monotonicDurationMs] = windows[Number(spec.shardId.slice(-1))]!;
+          return shardResult(spec.shardId, [10], undefined, { startWallMs, endWallMs, monotonicDurationMs });
+        },
+      },
+    );
+
+    const overlapping = await runWithWindows([[1_000, 1_100, 200], [1_100, 1_200, 200]]);
+    expect(overlapping.report.measurementWindow).toMatchObject({ startWallMs: 1_000, endWallMs: 1_300, monotonicDurationMs: 300 });
+    expect(overlapping.report.rps).toBeCloseTo(2 / 0.3, 8);
+
+    const nonOverlapping = await runWithWindows([[2_000, 2_100, 200], [2_300, 2_400, 200]]);
+    expect(nonOverlapping.report.measurementWindow).toMatchObject({ startWallMs: 2_000, endWallMs: 2_500, monotonicDurationMs: 500 });
+    expect(nonOverlapping.report.rps).toBe(4);
+  });
+
+  it("墙钟倒退时使用 monotonic fallback，缺少窗口字段则严格拒绝", async () => {
+    expect(StressMeasurementWindowSchema.safeParse({
+      startWallMs: 2_000, endWallMs: 1_000, monotonicDurationMs: 200, eligibleCompletedAttempts: 1,
+    }).success).toBe(true);
+    expect(StressMeasurementWindowSchema.safeParse({
+      endWallMs: 1_000, monotonicDurationMs: 200, eligibleCompletedAttempts: 1,
+    }).success).toBe(false);
+
+    const { report } = await coordinator.run(
+      { ...specBase, concurrency: 1, maxIterations: 1 },
+      {
+        shards: 1,
+        spawnWorker: async (spec) => shardResult(spec.shardId, [10], undefined, {
+          startWallMs: 2_000, endWallMs: 1_000, monotonicDurationMs: 200,
+        }),
+      },
+    );
+    expect(report.rps).toBe(5);
+    expect(report.measurementWindow).toMatchObject({ startWallMs: 2_000, endWallMs: 2_200, monotonicDurationMs: 200 });
+  });
+
+  it("跨 shard 合并 pre-I/O config/safety rejection 与成功样本时 verdict 仍失败", async () => {
+    const rejected: ShardResult = {
+      ...shardResult("shard-0", [0]),
+      samples: [{
+        requestTimeMs: 0, scriptTimeMs: 0, iterationTimeMs: 1, requestStarted: false, requestCompleted: false,
+        status: 0, ok: false, failureKind: "config", error: "target_confirmation_required",
+        safety: {
+          origin: "https://example.com", confirmation: "rejected", policy: "target_confirmation_required",
+          loopback: false, appliedPolicy: { trustedOrigins: [], deniedOrigins: [] },
+        },
+      }],
+      measurementWindow: { startWallMs: 1_000, endWallMs: 1_100, monotonicDurationMs: 100, eligibleCompletedAttempts: 0 },
+    };
+    const { report } = await coordinator.run(
+      { ...specBase, concurrency: 2, maxIterations: 2 },
+      {
+        shards: 2,
+        spawnWorker: async (spec) => spec.shardId === "shard-0" ? rejected : shardResult(spec.shardId, [10]),
+      },
+    );
+
+    expect(report.totalRequests).toBe(2);
+    expect(report.ok).toBe(1);
+    expect(report.failures.config).toBe(1);
+    expect(report.eligibleFailureCounts?.config).toBe(0);
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.verdict?.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ metric: "businessFailures", actual: 1 }),
+    ]));
   });
 
   it("部分失败：成功样本入报告、shardErrors 恰 1 条、run 不抛、并发只计成功 shard", async () => {

@@ -144,6 +144,49 @@ describe("StressRunner", () => {
     expect(report.verdict?.violations.filter((v) => v.metric === "noData")).toHaveLength(1);
   });
 
+  it("混合 pre-I/O safety rejection 与成功请求时 correctness verdict 仍失败", async () => {
+    let calls = 0;
+    const runner = new StressRunner({
+      createWorker: () => ({
+        execute: async () => {
+          calls += 1;
+          const request = { method: "GET" as const, url: "http://example.com/", headers: {}, query: [] };
+          if (calls === 1) {
+            return {
+              request, requestStarted: false, requestCompleted: false,
+              requestTimeMs: 0, scriptTimeMs: 0, iterationTimeMs: 1,
+              outcome: {
+                apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 1,
+                assertions: [], error: "target_confirmation_required", failureKind: "config" as const,
+              },
+              failureKind: "config" as const,
+              safety: {
+                origin: "https://example.com", confirmation: "rejected", policy: "target_confirmation_required",
+                loopback: false, appliedPolicy: { trustedOrigins: [], deniedOrigins: [] },
+              },
+            };
+          }
+          return {
+            request, requestStarted: true, requestCompleted: true,
+            requestTimeMs: 10, scriptTimeMs: 0, iterationTimeMs: 10,
+            outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 10, assertions: [] },
+          };
+        },
+        close: async () => {},
+      }),
+    });
+
+    const report = await runner.run({ concurrency: 1, maxIterations: 2 });
+    expect(report.totalRequests).toBe(2);
+    expect(report.ok).toBe(1);
+    expect(report.failures.config).toBe(1);
+    expect(report.eligibleFailureCounts?.config).toBe(0);
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.verdict?.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ metric: "businessFailures", actual: 1 }),
+    ]));
+  });
+
   it("非 2xx：ok=false 且不写 error（HTTP_ 分类由聚合派生，statusDist 保留状态）", async () => {
     const client = fakeClient(() => ({ status: 500, headers: {}, bodyText: "", timeMs: 1 }));
     const runner = new StressRunner({
