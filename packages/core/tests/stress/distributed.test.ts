@@ -302,6 +302,18 @@ describe("DistributedStressCoordinator", () => {
     expect(report.generator?.saturated).toBe(false);
   });
 
+  it("任一 shard generator 明确 partial 时顶层保留 partial 可用性", async () => {
+    const result = (id: string): ShardResult => ({
+      ...shardResult(id, [10]),
+      generator: { ...shardResult(id, [10]).generator, availability: "partial", unavailableReason: "event-loop probe unavailable" },
+    });
+    const { report } = await coordinator.run({ ...specBase, maxIterations: 2 }, {
+      shards: 2,
+      spawnWorker: async (spec) => result(spec.shardId),
+    });
+    expect(report.generator?.availability).toBe("partial");
+  });
+
   it("两个 worker 都回 shard-0：重复/错配路由作为 protocol error，不合并第二份样本", async () => {
     const { report, shardFailureCount } = await coordinator.run(specBase, {
       shards: 2,

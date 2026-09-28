@@ -234,6 +234,7 @@ export class DistributedStressCoordinator {
     const shardErrors: { shardId: string; error: string }[] = [];
     const generators: StressGeneratorMetrics[] = [];
     let unavailableGeneratorCount = 0;
+    let partialGeneratorCount = 0;
     const measurementWindows: StressMeasurementWindow[] = [];
     const seenShardIds = new Set<string>();
     let successConcurrency = 0;
@@ -277,7 +278,10 @@ export class DistributedStressCoordinator {
         // Empty successful shard still has a real Task-5 collector snapshot;
         // preserve it so the no-data report remains a valid current report.
         if (attempt.result.generator.availability === "unavailable") unavailableGeneratorCount += 1;
-        else generators.push(attempt.result.generator);
+        else {
+          if (attempt.result.generator.availability === "partial") partialGeneratorCount += 1;
+          generators.push(attempt.result.generator);
+        }
         perShard.push({
           shardId: spec.shardId,
           totalRequests: 0,
@@ -293,7 +297,10 @@ export class DistributedStressCoordinator {
       }
       merged.push(...samples);
       if (attempt.result.generator.availability === "unavailable") unavailableGeneratorCount += 1;
-      else generators.push(attempt.result.generator);
+      else {
+        if (attempt.result.generator.availability === "partial") partialGeneratorCount += 1;
+        generators.push(attempt.result.generator);
+      }
       measurementWindows.push(attempt.result.measurementWindow);
       const okCount = samples.filter((s) => s.ok).length;
       perShard.push({
@@ -339,7 +346,10 @@ export class DistributedStressCoordinator {
       },
     );
     if (generators.length > 0) {
-      report.generator = aggregateGeneratorMetrics(generators, dataComplete && unavailableGeneratorCount === 0 ? "available" : "partial");
+      report.generator = aggregateGeneratorMetrics(
+        generators,
+        dataComplete && unavailableGeneratorCount === 0 && partialGeneratorCount === 0 ? "available" : "partial",
+      );
     } else {
       report.generator = { availability: "unavailable", unavailableReason: "所有 shard 均未返回可用 generator 指标" };
     }
