@@ -1,10 +1,10 @@
 import { createServer, type Server } from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDefaultRegistry, fileStorage } from "@apicc/core";
-import type { Workspace } from "@apicc/core";
+import type { ShardOutcome, Workspace } from "@apicc/core";
 import { runCli } from "../src/main.js";
 
 let server: Server;
@@ -12,12 +12,28 @@ let baseUrl = "";
 let root: string;
 let prevCwd = "";
 const receivedPaths: string[] = [];
+type ObservedRequest = { method: string; url: string; headers: Record<string, string | undefined>; body: string };
+const receivedRequests: ObservedRequest[] = [];
 
 beforeAll(async () => {
   server = createServer((req, res) => {
-    receivedPaths.push(req.url ?? "");
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true }));
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const body = Buffer.concat(chunks).toString("utf8");
+      receivedPaths.push(req.url ?? "");
+      receivedRequests.push({
+        method: req.method ?? "",
+        url: req.url ?? "",
+        headers: {
+          "x-pre-script": typeof req.headers["x-pre-script"] === "string" ? req.headers["x-pre-script"] : undefined,
+          "x-pre-operation": typeof req.headers["x-pre-operation"] === "string" ? req.headers["x-pre-operation"] : undefined,
+        },
+        body,
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -53,6 +69,26 @@ beforeAll(async () => {
             url: "{{baseUrl}}/x", headers: [], query: [],
             cases: [{ id: "00000000-0000-4000-8000-000000000017", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
           }],
+        }, {
+          id: "00000000-0000-4000-8000-000000000021", name: "credibility", variables: {}, folders: [],
+          apis: [{
+            id: "00000000-0000-4000-8000-000000000022", name: "rich", version: "1", deprecated: false, method: "POST",
+            url: "{{baseUrl}}/credibility/{{item}}", headers: [], query: [],
+            body: { kind: "json", content: '{"payload":"{{payload}}"}' },
+            cases: [{
+              id: "00000000-0000-4000-8000-000000000023", name: "rich-case", scope: "base",
+              parameters: { item: "parameter-item", payload: "parameter-payload" },
+              dataDriver: { sourcePath: join(root, "credibility.csv"), format: "csv" },
+              preScript: 'pm.request.headers["X-Pre-Script"] = "from-script";',
+              preOperations: [{ id: "rich-pre", type: "script", content: 'pm.request.headers["X-Pre-Operation"] = "from-operation"; pm.request.url += "?marker=operation";' }],
+              postOperations: [{ id: "rich-post", type: "script", content: 'pm.assert(pm.response.status === 200, "post operation");' }],
+              postScript: 'pm.assert(pm.response.text().includes("\\"ok\\":true"), "post script");',
+              assertions: [
+                { id: "rich-status", target: "status", op: "eq", expected: "200" },
+                { id: "rich-body", target: "bodyJson", op: "eq", path: "$.ok", expected: "true" },
+              ],
+            }],
+          }],
         }],
       }],
     }, {
@@ -71,6 +107,7 @@ beforeAll(async () => {
       }],
     }],
   };
+  writeFileSync(join(root, "credibility.csv"), "item,payload\nrow-item,row-payload\n");
   await fileStorage.save(root, ws);
   // 注：CLI 的 run/export-design 按“从 cwd 向上查找 apicc.workspace.yaml”定位工作区；
   // 临时工作区无法从测试 cwd 上溯可达，故模拟真实用户“在工作区内执行 CLI”（用后还原）。
@@ -419,4 +456,168 @@ describe("CLI 端到端", () => {
       }
     },
   );
+
+  it("同一完整用例的集合运行与 concurrency=1/iterations=1 压测请求和结果一致", async () => {
+    const normalizeRequest = (request: ObservedRequest) => ({
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: request.body,
+    });
+    const functionalDir = join(root, "stress-credibility-functional");
+    const functionalBefore = receivedRequests.length;
+    const functionalCode = await runCli([
+      "run", "groups/demo/projects/svc/collections/credibility", "--env", "dev", "--reporters", "html", "--runs-dir", functionalDir,
+    ], createDefaultRegistry());
+    expect(functionalCode).toBe(0);
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const functionalFile = readdirSync(functionalDir).find((name) => name.endsWith(".json"));
+    expect(functionalFile).toBeDefined();
+    const functionalResult = JSON.parse(readFileSync(join(functionalDir, functionalFile!), "utf8")) as {
+      total: number; passed: number; failed: number; cases?: Array<{ assertions?: unknown[] }>;
+    };
+    expect(functionalResult).toMatchObject({ total: 1, passed: 1, failed: 0 });
+    expect(functionalResult.cases?.[0]?.assertions?.length).toBeGreaterThanOrEqual(4);
+    const functionalObservedRequest = normalizeRequest(receivedRequests[functionalBefore]!);
+
+    const stressDir = join(root, "stress-credibility-stress");
+    const stressBefore = receivedRequests.length;
+    const stressLogs: string[] = [];
+    const stressCode = await runCli([
+      "run-stress", "groups/demo/projects/svc/collections/credibility/apis/rich",
+      "--case", "00000000-0000-4000-8000-000000000023", "--env", "dev", "--concurrency", "1", "--iterations", "1",
+      "--allow-target", baseUrl, "--runs-dir", stressDir,
+    ], createDefaultRegistry(), (line) => stressLogs.push(line));
+    expect(stressCode).toBe(0);
+    const stressFile = readdirSync(stressDir).find((name) => name.endsWith(".json"));
+    expect(stressFile).toBeDefined();
+    const stressReport = JSON.parse(readFileSync(join(stressDir, stressFile!), "utf8")) as {
+      totalRequests: number; ok: number; failed: number; verdict?: { passed: boolean };
+    };
+    const stressObservedRequest = normalizeRequest(receivedRequests[stressBefore]!);
+    expect(stressObservedRequest).toEqual(functionalObservedRequest);
+    expect(stressReport.ok).toBe(functionalResult.passed ? 1 : 0);
+    expect(stressReport.verdict?.passed).toBe(functionalResult.passed === 1);
+    expect(stressReport).toMatchObject({ totalRequests: 1, failed: 0 });
+    expect(stressLogs.join("\n")).toContain("verdict: passed");
+  }, 30000);
+
+  it("目标确认只匹配精确 origin：path 可变、scheme/host/port 必须重确认，denylist 和阈值失败仍优先", async () => {
+    const { workspace } = await fileStorage.load(root);
+    const project = workspace.groups[0]!.projects[0]!;
+    const api = project.collections.find((collection) => collection.name === "credibility")!.apis[0]!;
+    const dataPath = join(root, "credibility.csv");
+    const originalData = "item,payload\nrow-item,row-payload\n";
+    const originalUrl = api.url;
+    const originalPolicy = project.stressPolicy;
+    const originalEnvironments = project.environments;
+    const runArgs = (env: string, runsDir: string, extra: string[] = []) => [
+      "run-stress", "groups/demo/projects/svc/collections/credibility/apis/rich",
+      "--case", "00000000-0000-4000-8000-000000000023", "--env", env, "--concurrency", "1", "--iterations", "1",
+      "--allow-target", baseUrl, "--runs-dir", runsDir, ...extra,
+    ];
+    try {
+      writeFileSync(dataPath, "item,payload\nfirst,p1\nsecond,p2\n");
+      project.stressPolicy = { trustedOrigins: [], deniedOrigins: [] };
+      await fileStorage.save(root, workspace);
+      const pathLogs: string[] = [];
+      const pathBefore = receivedRequests.length;
+      expect(await runCli([
+        ...runArgs("dev", join(root, "stress-origin-path"), ["--iterations", "2"]),
+      ], createDefaultRegistry(), (line) => pathLogs.push(line))).toBe(0);
+      expect(receivedRequests.slice(pathBefore).map((request) => request.url)).toEqual([
+        "/credibility/first?marker=operation", "/credibility/second?marker=operation",
+      ]);
+      expect(pathLogs.join("\n")).toContain(`target origins: ${baseUrl}`);
+
+      const port = Number(new URL(baseUrl).port);
+      for (const [label, targetUrl] of [
+        ["scheme", `https://127.0.0.1:${port}/credibility/{{item}}`],
+        ["host", `http://localhost:${port}/credibility/{{item}}`],
+        ["port", `http://127.0.0.1:${port + 1}/credibility/{{item}}`],
+      ] as const) {
+        api.url = targetUrl;
+        await fileStorage.save(root, workspace);
+        const logs: string[] = [];
+        const before = receivedRequests.length;
+        expect(await runCli(runArgs("dev", join(root, `stress-origin-${label}`)), createDefaultRegistry(), (line) => logs.push(line))).toBe(1);
+        expect(receivedRequests.length).toBe(before);
+        expect(logs.join("\n")).toContain("target_confirmation_required");
+      }
+
+      api.url = originalUrl;
+      project.environments = [...originalEnvironments, { id: "00000000-0000-4000-8000-000000000024", name: "production", variables: { baseUrl } }];
+      await fileStorage.save(root, workspace);
+      expect(await runCli(runArgs("production", join(root, "stress-origin-label")), createDefaultRegistry())).toBe(0);
+
+      project.stressPolicy = { trustedOrigins: [], deniedOrigins: [baseUrl] };
+      await fileStorage.save(root, workspace);
+      const deniedLogs: string[] = [];
+      const deniedBefore = receivedRequests.length;
+      expect(await runCli(runArgs("dev", join(root, "stress-origin-denied")), createDefaultRegistry(), (line) => deniedLogs.push(line))).toBe(1);
+      expect(receivedRequests.length).toBe(deniedBefore);
+      expect(deniedLogs.join("\n")).toContain("target_denied");
+
+      project.stressPolicy = { trustedOrigins: [baseUrl], deniedOrigins: [] };
+      await fileStorage.save(root, workspace);
+      const thresholdLogs: string[] = [];
+      expect(await runCli(runArgs("dev", join(root, "stress-threshold"), ["--max-p95-ms", "0.0001"]), createDefaultRegistry(), (line) => thresholdLogs.push(line))).toBe(1);
+      expect(thresholdLogs.join("\n")).toContain("[阈值失败]");
+    } finally {
+      writeFileSync(dataPath, originalData);
+      api.url = originalUrl;
+      project.environments = originalEnvironments;
+      project.stressPolicy = originalPolicy;
+      await fileStorage.save(root, workspace);
+    }
+  }, 30000);
+
+  it("单机与本地多分片对同一 HTTP 200 断言失败保持分类和退出码一致", async () => {
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const runArgs = (runsDir: string, extra: string[] = []) => [
+      "run-stress", "groups/demo/projects/svc/collections/api/apis/bad",
+      "--case", "00000000-0000-4000-8000-000000000016", "--env", "dev", "--concurrency", "1", "--iterations", "2",
+      "--allow-target", baseUrl, "--runs-dir", runsDir, ...extra,
+    ];
+    const singleDir = join(root, "stress-consistency-single");
+    const singleLogs: string[] = [];
+    const singleCode = await runCli(runArgs(singleDir), createDefaultRegistry(), (line) => singleLogs.push(line));
+    const singleFile = readdirSync(singleDir).find((name) => name.endsWith(".json"))!;
+    const single = JSON.parse(readFileSync(join(singleDir, singleFile), "utf8")) as {
+      failures: Record<string, number>; verdict?: { passed: boolean };
+    };
+
+    const multiDir = join(root, "stress-consistency-multi");
+    const multiLogs: string[] = [];
+    const spawnWorkerFactory = () => async (spec: {
+      apiPath: string; caseId: string; envName?: string; concurrency: number; maxIterations?: number; durationMs?: number;
+      maxRps?: number; maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
+      connectionMode?: "pooled" | "fresh"; confirmedTargetOrigins?: string[]; shardId: string; workspaceRoot: string;
+    }): Promise<ShardOutcome> => {
+      let wire = "";
+      const code = await runCli([
+        "stress-worker", spec.apiPath, "--case", spec.caseId, "--env", spec.envName!, "--concurrency", String(spec.concurrency),
+        "--iterations", String(spec.maxIterations), "--shard-id", spec.shardId, "--workspace", spec.workspaceRoot,
+        "--allow-target", ...(spec.confirmedTargetOrigins ?? []),
+      ], createDefaultRegistry(), () => {}, { workerOut: (line) => { wire = line; }, workerErr: () => {} });
+      expect(code).toBe(0);
+      const outcome = JSON.parse(wire) as ShardOutcome;
+      if (outcome.ok) outcome.generator = { ...outcome.generator, saturated: true, reasons: ["cpu"] };
+      return outcome;
+    };
+    const multiCode = await runCli(runArgs(multiDir, ["--shards", "2"]), createDefaultRegistry(), (line) => multiLogs.push(line), { spawnWorkerFactory });
+    const multiFile = readdirSync(multiDir).find((name) => name.endsWith(".json"))!;
+    const multi = JSON.parse(readFileSync(join(multiDir, multiFile), "utf8")) as {
+      failures: Record<string, number>; verdict?: { passed: boolean }; distributed?: { dataComplete: boolean };
+    };
+    expect(singleCode).toBe(1);
+    expect(multiCode).toBe(singleCode);
+    expect(single.failures.assertion).toBeGreaterThan(0);
+    expect(multi.failures.assertion).toBeGreaterThan(0);
+    expect(multi.verdict?.passed).toBe(single.verdict?.passed);
+    expect(multi.distributed?.dataComplete).toBe(true);
+    expect(singleLogs.join("\n")).toContain("失败分类: assertion=");
+    expect(multiLogs.join("\n")).toContain("失败分类: assertion=");
+    expect(multiLogs.join("\n")).toContain("[警告] generator saturation");
+  }, 30000);
 });

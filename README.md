@@ -9,7 +9,7 @@ apicc 是一个开源（MIT）的、**本地优先**的 API 全生命周期平�
 - **接口定义即代码资产**：纯文本 YAML/JSON 存储 + Git 优先，可 diff、可评审、可离线；SQLite 仅作可随时删除重建的索引缓存
 - **接口调试与自动化测试**：用例、断言、变量提取、多环境变量集（支持派生），运行后产出 HTML 报告与运行历史；前置/后置操作（脚本）可在模块、文件夹与用例任一层级挂载，按执行路径有序生效
 - **工作流编排**：把多个接口用例按 DAG 编排成端到端业务场景（如「登录 → 下单 → 查询 → 校验」），支持条件流转与生命周期管理，配套可视化设计器
-- **分布式压测**：并发池、迭代/时长双模式，多 shard 并行施压、原始样本汇聚成单一报告，分位数（P50/P90/P95/P99）跨 shard 精确
+- **本地多进程分片压测**：并发池、迭代/时长双模式，多 shard 在本机并行施压、原始样本汇聚成单一报告，分位数（P50/P90/P95/P99）跨 shard 精确；当前不提供跨机器远程 agent
 - **开放生态导入**：支持开放 API 规范（OpenAPI）2.0/3.0 与集合文件 v2.1 兼容导入，导入前预览差异、不静默覆盖
 - **AI 可消费的接口设计导出**：`export-design` 将接口定义与详细设计渲染为结构化 Markdown，供 AI 助手与自动化流水线消费
 - **桌面端**：基于 Electron 的图形界面，接口调试、工作流设计、压测发起与报告查看均在本地完成
@@ -51,8 +51,11 @@ apicc run groups/ecommerce/projects/order-service/collections/order-api --env de
 # 运行工作流（DAG 场景）
 apicc run-workflow groups/ecommerce/projects/order-service/workflows/checkout --env dev
 
-# 压测接口（--case 与 --concurrency 必填）：并发 4、共 100 次迭代（也可用 --duration 按秒数施压）
-apicc run-stress groups/ecommerce/projects/order-service/apis/create-order --case ok --concurrency 4 --iterations 100
+# 压测接口（--case 与 --concurrency 必填）：本地并发 4、共 100 次迭代（也可用 --duration 按秒数施压）
+# 阈值和 --allow-target 只对本次运行生效；origin 必须与最终请求的 scheme/host/port 精确匹配
+apicc run-stress groups/ecommerce/projects/order-service/apis/create-order --case ok --env dev --concurrency 4 --iterations 100 \
+  --max-error-rate 0.05 --max-assertion-failure-rate 0 --max-p95-ms 500 --min-rps 1 \
+  --connection-mode pooled --allow-target https://api.example.com
 
 # 导出接口设计（Markdown，供 AI 消费）
 apicc export-design groups/ecommerce/projects/order-service/apis/create-order
@@ -63,6 +66,10 @@ apicc import order-api.json --group ecommerce
 
 各命令完整参数以 `apicc <command> --help` 为准。
 
+`run-stress` 会执行所选用例的完整语义：参数、数据驱动行、前置/后置操作与脚本，以及声明式和脚本断言；HTTP 200 但断言失败仍计为业务失败并使 verdict 失败。`--allow-target <origin>` 只确认精确的 HTTP(S) origin，路径变化不需要重复确认，但 scheme、host 或 port 变化必须重新确认；项目 `deniedOrigins` 始终优先，不能由该参数覆盖。压测分片仅在本机以多进程运行，尚未提供跨机器远程 agent。
+
+报告中的 generator 指标描述施压端资源。若 `generator.saturated` 为 `true`，CLI 与桌面端会单独提示施压端已饱和；此时结果不能单独用于判断服务端上限。阈值违反、业务失败和分片失败都会使命令退出码为 `1`。
+
 桌面端：
 
 ```bash
@@ -72,7 +79,7 @@ pnpm -C apps/desktop dist:dir   # 打包为本地目录（免安装运行）
 
 ## MCP 服务器（agent 接入）
 
-`apicc mcp --workspace <工作区根>` 启动 stdio MCP 服务器，把工作区能力暴露为 MCP 工具，供 Claude Desktop、Cursor 等 agent 客户端消费：`list-apis`（接口摘要）与 `get-api-design`（接口详细设计 Markdown）默认可用，执行类工具 `run-case` 需显式加 `--allow-run`（执行类工具默认关闭）。构建、客户端 JSON 配置示例与安全边界见 [docs/mcp.md](docs/mcp.md)。
+`apicc mcp --workspace <工作区根>` 启动 stdio MCP 服务器，把工作区能力暴露为 MCP 工具，供第三方 agent 客户端消费：`list-apis`（接口摘要）与 `get-api-design`（接口详细设计 Markdown）默认可用，执行类工具 `run-case` 需显式加 `--allow-run`（执行类工具默认关闭）。构建、客户端 JSON 配置示例与安全边界见 [docs/mcp.md](docs/mcp.md)。
 
 ```bash
 apicc mcp --workspace /path/to/your-workspace [--allow-run]

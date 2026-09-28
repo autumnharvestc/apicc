@@ -230,6 +230,52 @@ function hangingClient() {
 
 describe("createStressController", () => {
   const confirmed = ["http://127.0.0.1:1"];
+  it.each(["pooled", "fresh"] as const)("%s 连接模式为每个虚拟用户创建并清理一个 managed client", async (connectionMode) => {
+    const { s, api } = await setupStress();
+    const modes: string[] = [];
+    const closed: number[] = [];
+    const controller = createStressController(s, {
+      createManagedClient: (workerId, mode) => {
+        modes.push(mode);
+        return {
+          name: `${mode}-${workerId}`,
+          canHandle: () => true,
+          execute: async () => ({ status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 }),
+          close: async () => { closed.push(workerId); },
+        };
+      },
+    });
+    const out = await controller.run({
+      apiId: api.id, caseId: api.cases[0]!.id, concurrency: 2, maxIterations: 2,
+      connectionMode, confirmedTargetOrigins: confirmed,
+    });
+    expect(out.report.totalRequests).toBe(2);
+    expect(modes).toEqual([connectionMode, connectionMode]);
+    expect(closed).toHaveLength(2);
+  });
+
+  it("报告保留 generator 饱和及原因，供桌面报告独立提示结果边界", async () => {
+    const { s, api } = await setupStress();
+    const controller = createStressController(s, {
+      createManagedClient: () => ({
+        name: "generator-fixture", canHandle: () => true,
+        execute: async () => ({ status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 }),
+        close: async () => {},
+      }),
+      createGeneratorCollector: () => ({
+        recordSchedulerBacklog: () => {},
+        stop: () => ({
+          cpuUserMs: 1, cpuSystemMs: 1, cpuPercent: 99, rssStartBytes: 10, rssPeakBytes: 20,
+          eventLoopDelayP95Ms: 120, schedulerBacklogMax: 3, saturated: true,
+          reasons: ["cpu", "event-loop-delay", "scheduler-backlog"],
+          limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
+        }),
+      }),
+    });
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
+    expect(out.report.generator).toMatchObject({ saturated: true, reasons: ["cpu", "event-loop-delay", "scheduler-backlog"] });
+  });
+
   it("迭代压测：报告过 StressReportSchema、totalRequests 与迭代数一致，落盘 .apicc/runs/stress-*.json", async () => {
     const { s, dir, api } = await setupStress();
     const controller = createStressController(s);
