@@ -355,6 +355,15 @@ export class StressRunner {
       if (hasPrimaryError) throw primaryError;
       if (hasCleanupError) throw cleanupError;
       report = computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds });
+      if (samples.length === 0) {
+        report.verdict = {
+          passed: false,
+          violations: [
+            ...(report.verdict?.violations ?? []),
+            { metric: "noData", actual: 0, expected: 1, message: "NO_DATA: 没有可评估的压测样本" },
+          ],
+        };
+      }
       return report;
     } finally {
       if (!sessionsClosed) await closeSessions();

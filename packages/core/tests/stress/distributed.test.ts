@@ -10,7 +10,7 @@ import type {
   ShardResult,
   StressWorkerSpec,
 } from "../../src/stress/distributed.js";
-import { StressReportSchema } from "../../src/stress/model.js";
+import { StressReportSchema, StressSampleSchema } from "../../src/stress/model.js";
 import type { StressSample } from "../../src/stress/model.js";
 
 /** 成功 shard 替身回传：固定样本批。 */
@@ -38,8 +38,24 @@ const shardFailure = (shardId: string, error: string): ShardFailure => ({
 describe("planShards", () => {
   it("maxRps 按 shard 均分且配额总和不超过全局上限", () => {
     const plans = planShards({ concurrency: 2, maxIterations: 8, maxRps: 1 }, 3);
-    expect(plans.map((p) => p.maxRps)).toEqual([1 / 3, 1 / 3, 1 / 3]);
+    expect(plans[0]?.maxRps).toBe(1 / 3);
+    expect(plans[1]?.maxRps).toBe(1 / 3);
+    expect(plans[2]?.maxRps).toBeGreaterThan(1 / 3);
     expect(plans.reduce((sum, p) => sum + (p.maxRps ?? 0), 0)).toBeLessThanOrEqual(1);
+  });
+
+  it.each([
+    [1 / 1000, 1000], [0.1 / 1000, 1000], [Number.MIN_VALUE * 2, 2], [0.1, 1000],
+  ])("maxRps 配额对 %s / %s 保持 finite positive 且实际求和不超上限", (global, shards) => {
+    const plans = planShards({ concurrency: 1, maxIterations: shards, maxRps: global }, shards);
+    const quotas = plans.map((plan) => plan.maxRps!);
+    expect(quotas.every((quota) => Number.isFinite(quota) && quota > 0)).toBe(true);
+    expect(quotas.reduce((sum, quota) => sum + quota, 0)).toBeLessThanOrEqual(global);
+  });
+
+  it("maxRps 小于最小可表示分片配额时在启动前拒绝", () => {
+    expect(() => planShards({ concurrency: 1, maxIterations: 2, maxRps: Number.MIN_VALUE }, 2))
+      .toThrow(/maxRps.*shard|maxRps.*过小/);
   });
   it("iterations 均分：12/3 → [4,4,4]", () => {
     const plans = planShards({ concurrency: 3, maxIterations: 12 }, 3);
@@ -285,6 +301,35 @@ describe("DistributedStressCoordinator", () => {
     expect(report.generator?.reasons).toEqual(["cpu"]);
     expect(report.generator?.saturated).toBe(true);
   });
+
+  it("两个 worker 都回 shard-0：重复/错配路由作为 protocol error，不合并第二份样本", async () => {
+    const { report, shardFailureCount } = await coordinator.run(specBase, {
+      shards: 2,
+      spawnWorker: async () => shardResult("shard-0", [99]),
+    });
+    expect(shardFailureCount).toBe(1);
+    expect(report.totalRequests).toBe(1);
+    expect(report.distributed?.perShard.map((item) => item.shardId)).toEqual(["shard-0"]);
+    expect(report.distributed?.shardErrors?.[0]?.error).toMatch(/protocol|协议|shardId/i);
+    expect(report.distributed?.dataComplete).toBe(false);
+    expect(report.verdict?.passed).toBe(false);
+  });
+
+  it.each(["iterations", "duration"])("%s 模式成功协议但空样本：no_data 门禁失败且不产生通过报告", async (mode) => {
+    const runSpec = mode === "iterations"
+      ? { ...specBase, durationMs: undefined }
+      : { ...specBase, maxIterations: undefined, durationMs: 10 };
+    const { report, shardFailureCount } = await coordinator.run(runSpec, {
+      shards: 2,
+      spawnWorker: async (spec) => ({ ...shardResult(spec.shardId, []), samples: [] }),
+    });
+    expect(shardFailureCount).toBe(2);
+    expect(report.totalRequests).toBe(0);
+    expect(report.distributed?.dataComplete).toBe(false);
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.distributed?.shardErrors?.every((error) => error.error.includes("NO_DATA"))).toBe(true);
+    expect(report.verdict?.violations.some((violation) => violation.metric === "noData")).toBe(true);
+  });
 });
 
 describe("StressReportSchema 旧报告兼容（D6）", () => {
@@ -304,5 +349,24 @@ describe("StressReportSchema 旧报告兼容（D6）", () => {
     };
     const parsed = StressReportSchema.parse(legacy);
     expect(parsed.distributed).toBeUndefined();
+  });
+});
+
+describe("StressSampleSchema v2 wire invariants", () => {
+  const base = { requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1, status: 200, ok: true };
+
+  it("rejects successful assertion samples and invalid outcome fields", () => {
+    expect(StressSampleSchema.safeParse({ ...base, failureKind: "assertion" }).success).toBe(false);
+    expect(StressSampleSchema.safeParse({ ...base, outcome: { passed: "yes" } }).success).toBe(false);
+  });
+
+  it("rejects contradictory request start/completion and fabricated latency", () => {
+    expect(StressSampleSchema.safeParse({ ...base, requestStarted: false, requestCompleted: true }).success).toBe(false);
+    expect(StressSampleSchema.safeParse({ ...base, requestStarted: false, requestTimeMs: 1 }).success).toBe(false);
+  });
+
+  it("requires stable failureKind on failed samples", () => {
+    expect(StressSampleSchema.safeParse({ ...base, ok: false }).success).toBe(false);
+    expect(StressSampleSchema.safeParse({ ...base, ok: false, failureKind: "assertion" }).success).toBe(true);
   });
 });

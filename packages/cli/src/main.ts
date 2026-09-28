@@ -153,12 +153,25 @@ export function parseShardOutcomeStdout(
 ): ShardOutcome {
   const lines = stdout.split(/\r?\n/).filter((l) => l.trim() !== "");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
+    let value: unknown;
     try {
-      const parsed = ShardOutcomeSchema.safeParse(JSON.parse(lines[i]!));
-      if (parsed.success) return parsed.data;
+      value = JSON.parse(lines[i]!);
     } catch {
-      // 非 JSON 行（日志污染）跳过，继续向前找末条可解析协议行。
+      // 仅跳过非 JSON 人类日志；一旦遇到 JSON，必须严格验证它。
+      continue;
     }
+    const parsed = ShardOutcomeSchema.safeParse(value);
+    if (!parsed.success) {
+      const detail = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
+      throw new Error(`shard ${ctx.shardId} 协议输出无效[protocol_invalid]：${detail}`);
+    }
+    if (parsed.data.ok && ctx.exitCode !== 0) {
+      throw new Error(`shard ${ctx.shardId} 结果与退出码不一致[protocol_exit_mismatch]：ShardResult 需要退出码 0，实际 ${ctx.exitCode}`);
+    }
+    if (!parsed.data.ok && ctx.exitCode === 0) {
+      throw new Error(`shard ${ctx.shardId} 结果与退出码不一致[protocol_exit_mismatch]：ShardFailure 需要非零退出码，实际 0`);
+    }
+    return parsed.data;
   }
   throw new Error(
     `shard ${ctx.shardId} 协议输出无效：stdout 末行不是合法 ShardOutcome（退出码 ${ctx.exitCode}）`,
@@ -560,12 +573,16 @@ export async function runCli(
         const { createRunner } = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
         const samples: ShardResult["samples"] = [];
         const report = await createRunner((sample) => samples.push({
-          ...sample,
           requestTimeMs: sample.requestTimeMs ?? sample.timeMs ?? 0,
           scriptTimeMs: sample.scriptTimeMs ?? 0,
           iterationTimeMs: sample.iterationTimeMs ?? sample.requestTimeMs ?? sample.timeMs ?? 0,
           status: sample.status,
           ok: sample.ok,
+          ...(sample.timeMs !== undefined ? { timeMs: sample.timeMs } : {}),
+          ...(sample.error !== undefined ? { error: sample.error } : {}),
+          ...(sample.requestStarted !== undefined ? { requestStarted: sample.requestStarted } : {}),
+          ...(sample.requestCompleted !== undefined ? { requestCompleted: sample.requestCompleted } : {}),
+          ...(sample.failureKind !== undefined ? { failureKind: sample.failureKind } : {}),
         })).run({
           concurrency: opts.concurrency,
           maxIterations: opts.iterations,

@@ -18,7 +18,7 @@ export interface StressThresholds {
   minRps?: number;
 }
 
-export type StressViolationMetric = "errorRate" | "assertionFailureRate" | "p95" | "rps" | "businessFailures";
+export type StressViolationMetric = "errorRate" | "assertionFailureRate" | "p95" | "rps" | "businessFailures" | "noData";
 
 export interface StressViolation {
   metric: StressViolationMetric;
@@ -87,10 +87,20 @@ export const StressSampleSchema = z.object({
   requestStarted: z.boolean().optional(),
   requestCompleted: z.boolean().optional(),
   failureKind: z.enum(["transport", "http", "script", "assertion", "config", "aborted"]).optional(),
-  // CaseOutcome is already validated by the execution kernel. Keep it opaque on the wire
-  // so the worker protocol does not duplicate the report model's recursive details.
-  outcome: z.any().optional(),
-}).strict();
+}).strict().superRefine((sample, ctx) => {
+  if (sample.ok && sample.failureKind !== undefined) {
+    ctx.addIssue({ code: "custom", path: ["failureKind"], message: "successful sample cannot carry failureKind" });
+  }
+  if (!sample.ok && sample.failureKind === undefined) {
+    ctx.addIssue({ code: "custom", path: ["failureKind"], message: "failed sample requires failureKind" });
+  }
+  if (sample.requestCompleted === true && sample.requestStarted !== true) {
+    ctx.addIssue({ code: "custom", path: ["requestCompleted"], message: "requestCompleted requires requestStarted" });
+  }
+  if (sample.requestStarted === false && (sample.requestTimeMs !== 0 || (sample.timeMs !== undefined && sample.timeMs !== 0))) {
+    ctx.addIssue({ code: "custom", path: ["requestTimeMs"], message: "request not started cannot carry request latency" });
+  }
+});
 
 const latencySchema = z.object({
   min: z.number().finite().nonnegative(), avg: z.number().finite().nonnegative(), max: z.number().finite().nonnegative(),
@@ -112,7 +122,7 @@ const thresholdsSchema = z.object({
 const verdictSchema = z.object({
   passed: z.boolean(),
   violations: z.array(z.object({
-    metric: z.enum(["errorRate", "assertionFailureRate", "p95", "rps", "businessFailures"]),
+    metric: z.enum(["errorRate", "assertionFailureRate", "p95", "rps", "businessFailures", "noData"]),
     actual: z.number(), expected: z.number(), message: z.string(),
   }).strict()),
 }).strict();

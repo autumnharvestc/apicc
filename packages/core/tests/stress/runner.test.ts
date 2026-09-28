@@ -69,6 +69,16 @@ describe("StressRunner", () => {
     expect(report.durationMs).toBeLessThan(5_000);
   });
 
+  it("没有可评估样本时 verdict 失败并写入稳定 noData violation", async () => {
+    const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));
+    const controller = new AbortController();
+    controller.abort();
+    const report = await runner.run({ concurrency: 1, maxIterations: 1, signal: controller.signal });
+    expect(report.totalRequests).toBe(0);
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.verdict?.violations.some((violation) => violation.metric === "noData")).toBe(true);
+  });
+
   it("都给时先到先停：迭代数先耗尽即停（远期 deadline 不拖尾）", async () => {
     hit = 0;
     const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));

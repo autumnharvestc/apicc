@@ -302,6 +302,25 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
     expect(outcome).toEqual(result);
   });
 
+  it("末 v1 failure 不会回退到更早的 v2 success", () => {
+    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator() };
+    const legacy = { protocolVersion: 1, ok: false, shardId: "s0", error: "legacy" };
+    expect(() => parseShardOutcomeStdout(`${JSON.stringify(success)}\n${JSON.stringify(legacy)}`, { shardId: "s0", exitCode: 1 }))
+      .toThrow(/协议|protocolVersion/);
+  });
+
+  it("末 JSON object 结构无效时不回退更早成功结果", () => {
+    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator() };
+    expect(() => parseShardOutcomeStdout(`${JSON.stringify(success)}\n${JSON.stringify({ protocolVersion: 2, ok: true })}`, { shardId: "s0", exitCode: 0 }))
+      .toThrow(/协议|protocol/);
+  });
+
+  it("非零 exit 携带 ShardResult 时拒绝伪装成功", () => {
+    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator() };
+    expect(() => parseShardOutcomeStdout(JSON.stringify(success), { shardId: "s0", exitCode: 1 }))
+      .toThrow(/exit|退出|protocol/);
+  });
+
   it("末行 ShardFailure 同样可解析（失败路径协议行）", () => {
     const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: "s7", error: "未找到用例" };
     const stdout = `noise\n${JSON.stringify(failure)}\n`;

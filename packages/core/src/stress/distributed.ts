@@ -41,6 +41,47 @@ export type ShardFailure = z.infer<typeof ShardFailureSchema>;
 export const ShardOutcomeSchema = z.discriminatedUnion("ok", [ShardResultSchema, ShardFailureSchema]);
 export type ShardOutcome = z.infer<typeof ShardOutcomeSchema>;
 
+/** Return the next representable IEEE-754 number below a positive finite value. */
+function nextDown(value: number): number {
+  if (value <= 0 || !Number.isFinite(value)) return value;
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setFloat64(0, value);
+  let high = view.getUint32(0);
+  let low = view.getUint32(4);
+  if (low === 0) { low = 0xffffffff; high -= 1; }
+  else low -= 1;
+  view.setUint32(0, high);
+  view.setUint32(4, low);
+  return view.getFloat64(0);
+}
+
+/** Split a global rate by actual floating-point remainder, never by an overflowing average sum. */
+function splitMaxRps(global: number, shards: number): number[] {
+  const base = global / shards;
+  if (!Number.isFinite(base) || base <= 0) {
+    throw new Error(`maxRps 过小：无法为 ${shards} 个 shard 分配正数配额`);
+  }
+  const quotas = Array<number>(shards).fill(base);
+  let allocated = 0;
+  for (let i = 0; i < shards - 1; i += 1) allocated += quotas[i]!;
+  let remainder = global - allocated;
+  if (!Number.isFinite(remainder) || remainder <= 0) {
+    throw new Error(`maxRps 过小：无法为 ${shards} 个 shard 分配正数配额`);
+  }
+  quotas[shards - 1] = remainder;
+  const excess = quotas.reduce((sum, quota) => sum + quota, 0) - global;
+  if (excess > 0) quotas[shards - 1] = remainder = remainder - excess;
+  while (quotas.reduce((sum, quota) => sum + quota, 0) > global) {
+    remainder = nextDown(remainder);
+    if (!(remainder > 0)) {
+      throw new Error(`maxRps 过小：无法为 ${shards} 个 shard 分配正数配额`);
+    }
+    quotas[shards - 1] = remainder;
+  }
+  return quotas;
+}
+
 /** 单个 shard 的份额（并发与终止条件）。 */
 export interface ShardPlan {
   concurrency: number;
@@ -74,16 +115,15 @@ export function planShards(
   }
   const iterBase = share.maxIterations === undefined ? 0 : Math.floor(share.maxIterations / shards);
   const iterRemainder = share.maxIterations === undefined ? 0 : share.maxIterations % shards;
-  const rpsBase = share.maxRps === undefined ? undefined : share.maxRps / shards;
-  const rpsExcess = rpsBase === undefined ? 0 : Math.max(0, rpsBase * shards - share.maxRps!);
+  const rpsQuotas = share.maxRps === undefined ? undefined : splitMaxRps(share.maxRps, shards);
   const plans: ShardPlan[] = [];
   for (let i = 0; i < shards; i += 1) {
     plans.push({
       concurrency: Math.max(1, Math.floor(share.concurrency / shards) + (i < share.concurrency % shards ? 1 : 0)),
       ...(share.maxIterations !== undefined ? { maxIterations: iterBase + (i < iterRemainder ? 1 : 0) } : {}),
       ...(share.durationMs !== undefined ? { durationMs: share.durationMs } : {}),
-      ...(rpsBase !== undefined
-        ? { maxRps: i === shards - 1 ? Math.max(Number.MIN_VALUE, rpsBase - rpsExcess) : rpsBase }
+      ...(rpsQuotas !== undefined
+        ? { maxRps: rpsQuotas[i] }
         : {}),
     });
   }
@@ -182,6 +222,7 @@ export class DistributedStressCoordinator {
     const perShard: StressDistributed["perShard"] = [];
     const shardErrors: { shardId: string; error: string }[] = [];
     const generators: StressGeneratorMetrics[] = [];
+    const seenShardIds = new Set<string>();
     let successConcurrency = 0;
 
     specs.forEach((spec, i) => {
@@ -194,9 +235,14 @@ export class DistributedStressCoordinator {
         if (!parsed.success) {
           const detail = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
           attempt = { ok: false, error: `协议解析失败：${detail}` };
+        } else if (parsed.data.shardId !== spec.shardId) {
+          attempt = { ok: false, error: `协议错误[shard_id_mismatch]：期望 ${spec.shardId}，实际 ${parsed.data.shardId}` };
+        } else if (seenShardIds.has(parsed.data.shardId)) {
+          attempt = { ok: false, error: `协议错误[duplicate_shard_id]：重复回传 ${parsed.data.shardId}` };
         } else if (!parsed.data.ok) {
           attempt = { ok: false, error: parsed.data.error };
         } else {
+          seenShardIds.add(parsed.data.shardId);
           attempt = { ok: true, result: parsed.data };
         }
       }
@@ -206,6 +252,10 @@ export class DistributedStressCoordinator {
         return;
       }
       const samples = attempt.result.samples;
+      if (samples.length === 0) {
+        shardErrors.push({ shardId: spec.shardId, error: `协议错误[NO_DATA]：shard ${spec.shardId} 未返回可评估样本` });
+        return;
+      }
       merged.push(...samples);
       generators.push(attempt.result.generator);
       const okCount = samples.filter((s) => s.ok).length;
@@ -233,12 +283,16 @@ export class DistributedStressCoordinator {
       { concurrency, startedAt, finishedAt },
     );
     if (generators.length > 0) report.generator = aggregateGeneratorMetrics(generators);
-    if (!dataComplete) {
+    if (!dataComplete || merged.length === 0) {
       const violations = report.verdict?.violations ?? [];
+      const noDataViolation = merged.length === 0
+        ? [{ metric: "noData" as const, actual: 0, expected: 1, message: "NO_DATA: 没有可评估的压测样本" }]
+        : [];
       report.verdict = {
         passed: false,
         violations: [
           ...violations,
+          ...noDataViolation,
           { metric: "businessFailures", actual: shardErrors.length, expected: 0, message: `${shardErrors.length} shard(s) failed; report data is incomplete` },
         ],
       };
