@@ -20,7 +20,6 @@ export class StressSafetyError extends Error {
     this.targetOrigin = targetOrigin;
   }
 }
-
 /** Canonicalize a URL to an HTTP(S) origin (default ports, host case and IPv6 included). */
 export function normalizeStressOrigin(url: string): string {
   let parsed: URL;
@@ -130,4 +129,3 @@ export function assertStressTargetAllowed(input: {
     appliedPolicy: policy,
   };
 }
-
