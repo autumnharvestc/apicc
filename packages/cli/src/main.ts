@@ -145,7 +145,7 @@ function cliEntryPath(): string {
 
 /**
  * 从 worker stdout 全文按行从末解析 ShardOutcome（裁定 B①：可导出纯函数，供单测直测）。
- * 日志污染行（非 JSON 或不过 schema）跳过，取末条合法协议行；全部非法时抛「协议输出无效」。
+ * 末条 JSON 是协议载荷：此前的非 JSON 人类日志可跳过，但协议载荷后的 JSON 日志/非法协议必须严格拒绝。
  */
 export function parseShardOutcomeStdout(
   stdout: string,
@@ -165,11 +165,12 @@ export function parseShardOutcomeStdout(
       const detail = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
       throw new Error(`shard ${ctx.shardId} 协议输出无效[protocol_invalid]：${detail}`);
     }
+    const integerExitCode = Number.isInteger(ctx.exitCode) && Number.isFinite(ctx.exitCode);
     if (parsed.data.ok && ctx.exitCode !== 0) {
       throw new Error(`shard ${ctx.shardId} 结果与退出码不一致[protocol_exit_mismatch]：ShardResult 需要退出码 0，实际 ${ctx.exitCode}`);
     }
-    if (!parsed.data.ok && ctx.exitCode === 0) {
-      throw new Error(`shard ${ctx.shardId} 结果与退出码不一致[protocol_exit_mismatch]：ShardFailure 需要非零退出码，实际 0`);
+    if (!parsed.data.ok && (!integerExitCode || ctx.exitCode === 0)) {
+      throw new Error(`shard ${ctx.shardId} 结果与退出码不一致[protocol_exit_mismatch]：ShardFailure 需要有限整数非零退出码，实际 ${String(ctx.exitCode)}`);
     }
     return parsed.data;
   }

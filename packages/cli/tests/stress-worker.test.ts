@@ -321,6 +321,20 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
       .toThrow(/exit|退出|protocol/);
   });
 
+  it.each([
+    [null, "null"], [undefined, "undefined"], [Number.NaN, "NaN"],
+    [Number.POSITIVE_INFINITY, "Infinity"], [1.5, "1.5"],
+  ])("ShardFailure 拒绝非法退出状态 %s", (exitCode) => {
+    const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: "s0", error: "原始失败" };
+    expect(() => parseShardOutcomeStdout(JSON.stringify(failure), { shardId: "s0", exitCode }))
+      .toThrow(/protocol_exit_mismatch/);
+  });
+
+  it("合法整数非零退出状态的 ShardFailure 仍可解析", () => {
+    const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: "s0", error: "原始失败" };
+    expect(parseShardOutcomeStdout(JSON.stringify(failure), { shardId: "s0", exitCode: 7 })).toEqual(failure);
+  });
+
   it("末行 ShardFailure 同样可解析（失败路径协议行）", () => {
     const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: "s7", error: "未找到用例" };
     const stdout = `noise\n${JSON.stringify(failure)}\n`;
