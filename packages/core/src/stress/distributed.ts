@@ -284,6 +284,7 @@ export class DistributedStressCoordinator {
           failed: 0,
           rps: 0,
           generator: attempt.result.generator,
+          safety: { targetOrigins: [] },
         });
         shardErrors.push({ shardId: spec.shardId, error: `协议错误[NO_DATA]：shard ${spec.shardId} 未返回可评估样本` });
         return;
@@ -298,7 +299,7 @@ export class DistributedStressCoordinator {
         failed: samples.length - okCount,
         rps: seconds > 0 ? samples.length / seconds : 0,
         generator: attempt.result.generator,
-        ...(safetyForSamples(samples) ? { safety: safetyForSamples(samples) } : {}),
+        safety: safetyForSamples(samples) ?? { targetOrigins: [] },
       });
       successConcurrency += plans[i].concurrency;
     });
