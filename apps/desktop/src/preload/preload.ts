@@ -17,6 +17,7 @@ const api = {
   containerSave: (input: unknown) => ipcRenderer.invoke(IpcChannel.ContainerSave, input),
   containerGet: (kind: string, id: string) => ipcRenderer.invoke(IpcChannel.ContainerGet, kind, id),
   globalsGet: (projectId: string) => ipcRenderer.invoke(IpcChannel.GlobalsGet, projectId),
+  stressPolicySave: (projectId: string, policy: unknown) => ipcRenderer.invoke(IpcChannel.StressPolicySave, projectId, policy),
   apiGet: (apiId: string) => ipcRenderer.invoke(IpcChannel.ApiGet, apiId),
   apiSave: (api: unknown) => ipcRenderer.invoke(IpcChannel.ApiSave, api),
   debugSend: (input: unknown) => ipcRenderer.invoke(IpcChannel.DebugSend, input),

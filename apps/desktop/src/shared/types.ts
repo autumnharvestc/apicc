@@ -6,12 +6,15 @@ import type {
   Project,
   RunResult,
   StressReport,
+  StressFailureCounts,
   Workflow,
   WorkflowImpactEntry,
   WorkflowRunResult,
   WorkflowStatus,
   WorkspaceGlobals,
   ProjectGlobals,
+  StressThresholds,
+  StressTargetPolicy,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
 import type { KeyValuePair } from "@apicc/core";
@@ -97,7 +100,18 @@ export interface StressRunSummaryDTO { kind: "stress"; file: string; startedAt: 
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
 /** stress:run 入参：maxIterations/durationMs 至少给其一（都给先到先停），二者可传 null（渲染层「清空」惯例）。 */
-export interface StressRunInput { apiId: string; caseId: string; envName?: string; concurrency: number; maxIterations?: number | null; durationMs?: number | null }
+export interface StressRunInput {
+  apiId: string;
+  caseId: string;
+  envName?: string;
+  concurrency: number;
+  maxIterations?: number | null;
+  durationMs?: number | null;
+  thresholds?: StressThresholds;
+  connectionMode?: "pooled" | "fresh";
+  /** Explicit, canonical origins approved only for this run. */
+  confirmedTargetOrigins?: string[];
+}
 /**
  * stress:run / stress:stop 返回：最终（或中止后的部分）报告 + 落盘文件名。
  * 落盘降级不影响报告返回，与集合运行口径一致（core Runner 落盘失败仅告警仍返回完整结果）：
@@ -105,7 +119,14 @@ export interface StressRunInput { apiId: string; caseId: string; envName?: strin
  */
 export interface StressRunOutput { report: StressReport; file?: string }
 /** runs:get 对 stress 文件的返回：kind 判别 + 完整压测报告（集合文件返回既有 RunResult 形状）。 */
-export interface StressReportDTO { kind: "stress"; report: StressReport }
+export type DesktopStressReport = Omit<StressReport, "failures" | "scriptLatency" | "iterationLatency"> & {
+  /** Historical reports may omit fields introduced after their creation. */
+  failures?: StressFailureCounts;
+  scriptLatency?: StressReport["scriptLatency"];
+  iterationLatency?: StressReport["iterationLatency"];
+};
+export interface StressReportDTO { kind: "stress"; report: DesktopStressReport }
+export type StressPolicyInput = StressTargetPolicy;
 
 /** import:preview 入参：渲染层经 input[type=file] 读出文本与文件名（不新增文件选择 IPC）。 */
 export interface ImportPreviewInput { fileName: string; content: string }
@@ -159,6 +180,7 @@ export interface ApiccApi {
   envVarsSave(envId: string, variables: Record<string, string>): Promise<void>;
   envBaseUrlsSave(envId: string, baseUrls: Record<string, string>): Promise<void>;
   globalsSave(projectId: string, globals: ProjectGlobalSettings): Promise<void>;
+  stressPolicySave(projectId: string, policy: StressPolicyInput): Promise<StressPolicyInput>;
   containerSave(input: ContainerSaveInput): Promise<void>;
   containerGet(kind: "collection" | "folder", id: string): Promise<ContainerSaveInput>;
   globalsGet(projectId: string): Promise<ProjectGlobalSettings>;

@@ -1,14 +1,15 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { StressReportSchema, type RunResult, type StressReport } from "@apicc/core";
+import { StressReportSchema, type RunResult } from "@apicc/core";
+import type { DesktopStressReport } from "../shared/types.js";
 
 export interface RunSummaryDTO { kind: "collection"; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number }
 export interface StressRunSummaryDTO { kind: "stress"; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
 /** runs:get 对 stress 文件的返回（M2-D3 任务 1）：kind 判别 + 完整压测报告。 */
-export interface StressReportDTO { kind: "stress"; report: StressReport }
+export interface StressReportDTO { kind: "stress"; report: DesktopStressReport }
 
 /**
  * RunResult 最小形状校验（宽审查修复 3）：手工放入 .apicc/runs 的形状不对 JSON 此前
@@ -31,10 +32,12 @@ function parseRunResult(raw: string): RunResult | null {
 }
 
 /** 压测报告校验（M2-D3 任务 1）：core StressReportSchema（strict）判别 kind: "stress"。 */
-function parseStressReport(raw: string): StressReport | null {
+function parseStressReport(raw: string): DesktopStressReport | null {
   const json = parseJson(raw);
   const result = json === null ? null : StressReportSchema.safeParse(json);
-  return result?.success ? result.data : null;
+  // Historical files intentionally remain permissive (legacy reports omit the
+  // current aggregate fields); current producers are checked separately.
+  return result?.success ? result.data as DesktopStressReport : null;
 }
 
 function parseJson(raw: string): unknown | null {

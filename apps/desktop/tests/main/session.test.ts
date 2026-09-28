@@ -228,23 +228,41 @@ function hangingClient() {
 }
 
 describe("createStressController", () => {
+  const confirmed = ["http://127.0.0.1:1"];
   it("迭代压测：报告过 StressReportSchema、totalRequests 与迭代数一致，落盘 .apicc/runs/stress-*.json", async () => {
     const { s, dir, api } = await setupStress();
     const controller = createStressController(s);
-    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 2, maxIterations: 4 });
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 2, maxIterations: 4, confirmedTargetOrigins: confirmed });
     expect(() => StressReportSchema.parse(out.report)).not.toThrow();
     expect(out.report.totalRequests).toBe(4);
     expect(out.file).toMatch(new RegExp(`^stress-${api.id}-\\d+\\.json$`));
     expect(existsSync(join(dir, ".apicc", "runs", out.file!))).toBe(true);
   });
 
+  it("未确认目标返回结构化精确 origin，确认后才允许发包", async () => {
+    const { s, api } = await setupStress();
+    let calls = 0;
+    const client: ProtocolClient = {
+      name: "counting",
+      canHandle: () => true,
+      execute: async () => { calls += 1; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; },
+    };
+    const controller = createStressController(s, { client });
+    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1 }))
+      .rejects.toMatchObject({ code: "target_confirmation_required", targetOrigin: "http://127.0.0.1:1" });
+    expect(calls).toBe(0);
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: ["HTTP://127.0.0.1:1/"] });
+    expect(calls).toBe(1);
+    expect(out.report.safety?.targetOrigins[0]?.origin).toBe("http://127.0.0.1:1");
+  });
+
   it("单活动约束：活动运行未结束时再次 stressRun 抛「已有压测进行中」", async () => {
     const { s, api } = await setupStress();
     const fake = hangingClient();
     const controller = createStressController(s, { client: fake.client });
-    const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2 });
+    const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed });
     await fake.waitEntered();
-    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2 })).rejects.toThrow(/已有压测进行中/);
+    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed })).rejects.toThrow(/已有压测进行中/);
     fake.release();
     expect((await first).report.totalRequests).toBe(2);
   });
@@ -254,7 +272,7 @@ describe("createStressController", () => {
     const fake = hangingClient();
     const controller = createStressController(s, { client: fake.client });
     await expect(controller.stop()).rejects.toThrow(/没有进行中的压测/);
-    const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 100 });
+    const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 100, confirmedTargetOrigins: confirmed });
     await fake.waitEntered();
     const stopping = controller.stop();
     fake.release(); // 信号语义：停止发起新采样、等在途请求完成后聚合
@@ -291,7 +309,7 @@ describe("createStressController", () => {
           throw new Error("disk full");
         },
       });
-      const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1 });
+      const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
       expect(out.report.totalRequests).toBe(1);
       expect(out.file).toBeUndefined();
       expect("file" in out).toBe(false);
@@ -308,7 +326,7 @@ describe("createStressController", () => {
   it("深拷贝回归：改动返回的报告对象不影响已落盘历史内容", async () => {
     const { s, dir, api } = await setupStress();
     const controller = createStressController(s);
-    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2 });
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed });
     out.report.totalRequests = 999;
     const onDisk = JSON.parse(readFileSync(join(dir, ".apicc", "runs", out.file!), "utf8")) as { totalRequests: number };
     expect(onDisk.totalRequests).toBe(2);
@@ -348,7 +366,7 @@ describe("createStressController", () => {
     expect(s.root && existsSync(join(s.root, ".apicc", "runs"))).toBe(false); // 无报告落盘
 
     // HTTP 接口不受守卫影响，照常执行
-    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1 });
+    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
     expect(out.report.totalRequests).toBe(1);
     expect(calls).toBe(1);
   });

@@ -460,7 +460,7 @@ describe("压测 IPC", () => {
     const api = await deps.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
     const detail = await deps.handle("api:get", {}, api.id);
     // envName=null 兼容既有 nullish 口径：通过校验按无环境运行（不可达地址 → failed 采样，运行完成）
-    const out = await deps.handle("stress:run", {}, { apiId: api.id, caseId: detail.api.cases[0]!.id, envName: null, concurrency: 1, maxIterations: 1 });
+    const out = await deps.handle("stress:run", {}, { apiId: api.id, caseId: detail.api.cases[0]!.id, envName: null, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: ["http://127.0.0.1:1"] });
     expect(out.report.totalRequests).toBe(1);
     expect(out.file).toMatch(new RegExp(`^stress-${api.id}-\\d+\\.json$`));
     const list = await deps.handle("runs:list", {});

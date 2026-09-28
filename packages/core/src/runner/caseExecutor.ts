@@ -256,7 +256,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       failureKind = (e as { caseFailureKind?: CaseFailureKind }).caseFailureKind ?? "config";
     }
   }
-  if (error === undefined && response && response.status >= 400) {
+  if (error === undefined && response && response.status >= 400 && input.api.protocol !== "soap") {
     error = `HTTP 响应失败: ${response.status}`;
     failureKind = "http";
   }

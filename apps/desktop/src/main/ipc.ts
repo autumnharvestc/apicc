@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Project, type Workspace } from "@apicc/core";
+import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, normalizeStressOrigin, normalizeStressPolicy, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Project, type Workspace, type StressTargetPolicy } from "@apicc/core";
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
@@ -71,14 +71,46 @@ const WfRunInputSchema = z.object({ workflowId: z.string(), envName: z.string().
 // 压测频道（M2-D3 任务 1）：envName 沿用 nullish 惯例；maxIterations/durationMs 传 null
 // （antd InputNumber 清空口径）同样放行，null 由 stress.ts 归一为 undefined（终止条件
 // 二者都缺时由 StressRunner 抛「压测终止条件缺失」core 文案）。
+const StressThresholdsSchema = z.object({
+  maxErrorRate: z.number().finite().min(0).max(1).optional(),
+  maxAssertionFailureRate: z.number().finite().min(0).max(1).optional(),
+  maxP95Ms: z.number().finite().positive().optional(),
+  minRps: z.number().finite().positive().optional(),
+}).strict();
+const StressOriginSchema = z.string().superRefine((value, ctx) => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("protocol");
+    const authority = value.slice(value.indexOf("://") + 3);
+    if (!/^[^/?#\s]+\/?$/.test(authority)) throw new Error("origin");
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("origin");
+  } catch {
+    ctx.addIssue({ code: "custom", message: "必须是无路径、查询、片段和用户信息的 HTTP(S) origin" });
+  }
+}).transform((value) => normalizeStressOrigin(value));
+const StressOriginListSchema = z.array(StressOriginSchema).transform((values) => [...new Set(values)]);
+const StressPolicySchema = z.object({
+  trustedOrigins: StressOriginListSchema.optional(),
+  deniedOrigins: StressOriginListSchema.optional(),
+  maxConcurrency: z.number().int().positive().optional(),
+  maxRps: z.number().finite().positive().optional(),
+}).strict().superRefine((policy, ctx) => {
+  const trusted = new Set(policy.trustedOrigins ?? []);
+  if ((policy.deniedOrigins ?? []).some((origin) => trusted.has(origin))) {
+    ctx.addIssue({ code: "custom", path: ["deniedOrigins"], message: "可信与禁用 origin 不能重叠" });
+  }
+}).transform((policy) => normalizeStressPolicy(policy));
 const StressRunInputSchema = z.object({
   apiId: z.string(),
   caseId: z.string(),
   envName: z.string().nullish(),
   concurrency: z.number().int().positive(),
   maxIterations: z.number().int().positive().nullish(),
-  durationMs: z.number().positive().nullish(),
-});
+  durationMs: z.number().finite().positive().nullish(),
+  thresholds: StressThresholdsSchema.optional(),
+  connectionMode: z.enum(["pooled", "fresh"]).optional(),
+  confirmedTargetOrigins: StressOriginListSchema.optional(),
+}).strict();
 // 在线频道（M3-B 任务 1）：复用 shared/online/contract.ts 的契约 schema（path 规则/批量上限/
 // register 校验单一来源），仅叠加频道定位字段（baseUrl/workspaceId）。未登录错误的可读文案
 // 由 online session 抛出（「尚未登录在线服务器」），此处只管形状。
@@ -153,6 +185,7 @@ const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
   [IpcChannel.ContainerGet]: z.tuple([z.enum(["collection", "folder"]), z.string()]),
   [IpcChannel.GlobalsSave]: z.tuple([z.string(), z.record(z.string(), z.unknown())]),
   [IpcChannel.GlobalsGet]: z.tuple([z.string()]),
+  [IpcChannel.StressPolicySave]: z.tuple([z.string(), StressPolicySchema]),
   [IpcChannel.ApiGet]: z.tuple([z.string()]),
   [IpcChannel.ApiSave]: z.tuple([ApiDefinitionSchema]),
   [IpcChannel.DebugSend]: z.tuple([DebugInputSchema]),
@@ -435,6 +468,11 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.GlobalsGet: {
         return session.getProjectGlobals(a[0] as string);
+      }
+      case IpcChannel.StressPolicySave: {
+        const policy = session.setStressPolicy(a[0] as string, a[1] as StressTargetPolicy);
+        await session.save();
+        return policy;
       }
       case IpcChannel.ContainerGet: {
         const [kind, id] = a as ["collection" | "folder", string];

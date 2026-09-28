@@ -113,7 +113,12 @@ const design = useDesignStore(apicc, editor);
 const wfList = useWfListStore(apicc);
 const workflowDesign = useWorkflowDesignStore(apicc);
 // —— 压测 store（M2-D3 任务 3 装配，裁定 A）：同一组合根一次性创建，经 props 下传 ——
-const stress = createStressStore({ api: apicc });
+const stress = createStressStore({
+  api: apicc,
+  trustOrigin: async (origin) => {
+    if (selectedProjectId.value) await workspace.trustStressOrigin(selectedProjectId.value, origin);
+  },
+});
 // —— 在线 store（M3-B 任务 2 装配）：同一组合根一次性创建；挂载后对上次激活的服务器
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
 // TopBar 的在线入口按钮只置 online.dialogOpen。 ——
@@ -553,6 +558,17 @@ const selectedProjectId = computed<string | null>(() => {
   return null;
 });
 
+const selectedProjectStressPolicy = computed(() => {
+  const id = selectedProjectId.value;
+  if (!id) return undefined;
+  return (workspace.tree?.children ?? []).flatMap((group) => group.children ?? []).find((project) => project.id === id)?.stressPolicy;
+});
+
+const saveSelectedProjectPolicy = async (policy: Parameters<typeof workspace.saveStressPolicy>[1]): Promise<void> => {
+  const id = selectedProjectId.value;
+  if (id) await workspace.saveStressPolicy(id, policy);
+};
+
 // 环境选中态项目记忆（M10）：项目切换即换挡（恢复该项目记忆值或「无环境」）；
 // 调试与压测共享同一状态源（StressPanel 传 debug）。
 watch(
@@ -858,6 +874,8 @@ function onDividerDblClick() {
                 :envs="editor.envs"
                 :debug="debug"
                 :report-error="reportError"
+                :policy="selectedProjectStressPolicy"
+                :save-policy="saveSelectedProjectPolicy"
               />
             </template>
             <TestView

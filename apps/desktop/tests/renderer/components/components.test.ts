@@ -877,6 +877,9 @@ function makeReport(overrides: Partial<StressReport> = {}): StressReport {
     latency: { min: 5.4, avg: 10.5, max: 20.9, p50: 9.2, p90: 18.1, p95: 19.3, p99: 20.8 },
     statusDist: { "200": 3, "500": 1 },
     errorKinds: { HTTP_500: 1 },
+    failures: { transport: 0, http: 1, script: 0, assertion: 0, config: 0, aborted: 0 },
+    scriptLatency: { min: 0, avg: 0, max: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
+    iterationLatency: { min: 5.4, avg: 10.5, max: 20.9, p50: 9.2, p90: 18.1, p95: 19.3, p99: 20.8 },
     startedAt: 0,
     finishedAt: 1200,
     ...overrides,
@@ -1178,6 +1181,31 @@ describe("StressReportView", () => {
     // 报告为 null：整块不渲染
     const w3 = mountWithI18n(StressReportView, { report: null });
     expect(w3.find('[data-testid="stress-report"]').exists()).toBe(false);
+  });
+
+  it("显示 verdict、中文 violation、安全目标和 generator 饱和警告；旧报告不臆判", () => {
+    const current = makeReport({
+      verdict: { passed: false, violations: [{ metric: "p95", actual: 250, expected: 200, message: "p95 超过上限" }] },
+      failures: { transport: 1, http: 0, script: 0, assertion: 2, config: 0, aborted: 0 },
+      safety: { targetOrigins: [{ origin: "https://example.com", confirmation: "explicit", policy: "none" }] },
+      generator: {
+        cpuUserMs: 1, cpuSystemMs: 1, cpuPercent: 98, rssStartBytes: 10, rssPeakBytes: 20,
+        eventLoopDelayP95Ms: 30, schedulerBacklogMax: 4, saturated: true,
+        reasons: ["cpu"], limits: { cpuPercent: 90, eventLoopDelayP95Ms: 50, schedulerBacklog: 10 },
+      },
+    });
+    const currentView = mountWithI18n(StressReportView, { report: current });
+    expect(currentView.find('[data-testid="stress-verdict"]').text()).toBe("失败");
+    expect(currentView.find('[data-testid="stress-violations"]').text()).toContain("P95");
+    expect(currentView.find('[data-testid="stress-violations"]').text()).toContain("250");
+    expect(currentView.find('[data-testid="stress-safety"]').text()).toContain("https://example.com");
+    expect(currentView.find('[data-testid="stress-generator-saturated"]').exists()).toBe(true);
+    expect(currentView.find('[data-testid="stress-generator"]').text()).toContain("98");
+
+    const legacyView = mountWithI18n(StressReportView, { report: makeReport() });
+    expect(legacyView.find('[data-testid="stress-verdict"]').text()).toBe("未评估");
+    expect(legacyView.find('[data-testid="stress-generator"]').text()).toContain("未采集");
+    expect(legacyView.find('[data-testid="stress-generator-saturated"]').exists()).toBe(false);
   });
 });
 

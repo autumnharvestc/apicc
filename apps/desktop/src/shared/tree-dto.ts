@@ -1,4 +1,4 @@
-import type { WorkflowStatus } from "@apicc/core";
+import type { StressTargetPolicy, WorkflowStatus } from "@apicc/core";
 
 /** 渲染层树节点 DTO：主进程与渲染层共享的单一类型源。 */
 export interface TreeNodeDTO {
@@ -19,6 +19,7 @@ export interface TreeNodeDTO {
    * 主进程树与集合层级耦合）。
    */
   workflows?: Array<{ id: string; name: string; status: WorkflowStatus }>;
+  stressPolicy?: StressTargetPolicy;
   /** workflow 叶子（SideTree 由 workflows 摘要合成的节点）状态：渲染状态徽标色点。 */
   status?: WorkflowStatus;
   children?: TreeNodeDTO[];

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   Button as AButton,
@@ -8,6 +8,7 @@ import {
   RadioGroup as ARadioGroup,
   Select as ASelect,
 } from "ant-design-vue";
+import type { StressTargetPolicy } from "@apicc/core";
 import { createStressFormDefaults, type createStressStore } from "../stores/stress.js";
 import StressReportView from "./StressReportView.vue";
 
@@ -33,11 +34,22 @@ const props = defineProps<{
 
   /** 环境选中共享源（M10）：传入则环境下拉读写调试 store 的项目记忆。 */
   debug?: { selectedEnvName: string | null; selectEnv(name: string | null): void };
+  policy?: StressTargetPolicy;
+  savePolicy?: (policy: StressTargetPolicy) => Promise<void>;
 }>();
 const { t } = useI18n();
 
 // 数字输入清空归一的默认值（与 form 初始默认同一来源，裁定 C①）
 const FORM_DEFAULTS = createStressFormDefaults();
+const policyDraft = ref<StressTargetPolicy>({ trustedOrigins: [], deniedOrigins: [] });
+watch(() => props.policy, (policy) => {
+  policyDraft.value = {
+    trustedOrigins: [...(policy?.trustedOrigins ?? [])],
+    deniedOrigins: [...(policy?.deniedOrigins ?? [])],
+    ...(policy?.maxConcurrency !== undefined ? { maxConcurrency: policy.maxConcurrency } : {}),
+    ...(policy?.maxRps !== undefined ? { maxRps: policy.maxRps } : {}),
+  };
+}, { immediate: true, deep: true });
 
 // —— 选项派生 ——
 const caseOptions = computed(() => props.cases.map((c) => ({ label: c.name, value: c.id })));
@@ -82,6 +94,18 @@ async function onStop() {
   } catch (e) {
     props.reportError(e);
   }
+}
+async function savePolicy() {
+  if (!props.savePolicy) return;
+  await props.savePolicy({
+    ...policyDraft.value,
+    trustedOrigins: [...new Set(policyDraft.value.trustedOrigins ?? [])].filter((origin) => !(policyDraft.value.deniedOrigins ?? []).includes(origin)),
+    deniedOrigins: [...new Set(policyDraft.value.deniedOrigins ?? [])],
+  });
+}
+function setThreshold(key: keyof typeof props.stress.form.thresholds, value: number | null) {
+  if (value === null || value === undefined) delete props.stress.form.thresholds[key];
+  else props.stress.form.thresholds[key] = value;
 }
 </script>
 
@@ -154,6 +178,29 @@ async function onStop() {
           @update:value="(v) => (stress.form.durationSeconds = (v as number | null) ?? FORM_DEFAULTS.durationSeconds)"
         />
       </label>
+      <details class="advanced" data-testid="stress-thresholds">
+        <summary>{{ t("stress.criteria") }}</summary>
+        <label class="field"><span class="field-label">{{ t("stress.maxErrorRate") }}</span><a-input-number :value="stress.form.thresholds.maxErrorRate" :min="0" :max="1" :step="0.01" class="control" @update:value="(v) => setThreshold('maxErrorRate', v as number | null)" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.maxAssertionFailureRate") }}</span><a-input-number :value="stress.form.thresholds.maxAssertionFailureRate" :min="0" :max="1" :step="0.01" class="control" @update:value="(v) => setThreshold('maxAssertionFailureRate', v as number | null)" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.maxP95Ms") }}</span><a-input-number :value="stress.form.thresholds.maxP95Ms" :min="0.001" class="control" @update:value="(v) => setThreshold('maxP95Ms', v as number | null)" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.minRps") }}</span><a-input-number :value="stress.form.thresholds.minRps" :min="0.001" class="control" @update:value="(v) => setThreshold('minRps', v as number | null)" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.connectionMode") }}</span><a-radio-group :value="stress.form.connectionMode" @update:value="(v) => (stress.form.connectionMode = v as 'pooled' | 'fresh')"><a-radio value="pooled">{{ t("stress.pooled") }}</a-radio><a-radio value="fresh">{{ t("stress.fresh") }}</a-radio></a-radio-group></label>
+      </details>
+      <details class="advanced" data-testid="stress-policy">
+        <summary>{{ t("stress.targetPolicy") }}</summary>
+        <p class="risk">{{ t("stress.targetPolicyRisk") }}</p>
+        <label class="field"><span class="field-label">{{ t("stress.trustedOrigins") }}</span><textarea class="text-control" :value="(policyDraft.trustedOrigins ?? []).join('\n')" @change="(e) => { policyDraft.trustedOrigins = (e.target as HTMLTextAreaElement).value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean); savePolicy(); }" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.deniedOrigins") }}</span><textarea class="text-control" :value="(policyDraft.deniedOrigins ?? []).join('\n')" @change="(e) => { policyDraft.deniedOrigins = (e.target as HTMLTextAreaElement).value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean); savePolicy(); }" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.maxConcurrency") }}</span><a-input-number :value="policyDraft.maxConcurrency" :min="1" class="control" @update:value="(v) => { policyDraft.maxConcurrency = (v as number | null) ?? undefined; savePolicy(); }" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.maxRps") }}</span><a-input-number :value="policyDraft.maxRps" :min="0.001" class="control" @update:value="(v) => { policyDraft.maxRps = (v as number | null) ?? undefined; savePolicy(); }" /></label>
+      </details>
+      <div v-if="stress.pendingTargetOrigin" class="target-confirmation" data-testid="stress-target-confirmation">
+        <p>{{ t("stress.targetConfirmation", { origin: stress.pendingTargetOrigin }) }}</p>
+        <p class="risk">{{ t("stress.targetConfirmationRisk") }}</p>
+        <a-button data-testid="stress-confirm-once" @click="stress.confirmTarget(apiId, false)">{{ t("stress.confirmOnce") }}</a-button>
+        <a-button type="primary" data-testid="stress-trust-project" @click="stress.confirmTarget(apiId, true)">{{ t("stress.trustProject") }}</a-button>
+        <a-button @click="stress.denyTarget()">{{ t("stress.denyTarget") }}</a-button>
+      </div>
       <div class="actions">
         <a-button
           type="primary"
@@ -221,6 +268,14 @@ async function onStop() {
 .error {
   color: var(--fail, #cf1322);
 }
+.advanced {
+  border-top: 1px solid var(--border, #ddd);
+  padding-top: 6px;
+}
+.advanced summary { cursor: pointer; color: var(--text-muted, #666); }
+.risk { color: var(--warning, #ad6800); margin: 4px 0; }
+.target-confirmation { border: 1px solid var(--warning, #d48806); padding: 8px; }
+.text-control { flex: 1; min-height: 42px; }
 .file-line {
   color: var(--text-muted, #666);
   font-size: 12px;

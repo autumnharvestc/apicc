@@ -174,7 +174,43 @@
     "statusDist": "状态码分布",
     "errorKinds": "错误分布",
     "noSamples": "无样本",
-    "noCases": "无用例"
+    "noCases": "无用例",
+    "criteria": "通过标准",
+    "maxErrorRate": "最大错误率",
+    "maxAssertionFailureRate": "最大断言失败率",
+    "maxP95Ms": "最大 P95（毫秒）",
+    "minRps": "最低 RPS",
+    "connectionMode": "连接模式",
+    "pooled": "连接池",
+    "fresh": "每次新连接",
+    "targetPolicy": "目标策略",
+    "targetPolicyRisk": "可信目标允许真实压测流量；禁用目标始终优先，且不会被本次确认覆盖。",
+    "trustedOrigins": "可信 origin（每行一个）",
+    "deniedOrigins": "禁用 origin（每行一个）",
+    "maxConcurrency": "并发上限",
+    "maxRps": "RPS 上限",
+    "targetConfirmation": "目标 {origin} 尚未确认。是否仅为本次运行放行？",
+    "targetConfirmationRisk": "请确认你拥有该目标的压测授权；loopback 目标也需要明确确认。",
+    "confirmOnce": "仅本次运行",
+    "trustProject": "信任此项目目标",
+    "denyTarget": "拒绝"
+    ,"verdictPassed": "通过"
+    ,"verdictFailed": "失败"
+    ,"verdictUnassessed": "未评估"
+    ,"generatorSaturated": "压测生成器可能已饱和；该资源边界独立于业务失败结论，请谨慎解读。"
+    ,"violations": "阈值违反"
+    ,"metricName": "指标"
+    ,"actual": "实际"
+    ,"expected": "期望"
+    ,"detail": "说明"
+    ,"failureKinds": "失败分类"
+    ,"failureKind": "分类"
+    ,"safety": "目标安全"
+    ,"safetyNone": "未采集到目标确认元数据"
+    ,"generator": "生成器资源"
+    ,"generatorUncollected": "未采集（旧报告无 generator 字段）"
+    ,"metric": {"errorRate": "错误率", "assertionFailureRate": "断言失败率", "p95": "P95", "rps": "RPS", "businessFailures": "业务失败", "noData": "无数据"}
+    ,"failure": {"transport": "传输", "http": "HTTP", "script": "脚本", "assertion": "断言", "config": "配置", "aborted": "中止"}
   },
   "import": {
     "title": "导入接口",

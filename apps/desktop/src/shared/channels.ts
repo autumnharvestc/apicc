@@ -15,6 +15,7 @@ export const IpcChannel = {
   // M10：项目级——GlobalsSave 载荷 [projectId, globals]；GlobalsGet 载荷 [projectId]
   GlobalsSave: "globals:save",
   GlobalsGet: "globals:get",
+  StressPolicySave: "stress:policy:save",
   ApiGet: "api:get",
   ApiSave: "api:save",
   DebugSend: "debug:send",

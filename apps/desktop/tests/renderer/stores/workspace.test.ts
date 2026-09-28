@@ -26,4 +26,21 @@ describe("workspace store", () => {
     await store.open("/tmp/ws");
     expect(store.problems).toHaveLength(1);
   });
+
+  it("项目策略保存规范化去重且禁用 origin 优先", async () => {
+    const { api, store } = freshStore();
+    api.seedWorkspace();
+    await store.open("/tmp/ws");
+    const project = store.tree!.children![0]!.children![0]!;
+    const saved = await store.saveStressPolicy(project.id, {
+      trustedOrigins: ["HTTPS://Example.COM:443/", "https://example.com"],
+      deniedOrigins: ["https://EXAMPLE.com/"],
+      maxConcurrency: 2,
+      maxRps: 5,
+    });
+    expect(saved.trustedOrigins).toEqual([]);
+    expect(saved.deniedOrigins).toEqual(["https://example.com"]);
+    expect(saved.maxConcurrency).toBe(2);
+    expect(store.tree!.children![0]!.children![0]!.stressPolicy).toEqual(saved);
+  });
 });

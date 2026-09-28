@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Table as ATable } from "ant-design-vue";
-import type { StressReport } from "@apicc/core";
+import type { DesktopStressReport } from "../../../shared/types.js";
 
 /**
  * 压测报告纯展示组件（M2-D3 任务 2，裁定 C）：props 报告对象 → 摘要行（total/ok/failed/
@@ -10,7 +10,7 @@ import type { StressReport } from "@apicc/core";
  * totalRequests=0 展示「无样本」态。数字格式化 helper 内联（毫秒取整、rps 两位小数），
  * 任何数值路径不产 NaN；面板与运行历史详情（任务 3）复用本组件。
  */
-const props = defineProps<{ report: StressReport | null }>();
+const props = defineProps<{ report: DesktopStressReport | null }>();
 const { t } = useI18n();
 
 // —— 数字格式化（内联 helper，禁 NaN：所有输入来自 StressReportSchema 校验过的数值） ——
@@ -61,10 +61,36 @@ const errorColumns = computed(() => [
   { key: "label", title: t("stress.errorCol"), dataIndex: "label" },
   { key: "count", title: t("stress.count"), dataIndex: "count" },
 ]);
+const verdict = computed(() => {
+  if (!props.report?.verdict) return "unassessed";
+  return props.report.verdict.passed ? "passed" : "failed";
+});
+const violationRows = computed(() => (props.report?.verdict?.violations ?? []).map((violation) => ({
+  metric: t(`stress.metric.${violation.metric}`), actual: String(violation.actual), expected: String(violation.expected), message: violation.message,
+})));
+const failureRows = computed(() => Object.entries(props.report?.failures ?? {}).filter(([, count]) => count > 0).map(([kind, count]) => ({ kind: t(`stress.failure.${kind}`), count })));
+const safetyRows = computed(() => props.report?.safety?.targetOrigins ?? []);
+const generator = computed(() => props.report?.generator);
 </script>
 
 <template>
   <section v-if="report" class="stress-report" data-testid="stress-report">
+    <div class="verdict" :data-verdict="verdict" data-testid="stress-verdict">
+      <strong v-if="verdict === 'passed'">{{ t("stress.verdictPassed") }}</strong>
+      <strong v-else-if="verdict === 'failed'">{{ t("stress.verdictFailed") }}</strong>
+      <strong v-else>{{ t("stress.verdictUnassessed") }}</strong>
+    </div>
+    <div v-if="report.generator?.saturated" class="saturated-warning" data-testid="stress-generator-saturated">{{ t("stress.generatorSaturated") }}</div>
+    <div v-if="violationRows.length" class="violations" data-testid="stress-violations">
+      <h4 class="block-title">{{ t("stress.violations") }}</h4>
+      <a-table :data-source="violationRows" :columns="[{ key: 'metric', title: t('stress.metricName'), dataIndex: 'metric' }, { key: 'actual', title: t('stress.actual'), dataIndex: 'actual' }, { key: 'expected', title: t('stress.expected'), dataIndex: 'expected' }, { key: 'message', title: t('stress.detail'), dataIndex: 'message' }]" row-key="metric" :pagination="false" size="small" />
+    </div>
+    <div v-if="failureRows.length" class="violations" data-testid="stress-failures">
+      <h4 class="block-title">{{ t("stress.failureKinds") }}</h4>
+      <a-table :data-source="failureRows" :columns="[{ key: 'kind', title: t('stress.failureKind'), dataIndex: 'kind' }, { key: 'count', title: t('stress.count'), dataIndex: 'count' }]" row-key="kind" :pagination="false" size="small" />
+    </div>
+    <div class="safety" data-testid="stress-safety"><h4 class="block-title">{{ t("stress.safety") }}</h4><span v-if="!safetyRows.length">{{ t("stress.safetyNone") }}</span><ul v-else><li v-for="row in safetyRows" :key="row.origin">{{ row.origin }} · {{ row.confirmation }} · {{ row.policy }}</li></ul></div>
+    <div class="generator" data-testid="stress-generator"><h4 class="block-title">{{ t("stress.generator") }}</h4><span v-if="!generator">{{ t("stress.generatorUncollected") }}</span><span v-else>CPU {{ fmtInt(generator.cpuPercent) }}% · RSS {{ fmtInt(generator.rssPeakBytes) }} · {{ fmtMs(generator.eventLoopDelayP95Ms) }} · backlog {{ generator.schedulerBacklogMax }}</span></div>
     <div v-if="report.totalRequests === 0" class="no-samples" data-testid="stress-no-samples">
       {{ t("stress.noSamples") }}
     </div>
@@ -117,6 +143,11 @@ const errorColumns = computed(() => [
 .summary {
   color: var(--text-muted, #666);
 }
+.verdict { font-weight: 600; }
+.verdict[data-verdict="passed"] { color: var(--pass, #389e0d); }
+.verdict[data-verdict="failed"], .saturated-warning { color: var(--fail, #cf1322); }
+.saturated-warning { border: 1px solid currentColor; padding: 6px; font-weight: 600; }
+.safety, .generator, .violations { font-size: 12px; }
 .block-title {
   margin: 4px 0 0;
   font-size: 13px;

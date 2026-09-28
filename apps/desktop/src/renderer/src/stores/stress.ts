@@ -1,6 +1,6 @@
 import { createPinia, defineStore } from "pinia";
-import type { StressReport } from "@apicc/core";
-import type { ApiccApi, StressRunInput } from "../../../shared/types.js";
+import type { StressThresholds } from "@apicc/core";
+import type { ApiccApi, DesktopStressReport, StressRunInput } from "../../../shared/types.js";
 
 /**
  * 压测表单状态（简报裁定 A）：mode 决定 start 组装哪个终止条件——
@@ -14,11 +14,16 @@ export interface StressForm {
   mode: "iterations" | "duration";
   iterations: number;
   durationSeconds: number;
+  thresholds: StressThresholds;
+  connectionMode: "pooled" | "fresh";
 }
 
 /** form 默认值集中定义（计划步骤 2）：并发 1、迭代模式、迭代 10 次/时长 10 秒。 */
 export function createStressFormDefaults(): StressForm {
-  return { caseId: null, envName: null, concurrency: 1, mode: "iterations", iterations: 10, durationSeconds: 10 };
+  return {
+    caseId: null, envName: null, concurrency: 1, mode: "iterations", iterations: 10, durationSeconds: 10,
+    thresholds: {}, connectionMode: "pooled",
+  };
 }
 
 /**
@@ -32,16 +37,18 @@ export function createStressFormDefaults(): StressForm {
  * 不等即视为陈旧会话（运行中切接口/切工作区被组合根 clear）——其完成结果与拒绝一律不上屏、
  * 不置 error、不向组件层外抛，防止旧接口的报告/错误错挂进新面板。
  */
-export function createStressStore(deps: { api: ApiccApi }) {
+export function createStressStore(deps: { api: ApiccApi; trustOrigin?: (origin: string) => Promise<void> }) {
   const { api } = deps;
   return defineStore("stress", {
     state: () => ({
       running: false,
-      report: null as StressReport | null,
+      report: null as DesktopStressReport | null,
       file: null as string | null,
       error: null as string | null,
       form: createStressFormDefaults(),
       generation: 0,
+      confirmedTargetOrigins: [] as string[],
+      pendingTargetOrigin: null as string | null,
     }),
     actions: {
       async start(apiId: string) {
@@ -59,6 +66,9 @@ export function createStressStore(deps: { api: ApiccApi }) {
             concurrency: this.form.concurrency,
             maxIterations: this.form.mode === "iterations" ? this.form.iterations : null,
             durationMs: this.form.mode === "duration" ? this.form.durationSeconds * 1000 : null,
+            ...(Object.keys(this.form.thresholds).length > 0 ? { thresholds: { ...this.form.thresholds } } : {}),
+            ...(this.form.connectionMode !== "pooled" ? { connectionMode: this.form.connectionMode } : {}),
+            ...(this.confirmedTargetOrigins.length > 0 ? { confirmedTargetOrigins: [...this.confirmedTargetOrigins] } : {}),
           };
           const out = await api.stressRun(input);
           if (gen !== this.generation) return;
@@ -66,11 +76,27 @@ export function createStressStore(deps: { api: ApiccApi }) {
           this.file = out.file ?? null;
         } catch (e) {
           if (gen !== this.generation) return;
+          const safety = e as { code?: unknown; targetOrigin?: unknown };
+          if (safety.code === "target_confirmation_required" && typeof safety.targetOrigin === "string") {
+            this.pendingTargetOrigin = safety.targetOrigin;
+            return;
+          }
           this.error = e instanceof Error ? e.message : String(e);
           throw e;
         } finally {
           this.running = false;
         }
+      },
+      async confirmTarget(apiId: string, trustProject: boolean) {
+        const origin = this.pendingTargetOrigin;
+        if (!origin) return;
+        if (trustProject) await deps.trustOrigin?.(origin);
+        if (!this.confirmedTargetOrigins.includes(origin)) this.confirmedTargetOrigins.push(origin);
+        this.pendingTargetOrigin = null;
+        await this.start(apiId);
+      },
+      denyTarget() {
+        this.pendingTargetOrigin = null;
       },
       async stop() {
         const gen = this.generation;
@@ -93,6 +119,8 @@ export function createStressStore(deps: { api: ApiccApi }) {
         this.report = null;
         this.file = null;
         this.error = null;
+        this.pendingTargetOrigin = null;
+        this.confirmedTargetOrigins = [];
       },
     },
   })(createPinia());

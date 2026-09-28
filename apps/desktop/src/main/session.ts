@@ -12,6 +12,7 @@ import {
   type Folder,
   type Group,
   type Project,
+  type StressTargetPolicy,
   type TestCase,
   type Workflow,
   type WorkflowStatus,
@@ -274,6 +275,15 @@ export function createSession(options: SessionOptions = {}) {
     if (!project) throw new Error(`未找到项目: ${projectId}`);
     const g = project.globals ?? { query: [], headers: [], cookies: [], body: [] };
     return { variables: project.variables, query: g.query, headers: g.headers, cookies: g.cookies, body: g.body };
+  }
+
+  /** 保存项目级压测安全策略；策略本身在 core 边界规范化，旧项目仍可省略。 */
+  function setStressPolicy(projectId: string, policy: StressTargetPolicy): StressTargetPolicy {
+    const { workspace: ws } = ensureOpen();
+    const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+    if (!project) throw new Error(`未找到项目: ${projectId}`);
+    project.stressPolicy = policy;
+    return policy;
   }
 
   /** 容器读取（M10）：管理对话框水合。返回与 ContainerSaveInput 同形（含 name 显示用）。 */
@@ -606,7 +616,7 @@ export function createSession(options: SessionOptions = {}) {
       return (await fileStorage.load(r)).problems;
     },
     createGroup, createProject, createCollection, createFolder, createApi,
-    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setProjectGlobals, getProjectGlobals, getContainer, saveContainer, ensureDefaultGroup,
+    createEnvironment, setEnvironmentVariables, setEnvironmentBaseUrls, setProjectGlobals, getProjectGlobals, setStressPolicy, getContainer, saveContainer, ensureDefaultGroup,
     importProjectToGroup, importModuleToProject, cloneProject, moveProject,
     locateApi, locateCollection, saveApi,
     locateWorkflow, createWorkflow, deleteWorkflow, saveWorkflow, setWorkflowStatus, renameWorkflow,

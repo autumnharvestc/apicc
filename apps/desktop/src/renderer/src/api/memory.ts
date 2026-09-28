@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   builtinAuthProviders,
+  createDefaultRegistry,
+  createStressCaseSession,
   sanitizeNodeName,
   buildStressRequest,
   createVariableResolver,
@@ -33,6 +35,7 @@ import {
   type WorkflowRunResult,
   type WorkflowStatus,
   type Workspace,
+  type StressTargetPolicy,
 } from "@apicc/core";
 import type { ContainerSaveInput, ProjectGlobalSettings } from "../../../shared/types.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
@@ -546,6 +549,15 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       return { variables: project.variables, query: g.query, headers: g.headers, cookies: g.cookies, body: g.body };
     },
 
+    async stressPolicySave(projectId: string, policy: StressTargetPolicy): Promise<StressTargetPolicy> {
+      const ws = ensureOpen();
+      const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
+      if (!project) throw new Error(`未找到项目: ${projectId}`);
+      project.stressPolicy = structuredClone(policy);
+      await save();
+      return structuredClone(project.stressPolicy);
+    },
+
     async containerGet(kind: "collection" | "folder", id: string): Promise<ContainerSaveInput> {
       const ws = ensureOpen();
       if (kind === "collection") {
@@ -694,16 +706,27 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       const ws = ensureOpen();
       const loc = locateApi(input.apiId);
       if (!loc) throw new Error(`未找到接口: ${input.apiId}`);
-      const api: ApiDefinition = { ...loc.api, cases: loc.api.cases.filter((c) => c.id === input.caseId) };
-      if (api.cases.length === 0) throw new Error(`用例不存在: ${input.caseId}`);
+      const api = loc.api;
+      const testCase = api.cases.find((candidate) => candidate.id === input.caseId);
+      if (!testCase) throw new Error(`用例不存在: ${input.caseId}`);
+      // The memory fixture intentionally uses a relative URL; make the in-memory
+      // case absolute so it exercises the same WHATWG HTTP path as main.
+      const stressApi = { ...api, url: new URL(api.url, "http://127.0.0.1").href };
+      const stressCollection = { ...loc.collection, apis: loc.collection.apis.map((candidate) => candidate === api ? stressApi : candidate) };
       const env = input.envName ? loc.project.environments.find((e) => e.name === input.envName) : undefined;
       if (input.envName && !env) throw new Error(`未找到环境: ${input.envName}`);
-      const resolver = createVariableResolver({
-        layers: [mergedEnvVars(env, loc.project), loc.collection.variables, loc.project.variables, ws.variables],
-      });
+      const registry = createDefaultRegistry();
       const runner = new StressRunner({
-        client: stressClient,
-        buildRequest: () => buildStressRequest(api, resolver, builtinAuthProviders),
+        createWorker: () => createStressCaseSession({ api: stressApi, testCase, env, project: loc.project, collection: stressCollection, workspace: ws }, {
+          resolveProtocol: (request) => stressClient,
+          resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
+          resolveAssert: (op) => registry.getAssert(op),
+          scriptEngine: registry.getScriptEngine("javascript")!,
+          createManagedClient: () => ({ ...stressClient, close: async () => {} }),
+        }, { workerId: 0, concurrency: input.concurrency, maxRps: loc.project.stressPolicy?.maxRps,
+          // The memory API is a deterministic renderer test substitute; real
+          // confirmation is enforced by the main process controller.
+          confirmedTargetOrigins: input.confirmedTargetOrigins ?? ["http://127.0.0.1"] }),
       });
       const controller = new AbortController();
       const finished = (async (): Promise<StressRunOutput> => {
@@ -713,6 +736,9 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
             maxIterations: input.maxIterations ?? undefined,
             durationMs: input.durationMs ?? undefined,
             signal: controller.signal,
+            thresholds: input.thresholds,
+            maxRps: loc.project.stressPolicy?.maxRps,
+            connectionMode: input.connectionMode,
           });
           const clone: StressReport = structuredClone(report);
           const file = `stress-${api.id}-${Date.now()}.json`;

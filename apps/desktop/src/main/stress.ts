@@ -2,13 +2,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   builtinAuthProviders,
-  buildStressRequest,
-  createVariableResolver,
-  httpClient,
-  mergedEnvVars,
+  createDefaultRegistry,
+  createHttpClient,
+  createStressCaseSession,
   StressRunner,
-  type ApiDefinition,
   type ProtocolClient,
+  CurrentStressReportSchema,
+  StressSafetyError,
   type StressReport,
 } from "@apicc/core";
 import { resolveEnv, workspaceRunsDir } from "./debug.js";
@@ -16,12 +16,17 @@ import type { createSession } from "./session.js";
 import type { StressRunInput, StressRunOutput } from "../shared/types.js";
 
 type Session = ReturnType<typeof createSession>;
+type ManagedProtocolClient = ProtocolClient & { close(): Promise<void> };
 
 /**
- * 控制器依赖：client/writeReport 供测试注入假实现（默认真实 httpClient 与 writeFileSync），
+ * 控制器依赖：client/writeReport 供测试注入假实现（默认真实 managed HTTP client 与 writeFileSync），
  * 生产无需关心。writeReport 只包写盘动作（降级口径在 persist 内统一处理）。
  */
-export interface StressControllerDeps { client?: ProtocolClient; writeReport?: (path: string, content: string) => void }
+export interface StressControllerDeps {
+  /** Legacy test seam; production creates one managed client per VU. */
+  client?: ProtocolClient;
+  writeReport?: (path: string, content: string) => void;
+}
 
 /**
  * 压测控制器（M2-D3 任务 1，规格 §2 D10）：main 进程执行接口级压测，闭包持单活动 run
@@ -65,17 +70,12 @@ export function createStressController(session: Session, deps: StressControllerD
     const loc = session.locateApi(input.apiId);
     if (!loc) throw new Error(`未找到接口: ${input.apiId}`);
     // 用例门（同 sendDebug 断言口径）：压测请求构造只依赖接口定义，但目标用例必须存在。
-    const api: ApiDefinition = { ...loc.api, cases: loc.api.cases.filter((c) => c.id === input.caseId) };
-    if (api.cases.length === 0) throw new Error(`用例不存在: ${input.caseId}`);
+    const api = loc.api;
+    const testCase = api.cases.find((candidate) => candidate.id === input.caseId);
+    if (!testCase) throw new Error(`用例不存在: ${input.caseId}`);
     const env = resolveEnv(loc.project, input.envName ?? undefined);
     // locateApi 内 ensureOpen 已保证会话打开，root/workspace 非空（与 debug.ts 运行链路同款断言）。
     const root = session.root!;
-    // M9-B 与集合运行同口径：环境按集合的前置 URL 注入 baseUrl 变量；工作区全局变量为最低层。
-    const baseUrl = env?.baseUrls?.[loc.collection.id];
-    const envVars = { ...mergedEnvVars(env, loc.project), ...(baseUrl ? { baseUrl } : {}) };
-    const resolver = createVariableResolver({
-      layers: [envVars, loc.collection.variables, loc.project.variables, session.workspace!.variables, session.workspace!.globals?.variables ?? {}],
-    });
     // 桌面压测面协议守卫（M5 终审）：StressRunner 是单 client 面，桌面控制器钉死
     // httpClient（协议感知的按 protocol 分发只有 CLI run-stress 有），而
     // buildStressRequest 已透传 protocol/envelope/soapAction——非 HTTP 接口若放行，
@@ -85,12 +85,49 @@ export function createStressController(session: Session, deps: StressControllerD
     if ((api.protocol ?? "http") !== "http") {
       throw new Error("桌面压测面板当前仅支持 HTTP 接口（WS/SOAP 压测请使用 CLI run-stress）");
     }
-    const runner = new StressRunner({
-      client: deps.client ?? httpClient,
-      // 每次采样重跑工厂：动态变量（如 {{$uuid}}）逐请求变化，与 CLI run-stress 同口径。
-      buildRequest: () => buildStressRequest(api, resolver, builtinAuthProviders, loc.project.globals),
-    });
+    const registry = createDefaultRegistry();
+    const policy = loc.project.stressPolicy;
     const controller = new AbortController();
+    let safetyFailure: StressSafetyError | undefined;
+    const runner = new StressRunner({
+      onSample: (sample) => {
+        const target = sample.safety;
+        if (!safetyFailure && target?.confirmation === "rejected" && target.policy !== "none") {
+          safetyFailure = new StressSafetyError(
+            target.policy as ConstructorParameters<typeof StressSafetyError>[0],
+            sample.error ?? `目标安全策略拒绝: ${target.origin}`,
+            target.origin,
+          );
+          controller.abort();
+        }
+      },
+      // 每个 VU 都由 createStressCaseSession 持有独立 client；这保证 pooled/fresh
+      // 连接模式与脚本、认证、断言和最终安全门共享同一 case 语义。
+      createWorker: (workerId) => {
+        const client: ManagedProtocolClient = deps.client
+          ? { ...deps.client, close: async () => {} }
+          : createHttpClient({ connectionMode: input.connectionMode });
+        return createStressCaseSession({
+          api,
+          testCase,
+          env,
+          project: loc.project,
+          collection: loc.collection,
+          workspace: session.workspace!,
+        }, {
+          resolveProtocol: (request) => request.protocol === undefined || request.protocol === "http" ? client : registry.getProtocol(request),
+          resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
+          resolveAssert: (op) => registry.getAssert(op),
+          scriptEngine: registry.getScriptEngine("javascript")!,
+          createManagedClient: () => client,
+        }, {
+          workerId,
+          concurrency: input.concurrency,
+          maxRps: policy?.maxRps,
+          confirmedTargetOrigins: input.confirmedTargetOrigins,
+        });
+      },
+    });
     const finished = (async (): Promise<StressRunOutput> => {
       try {
         // maxIterations/durationMs 的 null（渲染层「清空」惯例）归一为 undefined；
@@ -100,7 +137,12 @@ export function createStressController(session: Session, deps: StressControllerD
           maxIterations: input.maxIterations ?? undefined,
           durationMs: input.durationMs ?? undefined,
           signal: controller.signal,
+          thresholds: input.thresholds,
+          maxRps: policy?.maxRps,
+          connectionMode: input.connectionMode,
         });
+        if (safetyFailure) throw safetyFailure;
+        CurrentStressReportSchema.parse(report);
         return persist(root, api.id, report);
       } finally {
         clearActive(controller);

@@ -681,6 +681,9 @@ function stressReportFixture(): StressReport {
     latency: { min: 1, avg: 2, max: 3, p50: 2, p90: 3, p95: 3, p99: 3 },
     statusDist: { "200": 4 },
     errorKinds: {},
+    failures: { transport: 0, http: 0, script: 0, assertion: 0, config: 0, aborted: 0 },
+    scriptLatency: { min: 0, avg: 0, max: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
+    iterationLatency: { min: 1, avg: 2, max: 3, p50: 2, p90: 3, p95: 3, p99: 3 },
     startedAt: 0,
     finishedAt: 100,
   };
