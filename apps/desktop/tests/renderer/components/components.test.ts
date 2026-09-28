@@ -890,7 +890,7 @@ function makeReport(overrides: Partial<StressReport> = {}): StressReport {
  * StressPanel 装配辅助（裁定 B）：store 工厂一次性调用，实例经 props 注入（组件内零工厂调用）；
  * cases/envs 按「props 直接传列表」契约下发。种子：两用例（冒烟 + 第二用例）与环境 dev。
  */
-async function mountStress(props: Record<string, unknown> = {}) {
+async function mountStress(props: Record<string, unknown> = {}, storeDeps: { trustOrigin?: (projectId: string, origin: string) => Promise<void> } = {}) {
   const api = createMemoryApi();
   api.seedWorkspace();
   const tree = await api.treeGet();
@@ -901,7 +901,7 @@ async function mountStress(props: Record<string, unknown> = {}) {
   detail.api.cases.push({ id: "c2", name: "第二用例", scope: "base", parameters: {}, assertions: [] });
   await api.apiSave(detail.api);
   const fresh = await api.apiGet(apiId);
-  const stress = createStressStore({ api });
+  const stress = createStressStore({ api, resolveProjectId: () => "project", ...storeDeps });
   const errors: unknown[] = [];
   const { i18n } = createI18nInstance();
   const wrapper = mount(StressPanel, {
@@ -950,8 +950,8 @@ describe("stressStore", () => {
     apiA.seedWorkspace();
     const apiB = createMemoryApi();
     apiB.seedWorkspace();
-    const a = createStressStore({ api: apiA });
-    const b = createStressStore({ api: apiB });
+    const a = createStressStore({ api: apiA, resolveProjectId: () => "project" });
+    const b = createStressStore({ api: apiB, resolveProjectId: () => "project" });
     // form 默认值集中定义：并发 1、iterations 模式；改 A 不影响 B
     expect(a.form.concurrency).toBe(1);
     expect(a.form.mode).toBe("iterations");
@@ -973,7 +973,7 @@ describe("stressStore", () => {
     api.seedWorkspace();
     let resolveRun!: (v: StressRunOutput) => void;
     api.stressRun = (): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; });
-    const stress = createStressStore({ api });
+    const stress = createStressStore({ api, resolveProjectId: () => "project" });
     stress.form.caseId = "c1";
     const first = stress.start("api-a");
     await flushPromises();
@@ -981,7 +981,7 @@ describe("stressStore", () => {
     // 组合根切接口时机：clear()（代际 +1、展示清空，running 仍 true）
     stress.clear();
     // 旧 run 排空完成：结果属于旧会话，不得写回（新接口面板不受污染）
-    resolveRun({ report: makeReport(), file: "stress-a.json" });
+    resolveRun({ ok: true, report: makeReport(), file: "stress-a.json" });
     await first;
     await flushPromises();
     expect(stress.report).toBeNull();
@@ -1029,7 +1029,7 @@ describe("StressPanel", () => {
     api.stressRun = (input: StressRunInput): Promise<StressRunOutput> => {
       sent.push(input);
       if (sent.length === 1) return new Promise<StressRunOutput>((res) => { resolveFirst = res; });
-      return Promise.resolve({ report: makeReport({ totalRequests: 2, ok: 2, failed: 0 }) });
+      return Promise.resolve({ ok: true, report: makeReport({ totalRequests: 2, ok: 2, failed: 0 }) });
     };
     // 初态：无活动运行，停止禁用
     expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeDefined();
@@ -1046,7 +1046,7 @@ describe("StressPanel", () => {
     expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeUndefined();
     expect(wrapper.find('[data-testid="stress-running"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(false);
-    resolveFirst({ report: makeReport(), file: `stress-${apiId}-1.json` });
+    resolveFirst({ ok: true, report: makeReport(), file: `stress-${apiId}-1.json` });
     await flushPromises();
     // resolve 后：报告上屏（totalRequests=4）+ file 行显示 + 按钮态复位
     expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
@@ -1073,7 +1073,7 @@ describe("StressPanel", () => {
     const { wrapper, api, stress, errors } = await mountStress();
     api.stressRun = async (): Promise<StressRunOutput> => {
       call += 1;
-      if (call === 1) return { report: reportA, file: "stress-a.json" };
+      if (call === 1) return { ok: true, report: reportA, file: "stress-a.json" };
       throw new Error("已有压测进行中");
     };
     await wrapper.find('[data-testid="stress-start"]').trigger("click");
@@ -1102,8 +1102,8 @@ describe("StressPanel", () => {
     // store.start 的 finally 才能复位 running）
     api.stressRun = (): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; });
     api.stressStop = async (): Promise<StressRunOutput> => {
-      resolveRun({ report: partial, file: "stress-partial.json" });
-      return { report: partial, file: "stress-partial.json" };
+      resolveRun({ ok: true, report: partial, file: "stress-partial.json" });
+      return { ok: true, report: partial, file: "stress-partial.json" };
     };
     await wrapper.find('[data-testid="stress-start"]').trigger("click");
     await flushPromises();
@@ -1145,6 +1145,38 @@ describe("StressPanel", () => {
     expect(wrapper.find('[data-testid="stress-no-cases"]').text()).toBe("无用例");
     expect(stress.form.caseId).toBeNull();
     expect(wrapper.find('[data-testid="stress-start"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("实际点击仅本次确认与信任项目：显示风险文案并走精确 origin", async () => {
+    const { wrapper, api, stress } = await mountStress();
+    const outputs = [
+      { ok: false as const, error: { code: "target_confirmation_required" as const, message: "confirm", targetOrigin: "https://example.com" } },
+      { ok: true as const, report: makeReport() },
+    ];
+    const calls: StressRunInput[] = [];
+    api.stressRun = async (input) => { calls.push(input); return outputs.shift()!; };
+    await wrapper.find('[data-testid="stress-start"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="stress-target-confirmation"]').text()).toContain("https://example.com");
+    expect(wrapper.find('[data-testid="stress-target-confirmation"]').text()).toContain("压测授权");
+    await wrapper.find('[data-testid="stress-confirm-once"]').trigger("click");
+    await flushPromises();
+    expect(calls[1]?.confirmedTargetOrigins).toEqual(["https://example.com"]);
+    expect(stress.pendingTargetOrigin).toBeNull();
+
+    let trustedProject = "";
+    const second = await mountStress({}, { trustOrigin: async (projectId) => { trustedProject = projectId; } });
+    const secondOutputs = [
+      { ok: false as const, error: { code: "target_confirmation_required" as const, message: "confirm", targetOrigin: "https://example.com" } },
+      { ok: true as const, report: makeReport() },
+    ];
+    second.api.stressRun = async () => secondOutputs.shift()!;
+    await second.wrapper.find('[data-testid="stress-start"]').trigger("click");
+    await flushPromises();
+    await second.wrapper.find('[data-testid="stress-trust-project"]').trigger("click");
+    await flushPromises();
+    expect(trustedProject).toBe("project");
+    expect(second.stress.pendingTargetOrigin).toBeNull();
   });
 });
 

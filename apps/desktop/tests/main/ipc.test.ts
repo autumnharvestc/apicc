@@ -461,6 +461,8 @@ describe("压测 IPC", () => {
     const detail = await deps.handle("api:get", {}, api.id);
     // envName=null 兼容既有 nullish 口径：通过校验按无环境运行（不可达地址 → failed 采样，运行完成）
     const out = await deps.handle("stress:run", {}, { apiId: api.id, caseId: detail.api.cases[0]!.id, envName: null, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: ["http://127.0.0.1:1"] });
+    expect(out.ok).toBe(true);
+    if (!out.ok) throw new Error("expected stress report");
     expect(out.report.totalRequests).toBe(1);
     expect(out.file).toMatch(new RegExp(`^stress-${api.id}-\\d+\\.json$`));
     const list = await deps.handle("runs:list", {});
@@ -472,6 +474,30 @@ describe("压测 IPC", () => {
     expect(stressDetail.report.totalRequests).toBe(1);
     // 运行已结束：无活动运行时 stress:stop 抛「没有进行中的压测」
     await expect(deps.handle("stress:stop", {})).rejects.toThrow(/没有进行中的压测/);
+  });
+
+  it("stress:run 安全拒绝通过 IPC 结构化克隆仍保留 code/targetOrigin，并可用精确 origin 重试", async () => {
+    const { deps, dir } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
+    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
+    const c = await deps.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
+    const api = await deps.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
+    const detail = await deps.handle("api:get", {}, api.id);
+    const input = { apiId: api.id, caseId: detail.api.cases[0]!.id, concurrency: 1, maxIterations: 1 };
+
+    const denied = await deps.handle("stress:run", {}, input);
+    const cloned = structuredClone(denied);
+    expect(cloned).toEqual({ ok: false, error: { code: "target_confirmation_required", message: expect.any(String), targetOrigin: "http://127.0.0.1:1" } });
+    expect(cloned.ok).toBe(false);
+    if (cloned.ok) throw new Error("expected structured safety refusal");
+    expect(cloned.error.code).toBe("target_confirmation_required");
+    expect(cloned.error.targetOrigin).toBe("http://127.0.0.1:1");
+
+    const retried = await deps.handle("stress:run", {}, { ...input, confirmedTargetOrigins: [cloned.error.targetOrigin] });
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) throw new Error("expected confirmed stress report");
+    expect(retried.report.totalRequests).toBe(1);
   });
 
   it("stress:run 入参校验：负并发/零并发/非整数并发 zod 拒绝；迭代与时长都缺走 core 文案（可空字段 null 兼容）", async () => {

@@ -721,7 +721,7 @@ describe("App 测试模块装配（M9-D）", () => {
       await flushPromises();
       await wrapper.find('[data-testid="rail-test"]').trigger("click");
       await flushPromises();
-      failingApi.stressRun = async () => ({ report: stressReportFixture(), file: "stress-x.json" });
+      failingApi.stressRun = async () => ({ ok: true, report: stressReportFixture(), file: "stress-x.json" });
       // 用例行点「压测」：内嵌 StressPanel + 预选该用例
       const stressBtn = wrapper.find('[data-testid^="case-stress-"]');
       const caseId = stressBtn.attributes("data-case-id") as string;

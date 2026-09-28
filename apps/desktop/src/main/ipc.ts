@@ -1,9 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, normalizeStressOrigin, normalizeStressPolicy, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Project, type Workspace, type StressTargetPolicy } from "@apicc/core";
+import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, normalizeStressOrigin, normalizeStressPolicy, StressSafetyError, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Project, type Workspace, type StressTargetPolicy } from "@apicc/core";
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO, StressRunInput, StressRunOutput, StressRunSummaryDTO, WfCreateInput, WfImpactInput, WfRunInput } from "../shared/types.js";
+import type { ApiDetail, DebugInput, DebugOutput, EnvCreateInput, ImportApplyInput, ImportPreviewInput, NodeCreateInput, NodeCreatedDTO, OpenResult, RunCollectionInput, RunSummaryDTO, StressRunInput, StressRunOutput, StressRunResult, StressRunSummaryDTO, WfCreateInput, WfImpactInput, WfRunInput } from "../shared/types.js";
 import {
   OnlineBaseUrlSchema,
   OnlineBatchInputSchema,
@@ -615,8 +615,18 @@ export function createIpcDeps(options: IpcDepsOptions) {
       // 压测频道（M2-D3 任务 1）：run 返回最终报告 + 落盘文件名；stop 返回中止后的
       // 部分报告（abort 语义见 stress.ts）。返回前报告已深拷贝（DataCloneError 防御）。
       case IpcChannel.StressRun: {
-        const out = await stress.run(a[0] as StressRunInput);
-        return out satisfies StressRunOutput;
+        try {
+          const out = await stress.run(a[0] as StressRunInput);
+          return out satisfies StressRunResult;
+        } catch (error) {
+          if (error instanceof StressSafetyError) {
+            return {
+              ok: false,
+              error: { code: error.code, message: error.message, ...(error.targetOrigin ? { targetOrigin: error.targetOrigin } : {}) },
+            } satisfies StressRunResult;
+          }
+          throw error;
+        }
       }
       case IpcChannel.StressStop: {
         const out = await stress.stop();

@@ -13,6 +13,7 @@ import {
   mergedEnvVars,
   renderDesignMarkdown,
   StressRunner,
+  StressSafetyError,
   transitionWorkflowStatus,
   validateEnablement,
   workflowImpact,
@@ -114,6 +115,7 @@ import type {
   StressReportDTO,
   StressRunInput,
   StressRunOutput,
+  StressRunResult,
   StressRunSummaryDTO,
   WfCreateInput,
   WfImpactInput,
@@ -144,7 +146,9 @@ export const ONLINE_SEED_PROJECT_ID = "300";
  * stressRun（M2-D3 任务 1）：进程内 StressRunner + 假 client 实现与主进程同构语义
  * （单活动拒绝/stop/错误文案/历史 kind 判别），client 可注入、默认不发真实网络。
  */
-export function createMemoryApi(options?: { root?: string; stressClient?: ProtocolClient }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
+type MemoryManagedClient = ProtocolClient & { close(): Promise<void> };
+
+export function createMemoryApi(options?: { root?: string; stressClient?: MemoryManagedClient }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
@@ -157,12 +161,13 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
   // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
   const stressRuns: Array<{ file: string; report: StressReport }> = [];
   // 单活动压测（与主进程 createStressController 同构）：闭包持 AbortController + 收尾 Promise。
-  let stressActive: { controller: AbortController; finished: Promise<StressRunOutput> } | null = null;
+  let stressActive: { controller: AbortController; finished: Promise<StressRunResult> } | null = null;
   // 压测 client：默认假实现（200 成功、零时延），测试可注入挂起/自定义 client，不发真实网络。
-  const stressClient: ProtocolClient = options?.stressClient ?? {
+  const stressClient: MemoryManagedClient = options?.stressClient ?? {
     name: "fake",
     canHandle: () => true,
     execute: async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 0 }),
+    close: async () => {},
   };
   /** 收尾清理：仅当仍是本次 run 时清空（防误清新活动）；独立函数避免闭包内 let 收窄问题。 */
   function clearStressActive(controller: AbortController): void {
@@ -701,7 +706,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     // 压测（M2-D3 任务 1，与主进程 stress.ts 同构）：单活动拒绝/abort 语义/错误文案逐字对齐；
     // 历史收尾降级口径与主进程一致（异常仅告警不阻断报告返回，file 省略——内存 unshift 实际
     // 不可失败，同构其契约与降级结构）；返回前深拷贝。
-    async stressRun(input: StressRunInput): Promise<StressRunOutput> {
+    async stressRun(input: StressRunInput): Promise<StressRunResult> {
       if (stressActive) throw new Error("已有压测进行中");
       const ws = ensureOpen();
       const loc = locateApi(input.apiId);
@@ -716,20 +721,32 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
       const env = input.envName ? loc.project.environments.find((e) => e.name === input.envName) : undefined;
       if (input.envName && !env) throw new Error(`未找到环境: ${input.envName}`);
       const registry = createDefaultRegistry();
+      const controller = new AbortController();
+      let safetyFailure: StressSafetyError | undefined;
       const runner = new StressRunner({
+        onSample: (sample) => {
+          const target = sample.safety;
+          if (!safetyFailure && target?.confirmation === "rejected" && target.policy !== "none") {
+            safetyFailure = new StressSafetyError(
+              target.policy as ConstructorParameters<typeof StressSafetyError>[0],
+              sample.error ?? `目标安全策略拒绝: ${target.origin}`,
+              target.origin,
+            );
+            controller.abort();
+          }
+        },
         createWorker: () => createStressCaseSession({ api: stressApi, testCase, env, project: loc.project, collection: stressCollection, workspace: ws }, {
           resolveProtocol: (request) => stressClient,
           resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
           resolveAssert: (op) => registry.getAssert(op),
           scriptEngine: registry.getScriptEngine("javascript")!,
-          createManagedClient: () => ({ ...stressClient, close: async () => {} }),
+          createManagedClient: () => stressClient,
         }, { workerId: 0, concurrency: input.concurrency, maxRps: loc.project.stressPolicy?.maxRps,
           // The memory API is a deterministic renderer test substitute; real
           // confirmation is enforced by the main process controller.
-          confirmedTargetOrigins: input.confirmedTargetOrigins ?? ["http://127.0.0.1"] }),
+          confirmedTargetOrigins: input.confirmedTargetOrigins }),
       });
-      const controller = new AbortController();
-      const finished = (async (): Promise<StressRunOutput> => {
+      const finished = (async (): Promise<StressRunResult> => {
         try {
           const report = await runner.run({
             concurrency: input.concurrency,
@@ -740,15 +757,24 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
             maxRps: loc.project.stressPolicy?.maxRps,
             connectionMode: input.connectionMode,
           });
+          if (safetyFailure) throw safetyFailure;
           const clone: StressReport = structuredClone(report);
           const file = `stress-${api.id}-${Date.now()}.json`;
           try {
             stressRuns.unshift({ file, report: structuredClone(report) });
-            return { report: clone, file };
+            return { ok: true, report: clone, file };
           } catch (e) {
             console.warn(`压测报告历史记录失败（${file}）: ${e instanceof Error ? e.message : String(e)}`);
-            return { report: clone };
+            return { ok: true, report: clone };
           }
+        } catch (error) {
+          if (error instanceof StressSafetyError) {
+            return {
+              ok: false,
+              error: { code: error.code, message: error.message, ...(error.targetOrigin ? { targetOrigin: error.targetOrigin } : {}) },
+            };
+          }
+          throw error;
         } finally {
           clearStressActive(controller);
         }
@@ -760,7 +786,9 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Protoc
     async stressStop(): Promise<StressRunOutput> {
       if (!stressActive) throw new Error("没有进行中的压测");
       stressActive.controller.abort();
-      return stressActive.finished;
+      const result = await stressActive.finished;
+      if (!result.ok) throw Object.assign(new Error(result.error.message), result.error);
+      return result;
     },
 
     // 导入向导（任务 7）：importPreview 返回固定样例（渲染层替身不做格式探测——替身

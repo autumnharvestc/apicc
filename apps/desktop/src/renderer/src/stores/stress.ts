@@ -2,6 +2,14 @@ import { createPinia, defineStore } from "pinia";
 import type { StressThresholds } from "@apicc/core";
 import type { ApiccApi, DesktopStressReport, StressRunInput } from "../../../shared/types.js";
 
+export interface PendingStressConfirmation {
+  origin: string;
+  apiId: string;
+  projectId: string;
+  generation: number;
+  token: number;
+}
+
 /**
  * 压测表单状态（简报裁定 A）：mode 决定 start 组装哪个终止条件——
  * iterations → 只传 maxIterations、duration → 只传 durationMs（未选维度传 null，
@@ -37,7 +45,11 @@ export function createStressFormDefaults(): StressForm {
  * 不等即视为陈旧会话（运行中切接口/切工作区被组合根 clear）——其完成结果与拒绝一律不上屏、
  * 不置 error、不向组件层外抛，防止旧接口的报告/错误错挂进新面板。
  */
-export function createStressStore(deps: { api: ApiccApi; trustOrigin?: (origin: string) => Promise<void> }) {
+export function createStressStore(deps: {
+  api: ApiccApi;
+  resolveProjectId?: (apiId: string) => string | null;
+  trustOrigin?: (projectId: string, origin: string) => Promise<void>;
+}) {
   const { api } = deps;
   return defineStore("stress", {
     state: () => ({
@@ -49,15 +61,36 @@ export function createStressStore(deps: { api: ApiccApi; trustOrigin?: (origin: 
       generation: 0,
       confirmedTargetOrigins: [] as string[],
       pendingTargetOrigin: null as string | null,
+      pendingConfirmation: null as PendingStressConfirmation | null,
+      attemptToken: 0,
+      confirmationInFlight: false,
     }),
     actions: {
-      async start(apiId: string) {
+      resetAttemptContext() {
+        this.confirmedTargetOrigins = [];
+        this.pendingTargetOrigin = null;
+        this.pendingConfirmation = null;
+        this.confirmationInFlight = false;
+      },
+      invalidateAttempt() {
+        this.generation += 1;
+        this.attemptToken += 1;
+        this.running = false;
+        this.resetAttemptContext();
+      },
+      async runAttempt(apiId: string, token: number) {
         if (this.running) return;
         const caseId = this.form.caseId;
         if (!caseId) return;
+        const gen = this.generation;
+        const projectId = deps.resolveProjectId?.(apiId);
+        if (!projectId) {
+          this.error = "未找到接口所属项目";
+          this.resetAttemptContext();
+          return;
+        }
         this.running = true;
         this.error = null;
-        const gen = this.generation;
         try {
           const input: StressRunInput = {
             apiId,
@@ -70,38 +103,69 @@ export function createStressStore(deps: { api: ApiccApi; trustOrigin?: (origin: 
             ...(this.form.connectionMode !== "pooled" ? { connectionMode: this.form.connectionMode } : {}),
             ...(this.confirmedTargetOrigins.length > 0 ? { confirmedTargetOrigins: [...this.confirmedTargetOrigins] } : {}),
           };
-          const out = await api.stressRun(input);
+          const out = await deps.api.stressRun(input);
           if (gen !== this.generation) return;
+          if (!out.ok) {
+            if (out.error.code === "target_confirmation_required" && out.error.targetOrigin) {
+              this.pendingTargetOrigin = out.error.targetOrigin;
+              this.pendingConfirmation = { origin: out.error.targetOrigin, apiId, projectId, generation: gen, token };
+              return;
+            }
+            const failure = Object.assign(new Error(out.error.message), out.error);
+            this.error = failure.message;
+            this.resetAttemptContext();
+            throw failure;
+          }
           this.report = out.report;
           this.file = out.file ?? null;
+          this.resetAttemptContext();
         } catch (e) {
           if (gen !== this.generation) return;
-          const safety = e as { code?: unknown; targetOrigin?: unknown };
-          if (safety.code === "target_confirmation_required" && typeof safety.targetOrigin === "string") {
-            this.pendingTargetOrigin = safety.targetOrigin;
-            return;
-          }
           this.error = e instanceof Error ? e.message : String(e);
+          this.resetAttemptContext();
           throw e;
         } finally {
-          this.running = false;
+          if (gen === this.generation) this.running = false;
         }
       },
+      async start(apiId: string) {
+        if (this.running) return;
+        this.invalidateAttempt();
+        const token = this.attemptToken;
+        return this.runAttempt(apiId, token);
+      },
       async confirmTarget(apiId: string, trustProject: boolean) {
-        const origin = this.pendingTargetOrigin;
-        if (!origin) return;
-        if (trustProject) await deps.trustOrigin?.(origin);
-        if (!this.confirmedTargetOrigins.includes(origin)) this.confirmedTargetOrigins.push(origin);
-        this.pendingTargetOrigin = null;
-        await this.start(apiId);
+        const pending = this.pendingConfirmation;
+        if (!pending || pending.origin !== this.pendingTargetOrigin || pending.apiId !== apiId || pending.generation !== this.generation || pending.token !== this.attemptToken || this.confirmationInFlight) return;
+        this.confirmationInFlight = true;
+        try {
+          if (trustProject) {
+            if (!deps.trustOrigin) throw new Error("缺少项目目标信任持久化能力");
+            await deps.trustOrigin(pending.projectId, pending.origin);
+          }
+          if (!this.pendingConfirmation || this.pendingConfirmation.token !== pending.token || pending.generation !== this.generation || pending.apiId !== apiId) return;
+          if (!this.confirmedTargetOrigins.includes(pending.origin)) this.confirmedTargetOrigins.push(pending.origin);
+          this.pendingTargetOrigin = null;
+          this.pendingConfirmation = null;
+          this.confirmationInFlight = false;
+          return this.runAttempt(apiId, pending.token);
+        } catch (error) {
+          if (pending.generation === this.generation && pending.token === this.attemptToken) {
+            this.error = error instanceof Error ? error.message : String(error);
+            this.invalidateAttempt();
+          }
+          throw error;
+        } finally {
+          if (pending.generation === this.generation && pending.token === this.attemptToken) this.confirmationInFlight = false;
+        }
       },
       denyTarget() {
-        this.pendingTargetOrigin = null;
+        this.invalidateAttempt();
       },
       async stop() {
         const gen = this.generation;
         try {
-          const out = await api.stressStop();
+          const out = await deps.api.stressStop();
           if (gen !== this.generation) return;
           this.report = out.report;
           this.file = out.file ?? null;
@@ -109,18 +173,19 @@ export function createStressStore(deps: { api: ApiccApi; trustOrigin?: (origin: 
         } catch (e) {
           if (gen !== this.generation) return;
           this.error = e instanceof Error ? e.message : String(e);
+          this.invalidateAttempt();
           throw e;
+        } finally {
+          if (gen === this.generation) this.invalidateAttempt();
         }
       },
       /** 清空当前展示（报告/file/错误），form 保留；generation 自增使在途旧 run 失效——
        * 切换接口/工作区等场景由组合根按需调用。 */
       clear() {
-        this.generation += 1;
+        this.invalidateAttempt();
         this.report = null;
         this.file = null;
         this.error = null;
-        this.pendingTargetOrigin = null;
-        this.confirmedTargetOrigins = [];
       },
     },
   })(createPinia());

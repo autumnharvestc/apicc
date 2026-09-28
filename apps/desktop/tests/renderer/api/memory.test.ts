@@ -5,7 +5,9 @@ import { StressReportSchema, type ProtocolClient } from "@apicc/core";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 
 /** 夹具：种子工作区并定位到唯一接口（group→project→collection→api）。 */
-async function seededMemory(client?: ProtocolClient) {
+type TestManagedClient = ProtocolClient & { close(): Promise<void> };
+
+async function seededMemory(client?: TestManagedClient) {
   const api = createMemoryApi(client ? { stressClient: client } : undefined);
   api.seedWorkspace();
   const tree = await api.treeGet();
@@ -21,7 +23,7 @@ function hangingClient() {
   const gate = new Promise<void>((r) => {
     release = r;
   });
-  const client: ProtocolClient = {
+  const client: TestManagedClient = {
     name: "hanging",
     canHandle: () => true,
     execute: async () => {
@@ -29,23 +31,33 @@ function hangingClient() {
       await gate;
       return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
     },
+    close: async () => {},
   };
   return { client, waitEntered: async () => { while (entered === 0) await new Promise((r) => setTimeout(r, 1)); }, release: () => release() };
 }
 
 describe("memory 替身压测语义", () => {
+  it("未确认目标通过结构化结果返回精确 origin，而不是抛出带自定义字段的 Error", async () => {
+    const { api, apiId, caseId } = await seededMemory();
+    const out = await api.stressRun({ apiId, caseId, concurrency: 1, maxIterations: 1 });
+    expect(out).toEqual({ ok: false, error: { code: "target_confirmation_required", message: expect.any(String), targetOrigin: "http://127.0.0.1" } });
+  });
+
   it("stressRun 用假 client 产出 {report,file}：报告过 schema、计入历史 stress 行、runsGet 读回 StressReportDTO", async () => {
     let calls = 0;
-    const client: ProtocolClient = {
+    const client: TestManagedClient = {
       name: "fake",
       canHandle: () => true,
       execute: async () => {
         calls += 1;
         return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
       },
+      close: async () => {},
     };
     const { api, apiId, caseId } = await seededMemory(client);
-    const out = await api.stressRun({ apiId, caseId, concurrency: 2, maxIterations: 4 });
+    const out = await api.stressRun({ apiId, caseId, concurrency: 2, maxIterations: 4, confirmedTargetOrigins: ["http://127.0.0.1"] });
+    expect(out.ok).toBe(true);
+    if (!out.ok) throw new Error(out.error.message);
     expect(calls).toBe(4); // 假 client 替代真实网络
     expect(() => StressReportSchema.parse(out.report)).not.toThrow();
     expect(out.report.totalRequests).toBe(4);
@@ -62,7 +74,7 @@ describe("memory 替身压测语义", () => {
     const fake = hangingClient();
     const { api, apiId, caseId } = await seededMemory(fake.client);
     await expect(api.stressStop()).rejects.toThrow(/没有进行中的压测/);
-    const first = api.stressRun({ apiId, caseId, concurrency: 1, maxIterations: 100 });
+    const first = api.stressRun({ apiId, caseId, concurrency: 1, maxIterations: 100, confirmedTargetOrigins: ["http://127.0.0.1"] });
     await fake.waitEntered();
     await expect(api.stressRun({ apiId, caseId, concurrency: 1, maxIterations: 100 })).rejects.toThrow(/已有压测进行中/);
     const stopping = api.stressStop();
@@ -88,7 +100,9 @@ describe("memory 替身压测语义", () => {
 
   it("深拷贝回归：改动返回的报告对象不影响内存历史读回内容", async () => {
     const { api, apiId, caseId } = await seededMemory();
-    const out = await api.stressRun({ apiId, caseId, concurrency: 1, maxIterations: 2 });
+    const out = await api.stressRun({ apiId, caseId, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: ["http://127.0.0.1"] });
+    expect(out.ok).toBe(true);
+    if (!out.ok) throw new Error(out.error.message);
     out.report.totalRequests = 999;
     const detail = await api.runsGet(out.file!);
     expect(detail).toMatchObject({ kind: "stress", report: { totalRequests: 2 } });

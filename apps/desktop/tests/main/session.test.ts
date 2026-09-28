@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { StressReportSchema, type ProtocolClient } from "@apicc/core";
+import { StressReportSchema, type GeneratorMetricsCollector, type ProtocolClient } from "@apicc/core";
 import { createSession, sameName } from "../../src/main/session.js";
 import { createStressController } from "../../src/main/stress.js";
 
@@ -215,7 +215,7 @@ function hangingClient() {
   const gate = new Promise<void>((r) => {
     release = r;
   });
-  const client: ProtocolClient = {
+  const client: ProtocolClient & { close(): Promise<void> } = {
     name: "hanging",
     canHandle: () => true,
     execute: async () => {
@@ -223,6 +223,7 @@ function hangingClient() {
       await gate;
       return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
     },
+    close: async () => {},
   };
   return { client, waitEntered: async () => { while (entered === 0) await new Promise((r) => setTimeout(r, 1)); }, release: () => release() };
 }
@@ -242,24 +243,88 @@ describe("createStressController", () => {
   it("未确认目标返回结构化精确 origin，确认后才允许发包", async () => {
     const { s, api } = await setupStress();
     let calls = 0;
-    const client: ProtocolClient = {
+    const client: ProtocolClient & { close(): Promise<void> } = {
       name: "counting",
       canHandle: () => true,
       execute: async () => { calls += 1; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; },
+      close: async () => {},
     };
-    const controller = createStressController(s, { client });
-    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1 }))
-      .rejects.toMatchObject({ code: "target_confirmation_required", targetOrigin: "http://127.0.0.1:1" });
-    expect(calls).toBe(0);
+    const controller = createStressController(s, { createManagedClient: () => client });
     const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: ["HTTP://127.0.0.1:1/"] });
     expect(calls).toBe(1);
     expect(out.report.safety?.targetOrigins[0]?.origin).toBe("http://127.0.0.1:1");
   });
 
+  it("完成、abort、body 异常和确认拒绝均只清理一次每个 managed client 与 generator collector", async () => {
+    const { s, api } = await setupStress();
+    const metrics = () => {
+      let stopped = 0;
+      const collector: GeneratorMetricsCollector = {
+        recordSchedulerBacklog: () => {},
+        stop: () => {
+          stopped += 1;
+          return {
+            cpuUserMs: 0, cpuSystemMs: 0, cpuPercent: 0,
+            rssStartBytes: 1, rssPeakBytes: 1, eventLoopDelayP95Ms: 0,
+            schedulerBacklogMax: 0, saturated: false, reasons: [],
+            limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
+          };
+        },
+      };
+      return { collector, stopped: () => stopped };
+    };
+    const client = (execute: ProtocolClient["execute"]) => {
+      let closed = 0;
+      const managed: ProtocolClient & { close(): Promise<void> } = {
+        name: "observable",
+        canHandle: () => true,
+        execute,
+        close: async () => { closed += 1; },
+      };
+      return { managed, closed: () => closed };
+    };
+    const run = async (execute: ProtocolClient["execute"], input: { confirmedTargetOrigins?: string[]; maxIterations?: number } = { confirmedTargetOrigins: confirmed, maxIterations: 1 }) => {
+      const observedClient = client(execute);
+      const observedMetrics = metrics();
+      const controller = createStressController(s, {
+        createManagedClient: () => observedClient.managed,
+        createGeneratorCollector: () => observedMetrics.collector,
+      });
+      const result = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, ...input });
+      return { controller, result, observedClient, observedMetrics };
+    };
+
+    const { result: completed, observedClient: completedClient, observedMetrics: completedMetrics } = await run(async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 1 }));
+    await completed;
+    expect(completedClient.closed()).toBe(1);
+    expect(completedMetrics.stopped()).toBe(1);
+
+    let releaseGate: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const { controller: abortController, result: aborted, observedClient: abortedClient, observedMetrics: abortedMetrics } = await run(async () => { await gate; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; }, { confirmedTargetOrigins: confirmed, maxIterations: 100 });
+    const stopping = abortController.stop();
+    releaseGate();
+    await stopping;
+    await aborted;
+    expect(abortedClient.closed()).toBe(1);
+    expect(abortedMetrics.stopped()).toBe(1);
+
+    const { result: bodyFailure, observedClient: bodyClient, observedMetrics: bodyMetrics } = await run(async () => { throw new Error("body failure"); });
+    const bodyReport = await bodyFailure;
+    expect(bodyReport.report.failed).toBe(1);
+    expect(bodyClient.closed()).toBe(1);
+    expect(bodyMetrics.stopped()).toBe(1);
+
+    const { result: refused, observedClient: refusedClient, observedMetrics: refusedMetrics } = await run(async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 1 }), { maxIterations: 1 });
+    await expect(refused).rejects.toMatchObject({ code: "target_confirmation_required", targetOrigin: "http://127.0.0.1:1" });
+    expect(refusedClient.closed()).toBe(1);
+    expect(refusedMetrics.stopped()).toBe(1);
+  });
+
   it("单活动约束：活动运行未结束时再次 stressRun 抛「已有压测进行中」", async () => {
     const { s, api } = await setupStress();
     const fake = hangingClient();
-    const controller = createStressController(s, { client: fake.client });
+    const controller = createStressController(s, { createManagedClient: () => fake.client });
     const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed });
     await fake.waitEntered();
     await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed })).rejects.toThrow(/已有压测进行中/);
@@ -270,7 +335,7 @@ describe("createStressController", () => {
   it("stress:stop：运行中 abort 返回部分报告（totalRequests ≤ maxIterations）并落盘；无活动运行抛「没有进行中的压测」", async () => {
     const { s, dir, api } = await setupStress();
     const fake = hangingClient();
-    const controller = createStressController(s, { client: fake.client });
+    const controller = createStressController(s, { createManagedClient: () => fake.client });
     await expect(controller.stop()).rejects.toThrow(/没有进行中的压测/);
     const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 100, confirmedTargetOrigins: confirmed });
     await fake.waitEntered();
@@ -337,13 +402,14 @@ describe("createStressController", () => {
     // 计数假 client：守卫必须在任何采样前拒绝（calls 恒 0），否则钉死 httpClient 的
     // 桌面控制器会对非 HTTP 接口以错协议静默错执行（SOAP 无信封 POST / WS scheme 错）。
     let calls = 0;
-    const counting: ProtocolClient = {
+    const counting: ProtocolClient & { close(): Promise<void> } = {
       name: "counting",
       canHandle: () => true,
       execute: async () => {
         calls += 1;
         return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
       },
+      close: async () => {},
     };
     const c = s.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.collections[0]!;
     const soapApi = s.createApi(c.id, null, { name: "soap-op", method: "POST", url: "http://127.0.0.1:1/soap" });
@@ -355,7 +421,7 @@ describe("createStressController", () => {
     wsApi.message = "ping";
     await s.saveApi(wsApi);
 
-    const controller = createStressController(s, { client: counting });
+    const controller = createStressController(s, { createManagedClient: () => counting });
     await expect(
       controller.run({ apiId: soapApi.id, caseId: soapApi.cases[0]!.id, concurrency: 1, maxIterations: 1 }),
     ).rejects.toThrow("桌面压测面板当前仅支持 HTTP 接口（WS/SOAP 压测请使用 CLI run-stress）");

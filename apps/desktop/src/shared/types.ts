@@ -15,6 +15,7 @@ import type {
   ProjectGlobals,
   StressThresholds,
   StressTargetPolicy,
+  StressSafetyErrorCode,
 } from "@apicc/core";
 import type { TreeNodeDTO } from "./tree-dto.js";
 import type { KeyValuePair } from "@apicc/core";
@@ -117,7 +118,10 @@ export interface StressRunInput {
  * 落盘降级不影响报告返回，与集合运行口径一致（core Runner 落盘失败仅告警仍返回完整结果）：
  * file 落盘成功为文件名（.apicc/runs/stress-<apiId>-<ts>.json），降级时省略。
  */
-export interface StressRunOutput { report: StressReport; file?: string }
+export interface StressRunOutput { ok: true; report: StressReport; file?: string }
+/** Structured-clone-safe outcome for stress start; unknown main exceptions still reject IPC. */
+export interface StressRunError { ok: false; error: { code: StressSafetyErrorCode; message: string; targetOrigin?: string } }
+export type StressRunResult = StressRunOutput | StressRunError;
 /** runs:get 对 stress 文件的返回：kind 判别 + 完整压测报告（集合文件返回既有 RunResult 形状）。 */
 export type DesktopStressReport = Omit<StressReport, "failures" | "scriptLatency" | "iterationLatency"> & {
   /** Historical reports may omit fields introduced after their creation. */
@@ -191,7 +195,7 @@ export interface ApiccApi {
   runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>>;
   runsGet(file: string): Promise<RunResult | StressReportDTO | null>;
   /** stress:run（M2-D3 任务 1）：main 进程执行压测，返回最终报告 + 落盘文件名；单活动约束（「已有压测进行中」）。 */
-  stressRun(input: StressRunInput): Promise<StressRunOutput>;
+  stressRun(input: StressRunInput): Promise<StressRunResult>;
   /** stress:stop：abort 活动运行（停发新采样、等在途完成），返回部分报告；无活动运行抛「没有进行中的压测」。 */
   stressStop(): Promise<StressRunOutput>;
   importPreview(input: ImportPreviewInput): Promise<ImportPreviewResult>;

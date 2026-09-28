@@ -43,6 +43,15 @@ export function useWorkspaceStore(api: ApiccApi) {
       async refresh() {
         this.tree = await api.treeGet();
       },
+      projectIdForApi(apiId: string): string | null {
+        for (const group of this.tree?.children ?? []) {
+          for (const project of group.children ?? []) {
+            const contains = (node: TreeNodeDTO): boolean => node.id === apiId || (node.children ?? []).some(contains);
+            if ((project.children ?? []).some(contains)) return project.id;
+          }
+        }
+        return null;
+      },
       /** Save only the active project's safety policy; never persist one-run confirmations. */
       async saveStressPolicy(projectId: string, policy: StressTargetPolicy): Promise<StressTargetPolicy> {
         const normalized = normalizePolicy({

@@ -7,6 +7,7 @@ import {
   createStressCaseSession,
   StressRunner,
   type ProtocolClient,
+  type GeneratorMetricsCollector,
   CurrentStressReportSchema,
   StressSafetyError,
   type StressReport,
@@ -16,15 +17,17 @@ import type { createSession } from "./session.js";
 import type { StressRunInput, StressRunOutput } from "../shared/types.js";
 
 type Session = ReturnType<typeof createSession>;
-type ManagedProtocolClient = ProtocolClient & { close(): Promise<void> };
+export type ManagedProtocolClient = ProtocolClient & { close(): Promise<void> };
 
 /**
  * 控制器依赖：client/writeReport 供测试注入假实现（默认真实 managed HTTP client 与 writeFileSync），
  * 生产无需关心。writeReport 只包写盘动作（降级口径在 persist 内统一处理）。
  */
 export interface StressControllerDeps {
-  /** Legacy test seam; production creates one managed client per VU. */
-  client?: ProtocolClient;
+  /** Optional test seam; each VU receives a distinct managed client. */
+  createManagedClient?: (workerId: number, connectionMode: "pooled" | "fresh") => ManagedProtocolClient;
+  /** Optional test seam for observing generator collector cleanup. */
+  createGeneratorCollector?: () => GeneratorMetricsCollector;
   writeReport?: (path: string, content: string) => void;
 }
 
@@ -58,10 +61,10 @@ export function createStressController(session: Session, deps: StressControllerD
     try {
       mkdirSync(runsDir, { recursive: true });
       (deps.writeReport ?? ((path: string, content: string) => writeFileSync(path, content, "utf8")))(join(runsDir, file), JSON.stringify(report, null, 2));
-      return { report: clone, file };
+      return { ok: true, report: clone, file };
     } catch (e) {
       console.warn(`压测报告落盘失败（${join(runsDir, file)}）: ${e instanceof Error ? e.message : String(e)}`);
-      return { report: clone };
+      return { ok: true, report: clone };
     }
   }
 
@@ -90,6 +93,7 @@ export function createStressController(session: Session, deps: StressControllerD
     const controller = new AbortController();
     let safetyFailure: StressSafetyError | undefined;
     const runner = new StressRunner({
+      createGeneratorCollector: deps.createGeneratorCollector,
       onSample: (sample) => {
         const target = sample.safety;
         if (!safetyFailure && target?.confirmation === "rejected" && target.policy !== "none") {
@@ -103,29 +107,34 @@ export function createStressController(session: Session, deps: StressControllerD
       },
       // 每个 VU 都由 createStressCaseSession 持有独立 client；这保证 pooled/fresh
       // 连接模式与脚本、认证、断言和最终安全门共享同一 case 语义。
-      createWorker: (workerId) => {
-        const client: ManagedProtocolClient = deps.client
-          ? { ...deps.client, close: async () => {} }
+      createWorker: async (workerId) => {
+        const client = deps.createManagedClient
+          ? deps.createManagedClient(workerId, input.connectionMode ?? "pooled")
           : createHttpClient({ connectionMode: input.connectionMode });
-        return createStressCaseSession({
-          api,
-          testCase,
-          env,
-          project: loc.project,
-          collection: loc.collection,
-          workspace: session.workspace!,
-        }, {
-          resolveProtocol: (request) => request.protocol === undefined || request.protocol === "http" ? client : registry.getProtocol(request),
-          resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
-          resolveAssert: (op) => registry.getAssert(op),
-          scriptEngine: registry.getScriptEngine("javascript")!,
-          createManagedClient: () => client,
-        }, {
-          workerId,
-          concurrency: input.concurrency,
-          maxRps: policy?.maxRps,
-          confirmedTargetOrigins: input.confirmedTargetOrigins,
-        });
+        try {
+          return createStressCaseSession({
+            api,
+            testCase,
+            env,
+            project: loc.project,
+            collection: loc.collection,
+            workspace: session.workspace!,
+          }, {
+            resolveProtocol: (request) => request.protocol === undefined || request.protocol === "http" ? client : registry.getProtocol(request),
+            resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
+            resolveAssert: (op) => registry.getAssert(op),
+            scriptEngine: registry.getScriptEngine("javascript")!,
+            createManagedClient: () => client,
+          }, {
+            workerId,
+            concurrency: input.concurrency,
+            maxRps: policy?.maxRps,
+            confirmedTargetOrigins: input.confirmedTargetOrigins,
+          });
+        } catch (error) {
+          await client.close();
+          throw error;
+        }
       },
     });
     const finished = (async (): Promise<StressRunOutput> => {

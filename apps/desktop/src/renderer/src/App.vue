@@ -115,9 +115,8 @@ const workflowDesign = useWorkflowDesignStore(apicc);
 // —— 压测 store（M2-D3 任务 3 装配，裁定 A）：同一组合根一次性创建，经 props 下传 ——
 const stress = createStressStore({
   api: apicc,
-  trustOrigin: async (origin) => {
-    if (selectedProjectId.value) await workspace.trustStressOrigin(selectedProjectId.value, origin);
-  },
+  resolveProjectId: (apiId) => workspace.projectIdForApi(apiId),
+  trustOrigin: (projectId, origin) => workspace.trustStressOrigin(projectId, origin).then(() => undefined),
 });
 // —— 在线 store（M3-B 任务 2 装配）：同一组合根一次性创建；挂载后对上次激活的服务器
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
