@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { ApiDefinition, Collection, Folder, Project, TestCase, Workspace } from "../../src/domain/model.js";
+import type { ApiDefinition, Collection, Environment, Folder, Project, TestCase, Workspace } from "../../src/domain/model.js";
 import { createStressCaseSession, type StressCaseSessionDeps } from "../../src/stress/caseSession.js";
 import type { ManagedProtocolClient } from "../../src/http/client.js";
 import type { ExecutableRequest, ExecutionResponse } from "../../src/plugin/types.js";
@@ -147,6 +147,7 @@ describe("createStressCaseSession", () => {
     const pluginApi = { ...api, protocol: "websocket" as const, url: "HTTPS://Plugin.Example/orders" };
     const session = createStressCaseSession({
       ...target(testCase), api: pluginApi, collection: { ...collection, apis: [pluginApi] },
+      env: { id: "env-1", name: "dev", variables: {}, baseUrls: { [collection.id]: "https://base.example/api/v1" } },
     }, {
       createManagedClient: () => managed,
       resolveProtocol,
@@ -381,6 +382,88 @@ describe("createStressCaseSession", () => {
     const result = await session.execute();
     expect(result.outcome.passed).toBe(true);
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["http", "https:example.com/orders", "https://example.com/orders", "https://example.com"],
+    ["http", "\thttps:example.com/orders \n", "https://example.com/orders", "https://example.com"],
+    ["http", String.raw`https:\example.com\orders`, "https://example.com/orders", "https://example.com"],
+    ["soap", "https:example.com/orders", "https://example.com/orders", "https://example.com"],
+    ["soap", "\thttps:example.com/orders \n", "https://example.com/orders", "https://example.com"],
+    ["soap", String.raw`https:\example.com\orders`, "https://example.com/orders", "https://example.com"],
+  ] as const)("collection/env baseUrl 不应改写 WHATWG 可解析的 special %s URL %s；拒绝与 denied 均零 I/O，精确确认收到 canonical URL", async (protocol, url, canonicalUrl, origin) => {
+    const execute = vi.fn(async () => response);
+    const resolveProtocol = vi.fn((): ManagedProtocolClient => ({ name: protocol, canHandle: () => true, execute, close: async () => {} }));
+    const managed: ManagedProtocolClient = { name: "session-http", canHandle: () => true, execute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const specialApi = {
+      ...api,
+      protocol,
+      method: protocol === "soap" ? "POST" as const : api.method,
+      url,
+      ...(protocol === "soap" ? { envelope: "<Envelope/>" } : {}),
+    };
+    const specialCollection = { ...collection, apis: [specialApi] };
+    const env: Environment = {
+      id: "env-1", name: "dev", variables: {},
+      baseUrls: { [collection.id]: "https://base.example/api/v1" },
+    };
+    const make = (stressPolicy: Project["stressPolicy"], confirmedTargetOrigins?: string[]) => createStressCaseSession({
+      ...target(testCase), api: specialApi, collection: specialCollection, env,
+      project: { ...project, stressPolicy },
+    }, {
+      createManagedClient: () => managed,
+      resolveProtocol,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0, confirmedTargetOrigins });
+
+    const unconfirmed = await make({ trustedOrigins: [], deniedOrigins: [] }).execute();
+    expect(unconfirmed.failureKind).toBe("config");
+    expect(unconfirmed.safety).toMatchObject({ origin, confirmation: "rejected", policy: "target_confirmation_required" });
+    expect(execute).not.toHaveBeenCalled();
+    expect(resolveProtocol).not.toHaveBeenCalled();
+
+    const denied = await make({ trustedOrigins: [], deniedOrigins: [origin] }, [origin]).execute();
+    expect(denied.failureKind).toBe("config");
+    expect(denied.safety).toMatchObject({ origin, confirmation: "rejected", policy: "target_denied" });
+    expect(execute).not.toHaveBeenCalled();
+    expect(resolveProtocol).not.toHaveBeenCalled();
+
+    const allowed = await make({ trustedOrigins: [], deniedOrigins: [] }, [origin]).execute();
+    expect(allowed.outcome.passed).toBe(true);
+    expect(allowed.safety).toMatchObject({ origin, confirmation: "explicit" });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ url: canonicalUrl }), expect.anything());
+    if (protocol === "soap") expect(resolveProtocol).toHaveBeenCalledTimes(1);
+    else expect(resolveProtocol).not.toHaveBeenCalled();
+  });
+
+  it("collection/env baseUrl 存在时普通 relative URL 通过 WHATWG new URL 按 base 解析", async () => {
+    const execute = vi.fn(async () => response);
+    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const relativeApi = { ...api, url: "orders" };
+    const env: Environment = {
+      id: "env-1", name: "dev", variables: {},
+      baseUrls: { [collection.id]: "https://base.example/api/v1" },
+    };
+    const session = createStressCaseSession({
+      ...target(testCase), api: relativeApi, collection: { ...collection, apis: [relativeApi] }, env,
+      project: { ...project, stressPolicy: { trustedOrigins: [], deniedOrigins: [] } },
+    }, {
+      createManagedClient: () => managed,
+      resolveProtocol: () => managed,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0, confirmedTargetOrigins: ["https://base.example"] });
+    const result = await session.execute();
+    expect(result.outcome.passed).toBe(true);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ url: "https://base.example/api/orders" }), expect.anything());
   });
 
   it("内置 SOAP 非绝对 HTTP(S) URL 在 I/O 前 config 失败，不调用 registry", async () => {

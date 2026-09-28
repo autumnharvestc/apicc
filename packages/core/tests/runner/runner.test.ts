@@ -583,7 +583,8 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
     const col: Collection = { id: "c1", name: "c", variables: {}, folders: [], apis: [apiWith("/rel/{{who}}"), apiWith("{{baseUrl}}/tpl")] };
     const result = await deps().run(col, env, project, ws, {});
     expect(result.failed).toBe(0);
-    expect(seen[0]!.path).toBe("/prefix/rel/dev");
+    // WHATWG resolution treats a leading slash as an origin-root relative URL.
+    expect(seen[0]!.path).toBe("/rel/dev");
     expect(seen[1]!.path).toBe("/prefix/tpl");
   });
 
