@@ -136,6 +136,27 @@ function sessionEnv(target: StressCaseTarget): Record<string, string> {
   return baseUrl ? { ...envVars, baseUrl } : envVars;
 }
 
+/** Parse the post-script/auth URL with WHATWG semantics before any protocol I/O. */
+function parseFinalUrl(url: string, protocol?: string): URL | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    if (protocol === "soap") {
+      throw Object.assign(new Error("SOAP 请求 URL 必须是绝对 HTTP(S) URL"), { caseFailureKind: "config" as const });
+    }
+    // Non-HTTP(S) plugin protocols retain their existing registry behavior;
+    // they are not forced through HTTP origin policy or URL parsing.
+    return undefined;
+  }
+  const normalizedProtocol = parsed.protocol.toLowerCase();
+  const isHttp = normalizedProtocol === "http:" || normalizedProtocol === "https:";
+  if (protocol === "soap" && !isHttp) {
+    throw Object.assign(new Error("SOAP 请求 URL 必须是绝对 HTTP(S) URL"), { caseFailureKind: "config" as const });
+  }
+  return isHttp ? parsed : undefined;
+}
+
 /**
  * Creates all mutable state used by one stress virtual user. The returned object
  * is deliberately independent from every other session and from CollectionRunner.
@@ -194,10 +215,14 @@ export function createStressCaseSession(
           // Preserve the embedding hook, then make the core safety decision against
           // the request after scripts, data, variables and auth have all run.
           await options.authorizeRequest?.(request);
-          if (/^https?:\/\//i.test(request.url)) {
+          const parsedUrl = parseFinalUrl(request.url, request.protocol);
+          if (parsedUrl) {
             try {
+              // Use the canonical href for both the safety decision and the
+              // eventual transport so special forms cannot bypass either layer.
+              request.url = parsedUrl.href;
               const decision = assertStressTargetAllowed({
-                url: request.url,
+                url: parsedUrl.href,
                 confirmedTargetOrigins: options.confirmedTargetOrigins,
                 policy: target.project.stressPolicy,
                 concurrency: options.concurrency ?? 1,

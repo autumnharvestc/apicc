@@ -225,6 +225,126 @@ describe("createStressCaseSession", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["http:127.0.0.1:18080/orders", "http://127.0.0.1:18080"],
+    ["https:example.com/orders", "https://example.com"],
+  ])("特殊 HTTP(S) URL 仍按 WHATWG origin 安全裁定（%s）", async (url, origin) => {
+    const execute = vi.fn(async () => response);
+    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const specialApi = { ...api, url };
+    const session = createStressCaseSession({
+      ...target(testCase), api: specialApi, collection: { ...collection, apis: [specialApi] },
+    }, {
+      createManagedClient: () => managed,
+      resolveProtocol: () => managed,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0 });
+    const result = await session.execute();
+    expect(result.failureKind).toBe("config");
+    expect(result.safety).toMatchObject({ origin, confirmation: "rejected", policy: "target_confirmation_required" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("特殊 HTTP(S) URL 精确确认规范化 origin 后可执行，确认不匹配仍拒绝", async () => {
+    const execute = vi.fn(async () => response);
+    const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const specialApi = { ...api, url: "https:example.com/orders" };
+    const make = (confirmedTargetOrigins: string[]) => createStressCaseSession({
+      ...target(testCase), api: specialApi, collection: { ...collection, apis: [specialApi] },
+    }, {
+      createManagedClient: () => managed,
+      resolveProtocol: () => managed,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0, confirmedTargetOrigins });
+    const denied = await make(["https://other.example"]).execute();
+    expect(denied.failureKind).toBe("config");
+    expect(denied.safety).toMatchObject({ origin: "https://example.com", confirmation: "rejected" });
+    expect(execute).not.toHaveBeenCalled();
+    const allowed = await make(["HTTPS://EXAMPLE.COM:443/"]).execute();
+    expect(allowed.outcome.passed).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("特殊 SOAP URL 在静态/脚本动态改写时都先安全裁定，denied 优先且 I/O 为零", async () => {
+    const execute = vi.fn(async () => response);
+    const resolveProtocol = vi.fn((): ManagedProtocolClient => ({
+      name: "soap", canHandle: () => true, execute, close: async () => {},
+    }));
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, preScript: "rewrite", assertions: [] };
+    const soapApi = {
+      ...api, protocol: "soap" as const, method: "POST" as const,
+      url: "https:example.com/orders", envelope: "<Envelope/>",
+    };
+    const session = createStressCaseSession({
+      ...target(testCase), api: soapApi, collection: { ...collection, apis: [soapApi] },
+      project: { ...project, stressPolicy: { trustedOrigins: ["https://example.com"], deniedOrigins: ["https://example.com"] } },
+    }, {
+      createManagedClient: () => ({ name: "session-http", canHandle: () => true, execute, close: async () => {} }),
+      resolveProtocol,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run(code, ctx) { if (code === "rewrite") ctx.pm.request.url = "https:example.com/rewritten"; } },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0, confirmedTargetOrigins: ["https://example.com"] });
+    const result = await session.execute();
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("target_denied");
+    expect(result.safety).toMatchObject({ origin: "https://example.com", confirmation: "rejected", policy: "target_denied" });
+    expect(resolveProtocol).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("特殊 SOAP URL 精确确认规范化 origin 后执行协议客户端", async () => {
+    const execute = vi.fn(async () => response);
+    const soap: ManagedProtocolClient = { name: "soap", canHandle: () => true, execute, close: async () => {} };
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const soapApi = {
+      ...api, protocol: "soap" as const, method: "POST" as const,
+      url: "https:example.com/orders", envelope: "<Envelope/>",
+    };
+    const session = createStressCaseSession({
+      ...target(testCase), api: soapApi, collection: { ...collection, apis: [soapApi] },
+    }, {
+      createManagedClient: () => ({ name: "session-http", canHandle: () => true, execute: async () => response, close: async () => {} }),
+      resolveProtocol: () => soap,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0, confirmedTargetOrigins: ["HTTPS://EXAMPLE.COM:443/"] });
+    const result = await session.execute();
+    expect(result.outcome.passed).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("内置 SOAP 非绝对 HTTP(S) URL 在 I/O 前 config 失败，不调用 registry", async () => {
+    const resolveProtocol = vi.fn((): ManagedProtocolClient => ({ name: "soap", canHandle: () => true, execute: async () => response, close: async () => {} }));
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
+    const soapApi = { ...api, protocol: "soap" as const, method: "POST" as const, url: "not-an-absolute-url", envelope: "<Envelope/>" };
+    const session = createStressCaseSession({
+      ...target(testCase), api: soapApi, collection: { ...collection, apis: [soapApi] },
+    }, {
+      createManagedClient: () => ({ name: "session-http", canHandle: () => true, execute: async () => response, close: async () => {} }),
+      resolveProtocol,
+      resolveAuth: () => undefined,
+      resolveAssert: () => undefined,
+      scriptEngine: { language: "javascript", run() {} },
+      timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
+    }, { workerId: 0 });
+    const result = await session.execute();
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("SOAP");
+    expect(resolveProtocol).not.toHaveBeenCalled();
+  });
+
   it("空数据源按单行 undefined，并在创建时校验数据文件", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-session-empty-"));
     const dataPath = join(dir, "empty.csv");

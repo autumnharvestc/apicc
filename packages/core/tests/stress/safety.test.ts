@@ -8,6 +8,11 @@ describe("压测目标安全裁定", () => {
     expect(normalizeStressOrigin("https://[::1]:8443/x")).toBe("https://[::1]:8443");
   });
 
+  it("按 WHATWG URL 语义规范化省略 // 的特殊 HTTP(S) 形式", () => {
+    expect(normalizeStressOrigin("http:127.0.0.1:18080/path")).toBe("http://127.0.0.1:18080");
+    expect(normalizeStressOrigin("https:example.com/path")).toBe("https://example.com");
+  });
+
   it.each(["ftp://example.com/x", "//example.com/x", "not-a-url"])("拒绝非 HTTP(S) 目标 %s", (url) => {
     expect(() => normalizeStressOrigin(url)).toThrow(/HTTP\(S\)|origin/);
   });
