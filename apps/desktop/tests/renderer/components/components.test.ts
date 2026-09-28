@@ -1216,6 +1216,12 @@ describe("StressReportView", () => {
     expect(w2.find('[data-testid="stress-summary"]').exists()).toBe(false);
     expect(w2.find('[data-testid="stress-latency"]').exists()).toBe(false);
     expect(w2.text()).not.toContain("NaN");
+    // aborted/incomplete samples must use eligible completed attempts, not
+    // samples.length, for the no-data display.
+    const allAborted = makeReport({ totalRequests: 2, ok: 0, failed: 2, eligibleCompletedAttempts: 0, verdict: { passed: false, violations: [{ metric: "noData", actual: 0, expected: 1, message: "NO_DATA" }] } });
+    const wAborted = mountWithI18n(StressReportView, { report: allAborted });
+    expect(wAborted.find('[data-testid="stress-no-samples"]').exists()).toBe(true);
+    expect(wAborted.find('[data-testid="stress-summary"]').exists()).toBe(false);
     // 报告为 null：整块不渲染
     const w3 = mountWithI18n(StressReportView, { report: null });
     expect(w3.find('[data-testid="stress-report"]').exists()).toBe(false);

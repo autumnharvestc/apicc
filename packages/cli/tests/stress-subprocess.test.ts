@@ -218,9 +218,19 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
       root,
     );
     expect(res.code).toBe(1);
-    expect(res.stdout).toBe("");
-    expect(res.stderr).toContain("current_report_invalid");
+    expect(res.stdout).toContain("压测完成");
+    expect(res.stdout).toContain("未采集/不可用");
+    expect(res.stderr).not.toContain("current_report_invalid");
     expect(existsSync(runsDir)).toBe(true);
-    expect(readdirSync(runsDir).filter((name) => name.endsWith(".json"))).toHaveLength(0);
+    const report = readLastReport(runsDir) as {
+      distributed?: { dataComplete: boolean; shardErrors?: Array<{ shardId: string }> };
+      generator?: { availability?: string };
+      verdict?: { passed: boolean; violations: Array<{ metric: string }> };
+    };
+    expect(report.distributed?.dataComplete).toBe(false);
+    expect(report.distributed?.shardErrors).toHaveLength(2);
+    expect(report.generator?.availability).toBe("unavailable");
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.verdict?.violations.some((violation) => violation.metric === "noData")).toBe(true);
   }, 60000);
 });

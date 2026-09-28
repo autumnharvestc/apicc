@@ -15,6 +15,7 @@ import {
   renderDesignMarkdown,
   StressRunner,
   StressSafetyError,
+  validateStressRunOptions,
   transitionWorkflowStatus,
   validateEnablement,
   workflowImpact,
@@ -710,6 +711,11 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
     // 不可失败，同构其契约与降级结构）；返回前深拷贝。
     async stressRun(input: StressRunInput): Promise<StressRunResult> {
       if (stressActive) throw new Error("已有压测进行中");
+      validateStressRunOptions({
+        concurrency: input.concurrency,
+        ...(input.maxIterations != null ? { maxIterations: input.maxIterations } : {}),
+        ...(input.durationMs != null ? { durationMs: input.durationMs } : {}),
+      });
       const ws = ensureOpen();
       const loc = locateApi(input.apiId);
       if (!loc) throw new Error(`未找到接口: ${input.apiId}`);
@@ -758,6 +764,13 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
             thresholds: input.thresholds,
             maxRps: loc.project.stressPolicy?.maxRps,
             connectionMode: input.connectionMode,
+            safetyRun: {
+              requestedConcurrency: input.concurrency,
+              effectiveConcurrency: input.concurrency,
+              requestedMaxRps: null,
+              effectiveMaxRps: loc.project.stressPolicy?.maxRps ?? null,
+              connectionMode: input.connectionMode ?? "pooled",
+            },
           }));
           if (safetyFailure) throw safetyFailure;
           const clone: StressReport = structuredClone(report);

@@ -28,11 +28,15 @@ const tempRoots: string[] = [];
 const API_PATH = "groups/demo/projects/svc/collections/api/apis/ok";
 
 const generator = () => ({
+  availability: "available" as const,
   cpuUserMs: 1, cpuSystemMs: 2, cpuPercent: 3, rssStartBytes: 10, rssPeakBytes: 20,
   eventLoopDelayP95Ms: 4, schedulerBacklogMax: 0, saturated: false, reasons: [] as [],
   limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
 });
-const sample = (timeMs: number) => ({ timeMs, requestTimeMs: timeMs, scriptTimeMs: 0, iterationTimeMs: timeMs, status: 200, ok: true });
+const sample = (timeMs: number) => ({ timeMs, requestTimeMs: timeMs, scriptTimeMs: 0, iterationTimeMs: timeMs, requestStarted: true, requestCompleted: true, status: 200, ok: true });
+const measurementWindow = (eligibleCompletedAttempts: number) => ({
+  startWallMs: 1_000, endWallMs: 1_100, monotonicDurationMs: 100, eligibleCompletedAttempts,
+});
 
 /** 读 runs 目录下最新的 stress-*.json 报告（文件名排序取末位，不依赖 readdir 目录序假设）。 */
 function readLastReport(runsDir: string): Record<string, unknown> {
@@ -173,7 +177,11 @@ describe("run-stress --shards", () => {
           const samples = Array.from({ length: spec.maxIterations ?? 0 }, (_, i) => ({
             timeMs: 5 + i, status: 200, ok: true,
           }));
-          return { protocolVersion: 2, ok: true as const, shardId: spec.shardId, samples: samples.map((s) => ({ ...s, requestTimeMs: s.timeMs, scriptTimeMs: 0, iterationTimeMs: s.timeMs })), generator: generator() };
+          return {
+            protocolVersion: 2, ok: true as const, shardId: spec.shardId,
+            samples: samples.map((s) => ({ ...s, requestTimeMs: s.timeMs, scriptTimeMs: 0, iterationTimeMs: s.timeMs, requestStarted: true, requestCompleted: true })),
+            generator: generator(), measurementWindow: measurementWindow(samples.length),
+          };
         };
       },
     };
@@ -229,7 +237,11 @@ describe("run-stress --shards", () => {
           const samples = Array.from({ length: spec.maxIterations ?? 0 }, (_, i) => ({
             timeMs: 3 + i, status: 200, ok: true,
           }));
-          return { protocolVersion: 2, ok: true as const, shardId: spec.shardId, samples: samples.map((s) => ({ ...s, requestTimeMs: s.timeMs, scriptTimeMs: 0, iterationTimeMs: s.timeMs })), generator: generator() };
+          return {
+            protocolVersion: 2, ok: true as const, shardId: spec.shardId,
+            samples: samples.map((s) => ({ ...s, requestTimeMs: s.timeMs, scriptTimeMs: 0, iterationTimeMs: s.timeMs, requestStarted: true, requestCompleted: true })),
+            generator: generator(), measurementWindow: measurementWindow(samples.length),
+          };
         };
       },
     };
@@ -278,11 +290,37 @@ describe("run-stress --shards", () => {
     const base = ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--shards", "2",
       "--runs-dir", join(root, "runs-invalid-numeric")];
     await expect(runCli([...base, "--concurrency", "0", "--iterations", "4"],
-      createDefaultRegistry(), () => {})).rejects.toThrow(/concurrency 必须为正整数，收到 0/);
+      createDefaultRegistry(), () => {})).rejects.toThrow(/concurrency 必须为正 safe integer，收到 0/);
     await expect(runCli([...base, "--concurrency", "abc", "--iterations", "4"],
-      createDefaultRegistry(), () => {})).rejects.toThrow(/concurrency 必须为正整数，收到 NaN/);
+      createDefaultRegistry(), () => {})).rejects.toThrow(/concurrency 必须为正 safe integer，收到 NaN/);
     await expect(runCli([...base, "--concurrency", "2", "--iterations", "3.5"],
-      createDefaultRegistry(), () => {})).rejects.toThrow(/iterations 必须为正整数，收到 3\.5/);
+      createDefaultRegistry(), () => {})).rejects.toThrow(/iterations 必须为正 safe integer，收到 3\.5/);
+  });
+
+  it("全局安全上限：shards 不能超过 concurrency，多 shard maxRps 在 spawn 前拒绝", async () => {
+    let spawned = 0;
+    const deps: RunCliDeps = { spawnWorkerFactory: () => {
+      spawned += 1;
+      return async () => { throw new Error("should not spawn"); };
+    } };
+    const common = ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--iterations", "4", "--runs-dir", join(root, "runs-safety")];
+    await expect(runCli([...common, "--concurrency", "1", "--shards", "2"], createDefaultRegistry(), () => {}, deps))
+      .rejects.toThrow(/shards 不能大于 concurrency/);
+    await expect(runCli([...common, "--concurrency", "4", "--shards", "2", "--max-rps", "10"], createDefaultRegistry(), () => {}, deps))
+      .rejects.toThrow(/多 shard \+ maxRps/);
+    expect(spawned).toBe(0);
+  });
+
+  it("CLI 在任何目标解析前拒绝 NaN/Infinity duration、fractional/overflow iterations", async () => {
+    const common = ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--concurrency", "1"];
+    await expect(runCli([...common, "--duration", "abc"], createDefaultRegistry(), () => {}))
+      .rejects.toThrow(/duration 必须为有限正数/);
+    await expect(runCli([...common, "--duration", "Infinity"], createDefaultRegistry(), () => {}))
+      .rejects.toThrow(/duration 必须为有限正数/);
+    await expect(runCli([...common, "--iterations", "1.5"], createDefaultRegistry(), () => {}))
+      .rejects.toThrow(/iterations 必须为正 safe integer/);
+    await expect(runCli([...common, "--iterations", "9007199254740992"], createDefaultRegistry(), () => {}))
+      .rejects.toThrow(/iterations 必须为正 safe integer/);
   });
 });
 
@@ -292,7 +330,7 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
   it("污染行 + 末行 JSON：跳过日志行取末条合法 ShardOutcome", () => {
     const result: ShardResult = {
       protocolVersion: 2, ok: true, shardId: "s0",
-      samples: [sample(1)], generator: generator(),
+      samples: [sample(1)], generator: generator(), measurementWindow: measurementWindow(1),
     };
     const stdout = [
       "[INFO] worker 启动",
@@ -304,20 +342,20 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
   });
 
   it("末 v1 failure 不会回退到更早的 v2 success", () => {
-    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator() };
+    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator(), measurementWindow: measurementWindow(1) };
     const legacy = { protocolVersion: 1, ok: false, shardId: "s0", error: "legacy" };
     expect(() => parseShardOutcomeStdout(`${JSON.stringify(success)}\n${JSON.stringify(legacy)}`, { shardId: "s0", exitCode: 1 }))
       .toThrow(/协议|protocolVersion/);
   });
 
   it("末 JSON object 结构无效时不回退更早成功结果", () => {
-    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator() };
+    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator(), measurementWindow: measurementWindow(1) };
     expect(() => parseShardOutcomeStdout(`${JSON.stringify(success)}\n${JSON.stringify({ protocolVersion: 2, ok: true })}`, { shardId: "s0", exitCode: 0 }))
       .toThrow(/协议|protocol/);
   });
 
   it("非零 exit 携带 ShardResult 时拒绝伪装成功", () => {
-    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator() };
+    const success: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator(), measurementWindow: measurementWindow(1) };
     expect(() => parseShardOutcomeStdout(JSON.stringify(success), { shardId: "s0", exitCode: 1 }))
       .toThrow(/exit|退出|protocol/);
   });
@@ -354,7 +392,7 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
 
   it("非末行历史协议行不被回取：仅取从末第一条合法行（旧结果行被末行覆盖）", () => {
     const stale: ShardFailure = { protocolVersion: 2, ok: false, shardId: "s0", error: "旧" };
-    const fresh: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [], generator: generator() };
+    const fresh: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [], generator: generator(), measurementWindow: measurementWindow(0) };
     const stdout = `${JSON.stringify(stale)}\n${JSON.stringify(fresh)}`;
     expect(parseShardOutcomeStdout(stdout, ctx)).toEqual(fresh);
   });

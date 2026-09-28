@@ -378,10 +378,10 @@ describe("CLI 端到端", () => {
     const { readdirSync, readFileSync } = await import("node:fs");
     const file = readdirSync(runsDir).find((name) => name.endsWith(".json"))!;
     const report = JSON.parse(readFileSync(join(runsDir, file), "utf8")) as {
-      totalRequests: number; safety?: { targetOrigins: Array<{ origin: string; loopback?: boolean; confirmation: string }> };
+      totalRequests: number; safety?: { targetOrigins: Array<{ origin: string; loopback?: boolean; confirmation: string; appliedPolicy?: { trustedOrigins?: string[]; deniedOrigins?: string[] } }> };
     };
     expect(report.totalRequests).toBe(1);
-    expect(report.safety?.targetOrigins).toEqual([{ origin: baseUrl, confirmation: "rejected", policy: "target_confirmation_required", loopback: true }]);
+    expect(report.safety?.targetOrigins).toEqual([{ origin: baseUrl, confirmation: "rejected", policy: "target_confirmation_required", loopback: true, appliedPolicy: { trustedOrigins: [], deniedOrigins: [] } }]);
     project.stressPolicy = { trustedOrigins: [baseUrl] };
     await fileStorage.save(root, workspace);
   }, 30000);
@@ -593,7 +593,7 @@ describe("CLI 端到端", () => {
     const { readdirSync, readFileSync } = await import("node:fs");
     const runArgs = (runsDir: string, extra: string[] = []) => [
       "run-stress", "groups/demo/projects/svc/collections/api/apis/bad",
-      "--case", "00000000-0000-4000-8000-000000000016", "--env", "dev", "--concurrency", "1", "--iterations", "2",
+      "--case", "00000000-0000-4000-8000-000000000016", "--env", "dev", "--concurrency", "2", "--iterations", "2",
       "--allow-target", baseUrl, "--runs-dir", runsDir, ...extra,
     ];
     const singleDir = join(root, "stress-consistency-single");

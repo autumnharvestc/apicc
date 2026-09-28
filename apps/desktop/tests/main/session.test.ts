@@ -449,6 +449,17 @@ describe("createStressController", () => {
     await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1 })).rejects.toThrow(/压测终止条件缺失/);
   });
 
+  it("控制器直调用也在协议/客户端创建前拒绝 NaN、Infinity、分数与溢出终止值", async () => {
+    const { s, api } = await setupStress();
+    const controller = createStressController(s);
+    const input = { apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1 };
+    await expect(controller.run({ ...input, maxIterations: Number.NaN })).rejects.toThrow(/maxIterations 必须为正 safe integer/);
+    await expect(controller.run({ ...input, maxIterations: 1.5 })).rejects.toThrow(/maxIterations 必须为正 safe integer/);
+    await expect(controller.run({ ...input, maxIterations: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow(/maxIterations 必须为正 safe integer/);
+    await expect(controller.run({ ...input, durationMs: Number.NaN })).rejects.toThrow(/durationMs 必须为有限正数/);
+    await expect(controller.run({ ...input, durationMs: Number.POSITIVE_INFINITY })).rejects.toThrow(/durationMs 必须为有限正数/);
+  });
+
   it("落盘失败降级：写盘异常不阻断报告返回（file 省略）并 console.warn 含路径与原因（与集合运行口径一致）", async () => {
     const { s, api } = await setupStress();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

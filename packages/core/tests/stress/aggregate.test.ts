@@ -47,7 +47,7 @@ describe("computeReport", () => {
     );
     expect(r.ok).toBe(1);
     expect(r.failed).toBe(3);
-    expect(r.statusDist).toEqual({ "200": 1, "404": 1, "500": 1 });
+    expect(r.statusDist).toEqual({ "200": 2, "404": 1, "500": 1 });
     expect(r.errorKinds).toEqual({ ECONNREFUSED: 1, "HTTP_404": 1, "HTTP_500": 1 });
   });
 
@@ -70,7 +70,7 @@ describe("computeReport", () => {
     ], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
 
     expect(r.failures).toEqual({ transport: 1, http: 1, script: 1, assertion: 1, config: 1, aborted: 1 });
-    expect(r.latency.p95).toBe(70);
+    expect(r.latency.p95).toBe(60);
     expect(r.scriptLatency.avg).toBe(3);
     expect(r.iterationLatency.p95).toBe(73);
     expect(r.incomplete).toBe(true);
@@ -96,6 +96,8 @@ describe("computeReport", () => {
     expect(r.latency.p95).toBe(1_000);
     expect(r.latency.max).toBe(1_000);
     expect(r.scriptLatency.p95).toBe(5);
+    expect(r.eligibleFailureCounts?.script).toBe(0);
+    expect(evaluateStressThresholds(r, { maxErrorRate: 0 }).passed).toBe(true);
     expect(evaluateStressThresholds(r, { maxP95Ms: 500 }).violations.map((v) => v.metric)).toContain("p95");
   });
 
@@ -110,5 +112,47 @@ describe("computeReport", () => {
     ];
     const r = computeReport(samples, { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
     expect(r.rps).toBe(4);
+  });
+
+  it("v2 只接受 requestStarted 与 requestCompleted 同时为 true；缺一的尝试不进入资格分母", () => {
+    const r = computeReport([
+      { requestStarted: true, requestTimeMs: 10, status: 200, ok: true },
+      { requestCompleted: true, requestTimeMs: 10, status: 200, ok: true },
+      { requestStarted: true, requestCompleted: true, requestTimeMs: 10, status: 200, ok: true },
+    ], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+    expect(r.eligibleCompletedAttempts).toBe(1);
+    expect(r.latency.min).toBe(10);
+  });
+
+  it("all-aborted/incomplete 以 eligible=0 触发 noData，混合样本按 eligible 计算", () => {
+    const aborted: StressSample = {
+      requestStarted: true, requestCompleted: true, requestTimeMs: 10, scriptTimeMs: 0, iterationTimeMs: 10,
+      status: 0, ok: false, failureKind: "aborted",
+    };
+    const allAborted = computeReport([aborted], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+    expect(allAborted.eligibleCompletedAttempts).toBe(0);
+    expect(evaluateStressThresholds(allAborted, {}).violations.map((v) => v.metric)).toContain("noData");
+    const mixed = computeReport([aborted, { ...sample(10), requestStarted: true, requestCompleted: true }], {
+      concurrency: 1, startedAt: 0, finishedAt: 1_000,
+    });
+    expect(mixed.eligibleCompletedAttempts).toBe(1);
+    expect(evaluateStressThresholds(mixed, {}).violations.map((v) => v.metric)).not.toContain("noData");
+  });
+
+  it("worker pressure measurement window 驱动 RPS，排除 coordinator/setup/teardown 时间", () => {
+    const r = computeReport(
+      [{ ...sample(1), requestStarted: true, requestCompleted: true }],
+      {
+        concurrency: 1, startedAt: 10_000, finishedAt: 20_000,
+        measurementWindow: { startWallMs: 15_000, endWallMs: 16_000, monotonicDurationMs: 100, eligibleCompletedAttempts: 1 },
+      },
+    );
+    expect(r.startedAt).toBe(15_000);
+    expect(r.finishedAt).toBe(16_000);
+    // monotonic pressure time is authoritative even when comparable wall
+    // timestamps span a different amount of time.
+    expect(r.durationMs).toBe(100);
+    expect(r.rps).toBe(10);
+    expect(r.measurementWindow?.eligibleCompletedAttempts).toBe(1);
   });
 });

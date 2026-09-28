@@ -39,4 +39,17 @@ describe("压测目标安全裁定", () => {
     expect(() => assertStressTargetAllowed({ url: "https://example.com/x", policy: { trustedOrigins: ["https://example.com"], maxRps: 5 }, maxRps: 6, concurrency: 1 }))
       .toThrow(expect.objectContaining({ code: "max_rps_policy_exceeded" }));
   });
+
+  it("显式确认仍返回规范化 appliedPolicy，不能把项目 rate policy 伪装成 none", () => {
+    expect(assertStressTargetAllowed({
+      url: "https://example.com/v1",
+      confirmedTargetOrigins: ["https://example.com"],
+      policy: { maxConcurrency: 4, maxRps: 5 },
+      concurrency: 2,
+      maxRps: 3,
+    })).toMatchObject({
+      confirmation: "explicit",
+      appliedPolicy: { trustedOrigins: [], deniedOrigins: [], maxConcurrency: 4, maxRps: 5 },
+    });
+  });
 });

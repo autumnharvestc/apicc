@@ -7,7 +7,7 @@ import { executeCase } from "../runner/caseExecutor.js";
 import type { ManagedProtocolClient } from "../http/client.js";
 import type { ExecutableRequest, PmApi } from "../plugin/types.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
-import { assertStressTargetAllowed, StressSafetyError } from "./safety.js";
+import { assertStressTargetAllowed, isLoopbackStressOrigin, normalizeStressPolicy, StressSafetyError } from "./safety.js";
 
 export interface StressWorkerSession {
   execute(signal?: AbortSignal): Promise<CaseExecutionResult>;
@@ -233,16 +233,22 @@ export function createStressCaseSession(
               safety = {
                 origin: decision.targetOrigin,
                 confirmation: decision.confirmation,
-                policy: decision.confirmation === "project-policy" ? "trusted" : "none",
+                policy: decision.confirmation === "project-policy"
+                  ? "trusted"
+                  : (decision.appliedPolicy.maxConcurrency !== undefined || decision.appliedPolicy.maxRps !== undefined ? "explicit-limited" : "none"),
                 loopback: decision.loopback,
+                appliedPolicy: decision.appliedPolicy,
               };
             } catch (error) {
               if (error instanceof StressSafetyError && error.targetOrigin) {
+                let appliedPolicy: ReturnType<typeof normalizeStressPolicy> | undefined;
+                try { appliedPolicy = normalizeStressPolicy(target.project.stressPolicy); } catch { /* policy error is the primary diagnostic */ }
                 safety = {
                   origin: error.targetOrigin,
                   confirmation: "rejected",
                   policy: error.code,
-                  loopback: /localhost|127\.\d+\.\d+\.\d+|\[?::1\]?/.test(error.targetOrigin),
+                  loopback: isLoopbackStressOrigin(error.targetOrigin),
+                  ...(appliedPolicy ? { appliedPolicy } : {}),
                 };
               }
               throw error;

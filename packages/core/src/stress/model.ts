@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { StressTargetPolicy } from "../domain/model.js";
 import type { CaseFailureKind } from "../runner/caseExecutor.js";
 import type { CaseOutcome } from "../report/types.js";
 
@@ -32,18 +33,32 @@ export interface StressVerdict {
   violations: StressViolation[];
 }
 
+/** Worker-owned pressure window. Wall timestamps make shard windows comparable;
+ * monotonic duration remains authoritative when a wall clock jumps. */
+export interface StressMeasurementWindow {
+  startWallMs: number;
+  endWallMs: number;
+  monotonicDurationMs: number;
+  eligibleCompletedAttempts: number;
+}
+
+export type StressGeneratorAvailability = "available" | "partial" | "unavailable";
+
 /** Stable local generator resource metadata; legacy reports may omit this field. */
 export interface StressGeneratorMetrics {
-  cpuUserMs: number;
-  cpuSystemMs: number;
-  cpuPercent: number;
-  rssStartBytes: number;
-  rssPeakBytes: number;
-  eventLoopDelayP95Ms: number;
-  schedulerBacklogMax: number;
-  saturated: boolean;
-  reasons: Array<"cpu" | "event-loop-delay" | "scheduler-backlog">;
-  limits: { cpuPercent: number; eventLoopDelayP95Ms: number; schedulerBacklog: number };
+  /** Missing availability is the legacy shape and is treated as available. */
+  availability?: StressGeneratorAvailability;
+  unavailableReason?: string;
+  cpuUserMs?: number;
+  cpuSystemMs?: number;
+  cpuPercent?: number;
+  rssStartBytes?: number;
+  rssPeakBytes?: number;
+  eventLoopDelayP95Ms?: number;
+  schedulerBacklogMax?: number;
+  saturated?: boolean;
+  reasons?: Array<"cpu" | "event-loop-delay" | "scheduler-backlog">;
+  limits?: { cpuPercent: number; eventLoopDelayP95Ms: number; schedulerBacklog: number };
 }
 
 export interface StressSafetyTarget {
@@ -51,10 +66,23 @@ export interface StressSafetyTarget {
   confirmation: string;
   policy: string;
   loopback?: boolean;
+  /** Normalized policy snapshot; values are origins and numeric limits only. */
+  appliedPolicy?: StressTargetPolicy;
+}
+
+export interface StressSafetyRun {
+  requestedConcurrency: number;
+  effectiveConcurrency: number;
+  requestedMaxRps: number | null;
+  effectiveMaxRps: number | null;
+  connectionMode: "pooled" | "fresh";
 }
 
 export interface StressSafety {
   targetOrigins: StressSafetyTarget[];
+  availability?: "available" | "partial" | "unavailable";
+  unavailableReason?: string;
+  run?: StressSafetyRun;
 }
 
 /** 单次压测请求的采样结果（由并发池产生，aggregate 消费）。 */
@@ -89,7 +117,13 @@ export const StressSampleSchema = z.object({
   requestStarted: z.boolean().optional(),
   requestCompleted: z.boolean().optional(),
   failureKind: z.enum(["transport", "http", "script", "assertion", "config", "aborted"]).optional(),
-  safety: z.object({ origin: z.string(), confirmation: z.string(), policy: z.string(), loopback: z.boolean().optional() }).strict().optional(),
+  safety: z.object({
+    origin: z.string(), confirmation: z.string(), policy: z.string(), loopback: z.boolean().optional(),
+    appliedPolicy: z.object({
+      trustedOrigins: z.array(z.string()).optional(), deniedOrigins: z.array(z.string()).optional(),
+      maxConcurrency: z.number().int().positive().optional(), maxRps: z.number().finite().positive().optional(),
+    }).strict().optional(),
+  }).strict().optional(),
 }).strict().superRefine((sample, ctx) => {
   if (sample.ok && sample.failureKind !== undefined) {
     ctx.addIssue({ code: "custom", path: ["failureKind"], message: "successful sample cannot carry failureKind" });
@@ -116,30 +150,69 @@ export const StressFailureCountsSchema = z.object({
 }).strict();
 
 const thresholdsSchema = z.object({
-  maxErrorRate: z.number().min(0).max(1).optional(),
-  maxAssertionFailureRate: z.number().min(0).max(1).optional(),
-  maxP95Ms: z.number().nonnegative().optional(),
-  minRps: z.number().nonnegative().optional(),
+  maxErrorRate: z.number().finite().min(0).max(1).optional(),
+  maxAssertionFailureRate: z.number().finite().min(0).max(1).optional(),
+  maxP95Ms: z.number().finite().nonnegative().optional(),
+  minRps: z.number().finite().nonnegative().optional(),
 }).strict();
 
 const verdictSchema = z.object({
   passed: z.boolean(),
   violations: z.array(z.object({
     metric: z.enum(["errorRate", "assertionFailureRate", "p95", "rps", "businessFailures", "noData"]),
-    actual: z.number(), expected: z.number(), message: z.string(),
+    actual: z.number().finite(), expected: z.number().finite(), message: z.string(),
   }).strict()),
 }).strict();
 
-export const StressGeneratorSchema = z.object({
-  cpuUserMs: z.number().finite().nonnegative(), cpuSystemMs: z.number().finite().nonnegative(), cpuPercent: z.number().finite().nonnegative(),
-  rssStartBytes: z.number().finite().nonnegative(), rssPeakBytes: z.number().finite().nonnegative(), eventLoopDelayP95Ms: z.number().finite().nonnegative(),
-  schedulerBacklogMax: z.number().finite().int().nonnegative(), saturated: z.boolean(),
-  reasons: z.array(z.enum(["cpu", "event-loop-delay", "scheduler-backlog"])),
-  limits: z.object({ cpuPercent: z.number().finite().nonnegative(), eventLoopDelayP95Ms: z.number().finite().nonnegative(), schedulerBacklog: z.number().finite().int().nonnegative() }).strict(),
+const generatorLimitsSchema = z.object({
+  cpuPercent: z.number().finite().nonnegative(), eventLoopDelayP95Ms: z.number().finite().nonnegative(),
+  schedulerBacklog: z.number().finite().int().nonnegative(),
 }).strict();
 
+/** Legacy numeric generator objects remain readable; unavailable is explicit and has no fake metrics. */
+export const StressGeneratorSchema = z.object({
+  availability: z.enum(["available", "partial", "unavailable"]).optional(), unavailableReason: z.string().optional(),
+  cpuUserMs: z.number().finite().nonnegative().optional(), cpuSystemMs: z.number().finite().nonnegative().optional(), cpuPercent: z.number().finite().nonnegative().optional(),
+  rssStartBytes: z.number().finite().nonnegative().optional(), rssPeakBytes: z.number().finite().nonnegative().optional(), eventLoopDelayP95Ms: z.number().finite().nonnegative().optional(),
+  schedulerBacklogMax: z.number().finite().int().nonnegative().optional(), saturated: z.boolean().optional(),
+  reasons: z.array(z.enum(["cpu", "event-loop-delay", "scheduler-backlog"])).optional(),
+  limits: generatorLimitsSchema.optional(),
+}).strict().superRefine((generator, ctx) => {
+  if (generator.availability === "unavailable") {
+    for (const key of ["cpuUserMs", "cpuSystemMs", "cpuPercent", "rssStartBytes", "rssPeakBytes", "eventLoopDelayP95Ms", "schedulerBacklogMax", "saturated", "reasons", "limits"] as const) {
+      if (generator[key] !== undefined) ctx.addIssue({ code: "custom", path: [key], message: "unavailable generator cannot fabricate metrics" });
+    }
+    return;
+  }
+  for (const key of ["cpuUserMs", "cpuSystemMs", "cpuPercent", "rssStartBytes", "rssPeakBytes", "eventLoopDelayP95Ms", "schedulerBacklogMax", "saturated", "reasons", "limits"] as const) {
+    if (generator[key] === undefined) ctx.addIssue({ code: "custom", path: [key], message: "available generator requires complete metrics" });
+  }
+});
+
+export const StressMeasurementWindowSchema = z.object({
+  startWallMs: z.number().finite(), endWallMs: z.number().finite(),
+  monotonicDurationMs: z.number().finite().nonnegative(), eligibleCompletedAttempts: z.number().int().nonnegative(),
+}).strict().superRefine((window, ctx) => {
+  if (window.endWallMs < window.startWallMs && window.monotonicDurationMs === 0) {
+    ctx.addIssue({ code: "custom", path: ["endWallMs"], message: "measurement window wall clock reversed without monotonic duration" });
+  }
+});
+
 export const StressSafetySchema = z.object({
-  targetOrigins: z.array(z.object({ origin: z.string(), confirmation: z.string(), policy: z.string(), loopback: z.boolean().optional() }).strict()),
+  targetOrigins: z.array(z.object({
+    origin: z.string(), confirmation: z.string(), policy: z.string(), loopback: z.boolean().optional(),
+    appliedPolicy: z.object({
+      trustedOrigins: z.array(z.string()).optional(), deniedOrigins: z.array(z.string()).optional(),
+      maxConcurrency: z.number().int().positive().optional(), maxRps: z.number().finite().positive().optional(),
+    }).strict().optional(),
+  }).strict()),
+  availability: z.enum(["available", "partial", "unavailable"]).optional(),
+  unavailableReason: z.string().optional(),
+  run: z.object({
+    requestedConcurrency: z.number().int().positive(), effectiveConcurrency: z.number().int().positive(),
+    requestedMaxRps: z.number().finite().positive().nullable(), effectiveMaxRps: z.number().finite().positive().nullable(),
+    connectionMode: z.enum(["pooled", "fresh"]),
+  }).strict().optional(),
 }).strict();
 
 /** distributed 段：多 shard 汇聚信息（M2-D）。shardErrors 无失败时省略。 */
@@ -154,6 +227,7 @@ export const StressDistributedSchema = z.object({
     failed: z.number().int().nonnegative(),
     rps: z.number().finite().nonnegative(),
     generator: StressGeneratorSchema,
+    measurementWindow: StressMeasurementWindowSchema,
     safety: StressSafetySchema.optional(),
   }).strict()),
   shardErrors: z.array(z.object({ shardId: z.string(), error: z.string() })).optional(),
@@ -165,15 +239,19 @@ export const StressReportSchema = z.object({
   totalRequests: z.number().int().nonnegative(),
   ok: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
-  durationMs: z.number().nonnegative(),
-  rps: z.number().nonnegative(),
+  durationMs: z.number().finite().nonnegative(),
+  rps: z.number().finite().nonnegative(),
   latency: latencySchema,
   statusDist: z.record(z.string(), z.number().int().nonnegative()),
   errorKinds: z.record(z.string(), z.number().int().nonnegative()),
-  startedAt: z.number(), finishedAt: z.number(),
+  startedAt: z.number().finite(), finishedAt: z.number().finite(),
+  eligibleCompletedAttempts: z.number().int().nonnegative().optional(),
+  measurementWindow: StressMeasurementWindowSchema.optional(),
   // M2-D 分布式段：optional 保证 M2-C 旧报告（无 distributed）继续可解析（D6）。
   distributed: StressDistributedSchema.optional(),
   failures: StressFailureCountsSchema.optional(),
+  /** Failure counts restricted to requestStarted + requestCompleted + non-aborted attempts. */
+  eligibleFailureCounts: StressFailureCountsSchema.optional(),
   scriptLatency: latencySchema.optional(),
   iterationLatency: latencySchema.optional(),
   thresholds: thresholdsSchema.optional(),
@@ -190,11 +268,33 @@ export const StressReportSchema = z.object({
  */
 export const CurrentStressReportSchema = StressReportSchema.extend({
   failures: StressFailureCountsSchema,
+  eligibleFailureCounts: StressFailureCountsSchema,
   scriptLatency: latencySchema,
   iterationLatency: latencySchema,
   verdict: verdictSchema,
   generator: StressGeneratorSchema,
-  safety: StressSafetySchema,
+  safety: StressSafetySchema.extend({
+    run: z.object({
+      requestedConcurrency: z.number().int().positive(), effectiveConcurrency: z.number().int().positive(),
+      requestedMaxRps: z.number().finite().positive().nullable(), effectiveMaxRps: z.number().finite().positive().nullable(),
+      connectionMode: z.enum(["pooled", "fresh"]),
+    }).strict(),
+  }).superRefine((safety, ctx) => {
+    for (const [index, target] of safety.targetOrigins.entries()) {
+      if (!target.appliedPolicy) {
+        ctx.addIssue({ code: "custom", path: ["targetOrigins", index, "appliedPolicy"], message: "current safety target requires appliedPolicy" });
+      } else {
+        if (!Array.isArray(target.appliedPolicy.trustedOrigins)) {
+          ctx.addIssue({ code: "custom", path: ["targetOrigins", index, "appliedPolicy", "trustedOrigins"], message: "current safety target requires normalized trustedOrigins" });
+        }
+        if (!Array.isArray(target.appliedPolicy.deniedOrigins)) {
+          ctx.addIssue({ code: "custom", path: ["targetOrigins", index, "appliedPolicy", "deniedOrigins"], message: "current safety target requires normalized deniedOrigins" });
+        }
+      }
+    }
+  }),
+  eligibleCompletedAttempts: z.number().int().nonnegative(),
+  measurementWindow: StressMeasurementWindowSchema,
 });
 export type CurrentStressReport = z.infer<typeof CurrentStressReportSchema>;
 type ParsedStressReport = z.infer<typeof StressReportSchema>;

@@ -533,6 +533,10 @@ describe("压测 IPC", () => {
     await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: -1, maxIterations: 1 })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
     await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: 0, maxIterations: 1 })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
     await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: 1.5, maxIterations: 1 })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
+    await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: 1, maxIterations: 1.5 })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
+    await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: 1, maxIterations: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
+    await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: 1, durationMs: Number.NaN })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
+    await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: "x", concurrency: 1, durationMs: Number.POSITIVE_INFINITY })).rejects.toThrow(/\[stress:run\] 入参校验失败/);
     // maxIterations/durationMs 传 null（antd InputNumber 清空口径）：通过 zod，运行层报 core 终止条件文案
     const detail = await deps.handle("api:get", {}, api.id);
     await expect(deps.handle("stress:run", {}, { apiId: api.id, caseId: detail.api.cases[0]!.id, concurrency: 1, maxIterations: null, durationMs: null })).rejects.toThrow(/压测终止条件缺失/);

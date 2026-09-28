@@ -1,7 +1,7 @@
 import type { CaseExecutionResult } from "../runner/caseExecutor.js";
 import { computeReport } from "./aggregate.js";
 import { createGeneratorMetricsCollector, type GeneratorMetricsCollector, type GeneratorMetricsProbe } from "./generatorMetrics.js";
-import type { StressReport, StressSample, StressThresholds } from "./model.js";
+import type { StressReport, StressSafetyRun, StressSample, StressThresholds } from "./model.js";
 import type { StressWorkerSession } from "./caseSession.js";
 
 type StressSetTimeout = (handler: () => void, timeout: number) => NodeJS.Timeout;
@@ -31,6 +31,8 @@ export interface StressRunOptions {
   /** Safety upper bound shared by all workers. It is not an arrival-rate target. */
   maxRps?: number;
   connectionMode?: "pooled" | "fresh";
+  /** Optional audit override when a caller requested a value later capped by policy. */
+  safetyRun?: Partial<StressSafetyRun>;
 }
 
 interface PermitWaiter {
@@ -41,6 +43,28 @@ interface PermitWaiter {
 }
 
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
+const MAX_SAFE_DURATION_MS = Number.MAX_SAFE_INTEGER;
+
+/** Validate termination values before collector/session creation or protocol I/O. */
+export function validateStressRunOptions(input: {
+  concurrency: number;
+  maxIterations?: number;
+  durationMs?: number;
+  maxRps?: number;
+}): void {
+  if (!Number.isSafeInteger(input.concurrency) || input.concurrency < 1) {
+    throw new Error(`concurrency 必须为正 safe integer，收到 ${input.concurrency}`);
+  }
+  if (input.maxIterations !== undefined && (!Number.isSafeInteger(input.maxIterations) || input.maxIterations <= 0)) {
+    throw new Error(`maxIterations 必须为正 safe integer，收到 ${input.maxIterations}`);
+  }
+  if (input.durationMs !== undefined && (!Number.isFinite(input.durationMs) || input.durationMs <= 0 || input.durationMs > MAX_SAFE_DURATION_MS)) {
+    throw new Error(`durationMs 必须为有限正数且不可溢出，收到 ${input.durationMs}`);
+  }
+  if (input.maxRps !== undefined && (!Number.isFinite(input.maxRps) || input.maxRps <= 0)) {
+    throw new Error(`maxRps 必须为正数，收到 ${input.maxRps}`);
+  }
+}
 
 /** A shared sliding-window limiter. Waiting for a permit is not scheduler backlog. */
 class SlidingWindowPermitLimiter {
@@ -227,12 +251,7 @@ export class StressRunner {
     if (maxIterations === undefined && durationMs === undefined) {
       throw new Error("压测终止条件缺失：maxIterations 与 durationMs 必须给其一");
     }
-    if (!Number.isInteger(concurrency) || concurrency < 1) {
-      throw new Error(`concurrency 必须为正整数，收到 ${concurrency}`);
-    }
-    if (maxRps !== undefined && (!Number.isFinite(maxRps) || maxRps <= 0)) {
-      throw new Error(`maxRps 必须为正数，收到 ${maxRps}`);
-    }
+    validateStressRunOptions({ concurrency, maxIterations, durationMs, maxRps });
 
     const createCollector: () => GeneratorMetricsCollector = this.opts.createGeneratorCollector
       ?? this.opts.createGeneratorMetricsCollector
@@ -314,7 +333,10 @@ export class StressRunner {
 
       // Only the interval between all sessions being ready and all worker loops ending
       // is the measurement window. Setup and teardown must not distort RPS.
-      const startedAt = Date.now();
+      const wallNow = () => Date.now();
+      const monotonicNow = this.opts.now ?? (() => performance.now());
+      const startedAt = wallNow();
+      const startedMonotonic = monotonicNow();
       const deadline = durationMs === undefined ? Number.POSITIVE_INFINITY : startedAt + durationMs;
       if (limiter && durationMs !== undefined) {
         const setDeadline: StressSetTimeout = this.opts.setTimeout
@@ -329,7 +351,7 @@ export class StressRunner {
             if (remaining <= 0) break;
             remaining -= 1;
           }
-          if (Date.now() >= deadline) break;
+          if (wallNow() >= deadline) break;
           if (limiter) {
             try {
               if (!await limiter.acquire(signal)) break;
@@ -351,12 +373,19 @@ export class StressRunner {
       };
 
       await Promise.all(sessions.map((session) => worker(session)));
-      const finishedAt = Date.now();
+      const finishedAt = wallNow();
+      const finishedMonotonic = monotonicNow();
+      const measurementWindow = {
+        startWallMs: startedAt,
+        endWallMs: finishedAt,
+        monotonicDurationMs: Math.max(0, finishedMonotonic - startedMonotonic),
+        eligibleCompletedAttempts: 0,
+      } as const;
       await closeSessions();
       clearDeadlineTimer();
       if (hasPrimaryError) throw primaryError;
       if (hasCleanupError) throw cleanupError;
-      report = computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds });
+      report = computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds, measurementWindow });
       if (runOpts.connectionMode !== undefined) report.connectionMode = runOpts.connectionMode;
       const safetyTargets = samples
         .map((sample) => sample.safety)
@@ -365,16 +394,19 @@ export class StressRunner {
       // Current reports always carry a safety section.  An empty list is the
       // explicit no-data/no-I/O shape; legacy callers still read through the
       // optional StressReportSchema.
-      report.safety = { targetOrigins: uniqueSafety };
-      if (samples.length === 0) {
-        report.verdict = {
-          passed: false,
-          violations: [
-            ...(report.verdict?.violations ?? []),
-            { metric: "noData", actual: 0, expected: 1, message: "NO_DATA: 没有可评估的压测样本" },
-          ],
-        };
-      }
+      const safetyRun: StressSafetyRun = {
+        requestedConcurrency: runOpts.safetyRun?.requestedConcurrency ?? concurrency,
+        effectiveConcurrency: runOpts.safetyRun?.effectiveConcurrency ?? concurrency,
+        requestedMaxRps: runOpts.safetyRun?.requestedMaxRps ?? maxRps ?? null,
+        effectiveMaxRps: runOpts.safetyRun?.effectiveMaxRps ?? maxRps ?? null,
+        connectionMode: runOpts.safetyRun?.connectionMode ?? runOpts.connectionMode ?? "pooled",
+      };
+      report.safety = {
+        targetOrigins: uniqueSafety,
+        run: safetyRun,
+        availability: uniqueSafety.length > 0 ? "available" : "unavailable",
+        ...(uniqueSafety.length === 0 ? { unavailableReason: "没有样本携带目标安全采集" } : {}),
+      };
       return report;
     } finally {
       if (!sessionsClosed) await closeSessions();

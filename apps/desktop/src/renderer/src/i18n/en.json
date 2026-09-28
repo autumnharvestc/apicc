@@ -207,8 +207,12 @@
     "failureKind": "Category",
     "safety": "Target safety",
     "safetyNone": "No target confirmation metadata collected",
+    "safetyUnavailable": "Safety metadata not collected / unavailable",
+    "safetyRun": "Run safety parameters",
     "generator": "Generator resources",
     "generatorUncollected": "Not collected (legacy report has no generator field)",
+    "generatorUnavailable": "Not collected / unavailable",
+    "generatorPartial": "Partially collected / unavailable",
     "metric": { "errorRate": "Error rate", "assertionFailureRate": "Assertion failure rate", "p95": "P95", "rps": "RPS", "businessFailures": "Business failures", "noData": "No data" },
     "failure": { "transport": "Transport", "http": "HTTP", "script": "Script", "assertion": "Assertion", "config": "Configuration", "aborted": "Aborted" }
   },

@@ -66,9 +66,10 @@ apicc import order-api.json --group ecommerce
 
 各命令完整参数以 `apicc <command> --help` 为准。
 
-`run-stress` 会执行所选用例的完整语义：参数、数据驱动行、前置/后置操作与脚本，以及声明式和脚本断言；HTTP 200 但断言失败仍计为业务失败并使 verdict 失败。`--allow-target <origin>` 只确认精确的 HTTP(S) origin，路径变化不需要重复确认，但 scheme、host 或 port 变化必须重新确认；项目 `deniedOrigins` 始终优先，不能由该参数覆盖。压测分片仅在本机以多进程运行，尚未提供跨机器远程 agent。
+`run-stress` 会执行所选用例的完整语义：参数、数据驱动行、前置/后置操作与脚本，以及声明式和脚本断言；HTTP 200 但断言失败仍计为业务失败并使 verdict 失败。`--allow-target <origin>` 只确认精确的 HTTP(S) origin，路径变化不需要重复确认，但 scheme、host 或 port 变化必须重新确认；项目 `deniedOrigins` 始终优先，不能由该参数覆盖。压测分片仅在本机以多进程运行，尚未提供跨机器远程 agent；`--shards` 必须不大于 `--concurrency`，且当前版本只允许单 shard 使用 `--max-rps`，多 shard + RPS 上限会在发起请求前拒绝（不会静默拆分上限）。
 
 报告中的 generator 指标描述施压端资源。若 `generator.saturated` 为 `true`，CLI 与桌面端会单独提示施压端已饱和；此时结果不能单独用于判断服务端上限。阈值违反、业务失败和分片失败都会使命令退出码为 `1`。
+generator 或安全元数据不可采集时，报告会明确标记“未采集/不可用”，不会以零值伪造指标；全 shard 失败仍会落盘严格失败报告并以退出码 `1` 返回。RPS、延迟与阈值分母只包含已开始、已完成且非 aborted 的请求尝试。
 
 桌面端：
 

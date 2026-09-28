@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { StressRunner } from "../../src/stress/runner.js";
 import { httpClient } from "../../src/http/client.js";
 import type { CaseExecutionResult } from "../../src/runner/caseExecutor.js";
@@ -105,6 +105,43 @@ describe("StressRunner", () => {
     const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));
     await expect(runner.run({ concurrency: 1 })).rejects.toThrow("maxIterations");
     await expect(runner.run({ concurrency: 0, maxIterations: 1 })).rejects.toThrow("concurrency");
+  });
+
+  it.each([
+    [Number.NaN, "durationMs"], [Number.POSITIVE_INFINITY, "durationMs"], [0, "durationMs"], [-1, "durationMs"],
+  ])("在创建 collector/session 前拒绝非法 durationMs=%s", async (durationMs, field) => {
+    const createWorker = vi.fn(() => ({ execute: async () => { throw new Error("must not execute"); }, close: async () => {} }));
+    const runner = new StressRunner({ createWorker });
+    await expect(runner.run({ concurrency: 1, durationMs })).rejects.toThrow(field);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
+  it.each([1.5, Number.MAX_SAFE_INTEGER + 1, Number.POSITIVE_INFINITY, Number.NaN, 0, -1])
+    ("在创建 collector/session 前拒绝非法 maxIterations=%s", async (maxIterations) => {
+      const createWorker = vi.fn(() => ({ execute: async () => { throw new Error("must not execute"); }, close: async () => {} }));
+      const runner = new StressRunner({ createWorker });
+      await expect(runner.run({ concurrency: 1, maxIterations })).rejects.toThrow("maxIterations");
+      expect(createWorker).not.toHaveBeenCalled();
+    });
+
+  it("all-aborted 样本按 eligible completed attempts=0 判 noData，而不是 samples.length", async () => {
+    const runner = new StressRunner({
+      createWorker: () => ({
+        execute: async () => ({
+          request: { method: "GET" as const, url: "http://fake/", headers: {}, query: [] },
+          requestStarted: true, requestCompleted: true,
+          requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+          outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 1, assertions: [], failureKind: "aborted" as const },
+          failureKind: "aborted" as const,
+        }),
+        close: async () => {},
+      }),
+    });
+    const report = await runner.run({ concurrency: 1, maxIterations: 1 });
+    expect(report.totalRequests).toBe(1);
+    expect(report.eligibleCompletedAttempts).toBe(0);
+    expect(report.verdict?.passed).toBe(false);
+    expect(report.verdict?.violations.filter((v) => v.metric === "noData")).toHaveLength(1);
   });
 
   it("非 2xx：ok=false 且不写 error（HTTP_ 分类由聚合派生，statusDist 保留状态）", async () => {

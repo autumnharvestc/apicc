@@ -207,8 +207,12 @@
     ,"failureKind": "分类"
     ,"safety": "目标安全"
     ,"safetyNone": "未采集到目标确认元数据"
+    ,"safetyUnavailable": "安全元数据未采集/不可用"
+    ,"safetyRun": "运行安全参数"
     ,"generator": "生成器资源"
     ,"generatorUncollected": "未采集（旧报告无 generator 字段）"
+    ,"generatorUnavailable": "未采集/不可用"
+    ,"generatorPartial": "部分采集/不可用"
     ,"metric": {"errorRate": "错误率", "assertionFailureRate": "断言失败率", "p95": "P95", "rps": "RPS", "businessFailures": "业务失败", "noData": "无数据"}
     ,"failure": {"transport": "传输", "http": "HTTP", "script": "脚本", "assertion": "断言", "config": "配置", "aborted": "中止"}
   },

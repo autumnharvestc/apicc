@@ -66,7 +66,7 @@ export function normalizeStressPolicy(policy?: StressTargetPolicy): StressTarget
   };
 }
 
-function isLoopbackOrigin(origin: string): boolean {
+export function isLoopbackStressOrigin(origin: string): boolean {
   const hostname = new URL(origin).hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (hostname === "localhost" || hostname === "::1") return true;
   const octets = hostname.split(".");
@@ -77,7 +77,7 @@ export interface StressSafetyDecision {
   targetOrigin: string;
   loopback: boolean;
   confirmation: "explicit" | "project-policy";
-  appliedPolicy?: StressTargetPolicy;
+  appliedPolicy: StressTargetPolicy;
 }
 
 export function assertStressTargetAllowed(input: {
@@ -118,13 +118,13 @@ export function assertStressTargetAllowed(input: {
   if (!explicit && !projectTrusted) {
     throw new StressSafetyError(
       "target_confirmation_required",
-      `目标需要确认: ${targetOrigin}${isLoopbackOrigin(targetOrigin) ? "（loopback 也不自动放行）" : ""}`,
+      `目标需要确认: ${targetOrigin}${isLoopbackStressOrigin(targetOrigin) ? "（loopback 也不自动放行）" : ""}`,
       targetOrigin,
     );
   }
   return {
     targetOrigin,
-    loopback: isLoopbackOrigin(targetOrigin),
+    loopback: isLoopbackStressOrigin(targetOrigin),
     confirmation: projectTrusted ? "project-policy" : "explicit",
     appliedPolicy: policy,
   };

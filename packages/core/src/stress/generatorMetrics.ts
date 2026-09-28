@@ -165,6 +165,7 @@ export function createGeneratorMetricsCollector(probe: GeneratorMetricsProbe = {
       throw firstError;
     }
     snapshot = {
+      availability: "available",
       cpuUserMs,
       cpuSystemMs,
       cpuPercent,

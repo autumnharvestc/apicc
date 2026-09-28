@@ -31,6 +31,7 @@ import {
   createSoapClient,
   createStressCaseSession,
   normalizeStressOrigin,
+  validateStressRunOptions as validateCoreStressRunOptions,
   StressSafetyError,
   withBaseUrl,
 } from "@apicc/core";
@@ -78,6 +79,34 @@ function validateStressRunOptions(opts: {
   if (opts.connectionMode !== undefined && opts.connectionMode !== "pooled" && opts.connectionMode !== "fresh") {
     throw new Error(`connection-mode 必须为 pooled 或 fresh，收到 ${opts.connectionMode}`);
   }
+}
+
+const MAX_SAFE_DURATION_MS = Number.MAX_SAFE_INTEGER;
+
+/** CLI-side termination validation runs before workspace lookup, target resolution, or worker spawn. */
+function validateCliStressTermination(opts: {
+  concurrency: number;
+  iterations?: number;
+  duration?: number;
+}): number | undefined {
+  if (!Number.isSafeInteger(opts.concurrency) || opts.concurrency < 1) {
+    throw new Error(`concurrency 必须为正 safe integer，收到 ${opts.concurrency}`);
+  }
+  if (opts.iterations !== undefined && (!Number.isSafeInteger(opts.iterations) || opts.iterations <= 0)) {
+    throw new Error(`iterations 必须为正 safe integer，收到 ${opts.iterations}`);
+  }
+  if (opts.iterations === undefined && opts.duration === undefined) {
+    throw new Error("需要 --iterations 或 --duration");
+  }
+  if (opts.duration === undefined) return undefined;
+  if (!Number.isFinite(opts.duration) || opts.duration <= 0) {
+    throw new Error(`duration 必须为有限正数，收到 ${opts.duration}`);
+  }
+  const durationMs = opts.duration * 1000;
+  if (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > MAX_SAFE_DURATION_MS) {
+    throw new Error(`duration 换算后的毫秒数溢出，收到 ${opts.duration}`);
+  }
+  return durationMs;
 }
 
 /**
@@ -558,7 +587,7 @@ export async function runCli(
     });
 
   // 压测运行（任务 4）：把 core 压测引擎（并发池执行 + 聚合报告）暴露为 CLI 命令；
-  // 工作区定位、路径匹配、环境解析、产物目录均沿用 run/run-workflow 模式。断言不参与采样（M2-C 明确推迟）。
+  // 工作区定位、路径匹配、环境解析、产物目录均沿用 run/run-workflow 模式。
   // M2-D：--shards >1 走多 shard 协调（本地子进程 worker，spawn 实现可注入）；=1 保持既有进程内路径零行为变化。
   program
     .command("run-stress")
@@ -568,14 +597,14 @@ export async function runCli(
     .requiredOption("--concurrency <n>", "并发数", Number)
     .option("--iterations <n>", "总迭代数", Number)
     .option("--duration <s>", "持续秒数", Number)
-    .option("--max-rps <n>", "全局每秒请求启动安全上限", Number)
+    .option("--max-rps <n>", "单 shard 每秒请求启动安全上限（多 shard 不支持）", Number)
     .option("--max-error-rate <ratio>", "最大错误率阈值", Number)
     .option("--max-assertion-failure-rate <ratio>", "最大断言失败率阈值", Number)
     .option("--max-p95-ms <ms>", "最大 p95 时延阈值", Number)
     .option("--min-rps <n>", "最低 RPS 阈值", Number)
     .option("--connection-mode <mode>", "连接模式 pooled 或 fresh", "pooled")
     .option("--allow-target <origin>", "本次运行确认的 HTTP(S) origin（可重复）", collectOption, [])
-    .option("--shards <n>", "分片数（>1 走多 shard 协调）", Number, 1)
+    .option("--shards <n>", "分片数（必须 <= concurrency；>1 走多 shard 协调）", Number, 1)
     .option("--shard-timeout <s>", "单 shard 超时秒数", Number, 300)
     .option("--runs-dir <dir>", "报告输出目录")
     .action(async (apiPath: string, opts: {
@@ -583,30 +612,33 @@ export async function runCli(
       maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
       connectionMode: "pooled" | "fresh"; allowTarget: string[]; shards: number; shardTimeout: number; runsDir?: string;
     }) => {
-      // 分片参数校验（正整数/正数）；maxIterations < shards 的 fail-fast 由 core planShards 中文报错，直接透传不拦截。
-      if (!Number.isInteger(opts.shards) || opts.shards < 1) {
+      // 所有终止/分片守卫都在工作区读取、目标解析和 worker spawn 之前执行。
+      if (!Number.isSafeInteger(opts.shards) || opts.shards < 1) {
         throw new Error(`shards 必须为正整数，收到 ${opts.shards}`);
       }
       if (!Number.isFinite(opts.shardTimeout) || opts.shardTimeout <= 0) {
         throw new Error(`shard-timeout 必须为正数，收到 ${opts.shardTimeout}`);
       }
+      if (!Number.isFinite(opts.shardTimeout * 1000) || opts.shardTimeout * 1000 > MAX_SAFE_DURATION_MS) {
+        throw new Error(`shard-timeout 换算后的毫秒数溢出，收到 ${opts.shardTimeout}`);
+      }
       validateStressRunOptions(opts);
       const confirmedTargetOrigins = [...new Set((opts.allowTarget ?? []).map(validateStressOriginOption))];
-      // 数值参数守卫（终审顺修）：单/多 shard 路径口径必须一致——否则 concurrency 0 在多 shard 下被
-      // planShards 静默升为每 shard 1（单机路径是 StressRunner 中文报错），NaN 类值会漏到
-      // StressWorkerSpecSchema.parse 抛裸英文 ZodError。文案镜像 runner.ts 同款。
-      if (!Number.isInteger(opts.concurrency) || opts.concurrency < 1) {
-        throw new Error(`concurrency 必须为正整数，收到 ${opts.concurrency}`);
+      const durationMs = validateCliStressTermination(opts);
+      validateCoreStressRunOptions({
+        concurrency: opts.concurrency,
+        ...(opts.iterations !== undefined ? { maxIterations: opts.iterations } : {}),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+        ...(opts.maxRps !== undefined ? { maxRps: opts.maxRps } : {}),
+      });
+      if (opts.shards > opts.concurrency) {
+        throw new Error(`shards 不能大于 concurrency（${opts.concurrency}）`);
       }
-      if (opts.iterations !== undefined && (!Number.isInteger(opts.iterations) || opts.iterations < 1)) {
-        throw new Error(`iterations 必须为正整数，收到 ${opts.iterations}`);
+      if (opts.shards > 1 && opts.maxRps !== undefined) {
+        throw new Error("多 shard + maxRps 不受支持：无法证明全局滑动窗口上限");
       }
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
-      // 终止条件二选一校验（与 StressRunner 约束一致，前置到 CLI 以面向用户的文案报错）。
-      if (opts.iterations === undefined && opts.duration === undefined) {
-        throw new Error("需要 --iterations 或 --duration");
-      }
       // 定位/env/resolver 与 stress-worker 共享 helper（不复制）；校验通过才落协调或进程内执行。
       const targetInfo = await resolveStressTarget(registry, root, apiPath, opts.case, opts.env);
       const { apiId, createRunner } = targetInfo;
@@ -614,6 +646,9 @@ export async function runCli(
       const effectiveMaxRps = opts.maxRps === undefined
         ? projectMaxRps
         : projectMaxRps === undefined ? opts.maxRps : Math.min(opts.maxRps, projectMaxRps);
+      if (opts.shards > 1 && effectiveMaxRps !== undefined) {
+        throw new Error("多 shard + maxRps 不受支持：项目安全策略也不能拆成可证明的全局滑动窗口");
+      }
       if (targetInfo.project.stressPolicy?.maxConcurrency !== undefined
         && opts.concurrency > targetInfo.project.stressPolicy.maxConcurrency) {
         throw new StressSafetyError(
@@ -629,7 +664,6 @@ export async function runCli(
         ...(opts.minRps !== undefined ? { minRps: opts.minRps } : {}),
       };
       const hasThresholds = Object.keys(thresholds).length > 0;
-      const durationMs = opts.duration === undefined ? undefined : opts.duration * 1000;
       // 产物隔离（规格 §6，对齐 run-workflow）：StressReport JSON 落 runs 目录，默认 .apicc/runs。
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
       mkdirSync(runsOutDir, { recursive: true });
@@ -645,6 +679,13 @@ export async function runCli(
           concurrency: opts.concurrency, maxIterations: opts.iterations, durationMs,
           maxRps: effectiveMaxRps, ...(hasThresholds ? { thresholds } : {}),
           connectionMode: opts.connectionMode,
+          safetyRun: {
+            requestedConcurrency: opts.concurrency,
+            effectiveConcurrency: opts.concurrency,
+            requestedMaxRps: opts.maxRps ?? null,
+            effectiveMaxRps: effectiveMaxRps ?? null,
+            connectionMode: opts.connectionMode,
+          },
         });
       } else {
         // 多 shard：构造 specBase（workspaceRoot 显式传给子进程 worker），协调器拆分/并发/汇聚。
@@ -672,6 +713,13 @@ export async function runCli(
           shardTimeoutMs,
           // 默认本地子进程 spawn（同值超时 kill，裁定 A）；测试注入进程内替身。
           spawnWorker: (deps.spawnWorkerFactory ?? defaultSpawnWorkerFactory)(shardTimeoutMs),
+          safetyRun: {
+            requestedConcurrency: opts.concurrency,
+            effectiveConcurrency: opts.concurrency,
+            requestedMaxRps: opts.maxRps ?? null,
+            effectiveMaxRps: effectiveMaxRps ?? null,
+            connectionMode: opts.connectionMode,
+          },
         }));
       }
       const currentReport = CurrentStressReportSchema.safeParse(report);
@@ -714,10 +762,24 @@ export async function runCli(
         log(`target origins: ${report.safety.targetOrigins.map((target) => target.origin).join(", ")}`);
         for (const target of report.safety.targetOrigins) {
           if (target.confirmation === "rejected") log(`[安全拒绝][${target.policy}] ${target.origin}`);
+          const policy = target.appliedPolicy;
+          log(`[安全审计] ${target.origin} confirmation=${target.confirmation} loopback=${target.loopback === true ? "true" : "false"} policy=${target.policy}`
+            + (policy ? ` trusted=${(policy.trustedOrigins ?? []).join(",")} denied=${(policy.deniedOrigins ?? []).join(",")}`
+              + (policy.maxConcurrency === undefined ? "" : ` maxConcurrency=${policy.maxConcurrency}`)
+              + (policy.maxRps === undefined ? "" : ` maxRps=${policy.maxRps}`) : ""));
         }
       }
-      if (report.generator?.saturated) {
-        log(`[警告] generator saturation: ${report.generator.reasons.join(", ") || "unknown"}`);
+      if (report.safety?.run) {
+        log(`[安全审计] run requestedConcurrency=${report.safety.run.requestedConcurrency} effectiveConcurrency=${report.safety.run.effectiveConcurrency}`
+          + ` requestedMaxRps=${report.safety.run.requestedMaxRps ?? "none"} effectiveMaxRps=${report.safety.run.effectiveMaxRps ?? "none"}`
+          + ` connectionMode=${report.safety.run.connectionMode}`);
+      }
+      if (report.generator?.availability === "unavailable") {
+        log(`[generator] 未采集/不可用${report.generator.unavailableReason ? `：${report.generator.unavailableReason}` : ""}`);
+      } else if (report.generator?.availability === "partial") {
+        log(`[generator] 部分采集/不可用：部分 shard 未返回 generator 指标`);
+      } else if (report.generator?.saturated) {
+        log(`[警告] generator saturation: ${(report.generator.reasons ?? []).join(", ") || "unknown"}`);
       }
       // 退出码：任一 shard 失败 → 1；否则沿用「全部请求失败且 total>0 → 1」
       // （压测关注面是性能画像而非断言成败）。
@@ -758,13 +820,18 @@ export async function runCli(
         process.exitCode = 1;
       };
       try {
+        const durationMs = validateCliStressTermination(opts);
+        validateStressRunOptions(opts);
+        validateCoreStressRunOptions({
+          concurrency: opts.concurrency,
+          ...(opts.iterations !== undefined ? { maxIterations: opts.iterations } : {}),
+          ...(durationMs !== undefined ? { durationMs } : {}),
+          ...(opts.maxRps !== undefined ? { maxRps: opts.maxRps } : {}),
+        });
+        const workerDurationMs = durationMs;
         if (!existsSync(join(opts.workspace, "apicc.workspace.yaml"))) {
           throw new Error(`未找到 apicc.workspace.yaml: ${opts.workspace}`);
         }
-        if (opts.iterations === undefined && opts.duration === undefined) {
-          throw new Error("需要 --iterations 或 --duration");
-        }
-        validateStressRunOptions(opts);
         const confirmedTargetOrigins = [...new Set((opts.allowTarget ?? []).map(validateStressOriginOption))];
         const targetInfo = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
         const effectiveMaxRps = opts.maxRps === undefined
@@ -803,13 +870,24 @@ export async function runCli(
         }).run({
           concurrency: opts.concurrency,
           maxIterations: opts.iterations,
-          durationMs: opts.duration === undefined ? undefined : opts.duration * 1000,
+          ...(workerDurationMs !== undefined ? { durationMs: workerDurationMs } : {}),
           maxRps: effectiveMaxRps,
           ...(Object.keys(thresholds).length > 0 ? { thresholds } : {}),
           connectionMode: opts.connectionMode,
+          safetyRun: {
+            requestedConcurrency: opts.concurrency,
+            effectiveConcurrency: opts.concurrency,
+            requestedMaxRps: opts.maxRps ?? null,
+            effectiveMaxRps: effectiveMaxRps ?? null,
+            connectionMode: opts.connectionMode,
+          },
         });
         if (!report.generator) throw new Error("worker 未生成 generator 指标");
-        const result: ShardResult = { protocolVersion: 2, ok: true, shardId: opts.shardId, samples, generator: report.generator };
+        if (!report.measurementWindow) throw new Error("worker 未生成 pressure measurement window");
+        const result: ShardResult = {
+          protocolVersion: 2, ok: true, shardId: opts.shardId, samples, generator: report.generator,
+          measurementWindow: report.measurementWindow,
+        };
         out(JSON.stringify(ShardOutcomeSchema.parse(result)));
         process.exitCode = 0;
       } catch (e) {

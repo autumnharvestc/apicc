@@ -36,10 +36,10 @@ export { computeReport } from "./stress/aggregate.js";
 export { evaluateStressThresholds } from "./stress/thresholds.js";
 export { buildStressRequest } from "./stress/build.js";
 export {
-  assertStressTargetAllowed, normalizeStressOrigin, normalizeStressPolicy, StressSafetyError,
+  assertStressTargetAllowed, normalizeStressOrigin, normalizeStressPolicy, isLoopbackStressOrigin, StressSafetyError,
   type StressSafetyDecision, type StressSafetyErrorCode,
 } from "./stress/safety.js";
-export { StressRunner, type StressRunnerOptions, type StressRunOptions } from "./stress/runner.js";
+export { StressRunner, validateStressRunOptions, type StressRunnerOptions, type StressRunOptions } from "./stress/runner.js";
 export {
   createGeneratorMetricsCollector,
   createStressGeneratorMetricsCollector,

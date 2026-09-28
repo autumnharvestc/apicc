@@ -70,7 +70,9 @@ const violationRows = computed(() => (props.report?.verdict?.violations ?? []).m
 })));
 const failureRows = computed(() => Object.entries(props.report?.failures ?? {}).filter(([, count]) => count > 0).map(([kind, count]) => ({ kind: t(`stress.failure.${kind}`), count })));
 const safetyRows = computed(() => props.report?.safety?.targetOrigins ?? []);
+const safetyRun = computed(() => props.report?.safety?.run);
 const generator = computed(() => props.report?.generator);
+const eligibleCompletedAttempts = computed(() => props.report?.eligibleCompletedAttempts ?? props.report?.totalRequests ?? 0);
 </script>
 
 <template>
@@ -89,9 +91,24 @@ const generator = computed(() => props.report?.generator);
       <h4 class="block-title">{{ t("stress.failureKinds") }}</h4>
       <a-table :data-source="failureRows" :columns="[{ key: 'kind', title: t('stress.failureKind'), dataIndex: 'kind' }, { key: 'count', title: t('stress.count'), dataIndex: 'count' }]" row-key="kind" :pagination="false" size="small" />
     </div>
-    <div class="safety" data-testid="stress-safety"><h4 class="block-title">{{ t("stress.safety") }}</h4><span v-if="!safetyRows.length">{{ t("stress.safetyNone") }}</span><ul v-else><li v-for="row in safetyRows" :key="row.origin">{{ row.origin }} · {{ row.confirmation }} · {{ row.policy }}</li></ul></div>
-    <div class="generator" data-testid="stress-generator"><h4 class="block-title">{{ t("stress.generator") }}</h4><span v-if="!generator">{{ t("stress.generatorUncollected") }}</span><span v-else>CPU {{ fmtInt(generator.cpuPercent) }}% · RSS {{ fmtInt(generator.rssPeakBytes) }} · {{ fmtMs(generator.eventLoopDelayP95Ms) }} · backlog {{ generator.schedulerBacklogMax }}</span></div>
-    <div v-if="report.totalRequests === 0" class="no-samples" data-testid="stress-no-samples">
+    <div class="safety" data-testid="stress-safety">
+      <h4 class="block-title">{{ t("stress.safety") }}</h4>
+      <span v-if="report.safety?.availability === 'unavailable'">{{ t("stress.safetyUnavailable") }}</span>
+      <span v-else-if="!safetyRows.length">{{ t("stress.safetyNone") }}</span>
+      <ul v-else>
+        <li v-for="row in safetyRows" :key="row.origin">
+          {{ row.origin }} · {{ row.confirmation }} · {{ row.policy }} · loopback={{ row.loopback === true ? "true" : "false" }}
+          <span v-if="row.appliedPolicy"> · trusted={{ (row.appliedPolicy.trustedOrigins ?? []).join(",") }} · denied={{ (row.appliedPolicy.deniedOrigins ?? []).join(",") }}<span v-if="row.appliedPolicy.maxConcurrency !== undefined"> · maxConcurrency={{ row.appliedPolicy.maxConcurrency }}</span><span v-if="row.appliedPolicy.maxRps !== undefined"> · maxRps={{ row.appliedPolicy.maxRps }}</span></span>
+        </li>
+      </ul>
+      <div v-if="safetyRun" data-testid="stress-safety-run">{{ t("stress.safetyRun") }}: requestedConcurrency={{ safetyRun.requestedConcurrency }} · effectiveConcurrency={{ safetyRun.effectiveConcurrency }} · requestedMaxRps={{ safetyRun.requestedMaxRps ?? "none" }} · effectiveMaxRps={{ safetyRun.effectiveMaxRps ?? "none" }} · {{ safetyRun.connectionMode }}</div>
+    </div>
+    <div class="generator" data-testid="stress-generator">
+      <h4 class="block-title">{{ t("stress.generator") }}</h4>
+      <span v-if="!generator || generator.availability === 'unavailable'">{{ generator?.unavailableReason ?? t("stress.generatorUnavailable") }}</span>
+      <span v-else>{{ generator.availability === 'partial' ? `${t("stress.generatorPartial")} · ` : "" }}CPU {{ fmtInt(generator.cpuPercent ?? 0) }}% · RSS {{ fmtInt(generator.rssPeakBytes ?? 0) }} · {{ fmtMs(generator.eventLoopDelayP95Ms ?? 0) }} · backlog {{ generator.schedulerBacklogMax ?? 0 }}</span>
+    </div>
+    <div v-if="eligibleCompletedAttempts === 0" class="no-samples" data-testid="stress-no-samples">
       {{ t("stress.noSamples") }}
     </div>
     <template v-else>

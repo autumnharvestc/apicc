@@ -6,6 +6,7 @@ import {
   createHttpClient,
   createStressCaseSession,
   StressRunner,
+  validateStressRunOptions,
   type ProtocolClient,
   type GeneratorMetricsCollector,
   CurrentStressReportSchema,
@@ -70,6 +71,14 @@ export function createStressController(session: Session, deps: StressControllerD
 
   async function run(input: StressRunInput): Promise<StressRunOutput> {
     if (active) throw new Error("已有压测进行中");
+    // Validate termination values before locating the workspace target or creating
+    // any protocol client. IPC normally enforces this shape; this guard also covers
+    // direct controller callers and renderer test doubles.
+    validateStressRunOptions({
+      concurrency: input.concurrency,
+      ...(input.maxIterations != null ? { maxIterations: input.maxIterations } : {}),
+      ...(input.durationMs != null ? { durationMs: input.durationMs } : {}),
+    });
     const loc = session.locateApi(input.apiId);
     if (!loc) throw new Error(`未找到接口: ${input.apiId}`);
     // 用例门（同 sendDebug 断言口径）：压测请求构造只依赖接口定义，但目标用例必须存在。
@@ -149,6 +158,13 @@ export function createStressController(session: Session, deps: StressControllerD
           thresholds: input.thresholds,
           maxRps: policy?.maxRps,
           connectionMode: input.connectionMode,
+          safetyRun: {
+            requestedConcurrency: input.concurrency,
+            effectiveConcurrency: input.concurrency,
+            requestedMaxRps: null,
+            effectiveMaxRps: policy?.maxRps ?? null,
+            connectionMode: input.connectionMode ?? "pooled",
+          },
         }));
         if (safetyFailure) throw safetyFailure;
         CurrentStressReportSchema.parse(report);
