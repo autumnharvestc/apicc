@@ -77,7 +77,6 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
       }
     },
     async execute(req, opts) {
-      const started = performance.now();
       // form 走 urlencoded 编码；其余 kind 发送 content 字符串。
       let body: string | undefined;
       const sendHeaders = { ...req.headers };
@@ -99,19 +98,24 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
           })())
           : createAgent(opts);
         try {
-          const res = await request(buildUrl(req), {
+          const url = buildUrl(req);
+          const requestOptions = {
             method: req.method,
             headers: sendHeaders,
             body,
             dispatcher: agent,
             signal: opts.signal,
-          });
+          };
+          const started = performance.now();
+          const res = await request(url, requestOptions);
           const bodyText = await res.body.text();
+          // Network latency ends at body completion, before scheduling/metadata/cleanup.
+          const timeMs = performance.now() - started;
           // Allow Undici to mark the response socket idle before a subsequent sequential call.
           await new Promise<void>((resolve) => setImmediate(resolve));
           const headers: Record<string, string> = {};
           for (const [k, v] of Object.entries(res.headers)) headers[k] = String(v);
-          return { status: res.statusCode, headers, bodyText, timeMs: performance.now() - started };
+          return { status: res.statusCode, headers, bodyText, timeMs };
         } finally {
           if (connectionMode === "fresh") await agent.close();
         }

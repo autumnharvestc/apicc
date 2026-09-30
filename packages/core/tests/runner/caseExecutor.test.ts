@@ -60,7 +60,8 @@ describe("executeCase", () => {
     let seen: ExecutableRequest | undefined;
     const client: ProtocolClient = {
       name: "test", canHandle: () => true,
-      async execute(request) { seen = request; return response; },
+      // An immediately resolved fixture represents zero measured network time.
+      async execute(request) { seen = request; return { ...response, timeMs: 0 }; },
     };
     const state = input();
     const result = await executeCase(state, deps(client));
@@ -302,8 +303,97 @@ describe("executeCase", () => {
       ...deps({ name: "test", canHandle: () => true, async execute() { pause(5); return response; } }),
       scriptEngine: { language: "javascript", run(code) { pause(code === "pre" ? 4 : 6); } },
     });
-    expect(result.requestTimeMs).toBeGreaterThanOrEqual(4);
+    expect(result.requestTimeMs).toBe(3);
     expect(result.scriptTimeMs).toBeGreaterThanOrEqual(8);
     expect(result.iterationTimeMs).toBeGreaterThanOrEqual(result.requestTimeMs + result.scriptTimeMs - 1);
+  });
+
+  // Catch replacing a completed protocol's network duration with await/cleanup overhead, including zero.
+  it.each([0, 7])("response timing uses protocol time %s across metrics, events, scripts and assertions", async (protocolTime) => {
+    let clock = 0;
+    const clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const bus = createEventBus();
+    let eventTime: number | undefined;
+    let scriptTime: number | undefined;
+    bus.on("afterResponse", (payload) => { eventTime = payload.timeMs; clock += 5; });
+    try {
+      const result = await executeCase({ ...input(), testCase: {
+        ...testCase, preScript: "pre", postScript: "post",
+        assertions: [{ id: "time", target: "responseTime", op: "eq", expected: String(protocolTime) }],
+      } }, {
+        ...deps({ name: "timed-protocol", canHandle: () => true, async execute() {
+          clock += 41;
+          return { ...response, timeMs: protocolTime };
+        } }), bus,
+        scriptEngine: { language: "javascript", run(code, ctx) {
+          clock += code === "pre" ? 11 : 13;
+          if (code === "post") scriptTime = ctx.pm.response?.time;
+        } },
+      });
+      expect(result.requestTimeMs).toBe(protocolTime);
+      expect(result.response?.timeMs).toBe(protocolTime);
+      expect(eventTime).toBe(protocolTime);
+      expect(scriptTime).toBe(protocolTime);
+      expect(result.outcome.passed).toBe(true);
+      expect(result.scriptTimeMs).toBe(24);
+      expect(result.iterationTimeMs).toBe(70);
+      expect(result.outcome.durationMs).toBe(70);
+    } finally { clockSpy.mockRestore(); }
+  });
+
+  // Catch invalid plugin metadata reaching scripts, afterResponse and latency assertions.
+  it.each([Number.NaN, -1, Number.POSITIVE_INFINITY])("response timing normalizes invalid time %s to measured attempt duration", async (invalidTime) => {
+    let clock = 0;
+    const clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const bus = createEventBus();
+    let eventTime: number | undefined;
+    let scriptTime: number | undefined;
+    const protocolResponse = { ...response, timeMs: invalidTime };
+    bus.on("afterResponse", (payload) => { eventTime = payload.timeMs; });
+    try {
+      const result = await executeCase({ ...input(), testCase: {
+        ...testCase, preScript: undefined, postScript: "post",
+        assertions: [{ id: "time", target: "responseTime", op: "eq", expected: "41" }],
+      } }, {
+        ...deps({ name: "invalid-time", canHandle: () => true, async execute() { clock += 41; return protocolResponse; } }), bus,
+        scriptEngine: { language: "javascript", run(_code, ctx) { scriptTime = ctx.pm.response?.time; } },
+      });
+      expect(eventTime).toBe(41);
+      expect(scriptTime).toBe(41);
+      expect(result.response?.timeMs).toBe(41);
+      expect(result.requestTimeMs).toBe(41);
+      expect(result.iterationTimeMs).toBe(41);
+      expect(result.outcome.passed).toBe(true);
+      expect(protocolResponse.timeMs).toBe(invalidTime);
+    } finally { clockSpy.mockRestore(); }
+  });
+
+  it.each(["transport", "aborted"] as const)("no-response %s retains diagnostic duration and failure classification", async (kind) => {
+    let clock = 0;
+    const clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    try {
+      const result = await executeCase({ ...input(), testCase: {
+        ...testCase, preScript: undefined, postScript: undefined, assertions: [],
+      } }, deps({ name: "failed-attempt", canHandle: () => true, async execute() {
+        clock += 41;
+        throw Object.assign(new Error("wire failure"), { name: kind === "aborted" ? "AbortError" : "Error" });
+      } }));
+      expect(result).toMatchObject({ requestTimeMs: 41, iterationTimeMs: 41, requestStarted: true, requestCompleted: true, failureKind: kind });
+      expect(result.response).toBeUndefined();
+      expect(result.outcome).toMatchObject({ passed: false, durationMs: 41, error: "wire failure", failureKind: kind });
+    } finally { clockSpy.mockRestore(); }
+  });
+
+  it("pre-request failure keeps zero network duration without claiming a sent request", async () => {
+    let clock = 0;
+    const clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    try {
+      const result = await executeCase({ ...input(), testCase: { ...testCase, assertions: [] } }, {
+        ...deps({ name: "unused", canHandle: () => true, async execute() { throw new Error("unexpected I/O"); } }),
+        scriptEngine: { language: "javascript", run() { clock += 11; throw new Error("pre failure"); } },
+      });
+      expect(result).toMatchObject({ requestTimeMs: 0, iterationTimeMs: 11, scriptTimeMs: 11, requestStarted: false, requestCompleted: false, failureKind: "script" });
+      expect(result.outcome).toMatchObject({ passed: false, durationMs: 11, error: "pre failure" });
+    } finally { clockSpy.mockRestore(); }
   });
 });

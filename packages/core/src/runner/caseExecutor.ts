@@ -42,6 +42,7 @@ export interface CaseExecutionResult {
   outcome: CaseOutcome;
   request: ExecutableRequest;
   response?: ExecutionResponse;
+  /** Returned protocol latency, or elapsed attempt time when no valid response timing exists. */
   requestTimeMs: number;
   scriptTimeMs: number;
   iterationTimeMs: number;
@@ -234,7 +235,14 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       failureKind = isAbort(e, timeouts.signal) ? "aborted" : protocolFailureKind(e);
       throw e;
     } finally {
-      requestTimeMs = now() - requestStartAt;
+      const attemptTimeMs = now() - requestStartAt;
+      requestTimeMs = response && Number.isFinite(response.timeMs) && response.timeMs >= 0
+        ? response.timeMs
+        : attemptTimeMs;
+      if (response && response.timeMs !== requestTimeMs) {
+        // Normalize invalid plugin metadata without mutating its response object.
+        response = { ...response, timeMs: requestTimeMs };
+      }
       requestCompleted = true;
     }
     await emit("afterResponse", { status: response.status, timeMs: response.timeMs, headers: response.headers, bodyText: response.bodyText });
