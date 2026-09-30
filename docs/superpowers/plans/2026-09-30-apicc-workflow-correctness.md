@@ -93,7 +93,7 @@
 
 **交付：** 条件 false 是预期跳过；表达式错误、缺引擎、缺引用和执行异常不伪装成功；strict 默认 true。
 
-- [ ] **步骤 1：写失败测试。** 对现有 false 边、两级 false 级联、双败 fan-in、failFast 和 OR 成功路径断言明确原因。新增 missing API/case（包含被 false 边遮住的 missing）、坏条件 `prev.missing.deep`、缺引擎、容器脚本抛错、重复 node/edge id、悬空端点、环；错误引用严格运行在任何 HTTP 发送前失败。strict=false 的缺引用仍明确 skipped + warning，不能成为 passed。已有 missing-as-skipped 与 expression-error-as-false 测试更新为新规格或显式非严格模式。
+- [x] **步骤 1：写失败测试。** 对现有 false 边、两级 false 级联、双败 fan-in、failFast 和 OR 成功路径断言明确原因。新增 missing API/case（包含被 false 边遮住的 missing）、坏条件 `prev.missing.deep`、缺引擎、容器脚本抛错、重复 node/edge id、悬空端点、环；错误引用严格运行在任何 HTTP 发送前失败。strict=false 允许其他独立节点继续诊断，但缺引用节点仍 failed/config + warning，不能成为 passed。已有 missing-as-skipped 与 expression-error-as-false 测试更新为新规格或显式非严格模式。
 
   ```ts
   expect(falseBranch.verdict).toBe("passed");
@@ -102,22 +102,26 @@
   expect(badCondition.failed).toBeGreaterThan(0);
   ```
 
-- [ ] **步骤 2：验证 RED。** `pnpm -C packages/core exec vitest run tests/workflow/runner.test.ts tests/workflow/validate.test.ts`。
-- [ ] **步骤 3：实现类型化结论。** 新增 `WorkflowRunnerOptions.strict?: boolean`（默认 true）、`WorkflowRunResult.verdict?: "passed" | "failed"`；新增 NodeResult `skipReason?` 和 `failureKind?: CaseOutcome["failureKind"]`。原因集合：`condition-pruned | upstream-failed | fail-fast | reference-missing | reference-invalid | unreachable`。条件计算返回 discriminated union，不捕获后按 false：
+- [x] **步骤 2：验证 RED。** `pnpm -C packages/core exec vitest run tests/workflow/runner.test.ts tests/workflow/validate.test.ts`。
+- [x] **步骤 3：实现类型化结论。** 新增 `WorkflowRunnerOptions.strict?: boolean`（默认 true）、`WorkflowRunResult.verdict?: "passed" | "failed"`；新增 NodeResult `skipReason?` 和 `failureKind?: CaseOutcome["failureKind"]`。原因集合：`condition-pruned | upstream-failed | fail-fast | reference-missing | reference-invalid | unreachable`。条件计算返回 discriminated union，不捕获后按 false：
 
   ```ts
   type ConditionVerdict = { kind: "matched" } | { kind: "pruned" }
     | { kind: "error"; message: string };
   ```
 
-  strict 引用预检查以本项目定位/resolve 为准，缺失节点记 failed/config，其他节点 skipped/reference-invalid，不发请求且返回完整失败结果。非严格模式运行到缺引用时 skipped/reference-missing。结构性 error（重复 id、悬空端点、环）执行前拒绝；不能以 warning 忽略。条件求值错误将源节点标记 failed/script 并保存边 id 和可读错误，不运行任何经该失败源才可到达的下游。请求/容器异常转成 failed 节点，其他独立分支可继续，failFast 开启则遗留节点明确 fail-fast。正常 false 剪枝不是 warning 级异常；可以保留信息但要有 skipReason。多层剪枝传播原因，混合失败与剪枝优先 upstream-failed。无法解释的 unreachable 不能让严格 verdict 为 passed。run verdict 与 failed 节点一致；保留生命周期 status。
+  strict 引用预检查以本项目定位/resolve 为准，缺失节点记 failed/config，其他节点 skipped/reference-invalid，不发请求且返回完整失败结果。非严格模式不预先阻断全部节点，运行到缺引用时 failed/config，其他独立节点可继续；缺引用仍使整轮失败。结构性 error（重复 id、悬空端点、环）执行前拒绝；不能以 warning 忽略。条件求值错误将源节点标记 failed/script 并保存边 id 和可读错误，不运行任何经该失败源才可到达的下游。请求/容器异常转成 failed 节点，其他独立分支可继续，failFast 开启则遗留节点明确 fail-fast。正常 false 剪枝不是 warning 级异常；可以保留信息但要有 skipReason。多层剪枝传播原因，混合失败与剪枝优先 upstream-failed。无法解释的 unreachable 不能让严格 verdict 为 passed。run verdict 与 failed 节点一致；保留生命周期 status。
 
   启用校验复用递归定位，增加可选第三参 `project?: Project`；显式 project 时不得跨项目查找，未传时优先定位持有工作流的项目，只在没有所属项目的独立验证接缝里保持 workspace 查找。测试嵌套引用和跨项目相同 ID，保证启用与运行不是两套引用规则。
 
+引用同一逻辑用例时须保留其所有同 ID 环境版本，交由 CollectionRunner 的现有环境继承/覆盖规则挑选（runner.test.ts 已有环境版本覆盖测试）。不能 `.find` 后仅传首个 base 版本。`selectWorkflowCollection` 与 resolve 合成接缝都筛选 `api.cases.filter(c => c.id === caseDef.id)`，不复制 scopeRank 逻辑。工作流增加真实请求测试：base → dev → sit 同 ID，sit extends dev 时只执行 sit、dev 时只执行 dev、无环境只执行 base；没有适用版本仍 config 失败。本项允许必要的小范围修改 `workflow/references.ts`，不迁移用例模型。
+
+  容器操作异常须保留已累积的全部执行行。本项允许最小修改 `runner/runner.ts`：增加 `CollectionRunError extends Error`，携带 `partialResult: RunResult` 和 `failureKind: CaseOutcome["failureKind"]`。容器脚本抛错时使用已累积 outcomes 构造 partialResult 并携带 script 分类抛出；不复制执行引擎，不吞错、不将后置异常改成 warning。工作流 catch 保留 partialResult.cases/warnings，再追加一个独立失败诊断 outcome。普通 CollectionRunner 的原抛错控制流仍保留，额外携带已完成事实。测试模块/祖先文件夹前后置错误，后置错误含多数据行；未执行行不能伪装通过。
+
   不新增取消按钮或停止协议；现有 executeCase 的 aborted 失败分类原样保留，不能改成条件跳过。bridge 错误不能吞成成功。
 
-- [ ] **步骤 4：验证 GREEN。** 覆盖多入混合真假边、条件错误、请求失败三种情形，保证节点只执行一次；提交前 core 全测与 build。
-- [ ] **步骤 5：提交。** `git commit -m "fix(workflow): distinguish pruning from execution errors"`，写 RED/GREEN、严格引用预检和状态表证据。
+- [x] **步骤 4：验证 GREEN。** 覆盖多入混合真假边、条件错误、请求失败三种情形，保证节点只执行一次；提交前 core 全测与 build。
+- [x] **步骤 5：提交。** `git commit -m "fix(workflow): distinguish pruning from execution errors"`，写 RED/GREEN、严格引用预检和状态表证据。
 
 ### 任务 3：数据行完整报告与 skipped 独立计数
 
@@ -145,7 +149,7 @@
   const failed = cases.filter(c => !c.skipped && !c.passed).length;
   ```
 
-  JUnit `<testsuite tests="…" failures="…" skipped="…">` 与 testcase `<skipped message="…"/>`；HTML 三态显示。删除 adapter 原“skipped 计 failed、退出码仍零”的旧裁定注释，说明新规格取代它。无真实失败的条件剪枝报告必须 failed=0。
+  JUnit `<testsuite tests="…" failures="…" skipped="…">` 与 testcase `<skipped message="…"/>`；外层 testsuites 计数同源。JUnit 名称在有 nodeId 时加入节点识别前缀，避免不同节点引用同一 API/用例/数据行时名称碰撞；无 nodeId 的普通集合报告保留既有名称。HTML 三态显示，并使节点归属可识别。删除 adapter 原“skipped 计 failed、退出码仍零”的旧裁定注释，说明新规格取代它。无真实失败的条件剪枝报告必须 failed=0。
 
 - [ ] **步骤 4：验证 GREEN。** 聚焦报告测试；提交前 core 全测与 build。
 - [ ] **步骤 5：提交。** `git commit -m "fix(report): preserve workflow rows and skipped verdicts"`，报告说明节点计数与数据行计数区别。
@@ -156,9 +160,9 @@
 
 **交付：** 默认严格运行、报告与退出码一致、本项目递归引用，桌面能看全数据行和跳过原因；并发/同毫秒运行的原始结果不覆盖。
 
-- [ ] **步骤 1：写失败测试。** CLI 实际进程：false→exit 0、第二行失败→exit 1、缺引用→exit 1、坏条件→exit 1、`--no-strict` 缺引用→exit 0 且明确诊断；`--force-draft` 不绕过 strict。JSON/HTML/JUnit 均显示相同失败/跳过。跨项目同 ID、两层文件夹、原模块 baseUrl 的引用指向所属项目。IPC 同一组行为；桌面显示两/三行含 row、failureKind、error，跳过原因可见；请求行通过但路由失败时展示独立节点错误。同毫秒两次运行原始文件均存在且内容不串。
+- [ ] **步骤 1：写失败测试。** CLI 实际进程：false→exit 0、第二行失败→exit 1、缺引用→exit 1、坏条件→exit 1、`--no-strict` 缺引用→exit 1 且其他独立节点继续诊断；`--force-draft` 不绕过 strict。JSON/HTML/JUnit 均显示相同失败/跳过。跨项目同 ID、两层文件夹、原模块 baseUrl 的引用指向所属项目。IPC 同一组行为；桌面显示两/三行含 row、failureKind、error，跳过原因可见；请求行通过但路由失败时展示独立节点错误。同毫秒两次运行原始文件均存在且内容不串。
 - [ ] **步骤 2：验证 RED。** CLI `pnpm -C packages/cli exec vitest run tests/e2e.test.ts`，桌面 `pnpm -C apps/desktop exec vitest run tests/main/ipc.test.ts tests/renderer/components/wfDesigner.test.ts tests/renderer/components/RunView.test.ts tests/renderer/stores/workflowDesign.test.ts`。记录真实失败。
-- [ ] **步骤 3：实现消费者。** CLI run-workflow 添加 `.option("--no-strict", "允许缺失引用跳过（仍保留诊断）")`，把 commander 的 `strict` 传入；默认 strict=true。IPC `WfRunInput.strict?: boolean`，调用默认 true，不必新增放宽 UI。findProjectApi 只用定位工作流所属 project，不扫描所有 workspace。CLI exit 采用 `wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0`，输出明确“节点统计”；report 数据行独立统计。renderer 使用 outcomes 回退 outcome，按每行显示状态及 skipped 原因；通用 RunView 优先 skipped、再 passed/failed。旧报告可选字段安全回退，不新增执行编排能力。
+- [ ] **步骤 3：实现消费者。** CLI run-workflow 添加 `.option("--no-strict", "缺失引用不中断独立节点诊断（本次结果仍失败）")`，把 commander 的 `strict` 传入；默认 strict=true。IPC `WfRunInput.strict?: boolean`，调用默认 true，不必新增放宽 UI。findProjectApi 只用定位工作流所属 project，不扫描所有 workspace。CLI exit 采用 `wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0`，输出明确“节点统计”；report 数据行独立统计。renderer 使用 outcomes 回退 outcome，按每行显示状态及 skipped 原因；通用 RunView 优先 skipped、再 passed/failed。旧报告可选字段安全回退，不新增执行编排能力。
 
   ```ts
   const rows = node.outcomes ?? (node.outcome ? [node.outcome] : []);
