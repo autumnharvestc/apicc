@@ -18,6 +18,7 @@
 - 以 apicc 结构化契约为主；不在本阶段实施新契约迁移或旧版本兼容工程。
 - 开发使用 GPT-5.6 Luna，审查使用 GPT-6.1 Sol、high；工作发生于 `codex/workflow-correctness` 独立工作树，不改 main，不合并、不推送。
 - 用户已同意本次调度复杂残留临时使用独立 GPT-6.1 Sol high 修复子智能体，另由不同的 Sol high 审核；本次之外仍默认 Luna 开发。临时升级需逐次征得用户同意。
+- 用户另行批准计时边界修复因 agent thread limit 临时唤回现有 GPT-6.1 Sol high 实现，另由不同 Sol high 独立审核；只限该有界修复，不改变后续默认模型或扩大集成权限。
 - 所有入库内容保持品牌中立；使用 `node scripts/check-brand-neutral.mjs` 验证。
 - 保留现有顺序调度与 OR 就绪语义；真正并行、AND/OR 配置、循环、重试、finally 和新增取消 UI 属于阶段 E，不在本计划中实现。
 - 工作流 `status` 仍表示 draft/published/enabled 生命周期；执行结论另设 `verdict?: "passed" | "failed"`，不可混用。
@@ -226,6 +227,18 @@ JSON 在本阶段沿用 CLI 实际落盘的原始 WorkflowRunResult（节点计�
 控制者在同一冻结提交 `eb86fb1`（仅文档提交在已审代码之后）运行标准完整入口：第一轮 exit 0，167.37 秒，core 519、CLI 96、desktop 735、admin-web 185、服务端 192 项通过；第二轮 exit 1，37.78 秒，既有 HTTP 连接池并发回归失败，core 518 通过 / 1 失败，后续完整阶段不宣称完成。第三轮未运行，ENG-001 尚未验收。两轮后均无新增相关临时目录或匹配 Java 进程，两个历史目录保留。
 
 失败测试用 `<220ms` 总耗时判断两个请求并发；聚焦复跑通过。只读探针在两请求已并发到达后人为延迟事件循环，得到两个连接、最大重叠 2、均 HTTP 200，却耗时 305ms，证明时长代理存在负载敏感性。原门禁摘要未保留实际断言时长，不能据此断言这次失败的精确成因。控制者未修改 HTTP 产品或测试源码；已请求用户授权 Luna 将该单项测试改为确定性的服务端屏障和真实重叠验证，Sol high 审核后重新从第一轮连续验收。工作流修复本身保持已审查通过，但阶段 B 整体验收未完成。
+
+### 后续有界修复：HTTP 计时边界
+
+用户先要求只读审核，再授权先修正计时边界（并非授权修改原并发测试判据）。只读审核确认 HTTP 连接池真实并发与复用正常，但客户端在正文读取后仍将 yield/响应头转换计入 timeMs，执行器又将整个 await execute（包含 fresh close）计入 requestTimeMs，与核心规格 §4.3 不符。因线程上限无法新建或唤回 Luna，用户另行明确批准现有 Sol high 实现，另由不同 Sol high 独立审核。
+
+修复 `139cbb7` 只涉及 HTTP client、caseExecutor 和两份计时回归：request 前开始、body 读完即冻结；有效协议 timeMs（含 0）传至事件/脚本/断言/压测；非法值归一化为实际 attempt 诊断耗时；无响应失败分类与完整 iterationTimeMs 保留。原 awaited yield/fresh close、连接池行为、`<220ms` 判据与 close 生命周期契约不变，无接口形状或权限扩展。
+
+真实语义 RED 9 项，新增 12 个回归/守卫实例；实施者聚焦 82、core 全量 531、typecheck/build/brand/diff 均通过。控制者在冻结修复提交上独立复跑聚焦 82、typecheck/build/brand/区间 diff 均 exit 0。不同 Sol high 独立审核规格与质量通过，无 Critical/Important；一次额度中断后恢复同一审核者完成余下检查，不重复总审或已完成检查。
+
+非阻断 Minor 记录为后续测试健壮性事项：新 `tests/http/timing.test.ts:101、105` 的 yield/close 屏障等待未与 pending 提前完成竞速，未来删除这两步的回归可能等待超时且延后 finally 清理；当前生产和通过路径不受影响。此项不静默丢弃，后续改进测试时应处理。
+
+独立记录在 `local/HTTP计时边界修复记录-2026-09-30.md`；本次不运行 canonical 三轮、不合并/推送/打包。无法据此证明原 `<220ms` 失败的历史精确原因，阶段 B 的 ENG-001 仍未验收。
 
 - [x] 全部五项任务规格/质量审查通过，完成一次宽范围审查及所有后续修复区间的定向复审。
 - [ ] 全分支 Node/Java 工具链正确，core/CLI/desktop/admin-web 构建和测试、desktop typecheck、brand gate、服务端测试通过；以标准入口三次连续验证覆盖 ENG-001，避免另外反复全套重跑。
