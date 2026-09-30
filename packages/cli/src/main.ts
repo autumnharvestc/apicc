@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,6 +35,7 @@ import {
   validateStressRunOptions as validateCoreStressRunOptions,
   StressSafetyError,
   withBaseUrl,
+  findProjectApi,
 } from "@apicc/core";
 
 /** 路径分隔符归一为 "/"，使集合目录匹配与用户输入的正/反斜杠形态无关（Windows 兼容）。 */
@@ -526,9 +528,10 @@ export async function runCli(
     .argument("<workflowPath>", "工作流目录（相对工作区根，如 groups/g/projects/p/workflows/名）")
     .option("--env <name>", "环境名称")
     .option("--force-draft", "允许运行草稿（跳过生命周期与启用校验，仅结构校验）", false)
+    .option("--no-strict", "缺失引用不中断独立节点诊断（本次结果仍失败）")
     .option("--reporters <list>", "报告格式，逗号分隔", "html")
     .option("--runs-dir <dir>", "运行历史输出目录")
-    .action(async (workflowPath: string, opts: { env?: string; forceDraft: boolean; reporters: string; runsDir?: string }) => {
+    .action(async (workflowPath: string, opts: { env?: string; forceDraft: boolean; strict: boolean; reporters: string; runsDir?: string }) => {
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
       const storage = registry.getStorage();
@@ -559,21 +562,14 @@ export async function runCli(
         throw new Error("工作流为草稿，请先发布启用或加 --force-draft");
       }
       const { WorkflowRunner, workflowToRunResult } = await import("@apicc/core");
-      // resolve：workspace 全树查找接口定义（含文件夹内接口）。
-      const findApi = (apiId: string) => {
-        for (const g of workspace.groups) for (const p of g.projects) for (const c of p.collections) {
-          const api = c.apis.find((a) => a.id === apiId);
-          if (api) return api;
-          for (const f of c.folders) { const fa = f.apis.find((a) => a.id === apiId); if (fa) return fa; }
-        }
-        return undefined;
-      };
-      const runner = new WorkflowRunner({ registry, resolve: findApi, envName: env?.name, failFast: false });
+      // resolve：先在工作流所属项目递归定位接口，避免跨项目同 ID 污染；resolver 仅保留兼容接缝。
+      const findApi = (apiId: string) => findProjectApi(project!, apiId)?.api;
+      const runner = new WorkflowRunner({ registry, resolve: findApi, envName: env?.name, failFast: false, strict: opts.strict });
       const wfr = await runner.run(workflow, { project, workspace });
       // 生成物隔离（规格 §6）：原始结果 JSON 与报告同目录（对齐 run 命令产物口径），默认 .apicc/runs。
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
       mkdirSync(runsOutDir, { recursive: true });
-      writeFileSync(join(runsOutDir, `workflow-${wfr.workflowId}-${Date.now()}.json`), JSON.stringify(wfr, null, 2));
+      writeFileSync(join(runsOutDir, `workflow-${wfr.workflowId}-${randomUUID()}.json`), JSON.stringify(wfr, null, 2));
       const result = workflowToRunResult(wfr);
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
@@ -582,8 +578,13 @@ export async function runCli(
         log(`报告已生成: ${file}`);
       }
       for (const w of wfr.warnings) log(`[警告] ${w}`);
-      log(`总计 ${wfr.total} · 通过 ${wfr.passed} · 失败 ${wfr.failed} · 跳过 ${wfr.skipped}`);
-      process.exitCode = wfr.failed > 0 ? 1 : 0;
+      for (const node of wfr.nodeResults) {
+        if (node.state === "skipped") {
+          log(`[跳过] 节点 ${node.nodeId}：${node.skipReason === "condition-pruned" ? "条件不满足" : node.skipReason ?? "未知原因"}`);
+        }
+      }
+      log(`节点统计：总计 ${wfr.total} · 通过 ${wfr.passed} · 失败 ${wfr.failed} · 跳过 ${wfr.skipped}`);
+      process.exitCode = wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0;
     });
 
   // 压测运行（任务 4）：把 core 压测引擎（并发池执行 + 聚合报告）暴露为 CLI 命令；

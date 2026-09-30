@@ -964,7 +964,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
       const loc = locateWorkflow(workflowId);
       if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
       const ws = ensureOpen();
-      const enablement = next === "enabled" ? validateEnablement(loc.workflow, ws) : undefined;
+      const enablement = next === "enabled" ? validateEnablement(loc.workflow, ws, loc.project) : undefined;
       if (enablement && !enablement.ok) {
         return { workflow: loc.workflow, errors: enablement.errors, warnings: enablement.warnings };
       }

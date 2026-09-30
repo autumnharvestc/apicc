@@ -105,6 +105,31 @@ describe("RunView", () => {
     expect(wrapper.find('[data-testid="run-summary"]').text()).toContain("失败 1");
   });
 
+  it("结果行显示 skipped、skipReason 与 failureKind，且通过行不被改写", async () => {
+    const { wrapper, api, collectionNode } = await mountRunView();
+    const mixed: RunResult = {
+      collectionId: collectionNode.id, collectionName: "三态集合",
+      startedAt: "2026-09-02T00:00:00.000Z", finishedAt: "2026-09-02T00:00:01.000Z",
+      total: 3, passed: 1, failed: 1, skipped: 1,
+      cases: [
+        { apiId: "a1", apiName: "通过接口", caseId: "c1", caseName: "通过用例", passed: true, durationMs: 5, assertions: [] },
+        { apiId: "a2", apiName: "跳过接口", caseId: "c2", caseName: "跳过用例", passed: false, skipped: true, skipReason: "upstream-failed", durationMs: 0, assertions: [] },
+        { apiId: "a3", apiName: "失败接口", caseId: "c3", caseName: "失败用例", passed: false, failureKind: "config", error: "节点引用缺失", durationMs: 0, assertions: [] },
+      ],
+    };
+    api.runCollection = async () => mixed;
+    chooseSelect(wrapper, "run-collection-select", collectionNode.id);
+    await flushPromises();
+    await wrapper.find('[data-testid="run-btn"]').trigger("click");
+    await flushPromises();
+    const tags = wrapper.findAll('[data-testid="run-outcome"]');
+    expect(tags).toHaveLength(3);
+    expect(tags.find((tag) => tag.attributes("data-state") === "skipped")?.text()).toContain("跳过");
+    expect(wrapper.find('[data-testid="run-summary"]').text()).toContain("跳过 1");
+    expect(wrapper.text()).toContain("upstream-failed");
+    expect(wrapper.text()).toContain("config");
+  });
+
   it("历史抽屉：运行后打开列出 history-row，点击读回完整结果并收起", async () => {
     const { wrapper, run, collectionNode } = await mountRunView();
     chooseSelect(wrapper, "run-collection-select", collectionNode.id);

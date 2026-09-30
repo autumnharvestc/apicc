@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Drawer as ADrawer, Table as ATable, Tag as ATag } from "ant-design-vue";
-import type { NodeResult, WorkflowRunResult } from "@apicc/core";
+import type { CaseOutcome, NodeResult, NodeState, WorkflowRunResult } from "@apicc/core";
 import { stateTagColor } from "../wf/wfCanvas.js";
 
 /**
@@ -18,14 +18,44 @@ const { t } = useI18n();
 
 const columns = computed(() => [
   { key: "label", title: t("wf.colNode"), dataIndex: "label" },
+  { key: "row", title: t("run.row"), dataIndex: "row" },
   { key: "state", title: t("wf.colState"), dataIndex: "state" },
   { key: "duration", title: t("wf.colDuration"), dataIndex: "duration" },
   { key: "error", title: t("wf.colError"), dataIndex: "error" },
 ]);
 
-// NodeResult 以 nodeId 为天然稳定键（EnvPanel row-key 告警教训）。
-function rowKey(record: NodeResult): string {
-  return record.nodeId;
+interface ResultRow {
+  node: NodeResult;
+  outcome?: CaseOutcome;
+  state: NodeState;
+  key: string;
+}
+
+/** 展开节点的全部实际数据行；旧报告无 outcomes 时回退 outcome。 */
+const rows = computed<ResultRow[]>(() => props.result?.nodeResults.flatMap((node) => {
+  const outcomes = node.outcomes?.length ? node.outcomes : node.outcome ? [node.outcome] : [];
+  if (outcomes.length === 0) return [{ node, state: node.state, key: `${node.nodeId}:0` }];
+  const expanded = outcomes.map((outcome, index) => ({
+    node, outcome, state: outcome.skipped ? "skipped" as const : outcome.passed ? "passed" as const : "failed" as const,
+    key: `${node.nodeId}:${index}`,
+  }));
+  // 条件/路由失败不能改写已经通过的 HTTP 数据行；追加独立节点诊断行。
+  if (node.state === "failed" && expanded.every((row) => row.outcome?.passed)) {
+    expanded.push({
+      node,
+      outcome: {
+        apiId: node.nodeId, apiName: node.label ?? node.nodeId, caseId: node.nodeId,
+        caseName: `${node.label ?? node.nodeId}（节点诊断）`, passed: false, durationMs: 0,
+        assertions: [], error: node.error ?? "节点执行失败", failureKind: node.failureKind,
+      },
+      state: "failed", key: `${node.nodeId}:diagnostic`,
+    });
+  }
+  return expanded;
+}) ?? []);
+
+function rowKey(record: ResultRow): string {
+  return record.key;
 }
 
 function formatMs(ms: number): string {
@@ -58,7 +88,7 @@ function formatMs(ms: number): string {
         </template>
       </a-alert>
       <a-table
-        :data-source="result.nodeResults"
+        :data-source="rows"
         :columns="columns"
         :row-key="rowKey"
         :pagination="false"
@@ -67,15 +97,26 @@ function formatMs(ms: number): string {
         :custom-row="(): Record<string, any> => ({ 'data-testid': 'wf-result-node' })"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'state'">
+          <template v-if="column.key === 'label'">
+            {{ record.outcome?.caseName || record.node.label || record.node.nodeId }}
+          </template>
+          <template v-else-if="column.key === 'state'">
             <a-tag :color="stateTagColor(record.state)" data-testid="wf-result-state">
               {{ t(`wf.nodeState.${record.state}`) }}
             </a-tag>
           </template>
+          <template v-else-if="column.key === 'row'">{{ record.outcome?.row ?? "—" }}</template>
           <template v-else-if="column.key === 'duration'">
             {{ record.outcome ? formatMs(record.outcome.durationMs) : "—" }}
           </template>
-          <template v-else-if="column.key === 'error'"><span class="wf-result-error">{{ record.error ?? "—" }}</span></template>
+          <template v-else-if="column.key === 'error'">
+            <span class="wf-result-error">
+              <template v-if="record.outcome?.skipReason">{{ record.outcome.skipReason }}</template>
+              <template v-if="record.outcome?.failureKind">{{ record.outcome.failureKind }}</template>
+              <template v-if="record.outcome?.error">{{ record.outcome.error }}</template>
+              <template v-if="!record.outcome?.skipReason && !record.outcome?.failureKind && !record.outcome?.error">{{ record.node.error ?? record.node.skipReason ?? "—" }}</template>
+            </span>
+          </template>
         </template>
       </a-table>
     </template>

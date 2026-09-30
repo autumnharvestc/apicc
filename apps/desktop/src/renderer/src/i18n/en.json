@@ -143,7 +143,7 @@
     "row": "Data row",
     "result": "Result",
     "duration": "Duration",
-    "summary": "{total} total · {passed} passed · {failed} failed",
+    "summary": "{total} total · {passed} passed · {failed} failed · {skipped} skipped",
     "kindCollection": "Collection",
     "kindStress": "Stress",
     "stressSummary": "{total} requests · {failed} failed · {rps} req/s",

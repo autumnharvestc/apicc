@@ -433,8 +433,27 @@ describe("工作流 IPC", () => {
     expect(result.workflowId).toBe(wf.id);
     expect(result.total).toBe(1);
     expect(result.nodeResults).toHaveLength(1);
+    await deps.handle("wf:run", {}, { workflowId: wf.id });
     const files = readdirSync(join(dir, ".apicc", "runs"));
-    expect(files.some((f) => f.startsWith(`workflow-${wf.id}-`) && f.endsWith(".json"))).toBe(true);
+    const rawFiles = files.filter((f) => f.startsWith(`workflow-${wf.id}-`) && f.endsWith(".json"));
+    expect(rawFiles).toHaveLength(2);
+    expect(rawFiles[0]).not.toBe(rawFiles[1]);
+  });
+
+  it("wf:run 接受 strict=false 并保留缺引用失败结论", async () => {
+    const { deps, project, api } = await setupWf();
+    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "严格诊断流" });
+    await deps.handle("wf:save", {}, { workflow: {
+      ...wf,
+      nodes: [
+        { id: "missing", kind: "request", apiId: "ghost-api", caseId: "ghost-case" },
+        { id: "independent", kind: "request", apiId: api.id, caseId: api.cases[0]!.id },
+      ],
+    } });
+    await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "published" });
+    const result = await deps.handle("wf:run", {}, { workflowId: wf.id, strict: false });
+    expect(result.nodeResults.find((node: { nodeId: string }) => node.nodeId === "missing")?.state).toBe("failed");
+    expect(result.nodeResults.find((node: { nodeId: string }) => node.nodeId === "independent")?.state).toBe("failed");
   });
 
   it("wf 频道入参形状非法时抛带频道名的可读错误（zod 校验入表）", async () => {

@@ -1,7 +1,9 @@
 import { createServer, type Server } from "node:http";
+import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDefaultRegistry, fileStorage } from "@apicc/core";
 import type { ShardOutcome, Workspace } from "@apicc/core";
@@ -14,6 +16,17 @@ let prevCwd = "";
 const receivedPaths: string[] = [];
 type ObservedRequest = { method: string; url: string; headers: Record<string, string | undefined>; body: string };
 const receivedRequests: ObservedRequest[] = [];
+
+function runCliProcess(args: string[]): Promise<{ code: number; output: string }> {
+  const entry = join(dirname(fileURLToPath(import.meta.url)), "../dist/bin.js");
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [entry, "--no-plugins", ...args], { cwd: root });
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
+    child.on("close", (code) => resolve({ code: code ?? 1, output }));
+  });
+}
 
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -330,6 +343,41 @@ describe("CLI 端到端", () => {
       runCli(["run-workflow", "groups/demo/projects/svc/workflows/不存在", "--env", "dev"], createDefaultRegistry()),
     ).rejects.toThrow(/未找到工作流/);
   });
+
+  it("run-workflow 缺引用默认严格失败；--no-strict 继续独立节点但仍失败", async () => {
+    const { mkdirSync, writeFileSync, readdirSync, readFileSync } = await import("node:fs");
+    const wfId = "00000000-0000-4000-8000-000000000024";
+    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", wfId);
+    mkdirSync(wfDir, { recursive: true });
+    writeFileSync(join(wfDir, "workflow.yaml"), [
+      `id: ${wfId}`, "name: 严格诊断流", "status: enabled", "nodes:",
+      "  - id: missing", "    kind: request", "    apiId: ghost-api", "    caseId: ghost-case", "    label: missing",
+      "  - id: independent", "    kind: request", "    apiId: 00000000-0000-4000-8000-000000000011", "    caseId: 00000000-0000-4000-8000-000000000015", "    label: independent",
+      "edges: []",
+    ].join("\n"));
+    const strictDir = join(root, "strict-runs");
+    const strict = await runCliProcess([
+      "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--runs-dir", strictDir,
+    ]);
+    expect(strict.code).toBe(1);
+    const relaxedDir = join(root, "relaxed-runs");
+    const relaxed = await runCliProcess([
+      "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", relaxedDir,
+    ]);
+    expect(relaxed.code).toBe(1);
+    expect(relaxed.output).toContain("节点统计");
+    const relaxedAgain = await runCliProcess([
+      "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", relaxedDir,
+    ]);
+    expect(relaxedAgain.code).toBe(1);
+    const raws = readdirSync(relaxedDir).filter((name) => name.startsWith("workflow-") && name.endsWith(".json"));
+    expect(raws).toHaveLength(2);
+    expect(raws[0]).not.toBe(raws[1]);
+    const report = JSON.parse(readFileSync(join(relaxedDir, raws[1]!), "utf8")) as { nodeResults: Array<{ nodeId: string; state: string }>; verdict?: string };
+    expect(report.verdict).toBe("failed");
+    expect(report.nodeResults.find((node) => node.nodeId === "missing")?.state).toBe("failed");
+    expect(report.nodeResults.find((node) => node.nodeId === "independent")?.state).toBe("passed");
+  }, 30000);
 
   it("run-stress 对接口用例并发压测并落盘 JSON", async () => {
     // 夹具：既有临时工作区 + 本地 server（复用文件内既有 beforeAll 资源）。

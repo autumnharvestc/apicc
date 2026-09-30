@@ -143,7 +143,7 @@
     "row": "数据行",
     "result": "结果",
     "duration": "耗时",
-    "summary": "共 {total} 条 · 通过 {passed} · 失败 {failed}",
+    "summary": "共 {total} 条 · 通过 {passed} · 失败 {failed} · 跳过 {skipped}",
     "kindCollection": "集合",
     "kindStress": "压测",
     "stressSummary": "共 {total} 请求 · 失败 {failed} · {rps} req/s",

@@ -692,6 +692,32 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     expect(rows[1]!.textContent).toContain("—"); // 无 outcome 占位
   });
 
+  it("抽屉展开工作流节点的全部 outcomes，并显示跳过原因", async () => {
+    const ctx = await mountRunnableFlow();
+    const ids = ctx.design.workflow!.nodes.map((n) => n.id);
+    ctx.api.wfRun = async () => ({
+      workflowId: ctx.design.workflow!.id, workflowName: ctx.design.workflow!.name, status: "published",
+      nodeResults: [
+        {
+          nodeId: ids[0]!, kind: "request", state: "failed", outcomes: [
+            { apiId: "a", apiName: "a", caseId: "c", caseName: "行1", row: 1, passed: true, durationMs: 1, assertions: [] },
+            { apiId: "a", apiName: "a", caseId: "c", caseName: "行2", row: 2, passed: false, failureKind: "config", error: "引用缺失", durationMs: 0, assertions: [] },
+          ], error: "引用缺失",
+        },
+        { nodeId: ids[1]!, kind: "noop", state: "skipped", skipReason: "upstream-failed" },
+      ],
+      total: 2, passed: 0, failed: 1, skipped: 1, warnings: [], startedAt: "", finishedAt: "",
+    });
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    const rows = document.body.querySelectorAll('[data-testid="wf-result-node"]');
+    expect(rows).toHaveLength(3);
+    expect(document.body.textContent).toContain("行2");
+    expect(document.body.textContent).toContain("config");
+    expect(document.body.textContent).toContain("引用缺失");
+    expect(document.body.textContent).toContain("upstream-failed");
+  });
+
   it("环境选择：选项来自当前项目 envs；选中后 wfRun 携带 envName；切流重置回无环境", async () => {
     const ctx = await mountRunnableFlow();
     await ctx.api.envCreate({ projectId: ctx.projectId, name: "dev" });

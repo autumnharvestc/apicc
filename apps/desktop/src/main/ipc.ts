@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, normalizeStressOrigin, normalizeStressPolicy, StressSafetyError, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Project, type Workspace, type StressTargetPolicy } from "@apicc/core";
+import { randomUUID } from "node:crypto";
+import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, normalizeStressOrigin, normalizeStressPolicy, StressSafetyError, findProjectApi, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Project, type Workspace, type StressTargetPolicy } from "@apicc/core";
 import { z } from "zod";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
@@ -67,7 +68,7 @@ const WfRenameInputSchema = z.object({ workflowId: z.string(), name: z.string() 
 const WfSaveInputSchema = z.object({ workflow: WorkflowSchema });
 const WfSetStatusInputSchema = z.object({ workflowId: z.string(), next: WorkflowStatusSchema });
 const WfImpactInputSchema = z.object({ caseId: z.string().optional(), apiId: z.string().optional() });
-const WfRunInputSchema = z.object({ workflowId: z.string(), envName: z.string().nullish() });
+const WfRunInputSchema = z.object({ workflowId: z.string(), envName: z.string().nullish(), strict: z.boolean().optional() });
 // 压测频道（M2-D3 任务 1）：envName 沿用 nullish 惯例；maxIterations/durationMs 传 null
 // （antd InputNumber 清空口径）同样放行，null 由 stress.ts 归一为 undefined（终止条件
 // 二者都缺时由 StressRunner 抛「压测终止条件缺失」core 文案）。
@@ -264,20 +265,13 @@ async function runWorkflow(session: Session, input: WfRunInput, registry: Plugin
   if (loc.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
   // locateWorkflow 内 ensureOpen 已保证会话打开，root/workspace 非空（与 debug.ts 运行链路同款断言）。
   const ws = session.workspace!;
-  // resolve：workspace 全树查找接口定义（含文件夹内接口，与 CLI run-workflow 同口径）。
-  const findApi = (apiId: string) => {
-    for (const g of ws.groups) for (const p of g.projects) for (const c of p.collections) {
-      const api = c.apis.find((a) => a.id === apiId);
-      if (api) return api;
-      for (const f of c.folders) { const fa = f.apis.find((a) => a.id === apiId); if (fa) return fa; }
-    }
-    return undefined;
-  };
-  const runner = new WorkflowRunner({ registry, resolve: findApi, envName: input.envName ?? undefined, failFast: false });
+  // resolve：仅在工作流所属项目递归定位接口，避免跨项目同 ID 污染；resolver 仅保留兼容接缝。
+  const findApi = (apiId: string) => findProjectApi(loc.project, apiId)?.api;
+  const runner = new WorkflowRunner({ registry, resolve: findApi, envName: input.envName ?? undefined, failFast: false, strict: input.strict ?? true });
   const result = await runner.run(loc.workflow, { project: loc.project, workspace: ws });
   const runsDir = workspaceRunsDir(session.root!);
   mkdirSync(runsDir, { recursive: true });
-  writeFileSync(join(runsDir, `workflow-${result.workflowId}-${Date.now()}.json`), JSON.stringify(result, null, 2));
+  writeFileSync(join(runsDir, `workflow-${result.workflowId}-${randomUUID()}.json`), JSON.stringify(result, null, 2));
   return result;
 }
 

@@ -85,6 +85,12 @@ const columns = computed(() => [
   { key: "durationMs", title: t("run.duration"), dataIndex: "durationMs" },
 ]);
 
+type OutcomeState = "passed" | "failed" | "skipped";
+function outcomeState(record: Record<string, any>): OutcomeState {
+  if (record.skipped) return "skipped";
+  return record.passed ? "passed" : "failed";
+}
+
 // CaseOutcome 无独立 id：apiId+caseId+数据行号合成稳定 rowKey（EnvPanel row-key 告警教训）。
 function rowKey(record: CaseOutcome): string {
   return `${record.apiId}:${record.caseId}:${record.row ?? -1}`;
@@ -121,7 +127,7 @@ function formatMs(ms: number): string {
         <a-button data-testid="runs-history-btn" @click="run.historyOpen = true">{{ t("run.history") }}</a-button>
       </div>
       <div v-if="run.result" class="summary" data-testid="run-summary">
-        {{ t("run.summary", { total: run.result.total, passed: run.result.passed, failed: run.result.failed }) }}
+        {{ t("run.summary", { total: run.result.total, passed: run.result.passed, failed: run.result.failed, skipped: run.result.skipped ?? 0 }) }}
       </div>
       <a-table
         v-if="run.result"
@@ -135,14 +141,23 @@ function formatMs(ms: number): string {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'row'">{{ record.row ?? "—" }}</template>
           <template v-else-if="column.key === 'passed'">
-            <a-tag :color="record.passed ? 'success' : 'error'" :data-passed="String(record.passed)" data-testid="run-outcome">
-              {{ record.passed ? t("response.passed") : t("response.failed") }}
+            <a-tag
+              :color="outcomeState(record) === 'passed' ? 'success' : outcomeState(record) === 'skipped' ? 'default' : 'error'"
+              :data-passed="String(record.passed)"
+              :data-state="outcomeState(record)"
+              data-testid="run-outcome"
+            >
+              {{ outcomeState(record) === "skipped" ? t("wf.nodeState.skipped") : record.passed ? t("response.passed") : t("response.failed") }}
+              <span v-if="record.skipReason">（{{ record.skipReason }}）</span>
+              <span v-else-if="record.failureKind">（{{ record.failureKind }}）</span>
             </a-tag>
           </template>
           <template v-else-if="column.key === 'durationMs'">{{ formatMs(record.durationMs) }}</template>
         </template>
         <template #expandedRowRender="{ record }">
           <div class="case-detail" data-testid="run-detail">
+            <div v-if="record.skipReason" class="detail-skip">{{ record.skipReason }}</div>
+            <div v-if="record.failureKind" class="detail-failure-kind">{{ record.failureKind }}</div>
             <div v-if="record.error" class="detail-error">{{ record.error }}</div>
             <div
               v-for="(a, i) in record.assertions"

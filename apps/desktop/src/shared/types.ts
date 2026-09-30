@@ -184,7 +184,7 @@ export interface WfSetStatusResult { workflow: Workflow; errors: string[]; warni
 /** wf:impact 入参：按用例/接口 id 反查工作流引用（规格 §3.1 影响分析）。 */
 export interface WfImpactInput { caseId?: string; apiId?: string }
 /** wf:run 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
-export interface WfRunInput { workflowId: string; envName?: string }
+export interface WfRunInput { workflowId: string; envName?: string; strict?: boolean }
 
 /**
  * nodeCreate 统一返回的瘦节点 DTO（宽审查 I2：ipc 与 memory 契约一致的单一事实源）。
