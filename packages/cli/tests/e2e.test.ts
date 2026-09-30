@@ -440,9 +440,13 @@ describe("CLI 端到端", () => {
     const falseRun = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/条件通过流", "--reporters", "html,junit", "--runs-dir", falseDir]);
     expect(falseRun.code).toBe(0);
     const falseRaw = readdirSync(falseDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
-    const falseResult = JSON.parse(readFileSync(join(falseDir, falseRaw), "utf8")) as { verdict?: string; nodeResults: Array<{ state: string; skipReason?: string }> };
+    const falseResult = JSON.parse(readFileSync(join(falseDir, falseRaw), "utf8")) as { verdict?: string; total?: number; passed?: number; failed?: number; skipped?: number; nodeResults: Array<{ nodeId?: string; state: string; skipReason?: string }> };
     expect(falseResult.verdict).toBe("passed");
-    expect(falseResult.nodeResults.some((node) => node.skipReason === "condition-pruned")).toBe(true);
+    expect(falseResult).toMatchObject({ total: 2, passed: 1, failed: 0, skipped: 1 });
+    expect(falseResult.nodeResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeId: "start", state: "noop" }),
+      expect.objectContaining({ nodeId: "pruned", state: "skipped", skipReason: "condition-pruned" }),
+    ]));
     const falseAdapted = workflowToRunResult(falseResult as never);
     expect(falseAdapted).toMatchObject({ total: 2, passed: 1, failed: 0, skipped: 1 });
     expect(falseAdapted.cases).toEqual(expect.arrayContaining([
@@ -463,8 +467,9 @@ describe("CLI 端到端", () => {
     const failedRun = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/第二行失败流", "--env", "dev", "--reporters", "html,junit", "--runs-dir", failedDir]);
     expect(failedRun.code).toBe(1);
     const failedRaw = readdirSync(failedDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
-    const failedResult = JSON.parse(readFileSync(join(failedDir, failedRaw), "utf8")) as { verdict?: string; nodeResults: Array<{ nodeId: string; state: string; outcomes?: Array<{ passed: boolean }> }> };
+    const failedResult = JSON.parse(readFileSync(join(failedDir, failedRaw), "utf8")) as { verdict?: string; total?: number; passed?: number; failed?: number; skipped?: number; nodeResults: Array<{ nodeId: string; state: string; outcomes?: Array<{ passed: boolean }> }> };
     expect(failedResult.verdict).toBe("failed");
+    expect(failedResult).toMatchObject({ total: 2, passed: 1, failed: 1, skipped: 0 });
     expect(failedResult.nodeResults.find((node) => node.nodeId === "first")?.state).toBe("passed");
     expect(failedResult.nodeResults.find((node) => node.nodeId === "second")?.state).toBe("failed");
     const failedAdapted = workflowToRunResult(failedResult as never);
@@ -486,7 +491,13 @@ describe("CLI 端到端", () => {
     const badCondition = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/坏条件流", "--reporters", "html,junit", "--runs-dir", badDir]);
     expect(badCondition.code).toBe(1);
     const badRaw = readdirSync(badDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
-    const badResult = JSON.parse(readFileSync(join(badDir, badRaw), "utf8")) as { nodeResults: Array<{ nodeId: string; state: string; failureKind?: string; skipReason?: string }> };
+    const badResult = JSON.parse(readFileSync(join(badDir, badRaw), "utf8")) as { verdict?: string; total?: number; passed?: number; failed?: number; skipped?: number; nodeResults: Array<{ nodeId: string; state: string; failureKind?: string; skipReason?: string }> };
+    expect(badResult.verdict).toBe("failed");
+    expect(badResult).toMatchObject({ total: 2, passed: 0, failed: 1, skipped: 1 });
+    expect(badResult.nodeResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeId: "condition-source", state: "failed", failureKind: "script" }),
+      expect.objectContaining({ nodeId: "condition-target", state: "skipped", skipReason: "upstream-failed" }),
+    ]));
     const badAdapted = workflowToRunResult(badResult as never);
     expect(badAdapted).toMatchObject({ total: 2, passed: 0, failed: 1, skipped: 1 });
     expect(badAdapted.cases).toEqual(expect.arrayContaining([
@@ -500,8 +511,12 @@ describe("CLI 端到端", () => {
     const badXml = readFileSync(join(badDir, readdirSync(badDir).find((file) => file.endsWith(".xml"))!), "utf8");
     expect(badXml).toMatch(/<testsuites tests="2" failures="1" skipped="1">/);
     expect(badXml).toMatch(/<testsuite name="坏条件流" tests="2" failures="1" skipped="1">/);
-    expect(badXml).toMatch(/<testcase name="condition-source:[^"]+"[\s\S]*<failure message="/);
-    expect(badXml).toMatch(/<testcase name="condition-target:[^"]+"[\s\S]*<skipped message="upstream-failed"\/>/);
+    const conditionSourceCase = badXml.match(/<testcase name="condition-source:[^"]+"[\s\S]*?<\/testcase>/)?.[0] ?? "";
+    const conditionTargetCase = badXml.match(/<testcase name="condition-target:[^"]+"[\s\S]*?<\/testcase>/)?.[0] ?? "";
+    expect(conditionSourceCase).not.toBe("");
+    expect(conditionTargetCase).not.toBe("");
+    expect(conditionSourceCase).toContain("<failure message=");
+    expect(conditionTargetCase).toContain('<skipped message="upstream-failed"/>');
     const draftRequestsBefore = receivedRequests.length;
     const draft = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/草稿严格流", "--force-draft", "--runs-dir", join(root, "draft-strict-runs")]);
     expect(draft.code).toBe(1);
@@ -552,8 +567,10 @@ describe("CLI 端到端", () => {
     const xml = readFileSync(join(runsDir, readdirSync(runsDir).find((file) => file.endsWith(".xml"))!), "utf8");
     expect(xml).toMatch(/<testsuites tests="2" failures="1" skipped="0">/);
     expect(xml).toMatch(/<testsuite name="数据行流" tests="2" failures="1" skipped="0">/);
-    const passCase = xml.match(/<testcase name="data-row:[^"]+#0"[\s\S]*?<\/testcase>/)?.[0] ?? "";
-    const failCase = xml.match(/<testcase name="data-row:[^"]+#1"[\s\S]*?<\/testcase>/)?.[0] ?? "";
+    const passCase = xml.match(/<testcase name="data-row:[^"]+#0"[\s\S]*?<\/testcase>/)?.[0];
+    const failCase = xml.match(/<testcase name="data-row:[^"]+#1"[\s\S]*?<\/testcase>/)?.[0];
+    expect(passCase).toBeDefined();
+    expect(failCase).toBeDefined();
     expect(passCase).not.toContain("<failure ");
     expect(failCase).toContain("<failure ");
   }, 30000);
@@ -567,20 +584,22 @@ describe("CLI 端到端", () => {
       `id: ${wfId}`, `name: ${name}`, "status: enabled", "nodes:", "  - id: marker-a", "    kind: noop", "    label: marker-a", "edges: []",
     ].join("\n"));
     writeNamedWorkflow("碰撞甲");
-    const firstDir = join(root, "collision-a");
-    const first = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/碰撞甲", "--runs-dir", firstDir], { freezeNow: true });
+    const runsDir = join(root, "collision-runs");
+    const first = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/碰撞甲", "--runs-dir", runsDir], { freezeNow: true });
     expect(first.code).toBe(0);
     writeNamedWorkflow("碰撞乙");
-    const secondDir = join(root, "collision-b");
-    const second = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/碰撞乙", "--runs-dir", secondDir], { freezeNow: true });
+    const second = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/碰撞乙", "--runs-dir", runsDir], { freezeNow: true });
     expect(second.code).toBe(0);
-    const firstFile = readdirSync(firstDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
-    const secondFile = readdirSync(secondDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
-    expect(firstFile).not.toBe(secondFile);
-    const firstReport = JSON.parse(readFileSync(join(firstDir, firstFile), "utf8")) as { workflowId: string; workflowName: string; startedAt: string };
-    const secondReport = JSON.parse(readFileSync(join(secondDir, secondFile), "utf8")) as { workflowId: string; workflowName: string; startedAt: string };
-    expect(firstReport).toMatchObject({ workflowId: wfId, workflowName: "碰撞甲" });
-    expect(secondReport).toMatchObject({ workflowId: wfId, workflowName: "碰撞乙" });
+    const files = readdirSync(runsDir).filter((file) => file.startsWith("workflow-") && file.endsWith(".json"));
+    expect(files).toHaveLength(2);
+    expect(new Set(files.map((file) => file.slice("workflow-".length, -".json".length))).size).toBe(2);
+    const reports = files.map((file) => JSON.parse(readFileSync(join(runsDir, file), "utf8")) as { workflowId: string; workflowName: string; startedAt: string });
+    expect(reports).toEqual(expect.arrayContaining([
+      expect.objectContaining({ workflowId: wfId, workflowName: "碰撞甲" }),
+      expect.objectContaining({ workflowId: wfId, workflowName: "碰撞乙" }),
+    ]));
+    const firstReport = reports.find((report) => report.workflowName === "碰撞甲")!;
+    const secondReport = reports.find((report) => report.workflowName === "碰撞乙")!;
     expect(secondReport.startedAt).toBe(firstReport.startedAt);
   }, 30000);
 
