@@ -14,7 +14,7 @@ export { sanitizeNodeName } from "./storage/sanitize.js";
 export { SqliteIndex } from "./storage/sqliteIndex.js";
 export { createVariableResolver, CyclicVariableError } from "./variables/resolver.js";
 export { withBaseUrl } from "./variables/baseUrl.js";
-export { CollectionRunner } from "./runner/runner.js";
+export { CollectionRunner, CollectionRunError } from "./runner/runner.js";
 export {
   executeCase,
   type CaseExecutionDeps, CaseExecutionInput, CaseExecutionResult, CaseFailureKind,

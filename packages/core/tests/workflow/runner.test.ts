@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WorkflowRunner } from "../../src/workflow/runner.js";
 import type { Workflow } from "../../src/workflow/model.js";
 import type { Workspace, Project, ApiDefinition } from "../../src/domain/model.js";
-import { createDefaultRegistry } from "../../src/index.js";
+import { createDefaultRegistry, createPluginRegistry } from "../../src/index.js";
 
 let server: Server;
 let baseUrl = "";
@@ -121,16 +121,32 @@ describe("WorkflowRunner", () => {
     expect(result.nodeResults.find((n) => n.nodeId === "n2")?.skipReason).toBe("upstream-failed");
   });
 
-  it("strict=false 缺引用仍是明确 skipped/reference-missing 且整体失败", async () => {
+  it("strict=false 缺引用为 failed/config，其他独立节点仍继续且整体失败", async () => {
     const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false, strict: false })
-      .run(wf([{ id: "missing", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" }], []), { project, workspace: ws });
-    expect(result.nodeResults[0]?.state).toBe("skipped");
-    expect(result.nodeResults[0]?.skipReason).toBe("reference-missing");
+      .run(wf([
+        { id: "missing", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" },
+        { id: "independent", kind: "request" as const, apiId: "a1", caseId: "case-a1" },
+      ], []), { project, workspace: ws });
+    expect(result.nodeResults.find((n) => n.nodeId === "missing")?.state).toBe("failed");
+    expect(result.nodeResults.find((n) => n.nodeId === "missing")?.failureKind).toBe("config");
+    expect(result.nodeResults.find((n) => n.nodeId === "independent")?.state).toBe("passed");
     expect(result.verdict).toBe("failed");
     expect(result.warnings.some((warning) => /不存在/.test(warning))).toBe(true);
   });
 
-  it("noop 节点直接通过；missing 引用 skipped 带告警", async () => {
+  it("无 javascript 引擎时条件源节点 failed/script，不伪装成剪枝成功", async () => {
+    const result = await new WorkflowRunner({ registry: createPluginRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf([
+        { id: "n1", kind: "noop" as const },
+        { id: "n2", kind: "noop" as const },
+      ], [{ id: "edge", from: "n1", to: "n2", condition: "true" }]), { project, workspace: ws });
+    expect(result.nodeResults.find((n) => n.nodeId === "n1")?.failureKind).toBe("script");
+    expect(result.nodeResults.find((n) => n.nodeId === "n1")?.error).toContain("edge");
+    expect(result.nodeResults.find((n) => n.nodeId === "n2")?.skipReason).toBe("upstream-failed");
+    expect(result.verdict).toBe("failed");
+  });
+
+  it("noop 节点直接通过；非严格 missing 引用 failed/config 带告警", async () => {
     const nodes = [
       { id: "n1", kind: "noop" as const, label: "占位" },
       { id: "n2", kind: "request" as const, apiId: "ghost", caseId: "ghost-case", label: "缺失" },
@@ -138,7 +154,8 @@ describe("WorkflowRunner", () => {
     const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: undefined, failFast: false, strict: false })
       .run(wf(nodes, [{ id: "e", from: "n1", to: "n2" }]), { project, workspace: ws });
     expect(r.nodeResults[0]!.state).toBe("noop");
-    expect(r.nodeResults[1]!.state).toBe("skipped");
+    expect(r.nodeResults[1]!.state).toBe("failed");
+    expect(r.nodeResults[1]!.failureKind).toBe("config");
     expect(r.warnings.join("\n")).toContain("不存在");
   });
 
@@ -199,6 +216,21 @@ describe("WorkflowRunner", () => {
     expect(r.total).toBe(3);
   });
 
+  it("乱序声明的两级 false 剪枝仍稳定传播 condition-pruned", async () => {
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf([
+        { id: "tail", kind: "noop" as const },
+        { id: "mid", kind: "noop" as const },
+        { id: "root", kind: "noop" as const },
+      ], [
+        { id: "e1", from: "root", to: "mid", condition: "false" },
+        { id: "e2", from: "mid", to: "tail" },
+      ]), { project, workspace: ws });
+    expect(result.verdict).toBe("passed");
+    expect(result.nodeResults.find((n) => n.nodeId === "mid")?.skipReason).toBe("condition-pruned");
+    expect(result.nodeResults.find((n) => n.nodeId === "tail")?.skipReason).toBe("condition-pruned");
+  });
+
   it("级联多入区分性：任一上游通过即执行，失败上游不阻断", async () => {
     const nodes = [
       { id: "a", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "A" },
@@ -234,6 +266,17 @@ describe("WorkflowRunner", () => {
     expect(r.nodeResults.find((n) => n.nodeId === "n3")?.skipReason).toBe("upstream-failed");
   });
 
+  it("failFast 遗留的独立根节点明确标记 fail-fast", async () => {
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([badApi]), envName: "dev", failFast: true })
+      .run(wf([
+        { id: "bad", kind: "request" as const, apiId: "abad", caseId: "case-abad" },
+        { id: "independent", kind: "request" as const, apiId: "a1", caseId: "case-a1" },
+      ], []), { project, workspace: ws });
+    expect(result.nodeResults.find((n) => n.nodeId === "bad")?.state).toBe("failed");
+    expect(result.nodeResults.find((n) => n.nodeId === "independent")?.skipReason).toBe("fail-fast");
+    expect(result.verdict).toBe("failed");
+  });
+
   it("悬空边端点：执行前拒绝且不发请求", async () => {
     const nodes = [{ id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "one" }];
     await expect(new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
@@ -250,6 +293,8 @@ describe("WorkflowRunner", () => {
     expect(r.nodeResults[0]!.state).toBe("failed");
     expect(r.nodeResults[0]!.error).toContain("用例不适用于当前环境");
     expect(r.nodeResults[0]!.outcome?.passed).toBe(false);
+    expect(r.nodeResults[0]!.failureKind).toBe("config");
+    expect(r.nodeResults[0]!.outcome?.failureKind).toBe("config");
   });
 
   it("fan-in 双败级联：a、b 均失败 → c skipped 且计数正确", async () => {
@@ -263,6 +308,7 @@ describe("WorkflowRunner", () => {
     expect(r.nodeResults.find((n) => n.nodeId === "a")!.state).toBe("failed");
     expect(r.nodeResults.find((n) => n.nodeId === "b")!.state).toBe("failed");
     expect(r.nodeResults.find((n) => n.nodeId === "c")!.state).toBe("skipped");
+    expect(r.nodeResults.find((n) => n.nodeId === "c")!.skipReason).toBe("upstream-failed");
     expect(r.skipped).toBe(1);
     expect(r.total).toBe(3);
   });
@@ -281,6 +327,7 @@ describe("WorkflowRunner", () => {
     const c = r.nodeResults.filter((n) => n.nodeId === "c");
     expect(c).toHaveLength(1);
     expect(c[0]!.state).toBe("skipped");
+    expect(c[0]!.skipReason).toBe("upstream-failed");
     expect(r.nodeResults.find((n) => n.nodeId === "b")!.state).toBe("failed");
     expect(r.skipped).toBe(1);
   });
@@ -578,6 +625,38 @@ describe("WorkflowRunner", () => {
     expect(result.nodeResults.find((node) => node.nodeId === "target")?.state).toBe("passed");
     expect(result.nodeResults.find((node) => node.nodeId === "done")?.state).toBe("noop");
     expect(seenPaths).toEqual(["/module/module/MOI"]);
+  });
+
+  it("容器后置脚本异常保留全部数据行并追加独立 script 失败诊断", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-workflow-container-"));
+    const sourcePath = join(dir, "rows.json");
+    writeFileSync(sourcePath, JSON.stringify([{ expected: "200" }, { expected: "200" }]));
+    const dataApi: ApiDefinition = {
+      ...apiOf("container-data", `${baseUrl}/container`),
+      cases: [{ id: "case-container-data", name: "container-data", scope: "base", parameters: {}, dataDriver: { sourcePath, format: "json" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }] }],
+    };
+    const projectWithContainer: Project = {
+      ...project,
+      collections: [{
+        id: "container-module", name: "container-module", variables: {}, apis: [dataApi], folders: [],
+        postOperations: [{ id: "explode", type: "script", content: 'throw new Error("post explode")' }],
+      }],
+    };
+    try {
+      seenPaths.length = 0;
+      const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: () => undefined, envName: "dev", failFast: false })
+        .run(wf([{ id: "container", kind: "request", apiId: "container-data", caseId: "case-container-data" }], []), { project: projectWithContainer, workspace: ws });
+      const node = result.nodeResults[0]!;
+      expect(seenPaths).toEqual(["/container", "/container"]);
+      expect(node.state).toBe("failed");
+      expect(node.failureKind).toBe("script");
+      expect(node.error).toContain("post explode");
+      expect(node.outcomes?.map((outcome) => outcome.row)).toEqual([0, 1, undefined]);
+      expect(node.outcomes?.slice(0, 2).every((outcome) => outcome.passed)).toBe(true);
+      expect(node.outcomes?.[2]?.failureKind).toBe("script");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("条件上下文 env 继承链：sit extends dev 时父环境变量在条件中可见", async () => {

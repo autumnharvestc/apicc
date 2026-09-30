@@ -1,7 +1,7 @@
 import type { ApiDefinition, Collection, Environment, Project, TestCase, Workspace } from "../domain/model.js";
 import type { PluginRegistry } from "../plugin/registry.js";
 import type { PmApi } from "../plugin/types.js";
-import { CollectionRunner } from "../runner/runner.js";
+import { CollectionRunError, CollectionRunner } from "../runner/runner.js";
 import { createEventBus } from "../events/bus.js";
 import { mergedEnvVars } from "../domain/envChain.js";
 import { validateWorkflowStructure } from "./validate.js";
@@ -200,10 +200,15 @@ export class WorkflowRunner {
         const api = reference.api;
         const caseDef = reference.caseDef;
         if (!api || !caseDef) {
-          // 非严格模式允许继续遍历，但缺引用始终是失败 verdict，不能伪装成 passed。
+          // 非严格模式允许其他独立节点继续，但缺引用本身始终是 failed/config，不能伪装成 skipped/pass。
           const msg = missingReferenceMessage(node);
           warnings.push(msg);
-          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "skipped", skipReason: "reference-missing", error: msg });
+          const outcome: CaseOutcome = {
+            apiId: node.apiId ?? "", apiName: node.apiId ?? node.id,
+            caseId: node.caseId ?? "", caseName: node.caseId ?? node.id,
+            passed: false, durationMs: 0, assertions: [], error: msg, failureKind: "config",
+          };
+          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, failureKind: "config", error: msg });
         } else {
           // 保留项目模块/祖先文件夹上下文；外部 resolve 仍使用工作流专属合成集合。
           const collection = projectLocation
@@ -221,18 +226,32 @@ export class WorkflowRunner {
             const outcome = outcomes.find((o) => !o.passed) ?? outcomes[0];
             nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state, outcomes, outcome, error: outcome?.error, failureKind: outcome?.failureKind });
           } catch (e) {
-            const error = e instanceof Error ? e.message : String(e);
-            const failureKind: CaseOutcome["failureKind"] = /脚本引擎|接口\/用例|环境|数据源/.test(error) ? "config" : "script";
-            const outcome: CaseOutcome = {
-              apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
-              passed: false, durationMs: 0, assertions: [], error, failureKind,
-            };
-            nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, error, failureKind });
+            if (e instanceof CollectionRunError) {
+              warnings.push(...(e.partialResult.warnings ?? []));
+              const diagnostic: CaseOutcome = {
+                apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
+                passed: false, durationMs: 0, assertions: [], error: e.message, failureKind: e.failureKind,
+              };
+              const outcomes = [...e.partialResult.cases, diagnostic];
+              const outcome = outcomes.find((candidate) => !candidate.passed) ?? diagnostic;
+              nodeResults.set(node.id, {
+                nodeId: node.id, label: node.label, kind: "request", state: "failed",
+                outcomes, outcome, error: e.message, failureKind: e.failureKind,
+              });
+            } else {
+              const error = e instanceof Error ? e.message : String(e);
+              const failureKind: CaseOutcome["failureKind"] = /脚本引擎|接口\/用例|环境|数据源/.test(error) ? "config" : "script";
+              const outcome: CaseOutcome = {
+                apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
+                passed: false, durationMs: 0, assertions: [], error, failureKind,
+              };
+              nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, error, failureKind });
+            }
           }
         }
       }
 
-      // 出边求值：条件为假不流转（告警）并把该边记为剪枝——to 端就绪裁决不再等待此上游；
+      // 出边求值：条件为假是预期剪枝，不产生异常 warning；to 端就绪裁决不再等待此上游；
       // 满足则下游入队（多入只入队一次）。
       for (const edge of outgoing.get(node.id) ?? []) {
         if (edge.condition) {
@@ -250,7 +269,7 @@ export class WorkflowRunner {
             continue;
           }
         }
-        // 悬空 to 端点：忽略该边并告警，不以裸 TypeError 中断整轮（端点缺陷不阻断遍历）。
+        // 悬空端点已由执行前结构校验拒绝；此守卫仅保护未来调用方改变校验策略时的诊断。
         const target = workflow.nodes.find((n) => n.id === edge.to);
         if (!target) {
           warnings.push(`边 ${edge.id} 指向不存在的节点 ${edge.to}，已忽略`);
@@ -260,13 +279,20 @@ export class WorkflowRunner {
           queue.push(target);
         }
       }
-      // 级联：入边全部定局（来源终态否定或被条件剪枝）且不可达的节点标记 skipped（扫描置于出边求值之后，简报更正指令 ⑤）。
-      for (const n of workflow.nodes) {
-        if (!nodeResults.has(n.id) && blocked(n.id)) {
-          nodeResults.set(n.id, {
-            nodeId: n.id, label: n.label, kind: n.kind, state: "skipped",
-            skipReason: skipReasonForBlocked(n.id, incoming, nodeResults, pruned),
-          });
+      // 级联：反复扫描直到稳定，不能依赖 workflow.nodes 声明顺序。
+      // 例如 root→mid(false)→tail 在 tail、mid、root 的逆序声明下，tail 必须等待
+      // mid 先被裁决为 condition-pruned，而不是被最终兜底误报 unreachable。
+      let propagated = true;
+      while (propagated) {
+        propagated = false;
+        for (const n of workflow.nodes) {
+          if (!nodeResults.has(n.id) && blocked(n.id)) {
+            nodeResults.set(n.id, {
+              nodeId: n.id, label: n.label, kind: n.kind, state: "skipped",
+              skipReason: skipReasonForBlocked(n.id, incoming, nodeResults, pruned),
+            });
+            propagated = true;
+          }
         }
       }
       if (this.opts.failFast && nodeResults.get(node.id)?.state === "failed") break;
@@ -321,6 +347,7 @@ async function runSingleNode(
     apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
     passed: false, durationMs: 0, assertions: [],
     error: `用例不适用于当前环境（scope=${caseDef.scope}），已按失败处理`,
+    failureKind: "config",
   }], warnings: result.warnings ?? [] };
 }
 

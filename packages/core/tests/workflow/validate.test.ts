@@ -155,4 +155,27 @@ describe("validateEnablement", () => {
     expect(validateEnablement(workflow, workspace, selected).errors.some((e) => /不存在/.test(e))).toBe(true);
     expect(validateEnablement(workflow, workspace).ok).toBe(true);
   });
+
+  it("workspace 独立验证递归查找任意深度文件夹", () => {
+    const workflow = wfFactory([req("n1")], []);
+    const api = { id: "a-n1", name: "deep", version: "1", deprecated: false, method: "GET" as const, url: "/", headers: [], query: [], cases: [{ id: "c-n1", name: "c-n1", scope: "base", parameters: {}, assertions: [] }] };
+    const workspace = {
+      id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [{
+        id: "p", name: "p", variables: {}, environments: [], workflows: [], collections: [{
+          id: "c", name: "c", variables: {}, apis: [], folders: [{ id: "outer", name: "outer", apis: [], folders: [{ id: "inner", name: "inner", apis: [api], folders: [] }] }],
+        }],
+      }] }],
+    } as unknown as Workspace;
+    const result = validateEnablement(workflow, workspace);
+    expect(result.errors.some((error) => /引用的接口\/用例不存在/.test(error))).toBe(false);
+  });
+
+  it("未传 project 时优先使用工作流所属项目", () => {
+    const workflow = wfFactory([req("n1")], []);
+    const api = { id: "a-n1", name: "owner", version: "1", deprecated: false, method: "GET" as const, url: "/", headers: [], query: [], cases: [{ id: "c-n1", name: "c-n1", scope: "base", parameters: {}, assertions: [] }] };
+    const owner = { id: "owner", name: "owner", variables: {}, environments: [], collections: [{ id: "c", name: "c", variables: {}, apis: [api], folders: [] }], workflows: [workflow] } as any;
+    const other = { id: "other", name: "other", variables: {}, environments: [], collections: [], workflows: [] } as any;
+    const workspace = { id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [other, owner] }] } as unknown as Workspace;
+    expect(validateEnablement(workflow, workspace).ok).toBe(true);
+  });
 });

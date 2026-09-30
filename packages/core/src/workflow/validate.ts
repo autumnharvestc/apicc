@@ -124,14 +124,8 @@ export function validateEnablement(wf: Workflow, workspace: Workspace, project?:
     }
     for (const g of workspace.groups) {
       for (const p of g.projects) {
-        for (const c of p.collections) {
-          const direct = c.apis.find((a) => a.id === apiId);
-          if (direct?.cases.some((x) => x.id === caseId)) return true;
-          for (const f of c.folders) {
-            const fApi = f.apis.find((a) => a.id === apiId);
-            if (fApi?.cases.some((x) => x.id === caseId)) return true;
-          }
-        }
+        const location = findProjectApi(p, apiId);
+        if (location?.api.cases.some((candidate) => candidate.id === caseId)) return true;
       }
     }
     return false;

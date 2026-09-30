@@ -14,6 +14,18 @@ import type { PmApi, ScriptEngine } from "../plugin/types.js";
 import type { CaseOutcome, RunResult } from "../report/types.js";
 import { executeCase } from "./caseExecutor.js";
 
+/** Container-level failure that preserves all case rows completed before the throw. */
+export class CollectionRunError extends Error {
+  constructor(
+    message: string,
+    public readonly partialResult: RunResult,
+    public readonly failureKind: CaseOutcome["failureKind"] = "script",
+  ) {
+    super(message);
+    this.name = "CollectionRunError";
+  }
+}
+
 export interface RunnerOptions {
   runsDir?: string;
   runtimeBridge?: {
@@ -86,6 +98,14 @@ export class CollectionRunner {
     // failFast 停止标记：递归遍历中处处检查（替代原 label break，文件夹嵌套后无法单层 break）。
     const state = { stopped: false };
 
+    const partialResult = (): RunResult => ({
+      collectionId: collection.id, collectionName: collection.name, envName: env?.name,
+      startedAt: startedAt.toISOString(), finishedAt: new Date().toISOString(),
+      total: outcomes.length, passed: outcomes.filter((o) => o.passed).length,
+      failed: outcomes.filter((o) => !o.passed).length, cases: [...outcomes],
+      ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
+    });
+
     /** 单接口的用例去重/数据驱动/failFast（原 apis 平铺循环体，逻辑不变）。 */
     const runApi = async (api: ApiDefinition): Promise<void> => {
       const applicable = api.cases.filter((c) => c.scope === "base" || chain.includes(c.scope));
@@ -151,18 +171,23 @@ export class CollectionRunner {
       runLegacyOrOps(undefined, folder.postOperations);
     };
 
-    // 模块级前置（legacy scripts.pre → preOperations）
-    runLegacyOrOps(collection.scripts?.pre, collection.preOperations);
-    for (const api of collection.apis) {
-      if (state.stopped) break;
-      await runApi(api);
+    try {
+      // 模块级前置（legacy scripts.pre → preOperations）
+      runLegacyOrOps(collection.scripts?.pre, collection.preOperations);
+      for (const api of collection.apis) {
+        if (state.stopped) break;
+        await runApi(api);
+      }
+      for (const folder of collection.folders) {
+        if (state.stopped) break;
+        await processFolder(folder);
+      }
+      // 模块级后置（postOperations → legacy scripts.post）
+      runLegacyOrOps(collection.scripts?.post, collection.postOperations);
+    } catch (e) {
+      if (e instanceof CollectionRunError) throw e;
+      throw new CollectionRunError(e instanceof Error ? e.message : String(e), partialResult(), "script");
     }
-    for (const folder of collection.folders) {
-      if (state.stopped) break;
-      await processFolder(folder);
-    }
-    // 模块级后置（postOperations → legacy scripts.post）
-    runLegacyOrOps(collection.scripts?.post, collection.postOperations);
 
     const result: RunResult = {
       collectionId: collection.id, collectionName: collection.name, envName: env?.name,
