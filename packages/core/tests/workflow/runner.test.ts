@@ -1,4 +1,7 @@
 import { createServer, type Server } from "node:http";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WorkflowRunner } from "../../src/workflow/runner.js";
 import type { Workflow } from "../../src/workflow/model.js";
@@ -28,7 +31,7 @@ beforeAll(async () => {
     collections: [], workflows: [],
   };
 });
-const apiOf = (id: string, url: string) => ({
+const apiOf = (id: string, url: string): ApiDefinition => ({
   id, name: id, version: "1", deprecated: false, method: "GET" as const, url, headers: [], query: [],
   cases: [{
     id: `case-${id}`, name: `${id}-用例`, scope: "base", parameters: {},
@@ -330,6 +333,123 @@ describe("WorkflowRunner", () => {
       .run(wf(nodes, [{ id: "e1", from: "n1", to: "n2" }, { id: "e2", from: "n2", to: "n3" }]), { project, workspace: ws });
     expect(r.nodeResults.map((n) => n.state)).toEqual(["passed", "passed", "passed"]);
     expect(r.passed).toBe(3);
+  });
+
+  it("同一 runner 的并发 run 隔离 carried，且无提取 run 不继承旧 token", async () => {
+    const seenSeeds = new Set<string>();
+    const waiting: Array<() => void> = [];
+    const barrier = createServer((req, res) => {
+      const seed = String(req.headers["x-seed"] ?? "");
+      if (req.url === "/first") {
+        seenSeeds.add(seed);
+        if (seenSeeds.size === 2) while (waiting.length > 0) waiting.shift()!();
+        else waiting.push(() => res.end("ok"));
+        if (seenSeeds.size === 2) res.end("ok");
+        return;
+      }
+      res.end("ok");
+    });
+    await new Promise<void>((r) => barrier.listen(0, "127.0.0.1", r));
+    const barrierBase = `http://127.0.0.1:${(barrier.address() as { port: number }).port}`;
+    try {
+      const first = apiOf("first", `${barrierBase}/first`);
+      first.headers = [{ key: "x-seed", value: "{{seed}}", enabled: true }];
+      first.cases[0]!.postScript = 'pm.variables.set("token", pm.variables.get("seed"));';
+      const second = apiOf("second", `${barrierBase}/second`);
+      second.cases[0]!.postScript = 'pm.assert(pm.variables.get("token") === pm.variables.get("seed"), "run isolation");';
+      const locals = [first, second];
+      const runner = new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith(locals), envName: "dev", failFast: false });
+      const makeProject = (seed: string): Project => ({ ...project, id: `project-${seed}`, variables: { seed } });
+      const makeFlow = (id: string): Workflow => ({
+        id, name: id, status: "enabled",
+        nodes: [
+          { id: "first", kind: "request", apiId: "first", caseId: "case-first" },
+          { id: "second", kind: "request", apiId: "second", caseId: "case-second" },
+        ], edges: [{ id: `${id}-edge`, from: "first", to: "second" }],
+      });
+      const [a, b] = await Promise.all([
+        runner.run(makeFlow("A"), { project: makeProject("A"), workspace: ws }),
+        runner.run(makeFlow("B"), { project: makeProject("B"), workspace: ws }),
+      ]);
+      expect(a.nodeResults.map((n) => n.state)).toEqual(["passed", "passed"]);
+      expect(b.nodeResults.map((n) => n.state)).toEqual(["passed", "passed"]);
+
+      const cleanApi = apiOf("clean", `${barrierBase}/second`);
+      cleanApi.cases[0]!.postScript = 'pm.assert(pm.variables.get("token") === undefined, "stale token");';
+      const cleanRunner = new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([cleanApi]), envName: "dev", failFast: false });
+      const clean = await cleanRunner.run({ id: "clean", name: "clean", status: "enabled", nodes: [{ id: "clean", kind: "request", apiId: "clean", caseId: "case-clean" }], edges: [] }, { project: makeProject("C"), workspace: ws });
+      expect(clean.nodeResults[0]!.state).toBe("passed");
+    } finally {
+      await new Promise<void>((r) => barrier.close(() => r()));
+    }
+  });
+
+  it("数据驱动节点保留全部零基数据行并由聚合结论决定节点状态", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-workflow-"));
+    const sourcePath = join(dir, "rows.json");
+    writeFileSync(sourcePath, JSON.stringify([{ expected: "200" }, { expected: "500" }, { expected: "200" }]));
+    const dataApi: ApiDefinition = {
+      ...apiOf("data", "{{baseUrl}}/rows"),
+      cases: [{
+        id: "case-data", name: "data", scope: "base", parameters: {},
+        dataDriver: { sourcePath, format: "json" },
+        assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }],
+      }],
+    };
+    try {
+      const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([dataApi]), envName: "dev", failFast: false })
+        .run(wf([{ id: "data", kind: "request", apiId: "data", caseId: "case-data" }], []), { project, workspace: ws });
+      expect(result.nodeResults[0]?.state).toBe("failed");
+      expect(result.nodeResults[0]?.outcomes?.map((o) => o.passed)).toEqual([true, false, true]);
+      expect(result.nodeResults[0]?.outcomes?.map((o) => o.row)).toEqual([0, 1, 2]);
+      expect(result.nodeResults[0]?.outcome?.passed).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("数据驱动 failFast 仅保留实际执行行且配置错误作为节点失败", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-workflow-"));
+    const sourcePath = join(dir, "rows.json");
+    writeFileSync(sourcePath, JSON.stringify([{ expected: "500" }, { expected: "200" }]));
+    const dataApi: ApiDefinition = {
+      ...apiOf("data-fast", "{{baseUrl}}/rows"),
+      cases: [{ id: "case-data-fast", name: "data-fast", scope: "base", parameters: {}, dataDriver: { sourcePath, format: "json" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }] }],
+    };
+    try {
+      const fast = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([dataApi]), envName: "dev", failFast: true })
+        .run(wf([{ id: "data", kind: "request", apiId: "data-fast", caseId: "case-data-fast" }], []), { project, workspace: ws });
+      expect(fast.nodeResults[0]?.state).toBe("failed");
+      expect(fast.nodeResults[0]?.outcomes?.map((o) => o.row)).toEqual([0]);
+      const bad = { ...dataApi, id: "bad-data", cases: [{ ...dataApi.cases[0]!, id: "case-bad", dataDriver: { sourcePath: join(dir, "missing.json"), format: "json" as const } }] };
+      const config = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([bad]), envName: "dev", failFast: false })
+        .run(wf([{ id: "bad", kind: "request", apiId: "bad-data", caseId: "case-bad" }], []), { project, workspace: ws });
+      expect(config.nodeResults[0]?.state).toBe("failed");
+      expect(config.nodeResults[0]?.outcomes?.[0]?.failureKind).toBe("config");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("条件边的 prev.passed 使用数据行聚合结论而非首行结果", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-workflow-"));
+    const sourcePath = join(dir, "rows.json");
+    writeFileSync(sourcePath, JSON.stringify([{ expected: "200" }, { expected: "500" }]));
+    const dataApi: ApiDefinition = {
+      ...apiOf("aggregate", "{{baseUrl}}/aggregate"),
+      cases: [{ id: "case-aggregate", name: "aggregate", scope: "base", parameters: {}, dataDriver: { sourcePath, format: "json" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }] }],
+    };
+    try {
+      const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([dataApi]), envName: "dev", failFast: false })
+        .run(wf([
+          { id: "aggregate", kind: "request", apiId: "aggregate", caseId: "case-aggregate" },
+          { id: "next", kind: "noop" },
+        ], [{ id: "edge", from: "aggregate", to: "next", condition: "prev.passed" }]), { project, workspace: ws });
+      expect(result.nodeResults.find((node) => node.nodeId === "aggregate")?.state).toBe("failed");
+      expect(result.nodeResults.find((node) => node.nodeId === "next")?.state).toBe("skipped");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("条件上下文 env 继承链：sit extends dev 时父环境变量在条件中可见", async () => {

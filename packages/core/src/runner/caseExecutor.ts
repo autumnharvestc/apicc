@@ -94,6 +94,7 @@ function responseView(response: ExecutionResponse): NonNullable<PmApi["response"
 function evaluateAssertions(
   testCase: TestCase,
   ctx: { pm: PmApi },
+  resolver: VariableResolver,
   resolveAssert: (op: string) => AssertOperator | undefined,
 ) {
   const response = ctx.pm.response;
@@ -113,7 +114,7 @@ function evaluateAssertions(
         break;
     }
     try {
-      return op.evaluate(actual, assertion.expected);
+      return op.evaluate(actual, assertion.expected === undefined ? undefined : resolver.resolve(assertion.expected));
     } catch (e) {
       throw Object.assign(new Error(errorMessage(e)), { caseFailureKind: "config" as const });
     }
@@ -249,7 +250,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
 
   let assertions: Array<{ pass: boolean; message: string }> = [];
   try {
-    assertions = [...evaluateAssertions(testCase, ctx, deps.resolveAssert), ...pmAsserts];
+    assertions = [...evaluateAssertions(testCase, ctx, resolver, deps.resolveAssert), ...pmAsserts];
   } catch (e) {
     if (error === undefined) {
       error = errorMessage(e);

@@ -5,6 +5,7 @@ import { CollectionRunner } from "../runner/runner.js";
 import { createEventBus } from "../events/bus.js";
 import { mergedEnvVars } from "../domain/envChain.js";
 import { validateWorkflowStructure } from "./validate.js";
+import { findProjectApi, selectWorkflowCollection } from "./references.js";
 import type { Workflow, WorkflowEdge, WorkflowNode } from "./model.js";
 import type { CaseOutcome } from "../report/types.js";
 
@@ -15,6 +16,7 @@ export interface NodeResult {
   label?: string;
   kind: WorkflowNode["kind"];
   state: NodeState;
+  outcomes?: CaseOutcome[];
   outcome?: CaseOutcome;
   error?: string;
 }
@@ -49,9 +51,6 @@ interface ConditionPm extends PmApi {
 }
 
 export class WorkflowRunner {
-  /** 跨节点携带的运行时变量（累加语义：只合并不替换，见 run 内桥构造）。 */
-  private carried: Record<string, string> = {};
-
   constructor(private opts: WorkflowRunnerOptions) {}
 
   async run(workflow: Workflow, ctx: { project: Project; workspace: Workspace }): Promise<WorkflowRunResult> {
@@ -77,6 +76,8 @@ export class WorkflowRunner {
       timeouts: { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 },
       failFast: this.opts.failFast ?? false,
     });
+    // 携带变量属于一次 run，避免同一实例的顺序/并发调用相互污染。
+    const carried: Record<string, string> = {};
     // 运行时桥（任务 6 审查核定，必须累加语义）：set 用 Object.assign 合并进 carried，
     // 禁止替换式赋值（carried = v 会丢未被下游重新提取的变量）。
     // 桥方法异常兜底（同上）：get 失败包装为可读错误整体拒绝；
@@ -84,14 +85,14 @@ export class WorkflowRunner {
     const bridge = {
       get: () => {
         try {
-          return { ...this.carried };
+          return { ...carried };
         } catch (e) {
           throw new Error(`运行时桥读取失败: ${e instanceof Error ? e.message : String(e)}`);
         }
       },
       set: (v: Record<string, string>) => {
         try {
-          Object.assign(this.carried, v);
+          Object.assign(carried, v);
         } catch (e) {
           warnings.push(`运行时桥回写失败: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -164,7 +165,9 @@ export class WorkflowRunner {
       if (node.kind === "noop") {
         nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "noop", state: "noop" });
       } else {
-        const api = node.apiId ? this.opts.resolve(node.apiId) : undefined;
+        const projectLocation = node.apiId ? findProjectApi(project, node.apiId) : undefined;
+        // 项目中命中同 ID 时使用项目实体及其模块上下文；未命中才使用 resolve 接缝。
+        const api = projectLocation?.api ?? (node.apiId ? this.opts.resolve(node.apiId) : undefined);
         const caseDef = api?.cases.find((c) => c.id === node.caseId);
         if (!api || !caseDef) {
           // missing 引用：skipped 带告警，不中断整轮（「引用缺失」可诊断而非静默破坏）。
@@ -172,17 +175,20 @@ export class WorkflowRunner {
           warnings.push(msg);
           nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "skipped", error: msg });
         } else {
-          // 合成单用例集合：复用 CollectionRunner 完整语义（脚本/断言/变量/环境），运行时桥跨节点携带变量。
-          const collection: Collection = {
-            id: `wf-${workflow.id}-${node.id}`,
-            name: `${workflow.name}/${node.label ?? api.name}`,
-            variables: {},
-            folders: [],
-            apis: [{ ...api, cases: [caseDef] }],
-          };
-          const outcome = await runSingleNode(runner, collection, api, caseDef, env, project, ctx.workspace, bridge);
-          const state: NodeState = outcome.passed ? "passed" : "failed";
-          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state, outcome, error: outcome.error });
+          // 保留项目模块/祖先文件夹上下文；外部 resolve 仍使用工作流专属合成集合。
+          const collection = projectLocation
+            ? selectWorkflowCollection(projectLocation, caseDef)
+            : {
+              id: `wf-${workflow.id}-${node.id}`,
+              name: `${workflow.name}/${node.label ?? api.name}`,
+              variables: {}, folders: [], apis: [{ ...api, cases: [caseDef] }],
+            } satisfies Collection;
+          const nodeRun = await runSingleNode(runner, collection, api, caseDef, env, project, ctx.workspace, bridge);
+          warnings.push(...nodeRun.warnings);
+          const outcomes = nodeRun.outcomes;
+          const state: NodeState = outcomes.every((o) => o.passed) ? "passed" : "failed";
+          const outcome = outcomes.find((o) => !o.passed) ?? outcomes[0];
+          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state, outcomes, outcome, error: outcome?.error });
         }
       }
 
@@ -190,7 +196,7 @@ export class WorkflowRunner {
       // 满足则下游入队（多入只入队一次）。
       for (const edge of outgoing.get(node.id) ?? []) {
         if (edge.condition) {
-          const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, this.carried, envVars, this.opts.registry, warnings);
+          const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, carried, envVars, this.opts.registry, warnings);
           if (!verdict) {
             warnings.push(`边 ${edge.from} → ${edge.to} 条件不满足: ${edge.condition}`);
             pruned.add(edge.id);
@@ -250,22 +256,21 @@ function resolveEnv(project: Project, envName: string | undefined): Environment 
   return env;
 }
 
-/** request 节点单用例路径：CollectionRunner 完整语义（脚本/断言/变量/环境）跑合成单用例集合，取唯一用例结果。 */
+/** request 节点路径：CollectionRunner 完整语义（脚本/断言/变量/环境）。 */
 async function runSingleNode(
   runner: CollectionRunner, collection: Collection, api: ApiDefinition, caseDef: TestCase,
   env: Environment | undefined, project: Project, workspace: Workspace,
   bridge: { get(): Record<string, string>; set(v: Record<string, string>): void },
-): Promise<CaseOutcome> {
+): Promise<{ outcomes: CaseOutcome[]; warnings: string[] }> {
   const result = await runner.run(collection, env, project, workspace, { runtimeBridge: bridge });
-  const outcome = result.cases[0];
-  if (outcome) return outcome;
+  if (result.cases.length > 0) return { outcomes: result.cases, warnings: result.warnings ?? [] };
   // 被引用用例 scope 与所选环境不匹配时，单用例被 CollectionRunner 的 scope 过滤剔除（cases 为空）——
   // 构造可读 failed outcome 留痕，而非让 outcome undefined 裸崩（节点记 failed，遍历继续）。
-  return {
+  return { outcomes: [{
     apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
     passed: false, durationMs: 0, assertions: [],
     error: `用例不适用于当前环境（scope=${caseDef.scope}），已按失败处理`,
-  };
+  }], warnings: result.warnings ?? [] };
 }
 
 /**
@@ -279,9 +284,14 @@ async function runSingleNode(
 function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<string, string>, envVars: Record<string, string>, registry: PluginRegistry, warnings: string[]): boolean {
   const engine = registry.getScriptEngine("javascript");
   if (!engine) { warnings.push("缺少 javascript 脚本引擎，条件按 false 处理"); return false; }
-  const prev = upstream.outcome
-    ? { passed: upstream.outcome.passed, caseName: upstream.outcome.caseName, error: upstream.outcome.error, assertions: upstream.outcome.assertions }
-    : { passed: upstream.state === "noop", caseName: upstream.label, error: undefined, assertions: [] };
+  const representative = upstream.outcome;
+  const prev = representative
+    ? {
+      passed: upstream.state === "passed" || upstream.state === "noop",
+      caseName: representative.caseName, error: representative.error,
+      assertions: representative.assertions, outcomes: upstream.outcomes,
+    }
+    : { passed: upstream.state === "noop", caseName: upstream.label, error: undefined, assertions: [], outcomes: upstream.outcomes };
   const pm: ConditionPm = {
     variables: { get: () => undefined, set: () => {} },
     environment: { get: () => undefined },
