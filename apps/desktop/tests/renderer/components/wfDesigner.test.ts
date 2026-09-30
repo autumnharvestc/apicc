@@ -674,7 +674,7 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
       nodeResults: [
         {
           nodeId: ids[0]!, kind: "request", state: "failed", error: "连接超时",
-          outcome: { apiId: "a", apiName: "", caseId: "c", caseName: "", passed: false, durationMs: 12.4, assertions: [] },
+          outcome: { apiId: "a", apiName: "", caseId: "c", caseName: "", passed: false, error: "连接超时", durationMs: 12.4, assertions: [] },
         },
         { nodeId: ids[1]!, kind: "noop", state: "skipped" },
       ],
@@ -735,6 +735,32 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     expect(document.body.textContent).toContain("条件求值失败");
     expect(document.body.textContent).toContain("config");
     expect(document.body.textContent).toContain("上游节点失败");
+  });
+
+  it("HTTP outcomes 全部通过但节点失败时只追加诊断行，不污染成功行", async () => {
+    const ctx = await mountRunnableFlow();
+    const ids = ctx.design.workflow!.nodes.map((n) => n.id);
+    ctx.api.wfRun = async () => ({
+      workflowId: ctx.design.workflow!.id, workflowName: ctx.design.workflow!.name, status: "published",
+      nodeResults: [{
+        nodeId: ids[0]!, kind: "request", state: "failed", failureKind: "script", error: "路由条件失败", outcomes: [
+          { apiId: "a", apiName: "a", caseId: "c", caseName: "行1", row: 0, passed: true, durationMs: 1, assertions: [] },
+          { apiId: "a", apiName: "a", caseId: "c", caseName: "行2", row: 1, passed: true, durationMs: 1, assertions: [] },
+        ],
+      }, { nodeId: ids[1]!, kind: "noop", state: "skipped", skipReason: "upstream-failed" }],
+      total: 2, passed: 0, failed: 1, skipped: 1, warnings: [], startedAt: "", finishedAt: "",
+    });
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    const rows = document.body.querySelectorAll('[data-testid="wf-result-node"]');
+    expect(rows).toHaveLength(4); // 两个 HTTP 行 + 独立诊断 + noop skipped
+    expect(rows[0]!.textContent).toContain("行1");
+    expect(rows[0]!.textContent).not.toContain("script");
+    expect(rows[0]!.textContent).not.toContain("路由条件失败");
+    expect(rows[1]!.textContent).toContain("行2");
+    const diagnostic = Array.from(rows).find((row) => row.textContent?.includes("节点诊断"));
+    expect(diagnostic?.textContent).toContain("script");
+    expect(diagnostic?.textContent).toContain("路由条件失败");
   });
 
   it("环境选择：选项来自当前项目 envs；选中后 wfRun 携带 envName；切流重置回无环境", async () => {

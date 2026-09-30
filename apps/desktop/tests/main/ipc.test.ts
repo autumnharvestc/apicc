@@ -1,8 +1,9 @@
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { Importer } from "@apicc/core";
+import type { Collection, Folder, Importer, Project } from "@apicc/core";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
 import { createStressPreloadApi } from "../../src/preload/stressBridge.js";
@@ -11,7 +12,7 @@ function setup() {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-"));
   const session = createSession();
   const deps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
-  return { deps, dir };
+  return { deps, dir, session };
 }
 
 /** 固定 importer 替身：detect 按 MAGIC 标记命中，parse 返回固定项目与警告（导入器由 deps 注入）。 */
@@ -36,7 +37,7 @@ function setupWithImporters(importers: Importer[]) {
 
 describe("IPC 处理器", () => {
   it("ws:create → tree:get → node:create → api:get 全链路", async () => {
-    const { deps, dir } = setup();
+    const { deps, dir, session } = setup();
     const opened = await deps.handle("ws:create", {}, dir, "演示");
     expect(opened.workspace.name).toBe("演示");
     let tree = await deps.handle("tree:get", {});
@@ -60,7 +61,7 @@ describe("IPC 处理器", () => {
   });
 
   it("folder 内新建接口：parentId 指向文件夹时挂到所属集合的文件夹下", async () => {
-    const { deps, dir } = setup();
+    const { deps, dir, session } = setup();
     await deps.handle("ws:create", {}, dir, "w");
     const group = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
     const project = await deps.handle("node:create", {}, { kind: "project", parentId: group.id, name: "p" });
@@ -308,14 +309,14 @@ describe("IPC 处理器", () => {
 describe("工作流 IPC", () => {
   /** 共用夹具：工作区 + 分组 + 项目 + 集合 + 接口（含一个「冒烟」用例），返回 full api 供节点引用。 */
   async function setupWf() {
-    const { deps, dir } = setup();
+    const { deps, dir, session } = setup();
     await deps.handle("ws:create", {}, dir, "w");
     const group = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
     const project = await deps.handle("node:create", {}, { kind: "project", parentId: group.id, name: "p" });
     const collection = await deps.handle("node:create", {}, { kind: "collection", parentId: project.id, name: "c" });
     const api = await deps.handle("node:create", {}, { kind: "api", parentId: collection.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
     const detail = await deps.handle("api:get", {}, api.id);
-    return { deps, dir, project, api: detail.api };
+    return { deps, dir, project, api: detail.api, session };
   }
 
   it("wf:create → wf:list → wf:get → wf:save → wf:set-status 全链路", async () => {
@@ -482,6 +483,65 @@ describe("工作流 IPC", () => {
     expect(reports).toHaveLength(2);
     expect(reports.every((report) => report.workflowId === wf.id)).toBe(true);
     expect(reports.every((report) => report.nodeResults.some((node) => node.nodeId === "noop"))).toBe(true);
+  });
+
+  it("wf:run 数据驱动 JSON 保留完整零基行且实际 handler verdict 失败", async () => {
+    const { deps, dir, project, api } = await setupWf();
+    const rowsPath = join(dir, "workflow-rows.json");
+    writeFileSync(rowsPath, JSON.stringify([{ expected: "200" }, { expected: "500" }]));
+    const server = createServer((_req, res) => { res.statusCode = 200; res.end("{}"); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    try {
+      const testCase = api.cases[0]!;
+      await deps.handle("api:save", {}, {
+        ...api, url: `${baseUrl}/rows`, cases: [{ ...testCase, dataDriver: { sourcePath: rowsPath, format: "json" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }] }],
+      });
+      const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "IPC 数据行流" });
+      await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "data-row", kind: "request", apiId: api.id, caseId: testCase.id }] } });
+      await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "published" });
+      await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
+      const result = await deps.handle("wf:run", {}, { workflowId: wf.id });
+      expect(result.verdict).toBe("failed");
+      expect(result.nodeResults[0]?.outcomes?.map((outcome: { row?: number; passed: boolean }) => ({ row: outcome.row, passed: outcome.passed }))).toEqual([
+        { row: 0, passed: true }, { row: 1, passed: false },
+      ]);
+      expect(result.nodeResults[0]?.state).toBe("failed");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("wf:run 所属项目递归定位同 ID 两层 folder API，使用模块 baseUrl 而非错项目", async () => {
+    const { deps, project, api, session } = await setupWf();
+    let receivedPath = "";
+    const server = createServer((req, res) => { receivedPath = req.url ?? ""; res.statusCode = 200; res.end("{}"); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    try {
+      const duplicate = { ...api, url: "{{baseUrl}}/ipc-project-two" };
+      const nestedFolders: Folder[] = [{ id: "00000000-0000-4000-8000-000000000040", name: "outer", apis: [], folders: [{ id: "00000000-0000-4000-8000-000000000041", name: "inner", apis: [duplicate], folders: [] }] }];
+      const collection: Collection = { id: "00000000-0000-4000-8000-000000000039", name: "c-two", variables: { baseUrl: `${baseUrl}/module-base` }, apis: [], folders: nestedFolders };
+      const project2: Project = {
+        id: "00000000-0000-4000-8000-000000000038", name: "p-two", variables: {},
+        globals: { query: [], headers: [], cookies: [], body: [] }, environments: [], workflows: [],
+        collections: [collection],
+      };
+      collection.folders[0]!.folders![0]!.apis = [duplicate];
+      const group2 = { id: "00000000-0000-4000-8000-000000000042", name: "g-two", projects: [project2] };
+      session.workspace!.groups.push(group2);
+      await session.save();
+      const wf = await deps.handle("wf:create", {}, { projectId: project2.id, name: "IPC 项目作用域流" });
+      await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "nested", kind: "request", apiId: api.id, caseId: api.cases[0]!.id }] } });
+      await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "published" });
+      await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
+      const result = await deps.handle("wf:run", {}, { workflowId: wf.id });
+      expect(result.verdict).toBe("passed");
+      expect(result.nodeResults[0]?.outcomes?.[0]?.passed).toBe(true);
+      expect(receivedPath).toBe("/module-base/ipc-project-two");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("wf:run 默认 strict、条件剪枝与坏条件都保留 verdict/诊断", async () => {

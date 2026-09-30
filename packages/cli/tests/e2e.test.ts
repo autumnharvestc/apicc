@@ -17,10 +17,15 @@ const receivedPaths: string[] = [];
 type ObservedRequest = { method: string; url: string; headers: Record<string, string | undefined>; body: string };
 const receivedRequests: ObservedRequest[] = [];
 
-function runCliProcess(args: string[]): Promise<{ code: number; output: string }> {
+function runCliProcess(args: string[], options: { cwd?: string; freezeNow?: boolean } = {}): Promise<{ code: number; output: string }> {
   const entry = join(dirname(fileURLToPath(import.meta.url)), "../dist/bin.js");
+  const env = { ...process.env };
+  if (options.freezeNow) {
+    const preload = join(dirname(fileURLToPath(import.meta.url)), "freeze-date-now.cjs");
+    env.NODE_OPTIONS = [env.NODE_OPTIONS, `--require=${preload}`].filter(Boolean).join(" ");
+  }
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [entry, "--no-plugins", ...args], { cwd: root });
+    const child = spawn(process.execPath, [entry, "--no-plugins", ...args], { cwd: options.cwd ?? root, env });
     let output = "";
     child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
@@ -360,6 +365,12 @@ describe("CLI 端到端", () => {
       "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--runs-dir", strictDir,
     ]);
     expect(strict.code).toBe(1);
+    const strictRaw = readdirSync(strictDir).find((name) => name.startsWith("workflow-") && name.endsWith(".json"))!;
+    const strictReport = JSON.parse(readFileSync(join(strictDir, strictRaw), "utf8")) as { nodeResults: Array<{ nodeId: string; state: string; outcomes?: unknown[] }>; verdict?: string };
+    expect(strictReport.verdict).toBe("failed");
+    expect(strictReport.nodeResults.find((node) => node.nodeId === "missing")).toMatchObject({ state: "failed" });
+    expect(strictReport.nodeResults.find((node) => node.nodeId === "independent")).toMatchObject({ state: "skipped" });
+    expect(strictReport.nodeResults.find((node) => node.nodeId === "independent")?.outcomes).toBeUndefined();
     const relaxedDir = join(root, "relaxed-runs");
     const relaxed = await runCliProcess([
       "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", relaxedDir,
@@ -388,7 +399,7 @@ describe("CLI 端到端", () => {
   }, 30000);
 
   it("run-workflow 消费 verdict：false 通过、第二行失败、坏条件失败、force-draft 不绕过 strict，报告三态一致", async () => {
-    const { mkdirSync, writeFileSync, readdirSync, readFileSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync } = await import("node:fs");
     const writeWorkflow = (id: string, name: string, status: string, nodes: string[], edges: string[] = []) => {
       const dir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", id);
       mkdirSync(dir, { recursive: true });
@@ -410,6 +421,13 @@ describe("CLI 端到端", () => {
     writeWorkflow("00000000-0000-4000-8000-000000000028", "草稿严格流", "draft", [
       "  - id: missing", "    kind: request", "    apiId: ghost-api", "    caseId: ghost-case", "    label: missing",
     ]);
+    // 手写 YAML 后再经 storage round-trip，确保实际 dist 子进程看到该 draft 工作流（与真实落盘形状一致）。
+    const draftWorkspace = await fileStorage.load(root);
+    const draftProject = draftWorkspace.workspace.groups.find((group) => group.name === "demo")!.projects[0]!;
+    if (!draftProject.workflows.some((workflow) => workflow.id === "00000000-0000-4000-8000-000000000028")) {
+      draftProject.workflows.push({ id: "00000000-0000-4000-8000-000000000028", name: "草稿严格流", status: "draft", nodes: [{ id: "missing", kind: "request", apiId: "ghost-api", caseId: "ghost-case", label: "missing" }], edges: [] });
+    }
+    await fileStorage.save(root, draftWorkspace.workspace);
 
     const falseDir = join(root, "false-runs");
     const falseRun = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/条件通过流", "--reporters", "html,junit", "--runs-dir", falseDir]);
@@ -438,6 +456,80 @@ describe("CLI 端到端", () => {
     expect(badCondition.code).toBe(1);
     const draft = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/草稿严格流", "--force-draft", "--runs-dir", join(root, "draft-strict-runs")]);
     expect(draft.code).toBe(1);
+    const draftDir = join(root, "draft-strict-runs");
+    if (!existsSync(draftDir)) throw new Error(`draft child output: ${draft.output}`);
+    const draftRaw = readdirSync(draftDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
+    const draftReport = JSON.parse(readFileSync(join(draftDir, draftRaw), "utf8")) as { verdict?: string; nodeResults: Array<{ nodeId: string; state: string }> };
+    expect(draftReport.verdict).toBe("failed");
+    expect(draftReport.nodeResults.find((node) => node.nodeId === "missing")?.state).toBe("failed");
+  }, 30000);
+
+  it("run-workflow 数据驱动 JSON 保留第一行通过/第二行失败，CLI 与 HTML/JUnit 均按两行计数", async () => {
+    const { mkdirSync, readFileSync, readdirSync } = await import("node:fs");
+    const { workspace } = await fileStorage.load(root);
+    const project = workspace.groups.find((group) => group.name === "demo")!.projects[0]!;
+    const collection = project.collections[0]!;
+    const source = collection.apis[0]!;
+    const apiId = "00000000-0000-4000-8000-000000000034";
+    const caseId = "00000000-0000-4000-8000-000000000035";
+    const rowsPath = join(root, "workflow-rows.json");
+    writeFileSync(rowsPath, JSON.stringify([{ expected: "200" }, { expected: "500" }]));
+    collection.apis.push({ ...source, id: apiId, name: "数据行", url: "{{baseUrl}}/rows", cases: [{
+      ...source.cases[0]!, id: caseId, name: "data-case", dataDriver: { sourcePath: rowsPath, format: "json" },
+      assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }],
+    }] });
+    await fileStorage.save(root, workspace);
+    const wfId = "00000000-0000-4000-8000-000000000036";
+    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", wfId);
+    mkdirSync(wfDir, { recursive: true });
+    writeFileSync(join(wfDir, "workflow.yaml"), [
+      `id: ${wfId}`, "name: 数据行流", "status: enabled", "nodes:",
+      "  - id: data-row", "    kind: request", `    apiId: ${apiId}`, `    caseId: ${caseId}`, "    label: data-row", "edges: []",
+    ].join("\n"));
+    const runsDir = join(root, "data-row-runs");
+    const run = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/数据行流", "--env", "dev", "--reporters", "html,junit", "--runs-dir", runsDir]);
+    expect(run.code).toBe(1);
+    const rawFile = readdirSync(runsDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
+    const report = JSON.parse(readFileSync(join(runsDir, rawFile), "utf8")) as { verdict?: string; nodeResults: Array<{ outcomes?: Array<{ row?: number; passed: boolean }> }> };
+    expect(report.verdict).toBe("failed");
+    expect(report.nodeResults[0]?.outcomes?.map((outcome) => ({ row: outcome.row, passed: outcome.passed }))).toEqual([{ row: 0, passed: true }, { row: 1, passed: false }]);
+    const html = readFileSync(join(runsDir, readdirSync(runsDir).find((file) => file.endsWith(".html"))!), "utf8");
+    expect(html).toMatch(/总计 2 · 通过 1 · 失败 1 · 跳过 0/);
+    expect((html.match(/<tr class="pass">/g) ?? [])).toHaveLength(1);
+    expect((html.match(/<tr class="fail">/g) ?? [])).toHaveLength(1);
+    const xml = readFileSync(join(runsDir, readdirSync(runsDir).find((file) => file.endsWith(".xml"))!), "utf8");
+    expect(xml).toMatch(/<testsuites tests="2" failures="1" skipped="0">/);
+    expect(xml).toMatch(/<testsuite name="数据行流" tests="2" failures="1" skipped="0">/);
+    const passCase = xml.match(/<testcase name="data-row:[^"]+#0"[\s\S]*?<\/testcase>/)?.[0] ?? "";
+    const failCase = xml.match(/<testcase name="data-row:[^"]+#1"[\s\S]*?<\/testcase>/)?.[0] ?? "";
+    expect(passCase).not.toContain("<failure ");
+    expect(failCase).toContain("<failure ");
+  }, 30000);
+
+  it("run-workflow 固定同毫秒时不同 workflowName 仍写入两个可归属 JSON", async () => {
+    const { mkdirSync, readFileSync, readdirSync } = await import("node:fs");
+    const wfId = "00000000-0000-4000-8000-000000000037";
+    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", wfId);
+    mkdirSync(wfDir, { recursive: true });
+    const writeNamedWorkflow = (name: string) => writeFileSync(join(wfDir, "workflow.yaml"), [
+      `id: ${wfId}`, `name: ${name}`, "status: enabled", "nodes:", "  - id: marker-a", "    kind: noop", "    label: marker-a", "edges: []",
+    ].join("\n"));
+    writeNamedWorkflow("碰撞甲");
+    const firstDir = join(root, "collision-a");
+    const first = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/碰撞甲", "--runs-dir", firstDir], { freezeNow: true });
+    expect(first.code).toBe(0);
+    writeNamedWorkflow("碰撞乙");
+    const secondDir = join(root, "collision-b");
+    const second = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/碰撞乙", "--runs-dir", secondDir], { freezeNow: true });
+    expect(second.code).toBe(0);
+    const firstFile = readdirSync(firstDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
+    const secondFile = readdirSync(secondDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
+    expect(firstFile).not.toBe(secondFile);
+    const firstReport = JSON.parse(readFileSync(join(firstDir, firstFile), "utf8")) as { workflowId: string; workflowName: string; startedAt: string };
+    const secondReport = JSON.parse(readFileSync(join(secondDir, secondFile), "utf8")) as { workflowId: string; workflowName: string; startedAt: string };
+    expect(firstReport).toMatchObject({ workflowId: wfId, workflowName: "碰撞甲" });
+    expect(secondReport).toMatchObject({ workflowId: wfId, workflowName: "碰撞乙" });
+    expect(secondReport.startedAt).toBe(firstReport.startedAt);
   }, 30000);
 
   it("run-workflow 通过项目作用域递归查找同 ID API，保留两层 folder 与环境 baseUrl", async () => {
@@ -448,6 +540,8 @@ describe("CLI 端到端", () => {
     const project = demo2.projects[0]!;
     const collection = project.collections[0]!;
     const nestedApi = { ...sourceApi, name: "project-two", url: "{{baseUrl}}/project-two", cases: sourceApi.cases.map((testCase) => ({ ...testCase })) };
+    collection.variables = {};
+    project.environments[0]!.baseUrls = { [collection.id]: `${baseUrl}/module-base` };
     collection.apis = [];
     collection.folders = [{
       id: "00000000-0000-4000-8000-000000000031", name: "outer", apis: [], folders: [{
@@ -466,7 +560,7 @@ describe("CLI 端到端", () => {
     const runsDir = join(root, "project-scope-runs");
     const run = await runCliProcess(["run-workflow", "groups/demo2/projects/svc/workflows/项目作用域流", "--env", "dev", "--runs-dir", runsDir]);
     expect(run.code).toBe(0);
-    expect(receivedPaths).toContain("/project-two");
+    expect(receivedPaths).toContain("/module-base/project-two");
     const raw = readdirSync(runsDir).find((name) => name.startsWith("workflow-") && name.endsWith(".json"))!;
     const report = JSON.parse(readFileSync(join(runsDir, raw), "utf8")) as { verdict?: string; nodeResults: Array<{ state: string; outcomes?: Array<{ passed: boolean }> }> };
     expect(report.verdict).toBe("passed");
