@@ -78,6 +78,7 @@ export class WorkflowRunner {
       .filter((node) => node.kind === "request")
       .map((node) => ({ node, reference: resolveNodeReference(node, project, this.opts.resolve) }))
       .filter(({ reference }) => !reference.api || !reference.caseDef);
+    const missingReferenceByNodeId = new Map(missingReferences.map((item) => [item.node.id, item]));
     if (strict && missingReferences.length > 0) {
       for (const { node, reference } of missingReferences) {
         const message = missingReferenceMessage(node);
@@ -127,22 +128,15 @@ export class WorkflowRunner {
     };
 
     const nodeResults = new Map<string, NodeResult>();
-    // Relaxed execution still reports every known-invalid request before graph
-    // pruning/fail-fast can hide it. Valid independent roots remain schedulable.
+    // Relaxed execution still records every known-invalid request before graph
+    // pruning/fail-fast can hide it. The result is materialized only when the
+    // scheduler reaches the node (so a reached failure still participates in
+    // fail-fast/propagation); hidden invalid nodes are materialized at the end.
     if (!strict) {
       for (const { node, reference } of missingReferences) {
         const message = missingReferenceMessage(node);
         warnings.push(message);
         reference.missingMessage = message;
-        const outcome: CaseOutcome = {
-          apiId: node.apiId ?? "", apiName: node.apiId ?? node.id,
-          caseId: node.caseId ?? "", caseName: node.caseId ?? node.id,
-          passed: false, durationMs: 0, assertions: [], error: message, failureKind: "config",
-        };
-        nodeResults.set(node.id, {
-          nodeId: node.id, label: node.label, kind: "request", state: "failed",
-          outcomes: [outcome], outcome, failureKind: "config", error: message,
-        });
       }
     }
     const incoming = new Map<string, WorkflowEdge[]>();
@@ -210,7 +204,10 @@ export class WorkflowRunner {
       deferredInRow = 0;
       order.push(node.id);
 
-      if (node.kind === "noop") {
+      const knownMissing = !strict ? missingReferenceByNodeId.get(node.id) : undefined;
+      if (knownMissing) {
+        nodeResults.set(node.id, missingNodeResult(node, missingReferenceMessage(node)));
+      } else if (node.kind === "noop") {
         nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "noop", state: "noop" });
       } else {
         const reference = resolveNodeReference(node, project, this.opts.resolve);
@@ -305,6 +302,10 @@ export class WorkflowRunner {
         propagated = false;
         for (const n of workflow.nodes) {
           if (!nodeResults.has(n.id) && blocked(n.id)) {
+            // A known-invalid node hidden behind a false/failed path remains a
+            // report-visible config failure, but must not become a scheduler
+            // participant and globally halt relaxed diagnosis.
+            if (!strict && missingReferenceByNodeId.has(n.id)) continue;
             nodeResults.set(n.id, {
               nodeId: n.id, label: n.label, kind: n.kind, state: "skipped",
               skipReason: skipReasonForBlocked(n.id, incoming, nodeResults, pruned),
@@ -319,7 +320,10 @@ export class WorkflowRunner {
     // 未触达节点（条件不流转/级联/failFast 中断遗留）→ skipped。
     for (const n of workflow.nodes) {
       if (!nodeResults.has(n.id)) {
-        nodeResults.set(n.id, { nodeId: n.id, label: n.label, kind: n.kind, state: "skipped", skipReason: this.opts.failFast ? "fail-fast" : "unreachable" });
+        const knownMissing = !strict ? missingReferenceByNodeId.get(n.id) : undefined;
+        nodeResults.set(n.id, knownMissing
+          ? missingNodeResult(n, missingReferenceMessage(n))
+          : { nodeId: n.id, label: n.label, kind: n.kind, state: "skipped", skipReason: this.opts.failFast ? "fail-fast" : "unreachable" });
       }
     }
 
@@ -436,6 +440,18 @@ function resolveNodeReference(
 
 function missingReferenceMessage(node: WorkflowNode): string {
   return `节点「${node.label ?? node.id}」引用的接口/用例不存在（apiId=${node.apiId ?? ""}, caseId=${node.caseId ?? ""}）`;
+}
+
+function missingNodeResult(node: WorkflowNode, message: string): NodeResult {
+  const outcome: CaseOutcome = {
+    apiId: node.apiId ?? "", apiName: node.apiId ?? node.id,
+    caseId: node.caseId ?? "", caseName: node.caseId ?? node.id,
+    passed: false, durationMs: 0, assertions: [], error: message, failureKind: "config",
+  };
+  return {
+    nodeId: node.id, label: node.label, kind: "request", state: "failed",
+    outcomes: [outcome], outcome, failureKind: "config", error: message,
+  };
 }
 
 function skipReasonForBlocked(

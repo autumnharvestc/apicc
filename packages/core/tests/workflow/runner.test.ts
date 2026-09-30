@@ -7,6 +7,7 @@ import { WorkflowRunner } from "../../src/workflow/runner.js";
 import type { Workflow } from "../../src/workflow/model.js";
 import type { Workspace, Project, ApiDefinition } from "../../src/domain/model.js";
 import { createDefaultRegistry, createPluginRegistry } from "../../src/index.js";
+import { workflowToRunResult } from "../../src/workflow/adapter.js";
 
 let server: Server;
 let baseUrl = "";
@@ -132,6 +133,111 @@ describe("WorkflowRunner", () => {
     expect(result.nodeResults.find((n) => n.nodeId === "independent")?.state).toBe("passed");
     expect(result.verdict).toBe("failed");
     expect(result.warnings.some((warning) => /不存在/.test(warning))).toBe(true);
+  });
+
+  it("strict=false/failFast=true：已触达缺失根节点阻断 HTTP 并标记独立节点 fail-fast", async () => {
+    seenPaths.length = 0;
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", strict: false, failFast: true })
+      .run(wf([
+        { id: "missing-root", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" },
+        { id: "independent", kind: "request" as const, apiId: "a1", caseId: "case-a1" },
+      ], []), { project, workspace: ws });
+    expect(result.nodeResults.find((n) => n.nodeId === "missing-root")).toMatchObject({ state: "failed", failureKind: "config" });
+    expect(result.nodeResults.find((n) => n.nodeId === "independent")).toMatchObject({ state: "skipped", skipReason: "fail-fast" });
+    expect(seenPaths).toHaveLength(0);
+    expect(result.total).toBe(2);
+    expect(new Set(result.nodeResults.map((node) => node.nodeId)).size).toBe(result.total);
+    expect(result.passed).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(result.verdict).toBe("failed");
+    const adapted = workflowToRunResult(result);
+    expect(adapted.cases.filter((c) => c.nodeId === "missing-root")).toHaveLength(1);
+    expect(adapted.cases.filter((c) => c.nodeId === "independent")).toMatchObject([{ skipped: true, skipReason: "fail-fast" }]);
+    expect(adapted.failed).toBe(1);
+    expect(adapted.skipped).toBe(1);
+  });
+
+  it("strict=false/failFast=true：活动边上的非根缺失节点同样阻断 HTTP", async () => {
+    seenPaths.length = 0;
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", strict: false, failFast: true })
+      .run(wf([
+        { id: "root", kind: "noop" as const },
+        { id: "missing-child", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" },
+        { id: "downstream", kind: "request" as const, apiId: "a1", caseId: "case-a1" },
+      ], [
+        { id: "active", from: "root", to: "missing-child" },
+        { id: "after-missing", from: "missing-child", to: "downstream" },
+      ]), { project, workspace: ws });
+    expect(result.nodeResults.find((n) => n.nodeId === "root")?.state).toBe("noop");
+    expect(result.nodeResults.find((n) => n.nodeId === "missing-child")).toMatchObject({ state: "failed", failureKind: "config" });
+    expect(result.nodeResults.find((n) => n.nodeId === "downstream")).toMatchObject({ state: "skipped", skipReason: "upstream-failed" });
+    expect(seenPaths).toHaveLength(0);
+  });
+
+  it("strict=false/failFast=false：缺失根到两层下游传播 upstream-failed，独立请求执行一次", async () => {
+    seenPaths.length = 0;
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", strict: false, failFast: false })
+      .run(wf([
+        { id: "missing-root", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" },
+        { id: "child", kind: "noop" as const },
+        { id: "grandchild", kind: "noop" as const },
+        { id: "independent", kind: "request" as const, apiId: "a1", caseId: "case-a1" },
+      ], [
+        { id: "e1", from: "missing-root", to: "child" },
+        { id: "e2", from: "child", to: "grandchild" },
+      ]), { project, workspace: ws });
+    expect(result.nodeResults.find((n) => n.nodeId === "missing-root")).toMatchObject({ state: "failed", failureKind: "config" });
+    expect(result.nodeResults.find((n) => n.nodeId === "child")).toMatchObject({ state: "skipped", skipReason: "upstream-failed" });
+    expect(result.nodeResults.find((n) => n.nodeId === "grandchild")).toMatchObject({ state: "skipped", skipReason: "upstream-failed" });
+    expect(result.nodeResults.find((n) => n.nodeId === "independent")?.state).toBe("passed");
+    expect(seenPaths).toEqual(["/one"]);
+    expect(result.total).toBe(4);
+    expect(result.passed).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.skipped).toBe(2);
+    expect(result.verdict).toBe("failed");
+    expect(result.warnings.filter((warning) => /不存在/.test(warning))).toHaveLength(1);
+    expect(new Set(result.nodeResults.map((node) => node.nodeId)).size).toBe(result.total);
+    const adapted = workflowToRunResult(result);
+    expect(adapted.cases.map((c) => c.nodeId).sort()).toEqual(["child", "grandchild", "independent", "missing-root"]);
+    expect(adapted.cases.filter((c) => c.nodeId === "missing-root")).toHaveLength(1);
+    expect(adapted.cases.filter((c) => c.nodeId === "child" || c.nodeId === "grandchild")).toMatchObject([
+      { skipped: true, skipReason: "upstream-failed" },
+      { skipped: true, skipReason: "upstream-failed" },
+    ]);
+    expect(adapted.cases).toHaveLength(4);
+    expect(adapted.failed).toBe(1);
+    expect(adapted.skipped).toBe(2);
+  });
+
+  it("strict=false/failFast=true：假边后的 API/用例缺失可报告但不阻断独立 HTTP", async () => {
+    seenPaths.length = 0;
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", strict: false, failFast: true })
+      .run(wf([
+        { id: "root", kind: "noop" as const },
+        { id: "hidden-api", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" },
+        { id: "hidden-case", kind: "request" as const, apiId: "a1", caseId: "ghost-case" },
+        { id: "independent", kind: "request" as const, apiId: "a2", caseId: "case-a2" },
+      ], [
+        { id: "hide-api", from: "root", to: "hidden-api", condition: "false" },
+        { id: "hide-case", from: "root", to: "hidden-case", condition: "false" },
+      ]), { project, workspace: ws });
+    expect(result.nodeResults.filter((n) => n.nodeId === "hidden-api" || n.nodeId === "hidden-case")).toMatchObject([
+      { state: "failed", failureKind: "config" },
+      { state: "failed", failureKind: "config" },
+    ]);
+    expect(result.nodeResults.find((n) => n.nodeId === "independent")?.state).toBe("passed");
+    expect(seenPaths).toEqual(["/two"]);
+    expect(result.failed).toBe(2);
+    expect(result.passed).toBe(2);
+    expect(result.skipped).toBe(0);
+    expect(result.verdict).toBe("failed");
+    expect(result.warnings.filter((warning) => /不存在/.test(warning))).toHaveLength(2);
+    const adapted = workflowToRunResult(result);
+    expect(adapted.cases.filter((c) => c.failureKind === "config")).toHaveLength(2);
+    expect(new Set(adapted.cases.map((c) => c.nodeId)).size).toBe(adapted.cases.length);
+    expect(adapted.cases).toHaveLength(4);
   });
 
   it("strict=false 隐藏在条件剪枝和上游失败后的缺失引用仍保持 failed/config", async () => {
