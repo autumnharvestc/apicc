@@ -240,6 +240,16 @@ JSON 在本阶段沿用 CLI 实际落盘的原始 WorkflowRunResult（节点计�
 
 独立记录在 `local/HTTP计时边界修复记录-2026-09-30.md`；本次不运行 canonical 三轮、不合并/推送/打包。无法据此证明原 `<220ms` 失败的历史精确原因，阶段 B 的 ENG-001 仍未验收。
 
+### 后续有界修复：HTTP 并发验证方式
+
+用户另行批准替换原 `<220ms` 判据。新建 Luna 开发席位成功，未沿用前任务临时 Sol 实现授权；不同 Sol high 独立审核。本任务只改 `packages/core/tests/http/client.test.ts`，不改生产连接池、计时逻辑或 close 契约。
+
+`9fa6ea0` 用独立 server/client、两个在途请求到达后才放行的屏障、到达数/峰值为 2 和真实响应断言替代耗时代理。初审指出请求提前 settle 丢错、close 拒绝短路清理两项 Important，以及监听器 Minor；`87d1ba4` 用请求/屏障竞速及各阶段独立保护清理保留主错并完成资源收尾。一轮定向复审确认所有发现 ADDRESSED、无新问题，规格与质量通过。
+
+真实串行负向控制失败、恢复正常并发通过；最终测试额外放行前等待 300ms 的临时控制仍通过，随后源码恢复。初次实现 core 531 项通过；最终返修实现者 HTTP 20 项及控制者 HTTP+timing 24 项通过，typecheck/brand/rangeDiff exit 0。没有把初版全量当作最终返修已重跑过的全量；server/socket 关闭仅有经审查代码路径和无挂起的间接观测，限制明确保留。
+
+归档：`local/HTTP并发验证修复记录-2026-09-30.md`。原速度判据已移除；尚未执行三次 canonical 完整门禁，不合并/推送/打包，不宣称阶段 B ENG-001 已通过。前 timing-test 非阻断 Minor 仍独立延期。
+
 - [x] 全部五项任务规格/质量审查通过，完成一次宽范围审查及所有后续修复区间的定向复审。
 - [ ] 全分支 Node/Java 工具链正确，core/CLI/desktop/admin-web 构建和测试、desktop typecheck、brand gate、服务端测试通过；以标准入口三次连续验证覆盖 ENG-001，避免另外反复全套重跑。
 - [ ] 更新计划复选框；在 `local/阶段B工作流正确性验收-2026-09-30.md` 保存任务提交、审查结论、测试数量、三次稳定性证据与实际限制（local 不入库），不得参考该目录旧文档。
