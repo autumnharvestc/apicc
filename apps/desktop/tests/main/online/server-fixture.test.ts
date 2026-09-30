@@ -87,6 +87,8 @@ describe("server fixture Maven 产物隔离", () => {
   it("真实 Java 探针要求成功退出且拒绝非零、spawn 和超时失败", () => {
     const success = probeJavaMajor("java", () => ({ status: 0, stdout: "", stderr: 'openjdk version "21.0.12"' } as any));
     expect(success).toBe(21);
+    expect(probeJavaMajor("java", () => ({ status: 0, stdout: "", stderr: 'openjdk version "20.0.2"' } as any))).toBe(20);
+    expect(probeJavaMajor("java", () => ({ status: 0, stdout: "", stderr: 'openjdk version "22.0.1"' } as any))).toBe(22);
     expect(probeJavaMajor("java", () => ({ status: 17, stdout: "", stderr: 'openjdk version "21.0.12"' } as any))).toBeNull();
     expect(probeJavaMajor("java", () => ({ status: null, error: new Error("spawn") } as any))).toBeNull();
     expect(probeJavaMajor("java", () => ({ status: null, stdout: "", stderr: 'openjdk version "21.0.12"' } as any))).toBeNull();
