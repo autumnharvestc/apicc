@@ -10,6 +10,7 @@ import type { Workflow, WorkflowEdge, WorkflowNode } from "./model.js";
 import type { CaseOutcome } from "../report/types.js";
 
 export type NodeState = "passed" | "failed" | "skipped" | "noop";
+export type NodeSkipReason = "condition-pruned" | "upstream-failed" | "fail-fast" | "reference-missing" | "reference-invalid" | "unreachable";
 
 export interface NodeResult {
   nodeId: string;
@@ -19,6 +20,8 @@ export interface NodeResult {
   outcomes?: CaseOutcome[];
   outcome?: CaseOutcome;
   error?: string;
+  skipReason?: NodeSkipReason;
+  failureKind?: CaseOutcome["failureKind"];
 }
 
 export interface WorkflowRunResult {
@@ -30,6 +33,7 @@ export interface WorkflowRunResult {
   passed: number;
   failed: number;
   skipped: number;
+  verdict?: "passed" | "failed";
   warnings: string[];
   startedAt: string;
   finishedAt: string;
@@ -40,7 +44,10 @@ export interface WorkflowRunnerOptions {
   resolve: (apiId: string) => ApiDefinition | undefined;
   envName?: string;
   failFast?: boolean;
+  strict?: boolean;
 }
+
+export type ConditionVerdict = { kind: "matched" } | { kind: "pruned" } | { kind: "error"; message: string };
 
 /** 条件求值沙箱上下文：在 PmApi 之上扩展只读的 prev/vars/env 与求值结果槽位 __value。 */
 interface ConditionPm extends PmApi {
@@ -56,16 +63,36 @@ export class WorkflowRunner {
   async run(workflow: Workflow, ctx: { project: Project; workspace: Workspace }): Promise<WorkflowRunResult> {
     const startedAt = new Date().toISOString();
     const warnings: string[] = [];
-    // 结构防御：环在执行前拒绝（环阻断遍历）；其余结构性 error（如悬空边端点）不阻断运行，
-    // 但必须折进 warnings 使诊断可见——悬空 from 边永远不会被边求值触达，下游被静默 skipped 时这是唯一线索。
+    // 结构错误必须在任何节点执行前拒绝；否则重复 ID/悬空端点会让拓扑调度产生
+    // 无法解释的 skipped，且可能在错误图上发出请求。
     const structural = validateWorkflowStructure(workflow);
-    const cycle = structural.find((i) => i.code === "cycle");
-    if (cycle) throw new Error(cycle.message);
-    for (const i of structural) {
-      if (i.level === "error" && i.code !== "cycle") warnings.push(i.message);
-    }
+    const structuralErrors = structural.filter((i) => i.level === "error");
+    if (structuralErrors.length > 0) throw new Error(structuralErrors.map((i) => i.message).join("; "));
+    warnings.push(...structural.filter((i) => i.level === "warning").map((i) => i.message));
 
     const project = ctx.project;
+    const strict = this.opts.strict ?? true;
+    // strict 预检必须先于环境解析、CollectionRunner 和任何 HTTP 请求。项目实体优先，
+    // 只有项目内没有该接口时才使用 resolve 接缝，与实际运行定位保持一致。
+    const missingReferences = workflow.nodes
+      .filter((node) => node.kind === "request")
+      .map((node) => ({ node, reference: resolveNodeReference(node, project, this.opts.resolve) }))
+      .filter(({ reference }) => !reference.api || !reference.caseDef);
+    if (strict && missingReferences.length > 0) {
+      for (const { node, reference } of missingReferences) {
+        const message = missingReferenceMessage(node);
+        warnings.push(message);
+        reference.missingMessage = message;
+      }
+      const missingIds = new Set(missingReferences.map(({ node }) => node.id));
+      const nodeResults = workflow.nodes.map((node): NodeResult => {
+        const missing = missingIds.has(node.id);
+        return missing
+          ? { nodeId: node.id, label: node.label, kind: node.kind, state: "failed", failureKind: "config", error: missingReferences.find((m) => m.node.id === node.id)?.reference.missingMessage }
+          : { nodeId: node.id, label: node.label, kind: node.kind, state: "skipped", skipReason: "reference-invalid" };
+      });
+      return makeWorkflowResult(workflow, startedAt, nodeResults, warnings);
+    }
     const env = resolveEnv(project, this.opts.envName);
     // 条件求值上下文 env（规格 §4）：按继承链根→叶合并的环境变量只读快照（与 CollectionRunner
     // 的环境层同源语义，规格 §3.1/§6）；sit extends dev 等继承场景父环境变量必须可见。未选环境时空对象。
@@ -148,7 +175,10 @@ export class WorkflowRunner {
       if (!ready(node.id)) {
         const allResolved = (incoming.get(node.id) ?? []).every((e) => pruned.has(e.id) || nodeResults.has(e.from));
         if (allResolved) {
-          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: node.kind, state: "skipped" });
+          nodeResults.set(node.id, {
+            nodeId: node.id, label: node.label, kind: node.kind, state: "skipped",
+            skipReason: skipReasonForBlocked(node.id, incoming, nodeResults, pruned),
+          });
           continue;
         }
         queue.push(node);
@@ -165,15 +195,15 @@ export class WorkflowRunner {
       if (node.kind === "noop") {
         nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "noop", state: "noop" });
       } else {
-        const projectLocation = node.apiId ? findProjectApi(project, node.apiId) : undefined;
-        // 项目中命中同 ID 时使用项目实体及其模块上下文；未命中才使用 resolve 接缝。
-        const api = projectLocation?.api ?? (node.apiId ? this.opts.resolve(node.apiId) : undefined);
-        const caseDef = api?.cases.find((c) => c.id === node.caseId);
+        const reference = resolveNodeReference(node, project, this.opts.resolve);
+        const projectLocation = reference.location;
+        const api = reference.api;
+        const caseDef = reference.caseDef;
         if (!api || !caseDef) {
-          // missing 引用：skipped 带告警，不中断整轮（「引用缺失」可诊断而非静默破坏）。
-          const msg = `节点「${node.label ?? node.id}」引用的接口/用例不存在（apiId=${node.apiId ?? ""}, caseId=${node.caseId ?? ""}），已跳过`;
+          // 非严格模式允许继续遍历，但缺引用始终是失败 verdict，不能伪装成 passed。
+          const msg = missingReferenceMessage(node);
           warnings.push(msg);
-          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "skipped", error: msg });
+          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "skipped", skipReason: "reference-missing", error: msg });
         } else {
           // 保留项目模块/祖先文件夹上下文；外部 resolve 仍使用工作流专属合成集合。
           const collection = projectLocation
@@ -181,14 +211,24 @@ export class WorkflowRunner {
             : {
               id: `wf-${workflow.id}-${node.id}`,
               name: `${workflow.name}/${node.label ?? api.name}`,
-              variables: {}, folders: [], apis: [{ ...api, cases: [caseDef] }],
+              variables: {}, folders: [], apis: [{ ...api, cases: api.cases.filter((candidate) => candidate.id === caseDef.id) }],
             } satisfies Collection;
-          const nodeRun = await runSingleNode(runner, collection, api, caseDef, env, project, ctx.workspace, bridge);
-          warnings.push(...nodeRun.warnings);
-          const outcomes = nodeRun.outcomes;
-          const state: NodeState = outcomes.every((o) => o.passed) ? "passed" : "failed";
-          const outcome = outcomes.find((o) => !o.passed) ?? outcomes[0];
-          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state, outcomes, outcome, error: outcome?.error });
+          try {
+            const nodeRun = await runSingleNode(runner, collection, api, caseDef, env, project, ctx.workspace, bridge);
+            warnings.push(...nodeRun.warnings);
+            const outcomes = nodeRun.outcomes;
+            const state: NodeState = outcomes.every((o) => o.passed) ? "passed" : "failed";
+            const outcome = outcomes.find((o) => !o.passed) ?? outcomes[0];
+            nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state, outcomes, outcome, error: outcome?.error, failureKind: outcome?.failureKind });
+          } catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            const failureKind: CaseOutcome["failureKind"] = /脚本引擎|接口\/用例|环境|数据源/.test(error) ? "config" : "script";
+            const outcome: CaseOutcome = {
+              apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
+              passed: false, durationMs: 0, assertions: [], error, failureKind,
+            };
+            nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, error, failureKind });
+          }
         }
       }
 
@@ -196,10 +236,17 @@ export class WorkflowRunner {
       // 满足则下游入队（多入只入队一次）。
       for (const edge of outgoing.get(node.id) ?? []) {
         if (edge.condition) {
-          const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, carried, envVars, this.opts.registry, warnings);
-          if (!verdict) {
-            warnings.push(`边 ${edge.from} → ${edge.to} 条件不满足: ${edge.condition}`);
+          const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, carried, envVars, this.opts.registry);
+          if (verdict.kind === "pruned") {
             pruned.add(edge.id);
+            continue;
+          }
+          if (verdict.kind === "error") {
+            const result = nodeResults.get(node.id)!;
+            result.state = "failed";
+            result.failureKind = "script";
+            result.error = `边 ${edge.id} 条件求值失败: ${verdict.message}`;
+            warnings.push(result.error);
             continue;
           }
         }
@@ -216,7 +263,10 @@ export class WorkflowRunner {
       // 级联：入边全部定局（来源终态否定或被条件剪枝）且不可达的节点标记 skipped（扫描置于出边求值之后，简报更正指令 ⑤）。
       for (const n of workflow.nodes) {
         if (!nodeResults.has(n.id) && blocked(n.id)) {
-          nodeResults.set(n.id, { nodeId: n.id, label: n.label, kind: n.kind, state: "skipped" });
+          nodeResults.set(n.id, {
+            nodeId: n.id, label: n.label, kind: n.kind, state: "skipped",
+            skipReason: skipReasonForBlocked(n.id, incoming, nodeResults, pruned),
+          });
         }
       }
       if (this.opts.failFast && nodeResults.get(node.id)?.state === "failed") break;
@@ -225,7 +275,7 @@ export class WorkflowRunner {
     // 未触达节点（条件不流转/级联/failFast 中断遗留）→ skipped。
     for (const n of workflow.nodes) {
       if (!nodeResults.has(n.id)) {
-        nodeResults.set(n.id, { nodeId: n.id, label: n.label, kind: n.kind, state: "skipped" });
+        nodeResults.set(n.id, { nodeId: n.id, label: n.label, kind: n.kind, state: "skipped", skipReason: this.opts.failFast ? "fail-fast" : "unreachable" });
       }
     }
 
@@ -243,7 +293,8 @@ export class WorkflowRunner {
     const skipped = list.filter((n) => n.state === "skipped").length;
     return {
       workflowId: workflow.id, workflowName: workflow.name, status: workflow.status,
-      nodeResults: list, total, passed, failed, skipped, warnings,
+      nodeResults: list, total, passed, failed, skipped,
+      verdict: workflowVerdict(list, failed), warnings,
       startedAt, finishedAt: new Date().toISOString(),
     };
   }
@@ -279,11 +330,11 @@ async function runSingleNode(
  * env（当前环境 variables 只读快照，无环境时空对象）以 pm 属性直传沙箱；
  * 表达式以裸标识符引用（如 prev.passed / vars.orderId / env.deploy），而沙箱只注入 pm 一个全局——
  * 故注入一行解构绑定使裸标识符可达（每次 engine.run 均为新沙箱上下文，无跨调用词法残留）。
- * 求值异常/缺引擎按 false 处理并告警（规格 D2/§边界）。
+ * 求值异常/缺引擎返回 error，由调用方将源节点标为 script 失败并阻断其下游。
  */
-function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<string, string>, envVars: Record<string, string>, registry: PluginRegistry, warnings: string[]): boolean {
+function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<string, string>, envVars: Record<string, string>, registry: PluginRegistry): ConditionVerdict {
   const engine = registry.getScriptEngine("javascript");
-  if (!engine) { warnings.push("缺少 javascript 脚本引擎，条件按 false 处理"); return false; }
+  if (!engine) return { kind: "error", message: "缺少 javascript 脚本引擎" };
   const representative = upstream.outcome;
   const prev = deepReadonlySnapshot(representative
     ? {
@@ -304,10 +355,9 @@ function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<s
   };
   try {
     engine.run(`const { prev, vars, env } = pm; pm.__value = Boolean((${expr}));`, { pm });
-    return pm.__value === true;
+    return pm.__value === true ? { kind: "matched" } : { kind: "pruned" };
   } catch (e) {
-    warnings.push(`条件求值失败（按不通过处理）: ${expr} —— ${(e as Error).message}`);
-    return false;
+    return { kind: "error", message: `${(e as Error).message}（表达式: ${expr}）` };
   }
 }
 
@@ -317,4 +367,61 @@ function deepReadonlySnapshot<T>(value: T): T {
   if (Array.isArray(value)) return Object.freeze(value.map((item) => deepReadonlySnapshot(item))) as T;
   const copy = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepReadonlySnapshot(item)]));
   return Object.freeze(copy) as T;
+}
+
+interface NodeReference {
+  location?: ReturnType<typeof findProjectApi>;
+  api?: ApiDefinition;
+  caseDef?: TestCase;
+  missingMessage?: string;
+}
+
+function resolveNodeReference(
+  node: WorkflowNode,
+  project: Project,
+  resolve: (apiId: string) => ApiDefinition | undefined,
+): NodeReference {
+  if (node.kind !== "request") return {};
+  const location = node.apiId ? findProjectApi(project, node.apiId) : undefined;
+  // Project entities are authoritative. The resolver is only a seam for APIs not
+  // owned by this project (used by standalone/workspace execution).
+  const api = location?.api ?? (node.apiId ? resolve(node.apiId) : undefined);
+  return { location, api, caseDef: api?.cases.find((candidate) => candidate.id === node.caseId) };
+}
+
+function missingReferenceMessage(node: WorkflowNode): string {
+  return `节点「${node.label ?? node.id}」引用的接口/用例不存在（apiId=${node.apiId ?? ""}, caseId=${node.caseId ?? ""}）`;
+}
+
+function skipReasonForBlocked(
+  nodeId: string,
+  incoming: Map<string, WorkflowEdge[]>,
+  nodeResults: Map<string, NodeResult>,
+  pruned: Set<string>,
+): NodeSkipReason {
+  const ins = incoming.get(nodeId) ?? [];
+  const hasFailure = ins.some((edge) => {
+    if (pruned.has(edge.id)) return false;
+    const source = nodeResults.get(edge.from);
+    return source?.state === "failed" || source?.skipReason === "upstream-failed" || source?.skipReason === "reference-invalid" || source?.skipReason === "reference-missing";
+  });
+  return hasFailure ? "upstream-failed" : "condition-pruned";
+}
+
+function workflowVerdict(nodeResults: NodeResult[], failed: number): "passed" | "failed" {
+  if (failed > 0) return "failed";
+  if (nodeResults.some((node) => node.state === "skipped" && node.skipReason !== "condition-pruned" && node.skipReason !== "upstream-failed")) return "failed";
+  return "passed";
+}
+
+function makeWorkflowResult(workflow: Workflow, startedAt: string, nodeResults: NodeResult[], warnings: string[]): WorkflowRunResult {
+  const total = nodeResults.length;
+  const passed = nodeResults.filter((node) => node.state === "passed" || node.state === "noop").length;
+  const failed = nodeResults.filter((node) => node.state === "failed").length;
+  const skipped = nodeResults.filter((node) => node.state === "skipped").length;
+  return {
+    workflowId: workflow.id, workflowName: workflow.name, status: workflow.status,
+    nodeResults, total, passed, failed, skipped, verdict: "failed", warnings,
+    startedAt, finishedAt: new Date().toISOString(),
+  };
 }

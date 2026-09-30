@@ -1,11 +1,22 @@
 import type { Workflow, WorkflowNode, WorkflowEdge } from "./model.js";
-import type { Workspace } from "../domain/model.js";
+import type { Project, Workspace } from "../domain/model.js";
+import { findProjectApi } from "./references.js";
 
 export interface ValidationIssue { level: "error" | "warning"; code: string; message: string }
 
-/** 结构校验：环（error）/ 边端点（error）/ 孤立节点与完全重复边（warning）。 */
+/** 结构校验：重复 ID、环、边端点（error）/ 孤立节点与完全重复边（warning）。 */
 export function validateWorkflowStructure(wf: Workflow): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  const nodeCounts = new Map<string, number>();
+  for (const node of wf.nodes) nodeCounts.set(node.id, (nodeCounts.get(node.id) ?? 0) + 1);
+  for (const [id, count] of nodeCounts) {
+    if (count > 1) issues.push({ level: "error", code: "duplicate-node-id", message: `节点 ID 重复: ${id}` });
+  }
+  const edgeCounts = new Map<string, number>();
+  for (const edge of wf.edges) edgeCounts.set(edge.id, (edgeCounts.get(edge.id) ?? 0) + 1);
+  for (const [id, count] of edgeCounts) {
+    if (count > 1) issues.push({ level: "error", code: "duplicate-edge-id", message: `边 ID 重复: ${id}` });
+  }
   const ids = new Set(wf.nodes.map((n) => n.id));
 
   for (const e of wf.edges) {
@@ -88,7 +99,7 @@ export function transitionWorkflowStatus(
 }
 
 /** 启用校验：结构校验的 error/warning 并入结果，另校验 request 节点的接口/用例引用存在性。 */
-export function validateEnablement(wf: Workflow, workspace: Workspace): EnablementResult {
+export function validateEnablement(wf: Workflow, workspace: Workspace, project?: Project): EnablementResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -101,8 +112,16 @@ export function validateEnablement(wf: Workflow, workspace: Workspace): Enableme
   errors.push(...issues.filter((i) => i.level === "error").map((i) => i.message));
   warnings.push(...issues.filter((i) => i.level === "warning").map((i) => i.message));
 
+  // 显式 project 时严格限制在该项目；否则若能定位工作流所属项目则优先该项目，
+  // 仅独立验证（没有所属项目）才退回 workspace 全局查找。
+  const owner = project ?? workspace.groups.flatMap((group) => group.projects).find((candidate) => candidate.workflows.some((item) => item.id === wf.id));
+
   // 三层查找：collections 直属 apis 与 folder apis 两种归属都要覆盖。
   const findCase = (apiId: string, caseId: string): boolean => {
+    if (owner) {
+      const location = findProjectApi(owner, apiId);
+      return Boolean(location?.api.cases.some((candidate) => candidate.id === caseId));
+    }
     for (const g of workspace.groups) {
       for (const p of g.projects) {
         for (const c of p.collections) {

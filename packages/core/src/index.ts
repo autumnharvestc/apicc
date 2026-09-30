@@ -28,7 +28,7 @@ export { openapiImporter } from "./import/openapi.js";
 export * from "./workflow/model.js";
 export { validateWorkflowStructure, transitionWorkflowStatus, validateEnablement, type ValidationIssue } from "./workflow/validate.js";
 export { workflowImpact, type WorkflowImpactEntry } from "./workflow/impact.js";
-export { WorkflowRunner, type WorkflowRunResult, type NodeResult, type NodeState, type WorkflowRunnerOptions } from "./workflow/runner.js";
+export { WorkflowRunner, type WorkflowRunResult, type NodeResult, type NodeState, type NodeSkipReason, type ConditionVerdict, type WorkflowRunnerOptions } from "./workflow/runner.js";
 export { findProjectApi, selectWorkflowCollection, type ProjectApiLocation } from "./workflow/references.js";
 export { workflowToRunResult } from "./workflow/adapter.js";
 export { mergedEnvVars } from "./domain/envChain.js";

@@ -65,6 +65,16 @@ describe("validateWorkflowStructure", () => {
     ]));
     expect(issues.some((i) => i.level === "warning" && i.code === "duplicate-edge")).toBe(true);
   });
+
+  it("重复节点 ID 与边 ID 是结构错误而非 warning", () => {
+    const issues = validateWorkflowStructure(wf([
+      req("a"), req("a"), req("b"),
+    ], [
+      { id: "same", from: "a", to: "b" },
+      { id: "same", from: "a", to: "b", condition: "true" },
+    ]));
+    expect(issues.filter((i) => i.level === "error").map((i) => i.code)).toEqual(expect.arrayContaining(["duplicate-node-id", "duplicate-edge-id"]));
+  });
 });
 
 // 生命周期/启用校验共用的单一定义辅助（合并原 wf 局部函数，status 缺省 published）。
@@ -134,5 +144,15 @@ describe("validateEnablement", () => {
     expect(r.ok).toBe(true);
     expect(r.errors.some((e) => /不可达/.test(e))).toBe(false);
     expect(r.warnings.some((w) => /孤立节点/.test(w))).toBe(true);
+  });
+
+  it("显式 project 限制引用查找，不跨项目命中相同 API ID", () => {
+    const workflow = wfFactory([req("n1")], []);
+    const makeApi = (name: string) => ({ id: "a-n1", name, version: "1", deprecated: false, method: "GET" as const, url: "/", headers: [], query: [], cases: [{ id: "c-n1", name: "c-n1", scope: "base", parameters: {}, assertions: [] }] });
+    const selected = { id: "selected", name: "selected", variables: {}, environments: [], collections: [], workflows: [] } as any;
+    const other = { id: "other", name: "other", variables: {}, environments: [], collections: [{ id: "c", name: "c", variables: {}, folders: [], apis: [makeApi("other-api")] }], workflows: [] } as any;
+    const workspace = { id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [selected, other] }] } as unknown as Workspace;
+    expect(validateEnablement(workflow, workspace, selected).errors.some((e) => /不存在/.test(e))).toBe(true);
+    expect(validateEnablement(workflow, workspace).ok).toBe(true);
   });
 });

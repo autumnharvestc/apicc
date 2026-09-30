@@ -31,9 +31,10 @@ export function findProjectApi(project: Project, apiId: string): ProjectApiLocat
 function cloneFolderPath(folders: Folder[], api: ApiDefinition, testCase: TestCase): Folder[] {
   if (folders.length === 0) return [];
   const [current, ...rest] = folders;
+  const selectedCases = api.cases.filter((candidate) => candidate.id === testCase.id);
   const child: Folder = {
     ...current,
-    apis: rest.length === 0 ? [{ ...api, cases: [testCase] }] : [],
+    apis: rest.length === 0 ? [{ ...api, cases: selectedCases.length > 0 ? selectedCases : [testCase] }] : [],
     folders: cloneFolderPath(rest, api, testCase),
     preOperations: current.preOperations ? [...current.preOperations] : current.preOperations,
     postOperations: current.postOperations ? [...current.postOperations] : current.postOperations,
@@ -44,7 +45,8 @@ function cloneFolderPath(folders: Folder[], api: ApiDefinition, testCase: TestCa
 /** 生成仅执行目标 API/用例的集合副本，保留模块和目标祖先容器上下文。 */
 export function selectWorkflowCollection(location: ProjectApiLocation, testCase: TestCase): Collection {
   const { api, collection, folders } = location;
-  const selectedApi = { ...api, cases: [testCase] };
+  const selectedCases = api.cases.filter((candidate) => candidate.id === testCase.id);
+  const selectedApi = { ...api, cases: selectedCases.length > 0 ? selectedCases : [testCase] };
   return {
     ...collection,
     variables: { ...collection.variables },

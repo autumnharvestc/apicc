@@ -83,7 +83,51 @@ describe("WorkflowRunner", () => {
     const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
       .run(wf(nodes, edges), { project, workspace: ws });
     expect(r.nodeResults.map((n) => n.state)).toEqual(["passed", "passed", "skipped"]);
+    expect(r.nodeResults.find((n) => n.nodeId === "n3")?.skipReason).toBe("condition-pruned");
+    expect(r.verdict).toBe("passed");
     expect(r.skipped).toBe(1);
+  });
+
+  it("strict 默认在发送请求前拒绝缺失引用，即使缺失节点被假条件遮住", async () => {
+    seenPaths.length = 0;
+    const nodes = [
+      { id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1" },
+      { id: "missing", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" },
+      { id: "n3", kind: "request" as const, apiId: "a2", caseId: "case-a2" },
+    ];
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf(nodes, [
+        { id: "e1", from: "n1", to: "missing", condition: "false" },
+        { id: "e2", from: "missing", to: "n3" },
+      ]), { project, workspace: ws });
+    expect(result.verdict).toBe("failed");
+    expect(result.nodeResults.find((n) => n.nodeId === "missing")?.state).toBe("failed");
+    expect(result.nodeResults.find((n) => n.nodeId === "missing")?.failureKind).toBe("config");
+    expect(result.nodeResults.find((n) => n.nodeId === "n1")?.state).toBe("skipped");
+    expect(seenPaths).toEqual([]);
+  });
+
+  it("条件求值错误使源节点失败且不会伪装成剪枝", async () => {
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf([
+        { id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1" },
+        { id: "n2", kind: "request" as const, apiId: "a2", caseId: "case-a2" },
+      ], [{ id: "bad-edge", from: "n1", to: "n2", condition: "prev.missing.deep" }]), { project, workspace: ws });
+    const source = result.nodeResults.find((n) => n.nodeId === "n1");
+    expect(result.verdict).toBe("failed");
+    expect(source?.state).toBe("failed");
+    expect(source?.failureKind).toBe("script");
+    expect(source?.error).toContain("bad-edge");
+    expect(result.nodeResults.find((n) => n.nodeId === "n2")?.skipReason).toBe("upstream-failed");
+  });
+
+  it("strict=false 缺引用仍是明确 skipped/reference-missing 且整体失败", async () => {
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false, strict: false })
+      .run(wf([{ id: "missing", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" }], []), { project, workspace: ws });
+    expect(result.nodeResults[0]?.state).toBe("skipped");
+    expect(result.nodeResults[0]?.skipReason).toBe("reference-missing");
+    expect(result.verdict).toBe("failed");
+    expect(result.warnings.some((warning) => /不存在/.test(warning))).toBe(true);
   });
 
   it("noop 节点直接通过；missing 引用 skipped 带告警", async () => {
@@ -91,7 +135,7 @@ describe("WorkflowRunner", () => {
       { id: "n1", kind: "noop" as const, label: "占位" },
       { id: "n2", kind: "request" as const, apiId: "ghost", caseId: "ghost-case", label: "缺失" },
     ];
-    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: undefined, failFast: false })
+    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: undefined, failFast: false, strict: false })
       .run(wf(nodes, [{ id: "e", from: "n1", to: "n2" }]), { project, workspace: ws });
     expect(r.nodeResults[0]!.state).toBe("noop");
     expect(r.nodeResults[1]!.state).toBe("skipped");
@@ -186,15 +230,14 @@ describe("WorkflowRunner", () => {
     expect(r.total).toBe(3);
     expect(r.failed).toBe(1);
     expect(r.passed).toBe(0);
+    expect(r.nodeResults.find((n) => n.nodeId === "n2")?.skipReason).toBe("upstream-failed");
+    expect(r.nodeResults.find((n) => n.nodeId === "n3")?.skipReason).toBe("upstream-failed");
   });
 
-  it("悬空边端点：忽略该边并告警，不阻断运行", async () => {
+  it("悬空边端点：执行前拒绝且不发请求", async () => {
     const nodes = [{ id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "one" }];
-    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
-      .run(wf(nodes, [{ id: "e-bad", from: "n1", to: "ghost" }]), { project, workspace: ws });
-    expect(r.nodeResults.map((n) => n.state)).toEqual(["passed"]);
-    expect(r.warnings.join("\n")).toContain("指向不存在的节点");
-    expect(r.passed).toBe(1);
+    await expect(new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf(nodes, [{ id: "e-bad", from: "n1", to: "ghost" }]), { project, workspace: ws })).rejects.toThrow(/端点不存在/);
   });
 
   it("用例 scope 与所选环境不匹配：可读失败而非崩溃", async () => {
@@ -555,14 +598,39 @@ describe("WorkflowRunner", () => {
     expect(r.nodeResults.map((n) => n.state)).toEqual(["passed", "passed"]);
   });
 
-  it("悬空 from 边：下游静默 skipped 必须留有端点告警", async () => {
+  it("工作流引用保留同 caseId 的 base/dev/sit 版本并交给 CollectionRunner 覆盖", async () => {
+    const scopedApi: ApiDefinition = {
+      id: "scoped", name: "scoped", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/{{which}}`, headers: [], query: [],
+      cases: [
+        { id: "same-case", name: "base", scope: "base", parameters: { which: "base" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }] },
+        { id: "same-case", name: "dev", scope: "dev", parameters: { which: "dev" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }] },
+        { id: "same-case", name: "sit", scope: "sit", parameters: { which: "sit" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }] },
+      ],
+    };
+    const scopedProject: Project = {
+      ...project,
+      environments: [
+        { id: "e-dev", name: "dev", variables: { baseUrl }, baseUrls: {} },
+        { id: "e-sit", name: "sit", extends: "dev", variables: {}, baseUrls: {} },
+      ],
+    };
+    const run = async (envName: string | undefined) => {
+      seenPaths.length = 0;
+      const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: (id) => id === "scoped" ? scopedApi : undefined, envName, failFast: false })
+        .run(wf([{ id: "scoped-node", kind: "request", apiId: "scoped", caseId: "same-case" }], []), { project: scopedProject, workspace: ws });
+      return { result, path: seenPaths[0] };
+    };
+    expect((await run("sit")).path).toBe("/sit");
+    expect((await run("dev")).path).toBe("/dev");
+    expect((await run(undefined)).path).toBe("/base");
+  });
+
+  it("悬空 from 边：执行前拒绝", async () => {
     // 边的 from 端点不存在：该边永不求值，n1 因入度虚增不被入队 → 只能 skipped；
     // 运行结果 warnings 必须携带结构校验的端点错误，诊断可见。
     const nodes = [{ id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "one" }];
-    const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
-      .run(wf(nodes, [{ id: "e2", from: "ghost", to: "n1" }]), { project, workspace: ws });
-    expect(r.nodeResults.map((n) => n.state)).toEqual(["skipped"]);
-    expect(r.warnings.join("\n")).toContain("端点不存在");
+    await expect(new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf(nodes, [{ id: "e2", from: "ghost", to: "n1" }]), { project, workspace: ws })).rejects.toThrow(/端点不存在/);
   });
 
   it("条件上下文 env：环境变量在条件中可读；无环境时空对象", async () => {
