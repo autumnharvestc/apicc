@@ -190,9 +190,9 @@ JSON 在本阶段沿用 CLI 实际落盘的原始 WorkflowRunResult（节点计�
 
 **交付：** Windows 根入口严格检查 JDK21、顺序构建与测试；E2E 自建/启动 JAR 不占共享 server/target，三个连续全量入口运行无争用。
 
-- [ ] **步骤 1：写失败测试。** helper 两次/并发准备产物目录不同，启动 JAR 不位于共享 target；失败构建不启动服务、返回可读错误；仅清理自己创建的临时目录，进程结束后再删；Java20/22 拒绝，Java21 通过。使用注入构建调用验证不同 Maven build.directory 和生命周期，不能以两个相同 mock 成功代替真实 E2E 证据。
-- [ ] **步骤 2：验证 RED。** 聚焦 helper 测试。检查当前 E2E ensureJar 启动共享 target 的失败证据，不故意制造会损坏产物的争用。
-- [ ] **步骤 3：实现隔离。** helper 用 mkdtemp 创建专属输出根，Maven 输出指定到该根（pom 如需则定义 `<apicc.build.directory>${project.basedir}/target</apicc.build.directory>`、`<build><directory>${apicc.build.directory}</directory>`，调用传 `-Dapicc.build.directory=<唯一绝对目录>`）；不依赖 `-Dproject.build.directory` 覆盖模型。每次 E2E 自建或可信复制到自己的 JAR 路径后启动，不启动共享 target。保留 wrapper 优先、版本实测、超时和真实 online 场景，不降低测试覆盖。临时根清理有边界检查，异常路径也回收，后台窗口隐藏。真实启动使用 Java major ===21。
+- [x] **步骤 1：写失败测试。** helper 两次/并发准备产物目录不同，启动 JAR 不位于共享 target；失败构建不启动服务、返回可读错误；仅清理自己创建的临时目录，进程结束后再删；Java20/22 拒绝，Java21 通过。使用注入构建调用验证不同 Maven build.directory 和生命周期，不能以两个相同 mock 成功代替真实 E2E 证据。
+- [x] **步骤 2：验证 RED。** 聚焦 helper 测试。检查当前 E2E ensureJar 启动共享 target 的失败证据，不故意制造会损坏产物的争用。
+- [x] **步骤 3：实现隔离。** helper 用 mkdtemp 创建专属输出根，Maven 输出指定到该根（pom 如需则定义 `<apicc.build.directory>${project.basedir}/target</apicc.build.directory>`、`<build><directory>${apicc.build.directory}</directory>`，调用传 `-Dapicc.build.directory=<唯一绝对目录>`）；不依赖 `-Dproject.build.directory` 覆盖模型。每次 E2E 自建或可信复制到自己的 JAR 路径后启动，不启动共享 target。保留 wrapper 优先、版本实测、超时和真实 online 场景，不降低测试覆盖。临时根清理有边界检查，异常路径也回收，后台窗口隐藏。真实启动使用 Java major ===21。
 
   PowerShell 根入口设置 `$ErrorActionPreference = 'Stop'`，用 `&` 传命令参数，每个外部调用检查 `$LASTEXITCODE` 非零立即退出；JAVA_HOME 合法根与 Java21 校验，Node >=22.19.0 校验。从脚本路径定位仓库根而非依赖调用 cwd；不改全局用户环境。不进行依赖安装，缺依赖时明确失败。
 
@@ -205,8 +205,8 @@ JSON 在本阶段沿用 CLI 实际落盘的原始 WorkflowRunResult（节点计�
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-all.ps1
   ```
 
-- [ ] **步骤 4：验证 GREEN。** 聚焦 helper + 真实 e2e-server；提交前 desktop 全测/typecheck。测试入口有一次失败工具链/失败外部命令的非零退出验证。控制者在所有任务审查后运行上述标准入口连续三次，记录每次完整摘要、耗时和退出码，不能将三次聚焦 E2E 替代 ENG-001 验收。
-- [ ] **步骤 5：提交。** `git commit -m "test: isolate server artifacts and stabilize Windows gates"`；报告目录隔离、进程清理及根入口验证证据。
+- [x] **步骤 4：验证 GREEN。** 聚焦 helper + 真实 e2e-server；提交前 desktop 全测/typecheck。测试入口有一次失败工具链/失败外部命令的非零退出验证。控制者在所有任务审查后运行上述标准入口连续三次，记录每次完整摘要、耗时和退出码，不能将三次聚焦 E2E 替代 ENG-001 验收。
+- [x] **步骤 5：提交。** `git commit -m "test: isolate server artifacts and stabilize Windows gates"`；报告目录隔离、进程清理及根入口验证证据。
 
 ## 分支验收与交付
 
