@@ -169,17 +169,24 @@ describe("managed HTTP client lifecycle", () => {
     let barrierClient: ReturnType<typeof createHttpClient> | undefined;
     let controller: AbortController | undefined;
     const sockets = new Set<Socket>();
+    const socketCloseHandlers = new Map<Socket, () => void>();
     const heldResponses: Array<import("node:http").ServerResponse> = [];
+    const responseFinishHandlers = new Map<import("node:http").ServerResponse, () => void>();
     let arrivals = 0;
     let inFlight = 0;
     let peakInFlight = 0;
     let releaseResponses: (() => void) | undefined;
+    let resolveReleaseGate: (() => void) | undefined;
     let resolveTwoArrivals: (() => void) | undefined;
     let rejectTwoArrivals: ((error: Error) => void) | undefined;
+    let barrierRequestHandler: ((request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse) => void) | undefined;
+    let barrierServerErrorHandler: ((error: Error) => void) | undefined;
     const pendingRequests: Array<ReturnType<ReturnType<typeof createHttpClient>["execute"]>> = [];
     const onBarrierConnection = (socket: Socket) => {
+      const onSocketClose = () => sockets.delete(socket);
       sockets.add(socket);
-      socket.on("close", () => sockets.delete(socket));
+      socketCloseHandlers.set(socket, onSocketClose);
+      socket.on("close", onSocketClose);
     };
     const twoArrivals = new Promise<void>((resolve, reject) => {
       resolveTwoArrivals = resolve;
@@ -187,9 +194,19 @@ describe("managed HTTP client lifecycle", () => {
     });
     twoArrivals.catch(() => undefined);
     const timeout = setTimeout(() => rejectTwoArrivals?.(new Error("timed out waiting for two in-flight requests")), 2000);
+    const releaseGate = new Promise<void>((resolve) => { resolveReleaseGate = resolve; });
+    let primaryError: unknown;
+    const cleanupErrors: unknown[] = [];
+    const protectCleanup = async (cleanup: () => void | Promise<void>) => {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    };
 
     try {
-      barrierServer = createServer((request, response) => {
+      barrierRequestHandler = (request, response) => {
         if (request.url !== "/parallel") {
           response.statusCode = 404;
           response.end("nope");
@@ -199,15 +216,21 @@ describe("managed HTTP client lifecycle", () => {
         inFlight += 1;
         peakInFlight = Math.max(peakInFlight, inFlight);
         heldResponses.push(response);
-        response.on("finish", () => { inFlight -= 1; });
+        const onResponseFinish = () => { inFlight -= 1; };
+        responseFinishHandlers.set(response, onResponseFinish);
+        response.on("finish", onResponseFinish);
         request.resume();
         if (arrivals === 2) resolveTwoArrivals?.();
-      });
+      };
+      barrierServer = createServer(barrierRequestHandler);
       barrierServer.on("connection", onBarrierConnection);
       await new Promise<void>((resolve, reject) => {
-        barrierServer?.once("error", reject);
+        barrierServerErrorHandler = reject;
+        barrierServer?.on("error", barrierServerErrorHandler);
         barrierServer?.listen(0, "127.0.0.1", resolve);
       });
+      barrierServer.off("error", barrierServerErrorHandler!);
+      barrierServerErrorHandler = undefined;
       barrierBaseUrl = `http://127.0.0.1:${(barrierServer.address() as { port: number }).port}`;
       releaseResponses = () => {
         for (const response of heldResponses) {
@@ -222,26 +245,42 @@ describe("managed HTTP client lifecycle", () => {
         pending.catch(() => undefined);
         pendingRequests.push(pending);
       }
-      await twoArrivals;
+      const requestSettlesEarly = pendingRequests.map((pending, index) => pending.then(
+        () => { throw new Error(`request ${index + 1} fulfilled before the overlap barrier`); },
+        (error) => { throw error; },
+      ));
+      await Promise.race([twoArrivals, ...requestSettlesEarly]);
       expect(arrivals).toBe(2);
       expect(peakInFlight).toBe(2);
+      resolveReleaseGate?.();
+      await releaseGate;
       releaseResponses();
       const completed = await Promise.all(pendingRequests);
       expect(completed.map((response) => ({ status: response.status, body: response.bodyText }))).toEqual([
         { status: 200, body: "parallel" },
         { status: 200, body: "parallel" },
       ]);
+    } catch (error) {
+      primaryError = error;
+      throw error;
     } finally {
-      clearTimeout(timeout);
-      controller?.abort();
-      releaseResponses?.();
-      await Promise.allSettled(pendingRequests);
-      if (barrierClient) await barrierClient.close();
-      for (const socket of sockets) socket.destroy();
-      if (barrierServer) {
-        barrierServer.off("connection", onBarrierConnection);
-        if (barrierServer.listening) await new Promise<void>((resolve) => barrierServer?.close(() => resolve()));
-      }
+      await protectCleanup(() => clearTimeout(timeout));
+      await protectCleanup(() => controller?.abort());
+      await protectCleanup(() => releaseResponses?.());
+      await protectCleanup(async () => { await Promise.allSettled(pendingRequests); });
+      await protectCleanup(async () => { if (barrierClient) await barrierClient.close(); });
+      await protectCleanup(() => {
+        if (barrierServerErrorHandler && barrierServer) barrierServer.off("error", barrierServerErrorHandler);
+        if (barrierServer && barrierRequestHandler) barrierServer.off("request", barrierRequestHandler);
+        if (barrierServer) barrierServer.off("connection", onBarrierConnection);
+        for (const [response, handler] of responseFinishHandlers) response.off("finish", handler);
+        for (const [socket, handler] of socketCloseHandlers) socket.off("close", handler);
+        for (const socket of sockets) socket.destroy();
+      });
+      await protectCleanup(async () => {
+        if (barrierServer?.listening) await new Promise<void>((resolve) => barrierServer?.close(() => resolve()));
+      });
+      if (primaryError === undefined && cleanupErrors.length > 0) throw cleanupErrors[0];
     }
   });
 
