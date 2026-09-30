@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   cleanupOwnedRoot,
+  cleanupAfterConfirmedStop,
   createOwnedTempRoot,
   parseJavaMajor,
   prepareServerArtifact,
@@ -49,6 +50,22 @@ describe("server fixture Maven 产物隔离", () => {
     expect(started).toBe(false);
   });
 
+  it("清理失败不会遮蔽非零构建和缺 jar 的原始错误", () => {
+    let root = "";
+    const cleanup = (value: string) => {
+      root = value;
+      throw new Error("remove denied");
+    };
+    const failed = () => prepareServerArtifact({ ...options(), cleanup, run: () => ({ status: 17, output: "COMPILATION FAILED: fixture" }) });
+    expect(failed).toThrow(/exit 17.*COMPILATION FAILED/s);
+    cleanupOwnedRoot(root);
+
+    root = "";
+    const noJar = () => prepareServerArtifact({ ...options(), cleanup, run: () => ({ status: 0, output: "BUILD SUCCESS" }) });
+    expect(noJar).toThrow(/未找到.*maven-output/s);
+    cleanupOwnedRoot(root);
+  });
+
   it("runner 抛错和成功但缺 jar 都回收实际创建的专属根", () => {
     let rootSeen = "";
     const throwing: CommandRunner = (_exe, args) => {
@@ -92,6 +109,20 @@ describe("server fixture Maven 产物隔离", () => {
     expect(probeJavaMajor("java", () => ({ status: 17, stdout: "", stderr: 'openjdk version "21.0.12"' } as any))).toBeNull();
     expect(probeJavaMajor("java", () => ({ status: null, error: new Error("spawn") } as any))).toBeNull();
     expect(probeJavaMajor("java", () => ({ status: null, stdout: "", stderr: 'openjdk version "21.0.12"' } as any))).toBeNull();
+  });
+
+  it("生命周期仅在确认退出后删除，并在首个删除失败时继续第二个根", () => {
+    const calls: string[] = [];
+    expect(() => cleanupAfterConfirmedStop(false, ["data", "artifact"], (root) => calls.push(root))).toThrow(/退出/);
+    expect(calls).toEqual([]);
+
+    const errors: string[] = [];
+    expect(() => cleanupAfterConfirmedStop(true, ["data", "artifact"], (root) => {
+      calls.push(root);
+      if (root === "data") throw new Error("data remove denied");
+    })).toThrow("data remove denied");
+    errors.push(...calls);
+    expect(errors).toEqual(["data", "artifact"]);
   });
 });
 

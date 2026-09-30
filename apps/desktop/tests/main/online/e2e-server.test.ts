@@ -30,7 +30,7 @@ import { scanDirFiles, writeFiles } from "../../../src/main/online/migrate.js";
 import { onlineTreeToDto } from "../../../src/main/online/session.js";
 import { planPull, planPush, restoreLocalPaths, toEntityPath } from "../../../src/shared/online/migrate.js";
 import { runCommand } from "./run-command.js";
-import { cleanupOwnedRoot, createOwnedTempRoot, prepareServerArtifact, probeJavaMajor } from "./server-fixture.js";
+import { cleanupAfterConfirmedStop, createOwnedTempRoot, prepareServerArtifact, probeJavaMajor } from "./server-fixture.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // online → main → tests → desktop → apps → 仓库根：五层向上
@@ -238,17 +238,7 @@ beforeAll(async () => {
 afterAll(async () => {
   const stopped = await stopServer();
   expect(stopped, "服务端进程应确认退出（无残留进程）").toBe(true);
-  if (!stopped) return;
-  const cleanupErrors: unknown[] = [];
-  for (const root of [dataRoot, artifactRoot]) {
-    if (!root) continue;
-    try {
-      cleanupOwnedRoot(root);
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-  }
-  if (cleanupErrors.length > 0) throw cleanupErrors[0];
+  cleanupAfterConfirmedStop(stopped, [dataRoot, artifactRoot].filter(Boolean));
 });
 
 describe("在线模式真服务端端到端（onlineClient × spawn jar）", () => {

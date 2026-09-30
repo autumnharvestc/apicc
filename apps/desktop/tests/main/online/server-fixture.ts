@@ -59,6 +59,23 @@ export function cleanupOwnedRoot(root: string | undefined): void {
   ownedRoots.delete(candidate);
 }
 
+export function cleanupAfterConfirmedStop(
+  stopped: boolean,
+  roots: string[],
+  cleanup: (root: string) => void = (root) => cleanupOwnedRoot(root),
+): void {
+  if (!stopped) throw new Error("服务端进程未确认退出，拒绝清理临时根");
+  const errors: unknown[] = [];
+  for (const root of roots) {
+    try {
+      cleanup(root);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) throw errors[0];
+}
+
 function findJar(root: string): string | undefined {
   if (!existsSync(root)) return undefined;
   for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -83,21 +100,21 @@ export function prepareServerArtifact(opts: {
   run?: CommandRunner;
   env?: NodeJS.ProcessEnv;
   onPrepared?: (artifact: ServerArtifact) => void;
+  cleanup?: (root: string) => void;
 }): ServerArtifact {
   const root = createOwnedTempRoot("apicc-e2e-build-");
   const buildDirectory = join(root, "maven-output");
   const run = opts.run ?? runCommand;
+  const cleanup = opts.cleanup ?? cleanupOwnedRoot;
   const env = { ...process.env, ...opts.env, ...(opts.javaHome ? { JAVA_HOME: opts.javaHome } : {}) };
   const args = ["-s", join(opts.serverDir, ".mvn", "settings.xml"), "-f", join(opts.serverDir, "pom.xml"), "-q", "-DskipTests", `-Dapicc.build.directory=${buildDirectory}`, "package"];
   try {
     const result = run(opts.mvn, args, env, 600_000, { cwd: opts.repoRoot });
     if (result.status !== 0) {
-      cleanupOwnedRoot(root);
       throw new Error(`服务端 jar 构建失败（exit ${result.status ?? "unknown"}）。\n${result.output.slice(-2000)}`);
     }
     const jar = findJar(buildDirectory);
     if (!jar) {
-      cleanupOwnedRoot(root);
       throw new Error(`构建成功但专属 Maven 输出目录中未找到 apicc-server-*.jar：${buildDirectory}`);
     }
     const artifact = { jar, root, buildDirectory };
@@ -106,7 +123,7 @@ export function prepareServerArtifact(opts: {
   } catch (error) {
     if (ownedRoots.has(canonical(root))) {
       try {
-        cleanupOwnedRoot(root);
+        cleanup(root);
       } catch {
         // Preserve the original build/discovery error; cleanup is best effort here.
       }
