@@ -718,6 +718,25 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     expect(document.body.textContent).toContain("upstream-failed");
   });
 
+  it("抽屉显示无 outcome 节点的 failureKind 与 error", async () => {
+    const ctx = await mountRunnableFlow();
+    const ids = ctx.design.workflow!.nodes.map((n) => n.id);
+    ctx.api.wfRun = async () => ({
+      workflowId: ctx.design.workflow!.id, workflowName: ctx.design.workflow!.name, status: "published",
+      nodeResults: [
+        { nodeId: ids[0]!, kind: "request", state: "failed", failureKind: "script", error: "条件求值失败" },
+        { nodeId: ids[1]!, kind: "noop", state: "skipped", failureKind: "config", error: "上游节点失败", skipReason: "upstream-failed" },
+      ],
+      total: 2, passed: 0, failed: 1, skipped: 1, warnings: [], startedAt: "", finishedAt: "",
+    });
+    await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
+    await flushPromises();
+    expect(document.body.textContent).toContain("script");
+    expect(document.body.textContent).toContain("条件求值失败");
+    expect(document.body.textContent).toContain("config");
+    expect(document.body.textContent).toContain("上游节点失败");
+  });
+
   it("环境选择：选项来自当前项目 envs；选中后 wfRun 携带 envName；切流重置回无环境", async () => {
     const ctx = await mountRunnableFlow();
     await ctx.api.envCreate({ projectId: ctx.projectId, name: "dev" });

@@ -685,6 +685,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
         total: result.total,
         passed: result.passed,
         failed: result.failed,
+        skipped: result.skipped ?? 0,
       }));
       // 压测行（M2-D3 任务 1）：startedAt 由 epoch ms 格式化为 ISO，与主进程 listRuns 同口径。
       const stressRows: StressRunSummaryDTO[] = stressRuns.map(({ file, report }) => ({

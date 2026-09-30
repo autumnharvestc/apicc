@@ -256,7 +256,7 @@ function validateArgs<T>(channel: IpcChannelName, schema: z.ZodType<T>, input: u
 /**
  * 工作流运行（M2-B 任务 1，仿 CLI run-workflow）：draft 直接拒绝（UI 对 draft 禁用运行
  * 按钮，此为护栏）；envName 传给 WorkflowRunner 按名解析（未命中抛「未找到环境: xxx」）；
- * 结果固定落盘 .apicc/runs/workflow-<id>-<ts>.json（生成物隔离，规格 §6/§8）。
+ * 结果固定落盘 .apicc/runs/workflow-<id>-<uuid>.json（生成物隔离，规格 §6/§8）。
  * registry 由调用方注入插件运行时的 registry（M7-B 任务 2：插件贡献在运行频道可选）。
  */
 async function runWorkflow(session: Session, input: WfRunInput, registry: PluginRegistry): Promise<WorkflowRunResult> {

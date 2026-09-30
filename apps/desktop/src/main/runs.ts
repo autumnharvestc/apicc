@@ -4,7 +4,7 @@ import { z } from "zod";
 import { StressReportSchema, type RunResult } from "@apicc/core";
 import type { DesktopStressReport } from "../shared/types.js";
 
-export interface RunSummaryDTO { kind: "collection"; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number }
+export interface RunSummaryDTO { kind: "collection"; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number }
 export interface StressRunSummaryDTO { kind: "stress"; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
@@ -22,6 +22,7 @@ const RunResultShapeSchema = z.object({
   total: z.number(),
   passed: z.number(),
   failed: z.number(),
+  skipped: z.number().optional(),
   cases: z.array(z.unknown()),
 });
 
@@ -58,7 +59,7 @@ function summarize(runsDir: string, file: string): RunSummary | null {
     const raw = readFileSync(join(runsDir, file), "utf8");
     const r = parseRunResult(raw);
     if (r) {
-      return { kind: "collection", file, collectionName: r.collectionName, startedAt: r.startedAt, total: r.total, passed: r.passed, failed: r.failed };
+      return { kind: "collection", file, collectionName: r.collectionName, startedAt: r.startedAt, total: r.total, passed: r.passed, failed: r.failed, skipped: r.skipped ?? 0 };
     }
     const s = parseStressReport(raw);
     if (s) {

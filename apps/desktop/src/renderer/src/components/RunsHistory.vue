@@ -36,7 +36,7 @@ function rowName(s: RunSummary): string {
 }
 function rowMeta(s: RunSummary): string {
   return s.kind === "collection"
-    ? t("run.summary", { total: s.total, passed: s.passed, failed: s.failed })
+    ? t("run.summary", { total: s.total, passed: s.passed, failed: s.failed, skipped: s.skipped ?? 0 })
     : t("run.stressSummary", { total: s.totalRequests, failed: s.failed, rps: fmtRps(s.rps) });
 }
 function rowFailed(s: RunSummary): number {

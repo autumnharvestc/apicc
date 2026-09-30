@@ -1,7 +1,7 @@
-import { mkdtempSync, readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Importer } from "@apicc/core";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
@@ -428,7 +428,7 @@ describe("工作流 IPC", () => {
     await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
     // 环境按名解析：未命中显式抛错（不静默降级为无环境运行）
     await expect(deps.handle("wf:run", {}, { workflowId: wf.id, envName: "nope" })).rejects.toThrow(/未找到环境: nope/);
-    // 成功运行（不可达地址 → 节点 failed，但运行链路完整），结果落盘 workflow-<id>-<ts>.json
+    // 成功运行（不可达地址 → 节点 failed，但运行链路完整），结果落盘 workflow-<id>-<uuid>.json
     const result = await deps.handle("wf:run", {}, { workflowId: wf.id });
     expect(result.workflowId).toBe(wf.id);
     expect(result.total).toBe(1);
@@ -454,6 +454,67 @@ describe("工作流 IPC", () => {
     const result = await deps.handle("wf:run", {}, { workflowId: wf.id, strict: false });
     expect(result.nodeResults.find((node: { nodeId: string }) => node.nodeId === "missing")?.state).toBe("failed");
     expect(result.nodeResults.find((node: { nodeId: string }) => node.nodeId === "independent")?.state).toBe("failed");
+    expect(result.nodeResults.find((node: { nodeId: string; failureKind?: string }) => node.nodeId === "independent")?.failureKind).toBe("transport");
+    expect(result.verdict).toBe("failed");
+  });
+
+  it("wf:run 同毫秒两次落盘仍各有 UUID 文件且内容归属可读", async () => {
+    const { deps, dir, project } = await setupWf();
+    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "同毫秒流" });
+    await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "noop", kind: "noop" }] } });
+    await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "published" });
+    await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
+    const fixedNow = vi.spyOn(Date, "now").mockReturnValue(1_791_000_000_000);
+    try {
+      await Promise.all([
+        deps.handle("wf:run", {}, { workflowId: wf.id }),
+        deps.handle("wf:run", {}, { workflowId: wf.id }),
+      ]);
+    } finally {
+      fixedNow.mockRestore();
+    }
+    const files = readdirSync(join(dir, ".apicc", "runs"))
+      .filter((f) => f.startsWith(`workflow-${wf.id}-`) && f.endsWith(".json"));
+    expect(files).toHaveLength(2);
+    const runIds = files.map((f) => f.slice(`workflow-${wf.id}-`.length, -".json".length));
+    expect(new Set(runIds).size).toBe(2);
+    const reports = files.map((f) => JSON.parse(readFileSync(join(dir, ".apicc", "runs", f), "utf8")) as { workflowId: string; nodeResults: Array<{ nodeId: string }> });
+    expect(reports).toHaveLength(2);
+    expect(reports.every((report) => report.workflowId === wf.id)).toBe(true);
+    expect(reports.every((report) => report.nodeResults.some((node) => node.nodeId === "noop"))).toBe(true);
+  });
+
+  it("wf:run 默认 strict、条件剪枝与坏条件都保留 verdict/诊断", async () => {
+    const { deps, project, api } = await setupWf();
+    const missing = await deps.handle("wf:create", {}, { projectId: project.id, name: "默认严格流" });
+    await deps.handle("wf:save", {}, { workflow: { ...missing, nodes: [
+      { id: "missing", kind: "request", apiId: "ghost-api", caseId: "ghost-case" },
+      { id: "independent", kind: "request", apiId: api.id, caseId: api.cases[0]!.id },
+    ] } });
+    await deps.handle("wf:set-status", {}, { workflowId: missing.id, next: "published" });
+    const strict = await deps.handle("wf:run", {}, { workflowId: missing.id });
+    expect(strict.verdict).toBe("failed");
+    expect(strict.nodeResults.find((node: { nodeId: string }) => node.nodeId === "missing")?.state).toBe("failed");
+    expect(strict.nodeResults.find((node: { nodeId: string }) => node.nodeId === "independent")?.state).toBe("skipped");
+
+    const branch = await deps.handle("wf:create", {}, { projectId: project.id, name: "剪枝流" });
+    await deps.handle("wf:save", {}, { workflow: { ...branch, nodes: [
+      { id: "source", kind: "noop" }, { id: "pruned", kind: "noop" },
+    ], edges: [{ id: "false", from: "source", to: "pruned", condition: "false" }] } });
+    await deps.handle("wf:set-status", {}, { workflowId: branch.id, next: "published" });
+    const branched = await deps.handle("wf:run", {}, { workflowId: branch.id });
+    expect(branched.verdict).toBe("passed");
+    expect(branched.nodeResults.find((node: { nodeId: string }) => node.nodeId === "pruned")?.skipReason).toBe("condition-pruned");
+
+    const bad = await deps.handle("wf:create", {}, { projectId: project.id, name: "坏条件流" });
+    await deps.handle("wf:save", {}, { workflow: { ...bad, nodes: [
+      { id: "source", kind: "noop" }, { id: "target", kind: "noop" },
+    ], edges: [{ id: "bad", from: "source", to: "target", condition: "missingConditionValue" }] } });
+    await deps.handle("wf:set-status", {}, { workflowId: bad.id, next: "published" });
+    const badResult = await deps.handle("wf:run", {}, { workflowId: bad.id });
+    expect(badResult.verdict).toBe("failed");
+    expect(badResult.nodeResults.find((node: { nodeId: string }) => node.nodeId === "source")).toMatchObject({ state: "failed", failureKind: "script" });
+    expect(badResult.nodeResults.find((node: { nodeId: string }) => node.nodeId === "target")?.state).toBe("skipped");
   });
 
   it("wf 频道入参形状非法时抛带频道名的可读错误（zod 校验入表）", async () => {

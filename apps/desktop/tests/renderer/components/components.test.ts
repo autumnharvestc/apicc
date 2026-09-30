@@ -1257,7 +1257,7 @@ describe("StressReportView", () => {
 
 const collectionRow: RunSummaryDTO = {
   kind: "collection", file: "run-a.json", collectionName: "示例集合",
-  startedAt: "2026-09-03T00:00:00.000Z", total: 3, passed: 2, failed: 1,
+  startedAt: "2026-09-03T00:00:00.000Z", total: 3, passed: 2, failed: 1, skipped: 0,
 };
 const stressRow: StressRunSummaryDTO = {
   kind: "stress", file: "stress-x.json",
@@ -1275,13 +1275,13 @@ async function mountHistory(props: Record<string, unknown> = {}) {
   const api = createMemoryApi();
   api.seedWorkspace();
   const run = useRunStore(api);
-  const { i18n } = createI18nInstance();
+  const { i18n, setLocale } = createI18nInstance();
   const wrapper = mount(RunsHistory, {
     props: { run, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, run };
+  return { wrapper, api, run, setLocale };
 }
 
 function bodyRows(): Element[] {
@@ -1314,7 +1314,17 @@ describe("RunsHistory kind 区分（M2-D3 任务 3，裁定 B）", () => {
     expect(collectionEl!.getAttribute("data-kind")).toBe("collection");
     expect(collectionEl!.querySelector('[data-testid="history-kind"]')!.textContent).toBe("集合");
     expect(collectionEl!.textContent).toContain("示例集合");
-    expect(collectionEl!.textContent).toContain("共 3 条 · 通过 2 · 失败 1");
+    expect(collectionEl!.textContent).toContain("共 3 条 · 通过 2 · 失败 1 · 跳过 0");
+  });
+
+  it("英文集合历史摘要仍包含 skipped，旧字段缺失回退 0", async () => {
+    const { api, run, setLocale } = await mountHistory();
+    setLocale("en");
+    api.runsList = async () => [{ ...collectionRow, skipped: undefined }];
+    run.historyOpen = true;
+    await flushPromises();
+    expect(bodyRows()[0]!.textContent).toContain("3 total · 2 passed · 1 failed · 0 skipped");
+    setLocale("zh-CN");
   });
 
   it("点击压测行：runsGet 联合分支 → 内嵌 StressReportView 展示、返回复位；点击集合行仍回填结果并收起抽屉", async () => {

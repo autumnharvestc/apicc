@@ -113,8 +113,10 @@ function formatMs(ms: number): string {
             <span class="wf-result-error">
               <template v-if="record.outcome?.skipReason">{{ record.outcome.skipReason }}</template>
               <template v-if="record.outcome?.failureKind">{{ record.outcome.failureKind }}</template>
+              <template v-if="!record.outcome?.failureKind && record.node.failureKind">{{ record.node.failureKind }}</template>
               <template v-if="record.outcome?.error">{{ record.outcome.error }}</template>
-              <template v-if="!record.outcome?.skipReason && !record.outcome?.failureKind && !record.outcome?.error">{{ record.node.error ?? record.node.skipReason ?? "—" }}</template>
+              <template v-if="!record.outcome?.error && record.node.error">{{ record.node.error }}</template>
+              <template v-if="!record.outcome?.skipReason && !record.outcome?.failureKind && !record.node.failureKind && !record.outcome?.error && !record.node.error">{{ record.node.skipReason ?? "—" }}</template>
             </span>
           </template>
         </template>

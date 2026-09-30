@@ -25,6 +25,14 @@ describe("runs 历史", () => {
     expect(list[0]).toMatchObject({ collectionName: "demo" });
     expect(readRun(dir, "run-a.json")).toMatchObject({ collectionName: "demo", total: 2 });
   });
+  it("集合历史摘要透传 skipped，旧报告缺字段回退为 0", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-runslist-skipped-"));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "old.json"), JSON.stringify(sample));
+    writeFileSync(join(dir, "new.json"), JSON.stringify({ ...sample, skipped: 1 }));
+    expect(listRuns(dir).find((row) => row.file === "old.json")).toMatchObject({ skipped: 0 });
+    expect(listRuns(dir).find((row) => row.file === "new.json")).toMatchObject({ skipped: 1 });
+  });
   it("非法文件跳过不抛", () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-runslist2-"));
     mkdirSync(dir, { recursive: true });
