@@ -10,8 +10,10 @@ import { createDefaultRegistry } from "../../src/index.js";
 
 let server: Server;
 let baseUrl = "";
+const seenPaths: string[] = [];
 beforeAll(async () => {
   server = createServer((req, res) => {
+    seenPaths.push(req.url ?? "");
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok: true }));
   });
@@ -357,7 +359,9 @@ describe("WorkflowRunner", () => {
       first.cases[0]!.postScript = 'pm.variables.set("token", pm.variables.get("seed"));';
       const second = apiOf("second", `${barrierBase}/second`);
       second.cases[0]!.postScript = 'pm.assert(pm.variables.get("token") === pm.variables.get("seed"), "run isolation");';
-      const locals = [first, second];
+      const cleanApi = apiOf("clean", `${barrierBase}/second`);
+      cleanApi.cases[0]!.postScript = 'pm.assert(pm.variables.get("token") === undefined, "stale token");';
+      const locals = [first, second, cleanApi];
       const runner = new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith(locals), envName: "dev", failFast: false });
       const makeProject = (seed: string): Project => ({ ...project, id: `project-${seed}`, variables: { seed } });
       const makeFlow = (id: string): Workflow => ({
@@ -374,10 +378,7 @@ describe("WorkflowRunner", () => {
       expect(a.nodeResults.map((n) => n.state)).toEqual(["passed", "passed"]);
       expect(b.nodeResults.map((n) => n.state)).toEqual(["passed", "passed"]);
 
-      const cleanApi = apiOf("clean", `${barrierBase}/second`);
-      cleanApi.cases[0]!.postScript = 'pm.assert(pm.variables.get("token") === undefined, "stale token");';
-      const cleanRunner = new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([cleanApi]), envName: "dev", failFast: false });
-      const clean = await cleanRunner.run({ id: "clean", name: "clean", status: "enabled", nodes: [{ id: "clean", kind: "request", apiId: "clean", caseId: "case-clean" }], edges: [] }, { project: makeProject("C"), workspace: ws });
+      const clean = await runner.run({ id: "clean", name: "clean", status: "enabled", nodes: [{ id: "clean", kind: "request", apiId: "clean", caseId: "case-clean" }], edges: [] }, { project: makeProject("C"), workspace: ws });
       expect(clean.nodeResults[0]!.state).toBe("passed");
     } finally {
       await new Promise<void>((r) => barrier.close(() => r()));
@@ -403,6 +404,30 @@ describe("WorkflowRunner", () => {
       expect(result.nodeResults[0]?.outcomes?.map((o) => o.passed)).toEqual([true, false, true]);
       expect(result.nodeResults[0]?.outcomes?.map((o) => o.row)).toEqual([0, 1, 2]);
       expect(result.nodeResults[0]?.outcome?.passed).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("数据驱动全行通过与首行失败（failFast=false）均保留完整执行行", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-workflow-"));
+    const passPath = join(dir, "pass.json");
+    const firstFailPath = join(dir, "first-fail.json");
+    writeFileSync(passPath, JSON.stringify([{ expected: "200" }, { expected: "200" }]));
+    writeFileSync(firstFailPath, JSON.stringify([{ expected: "500" }, { expected: "200" }]));
+    const makeApi = (id: string, sourcePath: string): ApiDefinition => ({
+      ...apiOf(id, `{{baseUrl}}/${id}`),
+      cases: [{ id: `case-${id}`, name: id, scope: "base", parameters: {}, dataDriver: { sourcePath, format: "json" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }] }],
+    });
+    try {
+      const runner = new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([makeApi("all-pass", passPath), makeApi("first-fail", firstFailPath)]), envName: "dev", failFast: false });
+      const allPass = await runner.run(wf([{ id: "pass", kind: "request", apiId: "all-pass", caseId: "case-all-pass" }], []), { project, workspace: ws });
+      const firstFail = await runner.run(wf([{ id: "fail", kind: "request", apiId: "first-fail", caseId: "case-first-fail" }], []), { project, workspace: ws });
+      expect(allPass.nodeResults[0]?.state).toBe("passed");
+      expect(allPass.nodeResults[0]?.outcomes?.map((outcome) => outcome.passed)).toEqual([true, true]);
+      expect(firstFail.nodeResults[0]?.state).toBe("failed");
+      expect(firstFail.nodeResults[0]?.outcomes?.map((outcome) => outcome.passed)).toEqual([false, true]);
+      expect(firstFail.nodeResults[0]?.outcomes?.map((outcome) => outcome.row)).toEqual([0, 1]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -450,6 +475,66 @@ describe("WorkflowRunner", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("条件脚本只能看到深度只读快照，修改 outcomes 不影响节点结果", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-workflow-"));
+    const sourcePath = join(dir, "rows.json");
+    writeFileSync(sourcePath, JSON.stringify([{ expected: "200" }, { expected: "200" }]));
+    const dataApi: ApiDefinition = {
+      ...apiOf("snapshot", "{{baseUrl}}/snapshot"),
+      cases: [{ id: "case-snapshot", name: "snapshot", scope: "base", parameters: {}, dataDriver: { sourcePath, format: "json" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }] }],
+    };
+    try {
+      const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([dataApi]), envName: "dev", failFast: false })
+        .run(wf([
+          { id: "snapshot", kind: "request", apiId: "snapshot", caseId: "case-snapshot" },
+          { id: "next", kind: "noop" },
+        ], [{ id: "edge", from: "snapshot", to: "next", condition: "(prev.outcomes[0].assertions[0].pass = false, prev.outcomes.length = 0, true)" }]), { project, workspace: ws });
+      const snapshotNode = result.nodeResults.find((node) => node.nodeId === "snapshot");
+      expect(result.nodeResults.find((node) => node.nodeId === "next")?.state).toBe("noop");
+      expect(snapshotNode?.outcomes?.map((outcome) => outcome.passed)).toEqual([true, true]);
+      expect(snapshotNode?.outcomes?.map((outcome) => outcome.row)).toEqual([0, 1]);
+      expect(snapshotNode?.outcomes?.[0]?.assertions[0]?.pass).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("项目 API 优先且保留模块/两层祖先操作，只执行目标 API", async () => {
+    seenPaths.length = 0;
+    const append = (id: string, value: string) => ({ id, type: "script" as const, content: `pm.variables.set("trace", (pm.variables.get("trace") ?? "") + "${value}");` });
+    const target: ApiDefinition = {
+      id: "same-id", name: "project-target", version: "1", deprecated: false, method: "GET",
+      url: "{{baseUrl}}/{{moduleVar}}/{{trace}}", headers: [], query: [],
+      cases: [{ id: "case-project-target", name: "target", scope: "base", parameters: {}, assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }] }],
+    };
+    const other: ApiDefinition = { ...apiOf("other", `${baseUrl}/should-not-run`), cases: [{ id: "case-other", name: "other", scope: "base", parameters: {}, assertions: [] }] };
+    const inner = {
+      id: "inner", name: "inner", apis: [target], folders: [], preOperations: [append("inner-pre", "I")], postOperations: [append("inner-post", "i")],
+    };
+    const outer = {
+      id: "outer", name: "outer", apis: [other], folders: [inner], preOperations: [append("outer-pre", "O")], postOperations: [append("outer-post", "o")],
+    };
+    const collection = {
+      id: "module", name: "module", variables: { moduleVar: "module" }, apis: [], folders: [outer],
+      preOperations: [append("module-pre", "M")], postOperations: [{ id: "module-post", type: "script" as const, content: 'pm.variables.set("after", (pm.variables.get("trace") ?? "") + "m");' }],
+    };
+    const projectWithModule: Project = {
+      ...project,
+      environments: [{ ...project.environments[0]!, baseUrls: { module: `${baseUrl}/module` } }],
+      collections: [collection],
+    };
+    const external: ApiDefinition = { ...apiOf("same-id", `${baseUrl}/external`), cases: [{ id: "case-project-target", name: "external", scope: "base", parameters: {}, assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }] }] };
+    const runner = new WorkflowRunner({ registry: createDefaultRegistry(), resolve: () => external, envName: "dev", failFast: false });
+    const result = await runner.run({
+      id: "project-context", name: "project-context", status: "enabled",
+      nodes: [{ id: "target", kind: "request", apiId: "same-id", caseId: "case-project-target" }, { id: "done", kind: "noop" }],
+      edges: [{ id: "after", from: "target", to: "done", condition: "vars.after === 'MOIiom'" }],
+    }, { project: projectWithModule, workspace: ws });
+    expect(result.nodeResults.find((node) => node.nodeId === "target")?.state).toBe("passed");
+    expect(result.nodeResults.find((node) => node.nodeId === "done")?.state).toBe("noop");
+    expect(seenPaths).toEqual(["/module/module/MOI"]);
   });
 
   it("条件上下文 env 继承链：sit extends dev 时父环境变量在条件中可见", async () => {

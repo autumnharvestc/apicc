@@ -285,13 +285,13 @@ function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<s
   const engine = registry.getScriptEngine("javascript");
   if (!engine) { warnings.push("缺少 javascript 脚本引擎，条件按 false 处理"); return false; }
   const representative = upstream.outcome;
-  const prev = representative
+  const prev = deepReadonlySnapshot(representative
     ? {
       passed: upstream.state === "passed" || upstream.state === "noop",
       caseName: representative.caseName, error: representative.error,
       assertions: representative.assertions, outcomes: upstream.outcomes,
     }
-    : { passed: upstream.state === "noop", caseName: upstream.label, error: undefined, assertions: [], outcomes: upstream.outcomes };
+    : { passed: upstream.state === "noop", caseName: upstream.label, error: undefined, assertions: [], outcomes: upstream.outcomes });
   const pm: ConditionPm = {
     variables: { get: () => undefined, set: () => {} },
     environment: { get: () => undefined },
@@ -309,4 +309,12 @@ function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<s
     warnings.push(`条件求值失败（按不通过处理）: ${expr} —— ${(e as Error).message}`);
     return false;
   }
+}
+
+/** 条件脚本只能读取运行结果快照：递归复制并冻结数组及对象，隔离所有嵌套引用。 */
+function deepReadonlySnapshot<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return Object.freeze(value.map((item) => deepReadonlySnapshot(item))) as T;
+  const copy = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepReadonlySnapshot(item)]));
+  return Object.freeze(copy) as T;
 }

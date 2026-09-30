@@ -174,6 +174,49 @@ describe("CollectionRunner", () => {
     expect(result.passed).toBe(2);
   });
 
+  it("同一 CollectionRunner 并发运行不同 project.globals 时真实 echo 保持隔离", async () => {
+    const seen = new Set<string>();
+    const pending: Array<() => void> = [];
+    const barrier = createServer((req, res) => {
+      const run = String(req.headers["x-run"] ?? "");
+      const respond = () => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ run }));
+      };
+      seen.add(run);
+      if (seen.size < 2) {
+        pending.push(respond);
+        return;
+      }
+      while (pending.length > 0) pending.shift()!();
+      respond();
+    });
+    await new Promise<void>((r) => barrier.listen(0, "127.0.0.1", r));
+    try {
+      const shared = collectionWith([{
+        id: "echo-case", name: "echo", scope: "base", parameters: {},
+        assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }],
+        postScript: 'pm.assert(pm.response?.json().run === pm.variables.get("expected"), "globals echo");',
+      }]);
+      shared.apis[0]!.url = `http://127.0.0.1:${(barrier.address() as { port: number }).port}/echo`;
+      const makeProject = (run: string): Project => ({
+        ...project, id: `globals-${run}`, variables: { expected: run },
+        globals: { query: [], headers: [{ key: "x-run", value: run, enabled: true }], cookies: [], body: [] },
+      });
+      const runner = buildDeps();
+      const [a, b] = await Promise.all([
+        runner.run(shared, env, makeProject("A"), workspace, {}),
+        runner.run(shared, env, makeProject("B"), workspace, {}),
+      ]);
+      expect(a.cases[0]?.passed).toBe(true);
+      expect(b.cases[0]?.passed).toBe(true);
+      expect(a.cases[0]?.assertions.every((assertion) => assertion.pass)).toBe(true);
+      expect(b.cases[0]?.assertions.every((assertion) => assertion.pass)).toBe(true);
+    } finally {
+      await new Promise<void>((r) => barrier.close(() => r()));
+    }
+  });
+
   it("前置脚本可改写请求路径", async () => {
     const seen: string[] = [];
     const col: Collection = {
