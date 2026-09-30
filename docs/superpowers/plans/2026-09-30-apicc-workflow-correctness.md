@@ -31,7 +31,7 @@
 | `packages/core/src/workflow/validate.ts` | 图结构唯一性、悬空边和环校验 | 2 |
 | `packages/core/src/workflow/adapter.ts`、`src/report/{types,html,junit}.ts` | 数据行展开和跳过报告口径 | 3 |
 | `packages/core/src/index.ts` | 导出消费者使用的定位函数及结果类型 | 1、2、3 |
-| `packages/cli/src/index.ts` | 项目边界、strict 参数、退出码与报告入口 | 4 |
+| `packages/cli/src/main.ts` | 项目边界、strict 参数、退出码与报告入口 | 4 |
 | `apps/desktop/src/{main/ipc,shared/types}.ts` | IPC 相同项目定位和严格运行默认值 | 4 |
 | `apps/desktop/src/renderer/src/components/{WfDesigner,RunView}.vue`、`src/renderer/src/stores/workflowDesign.ts` | 工作流详情显示所有数据行与跳过原因，通用报告不把 skipped 当 failed | 4 |
 | `apps/desktop/src/main/session.ts`、`src/renderer/src/api/memory.ts` | 启用校验传所属项目，内存演示结果兼容可选字段 | 4 |
@@ -48,7 +48,7 @@
 
 **交付：** 同一 WorkflowRunner 顺序复用/并发调用互不污染；同一次工作流保留跨节点提取值；节点保存全部已执行数据行，任一行失败即节点失败；来自项目的请求保留原模块上下文。
 
-- [ ] **步骤 1：写失败测试。** 复用 runner.test.ts 中真实 HTTP 服务和 `apiOf`/`wf` 夹具。让 n1 的 post 脚本执行 `pm.variables.set("token", pm.variables.get("seed"))`，n2 用 `pm.assert(pm.variables.get("token") === pm.variables.get("seed"), "run isolation")` 检查。同一 runner 用 seed=A/B 的不同 project 同时运行；再运行无提取节点的工作流检查旧 token 不存在。并发测试用受控 HTTP 屏障交错运行，而非睡眠碰概率。
+- [x] **步骤 1：写失败测试。** 复用 runner.test.ts 中真实 HTTP 服务和 `apiOf`/`wf` 夹具。让 n1 的 post 脚本执行 `pm.variables.set("token", pm.variables.get("seed"))`，n2 用 `pm.assert(pm.variables.get("token") === pm.variables.get("seed"), "run isolation")` 检查。同一 runner 用 seed=A/B 的不同 project 同时运行；再运行无提取节点的工作流检查旧 token 不存在。并发测试用受控 HTTP 屏障交错运行，而非睡眠碰概率。
 
   数据行测试创建临时 JSON `[ {"expected":"200"}, {"expected":"500"}, {"expected":"200"} ]`，用例断言 status eq `{{expected}}`，failFast=false；检查：
 
@@ -63,9 +63,9 @@
 
   定位函数测试建立嵌套两层文件夹，仅目标 API 被执行；原模块 id / variables / preOperations / postOperations、目标文件夹祖先操作和 `env.baseUrls[module.id]` 均保留。上下文命中 project 时不能采用外部同 ID 对象；project 无此 API 时保留 resolve 注入接缝。
 
-- [ ] **步骤 2：验证 RED。** `pnpm -C packages/core exec vitest run tests/workflow/runner.test.ts tests/workflow/references.test.ts`；记录变量泄漏、缺少 outcomes 或模块上下文缺失的实际失败，不能用语法错误充当 RED。
+- [x] **步骤 2：验证 RED。** `pnpm -C packages/core exec vitest run tests/workflow/runner.test.ts tests/workflow/references.test.ts`；记录变量泄漏、缺少 outcomes 或模块上下文缺失的实际失败，不能用语法错误充当 RED。
 
-- [ ] **步骤 3：最小实现。** 删除实例 carried，将桥闭包和 carried 移至 run 内。新增可选 outcomes，兼容旧 outcome 读者：代表结果优先第一条失败，否则第一条通过。node.state 必须由全部行决定，条件 `prev.passed` 使用节点聚合结论而非首行；`prev` 可额外只读提供 outcomes，不改变脚本权限。
+- [x] **步骤 3：最小实现。** 删除实例 carried，将桥闭包和 carried 移至 run 内。新增可选 outcomes，兼容旧 outcome 读者：代表结果优先第一条失败，否则第一条通过。node.state 必须由全部行决定，条件 `prev.passed` 使用节点聚合结论而非首行；`prev` 可额外只读提供 outcomes，不改变脚本权限。
 
   ```ts
   // NodeResult 新字段
@@ -84,8 +84,8 @@
   export function selectWorkflowCollection(location: ProjectApiLocation, testCase: TestCase): Collection;
   ```
 
-- [ ] **步骤 4：验证 GREEN。** 聚焦上述测试；提交前 `pnpm -C packages/core test` 与 `pnpm -C packages/core build`。验证真正的 CollectionRunner 同一实例并发在阶段 A 已隔离；若现有测试缺少不同 globals 并发例，补真实 echo 断言而非重复执行器重构。
-- [ ] **步骤 5：提交。** `git add` 本任务文件；`git commit -m "fix(workflow): isolate runs and retain every data row"`。自审并写任务报告，注明 row 口径。
+- [x] **步骤 4：验证 GREEN。** 聚焦上述测试；提交前 `pnpm -C packages/core test` 与 `pnpm -C packages/core build`。验证真正的 CollectionRunner 同一实例并发在阶段 A 已隔离；若现有测试缺少不同 globals 并发例，补真实 echo 断言而非重复执行器重构。
+- [x] **步骤 5：提交。** `git add` 本任务文件；`git commit -m "fix(workflow): isolate runs and retain every data row"`。自审并写任务报告，注明 row 口径。
 
 ### 任务 2：严格引用与可诊断的剪枝/异常语义
 
@@ -152,13 +152,13 @@
 
 ### 任务 4：CLI 与桌面工作流消费一致的执行结论
 
-**文件：** 修改 `packages/cli/src/index.ts`、`apps/desktop/src/main/ipc.ts`、`apps/desktop/src/main/session.ts`、`apps/desktop/src/shared/types.ts`、`apps/desktop/src/renderer/src/components/WfDesigner.vue`、`apps/desktop/src/renderer/src/components/RunView.vue`；有形状调整需求时修改 `apps/desktop/src/renderer/src/stores/workflowDesign.ts` 与 `apps/desktop/src/renderer/src/api/memory.ts`。测试 `packages/cli/tests/e2e.test.ts`、`apps/desktop/tests/main/ipc.test.ts`、`apps/desktop/tests/renderer/components/wfDesigner.test.ts`、`apps/desktop/tests/renderer/components/RunView.test.ts`、`apps/desktop/tests/renderer/stores/workflowDesign.test.ts`。
+**文件：** 修改 `packages/cli/src/main.ts`、`apps/desktop/src/main/ipc.ts`、`apps/desktop/src/main/session.ts`、`apps/desktop/src/shared/types.ts`、`apps/desktop/src/renderer/src/components/WfDesigner.vue`、`apps/desktop/src/renderer/src/components/RunView.vue`；有形状调整需求时修改 `apps/desktop/src/renderer/src/stores/workflowDesign.ts` 与 `apps/desktop/src/renderer/src/api/memory.ts`。测试 `packages/cli/tests/e2e.test.ts`、`apps/desktop/tests/main/ipc.test.ts`、`apps/desktop/tests/renderer/components/wfDesigner.test.ts`、`apps/desktop/tests/renderer/components/RunView.test.ts`、`apps/desktop/tests/renderer/stores/workflowDesign.test.ts`。
 
-**交付：** 默认严格运行、报告与退出码一致、本项目递归引用，桌面能看全数据行和跳过原因。
+**交付：** 默认严格运行、报告与退出码一致、本项目递归引用，桌面能看全数据行和跳过原因；并发/同毫秒运行的原始结果不覆盖。
 
-- [ ] **步骤 1：写失败测试。** CLI 实际进程：false→exit 0、第二行失败→exit 1、缺引用→exit 1、坏条件→exit 1、`--no-strict` 缺引用→exit 0 且明确诊断；`--force-draft` 不绕过 strict。JSON/HTML/JUnit 均显示相同失败/跳过。跨项目同 ID、两层文件夹、原模块 baseUrl 的引用指向所属项目。IPC 同一组行为；桌面显示两/三行含 row、failureKind、error，跳过原因可见。
+- [ ] **步骤 1：写失败测试。** CLI 实际进程：false→exit 0、第二行失败→exit 1、缺引用→exit 1、坏条件→exit 1、`--no-strict` 缺引用→exit 0 且明确诊断；`--force-draft` 不绕过 strict。JSON/HTML/JUnit 均显示相同失败/跳过。跨项目同 ID、两层文件夹、原模块 baseUrl 的引用指向所属项目。IPC 同一组行为；桌面显示两/三行含 row、failureKind、error，跳过原因可见；请求行通过但路由失败时展示独立节点错误。同毫秒两次运行原始文件均存在且内容不串。
 - [ ] **步骤 2：验证 RED。** CLI `pnpm -C packages/cli exec vitest run tests/e2e.test.ts`，桌面 `pnpm -C apps/desktop exec vitest run tests/main/ipc.test.ts tests/renderer/components/wfDesigner.test.ts tests/renderer/components/RunView.test.ts tests/renderer/stores/workflowDesign.test.ts`。记录真实失败。
-- [ ] **步骤 3：实现消费者。** CLI run-workflow 添加 `.option("--no-strict", "允许缺失引用跳过（仍保留诊断）")`，把 commander 的 `strict` 传入；默认 strict=true。IPC `WfRunInput.strict?: boolean`，调用默认 true，不必新增放宽 UI。findProjectApi 只用定位工作流所属 project，不扫描所有 workspace。CLI exit 采用 `wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0`，输出明确“节点统计”；report 数据行独立统计。renderer 使用 outcomes 回退 outcome，按每行显示状态及 skipped 原因；通用 RunDetail 优先 skipped、再 passed/failed。旧报告可选字段安全回退，不新增执行编排能力。
+- [ ] **步骤 3：实现消费者。** CLI run-workflow 添加 `.option("--no-strict", "允许缺失引用跳过（仍保留诊断）")`，把 commander 的 `strict` 传入；默认 strict=true。IPC `WfRunInput.strict?: boolean`，调用默认 true，不必新增放宽 UI。findProjectApi 只用定位工作流所属 project，不扫描所有 workspace。CLI exit 采用 `wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0`，输出明确“节点统计”；report 数据行独立统计。renderer 使用 outcomes 回退 outcome，按每行显示状态及 skipped 原因；通用 RunView 优先 skipped、再 passed/failed。旧报告可选字段安全回退，不新增执行编排能力。
 
   ```ts
   const rows = node.outcomes ?? (node.outcome ? [node.outcome] : []);
@@ -166,6 +166,8 @@
   ```
 
   session.ts 和 memory.ts 的启用校验传入定位工作流所得 project，防止嵌套引用运行能通过却不能启用。
+
+  CLI 与 IPC 原始工作流 JSON 文件名改为 `workflow-${workflowId}-${randomUUID()}.json`，使用 `node:crypto` 的 randomUUID，无新增依赖，消除仅 Date.now 的同毫秒覆盖。不添加新的任务/历史模型。条件错误显示 node.error / node.failureKind 与节点失败状态，不把已通过的 HTTP 行改写为失败。
 
 - [ ] **步骤 4：验证 GREEN。** core build 后 CLI 全测/build，desktop 全测/typecheck/build；本任务不要反复重跑整桌面套件。若真实服务端测试暴露已知共享 JAR 争用，记录并交任务 5，不能改成跳过 E2E。
 - [ ] **步骤 5：提交。** `git commit -m "fix(app): align workflow execution and report verdicts"`；报告给出新增字段消费者清单与运行证据。
@@ -182,7 +184,7 @@
 
   PowerShell 根入口设置 `$ErrorActionPreference = 'Stop'`，用 `&` 传命令参数，每个外部调用检查 `$LASTEXITCODE` 非零立即退出；JAVA_HOME 合法根与 Java21 校验，Node >=22.19.0 校验。从脚本路径定位仓库根而非依赖调用 cwd；不改全局用户环境。不进行依赖安装，缺依赖时明确失败。
 
-  命令顺序：brand self-check + gate → `pnpm -r build` → `pnpm -r test` → Maven wrapper `-s server/.mvn/settings.xml -f server/pom.xml test`。Maven 的测试产物用专属临时 build.directory，结束清理，确保该入口本身也不争用共享 target。README 写标准调用：
+  命令顺序：brand self-check + gate → `pnpm -C packages/core typecheck`（包含测试文件，保持 CI 门禁一致）→ `pnpm -r build` → `pnpm -r test` → Maven wrapper `-s server/.mvn/settings.xml -f server/pom.xml test`。Maven 的测试产物用专属临时 build.directory，结束清理，确保该入口本身也不争用共享 target。README 写标准调用：
 
   ```powershell
   $env:JAVA_HOME = 'C:\Program Files\Java\jdk-21.0.12'
