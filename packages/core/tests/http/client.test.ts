@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import type { Socket } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHttpClient, httpClient, classifyNetworkError, HttpExecutionError } from "../../src/http/client.js";
 
@@ -17,8 +18,6 @@ beforeAll(async () => {
       });
     } else if (req.url === "/slow") {
       setTimeout(() => res.end("late"), 5000);
-    } else if (req.url === "/parallel") {
-      setTimeout(() => res.end("parallel"), 120);
     } else {
       res.statusCode = 404;
       res.end("nope");
@@ -165,14 +164,85 @@ describe("managed HTTP client lifecycle", () => {
   });
 
   it("pooled 模式允许并发请求使用多个连接，不被单连接串行化", async () => {
-    const client = createHttpClient({ connectionMode: "pooled" });
-    const started = performance.now();
-    await Promise.all([
-      client.execute({ ...req(), url: `${baseUrl}/parallel` }, opts),
-      client.execute({ ...req(), url: `${baseUrl}/parallel` }, opts),
-    ]);
-    expect(performance.now() - started).toBeLessThan(220);
-    await client.close();
+    let barrierServer: Server | undefined;
+    let barrierBaseUrl = "";
+    let barrierClient: ReturnType<typeof createHttpClient> | undefined;
+    let controller: AbortController | undefined;
+    const sockets = new Set<Socket>();
+    const heldResponses: Array<import("node:http").ServerResponse> = [];
+    let arrivals = 0;
+    let inFlight = 0;
+    let peakInFlight = 0;
+    let releaseResponses: (() => void) | undefined;
+    let resolveTwoArrivals: (() => void) | undefined;
+    let rejectTwoArrivals: ((error: Error) => void) | undefined;
+    const pendingRequests: Array<ReturnType<ReturnType<typeof createHttpClient>["execute"]>> = [];
+    const onBarrierConnection = (socket: Socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    };
+    const twoArrivals = new Promise<void>((resolve, reject) => {
+      resolveTwoArrivals = resolve;
+      rejectTwoArrivals = reject;
+    });
+    twoArrivals.catch(() => undefined);
+    const timeout = setTimeout(() => rejectTwoArrivals?.(new Error("timed out waiting for two in-flight requests")), 2000);
+
+    try {
+      barrierServer = createServer((request, response) => {
+        if (request.url !== "/parallel") {
+          response.statusCode = 404;
+          response.end("nope");
+          return;
+        }
+        arrivals += 1;
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        heldResponses.push(response);
+        response.on("finish", () => { inFlight -= 1; });
+        request.resume();
+        if (arrivals === 2) resolveTwoArrivals?.();
+      });
+      barrierServer.on("connection", onBarrierConnection);
+      await new Promise<void>((resolve, reject) => {
+        barrierServer?.once("error", reject);
+        barrierServer?.listen(0, "127.0.0.1", resolve);
+      });
+      barrierBaseUrl = `http://127.0.0.1:${(barrierServer.address() as { port: number }).port}`;
+      releaseResponses = () => {
+        for (const response of heldResponses) {
+          if (!response.writableEnded) response.end("parallel");
+        }
+      };
+      controller = new AbortController();
+      barrierClient = createHttpClient({ connectionMode: "pooled" });
+      const requestOptions = { ...opts, signal: controller.signal };
+      for (let i = 0; i < 2; i += 1) {
+        const pending = barrierClient.execute({ ...req(), url: `${barrierBaseUrl}/parallel` }, requestOptions);
+        pending.catch(() => undefined);
+        pendingRequests.push(pending);
+      }
+      await twoArrivals;
+      expect(arrivals).toBe(2);
+      expect(peakInFlight).toBe(2);
+      releaseResponses();
+      const completed = await Promise.all(pendingRequests);
+      expect(completed.map((response) => ({ status: response.status, body: response.bodyText }))).toEqual([
+        { status: 200, body: "parallel" },
+        { status: 200, body: "parallel" },
+      ]);
+    } finally {
+      clearTimeout(timeout);
+      controller?.abort();
+      releaseResponses?.();
+      await Promise.allSettled(pendingRequests);
+      if (barrierClient) await barrierClient.close();
+      for (const socket of sockets) socket.destroy();
+      if (barrierServer) {
+        barrierServer.off("connection", onBarrierConnection);
+        if (barrierServer.listening) await new Promise<void>((resolve) => barrierServer?.close(() => resolve()));
+      }
+    }
   });
 
   it("close 后最终关闭 socket，且重复 close 幂等", async () => {
