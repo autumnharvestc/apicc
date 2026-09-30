@@ -80,11 +80,23 @@ describe("skipped 三态报告", () => {
 
   it("JUnit 在 testsuites 和 testsuite 独立计 skipped，并写 skipped 节点", async () => {
     const outDir = mkdtempSync(join(tmpdir(), "apicc-junit-skip-"));
-    const file = await junitReporter.render(skipped, outDir);
+    const file = await junitReporter.render({
+      ...skipped,
+      total: 4,
+      passed: 1,
+      failed: 1,
+      skipped: 2,
+      cases: [
+        ...skipped.cases,
+        { apiId: "a1", apiName: "skip<&", caseId: "t3", caseName: "pruned<&", nodeId: "node-8", passed: false, skipped: true, skipReason: "另一个原因", durationMs: 0, assertions: [] },
+      ],
+    }, outDir);
     const xml = readFileSync(file, "utf8");
-    expect(xml).toContain('tests="3" failures="1" skipped="1"');
+    expect(xml).toContain('<testsuites tests="4" failures="1" skipped="2">');
+    expect(xml).toContain('<testsuite name="order-api" tests="4" failures="1" skipped="2">');
     expect(xml).toContain('<skipped message="条件&lt;&amp;&quot;"/>');
     expect(xml).toContain('name="node-7:skip&lt;&amp;.pruned&lt;&amp;"');
+    expect(xml).toContain('name="node-8:skip&lt;&amp;.pruned&lt;&amp;"');
     expect(xml).not.toContain("<failure message=\"条件");
   });
 

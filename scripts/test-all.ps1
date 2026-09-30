@@ -61,4 +61,3 @@ try {
   }
 }
 Write-Host '[DONE] Windows full gate passed.'
-

@@ -11,7 +11,6 @@ export function parseJavaMajor(output: string): number | null {
   const match = /version\s+"(\d+)/.exec(output);
   return match ? Number(match[1]) : null;
 }
-
 export function requireJava21(major: number | null): void {
   if (major !== 21) throw new Error(`E2E 服务端要求 Java 21（检测到 ${major === null ? "未知版本" : `Java ${major}`}）`);
 }
@@ -137,4 +136,3 @@ export async function prepareAndStartServer(
   await start(artifact);
   return artifact;
 }
-

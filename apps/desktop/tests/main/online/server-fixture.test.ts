@@ -154,4 +154,3 @@ describe("server fixture Maven 产物隔离", () => {
     expect(errors).toEqual(["data", "artifact"]);
   });
 });
-

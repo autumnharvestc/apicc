@@ -134,6 +134,41 @@ describe("WorkflowRunner", () => {
     expect(result.warnings.some((warning) => /不存在/.test(warning))).toBe(true);
   });
 
+  it("strict=false 隐藏在条件剪枝和上游失败后的缺失引用仍保持 failed/config", async () => {
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([badApi]), envName: "dev", failFast: false, strict: false })
+      .run(wf([
+        { id: "root", kind: "noop" as const },
+        { id: "pruned-missing", kind: "request" as const, apiId: "ghost", caseId: "ghost-case" },
+        { id: "bad", kind: "request" as const, apiId: "abad", caseId: "case-abad" },
+        { id: "blocked-missing-case", kind: "request" as const, apiId: "a1", caseId: "ghost-case" },
+        { id: "independent", kind: "request" as const, apiId: "a2", caseId: "case-a2" },
+      ], [
+        { id: "prune", from: "root", to: "pruned-missing", condition: "false" },
+        { id: "block", from: "bad", to: "blocked-missing-case" },
+      ]), { project, workspace: ws });
+    expect(result.nodeResults.find((n) => n.nodeId === "pruned-missing")).toMatchObject({ state: "failed", failureKind: "config" });
+    expect(result.nodeResults.find((n) => n.nodeId === "blocked-missing-case")).toMatchObject({ state: "failed", failureKind: "config" });
+    expect(result.nodeResults.find((n) => n.nodeId === "independent")?.state).toBe("passed");
+    expect(result.verdict).toBe("failed");
+    expect(result.failed).toBe(3);
+    expect(result.warnings.filter((warning) => /不存在/.test(warning))).toHaveLength(2);
+  });
+
+  it("条件环境是每条边独立的冻结快照，写入不能改变后续边或项目环境", async () => {
+    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
+      .run(wf([
+        { id: "root", kind: "noop" as const },
+        { id: "writer", kind: "noop" as const },
+        { id: "reader", kind: "noop" as const },
+      ], [
+        { id: "write", from: "root", to: "writer", condition: "(env.baseUrl = 'changed', true)" },
+        { id: "read", from: "root", to: "reader", condition: "env.baseUrl === '" + baseUrl + "'" },
+      ]), { project, workspace: ws });
+    expect(result.nodeResults.find((n) => n.nodeId === "writer")?.state).toBe("noop");
+    expect(result.nodeResults.find((n) => n.nodeId === "reader")?.state).toBe("noop");
+    expect(project.environments[0]!.variables.baseUrl).toBe(baseUrl);
+  });
+
   it("无 javascript 引擎时条件源节点 failed/script，不伪装成剪枝成功", async () => {
     const result = await new WorkflowRunner({ registry: createPluginRegistry(), resolve, envName: "dev", failFast: false })
       .run(wf([

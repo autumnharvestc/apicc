@@ -127,6 +127,24 @@ export class WorkflowRunner {
     };
 
     const nodeResults = new Map<string, NodeResult>();
+    // Relaxed execution still reports every known-invalid request before graph
+    // pruning/fail-fast can hide it. Valid independent roots remain schedulable.
+    if (!strict) {
+      for (const { node, reference } of missingReferences) {
+        const message = missingReferenceMessage(node);
+        warnings.push(message);
+        reference.missingMessage = message;
+        const outcome: CaseOutcome = {
+          apiId: node.apiId ?? "", apiName: node.apiId ?? node.id,
+          caseId: node.caseId ?? "", caseName: node.caseId ?? node.id,
+          passed: false, durationMs: 0, assertions: [], error: message, failureKind: "config",
+        };
+        nodeResults.set(node.id, {
+          nodeId: node.id, label: node.label, kind: "request", state: "failed",
+          outcomes: [outcome], outcome, failureKind: "config", error: message,
+        });
+      }
+    }
     const incoming = new Map<string, WorkflowEdge[]>();
     const outgoing = new Map<string, WorkflowEdge[]>();
     for (const e of workflow.edges) {
@@ -376,8 +394,8 @@ function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<s
     request: { method: "GET", url: "", headers: {}, query: [] },
     assert: () => {},
     prev,
-    vars: { ...carried },
-    env: envVars,
+    vars: deepReadonlySnapshot({ ...carried }),
+    env: deepReadonlySnapshot({ ...envVars }),
     __value: undefined,
   };
   try {

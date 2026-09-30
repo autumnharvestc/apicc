@@ -358,7 +358,7 @@ describe("CLI 端到端", () => {
       `id: ${wfId}`, "name: 严格诊断流", "status: enabled", "nodes:",
       "  - id: missing", "    kind: request", "    apiId: ghost-api", "    caseId: ghost-case", "    label: missing",
       "  - id: independent", "    kind: request", "    apiId: 00000000-0000-4000-8000-000000000011", "    caseId: 00000000-0000-4000-8000-000000000015", "    label: independent",
-      "edges: []",
+      "edges:", "  - id: hide-missing", "    from: independent", "    to: missing", "    condition: 'false'",
     ].join("\n"));
     const strictDir = join(root, "strict-runs");
     const strictRequestsBefore = receivedRequests.length;
@@ -379,6 +379,16 @@ describe("CLI 端到端", () => {
     ]);
     expect(relaxed.code).toBe(1);
     expect(relaxed.output).toContain("节点统计");
+    const relaxedRaw = readdirSync(relaxedDir).find((name) => name.startsWith("workflow-") && name.endsWith(".json"))!;
+    const relaxedReport = JSON.parse(readFileSync(join(relaxedDir, relaxedRaw), "utf8")) as {
+      verdict?: string; failed: number; warnings: string[];
+      nodeResults: Array<{ nodeId: string; state: string; failureKind?: string; outcomes?: Array<{ failureKind?: string; passed: boolean }> }>;
+    };
+    expect(relaxedReport.verdict).toBe("failed");
+    expect(relaxedReport.failed).toBe(1);
+    expect(relaxedReport.nodeResults.find((node) => node.nodeId === "missing")).toMatchObject({ state: "failed", failureKind: "config" });
+    expect(relaxedReport.nodeResults.find((node) => node.nodeId === "missing")?.outcomes?.[0]).toMatchObject({ passed: false, failureKind: "config" });
+    expect(relaxedReport.warnings.some((warning) => /不存在/.test(warning))).toBe(true);
     const parallelDir = join(root, "parallel-relaxed-runs");
     const [relaxedAgain, relaxedConcurrent] = await Promise.all([
       runCliProcess([
