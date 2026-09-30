@@ -99,7 +99,6 @@ export function prepareServerArtifact(opts: {
   mvn: string;
   run?: CommandRunner;
   env?: NodeJS.ProcessEnv;
-  onPrepared?: (artifact: ServerArtifact) => void;
   cleanup?: (root: string) => void;
 }): ServerArtifact {
   const root = createOwnedTempRoot("apicc-e2e-build-");
@@ -117,9 +116,7 @@ export function prepareServerArtifact(opts: {
     if (!jar) {
       throw new Error(`构建成功但专属 Maven 输出目录中未找到 apicc-server-*.jar：${buildDirectory}`);
     }
-    const artifact = { jar, root, buildDirectory };
-    opts.onPrepared?.(artifact);
-    return artifact;
+    return { jar, root, buildDirectory };
   } catch (error) {
     if (ownedRoots.has(canonical(root))) {
       try {
@@ -130,5 +127,14 @@ export function prepareServerArtifact(opts: {
     }
     throw error;
   }
+}
+
+export async function prepareAndStartServer(
+  opts: Parameters<typeof prepareServerArtifact>[0],
+  start: (artifact: ServerArtifact) => void | Promise<void>,
+): Promise<ServerArtifact> {
+  const artifact = prepareServerArtifact(opts);
+  await start(artifact);
+  return artifact;
 }
 

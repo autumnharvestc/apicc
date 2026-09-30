@@ -30,7 +30,7 @@ import { scanDirFiles, writeFiles } from "../../../src/main/online/migrate.js";
 import { onlineTreeToDto } from "../../../src/main/online/session.js";
 import { planPull, planPush, restoreLocalPaths, toEntityPath } from "../../../src/shared/online/migrate.js";
 import { runCommand } from "./run-command.js";
-import { cleanupAfterConfirmedStop, createOwnedTempRoot, prepareServerArtifact, probeJavaMajor } from "./server-fixture.js";
+import { cleanupAfterConfirmedStop, createOwnedTempRoot, prepareAndStartServer, probeJavaMajor } from "./server-fixture.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // online → main → tests → desktop → apps → 仓库根：五层向上
@@ -86,13 +86,6 @@ function resolveMvn(): string {
   const wrapper = process.platform === "win32" ? "mvnw.cmd" : "mvnw";
   if (existsSync(join(SERVER_DIR, wrapper))) return join(SERVER_DIR, wrapper);
   return "mvn";
-}
-
-/** 每个 E2E 实例均在自己的临时 Maven 输出根构建，绝不复用共享 server/target。 */
-function ensureJar(javaHome: string | undefined): string {
-  const artifact = prepareServerArtifact({ serverDir: SERVER_DIR, repoRoot: REPO_ROOT, javaHome, mvn: resolveMvn(), run: runCommand });
-  artifactRoot = artifact.root;
-  return artifact.jar;
 }
 
 /** 随机空闲端口（listen(0) 由内核分配后释放——启动窗口极短，竞态可忽略）。 */
@@ -227,8 +220,13 @@ let clientB: OnlineClient;
 
 beforeAll(async () => {
   const java = resolveJava();
-  const jar = ensureJar(java.home);
-  await startServer(jar, java.exe);
+  await prepareAndStartServer(
+    { serverDir: SERVER_DIR, repoRoot: REPO_ROOT, javaHome: java.home, mvn: resolveMvn(), run: runCommand },
+    async (artifact) => {
+      artifactRoot = artifact.root;
+      await startServer(artifact.jar, java.exe);
+    },
+  );
   const base = `http://127.0.0.1:${serverPort}`;
   serverBase = base;
   clientA = createOnlineClient({ baseUrl: base, timeoutMs: 10_000 });

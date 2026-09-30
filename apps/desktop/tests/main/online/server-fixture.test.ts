@@ -6,6 +6,7 @@ import {
   cleanupAfterConfirmedStop,
   createOwnedTempRoot,
   parseJavaMajor,
+  prepareAndStartServer,
   prepareServerArtifact,
   probeJavaMajor,
   requireJava21,
@@ -39,15 +40,43 @@ describe("server fixture Maven 产物隔离", () => {
 
   it("失败构建返回可读错误且不产出/启动服务，失败临时根会回收", () => {
     let rootSeen = "";
+    const run: CommandRunner = (_exe, args) => {
+      rootSeen = args.find((arg) => arg.startsWith("-Dapicc.build.directory="))!.slice("-Dapicc.build.directory=".length);
+      return { status: 17, output: "COMPILATION FAILED: fixture" };
+    };
+    expect(() => prepareServerArtifact({ ...options(), run })).toThrow(/exit 17.*COMPILATION FAILED/s);
+    expect(rootSeen).not.toBe("");
+    expect(existsSync(join(rootSeen, ".."))).toBe(false);
+  });
+
+  it("准备失败时不会调用实际启动 seam，且会回收已创建根", async () => {
+    let rootSeen = "";
     let started = false;
     const run: CommandRunner = (_exe, args) => {
       rootSeen = args.find((arg) => arg.startsWith("-Dapicc.build.directory="))!.slice("-Dapicc.build.directory=".length);
       return { status: 17, output: "COMPILATION FAILED: fixture" };
     };
-    expect(() => prepareServerArtifact({ ...options(), run, onPrepared: () => (started = true) })).toThrow(/exit 17.*COMPILATION FAILED/s);
-    expect(rootSeen).not.toBe("");
-    expect(existsSync(join(rootSeen, ".."))).toBe(false);
+    await expect(prepareAndStartServer({ ...options(), run }, async () => {
+      started = true;
+    })).rejects.toThrow(/exit 17.*COMPILATION FAILED/s);
     expect(started).toBe(false);
+    expect(existsSync(join(rootSeen, ".."))).toBe(false);
+  });
+
+  it("成功准备后实际启动 seam 收到专属产物", async () => {
+    let received: string | undefined;
+    const run: CommandRunner = (_exe, args) => {
+      const dir = args.find((arg) => arg.startsWith("-Dapicc.build.directory="))!.slice("-Dapicc.build.directory=".length);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "apicc-server-fixture.jar"), "jar");
+      return { status: 0, output: "BUILD SUCCESS" };
+    };
+    const artifact = await prepareAndStartServer({ ...options(), run }, async (prepared) => {
+      received = prepared.jar;
+    });
+    expect(received).toBe(artifact.jar);
+    expect(artifact.jar).not.toContain(`${join("C:/repo/server", "target")}`);
+    cleanupOwnedRoot(artifact.root);
   });
 
   it("清理失败不会遮蔽非零构建和缺 jar 的原始错误", () => {
