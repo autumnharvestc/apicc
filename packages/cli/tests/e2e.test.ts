@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDefaultRegistry, fileStorage } from "@apicc/core";
+import { createDefaultRegistry, fileStorage, workflowToRunResult } from "@apicc/core";
 import type { ShardOutcome, Workspace } from "@apicc/core";
 import { runCli } from "../src/main.js";
 
@@ -361,10 +361,12 @@ describe("CLI 端到端", () => {
       "edges: []",
     ].join("\n"));
     const strictDir = join(root, "strict-runs");
+    const strictRequestsBefore = receivedRequests.length;
     const strict = await runCliProcess([
       "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--runs-dir", strictDir,
     ]);
     expect(strict.code).toBe(1);
+    expect(receivedRequests).toHaveLength(strictRequestsBefore);
     const strictRaw = readdirSync(strictDir).find((name) => name.startsWith("workflow-") && name.endsWith(".json"))!;
     const strictReport = JSON.parse(readFileSync(join(strictDir, strictRaw), "utf8")) as { nodeResults: Array<{ nodeId: string; state: string; outcomes?: unknown[] }>; verdict?: string };
     expect(strictReport.verdict).toBe("failed");
@@ -420,13 +422,18 @@ describe("CLI 端到端", () => {
     ], ["  - id: bad-condition", "    from: condition-source", "    to: condition-target", "    condition: missingConditionValue"]);
     writeWorkflow("00000000-0000-4000-8000-000000000028", "草稿严格流", "draft", [
       "  - id: missing", "    kind: request", "    apiId: ghost-api", "    caseId: ghost-case", "    label: missing",
+      "  - id: independent", "    kind: request", "    apiId: 00000000-0000-4000-8000-000000000011", "    caseId: 00000000-0000-4000-8000-000000000015", "    label: independent",
     ]);
     // 手写 YAML 后再经 storage round-trip，确保实际 dist 子进程看到该 draft 工作流（与真实落盘形状一致）。
     const draftWorkspace = await fileStorage.load(root);
     const draftProject = draftWorkspace.workspace.groups.find((group) => group.name === "demo")!.projects[0]!;
-    if (!draftProject.workflows.some((workflow) => workflow.id === "00000000-0000-4000-8000-000000000028")) {
-      draftProject.workflows.push({ id: "00000000-0000-4000-8000-000000000028", name: "草稿严格流", status: "draft", nodes: [{ id: "missing", kind: "request", apiId: "ghost-api", caseId: "ghost-case", label: "missing" }], edges: [] });
-    }
+    const draftNodes = [
+      { id: "missing", kind: "request" as const, apiId: "ghost-api", caseId: "ghost-case", label: "missing" },
+      { id: "independent", kind: "request" as const, apiId: "00000000-0000-4000-8000-000000000011", caseId: "00000000-0000-4000-8000-000000000015", label: "independent" },
+    ];
+    const draftWorkflow = draftProject.workflows.find((workflow) => workflow.id === "00000000-0000-4000-8000-000000000028");
+    if (draftWorkflow) draftWorkflow.nodes = draftNodes;
+    else draftProject.workflows.push({ id: "00000000-0000-4000-8000-000000000028", name: "草稿严格流", status: "draft", nodes: draftNodes, edges: [] });
     await fileStorage.save(root, draftWorkspace.workspace);
 
     const falseDir = join(root, "false-runs");
@@ -436,8 +443,21 @@ describe("CLI 端到端", () => {
     const falseResult = JSON.parse(readFileSync(join(falseDir, falseRaw), "utf8")) as { verdict?: string; nodeResults: Array<{ state: string; skipReason?: string }> };
     expect(falseResult.verdict).toBe("passed");
     expect(falseResult.nodeResults.some((node) => node.skipReason === "condition-pruned")).toBe(true);
-    expect(readdirSync(falseDir).some((file) => file.endsWith(".html"))).toBe(true);
-    expect(readFileSync(join(falseDir, readdirSync(falseDir).find((file) => file.endsWith(".xml"))!), "utf8")).toContain("skipped");
+    const falseAdapted = workflowToRunResult(falseResult as never);
+    expect(falseAdapted).toMatchObject({ total: 2, passed: 1, failed: 0, skipped: 1 });
+    expect(falseAdapted.cases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeId: "start", passed: true }),
+      expect.objectContaining({ nodeId: "pruned", skipped: true, skipReason: "condition-pruned" }),
+    ]));
+    const falseHtml = readFileSync(join(falseDir, readdirSync(falseDir).find((file) => file.endsWith(".html"))!), "utf8");
+    expect(falseHtml).toMatch(/总计 2 · 通过 1 · 失败 0 · 跳过 1/);
+    expect((falseHtml.match(/<tr class="pass">/g) ?? [])).toHaveLength(1);
+    expect((falseHtml.match(/<tr class="skip">/g) ?? [])).toHaveLength(1);
+    const falseXml = readFileSync(join(falseDir, readdirSync(falseDir).find((file) => file.endsWith(".xml"))!), "utf8");
+    expect(falseXml).toMatch(/<testsuites tests="2" failures="0" skipped="1">/);
+    expect(falseXml).toMatch(/<testsuite name="条件通过流" tests="2" failures="0" skipped="1">/);
+    expect(falseXml).toMatch(/<testcase name="pruned:[^"]+"[\s\S]*<skipped message="condition-pruned"\/>/);
+    expect(falseXml).not.toContain("<failure ");
 
     const failedDir = join(root, "second-fails-runs");
     const failedRun = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/第二行失败流", "--env", "dev", "--reporters", "html,junit", "--runs-dir", failedDir]);
@@ -447,21 +467,53 @@ describe("CLI 端到端", () => {
     expect(failedResult.verdict).toBe("failed");
     expect(failedResult.nodeResults.find((node) => node.nodeId === "first")?.state).toBe("passed");
     expect(failedResult.nodeResults.find((node) => node.nodeId === "second")?.state).toBe("failed");
+    const failedAdapted = workflowToRunResult(failedResult as never);
+    expect(failedAdapted).toMatchObject({ total: 2, passed: 1, failed: 1, skipped: 0 });
+    expect(failedAdapted.cases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeId: "first", passed: true }),
+      expect.objectContaining({ nodeId: "second", passed: false }),
+    ]));
     const failedHtml = readFileSync(join(failedDir, readdirSync(failedDir).find((file) => file.endsWith(".html"))!), "utf8");
     const failedJunit = readFileSync(join(failedDir, readdirSync(failedDir).find((file) => file.endsWith(".xml"))!), "utf8");
-    expect(failedHtml).toContain("失败");
-    expect(failedJunit).toContain("failure");
+    expect(failedHtml).toMatch(/总计 2 · 通过 1 · 失败 1 · 跳过 0/);
+    expect((failedHtml.match(/<tr class="pass">/g) ?? [])).toHaveLength(1);
+    expect((failedHtml.match(/<tr class="fail">/g) ?? [])).toHaveLength(1);
+    expect(failedJunit).toMatch(/<testsuites tests="2" failures="1" skipped="0">/);
+    expect(failedJunit).toMatch(/<testsuite name="第二行失败流" tests="2" failures="1" skipped="0">/);
+    expect(failedJunit).toMatch(/<testcase name="second:[^"]+"[\s\S]*<failure message="/);
 
-    const badCondition = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/坏条件流", "--reporters", "junit", "--runs-dir", join(root, "bad-condition-runs")]);
+    const badDir = join(root, "bad-condition-runs");
+    const badCondition = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/坏条件流", "--reporters", "html,junit", "--runs-dir", badDir]);
     expect(badCondition.code).toBe(1);
+    const badRaw = readdirSync(badDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
+    const badResult = JSON.parse(readFileSync(join(badDir, badRaw), "utf8")) as { nodeResults: Array<{ nodeId: string; state: string; failureKind?: string; skipReason?: string }> };
+    const badAdapted = workflowToRunResult(badResult as never);
+    expect(badAdapted).toMatchObject({ total: 2, passed: 0, failed: 1, skipped: 1 });
+    expect(badAdapted.cases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeId: "condition-source", passed: false, failureKind: "script" }),
+      expect.objectContaining({ nodeId: "condition-target", skipped: true, skipReason: "upstream-failed" }),
+    ]));
+    const badHtml = readFileSync(join(badDir, readdirSync(badDir).find((file) => file.endsWith(".html"))!), "utf8");
+    expect(badHtml).toMatch(/总计 2 · 通过 0 · 失败 1 · 跳过 1/);
+    expect((badHtml.match(/<tr class="fail">/g) ?? [])).toHaveLength(1);
+    expect((badHtml.match(/<tr class="skip">/g) ?? [])).toHaveLength(1);
+    const badXml = readFileSync(join(badDir, readdirSync(badDir).find((file) => file.endsWith(".xml"))!), "utf8");
+    expect(badXml).toMatch(/<testsuites tests="2" failures="1" skipped="1">/);
+    expect(badXml).toMatch(/<testsuite name="坏条件流" tests="2" failures="1" skipped="1">/);
+    expect(badXml).toMatch(/<testcase name="condition-source:[^"]+"[\s\S]*<failure message="/);
+    expect(badXml).toMatch(/<testcase name="condition-target:[^"]+"[\s\S]*<skipped message="upstream-failed"\/>/);
+    const draftRequestsBefore = receivedRequests.length;
     const draft = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/草稿严格流", "--force-draft", "--runs-dir", join(root, "draft-strict-runs")]);
     expect(draft.code).toBe(1);
+    expect(receivedRequests).toHaveLength(draftRequestsBefore);
     const draftDir = join(root, "draft-strict-runs");
     if (!existsSync(draftDir)) throw new Error(`draft child output: ${draft.output}`);
     const draftRaw = readdirSync(draftDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
-    const draftReport = JSON.parse(readFileSync(join(draftDir, draftRaw), "utf8")) as { verdict?: string; nodeResults: Array<{ nodeId: string; state: string }> };
+    const draftReport = JSON.parse(readFileSync(join(draftDir, draftRaw), "utf8")) as { verdict?: string; nodeResults: Array<{ nodeId: string; state: string; failureKind?: string; skipReason?: string; outcomes?: unknown[] }> };
     expect(draftReport.verdict).toBe("failed");
-    expect(draftReport.nodeResults.find((node) => node.nodeId === "missing")?.state).toBe("failed");
+    expect(draftReport.nodeResults.find((node) => node.nodeId === "missing")).toMatchObject({ state: "failed", failureKind: "config" });
+    expect(draftReport.nodeResults.find((node) => node.nodeId === "independent")).toMatchObject({ state: "skipped", skipReason: "reference-invalid" });
+    expect(draftReport.nodeResults.find((node) => node.nodeId === "independent")?.outcomes).toBeUndefined();
   }, 30000);
 
   it("run-workflow 数据驱动 JSON 保留第一行通过/第二行失败，CLI 与 HTML/JUnit 均按两行计数", async () => {

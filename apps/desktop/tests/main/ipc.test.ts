@@ -461,28 +461,30 @@ describe("工作流 IPC", () => {
 
   it("wf:run 同毫秒两次落盘仍各有 UUID 文件且内容归属可读", async () => {
     const { deps, dir, project } = await setupWf();
-    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "同毫秒流" });
+    const wf = await deps.handle("wf:create", {}, { projectId: project.id, name: "同毫秒甲" });
     await deps.handle("wf:save", {}, { workflow: { ...wf, nodes: [{ id: "noop", kind: "noop" }] } });
     await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "published" });
     await deps.handle("wf:set-status", {}, { workflowId: wf.id, next: "enabled" });
-    const fixedNow = vi.spyOn(Date, "now").mockReturnValue(1_791_000_000_000);
+    vi.useFakeTimers();
+    vi.setSystemTime(1_791_000_000_000);
     try {
-      await Promise.all([
-        deps.handle("wf:run", {}, { workflowId: wf.id }),
-        deps.handle("wf:run", {}, { workflowId: wf.id }),
-      ]);
+      await deps.handle("wf:run", {}, { workflowId: wf.id });
+      await deps.handle("wf:rename", {}, { workflowId: wf.id, name: "同毫秒乙" });
+      await deps.handle("wf:run", {}, { workflowId: wf.id });
     } finally {
-      fixedNow.mockRestore();
+      vi.useRealTimers();
     }
     const files = readdirSync(join(dir, ".apicc", "runs"))
       .filter((f) => f.startsWith(`workflow-${wf.id}-`) && f.endsWith(".json"));
     expect(files).toHaveLength(2);
     const runIds = files.map((f) => f.slice(`workflow-${wf.id}-`.length, -".json".length));
     expect(new Set(runIds).size).toBe(2);
-    const reports = files.map((f) => JSON.parse(readFileSync(join(dir, ".apicc", "runs", f), "utf8")) as { workflowId: string; nodeResults: Array<{ nodeId: string }> });
+    const reports = files.map((f) => JSON.parse(readFileSync(join(dir, ".apicc", "runs", f), "utf8")) as { workflowId: string; workflowName: string; startedAt: string; nodeResults: Array<{ nodeId: string }> });
     expect(reports).toHaveLength(2);
     expect(reports.every((report) => report.workflowId === wf.id)).toBe(true);
     expect(reports.every((report) => report.nodeResults.some((node) => node.nodeId === "noop"))).toBe(true);
+    expect(reports.map((report) => report.workflowName).sort()).toEqual(["同毫秒乙", "同毫秒甲"].sort());
+    expect(reports[0]!.startedAt).toBe(reports[1]!.startedAt);
   });
 
   it("wf:run 数据驱动 JSON 保留完整零基行且实际 handler verdict 失败", async () => {
