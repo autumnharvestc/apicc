@@ -1,36 +1,66 @@
 import type { RunResult, CaseOutcome } from "../report/types.js";
 import type { WorkflowRunResult, NodeResult } from "./runner.js";
 
-function toCaseOutcome(node: NodeResult): CaseOutcome {
-  if (node.outcome) return node.outcome;
-  const message = node.state === "skipped" ? "skipped（上游条件不满足或引用缺失）" : "noop（空过占位节点）";
+function nodeOutcome(node: NodeResult, outcome: CaseOutcome): CaseOutcome {
+  return outcome.nodeId ? outcome : { ...outcome, nodeId: node.nodeId };
+}
+
+function syntheticOutcome(node: NodeResult): CaseOutcome {
+  const skipped = node.state === "skipped";
+  const passed = node.state === "noop" || node.state === "passed";
+  const message = skipped
+    ? `skipped（${node.skipReason ?? "上游条件不满足或引用缺失"}）`
+    : passed ? "noop（空过占位节点）" : (node.error ?? "节点执行失败");
   return {
     apiId: node.nodeId, apiName: node.label ?? node.nodeId,
     caseId: node.nodeId, caseName: node.label ?? node.nodeId,
-    passed: node.state === "noop", durationMs: 0,
-    assertions: [{ pass: node.state === "noop", message }],
-    error: node.error ?? message,
+    nodeId: node.nodeId,
+    passed: skipped ? false : passed,
+    skipped: skipped || undefined,
+    skipReason: skipped ? node.skipReason ?? message : undefined,
+    durationMs: 0,
+    assertions: skipped ? [] : [{ pass: passed, message }],
+    error: skipped || !passed ? node.error ?? message : undefined,
+    failureKind: node.failureKind,
   };
+}
+
+function toCaseOutcomes(node: NodeResult): CaseOutcome[] {
+  const outcomes = node.outcomes?.length
+    ? node.outcomes.map((outcome) => nodeOutcome(node, outcome))
+    : node.outcome ? [nodeOutcome(node, node.outcome)] : [];
+  if (outcomes.length === 0) return [syntheticOutcome(node)];
+
+  // Conditions may fail after the HTTP row has already passed. Keep both facts:
+  // the data row and a node-level diagnostic that makes the workflow verdict visible.
+  if (node.state === "failed" && outcomes.every((outcome) => outcome.passed)) {
+    outcomes.push({
+      apiId: node.nodeId, apiName: node.label ?? node.nodeId,
+      caseId: node.nodeId, caseName: `${node.label ?? node.nodeId}（节点诊断）`,
+      nodeId: node.nodeId,
+      passed: false, durationMs: 0, assertions: [],
+      error: node.error ?? "节点执行失败", failureKind: node.failureKind,
+    });
+  }
+  return outcomes;
 }
 
 /**
  * WorkflowRunResult → RunResult（复用既有 Reporter 插件渲染）。
- * skipped→passed:false 的映射决策（控制者裁定，保持）：skipped 在报告中计为失败以可见
- * （避免静默吞掉未执行节点），noop 为通过；WorkflowRunResult 自身的 passed/failed/skipped
- * 三计数仍由执行器口径给出，此处的 passed/failed 是报告口径（skipped 归入 failed）。
- * 口径裁定（M2-B 最终审查 I6）：「skipped 计为 failed（报告可见）与退出码 0（spec §7）」
- * 的双口径为 M2-B 既定裁定；CI 消费前须重新裁定（M2-C 前置）。
+ * raw workflow 使用节点级计数；适配后的报告使用展开数据行/合成诊断级计数。
+ * skipped 保持可见，但不进入 failed。
  */
 export function workflowToRunResult(wfr: WorkflowRunResult): RunResult {
-  const cases = wfr.nodeResults.map(toCaseOutcome);
+  const cases = wfr.nodeResults.flatMap(toCaseOutcomes);
+  const skipped = cases.filter((c) => c.skipped).length;
+  const passed = cases.filter((c) => !c.skipped && c.passed).length;
+  const failed = cases.filter((c) => !c.skipped && !c.passed).length;
   return {
     collectionId: wfr.workflowId,
     collectionName: wfr.workflowName,
     envName: undefined,
     startedAt: wfr.startedAt, finishedAt: wfr.finishedAt,
-    total: cases.length,
-    passed: cases.filter((c) => c.passed).length,
-    failed: cases.filter((c) => !c.passed).length,
+    total: cases.length, passed, failed, skipped,
     cases,
     warnings: wfr.warnings,
   };

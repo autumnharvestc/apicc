@@ -13,12 +13,13 @@ function escapeXml(s: string): string {
 export const junitReporter: Reporter = {
   format: "junit",
   async render(result: RunResult, outDir: string) {
-    const cases = result.cases.map((c) => `  <testcase name="${escapeXml(`${c.apiName}.${c.caseName}${c.row !== undefined ? `#${c.row}` : ""}`)}" classname="${escapeXml(result.collectionName)}" time="${(c.durationMs / 1000).toFixed(3)}">
-    ${c.passed ? "" : `<failure message="${escapeXml([c.error, ...c.assertions.filter((a) => !a.pass).map((a) => a.message)].filter(Boolean).join("; ") || "断言失败")}"/>`}
+    const cases = result.cases.map((c) => `  <testcase name="${escapeXml(`${c.nodeId ? `${c.nodeId}:` : ""}${c.apiName}.${c.caseName}${c.row !== undefined ? `#${c.row}` : ""}`)}" classname="${escapeXml(result.collectionName)}" time="${(c.durationMs / 1000).toFixed(3)}">
+    ${c.skipped ? `<skipped message="${escapeXml(c.skipReason ?? c.error ?? "跳过")}"/>` : c.passed ? "" : `<failure message="${escapeXml([c.error, ...c.assertions.filter((a) => !a.pass).map((a) => a.message)].filter(Boolean).join("; ") || "断言失败")}"/>`}
   </testcase>`).join("\n");
+    const skipped = result.skipped ?? 0;
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<testsuites tests="${result.total}" failures="${result.failed}">
-  <testsuite name="${escapeXml(result.collectionName)}" tests="${result.total}" failures="${result.failed}">
+<testsuites tests="${result.total}" failures="${result.failed}" skipped="${skipped}">
+  <testsuite name="${escapeXml(result.collectionName)}" tests="${result.total}" failures="${result.failed}" skipped="${skipped}">
 ${cases}
   </testsuite>
 </testsuites>`;

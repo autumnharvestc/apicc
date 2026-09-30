@@ -58,6 +58,44 @@ const hostile: RunResult = {
   ],
 };
 
+const skipped: RunResult = {
+  ...sample,
+  total: 3, passed: 1, failed: 1, skipped: 1,
+  cases: [
+    ...sample.cases,
+    { apiId: "a1", apiName: `skip<&`, caseId: "t3", caseName: `pruned<&`, nodeId: "node-7", passed: false, skipped: true, skipReason: `条件<&\"`, durationMs: 0, assertions: [] },
+  ],
+};
+
+describe("skipped 三态报告", () => {
+  it("HTML 显示独立 skipped 样式、节点归属、原因和计数", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "apicc-html-skip-"));
+    const file = await htmlReporter.render(skipped, outDir);
+    const html = readFileSync(file, "utf8");
+    expect(html).toContain("跳过 1");
+    expect(html).toContain('class="skip"');
+    expect(html).toContain("node-7");
+    expect(html).toContain("条件&lt;&amp;\"");
+  });
+
+  it("JUnit 在 testsuites 和 testsuite 独立计 skipped，并写 skipped 节点", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "apicc-junit-skip-"));
+    const file = await junitReporter.render(skipped, outDir);
+    const xml = readFileSync(file, "utf8");
+    expect(xml).toContain('tests="3" failures="1" skipped="1"');
+    expect(xml).toContain('<skipped message="条件&lt;&amp;&quot;"/>');
+    expect(xml).toContain('name="node-7:skip&lt;&amp;.pruned&lt;&amp;"');
+    expect(xml).not.toContain("<failure message=\"条件");
+  });
+
+  it("旧版 collection 结果缺少 skipped 时按零处理", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "apicc-junit-old-"));
+    const file = await junitReporter.render({ ...sample, skipped: undefined }, outDir);
+    const xml = readFileSync(file, "utf8");
+    expect(xml).toContain('tests="2" failures="1" skipped="0"');
+  });
+});
+
 describe("转义加固与文件名唯一", () => {
   it("HTML 不含原始 <script> 与裸控制字符", async () => {
     const outDir = mkdtempSync(join(tmpdir(), "apicc-esc-h-"));
