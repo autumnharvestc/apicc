@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -116,10 +117,19 @@ describe("server fixture Maven 产物隔离", () => {
 
   it("只允许清理本 fixture 创建的严格 temp 子根，拒绝 temp 根和未拥有子目录", () => {
     const owned = createOwnedTempRoot("apicc-fixture-test-");
-    const unrelated = join(process.env.TEMP ?? "", "unrelated-apicc-fixture");
-    expect(() => cleanupOwnedRoot(process.env.TEMP)).toThrow();
-    expect(() => cleanupOwnedRoot(unrelated)).toThrow();
-    cleanupOwnedRoot(owned);
+    const actualTempRoot = tmpdir();
+    const unrelated = join(actualTempRoot, "unrelated-apicc-fixture");
+    const previousTemp = process.env.TEMP;
+    try {
+      delete process.env.TEMP;
+      expect(() => cleanupOwnedRoot(process.env.TEMP)).not.toThrow();
+      expect(() => cleanupOwnedRoot(actualTempRoot)).toThrow();
+      expect(() => cleanupOwnedRoot(unrelated)).toThrow();
+    } finally {
+      if (previousTemp === undefined) delete process.env.TEMP;
+      else process.env.TEMP = previousTemp;
+      cleanupOwnedRoot(owned);
+    }
     expect(existsSync(owned)).toBe(false);
   });
 
