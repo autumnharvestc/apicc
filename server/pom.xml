@@ -19,6 +19,7 @@
 
   <properties>
     <java.version>21</java.version>
+    <apicc.build.directory>${project.basedir}/target</apicc.build.directory>
   </properties>
 
   <dependencies>
@@ -54,6 +55,7 @@
   </dependencies>
 
   <build>
+    <directory>${apicc.build.directory}</directory>
     <plugins>
       <plugin>
         <groupId>org.springframework.boot</groupId>

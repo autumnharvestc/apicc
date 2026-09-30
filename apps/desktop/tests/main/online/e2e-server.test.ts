@@ -16,10 +16,10 @@
 // - 关闭：child.kill()（SIGTERM）→ 5s 未退 taskkill /T /F（Windows 进程树兜底）→ afterAll
 //   断言进程已退（无残留），临时目录尽力删除。
 // - java 解析（环境硬约束）：PATH 默认 java 是 1.8——候选顺序 APICC_E2E_JAVA → JAVA_HOME →
-//   C:\Program Files\Java\jdk-21* → PATH，逐个以 `-version` 实测 major ≥ 21 才采用。
+//   C:\Program Files\Java\jdk-21* → PATH，逐个以 `-version` 实测 major === 21 才采用。
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -30,6 +30,7 @@ import { scanDirFiles, writeFiles } from "../../../src/main/online/migrate.js";
 import { onlineTreeToDto } from "../../../src/main/online/session.js";
 import { planPull, planPush, restoreLocalPaths, toEntityPath } from "../../../src/shared/online/migrate.js";
 import { runCommand } from "./run-command.js";
+import { cleanupOwnedRoot, prepareServerArtifact } from "./server-fixture.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // online → main → tests → desktop → apps → 仓库根：五层向上
@@ -40,28 +41,12 @@ const SERVER_DIR = join(REPO_ROOT, "server");
 let serverProcess: ChildProcess | undefined;
 let serverPort = 0;
 let dataRoot = "";
+let artifactRoot = "";
 
 // ---- 进程/构建工具函数 ----
 
 function sha256Hex(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
-}
-
-/** 服务端 boot jar（spring-boot repackage 产物；`.jar.original` 被 $ 锚点排除）。 */
-function findJar(): string | undefined {
-  const target = join(SERVER_DIR, "target");
-  if (!existsSync(target)) return undefined;
-  const jars = readdirSync(target).filter((f) => /^apicc-server-.+\.jar$/.test(f));
-  return jars[0] === undefined ? undefined : join(target, jars[0]);
-}
-
-function newestMtime(dir: string): number {
-  let newest = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, entry.name);
-    newest = Math.max(newest, statSync(p).mtimeMs, entry.isDirectory() ? newestMtime(p) : 0);
-  }
-  return newest;
 }
 
 /** 逐候选实测 `-version` major ≥ 21（PATH 默认 java 是 1.8，版本不符即弃用下一个候选）。 */
@@ -92,7 +77,7 @@ function resolveJava(): { exe: string; home: string | undefined } {
   candidates.push(exeName); // PATH 兜底（本机为 1.8 会被版本实测淘汰）
   for (const exe of candidates) {
     const major = javaMajor(exe);
-    if (major !== null && major >= 21) {
+    if (major === 21) {
       return { exe, home: exe.includes(`${sep}bin${sep}`) ? resolve(dirname(dirname(exe))) : undefined };
     }
   }
@@ -110,31 +95,11 @@ function resolveMvn(): string {
   return "mvn";
 }
 
-/** jar 缺失或不新于 server/src、pom.xml 时自建（账本裁定①③）。 */
+/** 每个 E2E 实例均在自己的临时 Maven 输出根构建，绝不复用共享 server/target。 */
 function ensureJar(javaHome: string | undefined): string {
-  const existing = findJar();
-  if (existing) {
-    const srcNewest = existsSync(join(SERVER_DIR, "src")) ? newestMtime(join(SERVER_DIR, "src")) : 0;
-    const pomMtime = existsSync(join(SERVER_DIR, "pom.xml")) ? statSync(join(SERVER_DIR, "pom.xml")).mtimeMs : 0;
-    if (statSync(existing).mtimeMs >= Math.max(srcNewest, pomMtime)) return existing;
-  }
-  const env = { ...process.env, ...(javaHome ? { JAVA_HOME: javaHome } : {}) };
-  const r = runCommand(
-    resolveMvn(),
-    ["-s", join(SERVER_DIR, ".mvn", "settings.xml"), "-f", join(SERVER_DIR, "pom.xml"), "-q", "-DskipTests", "package"],
-    env,
-    600_000,
-    { cwd: REPO_ROOT },
-  );
-  if (r.status !== 0) {
-    throw new Error(
-      `服务端 jar 构建失败（exit ${r.status}）。请先手动执行：mvn -s server/.mvn/settings.xml -f server/pom.xml -DskipTests package` +
-        `（或设置 APICC_E2E_MVN 指向 mvn 可执行文件）。构建输出尾部：\n${r.output.slice(-2000)}`,
-    );
-  }
-  const jar = findJar();
-  if (!jar) throw new Error("构建成功但未在 server/target 下找到 apicc-server-*.jar（spring-boot repackage 产物）");
-  return jar;
+  const artifact = prepareServerArtifact({ serverDir: SERVER_DIR, repoRoot: REPO_ROOT, javaHome, mvn: resolveMvn(), run: runCommand });
+  artifactRoot = artifact.root;
+  return artifact.jar;
 }
 
 /** 随机空闲端口（listen(0) 由内核分配后释放——启动窗口极短，竞态可忽略）。 */
@@ -280,7 +245,8 @@ beforeAll(async () => {
 afterAll(async () => {
   const stopped = await stopServer();
   expect(stopped, "服务端进程应确认退出（无残留进程）").toBe(true);
-  if (dataRoot) rmSync(dataRoot, { recursive: true, force: true }); // 尽力删除（Windows 句柄释放竞态不致失败套件）
+  if (dataRoot) cleanupOwnedRoot(dataRoot);
+  if (artifactRoot) cleanupOwnedRoot(artifactRoot);
 });
 
 describe("在线模式真服务端端到端（onlineClient × spawn jar）", () => {

@@ -107,6 +107,13 @@ pnpm -r build  # 全量构建
 
 推送与 PR 会自动触发四 job 门禁：三包构建与测试（core 另行类型检查，覆盖测试文件）、服务端测试（JDK 21）、品牌中立扫描、（main 分支推送时）Windows 打包冒烟，见 `.github/workflows/ci.yml`。
 
+Windows 本地全量门禁使用 PowerShell 5 兼容入口（要求 Node 22.19+、JDK 21；服务端 Maven 测试产物写入一次性临时目录）：
+
+```powershell
+$env:JAVA_HOME = 'C:\Program Files\Java\jdk-21.0.12'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-all.ps1
+```
+
 ## 许可证
 
 [MIT](LICENSE)
