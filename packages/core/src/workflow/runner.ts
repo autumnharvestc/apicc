@@ -128,15 +128,15 @@ export class WorkflowRunner {
     };
 
     const nodeResults = new Map<string, NodeResult>();
-    // Relaxed execution still records every known-invalid request before graph
-    // pruning/fail-fast can hide it. The result is materialized only when the
-    // scheduler reaches the node (so a reached failure still participates in
-    // fail-fast/propagation); hidden invalid nodes are materialized at the end.
+    // Report facts are not scheduler completion: a known config failure is
+    // recorded immediately, but participates in readiness only once settled.
+    const settled = new Set<string>();
     if (!strict) {
       for (const { node, reference } of missingReferences) {
         const message = missingReferenceMessage(node);
         warnings.push(message);
         reference.missingMessage = message;
+        nodeResults.set(node.id, missingNodeResult(node, message));
       }
     }
     const incoming = new Map<string, WorkflowEdge[]>();
@@ -155,7 +155,7 @@ export class WorkflowRunner {
       if (ins.length === 0) return true;
       return ins.some((e) => {
         if (pruned.has(e.id)) return false;
-        const s = nodeResults.get(e.from);
+        const s = settled.has(e.from) ? nodeResults.get(e.from) : undefined;
         return s !== undefined && (s.state === "passed" || s.state === "noop");
       });
     };
@@ -165,9 +165,32 @@ export class WorkflowRunner {
       if (ins.length === 0) return false;
       return ins.every((e) => {
         if (pruned.has(e.id)) return true;
-        const s = nodeResults.get(e.from);
+        const s = settled.has(e.from) ? nodeResults.get(e.from) : undefined;
         return s !== undefined && s.state !== "passed" && s.state !== "noop";
       }) && !ready(nodeId);
+    };
+
+    // A blocked node is terminal for scheduling without being executed. Keep
+    // any independently recorded config outcome instead of replacing it with a skip.
+    const settleSkipped = (node: WorkflowNode, skipReason: NodeSkipReason): void => {
+      if (!nodeResults.has(node.id)) {
+        nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: node.kind, state: "skipped", skipReason });
+      }
+      settled.add(node.id);
+    };
+    // Reach a fixed point regardless of node declaration order, including
+    // hidden config failures and their descendants. This never invokes fail-fast.
+    const propagateBlocked = (): void => {
+      let propagated = true;
+      while (propagated) {
+        propagated = false;
+        for (const node of workflow.nodes) {
+          if (!settled.has(node.id) && blocked(node.id)) {
+            settleSkipped(node, skipReasonForBlocked(node.id, incoming, nodeResults, pruned));
+            propagated = true;
+          }
+        }
+      }
     };
 
     // 从入度 0 节点拓扑遍历（环已被拒绝，入度 0 节点必存在且覆盖全图）。
@@ -178,19 +201,17 @@ export class WorkflowRunner {
 
     while (queue.length > 0) {
       const node = queue.shift()!;
-      if (nodeResults.has(node.id)) continue;
+      if (settled.has(node.id)) continue;
 
       // 出队终审（fan-in 修复）：入队时上游可能未决（当时 blocked=false 即放行入队），
       // 执行前必须按「任一上游 passed/noop 即就绪」复核：
       // - 上游全部定局（终态或被条件剪枝）且无一通过 → 级联 skipped（fan-in 双败在此兜底，下游不再对故障环境发出请求）；
       // - 尚有未决上游 → 延后：放回队尾，待其终态后随下一轮出队再裁决。
       if (!ready(node.id)) {
-        const allResolved = (incoming.get(node.id) ?? []).every((e) => pruned.has(e.id) || nodeResults.has(e.from));
+        const allResolved = (incoming.get(node.id) ?? []).every((e) => pruned.has(e.id) || settled.has(e.from));
         if (allResolved) {
-          nodeResults.set(node.id, {
-            nodeId: node.id, label: node.label, kind: node.kind, state: "skipped",
-            skipReason: skipReasonForBlocked(node.id, incoming, nodeResults, pruned),
-          });
+          settleSkipped(node, skipReasonForBlocked(node.id, incoming, nodeResults, pruned));
+          propagateBlocked();
           continue;
         }
         queue.push(node);
@@ -290,41 +311,28 @@ export class WorkflowRunner {
           warnings.push(`边 ${edge.id} 指向不存在的节点 ${edge.to}，已忽略`);
           continue;
         }
-        if (!queue.some((n) => n.id === target.id) && !nodeResults.has(target.id) && !blocked(target.id)) {
+        if (!queue.some((n) => n.id === target.id) && !settled.has(target.id) && !blocked(target.id)) {
           queue.push(target);
         }
       }
-      // 级联：反复扫描直到稳定，不能依赖 workflow.nodes 声明顺序。
-      // 例如 root→mid(false)→tail 在 tail、mid、root 的逆序声明下，tail 必须等待
-      // mid 先被裁决为 condition-pruned，而不是被最终兜底误报 unreachable。
-      let propagated = true;
-      while (propagated) {
-        propagated = false;
-        for (const n of workflow.nodes) {
-          if (!nodeResults.has(n.id) && blocked(n.id)) {
-            // A known-invalid node hidden behind a false/failed path remains a
-            // report-visible config failure, but must not become a scheduler
-            // participant and globally halt relaxed diagnosis.
-            if (!strict && missingReferenceByNodeId.has(n.id)) continue;
-            nodeResults.set(n.id, {
-              nodeId: n.id, label: n.label, kind: n.kind, state: "skipped",
-              skipReason: skipReasonForBlocked(n.id, incoming, nodeResults, pruned),
-            });
-            propagated = true;
-          }
-        }
-      }
+      // Edge evaluation can change a previously passed source into a failure;
+      // only now is its state terminal for readiness and failure propagation.
+      settled.add(node.id);
+      propagateBlocked();
       if (this.opts.failFast && nodeResults.get(node.id)?.state === "failed") break;
     }
 
-    // 未触达节点（条件不流转/级联/failFast 中断遗留）→ skipped。
+    // Settle remaining known diagnostics before fallback so even a fail-fast
+    // interruption leaves explained downstream provenance, without dispatching HTTP.
     for (const n of workflow.nodes) {
-      if (!nodeResults.has(n.id)) {
-        const knownMissing = !strict ? missingReferenceByNodeId.get(n.id) : undefined;
-        nodeResults.set(n.id, knownMissing
-          ? missingNodeResult(n, missingReferenceMessage(n))
-          : { nodeId: n.id, label: n.label, kind: n.kind, state: "skipped", skipReason: this.opts.failFast ? "fail-fast" : "unreachable" });
+      if (!settled.has(n.id) && missingReferenceByNodeId.has(n.id)) {
+        settleSkipped(n, this.opts.failFast ? "fail-fast" : "unreachable");
       }
+    }
+    propagateBlocked();
+    // 未触达节点（failFast 中断遗留）→ skipped。
+    for (const n of workflow.nodes) {
+      if (!settled.has(n.id)) settleSkipped(n, this.opts.failFast ? "fail-fast" : "unreachable");
     }
 
     // 先按执行顺序，再按工作流声明顺序补齐 skipped 节点（级联/未触达者不在 order 中）。
