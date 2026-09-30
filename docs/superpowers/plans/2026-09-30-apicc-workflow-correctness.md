@@ -129,7 +129,7 @@
 
 **交付：** raw workflow 保存节点级计数，适配报告是数据行/合成诊断级计数；两者结论一致，跳过既可见也不算失败。
 
-- [ ] **步骤 1：写失败测试。** 单节点三行 pass/fail/pass 全部展开；noop 一条通过，预期跳过一条 skipped；条件源请求通过但路由失败须额外输出失败诊断，不能因 outcome.passed 忽略失败状态。相同 API 被不同节点引用时保留 nodeId，数据行名称/row 不丢失。旧结果只有 outcome 仍可读。
+- [x] **步骤 1：写失败测试。** 单节点三行 pass/fail/pass 全部展开；noop 一条通过，预期跳过一条 skipped；条件源请求通过但路由失败须额外输出失败诊断，不能因 outcome.passed 忽略失败状态。相同 API 被不同节点引用时保留 nodeId，数据行名称/row 不丢失。旧结果只有 outcome 仍可读。
 
   ```ts
   expect(report.total).toBe(report.passed + report.failed + (report.skipped ?? 0));
@@ -140,8 +140,8 @@
 
   HTML 给 skipped 独立样式、原因及计数；恶意名称/skipReason 文本转义不破坏 HTML/XML。普通 collection 旧报告不含 skipped 时按零处理。
 
-- [ ] **步骤 2：验证 RED。** `pnpm -C packages/core exec vitest run tests/workflow/adapter.test.ts tests/report`。
-- [ ] **步骤 3：实现。** CaseOutcome 新增可选 `skipped?: boolean`、`skipReason?: string`、`nodeId?: string`；RunResult 新增可选 `skipped?: number`。adapter 先展开 node.outcomes，回退 outcome；有真实行且 node.state=failed、行没有任何失败时追加一条节点级失败诊断。无行时生成 noop/failed/skipped 合成记录；skip 记录 passed=false、skipped=true，不生成失败断言。计数公式如下：
+- [x] **步骤 2：验证 RED。** `pnpm -C packages/core exec vitest run tests/workflow/adapter.test.ts tests/report`。
+- [x] **步骤 3：实现。** CaseOutcome 新增可选 `skipped?: boolean`、`skipReason?: string`、`nodeId?: string`；RunResult 新增可选 `skipped?: number`。adapter 先展开 node.outcomes，回退 outcome；有真实行且 node.state=failed、行没有任何失败时追加一条节点级失败诊断。无行时生成 noop/failed/skipped 合成记录；skip 记录 passed=false、skipped=true，不生成失败断言。计数公式如下：
 
   ```ts
   const skipped = cases.filter(c => c.skipped).length;
@@ -151,8 +151,8 @@
 
   JUnit `<testsuite tests="…" failures="…" skipped="…">` 与 testcase `<skipped message="…"/>`；外层 testsuites 计数同源。JUnit 名称在有 nodeId 时加入节点识别前缀，避免不同节点引用同一 API/用例/数据行时名称碰撞；无 nodeId 的普通集合报告保留既有名称。HTML 三态显示，并使节点归属可识别。删除 adapter 原“skipped 计 failed、退出码仍零”的旧裁定注释，说明新规格取代它。无真实失败的条件剪枝报告必须 failed=0。
 
-- [ ] **步骤 4：验证 GREEN。** 聚焦报告测试；提交前 core 全测与 build。
-- [ ] **步骤 5：提交。** `git commit -m "fix(report): preserve workflow rows and skipped verdicts"`，报告说明节点计数与数据行计数区别。
+- [x] **步骤 4：验证 GREEN。** 聚焦报告测试；提交前 core 全测与 build。
+- [x] **步骤 5：提交。** `git commit -m "fix(report): preserve workflow rows and skipped verdicts"`，报告说明节点计数与数据行计数区别。
 
 ### 任务 4：CLI 与桌面工作流消费一致的执行结论
 
