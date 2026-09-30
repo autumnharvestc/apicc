@@ -592,6 +592,7 @@ describe("CLI 端到端", () => {
     expect(second.code).toBe(0);
     const files = readdirSync(runsDir).filter((file) => file.startsWith("workflow-") && file.endsWith(".json"));
     expect(files).toHaveLength(2);
+    expect(files.every((file) => new RegExp(`^workflow-${wfId}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.json$`).test(file))).toBe(true);
     expect(new Set(files.map((file) => file.slice("workflow-".length, -".json".length))).size).toBe(2);
     const reports = files.map((file) => JSON.parse(readFileSync(join(runsDir, file), "utf8")) as { workflowId: string; workflowName: string; startedAt: string });
     expect(reports).toEqual(expect.arrayContaining([
