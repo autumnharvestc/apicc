@@ -176,14 +176,17 @@ describe("WorkflowRunner", () => {
     expect(r.total).toBe(3);
   });
 
-  it("条件表达式求值异常按 false 并告警", async () => {
+  it("条件表达式求值异常标记源节点失败并告警", async () => {
     const nodes = [
       { id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "one" },
       { id: "n2", kind: "request" as const, apiId: "a2", caseId: "case-a2", label: "two" },
     ];
     const r = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
       .run(wf(nodes, [{ id: "e", from: "n1", to: "n2", condition: "prev.missing.deep" }]), { project, workspace: ws });
+    expect(r.nodeResults[0]!.state).toBe("failed");
+    expect(r.nodeResults[0]!.failureKind).toBe("script");
     expect(r.nodeResults[1]!.state).toBe("skipped");
+    expect(r.nodeResults[1]!.skipReason).toBe("upstream-failed");
     expect(r.warnings.some((w) => /条件求值失败/.test(w))).toBe(true);
   });
 
@@ -360,6 +363,7 @@ describe("WorkflowRunner", () => {
     const c = r.nodeResults.filter((n) => n.nodeId === "c");
     expect(c).toHaveLength(1);
     expect(c[0]!.state).toBe("skipped");
+    expect(c[0]!.skipReason).toBe("upstream-failed");
     expect(r.skipped).toBe(1);
   });
 
@@ -659,6 +663,48 @@ describe("WorkflowRunner", () => {
     }
   });
 
+  it("模块与祖先容器前后置脚本异常均保留真实执行诊断", async () => {
+    const target: ApiDefinition = {
+      ...apiOf("ancestor-target", `${baseUrl}/ancestor`),
+      cases: [{ id: "case-ancestor-target", name: "ancestor-target", scope: "base", parameters: {}, assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }] }],
+    };
+    const variants = [
+      { name: "module-pre", pre: "module" as const, post: undefined },
+      { name: "outer-pre", pre: "outer" as const, post: undefined },
+      { name: "inner-pre", pre: "inner" as const, post: undefined },
+      { name: "module-post", pre: undefined, post: "module" as const },
+      { name: "outer-post", pre: undefined, post: "outer" as const },
+      { name: "inner-post", pre: undefined, post: "inner" as const },
+    ];
+    for (const variant of variants) {
+      seenPaths.length = 0;
+      const throwing = (where: string) => [{ id: `${variant.name}-${where}`, type: "script" as const, content: `throw new Error("${variant.name}")` }];
+      const inner = { id: "inner", name: "inner", apis: [target], folders: [], preOperations: variant.pre === "inner" ? throwing("pre") : [], postOperations: variant.post === "inner" ? throwing("post") : [] };
+      const outer = { id: "outer", name: "outer", apis: [], folders: [inner], preOperations: variant.pre === "outer" ? throwing("pre") : [], postOperations: variant.post === "outer" ? throwing("post") : [] };
+      const container: Project = {
+        ...project,
+        collections: [{
+          id: "ancestor-module", name: "ancestor-module", variables: {}, apis: [], folders: [outer],
+          preOperations: variant.pre === "module" ? throwing("pre") : [], postOperations: variant.post === "module" ? throwing("post") : [],
+        }],
+      };
+      const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: () => undefined, envName: "dev", failFast: false })
+        .run(wf([{ id: "ancestor", kind: "request", apiId: "ancestor-target", caseId: "case-ancestor-target" }], []), { project: container, workspace: ws });
+      const node = result.nodeResults[0]!;
+      expect(node.state, variant.name).toBe("failed");
+      expect(node.failureKind, variant.name).toBe("script");
+      expect(node.error, variant.name).toContain(variant.name);
+      if (variant.pre) {
+        expect(seenPaths, variant.name).toEqual([]);
+        expect(node.outcomes?.map((outcome) => outcome.passed), variant.name).toEqual([false]);
+      } else {
+        expect(seenPaths, variant.name).toEqual(["/ancestor"]);
+        expect(node.outcomes?.map((outcome) => outcome.passed), variant.name).toEqual([true, false]);
+        expect(node.outcomes?.[1]?.failureKind, variant.name).toBe("script");
+      }
+    }
+  });
+
   it("条件上下文 env 继承链：sit extends dev 时父环境变量在条件中可见", async () => {
     const chainProject: Project = {
       ...project,
@@ -697,16 +743,17 @@ describe("WorkflowRunner", () => {
       seenPaths.length = 0;
       const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: (id) => id === "scoped" ? scopedApi : undefined, envName, failFast: false })
         .run(wf([{ id: "scoped-node", kind: "request", apiId: "scoped", caseId: "same-case" }], []), { project: scopedProject, workspace: ws });
-      return { result, path: seenPaths[0] };
+      return { result, paths: [...seenPaths] };
     };
-    expect((await run("sit")).path).toBe("/sit");
-    expect((await run("dev")).path).toBe("/dev");
-    expect((await run(undefined)).path).toBe("/base");
+    for (const [envName, expectedPath] of [["sit", "/sit"], ["dev", "/dev"], [undefined, "/base"]] as const) {
+      const { result, paths } = await run(envName);
+      expect(paths, envName ?? "base").toEqual([expectedPath]);
+      expect(result.nodeResults.find((node) => node.nodeId === "scoped-node")?.state, envName ?? "base").toBe("passed");
+    }
   });
 
   it("悬空 from 边：执行前拒绝", async () => {
-    // 边的 from 端点不存在：该边永不求值，n1 因入度虚增不被入队 → 只能 skipped；
-    // 运行结果 warnings 必须携带结构校验的端点错误，诊断可见。
+    // 悬空端点属于结构错误，执行前拒绝，不能静默跳过或发出请求。
     const nodes = [{ id: "n1", kind: "request" as const, apiId: "a1", caseId: "case-a1", label: "one" }];
     await expect(new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", failFast: false })
       .run(wf(nodes, [{ id: "e2", from: "ghost", to: "n1" }]), { project, workspace: ws })).rejects.toThrow(/端点不存在/);

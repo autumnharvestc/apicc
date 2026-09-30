@@ -170,12 +170,14 @@ describe("validateEnablement", () => {
     expect(result.errors.some((error) => /引用的接口\/用例不存在/.test(error))).toBe(false);
   });
 
-  it("未传 project 时优先使用工作流所属项目", () => {
+  it("未传 project 时优先使用工作流所属项目，不跨项目命中同 ID 引用", () => {
     const workflow = wfFactory([req("n1")], []);
     const api = { id: "a-n1", name: "owner", version: "1", deprecated: false, method: "GET" as const, url: "/", headers: [], query: [], cases: [{ id: "c-n1", name: "c-n1", scope: "base", parameters: {}, assertions: [] }] };
-    const owner = { id: "owner", name: "owner", variables: {}, environments: [], collections: [{ id: "c", name: "c", variables: {}, apis: [api], folders: [] }], workflows: [workflow] } as any;
-    const other = { id: "other", name: "other", variables: {}, environments: [], collections: [], workflows: [] } as any;
+    const owner = { id: "owner", name: "owner", variables: {}, environments: [], collections: [], workflows: [workflow] } as any;
+    const other = { id: "other", name: "other", variables: {}, environments: [], collections: [{ id: "c", name: "c", variables: {}, apis: [api], folders: [] }], workflows: [] } as any;
     const workspace = { id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [other, owner] }] } as unknown as Workspace;
-    expect(validateEnablement(workflow, workspace).ok).toBe(true);
+    const result = validateEnablement(workflow, workspace);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((error) => /引用的接口\/用例不存在/.test(error))).toBe(true);
   });
 });
