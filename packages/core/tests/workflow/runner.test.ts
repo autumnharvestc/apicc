@@ -401,7 +401,9 @@ describe("WorkflowRunner", () => {
     expect(r.nodeResults.find((n) => n.nodeId === "x")!.state).toBe("passed");
     expect(r.nodeResults.find((n) => n.nodeId === "a")!.state).toBe("failed");
     expect(r.nodeResults.find((n) => n.nodeId === "b")!.state).toBe("skipped");
+    expect(r.nodeResults.find((n) => n.nodeId === "b")!.skipReason).toBe("condition-pruned");
     expect(r.nodeResults.find((n) => n.nodeId === "c")!.state).toBe("skipped");
+    expect(r.nodeResults.find((n) => n.nodeId === "c")!.skipReason).toBe("upstream-failed");
     expect(r.skipped).toBe(2);
   });
 
