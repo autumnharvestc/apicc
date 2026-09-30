@@ -18,19 +18,24 @@ $javaInfo = New-Object System.Diagnostics.ProcessStartInfo
 $javaInfo.FileName = $javaExe
 $javaInfo.Arguments = '-version'
 $javaInfo.UseShellExecute = $false
+$javaInfo.CreateNoWindow = $true
 $javaInfo.RedirectStandardOutput = $true
 $javaInfo.RedirectStandardError = $true
 $javaProc = New-Object System.Diagnostics.Process
 $javaProc.StartInfo = $javaInfo
-[void]$javaProc.Start()
-$javaStdout = $javaProc.StandardOutput.ReadToEnd()
-$javaStderr = $javaProc.StandardError.ReadToEnd()
-$javaProc.WaitForExit()
-if ($javaProc.ExitCode -ne 0) { throw "java -version 失败（exit $($javaProc.ExitCode)）：$javaStderr$javaStdout" }
-$javaText = "$javaStdout`n$javaStderr"
-$javaMatch = [regex]::Match($javaText, 'version\s+"(\d+)')
-if (-not $javaMatch.Success -or [int]$javaMatch.Groups[1].Value -ne 21) { throw "必须使用 Java 21，实际输出：$javaText" }
-Write-Host '[GATE] Java 21 OK'
+try {
+  [void]$javaProc.Start()
+  $javaStdout = $javaProc.StandardOutput.ReadToEnd()
+  $javaStderr = $javaProc.StandardError.ReadToEnd()
+  $javaProc.WaitForExit()
+  if ($javaProc.ExitCode -ne 0) { throw "java -version 失败（exit $($javaProc.ExitCode)）：$javaStderr$javaStdout" }
+  $javaText = "$javaStdout`n$javaStderr"
+  $javaMatch = [regex]::Match($javaText, 'version\s+"(\d+)')
+  if (-not $javaMatch.Success -or [int]$javaMatch.Groups[1].Value -ne 21) { throw "必须使用 Java 21，实际输出：$javaText" }
+  Write-Host '[GATE] Java 21 OK'
+} finally {
+  if ($javaProc) { $javaProc.Dispose() }
+}
 
 $nodeVersion = (& node --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw "node --version 失败（exit $LASTEXITCODE）" }
@@ -39,6 +44,7 @@ if (-not $nodeMatch.Success -or (([int]$nodeMatch.Groups[1].Value * 1000000) + (
 Write-Host "[GATE] $nodeVersion OK"
 
 Invoke-Checked 'node' @('scripts/check-brand-neutral.mjs', '--self-check')
+Invoke-Checked 'node' @('scripts/check-brand-neutral.mjs')
 Invoke-Checked 'pnpm' @('-C', 'packages/core', 'typecheck')
 Invoke-Checked 'pnpm' @('-r', 'build')
 Invoke-Checked 'pnpm' @('-r', 'test')

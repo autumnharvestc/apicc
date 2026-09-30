@@ -1,14 +1,14 @@
 // M3-C 任务 1：在线模式真服务端端到端集成（联调轨核心交付，计划任务 1 步骤 1-2 / 账本裁定①②③）。
 //
 // 与既有 online 测试（假 fetch / 内存替身）的本质区别：本文件 spawn 真实服务端 jar
-// （server/target/apicc-server-*.jar），用生产路径的 createOnlineClient（globalThis.fetch）
+// （专属临时输出根中的 apicc-server-*.jar），用生产路径的 createOnlineClient（globalThis.fetch）
 // 跑通「注册两用户 → 建区 → B 加入 EDITOR → A 推送两项目 → B tree 可见 → P2 对 B 设 NONE →
 // B 推送成功与 409（含 currentHash:null 的新文件并发删除冲突路径）→ 拉取全量一致」8 步场景链。
 // 客户端出口逐响应过 shared/online/contract.ts 的 zod schema（safeParse 不符即 protocol_error），
 // 故全链通过即证明 M3-A 服务端实序与 M3-B 契约替身形状无漂移（防 A/B 契约漂移 = 本任务核心价值）。
 //
 // 服务端生命周期（账本裁定①③，实现选型留痕）：
-// - jar 就绪：target 下已有且不旧于 server/src 与 pom.xml 时直接复用；否则测试内自建
+// - jar 就绪：测试内每次构建到自己的临时输出根
 //   （mvn -s server/.mvn/settings.xml -f server/pom.xml -q -DskipTests package）；
 //   mvn 候选顺序：APICC_E2E_MVN 环境变量 → 仓库 wrapper（server/mvnw[.cmd]，版本钉 3.9.9）→ PATH。
 // - 启动：JDK 21 的 java -jar 随机空闲端口 + --apicc.server.data-dir 指向临时目录
@@ -19,7 +19,7 @@
 //   C:\Program Files\Java\jdk-21* → PATH，逐个以 `-version` 实测 major === 21 才采用。
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -30,7 +30,7 @@ import { scanDirFiles, writeFiles } from "../../../src/main/online/migrate.js";
 import { onlineTreeToDto } from "../../../src/main/online/session.js";
 import { planPull, planPush, restoreLocalPaths, toEntityPath } from "../../../src/shared/online/migrate.js";
 import { runCommand } from "./run-command.js";
-import { cleanupOwnedRoot, prepareServerArtifact } from "./server-fixture.js";
+import { cleanupOwnedRoot, createOwnedTempRoot, prepareServerArtifact, probeJavaMajor } from "./server-fixture.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // online → main → tests → desktop → apps → 仓库根：五层向上
@@ -49,16 +49,9 @@ function sha256Hex(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-/** 逐候选实测 `-version` major ≥ 21（PATH 默认 java 是 1.8，版本不符即弃用下一个候选）。 */
+/** 逐候选实测 `-version` 且要求精确 major === 21（版本不符即弃用下一个候选）。 */
 function javaMajor(exe: string): number | null {
-  try {
-    const r = spawnSync(exe, ["-version"], { encoding: "utf8", windowsHide: true, timeout: 15_000 });
-    const out = `${r.stderr ?? ""}${r.stdout ?? ""}`;
-    const m = /version "(\d+)/.exec(out);
-    return m ? Number(m[1]) : null;
-  } catch {
-    return null; // 候选不存在（ENOENT 等）→ 下一个
-  }
+  return probeJavaMajor(exe);
 }
 
 function resolveJava(): { exe: string; home: string | undefined } {
@@ -117,7 +110,7 @@ function freePort(): Promise<number> {
 
 async function startServer(jar: string, javaExe: string): Promise<void> {
   serverPort = await freePort();
-  dataRoot = mkdtempSync(join(tmpdir(), "apicc-e2e-server-"));
+  dataRoot = createOwnedTempRoot("apicc-e2e-server-");
   const tail: string[] = [];
   // 8 步场景链以注册起头；部署线 D5 起注册默认关，此处显式开启
   serverProcess = spawn(javaExe, ["-jar", jar, `--server.port=${serverPort}`, `--apicc.server.data-dir=${join(dataRoot, "server-data")}`, "--apicc.server.allow-registration=true"], {
@@ -245,8 +238,17 @@ beforeAll(async () => {
 afterAll(async () => {
   const stopped = await stopServer();
   expect(stopped, "服务端进程应确认退出（无残留进程）").toBe(true);
-  if (dataRoot) cleanupOwnedRoot(dataRoot);
-  if (artifactRoot) cleanupOwnedRoot(artifactRoot);
+  if (!stopped) return;
+  const cleanupErrors: unknown[] = [];
+  for (const root of [dataRoot, artifactRoot]) {
+    if (!root) continue;
+    try {
+      cleanupOwnedRoot(root);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length > 0) throw cleanupErrors[0];
 });
 
 describe("在线模式真服务端端到端（onlineClient × spawn jar）", () => {
