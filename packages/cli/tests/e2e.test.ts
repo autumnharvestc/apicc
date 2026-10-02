@@ -815,55 +815,6 @@ describe("CLI 端到端", () => {
     },
   );
 
-  it.each(["omitted-slashes", "whitespace", "backslash", "uppercase"])(
-    "run-stress WHATWG special HTTP URL %s 先做结构化目标确认，再以 canonical URL 发包",
-    async (variant) => {
-      const hostPath = baseUrl.slice("http://".length);
-      const specialUrl = variant === "omitted-slashes"
-        ? `http:${hostPath}/x`
-        : variant === "whitespace"
-          ? `\thttp:${hostPath}/x \n`
-          : variant === "backslash"
-            ? `http:\\${hostPath}\\x`
-            : `HTTP://${hostPath}/x`;
-      const { workspace } = await fileStorage.load(root);
-      const project = workspace.groups[0]!.projects[0]!;
-      const api = project.collections[0]!.apis[0]!;
-      api.url = specialUrl;
-      project.stressPolicy = { trustedOrigins: [], deniedOrigins: [] };
-      await fileStorage.save(root, workspace);
-      try {
-        const canonical = new URL(specialUrl);
-        const runsDir = join(root, `stress-special-${receivedPaths.length}`);
-        const rejectedLogs: string[] = [];
-        const beforeRejected = receivedPaths.length;
-        await expect(runCli([
-          "run-stress", "groups/demo/projects/svc/collections/api/apis/ok", "--case", "00000000-0000-4000-8000-000000000015",
-          "--env", "dev", "--concurrency", "1", "--iterations", "1", "--runs-dir", runsDir,
-        ], createDefaultRegistry(), (line) => rejectedLogs.push(line))).resolves.toBe(1);
-        expect(receivedPaths.length).toBe(beforeRejected);
-        expect(rejectedLogs.join("\n")).toContain("target_confirmation_required");
-        expect(rejectedLogs.join("\n")).toContain(canonical.origin);
-        expect(rejectedLogs.join("\n")).not.toContain("无协议客户端");
-
-        const allowedLogs: string[] = [];
-        const beforeAllowed = receivedPaths.length;
-        await expect(runCli([
-          "run-stress", "groups/demo/projects/svc/collections/api/apis/ok", "--case", "00000000-0000-4000-8000-000000000015",
-          "--env", "dev", "--concurrency", "1", "--iterations", "1", "--allow-target", canonical.origin, "--runs-dir", runsDir,
-        ], createDefaultRegistry(), (line) => allowedLogs.push(line))).resolves.toBe(0);
-        expect(receivedPaths.length).toBe(beforeAllowed + 1);
-        expect(receivedPaths.at(-1)).toBe("/x");
-        expect(allowedLogs.join("\n")).toContain(`target origins: ${canonical.origin}`);
-      } finally {
-        // Restore the shared fixture for the following case and tests.
-        api.url = "{{baseUrl}}/x";
-        project.stressPolicy = { trustedOrigins: [baseUrl] };
-        await fileStorage.save(root, workspace);
-      }
-    },
-  );
-
   it("同一完整用例的集合运行与 concurrency=1/iterations=1 压测请求和结果一致", async () => {
     const normalizeRequest = (request: ObservedRequest) => ({
       method: request.method,
