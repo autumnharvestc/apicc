@@ -3,12 +3,14 @@ import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Tree as ATree, Button as AButton } from "ant-design-vue";
 import { AppstoreOutlined, FolderOutlined, ProjectOutlined } from "@ant-design/icons-vue";
-import type { WorkflowImpactEntry } from "@apicc/core";
-import type { ApiccApi } from "../../../shared/types.js";
-import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
+import type { WorkflowImpactEntryDTO } from "../../../shared/types.js";
+import type { ApiccApi, ContainerTarget, NodeCreateInput, NodeCreatedDTO } from "../../../shared/types.js";
+import type { NodeLocator, ProjectLocator } from "../../../shared/locations.js";
+import type { LocalTreeNodeDTO, TreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
+import type { useModuleMemoryStore } from "../stores/moduleMemory.js";
 import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import ContainerManageDialog from "./ContainerManageDialog.vue";
@@ -41,30 +43,33 @@ const props = defineProps<{
   readonly?: boolean;
   /** 空态文案覆写（在线模式给「没有可见内容」文案）。 */
   emptyText?: string;
+  moduleMemory?: ReturnType<typeof useModuleMemoryStore>;
   /** 前端搜索过滤（M8）：按节点 label 不区分大小写过滤；命中节点保留其完整子树，
    * 容器自身未命中但有命中后代时保留为路径；过滤激活时可见容器全部自动展开。 */
   filter?: string;
   /** 活动项目（M9-C 层级调整）：本地模式传入即把树作用域化至该项目子树
    * （工作区顶层即项目；分组层在主页管理）。空/未选 = 空态提示选择项目。 */
-  activeProjectId?: string | null;
+  activeProjectLocator?: ProjectLocator | null;
 }>();
-const emit = defineEmits<{ select: [kind: TreeNodeDTO["kind"], id: string] }>();
+const emit = defineEmits<{ select: [node: TreeNodeDTO | NodeCreatedDTO] }>();
 const { t } = useI18n();
 
 // nodeRename/nodeDelete 频道接受的节点 kind（api 树节点；不含 root/workflow）。
-type NodeRenameKind = Parameters<ApiccApi["nodeRename"]>[0];
-
 // 折叠集合：默认读取上次会话（M11 侧栏状态重启保留），展开节点时递归展开其后代容器，
 // 一次点击即可从分组直达接口；变化即落 localStorage（应用本地，不进工作区文件）。
-const EXPANDED_KEY = "apicc.tree.expanded";
-const expanded = ref(new Set<string>(safeParseExpanded()));
+const expanded = ref(new Set<string>(props.moduleMemory?.apiTree.expanded ?? []));
+const isReadOnly = computed(() => !!props.readonly || (props.treeRoot === undefined && props.workspace.readOnly));
 const selectedKeys = ref<string[]>([]);
+watch(() => props.tree.selected?.key ?? null, (key) => { selectedKeys.value = key ? [key] : []; }, { immediate: true });
+watch(() => props.moduleMemory?.apiTree.expanded, (keys) => {
+  if (!props.treeRoot && props.activeProjectLocator) expanded.value = new Set(keys ?? []);
+}, { deep: true, immediate: true });
 
 function descendantContainerIds(node: TreeNodeDTO): string[] {
   const ids: string[] = [];
   for (const child of node.children ?? []) {
     // api 与 workflow 均为叶子（workflow 由 project.workflows 摘要合成，不入 children）
-    if (child.kind !== "api" && child.kind !== "workflow") ids.push(child.id);
+    if (child.kind !== "api" && child.kind !== "workflow") ids.push(child.key);
     ids.push(...descendantContainerIds(child));
   }
   return ids;
@@ -72,13 +77,17 @@ function descendantContainerIds(node: TreeNodeDTO): string[] {
 
 function toggle(node: TreeNodeDTO) {
   const next = new Set(expanded.value);
-  if (next.has(node.id)) {
-    next.delete(node.id);
+  if (next.has(node.key)) {
+    next.delete(node.key);
   } else {
-    next.add(node.id);
+    next.add(node.key);
     for (const id of descendantContainerIds(node)) next.add(id);
   }
   expanded.value = next;
+  if (props.treeRoot === undefined && props.activeProjectLocator && props.moduleMemory) {
+    props.moduleMemory.apiTree.expanded = [...next];
+    props.moduleMemory.touch();
+  }
 }
 
 // —— a-tree 数据面：受控 keys + 由 DTO 构造的 treeData（key=id，dto 字段携带原节点） ——
@@ -91,16 +100,11 @@ interface TreeDataNode {
 }
 const expandedKeys = computed(() => Array.from(expanded.value));
 // 数据源（任务 3）：显式传入 treeRoot（undefined = 本地模式回退本地工作区树；null = 无树）。
-// M9-C 作用域化：本地模式且 activeProjectId 命中时，根 = 该项目节点（顶层即项目；
+// M9-C 作用域化：本地模式且完整 activeProjectLocator 命中时，根 = 该项目节点（顶层即项目；
 // 分组层不进侧树，在主页管理）。在线模式不受影响。
 const activeProjectNode = computed<TreeNodeDTO | null>(() => {
-  if (props.treeRoot !== undefined || !props.activeProjectId || !props.workspace.tree) return null;
-  for (const g of props.workspace.tree.children ?? []) {
-    for (const p of g.children ?? []) {
-      if (p.id === props.activeProjectId) return p;
-    }
-  }
-  return null;
+  if (props.treeRoot !== undefined || !props.activeProjectLocator) return null;
+  return props.workspace.findProject(props.activeProjectLocator);
 });
 const scoped = computed(() => props.treeRoot === undefined && activeProjectNode.value !== null);
 const rootNode = computed<TreeNodeDTO | null>(() => {
@@ -112,7 +116,7 @@ const rootNode = computed<TreeNodeDTO | null>(() => {
 const isEmpty = computed(() => {
   if (props.treeRoot !== undefined) return !props.treeRoot;
   if (!props.workspace.opened || !props.workspace.tree) return true;
-  if (props.activeProjectId != null && !activeProjectNode.value) return true;
+  if (props.activeProjectLocator != null && !activeProjectNode.value) return true;
   return false;
 });
 const emptyText = computed(() => props.emptyText ?? t("tree.empty"));
@@ -122,20 +126,20 @@ const treeData = computed<TreeDataNode[]>(() => {
       // M2-B 收口：project 节点在 children 尾部追加工作流叶子（由 workflows 摘要合成，
       // 状态随 DTO 带给色点渲染；树 refresh 后重算，重命名/删除自动反映）。
       const children =
-        n.kind === "project"
+        n.source === "local" && n.kind === "project"
           ? [
               ...mapNodes(n.children),
               ...(n.workflows ?? []).map((w) => ({
-                key: w.id,
+                key: w.key,
                 title: w.name,
                 isLeaf: true,
-                dto: { kind: "workflow" as const, id: w.id, label: w.name, status: w.status },
+                dto: { source: "local" as const, kind: "workflow" as const, id: w.id, key: w.key, locator: { ...w.locator }, label: w.name, status: w.status },
                 children: [],
               })),
             ]
           : mapNodes(n.children);
       return {
-        key: n.id,
+        key: n.key,
         title: n.label,
         // file 叶（在线只读配置）与 api/workflow 同为叶子
         isLeaf: n.kind === "api" || n.kind === "workflow" || n.kind === "file",
@@ -160,14 +164,19 @@ const treeData = computed<TreeDataNode[]>(() => {
 // 展开集合持久化（M11）：序列化比对避免同值重写
 watch(
   () => JSON.stringify([...expanded.value].sort()),
-  (v) => localStorage.setItem("apicc.tree.expanded", v),
+  () => {
+    if (props.treeRoot === undefined && props.activeProjectLocator && props.moduleMemory) {
+      props.moduleMemory.apiTree.expanded = [...expanded.value];
+      props.moduleMemory.touch();
+    }
+  },
 );
 
 // 过滤激活时可见容器全部展开（否则命中叶子的祖先链处于折叠态，过滤结果不可见）
 const effectiveExpandedKeys = computed(() => {
   const keys = new Set(expanded.value);
   // 作用域化：项目根（顶层即项目）恒展开，集合层直接可见
-  if (scoped.value && rootNode.value) keys.add(rootNode.value.id);
+  if (scoped.value && rootNode.value) keys.add(rootNode.value.key);
   // 搜索过滤激活：可见容器全部自动展开（否则命中叶子的祖先链折叠，结果不可见）
   if (!props.filter?.trim()) return Array.from(keys);
   const collect = (nodes: TreeDataNode[]) => {
@@ -186,32 +195,29 @@ const filterNoMatch = computed(
   () => !!props.filter?.trim() && treeData.value.length === 0,
 );
 
-function safeParseExpanded(): string[] {
-  try {
-    const raw = localStorage.getItem("apicc.tree.expanded");
-    return raw ? (JSON.parse(raw) as string[]) : [];
-  } catch {
-    return [];
-  }
-}
-
 function selectNode(node: TreeNodeDTO) {
-  selectedKeys.value = [node.id];
-  // 只读模式（在线）：不写本地树选中态，仅向上发选中事件（App 路由到在线编辑链路）
-  if (!props.readonly) {
-    props.tree.select(node.kind, node.id);
-    // M11：记录最后选中（重启恢复选中接口进编辑器）
-    if (node.kind === "api") localStorage.setItem("apicc.lastApi", JSON.stringify({ id: node.id }));
+  selectedKeys.value = [node.key];
+  if (node.source === "local") {
+    props.tree.select(node);
+    if (node.kind === "api" && props.moduleMemory) {
+      props.moduleMemory.apiTree.lastApiLocator = { ...node.locator, folderIds: [...node.locator.folderIds] };
+      props.moduleMemory.touch();
+    }
   }
-  emit("select", node.kind, node.id);
+  emit("select", node);
 }
 
-// —— 容器管理对话框（M10）：模块（变量/操作）、文件夹（操作） ——
-const manageState = ref<{ open: boolean; kind: "collection" | "folder"; id: string; name: string }>({
-  open: false, kind: "collection", id: "", name: "",
-});
-function openManage(kind: "collection" | "folder", id: string, name: string) {
-  manageState.value = { open: true, kind, id, name };
+// —— 容器管理对话框（M10）：以完整 ContainerTarget 定位，不接受裸 kind/id ——
+const manageState = ref<{ open: boolean; target: ContainerTarget | null; name: string }>({ open: false, target: null, name: "" });
+function openManage(node: TreeNodeDTO) {
+  if (node.source !== "local" || (node.kind !== "collection" && node.kind !== "folder")) return;
+  manageState.value = {
+    open: true,
+    target: node.kind === "collection"
+      ? { kind: "collection", locator: { ...node.locator } }
+      : { kind: "folder", locator: { ...node.locator, folderIds: [...node.locator.folderIds] } },
+    name: node.label,
+  };
 }
 
 // —— 对话框（创建/重命名/删除共用一个 ConfirmDialog 实例） ——
@@ -221,7 +227,7 @@ interface DialogState {
   placeholder?: string;
   initialValue?: string;
   /** 任务 6：删除影响命中清单（可选——openDialog 兜底空数组，非删除对话框无此键）。 */
-  impact?: WorkflowImpactEntry[];
+  impact?: WorkflowImpactEntryDTO[];
   run: (value: string | null) => Promise<void> | void;
 }
 const dialog = ref<DialogState>({ open: false, title: "", impact: [], run: () => {} });
@@ -251,49 +257,67 @@ type CreateKind = "group" | "project" | "collection" | "folder" | "api";
 
 /** 根层新建分组：空工作区没有可悬停的节点，这是分组创建的唯一入口。 */
 function startCreateGroup() {
+  if (isReadOnly.value) return;
+  const root = props.workspace.root;
+  const rootNode = props.workspace.tree;
   openDialog({
     title: t("tree.newGroup"),
     placeholder: t("tree.namePlaceholder"),
     run: async (value) => {
       if (!value) return;
-      // nodeCreate 返回统一瘦 DTO（kind 必在，宽审查 I2），选中直接用返回值。
-      const node = await props.tree.createNode({ kind: "group", parentId: null, name: value });
-      emit("select", node.kind, node.id);
+      if (!root || !rootNode || root !== props.workspace.root || rootNode !== props.workspace.tree) return;
+      const node = await props.tree.createNode({ kind: "group", parent: { ...rootNode.locator }, name: value });
+      if (props.workspace.root === root) emit("select", node);
     },
   });
 }
 
 function startCreate(parent: TreeNodeDTO, kind: CreateKind) {
+  if (isReadOnly.value) return;
+  const root = props.workspace.root;
   const titleKey = { group: "tree.newGroup", project: "tree.newProject", collection: "tree.newCollection", folder: "tree.newFolder", api: "tree.newApi" }[kind];
   openDialog({
     title: t(titleKey),
     placeholder: t("tree.namePlaceholder"),
     run: async (value) => {
       if (!value) return;
-      // nodeCreate 返回统一瘦 DTO（kind 必在，宽审查 I2）：选中用返回值的 kind，
-      // App 据此对 "api" 加载编辑器。
-      const node = await props.tree.createNode({ kind, parentId: parent.id, name: value });
-      emit("select", node.kind, node.id);
+      if (root !== props.workspace.root || parent.source !== "local") return;
+      const input = createInput(parent, kind, value);
+      if (!input) throw new Error(`不支持在 ${parent.kind} 下创建 ${kind}`);
+      const node = await props.tree.createNode(input);
+      if (props.workspace.root === root) emit("select", node);
     },
   });
 }
 
+function createInput(parent: Extract<TreeNodeDTO, { source: "local" }>, kind: CreateKind, name: string): NodeCreateInput | null {
+  if (kind === "project" && parent.kind === "group") return { kind, parent: { ...parent.locator }, name };
+  if (kind === "collection" && parent.kind === "project") return { kind, parent: { ...parent.locator }, name };
+  if (kind === "folder" && parent.kind === "collection") return { kind, parent: { ...parent.locator }, name };
+  if (kind === "folder" && parent.kind === "folder") return { kind, parent: { ...parent.locator, folderIds: [...parent.locator.folderIds] }, name };
+  if (kind === "api" && parent.kind === "collection") return { kind, parent: { ...parent.locator }, api: { name, protocol: "http", method: "GET", baseUrl: "", path: "/" } };
+  if (kind === "api" && parent.kind === "folder") return { kind, parent: { ...parent.locator, folderIds: [...parent.locator.folderIds] }, api: { name, protocol: "http", method: "GET", baseUrl: "", path: "/" } };
+  return null;
+}
+
 function startRename(node: TreeNodeDTO) {
+  if (isReadOnly.value) return;
+  if (node.source !== "local" || node.kind === "root" || node.kind === "workflow") return;
+  const root = props.workspace.root;
   openDialog({
     title: t("tree.rename"),
     placeholder: t("tree.namePlaceholder"),
     initialValue: node.label,
     run: async (value) => {
       if (!value) return;
-      // renameNode 只接受 api 树 kind（不含 root/workflow）：本函数仅由 api 叶与容器
-      // 动作钮触达（workflow 叶走 startWorkflowRename，root 不渲染动作钮），断言恒成立。
-      await props.tree.renameNode(node.kind as NodeRenameKind, node.id, value);
+      if (root !== props.workspace.root) return;
+      await props.tree.renameNode(locatorForNode(node), value);
     },
   });
 }
 
 /**
- * 删除（任务 6 影响提醒）：接口类节点删除前置 api.wfImpact({ apiId }) 反查——
+ * 删除（任务 6 影响提醒）：接口类节点删除前置 api.wfImpact(完整 ApiLocator) 反查——
  * 命中时确认对话框内列出「工作流名（状态）— 节点 label」清单（impact-list），
  * 确认才删、取消不删；未命中维持原确认流程（无额外影响清单）。
  * M2-B 简化（控制者裁定）：树 DTO 无用例节点（用例删除在 CasePanel 编辑缓冲内、
@@ -301,22 +325,26 @@ function startRename(node: TreeNodeDTO) {
  * 延后，目前仅弹常规确认。反查失败经 reportError 上报并中止删除流程。
  */
 async function startDelete(node: TreeNodeDTO) {
-  let impact: WorkflowImpactEntry[] = [];
-  if (node.kind === "api") {
+  if (isReadOnly.value) return;
+  if (node.source !== "local" || node.kind === "root" || node.kind === "workflow") return;
+  const root = props.workspace.root;
+  const target = locatorForNode(node);
+  let impact: WorkflowImpactEntryDTO[] = [];
+  if (target.kind === "api") {
     try {
-      impact = await props.api.wfImpact({ apiId: node.id });
+      impact = await props.api.wfImpact({ ...target.locator });
     } catch (e) {
       props.reportError(e);
       return;
     }
+    if (props.workspace.root !== root) return;
   }
   openDialog({
     title: t("tree.deleteConfirm", { name: node.label }),
     impact,
     run: async () => {
-      // 已在对话框确认：放行回调恒真。kind 收窄依据同 startRename（workflow 叶走
-      // startWorkflowDelete，root 不渲染动作钮）。
-      await props.tree.deleteNode(node.kind as NodeRenameKind, node.id, async () => true);
+      if (props.workspace.root !== root) return;
+      await props.tree.deleteNode(target, async () => true);
     },
   });
 }
@@ -328,32 +356,53 @@ async function startDelete(node: TreeNodeDTO) {
 // unload 会话（审查 I2）。删除暂不清 workflowDesign 会话态（设计器打开中的工作流被
 // 侧树删除属边缘路径）——并入 M2-C 跟进：树摘要/wfList/设计器三方同步协议 + dirty 确认。
 function startWorkflowRename(node: TreeNodeDTO) {
+  if (isReadOnly.value) return;
+  if (node.source !== "local" || node.kind !== "workflow") return;
+  const root = props.workspace.root;
   openDialog({
     title: t("tree.rename"),
     placeholder: t("tree.namePlaceholder"),
     initialValue: node.label,
     run: async (value) => {
       if (!value) return;
-      await props.api.wfRename(node.id, value);
+      if (props.workspace.root !== root) return;
+      const locator = { ...node.locator };
+      await props.api.wfRename(locator, value);
+      if (props.workspace.root !== root) return;
       // 审查 I2：设计器正开着同一工作流时缓冲仍持旧名——此后保存按缓冲整体替换，
       // 改名被静默回滚且树摘要滞留假值。强制卸载会话，下次打开重新 load 拿新名
       // （避免「改了 id 同步、内容半同步」的中间态）。
-      if (props.workflowDesign.workflowId === node.id) props.workflowDesign.unload();
+      if (JSON.stringify(props.workflowDesign.locator) === JSON.stringify(locator)) props.workflowDesign.unload();
       await props.workspace.refresh();
     },
   });
 }
 
 function startWorkflowDelete(node: TreeNodeDTO) {
+  if (isReadOnly.value) return;
+  if (node.source !== "local" || node.kind !== "workflow") return;
+  const root = props.workspace.root;
   openDialog({
     title: t("wf.deleteConfirm", { name: node.label }),
     run: async () => {
+      if (props.workspace.root !== root) return;
       // 已在对话框确认：放行回调恒真。
-      await props.api.wfDelete(node.id);
-      if (props.tree.selected?.id === node.id) props.tree.selected = null;
+      await props.api.wfDelete({ ...node.locator });
+      if (props.workspace.root !== root) return;
+      if (props.tree.selected?.key === node.key) props.tree.selected = null;
       await props.workspace.refresh();
     },
   });
+}
+
+function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "project" | "collection" | "folder" | "api" }>): NodeLocator {
+  switch (node.kind) {
+    case "group": return { kind: "group", locator: { ...node.locator } };
+    case "project": return { kind: "project", locator: { ...node.locator } };
+    case "collection": return { kind: "collection", locator: { ...node.locator } };
+    case "folder": return { kind: "folder", locator: { ...node.locator, folderIds: [...node.locator.folderIds] } };
+    case "api": return { kind: "api", locator: { ...node.locator, folderIds: [...node.locator.folderIds] } };
+  }
 }
 </script>
 
@@ -365,7 +414,7 @@ function startWorkflowDelete(node: TreeNodeDTO) {
       <!-- 作用域化（M9-C）：根行隐藏——项目名即顶层容器行，分组在主页管理 -->
       <div v-if="!scoped" class="root-row">
         <span class="root-label">{{ rootNode.label }}</span>
-        <a-button v-if="!readonly" size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
+        <a-button v-if="!isReadOnly" size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
       </div>
       <a-tree
         class="tree"
@@ -382,7 +431,7 @@ function startWorkflowDelete(node: TreeNodeDTO) {
               <!-- 在线树 api 叶无 method 字段（只读浏览），徽标仅本地接口渲染 -->
               <span v-if="dto.method" class="method" :class="`m-${dto.method.toLowerCase()}`">{{ dto.method }}</span>{{ dto.label }}
             </button>
-            <span v-if="!readonly" class="actions">
+            <span v-if="!isReadOnly" class="actions">
               <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
               <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
             </span>
@@ -399,7 +448,7 @@ function startWorkflowDelete(node: TreeNodeDTO) {
             <button class="api-btn" data-testid="tree-workflow" :data-node-id="dto.id" :data-status="dto.status" @click="selectNode(dto)">
               <span class="wf-dot" :class="`wf-dot-${dto.status}`" :title="t(`wf.status.${dto.status}`)"></span>{{ dto.label }}
             </button>
-            <span v-if="!readonly" class="actions">
+            <span v-if="!isReadOnly" class="actions">
               <button class="act" data-testid="node-rename" @click="startWorkflowRename(dto)">{{ t("tree.rename") }}</button>
               <button class="act danger" data-testid="node-delete" @click="startWorkflowDelete(dto)">{{ t("tree.delete") }}</button>
             </span>
@@ -407,7 +456,7 @@ function startWorkflowDelete(node: TreeNodeDTO) {
           <!-- 容器节点：折叠钮 + 层级图标（M11：模块/文件夹/项目 图标区分）+ 悬停动作钮 -->
           <div v-else class="node">
             <button class="toggle" data-testid="tree-group-toggle" @click="toggle(dto)">
-              {{ expanded.has(dto.id) ? "▾" : "▸" }}
+              {{ expanded.has(dto.key) ? "▾" : "▸" }}
             </button>
             <AppstoreOutlined v-if="dto.kind === 'collection'" class="kind-icon mod" />
             <FolderOutlined v-else-if="dto.kind === 'folder'" class="kind-icon dir" />
@@ -420,13 +469,13 @@ function startWorkflowDelete(node: TreeNodeDTO) {
               :class="{ 'label-link': dto.kind === 'project' }"
               @click="dto.kind === 'project' && selectNode(dto)"
             >{{ dto.label }}</span>
-            <span v-if="!readonly" class="actions">
+            <span v-if="!isReadOnly" class="actions">
               <button v-if="dto.kind === 'group'" class="act" data-testid="new-project" @click="startCreate(dto, 'project')">{{ t("tree.newProject") }}</button>
               <button v-if="dto.kind === 'project'" class="act" data-testid="new-collection" @click="startCreate(dto, 'collection')">{{ t("tree.newCollection") }}</button>
-              <button v-if="dto.kind === 'collection'" class="act" data-testid="container-manage" @click="openManage('collection', dto.id, dto.label)">{{ t("container.manage") }}</button>
+              <button v-if="dto.kind === 'collection'" class="act" data-testid="container-manage" @click="openManage(dto)">{{ t("container.manage") }}</button>
               <button v-if="dto.kind === 'collection'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
               <button v-if="dto.kind === 'collection'" class="act" data-testid="new-folder" @click="startCreate(dto, 'folder')">{{ t("tree.newFolder") }}</button>
-              <button v-if="dto.kind === 'folder'" class="act" data-testid="container-manage" @click="openManage('folder', dto.id, dto.label)">{{ t("container.manage") }}</button>
+              <button v-if="dto.kind === 'folder'" class="act" data-testid="container-manage" @click="openManage(dto)">{{ t("container.manage") }}</button>
               <button v-if="dto.kind === 'folder'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
               <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
               <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
@@ -436,11 +485,11 @@ function startWorkflowDelete(node: TreeNodeDTO) {
       </a-tree>
     </template>
     <ContainerManageDialog
-      v-if="manageState.open"
+      v-if="manageState.open && manageState.target"
       :api="api"
-      :kind="manageState.kind"
-      :id="manageState.id"
+      :target="manageState.target"
       :name="manageState.name"
+      :read-only="workspace.readOnly"
       :report-error="reportError"
       @close="manageState.open = false"
       @saved="workspace.refresh().catch(() => undefined)"

@@ -9,6 +9,7 @@ import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/src/api/memory.js";
@@ -18,6 +19,7 @@ import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
 import { createTabsStore } from "../../../src/renderer/src/stores/tabs.js";
 import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
+import { useImportWizardStore } from "../../../src/renderer/src/stores/importW.js";
 import HomeView from "../../../src/renderer/src/components/HomeView.vue";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import OnlineApiEditor from "../../../src/renderer/src/components/OnlineApiEditor.vue";
@@ -27,20 +29,51 @@ import TopBar from "../../../src/renderer/src/components/TopBar.vue";
 import SideTree from "../../../src/renderer/src/components/SideTree.vue";
 import OnlineLoginDialog from "../../../src/renderer/src/components/OnlineLoginDialog.vue";
 import type { ApiccApi } from "../../../src/shared/types.js";
+import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
 
 const SERVER = "http://127.0.0.1:8080";
 // path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（memory 替身种子常量防漂移）
 const API_PATH = `${ONLINE_SEED_PROJECT_ID}/collections/示例集合/apis/示例接口/api.yaml`;
 const VALID_API_YAML = [
-  "id: api-online-1",
-  "name: 示例接口",
-  "version: 1.0.0",
-  "deprecated: false",
-  "method: GET",
-  'url: "/ping"',
-  "headers: []",
-  "query: []",
+  "contract:",
+  "  formatVersion: 1",
+  "  id: 2e8a7f71-3c07-42ea-85a4-15ed01d7a101",
+  "  metadata:",
+  "    name: 示例接口",
+  '    description: ""',
+  "    tags: []",
+  "    version: 1.0.0",
+  "    status: draft",
+  "  request:",
+  "    protocol: http",
+  "    method: GET",
+  "    baseUrl: https://api.example.test",
+  '    path: "/ping"',
+  "    pathParams: []",
+  "    query:",
+  "      - kind: inline",
+  "        id: 2e8a7f71-3c07-42ea-85a4-15ed01d7a102",
+  "        name: page",
+  "        schema:",
+  "          kind: scalar",
+  "          type: string",
+  "        required: false",
+  "        enabled: true",
+  '        description: ""',
+  '        value: "1"',
+  "    headers: []",
+  "    cookies: []",
+  "    auth:",
+  "      kind: bearer",
+  "      token:",
+  "        id: credential-reference-1",
+  "        policy: test-policy",
+  "    body:",
+  "      kind: json",
+  '      content: "{}"',
+  "  responses: []",
   "cases: []",
+  'documentation: ""',
   "",
 ].join("\n");
 
@@ -77,6 +110,17 @@ function bodyHas(testid: string): boolean {
   return bodyFind(testid) !== null;
 }
 
+function findTreeNode(node: TreeNodeDTO | null | undefined, kind: TreeNodeDTO["kind"], id: string): TreeNodeDTO | undefined {
+  if (!node) return undefined;
+  if (node.kind === kind && node.id === id) return node;
+  if (!("children" in node) || !node.children) return undefined;
+  for (const child of node.children) {
+    const found = findTreeNode(child, kind, id);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 function memStorage(): Storage {
   const map = new Map<string, string>();
   return {
@@ -103,6 +147,9 @@ interface Fixture {
 async function fixture(): Promise<Fixture> {
   const api = createMemoryApi();
   api.seedWorkspace(); // 本地内存工作区（TopBar 本地打开用例的 wsOpen 回退语义）
+  // seedWorkspace intentionally has a fire-and-forget signature; treeGet awaits its real pendingSeed
+  // initialization barrier without opening the renderer's local workspace state.
+  await api.treeGet();
   const online = createOnlineStore({ api, storage: memStorage() });
   online.addProfile(SERVER, "团队服务器");
   await online.login("alice", "password8");
@@ -111,13 +158,14 @@ async function fixture(): Promise<Fixture> {
   const workspace = useWorkspaceStore(api);
   const tree = useTreeStore(api, workspace);
   const plugins = createPluginsStore({ api });
+  const importW = useImportWizardStore(api, workspace);
   // 计划 C 任务 6：TopBar 退出在线工作区确认需要 tabs store（签列表/草稿态统计 + 关签编排）
-  const editor = useEditorStore(api);
+  const editor = useEditorStore(api, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
   const workflowDesign = useWorkflowDesignStore(api);
   const tabs = createTabsStore({ workspace, tree, online, editor, workflowDesign, storage: memStorage() });
   const { i18n } = createI18nInstance();
   const mountWith = async (component: Parameters<typeof mount>[0], props: Record<string, unknown> = {}) =>
-    mount(component, { props: { api, workspace, tree, online, plugins, tabs, reportError: () => {}, openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {}, ...props }, global: { plugins: [i18n] } });
+    mount(component, { props: { api, workspace, tree, online, plugins, tabs, importW, workflowDesign, reportError: () => {}, openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {}, ...props }, global: { plugins: [i18n] } });
   return { api, workspace, online, tabs, mount: mountWith };
 }
 
@@ -142,7 +190,16 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
     expect(wrapper.find('[data-testid="online-editor-name"]').exists()).toBe(true);
     expect((wrapper.find('[data-testid="online-editor-name"]').element as HTMLInputElement).value).toBe("示例接口");
     expect(wrapper.find('[data-testid="online-save-btn"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="online-tab-auth"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="online-auth-secret-note"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="auth-token"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("credential-reference-1");
+    await wrapper.find('[data-testid="online-tab-params"]').trigger("click");
+    await flushPromises();
     await wrapper.find('[data-testid="online-editor-name"]').setValue("在线改名");
+    await wrapper.find('[data-testid="online-editor-url"]').setValue("/v2/ping");
+    await wrapper.find('[data-testid="kv-value"]').setValue("2");
     expect(f.online.editorDirty).toBe(true);
     await wrapper.find('[data-testid="online-save-btn"]').trigger("click");
     await flushPromises();
@@ -150,6 +207,19 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
     expect(f.online.editorVersion).toBe(3);
     expect(f.online.editorDirty).toBe(false);
     expect(wrapper.find('[data-testid="online-saved-tip"]').exists()).toBe(true);
+    const saved = await f.api.onlineFilesGet({ workspaceId: f.online.activeWorkspace!.id, paths: [API_PATH] });
+    const savedText = saved.files[0]!.content;
+    expect(parseYaml(savedText)).toMatchObject({
+      contract: {
+        metadata: { name: "在线改名" },
+        request: {
+          path: "/v2/ping",
+          query: [{ name: "page", value: "2" }],
+          auth: { kind: "bearer", token: { id: "credential-reference-1", policy: "test-policy" } },
+        },
+      },
+    });
+    expect(savedText).not.toMatch(/^(name|method|url):/m);
   });
 
   it("VIEWER（工作区只读）：无保存钮、输入禁用、只读徽标", async () => {
@@ -176,16 +246,28 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
     expect(wrapper.find('[data-testid="online-save-btn"]').exists()).toBe(false);
   });
 
-  it("坏数据（校验失败）→ problems 展示原文，不崩、无表单", async () => {
+  it("坏数据及缺失引用 → problems 展示原文，不崩、无表单与保存入口", async () => {
     const f = await fixture();
-    // 种子内容缺 url/method——M5 D2 后 method 缺省 GET（websocket 可省略的零破坏演进），
-    // 缺 method 不再是校验问题，坏数据仅剩 url 必填缺失，断言随新 schema 契约更新。
+    const missingReference = VALID_API_YAML.replace(
+      "      kind: bearer\n      token:\n        id: credential-reference-1\n        policy: test-policy",
+      "      kind: componentRef\n      componentId: 00000000-0000-4000-8000-000000000099\n      expectedKind: auth",
+    );
+    await f.api.onlineFilePut({ workspaceId: f.online.activeWorkspace!.id, path: API_PATH, content: missingReference, baseVersion: 1 });
     await f.online.selectNode("api", API_PATH);
+    const referenceWrapper = await f.mount(OnlineApiEditor);
+    expect(referenceWrapper.find('[data-testid="online-problems"]').text()).toContain("ASSET_REFERENCE_MISSING");
+    expect(referenceWrapper.find('[data-testid="online-editor-name"]').exists()).toBe(false);
+    expect(referenceWrapper.find('[data-testid="online-save-btn"]').exists()).toBe(false);
+
+    // 保持完整的新 ApiAsset 外形，仅缺 HTTP path，验证 strict schema 错误仍原文可见。
+    const invalidApi = VALID_API_YAML.replace('    path: "/ping"\n', "");
+    await f.api.onlineFilePut({ workspaceId: f.online.activeWorkspace!.id, path: API_PATH, content: invalidApi, baseVersion: 2 });
+    await f.online.selectNode("api", API_PATH, { force: true });
     const wrapper = await f.mount(OnlineApiEditor);
     const problems = wrapper.find('[data-testid="online-problems"]');
     expect(problems.exists()).toBe(true);
-    expect(problems.text()).toContain("url");
-    expect(wrapper.find('[data-testid="online-raw"]').text()).toContain("api-online-1");
+    expect(problems.text()).toContain("path");
+    expect(wrapper.find('[data-testid="online-raw"]').text()).toContain("contract:");
     expect(wrapper.find('[data-testid="online-editor-name"]').exists()).toBe(false);
   });
 
@@ -204,27 +286,27 @@ describe("OnlineConflictDialog（裁定 C：409 → 拉取覆盖我的 / 放弃�
     const f = await fixture();
     await seedValidApi(f);
     await f.online.selectNode("api", API_PATH);
-    f.online.editorApi!.name = "我的本地编辑";
+    f.online.editorApi!.contract.metadata.name = "我的本地编辑";
     f.online.conflict = { code: "version_conflict", currentVersion: 9, currentHash: "h9" };
     await f.mount(OnlineConflictDialog);
     expect(expectBody("online-conflict-text").text()).toContain("9");
     await expectBody("online-conflict-discard").trigger("click");
     await flushPromises();
     expect(f.online.conflict).toBeNull();
-    expect(f.online.editorApi?.name).toBe("我的本地编辑"); // 放弃 = 保留缓冲
+    expect(f.online.editorApi?.contract.metadata.name).toBe("我的本地编辑"); // 放弃 = 保留缓冲
   });
 
   it("拉取覆盖我的 → 重取服务端最新重新渲染（丢弃本地编辑）", async () => {
     const f = await fixture();
     await seedValidApi(f);
     await f.online.selectNode("api", API_PATH);
-    f.online.editorApi!.name = "我的本地编辑";
+    f.online.editorApi!.contract.metadata.name = "我的本地编辑";
     f.online.conflict = { code: "version_conflict", currentVersion: 9, currentHash: "h9" };
     await f.mount(OnlineConflictDialog);
     await expectBody("online-conflict-pull").trigger("click");
     await flushPromises();
     expect(f.online.conflict).toBeNull();
-    expect(f.online.editorApi?.name).toBe("示例接口"); // 服务端内容覆盖
+    expect(f.online.editorApi?.contract.metadata.name).toBe("示例接口"); // 服务端内容覆盖
     expect(f.online.editorDirty).toBe(false);
   });
 });
@@ -369,13 +451,24 @@ describe("SideTree 在线只读装饰（裁定 A/E）", () => {
     const fileBtn = wrapper.find('[data-testid="tree-file"]');
     expect(fileBtn.exists()).toBe(true);
     await apiBtn.trigger("click");
-    expect(wrapper.emitted("select")?.[0]).toEqual(["api", API_PATH]);
+    const selectedApi = findTreeNode(f.online.onlineTree, "api", API_PATH);
+    expect(selectedApi).toBeDefined();
+    expect(selectedApi).toMatchObject({
+      source: "online",
+      kind: "api",
+      id: API_PATH,
+      key: JSON.stringify(["online", f.online.activeWorkspaceId, "api", API_PATH]),
+    });
+    expect(wrapper.emitted("select")?.[0]).toEqual([selectedApi]);
     // 项目名可点（任务 7 冒烟修复：在线项目签成签入口）——readonly 下不发 tree.select，仅 emit select("project")
     const projLabel = wrapper.findAll(".label").find((e) => e.text() === "示例项目");
     expect(projLabel).toBeDefined();
     await projLabel!.trigger("click");
     const selects = wrapper.emitted("select") ?? [];
-    expect(selects.at(-1)).toEqual(["project", ONLINE_SEED_PROJECT_ID]);
+    const selectedProject = findTreeNode(f.online.onlineTree, "project", ONLINE_SEED_PROJECT_ID);
+    expect(selectedProject).toBeDefined();
+    expect(selectedProject).toMatchObject({ source: "online", kind: "project", id: ONLINE_SEED_PROJECT_ID, key: JSON.stringify(["online", f.online.activeWorkspaceId, "project", ONLINE_SEED_PROJECT_ID]) });
+    expect(selects.at(-1)).toEqual([selectedProject]);
   });
 
   it("无 treeRoot 且本地未打开 → 空态用注入文案", async () => {

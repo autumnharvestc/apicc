@@ -11,7 +11,8 @@
 //    update:value 事件驱动（chooseSelect 辅助），语义等效于用户在下拉中选中该项。
 // 4. a-tabs 的页签触发钩子（tab-*）经 #tab slot 渲染成可点击 span，点击冒泡到
 //    a-tabs 内部处理器完成切换，测试仍直接对该 data-testid trigger("click")。
-import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
@@ -36,8 +37,20 @@ import TopBar from "../../../src/renderer/src/components/TopBar.vue";
 import RunsHistory from "../../../src/renderer/src/components/RunsHistory.vue";
 import StressPanel from "../../../src/renderer/src/components/StressPanel.vue";
 import StressReportView from "../../../src/renderer/src/components/StressReportView.vue";
-import type { RunResult, StressReport } from "@apicc/core";
+import type { ApiAsset, RunResult, StressReport } from "@apicc/core";
 import type { RunSummaryDTO, StressRunInput, StressRunOutput, StressRunSummaryDTO } from "../../../src/shared/types.js";
+import type { ApiLocator, ProjectLocator, WorkflowLocator } from "../../../src/shared/locations.js";
+import type { LocalGroupTreeNodeDTO, TreeNodeDTO } from "../../../src/shared/tree-dto.js";
+
+const stressStoreRoot = "C:/apicc-stress-store-tests";
+const stressStoreLocator: ApiLocator = {
+  workspaceId: "00000000-0000-4000-8000-000000000021",
+  groupId: "00000000-0000-4000-8000-000000000022",
+  projectId: "00000000-0000-4000-8000-000000000023",
+  collectionId: "00000000-0000-4000-8000-000000000024",
+  folderIds: [],
+  apiId: "00000000-0000-4000-8000-000000000025",
+};
 
 beforeAll(() => {
   // jsdom 未实现 matchMedia；TopBar→ThemeLanguageToggle 挂载时解析主题偏好会调用它，
@@ -109,6 +122,32 @@ function chooseSelect(wrapper: VueWrapper, testid: string, value: string): void 
   select.vm.$emit("update:value", value);
 }
 
+async function clickDebugSendAndWait(wrapper: VueWrapper, debug: ReturnType<typeof useDebugStore>): Promise<void> {
+  const original = debug.send.bind(debug);
+  let pending: ReturnType<typeof original> | null = null;
+  debug.send = (targetEditor, sendFn, explicitEnvName) => {
+    pending = original(targetEditor, sendFn, explicitEnvName);
+    return pending;
+  };
+  await wrapper.find('[data-testid="send-btn"]').trigger("click");
+  if (!pending) throw new Error("Send button did not invoke the real debug action");
+  await pending;
+  await flushPromises();
+}
+
+async function clickEditorSaveAndWait(wrapper: VueWrapper, editor: ReturnType<typeof useEditorStore>): Promise<void> {
+  const original = editor.save.bind(editor);
+  let pending: ReturnType<typeof original> | null = null;
+  editor.save = () => {
+    pending = original();
+    return pending;
+  };
+  await wrapper.find('[data-testid="save-btn"]').trigger("click");
+  if (!pending) throw new Error("Save button did not invoke the real editor action");
+  await pending;
+  await flushPromises();
+}
+
 /** 读取 a-select 受控 :value 绑定值（显示侧断言用，不经 antd 内部渲染）。 */
 function selectValue(wrapper: VueWrapper, testid: string): unknown {
   const select = wrapper
@@ -120,19 +159,19 @@ function selectValue(wrapper: VueWrapper, testid: string): unknown {
 
 /**
  * 任务 6 夹具：经 memory api 种子一个引用指定接口首个用例的工作流请求节点，
- * 使该接口的 wf:impact({ apiId }) 恰好命中一条（工作流名/状态/节点 label 可断言）。
+ * 使该完整 ApiLocator 的 wf:impact 恰好命中一条（工作流名/状态/节点 label 可断言）。
  */
 async function seedWorkflowReferencingApi(
   api: ReturnType<typeof createMemoryApi>,
-  projectId: string,
-  apiId: string,
+  projectLocator: ProjectLocator,
+  apiLocator: ApiLocator,
 ): Promise<void> {
-  const detail = await api.apiGet(apiId);
+  const detail = await api.apiGet(apiLocator);
   const caseId = detail.api.cases[0]!.id;
-  const wf = await api.wfCreate({ projectId, name: "下单主流程" });
-  await api.wfSave({
+  const wf = await api.wfCreate({ locator: projectLocator, name: "下单主流程" });
+  await api.wfSave({ ...projectLocator, workflowId: wf.id }, {
     ...wf,
-    nodes: [{ id: "n1", kind: "request", label: "创建订单", apiId, caseId }],
+    nodes: [{ id: "n1", kind: "request", label: "创建订单", apiId: apiLocator.apiId, caseId }],
     edges: [],
   });
 }
@@ -149,10 +188,11 @@ async function mountWith(component: Parameters<typeof mount>[0], props: Record<s
   const workspace = useWorkspaceStore(api);
   await workspace.open("/tmp/ws");
   const tree = useTreeStore(api, workspace);
-  const editor = useEditorStore(api);
-  const debug = useDebugStore(api);
+  const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly });
+  const editor = useEditorStore(api, localContext);
+  const debug = useDebugStore(api, editor, localContext);
   // SideTree 需要设计器会话（审查 I2 重命名卸载）：同一份一次性装配经 props 注入
-  const workflowDesign = useWorkflowDesignStore(api);
+  const workflowDesign = useWorkflowDesignStore(api, localContext);
   // TopBar 需要 online store（M3-B 任务 2 在线入口）：同一份一次性装配经 props 注入
   const online = createOnlineStore({ api, storage: memStorage() });
   // 计划 C 任务 6：TopBar 退出在线确认需要 tabs store（签列表/草稿态统计 + 关签编排）
@@ -169,10 +209,53 @@ async function mountWith(component: Parameters<typeof mount>[0], props: Record<s
   return { wrapper, api, workspace, tree, editor, debug, workflowDesign, online, tabs };
 }
 
+function seededProjectAndApi(workspace: ReturnType<typeof useWorkspaceStore>) {
+  const group = workspace.tree?.children.find((node): node is LocalGroupTreeNodeDTO =>
+    node.kind === "group" && node.children.some((child) => child.kind === "project"));
+  if (!group || group.kind !== "group") throw new Error("Memory workspace is missing its group");
+  const project = group.children.find((node) => node.kind === "project");
+  if (!project || project.kind !== "project") throw new Error("Memory group is missing its project");
+  const collection = project.children.find((node) => node.kind === "collection");
+  if (!collection || collection.kind !== "collection") throw new Error("Memory project is missing its collection");
+  const apiNode = collection.children.find((node) => node.kind === "api");
+  if (!apiNode || apiNode.kind !== "api") throw new Error("Memory collection is missing its API");
+  return { project, collection, apiNode };
+}
+
 /** 仅需 i18n 插件的挂载（组件只收普通 props，不消费 store）。 */
 function mountWithI18n(component: Parameters<typeof mount>[0], props: Record<string, unknown> = {}): VueWrapper {
   const { i18n } = createI18nInstance();
   return mount(component, { props, global: { plugins: [i18n] } });
+}
+
+/** 展开当前可见树中的折叠容器；只点 ▸，不会误把已展开节点收回。 */
+async function expandAllCollapsedTreeContainers(wrapper: VueWrapper): Promise<void> {
+  while (true) {
+    const collapsed = wrapper
+      .findAll('[data-testid="tree-group-toggle"]')
+      .find((toggle) => toggle.text().trim() === "▸");
+    if (!collapsed) return;
+    await collapsed.trigger("click");
+  }
+}
+
+function captureTreeCreate(tree: ReturnType<typeof useTreeStore>) {
+  const original = tree.createNode.bind(tree);
+  let pending: ReturnType<typeof original> | null = null;
+  tree.createNode = (input) => {
+    pending = original(input);
+    return pending;
+  };
+  return {
+    async settle(): Promise<void> {
+      if (!pending) throw new Error("Expected the real tree.createNode action to run");
+      await pending.catch(() => undefined);
+      await flushPromises();
+    },
+    restore(): void {
+      tree.createNode = original;
+    },
+  };
 }
 
 /**
@@ -183,13 +266,19 @@ async function seedTreeWorkflow(
   api: ReturnType<typeof createMemoryApi>,
   workspace: ReturnType<typeof useWorkspaceStore>,
   name: string,
-): Promise<{ workflowId: string; projectId: string; apiId: string; caseId: string }> {
-  const project = workspace.tree!.children![0]!.children![0]!;
-  const apiNode = project.children![0]!.children![0]!;
-  const detail = await api.apiGet(apiNode.id);
-  const wf = await api.wfCreate({ projectId: project.id, name });
+): Promise<{ workflowLocator: WorkflowLocator; projectLocator: ProjectLocator; apiLocator: ApiLocator; workflowId: string; apiId: string; caseId: string }> {
+  const { project, apiNode } = seededProjectAndApi(workspace);
+  const detail = await api.apiGet(apiNode.locator);
+  const wf = await api.wfCreate({ locator: project.locator, name });
   await workspace.refresh();
-  return { workflowId: wf.id, projectId: project.id, apiId: apiNode.id, caseId: detail.api.cases[0]!.id };
+  return {
+    workflowLocator: { ...project.locator, workflowId: wf.id },
+    projectLocator: project.locator,
+    apiLocator: apiNode.locator,
+    workflowId: wf.id,
+    apiId: apiNode.id,
+    caseId: detail.api.cases[0]!.id,
+  };
 }
 
 describe("SideTree", () => {
@@ -197,7 +286,7 @@ describe("SideTree", () => {
     const { wrapper } = await mountWith(SideTree);
     // 分组/项目/集合默认折叠：接口初始不可见
     expect(wrapper.find('[data-testid="tree-api"]').exists()).toBe(false);
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await expandAllCollapsedTreeContainers(wrapper);
     const apiNode = wrapper.find('[data-testid="tree-api"]');
     expect(apiNode.exists()).toBe(true);
     await apiNode.trigger("click");
@@ -205,52 +294,78 @@ describe("SideTree", () => {
   });
 
   it("新建接口：集合动作钮经对话框输入后创建并选中", async () => {
-    const { wrapper } = await mountWith(SideTree);
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const { wrapper, tree } = await mountWith(SideTree);
+    await expandAllCollapsedTreeContainers(wrapper);
     await wrapper.find('[data-testid="new-api"]').trigger("click");
     // 创建走 ConfirmDialog 复用的输入对话框（a-modal 渲染于 body）
     const input = expectBody("dialog-input");
     await input.setValue("新接口");
+    const create = captureTreeCreate(tree);
     await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
-    // select 事件必须携带 "api"（App 据此加载编辑器）：nodeCreate 返回统一瘦 DTO 含 kind
-    // （宽审查 I2），SideTree 以返回值的 kind 发事件，不再以发起请求的 kind 为准
-    expect(wrapper.emitted("select")![0]).toEqual(["api", expect.any(String)]);
+    await create.settle();
+    create.restore();
+    // App 消费完整节点 DTO；类型与身份来自真实 tree.createNode 返回值。
+    const selected = wrapper.emitted("select")![0]![0] as TreeNodeDTO;
+    expect(selected).toMatchObject({ source: "local", kind: "api", label: "新接口", locator: { apiId: expect.any(String) } });
+    if (selected.source !== "local" || selected.kind !== "api") throw new Error("Created API selection must carry its local API locator");
+    expect(selected.id).toBe(selected.locator.apiId);
     expect(wrapper.text()).toContain("新接口");
   });
 
   it("对话框 run 拒绝时经 reportError 上报（宽审查 I1，不再静默吞没）", async () => {
     const errors: unknown[] = [];
-    const { wrapper, api } = await mountWith(SideTree, { reportError: (e: unknown) => { errors.push(e); } });
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const { wrapper, api, tree } = await mountWith(SideTree, { reportError: (e: unknown) => { errors.push(e); } });
+    await expandAllCollapsedTreeContainers(wrapper);
     await wrapper.find('[data-testid="new-api"]').trigger("click");
     await expectBody("dialog-input").setValue("x");
     api.nodeCreate = async () => { throw new Error("boom"); };
+    const create = captureTreeCreate(tree);
     await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
+    await create.settle();
+    create.restore();
     expect(errors).toHaveLength(1);
     expect((errors[0] as Error).message).toBe("boom");
   });
 
   it("删除接口：确认对话框放行后节点消失", async () => {
-    const { wrapper, workspace } = await mountWith(SideTree);
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const { wrapper, api, workspace, tree } = await mountWith(SideTree);
+    await expandAllCollapsedTreeContainers(wrapper);
     // 以接口所在行（tree-api-row）为作用域，避免命中祖先节点的删除钮
     const row = wrapper.find('[data-testid="tree-api-row"]');
     const apiId = row.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
+    const originalImpact = api.wfImpact.bind(api);
+    let impactTask: ReturnType<typeof originalImpact> | null = null;
+    api.wfImpact = (...args) => {
+      impactTask = originalImpact(...args);
+      return impactTask;
+    };
     await row.find('[data-testid="node-delete"]').trigger("click");
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
-    expect(JSON.stringify(workspace.tree)).not.toContain(apiId);
+    if (!impactTask) throw new Error("API delete did not perform the real workflow-impact check");
+    await impactTask;
+    await vi.waitFor(() => expect(bodyHas("dialog-confirm")).toBe(true));
+    const originalDelete = tree.deleteNode.bind(tree);
+    let deleteTask: ReturnType<typeof originalDelete> | null = null;
+    tree.deleteNode = (target, confirm) => {
+      deleteTask = originalDelete(target, confirm);
+      return deleteTask;
+    };
+    try {
+      await expectBody("dialog-confirm").trigger("click");
+      if (!deleteTask) throw new Error("API delete confirmation did not invoke the real tree.deleteNode action");
+      await deleteTask;
+    } finally {
+      tree.deleteNode = originalDelete;
+      api.wfImpact = originalImpact;
+    }
+    await vi.waitFor(() => expect(JSON.stringify(workspace.tree)).not.toContain(apiId));
   });
 
-  it("删除被引用接口：先弹影响清单（工作流名（状态）—节点 label），确认后删除执行", async () => {
-    const { wrapper, api, workspace } = await mountWith(SideTree);
-    const group = workspace.tree!.children![0]!;
-    const project = group.children![0]!;
-    const apiNode = project.children![0]!.children![0]!;
-    await seedWorkflowReferencingApi(api, project.id, apiNode.id);
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+  it("删除被引用接口：显示引用方，确认后拒绝并保留 API（Task9 引用保护）", async () => {
+    const errors: unknown[] = [];
+    const { wrapper, api, workspace, tree } = await mountWith(SideTree, { reportError: (e: unknown) => errors.push(e) });
+    const { project, apiNode } = seededProjectAndApi(workspace);
+    await seedWorkflowReferencingApi(api, project.locator, apiNode.locator);
+    await expandAllCollapsedTreeContainers(wrapper);
     const row = wrapper.find('[data-testid="tree-api-row"]');
     await row.find('[data-testid="node-delete"]').trigger("click");
     await flushPromises();
@@ -263,32 +378,64 @@ describe("SideTree", () => {
     // impact-list 同为插槽内容；confirm-dialog testid 不被 a-modal 透传，不作钩子）
     expect(expectBody("impact-warning").text()).toContain("该用例被以下工作流引用");
     // 确认后删除执行
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
-    expect(JSON.stringify(workspace.tree)).not.toContain(apiNode.id);
+    const originalDelete = tree.deleteNode.bind(tree);
+    let deleteTask: ReturnType<typeof originalDelete> | null = null;
+    tree.deleteNode = (...args) => {
+      deleteTask = originalDelete(...args);
+      return deleteTask;
+    };
+    try {
+      await expectBody("dialog-confirm").trigger("click");
+      if (!deleteTask) throw new Error("API delete confirmation did not invoke the real tree.deleteNode action");
+      await expect(deleteTask).rejects.toThrow(/Cannot delete referenced API\/case; workflow callers remain/);
+    } finally {
+      tree.deleteNode = originalDelete;
+    }
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toBeInstanceOf(Error);
+    expect((errors[0] as Error).message).toMatch(/Cannot delete referenced API\/case; workflow callers remain/);
+    expect(JSON.stringify(workspace.tree)).toContain(apiNode.id);
+    expect((await api.apiGet(apiNode.locator)).api.contract.id).toBe(apiNode.id);
+    const workflows = await api.wfList(project.locator);
+    const caller = workflows.find((item) => item.name === "下单主流程");
+    expect(caller).toBeDefined();
+    if (!caller) throw new Error("The workflow caller should remain after the rejected API deletion");
+    expect((await api.wfGet(caller.locator)).workflow.nodes).toContainEqual(expect.objectContaining({
+      apiId: apiNode.id,
+      label: "创建订单",
+    }));
   });
 
   it("删除未被引用接口：无影响清单（无额外弹窗），确认后直接删除", async () => {
-    const { wrapper, workspace } = await mountWith(SideTree);
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const { wrapper, workspace, tree } = await mountWith(SideTree);
+    await expandAllCollapsedTreeContainers(wrapper);
     const row = wrapper.find('[data-testid="tree-api-row"]');
     const apiId = row.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
     await row.find('[data-testid="node-delete"]').trigger("click");
     await flushPromises();
     // 未命中：常规确认对话框放行即删，不得出现影响清单
     expect(bodyHas("impact-list")).toBe(false);
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
+    const originalDelete = tree.deleteNode.bind(tree);
+    let deleteTask: ReturnType<typeof originalDelete> | null = null;
+    tree.deleteNode = (...args) => {
+      deleteTask = originalDelete(...args);
+      return deleteTask;
+    };
+    try {
+      await expectBody("dialog-confirm").trigger("click");
+      if (!deleteTask) throw new Error("API delete confirmation did not invoke the real tree.deleteNode action");
+      await deleteTask;
+    } finally {
+      tree.deleteNode = originalDelete;
+    }
     expect(JSON.stringify(workspace.tree)).not.toContain(apiId);
   });
 
   it("删除被引用接口：取消影响清单对话框则不删除", async () => {
     const { wrapper, api, workspace } = await mountWith(SideTree);
-    const group = workspace.tree!.children![0]!;
-    const project = group.children![0]!;
-    const apiNode = project.children![0]!.children![0]!;
-    await seedWorkflowReferencingApi(api, project.id, apiNode.id);
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    const { project, apiNode } = seededProjectAndApi(workspace);
+    await seedWorkflowReferencingApi(api, project.locator, apiNode.locator);
+    await expandAllCollapsedTreeContainers(wrapper);
     const row = wrapper.find('[data-testid="tree-api-row"]');
     await row.find('[data-testid="node-delete"]').trigger("click");
     await flushPromises();
@@ -303,7 +450,7 @@ describe("SideTree", () => {
   it("删除接口：wfImpact 反查拒绝时经 reportError 上报并中止（不开框、不删除）", async () => {
     const errors: unknown[] = [];
     const { wrapper, api, workspace } = await mountWith(SideTree, { reportError: (e: unknown) => { errors.push(e); } });
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await expandAllCollapsedTreeContainers(wrapper);
     const row = wrapper.find('[data-testid="tree-api-row"]');
     const apiId = row.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
     api.wfImpact = async () => { throw new Error("影响反查失败"); };
@@ -317,12 +464,14 @@ describe("SideTree", () => {
   });
 
   it("根层新建分组：空工作区也能从根创建顶层节点", async () => {
-    const { wrapper, workspace } = await mountWith(SideTree);
+    const { wrapper, workspace, tree } = await mountWith(SideTree);
     const before = workspace.tree!.children!.length;
     await wrapper.find('[data-testid="new-group"]').trigger("click");
     await expectBody("dialog-input").setValue("根层新分组");
+    const create = captureTreeCreate(tree);
     await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
+    await create.settle();
+    create.restore();
     expect(workspace.tree!.children!.length).toBe(before + 1);
     expect(wrapper.text()).toContain("根层新分组");
   });
@@ -338,16 +487,18 @@ describe("SideTree", () => {
   it("project children 尾部渲染工作流节点：label + 状态徽标色点（draft 灰/published 蓝/enabled 绿）", async () => {
     const { wrapper, api, workspace } = await mountWith(SideTree);
     const seeded = await seedTreeWorkflow(api, workspace, "草稿流");
-    const pub = await api.wfCreate({ projectId: seeded.projectId, name: "已发布流" });
-    await api.wfSetStatus(pub.id, "published");
+    const pub = await api.wfCreate({ locator: seeded.projectLocator, name: "已发布流" });
+    const pubLocator: WorkflowLocator = { ...seeded.projectLocator, workflowId: pub.id };
+    await api.wfSetStatus(pubLocator, "published");
     // enabled 须过启用校验：绑定种子接口的真实用例（空流禁止启用）
-    const en = await api.wfCreate({ projectId: seeded.projectId, name: "已启用流" });
-    await api.wfSave({ ...en, nodes: [{ id: "n1", kind: "request", apiId: seeded.apiId, caseId: seeded.caseId }], edges: [] });
-    await api.wfSetStatus(en.id, "published");
-    await api.wfSetStatus(en.id, "enabled");
+    const en = await api.wfCreate({ locator: seeded.projectLocator, name: "已启用流" });
+    const enLocator: WorkflowLocator = { ...seeded.projectLocator, workflowId: en.id };
+    await api.wfSave(enLocator, { ...en, nodes: [{ id: "n1", kind: "request", apiId: seeded.apiId, caseId: seeded.caseId }], edges: [] });
+    await api.wfSetStatus(enLocator, "published");
+    await api.wfSetStatus(enLocator, "enabled");
     await workspace.refresh();
     await flushPromises();
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await expandAllCollapsedTreeContainers(wrapper);
     const nodes = wrapper.findAll('[data-testid="tree-workflow"]');
     expect(nodes.map((n) => n.text())).toEqual(["草稿流", "已发布流", "已启用流"]);
     // 状态徽标色点契约：data-status + 色点 class（draft 灰/published 蓝/enabled 绿）
@@ -357,6 +508,14 @@ describe("SideTree", () => {
     expect(nodes[0]!.find(".wf-dot").classes()).toContain("wf-dot-draft");
     expect(nodes[1]!.find(".wf-dot").classes()).toContain("wf-dot-published");
     expect(nodes[2]!.find(".wf-dot").classes()).toContain("wf-dot-enabled");
+    const treeComponent = wrapper.findAllComponents({ name: "ATree" })[0];
+    if (!treeComponent) throw new Error("Expected the Ant Design tree component.");
+    type TreeData = { key: string; dto?: { kind?: string; id?: string; key?: string }; children?: TreeData[] };
+    const flatten = (nodes: TreeData[]): TreeData[] => nodes.flatMap((node) => [node, ...flatten(node.children ?? [])]);
+    const workflowNode = flatten(treeComponent.props("treeData") as TreeData[])
+      .find((node) => node.dto?.kind === "workflow" && node.dto.id === seeded.workflowId);
+    expect(workflowNode?.key).toBe(workflowNode?.dto?.key);
+    expect(workflowNode?.key).not.toBe(seeded.workflowId);
     // 工作流节点渲染在 project children 尾部（接口行之后）
     const apiEl = wrapper.find('[data-testid="tree-api-row"]').element;
     const wfEl = wrapper.find('[data-testid="tree-workflow-row"]').element;
@@ -366,49 +525,77 @@ describe("SideTree", () => {
   it("点击工作流节点 emit select(\"workflow\", id)", async () => {
     const { wrapper, api, workspace } = await mountWith(SideTree);
     const seeded = await seedTreeWorkflow(api, workspace, "点击流");
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await expandAllCollapsedTreeContainers(wrapper);
     await wrapper.find('[data-testid="tree-workflow"]').trigger("click");
     // App 据此 kind 加载工作流设计器（onSelect → workflowDesign.load + 视图切 wf）
-    expect(wrapper.emitted("select")![0]).toEqual(["workflow", seeded.workflowId]);
+    const selected = wrapper.emitted("select")![0]![0] as TreeNodeDTO;
+    expect(selected).toMatchObject({ source: "local", kind: "workflow", id: seeded.workflowId, locator: seeded.workflowLocator });
   });
 
   it("工作流重命名：对话框输入后经 wfRename 改名并刷新树", async () => {
     const { wrapper, api, workspace } = await mountWith(SideTree);
     const seeded = await seedTreeWorkflow(api, workspace, "旧名流");
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await expandAllCollapsedTreeContainers(wrapper);
     const row = wrapper.find('[data-testid="tree-workflow-row"]');
     await row.find('[data-testid="node-rename"]').trigger("click");
     // 重命名复用 ConfirmDialog 输入先例（a-modal 传送门渲染于 body）
     await expectBody("dialog-input").setValue("新名流");
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
-    expect((await api.wfList(seeded.projectId)).map((w) => w.name)).toEqual(["新名流"]);
+    const originalRename = api.wfRename.bind(api);
+    let renameTask: ReturnType<typeof originalRename> | null = null;
+    api.wfRename = (locator, name) => {
+      renameTask = originalRename(locator, name);
+      return renameTask;
+    };
+    try {
+      await expectBody("dialog-confirm").trigger("click");
+      if (!renameTask) throw new Error("Rename confirmation did not invoke the real wfRename API");
+      await renameTask;
+    } finally {
+      api.wfRename = originalRename;
+    }
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="tree-workflow"]').text()).toContain("新名流"));
+    expect((await api.wfList(seeded.projectLocator)).map((w) => w.name)).toEqual(["新名流"]);
     expect(wrapper.find('[data-testid="tree-workflow"]').text()).toContain("新名流");
   });
 
   it("工作流删除：确认对话框放行后经 wfDelete 删除并从树移除", async () => {
     const { wrapper, api, workspace } = await mountWith(SideTree);
     const seeded = await seedTreeWorkflow(api, workspace, "待删流");
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    await expandAllCollapsedTreeContainers(wrapper);
     const row = wrapper.find('[data-testid="tree-workflow-row"]');
     await row.find('[data-testid="node-delete"]').trigger("click");
     await flushPromises();
     // 删除确认文案复用 wf.deleteConfirm（含工作流名），确认前不删
     expect(document.body.textContent).toContain("待删流");
-    expect((await api.wfList(seeded.projectId)).map((w) => w.name)).toEqual(["待删流"]);
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
-    expect(await api.wfList(seeded.projectId)).toEqual([]);
+    expect((await api.wfList(seeded.projectLocator)).map((w) => w.name)).toEqual(["待删流"]);
+    const originalDelete = api.wfDelete.bind(api);
+    let deleteTask: ReturnType<typeof originalDelete> | null = null;
+    api.wfDelete = (locator) => {
+      deleteTask = originalDelete(locator);
+      return deleteTask;
+    };
+    try {
+      await expectBody("dialog-confirm").trigger("click");
+      if (!deleteTask) throw new Error("Workflow delete confirmation did not invoke the real wfDelete API");
+      await deleteTask;
+    } finally {
+      api.wfDelete = originalDelete;
+    }
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="tree-workflow"]').exists()).toBe(false));
+    expect(await api.wfList(seeded.projectLocator)).toEqual([]);
     expect(wrapper.find('[data-testid="tree-workflow"]').exists()).toBe(false);
   });
 });
 
-// —— M5-B 任务 1：协议选择与字段适配（规格 D2/D8 契约 fixture——旧 core strict schema
-// 不接线，保存载荷仅作 fixture 观测；任务 2 同步 main 后真集成）——
+// —— M5-B 任务 1：正式 ApiAsset 契约下的协议编辑与字段适配（规格 D2/D8）。——
 
 /** 协议单选切换：经 ARadioGroup 组件级 update:value（与 chooseMode 同理，jsdom 不点真实 radio）。 */
 function chooseProtocol(wrapper: VueWrapper, value: "http" | "websocket" | "soap"): void {
   antdComponent(wrapper, "ARadioGroup", "editor-protocol").vm.$emit("update:value", value);
+}
+
+function chooseBodyKind(wrapper: VueWrapper, value: string): void {
+  antdComponent(wrapper, "ARadioGroup", "body-kind").vm.$emit("update:value", value);
 }
 
 /** 读取协议单选组当前值（显示侧断言用，不经 antd 内部渲染）。 */
@@ -435,15 +622,15 @@ describe("RequestEditor", () => {
   it("编辑 URL 触发 update 且显示发送按钮", async () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
     // 未加载接口时是空态，无编辑输入
-    expect(wrapper.find('[data-testid="editor-url"]').exists()).toBe(false);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
+    expect(wrapper.find('[data-testid="editor-base-url"]').exists()).toBe(false);
+    const { apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
     await flushPromises();
-    const url = wrapper.find('[data-testid="editor-url"]');
+    const url = wrapper.find('[data-testid="editor-base-url"]');
     await url.setValue("http://example.com/x");
     expect((url.element as HTMLInputElement).value).toBe("http://example.com/x");
     // v-model 直接写 editor.api 字段（Pinia 响应式），dirty 快照比对 getter 跟踪
-    expect(editor.api!.url).toBe("http://example.com/x");
+    expect(editor.api!.contract.request.baseUrl).toBe("http://example.com/x");
     expect(editor.dirty).toBe(true);
     expect(wrapper.find('[data-testid="send-btn"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="save-btn"]').exists()).toBe(true);
@@ -451,10 +638,9 @@ describe("RequestEditor", () => {
 
   it("点击发送走默认 apicc.debugSend 并产生结果", async () => {
     const { wrapper, editor, debug, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    await wrapper.find('[data-testid="send-btn"]').trigger("click");
-    await flushPromises();
+    const { apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+    await clickDebugSendAndWait(wrapper, debug);
     expect(debug.result).not.toBeNull();
     expect(debug.sending).toBe(false);
     expect(debug.error).toBeNull();
@@ -462,50 +648,50 @@ describe("RequestEditor", () => {
 
   it("认证 tab：选择类型生成对应 auth 字段", async () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    // a-tabs 页签钩子为 #tab slot 内的 span，点击冒泡到 a-tabs 完成切换
+    const { apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+    // a-tabs 页签钩子为 #tab slot 内的 span，点击冒泡到 a-tabs 完成切换。
     await wrapper.find('[data-testid="tab-auth"]').trigger("click");
     chooseSelect(wrapper, "auth-type", "bearer");
     await flushPromises();
-    expect(editor.api!.auth).toMatchObject({ type: "bearer" });
-    await wrapper.find('[data-testid="auth-token"]').setValue("t0");
-    expect(editor.api!.auth!.token).toBe("t0");
+    const request = editor.api!.contract.request;
+    if (request.protocol !== "http") throw new Error("Seeded API request must be HTTP");
+    expect(request.auth).toMatchObject({ kind: "bearer", token: { id: expect.any(String), policy: "test-auto" } });
+    expect(wrapper.find('[data-testid="auth-token"]').exists()).toBe(false);
   });
 
   it("请求体 tab：选择 form 类型后可添加行", async () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
+    const { apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
     await wrapper.find('[data-testid="tab-body"]').trigger("click");
-    // M8：体类型改为胶囊单选组（a-radio-group，data-testid 保留）——选中 form 项
-    await wrapper.find('[data-testid="body-kind"] input[value="form"]').setValue(true);
+    chooseBodyKind(wrapper, "urlencoded");
     await flushPromises();
-    expect(editor.api!.body).toMatchObject({ kind: "form" });
-    await wrapper.find('[data-testid="add-form-row"]').trigger("click");
-    expect(editor.api!.body!.form).toHaveLength(1);
+    const request = editor.api!.contract.request;
+    if (request.protocol !== "http") throw new Error("Seeded API request must be HTTP");
+    expect(request.body).toEqual({ kind: "urlencoded", fields: [] });
+    await wrapper.find('[data-testid="body-add-field"]').trigger("click");
+    expect(request.body).toMatchObject({ kind: "urlencoded", fields: [{ id: expect.any(String), name: "", value: "", enabled: true }] });
   });
 
   it("调试选择器：选环境/用例后发送按选择传参（envName/caseId 走 store 状态）", async () => {
     const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    // 种子项目无环境且仅一个用例（id 为 randomUUID）：注入 dev 环境并追加第二用例供选择
-    editor.envs.push({ id: "e1", name: "dev" });
-    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, assertions: [] });
-    // memory 替身未记录 debugSend 调用，按简报以 spy 覆写捕获入参（发送按钮不传显式 envName）
-    const sent: Array<{ apiId: string; caseId: string; envName?: string }> = [];
+    const { project, apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+    // 种子项目无环境且仅一个用例：通过真实 memory API 创建环境，再由 editor 重新水合。
+    await api.envCreate({ locator: project.locator, name: "dev" });
+    await editor.reloadEnvs();
+    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
+    // 包装实际 memory.debugSend 记录 UI 传参并继续真实调用（发送按钮不传显式 envName）。
+    const sent: Array<{ locator: ApiLocator; caseId: string; envName?: string | null }> = [];
+    const originalDebugSend = api.debugSend.bind(api);
     api.debugSend = async (input) => {
       sent.push(input);
-      return {
-        run: { total: 1, passed: 1, failed: 0, cases: [], startedAt: "", finishedAt: "", collectionId: "c", collectionName: "c" },
-        outcome: { apiId: "a", apiName: "a", caseId: "t2", caseName: "second", passed: true, durationMs: 1, assertions: [] },
-      };
+      return originalDebugSend(input);
     };
     chooseSelect(wrapper, "debug-env-select", "dev");
-    chooseSelect(wrapper, "debug-case-select", "t2");
-    await wrapper.find('[data-testid="send-btn"]').trigger("click");
-    await flushPromises();
+    chooseSelect(wrapper, "debug-case-select", JSON.stringify(["t2", "base"]));
+    await clickDebugSendAndWait(wrapper, debug);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ caseId: "t2", envName: "dev" });
     expect(debug.result).not.toBeNull();
@@ -514,122 +700,135 @@ describe("RequestEditor", () => {
   });
 
   it("悬空用例选择显示回退：切接口后失效 id 不再显示，回退 cases[0]（显示与 send 一致）", async () => {
-    const { wrapper, editor, debug, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, assertions: [] });
-    chooseSelect(wrapper, "debug-case-select", "t2");
-    expect(debug.selectedCaseId).toBe("t2");
+    const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
+    const { apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
+    chooseSelect(wrapper, "debug-case-select", JSON.stringify(["t2", "base"]));
+    expect(debug.selectedCase?.caseId).toBe("t2");
     // 模拟切接口：cases 整体换成不含 t2 的集合（store 选择状态不清除，仍指向失效 id）
-    editor.api!.cases = [{ id: "t9", name: "other", scope: "base", parameters: {}, assertions: [] }];
+    editor.api!.cases = [{ id: "t9", name: "other", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] }];
     await flushPromises();
     // send 侧已静默回退 cases[0].id（stores/debug.ts），显示侧须同步回退而非渲染失效 id
-    expect(selectValue(wrapper, "debug-case-select")).toBe("t9");
+    expect(selectValue(wrapper, "debug-case-select")).toBe(JSON.stringify(["t9", "base"]));
+    const sent: Array<{ locator: ApiLocator; caseId: string; envName?: string | null }> = [];
+    const originalDebugSend = api.debugSend.bind(api);
+    api.debugSend = async (input) => { sent.push(input); return originalDebugSend(input); };
+    await clickDebugSendAndWait(wrapper, debug);
+    expect(sent).toMatchObject([{ locator: apiNode.locator, caseId: "t9" }]);
   });
 
   it("悬空环境选择显示回退：删环境后失效名不再显示，回退「无环境」（显示与 send 一致）", async () => {
-    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    editor.envs.push({ id: "e1", name: "dev" });
+    const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
+    const { project, apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+    await api.envCreate({ locator: project.locator, name: "dev" });
+    await editor.reloadEnvs();
     chooseSelect(wrapper, "debug-env-select", "dev");
     await flushPromises();
     expect(selectValue(wrapper, "debug-env-select")).toBe("dev");
-    editor.envs.splice(0, editor.envs.length); // 删除所选环境（send 回退 undefined → 无环境）
+    editor.envs.splice(0, editor.envs.length); // 模拟刷新结果已不含所选环境（send 回退 undefined → 无环境）
     await flushPromises();
     expect(selectValue(wrapper, "debug-env-select")).toBe("");
+    const sent: Array<{ locator: ApiLocator; caseId: string; envName?: string | null }> = [];
+    const originalDebugSend = api.debugSend.bind(api);
+    api.debugSend = async (input) => { sent.push(input); return originalDebugSend(input); };
+    const defaultCaseId = editor.api!.cases[0]!.id;
+    await clickDebugSendAndWait(wrapper, debug);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ locator: apiNode.locator, caseId: defaultCaseId });
+    expect(sent[0].envName).toBeUndefined();
   });
 
-  it("M5-B 协议选择：三选单选组默认 http（旧数据无 protocol 字段显示侧回退，不回写数据），文案走 i18n", async () => {
+  it("M5-B 协议选择：正式契约明确 HTTP 默认值，三协议选项文案走 i18n", async () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    // 种子接口无 protocol 字段（旧 schema 形状）：显示 http 但不得回写
-    expect(editor.api!.protocol).toBeUndefined();
+    const { apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+    expect(editor.api!.contract.request.protocol).toBe("http");
     expect(protocolValue(wrapper)).toBe("http");
     expect(protocolOptionsOf(wrapper).map((o) => o.value)).toEqual(["http", "websocket", "soap"]);
     expect(protocolOptionsOf(wrapper).map((o) => o.label)).toEqual(["HTTP", "WebSocket", "SOAP"]);
   });
 
-  it("M5-B 切 WebSocket：method/参数/请求体退场、消息模板进场；已填 query/body 内容保留（裁定③）", async () => {
-    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    editor.api!.query.push({ key: "q1", value: "v1", enabled: true });
-    editor.api!.body = { kind: "json", content: '{"a":1}' };
+  it("M5-B HTTP↔WebSocket↔SOAP 多轮编辑/草稿保留/合法保存载荷（旧三协议与保存标题合并）", async () => {
+    const { wrapper, api, editor, workspace } = await mountWith(RequestEditor);
+    const { apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+
+    const initial = editor.api!.contract.request;
+    if (initial.protocol !== "http") throw new Error("Seeded API request must be HTTP");
+    initial.query.push({ kind: "inline", id: randomUUID(), name: "q1", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "v1" });
+    initial.body = { kind: "json", content: '{"a":1}' };
+
+    // 旧“切 WebSocket”断言：HTTP 专属 method/body 面板退场，WS message tab 入场。
     chooseProtocol(wrapper, "websocket");
     await flushPromises();
-    // D8 字段显隐：WS 隐藏 method 选择与 query/body 区，显示 message 文本域
     expect(wrapper.find('[data-testid="editor-method"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="tab-params"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tab-path"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="tab-body"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="tab-message"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="tab-message"]').trigger("click");
     const message = wrapper.find('[data-testid="editor-message"]');
     expect(message.exists()).toBe(true);
     await message.setValue("hello {{name}}");
-    expect(editor.api!.message).toBe("hello {{name}}");
-    // 裁定③：切协议只改显隐，query/body 原样保留
-    expect(editor.api!.query).toEqual([{ key: "q1", value: "v1", enabled: true }]);
-    expect(editor.api!.body).toEqual({ kind: "json", content: '{"a":1}' });
-    expect(editor.api!.protocol).toBe("websocket");
-  });
+    const websocket = editor.api!.contract.request;
+    if (websocket.protocol !== "websocket") throw new Error("Protocol switch did not produce WebSocket request");
+    expect(websocket.message).toBe("hello {{name}}");
 
-  it("M5-B 切 SOAP：参数/请求体退场、envelope/soapAction 进场；method 固定 POST 且禁用（D2）", async () => {
-    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    expect(editor.api!.method).toBe("GET"); // 种子接口为 GET：切 SOAP 须落定为显式 POST
+    // 旧“切 SOAP”断言：SOAP 固定 POST，不暴露 HTTP 参数/请求体控件。
     chooseProtocol(wrapper, "soap");
     await flushPromises();
-    expect(editor.api!.method).toBe("POST");
-    expect(wrapper.find('[data-testid="tab-params"]').exists()).toBe(false);
+    const soap = editor.api!.contract.request;
+    if (soap.protocol !== "soap") throw new Error("Protocol switch did not produce SOAP request");
+    expect(soap.method).toBe("POST");
+    expect(wrapper.find('[data-testid="tab-path"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="tab-envelope"]').exists()).toBe(true);
-    // method 展示但禁用（裁定②：WS 隐藏、SOAP 禁用固定 POST——报告注明）
-    expect(antdComponent(wrapper, "ASelect", "editor-method").props("disabled")).toBe(true);
+    expect(wrapper.find('[data-testid="editor-method"]').text()).toBe("POST");
+    expect(wrapper.findAllComponents({ name: "ASelect" }).some((component) => component.attributes("data-testid") === "editor-method")).toBe(false);
+    await wrapper.find('[data-testid="tab-envelope"]').trigger("click");
     await wrapper.find('[data-testid="editor-envelope"]').setValue("<Envelope/>");
     await wrapper.find('[data-testid="editor-soap-action"]').setValue("urn:do");
-    expect(editor.api!.envelope).toBe("<Envelope/>");
-    expect(editor.api!.soapAction).toBe("urn:do");
-  });
+    expect(soap.envelope).toBe("<Envelope/>");
+    expect(soap.soapAction).toBe("urn:do");
 
-  it("M5-B 来回切协议：message/envelope/query/body 各自内容互不丢失（裁定③）", async () => {
-    const { wrapper, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    editor.api!.query.push({ key: "q1", value: "v1", enabled: true });
-    editor.api!.body = { kind: "json", content: '{"a":1}' };
-    chooseProtocol(wrapper, "websocket");
-    await flushPromises();
-    await wrapper.find('[data-testid="editor-message"]').setValue("首帧模板");
-    chooseProtocol(wrapper, "soap");
-    await flushPromises();
-    await wrapper.find('[data-testid="editor-envelope"]').setValue("<Envelope/>");
+    // 旧“协议往返”断言：HTTP body/query、WS message 与 SOAP envelope 各自留在原协议草稿。
     chooseProtocol(wrapper, "http");
     await flushPromises();
-    // 切回 http：页签恢复，其余协议字段内容原样保留（不互删）
+    const restoredHttp = editor.api!.contract.request;
+    if (restoredHttp.protocol !== "http") throw new Error("Protocol switch did not restore HTTP request");
     expect(protocolValue(wrapper)).toBe("http");
-    expect(wrapper.find('[data-testid="tab-params"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="tab-path"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="tab-body"]').exists()).toBe(true);
-    expect(editor.api!.message).toBe("首帧模板");
-    expect(editor.api!.envelope).toBe("<Envelope/>");
-    expect(editor.api!.query).toEqual([{ key: "q1", value: "v1", enabled: true }]);
-    expect(editor.api!.body).toEqual({ kind: "json", content: '{"a":1}' });
-  });
-
-  it("M5-B 保存载荷：保存后 apiSave 载荷携带 protocol/message（任务 2 同步 main 后已真接线：api:save → session.saveApi → 新 schema 落盘往返）", async () => {
-    const { wrapper, api, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    const sent: unknown[] = [];
-    const original = api.apiSave.bind(api);
-    api.apiSave = async (input) => { sent.push(input); return original(input); };
+    await wrapper.find('[data-testid="tab-path"]').trigger("click");
+    expect(restoredHttp.query).toMatchObject([{ name: "q1", value: "v1", enabled: true }]);
+    expect(restoredHttp.body).toEqual({ kind: "json", content: '{"a":1}' });
     chooseProtocol(wrapper, "websocket");
     await flushPromises();
-    await wrapper.find('[data-testid="editor-message"]').setValue("ping");
-    await wrapper.find('[data-testid="save-btn"]').trigger("click");
+    const restoredWebsocket = editor.api!.contract.request;
+    if (restoredWebsocket.protocol !== "websocket") throw new Error("Protocol switch did not restore WebSocket request");
+    await wrapper.find('[data-testid="tab-message"]').trigger("click");
+    expect(restoredWebsocket.message).toBe("hello {{name}}");
+    chooseProtocol(wrapper, "soap");
     await flushPromises();
+    const restoredSoap = editor.api!.contract.request;
+    if (restoredSoap.protocol !== "soap") throw new Error("Protocol switch did not restore SOAP request");
+    await wrapper.find('[data-testid="tab-envelope"]').trigger("click");
+    expect(restoredSoap.envelope).toBe("<Envelope/>");
+    expect(restoredSoap.soapAction).toBe("urn:do");
+
+    // 旧“保存载荷”断言：apiSave 接收 locator + 完整 ApiAsset，且保存后可真实重读。
+    const sent: Array<{ locator: ApiLocator; asset: ApiAsset }> = [];
+    const original = api.apiSave.bind(api);
+    api.apiSave = async (locator, asset) => { sent.push({ locator, asset }); return original(locator, asset); };
+    chooseProtocol(wrapper, "websocket");
+    await flushPromises();
+    await clickEditorSaveAndWait(wrapper, editor);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ protocol: "websocket", message: "ping" });
+    expect(sent[0]).toMatchObject({
+      locator: apiNode.locator,
+      asset: { contract: { request: { protocol: "websocket", message: "hello {{name}}" } } },
+    });
+    expect((await api.apiGet(apiNode.locator)).api.contract.request).toMatchObject({ protocol: "websocket", message: "hello {{name}}" });
     expect(editor.dirty).toBe(false);
   });
 
@@ -638,42 +837,44 @@ describe("RequestEditor", () => {
   // 无对应面板 → 编辑区空白。修复 = watch apiId/protocol 重置为新对象协议首签。
   it("M5-B 预修①：WS 消息页签下切另一接口 → 页签回落新接口首签，编辑区可编辑", async () => {
     const { wrapper, api, editor, workspace } = await mountWith(RequestEditor);
-    const apiA = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiA.id);
+    const { apiNode: apiA, collection } = seededProjectAndApi(workspace);
+    await editor.load(apiA.locator);
     chooseProtocol(wrapper, "websocket");
     await flushPromises();
+    await wrapper.find('[data-testid="tab-message"]').trigger("click");
     expect(wrapper.find('[data-testid="editor-message"]').exists()).toBe(true);
     // 侧树选中新建接口 B：App.vue 对 api 节点即调 editor.load（组件常驻挂载无 remount）
-    const collectionNode = workspace.tree!.children![0]!.children![0]!.children![0]!;
-    const created = await api.nodeCreate({ kind: "api", parentId: collectionNode.id, name: "接口B" });
-    await editor.load(created.id);
+    const created = await api.nodeCreate({ kind: "api", parent: collection.locator, api: { name: "接口B" } });
+    if (created.kind !== "api") throw new Error("Expected nodeCreate to return an API node");
+    await editor.load(created.locator);
     await flushPromises();
-    // 新接口无 protocol（http 页签集）：message 面板不再渲染，激活页签回落 params
+    // 新接口是正式 HTTP 契约：message 面板退场，HTTP path 页签仍可操作。
     expect(wrapper.find('[data-testid="editor-message"]').exists()).toBe(false);
     expect(protocolValue(wrapper)).toBe("http");
-    // add-param 仅在激活面板渲染：存在且激活 = params 面板可见 = 编辑区可编辑（修复前此处失败）
-    expect(wrapper.find('[data-testid="add-param"]').exists()).toBe(true);
-    expect(paneActive(wrapper, "add-param")).toBe(true);
+    await wrapper.find('[data-testid="tab-path"]').trigger("click");
+    expect(wrapper.find('[data-testid="add-path"]').exists()).toBe(true);
+    expect(paneActive(wrapper, "add-path")).toBe(true);
   });
 
   it("M5-B 预修②：同协议页签集内常规互切（http params↔headers、WS message↔headers）不受重置干扰", async () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
-    const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-    await editor.load(apiNode.id);
-    // http：params（默认激活）→ headers → params（激活面板随点击迁移）
-    expect(paneActive(wrapper, "add-param")).toBe(true);
-    await wrapper.find('[data-testid="tab-headers"]').trigger("click");
+    const { apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+    // HTTP path（默认激活）→ headers → path（激活面板随点击迁移）。
+    expect(paneActive(wrapper, "add-path")).toBe(true);
+    await wrapper.find('[data-testid="tab-header"]').trigger("click");
     await flushPromises();
     expect(paneActive(wrapper, "add-header")).toBe(true);
-    expect(paneActive(wrapper, "add-param")).toBe(false);
-    await wrapper.find('[data-testid="tab-params"]').trigger("click");
+    expect(paneActive(wrapper, "add-path")).toBe(false);
+    await wrapper.find('[data-testid="tab-path"]').trigger("click");
     await flushPromises();
-    expect(paneActive(wrapper, "add-param")).toBe(true);
-    // WS：message（切协议自动激活）→ headers → message（同协议内互切，apiId/protocol 不变）
+    expect(paneActive(wrapper, "add-path")).toBe(true);
+    // WS message → headers → message，同协议内页签互切。
     chooseProtocol(wrapper, "websocket");
     await flushPromises();
+    await wrapper.find('[data-testid="tab-message"]').trigger("click");
     expect(paneActive(wrapper, "editor-message")).toBe(true);
-    await wrapper.find('[data-testid="tab-headers"]').trigger("click");
+    await wrapper.find('[data-testid="tab-header"]').trigger("click");
     await flushPromises();
     expect(paneActive(wrapper, "add-header")).toBe(true);
     expect(paneActive(wrapper, "editor-message")).toBe(false);
@@ -890,23 +1091,33 @@ function makeReport(overrides: Partial<StressReport> = {}): StressReport {
  * StressPanel 装配辅助（裁定 B）：store 工厂一次性调用，实例经 props 注入（组件内零工厂调用）；
  * cases/envs 按「props 直接传列表」契约下发。种子：两用例（冒烟 + 第二用例）与环境 dev。
  */
-async function mountStress(props: Record<string, unknown> = {}, storeDeps: { trustOrigin?: (projectId: string, origin: string) => Promise<void> } = {}) {
-  const api = createMemoryApi();
+async function mountStress(props: Record<string, unknown> = {}, storeDeps: { trustOrigin?: (locator: ProjectLocator, origin: string) => Promise<void> } = {}) {
+  const root = `C:/apicc-stress-${randomUUID()}`;
+  const api = createMemoryApi({ root });
   api.seedWorkspace();
+  await api.wsOpen(root);
   const tree = await api.treeGet();
-  const project = tree.children![0]!.children![0]!;
-  const apiId = project.children![0]!.children![0]!.id;
-  await api.envCreate({ projectId: project.id, name: "dev" });
-  const detail = await api.apiGet(apiId);
-  detail.api.cases.push({ id: "c2", name: "第二用例", scope: "base", parameters: {}, assertions: [] });
-  await api.apiSave(detail.api);
-  const fresh = await api.apiGet(apiId);
-  const stress = createStressStore({ api, resolveProjectId: () => "project", ...storeDeps });
+  if (tree.source !== "local" || tree.kind !== "root") throw new Error("Expected local stress fixture root");
+  const group = tree.children.find((node): node is LocalGroupTreeNodeDTO => node.kind === "group"
+    && node.children.some((child) => child.kind === "project"));
+  const project = group?.children.find((node) => node.kind === "project");
+  const collection = project?.children.find((node) => node.kind === "collection");
+  const apiNode = collection?.children.find((node) => node.kind === "api");
+  if (!group || !project || !collection || apiNode?.kind !== "api") throw new Error("Stress fixture missing API tree path");
+  const projectLocator: ProjectLocator = { ...project.locator };
+  const apiLocator: ApiLocator = { ...apiNode.locator, folderIds: [...apiNode.locator.folderIds] };
+  await api.envCreate({ locator: projectLocator, name: "dev" });
+  const detail = await api.apiGet(apiLocator);
+  if (detail.api.cases[0]) detail.api.cases[0].name = "冒烟";
+  detail.api.cases.push({ id: "c2", name: "第二用例", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
+  await api.apiSave(apiLocator, detail.api);
+  const fresh = await api.apiGet(apiLocator);
+  const stress = createStressStore({ api, getContext: () => ({ root, locator: apiLocator }), ...storeDeps });
   const errors: unknown[] = [];
   const { i18n } = createI18nInstance();
   const wrapper = mount(StressPanel, {
     props: {
-      apiId,
+      apiLocator,
       cases: fresh.api.cases,
       envs: fresh.envs,
       stress,
@@ -916,7 +1127,7 @@ async function mountStress(props: Record<string, unknown> = {}, storeDeps: { tru
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, apiId, stress, errors, cases: fresh.api.cases, envs: fresh.envs };
+  return { wrapper, api, apiLocator, projectLocator, stress, errors, cases: fresh.api.cases, envs: fresh.envs };
 }
 
 /** antd 组件定位（chooseSelect/selectValue 同款思路：按组件名 + data-testid，不经下拉展开）。
@@ -950,8 +1161,9 @@ describe("stressStore", () => {
     apiA.seedWorkspace();
     const apiB = createMemoryApi();
     apiB.seedWorkspace();
-    const a = createStressStore({ api: apiA, resolveProjectId: () => "project" });
-    const b = createStressStore({ api: apiB, resolveProjectId: () => "project" });
+    const noSelection = () => ({ root: "", locator: null });
+    const a = createStressStore({ api: apiA, getContext: noSelection });
+    const b = createStressStore({ api: apiB, getContext: noSelection });
     // form 默认值集中定义：并发 1、iterations 模式；改 A 不影响 B
     expect(a.form.concurrency).toBe(1);
     expect(a.form.mode).toBe("iterations");
@@ -973,9 +1185,9 @@ describe("stressStore", () => {
     api.seedWorkspace();
     let resolveRun!: (v: StressRunOutput) => void;
     api.stressRun = (): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; });
-    const stress = createStressStore({ api, resolveProjectId: () => "project" });
+    const stress = createStressStore({ api, getContext: () => ({ root: stressStoreRoot, locator: stressStoreLocator }) });
     stress.form.caseId = "c1";
-    const first = stress.start("api-a");
+    const first = stress.start(stressStoreLocator);
     await flushPromises();
     expect(stress.running).toBe(true);
     // 组合根切接口时机：clear()（代际 +1、展示清空，running 仍 true）
@@ -991,7 +1203,7 @@ describe("stressStore", () => {
     // 陈旧拒绝同样不污染：clear 后旧 run reject → error 不置位、不向组件层重抛
     let rejectRun!: (e: Error) => void;
     api.stressRun = (): Promise<StressRunOutput> => new Promise((_res, rej) => { rejectRun = rej; });
-    const second = stress.start("api-a");
+    const second = stress.start(stressStoreLocator);
     await flushPromises();
     stress.clear();
     rejectRun(new Error("旧会话错误"));
@@ -1025,7 +1237,7 @@ describe("StressPanel", () => {
   it("点「开始」：stressRun 以表单值调用（载荷按 mode 组装），运行中开始禁用+停止可用，resolve 后报告与 file 行上屏", async () => {
     const sent: StressRunInput[] = [];
     let resolveFirst!: (v: StressRunOutput) => void;
-    const { wrapper, api, apiId, cases } = await mountStress();
+    const { wrapper, api, apiLocator, cases } = await mountStress();
     api.stressRun = (input: StressRunInput): Promise<StressRunOutput> => {
       sent.push(input);
       if (sent.length === 1) return new Promise<StressRunOutput>((res) => { resolveFirst = res; });
@@ -1040,13 +1252,13 @@ describe("StressPanel", () => {
     await flushPromises();
     // iterations 模式（默认 10 次）：载荷只带 maxIterations，durationMs 为 null
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toEqual({ apiId, caseId: "c2", envName: "dev", concurrency: 3, maxIterations: 10, durationMs: null });
+    expect(sent[0]).toEqual({ locator: apiLocator, caseId: "c2", envName: "dev", concurrency: 3, maxIterations: 10, durationMs: null });
     // 运行中：开始禁用 + 停止可用 + 运行提示可见，报告未出
     expect(wrapper.find('[data-testid="stress-start"]').attributes("disabled")).toBeDefined();
     expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeUndefined();
     expect(wrapper.find('[data-testid="stress-running"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(false);
-    resolveFirst({ ok: true, report: makeReport(), file: `stress-${apiId}-1.json` });
+    resolveFirst({ ok: true, report: makeReport(), file: `stress-${apiLocator.apiId}-1.json` });
     await flushPromises();
     // resolve 后：报告上屏（totalRequests=4）+ file 行显示 + 按钮态复位
     expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
@@ -1062,7 +1274,7 @@ describe("StressPanel", () => {
     await wrapper.find('[data-testid="stress-start"]').trigger("click");
     await flushPromises();
     expect(sent).toHaveLength(2);
-    expect(sent[1]).toEqual({ apiId, caseId: "c2", envName: "dev", concurrency: 3, maxIterations: null, durationMs: 3000 });
+    expect(sent[1]).toEqual({ locator: apiLocator, caseId: "c2", envName: "dev", concurrency: 3, maxIterations: null, durationMs: 3000 });
     expect(wrapper.find('[data-testid="stress-report"]').text()).toContain("2");
     expect(wrapper.find('[data-testid="stress-file"]').exists()).toBe(false);
   });
@@ -1166,10 +1378,10 @@ describe("StressPanel", () => {
     expect(confirmOnlyTrustCalls).toBe(0);
     expect(stress.pendingTargetOrigin).toBeNull();
 
-    let trustedProject = "";
+    let trustedProject: ProjectLocator | null = null;
     let trustedOrigin = "";
     let trustCalls = 0;
-    const second = await mountStress({}, { trustOrigin: async (projectId, origin) => { trustCalls += 1; trustedProject = projectId; trustedOrigin = origin; } });
+    const second = await mountStress({}, { trustOrigin: async (projectLocator, origin) => { trustCalls += 1; trustedProject = projectLocator; trustedOrigin = origin; } });
     const secondOutputs = [
       { ok: false as const, error: { code: "target_confirmation_required" as const, message: "confirm", targetOrigin: "https://example.com" } },
       { ok: true as const, report: makeReport() },
@@ -1179,7 +1391,7 @@ describe("StressPanel", () => {
     await flushPromises();
     await second.wrapper.find('[data-testid="stress-trust-project"]').trigger("click");
     await flushPromises();
-    expect(trustedProject).toBe("project");
+    expect(trustedProject).toEqual(second.projectLocator);
     expect(trustedOrigin).toBe("https://example.com");
     expect(trustCalls).toBe(1);
     expect(second.stress.pendingTargetOrigin).toBeNull();

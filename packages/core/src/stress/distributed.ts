@@ -3,12 +3,33 @@ import { computeReport, isEligibleCompletedAttempt, measurementWindowDurationMs,
 import type { StressDistributed, StressGeneratorMetrics, StressMeasurementWindow, StressReport, StressSafetyRun, StressSample, StressThresholds } from "./model.js";
 import { CurrentStressReportSchema, StressGeneratorSchema, StressMeasurementWindowSchema, StressSampleSchema } from "./model.js";
 
+// Zod's default z.record parser materializes into a normal object and drops an own
+// `__proto__` entry. Credential reference IDs are opaque strings, so preserve every
+// enumerable own key in a null-prototype dictionary after validating its values.
+const credentialVersionsSchema = z.custom<Record<string, string>>(
+  (input) => input !== null
+    && typeof input === "object"
+    && !Array.isArray(input)
+    && Object.keys(input).every((key) => typeof (input as Record<string, unknown>)[key] === "string"),
+  "Expected a string-to-string credential version record",
+).transform((input) => {
+  const output = Object.create(null) as Record<string, string>;
+  for (const key of Object.keys(input)) {
+    Object.defineProperty(output, key, {
+      value: input[key], enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return output;
+});
+
 /** 协调端下发给 shard worker 的规格消息（protocolVersion 为前向兼容锚点，D5）。 */
 export const StressWorkerSpecSchema = z.object({
   protocolVersion: z.literal(2),
   shardId: z.string(),
   apiPath: z.string(),
   caseId: z.string(),
+  definitionRevision: z.string().min(1),
+  credentialVersions: credentialVersionsSchema,
   envName: z.string().optional(),
   concurrency: z.number().int().positive().safe(),
   maxIterations: z.number().int().positive().safe().optional(),

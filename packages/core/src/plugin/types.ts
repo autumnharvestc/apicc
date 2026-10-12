@@ -1,23 +1,22 @@
-import type { AuthSpec, BodyContent, KeyValuePair, HttpMethod, Protocol } from "../domain/model.js";
+import type { KeyValuePair, HttpMethod } from "../domain/common.js";
 import type { Workspace } from "../domain/model.js";
 import type { RunResult } from "../report/types.js";
+import type { WorkspaceLoadState } from "../storage/contractFiles.js";
+import type { RuntimeBody } from "../request/body.js";
+import type { RuntimeAuth } from "../request/materialize.js";
 
-export interface ExecutableRequest {
-  method: HttpMethod;
+interface ExecutableRequestCommon {
   url: string;
   headers: Record<string, string>;
   query: KeyValuePair[];
-  body?: BodyContent;
-  auth?: AuthSpec;
-  /** 协议显式分发键（M5 D5）：缺省视为 http（旧形状请求零破坏）。 */
-  protocol?: Protocol;
-  /** websocket 连接后发送的文本帧（变量已解析，D7）；缺省仅连接不等待帧。 */
-  message?: string;
-  /** soap 请求体（XML 信封模板，变量已解析，D7）；soapClient 执行时必填。 */
-  envelope?: string;
-  /** soap 的 SOAPAction 头值（变量已解析，D7）；缺省不带该头。 */
-  soapAction?: string;
+  auth: RuntimeAuth;
 }
+
+/** Mutable per-attempt DTO; its protocol-specific fields match the materialized contract union. */
+export type ExecutableRequest =
+  | (ExecutableRequestCommon & { protocol: "http"; method: HttpMethod; body?: RuntimeBody })
+  | (ExecutableRequestCommon & { protocol: "websocket"; message?: string })
+  | (ExecutableRequestCommon & { protocol: "soap"; method: "POST"; envelope: string; soapAction?: string });
 
 export interface ExecutionResponse {
   status: number;
@@ -39,8 +38,8 @@ export interface ProtocolClient {
 }
 
 export interface AuthProvider {
-  type: AuthSpec["type"];
-  apply(request: ExecutableRequest, auth: AuthSpec, getVar: (name: string) => string | undefined): void;
+  type: Exclude<RuntimeAuth, { kind: "none" }>["kind"];
+  apply(request: ExecutableRequest, auth: Exclude<RuntimeAuth, { kind: "none" }>): void;
 }
 
 export interface AssertResult { pass: boolean; message: string }
@@ -82,7 +81,16 @@ export interface Reporter {
 
 export interface ImportedProject {
   project: import("../domain/model.js").Project;
+  diagnostics: ImportDiagnostic[];
   warnings: string[];
+}
+
+export interface ImportDiagnostic {
+  code: string;
+  ownerId: string;
+  path: string;
+  reason: string;
+  targetId?: string;
 }
 
 export interface Importer {
@@ -93,9 +101,14 @@ export interface Importer {
 
 export interface LoadProblem { file: string; message: string }
 
+export interface StorageSaveOptions {
+  expectedRevision: string;
+  deletions: readonly string[];
+}
+
 export interface StorageAdapter {
-  load(root: string): Promise<{ workspace: Workspace; problems: LoadProblem[] }>;
-  save(root: string, workspace: Workspace): Promise<void>;
+  load(root: string): Promise<WorkspaceLoadState<Workspace>>;
+  save(root: string, workspace: Workspace, options: StorageSaveOptions): Promise<{ revision: string }>;
 }
 
 export interface PluginContext { registry: PluginRegistryApi }

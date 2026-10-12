@@ -9,10 +9,24 @@
 import { describe, expect, it, vi } from "vitest";
 import { reactive } from "vue";
 import { toPlain, withPlainArgs } from "../../../src/renderer/src/api/index.js";
+import type { EnvironmentLocator, GroupLocator, NodeLocator, ProjectLocator } from "../../../src/shared/locations.js";
 import type { ApiccApi } from "../../../src/shared/types.js";
 
 /** importApply 的 project 形参类型（契约锚定，避免依赖 types.ts 内部导出名）。 */
 type ImportProject = Parameters<ApiccApi["importApply"]>[0]["project"];
+const groupTarget: GroupLocator = {
+  workspaceId: "00000000-0000-4000-8000-000000000001",
+  groupId: "00000000-0000-4000-8000-000000000002",
+};
+const projectLocator: ProjectLocator = {
+  ...groupTarget,
+  projectId: "00000000-0000-4000-8000-000000000003",
+};
+const environmentLocator: EnvironmentLocator = {
+  ...projectLocator,
+  environmentId: "00000000-0000-4000-8000-000000000004",
+};
+const nodeLocator: NodeLocator = { kind: "collection", locator: { ...projectLocator, collectionId: "00000000-0000-4000-8000-000000000005" } };
 
 describe("IPC 入参深平化（withPlainArgs，回归：An object could not be cloned）", () => {
   it("前置假设：structuredClone 对 Vue 响应式 Proxy 抛错（与 Electron 同源的判定器）", () => {
@@ -44,26 +58,26 @@ describe("IPC 入参深平化（withPlainArgs，回归：An object could not be 
       format: "openapi",
       project: reactive({ name: "商店 API", apis: [{ name: "updatePet", method: "PUT" }] }),
     });
-    await wrapped.importApply({ mode: "project", groupId: "group-1", name: "商店 API", project: preview.project as unknown as ImportProject });
+    await wrapped.importApply({ mode: "project", target: groupTarget, name: "商店 API", project: preview.project as unknown as ImportProject });
     expect(received).toHaveLength(1);
     // 判定器：入参能过结构化克隆（真实 Electron 场景即不再抛 An object could not be cloned）
     expect(() => structuredClone(received[0])).not.toThrow();
-    expect(received[0]).toEqual({ mode: "project", groupId: "group-1", name: "商店 API", project: { name: "商店 API", apis: [{ name: "updatePet", method: "PUT" }] } });
+    expect(received[0]).toEqual({ mode: "project", target: groupTarget, name: "商店 API", project: { name: "商店 API", apis: [{ name: "updatePet", method: "PUT" }] } });
   });
 
   it("withPlainArgs：多参/基本类型/undefined 参原样透传；属性动态取（中途换实现仍生效）", async () => {
     const spy = vi.fn(async () => undefined);
     const fake = { nodeDelete: spy, envVarsSave: spy } as unknown as ApiccApi;
     const wrapped = withPlainArgs(fake);
-    await wrapped.nodeDelete("collection", "c1");
-    await wrapped.envVarsSave("e1", { k: "v" });
-    expect(spy).toHaveBeenNthCalledWith(1, "collection", "c1");
-    expect(spy).toHaveBeenNthCalledWith(2, "e1", { k: "v" });
+    await wrapped.nodeDelete(nodeLocator);
+    await wrapped.envVarsSave(environmentLocator, { k: "v" });
+    expect(spy).toHaveBeenNthCalledWith(1, nodeLocator);
+    expect(spy).toHaveBeenNthCalledWith(2, environmentLocator, { k: "v" });
     // 中途换实现（App.test 场景：failingApi.nodeCreate 事后替换）：动态取属性不缓存
     const replacement = vi.fn(async () => undefined);
     (fake as unknown as Record<string, unknown>).nodeDelete = replacement;
-    await wrapped.nodeDelete("api", "a1");
-    expect(replacement).toHaveBeenCalledWith("api", "a1");
+    await wrapped.nodeDelete(nodeLocator);
+    expect(replacement).toHaveBeenCalledWith(nodeLocator);
   });
 
   it("withPlainArgs：函数型入参原样透传（onDirtyCheck 应答器回调——JSON 平化会把函数抹成 undefined）", () => {

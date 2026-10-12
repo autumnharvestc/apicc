@@ -6,7 +6,7 @@ import type { createAiStore } from "../stores/ai.js";
 /**
  * AI 建议抽屉（M6-C 任务 1 组件 / 任务 2 真链路产物，规格 §2 D4，纯展示组件）：props 只收
  * ai store 实例（App 组合根装配，组件内零工厂调用）；建议列表为只读预览——name/scope/
- * 断言数/后置脚本有无，并恒带「AI 生成」来源标注（裁定④）。勾选写回 store.selectedIds
+ * 断言数/后置操作数，并恒带「AI 生成」来源标注（裁定④）。勾选写回 store.selectedIds
  * （按 core AiSuggestedCase 本地生成的 id）；「采用」调 store.adopt()（并入
  * editor.api.cases，不自动保存——裁定③）；关闭经 @close 调 dismissSuggestions 丢弃（零落盘）。
  * 组件零 i18n 内联中文。
@@ -14,10 +14,6 @@ import type { createAiStore } from "../stores/ai.js";
 const props = defineProps<{ ai: ReturnType<typeof createAiStore> }>();
 const { t } = useI18n();
 
-function hasPostScript(index: number): boolean {
-  const row = props.ai.suggestions?.[index];
-  return row?.postScript !== undefined && row.postScript !== "";
-}
 </script>
 
 <template>
@@ -35,7 +31,7 @@ function hasPostScript(index: number): boolean {
     </div>
     <div v-else class="list">
       <div
-        v-for="(row, index) in ai.suggestions"
+        v-for="row in ai.suggestions"
         :key="row.id"
         class="row"
         data-testid="ai-suggest-item"
@@ -50,7 +46,7 @@ function hasPostScript(index: number): boolean {
           <span class="row-meta">
             <span data-testid="ai-suggest-scope">{{ t("ai.colScope") }}: {{ row.scope }}</span>
             <span data-testid="ai-suggest-assertions">{{ t("ai.colAssertions") }}: {{ row.assertions.length }}</span>
-            <span data-testid="ai-suggest-postscript">{{ t("ai.colPostScript") }}: {{ hasPostScript(index) ? t("ai.postScriptYes") : t("ai.postScriptNo") }}</span>
+            <span data-testid="ai-suggest-postoperations">{{ t("ai.colPostOperations") }}: {{ row.postOperations.length }}</span>
           </span>
         </div>
       </div>
@@ -58,7 +54,7 @@ function hasPostScript(index: number): boolean {
     <template #footer>
       <a-button
         type="primary"
-        :disabled="ai.selectedIds.length === 0"
+        :disabled="!ai.canAdopt"
         data-testid="ai-adopt-btn"
         @click="ai.adopt()"
       >

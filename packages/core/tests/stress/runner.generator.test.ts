@@ -5,7 +5,7 @@ import type { StressGeneratorMetrics } from "../../src/stress/model.js";
 
 function result() {
   return {
-    request: { method: "GET" as const, url: "http://fake/", headers: {}, query: [] },
+    request: { protocol: "http" as const, method: "GET" as const, url: "http://fake/", headers: {}, query: [], auth: { kind: "none" as const } },
     response: { status: 200, headers: {}, bodyText: "", timeMs: 0 },
     requestTimeMs: 0, scriptTimeMs: 0, iterationTimeMs: 0,
     outcome: { apiId: "a", apiName: "a", caseId: "c", caseName: "c", passed: true, durationMs: 0, assertions: [] },

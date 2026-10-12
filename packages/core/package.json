@@ -4,8 +4,16 @@
   "type": "module",
   "exports": {
     ".": {
+      "browser": {
+        "types": "./dist/shared.d.ts",
+        "default": "./dist/shared.js"
+      },
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./assets/context": {
+      "types": "./dist/assets/context.d.ts",
+      "default": "./dist/assets/context.js"
     },
     "./schema": {
       "types": "./dist/schema.d.ts",
@@ -29,6 +37,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "@napi-rs/keyring": "2.1.0",
     "@xmldom/xmldom": "^0.9.12",
     "better-sqlite3": "^13.0.3",
     "csv-parse": "^7.0.2",

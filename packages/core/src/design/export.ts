@@ -1,43 +1,51 @@
-import type { ApiDefinition } from "../domain/model.js";
+import type { DeepReadonly, ProjectAssetContextReadView } from "../assets/context.js";
+import type { ApiAsset } from "../contract/model.js";
+import { contractAiView } from "../ai/contractView.js";
+import { redactCommonCredentialText } from "../import/schemaMapping.js";
+import { renderContractMarkdown as renderContractMarkdownBase } from "./contractMarkdown.js";
 
-/** 渲染 agent 可消费的接口详细设计 Markdown（规格 §7.5）。 */
-// 注：任务简报中测试断言要求 `POST {{baseUrl}}/orders` 连续出现，
-// 故请求行合并为单行（测试意图优先于简报实现的分行渲染）。
-export function renderDesignMarkdown(api: ApiDefinition): string {
-  const schemaBlock = api.body?.kind === "json" ? `\n\`\`\`json\n${api.body.content}\n\`\`\`\n` : "";
-  const caseRows = api.cases
-    .map((c) => `| ${c.name} | ${c.scope} | ${c.assertions.length} 条断言 |`)
-    .join("\n");
-  // M5 D5：非 HTTP 协议的最小适配——协议行 + 协议专属载荷说明（http 输出逐字节不变，既有测试零改动）。
-  const protocolLine = api.protocol && api.protocol !== "http" ? `\n- 协议：**${api.protocol}**` : "";
-  const wsBlock =
-    api.protocol === "websocket" && api.message !== undefined
-      ? `\n\n\`\`\`text\n${api.message}\n\`\`\`\n（WebSocket：连接后发送以上消息模板，首个文本帧作为响应体）`
+/** Render Markdown from the selected immutable asset and the context for the same project snapshot. */
+export function renderDesignMarkdown(asset: DeepReadonly<ApiAsset>, context: ProjectAssetContextReadView): string {
+  const contract = context.getContract(asset.contract.id);
+  if (!contract) throw new TypeError("The API asset must belong to the supplied project snapshot context.");
+  const view = contractAiView(asset, context);
+  const request = asRecord(view.request);
+  const protocol = stringOr(request?.protocol, "unknown");
+  const protocolDetails = protocol === "websocket"
+    ? `- WebSocket message template: ${stringOr(request?.message, "")}`
+    : protocol === "soap"
+      ? `- SOAP envelope: ${stringOr(request?.envelope, "")}\n- SOAPAction: ${stringOr(request?.soapAction, "")}`
       : "";
-  const soapBlock =
-    api.protocol === "soap"
-      ? `\n\n\`\`\`xml\n${api.envelope ?? ""}\n\`\`\`\n（SOAP 1.1：以上信封作为请求体${api.soapAction ? `，SOAPAction: ${api.soapAction}` : ""}）`
-      : "";
-  return `# 接口详细设计：${api.name}
+  const version = stringOr(view.version, "");
+  const documentation = asset.documentation
+    ? `## Documentation\n\n${redactCommonCredentialText(asset.documentation)}`
+    : "";
+  const caseRows = asset.cases.map((testCase) =>
+    `| ${testCase.name} | ${testCase.scope} | ${testCase.assertions.length} |`,
+  );
+  const cases = [
+    "## Test cases",
+    "",
+    "| Name | Scope | Assertions |",
+    "|------|-------|------------|",
+    ...caseRows,
+  ].join("\n");
+  return [
+    renderContractMarkdownBase(asset, context),
+    `## Contract metadata\n\n- Version: ${version}\n- Status: ${contract.metadata.status}`,
+    protocolDetails ? `## Protocol details\n\n${protocolDetails}` : "",
+    documentation,
+    cases,
+  ].filter(Boolean).join("\n\n");
+}
 
-## 定义
+/** Explicit name for new consumers; retained entrypoint has the same snapshot-based contract. */
+export const renderContractMarkdown = renderDesignMarkdown;
 
-- 请求行：**${api.method} ${api.url}**${protocolLine}${wsBlock}${soapBlock}
-- 版本：${api.version}${api.deprecated ? "（已废弃）" : ""}
-- 请求头：${api.headers.map((h) => `${h.key}: ${h.value}`).join("；") || "无"}
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
 
-## 请求体
-
-${schemaBlock || "无"}
-
-## 详细设计
-
-${api.design ?? "（未编写，可补充业务规则、校验约定、错误码）"}
-
-## 测试用例
-
-| 用例 | 适用环境 | 断言 |
-|------|----------|------|
-${caseRows}
-`;
+function stringOr(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
 }

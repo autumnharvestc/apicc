@@ -3,55 +3,91 @@
 import { describe, expect, it } from "vitest";
 import { isReactive } from "vue";
 import type { Workflow, WorkflowRunResult } from "@apicc/core";
+import type { ApiLocator, ProjectLocator, WorkflowLocator } from "../../../src/shared/locations.js";
 import type { WfSetStatusResult } from "../../../src/shared/types.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
 
+const root = "/tmp/ws";
+
 async function seeded() {
   const api = createMemoryApi();
   api.seedWorkspace();
   const ws = useWorkspaceStore(api);
-  await ws.open("/tmp/ws");
-  // 种子树：根 → 分组[0] → 项目[0]（→ 集合[0] → 接口[0]）
-  const projectNode = ws.tree!.children![0]!.children![0]!;
-  const apiNode = projectNode.children![0]!.children![0]!;
-  const design = useWorkflowDesignStore(api);
-  return { api, ws, design, projectNode, apiNode };
+  await ws.open(root);
+  const projectNode = ws.tree!.children!.flatMap((group) => group.children ?? []).find((node) => node.kind === "project");
+  if (!projectNode || projectNode.kind !== "project") throw new Error("Memory workspace is missing its project");
+  const apiNode = projectNode.children!.flatMap((collection) => collection.children ?? []).find((node) => node.kind === "api");
+  if (!apiNode || apiNode.kind !== "api") throw new Error("Memory project is missing its API");
+  const context = { root, readOnly: false };
+  const design = useWorkflowDesignStore(api, () => context);
+  return { api, ws, design, context, projectNode, apiNode };
 }
 
 /** 经契约 api 预置一条工作流：wfCreate 只建空 draft 流，patch 经 wfSave 落入缓冲。 */
 async function seedWorkflow(
   api: ReturnType<typeof createMemoryApi>,
-  projectId: string,
+  projectLocator: ProjectLocator,
   name = "条件流",
   patch?: Partial<Workflow>,
 ): Promise<Workflow> {
-  const wf = await api.wfCreate({ projectId, name });
-  return api.wfSave({ ...wf, ...patch });
+  const wf = await api.wfCreate({ locator: projectLocator, name });
+  return api.wfSave({ ...projectLocator, workflowId: wf.id }, { ...wf, ...patch });
 }
 
 /** 引用种子接口用例的有效 request 节点（启用校验可通过）。 */
-async function validNode(api: ReturnType<typeof createMemoryApi>, apiId: string) {
-  const detail = await api.apiGet(apiId);
+async function validNode(api: ReturnType<typeof createMemoryApi>, locator: ApiLocator) {
+  const detail = await api.apiGet(locator);
   return {
     id: "n1",
     kind: "request" as const,
-    apiId,
+    apiId: locator.apiId,
     caseId: detail.api.cases[0]!.id,
     label: "登录",
     position: { x: 0, y: 0 },
   };
 }
 
+function workflowLocator(project: ProjectLocator, workflowId: string): WorkflowLocator {
+  return { ...project, workflowId };
+}
+
+async function loadWorkflow(
+  design: ReturnType<typeof useWorkflowDesignStore>,
+  project: ProjectLocator,
+  workflow: Workflow,
+) {
+  await design.load(root, workflowLocator(project, workflow.id));
+}
+
 describe("workflowDesign store", () => {
+  it("拒绝只读本地编辑，并在工作区根变化后拒绝旧草稿保存", async () => {
+    const { api, design, context, projectNode } = await seeded();
+    const wf = await seedWorkflow(api, projectNode.locator);
+    await loadWorkflow(design, projectNode.locator, wf);
+    context.readOnly = true;
+    expect(() => design.update({ ...design.workflow!, name: "只读改动" })).toThrow(/只读/);
+    context.readOnly = false;
+    design.update({ ...design.workflow!, name: "旧根改动" });
+
+    let saves = 0;
+    const save = api.wfSave.bind(api);
+    api.wfSave = async (...args) => { saves++; return save(...args); };
+    context.root = `${root}-copy`;
+    await expect(design.save()).rejects.toThrow(/工作区上下文已变化/);
+    expect(saves).toBe(0);
+    expect(design.workflow?.name).toBe("旧根改动");
+    expect(design.dirty).toBe(true);
+  });
+
   it("load 拉全量建缓冲；update 整体替换缓冲，dirty 由快照比对自动生效", async () => {
     const { api, design, projectNode, apiNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id, "条件流", {
-      nodes: [await validNode(api, apiNode.id)],
+    const wf = await seedWorkflow(api, projectNode.locator, "条件流", {
+      nodes: [await validNode(api, apiNode.locator)],
     });
     expect(design.workflow).toBeNull();
-    await design.load(wf.id);
+    await loadWorkflow(design, projectNode.locator, wf);
     expect(design.workflowId).toBe(wf.id);
     expect(design.workflow!.name).toBe("条件流");
     expect(design.workflow!.nodes).toHaveLength(1);
@@ -66,16 +102,16 @@ describe("workflowDesign store", () => {
 
   it("save 走 api.wfSave：传参剥离响应式、缓冲用返回值刷新、dirty 复位", async () => {
     const { api, design, projectNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id);
-    await design.load(wf.id);
+    const wf = await seedWorkflow(api, projectNode.locator);
+    await loadWorkflow(design, projectNode.locator, wf);
     design.update({ ...design.workflow!, name: "改名流" });
     let calls = 0;
     let savedInput: Workflow | undefined;
     const original = api.wfSave.bind(api);
-    api.wfSave = async (input) => {
+    api.wfSave = async (locator, input) => {
       calls++;
       savedInput = input;
-      return original(input);
+      return original(locator, input);
     };
     await design.save();
     expect(calls).toBe(1);
@@ -90,8 +126,8 @@ describe("workflowDesign store", () => {
 
   it("save 失败上抛调用方且 saving 复位、缓冲与 dirty 不动", async () => {
     const { api, design, projectNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id);
-    await design.load(wf.id);
+    const wf = await seedWorkflow(api, projectNode.locator);
+    await loadWorkflow(design, projectNode.locator, wf);
     design.update({ ...design.workflow!, name: "改名流" });
     api.wfSave = async () => {
       throw new Error("落盘失败");
@@ -105,11 +141,12 @@ describe("workflowDesign store", () => {
   // —— 审查 Minor 采纳：编辑+保存后旧运行着色残留与新内容不符，成功落盘即清空 ——
   it("save 成功清空 runResult（旧运行结果不再着色新内容）；save 失败保留", async () => {
     const { api, design, projectNode, apiNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id, "着色流", {
-      nodes: [await validNode(api, apiNode.id)],
+    const wf = await seedWorkflow(api, projectNode.locator, "着色流", {
+      nodes: [await validNode(api, apiNode.locator)],
     });
-    await design.load(wf.id);
+    await loadWorkflow(design, projectNode.locator, wf);
     await design.setStatus("published");
+    expect(design.workflow!.status).toBe("published");
     await design.setStatus("enabled");
     await design.run();
     expect(design.runResult).not.toBeNull();
@@ -119,10 +156,10 @@ describe("workflowDesign store", () => {
     expect(design.dirty).toBe(false);
 
     // save 失败（未落盘成功）：缓冲内容未换基线，旧运行结果保留不误清
-    const wf2 = await seedWorkflow(api, projectNode.id, "着色流乙", {
-      nodes: [await validNode(api, apiNode.id)],
+    const wf2 = await seedWorkflow(api, projectNode.locator, "着色流乙", {
+      nodes: [await validNode(api, apiNode.locator)],
     });
-    await design.load(wf2.id);
+    await loadWorkflow(design, projectNode.locator, wf2);
     await design.setStatus("published");
     await design.setStatus("enabled");
     await design.run();
@@ -137,10 +174,10 @@ describe("workflowDesign store", () => {
 
   it("setStatus 成功：刷新 workflow、清 validationErrors、dirty 不误报", async () => {
     const { api, design, projectNode, apiNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id, "条件流", {
-      nodes: [await validNode(api, apiNode.id)],
+    const wf = await seedWorkflow(api, projectNode.locator, "条件流", {
+      nodes: [await validNode(api, apiNode.locator)],
     });
-    await design.load(wf.id);
+    await loadWorkflow(design, projectNode.locator, wf);
     await design.setStatus("published");
     expect(design.workflow!.status).toBe("published");
     expect(design.dirty).toBe(false);
@@ -153,11 +190,14 @@ describe("workflowDesign store", () => {
   it("setStatus 失败：validationErrors 可见且状态不变；dismissValidation 清除", async () => {
     const { api, design, projectNode } = await seeded();
     // 引用不存在的接口/用例 → published→enabled 启用校验失败（errors 非空、状态不变）
-    const wf = await seedWorkflow(api, projectNode.id, "坏引用流", {
+    const wf = await seedWorkflow(api, projectNode.locator, "坏引用流", {
       nodes: [{ id: "n1", kind: "request", apiId: "no-api", caseId: "no-case", label: "登录" }],
     });
-    await design.load(wf.id);
+    await loadWorkflow(design, projectNode.locator, wf);
+    expect(design.root).toBe(root);
+    expect(design.locator).toEqual(workflowLocator(projectNode.locator, wf.id));
     await design.setStatus("published");
+    expect(design.workflow!.status).toBe("published");
     await design.setStatus("enabled");
     expect(design.validationErrors.length).toBeGreaterThan(0);
     expect(design.workflow!.status).toBe("published");
@@ -168,8 +208,8 @@ describe("workflowDesign store", () => {
 
   it("run：draft 直接把草稿提示存 error 不调 api（api 层同文案抛错，双保险）", async () => {
     const { api, design, projectNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id);
-    await design.load(wf.id);
+    const wf = await seedWorkflow(api, projectNode.locator);
+    await loadWorkflow(design, projectNode.locator, wf);
     let calls = 0;
     const originalRun = api.wfRun.bind(api);
     api.wfRun = async (input) => {
@@ -185,10 +225,10 @@ describe("workflowDesign store", () => {
 
   it("run：enabled 走 api.wfRun 存 runResult，running 复位", async () => {
     const { api, design, projectNode, apiNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id, "条件流", {
-      nodes: [await validNode(api, apiNode.id)],
+    const wf = await seedWorkflow(api, projectNode.locator, "条件流", {
+      nodes: [await validNode(api, apiNode.locator)],
     });
-    await design.load(wf.id);
+    await loadWorkflow(design, projectNode.locator, wf);
     await design.setStatus("published");
     await design.setStatus("enabled");
     await design.run();
@@ -202,10 +242,10 @@ describe("workflowDesign store", () => {
 
   it("run：running 门控（运行中重复触发不并发，api 只被调一次）", async () => {
     const { api, design, projectNode, apiNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id, "条件流", {
-      nodes: [await validNode(api, apiNode.id)],
+    const wf = await seedWorkflow(api, projectNode.locator, "条件流", {
+      nodes: [await validNode(api, apiNode.locator)],
     });
-    await design.load(wf.id);
+    await loadWorkflow(design, projectNode.locator, wf);
     await design.setStatus("published");
     await design.setStatus("enabled");
     const finished: WorkflowRunResult = {
@@ -240,10 +280,10 @@ describe("workflowDesign store", () => {
 
   it("run：环境未命中上抛调用方且 running 复位", async () => {
     const { api, design, projectNode, apiNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id, "条件流", {
-      nodes: [await validNode(api, apiNode.id)],
+    const wf = await seedWorkflow(api, projectNode.locator, "条件流", {
+      nodes: [await validNode(api, apiNode.locator)],
     });
-    await design.load(wf.id);
+    await loadWorkflow(design, projectNode.locator, wf);
     await design.setStatus("published");
     await design.setStatus("enabled");
     await expect(design.run("不存在环境")).rejects.toThrow(/未找到环境/);
@@ -252,9 +292,9 @@ describe("workflowDesign store", () => {
 
   it("save 在途期间 load 切流：旧流落盘结果不回写，缓冲保持新流（竞态守卫）", async () => {
     const { api, design, projectNode } = await seeded();
-    const wfA = await seedWorkflow(api, projectNode.id, "流甲");
-    const wfB = await seedWorkflow(api, projectNode.id, "流乙");
-    await design.load(wfA.id);
+    const wfA = await seedWorkflow(api, projectNode.locator, "流甲");
+    const wfB = await seedWorkflow(api, projectNode.locator, "流乙");
+    await loadWorkflow(design, projectNode.locator, wfA);
     design.update({ ...design.workflow!, name: "流甲改动" });
     let release: (value: Workflow) => void = () => {};
     api.wfSave = async () =>
@@ -263,7 +303,7 @@ describe("workflowDesign store", () => {
       });
     const saving = design.save();
     // 落盘在途时切到流乙
-    await design.load(wfB.id);
+    await loadWorkflow(design, projectNode.locator, wfB);
     expect(design.workflowId).toBe(wfB.id);
     release({ ...wfA, name: "流甲改动" }); // 模拟旧流的落盘返回值
     await saving;
@@ -276,20 +316,20 @@ describe("workflowDesign store", () => {
 
   it("setStatus/run 在途期间 load 切流：状态刷新与运行结果均不回写（竞态守卫）", async () => {
     const { api, design, projectNode, apiNode } = await seeded();
-    const wfA = await seedWorkflow(api, projectNode.id, "流甲", {
-      nodes: [await validNode(api, apiNode.id)],
+    const wfA = await seedWorkflow(api, projectNode.locator, "流甲", {
+      nodes: [await validNode(api, apiNode.locator)],
     });
-    const wfB = await seedWorkflow(api, projectNode.id, "流乙");
-    await design.load(wfA.id);
+    const wfB = await seedWorkflow(api, projectNode.locator, "流乙");
+    await loadWorkflow(design, projectNode.locator, wfA);
     // setStatus 在途切流：迁移成功结果（A published）丢弃，缓冲保持流乙 draft
     const originalSetStatus = api.wfSetStatus.bind(api);
     let releaseStatus: () => void = () => {};
-    api.wfSetStatus = async (_id, next) =>
+    api.wfSetStatus = async (_locator, next) =>
       new Promise<WfSetStatusResult>((resolve) => {
         releaseStatus = () => resolve({ workflow: { ...wfA, status: next }, errors: [], warnings: [] });
       });
     const migrating = design.setStatus("published");
-    await design.load(wfB.id);
+    await loadWorkflow(design, projectNode.locator, wfB);
     releaseStatus();
     await migrating;
     expect(design.workflowId).toBe(wfB.id);
@@ -297,9 +337,9 @@ describe("workflowDesign store", () => {
     expect(design.workflow!.status).toBe("draft");
     // run 在途切流：旧流运行结果不回填（恢复原 api 把流甲启用后加载）
     api.wfSetStatus = originalSetStatus;
-    await api.wfSetStatus(wfA.id, "published");
-    await api.wfSetStatus(wfA.id, "enabled");
-    await design.load(wfA.id);
+    await api.wfSetStatus(workflowLocator(projectNode.locator, wfA.id), "published");
+    await api.wfSetStatus(workflowLocator(projectNode.locator, wfA.id), "enabled");
+    await loadWorkflow(design, projectNode.locator, wfA);
     const finished: WorkflowRunResult = {
       workflowId: wfA.id, workflowName: "流甲", status: "enabled", nodeResults: [],
       total: 0, passed: 0, failed: 0, skipped: 0, warnings: [],
@@ -311,7 +351,7 @@ describe("workflowDesign store", () => {
         releaseRun = () => resolve(finished);
       });
     const running = design.run();
-    await design.load(wfB.id);
+    await loadWorkflow(design, projectNode.locator, wfB);
     releaseRun();
     await running;
     expect(design.runResult).toBeNull();
@@ -321,17 +361,17 @@ describe("workflowDesign store", () => {
 
   it("load 切换工作流重置运行结果与校验状态；工厂每调用 createPinia 隔离", async () => {
     const { api, design, projectNode } = await seeded();
-    const wfA = await seedWorkflow(api, projectNode.id, "流甲", {
+    const wfA = await seedWorkflow(api, projectNode.locator, "流甲", {
       nodes: [{ id: "nA", kind: "noop", label: "占位" }],
     });
-    const wfB = await seedWorkflow(api, projectNode.id, "流乙");
-    await design.load(wfA.id);
+    const wfB = await seedWorkflow(api, projectNode.locator, "流乙");
+    await loadWorkflow(design, projectNode.locator, wfA);
     // noop 节点也可启用（无 request 引用即无引用错误）
     await design.setStatus("published");
     await design.setStatus("enabled");
     await design.run();
     expect(design.runResult).not.toBeNull();
-    await design.load(wfB.id);
+    await loadWorkflow(design, projectNode.locator, wfB);
     expect(design.runResult).toBeNull();
     expect(design.validationErrors).toEqual([]);
     expect(design.dirty).toBe(false);
@@ -346,8 +386,8 @@ describe("workflowDesign store", () => {
 describe("unload", () => {
   it("载入并编辑后卸载 → 回到未选工作流空态（dirty 复位、会话态清空）", async () => {
     const { api, design, projectNode } = await seeded();
-    const wf = await seedWorkflow(api, projectNode.id, "流甲");
-    await design.load(wf.id);
+    const wf = await seedWorkflow(api, projectNode.locator, "流甲");
+    await loadWorkflow(design, projectNode.locator, wf);
     design.update({ ...design.workflow!, nodes: [{ id: "nX", kind: "noop", label: "占位" }], edges: [] });
     expect(design.dirty).toBe(true);
     design.unload();

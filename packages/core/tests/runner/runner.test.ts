@@ -10,14 +10,15 @@ import { httpClient } from "../../src/http/client.js";
 import { builtinAuthProviders } from "../../src/http/auth.js";
 import { builtinAssertOperators } from "../../src/assert/operators.js";
 import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
-import type { Collection, Environment, Operation, Project, Workspace } from "../../src/domain/model.js";
+import type { Environment, Operation } from "../../src/domain/common.js";
 import type { RunResult } from "../../src/report/types.js";
+import { runLegacyCollection, type LegacyRunnerApi, type LegacyRunnerCase, type LegacyRunnerCollection, type LegacyRunnerProject } from "../helpers/legacyRunnerFixtures.js";
 
 let server: Server;
 let baseUrl = "";
 let env: Environment;
-let project: Project;
-let workspace: Workspace;
+let project: LegacyRunnerProject;
+const workspace = Object.freeze({}); // old fixture argument; ignored by the snapshot adapter
 beforeAll(async () => {
   server = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
@@ -27,37 +28,44 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   // 夹具须在 baseUrl 就绪后构造：模块顶层求值会把空串快照进 env.variables。
   env = { id: "e1", name: "dev", variables: { baseUrl, who: "dev" }, baseUrls: {} };
-  project = { id: "p1", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-  workspace = { id: "w1", name: "ws", variables: { who: "global" }, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+  project = { id: "p1", name: "p", variables: {}, environments: [env] };
 });
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
-function buildDeps(failFast = false) {
+interface LegacyRunnerAdapter {
+  run(collection: LegacyRunnerCollection, environment: Environment, project: LegacyRunnerProject, workspace: unknown, options: import("../../src/runner/runner.js").RunnerOptions): Promise<RunResult>;
+}
+
+function adaptRunner(runner: CollectionRunner): LegacyRunnerAdapter {
+  return { run: (collection, environment, project, _workspace, options) => runLegacyCollection(runner, collection, environment, project, options) };
+}
+
+function buildDeps(failFast = false): LegacyRunnerAdapter {
   const registry = createPluginRegistry();
   registry.registerProtocol(httpClient);
   for (const p of builtinAuthProviders) registry.registerAuth(p);
   for (const o of builtinAssertOperators) registry.registerAssert(o);
   registry.registerScriptEngine(jsScriptEngine);
-  return new CollectionRunner({
+  return adaptRunner(new CollectionRunner({
     registry, bus: createEventBus(),
     timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 },
     failFast,
-  });
+  }));
 }
 
 /** 用自定义 bus 构造 Runner（钩子极性/事件契约测试用），其余插件与 buildDeps 相同。 */
-function buildRunnerWith(bus: ReturnType<typeof createEventBus>, failFast = false) {
+function buildRunnerWith(bus: ReturnType<typeof createEventBus>, failFast = false): LegacyRunnerAdapter {
   const registry = createPluginRegistry();
   registry.registerProtocol(httpClient);
   for (const p of builtinAuthProviders) registry.registerAuth(p);
   for (const o of builtinAssertOperators) registry.registerAssert(o);
   registry.registerScriptEngine(jsScriptEngine);
-  return new CollectionRunner({
+  return adaptRunner(new CollectionRunner({
     registry, bus, timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 }, failFast,
-  });
+  }));
 }
 
-function collectionWith(cases: Collection["apis"][number]["cases"]): Collection {
+function collectionWith(cases: LegacyRunnerCase[]): LegacyRunnerCollection {
   return {
     id: "c1", name: "c", variables: {}, folders: [],
     apis: [{ id: "a1", name: "get-ok", version: "1", deprecated: false, method: "GET", url: "{{baseUrl}}/x", headers: [], query: [], cases }],
@@ -75,7 +83,7 @@ describe("CollectionRunner", () => {
     const result = await buildDeps().run(col, env, project, workspace, {});
     expect(result.total).toBe(1);
     expect(result.passed).toBe(1);
-    expect(result.failed).toBe(0);
+    expect(result.failed, result.cases.map((item) => item.error ?? "ok").join(" | ")).toBe(0);
   });
 
   it("失败断言计入 failed 且不中断后续", async () => {
@@ -97,8 +105,8 @@ describe("CollectionRunner", () => {
 
   it("同 ID 环境用例覆盖基座：仅执行环境版本而非重复执行（规格 §6）", async () => {
     const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl, who: "sit" }, baseUrls: {} };
-    const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [], workflows: [] };
-    const col: Collection = {
+    const sitProject: LegacyRunnerProject = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv] };
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "override", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
@@ -117,7 +125,7 @@ describe("CollectionRunner", () => {
   });
 
   it("运行未覆盖该 ID 的环境时仍执行基座版本（防过度去重）", async () => {
-    const col: Collection = {
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "base-fallback", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
@@ -136,8 +144,8 @@ describe("CollectionRunner", () => {
   it("同 ID 出现两个环境版本时继承链更近者优先（规格 §6）", async () => {
     const pressEnv: Environment = { id: "e3", name: "press", extends: "sit", variables: { baseUrl }, baseUrls: {} };
     const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { baseUrl }, baseUrls: {} };
-    const chainProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv, pressEnv], collections: [], workflows: [] };
-    const col: Collection = {
+    const chainProject: LegacyRunnerProject = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv, pressEnv] };
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "nearest", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
@@ -157,7 +165,7 @@ describe("CollectionRunner", () => {
   it("数据驱动：CSV 每行执行一次并注入运行时变量", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-run-"));
     writeFileSync(join(dir, "data.csv"), "sku\nA1\nB2");
-    const col: Collection = {
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "dd", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
@@ -199,7 +207,7 @@ describe("CollectionRunner", () => {
         postScript: 'pm.assert(pm.response?.json().run === pm.variables.get("expected"), "globals echo");',
       }]);
       shared.apis[0]!.url = `http://127.0.0.1:${(barrier.address() as { port: number }).port}/echo`;
-      const makeProject = (run: string): Project => ({
+      const makeProject = (run: string): LegacyRunnerProject => ({
         ...project, id: `globals-${run}`, variables: { expected: run },
         globals: { query: [], headers: [{ key: "x-run", value: run, enabled: true }], cookies: [], body: [] },
       });
@@ -219,7 +227,7 @@ describe("CollectionRunner", () => {
 
   it("前置脚本可改写请求路径", async () => {
     const seen: string[] = [];
-    const col: Collection = {
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "rewrite", version: "1", deprecated: false,
@@ -232,10 +240,10 @@ describe("CollectionRunner", () => {
     };
     const bus = createEventBus();
     bus.on("beforeRequest", ({ request }) => { seen.push((request as { url: string }).url); });
-    const runner = new CollectionRunner({
+    const runner = adaptRunner(new CollectionRunner({
       registry: (() => { const r = createPluginRegistry(); r.registerProtocol(httpClient); for (const p of builtinAuthProviders) r.registerAuth(p); for (const o of builtinAssertOperators) r.registerAssert(o); r.registerScriptEngine(jsScriptEngine); return r; })(),
       bus, timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 }, failFast: false,
-    });
+    }));
     const result = await runner.run(col, env, project, workspace, {});
     expect(seen[0]).toContain("/right");
     expect(result.passed).toBe(1);
@@ -251,7 +259,7 @@ describe("CollectionRunner", () => {
   });
 
   it("postScript 提取的变量跨用例持久，且可被本用例 parameters 遮蔽", async () => {
-    const col: Collection = {
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "flow", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
@@ -278,7 +286,7 @@ describe("CollectionRunner", () => {
 
   it("脚本异常/超时只失败当用例，后续用例与落盘不受影响", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-iso-"));
-    const col: Collection = {
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "iso", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
@@ -326,8 +334,8 @@ describe("CollectionRunner", () => {
   it("环境派生继承：sit extends dev 继承 baseUrl，子环境变量覆盖同名（回归 C3）", async () => {
     // dev 有 baseUrl 而 sit 没有——URL 能解析即证明继承生效；who 由 sit 覆盖 dev。
     const sitEnv: Environment = { id: "e2", name: "sit", extends: "dev", variables: { who: "sit" }, baseUrls: {} };
-    const sitProject: Project = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv], collections: [], workflows: [] };
-    const col: Collection = {
+    const sitProject: LegacyRunnerProject = { id: "p1", name: "p", variables: {}, environments: [env, sitEnv] };
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "inherit", version: "1", deprecated: false, method: "GET", url: "{{baseUrl}}/x", headers: [], query: [],
@@ -359,7 +367,7 @@ describe("CollectionRunner", () => {
     await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
     try {
       const echoUrl = `http://127.0.0.1:${(echo.address() as { port: number }).port}/login`;
-      const col: Collection = {
+      const col: LegacyRunnerCollection = {
         id: "c1", name: "c", variables: {}, folders: [],
         apis: [{
           id: "a1", name: "login", version: "1", deprecated: false, method: "POST", url: echoUrl, headers: [], query: [],
@@ -386,7 +394,7 @@ describe("CollectionRunner", () => {
 
   it("数据源读取失败折进当用例 outcome，运行不中断（回归 I3）", async () => {
     const missing = join(mkdtempSync(join(tmpdir(), "apicc-data-")), "nope.csv");
-    const col: Collection = {
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "dd", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
@@ -414,9 +422,9 @@ describe("CollectionRunner", () => {
     bus.on("afterCase", (p) => { afterPayloads.push({ ...p }); });
     bus.on("afterRun", (p) => { afterRunPayload = { ...p }; });
     const result = await buildRunnerWith(bus).run(col, env, project, workspace, {});
-    expect(beforePayloads[0]).toMatchObject({ apiId: "a1", caseId: "t1", apiName: "get-ok", caseName: "ok" });
+    expect(beforePayloads[0]).toMatchObject({ apiId: expect.stringMatching(/^[0-9a-f-]{36}$/), caseId: "t1", apiName: "get-ok", caseName: "ok" });
     expect(afterPayloads[0]).toMatchObject({
-      apiId: "a1", caseId: "t1", apiName: "get-ok", caseName: "ok",
+      apiId: expect.stringMatching(/^[0-9a-f-]{36}$/), caseId: "t1", apiName: "get-ok", caseName: "ok",
       passed: true, durationMs: expect.any(Number),
     });
     expect((afterRunPayload as { result?: { total: number } }).result?.total).toBe(1);
@@ -463,7 +471,7 @@ describe("CollectionRunner", () => {
     const counting = createServer((_req, res) => { hits += 1; res.end("{}"); });
     await new Promise<void>((r) => counting.listen(0, "127.0.0.1", r));
     try {
-      const col: Collection = {
+      const col: LegacyRunnerCollection = {
         id: "c1", name: "c", variables: {}, folders: [],
         apis: [{
           id: "a1", name: "hookfail", version: "1", deprecated: false,
@@ -496,7 +504,7 @@ describe("CollectionRunner", () => {
     const runner = buildDeps();
     // 简报原稿 URL 为 http://127.0.0.1:1/（必然 ECONNREFUSED）：请求失败时 postScript 不会执行，
     // 变量可读性断言无从评估，故改用本文件顶层夹具 server（对位既有夹具，语义不变）。
-    const col = (pre: string, post: string): Collection => ({
+    const col = (pre: string, post: string): LegacyRunnerCollection => ({
       id: "c", name: "c", variables: {}, folders: [],
       apis: [{ id: "a", name: "a", version: "1", deprecated: false, method: "GET", url: `${baseUrl}/x`, headers: [], query: [],
         cases: [{ id: "t", name: "t", scope: "base", parameters: {}, preScript: pre, postScript: post, assertions: [] }] }],
@@ -553,18 +561,19 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
   });
   afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
-  function deps() {
+  function deps(): LegacyRunnerAdapter {
     const registry = createPluginRegistry();
     registry.registerProtocol(httpClient);
     for (const p of builtinAuthProviders) registry.registerAuth(p);
     for (const o of builtinAssertOperators) registry.registerAssert(o);
     registry.registerScriptEngine(jsScriptEngine);
-    return new CollectionRunner({ registry, bus: createEventBus(), timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 }, failFast: false });
+    return adaptRunner(new CollectionRunner({ registry, bus: createEventBus(), timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 }, failFast: false }));
   }
 
-  function apiWith(url: string, extra: Partial<Collection["apis"][number]> = {}): Collection["apis"][number] {
+  let nextApiId = 1;
+  function apiWith(url: string, extra: Partial<LegacyRunnerApi> = {}): LegacyRunnerApi {
     return {
-      id: "a1", name: "a", version: "1", deprecated: false, method: "GET", url,
+      id: `a${nextApiId++}`, name: "a", version: "1", deprecated: false, method: "GET", url,
       headers: [], query: [],
       cases: [{ id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
       ...extra,
@@ -576,12 +585,12 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
     const ap = (id: string) => `pm.variables.set('trace', (pm.variables.get('trace') ?? '') + '${id}')`;
     const op = (id: string): Operation => ({ id, type: "script", content: ap(id) });
     const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: {} };
-    const project: Project = {
+    const project: LegacyRunnerProject = {
       id: "p", name: "p", variables: {},
       globals: { query: [], headers: [], cookies: [], body: [] },
-      environments: [env], collections: [], workflows: [],
+      environments: [env],
     };
-    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+    const ws = Object.freeze({});
     // 用例前置操作改写 pm.request（与 legacy preScript 同能力口径）；trace 变量跨用例经 persisted 流转
     const mkCase = (id: string, path: string) => ({
       id, name: id, scope: "base", parameters: {},
@@ -589,11 +598,11 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
       postOperations: [op(`${id}-post`)],
       assertions: [{ id: `as-${id}`, target: "status" as const, op: "eq" as const, expected: "200" }],
     });
-    const apiIn = (id: string): Collection["apis"][number] => ({
+    const apiIn = (id: string): LegacyRunnerApi => ({
       id, name: id, version: "1", deprecated: false, method: "GET", url: `${base}/${id}`,
       headers: [], query: [], cases: [mkCase(id, `/${id}`)],
     });
-    const col: Collection = {
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {},
       preOperations: [op("m1"), op("m2")],
       postOperations: [op("M")],
@@ -621,13 +630,13 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
   it("前置 URL：相对 URL 自动拼接 + {{baseUrl}} 模板（环境按集合设置）", async () => {
     seen.length = 0;
     const env: Environment = { id: "e", name: "dev", variables: { who: "dev" }, baseUrls: { c1: `${base}/prefix` } };
-    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
-    const col: Collection = { id: "c1", name: "c", variables: {}, folders: [], apis: [apiWith("/rel/{{who}}"), apiWith("{{baseUrl}}/tpl")] };
+    const project: LegacyRunnerProject = { id: "p", name: "p", variables: {}, environments: [env] };
+    const ws = Object.freeze({});
+    const col: LegacyRunnerCollection = { id: "c1", name: "c", variables: {}, folders: [], apis: [apiWith("/rel/{{who}}"), apiWith("{{baseUrl}}/tpl")] };
     const result = await deps().run(col, env, project, ws, {});
-    expect(result.failed).toBe(0);
-    // WHATWG resolution treats a leading slash as an origin-root relative URL.
-    expect(seen[0]!.path).toBe("/rel/dev");
+    expect(result.failed, result.cases.map((item) => item.error ?? "ok").join(" | ")).toBe(0);
+    // Contract paths remain relative to the selected collection base URL path.
+    expect(seen[0]!.path).toBe("/prefix/rel/dev");
     expect(seen[1]!.path).toBe("/prefix/tpl");
   });
 
@@ -635,7 +644,7 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
     seen.length = 0;
     const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: { c1: base } };
     // 全局变量即 project.variables（M10 合一）：gvar 在变量链最低层可被 {{gvar}} 引用
-    const project: Project = {
+    const project: LegacyRunnerProject = {
       id: "p", name: "p", variables: { gvar: "G" },
       globals: {
         query: [{ key: "gq", value: "from-global", enabled: true }, { key: "api-q", value: "gone", enabled: true }],
@@ -643,10 +652,10 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
         cookies: [{ key: "sid", value: "from-cookie", enabled: true }],
         body: [{ key: "gk", value: "from-global", enabled: true }, { key: "api-k", value: "gone", enabled: true }],
       },
-      environments: [env], collections: [], workflows: [],
+      environments: [env],
     };
-    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
-    const col: Collection = {
+    const ws = Object.freeze({});
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
         id: "a1", name: "a", version: "1", deprecated: false, method: "POST",
@@ -667,10 +676,10 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
   });
 
   it("请求构造配置错误折进 config outcome，并继续后续用例", async () => {
-    const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: { c1: base } };
-    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
-    const col: Collection = {
+    const env: Environment = { id: "e", name: "dev", variables: { baseUrl: base }, baseUrls: {} };
+    const project: LegacyRunnerProject = { id: "p", name: "p", variables: {}, environments: [env] };
+    const ws = Object.freeze({});
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: { loop: "{{loop}}" }, folders: [],
       apis: [
         {
@@ -693,9 +702,9 @@ describe("CollectionRunner 环境模型（M9-B）", () => {
 
   it("数据源读取失败保留 config failureKind", async () => {
     const env: Environment = { id: "e", name: "dev", variables: {}, baseUrls: { c1: base } };
-    const project: Project = { id: "p", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-    const ws: Workspace = { id: "w", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
-    const col: Collection = {
+    const project: LegacyRunnerProject = { id: "p", name: "p", variables: {}, environments: [env] };
+    const ws = Object.freeze({});
+    const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [], apis: [{
         ...apiWith("/data"), cases: [{
           id: "missing", name: "missing", scope: "base", parameters: {},

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { AssertionSchema } from "../domain/model.js";
+import { AssertionSchema, OperationListSchema } from "../domain/common.js";
 
 // M6-A core ai 模块契约面（规格 §2 D1/D3）。core 只认显式传入的 config，
 // 配置解析（env/用户级文件）归宿主（CLI/桌面），密钥永不落工作区。
@@ -28,15 +28,16 @@ export interface AiChatMessage {
 export type AiProvider = (messages: AiChatMessage[]) => Promise<string>;
 
 /**
- * AI 产出的用例草稿（D3：TestCase 同构子集 name/scope/parameters/assertions/postScript）。
+ * AI 产出的用例草稿（name/scope/parameters/operations/assertions）。
  * strict：未知字段（含 AI 自带的 id——裁定④不信任 AI id）一律拒绝，进修复重试而非静默丢弃。
  */
 export const AiCaseDraftSchema = z.object({
   name: z.string(),
   scope: z.string().default("base"),
   parameters: z.record(z.string(), z.string()).default({}),
+  preOperations: OperationListSchema,
+  postOperations: OperationListSchema,
   assertions: z.array(AssertionSchema).default([]),
-  postScript: z.string().optional(),
 }).strict();
 export type AiCaseDraft = z.output<typeof AiCaseDraftSchema>;
 

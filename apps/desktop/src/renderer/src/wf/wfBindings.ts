@@ -1,107 +1,167 @@
-import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
+import type { ApiLocator, ProjectLocator } from "../../../shared/locations.js";
+import type { LocalTreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { ApiDetail } from "../../../shared/types.js";
 
-/**
- * 接口/用例绑定级联数据层（M2-B 任务 4）：树 DTO 只携带接口 id 与名称，不含用例——
- * 用例目录由组合根注入式取数（api.apiGet）补齐。产物同时服务三处消费：
- * - 属性面板 a-cascader 的 options（集合→接口→用例）；
- * - 画布节点 data 预注入的 apiName/caseName（WfNodeData 契约，画布不做查找）；
- * - toFlowElements 的 apiIds 集合（request 节点 missing 红框检测）。
- * 全部为纯数据运算：取数失败（接口已被删除）跳过该接口的用例目录，不阻塞其余索引。
- */
-
-/** a-cascader 选项形状（value=对应层级 id，label=展示名）。 */
+/** a-cascader 选项形状（value 沿用模型中的 API/case id）。 */
 export interface BindOption {
   value: string;
   label: string;
   children?: BindOption[];
 }
 
-/** 单项目的绑定索引（绑定目录 + 名称解析 + missing 检测集合）。 */
+/** 单项目绑定索引；取数与名称解析均按完整 API 定位符分区。 */
 export interface WfBindIndex {
-  /** 当前项目全部接口 id：toFlowElements({ apiIds }) 的 missing 检测数据源。 */
+  projectLocator: ProjectLocator | null;
+  /** 当前项目全部接口 id：Workflow 节点仅持有 API id，missing 检测在项目内进行。 */
   apiIds: Set<string>;
-  /** apiId → 接口名（画布节点预注入）。 */
+  /** 完整 API 定位符 key → 接口名。 */
   apiNames: Map<string, string>;
-  /** caseId → 用例名（画布节点预注入）。 */
+  /** 完整 API 定位符 + case id key → 用例名。 */
   caseNames: Map<string, string>;
-  /** 集合→接口→用例 级联选项（属性面板改绑）。 */
+  /** 供持久化的 Workflow API id 反解完整 API 位置；重复 id 保留全部以消除串名。 */
+  apiLocatorsById: Map<string, ApiLocator[]>;
+  /** 集合→接口→用例级联选项。 */
   options: BindOption[];
 }
 
-/** 用例目录取数函数（组合根绑定为 api.apiGet）。 */
-export type FetchApiDetail = (apiId: string) => Promise<ApiDetail>;
+export type FetchApiDetail = (locator: ApiLocator) => Promise<ApiDetail>;
 
-/** 树投影：项目下「集合→接口」平铺条目（保持深度优先顺序）。 */
-interface TreeApiEntry { collectionId: string; collectionLabel: string; apiId: string; apiLabel: string }
-
-function collectProjectApis(node: TreeNodeDTO | undefined, out: TreeApiEntry[], col?: { id: string; label: string }): void {
-  if (!node) return;
-  if (node.kind === "collection") col = { id: node.id, label: node.label };
-  if (node.kind === "api" && col) {
-    out.push({ collectionId: col.id, collectionLabel: col.label, apiId: node.id, apiLabel: node.label });
-    return;
-  }
-  for (const child of node.children ?? []) collectProjectApis(child, out, col);
+interface TreeApiEntry {
+  collectionId: string;
+  collectionLabel: string;
+  locator: ApiLocator;
+  apiLabel: string;
 }
 
-/**
- * 构建单项目绑定索引。projectId 为 null（未选项目）或树未开 → 空索引；
- * 单个接口取数失败 → 只跳过该接口的用例目录（已删接口不阻塞面板，引用它的
- * 节点由 missing 标注兜底），接口本身仍进 apiIds/apiNames。
- */
+function copyProject(locator: ProjectLocator): ProjectLocator {
+  return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+}
+
+function copyApi(locator: ApiLocator): ApiLocator {
+  return {
+    workspaceId: locator.workspaceId,
+    groupId: locator.groupId,
+    projectId: locator.projectId,
+    collectionId: locator.collectionId,
+    folderIds: [...locator.folderIds],
+    apiId: locator.apiId,
+  };
+}
+
+export function sameProjectLocator(left: ProjectLocator | null, right: ProjectLocator | null): boolean {
+  return !!left && !!right && left.workspaceId === right.workspaceId && left.groupId === right.groupId
+    && left.projectId === right.projectId;
+}
+
+/** Stable key over every API path segment; never merge names from distinct collections/folders. */
+export function apiLocatorKey(locator: ApiLocator): string {
+  return JSON.stringify([
+    locator.workspaceId,
+    locator.groupId,
+    locator.projectId,
+    locator.collectionId,
+    ...locator.folderIds,
+    locator.apiId,
+  ]);
+}
+
+export function apiCaseKey(locator: ApiLocator, caseId: string): string {
+  return JSON.stringify([apiLocatorKey(locator), caseId]);
+}
+
+function sameProject(left: ProjectLocator, right: ProjectLocator): boolean {
+  return left.workspaceId === right.workspaceId && left.groupId === right.groupId && left.projectId === right.projectId;
+}
+
+function findProject(node: LocalTreeNodeDTO | null, locator: ProjectLocator): LocalTreeNodeDTO | null {
+  if (!node) return null;
+  if (node.kind === "project" && sameProject(node.locator, locator)) return node;
+  for (const child of node.children ?? []) {
+    const hit = findProject(child, locator);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function collectProjectApis(
+  node: LocalTreeNodeDTO | null,
+  out: TreeApiEntry[],
+  collection?: { id: string; label: string },
+): void {
+  if (!node) return;
+  if (node.kind === "collection") collection = { id: node.id, label: node.label };
+  if (node.kind === "api" && collection) {
+    out.push({ collectionId: collection.id, collectionLabel: collection.label, locator: copyApi(node.locator), apiLabel: node.label });
+    return;
+  }
+  for (const child of node.children ?? []) collectProjectApis(child, out, collection);
+}
+
+function emptyIndex(projectLocator: ProjectLocator | null = null): WfBindIndex {
+  return {
+    projectLocator: projectLocator ? copyProject(projectLocator) : null,
+    apiIds: new Set(),
+    apiNames: new Map(),
+    caseNames: new Map(),
+    apiLocatorsById: new Map(),
+    options: [],
+  };
+}
+
+/** 构建单项目索引；失败接口仍存在于树索引，只缺其用例目录。 */
 export async function buildBindIndex(
-  tree: TreeNodeDTO | null,
-  projectId: string | null,
+  tree: LocalTreeNodeDTO | null,
+  projectLocator: ProjectLocator | null,
   fetchCases: FetchApiDetail,
 ): Promise<WfBindIndex> {
-  const empty: WfBindIndex = { apiIds: new Set(), apiNames: new Map(), caseNames: new Map(), options: [] };
-  if (!tree || !projectId) return empty;
-  const project = (tree.children ?? [])
-    .flatMap((g) => g.children ?? [])
-    .find((p) => p.kind === "project" && p.id === projectId);
-  if (!project) return empty;
+  if (!tree || !projectLocator) return emptyIndex(projectLocator);
+  const project = findProject(tree, projectLocator);
+  if (!project) return emptyIndex(projectLocator);
 
   const entries: TreeApiEntry[] = [];
   collectProjectApis(project, entries);
-
-  // 用例目录缓存：apiId → 用例选项（取数失败为空数组）
-  const caseNames = new Map<string, string>();
   const casesByApi = new Map<string, BindOption[]>();
-  await Promise.all(
-    entries.map(async (e) => {
-      try {
-        const detail = await fetchCases(e.apiId);
-        casesByApi.set(
-          e.apiId,
-          detail.api.cases.map((c) => ({ value: c.id, label: c.name })),
-        );
-        for (const c of detail.api.cases) caseNames.set(c.id, c.name);
-      } catch {
-        casesByApi.set(e.apiId, []);
-      }
-    }),
-  );
-
-  const apiIds = new Set(entries.map((e) => e.apiId));
-  const apiNames = new Map(entries.map((e) => [e.apiId, e.apiLabel] as const));
-  const options: BindOption[] = [];
-  for (const e of entries) {
-    let collection = options.find((o) => o.value === e.collectionId);
-    if (!collection) {
-      collection = { value: e.collectionId, label: e.collectionLabel, children: [] };
-      options.push(collection);
+  const caseNames = new Map<string, string>();
+  await Promise.all(entries.map(async (entry) => {
+    const key = apiLocatorKey(entry.locator);
+    try {
+      const detail = await fetchCases(copyApi(entry.locator));
+      casesByApi.set(key, detail.api.cases.map((item) => ({ value: item.id, label: item.name })));
+      for (const item of detail.api.cases) caseNames.set(apiCaseKey(entry.locator, item.id), item.name);
+    } catch {
+      casesByApi.set(key, []);
     }
-    collection.children!.push({ value: e.apiId, label: e.apiLabel, children: casesByApi.get(e.apiId) ?? [] });
+  }));
+
+  const apiIds = new Set(entries.map((entry) => entry.locator.apiId));
+  const apiNames = new Map<string, string>();
+  const apiLocatorsById = new Map<string, ApiLocator[]>();
+  for (const entry of entries) {
+    apiNames.set(apiLocatorKey(entry.locator), entry.apiLabel);
+    const candidates = apiLocatorsById.get(entry.locator.apiId) ?? [];
+    candidates.push(copyApi(entry.locator));
+    apiLocatorsById.set(entry.locator.apiId, candidates);
   }
-  return { apiIds, apiNames, caseNames, options };
+
+  const options: BindOption[] = [];
+  const collections = new Map<string, BindOption>();
+  for (const entry of entries) {
+    let option = collections.get(entry.collectionId);
+    if (!option) {
+      option = { value: entry.collectionId, label: entry.collectionLabel, children: [] };
+      collections.set(entry.collectionId, option);
+      options.push(option);
+    }
+    option.children!.push({
+      value: entry.locator.apiId,
+      label: entry.apiLabel,
+      children: casesByApi.get(apiLocatorKey(entry.locator)) ?? [],
+    });
+  }
+  return { projectLocator: copyProject(projectLocator), apiIds, apiNames, caseNames, apiLocatorsById, options };
 }
 
-/**
- * 在级联选项中反查当前绑定路径（cascader 受控 value）：命中 apiId+caseId 返回三级
- * 路径；只绑了接口（无 caseId 或 caseId 不在选项内）返回两段；未绑定或引用不在
- * 选项内（如他项目接口）返回空数组。
- */
+/** 将持久化 Workflow 中的 API/case ids 反查级联受控路径。 */
 export function findBindPath(options: BindOption[], apiId?: string, caseId?: string): string[] {
   if (!apiId) return [];
   for (const collection of options) {
@@ -109,41 +169,36 @@ export function findBindPath(options: BindOption[], apiId?: string, caseId?: str
       if (api.value !== apiId) continue;
       const path = [collection.value, api.value];
       if (!caseId) return path;
-      const hit = (api.children ?? []).some((c) => c.value === caseId);
-      return hit ? [...path, caseId] : path;
+      return (api.children ?? []).some((item) => item.value === caseId) ? [...path, caseId] : path;
     }
   }
   return [];
 }
 
-/**
- * 绑定索引装载器（组合根用，审查修复）：递增序号守护异步竞态——快速切换项目时，
- * 先发起的构建若后完成即视为过期（结果丢弃、不落位），只有最新请求的结果落进
- * `current`。projectId 为 null 视为显式清空（同样参与序号竞争）。
- */
 export interface BindIndexLoader {
-  /** 当前已落位的索引（仅在最新请求完成后更新）。 */
   readonly current: WfBindIndex | null;
-  /** 发起一次装载；返回 null = 被更新的请求过期，或入参为空/树未开。 */
-  load(projectId: string | null): Promise<WfBindIndex | null>;
+  load(projectLocator: ProjectLocator | null): Promise<WfBindIndex | null>;
 }
 
-export function createBindIndexLoader(getTree: () => TreeNodeDTO | null, fetchCases: FetchApiDetail): BindIndexLoader {
+/** 按完整 ProjectLocator 装载，保留序号防止旧项目结果覆盖新索引。 */
+export function createBindIndexLoader(
+  getTree: () => LocalTreeNodeDTO | null,
+  fetchCases: FetchApiDetail,
+): BindIndexLoader {
   let seq = 0;
   let current: WfBindIndex | null = null;
   return {
-    get current() {
-      return current;
-    },
-    async load(projectId: string | null): Promise<WfBindIndex | null> {
+    get current() { return current; },
+    async load(projectLocator: ProjectLocator | null): Promise<WfBindIndex | null> {
       const mine = ++seq;
-      if (!projectId || !getTree()) {
+      if (!projectLocator || !getTree()) {
         if (mine !== seq) return null;
         current = null;
         return null;
       }
-      const index = await buildBindIndex(getTree(), projectId, fetchCases);
-      if (mine !== seq) return null; // 过期：期间又发起了新的装载
+      const fixed = copyProject(projectLocator);
+      const index = await buildBindIndex(getTree(), fixed, fetchCases);
+      if (mine !== seq) return null;
       current = index;
       return index;
     },

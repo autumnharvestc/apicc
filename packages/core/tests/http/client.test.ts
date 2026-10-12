@@ -2,6 +2,12 @@ import { createServer, type Server } from "node:http";
 import type { Socket } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHttpClient, httpClient, classifyNetworkError, HttpExecutionError } from "../../src/http/client.js";
+import type { ExecutableRequest } from "../../src/plugin/types.js";
+
+type HttpRequest = Extract<ExecutableRequest, { protocol: "http" }>;
+const httpRequest = (url: string, overrides: Partial<HttpRequest> = {}): HttpRequest => ({
+  protocol: "http", method: "GET", url, headers: {}, query: [], auth: { kind: "none" }, ...overrides,
+});
 
 let server: Server;
 let baseUrl = "";
@@ -37,27 +43,28 @@ describe("httpClient", () => {
     String.raw`https:\example.com\orders`,
     "HTTPS://EXAMPLE.COM/orders",
   ])("canHandle 按 WHATWG 识别 HTTP(S) special URL：%s", (url) => {
-    const request = { method: "GET" as const, url, headers: {}, query: [] };
-    expect(httpClient.canHandle(request)).toBe(true);
-    expect(httpClient.canHandle({ ...request, protocol: "http" })).toBe(true);
+    expect(httpClient.canHandle(httpRequest(url))).toBe(true);
+    const missingProtocol = { method: "GET", url, headers: {}, query: [], auth: { kind: "none" } } as unknown as ExecutableRequest;
+    expect(httpClient.canHandle(missingProtocol)).toBe(false);
   });
 
   it.each(["ftp://example.com/orders", "example.com/orders", "/relative/orders"])(
     "canHandle 拒绝非 HTTP(S)/relative URL：%s",
     (url) => {
-      expect(httpClient.canHandle({ method: "GET", url, headers: {}, query: [] })).toBe(false);
+      expect(httpClient.canHandle(httpRequest(url))).toBe(false);
     },
   );
 
   it("显式协议字段优先，HTTPS-looking websocket/SOAP 不由 HTTP client 承接", () => {
-    const request = { method: "GET" as const, url: "https:example.com/orders", headers: {}, query: [] };
-    expect(httpClient.canHandle({ ...request, protocol: "websocket" })).toBe(false);
-    expect(httpClient.canHandle({ ...request, protocol: "soap" })).toBe(false);
+    const websocket: ExecutableRequest = { protocol: "websocket", url: "https:example.com/orders", headers: {}, query: [], auth: { kind: "none" } };
+    const soap: ExecutableRequest = { protocol: "soap", method: "POST", envelope: "", url: "https:example.com/orders", headers: {}, query: [], auth: { kind: "none" } };
+    expect(httpClient.canHandle(websocket)).toBe(false);
+    expect(httpClient.canHandle(soap)).toBe(false);
   });
 
   it("发送 POST JSON 并读取响应头/体/耗时", async () => {
     const res = await httpClient.execute(
-      { method: "POST", url: `${baseUrl}/echo`, headers: { "content-type": "application/json", "x-token": "t1" }, query: [], body: { kind: "json", content: '{"a":1}' } },
+      httpRequest(`${baseUrl}/echo`, { method: "POST", headers: { "content-type": "application/json", "x-token": "t1" }, body: { kind: "json", content: '{"a":1}' } }),
       opts,
     );
     expect(res.status).toBe(200);
@@ -68,8 +75,8 @@ describe("httpClient", () => {
 
   it("form 请求体以 urlencoded 编码发送，缺省时自动补 content-type（回归 C4）", async () => {
     const res = await httpClient.execute(
-      {
-        method: "POST", url: `${baseUrl}/echo`, headers: {}, query: [],
+      httpRequest(`${baseUrl}/echo`, {
+        method: "POST",
         body: {
           kind: "form",
           content: "",
@@ -79,7 +86,7 @@ describe("httpClient", () => {
             { key: "off", value: "no", enabled: false },
           ],
         },
-      },
+      }),
       opts,
     );
     expect(res.status).toBe(200);
@@ -91,10 +98,10 @@ describe("httpClient", () => {
 
   it("form 请求体已显式声明 content-type 时不覆盖", async () => {
     const res = await httpClient.execute(
-      {
-        method: "POST", url: `${baseUrl}/echo`, headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" }, query: [],
+      httpRequest(`${baseUrl}/echo`, {
+        method: "POST", headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
         body: { kind: "form", content: "", form: [{ key: "a", value: "1", enabled: true }] },
-      },
+      }),
       opts,
     );
     const echoed = JSON.parse(res.bodyText) as { body: string; contentType: string };
@@ -104,7 +111,7 @@ describe("httpClient", () => {
 
   it("query 参数拼接到 URL", async () => {
     const res = await httpClient.execute(
-      { method: "GET", url: `${baseUrl}/echo`, headers: {}, query: [{ key: "a", value: "1", enabled: true }], },
+      httpRequest(`${baseUrl}/echo`, { query: [{ key: "a", value: "1", enabled: true }] }),
       opts,
     );
     expect(res.status).toBe(200);
@@ -113,7 +120,7 @@ describe("httpClient", () => {
   it("连接拒绝分类为 refused", async () => {
     // 端口 1 几乎必然拒绝；若环境异常兜底校验分类函数存在
     try {
-      await httpClient.execute({ method: "GET", url: "http://127.0.0.1:1/", headers: {}, query: [] }, opts);
+      await httpClient.execute(httpRequest("http://127.0.0.1:1/"), opts);
       expect.unreachable("应当抛错");
     } catch (e) {
       expect((e as { kind?: string }).kind).toBe("refused");
@@ -122,7 +129,7 @@ describe("httpClient", () => {
 
   it("响应超时分类为 timeout", async () => {
     try {
-      await httpClient.execute({ method: "GET", url: `${baseUrl}/slow`, headers: {}, query: [] }, { connectTimeoutMs: 1000, totalTimeoutMs: 500 });
+      await httpClient.execute(httpRequest(`${baseUrl}/slow`), { connectTimeoutMs: 1000, totalTimeoutMs: 500 });
       expect.unreachable("应当抛错");
     } catch (e) {
       expect((e as { kind?: string }).kind).toBe("timeout");
@@ -141,7 +148,7 @@ describe("httpClient", () => {
 });
 
 describe("managed HTTP client lifecycle", () => {
-  const req = () => ({ method: "GET" as const, url: `${baseUrl}/echo`, headers: {}, query: [] });
+  const req = () => httpRequest(`${baseUrl}/echo`);
 
   it("pooled 模式复用连接，fresh 模式逐请求建连", async () => {
     let connections = 0;

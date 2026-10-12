@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { listRuns, readRun } from "../../src/main/runs.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
+import { IDS, uuid } from "./helpers/contract-assets.js";
 
 const sample = {
   collectionId: "c", collectionName: "demo", startedAt: "2026-09-02T00:00:00.000Z",
@@ -106,47 +107,62 @@ function setup() {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-runs-"));
   const session = createSession();
   const deps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
-  return { deps, dir };
+  return { deps, dir, session };
+}
+
+async function createRunFixture(deps: ReturnType<typeof createIpcDeps>, dir: string) {
+  const opened = await deps.handle("ws:create", {}, dir, "w");
+  const group = await deps.handle("node:create", {}, { kind: "group", parent: { workspaceId: opened.workspace.id }, name: "g" });
+  if (group.kind !== "group") throw new Error(`Expected group DTO, received ${group.kind}`);
+  const project = await deps.handle("node:create", {}, { kind: "project", parent: group.locator, name: "p" });
+  if (project.kind !== "project") throw new Error(`Expected project DTO, received ${project.kind}`);
+  const collection = await deps.handle("node:create", {}, { kind: "collection", parent: project.locator, name: "c" });
+  if (collection.kind !== "collection") throw new Error(`Expected collection DTO, received ${collection.kind}`);
+  const api = await deps.handle("node:create", {}, {
+    kind: "api", parent: collection.locator,
+    api: { name: "a", method: "GET", baseUrl: "http://127.0.0.1:1", path: "/" },
+  });
+  if (api.kind !== "api") throw new Error(`Expected API DTO, received ${api.kind}`);
+  return { opened, group, project, collection, api };
 }
 
 describe("IPC run 频道", () => {
   it("run:collection 走完整集合运行并落盘历史；runs:list/runs:get 读回", async () => {
     const { deps, dir } = setup();
-    await deps.handle("ws:create", {}, dir, "w");
-    const g = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
-    const p = await deps.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
-    const c = await deps.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
-    await deps.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
+    const { collection } = await createRunFixture(deps, dir);
     // 不可达地址 → 用例失败但运行本身完成（Runner 语义，与 debug:send 测试同款）
-    const run = await deps.handle("run:collection", {}, { collectionId: c.id });
+    const run = await deps.handle("run:collection", {}, { locator: collection.locator });
+    if (!run || "kind" in run) throw new Error("Expected collection run result");
     expect(run.collectionName).toBe("c");
     expect(run.total).toBe(1);
     expect(run.failed).toBe(1);
     const list = await deps.handle("runs:list", {});
     expect(list).toHaveLength(1);
-    expect(list[0]!.collectionName).toBe("c");
-    expect(list[0]!.failed).toBe(1);
-    const detail = await deps.handle("runs:get", {}, list[0]!.file);
-    expect(detail).not.toBeNull();
-    expect(detail!.total).toBe(1);
-    expect(detail!.collectionName).toBe("c");
+    const summary = list[0];
+    if (!summary || summary.kind !== "collection") throw new Error("Expected collection run summary");
+    expect(summary.collectionName).toBe("c");
+    expect(summary.failed).toBe(1);
+    const detail = await deps.handle("runs:get", {}, summary.file);
+    if (!detail || "kind" in detail) throw new Error("Expected collection run detail");
+    expect(detail.total).toBe(1);
+    expect(detail.collectionName).toBe("c");
   });
 
   it("run:collection 未命中集合抛「未找到」；未知 envName 显式抛「未找到环境」；runs:list 未打开工作区抛可读错误", async () => {
     const { deps } = setup();
-    await expect(deps.handle("run:collection", {}, { collectionId: "不存在" })).rejects.toThrow(/未打开工作区/);
+    await expect(deps.handle("run:collection", {}, { locator: {
+      workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, collectionId: IDS.collectionOne,
+    } })).rejects.toThrow(/未打开工作区/);
     const { deps: fresh } = setup();
     await expect(fresh.handle("runs:list", {})).rejects.toThrow(/未打开工作区/);
     // 未知 envName：显式拒绝而非静默降级为无环境运行（审查修复）
     const { deps: full, dir: fullDir } = setup();
-    await full.handle("ws:create", {}, fullDir, "w");
-    const g = await full.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
-    const p = await full.handle("node:create", {}, { kind: "project", parentId: g.id, name: "p" });
-    const c = await full.handle("node:create", {}, { kind: "collection", parentId: p.id, name: "c" });
-    await full.handle("node:create", {}, { kind: "api", parentId: c.id, name: "a", method: "GET", url: "http://127.0.0.1:1/" });
-    await expect(full.handle("run:collection", {}, { collectionId: c.id, envName: "ghost" })).rejects.toThrow(/未找到环境: ghost/);
+    const { collection } = await createRunFixture(full, fullDir);
+    await expect(full.handle("run:collection", {}, { locator: { ...collection.locator, collectionId: uuid(2700) } }))
+      .rejects.toThrow(/未找到集合/);
+    await expect(full.handle("run:collection", {}, { locator: collection.locator, envName: "ghost" })).rejects.toThrow(/未找到环境: ghost/);
     // envName 为空 = 无环境运行，不抛（走完整 Runner，不可达地址 → 运行完成、用例失败）
-    const emptyEnvRun = await full.handle("run:collection", {}, { collectionId: c.id, envName: "" });
+    const emptyEnvRun = await full.handle("run:collection", {}, { locator: collection.locator, envName: "" });
     expect(emptyEnvRun.total).toBe(1);
   });
 });

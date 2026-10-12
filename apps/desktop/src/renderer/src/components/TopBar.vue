@@ -9,6 +9,7 @@ import type { useTreeStore } from "../stores/tree.js";
 import type { createOnlineStore } from "../stores/online.js";
 import type { createPluginsStore } from "../stores/plugins.js";
 import type { createTabsStore, ProjectTab } from "../stores/tabs.js";
+import type { ProjectLocator } from "../../../shared/locations.js";
 import ThemeLanguageToggle from "./ThemeLanguageToggle.vue";
 import PluginsView from "./PluginsView.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
@@ -38,31 +39,29 @@ const { t } = useI18n();
 
 const settingsOpen = ref(false);
 
-// —— 项目切换（本地模式）：选中树中的项目节点，侧树作用域化至该项目 ——
+// —— 项目切换（本地模式）：value 为完整 ProjectLocator，避免跨分组同 ID 串项 ——
 const projects = computed(() =>
   (props.workspace.tree?.children ?? [])
     .flatMap((g) => g.children ?? [])
     .filter((n) => n.kind === "project")
-    .map((p) => ({ label: p.label, value: p.id })),
+    .map((p) => ({ label: p.label, value: JSON.stringify(p.locator) })),
 );
-// 选中任意节点时回溯其所属项目（与 App 的 selectedProjectId 同口径——仅选中项目节点
-// 时显示会让接口/集合选中后下拉退回占位符）。
-const activeProjectId = computed(() => {
+const activeProjectValue = computed(() => {
   const sel = props.tree.selected;
-  if (!sel || !props.workspace.tree) return undefined;
-  if (sel.kind === "project") return sel.id;
-  const contains = (node: { id: string; children?: Array<{ id: string; children?: unknown[] }> }): boolean =>
-    (node.children ?? []).some((c) => c.id === sel.id || contains(c as never));
-  for (const g of props.workspace.tree.children ?? []) {
-    for (const p of g.children ?? []) {
-      if (p.id === sel.id || contains(p)) return p.id;
-    }
-  }
-  return undefined;
+  if (!sel || sel.source !== "local") return undefined;
+  if (sel.kind === "project") return JSON.stringify(sel.locator);
+  if (sel.kind === "root" || sel.kind === "group") return undefined;
+  return JSON.stringify({ workspaceId: sel.locator.workspaceId, groupId: sel.locator.groupId, projectId: sel.locator.projectId });
 });
 
-function onProjectSelect(id: string) {
-  props.tree.select("project", id);
+function onProjectSelect(value: string) {
+  try {
+    const locator = JSON.parse(value) as ProjectLocator;
+    const project = props.workspace.findProject(locator);
+    if (project) props.tree.select(project);
+  } catch (error) {
+    props.reportError(error);
+  }
 }
 
 // —— 退出在线工作区（计划 C 任务 6，不变量 4：工作区级关闭唯一入口，确认弹窗列出受影响签）——
@@ -112,7 +111,7 @@ function onExitCancel() {
     <a-select
       v-if="!online.activeWorkspace && workspace.opened"
       class="project-switch"
-      :value="activeProjectId"
+      :value="activeProjectValue"
       :options="projects"
       :placeholder="t('topbar.projectPlaceholder')"
       data-testid="project-switch"

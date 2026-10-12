@@ -5,6 +5,7 @@
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import type { RunResult } from "@apicc/core";
+import type { CollectionLocator } from "../../../src/shared/locations.js";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
@@ -51,15 +52,21 @@ async function mountRunView(props: Record<string, unknown> = {}) {
   api.seedWorkspace();
   const workspace = useWorkspaceStore(api);
   await workspace.open("/tmp/ws");
-  const collectionNode = workspace.tree!.children![0]!.children![0]!.children![0]!;
+  const group = workspace.tree!.children.find((node) => node.kind === "group" && node.children.some((child) =>
+    child.kind === "project" && child.children.some((item) => item.kind === "collection")));
+  if (!group || group.kind !== "group") throw new Error("Memory workspace is missing the seeded project group");
+  const project = group.children.find((node) => node.kind === "project" && node.children.some((item) => item.kind === "collection"));
+  if (!project || project.kind !== "project") throw new Error("Memory group is missing the seeded project");
+  const collectionNode = project.children.find((node) => node.kind === "collection");
+  if (!collectionNode || collectionNode.kind !== "collection") throw new Error("Memory project is missing the seeded collection");
   const run = useRunStore(api);
   const { i18n } = createI18nInstance();
   const wrapper = mount(RunView, {
-    props: { run, workspace, selectedCollectionId: null, reportError: () => {}, ...props },
+    props: { run, workspace, selectedCollectionLocator: null, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, workspace, run, collectionNode };
+  return { wrapper, api, workspace, run, group, project, collectionNode };
 }
 
 describe("RunView", () => {
@@ -67,7 +74,7 @@ describe("RunView", () => {
     const { wrapper, run, collectionNode } = await mountRunView();
     const runBtn = wrapper.find('[data-testid="run-btn"]');
     expect(runBtn.attributes("disabled")).toBeDefined();
-    chooseSelect(wrapper, "run-collection-select", collectionNode.id);
+    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
     await flushPromises();
     expect(runBtn.attributes("disabled")).toBeUndefined();
     await runBtn.trigger("click");
@@ -93,7 +100,7 @@ describe("RunView", () => {
       ],
     };
     api.runCollection = async () => mixed;
-    chooseSelect(wrapper, "run-collection-select", collectionNode.id);
+    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
     await flushPromises();
     await wrapper.find('[data-testid="run-btn"]').trigger("click");
     await flushPromises();
@@ -118,7 +125,7 @@ describe("RunView", () => {
       ],
     };
     api.runCollection = async () => mixed;
-    chooseSelect(wrapper, "run-collection-select", collectionNode.id);
+    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
     await flushPromises();
     await wrapper.find('[data-testid="run-btn"]').trigger("click");
     await flushPromises();
@@ -132,7 +139,7 @@ describe("RunView", () => {
 
   it("历史抽屉：运行后打开列出 history-row，点击读回完整结果并收起", async () => {
     const { wrapper, run, collectionNode } = await mountRunView();
-    chooseSelect(wrapper, "run-collection-select", collectionNode.id);
+    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
     await flushPromises();
     await wrapper.find('[data-testid="run-btn"]').trigger("click");
     await flushPromises();
@@ -151,35 +158,36 @@ describe("RunView", () => {
   });
 
   it("跨项目切换集合：环境下拉残留的失效环境名重置回「无环境」", async () => {
-    const { wrapper, api, run, workspace, collectionNode } = await mountRunView();
-    const rootNode = workspace.tree!.children![0]!;
-    const projectA = rootNode.children![0]!;
+    const { wrapper, api, run, workspace, group, project: projectA, collectionNode } = await mountRunView();
     // 项目 A 建环境 dev；另建项目 B 及其集合（跨项目切换场景）
-    await api.envCreate({ projectId: projectA.id, name: "dev" });
-    const p2 = await api.nodeCreate({ kind: "project", parentId: rootNode.id, name: "p2" });
-    const c2 = await api.nodeCreate({ kind: "collection", parentId: p2.id, name: "c2" });
+    await api.envCreate({ locator: projectA.locator, name: "dev" });
+    const p2 = await api.nodeCreate({ kind: "project", parent: group.locator, name: "p2" });
+    if (p2.kind !== "project") throw new Error("Memory project creation did not return a project node");
+    const c2 = await api.nodeCreate({ kind: "collection", parent: p2.locator, name: "c2" });
+    if (c2.kind !== "collection") throw new Error("Memory collection creation did not return a collection node");
     await workspace.refresh();
     await flushPromises();
-    chooseSelect(wrapper, "run-collection-select", collectionNode.id);
+    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
     chooseSelect(wrapper, "run-env-select", "dev");
     await flushPromises();
     // 切到项目 B 的集合：残留的 dev 在项目 B 不存在（会被主进程「未找到环境」拒绝），应重置回无环境
-    chooseSelect(wrapper, "run-collection-select", c2.id);
+    chooseSelect(wrapper, "run-collection-select", JSON.stringify(c2.locator));
     await flushPromises();
     const envSelect = wrapper
       .findAllComponents({ name: "ASelect" })
       .find((c) => c.attributes("data-testid") === "run-env-select")!;
     expect((envSelect.vm.$props as { value: unknown }).value).toBe("");
     // 行为面断言：运行入参不再携带残留 envName
-    let captured: { collectionId: string; envName?: string } | null = null;
+    const captured: { current: { locator: CollectionLocator; envName?: string | null } | null } = { current: null };
     const original = api.runCollection.bind(api);
     api.runCollection = async (input) => {
-      captured = { ...input };
+      captured.current = { ...input };
       return original(input);
     };
     await wrapper.find('[data-testid="run-btn"]').trigger("click");
     await flushPromises();
-    expect(captured).toEqual({ collectionId: c2.id });
+    expect(captured.current?.locator).toEqual(c2.locator);
+    expect(captured.current?.envName).toBeUndefined();
     expect(run.result).not.toBeNull();
   });
 
@@ -187,7 +195,7 @@ describe("RunView", () => {
     const errors: unknown[] = [];
     const { wrapper, api, collectionNode } = await mountRunView({ reportError: (e: unknown) => { errors.push(e); } });
     api.runCollection = async () => { throw new Error("boom"); };
-    chooseSelect(wrapper, "run-collection-select", collectionNode.id);
+    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
     await flushPromises();
     await wrapper.find('[data-testid="run-btn"]').trigger("click");
     await flushPromises();

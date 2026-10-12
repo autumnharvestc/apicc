@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createPluginRegistry } from "../../src/plugin/registry.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ProtocolClient } from "../../src/plugin/types.js";
+import { fileStorage } from "../../src/storage/fileStorage.js";
+import { ContractWorkspaceSchema } from "../../src/contract/workspace.js";
+import { workspaceFixture } from "../helpers/contractFixtures.js";
 
 const fakeAssert = {
   op: "eq",
@@ -36,7 +42,7 @@ describe("PluginRegistry", () => {
     };
     reg.registerProtocol(first);
     reg.registerProtocol({ name: "second", canHandle: () => false, execute: async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 0 }) });
-    expect(reg.getProtocol({ method: "GET", url: "https://example.com", headers: {}, query: [] })).toBe(first);
+    expect(reg.getProtocol({ protocol: "http", method: "GET", url: "https://example.com", headers: {}, query: [], auth: { kind: "none" } })).toBe(first);
   });
 
   it("plugin(def) 执行 setup 完成自注册", () => {
@@ -46,5 +52,26 @@ describe("PluginRegistry", () => {
       setup(ctx) { ctx.registry.registerAssert(fakeAssert); },
     });
     expect(reg.getAssert("eq")).toBeDefined();
+  });
+
+  it("registers a StorageAdapter that reads and writes the versioned workspace contract", async () => {
+    const reg = createPluginRegistry();
+    reg.plugin({
+      name: "contract-storage",
+      version: "1.0.0",
+      setup(ctx) { ctx.registry.registerStorage(fileStorage); },
+    });
+    const storage = reg.getStorage();
+    expect(storage).toBe(fileStorage);
+    if (!storage) throw new Error("Storage plugin did not register its adapter");
+
+    const workspace = ContractWorkspaceSchema.parse(workspaceFixture());
+    const root = mkdtempSync(join(tmpdir(), "apicc-registry-storage-"));
+    const saved = await storage.save(root, workspace, { expectedRevision: "empty", deletions: [] });
+    const loaded = await storage.load(root);
+
+    expect(loaded.workspace).toEqual(workspace);
+    expect(loaded.revision).toBe(saved.revision);
+    expect(loaded.readOnly).toBe(false);
   });
 });

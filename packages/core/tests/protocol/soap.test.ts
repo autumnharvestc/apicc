@@ -3,8 +3,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createSoapClient, soapClient } from "../../src/protocol/soap.js";
 import { HttpExecutionError } from "../../src/http/client.js";
 import { CollectionRunner, createDefaultRegistry, createEventBus } from "../../src/index.js";
-import type { Collection, Environment, Project, Workspace } from "../../src/domain/model.js";
+import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import type { ApiAsset } from "../../src/contract/model.js";
 import type { ExecutableRequest } from "../../src/plugin/types.js";
+import { createContractExecutionProject, contractExecutionIds } from "../helpers/contractExecutionFixtures.js";
 
 /**
  * 本地 http server 夹具（风格对照 tests/http/client.test.ts）：
@@ -56,7 +58,9 @@ afterAll(() => new Promise<void>((r) => server.close(() => r())));
 const opts = { connectTimeoutMs: 2000, totalTimeoutMs: 3000 };
 
 /** 夹具请求：envelope 为「已解析」XML 文本（变量解析在 runner，D7）。 */
-function soapReq(overrides: Partial<ExecutableRequest> = {}): ExecutableRequest {
+type SoapExecutableRequest = Extract<ExecutableRequest, { protocol: "soap" }>;
+
+function soapReq(overrides: Partial<SoapExecutableRequest> = {}): SoapExecutableRequest {
   return {
     method: "POST",
     url: `${baseUrl}/soap`,
@@ -65,6 +69,7 @@ function soapReq(overrides: Partial<ExecutableRequest> = {}): ExecutableRequest 
     protocol: "soap",
     envelope: '<Envelope><Body><AddUser name="m5"/></Body></Envelope>',
     ...overrides,
+    auth: overrides.auth ?? { kind: "none" },
   };
 }
 
@@ -74,7 +79,10 @@ describe("soapClient（M5 D3/D4，裁定 A）", () => {
     const managed = {
       name: "session-http", canHandle: () => true,
       execute: async (request: ExecutableRequest) => {
+        expect(request.protocol).toBe("http");
+        if (request.protocol !== "http") throw new Error("SOAP adapter must delegate HTTP");
         expect(request.method).toBe("POST");
+        expect(request.body?.kind).toBe("xml");
         expect(request.body?.content).toContain("AddUser");
         return { status: 200, headers: {}, bodyText: "ok", timeMs: 1 };
       },
@@ -145,29 +153,40 @@ describe("soapClient（M5 D3/D4，裁定 A）", () => {
 
 describe("runner 分发与 envelope 变量解析（M5 D5+D7）", () => {
   it("CollectionRunner：soap 接口走 soapClient，envelope 模板经变量解析后作为请求体", async () => {
-    const env: Environment = { id: "e1", name: "dev", variables: { who: "m5-soap" }, baseUrls: {} };
-    const project: Project = { id: "p1", name: "p", variables: {}, environments: [env], collections: [], workflows: [] };
-    const workspace: Workspace = { id: "w1", name: "ws", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
-    const collection: Collection = {
-      id: "c1", name: "c", variables: {}, folders: [],
-      apis: [{
-        id: "a1", name: "soap-add", version: "1", deprecated: false,
-        method: "POST", protocol: "soap", url: `${baseUrl}/soap`,
-        envelope: '<Envelope><Body><AddUser name="{{who}}"/></Body></Envelope>',
-        soapAction: "urn:demo/AddUser",
-        headers: [], query: [], cases: [{
-          id: "t1", name: "add", scope: "base", parameters: {}, assertions: [],
-          postScript: 'pm.assert(pm.response.text().includes("<id>42</id>"), "响应应含 id=42");',
-        }],
+    const project = createContractExecutionProject(baseUrl);
+    project.environments[0]!.variables.who = "m5-soap";
+    project.globals = { query: [], headers: [], cookies: [], body: [] };
+    const soapAsset: ApiAsset = {
+      contract: {
+        formatVersion: 1,
+        id: contractExecutionIds.contract,
+        metadata: { name: "soap-add", description: "", tags: [], version: "1", status: "draft" },
+        request: {
+          protocol: "soap", method: "POST", baseUrl: "{{baseUrl}}", path: "/soap",
+          pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" },
+          envelope: '<Envelope><Body><AddUser name="{{who}}"/></Body></Envelope>',
+          soapAction: "urn:demo/AddUser",
+        },
+        responses: [],
+      },
+      cases: [{
+        id: contractExecutionIds.case, name: "add", scope: "base", parameters: {},
+        preOperations: [], postOperations: [{ id: "assert-response", type: "script", content: 'pm.assert(pm.response.text().includes("<id>42</id>"), "响应应含 id=42");' }],
+        assertions: [],
       }],
+      documentation: "",
     };
-
+    project.collections[0]!.folders[0]!.folders[0]!.apis = [soapAsset];
+    const snapshot = createProjectSnapshot(project);
     captured.length = 0;
     const runner = new CollectionRunner({
       registry: createDefaultRegistry(), bus: createEventBus(),
       timeouts: opts, failFast: false,
     });
-    const result = await runner.run(collection, env, project, workspace, {});
+    const result = await runner.run({
+      snapshot,
+      credentialBindings: { resolve: () => { throw new Error("no credential expected"); }, versions: {} },
+    }, contractExecutionIds.collection, { environmentId: contractExecutionIds.environment });
     expect(result.failed).toBe(0);
     expect(result.passed).toBe(1);
     expect(captured[0]?.body).toBe('<Envelope><Body><AddUser name="m5-soap"/></Body></Envelope>');

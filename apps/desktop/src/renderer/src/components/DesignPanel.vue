@@ -22,6 +22,7 @@ const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
   design: ReturnType<typeof useDesignStore>;
   reportError?: (e: unknown) => void;
+  readOnly?: boolean;
 }>();
 const { t } = useI18n();
 
@@ -29,7 +30,11 @@ const saved = ref(false);
 
 // immediate：装配后首次挂载（含视图切换重挂）也要按当前接口水合，不等 apiId 变化。
 watch(
-  () => props.editor.apiId,
+  () => {
+    const key = props.editor.activeKey;
+    const session = key ? props.editor.sessions[key] : undefined;
+    return [key, session?.generation] as const;
+  },
   () => {
     props.design.load();
     saved.value = false;
@@ -38,12 +43,19 @@ watch(
 );
 
 async function onSave() {
+  if (props.readOnly) return;
   try {
+    // Reconcile the design draft with the current editor generation before it can write documentation.
+    props.design.load();
     await props.design.save();
     saved.value = true;
   } catch (e) {
     props.reportError?.(e);
   }
+}
+
+function setContent(value: string) {
+  if (!props.readOnly) props.design.setContent(value);
 }
 
 async function onExport() {
@@ -61,7 +73,7 @@ async function onExport() {
     <EmptyState v-if="!editor.api" :text="t('design.empty')" />
     <template v-else>
       <div class="toolbar">
-        <a-button size="small" type="primary" data-testid="design-save" @click="onSave">{{ t("design.save") }}</a-button>
+        <a-button size="small" type="primary" data-testid="design-save" :disabled="readOnly" @click="onSave">{{ t("design.save") }}</a-button>
         <a-button size="small" data-testid="design-export" @click="onExport">{{ t("design.export") }}</a-button>
         <span v-if="saved" class="saved" data-testid="design-saved">{{ t("design.saved") }}</span>
       </div>
@@ -71,7 +83,8 @@ async function onExport() {
         class="design-text"
         :placeholder="t('design.placeholder')"
         data-testid="design-content"
-        @update:value="design.setContent($event as string)"
+        :disabled="readOnly"
+        @update:value="setContent($event as string)"
       />
       <a-typography class="preview">
         <a-typography-paragraph>

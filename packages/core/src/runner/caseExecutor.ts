@@ -1,5 +1,8 @@
 import { JSONPath } from "jsonpath-plus";
-import type { ApiDefinition, BodyContent, KeyValuePair, ProjectGlobals, TestCase } from "../domain/model.js";
+import type { ApiAsset } from "../contract/model.js";
+import type { DeepReadonly, ProjectAssetContextReadView } from "../assets/context.js";
+import type { CredentialBindings } from "../credentials/types.js";
+import type { ProjectGlobals, TestCase } from "../domain/common.js";
 import type { EventBus, RunEventMap } from "../events/bus.js";
 import type {
   AssertOperator, AuthProvider, ExecutableRequest, ExecutionResponse, HttpExecuteOptions,
@@ -8,7 +11,7 @@ import type {
 import type { CaseOutcome } from "../report/types.js";
 import type { VariableResolver } from "../variables/resolver.js";
 import type { StressSafetyTarget } from "../stress/model.js";
-import { withBaseUrl } from "../variables/baseUrl.js";
+import { materializeRequest, type MaterializedRequest, type RuntimeAuth } from "../request/materialize.js";
 
 export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "config" | "aborted";
 
@@ -16,13 +19,16 @@ const CASE_FAILURE_KINDS = new Set<CaseFailureKind>(["transport", "http", "scrip
 
 /** Run-scoped state for one case. Nothing here is read from CollectionRunner. */
 export interface CaseExecutionInput {
-  api: ApiDefinition;
-  testCase: TestCase;
+  asset: DeepReadonly<ApiAsset>;
+  assetContext: ProjectAssetContextReadView;
+  credentialBindings: CredentialBindings;
+  testCase: DeepReadonly<TestCase>;
   row?: Record<string, string>;
   rowIndex: number;
   isDataDriven: boolean;
   resolver: VariableResolver;
   envVars: Record<string, string>;
+  envBaseUrl?: string;
   globals?: Partial<ProjectGlobals>;
   persisted: Map<string, string>;
   persistedSnapshot: Record<string, string>;
@@ -54,31 +60,96 @@ export interface CaseExecutionResult {
   safety?: StressSafetyTarget;
 }
 
-const EMPTY_GLOBALS: Required<ProjectGlobals> = { query: [], headers: [], cookies: [], body: [] };
-
 const now = (): number => performance.now();
 const errorMessage = (e: unknown): string => e instanceof Error ? e.message : String(e);
 const isAbort = (e: unknown, signal?: AbortSignal): boolean =>
   Boolean(signal?.aborted) || (e instanceof Error && (e.name === "AbortError" || /aborted/i.test(e.message)));
 
-function mergeGlobalForm(body: BodyContent | undefined, resolver: VariableResolver, globals: Partial<ProjectGlobals>): ExecutableRequest["body"] {
-  if (body === undefined) return undefined;
-  const form = (body.form ?? []).map((kv) => ({ ...kv, value: resolver.resolve(kv.value) }));
-  if (body.kind !== "form") return { kind: body.kind, content: resolver.resolve(body.content), form };
-  const existing = new Set(form.map((f) => f.key));
-  const extra = (globals.body ?? EMPTY_GLOBALS.body)
-    .filter((b) => b.enabled && b.key && !existing.has(b.key))
-    .map((b) => ({ key: b.key, value: resolver.resolve(b.value), enabled: true }));
-  return { kind: body.kind, content: resolver.resolve(body.content), form: [...form, ...extra] };
+function emptyRequest(): ExecutableRequest {
+  return { protocol: "http", method: "GET", url: "", headers: {}, query: [], auth: { kind: "none" } };
 }
 
-function injectGlobalCookie(headers: Record<string, string>, resolver: VariableResolver, globals: Partial<ProjectGlobals>): void {
-  if (Object.keys(headers).some((k) => k.toLowerCase() === "cookie")) return;
-  const cookie = (globals.cookies ?? EMPTY_GLOBALS.cookies)
-    .filter((c) => c.enabled && c.key)
-    .map((c) => `${resolver.resolve(c.key)}=${resolver.resolve(c.value)}`)
-    .join("; ");
-  if (cookie) headers.Cookie = cookie;
+function mutableRequest(request: MaterializedRequest): ExecutableRequest {
+  const common = {
+    url: request.url,
+    headers: { ...request.headers },
+    query: request.query.map((parameter) => ({ ...parameter })),
+    auth: { ...request.auth },
+  };
+  switch (request.protocol) {
+    case "http":
+      return { ...common, protocol: "http", method: request.method, ...(request.body ? { body: cloneRuntimeBody(request.body) } : {}) };
+    case "websocket":
+      return { ...common, protocol: "websocket", ...(request.message !== undefined ? { message: request.message } : {}) };
+    case "soap":
+      return { ...common, protocol: "soap", method: "POST", envelope: request.envelope, ...(request.soapAction !== undefined ? { soapAction: request.soapAction } : {}) };
+  }
+}
+
+function cloneRuntimeBody(body: NonNullable<Extract<ExecutableRequest, { protocol: "http" }>["body"]>) {
+  return body.kind === "form" ? { ...body, form: body.form.map((parameter) => ({ ...parameter })) } : { ...body };
+}
+
+function invalidRequest(message: string): Error {
+  return Object.assign(new Error(message), { caseFailureKind: "config" as const, code: "CONFIG" });
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function isRuntimeAuth(value: unknown): value is RuntimeAuth {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const auth = value as Record<string, unknown>;
+  switch (auth.kind) {
+    case "none":
+      return hasExactKeys(auth, ["kind"]);
+    case "bearer":
+      return hasExactKeys(auth, ["kind", "token"]) && typeof auth.token === "string";
+    case "basic":
+      return hasExactKeys(auth, ["kind", "username", "password"])
+        && typeof auth.username === "string" && typeof auth.password === "string";
+    case "apikey":
+      return hasExactKeys(auth, ["kind", "name", "placement", "value"])
+        && typeof auth.name === "string"
+        && (auth.placement === "header" || auth.placement === "query")
+        && typeof auth.value === "string";
+    default:
+      return false;
+  }
+}
+
+function validateExecutableRequest(request: ExecutableRequest): void {
+  if (typeof request.url !== "string" || !request.url || typeof request.headers !== "object" || request.headers === null
+    || !Array.isArray(request.query) || typeof request.auth !== "object" || request.auth === null) {
+    throw invalidRequest("执行请求结构无效");
+  }
+  if (!isRuntimeAuth(request.auth)) throw invalidRequest("执行请求认证结构无效");
+  if (Object.values(request.headers).some((value) => typeof value !== "string")
+    || request.query.some((entry) => typeof entry.key !== "string" || typeof entry.value !== "string" || typeof entry.enabled !== "boolean")) {
+    throw invalidRequest("执行请求头或查询参数结构无效");
+  }
+  switch (request.protocol) {
+    case "http":
+      if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(request.method)
+        || (request.body !== undefined && !(request.body.kind === "json" || request.body.kind === "xml" || request.body.kind === "raw" || request.body.kind === "form"))) {
+        throw invalidRequest("HTTP 执行请求结构无效");
+      }
+      return;
+    case "websocket":
+      if (request.message !== undefined && typeof request.message !== "string") throw invalidRequest("WebSocket message 必须是字符串");
+      if ("method" in request || "body" in request || "envelope" in request || "soapAction" in request) throw invalidRequest("WebSocket 执行请求包含 HTTP/SOAP 字段");
+      return;
+    case "soap":
+      if (request.method !== "POST" || typeof request.envelope !== "string" || (request.soapAction !== undefined && typeof request.soapAction !== "string")) {
+        throw invalidRequest("SOAP 执行请求必须使用 POST 并提供 envelope");
+      }
+      if ("body" in request || "message" in request) throw invalidRequest("SOAP 执行请求包含 HTTP/WebSocket 字段");
+      return;
+    default:
+      throw invalidRequest("执行请求必须包含受支持的 protocol 字段");
+  }
 }
 
 function responseView(response: ExecutionResponse): NonNullable<PmApi["response"]> {
@@ -93,7 +164,7 @@ function responseView(response: ExecutionResponse): NonNullable<PmApi["response"
 }
 
 function evaluateAssertions(
-  testCase: TestCase,
+  testCase: DeepReadonly<TestCase>,
   ctx: { pm: PmApi },
   resolver: VariableResolver,
   resolveAssert: (op: string) => AssertOperator | undefined,
@@ -142,18 +213,13 @@ function protocolFailureKind(error: unknown): CaseFailureKind {
 export async function executeCase(input: CaseExecutionInput, deps: CaseExecutionDeps): Promise<CaseExecutionResult> {
   const started = now();
   const timeouts: HttpExecuteOptions = deps.timeouts ?? { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 };
-  const { api, testCase, resolver, envVars, persisted, persistedSnapshot } = input;
+  const { asset, testCase, resolver, envVars, persisted, persistedSnapshot } = input;
+  const contractId = asset.contract.id;
+  const apiName = asset.contract.metadata.name;
   const globals = input.globals ?? {};
   // The diagnostic request is always available, even when variable resolution fails.
   // Every nested request object is owned by this invocation; scripts/plugins may mutate it.
-  const request: ExecutableRequest = {
-    method: api.method,
-    url: api.url,
-    headers: {},
-    query: [],
-    auth: api.auth ? { ...api.auth } : undefined,
-    protocol: api.protocol,
-  };
+  let request = emptyRequest();
 
   const pmAsserts: Array<{ pass: boolean; message: string }> = [];
   const pm: PmApi = {
@@ -162,7 +228,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       set: (name, value) => { persisted.set(name, value); persistedSnapshot[name] = value; resolver.setRuntime(name, value); },
     },
     environment: { get: (name) => envVars[name] },
-    request,
+    get request() { return request; },
     response: undefined,
     assert: (condition, message) => pmAsserts.push({ pass: Boolean(condition), message }),
   };
@@ -191,41 +257,33 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     for (const [key, value] of persisted) resolver.setRuntime(key, value);
     for (const [key, value] of Object.entries(testCase.parameters)) resolver.setRuntime(key, value);
     for (const [key, value] of Object.entries(input.row ?? {})) resolver.setRuntime(key, value);
-    Object.assign(request, {
-      url: withBaseUrl(resolver.resolve(api.url), resolver.get("baseUrl")),
-      headers: Object.fromEntries([
-        ...(globals.headers ?? EMPTY_GLOBALS.headers).filter((h) => h.enabled && h.key && !api.headers.some((a) => a.key === h.key)),
-        ...api.headers.filter((h) => h.enabled),
-      ].map((h: KeyValuePair) => [h.key, resolver.resolve(h.value)])),
-      query: [
-        ...(globals.query ?? EMPTY_GLOBALS.query)
-          .filter((q) => q.enabled && q.key && !api.query.some((a) => a.key === q.key))
-          .map((q) => ({ ...q, value: resolver.resolve(q.value) })),
-        ...api.query.map((q) => ({ ...q, value: resolver.resolve(q.value) })),
-      ],
-      body: mergeGlobalForm(api.body, resolver, globals),
-      message: api.message === undefined ? undefined : resolver.resolve(api.message),
-      envelope: api.envelope === undefined ? undefined : resolver.resolve(api.envelope),
-      soapAction: api.soapAction === undefined ? undefined : resolver.resolve(api.soapAction),
-    });
-    injectGlobalCookie(request.headers, resolver, globals);
-    await emit("beforeCase", { apiName: api.name, caseName: testCase.name, apiId: api.id, caseId: testCase.id, row: input.isDataDriven ? input.rowIndex : undefined });
-    if (testCase.preScript) runScript(testCase.preScript);
-    for (const operation of testCase.preOperations ?? []) if (operation.type === "script") runScript(operation.content);
+    if (!asset.cases.some((candidate) => candidate.id === testCase.id)) {
+      throw invalidRequest(`用例 ${testCase.id} 不属于接口资产 ${contractId}`);
+    }
+    const contract = input.assetContext.getContract(contractId);
+    if (!contract) throw invalidRequest(`接口资产 ${contractId} 不在所选项目快照中`);
+    request = mutableRequest(materializeRequest(contract, input.assetContext, {
+      resolve: (template) => resolver.resolve(template),
+      envBaseUrl: input.envBaseUrl,
+      globals,
+      credentials: input.credentialBindings,
+    }));
+    await emit("beforeCase", { apiName, caseName: testCase.name, apiId: contractId, caseId: testCase.id, row: input.isDataDriven ? input.rowIndex : undefined });
+    for (const operation of testCase.preOperations) if (operation.type === "script") runScript(operation.content);
     stage = "config";
     await emit("beforeRequest", { request });
 
-    if (request.protocol === "soap" && request.envelope === undefined) {
-      throw Object.assign(new Error("soap 请求必须提供 envelope（XML 信封模板）"), { caseFailureKind: "config" as const });
-    }
-    if (request.auth) {
-      const auth = deps.resolveAuth(request.auth.type);
-      if (!auth) throw Object.assign(new Error(`无可用认证提供方: ${request.auth.type}`), { caseFailureKind: "config" });
-      auth.apply(request, request.auth, (name) => resolver.get(name));
+    validateExecutableRequest(request);
+    const runtimeAuth = request.auth;
+    if (runtimeAuth.kind !== "none") {
+      const auth = deps.resolveAuth(runtimeAuth.kind);
+      if (!auth || auth.type !== runtimeAuth.kind) throw invalidRequest(`无可用认证提供方: ${runtimeAuth.kind}`);
+      auth.apply(request, runtimeAuth);
     }
     if (deps.beforeSend) await deps.beforeSend(request);
+    validateExecutableRequest(request);
     const client = deps.resolveProtocol(request);
-    if (!client) throw Object.assign(new Error(`无可用协议客户端处理 ${request.url}`), { caseFailureKind: "config" });
+    if (!client) throw invalidRequest(`无可用协议客户端处理 ${request.url}`);
     stage = "request";
     requestStarted = true;
     const requestStartAt = now();
@@ -247,8 +305,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     }
     await emit("afterResponse", { status: response.status, timeMs: response.timeMs, headers: response.headers, bodyText: response.bodyText });
     pm.response = responseView(response);
-    for (const operation of testCase.postOperations ?? []) if (operation.type === "script") runScript(operation.content);
-    if (testCase.postScript) runScript(testCase.postScript);
+    for (const operation of testCase.postOperations) if (operation.type === "script") runScript(operation.content);
   } catch (e) {
     error = errorMessage(e);
     failureKind ??= isAbort(e, timeouts.signal)
@@ -265,7 +322,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       failureKind = (e as { caseFailureKind?: CaseFailureKind }).caseFailureKind ?? "config";
     }
   }
-  if (error === undefined && response && response.status >= 400 && input.api.protocol !== "soap") {
+  if (error === undefined && response && response.status >= 400 && request.protocol !== "soap") {
     error = `HTTP 响应失败: ${response.status}`;
     failureKind = "http";
   }
@@ -273,7 +330,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   if (error === undefined && !assertionsPass) failureKind = "assertion";
   const iterationTimeMs = now() - started;
   const outcome: CaseOutcome = {
-    apiId: api.id, apiName: api.name, caseId: testCase.id, caseName: testCase.name,
+    apiId: contractId, apiName, caseId: testCase.id, caseName: testCase.name,
     row: input.isDataDriven ? input.rowIndex : undefined,
     passed: error === undefined && assertionsPass,
     durationMs: iterationTimeMs,
@@ -283,7 +340,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   };
   try {
     await emit("afterCase", {
-      apiName: api.name, caseName: testCase.name, apiId: api.id, caseId: testCase.id,
+      apiName, caseName: testCase.name, apiId: contractId, caseId: testCase.id,
       passed: outcome.passed, row: outcome.row, durationMs: outcome.durationMs, error,
     });
   } catch (e) {

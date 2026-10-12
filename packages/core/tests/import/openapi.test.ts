@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { openapiImporter } from "../../src/import/openapi.js";
 
+function parseOpenapi(content: string): ReturnType<typeof openapiImporter.parse> {
+  return openapiImporter.parse(content);
+}
+
 const v3 = `
 openapi: 3.0.3
 info: { title: 订单服务, version: 1.0.0 }
@@ -32,34 +36,43 @@ paths:
 `;
 
 describe("openapiImporter", () => {
-  it("detect 识别 3.0 与 2.0 文档", () => {
+  it("detect parses OpenAPI 3.x and 2.0 text documents", () => {
     expect(openapiImporter.detect("a.yaml", v3)).toBe(true);
     expect(openapiImporter.detect("a.yaml", v2)).toBe(true);
     expect(openapiImporter.detect("a.yaml", "info: x")).toBe(false);
   });
 
-  it("3.0：servers 映射为 imported 环境的 baseUrl，路径映射为接口", () => {
-    const { project, warnings } = openapiImporter.parse(v3);
-    expect(project.environments[0]!.variables.baseUrl).toBe("https://api.example.com/v1");
+  it("delegates text parsing into the standard project shape and retains request and path parameter data", () => {
+    const { project, diagnostics, warnings } = parseOpenapi(v3);
+    expect(project.globals).toEqual({ query: [], headers: [], cookies: [], body: [] });
+    expect(project.stressPolicy).toEqual({ trustedOrigins: [], deniedOrigins: [] });
+    expect(project.models).toEqual([]);
+    expect(project.components).toEqual([]);
+
     const col = project.collections[0]!;
     expect(col.apis).toHaveLength(2);
-    const create = col.apis.find((a) => a.name === "createOrder")!;
-    expect(create.method).toBe("POST");
-    expect(create.url).toBe("{{baseUrl}}/orders");
-    expect(create.body?.kind).toBe("json");
-    expect(create.design).toContain("type: object");
-    const get = col.apis.find((a) => a.name === "查询订单")!;
-    expect(get.query[0]!.key).toBe("id");
+    const create = col.apis.find((asset) => asset.contract.metadata.name === "createOrder")!;
+    expect(create.contract.request).toMatchObject({ protocol: "http", method: "POST", baseUrl: "https://api.example.com/v1", path: "/orders" });
+    if (create.contract.request.protocol !== "http") throw new Error("Expected an HTTP request.");
+    expect(create.contract.request.body).toMatchObject({ kind: "json", schema: { kind: "object" } });
+    expect(create.cases).toEqual([]);
+
+    const get = col.apis.find((asset) => asset.contract.metadata.name === "查询订单")!;
+    expect(get.contract.request.protocol).toBe("http");
+    if (get.contract.request.protocol !== "http") throw new Error("Expected an HTTP request.");
+    expect(get.contract.request.pathParams).toHaveLength(1);
+    expect(get.contract.request.query).toEqual([]);
+    expect(diagnostics).toEqual([]);
     expect(warnings).toEqual([]);
   });
 
-  it("2.0：host+basePath 组合 baseUrl", () => {
-    const { project } = openapiImporter.parse(v2);
-    expect(project.environments[0]!.variables.baseUrl).toBe("https://api.example.com/v2");
-    expect(project.collections[0]!.apis[0]!.url).toBe("{{baseUrl}}/ping");
+  it("OpenAPI 2 host and basePath stay on each imported request", () => {
+    const { project } = parseOpenapi(v2);
+    const request = project.collections[0]!.apis[0]!.contract.request;
+    expect(request).toMatchObject({ protocol: "http", baseUrl: "https://api.example.com/v2", path: "/ping" });
   });
 
-  it("2.0：in body 参数映射为 json 请求体与 design", () => {
+  it("OpenAPI 2 body parameters retain JSON schema structure", () => {
     const v2Body = `
 swagger: "2.0"
 info: { title: 旧下单服务, version: 1.0.0 }
@@ -72,14 +85,14 @@ paths:
         - { name: order, in: body, schema: { type: object, required: [sku] } }
       responses: { "200": { description: ok } }
 `;
-    const { project, warnings } = openapiImporter.parse(v2Body);
-    const api = project.collections[0]!.apis[0]!;
-    expect(api.body?.kind).toBe("json");
-    expect(api.design).toContain("type: object");
-    expect(warnings).toEqual([]);
+    const { project } = parseOpenapi(v2Body);
+    const request = project.collections[0]!.apis[0]!.contract.request;
+    expect(request.protocol).toBe("http");
+    if (request.protocol !== "http") throw new Error("Expected an HTTP request.");
+    expect(request.body).toMatchObject({ kind: "json", schema: { kind: "object" } });
   });
 
-  it("2.0：in formData 参数映射为 form 请求体", () => {
+  it("OpenAPI 2 formData fields become an unbound URL-encoded body", () => {
     const v2Form = `
 swagger: "2.0"
 info: { title: 上传服务, version: 1.0.0 }
@@ -89,12 +102,21 @@ paths:
     post:
       parameters:
         - { name: name, in: formData, type: string }
-        - { name: file, in: formData, type: file }
       responses: { "200": { description: ok } }
 `;
-    const { project } = openapiImporter.parse(v2Form);
-    const api = project.collections[0]!.apis[0]!;
-    expect(api.body?.kind).toBe("form");
-    expect(api.body?.form).toEqual([{ key: "name", value: "", enabled: true }, { key: "file", value: "", enabled: true }]);
+    const { project } = parseOpenapi(v2Form);
+    const request = project.collections[0]!.apis[0]!.contract.request;
+    expect(request.protocol).toBe("http");
+    if (request.protocol !== "http") throw new Error("Expected an HTTP request.");
+    expect(request.body).toMatchObject({ kind: "urlencoded", fields: [{ name: "name", value: "", enabled: true }] });
+  });
+
+  it("keeps structured diagnostics and exposes warnings only as a human-readable projection", () => {
+    const source = `${v3}\nexternalDocs: { url: https://docs.example.com/api }\n`;
+    const imported = parseOpenapi(source);
+    const diagnostic = imported.diagnostics.find((item) => item.code === "OPENAPI_EXTERNAL_DOCS_UNREPRESENTED");
+    expect(diagnostic).toMatchObject({ ownerId: imported.project.id, path: "externalDocs" });
+    expect(typeof diagnostic?.reason).toBe("string");
+    expect(imported.warnings).toContain(diagnostic?.reason);
   });
 });

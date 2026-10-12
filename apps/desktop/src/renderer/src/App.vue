@@ -21,7 +21,10 @@ import {
 import zhCN from "ant-design-vue/es/locale/zh_CN";
 import enUS from "ant-design-vue/es/locale/en_US";
 import { apicc } from "./api";
-import type { TreeNodeDTO } from "../../shared/tree-dto.js";
+import type { OnlineTreeNodeDTO, TreeNodeDTO } from "../../shared/tree-dto.js";
+import type { LocalTreeNodeDTO } from "../../shared/tree-dto.js";
+import type { NodeCreatedDTO } from "../../shared/types.js";
+import type { ApiLocator, CollectionLocator, ProjectLocator, WorkflowLocator } from "../../shared/locations.js";
 import type { OnlineWorkspaceSummary } from "../../shared/online/contract.js";
 import TopBar from "./components/TopBar.vue";
 import ProjectTabs from "./components/ProjectTabs.vue";
@@ -49,8 +52,9 @@ import AiSuggestionsDrawer from "./components/AiSuggestionsDrawer.vue";
 import PluginsView from "./components/PluginsView.vue";
 import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
-import { findProjectIdByApiId, useEditorStore } from "./stores/editor.js";
+import { useEditorStore } from "./stores/editor.js";
 import { useDebugStore } from "./stores/debug.js";
+import { useAssetsStore } from "./stores/assets.js";
 import { useCasesStore } from "./stores/cases.js";
 import { useEnvsStore } from "./stores/envs.js";
 import { useRunStore } from "./stores/run.js";
@@ -81,6 +85,7 @@ import {
 } from "./viewSwitch.js";
 import { currentLocale } from "./i18n/bridge.js";
 import { themePreference, resolveTheme } from "./theme.js";
+import { localTreeNodeKey, type LocalTreeIdentity } from "../../shared/tree-dto.js";
 
 const ARadioGroup = ARadio.Group;
 const ARadioButton = ARadio.Button;
@@ -98,25 +103,24 @@ const antdThemeConfig = computed(() => ({
 const { t } = useI18n();
 const workspace = useWorkspaceStore(apicc);
 const tree = useTreeStore(apicc, workspace);
-// 计划 C 任务 5 审查重要 1（裁定修法）：建槽时按当前树写归属元数据（slot.projectId）——
-// 跨目录开工作区后，关签 dirty 判定与驱逐按元数据过滤，不再依赖当前树恰好还开着该项目
-const editor = useEditorStore(apicc, (apiId) => findProjectIdByApiId(workspace.tree, apiId));
-// 计划 C 任务 4：debug 结果按 apiId 驻留——注入 editor 使 result getter 跟随活跃接口
-const debug = useDebugStore(apicc, editor);
+const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly });
+const editor = useEditorStore(apicc, localContext);
+const assets = useAssetsStore(apicc, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
+const debug = useDebugStore(apicc, editor, localContext);
 // —— 视图面板 store（任务 8 装配）：与既有 store 同一组合根一次性创建 ——
 const cases = useCasesStore(apicc, editor);
-const envs = useEnvsStore(apicc);
+const envs = useEnvsStore(apicc, localContext);
 const run = useRunStore(apicc);
 const importW = useImportWizardStore(apicc, workspace);
 const design = useDesignStore(apicc, editor);
 // —— 工作流设计器 store（M2-B 任务 4 装配）：同一组合根一次性创建 ——
-const wfList = useWfListStore(apicc);
-const workflowDesign = useWorkflowDesignStore(apicc);
+const wfList = useWfListStore(apicc, localContext);
+const workflowDesign = useWorkflowDesignStore(apicc, localContext);
 // —— 压测 store（M2-D3 任务 3 装配，裁定 A）：同一组合根一次性创建，经 props 下传 ——
 const stress = createStressStore({
   api: apicc,
-  resolveProjectId: (apiId) => workspace.projectIdForApi(apiId),
-  trustOrigin: (projectId, origin) => workspace.trustStressOrigin(projectId, origin).then(() => undefined),
+  getContext: () => ({ root: workspace.root, locator: editor.locator }),
+  trustOrigin: (locator, origin) => workspace.trustStressOrigin(locator, origin).then(() => undefined),
 });
 // —— 在线 store（M3-B 任务 2 装配）：同一组合根一次性创建；挂载后对上次激活的服务器
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
@@ -124,7 +128,7 @@ const stress = createStressStore({
 const online = createOnlineStore({ api: apicc });
 // —— AI store（M6-C 任务 1 装配）：同一组合根一次性创建；挂载后读持久化配置与 key
 // 状态（init 全程不抛）。对话框/抽屉本体在组合根渲染，接口头部入口按钮只置显隐/拉取。 ——
-const ai = createAiStore({ api: apicc, editor });
+const ai = createAiStore({ api: apicc, editor, getContext: localContext });
 // —— 插件 store（M7-B 任务 1 装配）：同一组合根一次性创建；挂载后拉取 plugins:list
 // （fixture 桩）——插件视图清单 + 导入向导的导入格式动态枚举共用此份状态。 ——
 const plugins = createPluginsStore({ api: apicc });
@@ -138,15 +142,44 @@ const tabs = createTabsStore({
   online,
   editor,
   workflowDesign,
-  evictProjectSessions: createEvictProjectSessions({ editor, online }),
+  evictProjectSessions: createEvictProjectSessions({ editor, online, workflowDesign }),
   onProjectActivated: restoreLastApiForTab,
   confirmWorkflowDraft,
 });
 
-// —— 启动恢复（计划 C 任务 5）：签表驱动（不变量 5）——lastWorkspace 单槽退役：
-// 该单槽键的读写删除（持久化职责移交签表 apicc.projectTabs）；apicc.lastApi
-// 保留（SideTree 写入），消费按活跃签项目过滤（restoreLastApiForTab）。
-const LAST_API_KEY = "apicc.lastApi";
+// 启动恢复由签表驱动；模块选择与树状态由按 root+ProjectLocator 分区的 moduleMemory 持久化。
+
+function findLocalNodeByKey(key: string): LocalTreeNodeDTO | null {
+  let result: LocalTreeNodeDTO | null = null;
+  const visit = (node: LocalTreeNodeDTO): void => {
+    if (node.key === key) { result = node; return; }
+    for (const child of node.children ?? []) visit(child);
+  };
+  if (workspace.tree) visit(workspace.tree);
+  return result;
+}
+
+function sameProjectLocator(left: ProjectLocator, right: ProjectLocator): boolean {
+  return left.workspaceId === right.workspaceId && left.groupId === right.groupId && left.projectId === right.projectId;
+}
+
+function projectOfLocator(locator: ProjectLocator | ApiLocator | WorkflowLocator | CollectionLocator): ProjectLocator {
+  return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+}
+
+/** One local API activation path keeps editor, project assets, and design drafts on the same locator. */
+async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean = () => true): Promise<void> {
+  const root = workspace.root;
+  const expected = { ...locator, folderIds: [...locator.folderIds] };
+  if (!isCurrent()) return;
+  await editor.load(locator);
+  if (!isCurrent() || workspace.root !== root || !editor.locator || JSON.stringify(editor.locator) !== JSON.stringify(expected)) return;
+  const project = workspace.projectLocatorForApi(expected);
+  if (!project) throw new Error("接口 locator 在当前本地树中不存在");
+  await assets.load(project);
+  if (!isCurrent() || workspace.root !== root || !editor.locator || JSON.stringify(editor.locator) !== JSON.stringify(expected)) return;
+  design.load();
+}
 
 /**
  * 活跃签项目驱动编辑器上下文（tabs.onProjectActivated 钩子）：apicc.lastApi 记忆仅当属于
@@ -155,19 +188,26 @@ const LAST_API_KEY = "apicc.lastApi";
  * 任务 7 冒烟修复：切到的项目没有可恢复的接口记忆时，编辑器上下文清空回空白
  * （editor.deactivate，会话槽驻留不动）——否则上一项目的活跃会话串显到当前签下。
  */
-async function restoreLastApiForTab(tab: ProjectTab): Promise<void> {
-  if (tab.workspaceRef.kind !== "local") return;
+async function restoreLastApiForTab(tab: ProjectTab, isCurrent: () => boolean = () => true): Promise<void> {
+  if (!isCurrent() || !("projectLocator" in tab) || workspace.root !== tab.workspaceRef.dir) return;
+  moduleMemory.activateProject(tab.workspaceRef.dir, tab.projectLocator);
   try {
-    const last = JSON.parse(localStorage.getItem(LAST_API_KEY) ?? "null") as { id: string } | null;
-    if (last?.id && findProjectIdByApiId(workspace.tree, last.id) === tab.projectId) {
-      tree.select("api", last.id);
-      await editor.load(last.id);
-      return;
+    const last = moduleMemory.test.apiLocator ?? moduleMemory.apiTree.lastApiLocator;
+    if (last && sameProjectLocator(projectOfLocator(last), tab.projectLocator)) {
+      const key = localTreeNodeKey({ source: "local", kind: "api", locator: last });
+      const node = findLocalNodeByKey(key);
+      if (node?.kind === "api") {
+        if (!isCurrent() || workspace.root !== tab.workspaceRef.dir) return;
+        tree.select(node);
+        await loadApiIntoEditor(node.locator, isCurrent);
+        if (!isCurrent() || workspace.root !== tab.workspaceRef.dir) return;
+        return;
+      }
     }
   } catch {
     // 恢复失败静默（无碍主流程）
   }
-  editor.deactivate();
+  if (isCurrent() && workspace.root === tab.workspaceRef.dir) editor.deactivate();
 }
 
 /**
@@ -217,7 +257,12 @@ const apiSubView = ref<ApiSubView>("debug");
 // —— 内容上下文由活跃签驱动（计划 C 任务 5）：活跃签是本地签 → 本地内容；活跃签是在线签
 // （或无签但有活跃在线工作区——主页打开在线工作区尚未成签的过渡态）→ 在线内容。切到本地
 // 签不退在线会话（驻留，不变量 4：工作区级关闭唯一入口=退出在线工作区按钮）。
-const onlineMode = computed(() => online.activeWorkspace !== null && tabs.activeTab?.workspaceRef.kind !== "local");
+function isLocalProjectTab(tab: ProjectTab | null): tab is Extract<ProjectTab, { projectLocator: ProjectLocator }> {
+  return tab !== null && "projectLocator" in tab;
+}
+
+const activeLocalProjectTab = computed(() => isLocalProjectTab(tabs.activeTab) ? tabs.activeTab : null);
+const onlineMode = computed(() => online.activeWorkspace !== null && activeLocalProjectTab.value === null);
 const railGate = computed(() => ({
   workspaceOpened: workspace.opened,
   onlineActive: onlineMode.value,
@@ -225,13 +270,12 @@ const railGate = computed(() => ({
 }));
 const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !!editor.apiId }));
 // 主页项目卡片高亮（任务 5 D）：该项目签存在且激活（从 tabs store 算，不再看树选中）
-const homeActiveProjectId = computed(() =>
-  tabs.activeTab?.workspaceRef.kind === "local" ? tabs.activeTab.projectId : null,
-);
+const homeActiveProjectId = computed(() => activeLocalProjectTab.value?.projectLocator.projectId ?? null);
 // 主页在线项目卡片高亮（终审 Important 1 ②）：活跃签为在线签时的 projectId
-const homeActiveOnlineProjectId = computed(() =>
-  tabs.activeTab?.workspaceRef.kind === "online" ? tabs.activeTab.projectId : null,
-);
+const homeActiveOnlineProjectId = computed(() => {
+  const tab = tabs.activeTab;
+  return tab && !isLocalProjectTab(tab) ? tab.projectId : null;
+});
 
 // 活跃签变化：从主页点签直接进入项目内容（主页仅经 topbar-home / 点签离开）
 watch(
@@ -279,7 +323,7 @@ watch(
 // 即调 store.clear()（只清报告/file/错误，form 保留；同时代际 +1，在途旧 run 的完成/
 // 拒绝不再上屏——终审修复）；同接口视图往返不动 apiId，form/报告原样保留。
 watch(
-  () => editor.apiId,
+  () => JSON.stringify([workspace.root, editor.locator]),
   () => {
     stress.clear();
   },
@@ -322,68 +366,67 @@ async function onAiSuggest() {
  * 缓冲 dirty 时先经确认对话框放行（审查 I1 修复），确认丢弃后才载入目标流，
  * 不再静默覆盖未保存编辑。其余节点仅记录选中态。
  */
-async function onSelect(kind: TreeNodeDTO["kind"], id: string) {
-  // 不变量 1（项目选中即成签）：项目节点选中统一入签（openProjectTab 去重：已存在仅激活）。
-  // 在线只读树不经 tree.select，两模式统一在此分流。
-  if (kind === "project") {
-    openProjectTabFor(id);
-    return;
-  }
-  if (onlineMode.value) {
-    try {
-      await online.selectNode(kind, id);
-    } catch (e) {
-      reportError(e);
+async function onSelect(node: TreeNodeDTO | NodeCreatedDTO) {
+  if (node.source === "online") {
+    if (node.kind === "project") openProjectTabFor(node);
+    else {
+      try { await online.selectNode(node.kind, node.id); }
+      catch (e) { reportError(e); }
     }
     return;
   }
-  tree.select(kind, id);
-  if (kind === "api") {
-    // 主页是发起台：从主页点接口即进入接口模块（其余模块不跟随——M8 裁定：创建/选中
-    // 事件同走本通道，不把用户从当前模块踹走）
-    if (view.value === "home") view.value = "api";
-    await editor.load(id);
+  if (node.kind === "project") {
+    openProjectTabFor(node);
+    return;
   }
-  if (kind === "workflow") {
+  if (node.kind === "api") {
+    if (view.value === "home") view.value = "api";
+    await loadApiIntoEditor(node.locator);
+  }
+  if (node.kind === "workflow") {
     if (workflowDesign.dirty) {
-      pendingSwitchId = id;
+      pendingSwitchLocator = { root: workspace.root, locator: { ...node.locator } };
       wfSwitchConfirmOpen.value = true;
       return;
     }
-    await openWorkflowInDesigner(id);
+    await openWorkflowInDesigner(node.locator);
   }
 }
-// M2-C 跟进：树摘要/wfList/设计器三方同步协议 + dirty 确认（侧树切换的确认放行已随
-// 审查 I1 补齐；跨视图选中态/摘要一致性仍随协议收口）。
 
-// —— 侧树切换工作流的 dirty 确认（审查 I1）——
-// 确认前缓冲与会话态不动；确认丢弃后卸载旧会话再载入目标流；取消则留在原工作流，
-// 并把树选中项回退到设计器当前流，避免「树选中 B、设计器开着 A」的选中错位。
+// —— 工作流切换按完整 locator 捕获，确认等待期间不重新读取活动选中目标 ——
 const wfSwitchConfirmOpen = ref(false);
-let pendingSwitchId: string | null = null;
+let pendingSwitchLocator: { root: string; locator: WorkflowLocator } | null = null;
 
-/** 载入工作流进设计器并切到 wf 模块（load 失败经 reportError 上报，与对话框链路同一收口点）。 */
-async function openWorkflowInDesigner(id: string) {
+async function openWorkflowInDesigner(locator: WorkflowLocator, root = workspace.root) {
+  if (workspace.root !== root) return;
   view.value = "wf";
   try {
-    await workflowDesign.load(id);
+    await workflowDesign.load(root, { ...locator });
   } catch (e) {
     reportError(e);
   }
 }
 
 function onWfSwitchConfirm() {
-  const id = pendingSwitchId;
-  pendingSwitchId = null;
+  const target = pendingSwitchLocator;
+  pendingSwitchLocator = null;
   wfSwitchConfirmOpen.value = false;
-  if (id) void openWorkflowInDesigner(id);
+  if (target && workspace.root === target.root) void openWorkflowInDesigner(target.locator, target.root);
 }
 
 function onWfSwitchCancel() {
-  pendingSwitchId = null;
+  pendingSwitchLocator = null;
   wfSwitchConfirmOpen.value = false;
-  if (workflowDesign.workflowId) tree.select("workflow", workflowDesign.workflowId);
+  const locator = workflowDesign.locator;
+  if (locator && workflowDesign.root === workspace.root) {
+    const key = localTreeNodeKey({ source: "local", kind: "workflow", locator });
+    const node = findLocalNodeByKey(key);
+    if (node?.kind === "workflow") tree.select(node);
+  }
 }
+
+// M2-C 跟进：树摘要/wfList/设计器三方同步协议 + dirty 确认（侧树切换的确认放行已随
+// 审查 I1 补齐；跨视图选中态/摘要一致性仍随协议收口）。
 
 // —— 切签工作流草稿确认（计划 C 任务 6，规格勘误口径）——
 // tabs.activateTab 在「离开当前项目上下文」时机回调 confirmWorkflowDraft（仅当活跃工作流
@@ -431,10 +474,49 @@ function aggregateHasDrafts(): boolean {
 }
 apicc.onDirtyCheck(aggregateHasDrafts);
 
-// —— 活动项目（M9-C）：树作用域化的依据。打开工作区后未选项目时自动选中首个项目
-// （工作区顶层即项目）；在线模式与作用域无涉（activeProjectId 仅本地树消费）。
-// 有任意选中节点时按其归属项目作用域化（selectedProjectId 已实现向上归属）；无选中 = 未作用域
-const activeProjectId = computed(() => (tree.selected ? selectedProjectId.value : null));
+function projectOfLocalNode(node: LocalTreeIdentity): ProjectLocator | null {
+  switch (node.kind) {
+    case "project": return { ...node.locator };
+    case "collection":
+    case "folder":
+    case "api":
+    case "workflow": return projectOfLocator(node.locator);
+    case "environment": return {
+      workspaceId: node.locator.workspaceId,
+      groupId: node.locator.groupId,
+      projectId: node.locator.projectId,
+    };
+    case "root":
+    case "group": return null;
+  }
+}
+
+function collectionOfLocalNode(node: LocalTreeIdentity): CollectionLocator | null {
+  switch (node.kind) {
+    case "collection": return { ...node.locator };
+    case "folder":
+    case "api": return {
+      workspaceId: node.locator.workspaceId,
+      groupId: node.locator.groupId,
+      projectId: node.locator.projectId,
+      collectionId: node.locator.collectionId,
+    };
+    default: return null;
+  }
+}
+
+// 本地面板都消费树 DTO 已携带的完整 locator，在线节点不进入本地合同。
+const selectedProjectLocator = computed(() => {
+  const selected = tree.selected;
+  return !onlineMode.value && selected?.source === "local" ? projectOfLocalNode(selected) : null;
+});
+const activeProjectLocator = computed(() => selectedProjectLocator.value ? { ...selectedProjectLocator.value } : null);
+
+watch(
+  () => selectedProjectLocator.value ? JSON.stringify([workspace.root, selectedProjectLocator.value]) : null,
+  () => moduleMemory.activateProject(workspace.root, selectedProjectLocator.value),
+  { immediate: true },
+);
 
 // M9-C 的「打开工作区后自动选中首个项目」随签表化退役（计划 C 任务 5）：项目上下文一律
 // 由活跃签承载（不变量 1：不存在「选中项目但不入签」的状态——自动选中恰会制造该状态，
@@ -446,8 +528,9 @@ const activeProjectId = computed(() => (tree.selected ? selectedProjectId.value 
 watch(
   () => tree.selected,
   (selected) => {
-    if (!selected || selected.kind !== "project" || tabs.restoring || onlineMode.value) return;
-    openProjectTabFor(selected.id);
+    if (!selected || selected.source !== "local" || selected.kind !== "project" || tabs.restoring || onlineMode.value) return;
+    const project = findLocalNodeByKey(selected.key);
+    if (project?.kind === "project") openProjectTabFor(project);
   },
 );
 
@@ -455,25 +538,33 @@ watch(
  * 项目选中即成签（不变量 1）：按当前内容上下文解析 workspaceRef（在线=活跃驻留会话 /
  * 本地=单例目录）与项目名后入签；同签已存在则仅激活（openProjectTab 去重）。
  */
-function openProjectTabFor(projectId: string): void {
-  if (onlineMode.value && online.activeWorkspace) {
-    const node = findProjectNode(online.onlineTree, projectId);
-    if (!node) return;
+type LocalProjectNode = Extract<TreeNodeDTO, { source: "local"; kind: "project" }> | Extract<NodeCreatedDTO, { kind: "project" }>;
+
+function isLocalProjectNode(node: TreeNodeDTO | NodeCreatedDTO): node is LocalProjectNode {
+  return node.source === "local" && node.kind === "project";
+}
+
+function isOnlineProjectNode(node: TreeNodeDTO | NodeCreatedDTO): node is OnlineTreeNodeDTO & { kind: "project" } {
+  return node.source === "online" && node.kind === "project";
+}
+
+function openProjectTabFor(node: TreeNodeDTO | NodeCreatedDTO): void {
+  if (isOnlineProjectNode(node) && onlineMode.value && online.activeWorkspace) {
     void tabs.openProjectTab(
       { kind: "online", workspaceId: online.activeWorkspace.id, name: online.activeWorkspace.name },
       { id: node.id, name: node.label },
     );
     return;
   }
-  const node = findProjectNode(workspace.tree, projectId);
-  if (!node) return;
-  void tabs.openProjectTab({ kind: "local", dir: workspace.root }, { id: node.id, name: node.label });
+  if (isLocalProjectNode(node)) {
+    void tabs.openProjectTab({ kind: "local", dir: workspace.root }, { locator: node.locator, name: node.label });
+  }
 }
 
 /** 主页「打开项目」：本地项目成签并激活（不变量 1，选中由激活编排承接），切接口模块保持既有行为。 */
-function openProjectFromHome(id: string) {
-  const node = findProjectNode(workspace.tree, id);
-  if (node) void tabs.openProjectTab({ kind: "local", dir: workspace.root }, { id: node.id, name: node.label });
+function openProjectFromHome(locator: ProjectLocator) {
+  const node = findProjectNode(workspace.tree, locator);
+  if (node) void tabs.openProjectTab({ kind: "local", dir: workspace.root }, { locator: node.locator, name: node.label });
   view.value = "api";
 }
 
@@ -509,92 +600,53 @@ function openOnlineProjectFromHome(projectId: string) {
 const testStressOpen = ref(false);
 
 function onTestStress(caseId: string) {
-  if (!editor.apiId) return;
+  if (!editor.locator) return;
   stress.form.caseId = caseId;
   stress.form.envName = debug.selectedEnvName; // 与调试共享项目环境选中态
   testStressOpen.value = true;
 }
 
-function onTestPickApi(apiId: string) {
+function onTestPickApi(locator: ApiLocator) {
   testStressOpen.value = false;
-  moduleMemory.test.apiId = apiId;
+  moduleMemory.test.apiLocator = { ...locator, folderIds: [...locator.folderIds] };
+  moduleMemory.apiTree.lastApiLocator = { ...locator, folderIds: [...locator.folderIds] };
   moduleMemory.touch();
-  tree.select("api", apiId);
-  editor.load(apiId).catch(reportError);
+  const node = findLocalNodeByKey(localTreeNodeKey({ source: "local", kind: "api", locator }));
+  if (!node || node.kind !== "api") return;
+  tree.select(node);
+  loadApiIntoEditor(locator).catch(reportError);
 }
 
 /** 场景清单（活动项目工作流摘要）：测试侧栏数据源。 */
 const testScenarios = computed(() => {
-  const project = (workspace.tree?.children ?? [])
-    .flatMap((g) => g.children ?? [])
-    .find((p) => p.id === selectedProjectId.value);
-  return project?.workflows ?? [];
+  return selectedProjectLocator.value ? workspace.findProject(selectedProjectLocator.value)?.workflows ?? [] : [];
 });
 
 // 导入向导显隐（M10 归接口模块）：向导 close 事件由模板内联 importOpen=false 处理。
 
-/** 树选中节点所属项目 id：环境面板按它加载环境列表（接口/文件夹/集合向上归属）。
- * 工作流节点（M2-B 收口）按 project.workflows 摘要归属——否则侧树打开工作流后
- * selectedProjectId 落空，设计器的绑定级联索引与 wf 列表会丢失项目上下文。 */
-const selectedProjectId = computed<string | null>(() => {
-  const sel = tree.selected;
-  const root = workspace.tree;
-  if (!sel || !root) return null;
-  if (sel.kind === "project") return sel.id;
-  if (sel.kind === "group") return null;
-  for (const group of root.children ?? []) {
-    for (const project of group.children ?? []) {
-      if (project.id === sel.id) return project.id;
-      if (project.workflows?.some((w) => w.id === sel.id)) return project.id;
-      for (const collection of project.children ?? []) {
-        if (collection.id === sel.id) return project.id;
-        for (const folder of collection.children ?? []) {
-          if (folder.id === sel.id) return project.id;
-        }
-      }
-    }
-  }
-  return null;
-});
-
 const selectedProjectStressPolicy = computed(() => {
-  const id = selectedProjectId.value;
-  if (!id) return undefined;
-  return (workspace.tree?.children ?? []).flatMap((group) => group.children ?? []).find((project) => project.id === id)?.stressPolicy;
+  return selectedProjectLocator.value ? workspace.findProject(selectedProjectLocator.value)?.stressPolicy : undefined;
 });
 
 const saveSelectedProjectPolicy = async (policy: Parameters<typeof workspace.saveStressPolicy>[1]): Promise<void> => {
-  const id = selectedProjectId.value;
-  if (id) await workspace.saveStressPolicy(id, policy);
+  const locator = selectedProjectLocator.value;
+  if (locator) await workspace.saveStressPolicy(locator, policy);
 };
 
 // 环境选中态项目记忆（M10）：项目切换即换挡（恢复该项目记忆值或「无环境」）；
 // 调试与压测共享同一状态源（StressPanel 传 debug）。
 watch(
-  () => selectedProjectId.value,
-  (pid) => {
-    debug.setProject(pid);
+  () => selectedProjectLocator.value ? JSON.stringify([workspace.root, selectedProjectLocator.value]) : null,
+  () => {
+    debug.setProject(selectedProjectLocator.value);
   },
   { immediate: true },
 );
 
 /** 树选中节点所属集合 id：运行视图的默认选中集合（文件夹/接口向上归属）。 */
-const selectedCollectionId = computed<string | null>(() => {
-  const sel = tree.selected;
-  const root = workspace.tree;
-  if (!sel || !root) return null;
-  if (sel.kind === "collection") return sel.id;
-  for (const group of root.children ?? []) {
-    for (const project of group.children ?? []) {
-      for (const collection of project.children ?? []) {
-        if (collection.id === sel.id) return collection.id;
-        for (const folder of collection.children ?? []) {
-          if (folder.id === sel.id) return collection.id;
-        }
-      }
-    }
-  }
-  return null;
+const selectedCollectionLocator = computed<CollectionLocator | null>(() => {
+  const selected = tree.selected;
+  return selected?.source === "local" ? collectionOfLocalNode(selected) : null;
 });
 
 // —— 工作流设计器的绑定级联索引（M2-B 任务 4 / 审查修复竞态）——
@@ -605,18 +657,19 @@ const selectedCollectionId = computed<string | null>(() => {
 // tree 引用即触发重建，避免改绑级联/画布预注入/missing 检测基于陈旧索引。
 const bindIndexLoader = createBindIndexLoader(
   () => workspace.tree,
-  (id) => apicc.apiGet(id),
+  (locator) => apicc.apiGet(locator),
 );
 const wfBindIndex = ref<WfBindIndex | null>(null);
 watch(
-  [selectedProjectId, () => workspace.opened, () => workspace.tree],
-  async ([pid]) => {
+  [() => workspace.root, () => selectedProjectLocator.value ? JSON.stringify(selectedProjectLocator.value) : null, () => workspace.opened, () => workspace.tree],
+  async ([root, projectKey]) => {
     wfBindIndex.value = null;
     try {
-      const index = await bindIndexLoader.load(pid);
-      if (index) wfBindIndex.value = index; // 过期结果为 null：不覆盖（新请求已落位）
+      const locator = projectKey && selectedProjectLocator.value ? { ...selectedProjectLocator.value } : null;
+      const index = await bindIndexLoader.load(locator);
+      if (index && workspace.root === root && sameProjectLocator(selectedProjectLocator.value ?? locator!, locator!)) wfBindIndex.value = index;
     } catch (e) {
-      reportError(e);
+      if (workspace.root === root) reportError(e);
     }
   },
   { immediate: true },
@@ -735,8 +788,9 @@ function onDividerDblClick() {
             :tree="tree"
             :workflow-design="workflowDesign"
             :report-error="reportError"
+            :module-memory="moduleMemory"
             :filter="treeFilter"
-            :active-project-id="activeProjectId"
+            :active-project-locator="activeProjectLocator"
             :tree-root="onlineMode ? online.onlineTree : undefined"
             :readonly="onlineMode"
             :empty-text="onlineMode ? t('online.treeEmpty') : undefined"
@@ -747,8 +801,8 @@ function onDividerDblClick() {
         <div v-show="view === 'test' && !onlineMode" class="sider-col-wrap" data-testid="sidebar-test">
           <TestSidebar
             :workspace="workspace"
-            :active-project-id="selectedProjectId"
-            :active-api-id="editor.apiId"
+            :active-project-locator="selectedProjectLocator"
+            :active-api-locator="editor.locator"
             :pane="moduleMemory.test.pane"
             :scenarios="testScenarios"
             :report-error="reportError"
@@ -770,7 +824,7 @@ function onDividerDblClick() {
             :plugins="plugins"
             :report-error="reportError"
             :open-project="openProjectFromHome"
-            :active-project-id="homeActiveProjectId"
+            :active-project-locator="activeLocalProjectTab?.projectLocator ?? null"
             :open-online-workspace="openOnlineWorkspaceFromHome"
             :open-online-project="openOnlineProjectFromHome"
             :active-online-project-id="homeActiveOnlineProjectId"
@@ -817,7 +871,7 @@ function onDividerDblClick() {
               v-if="importOpen"
               class="panel-view"
               mode="module"
-              :target-project-id="activeProjectId"
+              :target-project-locator="activeProjectLocator"
               :import-w="importW"
               :plugins="plugins"
               :report-error="reportError"
@@ -826,7 +880,7 @@ function onDividerDblClick() {
             <!-- 调试子视图：上编辑器 / 可拖拽分割条 / 下响应（结构契约：main-split 四子元素） -->
             <template v-else-if="apiSubView === 'debug'">
               <div class="editor-pane" data-testid="editor-pane">
-                <RequestEditor :editor="editor" :debug="debug" />
+                <RequestEditor :editor="editor" :debug="debug" :api="apicc" :assets="assets" :project-locator="assets.projectLocator" />
               </div>
               <div
                 class="split-divider"
@@ -840,14 +894,14 @@ function onDividerDblClick() {
                 <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
               </div>
             </template>
-            <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" />
+            <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" :read-only="workspace.readOnly" />
           </template>
           <EnvPanel
             v-else-if="view === 'envs'"
             class="panel-view"
             :envs="envs"
             :workspace="workspace"
-            :project-id="selectedProjectId"
+            :project-locator="selectedProjectLocator"
             :report-error="reportError"
           />
           <RunView
@@ -855,12 +909,12 @@ function onDividerDblClick() {
             class="panel-view"
             :run="run"
             :workspace="workspace"
-            :selected-collection-id="selectedCollectionId"
+            :selected-collection-locator="selectedCollectionLocator"
             :report-error="reportError"
           />
           <!-- 测试模块（M11）：侧栏导航 + 主区用例面板/压测上下文 -->
           <template v-else-if="view === 'test'">
-            <template v-if="testStressOpen && editor.apiId">
+            <template v-if="testStressOpen && editor.locator">
               <div class="api-head">
                 <a-button size="small" data-testid="test-back-to-cases" @click="testStressOpen = false">{{ t("test.backToCases") }}</a-button>
                 <a-tag color="orange">{{ t("test.stressContext") }}</a-tag>
@@ -868,13 +922,14 @@ function onDividerDblClick() {
               <StressPanel
                 class="panel-view"
                 :stress="stress"
-                :api-id="editor.apiId"
+                :api-locator="editor.locator"
                 :cases="editor.api?.cases ?? []"
                 :envs="editor.envs"
                 :debug="debug"
                 :report-error="reportError"
                 :policy="selectedProjectStressPolicy"
                 :save-policy="saveSelectedProjectPolicy"
+                :read-only="workspace.readOnly"
               />
             </template>
             <TestView
@@ -887,6 +942,7 @@ function onDividerDblClick() {
               :stress="stress"
               :pane="moduleMemory.test.pane"
               :report-error="reportError"
+              :read-only="workspace.readOnly"
               @stress="onTestStress"
             />
           </template>
@@ -896,7 +952,7 @@ function onDividerDblClick() {
             :workflow-design="workflowDesign"
             :wf-list="wfList"
             :workspace="workspace"
-            :project-id="selectedProjectId"
+            :project-locator="selectedProjectLocator"
             :bind-index="wfBindIndex"
             :report-error="reportError"
           />

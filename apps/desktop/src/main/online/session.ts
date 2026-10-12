@@ -22,7 +22,7 @@
 import type { OnlineClient } from "./client.js";
 import { OnlineConflictError } from "./client.js";
 import type { TokenStore } from "./tokenStore.js";
-import type { TreeNodeDTO } from "../../shared/tree-dto.js";
+import { onlineTreeNodeKey, type OnlineTreeKind, type OnlineTreeNodeDTO } from "../../shared/tree-dto.js";
 import type {
   OnlineDeleteOutcome,
   OnlineFilesBatchInput,
@@ -95,7 +95,7 @@ function parseWorkspacePath(path: string): ParsedPath | null {
   return null;
 }
 
-function sortTree(node: TreeNodeDTO, projectRowOrder?: ReadonlyMap<string, number>): TreeNodeDTO {
+function sortTree(node: OnlineTreeNodeDTO, projectRowOrder?: ReadonlyMap<string, number>): OnlineTreeNodeDTO {
   if (node.children?.length) {
     if (node.kind === "group" && projectRowOrder) {
       // 组内按 projects 行序（服务端实体表 (created_at,id) 决定性稳定序——与组织管理面创建序
@@ -121,18 +121,27 @@ function sortTree(node: TreeNodeDTO, projectRowOrder?: ReadonlyMap<string, numbe
  * 组内按 projects 行序；组名不可得（groupId 缺席/清单无此组）的孤儿项目保持直挂根；未提供
  * groupNames 时项目直挂根（既有扁平口径，e2e/旧调用零破坏）。
  */
-export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string, groupNames?: ReadonlyMap<string, string>): TreeNodeDTO {
-  const root: TreeNodeDTO = { kind: "root", id: tree.workspaceId, label: workspaceName ?? tree.workspaceId, children: [] };
-  const containers = new Map<string, TreeNodeDTO>();
-  const ensure = (kind: TreeNodeDTO["kind"], id: string, label: string, parent: TreeNodeDTO): TreeNodeDTO => {
+export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string, groupNames?: ReadonlyMap<string, string>): OnlineTreeNodeDTO {
+  const root: OnlineTreeNodeDTO = {
+    source: "online",
+    kind: "root",
+    id: tree.workspaceId,
+    key: onlineTreeNodeKey(tree.workspaceId, "root", tree.workspaceId),
+    label: workspaceName ?? tree.workspaceId,
+    children: [],
+  };
+  const containers = new Map<string, OnlineTreeNodeDTO>();
+  const ensure = (kind: OnlineTreeKind, id: string, label: string, parent: OnlineTreeNodeDTO): OnlineTreeNodeDTO => {
     const existing = containers.get(id);
     if (existing) return existing;
-    const node: TreeNodeDTO = { kind, id, label, children: [] };
+    const node: OnlineTreeNodeDTO = { source: "online", kind, id, key: onlineTreeNodeKey(tree.workspaceId, kind, id), label, children: [] };
     containers.set(id, node);
     parent.children!.push(node);
     return node;
   };
-  const leaf = (id: string, label: string): TreeNodeDTO => ({ kind: "file", id, label, children: [] });
+  const leaf = (id: string, label: string): OnlineTreeNodeDTO => ({
+    source: "online", kind: "file", id, key: onlineTreeNodeKey(tree.workspaceId, "file", id), label, children: [],
+  });
 
   // 根配置：apicc.workspace.yaml（工作区级"项目配置"只读叶）
   if (tree.files.some((f: OnlineTreeFile) => f.path === "apicc.workspace.yaml")) {
@@ -140,19 +149,16 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string, groupN
   }
   const projectRows = new Map(tree.projects.map((p) => [p.id, p]));
   // 分组节点懒建（有项目文件挂入才存在——清单中无项目的组不造空组节点）
-  const groupNode = (groupId: string): TreeNodeDTO | null => {
+  const groupNode = (groupId: string): OnlineTreeNodeDTO | null => {
     const name = groupNames?.get(groupId);
     if (name === undefined) return null; // 组名不可得 → 孤儿项目直挂根
     const id = `group:${groupId}`;
     const existing = containers.get(id);
     if (existing) return existing;
-    const node: TreeNodeDTO = { kind: "group", id, label: name, children: [] };
-    containers.set(id, node);
-    root.children!.push(node);
-    return node;
+    return ensure("group", id, name, root);
   };
   // 项目节点的挂载父节点：组归属 + 组名可得 → 合成组节点；否则根
-  const projectParent = (projectId: string): TreeNodeDTO => {
+  const projectParent = (projectId: string): OnlineTreeNodeDTO => {
     const groupId = projectRows.get(projectId)?.groupId;
     return (groupId !== undefined ? groupNode(groupId) : null) ?? root;
   };
@@ -160,7 +166,9 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string, groupN
     if (file.path === "apicc.workspace.yaml") continue;
     const parsed = parseWorkspacePath(file.path);
     if (!parsed) continue;
-    const project = ensure("project", parsed.project, projectRows.get(parsed.project)?.name ?? parsed.project, projectParent(parsed.project));
+    const projectRow = projectRows.get(parsed.project);
+    const project = ensure("project", parsed.project, projectRow?.name ?? parsed.project, projectParent(parsed.project));
+    if (projectRow) project.myRole = projectRow.myRole;
     if (parsed.kind === "project-config") {
       project.children!.push(leaf(file.path, parsed.name));
       continue;
@@ -188,7 +196,14 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string, groupN
       continue;
     }
     // api 叶 id = api.yaml 全路径：选中后渲染层按该路径 getFiles 取内容（裁定 B）
-    folderNode.children!.push({ kind: "api", id: file.path, label: parsed.name, children: [] });
+    folderNode.children!.push({
+      source: "online",
+      kind: "api",
+      id: file.path,
+      key: onlineTreeNodeKey(tree.workspaceId, "api", file.path),
+      label: parsed.name,
+      children: [],
+    });
   }
   // 组内排序的行序表（projects 行下标）：仅注入了组名表时启用组内行序
   return sortTree(root, groupNames ? new Map(tree.projects.map((p, i) => [p.id, i])) : undefined);

@@ -2,8 +2,9 @@ import { createPinia, defineStore } from "pinia";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 // core 主入口含 native 索引面（better-sqlite3）——渲染层沙箱求值即崩（白屏，2026-09-06 用户报告）。
 // 纯 schema 一律走 ./schema 子路径（依赖闭包仅 zod）。
-import { ApiDefinitionSchema } from "@apicc/core/schema";
-import type { ApiDefinition } from "@apicc/core";
+import { ComponentAssetSchema, ModelAssetSchema, ApiAssetSchema } from "@apicc/core/schema";
+import { createProjectAssetContext } from "@apicc/core/assets/context";
+import type { ApiAsset, ComponentAsset, ModelAsset } from "@apicc/core";
 import { OnlineBaseUrlSchema, type OnlineRole, type OnlineTreeProject, type OnlineUser, type OnlineVersionConflict, type OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
 import { chunk, planPull, planPush, restoreLocalPaths, toEntityPath, type LocalFileRow, type ProjectDirRef } from "../../../shared/online/migrate.js";
 import type { OnlineGroup } from "../../../shared/online/contract.js";
@@ -58,7 +59,7 @@ function writePersisted(storage: Storage, state: PersistedOnlineServers): void {
 export interface OnlineEditorBuffer {
   path: string | null;
   kind: "api" | "file" | null;
-  api: ApiDefinition | null;
+  api: ApiAsset | null;
   raw: string;
   problems: string[];
   version: number;
@@ -68,6 +69,48 @@ export interface OnlineEditorBuffer {
 
 function emptyBuffer(): OnlineEditorBuffer {
   return { path: null, kind: null, api: null, raw: "", problems: [], version: 0, snapshot: "", loading: false };
+}
+
+async function projectAssetProblems(api: ApiccApi, workspaceId: string, projectId: string, asset: ApiAsset): Promise<string[]> {
+  const tree = await api.onlineTreeGet(workspaceId);
+  if (tree.workspaceId !== workspaceId || !tree.projects.some((project) => project.id === projectId)) {
+    return [`项目资产上下文不可用: ${projectId}`];
+  }
+  const prefix = `${projectId}/`;
+  const relatedPaths = tree.files.map((file) => file.path).filter((path) => {
+    if (!path.startsWith(prefix)) return false;
+    const relative = path.slice(prefix.length);
+    return /^models\/[^/]+\.yaml$/.test(relative)
+      || /^components\/(?:parameter|auth|response|example)\/[^/]+\.yaml$/.test(relative);
+  });
+  const models: ModelAsset[] = [];
+  const components: ComponentAsset[] = [];
+  const problems: string[] = [];
+  for (const paths of chunk(relatedPaths, 200)) {
+    const result = await api.onlineFilesGet({ workspaceId, paths });
+    for (const missing of result.missing) problems.push(`项目资产不可读: ${missing}`);
+    for (const file of result.files) {
+      try {
+        const relative = file.path.slice(prefix.length);
+        if (relative.startsWith("models/")) {
+          const parsed = ModelAssetSchema.safeParse(parseYaml(file.content));
+          if (parsed.success) models.push(parsed.data);
+          else problems.push(`项目模型无效: ${file.path}`);
+        } else {
+          const parsed = ComponentAssetSchema.safeParse(parseYaml(file.content));
+          if (parsed.success) components.push(parsed.data);
+          else problems.push(`项目组件无效: ${file.path}`);
+        }
+      } catch {
+        problems.push(`项目资产无法解析: ${file.path}`);
+      }
+    }
+  }
+  const context = createProjectAssetContext({ projectId, assets: [asset], models, components });
+  return [
+    ...problems,
+    ...context.diagnostics.map((diagnostic) => `${diagnostic.code}: ${diagnostic.path}${diagnostic.targetId ? ` → ${diagnostic.targetId}` : ""}`),
+  ];
 }
 
 /** 在线工作区驻留会话（计划 C 任务 2，与 main online session 同构）：工作区态 + 树视图 +
@@ -171,7 +214,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       editorKind(state): "api" | "file" | null {
         return activeBufferOf(state)?.kind ?? null;
       },
-      editorApi(state): ApiDefinition | null {
+      editorApi(state): ApiAsset | null {
         return activeBufferOf(state)?.api ?? null;
       },
       editorRaw(state): string {
@@ -210,6 +253,8 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         return (path: string | null): boolean => {
           const session = activeSessionOf(state);
           if (!session || session.workspace.myRole === "VIEWER" || !path) return false;
+          const buffer = session.buffers[path];
+          if (buffer?.kind === "api" && (buffer.loading || buffer.problems.length > 0)) return false;
           if (path === "apicc.workspace.yaml") {
             return session.workspace.myRole === "ADMIN" || session.workspace.myRole === "OWNER";
           }
@@ -530,10 +575,15 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           }
           slot.kind = "api";
           try {
-            const parsed = ApiDefinitionSchema.safeParse(parseYaml(file.content));
+            const parsed = ApiAssetSchema.safeParse(parseYaml(file.content));
             if (parsed.success) {
               slot.api = parsed.data;
-              slot.problems = [];
+              const projectId = id.split("/", 1)[0] ?? "";
+              try {
+                slot.problems = await projectAssetProblems(api, wsId, projectId, parsed.data);
+              } catch (e) {
+                slot.problems = [`项目资产上下文读取失败: ${e instanceof Error ? e.message : String(e)}`];
+              }
               slot.snapshot = JSON.stringify(parsed.data);
             } else {
               slot.api = null;
@@ -569,11 +619,16 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         if (wsId === null || !session || !buffer || this.saving) return;
         const apiDef = buffer.api;
         const path = buffer.path;
-        if (!apiDef || !path || !this.canEdit(path)) return;
+        if (!apiDef || !path || buffer.loading || buffer.problems.length > 0 || !this.canEdit(path)) return;
         this.saving = true;
         this.error = null;
         try {
-          const content = stringifyYaml(JSON.parse(JSON.stringify(apiDef)) as Record<string, unknown>);
+          const parsed = ApiAssetSchema.safeParse(apiDef);
+          if (!parsed.success) {
+            this.error = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`).join("\n");
+            return;
+          }
+          const content = stringifyYaml(JSON.parse(JSON.stringify(parsed.data)) as Record<string, unknown>);
           const outcome = await api.onlineFilePut({
             workspaceId: wsId,
             path,
@@ -582,7 +637,8 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           });
           if (outcome.outcome === "pushed") {
             buffer.version = outcome.result.version;
-            buffer.snapshot = JSON.stringify(apiDef);
+            buffer.api = parsed.data;
+            buffer.snapshot = JSON.stringify(parsed.data);
           } else {
             this.conflict = outcome.conflict;
           }

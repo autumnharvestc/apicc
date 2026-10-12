@@ -13,6 +13,7 @@ import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { createAiStore } from "../../../src/renderer/src/stores/ai.js";
+import type { LocalTreeNodeDTO } from "../../../src/shared/tree-dto.js";
 import AiConfigDialog from "../../../src/renderer/src/components/AiConfigDialog.vue";
 
 beforeAll(() => {
@@ -66,15 +67,27 @@ function memStorage(): Storage {
   } as Storage;
 }
 
+function firstApiNode(node: LocalTreeNodeDTO): Extract<LocalTreeNodeDTO, { kind: "api" }> | undefined {
+  if (node.kind === "api") return node;
+  if ("children" in node && node.children) {
+    for (const child of node.children) {
+      const match = firstApiNode(child);
+      if (match) return match;
+    }
+  }
+  return undefined;
+}
+
 async function mountDialog({ open = true }: { open?: boolean } = {}) {
   const api = createMemoryApi();
   api.seedWorkspace();
   const ws = useWorkspaceStore(api);
   await ws.open("/tmp/ws");
-  const apiNode = ws.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-  const editor = useEditorStore(api);
-  await editor.load(apiNode.id);
-  const ai = createAiStore({ api, editor, storage: memStorage() });
+  const apiNode = firstApiNode(ws.tree!);
+  if (!apiNode) throw new Error("Expected the API fixture to be present in the tree.");
+  const editor = useEditorStore(api, () => ({ root: ws.root, readOnly: ws.readOnly }));
+  await editor.load(apiNode.locator);
+  const ai = createAiStore({ api, editor, storage: memStorage(), getContext: () => ({ root: ws.root, readOnly: ws.readOnly }) });
   ai.configDialogOpen = open;
   const { i18n } = createI18nInstance();
   const wrapper = mount(AiConfigDialog, { props: { ai }, global: { plugins: [i18n] } });

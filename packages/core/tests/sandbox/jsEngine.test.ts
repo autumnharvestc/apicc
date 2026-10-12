@@ -5,7 +5,7 @@ import type { PmApi, ScriptContext } from "../../src/plugin/types.js";
 const pm: PmApi = {
   variables: { get: () => undefined, set: () => {} },
   environment: { get: () => undefined },
-  request: { method: "GET", url: "http://x/", headers: {}, query: [] },
+  request: { protocol: "http", method: "GET", url: "http://x/", headers: {}, query: [], auth: { kind: "none" } },
   assert(cond: boolean, message: string) {
     const acc = (this as { __asserts?: { cond: boolean; message: string }[] }).__asserts ??= [];
     acc.push({ cond, message });
@@ -41,7 +41,7 @@ it("pm.variables.set 写入 resolver 运行时层", () => {
     pm: {
       variables: { get: (n) => resolver.get(n), set: (n, v) => resolver.setRuntime(n, v) },
       environment: { get: () => undefined },
-      request: { method: "GET", url: "/", headers: {}, query: [] },
+      request: { protocol: "http", method: "GET", url: "/", headers: {}, query: [], auth: { kind: "none" } },
       assert: () => {},
     },
   };

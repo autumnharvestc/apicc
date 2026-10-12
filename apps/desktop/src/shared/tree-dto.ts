@@ -1,26 +1,135 @@
 import type { StressTargetPolicy, WorkflowStatus } from "@apicc/core";
+import type { OnlineProjectRole } from "./online/contract.js";
+import type {
+  ApiLocator,
+  CollectionLocator,
+  EnvironmentLocator,
+  FolderLocator,
+  GroupLocator,
+  ProjectLocator,
+  WorkflowLocator,
+  WorkspaceLocator,
+} from "./locations.js";
 
-/** 渲染层树节点 DTO：主进程与渲染层共享的单一类型源。 */
-export interface TreeNodeDTO {
-  /**
-   * kind：本地树使用 root/group/project/collection/folder/api/workflow；
-   * file（M3-B 任务 3）为在线工作区只读配置叶（工作流/环境/项目/集合配置等，
-   * 仅本地在线模式产生，id = 文件全路径），本地树永不产出。
-   */
-  kind: "root" | "group" | "project" | "collection" | "folder" | "api" | "workflow" | "file";
+export type LocalTreeKind = "root" | "group" | "project" | "collection" | "folder" | "api" | "workflow" | "environment";
+export type OnlineTreeKind = "root" | "group" | "project" | "collection" | "folder" | "api" | "file";
+
+interface LocalBase<K extends LocalTreeKind, L> {
+  source: "local";
+  kind: K;
   id: string;
+  key: string;
+  label: string;
+  locator: L;
+  children?: LocalTreeNodeDTO[];
+}
+
+export interface LocalRootTreeNodeDTO extends LocalBase<"root", WorkspaceLocator> {
+  children: LocalTreeNodeDTO[];
+}
+
+export interface LocalGroupTreeNodeDTO extends LocalBase<"group", GroupLocator> {
+  children: LocalTreeNodeDTO[];
+}
+
+export interface LocalEnvironmentSummaryDTO {
+  source: "local";
+  key: string;
+  id: string;
+  name: string;
+  extends?: string;
+  variables: Record<string, string>;
+  baseUrls?: Record<string, string>;
+  locator: EnvironmentLocator;
+}
+
+export interface LocalWorkflowSummaryDTO {
+  source: "local";
+  key: string;
+  id: string;
+  name: string;
+  status: WorkflowStatus;
+  locator: WorkflowLocator;
+}
+
+export interface LocalProjectTreeNodeDTO extends LocalBase<"project", ProjectLocator> {
+  stressPolicy?: StressTargetPolicy;
+  envs: LocalEnvironmentSummaryDTO[];
+  workflows: LocalWorkflowSummaryDTO[];
+  children: LocalTreeNodeDTO[];
+}
+
+export interface LocalCollectionTreeNodeDTO extends LocalBase<"collection", CollectionLocator> {
+  children: LocalTreeNodeDTO[];
+}
+
+export interface LocalFolderTreeNodeDTO extends LocalBase<"folder", FolderLocator> {
+  children: LocalTreeNodeDTO[];
+}
+
+export interface LocalApiTreeNodeDTO extends LocalBase<"api", ApiLocator> {
+  protocol: "http" | "websocket" | "soap";
+  method?: string;
+}
+
+export interface LocalWorkflowTreeNodeDTO extends LocalBase<"workflow", WorkflowLocator> {
+  status: WorkflowStatus;
+}
+
+export type LocalTreeNodeDTO =
+  | LocalRootTreeNodeDTO
+  | LocalGroupTreeNodeDTO
+  | LocalProjectTreeNodeDTO
+  | LocalCollectionTreeNodeDTO
+  | LocalFolderTreeNodeDTO
+  | LocalApiTreeNodeDTO
+  | LocalWorkflowTreeNodeDTO;
+
+export type LocalTreeIdentity =
+  | { source: "local"; kind: "root"; locator: WorkspaceLocator }
+  | { source: "local"; kind: "group"; locator: GroupLocator }
+  | { source: "local"; kind: "project"; locator: ProjectLocator }
+  | { source: "local"; kind: "collection"; locator: CollectionLocator }
+  | { source: "local"; kind: "folder"; locator: FolderLocator }
+  | { source: "local"; kind: "api"; locator: ApiLocator }
+  | { source: "local"; kind: "environment"; locator: EnvironmentLocator }
+  | { source: "local"; kind: "workflow"; locator: WorkflowLocator };
+
+export interface OnlineTreeNodeDTO {
+  source: "online";
+  kind: OnlineTreeKind;
+  id: string;
+  key: string;
   label: string;
   method?: string;
-  /** project 节点环境：含 extends（按环境名引用，规格 §6）与已存 variables，供环境面板水合。 */
-  envs?: Array<{ id: string; name: string; extends?: string; variables: Record<string, string>; baseUrls?: Record<string, string> }>;
-  /**
-   * project 节点工作流摘要（M2-B 收口：侧树发现/打开工作流的数据源）。与 children 分离：
-   * SideTree 据此在 project children 尾部合成 workflow 叶子节点（不落 children，避免
-   * 主进程树与集合层级耦合）。
-   */
-  workflows?: Array<{ id: string; name: string; status: WorkflowStatus }>;
-  stressPolicy?: StressTargetPolicy;
-  /** workflow 叶子（SideTree 由 workflows 摘要合成的节点）状态：渲染状态徽标色点。 */
-  status?: WorkflowStatus;
-  children?: TreeNodeDTO[];
+  myRole?: OnlineProjectRole;
+  children?: OnlineTreeNodeDTO[];
+}
+
+export type TreeNodeDTO = LocalTreeNodeDTO | OnlineTreeNodeDTO;
+
+/** Stable UI identity encoded from locator fields in a fixed order. */
+export function localTreeNodeKey(node: LocalTreeIdentity): string {
+  switch (node.kind) {
+    case "root":
+      return JSON.stringify([node.source, node.kind, node.locator.workspaceId]);
+    case "group":
+      return JSON.stringify([node.source, node.kind, node.locator.workspaceId, node.locator.groupId]);
+    case "project":
+      return JSON.stringify([node.source, node.kind, node.locator.workspaceId, node.locator.groupId, node.locator.projectId]);
+    case "collection":
+      return JSON.stringify([node.source, node.kind, node.locator.workspaceId, node.locator.groupId, node.locator.projectId, node.locator.collectionId]);
+    case "folder":
+      return JSON.stringify([node.source, node.kind, node.locator.workspaceId, node.locator.groupId, node.locator.projectId, node.locator.collectionId, ...node.locator.folderIds]);
+    case "api":
+      return JSON.stringify([node.source, node.kind, node.locator.workspaceId, node.locator.groupId, node.locator.projectId, node.locator.collectionId, ...node.locator.folderIds, node.locator.apiId]);
+    case "workflow":
+      return JSON.stringify([node.source, node.kind, node.locator.workspaceId, node.locator.groupId, node.locator.projectId, node.locator.workflowId]);
+    case "environment":
+      return JSON.stringify([node.source, node.kind, node.locator.workspaceId, node.locator.groupId, node.locator.projectId, node.locator.environmentId]);
+  }
+}
+
+export function onlineTreeNodeKey(workspaceId: string, kind: OnlineTreeKind, id: string): string {
+  return JSON.stringify(["online", workspaceId, kind, id]);
 }

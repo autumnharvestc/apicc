@@ -1,11 +1,16 @@
 import { createServer, type Server } from "node:http";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { WorkflowRunner } from "../../src/workflow/runner.js";
+import { WorkflowRunner as ProjectSnapshotWorkflowRunner } from "../../src/workflow/runner.js";
 import type { Workflow } from "../../src/workflow/model.js";
-import type { Workspace, Project, ApiDefinition } from "../../src/domain/model.js";
+import type { ApiAsset, RequestBody } from "../../src/contract/model.js";
+import type { ContractCollection, ContractFolder, ContractProject } from "../../src/contract/workspace.js";
+import type { Assertion, Environment, KeyValuePair, Operation } from "../../src/domain/common.js";
+import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import type { ProjectExecutionRun } from "../../src/runner/runner.js";
 import { createDefaultRegistry, createPluginRegistry } from "../../src/index.js";
 import { workflowToRunResult } from "../../src/workflow/adapter.js";
 
@@ -24,39 +29,282 @@ beforeAll(async () => {
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
 // 夹具须在 baseUrl 就绪后构造（模块顶层求值会把空串快照进 env.variables，对位 tests/runner/runner.test.ts 先例）。
-let ws: Workspace;
-let project: Project;
+interface FixtureCase {
+  id: string;
+  name: string;
+  scope?: string;
+  parameters?: Record<string, string>;
+  preScript?: string;
+  postScript?: string;
+  preOperations?: Operation[];
+  postOperations?: Operation[];
+  assertions?: Assertion[];
+  dataDriver?: { sourcePath: string; format: "csv" | "json" };
+}
+interface FixtureApi {
+  id: string;
+  name: string;
+  version?: string;
+  deprecated?: boolean;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
+  url: string;
+  headers?: KeyValuePair[];
+  query?: KeyValuePair[];
+  body?: RequestBody;
+  protocol?: "http" | "websocket" | "soap";
+  message?: string;
+  envelope?: string;
+  soapAction?: string;
+  cases?: FixtureCase[];
+}
+interface FixtureContainer {
+  id: string;
+  name: string;
+  variables?: Record<string, string>;
+  apis?: FixtureApi[];
+  folders?: FixtureContainer[];
+  preOperations?: Operation[];
+  postOperations?: Operation[];
+}
+interface FixtureProject {
+  id: string;
+  name: string;
+  variables: Record<string, string>;
+  environments: Environment[];
+  collections?: FixtureContainer[];
+}
+type FixtureApiResolver = (apiId: string) => FixtureApi | undefined;
+// Old test fixture shapes are translated to a complete snapshot below; these aliases are test-local only.
+type ApiDefinition = FixtureApi;
+type Project = FixtureProject;
+
+let project: FixtureProject;
+const ws = { id: "workspace-fixture" };
 beforeAll(async () => {
-  ws = { id: "w", name: "w", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
   project = {
     id: "p", name: "p", variables: {},
     environments: [{ id: "e", name: "dev", variables: { baseUrl }, baseUrls: {} }],
-    collections: [], workflows: [],
   };
 });
-const apiOf = (id: string, url: string): ApiDefinition => ({
-  id, name: id, version: "1", deprecated: false, method: "GET" as const, url, headers: [], query: [],
+const apiOf = (id: string, url: string): FixtureApi => ({
+  id, name: id, version: "1", deprecated: false, method: "GET", url, headers: [], query: [],
   cases: [{
     id: `case-${id}`, name: `${id}-用例`, scope: "base", parameters: {},
+    preOperations: [], postOperations: [],
     assertions: [{ id: `as-${id}`, target: "status" as const, op: "eq" as const, expected: "200" }],
   }],
 });
 const apis = [apiOf("a1", "{{baseUrl}}/one"), apiOf("a2", "{{baseUrl}}/two"), apiOf("a3", "{{baseUrl}}/three")];
 // 必失败接口（断言 500）：级联 skipped / failFast 用例的失败源。
-const badApi: ApiDefinition = {
+const badApi: FixtureApi = {
   id: "abad", name: "abad", version: "1", deprecated: false, method: "GET", url: "{{baseUrl}}/bad", headers: [], query: [],
-  cases: [{ id: "case-abad", name: "abad-用例", scope: "base", parameters: {}, assertions: [{ id: "as-abad", target: "status", op: "eq", expected: "500" }] }],
+  cases: [{ id: "case-abad", name: "abad-用例", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [{ id: "as-abad", target: "status", op: "eq", expected: "500" }] }],
 };
 // 第二个必失败接口（不同 apiId）：fan-in 双败用例的另一个失败源。
-const badApi2: ApiDefinition = {
+const badApi2: FixtureApi = {
   id: "abad2", name: "abad2", version: "1", deprecated: false, method: "GET", url: "{{baseUrl}}/bad2", headers: [], query: [],
-  cases: [{ id: "case-abad2", name: "abad2-用例", scope: "base", parameters: {}, assertions: [{ id: "as-abad2", target: "status", op: "eq", expected: "500" }] }],
+  cases: [{ id: "case-abad2", name: "abad2-用例", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [{ id: "as-abad2", target: "status", op: "eq", expected: "500" }] }],
 };
-const resolve = (apiId: string) => apis.find((a) => a.id === apiId);
+const resolve: FixtureApiResolver = (apiId) => apis.find((a) => a.id === apiId);
 /** 追加额外接口定义的 resolve（badApi/sitApi 等局部夹具用）。 */
-const resolveWith = (extras: ApiDefinition[]) => (apiId: string) => [...extras, ...apis].find((a) => a.id === apiId);
+const resolveWith = (extras: FixtureApi[]): FixtureApiResolver => (apiId) => [...extras, ...apis].find((a) => a.id === apiId);
 const wf = (nodes: Workflow["nodes"], edges: Workflow["edges"]): Workflow =>
   ({ id: "wf", name: "条件流", status: "enabled", nodes, edges });
+
+function stableId(kind: string, value: string): string {
+  const hex = createHash("sha256").update(`${kind}:${value}`).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
+function parameterBindings(values: readonly KeyValuePair[], apiId: string, location: string) {
+  return values.map((item, index) => ({
+    kind: "inline" as const,
+    id: stableId(`parameter:${location}:${apiId}`, String(index)),
+    name: item.key,
+    schema: { kind: "scalar" as const, type: "string" as const },
+    required: false,
+    enabled: item.enabled,
+    description: "",
+    value: item.value,
+  }));
+}
+
+function fixtureApiAsset(api: FixtureApi): ApiAsset {
+  const contractId = stableId("api", api.id);
+  const separator = api.url.indexOf("?");
+  const urlWithoutQuery = separator < 0 ? api.url : api.url.slice(0, separator);
+  const urlQuery = separator < 0 ? [] : api.url.slice(separator + 1).split("&").filter(Boolean).map((entry) => {
+    const [key, ...parts] = entry.split("=");
+    return { key: decodeURIComponent(key ?? ""), value: decodeURIComponent(parts.join("=")), enabled: true };
+  });
+  let baseUrl: string;
+  let path: string;
+  if (urlWithoutQuery.startsWith("{{baseUrl}}")) {
+    baseUrl = "{{baseUrl}}";
+    path = urlWithoutQuery.slice("{{baseUrl}}".length) || "/";
+  } else {
+    const match = /^([A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]+)([^?#]*)(?:\?([^#]*))?$/.exec(urlWithoutQuery);
+    if (match) {
+      baseUrl = match[1]!;
+      path = match[2] || "/";
+    } else {
+      baseUrl = "{{baseUrl}}";
+      path = urlWithoutQuery.startsWith("/") ? urlWithoutQuery : `/${urlWithoutQuery}`;
+    }
+  }
+  const query = [...(api.query ?? []), ...urlQuery];
+  const common = {
+    baseUrl,
+    path,
+    pathParams: [],
+    query: parameterBindings(query, contractId, "query"),
+    headers: parameterBindings(api.headers ?? [], contractId, "header"),
+    cookies: [],
+    auth: { kind: "none" as const },
+  };
+  const protocol = api.protocol ?? "http";
+  const request = protocol === "websocket"
+    ? { protocol, ...common, ...(api.message === undefined ? {} : { message: api.message }) }
+    : protocol === "soap"
+      ? { protocol, method: "POST" as const, ...common, envelope: api.envelope ?? "<Envelope/>", ...(api.soapAction === undefined ? {} : { soapAction: api.soapAction }) }
+      : { protocol, method: api.method, ...common, body: api.body ?? { kind: "none" as const } };
+  return {
+    contract: {
+      formatVersion: 1,
+      id: contractId,
+      metadata: { name: api.name, description: "", tags: [], version: api.version ?? "1", status: api.deprecated ? "deprecated" : "draft" },
+      request,
+      responses: [],
+    },
+    cases: (api.cases ?? []).map((testCase) => ({
+      id: stableId("case", testCase.id),
+      name: testCase.name,
+      scope: testCase.scope ?? "base",
+      parameters: testCase.parameters ?? {},
+      preOperations: testCase.preOperations ?? (testCase.preScript ? [{ id: stableId("operation", `${testCase.id}:pre`), type: "script" as const, content: testCase.preScript }] : []),
+      postOperations: testCase.postOperations ?? (testCase.postScript ? [{ id: stableId("operation", `${testCase.id}:post`), type: "script" as const, content: testCase.postScript }] : []),
+      assertions: testCase.assertions ?? [],
+      ...(testCase.dataDriver === undefined ? {} : { dataDriver: testCase.dataDriver }),
+    })),
+    documentation: "",
+  };
+}
+
+function fixtureContainer(container: FixtureContainer, collectionId: string, path = ""): ContractCollection | ContractFolder {
+  const currentPath = `${path}/${container.id}`;
+  const apis = (container.apis ?? []).map(fixtureApiAsset);
+  const folders = (container.folders ?? []).map((folder) => fixtureContainer(folder, collectionId, currentPath) as ContractFolder);
+  const operations = {
+    preOperations: container.preOperations ?? [],
+    postOperations: container.postOperations ?? [],
+  };
+  if (path === "") {
+    return {
+      id: stableId("collection", container.id),
+      name: container.name,
+      variables: container.variables ?? {},
+      ...operations,
+      folders,
+      apis,
+    };
+  }
+  return { id: stableId(`folder:${collectionId}:${path}`, container.id), name: container.name, ...operations, folders, apis };
+}
+
+function executionFor(
+  workflow: Workflow,
+  sourceProject: FixtureProject,
+  resolver: FixtureApiResolver | undefined,
+): { execution: ProjectExecutionRun; workflowId: string } {
+  const collections = (sourceProject.collections ?? []).map((container) => fixtureContainer(container, container.id) as ContractCollection);
+  const knownApiIds = new Set<string>();
+  const collectApiIds = (assets: readonly ApiAsset[]): void => { for (const asset of assets) knownApiIds.add(asset.contract.id); };
+  const collectContainers = (container: ContractCollection | ContractFolder): void => {
+    collectApiIds(container.apis);
+    for (const folder of container.folders) collectContainers(folder);
+  };
+  for (const collection of collections) collectContainers(collection);
+  const resolverApis = new Map<string, ApiAsset>();
+  for (const node of workflow.nodes) {
+    if (node.kind !== "request" || !node.apiId) continue;
+    const candidate = resolver?.(node.apiId);
+    if (candidate) {
+      const asset = fixtureApiAsset(candidate);
+      if (!knownApiIds.has(asset.contract.id)) resolverApis.set(asset.contract.id, asset);
+    }
+  }
+  if (resolverApis.size > 0) {
+    collections.push({
+      id: stableId("collection", "resolver-fixtures"), name: "resolver-fixtures", variables: {},
+      preOperations: [], postOperations: [], folders: [], apis: [...resolverApis.values()],
+    });
+  }
+  const mappedWorkflow: Workflow = {
+    ...workflow,
+    id: stableId("workflow", workflow.id),
+    nodes: workflow.nodes.map((node) => ({
+      ...node,
+      ...(node.apiId === undefined ? {} : { apiId: stableId("api", node.apiId) }),
+      ...(node.caseId === undefined ? {} : { caseId: stableId("case", node.caseId) }),
+    })),
+  };
+  const environments = sourceProject.environments.map((environment) => {
+    const firstBaseUrl = Object.values(environment.baseUrls)[0];
+    const firstCollection = collections[0];
+    return {
+      ...environment,
+      id: stableId("environment", environment.id),
+      baseUrls: firstBaseUrl === undefined || firstCollection === undefined ? {} : { [firstCollection.id]: firstBaseUrl },
+    };
+  });
+  const projectDefinition: ContractProject = {
+    id: stableId("project", sourceProject.id),
+    name: sourceProject.name,
+    variables: sourceProject.variables,
+    globals: { query: [], headers: [], cookies: [], body: [] },
+    environments,
+    collections,
+    workflows: [mappedWorkflow],
+    stressPolicy: { trustedOrigins: [], deniedOrigins: [] },
+    models: [],
+    components: [],
+  };
+  const snapshot = createProjectSnapshot(projectDefinition);
+  return {
+    execution: {
+      snapshot,
+      credentialBindings: { resolve: (ref) => { throw new Error(`Unexpected credential reference ${ref.id}`); }, versions: {} },
+    },
+    workflowId: mappedWorkflow.id,
+  };
+}
+
+interface WorkflowFixtureRunnerOptions {
+  registry: ReturnType<typeof createDefaultRegistry>;
+  resolve?: FixtureApiResolver;
+  envName?: string;
+  failFast?: boolean;
+  strict?: boolean;
+}
+class WorkflowRunner {
+  private readonly production: ProjectSnapshotWorkflowRunner;
+  constructor(private readonly options: WorkflowFixtureRunnerOptions) {
+    this.production = new ProjectSnapshotWorkflowRunner({
+      registry: options.registry,
+      ...(options.envName === undefined ? {} : { environmentId: options.envName }),
+      ...(options.failFast === undefined ? {} : { failFast: options.failFast }),
+      ...(options.strict === undefined ? {} : { strict: options.strict }),
+    });
+  }
+  run(workflow: Workflow, context: { project?: FixtureProject; workspace?: typeof ws } = {}) {
+    const sourceProject = context.project ?? project;
+    const { execution, workflowId } = executionFor(workflow, sourceProject, this.options.resolve);
+    const environment = this.options.envName === undefined
+      ? undefined
+      : sourceProject.environments.find(({ name }) => name === this.options.envName)?.id ?? this.options.envName;
+    return this.production.run(execution, workflowId, environment === undefined ? {} : { environmentId: stableId("environment", environment) });
+  }
+}
 
 describe("WorkflowRunner", () => {
   it("线性两节点顺序执行且变量跨节点携带", async () => {
@@ -449,7 +697,7 @@ describe("WorkflowRunner", () => {
   it("envName 未找到显式报错（resolveEnv 对齐）", async () => {
     await expect(new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "ghost", failFast: false })
       .run(wf([{ id: "n", kind: "request" as const, apiId: "a1", caseId: "case-a1" }], []), { project, workspace: ws }))
-      .rejects.toThrow(/未找到环境/);
+      .rejects.toThrow(/不存在环境/);
   });
 
   it("级联 skipped：首节点 failed 且边无条件，下游不执行", async () => {
@@ -681,6 +929,8 @@ describe("WorkflowRunner", () => {
 
   it("同一 runner 的并发 run 隔离 carried，且无提取 run 不继承旧 token", async () => {
     const seenSeeds = new Set<string>();
+    const seenCarriedTokens: string[] = [];
+    const seenCleanTokenMarkers: string[] = [];
     const waiting: Array<() => void> = [];
     const barrier = createServer((req, res) => {
       const seed = String(req.headers["x-seed"] ?? "");
@@ -691,6 +941,8 @@ describe("WorkflowRunner", () => {
         if (seenSeeds.size === 2) res.end("ok");
         return;
       }
+      if (req.url === "/second") seenCarriedTokens.push(String(req.headers["x-carried-token"] ?? ""));
+      if (req.url === "/clean") seenCleanTokenMarkers.push(String(req.headers["x-clean-token"] ?? ""));
       res.end("ok");
     });
     await new Promise<void>((r) => barrier.listen(0, "127.0.0.1", r));
@@ -698,11 +950,29 @@ describe("WorkflowRunner", () => {
     try {
       const first = apiOf("first", `${barrierBase}/first`);
       first.headers = [{ key: "x-seed", value: "{{seed}}", enabled: true }];
-      first.cases[0]!.postScript = 'pm.variables.set("token", pm.variables.get("seed"));';
+      first.cases![0]!.postOperations = [{
+        id: "extract-token",
+        type: "script",
+        content: 'pm.variables.set("token", pm.variables.get("seed"));',
+      }];
       const second = apiOf("second", `${barrierBase}/second`);
-      second.cases[0]!.postScript = 'pm.assert(pm.variables.get("token") === pm.variables.get("seed"), "run isolation");';
-      const cleanApi = apiOf("clean", `${barrierBase}/second`);
-      cleanApi.cases[0]!.postScript = 'pm.assert(pm.variables.get("token") === undefined, "stale token");';
+      second.headers = [{ key: "x-carried-token", value: "{{token}}", enabled: true }];
+      second.cases![0]!.postOperations = [{
+        id: "assert-carried-token",
+        type: "script",
+        content: 'pm.assert(pm.variables.get("token") === pm.variables.get("seed"), "run isolation");',
+      }];
+      const cleanApi = apiOf("clean", `${barrierBase}/clean`);
+      cleanApi.cases![0]!.preOperations = [{
+        id: "observe-clean-token",
+        type: "script",
+        content: 'pm.request.headers["x-clean-token"] = pm.variables.get("token") === undefined ? "undefined" : "stale";',
+      }];
+      cleanApi.cases![0]!.postOperations = [{
+        id: "assert-clean-token",
+        type: "script",
+        content: 'pm.assert(pm.variables.get("token") === undefined, "stale token");',
+      }];
       const locals = [first, second, cleanApi];
       const runner = new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith(locals), envName: "dev", failFast: false });
       const makeProject = (seed: string): Project => ({ ...project, id: `project-${seed}`, variables: { seed } });
@@ -719,9 +989,12 @@ describe("WorkflowRunner", () => {
       ]);
       expect(a.nodeResults.map((n) => n.state)).toEqual(["passed", "passed"]);
       expect(b.nodeResults.map((n) => n.state)).toEqual(["passed", "passed"]);
+      expect(seenCarriedTokens).toHaveLength(2);
+      expect(seenCarriedTokens.sort()).toEqual(["A", "B"]);
 
       const clean = await runner.run({ id: "clean", name: "clean", status: "enabled", nodes: [{ id: "clean", kind: "request", apiId: "clean", caseId: "case-clean" }], edges: [] }, { project: makeProject("C"), workspace: ws });
       expect(clean.nodeResults[0]!.state).toBe("passed");
+      expect(seenCleanTokenMarkers).toEqual(["undefined"]);
     } finally {
       await new Promise<void>((r) => barrier.close(() => r()));
     }
@@ -788,7 +1061,7 @@ describe("WorkflowRunner", () => {
         .run(wf([{ id: "data", kind: "request", apiId: "data-fast", caseId: "case-data-fast" }], []), { project, workspace: ws });
       expect(fast.nodeResults[0]?.state).toBe("failed");
       expect(fast.nodeResults[0]?.outcomes?.map((o) => o.row)).toEqual([0]);
-      const bad = { ...dataApi, id: "bad-data", cases: [{ ...dataApi.cases[0]!, id: "case-bad", dataDriver: { sourcePath: join(dir, "missing.json"), format: "json" as const } }] };
+      const bad = { ...dataApi, id: "bad-data", cases: [{ ...dataApi.cases![0]!, id: "case-bad", dataDriver: { sourcePath: join(dir, "missing.json"), format: "json" as const } }] };
       const config = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([bad]), envName: "dev", failFast: false })
         .run(wf([{ id: "bad", kind: "request", apiId: "bad-data", caseId: "case-bad" }], []), { project, workspace: ws });
       expect(config.nodeResults[0]?.state).toBe("failed");

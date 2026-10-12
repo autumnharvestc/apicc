@@ -19,8 +19,8 @@ export function createSoapClient(transport: ManagedProtocolClient): ProtocolClie
     name: "soap",
     canHandle: (req) => canHandleProtocol(req, "soap"),
     async execute(req: ExecutableRequest, opts: HttpExecuteOptions): Promise<ExecutionResponse> {
-      if (req.envelope === undefined) {
-        throw new Error("soap 请求必须提供 envelope（XML 信封模板）");
+      if (req.protocol !== "soap" || req.method !== "POST" || typeof req.envelope !== "string") {
+        throw Object.assign(new Error("SOAP 客户端要求 protocol=soap、method=POST 和字符串 envelope"), { caseFailureKind: "config" as const, code: "CONFIG" });
       }
       const headers = { ...req.headers };
       if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
@@ -30,7 +30,7 @@ export function createSoapClient(transport: ManagedProtocolClient): ProtocolClie
         headers["SOAPAction"] = req.soapAction;
       }
       return await transport.execute(
-        { ...req, method: "POST", headers, body: { kind: "xml", content: req.envelope } },
+        { protocol: "http", method: "POST", url: req.url, headers, query: [...req.query], auth: req.auth, body: { kind: "xml", content: req.envelope } },
         opts,
       );
     },

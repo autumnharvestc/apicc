@@ -1,220 +1,279 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { StressReportSchema, type GeneratorMetricsCollector, type ProtocolClient } from "@apicc/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  StressReportSchema,
+  type ApiAsset,
+  type GeneratorMetricsCollector,
+  type ProtocolClient,
+} from "@apicc/core";
 import { createSession, sameName } from "../../src/main/session.js";
 import { createStressController } from "../../src/main/stress.js";
+import {
+  findApi,
+  IDS,
+  makeTempRoot,
+  makeWorkspace,
+  persistWorkspace,
+  projectOne,
+  uuid,
+} from "./helpers/contract-assets.js";
+import type { ApiLocator } from "../../src/shared/locations.js";
 
-const root = () => mkdtempSync(join(tmpdir(), "apicc-ui-"));
+const temporaryRoots: Array<() => Promise<void>> = [];
 
-describe("createSession", () => {
-  it("create 建立最小工作区并 open 读回", async () => {
-    const s = createSession();
-    const dir = root();
-    const created = await s.create(dir, "演示");
+async function tempRoot(): Promise<{ path: string; dispose: () => Promise<void> }> {
+  const temporary = await makeTempRoot("apicc-session-");
+  temporaryRoots.push(temporary.dispose);
+  return temporary;
+}
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map((dispose) => dispose()));
+});
+
+const projectLocator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+const apiLocator: ApiLocator = {
+  ...projectLocator,
+  collectionId: IDS.collectionOne,
+  folderIds: [],
+  apiId: IDS.sharedApi,
+};
+
+type TestStressApi = ApiAsset & { id: string; locator: ApiLocator };
+
+function apiWithLocator(session: ReturnType<typeof createSession>, locator: ApiLocator): TestStressApi {
+  const located = session.locateApi(locator);
+  if (!located) throw new Error(`Stress fixture API not found: ${locator.apiId}`);
+  return Object.assign(located.api, { id: located.api.contract.id, locator });
+}
+
+async function setupStress() {
+  const temporary = await tempRoot();
+  const workspace = makeWorkspace();
+  const project = projectOne(workspace);
+  const api = findApi(project, IDS.sharedApi)!;
+  api.contract.request.baseUrl = "http://127.0.0.1:1";
+  api.contract.request.auth = { kind: "none" };
+  api.cases = [{
+    id: IDS.sharedCase,
+    name: "smoke",
+    scope: "base",
+    parameters: {},
+    preOperations: [],
+    postOperations: [],
+    assertions: [],
+  }];
+  project.environments[0]!.baseUrls[IDS.collectionOne] = "http://127.0.0.1:1";
+  await persistWorkspace(temporary.path, workspace);
+  const session = createSession();
+  await session.open(temporary.path);
+  return { s: session, dir: temporary.path, api: apiWithLocator(session, apiLocator) };
+}
+
+describe("formal Session transactions", () => {
+  it("creates a formal workspace with one default group and a committed revision", async () => {
+    const temporary = await tempRoot();
+    const unopened = createSession();
+    expect(() => unopened.locateApi(apiLocator)).toThrow(/尚未打开工作区/);
+    const session = createSession();
+
+    const created = await session.create(temporary.path, "演示");
+    const reopened = await session.open(temporary.path);
+
     expect(created.workspace.name).toBe("演示");
-    const opened = await s.open(dir);
-    // M10：新建目录自带默认分组
-    expect(opened.workspace.groups).toHaveLength(1);
-    expect(opened.workspace.groups[0]).toMatchObject({ name: "默认分组", default: true });
-    expect(s.root).toBe(dir);
+    expect(reopened.workspace.groups).toHaveLength(1);
+    expect(reopened.workspace.groups[0]).toMatchObject({ name: "默认分组", default: true });
+    expect(reopened.root).toBe(temporary.path);
+    expect(reopened.revision).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("未打开时 locate 抛错；open 后可经路径定位接口", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g1");
-    const p = s.createProject(g.id, "p1");
-    const c = s.createCollection(p.id, "c1");
-    const api = s.createApi(c.id, null, { name: "ping", method: "GET", url: "{{baseUrl}}/x" });
-    const found = s.locateApi(api.id);
-    expect(found?.collection.id).toBe(c.id);
-    expect(found?.project.id).toBe(p.id);
-    expect(s.locateApi("missing")).toBeUndefined();
-    const s2 = createSession();
-    expect(() => s2.locateApi(api.id)).toThrow(/未打开/);
-  });
+  it("creates a smoke case through full locators and explicitly deletes only that API asset", async () => {
+    const temporary = await tempRoot();
+    const session = createSession();
+    const opened = await session.create(temporary.path, "delete API");
+    const workspaceLocator = { workspaceId: opened.workspace.id };
+    const group = opened.workspace.groups[0]!;
+    const project = await session.createProject({ ...workspaceLocator, groupId: group.id }, "project");
+    const projectRef = { ...workspaceLocator, groupId: group.id, projectId: project.id };
+    const collection = await session.createCollection(projectRef, "collection");
+    const collectionRef = { ...projectRef, collectionId: collection.id };
+    const api = await session.createApi(collectionRef, { name: "ping", baseUrl: "https://example.test", path: "/x" });
+    const locator: ApiLocator = { ...collectionRef, folderIds: [], apiId: api.contract.id };
+    const apiDir = join(temporary.path, "groups", group.id, "projects", project.id, "collections", collection.id, "apis", api.contract.id);
 
-  it("createApi 附带基座冒烟用例；delete 级联删除接口", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const c = s.createCollection(p.id, "c");
-    const api = s.createApi(c.id, null, { name: "a", method: "POST", url: "/" });
     expect(api.cases).toHaveLength(1);
     expect(api.cases[0]!.scope).toBe("base");
-    await s.save();
-    // id 布局（轨一）：盘上目录名=实体 id
-    const apiDir = join(dir, "groups", g.id, "projects", p.id, "collections", c.id, "apis", api.id);
+    expect(session.locateApi(locator)?.api).toEqual(api);
     expect(existsSync(apiDir)).toBe(true);
-    s.deleteNode("api", api.id);
-    await s.save();
-    expect(s.locateApi(api.id)).toBeUndefined();
-    const s2 = createSession();
-    await s2.open(dir);
-    expect(existsSync(apiDir)).toBe(false);
-  });
+    await session.deleteNode({ kind: "api", locator });
 
-  it("saveApi 更新接口并落盘（重开读回验证）", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const c = s.createCollection(p.id, "c");
-    const api = s.createApi(c.id, null, { name: "a", method: "GET", url: "/x" });
-    api.url = "/changed";
-    await s.saveApi(api);
-    const s2 = createSession();
-    const reopened = await s2.open(dir);
-    const found = s2.locateApi(api.id);
-    expect(found?.api.url).toBe("/changed");
-    expect(reopened.workspace.groups).toHaveLength(2); // 默认分组 + 自建分组
-  });
-
-  it("deleteNode group 未命中时抛「未找到」（与 memory 契约对齐，宽审查 I3）", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    expect(() => s.deleteNode("group", "不存在")).toThrow(/未找到/);
-  });
-
-  it("createEnvironment 派生环境并继承父变量；setEnvironmentVariables 覆盖", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    // id 布局（轨一）：环境文件名=环境 id，夹具 id 须 UUID 形态
-    p.environments.push({ id: randomUUID(), name: "dev", variables: { baseUrl: "http://d", token: "t" }, baseUrls: {} });
-    const env = s.createEnvironment(p.id, { name: "sit", extends: "dev" });
-    await s.save();
-    const s2 = createSession();
-    await s2.open(dir);
-    const sit = s2.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.environments.find((e) => e.name === "sit")!;
-    expect(sit.extends).toBe("dev");
-    await s2.setEnvironmentVariables(sit.id, { baseUrl: "http://s" });
-    // 简报修正：session 变更操作不自动落盘（承重语义备忘，IPC 层显式 save），
-    // 重开读回前须显式 save——与本文件 renameNode 用例的既有模式一致。
-    await s2.save();
+    expect(session.locateApi(locator)).toBeUndefined();
+    expect(existsSync(join(apiDir, "api.yaml"))).toBe(false);
     const reopened = createSession();
-    await reopened.open(dir);
-    const sitVars = reopened.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.environments.find((e) => e.name === "sit")!.variables;
-    expect(sitVars).toEqual({ baseUrl: "http://s" });
-    expect(env.name).toBe("sit");
+    await reopened.open(temporary.path);
+    expect(reopened.locateApi(locator)).toBeUndefined();
   });
 
-  it("renameWorkflow 改名后仅名称变化、盘上 id 目录不丢", async () => {
-    // id 布局（轨一）：目录名=工作流 id，改名只改 yaml 内名称——目录恒在、重开读回新名。
-    // 清理语义仍由 node:fs/promises rm 承担（本机 Windows+Node24 对非 ASCII 路径 rmSync
-    // 静默失效/硬崩的修复不回退），删除工作流场景见下一用例。
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const wf = s.createWorkflow(p.id, "旧名");
-    await s.save();
-    const wfDir = join(dir, "groups", g.id, "projects", p.id, "workflows", wf.id);
-    expect(existsSync(wfDir)).toBe(true);
-    await s.renameWorkflow(wf.id, "新名");
-    // 改名不动盘上目录（id 目录恒在）
-    expect(existsSync(wfDir)).toBe(true);
-    const s2 = createSession();
-    const reopened = await s2.open(dir);
-    // 重开读回：改名已持久化（按 id 取，不依赖盘上目录的字典序）
-    const reopenedWfs = reopened.workspace.groups.find((x) => x.name === "g")!.projects[0]!.workflows;
-    expect(reopenedWfs.find((w) => w.id === wf.id)!.name).toBe("新名");
-    expect(s2.locateWorkflow(wf.id)?.workflow.name).toBe("新名");
+  it("saves the complete ApiAsset and observes it after reopening", async () => {
+    const temporary = await tempRoot();
+    await persistWorkspace(temporary.path, makeWorkspace());
+    const session = createSession();
+    await session.open(temporary.path);
+    const edited = session.locateApi(apiLocator)!.api;
+    edited.contract.request.path = "/changed";
+    edited.documentation = "# saved design";
+
+    await session.saveApi(apiLocator, edited);
+    const reopened = createSession();
+    await reopened.open(temporary.path);
+
+    expect(reopened.locateApi(apiLocator)?.api).toMatchObject({
+      contract: { request: { path: "/changed" } },
+      documentation: "# saved design",
+    });
   });
 
-  it("cleanupOrphanDirs 清理已删除工作流的残留目录", async () => {
-    // 简报骨架：save 含 wf → 内存 deleteWorkflow → save → 旧目录不存在（中文盘上名同上）
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const wf = s.createWorkflow(p.id, "残留流");
-    await s.save();
-    const wfDir = join(dir, "groups", g.id, "projects", p.id, "workflows", wf.id);
-    expect(existsSync(wfDir)).toBe(true);
-    s.deleteWorkflow(wf.id);
-    await s.save();
-    expect(existsSync(wfDir)).toBe(false);
-    expect(s.locateWorkflow(wf.id)).toBeUndefined();
+  it("rejects deletion of an unknown group through the asynchronous transaction API", async () => {
+    const temporary = await tempRoot();
+    await persistWorkspace(temporary.path, makeWorkspace());
+    const session = createSession();
+    await session.open(temporary.path);
+
+    await expect(session.deleteNode({
+      kind: "group",
+      locator: { workspaceId: IDS.workspace, groupId: uuid(9999) },
+    })).rejects.toThrow(/not found|未找到/i);
   });
 
-  // —— C1（Critical）回归的两条 NTFS 大小写用例随 id 布局（轨一）移除：目录名=UUID 后
-  // 「模型名 Flow / 盘上目录 flow」的解析态这一错误类别整体消亡，rename 仅改 yaml 名称
-  // 且 id 目录恒在（由 renameWorkflow 用例钉住）。同名放开（轨二）后重名拒绝整体移除，
-  // sameName 归一比较仅剩 ensureDefaultGroup 的同名补标记在用。 ——
-  it("sameName 纯函数：win32 两侧 toLowerCase 归一，其余平台严格相等", () => {
+  it("inherits environment variables and persists environment, collection base URLs, and project globals", async () => {
+    const temporary = await tempRoot();
+    await persistWorkspace(temporary.path, makeWorkspace());
+    const session = createSession();
+    await session.open(temporary.path);
+    const environment = await session.createEnvironment(projectLocator, { name: "sit", extends: "dev" });
+    const environmentRef = { ...projectLocator, environmentId: environment.id };
+
+    await session.setEnvironmentVariables(environmentRef, { baseUrl: "https://sit.example.test", token: "t" });
+    await session.setEnvironmentBaseUrls(environmentRef, { [IDS.collectionOne]: "https://sit.example.test" });
+    await expect(session.setEnvironmentBaseUrls({ ...environmentRef, environmentId: uuid(9997) }, {}))
+      .rejects.toThrow(/Environment not found/);
+    const globals = {
+      variables: { region: "qa" },
+      query: [{ key: "region", value: "qa", enabled: true }],
+      headers: [{ key: "x-project", value: "qa", enabled: false }],
+      cookies: [],
+      body: [{ key: "mode", value: "test", enabled: true }],
+    };
+    await session.setProjectGlobals(projectLocator, globals);
+    const reopened = createSession();
+    await reopened.open(temporary.path);
+
+    expect(reopened.locateEnvironment(environmentRef)?.environment).toMatchObject({
+      name: "sit",
+      extends: "dev",
+      variables: { baseUrl: "https://sit.example.test", token: "t" },
+      baseUrls: { [IDS.collectionOne]: "https://sit.example.test" },
+    });
+    expect(reopened.getProjectGlobals(projectLocator)).toEqual(globals);
+  });
+
+  it("rejects an invalid stress policy without committing a revision", async () => {
+    const temporary = await tempRoot();
+    await persistWorkspace(temporary.path, makeWorkspace());
+    const session = createSession();
+    await session.open(temporary.path);
+    const before = session.workspace;
+    const revision = session.revision;
+
+    await expect(session.setStressPolicy(projectLocator, { maxRps: 0 })).rejects.toThrow(/maxRps|positive|正数/i);
+
+    expect(session.workspace).toEqual(before);
+    expect(session.revision).toBe(revision);
+  });
+
+  it("renames a workflow without changing its identity, then explicitly deletes it", async () => {
+    const temporary = await tempRoot();
+    await persistWorkspace(temporary.path, makeWorkspace());
+    const session = createSession();
+    await session.open(temporary.path);
+    const workflow = await session.createWorkflow(projectLocator, "旧名");
+    const workflowRef = { ...projectLocator, workflowId: workflow.id };
+    await session.renameWorkflow(workflowRef, "新名");
+    expect(session.locateWorkflow(workflowRef)?.workflow.id).toBe(workflow.id);
+    const reopened = createSession();
+    await reopened.open(temporary.path);
+    expect(reopened.locateWorkflow(workflowRef)?.workflow.name).toBe("新名");
+
+    await reopened.deleteWorkflow(workflowRef);
+    expect(reopened.locateWorkflow(workflowRef)).toBeUndefined();
+  });
+
+  it("sanitizes node names while allowing same-name siblings with distinct identities", async () => {
+    const temporary = await tempRoot();
+    const created = await createSession().create(temporary.path, "name workspace");
+    const session = createSession();
+    await session.open(temporary.path);
+    const workspaceRef = { workspaceId: created.workspace.id };
+    const group = await session.createGroup(workspaceRef, "  ");
+    const duplicateGroup = await session.createGroup(workspaceRef, "  ");
+    expect(group.id).not.toBe(duplicateGroup.id);
+    expect(group.name).toBe("未命名");
+    const workspace = session.workspace;
+    if (!workspace) throw new Error("Created workspace is not open");
+    expect(workspace.groups.filter((item) => item.name === group.name)).toHaveLength(2);
+
+    const project = await session.createProject({ ...workspaceRef, groupId: group.id }, "pr:oj");
+    const duplicateProject = await session.createProject({ ...workspaceRef, groupId: group.id }, "pr:oj");
+    expect(duplicateProject.id).not.toBe(project.id);
+    expect(project.name).not.toContain(":");
+    expect(duplicateProject.name).toBe(project.name);
+    const projectRef = { ...workspaceRef, groupId: group.id, projectId: project.id };
+    const collection = await session.createCollection(projectRef, "dir.");
+    const duplicateCollection = await session.createCollection(projectRef, "dir.");
+    expect(duplicateCollection.id).not.toBe(collection.id);
+    expect(collection.name).toBe("dir");
+    const collectionRef = { ...projectRef, collectionId: collection.id };
+    const api = await session.createApi(collectionRef, { name: "http://localhost:8080/api/health" });
+    const duplicateApi = await session.createApi(collectionRef, { name: "http://localhost:8080/api/health" });
+    expect(duplicateApi.contract.id).not.toBe(api.contract.id);
+    expect(duplicateApi.contract.metadata.name).toBe(api.contract.metadata.name);
+    expect(api.contract.metadata.name).not.toMatch(/[\\/:*]/);
+    expect(api.contract.metadata.name).toContain("http");
+    const apiRef: ApiLocator = { ...collectionRef, folderIds: [], apiId: api.contract.id };
+    await session.renameNode({ kind: "api", locator: apiRef }, "y/z:*");
+    const renamedApi = session.locateApi(apiRef)!.api;
+
+    expect(renamedApi.contract.metadata.name).not.toMatch(/[\\/:*]/);
+    expect(session.locateApi(apiRef)?.api.contract.metadata.name).toBe(renamedApi.contract.metadata.name);
+  });
+
+  it("keeps sameName platform semantics and renames a collection without moving its ID directory", async () => {
     expect(sameName("Flow", "flow", "win32")).toBe(true);
-    expect(sameName("FLOW", "flow", "win32")).toBe(true);
-    expect(sameName("flow", "flow", "win32")).toBe(true);
-    expect(sameName("flow", "flowx", "win32")).toBe(false);
     expect(sameName("Flow", "flow", "linux")).toBe(false);
     expect(sameName("Flow", "Flow", "darwin")).toBe(true);
-    // 默认平台参数 = process.platform（win32 归一，其余严格）
-    expect(sameName("a", "a")).toBe(true);
-    expect(sameName("a", "A", process.platform)).toBe(process.platform === "win32");
-  });
 
-  it("renameNode 重命名集合（仅名称变化，id 目录恒在）", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const c = s.createCollection(p.id, "old-name");
-    await s.save();
-    const cDir = join(dir, "groups", g.id, "projects", p.id, "collections", c.id);
-    expect(existsSync(cDir)).toBe(true);
-    s.renameNode("collection", c.id, "new-name");
-    await s.save();
-    const s2 = createSession();
-    await s2.open(dir);
-    const names = s2.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.collections.map((x) => x.name);
-    expect(names).toEqual(["new-name"]);
-    expect(existsSync(cDir)).toBe(true);
+    const temporary = await tempRoot();
+    await persistWorkspace(temporary.path, makeWorkspace());
+    const session = createSession();
+    await session.open(temporary.path);
+    const collectionRef = { ...projectLocator, collectionId: IDS.collectionOne };
+    const collectionDir = join(temporary.path, "groups", IDS.groupOne, "projects", IDS.projectOne, "collections", IDS.collectionOne);
+    await session.renameNode({ kind: "collection", locator: collectionRef }, "renamed collection");
+
+    expect(existsSync(collectionDir)).toBe(true);
+    expect(session.locateCollection(collectionRef)?.collection.name).toBe("renamed collection");
+    const reopened = createSession();
+    await reopened.open(temporary.path);
+    expect(reopened.locateCollection(collectionRef)?.collection.name).toBe("renamed collection");
   });
 });
 
-// —— 压测控制器（M2-D3 任务 1）：main 进程 StressRunner 执行/停止/单活动约束 ——
-/** 夹具：工作区 + 分组/项目/集合/接口各一（接口指向不可达地址，采样快速失败不依赖网络）。 */
-async function setupStress() {
-  const s = createSession();
-  const dir = root();
-  await s.create(dir, "w");
-  await s.open(dir);
-  const g = s.createGroup("g");
-  const p = s.createProject(g.id, "p");
-  const c = s.createCollection(p.id, "c");
-  const api = s.createApi(c.id, null, { name: "ping", method: "GET", url: "http://127.0.0.1:1/" });
-  return { s, dir, api };
-}
-
-/** 挂起假 client：execute 进入即计数并停在 gate 上，制造「活动运行窗口」供并发/停止断言。 */
+// Stress lifecycle tests deliberately use a persisted formal asset and a complete API locator.
 function hangingClient() {
   let entered = 0;
   let release: () => void = () => {};
-  const gate = new Promise<void>((r) => {
-    release = r;
-  });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
   const client: ProtocolClient & { close(): Promise<void> } = {
     name: "hanging",
     canHandle: () => true,
@@ -225,12 +284,17 @@ function hangingClient() {
     },
     close: async () => {},
   };
-  return { client, waitEntered: async () => { while (entered === 0) await new Promise((r) => setTimeout(r, 1)); }, release: () => release() };
+  return {
+    client,
+    waitEntered: async () => { while (entered === 0) await new Promise((resolve) => setTimeout(resolve, 1)); },
+    release: () => release(),
+  };
 }
 
-describe("createStressController", () => {
+describe("createStressController with formal session assets", () => {
   const confirmed = ["http://127.0.0.1:1"];
-  it.each(["pooled", "fresh"] as const)("%s 连接模式为每个虚拟用户创建并清理一个 managed client", async (connectionMode) => {
+
+  it.each(["pooled", "fresh"] as const)("%s connection mode creates and closes one managed client per worker", async (connectionMode) => {
     const { s, api } = await setupStress();
     const modes: string[] = [];
     const closed: number[] = [];
@@ -240,26 +304,24 @@ describe("createStressController", () => {
         return {
           name: `${mode}-${workerId}`,
           canHandle: () => true,
-          execute: async () => ({ status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 }),
+          execute: async () => ({ status: 200, headers: {}, bodyText: "{\"ok\":true}", timeMs: 1 }),
           close: async () => { closed.push(workerId); },
         };
       },
     });
-    const out = await controller.run({
-      apiId: api.id, caseId: api.cases[0]!.id, concurrency: 2, maxIterations: 2,
-      connectionMode, confirmedTargetOrigins: confirmed,
-    });
-    expect(out.report.totalRequests).toBe(2);
+
+    const output = await controller.run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 2, maxIterations: 2, connectionMode, confirmedTargetOrigins: confirmed });
+    expect(output.report.totalRequests).toBe(2);
     expect(modes).toEqual([connectionMode, connectionMode]);
     expect(closed).toHaveLength(2);
   });
 
-  it("报告保留 generator 饱和及原因，供桌面报告独立提示结果边界", async () => {
+  it("preserves generator saturation metrics and reasons in the report", async () => {
     const { s, api } = await setupStress();
     const controller = createStressController(s, {
       createManagedClient: () => ({
         name: "generator-fixture", canHandle: () => true,
-        execute: async () => ({ status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 }),
+        execute: async () => ({ status: 200, headers: {}, bodyText: "{\"ok\":true}", timeMs: 1 }),
         close: async () => {},
       }),
       createGeneratorCollector: () => ({
@@ -272,368 +334,265 @@ describe("createStressController", () => {
         }),
       }),
     });
-    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
-    expect(out.report.generator).toMatchObject({ saturated: true, reasons: ["cpu", "event-loop-delay", "scheduler-backlog"] });
+
+    const output = await controller.run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
+    expect(output.report.generator).toMatchObject({ saturated: true, reasons: ["cpu", "event-loop-delay", "scheduler-backlog"] });
   });
 
-  it("迭代压测：报告过 StressReportSchema、totalRequests 与迭代数一致，落盘 .apicc/runs/stress-*.json", async () => {
+  it("validates and persists the report under the workspace runs directory", async () => {
     const { s, dir, api } = await setupStress();
     const controller = createStressController(s);
-    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 2, maxIterations: 4, confirmedTargetOrigins: confirmed });
-    expect(() => StressReportSchema.parse(out.report)).not.toThrow();
-    expect(out.report.totalRequests).toBe(4);
-    expect(out.file).toMatch(new RegExp(`^stress-${api.id}-\\d+\\.json$`));
-    expect(existsSync(join(dir, ".apicc", "runs", out.file!))).toBe(true);
+    const output = await controller.run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 2, maxIterations: 4, confirmedTargetOrigins: confirmed });
+
+    expect(() => StressReportSchema.parse(output.report)).not.toThrow();
+    expect(output.report.totalRequests).toBe(4);
+    expect(output.file).toMatch(/^stress-.*\.json$/);
+    expect(existsSync(join(dir, ".apicc", "runs", output.file!))).toBe(true);
   });
 
-  it("未确认目标返回结构化精确 origin，确认后才允许发包", async () => {
+  it("canonicalizes a confirmed target origin before allowing requests", async () => {
     const { s, api } = await setupStress();
     let calls = 0;
-    const client: ProtocolClient & { close(): Promise<void> } = {
-      name: "counting",
-      canHandle: () => true,
+    const controller = createStressController(s, { createManagedClient: () => ({
+      name: "counting", canHandle: () => true,
       execute: async () => { calls += 1; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; },
       close: async () => {},
-    };
-    const controller = createStressController(s, { createManagedClient: () => client });
-    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: ["HTTP://127.0.0.1:1/"] });
+    }) });
+
+    const output = await controller.run({
+      locator: api.locator,
+      caseId: api.cases[0]!.id,
+      concurrency: 1,
+      maxIterations: 1,
+      confirmedTargetOrigins: ["HTTP://127.0.0.1:1/"],
+    });
     expect(calls).toBe(1);
-    expect(out.report.safety?.targetOrigins[0]?.origin).toBe("http://127.0.0.1:1");
+    expect(output.report.safety?.targetOrigins[0]?.origin).toBe("http://127.0.0.1:1");
   });
 
-  it("完成、abort、body 异常和确认拒绝均只清理一次每个 managed client 与 generator collector", async () => {
+  it("closes each client and collector exactly once for completion, abort, body failure, and safety refusal", async () => {
     const { s, api } = await setupStress();
-    const metrics = () => {
+    const makeMetrics = () => {
       let stopped = 0;
       const collector: GeneratorMetricsCollector = {
         recordSchedulerBacklog: () => {},
         stop: () => {
           stopped += 1;
           return {
-            cpuUserMs: 0, cpuSystemMs: 0, cpuPercent: 0,
-            rssStartBytes: 1, rssPeakBytes: 1, eventLoopDelayP95Ms: 0,
-            schedulerBacklogMax: 0, saturated: false, reasons: [],
+            cpuUserMs: 0, cpuSystemMs: 0, cpuPercent: 0, rssStartBytes: 1, rssPeakBytes: 1,
+            eventLoopDelayP95Ms: 0, schedulerBacklogMax: 0, saturated: false, reasons: [],
             limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
           };
         },
       };
       return { collector, stopped: () => stopped };
     };
-    const client = (execute: ProtocolClient["execute"]) => {
+    const makeClient = (execute: ProtocolClient["execute"]) => {
       let closed = 0;
-      const managed: ProtocolClient & { close(): Promise<void> } = {
-        name: "observable",
-        canHandle: () => true,
-        execute,
-        close: async () => { closed += 1; },
-      };
-      return { managed, closed: () => closed };
+      const client: ProtocolClient & { close(): Promise<void> } = { name: "observed", canHandle: () => true, execute, close: async () => { closed += 1; } };
+      return { client, closed: () => closed };
     };
-    const run = async (execute: ProtocolClient["execute"], input: { confirmedTargetOrigins?: string[]; maxIterations?: number } = { confirmedTargetOrigins: confirmed, maxIterations: 1 }) => {
-      const observedClient = client(execute);
-      const observedMetrics = metrics();
+    const runOnce = (execute: ProtocolClient["execute"], extra: { confirmedTargetOrigins?: string[]; maxIterations?: number } = { confirmedTargetOrigins: confirmed, maxIterations: 1 }) => {
+      const client = makeClient(execute);
+      const metrics = makeMetrics();
       const controller = createStressController(s, {
-        createManagedClient: () => observedClient.managed,
-        createGeneratorCollector: () => observedMetrics.collector,
+        createManagedClient: () => client.client,
+        createGeneratorCollector: () => metrics.collector,
       });
-      const result = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, ...input });
-      return { controller, result, observedClient, observedMetrics };
+      const result = controller.run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1, ...extra });
+      return { controller, result, client, metrics };
     };
 
-    const { result: completed, observedClient: completedClient, observedMetrics: completedMetrics } = await run(async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 1 }));
-    await completed;
-    expect(completedClient.closed()).toBe(1);
-    expect(completedMetrics.stopped()).toBe(1);
+    const completed = runOnce(async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 1 }));
+    await completed.result;
+    expect(completed.client.closed()).toBe(1);
+    expect(completed.metrics.stopped()).toBe(1);
 
-    let releaseGate: () => void = () => {};
-    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-    const { controller: abortController, result: aborted, observedClient: abortedClient, observedMetrics: abortedMetrics } = await run(async () => { await gate; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; }, { confirmedTargetOrigins: confirmed, maxIterations: 100 });
-    const stopping = abortController.stop();
-    releaseGate();
+    let release: () => void = () => {};
+    let markEntered: () => void = () => {};
+    const enteredRequest = new Promise<void>((resolve) => { markEntered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const aborted = runOnce(async () => { markEntered(); await gate; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; }, { confirmedTargetOrigins: confirmed, maxIterations: 100 });
+    await enteredRequest;
+    const stopping = aborted.controller.stop();
+    release();
     await stopping;
-    await aborted;
-    expect(abortedClient.closed()).toBe(1);
-    expect(abortedMetrics.stopped()).toBe(1);
+    await aborted.result;
+    expect(aborted.client.closed()).toBe(1);
+    expect(aborted.metrics.stopped()).toBe(1);
 
-    const { result: bodyFailure, observedClient: bodyClient, observedMetrics: bodyMetrics } = await run(async () => { throw new Error("body failure"); });
-    const bodyReport = await bodyFailure;
-    expect(bodyReport.report.failed).toBe(1);
-    expect(bodyClient.closed()).toBe(1);
-    expect(bodyMetrics.stopped()).toBe(1);
+    const bodyFailure = runOnce(async () => { throw new Error("body failure"); });
+    expect((await bodyFailure.result).report.failed).toBe(1);
+    expect(bodyFailure.client.closed()).toBe(1);
+    expect(bodyFailure.metrics.stopped()).toBe(1);
 
-    const { result: refused, observedClient: refusedClient, observedMetrics: refusedMetrics } = await run(async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 1 }), { maxIterations: 1 });
-    await expect(refused).rejects.toMatchObject({ code: "target_confirmation_required", targetOrigin: "http://127.0.0.1:1" });
-    expect(refusedClient.closed()).toBe(1);
-    expect(refusedMetrics.stopped()).toBe(1);
+    const refused = runOnce(async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 1 }), { maxIterations: 1 });
+    await expect(refused.result).rejects.toMatchObject({ code: "target_confirmation_required", targetOrigin: "http://127.0.0.1:1" });
+    expect(refused.client.closed()).toBe(1);
+    expect(refused.metrics.stopped()).toBe(1);
   });
 
   it.each([
-    { name: "origin mismatch", policy: undefined, confirmed: ["http://127.0.0.1:2"], concurrency: 1, code: "target_confirmation_required" },
-    { name: "denied", policy: { deniedOrigins: ["http://127.0.0.1:1"] }, confirmed, concurrency: 1, code: "target_denied" },
-    { name: "maxConcurrency", policy: { maxConcurrency: 1 }, confirmed, concurrency: 2, code: "concurrency_policy_exceeded" },
-    { name: "invalid maxRps policy", policy: { maxRps: 0 }, confirmed, concurrency: 1, code: undefined, ordinary: true },
-  ])("策略门在 $name 下 I/O 为 0 且资源各清理一次", async ({ policy, confirmed: origins, concurrency, code, ordinary }) => {
+    { name: "origin mismatch", policy: undefined, origins: ["http://127.0.0.1:2"], concurrency: 1, code: "target_confirmation_required" },
+    { name: "denied origin", policy: { deniedOrigins: ["http://127.0.0.1:1"] }, origins: confirmed, concurrency: 1, code: "target_denied" },
+    { name: "maxConcurrency", policy: { maxConcurrency: 1 }, origins: confirmed, concurrency: 2, code: "concurrency_policy_exceeded" },
+  ])("fails the $name safety gate before I/O and closes managed clients", async ({ policy, origins, concurrency, code }) => {
     const { s, api } = await setupStress();
-    const project = s.locateApi(api.id)!.project;
-    if (policy) s.setStressPolicy(project.id, policy);
+    if (policy) await s.setStressPolicy(projectLocator, policy);
     let calls = 0;
     let closes = 0;
-    let collectorStops = 0;
     const controller = createStressController(s, {
       createManagedClient: () => ({
-        name: "policy-guard",
-        canHandle: () => true,
+        name: "policy-guard", canHandle: () => true,
         execute: async () => { calls += 1; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; },
         close: async () => { closes += 1; },
       }),
-      createGeneratorCollector: () => ({
-        recordSchedulerBacklog: () => {},
-        stop: () => {
-          collectorStops += 1;
-          return {
-            cpuUserMs: 0, cpuSystemMs: 0, cpuPercent: 0, rssStartBytes: 1, rssPeakBytes: 1,
-            eventLoopDelayP95Ms: 0, schedulerBacklogMax: 0, saturated: false, reasons: [],
-            limits: { cpuPercent: 90, eventLoopDelayP95Ms: 100, schedulerBacklog: 0 },
-          };
-        },
-      }),
     });
-    const run = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency, maxIterations: 1, confirmedTargetOrigins: origins });
-    if (ordinary) await expect(run).rejects.toThrow(/maxRps 必须为正数/);
-    else await expect(run).rejects.toMatchObject({ code });
+
+    await expect(controller.run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency, maxIterations: 1, confirmedTargetOrigins: origins }))
+      .rejects.toMatchObject({ code });
     expect(calls).toBe(0);
-    expect(closes).toBe(ordinary ? 0 : concurrency);
-    expect(collectorStops).toBe(ordinary ? 0 : 1);
+    expect(closes).toBe(concurrency);
   });
 
-  it("单活动约束：活动运行未结束时再次 stressRun 抛「已有压测进行中」", async () => {
+  it("enforces one active run until its request settles", async () => {
     const { s, api } = await setupStress();
-    const fake = hangingClient();
-    const controller = createStressController(s, { createManagedClient: () => fake.client });
-    const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed });
-    await fake.waitEntered();
-    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed })).rejects.toThrow(/已有压测进行中/);
-    fake.release();
+    const hanging = hangingClient();
+    const controller = createStressController(s, { createManagedClient: () => hanging.client });
+    const input = { locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed };
+    const first = controller.run(input);
+    try {
+      await hanging.waitEntered();
+      await expect(controller.run(input)).rejects.toThrow(/已有压测进行中/);
+    } finally {
+      hanging.release();
+    }
     expect((await first).report.totalRequests).toBe(2);
   });
 
-  it("stress:stop：运行中 abort 返回部分报告（totalRequests ≤ maxIterations）并落盘；无活动运行抛「没有进行中的压测」", async () => {
+  it("stop returns and persists a partial report, then clears the active run", async () => {
     const { s, dir, api } = await setupStress();
-    const fake = hangingClient();
-    const controller = createStressController(s, { createManagedClient: () => fake.client });
+    const hanging = hangingClient();
+    const controller = createStressController(s, { createManagedClient: () => hanging.client });
     await expect(controller.stop()).rejects.toThrow(/没有进行中的压测/);
-    const first = controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 100, confirmedTargetOrigins: confirmed });
-    await fake.waitEntered();
-    const stopping = controller.stop();
-    fake.release(); // 信号语义：停止发起新采样、等在途请求完成后聚合
-    const stopped = await stopping;
-    expect(stopped.report.totalRequests).toBeGreaterThanOrEqual(1);
-    expect(stopped.report.totalRequests).toBeLessThanOrEqual(100);
-    expect(existsSync(join(dir, ".apicc", "runs", stopped.file!))).toBe(true);
-    await first;
-    // 完成后活动状态清空：再次 stop 回到「没有进行中的压测」
+    const first = controller.run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 100, confirmedTargetOrigins: confirmed });
+    try {
+      await hanging.waitEntered();
+      const stopping = controller.stop();
+      hanging.release();
+      const stopped = await stopping;
+      expect(stopped.report.totalRequests).toBeGreaterThanOrEqual(1);
+      expect(stopped.report.totalRequests).toBeLessThanOrEqual(100);
+      expect(existsSync(join(dir, ".apicc", "runs", stopped.file!))).toBe(true);
+      await first;
+    } finally {
+      hanging.release();
+    }
     await expect(controller.stop()).rejects.toThrow(/没有进行中的压测/);
   });
 
-  it("未找到接口/用例/环境：错误文案与 debug 频道同款", async () => {
+  it("reports complete-locator, case, and environment lookup errors before execution", async () => {
     const { s, api } = await setupStress();
     const controller = createStressController(s);
-    await expect(controller.run({ apiId: "ghost", caseId: "x", concurrency: 1, maxIterations: 1 })).rejects.toThrow(/未找到接口: ghost/);
-    await expect(controller.run({ apiId: api.id, caseId: "ghost", concurrency: 1, maxIterations: 1 })).rejects.toThrow(/用例不存在: ghost/);
-    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, envName: "ghost", concurrency: 1, maxIterations: 1 })).rejects.toThrow(/未找到环境: ghost/);
+    await expect(() => controller.run({ locator: { ...api.locator, apiId: uuid(9998) }, caseId: "x", concurrency: 1, maxIterations: 1 }))
+      .toThrow(/未找到接口/);
+    await expect(() => controller.run({ locator: api.locator, caseId: "ghost", concurrency: 1, maxIterations: 1 }))
+      .toThrow(/用例不存在: ghost/);
+    await expect(() => controller.run({ locator: api.locator, caseId: api.cases[0]!.id, envName: "ghost", concurrency: 1, maxIterations: 1 }))
+      .toThrow(/未找到环境: ghost/);
   });
 
-  it("迭代与时长都缺：抛「压测终止条件缺失」（沿用 core 文案）", async () => {
+  it("validates termination options and finite safe-integer iteration counts before clients exist", async () => {
     const { s, api } = await setupStress();
     const controller = createStressController(s);
-    await expect(controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1 })).rejects.toThrow(/压测终止条件缺失/);
+    const base = { locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1 };
+    await expect(controller.run(base)).rejects.toThrow(/压测终止条件缺失/);
+    expect(() => controller.run({ ...base, maxIterations: Number.NaN })).toThrow(/maxIterations 必须为正 safe integer/);
+    expect(() => controller.run({ ...base, maxIterations: 1.5 })).toThrow(/maxIterations 必须为正 safe integer/);
+    expect(() => controller.run({ ...base, maxIterations: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/maxIterations 必须为正 safe integer/);
+    expect(() => controller.run({ ...base, durationMs: Number.NaN })).toThrow(/durationMs 必须为有限正数/);
+    expect(() => controller.run({ ...base, durationMs: Number.POSITIVE_INFINITY })).toThrow(/durationMs 必须为有限正数/);
   });
 
-  it("控制器直调用也在协议/客户端创建前拒绝 NaN、Infinity、分数与溢出终止值", async () => {
-    const { s, api } = await setupStress();
-    const controller = createStressController(s);
-    const input = { apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1 };
-    await expect(controller.run({ ...input, maxIterations: Number.NaN })).rejects.toThrow(/maxIterations 必须为正 safe integer/);
-    await expect(controller.run({ ...input, maxIterations: 1.5 })).rejects.toThrow(/maxIterations 必须为正 safe integer/);
-    await expect(controller.run({ ...input, maxIterations: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow(/maxIterations 必须为正 safe integer/);
-    await expect(controller.run({ ...input, durationMs: Number.NaN })).rejects.toThrow(/durationMs 必须为有限正数/);
-    await expect(controller.run({ ...input, durationMs: Number.POSITIVE_INFINITY })).rejects.toThrow(/durationMs 必须为有限正数/);
+  it("does not create or close a managed client when Core rejects data-row configuration", async () => {
+    const { s, dir, api } = await setupStress();
+    const invalid = structuredClone(s.locateApi(api.locator)!.api);
+    invalid.cases[0]!.dataDriver = { sourcePath: join(dir, "missing-rows.json"), format: "json" };
+    await s.saveApi(api.locator, invalid);
+    let created = 0;
+    let closed = 0;
+    const controller = createStressController(s, {
+      createManagedClient: () => {
+        created += 1;
+        return {
+          name: "must-not-exist",
+          canHandle: () => true,
+          execute: async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 0 }),
+          close: async () => { closed += 1; },
+        };
+      },
+    });
+
+    await expect(controller.run({
+      locator: api.locator,
+      caseId: api.cases[0]!.id,
+      concurrency: 1,
+      maxIterations: 1,
+      confirmedTargetOrigins: confirmed,
+    })).rejects.toThrow(/missing-rows\.json/);
+    expect(created).toBe(0);
+    expect(closed).toBe(0);
   });
 
-  it("落盘失败降级：写盘异常不阻断报告返回（file 省略）并 console.warn 含路径与原因（与集合运行口径一致）", async () => {
+  it("returns a report with no file when persistence fails and warns with useful context", async () => {
     const { s, api } = await setupStress();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const controller = createStressController(s, {
-        // 注入写盘失败（代码库既有模式为控制器 deps 注入，同 client/pickDirectory/saveFile 先例）
-        writeReport: () => {
-          throw new Error("disk full");
-        },
-      });
-      const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
-      expect(out.report.totalRequests).toBe(1);
-      expect(out.file).toBeUndefined();
-      expect("file" in out).toBe(false);
+      const controller = createStressController(s, { writeReport: () => { throw new Error("disk full"); } });
+      const output = await controller.run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
+      expect(output.report.totalRequests).toBe(1);
+      expect(output.file).toBeUndefined();
+      expect("file" in output).toBe(false);
       expect(warn).toHaveBeenCalledTimes(1);
-      const [msg] = warn.mock.calls[0]!;
-      expect(msg).toContain("落盘失败");
-      expect(msg).toContain("stress-"); // 文件路径
-      expect(msg).toContain("disk full"); // 原因
+      expect(warn.mock.calls[0]![0]).toContain("落盘失败");
+      expect(warn.mock.calls[0]![0]).toContain("stress-");
+      expect(warn.mock.calls[0]![0]).toContain("disk full");
     } finally {
       warn.mockRestore();
     }
   });
 
-  it("深拷贝回归：改动返回的报告对象不影响已落盘历史内容", async () => {
+  it("does not let callers mutate the persisted stress report", async () => {
     const { s, dir, api } = await setupStress();
-    const controller = createStressController(s);
-    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed });
-    out.report.totalRequests = 999;
-    const onDisk = JSON.parse(readFileSync(join(dir, ".apicc", "runs", out.file!), "utf8")) as { totalRequests: number };
-    expect(onDisk.totalRequests).toBe(2);
+    const output = await createStressController(s).run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 2, confirmedTargetOrigins: confirmed });
+    output.report.totalRequests = 999;
+    const saved = JSON.parse(readFileSync(join(dir, ".apicc", "runs", output.file!), "utf8")) as { totalRequests: number };
+    expect(saved.totalRequests).toBe(2);
   });
 
-  it("M5 终审：非 HTTP 接口压测 fail-fast 拒绝（对齐 CLI 协议感知），HTTP 接口照常", async () => {
+  it("rejects non-HTTP APIs before creating clients while HTTP remains runnable", async () => {
     const { s, api } = await setupStress();
-    // 计数假 client：守卫必须在任何采样前拒绝（calls 恒 0），否则钉死 httpClient 的
-    // 桌面控制器会对非 HTTP 接口以错协议静默错执行（SOAP 无信封 POST / WS scheme 错）。
+    const collection = { ...projectLocator, collectionId: IDS.collectionOne };
+    const soap = await s.createApi(collection, { name: "soap-op", protocol: "soap", baseUrl: "http://127.0.0.1:1", path: "/soap" });
+    const websocket = await s.createApi(collection, { name: "ws-op", protocol: "websocket", baseUrl: "ws://127.0.0.1:1", path: "/echo" });
     let calls = 0;
-    const counting: ProtocolClient & { close(): Promise<void> } = {
-      name: "counting",
-      canHandle: () => true,
-      execute: async () => {
-        calls += 1;
-        return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
-      },
+    const controller = createStressController(s, { createManagedClient: () => ({
+      name: "counting", canHandle: () => true,
+      execute: async () => { calls += 1; return { status: 200, headers: {}, bodyText: "", timeMs: 0 }; },
       close: async () => {},
-    };
-    const c = s.workspace!.groups.find((x) => x.name === "g")!.projects[0]!.collections[0]!;
-    const soapApi = s.createApi(c.id, null, { name: "soap-op", method: "POST", url: "http://127.0.0.1:1/soap" });
-    soapApi.protocol = "soap";
-    soapApi.envelope = "<Envelope/>";
-    await s.saveApi(soapApi);
-    const wsApi = s.createApi(c.id, null, { name: "ws-op", method: "GET", url: "ws://127.0.0.1:1/echo" });
-    wsApi.protocol = "websocket";
-    wsApi.message = "ping";
-    await s.saveApi(wsApi);
+    }) });
+    const soapRef: ApiLocator = { ...collection, folderIds: [], apiId: soap.contract.id };
+    const websocketRef: ApiLocator = { ...collection, folderIds: [], apiId: websocket.contract.id };
 
-    const controller = createStressController(s, { createManagedClient: () => counting });
-    await expect(
-      controller.run({ apiId: soapApi.id, caseId: soapApi.cases[0]!.id, concurrency: 1, maxIterations: 1 }),
-    ).rejects.toThrow("桌面压测面板当前仅支持 HTTP 接口（WS/SOAP 压测请使用 CLI run-stress）");
-    await expect(
-      controller.run({ apiId: wsApi.id, caseId: wsApi.cases[0]!.id, concurrency: 1, maxIterations: 1 }),
-    ).rejects.toThrow(/桌面压测面板当前仅支持 HTTP 接口/);
-    expect(calls).toBe(0); // 拒绝发生在任何采样之前（fail-fast，不产出错协议报告）
-    expect(s.root && existsSync(join(s.root, ".apicc", "runs"))).toBe(false); // 无报告落盘
+    expect(() => controller.run({ locator: soapRef, caseId: soap.cases[0]!.id, concurrency: 1, maxIterations: 1 }))
+      .toThrow(/桌面压测面板当前仅支持 HTTP/);
+    expect(() => controller.run({ locator: websocketRef, caseId: websocket.cases[0]!.id, concurrency: 1, maxIterations: 1 }))
+      .toThrow(/桌面压测面板当前仅支持 HTTP/);
+    expect(calls).toBe(0);
+    expect(existsSync(join(s.root!, ".apicc", "runs"))).toBe(false);
 
-    // HTTP 接口不受守卫影响，照常执行
-    const out = await controller.run({ apiId: api.id, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
-    expect(out.report.totalRequests).toBe(1);
+    const output = await controller.run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: confirmed });
+    expect(output.report.totalRequests).toBe(1);
     expect(calls).toBe(1);
-  });
-});
-
-// —— M9-A2：名称净化（非法字符 mkdir ENOENT 用户回归）。id 布局（轨一）后名称不再
-// 上盘，净化保留为名称卫生（显示/导出口径）；同级重名拒绝仍在（轨二放开后移除） ——
-describe("session 名称净化（M9-A2）", () => {
-  it("createApi 名称含路径非法字符：净化为安全名称并重开可读（用户 ENOENT 回归）", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const c = s.createCollection(p.id, "c");
-    const api = s.createApi(c.id, null, { name: "http://localhost:8080/api/health", method: "GET", url: "/health" });
-    for (const ch of ["/", ":", String.fromCharCode(92)]) expect(api.name).not.toContain(ch);
-    expect(api.name).toContain("http");
-    await s.save();
-    // id 布局：盘上目录=接口 id，名称仅存 yaml 内容
-    const apiDir = join(dir, "groups", g.id, "projects", p.id, "collections", c.id, "apis", api.id);
-    expect(existsSync(apiDir)).toBe(true);
-    const s2 = createSession();
-    await s2.open(dir);
-    expect(s2.locateApi(api.id)?.api.name).toBe(api.name);
-  });
-
-  it("create*/renameNode 统一净化：非法字符替换、结尾点清理、空名回退", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("  ");
-    expect(g.name).toBe("未命名");
-    const p = s.createProject(g.id, 'a*b<c>?"|');
-    expect(p.name).toBe("a-b-c----");
-    const c = s.createCollection(p.id, "dir.");
-    expect(c.name).toBe("dir");
-    const api = s.createApi(c.id, null, { name: "x", method: "GET", url: "/" });
-    s.renameNode("api", api.id, "y/z:*");
-    expect(s.locateApi(api.id)?.api.name).toBe("y-z--");
-  });
-
-  it("同级同名并存：分组/项目/集合/接口创建与重命名（轨二同名放开，id 为身份）", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const g2 = s.createGroup("g");
-    expect(g2.id).not.toBe(g.id); // 同名分组并存
-    const p = s.createProject(g.id, "p");
-    const pDup = s.createProject(g.id, "p");
-    expect(pDup.id).not.toBe(p.id); // 同分组同名项目并存
-    const c = s.createCollection(p.id, "c");
-    const cDup = s.createCollection(p.id, "c");
-    expect(cDup.id).not.toBe(c.id); // 同名模块并存
-    s.createApi(c.id, null, { name: "a", method: "GET", url: "/" });
-    const aDup = s.createApi(c.id, null, { name: "a", method: "GET", url: "/" });
-    expect(aDup.name).toBe("a"); // 同目录同名接口并存
-    // 重命名到已存在名称直接成功（默认分组守卫与「未找到」仍保留）
-    s.renameNode("collection", cDup.id, "c");
-    expect(s.locateCollection(cDup.id)!.collection.name).toBe("c");
-    await s.save();
-    const s2 = createSession();
-    await s2.open(dir);
-    // id 布局（轨一）：重开加载按目录名（=UUID）字典序，分组顺序随机——按名称聚合断言
-    const groups = s2.workspace!.groups.filter((x) => x.name === "g");
-    expect(groups).toHaveLength(2);
-    const withProjects = groups.filter((x) => x.projects.length === 2);
-    expect(withProjects).toHaveLength(1); // 两个同名分组中，仅先建的承载项目；后建的为空壳并存
-    expect(withProjects[0]!.projects.filter((x) => x.name === "p")).toHaveLength(2);
-    // 项目内模块顺序同为 UUID 字典序（随机）——按内容定位承载集合的项目
-    const hostProject = withProjects[0]!.projects.find((x) => x.collections.length === 2)!;
-    expect(hostProject.collections.filter((x) => x.name === "c")).toHaveLength(2);
-  });
-});
-
-// —— M9-B：环境前置 URL 与工作区全局设置通道（落盘重开读回） ——
-describe("session 环境模型（M9-B）", () => {
-  it("setEnvironmentBaseUrls 落盘重开读回；setWorkspaceGlobals 整体替换并读回", async () => {
-    const s = createSession();
-    const dir = root();
-    await s.create(dir, "w");
-    await s.open(dir);
-    const g = s.createGroup("g");
-    const p = s.createProject(g.id, "p");
-    const c = s.createCollection(p.id, "c");
-    const env = s.createEnvironment(p.id, { name: "dev" });
-    s.setEnvironmentBaseUrls(env.id, { [c.id]: "http://base" });
-    // M10：项目级全局设置（参数四类；全局变量=project.variables 另行编辑）
-    s.setProjectGlobals(p.id, { variables: {}, query: [{ key: "q", value: "1", enabled: true }], headers: [], cookies: [], body: [] });
-    await s.save();
-    const s2 = createSession();
-    await s2.open(dir);
-    // 打开即保障默认分组：seed 无任何带标记分组 → 同名就地补标记（不新建、不覆盖）
-    const defaultGroup = s2.workspace!.groups.find((x) => x.default === true);
-    expect(defaultGroup).toBeDefined();
-    const project = s2.workspace!.groups.find((x) => x.name === "g")!.projects[0]!;
-    expect(project.environments[0]!.baseUrls).toEqual({ [c.id]: "http://base" });
-    expect(s2.getProjectGlobals(p.id)).toEqual({
-      variables: {}, query: [{ key: "q", value: "1", enabled: true }], headers: [], cookies: [], body: [],
-    });
-    // 未命中环境照旧抛「未找到」
-    expect(() => s2.setEnvironmentBaseUrls("nope", {})).toThrow("未找到环境");
   });
 });

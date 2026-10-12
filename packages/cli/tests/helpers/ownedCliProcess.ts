@@ -21,6 +21,17 @@ export type OwnedCliProcessOptions = {
   signal?: AbortSignal;
   maxOutputBytes?: number;
   readyToken?: string;
+  onLifecycleEvent?: (event: OwnedCliLifecycleEvent) => void;
+};
+
+export type OwnedCliLifecycleEvent = {
+  phase: "start" | "spawn" | "error" | "exit" | "close";
+  elapsedMs: number;
+  pid?: number;
+  code?: number | null;
+  signal?: NodeJS.Signals | null;
+  stdoutBytes?: number;
+  stderrBytes?: number;
 };
 
 export type OwnedCliExit = { exitCode: number | null; signal: NodeJS.Signals | null };
@@ -70,6 +81,20 @@ export function spawnOwnedCliProcess(options: OwnedCliProcessOptions): OwnedCliP
   const maxOutputBytes = options.maxOutputBytes ?? OWNED_CLI_OUTPUT_LIMIT_BYTES;
   validatePositiveFinite("timeoutMs", timeoutMs);
   validatePositiveFinite("maxOutputBytes", maxOutputBytes);
+
+  const lifecycleStartedAt = performance.now();
+  const observeLifecycle = (event: Omit<OwnedCliLifecycleEvent, "elapsedMs">): void => {
+    if (!options.onLifecycleEvent) return;
+    try {
+      options.onLifecycleEvent({
+        ...event,
+        elapsedMs: Number((performance.now() - lifecycleStartedAt).toFixed(3)),
+      });
+    } catch {
+      // Diagnostics are optional and must not affect child ownership or settlement.
+    }
+  };
+  observeLifecycle({ phase: "start" });
 
   const child = spawn(options.command ?? process.execPath, [...options.args], {
     cwd: options.cwd,
@@ -200,7 +225,9 @@ export function spawnOwnedCliProcess(options: OwnedCliProcessOptions): OwnedCliP
 
   child.stdout?.on("data", (chunk: Buffer) => capture("stdout", chunk));
   child.stderr?.on("data", (chunk: Buffer) => capture("stderr", chunk));
+  child.once("spawn", () => observeLifecycle({ phase: "spawn", ...(child.pid === undefined ? {} : { pid: child.pid }) }));
   child.on("exit", (code, childSignal) => {
+    observeLifecycle({ phase: "exit", code, signal: childSignal });
     exitCode = code;
     signal = childSignal;
     resolveExited({ exitCode: code, signal: childSignal });
@@ -210,6 +237,7 @@ export function spawnOwnedCliProcess(options: OwnedCliProcessOptions): OwnedCliP
     }
   });
   child.on("error", (error) => {
+    observeLifecycle({ phase: "error" });
     const normalized = asError(error);
     if (state === "terminating") {
       terminationDiagnostics.push(`child error during termination: ${normalized.message}`);
@@ -222,6 +250,7 @@ export function spawnOwnedCliProcess(options: OwnedCliProcessOptions): OwnedCliP
     requestTermination("spawn-error", normalized);
   });
   child.on("close", (code, childSignal) => {
+    observeLifecycle({ phase: "close", code, signal: childSignal, stdoutBytes, stderrBytes });
     closeEventObserved = true;
     if (options.readyToken && !readySettled) {
       readySettled = true;

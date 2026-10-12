@@ -13,10 +13,11 @@ export interface AiSaveConfigInput { baseUrl: string; model: string; apiKey?: st
 export interface AiKeyStatus { hasKey: boolean }
 
 /**
- * ai:suggest 入参（任务 2 真链路）：apiId 供 main 定位接口定义；baseUrl/model 为渲染层
+ * ai:suggest 入参（任务 11）：完整位置供 main 在对应工作区/分组/项目中定位；baseUrl/model 为渲染层
  * 已保存配置（localStorage，非敏感）随调用携带，main 与 safeStorage key 合成 provider 配置。
  */
-export interface AiSuggestInput { apiId: string; baseUrl: string; model: string }
+import type { ApiLocator } from "../locations.js";
+export interface AiSuggestInput { locator: ApiLocator; baseUrl: string; model: string }
 
 /** ai:test-config 入参：轻量探测目标端点（渲染层已保存配置；key 仍取自 main 安全存储）。 */
 export interface AiTestConfigInput { baseUrl: string; model: string }

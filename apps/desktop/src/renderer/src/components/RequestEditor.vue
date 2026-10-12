@@ -1,343 +1,405 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, toRaw } from "vue";
 import { useI18n } from "vue-i18n";
-import { Select as ASelect, Input as AInput, Button as AButton, Tabs as ATabs, Checkbox as ACheckbox, RadioGroup as ARadioGroup, RadioButton as ARadioButton } from "ant-design-vue";
-import type { AuthSpec, BodyContent, HttpMethod, KeyValuePair, Protocol } from "@apicc/core";
+import { Button as AButton, Checkbox as ACheckbox, Input as AInput, RadioButton as ARadioButton, RadioGroup as ARadioGroup, Select as ASelect, TabPane as ATabPane, Tabs as ATabs, Textarea as ATextarea } from "ant-design-vue";
+import type { ApiRequest, ComponentAsset, ModelAsset, MultipartEntry, ParameterBinding, RequestBody } from "@apicc/core";
+import type { SchemaNode } from "@apicc/core/schema";
+import type { ApiccApi, CreateComponentInput, CreateModelInput } from "../../../shared/types.js";
+import type { ComponentLocator, ModelLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { useEditorStore } from "../stores/editor.js";
 import type { useDebugStore } from "../stores/debug.js";
+import type { DeleteAssetResult } from "../stores/assets.js";
 import EmptyState from "./EmptyState.vue";
+import SchemaEditor from "./SchemaEditor.vue";
+import ResponseEditor from "./ResponseEditor.vue";
+import CredentialEditor from "./CredentialEditor.vue";
+import ProjectAssetsPanel from "./ProjectAssetsPanel.vue";
 
-const ATabPane = ATabs.TabPane;
-const ATextarea = AInput.TextArea;
-
-/**
- * 请求编辑器：props 接收 editor/debug store 实例（组合根一次装配；
- * 组件内部禁止重复调用 store 工厂）。全部绑定直接改 editor.api 字段
- * （Pinia 响应式 + dirty 快照比对自动跟踪），显式保存按钮调 editor.save()；
- * 发送按钮调 debug.send(editor)（发送前自动保存脏编辑）。
- * 调试选择器：URL 行内发送按钮左侧有环境选择器（debug-env-select，含「无环境」空值项）
- * 与用例选择器（debug-case-select），仅写 debug store 的 selectedEnvName/selectedCaseId。
- * antd 4 落地：方法/认证类型/placement/体类型为 a-select，URL/名称/字段为 a-input，
- * 页签为 a-tabs（页签触发的 data-testid 经 #tab slot 保留在可点击的 span 上，
- * 点击冒泡到 a-tabs 内部处理器），行编辑为 a-input + a-checkbox + a-button。
- * M5-B 任务 1（D8 协议选择与字段显隐，D2 契约 fixture）：URL 行左侧 a-radio-group
- * （editor-protocol，三选 a-radio-button，缺省 http）——旧数据无 protocol 字段显示
- * http 不回写；切换协议只改页签显隐（各自字段内容保留不互删）：WS 隐藏 method 选择
- * 与参数/请求体、显消息模板（method 缺省 GET 不参与执行，UI 不显示 method——裁定②）；
- * SOAP 隐藏参数/请求体、显 envelope/soapAction，method 落定显式 POST 且禁用（D2
- * superRefine 前置的 UI 侧 fixture）；HTTP 原样。切协议后激活页签重置为该协议首个
- * 页签（协议载荷页签居首），保证新协议字段立即可编辑。
- * 审查预修：组件常驻挂载（App.vue 无 :key），editor.load 原地换 api——激活页签是
- * 本地 ref，跨接口残留无效键时新协议页签集无对应面板 → 编辑区空白。watch 编辑对象
- * 身份（apiId）与 protocol，重置激活页签为新对象协议的首签；同协议内常规互切不触发
- * （apiId/protocol 不变化），radio 切协议经 protocol 源走同一重置路径。
- */
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
   debug: ReturnType<typeof useDebugStore>;
+  api?: ApiccApi;
+  assets?: {
+    projectLocator: ProjectLocator | null;
+    models: ModelAsset[];
+    components: ComponentAsset[];
+    createModel(input: CreateModelInput): Promise<ModelAsset>;
+    saveModel(locator: ModelLocator, model: ModelAsset): Promise<ModelAsset>;
+    createComponent(input: CreateComponentInput): Promise<ComponentAsset>;
+    saveComponent(locator: ComponentLocator, component: ComponentAsset): Promise<ComponentAsset>;
+    deleteAsset(input: { kind: "model"; locator: ModelLocator } | { kind: "component"; locator: ComponentLocator }): Promise<DeleteAssetResult>;
+  };
+  projectLocator?: ProjectLocator | null;
 }>();
 const { t } = useI18n();
-
-const METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
-const METHOD_OPTIONS = METHODS.map((m) => ({ label: m, value: m }));
-const AUTH_KIND_OPTIONS = ["none", "bearer", "basic", "apikey"].map((v) => ({ label: v, value: v }));
-const AUTH_PLACEMENT_OPTIONS = ["header", "query"].map((v) => ({ label: v, value: v }));
-const BODY_KIND_OPTIONS = ["none", "json", "xml", "raw", "graphql", "form"].map((v) => ({ label: v, value: v }));
-
-// —— 协议：三选单选（标签走 i18n protocol.*）+ 按协议的页签清单（载荷页签居首） ——
-// ProtocolKind 与缺省值直接取 core 契约（M5-B 任务 2 裁定 A：本地 fixture 类型收敛删除）。
-const DEFAULT_PROTOCOL: Protocol = "http";
-const PROTOCOL_OPTIONS = computed(() =>
-  (["http", "websocket", "soap"] as const).map((p) => ({ value: p, label: t(`protocol.${p}`) })),
-);
-type Tab = "params" | "headers" | "auth" | "body" | "message" | "envelope";
-const TABS_BY_PROTOCOL: Record<Protocol, readonly Tab[]> = {
-  http: ["params", "headers", "auth", "body"],
-  websocket: ["message", "headers", "auth"],
-  soap: ["envelope", "headers", "auth"],
-};
-const activeTab = ref<Tab>("params");
-
-const protocol = computed<Protocol>({
-  get: () => props.editor.api?.protocol ?? DEFAULT_PROTOCOL,
-  set: (p) => {
-    const api = props.editor.api;
-    if (!api) return;
-    api.protocol = p;
-    // D2：soap → method 固定 POST 且必须显式 POST（UI 落定并禁用）；WS method 缺省
-    // GET 不参与执行——不写数据，仅 UI 隐藏；来回切不回改（裁定③只保字段内容）。
-    // 页签重置统一由下方 watch（protocol 在源中）完成，此处不重复。
-    if (p === "soap" && api.method !== "POST") api.method = "POST";
-  },
+const request = computed<ApiRequest | null>(() => props.editor.api?.contract.request ?? null);
+const bodyText = computed(() => {
+  const body = request.value?.protocol === "http" ? request.value.body : undefined;
+  return body && (body.kind === "json" || body.kind === "xml" || body.kind === "text") ? body : null;
 });
-const isHttp = computed(() => protocol.value === "http");
-
-// 激活页签跟随编辑对象：切接口（apiId 变）或切协议（protocol 变）时回落到该协议
-// 页签集的首签，消除跨对象残留键的空白编辑区；常规页签互切不是源变化，不受扰。
-watch([() => props.editor.apiId, () => props.editor.api?.protocol], () => {
-  activeTab.value = TABS_BY_PROTOCOL[protocol.value][0]!;
+const urlencodedFields = computed(() => {
+  const body = request.value?.protocol === "http" ? request.value.body : undefined;
+  return body?.kind === "urlencoded" ? body.fields : [];
 });
+const multipartEntries = computed(() => {
+  const body = request.value?.protocol === "http" ? request.value.body : undefined;
+  return body?.kind === "multipart" ? body.entries : [];
+});
+const metadata = computed(() => props.editor.api?.contract.metadata ?? null);
+const credentialContextKey = computed(() => {
+  const activeKey = props.editor.activeKey;
+  const session = activeKey ? props.editor.sessions[activeKey] : undefined;
+  if (!session) return "";
+  return JSON.stringify({
+    root: session.root,
+    project: props.projectLocator,
+    locator: session.locator,
+    generation: session.generation,
+  });
+});
+const saveFeedback = ref("");
+const saveError = ref("");
+const methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+const authKinds = ["none", "bearer", "basic", "apikey"];
+const bodyKinds = ["none", "json", "xml", "text", "graphql", "urlencoded", "multipart", "binary"];
+const parameterLocations = ["path", "query", "header", "cookie"] as const;
+type ParameterLocation = (typeof parameterLocations)[number];
 
-function addRow(list: KeyValuePair[]) {
-  list.push({ key: "", value: "", enabled: true });
+function cloneContract<T>(value: T): T {
+  return JSON.parse(JSON.stringify(toRaw(value))) as T;
 }
 
-// —— 认证：none 与三种类型互转（strict schema：切类型重建对象，不残留旧键） ——
-type AuthKind = AuthSpec["type"] | "none";
-const authKind = computed<AuthKind>({
-  get: () => props.editor.api?.auth?.type ?? "none",
-  set: (kind) => {
-    const api = props.editor.api;
-    if (!api) return;
-    if (kind === "none") {
-      api.auth = undefined;
-      return;
-    }
-    const base = { type: kind, placement: "header" } as const;
-    api.auth =
-      kind === "bearer" ? { ...base, token: "" }
-      : kind === "basic" ? { ...base, username: "", password: "" }
-      : { ...base, key: "", value: "" };
-  },
-});
+function secretRef() {
+  return { id: crypto.randomUUID(), policy: "test-auto" };
+}
 
-// —— 请求体：none 与五种体类型互转（同上，切换时重建避免残留 form 键） ——
-type BodyKind = BodyContent["kind"] | "none";
-const bodyKind = computed<BodyKind>({
-  get: () => props.editor.api?.body?.kind ?? "none",
-  set: (kind) => {
-    const api = props.editor.api;
-    if (!api) return;
-    if (kind === "none") {
-      api.body = undefined;
-      return;
+function switchProtocol(next: ApiRequest["protocol"]) {
+  const asset = props.editor.api;
+  const slotKey = props.editor.activeKey;
+  const session = slotKey ? props.editor.sessions[slotKey] : undefined;
+  const current = asset?.contract.request;
+  if (!asset || !session || !current || current.protocol === next) return;
+  session.protocolDrafts[current.protocol] = cloneContract(current);
+  const saved = session.protocolDrafts[next] as ApiRequest | undefined;
+  if (saved) {
+    asset.contract.request = cloneContract(saved);
+    return;
+  }
+  const common = {
+    baseUrl: current.baseUrl,
+    path: current.path,
+    pathParams: cloneContract(current.pathParams),
+    query: cloneContract(current.query),
+    headers: cloneContract(current.headers),
+    cookies: cloneContract(current.cookies),
+    auth: cloneContract(current.auth),
+  };
+  if (next === "http") asset.contract.request = { ...common, protocol: "http", method: "GET", body: { kind: "none" } };
+  else if (next === "websocket") asset.contract.request = { ...common, protocol: "websocket" };
+  else asset.contract.request = { ...common, protocol: "soap", method: "POST", envelope: "" };
+}
+
+function parameterList(location: ParameterLocation): ParameterBinding[] {
+  const current = request.value;
+  if (!current) return [];
+  return location === "path" ? current.pathParams
+    : location === "query" ? current.query
+      : location === "header" ? current.headers : current.cookies;
+}
+
+function addParameter(location: ParameterLocation) {
+  const id = crypto.randomUUID();
+  const item: ParameterBinding = {
+    kind: "inline", id, name: "", schema: { kind: "scalar", type: "string" },
+    required: false, enabled: true, description: "", value: "",
+  };
+  parameterList(location).push(item);
+}
+
+function removeParameter(location: ParameterLocation, index: number) {
+  parameterList(location).splice(index, 1);
+}
+
+function parameterComponents(location: ParameterLocation): Extract<ComponentAsset, { kind: "parameter" }>[] {
+  const components = props.assets?.components ?? [];
+  return components.filter((component): component is Extract<ComponentAsset, { kind: "parameter" }> =>
+    component.kind === "parameter" && component.definition.location === location);
+}
+
+function bindParameter(location: ParameterLocation, index: number, componentId: string) {
+  const list = parameterList(location);
+  const previous = list[index];
+  if (!previous || !componentId) return;
+  const component = parameterComponents(location).find((entry) => entry.id === componentId);
+  if (!component) return;
+  list.splice(index, 1, {
+    kind: "componentRef", id: previous.id, componentId: component.id, expectedKind: "parameter",
+    value: previous.value, enabled: previous.kind === "inline" ? previous.enabled : previous.enabled,
+  });
+}
+
+function setAuthKind(kind: string) {
+  const current = request.value;
+  if (!current) return;
+  if (kind === "none") current.auth = { kind: "none" };
+  else if (kind === "bearer") current.auth = { kind: "bearer", token: secretRef() };
+  else if (kind === "basic") current.auth = { kind: "basic", username: "", password: secretRef() };
+  else if (kind === "apikey") current.auth = { kind: "apikey", name: "", placement: "header", value: secretRef() };
+  else if (kind.startsWith("component:")) current.auth = { kind: "componentRef", componentId: kind.slice("component:".length), expectedKind: "auth" };
+}
+
+function setBodyKind(kind: string) {
+  const current = request.value;
+  if (!current || current.protocol !== "http") return;
+  const previous = current.body;
+  if (kind === "none") current.body = { kind: "none" };
+  else if (kind === "json" || kind === "xml" || kind === "text") {
+    current.body = { kind, content: previous.kind === kind ? previous.content : "" };
+  } else if (kind === "graphql") {
+    current.body = previous.kind === "graphql" ? previous : { kind, query: "", variables: "" };
+  } else if (kind === "urlencoded") {
+    current.body = previous.kind === "urlencoded" ? previous : { kind, fields: [] };
+  } else if (kind === "multipart") {
+    current.body = previous.kind === "multipart" ? previous : { kind, entries: [] };
+  } else if (kind === "binary") {
+    current.body = previous.kind === "binary" ? previous : { kind, file: { path: "" }, contentType: "application/octet-stream" };
+  }
+}
+
+function setBodyText(value: string) {
+  if (bodyText.value) bodyText.value.content = value;
+}
+
+function bodySchema(): SchemaNode | undefined {
+  const body = request.value?.protocol === "http" ? request.value.body : undefined;
+  return body && (body.kind === "json" || body.kind === "xml" || body.kind === "text") ? body.schema : undefined;
+}
+
+function updateBodySchema(schema: SchemaNode | undefined) {
+  const body = request.value?.protocol === "http" ? request.value.body : undefined;
+  if (!body || (body.kind !== "json" && body.kind !== "xml" && body.kind !== "text")) return;
+  if (schema === undefined) delete body.schema;
+  else body.schema = schema;
+}
+
+function bodyExamples(): unknown[] {
+  const schema = bodySchema();
+  return schema?.examples ?? [];
+}
+
+function useBodyExample(index: number) {
+  const body = request.value?.protocol === "http" ? request.value.body : undefined;
+  const example = bodyExamples()[index];
+  if (!body || (body.kind !== "json" && body.kind !== "xml" && body.kind !== "text") || example === undefined) return;
+  body.content = JSON.stringify(example, null, 2);
+}
+
+function addBodyEntry(body: Extract<RequestBody, { kind: "multipart" | "urlencoded" }>) {
+  if (body.kind === "urlencoded") body.fields.push({ id: crypto.randomUUID(), name: "", value: "", enabled: true });
+  else body.entries.push({ kind: "text", id: crypto.randomUUID(), name: "", value: "", enabled: true });
+}
+
+function removeBodyEntry(body: Extract<RequestBody, { kind: "multipart" | "urlencoded" }>, index: number) {
+  if (body.kind === "urlencoded") body.fields.splice(index, 1);
+  else body.entries.splice(index, 1);
+}
+
+function setMultipartEntryKind(index: number, kind: "text" | "file") {
+  const body = request.value?.protocol === "http" ? request.value.body : undefined;
+  const previous = body?.kind === "multipart" ? body.entries[index] : undefined;
+  if (body?.kind !== "multipart" || !previous || previous.kind === kind) return;
+  const next: MultipartEntry = kind === "file"
+    ? { kind, id: previous.id, name: previous.name, file: { path: "" }, enabled: previous.enabled }
+    : { kind, id: previous.id, name: previous.name, value: "", enabled: previous.enabled };
+  body.entries.splice(index, 1, next);
+}
+
+function caseValue(identity: { caseId: string; scope: string }): string {
+  return JSON.stringify([identity.caseId, identity.scope]);
+}
+
+function activeCaseValue(): string {
+  const cases = props.editor.api?.cases ?? [];
+  const selected = props.debug.selectedCase;
+  const active = cases.find((item) => item.id === selected?.caseId && item.scope === selected.scope) ?? cases[0];
+  return active ? caseValue({ caseId: active.id, scope: active.scope }) : "";
+}
+
+function selectDebugCase(value: string) {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed) && typeof parsed[0] === "string" && typeof parsed[1] === "string") {
+      props.debug.selectCase({ caseId: parsed[0], scope: parsed[1] });
     }
-    const prevContent = api.body?.content ?? "";
-    api.body =
-      kind === "form" ? { kind: "form", content: prevContent, form: api.body?.form ?? [] } : { kind, content: prevContent };
-  },
-});
+  } catch {
+    props.debug.selectCase(null);
+  }
+}
+
+function metadataTags(value: string) {
+  if (metadata.value) metadata.value.tags = value.split(",").map((tag) => tag.trim()).filter(Boolean);
+}
+
+async function onSave() {
+  saveFeedback.value = "";
+  saveError.value = "";
+  try {
+    await props.editor.save();
+    saveFeedback.value = t("editor.saved");
+  } catch (error) {
+    saveError.value = error instanceof Error ? error.message : String(error);
+  }
+}
 </script>
 
 <template>
-  <section v-if="editor.api" class="editor" data-testid="request-editor">
-    <div class="name-row">
-      <a-input v-model:value="editor.api.name" class="name-input" data-testid="editor-name" :placeholder="t('editor.name')" />
+  <section v-if="editor.api && request && metadata" class="editor" data-testid="request-editor">
+    <section class="metadata" aria-label="API metadata">
+      <a-input v-model:value="metadata.name" data-testid="asset-metadata-name" :disabled="editor.readOnly" :placeholder="t('contract.metadataName')" />
+      <a-input v-model:value="metadata.description" data-testid="asset-metadata-description" :disabled="editor.readOnly" :placeholder="t('contract.metadataDescription')" />
+      <a-input :value="metadata.tags.join(', ')" data-testid="asset-metadata-tags" :disabled="editor.readOnly" :placeholder="t('contract.metadataTags')" @update:value="metadataTags" />
+      <a-input v-model:value="metadata.version" data-testid="asset-metadata-version" :disabled="editor.readOnly" :placeholder="t('contract.metadataVersion')" />
+      <a-select v-model:value="metadata.status" data-testid="asset-metadata-status" :disabled="editor.readOnly" :options="['draft', 'published', 'deprecated'].map((value) => ({ label: t(`contract.status.${value}`), value }))" />
       <span v-if="editor.dirty" class="dirty" :title="t('editor.unsaved')">●</span>
-    </div>
+    </section>
+
     <div class="top-row">
-      <!-- 协议选择（D8）：三选单选，缺省 http；旧数据无 protocol 字段显示侧回退不回写 -->
-      <a-radio-group v-model:value="protocol" data-testid="editor-protocol" class="protocol-select">
-        <a-radio-button v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</a-radio-button>
+      <a-radio-group :value="request.protocol" data-testid="editor-protocol" :disabled="editor.readOnly" @update:value="switchProtocol">
+        <a-radio-button v-for="protocol in ['http', 'websocket', 'soap']" :key="protocol" :value="protocol">{{ t(`protocol.${protocol}`) }}</a-radio-button>
       </a-radio-group>
-      <!-- method：WS 隐藏（缺省 GET 不参与执行，裁定②选隐藏）；SOAP 固定 POST 禁用（D2）。
-           M8：方法名按语义着色（GET 绿/POST 橙/PUT 蓝/DELETE 红…，method-* class） -->
-      <a-select
-        v-if="protocol !== 'websocket'"
-        v-model:value="editor.api.method"
-        class="method-select"
-        :class="`method-${editor.api.method.toLowerCase()}`"
-        data-testid="editor-method"
-        :options="METHOD_OPTIONS"
-        :disabled="protocol === 'soap'"
-        :title="t('editor.method')"
-      />
-      <a-input v-model:value="editor.api.url" class="url" data-testid="editor-url" :placeholder="t('editor.url')" />
-      <!-- 调试环境/用例选择器（任务 1）：仅写 debug store 的选择状态，send 按钮仍调
-           debug.send(editor)（不传显式 envName，走 store 状态）；空值项表示无环境。
-           显示侧与 send 相同的存在性校验（宽审查修复 2）：切接口/删环境后失效的选择
-           不再渲染为裸字符串，与 send 的静默回退一致（显示 = 发送）。 -->
-      <a-select
-        data-testid="debug-env-select"
-        :value="(editor.envs ?? []).some((e) => e.name === debug.selectedEnvName) ? debug.selectedEnvName ?? '' : ''"
-        :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: e.name }))]"
-        style="min-width: 120px"
-        @update:value="(v) => debug.selectEnv(v === '' ? null : (v as string))"
-      />
-      <a-select
-        data-testid="debug-case-select"
-        :value="(editor.api?.cases ?? []).some((c) => c.id === debug.selectedCaseId) ? debug.selectedCaseId ?? '' : editor.api?.cases[0]?.id ?? ''"
-        :options="(editor.api?.cases ?? []).map((c) => ({ label: `${c.name}（${c.scope}）`, value: c.id }))"
-        style="min-width: 160px"
-        @update:value="(v) => debug.selectCase(v as string)"
-      />
-      <a-button type="primary" data-testid="send-btn" :disabled="debug.sending" @click="debug.send(editor)">
-        {{ debug.sending ? t("editor.sending") : t("editor.send") }}
-      </a-button>
-      <a-button data-testid="save-btn" @click="editor.save()">{{ t("editor.save") }}</a-button>
+      <a-select v-if="request.protocol === 'http'" v-model:value="request.method" class="method-select" data-testid="editor-method" :disabled="editor.readOnly" :options="methods.map((value) => ({ label: value, value }))" />
+      <span v-else-if="request.protocol === 'soap'" data-testid="editor-method">POST</span>
+      <a-input v-model:value="request.baseUrl" class="url" data-testid="editor-base-url" :disabled="editor.readOnly" :placeholder="t('editor.baseUrl')" />
+      <a-input v-model:value="request.path" class="url" data-testid="editor-path" :disabled="editor.readOnly" :placeholder="t('editor.path')" />
+      <a-select data-testid="debug-env-select" :value="(editor.envs ?? []).some((e) => e.name === debug.selectedEnvName) ? debug.selectedEnvName ?? '' : ''" :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: e.name }))]" @update:value="(value) => debug.selectEnv(value === '' ? null : (value as string))" />
+      <a-select data-testid="debug-case-select" :value="activeCaseValue()" :options="(editor.api?.cases ?? []).map((item) => ({ label: `${item.name} (${item.scope})`, value: caseValue({ caseId: item.id, scope: item.scope }) }))" @update:value="(value) => selectDebugCase(value as string)" />
+      <a-button type="primary" data-testid="send-btn" :disabled="debug.sending" @click="debug.send(editor)">{{ debug.sending ? t('editor.sending') : t('editor.send') }}</a-button>
+      <a-button data-testid="save-btn" :disabled="editor.readOnly" @click="onSave">{{ t('editor.save') }}</a-button>
+      <span v-if="saveFeedback" data-testid="save-feedback">{{ saveFeedback }}</span>
+      <span v-if="saveError" data-testid="save-error">{{ saveError }}</span>
     </div>
 
-    <a-tabs v-model:active-key="activeTab">
-      <!-- 参数 / 请求头：key/value/enabled 行编辑（参数页签仅 HTTP——D8：WS/SOAP 隐藏
-           query，字段内容保留不互删，裁定③；两页签各持一份，data-testid 相同，
-           未激活页签不渲染，任一时刻仅有一份在 DOM 中） -->
-      <a-tab-pane v-if="isHttp" key="params">
-        <template #tab><span data-testid="tab-params">{{ t("editor.params") }}</span></template>
+    <a-tabs>
+      <a-tab-pane v-for="location in parameterLocations" :key="location">
+        <template #tab><span :data-testid="`tab-${location}`">{{ t(`contract.location.${location}`) }}</span></template>
         <div class="panel">
-          <div v-for="(row, index) in editor.api.query" :key="index" class="kv-row">
-            <a-input v-model:value="row.key" data-testid="kv-key" placeholder="key" />
-            <a-input v-model:value="row.value" data-testid="kv-value" placeholder="value" />
-            <a-checkbox v-model:checked="row.enabled" data-testid="kv-enabled" :title="row.enabled ? 'enabled' : 'disabled'" />
-            <a-button danger type="text" size="small" data-testid="kv-remove" @click="editor.api.query.splice(index, 1)">×</a-button>
+          <div v-for="(binding, index) in parameterList(location)" :key="binding.id" class="kv-row">
+            <a-select v-if="assets" :value="binding.kind === 'componentRef' ? binding.componentId : ''" :data-testid="`parameter-component-${location}-${index}`" :disabled="editor.readOnly" :options="[{ label: t('contract.inlineParameter'), value: '' }, ...parameterComponents(location).map((item) => ({ label: item.name, value: item.id }))]" @update:value="(value) => bindParameter(location, index, value as string)" />
+            <template v-if="binding.kind === 'inline'">
+              <a-input v-model:value="binding.name" data-testid="kv-key" :disabled="editor.readOnly" placeholder="name" />
+              <a-input v-model:value="binding.value" data-testid="kv-value" :disabled="editor.readOnly" placeholder="value" />
+              <a-input v-model:value="binding.description" :disabled="editor.readOnly" :placeholder="t('contract.description')" />
+              <a-checkbox v-model:checked="binding.required" :data-testid="`parameter-required-${location}-${index}`" :disabled="editor.readOnly">{{ t('contract.required') }}</a-checkbox>
+              <div :data-testid="`parameter-schema-${location}-${index}`">
+                <SchemaEditor :model-value="binding.schema" :models="assets?.models ?? []" :read-only="editor.readOnly" @update:model-value="(value) => { if (value) binding.schema = value; }" />
+              </div>
+            </template>
+            <template v-else>
+              <span>{{ parameterComponents(location).find((item) => item.id === binding.componentId)?.name ?? t('contract.missingComponent') }}</span>
+              <a-input v-model:value="binding.value" data-testid="kv-value" :disabled="editor.readOnly" placeholder="value" />
+            </template>
+            <a-checkbox v-model:checked="binding.enabled" data-testid="kv-enabled" :disabled="editor.readOnly" />
+            <a-button danger type="text" size="small" data-testid="kv-remove" :disabled="editor.readOnly" @click="removeParameter(location, index)">×</a-button>
           </div>
-          <a-button class="add" data-testid="add-param" @click="addRow(editor.api.query)">
-            {{ t("editor.addRow") }}
-          </a-button>
-        </div>
-      </a-tab-pane>
-      <a-tab-pane key="headers">
-        <template #tab><span data-testid="tab-headers">{{ t("editor.headers") }}</span></template>
-        <div class="panel">
-          <div v-for="(row, index) in editor.api.headers" :key="index" class="kv-row">
-            <a-input v-model:value="row.key" data-testid="kv-key" placeholder="key" />
-            <a-input v-model:value="row.value" data-testid="kv-value" placeholder="value" />
-            <a-checkbox v-model:checked="row.enabled" data-testid="kv-enabled" :title="row.enabled ? 'enabled' : 'disabled'" />
-            <a-button danger type="text" size="small" data-testid="kv-remove" @click="editor.api.headers.splice(index, 1)">×</a-button>
-          </div>
-          <a-button class="add" data-testid="add-header" @click="addRow(editor.api.headers)">
-            {{ t("editor.addRow") }}
-          </a-button>
+          <a-button class="add" :disabled="editor.readOnly" :data-testid="`add-${location}`" @click="addParameter(location)">{{ t('editor.addRow') }}</a-button>
         </div>
       </a-tab-pane>
 
-      <!-- 认证：type 下拉 + bearer/basic/apikey 对应字段 -->
       <a-tab-pane key="auth">
-        <template #tab><span data-testid="tab-auth">{{ t("editor.auth") }}</span></template>
+        <template #tab><span data-testid="tab-auth">{{ t('editor.auth') }}</span></template>
         <div class="panel">
-          <div class="field-row">
-            <label>type</label>
-            <a-select v-model:value="authKind" class="field-input" data-testid="auth-type" :options="AUTH_KIND_OPTIONS" />
+          <a-select :value="request.auth.kind === 'componentRef' ? `component:${request.auth.componentId}` : request.auth.kind" data-testid="auth-type" :disabled="editor.readOnly" :options="[...authKinds.map((value) => ({ label: t(`contract.auth.${value}`), value })), ...(assets?.components.filter((item) => item.kind === 'auth').map((item) => ({ label: item.name, value: `component:${item.id}` })) ?? [])]" @update:value="(value) => setAuthKind(value as string)" />
+          <a-input v-if="request.auth.kind === 'basic'" v-model:value="request.auth.username" data-testid="auth-basic-username" :disabled="editor.readOnly" :placeholder="t('contract.username')" />
+          <div v-if="request.auth.kind === 'apikey'" class="kv-row">
+            <a-input v-model:value="request.auth.name" data-testid="auth-apikey-name" :disabled="editor.readOnly" :placeholder="t('contract.apiKeyName')" />
+            <a-select v-model:value="request.auth.placement" data-testid="auth-apikey-placement" :disabled="editor.readOnly" :options="[{ label: t('contract.location.header'), value: 'header' }, { label: t('contract.location.query'), value: 'query' }]" />
           </div>
-          <div v-if="editor.api.auth?.type === 'bearer'" class="field-row">
-            <label>token</label>
-            <a-input v-model:value="editor.api.auth.token" class="field-input" data-testid="auth-token" />
-          </div>
-          <template v-if="editor.api.auth?.type === 'basic'">
-            <div class="field-row">
-              <label>username</label>
-              <a-input v-model:value="editor.api.auth.username" class="field-input" data-testid="auth-username" />
-            </div>
-            <div class="field-row">
-              <label>password</label>
-              <a-input v-model:value="editor.api.auth.password" class="field-input" data-testid="auth-password" type="password" />
-            </div>
-          </template>
-          <template v-if="editor.api.auth?.type === 'apikey'">
-            <div class="field-row">
-              <label>key</label>
-              <a-input v-model:value="editor.api.auth.key" class="field-input" data-testid="auth-key" />
-            </div>
-            <div class="field-row">
-              <label>value</label>
-              <a-input v-model:value="editor.api.auth.value" class="field-input" data-testid="auth-value" />
-            </div>
-            <div class="field-row">
-              <label>placement</label>
-              <a-select v-model:value="editor.api.auth.placement" class="field-input" data-testid="auth-placement" :options="AUTH_PLACEMENT_OPTIONS" />
-            </div>
-          </template>
         </div>
       </a-tab-pane>
 
-      <!-- 请求体：kind 下拉 + 对应编辑器（仅 HTTP——D8；SOAP 的载荷是 envelope） -->
-      <a-tab-pane v-if="isHttp" key="body">
-        <template #tab><span data-testid="tab-body">{{ t("editor.body") }}</span></template>
+      <a-tab-pane v-if="request.protocol === 'http'" key="body">
+        <template #tab><span data-testid="tab-body">{{ t('editor.body') }}</span></template>
         <div class="panel">
-          <!-- M8：体类型胶囊单选（借鉴参考布局，替代原下拉；testid body-kind 保留） -->
-          <a-radio-group v-model:value="bodyKind" size="small" data-testid="body-kind" class="body-kind-pills">
-            <a-radio-button v-for="k in BODY_KIND_OPTIONS" :key="k.value" :value="k.value">{{ k.label }}</a-radio-button>
+          <a-radio-group :value="request.body.kind" data-testid="body-kind" :disabled="editor.readOnly" @update:value="(value) => setBodyKind(value as string)">
+            <a-radio-button v-for="kind in bodyKinds" :key="kind" :value="kind">{{ t(`contract.body.${kind}`) }}</a-radio-button>
           </a-radio-group>
-          <a-textarea
-            v-if="editor.api.body && editor.api.body.kind !== 'form'"
-            v-model:value="editor.api.body.content"
-            class="body-text"
-            data-testid="body-content"
-            :rows="8"
-          />
-          <div v-if="editor.api.body?.kind === 'form'" class="form-rows">
-            <div v-for="(row, index) in editor.api.body.form" :key="index" class="kv-row">
-              <a-input v-model:value="row.key" data-testid="kv-key" placeholder="key" />
-              <a-input v-model:value="row.value" data-testid="kv-value" placeholder="value" />
-              <a-checkbox v-model:checked="row.enabled" data-testid="kv-enabled" />
-              <a-button danger type="text" size="small" data-testid="kv-remove" @click="editor.api.body?.form?.splice(index, 1)">×</a-button>
+          <a-textarea v-if="bodyText" :value="bodyText.content" @update:value="setBodyText" class="body-text" data-testid="body-content" :disabled="editor.readOnly" :rows="8" />
+          <template v-else-if="request.body.kind === 'graphql'">
+            <a-textarea v-model:value="request.body.query" data-testid="body-graphql-query" :disabled="editor.readOnly" :rows="5" />
+            <a-textarea v-model:value="request.body.variables" data-testid="body-graphql-variables" :disabled="editor.readOnly" :rows="4" />
+            <a-input v-model:value="request.body.operationName" data-testid="body-graphql-operation" :disabled="editor.readOnly" />
+          </template>
+          <template v-else-if="request.body.kind === 'urlencoded'">
+            <div v-for="(field, index) in urlencodedFields" :key="field.id" class="kv-row">
+              <a-input v-model:value="field.name" data-testid="body-field-name" :disabled="editor.readOnly" />
+              <a-input v-model:value="field.value" data-testid="body-field-value" :disabled="editor.readOnly" />
+              <a-checkbox v-model:checked="field.enabled" :disabled="editor.readOnly" />
+              <a-button :data-testid="`body-remove-field-${index}`" :disabled="editor.readOnly" @click="removeBodyEntry(request.body, index)">×</a-button>
             </div>
-            <a-button class="add" data-testid="add-form-row" @click="editor.api.body?.form && addRow(editor.api.body.form)">
-              {{ t("editor.addRow") }}
-            </a-button>
-          </div>
+            <a-button data-testid="body-add-field" :disabled="editor.readOnly" @click="addBodyEntry(request.body)">{{ t('editor.addRow') }}</a-button>
+          </template>
+          <template v-else-if="request.body.kind === 'multipart'">
+            <div v-for="(field, index) in multipartEntries" :key="field.id" class="kv-row">
+              <a-input v-model:value="field.name" data-testid="body-field-name" :disabled="editor.readOnly" />
+              <select :value="field.kind" :data-testid="`body-field-kind-${index}`" :disabled="editor.readOnly" @change="setMultipartEntryKind(index, ($event.target as HTMLSelectElement).value as 'text' | 'file')">
+                <option value="text">text</option>
+                <option value="file">file</option>
+              </select>
+              <template v-if="field.kind === 'text'">
+                <a-input v-model:value="field.value" data-testid="body-field-value" :disabled="editor.readOnly" />
+              </template>
+              <template v-else>
+                <a-input v-model:value="field.file.path" :data-testid="`body-file-path-${index}`" :disabled="editor.readOnly" />
+                <a-input v-model:value="field.contentType" :data-testid="`body-file-content-type-${index}`" :disabled="editor.readOnly" />
+              </template>
+              <a-checkbox v-model:checked="field.enabled" :disabled="editor.readOnly" />
+              <a-button :data-testid="`body-remove-field-${index}`" :disabled="editor.readOnly" @click="removeBodyEntry(request.body, index)">×</a-button>
+            </div>
+            <a-button data-testid="body-add-field" :disabled="editor.readOnly" @click="addBodyEntry(request.body)">{{ t('editor.addRow') }}</a-button>
+          </template>
+          <template v-else-if="request.body.kind === 'binary'">
+            <a-input v-model:value="request.body.file.path" data-testid="body-binary-path" :disabled="editor.readOnly" />
+            <a-input v-model:value="request.body.contentType" data-testid="body-binary-content-type" :disabled="editor.readOnly" />
+            <p>{{ t('contract.transferNotImplemented') }}</p>
+          </template>
+          <p v-if="request.body.kind === 'multipart'">{{ t('contract.transferNotImplemented') }}</p>
+          <section v-if="['json', 'xml', 'text'].includes(request.body.kind)" class="body-schema">
+            <SchemaEditor :model-value="bodySchema()" :models="assets?.models ?? []" :read-only="editor.readOnly" @update:model-value="updateBodySchema($event as SchemaNode | undefined)" />
+            <div v-if="bodyExamples().length" class="examples" data-testid="body-examples">
+              <span>{{ t('contract.schemaExamples') }}</span>
+              <button v-for="(example, index) in bodyExamples()" :key="index" type="button" :data-testid="`body-example-use-${index}`" :disabled="editor.readOnly" @click="useBodyExample(index)">{{ t('contract.useExample', { index: index + 1 }) }}</button>
+            </div>
+          </section>
         </div>
       </a-tab-pane>
 
-      <!-- 消息模板（仅 WebSocket，D8）：连接后发送的文本帧模板，缺省仅连接（D2） -->
-      <a-tab-pane v-if="protocol === 'websocket'" key="message">
-        <template #tab><span data-testid="tab-message">{{ t("protocol.message") }}</span></template>
-        <div class="panel">
-          <a-textarea
-            v-model:value="editor.api.message"
-            class="body-text"
-            data-testid="editor-message"
-            :rows="8"
-            :placeholder="t('protocol.messagePlaceholder')"
-          />
-        </div>
+      <a-tab-pane v-if="request.protocol === 'websocket'" key="message">
+        <template #tab><span data-testid="tab-message">{{ t('protocol.message') }}</span></template>
+        <a-textarea v-model:value="request.message" data-testid="editor-message" :disabled="editor.readOnly" :rows="8" />
       </a-tab-pane>
-
-      <!-- SOAP 报文（仅 SOAP，D8）：envelope XML 模板 + 可选 SOAPAction 头 -->
-      <a-tab-pane v-if="protocol === 'soap'" key="envelope">
-        <template #tab><span data-testid="tab-envelope">{{ t("protocol.envelope") }}</span></template>
-        <div class="panel">
-          <a-textarea
-            v-model:value="editor.api.envelope"
-            class="body-text"
-            data-testid="editor-envelope"
-            :rows="8"
-            :placeholder="t('protocol.envelopePlaceholder')"
-          />
-          <div class="field-row">
-            <label>{{ t("protocol.soapAction") }}</label>
-            <a-input v-model:value="editor.api.soapAction" class="field-input" data-testid="editor-soap-action" />
-          </div>
-        </div>
+      <a-tab-pane v-if="request.protocol === 'soap'" key="envelope">
+        <template #tab><span data-testid="tab-envelope">{{ t('protocol.envelope') }}</span></template>
+        <a-textarea v-model:value="request.envelope" data-testid="editor-envelope" :disabled="editor.readOnly" :rows="8" />
+        <a-input v-model:value="request.soapAction" data-testid="editor-soap-action" :disabled="editor.readOnly" />
       </a-tab-pane>
     </a-tabs>
+    <ResponseEditor v-if="assets" :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" />
+    <ProjectAssetsPanel v-if="assets" :assets="assets" :api="api" :credential-context-key="credentialContextKey" :read-only="editor.readOnly" />
+    <CredentialEditor v-if="api && projectLocator" :api="api" :locator="projectLocator" :auth="request.auth" :context-key="credentialContextKey" :read-only="editor.readOnly" />
   </section>
   <EmptyState v-else :text="t('editor.empty')" />
 </template>
 
 <style scoped>
-.editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  height: 100%;
-  box-sizing: border-box;
-}
-.name-row { display: flex; align-items: center; gap: 6px; }
-.name-input { flex: 1; max-width: 420px; font-weight: 600; }
-.dirty { color: var(--accent); }
-.top-row { display: flex; gap: 8px; }
-.method-select { width: 96px; }
-.protocol-select { flex-shrink: 0; }
-.url { flex: 1; }
+.editor { display: flex; flex-direction: column; gap: 8px; padding: 10px; height: 100%; box-sizing: border-box; overflow: auto; }
+.metadata { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 6px; align-items: center; }
+.top-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.url { flex: 1; min-width: 120px; }
 .panel { display: flex; flex-direction: column; gap: 6px; overflow: auto; }
-/* M8：方法语义色（方法选择框内文字 + 下拉选中项；深浅主题共用高对比色值） */
-.method-select :deep(.ant-select-selection-item) { font-weight: 700; }
-.method-get :deep(.ant-select-selection-item) { color: var(--pass); }
-.method-post :deep(.ant-select-selection-item) { color: #fa8c16; }
-.method-put :deep(.ant-select-selection-item) { color: var(--accent); }
-.method-patch :deep(.ant-select-selection-item) { color: #722ed1; }
-.method-delete :deep(.ant-select-selection-item) { color: var(--fail); }
-.method-head :deep(.ant-select-selection-item),
-.method-options :deep(.ant-select-selection-item) { color: var(--text-muted); }
-/* M8：体类型胶囊行 */
-.body-kind-pills { margin-bottom: 2px; }
-.body-kind-pills :deep(.ant-radio-button-wrapper) { font-size: 12px; }
 .kv-row { display: flex; gap: 6px; align-items: center; }
-.kv-row :deep(.ant-input) { flex: 1; }
-.field-row { display: flex; align-items: center; gap: 8px; }
-.field-row label { width: 80px; color: var(--text-muted); font-size: 12px; }
-.field-input { flex: 1; max-width: 320px; }
-button.add { align-self: flex-start; }
+.kv-row > * { flex: 1; }
+.dirty { color: var(--accent); }
 .body-text { font-family: ui-monospace, monospace; resize: vertical; }
+.body-schema { display: grid; gap: 8px; }
+.examples { display: flex; gap: 8px; align-items: center; }
 </style>

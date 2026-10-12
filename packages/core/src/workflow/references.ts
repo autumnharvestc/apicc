@@ -1,57 +1,66 @@
-import type { ApiDefinition, Collection, Folder, Project, TestCase } from "../domain/model.js";
+import type { DeepReadonly } from "../assets/context.js";
+import type { ApiAsset } from "../contract/model.js";
+import type { ContractCollection, ContractFolder, ContractProject } from "../contract/workspace.js";
+import type { TestCase } from "../domain/common.js";
 
 export interface ProjectApiLocation {
-  api: ApiDefinition;
-  collection: Collection;
-  folders: Folder[];
+  api: DeepReadonly<ApiAsset>;
+  collection: DeepReadonly<ContractCollection>;
+  folders: readonly DeepReadonly<ContractFolder>[];
 }
 
-function findInFolders(folders: Folder[], apiId: string, ancestors: Folder[]): { api: ApiDefinition; folders: Folder[] } | undefined {
+function findInFolders(
+  folders: readonly DeepReadonly<ContractFolder>[], apiId: string, ancestors: readonly DeepReadonly<ContractFolder>[],
+): { api: DeepReadonly<ApiAsset>; folders: readonly DeepReadonly<ContractFolder>[] } | undefined {
   for (const folder of folders) {
     const nextAncestors = [...ancestors, folder];
-    const api = folder.apis.find((candidate) => candidate.id === apiId);
+    const api = folder.apis.find((candidate) => candidate.contract.id === apiId);
     if (api) return { api, folders: nextAncestors };
-    const nested = findInFolders(folder.folders ?? [], apiId, nextAncestors);
+    const nested = findInFolders(folder.folders, apiId, nextAncestors);
     if (nested) return nested;
   }
   return undefined;
 }
 
-/** 在项目模块及任意深度文件夹中定位 API，并返回其祖先容器。 */
-export function findProjectApi(project: Project, apiId: string): ProjectApiLocation | undefined {
+/** Locate an API asset anywhere in one complete project and retain its real module/folder path. */
+export function findProjectApi(project: DeepReadonly<ContractProject>, apiId: string): ProjectApiLocation | undefined {
   for (const collection of project.collections) {
-    const direct = collection.apis.find((candidate) => candidate.id === apiId);
+    const direct = collection.apis.find((candidate) => candidate.contract.id === apiId);
     if (direct) return { api: direct, collection, folders: [] };
-    const nested = findInFolders(collection.folders ?? [], apiId, []);
+    const nested = findInFolders(collection.folders, apiId, []);
     if (nested) return { ...nested, collection };
   }
   return undefined;
 }
 
-function cloneFolderPath(folders: Folder[], api: ApiDefinition, testCase: TestCase): Folder[] {
+function cloneFolderPath(
+  folders: readonly DeepReadonly<ContractFolder>[], api: DeepReadonly<ApiAsset>, testCase: DeepReadonly<TestCase>,
+): ContractFolder[] {
   if (folders.length === 0) return [];
   const [current, ...rest] = folders;
   const selectedCases = api.cases.filter((candidate) => candidate.id === testCase.id);
-  const child: Folder = {
-    ...current,
-    apis: rest.length === 0 ? [{ ...api, cases: selectedCases.length > 0 ? selectedCases : [testCase] }] : [],
+  const child: ContractFolder = {
+    id: current!.id,
+    name: current!.name,
+    preOperations: current!.preOperations.map((operation) => ({ ...operation })),
+    postOperations: current!.postOperations.map((operation) => ({ ...operation })),
+    apis: rest.length === 0 ? [{ ...api, cases: selectedCases.length > 0 ? [...selectedCases] : [testCase] } as ApiAsset] : [],
     folders: cloneFolderPath(rest, api, testCase),
-    preOperations: current.preOperations ? [...current.preOperations] : current.preOperations,
-    postOperations: current.postOperations ? [...current.postOperations] : current.postOperations,
   };
   return [child];
 }
 
-/** 生成仅执行目标 API/用例的集合副本，保留模块和目标祖先容器上下文。 */
-export function selectWorkflowCollection(location: ProjectApiLocation, testCase: TestCase): Collection {
+/** Create a standalone selected view for callers that need one; execution should prefer run.caseSelection. */
+export function selectWorkflowCollection(location: ProjectApiLocation, testCase: DeepReadonly<TestCase>): ContractCollection {
   const { api, collection, folders } = location;
   const selectedCases = api.cases.filter((candidate) => candidate.id === testCase.id);
-  const selectedApi = { ...api, cases: selectedCases.length > 0 ? selectedCases : [testCase] };
+  const selectedApi = { ...api, cases: selectedCases.length > 0 ? [...selectedCases] : [testCase] } as ApiAsset;
   return {
-    ...collection,
+    id: collection.id,
+    name: collection.name,
     variables: { ...collection.variables },
-    preOperations: collection.preOperations ? [...collection.preOperations] : collection.preOperations,
-    postOperations: collection.postOperations ? [...collection.postOperations] : collection.postOperations,
+    preOperations: collection.preOperations.map((operation) => ({ ...operation })),
+    postOperations: collection.postOperations.map((operation) => ({ ...operation })),
     apis: folders.length === 0 ? [selectedApi] : [],
     folders: cloneFolderPath(folders, api, testCase),
   };

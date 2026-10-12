@@ -1,0 +1,250 @@
+export { version } from "./version.js";
+export {
+  AssertionSchema,
+  DataDriverSchema,
+  EnvironmentSchema,
+  HttpMethodSchema,
+  KeyValuePairSchema,
+  OperationListSchema,
+  OperationSchema,
+  ProtocolSchema,
+  ProjectGlobalsSchema,
+  StressPolicySchema,
+  TestCaseSchema,
+  ApiAssetSchema,
+  ApiContractSchema,
+  ApiRequestSchema,
+  ApiTestCaseSchema,
+  AuthBindingSchema,
+  ComponentAssetSchema,
+  ExampleBindingSchema,
+  InlineAuthBindingSchema,
+  ModelAssetSchema,
+  ParameterBindingSchema,
+  RequestBodySchema,
+  ResponseBindingSchema,
+  ResponseDefinitionSchema,
+  SecretRefSchema,
+  JsonValueSchema,
+  SchemaNodeSchema,
+  ContractCollectionSchema,
+  ContractEnvironmentSchema,
+  ContractFolderSchema,
+  ContractGroupSchema,
+  ContractProjectSchema,
+  ContractWorkspaceSchema,
+  CollectionSchema,
+  FolderSchema,
+  GroupSchema,
+  ProjectSchema,
+  WorkspaceSchema,
+} from "./domain/model.js";
+export type {
+  Assertion,
+  DataDriver,
+  Environment,
+  HttpMethod,
+  ID,
+  KeyValuePair,
+  Operation,
+  ProjectGlobals,
+  Protocol,
+  StressPolicy,
+  StressTargetPolicy,
+  TestCase,
+  ApiAsset,
+  ApiContract,
+  ApiLifecycleStatus,
+  ApiMetadata,
+  ApiRequest,
+  ApiTestCase,
+  AuthBinding,
+  ComponentAsset,
+  ExampleBinding,
+  ExampleComponentAsset,
+  ExampleDefinition,
+  ExampleReference,
+  HttpRequest,
+  InlineAuthBinding,
+  InlineExampleBinding,
+  InlineParameter,
+  InlineResponse,
+  JsonValue,
+  LocalFileReference,
+  ModelAsset,
+  MultipartEntry,
+  ParameterBinding,
+  ParameterComponentAsset,
+  ParameterComponentDefinition,
+  ParameterLocation,
+  ParameterReference,
+  RequestBody,
+  ResponseBinding,
+  ResponseComponentAsset,
+  ResponseContent,
+  ResponseDefinition,
+  ResponseReference,
+  ResponseStatus,
+  SchemaAnnotations,
+  SchemaNode,
+  SecretRef,
+  SoapRequest,
+  WebSocketRequest,
+  ContractCollection,
+  ContractFolder,
+  ContractGroup,
+  ContractProject,
+  ContractWorkspace,
+  Collection,
+  Folder,
+  Group,
+  Project,
+  Workspace,
+} from "./domain/model.js";
+export { envChain } from "./domain/envChain.js";
+export { resolveExecutionEnvironment, selectEffectiveCases } from "./domain/executionSelection.js";
+export type { ExecutionEnvironment } from "./domain/executionSelection.js";
+export { createEventBus } from "./events/bus.js";
+export type { RunEventMap } from "./events/bus.js";
+export type {
+  ExecutableRequest, ExecutionResponse, HttpExecuteOptions, ProtocolClient, AuthProvider,
+  AssertResult, AssertOperator, PmVariables, PmApi, ScriptContext, ScriptEngine, Reporter,
+  ImportedProject, ImportDiagnostic, Importer, LoadProblem, StorageSaveOptions, StorageAdapter,
+  PluginContext, PluginRegistryApi, PluginDefinition,
+} from "./plugin/types.js";
+export { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
+export { loadUserPlugins } from "./plugins/loader.js";
+export type {
+  PluginManifest, PluginContributionSummary, PluginLoadEntry, PluginLoadResult, PluginLoaderOptions,
+} from "./plugins/types.js";
+export { fileStorage } from "./storage/fileStorage.js";
+export { listContractWorkspaceDefinitionFiles } from "./storage/definitionFiles.js";
+export { sanitizeNodeName } from "./storage/sanitize.js";
+export { SqliteIndex } from "./storage/sqliteIndex.js";
+export type { IndexedObject, IndexedObjectIdentity, IndexedAssetReference } from "./storage/sqliteIndex.js";
+export type { WorkspaceLoadState } from "./storage/contractFiles.js";
+export { createProjectAssetContext } from "./assets/context.js";
+export type {
+  AssetBundle, AssetDiagnostic, AssetGate, AssetGateResult, AssetMutationResult, DeepReadonly,
+  ProjectAssetContext, ProjectAssetContextInput, ProjectAssetContextReadView,
+} from "./assets/context.js";
+export { createProjectSnapshot } from "./assets/snapshot.js";
+export type { ProjectSnapshot } from "./assets/snapshot.js";
+export { cloneProjectDefinition, cloneAssetBundle } from "./assets/clone.js";
+export type { CloneIdFactory, CloneIdKind, CloneIdMapping, ClonedAssetBundle, ClonedProjectDefinition } from "./assets/clone.js";
+export { rotateProjectSecretRefs } from "./assets/secretRefs.js";
+export { prepareCredentialBindings } from "./credentials/bindings.js";
+export { defaultCredentialPrivateRoot } from "./credentials/host.js";
+export type { CredentialScope, CredentialErrorCode, SecretStore, CredentialBindings } from "./credentials/types.js";
+export { CredentialError } from "./credentials/types.js";
+export {
+  collectProjectCredentialRefs,
+  collectCredentialOutputMarkers,
+  createCredentialOutputSanitizer,
+} from "./credentials/output.js";
+export type { CredentialOutputSanitizer } from "./credentials/output.js";
+export { materializeRequest } from "./request/materialize.js";
+export type { MaterializeInputs, MaterializedRequest, RuntimeAuth } from "./request/materialize.js";
+export { createVariableResolver, CyclicVariableError } from "./variables/resolver.js";
+export { withBaseUrl } from "./variables/baseUrl.js";
+export { CollectionRunner, CollectionRunError } from "./runner/runner.js";
+export type { ProjectExecutionRun, RunnerOptions } from "./runner/runner.js";
+export {
+  executeCase,
+  type CaseExecutionDeps, CaseExecutionInput, CaseExecutionResult, CaseFailureKind,
+} from "./runner/caseExecutor.js";
+export type { RunResult, CaseOutcome } from "./report/types.js";
+export { renderDesignMarkdown, renderContractMarkdown } from "./design/export.js";
+export { htmlReporter } from "./report/html.js";
+export { junitReporter } from "./report/junit.js";
+export { collectionV21Importer } from "./import/collection21.js";
+export { openapiImporter } from "./import/openapi.js";
+export { WorkflowStatusSchema, WorkflowNodeSchema, WorkflowEdgeSchema, WorkflowSchema } from "./workflow/model.js";
+export type { WorkflowStatus, WorkflowNode, WorkflowEdge, Workflow } from "./workflow/model.js";
+export { validateWorkflowStructure, transitionWorkflowStatus, validateEnablement, type ValidationIssue } from "./workflow/validate.js";
+export { workflowImpact, type WorkflowImpactEntry } from "./workflow/impact.js";
+export { WorkflowRunner, type WorkflowRunResult, type NodeResult, type NodeState, type NodeSkipReason, type ConditionVerdict, type WorkflowRunnerOptions } from "./workflow/runner.js";
+export { findProjectApi, selectWorkflowCollection, type ProjectApiLocation } from "./workflow/references.js";
+export { workflowToRunResult } from "./workflow/adapter.js";
+export { mergedEnvVars } from "./domain/envChain.js";
+export {
+  STRESS_FAILURE_KINDS, StressSampleSchema, StressFailureCountsSchema, StressGeneratorSchema,
+  StressMeasurementWindowSchema, StressSafetySchema, StressDistributedSchema, StressReportSchema,
+  CurrentStressReportSchema,
+} from "./stress/model.js";
+export type {
+  StressFailureKind, StressFailureCounts, StressThresholds, StressViolationMetric, StressViolation,
+  StressVerdict, StressMeasurementWindow, StressGeneratorAvailability, StressGeneratorMetrics,
+  StressSafetyTarget, StressSafetyRun, StressSafety, StressSample, StressDistributed,
+  CurrentStressReport, StressReport,
+} from "./stress/model.js";
+export { computeReport } from "./stress/aggregate.js";
+export { evaluateStressThresholds } from "./stress/thresholds.js";
+export { buildStressRequest } from "./stress/build.js";
+export {
+  assertStressTargetAllowed, normalizeStressOrigin, normalizeStressPolicy, isLoopbackStressOrigin, StressSafetyError,
+  type StressSafetyDecision, type StressSafetyErrorCode,
+} from "./stress/safety.js";
+export { StressRunner, validateStressRunOptions, type StressRunnerOptions, type StressRunOptions } from "./stress/runner.js";
+export {
+  createGeneratorMetricsCollector,
+  createStressGeneratorMetricsCollector,
+  createGeneratorCollector,
+  DEFAULT_GENERATOR_LIMITS,
+  type GeneratorMetricsCollector,
+  type GeneratorMetricsProbe,
+  type GeneratorCpuUsage,
+  type GeneratorCpuUsageMs,
+} from "./stress/generatorMetrics.js";
+export {
+  createStressCaseSession,
+  type StressCaseTarget, StressCaseSessionDeps, StressWorkerSession,
+} from "./stress/caseSession.js";
+export {
+  StressWorkerSpecSchema, ShardResultSchema, ShardFailureSchema, ShardOutcomeSchema,
+  planShards, mergeStressReport, DistributedStressCoordinator,
+  type StressWorkerSpec, type StressWorkerSpecBase, type ShardResult, type ShardFailure,
+  type ShardOutcome, type SpawnWorker, type ShardPlan, type DistributedRunOptions, type CoordinatorRunResult,
+} from "./stress/distributed.js";
+export {
+  createAiProvider, AiProviderError, type AiProviderDeps, type AiProviderErrorKind,
+} from "./ai/provider.js";
+export { suggestCases, AiSuggestError } from "./ai/suggest.js";
+export { AI_SUGGEST_SYSTEM_PROMPT, buildSuggestMessages } from "./ai/prompt.js";
+export {
+  DEFAULT_AI_TIMEOUT_MS, DEFAULT_SUGGEST_LIMIT, AiCaseDraftSchema, AiSuggestOutputSchema,
+  type AiProviderConfig, type AiChatMessage, type AiProvider, type AiCaseDraft, type AiSuggestedCase,
+  type AiSuggestResult, type AiSuggestOptions,
+} from "./ai/types.js";
+
+import { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
+import { fileStorage } from "./storage/fileStorage.js";
+import { createHttpClient, httpClient } from "./http/client.js";
+import { wsClient } from "./protocol/websocket.js";
+import { createSoapClient, soapClient } from "./protocol/soap.js";
+import { builtinAuthProviders } from "./http/auth.js";
+// 内置协议客户端与认证器同时对外导出：CLI run-stress 等消费方直接注入 StressRunner，无需绕注册中心取回。
+export { createHttpClient, httpClient, wsClient, soapClient, createSoapClient, builtinAuthProviders };
+import { builtinAssertOperators } from "./assert/operators.js";
+import { jsScriptEngine } from "./sandbox/jsEngine.js";
+import { htmlReporter } from "./report/html.js";
+import { junitReporter } from "./report/junit.js";
+import { collectionV21Importer } from "./import/collection21.js";
+import { openapiImporter } from "./import/openapi.js";
+
+/** 创建注册了全部内置插件的注册中心（内置功能即普通插件，规格 §4）。 */
+export function createDefaultRegistry(): PluginRegistry {
+  const registry = createPluginRegistry();
+  registry.registerStorage(fileStorage);
+  registry.registerProtocol(httpClient);
+  registry.registerProtocol(wsClient);
+  registry.registerProtocol(soapClient);
+  for (const p of builtinAuthProviders) registry.registerAuth(p);
+  for (const o of builtinAssertOperators) registry.registerAssert(o);
+  registry.registerScriptEngine(jsScriptEngine);
+  registry.registerReporter(htmlReporter);
+  registry.registerReporter(junitReporter);
+  registry.registerImporter(collectionV21Importer);
+  registry.registerImporter(openapiImporter);
+  return registry;
+}

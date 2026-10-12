@@ -1,30 +1,75 @@
 import { describe, expect, it, vi } from "vitest";
 import { createVariableResolver } from "../../src/variables/resolver.js";
 import { createEventBus } from "../../src/events/bus.js";
-import { executeCase, type CaseExecutionDeps } from "../../src/runner/caseExecutor.js";
-import type { ApiDefinition, TestCase } from "../../src/domain/model.js";
+import { executeCase, type CaseExecutionDeps, type CaseExecutionInput } from "../../src/runner/caseExecutor.js";
+import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import type { ApiAsset, RequestBody } from "../../src/contract/model.js";
+import type { ContractProject } from "../../src/contract/workspace.js";
+import type { ProjectGlobals, TestCase } from "../../src/domain/common.js";
 import type { ExecutableRequest, ExecutionResponse, ProtocolClient, ScriptEngine } from "../../src/plugin/types.js";
-
-const api: ApiDefinition = {
-  id: "api-1", name: "orders", version: "1", deprecated: false, method: "GET",
-  url: "https://example.test/orders/{{orderId}}", headers: [], query: [],
-  auth: { type: "bearer", token: "{{token}}", placement: "header" },
-  cases: [],
-};
+import { builtinAuthProviders } from "../../src/http/auth.js";
+import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
 
 const testCase: TestCase = {
   id: "case-1", name: "order", scope: "base", parameters: { orderId: "from-parameter" },
-  preScript: "pm.request.headers['X-Prepared'] = pm.variables.get('prepared');",
-  postScript: "pm.variables.set('nextToken', 'next'); pm.assert(pm.response.status === 200, 'status');",
+  preOperations: [{ id: "pre", type: "script", content: "pm.request.headers['X-Prepared'] = pm.variables.get('prepared');" }],
+  postOperations: [{ id: "post", type: "script", content: "pm.variables.set('nextToken', 'next'); pm.assert(pm.response.status === 200, 'status');" }],
   assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }],
 };
 
 const response: ExecutionResponse = { status: 200, headers: { "content-type": "application/json" }, bodyText: '{"ok":true}', timeMs: 3 };
 
-function input(globals: Record<string, unknown> = {}) {
+function input(options: {
+  globals?: Partial<ProjectGlobals>;
+  request?: { baseUrl?: string; protocol?: "http" | "soap"; envelope?: string; body?: RequestBody };
+  testCase?: TestCase;
+} = {}): CaseExecutionInput {
+  const selectedCase = options.testCase ?? testCase;
+  const contractId = "10000000-0000-4000-8000-000000000001";
+  const secretId = "credential-ref";
+  const asset: ApiAsset = {
+    contract: {
+      formatVersion: 1,
+      id: contractId,
+      metadata: { name: "orders", description: "", tags: [], version: "1", status: "draft" },
+      request: options.request?.protocol === "soap"
+        ? {
+          protocol: "soap", method: "POST", baseUrl: options.request.baseUrl ?? "https://example.test", path: "/orders/{{orderId}}",
+          pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "bearer", token: { id: secretId, policy: "test-auto" } },
+          envelope: options.request.envelope ?? "<Envelope>{{orderId}}</Envelope>",
+        }
+        : {
+          protocol: "http", method: "GET", baseUrl: options.request?.baseUrl ?? "https://example.test", path: "/orders/{{orderId}}",
+          pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "bearer", token: { id: secretId, policy: "test-auto" } },
+          body: options.request?.body ?? { kind: "none" },
+        },
+      responses: [],
+    },
+    cases: [selectedCase],
+    documentation: "",
+  };
+  const globals: ProjectGlobals = {
+    query: [], headers: [], cookies: [], body: [], ...options.globals,
+  };
+  const project: ContractProject = {
+    id: "10000000-0000-4000-8000-000000000002", name: "project", variables: { token: "unused" }, globals,
+    environments: [], workflows: [], stressPolicy: { trustedOrigins: [], deniedOrigins: [] }, models: [], components: [],
+    collections: [{
+      id: "10000000-0000-4000-8000-000000000003", name: "collection", variables: {}, preOperations: [], postOperations: [],
+      folders: [], apis: [asset],
+    }],
+  };
+  const snapshot = createProjectSnapshot(project);
+  const frozenAsset = snapshot.project.collections[0]!.apis[0]!;
+  const frozenCase = frozenAsset.cases[0]!;
   return {
-    api,
-    testCase,
+    asset: frozenAsset,
+    assetContext: snapshot.context,
+    credentialBindings: {
+      resolve(ref: { id: string }) { if (ref.id !== secretId) throw new Error("unexpected credential ref"); return "token-from-script"; },
+      versions: { [secretId]: "v1" },
+    },
+    testCase: frozenCase,
     row: { orderId: "42" },
     rowIndex: 0,
     isDataDriven: true,
@@ -43,11 +88,12 @@ function deps(client: ProtocolClient, beforeSend?: CaseExecutionDeps["beforeSend
       if (code.includes("X-Prepared")) ctx.pm.request.headers["X-Prepared"] = ctx.pm.variables.get("prepared") ?? "";
       if (code.includes("nextToken")) ctx.pm.variables.set("nextToken", "next");
       if (code.includes("pm.assert")) ctx.pm.assert(ctx.pm.response?.status === 200, "status");
+      if (code === "delete-envelope" && ctx.pm.request.protocol === "soap") Object.assign(ctx.pm.request, { envelope: undefined });
     },
   };
   return {
     resolveProtocol: () => client,
-    resolveAuth: () => ({ type: "bearer", apply(request, auth, getVar) { request.headers.Authorization = `Bearer ${getVar(auth.token!.slice(2, -2))}`; } }),
+    resolveAuth: () => ({ type: "bearer", apply(request, auth) { if (auth.kind === "bearer") request.headers.Authorization = `Bearer ${auth.token}`; } }),
     resolveAssert: () => ({ op: "eq", evaluate(actual, expected) { return { pass: String(actual) === expected, message: "status" }; } }),
     scriptEngine,
     timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
@@ -107,8 +153,8 @@ describe("executeCase", () => {
         return response;
       },
     };
-    const a = input({ headers: [{ key: "X-Global", value: "A", enabled: true }] });
-    const b = input({ headers: [{ key: "X-Global", value: "B", enabled: true }] });
+    const a = input({ globals: { headers: [{ key: "X-Global", value: "A", enabled: true }] } });
+    const b = input({ globals: { headers: [{ key: "X-Global", value: "B", enabled: true }] } });
     await Promise.all([executeCase(a, deps(client)), executeCase(b, deps(client))]);
     expect(seen.sort()).toEqual(["A", "B"]);
   });
@@ -118,7 +164,7 @@ describe("executeCase", () => {
       ...deps({ name: "test", canHandle: () => true, execute: async () => response }),
       scriptEngine: { language: "javascript", run() { throw new Error("script boom"); } },
     };
-    const scriptResult = await executeCase({ ...input(), testCase: { ...testCase, preScript: "throw new Error('x')" } }, failingScript);
+    const scriptResult = await executeCase(input({ testCase: { ...testCase, preOperations: [{ id: "throw", type: "script", content: "throw new Error('x')" }] } }), failingScript);
     expect(scriptResult.failureKind).toBe("script");
 
     const transport = await executeCase(input(), deps({
@@ -131,49 +177,52 @@ describe("executeCase", () => {
     }));
     expect(http.failureKind).toBe("http");
 
-    const assertion = await executeCase({ ...input(), testCase: { ...testCase, assertions: [{ id: "bad", target: "status", op: "eq", expected: "201" }] } }, deps({
+    const assertion = await executeCase(input({ testCase: { ...testCase, assertions: [{ id: "bad", target: "status", op: "eq", expected: "201" }] } }), deps({
       name: "test", canHandle: () => true, async execute() { return response; },
     }));
     expect(assertion.failureKind).toBe("assertion");
   });
 
   it("clones auth for concurrent executions of one shared API", async () => {
-    const sharedApi = { ...api, auth: { type: "bearer" as const, token: "shared", placement: "header" as const } };
+    const base = input();
     const seen: string[] = [];
     const client: ProtocolClient = {
       name: "test", canHandle: () => true,
       async execute(request) {
         await new Promise((resolve) => setTimeout(resolve, 2));
-        seen.push(request.auth?.token ?? "missing");
+        seen.push(request.headers.Authorization ?? "missing");
         return response;
       },
     };
     const engine: ScriptEngine = {
       language: "javascript",
-      run(code, ctx) { ctx.pm.request.auth!.token = code; },
+      run(code, ctx) { if (ctx.pm.request.auth.kind === "bearer") ctx.pm.request.auth.token = code; },
     };
     const make = (token: string) => ({
-      ...input(), api: sharedApi, testCase: { ...testCase, preScript: token },
+      ...base,
+      testCase: { ...base.testCase, preOperations: [{ id: `token-${token}`, type: "script" as const, content: token }] },
+      resolver: createVariableResolver({ layers: [{ prepared: "yes" }] }),
+      persisted: new Map<string, string>(),
+      persistedSnapshot: {} as Record<string, string>,
     });
     const makeDeps = (): CaseExecutionDeps => ({
       ...deps(client), scriptEngine: engine,
-      resolveAuth: () => ({ type: "bearer", apply(request, auth) { request.headers.Authorization = auth.token ?? ""; } }),
+      resolveAuth: () => ({ type: "bearer", apply(request, auth) { if (auth.kind === "bearer") request.headers.Authorization = auth.token; } }),
     });
     await Promise.all([executeCase(make("A"), makeDeps()), executeCase(make("B"), makeDeps())]);
     expect(seen.sort()).toEqual(["A", "B"]);
-    expect(sharedApi.auth?.token).toBe("shared");
+    expect(base.asset.contract.request.auth).toMatchObject({ kind: "bearer", token: { id: "credential-ref" } });
   });
 
   it("returns a config outcome when request construction fails", async () => {
-    const state = input();
-    state.api = { ...api, url: "{{loop}}/orders" };
+    const state = input({ request: { baseUrl: "{{loop}}" } });
     state.resolver = createVariableResolver({ layers: [{ loop: "{{loop}}" }] });
     const execute = vi.fn(async () => response);
     const result = await executeCase(state, deps({ name: "test", canHandle: () => true, execute }));
     expect(result.outcome.passed).toBe(false);
     expect(result.failureKind).toBe("config");
     expect(result.outcome.error).toContain("变量循环引用");
-    expect(result.request.url).toBe("{{loop}}/orders");
+    expect(result.request.url).toBe("");
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -181,8 +230,7 @@ describe("executeCase", () => {
     const bus = createEventBus();
     let afterCaseCount = 0;
     bus.on("afterCase", () => { afterCaseCount += 1; });
-    const state = input();
-    state.api = { ...api, url: "{{loop}}/orders" };
+    const state = input({ request: { baseUrl: "{{loop}}" } });
     state.resolver = createVariableResolver({ layers: [{ loop: "{{loop}}" }] });
     const result = await executeCase(state, { ...deps({ name: "test", canHandle: () => true, execute: async () => response }), bus });
     expect(result.failureKind).toBe("config");
@@ -190,8 +238,10 @@ describe("executeCase", () => {
   });
 
   it("classifies unknown and throwing assertion operators as config errors", async () => {
+    const validInput = input();
     const unknown = await executeCase({
-      ...input(), testCase: { ...testCase, assertions: [{ id: "unknown", target: "status", op: "missing" as never, expected: "200" }] },
+      ...validInput,
+      testCase: { ...validInput.testCase, assertions: [{ id: "unknown", target: "status", op: "missing" as never, expected: "200" }] },
     }, { ...deps({ name: "test", canHandle: () => true, execute: async () => response }), resolveAssert: () => undefined });
     expect(unknown.failureKind).toBe("config");
     expect(unknown.outcome.error).toContain("未知断言操作符");
@@ -206,12 +256,129 @@ describe("executeCase", () => {
 
   it("classifies missing SOAP envelope as config without protocol I/O", async () => {
     const execute = vi.fn(async () => response);
-    const result = await executeCase({ ...input(), api: { ...api, method: "POST", protocol: "soap" } }, {
+    const result = await executeCase(input({
+      request: { protocol: "soap" },
+      testCase: { ...testCase, preOperations: [{ id: "remove-envelope", type: "script", content: "delete-envelope" }] },
+    }), {
       ...deps({ name: "soap", canHandle: () => true, execute }),
     });
     expect(result.failureKind).toBe("config");
-    expect(result.outcome.error).toContain("soap 请求必须提供 envelope");
+    expect(result.outcome.error).toContain("envelope");
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("classifies missing credential bindings as config before protocol dispatch", async () => {
+    const client: ProtocolClient = { name: "test", canHandle: () => true, execute: vi.fn(async () => response) };
+    const resolveProtocol = vi.fn(() => client);
+    const state = input();
+    state.credentialBindings = {
+      resolve() { throw new Error("credential binding missing"); },
+      versions: {},
+    };
+    const result = await executeCase(state, { ...deps(client), resolveProtocol });
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("credential binding missing");
+    expect(result.requestStarted).toBe(false);
+    expect(resolveProtocol).not.toHaveBeenCalled();
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing bearer token", { kind: "bearer" }],
+    ["bearer token object", { kind: "bearer", token: { id: "credential-ref", policy: "test-auto" } }],
+    ["basic password object", { kind: "basic", username: "user", password: { value: "secret" } }],
+    ["apikey name object", { kind: "apikey", name: { value: "X-Key" }, placement: "header", value: "secret" }],
+    ["apikey illegal placement", { kind: "apikey", name: "X-Key", placement: "body", value: "secret" }],
+    ["unknown auth kind", { kind: "custom", token: "secret" }],
+  ] as const)("rejects malformed %s auth before resolving a protocol client", async (_label, invalidAuth) => {
+    const client: ProtocolClient = { name: "test", canHandle: () => true, execute: vi.fn(async () => response) };
+    const resolveProtocol = vi.fn(() => client);
+    const resolveAuth = vi.fn((kind: string) => builtinAuthProviders.find((provider) => provider.type === kind));
+    const script = `pm.request.auth = ${JSON.stringify(invalidAuth)};`;
+    const state = input({ testCase: { ...testCase, preOperations: [{ id: "mutate-auth", type: "script", content: script }] } });
+    const result = await executeCase(state, { ...deps(client), resolveProtocol, resolveAuth, scriptEngine: jsScriptEngine });
+
+    expect(result.failureKind).toBe("config");
+    expect(result.requestStarted).toBe(false);
+    expect(result.requestCompleted).toBe(false);
+    expect(resolveAuth).not.toHaveBeenCalled();
+    expect(resolveProtocol).not.toHaveBeenCalled();
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed RuntimeAuth introduced by final beforeSend before protocol dispatch", async () => {
+    const client: ProtocolClient = { name: "test", canHandle: () => true, execute: vi.fn(async () => response) };
+    const resolveProtocol = vi.fn(() => client);
+    const resolveAuth = vi.fn((kind: string) => builtinAuthProviders.find((provider) => provider.type === kind));
+    const result = await executeCase(input(), {
+      ...deps(client),
+      resolveProtocol,
+      resolveAuth,
+      scriptEngine: jsScriptEngine,
+      beforeSend(request) {
+        Reflect.set(request, "auth", { kind: "bearer", token: { id: "credential-ref", policy: "test-auto" } });
+      },
+    });
+
+    expect(result.failureKind).toBe("config");
+    expect(result.requestStarted).toBe(false);
+    expect(result.requestCompleted).toBe(false);
+    expect(resolveProtocol).not.toHaveBeenCalled();
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+
+  it("allows scripts to read and replace ordinary RuntimeAuth strings before built-in auth application", async () => {
+    let seen: ExecutableRequest | undefined;
+    const client: ProtocolClient = {
+      name: "test", canHandle: () => true,
+      async execute(request) { seen = request; return response; },
+    };
+    const state = input({ testCase: { ...testCase, preOperations: [{
+      id: "replace-bearer-string", type: "script",
+      content: 'pm.request.headers["X-Script-Auth"] = pm.request.auth.token; pm.request.auth.token = "script-token";',
+    }] } });
+    const resolveAuth = (kind: string) => builtinAuthProviders.find((provider) => provider.type === kind);
+    const result = await executeCase(state, { ...deps(client), resolveAuth, scriptEngine: jsScriptEngine });
+
+    expect(result.outcome.passed).toBe(true);
+    expect(seen?.headers["X-Script-Auth"]).toBe("token-from-script");
+    expect(seen?.headers.Authorization).toBe("Bearer script-token");
+    expect(result.requestStarted).toBe(true);
+    expect(result.requestCompleted).toBe(true);
+  });
+
+  it("rejects a runtime request that no longer matches its protocol variant before dispatch", async () => {
+    const client: ProtocolClient = { name: "test", canHandle: () => true, execute: vi.fn(async () => response) };
+    const resolveProtocol = vi.fn(() => client);
+    const state = input({ testCase: { ...testCase, preOperations: [{ id: "corrupt", type: "script", content: "corrupt" }] } });
+    const result = await executeCase(state, {
+      ...deps(client),
+      resolveProtocol,
+      scriptEngine: {
+        language: "javascript",
+        run(_code, ctx) {
+          Reflect.set(ctx.pm.request, "protocol", "websocket");
+          Reflect.set(ctx.pm.request, "method", "GET");
+        },
+      },
+    });
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("WebSocket 执行请求包含 HTTP/SOAP 字段");
+    expect(resolveProtocol).not.toHaveBeenCalled();
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { kind: "multipart", entries: [] },
+    { kind: "binary", file: { path: "C:/fixture.bin" }, contentType: "application/octet-stream" },
+  ] as const)("rejects unsupported $kind encoding as config with zero protocol I/O", async (body) => {
+    const client: ProtocolClient = { name: "test", canHandle: () => true, execute: vi.fn(async () => response) };
+    const resolveProtocol = vi.fn(() => client);
+    const result = await executeCase(input({ request: { body: body as RequestBody } }), { ...deps(client), resolveProtocol });
+    expect(result.failureKind).toBe("config");
+    expect(result.outcome.error).toContain("no supported transport");
+    expect(resolveProtocol).not.toHaveBeenCalled();
+    expect(client.execute).not.toHaveBeenCalled();
   });
 
   it("preserves a plugin's explicit configuration error classification", async () => {
@@ -242,7 +409,7 @@ describe("executeCase", () => {
   });
 
   it("keeps an unmarked SOAP I/O error as transport even when its message mentions envelope", async () => {
-    const result = await executeCase({ ...input(), api: { ...api, method: "POST", protocol: "soap", envelope: "<Envelope/>" } }, {
+    const result = await executeCase(input({ request: { protocol: "soap", envelope: "<Envelope/>" } }), {
       ...deps({ name: "soap", canHandle: () => true, async execute() { throw new Error("remote envelope stream reset"); } }),
     });
     expect(result.failureKind).toBe("transport");
@@ -298,7 +465,7 @@ describe("executeCase", () => {
   it("keeps protocol timing separate from pre/post script timing", async () => {
     const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     const result = await executeCase({
-      ...input(), testCase: { ...testCase, preScript: "pre", postScript: "post" },
+      ...input({ testCase: { ...testCase, preOperations: [{ id: "pre", type: "script", content: "pre" }], postOperations: [{ id: "post", type: "script", content: "post" }] } }),
     }, {
       ...deps({ name: "test", canHandle: () => true, async execute() { pause(5); return response; } }),
       scriptEngine: { language: "javascript", run(code) { pause(code === "pre" ? 4 : 6); } },
@@ -317,10 +484,10 @@ describe("executeCase", () => {
     let scriptTime: number | undefined;
     bus.on("afterResponse", (payload) => { eventTime = payload.timeMs; clock += 5; });
     try {
-      const result = await executeCase({ ...input(), testCase: {
-        ...testCase, preScript: "pre", postScript: "post",
+      const result = await executeCase(input({ testCase: {
+        ...testCase, preOperations: [{ id: "pre", type: "script", content: "pre" }], postOperations: [{ id: "post", type: "script", content: "post" }],
         assertions: [{ id: "time", target: "responseTime", op: "eq", expected: String(protocolTime) }],
-      } }, {
+      } }), {
         ...deps({ name: "timed-protocol", canHandle: () => true, async execute() {
           clock += 41;
           return { ...response, timeMs: protocolTime };
@@ -351,10 +518,10 @@ describe("executeCase", () => {
     const protocolResponse = { ...response, timeMs: invalidTime };
     bus.on("afterResponse", (payload) => { eventTime = payload.timeMs; });
     try {
-      const result = await executeCase({ ...input(), testCase: {
-        ...testCase, preScript: undefined, postScript: "post",
+      const result = await executeCase(input({ testCase: {
+        ...testCase, preOperations: [], postOperations: [{ id: "post", type: "script", content: "post" }],
         assertions: [{ id: "time", target: "responseTime", op: "eq", expected: "41" }],
-      } }, {
+      } }), {
         ...deps({ name: "invalid-time", canHandle: () => true, async execute() { clock += 41; return protocolResponse; } }), bus,
         scriptEngine: { language: "javascript", run(_code, ctx) { scriptTime = ctx.pm.response?.time; } },
       });
@@ -372,9 +539,9 @@ describe("executeCase", () => {
     let clock = 0;
     const clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
     try {
-      const result = await executeCase({ ...input(), testCase: {
-        ...testCase, preScript: undefined, postScript: undefined, assertions: [],
-      } }, deps({ name: "failed-attempt", canHandle: () => true, async execute() {
+      const result = await executeCase(input({ testCase: {
+        ...testCase, preOperations: [], postOperations: [], assertions: [],
+      } }), deps({ name: "failed-attempt", canHandle: () => true, async execute() {
         clock += 41;
         throw Object.assign(new Error("wire failure"), { name: kind === "aborted" ? "AbortError" : "Error" });
       } }));

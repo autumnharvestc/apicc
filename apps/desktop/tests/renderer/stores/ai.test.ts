@@ -10,6 +10,18 @@ import { createMemoryApi, AI_FIXTURE_SUGGESTIONS } from "../../../src/renderer/s
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { createAiStore, AI_CONFIG_STORAGE_KEY } from "../../../src/renderer/src/stores/ai.js";
+import type { LocalTreeNodeDTO } from "../../../src/shared/tree-dto.js";
+
+function firstApiNode(node: LocalTreeNodeDTO): Extract<LocalTreeNodeDTO, { kind: "api" }> | undefined {
+  if (node.kind === "api") return node;
+  if ("children" in node && node.children) {
+    for (const child of node.children) {
+      const match = firstApiNode(child);
+      if (match) return match;
+    }
+  }
+  return undefined;
+}
 
 function memStorage(): Storage {
   const map = new Map<string, string>();
@@ -34,12 +46,14 @@ async function seeded() {
   api.seedWorkspace();
   const ws = useWorkspaceStore(api);
   await ws.open("/tmp/ws");
-  const apiNode = ws.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-  const editor = useEditorStore(api);
-  await editor.load(apiNode.id);
+  const apiNode = ws.tree && firstApiNode(ws.tree);
+  if (!apiNode) throw new Error("fixture must contain an API in its workspace tree");
+  const editor = useEditorStore(api, () => ({ root: ws.root, readOnly: ws.readOnly }));
+  await editor.load(apiNode.locator);
   const storage = memStorage();
-  const ai = createAiStore({ api, editor, storage });
-  return { api, editor, ai, storage };
+  const getContext = () => ({ root: ws.root, readOnly: ws.readOnly });
+  const ai = createAiStore({ api, editor, storage, getContext });
+  return { api, ws, editor, ai, storage };
 }
 
 /** 预存配置（密钥入替身 → 建议桩/测试探测进入可用态）。 */
@@ -147,12 +161,69 @@ describe("ai store：连接测试（ai:test-config 轻量探测，任务 2）", 
 describe("ai store：建议拉取（main 真链路的渲染出口，任务 2）", () => {
   it("已配置 → 建议（core AiSuggestedCase 形状：带 id）、抽屉打开、默认未勾选", async () => {
     const ctx = await withConfig(await seeded());
+    const sent: unknown[] = [];
+    const original = ctx.api.aiSuggest.bind(ctx.api);
+    ctx.api.aiSuggest = async (input) => { sent.push(input); return original(input); };
     await ctx.ai.fetchSuggestions();
     expect(ctx.ai.suggestions).toHaveLength(2);
     expect(ctx.ai.suggestions!.map((s) => s.id)).toEqual(AI_FIXTURE_SUGGESTIONS.map((s) => s.id));
     expect(ctx.ai.drawerOpen).toBe(true);
     expect(ctx.ai.selectedIds).toEqual([]);
     expect(ctx.ai.error).toBeNull();
+    expect(sent).toEqual([{ locator: ctx.editor.locator, baseUrl: "https://api.example.com/v1", model: "gpt-test" }]);
+  });
+
+  it("请求期间切换接口：迟到的建议不会覆盖或采用到新接口", async () => {
+    const ctx = await withConfig(await seeded());
+    const requestedLocator = ctx.editor.locator!;
+    const created = await ctx.api.nodeCreate({
+      kind: "api",
+      parent: {
+        workspaceId: requestedLocator.workspaceId,
+        groupId: requestedLocator.groupId,
+        projectId: requestedLocator.projectId,
+        collectionId: requestedLocator.collectionId,
+        ...(requestedLocator.folderIds.length ? { folderIds: [...requestedLocator.folderIds] } : {}),
+      },
+      api: { name: "迟到结果目标接口", method: "GET", path: "/other", baseUrl: "http://127.0.0.1" },
+    });
+    if (created.kind !== "api") throw new Error("fixture must create an API node");
+    let releaseApiSwitch!: () => void;
+    let releaseRootSwitch!: () => void;
+    const apiSwitchGate = new Promise<void>((resolve) => { releaseApiSwitch = resolve; });
+    const rootSwitchGate = new Promise<void>((resolve) => { releaseRootSwitch = resolve; });
+    const received: unknown[] = [];
+    let callCount = 0;
+    ctx.api.aiSuggest = async (input) => {
+      received.push(input);
+      callCount += 1;
+      await (callCount === 1 ? apiSwitchGate : rootSwitchGate);
+      return AI_FIXTURE_SUGGESTIONS.map((suggestion) => ({ ...suggestion }));
+    };
+
+    const pendingApiSwitch = ctx.ai.fetchSuggestions();
+    await ctx.editor.load(created.locator);
+    releaseApiSwitch();
+    await pendingApiSwitch;
+
+    expect(received[0]).toMatchObject({ locator: requestedLocator });
+    expect(ctx.editor.locator).toEqual(created.locator);
+    expect(ctx.ai.suggestions).toBeNull();
+    expect(ctx.ai.drawerOpen).toBe(false);
+    expect(ctx.ai.suggestLoading).toBe(false);
+    expect(ctx.ai.adopt()).toBe(0);
+
+    await ctx.editor.load(requestedLocator);
+    const pendingRootSwitch = ctx.ai.fetchSuggestions();
+    const nextRoot = await ctx.api.wsOpen("/tmp/ws-root-switch");
+    ctx.ws.apply(nextRoot);
+    releaseRootSwitch();
+    await pendingRootSwitch;
+    expect(received[1]).toMatchObject({ locator: requestedLocator });
+    expect(ctx.ws.root).toBe("/tmp/ws-root-switch");
+    expect(ctx.ai.suggestions).toBeNull();
+    expect(ctx.ai.drawerOpen).toBe(false);
+    expect(ctx.ai.suggestLoading).toBe(false);
   });
 
   it("未配置 → error 上屏、建议保持空、抽屉不打开", async () => {
@@ -171,11 +242,17 @@ describe("ai store：勾选采用与丢弃（裁定③④，沿用任务 1 语�
     const before = ctx.editor.api!.cases.length;
     let saveCalls = 0;
     const original = ctx.api.apiSave.bind(ctx.api);
-    ctx.api.apiSave = async (input) => {
+    ctx.api.apiSave = async (locator, asset) => {
       saveCalls += 1;
-      return original(input);
+      return original(locator, asset);
     };
     ctx.ai.toggleSelect(ctx.ai.suggestions![0]!.id);
+    const beforeReadOnlyAdopt = JSON.parse(JSON.stringify(ctx.editor.api!.cases)) as unknown;
+    ctx.ws.readOnly = true;
+    expect(ctx.ai.adopt()).toBe(0);
+    expect(JSON.parse(JSON.stringify(ctx.editor.api!.cases))).toEqual(beforeReadOnlyAdopt);
+    expect(ctx.editor.dirty).toBe(false);
+    ctx.ws.readOnly = false;
     ctx.ai.toggleSelect(ctx.ai.suggestions![1]!.id);
     const count = ctx.ai.adopt();
     expect(count).toBe(2);
@@ -188,8 +265,9 @@ describe("ai store：勾选采用与丢弃（裁定③④，沿用任务 1 语�
       expect(c.assertions.length).toBeGreaterThan(0);
       for (const a of c.assertions) expect(a.id).toBeTruthy();
     }
-    // postScript 随建议携带（fixture 第二条有后置脚本）
-    expect(adopted[1]!.postScript).toBe(AI_FIXTURE_SUGGESTIONS[1]!.postScript);
+    // 正式 AiSuggestedCase 的 pre/post operations 与断言完整进入新用例。
+    expect(adopted.map((c) => c.preOperations)).toEqual(AI_FIXTURE_SUGGESTIONS.map((s) => s.preOperations));
+    expect(adopted.map((c) => c.postOperations)).toEqual(AI_FIXTURE_SUGGESTIONS.map((s) => s.postOperations));
     // 列表清空 + 抽屉关闭
     expect(ctx.ai.suggestions).toBeNull();
     expect(ctx.ai.selectedIds).toEqual([]);
@@ -229,7 +307,7 @@ describe("ai store：勾选采用与丢弃（裁定③④，沿用任务 1 语�
   it("adopt：未加载接口（editor.api 为空）时为空操作", async () => {
     const api = createMemoryApi();
     api.seedWorkspace();
-    const editor = useEditorStore(api);
+    const editor = useEditorStore(api, () => ({ root: "", readOnly: false }));
     const ai = createAiStore({ api, editor, storage: memStorage() });
     expect(ai.adopt()).toBe(0);
   });

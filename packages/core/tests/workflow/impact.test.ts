@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { workflowImpact } from "../../src/workflow/impact.js";
-import type { Workspace } from "../../src/domain/model.js";
+import type { ContractWorkspace } from "../../src/contract/workspace.js";
 
-const ws: Workspace = {
-  id: "w", name: "w", variables: {}, globals: { variables: {}, query: [], headers: [] },
+const ws: ContractWorkspace = {
+  formatVersion: 1,
+  id: "10000000-0000-4000-8000-000000000001", name: "w", variables: {},
   groups: [{
-    id: "g", name: "g", projects: [{
-      id: "p", name: "p", variables: {}, environments: [], collections: [],
+    id: "10000000-0000-4000-8000-000000000002", name: "g", projects: [{
+      id: "10000000-0000-4000-8000-000000000003", name: "p", variables: {},
+      globals: { query: [], headers: [], cookies: [], body: [] }, environments: [], collections: [],
+      stressPolicy: {}, models: [], components: [],
       workflows: [
         { id: "wf1", name: "已启用流", status: "enabled",
           nodes: [{ id: "n1", kind: "request", apiId: "a1", caseId: "c1", label: "登录" }], edges: [] },

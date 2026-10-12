@@ -3,7 +3,19 @@ import vue from "@vitejs/plugin-vue";
 import { cpus } from "node:os";
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    {
+      // Node22 supports node:sqlite but omits it from builtinModules, which
+      // Vitest uses for Vite's client external list. Keep this test import native.
+      name: "vitest-node-sqlite-native",
+      enforce: "pre",
+      applyToEnvironment: (environment) => environment.name === "client",
+      resolveId(source) {
+        if (source === "node:sqlite") return { id: source, external: true };
+      },
+    },
+  ],
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],

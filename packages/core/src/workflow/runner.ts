@@ -1,13 +1,16 @@
-import type { ApiDefinition, Collection, Environment, Project, TestCase, Workspace } from "../domain/model.js";
+import type { DeepReadonly } from "../assets/context.js";
+import type { ApiAsset } from "../contract/model.js";
+import type { ContractProject } from "../contract/workspace.js";
+import type { Environment, TestCase } from "../domain/common.js";
 import type { PluginRegistry } from "../plugin/registry.js";
 import type { PmApi } from "../plugin/types.js";
-import { CollectionRunError, CollectionRunner } from "../runner/runner.js";
+import { captureProjectExecutionRun, CollectionRunError, CollectionRunner } from "../runner/runner.js";
 import { createEventBus } from "../events/bus.js";
-import { mergedEnvVars } from "../domain/envChain.js";
 import { validateWorkflowStructure } from "./validate.js";
-import { findProjectApi, selectWorkflowCollection } from "./references.js";
+import { findProjectApi } from "./references.js";
 import type { Workflow, WorkflowEdge, WorkflowNode } from "./model.js";
 import type { CaseOutcome } from "../report/types.js";
+import type { ProjectExecutionRun } from "../runner/runner.js";
 
 export type NodeState = "passed" | "failed" | "skipped" | "noop";
 export type NodeSkipReason = "condition-pruned" | "upstream-failed" | "fail-fast" | "reference-missing" | "reference-invalid" | "unreachable";
@@ -41,8 +44,7 @@ export interface WorkflowRunResult {
 
 export interface WorkflowRunnerOptions {
   registry: PluginRegistry;
-  resolve: (apiId: string) => ApiDefinition | undefined;
-  envName?: string;
+  environmentId?: string;
   failFast?: boolean;
   strict?: boolean;
 }
@@ -60,7 +62,11 @@ interface ConditionPm extends PmApi {
 export class WorkflowRunner {
   constructor(private opts: WorkflowRunnerOptions) {}
 
-  async run(workflow: Workflow, ctx: { project: Project; workspace: Workspace }): Promise<WorkflowRunResult> {
+  async run(execution: ProjectExecutionRun, workflowId: string, options: { environmentId?: string } = {}): Promise<WorkflowRunResult> {
+    const selectedExecution = captureProjectExecutionRun(execution);
+    const project = selectedExecution.snapshot.project;
+    const workflow = project.workflows.find((candidate) => candidate.id === workflowId);
+    if (!workflow) throw new Error(`配置错误: 项目快照中不存在工作流 ${workflowId}`);
     const startedAt = new Date().toISOString();
     const warnings: string[] = [];
     // 结构错误必须在任何节点执行前拒绝；否则重复 ID/悬空端点会让拓扑调度产生
@@ -70,14 +76,12 @@ export class WorkflowRunner {
     if (structuralErrors.length > 0) throw new Error(structuralErrors.map((i) => i.message).join("; "));
     warnings.push(...structural.filter((i) => i.level === "warning").map((i) => i.message));
 
-    const project = ctx.project;
     const strict = this.opts.strict ?? true;
-    // strict 预检必须先于环境解析、CollectionRunner 和任何 HTTP 请求。项目实体优先，
-    // 只有项目内没有该接口时才使用 resolve 接缝，与实际运行定位保持一致。
+    // strict 预检必须先于环境解析、CollectionRunner 和任何 HTTP 请求；所有引用只来自所选快照。
     const missingReferences = workflow.nodes
       .filter((node) => node.kind === "request")
-      .map((node) => ({ node, reference: resolveNodeReference(node, project, this.opts.resolve) }))
-      .filter(({ reference }) => !reference.api || !reference.caseDef);
+      .map((node) => ({ node, reference: resolveNodeReference(node, project) }))
+      .filter(({ reference }) => !reference.location || !reference.api || !reference.caseDef);
     const missingReferenceByNodeId = new Map(missingReferences.map((item) => [item.node.id, item]));
     if (strict && missingReferences.length > 0) {
       for (const { node, reference } of missingReferences) {
@@ -94,10 +98,11 @@ export class WorkflowRunner {
       });
       return makeWorkflowResult(workflow, startedAt, nodeResults, warnings);
     }
-    const env = resolveEnv(project, this.opts.envName);
+    const environmentId = options.environmentId ?? this.opts.environmentId;
+    const env = resolveEnv(project, environmentId);
     // 条件求值上下文 env（规格 §4）：按继承链根→叶合并的环境变量只读快照（与 CollectionRunner
     // 的环境层同源语义，规格 §3.1/§6）；sit extends dev 等继承场景父环境变量必须可见。未选环境时空对象。
-    const envVars = mergedEnvVars(env, project);
+    const envVars = mergedEnvironmentVariables(env, project);
     const runner = new CollectionRunner({
       registry: this.opts.registry,
       bus: createEventBus(),
@@ -231,11 +236,11 @@ export class WorkflowRunner {
       } else if (node.kind === "noop") {
         nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "noop", state: "noop" });
       } else {
-        const reference = resolveNodeReference(node, project, this.opts.resolve);
+        const reference = resolveNodeReference(node, project);
         const projectLocation = reference.location;
         const api = reference.api;
         const caseDef = reference.caseDef;
-        if (!api || !caseDef) {
+        if (!projectLocation || !api || !caseDef) {
           // 非严格模式允许其他独立节点继续，但缺引用本身始终是 failed/config，不能伪装成 skipped/pass。
           const msg = missingReferenceMessage(node);
           warnings.push(msg);
@@ -246,16 +251,8 @@ export class WorkflowRunner {
           };
           nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, failureKind: "config", error: msg });
         } else {
-          // 保留项目模块/祖先文件夹上下文；外部 resolve 仍使用工作流专属合成集合。
-          const collection = projectLocation
-            ? selectWorkflowCollection(projectLocation, caseDef)
-            : {
-              id: `wf-${workflow.id}-${node.id}`,
-              name: `${workflow.name}/${node.label ?? api.name}`,
-              variables: {}, folders: [], apis: [{ ...api, cases: api.cases.filter((candidate) => candidate.id === caseDef.id) }],
-            } satisfies Collection;
           try {
-            const nodeRun = await runSingleNode(runner, collection, api, caseDef, env, project, ctx.workspace, bridge);
+            const nodeRun = await runSingleNode(runner, selectedExecution, projectLocation, caseDef, environmentId, bridge);
             warnings.push(...nodeRun.warnings);
             const outcomes = nodeRun.outcomes;
             const state: NodeState = outcomes.every((o) => o.passed) ? "passed" : "failed";
@@ -265,7 +262,7 @@ export class WorkflowRunner {
             if (e instanceof CollectionRunError) {
               warnings.push(...(e.partialResult.warnings ?? []));
               const diagnostic: CaseOutcome = {
-                apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
+                apiId: api.contract.id, apiName: api.contract.metadata.name, caseId: caseDef.id, caseName: caseDef.name,
                 passed: false, durationMs: 0, assertions: [], error: e.message, failureKind: e.failureKind,
               };
               const outcomes = [...e.partialResult.cases, diagnostic];
@@ -278,7 +275,7 @@ export class WorkflowRunner {
               const error = e instanceof Error ? e.message : String(e);
               const failureKind: CaseOutcome["failureKind"] = /脚本引擎|接口\/用例|环境|数据源/.test(error) ? "config" : "script";
               const outcome: CaseOutcome = {
-                apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
+                apiId: api.contract.id, apiName: api.contract.metadata.name, caseId: caseDef.id, caseName: caseDef.name,
                 passed: false, durationMs: 0, assertions: [], error, failureKind,
               };
               nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, error, failureKind });
@@ -356,25 +353,33 @@ export class WorkflowRunner {
   }
 }
 
-function resolveEnv(project: Project, envName: string | undefined): Environment | undefined {
-  if (!envName) return undefined;
-  const env = project.environments.find((e) => e.name === envName);
-  if (!env) throw new Error(`未找到环境: ${envName}`);
+function resolveEnv(project: DeepReadonly<ContractProject>, environmentId: string | undefined): DeepReadonly<Environment> | undefined {
+  if (!environmentId) return undefined;
+  const env = project.environments.find((candidate) => candidate.id === environmentId);
+  if (!env) throw new Error(`配置错误: 项目快照中不存在环境 ${environmentId}`);
   return env;
 }
 
 /** request 节点路径：CollectionRunner 完整语义（脚本/断言/变量/环境）。 */
 async function runSingleNode(
-  runner: CollectionRunner, collection: Collection, api: ApiDefinition, caseDef: TestCase,
-  env: Environment | undefined, project: Project, workspace: Workspace,
+  runner: CollectionRunner,
+  execution: ProjectExecutionRun,
+  location: NonNullable<ReturnType<typeof findProjectApi>>,
+  caseDef: DeepReadonly<TestCase>,
+  environmentId: string | undefined,
   bridge: { get(): Record<string, string>; set(v: Record<string, string>): void },
 ): Promise<{ outcomes: CaseOutcome[]; warnings: string[] }> {
-  const result = await runner.run(collection, env, project, workspace, { runtimeBridge: bridge });
+  const apiId = location.api.contract.id;
+  const result = await runner.run(execution, location.collection.id, {
+    environmentId,
+    runtimeBridge: bridge,
+    caseSelection: { apiId, caseId: caseDef.id, folderIds: location.folders.map((folder) => folder.id) },
+  });
   if (result.cases.length > 0) return { outcomes: result.cases, warnings: result.warnings ?? [] };
   // 被引用用例 scope 与所选环境不匹配时，单用例被 CollectionRunner 的 scope 过滤剔除（cases 为空）——
   // 构造可读 failed outcome 留痕，而非让 outcome undefined 裸崩（节点记 failed，遍历继续）。
   return { outcomes: [{
-    apiId: api.id, apiName: api.name, caseId: caseDef.id, caseName: caseDef.name,
+    apiId, apiName: location.api.contract.metadata.name, caseId: caseDef.id, caseName: caseDef.name,
     passed: false, durationMs: 0, assertions: [],
     error: `用例不适用于当前环境（scope=${caseDef.scope}），已按失败处理`,
     failureKind: "config",
@@ -403,7 +408,7 @@ function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<s
   const pm: ConditionPm = {
     variables: { get: () => undefined, set: () => {} },
     environment: { get: () => undefined },
-    request: { method: "GET", url: "", headers: {}, query: [] },
+    request: { protocol: "http", method: "GET", url: "", headers: {}, query: [], auth: { kind: "none" } },
     assert: () => {},
     prev,
     vars: deepReadonlySnapshot({ ...carried }),
@@ -428,22 +433,40 @@ function deepReadonlySnapshot<T>(value: T): T {
 
 interface NodeReference {
   location?: ReturnType<typeof findProjectApi>;
-  api?: ApiDefinition;
-  caseDef?: TestCase;
+  api?: DeepReadonly<ApiAsset>;
+  caseDef?: DeepReadonly<TestCase>;
   missingMessage?: string;
 }
 
 function resolveNodeReference(
   node: WorkflowNode,
-  project: Project,
-  resolve: (apiId: string) => ApiDefinition | undefined,
+  project: DeepReadonly<ContractProject>,
 ): NodeReference {
   if (node.kind !== "request") return {};
   const location = node.apiId ? findProjectApi(project, node.apiId) : undefined;
-  // Project entities are authoritative. The resolver is only a seam for APIs not
-  // owned by this project (used by standalone/workspace execution).
-  const api = location?.api ?? (node.apiId ? resolve(node.apiId) : undefined);
+  const api = location?.api;
   return { location, api, caseDef: api?.cases.find((candidate) => candidate.id === node.caseId) };
+}
+
+function environmentChain(env: DeepReadonly<Environment>, project: DeepReadonly<ContractProject>): string[] {
+  const byName = new Map(project.environments.map((candidate) => [candidate.name, candidate]));
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let current: DeepReadonly<Environment> | undefined = env;
+  while (current && !seen.has(current.name)) {
+    names.push(current.name);
+    seen.add(current.name);
+    current = current.extends ? byName.get(current.extends) : undefined;
+  }
+  return names;
+}
+
+function mergedEnvironmentVariables(env: DeepReadonly<Environment> | undefined, project: DeepReadonly<ContractProject>): Record<string, string> {
+  if (!env) return {};
+  const byName = new Map(project.environments.map((candidate) => [candidate.name, candidate]));
+  const variables: Record<string, string> = {};
+  for (const name of environmentChain(env, project).reverse()) Object.assign(variables, byName.get(name)?.variables ?? {});
+  return variables;
 }
 
 function missingReferenceMessage(node: WorkflowNode): string {
@@ -483,7 +506,7 @@ function workflowVerdict(nodeResults: NodeResult[], failed: number): "passed" | 
   return "passed";
 }
 
-function makeWorkflowResult(workflow: Workflow, startedAt: string, nodeResults: NodeResult[], warnings: string[]): WorkflowRunResult {
+function makeWorkflowResult(workflow: DeepReadonly<Workflow>, startedAt: string, nodeResults: NodeResult[], warnings: string[]): WorkflowRunResult {
   const total = nodeResults.length;
   const passed = nodeResults.filter((node) => node.state === "passed" || node.state === "noop").length;
   const failed = nodeResults.filter((node) => node.state === "failed").length;

@@ -1,18 +1,18 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
-import { WorkflowRunner } from "../../src/workflow/runner.js";
-import type { Workflow } from "../../src/workflow/model.js";
-import type { Workspace, Project, ApiDefinition } from "../../src/domain/model.js";
+import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import type { ApiAsset } from "../../src/contract/model.js";
 import { createDefaultRegistry } from "../../src/index.js";
+import type { ProjectExecutionRun } from "../../src/runner/runner.js";
+import { WorkflowRunner } from "../../src/workflow/runner.js";
+import { createContractExecutionProject, contractExecutionIds } from "../helpers/contractExecutionFixtures.js";
 
 /**
- * 终审 Important 3 补钉（计划任务 3 步骤 1.3 原口径）：WorkflowRunner 双节点——
- * WS 节点首帧（JSON）经后置脚本提取变量 → 条件边 → HTTP 节点经 prev/vars 引用。
- * 协议字段随 workflowToRunResult 的整体 api 携带进 CollectionRunner（不可能丢失），
- * 本测试钉住该口径。
+ * Workflow production path: a referenced snapshot WebSocket API extracts a
+ * runtime value, a condition edge carries it, and a referenced HTTP API consumes it.
  */
-describe("WorkflowRunner 跨协议（WS → 条件边 → HTTP）", () => {
+describe("WorkflowRunner cross protocol (WS → conditional edge → HTTP)", () => {
   let httpServer: Server;
   let httpBaseUrl = "";
   let wss: WebSocketServer;
@@ -20,17 +20,17 @@ describe("WorkflowRunner 跨协议（WS → 条件边 → HTTP）", () => {
   let seenAuth: string | undefined;
 
   beforeAll(async () => {
-    httpServer = createServer((req, res) => {
-      seenAuth = req.headers.authorization;
+    httpServer = createServer((_req, res) => {
+      seenAuth = _req.headers.authorization;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ auth: seenAuth ?? "" }));
     });
-    await new Promise<void>((r) => httpServer.listen(0, "127.0.0.1", r));
+    await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
     httpBaseUrl = `http://127.0.0.1:${(httpServer.address() as { port: number }).port}`;
     wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-    await new Promise<void>((r) => wss.on("listening", r));
-    const addr = wss.address() as { port: number };
-    wssUrl = `ws://127.0.0.1:${addr.port}/rt`;
+    await new Promise<void>((resolve) => wss.on("listening", resolve));
+    const address = wss.address() as { port: number };
+    wssUrl = `ws://127.0.0.1:${address.port}`;
     wss.on("connection", (socket: WsSocket) => {
       socket.on("message", (data) => {
         socket.send(JSON.stringify({ token: `tk-${JSON.parse(data.toString()).user}` }));
@@ -39,46 +39,77 @@ describe("WorkflowRunner 跨协议（WS → 条件边 → HTTP）", () => {
     });
   });
   afterAll(async () => {
-    await new Promise<void>((r) => wss.close(() => r()));
-    await new Promise<void>((r) => httpServer.close(() => r()));
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   });
 
-  it("WS 节点提取 token → 条件边 → HTTP 节点引用 carried 变量", async () => {
-    // 夹具在服务端就绪后构造（模块顶层求值会把空串快照进 env.variables——runner.test.ts 先例）。
-    const ws: Workspace = { id: "w", name: "w", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
-    const project: Project = {
-      id: "p", name: "p", variables: {},
-      environments: [{ id: "e", name: "dev", variables: { wsUrl: wssUrl, httpUrl: httpBaseUrl }, baseUrls: {} }],
-      collections: [], workflows: [],
-    };
-    const wsApi: ApiDefinition = {
-      id: "n-ws", name: "n-ws", version: "1", deprecated: false, method: "GET",
-      protocol: "websocket", url: "{{wsUrl}}", message: '{"user":"m5"}', headers: [], query: [],
+  it("resolves API and case references from one frozen project and carries the WS token to HTTP", async () => {
+    const project = createContractExecutionProject(httpBaseUrl);
+    project.environments[0]!.variables = { wsUrl: wssUrl, httpUrl: httpBaseUrl };
+    project.environments[0]!.baseUrls = {};
+    const wsApiId = "10000000-0000-4000-8000-000000000011";
+    const httpApiId = "10000000-0000-4000-8000-000000000012";
+    const wsAsset: ApiAsset = {
+      contract: {
+        formatVersion: 1,
+        id: wsApiId,
+        metadata: { name: "ws-login", description: "", tags: [], version: "1", status: "draft" },
+        request: {
+          protocol: "websocket", baseUrl: "{{wsUrl}}", path: "/rt", pathParams: [], query: [], headers: [], cookies: [],
+          auth: { kind: "none" }, message: '{"user":"m5"}',
+        },
+        responses: [],
+      },
       cases: [{
-        id: "case-ws", name: "ws-用例", scope: "base", parameters: {}, assertions: [],
-        postScript: 'pm.variables.set("token", JSON.parse(pm.response.text()).token);',
+        id: "case-ws", name: "ws-login", scope: "base", parameters: {},
+        preOperations: [],
+        postOperations: [{ id: "extract-token", type: "script", content: 'pm.variables.set("token", JSON.parse(pm.response.text()).token);' }],
+        assertions: [{ id: "ws-token", target: "bodyJson", op: "eq", expected: "tk-m5", path: "token" }],
       }],
+      documentation: "",
     };
-    const httpApi: ApiDefinition = {
-      id: "n-http", name: "n-http", version: "1", deprecated: false, method: "GET",
-      url: "{{httpUrl}}/who", headers: [{ key: "authorization", value: "{{token}}", enabled: true }], query: [],
+    const httpAsset: ApiAsset = {
+      contract: {
+        formatVersion: 1,
+        id: httpApiId,
+        metadata: { name: "http-who", description: "", tags: [], version: "1", status: "draft" },
+        request: {
+          protocol: "http", method: "GET", baseUrl: "{{httpUrl}}", path: "/who", pathParams: [], query: [], cookies: [],
+          headers: [{ kind: "inline", id: "10000000-0000-4000-8000-000000000013", name: "authorization", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "{{token}}" }],
+          auth: { kind: "none" }, body: { kind: "none" },
+        },
+        responses: [],
+      },
       cases: [{
-        id: "case-http", name: "http-用例", scope: "base", parameters: {},
-        assertions: [{ id: "as-http", target: "bodyJson", op: "eq", expected: "tk-m5", path: "auth" }],
+        id: "case-http", name: "http-who", scope: "base", parameters: {},
+        preOperations: [], postOperations: [],
+        assertions: [{ id: "http-auth", target: "bodyJson", op: "eq", expected: "tk-m5", path: "auth" }],
       }],
+      documentation: "",
     };
-    const workflow: Workflow = {
-      id: "wf", name: "跨协议流", status: "enabled",
+    project.collections[0]!.folders = [];
+    project.collections[0]!.apis = [wsAsset, httpAsset];
+    project.workflows = [{
+      id: "workflow-cross-protocol", name: "cross protocol", status: "enabled",
       nodes: [
-        { id: "s", kind: "request", apiId: "n-ws", caseId: "case-ws", label: "ws" },
-        { id: "h", kind: "request", apiId: "n-http", caseId: "case-http", label: "http" },
+        { id: "ws", kind: "request", apiId: wsApiId, caseId: "case-ws", label: "ws" },
+        { id: "http", kind: "request", apiId: httpApiId, caseId: "case-http", label: "http" },
       ],
-      edges: [{ id: "e1", from: "s", to: "h", condition: "prev.passed" }],
+      edges: [{ id: "ws-to-http", from: "ws", to: "http", condition: "prev.passed" }],
+    }];
+    const run: ProjectExecutionRun = {
+      snapshot: createProjectSnapshot(project),
+      credentialBindings: { resolve: () => { throw new Error("No credential expected"); }, versions: {} },
     };
-    const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: (id) => (id === "n-ws" ? wsApi : httpApi), envName: "dev", failFast: false })
-      .run(workflow, { project, workspace: ws });
+
+    const result = await new WorkflowRunner({
+      registry: createDefaultRegistry(),
+      environmentId: contractExecutionIds.environment,
+      failFast: false,
+    }).run(run, "workflow-cross-protocol");
     expect(result.passed).toBe(2);
     expect(result.failed).toBe(0);
+    expect(result.nodeResults.map((node) => node.state)).toEqual(["passed", "passed"]);
     expect(seenAuth).toBe("tk-m5");
   });
 });

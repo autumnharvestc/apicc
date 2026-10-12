@@ -20,15 +20,33 @@ describe("importW store", () => {
     expect(importW.applying).toBe(false);
   });
 
-  it("previewFile 调 api.importPreview 并把返回结构入状态", async () => {
-    const { api } = await seeded();
-    const importW = useImportWizardStore(api);
+  it("previewFile 调 api.importPreview 并把返回结构入状态；旧根迟到预览不覆盖当前状态", async () => {
+    const { api, ws } = await seeded();
+    const importW = useImportWizardStore(api, ws);
     const preview = await importW.previewFile("sample.yaml", "openapi: 3.0.0");
     expect(importW.preview).toEqual(preview);
     // memory 替身固定样例：importerName/project.name/warnings 可断言
     expect(importW.preview!.importerName).toBe("sample");
     expect(importW.preview!.project.name).toBe("导入示例项目");
     expect(importW.preview!.warnings).toEqual(["示例警告"]);
+
+    let release!: () => void;
+    let notifyStarted!: () => void;
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const originalPreview = api.importPreview.bind(api);
+    api.importPreview = async (input) => {
+      notifyStarted();
+      await gate;
+      return originalPreview(input);
+    };
+    const context = importW.capturePreviewContext();
+    const pending = importW.previewFile("late.yaml", "openapi: 3.0.0", context);
+    await started;
+    await ws.open("/tmp/ws-context-switched");
+    release();
+    await expect(pending).rejects.toThrow(/工作区已变更/);
+    expect(importW.preview).toBeNull();
   });
 
   it("apply(project 模式) 调 api.importApply（记录调用可断言）后触发 workspace.refresh，树中出现导入项目", async () => {
@@ -36,15 +54,78 @@ describe("importW store", () => {
     const importW = useImportWizardStore(api, ws);
     await importW.previewFile("sample.yaml", "x");
     // 先建一个目标分组拿 id（轨二：分组按 id 选择，不再按名称缺省创建）
-    const groupNode = ws.tree!.children!.find((n) => n.kind === "group")!;
-    await importW.apply({ mode: "project", groupId: groupNode.id, name: "导入示例项目" });
+    const groupCandidate = ws.tree!.children!.find((n) => n.kind === "group");
+    if (!groupCandidate || groupCandidate.kind !== "group") throw new Error("Expected the group fixture to be present in the tree.");
+    ws.readOnly = true;
+    await expect(importW.apply({ mode: "project", target: groupCandidate.locator, name: "只读导入" })).rejects.toThrow(/只读/);
+    expect(api.importApplyCalls).toEqual([]);
+    ws.readOnly = false;
+    await expect(importW.apply({
+      mode: "project",
+      target: { ...groupCandidate.locator, workspaceId: "00000000-0000-4000-8000-000000000001" },
+      name: "错误工作区导入",
+    })).rejects.toThrow(/不属于当前工作区/);
+    expect(api.importApplyCalls).toEqual([]);
+    const applyInputs: Parameters<typeof api.importApply>[0][] = [];
+    const originalImportApply = api.importApply.bind(api);
+    api.importApply = async (input) => {
+      applyInputs.push(input);
+      return originalImportApply(input);
+    };
+    await importW.apply({ mode: "project", target: groupCandidate.locator, name: "导入示例项目" });
+    expect(applyInputs).toHaveLength(1);
+    expect(applyInputs[0]).toMatchObject({ mode: "project", target: groupCandidate.locator, name: "导入示例项目" });
     // memory.importApply 记录调用（可断言）
     expect(api.importApplyCalls).toEqual([
-      { mode: "project", groupId: groupNode.id, name: "导入示例项目" },
+      { mode: "project", groupId: groupCandidate.id, name: "导入示例项目" },
     ]);
     // workspace.refresh 被触发：树中出现导入项目
-    const refreshed = ws.tree!.children!.find((n) => n.id === groupNode.id)!;
+    const refreshed = ws.tree!.children!.find((n) => n.id === groupCandidate.id)!;
     expect(refreshed.children!.map((n) => n.label)).toContain("导入示例项目");
+    expect(importW.applying).toBe(false);
+
+    let releaseOld!: () => void;
+    let releaseCurrent!: () => void;
+    let notifyOld!: () => void;
+    let notifyCurrent!: () => void;
+    const oldStarted = new Promise<void>((resolve) => { notifyOld = resolve; });
+    const currentStarted = new Promise<void>((resolve) => { notifyCurrent = resolve; });
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const currentGate = new Promise<void>((resolve) => { releaseCurrent = resolve; });
+    const originalApply = api.importApply.bind(api);
+    let delayedApply = 0;
+    api.importApply = async (input) => {
+      const result = await originalApply(input);
+      if (delayedApply++ === 0) {
+        notifyOld();
+        await oldGate;
+      } else {
+        notifyCurrent();
+        await currentGate;
+      }
+      return result;
+    };
+    const refreshedRoots: string[] = [];
+    const originalRefresh = ws.refresh.bind(ws);
+    ws.refresh = async () => {
+      refreshedRoots.push(ws.root);
+      await originalRefresh();
+    };
+    await importW.previewFile("old-root.yaml", "x");
+    const oldApply = importW.apply({ mode: "project", target: groupCandidate.locator, name: "旧根迟到导入" });
+    await oldStarted;
+    await ws.open("/tmp/ws-import-root-switch");
+    importW.reset();
+    await importW.previewFile("current-root.yaml", "x");
+    const currentApply = importW.apply({ mode: "project", target: groupCandidate.locator, name: "当前根导入" });
+    await currentStarted;
+    releaseOld();
+    await expect(oldApply).rejects.toThrow(/工作区已变更/);
+    expect(importW.applying).toBe(true);
+    expect(refreshedRoots).toEqual([]);
+    releaseCurrent();
+    await currentApply;
+    expect(refreshedRoots).toEqual([ws.root]);
     expect(importW.applying).toBe(false);
   });
 
@@ -52,25 +133,39 @@ describe("importW store", () => {
     const { api, ws } = await seeded();
     const importW = useImportWizardStore(api, ws);
     await importW.previewFile("sample.yaml", "x");
-    const projectNode = ws.tree!.children![0]!.children!.find((n) => n.kind === "project")!;
-    await importW.apply({ mode: "module", projectId: projectNode.id, name: "导入示例集合" });
+    const projectCandidate = ws.tree!.children
+      .filter((group) => group.kind === "group")
+      .flatMap((group) => group.children)
+      .find((node) => node.kind === "project");
+    if (!projectCandidate || projectCandidate.kind !== "project") throw new Error("Expected the project fixture to be present in the tree.");
+    const applyInputs: Parameters<typeof api.importApply>[0][] = [];
+    const originalImportApply = api.importApply.bind(api);
+    api.importApply = async (input) => {
+      applyInputs.push(input);
+      return originalImportApply(input);
+    };
+    await importW.apply({ mode: "module", target: projectCandidate.locator, name: "导入示例集合" });
+    expect(applyInputs).toHaveLength(1);
+    expect(applyInputs[0]).toMatchObject({ mode: "module", target: projectCandidate.locator, name: "导入示例集合" });
     expect(api.importApplyCalls).toEqual([
-      { mode: "module", projectId: projectNode.id, name: "导入示例集合" },
+      { mode: "module", projectId: projectCandidate.id, name: "导入示例集合" },
     ]);
   });
 
   it("apply 未先 preview 时抛「尚无预览」；applying 状态不残留", async () => {
-    const { api } = await seeded();
+    const { api, ws } = await seeded();
     const importW = useImportWizardStore(api);
-    await expect(importW.apply({ mode: "project", groupId: "g", name: "x" })).rejects.toThrow(/预览/);
+    const groupCandidate = ws.tree!.children!.find((n) => n.kind === "group");
+    if (!groupCandidate || groupCandidate.kind !== "group") throw new Error("Expected the group fixture to be present in the tree.");
+    await expect(importW.apply({ mode: "project", target: groupCandidate.locator, name: "x" })).rejects.toThrow(/预览/);
     expect(importW.applying).toBe(false);
   });
 
   it("apply(project 模式) 目标分组不存在时上抛「未找到分组」（轨二：分组按 id 选择）", async () => {
-    const { api } = await seeded();
+    const { api, ws } = await seeded();
     const importW = useImportWizardStore(api);
     await importW.previewFile("a.yaml", "x");
-    await expect(importW.apply({ mode: "project", groupId: "ghost", name: "x" })).rejects.toThrow(/未找到分组/);
+    await expect(importW.apply({ mode: "project", target: { workspaceId: ws.tree!.locator.workspaceId, groupId: "00000000-0000-4000-8000-000000000001" }, name: "x" })).rejects.toThrow(/Target group not found/);
   });
 
   it("reset 清空 preview（取消向导回第一步）", async () => {

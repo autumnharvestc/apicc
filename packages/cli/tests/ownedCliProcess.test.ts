@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, onTestFinished } from "vitest";
-import { OWNED_CLI_CLOSE_TIMEOUT_MS, spawnOwnedCliProcess, type OwnedCliProcess, type OwnedCliResult } from "./helpers/ownedCliProcess.js";
+import { OWNED_CLI_CLOSE_TIMEOUT_MS, spawnOwnedCliProcess, type OwnedCliLifecycleEvent, type OwnedCliProcess, type OwnedCliResult } from "./helpers/ownedCliProcess.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/owned-cli-child.mjs", import.meta.url));
 const cwd = fileURLToPath(new URL("../../", import.meta.url));
@@ -128,6 +128,52 @@ describe("owned CLI child lifecycle", () => {
       stderr: "owned-child-stderr\n",
       closeConfirmed: true,
     });
+  });
+
+  it("emits a bounded monotonic lifecycle trace without changing the captured result", async () => {
+    const events: OwnedCliLifecycleEvent[] = [];
+    const owned = startFixture("normal", {
+      onLifecycleEvent: (event) => events.push(event),
+    });
+    const result = await owned.result;
+
+    expect(result).toMatchObject({
+      termination: "exit",
+      exitCode: 0,
+      stdout: "owned-child-stdout\n",
+      stderr: "owned-child-stderr\n",
+      closeConfirmed: true,
+    });
+    expect(events.map((event) => event.phase)).toEqual(["start", "spawn", "exit", "close"]);
+    const elapsed = events.map((event) => event.elapsedMs);
+    expect(elapsed.every(Number.isFinite)).toBe(true);
+    expect(elapsed).toEqual([...elapsed].sort((left, right) => left - right));
+    expect(events[1]).toMatchObject({ pid: owned.child.pid });
+    expect(events[2]).toMatchObject({ code: 0, signal: null });
+    expect(events[3]).toMatchObject({
+      code: 0,
+      signal: null,
+      stdoutBytes: Buffer.byteLength("owned-child-stdout\n"),
+      stderrBytes: Buffer.byteLength("owned-child-stderr\n"),
+    });
+  });
+
+  it("isolates observer exceptions from deadline kill, result settlement, and real close", async () => {
+    const events: OwnedCliLifecycleEvent[] = [];
+    const owned = startFixture("ready-wait", {
+      readyToken: "READY",
+      onLifecycleEvent: (event) => {
+        events.push(event);
+        throw new Error("observer exception must not affect child lifecycle");
+      },
+    });
+    await owned.waitForReady(1_000);
+    const result = await owned.cancel("deadline");
+
+    expect(result).toMatchObject({ termination: "deadline", closeConfirmed: true });
+    expect(owned.resultSettled()).toBe(true);
+    expect(owned.closeEventObserved()).toBe(true);
+    expect(events.map((event) => event.phase)).toContain("close");
   });
 
   it("waits for close after exit while draining remaining stdio", async () => {

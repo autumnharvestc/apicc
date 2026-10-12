@@ -1,9 +1,14 @@
 import { readFileSync } from "node:fs";
 import { parse as parseCsv } from "csv-parse/sync";
-import { mergedEnvVars } from "../domain/envChain.js";
-import type { ApiDefinition, Collection, Environment, Folder, Project, TestCase, Workspace } from "../domain/model.js";
+import type { DeepReadonly, ProjectSnapshot } from "../assets/snapshot.js";
+import type { ApiAsset } from "../contract/model.js";
+import type { ContractCollection, ContractFolder, ContractProject } from "../contract/workspace.js";
+import type { Operation, ProjectGlobals, StressPolicy } from "../domain/common.js";
+import type { CredentialBindings } from "../credentials/types.js";
 import type { CaseExecutionDeps, CaseExecutionResult } from "../runner/caseExecutor.js";
 import { executeCase } from "../runner/caseExecutor.js";
+import { captureProjectExecutionRun, type ProjectExecutionRun } from "../runner/runner.js";
+import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/executionSelection.js";
 import type { ManagedProtocolClient } from "../http/client.js";
 import type { ExecutableRequest, PmApi } from "../plugin/types.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
@@ -13,59 +18,46 @@ export interface StressWorkerSession {
   execute(signal?: AbortSignal): Promise<CaseExecutionResult>;
   close(): Promise<void>;
 }
-export interface StressCaseTarget {
-  api: ApiDefinition;
-  testCase: TestCase;
-  env?: Environment;
-  project: Project;
-  collection: Collection;
-  workspace: Workspace;
-  /** Optional outer-to-inner container path; otherwise it is resolved from collection folders. */
-  containerChain?: StressCaseContainer[];
-}
 
-export type StressCaseContainer = (Collection | Folder) & { variables?: Record<string, string> };
+/** A selected case within one immutable project snapshot and its prepared credentials. */
+export interface StressCaseTarget {
+  run: ProjectExecutionRun;
+  collectionId: string;
+  apiId: string;
+  caseId: string;
+  environmentId?: string;
+}
 
 export interface StressCaseSessionDeps extends Omit<CaseExecutionDeps, "beforeSend"> {
   /** Creates the protocol client owned by this virtual-user session. */
   createManagedClient: (workerId: number) => ManagedProtocolClient | Promise<ManagedProtocolClient>;
 }
 
-function findContainerChain(collection: Collection, api: ApiDefinition): StressCaseContainer[] {
-  const matches: StressCaseContainer[][] = [];
-  if (collection.apis.some((candidate) => candidate === api)) matches.push([]);
-  const visit = (folders: Folder[], path: StressCaseContainer[]): void => {
-    for (const folder of folders) {
-      const next = [...path, folder];
-      if (folder.apis.some((candidate) => candidate === api)) matches.push(next);
-      visit(folder.folders ?? [], next);
-    }
-  };
-  visit(collection.folders ?? [], []);
-  if (matches.length === 0) throw new Error(`配置错误: 未找到目标接口 ${api.id} 的容器路径`);
-  if (matches.length > 1) throw new Error(`配置错误: 目标接口 ${api.id} 匹配多个容器路径`);
-  return [collection, ...matches[0]!];
+type SnapshotContainer = DeepReadonly<ContractCollection | ContractFolder>;
+interface LocatedApi {
+  asset: DeepReadonly<ApiAsset>;
+  collection: DeepReadonly<ContractCollection>;
+  containers: SnapshotContainer[];
 }
 
-function validateContainerChain(target: StressCaseTarget, supplied: StressCaseContainer[]): StressCaseContainer[] {
-  if (supplied.length === 0 || supplied[0] !== target.collection) throw new Error("配置错误: containerChain 必须以目标 collection 开始");
-  const seen = new Set<StressCaseContainer>();
-  for (const container of supplied) {
-    if (seen.has(container)) throw new Error("配置错误: containerChain 存在重复容器");
-    seen.add(container);
-  }
-  for (let i = 1; i < supplied.length; i += 1) {
-    const parent = supplied[i - 1]!;
-    const child = supplied[i]!;
-    if (!("folders" in parent) || !(parent.folders ?? []).some((folder) => folder === child)) {
-      throw new Error("配置错误: containerChain 的父子容器不连续");
+function locateApi(project: DeepReadonly<ContractProject>, collectionId: string, apiId: string): LocatedApi {
+  const collection = project.collections.find((candidate) => candidate.id === collectionId);
+  if (!collection) throw new Error(`配置错误: 项目快照中不存在集合 ${collectionId}`);
+  const matches: LocatedApi[] = [];
+  const visit = (folder: DeepReadonly<ContractFolder>, path: SnapshotContainer[]): void => {
+    const next = [...path, folder];
+    for (const asset of folder.apis) {
+      if (asset.contract.id === apiId) matches.push({ asset, collection, containers: [collection, ...next] });
     }
+    for (const child of folder.folders) visit(child, next);
+  };
+  for (const asset of collection.apis) {
+    if (asset.contract.id === apiId) matches.push({ asset, collection, containers: [collection] });
   }
-  const leaf = supplied[supplied.length - 1]!;
-  if (!("apis" in leaf) || !leaf.apis.some((candidate) => candidate === target.api)) {
-    throw new Error(`配置错误: containerChain 叶节点不包含目标接口 ${target.api.id}`);
-  }
-  return supplied;
+  for (const folder of collection.folders) visit(folder, []);
+  if (matches.length === 0) throw new Error(`配置错误: 项目快照中未找到接口 ${apiId} 的容器路径`);
+  if (matches.length > 1) throw new Error(`配置错误: 项目快照中接口 ${apiId} 匹配多个容器路径`);
+  return matches[0]!;
 }
 
 function operationContext(
@@ -80,7 +72,7 @@ function operationContext(
       set: (name, value) => { persisted.set(name, value); persistedSnapshot[name] = value; resolver.setRuntime(name, value); },
     },
     environment: { get: (name) => envVars[name] },
-    request: { method: "GET", url: "", headers: {}, query: [] },
+    request: { protocol: "http", method: "GET", url: "", headers: {}, query: [], auth: { kind: "none" } },
     response: undefined,
     assert: () => {},
   };
@@ -88,7 +80,7 @@ function operationContext(
 }
 
 function runContainerOperations(
-  containers: StressCaseContainer[], phase: "pre" | "post", deps: StressCaseSessionDeps,
+  containers: readonly SnapshotContainer[], phase: "pre" | "post", deps: StressCaseSessionDeps,
   resolver: VariableResolver, envVars: Record<string, string>, persisted: Map<string, string>, persistedSnapshot: Record<string, string>,
 ): void {
   const ordered = phase === "pre" ? containers : [...containers].reverse();
@@ -100,12 +92,10 @@ function runContainerOperations(
     catch (error) { if (!hasError) { hasError = true; firstError = error; } }
   };
   for (const container of ordered) {
-    const scripts = container === containers[0] && "scripts" in container ? container.scripts : undefined;
-    if (phase === "pre" && scripts?.pre) runHook(() => deps.scriptEngine.run(scripts.pre!, operationContext(resolver, envVars, persisted, persistedSnapshot)));
-    for (const operation of phase === "pre" ? container.preOperations ?? [] : container.postOperations ?? []) {
+    const operations: readonly DeepReadonly<Operation>[] = phase === "pre" ? container.preOperations : container.postOperations;
+    for (const operation of operations) {
       if (operation.type === "script") runHook(() => deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot)));
     }
-    if (phase === "post" && scripts?.post) runHook(() => deps.scriptEngine.run(scripts.post!, operationContext(resolver, envVars, persisted, persistedSnapshot)));
   }
   if (hasError) throw firstError;
 }
@@ -130,21 +120,27 @@ function parseDataRows(sourcePath: string, format: "csv" | "json"): Array<Record
   return rows.length > 0 ? rows : [undefined];
 }
 
-function sessionEnv(target: StressCaseTarget): Record<string, string> {
-  const envVars = target.env ? mergedEnvVars(target.env, target.project) : {};
-  const baseUrl = target.env?.baseUrls?.[target.collection.id];
-  return baseUrl ? { ...envVars, baseUrl } : envVars;
+function mutableGlobals(globals: DeepReadonly<ProjectGlobals>): ProjectGlobals {
+  return {
+    query: globals.query.map((entry) => ({ ...entry })),
+    headers: globals.headers.map((entry) => ({ ...entry })),
+    cookies: globals.cookies.map((entry) => ({ ...entry })),
+    body: globals.body.map((entry) => ({ ...entry })),
+  };
 }
 
-/** Parse the post-script/auth URL with WHATWG semantics before any protocol I/O. */
-function parseFinalUrl(url: string, protocol?: string): URL | undefined {
-  const requiresHttpUrl = protocol === undefined || protocol === "http" || protocol === "soap";
-  if (!requiresHttpUrl) {
-    // Explicit non-HTTP(S) domains own URL parsing and canonicalization. In
-    // particular, a websocket/plugin request with an HTTPS-looking URL must
-    // retain its original URL and continue through the registry.
-    return undefined;
-  }
+function mutableStressPolicy(policy: DeepReadonly<StressPolicy>): StressPolicy {
+  return {
+    ...(policy.trustedOrigins === undefined ? {} : { trustedOrigins: [...policy.trustedOrigins] }),
+    ...(policy.deniedOrigins === undefined ? {} : { deniedOrigins: [...policy.deniedOrigins] }),
+    ...(policy.maxConcurrency === undefined ? {} : { maxConcurrency: policy.maxConcurrency }),
+    ...(policy.maxRps === undefined ? {} : { maxRps: policy.maxRps }),
+  };
+}
+
+/** Parse the final HTTP(S) URL after scripts/auth and before protocol I/O. */
+function parseFinalUrl(url: string, protocol: string): URL | undefined {
+  if (protocol === "websocket") return undefined;
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -152,16 +148,15 @@ function parseFinalUrl(url: string, protocol?: string): URL | undefined {
     throw Object.assign(new Error("HTTP(S) 请求 URL 必须是绝对 HTTP(S) URL"), { caseFailureKind: "config" as const });
   }
   const normalizedProtocol = parsed.protocol.toLowerCase();
-  const isHttp = normalizedProtocol === "http:" || normalizedProtocol === "https:";
-  if (!isHttp) {
+  if (normalizedProtocol !== "http:" && normalizedProtocol !== "https:") {
     throw Object.assign(new Error("HTTP(S) 请求 URL 必须是绝对 HTTP(S) URL"), { caseFailureKind: "config" as const });
   }
-  return isHttp ? parsed : undefined;
+  return parsed;
 }
 
 /**
- * Creates all mutable state used by one stress virtual user. The returned object
- * is deliberately independent from every other session and from CollectionRunner.
+ * Create one independent virtual-user session over a shared immutable run snapshot.
+ * Each call owns resolver, request/plugin objects, persistence, and managed connection.
  */
 export function createStressCaseSession(
   target: StressCaseTarget,
@@ -174,32 +169,34 @@ export function createStressCaseSession(
     authorizeRequest?(request: ExecutableRequest): void | Promise<void>;
   },
 ): StressWorkerSession {
-  const envVars = sessionEnv(target);
-  const suppliedContainers = target.containerChain;
-  const containers = suppliedContainers
-    ? validateContainerChain(target, suppliedContainers)
-    : findContainerChain(target.collection, target.api);
-  const folderLayers = containers.slice(1).reverse().map((container) => container.variables ?? {});
-  const resolver: VariableResolver = createVariableResolver({
-    layers: [envVars, ...folderLayers, target.collection.variables, target.project.variables],
-  });
+  const selectedRun = captureProjectExecutionRun(target.run);
+  const project = selectedRun.snapshot.project;
+  const stressPolicy = mutableStressPolicy(project.stressPolicy);
+  const location = locateApi(project, target.collectionId, target.apiId);
+  const environment = resolveExecutionEnvironment(project, target.collectionId, target.environmentId);
+  const testCase = selectEffectiveCases(location.asset.cases, environment.chain, target.caseId)[0];
+  if (!testCase) {
+    if (!location.asset.cases.some((candidate) => candidate.id === target.caseId)) {
+      throw new Error(`配置错误: 接口 ${target.apiId} 中不存在用例 ${target.caseId}`);
+    }
+    throw new Error(`配置错误: 接口 ${target.apiId} 的用例 ${target.caseId} 不适用于当前环境`);
+  }
+  const envVars = environment.variables;
+  const baseUrl = environment.baseUrl;
+  const resolver = createVariableResolver({ layers: [envVars, location.collection.variables, project.variables] });
   const persisted = new Map<string, string>();
   const persistedSnapshot: Record<string, string> = {};
-  // Read and validate at construction time so workers do not discover malformed
-  // data half-way through a run.
-  const rows = target.testCase.dataDriver
-    ? parseDataRows(target.testCase.dataDriver.sourcePath, target.testCase.dataDriver.format)
+  const rows = testCase.dataDriver
+    ? parseDataRows(testCase.dataDriver.sourcePath, testCase.dataDriver.format)
     : [undefined];
   let cursor = 0;
-  runContainerOperations(containers, "pre", deps, resolver, envVars, persisted, persistedSnapshot);
+  runContainerOperations(location.containers, "pre", deps, resolver, envVars, persisted, persistedSnapshot);
   let client: ManagedProtocolClient | undefined;
   const clientPromise = Promise.resolve(deps.createManagedClient(options.workerId));
   let closePromise: Promise<void> | undefined;
 
   const resolveProtocol = (request: ExecutableRequest) => {
-    // HTTP is always session-owned. A registry fallback is reserved for WS,
-    // SOAP, and explicitly plugin-defined protocol requests.
-    if (request.protocol !== undefined && request.protocol !== "http") return deps.resolveProtocol(request);
+    if (request.protocol !== "http") return deps.resolveProtocol(request);
     if (client && client.canHandle(request)) return client;
     return undefined;
   };
@@ -214,57 +211,55 @@ export function createStressCaseSession(
         resolveProtocol,
         timeouts: { ...(deps.timeouts ?? { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 }), signal },
         beforeSend: async (request) => {
-          // Preserve the embedding hook, then make the core safety decision against
-          // the request after scripts, data, variables and auth have all run.
           await options.authorizeRequest?.(request);
           const parsedUrl = parseFinalUrl(request.url, request.protocol);
-          if (parsedUrl) {
-            try {
-              // Use the canonical href for both the safety decision and the
-              // eventual transport so special forms cannot bypass either layer.
-              request.url = parsedUrl.href;
-              const decision = assertStressTargetAllowed({
-                url: parsedUrl.href,
-                confirmedTargetOrigins: options.confirmedTargetOrigins,
-                policy: target.project.stressPolicy,
-                concurrency: options.concurrency ?? 1,
-                maxRps: options.maxRps,
-              });
+          if (!parsedUrl) return;
+          try {
+            request.url = parsedUrl.href;
+            const decision = assertStressTargetAllowed({
+              url: parsedUrl.href,
+              confirmedTargetOrigins: options.confirmedTargetOrigins,
+              policy: stressPolicy,
+              concurrency: options.concurrency ?? 1,
+              maxRps: options.maxRps,
+            });
+            safety = {
+              origin: decision.targetOrigin,
+              confirmation: decision.confirmation,
+              policy: decision.confirmation === "project-policy"
+                ? "trusted"
+                : (decision.appliedPolicy.maxConcurrency !== undefined || decision.appliedPolicy.maxRps !== undefined ? "explicit-limited" : "none"),
+              loopback: decision.loopback,
+              appliedPolicy: decision.appliedPolicy,
+            };
+          } catch (error) {
+            if (error instanceof StressSafetyError && error.targetOrigin) {
+              let appliedPolicy: ReturnType<typeof normalizeStressPolicy> | undefined;
+              try { appliedPolicy = normalizeStressPolicy(stressPolicy); } catch { /* keep the primary policy error */ }
               safety = {
-                origin: decision.targetOrigin,
-                confirmation: decision.confirmation,
-                policy: decision.confirmation === "project-policy"
-                  ? "trusted"
-                  : (decision.appliedPolicy.maxConcurrency !== undefined || decision.appliedPolicy.maxRps !== undefined ? "explicit-limited" : "none"),
-                loopback: decision.loopback,
-                appliedPolicy: decision.appliedPolicy,
+                origin: error.targetOrigin,
+                confirmation: "rejected",
+                policy: error.code,
+                loopback: isLoopbackStressOrigin(error.targetOrigin),
+                ...(appliedPolicy ? { appliedPolicy } : {}),
               };
-            } catch (error) {
-              if (error instanceof StressSafetyError && error.targetOrigin) {
-                let appliedPolicy: ReturnType<typeof normalizeStressPolicy> | undefined;
-                try { appliedPolicy = normalizeStressPolicy(target.project.stressPolicy); } catch { /* policy error is the primary diagnostic */ }
-                safety = {
-                  origin: error.targetOrigin,
-                  confirmation: "rejected",
-                  policy: error.code,
-                  loopback: isLoopbackStressOrigin(error.targetOrigin),
-                  ...(appliedPolicy ? { appliedPolicy } : {}),
-                };
-              }
-              throw error;
             }
+            throw error;
           }
         },
       };
       const result = await executeCase({
-        api: target.api,
-        testCase: target.testCase,
+        asset: location.asset,
+        assetContext: selectedRun.snapshot.context,
+        credentialBindings: selectedRun.credentialBindings,
+        testCase,
         row: rows[rowIndex],
         rowIndex,
         isDataDriven: rows.length > 1,
         resolver,
         envVars,
-        globals: target.project.globals,
+        envBaseUrl: baseUrl,
+        globals: mutableGlobals(project.globals),
         persisted,
         persistedSnapshot,
       }, executionDeps);
@@ -276,7 +271,7 @@ export function createStressCaseSession(
       closePromise = (async () => {
         let firstError: unknown;
         let hasError = false;
-        try { runContainerOperations(containers, "post", deps, resolver, envVars, persisted, persistedSnapshot); }
+        try { runContainerOperations(location.containers, "post", deps, resolver, envVars, persisted, persistedSnapshot); }
         catch (error) { hasError = true; firstError = error; }
         try {
           client ??= await clientPromise;

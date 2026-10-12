@@ -1,6 +1,6 @@
 import { Agent, request } from "undici";
-import type { BodyContent } from "../domain/model.js";
 import type { ExecutableRequest, ExecutionResponse, HttpExecuteOptions, ProtocolClient } from "../plugin/types.js";
+import type { RuntimeBody } from "../request/body.js";
 import { canHandleProtocol } from "../protocol/index.js";
 
 export type HttpErrorKind = "dns" | "refused" | "timeout" | "tls" | "unknown";
@@ -43,7 +43,7 @@ function buildUrl(req: ExecutableRequest): string {
 }
 
 /** form 请求体的 enabled 项编码为 application/x-www-form-urlencoded。 */
-function urlencodedBody(form: BodyContent["form"]): string {
+function urlencodedBody(form: Extract<RuntimeBody, { kind: "form" }> ["form"]): string {
   const params = new URLSearchParams();
   for (const kv of form ?? []) {
     if (kv.enabled) params.append(kv.key, kv.value);
@@ -65,7 +65,7 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
 
   return {
     name: "http",
-    // D5：按 protocol 显式分发（缺省视为 http）；HTTP(S) URL 采用 WHATWG
+    // 按严格 protocol 联合显式分发；HTTP(S) URL 采用 WHATWG
     // 解析，以覆盖省略 `//`、ASCII 空白、反斜杠和大小写等等价写法。
     canHandle: (req) => {
       if (!canHandleProtocol(req, "http")) return false;
@@ -77,6 +77,9 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
       }
     },
     async execute(req, opts) {
+      if (req.protocol !== "http") {
+        throw Object.assign(new Error(`HTTP 客户端不能执行 ${req.protocol} 请求`), { caseFailureKind: "config" as const, code: "CONFIG" });
+      }
       // form 走 urlencoded 编码；其余 kind 发送 content 字符串。
       let body: string | undefined;
       const sendHeaders = { ...req.headers };

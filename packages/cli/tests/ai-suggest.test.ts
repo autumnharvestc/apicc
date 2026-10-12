@@ -25,7 +25,11 @@ const envTrio = {
   APICC_AI_API_KEY: API_KEY,
   APICC_AI_MODEL: "test-model",
 };
-const apiPath = "groups/demo/projects/svc/collections/api/apis/orders";
+const GROUP_ID = "00000000-0000-4000-8000-000000000002";
+const PROJECT_ID = "00000000-0000-4000-8000-000000000004";
+const COLLECTION_ID = "00000000-0000-4000-8000-000000000008";
+const API_ID = "00000000-0000-4000-8000-000000000011";
+const apiPath = `groups/${GROUP_ID}/projects/${PROJECT_ID}/collections/${COLLECTION_ID}/apis/${API_ID}`;
 
 const suggestionCases = [
   {
@@ -55,27 +59,33 @@ beforeAll(async () => {
   // 工作区夹具（fileStorage 落盘）：含 design 与既有用例的 POST 接口
   root = mkdtempSync(join(tmpdir(), "apicc-ai-e2e-"));
   const ws: Workspace = {
-    id: "00000000-0000-4000-8000-000000000001", name: "ai-e2e", variables: {},
+    formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "ai-e2e", variables: {},
     groups: [{
-      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
-        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {}, workflows: [],
-        environments: [],
+      id: GROUP_ID, name: "demo", projects: [{
+        id: PROJECT_ID, name: "svc", variables: {}, globals: {}, workflows: [],
+        environments: [], models: [], components: [], stressPolicy: {},
         collections: [{
-          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {}, folders: [],
+          id: COLLECTION_ID, name: "api", variables: {}, preOperations: [], postOperations: [], folders: [],
           apis: [{
-            id: "00000000-0000-4000-8000-000000000011", name: "orders", version: "1.0.0", deprecated: false, method: "POST",
-            url: "https://api.example.com/orders",
-            headers: [{ key: "content-type", value: "application/json", enabled: true }],
-            query: [],
-            body: { kind: "json", content: '{"sku":"A1","qty":1}' },
-            design: "# 创建订单\n- qty 必须为正整数",
-            cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "正常创建订单", scope: "base", parameters: {}, assertions: [] }],
+            contract: {
+              formatVersion: 1, id: API_ID,
+              metadata: { name: "orders", description: "# 创建订单\n- qty 必须为正整数", tags: [], version: "1.0.0", status: "published" },
+              request: {
+                protocol: "http", method: "POST", baseUrl: "https://api.example.com", path: "/orders",
+                pathParams: [], query: [], headers: [],
+                cookies: [], auth: { kind: "none" }, body: { kind: "json", content: '{"sku":"A1","qty":1}' },
+              },
+              responses: [],
+            },
+            documentation: "# 创建订单\n- qty 必须为正整数",
+            cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "正常创建订单", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] }],
           }],
         }],
       }],
     }],
   };
-  await fileStorage.save(root, ws);
+  const initial = await fileStorage.load(root);
+  await fileStorage.save(root, ws, { expectedRevision: initial.revision, deletions: [] });
   // CLI 按「从 cwd 向上查找 apicc.workspace.yaml」定位工作区（与 e2e.test.ts 同款模拟）。
   prevCwd = process.cwd();
   process.chdir(root);
@@ -191,7 +201,7 @@ describe("ai suggest-cases 端到端（替身 OpenAI 兼容端点，零真实网
 
   it("--out 写 YAML 文件且 stdout 不含 YAML 块；缺省（无 --out）打 stdout", async () => {
     replyContent = JSON.stringify({ cases: suggestionCases });
-    const outFile = join(root, "ai-suggest-out.yaml");
+    const outFile = join(fileHome, "ai-suggest-out.yaml");
     const logs: string[] = [];
     const code = await run(["ai", "suggest-cases", apiPath, "--out", outFile], logs, {
       aiEnv: envTrio, aiHomeDir: emptyHome,
@@ -228,7 +238,7 @@ describe("ai suggest-cases 端到端（替身 OpenAI 兼容端点，零真实网
 
   it("接口定位复用既有 resolve 先例：未找到接口可读报错", async () => {
     await expect(
-      run(["ai", "suggest-cases", "groups/demo/projects/svc/collections/api/apis/不存在"], [], {
+    run(["ai", "suggest-cases", `groups/${GROUP_ID}/projects/${PROJECT_ID}/collections/${COLLECTION_ID}/apis/00000000-0000-4000-8000-000000000099`], [], {
         aiEnv: envTrio, aiHomeDir: emptyHome,
       }),
     ).rejects.toThrow(/未找到接口/);

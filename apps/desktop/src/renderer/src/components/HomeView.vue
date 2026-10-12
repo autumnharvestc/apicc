@@ -9,6 +9,8 @@ import type { useTreeStore } from "../stores/tree.js";
 import type { createOnlineStore } from "../stores/online.js";
 import type { useImportWizardStore } from "../stores/importW.js";
 import type { PluginsStore } from "../stores/plugins.js";
+import type { GroupLocator, ProjectLocator, WorkspaceLocator } from "../../../shared/locations.js";
+import type { LocalGroupTreeNodeDTO, LocalProjectTreeNodeDTO } from "../../../shared/tree-dto.js";
 import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import ConnectionPanel from "./ConnectionPanel.vue";
@@ -34,7 +36,7 @@ const props = defineProps<{
   plugins: PluginsStore;
   reportError: (e: unknown) => void;
   /** 打开项目回调：组合根成签并激活（不变量 1）+ 切接口模块。 */
-  openProject: (id: string) => void;
+  openProject: (locator: ProjectLocator) => void;
   /** 打开在线工作区回调（计划 C 终审 Important 1 ①，open-project 同款组合根模式）：组合根
    * 打开驻留会话并切接口模块——纯在线用户（无本地工作区）从主页打开在线工作区后由此离开
    * 主页（否则侧栏 v-show 与 ModuleRail v-if 双双隐藏，在线树/成签入口不可达）。 */
@@ -43,7 +45,7 @@ const props = defineProps<{
    * （online 分支 workspaceRef），纯在线用户在主页即可点项目成签。 */
   openOnlineProject: (projectId: string) => void;
   /** 活动项目 id（计划 C 任务 5 D）：该项目签存在且激活——组合根从 tabs store 计算。 */
-  activeProjectId?: string | null;
+  activeProjectLocator?: ProjectLocator | null;
   /** 活跃在线项目 id（终审 Important 1 ②）：活跃签为在线签时的 projectId——卡片高亮。 */
   activeOnlineProjectId?: string | null;
 }>();
@@ -52,43 +54,46 @@ const { t } = useI18n();
 // —— 左栏选中态：本地全部 / 某分组 / 某服务器 / 连接管理 ——
 type Selection =
   | { kind: "local" }
-  | { kind: "group"; groupId: string }
+  | { kind: "group"; locator: GroupLocator }
   | { kind: "server"; baseUrl: string }
   | { kind: "connections" };
 const selection = ref<Selection>({ kind: "local" });
 
 interface GroupView {
   id: string;
+  locator: GroupLocator;
   name: string;
-  projects: Array<{ id: string; name: string }>;
+  projects: Array<{ id: string; name: string; locator: ProjectLocator }>;
 }
 
 const groups = computed<GroupView[]>(() =>
-  (props.workspace.tree?.children ?? []).map((g) => ({
+  (props.workspace.tree?.children ?? []).filter((node): node is LocalGroupTreeNodeDTO => node.kind === "group").map((g) => ({
     id: g.id,
+    locator: { ...g.locator },
     name: g.label,
-    projects: (g.children ?? []).filter((n) => n.kind === "project").map((p) => ({ id: p.id, name: p.label })),
+    projects: (g.children ?? []).filter((node): node is LocalProjectTreeNodeDTO => node.kind === "project")
+      .map((p) => ({ id: p.id, name: p.label, locator: { ...p.locator } })),
   })),
 );
-const defaultGroupId = computed(() => groups.value.find((g) => g.name === "默认分组")?.id ?? groups.value[0]?.id ?? null);
+const defaultGroupLocator = computed(() => groups.value.find((g) => g.name === "默认分组")?.locator ?? groups.value[0]?.locator ?? null);
 
 /** 右栏可见项目：选 local → 全部；选 group → 该分组。 */
 const visibleProjects = computed(() => {
   const sel = selection.value;
   if (sel.kind === "group") {
-    return groups.value.find((g) => g.id === sel.groupId)?.projects ?? [];
+    return groups.value.find((g) => JSON.stringify(g.locator) === JSON.stringify(sel.locator))?.projects ?? [];
   }
   return groups.value.flatMap((g) => g.projects);
 });
 
-const selectedGroupId = computed(() => (selection.value.kind === "group" ? selection.value.groupId : ""));
+const selectedGroupId = computed(() => (selection.value.kind === "group" ? selection.value.locator.groupId : ""));
 const selectedBaseUrl = computed(() => (selection.value.kind === "server" ? selection.value.baseUrl : ""));
 
 function selectLocal() {
   selection.value = { kind: "local" };
 }
-function selectGroup(groupId: string) {
-  selection.value = { kind: "group", groupId };
+function selectGroup(locator: GroupLocator) {
+  selection.value = { kind: "group", locator: { ...locator } };
 }
 function selectServer(baseUrl: string) {
   selection.value = { kind: "server", baseUrl };
@@ -105,75 +110,89 @@ type DialogKind =
 const dialog = ref<{
   open: boolean;
   kind: DialogKind;
-  groupId: string;
-  projectId: string;
+  groupLocator: GroupLocator | null;
+  projectLocator: ProjectLocator | null;
   name: string;
   error: string;
-}>({ open: false, kind: "create-group", groupId: "", projectId: "", name: "", error: "" });
+}>({ open: false, kind: "create-group", groupLocator: null, projectLocator: null, name: "", error: "" });
 
 function openCreateGroup() {
-  dialog.value = { open: true, kind: "create-group", groupId: "", projectId: "", name: "", error: "" };
+  dialog.value = { open: true, kind: "create-group", groupLocator: null, projectLocator: null, name: "", error: "" };
 }
-function openCreateProject(groupId: string) {
-  dialog.value = { open: true, kind: "create-project", groupId, projectId: "", name: "", error: "" };
+function openCreateProject(groupLocator: GroupLocator) {
+  dialog.value = { open: true, kind: "create-project", groupLocator: { ...groupLocator }, projectLocator: null, name: "", error: "" };
 }
 function openRenameGroup(g: GroupView) {
-  dialog.value = { open: true, kind: "rename-group", groupId: g.id, projectId: "", name: g.name, error: "" };
+  dialog.value = { open: true, kind: "rename-group", groupLocator: { ...g.locator }, projectLocator: null, name: g.name, error: "" };
 }
 function openDeleteGroup(g: GroupView) {
-  dialog.value = { open: true, kind: "delete-group", groupId: g.id, projectId: "", name: g.name, error: "" };
+  dialog.value = { open: true, kind: "delete-group", groupLocator: { ...g.locator }, projectLocator: null, name: g.name, error: "" };
 }
-function openRenameProject(p: { id: string; name: string }) {
-  dialog.value = { open: true, kind: "rename-project", groupId: "", projectId: p.id, name: p.name, error: "" };
+function openRenameProject(p: { name: string; locator: ProjectLocator }) {
+  dialog.value = { open: true, kind: "rename-project", groupLocator: null, projectLocator: { ...p.locator }, name: p.name, error: "" };
 }
-function openDeleteProject(p: { id: string; name: string }) {
-  dialog.value = { open: true, kind: "delete-project", groupId: "", projectId: p.id, name: p.name, error: "" };
+function openDeleteProject(p: { name: string; locator: ProjectLocator }) {
+  dialog.value = { open: true, kind: "delete-project", groupLocator: null, projectLocator: { ...p.locator }, name: p.name, error: "" };
 }
 function closeDialog() {
   dialog.value = { ...dialog.value, open: false };
 }
 
 async function onDialogConfirm(name: string | null) {
+  if (props.workspace.readOnly) {
+    dialog.value.error = t("workspace.readonlyBadge");
+    return;
+  }
   const kind = dialog.value.kind;
   try {
     if (kind === "create-group") {
-      await props.tree.createNode({ kind: "group", parentId: null, name: (name ?? "").trim() });
+      const root = props.workspace.tree;
+      if (!root) return;
+      await props.tree.createNode({ kind: "group", parent: { ...root.locator }, name: (name ?? "").trim() });
       closeDialog();
       return;
     }
     if (kind === "create-project") {
-      const node = await props.tree.createNode({ kind: "project", parentId: dialog.value.groupId, name: (name ?? "").trim() });
+      const groupLocator = dialog.value.groupLocator;
+      if (!groupLocator) return;
+      const node = await props.tree.createNode({ kind: "project", parent: { ...groupLocator }, name: (name ?? "").trim() });
+      if (node.kind !== "project") throw new Error("创建项目返回了非项目节点");
       closeDialog();
-      props.openProject(node.id); // 创建即打开（参考产品行为：建完进项目）
+      props.openProject(node.locator); // 创建即打开（参考产品行为：建完进项目）
       return;
     }
     if (kind === "rename-group") {
-      await props.api.nodeRename("group", dialog.value.groupId, (name ?? "").trim());
+      if (!dialog.value.groupLocator) return;
+      await props.api.nodeRename({ kind: "group", locator: dialog.value.groupLocator }, (name ?? "").trim());
       await props.workspace.refresh();
       closeDialog();
       return;
     }
     if (kind === "rename-project") {
-      await props.api.nodeRename("project", dialog.value.projectId, (name ?? "").trim());
+      if (!dialog.value.projectLocator) return;
+      await props.api.nodeRename({ kind: "project", locator: dialog.value.projectLocator }, (name ?? "").trim());
       await props.workspace.refresh();
       closeDialog();
       return;
     }
     if (kind === "delete-project") {
-      await props.api.nodeDelete("project", dialog.value.projectId);
+      if (!dialog.value.projectLocator) return;
+      await props.api.nodeDelete({ kind: "project", locator: dialog.value.projectLocator });
       await props.workspace.refresh();
       closeDialog();
       return;
     }
     if (kind === "delete-group") {
-      const g = groups.value.find((x) => x.id === dialog.value.groupId);
+      const groupLocator = dialog.value.groupLocator;
+      if (!groupLocator) return;
+      const g = groups.value.find((x) => JSON.stringify(x.locator) === JSON.stringify(groupLocator));
       if (g && g.projects.length > 0) {
         dialog.value.error = t("home.groupNotEmpty");
         return;
       }
-      await props.api.nodeDelete("group", dialog.value.groupId);
+      await props.api.nodeDelete({ kind: "group", locator: groupLocator });
       await props.workspace.refresh();
-      if (selection.value.kind === "group" && selection.value.groupId === dialog.value.groupId) selectLocal();
+      if (selection.value.kind === "group" && JSON.stringify(selection.value.locator) === JSON.stringify(groupLocator)) selectLocal();
       closeDialog();
     }
   } catch (e) {
@@ -199,43 +218,60 @@ const newProjectGroupId = ref<string | undefined>(undefined);
 const newProjectError = ref("");
 
 function openNewProject() {
-  newProjectGroupId.value = selection.value.kind === "group" ? selection.value.groupId : defaultGroupId.value ?? undefined;
+  const locator = selection.value.kind === "group" ? selection.value.locator : defaultGroupLocator.value;
+  newProjectGroupId.value = locator ? JSON.stringify(locator) : undefined;
   newProjectName.value = "";
   newProjectError.value = "";
   newProjectOpen.value = true;
 }
 
 async function createProjectConfirm() {
-  if (!newProjectGroupId.value) {
+  if (props.workspace.readOnly) {
+    newProjectError.value = t("workspace.readonlyBadge");
+    return;
+  }
+  const groupValue = newProjectGroupId.value;
+  if (!groupValue) {
     newProjectError.value = t("home.targetGroup");
     return;
   }
   try {
-    const node = await props.tree.createNode({ kind: "project", parentId: newProjectGroupId.value, name: newProjectName.value.trim() });
+    const groupLocator = JSON.parse(groupValue) as GroupLocator;
+    const node = await props.tree.createNode({ kind: "project", parent: groupLocator, name: newProjectName.value.trim() });
+    if (node.kind !== "project") throw new Error("创建项目返回了非项目节点");
     newProjectOpen.value = false;
-    props.openProject(node.id);
+    props.openProject(node.locator);
   } catch (e) {
     newProjectError.value = e instanceof Error ? e.message : String(e);
   }
 }
 
-const newProjectGroupOptions = computed(() => groups.value.map((g) => ({ label: g.name, value: g.id })));
+const newProjectGroupOptions = computed(() => groups.value.map((g) => ({ label: g.name, value: JSON.stringify(g.locator) })));
 
 // —— 项目卡片动作：克隆 / 移动 / 删除（同名放开：克隆与重命名都可直接落） ——
 const moveOpen = ref(false);
-const moveProjectId = ref("");
-const moveTargetGroupId = ref<string | undefined>(undefined);
+const moveProjectLocator = ref<ProjectLocator | null>(null);
+const moveTargetGroupValue = ref<string | undefined>(undefined);
 
-function openMoveProject(p: { id: string }) {
-  moveProjectId.value = p.id;
-  moveTargetGroupId.value = groups.value.find((g) => g.projects.some((x) => x.id === p.id))?.id ?? defaultGroupId.value ?? undefined;
+function openMoveProject(p: { locator: ProjectLocator }) {
+  moveProjectLocator.value = { ...p.locator };
+  const sourceGroup = groups.value.find((g) => JSON.stringify(g.locator) === JSON.stringify({
+    workspaceId: p.locator.workspaceId, groupId: p.locator.groupId,
+  }));
+  moveTargetGroupValue.value = sourceGroup ? JSON.stringify(sourceGroup.locator)
+    : defaultGroupLocator.value ? JSON.stringify(defaultGroupLocator.value) : undefined;
   moveOpen.value = true;
 }
 
 async function moveConfirm() {
-  if (!moveTargetGroupId.value) return;
+  if (props.workspace.readOnly) {
+    props.reportError(new Error(t("workspace.readonlyBadge")));
+    return;
+  }
+  if (!moveProjectLocator.value || !moveTargetGroupValue.value) return;
   try {
-    await props.api.projectMove(moveProjectId.value, moveTargetGroupId.value);
+    const target = JSON.parse(moveTargetGroupValue.value) as GroupLocator;
+    await props.api.projectMove(moveProjectLocator.value, target);
     await props.workspace.refresh();
     moveOpen.value = false;
   } catch (e) {
@@ -243,16 +279,20 @@ async function moveConfirm() {
   }
 }
 
-async function cloneProject(p: { id: string }) {
+async function cloneProject(p: { locator: ProjectLocator }) {
+  if (props.workspace.readOnly) {
+    props.reportError(new Error(t("workspace.readonlyBadge")));
+    return;
+  }
   try {
-    await props.api.projectClone(p.id);
+    await props.api.projectClone(p.locator);
     await props.workspace.refresh();
   } catch (e) {
     props.reportError(e);
   }
 }
 
-const moveGroupOptions = computed(() => groups.value.map((g) => ({ label: g.name, value: g.id })));
+const moveGroupOptions = computed(() => groups.value.map((g) => ({ label: g.name, value: JSON.stringify(g.locator) })));
 
 // —— 导入项目向导（project 模式） ——
 const importOpen = ref(false);
@@ -337,18 +377,18 @@ async function onCreateWsConfirm(name: string | null) {
             v-for="g in groups"
             :key="g.id"
             class="side-item child"
-            :class="{ active: selection.kind === 'group' && selectedGroupId === g.id }"
+          :class="{ active: selection.kind === 'group' && JSON.stringify(selection.locator) === JSON.stringify(g.locator) }"
             data-testid="home-side-group"
-            @click="selectGroup(g.id)"
+            @click="selectGroup(g.locator)"
           >
             <span class="side-name">{{ g.name }}</span>
             <span class="side-actions" @click.stop>
-              <a-button size="small" type="text" data-testid="home-rename-group" @click="openRenameGroup(g)">{{ t("tree.rename") }}</a-button>
+              <a-button size="small" type="text" data-testid="home-rename-group" :disabled="workspace.readOnly" @click="openRenameGroup(g)">{{ t("tree.rename") }}</a-button>
               <a-button
                 size="small"
                 type="text"
                 danger
-                :disabled="g.projects.length > 0"
+                :disabled="workspace.readOnly || g.projects.length > 0"
                 :title="g.projects.length > 0 ? t('home.groupNotEmpty') : undefined"
                 data-testid="home-delete-group"
                 @click="openDeleteGroup(g)"
@@ -358,7 +398,7 @@ async function onCreateWsConfirm(name: string | null) {
             </span>
           </div>
           <div class="side-item child action">
-            <a-button size="small" type="text" data-testid="home-new-group" @click="openCreateGroup">{{ t("home.newGroup") }}</a-button>
+            <a-button size="small" type="text" data-testid="home-new-group" :disabled="workspace.readOnly" @click="openCreateGroup">{{ t("home.newGroup") }}</a-button>
           </div>
           <!-- 打开/新建常驻（切换工作区入口不随打开态消失） -->
           <div class="side-item child action">
@@ -469,10 +509,10 @@ async function onCreateWsConfirm(name: string | null) {
             {{ selection.kind === "group" ? groups.find((g) => g.id === selectedGroupId)?.name : workspace.name }}
           </span>
           <span class="spacer"></span>
-          <a-button size="small" data-testid="home-import-project" :disabled="!workspace.opened" @click="openImportProject">
+          <a-button size="small" data-testid="home-import-project" :disabled="!workspace.opened || workspace.readOnly" @click="openImportProject">
             {{ t("home.importProject") }}
           </a-button>
-          <a-button size="small" type="primary" data-testid="home-new-project-top" :disabled="!workspace.opened" @click="openNewProject">
+          <a-button size="small" type="primary" data-testid="home-new-project-top" :disabled="!workspace.opened || workspace.readOnly" @click="openNewProject">
             {{ t("home.newProject") }}
           </a-button>
         </div>
@@ -481,11 +521,12 @@ async function onCreateWsConfirm(name: string | null) {
         <div v-else class="project-grid" data-testid="home-project-grid">
           <ProjectCard
             v-for="p in visibleProjects"
-            :key="p.id"
+            :key="JSON.stringify(p.locator)"
             :project-id="p.id"
             :project-name="p.name"
-            :active="p.id === activeProjectId"
-            @open="openProject(p.id)"
+            :active="JSON.stringify(p.locator) === JSON.stringify(activeProjectLocator)"
+            :plain="workspace.readOnly"
+            @open="openProject(p.locator)"
             @rename="openRenameProject(p)"
             @clone="cloneProject(p)"
             @move="openMoveProject(p)"
@@ -508,8 +549,8 @@ async function onCreateWsConfirm(name: string | null) {
       <ImportWizard
         v-if="importOpen"
         mode="project"
-        :groups="groups.map((g) => ({ id: g.id, label: g.name }))"
-        :default-group-id="defaultGroupId"
+        :groups="groups.map((g) => ({ locator: g.locator, label: g.name }))"
+        :default-group-locator="defaultGroupLocator"
         :import-w="importW"
         :plugins="plugins"
         :report-error="reportError"
@@ -561,7 +602,7 @@ async function onCreateWsConfirm(name: string | null) {
         <label class="field">
           <span class="field-label">{{ t("home.targetGroup") }}</span>
           <a-select
-            v-model:value="moveTargetGroupId"
+            v-model:value="moveTargetGroupValue"
             class="control"
             :options="moveGroupOptions"
             data-testid="home-move-dialog-group"

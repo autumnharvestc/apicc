@@ -3,9 +3,9 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Select as ASelect, Table as ATable, Tag as ATag } from "ant-design-vue";
 import type { CaseOutcome } from "@apicc/core";
+import type { CollectionLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { useRunStore } from "../stores/run.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
-import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import EmptyState from "./EmptyState.vue";
 import RunsHistory from "./RunsHistory.vue";
 
@@ -21,43 +21,41 @@ import RunsHistory from "./RunsHistory.vue";
 const props = defineProps<{
   run: ReturnType<typeof useRunStore>;
   workspace: ReturnType<typeof useWorkspaceStore>;
-  selectedCollectionId: string | null;
+  selectedCollectionLocator: CollectionLocator | null;
   reportError: (e: unknown) => void;
 }>();
 const { t } = useI18n();
 
 // —— 集合/环境选项（均派生自树 DTO） ——
-const collectionOptions = computed(() => {
-  const options: Array<{ label: string; value: string }> = [];
-  for (const group of props.workspace.tree?.children ?? []) {
-    for (const project of group.children ?? []) {
-      for (const collection of project.children ?? []) {
-        if (collection.kind === "collection") options.push({ label: collection.label, value: collection.id });
-      }
+function projectLocator(locator: CollectionLocator): ProjectLocator {
+  return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+}
+
+const collectionEntries = computed(() => {
+  const result: Array<{ label: string; locator: CollectionLocator }> = [];
+  for (const group of props.workspace.tree?.children ?? []) if (group.kind === "group") for (const project of group.children ?? []) {
+    if (project.kind !== "project") continue;
+    for (const collection of project.children ?? []) if (collection.kind === "collection") {
+      result.push({ label: collection.label, locator: { ...collection.locator } });
     }
   }
-  return options;
+  return result;
 });
+const collectionValue = (locator: CollectionLocator | null) => locator ? JSON.stringify(locator) : "";
+const collectionOptions = computed(() => collectionEntries.value.map((entry) => ({ label: entry.label, value: collectionValue(entry.locator) })));
+const selectedCollectionLocator = ref<CollectionLocator | null>(props.selectedCollectionLocator ? { ...props.selectedCollectionLocator } : null);
+watch(() => props.selectedCollectionLocator, (locator) => { selectedCollectionLocator.value = locator ? { ...locator } : null; }, { deep: true });
+watch([() => props.workspace.root, selectedCollectionLocator], ([root, locator]) => props.run.setTarget(root || null, locator), { immediate: true, deep: true });
 
-const selectedCollectionId = ref<string | null>(props.selectedCollectionId);
-watch(() => props.selectedCollectionId, (id) => { if (id !== null) selectedCollectionId.value = id; });
-
-/** 选中集合所属的项目节点：环境下拉取其 envs（含派生链的完整环境列表）。 */
-const projectOfSelected = computed<TreeNodeDTO | undefined>(() => {
-  for (const group of props.workspace.tree?.children ?? []) {
-    for (const project of group.children ?? []) {
-      if ((project.children ?? []).some((c) => c.id === selectedCollectionId.value)) return project;
-    }
-  }
-  return undefined;
-});
+/** Resolve environments from the exact selected collection's project, not the first matching id. */
+const projectOfSelected = computed(() => selectedCollectionLocator.value ? props.workspace.findProject(projectLocator(selectedCollectionLocator.value)) : null);
 
 // 环境按名称引用（run:collection 入参 envName），首项「无环境」= 不传 envName。
 const selectedEnv = ref("");
 // 环境列表随选中集合所属项目而变：项目切换后原选中环境名在新项目中不存在（残留失效值
 // 会被主进程「未找到环境」显式拒绝），故 projectOfSelected 变化即重置回「无环境」；
 // 同项目内切换集合不触发（computed 引用未变），环境列表不变可保留选中。
-watch(projectOfSelected, () => {
+watch(() => selectedCollectionLocator.value ? JSON.stringify(projectLocator(selectedCollectionLocator.value)) : null, () => {
   selectedEnv.value = "";
 });
 const envOptions = computed(() => [
@@ -67,10 +65,10 @@ const envOptions = computed(() => [
 
 // —— 运行 ——
 async function onRun() {
-  const collectionId = selectedCollectionId.value;
-  if (!collectionId) return;
+  const locator = selectedCollectionLocator.value;
+  if (!locator) return;
   try {
-    await props.run.runCollection(collectionId, selectedEnv.value || undefined);
+    await props.run.runCollection(props.workspace.root, locator, selectedEnv.value || undefined);
   } catch (e) {
     props.reportError(e);
   }
@@ -108,11 +106,11 @@ function formatMs(ms: number): string {
       <div class="toolbar">
         <a-select
           class="collection-select"
-          :value="selectedCollectionId ?? undefined"
+          :value="collectionValue(selectedCollectionLocator) || undefined"
           :options="collectionOptions"
           :placeholder="t('run.collectionPlaceholder')"
           data-testid="run-collection-select"
-          @update:value="(id) => (selectedCollectionId = id as string)"
+          @update:value="(value) => (selectedCollectionLocator = collectionEntries.find((entry) => collectionValue(entry.locator) === value)?.locator ?? null)"
         />
         <a-select
           class="env-select"
@@ -121,7 +119,7 @@ function formatMs(ms: number): string {
           :placeholder="t('run.envPlaceholder')"
           data-testid="run-env-select"
         />
-        <a-button type="primary" :loading="run.running" :disabled="!selectedCollectionId" data-testid="run-btn" @click="onRun">
+        <a-button type="primary" :loading="run.running" :disabled="!selectedCollectionLocator" data-testid="run-btn" @click="onRun">
           {{ t("run.runBtn") }}
         </a-button>
         <a-button data-testid="runs-history-btn" @click="run.historyOpen = true">{{ t("run.history") }}</a-button>

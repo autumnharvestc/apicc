@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
-import { fileStorage } from "@apicc/core";
+import { fileStorage, type Workspace } from "@apicc/core";
 import { runCli, type RunCliDeps } from "../src/main.js";
 
 /**
@@ -25,6 +25,46 @@ let wssUrl = "";
 const captured: { soapBodies: string[]; soapContentTypes: string[]; wsMessages: string[]; httpBodies: string[] } = {
   soapBodies: [], soapContentTypes: [], wsMessages: [], httpBodies: [],
 };
+
+const GROUP_ID = "00000000-0000-4000-8000-000000000042";
+const PROJECT_ID = "00000000-0000-4000-8000-000000000043";
+const COLLECTION_ID = "00000000-0000-4000-8000-000000000045";
+const HTTP_API_ID = "00000000-0000-4000-8000-000000000046";
+const WS_API_ID = "00000000-0000-4000-8000-000000000047";
+const WS_CASE_ID = "00000000-0000-4000-8000-000000000048";
+const SOAP_API_ID = "00000000-0000-4000-8000-000000000049";
+const SOAP_CASE_ID = "00000000-0000-4000-8000-000000000050";
+const HTTP_CASE_ID = "00000000-0000-4000-8000-000000000051";
+const collectionPath = `groups/${GROUP_ID}/projects/${PROJECT_ID}/collections/${COLLECTION_ID}`;
+const soapApiPath = `${collectionPath}/apis/${SOAP_API_ID}`;
+
+function testCase(
+  id: string,
+  name: string,
+  assertions: Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number]["cases"][number]["assertions"],
+  postOperations: Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number]["cases"][number]["postOperations"] = [],
+) {
+  return { id, name, scope: "base", parameters: {}, preOperations: [], postOperations, assertions };
+}
+
+function apiAsset(
+  id: string,
+  name: string,
+  request: Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number]["contract"]["request"],
+  cases: ReturnType<typeof testCase>[],
+) {
+  return {
+    contract: {
+      formatVersion: 1 as const,
+      id,
+      metadata: { name, description: "", tags: [], version: "1", status: "published" as const },
+      request,
+      responses: [],
+    },
+    documentation: "",
+    cases,
+  };
+}
 
 let root: string;
 let prevCwd = "";
@@ -67,45 +107,42 @@ beforeAll(async () => {
   // CLI 按「cwd 向上查找 apicc.workspace.yaml」定位工作区（e2e.test.ts 同款 chdir 模拟）。
   prevCwd = process.cwd();
   process.chdir(root);
-  await fileStorage.save(root, {
+  const ws: Workspace = {
+    formatVersion: 1,
     id: "00000000-0000-4000-8000-000000000041", name: "ws-mixed", variables: {},
     groups: [{
-      id: "00000000-0000-4000-8000-000000000042", name: "demo", projects: [{
-        id: "00000000-0000-4000-8000-000000000043", name: "mixed", variables: {},
-        environments: [{ id: "00000000-0000-4000-8000-000000000044", name: "dev", variables: {} }],
+      id: GROUP_ID, name: "demo", projects: [{
+        id: PROJECT_ID, name: "mixed", variables: {}, globals: {},
+        environments: [{ id: "00000000-0000-4000-8000-000000000044", name: "dev", variables: {}, baseUrls: {} }],
+        models: [], components: [], stressPolicy: { trustedOrigins: [httpBaseUrl], deniedOrigins: [] },
         collections: [{
-          id: "00000000-0000-4000-8000-000000000045", name: "mixed", variables: {}, folders: [],
+          id: COLLECTION_ID, name: "mixed", variables: {}, preOperations: [], postOperations: [], folders: [],
           apis: [
-            {
-              id: "00000000-0000-4000-8000-000000000046", name: "http-one", version: "1", deprecated: false, method: "GET",
-              url: `${httpBaseUrl}/one`, headers: [], query: [],
-              cases: [{ id: "00000000-0000-4000-8000-000000000051", name: "http-用例", scope: "base", parameters: {}, assertions: [{ id: "as1", target: "status", op: "eq", expected: "200" }] }],
-            },
-            {
-              id: "00000000-0000-4000-8000-000000000047", name: "ws-rt", version: "1", deprecated: false, protocol: "websocket",
-              url: wssUrl, message: '{"ping":"m5"}', headers: [], query: [],
-              cases: [{
-                id: "00000000-0000-4000-8000-000000000048", name: "ws-用例", scope: "base", parameters: {},
-                assertions: [{ id: "as2", target: "bodyJson", op: "eq", expected: "ws-ok", path: "pong" }],
-              }],
-            },
-            {
-              id: "00000000-0000-4000-8000-000000000049", name: "soap-add", version: "1", deprecated: false, method: "POST", protocol: "soap",
-              url: `${httpBaseUrl}/soap`, envelope: '<Envelope><Body><AddUser name="m5"/></Body></Envelope>', soapAction: "urn:add",
-              headers: [], query: [],
-              cases: [{
-                id: "00000000-0000-4000-8000-000000000050", name: "soap-用例", scope: "base", parameters: {},
-                // SOAP 响应是 XML——bodyJson 断言不适用，用后置脚本 + 内置 xpath 操作符（M5 D6）。
-        assertions: [],
-        postScript: 'pm.assert(pm.response.text().includes("<id>7</id>"), "SOAP 响应应含 id=7");',
-              }],
-            },
+            apiAsset(HTTP_API_ID, "http-one", {
+              protocol: "http", method: "GET", baseUrl: httpBaseUrl, path: "/one",
+              pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" },
+            }, [testCase(HTTP_CASE_ID, "http-用例", [{ id: "as1", target: "status", op: "eq", expected: "200" }])]),
+            apiAsset(WS_API_ID, "ws-rt", {
+              protocol: "websocket", baseUrl: wssUrl.replace(/\/rt$/, ""), path: "/rt",
+              pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, message: '{"ping":"m5"}',
+            }, [testCase(WS_CASE_ID, "ws-用例", [{ id: "as2", target: "bodyJson", op: "eq", expected: "ws-ok", path: "$.pong" }])]),
+            apiAsset(SOAP_API_ID, "soap-add", {
+              protocol: "soap", method: "POST", baseUrl: httpBaseUrl, path: "/soap",
+              pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" },
+              envelope: '<Envelope><Body><AddUser name="m5"/></Body></Envelope>', soapAction: "urn:add",
+            }, [testCase(SOAP_CASE_ID, "soap-用例", [], [{
+              id: "soap-response-assertion",
+              type: "script",
+              content: 'pm.assert(pm.response.text().includes("<id>7</id>"), "SOAP 响应应含 id=7");',
+            }])]),
           ],
         }],
         workflows: [],
       }],
     }],
-  });
+  };
+  const initial = await fileStorage.load(root);
+  await fileStorage.save(root, ws, { expectedRevision: initial.revision, deletions: [] });
 });
 
 afterAll(() => {
@@ -119,7 +156,7 @@ afterAll(() => {
 describe("多协议混合集合端到端（M5 验收）", () => {
   it("apicc run：HTTP + WS + SOAP 三用例全过（各协议由对应客户端承接）", async () => {
     const exit = await runCli(
-      ["run", "groups/demo/projects/mixed/collections/mixed", "--env", "dev"],
+      ["run", collectionPath, "--env", "dev"],
       (await import("@apicc/core")).createDefaultRegistry(),
       log,
       deps,
@@ -134,8 +171,8 @@ describe("多协议混合集合端到端（M5 验收）", () => {
   it("apicc run-stress：SOAP 接口照常压测（协议感知客户端，非静默 HTTP）", async () => {
     const exit = await runCli(
       [
-        "run-stress", "groups/demo/projects/mixed/collections/mixed/apis/soap-add",
-        "--case", "00000000-0000-4000-8000-000000000050", "--env", "dev", "--concurrency", "2", "--iterations", "6",
+        "run-stress", soapApiPath,
+        "--case", SOAP_CASE_ID, "--env", "dev", "--concurrency", "2", "--iterations", "6",
         "--allow-target", httpBaseUrl,
         "--runs-dir", join(root, "runs"),
       ],

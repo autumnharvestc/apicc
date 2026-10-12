@@ -1,6 +1,7 @@
 import { createPinia, defineStore } from "pinia";
 import type { AiSuggestedCase } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
+import type { ApiLocator } from "../../../shared/locations.js";
 import type { useEditorStore } from "./editor.js";
 
 type Editor = ReturnType<typeof useEditorStore>;
@@ -14,6 +15,23 @@ export const AI_CONFIG_STORAGE_KEY = "apicc.ai.config";
 
 /** localStorage 持久化形状：仅非敏感的 baseUrl/model。 */
 export interface PersistedAiConfig { baseUrl: string; model: string }
+
+interface SuggestionTarget {
+  root: string;
+  activeKey: string;
+  generation: number;
+  locator: ApiLocator;
+}
+
+function sameLocator(left: ApiLocator, right: ApiLocator): boolean {
+  return left.workspaceId === right.workspaceId
+    && left.groupId === right.groupId
+    && left.projectId === right.projectId
+    && left.collectionId === right.collectionId
+    && left.apiId === right.apiId
+    && left.folderIds.length === right.folderIds.length
+    && left.folderIds.every((id, index) => id === right.folderIds[index]);
+}
 
 /** 读持久化配置（形状守卫：非 JSON/缺字段/类型不符 → 空白 + warn，不抛——先例同 online 档案）。 */
 export function readPersistedAiConfig(storage: Storage): PersistedAiConfig {
@@ -54,10 +72,51 @@ export function readPersistedAiConfig(storage: Storage): PersistedAiConfig {
  *   的 id 已由 core 兜住）后**不自动保存**——AI 产出永不静默落盘，dirty 点亮等待用户显式
  *   触发既有保存链路（editor.save）；关闭/丢弃零落盘。
  */
-export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: Storage }) {
+export function createAiStore(deps: {
+  api: ApiccApi;
+  editor: Editor;
+  storage?: Storage;
+  getContext?: () => { root: string; readOnly: boolean };
+}) {
   const api = deps.api;
   const editor = deps.editor;
   const storage = deps.storage ?? localStorage;
+  const getContext = deps.getContext ?? (() => ({
+    root: editor.activeKey === null ? "" : editor.sessions[editor.activeKey]?.root ?? "",
+    readOnly: false,
+  }));
+  let suggestionGeneration = 0;
+  let suggestionTarget: SuggestionTarget | null = null;
+  const activeTarget = (): SuggestionTarget | null => {
+    const activeKey = editor.activeKey;
+    if (activeKey === null) return null;
+    const session = editor.sessions[activeKey];
+    const context = getContext();
+    if (!session || !context.root || session.root !== context.root) return null;
+    return {
+      root: session.root,
+      activeKey,
+      generation: session.generation,
+      locator: {
+        ...session.locator,
+        folderIds: [...session.locator.folderIds],
+      },
+    };
+  };
+  const targetIsCurrent = (target: SuggestionTarget): boolean => {
+    const current = activeTarget();
+    return current !== null
+      && current.root === target.root
+      && current.activeKey === target.activeKey
+      && current.generation === target.generation
+      && sameLocator(current.locator, target.locator);
+  };
+  const clearSuggestions = (state: { suggestions: AiSuggestedCase[] | null; selectedIds: string[]; drawerOpen: boolean }): void => {
+    state.suggestions = null;
+    state.selectedIds = [];
+    state.drawerOpen = false;
+    suggestionTarget = null;
+  };
   return defineStore("ai", {
     state: () => ({
       // —— 配置（对话框）——
@@ -81,6 +140,16 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
       /** 共享错误通道（保存/测试/拉取失败文案上屏）。 */
       error: null as string | null,
     }),
+    getters: {
+      canAdopt(state): boolean {
+        return !getContext().readOnly
+          && editor.api !== null
+          && state.suggestions !== null
+          && state.selectedIds.length > 0
+          && suggestionTarget !== null
+          && targetIsCurrent(suggestionTarget);
+      },
+    },
     actions: {
       /**
        * 启动装配（App 组合根 onMounted 调用，void 之）：读持久化 baseUrl/model + IPC
@@ -161,21 +230,34 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
        * 失败 → error 上屏、抽屉不动。
        */
       async fetchSuggestions(): Promise<void> {
-        if (!editor.apiId || !this.baseUrl || !this.model) {
+        const target = activeTarget();
+        if (!target || !this.baseUrl || !this.model) {
           this.error = "尚未配置 AI 或未选择接口，请先保存 AI 配置并选择接口";
           return;
         }
+        const requestGeneration = ++suggestionGeneration;
         this.suggestLoading = true;
         this.error = null;
         try {
-          const rows = await api.aiSuggest({ apiId: editor.apiId, baseUrl: this.baseUrl, model: this.model });
+          const rows = await api.aiSuggest({ locator: target.locator, baseUrl: this.baseUrl, model: this.model });
+          if (requestGeneration !== suggestionGeneration) return;
+          if (!targetIsCurrent(target)) {
+            clearSuggestions(this);
+            return;
+          }
           this.suggestions = rows.map((s) => structuredClone(s));
           this.selectedIds = [];
           this.drawerOpen = true;
+          suggestionTarget = target;
         } catch (e) {
+          if (requestGeneration !== suggestionGeneration) return;
+          if (!targetIsCurrent(target)) {
+            clearSuggestions(this);
+            return;
+          }
           this.error = e instanceof Error ? e.message : String(e);
         } finally {
-          this.suggestLoading = false;
+          if (requestGeneration === suggestionGeneration) this.suggestLoading = false;
         }
       },
 
@@ -193,7 +275,11 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
        */
       adopt(): number {
         const target = editor.api;
-        if (!target || this.suggestions === null || this.selectedIds.length === 0) return 0;
+        if (getContext().readOnly || !target || this.suggestions === null || this.selectedIds.length === 0) return 0;
+        if (!suggestionTarget || !targetIsCurrent(suggestionTarget)) {
+          clearSuggestions(this);
+          return 0;
+        }
         const selected = new Set(this.selectedIds);
         let count = 0;
         for (const row of this.suggestions) {
@@ -203,22 +289,27 @@ export function createAiStore(deps: { api: ApiccApi; editor: Editor; storage?: S
             name: row.name,
             scope: row.scope,
             parameters: { ...row.parameters },
+            preOperations: row.preOperations.map((operation) => ({ ...operation })),
+            postOperations: row.postOperations.map((operation) => ({ ...operation })),
             assertions: row.assertions.map((a) => ({ ...a })),
-            ...(row.postScript !== undefined ? { postScript: row.postScript } : {}),
           });
           count += 1;
         }
         this.suggestions = null;
         this.selectedIds = [];
         this.drawerOpen = false;
+        suggestionTarget = null;
         return count;
       },
 
       /** 关闭/丢弃（零落盘）：建议与勾选清空、抽屉关闭，editor 不动。 */
       dismissSuggestions(): void {
+        suggestionGeneration += 1;
+        this.suggestLoading = false;
         this.drawerOpen = false;
         this.suggestions = null;
         this.selectedIds = [];
+        suggestionTarget = null;
       },
     },
   })(createPinia());

@@ -48,14 +48,33 @@ const { t } = useI18n();
 const mode = ref<"login" | "register">("login");
 // 注册开关（服务端 auth/config）：关闭时隐藏注册页签（独立部署/非注册模式不显示不可用的功能）
 const allowRegistration = ref(false);
-void fetchAllowRegistration();
-async function fetchAllowRegistration() {
-  try {
-    allowRegistration.value = (await props.apicc.authConfig()).allowRegistration;
-  } catch {
-    allowRegistration.value = false; // 探测失败按关闭处理
-  }
-}
+let authConfigGeneration = 0;
+watch(
+  () => [props.online.dialogOpen, props.online.activeBaseUrl] as const,
+  async ([open, baseUrl], _previous, onCleanup) => {
+    const generation = ++authConfigGeneration;
+    let current = true;
+    onCleanup(() => { current = false; });
+    if (!open || !baseUrl) {
+      allowRegistration.value = false;
+      mode.value = "login";
+      return;
+    }
+    allowRegistration.value = false;
+    mode.value = "login";
+    const isCurrent = () => current
+      && generation === authConfigGeneration
+      && props.online.dialogOpen
+      && props.online.activeBaseUrl === baseUrl;
+    try {
+      const config = await props.apicc.authConfig(baseUrl);
+      if (isCurrent()) allowRegistration.value = config.allowRegistration;
+    } catch {
+      if (isCurrent()) allowRegistration.value = false; // 探测失败按关闭处理
+    }
+  },
+  { immediate: true },
+);
 const username = ref("");
 const password = ref("");
 const displayName = ref("");

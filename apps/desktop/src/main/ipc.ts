@@ -1,21 +1,13 @@
-import { mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { ApiDefinitionSchema, ProjectSchema, renderDesignMarkdown, WorkflowRunner, WorkflowSchema, WorkflowStatusSchema, workflowImpact, normalizeStressOrigin, normalizeStressPolicy, StressSafetyError, findProjectApi, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type Project, type Workspace, type StressTargetPolicy } from "@apicc/core";
-import { z } from "zod";
+import { WorkflowRunner, StressSafetyError, findProjectApi, createProjectSnapshot, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus } from "@apicc/core";
 import { join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import { StressRunResultSchema, type ApiDetail, type DebugInput, type DebugOutput, type EnvCreateInput, type ImportApplyInput, type ImportPreviewInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput } from "../shared/types.js";
-import {
-  OnlineBaseUrlSchema,
-  OnlineBatchInputSchema,
-  OnlineGetFilesInputSchema,
-  OnlineMappingInputSchema,
-  OnlinePathSchema,
-  OnlineRegisterInputSchema,
-  OnlineRoleSchema,
-} from "../shared/online/contract.js";
+import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type DebugInput, type DebugOutput, type EnvCreateInput, type ImportApplyInput, type ImportPreviewInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
+import { parseIpcArgs, type IpcArgsMap, type IpcResultMap } from "../shared/ipc-contract.js";
+import type { ApiLocator, ApiParentLocator, CaseLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
+import { localTreeNodeKey } from "../shared/tree-dto.js";
 import type { OnlineFilesBatchInput, OnlineProjectMappingInput, OnlineWorkspaceOpenInput } from "../shared/online/types.js";
-import type { ContainerSaveInput, ProjectGlobalSettings } from "../shared/types.js";
+import type { ApiTestCase, ComponentAsset, ModelAsset } from "@apicc/core";
 import { createOnlineSession, type OnlineSession } from "./online/session.js";
 import { scanDirFiles, writeFiles } from "./online/migrate.js";
 import type { OnlineClient } from "./online/client.js";
@@ -24,234 +16,22 @@ import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
 import { listRuns, readRun } from "./runs.js";
 import { createStressController } from "./stress.js";
 import type { createSession } from "./session.js";
-import { toTreeNode, type TreeNodeDTO } from "./tree.js";
+import { toTreeNode } from "./tree.js";
 import type { AiKeyStore } from "./ai/config.js";
 import { runAiSuggest, runAiTestConfig, type AiRuntimeDeps } from "./ai/suggest.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput } from "../shared/ai/contract.js";
 import { createPluginsRuntime, type PluginsRuntime, type PluginsRuntimeOptions } from "./plugins/runtime.js";
 import type { PluginsListResult } from "../shared/plugins/contract.js";
+import { createDesktopCredentialHost, type DesktopCredentialHostOptions, type PreparedDesktopExecutionRun } from "./credentials.js";
+import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
+import type { CredentialPutInput, CredentialRefInput } from "../shared/credentials.js";
 
 type Session = ReturnType<typeof createSession>;
+type IsUnion<Value, Whole = Value> = Value extends Whole ? ([Whole] extends [Value] ? false : true) : never;
+type HandleArgs<Channel extends IpcChannelName> = IsUnion<Channel> extends true ? unknown[] : IpcArgsMap[Channel];
 
-// —— 全频道入参 zod schema（任务 8 收口，与 shared/types.ts 字段一一对应）——
-// 多参频道包 tuple；对象频道沿用 core 严格 schema 的口径（import:apply 的 project
-// 多余字段 fail-fast，与导入器产物一致）；其余对象为最简 z.object。
-const NodeKindSchema = z.enum(["group", "project", "collection", "folder", "api", "environment"]);
-const NodeCreateInputSchema = z.object({
-  kind: z.enum(["group", "project", "collection", "folder", "api"]),
-  parentId: z.string().nullable(),
-  name: z.string(),
-  method: z.string().optional(),
-  url: z.string().optional(),
-});
-// 可选字符串字段用 nullish（修复轮 1）：渲染层「无选中」惯例是 null（App.vue 的
-// string | null computed、selectedEnvId/selectedCollectionId），optional 只认 undefined，
-// store 原样透传 null 会被收口误伤。envName 的 null 由 resolveEnv 的 falsy 判断归一为
-// 无环境运行；extends 的 null 在 env:create 分支显式归一为 undefined（模型 strict schema
-// 拒绝 null，落盘不可带回）。
-const EnvCreateInputSchema = z.object({ projectId: z.string(), name: z.string(), extends: z.string().nullish() });
-const DebugInputSchema = z.object({ apiId: z.string(), caseId: z.string(), envName: z.string().nullish() });
-const RunInputSchema = z.object({ collectionId: z.string(), envName: z.string().nullish() });
-const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() });
-const ImportApplyInputSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("project"), groupId: z.string(), name: z.string(), project: ProjectSchema }),
-  z.object({ mode: z.literal("module"), projectId: z.string(), name: z.string(), project: ProjectSchema }),
-]);
-const ProjectMoveInputSchema = z.object({ projectId: z.string(), targetGroupId: z.string() });
-// 工作流频道（M2-B 任务 1）：wf:save 复用 core WorkflowSchema 全量校验（strict，未知字段
-// fail-fast）；wf:run 的 envName 沿用 envName nullish 惯例（null 归一为无环境运行）。
-const WfListInputSchema = z.object({ projectId: z.string() });
-const WfGetInputSchema = z.object({ workflowId: z.string() });
-const WfCreateInputSchema = z.object({ projectId: z.string(), name: z.string() });
-const WfDeleteInputSchema = z.object({ workflowId: z.string() });
-const WfRenameInputSchema = z.object({ workflowId: z.string(), name: z.string() });
-const WfSaveInputSchema = z.object({ workflow: WorkflowSchema });
-const WfSetStatusInputSchema = z.object({ workflowId: z.string(), next: WorkflowStatusSchema });
-const WfImpactInputSchema = z.object({ caseId: z.string().optional(), apiId: z.string().optional() });
-const WfRunInputSchema = z.object({ workflowId: z.string(), envName: z.string().nullish(), strict: z.boolean().optional() });
-// 压测频道（M2-D3 任务 1）：envName 沿用 nullish 惯例；maxIterations/durationMs 传 null
-// （antd InputNumber 清空口径）同样放行，null 由 stress.ts 归一为 undefined（终止条件
-// 二者都缺时由 StressRunner 抛「压测终止条件缺失」core 文案）。
-const StressThresholdsSchema = z.object({
-  maxErrorRate: z.number().finite().min(0).max(1).optional(),
-  maxAssertionFailureRate: z.number().finite().min(0).max(1).optional(),
-  maxP95Ms: z.number().finite().positive().optional(),
-  minRps: z.number().finite().positive().optional(),
-}).strict();
-const StressOriginSchema = z.string().superRefine((value, ctx) => {
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("protocol");
-    const authority = value.slice(value.indexOf("://") + 3);
-    if (!/^[^/?#\s]+\/?$/.test(authority)) throw new Error("origin");
-    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("origin");
-  } catch {
-    ctx.addIssue({ code: "custom", message: "必须是无路径、查询、片段和用户信息的 HTTP(S) origin" });
-  }
-}).transform((value) => normalizeStressOrigin(value));
-const StressOriginListSchema = z.array(StressOriginSchema).transform((values) => [...new Set(values)]);
-const StressPolicySchema = z.object({
-  trustedOrigins: StressOriginListSchema.optional(),
-  deniedOrigins: StressOriginListSchema.optional(),
-  maxConcurrency: z.number().int().positive().optional(),
-  maxRps: z.number().finite().positive().optional(),
-}).strict().superRefine((policy, ctx) => {
-  const trusted = new Set(policy.trustedOrigins ?? []);
-  if ((policy.deniedOrigins ?? []).some((origin) => trusted.has(origin))) {
-    ctx.addIssue({ code: "custom", path: ["deniedOrigins"], message: "可信与禁用 origin 不能重叠" });
-  }
-}).transform((policy) => normalizeStressPolicy(policy));
-const StressRunInputSchema = z.object({
-  apiId: z.string(),
-  caseId: z.string(),
-  envName: z.string().nullish(),
-  concurrency: z.number().finite().int().positive().safe(),
-  maxIterations: z.number().finite().int().positive().safe().nullish(),
-  durationMs: z.number().finite().positive().max(Number.MAX_SAFE_INTEGER).nullish(),
-  thresholds: StressThresholdsSchema.optional(),
-  connectionMode: z.enum(["pooled", "fresh"]).optional(),
-  confirmedTargetOrigins: StressOriginListSchema.optional(),
-}).strict();
-// 在线频道（M3-B 任务 1）：复用 shared/online/contract.ts 的契约 schema（path 规则/批量上限/
-// register 校验单一来源），仅叠加频道定位字段（baseUrl/workspaceId）。未登录错误的可读文案
-// 由 online session 抛出（「尚未登录在线服务器」），此处只管形状。
-const OnlineRegisterChannelSchema = OnlineRegisterInputSchema.extend({ baseUrl: OnlineBaseUrlSchema });
-const OnlineLoginChannelSchema = z.object({ baseUrl: OnlineBaseUrlSchema, username: z.string(), password: z.string() });
-const OnlineResumeChannelSchema = z.object({ baseUrl: OnlineBaseUrlSchema });
-const OnlineWorkspaceIdSchema = z.object({ workspaceId: z.string().min(1) });
-const OnlineFilesGetChannelSchema = OnlineGetFilesInputSchema.extend({ workspaceId: z.string().min(1) });
-const OnlineFilePutChannelSchema = z.object({
-  workspaceId: z.string().min(1),
-  path: OnlinePathSchema,
-  content: z.string(),
-  baseVersion: z.number().int().nonnegative(),
-});
-const OnlineFilesBatchChannelSchema = OnlineBatchInputSchema.extend({ workspaceId: z.string().min(1) });
-const OnlineFileDeleteChannelSchema = z.object({
-  workspaceId: z.string().min(1),
-  path: OnlinePathSchema,
-  baseVersion: z.number().int().nonnegative(),
-});
-// 在线工作区/迁移频道（M3-B 任务 3）：open 携工作区摘要三元组（角色过契约枚举）；
-// migrate:write 批量 ≤200（与 §3.4 批量口径一致）、路径过契约 path 规则（越界在 main 侧再兜底）。
-const OnlineWorkspaceOpenChannelSchema = z.object({
-  workspaceId: z.string().min(1),
-  name: z.string().min(1),
-  myRole: OnlineRoleSchema,
-});
-// M3-C 前置对齐顺带（M3-B 终审 Minor 6）：workspaceId 定位 schema 统一复用 OnlineWorkspaceIdSchema，
-// 消除 OnlineWorkspaceIdRequiredSchema 重复定义。
-const OnlineMigrateScanChannelSchema = z.object({ dir: z.string().min(1) });
-const OnlineMigrateWriteChannelSchema = z.object({
-  dir: z.string().min(1),
-  files: z.array(z.object({ path: OnlinePathSchema, content: z.string() })).min(1).max(200),
-});
-// 迁移映射桥 + 组清单频道（计划 C 任务 2）：载荷复用映射契约（≤200 条/批 + 名称约束），
-// 组清单单参包对象（workspaceId）。
-const OnlineProjectMappingChannelSchema = OnlineMappingInputSchema.extend({ workspaceId: z.string().min(1) });
-const OnlineGroupsListChannelSchema = OnlineWorkspaceIdSchema;
-// AI 频道（M6-C 任务 2 真链路）：save-config 形状校验（baseUrl/model 由渲染层表单与
-// localStorage 持久化，main 只收形状；apiKey 非空才入安全存储）；suggest 携 apiId（定位
-// 接口定义）与已保存配置（baseUrl/model，与 safeStorage key 合成 provider 配置）；
-// test-config 轻量探测（连接测试专用，无需选中接口）。
-const AiSaveConfigChannelSchema = z.object({
-  baseUrl: z.string().min(1),
-  model: z.string().min(1),
-  apiKey: z.string().optional(),
-});
-const AiSuggestChannelSchema = z.object({
-  apiId: z.string().min(1),
-  baseUrl: z.string().min(1),
-  model: z.string().min(1),
-});
-const AiTestConfigChannelSchema = z.object({
-  baseUrl: z.string().min(1),
-  model: z.string().min(1),
-});
+// IPC argument schemas and channel/result maps are centralized in shared/ipc-contract.ts.
 
-/** 频道 → 入参 tuple schema 表：Record 键为全部频道名，新增频道漏配 schema 即编译错误。 */
-const schemas: Record<IpcChannelName, z.ZodTypeAny> = {
-  [IpcChannel.WsOpen]: z.tuple([z.string()]),
-  [IpcChannel.WsCreate]: z.tuple([z.string(), z.string()]),
-  [IpcChannel.WsPickDirectory]: z.tuple([]),
-  [IpcChannel.WsValidate]: z.tuple([]),
-  [IpcChannel.TreeGet]: z.tuple([]),
-  [IpcChannel.NodeCreate]: z.tuple([NodeCreateInputSchema]),
-  [IpcChannel.NodeRename]: z.tuple([NodeKindSchema, z.string(), z.string()]),
-  [IpcChannel.NodeDelete]: z.tuple([NodeKindSchema, z.string()]),
-  [IpcChannel.EnvCreate]: z.tuple([EnvCreateInputSchema]),
-  [IpcChannel.EnvVarsSave]: z.tuple([z.string(), z.record(z.string(), z.string())]),
-  [IpcChannel.EnvBaseUrlsSave]: z.tuple([z.string(), z.record(z.string(), z.string())]),
-  [IpcChannel.ContainerSave]: z.tuple([z.record(z.string(), z.unknown())]),
-  [IpcChannel.ContainerGet]: z.tuple([z.enum(["collection", "folder"]), z.string()]),
-  [IpcChannel.GlobalsSave]: z.tuple([z.string(), z.record(z.string(), z.unknown())]),
-  [IpcChannel.GlobalsGet]: z.tuple([z.string()]),
-  [IpcChannel.StressPolicySave]: z.tuple([z.string(), StressPolicySchema]),
-  [IpcChannel.ApiGet]: z.tuple([z.string()]),
-  [IpcChannel.ApiSave]: z.tuple([ApiDefinitionSchema]),
-  [IpcChannel.DebugSend]: z.tuple([DebugInputSchema]),
-  [IpcChannel.RunCollection]: z.tuple([RunInputSchema]),
-  [IpcChannel.RunsList]: z.tuple([]),
-  [IpcChannel.RunsGet]: z.tuple([z.string()]),
-  [IpcChannel.ImportPreview]: z.tuple([ImportPreviewInputSchema]),
-  [IpcChannel.ImportApply]: z.tuple([ImportApplyInputSchema]),
-  [IpcChannel.ProjectClone]: z.tuple([z.string()]),
-  [IpcChannel.ProjectMove]: z.tuple([ProjectMoveInputSchema]),
-  [IpcChannel.DesignExport]: z.tuple([z.string()]),
-  [IpcChannel.WfList]: z.tuple([WfListInputSchema]),
-  [IpcChannel.WfGet]: z.tuple([WfGetInputSchema]),
-  [IpcChannel.WfCreate]: z.tuple([WfCreateInputSchema]),
-  [IpcChannel.WfDelete]: z.tuple([WfDeleteInputSchema]),
-  [IpcChannel.WfRename]: z.tuple([WfRenameInputSchema]),
-  [IpcChannel.WfSave]: z.tuple([WfSaveInputSchema]),
-  [IpcChannel.WfSetStatus]: z.tuple([WfSetStatusInputSchema]),
-  [IpcChannel.WfImpact]: z.tuple([WfImpactInputSchema]),
-  [IpcChannel.WfRun]: z.tuple([WfRunInputSchema]),
-  [IpcChannel.StressRun]: z.tuple([StressRunInputSchema]),
-  [IpcChannel.StressStop]: z.tuple([]),
-  // 在线频道（M3-B 任务 1）：login/register 携 baseUrl；内容频道携 workspaceId 定位。
-  [IpcChannel.OnlineRegister]: z.tuple([OnlineRegisterChannelSchema]),
-  [IpcChannel.OnlineLogin]: z.tuple([OnlineLoginChannelSchema]),
-  [IpcChannel.OnlineLogout]: z.tuple([]),
-  [IpcChannel.OnlineResume]: z.tuple([OnlineResumeChannelSchema]),
-  [IpcChannel.OnlineMe]: z.tuple([]),
-  [IpcChannel.OnlineWorkspaceList]: z.tuple([]),
-  [IpcChannel.OnlineWorkspaceCreate]: z.tuple([z.object({ name: z.string().min(1) })]),
-  [IpcChannel.OnlineTreeGet]: z.tuple([OnlineWorkspaceIdSchema]),
-  [IpcChannel.OnlineFilesGet]: z.tuple([OnlineFilesGetChannelSchema]),
-  [IpcChannel.OnlineFilePut]: z.tuple([OnlineFilePutChannelSchema]),
-  [IpcChannel.OnlineFilesBatch]: z.tuple([OnlineFilesBatchChannelSchema]),
-  [IpcChannel.OnlineFileDelete]: z.tuple([OnlineFileDeleteChannelSchema]),
-  // 在线工作区/迁移频道（M3-B 任务 3）。计划 C 任务 1 会话表化：activate 载荷 {workspaceId}；
-  // close 可带 {workspaceId?}（可选元素兼容无参——关活跃）。
-  [IpcChannel.OnlineWorkspaceOpen]: z.tuple([OnlineWorkspaceOpenChannelSchema]),
-  [IpcChannel.OnlineWorkspaceActivate]: z.tuple([OnlineWorkspaceIdSchema]),
-  [IpcChannel.OnlineWorkspaceClose]: z.tuple([z.object({ workspaceId: z.string().min(1).optional() }).optional()]),
-  [IpcChannel.OnlineTreeView]: z.tuple([OnlineWorkspaceIdSchema]),
-  [IpcChannel.OnlineMigrateScan]: z.tuple([OnlineMigrateScanChannelSchema]),
-  [IpcChannel.OnlineMigrateWrite]: z.tuple([OnlineMigrateWriteChannelSchema]),
-  // 迁移映射桥 + 组清单（计划 C 任务 2）
-  [IpcChannel.OnlineProjectMapping]: z.tuple([OnlineProjectMappingChannelSchema]),
-  [IpcChannel.OnlineGroupsList]: z.tuple([OnlineGroupsListChannelSchema]),
-  // AI 频道（M6-C 任务 1 登记 / 任务 2 真链路）
-  [IpcChannel.AiSaveConfig]: z.tuple([AiSaveConfigChannelSchema]),
-  [IpcChannel.AiGetConfig]: z.tuple([]),
-  [IpcChannel.AiSuggest]: z.tuple([AiSuggestChannelSchema]),
-  [IpcChannel.AiTestConfig]: z.tuple([AiTestConfigChannelSchema]),
-  // 插件频道（M7-B 任务 1）：无入参
-  [IpcChannel.PluginsList]: z.tuple([]),
-};
-
-/** 频道入参校验辅助：失败抛带频道名的可读错误（经组合根错误通道显示）。 */
-function validateArgs<T>(channel: IpcChannelName, schema: z.ZodType<T>, input: unknown): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    const issue = result.error.issues[0];
-    const where = issue ? `${issue.path.join(".") || "(root)"} ${issue.message}` : "未知错误";
-    throw new Error(`[${channel}] 入参校验失败: ${where}`);
-  }
-  return result.data;
-}
 
 /**
  * 工作流运行（M2-B 任务 1，仿 CLI run-workflow）：draft 直接拒绝（UI 对 draft 禁用运行
@@ -259,20 +39,77 @@ function validateArgs<T>(channel: IpcChannelName, schema: z.ZodType<T>, input: u
  * 结果固定落盘 .apicc/runs/workflow-<id>-<uuid>.json（生成物隔离，规格 §6/§8）。
  * registry 由调用方注入插件运行时的 registry（M7-B 任务 2：插件贡献在运行频道可选）。
  */
-async function runWorkflow(session: Session, input: WfRunInput, registry: PluginRegistry): Promise<WorkflowRunResult> {
-  const loc = session.locateWorkflow(input.workflowId);
-  if (!loc) throw new Error(`未找到工作流: ${input.workflowId}`);
+async function runWorkflow(
+  session: Session,
+  input: WfRunInput,
+  registrySource: PluginRegistry | (() => Promise<PluginRegistry>),
+  credentials: Pick<ReturnType<typeof createDesktopCredentialHost>, "prepareRun">,
+): Promise<WorkflowRunResult> {
+  const captured = {
+    locator: { ...input.locator },
+    envName: input.envName ?? undefined,
+    strict: input.strict ?? true,
+  };
+  const loc = session.locateWorkflow(captured.locator);
+  if (!loc) throw new Error(`未找到工作流: ${JSON.stringify(captured.locator)}`);
   if (loc.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
-  // locateWorkflow 内 ensureOpen 已保证会话打开，root/workspace 非空（与 debug.ts 运行链路同款断言）。
-  const ws = session.workspace!;
-  // resolve：仅在工作流所属项目递归定位接口，避免跨项目同 ID 污染；resolver 仅保留兼容接缝。
-  const findApi = (apiId: string) => findProjectApi(loc.project, apiId)?.api;
-  const runner = new WorkflowRunner({ registry, resolve: findApi, envName: input.envName ?? undefined, failFast: false, strict: input.strict ?? true });
-  const result = await runner.run(loc.workflow, { project: loc.project, workspace: ws });
-  const runsDir = workspaceRunsDir(session.root!);
-  mkdirSync(runsDir, { recursive: true });
-  writeFileSync(join(runsDir, `workflow-${result.workflowId}-${randomUUID()}.json`), JSON.stringify(result, null, 2));
-  return result;
+  const root = session.root!;
+  const snapshot = createProjectSnapshot(loc.project);
+  const workflow = snapshot.project.workflows.find((candidate) => candidate.id === captured.locator.workflowId);
+  if (!workflow) throw new Error(`未找到工作流: ${JSON.stringify(captured.locator)}`);
+  const structuralErrors = validateWorkflowStructure(workflow).filter((issue) => issue.level === "error");
+  if (structuralErrors.length > 0) throw new Error(structuralErrors.map((issue) => issue.message).join("; "));
+  const env = captured.envName
+    ? snapshot.project.environments.find((candidate) => candidate.name === captured.envName)
+    : undefined;
+  if (captured.envName && !env) throw new Error(`未找到环境: ${captured.envName}`);
+  const requestReferences = workflow.nodes.filter((node) => node.kind === "request").map((node) => {
+    const location = node.apiId ? findProjectApi(snapshot.project, node.apiId) : undefined;
+    const api = location?.api;
+    const caseDef = api?.cases.find((candidate) => candidate.id === node.caseId);
+    return { location, api, caseDef };
+  });
+  const hasMissingReference = requestReferences.some(({ location, api, caseDef }) => !location || !api || !caseDef);
+  const selectedAssets = captured.strict && hasMissingReference
+    ? []
+    : [...new Map(requestReferences.flatMap(({ location, api, caseDef }) =>
+      location && api && caseDef && selectEffectiveCases(
+        api.cases,
+        resolveExecutionEnvironment(snapshot.project, location.collection.id, env?.id).chain,
+        caseDef.id,
+      ).length > 0
+        ? [[api.contract.id, api as ApiAsset] as const]
+        : [])).values()];
+  let prepared: PreparedDesktopExecutionRun;
+  const scope = {
+    workspaceId: captured.locator.workspaceId,
+    groupId: captured.locator.groupId,
+    projectId: captured.locator.projectId,
+  };
+  try {
+    prepared = await credentials.prepareRun(scope, snapshot, selectedAssets);
+  } catch (error) {
+    throw createExecutionOutputBoundary([]).error(error);
+  }
+  const boundary = createExecutionOutputBoundary(prepared.markers);
+  try {
+    const registry = typeof registrySource === "function" ? await registrySource() : registrySource;
+    const runner = new WorkflowRunner({ registry, failFast: false, strict: captured.strict });
+    const result = await runner.run(prepared.run, workflow.id, env ? { environmentId: env.id } : {});
+    const file = `workflow-${result.workflowId}-${randomUUID()}.json`;
+    const path = join(workspaceRunsDir(root), file);
+    const persisted = persistExecutionJson(
+      path,
+      result,
+      boundary,
+      (error) => `工作流报告落盘失败（${path}）: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return boundary.value(persisted.warning
+      ? { ...persisted.value, warnings: [...persisted.value.warnings, persisted.warning] }
+      : persisted.value);
+  } catch (error) {
+    throw boundary.error(error);
+  }
 }
 
 export interface OnlineIpcDeps {
@@ -308,6 +145,7 @@ export interface IpcDepsOptions {
    * 清单）。运行频道（debug/集合/工作流）与 plugins:list、import:preview 探测共用其 registry。
    */
   plugins?: PluginsRuntimeOptions;
+  credentials?: DesktopCredentialHostOptions;
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
@@ -334,65 +172,53 @@ export function createIpcDeps(options: IpcDepsOptions) {
   }
   // 压测控制器（M2-D3 任务 1）：状态挂 deps 闭包（进程内单例），ws:open/ws:create 切换
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
-  const stress = createStressController(session);
+  const credentials = createDesktopCredentialHost(session, options.credentials);
+  const stress = createStressController(session, {}, credentials);
 
-  /**
-   * api 分支父解析（宽审查 C1）：parentId 可能是文件夹 id——先在工作区中按文件夹命中
-   （取其所属集合 id 作 collectionId、文件夹 id 作 folderId）；未命中再按集合 id 解析
-   （folderId=null，挂集合根）。此前直接把 parentId 当集合 id 传给 createApi，
-   侧树文件夹行上的「新建接口」一按就抛「未找到集合」。
-   */
-  function resolveApiParent(ws: Workspace | null, parentId: string): { collectionId: string; folderId: string | null } {
-    if (ws) {
-      for (const group of ws.groups) {
-        for (const project of group.projects) {
-          for (const collection of project.collections) {
-            const folder = collection.folders.find((f) => f.id === parentId);
-            if (folder) return { collectionId: collection.id, folderId: folder.id };
-          }
-        }
-      }
-    }
-    return { collectionId: parentId, folderId: null };
-  }
-
-  // 返回统一瘦 DTO（宽审查 I2）：与 memory 替身同构，渲染层无需感知原生节点形状。
-  function createNode(input: NodeCreateInput): NodeCreatedDTO {
+  async function createNode(input: NodeCreateInput): Promise<NodeCreatedDTO> {
     switch (input.kind) {
       case "group": {
-        const g = session.createGroup(input.name);
-        return { kind: "group", id: g.id, label: g.name };
+        const g = await session.createGroup(input.parent, input.name);
+        const locator = { ...input.parent, groupId: g.id };
+        return { kind: "group", source: "local", id: g.id, key: localTreeNodeKey({ source: "local", kind: "group", locator }), locator, label: g.name };
       }
       case "project": {
-        const p = session.createProject(input.parentId!, input.name);
-        return { kind: "project", id: p.id, label: p.name };
+        const p = await session.createProject(input.parent, input.name);
+        const locator = { ...input.parent, projectId: p.id };
+        return { kind: "project", source: "local", id: p.id, key: localTreeNodeKey({ source: "local", kind: "project", locator }), locator, label: p.name };
       }
       case "collection": {
-        const c = session.createCollection(input.parentId!, input.name);
-        return { kind: "collection", id: c.id, label: c.name };
+        const c = await session.createCollection(input.parent, input.name);
+        const locator = { ...input.parent, collectionId: c.id };
+        return { kind: "collection", source: "local", id: c.id, key: localTreeNodeKey({ source: "local", kind: "collection", locator }), locator, label: c.name };
       }
       case "folder": {
-        const f = session.createFolder(input.parentId!, input.name);
-        return { kind: "folder", id: f.id, label: f.name };
+        const f = await session.createFolder(input.parent, input.name);
+        const locator = { ...input.parent, folderIds: [...(input.parent.folderIds ?? []), f.id] };
+        return { kind: "folder", source: "local", id: f.id, key: localTreeNodeKey({ source: "local", kind: "folder", locator }), locator, label: f.name };
       }
       case "api": {
-        const parent = resolveApiParent(session.workspace, input.parentId!);
-        const a = session.createApi(parent.collectionId, parent.folderId, {
-          name: input.name,
-          method: (input.method ?? "GET") as Parameters<Session["createApi"]>[2]["method"],
-          url: input.url ?? "/",
-        });
-        return { kind: "api", id: a.id, label: a.name, method: a.method };
+        const api = await session.createApi(input.parent, input.api);
+        const locator: ApiLocator = { ...input.parent, folderIds: input.parent.folderIds ?? [], apiId: api.contract.id };
+        return {
+          kind: "api", source: "local", id: api.contract.id,
+          key: localTreeNodeKey({ source: "local", kind: "api", locator }), locator,
+          label: api.contract.metadata.name, protocol: api.contract.request.protocol,
+          ...(api.contract.request.protocol === "http" || api.contract.request.protocol === "soap" ? { method: api.contract.request.method } : {}),
+        };
       }
     }
   }
 
-  // 返回值用 any：各频道返回各自 DTO（关键形状已在分支内 satisfies 校验），
-  // 测试与渲染层按频道直取属性，统一 unknown 会迫使每处断言。
-  async function handle(channel: IpcChannelName, _event: unknown, ...args: unknown[]): Promise<any> {
-    // 入参校验收口（任务 8）：所有频道在进入分支前统一按 tuple schema parse，
-    // 形状非法即抛带频道名的可读错误，分支内不再依赖裸 as 断言兜底形状。
-    const a = validateArgs(channel, schemas[channel]!, args) as unknown[];
+  function findApiByLocator(locator: ApiLocator): { api: ApiAsset; context: ReturnType<typeof createProjectSnapshot>["context"] } | undefined {
+    const located = session.locateApi(locator);
+    if (!located) return undefined;
+    const snapshot = createProjectSnapshot(located.project);
+    return { api: structuredClone(located.api), context: snapshot.context };
+  }
+
+  async function dispatch(channel: IpcChannelName, rawArgs: unknown[]): Promise<unknown> {
+    const a = parseIpcArgs(channel, rawArgs) as unknown[];
     switch (channel) {
       case IpcChannel.WsOpen: {
         // 工作区切换清理点（M2-D3 任务 1）：活动压测先 abort，部分报告由其收尾异步落回原工作区。
@@ -414,93 +240,122 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.TreeGet: {
         const ws = session.workspace;
         if (!ws) throw new Error("尚未打开工作区");
-        return toTreeNode(ws) as TreeNodeDTO;
+        return toTreeNode(ws) satisfies IpcResultMap[typeof IpcChannel.TreeGet];
       }
       case IpcChannel.NodeCreate: {
-        // 返回统一瘦 DTO（kind/id/label[/method]，宽审查 I2），渲染层据此定位与续操作。
-        const node = createNode(a[0] as NodeCreateInput);
-        await session.save();
-        return node;
+        return await createNode(a[0] as NodeCreateInput) satisfies IpcResultMap[typeof IpcChannel.NodeCreate];
       }
       case IpcChannel.NodeRename: {
-        const [kind, id, name] = a as [Parameters<Session["renameNode"]>[0], string, string];
-        session.renameNode(kind, id, name);
-        await session.save();
-        return undefined;
+        const [node, name] = a as [Parameters<Session["renameNode"]>[0], string];
+        await session.renameNode(node, name);
+        return undefined satisfies IpcResultMap[typeof IpcChannel.NodeRename];
       }
       case IpcChannel.NodeDelete: {
-        const [kind, id] = a as [Parameters<Session["deleteNode"]>[0], string];
-        session.deleteNode(kind, id);
-        await session.save();
-        return undefined;
+        await session.deleteNode(a[0] as Parameters<Session["deleteNode"]>[0]);
+        return undefined satisfies IpcResultMap[typeof IpcChannel.NodeDelete];
       }
-      // 环境频道（任务 4）：session 变更操作不自动落盘，两分支均显式 save（语义备忘）。
       case IpcChannel.EnvCreate: {
         const input = a[0] as EnvCreateInput;
-        // extends 显式 null 归一为 undefined：模型 strict schema 拒绝 null，不可写入后落盘。
-        const env = session.createEnvironment(input.projectId, { name: input.name, extends: input.extends ?? undefined });
-        await session.save();
-        return env;
+        return await session.createEnvironment(input.locator, {
+          name: input.name,
+          extends: input.extends ?? undefined,
+          variables: input.variables,
+          baseUrls: input.baseUrls,
+        }) satisfies IpcResultMap[typeof IpcChannel.EnvCreate];
       }
       case IpcChannel.EnvVarsSave: {
-        const [envId, variables] = a as [string, Record<string, string>];
-        session.setEnvironmentVariables(envId, variables);
-        await session.save();
-        return undefined;
+        const [locator, variables] = a as [EnvironmentLocator, Record<string, string>];
+        return await session.setEnvironmentVariables(locator, variables) satisfies IpcResultMap[typeof IpcChannel.EnvVarsSave];
       }
       case IpcChannel.EnvBaseUrlsSave: {
-        const [envId, baseUrls] = a as [string, Record<string, string>];
-        session.setEnvironmentBaseUrls(envId, baseUrls);
-        await session.save();
-        return undefined;
+        const [locator, baseUrls] = a as [EnvironmentLocator, Record<string, string>];
+        return await session.setEnvironmentBaseUrls(locator, baseUrls) satisfies IpcResultMap[typeof IpcChannel.EnvBaseUrlsSave];
       }
       case IpcChannel.GlobalsSave: {
-        const [projectId, globals] = a as [string, ProjectGlobalSettings];
-        session.setProjectGlobals(projectId, globals);
-        await session.save();
-        return undefined;
+        const [locator, globals] = a as [ProjectLocator, ProjectGlobalSettings];
+        return await session.setProjectGlobals(locator, globals) satisfies IpcResultMap[typeof IpcChannel.GlobalsSave];
       }
       case IpcChannel.GlobalsGet: {
-        return session.getProjectGlobals(a[0] as string);
+        return session.getProjectGlobals(a[0] as ProjectLocator) satisfies IpcResultMap[typeof IpcChannel.GlobalsGet];
       }
       case IpcChannel.StressPolicySave: {
-        const policy = session.setStressPolicy(a[0] as string, a[1] as StressTargetPolicy);
-        await session.save();
-        return policy;
+        return await session.setStressPolicy(a[0] as ProjectLocator, a[1] as Parameters<Session["setStressPolicy"]>[1]) satisfies IpcResultMap[typeof IpcChannel.StressPolicySave];
       }
       case IpcChannel.ContainerGet: {
-        const [kind, id] = a as ["collection" | "folder", string];
-        return session.getContainer(kind, id);
+        const target = a[0] as ContainerTarget;
+        if (target.kind === "collection") {
+          const location = session.locateCollection(target.locator);
+          if (!location) throw new Error(`Collection not found at complete locator: ${JSON.stringify(target.locator)}`);
+          return { kind: target.kind, locator: target.locator, name: location.collection.name, operations: session.getContainer(target.locator) } satisfies IpcResultMap[typeof IpcChannel.ContainerGet];
+        }
+        const location = session.locateFolder(target.locator);
+        if (!location) throw new Error(`Folder not found at complete locator: ${JSON.stringify(target.locator)}`);
+        return { kind: target.kind, locator: target.locator, name: location.folder.name, operations: session.getContainer(target.locator) } satisfies IpcResultMap[typeof IpcChannel.ContainerGet];
       }
       case IpcChannel.ContainerSave: {
         const input = a[0] as ContainerSaveInput;
-        session.saveContainer(input);
-        await session.save();
-        return undefined;
+        if (input.kind === "collection") {
+          const operations = await session.saveContainer(input.locator, input.operations);
+          return { kind: input.kind, locator: input.locator, operations } satisfies IpcResultMap[typeof IpcChannel.ContainerSave];
+        }
+        const operations = await session.saveContainer(input.locator, input.operations);
+        return { kind: input.kind, locator: input.locator, operations } satisfies IpcResultMap[typeof IpcChannel.ContainerSave];
       }
       case IpcChannel.ApiGet: {
-        const loc = session.locateApi(a[0] as string);
-        if (!loc) throw new Error(`未找到接口: ${a[0] as string}`);
+        const locator = a[0] as ApiLocator;
+        const loc = session.locateApi(locator);
+        if (!loc) throw new Error(`未找到接口: ${JSON.stringify(locator)}`);
         const detail: ApiDetail = {
           api: loc.api,
-          envs: loc.project.environments.map((e) => ({ id: e.id, name: e.name })),
+          locator,
+          envs: loc.project.environments.map((e) => ({ id: e.id, name: e.name, locator: { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId, environmentId: e.id } })),
         };
-        return detail;
+        return detail satisfies IpcResultMap[typeof IpcChannel.ApiGet];
       }
       case IpcChannel.ApiSave: {
-        // saveApi 内部已落盘（替换 + save），此处不再重复 save。
-        await session.saveApi(a[0] as Parameters<Session["saveApi"]>[0]);
-        return undefined;
+        const [locator, api] = a as [ApiLocator, ApiAsset];
+        return await session.saveApi(locator, api) satisfies IpcResultMap[typeof IpcChannel.ApiSave];
       }
+      case IpcChannel.CaseSave: {
+        const [locator, testCase] = a as [CaseLocator, ApiTestCase];
+        return await session.saveCase(locator, testCase) satisfies IpcResultMap[typeof IpcChannel.CaseSave];
+      }
+      case IpcChannel.CaseDelete:
+        await session.deleteCase(a[0] as CaseLocator);
+        return undefined satisfies IpcResultMap[typeof IpcChannel.CaseDelete];
+      case IpcChannel.ModelList:
+        return session.listModels(a[0] as ProjectLocator) satisfies IpcResultMap[typeof IpcChannel.ModelList];
+      case IpcChannel.ModelGet: {
+        const location = session.locateModel(a[0] as ModelLocator);
+        if (!location) throw new Error(`Model not found at complete locator: ${JSON.stringify(a[0])}`);
+        return location.model satisfies IpcResultMap[typeof IpcChannel.ModelGet];
+      }
+      case IpcChannel.ModelCreate:
+        return await session.createModel(a[0] as ProjectLocator, a[1] as Parameters<Session["createModel"]>[1]) satisfies IpcResultMap[typeof IpcChannel.ModelCreate];
+      case IpcChannel.ModelSave:
+        return await session.saveModel(a[0] as ModelLocator, a[1] as ModelAsset) satisfies IpcResultMap[typeof IpcChannel.ModelSave];
+      case IpcChannel.ComponentList:
+        return session.listComponents(a[0] as ProjectLocator) satisfies IpcResultMap[typeof IpcChannel.ComponentList];
+      case IpcChannel.ComponentGet: {
+        const location = session.locateComponent(a[0] as ComponentLocator);
+        if (!location) throw new Error(`Component not found at complete locator: ${JSON.stringify(a[0])}`);
+        return location.component satisfies IpcResultMap[typeof IpcChannel.ComponentGet];
+      }
+      case IpcChannel.ComponentCreate:
+        return await session.createComponent(a[0] as ProjectLocator, a[1] as Parameters<Session["createComponent"]>[1]) satisfies IpcResultMap[typeof IpcChannel.ComponentCreate];
+      case IpcChannel.ComponentSave:
+        return await session.saveComponent(a[0] as ComponentLocator, a[1] as ComponentAsset) satisfies IpcResultMap[typeof IpcChannel.ComponentSave];
+      case IpcChannel.AssetReferences:
+        return session.referencesTo(a[0] as ProjectLocator, a[1] as string) satisfies IpcResultMap[typeof IpcChannel.AssetReferences];
       case IpcChannel.DebugSend: {
-        const result = await sendDebug(session, a[0] as DebugInput, await pluginsRuntime.registry());
+        const result = await sendDebug(session, a[0] as DebugInput, () => pluginsRuntime.registry(), credentials);
         return result satisfies DebugOutput;
       }
       // 运行频道（任务 6）：run:collection 走完整 Runner 并固定落盘 .apicc/runs；
       // runs:list/get 读历史（目录不存在/文件损坏已在 runs.ts 侧降级为 []/null）。
       // registry 注入插件运行时（M7-B 任务 2）：插件协议/认证/断言/脚本在运行频道可选。
       case IpcChannel.RunCollection: {
-        const run = await runCollection(session, a[0] as RunCollectionInput, await pluginsRuntime.registry());
+        const run = await runCollection(session, a[0] as RunCollectionInput, () => pluginsRuntime.registry(), credentials);
         return run satisfies RunResult;
       }
       case IpcChannel.RunsList: {
@@ -521,90 +376,83 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const importer = importers.find((i) => i.detect(input.fileName, input.content));
         if (!importer) throw new Error("无法识别的导入格式");
         const { project, warnings } = importer.parse(input.content);
-        return { importerName: importer.name, project, warnings };
+        return { importerName: importer.name, project, warnings } satisfies IpcResultMap[typeof IpcChannel.ImportPreview];
       }
       case IpcChannel.ImportApply: {
         const input = a[0] as ImportApplyInput;
         // 轨二双模式：project=整包落库到所选分组；module=产物集合改名后并入目标项目
         // （baseUrl 进模块变量、不造环境）。同名并存（同名放开）。
         if (input.mode === "module") {
-          await session.importModuleToProject(input.projectId, input.name, { project: input.project });
+          await session.importModuleToProject(input.target, input.name, {
+            project: input.project,
+            ...(input.sourceEnvironmentName === undefined ? {} : { sourceEnvironmentName: input.sourceEnvironmentName }),
+          });
         } else {
-          await session.importProjectToGroup(input.groupId, input.name, { project: input.project });
+          await session.importProjectToGroup(input.target, input.name, { project: input.project });
         }
-        return undefined;
+        return undefined satisfies IpcResultMap[typeof IpcChannel.ImportApply];
       }
       // 项目克隆/移动（轨二）：克隆=整项目深拷贝新 id 落回原分组；移动=换分组。
       case IpcChannel.ProjectClone: {
-        const projectId = a[0] as string;
-        return session.cloneProject(projectId);
+        return await session.cloneProject(a[0] as ProjectLocator) satisfies IpcResultMap[typeof IpcChannel.ProjectClone];
       }
       case IpcChannel.ProjectMove: {
-        const input = a[0] as { projectId: string; targetGroupId: string };
-        await session.moveProject(input.projectId, input.targetGroupId);
-        return undefined;
+        await session.moveProject(a[0] as ProjectLocator, a[1] as GroupLocator);
+        return undefined satisfies IpcResultMap[typeof IpcChannel.ProjectMove];
       }
       // 详细设计导出（任务 8）：取接口 → core renderDesignMarkdown 渲染 → 注入的
       // saveFile（生产 = showSaveDialog + 写盘）落盘并返回路径（取消为空串）。
       case IpcChannel.DesignExport: {
-        const apiId = a[0] as string;
-        const loc = session.locateApi(apiId);
-        if (!loc) throw new Error(`未找到接口: ${apiId}`);
-        return saveFile(`${loc.api.name}.design.md`, renderDesignMarkdown(loc.api));
+        const locator = a[0] as ApiLocator;
+        const loc = session.locateApi(locator);
+        if (!loc) throw new Error(`未找到接口: ${JSON.stringify(locator)}`);
+        const snapshot = createProjectSnapshot(loc.project);
+        return await saveFile(`${loc.api.contract.metadata.name}.design.md`, renderContractMarkdown(loc.api, snapshot.context)) satisfies IpcResultMap[typeof IpcChannel.DesignExport];
       }
       // 工作流频道（M2-B 任务 1）：变更分支显式 save（session 变更操作不自动落盘，
       // 语义备忘同环境频道）；set-status 仅在迁移成功（errors 为空）时落盘。
       case IpcChannel.WfList: {
-        const input = a[0] as { projectId: string };
-        const ws = session.workspace;
-        if (!ws) throw new Error("尚未打开工作区");
-        const project = ws.groups.flatMap((g) => g.projects).find((p) => p.id === input.projectId);
-        if (!project) throw new Error(`未找到项目: ${input.projectId}`);
-        return project.workflows.map((w) => ({ id: w.id, name: w.name, status: w.status }));
+        const locator = a[0] as ProjectLocator;
+        const project = session.locateProject(locator)?.project;
+        if (!project) throw new Error(`Project not found at complete locator: ${JSON.stringify(locator)}`);
+        return project.workflows.map((workflow) => ({
+          id: workflow.id,
+          name: workflow.name,
+          status: workflow.status,
+          locator: { ...locator, workflowId: workflow.id },
+        } satisfies WorkflowSummary)) satisfies IpcResultMap[typeof IpcChannel.WfList];
       }
       case IpcChannel.WfGet: {
-        const input = a[0] as { workflowId: string };
-        const loc = session.locateWorkflow(input.workflowId);
-        if (!loc) throw new Error(`未找到工作流: ${input.workflowId}`);
-        return { workflow: loc.workflow, projectId: loc.project.id };
+        const locator = a[0] as WorkflowLocator;
+        const loc = session.locateWorkflow(locator);
+        if (!loc) throw new Error(`Workflow not found at complete locator: ${JSON.stringify(locator)}`);
+        return { workflow: loc.workflow, locator } satisfies IpcResultMap[typeof IpcChannel.WfGet];
       }
       case IpcChannel.WfCreate: {
         const input = a[0] as WfCreateInput;
-        const workflow = session.createWorkflow(input.projectId, input.name);
-        await session.save();
-        return workflow;
+        return await session.createWorkflow(input.locator, input.name) satisfies IpcResultMap[typeof IpcChannel.WfCreate];
       }
-      case IpcChannel.WfDelete: {
-        const input = a[0] as { workflowId: string };
-        session.deleteWorkflow(input.workflowId);
-        await session.save();
-        return undefined;
-      }
+      case IpcChannel.WfDelete:
+        await session.deleteWorkflow(a[0] as WorkflowLocator);
+        return undefined satisfies IpcResultMap[typeof IpcChannel.WfDelete];
       case IpcChannel.WfRename: {
-        // renameWorkflow 内部已落盘（改名 + save → cleanupOrphanDirs 清旧目录），不再重复 save。
-        const input = a[0] as { workflowId: string; name: string };
-        await session.renameWorkflow(input.workflowId, input.name);
-        return undefined;
+        const [locator, name] = a as [WorkflowLocator, string];
+        return await session.renameWorkflow(locator, name) satisfies IpcResultMap[typeof IpcChannel.WfRename];
       }
       case IpcChannel.WfSave: {
-        // saveWorkflow 内部已落盘（恒保持 status 替换 + save），此处不再重复 save。
-        const input = a[0] as { workflow: Parameters<Session["saveWorkflow"]>[0] };
-        return session.saveWorkflow(input.workflow);
+        const [locator, workflow] = a as [WorkflowLocator, Workflow];
+        return await session.saveWorkflow(locator, workflow) satisfies IpcResultMap[typeof IpcChannel.WfSave];
       }
       case IpcChannel.WfSetStatus: {
-        const input = a[0] as { workflowId: string; next: Parameters<Session["setWorkflowStatus"]>[1] };
-        const result = session.setWorkflowStatus(input.workflowId, input.next);
-        if (result.errors.length === 0) await session.save();
-        return result;
+        const [locator, next] = a as [WorkflowLocator, WorkflowStatus];
+        return await session.setWorkflowStatus(locator, next) satisfies IpcResultMap[typeof IpcChannel.WfSetStatus];
       }
       case IpcChannel.WfImpact: {
         const input = a[0] as WfImpactInput;
-        const ws = session.workspace;
-        if (!ws) throw new Error("尚未打开工作区");
-        return workflowImpact(ws, { caseId: input.caseId, apiId: input.apiId });
+        return session.workflowImpact(input) satisfies IpcResultMap[typeof IpcChannel.WfImpact];
       }
       case IpcChannel.WfRun: {
-        return runWorkflow(session, a[0] as WfRunInput, await pluginsRuntime.registry());
+        return runWorkflow(session, a[0] as WfRunInput, () => pluginsRuntime.registry(), credentials);
       }
       // 压测频道（M2-D3 任务 1）：run 返回最终报告 + 落盘文件名；stop 返回中止后的
       // 部分报告（abort 语义见 stress.ts）。返回前报告已深拷贝（DataCloneError 防御）。
@@ -627,6 +475,12 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const out = await stress.stop();
         return out satisfies StressRunOutput;
       }
+      case IpcChannel.CredentialPut:
+        return await credentials.put(a[0] as CredentialPutInput) satisfies IpcResultMap[typeof IpcChannel.CredentialPut];
+      case IpcChannel.CredentialRemove:
+        return await credentials.remove(a[0] as CredentialRefInput) satisfies IpcResultMap[typeof IpcChannel.CredentialRemove];
+      case IpcChannel.CredentialStatus:
+        return await credentials.status(a[0] as CredentialRefInput) satisfies IpcResultMap[typeof IpcChannel.CredentialStatus];
       // 在线频道（M3-B 任务 1）：全部委派 online session（登录态串联/冲突出口转换在其内聚）。
       // login 出口不含 token（token 留 main 进程）；put/delete 的 409 转为 outcome 结果对象。
       case IpcChannel.OnlineRegister: {
@@ -634,6 +488,11 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.OnlineLogin: {
         return requireOnline().login(a[0] as Parameters<OnlineSession["login"]>[0]);
+      }
+      case IpcChannel.OnlineAuthConfig: {
+        if (!options.online) throw new Error("在线功能未配置");
+        const client = options.online.createClient(a[0] as string, { onUnauthorized: () => undefined });
+        return client.authConfig();
       }
       case IpcChannel.OnlineLogout:
         await requireOnline().logout();
@@ -706,7 +565,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return { hasKey: requireAi().keyStore.load() !== null } satisfies AiKeyStatus;
       case IpcChannel.AiSuggest: {
         const input = a[0] as AiSuggestInput;
-        return runAiSuggest(requireAi(), input, (apiId) => session.locateApi(apiId)?.api);
+        return runAiSuggest(requireAi(), input, findApiByLocator);
       }
       case IpcChannel.AiTestConfig:
         return runAiTestConfig(requireAi(), a[0] as AiTestConfigInput);
@@ -719,6 +578,14 @@ export function createIpcDeps(options: IpcDepsOptions) {
       default:
         throw new Error(`未知频道: ${channel}`);
     }
+  }
+
+  async function handle<Channel extends IpcChannelName>(
+    channel: Channel,
+    _event: unknown,
+    ...args: HandleArgs<NoInfer<Channel>>
+  ): Promise<IpcResultMap[Channel]> {
+    return await dispatch(channel, args) as IpcResultMap[Channel];
   }
 
   return { handle, pluginsRuntime };

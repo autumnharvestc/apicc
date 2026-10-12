@@ -3,6 +3,9 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Tooltip as ATooltip } from "ant-design-vue";
 import type { useWorkspaceStore } from "../stores/workspace.js";
+import type { ApiLocator, ProjectLocator, WorkflowLocator } from "../../../shared/locations.js";
+import { localTreeNodeKey } from "../../../shared/tree-dto.js";
+import type { LocalTreeNodeDTO } from "../../../shared/tree-dto.js";
 
 /**
  * 测试模块 API 栏（M11 自主视图侧栏迁入）：单接口用例 / 场景用例 锚点 + 活动项目的
@@ -11,27 +14,36 @@ import type { useWorkspaceStore } from "../stores/workspace.js";
  */
 const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
-  activeProjectId: string | null;
-  activeApiId: string | null;
+  activeProjectLocator: ProjectLocator | null;
+  activeApiLocator: ApiLocator | null;
   pane: "api-cases" | "scenario";
-  scenarios: Array<{ id: string; name: string }>;
+  scenarios: Array<{ id: string; name: string; locator: WorkflowLocator }>;
   reportError: (e: unknown) => void;
 }>();
 const emit = defineEmits<{
   "update:pane": [pane: "api-cases" | "scenario"];
-  "pick-api": [id: string];
-  "open-workflow": [id: string];
+  "pick-api": [locator: ApiLocator];
+  "open-workflow": [locator: WorkflowLocator];
 }>();
 const { t } = useI18n();
 
 const apis = computed(() => {
-  const project = (props.workspace.tree?.children ?? [])
-    .flatMap((g) => g.children ?? [])
-    .find((p) => p.id === props.activeProjectId);
-  return (project?.children ?? [])
-    .filter((c) => c.kind === "collection")
-    .flatMap((c) => (c.children ?? []).filter((n) => n.kind === "api").map((a) => ({ id: a.id, label: a.label, collection: c.label })));
+  const project = props.activeProjectLocator ? props.workspace.findProject(props.activeProjectLocator) : null;
+  const result: Array<{ id: string; key: string; label: string; collection: string; locator: ApiLocator }> = [];
+  const visit = (node: LocalTreeNodeDTO, collection: string) => {
+    if (node.kind === "api") result.push({
+      id: node.id, key: node.key, label: node.label, collection,
+      locator: { ...node.locator, folderIds: [...node.locator.folderIds] },
+    });
+    for (const child of node.children ?? []) visit(child, node.kind === "collection" ? node.label : collection);
+  };
+  for (const child of project?.children ?? []) visit(child, "");
+  return result;
 });
+
+function sameApi(left: ApiLocator | null, right: ApiLocator): boolean {
+  return !!left && localTreeNodeKey({ source: "local", kind: "api", locator: left }) === localTreeNodeKey({ source: "local", kind: "api", locator: right });
+}
 
 const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collection))]);
 </script>
@@ -67,12 +79,12 @@ const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collectio
         <div class="group-name">{{ m }}</div>
         <button
           v-for="a in apis.filter((x) => x.collection === m)"
-          :key="a.id"
+          :key="a.key"
           type="button"
           class="api-item"
-          :class="{ active: activeApiId === a.id }"
-          :data-testid="`test-api-${a.id}`"
-          @click="emit('pick-api', a.id)"
+          :class="{ active: sameApi(activeApiLocator, a.locator) }"
+          :data-testid="`test-api-${encodeURIComponent(a.key)}`"
+          @click="emit('pick-api', a.locator)"
         >
           {{ a.label }}
         </button>
@@ -81,12 +93,12 @@ const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collectio
     </template>
 
     <template v-else>
-      <div v-for="w in scenarios" :key="w.id" class="scenario-row" :data-testid="`test-scenario-${w.id}`">
+      <div v-for="w in scenarios" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
         <span class="scenario-name">{{ w.name }}</span>
         <a-tooltip :title="t('test.scenarioStressDeferred')">
           <a-button size="small" type="text" disabled data-testid="test-scenario-stress">{{ t("case.stress") }}</a-button>
         </a-tooltip>
-        <a-button size="small" type="text" :data-testid="`test-scenario-run-${w.id}`" @click="emit('open-workflow', w.id)">
+        <a-button size="small" type="text" :data-testid="`test-scenario-run-${encodeURIComponent(JSON.stringify(w.locator))}`" @click="emit('open-workflow', w.locator)">
           {{ t("case.run") }}
         </a-button>
       </div>

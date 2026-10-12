@@ -1,49 +1,69 @@
-// @vitest-environment jsdom
-// M5-B 任务 2（D7/D9 调试链路真执行 + D3 呈现核验，裁定 B）：主进程 sendDebug 对
-// WebSocket / SOAP 接口的端到端集成——本地 ws echo server + http server 夹具（夹具
-// 思路对齐 tests/main/online/e2e-server.test.ts 的「真服务端」原则与 core
-// tests/protocol/websocket.test.ts 的本地 ws server），经真 core CollectionRunner
-// → 协议分发（D5）→ 协议客户端执行，响应快照（afterResponse）喂给真 ResponseViewer
-// 组件断言「上屏」：
-// - WS：message 模板经环境变量解析（D7）后真实发帧（服务端侧记录收帧），
-//   首个文本帧作为 bodyText、握手 101 作为 status（D3）上屏；
-// - SOAP：envelope/soapAction 到达服务端（头与体逐项核对），HTTP 语义透传上屏；
-// - SOAP fault：服务端 500 + XML 体 → 非执行错误（outcome.error 为空），
-//   ResponseViewer 正常呈现 status/响应体（D3：fault 是合法响应，由断言层处理）。
+// Real local WS/SOAP execution through the formal persisted contract-asset and full-locator path.
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
-import { mount, type VueWrapper } from "@vue/test-utils";
+import type { VueWrapper } from "@vue/test-utils";
+import type { Component } from "vue";
 import { createSession } from "../../src/main/session.js";
 import { sendDebug } from "../../src/main/debug.js";
 import type { DebugOutput } from "../../src/shared/types.js";
-import ResponseViewer from "../../src/renderer/src/components/ResponseViewer.vue";
-import { createI18nInstance } from "../../src/renderer/src/i18n/index.js";
+import type { ApiLocator } from "../../src/shared/locations.js";
+import { IDS, makeApi, makeWorkspace, makeTempRoot, persistWorkspace, projectOne, uuid } from "./helpers/contract-assets.js";
 
-// —— 本地 ws echo server：收到文本帧即回 echo:<原文>（首帧语义，D3） ——
 const received: string[] = [];
-let wss: WebSocketServer;
-let wsUrl = "";
-
-// —— 本地 http server：/soap 记录信封到达并回 XML；/fault 回 500 + XML fault ——
+let wss: WebSocketServer | undefined;
+let wsBase = "";
 interface SoapHit { soapAction: string | undefined; contentType: string | undefined; body: string }
 const soapHits: SoapHit[] = [];
-let http: Server;
+let http: Server | undefined;
 let httpBase = "";
-
 let session: ReturnType<typeof createSession>;
-let dir = "";
-let wsApiId = "";
-let soapApiId = "";
-let faultApiId = "";
+let root: Awaited<ReturnType<typeof makeTempRoot>> | undefined;
+let dom: MinimalJSDOM | undefined;
+let mountComponent: typeof import("@vue/test-utils").mount;
+let responseViewer: Component;
+let createI18nInstance: typeof import("../../src/renderer/src/i18n/index.js").createI18nInstance;
+const domGlobalNames = ["window", "document", "navigator", "localStorage", "getComputedStyle", "Node", "Element", "HTMLElement", "SVGElement", "MutationObserver"] as const;
+const previousDomGlobals = new Map<(typeof domGlobalNames)[number], PropertyDescriptor | undefined>();
+const mountedViewers: VueWrapper[] = [];
 const caseIds: Record<string, string> = {};
+const apiLocators = new Map<string, ApiLocator>();
+const SOAP_API_ID = uuid(30);
+const FAULT_API_ID = uuid(31);
+type DomWindow = Window & {
+  Node: typeof Node;
+  Element: typeof Element;
+  HTMLElement: typeof HTMLElement;
+  SVGElement: typeof SVGElement;
+  MutationObserver: typeof MutationObserver;
+};
+type MinimalJSDOM = { window: DomWindow & { close(): void } };
+const { JSDOM } = createRequire(import.meta.url)("jsdom") as {
+  JSDOM: new (html: string, options: { url: string; pretendToBeVisual: boolean }) => MinimalJSDOM;
+};
 
 beforeAll(async () => {
-  // jsdom 未实现 matchMedia；ResponseViewer → antd（响应式断点）挂载需要。
-  Object.defineProperty(window, "matchMedia", {
+  dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/", pretendToBeVisual: true });
+  const domWindow = dom.window;
+  const globals: Record<(typeof domGlobalNames)[number], unknown> = {
+    window: domWindow,
+    document: domWindow.document,
+    navigator: domWindow.navigator,
+    localStorage: domWindow.localStorage,
+    getComputedStyle: domWindow.getComputedStyle.bind(domWindow),
+    Node: domWindow.Node,
+    Element: domWindow.Element,
+    HTMLElement: domWindow.HTMLElement,
+    SVGElement: domWindow.SVGElement,
+    MutationObserver: domWindow.MutationObserver,
+  };
+  for (const name of domGlobalNames) {
+    previousDomGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, enumerable: true, writable: true, value: globals[name] });
+  }
+  Object.defineProperty(domWindow, "matchMedia", {
     writable: true,
     configurable: true,
     value: (query: string) => ({
@@ -52,8 +72,42 @@ beforeAll(async () => {
     }),
   });
 
-  wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-  wss.on("connection", (socket: WsSocket) => {
+  const testUtils = await import("@vue/test-utils");
+  const i18n = await import("../../src/renderer/src/i18n/index.js");
+  const vue = await import("vue");
+  const compiler = await import("vue/compiler-sfc");
+  const typescript = await import("typescript");
+  const vueI18n = await import("vue-i18n");
+  const antDesign = await import("ant-design-vue");
+  const emptyState = await import("../../src/renderer/src/components/EmptyState.vue");
+  mountComponent = testUtils.mount;
+  createI18nInstance = i18n.createI18nInstance;
+  const source = readFileSync(new URL("../../src/renderer/src/components/ResponseViewer.vue", import.meta.url), "utf8");
+  const { descriptor, errors } = compiler.parse(source, { filename: "ResponseViewer.vue" });
+  if (errors.length > 0 || !descriptor.template) throw new Error("Could not parse the ResponseViewer template for the manual DOM harness.");
+  const compiled = compiler.compileScript(descriptor, { id: "manual-response-viewer", inlineTemplate: true });
+  const moduleBody = typescript.transpileModule(compiled.content, {
+    compilerOptions: { module: typescript.ModuleKind.ESNext, target: typescript.ScriptTarget.ES2022 },
+  }).outputText
+    .replace(/^\s*import\s+.*?from\s+["'][^"']+["'];?\s*$/gm, "")
+    .replace(/export default\s+/, "return ");
+  const compileComponent = new Function(
+    "vueRuntime", "vueI18n", "antDesign", "EmptyState",
+    `const { defineComponent: _defineComponent, unref: _unref, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, computed, ref } = vueRuntime;
+const { useI18n } = vueI18n;
+const { Tabs: ATabs, Tag: ATag, Table: ATable, Typography: ATypography } = antDesign;
+${moduleBody}`,
+  ) as (
+    vueRuntime: typeof vue,
+    vueI18nRuntime: typeof vueI18n,
+    antDesignRuntime: typeof antDesign,
+    emptyStateComponent: Component,
+  ) => Component;
+  responseViewer = compileComponent(vue, vueI18n, antDesign, emptyState.default);
+
+  const websocketServer = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  wss = websocketServer;
+  websocketServer.on("connection", (socket: WsSocket) => {
     socket.on("message", (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
       if (isBinary) return;
       const text = data.toString();
@@ -61,13 +115,13 @@ beforeAll(async () => {
       socket.send(`echo:${text}`);
     });
   });
-  await new Promise<void>((r) => wss.once("listening", r));
-  const addr = wss.address() as { address: string; port: number };
-  wsUrl = `ws://${addr.address}:${addr.port}/echo`;
+  await new Promise<void>((resolve) => websocketServer.once("listening", resolve));
+  const wsAddress = websocketServer.address() as { address: string; port: number };
+  wsBase = `ws://${wsAddress.address}:${wsAddress.port}`;
 
-  http = createServer((req, res) => {
+  const httpServer = createServer((req, res) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
       if (req.url === "/soap") {
@@ -77,92 +131,140 @@ beforeAll(async () => {
           body,
         });
         res.writeHead(200, { "content-type": "text/xml" });
-        res.end('<Envelope><Result>ok</Result></Envelope>');
+        res.end("<Envelope><Result>ok</Result></Envelope>");
         return;
       }
-      // SOAP fault（裁定 B/D3）：500 + XML 体 = 合法响应，非执行错误
       res.writeHead(500, { "content-type": "text/xml" });
       res.end('<?xml version="1.0"?><Envelope><Fault><Code>Server</Code></Fault></Envelope>');
     });
   });
-  http.listen(0, "127.0.0.1"); // node:http 不自启动监听（WebSocketServer 构造即 listen）
-  await new Promise<void>((r) => http.once("listening", r));
-  const httpAddr = http.address() as { address: string; port: number };
-  httpBase = `http://${httpAddr.address}:${httpAddr.port}`;
+  http = httpServer;
+  httpServer.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => httpServer.once("listening", resolve));
+  const httpAddress = httpServer.address() as { address: string; port: number };
+  httpBase = `http://${httpAddress.address}:${httpAddress.port}`;
 
-  // —— 会话夹具：dev 环境（token=世界，D7 变量解析走真管线）+ 三个协议接口 ——
+  const workspace = makeWorkspace();
+  const project = projectOne(workspace);
+  const collection = project.collections.find((item) => item.id === IDS.collectionOne)!;
+  const environment = project.environments[0]!;
+  environment.variables.token = "世界";
+  delete environment.baseUrls[IDS.collectionOne];
+
+  const wsApi = makeApi(IDS.sharedApi, "ws-echo");
+  wsApi.contract.request = {
+    protocol: "websocket", baseUrl: wsBase, path: "/echo",
+    pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, message: "ping-{{token}}",
+  };
+  const soapApi = makeApi(SOAP_API_ID, "soap-do");
+  soapApi.contract.request = {
+    protocol: "soap", method: "POST", baseUrl: httpBase, path: "/soap",
+    pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" },
+    envelope: "<Envelope><body>{{token}}</body></Envelope>", soapAction: "urn:Ping",
+  };
+  const faultApi = makeApi(FAULT_API_ID, "soap-fault");
+  faultApi.contract.request = {
+    protocol: "soap", method: "POST", baseUrl: httpBase, path: "/fault",
+    pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" },
+    envelope: "<Envelope><body>fault-me</body></Envelope>",
+  };
+  collection.apis = [wsApi, soapApi, faultApi];
+  root = await makeTempRoot("apicc-multi-protocol-debug-");
+  await persistWorkspace(root.path, workspace);
   session = createSession();
-  dir = mkdtempSync(join(tmpdir(), "apicc-m5b-debug-"));
-  await session.create(dir, "多协议调试");
-  await session.open(dir);
-  const g = session.createGroup("g");
-  const p = session.createProject(g.id, "p");
-  const c = session.createCollection(p.id, "c");
-  const env = session.createEnvironment(p.id, { name: "dev" });
-  session.setEnvironmentVariables(env.id, { token: "世界" });
+  await session.open(root.path);
 
-  const wsApi = session.createApi(c.id, null, { name: "ws-echo", method: "GET", url: wsUrl });
-  wsApi.protocol = "websocket";
-  wsApi.message = "ping-{{token}}";
-  await session.saveApi(wsApi);
+  for (const id of [IDS.sharedApi, SOAP_API_ID, FAULT_API_ID]) {
+    const locator: ApiLocator = {
+      workspaceId: IDS.workspace,
+      groupId: IDS.groupOne,
+      projectId: IDS.projectOne,
+      collectionId: IDS.collectionOne,
+      folderIds: [],
+      apiId: id,
+    };
+    apiLocators.set(id, locator);
+  }
+  for (const api of [wsApi, soapApi, faultApi]) caseIds[api.contract.id] = api.cases[0]!.id;
+});
 
-  const soapApi = session.createApi(c.id, null, { name: "soap-do", method: "POST", url: `${httpBase}/soap` });
-  soapApi.protocol = "soap";
-  soapApi.envelope = "<Envelope><body>{{token}}</body></Envelope>";
-  soapApi.soapAction = "urn:Ping";
-  await session.saveApi(soapApi);
-
-  const faultApi = session.createApi(c.id, null, { name: "soap-fault", method: "POST", url: `${httpBase}/fault` });
-  faultApi.protocol = "soap";
-  faultApi.envelope = "<Envelope><body>fault-me</body></Envelope>";
-  await session.saveApi(faultApi);
-
-  wsApiId = wsApi.id;
-  soapApiId = soapApi.id;
-  faultApiId = faultApi.id;
-  for (const api of [wsApi, soapApi, faultApi]) caseIds[api.id] = api.cases[0]!.id;
-}, 30_000);
+afterEach(() => {
+  const errors: unknown[] = [];
+  for (const wrapper of mountedViewers.splice(0)) {
+    try {
+      wrapper.unmount();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) throw new AggregateError(errors, "ResponseViewer wrappers failed to unmount.");
+});
 
 afterAll(async () => {
-  for (const client of wss.clients) client.terminate();
-  await new Promise<void>((r) => wss.close(() => r()));
-  await new Promise<void>((r) => http.close(() => r()));
-  rmSync(dir, { recursive: true, force: true });
+  const errors: unknown[] = [];
+  try {
+    try {
+      if (wss) {
+        for (const client of wss.clients) client.terminate();
+        await new Promise<void>((resolve, reject) => wss!.close((error) => error ? reject(error) : resolve()));
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      if (http?.listening) await new Promise<void>((resolve, reject) => http!.close((error) => error ? reject(error) : resolve()));
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await root?.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+  } finally {
+    for (const name of domGlobalNames) {
+      const descriptor = previousDomGlobals.get(name);
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+    previousDomGlobals.clear();
+    dom?.window.close();
+    dom = undefined;
+  }
+  if (errors.length > 0) throw new AggregateError(errors, "Multi-protocol test resources failed to clean up.");
 });
 
 function mountViewer(result: DebugOutput): VueWrapper {
   const { i18n } = createI18nInstance();
-  return mount(ResponseViewer, { props: { result }, global: { plugins: [i18n] } });
+  const wrapper = mountComponent(responseViewer, { props: { result }, global: { plugins: [i18n] } });
+  mountedViewers.push(wrapper);
+  return wrapper;
 }
 
-describe("M5-B 任务 2 调试链路：WS/SOAP sendDebug 真执行 → ResponseViewer 上屏", () => {
-  it("WS：message 经环境变量解析发帧（服务端实收），首帧上屏且握手 101 为 status（D3/D7）", async () => {
-    const result = await sendDebug(session, { apiId: wsApiId, caseId: caseIds[wsApiId]!, envName: "dev" });
-
-    // 服务端侧：真实收到变量解析后的帧（D7 管线）
+describe("WS/SOAP sendDebug 真执行 → ResponseViewer 上屏", () => {
+  it("WS：message 经环境变量解析发帧，首帧上屏且握手 101 为 status", async () => {
+    const locator = apiLocators.get(IDS.sharedApi)!;
+    const result = await sendDebug(session, { locator, caseId: caseIds[IDS.sharedApi]!, envName: "dev" });
     expect(received).toContain("ping-世界");
-    // D3 映射：status=握手 HTTP 状态、bodyText=首个文本帧、headers=握手响应头
     expect(result.response?.status).toBe(101);
     expect(result.response?.bodyText).toBe("echo:ping-世界");
     expect(result.response?.headers["upgrade"]?.toLowerCase()).toContain("websocket");
     expect(result.outcome.passed).toBe(true);
     expect(result.outcome.error).toBeUndefined();
 
-    // 首帧上屏（ResponseViewer 既有渲染零分支）
     const wrapper = mountViewer(result);
     expect(wrapper.find('[data-testid="response-body"]').text()).toContain("echo:ping-世界");
     expect(wrapper.find('[data-testid="response-status"]').text()).toContain("101");
   });
 
-  it("SOAP：envelope/soapAction 到达服务端（头体逐项核对），HTTP 语义响应上屏", async () => {
-    const result = await sendDebug(session, { apiId: soapApiId, caseId: caseIds[soapApiId]!, envName: "dev" });
-
+  it("SOAP：envelope/soapAction 到达服务端，HTTP 语义响应上屏", async () => {
+    const locator = apiLocators.get(SOAP_API_ID)!;
+    const result = await sendDebug(session, { locator, caseId: caseIds[SOAP_API_ID]!, envName: "dev" });
     expect(soapHits).toHaveLength(1);
     const hit = soapHits[0]!;
-    expect(hit.soapAction).toBe("urn:Ping"); // soapAction → SOAPAction 头（D4）
-    expect(hit.contentType).toContain("text/xml"); // 缺省补 Content-Type
-    expect(hit.body).toContain("<Envelope><body>世界</body></Envelope>"); // envelope 变量解析（D7）
-
+    expect(hit.soapAction).toBe("urn:Ping");
+    expect(hit.contentType).toContain("text/xml");
+    expect(hit.body).toContain("<Envelope><body>世界</body></Envelope>");
     expect(result.response?.status).toBe(200);
     expect(result.response?.bodyText).toContain("<Result>ok</Result>");
     expect(result.outcome.passed).toBe(true);
@@ -172,19 +274,17 @@ describe("M5-B 任务 2 调试链路：WS/SOAP sendDebug 真执行 → ResponseV
     expect(wrapper.find('[data-testid="response-status"]').text()).toContain("200");
   });
 
-  it("SOAP fault：服务端 500 + XML 体 → 非执行错误，ResponseViewer 正常呈现（D3）", async () => {
-    const result = await sendDebug(session, { apiId: faultApiId, caseId: caseIds[faultApiId]!, envName: "dev" });
-
-    // D3 关键口径：fault 是合法响应而非执行错误——不抛错、error 为空、断言层裁决通过性
+  it("SOAP fault：服务端 500 + XML 体是合法响应而非执行错误", async () => {
+    const locator = apiLocators.get(FAULT_API_ID)!;
+    const result = await sendDebug(session, { locator, caseId: caseIds[FAULT_API_ID]!, envName: "dev" });
     expect(result.response?.status).toBe(500);
     expect(result.response?.bodyText).toContain("<Fault>");
     expect(result.outcome.error).toBeUndefined();
-    expect(result.outcome.passed).toBe(true); // 无断言 → 用例通过，状态码交由断言判定
+    expect(result.outcome.passed).toBe(true);
 
     const wrapper = mountViewer(result);
     expect(wrapper.find('[data-testid="response-status"]').text()).toContain("500");
     expect(wrapper.find('[data-testid="response-body"]').text()).toContain("<Fault>");
-    // 结果徽标仍按 outcome 渲染（fault 不触发 error 徽标）
     expect(wrapper.find('[data-testid="response-error"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
   });

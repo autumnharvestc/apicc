@@ -1,0 +1,1137 @@
+import { createServer } from "node:http";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CredentialError, createDefaultRegistry, createProjectSnapshot, fileStorage, type AuthBinding, type SecretStore, type Workspace } from "@apicc/core";
+import { createMcpServer } from "../src/mcp/server.js";
+import { prepareExecutionRun, stableCredentialError } from "../src/credentials.js";
+import { runCli } from "../src/main.js";
+
+const groupA = "00000000-0000-4000-8000-000000000002";
+const groupB = "00000000-0000-4000-8000-000000000003";
+const projectId = "00000000-0000-4000-8000-000000000004";
+const collectionId = "00000000-0000-4000-8000-000000000008";
+const outerFolderId = "00000000-0000-4000-8000-000000000031";
+const innerFolderId = "00000000-0000-4000-8000-000000000032";
+const deepApiId = "00000000-0000-4000-8000-000000000033";
+const otherApiId = "00000000-0000-4000-8000-000000000034";
+const caseId = "00000000-0000-4000-8000-000000000035";
+const workerCaseId = "00000000-0000-4000-8000-000000000036";
+const basicApiId = "00000000-0000-4000-8000-000000000037";
+const queryApiId = "00000000-0000-4000-8000-000000000038";
+const basicRefId = "basic-password";
+const queryRefId = "query-key";
+
+let server: ReturnType<typeof createServer>;
+let baseUrl = "";
+let root = "";
+let requestPath = "";
+let authorizationHeader = "";
+const observedRequests: Array<{ url: string; authorization: string }> = [];
+
+const deepApiPath = [
+  "groups", groupA, "projects", projectId, "collections", collectionId,
+  "folders", outerFolderId, "folders", innerFolderId, "apis", deepApiId,
+].join("/");
+
+function api(
+  id: string,
+  name: string,
+  documentation: string,
+  cases: Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number]["cases"] = [],
+  path = "/contract-assets",
+  auth: AuthBinding = { kind: "none" },
+) {
+  return {
+    contract: {
+      formatVersion: 1 as const,
+      id,
+      metadata: { name, description: "", tags: [], version: "1", status: "published" as const },
+      request: {
+        protocol: "http" as const,
+        method: "GET" as const,
+        baseUrl,
+        path,
+        pathParams: [], query: [], headers: [], cookies: [],
+        auth,
+        body: { kind: "none" as const },
+      },
+      responses: [],
+    },
+    cases,
+    documentation,
+  };
+}
+
+function workspace(): Workspace {
+  const deep = api(deepApiId, "deep", "来自指定 group 的设计正文", [{
+    id: caseId, name: "base", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [],
+  }], "/{{outer}}/{{inner}}");
+  return {
+    formatVersion: 1,
+    id: "00000000-0000-4000-8000-000000000001",
+    name: "contract-assets",
+    variables: {},
+    groups: [
+      {
+        id: groupA,
+        name: "same",
+        projects: [{
+          id: projectId,
+          name: "same-project",
+          variables: {},
+          globals: {},
+        environments: [{ id: "00000000-0000-4000-8000-000000000039", name: "dev", variables: {} }],
+          workflows: [],
+          stressPolicy: { trustedOrigins: [baseUrl], deniedOrigins: [] },
+          models: [],
+          components: [],
+          collections: [{
+            id: collectionId,
+            name: "same-collection",
+            variables: {},
+            preOperations: [],
+            postOperations: [],
+            apis: [],
+            folders: [{
+              id: outerFolderId,
+              name: "outer",
+              preOperations: [{ id: "outer-pre", type: "script", content: 'pm.variables.set("outer", "preserved");' }],
+              postOperations: [],
+              apis: [],
+              folders: [{
+                id: innerFolderId,
+                name: "inner",
+                preOperations: [{ id: "inner-pre", type: "script", content: 'pm.variables.set("inner", "preserved");' }],
+                postOperations: [],
+                apis: [deep],
+                folders: [],
+              }],
+            }],
+          }],
+        }],
+      },
+      {
+        id: groupB,
+        name: "same",
+        projects: [{
+          id: projectId,
+          name: "same-project",
+          variables: {},
+          globals: {},
+          environments: [{ id: "00000000-0000-4000-8000-000000000040", name: "dev", variables: {} }],
+          workflows: [],
+        stressPolicy: { trustedOrigins: [baseUrl], deniedOrigins: [] },
+          models: [],
+          components: [],
+          collections: [{
+            id: collectionId,
+            name: "same-collection",
+            variables: {},
+            preOperations: [],
+            postOperations: [],
+            apis: [api(otherApiId, "other", "来自另一个 group 的设计正文", [{
+              id: workerCaseId, name: "worker", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [],
+            }], "/worker", { kind: "bearer", token: { id: "__proto__", policy: "test-auto" } }),
+            api(basicApiId, "basic", "Basic auth echo", [{
+              id: workerCaseId, name: "basic", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [
+                { id: "basic-echo", target: "bodyJson", path: "$.authorization", op: "contains", expected: "Basic" },
+              ],
+            }], "/basic", { kind: "basic", username: "alice", password: { id: basicRefId, policy: "test-auto" } }),
+            api(queryApiId, "query", "API key query echo", [{
+              id: workerCaseId, name: "query", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [
+                { id: "query-echo", target: "bodyJson", path: "$.url", op: "contains", expected: "api%20key" },
+              ],
+            }], "/query", { kind: "apikey", name: "api key", placement: "query", value: { id: queryRefId, policy: "test-auto" } })],
+            folders: [],
+          }],
+        }],
+      },
+    ],
+  };
+}
+
+async function connectMcp(allowRun = false) {
+  const mcp = createMcpServer(root, { allowRun, registry: createDefaultRegistry(), log: () => {} });
+  const client = new Client({ name: "contract-assets-test", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([mcp.connect(serverTransport), client.connect(clientTransport)]);
+  return client;
+}
+
+function resultText(result: { content: Array<{ type: string; text: string }> }): string {
+  return result.content.map((entry) => entry.text).join("\n");
+}
+
+function protoWorkerArgs(definitionRevision: string, credentialVersionsJson: string): string[] {
+  return [
+    "stress-worker", `groups/${groupB}/projects/${projectId}/collections/${collectionId}/apis/${otherApiId}`,
+    "--case", workerCaseId, "--concurrency", "1", "--iterations", "1", "--shard-id", "proto-worker",
+    "--workspace", root, "--definition-revision", definitionRevision, "--credential-versions", credentialVersionsJson,
+  ];
+}
+
+beforeAll(async () => {
+  server = createServer((request, response) => {
+    requestPath = request.url ?? "";
+    authorizationHeader = request.headers.authorization ?? "";
+    observedRequests.push({ url: requestPath, authorization: authorizationHeader });
+    response.statusCode = 200;
+    response.end(JSON.stringify({ url: requestPath, authorization: authorizationHeader }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  root = mkdtempSync(join(tmpdir(), "apicc-contract-assets-"));
+  const initial = await fileStorage.load(root);
+  await fileStorage.save(root, workspace(), { expectedRevision: initial.revision, deletions: [] });
+});
+
+afterAll(async () => {
+  if (root) rmSync(root, { recursive: true, force: true });
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+describe("contract workspace CLI/MCP consumption", () => {
+  it("runs the child version and then an ancestor-only version through fileStorage and runCli", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-effective-case-cli-"));
+    const fixtureWorkspace = workspace();
+    const project = fixtureWorkspace.groups[0]!.projects[0]!;
+    project.environments = [
+      { id: "00000000-0000-4000-8000-000000000051", name: "parent", variables: {}, baseUrls: { [collectionId]: baseUrl } },
+      { id: "00000000-0000-4000-8000-000000000052", name: "child", extends: "parent", variables: {}, baseUrls: {} },
+    ];
+    const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.path = "/{{caseValue}}";
+    asset.cases = [
+      { id: caseId, name: "base-version", scope: "base", parameters: { caseValue: "base-parameter" }, preOperations: [], postOperations: [], assertions: [] },
+      { id: caseId, name: "parent-version", scope: "parent", parameters: { caseValue: "parent-parameter" }, preOperations: [], postOperations: [], assertions: [] },
+      { id: caseId, name: "child-version", scope: "child", parameters: { caseValue: "child-parameter" }, preOperations: [], postOperations: [], assertions: [] },
+    ];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    const runsDir = join(fixtureRoot, ".apicc", "runs");
+    const collectionPath = `groups/${groupA}/projects/${projectId}/collections/${collectionId}`;
+    const previousCwd = process.cwd();
+    let ancestorRoot: string | undefined;
+    observedRequests.length = 0;
+    try {
+      process.chdir(fixtureRoot);
+      const collectionCode = await runCli([
+        "run", collectionPath, "--env", "child", "--runs-dir", runsDir,
+      ], createDefaultRegistry(), () => {}, { loadPlugins: false });
+      expect(collectionCode).toBe(0);
+      const runFiles = readdirSync(runsDir).filter((file) => file.startsWith("run-") && file.endsWith(".json"));
+      expect(runFiles).toHaveLength(1);
+      const runReport = JSON.parse(readFileSync(join(runsDir, runFiles[0]!), "utf8")) as { cases: Array<{ caseName: string }> };
+      expect(runReport.cases.map((outcome) => outcome.caseName)).toEqual(["child-version"]);
+      expect(observedRequests.map((request) => request.url)).toEqual(["/child-parameter"]);
+
+      observedRequests.length = 0;
+      const stressCode = await runCli([
+        "run-stress", deepApiPath, "--case", caseId, "--env", "child", "--concurrency", "1", "--iterations", "1",
+        "--runs-dir", runsDir,
+      ], createDefaultRegistry(), () => {}, { loadPlugins: false });
+      expect(stressCode).toBe(0);
+      expect(observedRequests.map((request) => request.url)).toEqual(["/child-parameter"]);
+
+      ancestorRoot = mkdtempSync(join(tmpdir(), "apicc-effective-case-ancestor-cli-"));
+      const ancestorWorkspace = workspace();
+      const ancestorProject = ancestorWorkspace.groups[0]!.projects[0]!;
+      ancestorProject.environments = [
+        { id: "00000000-0000-4000-8000-000000000071", name: "parent", variables: {}, baseUrls: { [collectionId]: baseUrl } },
+        { id: "00000000-0000-4000-8000-000000000072", name: "child", extends: "parent", variables: {}, baseUrls: {} },
+      ];
+      const ancestorAsset = ancestorProject.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+      ancestorAsset.contract.request.path = "/{{caseValue}}";
+      ancestorAsset.cases = [
+        { id: caseId, name: "parent-ancestor-only", scope: "parent", parameters: { caseValue: "parent-ancestor-parameter" }, preOperations: [], postOperations: [], assertions: [] },
+      ];
+      const ancestorInitial = await fileStorage.load(ancestorRoot);
+      await fileStorage.save(ancestorRoot, ancestorWorkspace, { expectedRevision: ancestorInitial.revision, deletions: [] });
+      const ancestorRunsDir = join(ancestorRoot, ".apicc", "runs");
+      observedRequests.length = 0;
+      process.chdir(ancestorRoot);
+      const ancestorCode = await runCli([
+        "run", collectionPath, "--env", "child", "--runs-dir", ancestorRunsDir,
+      ], createDefaultRegistry(), () => {}, { loadPlugins: false });
+      expect(ancestorCode).toBe(0);
+      expect(observedRequests.map((request) => request.url)).toEqual(["/parent-ancestor-parameter"]);
+      const ancestorRunFiles = readdirSync(ancestorRunsDir).filter((file) => file.startsWith("run-") && file.endsWith(".json"));
+      const ancestorRunReports = ancestorRunFiles.map((file) =>
+        JSON.parse(readFileSync(join(ancestorRunsDir, file), "utf8")) as { cases: Array<{ caseName: string }> },
+      );
+      expect(ancestorRunReports.some((report) => report.cases.map((outcome) => outcome.caseName).includes("parent-ancestor-only"))).toBe(true);
+    } finally {
+      process.chdir(previousCwd);
+      observedRequests.length = 0;
+      if (ancestorRoot) rmSync(ancestorRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["api", "collection", "environment"] as const)(
+    "keeps the prepared snapshot locator when the active %s identity changes during credential preparation",
+    async (identity) => {
+      const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-snapshot-identity-"));
+      const fixtureWorkspace = workspace();
+      const project = fixtureWorkspace.groups[0]!.projects[0]!;
+      const parentEnvironmentId = "00000000-0000-4000-8000-000000000061";
+      const childEnvironmentId = "00000000-0000-4000-8000-000000000062";
+      const targetRequests = {
+        parent: [] as Array<{ path: string; selectedCase: string | undefined }>,
+        child: [] as Array<{ path: string; selectedCase: string | undefined }>,
+      };
+      const parentServer = createServer((request, response) => {
+        targetRequests.parent.push({ path: request.url ?? "", selectedCase: request.headers["x-selected-case"] as string | undefined });
+        response.statusCode = 200;
+        response.end("{}");
+      });
+      const childServer = createServer((request, response) => {
+        targetRequests.child.push({ path: request.url ?? "", selectedCase: request.headers["x-selected-case"] as string | undefined });
+        response.statusCode = 200;
+        response.end("{}");
+      });
+      await Promise.all([
+        new Promise<void>((resolve) => parentServer.listen(0, "127.0.0.1", resolve)),
+        new Promise<void>((resolve) => childServer.listen(0, "127.0.0.1", resolve)),
+      ]);
+      const parentUrl = `http://127.0.0.1:${(parentServer.address() as { port: number }).port}`;
+      const childUrl = `http://127.0.0.1:${(childServer.address() as { port: number }).port}`;
+      project.environments = [
+        { id: parentEnvironmentId, name: "parent", variables: {}, baseUrls: { [collectionId]: parentUrl } },
+        { id: childEnvironmentId, name: "child", extends: "parent", variables: {}, baseUrls: { [collectionId]: childUrl } },
+      ];
+      project.stressPolicy = { trustedOrigins: [parentUrl, childUrl], deniedOrigins: [] };
+      const selectedApi = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+      selectedApi.contract.request.auth = { kind: "bearer", token: { id: "identity-window-secret", policy: "test-auto" } };
+      selectedApi.contract.request.baseUrl = "";
+      selectedApi.contract.request.path = "/{{caseValue}}";
+      selectedApi.cases = [
+        { id: caseId, name: "parent-version", scope: "parent", parameters: { caseValue: "parent-parameter" }, preOperations: [{ id: "parent-marker", type: "script", content: 'pm.request.headers["X-Selected-Case"] = "parent-version";' }], postOperations: [], assertions: [] },
+        { id: caseId, name: "child-version", scope: "child", parameters: { caseValue: "child-parameter" }, preOperations: [{ id: "child-marker", type: "script", content: 'pm.request.headers["X-Selected-Case"] = "child-version";' }], postOperations: [], assertions: [] },
+      ];
+      const initial = await fileStorage.load(fixtureRoot);
+      await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+
+      let activeWorkspace: Workspace | undefined;
+      let mutationCount = 0;
+      const registry = createDefaultRegistry();
+      registry.registerStorage({
+        async load(storageRoot) {
+          const state = await fileStorage.load(storageRoot);
+          activeWorkspace = state.workspace;
+          return state;
+        },
+        save(storageRoot, storedWorkspace, options) {
+          return fileStorage.save(storageRoot, storedWorkspace, options);
+        },
+      });
+      const secretStore: SecretStore = {
+        async put() {},
+        async resolve() { return "synthetic-identity-window-secret"; },
+        async version() {
+          if (mutationCount++ === 0) {
+            const activeProject = activeWorkspace!.groups[0]!.projects[0]!;
+            if (identity === "api") activeProject.collections[0]!.folders[0]!.folders[0]!.apis[0]!.contract.id = "changed-active-api-id";
+            if (identity === "collection") activeProject.collections[0]!.id = "changed-active-collection-id";
+            if (identity === "environment") activeProject.environments.find((environment) => environment.name === "child")!.id = parentEnvironmentId;
+          }
+          return "identity-window-version";
+        },
+        async remove() {},
+        async status() { return "available"; },
+      };
+      const previousCwd = process.cwd();
+      try {
+        process.chdir(fixtureRoot);
+        const code = await runCli([
+          "run-stress", deepApiPath, "--case", caseId, "--env", "child", "--concurrency", "1", "--iterations", "1",
+          "--allow-target", parentUrl, "--allow-target", childUrl,
+          "--runs-dir", join(fixtureRoot, ".apicc", "runs"),
+        ], registry, () => {}, { secretStore, loadPlugins: false });
+
+        expect(code).toBe(0);
+        expect(mutationCount).toBeGreaterThan(0);
+        expect(targetRequests.parent).toEqual([]);
+        expect(targetRequests.child).toEqual([{ path: "/child-parameter", selectedCase: "child-version" }]);
+      } finally {
+        process.chdir(previousCwd);
+        await Promise.all([
+          new Promise<void>((resolve) => parentServer.close(() => resolve())),
+          new Promise<void>((resolve) => childServer.close(() => resolve())),
+        ]);
+        rmSync(fixtureRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("rejects non-applicable cases and an unknown environment before reading credentials or sending", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-effective-case-invalid-"));
+    const fixtureWorkspace = workspace();
+    const project = fixtureWorkspace.groups[0]!.projects[0]!;
+    project.environments = [
+      { id: "00000000-0000-4000-8000-000000000053", name: "parent", variables: {}, baseUrls: { [collectionId]: baseUrl } },
+      { id: "00000000-0000-4000-8000-000000000054", name: "child", extends: "parent", variables: {}, baseUrls: {} },
+    ];
+    const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.auth = { kind: "bearer", token: { id: "preflight-secret", policy: "test-auto" } };
+    asset.cases = [
+      { id: caseId, name: "base-applicable", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
+      { id: "not-applicable", name: "other-environment", scope: "other", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
+    ];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    let secretStoreCalls = 0;
+    const secretStore: SecretStore = {
+      async put() { secretStoreCalls += 1; },
+      async resolve() { secretStoreCalls += 1; return "synthetic-preflight-secret"; },
+      async version() { secretStoreCalls += 1; return "synthetic-version"; },
+      async remove() { secretStoreCalls += 1; },
+      async status() { secretStoreCalls += 1; return "available"; },
+    };
+    const previousCwd = process.cwd();
+    observedRequests.length = 0;
+    try {
+      process.chdir(fixtureRoot);
+      await expect(runCli([
+        "run-stress", deepApiPath, "--case", "not-applicable", "--env", "child", "--concurrency", "1", "--iterations", "1",
+        "--runs-dir", join(fixtureRoot, ".apicc", "runs"),
+      ], createDefaultRegistry(), () => {}, { secretStore, loadPlugins: false }))
+        .rejects.toThrow("不适用于当前环境");
+      expect(secretStoreCalls).toBe(0);
+      expect(observedRequests).toEqual([]);
+
+      await expect(runCli([
+        "run-stress", deepApiPath, "--case", caseId, "--env", "missing", "--concurrency", "1", "--iterations", "1",
+        "--runs-dir", join(fixtureRoot, ".apicc", "runs"),
+      ], createDefaultRegistry(), () => {}, { secretStore, loadPlugins: false }))
+        .rejects.toThrow("未找到环境: missing");
+      expect(secretStoreCalls).toBe(0);
+      expect(observedRequests).toEqual([]);
+    } finally {
+      process.chdir(previousCwd);
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("export-design resolves a full UUID path through nested folders and the selected group", async () => {
+    const previousCwd = process.cwd();
+    const output: string[] = [];
+    try {
+      process.chdir(root);
+      const code = await runCli(["export-design", deepApiPath.replaceAll("/", "\\")], createDefaultRegistry(), (line) => output.push(line), { loadPlugins: false });
+      expect(code).toBe(0);
+      expect(output.join("\n")).toContain("来自指定 group 的设计正文");
+      expect(output.join("\n")).not.toContain("来自另一个 group 的设计正文");
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it("list-apis returns complete UUID paths including every folder ancestor", async () => {
+    const client = await connectMcp();
+    try {
+      const result = await client.callTool({ name: "list-apis", arguments: {} });
+      const rows = JSON.parse(resultText(result as never)) as Array<{ id: string; apiPath: string }>;
+      expect(rows.find((row) => row.id === deepApiId)?.apiPath).toBe(deepApiPath);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("run-case preserves operations from every ancestor folder in the full collection context", async () => {
+    const client = await connectMcp(true);
+    requestPath = "";
+    try {
+      const result = await client.callTool({ name: "run-case", arguments: { apiPath: deepApiPath, caseId } });
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(resultText(result as never))).toMatchObject({ apiId: deepApiId, passed: true });
+      expect(requestPath).toBe("/preserved/preserved");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("redacts Basic Authorization and URL-encoded API-key query echoes from persisted run JSON and CLI output", async () => {
+    const basicSecret = "basic secret /+";
+    const querySecret = "query secret /+";
+    const basicAuthorization = `Basic ${Buffer.from(`alice:${basicSecret}`).toString("base64")}`;
+    const encodedQuerySecret = encodeURIComponent(querySecret);
+    const values = new Map([
+      ["__proto__", { value: "bearer worker secret", version: "version-own-proto" }],
+      [basicRefId, { value: basicSecret, version: "version-basic" }],
+      [queryRefId, { value: querySecret, version: "version-query" }],
+    ]);
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) { return values.get(ref.id)!.value; },
+      async version(_scope, ref) { return values.get(ref.id)!.version; },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const runsDir = join(root, ".apicc", "runs-redaction");
+    const logs: string[] = [];
+    observedRequests.length = 0;
+    const previousCwd = process.cwd();
+    let code: number;
+    try {
+      process.chdir(root);
+      code = await runCli([
+        "run", `groups/${groupB}/projects/${projectId}/collections/${collectionId}`, "--env", "dev", "--runs-dir", runsDir,
+      ], createDefaultRegistry(), (line) => logs.push(line), { secretStore, loadPlugins: false });
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(code).toBe(0);
+    expect(observedRequests.some((request) => request.authorization === basicAuthorization)).toBe(true);
+    expect(observedRequests.some((request) => request.url.includes(`api%20key=${encodedQuerySecret}`))).toBe(true);
+    const resultFiles = readdirSync(runsDir).filter((file) => file.startsWith("run-") && file.endsWith(".json"));
+    expect(resultFiles).toHaveLength(1);
+    const persisted = readFileSync(join(runsDir, resultFiles[0]!), "utf8");
+    for (const forbidden of [basicSecret, basicAuthorization, querySecret, encodedQuerySecret, "bearer worker secret"]) {
+      expect(persisted).not.toContain(forbidden);
+      expect(logs.join("\n")).not.toContain(forbidden);
+    }
+  });
+
+  it("redacts an actual Basic Authorization header when the username comes from an environment variable", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-contract-basic-variable-"));
+    const password = "synthetic-basic-password-variable";
+    const actualAuthorization = `Basic ${Buffer.from(`alice:${password}`, "utf8").toString("base64")}`;
+    const fixtureWorkspace = workspace();
+    const project = fixtureWorkspace.groups[1]!.projects[0]!;
+    project.environments = [{
+      id: "00000000-0000-4000-8000-000000000041",
+      name: "dev",
+      variables: { username: "alice" },
+      baseUrls: {},
+    }];
+    project.collections[0]!.apis = [api(basicApiId, "basic-variable", "Basic auth variable echo", [{
+      id: workerCaseId,
+      name: "basic-variable",
+      scope: "base",
+      parameters: {},
+      preOperations: [],
+      postOperations: [],
+      assertions: [{ id: "basic-echo", target: "bodyJson", path: "$.authorization", op: "contains", expected: "Basic" }],
+    }], "/basic", { kind: "basic", username: "{{username}}", password: { id: basicRefId, policy: "test-auto" } })];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) { expect(ref.id).toBe(basicRefId); return password; },
+      async version() { return "version-basic-variable"; },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const runsDir = join(fixtureRoot, ".apicc", "runs");
+    const logs: string[] = [];
+    const previousCwd = process.cwd();
+    observedRequests.length = 0;
+    try {
+      process.chdir(fixtureRoot);
+      const code = await runCli([
+        "run", `groups/${groupB}/projects/${projectId}/collections/${collectionId}`,
+        "--env", "dev", "--runs-dir", runsDir,
+      ], createDefaultRegistry(), (line) => logs.push(line), { secretStore, loadPlugins: false });
+
+      expect(code).toBe(0);
+      expect(observedRequests).toEqual([{ url: "/basic", authorization: actualAuthorization }]);
+      const resultFiles = readdirSync(runsDir).filter((file) => file.startsWith("run-") && file.endsWith(".json"));
+      expect(resultFiles).toHaveLength(1);
+      const persisted = readFileSync(join(runsDir, resultFiles[0]!), "utf8");
+      expect(persisted).not.toContain(actualAuthorization);
+      expect(persisted).not.toContain(password);
+      expect(logs.join("\n")).not.toContain(actualAuthorization);
+      expect(logs.join("\n")).not.toContain(password);
+    } finally {
+      process.chdir(previousCwd);
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts actual Basic Authorization when a runtime username contains a colon", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-contract-basic-colon-"));
+    const password = "synthetic-basic-password-colon";
+    const actualAuthorization = `Basic ${Buffer.from(`alice:team:${password}`, "utf8").toString("base64")}`;
+    const fixtureWorkspace = workspace();
+    const project = fixtureWorkspace.groups[1]!.projects[0]!;
+    project.environments = [{
+      id: "00000000-0000-4000-8000-000000000043",
+      name: "dev",
+      variables: { username: "alice:team" },
+      baseUrls: {},
+    }];
+    project.collections[0]!.apis = [api(basicApiId, "basic-colon", "Basic auth colon username echo", [{
+      id: workerCaseId,
+      name: "basic-colon",
+      scope: "base",
+      parameters: {},
+      preOperations: [],
+      postOperations: [],
+      assertions: [{ id: "basic-echo", target: "bodyJson", path: "$.authorization", op: "contains", expected: "Basic" }],
+    }], "/basic-colon", { kind: "basic", username: "{{username}}", password: { id: basicRefId, policy: "test-auto" } })];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) { expect(ref.id).toBe(basicRefId); return password; },
+      async version() { return "version-basic-colon"; },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const runsDir = join(fixtureRoot, ".apicc", "runs");
+    const logs: string[] = [];
+    const previousCwd = process.cwd();
+    observedRequests.length = 0;
+    try {
+      process.chdir(fixtureRoot);
+      const code = await runCli([
+        "run", `groups/${groupB}/projects/${projectId}/collections/${collectionId}`,
+        "--env", "dev", "--runs-dir", runsDir,
+      ], createDefaultRegistry(), (line) => logs.push(line), { secretStore, loadPlugins: false });
+
+      expect(code).toBe(0);
+      expect(observedRequests).toEqual([{ url: "/basic-colon", authorization: actualAuthorization }]);
+      const resultFiles = readdirSync(runsDir).filter((file) => file.startsWith("run-") && file.endsWith(".json"));
+      expect(resultFiles).toHaveLength(1);
+      const persisted = readFileSync(join(runsDir, resultFiles[0]!), "utf8");
+      expect(persisted).not.toContain(actualAuthorization);
+      expect(persisted).not.toContain(password);
+      expect(logs.join("\n")).not.toContain(actualAuthorization);
+      expect(logs.join("\n")).not.toContain(password);
+    } finally {
+      process.chdir(previousCwd);
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts actual Basic Authorization when a bound password contains an unpaired surrogate", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-contract-basic-surrogate-"));
+    const password = `synthetic-${String.fromCharCode(0xd800)}`;
+    const utf8Password = Buffer.from(password, "utf8").toString("utf8");
+    const actualAuthorization = `Basic ${Buffer.from(`alice:${password}`, "utf8").toString("base64")}`;
+    const fixtureWorkspace = workspace();
+    const project = fixtureWorkspace.groups[1]!.projects[0]!;
+    project.environments = [{
+      id: "00000000-0000-4000-8000-000000000044",
+      name: "dev",
+      variables: { username: "alice" },
+      baseUrls: {},
+    }];
+    project.collections[0]!.apis = [api(basicApiId, "basic-surrogate", "Basic auth surrogate echo", [{
+      id: workerCaseId,
+      name: "basic-surrogate",
+      scope: "base",
+      parameters: {},
+      preOperations: [],
+      postOperations: [],
+      assertions: [{ id: "basic-echo", target: "bodyJson", path: "$.authorization", op: "contains", expected: "Basic" }],
+    }], "/basic-surrogate", { kind: "basic", username: "{{username}}", password: { id: basicRefId, policy: "test-auto" } })];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) { expect(ref.id).toBe(basicRefId); return password; },
+      async version() { return "version-basic-surrogate"; },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const runsDir = join(fixtureRoot, ".apicc", "runs");
+    const logs: string[] = [];
+    const previousCwd = process.cwd();
+    observedRequests.length = 0;
+    try {
+      process.chdir(fixtureRoot);
+      const code = await runCli([
+        "run", `groups/${groupB}/projects/${projectId}/collections/${collectionId}`,
+        "--env", "dev", "--runs-dir", runsDir,
+      ], createDefaultRegistry(), (line) => logs.push(line), { secretStore, loadPlugins: false });
+
+      expect(code).toBe(0);
+      expect(observedRequests.some((request) => request.url === "/basic-surrogate" && request.authorization === actualAuthorization)).toBe(true);
+      const resultFiles = readdirSync(runsDir).filter((file) => file.startsWith("run-") && file.endsWith(".json"));
+      expect(resultFiles).toHaveLength(1);
+      const persisted = readFileSync(join(runsDir, resultFiles[0]!), "utf8");
+      for (const output of [persisted, logs.join("\n")]) {
+        expect(output.includes(actualAuthorization)).toBe(false);
+        expect(output.includes(password)).toBe(false);
+        expect(output.includes(utf8Password)).toBe(false);
+      }
+    } finally {
+      process.chdir(previousCwd);
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      source: "case parameters overriding an environment value",
+      initialUsername: "{{username}}",
+      environmentUsername: "environment-user",
+      parameters: { username: "alice" },
+      preOperations: [],
+    },
+    {
+      source: "an ordinary pre-request script rewriting the materialized username",
+      initialUsername: "initial-user",
+      environmentUsername: undefined,
+      parameters: {},
+      preOperations: [{ id: "rewrite-username", type: "script" as const, content: 'pm.request.auth.username = "alice";' }],
+    },
+  ])("redacts actual Basic output when the username comes from $source", async ({ initialUsername, environmentUsername, parameters, preOperations }) => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-contract-basic-source-"));
+    const password = "synthetic-basic-password-source";
+    const actualAuthorization = `Basic ${Buffer.from(`alice:${password}`, "utf8").toString("base64")}`;
+    const fixtureWorkspace = workspace();
+    const project = fixtureWorkspace.groups[1]!.projects[0]!;
+    project.environments = [{
+      id: "00000000-0000-4000-8000-000000000042",
+      name: "dev",
+      variables: environmentUsername ? { username: environmentUsername } : {},
+      baseUrls: {},
+    }];
+    project.collections[0]!.apis = [api(basicApiId, "basic-source", "Basic auth source echo", [{
+      id: workerCaseId,
+      name: "basic-source",
+      scope: "base",
+      parameters,
+      preOperations,
+      postOperations: [],
+      assertions: [{ id: "basic-echo", target: "bodyJson", path: "$.authorization", op: "contains", expected: "Basic" }],
+    }], "/basic", { kind: "basic", username: initialUsername, password: { id: basicRefId, policy: "test-auto" } })];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) { expect(ref.id).toBe(basicRefId); return password; },
+      async version() { return "version-basic-source"; },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const runsDir = join(fixtureRoot, ".apicc", "runs");
+    const logs: string[] = [];
+    const previousCwd = process.cwd();
+    observedRequests.length = 0;
+    try {
+      process.chdir(fixtureRoot);
+      const code = await runCli([
+        "run", `groups/${groupB}/projects/${projectId}/collections/${collectionId}`,
+        "--env", "dev", "--runs-dir", runsDir,
+      ], createDefaultRegistry(), (line) => logs.push(line), { secretStore, loadPlugins: false });
+
+      expect(code).toBe(0);
+      expect(observedRequests).toEqual([{ url: "/basic", authorization: actualAuthorization }]);
+      const resultFiles = readdirSync(runsDir).filter((file) => file.startsWith("run-") && file.endsWith(".json"));
+      expect(resultFiles).toHaveLength(1);
+      const persisted = readFileSync(join(runsDir, resultFiles[0]!), "utf8");
+      for (const forbidden of [actualAuthorization, password]) {
+        expect(persisted).not.toContain(forbidden);
+        expect(logs.join("\n")).not.toContain(forbidden);
+      }
+    } finally {
+      process.chdir(previousCwd);
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("credentials save/status/remove use the selected full project scope and never print the value", async () => {
+    const calls: string[] = [];
+    const values = new Map<string, string>();
+    const secretStore: SecretStore = {
+      async put(scope, ref, value) {
+        calls.push(`put:${scope.workspaceId}:${scope.groupId}:${scope.projectId}:${ref.id}`);
+        values.set(ref.id, value);
+      },
+      async resolve(_scope, ref) { return values.get(ref.id) ?? ""; },
+      async version(_scope, ref) { return values.has(ref.id) ? "version-1" : ""; },
+      async remove(scope, ref) {
+        calls.push(`remove:${scope.workspaceId}:${scope.groupId}:${scope.projectId}:${ref.id}`);
+        values.delete(ref.id);
+      },
+      async status(_scope, ref) { return values.has(ref.id) ? "available" : "missing"; },
+    };
+    const projectPath = `groups/${groupB}/projects/${projectId}`;
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    try {
+      process.chdir(root);
+      const saveCode = await runCli(["credentials", "save", projectPath, "__proto__"], createDefaultRegistry(), (line) => logs.push(line), {
+        secretStore, secretInput: async () => "synthetic-cli-save-value", loadPlugins: false,
+      });
+      const statusCode = await runCli(["credentials", "status", projectPath, "__proto__"], createDefaultRegistry(), (line) => logs.push(line), {
+        secretStore, loadPlugins: false,
+      });
+      const removeCode = await runCli(["credentials", "remove", projectPath, "__proto__"], createDefaultRegistry(), (line) => logs.push(line), {
+        secretStore, loadPlugins: false,
+      });
+      expect([saveCode, statusCode, removeCode]).toEqual([0, 0, 0]);
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(calls).toEqual([
+      `put:00000000-0000-4000-8000-000000000001:${groupB}:${projectId}:__proto__`,
+      `remove:00000000-0000-4000-8000-000000000001:${groupB}:${projectId}:__proto__`,
+    ]);
+    expect(logs.join("\n")).toContain("凭据状态：available");
+    expect(logs.join("\n")).not.toContain("synthetic-cli-save-value");
+  });
+
+  it("stable credential errors preserve each code/ref and map all eight categories to distinct safe messages", () => {
+    const codes = [
+      "CREDENTIAL_MISSING",
+      "CREDENTIAL_UNAVAILABLE",
+      "CREDENTIAL_FORMAT_UNSUPPORTED",
+      "CREDENTIAL_POLICY_UNSUPPORTED",
+      "CREDENTIAL_READ_FAILED",
+      "CREDENTIAL_SAVE_FAILED",
+      "CREDENTIAL_REMOVE_FAILED",
+      "CREDENTIAL_VERSION_CONFLICT",
+    ] as const;
+    const mapped = codes.map((code) => {
+      const source = new CredentialError(code, "synthetic-ref-id");
+      source.cause = new Error("private-native-backend-detail");
+      const stable = stableCredentialError(source) as Error & { code?: string; refId?: string };
+      expect(stable).toMatchObject({ code, refId: "synthetic-ref-id" });
+      expect(stable.message).toContain(code);
+      expect(stable.message).toContain("synthetic-ref-id");
+      expect(stable.message).not.toContain("private-native-backend-detail");
+      return stable.message;
+    });
+
+    expect(new Set(mapped).size).toBe(codes.length);
+  });
+
+  it.each([
+    ["save", "CREDENTIAL_SAVE_FAILED"],
+    ["status", "CREDENTIAL_UNAVAILABLE"],
+    ["remove", "CREDENTIAL_REMOVE_FAILED"],
+  ] as const)("credentials %s preserves safe error code/ref from the host store", async (operation, code) => {
+    const nativeDetail = "private-native-backend-detail";
+    const fail = (refId: string): never => {
+      const error = new CredentialError(code, refId);
+      error.cause = new Error(nativeDetail);
+      throw error;
+    };
+    const secretStore: SecretStore = {
+      async put(_scope, ref) { if (operation === "save") fail(ref.id); },
+      async resolve() { return "unused"; },
+      async version() { return "version"; },
+      async remove(_scope, ref) { if (operation === "remove") fail(ref.id); },
+      async status(_scope, ref) { if (operation === "status") fail(ref.id); return "available"; },
+    };
+    const projectPath = `groups/${groupB}/projects/${projectId}`;
+    const args = operation === "save"
+      ? ["credentials", operation, projectPath, "__proto__"]
+      : ["credentials", operation, projectPath, "__proto__"];
+    const previousCwd = process.cwd();
+    let caught: unknown;
+    try {
+      process.chdir(root);
+      await runCli(args, createDefaultRegistry(), () => {}, {
+        secretStore,
+        ...(operation === "save" ? { secretInput: async () => "synthetic-cli-input" } : {}),
+        loadPlugins: false,
+      });
+    } catch (error) {
+      caught = error;
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(caught).toMatchObject({ code, refId: "__proto__" });
+    expect((caught as Error).message).toContain(code);
+    expect((caught as Error).message).not.toContain(nativeDetail);
+  });
+
+  it("collection run maps a credential read failure to its stable category before sending", async () => {
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve() { throw new Error("unexpected credential resolution"); },
+      async version(_scope, ref) {
+        if (ref.id === "__proto__") {
+          const error = new CredentialError("CREDENTIAL_READ_FAILED", ref.id);
+          error.cause = new Error("private-native-backend-detail");
+          throw error;
+        }
+        return "version-unused";
+      },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const previousCwd = process.cwd();
+    let caught: unknown;
+    try {
+      process.chdir(root);
+      await runCli([
+        "run", `groups/${groupB}/projects/${projectId}/collections/${collectionId}`, "--env", "dev",
+      ], createDefaultRegistry(), () => {}, { secretStore, loadPlugins: false });
+    } catch (error) {
+      caught = error;
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(caught).toMatchObject({ code: "CREDENTIAL_READ_FAILED", refId: "__proto__" });
+    expect((caught as Error).message).toContain("CREDENTIAL_READ_FAILED");
+    expect((caught as Error).message).not.toContain("private-native-backend-detail");
+    expect(observedRequests).toHaveLength(0);
+  });
+
+  it("no-auth run with an empty ref table does not touch the credential store", async () => {
+    const state = await fileStorage.load(root);
+    const group = state.workspace.groups[0]!;
+    const project = group.projects[0]!;
+    const noAuthApi = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    let storeCalls = 0;
+    const neverStore: SecretStore = {
+      async put() { storeCalls += 1; throw new Error("unexpected credential store access"); },
+      async resolve() { storeCalls += 1; throw new Error("unexpected credential store access"); },
+      async version() { storeCalls += 1; throw new Error("unexpected credential store access"); },
+      async remove() { storeCalls += 1; throw new Error("unexpected credential store access"); },
+      async status() { storeCalls += 1; throw new Error("unexpected credential store access"); },
+    };
+
+    const prepared = await prepareExecutionRun(state.workspace, group.id, project, [noAuthApi], { secretStore: neverStore });
+
+    expect(prepared.refs).toEqual([]);
+    expect(prepared.run.credentialBindings.versions).toEqual({});
+    expect(storeCalls).toBe(0);
+  });
+
+  it("run prepares only refs for APIs with base or inherited cases in the selected environment", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-contract-selected-case-"));
+    const fixtureWorkspace = workspace();
+    const project = fixtureWorkspace.groups[1]!.projects[0]!;
+    project.environments = [
+      { id: "00000000-0000-4000-8000-000000000042", name: "dev", extends: "staging", variables: {}, baseUrls: {} },
+      { id: "00000000-0000-4000-8000-000000000043", name: "staging", variables: {}, baseUrls: {} },
+    ];
+    const scopedCase = (id: string, scope: string) => ({
+      id, name: scope, scope, parameters: {}, preOperations: [], postOperations: [], assertions: [],
+    });
+    project.collections[0]!.apis = [
+      api("00000000-0000-4000-8000-000000000044", "base-no-auth", "", [scopedCase("00000000-0000-4000-8000-000000000045", "base")], "/base"),
+      api("00000000-0000-4000-8000-000000000046", "inherited-auth", "", [scopedCase("00000000-0000-4000-8000-000000000047", "staging")], "/inherited", {
+        kind: "bearer", token: { id: "inherited-active-ref", policy: "test-auto" },
+      }),
+      api("00000000-0000-4000-8000-000000000048", "empty-case-auth", "", [], "/empty-case", {
+        kind: "bearer", token: { id: "unused-empty-ref", policy: "test-auto" },
+      }),
+      api("00000000-0000-4000-8000-000000000049", "other-scope-auth", "", [scopedCase("00000000-0000-4000-8000-000000000050", "prod")], "/other-scope", {
+        kind: "bearer", token: { id: "unused-other-scope-ref", policy: "test-auto" },
+      }),
+    ];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+
+    const touchedRefs = new Set<string>();
+    const secretStore: SecretStore = {
+      async put(_scope, ref) { touchedRefs.add(ref.id); throw new Error("unexpected credential write"); },
+      async resolve(_scope, ref) {
+        touchedRefs.add(ref.id);
+        if (ref.id !== "inherited-active-ref") throw new Error(`unexpected ref ${ref.id}`);
+        return "synthetic-inherited-run-token";
+      },
+      async version(_scope, ref) {
+        touchedRefs.add(ref.id);
+        if (ref.id !== "inherited-active-ref") throw new Error(`unexpected ref ${ref.id}`);
+        return "version-inherited-active";
+      },
+      async remove(_scope, ref) { touchedRefs.add(ref.id); throw new Error("unexpected credential remove"); },
+      async status(_scope, ref) {
+        touchedRefs.add(ref.id);
+        if (ref.id !== "inherited-active-ref") throw new Error(`unexpected ref ${ref.id}`);
+        return "available";
+      },
+    };
+    const previousCwd = process.cwd();
+    observedRequests.length = 0;
+    try {
+      process.chdir(fixtureRoot);
+      const code = await runCli([
+        "run", `groups/${groupB}/projects/${projectId}/collections/${collectionId}`,
+        "--env", "dev", "--runs-dir", join(fixtureRoot, ".apicc", "runs"),
+      ], createDefaultRegistry(), () => {}, { secretStore, loadPlugins: false });
+
+      expect(code).toBe(0);
+      expect(touchedRefs).toEqual(new Set(["inherited-active-ref"]));
+      expect(observedRequests).toEqual([
+        { url: "/base", authorization: "" },
+        { url: "/inherited", authorization: "Bearer synthetic-inherited-run-token" },
+      ]);
+    } finally {
+      process.chdir(previousCwd);
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("an already prepared run keeps its credential binding; a later run sees the replacement", async () => {
+    const state = await fileStorage.load(root);
+    const group = state.workspace.groups[1]!;
+    const project = group.projects[0]!;
+    const apiAsset = project.collections[0]!.apis[0]!;
+    const ref = { id: "__proto__", policy: "test-auto" };
+    let currentValue = "synthetic-old-worker-secret";
+    let currentVersion = "version-before-replacement";
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, requested, expectedVersion) {
+        expect(requested.id).toBe(ref.id);
+        expect(expectedVersion).toBe(currentVersion);
+        return currentValue;
+      },
+      async version(_scope, requested) {
+        expect(requested.id).toBe(ref.id);
+        return currentVersion;
+      },
+      async remove() {},
+      async status() { return "available"; },
+    };
+
+    const first = await prepareExecutionRun(state.workspace, group.id, project, [apiAsset], { secretStore });
+    expect(first.run.credentialBindings.resolve(ref)).toBe("synthetic-old-worker-secret");
+    expect(Object.hasOwn(first.run.credentialBindings.versions, ref.id)).toBe(true);
+    expect(first.run.credentialBindings.versions[ref.id]).toBe("version-before-replacement");
+
+    currentValue = "synthetic-new-worker-secret";
+    currentVersion = "version-after-replacement";
+    expect(first.run.credentialBindings.resolve(ref)).toBe("synthetic-old-worker-secret");
+
+    const nextRun = await prepareExecutionRun(state.workspace, group.id, project, [apiAsset], { secretStore });
+    expect(nextRun.run.credentialBindings.resolve(ref)).toBe("synthetic-new-worker-secret");
+    expect(nextRun.run.credentialBindings.versions[ref.id]).toBe("version-after-replacement");
+  });
+
+  it("stress-worker retains and checks an own __proto__ credential version before sending", async () => {
+    const state = await fileStorage.load(root);
+    const project = state.workspace.groups[1]!.projects[0]!;
+    const revision = createProjectSnapshot(project).definitionRevision;
+    let versionReads = 0;
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref, expectedVersion) {
+        expect(ref.id).toBe("__proto__");
+        expect(expectedVersion).toBe("version-own-proto");
+        return "synthetic-worker-secret";
+      },
+      async version(_scope, ref) {
+        expect(ref.id).toBe("__proto__");
+        versionReads += 1;
+        return "version-own-proto";
+      },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const versionWire = '{"__proto__":"version-own-proto"}';
+    const out: string[] = [];
+    const err: string[] = [];
+    requestPath = "";
+    authorizationHeader = "";
+    const code = await runCli(protoWorkerArgs(revision, versionWire), createDefaultRegistry(), () => {}, {
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore,
+    });
+
+    expect(code).toBe(0);
+    expect(versionReads).toBe(2);
+    expect(authorizationHeader).toBe("Bearer synthetic-worker-secret");
+    expect(out).toHaveLength(1);
+    expect(err.join("\n")).not.toContain("synthetic-worker-secret");
+    expect(out.join("\n")).not.toContain("synthetic-worker-secret");
+  });
+
+  it("拒绝缺失 own ref 版本的 worker 描述符，且读取凭据前零请求", async () => {
+    const state = await fileStorage.load(root);
+    const project = state.workspace.groups[1]!.projects[0]!;
+    let storeCalls = 0;
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve() { storeCalls += 1; return "synthetic-worker-secret"; },
+      async version() { storeCalls += 1; return "version-own-proto"; },
+      async remove() {},
+      async status() { storeCalls += 1; return "available"; },
+    };
+    const out: string[] = [];
+    const err: string[] = [];
+    requestPath = "";
+    const code = await runCli(protoWorkerArgs(createProjectSnapshot(project).definitionRevision, "{}"), createDefaultRegistry(), () => {}, {
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore,
+    });
+
+    expect(code).toBe(1);
+    expect(storeCalls).toBe(0);
+    expect(requestPath).toBe("");
+    expect(err.join("\n")).toContain("缺少 own expected version");
+    expect(out.join("\n")).not.toContain("synthetic-worker-secret");
+  });
+
+  it("定义版本已变化时在读取凭据和发送前失败", async () => {
+    const state = await fileStorage.load(root);
+    const project = state.workspace.groups[1]!.projects[0]!;
+    let storeCalls = 0;
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve() { storeCalls += 1; return "synthetic-worker-secret"; },
+      async version() { storeCalls += 1; return "version-own-proto"; },
+      async remove() {},
+      async status() { storeCalls += 1; return "available"; },
+    };
+    const out: string[] = [];
+    const err: string[] = [];
+    requestPath = "";
+    const code = await runCli(protoWorkerArgs("stale-definition-revision", '{"__proto__":"version-own-proto"}'), createDefaultRegistry(), () => {}, {
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore,
+    });
+
+    expect(code).toBe(1);
+    expect(storeCalls).toBe(0);
+    expect(requestPath).toBe("");
+    expect(err.join("\n")).toContain("定义在压测 worker 启动前发生变化");
+    expect(out.join("\n")).not.toContain("synthetic-worker-secret");
+  });
+
+  it.each(["replace", "delete"] as const)("worker 启动期间凭据 %s 时 config/零发送", async (mutation) => {
+    const state = await fileStorage.load(root);
+    const project = state.workspace.groups[1]!.projects[0]!;
+    let versionReads = 0;
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) {
+        if (mutation === "delete") throw new CredentialError("CREDENTIAL_MISSING", ref.id);
+        return "synthetic-worker-secret";
+      },
+      async version() {
+        versionReads += 1;
+        return mutation === "replace" && versionReads > 1 ? "version-replaced" : "version-own-proto";
+      },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const out: string[] = [];
+    const err: string[] = [];
+    requestPath = "";
+    const code = await runCli(protoWorkerArgs(createProjectSnapshot(project).definitionRevision, '{"__proto__":"version-own-proto"}'), createDefaultRegistry(), () => {}, {
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore,
+    });
+
+    expect(code).toBe(1);
+    expect(requestPath).toBe("");
+    expect(err.join("\n")).toContain("发生变化");
+    expect(out.join("\n")).not.toContain("synthetic-worker-secret");
+  });
+});

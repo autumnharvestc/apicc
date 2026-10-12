@@ -23,10 +23,11 @@ import {
 } from "ant-design-vue";
 import type { NodeState, WorkflowStatus } from "@apicc/core";
 import type { WorkflowSummary } from "../../../shared/types.js";
+import type { ProjectLocator, WorkflowLocator } from "../../../shared/locations.js";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
 import type { useWfListStore } from "../stores/wfList.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
-import type { WfBindIndex } from "../wf/wfBindings.js";
+import { apiCaseKey, apiLocatorKey, sameProjectLocator, type WfBindIndex } from "../wf/wfBindings.js";
 import {
   applyEdgeAdd,
   applyEdgeCondition,
@@ -74,7 +75,7 @@ const props = defineProps<{
   workflowDesign: ReturnType<typeof useWorkflowDesignStore>;
   wfList: ReturnType<typeof useWfListStore>;
   workspace: ReturnType<typeof useWorkspaceStore>;
-  projectId: string | null;
+  projectLocator: ProjectLocator | null;
   bindIndex: WfBindIndex | null;
   reportError: (e: unknown) => void;
 }>();
@@ -82,14 +83,26 @@ const { t } = useI18n();
 
 const design = computed(() => props.workflowDesign);
 const wf = computed(() => props.workflowDesign.workflow);
+const designProjectLocator = computed<ProjectLocator | null>(() => {
+  const locator = props.workflowDesign.locator;
+  return locator ? { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId } : null;
+});
+const designBindIndex = computed(() => {
+  const index = props.bindIndex;
+  return index && sameProjectLocator(index.projectLocator, designProjectLocator.value) ? index : null;
+});
 
 const newName = ref("");
 async function createAndOpen() {
   const name = newName.value.trim();
-  if (!name) return;
+  const projectLocator = props.projectLocator;
+  const root = props.workspace.root;
+  if (!name || !projectLocator || props.workspace.readOnly || props.wfList.root !== root
+    || !sameProjectLocator(props.wfList.projectLocator, projectLocator)) return;
   try {
-    const created = await props.wfList.create(name);
-    await props.workflowDesign.load(created.id);
+    const created = await props.wfList.create(name, projectLocator);
+    if (props.workspace.root !== root || !sameProjectLocator(props.projectLocator, projectLocator)) return;
+    await props.workflowDesign.load(root, { ...projectLocator, workflowId: created.id });
     clearSelection();
     newName.value = "";
   } catch (e) {
@@ -97,9 +110,15 @@ async function createAndOpen() {
   }
 }
 
-async function selectWorkflow(id: string) {
+async function selectWorkflow(locator: WorkflowLocator) {
+  const root = props.workspace.root;
+  const projectLocator = { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+  if (props.wfList.root !== root || !sameProjectLocator(props.wfList.projectLocator, projectLocator)
+    || !sameProjectLocator(props.projectLocator, projectLocator)) return;
   try {
-    await props.workflowDesign.load(id);
+    await props.workflowDesign.load(root, { ...locator });
+    if (props.workspace.root !== root || props.workflowDesign.root !== root
+      || JSON.stringify(props.workflowDesign.locator) !== JSON.stringify(locator)) return;
     clearSelection();
   } catch (e) {
     props.reportError(e);
@@ -110,10 +129,10 @@ async function selectWorkflow(id: string) {
 // 悬停动作钮先例同 SideTree；复用 wfList.remove(id, confirm) 确认回调模式 +
 // 既有 ConfirmDialog。删除入口仅在空态列表（未载工作流），不存在「删除正在编辑的流」
 // 的会话错位。重命名显式延后：M2-C 与侧树入口同批。
-const deleteTarget = ref<WorkflowSummary | null>(null);
+const deleteTarget = ref<(WorkflowSummary & { root: string }) | null>(null);
 const deleteOpen = computed(() => deleteTarget.value !== null);
 function askDelete(item: WorkflowSummary) {
-  deleteTarget.value = item;
+  deleteTarget.value = { ...item, root: props.workspace.root };
 }
 function onDeleteCancel() {
   deleteTarget.value = null;
@@ -121,10 +140,11 @@ function onDeleteCancel() {
 async function onDeleteConfirm() {
   const target = deleteTarget.value;
   deleteTarget.value = null;
-  if (!target) return;
+  if (!target || props.workspace.readOnly || props.workspace.root !== target.root
+    || props.wfList.root !== target.root || !sameProjectLocator(props.wfList.projectLocator, target.locator)) return;
   try {
     // 已在对话框确认：放行回调恒真（先例同 SideTree 删除）。
-    await props.wfList.remove(target.id, async () => true);
+    await props.wfList.remove(target.locator, async () => true);
   } catch (e) {
     props.reportError(e);
   }
@@ -148,7 +168,7 @@ const ACTION_TARGET: Record<LifecycleAction, WorkflowStatus> = {
 /** 在途迁移守卫：全组禁用防重复提交，动作钮单独 loading。 */
 const pendingAction = ref<LifecycleAction | null>(null);
 async function changeStatus(action: LifecycleAction) {
-  if (pendingAction.value) return;
+  if (pendingAction.value || props.workspace.readOnly) return;
   pendingAction.value = action;
   try {
     await props.workflowDesign.setStatus(ACTION_TARGET[action]);
@@ -169,15 +189,10 @@ function clearSelection() {
 
 // —— 运行接线（任务 7）：环境选择 + wf:run + 结果抽屉开关 ——
 // 环境按名称引用（wf:run 入参 envName），首项「无环境」= 不传 envName（先例同 RunView）；
-// 选项 = 当前项目树 envs（workspace/projectId 已在 props，无需另接 envs store）。
+// 选项 = 当前完整项目定位下的 environments，不按裸 projectId 首匹配。
 const runEnv = ref("");
 const projectEnvs = computed<Array<{ id: string; name: string }>>(() => {
-  for (const group of props.workspace.tree?.children ?? []) {
-    for (const project of group.children ?? []) {
-      if (project.id === props.projectId) return project.envs ?? [];
-    }
-  }
-  return [];
+  return props.projectLocator ? props.workspace.findProject(props.projectLocator)?.envs ?? [] : [];
 });
 const runEnvOptions = computed(() => [
   { label: t("wf.envNone"), value: "" },
@@ -190,7 +205,7 @@ const resultOpen = ref(false);
 // 切流（load/unload 改 workflowId）即重置运行会话态：环境选择与抽屉开关不跨流残留
 // （残留失效环境名会被主进程「未找到环境」显式拒绝）。编辑不改 workflowId，不重置。
 watch(
-  () => design.value.workflowId,
+  () => JSON.stringify([design.value.root, design.value.locator]),
   () => {
     runEnv.value = "";
     resultOpen.value = false;
@@ -199,7 +214,9 @@ watch(
 
 /** 顶栏「运行」：design.run 门控 draft/在途（store 内），链路拒绝统一转报错误通道。 */
 async function onRun() {
-  const targetId = design.value.workflowId;
+  const targetLocator = design.value.locator ? { ...design.value.locator } : null;
+  const targetRoot = design.value.root;
+  const targetGeneration = design.value.loadEpoch;
   try {
     await design.value.run(runEnv.value || undefined);
   } catch (e) {
@@ -207,7 +224,10 @@ async function onRun() {
     return;
   }
   // 运行完成自动打开结果抽屉；切流守卫同 store（await 期间换流，旧流结果不弹）。
-  if (design.value.runResult && design.value.workflowId === targetId) resultOpen.value = true;
+  if (design.value.runResult && targetLocator && targetRoot
+    && props.workspace.root === targetRoot && design.value.root === targetRoot
+    && design.value.loadEpoch === targetGeneration
+    && JSON.stringify(design.value.locator) === JSON.stringify(targetLocator)) resultOpen.value = true;
 }
 
 // —— 工作流列表入口：进入视图/切换项目时拉取（选中与新建即 load 进设计器） ——
@@ -247,10 +267,17 @@ function backToList() {
 }
 
 watch(
-  () => props.projectId,
-  (pid, oldPid) => {
-    if (oldPid !== undefined && pid !== oldPid) requestUnload(() => {});
-    if (pid && props.wfList.projectId !== pid) props.wfList.load(pid).catch(props.reportError);
+  () => JSON.stringify([props.workspace.root, props.projectLocator]),
+  (key, oldKey) => {
+    if (oldKey !== undefined && key !== oldKey) requestUnload(() => {});
+    if (props.projectLocator && (props.wfList.root !== props.workspace.root
+      || !sameProjectLocator(props.wfList.projectLocator, props.projectLocator))) {
+      const root = props.workspace.root;
+      const locator = { ...props.projectLocator };
+      props.wfList.load(root, locator).catch((e) => {
+        if (props.workspace.root === root && sameProjectLocator(props.projectLocator, locator)) props.reportError(e);
+      });
+    }
   },
   { immediate: true },
 );
@@ -264,8 +291,9 @@ const nodeStates = computed<Map<string, NodeState> | undefined>(() =>
 const flowNodes = computed(() => {
   const w = wf.value;
   if (!w) return [];
+  const index = designBindIndex.value;
   const { nodes } = toFlowElements(w, {
-    apiIds: props.bindIndex?.apiIds,
+    apiIds: index?.apiIds ?? new Set<string>(),
     nodeStates: nodeStates.value,
   });
   // 名称预注入契约：画布节点不做查找，apiName/caseName 在此解析进 data
@@ -273,8 +301,19 @@ const flowNodes = computed(() => {
     ...n,
     data: {
       ...n.data,
-      apiName: n.data.node.apiId ? props.bindIndex?.apiNames.get(n.data.node.apiId) : undefined,
-      caseName: n.data.node.caseId ? props.bindIndex?.caseNames.get(n.data.node.caseId) : undefined,
+      apiName: (() => {
+        const apiId = n.data.node.apiId;
+        const candidates = apiId ? index?.apiLocatorsById.get(apiId) : undefined;
+        const locator = candidates?.length === 1 ? candidates[0] : undefined;
+        return locator && index ? index.apiNames.get(apiLocatorKey(locator)) : undefined;
+      })(),
+      caseName: (() => {
+        const apiId = n.data.node.apiId;
+        const caseId = n.data.node.caseId;
+        const candidates = apiId ? index?.apiLocatorsById.get(apiId) : undefined;
+        const locator = candidates?.length === 1 ? candidates[0] : undefined;
+        return locator && caseId && index ? index.caseNames.get(apiCaseKey(locator, caseId)) : undefined;
+      })(),
     },
   }));
 });
@@ -309,6 +348,7 @@ function onEdgeClick({ edge }: EdgeMouseEvent) {
 }
 
 function addNode(kind: "request" | "noop") {
+  if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w) return;
   design.value.update(
@@ -317,12 +357,14 @@ function addNode(kind: "request" | "noop") {
 }
 
 function onNodeChange(patch: WfNodePatch) {
+  if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w || !selectedNodeId.value) return;
   design.value.update(applyNodeUpdate(w, selectedNodeId.value, patch));
 }
 
 function removeSelectedNode() {
+  if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w || !selectedNodeId.value) return;
   design.value.update(applyNodeRemove(w, selectedNodeId.value));
@@ -330,12 +372,14 @@ function removeSelectedNode() {
 }
 
 function onEdgeConditionChange(condition: string) {
+  if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w || !selectedEdgeId.value) return;
   design.value.update(applyEdgeCondition(w, selectedEdgeId.value, condition));
 }
 
 function onConnect({ source, target }: Connection) {
+  if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w || !source || !target) return;
   // 自环/重复边拒绝在数据层（错误文案统一），此处仅转报
@@ -348,6 +392,7 @@ function onConnect({ source, target }: Connection) {
 
 /** 拖拽落点写回：以新建 position 对象替换（浅共享交接，见 applyNodeMove 注释）。 */
 function onNodeDragStop({ node }: NodeDragEvent) {
+  if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w) return;
   design.value.update(applyNodeMove(w, node.id, { x: node.position.x, y: node.position.y }));
@@ -355,6 +400,7 @@ function onNodeDragStop({ node }: NodeDragEvent) {
 
 /** 画布键盘删除（remove 变更）与属性面板删除同一变换；position/select 等变更不回写。 */
 function onNodesChange(changes: NodeChange[]) {
+  if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w) return;
   let next = w;
@@ -368,6 +414,7 @@ function onNodesChange(changes: NodeChange[]) {
 }
 
 function onEdgesChange(changes: EdgeChange[]) {
+  if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w) return;
   let next = w;
@@ -412,21 +459,22 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           class="wf-new-name"
           data-testid="wf-new-name"
           :placeholder="t('wf.namePlaceholder')"
+          :disabled="workspace.readOnly"
           @press-enter="createAndOpen"
         />
-        <a-button data-testid="wf-new-create" :disabled="!newName.trim()" @click="createAndOpen">
+        <a-button data-testid="wf-new-create" :disabled="workspace.readOnly || !newName.trim()" @click="createAndOpen">
           {{ t("wf.create") }}
         </a-button>
       </div>
       <ul class="wf-items">
         <!-- 行内悬停动作钮（审查 I3 删除）：li 承载 hover 显隐，按钮不嵌套在打开列表项内 -->
         <li v-for="item in wfList.items" :key="item.id" class="wf-item-row">
-          <button class="wf-item" data-testid="wf-list-item" :data-id="item.id" @click="selectWorkflow(item.id)">
+          <button class="wf-item" data-testid="wf-list-item" :data-id="item.id" @click="selectWorkflow(item.locator)">
             <span>{{ item.name }}</span>
             <a-tag :color="statusColors[item.status]" class="wf-item-status">{{ t(`wf.status.${item.status}`) }}</a-tag>
           </button>
           <span class="wf-item-actions">
-            <button class="wf-item-act danger" data-testid="wf-item-delete" :data-id="item.id" @click="askDelete(item)">
+            <button class="wf-item-act danger" data-testid="wf-item-delete" :data-id="item.id" :disabled="workspace.readOnly" @click="askDelete(item)">
               {{ t("wf.delete") }}
             </button>
           </span>
@@ -443,16 +491,16 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         <span v-if="design.dirty" class="wf-dirty" data-testid="wf-dirty" :title="t('wf.unsaved')">●</span>
         <a-button size="small" data-testid="wf-back-to-list" @click="backToList">{{ t("wf.backToList") }}</a-button>
         <a-space class="wf-actions">
-          <a-button size="small" data-testid="wf-add-request" @click="addNode('request')">{{ t("wf.addRequest") }}</a-button>
-          <a-button size="small" data-testid="wf-add-noop" @click="addNode('noop')">{{ t("wf.addNoop") }}</a-button>
-          <a-button size="small" type="primary" data-testid="wf-save" :loading="design.saving" @click="save">
+          <a-button size="small" data-testid="wf-add-request" :disabled="workspace.readOnly" @click="addNode('request')">{{ t("wf.addRequest") }}</a-button>
+          <a-button size="small" data-testid="wf-add-noop" :disabled="workspace.readOnly" @click="addNode('noop')">{{ t("wf.addNoop") }}</a-button>
+          <a-button size="small" type="primary" data-testid="wf-save" :loading="design.saving" :disabled="workspace.readOnly" @click="save">
             {{ t("wf.save") }}
           </a-button>
           <!-- 生命周期组：可用性随 status；dirty/在途时全组禁用（title 仅 dirty 时提示先保存） -->
           <a-button
             size="small"
             data-testid="wf-publish"
-            :disabled="lifecycleLocked || wf.status !== 'draft'"
+            :disabled="workspace.readOnly || lifecycleLocked || wf.status !== 'draft'"
             :loading="pendingAction === 'publish'"
             :title="dirtyHint"
             @click="changeStatus('publish')"
@@ -462,7 +510,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           <a-button
             size="small"
             data-testid="wf-enable"
-            :disabled="lifecycleLocked || wf.status !== 'published'"
+            :disabled="workspace.readOnly || lifecycleLocked || wf.status !== 'published'"
             :loading="pendingAction === 'enable'"
             :title="dirtyHint"
             @click="changeStatus('enable')"
@@ -472,7 +520,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           <a-button
             size="small"
             data-testid="wf-retract"
-            :disabled="lifecycleLocked || wf.status !== 'enabled'"
+            :disabled="workspace.readOnly || lifecycleLocked || wf.status !== 'enabled'"
             :loading="pendingAction === 'retract'"
             :title="dirtyHint"
             @click="changeStatus('retract')"
@@ -534,6 +582,8 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
             :nodes="flowNodes"
             :edges="flowEdges"
             :auto-pan-on-connect="false"
+            :nodes-draggable="!workspace.readOnly"
+            :nodes-connectable="!workspace.readOnly"
             @node-click="onNodeClick"
             @edge-click="onEdgeClick"
             @pane-click="clearSelection"
@@ -563,14 +613,16 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
 
         <!-- 右侧属性面板（280px） -->
         <a-layout-sider :width="280" theme="light" class="wf-panel" data-testid="wf-panel">
-          <WfPropertyPanel
-            :node-data="selectedNodeData"
-            :edge-data="selectedEdgeData"
-            :bind-options="bindIndex?.options ?? []"
-            @node-change="onNodeChange"
-            @edge-condition="onEdgeConditionChange"
-            @remove-node="removeSelectedNode"
-          />
+          <div class="wf-property-interaction" :inert="workspace.readOnly" :aria-disabled="workspace.readOnly">
+            <WfPropertyPanel
+              :node-data="selectedNodeData"
+              :edge-data="selectedEdgeData"
+              :bind-options="designBindIndex?.options ?? []"
+              @node-change="onNodeChange"
+              @edge-condition="onEdgeConditionChange"
+              @remove-node="removeSelectedNode"
+            />
+          </div>
         </a-layout-sider>
       </div>
 
@@ -656,4 +708,5 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
   pointer-events: none;
 }
 .wf-panel { border-left: 1px solid var(--border); overflow: auto; }
+.wf-property-interaction { width: 100%; }
 </style>

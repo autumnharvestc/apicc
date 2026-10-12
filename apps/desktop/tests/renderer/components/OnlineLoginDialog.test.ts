@@ -16,6 +16,7 @@ import OnlineLoginDialog from "../../../src/renderer/src/components/OnlineLoginD
 import type { ApiccApi } from "../../../src/shared/types.js";
 
 const SERVER_A = "http://127.0.0.1:8080";
+const SERVER_B = "http://127.0.0.1:8081";
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -225,6 +226,58 @@ describe("OnlineLoginDialog", () => {
     await flushPromises();
     expect(bodyHas("online-tab-register")).toBe(false);
     expect(bodyHas("online-login-form")).toBe(true);
+  });
+
+  it("在打开和服务器切换时探测注册能力，并忽略关闭/换服后的迟到结果", async () => {
+    type AuthConfig = Awaited<ReturnType<ApiccApi["authConfig"]>>;
+    const deferred = () => {
+      let resolve!: (value: AuthConfig) => void;
+      const promise = new Promise<AuthConfig>((done) => { resolve = done; });
+      return { promise, resolve };
+    };
+    const firstServer = deferred();
+    const switchedServer = deferred();
+    const reopenedServer = deferred();
+    const pending = [firstServer.promise, switchedServer.promise, reopenedServer.promise];
+    const calls: string[] = [];
+    const api = createMemoryApi();
+    api.authConfig = async (baseUrl) => {
+      calls.push(baseUrl);
+      return pending.shift() ?? { allowRegistration: false };
+    };
+    const online = createOnlineStore({ api, storage: memStorage() });
+    online.addProfile(SERVER_A, "A");
+    online.addProfile(SERVER_B, "B");
+    online.setActive(SERVER_A);
+    const tabs = createTabsStore({
+      workspace: { open: async () => {}, opened: false, root: "", tree: null },
+      tree: { select: async () => {} },
+      online,
+      storage: memStorage(),
+    });
+    online.dialogOpen = true;
+    const { i18n } = createI18nInstance();
+    mount(OnlineLoginDialog, { props: { online, apicc: api, tabs }, global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(calls).toEqual([SERVER_A]);
+
+    online.setActive(SERVER_B);
+    await flushPromises();
+    expect(calls).toEqual([SERVER_A, SERVER_B]);
+    online.dialogOpen = false;
+    await flushPromises();
+    online.dialogOpen = true;
+    await flushPromises();
+    expect(calls).toEqual([SERVER_A, SERVER_B, SERVER_B]);
+
+    switchedServer.resolve({ allowRegistration: true });
+    await flushPromises();
+    expect(bodyHas("online-tab-register")).toBe(false);
+    reopenedServer.resolve({ allowRegistration: false });
+    await flushPromises();
+    firstServer.resolve({ allowRegistration: true });
+    await flushPromises();
+    expect(bodyHas("online-tab-register")).toBe(false);
   });
 
   it("已登录态：退出登录按钮 → store.logout（档案保留），回到登录表单", async () => {

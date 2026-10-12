@@ -38,6 +38,9 @@ export const wsClient: ProtocolClient = {
   name: "websocket",
   canHandle: (req) => canHandleProtocol(req, "websocket"),
   async execute(req: ExecutableRequest, opts: HttpExecuteOptions): Promise<ExecutionResponse> {
+    if (req.protocol !== "websocket") {
+      throw Object.assign(new Error(`WebSocket 客户端不能执行 ${req.protocol} 请求`), { caseFailureKind: "config" as const, code: "CONFIG" });
+    }
     const started = performance.now();
     if (!/^wss?:\/\//i.test(req.url)) {
       throw new WebSocketExecutionError("unknown", `端点须为 ws:// 或 wss://，实际: ${req.url}`);

@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Button as AButton, Input as AInput, Select as ASelect, Table as ATable } from "ant-design-vue";
 import type { Assertion, TestCase } from "@apicc/core";
 import type { useCasesStore } from "../stores/cases.js";
+import type { CaseIdentity } from "../stores/cases.js";
 import type { useDebugStore } from "../stores/debug.js";
 import type { useEditorStore } from "../stores/editor.js";
 import EmptyState from "./EmptyState.vue";
@@ -27,6 +28,7 @@ const props = defineProps<{
   /** 调试 store（M9-D 测试模块）：单条用例「运行」复用既有发送管线，结果共享上屏。 */
   debug?: ReturnType<typeof useDebugStore>;
   reportError?: (e: unknown) => void;
+  readOnly?: boolean;
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
 const { t } = useI18n();
@@ -43,7 +45,8 @@ const scopeOptions = computed(() => [
 // 选中用例：store 未选中/悬空（如刚切换接口）时回退第一个，保证面板始终有编辑目标。
 const selected = computed(() => {
   const list = props.editor.api?.cases ?? [];
-  return list.find((c) => c.id === props.cases.selectedCaseId) ?? list[0] ?? null;
+  const identity = props.cases.selectedCase;
+  return list.find((c) => c.id === identity?.caseId && c.scope === identity.scope) ?? list[0] ?? null;
 });
 
 // 断言表列（computed 包裹保持语言切换响应，EnvPanel 同款）。
@@ -57,15 +60,20 @@ const assertColumns = computed(() => [
 ]);
 
 function addCase() {
+  if (props.readOnly) return;
   props.cases.addCase({ name: t("case.new"), scope: "base" });
 }
 
+function setCaseName(testCase: TestCase, name: string) {
+  if (!props.readOnly) testCase.name = name;
+}
+
 /** 单条用例运行（M9-D）：存编辑缓冲后按该用例发送（结果经共享 debug store 上屏）。 */
-async function runCase(caseId: string) {
+async function runCase(identity: CaseIdentity) {
   if (!props.debug) return;
   try {
-    await props.editor.save();
-    await props.debug.runCase(props.editor, caseId);
+    // debug.send captures the complete editor/root identity before its own save await.
+    await props.debug.runCase(props.editor, { caseId: identity.caseId, scope: identity.scope });
   } catch (e) {
     props.reportError?.(e);
   }
@@ -73,6 +81,7 @@ async function runCase(caseId: string) {
 
 // 保存链路收口（任务 8 补课）：拒绝经可选 reportError 转报，不再作为未处理 rejection 静默吞没。
 async function saveCases() {
+  if (props.readOnly) return;
   try {
     await props.cases.save();
   } catch (e) {
@@ -81,11 +90,18 @@ async function saveCases() {
 }
 
 function removeSelected() {
-  if (selected.value) props.cases.removeCase(selected.value.id);
+  if (!props.readOnly && selected.value) props.cases.removeCase(selected.value.id, selected.value.scope);
+}
+
+function updateScope(testCase: TestCase, scope: string) {
+  if (props.readOnly) return;
+  testCase.scope = scope;
+  props.cases.select(testCase.id, scope);
 }
 
 // strict schema：headerName 仅 header 需要、path 仅 bodyJson 需要，其余目标即时删除旧键。
 function setTarget(record: Assertion, target: Assertion["target"]) {
+  if (props.readOnly) return;
   record.target = target;
   if (target === "header") record.headerName = record.headerName ?? "";
   else delete record.headerName;
@@ -94,7 +110,12 @@ function setTarget(record: Assertion, target: Assertion["target"]) {
 }
 
 function addAssertion() {
+  if (props.readOnly) return;
   selected.value?.assertions.push({ id: crypto.randomUUID(), target: "status", op: "eq", expected: "" });
+}
+
+function setAssertionField<K extends keyof Assertion>(record: Assertion, key: K, value: Assertion[K]) {
+  if (!props.readOnly) record[key] = value;
 }
 
 // —— M10 操作列表：增删/排序（数组不存在时先初始化——旧数据兼容） ——
@@ -111,10 +132,12 @@ function opsList(kind: "pre" | "post"): CaseOperation[] {
 }
 
 function addOp(kind: "pre" | "post") {
+  if (props.readOnly) return;
   opsList(kind).push({ id: crypto.randomUUID(), type: "script", content: "" });
 }
 
 function moveOp(kind: "pre" | "post", index: number, delta: -1 | 1) {
+  if (props.readOnly) return;
   const list = opsList(kind);
   const target = index + delta;
   if (target < 0 || target >= list.length) return;
@@ -123,7 +146,16 @@ function moveOp(kind: "pre" | "post", index: number, delta: -1 | 1) {
 }
 
 function removeAssertion(index: number) {
+  if (props.readOnly) return;
   selected.value?.assertions.splice(index, 1);
+}
+
+function setOperationContent(op: CaseOperation, content: string) {
+  if (!props.readOnly) op.content = content;
+}
+
+function removeOp(kind: "pre" | "post", index: number) {
+  if (!props.readOnly) opsList(kind).splice(index, 1);
 }
 </script>
 
@@ -132,31 +164,31 @@ function removeAssertion(index: number) {
     <EmptyState v-if="!editor.api" :text="t('case.empty')" />
     <template v-else>
       <div class="toolbar">
-        <a-button size="small" data-testid="case-add" @click="addCase">{{ t("case.add") }}</a-button>
+        <a-button size="small" data-testid="case-add" :disabled="readOnly" @click="addCase">{{ t("case.add") }}</a-button>
         <a-button
           size="small"
           danger
-          :disabled="editor.api.cases.length <= 1"
+          :disabled="readOnly || editor.api.cases.length <= 1"
           data-testid="case-delete"
           @click="removeSelected"
         >
           {{ t("case.remove") }}
         </a-button>
-        <a-button size="small" type="primary" data-testid="case-save" @click="saveCases">{{ t("case.save") }}</a-button>
+        <a-button size="small" type="primary" data-testid="case-save" :disabled="readOnly" @click="saveCases">{{ t("case.save") }}</a-button>
       </div>
 
       <!-- 用例列表：行内编辑名称/scope，行点击选中；断言数只读展示 -->
       <div class="case-list">
         <div
           v-for="c in editor.api.cases"
-          :key="c.id"
+          :key="`${c.id}:${c.scope}`"
           class="case-row"
-          :class="{ active: c.id === selected?.id }"
+          :class="{ active: c.id === selected?.id && c.scope === selected?.scope }"
           data-testid="case-row"
-          @click="cases.select(c.id)"
+          @click="cases.select(c.id, c.scope)"
         >
-          <a-input v-model:value="c.name" class="case-name" data-testid="case-name" :placeholder="t('tree.namePlaceholder')" />
-          <a-select v-model:value="c.scope" class="scope-select" :options="scopeOptions" data-testid="case-scope" />
+          <a-input :value="c.name" :disabled="readOnly" class="case-name" data-testid="case-name" :placeholder="t('tree.namePlaceholder')" @update:value="(value) => setCaseName(c, value as string)" />
+          <a-select :value="c.scope" :disabled="readOnly" class="scope-select" :options="scopeOptions" data-testid="case-scope" @update:value="(value) => updateScope(c, value as string)" />
           <span class="assert-count" :title="t('case.assertions')">{{ c.assertions.length }}</span>
           <a-button
             v-if="debug"
@@ -164,7 +196,7 @@ function removeAssertion(index: number) {
             type="text"
             :data-testid="`case-run-${c.id}`"
             :data-case-id="c.id"
-            @click.stop="runCase(c.id)"
+            @click.stop="runCase({ caseId: c.id, scope: c.scope })"
           >
             {{ t("case.run") }}
           </a-button>
@@ -197,31 +229,32 @@ function removeAssertion(index: number) {
               <!-- 断言行 record 为表格槽宽类型、v 为 SelectValue：选项值恒为 target 联合内字符串，断言收窄。 -->
               <a-select
                 :value="record.target"
+                :disabled="readOnly"
                 :options="TARGET_OPTIONS"
                 data-testid="assert-target"
                 @update:value="(v) => setTarget(record as Assertion, v as Assertion['target'])"
               />
             </template>
             <template v-else-if="column.key === 'op'">
-              <a-select v-model:value="record.op" :options="OP_OPTIONS" data-testid="assert-op" />
+              <a-select :value="record.op" :disabled="readOnly" :options="OP_OPTIONS" data-testid="assert-op" @update:value="(v) => setAssertionField(record as Assertion, 'op', v as Assertion['op'])" />
             </template>
             <template v-else-if="column.key === 'expected'">
-              <a-input v-model:value="record.expected" data-testid="assert-expected" />
+              <a-input :value="record.expected" :disabled="readOnly" data-testid="assert-expected" @update:value="(v) => setAssertionField(record as Assertion, 'expected', v as string)" />
             </template>
             <template v-else-if="column.key === 'headerName'">
-              <a-input v-if="record.target === 'header'" v-model:value="record.headerName" data-testid="assert-header-name" />
+              <a-input v-if="record.target === 'header'" :value="record.headerName ?? ''" :disabled="readOnly" data-testid="assert-header-name" @update:value="(v) => setAssertionField(record as Assertion, 'headerName', v as string)" />
               <span v-else class="na">—</span>
             </template>
             <template v-else-if="column.key === 'path'">
-              <a-input v-if="record.target === 'bodyJson'" v-model:value="record.path" data-testid="assert-path" />
+              <a-input v-if="record.target === 'bodyJson'" :value="record.path ?? ''" :disabled="readOnly" data-testid="assert-path" @update:value="(v) => setAssertionField(record as Assertion, 'path', v as string)" />
               <span v-else class="na">—</span>
             </template>
             <template v-else>
-              <a-button size="small" danger type="text" data-testid="assert-delete" @click="removeAssertion(index)">×</a-button>
+              <a-button size="small" danger type="text" data-testid="assert-delete" :disabled="readOnly" @click="removeAssertion(index)">×</a-button>
             </template>
           </template>
         </a-table>
-        <a-button size="small" data-testid="assert-add" @click="addAssertion">{{ t("case.addAssert") }}</a-button>
+        <a-button size="small" data-testid="assert-add" :disabled="readOnly" @click="addAssertion">{{ t("case.addAssert") }}</a-button>
 
         <!-- M10：前置/后置操作（有序脚本操作列表；legacy preScript/postScript 保留只读迁移提示） -->
         <div class="scripts">
@@ -230,13 +263,13 @@ function removeAssertion(index: number) {
             <div class="ops-list" data-testid="case-pre-ops">
               <div v-for="(op, index) in selected.preOperations ?? []" :key="op.id" class="op-row">
                 <div class="op-btns">
-                  <a-button size="small" type="text" :disabled="index === 0" @click="moveOp('pre', index, -1)">↑</a-button>
-                  <a-button size="small" type="text" :disabled="index === (selected!.preOperations?.length ?? 0) - 1" @click="moveOp('pre', index, 1)">↓</a-button>
-                  <a-button size="small" danger type="text" data-testid="case-op-delete" @click="opsList('pre').splice(index, 1)">×</a-button>
+                  <a-button size="small" type="text" :disabled="readOnly || index === 0" @click="moveOp('pre', index, -1)">↑</a-button>
+                  <a-button size="small" type="text" :disabled="readOnly || index === (selected!.preOperations?.length ?? 0) - 1" @click="moveOp('pre', index, 1)">↓</a-button>
+                  <a-button size="small" danger type="text" data-testid="case-op-delete" :disabled="readOnly" @click="removeOp('pre', index)">×</a-button>
                 </div>
-                <a-textarea v-model:value="op.content" :rows="3" class="script-text" data-testid="case-op-content" />
+                <a-textarea :value="op.content" :disabled="readOnly" :rows="3" class="script-text" data-testid="case-op-content" @update:value="(v) => setOperationContent(op, v as string)" />
               </div>
-              <a-button size="small" data-testid="case-pre-op-add" @click="addOp('pre')">{{ t("container.addOperation") }}</a-button>
+              <a-button size="small" data-testid="case-pre-op-add" :disabled="readOnly" @click="addOp('pre')">{{ t("container.addOperation") }}</a-button>
             </div>
           </div>
           <div class="script-row">
@@ -244,13 +277,13 @@ function removeAssertion(index: number) {
             <div class="ops-list" data-testid="case-post-ops">
               <div v-for="(op, index) in selected.postOperations ?? []" :key="op.id" class="op-row">
                 <div class="op-btns">
-                  <a-button size="small" type="text" :disabled="index === 0" @click="moveOp('post', index, -1)">↑</a-button>
-                  <a-button size="small" type="text" :disabled="index === (selected!.postOperations?.length ?? 0) - 1" @click="moveOp('post', index, 1)">↓</a-button>
-                  <a-button size="small" danger type="text" data-testid="case-op-delete" @click="opsList('post').splice(index, 1)">×</a-button>
+                  <a-button size="small" type="text" :disabled="readOnly || index === 0" @click="moveOp('post', index, -1)">↑</a-button>
+                  <a-button size="small" type="text" :disabled="readOnly || index === (selected!.postOperations?.length ?? 0) - 1" @click="moveOp('post', index, 1)">↓</a-button>
+                  <a-button size="small" danger type="text" data-testid="case-op-delete" :disabled="readOnly" @click="removeOp('post', index)">×</a-button>
                 </div>
-                <a-textarea v-model:value="op.content" :rows="3" class="script-text" data-testid="case-op-content" />
+                <a-textarea :value="op.content" :disabled="readOnly" :rows="3" class="script-text" data-testid="case-op-content" @update:value="(v) => setOperationContent(op, v as string)" />
               </div>
-              <a-button size="small" data-testid="case-post-op-add" @click="addOp('post')">{{ t("container.addOperation") }}</a-button>
+              <a-button size="small" data-testid="case-post-op-add" :disabled="readOnly" @click="addOp('post')">{{ t("container.addOperation") }}</a-button>
             </div>
           </div>
         </div>

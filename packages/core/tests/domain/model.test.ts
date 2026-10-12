@@ -1,74 +1,147 @@
 import { describe, expect, it } from "vitest";
-import { ApiDefinitionSchema, ProjectSchema, StressPolicySchema, TestCaseSchema } from "../../src/domain/model.js";
+import {
+  ApiAssetSchema,
+  CollectionSchema,
+  ContractCollectionSchema,
+  ContractFolderSchema,
+  ContractProjectSchema,
+  ContractWorkspaceSchema,
+  FolderSchema,
+  ProjectSchema,
+  StressPolicySchema,
+  TestCaseSchema,
+  WorkspaceSchema,
+} from "../../src/domain/model.js";
 
-describe("域 schema", () => {
-  it("接受合法接口定义", () => {
-    const api = {
-      id: "01J5M8Z9Q2V3K4M5N6P7Q8R9S0",
-      name: "create-order",
-      version: "1.0.0",
-      method: "POST",
-      url: "{{baseUrl}}/orders",
-      headers: [{ key: "Content-Type", value: "application/json", enabled: true }],
-      query: [],
-      body: { kind: "json", content: '{"sku":"A1"}' },
-      cases: [],
-    };
-    expect(ApiDefinitionSchema.parse(api).method).toBe("POST");
-  });
+const id = "00000000-0000-4000-8000-000000000001";
 
-  it("拒绝未知字段与非法 method", () => {
-    expect(() =>
-      TestCaseSchema.parse({ id: "x", name: "c", scope: "base", nonsense: 1 }),
-    ).toThrow();
-    expect(() =>
-      ApiDefinitionSchema.parse({ id: "x", name: "a", version: "1", method: "TELEPORT", url: "/", headers: [], query: [], cases: [] }),
-    ).toThrow();
-  });
-});
-
-describe("Project.workflows 字段（M2-A）", () => {
-  it("缺省为空数组；接受工作流对象", () => {
-    const p = ProjectSchema.parse({ id: "p", name: "x", variables: {} });
-    expect(p.workflows).toEqual([]);
-    const p2 = ProjectSchema.parse({
-      id: "p", name: "x", variables: {}, environments: [], collections: [],
-      workflows: [{ id: "w", name: "wf", status: "draft", nodes: [], edges: [] }],
-    });
-    expect(p2.workflows).toHaveLength(1);
-  });
-});
-
-describe("Project.stressPolicy 字段", () => {
-  it("缺省为空策略，并规范化 origin、去重", () => {
-    const p = ProjectSchema.parse({ id: "p", name: "x", variables: {} });
-    expect(p.stressPolicy).toEqual({ trustedOrigins: [], deniedOrigins: [] });
-    const configured = ProjectSchema.parse({
-      id: "p", name: "x", variables: {},
-      stressPolicy: {
-        trustedOrigins: ["HTTPS://Example.COM:443/path", "https://example.com", "http://[::1]:80"],
-        deniedOrigins: ["http://127.0.0.1:80/a", "http://127.0.0.1"],
-        maxConcurrency: 4,
-        maxRps: 12.5,
+function apiAsset() {
+  return {
+    contract: {
+      formatVersion: 1 as const,
+      id,
+      metadata: { name: "lookup", description: "", tags: [], version: "1.0.0", status: "draft" as const },
+      request: {
+        protocol: "http" as const,
+        method: "GET" as const,
+        baseUrl: "https://example.test",
+        path: "/items",
+        pathParams: [],
+        query: [],
+        headers: [],
+        cookies: [],
+        auth: { kind: "none" as const },
+        body: { kind: "none" as const },
       },
-    });
-    expect(configured.stressPolicy).toEqual({
-      trustedOrigins: ["https://example.com", "http://[::1]"],
+      responses: [],
+    },
+    cases: [{
+      id: "case-1",
+      name: "default",
+      scope: "base",
+      parameters: {},
+      preOperations: [],
+      postOperations: [],
+      assertions: [],
+    }],
+    documentation: "",
+  };
+}
+
+describe("共享叶子域", () => {
+  it("TestCase 只接受 operation 列表，拒绝旧脚本字段", () => {
+    const currentShape = {
+      id: "case-1",
+      name: "case",
+      scope: "base",
+      parameters: {},
+      preOperations: [{ id: "pre-1", type: "script", content: "prepare" }],
+      postOperations: [],
+      assertions: [],
+    };
+
+    expect(TestCaseSchema.parse(currentShape).preOperations).toEqual([
+      { id: "pre-1", type: "script", content: "prepare" },
+    ]);
+    expect(TestCaseSchema.safeParse({ ...currentShape, preScript: "legacy" }).success).toBe(false);
+    expect(TestCaseSchema.safeParse({ ...currentShape, postScript: "legacy" }).success).toBe(false);
+  });
+
+  it("共享 stress policy schema 规范化 origins 并返回校验 issue", () => {
+    expect(StressPolicySchema.parse({
+      trustedOrigins: ["HTTPS://Example.COM:443/path", "https://example.com"],
+      deniedOrigins: ["http://127.0.0.1:80/a"],
+      maxConcurrency: 4,
+      maxRps: 12.5,
+    })).toEqual({
+      trustedOrigins: ["https://example.com"],
       deniedOrigins: ["http://127.0.0.1"],
       maxConcurrency: 4,
       maxRps: 12.5,
     });
+    expect(StressPolicySchema.safeParse({ trustedOrigins: ["ftp://example.test"] }).success).toBe(false);
+  });
+});
+
+describe("标准 contract 域聚合", () => {
+  it("聚合入口接受 ApiAsset 而不是旧内联 API 形状", () => {
+    const asset = apiAsset();
+
+    expect(ApiAssetSchema.safeParse(asset).success).toBe(true);
+    expect(ApiAssetSchema.safeParse({ ...asset, cases: [{ ...asset.cases[0], preScript: "legacy" }] }).success).toBe(false);
   });
 
-  it("非法 origin 通过 safeParse 返回 Zod issue，而不是抛 StressSafetyError", () => {
-    const parsed = StressPolicySchema.safeParse({ trustedOrigins: ["ftp://not-http.example"] });
-    expect(parsed.success).toBe(false);
-    if (!parsed.success) expect(parsed.error.issues.length).toBeGreaterThan(0);
+  it("公开容器名指向同一套 versioned schema", () => {
+    expect(WorkspaceSchema).toBe(ContractWorkspaceSchema);
+    expect(ProjectSchema).toBe(ContractProjectSchema);
+    expect(CollectionSchema).toBe(ContractCollectionSchema);
+    expect(FolderSchema).toBe(ContractFolderSchema);
   });
 
-  it("非法 URL/协议让 ProjectSchema.safeParse 失败", () => {
-    expect(ProjectSchema.safeParse({
-      id: "p", name: "x", variables: {}, stressPolicy: { deniedOrigins: ["not a url"] },
+  it("project 输出 models/components，collection 与 folder 保存 ApiAsset", () => {
+    const projectInput = {
+      id,
+      name: "project",
+      variables: {},
+      globals: {},
+    };
+    const project = ProjectSchema.parse(projectInput);
+    expect(project.models).toEqual([]);
+    expect(project.components).toEqual([]);
+    expect(project.stressPolicy).toEqual({ trustedOrigins: [], deniedOrigins: [] });
+
+    const normalizedProject = ProjectSchema.parse({
+      ...projectInput,
+      stressPolicy: {
+        trustedOrigins: ["HTTPS://Example.COM:443/path", "https://example.com"],
+        deniedOrigins: ["http://127.0.0.1:80/a", "http://127.0.0.1"],
+      },
+    });
+    expect(normalizedProject.stressPolicy).toEqual({
+      trustedOrigins: ["https://example.com"],
+      deniedOrigins: ["http://127.0.0.1"],
+    });
+    expect(ProjectSchema.safeParse({ ...projectInput, stressPolicy: { trustedOrigins: ["ftp://example.test"] } }).success).toBe(false);
+
+    const asset = apiAsset();
+    const collection = CollectionSchema.parse({
+      id,
+      name: "collection",
+      apis: [asset],
+      folders: [{ id: "00000000-0000-4000-8000-000000000002", name: "folder", apis: [asset] }],
+    });
+    expect(collection.apis[0]).toEqual(asset);
+    expect(collection.folders[0].apis[0]).toEqual(asset);
+    expect(CollectionSchema.safeParse({
+      id,
+      name: "legacy",
+      scripts: { pre: "legacy" },
     }).success).toBe(false);
+  });
+
+  it("workspace 要求 formatVersion 1", () => {
+    const parsed = WorkspaceSchema.parse({ formatVersion: 1, id, name: "workspace", variables: {} });
+    expect(parsed.formatVersion).toBe(1);
+    expect(WorkspaceSchema.safeParse({ ...parsed, formatVersion: 2 }).success).toBe(false);
   });
 });

@@ -6,11 +6,13 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ApiDefinitionSchema } from "@apicc/core";
+import { TestCaseSchema } from "@apicc/core";
 import { createIpcDeps } from "../../../src/main/ipc.js";
 import { createSession } from "../../../src/main/session.js";
 import { createAiKeyStore } from "../../../src/main/ai/config.js";
+import type { AiSuggestInput } from "../../../src/shared/ai/contract.js";
 import type { SafeStorageLike } from "../../../src/main/online/tokenStore.js";
+import { IDS, makeWorkspace, persistWorkspace, uuid } from "../helpers/contract-assets.js";
 
 const availableStorage: SafeStorageLike = {
   isEncryptionAvailable: () => true,
@@ -43,6 +45,7 @@ const BAD_AI_OUTPUT = JSON.stringify({ cases: [{ name: 123 }] });
 
 function setup(opts: { content?: string; status?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ai-ipc-"));
+  const workspaceDir = mkdtempSync(join(tmpdir(), "apicc-ai-workspace-"));
   const keyStore = createAiKeyStore({ dir, storage: availableStorage });
   const calls: FetchCall[] = [];
   const session = createSession();
@@ -52,17 +55,22 @@ function setup(opts: { content?: string; status?: number } = {}) {
     saveFile: async () => "",
     ai: { keyStore, fetch: fetchStub(opts.content ?? VALID_AI_OUTPUT, calls, opts.status ?? 200) },
   });
-  return { deps, dir, keyStore, calls, session };
+  return { deps, dir, workspaceDir, keyStore, calls, session };
 }
 
 /** 经 IPC 链路造一个已打开工作区 + 一条接口，返回 apiId。 */
-async function seedApi(deps: ReturnType<typeof createIpcDeps>, dir: string): Promise<string> {
-  await deps.handle("ws:create", {}, dir, "演示");
-  const group = await deps.handle("node:create", {}, { kind: "group", parentId: null, name: "g" });
-  const project = await deps.handle("node:create", {}, { kind: "project", parentId: group.id, name: "p" });
-  const collection = await deps.handle("node:create", {}, { kind: "collection", parentId: project.id, name: "c" });
-  const api = await deps.handle("node:create", {}, { kind: "api", parentId: collection.id, name: "a", method: "GET", url: "http://127.0.0.1:1/x" });
-  return api.id as string;
+async function seedApi(deps: ReturnType<typeof createIpcDeps>, dir: string) {
+  const opened = await deps.handle("ws:create", {}, dir, "演示");
+  const groupLocator = { workspaceId: opened.workspace.id };
+  const group = await deps.handle("node:create", {}, { kind: "group", parent: groupLocator, name: "g" });
+  if (group.kind !== "group") throw new Error("Expected the group fixture to be created.");
+  const project = await deps.handle("node:create", {}, { kind: "project", parent: group.locator, name: "p" });
+  if (project.kind !== "project") throw new Error("Expected the project fixture to be created.");
+  const collection = await deps.handle("node:create", {}, { kind: "collection", parent: project.locator, name: "c" });
+  if (collection.kind !== "collection") throw new Error("Expected the collection fixture to be created.");
+  const api = await deps.handle("node:create", {}, { kind: "api", parent: collection.locator, api: { name: "a", method: "GET", baseUrl: "http://127.0.0.1:1", path: "/x" } });
+  if (api.kind !== "api") throw new Error("Expected the API fixture to be created.");
+  return { id: api.id, locator: api.locator };
 }
 
 describe("AI 频道：配置面（沿用任务 1 契约）", () => {
@@ -88,17 +96,39 @@ describe("AI 频道：配置面（沿用任务 1 契约）", () => {
     await expect(deps.handle("ai:save-config", {}, { baseUrl: "", model: "m", apiKey: "k" })).rejects.toThrow(/\[ai:save-config\]/);
     const bare = createIpcDeps({ session: createSession(), pickDirectory: async () => "", saveFile: async () => "" });
     await expect(bare.handle("ai:get-config", {})).rejects.toThrow(/AI 功能未配置/);
-    await expect(bare.handle("ai:suggest", {}, { apiId: "x", baseUrl: "https://a", model: "m" })).rejects.toThrow(/AI 功能未配置/);
+    await expect(bare.handle("ai:suggest", {}, { locator: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi }, baseUrl: "https://a", model: "m" })).rejects.toThrow(/AI 功能未配置/);
     await expect(bare.handle("ai:test-config", {}, { baseUrl: "https://a", model: "m" })).rejects.toThrow(/AI 功能未配置/);
   });
 });
 
 describe("ai:suggest 真链路（core provider + suggestCases，任务 2 步骤 1①）", () => {
   it("完整链路：保存密钥 + 打开工作区接口 → ai:suggest 返回两条建议（id 齐全唯一、可直接过 TestCase 形状）", async () => {
-    const { deps, dir, calls } = setup();
+    const { deps, dir, workspaceDir, calls, session } = setup();
     await deps.handle("ai:save-config", {}, { baseUrl: "https://ai.example.com/v1", model: "model-x", apiKey: "sk-real-1" });
-    const apiId = await seedApi(deps, dir);
-    const out = (await deps.handle("ai:suggest", {}, { apiId, baseUrl: "https://ai.example.com/v1", model: "model-x" })) as Array<{ id: string; name: string; assertions: Array<{ id: string }> }>;
+    const seeded = await seedApi(deps, workspaceDir);
+    const projectLocator = {
+      workspaceId: seeded.locator.workspaceId,
+      groupId: seeded.locator.groupId,
+      projectId: seeded.locator.projectId,
+    };
+    const model = await session.createModel(projectLocator, {
+      name: "AI_PROMPT_MODEL_SENTINEL",
+      description: "Only this project's referenced model belongs in the AI prompt.",
+      schema: { kind: "object", properties: { promptSentinel: { kind: "scalar", type: "string" } }, required: ["promptSentinel"], additionalProperties: false },
+    });
+    const parameter = await session.createComponent(projectLocator, {
+      name: "AI_PROMPT_PARAMETER_SENTINEL",
+      description: "Only this project's referenced parameter belongs in the AI prompt.",
+      kind: "parameter",
+      definition: { location: "header", name: "AI_PROMPT_PARAMETER_SENTINEL", schema: { kind: "scalar", type: "string" }, required: true, description: "AI prompt parameter sentinel" },
+    });
+    const api = session.locateApi(seeded.locator)!.api;
+    if (api.contract.request.protocol !== "http") throw new Error("Expected an HTTP API fixture.");
+    api.contract.request.body = { kind: "json", content: "{}", schema: { kind: "modelRef", modelId: model.id } };
+    api.contract.request.headers.push({ kind: "componentRef", id: uuid(9001), componentId: parameter.id, expectedKind: "parameter" });
+    await session.saveApi(seeded.locator, api);
+    const locator = seeded.locator;
+    const out = (await deps.handle("ai:suggest", {}, { locator, baseUrl: "https://ai.example.com/v1", model: "model-x" })) as Array<{ id: string; name: string; assertions: Array<{ id: string }> }>;
     expect(out).toHaveLength(2);
     expect(new Set(out.map((c) => c.id)).size).toBe(2);
     for (const c of out) {
@@ -111,41 +141,62 @@ describe("ai:suggest 真链路（core provider + suggestCases，任务 2 步骤 
     expect(calls[0]!.url).toBe("https://ai.example.com/v1/chat/completions");
     const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer sk-real-1");
-    const payload = JSON.parse(String(calls[0]!.init.body)) as { model: string; response_format: { type: string }; messages: Array<{ role: string }> };
+    const payload = JSON.parse(String(calls[0]!.init.body)) as { model: string; response_format: { type: string }; messages: Array<{ role: string; content: string }> };
     expect(payload.model).toBe("model-x");
     expect(payload.response_format).toEqual({ type: "json_object" });
     expect(payload.messages[0]!.role).toBe("system");
-    // 产物面：建议即合法 TestCase（含 id），并入接口后过严格 schema（采用落盘前置守卫）
-    const api = { id: "api-x", name: "n", version: "1.0.0", deprecated: false, method: "GET", url: "/x", headers: [], query: [], protocol: "http", cases: out } as const;
-    expect(ApiDefinitionSchema.parse(api).cases).toHaveLength(2);
+    expect(payload.messages[1]!.content).toContain("AI_PROMPT_MODEL_SENTINEL");
+    expect(payload.messages[1]!.content).toContain(parameter.id);
+    expect(payload.messages[1]!.content).toContain("AI_PROMPT_PARAMETER_SENTINEL");
+    // 产物面：每条建议即合法 TestCase（含 id），可直接提交给契约资产保存链路。
+    expect(out.map((testCase) => TestCaseSchema.parse(testCase))).toHaveLength(2);
   });
 
   it("未存密钥 → 可读错误指引配置对话框，且不发起 provider 请求", async () => {
-    const { deps, calls } = setup();
-    const apiId = await seedApi(deps, mkdtempSync(join(tmpdir(), "apicc-ai-ws-")));
-    await expect(deps.handle("ai:suggest", {}, { apiId, baseUrl: "https://a", model: "m" })).rejects.toThrow(/尚未配置 AI 密钥/);
+    const { deps, workspaceDir, calls } = setup();
+    const locator = (await seedApi(deps, workspaceDir)).locator;
+    await expect(deps.handle("ai:suggest", {}, { locator, baseUrl: "https://a", model: "m" })).rejects.toThrow(/尚未配置 AI 密钥/);
     expect(calls).toHaveLength(0);
   });
 
   it("apiId 未命中 → 「未找到接口」可读错误", async () => {
-    const { deps, dir } = setup();
+    const { deps, workspaceDir } = setup();
     await deps.handle("ai:save-config", {}, { baseUrl: "https://a", model: "m", apiKey: "sk-x" });
-    await deps.handle("ws:create", {}, dir, "w");
-    await expect(deps.handle("ai:suggest", {}, { apiId: "不存在的接口", baseUrl: "https://a", model: "m" })).rejects.toThrow(/未找到接口/);
+    const seeded = await seedApi(deps, workspaceDir);
+    await expect(deps.handle("ai:suggest", {}, { locator: { ...seeded.locator, apiId: uuid(9999) }, baseUrl: "https://a", model: "m" })).rejects.toThrow(/未找到接口/);
+  });
+
+  it("跨项目重复 API ID 由完整 locator 精确定位目标项目上下文", async () => {
+    const { deps, calls } = setup();
+    await deps.handle("ai:save-config", {}, { baseUrl: "https://a", model: "m", apiKey: "sk-x" });
+    const workspaceDir = mkdtempSync(join(tmpdir(), "apicc-ai-ambiguous-"));
+    await persistWorkspace(workspaceDir, makeWorkspace());
+    await deps.handle("ws:open", {}, workspaceDir);
+    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupTwo, projectId: IDS.projectTwo, collectionId: IDS.collectionTwo, folderIds: [], apiId: IDS.sharedApi };
+    const output = await deps.handle("ai:suggest", {}, { locator, baseUrl: "https://a", model: "m" });
+    expect(output).toHaveLength(2);
+    expect(calls).toHaveLength(1);
+    expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe("Bearer sk-x");
+    const payload = JSON.parse(String(calls[0]!.init.body)) as { messages: Array<{ content: string }> };
+    expect(payload.messages[1]!.content).toContain("project two API");
+    expect(payload.messages[1]!.content).not.toContain("project one API");
   });
 
   it("AI 两次输出均非法 → AiSuggestError 冒泡（报错带解析失败原因）", async () => {
-    const { deps, dir } = setup({ content: BAD_AI_OUTPUT });
+    const { deps, workspaceDir } = setup({ content: BAD_AI_OUTPUT });
     await deps.handle("ai:save-config", {}, { baseUrl: "https://a", model: "m", apiKey: "sk-x" });
-    const apiId = await seedApi(deps, dir);
-    await expect(deps.handle("ai:suggest", {}, { apiId, baseUrl: "https://a", model: "m" })).rejects.toThrow(/解析失败/);
+    const locator = (await seedApi(deps, workspaceDir)).locator;
+    await expect(deps.handle("ai:suggest", {}, { locator, baseUrl: "https://a", model: "m" })).rejects.toThrow(/解析失败/);
   });
 
   it("入参校验：baseUrl/model/apiId 缺失 → 带频道名的可读错误", async () => {
     const { deps } = setup();
-    await expect(deps.handle("ai:suggest", {}, { apiId: "", baseUrl: "https://a", model: "m" })).rejects.toThrow(/\[ai:suggest\]/);
-    await expect(deps.handle("ai:suggest", {}, { apiId: "x", baseUrl: "", model: "m" })).rejects.toThrow(/\[ai:suggest\]/);
-    await expect(deps.handle("ai:suggest", {}, { apiId: "x", baseUrl: "https://a", model: "" })).rejects.toThrow(/\[ai:suggest\]/);
+    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi };
+    // Runtime-negative IPC input crosses the static contract only at this explicit unknown boundary.
+    const malformedLocator: unknown = {};
+    await expect(deps.handle("ai:suggest", {}, { locator: malformedLocator as AiSuggestInput["locator"], baseUrl: "https://a", model: "m" })).rejects.toThrow(/\[ai:suggest\]/);
+    await expect(deps.handle("ai:suggest", {}, { locator, baseUrl: "", model: "m" })).rejects.toThrow(/\[ai:suggest\]/);
+    await expect(deps.handle("ai:suggest", {}, { locator, baseUrl: "https://a", model: "" })).rejects.toThrow(/\[ai:suggest\]/);
   });
 });
 

@@ -7,17 +7,20 @@
 // （expectBody/bodyHas，先例同 App.test.ts / onlineWorkspace.test.ts）。
 import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
+import type { ApiAsset } from "@apicc/core";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import ProjectTabs from "../../../src/renderer/src/components/ProjectTabs.vue";
 import {
   createEvictProjectSessions,
   createTabsStore,
+  type ProjectTab,
   type TabsStoreDeps,
   type WorkspaceRef,
 } from "../../../src/renderer/src/stores/tabs.js";
 import type { EditorSession } from "../../../src/renderer/src/stores/editor.js";
 import type { OnlineSession } from "../../../src/renderer/src/stores/online.js";
-import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
+import type { LocalProjectTreeNodeDTO, LocalRootTreeNodeDTO } from "../../../src/shared/tree-dto.js";
+import type { ProjectLocator, WorkflowLocator } from "../../../src/shared/locations.js";
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -58,6 +61,10 @@ function bodyHas(testid: string): boolean {
   return bodyFind(testid) !== null;
 }
 
+function projectIdOf(tab: ProjectTab): string {
+  return "projectLocator" in tab ? tab.projectLocator.projectId : tab.projectId;
+}
+
 function memStorage(): Storage {
   const map = new Map<string, string>();
   return {
@@ -72,54 +79,32 @@ function memStorage(): Storage {
   } as Storage;
 }
 
-const LOCAL_REF: WorkspaceRef = { kind: "local", dir: "/tmp/ws-local" };
-const ONLINE_REF: WorkspaceRef = { kind: "online", workspaceId: "ws-1", name: "在线一" };
-const P1 = { id: "p-1", name: "项目一" };
-const P2 = { id: "p-2", name: "项目二" };
+const LOCAL_REF = { kind: "local", dir: "/tmp/ws-local" } as const satisfies WorkspaceRef;
+const ONLINE_REF = { kind: "online", workspaceId: "ws-1", name: "在线一" } as const satisfies WorkspaceRef;
+const PROJECT_1: ProjectLocator = { workspaceId: "20000000-0000-4000-8000-000000000001", groupId: "20000000-0000-4000-8000-000000000002", projectId: "20000000-0000-4000-8000-000000000011" };
+const PROJECT_2: ProjectLocator = { ...PROJECT_1, projectId: "20000000-0000-4000-8000-000000000012" };
+const PROJECT_1_OTHER_GROUP: ProjectLocator = { ...PROJECT_1, groupId: "20000000-0000-4000-8000-000000000003" };
+const P1 = { id: "p-1", name: "项目一", locator: PROJECT_1 };
+const P2 = { id: "p-2", name: "项目二", locator: PROJECT_2 };
 
 /** 本地树夹具：项目一（接口甲/乙 + 工作流 wf-1）、项目二（接口丙）——projectHasDrafts 收集与归属过滤的取数面。 */
-const TREE: TreeNodeDTO = {
-  id: "root",
-  kind: "root",
-  label: "工作区",
+const TREE: LocalRootTreeNodeDTO = {
+  source: "local", id: PROJECT_1.workspaceId, key: "local:root", kind: "root",
+  locator: { workspaceId: PROJECT_1.workspaceId }, label: "工作区",
   children: [
     {
-      id: "g-1",
-      kind: "group",
-      label: "分组",
+      source: "local", id: PROJECT_1.groupId, key: "local:group:1", kind: "group",
+      locator: { workspaceId: PROJECT_1.workspaceId, groupId: PROJECT_1.groupId }, label: "分组",
       children: [
-        {
-          id: "p-1",
-          kind: "project",
-          label: "项目一",
-          workflows: [{ id: "wf-1", name: "流一", status: "draft" }],
-          children: [
-            {
-              id: "c-1",
-              kind: "collection",
-              label: "集合",
-              children: [
-                { id: "a-1", kind: "api", label: "接口甲" },
-                { id: "a-2", kind: "api", label: "接口乙" },
-              ],
-            },
-          ],
-        },
-        {
-          id: "p-2",
-          kind: "project",
-          label: "项目二",
-          children: [
-            {
-              id: "c-2",
-              kind: "collection",
-              label: "集合二",
-              children: [{ id: "a-3", kind: "api", label: "接口丙" }],
-            },
-          ],
-        },
+        { source: "local", id: P1.id, key: "local:project:1", kind: "project", locator: PROJECT_1,
+          label: P1.name, envs: [], workflows: [{ source: "local", id: "wf-1", key: "local:workflow:1", name: "流一", status: "draft", locator: { ...PROJECT_1, workflowId: "wf-1" } }], children: [] },
+        { source: "local", id: P2.id, key: "local:project:2", kind: "project", locator: PROJECT_2, label: P2.name, envs: [], workflows: [], children: [] },
       ],
     },
+    { source: "local", id: PROJECT_1_OTHER_GROUP.groupId, key: "local:group:2", kind: "group",
+      locator: { workspaceId: PROJECT_1_OTHER_GROUP.workspaceId, groupId: PROJECT_1_OTHER_GROUP.groupId }, label: "第二分组",
+      children: [{ source: "local", id: "p-1-other", key: "local:project:1-other", kind: "project",
+        locator: PROJECT_1_OTHER_GROUP, label: "同 ID 不同分组", envs: [], workflows: [], children: [] }] },
   ],
 };
 
@@ -134,15 +119,24 @@ function sessionStub(id: string): OnlineSession {
 }
 
 /** 干净会话槽：api 与快照一致。 */
-function cleanSession(apiId: string, projectId: string | null): EditorSession {
-  const api = { id: apiId, name: `接口-${apiId}` } as EditorSession["api"];
-  return { api, envs: [], snapshot: JSON.stringify(api), projectId };
+function cleanSession(apiId: string, project: ProjectLocator = PROJECT_1): EditorSession {
+  const locator = { ...project, collectionId: "30000000-0000-4000-8000-000000000001", folderIds: [], apiId };
+  const api: ApiAsset = {
+    contract: {
+      formatVersion: 1, id: apiId,
+      metadata: { name: `接口-${apiId}`, description: "", tags: [], version: "1.0.0", status: "draft" },
+      request: { protocol: "http", method: "GET", baseUrl: "", path: "/", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" } },
+      responses: [],
+    },
+    cases: [], documentation: "",
+  };
+  return { root: LOCAL_REF.dir, locator, api, envs: [], snapshot: JSON.stringify(api), protocolDrafts: {}, generation: 1 };
 }
 
 /** 脏会话槽：缓冲相对快照有未保存修改。 */
-function dirtySession(apiId: string, projectId: string | null): EditorSession {
-  const session = cleanSession(apiId, projectId);
-  session.api!.name = "未保存的改名";
+function dirtySession(apiId: string, project: ProjectLocator = PROJECT_1): EditorSession {
+  const session = cleanSession(apiId, project);
+  session.api.contract.metadata.name = "未保存的改名";
   return session;
 }
 
@@ -152,13 +146,13 @@ function makeDeps() {
   const workspace = {
     opened: false,
     root: "/tmp/ws-local",
-    tree: TREE as TreeNodeDTO | null,
+    tree: TREE,
     open: vi.fn(async (dir: string) => {
       workspace.opened = true;
       workspace.root = dir;
     }),
   };
-  const tree = { select: vi.fn(async () => {}) };
+  const tree = { select: vi.fn(async (_node: LocalProjectTreeNodeDTO) => {}) };
   const online = {
     sessions: {} as TabsStoreDeps["online"]["sessions"],
     activeWorkspaceId: null as string | null,
@@ -180,8 +174,16 @@ function makeDeps() {
       }
     },
   };
-  const editor = { sessions: {} as Record<string, EditorSession>, evictProject: vi.fn() };
-  const workflowDesign = { dirty: false, workflowId: null as string | null };
+  const editorSessions = {} as Record<string, EditorSession>;
+  const editor = {
+    sessions: editorSessions,
+    evictProject: vi.fn(),
+    isProjectDirty: (locator: ProjectLocator, root: string) => Object.values(editorSessions).some((session) =>
+      session.root === root && session.locator.workspaceId === locator.workspaceId
+      && session.locator.groupId === locator.groupId && session.locator.projectId === locator.projectId
+      && JSON.stringify(session.api) !== session.snapshot),
+  };
+  const workflowDesign = { dirty: false, locator: null as WorkflowLocator | null };
   const evictProjectSessions = vi.fn();
   const deps: TabsStoreDeps = {
     workspace,
@@ -192,7 +194,7 @@ function makeDeps() {
     evictProjectSessions,
     storage,
   };
-  return { deps, storage, workspace, tree, online, editor, workflowDesign, evictProjectSessions };
+  return { deps, storage, workspace, tree, online, editor, editorSessions, workflowDesign, evictProjectSessions };
 }
 
 async function mountTabs(deps: TabsStoreDeps) {
@@ -234,7 +236,7 @@ describe("ProjectTabs 渲染与激活（计划 C 任务 5）", () => {
     await wrapper.find('[data-testid="project-tab-0"]').trigger("click");
     await flushPromises();
     expect(tabs.activeTabId).toBe("tab-1");
-    expect(tree.select).toHaveBeenCalledWith("project", "p-1");
+    expect(tree.select).toHaveBeenCalledWith(expect.objectContaining({ kind: "project", locator: PROJECT_1 }));
     expect(wrapper.find('[data-testid="project-tab-0"]').classes()).toContain("active");
     expect(wrapper.find('[data-testid="project-tab-1"]').attributes("data-active")).toBe("false");
   });
@@ -249,15 +251,15 @@ describe("ProjectTabs 关签（dirty 确认两分支，不变量 3）", () => {
     await flushPromises();
     await wrapper.find('[data-testid="tab-close-0"]').trigger("click");
     await flushPromises();
-    expect(tabs.tabs.map((t) => t.projectId)).toEqual(["p-2"]);
-    expect(evictProjectSessions).toHaveBeenCalledWith(LOCAL_REF, "p-1");
+    expect(tabs.tabs.map(projectIdOf)).toEqual([PROJECT_2.projectId]);
+    expect(evictProjectSessions).toHaveBeenCalledWith(expect.objectContaining({ projectLocator: PROJECT_1 }));
     expect(bodyHas("dialog-confirm")).toBe(false);
   });
 
   it("非活跃槽脏也拦截：活跃编辑槽干净、同项目非活跃槽脏 → 弹「未保存的修改将丢弃」；取消保留、确认后关签驱逐", async () => {
-    const { deps, evictProjectSessions } = makeDeps();
-    deps.editor!.sessions["a-1"] = dirtySession("a-1", "p-1"); // 项目一非活跃槽：脏（槽元数据归属项目一）
-    deps.editor!.sessions["a-2"] = cleanSession("a-2", "p-1"); // 项目一活跃槽：干净
+    const { deps, editorSessions, evictProjectSessions } = makeDeps();
+    editorSessions["a-1"] = dirtySession("a-1", PROJECT_1); // 项目一非活跃槽：脏（完整 locator 归属）
+    editorSessions["a-2"] = cleanSession("a-2", PROJECT_1); // 项目一活跃槽：干净
     const { wrapper, tabs } = await mountTabs(deps);
     await tabs.openProjectTab(LOCAL_REF, P1); // tab-1（项目一，非活跃签）
     await tabs.openProjectTab(LOCAL_REF, P2); // tab-2（活跃）
@@ -279,14 +281,14 @@ describe("ProjectTabs 关签（dirty 确认两分支，不变量 3）", () => {
     await flushPromises();
     await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
-    expect(tabs.tabs.map((t) => t.projectId)).toEqual(["p-2"]);
-    expect(evictProjectSessions).toHaveBeenCalledWith(LOCAL_REF, "p-1");
+    expect(tabs.tabs.map(projectIdOf)).toEqual([PROJECT_2.projectId]);
+    expect(evictProjectSessions).toHaveBeenCalledWith(expect.objectContaining({ projectLocator: PROJECT_1 }));
   });
 
   it("workflowDesign 草稿归属过滤：活跃工作流属于该项目才拦截；不属于则直关", async () => {
     const { deps, workflowDesign } = makeDeps();
     workflowDesign.dirty = true;
-    workflowDesign.workflowId = "wf-1"; // 属于项目一（tree workflows 摘要）
+    workflowDesign.locator = { ...PROJECT_1, workflowId: "wf-1" }; // 属于项目一（tree workflows 摘要）
     const { wrapper, tabs } = await mountTabs(deps);
     await tabs.openProjectTab(LOCAL_REF, P1); // tab-1
     await tabs.openProjectTab(LOCAL_REF, P2); // tab-2（活跃）
@@ -299,24 +301,21 @@ describe("ProjectTabs 关签（dirty 确认两分支，不变量 3）", () => {
     // 同一草稿流不属于项目二：p-2 无任何草稿 → 直关
     await wrapper.find('[data-testid="tab-close-1"]').trigger("click");
     await flushPromises();
-    expect(tabs.tabs.map((t) => t.projectId)).toEqual(["p-1"]);
+    expect(tabs.tabs.map(projectIdOf)).toEqual([PROJECT_1.projectId]);
     expect(bodyHas("dialog-confirm")).toBe(false);
   });
 
-  it("slot.projectId=null 的脏槽保守计入（防漏报）：任何本地项目签关签都拦截确认", async () => {
-    const { deps } = makeDeps();
-    // 建槽时树里找不到归属（罕见）→ projectId null：判定保守计入，任何本地签关签都需确认
-    deps.editor!.sessions["a-x"] = dirtySession("a-x", null);
+  it("同 projectId 不同 group 的脏槽不串扰：关闭另一定位的签不触发确认", async () => {
+    const { deps, editorSessions } = makeDeps();
+    editorSessions["a-x"] = dirtySession("a-x", PROJECT_1);
     const { wrapper, tabs } = await mountTabs(deps);
-    await tabs.openProjectTab(LOCAL_REF, P2); // 项目二自身无任何槽
+    await tabs.openProjectTab(LOCAL_REF, P1);
+    await tabs.openProjectTab(LOCAL_REF, { id: "p-1-other", name: "同 ID 不同分组", locator: PROJECT_1_OTHER_GROUP });
     await flushPromises();
-    await wrapper.find('[data-testid="tab-close-0"]').trigger("click");
-    await flushPromises();
-    expect(tabs.tabs).toHaveLength(1); // 确认前不关
-    expect(bodyHas("dialog-confirm")).toBe(true);
-    await expectBody("dialog-cancel").trigger("click");
+    await wrapper.find('[data-testid="tab-close-1"]').trigger("click");
     await flushPromises();
     expect(tabs.tabs).toHaveLength(1);
+    expect(bodyHas("dialog-confirm")).toBe(false);
   });
 
   it("在线签：`<projectId>/` 前缀缓冲槽任一 dirty 拦截（其他前缀不牵连）", async () => {

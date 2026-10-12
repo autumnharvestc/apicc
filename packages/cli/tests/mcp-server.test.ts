@@ -6,9 +6,11 @@ import { afterEach, afterAll, beforeAll, describe, expect, it, vi } from "vitest
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
+  CredentialError,
   createDefaultRegistry,
+  createProjectSnapshot,
   fileStorage,
-  renderDesignMarkdown,
+  renderContractMarkdown,
   type Workspace,
 } from "@apicc/core";
 import { createMcpServer } from "../src/mcp/server.js";
@@ -19,8 +21,19 @@ import { runCli } from "../src/main.js";
 // 安全红线：工具只暴露 --workspace 指定的工作区；工具无文件系统路径类参数（apiPath 仅是
 // 与既有 CLI 同口径的工作区相对定位符，只与内存树匹配，不落任何 FS 访问）。
 
-const OK_PATH = "groups/demo/projects/svc/collections/api/apis/ok";
-const DEEP_PATH = "groups/demo/projects/svc/collections/api/folders/sub/apis/deep";
+const GROUP_A = "00000000-0000-4000-8000-000000000002";
+const PROJECT_A = "00000000-0000-4000-8000-000000000004";
+const COLLECTION_A = "00000000-0000-4000-8000-000000000008";
+const FOLDER_A = "00000000-0000-4000-8000-000000000031";
+const DEEP_API = "00000000-0000-4000-8000-000000000032";
+const DEEP_CASE = "00000000-0000-4000-8000-000000000033";
+const OK_API = "00000000-0000-4000-8000-000000000034";
+const OK_CASE = "00000000-0000-4000-8000-000000000015";
+const DEV_CASE = "00000000-0000-4000-8000-000000000016";
+const XOK_API = "00000000-0000-4000-8000-000000000037";
+const XOK_CASE = "00000000-0000-4000-8000-000000000038";
+const OK_PATH = `groups/${GROUP_A}/projects/${PROJECT_A}/collections/${COLLECTION_A}/apis/${OK_API}`;
+const DEEP_PATH = `groups/${GROUP_A}/projects/${PROJECT_A}/collections/${COLLECTION_A}/folders/${FOLDER_A}/apis/${DEEP_API}`;
 
 let server: Server;
 let baseUrl = "";
@@ -41,6 +54,34 @@ function textOf(res: { content: Array<{ type: string; text: string }> }): string
   return res.content.map((c) => c.text).join("\n");
 }
 
+function testCase(id: string, name: string, scope: string, assertions: Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number]["cases"][number]["assertions"] = []) {
+  return { id, name, scope, parameters: {}, preOperations: [], postOperations: [], assertions };
+}
+
+function apiAsset(
+  id: string,
+  name: string,
+  path: string,
+  cases: ReturnType<typeof testCase>[],
+  documentation = "",
+  method: "GET" | "POST" = "GET",
+  body: { kind: "none" } | { kind: "json"; content: string } = { kind: "none" },
+) {
+  return {
+    contract: {
+      formatVersion: 1 as const, id,
+      metadata: { name, description: "", tags: [], version: "1", status: "published" as const },
+      request: {
+        protocol: "http" as const, method, baseUrl, path, pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" as const }, body,
+      },
+      responses: [],
+    },
+    documentation,
+    cases,
+  };
+}
+
 beforeAll(async () => {
   server = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
@@ -53,65 +94,51 @@ beforeAll(async () => {
   rootA = mkdtempSync(join(tmpdir(), "apicc-mcp-a-"));
   tempRoots.push(rootA);
   const wsA: Workspace = {
-    id: "wa", name: "mcp-a", variables: {},
+    formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "mcp-a", variables: {},
     groups: [{
-      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
-        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: { baseUrl }, workflows: [], environments: [],
+      id: GROUP_A, name: "demo", projects: [{
+        id: PROJECT_A, name: "svc", variables: {}, globals: {}, components: [], models: [], workflows: [], environments: [],
+        stressPolicy: {},
         collections: [{
-          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {},
+          id: COLLECTION_A, name: "api", variables: {}, preOperations: [], postOperations: [],
           folders: [{
-            id: "00000000-0000-4000-8000-000000000031", name: "sub", apis: [{
-              id: "00000000-0000-4000-8000-000000000032", name: "deep", version: "1", deprecated: false, method: "POST",
-              url: "{{baseUrl}}/deep", headers: [], query: [],
-              body: { kind: "json", content: "{\"n\":1}" },
-              cases: [{ id: "00000000-0000-4000-8000-000000000033", name: "deep-ok", scope: "base", parameters: {}, assertions: [] }],
-            }],
+            id: FOLDER_A, name: "sub", preOperations: [], postOperations: [], folders: [],
+            apis: [apiAsset(DEEP_API, "deep", "/deep", [testCase(DEEP_CASE, "deep-ok", "base")], "", "POST", { kind: "json", content: "{\"n\":1}" })],
           }],
           apis: [
-            {
-              id: "00000000-0000-4000-8000-000000000034", name: "ok", version: "1", deprecated: false, method: "GET",
-              url: "{{baseUrl}}/x", headers: [], query: [],
-              design: "ok 接口的业务规则说明（design.md 正文）。",
-              cases: [
-                { id: "00000000-0000-4000-8000-000000000015", name: "passes", scope: "base", parameters: {}, assertions: [
+            apiAsset(OK_API, "ok", "/x", [
+                testCase(OK_CASE, "passes", "base", [
                   { id: "as1", target: "status", op: "eq", expected: "200" },
                   { id: "as2", target: "bodyJson", path: "$.ok", op: "eq", expected: "true" },
-                ] },
-                { id: "00000000-0000-4000-8000-000000000016", name: "dev-only", scope: "dev", parameters: {}, assertions: [] },
-              ],
-            },
-            {
-              id: "00000000-0000-4000-8000-000000000037", name: "xok", version: "1", deprecated: false, method: "GET",
-              url: "{{baseUrl}}/y", headers: [], query: [],
-              cases: [{ id: "00000000-0000-4000-8000-000000000038", name: "x-passes", scope: "base", parameters: {}, assertions: [] }],
-            },
+                ]),
+                testCase(DEV_CASE, "dev-only", "dev"),
+              ], "ok 接口的业务规则说明（documentation）。"),
+            apiAsset(XOK_API, "xok", "/y", [testCase(XOK_CASE, "x-passes", "base")]),
           ],
         }],
       }],
     }],
   };
-  await fileStorage.save(rootA, wsA);
+  const initialA = await fileStorage.load(rootA);
+  await fileStorage.save(rootA, wsA, { expectedRevision: initialA.revision, deletions: [] });
 
   // 工作区 B：不同接口——钉住「工具只暴露 --workspace 指定的工作区」。
   rootB = mkdtempSync(join(tmpdir(), "apicc-mcp-b-"));
   tempRoots.push(rootB);
   const wsB: Workspace = {
-    id: "wb", name: "mcp-b", variables: {},
+    formatVersion: 1, id: "00000000-0000-4000-8000-000000000011", name: "mcp-b", variables: {},
     groups: [{
       id: "00000000-0000-4000-8000-000000000003", name: "other", projects: [{
-        id: "00000000-0000-4000-8000-000000000005", name: "bee", variables: {}, workflows: [], environments: [],
+        id: "00000000-0000-4000-8000-000000000005", name: "bee", variables: {}, globals: {}, components: [], models: [], workflows: [], environments: [], stressPolicy: {},
         collections: [{
-          id: "00000000-0000-4000-8000-000000000009", name: "col", variables: {}, folders: [],
-          apis: [{
-            id: "00000000-0000-4000-8000-000000000035", name: "bee", version: "1", deprecated: false, method: "GET",
-            url: "http://bee.example", headers: [], query: [],
-            cases: [{ id: "00000000-0000-4000-8000-000000000036", name: "bee-passes", scope: "base", parameters: {}, assertions: [] }],
-          }],
+          id: "00000000-0000-4000-8000-000000000009", name: "col", variables: {}, preOperations: [], postOperations: [], folders: [],
+          apis: [apiAsset("00000000-0000-4000-8000-000000000035", "bee", "/", [testCase("00000000-0000-4000-8000-000000000036", "bee-passes", "base")], "", "GET")],
         }],
       }],
     }],
   };
-  await fileStorage.save(rootB, wsB);
+  const initialB = await fileStorage.load(rootB);
+  await fileStorage.save(rootB, wsB, { expectedRevision: initialB.revision, deletions: [] });
 });
 
 afterAll(() => {
@@ -137,10 +164,10 @@ describe("只读工具（list-apis / get-api-design）", () => {
     const rows = JSON.parse(textOf(res as never)) as Array<Record<string, string>>;
     expect(rows).toHaveLength(3);
     const byId = new Map(rows.map((r) => [r.id, r]));
-    expect(byId.get("00000000-0000-4000-8000-000000000034")).toMatchObject({ name: "ok", protocol: "http", url: "{{baseUrl}}/x", apiPath: OK_PATH });
+    expect(byId.get(OK_API)).toMatchObject({ name: "ok", protocol: "http", url: `${baseUrl}/x`, apiPath: OK_PATH });
     // folder 内接口在列，apiPath 含 folders 段。
-    expect(byId.get("00000000-0000-4000-8000-000000000032")).toMatchObject({ name: "deep", protocol: "http", url: "{{baseUrl}}/deep", apiPath: DEEP_PATH });
-    expect(byId.get("00000000-0000-4000-8000-000000000037")).toMatchObject({ name: "xok", url: "{{baseUrl}}/y" });
+    expect(byId.get(DEEP_API)).toMatchObject({ name: "deep", protocol: "http", url: `${baseUrl}/deep`, apiPath: DEEP_PATH });
+    expect(byId.get(XOK_API)).toMatchObject({ name: "xok", url: `${baseUrl}/y` });
     await client.close();
   });
 
@@ -150,18 +177,17 @@ describe("只读工具（list-apis / get-api-design）", () => {
     expect(res.isError).toBeFalsy();
     // 期望值取自同一工作区加载产物（fileStorage 会把 design.md 读回 api.design）。
     const { workspace } = await fileStorage.load(rootA);
-    const api = workspace.groups[0]!.projects[0]!.collections[0]!.apis.find((a) => a.id === "00000000-0000-4000-8000-000000000034")!;
-    expect(textOf(res as never)).toBe(renderDesignMarkdown(api));
+    const project = workspace.groups[0]!.projects[0]!;
+    const api = project.collections[0]!.apis.find((a) => a.contract.id === OK_API)!;
+    expect(textOf(res as never)).toBe(renderContractMarkdown(api, createProjectSnapshot(project).context));
     await client.close();
   });
 
-  it("get-api-design 分隔符边界后缀匹配（与 run-stress/run 同口径）：apis/ok 命中 ok 而非 xok", async () => {
+  it("get-api-design 拒绝不完整名称路径，只接受工作区完整 UUID 路径", async () => {
     const { client } = await connectClient(rootA);
     const res = await client.callTool({ name: "get-api-design", arguments: { apiPath: "collections/api/apis/ok" } });
-    expect(res.isError).toBeFalsy();
-    const text = textOf(res as never);
-    expect(text).toContain("# 接口详细设计：ok\n");
-    expect(text).not.toContain("xok");
+    expect(res.isError).toBe(true);
+    expect(textOf(res as never)).toContain("未找到接口");
     await client.close();
   });
 
@@ -230,6 +256,113 @@ describe("run-case（opt-in 执行类工具）", () => {
     expect(textOf(res as never)).toContain("scope");
     await client.close();
   });
+
+  it.each(["environment-first", "base-first"] as const)("run-case selects the exact base case when a same-id environment version is %s", async (order) => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-mcp-base-selection-"));
+    tempRoots.push(fixtureRoot);
+    const { workspace } = await fileStorage.load(rootA);
+    const targetApi = workspace.groups[0]!.projects[0]!.collections[0]!.apis.find((candidate) => candidate.contract.id === OK_API)!;
+    const baseCase = targetApi.cases.find((candidate) => candidate.id === OK_CASE)!;
+    const environmentCase = { ...baseCase, name: "dev-version", scope: "dev" };
+    targetApi.cases = order === "environment-first" ? [environmentCase, baseCase] : [baseCase, environmentCase];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, workspace, { expectedRevision: initial.revision, deletions: [] });
+
+    const mcp = createMcpServer(fixtureRoot, { allowRun: true, log: () => {} });
+    const client = new Client({ name: "mcp-base-selection-test", version: "0.0.1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([mcp.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: OK_CASE } });
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(textOf(result as never))).toMatchObject({ caseId: OK_CASE, caseName: baseCase.name, passed: true });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("run-case redacts a bound credential echoed by a collection script error", async () => {
+    const marker = "synthetic-mcp-bound-bearer-error";
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-mcp-secret-error-"));
+    tempRoots.push(fixtureRoot);
+    const { workspace } = await fileStorage.load(rootA);
+    const project = workspace.groups[0]!.projects[0]!;
+    const collection = project.collections[0]!;
+    const targetApi = collection.apis.find((candidate) => candidate.contract.id === OK_API)!;
+    targetApi.contract.request.auth = { kind: "bearer", token: { id: "mcp-error-token", policy: "test-auto" } };
+    collection.preOperations = [{
+      id: "throw-bound-value",
+      type: "script",
+      content: `throw new Error(${JSON.stringify(marker)});`,
+    }];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, workspace, { expectedRevision: initial.revision, deletions: [] });
+
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) { expect(ref.id).toBe("mcp-error-token"); return marker; },
+      async version() { return "version-mcp-error-token"; },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const hostLogs: string[] = [];
+    const mcp = createMcpServer(fixtureRoot, {
+      allowRun: true,
+      registry: createDefaultRegistry(),
+      secretStore,
+      log: (line) => hostLogs.push(line),
+    });
+    const client = new Client({ name: "mcp-secret-error-test", version: "0.0.1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([mcp.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: OK_CASE } });
+      const text = textOf(result as never);
+      expect(result.isError).toBe(true);
+      expect(text).toContain("[REDACTED]");
+      expect(text).not.toContain(marker);
+      expect(hostLogs.join("\n")).not.toContain(marker);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("run-case preserves credential host failure code/ref without native backend details", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-mcp-credential-failure-"));
+    tempRoots.push(fixtureRoot);
+    const { workspace } = await fileStorage.load(rootA);
+    const project = workspace.groups[0]!.projects[0]!;
+    const targetApi = project.collections[0]!.apis.find((candidate) => candidate.contract.id === OK_API)!;
+    targetApi.contract.request.auth = { kind: "bearer", token: { id: "mcp-read-failure-ref", policy: "test-auto" } };
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, workspace, { expectedRevision: initial.revision, deletions: [] });
+
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve() { throw new Error("unexpected resolution"); },
+      async version(_scope, ref) {
+        const error = new CredentialError("CREDENTIAL_UNAVAILABLE", ref.id);
+        error.cause = new Error("private-native-backend-detail");
+        throw error;
+      },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const mcp = createMcpServer(fixtureRoot, { allowRun: true, secretStore, log: () => {} });
+    const client = new Client({ name: "mcp-credential-failure-test", version: "0.0.1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([mcp.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({ name: "run-case", arguments: { apiPath: OK_PATH, caseId: OK_CASE } });
+      const text = textOf(result as never);
+      expect(result.isError).toBe(true);
+      expect(text).toContain("CREDENTIAL_UNAVAILABLE");
+      expect(text).toContain("mcp-read-failure-ref");
+      expect(text).not.toContain("private-native-backend-detail");
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 describe("安全边界与日志通道", () => {
@@ -238,7 +371,7 @@ describe("安全边界与日志通道", () => {
     const res = await client.callTool({ name: "list-apis", arguments: {} });
     const rows = JSON.parse(textOf(res as never)) as Array<Record<string, string>>;
     expect(rows.map((r) => r.id)).not.toContain("00000000-0000-4000-8000-000000000035");
-    expect(rows.map((r) => r.apiPath)).not.toContain("groups/other/projects/bee/collections/col/apis/bee");
+    expect(rows.map((r) => r.apiPath)).not.toContain("groups/00000000-0000-4000-8000-000000000003/projects/00000000-0000-4000-8000-000000000005/collections/00000000-0000-4000-8000-000000000009/apis/00000000-0000-4000-8000-000000000035");
     await client.close();
     // 反向：rootB 服务器同样只见自己的接口。
     const { client: clientB } = await connectClient(rootB);

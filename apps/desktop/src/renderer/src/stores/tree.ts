@@ -1,37 +1,103 @@
 import { createPinia, defineStore } from "pinia";
-import type { ApiccApi, NodeCreateInput } from "../../../shared/types.js";
-import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
+import type { ApiccApi, NodeCreateInput, NodeCreatedDTO } from "../../../shared/types.js";
+import type { NodeLocator } from "../../../shared/locations.js";
+import { localTreeNodeKey, type LocalTreeIdentity, type LocalTreeNodeDTO } from "../../../shared/tree-dto.js";
 import { useWorkspaceStore } from "./workspace.js";
 
 type ConfirmFn = (message: string) => Promise<boolean>;
+type SelectedLocalNode = LocalTreeIdentity & { id: string; key: string };
 
-/**
- * 树 store 工厂：接受依赖 api 与工作区 store 参数，节点变更后刷新工作区树；
- * 删除必须经确认回调放行。每次工厂调用绑定独立 Pinia 实例。
- */
+function nodeId(node: NodeLocator): string {
+  switch (node.kind) {
+    case "api": return node.locator.apiId;
+    case "project": return node.locator.projectId;
+    case "group": return node.locator.groupId;
+    case "collection": return node.locator.collectionId;
+    case "folder": return node.locator.folderIds.at(-1)!;
+    case "environment": return node.locator.environmentId;
+    case "model": return node.locator.modelId;
+    case "component": return node.locator.componentId;
+    case "workflow": return node.locator.workflowId;
+  }
+}
+
+function copyLocator(node: LocalTreeNodeDTO | NodeCreatedDTO): LocalTreeIdentity["locator"] {
+  switch (node.kind) {
+    case "root": return { workspaceId: node.locator.workspaceId };
+    case "group": return { workspaceId: node.locator.workspaceId, groupId: node.locator.groupId };
+    case "project": return { workspaceId: node.locator.workspaceId, groupId: node.locator.groupId, projectId: node.locator.projectId };
+    case "collection": return {
+      workspaceId: node.locator.workspaceId,
+      groupId: node.locator.groupId,
+      projectId: node.locator.projectId,
+      collectionId: node.locator.collectionId,
+    };
+    case "folder": return {
+      workspaceId: node.locator.workspaceId,
+      groupId: node.locator.groupId,
+      projectId: node.locator.projectId,
+      collectionId: node.locator.collectionId,
+      folderIds: [...node.locator.folderIds],
+    };
+    case "api": return {
+      workspaceId: node.locator.workspaceId,
+      groupId: node.locator.groupId,
+      projectId: node.locator.projectId,
+      collectionId: node.locator.collectionId,
+      folderIds: [...node.locator.folderIds],
+      apiId: node.locator.apiId,
+    };
+    case "workflow": return {
+      workspaceId: node.locator.workspaceId,
+      groupId: node.locator.groupId,
+      projectId: node.locator.projectId,
+      workflowId: node.locator.workflowId,
+    };
+  }
+}
+
+function selectionOf(node: LocalTreeNodeDTO | NodeCreatedDTO): SelectedLocalNode {
+  return { source: "local", kind: node.kind, id: node.id, key: node.key, locator: copyLocator(node) } as SelectedLocalNode;
+}
+
+/** Complete local locators are retained for every selection and mutation. */
 export function useTreeStore(api: ApiccApi, workspace: ReturnType<typeof useWorkspaceStore>) {
   return defineStore("tree", {
-    state: () => ({ selected: null as { kind: TreeNodeDTO["kind"]; id: string } | null }),
+    state: () => ({ selected: null as SelectedLocalNode | null }),
     actions: {
-      select(kind: TreeNodeDTO["kind"], id: string) {
-        this.selected = { kind, id };
+      select(node: LocalTreeNodeDTO): void {
+        this.selected = selectionOf(node);
       },
-      async createNode(input: NodeCreateInput) {
-        // 契约收紧（宽审查 I2）：nodeCreate 返回统一瘦 DTO，直接使用，无需强转
-        const node = await api.nodeCreate(input);
+
+      async createNode(input: NodeCreateInput): Promise<NodeCreatedDTO> {
+        this.assertWritable();
+        const created = await api.nodeCreate(input);
         await workspace.refresh();
-        this.select(input.kind, node.id);
-        return node;
+        this.selected = selectionOf(created);
+        return created;
       },
-      async renameNode(kind: Parameters<ApiccApi["nodeRename"]>[0], id: string, name: string) {
-        await api.nodeRename(kind, id, name);
+
+      async renameNode(node: NodeLocator, name: string): Promise<void> {
+        this.assertWritable();
+        await api.nodeRename(node, name);
         await workspace.refresh();
       },
-      async deleteNode(kind: Parameters<ApiccApi["nodeDelete"]>[0], id: string, confirm: ConfirmFn) {
-        if (!(await confirm(`delete:${id}`))) return;
-        await api.nodeDelete(kind, id);
-        if (this.selected?.id === id) this.selected = null;
+
+      async deleteNode(node: NodeLocator, confirm: ConfirmFn): Promise<boolean> {
+        this.assertWritable();
+        if (!(await confirm(`delete:${nodeId(node)}`))) return false;
+        await api.nodeDelete(node);
+        if (this.selected && node.kind !== "model" && node.kind !== "component" && node.kind !== "environment") {
+          const deletedKey = localTreeNodeKey({ source: "local", kind: node.kind, locator: node.locator } as LocalTreeIdentity);
+          if (this.selected.key === deletedKey) this.selected = null;
+        }
         await workspace.refresh();
+        return true;
+      },
+
+      assertWritable(): void {
+        if (!workspace.opened) throw new Error("尚未打开本地工作区");
+        if (workspace.readOnly) throw new Error("工作区处于只读模式，不能修改树");
       },
     },
   })(createPinia());

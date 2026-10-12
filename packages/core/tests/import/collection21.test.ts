@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { collectionV21Importer } from "../../src/import/collection21.js";
 
+function parseCollection(content: string): ReturnType<typeof collectionV21Importer.parse> {
+  return collectionV21Importer.parse(content);
+}
+
 const sample = JSON.stringify({
   info: { name: "order-api", schema: "v2.1.0" },
   item: [
@@ -13,7 +17,7 @@ const sample = JSON.stringify({
             method: "POST",
             url: { raw: "{{baseUrl}}/orders" },
             header: [{ key: "Content-Type", value: "application/json" }],
-            body: { mode: "raw", raw: '{"sku":"A1"}' },
+            body: { mode: "raw", raw: '{"sku":"A1"}', options: { raw: { language: "json" } } },
           },
         },
       ],
@@ -29,33 +33,9 @@ const sample = JSON.stringify({
 });
 
 describe("collectionV21Importer", () => {
-  it("detect 识别 v2.1 JSON", () => {
+  it("detect parses v2.1 JSON and URL-form schema identifiers", () => {
     expect(collectionV21Importer.detect("c.json", sample)).toBe(true);
     expect(collectionV21Importer.detect("c.json", '{"openapi":"3.0.0"}')).toBe(false);
-  });
-
-  it("parse 映射文件夹/接口/请求体/查询参数", () => {
-    const { project, warnings } = collectionV21Importer.parse(sample);
-    const col = project.collections[0]!;
-    expect(col.name).toBe("order-api");
-    expect(col.folders[0]!.name).toBe("订单");
-    expect(col.folders[0]!.apis[0]!.method).toBe("POST");
-    expect(col.folders[0]!.apis[0]!.body?.content).toBe('{"sku":"A1"}');
-    const flat = col.apis[0]!;
-    expect(flat.query).toEqual([{ key: "a", value: "1", enabled: true }]);
-    expect(flat.cases[0]!.name).toContain("get");
-  });
-
-  it("脚本事件跳过并产生 warning", () => {
-    const withEvents = JSON.stringify({
-      info: { name: "x", schema: "v2.1.0" },
-      item: [{ name: "e", request: { method: "GET", url: { raw: "http://x/" } }, event: [{ listen: "test", script: { exec: [] } }] }],
-    });
-    const { warnings } = collectionV21Importer.parse(withEvents);
-    expect(warnings.some((w) => w.includes("脚本"))).toBe(true);
-  });
-
-  it("detect 兼容 URL 形态的 schema 标识", () => {
     const urlSchema = JSON.stringify({
       info: { name: "n", schema: "https://example.com/schemas/collection/v2.1.0/collection.json" },
       item: [],
@@ -63,7 +43,47 @@ describe("collectionV21Importer", () => {
     expect(collectionV21Importer.detect("c.json", urlSchema)).toBe(true);
   });
 
-  it("formdata 表单映射并跳过文件项", () => {
+  it("delegates into the standard project shape while retaining nested folders and request data", () => {
+    const { project, diagnostics, warnings } = parseCollection(sample);
+    expect(project.globals).toEqual({ query: [], headers: [], cookies: [], body: [] });
+    expect(project.stressPolicy).toEqual({ trustedOrigins: [], deniedOrigins: [] });
+    expect(project.models).toEqual([]);
+    expect(project.components).toEqual([]);
+
+    const col = project.collections[0]!;
+    expect(col.name).toBe("order-api");
+    expect(col.folders[0]!.name).toBe("订单");
+    const create = col.folders[0]!.apis[0]!;
+    expect(create.contract.request).toMatchObject({ protocol: "http", method: "POST", path: "/orders" });
+    if (create.contract.request.protocol !== "http") throw new Error("Expected an HTTP request.");
+    expect(create.contract.request.body).toMatchObject({ kind: "json", content: '{"sku":"A1"}' });
+    expect(create.cases).toEqual([]);
+
+    const get = col.apis[0]!;
+    expect(get.contract.request.protocol).toBe("http");
+    if (get.contract.request.protocol !== "http") throw new Error("Expected an HTTP request.");
+    expect(get.contract.request.query).toEqual([expect.objectContaining({ kind: "inline", name: "a", value: "1" })]);
+    expect(get.cases).toEqual([]);
+    expect(diagnostics).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("script events are not executed and remain visible as structured diagnostics and warning projections", () => {
+    const withEvents = JSON.stringify({
+      info: { name: "x", schema: "v2.1.0" },
+      item: [{ name: "e", request: { method: "GET", url: { raw: "http://x/" } }, event: [{ listen: "test", script: { exec: [] } }] }],
+    });
+    const { project, diagnostics, warnings } = parseCollection(withEvents);
+    const asset = project.collections[0]!.apis[0]!;
+    const diagnostic = diagnostics.find((item) => item.code === "SCRIPT_EVENT_NOT_IMPORTED");
+    expect(diagnostic).toMatchObject({ ownerId: asset.contract.id });
+    expect(diagnostic?.path).toContain("event");
+    expect(diagnostic?.reason).toContain("not imported or executed");
+    expect(warnings).toContain(diagnostic?.reason);
+    expect(asset.cases).toEqual([]);
+  });
+
+  it("formdata fields map to an unbound multipart body and file binding loss stays structured", () => {
     const withForm = JSON.stringify({
       info: { name: "f", schema: "v2.1.0" },
       item: [{
@@ -71,17 +91,25 @@ describe("collectionV21Importer", () => {
         request: {
           method: "POST",
           url: { raw: "{{baseUrl}}/upload" },
-          body: { mode: "formdata", formdata: [{ key: "sku", value: "A1" }, { key: "count", value: "2" }, { key: "f", type: "file" }] },
+          body: { mode: "formdata", formdata: [{ key: "sku", value: "A1" }, { key: "count", value: "2" }, { key: "f", type: "file", src: "upload.bin" }] },
         },
       }],
     });
-    const { project, warnings } = collectionV21Importer.parse(withForm);
-    const api = project.collections[0]!.apis[0]!;
-    expect(api.body?.kind).toBe("form");
-    expect(api.body?.form).toEqual([
-      { key: "sku", value: "A1", enabled: true },
-      { key: "count", value: "2", enabled: true },
+    const { project, diagnostics, warnings } = parseCollection(withForm);
+    const asset = project.collections[0]!.apis[0]!;
+    const request = asset.contract.request;
+    expect(request.protocol).toBe("http");
+    if (request.protocol !== "http") throw new Error("Expected an HTTP request.");
+    expect(request.body.kind).toBe("multipart");
+    if (request.body.kind !== "multipart") throw new Error("Expected multipart body fields.");
+    expect(request.body.entries).toMatchObject([
+      { kind: "text", name: "sku", value: "A1", enabled: true },
+      { kind: "text", name: "count", value: "2", enabled: true },
+      { kind: "file", name: "f", file: { path: "" }, enabled: true },
     ]);
-    expect(warnings.filter((w) => w.includes("文件类型表单项不支持"))).toHaveLength(1);
+    const diagnostic = diagnostics.find((item) => item.code === "REQUEST_FILE_NOT_BOUND");
+    expect(diagnostic).toMatchObject({ ownerId: asset.contract.id });
+    expect(diagnostic?.path).toContain("formdata.f");
+    expect(warnings).toContain(diagnostic?.reason);
   });
 });

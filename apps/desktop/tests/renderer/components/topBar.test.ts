@@ -19,10 +19,13 @@ import type { OnlineSession } from "../../../src/renderer/src/stores/online.js";
 import {
   createEvictProjectSessions,
   createTabsStore,
+  type ProjectTab,
   type TabsStoreDeps,
   type WorkspaceRef,
 } from "../../../src/renderer/src/stores/tabs.js";
-import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
+import type { LocalRootTreeNodeDTO } from "../../../src/shared/tree-dto.js";
+import type { ProjectLocator, WorkflowLocator } from "../../../src/shared/locations.js";
+import type { EditorSession } from "../../../src/renderer/src/stores/editor.js";
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -70,7 +73,11 @@ function memStorage(): Storage {
 const ONLINE_REF_WS1: WorkspaceRef = { kind: "online", workspaceId: "ws-1", name: "在线一" };
 const P1 = { id: "p-1", name: "项目一" };
 const P2 = { id: "p-2", name: "项目二" };
-const P3 = { id: "p-3", name: "本地项目" };
+const P3 = { id: "p-3", name: "本地项目", locator: { workspaceId: "20000000-0000-4000-8000-000000000001", groupId: "20000000-0000-4000-8000-000000000002", projectId: "20000000-0000-4000-8000-000000000013" } satisfies ProjectLocator };
+
+function projectIdOf(tab: ProjectTab): string {
+  return "projectLocator" in tab ? tab.projectLocator.projectId : tab.projectId;
+}
 
 function sessionStub(id: string): OnlineSession {
   return {
@@ -132,12 +139,12 @@ function makeFixture() {
     name: "本地工作区",
     problems: [],
     root: "/tmp/ws-local",
-    tree: null as TreeNodeDTO | null,
+    tree: null as LocalRootTreeNodeDTO | null,
     open: vi.fn(async () => {}),
   };
   const tree = { selected: null, select: vi.fn(async () => {}) };
-  const editor = { sessions: {}, evictProject: vi.fn() };
-  const workflowDesign = { dirty: false, workflowId: null as string | null };
+  const editor = { sessions: {} as Record<string, EditorSession>, evictProject: vi.fn(), isProjectDirty: () => false };
+  const workflowDesign = { dirty: false, locator: null as WorkflowLocator | null };
   const deps: TabsStoreDeps = {
     workspace,
     tree,
@@ -176,7 +183,7 @@ async function seedTabs(fixture: ReturnType<typeof makeFixture>) {
     dirtyBuffer("p-1/collections/c/apis/a/api.yaml");
   await fixture.tabs.openProjectTab(ONLINE_REF_WS1, P1); // tab-1（在线项目一，缓冲脏）
   await fixture.tabs.openProjectTab(ONLINE_REF_WS1, P2); // tab-2
-  await fixture.tabs.openProjectTab({ kind: "local", dir: "/tmp/ws-local" }, P3); // tab-3
+  await fixture.tabs.openProjectTab({ kind: "local", dir: "/tmp/ws-local" }, { locator: P3.locator, name: P3.name }); // tab-3
   await flushPromises();
 }
 
@@ -213,7 +220,7 @@ describe("TopBar 退出在线工作区确认（计划 C 任务 6，不变量 4�
     await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
     // ws-1 全部签关闭（含脏签——工作区级关闭已确认，签级不再拦截），本地签保留
-    expect(fixture.tabs.tabs.map((t) => t.projectId)).toEqual(["p-3"]);
+    expect(fixture.tabs.tabs.map(projectIdOf)).toEqual([P3.locator.projectId]);
     // 驱逐真实落地：ws-1 会话的 p-1 前缀脏缓冲被逐
     expect(fixture.onlineSessions["ws-1"].buffers["p-1/collections/c/apis/a/api.yaml"]).toBeUndefined();
     // 工作区会话出表（带 id），其他驻留工作区不受影响

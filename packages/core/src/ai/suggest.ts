@@ -1,6 +1,7 @@
 import { monotonicFactory } from "ulid";
 
-import type { ApiDefinition } from "../domain/model.js";
+import type { DeepReadonly, ProjectAssetContextReadView } from "../assets/context.js";
+import type { ApiAsset } from "../contract/model.js";
 import { buildSuggestMessages } from "./prompt.js";
 import {
   AiSuggestOutputSchema,
@@ -106,9 +107,13 @@ function buildRepairMessage(problems: string[]): string {
  * 失败携 issues 恰好一次修复重试（裁定③）→ 本地补 ULID id（裁定④）→ limit 截断（缺省 5，裁定⑤）。
  * AI 产出只作为候选用例返回，是否采用由人工决定，绝不静默落盘。
  */
-export async function suggestCases(api: ApiDefinition, opts: AiSuggestOptions): Promise<AiSuggestedCase[]> {
+export async function suggestCases(
+  asset: DeepReadonly<ApiAsset>,
+  context: ProjectAssetContextReadView,
+  opts: AiSuggestOptions,
+): Promise<AiSuggestedCase[]> {
   const limit = normalizeLimit(opts.limit);
-  const baseMessages = buildSuggestMessages(api, { instruction: opts.instruction, limit });
+  const baseMessages = buildSuggestMessages(asset, context, { instruction: opts.instruction, limit });
 
   const firstContent = await opts.provider(baseMessages);
   let outcome = parseOutput(firstContent);

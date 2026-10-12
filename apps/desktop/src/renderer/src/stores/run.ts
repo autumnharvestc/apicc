@@ -1,16 +1,13 @@
 import { createPinia, defineStore } from "pinia";
 import type { RunResult } from "@apicc/core";
+import type { CollectionLocator } from "../../../shared/locations.js";
 import type { ApiccApi, RunSummaryDTO, StressReportDTO, StressRunSummaryDTO } from "../../../shared/types.js";
 
-/**
- * 运行 store 工厂：接受依赖 api 参数（测试传新实例即天然隔离），每次工厂调用绑定
- * 独立 Pinia 实例。状态：running（运行门控，进行中重复触发直接忽略）、result（当前
- * 展示的完整 RunResult——runCollection 产出或 openRun 从历史读回）、summaries（运行
- * 历史摘要，新→旧，M2-D3 起含压测行联合）、historyOpen（历史抽屉开关）、stressReport
- * （runs:get 读回的压测报告，M2-D3 任务 3：RunsHistory 内嵌 StressReportView 复位前持有）。
- * 失败时错误上抛由组件层捕获转报组合根错误通道（EnvPanel 同款），running 无论成败都在
- * finally 复位。
- */
+function copyLocator(locator: CollectionLocator): CollectionLocator {
+  return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId, collectionId: locator.collectionId };
+}
+
+/** Collection runs capture their full target before any asynchronous work starts. */
 export function useRunStore(api: ApiccApi) {
   return defineStore("run", {
     state: () => ({
@@ -19,26 +16,39 @@ export function useRunStore(api: ApiccApi) {
       summaries: [] as Array<RunSummaryDTO | StressRunSummaryDTO>,
       historyOpen: false,
       stressReport: null as StressReportDTO | null,
+      target: null as CollectionLocator | null,
+      targetRoot: null as string | null,
+      generation: 0,
     }),
     actions: {
-      async runCollection(collectionId: string, envName?: string) {
+      setTarget(root: string | null, locator: CollectionLocator | null) {
+        const next = root && locator ? copyLocator(locator) : null;
+        if (this.targetRoot === root && JSON.stringify(this.target) === JSON.stringify(next)) return;
+        this.generation += 1;
+        this.targetRoot = root;
+        this.target = next;
+        this.result = null;
+        this.running = false;
+      },
+      async runCollection(root: string, locator: CollectionLocator, envName?: string) {
         if (this.running) return;
+        const target = copyLocator(locator);
+        this.setTarget(root, target);
+        const generation = this.generation;
         this.running = true;
         try {
-          this.result = await api.runCollection({ collectionId, envName });
+          const result = await api.runCollection({ locator: target, envName });
+          if (generation === this.generation) this.result = result;
         } finally {
-          this.running = false;
+          if (generation === this.generation) this.running = false;
         }
       },
       async loadHistory() {
         this.summaries = await api.runsList();
       },
-      /** 按文件读回并按 kind 分派；返回读到的联合（未命中为 null，供调用方守卫提示——终审 Minor）。 */
       async openRun(file: string): Promise<RunResult | StressReportDTO | null> {
         const run = await api.runsGet(file);
         if (!run) return null;
-        // kind 判别（M2-D3 任务 1 联合分支）：集合运行回填 RunView 表格；压测报告入
-        // stressReport（任务 3 裁定 B：运行历史抽屉内嵌 StressReportView 展示）。
         if ("kind" in run) this.stressReport = run;
         else this.result = run;
         return run;

@@ -1,11 +1,12 @@
 import type { Workflow, WorkflowNode, WorkflowEdge } from "./model.js";
 import type { Project, Workspace } from "../domain/model.js";
+import type { DeepReadonly } from "../assets/context.js";
 import { findProjectApi } from "./references.js";
 
 export interface ValidationIssue { level: "error" | "warning"; code: string; message: string }
 
 /** 结构校验：重复 ID、环、边端点（error）/ 孤立节点与完全重复边（warning）。 */
-export function validateWorkflowStructure(wf: Workflow): ValidationIssue[] {
+export function validateWorkflowStructure(wf: DeepReadonly<Workflow>): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const nodeCounts = new Map<string, number>();
   for (const node of wf.nodes) nodeCounts.set(node.id, (nodeCounts.get(node.id) ?? 0) + 1);

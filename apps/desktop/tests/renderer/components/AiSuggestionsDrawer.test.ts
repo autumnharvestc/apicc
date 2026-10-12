@@ -12,6 +12,7 @@ import { createMemoryApi, AI_FIXTURE_SUGGESTIONS } from "../../../src/renderer/s
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { createAiStore } from "../../../src/renderer/src/stores/ai.js";
+import type { LocalTreeNodeDTO } from "../../../src/shared/tree-dto.js";
 import AiSuggestionsDrawer from "../../../src/renderer/src/components/AiSuggestionsDrawer.vue";
 
 beforeAll(() => {
@@ -69,27 +70,39 @@ function memStorage(): Storage {
   } as Storage;
 }
 
+function firstApiNode(node: LocalTreeNodeDTO): Extract<LocalTreeNodeDTO, { kind: "api" }> | undefined {
+  if (node.kind === "api") return node;
+  if ("children" in node && node.children) {
+    for (const child of node.children) {
+      const match = firstApiNode(child);
+      if (match) return match;
+    }
+  }
+  return undefined;
+}
+
 /** 装配：已加载接口的 editor + ai store；可预取固定建议并打开抽屉。 */
 async function mountDrawer({ suggestions = false, open = true }: { suggestions?: boolean; open?: boolean } = {}) {
   const api = createMemoryApi();
   api.seedWorkspace();
   const ws = useWorkspaceStore(api);
   await ws.open("/tmp/ws");
-  const apiNode = ws.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-  const editor = useEditorStore(api);
-  await editor.load(apiNode.id);
-  const ai = createAiStore({ api, editor, storage: memStorage() });
+  const apiNode = firstApiNode(ws.tree!);
+  if (!apiNode) throw new Error("Expected the API fixture to be present in the tree.");
+  const editor = useEditorStore(api, () => ({ root: ws.root, readOnly: ws.readOnly }));
+  await editor.load(apiNode.locator);
+  const ai = createAiStore({ api, editor, storage: memStorage(), getContext: () => ({ root: ws.root, readOnly: ws.readOnly }) });
   if (suggestions) {
-    // 任务 2：建议形状收敛 core AiSuggestedCase（带本地 id），行键即 id
-    ai.suggestions = AI_FIXTURE_SUGGESTIONS.map((s) => ({ ...s }));
-    ai.drawerOpen = open;
+    expect(await ai.saveConfig({ baseUrl: "https://api.example.com/v1", model: "gpt-test", apiKey: "sk-fixture" })).toBe(true);
+    await ai.fetchSuggestions();
+    if (!open) ai.drawerOpen = false;
   } else {
     ai.drawerOpen = open;
   }
   const { i18n } = createI18nInstance();
   const wrapper = mount(AiSuggestionsDrawer, { props: { ai }, global: { plugins: [i18n] } });
   await flushPromises();
-  return { wrapper, api, editor, ai };
+  return { wrapper, api, editor, ai, ws };
 }
 
 describe("AiSuggestionsDrawer", () => {
@@ -112,6 +125,9 @@ describe("AiSuggestionsDrawer", () => {
     expect(items[0]!.find('[data-testid="ai-suggest-assertions"]').text()).toContain(
       String(AI_FIXTURE_SUGGESTIONS[0]!.assertions.length),
     );
+    expect(items[1]!.find('[data-testid="ai-suggest-postoperations"]').text()).toContain(
+      String(AI_FIXTURE_SUGGESTIONS[1]!.postOperations.length),
+    );
     // 只读：预览区不提供任何文本输入
     expect(document.body.querySelectorAll("input[type=text], textarea").length).toBe(0);
   });
@@ -130,17 +146,28 @@ describe("AiSuggestionsDrawer", () => {
   });
 
   it("采用门控：未勾选禁用；勾选后可用，点击采用并入 editor.api.cases 且不自动保存（裁定③）", async () => {
-    const { api, editor, ai } = await mountDrawer({ suggestions: true });
+    const { api, editor, ai, ws } = await mountDrawer({ suggestions: true });
     const before = editor.api!.cases.length;
     expect(expectBody("ai-adopt-btn").attributes("disabled")).toBeDefined();
     let saveCalls = 0;
     const original = api.apiSave.bind(api);
-    api.apiSave = async (input) => {
+    api.apiSave = async (locator, asset) => {
       saveCalls += 1;
-      return original(input);
+      return original(locator, asset);
     };
     const checks = bodyFindAll("ai-suggest-check");
     await checks[1]!.setValue(true);
+    expect(expectBody("ai-adopt-btn").attributes("disabled")).toBeUndefined();
+    const beforeReadOnly = JSON.parse(JSON.stringify(editor.api!.cases)) as unknown;
+    ws.readOnly = true;
+    await flushPromises();
+    expect(expectBody("ai-adopt-btn").attributes("disabled")).toBeDefined();
+    expect(ai.adopt()).toBe(0);
+    expect(JSON.parse(JSON.stringify(editor.api!.cases))).toEqual(beforeReadOnly);
+    expect(editor.dirty).toBe(false);
+    expect(ai.suggestions).not.toBeNull();
+    ws.readOnly = false;
+    await flushPromises();
     expect(expectBody("ai-adopt-btn").attributes("disabled")).toBeUndefined();
     await expectBody("ai-adopt-btn").trigger("click");
     await flushPromises();

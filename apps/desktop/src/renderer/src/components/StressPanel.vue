@@ -9,6 +9,7 @@ import {
   Select as ASelect,
 } from "ant-design-vue";
 import type { StressTargetPolicy } from "@apicc/core";
+import type { ApiLocator } from "../../../shared/locations.js";
 import { createStressFormDefaults, type createStressStore } from "../stores/stress.js";
 import StressReportView from "./StressReportView.vue";
 
@@ -27,7 +28,7 @@ import StressReportView from "./StressReportView.vue";
  */
 const props = defineProps<{
   stress: ReturnType<typeof createStressStore>;
-  apiId: string;
+  apiLocator: ApiLocator;
   cases: Array<{ id: string; name: string }>;
   envs: Array<{ id: string; name: string }>;
   reportError: (e: unknown) => void;
@@ -36,6 +37,7 @@ const props = defineProps<{
   debug?: { selectedEnvName: string | null; selectEnv(name: string | null): void };
   policy?: StressTargetPolicy;
   savePolicy?: (policy: StressTargetPolicy) => Promise<void>;
+  readOnly?: boolean;
 }>();
 const { t } = useI18n();
 
@@ -82,7 +84,7 @@ watch(
 // —— 开始 / 停止（store 持有 running/report/file/error 状态；拒绝转报组合根通道） ——
 async function onStart() {
   try {
-    await props.stress.start(props.apiId);
+    await props.stress.start(props.apiLocator);
   } catch (e) {
     props.reportError(e);
   }
@@ -90,13 +92,13 @@ async function onStart() {
 
 async function onStop() {
   try {
-    await props.stress.stop();
+    await props.stress.stop(props.apiLocator);
   } catch (e) {
     props.reportError(e);
   }
 }
 async function savePolicy() {
-  if (!props.savePolicy) return;
+  if (props.readOnly || !props.savePolicy) return;
   await props.savePolicy({
     ...policyDraft.value,
     trustedOrigins: [...new Set(policyDraft.value.trustedOrigins ?? [])].filter((origin) => !(policyDraft.value.deniedOrigins ?? []).includes(origin)),
@@ -189,16 +191,16 @@ function setThreshold(key: keyof typeof props.stress.form.thresholds, value: num
       <details class="advanced" data-testid="stress-policy">
         <summary>{{ t("stress.targetPolicy") }}</summary>
         <p class="risk">{{ t("stress.targetPolicyRisk") }}</p>
-        <label class="field"><span class="field-label">{{ t("stress.trustedOrigins") }}</span><textarea class="text-control" :value="(policyDraft.trustedOrigins ?? []).join('\n')" @change="(e) => { policyDraft.trustedOrigins = (e.target as HTMLTextAreaElement).value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean); savePolicy(); }" /></label>
-        <label class="field"><span class="field-label">{{ t("stress.deniedOrigins") }}</span><textarea class="text-control" :value="(policyDraft.deniedOrigins ?? []).join('\n')" @change="(e) => { policyDraft.deniedOrigins = (e.target as HTMLTextAreaElement).value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean); savePolicy(); }" /></label>
-        <label class="field"><span class="field-label">{{ t("stress.maxConcurrency") }}</span><a-input-number :value="policyDraft.maxConcurrency" :min="1" class="control" @update:value="(v) => { policyDraft.maxConcurrency = (v as number | null) ?? undefined; savePolicy(); }" /></label>
-        <label class="field"><span class="field-label">{{ t("stress.maxRps") }}</span><a-input-number :value="policyDraft.maxRps" :min="0.001" class="control" @update:value="(v) => { policyDraft.maxRps = (v as number | null) ?? undefined; savePolicy(); }" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.trustedOrigins") }}</span><textarea class="text-control" :disabled="readOnly" :value="(policyDraft.trustedOrigins ?? []).join('\n')" @change="(e) => { if (!readOnly) { policyDraft.trustedOrigins = (e.target as HTMLTextAreaElement).value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean); savePolicy(); } }" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.deniedOrigins") }}</span><textarea class="text-control" :disabled="readOnly" :value="(policyDraft.deniedOrigins ?? []).join('\n')" @change="(e) => { if (!readOnly) { policyDraft.deniedOrigins = (e.target as HTMLTextAreaElement).value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean); savePolicy(); } }" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.maxConcurrency") }}</span><a-input-number :value="policyDraft.maxConcurrency" :disabled="readOnly" :min="1" class="control" @update:value="(v) => { if (!readOnly) { policyDraft.maxConcurrency = (v as number | null) ?? undefined; savePolicy(); } }" /></label>
+        <label class="field"><span class="field-label">{{ t("stress.maxRps") }}</span><a-input-number :value="policyDraft.maxRps" :disabled="readOnly" :min="0.001" class="control" @update:value="(v) => { if (!readOnly) { policyDraft.maxRps = (v as number | null) ?? undefined; savePolicy(); } }" /></label>
       </details>
       <div v-if="stress.pendingTargetOrigin" class="target-confirmation" data-testid="stress-target-confirmation">
         <p>{{ t("stress.targetConfirmation", { origin: stress.pendingTargetOrigin }) }}</p>
         <p class="risk">{{ t("stress.targetConfirmationRisk") }}</p>
-        <a-button data-testid="stress-confirm-once" @click="stress.confirmTarget(apiId, false)">{{ t("stress.confirmOnce") }}</a-button>
-        <a-button type="primary" data-testid="stress-trust-project" @click="stress.confirmTarget(apiId, true)">{{ t("stress.trustProject") }}</a-button>
+        <a-button data-testid="stress-confirm-once" @click="stress.confirmTarget(apiLocator, false)">{{ t("stress.confirmOnce") }}</a-button>
+        <a-button type="primary" data-testid="stress-trust-project" :disabled="readOnly" @click="stress.confirmTarget(apiLocator, true)">{{ t("stress.trustProject") }}</a-button>
         <a-button @click="stress.denyTarget()">{{ t("stress.denyTarget") }}</a-button>
       </div>
       <div class="actions">

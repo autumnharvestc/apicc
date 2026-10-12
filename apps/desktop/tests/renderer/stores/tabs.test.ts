@@ -8,10 +8,14 @@
 // ⑥恢复重建（失败签标记离线可再激活）⑦形状守卫（损坏 JSON 降级空表，照 online.ts readPersisted 先例）。
 import { describe, expect, it, vi } from "vitest";
 import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
+import type { LocalProjectTreeNodeDTO, LocalRootTreeNodeDTO } from "../../../src/shared/tree-dto.js";
+import type { ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../../../src/shared/locations.js";
 import type { OnlineSession } from "../../../src/renderer/src/stores/online.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
-import { findProjectIdByApiId, useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
+import { apiSessionKey } from "../../../src/renderer/src/stores/localIdentity.js";
 import {
   STORAGE_KEY,
   createEvictProjectSessions,
@@ -36,11 +40,184 @@ function memStorage(): Storage {
   } as Storage;
 }
 
-const LOCAL_REF: WorkspaceRef = { kind: "local", dir: "/tmp/ws-local" };
-const ONLINE_REF: WorkspaceRef = { kind: "online", workspaceId: "ws-1", name: "在线一" };
+const LOCAL_REF = { kind: "local", dir: "/tmp/ws-local" } as const satisfies WorkspaceRef;
+const ONLINE_REF = { kind: "online", workspaceId: "ws-1", name: "在线一" } as const satisfies WorkspaceRef;
 const P1 = { id: "p-1", name: "项目一" };
 const P2 = { id: "p-2", name: "项目二" };
 const P3 = { id: "p-3", name: "项目三" };
+
+const WORKSPACE_ID = "10000000-0000-4000-8000-000000000001";
+const SHARED_PROJECT_ID = "10000000-0000-4000-8000-000000000004";
+const PROJECT_A: ProjectLocator = {
+  workspaceId: WORKSPACE_ID,
+  groupId: "10000000-0000-4000-8000-000000000002",
+  projectId: SHARED_PROJECT_ID,
+};
+const PROJECT_B: ProjectLocator = {
+  workspaceId: WORKSPACE_ID,
+  groupId: "10000000-0000-4000-8000-000000000003",
+  projectId: SHARED_PROJECT_ID,
+};
+const FULL_LOCAL_REF = { kind: "local", dir: "/tmp/ws-full" } as const satisfies WorkspaceRef;
+const LOCAL_PROJECTS: Record<string, ProjectLocator> = {
+  "p-1": { workspaceId: "20000000-0000-4000-8000-000000000001", groupId: "20000000-0000-4000-8000-000000000002", projectId: "20000000-0000-4000-8000-000000000011" },
+  "p-2": { workspaceId: "20000000-0000-4000-8000-000000000001", groupId: "20000000-0000-4000-8000-000000000002", projectId: "20000000-0000-4000-8000-000000000012" },
+  "p-3": { workspaceId: "20000000-0000-4000-8000-000000000001", groupId: "20000000-0000-4000-8000-000000000002", projectId: "20000000-0000-4000-8000-000000000013" },
+};
+
+function localLocator(id: string): ProjectLocator {
+  const locator = LOCAL_PROJECTS[id];
+  if (!locator) throw new Error(`No local project locator fixture for ${id}`);
+  return locator;
+}
+
+function persistedLocal(project: { id: string; name: string }, workspaceRef: Extract<WorkspaceRef, { kind: "local" }> = LOCAL_REF) {
+  return { workspaceRef, projectLocator: localLocator(project.id), projectName: project.name };
+}
+
+async function openTab(tabs: ReturnType<typeof createTabsStore>, ref: WorkspaceRef, project: { id: string; name: string }): Promise<void> {
+  if (ref.kind === "local") await tabs.openProjectTab(ref, { locator: localLocator(project.id), name: project.name });
+  else await tabs.openProjectTab(ref, project);
+}
+
+function tabProjectId(tab: ProjectTab): string {
+  return "projectLocator" in tab ? tab.projectLocator.projectId : tab.projectId;
+}
+
+function localProjectNode(locator: ProjectLocator, label: string): LocalProjectTreeNodeDTO {
+  return {
+    source: "local", kind: "project", id: locator.projectId,
+    key: JSON.stringify(["local", "project", locator.workspaceId, locator.groupId, locator.projectId]),
+    label, locator, envs: [], workflows: [], children: [],
+  };
+}
+
+function stubLocalTree(): LocalRootTreeNodeDTO {
+  const projects = [P1, P2, P3].map((project) => localProjectNode(localLocator(project.id), project.name));
+  const groupId = "20000000-0000-4000-8000-000000000002";
+  return {
+    source: "local", kind: "root", id: "20000000-0000-4000-8000-000000000001",
+    key: JSON.stringify(["local", "root", "20000000-0000-4000-8000-000000000001"]), label: "workspace",
+    locator: { workspaceId: "20000000-0000-4000-8000-000000000001" },
+    children: [{ source: "local", kind: "group", id: groupId, key: "group", label: "group",
+      locator: { workspaceId: "20000000-0000-4000-8000-000000000001", groupId }, children: projects }],
+  };
+}
+
+function fullLocatorDeps() {
+  const storage = memStorage();
+  const projectA = localProjectNode(PROJECT_A, "A");
+  const projectB = localProjectNode(PROJECT_B, "B");
+  const treeRoot: LocalRootTreeNodeDTO = {
+    source: "local", kind: "root", id: WORKSPACE_ID,
+    key: JSON.stringify(["local", "root", WORKSPACE_ID]), label: "workspace",
+    locator: { workspaceId: WORKSPACE_ID } satisfies WorkspaceLocator,
+    children: [
+      { source: "local", kind: "group", id: PROJECT_A.groupId, key: "group-a", label: "A", locator: { workspaceId: WORKSPACE_ID, groupId: PROJECT_A.groupId }, children: [projectA] },
+      { source: "local", kind: "group", id: PROJECT_B.groupId, key: "group-b", label: "B", locator: { workspaceId: WORKSPACE_ID, groupId: PROJECT_B.groupId }, children: [projectB] },
+    ],
+  };
+  const workspace = { opened: true, root: FULL_LOCAL_REF.dir, tree: treeRoot, open: vi.fn(async () => undefined) };
+  const tree = { select: vi.fn((_node: LocalProjectTreeNodeDTO) => undefined) };
+  const online = {
+    sessions: {} as TabsStoreDeps["online"]["sessions"], activeWorkspaceId: null as string | null, error: null as string | null,
+    activateWorkspace: vi.fn(async () => undefined), selectNode: vi.fn(async () => undefined),
+  };
+  const deps: TabsStoreDeps = { workspace, tree, online, storage };
+  return { deps, storage, tree, projectA, projectB };
+}
+
+describe("local project tabs use full project locators", () => {
+  it("keeps same project id in different groups distinct and persists each complete locator", async () => {
+    const { deps, storage, tree, projectA, projectB } = fullLocatorDeps();
+    const tabs = createTabsStore(deps);
+
+    await tabs.openProjectTab(FULL_LOCAL_REF, { locator: PROJECT_A, name: "A" });
+    await tabs.openProjectTab(FULL_LOCAL_REF, { locator: PROJECT_B, name: "B" });
+
+    expect(tabs.tabs).toHaveLength(2);
+    expect(tabs.tabs.map((tab) => "projectLocator" in tab ? tab.projectLocator : null)).toEqual([PROJECT_A, PROJECT_B]);
+    expect(tree.select).toHaveBeenLastCalledWith(projectB);
+    expect(JSON.parse(storage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      tabs: [
+        { workspaceRef: FULL_LOCAL_REF, projectLocator: PROJECT_A, projectName: "A" },
+        { workspaceRef: FULL_LOCAL_REF, projectLocator: PROJECT_B, projectName: "B" },
+      ],
+      activeIndex: 1,
+    });
+  });
+
+  it("I08: explicit B reactivation and closing pending non-active A both converge backend, workspace, and tabs", async () => {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const workspace = useWorkspaceStore(api);
+    const rootB = "/tmp/task10b-i08-b";
+    const rootA = "/tmp/task10b-i08-a";
+    await workspace.open(rootB);
+    const project = workspace.tree!.children.flatMap((group) => group.children ?? []).find((node) => node.kind === "project");
+    if (!project || project.kind !== "project") throw new Error("Memory workspace is missing its project");
+
+    const openCalls: string[] = [];
+    const realOpen = api.wsOpen.bind(api);
+    let releaseExplicitA!: () => void;
+    let releaseClosingA!: () => void;
+    const explicitGate = new Promise<void>((resolve) => { releaseExplicitA = resolve; });
+    const closingGate = new Promise<void>((resolve) => { releaseClosingA = resolve; });
+    let aOpenCount = 0;
+    api.wsOpen = async (rootPath) => {
+      openCalls.push(rootPath);
+      if (rootPath === rootA) await (aOpenCount++ === 0 ? explicitGate : closingGate);
+      return realOpen(rootPath);
+    };
+
+    const selected: LocalProjectTreeNodeDTO[] = [];
+    const online = {
+      sessions: {}, activeWorkspaceId: null, error: null,
+      activateWorkspace: async () => {}, selectNode: async () => {}, evictProjectBuffers: () => {},
+    } as unknown as TabsStoreDeps["online"];
+    const tabs = createTabsStore({
+      workspace,
+      tree: { select: (node) => { selected.push(node); } },
+      online,
+      storage: memStorage(),
+    });
+
+    await tabs.openProjectTab({ kind: "local", dir: rootB }, { locator: project.locator, name: project.label });
+    let explicitOpeningA: Promise<void> | undefined;
+    let restoringB: Promise<void> | undefined;
+    let closingOpeningA: Promise<void> | undefined;
+    let closingA: Promise<void> | undefined;
+    try {
+      explicitOpeningA = tabs.openProjectTab({ kind: "local", dir: rootA }, { locator: project.locator, name: project.label });
+      await vi.waitFor(() => expect(openCalls).toEqual([rootA]));
+      // B is still the active tab/root, but the older A wsOpen has already crossed the bridge.
+      restoringB = tabs.activateTab("tab-1");
+      releaseExplicitA();
+      await Promise.all([explicitOpeningA, restoringB]);
+
+      // Re-enter A while B remains active, then close this non-active tab during its real wsOpen.
+      closingOpeningA = tabs.activateTab("tab-2");
+      await vi.waitFor(() => expect(openCalls).toEqual([rootA, rootB, rootA]));
+      closingA = tabs.closeTab("tab-2");
+      expect(tabs.tabs.map((tab) => tab.tabId)).toEqual(["tab-1"]);
+      releaseClosingA();
+      await Promise.all([closingOpeningA, closingA]);
+
+      expect(openCalls).toEqual([rootA, rootB, rootA, rootB]);
+      expect(await api.wsPickDirectory()).toBe(rootB);
+      expect(workspace.root).toBe(rootB);
+      expect(tabs.activeTabId).toBe("tab-1");
+      expect(selected[selected.length - 1]?.locator).toEqual(project.locator);
+    } finally {
+      releaseExplicitA();
+      releaseClosingA();
+      await explicitOpeningA?.catch(() => undefined);
+      await restoringB?.catch(() => undefined);
+      await closingOpeningA?.catch(() => undefined);
+      await closingA?.catch(() => undefined);
+    }
+  });
+});
 
 /** 在线会话表桩条目：tabs store 只读其存在性（分歧防御），形状按 OnlineSession 补齐。 */
 function sessionStub(id: string): OnlineSession {
@@ -57,21 +234,25 @@ function sessionStub(id: string): OnlineSession {
 function makeDeps() {
   const storage = memStorage();
   const log: string[] = [];
+  const openCurrentResults: boolean[] = [];
   const workspace = {
     opened: false,
     root: "",
-    tree: null as TreeNodeDTO | null, // 关签 dirty 判定（任务 5 projectHasDrafts）按树收集
+    tree: stubLocalTree() as LocalRootTreeNodeDTO | null, // 本地签激活按完整 locator 查真实形状的 fixture tree
     openFails: false,
-    open: vi.fn(async (dir: string) => {
+    open: vi.fn(async (dir: string, isCurrent: () => boolean = () => true) => {
       log.push(`ws.open:${dir}`);
       if (workspace.openFails) throw new Error(`工作区根目录缺少 apicc.workspace.yaml: ${dir}`);
+      const current = isCurrent();
+      openCurrentResults.push(current);
+      if (!current) return;
       workspace.opened = true;
       workspace.root = dir;
     }),
   };
   const tree = {
-    select: vi.fn((kind: TreeNodeDTO["kind"], id: string) => {
-      log.push(`tree.select:${kind}:${id}`);
+    select: vi.fn((node: LocalProjectTreeNodeDTO) => {
+      log.push(`tree.select:project:${node.locator.projectId}`);
     }),
   };
   const online = {
@@ -98,7 +279,9 @@ function makeDeps() {
     workspace,
     tree,
     online,
-    evictProjectSessions: (workspaceRef, projectId) => {
+    evictProjectSessions: (tab) => {
+      const projectId = "projectLocator" in tab ? tab.projectLocator.projectId : tab.projectId;
+      const workspaceRef = tab.workspaceRef;
       evictions.push({ workspaceRef, projectId });
     },
     onProjectActivated: (tab) => {
@@ -106,21 +289,21 @@ function makeDeps() {
     },
     storage,
   };
-  return { deps, storage, log, evictions, activatedTabs, workspace, tree, online };
+  return { deps, storage, log, evictions, activatedTabs, openCurrentResults, workspace, tree, online };
 }
 
 describe("成签注册表（openProjectTab，不变量 1：项目选中即成签）", () => {
   it("新项目成签置活跃：tab-<自增> 运行期唯一；本地项目选中走 tree.select（App.vue:367-370 先例）", async () => {
     const { deps, tree } = makeDeps();
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P1);
     expect(tabs.tabs).toEqual([
-      { tabId: "tab-1", workspaceRef: LOCAL_REF, projectId: "p-1", projectName: "项目一" },
+      { tabId: "tab-1", ...persistedLocal(P1) },
     ]);
     expect(tabs.activeTabId).toBe("tab-1");
-    expect(tabs.activeTab?.projectId).toBe("p-1");
-    expect(tree.select).toHaveBeenCalledWith("project", "p-1");
-    await tabs.openProjectTab(LOCAL_REF, P2);
+    expect(tabs.activeTab && tabProjectId(tabs.activeTab)).toBe(localLocator("p-1").projectId);
+    expect(tree.select).toHaveBeenCalledWith(expect.objectContaining({ locator: localLocator("p-1") }));
+    await openTab(tabs, LOCAL_REF, P2);
     expect(tabs.tabs.map((t) => t.tabId)).toEqual(["tab-1", "tab-2"]);
     expect(tabs.activeTabId).toBe("tab-2");
   });
@@ -128,10 +311,10 @@ describe("成签注册表（openProjectTab，不变量 1：项目选中即成签
   it("同 workspaceRef+projectId 重复成签去重：仅激活既有签（已活跃时不重跑选中——草稿零扰动，不变量 2）", async () => {
     const { deps, log } = makeDeps();
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1);
-    expect(log).toEqual(["ws.open:/tmp/ws-local", "tree.select:project:p-1"]); // 首开含目录兜底重开
+    await openTab(tabs, LOCAL_REF, P1);
+    expect(log).toEqual(["ws.open:/tmp/ws-local", `tree.select:project:${localLocator("p-1").projectId}`]); // 首开含目录兜底重开
     log.length = 0;
-    await tabs.openProjectTab(LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P1);
     expect(tabs.tabs).toHaveLength(1); // 去重：不重签
     expect(tabs.activeTabId).toBe("tab-1"); // 仅激活
     expect(log).toEqual([]); // 已活跃：no-op
@@ -141,14 +324,37 @@ describe("成签注册表（openProjectTab，不变量 1：项目选中即成签
     const { deps, online } = makeDeps();
     online.sessions["ws-1"] = sessionStub("ws-1");
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1);
-    await tabs.openProjectTab(ONLINE_REF, P1);
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, ONLINE_REF, P1);
     expect(tabs.tabs.map((t) => t.workspaceRef.kind)).toEqual(["local", "online"]);
     expect(tabs.tabs).toHaveLength(2);
   });
 });
 
 describe("激活编排（activateTab）", () => {
+  it("并发激活按最新意图收敛，较早确认迟到不能重新选择旧签", async () => {
+    const ctx = makeDeps();
+    const gates: Array<{ resolve: (value: boolean) => void }> = [];
+    ctx.deps.workflowDesign = { dirty: false, locator: { ...localLocator("p-1"), workflowId: "30000000-0000-4000-8000-000000000001" } };
+    const tabs = createTabsStore(ctx.deps);
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P2);
+    await openTab(tabs, LOCAL_REF, P3);
+    // 回到 P1，再从同一脏工作流并发切 P2/P3，模拟确认对话框交错。
+    tabs.activeTabId = "tab-1";
+    ctx.deps.workflowDesign = { dirty: true, locator: { ...localLocator("p-1"), workflowId: "30000000-0000-4000-8000-000000000001" } };
+    ctx.deps.confirmWorkflowDraft = vi.fn(() => new Promise<boolean>((resolve) => gates.push({ resolve })));
+    const older = tabs.activateTab("tab-2");
+    const newer = tabs.activateTab("tab-3");
+    expect(gates).toHaveLength(2);
+    gates[1]!.resolve(true);
+    await newer;
+    gates[0]!.resolve(true);
+    await older;
+    expect(tabs.activeTabId).toBe("tab-3");
+    expect(ctx.tree.select).toHaveBeenLastCalledWith(expect.objectContaining({ locator: localLocator("p-3") }));
+  });
+
   it("在线签且工作区未活跃：先 activateWorkspace 再 selectNode 项目节点（顺序钉住）", async () => {
     const { deps, online, log } = makeDeps();
     online.sessions["ws-1"] = sessionStub("ws-1");
@@ -217,13 +423,14 @@ describe("激活编排（activateTab）", () => {
     workspace.opened = true;
     workspace.root = LOCAL_REF.dir;
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P1);
     expect(workspace.open).not.toHaveBeenCalled();
     expect(tabs.activeTabId).toBe("tab-1");
     const fresh = makeDeps(); // 未打开场景：兜底重开目录
     const tabs2 = createTabsStore(fresh.deps);
-    await tabs2.openProjectTab(LOCAL_REF, P1);
-    expect(fresh.workspace.open).toHaveBeenCalledWith(LOCAL_REF.dir);
+    await openTab(tabs2, LOCAL_REF, P1);
+    expect(fresh.workspace.open).toHaveBeenCalledWith(LOCAL_REF.dir, expect.any(Function));
+    expect(fresh.openCurrentResults).toEqual([true]);
     expect(tabs2.activeTabId).toBe("tab-1");
   });
 
@@ -231,7 +438,7 @@ describe("激活编排（activateTab）", () => {
     const { deps, workspace } = makeDeps();
     workspace.openFails = true;
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P1);
     expect(tabs.offlineTabIds).toEqual(["tab-1"]);
     expect(tabs.activeTabId).toBeNull();
     expect(tabs.error).toContain("apicc.workspace.yaml");
@@ -242,22 +449,22 @@ describe("关签（closeTab，不变量 3：关签=项目关闭，dirty 确认�
   it("驱逐钩子按 (workspaceRef, projectId) 被调；签出表并跟随持久化；非活跃签关闭不动活跃", async () => {
     const { deps, evictions, storage } = makeDeps();
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1);
-    await tabs.openProjectTab(LOCAL_REF, P2); // active = tab-2
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P2); // active = tab-2
     await tabs.closeTab("tab-1");
-    expect(evictions).toEqual([{ workspaceRef: LOCAL_REF, projectId: "p-1" }]);
+    expect(evictions).toEqual([{ workspaceRef: LOCAL_REF, projectId: localLocator("p-1").projectId }]);
     expect(tabs.tabs.map((t) => t.tabId)).toEqual(["tab-2"]);
     expect(tabs.activeTabId).toBe("tab-2");
     const persisted = JSON.parse(storage.getItem(STORAGE_KEY)!);
-    expect(persisted.tabs).toEqual([{ workspaceRef: LOCAL_REF, projectId: "p-2", projectName: "项目二" }]);
+    expect(persisted.tabs).toEqual([persistedLocal(P2)]);
   });
 
   it("关非活跃签不动活跃；关活跃尾签回左邻（Math.min 尾分支）；签全关 → null（回主页）", async () => {
     const { deps } = makeDeps();
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1); // tab-1
-    await tabs.openProjectTab(LOCAL_REF, P2); // tab-2
-    await tabs.openProjectTab(LOCAL_REF, P3); // tab-3（活跃）
+    await openTab(tabs, LOCAL_REF, P1); // tab-1
+    await openTab(tabs, LOCAL_REF, P2); // tab-2
+    await openTab(tabs, LOCAL_REF, P3); // tab-3（活跃）
     await tabs.closeTab("tab-2");
     expect(tabs.activeTabId).toBe("tab-3"); // 非活跃签关闭：不动活跃（相邻切换分支不执行）
     await tabs.closeTab("tab-3");
@@ -270,8 +477,8 @@ describe("关签（closeTab，不变量 3：关签=项目关闭，dirty 确认�
   it("关活跃首签 → 右邻接任（Math.min 右邻分支，closeTab JSDoc 承诺的相邻切换主路径）", async () => {
     const { deps } = makeDeps();
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1); // tab-1（活跃）
-    await tabs.openProjectTab(LOCAL_REF, P2); // tab-2
+    await openTab(tabs, LOCAL_REF, P1); // tab-1（活跃）
+    await openTab(tabs, LOCAL_REF, P2); // tab-2
     await tabs.closeTab("tab-1");
     expect(tabs.activeTabId).toBe("tab-2"); // 右邻接任
     expect(tabs.tabs.map((t) => t.tabId)).toEqual(["tab-2"]);
@@ -282,7 +489,7 @@ describe("关签（closeTab，不变量 3：关签=项目关闭，dirty 确认�
     const { deps, online, evictions } = makeDeps();
     online.sessions["ws-1"] = sessionStub("ws-1"); // 仅 ws-1 驻留（ws-2 分歧缺席）
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab({ kind: "online", workspaceId: "ws-1", name: "在线一" }, P1); // tab-1 活跃
+    await openTab(tabs, { kind: "online", workspaceId: "ws-1", name: "在线一" }, P1); // tab-1 活跃
     await tabs.openProjectTab(WS2_REF, P2); // tab-2 分歧 → 离线，活跃仍是 tab-1
     expect(tabs.activeTabId).toBe("tab-1");
     await tabs.closeTab("tab-1"); // 关活跃首签 → 相邻 tab-2 激活失败（分歧）→ 活跃落 null
@@ -296,27 +503,27 @@ describe("关签（closeTab，不变量 3：关签=项目关闭，dirty 确认�
     const { deps, online, log } = makeDeps();
     online.sessions["ws-1"] = sessionStub("ws-1");
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1); // tab-1（本地上下文就位）
+    await openTab(tabs, LOCAL_REF, P1); // tab-1（本地上下文就位）
     await tabs.openProjectTab(ONLINE_REF, P2); // tab-2（活跃，在线上下文）
     log.length = 0;
     await tabs.closeTab("tab-2");
     expect(tabs.activeTabId).toBe("tab-1");
-    expect(log).toEqual(["tree.select:project:p-1"]); // 本地签接任：不重开目录，仅项目选中
+    expect(log).toEqual([`tree.select:project:${localLocator("p-1").projectId}`]); // 本地签接任：不重开目录，仅项目选中
     expect(online.activeWorkspaceId).toBe("ws-1"); // 在线会话驻留不被动（不变量 4）
   });
 });
 
 describe("持久化与恢复（localStorage apicc.projectTabs）", () => {
-  it("persist：写入 {tabs:[{workspaceRef,projectId,projectName}], activeIndex}（只记签结构，草稿/离线态不落盘）", async () => {
+  it("persist：本地保存完整 projectLocator、在线保存 projectId（只记签结构，草稿/离线态不落盘）", async () => {
     const { deps, storage, online } = makeDeps();
     online.sessions["ws-1"] = sessionStub("ws-1");
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P1);
     await tabs.openProjectTab(ONLINE_REF, P2); // active = tab-2
     tabs.persist();
     expect(JSON.parse(storage.getItem(STORAGE_KEY)!)).toEqual({
       tabs: [
-        { workspaceRef: LOCAL_REF, projectId: "p-1", projectName: "项目一" },
+        persistedLocal(P1),
         { workspaceRef: ONLINE_REF, projectId: "p-2", projectName: "项目二" },
       ],
       activeIndex: 1,
@@ -324,12 +531,12 @@ describe("持久化与恢复（localStorage apicc.projectTabs）", () => {
   });
 
   it("恢复往返：新 store restore 重建签结构（tabId 重生成）+ 活跃位跟随 + 活跃签走完整编排（钩子只对活跃签）", async () => {
-    const { deps, storage, workspace, tree, online, activatedTabs } = makeDeps();
+    const { deps, storage, workspace, tree, online, activatedTabs, openCurrentResults } = makeDeps();
     storage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         tabs: [
-          { workspaceRef: LOCAL_REF, projectId: "p-1", projectName: "项目一" },
+          persistedLocal(P1),
           { workspaceRef: ONLINE_REF, projectId: "p-2", projectName: "项目二" },
         ],
         activeIndex: 1,
@@ -338,17 +545,18 @@ describe("持久化与恢复（localStorage apicc.projectTabs）", () => {
     online.sessions["ws-1"] = sessionStub("ws-1");
     const tabs = createTabsStore(deps);
     await tabs.restore();
-    expect(tabs.tabs.map((t) => [t.tabId, t.projectId, t.projectName])).toEqual([
-      ["tab-1", "p-1", "项目一"],
+    expect(tabs.tabs.map((tab) => [tab.tabId, tabProjectId(tab), tab.projectName])).toEqual([
+      ["tab-1", localLocator("p-1").projectId, "项目一"],
       ["tab-2", "p-2", "项目二"],
     ]);
     expect(tabs.activeTabId).toBe("tab-2"); // activeIndex=1
     expect(workspace.open).toHaveBeenCalledTimes(1); // 非活跃本地签重建：重开目录（工作区驻留）
-    expect(workspace.open).toHaveBeenCalledWith(LOCAL_REF.dir);
+    expect(workspace.open).toHaveBeenCalledWith(LOCAL_REF.dir, expect.any(Function));
+    expect(openCurrentResults).toEqual([true]);
     expect(online.activeWorkspaceId).toBe("ws-1"); // 活跃签在线工作区已激活
     expect(online.selectNode).toHaveBeenCalledWith("project", "p-2");
     expect(tree.select).not.toHaveBeenCalled(); // 活跃签是在线：本地树选中不跑
-    expect(activatedTabs.map((t) => t.projectId)).toEqual(["p-2"]); // onProjectActivated 钩子只对活跃签
+    expect(activatedTabs.map(tabProjectId)).toEqual(["p-2"]); // onProjectActivated 钩子只对活跃签
   });
 
   it("恢复重建失败→离线态：本地 open 失败与在线 activate 失败各自标记离线；活跃位落空 → null（回主页）", async () => {
@@ -357,7 +565,7 @@ describe("持久化与恢复（localStorage apicc.projectTabs）", () => {
       STORAGE_KEY,
       JSON.stringify({
         tabs: [
-          { workspaceRef: LOCAL_REF, projectId: "p-1", projectName: "项目一" },
+          persistedLocal(P1),
           { workspaceRef: ONLINE_REF, projectId: "p-2", projectName: "项目二" },
         ],
         activeIndex: 1,
@@ -407,13 +615,13 @@ describe("持久化与恢复（localStorage apicc.projectTabs）", () => {
     });
     const tabs = createTabsStore(deps);
     await tabs.restore();
-    expect(tabs.tabs.map((t) => t.projectId)).toEqual(["p-2"]);
+    expect(tabs.tabs.map(tabProjectId)).toEqual(["p-2"]);
     expect(tabs.activeTabId).toBeNull();
   });
 });
 
 // —— 计划 C 任务 4：关签驱逐真实实现（createEvictProjectSessions，deps 装配体）——
-// 本地 ref：按 tree 收集该项目 api 集合驱逐 editor 会话槽；在线 ref：按 projectId 前缀
+// 本地 ref：按完整 ProjectLocator + root 驱逐 editor 会话槽；在线 ref：按 projectId 前缀
 // 驱逐驻留会话缓冲槽；实现内部不抛（任务 3 钩子防护口径：closeTab 调用方不 try/catch）。
 describe("关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessions）", () => {
   /** 真实 store 上下文：种子项目（含接口A）+ 第二项目（接口B），供跨项目驱逐隔离验证。 */
@@ -422,17 +630,25 @@ describe("关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessi
     api.seedWorkspace();
     const workspace = useWorkspaceStore(api);
     await workspace.open("/tmp/ws");
-    const groupNode = workspace.tree!.children![0]!;
-    const projectNode = groupNode.children![0]!;
-    const collectionNode = projectNode.children![0]!;
-    const project2 = await api.nodeCreate({ kind: "project", parentId: groupNode.id, name: "项目二" });
-    const collection2 = await api.nodeCreate({ kind: "collection", parentId: project2.id, name: "集合乙" });
-    const apiB = await api.nodeCreate({ kind: "api", parentId: collection2.id, name: "接口B" });
-    await workspace.refresh(); // 驱逐收集按当前树（nodeCreate 后刷新）
-    // 槽元数据归属解析器（任务 5 审查重要 1）：组合根同款装配
-    const editor = useEditorStore(api, (apiId) => findProjectIdByApiId(workspace.tree, apiId));
+    const groupNode = workspace.tree!.children.find((node) => node.kind === "group" && node.children.some((child) => child.kind === "project" && child.children.some((item) => item.kind === "collection")));
+    if (!groupNode || groupNode.kind !== "group") throw new Error("Memory workspace is missing the seeded project group");
+    const projectNode = groupNode.children.find((node) => node.kind === "project" && node.children.some((item) => item.kind === "collection"));
+    if (!projectNode || projectNode.kind !== "project") throw new Error("Memory group is missing the seeded project");
+    const collectionNode = projectNode.children.find((node) => node.kind === "collection");
+    if (!collectionNode || collectionNode.kind !== "collection") throw new Error("Memory project is missing the seeded collection");
+    const apiA = collectionNode.children.find((node) => node.kind === "api");
+    if (!apiA || apiA.kind !== "api") throw new Error("Memory collection is missing the seeded API");
+    const project2 = await api.nodeCreate({ kind: "project", parent: groupNode.locator, name: "项目二" });
+    if (project2.kind !== "project") throw new Error("Memory project creation did not return a project node");
+    const collection2 = await api.nodeCreate({ kind: "collection", parent: project2.locator, name: "集合乙" });
+    if (collection2.kind !== "collection") throw new Error("Memory collection creation did not return a collection node");
+    const apiB = await api.nodeCreate({ kind: "api", parent: collection2.locator, api: { name: "接口B" } });
+    if (apiB.kind !== "api") throw new Error("Memory API creation did not return an API node");
+    await workspace.refresh();
+    const context = () => ({ root: workspace.root, readOnly: workspace.readOnly });
+    const editor = useEditorStore(api, context);
     const online = createOnlineStoreStub();
-    return { api, workspace, editor, online, projectNode, collectionNode, apiB };
+    return { api, workspace, editor, online, projectNode, collectionNode, apiA, apiB };
   }
 
   /** 在线驱逐只路由不实现（真实现归 online store，已由 online-workspace.test 钉住）。 */
@@ -446,38 +662,82 @@ describe("关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessi
     };
   }
 
-  it("本地 ref：按槽元数据 projectId 过滤驱逐 editor 会话槽；其他项目会话驻留、活跃不受牵连", async () => {
+  it("本地 ref：按完整 ProjectLocator 驱逐一个项目；其他项目会话驻留、活跃不受牵连", async () => {
     const ctx = await localContext();
-    const apiA = ctx.collectionNode.children![0]!.id; // 种子项目（项目一）的接口
-    await ctx.editor.load(apiA);
-    await ctx.editor.load(ctx.apiB.id);
-    ctx.editor.api!.url = "/draft-b"; // 活跃在接口B（项目二）
+    await ctx.editor.load(ctx.apiA.locator);
+    await ctx.editor.load(ctx.apiB.locator);
+    ctx.editor.api!.contract.request.baseUrl = "/draft-b"; // 活跃在接口B（项目二）
     const evict = createEvictProjectSessions({ editor: ctx.editor, online: ctx.online });
-    evict({ kind: "local", dir: ctx.workspace.root }, ctx.projectNode.id);
-    expect(ctx.editor.sessions[apiA]).toBeUndefined(); // 项目一槽被逐
-    expect(ctx.editor.sessions[ctx.apiB.id]).toBeDefined(); // 项目二会话驻留
-    expect(ctx.editor.activeApiId).toBe(ctx.apiB.id); // 活跃不在驱逐集合 → 不动
+    const root = ctx.workspace.root;
+    evict({ tabId: "tab-project-a", workspaceRef: { kind: "local", dir: root }, projectLocator: ctx.projectNode.locator, projectName: ctx.projectNode.label });
+    expect(ctx.editor.sessions[apiSessionKey(root, ctx.apiA.locator)]).toBeUndefined(); // 项目一槽被逐
+    expect(ctx.editor.sessions[apiSessionKey(root, ctx.apiB.locator)]).toBeDefined(); // 项目二会话驻留
+    expect(ctx.editor.locator).toEqual(ctx.apiB.locator); // 活跃不在驱逐集合 → 不动
   });
 
   it("在线 ref：路由到 online.evictProjectBuffers(workspaceId, projectId)", async () => {
     const ctx = await localContext();
     const evict = createEvictProjectSessions({ editor: ctx.editor, online: ctx.online });
-    evict({ kind: "online", workspaceId: "ws-9", name: "在线九" }, "p-9");
+    evict({ tabId: "tab-online", workspaceRef: { kind: "online", workspaceId: "ws-9", name: "在线九" }, projectId: "p-9", projectName: "项目九" });
     expect(ctx.online.calls).toEqual([["ws-9", "p-9"]]);
   });
 
-  it("防护口径：无归属匹配的槽不被误逐（未知项目/无归属 null 槽）；钩子实现内部不抛", async () => {
+  it("I06: close evicts only the workflow session owned by the closed root and project", async () => {
     const ctx = await localContext();
-    const apiA = ctx.collectionNode.children![0]!.id;
-    await ctx.editor.load(apiA);
-    ctx.editor.sessions[apiA]!.projectId = null; // 无归属槽（建槽时树缺失场景）
+    const rootA = ctx.workspace.root;
+    const workflow = await ctx.api.wfCreate({ locator: ctx.projectNode.locator, name: "关签归属流" });
+    const workflowLocator: WorkflowLocator = { ...ctx.projectNode.locator, workflowId: workflow.id };
+    const workflowDesign = useWorkflowDesignStore(ctx.api, () => ({ root: ctx.workspace.root, readOnly: ctx.workspace.readOnly }));
+
+    const tabs = createTabsStore({
+      workspace: ctx.workspace,
+      tree: { select: () => undefined },
+      online: {
+        sessions: {}, activeWorkspaceId: null, error: null,
+        activateWorkspace: async () => {}, selectNode: async () => {}, evictProjectBuffers: () => {},
+      } as unknown as TabsStoreDeps["online"],
+      workflowDesign,
+      evictProjectSessions: createEvictProjectSessions({ editor: ctx.editor, online: ctx.online, workflowDesign }),
+      storage: memStorage(),
+    });
+
+    await tabs.openProjectTab({ kind: "local", dir: rootA }, { locator: ctx.projectNode.locator, name: ctx.projectNode.label });
+    const rootB = "/tmp/task10b-i06-copy";
+    await tabs.openProjectTab({ kind: "local", dir: rootB }, { locator: ctx.projectNode.locator, name: ctx.projectNode.label });
+    await workflowDesign.load(rootB, workflowLocator);
+    if (!workflowDesign.workflow) throw new Error("Created workflow did not load");
+    workflowDesign.update({ ...workflowDesign.workflow, name: "B 草稿" });
+    workflowDesign.runResult = {
+      workflowId: workflow.id, workflowName: "B 草稿", status: workflow.status,
+      nodeResults: [], total: 0, passed: 0, failed: 0, skipped: 0, warnings: [], startedAt: "", finishedAt: "",
+    };
+
+    await tabs.closeTab("tab-1");
+    expect(workflowDesign.root).toBe(rootB);
+    expect(workflowDesign.locator).toEqual(workflowLocator);
+    expect(workflowDesign.dirty).toBe(true);
+    expect(workflowDesign.runResult).not.toBeNull();
+
+    await tabs.closeTab("tab-2");
+    expect(workflowDesign.root).toBeNull();
+    expect(workflowDesign.locator).toBeNull();
+    expect(workflowDesign.workflow).toBeNull();
+    expect(workflowDesign.dirty).toBe(false);
+    expect(workflowDesign.runResult).toBeNull();
+  });
+
+  it("防护口径：相同 projectId 的错误 group locator 不会别名驱逐；钩子实现内部不抛", async () => {
+    const ctx = await localContext();
+    await ctx.editor.load(ctx.apiA.locator);
+    ctx.editor.api!.contract.request.baseUrl = "/draft-a";
     const evict = createEvictProjectSessions({ editor: ctx.editor, online: ctx.online });
-    expect(() => evict({ kind: "local", dir: "/tmp/ws" }, "不存在的项目")).not.toThrow();
-    expect(ctx.editor.sessions[apiA]).toBeDefined(); // null 归属不被驱逐牵连
+    const wrongGroup: ProjectLocator = { ...ctx.projectNode.locator, groupId: "30000000-0000-4000-8000-000000000003" };
+    evict({ tabId: "tab-wrong-group", workspaceRef: { kind: "local", dir: ctx.workspace.root }, projectLocator: wrongGroup, projectName: "wrong group" });
+    expect(ctx.editor.sessions[apiSessionKey(ctx.workspace.root, ctx.apiA.locator)]).toBeDefined();
     // 在线驱逐体抛错（替身层契约被破坏）也被吸收：closeTab 驱逐钩子不阻断关签
     const bomb = { evictProjectBuffers: () => { throw new Error("替身契约破坏"); } };
     const evictBomb = createEvictProjectSessions({ editor: ctx.editor, online: bomb });
-    expect(() => evictBomb({ kind: "online", workspaceId: "ws-9", name: "在线九" }, "p-1")).not.toThrow();
+    expect(() => evictBomb({ tabId: "tab-bomb", workspaceRef: { kind: "online", workspaceId: "ws-9", name: "在线九" }, projectId: "p-1", projectName: "项目一" })).not.toThrow();
   });
 });
 
@@ -491,10 +751,17 @@ describe("关签判定与驱逐的元数据语义（任务 5 审查重要 1：�
     api.seedWorkspace();
     const workspace = useWorkspaceStore(api);
     await workspace.open("/tmp/ws-a");
-    const projectA = workspace.tree!.children![0]!.children![0]!; // 项目一
-    const apiA = projectA.children![0]!.children![0]!.id; // 接口甲
-    const editor = useEditorStore(api, (apiId) => findProjectIdByApiId(workspace.tree, apiId));
-    const tree = { select: vi.fn(async () => {}) };
+    const group = workspace.tree!.children.find((node) => node.kind === "group" && node.children.some((child) => child.kind === "project" && child.children.some((item) => item.kind === "collection")));
+    if (!group || group.kind !== "group") throw new Error("Memory workspace is missing the seeded project group");
+    const projectA = group.children.find((node) => node.kind === "project" && node.children.some((item) => item.kind === "collection"));
+    if (!projectA || projectA.kind !== "project") throw new Error("Memory group is missing the seeded project");
+    const collection = projectA.children.find((node) => node.kind === "collection");
+    if (!collection || collection.kind !== "collection") throw new Error("Memory project is missing the seeded collection");
+    const apiA = collection.children.find((node) => node.kind === "api");
+    if (!apiA || apiA.kind !== "api") throw new Error("Memory collection is missing the seeded API");
+    const context = () => ({ root: workspace.root, readOnly: workspace.readOnly });
+    const editor = useEditorStore(api, context);
+    const tree = { select: vi.fn((_node: LocalProjectTreeNodeDTO) => {}) };
     const online = {
       sessions: {} as TabsStoreDeps["online"]["sessions"],
       activeWorkspaceId: null as string | null,
@@ -508,11 +775,8 @@ describe("关签判定与驱逐的元数据语义（任务 5 审查重要 1：�
 
   it("跨目录本地签：目录 A 项目 PA 有草稿 → 开目录 B（当前树已不含 PA）→ projectHasDrafts(tab-PA) 仍为 true，确认驱逐后 PA 会话消失", async () => {
     const ctx = await localContextA();
-    await ctx.editor.load(ctx.apiA);
-    ctx.editor.api!.url = "/draft-a"; // PA 草稿
-    // 开目录 B（替身层直接换树引用模拟——内存替身对任意目录回退同一份种子，无法造第二棵真树；
-    // 本用例钉的正是「判定/驱逐不依赖当前树」）
-    ctx.workspace.tree = { id: "root-b", kind: "root", label: "目录B工作区", children: [] };
+    await ctx.editor.load(ctx.apiA.locator);
+    ctx.editor.api!.contract.request.baseUrl = "/draft-a"; // PA 草稿
     const deps: TabsStoreDeps = {
       workspace: ctx.workspace,
       tree: ctx.tree,
@@ -522,62 +786,50 @@ describe("关签判定与驱逐的元数据语义（任务 5 审查重要 1：�
       storage: memStorage(),
     };
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab({ kind: "local", dir: "/tmp/ws-a" }, { id: ctx.projectA.id, name: "项目一" });
+    await tabs.openProjectTab({ kind: "local", dir: "/tmp/ws-a" }, { locator: ctx.projectA.locator, name: ctx.projectA.label });
+    // 切到目录 B 后当前树已不含 A；dirty 判定/驱逐必须使用 tab 保留的 root+locator。
+    ctx.workspace.root = "/tmp/ws-b";
+    ctx.workspace.tree = { source: "local", kind: "root", id: "root-b", key: "root-b", label: "目录B工作区", locator: { workspaceId: "40000000-0000-4000-8000-000000000001" }, children: [] };
     // 修复前：按当前树 findProjectNode(PA) → null → 不弹确认直关、驱逐 no-op（脏会话滞留）
     expect(tabs.projectHasDrafts(tabs.activeTabId!)).toBe(true);
     await tabs.closeTab(tabs.activeTabId!); // 组件层确认后的关签
     expect(tabs.tabs).toHaveLength(0);
-    expect(ctx.editor.sessions[ctx.apiA]).toBeUndefined(); // PA 草稿槽已被驱逐
-    expect(ctx.editor.activeApiId).toBeNull();
+    expect(Object.values(ctx.editor.sessions).some((session) => session.locator.apiId === ctx.apiA.locator.apiId)).toBe(false); // PA 草稿槽已被驱逐
+    expect(ctx.editor.locator).toBeNull();
   });
 
-  it("slot.projectId=null 的脏槽保守计入判定（防漏报），但驱逐不牵连（防误伤未知归属）", async () => {
+  it("不同 group 的同 projectId locator 不会把别处草稿算入或驱逐", async () => {
     const ctx = await localContextA();
-    // 无归属脏槽（建槽时树里找不到归属）
-    ctx.editor.sessions["api-orphan"] = { api: null, envs: [], snapshot: "", projectId: null };
-    ctx.editor.sessions["api-orphan"]!.api = { id: "api-orphan", name: "孤儿接口" } as never;
-    ctx.editor.sessions["api-orphan"]!.snapshot = "{}"; // 脏
-    const deps: TabsStoreDeps = {
-      workspace: ctx.workspace,
-      tree: ctx.tree,
-      online: ctx.online,
-      editor: ctx.editor,
-      evictProjectSessions: createEvictProjectSessions({ editor: ctx.editor, online: ctx.online }),
-      storage: memStorage(),
-    };
-    const tabs = createTabsStore(deps);
-    await tabs.openProjectTab({ kind: "local", dir: "/tmp/ws-a" }, { id: ctx.projectA.id, name: "项目一" });
-    expect(tabs.projectHasDrafts(tabs.activeTabId!)).toBe(true); // null 归属脏槽保守计入
-    await tabs.closeTab(tabs.activeTabId!);
-    expect(ctx.editor.sessions["api-orphan"]).toBeDefined(); // 驱逐不牵连无归属槽
-    expect(tabs.tabs).toHaveLength(0); // PA 自身无草稿槽（接口甲未载入）→ 签已关
+    await ctx.editor.load(ctx.apiA.locator);
+    ctx.editor.api!.contract.request.baseUrl = "/draft-a";
+    const wrongGroup: ProjectLocator = { ...ctx.projectA.locator, groupId: "50000000-0000-4000-8000-000000000003" };
+    expect(ctx.editor.isProjectDirty(wrongGroup, "/tmp/ws-a")).toBe(false);
+    const before = Object.keys(ctx.editor.sessions);
+    ctx.editor.evictProject(wrongGroup, "/tmp/ws-a");
+    expect(Object.keys(ctx.editor.sessions)).toEqual(before);
   });
 });
 
 // —— 计划 C 任务 6：工作区级关闭 + 切签工作流草稿确认 ——
 
 /** 带工作流摘要的本地树夹具：项目一（p-1）持 wf-1，项目二（p-2）无工作流。 */
-const WF_TREE: TreeNodeDTO = {
-  id: "root",
-  kind: "root",
-  label: "工作区",
-  children: [
-    {
-      id: "g-1",
-      kind: "group",
-      label: "分组",
-      children: [
-        {
-          id: "p-1",
-          kind: "project",
-          label: "项目一",
-          workflows: [{ id: "wf-1", name: "流一", status: "draft" }],
-          children: [],
-        },
-        { id: "p-2", kind: "project", label: "项目二", children: [] },
-      ],
-    },
-  ],
+const WF_LOCATOR: WorkflowLocator = { ...localLocator("p-1"), workflowId: "30000000-0000-4000-8000-000000000001" };
+const WF_TREE: LocalRootTreeNodeDTO = {
+  source: "local", kind: "root", id: localLocator("p-1").workspaceId,
+  key: JSON.stringify(["local", "root", localLocator("p-1").workspaceId]), label: "工作区",
+  locator: { workspaceId: localLocator("p-1").workspaceId },
+  children: [{
+    source: "local", kind: "group", id: localLocator("p-1").groupId,
+    key: JSON.stringify(["local", "group", localLocator("p-1").workspaceId, localLocator("p-1").groupId]), label: "分组",
+    locator: { workspaceId: localLocator("p-1").workspaceId, groupId: localLocator("p-1").groupId },
+    children: [
+      { ...localProjectNode(localLocator("p-1"), "项目一"), workflows: [{
+        source: "local", id: WF_LOCATOR.workflowId, key: JSON.stringify(["local", "workflow", WF_LOCATOR.workspaceId, WF_LOCATOR.groupId, WF_LOCATOR.projectId, WF_LOCATOR.workflowId]),
+        name: "流一", status: "draft", locator: WF_LOCATOR,
+      }] },
+      localProjectNode(localLocator("p-2"), "项目二"),
+    ],
+  }],
 };
 
 describe("工作区级关闭（closeWorkspaceTabs，任务 6，不变量 4）", () => {
@@ -590,10 +842,10 @@ describe("工作区级关闭（closeWorkspaceTabs，任务 6，不变量 4）", 
     await tabs.openProjectTab(ONLINE_REF, P1); // tab-1 ws-1
     await tabs.openProjectTab(ONLINE_REF, P2); // tab-2 ws-1
     await tabs.openProjectTab({ kind: "online", workspaceId: "ws-2", name: "在线二" }, P3); // tab-3
-    await tabs.openProjectTab(LOCAL_REF, P1); // tab-4 本地（活跃）
+    await openTab(tabs, LOCAL_REF, P1); // tab-4 本地（活跃）
     await tabs.closeWorkspaceTabs(ONLINE_REF);
     // ws-1 两签出表（驱逐按 (ref, projectId) 逐签落地），ws-2 与本地签不动，活跃不受牵连
-    expect(tabs.tabs.map((t) => `${t.workspaceRef.kind}:${t.projectId}`)).toEqual(["online:p-3", "local:p-1"]);
+    expect(tabs.tabs.map((tab) => `${tab.workspaceRef.kind}:${tabProjectId(tab)}`)).toEqual(["online:p-3", `local:${localLocator("p-1").projectId}`]);
     expect(evictions.filter((e) => e.workspaceRef.kind === "online" && e.workspaceRef.workspaceId === "ws-1")).toHaveLength(2);
     expect(tabs.activeTabId).toBe("tab-4");
   });
@@ -622,7 +874,7 @@ describe("切签工作流草稿确认（任务 6，规格勘误口径：workflow
   function makeWfDeps() {
     const ctx = makeDeps();
     ctx.deps.workspace.tree = WF_TREE;
-    ctx.deps.workflowDesign = { dirty: true, workflowId: "wf-1" };
+    ctx.deps.workflowDesign = { dirty: true, locator: WF_LOCATOR };
     return ctx;
   }
 
@@ -631,11 +883,11 @@ describe("切签工作流草稿确认（任务 6，规格勘误口径：workflow
     const confirmWorkflowDraft = vi.fn(async () => false);
     deps.confirmWorkflowDraft = confirmWorkflowDraft;
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" }); // tab-1（首个成签，无离开上下文）
+    await openTab(tabs, LOCAL_REF, P1); // tab-1（首个成签，无离开上下文）
     expect(confirmWorkflowDraft).not.toHaveBeenCalled();
-    await tabs.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" }); // 成签即切：离开 p-1（wf-1 归属）→ 拦截
+    await openTab(tabs, LOCAL_REF, P2); // 成签即切：离开 p-1（wf-1 归属）→ 拦截
     expect(confirmWorkflowDraft).toHaveBeenCalledTimes(1);
-    expect(tabs.tabs.map((t) => t.projectId)).toEqual(["p-1", "p-2"]); // 签已入表，仅激活被拦
+    expect(tabs.tabs.map(tabProjectId)).toEqual([localLocator("p-1").projectId, localLocator("p-2").projectId]); // 签已入表，仅激活被拦
     expect(tabs.activeTabId).toBe("tab-1"); // 取消：不切换
     tree.select.mockClear();
     await tabs.activateTab("tab-2");
@@ -649,8 +901,8 @@ describe("切签工作流草稿确认（任务 6，规格勘误口径：workflow
     const confirmWorkflowDraft = vi.fn(async () => true);
     deps.confirmWorkflowDraft = confirmWorkflowDraft;
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" });
-    await tabs.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" }); // 离开 p-1 → 确认放行
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P2); // 离开 p-1 → 确认放行
     expect(confirmWorkflowDraft).toHaveBeenCalledTimes(1);
     expect(tabs.activeTabId).toBe("tab-2");
     await tabs.activateTab("tab-1"); // 离开 p-2（无归属流）→ 直切；p-1 的草稿流随激活回到当前项目
@@ -660,31 +912,40 @@ describe("切签工作流草稿确认（任务 6，规格勘误口径：workflow
 
   it("活跃工作流不属于离开签项目（树摘要归属过滤）→ 不牵连直切", async () => {
     const { deps } = makeWfDeps();
-    deps.workflowDesign = { dirty: true, workflowId: "wf-other" }; // 不在 p-1 树摘要里
+    deps.workflowDesign = { dirty: true, locator: { ...localLocator("p-2"), workflowId: "30000000-0000-4000-8000-000000000002" } }; // 其他项目的工作流草稿不牵连 p-1
     const confirmWorkflowDraft = vi.fn(async () => false);
     deps.confirmWorkflowDraft = confirmWorkflowDraft;
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" });
-    await tabs.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" });
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P2);
     expect(confirmWorkflowDraft).not.toHaveBeenCalled();
     expect(tabs.activeTabId).toBe("tab-2");
   });
 
+  it("相同完整locator的复制工作区不共享workflow dirty归属", () => {
+    const { deps } = makeWfDeps();
+    deps.workflowDesign = { dirty: true, root: "/tmp/ws-local-copy", locator: WF_LOCATOR };
+    const tabs = createTabsStore(deps);
+    tabs.tabs = [{ tabId: "tab-old-root", workspaceRef: { kind: "local", dir: "/tmp/ws-local" }, projectLocator: localLocator("p-1"), projectName: "项目一" }];
+    expect(tabs.leavingTabHasWorkflowDraft(tabs.tabs[0]!)).toBe(false);
+    expect(tabs.projectHasDrafts("tab-old-root")).toBe(false);
+  });
+
   it("workflowDesign 不 dirty → 不确认；确认钩子未注入 → 跳过该草稿源直切（store 单测省略面）", async () => {
     const { deps } = makeWfDeps();
-    deps.workflowDesign = { dirty: false, workflowId: "wf-1" };
+    deps.workflowDesign = { dirty: false, locator: WF_LOCATOR };
     const confirmWorkflowDraft = vi.fn(async () => false);
     deps.confirmWorkflowDraft = confirmWorkflowDraft;
     const tabs = createTabsStore(deps);
-    await tabs.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" });
-    await tabs.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" });
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P2);
     expect(confirmWorkflowDraft).not.toHaveBeenCalled();
     expect(tabs.activeTabId).toBe("tab-2");
 
     const noHook = makeWfDeps(); // 不注入 confirmWorkflowDraft
     const tabs2 = createTabsStore(noHook.deps);
-    await tabs2.openProjectTab(LOCAL_REF, { id: "p-1", name: "项目一" });
-    await tabs2.openProjectTab(LOCAL_REF, { id: "p-2", name: "项目二" });
+    await openTab(tabs2, LOCAL_REF, P1);
+    await openTab(tabs2, LOCAL_REF, P2);
     expect(tabs2.activeTabId).toBe("tab-2");
   });
 });

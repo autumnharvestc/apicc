@@ -5,13 +5,24 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { fileStorage, type Workspace } from "@apicc/core";
+import { createProjectSnapshot, fileStorage, ShardFailureSchema, ShardResultSchema, type Workspace } from "@apicc/core";
 
 // 本文件覆盖 M2-D1 任务 3：defaultSpawnWorkerFactory 真实子进程端到端（任务 2 审查移交的覆盖缺口）。
 // Windows 约束：spawn process.execPath + [dist/bin.js]，禁 shell:true。
 
 const BIN_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "bin.js");
-const API_PATH = "groups/demo/projects/svc/collections/api/apis/ok";
+const GROUP_ID = "00000000-0000-4000-8000-000000000002";
+const PROJECT_ID = "00000000-0000-4000-8000-000000000004";
+const COLLECTION_ID = "00000000-0000-4000-8000-000000000008";
+const OK_API_ID = "00000000-0000-4000-8000-000000000011";
+const BAD_API_ID = "00000000-0000-4000-8000-000000000012";
+const SLOW_API_ID = "00000000-0000-4000-8000-000000000013";
+const ASSERT_BAD_API_ID = "00000000-0000-4000-8000-000000000014";
+const OK_CASE_ID = "00000000-0000-4000-8000-000000000015";
+const BAD_CASE_ID = "00000000-0000-4000-8000-000000000016";
+const SLOW_CASE_ID = "00000000-0000-4000-8000-000000000017";
+const ASSERT_BAD_CASE_ID = "00000000-0000-4000-8000-000000000018";
+const API_PATH = (apiId: string) => `groups/${GROUP_ID}/projects/${PROJECT_ID}/collections/${COLLECTION_ID}/apis/${apiId}`;
 
 interface SpawnResult { code: number; stdout: string; stderr: string }
 
@@ -35,8 +46,25 @@ function readLastReport(runsDir: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(runsDir, files[files.length - 1]!), "utf8")) as Record<string, unknown>;
 }
 
+function apiAsset(id: string, name: string, path: string, caseId: string, caseName: string, assertions: Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number]["cases"][number]["assertions"] = []) {
+  return {
+    contract: {
+      formatVersion: 1 as const, id,
+      metadata: { name, description: "", tags: [], version: "1", status: "published" as const },
+      request: {
+        protocol: "http" as const, method: "GET" as const, baseUrl, path,
+        pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" as const }, body: { kind: "none" as const },
+      },
+      responses: [],
+    },
+    documentation: "",
+    cases: [{ id: caseId, name: caseName, scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions }],
+  };
+}
+
 let server: Server;
 let baseUrl = "";
+let receivedRequests = 0;
 /** 本文件各用例创建的临时工作区根（afterAll 统一清理）。 */
 const tempRoots: string[] = [];
 
@@ -48,6 +76,7 @@ beforeAll(async () => {
   // /x → 200（成功路径）；/boom → 500（全失败口径）；/slow → 8s 后才响应（触发 shard 超时崩溃）。
   // 端口动态，故每用例独立建工作区。
   server = createServer((req, res) => {
+    receivedRequests += 1;
     res.setHeader("content-type", "application/json");
     if (req.url === "/boom") {
       res.statusCode = 500;
@@ -83,51 +112,36 @@ async function makeWorkspace(name: string): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), `apicc-subproc-${name}-`));
   tempRoots.push(root);
   const ws: Workspace = {
-    id: "00000000-0000-4000-8000-000000000001", name: `subproc-${name}`, variables: {},
+    formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: `subproc-${name}`, variables: {},
     groups: [{
-      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
-        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {},
+      id: GROUP_ID, name: "demo", projects: [{
+        id: PROJECT_ID, name: "svc", variables: {}, globals: {}, components: [], models: [],
         stressPolicy: { trustedOrigins: [baseUrl] },
         workflows: [],
         environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
         collections: [{
-          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {}, folders: [],
+          id: COLLECTION_ID, name: "api", variables: {}, preOperations: [], postOperations: [], folders: [],
           apis: [
-            {
-              id: "00000000-0000-4000-8000-000000000011", name: "ok", version: "1", deprecated: false, method: "GET",
-              url: "{{baseUrl}}/x", headers: [], query: [],
-              cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "passes", scope: "base", parameters: {}, assertions: [] }],
-            },
-            {
-              id: "00000000-0000-4000-8000-000000000012", name: "bad", version: "1", deprecated: false, method: "GET",
-              url: "{{baseUrl}}/boom", headers: [], query: [],
-              cases: [{ id: "00000000-0000-4000-8000-000000000016", name: "fails", scope: "base", parameters: {}, assertions: [] }],
-            },
-            {
-              id: "00000000-0000-4000-8000-000000000014", name: "assert-bad", version: "1", deprecated: false, method: "GET",
-              url: "{{baseUrl}}/x", headers: [], query: [],
-              cases: [{ id: "00000000-0000-4000-8000-000000000018", name: "assertion-fails", scope: "base", parameters: {}, assertions: [{ id: "status", target: "status", op: "eq", expected: "201" }] }],
-            },
-            {
-              id: "00000000-0000-4000-8000-000000000013", name: "slow", version: "1", deprecated: false, method: "GET",
-              url: "{{baseUrl}}/slow", headers: [], query: [],
-              cases: [{ id: "00000000-0000-4000-8000-000000000017", name: "hangs", scope: "base", parameters: {}, assertions: [] }],
-            },
+            apiAsset(OK_API_ID, "ok", "/x", OK_CASE_ID, "passes"),
+            apiAsset(BAD_API_ID, "bad", "/boom", BAD_CASE_ID, "fails"),
+            apiAsset(ASSERT_BAD_API_ID, "assert-bad", "/x", ASSERT_BAD_CASE_ID, "assertion-fails", [{ id: "status", target: "status", op: "eq", expected: "201" }]),
+            apiAsset(SLOW_API_ID, "slow", "/slow", SLOW_CASE_ID, "hangs"),
           ],
         }],
       }],
     }],
   };
-  await fileStorage.save(root, ws);
+  const initial = await fileStorage.load(root);
+  await fileStorage.save(root, ws, { expectedRevision: initial.revision, deletions: [] });
   return root;
 }
 
 describe("run-stress 真实子进程多 shard 端到端", () => {
   it("成功合并：--shards 2 → exit 0，total=8、distributed.shards=2、perShard 各 4，p50 落在 [min,max]", async () => {
     const root = await makeWorkspace("ok");
-    const runsDir = join(root, "runs");
+    const runsDir = join(root, ".apicc", "runs");
     const res = await spawnCli(
-      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
+      ["run-stress", API_PATH(OK_API_ID), "--case", OK_CASE_ID, "--env", "dev", "--concurrency", "2",
         "--iterations", "8", "--shards", "2", "--runs-dir", runsDir],
       root,
     );
@@ -154,9 +168,9 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
 
   it("全失败传播：server 500 且 iterations=4/shards=2 → exit 1（全部失败口径），perShard 各 2 全败", async () => {
     const root = await makeWorkspace("bad");
-    const runsDir = join(root, "runs");
+    const runsDir = join(root, ".apicc", "runs");
     const res = await spawnCli(
-      ["run-stress", "groups/demo/projects/svc/collections/api/apis/bad", "--case", "00000000-0000-4000-8000-000000000016", "--env", "dev",
+      ["run-stress", API_PATH(BAD_API_ID), "--case", BAD_CASE_ID, "--env", "dev",
         "--concurrency", "2", "--iterations", "4", "--shards", "2", "--runs-dir", runsDir],
       root,
     );
@@ -179,9 +193,9 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
 
   it("HTTP 200 但断言失败：多 shard 合并 assertion 计数、verdict=false、CLI exit 1", async () => {
     const root = await makeWorkspace("assertion-failure");
-    const runsDir = join(root, "runs");
+    const runsDir = join(root, ".apicc", "runs");
     const res = await spawnCli(
-      ["run-stress", "groups/demo/projects/svc/collections/api/apis/assert-bad", "--case", "00000000-0000-4000-8000-000000000018", "--env", "dev",
+      ["run-stress", API_PATH(ASSERT_BAD_API_ID), "--case", ASSERT_BAD_CASE_ID, "--env", "dev",
         "--concurrency", "2", "--iterations", "4", "--shards", "2", "--runs-dir", runsDir],
       root,
     );
@@ -196,9 +210,9 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     // 计划原案「不存在 caseId 触发 worker 失败」与实际设计不符：run-stress 与 worker 共享
     // resolveStressTarget 用例门，父进程在协调前即拒绝。此处按真实契约断言。
     const root = await makeWorkspace("crash");
-    const runsDir = join(root, "runs");
+    const runsDir = join(root, ".apicc", "runs");
     const res = await spawnCli(
-      ["run-stress", API_PATH, "--case", "不存在", "--env", "dev", "--concurrency", "2",
+      ["run-stress", API_PATH(OK_API_ID), "--case", "不存在", "--env", "dev", "--concurrency", "2",
         "--iterations", "4", "--shards", "2", "--runs-dir", runsDir],
       root,
     );
@@ -208,12 +222,59 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     expect(existsSync(runsDir)).toBe(false);
   }, 60000);
 
+  it("fresh stress-worker 子进程重载定义版本不匹配时 config/零发送", async () => {
+    const root = await makeWorkspace("definition-changed");
+    const before = await fileStorage.load(root);
+    const originalProject = before.workspace.groups[0]!.projects[0]!;
+    const definitionRevision = createProjectSnapshot(originalProject).definitionRevision;
+    const afterWorkspace = structuredClone(before.workspace);
+    afterWorkspace.groups[0]!.projects[0]!.variables = { changedWhileWaiting: "yes" };
+    await fileStorage.save(root, afterWorkspace, { expectedRevision: before.revision, deletions: [] });
+    const requestsBefore = receivedRequests;
+
+    const result = await spawnCli([
+      "stress-worker", API_PATH(OK_API_ID), "--case", OK_CASE_ID, "--concurrency", "1", "--iterations", "1",
+      "--shard-id", "late-worker", "--workspace", root,
+      "--definition-revision", definitionRevision, "--credential-versions", "{}",
+    ], root);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("定义在压测 worker 启动前发生变化");
+    expect(result.stdout.trim().split(/\r?\n/)).toHaveLength(1);
+    expect(ShardFailureSchema.parse(JSON.parse(result.stdout.trim()))).toMatchObject({
+      protocolVersion: 2, ok: false, shardId: "late-worker",
+    });
+    expect(receivedRequests).toBe(requestsBefore);
+  }, 60000);
+
+  it("fresh no-auth worker accepts an empty credential-version table and exits cleanly", async () => {
+    const root = await makeWorkspace("no-auth-empty-versions");
+    const state = await fileStorage.load(root);
+    const project = state.workspace.groups[0]!.projects[0]!;
+    const definitionRevision = createProjectSnapshot(project).definitionRevision;
+    const requestsBefore = receivedRequests;
+
+    const result = await spawnCli([
+      "stress-worker", API_PATH(OK_API_ID), "--case", OK_CASE_ID, "--concurrency", "1", "--iterations", "1",
+      "--shard-id", "no-auth-empty-versions", "--workspace", root,
+      "--definition-revision", definitionRevision, "--credential-versions", "{}",
+    ], root);
+
+    expect(result.code).toBe(0);
+    expect(ShardResultSchema.parse(JSON.parse(result.stdout.trim()))).toMatchObject({
+      protocolVersion: 2, ok: true, shardId: "no-auth-empty-versions",
+    });
+    expect(result.stdout.trim().split(/\r?\n/)).toHaveLength(1);
+    expect(result.stderr).toBe("");
+    expect(receivedRequests).toBe(requestsBefore + 1);
+  }, 60000);
+
   it("shard 崩溃传播：/slow 挂起 + --shard-timeout 1 → 两 worker 超时判失败，exit 1 且不伪造缺 generator 报告", async () => {
     // 走专用 /slow 接口（8s 才响应），确保 1s shard 超时必然先到——不依赖进程启动快慢的偶然时序。
     const root = await makeWorkspace("timeout");
-    const runsDir = join(root, "runs");
+    const runsDir = join(root, ".apicc", "runs");
     const res = await spawnCli(
-      ["run-stress", "groups/demo/projects/svc/collections/api/apis/slow", "--case", "00000000-0000-4000-8000-000000000017", "--env", "dev",
+      ["run-stress", API_PATH(SLOW_API_ID), "--case", SLOW_CASE_ID, "--env", "dev",
         "--concurrency", "2", "--iterations", "4", "--shards", "2", "--shard-timeout", "1", "--runs-dir", runsDir],
       root,
     );

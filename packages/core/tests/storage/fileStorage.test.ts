@@ -1,416 +1,558 @@
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse, stringify } from "yaml";
 import { describe, expect, it } from "vitest";
+import { ContractWorkspaceSchema, type ContractWorkspace } from "../../src/contract/workspace.js";
 import { fileStorage } from "../../src/storage/fileStorage.js";
-import { WorkspaceSchema } from "../../src/domain/model.js";
-import type { Workspace } from "../../src/domain/model.js";
-import type { Workflow } from "../../src/workflow/model.js";
+import {
+  apiCaseFilePath,
+  apiContractFilePath,
+  apiDesignFilePath,
+  collectionMetadataFilePath,
+  modelAssetFilePath,
+  projectMetadataFilePath,
+  workspaceFilePath,
+} from "../../src/storage/paths.js";
+import type { StorageAdapter } from "../../src/plugin/types.js";
+import { workspaceFixture } from "../helpers/contractFixtures.js";
 
-// id 布局（轨一）：夹具 id 一律 UUID 形态（盘上目录/文件名取 id，非 UUID 会被 fail-fast 守卫拒绝）
-const uid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const W1 = uid(1), G1 = uid(2), P1 = uid(3), E1 = uid(4), C1 = uid(5), A1 = uid(6), T1 = uid(7), T2 = uid(8),
-  F1 = uid(9), A2 = uid(10), T3 = uid(11), T4 = uid(12), E2 = uid(13), C2 = uid(14), WF1 = uid(15),
-  ORPHAN_C = uid(20), ORPHAN_A = uid(21);
+const adapter: StorageAdapter = fileStorage;
 
-const workspace: Workspace = {
-  id: W1, name: "demo", variables: { region: "cn" }, globals: { variables: {}, query: [], headers: [] },
-  groups: [{
-    id: G1, name: "ecommerce",
-    projects: [{
-      id: P1, name: "order-service", variables: {},
-      workflows: [],
-      environments: [{ id: E1, name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" }, baseUrls: {} }],
-      collections: [{
-        id: C1, name: "order-api", variables: {}, folders: [], apis: [],
-      }],
-    }],
-  }],
-};
-
-/** id 布局下 group/project 两层盘上路径（测试内高频拼接） */
-function projectDir(root: string): string {
-  return join(root, "groups", G1, "projects", P1);
+function workspace(): ContractWorkspace {
+  return ContractWorkspaceSchema.parse(workspaceFixture());
 }
 
-describe("fileStorage", () => {
-  it("save→load roundtrip 保留结构、变量与 id", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(problems).toEqual([]);
-    expect(loaded.groups[0]?.projects[0]?.environments[0]?.variables.baseUrl).toBe("http://127.0.0.1");
-    expect(loaded.groups[0]?.projects[0]?.collections[0]?.id).toBe(C1);
+function workspaceWithNonEmptyPersistenceFields(): ContractWorkspace {
+  const value = ContractWorkspaceSchema.parse(workspaceFixture());
+  value.variables = { workspaceTier: "shared", workspaceRegion: "eu-west" };
+  const project = value.groups[0]!.projects[0]!;
+  project.variables = { projectStage: "integration", apiVersion: "v3" };
+  project.globals = {
+    query: [{ key: "tenant", value: "global-tenant", enabled: true }],
+    headers: [{ key: "X-Workspace", value: "workspace-header", enabled: true }],
+    cookies: [{ key: "session", value: "global-cookie", enabled: true }],
+    body: [{ key: "region", value: "global-region", enabled: true }],
+  };
+  const parentEnvironmentId = "00000000-0000-4000-8000-000000000032";
+  project.environments.push({
+    id: parentEnvironmentId,
+    name: "shared base",
+    variables: { environmentLayer: "base", serviceHost: "shared.example.test" },
+    baseUrls: { api: "https://shared.example.test/v3" },
   });
+  const environment = project.environments[0]!;
+  environment.extends = parentEnvironmentId;
+  environment.variables = { environmentLayer: "local", userId: "17" };
+  environment.baseUrls = { api: "https://local.example.test/v3" };
 
-  it("合法 YAML 的 BOM/引号 stressPolicy 键在 load→save 后不丢失", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    const pFile = join(projectDir(root), "project.yaml");
-    writeFileSync(pFile, `\uFEFF"id": ${P1}\n"name": order-service\n"variables": {}\n"stressPolicy":\n  "trustedOrigins":\n    - "HTTPS://Example.COM:443/path"\n`);
-    const loaded = await fileStorage.load(root);
+  const collection = project.collections[0]!;
+  collection.variables = { collectionRegion: "eu-west" };
+  collection.postOperations.push({ id: "operation-collection-after", type: "script", content: "collectionFinished = true;" });
+  collection.folders[0]!.postOperations.push({ id: "operation-folder-after", type: "script", content: "folderFinished = true;" });
+
+  const api = collection.apis[0]!;
+  api.contract.request.headers.push({
+    kind: "inline",
+    id: "00000000-0000-4000-8000-000000000034",
+    name: "X-Trace-Id",
+    schema: { kind: "scalar", type: "string" },
+    required: false,
+    enabled: true,
+    description: "trace request through storage",
+    value: "trace-17",
+  });
+  api.contract.request.query.push({
+    kind: "inline",
+    id: "00000000-0000-4000-8000-000000000035",
+    name: "include",
+    schema: { kind: "scalar", type: "string" },
+    required: false,
+    enabled: true,
+    description: "related resources",
+    value: "roles",
+  });
+  api.contract.request.auth = {
+    kind: "bearer",
+    token: { id: "credential-ref-fixture", policy: "project-scoped" },
+  };
+
+  const testCase = api.cases[0]!;
+  testCase.parameters = { userId: "17", tenant: "case-tenant" };
+  testCase.dataDriver = { sourcePath: "fixtures/users.csv", format: "csv" };
+  testCase.postOperations = [{ id: "operation-case-after", type: "script", content: "response.checked = true;" }];
+  testCase.assertions = [
+    { id: "assert-created", target: "status", op: "eq", expected: "201" },
+    { id: "assert-user-id", target: "bodyJson", op: "eq", path: "id", expected: "17" },
+  ];
+
+  const workflow = project.workflows[0]!;
+  workflow.status = "enabled";
+  workflow.nodes = [
+    { id: "node-create-user", kind: "request", apiId: api.contract.id, caseId: testCase.id, label: "Create user", position: { x: 24, y: 40 } },
+    { id: "node-finished", kind: "noop", label: "Finished", position: { x: 280, y: 40 } },
+  ];
+  workflow.edges = [{ id: "edge-create-finished", from: "node-create-user", to: "node-finished", condition: "status == 201" }];
+
+  return ContractWorkspaceSchema.parse(value);
+}
+
+function temporaryRoot(label = "storage"): string {
+  return mkdtempSync(join(tmpdir(), `apicc-${label}-`));
+}
+
+function projectLocation(value: ContractWorkspace, groupIndex = 0) {
+  const group = value.groups[groupIndex]!;
+  const project = group.projects[0]!;
+  return { group, project };
+}
+
+function collectionLocation(value: ContractWorkspace) {
+  const { group, project } = projectLocation(value);
+  const collection = project.collections[0]!;
+  return { group, project, collection, groupId: group.id, projectId: project.id, collectionId: collection.id };
+}
+
+function firstApi(value: ContractWorkspace) {
+  const { group, project, collection } = collectionLocation(value);
+  const api = collection.apis[0]!;
+  return { group, project, collection, api, location: { groupId: group.id, projectId: project.id, collectionId: collection.id, folderIds: [], apiId: api.contract.id } };
+}
+
+async function saveNew(root: string, value: ContractWorkspace) {
+  return adapter.save(root, value, { expectedRevision: "empty", deletions: [] });
+}
+
+function editYaml(path: string, edit: (document: Record<string, unknown>) => void): string {
+  const document = parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  edit(document);
+  const raw = stringify(document);
+  writeFileSync(path, raw, "utf8");
+  return raw;
+}
+
+describe("fileStorage — Task 4 contract file adapter", () => {
+  it("save→load roundtrip preserves contract structure, variables, and identity", async () => {
+    const root = temporaryRoot();
+    const source = workspaceWithNonEmptyPersistenceFields();
+    const saved = await saveNew(root, source);
+    const loaded = await adapter.load(root);
+
+    expect(loaded.workspace).toEqual(source);
     expect(loaded.problems).toEqual([]);
-    expect(loaded.workspace.groups[0]!.projects[0]!.stressPolicy).toEqual({
-      trustedOrigins: ["https://example.com"], deniedOrigins: [],
-    });
-    await fileStorage.save(root, loaded.workspace);
-    const reloaded = await fileStorage.load(root);
-    expect(reloaded.problems).toEqual([]);
-    expect(reloaded.workspace.groups[0]!.projects[0]!.stressPolicy).toEqual({
-      trustedOrigins: ["https://example.com"], deniedOrigins: [],
-    });
+    expect(loaded.readOnly).toBe(false);
+    expect(source.variables).toEqual({ workspaceTier: "shared", workspaceRegion: "eu-west" });
+    expect(loaded.workspace.variables).toEqual({ workspaceTier: "shared", workspaceRegion: "eu-west" });
+    expect(loaded.workspace.id).toBe(source.id);
+    expect(loaded.revision).toBe(saved.revision);
   });
 
-  it("项目 stressPolicy 非法时记 LoadProblem，不中断其余工作区加载", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    const pFile = join(projectDir(root), "project.yaml");
-    writeFileSync(pFile, `id: ${P1}\nname: order-service\nvariables: {}\nstressPolicy:\n  trustedOrigins:\n    - ftp://not-http.example\n`);
-    const loaded = await fileStorage.load(root);
-    expect(loaded.workspace.groups[0]!.projects).toEqual([]);
+  it("BOM and quoted stressPolicy keys remain valid and normalize across load→save", async () => {
+    const root = temporaryRoot();
+    const source = workspace();
+    await saveNew(root, source);
+    const { group, project } = projectLocation(source);
+    const metadataPath = join(root, projectMetadataFilePath(group.id, project.id));
+    const document = parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+    document.stressPolicy = { trustedOrigins: ["HTTPS://Example.COM:443/path"], deniedOrigins: [] };
+    const quoted = stringify(document).replace("stressPolicy:", '"stressPolicy":').replace("trustedOrigins:", '"trustedOrigins":');
+    writeFileSync(metadataPath, `\uFEFF${quoted}`, "utf8");
+
+    const loaded = await adapter.load(root);
+    expect(loaded.problems).toEqual([]);
+    expect(loaded.workspace.groups[0]!.projects[0]!.stressPolicy.trustedOrigins).toEqual(["https://example.com"]);
+    const saved = await adapter.save(root, loaded.workspace, { expectedRevision: loaded.revision, deletions: [] });
+    const reloaded = await adapter.load(root);
+    expect(reloaded.workspace.groups[0]!.projects[0]!.stressPolicy.trustedOrigins).toEqual(["https://example.com"]);
+    expect(reloaded.revision).toBe(saved.revision);
+  });
+
+  it("invalid project stressPolicy is isolated while another project remains readable", async () => {
+    const root = temporaryRoot();
+    const source = workspace();
+    const otherGroup = structuredClone(source.groups[0]!);
+    otherGroup.id = "00000000-0000-4000-8000-000000000024";
+    otherGroup.name = "healthy group";
+    source.groups.push(otherGroup);
+    await saveNew(root, source);
+    const { project } = projectLocation(source);
+    const invalidPath = join(root, projectMetadataFilePath(source.groups[0]!.id, project.id));
+    const bytes = editYaml(invalidPath, (document) => {
+      document.stressPolicy = { trustedOrigins: ["ftp://not-http.example"], deniedOrigins: [] };
+    });
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
     expect(loaded.problems.some((problem) => problem.file.endsWith("project.yaml"))).toBe(true);
-    expect(loaded.problems.some((problem) => problem.message.includes("stressPolicy"))).toBe(true);
+    expect(loaded.workspace.groups[0]!.projects).toEqual([]);
+    expect(loaded.workspace.groups[1]!.projects[0]!.name).toBe(project.name);
+    expect(readFileSync(invalidPath, "utf8")).toBe(bytes);
   });
 
-  it("接口 design.md 与用例环境后缀落盘并读回", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    const ws: Workspace = {
-      ...workspace,
-      groups: [{
-        ...workspace.groups[0]!, projects: [{
-          ...workspace.groups[0]!.projects[0]!, collections: [{
-            id: C1, name: "order-api", variables: {}, folders: [],
-            apis: [{
-              id: A1, name: "create-order", version: "1.0.0", deprecated: false,
-              method: "POST", url: "{{baseUrl}}/orders", headers: [], query: [],
-              design: "# 创建订单设计",
-              cases: [
-                { id: T1, name: "ok", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
-                { id: T2, name: "ok", scope: "sit", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
-              ],
-            }],
-          }],
-        }],
-      }],
-    };
-    await fileStorage.save(root, ws);
-    const { workspace: loaded } = await fileStorage.load(root);
-    const api = loaded.groups[0]!.projects[0]!.collections[0]!.apis[0]!;
-    expect(api.design).toBe("# 创建订单设计");
-    expect(api.cases.map((c) => c.scope).sort()).toEqual(["base", "sit"]);
+  it("stores API design and scoped cases at the canonical case paths", async () => {
+    const root = temporaryRoot();
+    const source = workspace();
+    const { api, location } = firstApi(source);
+    api.cases.push({ ...api.cases[0]!, scope: "sit", name: "staging success" });
+    await saveNew(root, source);
+
+    const loaded = await adapter.load(root);
+    const loadedApi = loaded.workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!;
+    const designPath = apiDesignFilePath(location);
+    const scopedCasePath = apiCaseFilePath(location, "case-create-user", "sit");
+    expect(loadedApi.documentation).toBe("# Create user\n\nCreates a user.");
+    expect(loadedApi.cases.map((testCase) => testCase.scope)).toEqual(["base", "sit"]);
+    expect(readFileSync(join(root, designPath), "utf8")).toContain("Creates a user.");
+    expect(parse(readFileSync(join(root, scopedCasePath), "utf8")).scope).toBe("sit");
   });
 
-  it("坏 YAML 隔离为 problem，不阻塞其余加载", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    const envFile = join(projectDir(root), "environments", `${E1}.yaml`);
-    writeFileSync(envFile, "id: [broken");
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(loaded.groups[0]!.projects[0]!.environments).toEqual([]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]!.file).toBe(
-      join("groups", G1, "projects", P1, "environments", `${E1}.yaml`),
-    );
+  it("isolates a malformed API file, keeps other assets readable, and preserves its bytes", async () => {
+    const root = temporaryRoot();
+    const source = workspace();
+    await saveNew(root, source);
+    const { api, location } = firstApi(source);
+    const apiPath = join(root, apiContractFilePath(location));
+    const raw = "contract: [malformed";
+    writeFileSync(apiPath, raw, "utf8");
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections[0]!.apis).toEqual([]);
+    expect(loaded.workspace.groups[0]!.projects[0]!.models).toHaveLength(1);
+    expect(loaded.problems.some((problem) => problem.file === apiContractFilePath(location))).toBe(true);
+    expect(readFileSync(apiPath, "utf8")).toBe(raw);
   });
 
-  it("缺少 apicc.workspace.yaml 时抛错", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-empty-"));
-    await expect(fileStorage.load(root)).rejects.toThrow(/apicc\.workspace\.yaml/);
+  it("missing workspace metadata returns a read-only load state instead of throwing", async () => {
+    const root = temporaryRoot("missing-root");
+    const loaded = await adapter.load(root);
+
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.revision).toBe("empty");
+    expect(loaded.problems.some((problem) => problem.file === workspaceFilePath())).toBe(true);
   });
 
-  it("旧名称制布局 fail-fast 拒绝打开（轨一守卫）", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    // 手工造一个名称制目录：group.yaml 存在但目录名非 UUID
-    mkdirSync(join(root, "groups", "ecommerce"), { recursive: true });
-    writeFileSync(join(root, "groups", "ecommerce", "group.yaml"), `id: ${G1}\nname: ecommerce\n`);
-    writeFileSync(join(root, "apicc.workspace.yaml"), `id: ${W1}\nname: demo\nvariables: {}\n`);
-    await expect(fileStorage.load(root)).rejects.toThrow(/旧版布局/);
+  it("legacy name-based directories are diagnosed read-only without rewriting their bytes", async () => {
+    const root = temporaryRoot("legacy-layout");
+    await saveNew(root, workspace());
+    const legacyDirectory = join(root, "groups", "ecommerce");
+    mkdirSync(legacyDirectory, { recursive: true });
+    const legacyPath = join(legacyDirectory, "group.yaml");
+    const legacyBytes = `id: 00000000-0000-4000-8000-000000000002\nname: ecommerce\n`;
+    writeFileSync(legacyPath, legacyBytes, "utf8");
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.problems.some((problem) => problem.message.includes("UUID"))).toBe(true);
+    expect(readFileSync(legacyPath, "utf8")).toBe(legacyBytes);
   });
 
-  it("collection.yaml 未知字段经 zod schema 校验记 problem 并跳过（回归 C2）", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    const cFile = join(projectDir(root), "collections", C1, "collection.yaml");
-    writeFileSync(cFile, `id: ${C1}\nname: order-api\nnonsense: 1\n`);
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(loaded.groups[0]!.projects[0]!.collections).toEqual([]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]!.file).toContain(join("collections", C1, "collection.yaml"));
-    expect(problems[0]!.message).toContain("nonsense");
+  it("unknown collection fields are strict problems and the original file stays intact", async () => {
+    const root = temporaryRoot("unknown-collection");
+    const source = workspace();
+    await saveNew(root, source);
+    const { group, project, collection } = collectionLocation(source);
+    const relativePath = collectionMetadataFilePath({ groupId: group.id, projectId: project.id, collectionId: collection.id });
+    const absolutePath = join(root, relativePath);
+    const raw = editYaml(absolutePath, (document) => { document.futureField = true; });
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections).toEqual([]);
+    expect(loaded.problems.some((problem) => problem.file === relativePath && problem.message.includes("unknown field"))).toBe(true);
+    expect(readFileSync(absolutePath, "utf8")).toBe(raw);
   });
 
-  it("collection.yaml 省略可选字段时以 schema 默认值构建域对象（回归 C2）", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    const cFile = join(projectDir(root), "collections", C1, "collection.yaml");
-    writeFileSync(cFile, `id: ${C1}\nname: order-api\n`);
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(problems).toEqual([]);
-    const collection = loaded.groups[0]!.projects[0]!.collections[0]!;
-    expect(collection.variables).toEqual({});
-    expect(collection.apis).toEqual([]);
-    expect(collection.folders).toEqual([]);
+  it("omitted collection defaults are supplied by the contract schema", async () => {
+    const root = temporaryRoot("collection-defaults");
+    const source = workspace();
+    await saveNew(root, source);
+    const { group, project, collection } = collectionLocation(source);
+    const relativePath = collectionMetadataFilePath({ groupId: group.id, projectId: project.id, collectionId: collection.id });
+    editYaml(join(root, relativePath), (document) => {
+      delete document.variables;
+      delete document.preOperations;
+      delete document.postOperations;
+    });
+
+    const loaded = await adapter.load(root);
+    const readCollection = loaded.workspace.groups[0]!.projects[0]!.collections[0]!;
+    expect(loaded.problems).toEqual([]);
+    expect(loaded.readOnly).toBe(false);
+    expect(readCollection.variables).toEqual({});
+    expect(readCollection.preOperations).toEqual([]);
+    expect(readCollection.postOperations).toEqual([]);
+    expect(readCollection.apis).toHaveLength(1);
   });
 
-  it("api.yaml 带未知字段同样记 problem（schema 校验覆盖全部文件类型）", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    const apiDir = join(projectDir(root), "collections", C1, "apis", A1);
-    mkdirSync(join(apiDir, "cases"), { recursive: true });
-    writeFileSync(join(apiDir, "api.yaml"), `id: ${A1}\nname: broken-api\nmethod: GET\nurl: /\nspellingMistake: true\n`);
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(loaded.groups[0]!.projects[0]!.collections[0]!.apis).toEqual([]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]!.message).toContain("spellingMistake");
+  it("unknown API contract fields are rejected without dropping sibling metadata", async () => {
+    const root = temporaryRoot("unknown-api");
+    const source = workspace();
+    await saveNew(root, source);
+    const { api, location } = firstApi(source);
+    const relativePath = apiContractFilePath(location);
+    const absolutePath = join(root, relativePath);
+    const raw = editYaml(absolutePath, (document) => { document.futureField = true; });
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections).toHaveLength(1);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections[0]!.apis).toEqual([]);
+    expect(loaded.problems.some((problem) => problem.file === relativePath)).toBe(true);
+    expect(readFileSync(absolutePath, "utf8")).toBe(raw);
+    expect(api.contract.metadata.name).toBe("Create user");
   });
 
-  it("workspace.yaml 自身 schema 失败保持抛错语义", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    writeFileSync(join(root, "apicc.workspace.yaml"), `id: ${W1}\nname: demo\nbogus: 1\n`);
-    await expect(fileStorage.load(root)).rejects.toThrow(/apicc\.workspace\.yaml/);
+  it("invalid workspace metadata is read-only and retained byte-for-byte", async () => {
+    const root = temporaryRoot("invalid-workspace");
+    await saveNew(root, workspace());
+    const relativePath = workspaceFilePath();
+    const absolutePath = join(root, relativePath);
+    const raw = editYaml(absolutePath, (document) => { document.futureField = "unsupported"; });
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.problems.some((problem) => problem.file === relativePath)).toBe(true);
+    expect(readFileSync(absolutePath, "utf8")).toBe(raw);
   });
 
-  it("collections 下缺 collection.yaml 的子目录记 problem（回归 I1，与 apis 孤儿目录语义对齐）", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    // 孤儿目录名也须是 UUID（id 布局守卫先行），缺 collection.yaml 才走到既有 problem 语义
-    mkdirSync(join(projectDir(root), "collections", ORPHAN_C));
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(loaded.groups[0]!.projects[0]!.collections.map((c) => c.name)).toEqual(["order-api"]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]!.file).toContain(join("collections", ORPHAN_C, "collection.yaml"));
-    expect(problems[0]!.message).toContain("缺少 collection.yaml");
+  it("a collection directory missing collection.yaml is reported without hiding valid collections", async () => {
+    const root = temporaryRoot("orphan-collection");
+    const source = workspace();
+    await saveNew(root, source);
+    const { group, project } = projectLocation(source);
+    const orphanId = "00000000-0000-4000-8000-000000000027";
+    const orphanDirectory = join(root, "groups", group.id, "projects", project.id, "collections", orphanId);
+    mkdirSync(orphanDirectory, { recursive: true });
+    writeFileSync(join(orphanDirectory, "unexpected.txt"), "orphan", "utf8");
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections.map((item) => item.id)).toEqual([project.collections[0]!.id]);
+    expect(loaded.problems.some((problem) => problem.file.endsWith(`/collections/${orphanId}/collection.yaml`))).toBe(true);
   });
 
-  it("folder 层级落盘并读回（folder 内 api 的用例与设计完整保留）", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    const ws: Workspace = {
-      ...workspace,
-      groups: [{
-        ...workspace.groups[0]!, projects: [{
-          ...workspace.groups[0]!.projects[0]!, collections: [{
-            id: C1, name: "order-api", variables: {},
-            folders: [{
-              id: F1, name: "支付", apis: [{
-                id: A2, name: "pay-order", version: "1.0.0", deprecated: false,
-                method: "POST", url: "{{baseUrl}}/pay", headers: [], query: [],
-                design: "# 支付设计",
-                cases: [
-                  { id: T3, name: "ok", scope: "base", parameters: {}, assertions: [] },
-                  { id: T4, name: "ok", scope: "sit", parameters: {}, assertions: [] },
-                ],
-              }],
-            }],
-            apis: [],
-          }],
-        }],
-      }],
-    };
-    await fileStorage.save(root, ws);
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(problems).toEqual([]);
-    const collection = loaded.groups[0]!.projects[0]!.collections[0]!;
-    expect(collection.folders[0]!.id).toBe(F1);
-    expect(collection.folders[0]!.name).toBe("支付");
-    const api = collection.folders[0]!.apis[0]!;
-    expect(api.id).toBe(A2);
-    expect(api.design).toBe("# 支付设计");
-    expect(api.cases.map((c) => c.scope).sort()).toEqual(["base", "sit"]);
+  it("deep folders, nested APIs, design documents, and scoped cases round-trip", async () => {
+    const root = temporaryRoot("nested-folder");
+    const source = workspace();
+    const { collection } = collectionLocation(source);
+    const nestedApi = structuredClone(collection.apis[0]!);
+    nestedApi.contract.id = "00000000-0000-4000-8000-000000000026";
+    nestedApi.contract.metadata.name = "Nested API";
+    nestedApi.cases = [{ ...nestedApi.cases[0]!, scope: "sit", name: "nested staging" }];
+    collection.folders[0]!.folders[0]!.apis.push(nestedApi);
+    const saved = await saveNew(root, source);
+    const loaded = await adapter.load(root);
+
+    expect(loaded.problems).toEqual([]);
+    expect(loaded.readOnly).toBe(false);
+    expect(loaded.workspace).toEqual(source);
+    expect(loaded.revision).toBe(saved.revision);
   });
 
-  it("folder.yaml 坏文件隔离为 problem，不阻塞其余加载", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    const ws: Workspace = {
-      ...workspace,
-      groups: [{
-        ...workspace.groups[0]!, projects: [{
-          ...workspace.groups[0]!.projects[0]!, collections: [{
-            id: C1, name: "order-api", variables: {},
-            folders: [{ id: F1, name: "支付", apis: [] }],
-            apis: [],
-          }],
-        }],
-      }],
-    };
-    await fileStorage.save(root, ws);
-    const folderFile = join(projectDir(root), "collections", C1, "folders", F1, "folder.yaml");
-    writeFileSync(folderFile, "id: [broken");
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(loaded.groups[0]!.projects[0]!.collections[0]!.folders).toEqual([]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]!.file).toBe(
-      join("groups", G1, "projects", P1, "collections", C1, "folders", F1, "folder.yaml"),
-    );
+  it("malformed folder metadata is isolated while the collection API still loads", async () => {
+    const root = temporaryRoot("bad-folder");
+    const source = workspace();
+    await saveNew(root, source);
+    const { group, project, collection } = collectionLocation(source);
+    const folderId = collection.folders[0]!.id;
+    const relativePath = `groups/${group.id}/projects/${project.id}/collections/${collection.id}/folders/${folderId}/folder.yaml`;
+    const absolutePath = join(root, relativePath);
+    const raw = "folders: [broken";
+    writeFileSync(absolutePath, raw, "utf8");
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections[0]!.folders).toEqual([]);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections[0]!.apis).toHaveLength(1);
+    expect(loaded.problems.some((problem) => problem.file === relativePath)).toBe(true);
+    expect(readFileSync(absolutePath, "utf8")).toBe(raw);
   });
 
-  it("目录枚举按名称字典序排序，与创建顺序无关", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    const ws: Workspace = {
-      ...workspace,
-      groups: [{
-        ...workspace.groups[0]!, projects: [{
-          ...workspace.groups[0]!.projects[0]!,
-          environments: [
-            { id: E2, name: "zeta", extends: undefined, variables: {}, baseUrls: {} },
-            { id: E1, name: "alpha", extends: undefined, variables: {}, baseUrls: {} },
-          ],
-          collections: [
-            { id: C2, name: "zeta-api", variables: {}, folders: [], apis: [] },
-            { id: C1, name: "alpha-api", variables: {}, folders: [], apis: [] },
-          ],
-        }],
-      }],
-    };
-    await fileStorage.save(root, ws);
-    const { workspace: loaded } = await fileStorage.load(root);
-    const project = loaded.groups[0]!.projects[0]!;
-    expect(project.environments.map((e) => e.name)).toEqual(["alpha", "zeta"]);
-    expect(project.collections.map((c) => c.name)).toEqual(["alpha-api", "zeta-api"]);
+  it("metadata-declared order is preserved instead of sorting by display name", async () => {
+    const root = temporaryRoot("metadata-order");
+    const source = workspace();
+    const project = source.groups[0]!.projects[0]!;
+    const second = structuredClone(project.collections[0]!);
+    second.id = "00000000-0000-4000-8000-000000000028";
+    second.name = "AAA collection";
+    second.apis = [];
+    second.folders = [];
+    project.collections[0]!.name = "Zulu collection";
+    project.collections = [project.collections[0]!, second];
+    await saveNew(root, source);
+
+    const loaded = await adapter.load(root);
+    expect(loaded.problems).toEqual([]);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections.map((item) => item.name))
+      .toEqual(["Zulu collection", "AAA collection"]);
   });
 
-  it("缺少 api.yaml 的孤儿 api 目录记 problem 而非静默丢弃", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    await fileStorage.save(root, workspace);
-    const orphanDir = join(projectDir(root), "collections", C1, "apis", ORPHAN_A);
-    mkdirSync(join(orphanDir, "cases"), { recursive: true });
-    writeFileSync(join(orphanDir, "cases", "x.yaml"), `id: ${T1}`);
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(loaded.groups[0]!.projects[0]!.collections[0]!.apis).toEqual([]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]!.file).toBe(
-      join("groups", G1, "projects", P1, "collections", C1, "apis", ORPHAN_A, "api.yaml"),
-    );
-    expect(problems[0]!.message).toContain("api.yaml");
-    expect(problems[0]!.message).toContain("跳过");
+  it("an API directory missing api.yaml is reported and not silently added", async () => {
+    const root = temporaryRoot("orphan-api");
+    const source = workspace();
+    await saveNew(root, source);
+    const { group, project, collection } = collectionLocation(source);
+    const orphanId = "00000000-0000-4000-8000-000000000029";
+    const orphanDirectory = join(root, "groups", group.id, "projects", project.id, "collections", collection.id, "apis", orphanId);
+    mkdirSync(join(orphanDirectory, "cases"), { recursive: true });
+    writeFileSync(join(orphanDirectory, "cases", "unexpected.txt"), "orphan", "utf8");
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.workspace.groups[0]!.projects[0]!.collections[0]!.apis.map((api) => api.contract.id))
+      .toEqual([collection.apis[0]!.contract.id]);
+    expect(loaded.problems.some((problem) => problem.file.endsWith(`/apis/${orphanId}/api.yaml`))).toBe(true);
   });
 
-  it("全字段 save→load 深等价（toEqual + strict parse）", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-ws-"));
-    const ws: Workspace = {
-      id: W1, name: "demo", variables: { region: "cn", env: "prod" },
-      // M10 弃用字段：schema 保留仅为旧文件读兼容（parse default 必填出现在输出），运行器/写入不再使用
-      globals: { variables: {}, query: [], headers: [] },
-      groups: [{
-        id: G1, name: "ecommerce",
-        projects: [{
-          id: P1, name: "order-service", variables: { timeoutMs: "3000" },
-          globals: { query: [{ key: "gq", value: "1", enabled: true }], headers: [], cookies: [{ key: "sid", value: "abc", enabled: true }], body: [] },
-          workflows: [],
-          environments: [
-            { id: E1, name: "dev", extends: undefined, variables: { baseUrl: "http://127.0.0.1" }, baseUrls: { [C1]: "http://b1" } },
-            { id: E2, name: "sit", extends: "dev", variables: { baseUrl: "http://sit.example" }, baseUrls: {} },
-          ],
-          collections: [{
-            id: C1, name: "order-api", variables: { pageSize: "20" },
-            preOperations: [{ id: "c1-pre-legacy", type: "script", content: "pm.variables.set('k','v')" }],
-            postOperations: [{ id: "c1-post-legacy", type: "script", content: "pm.assert(true,'ok')" }],
-            folders: [{
-              id: F1, name: "支付", folders: [], preOperations: [], postOperations: [], apis: [{
-                id: A2, name: "pay-order", version: "1.0.0", deprecated: false,
-                method: "POST", protocol: "http", url: "{{baseUrl}}/pay",
-                headers: [{ key: "X-Sign", value: "s", enabled: true }],
-                query: [], body: { kind: "json", content: '{"oid":"1"}' },
-                auth: { type: "bearer", token: "tk", placement: "header" },
-                design: "# 支付设计",
-                cases: [{
-                  id: T3, name: "ok", scope: "base", parameters: { oid: "1" },
-                  dataDriver: { sourcePath: "d.csv", format: "csv" },
-                  preScript: "pm.variables.set('x','1')", postScript: "pm.assert(true,'y')",
-                  preOperations: [{ id: "t3-pre-legacy", type: "script", content: "pm.variables.set('x','1')" }],
-                  postOperations: [{ id: "t3-post-legacy", type: "script", content: "pm.assert(true,'y')" }],
-                  assertions: [{ id: "as1", target: "status", op: "eq", expected: "200" }],
-                }],
-              }],
-            }],
-            apis: [{
-              id: A1, name: "create-order", version: "1.2.3", deprecated: true,
-              method: "POST", protocol: "http", url: "{{baseUrl}}/orders",
-              headers: [{ key: "X-Trace", value: "t-1", enabled: true }],
-              query: [{ key: "dry", value: "1", enabled: false }],
-              body: { kind: "json", content: '{"sku":"A1"}' },
-              auth: { type: "bearer", token: "tk", placement: "header" },
-              design: "# 创建订单设计",
-              cases: [
-                { id: T1, name: "ok", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
-                { id: T2, name: "ok", scope: "sit", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
-              ],
-            }],
-          }],
-        }],
-      }],
-    };
-    await fileStorage.save(root, ws);
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(problems).toEqual([]);
-    // toEqual 忽略 undefined 属性 → 语义等价（undefined 字段 vs 缺失字段）
-    // 数组顺序由目录名承载（字典序），深比较前按 id 归一，不削弱字段级比较
-    const byId = <T extends { id: string }>(xs: T[]): T[] => [...xs].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const norm = (w: Workspace): Workspace => {
-      const c = JSON.parse(JSON.stringify(w)) as Workspace;
-      for (const g of c.groups) for (const p of g.projects) {
-        p.environments = byId(p.environments);
-        p.collections = byId(p.collections);
-        for (const col of p.collections) {
-          col.folders = byId(col.folders);
-          for (const f of col.folders) { f.apis = byId(f.apis); for (const a of f.apis) a.cases = byId(a.cases); }
-          col.apis = byId(col.apis);
-          for (const a of col.apis) a.cases = byId(a.cases);
-        }
-      }
-      return c;
-    };
-    expect(norm(loaded)).toEqual(norm(ws));
-    expect(() => WorkspaceSchema.parse(loaded)).not.toThrow();
+  it("full contract fields round-trip through strict workspace validation", async () => {
+    const root = temporaryRoot("full-contract");
+    const source = workspaceWithNonEmptyPersistenceFields();
+    const saved = await saveNew(root, source);
+    const loaded = await adapter.load(root);
+    const sourceProject = source.groups[0]!.projects[0]!;
+    const loadedProject = loaded.workspace.groups[0]!.projects[0]!;
+    const sourceApi = sourceProject.collections[0]!.apis[0]!;
+    const loadedApi = loadedProject.collections[0]!.apis[0]!;
+    const sourceCase = sourceApi.cases[0]!;
+    const loadedCase = loadedApi.cases[0]!;
+
+    expect(loaded.workspace).toEqual(source);
+    expect(() => ContractWorkspaceSchema.parse(loaded.workspace)).not.toThrow();
+    expect(loaded.workspace.variables).toEqual({ workspaceTier: "shared", workspaceRegion: "eu-west" });
+    expect(loadedProject.variables).toEqual({ projectStage: "integration", apiVersion: "v3" });
+    expect(loadedProject.globals).toEqual({
+      query: [{ key: "tenant", value: "global-tenant", enabled: true }],
+      headers: [{ key: "X-Workspace", value: "workspace-header", enabled: true }],
+      cookies: [{ key: "session", value: "global-cookie", enabled: true }],
+      body: [{ key: "region", value: "global-region", enabled: true }],
+    });
+    expect(loadedProject.environments[0]).toEqual({
+      id: "00000000-0000-4000-8000-000000000019",
+      name: "local",
+      extends: "00000000-0000-4000-8000-000000000032",
+      variables: { environmentLayer: "local", userId: "17" },
+      baseUrls: { api: "https://local.example.test/v3" },
+    });
+    expect(loadedProject.collections[0]!.variables).toEqual({ collectionRegion: "eu-west" });
+    expect(loadedProject.collections[0]!.postOperations).toEqual([
+      { id: "operation-collection-after", type: "script", content: "collectionFinished = true;" },
+    ]);
+    expect(loadedApi.contract.request.headers[0]).toMatchObject({ name: "X-Trace-Id", value: "trace-17" });
+    expect(loadedApi.contract.request.query[0]).toMatchObject({ name: "include", value: "roles" });
+    expect(loadedApi.contract.request.auth).toEqual({
+      kind: "bearer",
+      token: { id: "credential-ref-fixture", policy: "project-scoped" },
+    });
+    expect(loadedCase.parameters).toEqual({ userId: "17", tenant: "case-tenant" });
+    expect(loadedCase.dataDriver).toEqual({ sourcePath: "fixtures/users.csv", format: "csv" });
+    expect(loadedCase.postOperations).toEqual([
+      { id: "operation-case-after", type: "script", content: "response.checked = true;" },
+    ]);
+    expect(loadedCase.assertions).toEqual([
+      { id: "assert-created", target: "status", op: "eq", expected: "201" },
+      { id: "assert-user-id", target: "bodyJson", op: "eq", path: "id", expected: "17" },
+    ]);
+    expect(loadedProject.components).toEqual(sourceProject.components);
+    expect(loaded.revision).toBe(saved.revision);
+  });
+
+  it("persists workflows inline in project.yaml and reloads the same project view", async () => {
+    const root = temporaryRoot("inline-workflows");
+    const source = workspaceWithNonEmptyPersistenceFields();
+    const { group, project } = projectLocation(source);
+    const metadataPath = projectMetadataFilePath(group.id, project.id);
+    const saved = await saveNew(root, source);
+    const metadata = parse(readFileSync(join(root, metadataPath), "utf8")) as Record<string, unknown>;
+    const loaded = await adapter.load(root);
+    const workflow = loaded.workspace.groups[0]!.projects[0]!.workflows[0]!;
+    const api = loaded.workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!;
+
+    expect(metadata.workflows).toEqual(project.workflows);
+    expect(existsSync(join(root, "groups", group.id, "projects", project.id, "workflows"))).toBe(false);
+    expect(loaded.workspace.groups[0]!.projects[0]!.workflows).toEqual(project.workflows);
+    expect(workflow.nodes).toEqual([
+      { id: "node-create-user", kind: "request", apiId: api.contract.id, caseId: "case-create-user", label: "Create user", position: { x: 24, y: 40 } },
+      { id: "node-finished", kind: "noop", label: "Finished", position: { x: 280, y: 40 } },
+    ]);
+    expect(workflow.edges).toEqual([
+      { id: "edge-create-finished", from: "node-create-user", to: "node-finished", condition: "status == 201" },
+    ]);
+    expect(api.cases[0]!.parameters).toEqual({ userId: "17", tenant: "case-tenant" });
+    expect(loaded.revision).toBe(saved.revision);
+  });
+
+  it("invalid inline workflow data marks the project read-only and preserves project.yaml", async () => {
+    const root = temporaryRoot("bad-inline-workflow");
+    const source = workspace();
+    await saveNew(root, source);
+    const { group, project } = projectLocation(source);
+    const relativePath = projectMetadataFilePath(group.id, project.id);
+    const absolutePath = join(root, relativePath);
+    const raw = editYaml(absolutePath, (document) => {
+      document.workflows = [{ id: "bad-workflow", name: "Broken", status: "unknown", nodes: [], edges: [] }];
+    });
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.workspace.groups[0]!.projects).toEqual([]);
+    expect(loaded.problems.some((problem) => problem.file === relativePath)).toBe(true);
+    expect(readFileSync(absolutePath, "utf8")).toBe(raw);
   });
 });
 
-describe("fileStorage workflows 读写（M2-A）", () => {
-  const workflow: Workflow = {
-    id: WF1, name: "下单流程", status: "draft",
-    nodes: [{ id: "n1", kind: "request", apiId: A1, caseId: T1 }],
-    edges: [],
-  };
+describe("StorageAdapter contract workspace persistence", () => {
+  it("returns the current revision through load and rejects stale saves", async () => {
+    const root = temporaryRoot("storage-revision");
+    const source = workspace();
 
-  it("save 落盘 projects/<pId>/workflows/<wfId>/workflow.yaml 并读回", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-wfio-"));
-    const ws: Workspace = {
-      ...workspace,
-      groups: [{
-        ...workspace.groups[0]!, projects: [{
-          ...workspace.groups[0]!.projects[0]!, workflows: [workflow],
-        }],
-      }],
-    };
-    await fileStorage.save(root, ws);
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(problems).toEqual([]);
-    const loadedWf = loaded.groups[0]!.projects[0]!.workflows[0]!;
-    expect(loadedWf.name).toBe("下单流程");
-    expect(loadedWf.nodes).toEqual([{ id: "n1", kind: "request", apiId: A1, caseId: T1 }]);
-    expect(loadedWf.edges).toEqual([]);
+    const saved = await saveNew(root, source);
+    const loaded = await adapter.load(root);
+
+    expect(saved.revision).toMatch(/^[0-9a-f]{64}$/);
+    expect(loaded.workspace).toEqual(source);
+    expect(loaded.problems).toEqual([]);
+    expect(loaded.readOnly).toBe(false);
+    expect(loaded.revision).toBe(saved.revision);
+    await expect(adapter.save(root, source, { expectedRevision: "empty", deletions: [] }))
+      .rejects.toThrow("Workspace revision conflict");
   });
 
-  it("坏 workflow.yaml 隔离为 problem", async () => {
-    const root = mkdtempSync(join(tmpdir(), "apicc-wfio2-"));
-    const ws: Workspace = {
-      ...workspace,
-      groups: [{
-        ...workspace.groups[0]!, projects: [{
-          ...workspace.groups[0]!.projects[0]!, workflows: [workflow],
-        }],
-      }],
-    };
-    await fileStorage.save(root, ws);
-    writeFileSync(
-      join(projectDir(root), "workflows", WF1, "workflow.yaml"),
-      "id: [broken",
-    );
-    const { workspace: loaded, problems } = await fileStorage.load(root);
-    expect(loaded.groups[0]!.projects[0]!.workflows).toEqual([]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]!.file).toBe(
-      join("groups", G1, "projects", P1, "workflows", WF1, "workflow.yaml"),
-    );
+  it("requires explicit deletions when the complete replacement view removes a model", async () => {
+    const root = temporaryRoot("storage-delete");
+    const original = workspace();
+    const { group, project } = projectLocation(original);
+    const modelPath = modelAssetFilePath({ groupId: group.id, projectId: project.id }, project.models[0]!.id);
+    const saved = await saveNew(root, original);
+    const replacement = structuredClone(original);
+    replacement.groups[0]!.projects[0]!.models = [];
+
+    await expect(adapter.save(root, replacement, { expectedRevision: saved.revision, deletions: [] }))
+      .rejects.toThrow("Write plan does not produce a structurally valid workspace");
+    expect(readFileSync(join(root, modelPath), "utf8")).toContain("id:");
+
+    const committed = await adapter.save(root, replacement, { expectedRevision: saved.revision, deletions: [modelPath] });
+    const loaded = await adapter.load(root);
+    expect(committed.revision).not.toBe(saved.revision);
+    expect(loaded.workspace.groups[0]!.projects[0]!.models).toEqual([]);
+    expect(loaded.readOnly).toBe(false);
+  });
+
+  it("reports malformed UTF-8 as read-only and preserves the original bytes on save", async () => {
+    const root = temporaryRoot("storage-readonly");
+    const source = workspace();
+    await saveNew(root, source);
+    const { api, location } = firstApi(source);
+    const designPath = apiDesignFilePath(location);
+    const originalBytes = Buffer.from([0xc3, 0x28, 0xff]);
+    writeFileSync(join(root, designPath), originalBytes);
+
+    const loaded = await adapter.load(root);
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.problems.some((problem) => problem.file === designPath)).toBe(true);
+    await expect(adapter.save(root, source, { expectedRevision: loaded.revision, deletions: [] }))
+      .rejects.toThrow("Workspace has unresolved load or recovery problems and is read-only");
+    expect(readFileSync(join(root, designPath))).toEqual(originalBytes);
+    expect(api.contract.id).toBe("00000000-0000-4000-8000-000000000001");
   });
 });

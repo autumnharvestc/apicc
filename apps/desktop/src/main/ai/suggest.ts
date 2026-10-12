@@ -9,7 +9,8 @@
  * globalThis.fetch，测试注入替身——CI 零真实网络纪律，D7）。
  * 本模块不直接 import electron，保证 vitest（node 环境）可加载。
  */
-import { createAiProvider, suggestCases, type AiSuggestedCase, type ApiDefinition } from "@apicc/core";
+import { createAiProvider, suggestCases, type AiSuggestedCase, type ApiAsset, type ProjectAssetContextReadView } from "@apicc/core";
+import type { ApiLocator } from "../../shared/locations.js";
 import type { AiKeyStore } from "./config.js";
 
 export interface AiRuntimeDeps {
@@ -19,7 +20,8 @@ export interface AiRuntimeDeps {
   fetch?: typeof fetch;
 }
 
-export interface AiSuggestRequest { apiId: string; baseUrl: string; model: string }
+export interface AiSuggestRequest { locator: ApiLocator; baseUrl: string; model: string }
+export interface LocatedAiAsset { api: ApiAsset; context: ProjectAssetContextReadView }
 
 /**
  * 组装 provider 配置：key 必须已存（缺失 → 可读错误指引打开 AI 设置）；baseUrl/model
@@ -35,12 +37,12 @@ function requireProviderConfig(deps: AiRuntimeDeps, baseUrl: string, model: stri
 export async function runAiSuggest(
   deps: AiRuntimeDeps,
   request: AiSuggestRequest,
-  locateApi: (apiId: string) => ApiDefinition | undefined,
+  locateApi: (locator: ApiLocator) => LocatedAiAsset | undefined,
 ): Promise<AiSuggestedCase[]> {
-  const api = locateApi(request.apiId);
-  if (!api) throw new Error(`未找到接口: ${request.apiId}`);
+  const located = locateApi(request.locator);
+  if (!located) throw new Error(`未找到接口: ${JSON.stringify(request.locator)}`);
   const provider = createAiProvider(requireProviderConfig(deps, request.baseUrl, request.model), { fetch: deps.fetch });
-  const cases = await suggestCases(api, { provider });
+  const cases = await suggestCases(located.api, located.context, { provider });
   return cases.map((c) => structuredClone(c));
 }
 

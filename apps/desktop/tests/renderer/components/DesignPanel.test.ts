@@ -4,8 +4,10 @@
 // document.body，导出成功文案用 body 级文本断言。
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import { mount, flushPromises, enableAutoUnmount } from "@vue/test-utils";
+import { Input as AInput } from "ant-design-vue";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
+import type { ApiLocator } from "../../../src/shared/locations.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { useDesignStore } from "../../../src/renderer/src/stores/design.js";
@@ -36,9 +38,17 @@ async function mountDesignPanel(props: Record<string, unknown> = {}) {
   api.seedWorkspace();
   const workspace = useWorkspaceStore(api);
   await workspace.open("/tmp/ws");
-  const apiNode = workspace.tree!.children![0]!.children![0]!.children![0]!.children![0]!;
-  const editor = useEditorStore(api);
-  await editor.load(apiNode.id);
+  const group = workspace.tree!.children.find((node) => node.kind === "group" && node.children.some((child) =>
+    child.kind === "project" && child.children.some((item) => item.kind === "collection" && item.children.some((apiItem) => apiItem.kind === "api"))));
+  if (!group || group.kind !== "group") throw new Error("Memory workspace is missing the seeded project group");
+  const project = group.children.find((node) => node.kind === "project" && node.children.some((item) => item.kind === "collection" && item.children.some((apiItem) => apiItem.kind === "api")));
+  if (!project || project.kind !== "project") throw new Error("Memory group is missing the seeded project");
+  const collection = project.children.find((node) => node.kind === "collection");
+  if (!collection || collection.kind !== "collection") throw new Error("Memory project is missing the seeded collection");
+  const apiNode = collection.children.find((node) => node.kind === "api");
+  if (!apiNode || apiNode.kind !== "api") throw new Error("Memory collection is missing the seeded API");
+  const editor = useEditorStore(api, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
+  await editor.load(apiNode.locator);
   const design = useDesignStore(api, editor);
   const { i18n } = createI18nInstance();
   const wrapper = mount(DesignPanel, {
@@ -52,7 +62,7 @@ async function mountDesignPanel(props: Record<string, unknown> = {}) {
 describe("DesignPanel", () => {
   it("未加载接口时渲染空态", async () => {
     const api = createMemoryApi();
-    const editor = useEditorStore(api);
+    const editor = useEditorStore(api, () => ({ root: "", readOnly: false }));
     const design = useDesignStore(api, editor);
     const { i18n } = createI18nInstance();
     const wrapper = mount(DesignPanel, { props: { editor, design }, global: { plugins: [i18n] } });
@@ -66,25 +76,48 @@ describe("DesignPanel", () => {
     expect(design.content).toBe("");
     await wrapper.find('[data-testid="design-content"]').setValue("校验约定：金额必须大于 0");
     expect(design.dirty).toBe(true);
+    const save = editor.save.bind(editor);
+    let savePromise: ReturnType<typeof save> | null = null;
+    editor.save = () => (savePromise = save());
     await wrapper.find('[data-testid="design-save"]').trigger("click");
+    expect(savePromise).not.toBeNull();
+    await savePromise;
     await flushPromises();
     expect(design.dirty).toBe(false);
-    expect(editor.api!.design).toBe("校验约定：金额必须大于 0");
+    expect(editor.api!.documentation).toBe("校验约定：金额必须大于 0");
     expect(wrapper.find('[data-testid="design-saved"]').exists()).toBe(true);
+  });
+
+  it("只读模式禁用设计编辑和保存，并拒绝直接的 textarea 更新事件", async () => {
+    const { wrapper, editor, design } = await mountDesignPanel({ readOnly: true });
+    const initial = design.content;
+    expect((wrapper.get('[data-testid="design-content"]').element as HTMLTextAreaElement).disabled).toBe(true);
+    expect((wrapper.get('[data-testid="design-save"]').element as HTMLButtonElement).disabled).toBe(true);
+    const textarea = wrapper.findAllComponents(AInput.TextArea)
+      .find((component) => component.attributes("data-testid") === "design-content");
+    if (!textarea) throw new Error("Design textarea component missing");
+    textarea.vm.$emit("update:value", "must not enter a readonly draft");
+    expect(design.content).toBe(initial);
+    expect(design.dirty).toBe(false);
+    expect(editor.api!.documentation).toBe(initial);
+    await wrapper.get('[data-testid="design-save"]').trigger("click");
+    await flushPromises();
+    expect(editor.api!.documentation).toBe(initial);
+    expect(wrapper.find('[data-testid="design-saved"]').exists()).toBe(false);
   });
 
   it("导出 agent 设计：designExport 成功后 message 显示保存路径", async () => {
     const { wrapper, api, editor } = await mountDesignPanel();
-    let calledApiId: string | null = null;
+    let calledLocator: ApiLocator | null = null;
     const original = api.designExport.bind(api);
-    api.designExport = async (apiId: string) => {
-      calledApiId = apiId;
-      return original(apiId);
+    api.designExport = async (locator) => {
+      calledLocator = locator;
+      return original(locator);
     };
     await wrapper.find('[data-testid="design-export"]').trigger("click");
     await flushPromises();
     await new Promise((r) => setTimeout(r, 0)); // antd message 传送门渲染一帧
-    expect(calledApiId).toBe(editor.apiId);
+    expect(calledLocator).toEqual(editor.locator);
     expect(document.body.textContent).toContain("已导出");
     expect(document.body.textContent).toContain("示例接口.design.md");
   });

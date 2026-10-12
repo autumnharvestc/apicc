@@ -1,71 +1,128 @@
 import { createPinia, defineStore } from "pinia";
 import type { ApiccApi, EnvCreateInput } from "../../../shared/types.js";
+import type { EnvironmentLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { ProjectGlobalSettings } from "../../../shared/types.js";
+import type { LocalWorkspaceContext } from "./localIdentity.js";
 
 type ConfirmFn = (message: string) => Promise<boolean>;
+export interface EnvItem { id: string; name: string; extends?: string; variables: Record<string, string>; baseUrls: Record<string, string>; locator: EnvironmentLocator }
 
-/** 列表项与 TreeNodeDTO project 节点的 envs 形状对齐（含 extends 与已存 variables，供水合）。 */
-export interface EnvItem { id: string; name: string; extends?: string; variables: Record<string, string>; baseUrls: Record<string, string> }
+function projectOf(locator: EnvironmentLocator): ProjectLocator {
+  return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+}
 
-/**
- * 环境 store 工厂：接受依赖 api 参数（测试传新实例即天然隔离），每次工厂调用绑定
- * 独立 Pinia 实例。数据源 = treeGet 的 project 节点 envs 数组（含已存 variables，
- * 供组件层选中环境时水合行缓冲）；projectId 记录当前加载的项目，供 remove 后刷新复用。
- * saveVars 落盘（主进程 IPC 显式 save）后同步更新本地项，保证切换环境再切回时
- * 水合到已存值；load 末尾清理悬空 selectedEnvId（跨项目切换防误删/误写）。
- */
-export function useEnvsStore(api: ApiccApi) {
+function copyProject(locator: ProjectLocator): ProjectLocator {
+  return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+}
+
+function sameProject(left: ProjectLocator, right: ProjectLocator): boolean {
+  return left.workspaceId === right.workspaceId && left.groupId === right.groupId && left.projectId === right.projectId;
+}
+
+/** Environment loads and mutations are pinned to a directory root and full workspace/group/project identity. */
+export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceContext = () => ({ root: "", readOnly: false })) {
   return defineStore("envs", {
     state: () => ({
-      projectId: null as string | null,
+      root: null as string | null,
+      projectLocator: null as ProjectLocator | null,
       envs: [] as EnvItem[],
-      selectedEnvId: null as string | null,
+      selectedEnvironment: null as EnvironmentLocator | null,
       globals: { variables: {}, query: [], headers: [], cookies: [], body: [] } as ProjectGlobalSettings,
+      loadToken: 0,
     }),
+    getters: {
+      selectedEnvId(): string | null { return this.selectedEnvironment?.environmentId ?? null; },
+      projectId(): string | null { return this.projectLocator?.projectId ?? null; },
+      selectedEnv(): EnvItem | null {
+        return this.selectedEnvironment ? this.envs.find((item) => item.locator.environmentId === this.selectedEnvironment!.environmentId) ?? null : null;
+      },
+    },
     actions: {
-      async load(projectId: string) {
-        const tree = await api.treeGet();
-        const project = (tree.children ?? [])
-          .flatMap((g) => g.children ?? [])
-          .find((n) => n.kind === "project" && n.id === projectId);
-        this.projectId = projectId;
-        this.envs = (project?.envs ?? []).map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: { ...e.variables }, baseUrls: { ...(e.baseUrls ?? {}) } }));
-        // 全局变量/全局参数（M10）：项目级，随 load 一并水合（替换式落盘前的编辑基准）。
-        this.globals = await api.globalsGet(projectId);
-        // 悬空选中清理：新列表不含当前选中（跨项目切换/被并发删除）时置空。
-        if (this.selectedEnvId !== null && !this.envs.some((e) => e.id === this.selectedEnvId)) {
-          this.selectedEnvId = null;
+      assertWritable(): void {
+        if (getContext().readOnly) throw new Error("工作区处于只读模式，不能修改环境");
+      },
+      async load(locator: ProjectLocator): Promise<void> {
+        const fixed = copyProject(locator);
+        const root = getContext().root;
+        const token = ++this.loadToken;
+        const [tree, globals] = await Promise.all([api.treeGet(), api.globalsGet(fixed)]);
+        if (token !== this.loadToken || getContext().root !== root) return;
+        const group = tree.source === "local" && tree.kind === "root"
+          ? tree.children.find((node) => node.kind === "group" && node.locator.workspaceId === fixed.workspaceId && node.locator.groupId === fixed.groupId)
+          : undefined;
+        const project = group?.kind === "group"
+          ? group.children.find((node) => node.kind === "project" && node.locator.workspaceId === fixed.workspaceId
+            && node.locator.groupId === fixed.groupId && node.locator.projectId === fixed.projectId)
+          : undefined;
+        this.root = root;
+        this.projectLocator = fixed;
+        this.envs = project?.kind === "project" ? project.envs.map((env) => ({
+          id: env.id,
+          name: env.name,
+          extends: env.extends,
+          variables: { ...env.variables },
+          baseUrls: { ...(env.baseUrls ?? {}) },
+          locator: { ...env.locator },
+        })) : [];
+        this.globals = globals;
+        if (this.selectedEnvironment && (!sameProject(projectOf(this.selectedEnvironment), fixed)
+          || !this.envs.some((item) => item.locator.environmentId === this.selectedEnvironment!.environmentId))) {
+          this.selectedEnvironment = null;
         }
       },
+      select(locator: EnvironmentLocator | null): void {
+        this.selectedEnvironment = locator ? { ...locator } : null;
+      },
       async create(input: EnvCreateInput) {
-        const env = await api.envCreate(input);
-        await this.load(input.projectId);
-        this.selectedEnvId = env.id;
+        this.assertWritable();
+        const root = getContext().root;
+        const fixed = copyProject(input.locator);
+        const env = await api.envCreate({ ...input, locator: fixed });
+        if (getContext().root !== root || !this.projectLocator || !sameProject(this.projectLocator, fixed)) return env;
+        await this.load(fixed);
+        const created = this.envs.find((item) => item.id === env.id);
+        this.select(created?.locator ?? null);
         return env;
       },
-      async saveVars(envId: string, variables: Record<string, string>) {
-        await api.envVarsSave(envId, variables);
-        // setEnvironmentVariables 为全量替换：同步本地项，行缓冲再水合即已存值。
-        const item = this.envs.find((e) => e.id === envId);
-        if (item) item.variables = { ...variables };
+      async saveVars(locator: EnvironmentLocator, variables: Record<string, string>) {
+        this.assertWritable();
+        const root = getContext().root;
+        const fixed = { ...locator };
+        const saved = await api.envVarsSave(fixed, { ...variables });
+        if (root !== getContext().root || this.root !== root || !this.projectLocator || !sameProject(this.projectLocator, projectOf(fixed))) return;
+        const item = this.envs.find((entry) => entry.locator.environmentId === fixed.environmentId);
+        if (item) item.variables = { ...saved.variables };
       },
-      /** 环境前置 URL 整体替换（M9-B）：落盘 + 本地项同步。 */
-      async saveBaseUrls(envId: string, baseUrls: Record<string, string>) {
-        await api.envBaseUrlsSave(envId, baseUrls);
-        const item = this.envs.find((e) => e.id === envId);
-        if (item) item.baseUrls = { ...baseUrls };
+      async saveBaseUrls(locator: EnvironmentLocator, baseUrls: Record<string, string>) {
+        this.assertWritable();
+        const root = getContext().root;
+        const fixed = { ...locator };
+        const saved = await api.envBaseUrlsSave(fixed, { ...baseUrls });
+        if (root !== getContext().root || this.root !== root || !this.projectLocator || !sameProject(this.projectLocator, projectOf(fixed))) return;
+        const item = this.envs.find((entry) => entry.locator.environmentId === fixed.environmentId);
+        if (item) item.baseUrls = { ...(saved.baseUrls ?? {}) };
       },
-      /** 全局设置整体替换（M10）：项目级，variables/参数一起落盘。 */
-      async saveGlobals(projectId: string, globals: ProjectGlobalSettings) {
-        await api.globalsSave(projectId, globals);
-        this.globals = globals;
+      async saveGlobals(locator: ProjectLocator, globals: ProjectGlobalSettings) {
+        this.assertWritable();
+        const root = getContext().root;
+        const fixed = copyProject(locator);
+        const saved = await api.globalsSave(fixed, globals);
+        if (root === getContext().root && this.root === root && this.projectLocator && sameProject(this.projectLocator, fixed)) this.globals = saved;
       },
-      // 复用 tree store 的删除模式：确认回调放行才删除，删除后清选中并刷新。
-      async remove(kind: "environment", id: string, confirm: ConfirmFn) {
-        if (!(await confirm(`delete:${id}`))) return;
-        await api.nodeDelete(kind, id);
-        if (this.selectedEnvId === id) this.selectedEnvId = null;
-        if (this.projectId) await this.load(this.projectId);
+      async remove(locator: EnvironmentLocator, confirm: ConfirmFn): Promise<void> {
+        this.assertWritable();
+        const root = getContext().root;
+        const fixed = { ...locator };
+        if (!(await confirm(`delete:${fixed.environmentId}`))) return;
+        // Confirmation is asynchronous; do not redirect an operation captured in one root
+        // into whichever workspace became active while the dialog was open.
+        if (getContext().root !== root) return;
+        this.assertWritable();
+        await api.nodeDelete({ kind: "environment", locator: fixed });
+        if (root !== getContext().root || !this.projectLocator || !sameProject(this.projectLocator, projectOf(fixed))) return;
+        if (this.selectedEnvironment?.environmentId === fixed.environmentId
+          && sameProject(projectOf(this.selectedEnvironment), projectOf(fixed))) this.selectedEnvironment = null;
+        await this.load(projectOf(fixed));
       },
     },
   })(createPinia());

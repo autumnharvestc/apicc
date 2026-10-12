@@ -24,18 +24,11 @@ const props = defineProps<{
   stress: ReturnType<typeof createStressStore>;
   pane: "api-cases" | "scenario";
   reportError: (e: unknown) => void;
+  readOnly?: boolean;
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
 const { t } = useI18n();
 
-async function runCase(caseId: string) {
-  try {
-    await props.editor.save();
-    await props.debug.runCase(props.editor, caseId);
-  } catch (e) {
-    props.reportError(e);
-  }
-}
 </script>
 
 <template>
@@ -44,7 +37,7 @@ async function runCase(caseId: string) {
     <template v-if="pane === 'api-cases'">
       <EmptyState v-if="!editor.api" :text="t('test.pickApi')" />
       <template v-else>
-        <CasePanel :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" @stress="(caseId: string) => emit('stress', caseId)" />
+        <CasePanel :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" @stress="(caseId: string) => emit('stress', caseId)" />
         <div v-if="debug.result" class="result" data-testid="test-result">
           <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
         </div>

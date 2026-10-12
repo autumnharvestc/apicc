@@ -8,16 +8,22 @@ import { generatePluginPackage } from "./create-plugin.js";
 import {
   ShardOutcomeSchema,
   CurrentStressReportSchema,
+  CollectionRunError,
   createAiProvider,
+  createProjectSnapshot,
+  renderContractMarkdown,
   loadUserPlugins,
-  renderDesignMarkdown,
+  findProjectApi,
   type AiProviderConfig,
-  type ApiDefinition,
+  type ApiAsset,
   type Collection,
+  type Environment,
+  type ProjectExecutionRun,
   type LoadProblem,
   type PluginLoadEntry,
   type PluginRegistry,
   type Project,
+  type SecretRef,
   type ShardFailure,
   type ShardOutcome,
   type ShardResult,
@@ -28,20 +34,37 @@ import {
   type StressSample,
   type StressWorkerSpecBase,
   type Workspace,
+  type Workflow,
   createHttpClient,
   createSoapClient,
   createStressCaseSession,
   normalizeStressOrigin,
+  resolveExecutionEnvironment,
+  selectEffectiveCases,
   validateStressRunOptions as validateCoreStressRunOptions,
   StressSafetyError,
   withBaseUrl,
-  findProjectApi,
 } from "@apicc/core";
-
-/** 路径分隔符归一为 "/"，使集合目录匹配与用户输入的正/反斜杠形态无关（Windows 兼容）。 */
-function toSlash(p: string): string {
-  return p.split("\\").join("/");
-}
+import {
+  apiAssetsInCollection,
+  apiAssetsWithExecutableCases,
+  createCredentialHostStore,
+  findProjectCredentialRef,
+  prepareExecutionRun,
+  credentialScope,
+  stableCredentialError,
+  type CredentialHostOptions,
+} from "./credentials.js";
+import { createOutputSanitizer } from "./output.js";
+import {
+  assertWorkspaceUsable,
+  listApiLocations,
+  loadWorkspace,
+  locateApi,
+  locateCollection,
+  locateProject,
+  locateWorkflow,
+} from "./workspace.js";
 
 function collectOption(value: string, previous: string[] = []): string[] {
   return [...previous, value];
@@ -177,44 +200,11 @@ export function resolveAiConfig(input: { env?: Record<string, string | undefined
   );
 }
 
-/**
- * 工作区接口定位（run-stress/stress-worker/ai suggest-cases 共享，不复制）：全树目录
- * （含 folders 内接口）按「全等或分隔符边界后缀」匹配，首个命中即止；design.md 存在时
- * 读入 api.design（与 export-design 同口径——api.yaml 不含设计正文，规格 §6/§8）。
- */
-async function locateApiTarget(
-  registry: PluginRegistry,
-  root: string,
-  apiPath: string,
-): Promise<{ api: ApiDefinition; dir: string; project: Project; collection: Collection; workspace: Workspace }> {
-  const storage = registry.getStorage();
-  if (!storage) throw new Error("未注册存储适配器");
-  const { workspace } = await storage.load(root);
-  let hit: { api: ApiDefinition; dir: string; project: Project; collection: Collection } | undefined;
-  const target = toSlash(apiPath);
-  search:
-  for (const g of workspace.groups) {
-    for (const p of g.projects) {
-      for (const c of p.collections) {
-        // id 布局（轨一）：盘上目录名是 id；用户参数仍按名称制虚拟路径匹配，design.md 读物理 id 目录
-        const matchBase = toSlash(join("groups", g.name, "projects", p.name, "collections", c.name));
-        const cDir = join(root, "groups", g.id, "projects", p.id, "collections", c.id);
-        const candidates = [
-          ...c.apis.map((a) => ({ api: a, dir: join(cDir, "apis", a.id), match: toSlash(join(matchBase, "apis", a.name)) })),
-          ...c.folders.flatMap((f) => f.apis.map((a) => ({ api: a, dir: join(cDir, "folders", f.id, "apis", a.id), match: toSlash(join(matchBase, "folders", f.name, "apis", a.name)) }))),
-        ];
-        for (const cand of candidates) {
-          if (cand.match === target || cand.match.endsWith(`/${target}`)) {
-            hit = { ...cand, project: p, collection: c };
-            break search;
-          }
-        }
-      }
-    }
-  }
-  if (!hit) throw new Error(`未找到接口: ${apiPath}`);
-  if (existsSync(join(hit.dir, "design.md"))) hit.api.design = readFileSync(join(hit.dir, "design.md"), "utf8");
-  return { ...hit, workspace };
+/** Load once, preserve storage diagnostics, and locate solely within the returned UUID tree. */
+async function locateApiTarget(registry: PluginRegistry, root: string, apiPath: string) {
+  const state = await loadWorkspace(registry, root);
+  assertWorkspaceUsable(state);
+  return { ...locateApi(state.workspace, apiPath), workspace: state.workspace, loadState: state };
 }
 
 /** runCli 可注入依赖：worker 协议/日志通道与默认 SpawnWorker 工厂（测试注入替身即可进程内闭环）。 */
@@ -233,6 +223,63 @@ export interface RunCliDeps {
   pluginsHomeDir?: string;
   /** 插件加载注入：false 关闭加载（--no-plugins 之外的编程关闭通道，供嵌入方与测试零扰动）。 */
   loadPlugins?: boolean;
+  /** CLI 凭据宿主注入：测试可提供合成值 store；不暴露系统后端装载缝。 */
+  secretStore?: import("@apicc/core").SecretStore;
+  /** CLI 凭据宿主注入：指定独立 privateRoot，默认 Core 提供的用户级 privateRoot。 */
+  credentialPrivateRoot?: string;
+  /** CLI 凭据保存注入：默认仅从 stdin 读取，永不接受 argv 明文。 */
+  secretInput?: () => Promise<string>;
+}
+
+function credentialHostOptions(deps: RunCliDeps): CredentialHostOptions {
+  return {
+    ...(deps.secretStore ? { secretStore: deps.secretStore } : {}),
+    ...(deps.credentialPrivateRoot ? { credentialPrivateRoot: deps.credentialPrivateRoot } : {}),
+  };
+}
+
+function parseExpectedCredentialVersions(input: string): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    throw new Error("worker 凭据版本描述无效：必须是 JSON 字符串字典");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("worker 凭据版本描述无效：必须是 JSON 字符串字典");
+  }
+  const versions = Object.create(null) as Record<string, string>;
+  for (const key of Object.keys(parsed)) {
+    const version = (parsed as Record<string, unknown>)[key];
+    if (typeof version !== "string") {
+      throw new Error("worker 凭据版本描述无效：每个 own ref 版本都必须是字符串");
+    }
+    Object.defineProperty(versions, key, {
+      value: version, enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return versions;
+}
+
+async function readSecretFromStdin(): Promise<string> {
+  const chunks: string[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+  }
+  return chunks.join("").replace(/\r?\n$/, "");
+}
+
+let lastRunFileTime = 0;
+let runFileSequence = 0;
+function nextRunFileId(): string {
+  const now = Date.now();
+  if (now > lastRunFileTime) {
+    lastRunFileTime = now;
+    runFileSequence = 0;
+  } else {
+    runFileSequence += 1;
+  }
+  return `${lastRunFileTime.toString(36).padStart(10, "0")}${runFileSequence.toString(36).padStart(4, "0")}`;
 }
 
 /** CLI 入口绝对路径（dist/bin.js）：由本模块编译产物位置推导，子进程 worker 与父进程同一份安装。 */
@@ -300,6 +347,8 @@ const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec
       ...(spec.minRps !== undefined ? ["--min-rps", String(spec.minRps)] : []),
       ...(spec.connectionMode !== undefined ? ["--connection-mode", spec.connectionMode] : []),
       ...((spec.confirmedTargetOrigins ?? []).flatMap((origin) => ["--allow-target", origin])),
+      "--definition-revision", spec.definitionRevision,
+      "--credential-versions", JSON.stringify(spec.credentialVersions),
     ];
     const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     child.stderr?.pipe(process.stderr);
@@ -327,25 +376,24 @@ const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec
     }));
   });
 
-/**
- * 压测目标解析（run-stress 与 stress-worker 共享，不复制）：工作区加载、接口定位（与 run 命令
- * 同款分隔符边界后缀匹配）、用例门、env 解析、变量层组装与 StressRunner 工厂。
- * createRunner 为每个并发 worker 创建独立的真实用例 session，保证参数、脚本和断言结果进入样本。
- */
+/** Prepare one immutable snapshot and the selected API's credentials for stress or its worker. */
 async function resolveStressTarget(
   registry: PluginRegistry,
   root: string,
   apiPath: string,
   caseId: string,
   envName: string | undefined,
+  credentialOptions: CredentialHostOptions = {},
+  expected?: { definitionRevision: string; credentialVersions: Readonly<Record<string, string>> },
 ): Promise<{
+  apiPath: string;
   apiId: string;
-  api: ApiDefinition;
-  testCase: import("@apicc/core").TestCase;
-  collection: Collection;
-  project: Project;
+  api: NonNullable<ReturnType<typeof findProjectApi>>["api"];
+  testCase: NonNullable<ReturnType<typeof findProjectApi>>["api"]["cases"][number];
+  collection: NonNullable<ReturnType<typeof findProjectApi>>["collection"];
+  project: ProjectExecutionRun["snapshot"]["project"];
   workspace: Workspace;
-  env?: import("@apicc/core").Environment;
+  prepared: Awaited<ReturnType<typeof prepareExecutionRun>>;
   targetOrigin?: string;
   createRunner: (options?: {
     concurrency?: number;
@@ -355,41 +403,64 @@ async function resolveStressTarget(
     onSample?: (sample: StressSample) => void;
   }) => StressRunner;
 }> {
-  // 定位/env/resolver 与 ai suggest-cases 共享 helper（不复制）。
-  const { api: stressedApi, project, collection, workspace } = await locateApiTarget(registry, root, apiPath);
-  const testCase = stressedApi.cases.find((tc) => tc.id === caseId);
-  if (!testCase) throw new Error(`未找到用例: ${caseId}`);
-  // env 解析：未指定则不启用环境；指定但未命中显式报错（与 run-workflow 同款）。
-  const env = envName ? project.environments.find((e) => e.name === envName) : undefined;
-  if (envName && !env) throw new Error(`未找到环境: ${envName}`);
-  const { StressRunner, mergedEnvVars, createVariableResolver } =
-    await import("@apicc/core");
-  // 变量层与 CollectionRunner 同源（M10 收敛）：[环境(含模块前置URL baseUrl 注入), 模块, 全局变量(项目)]。
-  // workspace 层弃用；全局参数（query/header/cookie/body）由 executeCase 合并。
-  const baseUrl = env?.baseUrls?.[collection.id];
-  const envVars = { ...mergedEnvVars(env, project), ...(baseUrl ? { baseUrl } : {}) };
-  const resolver = createVariableResolver({
-    layers: [envVars, collection.variables, project.variables],
-  });
-  void workspace;
-  // M5 D5：默认客户端按接口协议从注册中心解析。仅构造协议探针；真实请求
-  // 始终由 StressCaseSession/executeCase 逐次解析用例参数、脚本、认证和断言。
-  const rawProbeUrl = withBaseUrl(resolver.resolve(stressedApi.url), resolver.get("baseUrl"));
-  const staticTarget = resolveStaticStressTarget(rawProbeUrl, stressedApi.protocol);
+  const location = await locateApiTarget(registry, root, apiPath);
+  const { api, group, project, collection, workspace } = location;
+  const env = envName === undefined ? undefined : project.environments.find((candidate) => candidate.name === envName);
+  if (envName !== undefined && !env) throw new Error(`未找到环境: ${envName}`);
+  const preflightEnvironment = resolveExecutionEnvironment(project, collection.id, env?.id);
+  const preflightCase = selectEffectiveCases(api.cases, preflightEnvironment.chain, caseId)[0];
+  if (!preflightCase) {
+    if (!api.cases.some((candidate) => candidate.id === caseId)) throw new Error(`未找到用例: ${caseId}`);
+    throw new Error(`配置错误: 用例 ${caseId} 不适用于当前环境${env ? ` ${env.name}` : ""}`);
+  }
+  const apiId = api.contract.id;
+  const collectionId = collection.id;
+  const environmentId = env?.id;
+  const prepared = await prepareExecutionRun(workspace, group.id, project, [api], credentialOptions,
+    expected?.credentialVersions, expected?.definitionRevision);
+  const preparedProject = prepared.snapshot.project;
+  const preparedLocation = findProjectApi(preparedProject, apiId);
+  if (!preparedLocation || preparedLocation.collection.id !== collectionId) {
+    throw new Error(`配置错误: 项目快照中未找到接口 ${apiId} 的原集合资产`);
+  }
+  const preparedEnvironment = resolveExecutionEnvironment(preparedProject, collectionId, environmentId);
+  const testCase = selectEffectiveCases(preparedLocation.api.cases, preparedEnvironment.chain, caseId)[0];
+  if (!testCase) throw new Error(`配置错误: 项目快照中接口 ${apiId} 不存在适用于当前环境的用例 ${caseId}`);
+  const preparedApi = preparedLocation.api;
+  const preparedCollection = preparedLocation.collection;
+  const { StressRunner, createVariableResolver } = await import("@apicc/core");
+  const envVars = preparedEnvironment.variables;
+  const resolver = createVariableResolver({ layers: [envVars, preparedCollection.variables, preparedProject.variables] });
+  const request = preparedApi.contract.request;
+  const requestBaseUrl = resolver.resolve(request.baseUrl);
+  const selectedBaseUrl = requestBaseUrl !== "" ? requestBaseUrl : preparedEnvironment.baseUrl;
+  const resolvedBaseUrl = selectedBaseUrl === undefined ? undefined : resolver.resolve(selectedBaseUrl);
+  const rawProbeUrl = withBaseUrl(resolver.resolve(request.path), resolvedBaseUrl);
+  const staticTarget = resolveStaticStressTarget(rawProbeUrl, request.protocol);
   const probe = {
-    method: stressedApi.method,
+    method: request.protocol === "http" ? request.method : "POST",
     url: staticTarget.url,
-    headers: {}, query: [], protocol: stressedApi.protocol,
+    headers: {}, query: [], protocol: request.protocol, auth: { kind: "none" as const },
   } as import("@apicc/core").ExecutableRequest;
   const defaultClient = registry.getProtocol(probe);
-  if (!defaultClient) {
-    throw new Error(`未找到可处理该接口的协议客户端（protocol: ${probe.protocol ?? "http"}）`);
-  }
-  const target = { api: stressedApi, testCase, env, project, collection, workspace };
+  if (!defaultClient) throw new Error(`未找到可处理该接口的协议客户端（protocol: ${probe.protocol ?? "http"}）`);
+  const target = {
+    run: prepared.run,
+    collectionId: preparedCollection.id,
+    apiId: preparedApi.contract.id,
+    caseId,
+    ...(preparedEnvironment.environment ? { environmentId: preparedEnvironment.environment.id } : {}),
+  };
   const targetOrigin = staticTarget.origin;
   return {
-    apiId: stressedApi.id,
-    api: stressedApi, testCase, collection, project, workspace, env,
+    apiPath: location.apiPath,
+    apiId: preparedApi.contract.id,
+    api: preparedApi,
+    testCase,
+    collection: preparedCollection,
+    project: preparedProject,
+    workspace,
+    prepared,
     ...(targetOrigin !== undefined ? { targetOrigin } : {}),
     createRunner: (options = {}) => {
       const maxRps = options.maxRps ?? project.stressPolicy?.maxRps;
@@ -400,15 +471,15 @@ async function resolveStressTarget(
           let ownedSoap: ReturnType<typeof createSoapClient> | undefined;
           const createOwnedHttp = () => ownedHttp ??= createHttpClient({ connectionMode: options.connectionMode });
           return createStressCaseSession(target, {
-            resolveProtocol: (request) => {
-              if (request.protocol === "soap" && defaultClient.name === "soap") {
+            resolveProtocol: (candidate) => {
+              if (candidate.protocol === "soap" && defaultClient.name === "soap") {
                 ownedSoap ??= createSoapClient(createOwnedHttp());
                 return ownedSoap;
               }
-              return registry.getProtocol(request);
+              return registry.getProtocol(candidate);
             },
-            resolveAuth: (type) => registry.getAuth(type),
-            resolveAssert: (op) => registry.getAssert(op),
+            resolveAuth: (kind) => registry.getAuth(kind),
+            resolveAssert: (operator) => registry.getAssert(operator),
             scriptEngine: registry.getScriptEngine("javascript")!,
             createManagedClient: () => defaultClient.name === "http" || defaultClient.name === "soap"
               ? createOwnedHttp()
@@ -431,6 +502,7 @@ export async function runCli(
   log: (line: string) => void = console.log,
   deps: RunCliDeps = {},
 ): Promise<number> {
+  const hostLog = log;
   // 进入时重置进程退出码：同进程多次调用 runCli（编程/测试场景）互不串扰，
   // 各命令只反映本次调用的结果（bin.ts 执行完毕后会把返回值写回 process.exitCode）。
   process.exitCode = 0;
@@ -467,9 +539,71 @@ export async function runCli(
       }
     });
 
+  const credentials = program.command("credentials").description("绑定、检查或移除项目凭据（值仅从标准输入读取）");
+  credentials
+    .command("save")
+    .argument("<projectPath>", "项目完整 UUID 路径（groups/<groupId>/projects/<projectId>）")
+    .argument("<refId>", "项目接口认证中引用的 opaque ref ID")
+    .description("从标准输入绑定 test-auto 凭据，不接受 argv 明文且不回显")
+    .action(async (projectPath: string, refId: string) => {
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+      const state = await loadWorkspace(registry, root);
+      assertWorkspaceUsable(state);
+      const { group, project } = locateProject(state.workspace, projectPath);
+      const ref = findProjectCredentialRef(project, refId);
+      const value = deps.secretInput ? await deps.secretInput() : await readSecretFromStdin();
+      if (value.length === 0) throw new Error("标准输入未提供凭据值；请通过管道传入非空值");
+      const store = createCredentialHostStore(credentialHostOptions(deps));
+      try {
+        await store.put(credentialScope(state.workspace, group.id, project), ref, value);
+      } catch (error) {
+        throw stableCredentialError(error);
+      }
+      log(`凭据已保存：${projectPath} ${ref.id}（值未显示）`);
+    });
+  credentials
+    .command("status")
+    .argument("<projectPath>", "项目完整 UUID 路径（groups/<groupId>/projects/<projectId>）")
+    .argument("<refId>", "项目接口认证中引用的 opaque ref ID")
+    .action(async (projectPath: string, refId: string) => {
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+      const state = await loadWorkspace(registry, root);
+      assertWorkspaceUsable(state);
+      const { group, project } = locateProject(state.workspace, projectPath);
+      const ref = findProjectCredentialRef(project, refId);
+      try {
+        const status = await createCredentialHostStore(credentialHostOptions(deps))
+          .status(credentialScope(state.workspace, group.id, project), ref);
+        log(`凭据状态：${status}`);
+      } catch (error) {
+        throw stableCredentialError(error);
+      }
+    });
+  credentials
+    .command("remove")
+    .argument("<projectPath>", "项目完整 UUID 路径（groups/<groupId>/projects/<projectId>）")
+    .argument("<refId>", "项目接口认证中引用的 opaque ref ID")
+    .action(async (projectPath: string, refId: string) => {
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+      const state = await loadWorkspace(registry, root);
+      assertWorkspaceUsable(state);
+      const { group, project } = locateProject(state.workspace, projectPath);
+      const ref = findProjectCredentialRef(project, refId);
+      try {
+        await createCredentialHostStore(credentialHostOptions(deps))
+          .remove(credentialScope(state.workspace, group.id, project), ref);
+      } catch (error) {
+        throw stableCredentialError(error);
+      }
+      log(`凭据已移除：${projectPath} ${ref.id}`);
+    });
+
   program
     .command("run")
-    .argument("<collectionPath>", "集合目录（相对工作区根）")
+    .argument("<collectionPath>", "集合完整 UUID 路径（groups/<groupId>/projects/<projectId>/collections/<collectionId>）")
     .requiredOption("--env <name>", "环境名称")
     .option("--reporters <list>", "报告格式，逗号分隔", "html")
     .option("--runs-dir <dir>", "运行历史输出目录")
@@ -477,29 +611,22 @@ export async function runCli(
     .action(async (collectionPath: string, opts: { env: string; reporters: string; runsDir?: string; failFast: boolean }) => {
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
-      const storage = registry.getStorage();
-      if (!storage) throw new Error("未注册存储适配器");
-      const { workspace } = await storage.load(root);
-      let collection: import("@apicc/core").Collection | undefined;
-      let project: import("@apicc/core").Project | undefined;
-      const target = toSlash(collectionPath);
-      search:
-      for (const g of workspace.groups) {
-        for (const p of g.projects) {
-          for (const c of p.collections) {
-            // id 布局（轨一）：按名称制虚拟路径匹配（盘上目录名已是 id，此处不碰文件系统）
-            const matchPath = toSlash(join("groups", g.name, "projects", p.name, "collections", c.name));
-            // 全等或按分隔符边界后缀匹配：避免 "api" 误命中 "xapi"；首个命中即止，重名集合取确定性首个。
-            if (matchPath === target || matchPath.endsWith(`/${target}`)) {
-              collection = c; project = p;
-              break search;
-            }
-          }
-        }
-      }
-      if (!collection || !project) throw new Error(`未找到集合: ${collectionPath}`);
-      const env = project.environments.find((e) => e.name === opts.env);
+      const state = await loadWorkspace(registry, root);
+      assertWorkspaceUsable(state);
+      const location = locateCollection(state.workspace, collectionPath);
+      const { collection, project } = location;
+      const env = project.environments.find((candidate) => candidate.name === opts.env);
       if (!env) throw new Error(`未找到环境: ${opts.env}`);
+
+      const prepared = await prepareExecutionRun(
+        state.workspace,
+        location.group.id,
+        project,
+        apiAssetsWithExecutableCases(project, apiAssetsInCollection(collection), env),
+        credentialHostOptions(deps),
+      );
+      const sanitizer = createOutputSanitizer(prepared.secrets);
+      const safeLog = (line: string): void => log(sanitizer.redactText(line));
 
       const { CollectionRunner } = await import("@apicc/core");
       const runner = new CollectionRunner({
@@ -507,25 +634,36 @@ export async function runCli(
         timeouts: { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 },
         failFast: opts.failFast,
       });
-      // 生成物隔离（规格 §6）：运行历史与报告默认写工作区根 .apicc/runs，不污染 Git 友好的数据树；
-      // --runs-dir 仍可覆盖。原始结果 JSON 与报告同目录，run 后 validate 不会报假问题。
+      // Host persists only the projected result; do not let Core write an unredacted raw result.
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
-      const result = await runner.run(collection, env, project, workspace, { runsDir: runsOutDir });
+      let result: import("@apicc/core").RunResult;
+      let runFailure = false;
+      try {
+        result = await runner.run(prepared.run, collection.id, { environmentId: env.id });
+      } catch (error) {
+        if (!(error instanceof CollectionRunError)) throw error;
+        result = error.partialResult;
+        runFailure = true;
+        safeLog(sanitizer.redactText(error.message));
+      }
+      const safeResult = sanitizer.redactValue(result);
+      mkdirSync(runsOutDir, { recursive: true });
+      writeFileSync(join(runsOutDir, `run-${nextRunFileId()}.json`), JSON.stringify(safeResult, null, 2));
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
         if (!reporter) throw new Error(`未注册报告格式: ${format}`);
-        const file = await reporter.render(result, runsOutDir);
-        log(`报告已生成: ${file}`);
+        const file = await reporter.render(safeResult, runsOutDir);
+        safeLog(`报告已生成: ${file}`);
       }
-      log(`总计 ${result.total} · 通过 ${result.passed} · 失败 ${result.failed}`);
-      process.exitCode = result.failed > 0 ? 1 : 0;
+      safeLog(`总计 ${safeResult.total} · 通过 ${safeResult.passed} · 失败 ${safeResult.failed}`);
+      process.exitCode = runFailure || safeResult.failed > 0 ? 1 : 0;
     });
 
   // 工作流运行（任务 8）：复用 run 命令的加载/定位/报告模式；结构校验（含环拒绝）由 WorkflowRunner
   // 内部执行，CLI 只负责目录定位、env 解析与草稿状态门。
   program
     .command("run-workflow")
-    .argument("<workflowPath>", "工作流目录（相对工作区根，如 groups/g/projects/p/workflows/名）")
+    .argument("<workflowPath>", "工作流完整 UUID 路径（groups/<groupId>/projects/<projectId>/workflows/<workflowId>）")
     .option("--env <name>", "环境名称")
     .option("--force-draft", "允许运行草稿（跳过生命周期与启用校验，仅结构校验）", false)
     .option("--no-strict", "缺失引用不中断独立节点诊断（本次结果仍失败）")
@@ -534,26 +672,10 @@ export async function runCli(
     .action(async (workflowPath: string, opts: { env?: string; forceDraft: boolean; strict: boolean; reporters: string; runsDir?: string }) => {
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
-      const storage = registry.getStorage();
-      if (!storage) throw new Error("未注册存储适配器");
-      const { workspace } = await storage.load(root);
-      let workflow: import("@apicc/core").Workflow | undefined;
-      let project: import("@apicc/core").Project | undefined;
-      const target = toSlash(workflowPath);
-      search:
-      for (const g of workspace.groups) {
-        for (const p of g.projects) {
-          for (const w of p.workflows) {
-            // 与 run 同款匹配（id 布局轨一：名称制虚拟路径，不碰文件系统）：全等或按分隔符边界后缀；首个命中即止。
-            const matchPath = toSlash(join("groups", g.name, "projects", p.name, "workflows", w.name));
-            if (matchPath === target || matchPath.endsWith(`/${target}`)) {
-              workflow = w; project = p;
-              break search;
-            }
-          }
-        }
-      }
-      if (!workflow || !project) throw new Error(`未找到工作流: ${workflowPath}`);
+      const state = await loadWorkspace(registry, root);
+      assertWorkspaceUsable(state);
+      const location = locateWorkflow(state.workspace, workflowPath);
+      const { workflow, project } = location;
       // env 解析：未指定则不启用环境（执行器侧为空快照）；指定但未命中显式报错。
       const env = opts.env ? project.environments.find((e) => e.name === opts.env) : undefined;
       if (opts.env && !env) throw new Error(`未找到环境: ${opts.env}`);
@@ -562,28 +684,34 @@ export async function runCli(
         throw new Error("工作流为草稿，请先发布启用或加 --force-draft");
       }
       const { WorkflowRunner, workflowToRunResult } = await import("@apicc/core");
-      // resolve：先在工作流所属项目递归定位接口，避免跨项目同 ID 污染；resolver 仅保留兼容接缝。
-      const findApi = (apiId: string) => findProjectApi(project!, apiId)?.api;
-      const runner = new WorkflowRunner({ registry, resolve: findApi, envName: env?.name, failFast: false, strict: opts.strict });
-      const wfr = await runner.run(workflow, { project, workspace });
-      // 生成物隔离（规格 §6）：原始结果 JSON 与报告同目录（对齐 run 命令产物口径），默认 .apicc/runs。
+      const workflowAssets = workflow.nodes.flatMap((node) => {
+        if (node.kind !== "request" || !node.apiId) return [];
+        const api = findProjectApi(project, node.apiId)?.api;
+        return api ? [api as ApiAsset] : [];
+      });
+      const prepared = await prepareExecutionRun(state.workspace, location.group.id, project, workflowAssets, credentialHostOptions(deps));
+      const sanitizer = createOutputSanitizer(prepared.secrets);
+      const safeLog = (line: string): void => log(sanitizer.redactText(line));
+      const runner = new WorkflowRunner({ registry, environmentId: env?.id, failFast: false, strict: opts.strict });
+      const wfr = sanitizer.redactValue(await runner.run(prepared.run, workflow.id, { environmentId: env?.id }));
+      const result = sanitizer.redactValue(workflowToRunResult(wfr));
+      // The projected raw result is durable before any reporter is invoked.
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
       mkdirSync(runsOutDir, { recursive: true });
       writeFileSync(join(runsOutDir, `workflow-${wfr.workflowId}-${randomUUID()}.json`), JSON.stringify(wfr, null, 2));
-      const result = workflowToRunResult(wfr);
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
         if (!reporter) throw new Error(`未注册报告格式: ${format}`);
         const file = await reporter.render(result, runsOutDir);
-        log(`报告已生成: ${file}`);
+        safeLog(`报告已生成: ${file}`);
       }
-      for (const w of wfr.warnings) log(`[警告] ${w}`);
+      for (const w of wfr.warnings) safeLog(`[警告] ${w}`);
       for (const node of wfr.nodeResults) {
         if (node.state === "skipped") {
-          log(`[跳过] 节点 ${node.nodeId}：${node.skipReason === "condition-pruned" ? "条件不满足" : node.skipReason ?? "未知原因"}`);
+          safeLog(`[跳过] 节点 ${node.nodeId}：${node.skipReason === "condition-pruned" ? "条件不满足" : node.skipReason ?? "未知原因"}`);
         }
       }
-      log(`节点统计：总计 ${wfr.total} · 通过 ${wfr.passed} · 失败 ${wfr.failed} · 跳过 ${wfr.skipped}`);
+      safeLog(`节点统计：总计 ${wfr.total} · 通过 ${wfr.passed} · 失败 ${wfr.failed} · 跳过 ${wfr.skipped}`);
       process.exitCode = wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0;
     });
 
@@ -641,8 +769,10 @@ export async function runCli(
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
       // 定位/env/resolver 与 stress-worker 共享 helper（不复制）；校验通过才落协调或进程内执行。
-      const targetInfo = await resolveStressTarget(registry, root, apiPath, opts.case, opts.env);
+      const targetInfo = await resolveStressTarget(registry, root, apiPath, opts.case, opts.env, credentialHostOptions(deps));
       const { apiId, createRunner } = targetInfo;
+      const sanitizer = createOutputSanitizer(targetInfo.prepared.secrets);
+      const log = (line: string): void => hostLog(sanitizer.redactText(line));
       const projectMaxRps = targetInfo.project.stressPolicy?.maxRps;
       const effectiveMaxRps = opts.maxRps === undefined
         ? projectMaxRps
@@ -692,8 +822,11 @@ export async function runCli(
         // 多 shard：构造 specBase（workspaceRoot 显式传给子进程 worker），协调器拆分/并发/汇聚。
         const { DistributedStressCoordinator } = await import("@apicc/core");
         const specBase: StressWorkerSpecBase = {
-          apiPath,
+          apiPath: targetInfo.apiPath,
           caseId: opts.case,
+          definitionRevision: targetInfo.prepared.snapshot.definitionRevision,
+          credentialVersions: Object.fromEntries(Object.keys(targetInfo.prepared.run.credentialBindings.versions)
+            .map((refId) => [refId, targetInfo.prepared.run.credentialBindings.versions[refId]!])),
           envName: opts.env,
           concurrency: opts.concurrency,
           workspaceRoot: root,
@@ -731,6 +864,7 @@ export async function runCli(
         throw new Error(`压测报告契约校验失败[current_report_invalid]：${detail}`);
       }
       report = currentReport.data;
+      report = sanitizer.redactValue(report);
       writeFileSync(join(runsOutDir, `stress-${apiId}-${Date.now()}.json`), JSON.stringify(report, null, 2));
       const l = report.latency;
       log(`压测完成：总计 ${report.totalRequests} · 成功 ${report.ok} · 失败 ${report.failed} · RPS ${report.rps.toFixed(1)}`);
@@ -807,16 +941,21 @@ export async function runCli(
     .option("--allow-target <origin>", "本次运行确认的 HTTP(S) origin（可重复）", collectOption, [])
     .requiredOption("--shard-id <id>", "shard 标识（由协调端分配）")
     .requiredOption("--workspace <root>", "工作区根目录（由协调端传入）")
+    .requiredOption("--definition-revision <revision>", "协调端固定的项目定义版本描述符")
+    .requiredOption("--credential-versions <json>", "协调端固定的凭据版本 JSON 字典（不含凭据值）")
     .action(async (apiPath: string, opts: {
       case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number;
       maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
       connectionMode: "pooled" | "fresh"; allowTarget: string[]; shardId: string; workspace: string;
+      definitionRevision: string; credentialVersions: string;
     }) => {
       const out = deps.workerOut ?? ((line: string) => { process.stdout.write(`${line}\n`); });
       const err = deps.workerErr ?? ((line: string) => { console.error(line); });
+      let redactText = (line: string): string => line;
       const fail = (message: string): void => {
-        err(`[stress-worker ${opts.shardId}] ${message}`);
-        const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: opts.shardId, error: message };
+        const safeMessage = redactText(message);
+        err(`[stress-worker ${opts.shardId}] ${safeMessage}`);
+        const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: opts.shardId, error: safeMessage };
         out(JSON.stringify(failure));
         process.exitCode = 1;
       };
@@ -834,7 +973,18 @@ export async function runCli(
           throw new Error(`未找到 apicc.workspace.yaml: ${opts.workspace}`);
         }
         const confirmedTargetOrigins = [...new Set((opts.allowTarget ?? []).map(validateStressOriginOption))];
-        const targetInfo = await resolveStressTarget(registry, opts.workspace, apiPath, opts.case, opts.env);
+        const credentialVersions = parseExpectedCredentialVersions(opts.credentialVersions);
+        const targetInfo = await resolveStressTarget(
+          registry,
+          opts.workspace,
+          apiPath,
+          opts.case,
+          opts.env,
+          credentialHostOptions(deps),
+          { definitionRevision: opts.definitionRevision, credentialVersions },
+        );
+        const sanitizer = createOutputSanitizer(targetInfo.prepared.secrets);
+        redactText = sanitizer.redactText;
         const effectiveMaxRps = opts.maxRps === undefined
           ? targetInfo.project.stressPolicy?.maxRps
           : targetInfo.project.stressPolicy?.maxRps === undefined
@@ -854,7 +1004,7 @@ export async function runCli(
           ...(opts.minRps !== undefined ? { minRps: opts.minRps } : {}),
         };
         const report = await targetInfo.createRunner({
-          onSample: (sample) => samples.push({
+          onSample: (sample) => samples.push(sanitizer.redactValue({
           requestTimeMs: sample.requestTimeMs ?? sample.timeMs ?? 0,
           scriptTimeMs: sample.scriptTimeMs ?? 0,
           iterationTimeMs: sample.iterationTimeMs ?? sample.requestTimeMs ?? sample.timeMs ?? 0,
@@ -866,7 +1016,7 @@ export async function runCli(
           ...(sample.requestCompleted !== undefined ? { requestCompleted: sample.requestCompleted } : {}),
           ...(sample.failureKind !== undefined ? { failureKind: sample.failureKind } : {}),
           ...(sample.safety !== undefined ? { safety: sample.safety } : {}),
-        }), concurrency: opts.concurrency, maxRps: effectiveMaxRps,
+        })), concurrency: opts.concurrency, maxRps: effectiveMaxRps,
         confirmedTargetOrigins, connectionMode: opts.connectionMode,
         }).run({
           concurrency: opts.concurrency,
@@ -885,10 +1035,10 @@ export async function runCli(
         });
         if (!report.generator) throw new Error("worker 未生成 generator 指标");
         if (!report.measurementWindow) throw new Error("worker 未生成 pressure measurement window");
-        const result: ShardResult = {
+        const result: ShardResult = sanitizer.redactValue({
           protocolVersion: 2, ok: true, shardId: opts.shardId, samples, generator: report.generator,
           measurementWindow: report.measurementWindow,
-        };
+        });
         out(JSON.stringify(ShardOutcomeSchema.parse(result)));
         process.exitCode = 0;
       } catch (e) {
@@ -898,14 +1048,13 @@ export async function runCli(
 
   program
     .command("export-design")
-    .argument("<apiPath>", "接口路径（名称制虚拟路径，与 run/ai 同匹配口径，可为全路径或分隔符边界后缀）")
+    .argument("<apiPath>", "接口完整 UUID 路径（groups/<groupId>/projects/<projectId>/collections/<collectionId>/.../apis/<apiId>）")
     .action(async (apiPath: string) => {
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml");
-      // id 布局（轨一）收口到 locateApiTarget：名称匹配 + design.md 自物理 id 目录读取，
-      // 与 fileStorage.loadApiDir 读取口径一致；简报测试要求导出内容包含设计正文。
-      const { api } = await locateApiTarget(registry, root, apiPath);
-      log(renderDesignMarkdown(api));
+      const { api, project } = await locateApiTarget(registry, root, apiPath);
+      const snapshot = createProjectSnapshot(project);
+      log(renderContractMarkdown(api, snapshot.context));
     });
 
   // stdio MCP 服务器（M6 规格 D5/D6）：把工作区能力暴露为 MCP 工具供 agent 客户端消费。
@@ -940,7 +1089,7 @@ export async function runCli(
   const ai = program.command("ai").description("AI 能力命令组");
   ai
     .command("suggest-cases")
-    .argument("<apiPath>", "接口目录（相对工作区根）")
+    .argument("<apiPath>", "接口完整 UUID 路径（直接使用工作区存储树路径）")
     .option("--instruction <text>", "用户补充指令（如「补充边界用例」）")
     .option("--limit <n>", "候选用例条数上限", Number)
     .option("--out <file>", "候选用例 YAML 输出文件（缺省打印 stdout）")
@@ -951,10 +1100,11 @@ export async function runCli(
       if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) {
         throw new Error(`limit 必须为正整数，收到 ${opts.limit}`);
       }
-      const { api } = await locateApiTarget(registry, root, apiPath);
+      const { api, project } = await locateApiTarget(registry, root, apiPath);
       const provider = createAiProvider(resolveAiConfig({ env: deps.aiEnv, homeDir: deps.aiHomeDir }));
       const { suggestCases } = await import("@apicc/core");
-      const cases = await suggestCases(api, { provider, instruction: opts.instruction, limit: opts.limit });
+      const snapshot = createProjectSnapshot(project);
+      const cases = await suggestCases(api, snapshot.context, { provider, instruction: opts.instruction, limit: opts.limit });
       const { stringify: stringifyYaml } = await import("yaml");
       const yamlText = stringifyYaml({ cases });
       if (opts.out) {
@@ -986,12 +1136,12 @@ export async function runCli(
         return;
       }
       const storage = registry.getStorage()!;
-      const { workspace } = await storage.load(root);
+      const { workspace, revision } = await storage.load(root);
       let group = workspace.groups.find((x) => x.name === opts.group);
       if (!group) { group = { id: crypto.randomUUID(), name: opts.group, projects: [] }; workspace.groups.push(group); }
       // 同名放开（轨一）：同名项目直接并存（id 为身份），不再拒绝
       group.projects.push(project);
-      await storage.save(root, workspace);
+      await storage.save(root, workspace, { expectedRevision: revision, deletions: [] });
       for (const w of warnings) log(`[警告] ${w}`);
       log(`已导入项目「${project.name}」到分组「${opts.group}」`);
     });

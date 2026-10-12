@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -12,10 +12,100 @@ import { runCli } from "../src/main.js";
 let server: Server;
 let baseUrl = "";
 let root: string;
+let dataRoot: string;
+let credibilityCsv: string;
 let prevCwd = "";
 const receivedPaths: string[] = [];
 type ObservedRequest = { method: string; url: string; headers: Record<string, string | undefined>; body: string };
 const receivedRequests: ObservedRequest[] = [];
+
+const GROUP_A = "00000000-0000-4000-8000-000000000002";
+const GROUP_B = "00000000-0000-4000-8000-000000000003";
+const PROJECT_A = "00000000-0000-4000-8000-000000000004";
+const PROJECT_B = "00000000-0000-4000-8000-000000000005";
+const COLLECTION_API = "00000000-0000-4000-8000-000000000008";
+const COLLECTION_XAPI = "00000000-0000-4000-8000-000000000009";
+const COLLECTION_B = "00000000-0000-4000-8000-000000000010";
+const COLLECTION_CREDIBILITY = "00000000-0000-4000-8000-000000000021";
+const API_OK = "00000000-0000-4000-8000-000000000011";
+const API_BAD = "00000000-0000-4000-8000-000000000012";
+const API_XOK = "00000000-0000-4000-8000-000000000013";
+const API_OK2 = "00000000-0000-4000-8000-000000000014";
+const API_RICH = "00000000-0000-4000-8000-000000000022";
+const CASE_OK = "00000000-0000-4000-8000-000000000015";
+const CASE_BAD = "00000000-0000-4000-8000-000000000016";
+const CASE_XOK = "00000000-0000-4000-8000-000000000017";
+const CASE_OK2 = "00000000-0000-4000-8000-000000000018";
+const CASE_RICH = "00000000-0000-4000-8000-000000000023";
+const collectionPath = (groupId: string, projectId: string, collectionId: string) =>
+  `groups/${groupId}/projects/${projectId}/collections/${collectionId}`;
+const apiPath = (groupId: string, projectId: string, collectionId: string, apiId: string) =>
+  `${collectionPath(groupId, projectId, collectionId)}/apis/${apiId}`;
+const workflowPath = (groupId: string, projectId: string, workflowId: string) =>
+  `groups/${groupId}/projects/${projectId}/workflows/${workflowId}`;
+
+type ApiCase = Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number]["cases"][number];
+type ApiRequest = Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number]["contract"]["request"];
+type Workflow = Workspace["groups"][number]["projects"][number]["workflows"][number];
+
+const runsPath = (name: string) => join(dataRoot, name);
+
+function testCase(
+  id: string,
+  name: string,
+  assertions: ApiCase["assertions"],
+  options: Partial<Pick<ApiCase, "parameters" | "dataDriver" | "preOperations" | "postOperations">> = {},
+): ApiCase {
+  return { id, name, scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions, ...options };
+}
+
+function httpApi(
+  id: string,
+  name: string,
+  path: string,
+  cases: ApiCase[],
+  options: { method?: "GET" | "POST"; body?: { kind: "none" } | { kind: "json"; content: string }; documentation?: string } = {},
+): Workspace["groups"][number]["projects"][number]["collections"][number]["apis"][number] {
+  const request: ApiRequest = {
+    protocol: "http",
+    method: options.method ?? "GET",
+    baseUrl: "{{baseUrl}}",
+    path,
+    pathParams: [],
+    query: [],
+    headers: [],
+    cookies: [],
+    auth: { kind: "none" },
+    body: options.body ?? { kind: "none" },
+  };
+  return {
+    contract: {
+      formatVersion: 1,
+      id,
+      metadata: { name, description: "", tags: [], version: "1", status: "published" },
+      request,
+      responses: [],
+    },
+    documentation: options.documentation ?? "",
+    cases,
+  };
+}
+
+async function saveWorkspace(workspace: Workspace): Promise<void> {
+  const current = await fileStorage.load(root);
+  await fileStorage.save(root, workspace, { expectedRevision: current.revision, deletions: [] });
+}
+
+async function saveWorkflow(workflow: Workflow, groupId = GROUP_A, projectId = PROJECT_A): Promise<void> {
+  const state = await fileStorage.load(root);
+  const group = state.workspace.groups.find((candidate) => candidate.id === groupId);
+  const project = group?.projects.find((candidate) => candidate.id === projectId);
+  if (!project) throw new Error(`Workflow project not found: ${groupId}/${projectId}`);
+  const index = project.workflows.findIndex((candidate) => candidate.id === workflow.id);
+  if (index < 0) project.workflows.push(workflow);
+  else project.workflows[index] = workflow;
+  await fileStorage.save(root, state.workspace, { expectedRevision: state.revision, deletions: [] });
+}
 
 function runCliProcess(args: string[], options: { cwd?: string; freezeNow?: boolean } = {}): Promise<{ code: number; output: string }> {
   const entry = join(dirname(fileURLToPath(import.meta.url)), "../dist/bin.js");
@@ -57,76 +147,59 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
   root = mkdtempSync(join(tmpdir(), "apicc-e2e-"));
+  dataRoot = mkdtempSync(join(tmpdir(), "apicc-e2e-data-"));
+  credibilityCsv = join(dataRoot, "credibility.csv");
   const ws: Workspace = {
-    id: "00000000-0000-4000-8000-000000000001", name: "e2e", variables: {},
+    formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "e2e", variables: {},
     groups: [{
-      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
-        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {},
-        stressPolicy: { trustedOrigins: [baseUrl] },
-        workflows: [],
-        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
+      id: GROUP_A, name: "demo", projects: [{
+        id: PROJECT_A, name: "svc", variables: {}, globals: {},
+        stressPolicy: { trustedOrigins: [baseUrl], deniedOrigins: [] },
+        workflows: [], models: [], components: [],
+        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl }, baseUrls: {} }],
         collections: [{
-          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {}, folders: [],
+          id: COLLECTION_API, name: "api", variables: {}, preOperations: [], postOperations: [], folders: [],
           apis: [
-            {
-              id: "00000000-0000-4000-8000-000000000011", name: "ok", version: "1", deprecated: false, method: "GET",
-              url: "{{baseUrl}}/x", headers: [], query: [],
-              design: "# 设计",
-              cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
-            },
-            {
-              id: "00000000-0000-4000-8000-000000000012", name: "bad", version: "1", deprecated: false, method: "GET",
-              url: "{{baseUrl}}/x", headers: [], query: [],
-              cases: [{ id: "00000000-0000-4000-8000-000000000016", name: "fails", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "500" }] }],
-            },
+            httpApi(API_OK, "ok", "/x", [testCase(CASE_OK, "passes", [{ id: "as", target: "status", op: "eq", expected: "200" }])], { documentation: "# 设计" }),
+            httpApi(API_BAD, "bad", "/x", [testCase(CASE_BAD, "fails", [{ id: "as", target: "status", op: "eq", expected: "500" }])]),
           ],
         }, {
-          id: "00000000-0000-4000-8000-000000000009", name: "xapi", variables: {}, folders: [],
-          apis: [{
-            id: "00000000-0000-4000-8000-000000000013", name: "xok", version: "1", deprecated: false, method: "GET",
-            url: "{{baseUrl}}/x", headers: [], query: [],
-            cases: [{ id: "00000000-0000-4000-8000-000000000017", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
-          }],
+          id: COLLECTION_XAPI, name: "xapi", variables: {}, preOperations: [], postOperations: [], folders: [],
+          apis: [httpApi(API_XOK, "xok", "/x", [testCase(CASE_XOK, "passes", [{ id: "as", target: "status", op: "eq", expected: "200" }])])],
         }, {
-          id: "00000000-0000-4000-8000-000000000021", name: "credibility", variables: {}, folders: [],
-          apis: [{
-            id: "00000000-0000-4000-8000-000000000022", name: "rich", version: "1", deprecated: false, method: "POST",
-            url: "{{baseUrl}}/credibility/{{parameterItem}}/{{rowItem}}", headers: [], query: [],
-            body: { kind: "json", content: '{"parameterPayload":"{{parameterPayload}}","rowPayload":"{{rowPayload}}"}' },
-            cases: [{
-              id: "00000000-0000-4000-8000-000000000023", name: "rich-case", scope: "base",
-              parameters: { parameterItem: "parameter-item", parameterPayload: "parameter-payload", parameterHeader: "from-script-parameter" },
-              dataDriver: { sourcePath: join(root, "credibility.csv"), format: "csv" },
-              preScript: 'pm.request.headers["X-Pre-Script"] = pm.variables.get("parameterHeader") ?? "";',
-              preOperations: [{ id: "rich-pre", type: "script", content: 'pm.request.headers["X-Pre-Operation"] = pm.variables.get("rowHeader") ?? ""; pm.request.url += "?marker=" + (pm.variables.get("rowMarker") ?? "");' }],
-              postOperations: [{ id: "rich-post", type: "script", content: 'pm.assert(pm.response.status === 200, "post operation: status");' }],
-              postScript: 'pm.assert(pm.response.text().includes("\\"ok\\":true"), "post script: body");',
-              assertions: [
-                { id: "rich-status", target: "status", op: "eq", expected: "200" },
-                { id: "rich-body", target: "bodyJson", op: "eq", path: "$.ok", expected: "true" },
-              ],
-            }],
-          }],
+          id: COLLECTION_CREDIBILITY, name: "credibility", variables: {}, preOperations: [], postOperations: [], folders: [],
+          apis: [httpApi(API_RICH, "rich", "/credibility/{{parameterItem}}/{{rowItem}}", [testCase(CASE_RICH, "rich-case", [
+            { id: "rich-status", target: "status", op: "eq", expected: "200" },
+            { id: "rich-body", target: "bodyJson", op: "eq", path: "$.ok", expected: "true" },
+          ], {
+            parameters: { parameterItem: "parameter-item", parameterPayload: "parameter-payload", parameterHeader: "from-script-parameter" },
+            dataDriver: { sourcePath: credibilityCsv, format: "csv" },
+            preOperations: [
+              { id: "rich-pre-script", type: "script", content: 'pm.request.headers["X-Pre-Script"] = pm.variables.get("parameterHeader") ?? "";' },
+              { id: "rich-pre", type: "script", content: 'pm.request.headers["X-Pre-Operation"] = pm.variables.get("rowHeader") ?? ""; pm.request.url += "?marker=" + (pm.variables.get("rowMarker") ?? "");' },
+            ],
+            postOperations: [
+              { id: "rich-post", type: "script", content: 'pm.assert(pm.response.status === 200, "post operation: status");' },
+              { id: "rich-post-script", type: "script", content: 'pm.assert(pm.response.text().includes("\\"ok\\":true"), "post script: body");' },
+            ],
+          })], { method: "POST", body: { kind: "json", content: '{"parameterPayload":"{{parameterPayload}}","rowPayload":"{{rowPayload}}"}' } })],
         }],
       }],
     }, {
-      id: "00000000-0000-4000-8000-000000000003", name: "demo2", projects: [{
-        id: "00000000-0000-4000-8000-000000000005", name: "svc", variables: {},
-        workflows: [],
-        environments: [{ id: "00000000-0000-4000-8000-000000000007", name: "dev", variables: { baseUrl } }],
+      id: GROUP_B, name: "demo2", projects: [{
+        id: PROJECT_B, name: "svc", variables: {}, globals: {},
+        workflows: [], models: [], components: [], stressPolicy: { trustedOrigins: [baseUrl], deniedOrigins: [] },
+        environments: [{ id: "00000000-0000-4000-8000-000000000007", name: "dev", variables: { baseUrl }, baseUrls: {} }],
         collections: [{
-          id: "00000000-0000-4000-8000-000000000010", name: "api", variables: {}, folders: [],
-          apis: [{
-            id: "00000000-0000-4000-8000-000000000014", name: "ok2", version: "1", deprecated: false, method: "GET",
-            url: "{{baseUrl}}/x", headers: [], query: [],
-            cases: [{ id: "00000000-0000-4000-8000-000000000018", name: "passes", scope: "base", parameters: {}, assertions: [{ id: "as", target: "status", op: "eq", expected: "200" }] }],
-          }],
+          id: COLLECTION_B, name: "api", variables: {}, preOperations: [], postOperations: [], folders: [],
+          apis: [httpApi(API_OK2, "ok2", "/x", [testCase(CASE_OK2, "passes", [{ id: "as", target: "status", op: "eq", expected: "200" }])])],
         }],
       }],
     }],
   };
-  writeFileSync(join(root, "credibility.csv"), "rowItem,rowPayload,rowMarker,rowHeader\nrow-item,row-payload,row-marker,from-operation-row\n");
-  await fileStorage.save(root, ws);
+  writeFileSync(credibilityCsv, "rowItem,rowPayload,rowMarker,rowHeader\nrow-item,row-payload,row-marker,from-operation-row\n");
+  const initial = await fileStorage.load(root);
+  await fileStorage.save(root, ws, { expectedRevision: initial.revision, deletions: [] });
   // 注：CLI 的 run/export-design 按“从 cwd 向上查找 apicc.workspace.yaml”定位工作区；
   // 临时工作区无法从测试 cwd 上溯可达，故模拟真实用户“在工作区内执行 CLI”（用后还原）。
   prevCwd = process.cwd();
@@ -134,6 +207,7 @@ beforeAll(async () => {
 });
 afterAll(() => {
   process.chdir(prevCwd);
+  if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
   return new Promise<void>((r) => server.close(() => r()));
 });
 
@@ -144,9 +218,9 @@ describe("CLI 端到端", () => {
   });
 
   it("run 执行集合并产出报告，失败用例使退出码为 1", async () => {
-    const runsDir = join(root, "runs");
+    const runsDir = runsPath("runs");
     const code = await runCli(
-      ["run", "groups/demo/projects/svc/collections/api", "--env", "dev", "--reporters", "html,junit", "--runs-dir", runsDir],
+      ["run", collectionPath(GROUP_A, PROJECT_A, COLLECTION_API), "--env", "dev", "--reporters", "html,junit", "--runs-dir", runsDir],
       createDefaultRegistry(),
     );
     expect(code).toBe(1);
@@ -154,23 +228,22 @@ describe("CLI 端到端", () => {
     expect(readdirSync(runsDir).some((f) => f.endsWith(".json"))).toBe(true);
   });
 
-  it("run 传正斜杠相对路径正确定位，不误匹配 xapi、重名集合取首个", async () => {
+  it("run 完整 UUID 路径精确定位，不误匹配同名集合或另一 collection", async () => {
     const logs: string[] = [];
     const code = await runCli(
-      ["run", "collections/api", "--env", "dev", "--reporters", "html"],
+      ["run", collectionPath(GROUP_A, PROJECT_A, COLLECTION_API), "--env", "dev", "--reporters", "html"],
       createDefaultRegistry(),
       (line) => logs.push(line),
     );
     expect(code).toBe(1);
-    // 仅 demo/svc/collections/api（2 用例：1 过 1 败）应被运行；
-    // xapi 与 demo2 下重名 api 均 1 用例全过——命中其一则“总计/退出码”皆不符。
+    // 仅指定 UUID 集合（2 用例：1 过 1 败）应被运行；xapi 与 demo2 下同名 api 均 1 用例全过。
     expect(logs.join("\n")).toContain("总计 2 · 通过 1 · 失败 1");
   });
 
   it("export-design 输出 Markdown 到 stdout", async () => {
     const logs: string[] = [];
     const code = await runCli(
-      ["export-design", "groups/demo/projects/svc/collections/api/apis/ok"],
+      ["export-design", apiPath(GROUP_A, PROJECT_A, COLLECTION_API, API_OK)],
       createDefaultRegistry(),
       (line) => logs.push(line),
     );
@@ -181,7 +254,7 @@ describe("CLI 端到端", () => {
   it("run 未指定 --runs-dir 时产物默认写入 <workspaceRoot>/.apicc/runs，数据树零污染（回归 I1）", async () => {
     const logs: string[] = [];
     const code = await runCli(
-      ["run", "groups/demo/projects/svc/collections/xapi", "--env", "dev", "--reporters", "html,junit"],
+      ["run", collectionPath(GROUP_A, PROJECT_A, COLLECTION_XAPI), "--env", "dev", "--reporters", "html,junit"],
       createDefaultRegistry(),
       (line) => logs.push(line),
     );
@@ -202,7 +275,7 @@ describe("CLI 端到端", () => {
 
   it("import --yes 导入 OpenAPI 样例退出码 0，重开工作区断言项目存在；重复导入同名并存（轨一同名放开）", async () => {
     const { writeFileSync } = await import("node:fs");
-    const sample = join(root, "openapi-sample.yaml");
+    const sample = join(dataRoot, "openapi-sample.yaml");
     writeFileSync(sample, [
       "openapi: 3.0.0",
       "info:",
@@ -228,7 +301,7 @@ describe("CLI 端到端", () => {
     expect(group).toBeDefined();
     const project = group!.projects.find((p) => p.name === "宠物样例");
     expect(project).toBeDefined();
-    expect(project!.collections[0]!.apis.map((a) => a.name)).toContain("listPets");
+    expect(project!.collections[0]!.apis.map((asset) => asset.contract.metadata.name)).toContain("listPets");
     // 重复导入同名项目：同名放开（轨一）后并存，不再拒绝——两个同名项目 id 不同
     const code2 = await runCli(["import", sample, "--group", "imported", "--yes"], createDefaultRegistry());
     expect(code2).toBe(0);
@@ -240,7 +313,7 @@ describe("CLI 端到端", () => {
 
   it("import 不带 --yes 只打印预览不写入工作区", async () => {
     const { writeFileSync } = await import("node:fs");
-    const sample = join(root, "preview-sample.yaml");
+    const sample = join(dataRoot, "preview-sample.yaml");
     writeFileSync(sample, ["openapi: 3.0.0", "info:", "  title: 预览项目", "  version: 1.0.0", "paths: {}"].join("\n"));
     const logs: string[] = [];
     const code = await runCli(["import", sample, "--group", "preview-group"], createDefaultRegistry(), (l) => logs.push(l));
@@ -253,51 +326,29 @@ describe("CLI 端到端", () => {
 
   it("import 无法识别的格式抛「无法识别的导入格式」", async () => {
     const { writeFileSync } = await import("node:fs");
-    const sample = join(root, "unknown-format.txt");
+    const sample = join(dataRoot, "unknown-format.txt");
     writeFileSync(sample, "既不是 OpenAPI 也不是 v2.1 集合的普通文本");
     await expect(runCli(["import", sample, "--group", "g"], createDefaultRegistry())).rejects.toThrow(/无法识别的导入格式/);
   });
 
   it("run-workflow 按条件流转执行并产出报告", async () => {
-    // 夹具：三节点条件工作流 one --prev.passed--> two --false--> three，workflow.yaml 手写落盘
-    // （nodes 引用既有夹具接口：a1/t1 通过、a3/t3 通过、a2/t2 失败——three 若被错误流转执行会致失败）。
-    const { mkdirSync, writeFileSync, readdirSync, readFileSync } = await import("node:fs");
-    // id 布局（轨一）：工作流目录名=工作流 id；apiId/caseId 引用夹具接口的 UUID id
-    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", "00000000-0000-4000-8000-000000000019");
-    mkdirSync(wfDir, { recursive: true });
-    writeFileSync(join(wfDir, "workflow.yaml"), [
-      "id: 00000000-0000-4000-8000-000000000019",
-      "name: 条件流",
-      "status: enabled",
-      "nodes:",
-      "  - id: one",
-      "    kind: request",
-      "    apiId: 00000000-0000-4000-8000-000000000011",
-      "    caseId: 00000000-0000-4000-8000-000000000015",
-      "    label: one",
-      "  - id: two",
-      "    kind: request",
-      "    apiId: 00000000-0000-4000-8000-000000000013",
-      "    caseId: 00000000-0000-4000-8000-000000000017",
-      "    label: two",
-      "  - id: three",
-      "    kind: request",
-      "    apiId: 00000000-0000-4000-8000-000000000012",
-      "    caseId: 00000000-0000-4000-8000-000000000016",
-      "    label: three",
-      "edges:",
-      "  - id: e1",
-      "    from: one",
-      "    to: two",
-      "    condition: prev.passed",
-      "  - id: e2",
-      "    from: two",
-      "    to: three",
-      '    condition: "false"',
-    ].join("\n"));
+    // 三节点条件工作流 one --prev.passed--> two --false--> three；workflow 属于 project 元数据。
+    await saveWorkflow({
+      id: "00000000-0000-4000-8000-000000000019", name: "条件流", status: "enabled",
+      nodes: [
+        { id: "one", kind: "request", apiId: API_OK, caseId: CASE_OK, label: "one" },
+        { id: "two", kind: "request", apiId: API_XOK, caseId: CASE_XOK, label: "two" },
+        { id: "three", kind: "request", apiId: API_BAD, caseId: CASE_BAD, label: "three" },
+      ],
+      edges: [
+        { id: "e1", from: "one", to: "two", condition: "prev.passed" },
+        { id: "e2", from: "two", to: "three", condition: "false" },
+      ],
+    });
+    const { readdirSync, readFileSync } = await import("node:fs");
     const logs: string[] = [];
     const code = await runCli(
-      ["run-workflow", "groups/demo/projects/svc/workflows/条件流", "--env", "dev", "--reporters", "junit"],
+      ["run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000019"), "--env", "dev", "--reporters", "junit"],
       createDefaultRegistry(),
       (line) => logs.push(line),
     );
@@ -321,49 +372,38 @@ describe("CLI 端到端", () => {
   }, 30000);
 
   it("run-workflow 草稿默认拒绝，--force-draft 放行；未知路径报「未找到工作流」", async () => {
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", "00000000-0000-4000-8000-000000000020");
-    mkdirSync(wfDir, { recursive: true });
-    writeFileSync(join(wfDir, "workflow.yaml"), [
-      "id: 00000000-0000-4000-8000-000000000020",
-      "name: 草稿流",
-      "status: draft",
-      "nodes:",
-      "  - id: only",
-      "    kind: request",
-      "    apiId: 00000000-0000-4000-8000-000000000011",
-      "    caseId: 00000000-0000-4000-8000-000000000015",
-      "    label: only",
-      "edges: []",
-    ].join("\n"));
+    await saveWorkflow({
+      id: "00000000-0000-4000-8000-000000000020", name: "草稿流", status: "draft",
+      nodes: [{ id: "only", kind: "request", apiId: API_OK, caseId: CASE_OK, label: "only" }], edges: [],
+    });
     await expect(
-      runCli(["run-workflow", "groups/demo/projects/svc/workflows/草稿流", "--env", "dev"], createDefaultRegistry()),
+      runCli(["run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000020"), "--env", "dev"], createDefaultRegistry()),
     ).rejects.toThrow(/工作流为草稿，请先发布启用或加 --force-draft/);
     const code = await runCli(
-      ["run-workflow", "groups/demo/projects/svc/workflows/草稿流", "--env", "dev", "--force-draft"],
+      ["run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000020"), "--env", "dev", "--force-draft"],
       createDefaultRegistry(),
     );
     expect(code).toBe(0);
     await expect(
-      runCli(["run-workflow", "groups/demo/projects/svc/workflows/不存在", "--env", "dev"], createDefaultRegistry()),
+      runCli(["run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000099"), "--env", "dev"], createDefaultRegistry()),
     ).rejects.toThrow(/未找到工作流/);
   });
 
   it("run-workflow 缺引用默认严格失败；--no-strict 继续独立节点但仍失败", async () => {
-    const { mkdirSync, writeFileSync, readdirSync, readFileSync } = await import("node:fs");
+    const { readdirSync, readFileSync } = await import("node:fs");
     const wfId = "00000000-0000-4000-8000-000000000024";
-    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", wfId);
-    mkdirSync(wfDir, { recursive: true });
-    writeFileSync(join(wfDir, "workflow.yaml"), [
-      `id: ${wfId}`, "name: 严格诊断流", "status: enabled", "nodes:",
-      "  - id: missing", "    kind: request", "    apiId: ghost-api", "    caseId: ghost-case", "    label: missing",
-      "  - id: independent", "    kind: request", "    apiId: 00000000-0000-4000-8000-000000000011", "    caseId: 00000000-0000-4000-8000-000000000015", "    label: independent",
-      "edges:", "  - id: hide-missing", "    from: independent", "    to: missing", "    condition: 'false'",
-    ].join("\n"));
-    const strictDir = join(root, "strict-runs");
+    await saveWorkflow({
+      id: wfId, name: "严格诊断流", status: "enabled",
+      nodes: [
+        { id: "missing", kind: "request", apiId: "ghost-api", caseId: "ghost-case", label: "missing" },
+        { id: "independent", kind: "request", apiId: API_OK, caseId: CASE_OK, label: "independent" },
+      ],
+      edges: [{ id: "hide-missing", from: "independent", to: "missing", condition: "false" }],
+    });
+    const strictDir = runsPath("strict-runs");
     const strictRequestsBefore = receivedRequests.length;
     const strict = await runCliProcess([
-      "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--runs-dir", strictDir,
+      "run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000024"), "--env", "dev", "--runs-dir", strictDir,
     ]);
     expect(strict.code).toBe(1);
     expect(receivedRequests).toHaveLength(strictRequestsBefore);
@@ -373,9 +413,9 @@ describe("CLI 端到端", () => {
     expect(strictReport.nodeResults.find((node) => node.nodeId === "missing")).toMatchObject({ state: "failed" });
     expect(strictReport.nodeResults.find((node) => node.nodeId === "independent")).toMatchObject({ state: "skipped" });
     expect(strictReport.nodeResults.find((node) => node.nodeId === "independent")?.outcomes).toBeUndefined();
-    const relaxedDir = join(root, "relaxed-runs");
+    const relaxedDir = runsPath("relaxed-runs");
     const relaxed = await runCliProcess([
-      "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", relaxedDir,
+      "run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000024"), "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", relaxedDir,
     ]);
     expect(relaxed.code).toBe(1);
     expect(relaxed.output).toContain("节点统计");
@@ -389,13 +429,13 @@ describe("CLI 端到端", () => {
     expect(relaxedReport.nodeResults.find((node) => node.nodeId === "missing")).toMatchObject({ state: "failed", failureKind: "config" });
     expect(relaxedReport.nodeResults.find((node) => node.nodeId === "missing")?.outcomes?.[0]).toMatchObject({ passed: false, failureKind: "config" });
     expect(relaxedReport.warnings.some((warning) => /不存在/.test(warning))).toBe(true);
-    const parallelDir = join(root, "parallel-relaxed-runs");
+    const parallelDir = runsPath("parallel-relaxed-runs");
     const [relaxedAgain, relaxedConcurrent] = await Promise.all([
       runCliProcess([
-        "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", parallelDir,
+        "run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000024"), "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", parallelDir,
       ]),
       runCliProcess([
-        "run-workflow", "groups/demo/projects/svc/workflows/严格诊断流", "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", parallelDir,
+        "run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000024"), "--env", "dev", "--no-strict", "--reporters", "junit", "--runs-dir", parallelDir,
       ]),
     ]);
     expect(relaxedAgain.code).toBe(1);
@@ -411,43 +451,27 @@ describe("CLI 端到端", () => {
   }, 30000);
 
   it("run-workflow 消费 verdict：false 通过、第二行失败、坏条件失败、force-draft 不绕过 strict，报告三态一致", async () => {
-    const { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync } = await import("node:fs");
-    const writeWorkflow = (id: string, name: string, status: string, nodes: string[], edges: string[] = []) => {
-      const dir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", id);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "workflow.yaml"), [
-        `id: ${id}`, `name: ${name}`, `status: ${status}`, "nodes:", ...nodes, "edges:", ...edges,
-      ].join("\n"));
-    };
-    const noop = (id: string, label: string) => [`  - id: ${id}`, "    kind: noop", `    label: ${label}`];
-    writeWorkflow("00000000-0000-4000-8000-000000000025", "条件通过流", "enabled", [
-      ...noop("start", "start"), ...noop("pruned", "pruned"),
-    ], ["  - id: false-edge", "    from: start", "    to: pruned", '    condition: "false"']);
-    writeWorkflow("00000000-0000-4000-8000-000000000026", "第二行失败流", "enabled", [
-      "  - id: first", "    kind: request", "    apiId: 00000000-0000-4000-8000-000000000011", "    caseId: 00000000-0000-4000-8000-000000000015", "    label: first",
-      "  - id: second", "    kind: request", "    apiId: 00000000-0000-4000-8000-000000000012", "    caseId: 00000000-0000-4000-8000-000000000016", "    label: second",
-    ], ["  - id: next", "    from: first", "    to: second"]);
-    writeWorkflow("00000000-0000-4000-8000-000000000027", "坏条件流", "enabled", [
-      ...noop("condition-source", "condition-source"), ...noop("condition-target", "condition-target"),
-    ], ["  - id: bad-condition", "    from: condition-source", "    to: condition-target", "    condition: missingConditionValue"]);
-    writeWorkflow("00000000-0000-4000-8000-000000000028", "草稿严格流", "draft", [
-      "  - id: missing", "    kind: request", "    apiId: ghost-api", "    caseId: ghost-case", "    label: missing",
-      "  - id: independent", "    kind: request", "    apiId: 00000000-0000-4000-8000-000000000011", "    caseId: 00000000-0000-4000-8000-000000000015", "    label: independent",
+    const { readdirSync, readFileSync, existsSync } = await import("node:fs");
+    const writeWorkflow = (id: string, name: string, status: Workflow["status"], nodes: Workflow["nodes"], edges: Workflow["edges"] = []) =>
+      saveWorkflow({ id, name, status, nodes, edges });
+    const noop = (id: string, label: string): Workflow["nodes"][number] => ({ id, kind: "noop", label });
+    await writeWorkflow("00000000-0000-4000-8000-000000000025", "条件通过流", "enabled", [
+      noop("start", "start"), noop("pruned", "pruned"),
+    ], [{ id: "false-edge", from: "start", to: "pruned", condition: "false" }]);
+    await writeWorkflow("00000000-0000-4000-8000-000000000026", "第二行失败流", "enabled", [
+      { id: "first", kind: "request", apiId: API_OK, caseId: CASE_OK, label: "first" },
+      { id: "second", kind: "request", apiId: API_BAD, caseId: CASE_BAD, label: "second" },
+    ], [{ id: "next", from: "first", to: "second" }]);
+    await writeWorkflow("00000000-0000-4000-8000-000000000027", "坏条件流", "enabled", [
+      noop("condition-source", "condition-source"), noop("condition-target", "condition-target"),
+    ], [{ id: "bad-condition", from: "condition-source", to: "condition-target", condition: "missingConditionValue" }]);
+    await writeWorkflow("00000000-0000-4000-8000-000000000028", "草稿严格流", "draft", [
+      { id: "missing", kind: "request", apiId: "ghost-api", caseId: "ghost-case", label: "missing" },
+      { id: "independent", kind: "request", apiId: API_OK, caseId: CASE_OK, label: "independent" },
     ]);
-    // 手写 YAML 后再经 storage round-trip，确保实际 dist 子进程看到该 draft 工作流（与真实落盘形状一致）。
-    const draftWorkspace = await fileStorage.load(root);
-    const draftProject = draftWorkspace.workspace.groups.find((group) => group.name === "demo")!.projects[0]!;
-    const draftNodes = [
-      { id: "missing", kind: "request" as const, apiId: "ghost-api", caseId: "ghost-case", label: "missing" },
-      { id: "independent", kind: "request" as const, apiId: "00000000-0000-4000-8000-000000000011", caseId: "00000000-0000-4000-8000-000000000015", label: "independent" },
-    ];
-    const draftWorkflow = draftProject.workflows.find((workflow) => workflow.id === "00000000-0000-4000-8000-000000000028");
-    if (draftWorkflow) draftWorkflow.nodes = draftNodes;
-    else draftProject.workflows.push({ id: "00000000-0000-4000-8000-000000000028", name: "草稿严格流", status: "draft", nodes: draftNodes, edges: [] });
-    await fileStorage.save(root, draftWorkspace.workspace);
 
-    const falseDir = join(root, "false-runs");
-    const falseRun = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/条件通过流", "--reporters", "html,junit", "--runs-dir", falseDir]);
+    const falseDir = runsPath("false-runs");
+    const falseRun = await runCliProcess(["run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000025"), "--reporters", "html,junit", "--runs-dir", falseDir]);
     expect(falseRun.code).toBe(0);
     const falseRaw = readdirSync(falseDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
     const falseResult = JSON.parse(readFileSync(join(falseDir, falseRaw), "utf8")) as { verdict?: string; total?: number; passed?: number; failed?: number; skipped?: number; nodeResults: Array<{ nodeId?: string; state: string; skipReason?: string }> };
@@ -473,8 +497,8 @@ describe("CLI 端到端", () => {
     expect(falseXml).toMatch(/<testcase name="pruned:[^"]+"[\s\S]*<skipped message="condition-pruned"\/>/);
     expect(falseXml).not.toContain("<failure ");
 
-    const failedDir = join(root, "second-fails-runs");
-    const failedRun = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/第二行失败流", "--env", "dev", "--reporters", "html,junit", "--runs-dir", failedDir]);
+    const failedDir = runsPath("second-fails-runs");
+    const failedRun = await runCliProcess(["run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000026"), "--env", "dev", "--reporters", "html,junit", "--runs-dir", failedDir]);
     expect(failedRun.code).toBe(1);
     const failedRaw = readdirSync(failedDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
     const failedResult = JSON.parse(readFileSync(join(failedDir, failedRaw), "utf8")) as { verdict?: string; total?: number; passed?: number; failed?: number; skipped?: number; nodeResults: Array<{ nodeId: string; state: string; outcomes?: Array<{ passed: boolean }> }> };
@@ -497,8 +521,8 @@ describe("CLI 端到端", () => {
     expect(failedJunit).toMatch(/<testsuite name="第二行失败流" tests="2" failures="1" skipped="0">/);
     expect(failedJunit).toMatch(/<testcase name="second:[^"]+"[\s\S]*<failure message="/);
 
-    const badDir = join(root, "bad-condition-runs");
-    const badCondition = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/坏条件流", "--reporters", "html,junit", "--runs-dir", badDir]);
+    const badDir = runsPath("bad-condition-runs");
+    const badCondition = await runCliProcess(["run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000027"), "--reporters", "html,junit", "--runs-dir", badDir]);
     expect(badCondition.code).toBe(1);
     const badRaw = readdirSync(badDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
     const badResult = JSON.parse(readFileSync(join(badDir, badRaw), "utf8")) as { verdict?: string; total?: number; passed?: number; failed?: number; skipped?: number; nodeResults: Array<{ nodeId: string; state: string; failureKind?: string; skipReason?: string }> };
@@ -528,10 +552,10 @@ describe("CLI 端到端", () => {
     expect(conditionSourceCase).toContain("<failure message=");
     expect(conditionTargetCase).toContain('<skipped message="upstream-failed"/>');
     const draftRequestsBefore = receivedRequests.length;
-    const draft = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/草稿严格流", "--force-draft", "--runs-dir", join(root, "draft-strict-runs")]);
+    const draft = await runCliProcess(["run-workflow", workflowPath(GROUP_A, PROJECT_A, "00000000-0000-4000-8000-000000000028"), "--force-draft", "--runs-dir", runsPath("draft-strict-runs")]);
     expect(draft.code).toBe(1);
     expect(receivedRequests).toHaveLength(draftRequestsBefore);
-    const draftDir = join(root, "draft-strict-runs");
+    const draftDir = runsPath("draft-strict-runs");
     if (!existsSync(draftDir)) throw new Error(`draft child output: ${draft.output}`);
     const draftRaw = readdirSync(draftDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
     const draftReport = JSON.parse(readFileSync(join(draftDir, draftRaw), "utf8")) as { verdict?: string; nodeResults: Array<{ nodeId: string; state: string; failureKind?: string; skipReason?: string; outcomes?: unknown[] }> };
@@ -542,29 +566,35 @@ describe("CLI 端到端", () => {
   }, 30000);
 
   it("run-workflow 数据驱动 JSON 保留第一行通过/第二行失败，CLI 与 HTML/JUnit 均按两行计数", async () => {
-    const { mkdirSync, readFileSync, readdirSync } = await import("node:fs");
+    const { readFileSync, readdirSync } = await import("node:fs");
     const { workspace } = await fileStorage.load(root);
     const project = workspace.groups.find((group) => group.name === "demo")!.projects[0]!;
     const collection = project.collections[0]!;
     const source = collection.apis[0]!;
     const apiId = "00000000-0000-4000-8000-000000000034";
     const caseId = "00000000-0000-4000-8000-000000000035";
-    const rowsPath = join(root, "workflow-rows.json");
+    const rowsPath = join(dataRoot, "workflow-rows.json");
     writeFileSync(rowsPath, JSON.stringify([{ expected: "200" }, { expected: "500" }]));
-    collection.apis.push({ ...source, id: apiId, name: "数据行", url: "{{baseUrl}}/rows", cases: [{
+    collection.apis.push({
+      ...source,
+      contract: {
+        ...source.contract,
+        id: apiId,
+        metadata: { ...source.contract.metadata, name: "数据行" },
+        request: { ...source.contract.request, path: "/rows" },
+      },
+      cases: [{
       ...source.cases[0]!, id: caseId, name: "data-case", dataDriver: { sourcePath: rowsPath, format: "json" },
       assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }],
     }] });
-    await fileStorage.save(root, workspace);
+    await saveWorkspace(workspace);
     const wfId = "00000000-0000-4000-8000-000000000036";
-    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", wfId);
-    mkdirSync(wfDir, { recursive: true });
-    writeFileSync(join(wfDir, "workflow.yaml"), [
-      `id: ${wfId}`, "name: 数据行流", "status: enabled", "nodes:",
-      "  - id: data-row", "    kind: request", `    apiId: ${apiId}`, `    caseId: ${caseId}`, "    label: data-row", "edges: []",
-    ].join("\n"));
-    const runsDir = join(root, "data-row-runs");
-    const run = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/数据行流", "--env", "dev", "--reporters", "html,junit", "--runs-dir", runsDir]);
+    await saveWorkflow({
+      id: wfId, name: "数据行流", status: "enabled",
+      nodes: [{ id: "data-row", kind: "request", apiId, caseId, label: "data-row" }], edges: [],
+    });
+    const runsDir = runsPath("data-row-runs");
+    const run = await runCliProcess(["run-workflow", workflowPath(GROUP_A, PROJECT_A, wfId), "--env", "dev", "--reporters", "html,junit", "--runs-dir", runsDir]);
     expect(run.code).toBe(1);
     const rawFile = readdirSync(runsDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"))!;
     const report = JSON.parse(readFileSync(join(runsDir, rawFile), "utf8")) as { verdict?: string; nodeResults: Array<{ outcomes?: Array<{ row?: number; passed: boolean }> }> };
@@ -586,19 +616,17 @@ describe("CLI 端到端", () => {
   }, 30000);
 
   it("run-workflow 固定同毫秒时不同 workflowName 仍写入两个可归属 JSON", async () => {
-    const { mkdirSync, readFileSync, readdirSync } = await import("node:fs");
+    const { readFileSync, readdirSync } = await import("node:fs");
     const wfId = "00000000-0000-4000-8000-000000000037";
-    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000002", "projects", "00000000-0000-4000-8000-000000000004", "workflows", wfId);
-    mkdirSync(wfDir, { recursive: true });
-    const writeNamedWorkflow = (name: string) => writeFileSync(join(wfDir, "workflow.yaml"), [
-      `id: ${wfId}`, `name: ${name}`, "status: enabled", "nodes:", "  - id: marker-a", "    kind: noop", "    label: marker-a", "edges: []",
-    ].join("\n"));
-    writeNamedWorkflow("碰撞甲");
-    const runsDir = join(root, "collision-runs");
-    const first = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/碰撞甲", "--runs-dir", runsDir], { freezeNow: true });
+    const writeNamedWorkflow = (name: string) => saveWorkflow({
+      id: wfId, name, status: "enabled", nodes: [{ id: "marker-a", kind: "noop", label: "marker-a" }], edges: [],
+    });
+    await writeNamedWorkflow("碰撞甲");
+    const runsDir = runsPath("collision-runs");
+    const first = await runCliProcess(["run-workflow", workflowPath(GROUP_A, PROJECT_A, wfId), "--runs-dir", runsDir], { freezeNow: true });
     expect(first.code).toBe(0);
-    writeNamedWorkflow("碰撞乙");
-    const second = await runCliProcess(["run-workflow", "groups/demo/projects/svc/workflows/碰撞乙", "--runs-dir", runsDir], { freezeNow: true });
+    await writeNamedWorkflow("碰撞乙");
+    const second = await runCliProcess(["run-workflow", workflowPath(GROUP_A, PROJECT_A, wfId), "--runs-dir", runsDir], { freezeNow: true });
     expect(second.code).toBe(0);
     const files = readdirSync(runsDir).filter((file) => file.startsWith("workflow-") && file.endsWith(".json"));
     expect(files).toHaveLength(2);
@@ -621,26 +649,31 @@ describe("CLI 端到端", () => {
     const sourceApi = demo.projects[0]!.collections[0]!.apis[0]!;
     const project = demo2.projects[0]!;
     const collection = project.collections[0]!;
-    const nestedApi = { ...sourceApi, name: "project-two", url: "{{baseUrl}}/project-two", cases: sourceApi.cases.map((testCase) => ({ ...testCase })) };
+    const nestedApi = {
+      ...sourceApi,
+      contract: {
+        ...sourceApi.contract,
+        metadata: { ...sourceApi.contract.metadata, name: "project-two" },
+        request: { ...sourceApi.contract.request, path: "/project-two" },
+      },
+      cases: sourceApi.cases.map((testCase) => ({ ...testCase })),
+    };
     collection.variables = {};
     project.environments[0]!.baseUrls = { [collection.id]: `${baseUrl}/module-base` };
-    collection.apis = [];
     collection.folders = [{
-      id: "00000000-0000-4000-8000-000000000031", name: "outer", apis: [], folders: [{
-        id: "00000000-0000-4000-8000-000000000032", name: "inner", apis: [nestedApi], folders: [],
+      id: "00000000-0000-4000-8000-000000000031", name: "outer", preOperations: [], postOperations: [], apis: [], folders: [{
+        id: "00000000-0000-4000-8000-000000000032", name: "inner", preOperations: [], postOperations: [], apis: [nestedApi], folders: [],
       }],
     }];
-    await fileStorage.save(root, workspace);
+    await saveWorkspace(workspace);
     const wfId = "00000000-0000-4000-8000-000000000033";
-    const wfDir = join(root, "groups", "00000000-0000-4000-8000-000000000003", "projects", "00000000-0000-4000-8000-000000000005", "workflows", wfId);
-    const { mkdirSync, readFileSync, readdirSync } = await import("node:fs");
-    mkdirSync(wfDir, { recursive: true });
-    writeFileSync(join(wfDir, "workflow.yaml"), [
-      `id: ${wfId}`, "name: 项目作用域流", "status: enabled", "nodes:",
-      "  - id: nested-request", "    kind: request", `    apiId: ${sourceApi.id}`, `    caseId: ${sourceApi.cases[0]!.id}`, "    label: nested-request", "edges: []",
-    ].join("\n"));
-    const runsDir = join(root, "project-scope-runs");
-    const run = await runCliProcess(["run-workflow", "groups/demo2/projects/svc/workflows/项目作用域流", "--env", "dev", "--runs-dir", runsDir]);
+    const { readFileSync, readdirSync } = await import("node:fs");
+    await saveWorkflow({
+      id: wfId, name: "项目作用域流", status: "enabled",
+      nodes: [{ id: "nested-request", kind: "request", apiId: sourceApi.contract.id, caseId: sourceApi.cases[0]!.id, label: "nested-request" }], edges: [],
+    }, GROUP_B, PROJECT_B);
+    const runsDir = runsPath("project-scope-runs");
+    const run = await runCliProcess(["run-workflow", workflowPath(GROUP_B, PROJECT_B, wfId), "--env", "dev", "--runs-dir", runsDir]);
     expect(run.code).toBe(0);
     expect(receivedPaths).toContain("/module-base/project-two");
     const raw = readdirSync(runsDir).find((name) => name.startsWith("workflow-") && name.endsWith(".json"))!;
@@ -651,12 +684,12 @@ describe("CLI 端到端", () => {
 
   it("run-stress 对接口用例并发压测并落盘 JSON", async () => {
     // 夹具：既有临时工作区 + 本地 server（复用文件内既有 beforeAll 资源）。
-    const runsDir = join(root, "stress-runs");
+    const runsDir = runsPath("stress-runs");
     const logs: string[] = [];
     const code = await runCli(
       [
-        "run-stress", "groups/demo/projects/svc/collections/api/apis/ok",
-        "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "4", "--iterations", "12",
+        "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_API, API_OK),
+        "--case", CASE_OK, "--env", "dev", "--concurrency", "4", "--iterations", "12",
         "--runs-dir", runsDir,
       ],
       createDefaultRegistry(),
@@ -683,11 +716,11 @@ describe("CLI 端到端", () => {
     const { workspace } = await fileStorage.load(root);
     const project = workspace.groups[0]!.projects[0]!;
     project.stressPolicy = { trustedOrigins: [], deniedOrigins: [] };
-    await fileStorage.save(root, workspace);
-    const runsDir = join(root, "stress-unconfirmed");
+    await saveWorkspace(workspace);
+    const runsDir = runsPath("stress-unconfirmed");
     const logs: string[] = [];
     const code = await runCli([
-      "run-stress", "groups/demo/projects/svc/collections/api/apis/ok", "--case", "00000000-0000-4000-8000-000000000015",
+      "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_API, API_OK), "--case", CASE_OK,
       "--env", "dev", "--concurrency", "1", "--iterations", "1", "--runs-dir", runsDir,
     ], createDefaultRegistry(), (line) => logs.push(line));
     expect(code).toBe(1);
@@ -701,14 +734,14 @@ describe("CLI 端到端", () => {
     expect(report.totalRequests).toBe(1);
     expect(report.safety?.targetOrigins).toEqual([{ origin: baseUrl, confirmation: "rejected", policy: "target_confirmation_required", loopback: true, appliedPolicy: { trustedOrigins: [], deniedOrigins: [] } }]);
     project.stressPolicy = { trustedOrigins: [baseUrl] };
-    await fileStorage.save(root, workspace);
+    await saveWorkspace(workspace);
   }, 30000);
 
   it("run-stress 精确 allow-target 放行，HTTP 200 但断言失败仍以 verdict 失败退出", async () => {
-    const runsDir = join(root, "stress-assertion");
+    const runsDir = runsPath("stress-assertion");
     const logs: string[] = [];
     const code = await runCli([
-      "run-stress", "groups/demo/projects/svc/collections/api/apis/bad", "--case", "00000000-0000-4000-8000-000000000016",
+      "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_API, API_BAD), "--case", CASE_BAD,
       "--env", "dev", "--concurrency", "1", "--iterations", "1", "--allow-target", baseUrl, "--runs-dir", runsDir,
     ], createDefaultRegistry(), (line) => logs.push(line));
     expect(code).toBe(1);
@@ -722,22 +755,21 @@ describe("CLI 端到端", () => {
     const project = workspace.groups[0]!.projects.find((candidate) => candidate.name === "svc")!;
     const api = project.collections.find((collection) => collection.name === "credibility")!.apis[0]!;
     const testCase = api.cases[0]!;
-    const originalPreScript = testCase.preScript;
-    const runsDir = join(root, "stress-mixed-safety");
+    const originalPreOperations = testCase.preOperations;
+    const runsDir = runsPath("stress-mixed-safety");
     const before = receivedRequests.length;
-    testCase.preScript = [
+    testCase.preOperations = [{ id: "safety-injection", type: "script", content: [
       'if (pm.variables.get("safetyOnce") !== "yes") {',
       '  pm.variables.set("safetyOnce", "yes");',
       '  pm.request.url = "http://127.0.0.1:1/blocked";',
       '}',
-      originalPreScript ?? "",
-    ].join("\n");
-    await fileStorage.save(root, workspace);
+    ].join("\n") }, ...originalPreOperations];
+    await saveWorkspace(workspace);
     try {
       const logs: string[] = [];
       const code = await runCli([
-        "run-stress", "groups/demo/projects/svc/collections/credibility/apis/rich",
-        "--case", "00000000-0000-4000-8000-000000000023", "--env", "dev", "--concurrency", "1", "--iterations", "2",
+        "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_CREDIBILITY, API_RICH),
+        "--case", CASE_RICH, "--env", "dev", "--concurrency", "1", "--iterations", "2",
         "--allow-target", baseUrl, "--runs-dir", runsDir,
       ], createDefaultRegistry(), (line) => logs.push(line));
       expect(code).toBe(1);
@@ -760,8 +792,8 @@ describe("CLI 端到端", () => {
       ]));
       expect(logs.join("\n")).toContain("verdict: failed");
     } finally {
-      testCase.preScript = originalPreScript;
-      await fileStorage.save(root, workspace);
+      testCase.preOperations = originalPreOperations;
+      await saveWorkspace(workspace);
     }
   }, 30000);
 
@@ -770,21 +802,20 @@ describe("CLI 端到端", () => {
     const project = workspace.groups[0]!.projects.find((candidate) => candidate.name === "svc")!;
     const api = project.collections.find((collection) => collection.name === "credibility")!.apis[0]!;
     const testCase = api.cases[0]!;
-    const originalPreScript = testCase.preScript;
-    const runsDir = join(root, "stress-mixed-script");
+    const originalPreOperations = testCase.preOperations;
+    const runsDir = runsPath("stress-mixed-script");
     const before = receivedRequests.length;
-    testCase.preScript = [
+    testCase.preOperations = [{ id: "script-failure-injection", type: "script", content: [
       'if (pm.variables.get("scriptOnce") !== "yes") {',
       '  pm.variables.set("scriptOnce", "yes");',
       '  throw new Error("pre-script failed");',
       '}',
-      originalPreScript ?? "",
-    ].join("\n");
-    await fileStorage.save(root, workspace);
+    ].join("\n") }, ...originalPreOperations];
+    await saveWorkspace(workspace);
     try {
       const code = await runCli([
-        "run-stress", "groups/demo/projects/svc/collections/credibility/apis/rich",
-        "--case", "00000000-0000-4000-8000-000000000023", "--env", "dev", "--concurrency", "1", "--iterations", "2",
+        "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_CREDIBILITY, API_RICH),
+        "--case", CASE_RICH, "--env", "dev", "--concurrency", "1", "--iterations", "2",
         "--allow-target", baseUrl, "--runs-dir", runsDir,
       ], createDefaultRegistry());
       expect(code).toBe(1);
@@ -801,15 +832,15 @@ describe("CLI 端到端", () => {
         expect.objectContaining({ metric: "businessFailures", actual: 1 }),
       ]));
     } finally {
-      testCase.preScript = originalPreScript;
-      await fileStorage.save(root, workspace);
+      testCase.preOperations = originalPreOperations;
+      await saveWorkspace(workspace);
     }
   }, 30000);
 
   it.each(["https://example.com/path", "https://user:pass@example.com", "ftp://example.com"])(
     "run-stress 拒绝非 origin allow-target %s", async (origin) => {
       await expect(runCli([
-        "run-stress", "groups/demo/projects/svc/collections/api/apis/ok", "--case", "00000000-0000-0000-0000-000000000015",
+        "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_API, API_OK), "--case", CASE_OK,
         "--env", "dev", "--concurrency", "1", "--iterations", "1", "--allow-target", origin,
       ], createDefaultRegistry(), () => {})).rejects.toThrow(/allow-target/);
     },
@@ -822,10 +853,10 @@ describe("CLI 端到端", () => {
       headers: request.headers,
       body: request.body,
     });
-    const functionalDir = join(root, "stress-credibility-functional");
+    const functionalDir = runsPath("stress-credibility-functional");
     const functionalBefore = receivedRequests.length;
     const functionalCode = await runCli([
-      "run", "groups/demo/projects/svc/collections/credibility", "--env", "dev", "--reporters", "html", "--runs-dir", functionalDir,
+      "run", collectionPath(GROUP_A, PROJECT_A, COLLECTION_CREDIBILITY), "--env", "dev", "--reporters", "html", "--runs-dir", functionalDir,
     ], createDefaultRegistry());
     expect(functionalCode).toBe(0);
     const { readdirSync, readFileSync } = await import("node:fs");
@@ -844,12 +875,12 @@ describe("CLI 端到端", () => {
       body: '{"parameterPayload":"parameter-payload","rowPayload":"row-payload"}',
     });
 
-    const stressDir = join(root, "stress-credibility-stress");
+    const stressDir = runsPath("stress-credibility-stress");
     const stressBefore = receivedRequests.length;
     const stressLogs: string[] = [];
     const stressCode = await runCli([
-      "run-stress", "groups/demo/projects/svc/collections/credibility/apis/rich",
-      "--case", "00000000-0000-4000-8000-000000000023", "--env", "dev", "--concurrency", "1", "--iterations", "1",
+      "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_CREDIBILITY, API_RICH),
+      "--case", CASE_RICH, "--env", "dev", "--concurrency", "1", "--iterations", "1",
       "--allow-target", baseUrl, "--runs-dir", stressDir,
     ], createDefaultRegistry(), (line) => stressLogs.push(line));
     expect(stressCode).toBe(0);
@@ -881,24 +912,25 @@ describe("CLI 端到端", () => {
     const { workspace } = await fileStorage.load(root);
     const project = workspace.groups[0]!.projects[0]!;
     const api = project.collections.find((collection) => collection.name === "credibility")!.apis[0]!;
-    const dataPath = join(root, "credibility.csv");
+    const dataPath = credibilityCsv;
     const originalData = "rowItem,rowPayload,rowMarker,rowHeader\nrow-item,row-payload,row-marker,from-operation-row\n";
-    const originalUrl = api.url;
+    const originalBaseUrl = api.contract.request.baseUrl;
+    const originalPath = api.contract.request.path;
     const originalPolicy = project.stressPolicy;
     const originalEnvironments = project.environments;
     const runArgs = (env: string, runsDir: string, extra: string[] = []) => [
-      "run-stress", "groups/demo/projects/svc/collections/credibility/apis/rich",
-      "--case", "00000000-0000-4000-8000-000000000023", "--env", env, "--concurrency", "1", "--iterations", "1",
+      "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_CREDIBILITY, API_RICH),
+      "--case", CASE_RICH, "--env", env, "--concurrency", "1", "--iterations", "1",
       "--allow-target", baseUrl, "--runs-dir", runsDir, ...extra,
     ];
     try {
       writeFileSync(dataPath, "rowItem,rowPayload,rowMarker,rowHeader\nfirst,p1,first-marker,first-header\nsecond,p2,second-marker,second-header\n");
       project.stressPolicy = { trustedOrigins: [], deniedOrigins: [] };
-      await fileStorage.save(root, workspace);
+      await saveWorkspace(workspace);
       const pathLogs: string[] = [];
       const pathBefore = receivedRequests.length;
       expect(await runCli([
-        ...runArgs("dev", join(root, "stress-origin-path"), ["--iterations", "2"]),
+        ...runArgs("dev", runsPath("stress-origin-path"), ["--iterations", "2"]),
       ], createDefaultRegistry(), (line) => pathLogs.push(line))).toBe(0);
       expect(receivedRequests.slice(pathBefore).map((request) => request.url)).toEqual([
         "/credibility/parameter-item/first?marker=first-marker", "/credibility/parameter-item/second?marker=second-marker",
@@ -911,50 +943,54 @@ describe("CLI 端到端", () => {
         ["host", `http://localhost:${port}/credibility/{{parameterItem}}/{{rowItem}}`],
         ["port", `http://127.0.0.1:${port + 1}/credibility/{{parameterItem}}/{{rowItem}}`],
       ] as const) {
-        api.url = targetUrl;
-        await fileStorage.save(root, workspace);
+        const parsed = new URL(targetUrl);
+        api.contract.request.baseUrl = `${parsed.protocol}//${parsed.host}`;
+        api.contract.request.path = parsed.pathname;
+        await saveWorkspace(workspace);
         const logs: string[] = [];
         const before = receivedRequests.length;
-        expect(await runCli(runArgs("dev", join(root, `stress-origin-${label}`)), createDefaultRegistry(), (line) => logs.push(line))).toBe(1);
+        expect(await runCli(runArgs("dev", runsPath(`stress-origin-${label}`)), createDefaultRegistry(), (line) => logs.push(line))).toBe(1);
         expect(receivedRequests.length).toBe(before);
         expect(logs.join("\n")).toContain("target_confirmation_required");
       }
 
-      api.url = originalUrl;
-      project.environments = [...originalEnvironments, { id: "00000000-0000-4000-8000-000000000024", name: "production", variables: { baseUrl } }];
-      await fileStorage.save(root, workspace);
-      expect(await runCli(runArgs("production", join(root, "stress-origin-label")), createDefaultRegistry())).toBe(0);
+      api.contract.request.baseUrl = originalBaseUrl;
+      api.contract.request.path = originalPath;
+      project.environments = [...originalEnvironments, { id: "00000000-0000-4000-8000-000000000024", name: "production", variables: { baseUrl }, baseUrls: {} }];
+      await saveWorkspace(workspace);
+      expect(await runCli(runArgs("production", runsPath("stress-origin-label")), createDefaultRegistry())).toBe(0);
 
       project.stressPolicy = { trustedOrigins: [], deniedOrigins: [baseUrl] };
-      await fileStorage.save(root, workspace);
+      await saveWorkspace(workspace);
       const deniedLogs: string[] = [];
       const deniedBefore = receivedRequests.length;
-      expect(await runCli(runArgs("dev", join(root, "stress-origin-denied")), createDefaultRegistry(), (line) => deniedLogs.push(line))).toBe(1);
+      expect(await runCli(runArgs("dev", runsPath("stress-origin-denied")), createDefaultRegistry(), (line) => deniedLogs.push(line))).toBe(1);
       expect(receivedRequests.length).toBe(deniedBefore);
       expect(deniedLogs.join("\n")).toContain("target_denied");
 
       project.stressPolicy = { trustedOrigins: [baseUrl], deniedOrigins: [] };
-      await fileStorage.save(root, workspace);
+      await saveWorkspace(workspace);
       const thresholdLogs: string[] = [];
-      expect(await runCli(runArgs("dev", join(root, "stress-threshold"), ["--max-p95-ms", "0.0001"]), createDefaultRegistry(), (line) => thresholdLogs.push(line))).toBe(1);
+      expect(await runCli(runArgs("dev", runsPath("stress-threshold"), ["--max-p95-ms", "0.0001"]), createDefaultRegistry(), (line) => thresholdLogs.push(line))).toBe(1);
       expect(thresholdLogs.join("\n")).toContain("[阈值失败]");
     } finally {
       writeFileSync(dataPath, originalData);
-      api.url = originalUrl;
+      api.contract.request.baseUrl = originalBaseUrl;
+      api.contract.request.path = originalPath;
       project.environments = originalEnvironments;
       project.stressPolicy = originalPolicy;
-      await fileStorage.save(root, workspace);
+      await saveWorkspace(workspace);
     }
   }, 30000);
 
   it("单机与本地多分片对同一 HTTP 200 断言失败保持分类和退出码一致", async () => {
     const { readdirSync, readFileSync } = await import("node:fs");
     const runArgs = (runsDir: string, extra: string[] = []) => [
-      "run-stress", "groups/demo/projects/svc/collections/api/apis/bad",
-      "--case", "00000000-0000-4000-8000-000000000016", "--env", "dev", "--concurrency", "2", "--iterations", "2",
+      "run-stress", apiPath(GROUP_A, PROJECT_A, COLLECTION_API, API_BAD),
+      "--case", CASE_BAD, "--env", "dev", "--concurrency", "2", "--iterations", "2",
       "--allow-target", baseUrl, "--runs-dir", runsDir, ...extra,
     ];
-    const singleDir = join(root, "stress-consistency-single");
+    const singleDir = runsPath("stress-consistency-single");
     const singleLogs: string[] = [];
     const singleCode = await runCli(runArgs(singleDir), createDefaultRegistry(), (line) => singleLogs.push(line));
     const singleFile = readdirSync(singleDir).find((name) => name.endsWith(".json"))!;
@@ -964,17 +1000,19 @@ describe("CLI 端到端", () => {
       verdict?: { passed: boolean; violations: Array<{ metric: string; actual: number; expected: number }> };
     };
 
-    const multiDir = join(root, "stress-consistency-multi");
+    const multiDir = runsPath("stress-consistency-multi");
     const multiLogs: string[] = [];
     const spawnWorkerFactory = () => async (spec: {
       apiPath: string; caseId: string; envName?: string; concurrency: number; maxIterations?: number; durationMs?: number;
       maxRps?: number; maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
       connectionMode?: "pooled" | "fresh"; confirmedTargetOrigins?: string[]; shardId: string; workspaceRoot: string;
+      definitionRevision: string; credentialVersions: Record<string, string>;
     }): Promise<ShardOutcome> => {
       let wire = "";
       const code = await runCli([
         "stress-worker", spec.apiPath, "--case", spec.caseId, "--env", spec.envName!, "--concurrency", String(spec.concurrency),
         "--iterations", String(spec.maxIterations), "--shard-id", spec.shardId, "--workspace", spec.workspaceRoot,
+        "--definition-revision", spec.definitionRevision, "--credential-versions", JSON.stringify(spec.credentialVersions),
         "--allow-target", ...(spec.confirmedTargetOrigins ?? []),
       ], createDefaultRegistry(), () => {}, { workerOut: (line) => { wire = line; }, workerErr: () => {} });
       expect(code).toBe(0);

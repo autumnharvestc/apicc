@@ -4,6 +4,7 @@ import {
   DistributedStressCoordinator,
   planShards,
   ShardResultSchema,
+  StressWorkerSpecSchema,
 } from "../../src/stress/distributed.js";
 import type {
   ShardFailure,
@@ -53,7 +54,7 @@ describe("planShards", () => {
   it("多 shard 请求 maxRps 时在 spawn 前稳定拒绝全局不可证明的组合", async () => {
     let spawned = 0;
     await expect(new DistributedStressCoordinator().run(
-      { apiPath: "/api/pet", caseId: "c1", workspaceRoot: "/ws", concurrency: 4, maxIterations: 8, maxRps: 10 },
+      { apiPath: "/api/pet", caseId: "c1", definitionRevision: "rev-1", credentialVersions: {}, workspaceRoot: "/ws", concurrency: 4, maxIterations: 8, maxRps: 10 },
       { shards: 2, spawnWorker: async () => { spawned += 1; return shardFailure("shard-0", "unexpected"); } },
     )).rejects.toThrow(/shard.*maxRps|maxRps.*shard|全局/);
     expect(spawned).toBe(0);
@@ -106,11 +107,66 @@ describe("planShards", () => {
   });
 });
 
+describe("StressWorkerSpec contract revision descriptors", () => {
+  it("requires the selected definition revision and credential version descriptors", () => {
+    const base = {
+      protocolVersion: 2,
+      shardId: "shard-0",
+      apiPath: "/api/pet",
+      caseId: "case-1",
+      concurrency: 1,
+      maxIterations: 1,
+      workspaceRoot: "C:/workspace",
+    };
+
+    expect(() => StressWorkerSpecSchema.parse(base)).toThrow();
+    expect(StressWorkerSpecSchema.parse({
+      ...base,
+      definitionRevision: "sha256:project-revision",
+      credentialVersions: { "ref-1": "version-3" },
+    })).toMatchObject({
+      definitionRevision: "sha256:project-revision",
+      credentialVersions: { "ref-1": "version-3" },
+    });
+    expect(() => StressWorkerSpecSchema.parse({
+      ...base,
+      definitionRevision: "sha256:project-revision",
+      credentialVersions: { "ref-1": "version-3" },
+      credentialValues: { "ref-1": "must-not-cross-worker-boundary" },
+    })).toThrow();
+  });
+
+  it("preserves every own string credential-version key through strict parsing and JSON round trips", () => {
+    const versions = JSON.parse('{"__proto__":"v-proto","constructor":"v-constructor","toString":"v-toString"}') as Record<string, string>;
+    const wire = JSON.stringify({
+      protocolVersion: 2,
+      shardId: "shard-0",
+      apiPath: "groups/g/projects/p/collections/c/apis/a",
+      caseId: "case-1",
+      definitionRevision: "sha256:project-revision",
+      credentialVersions: versions,
+      concurrency: 1,
+      maxIterations: 1,
+      workspaceRoot: "C:/workspace",
+    });
+    const parsed = StressWorkerSpecSchema.parse(JSON.parse(wire));
+    const roundTripped = JSON.parse(JSON.stringify(parsed)) as { credentialVersions: Record<string, string> };
+
+    expect(Object.keys(roundTripped.credentialVersions).sort()).toEqual(["__proto__", "constructor", "toString"]);
+    expect(Object.hasOwn(roundTripped.credentialVersions, "__proto__")).toBe(true);
+    expect(roundTripped.credentialVersions["__proto__"]).toBe("v-proto");
+    expect(roundTripped.credentialVersions.constructor).toBe("v-constructor");
+    expect(roundTripped.credentialVersions.toString).toBe("v-toString");
+  });
+});
+
 describe("DistributedStressCoordinator", () => {
   // 定位/份额基础规格：concurrency 3 → 两 shard 分得 [2,1]；iterations 8 → [4,4]。
   const specBase = {
     apiPath: "/api/pet",
     caseId: "c1",
+    definitionRevision: "rev-1",
+    credentialVersions: {},
     workspaceRoot: "/ws",
     concurrency: 3,
     maxIterations: 8,

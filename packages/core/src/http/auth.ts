@@ -1,39 +1,36 @@
 import type { AuthProvider } from "../plugin/types.js";
+import type { RuntimeAuth } from "../request/materialize.js";
 
-/** 整串 {{name}} 占位符（命名规则与 variables/resolver 一致）；解析失败保留原文。 */
-const WHOLE_PLACEHOLDER = /^\{\{\s*([A-Za-z0-9_.$-]+)\s*\}\}$/;
+type AppliedAuth = Exclude<RuntimeAuth, { kind: "none" }>;
 
-/** 仅整串 {{name}} 查变量（未知保留原文）；普通字面量不进变量解析，原样返回。 */
-function resolveValue(value: string | undefined, getVar: (name: string) => string | undefined): string {
-  if (value === undefined) return "";
-  const m = WHOLE_PLACEHOLDER.exec(value);
-  return (m && getVar(m[1])) ?? value;
+function requireKind<K extends AppliedAuth["kind"]>(auth: AppliedAuth, kind: K): Extract<AppliedAuth, { kind: K }> {
+  if (auth.kind !== kind) throw Object.assign(new Error(`认证提供方 ${kind} 收到 ${auth.kind}`), { caseFailureKind: "config" as const });
+  return auth as Extract<AppliedAuth, { kind: K }>;
 }
 
 export const builtinAuthProviders: AuthProvider[] = [
   {
     type: "bearer",
-    apply(req, auth, getVar) {
-      req.headers["Authorization"] = `Bearer ${resolveValue(auth.token, getVar)}`;
+    apply(req, auth) {
+      const bearer = requireKind(auth, "bearer");
+      req.headers["Authorization"] = `Bearer ${bearer.token}`;
     },
   },
   {
     type: "basic",
-    apply(req, auth, getVar) {
-      const u = resolveValue(auth.username, getVar);
-      const p = resolveValue(auth.password, getVar);
-      req.headers["Authorization"] = `Basic ${Buffer.from(`${u}:${p}`).toString("base64")}`;
+    apply(req, auth) {
+      const basic = requireKind(auth, "basic");
+      req.headers["Authorization"] = `Basic ${Buffer.from(`${basic.username}:${basic.password}`).toString("base64")}`;
     },
   },
   {
     type: "apikey",
-    apply(req, auth, getVar) {
-      const key = resolveValue(auth.key, getVar);
-      const value = resolveValue(auth.value, getVar);
-      if (auth.placement === "query") {
-        req.query.push({ key, value, enabled: true });
+    apply(req, auth) {
+      const apiKey = requireKind(auth, "apikey");
+      if (apiKey.placement === "query") {
+        req.query.push({ key: apiKey.name, value: apiKey.value, enabled: true });
       } else {
-        req.headers[key] = value;
+        req.headers[apiKey.name] = apiKey.value;
       }
     },
   },

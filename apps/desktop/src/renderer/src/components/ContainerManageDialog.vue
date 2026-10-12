@@ -2,7 +2,7 @@
 import { ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Input as AInput, Modal as AModal, TabPane as ATabPane, Tabs as ATabs, Textarea as ATextarea } from "ant-design-vue";
-import type { ApiccApi, ContainerSaveInput } from "../../../shared/types.js";
+import type { ApiccApi, ContainerSaveInput, ContainerTarget } from "../../../shared/types.js";
 
 /**
  * 容器管理对话框（M10）：模块（集合）= 变量 / 前置操作 / 后置操作 三页签；
@@ -13,9 +13,9 @@ import type { ApiccApi, ContainerSaveInput } from "../../../shared/types.js";
  */
 const props = defineProps<{
   api: ApiccApi;
-  kind: "collection" | "folder";
-  id: string;
+  target: ContainerTarget;
   name: string;
+  readOnly: boolean;
   reportError: (e: unknown) => void;
 }>();
 const emit = defineEmits<{ close: []; saved: [] }>();
@@ -27,20 +27,22 @@ const preOps = ref<Array<{ id: string; content: string }>>([]);
 const postOps = ref<Array<{ id: string; content: string }>>([]);
 const error = ref("");
 const saved = ref(false);
+let loadEpoch = 0;
 
 watch(
-  () => props.id,
+  () => JSON.stringify(props.target),
   async () => {
-    if (!props.id) return;
+    const epoch = ++loadEpoch;
     error.value = "";
     saved.value = false;
     try {
-      const data = await props.api.containerGet(props.kind, props.id);
-      variables.value = Object.entries(data.variables ?? {}).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }));
-      preOps.value = (data.preOperations ?? []).map((o) => ({ id: o.id, content: o.content }));
-      postOps.value = (data.postOperations ?? []).map((o) => ({ id: o.id, content: o.content }));
+      const data = await props.api.containerGet(props.target);
+      if (epoch !== loadEpoch) return;
+      variables.value = data.kind === "collection" ? Object.entries(data.operations.variables).map(([key, value]) => ({ id: crypto.randomUUID(), key, value })) : [];
+      preOps.value = data.operations.preOperations.map((o) => ({ id: o.id, content: o.content }));
+      postOps.value = data.operations.postOperations.map((o) => ({ id: o.id, content: o.content }));
     } catch (e) {
-      props.reportError(e);
+      if (epoch === loadEpoch) props.reportError(e);
     }
   },
   { immediate: true },
@@ -60,18 +62,19 @@ function move(list: Array<{ id: string; content: string }>, index: number, delta
 }
 
 async function save() {
+  if (props.readOnly) return;
   const variablesRecord: Record<string, string> = {};
   for (const row of variables.value) {
     const key = row.key.trim();
     if (key) variablesRecord[key] = row.value;
   }
-  const input: ContainerSaveInput = {
-    kind: props.kind,
-    id: props.id,
-    ...(props.kind === "collection" ? { variables: variablesRecord } : {}),
+  const operations = {
     preOperations: preOps.value.map((o) => ({ id: o.id, type: "script" as const, content: o.content })),
     postOperations: postOps.value.map((o) => ({ id: o.id, type: "script" as const, content: o.content })),
   };
+  const input: ContainerSaveInput = props.target.kind === "collection"
+    ? { kind: "collection", locator: { ...props.target.locator }, operations: { ...operations, variables: variablesRecord } }
+    : { kind: "folder", locator: { ...props.target.locator, folderIds: [...props.target.locator.folderIds] }, operations };
   try {
     await props.api.containerSave(input);
     saved.value = true;
@@ -91,12 +94,14 @@ async function save() {
     :cancel-text="t('common.close')"
     :width="680"
     data-testid="container-dialog"
+    :ok-button-props="{ disabled: readOnly }"
     @ok="save"
     @cancel="emit('close')"
   >
+    <fieldset class="readonly-fieldset" :disabled="readOnly">
     <a-tabs v-model:active-key="activeTab">
       <!-- 模块变量（仅模块；文件夹无变量——M10 澄清裁定） -->
-      <a-tab-pane v-if="kind === 'collection'" key="variables">
+      <a-tab-pane v-if="target.kind === 'collection'" key="variables">
         <template #tab>{{ t("container.variables") }}</template>
         <div v-for="(row, index) in variables" :key="row.id" class="kv-row">
           <a-input v-model:value="row.key" data-testid="container-var-key" placeholder="key" />
@@ -136,6 +141,7 @@ async function save() {
     </a-tabs>
     <p v-if="error" class="dialog-error" data-testid="container-error">{{ error }}</p>
     <p v-if="saved" class="saved" data-testid="container-saved">{{ t("container.saved") }}</p>
+    </fieldset>
   </a-modal>
 </template>
 
@@ -147,4 +153,5 @@ async function save() {
 .op-text { flex: 1; font-family: ui-monospace, monospace; }
 .dialog-error { margin: 8px 0 0; color: var(--fail, #dc2626); font-size: 12px; }
 .saved { margin: 8px 0 0; color: var(--pass, #16a34a); font-size: 12px; }
+.readonly-fieldset { border: 0; margin: 0; min-width: 0; padding: 0; }
 </style>

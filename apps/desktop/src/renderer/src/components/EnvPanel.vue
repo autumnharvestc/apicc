@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Checkbox as ACheckbox, Input as AInput, Modal as AModal, Select as ASelect, Table as ATable } from "ant-design-vue";
 import type { KeyValuePair } from "@apicc/core";
+import type { EnvironmentLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { useEnvsStore } from "../stores/envs.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import EmptyState from "./EmptyState.vue";
@@ -23,27 +24,41 @@ import ConfirmDialog from "./ConfirmDialog.vue";
 const props = defineProps<{
   envs: ReturnType<typeof useEnvsStore>;
   workspace: ReturnType<typeof useWorkspaceStore>;
-  projectId: string | null;
+  projectLocator: ProjectLocator | null;
   reportError: (e: unknown) => void;
 }>();
 const { t } = useI18n();
 
+function sameProject(left: ProjectLocator | null, right: ProjectLocator | null): boolean {
+  return !!left && !!right && left.workspaceId === right.workspaceId
+    && left.groupId === right.groupId && left.projectId === right.projectId;
+}
+
+function contextIsCurrent(root: string, locator: ProjectLocator): boolean {
+  return props.workspace.root === root
+    && sameProject(props.projectLocator, locator)
+    && props.envs.root === root
+    && sameProject(props.envs.projectLocator, locator);
+}
+
 async function loadEnvs() {
-  if (!props.projectId) return;
+  const root = props.workspace.root;
+  const locator = props.projectLocator ? { ...props.projectLocator } : null;
+  if (!locator) return;
   try {
-    await props.envs.load(props.projectId);
+    await props.envs.load(locator);
   } catch (e) {
-    props.reportError(e);
+    if (contextIsCurrent(root, locator)) props.reportError(e);
   }
 }
-watch(() => props.projectId, loadEnvs, { immediate: true });
+watch(() => JSON.stringify([props.workspace.root, props.projectLocator]), loadEnvs, { immediate: true });
 
 // —— 左侧导航选择：全局变量 / 全局参数 / 某环境（值为环境 id） ——
 // selectedEnvId 程序性变化（创建后自动选中、重挂水合、删除清空）时 pane 跟随：
 // 置空回全局变量页；用户点击导航条目不受扰（值不变不触发）。
 type Pane = "gvars" | "gparams" | string;
 const pane = ref<Pane>("gvars");
-const selectedEnv = computed(() => props.envs.envs.find((e) => e.id === pane.value) ?? null);
+const selectedEnv = computed(() => props.envs.selectedEnv);
 watch(
   () => props.envs.selectedEnvId,
   (id) => {
@@ -54,10 +69,7 @@ watch(
 
 // 当前项目的集合清单（前置 URL 表的「模块」列，M9-B 按集合设置）：取树中所属项目的集合子节点。
 const collections = computed(() => {
-  const pid = props.projectId;
-  const project = (props.workspace.tree?.children ?? [])
-    .flatMap((g) => g.children ?? [])
-    .find((p) => p.id === pid);
+  const project = props.projectLocator ? props.workspace.findProject(props.projectLocator) : null;
   return (project?.children ?? [])
     .filter((n) => n.kind === "collection")
     .map((c) => ({ id: c.id, name: c.label }));
@@ -91,13 +103,17 @@ function addGvarRow() {
   gvarRows.value.push({ id: crypto.randomUUID(), key: "", value: "" });
 }
 async function saveGlobalVars() {
+  const root = props.workspace.root;
+  const locator = props.projectLocator ? { ...props.projectLocator } : null;
+  if (!locator || !contextIsCurrent(root, locator)) return;
   const variables: Record<string, string> = {};
   for (const row of gvarRows.value) {
     const key = row.key.trim();
     if (key) variables[key] = row.value;
   }
   try {
-    await props.envs.saveGlobals(props.projectId!, { ...props.envs.globals, variables });
+    await props.envs.saveGlobals(locator, { ...props.envs.globals, variables });
+    if (!contextIsCurrent(root, locator)) return;
     gvarsSaved.value = true;
   } catch (e) {
     props.reportError(e);
@@ -109,14 +125,18 @@ function addParamRow(list: ParamRow[]) {
   list.push({ id: crypto.randomUUID(), key: "", value: "", enabled: true });
 }
 async function saveGlobalParams() {
+  const root = props.workspace.root;
+  const locator = props.projectLocator ? { ...props.projectLocator } : null;
+  if (!locator || !contextIsCurrent(root, locator)) return;
   const toParams = (rows: ParamRow[]): KeyValuePair[] =>
     rows.filter((r) => r.key.trim()).map((r) => ({ key: r.key.trim(), value: r.value, enabled: r.enabled }));
   try {
-    await props.envs.saveGlobals(props.projectId!, {
+    await props.envs.saveGlobals(locator, {
       ...props.envs.globals,
       query: toParams(gqueryRows.value),
       headers: toParams(gheaderRows.value),
     });
+    if (!contextIsCurrent(root, locator)) return;
     gparamsSaved.value = true;
   } catch (e) {
     props.reportError(e);
@@ -147,8 +167,12 @@ function removeRow(index: number) {
 
 /** 环境保存（M9-B）：变量 + 前置 URL 双写（同一「保存」动作，语义 = 该环境详情页整体落盘）。 */
 async function saveVars() {
-  const envId = props.envs.selectedEnvId;
-  if (!envId) return;
+  const root = props.workspace.root;
+  const selected = props.envs.selectedEnvironment;
+  if (!selected) return;
+  const locator = { ...selected };
+  const projectLocator: ProjectLocator = { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+  if (!contextIsCurrent(root, projectLocator)) return;
   const variables: Record<string, string> = {};
   for (const row of varRows.value) {
     const key = row.key.trim();
@@ -160,8 +184,11 @@ async function saveVars() {
     if (trimmed) baseUrls[collectionId] = trimmed;
   }
   try {
-    await props.envs.saveVars(envId, variables);
-    await props.envs.saveBaseUrls(envId, baseUrls);
+    await props.envs.saveVars(locator, variables);
+    // Both writes form one UI transaction. Never derive the second write's root after an await.
+    if (!contextIsCurrent(root, projectLocator)) return;
+    await props.envs.saveBaseUrls(locator, baseUrls);
+    if (!contextIsCurrent(root, projectLocator)) return;
     saved.value = true;
   } catch (e) {
     props.reportError(e);
@@ -169,15 +196,24 @@ async function saveVars() {
 }
 
 // —— 新建 / 从现有环境派生（共用一个 a-modal；derive 模式多父环境选择） ——
-const modal = ref<{ open: boolean; mode: "new" | "derive"; name: string; parentId: string | undefined }>({
+const modal = ref<{ open: boolean; mode: "new" | "derive"; name: string; parentId: string | undefined; root: string; locator: ProjectLocator | null }>({
   open: false,
   mode: "new",
   name: "",
   parentId: undefined,
+  root: "",
+  locator: null,
 });
 
 function openModal(mode: "new" | "derive") {
-  modal.value = { open: true, mode, name: "", parentId: mode === "derive" ? props.envs.envs[0]?.id : undefined };
+  modal.value = {
+    open: true,
+    mode,
+    name: "",
+    parentId: mode === "derive" ? props.envs.envs[0]?.id : undefined,
+    root: props.workspace.root,
+    locator: props.envs.projectLocator ? { ...props.envs.projectLocator } : null,
+  };
 }
 
 function closeModal() {
@@ -185,18 +221,20 @@ function closeModal() {
 }
 
 async function confirmModal() {
-  const name = modal.value.name.trim();
-  if (!name || !props.envs.projectId) return;
+  const target = modal.value;
+  const name = target.name.trim();
+  if (!name || !target.locator || !contextIsCurrent(target.root, target.locator)) return;
   let extendsName: string | undefined;
-  if (modal.value.mode === "derive") {
-    const parent = props.envs.envs.find((e) => e.id === modal.value.parentId);
+  if (target.mode === "derive") {
+    const parent = props.envs.envs.find((e) => e.id === target.parentId);
     if (!parent) return;
     extendsName = parent.name;
   }
   closeModal();
   // 先关对话框再执行（SideTree 对话框同款收口）：拒绝统一转报组合根错误展示条。
   try {
-    const env = await props.envs.create({ projectId: props.envs.projectId, name, extends: extendsName });
+    const env = await props.envs.create({ locator: { ...target.locator }, name, extends: extendsName });
+    if (!contextIsCurrent(target.root, target.locator)) return;
     pane.value = env.id;
   } catch (e) {
     props.reportError(e);
@@ -204,30 +242,36 @@ async function confirmModal() {
 }
 
 // —— 删除当前选中环境（确认对话框放行） ——
-const deleteTarget = ref<{ id: string; name: string } | null>(null);
+const deleteTarget = ref<{ root: string; locator: EnvironmentLocator; name: string } | null>(null);
 
 // data-* 为 HTML 透传属性，antd 按钮 props 类型未建模；经 any 索引签名断言保留测试锚点
 // （运行时 Vue 原样透传到 ok/cancel 按钮上，行为不变，见 vue-tsc 收口）。
-const okButtonProps: Record<string, any> = { "data-testid": "env-modal-confirm" };
+const okButtonProps = computed(() => ({ "data-testid": "env-modal-confirm", disabled: props.workspace.readOnly }));
 const cancelButtonProps: Record<string, any> = { "data-testid": "env-modal-cancel" };
 
 async function onDeleteConfirm() {
   const target = deleteTarget.value;
   deleteTarget.value = null;
-  if (!target) return;
+  if (!target || props.workspace.readOnly || !contextIsCurrent(target.root, target.locator)) return;
   try {
-    await props.envs.remove("environment", target.id, async () => true);
-    if (pane.value === target.id) pane.value = "gvars";
+    await props.envs.remove(target.locator, async () => true);
+    if (pane.value === target.locator.environmentId) pane.value = "gvars";
   } catch (e) {
     props.reportError(e);
   }
+}
+
+function selectDeleteTarget() {
+  const env = props.envs.selectedEnv;
+  deleteTarget.value = env ? { root: props.workspace.root, locator: { ...env.locator }, name: env.name } : null;
 }
 </script>
 
 <template>
   <section class="env-panel" data-testid="env-panel">
-    <EmptyState v-if="!projectId" :text="t('env.empty')" />
-    <div v-else class="layout">
+    <EmptyState v-if="!projectLocator" :text="t('env.empty')" />
+    <fieldset v-else class="readonly-fieldset" :disabled="workspace.readOnly">
+    <div class="layout">
       <!-- 左侧锚点：全局 + 环境清单 -->
       <aside class="side">
         <div class="side-title">{{ t("env.globalSection") }}</div>
@@ -251,7 +295,7 @@ async function onDeleteConfirm() {
           class="side-item"
           :class="{ active: pane === e.id }"
           :data-testid="`env-item-${e.id}`"
-          @click="pane = e.id; envs.selectedEnvId = e.id"
+          @click="pane = e.id; envs.select(e.locator)"
         >
           {{ e.name }}
         </button>
@@ -259,10 +303,10 @@ async function onDeleteConfirm() {
           size="small"
           danger
           class="side-delete"
-          :disabled="!envs.selectedEnvId"
+          :disabled="!envs.selectedEnvironment || workspace.readOnly"
           :data-env-id="envs.selectedEnvId ?? ''"
           data-testid="env-delete"
-          @click="deleteTarget = envs.envs.find((e) => e.id === envs.selectedEnvId) ?? null"
+          @click="selectDeleteTarget"
         >
           {{ t("tree.delete") }}
         </a-button>
@@ -415,6 +459,7 @@ async function onDeleteConfirm() {
         </div>
       </div>
     </div>
+    </fieldset>
     <a-modal
       v-if="modal.open"
       :open="modal.open"
@@ -428,7 +473,7 @@ async function onDeleteConfirm() {
       @ok="confirmModal"
       @cancel="closeModal"
     >
-      <a-input v-model:value="modal.name" data-testid="env-name-input" :placeholder="t('env.namePlaceholder')" />
+      <a-input v-model:value="modal.name" data-testid="env-name-input" :placeholder="t('env.namePlaceholder')" :disabled="workspace.readOnly" />
       <a-select
         v-if="modal.mode === 'derive'"
         v-model:value="modal.parentId"
@@ -436,6 +481,7 @@ async function onDeleteConfirm() {
         :options="envs.envs.map((e) => ({ label: e.name, value: e.id }))"
         :placeholder="t('env.parent')"
         data-testid="env-parent-select"
+        :disabled="workspace.readOnly"
       />
     </a-modal>
     <ConfirmDialog
@@ -454,6 +500,7 @@ async function onDeleteConfirm() {
   height: 100%;
   box-sizing: border-box;
 }
+.readonly-fieldset { border: 0; margin: 0; min-width: 0; padding: 0; }
 .layout {
   display: flex;
   gap: 14px;

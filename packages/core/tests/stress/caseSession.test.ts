@@ -1,35 +1,283 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { ApiDefinition, Collection, Environment, Folder, Project, TestCase, Workspace } from "../../src/domain/model.js";
-import { createStressCaseSession, type StressCaseSessionDeps } from "../../src/stress/caseSession.js";
+import type { ApiAsset, RequestBody } from "../../src/contract/model.js";
+import type { ContractCollection, ContractFolder, ContractProject } from "../../src/contract/workspace.js";
+import type { Assertion, Environment, KeyValuePair, Operation, TestCase as ContractTestCase } from "../../src/domain/common.js";
+import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import type { ProjectExecutionRun } from "../../src/runner/runner.js";
+import { createStressCaseSession as createSnapshotStressCaseSession, type StressCaseSessionDeps, type StressCaseTarget } from "../../src/stress/caseSession.js";
 import type { ManagedProtocolClient } from "../../src/http/client.js";
 import type { ExecutableRequest, ExecutionResponse } from "../../src/plugin/types.js";
 
 const response: ExecutionResponse = { status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 };
 
-const api: ApiDefinition = {
+interface FixtureCase extends Omit<ContractTestCase, "preOperations" | "postOperations"> {
+  preScript?: string;
+  postScript?: string;
+  preOperations?: Operation[];
+  postOperations?: Operation[];
+}
+type TestCase = FixtureCase;
+interface FixtureApi {
+  id: string;
+  name: string;
+  version?: string;
+  deprecated?: boolean;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
+  url: string;
+  headers?: KeyValuePair[];
+  query?: KeyValuePair[];
+  body?: RequestBody;
+  protocol?: "http" | "websocket" | "soap";
+  message?: string;
+  envelope?: string;
+  soapAction?: string;
+  auth?: { type: "none" } | { type: "bearer"; token: string } | { type: "basic"; username: string; password: string } | { type: "apikey"; key?: string; name?: string; value: string; placement: "header" | "query" };
+  cases?: FixtureCase[];
+}
+interface FixtureFolder {
+  id: string;
+  name: string;
+  apis: FixtureApi[];
+  folders: FixtureFolder[];
+  preOperations?: Operation[];
+  postOperations?: Operation[];
+}
+interface FixtureCollection extends FixtureFolder {
+  variables: Record<string, string>;
+}
+type Folder = FixtureFolder;
+type Collection = FixtureCollection;
+interface FixtureProject {
+  id: string;
+  name: string;
+  variables: Record<string, string>;
+  environments: Environment[];
+  stressPolicy: { trustedOrigins: string[]; deniedOrigins?: string[] };
+}
+type Project = FixtureProject;
+interface FixtureTarget {
+  api: FixtureApi;
+  testCase: FixtureCase;
+  project: FixtureProject;
+  collection: FixtureCollection;
+  env?: Environment;
+  collectionId?: string;
+  apiId?: string;
+}
+
+const api: FixtureApi = {
   id: "api-1", name: "orders", version: "1.0.0", deprecated: false, method: "GET", url: "http://trusted.example/orders/{{row}}?vu={{counter}}&row={{row}}",
   headers: [], query: [], cases: [], protocol: "http",
 };
 
-const project: Project = {
-  id: "project-1", name: "project", variables: {}, environments: [], collections: [], workflows: [],
-  globals: { query: [], headers: [], cookies: [], body: [] },
+const project: FixtureProject = {
+  id: "project-1", name: "project", variables: {}, environments: [],
   stressPolicy: { trustedOrigins: ["http://trusted.example"], deniedOrigins: [] },
 };
-const collection: Collection = { id: "collection-1", name: "collection", variables: {}, folders: [], apis: [api] };
-const workspace: Workspace = { id: "workspace-1", name: "workspace", variables: {}, groups: [] };
-const target = (testCase: TestCase, sourcePath?: string) => ({
+const collection: FixtureCollection = { id: "collection-1", name: "collection", variables: {}, folders: [], apis: [api] };
+const target = (testCase: FixtureCase, sourcePath?: string): FixtureTarget => ({
   api, testCase: sourcePath ? { ...testCase, dataDriver: { sourcePath, format: "csv" as const } } : testCase,
-  project, collection, workspace,
+  project, collection,
 });
+
+function stableId(kind: string, value: string): string {
+  const hex = createHash("sha256").update(`${kind}:${value}`).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
+function fixtureOperations(testCase: FixtureCase, phase: "pre" | "post"): Operation[] {
+  const operations = phase === "pre" ? testCase.preOperations : testCase.postOperations;
+  const script = phase === "pre" ? testCase.preScript : testCase.postScript;
+  if (operations) return operations;
+  return script === undefined ? [] : [{ id: stableId("case-operation", `${testCase.id}:${phase}`), type: "script", content: script }];
+}
+
+function fixtureApiAsset(source: FixtureApi, credentials: Map<string, string>, selectedCase?: FixtureCase): ApiAsset {
+  const contractId = stableId("api", source.id);
+  const [withoutQuery, initialQuery] = source.url.split("?", 2);
+  let rawQuery = initialQuery;
+  let baseUrl = "{{baseUrl}}";
+  let path = withoutQuery ?? source.url;
+  const match = /^([A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]+)([^?#]*)$/.exec(path);
+  if (match) {
+    baseUrl = match[1]!;
+    path = match[2] || "/";
+  } else if (path.startsWith("{{baseUrl}}")) {
+    path = path.slice("{{baseUrl}}".length) || "/";
+  } else if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(path.trim())) {
+    try {
+      const parsed = new URL(path.trim());
+      baseUrl = parsed.origin;
+      path = parsed.pathname;
+      rawQuery ??= parsed.search.slice(1);
+    } catch { /* Preserve malformed URL as a relative path for pre-I/O config validation. */ }
+  } else if (!path.startsWith("/")) {
+    path = `/${path}`;
+  }
+  const urlQuery: KeyValuePair[] = rawQuery
+    ? rawQuery.split("&").filter(Boolean).map((entry) => {
+      const [key, ...parts] = entry.split("=");
+      return { key: decodeURIComponent(key ?? ""), value: decodeURIComponent(parts.join("=")), enabled: true };
+    })
+    : [];
+  const query = [...(source.query ?? []), ...urlQuery].map((entry, index) => ({
+    kind: "inline" as const,
+    id: stableId(`parameter:query:${contractId}`, String(index)),
+    name: entry.key,
+    schema: { kind: "scalar" as const, type: "string" as const },
+    required: false,
+    enabled: entry.enabled,
+    description: "",
+    value: entry.value,
+  }));
+  const headers = (source.headers ?? []).map((entry, index) => ({
+    kind: "inline" as const,
+    id: stableId(`parameter:header:${contractId}`, String(index)),
+    name: entry.key,
+    schema: { kind: "scalar" as const, type: "string" as const },
+    required: false,
+    enabled: entry.enabled,
+    description: "",
+    value: entry.value,
+  }));
+  const secret = (name: string, value: string) => {
+    const id = stableId("credential", `${source.id}:${name}`);
+    credentials.set(id, value);
+    return { id, policy: "test-auto" as const };
+  };
+  let auth: Record<string, unknown>;
+  switch (source.auth?.type) {
+    case "bearer": auth = { kind: "bearer", token: secret("bearer", source.auth.token) }; break;
+    case "basic": auth = { kind: "basic", username: secret("username", source.auth.username), password: secret("password", source.auth.password) }; break;
+    case "apikey": auth = { kind: "apikey", name: source.auth.name ?? source.auth.key ?? "X-API-Key", placement: source.auth.placement, value: secret("apikey", source.auth.value) }; break;
+    default: auth = { kind: "none" };
+  }
+  const protocol = source.protocol;
+  const common = { baseUrl, path, pathParams: [], query, headers, cookies: [], auth };
+  const request = protocol === undefined
+    ? { method: source.method, ...common, body: source.body ?? { kind: "none" } }
+    : protocol === "websocket"
+      ? { protocol, ...common, ...(source.message === undefined ? {} : { message: source.message }) }
+      : protocol === "soap"
+        ? { protocol, method: "POST" as const, ...common, envelope: source.envelope ?? "<Envelope/>", ...(source.soapAction === undefined ? {} : { soapAction: source.soapAction }) }
+        : { protocol, method: source.method, ...common, body: source.body ?? { kind: "none" as const } };
+  const cases = [...(source.cases ?? [])];
+  if (selectedCase) {
+    const index = cases.findIndex(({ id }) => id === selectedCase.id);
+    if (index < 0) cases.push(selectedCase);
+    else cases[index] = selectedCase;
+  }
+  return {
+    contract: {
+      formatVersion: 1,
+      id: contractId,
+      metadata: { name: source.name, description: "", tags: [], version: source.version ?? "1", status: source.deprecated ? "deprecated" : "draft" },
+      request: request as unknown as ApiAsset["contract"]["request"],
+      responses: [],
+    },
+    cases: cases.map((testCase) => ({
+      id: testCase.id,
+      name: testCase.name,
+      scope: testCase.scope,
+      parameters: testCase.parameters,
+      preOperations: fixtureOperations(testCase, "pre"),
+      postOperations: fixtureOperations(testCase, "post"),
+      assertions: testCase.assertions,
+      ...(testCase.dataDriver === undefined ? {} : { dataDriver: testCase.dataDriver }),
+    })),
+    documentation: "",
+  };
+}
+
+function fixtureCollection(source: FixtureCollection, targetApi: FixtureApi, selectedCase: FixtureCase, credentials: Map<string, string>): ContractCollection {
+  const transformFolder = (folder: FixtureFolder, parentPath: string): ContractFolder => {
+    const path = `${parentPath}/${folder.id}`;
+    return {
+      id: stableId(`folder:${path}`, folder.id),
+      name: folder.name,
+      preOperations: folder.preOperations ?? [],
+      postOperations: folder.postOperations ?? [],
+      folders: folder.folders.map((nested) => transformFolder(nested, path)),
+      apis: folder.apis.map((asset) => fixtureApiAsset(asset.id === targetApi.id ? targetApi : asset, credentials, asset.id === targetApi.id ? selectedCase : undefined)),
+    };
+  };
+  const collectionId = stableId("collection", source.id);
+  return {
+    id: collectionId,
+    name: source.name,
+    variables: source.variables,
+    preOperations: source.preOperations ?? [],
+    postOperations: source.postOperations ?? [],
+    folders: source.folders.map((folder) => transformFolder(folder, source.id)),
+    apis: source.apis.map((asset) => fixtureApiAsset(asset.id === targetApi.id ? targetApi : asset, credentials, asset.id === targetApi.id ? selectedCase : undefined)),
+  };
+}
+
+function createProjectExecutionTarget(target: FixtureTarget): StressCaseTarget {
+  const credentials = new Map<string, string>();
+  const collectionAsset = fixtureCollection(target.collection, target.api, target.testCase, credentials);
+  const environments = new Map<string, Environment>();
+  for (const environment of target.project.environments) environments.set(environment.id, environment);
+  if (target.env) environments.set(target.env.id, target.env);
+  const environmentDefinitions = [...environments.values()].map((environment) => {
+    const configuredBaseUrl = environment.baseUrls[target.collection.id];
+    return {
+      ...environment,
+      id: stableId("environment", environment.id),
+      baseUrls: configuredBaseUrl === undefined ? {} : { [collectionAsset.id]: configuredBaseUrl },
+    };
+  });
+  const projectDefinition: ContractProject = {
+    id: stableId("project", target.project.id),
+    name: target.project.name,
+    variables: target.project.variables,
+    globals: { query: [], headers: [], cookies: [], body: [] },
+    environments: environmentDefinitions,
+    collections: [collectionAsset],
+    workflows: [],
+    stressPolicy: target.project.stressPolicy,
+    models: [],
+    components: [],
+  };
+  const snapshot = createProjectSnapshot(projectDefinition);
+  const bindingVersions = Object.fromEntries([...credentials.keys()].map((id) => [id, "fixture-v1"]));
+  const execution: ProjectExecutionRun = {
+    snapshot,
+    credentialBindings: {
+      resolve: (ref) => {
+        const value = credentials.get(ref.id);
+        if (value === undefined) throw new Error(`Missing fixture credential ${ref.id}`);
+        return value;
+      },
+      versions: bindingVersions,
+    },
+  };
+  return {
+    run: execution,
+    collectionId: target.collectionId ?? collectionAsset.id,
+    apiId: target.apiId ?? stableId("api", target.api.id),
+    caseId: target.testCase.id,
+    ...(target.env === undefined ? {} : { environmentId: stableId("environment", target.env.id) }),
+  };
+}
+
+function createStressCaseSession(target: FixtureTarget, deps: StressCaseSessionDeps, options: Parameters<typeof createSnapshotStressCaseSession>[2]) {
+  return createSnapshotStressCaseSession(createProjectExecutionTarget(target), deps, options);
+}
 
 function deps(seen: string[], close: () => Promise<void>, created: (workerId: number) => ManagedProtocolClient): StressCaseSessionDeps {
   const client: ManagedProtocolClient = {
     name: "fake", canHandle: () => true,
-    execute: vi.fn(async (request) => { seen.push(request.url); return response; }),
+    execute: vi.fn(async (request: ExecutableRequest) => {
+      const enabledQuery = request.query.filter(({ enabled }) => enabled);
+      const query = enabledQuery.map(({ key, value }) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&");
+      seen.push(`${request.url}${query ? `?${query}` : ""}`);
+      return response;
+    }),
     close,
   };
   return {
@@ -43,9 +291,10 @@ function deps(seen: string[], close: () => Promise<void>, created: (workerId: nu
         if (code === "increment") {
           const next = Number(ctx.pm.variables.get("counter") ?? "0") + 1;
           ctx.pm.variables.set("counter", String(next));
-          ctx.pm.request.url = ctx.pm.request.url.replace(/vu=[^&]+/, `vu=${next}`);
+          const counter = ctx.pm.request.query.find(({ key }) => key === "vu");
+          if (counter) counter.value = String(next);
         }
-        if (code === "assert-row") ctx.pm.assert(ctx.pm.request.url.includes("row="), "row present");
+        if (code === "assert-row") ctx.pm.assert(ctx.pm.request.query.some(({ key }) => key === "row"), "row present");
       },
     },
     timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
@@ -59,14 +308,17 @@ describe("createStressCaseSession", () => {
     writeFileSync(dataPath, "row\nA\nB\n");
     const testCase: TestCase = {
       id: "case-1", name: "case", scope: "base", parameters: {},
-      preScript: "increment", postScript: "assert-row",
+      preOperations: [{ id: "increment", type: "script", content: "increment" }],
+      postOperations: [{ id: "assert-row", type: "script", content: "assert-row" }],
       assertions: [{ id: "status", target: "status", op: "eq", expected: "200" }],
     };
     const seen: string[] = [];
     const close = vi.fn(async (): Promise<void> => {});
     const created = vi.fn((_: number): ManagedProtocolClient => ({ name: "fake", canHandle: () => true, execute: async () => response, close }));
-    const sessionA = createStressCaseSession(target(testCase, dataPath), deps(seen, close, created), { workerId: 0 });
-    const sessionB = createStressCaseSession(target(testCase, dataPath), deps(seen, close, created), { workerId: 1 });
+    const sharedTarget = createProjectExecutionTarget(target(testCase, dataPath));
+    const sharedRevision = sharedTarget.run.snapshot.definitionRevision;
+    const sessionA = createSnapshotStressCaseSession(sharedTarget, deps(seen, close, created), { workerId: 0 });
+    const sessionB = createSnapshotStressCaseSession(sharedTarget, deps(seen, close, created), { workerId: 1 });
 
     expect((await sessionA.execute()).outcome.passed).toBe(true);
     expect((await sessionA.execute()).outcome.passed).toBe(true);
@@ -77,6 +329,7 @@ describe("createStressCaseSession", () => {
       "http://trusted.example/orders/A?vu=1&row=A", "http://trusted.example/orders/B?vu=2&row=B",
     ]);
     expect(created).toHaveBeenCalledTimes(2);
+    expect(sharedTarget.run.snapshot.definitionRevision).toBe(sharedRevision);
     await Promise.all([sessionA.close(), sessionA.close(), sessionB.close()]);
     expect(close).toHaveBeenCalledTimes(2);
   });
@@ -96,7 +349,8 @@ describe("createStressCaseSession", () => {
     const session = createStressCaseSession(target(testCase), baseDeps, {
       workerId: 0,
       authorizeRequest(request) {
-        expect(request.url).toBe("http://trusted.example/orders/{{row}}?vu={{counter}}&row={{row}}");
+        expect(request.url).toBe("http://trusted.example/orders/{{row}}");
+        expect(request.query.map(({ key }) => key)).toEqual(["vu", "row"]);
         throw new Error("target rejected");
       },
     });
@@ -111,22 +365,30 @@ describe("createStressCaseSession", () => {
     ["http", "ftp://example.com/orders"],
     [undefined, "/relative/orders"],
     [undefined, "ftp://example.com/orders"],
-  ] as const)("HTTP/缺省协议的最终 URL %s %s 非绝对 HTTP(S) 时在 resolveProtocol 前 config 拒绝", async (protocol, url) => {
+  ] as const)("缺失 protocol 在快照配置阶段拒绝；无效 HTTP(S) URL 在 dispatch 前 config 拒绝：%s %s", async (protocol, url) => {
     const execute = vi.fn(async () => response);
     const resolveProtocol = vi.fn((): ManagedProtocolClient => ({ name: "registry", canHandle: () => true, execute, close: async () => {} }));
     const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute, close: async () => {} };
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
     const invalidApi = { ...api, protocol, url };
-    const session = createStressCaseSession({
+    const source = {
       ...target(testCase), api: invalidApi, collection: { ...collection, apis: [invalidApi] },
-    }, {
+    };
+    const sessionDeps = {
       createManagedClient: () => managed,
       resolveProtocol,
       resolveAuth: () => undefined,
       resolveAssert: () => undefined,
       scriptEngine: { language: "javascript", run() {} },
       timeouts: { connectTimeoutMs: 100, totalTimeoutMs: 100 },
-    }, { workerId: 0 });
+    };
+    if (protocol === undefined) {
+      expect(() => createStressCaseSession(source, sessionDeps, { workerId: 0 })).toThrow(/valid contract project definition/);
+      expect(resolveProtocol).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    const session = createStressCaseSession(source, sessionDeps, { workerId: 0 });
     const result = await session.execute();
     expect(result.failureKind).toBe("config");
     expect(result.outcome.passed).toBe(false);
@@ -134,20 +396,19 @@ describe("createStressCaseSession", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("显式 websocket/plugin 协议即使 URL 恰为 HTTPS 也保持原文直达 registry，不套 allow-target", async () => {
+  it("显式 WebSocket 协议使用 WSS 并直达 registry，不套 HTTP allow-target", async () => {
     const managedExecute = vi.fn(async () => response);
     const pluginExecute = vi.fn(async (request: ExecutableRequest) => {
-      expect(request.url).toBe("HTTPS://Plugin.Example/orders");
+      expect(request.url).toBe("wss://plugin.example/orders");
       return response;
     });
     const plugin: ManagedProtocolClient = { name: "plugin", canHandle: () => true, execute: pluginExecute, close: async () => {} };
     const resolveProtocol = vi.fn(() => plugin);
     const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute: managedExecute, close: async () => {} };
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
-    const pluginApi = { ...api, protocol: "websocket" as const, url: "HTTPS://Plugin.Example/orders" };
+    const pluginApi = { ...api, protocol: "websocket" as const, url: "WSS://Plugin.Example/orders" };
     const session = createStressCaseSession({
       ...target(testCase), api: pluginApi, collection: { ...collection, apis: [pluginApi] },
-      env: { id: "env-1", name: "dev", variables: {}, baseUrls: { [collection.id]: "https://base.example/api/v1" } },
     }, {
       createManagedClient: () => managed,
       resolveProtocol,
@@ -223,7 +484,7 @@ describe("createStressCaseSession", () => {
     const managed: ManagedProtocolClient = { name: "http", canHandle: () => true, execute: async () => { managedCalls += 1; return { ...response, status: 201 }; }, close: async () => {} };
     const plugin: ManagedProtocolClient = { name: "ws-plugin", canHandle: () => true, execute: async () => { registryCalls += 1; return response; }, close: async () => {} };
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
-    const wsApi = { ...api, url: "https://plugin.example/orders", protocol: "websocket" as const, message: "hello" };
+    const wsApi = { ...api, url: "wss://plugin.example/orders", protocol: "websocket" as const, message: "hello" };
     const session = createStressCaseSession({ ...target(testCase), api: wsApi, collection: { ...collection, apis: [wsApi] } }, {
       createManagedClient: () => managed,
       resolveProtocol: () => plugin,
@@ -391,7 +652,7 @@ describe("createStressCaseSession", () => {
     ["soap", "https:example.com/orders", "https://example.com/orders", "https://example.com"],
     ["soap", "\thttps:example.com/orders \n", "https://example.com/orders", "https://example.com"],
     ["soap", String.raw`https:\example.com\orders`, "https://example.com/orders", "https://example.com"],
-  ] as const)("collection/env baseUrl 不应改写 WHATWG 可解析的 special %s URL %s；拒绝与 denied 均零 I/O，精确确认收到 canonical URL", async (protocol, url, canonicalUrl, origin) => {
+  ] as const)("WHATWG special %s URL %s canonicalization retains safety decisions", async (protocol, url, canonicalUrl, origin) => {
     const execute = vi.fn(async () => response);
     const resolveProtocol = vi.fn((): ManagedProtocolClient => ({ name: protocol, canHandle: () => true, execute, close: async () => {} }));
     const managed: ManagedProtocolClient = { name: "session-http", canHandle: () => true, execute, close: async () => {} };
@@ -403,13 +664,9 @@ describe("createStressCaseSession", () => {
       url,
       ...(protocol === "soap" ? { envelope: "<Envelope/>" } : {}),
     };
-    const specialCollection = { ...collection, apis: [specialApi] };
-    const env: Environment = {
-      id: "env-1", name: "dev", variables: {},
-      baseUrls: { [collection.id]: "https://base.example/api/v1" },
-    };
+      const specialCollection = { ...collection, apis: [specialApi] };
     const make = (stressPolicy: Project["stressPolicy"], confirmedTargetOrigins?: string[]) => createStressCaseSession({
-      ...target(testCase), api: specialApi, collection: specialCollection, env,
+      ...target(testCase), api: specialApi, collection: specialCollection,
       project: { ...project, stressPolicy },
     }, {
       createManagedClient: () => managed,
@@ -463,7 +720,7 @@ describe("createStressCaseSession", () => {
     }, { workerId: 0, confirmedTargetOrigins: ["https://base.example"] });
     const result = await session.execute();
     expect(result.outcome.passed).toBe(true);
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ url: "https://base.example/api/orders" }), expect.anything());
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ url: "https://base.example/api/v1/orders" }), expect.anything());
   });
 
   it("内置 SOAP 非绝对 HTTP(S) URL 在 I/O 前 config 失败，不调用 registry", async () => {
@@ -482,7 +739,7 @@ describe("createStressCaseSession", () => {
     }, { workerId: 0 });
     const result = await session.execute();
     expect(result.failureKind).toBe("config");
-    expect(result.outcome.error).toContain("HTTP(S)");
+    expect(result.outcome.error).toMatch(/invalid|URL/i);
     expect(resolveProtocol).not.toHaveBeenCalled();
   });
 
@@ -559,9 +816,14 @@ describe("createStressCaseSession", () => {
     const events: string[] = [];
     const directCollection: Collection = {
       ...collection,
-      scripts: { pre: "collection-script-pre", post: "collection-script-post" },
-      preOperations: [{ id: "collection-pre", type: "script", content: "collection-pre" }],
-      postOperations: [{ id: "collection-post", type: "script", content: "collection-post" }],
+      preOperations: [
+        { id: "collection-script-pre", type: "script", content: "collection-script-pre" },
+        { id: "collection-pre", type: "script", content: "collection-pre" },
+      ],
+      postOperations: [
+        { id: "collection-post", type: "script", content: "collection-post" },
+        { id: "collection-script-post", type: "script", content: "collection-script-post" },
+      ],
     };
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
     const client: ManagedProtocolClient = {
@@ -588,15 +850,18 @@ describe("createStressCaseSession", () => {
     ]);
   });
 
-  it("显式 containerChain 必须以 collection 开始且父子连续、叶节点包含 API", async () => {
+  it("stress target 只能按快照 collectionId/apiId 定位真实祖先路径", async () => {
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
     const folder: Folder = { id: "folder", name: "folder", apis: [api], folders: [] };
     const base = deps([], async () => {}, vi.fn());
-    expect(() => createStressCaseSession({ ...target(testCase), containerChain: [folder] }, base, { workerId: 0 })).toThrow(/collection/);
-    expect(() => createStressCaseSession({ ...target(testCase), containerChain: [collection, folder, folder] }, base, { workerId: 1 })).toThrow(/重复/);
+    const nestedCollection: Collection = { ...collection, apis: [], folders: [folder] };
+    const nestedSession = createStressCaseSession({ ...target(testCase), collection: nestedCollection }, base, { workerId: 0 });
+    await nestedSession.close();
+    expect(() => createStressCaseSession({ ...target(testCase), collectionId: stableId("collection", "missing") }, base, { workerId: 1 })).toThrow(/不存在集合/);
+    expect(() => createStressCaseSession({ ...target(testCase), apiId: stableId("api", "missing") }, base, { workerId: 2 })).toThrow(/未找到/);
     const noApiFolder: Folder = { ...folder, id: "no-api", apis: [] };
     const linkedCollection: Collection = { ...collection, apis: [], folders: [noApiFolder] };
-    expect(() => createStressCaseSession({ ...target(testCase), collection: linkedCollection, containerChain: [linkedCollection, noApiFolder] }, base, { workerId: 2 })).toThrow(/包含/);
+    expect(() => createStressCaseSession({ ...target(testCase), collection: linkedCollection }, base, { workerId: 3 })).toThrow(/未找到/);
   });
 
   it("teardown best-effort：inner/outer/client 均失败时仍完整清理并抛首错", async () => {
@@ -625,8 +890,11 @@ describe("createStressCaseSession", () => {
         { id: "second", type: "script", content: "second" },
       ] };
     const collectionWithHooks: Collection = {
-      ...collection, apis: [], folders: [inner], scripts: { post: "collection-script" },
-      postOperations: [{ id: "collection-post", type: "script", content: "collection-post" }],
+      ...collection, apis: [], folders: [inner],
+      postOperations: [
+        { id: "collection-post", type: "script", content: "collection-post" },
+        { id: "collection-script", type: "script", content: "collection-script" },
+      ],
     };
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
     const client: ManagedProtocolClient = { name: "http", canHandle: () => true, execute: async () => response, close: async () => { events.push("client"); throw "client-error"; } };
@@ -664,14 +932,19 @@ describe("createStressCaseSession", () => {
     expect(closeCounts).toEqual([1, 1]);
   });
 
-  it("containerChain 允许不同容器复用同一 ID，但不允许重复同一对象", async () => {
+  it("从快照推导真实嵌套路径，不依赖调用方传入的容器链", async () => {
     const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
     const sameIdInner: Folder = { id: "same-id", name: "inner", apis: [api], folders: [] };
     const sameIdOuter: Folder = { id: "same-id", name: "outer", apis: [], folders: [sameIdInner] };
     const linkedCollection: Collection = { ...collection, apis: [], folders: [sameIdOuter] };
     const base = deps([], async () => {}, vi.fn());
-    const session = createStressCaseSession({ ...target(testCase), collection: linkedCollection, containerChain: [linkedCollection, sameIdOuter, sameIdInner] }, base, { workerId: 0 });
+    const session = createStressCaseSession({ ...target(testCase), collection: linkedCollection }, base, { workerId: 0 });
     await session.close();
-    expect(() => createStressCaseSession({ ...target(testCase), collection: linkedCollection, containerChain: [linkedCollection, sameIdOuter, sameIdOuter] }, base, { workerId: 1 })).toThrow(/重复/);
+    const duplicateApi = { ...api, id: "duplicate-snapshot-api" };
+    const duplicateCollection: Collection = { ...collection, apis: [], folders: [
+      { id: "first", name: "first", apis: [duplicateApi], folders: [] },
+      { id: "second", name: "second", apis: [duplicateApi], folders: [] },
+    ] };
+    expect(() => createStressCaseSession({ ...target(testCase), api: duplicateApi, collection: duplicateCollection }, base, { workerId: 1 })).toThrow(/多个容器路径/);
   });
 });

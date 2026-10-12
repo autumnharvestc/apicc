@@ -19,15 +19,31 @@ const SERVER = "http://127.0.0.1:8080";
 // path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（memory 替身种子常量防漂移）
 const API_PATH = `${ONLINE_SEED_PROJECT_ID}/collections/示例集合/apis/示例接口/api.yaml`;
 const VALID_API_YAML = [
-  "id: api-online-1",
-  "name: 示例接口",
-  "version: 1.0.0",
-  "deprecated: false",
-  "method: GET",
-  'url: "/ping"',
-  "headers: []",
-  "query: []",
+  "contract:",
+  "  formatVersion: 1",
+  "  id: 2e8a7f71-3c07-42ea-85a4-15ed01d7a101",
+  "  metadata:",
+  "    name: 示例接口",
+  '    description: ""',
+  "    tags: []",
+  '    version: "1.0.0"',
+  "    status: draft",
+  "  request:",
+  "    protocol: http",
+  "    method: GET",
+  "    baseUrl: https://api.example.test",
+  '    path: "/ping"',
+  "    pathParams: []",
+  "    query: []",
+  "    headers: []",
+  "    cookies: []",
+  "    auth:",
+  "      kind: none",
+  "    body:",
+  "      kind: none",
+  "  responses: []",
   "cases: []",
+  'documentation: ""',
   "",
 ].join("\n");
 
@@ -188,11 +204,11 @@ describe("打开/关闭在线工作区（计划 C 任务 2：会话表语义）"
     const first = store.workspaces[0]!;
     await api.onlineFilePut({ workspaceId: first.id, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
     await store.selectNode("api", API_PATH);
-    store.editorApi!.name = "草稿改名";
+    store.editorApi!.contract.metadata.name = "草稿改名";
     const before = store.sessions[first.id]!.tree;
     await store.openWorkspace(first);
     expect(store.sessions[first.id]!.tree).not.toBe(before); // 树随 open 重取
-    expect(store.editorApi?.name).toBe("草稿改名"); // 草稿保留
+    expect(store.editorApi?.contract.metadata.name).toBe("草稿改名"); // 草稿保留
     expect(store.editorDirty).toBe(true);
   });
 
@@ -215,7 +231,7 @@ describe("编辑缓冲按工作区隔离（计划 C 任务 2：缓冲随会话�
     const first = store.workspaces[0]!;
     await api.onlineFilePut({ workspaceId: first.id, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
     await store.selectNode("api", API_PATH);
-    store.editorApi!.name = "ws1 改名";
+    store.editorApi!.contract.metadata.name = "ws1 改名";
     expect(store.editorDirty).toBe(true);
     // 打开第二个工作区：活跃切走，活跃缓冲为空（不见 ws-1 草稿）
     const second = await createSecondWorkspace(api);
@@ -225,13 +241,13 @@ describe("编辑缓冲按工作区隔离（计划 C 任务 2：缓冲随会话�
     expect(store.editorDirty).toBe(false);
     // ws-2 选同路径文件：各自缓冲，ws-1 的改名不串扰
     await store.selectNode("api", API_PATH);
-    expect(store.editorApi!.name).toBe("示例接口");
+    expect(store.editorApi!.contract.metadata.name).toBe("示例接口");
     expect(store.editorDirty).toBe(false);
     // 切回 ws-1：草稿原样驻留（零丢失零确认）
     await store.activateWorkspace(first.id);
-    expect(store.editorApi!.name).toBe("ws1 改名");
+    expect(store.editorApi!.contract.metadata.name).toBe("ws1 改名");
     expect(store.editorDirty).toBe(true);
-    expect(store.sessions[second.id]!.buffers[API_PATH]!.api!.name).toBe("示例接口"); // ws-2 缓冲独立驻留
+    expect(store.sessions[second.id]!.buffers[API_PATH]!.api!.contract.metadata.name).toBe("示例接口"); // ws-2 缓冲独立驻留
   });
 
   it("closeWorkspace(id) 出表即弃其缓冲：被关会话草稿清除，另一驻留会话缓冲不受影响", async () => {
@@ -239,7 +255,7 @@ describe("编辑缓冲按工作区隔离（计划 C 任务 2：缓冲随会话�
     const first = store.workspaces[0]!;
     await api.onlineFilePut({ workspaceId: first.id, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
     await store.selectNode("api", API_PATH);
-    store.editorApi!.name = "ws1 草稿";
+    store.editorApi!.contract.metadata.name = "ws1 草稿";
     const second = await createSecondWorkspace(api);
     await store.openWorkspace(second);
     await store.selectNode("file", "apicc.workspace.yaml");
@@ -262,15 +278,31 @@ describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath
   const PID2 = "999";
   const PATH2 = `${PID2}/collections/乙集合/apis/接口乙/api.yaml`;
   const API2_YAML = [
-    "id: api-online-2",
-    "name: 接口乙",
-    "version: 1.0.0",
-    "deprecated: false",
-    "method: POST",
-    'url: "/pong"',
-    "headers: []",
-    "query: []",
+    "contract:",
+    "  formatVersion: 1",
+    "  id: 2e8a7f71-3c07-42ea-85a4-15ed01d7a201",
+    "  metadata:",
+    "    name: 接口乙",
+    '    description: ""',
+    "    tags: []",
+    '    version: "1.0.0"',
+    "    status: draft",
+    "  request:",
+    "    protocol: http",
+    "    method: POST",
+    "    baseUrl: https://api.example.test",
+    '    path: "/pong"',
+    "    pathParams: []",
+    "    query: []",
+    "    headers: []",
+    "    cookies: []",
+    "    auth:",
+    "      kind: none",
+    "    body:",
+    "      kind: none",
+    "  responses: []",
     "cases: []",
+    'documentation: ""',
     "",
   ].join("\n");
 
@@ -286,10 +318,10 @@ describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath
   it("双项目各自缓冲：甲项目草稿 → 切乙项目接口互不污染 → 切回甲草稿原样驻留（已驻留路径不重拉）", async () => {
     const { api, store, wsId } = await openedTwoProjects();
     await store.selectNode("api", API_PATH);
-    store.editorApi!.name = "甲项目草稿";
+    store.editorApi!.contract.metadata.name = "甲项目草稿";
     expect(store.editorDirty).toBe(true);
     await store.selectNode("api", PATH2); // 未驻留路径：拉取建槽
-    expect(store.editorApi!.name).toBe("接口乙");
+    expect(store.editorApi!.contract.metadata.name).toBe("接口乙");
     expect(store.editorDirty).toBe(false); // 乙槽干净，甲草稿不串扰
     const session = store.sessions[wsId]!;
     expect(Object.keys(session.buffers).sort()).toEqual([API_PATH, PATH2].sort());
@@ -302,7 +334,7 @@ describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath
       return originalGet(input);
     };
     await store.selectNode("api", API_PATH);
-    expect(store.editorApi!.name).toBe("甲项目草稿");
+    expect(store.editorApi!.contract.metadata.name).toBe("甲项目草稿");
     expect(store.editorDirty).toBe(true);
     expect(gets).toBe(0);
   });
@@ -310,7 +342,7 @@ describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath
   it("容器节点（project）选中：活跃指针置空（编辑区空白）但缓冲表驻留——切项目签草稿零丢失", async () => {
     const { store, wsId } = await openedTwoProjects();
     await store.selectNode("api", API_PATH);
-    store.editorApi!.name = "甲项目草稿";
+    store.editorApi!.contract.metadata.name = "甲项目草稿";
     // 项目签激活编排（tabs.activateTab → online.selectNode("project", id)）同路径
     await store.selectNode("project", ONLINE_SEED_PROJECT_ID);
     expect(store.editorPath).toBeNull();
@@ -318,7 +350,7 @@ describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath
     expect(store.editorDirty).toBe(false);
     expect(Object.keys(store.sessions[wsId]!.buffers)).toEqual([API_PATH]); // 草稿槽保留
     await store.selectNode("api", API_PATH); // 再点接口：草稿回显，不重拉
-    expect(store.editorApi!.name).toBe("甲项目草稿");
+    expect(store.editorApi!.contract.metadata.name).toBe("甲项目草稿");
   });
 
   it("拉取失败/文件缺失：不驻留空槽（重试可重拉），活跃指针复位（编辑区空白）", async () => {
@@ -335,7 +367,7 @@ describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath
   it("clearEditor 显式清场（任务 4 范围控制保留）：清空活跃会话整张缓冲表 + 指针；selectNode 不再走全清", async () => {
     const { store, wsId } = await openedTwoProjects();
     await store.selectNode("api", API_PATH);
-    store.editorApi!.name = "甲项目草稿";
+    store.editorApi!.contract.metadata.name = "甲项目草稿";
     store.clearEditor();
     const session = store.sessions[wsId]!;
     expect(session.buffers).toEqual({});
@@ -347,9 +379,9 @@ describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath
   it("evictProjectBuffers：按 <projectId>/ 前缀驱逐；根级配置叶与其它项目缓冲驻留；活跃槽被逐则指针复位", async () => {
     const { store, wsId } = await openedTwoProjects();
     await store.selectNode("api", API_PATH);
-    store.editorApi!.name = "甲项目草稿";
+    store.editorApi!.contract.metadata.name = "甲项目草稿";
     await store.selectNode("api", PATH2);
-    store.editorApi!.name = "乙项目草稿";
+    store.editorApi!.contract.metadata.name = "乙项目草稿";
     await store.selectNode("file", "apicc.workspace.yaml");
     expect(store.editorPath).toBe("apicc.workspace.yaml");
     // 驱逐乙项目（999）：乙槽清除；甲槽与根级配置叶驻留；活跃（根级叶）不动
@@ -374,17 +406,59 @@ describe("同工作区双项目编辑缓冲（计划 C 任务 4：按 editorPath
 });
 
 describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编辑，坏数据进 problems）", () => {
-  it("selectNode api：合法 api.yaml → 解析进编辑缓冲，dirty 快照复位；修改 → dirty", async () => {
+  it("selectNode api：合法定义可编辑；缺失引用进入项目诊断并阻止保存", async () => {
     const { api, store } = await opened();
     await api.onlineFilePut({ workspaceId: store.activeWorkspace!.id, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
     await store.selectNode("api", API_PATH);
     expect(store.editorKind).toBe("api");
-    expect(store.editorApi?.method).toBe("GET");
+    expect(store.editorApi?.contract.request).toMatchObject({ protocol: "http", method: "GET" });
     expect(store.editorDirty).toBe(false);
     expect(store.editorProblems).toEqual([]);
     expect(store.editorVersion).toBe(2);
-    store.editorApi!.name = "改名";
+    store.editorApi!.contract.metadata.name = "改名";
     expect(store.editorDirty).toBe(true);
+
+    const missingReference = VALID_API_YAML.replace(
+      "      kind: none",
+      "      kind: componentRef\n      componentId: 00000000-0000-4000-8000-000000000099\n      expectedKind: auth",
+    );
+    await api.onlineFilePut({ workspaceId: store.activeWorkspace!.id, path: API_PATH, content: missingReference, baseVersion: 2 });
+    const originalPut = api.onlineFilePut.bind(api);
+    const pushes: string[] = [];
+    api.onlineFilePut = async (input) => {
+      pushes.push(input.path);
+      return originalPut(input);
+    };
+    let releaseContext!: () => void;
+    let notifyContextStarted!: () => void;
+    const contextStarted = new Promise<void>((resolve) => { notifyContextStarted = resolve; });
+    const contextGate = new Promise<void>((resolve) => { releaseContext = resolve; });
+    const originalTreeGet = api.onlineTreeGet.bind(api);
+    api.onlineTreeGet = async (workspaceId) => {
+      const tree = await originalTreeGet(workspaceId);
+      notifyContextStarted();
+      await contextGate;
+      return tree;
+    };
+    const loadingSelection = store.selectNode("api", API_PATH, { force: true });
+    await contextStarted;
+    const loadingDuringContext = store.editorLoading;
+    const canEditWhileContextLoads = store.canEdit(API_PATH);
+    await store.saveApi();
+    const pushesWhileContextLoads = [...pushes];
+    releaseContext();
+    await loadingSelection;
+    expect(loadingDuringContext).toBe(true);
+    expect(store.editorLoading).toBe(false);
+    expect(canEditWhileContextLoads).toBe(false);
+    expect(pushesWhileContextLoads).toEqual([]);
+    expect(store.editorApi).not.toBeNull();
+    expect(store.editorProblems.some((problem) => problem.includes("ASSET_REFERENCE_MISSING"))).toBe(true);
+    expect(store.canEdit(API_PATH)).toBe(false);
+    await store.saveApi();
+    expect(pushes).toEqual([]);
+    const unchanged = await api.onlineFilesGet({ workspaceId: store.activeWorkspace!.id, paths: [API_PATH] });
+    expect(unchanged.files[0]!.content).toBe(missingReference);
   });
 
   it("selectNode api：坏数据（schema 不符）→ problems 展示、editorApi 为 null、不抛", async () => {
@@ -448,7 +522,7 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
       calls.push({ path: input.path, baseVersion: input.baseVersion });
       return originalPut(input);
     };
-    store.editorApi!.name = "在线改名";
+    store.editorApi!.contract.metadata.name = "在线改名";
     await store.saveApi();
     expect(store.conflict).toBeNull();
     expect(calls[0]).toEqual({ path: API_PATH, baseVersion: 2 });
@@ -463,7 +537,7 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     const { api, store } = await opened();
     await api.onlineFilePut({ workspaceId: store.activeWorkspace!.id, path: API_PATH, content: VALID_API_YAML, baseVersion: 1 });
     await store.selectNode("api", API_PATH);
-    store.editorApi!.name = "我的本地编辑";
+    store.editorApi!.contract.metadata.name = "我的本地编辑";
     api.onlineFilePut = async () => ({
       outcome: "conflict",
       conflict: { code: "version_conflict", currentVersion: 9, currentHash: "h9" },
@@ -474,7 +548,7 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     // 放弃：清冲突、缓冲保留
     store.conflictDiscard();
     expect(store.conflict).toBeNull();
-    expect(store.editorApi?.name).toBe("我的本地编辑");
+    expect(store.editorApi?.contract.metadata.name).toBe("我的本地编辑");
     // 拉取覆盖我的：重取服务端最新并重新渲染
     api.onlineFilePut = async () => {
       throw new Error("不应再推送");
@@ -482,7 +556,7 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     store.conflict = { code: "version_conflict", currentVersion: 9, currentHash: "h9" };
     await store.conflictPullOverwrite();
     expect(store.conflict).toBeNull();
-    expect(store.editorApi?.name).toBe("示例接口"); // 服务端内容
+    expect(store.editorApi?.contract.metadata.name).toBe("示例接口"); // 服务端内容
     expect(store.editorDirty).toBe(false);
     expect(store.editorVersion).toBe(2);
   });

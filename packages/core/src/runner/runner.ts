@@ -5,12 +5,17 @@ import { monotonicFactory } from "ulid";
 
 /** runs 落盘文件名 ID：进程内单调递增，同毫秒多次运行不重名。 */
 const nextRunFileId = monotonicFactory();
-import { envChain, mergedEnvVars } from "../domain/envChain.js";
-import type { ApiDefinition, Collection, Environment, Folder, Operation, Project, TestCase, Workspace } from "../domain/model.js";
+import type { ApiAsset } from "../contract/model.js";
+import type { ContractCollection, ContractFolder } from "../contract/workspace.js";
+import type { Operation, ProjectGlobals, TestCase } from "../domain/common.js";
+import type { ProjectSnapshot } from "../assets/snapshot.js";
+import type { CredentialBindings } from "../credentials/types.js";
+import type { DeepReadonly } from "../assets/context.js";
+import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/executionSelection.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
 import type { EventBus } from "../events/bus.js";
 import type { PluginRegistry } from "../plugin/registry.js";
-import type { PmApi, ScriptEngine } from "../plugin/types.js";
+import type { ExecutableRequest, PmApi, ScriptEngine } from "../plugin/types.js";
 import type { CaseOutcome, RunResult } from "../report/types.js";
 import { executeCase } from "./caseExecutor.js";
 
@@ -28,12 +33,31 @@ export class CollectionRunError extends Error {
 
 export interface RunnerOptions {
   runsDir?: string;
+  environmentId?: string;
+  /** Restrict a workflow request node to its selected snapshot case and real ancestor path. */
+  caseSelection?: { apiId: string; caseId: string; folderIds: readonly string[] };
   runtimeBridge?: {
     /** 读取外部携带的运行时变量（进入本 run 前注入 persisted 层）。 */
     get(): Record<string, string>;
     /** 本 run 结束后接收本次累计提取的运行时变量（仅脚本 pm.variables.set 写过的键）；外部携带者应做加法式合并。 */
     set(vars: Record<string, string>): void;
   };
+}
+
+export interface ProjectExecutionRun {
+  readonly snapshot: ProjectSnapshot;
+  readonly credentialBindings: CredentialBindings;
+}
+
+/** Pin one caller-selected run wrapper so later wrapper replacement cannot mix revisions. */
+export function captureProjectExecutionRun(run: ProjectExecutionRun): ProjectExecutionRun {
+  const selectedSnapshot = run.snapshot;
+  const snapshot: ProjectSnapshot = Object.freeze({
+    project: selectedSnapshot.project,
+    context: selectedSnapshot.context,
+    definitionRevision: selectedSnapshot.definitionRevision,
+  });
+  return Object.freeze({ snapshot, credentialBindings: run.credentialBindings });
 }
 
 export class CollectionRunner {
@@ -44,9 +68,15 @@ export class CollectionRunner {
     failFast: boolean;
   }) {}
 
-  async run(collection: Collection, env: Environment | undefined, project: Project, workspace: Workspace, opts: RunnerOptions): Promise<RunResult> {
+  async run(run: ProjectExecutionRun, collectionId: string, opts: RunnerOptions = {}): Promise<RunResult> {
+    const selectedRun = captureProjectExecutionRun(run);
+    const project = selectedRun.snapshot.project;
+    const collection = project.collections.find((candidate) => candidate.id === collectionId);
+    if (!collection) throw new Error(`配置错误: 项目快照中不存在集合 ${collectionId}`);
+    const executionEnvironment = resolveExecutionEnvironment(project, collection.id, opts.environmentId);
+    const env = executionEnvironment.environment;
     const startedAt = new Date();
-    const chain = env ? envChain(env, project) : [];
+    const chain = executionEnvironment.chain;
     // 环境变量继承（规格 §3.1/§6）：按继承链从根到叶合并各环境变量为一层，子环境同名变量覆盖父环境。
     // 经 mergedEnvVars 统一口径，与工作流条件求值上下文 env 同源。
     // M9-B：环境按模块设置的前置 URL 注入为内置变量 baseUrl（{{baseUrl}} 模板可用；
@@ -54,12 +84,10 @@ export class CollectionRunner {
     // M10：变量链收敛为 环境 > 模块 > 全局变量（= project.variables，两层来源合一）；
     // workspace 级变量层与 globals.variables 弃用。全局参数（query/header/cookie/body）
     // 归属 project.globals，由 runCase 合并（请求同名项优先）。
-    const globals = project.globals ?? { query: [], headers: [], cookies: [], body: [] };
-    const baseUrl = env?.baseUrls?.[collection.id];
-    const envVars = { ...mergedEnvVars(env, project), ...(baseUrl ? { baseUrl } : {}) };
-    const resolver = createVariableResolver({
-      layers: [envVars, collection.variables, project.variables],
-    });
+    const globals = mutableGlobals(project.globals);
+    const envVars = executionEnvironment.variables;
+    const baseUrl = executionEnvironment.baseUrl;
+    const resolver = createResolver(envVars, collection.variables, project.variables);
     const engine = this.deps.registry.getScriptEngine("javascript");
     if (!engine) throw new Error("缺少 javascript 脚本引擎插件");
     // 预留：报告与运行历史可经 this.deps.registry.getStorage() 适配，本任务不消费。
@@ -85,13 +113,11 @@ export class CollectionRunner {
       resolver.setRuntime(k, v);
     }
     // M10 操作执行：run 级上下文（无请求）；容器前置操作自上而下、后置操作自下而上。
-    const runLevelCtx = () => this.buildContext(resolver, envVars, undefined, undefined, persisted, persistedSnapshot);
-    // 旧 scripts 字段为读兼容遗留（loader 归一后内存模型不再携带；直接构造容器直调 run 的
-    // 调用方仍可能携带——legacy 优先于操作列表执行，顺序确定）。
-    const runLegacyOrOps = (legacy: string | undefined, ops: Operation[] | undefined): void => {
-      if (legacy) engine.run(legacy, runLevelCtx());
-      for (const op of ops ?? []) {
-        if (op.type === "script") engine.run(op.content, runLevelCtx());
+    const runOperations = (folders: readonly DeepReadonly<ContractFolder>[], ops: readonly DeepReadonly<Operation>[]): void => {
+      const operationResolver = createResolver(envVars, collection.variables, project.variables);
+      restorePersisted(operationResolver, persisted);
+      for (const operation of ops) {
+        if (operation.type === "script") engine.run(operation.content, this.buildContext(operationResolver, envVars, undefined, undefined, persisted, persistedSnapshot));
       }
     };
 
@@ -107,20 +133,11 @@ export class CollectionRunner {
     });
 
     /** 单接口的用例去重/数据驱动/failFast（原 apis 平铺循环体，逻辑不变）。 */
-    const runApi = async (api: ApiDefinition): Promise<void> => {
-      const applicable = api.cases.filter((c) => c.scope === "base" || chain.includes(c.scope));
-      // 规格 §6：同 ID 用例仅执行环境版本（覆盖而非重复执行）；
-      // 同 ID 出现多个环境版本时继承链更近者优先（chain 靠前者更具体），base 视为最远。
-      const scopeRank = (scope: string): number => {
-        const i = chain.indexOf(scope);
-        return i === -1 ? Number.MAX_SAFE_INTEGER : i;
-      };
-      const byId = new Map<string, TestCase>();
-      for (const c of applicable) {
-        const prev = byId.get(c.id);
-        if (!prev || scopeRank(c.scope) < scopeRank(prev.scope)) byId.set(c.id, c);
-      }
-      for (const tc of byId.values()) {
+    const runApi = async (asset: DeepReadonly<ApiAsset>, folders: readonly DeepReadonly<ContractFolder>[]): Promise<void> => {
+      const api = asset.contract;
+      if (opts.caseSelection && api.id !== opts.caseSelection.apiId) return;
+      const applicable = selectEffectiveCases(asset.cases, chain, opts.caseSelection?.caseId);
+      for (const tc of applicable) {
         if (state.stopped) return;
         // 数据源读取/解析失败折进当用例 outcome，不中断整轮（与单用例隔离语义一致）。
         let rows: Array<Record<string, string> | undefined>;
@@ -128,7 +145,7 @@ export class CollectionRunner {
           rows = this.expandDataRows(tc);
         } catch (e) {
           outcomes.push({
-            apiId: api.id, apiName: api.name, caseId: tc.id, caseName: tc.name,
+            apiId: api.id, apiName: api.metadata.name, caseId: tc.id, caseName: tc.name,
             passed: false, durationMs: 0, assertions: [],
             error: `数据源读取失败: ${e instanceof Error ? e.message : String(e)}`,
             failureKind: "config",
@@ -136,10 +153,12 @@ export class CollectionRunner {
           if (this.deps.failFast) state.stopped = true;
           continue;
         }
+        const caseResolver = createResolver(envVars, collection.variables, project.variables);
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
           const execution = await executeCase({
-            api, testCase: tc, row: rows[rowIndex], rowIndex, isDataDriven: rows.length > 1,
-            resolver, envVars, globals, persisted, persistedSnapshot,
+            asset, assetContext: selectedRun.snapshot.context, credentialBindings: selectedRun.credentialBindings,
+            testCase: tc, row: rows[rowIndex], rowIndex, isDataDriven: rows.length > 1,
+            resolver: caseResolver, envVars, envBaseUrl: baseUrl, globals: mutableGlobals(globals), persisted, persistedSnapshot,
           }, {
             resolveProtocol: (request) => this.deps.registry.getProtocol(request),
             resolveAuth: (type) => this.deps.registry.getAuth(type),
@@ -158,32 +177,36 @@ export class CollectionRunner {
     };
 
     /** 容器遍历：直属接口 → 子文件夹递归（前置自上而下、后置自下而上）。 */
-    const processFolder = async (folder: Folder): Promise<void> => {
-      runLegacyOrOps(undefined, folder.preOperations);
-      for (const api of folder.apis) {
+    const processFolder = async (folder: DeepReadonly<ContractFolder>, ancestors: readonly DeepReadonly<ContractFolder>[]): Promise<void> => {
+      const chain = [...ancestors, folder];
+      if (opts.caseSelection && (
+        chain.length > opts.caseSelection.folderIds.length
+        || chain.some((item, index) => item.id !== opts.caseSelection!.folderIds[index])
+      )) return;
+      runOperations(chain, folder.preOperations);
+      for (const asset of folder.apis) {
         if (state.stopped) return;
-        await runApi(api);
+        await runApi(asset, chain);
       }
-      for (const sub of folder.folders ?? []) {
+      for (const sub of folder.folders) {
         if (state.stopped) return;
-        await processFolder(sub);
+        await processFolder(sub, chain);
       }
-      runLegacyOrOps(undefined, folder.postOperations);
+      runOperations(chain, folder.postOperations);
     };
 
     try {
-      // 模块级前置（legacy scripts.pre → preOperations）
-      runLegacyOrOps(collection.scripts?.pre, collection.preOperations);
-      for (const api of collection.apis) {
+      // Module preOperations run once before any asset; module postOperations run after descendants.
+      runOperations([], collection.preOperations);
+      for (const asset of collection.apis) {
         if (state.stopped) break;
-        await runApi(api);
+        await runApi(asset, []);
       }
       for (const folder of collection.folders) {
         if (state.stopped) break;
-        await processFolder(folder);
+        await processFolder(folder, []);
       }
-      // 模块级后置（postOperations → legacy scripts.post）
-      runLegacyOrOps(collection.scripts?.post, collection.postOperations);
+      runOperations([], collection.postOperations);
     } catch (e) {
       if (e instanceof CollectionRunError) throw e;
       throw new CollectionRunError(e instanceof Error ? e.message : String(e), partialResult(), "script");
@@ -218,7 +241,7 @@ export class CollectionRunner {
   }
 
   /** 数据驱动逐行展开；无数据源或空数据按单行处理。 */
-  private expandDataRows(tc: TestCase): Array<Record<string, string> | undefined> {
+  private expandDataRows(tc: DeepReadonly<TestCase>): Array<Record<string, string> | undefined> {
     if (!tc.dataDriver) return [undefined];
     const raw = readFileSync(tc.dataDriver.sourcePath, "utf8");
     const records: Array<Record<string, string>> =
@@ -230,7 +253,7 @@ export class CollectionRunner {
 
   private buildContext(
     resolver: VariableResolver, envVars: Record<string, string>,
-    request?: { method: "GET"; url: string; headers: Record<string, string>; query: never[] },
+    request?: ExecutableRequest,
     pmAsserts?: Array<{ pass: boolean; message: string }>,
     persisted?: Map<string, string>, persistedSnapshot?: Record<string, string>,
   ): { pm: PmApi } {
@@ -240,11 +263,33 @@ export class CollectionRunner {
         set: (name, value) => { persisted?.set(name, value); if (persistedSnapshot) persistedSnapshot[name] = value; resolver.setRuntime(name, value); },
       },
       environment: { get: (name) => envVars[name] },
-      request: request ?? { method: "GET", url: "", headers: {}, query: [] },
+      request: request ?? { protocol: "http", method: "GET", url: "", headers: {}, query: [], auth: { kind: "none" } },
       response: undefined,
       assert: (condition, message) => pmAsserts?.push({ pass: Boolean(condition), message }),
     };
     return { pm };
   }
 
+}
+
+function createResolver(
+  envVars: Record<string, string>,
+  collectionVariables: Readonly<Record<string, string>>,
+  projectVariables: Readonly<Record<string, string>>,
+): VariableResolver {
+  return createVariableResolver({ layers: [envVars, { ...collectionVariables }, { ...projectVariables }] });
+}
+
+function restorePersisted(resolver: VariableResolver, persisted: ReadonlyMap<string, string>): void {
+  resolver.clearRuntime();
+  for (const [name, value] of persisted) resolver.setRuntime(name, value);
+}
+
+function mutableGlobals(globals: DeepReadonly<ProjectGlobals>): ProjectGlobals {
+  return {
+    query: globals.query.map((entry) => ({ ...entry })),
+    headers: globals.headers.map((entry) => ({ ...entry })),
+    cookies: globals.cookies.map((entry) => ({ ...entry })),
+    body: globals.body.map((entry) => ({ ...entry })),
+  };
 }

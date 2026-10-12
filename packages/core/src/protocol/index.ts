@@ -8,17 +8,17 @@ import type { ExecutableRequest, ProtocolClient } from "../plugin/types.js";
  */
 export const KNOWN_PROTOCOLS = ProtocolSchema.options;
 
-/**
- * 请求的有效协议（D5）：未携带 protocol 字段的旧形状请求视为 http——
- * 注册面（getProtocol/canHandle）与执行面（runner）统一走此口径，缺省逻辑单点收口。
- */
+/** Every executable request carries its protocol; malformed plugin input is a configuration error. */
 export function protocolOf(request: Pick<ExecutableRequest, "protocol">): Protocol {
-  return request.protocol ?? "http";
+  if (typeof request.protocol !== "string" || !(KNOWN_PROTOCOLS as readonly string[]).includes(request.protocol)) {
+    throw Object.assign(new Error("执行请求必须包含受支持的 protocol 字段"), { caseFailureKind: "config" as const, code: "CONFIG" });
+  }
+  return request.protocol;
 }
 
 /** canHandle 助手：客户端按协议显式匹配（D5），替代 URL 嗅探。 */
 export function canHandleProtocol(request: Pick<ExecutableRequest, "protocol">, protocol: Protocol): boolean {
-  return protocolOf(request) === protocol;
+  return request.protocol === protocol;
 }
 
 /** 按协议从注册中心解析客户端；未知协议或无承接者 → 明确错误（fail-fast，不悬挂）。 */

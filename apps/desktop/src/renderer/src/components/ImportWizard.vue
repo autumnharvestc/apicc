@@ -2,8 +2,10 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Button as AButton, Input as AInput, Select as ASelect, Steps as ASteps, Tag as ATag, Tree as ATree } from "ant-design-vue";
+import type { ApiAsset } from "@apicc/core";
 import type { useImportWizardStore } from "../stores/importW.js";
 import type { PluginsStore } from "../stores/plugins.js";
+import type { GroupLocator, ProjectLocator } from "../../../shared/locations.js";
 
 /**
  * 导入向导（antd a-steps 三步；轨二双模式）：① 选择文件——渲染层 input[type=file] 读文本，
@@ -24,18 +26,19 @@ const props = defineProps<{
   reportError: (e: unknown) => void;
   /** 落点模式：project=导入为项目（选分组）；module=并入指定项目（默认当前项目）。 */
   mode: "project" | "module";
-  /** project 模式：可选分组清单（id+名），默认选中 defaultGroupId。 */
-  groups?: Array<{ id: string; label: string }>;
-  defaultGroupId?: string | null;
-  /** module 模式：目标项目 id（默认当前项目上下文）。 */
-  targetProjectId?: string | null;
+  /** project 模式：分组及其完整位置。 */
+  groups?: Array<{ locator: GroupLocator; label: string }>;
+  defaultGroupLocator?: GroupLocator | null;
+  /** module 模式：目标项目的完整位置。 */
+  targetProjectLocator?: ProjectLocator | null;
 }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 const { t } = useI18n();
 
 const current = ref(0);
 const targetName = ref("");
-const groupId = ref<string | undefined>(undefined);
+const groupValue = ref<string | undefined>(undefined);
+const sourceEnvironmentName = ref<string | undefined>(undefined);
 const stepError = ref("");
 
 const steps = computed(() => [
@@ -44,7 +47,7 @@ const steps = computed(() => [
   { title: t("import.stepDone") },
 ]);
 
-// 预览树：项目 → 集合（标注接口数）→ 接口（方法 + 名称；文件夹内接口平铺）。
+// 预览树使用正式 ApiAsset 契约字段：项目 → 集合 → 接口。
 const treeData = computed(() => {
   const p = props.importW.preview?.project;
   if (!p) return [];
@@ -55,62 +58,91 @@ const treeData = computed(() => {
       title: `${c.name}（${c.apis.length + c.folders.reduce((n, f) => n + f.apis.length, 0)} ${t("import.apiCount")}）`,
       key: `collection:${c.id}`,
       children: [
-        ...c.apis.map((a) => ({ title: `${a.method} ${a.name}`, key: `api:${a.id}` })),
-        ...c.folders.flatMap((f) => f.apis.map((a) => ({ title: `${a.method} ${a.name}`, key: `folder-api:${a.id}` }))),
+        ...c.apis.map((a) => ({ title: apiTitle(a), key: `api:${a.contract.id}` })),
+        ...c.folders.flatMap((f) => f.apis.map((a) => ({ title: apiTitle(a), key: `folder-api:${a.contract.id}` }))),
       ],
     })),
   }];
 });
 
-const warnings = computed(() => props.importW.preview?.warnings ?? []);
+function apiTitle(api: ApiAsset): string {
+  const request = api.contract.request;
+  const method = request.protocol === "websocket" ? "WS" : request.method;
+  return `${method} ${api.contract.metadata.name}`;
+}
 
-const groupOptions = computed(() => (props.groups ?? []).map((g) => ({ label: g.label, value: g.id })));
+const warnings = computed(() => props.importW.preview?.warnings ?? []);
+const sourceEnvironmentOptions = computed(() => (props.importW.preview?.project.environments ?? []).map((environment) => ({
+  label: environment.name,
+  value: environment.name,
+})));
+
+const groupOptions = computed(() => (props.groups ?? []).map((g) => ({ label: g.label, value: JSON.stringify(g.locator) })));
 
 async function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = ""; // 复位以允许重复选择同一文件
   if (!file) return;
+  const context = props.importW.capturePreviewContext();
   try {
     const content = await file.text();
-    await props.importW.previewFile(file.name, content);
+    await props.importW.previewFile(file.name, content, context);
+    if (!props.importW.isPreviewContextCurrent(context)) return;
     // 预填可编辑名称：project=项目名 / module=模块名（均取文件 title）
     targetName.value = props.importW.preview?.project.name ?? "";
-    groupId.value = props.defaultGroupId ?? props.groups?.[0]?.id ?? undefined;
+    const sourceEnvironments = props.importW.preview?.project.environments ?? [];
+    sourceEnvironmentName.value = sourceEnvironments.length === 1 ? sourceEnvironments[0]!.name : undefined;
+    groupValue.value = props.defaultGroupLocator ? JSON.stringify(props.defaultGroupLocator)
+      : props.groups?.[0] ? JSON.stringify(props.groups[0].locator) : undefined;
     stepError.value = "";
     current.value = 1;
   } catch (e) {
-    stepError.value = e instanceof Error ? e.message : String(e);
+    if (props.importW.isPreviewContextCurrent(context)) {
+      stepError.value = e instanceof Error ? e.message : String(e);
+    }
   }
 }
 
 async function applyImport() {
+  const context = props.importW.previewContext;
   const p = props.importW.preview?.project;
-  if (!p) return;
-  if (props.mode === "project" && !groupId.value) {
+  if (!p || !context || !props.importW.isPreviewContextCurrent(context)) return;
+  if (props.mode === "project" && !groupValue.value) {
     stepError.value = t("home.targetGroup");
     return;
   }
   try {
     if (props.mode === "module") {
-      if (!props.targetProjectId) {
+      if (!props.targetProjectLocator) {
         stepError.value = t("home.noWorkspaceSide");
         return;
       }
-      await props.importW.apply({ mode: "module", projectId: props.targetProjectId, name: targetName.value.trim() });
+      if (sourceEnvironmentOptions.value.length > 1 && sourceEnvironmentName.value === undefined) {
+        stepError.value = t("import.sourceEnvironmentRequired");
+        return;
+      }
+      await props.importW.apply({
+        mode: "module",
+        target: { ...props.targetProjectLocator },
+        name: targetName.value.trim(),
+        ...(sourceEnvironmentName.value === undefined ? {} : { sourceEnvironmentName: sourceEnvironmentName.value }),
+      });
     } else {
-      await props.importW.apply({ mode: "project", groupId: groupId.value!, name: targetName.value.trim() });
+      await props.importW.apply({ mode: "project", target: JSON.parse(groupValue.value!) as GroupLocator, name: targetName.value.trim() });
     }
+    if (!props.importW.isPreviewContextCurrent(context)) return;
     current.value = 2;
   } catch (e) {
-    props.reportError(e); // 留在第二步（预览/名称可改后重试）
+    if (props.importW.isPreviewContextCurrent(context)) props.reportError(e); // 仅报告发起该 apply 的预览错误
   }
 }
 
 function closeWizard() {
   props.importW.reset();
   targetName.value = "";
-  groupId.value = undefined;
+  groupValue.value = undefined;
+  sourceEnvironmentName.value = undefined;
   stepError.value = "";
   current.value = 0;
   emit("close");
@@ -160,10 +192,21 @@ function closeWizard() {
         data-testid="import-warnings"
       />
       <a-tree :tree-data="treeData" block-node default-expand-all data-testid="import-preview-tree" />
+      <label v-if="mode === 'module' && sourceEnvironmentOptions.length > 0" class="group-row">
+        <span>{{ t("import.sourceEnvironment") }}</span>
+        <a-select
+          v-model:value="sourceEnvironmentName"
+          class="group-select"
+          :options="sourceEnvironmentOptions"
+          :placeholder="t('import.sourceEnvironment')"
+          data-testid="import-source-environment-select"
+          @change="stepError = ''"
+        />
+      </label>
       <label v-if="mode === 'project'" class="group-row">
         <span>{{ t("home.targetGroup") }}</span>
         <a-select
-          v-model:value="groupId"
+          v-model:value="groupValue"
           class="group-select"
           :options="groupOptions"
           data-testid="import-group-select"
@@ -182,7 +225,7 @@ function closeWizard() {
         <a-button data-testid="import-cancel" @click="closeWizard">{{ t("common.cancel") }}</a-button>
         <a-button
           type="primary"
-          :disabled="importW.applying || (mode === 'project' && !groupId)"
+          :disabled="!importW.previewIsCurrent || importW.applying || (mode === 'project' && !groupValue) || (mode === 'module' && sourceEnvironmentOptions.length > 1 && sourceEnvironmentName === undefined)"
           data-testid="import-apply"
           @click="applyImport"
         >

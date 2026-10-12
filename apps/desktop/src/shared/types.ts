@@ -1,36 +1,95 @@
 import type {
-  ApiDefinition,
+  ApiAsset,
+  ApiTestCase,
   CaseOutcome,
+  ComponentAsset,
+  ContractProject,
+  ContractWorkspace,
   Environment,
   LoadProblem,
-  Project,
+  ModelAsset,
   RunResult,
   StressReport,
   StressFailureCounts,
   Workflow,
-  WorkflowImpactEntry,
   WorkflowRunResult,
   WorkflowStatus,
-  WorkspaceGlobals,
   ProjectGlobals,
   StressThresholds,
   StressTargetPolicy,
 } from "@apicc/core";
-import type { TreeNodeDTO } from "./tree-dto.js";
+import type {
+  ApiLocator,
+  ApiParentLocator,
+  CaseLocator,
+  CollectionLocator,
+  ComponentLocator,
+  EnvironmentLocator,
+  FolderLocator,
+  GroupLocator,
+  ModelLocator,
+  NodeLocator,
+  ProjectLocator,
+  WorkflowLocator,
+  WorkspaceLocator,
+} from "./locations.js";
+import type { LocalTreeNodeDTO } from "./tree-dto.js";
 import type { KeyValuePair } from "@apicc/core";
 import { CurrentStressReportSchema } from "@apicc/core/schema";
 import { z } from "zod";
+import type { CredentialMutationResult, CredentialPutInput, CredentialRefInput, CredentialStatusResult } from "./credentials.js";
 
-/** 容器保存载荷（M10）：模块（集合）= 变量+操作；文件夹 = 操作。id 定位，整体替换。 */
-export interface ContainerSaveInput {
-  kind: "collection" | "folder";
-  id: string;
-  /** 仅 containerGet 回填供对话框标题展示；save 侧忽略。 */
-  name?: string;
-  variables?: Record<string, string>;
+export type CreateModelInput = ModelAsset extends infer Asset
+  ? Asset extends { formatVersion: number; id: string }
+    ? Omit<Asset, "formatVersion" | "id">
+    : never
+  : never;
+export type CreateComponentInput = ComponentAsset extends infer Asset
+  ? Asset extends { formatVersion: number; id: string }
+    ? Omit<Asset, "formatVersion" | "id">
+    : never
+  : never;
+type LocatorKey =
+  | "workspaceId" | "groupId" | "projectId" | "collectionId" | "folderIds" | "apiId"
+  | "environmentId" | "modelId" | "componentKind" | "componentId" | "workflowId";
+type ExactLocator<Locator> = Locator extends object
+  ? Locator & { [Key in Exclude<LocatorKey, keyof Locator>]?: never }
+  : never;
+export interface CreateApiInput {
+  name: string;
+  protocol?: "http" | "websocket" | "soap";
+  method?: import("@apicc/core").HttpMethod;
+  baseUrl?: string;
+  path?: string;
+}
+export type NodeCreateInput =
+  | { kind: "group"; parent: ExactLocator<WorkspaceLocator>; name: string }
+  | { kind: "project"; parent: ExactLocator<GroupLocator>; name: string }
+  | { kind: "collection"; parent: ExactLocator<ProjectLocator>; name: string }
+  | { kind: "folder"; parent: ExactLocator<ApiParentLocator>; name: string }
+  | { kind: "api"; parent: ExactLocator<ApiParentLocator>; api: CreateApiInput };
+export type NodeCreatedDTO =
+  | { kind: "group"; source: "local"; id: string; key: string; locator: GroupLocator; label: string }
+  | { kind: "project"; source: "local"; id: string; key: string; locator: ProjectLocator; label: string }
+  | { kind: "collection"; source: "local"; id: string; key: string; locator: CollectionLocator; label: string }
+  | { kind: "folder"; source: "local"; id: string; key: string; locator: FolderLocator; label: string }
+  | { kind: "api"; source: "local"; id: string; key: string; locator: ApiLocator; label: string; protocol: "http" | "websocket" | "soap"; method?: string };
+export interface ContainerOperations {
   preOperations: Array<{ id: string; type: "script"; content: string }>;
   postOperations: Array<{ id: string; type: "script"; content: string }>;
 }
+export type ContainerTarget =
+  | { kind: "collection"; locator: CollectionLocator }
+  | { kind: "folder"; locator: FolderLocator };
+export type ContainerDetail =
+  | { kind: "collection"; locator: CollectionLocator; name: string; operations: ContainerOperations & { variables: Record<string, string> } }
+  | { kind: "folder"; locator: FolderLocator; name: string; operations: ContainerOperations };
+export type ContainerSaveInput =
+  | { kind: "collection"; locator: CollectionLocator; operations: ContainerOperations & { variables: Record<string, string> } }
+  | { kind: "folder"; locator: FolderLocator; operations: ContainerOperations };
+export type ContainerSaveResult =
+  | { kind: "collection"; locator: CollectionLocator; operations: ContainerOperations & { variables: Record<string, string> } }
+  | { kind: "folder"; locator: FolderLocator; operations: ContainerOperations };
 
 /** 项目级全局设置（M10）：全局变量（=project.variables）+ 四类全局参数的复合包络。 */
 export interface ProjectGlobalSettings {
@@ -70,24 +129,31 @@ import type {
   OnlineWorkspaceSummary,
   OnlineWorkspaceView,
 } from "./online/types.js";
+import type { WorkflowImpactLocator } from "./locations.js";
 
-export interface OpenResult { workspace: { id: string; name: string }; problems: LoadProblem[]; root: string }
-export interface ApiDetail { api: ApiDefinition; envs: Array<{ id: string; name: string }> }
-export interface NodeCreateInput {
-  kind: "group" | "project" | "collection" | "folder" | "api";
-  parentId: string | null;
-  name: string;
-  method?: string;
-  url?: string;
+export interface WorkflowImpactEntryDTO {
+  workflowId: string;
+  workflowName: string;
+  status: WorkflowStatus;
+  nodeId: string;
+  nodeLabel?: string;
 }
-export interface DebugInput { apiId: string; caseId: string; envName?: string }
+export interface OpenResult { workspace: ContractWorkspace; problems: LoadProblem[]; root: string; readOnly: boolean; revision: string }
+export interface ApiDetail { api: ApiAsset; locator: ApiLocator; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> }
+export interface DebugInput { locator: ApiLocator; caseId: string; envName?: string | null }
 /** env:create 入参：extends 按环境名引用父环境（规格 §6 继承链，运行时由 Runner 合并）。 */
-export interface EnvCreateInput { projectId: string; name: string; extends?: string }
+export interface EnvCreateInput {
+  locator: ProjectLocator;
+  name: string;
+  extends?: string | null;
+  variables?: Record<string, string>;
+  baseUrls?: Record<string, string>;
+}
 /** 响应快照：随 afterResponse 事件捕获，ResponseViewer 用真实数据替换「—」占位。 */
 export interface ResponseSnapshot { status: number; headers: Record<string, string>; bodyText: string; timeMs: number }
 export interface DebugOutput { run: RunResult; outcome: CaseOutcome; response?: ResponseSnapshot }
 /** run:collection 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
-export interface RunCollectionInput { collectionId: string; envName?: string }
+export interface RunCollectionInput { locator: CollectionLocator; envName?: string | null }
 /**
  * runs:list 行摘要（集合运行）：与 src/main/runs.ts 同名接口结构同构（IPC 结构化克隆传输，
  * 字段变更需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
@@ -103,9 +169,9 @@ export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
 /** stress:run 入参：maxIterations/durationMs 至少给其一（都给先到先停），二者可传 null（渲染层「清空」惯例）。 */
 export interface StressRunInput {
-  apiId: string;
+  locator: ApiLocator;
   caseId: string;
-  envName?: string;
+  envName?: string | null;
   concurrency: number;
   maxIterations?: number | null;
   durationMs?: number | null;
@@ -162,19 +228,19 @@ export type StressPolicyInput = StressTargetPolicy;
 /** import:preview 入参：渲染层经 input[type=file] 读出文本与文件名（不新增文件选择 IPC）。 */
 export interface ImportPreviewInput { fileName: string; content: string }
 /** import:preview 返回：命中的导入器名 + 解析产物（id 均为新生成 UUID）+ 警告列表。 */
-export interface ImportPreviewResult { importerName: string; project: Project; warnings: string[] }
+export interface ImportPreviewResult { importerName: string; project: ContractProject; warnings: string[] }
 /** import:apply 入参（轨二双模式）：project=整包落到所选分组（name=项目名，预填 title 可改）；
  * module=产物集合改名后并入目标项目（baseUrl 进模块变量、不造环境）。同名并存（同名放开）。 */
 export type ImportApplyInput =
-  | { mode: "project"; groupId: string; name: string; project: Project }
-  | { mode: "module"; projectId: string; name: string; project: Project };
+  | { mode: "project"; target: GroupLocator; name: string; project: ContractProject }
+  | { mode: "module"; target: ProjectLocator; name: string; project: ContractProject; sourceEnvironmentName?: string };
 
 /** wf:list 行摘要：工作流列表（侧树「工作流」分组与列表视图共用，规格 §3）。 */
-export interface WorkflowSummary { id: string; name: string; status: WorkflowStatus }
+export interface WorkflowSummary { id: string; name: string; status: WorkflowStatus; locator: WorkflowLocator }
 /** wf:get 返回：完整工作流 + 所属项目 id（设计器级联数据按项目定位）。 */
-export interface WorkflowDetail { workflow: Workflow; projectId: string }
+export interface WorkflowDetail { workflow: Workflow; locator: WorkflowLocator }
 /** wf:create 入参：目标项目 + 工作流名（同项目重名拒绝「工作流已存在: name」）。 */
-export interface WfCreateInput { projectId: string; name: string }
+export interface WfCreateInput { locator: ProjectLocator; name: string }
 /**
  * wf:set-status 返回：迁移后的工作流 + 启用校验错误/警告。
  * published→enabled 校验未过时 workflow 为状态不变的原工作流、errors 非空；
@@ -182,41 +248,40 @@ export interface WfCreateInput { projectId: string; name: string }
  */
 export interface WfSetStatusResult { workflow: Workflow; errors: string[]; warnings: string[] }
 /** wf:impact 入参：按用例/接口 id 反查工作流引用（规格 §3.1 影响分析）。 */
-export interface WfImpactInput { caseId?: string; apiId?: string }
+export type WfImpactInput = WorkflowImpactLocator;
 /** wf:run 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
-export interface WfRunInput { workflowId: string; envName?: string; strict?: boolean }
-
-/**
- * nodeCreate 统一返回的瘦节点 DTO（宽审查 I2：ipc 与 memory 契约一致的单一事实源）。
- * kind 与 TreeNodeDTO 的节点子集对齐（不含 root；workflow 亦非 node:create 产物，同样排除），
- * 与请求 input.kind 恒等。
- */
-export interface NodeCreatedDTO {
-  kind: Exclude<TreeNodeDTO["kind"], "root" | "workflow">;
-  id: string;
-  label: string;
-  method?: string;
-}
+export interface WfRunInput { locator: WorkflowLocator; envName?: string | null; strict?: boolean }
 
 export interface ApiccApi {
   wsOpen(rootPath: string): Promise<OpenResult>;
   wsCreate(rootPath: string, name: string): Promise<OpenResult>;
   wsPickDirectory(): Promise<string>;
   wsValidate(): Promise<LoadProblem[]>;
-  treeGet(): Promise<TreeNodeDTO>;
+  treeGet(): Promise<LocalTreeNodeDTO>;
   nodeCreate(input: NodeCreateInput): Promise<NodeCreatedDTO>;
-  nodeRename(kind: "group" | "project" | "collection" | "folder" | "api" | "environment", id: string, name: string): Promise<void>;
-  nodeDelete(kind: "group" | "project" | "collection" | "folder" | "api" | "environment", id: string): Promise<void>;
+  nodeRename(node: NodeLocator, name: string): Promise<void>;
+  nodeDelete(node: NodeLocator): Promise<void>;
   envCreate(input: EnvCreateInput): Promise<Environment>;
-  envVarsSave(envId: string, variables: Record<string, string>): Promise<void>;
-  envBaseUrlsSave(envId: string, baseUrls: Record<string, string>): Promise<void>;
-  globalsSave(projectId: string, globals: ProjectGlobalSettings): Promise<void>;
-  stressPolicySave(projectId: string, policy: StressPolicyInput): Promise<StressPolicyInput>;
-  containerSave(input: ContainerSaveInput): Promise<void>;
-  containerGet(kind: "collection" | "folder", id: string): Promise<ContainerSaveInput>;
-  globalsGet(projectId: string): Promise<ProjectGlobalSettings>;
-  apiGet(apiId: string): Promise<ApiDetail>;
-  apiSave(api: ApiDefinition): Promise<void>;
+  envVarsSave(locator: EnvironmentLocator, variables: Record<string, string>): Promise<Environment>;
+  envBaseUrlsSave(locator: EnvironmentLocator, baseUrls: Record<string, string>): Promise<Environment>;
+  globalsSave(locator: ProjectLocator, globals: ProjectGlobalSettings): Promise<ProjectGlobalSettings>;
+  stressPolicySave(locator: ProjectLocator, policy: StressPolicyInput): Promise<StressPolicyInput>;
+  containerSave(input: ContainerSaveInput): Promise<ContainerSaveResult>;
+  containerGet(target: ContainerTarget): Promise<ContainerDetail>;
+  globalsGet(locator: ProjectLocator): Promise<ProjectGlobalSettings>;
+  apiGet(locator: ApiLocator): Promise<ApiDetail>;
+  apiSave(locator: ApiLocator, api: ApiAsset): Promise<ApiAsset>;
+  caseSave(locator: CaseLocator, testCase: ApiTestCase): Promise<ApiTestCase>;
+  caseDelete(locator: CaseLocator): Promise<void>;
+  modelList(locator: ProjectLocator): Promise<ModelAsset[]>;
+  modelGet(locator: ModelLocator): Promise<ModelAsset>;
+  modelCreate(locator: ProjectLocator, input: CreateModelInput): Promise<ModelAsset>;
+  modelSave(locator: ModelLocator, model: ModelAsset): Promise<ModelAsset>;
+  componentList(locator: ProjectLocator): Promise<ComponentAsset[]>;
+  componentGet(locator: ComponentLocator): Promise<ComponentAsset>;
+  componentCreate(locator: ProjectLocator, input: CreateComponentInput): Promise<ComponentAsset>;
+  componentSave(locator: ComponentLocator, component: ComponentAsset): Promise<ComponentAsset>;
+  assetReferences(locator: ProjectLocator, assetId: string): Promise<import("@apicc/core").AssetDiagnostic[]>;
   debugSend(input: DebugInput): Promise<DebugOutput>;
   runCollection(input: RunCollectionInput): Promise<RunResult>;
   runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>>;
@@ -225,30 +290,33 @@ export interface ApiccApi {
   stressRun(input: StressRunInput): Promise<StressRunResult>;
   /** stress:stop：abort 活动运行（停发新采样、等在途完成），返回部分报告；无活动运行抛「没有进行中的压测」。 */
   stressStop(): Promise<StressRunOutput>;
+  credentialPut(input: CredentialPutInput): Promise<CredentialMutationResult>;
+  credentialRemove(input: CredentialRefInput): Promise<CredentialMutationResult>;
+  credentialStatus(input: CredentialRefInput): Promise<CredentialStatusResult>;
   importPreview(input: ImportPreviewInput): Promise<ImportPreviewResult>;
   importApply(input: ImportApplyInput): Promise<void>;
   /** project:clone：整项目深拷贝新 id 落回原分组，返回克隆体。 */
-  projectClone(projectId: string): Promise<Project>;
+  projectClone(locator: ProjectLocator): Promise<ContractProject>;
   /** project:move：项目移入目标分组。 */
-  projectMove(projectId: string, targetGroupId: string): Promise<void>;
+  projectMove(source: ProjectLocator, target: GroupLocator): Promise<void>;
   /** design:export：主进程渲染 agent 设计 md → showSaveDialog 落盘；返回保存路径（取消为空串）。 */
-  designExport(apiId: string): Promise<string>;
+  designExport(locator: ApiLocator): Promise<string>;
   /** 工作流频道（M2-B 任务 1）：语义与主进程 session 一致，错误文案逐字对齐。 */
-  wfList(projectId: string): Promise<WorkflowSummary[]>;
-  wfGet(workflowId: string): Promise<WorkflowDetail>;
+  wfList(locator: ProjectLocator): Promise<WorkflowSummary[]>;
+  wfGet(locator: WorkflowLocator): Promise<WorkflowDetail>;
   wfCreate(input: WfCreateInput): Promise<Workflow>;
-  wfDelete(workflowId: string): Promise<void>;
+  wfDelete(locator: WorkflowLocator): Promise<void>;
   /** wf:rename：同项目内改名（重名拒绝「工作流已存在: name」），落盘并清理旧目录。 */
-  wfRename(workflowId: string, name: string): Promise<void>;
+  wfRename(locator: WorkflowLocator, name: string): Promise<Workflow>;
   /** wf:save：恒保持当前 status 不变（生命周期只经 wf:set-status），返回落盘后的工作流。 */
-  wfSave(workflow: Workflow): Promise<Workflow>;
-  wfSetStatus(workflowId: string, next: WorkflowStatus): Promise<WfSetStatusResult>;
-  wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntry[]>;
+  wfSave(locator: WorkflowLocator, workflow: Workflow): Promise<Workflow>;
+  wfSetStatus(locator: WorkflowLocator, next: WorkflowStatus): Promise<WfSetStatusResult>;
+  wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntryDTO[]>;
   /** wf:run：draft 拒绝（「工作流为草稿，请先发布启用」）；结果由主进程落盘 .apicc/runs。 */
   wfRun(input: WfRunInput): Promise<WorkflowRunResult>;
   // —— 在线频道（M3-B 任务 1，规格 §2 D9 / §3）：main 进程 onlineClient 的 IPC 出口 ——
   /** 注册（不建立登录态）。 */
-  authConfig(): Promise<{ allowRegistration: boolean }>;
+  authConfig(baseUrl: string): Promise<{ allowRegistration: boolean }>;
   onlineRegister(input: OnlineRegisterChannelInput): Promise<OnlineUser>;
   /** 登录：token 留在 main 进程（tokenStore 持久化），出口只含 expiresAt + user。 */
   onlineLogin(input: OnlineLoginInput): Promise<OnlineLoginOutput>;

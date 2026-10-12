@@ -1,47 +1,48 @@
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  builtinAuthProviders,
-  createDefaultRegistry,
-  createStressCaseSession,
-  CurrentStressReportSchema,
-  sanitizeNodeName,
-  buildStressRequest,
-  createVariableResolver,
-  fileStorage,
-  mergedEnvVars,
-  renderDesignMarkdown,
-  StressRunner,
+  renderContractMarkdown,
+  createProjectSnapshot,
   StressSafetyError,
-  validateStressRunOptions,
-  transitionWorkflowStatus,
-  validateEnablement,
-  workflowImpact,
+  CredentialError,
   type AiSuggestedCase,
-  type ApiDefinition,
-  type TestCase,
+  type ApiAsset,
+  type ApiTestCase,
+  type AssetDiagnostic,
   type CaseOutcome,
-  type Collection,
+  type ComponentAsset,
+  type ContractCollection,
+  type ContractFolder,
+  type ContractGroup,
+  type ContractProject,
+  type ContractWorkspace,
   type Environment,
-  type Folder,
-  type Group,
   type LoadProblem,
+  type ModelAsset,
   type NodeResult,
-  type Project,
   type ProtocolClient,
   type RunResult,
+  type SecretRef,
+  type SecretStore,
+  type StorageAdapter,
   type StressReport,
   type Workflow,
-  type WorkflowImpactEntry,
   type WorkflowRunResult,
   type WorkflowStatus,
-  type Workspace,
   type StressTargetPolicy,
 } from "@apicc/core";
-import type { ContainerSaveInput, ProjectGlobalSettings } from "../../../shared/types.js";
-import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
+import { ContractProjectSchema } from "@apicc/core/schema";
+import { createSession } from "../../../main/session.js";
+import { toTreeNode } from "../../../main/tree.js";
+import { createCredentialHost } from "../../../main/credentialHost.js";
+import { createStressControllerWithHost } from "../../../main/stressController.js";
+import type { ApiLocator, ApiParentLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, NodeLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../../../shared/locations.js";
+import { localTreeNodeKey, type LocalRootTreeNodeDTO, type LocalTreeIdentity, type LocalTreeNodeDTO } from "../../../shared/tree-dto.js";
+import type { ContainerSaveInput, ContainerSaveResult, ProjectGlobalSettings, WorkflowImpactEntryDTO } from "../../../shared/types.js";
+import type { DesktopCredentialErrorCode } from "../../../shared/credentials.js";
+import type { CredentialMutationResult, CredentialPutInput, CredentialRefInput, CredentialStatusResult } from "../../../shared/credentials.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "../../../shared/ai/contract.js";
 
@@ -56,6 +57,8 @@ export const AI_FIXTURE_SUGGESTIONS: readonly AiSuggestedCase[] = [
     name: "AI 建议-正常请求 200",
     scope: "base",
     parameters: {},
+    preOperations: [],
+    postOperations: [],
     assertions: [{ id: "ai-fixture-assert-1", target: "status", op: "eq", expected: "200" }],
   },
   {
@@ -63,11 +66,12 @@ export const AI_FIXTURE_SUGGESTIONS: readonly AiSuggestedCase[] = [
     name: "AI 建议-非法参数 400",
     scope: "base",
     parameters: {},
+    preOperations: [],
     assertions: [
       { id: "ai-fixture-assert-2", target: "status", op: "eq", expected: "400" },
       { id: "ai-fixture-assert-3", target: "bodyJson", op: "contains", path: "$.message", expected: "参数" },
     ],
-    postScript: "console.log(\"AI 建议用例执行完毕\");",
+    postOperations: [{ id: "ai-fixture-post-operation-1", type: "script", content: "console.log(\"AI 建议用例执行完毕\");" }],
   },
 ];
 import { onlineTreeToDto } from "../../../main/online/session.js";
@@ -146,16 +150,18 @@ export const ONLINE_SEED_PROJECT_ID = "300";
  * 目录确为工作区时仍从盘加载，保持与 session 一致的重开语义。
  * debugSend 不走真实网络，固定返回成功结果。测试经 options.root 注入工作区目录；
  * 默认每实例独立临时目录，可安全并行。
- * stressRun（M2-D3 任务 1）：进程内 StressRunner + 假 client 实现与主进程同构语义
- * （单活动拒绝/stop/错误文案/历史 kind 判别），client 可注入、默认不发真实网络。
+ * stressRun 复用主进程 controller/credential preparation；仅把传输与历史存储替换为内存实现，
+ * 默认假 client 不发真实网络。
  */
 type MemoryManagedClient = ProtocolClient & { close(): Promise<void> };
 
-export function createMemoryApi(options?: { root?: string; stressClient?: MemoryManagedClient }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
+export function createMemoryApi(options?: { root?: string; stressClient?: MemoryManagedClient; storage?: StorageAdapter; secretStore?: SecretStore }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
-  let workspace: Workspace | null = null;
+  const session = createSession({ storage: options?.storage });
+  let seeded = false;
+  let pendingSeed: Promise<void> | null = null;
   let problems: LoadProblem[] = [];
   // 运行历史内存样例（新→旧，与主进程 listRuns 排序一致）：runCollection 产出，
   // runsList/runsGet 读回；runSeq 保证同毫秒多次运行不重名（对齐 Runner 落盘文件名语义）。
@@ -163,8 +169,9 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   let runSeq = 0;
   // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
   const stressRuns: Array<{ file: string; report: StressReport }> = [];
-  // 单活动压测（与主进程 createStressController 同构）：闭包持 AbortController + 收尾 Promise。
-  let stressActive: { controller: AbortController; finished: Promise<StressRunResult> } | null = null;
+  // 压测生命周期由正式 controller 管理；此 Promise 仅用于 renderer 替身的单活动拒绝与 stop 等待。
+  let stressActive: Promise<StressRunResult> | null = null;
+  let stressController: ReturnType<typeof createStressControllerWithHost> | null = null;
   // 压测 client：默认假实现（200 成功、零时延），测试可注入挂起/自定义 client，不发真实网络。
   const stressClient: MemoryManagedClient = options?.stressClient ?? {
     name: "fake",
@@ -172,10 +179,6 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
     execute: async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 0 }),
     close: async () => {},
   };
-  /** 收尾清理：仅当仍是本次 run 时清空（防误清新活动）；独立函数避免闭包内 let 收窄问题。 */
-  function clearStressActive(controller: AbortController): void {
-    if (stressActive?.controller === controller) stressActive = null;
-  }
   // 导入向导（任务 7）：importApply 调用记录（供测试断言；语义对齐 session.importProject）。
   const importApplyCalls: Array<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }> = [];
   // 详细设计导出（任务 8）：designExport 调用记录（供测试断言渲染产物）。
@@ -276,79 +279,86 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
     };
   }
 
-  function ensureOpen(): Workspace {
-    if (!workspace) throw new Error("尚未打开工作区");
-    return workspace;
+  async function ensureReady(): Promise<ContractWorkspace> {
+    if (pendingSeed) await pendingSeed;
+    const current = session.workspace;
+    if (!current) throw new Error("尚未打开工作区");
+    return current;
   }
 
-  async function save(): Promise<void> {
-    await fileStorage.save(root, ensureOpen());
+  function currentWorkspace(): ContractWorkspace {
+    const current = session.workspace;
+    if (!current) throw new Error("尚未打开工作区");
+    return current;
   }
 
-  interface ApiLocation { api: ApiDefinition; collection: Collection; project: Project; folder: Folder | null }
-
-  function locateApi(apiId: string): ApiLocation | undefined {
-    const ws = ensureOpen();
-    for (const g of ws.groups) {
-      for (const p of g.projects) {
-        for (const c of p.collections) {
-          const api = c.apis.find((a) => a.id === apiId);
-          if (api) return { api, collection: c, project: p, folder: null };
-          for (const f of c.folders) {
-            const fApi = f.apis.find((a) => a.id === apiId);
-            if (fApi) return { api: fApi, collection: c, project: p, folder: f };
-          }
-        }
-      }
-    }
-    return undefined;
-  }
-
-  /** 工作流定位（M2-B 任务 1）：遍历模式同 locateApi；启用校验/生命周期用 workspace 全树。 */
-  function locateWorkflow(workflowId: string): { workflow: Workflow; project: Project } | undefined {
-    const ws = ensureOpen();
-    for (const g of ws.groups) {
-      for (const p of g.projects) {
-        const wf = p.workflows.find((w) => w.id === workflowId);
-        if (wf) return { workflow: wf, project: p };
-      }
-    }
-    return undefined;
-  }
-
-  function toTreeNodeDTO(ws: Workspace): TreeNodeDTO {
+  function openResult(rootPath: string): OpenResult {
     return {
-      kind: "root",
-      id: ws.id,
-      label: ws.name,
-      children: ws.groups.map((g) => ({
-        kind: "group" as const, id: g.id, label: g.name,
-      children: g.projects.map((p) => ({
-        kind: "project" as const, id: p.id, label: p.name,
-        envs: p.environments.map((e) => ({ id: e.id, name: e.name, extends: e.extends, variables: e.variables, baseUrls: e.baseUrls })),
-        // 工作流摘要（M2-B 收口）：与主进程 tree.ts 同构，侧树入口数据源。
-        workflows: p.workflows.map((w) => ({ id: w.id, name: w.name, status: w.status })),
-        children: p.collections.map((c) => ({
-            kind: "collection" as const, id: c.id, label: c.name,
-            children: [
-              ...c.apis.map((a) => ({ kind: "api" as const, id: a.id, label: a.name, method: a.method })),
-              ...c.folders.map((f) => ({
-                kind: "folder" as const, id: f.id, label: f.name,
-                children: f.apis.map((a) => ({ kind: "api" as const, id: a.id, label: a.name, method: a.method })),
-              })),
-            ],
-          })),
-        })),
-      })),
+      workspace: currentWorkspace(),
+      problems: structuredClone(problems),
+      root: rootPath,
+      readOnly: session.readOnly,
+      revision: session.revision ?? "",
     };
   }
 
-  function createApiDefinition(name: string, method: string, url: string): ApiDefinition {
-    return {
-      id: randomUUID(), name, version: "1.0.0", deprecated: false,
-      method: method as ApiDefinition["method"], url, headers: [], query: [],
-      cases: [{ id: randomUUID(), name: "冒烟", scope: "base", parameters: {}, assertions: [] }],
-    };
+  function findWorkflow(locator: WorkflowLocator): { workflow: Workflow; project: ContractProject } | undefined {
+    return session.locateWorkflow(locator);
+  }
+
+function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" | "collection" | "folder" | "api">>(kind: K, locator: Extract<NodeLocator, { kind: K }>["locator"], id: string, label: string): NodeCreatedDTO {
+    const identity = { source: "local" as const, kind, locator } as const;
+  return { ...identity, id, key: localTreeNodeKey(identity as LocalTreeIdentity), label } as NodeCreatedDTO;
+  }
+
+  function credentialKey(scope: { workspaceId: string; groupId: string; projectId: string }, ref: SecretRef): string {
+    return JSON.stringify([scope.workspaceId, scope.groupId, scope.projectId, ref.id, ref.policy]);
+  }
+
+  const secretValues = new Map<string, string>();
+  const secretStore: SecretStore = options?.secretStore ?? {
+    async put(scope, ref, value) { secretValues.set(credentialKey(scope, ref), value); },
+    async resolve(scope, ref) {
+      const value = secretValues.get(credentialKey(scope, ref));
+      if (value === undefined) throw new CredentialError("CREDENTIAL_MISSING", ref.id);
+      return value;
+    },
+    async version(scope, ref) {
+      if (!secretValues.has(credentialKey(scope, ref))) throw new CredentialError("CREDENTIAL_MISSING", ref.id);
+      return "memory-v1";
+    },
+    async remove(scope, ref) {
+      if (!secretValues.delete(credentialKey(scope, ref))) throw new CredentialError("CREDENTIAL_MISSING", ref.id);
+    },
+    async status(scope, ref) {
+      return secretValues.has(credentialKey(scope, ref)) ? "available" : "missing";
+    },
+  };
+
+  // The test substitute shares the exact credential preparation and stress controller path with
+  // desktop IPC, while explicitly pinning both dependencies: credentials never fall back to a
+  // system provider and the injected fake transport never reaches the network. The controller's
+  // report writer is intentionally a no-op; runsList/runsGet below expose only in-memory history.
+  stressController = createStressControllerWithHost(session, {
+    createManagedClient: () => stressClient,
+    writeReport: () => {},
+  }, createCredentialHost(session, () => secretStore));
+
+  function credentialScope(locator: ProjectLocator): { workspaceId: string; groupId: string; projectId: string } {
+    return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+  }
+
+  function credentialFailure(error: unknown, refId: string, fallbackCode: DesktopCredentialErrorCode): CredentialMutationResult {
+    const code = error instanceof CredentialError ? error.code : fallbackCode;
+    return { ok: false, error: { code, refId, message: error instanceof Error ? error.message : String(error) } };
+  }
+
+  function credentialContextExists(locator: ProjectLocator): boolean {
+    try {
+      return session.locateProject(credentialScope(locator)) !== undefined;
+    } catch {
+      return false;
+    }
   }
 
   return {
@@ -376,29 +386,26 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
     },
 
     async wsOpen(rootPath: string): Promise<OpenResult> {
+      if (pendingSeed) await pendingSeed;
       if (existsSync(join(rootPath, WORKSPACE_FILE))) {
-        const loaded = await fileStorage.load(rootPath);
+        const view = await session.open(rootPath);
         root = rootPath;
-        workspace = loaded.workspace;
-        problems = loaded.problems as LoadProblem[];
-        return { workspace: { id: workspace.id, name: workspace.name }, problems, root: rootPath };
+        problems = view.problems;
+        return { workspace: view.workspace, problems: view.problems, root: view.root, readOnly: view.readOnly, revision: view.revision };
       }
       // 目标目录不是工作区：内存有工作区时回退为打开内存态（替身以内存为事实源）；
       // 内存也为空时保留与 session 一致的「缺少工作区文件」错误。
+      const workspace = session.workspace;
       if (!workspace) throw new Error(`工作区根目录缺少 ${WORKSPACE_FILE}: ${rootPath}`);
-      return { workspace: { id: workspace.id, name: workspace.name }, problems, root: rootPath };
+      root = rootPath;
+      return openResult(rootPath);
     },
 
     async wsCreate(rootPath: string, name: string): Promise<OpenResult> {
-      if (existsSync(join(rootPath, WORKSPACE_FILE))) throw new Error("目录已是工作区");
-      mkdirSync(rootPath, { recursive: true });
-      const ws: Workspace = { id: randomUUID(), name, variables: {}, groups: [] };
-      ws.groups.push({ id: randomUUID(), name: "默认分组", default: true, projects: [] });
-      await fileStorage.save(rootPath, ws);
+      const view = await session.create(rootPath, name);
       root = rootPath;
-      workspace = ws;
-      problems = [];
-      return { workspace: { id: ws.id, name: ws.name }, problems: [], root: rootPath };
+      problems = view.problems;
+      return { workspace: view.workspace, problems: view.problems, root: view.root, readOnly: view.readOnly, revision: view.revision };
     },
 
     async wsPickDirectory(): Promise<string> {
@@ -406,225 +413,236 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
     },
 
     async wsValidate(): Promise<LoadProblem[]> {
-      ensureOpen();
-      return (await fileStorage.load(root)).problems;
+      await ensureReady();
+      problems = await session.validate();
+      return structuredClone(problems);
     },
 
-    async treeGet(): Promise<TreeNodeDTO> {
-      return toTreeNodeDTO(ensureOpen());
+    async treeGet(): Promise<LocalTreeNodeDTO> {
+      await ensureReady();
+      const tree = toTreeNode(currentWorkspace());
+      if (tree.source !== "local" || tree.kind !== "root") throw new Error("memory tree must be a local workspace root");
+      return tree;
     },
 
     async nodeCreate(input: NodeCreateInput): Promise<NodeCreatedDTO> {
-      const ws = ensureOpen();
-      const name = sanitizeNodeName(input.name);
-      // 与主进程 session 同契约（轨二）：名称净化保留；同名放开——不再做同级重名拒绝。
+      await ensureReady();
       if (input.kind === "group") {
-        const g: Group = { id: randomUUID(), name, projects: [] };
-        ws.groups.push(g);
-        await save();
-        return { kind: "group", id: g.id, label: g.name };
+        const value = await session.createGroup(input.parent, input.name);
+        return newNodeDTO("group", { workspaceId: input.parent.workspaceId, groupId: value.id }, value.id, value.name);
       }
       if (input.kind === "project") {
-        const g = ws.groups.find((x) => x.id === input.parentId);
-        if (!g) throw new Error(`未找到分组: ${input.parentId}`);
-        const p: Project = { id: randomUUID(), name, variables: {}, environments: [], collections: [], workflows: [] };
-        g.projects.push(p);
-        await save();
-        return { kind: "project", id: p.id, label: p.name };
+        const value = await session.createProject(input.parent, input.name);
+        return newNodeDTO("project", { ...input.parent, projectId: value.id }, value.id, value.name);
       }
       if (input.kind === "collection") {
-        const p = ws.groups.flatMap((g) => g.projects).find((x) => x.id === input.parentId);
-        if (!p) throw new Error(`未找到项目: ${input.parentId}`);
-        const c: Collection = { id: randomUUID(), name, variables: {}, folders: [], apis: [] };
-        p.collections.push(c);
-        await save();
-        return { kind: "collection", id: c.id, label: c.name };
+        const value = await session.createCollection(input.parent, input.name);
+        return newNodeDTO("collection", { ...input.parent, collectionId: value.id }, value.id, value.name);
       }
       if (input.kind === "folder") {
-        const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.parentId);
-        if (!c) throw new Error(`未找到集合: ${input.parentId}`);
-        const f: Folder = { id: randomUUID(), name, apis: [] };
-        c.folders.push(f);
-        await save();
-        return { kind: "folder", id: f.id, label: f.name };
+        const value = await session.createFolder(input.parent, input.name);
+        return newNodeDTO("folder", { ...input.parent, folderIds: [...("folderIds" in input.parent ? input.parent.folderIds ?? [] : []), value.id] }, value.id, value.name);
       }
-      // api 分支父解析与主进程 IPC 同构（宽审查 C1）：parentId 先按文件夹命中（接口挂其
-      // apis），未命中再按集合解析（挂集合根）。此前只按集合解析，文件夹内新建接口必失败。
-      let target: { collection: Collection; folder: Folder | null } | null = null;
-      for (const g of ws.groups) {
-        for (const p of g.projects) {
-          for (const c of p.collections) {
-            const folder = c.folders.find((f) => f.id === input.parentId);
-            if (folder) { target = { collection: c, folder }; break; }
-          }
-          if (target) break;
-        }
-        if (target) break;
-      }
-      if (!target) {
-        const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.parentId);
-        if (!c) throw new Error(`未找到集合: ${input.parentId}`);
-        target = { collection: c, folder: null };
-      }
-      const api = createApiDefinition(name, input.method ?? "GET", input.url ?? "/");
-      if (target.folder) target.folder.apis.push(api);
-      else target.collection.apis.push(api);
-      await save();
-      return { kind: "api", id: api.id, label: api.name, method: api.method };
+      const value = await session.createApi(input.parent, input.api);
+      const locator: ApiLocator = { ...input.parent, folderIds: "folderIds" in input.parent ? [...(input.parent.folderIds ?? [])] : [], apiId: value.contract.id };
+      const method = value.contract.request.protocol === "websocket" ? undefined : value.contract.request.method;
+      const identity = { source: "local" as const, kind: "api" as const, locator };
+      return { ...identity, id: value.contract.id, key: localTreeNodeKey(identity), label: value.contract.metadata.name,
+        protocol: value.contract.request.protocol, ...(method === undefined ? {} : { method }) };
     },
 
-    async nodeRename(kind: "group" | "project" | "collection" | "folder" | "api" | "environment", id: string, rawName: string): Promise<void> {
-      const ws = ensureOpen();
-      const name = sanitizeNodeName(rawName);
-      if (kind === "group") { const n = ws.groups.find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; await save(); return; }
-      if (kind === "project") { const n = ws.groups.flatMap((g) => g.projects).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; await save(); return; }
-      if (kind === "collection") { const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; await save(); return; }
-      if (kind === "folder") { const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).flatMap((c) => c.folders).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; await save(); return; }
-      if (kind === "environment") { const n = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === id); if (!n) throw new Error(`未找到: ${id}`); n.name = name; await save(); return; }
-      const loc = locateApi(id);
-      if (!loc) throw new Error(`未找到: ${id}`);
-      loc.api.name = name;
-      await save();
+    async nodeRename(node: NodeLocator, name: string): Promise<void> {
+      await ensureReady();
+      await session.renameNode(node, name);
     },
 
-    async nodeDelete(kind: "group" | "project" | "collection" | "folder" | "api" | "environment", id: string): Promise<void> {
-      const ws = ensureOpen();
-      const removeFrom = <T>(list: T[], pred: (x: T) => boolean): boolean => {
-        const index = list.findIndex(pred);
-        if (index >= 0) list.splice(index, 1);
-        return index >= 0;
-      };
-      if (kind === "group" && removeFrom(ws.groups, (x) => x.id === id)) { await save(); return; }
-      for (const g of ws.groups) {
-        if (kind === "project" && removeFrom(g.projects, (x) => x.id === id)) { await save(); return; }
-        for (const p of g.projects) {
-          if (kind === "environment" && removeFrom(p.environments, (x) => x.id === id)) { await save(); return; }
-          for (const c of p.collections) {
-            if (kind === "collection" && removeFrom(p.collections, (x) => x.id === id)) { await save(); return; }
-            if (kind === "folder" && removeFrom(c.folders, (x) => x.id === id)) { await save(); return; }
-            if (kind === "api") {
-              if (removeFrom(c.apis, (x) => x.id === id)) { await save(); return; }
-              for (const f of c.folders) if (removeFrom(f.apis, (x) => x.id === id)) { await save(); return; }
-            }
-          }
-        }
-      }
-      throw new Error(`未找到: ${id}`);
+    async nodeDelete(node: NodeLocator): Promise<void> {
+      await ensureReady();
+      await session.deleteNode(node);
     },
 
     // 环境操作（任务 4）：语义对齐 session（未命中统一抛「未找到」）；与替身其余
     // node 操作一致，成功后内部落盘（替身的落盘为最佳努力），主进程侧落盘由 IPC 分支显式 save。
     async envCreate(input: EnvCreateInput): Promise<Environment> {
-      const ws = ensureOpen();
-      const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === input.projectId);
-      if (!project) throw new Error(`未找到项目: ${input.projectId}`);
-      const env: Environment = { id: randomUUID(), name: sanitizeNodeName(input.name), extends: input.extends, variables: {}, baseUrls: {} };
-      project.environments.push(env);
-      await save();
-      return env;
+      await ensureReady();
+      return session.createEnvironment(input.locator, {
+        name: input.name,
+        ...(input.extends === undefined ? {} : { extends: input.extends ?? undefined }),
+        variables: input.variables,
+        baseUrls: input.baseUrls,
+      });
     },
 
-    async envVarsSave(envId: string, variables: Record<string, string>): Promise<void> {
-      const ws = ensureOpen();
-      const env = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === envId);
-      if (!env) throw new Error(`未找到环境: ${envId}`);
-      env.variables = variables;
-      await save();
+    async envVarsSave(locator: EnvironmentLocator, variables: Record<string, string>): Promise<Environment> {
+      await ensureReady();
+      return session.setEnvironmentVariables(locator, variables);
     },
 
-    async envBaseUrlsSave(envId: string, baseUrls: Record<string, string>): Promise<void> {
-      const ws = ensureOpen();
-      const env = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.environments).find((x) => x.id === envId);
-      if (!env) throw new Error(`未找到环境: ${envId}`);
-      env.baseUrls = baseUrls;
-      await save();
+    async envBaseUrlsSave(locator: EnvironmentLocator, baseUrls: Record<string, string>): Promise<Environment> {
+      await ensureReady();
+      return session.setEnvironmentBaseUrls(locator, baseUrls);
     },
 
-    async globalsSave(projectId: string, settings: ProjectGlobalSettings): Promise<void> {
-      const ws = ensureOpen();
-      const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
-      if (!project) throw new Error(`未找到项目: ${projectId}`);
-      project.variables = settings.variables;
-      project.globals = { query: settings.query, headers: settings.headers, cookies: settings.cookies, body: settings.body };
-      await save();
+    async globalsSave(locator: ProjectLocator, settings: ProjectGlobalSettings): Promise<ProjectGlobalSettings> {
+      await ensureReady();
+      return session.setProjectGlobals(locator, settings);
     },
 
-    async globalsGet(projectId: string): Promise<ProjectGlobalSettings> {
-      const ws = ensureOpen();
-      const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
-      if (!project) throw new Error(`未找到项目: ${projectId}`);
-      const g = project.globals ?? { query: [], headers: [], cookies: [], body: [] };
-      return { variables: project.variables, query: g.query, headers: g.headers, cookies: g.cookies, body: g.body };
+    async globalsGet(locator: ProjectLocator): Promise<ProjectGlobalSettings> {
+      await ensureReady();
+      return session.getProjectGlobals(locator);
     },
 
-    async stressPolicySave(projectId: string, policy: StressTargetPolicy): Promise<StressTargetPolicy> {
-      const ws = ensureOpen();
-      const project = ws.groups.flatMap((g) => g.projects).find((x) => x.id === projectId);
-      if (!project) throw new Error(`未找到项目: ${projectId}`);
-      project.stressPolicy = structuredClone(policy);
-      await save();
-      return structuredClone(project.stressPolicy);
+    async stressPolicySave(locator: ProjectLocator, policy: StressTargetPolicy): Promise<StressTargetPolicy> {
+      await ensureReady();
+      return session.setStressPolicy(locator, policy);
     },
 
-    async containerGet(kind: "collection" | "folder", id: string): Promise<ContainerSaveInput> {
-      const ws = ensureOpen();
-      if (kind === "collection") {
-        const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === id);
-        if (!c) throw new Error(`未找到集合: ${id}`);
-        return {
-          kind, id, name: c.name, variables: { ...c.variables },
-          preOperations: c.preOperations ?? [], postOperations: c.postOperations ?? [],
-        };
+    async containerGet(target: { kind: "collection"; locator: CollectionLocator } | { kind: "folder"; locator: FolderLocator }): Promise<import("../../../shared/types.js").ContainerDetail> {
+      await ensureReady();
+      if (target.kind === "collection") {
+        const location = session.locateCollection(target.locator);
+        if (!location) throw new Error(`Collection not found at complete locator: ${JSON.stringify(target.locator)}`);
+        return { kind: "collection", locator: target.locator, name: location.collection.name, operations: session.getContainer(target.locator) };
       }
-      const f = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).flatMap((c) => c.folders).find((x) => x.id === id);
-      if (!f) throw new Error(`未找到文件夹: ${id}`);
-      return { kind, id, name: f.name, preOperations: f.preOperations ?? [], postOperations: f.postOperations ?? [] };
+      const location = session.locateFolder(target.locator);
+      if (!location) throw new Error(`Folder not found at complete locator: ${JSON.stringify(target.locator)}`);
+      return { kind: "folder", locator: target.locator, name: location.folder.name, operations: session.getContainer(target.locator) };
     },
 
-    async containerSave(input: ContainerSaveInput): Promise<void> {
-      const ws = ensureOpen();
+    async containerSave(input: ContainerSaveInput): Promise<ContainerSaveResult> {
+      await ensureReady();
       if (input.kind === "collection") {
-        const c = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.id);
-        if (!c) throw new Error(`未找到集合: ${input.id}`);
-        if (input.variables) c.variables = input.variables;
-        c.preOperations = input.preOperations;
-        c.postOperations = input.postOperations;
-      } else {
-        const f = ws.groups
-          .flatMap((g) => g.projects)
-          .flatMap((p) => p.collections)
-          .flatMap((c) => c.folders)
-          .find((x) => x.id === input.id);
-        if (!f) throw new Error(`未找到文件夹: ${input.id}`);
-        f.preOperations = input.preOperations;
-        f.postOperations = input.postOperations;
+        const operations = await session.saveContainer(input.locator, input.operations);
+        return { kind: input.kind, locator: input.locator, operations };
       }
-      await save();
+      const operations = await session.saveContainer(input.locator, input.operations);
+      return { kind: input.kind, locator: input.locator, operations };
     },
 
-    async apiGet(apiId: string): Promise<ApiDetail> {
-      const loc = locateApi(apiId);
-      if (!loc) throw new Error(`未找到接口: ${apiId}`);
+    async apiGet(locator: ApiLocator): Promise<ApiDetail> {
+      await ensureReady();
+      const loc = session.locateApi(locator);
+      if (!loc) throw new Error(`未找到接口: ${JSON.stringify(locator)}`);
       return {
         api: loc.api,
-        envs: loc.project.environments.map((e) => ({ id: e.id, name: e.name })),
+        locator: { ...locator, folderIds: [...locator.folderIds] },
+        envs: loc.project.environments.map((environment) => ({
+          id: environment.id,
+          name: environment.name,
+          locator: { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId, environmentId: environment.id },
+        })),
       };
     },
 
-    async apiSave(api: ApiDefinition): Promise<void> {
-      const loc = locateApi(api.id);
-      if (!loc) throw new Error(`未找到接口: ${api.id}`);
-      const list = loc.folder ? loc.folder.apis : loc.collection.apis;
-      const index = list.findIndex((a) => a.id === api.id);
-      list[index] = api;
-      await save();
+    async apiSave(locator: ApiLocator, api: ApiAsset): Promise<ApiAsset> {
+      await ensureReady();
+      return session.saveApi(locator, api);
+    },
+
+    async caseSave(locator, testCase) {
+      await ensureReady();
+      return session.saveCase(locator, testCase);
+    },
+
+    async caseDelete(locator) {
+      await ensureReady();
+      await session.deleteCase(locator);
+    },
+
+    async modelList(locator: ProjectLocator): Promise<ModelAsset[]> {
+      await ensureReady();
+      return session.listModels(locator);
+    },
+
+    async modelGet(locator: ModelLocator): Promise<ModelAsset> {
+      await ensureReady();
+      const location = session.locateModel(locator);
+      if (!location) throw new Error(`Model not found at complete locator: ${JSON.stringify(locator)}`);
+      return location.model;
+    },
+
+    async modelCreate(locator: ProjectLocator, input): Promise<ModelAsset> {
+      await ensureReady();
+      return session.createModel(locator, input);
+    },
+
+    async modelSave(locator: ModelLocator, model: ModelAsset): Promise<ModelAsset> {
+      await ensureReady();
+      return session.saveModel(locator, model);
+    },
+
+    async componentList(locator: ProjectLocator): Promise<ComponentAsset[]> {
+      await ensureReady();
+      return session.listComponents(locator);
+    },
+
+    async componentGet(locator: ComponentLocator): Promise<ComponentAsset> {
+      await ensureReady();
+      const location = session.locateComponent(locator);
+      if (!location) throw new Error(`Component not found at complete locator: ${JSON.stringify(locator)}`);
+      return location.component;
+    },
+
+    async componentCreate(locator: ProjectLocator, input): Promise<ComponentAsset> {
+      await ensureReady();
+      return session.createComponent(locator, input);
+    },
+
+    async componentSave(locator: ComponentLocator, component: ComponentAsset): Promise<ComponentAsset> {
+      await ensureReady();
+      return session.saveComponent(locator, component);
+    },
+
+    async assetReferences(locator: ProjectLocator, assetId: string): Promise<AssetDiagnostic[]> {
+      await ensureReady();
+      return session.referencesTo(locator, assetId);
+    },
+
+    async credentialPut(input: CredentialPutInput): Promise<CredentialMutationResult> {
+      await ensureReady();
+      if (!credentialContextExists(input.locator)) return { ok: false, error: { code: "CREDENTIAL_CONTEXT_INVALID", refId: input.ref.id, message: "Credential project context is invalid." } };
+      if (session.readOnly) return { ok: false, error: { code: "CREDENTIAL_READ_ONLY", refId: input.ref.id, message: "工作区处于只读模式，不能写入凭据" } };
+      if (input.ref.policy !== "test-auto") return { ok: false, error: { code: "CREDENTIAL_POLICY_UNSUPPORTED", refId: input.ref.id, message: "Credential policy is not supported." } };
+      try {
+        await secretStore.put(credentialScope(input.locator), input.ref, input.value);
+        return { ok: true };
+      } catch (error) {
+        return credentialFailure(error, input.ref.id, "CREDENTIAL_SAVE_FAILED");
+      }
+    },
+
+    async credentialRemove(input: CredentialRefInput): Promise<CredentialMutationResult> {
+      await ensureReady();
+      if (!credentialContextExists(input.locator)) return { ok: false, error: { code: "CREDENTIAL_CONTEXT_INVALID", refId: input.ref.id, message: "Credential project context is invalid." } };
+      if (session.readOnly) return { ok: false, error: { code: "CREDENTIAL_READ_ONLY", refId: input.ref.id, message: "工作区处于只读模式，不能写入凭据" } };
+      if (input.ref.policy !== "test-auto") return { ok: false, error: { code: "CREDENTIAL_POLICY_UNSUPPORTED", refId: input.ref.id, message: "Credential policy is not supported." } };
+      try {
+        await secretStore.remove(credentialScope(input.locator), input.ref);
+        return { ok: true };
+      } catch (error) {
+        return credentialFailure(error, input.ref.id, "CREDENTIAL_REMOVE_FAILED");
+      }
+    },
+
+    async credentialStatus(input: CredentialRefInput): Promise<CredentialStatusResult> {
+      await ensureReady();
+      if (!credentialContextExists(input.locator)) return { ok: false, error: { code: "CREDENTIAL_CONTEXT_INVALID", refId: input.ref.id, message: "Credential project context is invalid." } };
+      if (input.ref.policy !== "test-auto") return { ok: false, error: { code: "CREDENTIAL_POLICY_UNSUPPORTED", refId: input.ref.id, message: "Credential policy is not supported." } };
+      try {
+        return { ok: true, status: await secretStore.status(credentialScope(input.locator), input.ref) };
+      } catch (error) {
+        const code = error instanceof CredentialError ? error.code : "CREDENTIAL_READ_FAILED";
+        return { ok: false, error: { code, refId: input.ref.id, message: error instanceof Error ? error.message : String(error) } };
+      }
     },
 
     async debugSend(input: DebugInput): Promise<DebugOutput> {
-      const loc = locateApi(input.apiId);
+      await ensureReady();
+      const loc = session.locateApi(input.locator);
       const outcome: CaseOutcome = {
-        apiId: input.apiId,
-        apiName: loc?.api.name ?? "",
+        apiId: input.locator.apiId,
+        apiName: loc?.api.contract.metadata.name ?? "",
         caseId: input.caseId,
         caseName: loc?.api.cases.find((c) => c.id === input.caseId)?.name ?? "",
         passed: true,
@@ -647,13 +665,23 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
     // 集合运行（任务 6）：语义对齐 session——未命中集合抛「未找到」；不走真实网络，
     // 固定返回单用例成功结果并记入运行历史（runs list/get 的内存样例由此产出）。
     async runCollection(input: RunCollectionInput): Promise<RunResult> {
-      const ws = ensureOpen();
-      const collection = ws.groups.flatMap((g) => g.projects).flatMap((p) => p.collections).find((x) => x.id === input.collectionId);
-      if (!collection) throw new Error(`未找到集合: ${input.collectionId}`);
-      const api = collection.apis[0] ?? collection.folders[0]?.apis[0];
+      await ensureReady();
+      const location = session.locateCollection(input.locator);
+      if (!location) throw new Error(`Collection not found at complete locator: ${JSON.stringify(input.locator)}`);
+      const firstApi = (container: ContractCollection | ContractFolder): ApiAsset | undefined => {
+        const direct = container.apis[0];
+        if (direct) return direct;
+        for (const folder of "folders" in container ? container.folders : []) {
+          const nested = firstApi(folder);
+          if (nested) return nested;
+        }
+        return undefined;
+      };
+      const collection = location.collection;
+      const api = firstApi(collection);
       const outcome: CaseOutcome = {
-        apiId: api?.id ?? "",
-        apiName: api?.name ?? "",
+        apiId: api?.contract.id ?? "",
+        apiName: api?.contract.metadata.name ?? "",
         caseId: api?.cases[0]?.id ?? "",
         caseName: api?.cases[0]?.name ?? "",
         passed: true,
@@ -664,7 +692,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
       const run: RunResult = {
         collectionId: collection.id,
         collectionName: collection.name,
-        envName: input.envName,
+        ...(input.envName == null ? {} : { envName: input.envName }),
         startedAt,
         finishedAt: startedAt,
         total: 1,
@@ -707,103 +735,48 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
       return stress ? { kind: "stress", report: structuredClone(stress.report) } : null;
     },
 
-    // 压测（M2-D3 任务 1，与主进程 stress.ts 同构）：单活动拒绝/abort 语义/错误文案逐字对齐；
-    // 历史收尾降级口径与主进程一致（异常仅告警不阻断报告返回，file 省略——内存 unshift 实际
-    // 不可失败，同构其契约与降级结构）；返回前深拷贝。
+    // 正式 controller 负责 locator 捕获、凭据准备、worker/session、计时和确认策略；内存替身
+    // 只提供假 transport 与内存历史。历史/返回报告彼此分离，避免调用方改写历史内容。
     async stressRun(input: StressRunInput): Promise<StressRunResult> {
       if (stressActive) throw new Error("已有压测进行中");
-      validateStressRunOptions({
-        concurrency: input.concurrency,
-        ...(input.maxIterations != null ? { maxIterations: input.maxIterations } : {}),
-        ...(input.durationMs != null ? { durationMs: input.durationMs } : {}),
-      });
-      const ws = ensureOpen();
-      const loc = locateApi(input.apiId);
-      if (!loc) throw new Error(`未找到接口: ${input.apiId}`);
-      const api = loc.api;
-      const testCase = api.cases.find((candidate) => candidate.id === input.caseId);
-      if (!testCase) throw new Error(`用例不存在: ${input.caseId}`);
-      // The memory fixture intentionally uses a relative URL; make the in-memory
-      // case absolute so it exercises the same WHATWG HTTP path as main.
-      const stressApi = { ...api, url: new URL(api.url, "http://127.0.0.1").href };
-      const stressCollection = { ...loc.collection, apis: loc.collection.apis.map((candidate) => candidate === api ? stressApi : candidate) };
-      const env = input.envName ? loc.project.environments.find((e) => e.name === input.envName) : undefined;
-      if (input.envName && !env) throw new Error(`未找到环境: ${input.envName}`);
-      const registry = createDefaultRegistry();
-      const controller = new AbortController();
-      let safetyFailure: StressSafetyError | undefined;
-      const runner = new StressRunner({
-        onSample: (sample) => {
-          const target = sample.safety;
-          if (!safetyFailure && target?.confirmation === "rejected" && target.policy !== "none") {
-            safetyFailure = new StressSafetyError(
-              target.policy as ConstructorParameters<typeof StressSafetyError>[0],
-              sample.error ?? `目标安全策略拒绝: ${target.origin}`,
-              target.origin,
-            );
-            controller.abort();
-          }
-        },
-        createWorker: () => createStressCaseSession({ api: stressApi, testCase, env, project: loc.project, collection: stressCollection, workspace: ws }, {
-          resolveProtocol: (request) => stressClient,
-          resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
-          resolveAssert: (op) => registry.getAssert(op),
-          scriptEngine: registry.getScriptEngine("javascript")!,
-          createManagedClient: () => stressClient,
-        }, { workerId: 0, concurrency: input.concurrency, maxRps: loc.project.stressPolicy?.maxRps,
-          // The memory API is a deterministic renderer test substitute; real
-          // confirmation is enforced by the main process controller.
-          confirmedTargetOrigins: input.confirmedTargetOrigins }),
-      });
-      const finished = (async (): Promise<StressRunResult> => {
+      await ensureReady();
+      const controller = stressController;
+      if (!controller) throw new Error("压测控制器尚未初始化");
+      let finished: Promise<StressRunResult>;
+      finished = (async (): Promise<StressRunResult> => {
         try {
-          const report = CurrentStressReportSchema.parse(await runner.run({
-            concurrency: input.concurrency,
-            maxIterations: input.maxIterations ?? undefined,
-            durationMs: input.durationMs ?? undefined,
-            signal: controller.signal,
-            thresholds: input.thresholds,
-            maxRps: loc.project.stressPolicy?.maxRps,
-            connectionMode: input.connectionMode,
-            safetyRun: {
-              requestedConcurrency: input.concurrency,
-              effectiveConcurrency: input.concurrency,
-              requestedMaxRps: null,
-              effectiveMaxRps: loc.project.stressPolicy?.maxRps ?? null,
-              connectionMode: input.connectionMode ?? "pooled",
-            },
-          }));
-          if (safetyFailure) throw safetyFailure;
-          const clone: StressReport = structuredClone(report);
-          const file = `stress-${api.id}-${Date.now()}.json`;
+          const output: StressRunOutput = await controller.run(input);
+          const report: StressReport = structuredClone(output.report);
+          const file = output.file;
           try {
-            stressRuns.unshift({ file, report: structuredClone(report) });
-            return { ok: true, report: clone, file };
+            if (file) stressRuns.unshift({ file, report: structuredClone(report) });
+            return StressRunResultSchema.parse({ ok: true, report, ...(file ? { file } : {}) });
           } catch (e) {
-            console.warn(`压测报告历史记录失败（${file}）: ${e instanceof Error ? e.message : String(e)}`);
-            return { ok: true, report: clone };
+            console.warn(`压测历史记录失败（${file ?? "memory"}）: ${e instanceof Error ? e.message : String(e)}`);
+            return StressRunResultSchema.parse({ ok: true, report });
           }
         } catch (error) {
           if (error instanceof StressSafetyError) {
             if (!error.targetOrigin) throw new Error("安全错误缺少目标 origin");
-            return {
+            return StressRunResultSchema.parse({
               ok: false,
               error: { code: error.code, message: error.message, targetOrigin: error.targetOrigin },
-            };
+            });
           }
           throw error;
-        } finally {
-          clearStressActive(controller);
         }
-      })();
-      stressActive = { controller, finished };
-      return StressRunResultSchema.parse(await finished);
+      })().finally(() => {
+        if (stressActive === finished) stressActive = null;
+      });
+      stressActive = finished;
+      return await finished;
     },
 
     async stressStop(): Promise<StressRunOutput> {
-      if (!stressActive) throw new Error("没有进行中的压测");
-      stressActive.controller.abort();
-      const result = await stressActive.finished;
+      const active = stressActive;
+      if (!active) throw new Error("没有进行中的压测");
+      stressController?.abortActive();
+      const result = await active;
       if (!result.ok) throw Object.assign(new Error(result.error.message), result.error);
       return result;
     },
@@ -813,176 +786,107 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
     // session 双模式（轨二：project=按分组 id 整包落库；module=集合并入目标项目、
     // baseUrl 进模块变量不造环境）并记录调用供测试断言。
     async importPreview(_input: ImportPreviewInput): Promise<ImportPreviewResult> {
-      const project: Project = {
-        id: randomUUID(), name: "导入示例项目", variables: {}, environments: [], workflows: [],
-        collections: [{
-          id: randomUUID(), name: "导入示例集合", variables: {}, folders: [],
-          apis: [createApiDefinition("导入接口", "GET", "/imported")],
-        }],
-      };
+      await ensureReady();
+      const project = ContractProjectSchema.parse({ id: randomUUID(), name: "导入示例项目", globals: {} });
       return { importerName: "sample", project, warnings: ["示例警告"] };
     },
 
     async importApply(input: ImportApplyInput): Promise<void> {
-      const ws = ensureOpen();
-      const project = input.project;
+      await ensureReady();
       if (input.mode === "module") {
-        const target = ws.groups.flatMap((g) => g.projects).find((x) => x.id === input.projectId);
-        if (!target) throw new Error(`未找到项目: ${input.projectId}`);
-        const baseUrl = project.environments?.[0]?.variables?.baseUrl;
-        for (const c of project.collections) {
-          target.collections.push({
-            ...c,
-            name: sanitizeNodeName(input.name.trim() || c.name),
-            variables: { ...c.variables, ...(baseUrl ? { baseUrl } : {}) },
-          });
-        }
-        importApplyCalls.push({ mode: "module", projectId: input.projectId, name: input.name });
-        await save();
+        await session.importModuleToProject(input.target, input.name, {
+          project: input.project,
+          ...(input.sourceEnvironmentName === undefined ? {} : { sourceEnvironmentName: input.sourceEnvironmentName }),
+        });
+        importApplyCalls.push({ mode: "module", projectId: input.target.projectId, name: input.name });
         return;
       }
-      const group = ws.groups.find((x) => x.id === input.groupId);
-      if (!group) throw new Error(`未找到分组: ${input.groupId}`);
-      project.name = sanitizeNodeName(input.name.trim() || project.name);
-      project.collections = project.collections.map((c) => ({
-        ...c,
-        name: sanitizeNodeName(c.name),
-        folders: c.folders.map((f) => ({ ...f, name: sanitizeNodeName(f.name), apis: f.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name) })) })),
-        apis: c.apis.map((a) => ({ ...a, name: sanitizeNodeName(a.name) })),
-      }));
-      group.projects.push(project);
-      importApplyCalls.push({ mode: "project", groupId: input.groupId, name: project.name });
-      await save();
+      await session.importProjectToGroup(input.target, input.name, { project: input.project });
+      importApplyCalls.push({ mode: "project", groupId: input.target.groupId, name: input.name });
     },
 
     /** project:clone（轨二）：整项目深拷贝、全部实体新 id，落回原分组（名称不变）。 */
-    async projectClone(projectId: string): Promise<Project> {
-      const ws = ensureOpen();
-      const group = ws.groups.find((g) => g.projects.some((p) => p.id === projectId));
-      const source = group?.projects.find((p) => p.id === projectId);
-      if (!group || !source) throw new Error(`未找到项目: ${projectId}`);
-      const clone = JSON.parse(JSON.stringify(source)) as Project;
-      const reidCase = (tc: TestCase): TestCase => ({ ...tc, id: randomUUID() });
-      const reidApi = (a: ApiDefinition): ApiDefinition => ({ ...a, id: randomUUID(), cases: a.cases.map(reidCase) });
-      const reidFolder = (f: Folder): Folder => ({ ...f, id: randomUUID(), apis: f.apis.map(reidApi), folders: (f.folders ?? []).map(reidFolder) });
-      clone.id = randomUUID();
-      clone.environments = (clone.environments ?? []).map((e) => ({ ...e, id: randomUUID() }));
-      clone.collections = clone.collections.map((c) => ({ ...c, id: randomUUID(), apis: c.apis.map(reidApi), folders: c.folders.map(reidFolder) }));
-      clone.workflows = (clone.workflows ?? []).map((w) => ({ ...w, id: randomUUID() }));
-      group.projects.push(clone);
-      await save();
-      return clone;
+    async projectClone(locator: ProjectLocator): Promise<ContractProject> {
+      await ensureReady();
+      return session.cloneProject(locator);
     },
 
     /** project:move（轨二）：项目移入目标分组。 */
-    async projectMove(projectId: string, targetGroupId: string): Promise<void> {
-      const ws = ensureOpen();
-      const source = ws.groups.find((g) => g.projects.some((p) => p.id === projectId));
-      if (!source) throw new Error(`未找到项目: ${projectId}`);
-      const target = ws.groups.find((g) => g.id === targetGroupId);
-      if (!target) throw new Error(`未找到分组: ${targetGroupId}`);
-      if (target.id === source.id) return;
-      const index = source.projects.findIndex((p) => p.id === projectId);
-      const [project] = source.projects.splice(index, 1);
-      target.projects.push(project);
-      await save();
+    async projectMove(source: ProjectLocator, target: GroupLocator): Promise<void> {
+      await ensureReady();
+      await session.moveProject(source, target);
     },
 
     // 详细设计导出（任务 8）：用 core renderDesignMarkdown 渲染（与主进程同一实现），
     // 记录渲染产物供测试断言；替身不落盘（主进程语义是 showSaveDialog 后写盘并返回
     // 路径），返回「工作区根/<接口名>.design.md」占位路径。
-    async designExport(apiId: string): Promise<string> {
-      const loc = locateApi(apiId);
-      if (!loc) throw new Error(`未找到接口: ${apiId}`);
-      const file = join(root, `${loc.api.name}.design.md`);
-      designExportCalls.push({ file, content: renderDesignMarkdown(loc.api) });
+    async designExport(locator: ApiLocator): Promise<string> {
+      await ensureReady();
+      const loc = session.locateApi(locator);
+      if (!loc) throw new Error(`未找到接口: ${JSON.stringify(locator)}`);
+      const file = join(root, `${loc.api.contract.metadata.name}.design.md`);
+      designExportCalls.push({ file, content: renderContractMarkdown(loc.api, createProjectSnapshot(loc.project).context) });
       return file;
     },
 
     // 工作流频道（M2-B 任务 1）：语义与主进程 session 一致（错误文案逐字对齐）——
     // 生命周期迁移复用 core transitionWorkflowStatus/validateEnablement（与 session 同一实现），
     // 启用校验未过返回状态不变 + errors；wf:run 不走真实网络，按实际节点生成固定成功样例。
-    async wfList(projectId: string): Promise<WorkflowSummary[]> {
-      const ws = ensureOpen();
-      const project = ws.groups.flatMap((g) => g.projects).find((p) => p.id === projectId);
-      if (!project) throw new Error(`未找到项目: ${projectId}`);
-      return project.workflows.map((w) => ({ id: w.id, name: w.name, status: w.status }));
+    async wfList(locator: ProjectLocator): Promise<WorkflowSummary[]> {
+      await ensureReady();
+      const location = session.locateProject(locator);
+      if (!location) throw new Error(`Project not found at complete locator: ${JSON.stringify(locator)}`);
+      return location.project.workflows.map((workflow) => ({
+        id: workflow.id,
+        name: workflow.name,
+        status: workflow.status,
+        locator: { ...locator, workflowId: workflow.id },
+      }));
     },
 
-    async wfGet(workflowId: string): Promise<WorkflowDetail> {
-      const loc = locateWorkflow(workflowId);
-      if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
-      return { workflow: loc.workflow, projectId: loc.project.id };
+    async wfGet(locator: WorkflowLocator): Promise<WorkflowDetail> {
+      await ensureReady();
+      const loc = session.locateWorkflow(locator);
+      if (!loc) throw new Error(`Workflow not found at complete locator: ${JSON.stringify(locator)}`);
+      return { workflow: loc.workflow, locator };
     },
 
     async wfCreate(input: WfCreateInput): Promise<Workflow> {
-      const ws = ensureOpen();
-      const project = ws.groups.flatMap((g) => g.projects).find((p) => p.id === input.projectId);
-      if (!project) throw new Error(`未找到项目: ${input.projectId}`);
-      // 同名放开（轨二）：同项目同名工作流并存
-      const workflow: Workflow = { id: randomUUID(), name: input.name, status: "draft", nodes: [], edges: [] };
-      project.workflows.push(workflow);
-      await save();
-      return workflow;
+      await ensureReady();
+      return session.createWorkflow(input.locator, input.name);
     },
 
-    async wfDelete(workflowId: string): Promise<void> {
-      const ws = ensureOpen();
-      for (const g of ws.groups) {
-        for (const p of g.projects) {
-          const index = p.workflows.findIndex((w) => w.id === workflowId);
-          if (index >= 0) {
-            p.workflows.splice(index, 1);
-            await save();
-            return;
-          }
-        }
-      }
-      throw new Error(`未找到工作流: ${workflowId}`);
+    async wfDelete(locator: WorkflowLocator): Promise<void> {
+      await ensureReady();
+      await session.deleteWorkflow(locator);
     },
 
     // 重命名（M2-B 收口）：语义对齐 session.renameWorkflow——同名放开（轨二）后仅改名
     // 并落盘（id 布局后盘上目录=工作流 id，改名不动目录；替身落盘为最佳努力）。
-    async wfRename(workflowId: string, name: string): Promise<void> {
-      const loc = locateWorkflow(workflowId);
-      if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
-      loc.workflow.name = name;
-      await save();
+    async wfRename(locator: WorkflowLocator, name: string): Promise<Workflow> {
+      await ensureReady();
+      return session.renameWorkflow(locator, name);
     },
 
-    async wfSave(workflow: Workflow): Promise<Workflow> {
-      const loc = locateWorkflow(workflow.id);
-      if (!loc) throw new Error(`未找到工作流: ${workflow.id}`);
-      // 恒保持当前 status 不变（生命周期只经 wfSetStatus），与 session.saveWorkflow 同语义。
-      const stored: Workflow = { ...workflow, status: loc.workflow.status };
-      const index = loc.project.workflows.findIndex((w) => w.id === workflow.id);
-      loc.project.workflows[index] = stored;
-      await save();
-      return stored;
+    async wfSave(locator: WorkflowLocator, workflow: Workflow): Promise<Workflow> {
+      await ensureReady();
+      return session.saveWorkflow(locator, workflow);
     },
 
-    async wfSetStatus(workflowId: string, next: WorkflowStatus): Promise<WfSetStatusResult> {
-      const loc = locateWorkflow(workflowId);
-      if (!loc) throw new Error(`未找到工作流: ${workflowId}`);
-      const ws = ensureOpen();
-      const enablement = next === "enabled" ? validateEnablement(loc.workflow, ws, loc.project) : undefined;
-      if (enablement && !enablement.ok) {
-        return { workflow: loc.workflow, errors: enablement.errors, warnings: enablement.warnings };
-      }
-      // 非法迁移（draft→enabled 跳级等）由 core 守卫直接抛错（与 session 同源）。
-      transitionWorkflowStatus(loc.workflow, next, enablement);
-      loc.workflow.status = next;
-      await save();
-      return { workflow: loc.workflow, errors: [], warnings: enablement?.warnings ?? [] };
+    async wfSetStatus(locator: WorkflowLocator, next: WorkflowStatus): Promise<WfSetStatusResult> {
+      await ensureReady();
+      return session.setWorkflowStatus(locator, next);
     },
 
-    async wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntry[]> {
-      return workflowImpact(ensureOpen(), { caseId: input.caseId, apiId: input.apiId });
+    async wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntryDTO[]> {
+      await ensureReady();
+      return session.workflowImpact(input);
     },
 
     async wfRun(input: WfRunInput): Promise<WorkflowRunResult> {
-      const loc = locateWorkflow(input.workflowId);
-      if (!loc) throw new Error(`未找到工作流: ${input.workflowId}`);
+      await ensureReady();
+      const loc = findWorkflow(input.locator);
+      if (!loc) throw new Error(`Workflow not found at complete locator: ${JSON.stringify(input.locator)}`);
       if (loc.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
       if (input.envName) {
         const env = loc.project.environments.find((e) => e.name === input.envName);
@@ -1223,25 +1127,27 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
 
     /** 预置 分组/项目/集合/接口 各一（未打开工作区时先在内存中初始化默认工作区），并落盘。 */
     seedWorkspace(): void {
-      if (!workspace) {
-        workspace = { id: randomUUID(), name: "内存工作区", variables: {}, groups: [] };
+      if (seeded || pendingSeed) return;
+      seeded = true;
+      pendingSeed = (async () => {
+        const view = await session.create(root, "内存工作区");
         problems = [];
-      }
-      const ws = workspace;
-      const g: Group = { id: randomUUID(), name: "示例分组", projects: [] };
-      const p: Project = { id: randomUUID(), name: "示例项目", variables: {}, environments: [], collections: [], workflows: [] };
-      const c: Collection = { id: randomUUID(), name: "示例集合", variables: {}, folders: [], apis: [] };
-      const api = createApiDefinition("示例接口", "GET", "/");
-      c.apis.push(api);
-      p.collections.push(c);
-      g.projects.push(p);
-      ws.groups.push(g);
-      // M10 默认分组：追加在尾部（示例分组保持首位——既有测试按下标定位）；
-      // id 布局（轨一）后 id 落盘即目录名，必须 randomUUID（旧 "g-default" 会被 fail-fast 守卫拒绝）
-      ws.groups.push({ id: randomUUID(), name: "默认分组", default: true, projects: [] });
-      // 写盘失败就地消化、保留内存态：内存数组才是替身的语义核心，落盘只是为
-      // reopen/validate 同语义做的最佳努力；不用发射后不管，避免无关 unhandled rejection。
-      save().catch(() => undefined);
+        const workspaceLocator: WorkspaceLocator = { workspaceId: view.workspace.id };
+        // The default group is intentionally immutable in the formal session contract. Seed the
+        // sample project in a separate named group instead of renaming that protected node.
+        const group = await session.createGroup(workspaceLocator, "示例分组");
+        const groupLocator: GroupLocator = { ...workspaceLocator, groupId: group.id };
+        const project = await session.createProject(groupLocator, "示例项目");
+        const projectLocator: ProjectLocator = { ...groupLocator, projectId: project.id };
+        const collection = await session.createCollection(projectLocator, "示例集合");
+        await session.createApi({ ...projectLocator, collectionId: collection.id }, {
+          name: "示例接口", method: "GET", path: "/", baseUrl: "http://127.0.0.1",
+        });
+        await session.createGroup(workspaceLocator, "默认分组");
+      })().catch((error: unknown) => {
+        seeded = false;
+        throw error;
+      });
     },
   };
 }

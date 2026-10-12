@@ -9,6 +9,7 @@ import { createOnlineClient } from "./online/client.js";
 import { createTokenStore } from "./online/tokenStore.js";
 import { createAiKeyStore } from "./ai/config.js";
 import { attachQuitGuard } from "./quitGuard.js";
+import { defaultCredentialPrivateRoot } from "@apicc/core";
 
 // package.json 为 type:module，编译产物是 ESM，须用 import.meta 推导 __dirname。
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -98,7 +99,7 @@ app.whenReady().then(() => {
   // （与 CLI --no-plugins 对齐口径的编程关闭面，桌面 MVP 无 UI 开关——启用/停用 = 编辑
   // 用户级清单，D8）。createIpcDeps 未配置 plugins 时零加载（测试零扰动），生产必须显式启用。
   const plugins = { homeDir: app.getPath("home") };
-  const deps = createIpcDeps({ session, pickDirectory, saveFile, online, ai, plugins });
+  const deps = createIpcDeps({ session, pickDirectory, saveFile, online, ai, plugins, credentials: { credentialPrivateRoot: defaultCredentialPrivateRoot() } });
   for (const channel of Object.values(IpcChannel)) {
     ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
   }

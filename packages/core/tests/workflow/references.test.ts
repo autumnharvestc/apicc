@@ -1,23 +1,36 @@
 import { describe, expect, it } from "vitest";
-import type { ApiDefinition, Collection, Project, TestCase } from "../../src/domain/model.js";
+import type { ApiAsset } from "../../src/contract/model.js";
+import type { ContractCollection, ContractProject } from "../../src/contract/workspace.js";
+import type { TestCase } from "../../src/domain/common.js";
 import { findProjectApi, selectWorkflowCollection } from "../../src/workflow/references.js";
 
-const testCase = (id: string): TestCase => ({ id, name: id, scope: "base", parameters: {}, assertions: [] });
-const api = (id: string): ApiDefinition => ({
-  id, name: id, version: "1", deprecated: false, method: "GET", url: "/", headers: [], query: [], cases: [testCase(`case-${id}`)],
+const testCase = (id: string): TestCase => ({ id, name: id, scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
+const api = (id: string): ApiAsset => ({
+  contract: {
+    formatVersion: 1, id, metadata: { name: id, description: "", tags: [], version: "1", status: "draft" },
+    request: { protocol: "http", method: "GET", baseUrl: "https://example.test", path: "/", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" } },
+    responses: [],
+  },
+  cases: [testCase(`case-${id}`)], documentation: "",
 });
+
+function project(collections: ContractCollection[]): ContractProject {
+  return {
+    id: "project", name: "project", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] },
+    environments: [], collections, workflows: [], stressPolicy: { trustedOrigins: [], deniedOrigins: [] }, models: [], components: [],
+  };
+}
 
 describe("workflow project references", () => {
   it("递归定位目标 API 并保留从集合到两层文件夹的祖先链", () => {
     const target = api("target");
     const inner = { id: "inner", name: "inner", apis: [target], folders: [], preOperations: [{ id: "inner-pre", type: "script" as const, content: "" }], postOperations: [{ id: "inner-post", type: "script" as const, content: "" }] };
     const outer = { id: "outer", name: "outer", apis: [], folders: [inner], preOperations: [{ id: "outer-pre", type: "script" as const, content: "" }], postOperations: [{ id: "outer-post", type: "script" as const, content: "" }] };
-    const collection: Collection = {
+    const collection: ContractCollection = {
       id: "module", name: "module", variables: { moduleVar: "yes" }, preOperations: [{ id: "module-pre", type: "script", content: "" }], postOperations: [{ id: "module-post", type: "script", content: "" }],
       apis: [], folders: [outer],
     };
-    const project: Project = { id: "project", name: "project", variables: {}, environments: [], collections: [collection], workflows: [] };
-    const location = findProjectApi(project, "target");
+    const location = findProjectApi(project([collection]), "target");
     expect(location?.api).toBe(target);
     expect(location?.collection).toBe(collection);
     expect(location?.folders.map((folder) => folder.id)).toEqual(["outer", "inner"]);
@@ -27,12 +40,11 @@ describe("workflow project references", () => {
     const target = api("target");
     const other = api("other");
     const inner = { id: "inner", name: "inner", apis: [target, other], folders: [], preOperations: [{ id: "inner-pre", type: "script" as const, content: "" }], postOperations: [{ id: "inner-post", type: "script" as const, content: "" }] };
-    const collection: Collection = {
+    const collection: ContractCollection = {
       id: "module", name: "module", variables: { moduleVar: "yes" }, preOperations: [{ id: "module-pre", type: "script", content: "" }], postOperations: [{ id: "module-post", type: "script", content: "" }],
       apis: [api("top")], folders: [{ id: "outer", name: "outer", apis: [], folders: [inner], preOperations: [{ id: "outer-pre", type: "script", content: "" }], postOperations: [{ id: "outer-post", type: "script", content: "" }] }],
     };
-    const project: Project = { id: "project", name: "project", variables: {}, environments: [], collections: [collection], workflows: [] };
-    const location = findProjectApi(project, "target")!;
+    const location = findProjectApi(project([collection]), "target")!;
     const selected = selectWorkflowCollection(location, target.cases[0]!);
     expect(selected.id).toBe("module");
     expect(selected.variables).toEqual(collection.variables);
@@ -42,8 +54,8 @@ describe("workflow project references", () => {
     expect(selected.folders).toHaveLength(1);
     expect(selected.folders[0]!.preOperations).toEqual(collection.folders[0]!.preOperations);
     expect(selected.folders[0]!.folders?.[0]!.postOperations).toEqual(inner.postOperations);
-    expect(selected.folders[0]!.folders?.[0]!.apis.map((candidate) => candidate.id)).toEqual(["target"]);
+    expect(selected.folders[0]!.folders[0]!.apis.map((candidate) => candidate.contract.id)).toEqual(["target"]);
     expect(selected.folders[0]!.folders?.[0]!.apis[0]!.cases).toEqual([target.cases[0]]);
-    expect(collection.folders[0]!.folders?.[0]!.apis.map((candidate) => candidate.id)).toEqual(["target", "other"]);
+    expect(collection.folders[0]!.folders[0]!.apis.map((candidate) => candidate.contract.id)).toEqual(["target", "other"]);
   });
 });

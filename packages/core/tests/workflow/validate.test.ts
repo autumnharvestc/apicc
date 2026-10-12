@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { transitionWorkflowStatus, validateEnablement, validateWorkflowStructure } from "../../src/workflow/validate.js";
 import type { Workflow } from "../../src/workflow/model.js";
 import type { Workspace } from "../../src/domain/model.js";
+import type { ApiAsset } from "../../src/contract/model.js";
+import type { ContractCollection, ContractFolder, ContractProject } from "../../src/contract/workspace.js";
 
 function wf(nodes: Workflow["nodes"], edges: Workflow["edges"]): Workflow {
   return { id: "w", name: "wf", status: "draft", nodes, edges };
@@ -81,6 +83,58 @@ describe("validateWorkflowStructure", () => {
 const wfFactory = (nodes: Workflow["nodes"], edges: Workflow["edges"], status: Workflow["status"] = "published"): Workflow =>
   ({ id: "w", name: "wf", status, nodes, edges });
 
+function apiAsset(apiId: string, name: string, caseIds: readonly string[]): ApiAsset {
+  return {
+    contract: {
+      formatVersion: 1,
+      id: apiId,
+      metadata: { name, description: "", tags: [], version: "1", status: "draft" },
+      request: {
+        protocol: "http",
+        method: "GET",
+        baseUrl: "https://api.example.test",
+        path: "/",
+        pathParams: [],
+        query: [],
+        headers: [],
+        cookies: [],
+        auth: { kind: "none" },
+        body: { kind: "none" },
+      },
+      responses: [],
+    },
+    cases: caseIds.map((id) => ({ id, name: id, scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] })),
+    documentation: "",
+  };
+}
+
+function collection(id: string, apis: ApiAsset[] = [], folders: ContractFolder[] = []): ContractCollection {
+  return { id, name: id, variables: {}, preOperations: [], postOperations: [], apis, folders };
+}
+
+function folder(id: string, apis: ApiAsset[] = [], folders: ContractFolder[] = []): ContractFolder {
+  return { id, name: id, preOperations: [], postOperations: [], apis, folders };
+}
+
+function project(id: string, collections: ContractCollection[], workflows: Workflow[] = []): ContractProject {
+  return {
+    id,
+    name: id,
+    variables: {},
+    globals: { query: [], headers: [], cookies: [], body: [] },
+    environments: [],
+    collections,
+    workflows,
+    stressPolicy: { trustedOrigins: [], deniedOrigins: [] },
+    models: [],
+    components: [],
+  };
+}
+
+function workspace(...projects: ContractProject[]): Workspace {
+  return { formatVersion: 1, id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects }] };
+}
+
 describe("transitionWorkflowStatus", () => {
   it("draft→published→enabled 合法；跳级拒绝", () => {
     expect(transitionWorkflowStatus(wfFactory([], [], "draft"), "published").status).toBe("published");
@@ -98,8 +152,12 @@ describe("transitionWorkflowStatus", () => {
 });
 
 describe("validateEnablement", () => {
-  const workspaceWith = (apis: Array<{ id: string }>, cases: Array<{ id: string; apiId: string }>): Workspace =>
-    ({ id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [{ id: "p", name: "p", variables: {}, environments: [], collections: apis.map((a) => ({ id: a.id, name: a.id, variables: {}, folders: [], apis: [{ id: a.id, name: a.id, version: "1", deprecated: false, method: "GET", url: "/", headers: [], query: [], cases: cases.filter((c) => c.apiId === a.id).map((c) => ({ id: c.id, name: c.id, scope: "base", parameters: {}, assertions: [] })) }] })), workflows: [] }] }] } as unknown as Workspace);
+  const workspaceWith = (apis: Array<{ id: string }>, cases: Array<{ id: string; apiId: string }>): Workspace => workspace(
+    project("p", apis.map((api) => collection(
+      `collection-${api.id}`,
+      [apiAsset(api.id, api.id, cases.filter((item) => item.apiId === api.id).map((item) => item.id))],
+    ))),
+  );
 
   it("空工作流（0 节点）不可启用 → ok=false 且 errors 含「没有任何节点」", () => {
     // 规格 §5 第 5 条（2026-09-03 增补）：空流没有可执行编排语义，启用必被拒
@@ -148,35 +206,30 @@ describe("validateEnablement", () => {
 
   it("显式 project 限制引用查找，不跨项目命中相同 API ID", () => {
     const workflow = wfFactory([req("n1")], []);
-    const makeApi = (name: string) => ({ id: "a-n1", name, version: "1", deprecated: false, method: "GET" as const, url: "/", headers: [], query: [], cases: [{ id: "c-n1", name: "c-n1", scope: "base", parameters: {}, assertions: [] }] });
-    const selected = { id: "selected", name: "selected", variables: {}, environments: [], collections: [], workflows: [] } as any;
-    const other = { id: "other", name: "other", variables: {}, environments: [], collections: [{ id: "c", name: "c", variables: {}, folders: [], apis: [makeApi("other-api")] }], workflows: [] } as any;
-    const workspace = { id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [selected, other] }] } as unknown as Workspace;
-    expect(validateEnablement(workflow, workspace, selected).errors.some((e) => /不存在/.test(e))).toBe(true);
-    expect(validateEnablement(workflow, workspace).ok).toBe(true);
+    const selected = project("selected", []);
+    const other = project("other", [collection("c", [apiAsset("a-n1", "other-api", ["c-n1"])])]);
+    const workspaceWithDuplicateId = workspace(selected, other);
+    expect(validateEnablement(workflow, workspaceWithDuplicateId, selected).errors.some((e) => /不存在/.test(e))).toBe(true);
+    expect(validateEnablement(workflow, workspaceWithDuplicateId).ok).toBe(true);
   });
 
   it("workspace 独立验证递归查找任意深度文件夹", () => {
     const workflow = wfFactory([req("n1")], []);
-    const api = { id: "a-n1", name: "deep", version: "1", deprecated: false, method: "GET" as const, url: "/", headers: [], query: [], cases: [{ id: "c-n1", name: "c-n1", scope: "base", parameters: {}, assertions: [] }] };
-    const workspace = {
-      id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [{
-        id: "p", name: "p", variables: {}, environments: [], workflows: [], collections: [{
-          id: "c", name: "c", variables: {}, apis: [], folders: [{ id: "outer", name: "outer", apis: [], folders: [{ id: "inner", name: "inner", apis: [api], folders: [] }] }],
-        }],
-      }] }],
-    } as unknown as Workspace;
-    const result = validateEnablement(workflow, workspace);
+    const api = apiAsset("a-n1", "deep", ["c-n1"]);
+    const workspaceWithNestedApi = workspace(project("p", [collection("c", [], [
+      folder("outer", [], [folder("inner", [api])]),
+    ])]));
+    const result = validateEnablement(workflow, workspaceWithNestedApi);
     expect(result.errors.some((error) => /引用的接口\/用例不存在/.test(error))).toBe(false);
   });
 
   it("未传 project 时优先使用工作流所属项目，不跨项目命中同 ID 引用", () => {
     const workflow = wfFactory([req("n1")], []);
-    const api = { id: "a-n1", name: "owner", version: "1", deprecated: false, method: "GET" as const, url: "/", headers: [], query: [], cases: [{ id: "c-n1", name: "c-n1", scope: "base", parameters: {}, assertions: [] }] };
-    const owner = { id: "owner", name: "owner", variables: {}, environments: [], collections: [], workflows: [workflow] } as any;
-    const other = { id: "other", name: "other", variables: {}, environments: [], collections: [{ id: "c", name: "c", variables: {}, apis: [api], folders: [] }], workflows: [] } as any;
-    const workspace = { id: "w", name: "w", variables: {}, groups: [{ id: "g", name: "g", projects: [other, owner] }] } as unknown as Workspace;
-    const result = validateEnablement(workflow, workspace);
+    const api = apiAsset("a-n1", "owner", ["c-n1"]);
+    const owner = project("owner", [], [workflow]);
+    const other = project("other", [collection("c", [api])]);
+    const workspaceWithOwnerFirst = workspace(other, owner);
+    const result = validateEnablement(workflow, workspaceWithOwnerFirst);
     expect(result.ok).toBe(false);
     expect(result.errors.some((error) => /引用的接口\/用例不存在/.test(error))).toBe(true);
   });

@@ -9,6 +9,7 @@ import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useEnvsStore } from "../../../src/renderer/src/stores/envs.js";
 import type { EnvCreateInput } from "../../../src/shared/types.js";
+import type { LocalProjectTreeNodeDTO } from "../../../src/shared/tree-dto.js";
 import EnvPanel from "../../../src/renderer/src/components/EnvPanel.vue";
 
 beforeAll(() => {
@@ -47,6 +48,14 @@ async function chooseEnv(wrapper: VueWrapper, envId: string): Promise<void> {
   await wrapper.find(`[data-testid="env-item-${envId}"]`).trigger("click");
 }
 
+function findSeedProject(workspace: ReturnType<typeof useWorkspaceStore>): LocalProjectTreeNodeDTO {
+  const candidate = workspace.tree?.children
+    .flatMap((group) => group.kind === "group" ? group.children : [])
+    .find((node) => node.kind === "project");
+  if (candidate?.kind !== "project") throw new Error("Memory fixture did not create a project");
+  return candidate;
+}
+
 /** a-select 交互适配（派生对话框父环境选择仍在用）：经组件实例发 update:value。 */
 function chooseSelect(wrapper: VueWrapper, testid: string, value: string): void {
   const select = wrapper
@@ -62,41 +71,42 @@ async function mountEnvPanel(props: Record<string, unknown> = {}) {
   api.seedWorkspace();
   const workspace = useWorkspaceStore(api);
   await workspace.open("/tmp/ws");
-  const projectNode = workspace.tree!.children![0]!.children![0]!;
-  const envs = useEnvsStore(api);
+  const projectNode = findSeedProject(workspace);
+  const envs = useEnvsStore(api, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
+  await envs.load(projectNode.locator);
   const { i18n } = createI18nInstance();
   const wrapper = mount(EnvPanel, {
-    props: { envs, workspace, projectId: projectNode.id, reportError: () => {}, ...props },
+    props: { envs, workspace, projectLocator: projectNode.locator, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, workspace, envs, projectNode };
+  return { wrapper, api, workspace, envs, projectNode, projectLocator: projectNode.locator };
 }
 
 describe("EnvPanel", () => {
-  it("无 projectId 时渲染空态", async () => {
-    const { wrapper } = await mountEnvPanel({ projectId: null });
+  it("无 project locator 时渲染空态", async () => {
+    const { wrapper } = await mountEnvPanel({ projectLocator: null });
     expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="env-tab-globals-vars"]').exists()).toBe(false);
   });
 
-  it("挂载即按 projectId 加载项目环境列表", async () => {
+  it("挂载即按完整项目 locator 加载项目环境列表", async () => {
     const api = createMemoryApi();
     api.seedWorkspace();
     const workspace = useWorkspaceStore(api);
     await workspace.open("/tmp/ws");
-    const projectNode = workspace.tree!.children![0]!.children![0]!;
-    const created = await api.envCreate({ projectId: projectNode.id, name: "dev" });
-    const envs = useEnvsStore(api);
+    const projectNode = findSeedProject(workspace);
+    const created = await api.envCreate({ locator: projectNode.locator, name: "dev" });
+    const envs = useEnvsStore(api, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
     const { i18n } = createI18nInstance();
     const wrapper = mount(EnvPanel, {
-      props: { envs, workspace, projectId: projectNode.id, reportError: () => {} },
+      props: { envs, workspace, projectLocator: projectNode.locator, reportError: () => {} },
       global: { plugins: [i18n] },
     });
     await flushPromises();
     expect(wrapper.find('[data-testid="env-tab-globals-vars"]').exists()).toBe(true);
     // a-select 收起态不渲染 option 文本，列表内容以 store 状态断言
-    expect(envs.envs).toEqual([{ id: created.id, name: "dev", variables: {}, baseUrls: {} }]);
+    expect(envs.envs).toEqual([expect.objectContaining({ id: created.id, name: "dev", variables: {}, baseUrls: {}, locator: { ...projectNode.locator, environmentId: created.id } })]);
   });
 
   it("选中已存环境后变量表水合显示其已存变量（而非空表）", async () => {
@@ -104,13 +114,14 @@ describe("EnvPanel", () => {
     api.seedWorkspace();
     const workspace = useWorkspaceStore(api);
     await workspace.open("/tmp/ws");
-    const projectNode = workspace.tree!.children![0]!.children![0]!;
-    const created = await api.envCreate({ projectId: projectNode.id, name: "dev" });
-    await api.envVarsSave(created.id, { baseUrl: "http://d", token: "t" });
-    const envs = useEnvsStore(api);
+    const projectNode = findSeedProject(workspace);
+    const created = await api.envCreate({ locator: projectNode.locator, name: "dev" });
+    const envLocator = { ...projectNode.locator, environmentId: created.id };
+    await api.envVarsSave(envLocator, { baseUrl: "http://d", token: "t" });
+    const envs = useEnvsStore(api, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
     const { i18n } = createI18nInstance();
     const wrapper = mount(EnvPanel, {
-      props: { envs, workspace, projectId: projectNode.id, reportError: () => {} },
+      props: { envs, workspace, projectLocator: projectNode.locator, reportError: () => {} },
       global: { plugins: [i18n] },
     });
     await flushPromises();
@@ -130,15 +141,71 @@ describe("EnvPanel", () => {
     await wrapper.find('[data-testid="env-new"]').trigger("click");
     await flushPromises();
     await expectBody("env-name-input").setValue("sit");
-    await expectBody("env-modal-confirm").trigger("click");
-    await flushPromises();
+    const originalCreate = envs.create.bind(envs);
+    let createTask: ReturnType<typeof originalCreate> | null = null;
+    envs.create = (input) => {
+      createTask = originalCreate(input);
+      return createTask;
+    };
+    try {
+      await expectBody("env-modal-confirm").trigger("click");
+      if (!createTask) throw new Error("Environment confirmation did not invoke the real envs.create action");
+      await createTask;
+    } finally {
+      envs.create = originalCreate;
+    }
     expect(envs.envs.map((e) => e.name)).toContain("sit");
     expect(envs.selectedEnvId).toBe(envs.envs.find((e) => e.name === "sit")!.id);
   });
 
+  it("新建确认仍绑定打开对话框时的root；复制根切换后不在新根创建旧目标", async () => {
+    const { wrapper, api, workspace } = await mountEnvPanel();
+    const root = workspace.root;
+    let creates = 0;
+    const create = api.envCreate.bind(api);
+    api.envCreate = async (input) => { creates++; return create(input); };
+    await wrapper.find('[data-testid="env-new"]').trigger("click");
+    await flushPromises();
+    await expectBody("env-name-input").setValue("stale-root");
+    workspace.root = `${root}-copy`;
+    await expectBody("env-modal-confirm").trigger("click");
+    await flushPromises();
+    expect(creates).toBe(0);
+  });
+
+  it("变量保存的第二次baseUrl写入在第一次await后root变化时取消", async () => {
+    const { wrapper, api, workspace, envs, projectNode } = await mountEnvPanel();
+    const created = await envs.create({ locator: projectNode.locator, name: "deferred" });
+    await flushPromises();
+    await chooseEnv(wrapper, created.id);
+    await flushPromises();
+    let startSave!: () => void;
+    let finishSave!: () => void;
+    const started = new Promise<void>((resolve) => { startSave = resolve; });
+    const gate = new Promise<void>((resolve) => { finishSave = resolve; });
+    const saveVars = api.envVarsSave.bind(api);
+    let baseUrlWrites = 0;
+    const saveBaseUrls = api.envBaseUrlsSave.bind(api);
+    api.envVarsSave = async (locator, variables) => {
+      startSave();
+      await gate;
+      return saveVars(locator, variables);
+    };
+    api.envBaseUrlsSave = async (locator, baseUrls) => {
+      baseUrlWrites++;
+      return saveBaseUrls(locator, baseUrls);
+    };
+    await wrapper.find('[data-testid="env-vars-save"]').trigger("click");
+    await started;
+    workspace.root = `${workspace.root}-copy`;
+    finishSave();
+    await flushPromises();
+    expect(baseUrlWrites).toBe(0);
+  });
+
   it("从现有环境派生：选择父环境后 extends 透传父环境名", async () => {
     const { wrapper, api, envs, projectNode } = await mountEnvPanel();
-    const dev = await envs.create({ projectId: projectNode.id, name: "dev" });
+    const dev = await envs.create({ locator: projectNode.locator, name: "dev" });
     await flushPromises();
     let captured: EnvCreateInput | null = null;
     const original = api.envCreate.bind(api);
@@ -159,8 +226,9 @@ describe("EnvPanel", () => {
 
   it("变量行编辑与保存：行缓冲经 saveVars 落盘，切换环境即重置", async () => {
     const { wrapper, api, envs, projectNode } = await mountEnvPanel();
-    const dev = await envs.create({ projectId: projectNode.id, name: "dev" });
-    await envs.create({ projectId: projectNode.id, name: "sit" });
+    const dev = await envs.create({ locator: projectNode.locator, name: "dev" });
+    const devItem = envs.envs.find((item) => item.id === dev.id)!;
+    await envs.create({ locator: projectNode.locator, name: "sit" });
     await flushPromises();
     await chooseEnv(wrapper, dev.id);
     await flushPromises();
@@ -168,15 +236,38 @@ describe("EnvPanel", () => {
     await flushPromises();
     await wrapper.findAll('[data-testid="env-var-key"]')[0]!.setValue("baseUrl");
     await wrapper.findAll('[data-testid="env-var-value"]')[0]!.setValue("http://s");
-    let received: { envId: string; variables: Record<string, string> } | null = null;
+    const received: { current: { locator: Parameters<typeof api.envVarsSave>[0]; variables: Record<string, string> } | null } = { current: null };
     const original = api.envVarsSave.bind(api);
-    api.envVarsSave = async (envId: string, variables: Record<string, string>) => {
-      await original(envId, variables);
-      received = { envId, variables };
+    api.envVarsSave = async (locator, variables) => {
+      const saved = await original(locator, variables);
+      received.current = { locator, variables };
+      return saved;
     };
-    await wrapper.find('[data-testid="env-vars-save"]').trigger("click");
+    const originalStoreSaveVars = envs.saveVars.bind(envs);
+    const originalStoreSaveBaseUrls = envs.saveBaseUrls.bind(envs);
+    let storeSaveVarsTask: ReturnType<typeof originalStoreSaveVars> | null = null;
+    let storeSaveBaseUrlsTask: ReturnType<typeof originalStoreSaveBaseUrls> | null = null;
+    envs.saveVars = (...args) => {
+      storeSaveVarsTask = originalStoreSaveVars(...args);
+      return storeSaveVarsTask;
+    };
+    envs.saveBaseUrls = (...args) => {
+      storeSaveBaseUrlsTask = originalStoreSaveBaseUrls(...args);
+      return storeSaveBaseUrlsTask;
+    };
+    try {
+      await wrapper.find('[data-testid="env-vars-save"]').trigger("click");
+      if (!storeSaveVarsTask) throw new Error("Environment save did not invoke the real envs.saveVars action");
+      await storeSaveVarsTask;
+      if (!storeSaveBaseUrlsTask) throw new Error("Environment save did not invoke the real envs.saveBaseUrls action");
+      await storeSaveBaseUrlsTask;
+    } finally {
+      envs.saveVars = originalStoreSaveVars;
+      envs.saveBaseUrls = originalStoreSaveBaseUrls;
+      api.envVarsSave = original;
+    }
     await flushPromises();
-    expect(received).toEqual({ envId: dev.id, variables: { baseUrl: "http://s" } });
+    expect(received.current).toEqual({ locator: devItem.locator, variables: { baseUrl: "http://s" } });
     expect(wrapper.find('[data-testid="env-vars-saved"]').exists()).toBe(true);
     // 切换到另一环境（无已存变量）：行缓冲清空
     const sit = envs.envs.find((e) => e.name === "sit")!;
@@ -194,12 +285,23 @@ describe("EnvPanel", () => {
 
   it("删除选中环境：确认对话框放行后移除", async () => {
     const { wrapper, envs, projectNode } = await mountEnvPanel();
-    const dev = await envs.create({ projectId: projectNode.id, name: "dev" });
+    const dev = await envs.create({ locator: projectNode.locator, name: "dev" });
     await chooseEnv(wrapper, dev.id);
     await flushPromises();
     await wrapper.find('[data-testid="env-delete"]').trigger("click");
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
+    const originalRemove = envs.remove.bind(envs);
+    let removeTask: ReturnType<typeof originalRemove> | null = null;
+    envs.remove = (...args) => {
+      removeTask = originalRemove(...args);
+      return removeTask;
+    };
+    try {
+      await expectBody("dialog-confirm").trigger("click");
+      if (!removeTask) throw new Error("Environment delete confirmation did not invoke the real envs.remove action");
+      await removeTask;
+    } finally {
+      envs.remove = originalRemove;
+    }
     expect(envs.envs.map((e) => e.name)).not.toContain("dev");
     expect(envs.selectedEnvId).toBeNull();
   });
@@ -211,15 +313,16 @@ describe("EnvPanel", () => {
     api.seedWorkspace();
     const workspace = useWorkspaceStore(api);
     await workspace.open("/tmp/ws");
-    const projectNode = workspace.tree!.children![0]!.children![0]!;
-    const created = await api.envCreate({ projectId: projectNode.id, name: "dev" });
-    await api.envVarsSave(created.id, { baseUrl: "http://d" });
-    const envs = useEnvsStore(api);
-    await envs.load(projectNode.id);
-    envs.selectedEnvId = created.id;
+    const projectNode = findSeedProject(workspace);
+    const created = await api.envCreate({ locator: projectNode.locator, name: "dev" });
+    const envLocator = { ...projectNode.locator, environmentId: created.id };
+    await api.envVarsSave(envLocator, { baseUrl: "http://d" });
+    const envs = useEnvsStore(api, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
+    await envs.load(projectNode.locator);
+    envs.select(envLocator);
     const { i18n } = createI18nInstance();
     const wrapper = mount(EnvPanel, {
-      props: { envs, workspace, projectId: projectNode.id, reportError: () => {} },
+      props: { envs, workspace, projectLocator: projectNode.locator, reportError: () => {} },
       global: { plugins: [i18n] },
     });
     await flushPromises();

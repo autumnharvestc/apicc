@@ -12,14 +12,31 @@
 //    app-error-close）仍在组件 DOM 内，照旧 wrapper.find。
 // TopBar 现代化（计划 2C 任务 2）适配：3. a-dropdown（语言切换）展开的菜单同样
 //    传送门渲染到 body，菜单项用 langOption（data-locale）查询。
-import { describe, expect, it, beforeAll, afterEach } from "vitest";
-import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
+import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
+import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
 import { createMemoryApi } from "../../src/renderer/src/api/memory.js";
+import HomeView from "../../src/renderer/src/components/HomeView.vue";
+import ProjectTabs from "../../src/renderer/src/components/ProjectTabs.vue";
 import WfDesigner from "../../src/renderer/src/components/WfDesigner.vue";
+import CasePanel from "../../src/renderer/src/components/CasePanel.vue";
+import EnvPanel from "../../src/renderer/src/components/EnvPanel.vue";
 import RequestEditor from "../../src/renderer/src/components/RequestEditor.vue";
+import SideTree from "../../src/renderer/src/components/SideTree.vue";
+import ImportWizard from "../../src/renderer/src/components/ImportWizard.vue";
 import StressPanel from "../../src/renderer/src/components/StressPanel.vue";
+import type { useWorkspaceStore } from "../../src/renderer/src/stores/workspace.js";
+import type { createTabsStore } from "../../src/renderer/src/stores/tabs.js";
+import type { useTreeStore } from "../../src/renderer/src/stores/tree.js";
+import type { useWorkflowDesignStore } from "../../src/renderer/src/stores/workflowDesign.js";
+import type { useWfListStore } from "../../src/renderer/src/stores/wfList.js";
+import type { useDebugStore } from "../../src/renderer/src/stores/debug.js";
+import type { useEnvsStore } from "../../src/renderer/src/stores/envs.js";
+import type { useEditorStore } from "../../src/renderer/src/stores/editor.js";
+import { useModuleMemoryStore } from "../../src/renderer/src/stores/moduleMemory.js";
 import type { WfBindIndex } from "../../src/renderer/src/wf/wfBindings.js";
+import type { ProjectLocator } from "../../src/shared/locations.js";
+import type { LocalProjectTreeNodeDTO, LocalTreeNodeDTO } from "../../src/shared/tree-dto.js";
 import type { StressReport } from "@apicc/core";
 
 const failingApi = createMemoryApi();
@@ -29,6 +46,16 @@ failingApi.seedWorkspace();
 const realNodeCreate = failingApi.nodeCreate.bind(failingApi);
 failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
 window.apicc = failingApi;
+
+function projectByLabel(tree: LocalTreeNodeDTO, label: string): LocalProjectTreeNodeDTO {
+  if (tree.kind !== "root") throw new Error("Expected local root tree");
+  for (const group of tree.children) {
+    if (group.kind !== "group") continue;
+    const project = group.children.find((node) => node.kind === "project" && node.label === label);
+    if (project?.kind === "project") return project;
+  }
+  throw new Error(`Project not found: ${label}`);
+}
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -95,33 +122,108 @@ async function mountApp() {
  * 轮询等待 tree 就绪（上限 ~2s）后再切接口模块，消除时序边缘。
  * 计划 C 任务 5：项目卡片点开走成签链路（openProjectTab → activateTab 编排）——
  * 轮询等待首个项目签出现后再等树节点。 */
-async function openLocalDir(wrapper: import("@vue/test-utils").VueWrapper) {
+async function expandAllCollapsedTreeContainers(wrapper: VueWrapper): Promise<void> {
+  while (true) {
+    const collapsed = wrapper
+      .findAll('[data-testid="tree-group-toggle"]')
+      .find((toggle) => toggle.text().trim() === "▸");
+    if (!collapsed) return;
+    await collapsed.trigger("click");
+  }
+}
+
+/** Open the real workspace, await its store action, then open the named seed project tab. */
+async function openLocalDir(wrapper: VueWrapper) {
   await wrapper.find('[data-testid="topbar-home"]').trigger("click");
-  await flushPromises();
+  const home = wrapper.findComponent(HomeView);
+  if (!home.exists()) throw new Error("HomeView was not mounted after navigating home");
+  const workspace = home.props("workspace") as ReturnType<typeof useWorkspaceStore>;
+  const originalOpen = workspace.open.bind(workspace);
+  let openTask: Promise<void> | null = null;
+  workspace.open = (rootPath) => {
+    openTask = originalOpen(rootPath);
+    return openTask;
+  };
   await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
-  // 主页视图不渲染 rail（用户裁定）：打开后经首个项目卡片成签进入接口模块
-  for (let i = 0; i < 100 && !wrapper.find('[data-testid^="project-card-"]').exists(); i++) await new Promise((r) => setTimeout(r, 20));
-  await flushPromises();
-  await wrapper.find('[data-testid^="project-card-"]').trigger("click");
-  // 成签链路（openProjectTab → activateTab → 项目选中）是多拍宏任务：先等签栏出现
-  for (let i = 0; i < 100 && !wrapper.find('[data-testid^="project-tab-"]').exists(); i++) {
-    await flushPromises();
-    await new Promise((r) => setTimeout(r, 20));
+  if (!openTask) {
+    workspace.open = originalOpen;
+    throw new Error("Open Directory did not invoke the real workspace.open action");
   }
-  // 打开链路（真实磁盘重载 + 树渲染）是多拍宏任务，单次 flushPromises 会早于树数据就绪：
-  // 直接等首个树节点出现（上限 ~2s），不 sleep 凑拍。
-  for (let i = 0; i < 100 && !wrapper.find('[data-testid="tree-group-toggle"]').exists(); i++) {
-    await flushPromises();
-    await new Promise((r) => setTimeout(r, 20));
+  try {
+    await openTask;
+  } finally {
+    workspace.open = originalOpen;
   }
   await flushPromises();
-  // id 布局（轨一）：重开后分组顺序=UUID 字典序（随机），首个分组可能是空的默认分组——
-  // 展开全部分组并等种子接口节点出现，不依赖顺序
-  for (let round = 0; round < 5 && !wrapper.find('[data-testid="tree-api"]').exists(); round++) {
-    for (const t of wrapper.findAll('[data-testid="tree-group-toggle"]')) await t.trigger("click");
-    await flushPromises();
-    await new Promise((r) => setTimeout(r, 20));
+  const projectCard = wrapper
+    .findAll('[data-testid^="project-card-"]')
+    .find((card) => card.text().includes("示例项目"));
+  if (!projectCard) throw new Error("The seeded 示例项目 card is unavailable after workspace.open");
+  const tabs = wrapper.findComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+  const originalOpenProjectTab = tabs.openProjectTab.bind(tabs);
+  let openTabTask: ReturnType<typeof originalOpenProjectTab> | null = null;
+  tabs.openProjectTab = (...args) => {
+    openTabTask = originalOpenProjectTab(...args);
+    return openTabTask;
+  };
+  try {
+    await projectCard.trigger("click");
+    if (!openTabTask) throw new Error("Opening the seeded project did not invoke tabs.openProjectTab");
+    await openTabTask;
+  } finally {
+    tabs.openProjectTab = originalOpenProjectTab;
   }
+  await flushPromises();
+  await expandAllCollapsedTreeContainers(wrapper);
+}
+
+function captureWorkflowLoad(workflowDesign: ReturnType<typeof useWorkflowDesignStore>) {
+  const original = workflowDesign.load.bind(workflowDesign);
+  let pending: ReturnType<typeof original> | null = null;
+  workflowDesign.load = (root, locator) => {
+    pending = original(root, locator);
+    return pending;
+  };
+  return {
+    called(): boolean {
+      return pending !== null;
+    },
+    async settle(): Promise<void> {
+      if (!pending) throw new Error("Tree selection did not invoke the real workflowDesign.load action");
+      await pending;
+      await flushPromises();
+    },
+    restore(): void {
+      workflowDesign.load = original;
+    },
+  };
+}
+
+async function clickApiAndWait(wrapper: VueWrapper): Promise<void> {
+  const editor = wrapper.findComponent(RequestEditor).props("editor") as ReturnType<typeof useEditorStore>;
+  const original = editor.load.bind(editor);
+  let pending: ReturnType<typeof original> | null = null;
+  editor.load = (locator) => {
+    pending = original(locator);
+    return pending;
+  };
+  try {
+    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    if (!pending) throw new Error("Selecting the visible API did not invoke the real editor.load action");
+    await pending;
+    await flushPromises();
+  } finally {
+    editor.load = original;
+  }
+}
+
+async function openWorkflowDesigner(wrapper: VueWrapper): Promise<ReturnType<typeof useWorkflowDesignStore>> {
+  // WfDesigner is the workflow rail view, not the API module's design subview.
+  // Select an API first so the workflow rail is enabled, then wait for the real view to mount.
+  await clickApiAndWait(wrapper);
+  await wrapper.find('[data-testid="rail-wf"]').trigger("click");
+  await vi.waitFor(() => expect(wrapper.findComponent(WfDesigner).exists()).toBe(true));
+  return wrapper.findComponent(WfDesigner).props("workflowDesign") as ReturnType<typeof useWorkflowDesignStore>;
 }
 
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
@@ -207,7 +309,7 @@ describe("App 视图切换装配（M8 模块化）", () => {
     expect(wrapper.find('[data-testid="viewer-pane"]').exists()).toBe(true);
     // 选中种子接口 → 子视图（调试/设计）启用 → 设计子视图（M9-D：用例移入测试模块）
     await flushPromises();
-    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await clickApiAndWait(wrapper);
     await flushPromises();
     expect(subRadio(wrapper, "design").attributes("disabled")).toBeUndefined();
     await subRadio(wrapper, "design").setValue(true);
@@ -233,8 +335,23 @@ describe("App 视图切换装配（M8 模块化）", () => {
     await wrapper.find('[data-testid="api-import-btn"]').trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="import-wizard"]').exists()).toBe(true);
+    const fileInput = wrapper.get('[data-testid="import-file-input"]').element as HTMLInputElement;
+    Object.defineProperty(fileInput, "files", {
+      value: [new File(["openapi: 3.0.0"], "preview.yaml", { type: "text/yaml" })],
+      configurable: true,
+    });
+    await fileInput.dispatchEvent(new Event("change"));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="import-preview-tree"]').exists()).toBe(true);
+    expect((wrapper.get('[data-testid="import-name-input"]').element as HTMLInputElement).value).toBe("导入示例项目");
+    const importW = wrapper.findComponent(ImportWizard).props("importW") as {
+      preview: { importerName: string; project: { name: string }; warnings: string[] } | null;
+    };
+    expect(importW.preview?.importerName).toBe("sample");
+    expect(importW.preview?.warnings).toContain("示例警告");
     await wrapper.find('[data-testid="import-cancel"]').trigger("click");
     await flushPromises();
+    expect(importW.preview).toBeNull();
     expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
   });
 
@@ -243,7 +360,7 @@ describe("App 视图切换装配（M8 模块化）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await clickApiAndWait(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="send-btn"]').trigger("click");
     await flushPromises();
@@ -258,7 +375,7 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await clickApiAndWait(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="send-btn"]').trigger("click");
     await flushPromises();
@@ -292,16 +409,19 @@ describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
     await flushPromises();
     // 直连替身建两条流后重开工作区刷新树（failingApi 为本文件共享单例，按名定位节点）
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
-    const wfA = await failingApi.wfCreate({ projectId: project.id, name: "脏缓冲流" });
-    const wfB = await failingApi.wfCreate({ projectId: project.id, name: "切换目标流" });
+    const project = projectByLabel(treeDto, "示例项目");
+    const wfA = await failingApi.wfCreate({ locator: project.locator, name: "脏缓冲流" });
+    const wfB = await failingApi.wfCreate({ locator: project.locator, name: "切换目标流" });
     await openLocalDir(wrapper);
     await flushPromises();
     const wfNode = (name: string) =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
     // 侧树打开流 A 并经设计器「加节点」制造 dirty
+    const designStore = await openWorkflowDesigner(wrapper);
+    const loadA = captureWorkflowLoad(designStore);
     await wfNode("脏缓冲流").trigger("click");
-    await flushPromises();
+    await loadA.settle();
+    loadA.restore();
     await wrapper.find('[data-testid="wf-add-request"]').trigger("click");
     await flushPromises();
     const designOf = () =>
@@ -313,24 +433,29 @@ describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
     expect(designOf().dirty).toBe(true);
 
     // dirty 时点击流 B：确认框弹出，缓冲仍是 A（修复前：直接 load，编辑静默丢失）
+    const blockedLoad = captureWorkflowLoad(designStore);
     await wfNode("切换目标流").trigger("click");
     await flushPromises();
     expect(designOf().workflowId).toBe(wfA.id);
     expect(designOf().dirty).toBe(true);
     expect(expectBody("dialog-cancel").exists()).toBe(true);
     expect(expectBody("dialog-confirm").exists()).toBe(true);
+    expect(blockedLoad.called()).toBe(false);
 
     // 取消：缓冲不变、不载入 B
     await expectBody("dialog-cancel").trigger("click");
     await flushPromises();
+    blockedLoad.restore();
     expect(designOf().workflowId).toBe(wfA.id);
     expect(designOf().dirty).toBe(true);
 
     // 再点流 B 并确认丢弃：新流载入、dirty 复位
+    const confirmedLoad = captureWorkflowLoad(designStore);
     await wfNode("切换目标流").trigger("click");
     await flushPromises();
     await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
+    await confirmedLoad.settle();
+    confirmedLoad.restore();
     expect(designOf().workflowId).toBe(wfB.id);
     expect(designOf().workflow?.name).toBe("切换目标流");
     expect(designOf().dirty).toBe(false);
@@ -341,17 +466,22 @@ describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
-    await failingApi.wfCreate({ projectId: project.id, name: "干净流甲" });
-    const wfB = await failingApi.wfCreate({ projectId: project.id, name: "干净流乙" });
+    const project = projectByLabel(treeDto, "示例项目");
+    await failingApi.wfCreate({ locator: project.locator, name: "干净流甲" });
+    const wfB = await failingApi.wfCreate({ locator: project.locator, name: "干净流乙" });
     await openLocalDir(wrapper);
     await flushPromises();
     const wfNode = (name: string) =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
+    const designStore = await openWorkflowDesigner(wrapper);
+    const loadA = captureWorkflowLoad(designStore);
     await wfNode("干净流甲").trigger("click");
-    await flushPromises();
+    await loadA.settle();
+    loadA.restore();
+    const loadB = captureWorkflowLoad(designStore);
     await wfNode("干净流乙").trigger("click");
-    await flushPromises();
+    await loadB.settle();
+    loadB.restore();
     const design = wrapper.findComponent(WfDesigner).props("workflowDesign") as { workflowId: string | null };
     expect(design.workflowId).toBe(wfB.id);
     expect(document.body.querySelector('[data-testid="dialog-confirm"]')).toBeNull();
@@ -365,15 +495,18 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
-    const wf = await failingApi.wfCreate({ projectId: project.id, name: "旧名流" });
+    const project = projectByLabel(treeDto, "示例项目");
+    const wf = await failingApi.wfCreate({ locator: project.locator, name: "旧名流" });
     await openLocalDir(wrapper);
     await flushPromises();
     const wfNode = (name: string) =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
     // 侧树打开该流（设计器载入，缓冲持旧名）
+    const designStore = await openWorkflowDesigner(wrapper);
+    const loadOld = captureWorkflowLoad(designStore);
     await wfNode("旧名流").trigger("click");
-    await flushPromises();
+    await loadOld.settle();
+    loadOld.restore();
     const designOf = () =>
       wrapper.findComponent(WfDesigner).props("workflowDesign") as {
         workflowId: string | null;
@@ -386,14 +519,38 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
       .find((r) => r.text().includes("旧名流"))!;
     await row.find('[data-testid="node-rename"]').trigger("click");
     await expectBody("dialog-input").setValue("新名流");
-    await expectBody("dialog-confirm").trigger("click");
+    const originalRename = failingApi.wfRename.bind(failingApi);
+    let renameTask: ReturnType<typeof originalRename> | null = null;
+    failingApi.wfRename = (...args) => {
+      renameTask = originalRename(...args);
+      return renameTask;
+    };
+    const workspace = wrapper.findComponent(WfDesigner).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+    const originalRefresh = workspace.refresh.bind(workspace);
+    let refreshTask: ReturnType<typeof originalRefresh> | null = null;
+    workspace.refresh = () => {
+      refreshTask = originalRefresh();
+      return refreshTask;
+    };
+    try {
+      await expectBody("dialog-confirm").trigger("click");
+      if (!renameTask) throw new Error("Workflow rename confirmation did not invoke the real api.wfRename action");
+      await renameTask;
+      if (!refreshTask) throw new Error("Completed workflow rename did not invoke the real workspace.refresh action");
+      await refreshTask;
+    } finally {
+      failingApi.wfRename = originalRename;
+      workspace.refresh = originalRefresh;
+    }
     await flushPromises();
     // 修复前：缓冲仍持旧名（workflowId 不变）——此后保存按缓冲整体替换，改名被静默回滚
     expect(designOf().workflowId).toBeNull();
     expect(designOf().workflow).toBeNull();
     // 再次打开（树已 refresh 显示新名）：走重新 load 拿新名
+    const loadRenamed = captureWorkflowLoad(designStore);
     await wfNode("新名流").trigger("click");
-    await flushPromises();
+    await loadRenamed.settle();
+    loadRenamed.restore();
     expect(designOf().workflowId).toBe(wf.id);
     expect(designOf().workflow?.name).toBe("新名流");
   });
@@ -403,16 +560,19 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
-    const wfA = await failingApi.wfCreate({ projectId: project.id, name: "旁路流甲" });
-    await failingApi.wfCreate({ projectId: project.id, name: "旁路流乙" });
+    const project = projectByLabel(treeDto, "示例项目");
+    const wfA = await failingApi.wfCreate({ locator: project.locator, name: "旁路流甲" });
+    await failingApi.wfCreate({ locator: project.locator, name: "旁路流乙" });
     await openLocalDir(wrapper);
     await flushPromises();
     const wfNode = (name: string) =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes(name))!;
     // 设计器开着流甲，重命名流乙
+    const designStore = await openWorkflowDesigner(wrapper);
+    const loadA = captureWorkflowLoad(designStore);
     await wfNode("旁路流甲").trigger("click");
-    await flushPromises();
+    await loadA.settle();
+    loadA.restore();
     const row = wrapper
       .findAll('[data-testid="tree-workflow-row"]')
       .find((r) => r.text().includes("旁路流乙"))!;
@@ -438,7 +598,7 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
       await openLocalDir(wrapper);
       await flushPromises();
       // 选中种子接口 → selectedProjectId 就绪 → bindIndex 首次构建（仅种子 1 个接口）
-        await wrapper.find('[data-testid="tree-api"]').trigger("click");
+      await clickApiAndWait(wrapper);
       await flushPromises();
       await wrapper.find('[data-testid="rail-wf"]').trigger("click");
       await flushPromises();
@@ -450,10 +610,27 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
       // 项目内经侧树新增接口：nodeCreate + workspace.refresh 换新 tree 引用
       await wrapper.find('[data-testid="new-api"]').trigger("click");
       await expectBody("dialog-input").setValue("联动新接口");
-      await expectBody("dialog-confirm").trigger("click");
-      await flushPromises();
+      const tree = wrapper.findComponent(SideTree).props("tree") as ReturnType<typeof useTreeStore>;
+      const originalCreate = tree.createNode.bind(tree);
+      let createTask: ReturnType<typeof originalCreate> | null = null;
+      tree.createNode = (...args) => {
+        createTask = originalCreate(...args);
+        return createTask;
+      };
+      try {
+        await expectBody("dialog-confirm").trigger("click");
+        if (!createTask) throw new Error("API creation dialog did not invoke the real tree.createNode action");
+        await createTask;
+      } finally {
+        tree.createNode = originalCreate;
+      }
 
       // watch 源含 workspace.tree：refresh 即重建索引，新接口进入 apiIds/名称表
+      await vi.waitFor(() => {
+        const after = designer.props("bindIndex") as WfBindIndex | null;
+        expect(after?.apiIds.size).toBe(2);
+        expect([...after!.apiNames.values()]).toContain("联动新接口");
+      });
       const after = designer.props("bindIndex") as WfBindIndex | null;
       expect(after!.apiIds.size).toBe(2); // 修复前索引陈旧仍为 1
       expect([...after!.apiNames.values()]).toContain("联动新接口");
@@ -471,13 +648,16 @@ describe("App 侧树工作流入口", () => {
     await flushPromises();
     // 直连替身建工作流后重开工作区刷新树（打开钮对非工作区目录回退内存态）
     const tree = await failingApi.treeGet();
-    const project = tree.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
-    const wf = await failingApi.wfCreate({ projectId: project.id, name: "侧树入口流" });
+    const project = projectByLabel(tree, "示例项目");
+    const wf = await failingApi.wfCreate({ locator: project.locator, name: "侧树入口流" });
     await openLocalDir(wrapper);
     await flushPromises();
     // id 布局（轨一）后树内工作流按 id 字典序排列（名称制时代的名称序不再保证）——按名称点选目标流
+    const designStore = wrapper.findComponent(SideTree).props("workflowDesign") as ReturnType<typeof useWorkflowDesignStore>;
+    const load = captureWorkflowLoad(designStore);
     await wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("侧树入口流"))!.trigger("click");
-    await flushPromises();
+    await load.settle();
+    load.restore();
     // 视图切到 wf（rail 选中态）
     expect(wrapper.find('[data-testid="rail-wf"]').classes()).toContain("active");
     // 设计器载入点击的工作流（而非空态列表）
@@ -485,7 +665,7 @@ describe("App 侧树工作流入口", () => {
     const design = designer.props("workflowDesign") as { workflowId: string | null };
     expect(design.workflowId).toBe(wf.id);
     // 选中节点归属项目解析含 workflows 摘要：selectedProjectId 不因 kind=workflow 落空
-    expect(designer.props("projectId")).toBe(project.id);
+    expect(designer.props("projectLocator")).toStrictEqual(project.locator);
   });
 
   it("设计器列表新建工作流后侧树同步出现（树摘要随 wfList 变更刷新）", async () => {
@@ -494,15 +674,32 @@ describe("App 侧树工作流入口", () => {
     await flushPromises();
     // 选中接口 → selectedProjectId 就绪 → 切到工作流视图（设计器是工作流唯一创建入口）
     await flushPromises();
-    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await clickApiAndWait(wrapper);
     await wrapper.find('[data-testid="rail-wf"]').trigger("click");
     await flushPromises();
     // 建前树中无同名工作流（failingApi 是本文件共享单例，前面用例可能已建过别的流）
     expect(wrapper.find('[data-testid="tree-workflow"]').text()).not.toContain("设计器新建流");
     // 经设计器列表新建 → 侧树应同步出现该工作流（draft 色点）
     await wrapper.find('[data-testid="wf-new-name"]').setValue("设计器新建流");
-    await wrapper.find('[data-testid="wf-new-create"]').trigger("click");
-    await flushPromises();
+    const designer = wrapper.findComponent(WfDesigner);
+    const wfList = designer.props("wfList") as ReturnType<typeof useWfListStore>;
+    const originalCreate = wfList.create.bind(wfList);
+    let createTask: ReturnType<typeof originalCreate> | null = null;
+    wfList.create = (...args) => {
+      createTask = originalCreate(...args);
+      return createTask;
+    };
+    try {
+      await wrapper.find('[data-testid="wf-new-create"]').trigger("click");
+      if (!createTask) throw new Error("Create button did not invoke the real wfList.create action");
+      await createTask;
+    } finally {
+      wfList.create = originalCreate;
+    }
+    await vi.waitFor(() => {
+      const created = wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("设计器新建流"));
+      expect(created).toBeDefined();
+    });
     const nodes = wrapper.findAll('[data-testid="tree-workflow"]');
     const created = nodes.find((n) => n.text().includes("设计器新建流"));
     expect(created).toBeDefined();
@@ -517,27 +714,40 @@ describe("App 侧树工作流入口", () => {
     await flushPromises();
     // 直连替身建 draft 工作流后重开工作区刷新树（failingApi 为本文件共享单例，按名断言）
     const tree = await failingApi.treeGet();
-    const project = tree.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
-    const wf = await failingApi.wfCreate({ projectId: project.id, name: "生命周期流" });
+    const project = projectByLabel(tree, "示例项目");
+    const wf = await failingApi.wfCreate({ locator: project.locator, name: "生命周期流" });
     await openLocalDir(wrapper);
     await flushPromises();
     const findNode = () =>
       wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("生命周期流"))!;
     expect(findNode().attributes("data-status")).toBe("draft");
     // 侧树打开工作流 → 设计器点「发布」
+    const designStore = wrapper.findComponent(SideTree).props("workflowDesign") as ReturnType<typeof useWorkflowDesignStore>;
+    const load = captureWorkflowLoad(designStore);
     await findNode().trigger("click");
-    await flushPromises();
-    await wrapper.find('[data-testid="wf-publish"]').trigger("click");
-    await flushPromises();
+    await load.settle();
+    load.restore();
+    const originalSetStatus = designStore.setStatus.bind(designStore);
+    let statusTask: ReturnType<typeof originalSetStatus> | null = null;
+    designStore.setStatus = (...args) => {
+      statusTask = originalSetStatus(...args);
+      return statusTask;
+    };
+    try {
+      await wrapper.find('[data-testid="wf-publish"]').trigger("click");
+      if (!statusTask) throw new Error("Publish button did not invoke the real workflowDesign.setStatus action");
+      await statusTask;
+    } finally {
+      designStore.setStatus = originalSetStatus;
+    }
+    await vi.waitFor(() => expect(findNode().attributes("data-status")).toBe("published"));
     // 侧树色点同步为 published（修复前：同引用赋值不触发响应式 + 无 status watcher，
     // 树摘要陈旧为 draft）
     expect(findNode().attributes("data-status")).toBe("published");
     // 树 DTO 摘要确实重建（status 更新；failingApi 为共享单例，按 id 断言本流）
     const dto = await failingApi.treeGet();
-    expect(dto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!.workflows!.find((w) => w.id === wf.id)).toEqual({
-      id: wf.id,
-      name: "生命周期流",
-      status: "published",
+    expect(projectByLabel(dto, "示例项目").workflows.find((item) => item.id === wf.id)).toMatchObject({
+      id: wf.id, name: "生命周期流", status: "published",
     });
   });
 });
@@ -609,34 +819,45 @@ async function mountAppKeepingStorage() {
 }
 
 describe("App 启动按签恢复（计划 C 任务 5：签表驱动）", () => {
-  it("持久化本地签 → 挂载重开目录并激活该签（视图离开主页）；lastApi 按活跃签项目过滤恢复", async () => {
+  it("持久化本地签 → 挂载重开目录并激活该签（视图离开主页）；正式 moduleMemory locator 按项目恢复", async () => {
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
+    const project = projectByLabel(treeDto, "示例项目");
     const collection = project.children!.find((c) => c.kind === "collection")!;
     const apiNode = collection.children!.find((n) => n.kind === "api")!;
-    // 模拟上次会话持久化：本地签（内存替身对非工作区目录回退种子内存态）+ lastApi 记忆（同项目接口）
+    // 正式树：本地签（内存替身对非工作区目录回退种子内存态）+ root/ProjectLocator scoped memory。
     localStorage.setItem("apicc.projectTabs", JSON.stringify({
-      tabs: [{ workspaceRef: { kind: "local", dir: "/tmp/ws-restored" }, projectId: project.id, projectName: "示例项目" }],
+      tabs: [{ workspaceRef: { kind: "local", dir: "/tmp/ws-restored" }, projectLocator: project.locator, projectName: "示例项目" }],
       activeIndex: 0,
     }));
-    localStorage.setItem("apicc.lastApi", JSON.stringify({ id: apiNode.id }));
+    const memory = useModuleMemoryStore();
+    memory.activateProject("/tmp/ws-restored", project.locator);
+    memory.apiTree.lastApiLocator = { ...apiNode.locator, folderIds: [...apiNode.locator.folderIds] };
+    memory.touch();
+    const originalWsOpen = failingApi.wsOpen.bind(failingApi);
+    let workspaceOpenTask: ReturnType<typeof originalWsOpen> | null = null;
+    failingApi.wsOpen = (...args) => {
+      workspaceOpenTask = originalWsOpen(...args);
+      return workspaceOpenTask;
+    };
     try {
       const wrapper = await mountAppKeepingStorage();
-      await flushPromises();
-      // 签栏恢复：持久化签渲染且处于激活态
-      expect(wrapper.find('[data-testid="project-tab-0"]').exists()).toBe(true);
-      expect(wrapper.find('[data-testid="project-tab-0"]').attributes("data-active")).toBe("true");
-      // 视图离开主页（签驱动重开），接口模块就位
-      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
-      expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
-      expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
-      // lastApi 记忆属于活跃签项目 → 恢复进编辑器
-      await flushPromises();
+      if (!workspaceOpenTask) throw new Error("tabs.restore did not invoke the real wsOpen action");
+      await workspaceOpenTask;
       const editorOf = () => wrapper.findComponent(RequestEditor).props("editor") as { apiId: string | null };
-      expect(editorOf().apiId).toBe(apiNode.id);
+      await vi.waitFor(() => {
+      // 签栏恢复：持久化签渲染且处于激活态
+        expect(wrapper.find('[data-testid="project-tab-0"]').exists()).toBe(true);
+        expect(wrapper.find('[data-testid="project-tab-0"]').attributes("data-active")).toBe("true");
+      // 视图离开主页（签驱动重开），接口模块就位
+        expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
+        expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
+        expect(editorOf().apiId).toBe(apiNode.id);
+      });
     } finally {
+      failingApi.wsOpen = originalWsOpen;
       localStorage.removeItem("apicc.projectTabs");
-      localStorage.removeItem("apicc.lastApi");
+      localStorage.removeItem("apicc.moduleMemory");
     }
   });
 
@@ -696,7 +917,7 @@ describe("App 测试模块装配（M9-D）", () => {
     await flushPromises();
     // 选中种子接口（作用域化树：collection 展开后点接口）
     await flushPromises();
-    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await clickApiAndWait(wrapper);
     await flushPromises();
     // 测试模块：用例面板渲染（用例列表来自当前接口）
     await wrapper.find('[data-testid="rail-test"]').trigger("click");
@@ -705,8 +926,21 @@ describe("App 测试模块装配（M9-D）", () => {
     expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(true);
     // 单条用例「运行」：结果内嵌上屏（memory 替身断言恒通过）
     const runBtn = wrapper.find('[data-testid^="case-run-"]');
+    const debug = wrapper.findComponent(CasePanel).props("debug") as ReturnType<typeof useDebugStore>;
+    const originalRunCase = debug.runCase.bind(debug);
+    let runTask: ReturnType<typeof originalRunCase> | null = null;
+    debug.runCase = (...args) => {
+      runTask = originalRunCase(...args);
+      return runTask;
+    };
+    try {
     await runBtn.trigger("click");
-    await flushPromises();
+      if (!runTask) throw new Error("Case Run did not invoke the real debug.runCase action");
+      await runTask;
+      await flushPromises();
+    } finally {
+      debug.runCase = originalRunCase;
+    }
     expect(wrapper.find('[data-testid="test-result"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
   });
@@ -717,7 +951,7 @@ describe("App 测试模块装配（M9-D）", () => {
       const wrapper = await mountApp();
       await openLocalDir(wrapper);
       await flushPromises();
-        await wrapper.find('[data-testid="tree-api"]').trigger("click");
+      await clickApiAndWait(wrapper);
       await flushPromises();
       await wrapper.find('[data-testid="rail-test"]').trigger("click");
       await flushPromises();
@@ -730,8 +964,17 @@ describe("App 测试模块装配（M9-D）", () => {
       expect(wrapper.find('[data-testid="stress-panel"]').exists()).toBe(true);
       const panel = wrapper.findComponent(StressPanel);
       const apiId = wrapper.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
-      expect(panel.props("apiId")).toBe(apiId);
-      expect((panel.props("cases") as Array<{ name: string }>).map((c) => c.name)).toEqual(["冒烟"]);
+      expect((panel.props("apiLocator") as { apiId: string }).apiId).toBe(apiId);
+      const selectedCases = panel.props("cases") as Array<{ id: string; name: string }>;
+      const seedTree = await failingApi.treeGet();
+      const seedProject = projectByLabel(seedTree, "示例项目");
+      const seedCollection = seedProject.children!.find((node) => node.kind === "collection");
+      if (seedCollection?.kind !== "collection") throw new Error("Seed project has no collection");
+      const seedApi = seedCollection.children!.find((node) => node.kind === "api");
+      if (seedApi?.kind !== "api") throw new Error("Seed collection has no API");
+      const apiDetail = await failingApi.apiGet(seedApi.locator);
+      const selectedCase = apiDetail.api.cases.find((candidate) => candidate.id === caseId);
+      expect(selectedCases).toEqual([expect.objectContaining({ id: caseId, name: selectedCase?.name })]);
       const stress = panel.props("stress") as { form: { caseId: string; concurrency: number } };
       expect(stress.form.caseId).toBe(caseId);
       // 压测跑一轮出报告，返回用例再进入保留（store 会话不随视图切换清空）
@@ -765,13 +1008,13 @@ describe("App 测试模块装配（M9-D）", () => {
     await flushPromises();
     // 建（或复用）一条工作流后进入测试模块场景页签
     const treeDto = await failingApi.treeGet();
-    const project = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
-    const wf = await failingApi.wfCreate({ projectId: project.id, name: "场景流" });
+    const project = projectByLabel(treeDto, "示例项目");
+    const wf = await failingApi.wfCreate({ locator: project.locator, name: "场景流" });
     // 直建工作流后重开目录刷新树摘要（场景清单取自 workspace.tree）
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await clickApiAndWait(wrapper);
     await flushPromises();
     await wrapper.find('[data-testid="rail-test"]').trigger("click");
     await flushPromises();
@@ -780,8 +1023,14 @@ describe("App 测试模块装配（M9-D）", () => {
     // 场景压测禁用（裁定 D2：延后不做假入口）
     expect(wrapper.find('[data-testid="test-scenario-stress"]').attributes("disabled")).toBeDefined();
     // 运行：切到工作流模块且设计器载入该流
-    await wrapper.find(`[data-testid="test-scenario-run-${wf.id}"]`).trigger("click");
-    await flushPromises();
+    const designStore = wrapper.findComponent(SideTree).props("workflowDesign") as ReturnType<typeof useWorkflowDesignStore>;
+    const load = captureWorkflowLoad(designStore);
+    const runButton = wrapper.findAll('[data-testid^="test-scenario-run-"]')
+      .find((button) => button.element.closest(".scenario-row")?.textContent?.includes("场景流"));
+    if (!runButton) throw new Error("Scenario workflow run button was not rendered");
+    await runButton.trigger("click");
+    await load.settle();
+    load.restore();
     expect(wrapper.find('[data-testid="rail-wf"]').classes()).toContain("active");
     const design = wrapper.findComponent(WfDesigner).props("workflowDesign") as { workflowId: string | null };
     expect(design.workflowId).toBe(wf.id);
@@ -795,7 +1044,7 @@ describe("App 环境联动（M9-A1）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    await wrapper.find('[data-testid="tree-api"]').trigger("click");
+    await clickApiAndWait(wrapper);
     await flushPromises();
     // 选中接口时环境清单为空（种子项目无环境）
     const editorOf = () =>
@@ -807,11 +1056,24 @@ describe("App 环境联动（M9-A1）", () => {
     await wrapper.find('[data-testid="env-new"]').trigger("click");
     await flushPromises();
     await expectBody("env-name-input").setValue("prod");
-    await expectBody("env-modal-confirm").trigger("click");
-    await flushPromises();
+    const envs = wrapper.findComponent(EnvPanel).props("envs") as ReturnType<typeof useEnvsStore>;
+    const originalCreate = envs.create.bind(envs);
+    let envCreateTask: ReturnType<typeof originalCreate> | null = null;
+    envs.create = (...args) => {
+      envCreateTask = originalCreate(...args);
+      return envCreateTask;
+    };
+    try {
+      await expectBody("env-modal-confirm").trigger("click");
+      if (!envCreateTask) throw new Error("Environment confirmation did not invoke the real envs.create action");
+      await envCreateTask;
+    } finally {
+      envs.create = originalCreate;
+    }
+    await vi.waitFor(() => expect(envs.envs.map((entry) => entry.name)).toContain("prod"));
     // 回调试模块：选择器数据源（editor.envs）已含新环境
     await wrapper.find('[data-testid="rail-api"]').trigger("click");
-    await flushPromises();
+    await vi.waitFor(() => expect(editorOf().envs.map((entry) => entry.name)).toContain("prod"));
     expect(editorOf().envs.map((e) => e.name)).toContain("prod");
   });
 });
@@ -823,44 +1085,61 @@ describe("App 环境联动（M9-A1）", () => {
 // 一律按项目名定位签。置于文件末尾：用例会向共享替身工作区直建第二项目（结束即删，但与
 // 仍挂载组件的收尾写盘存在竞态），不把该足迹暴露给文件内更早的既有用例。
 describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
-  async function seedSecondProject(name: string): Promise<string> {
+  async function seedSecondProject(name: string): Promise<ProjectLocator> {
     const treeDto = await failingApi.treeGet();
     failingApi.nodeCreate = realNodeCreate;
     try {
-      const created = await failingApi.nodeCreate({ kind: "project", parentId: treeDto.children![0]!.id, name });
-      return created.id;
+      const group = treeDto.children!.find((node) => node.kind === "group");
+      if (!group || group.kind !== "group") throw new Error("Memory workspace is missing its group");
+      const created = await failingApi.nodeCreate({ kind: "project", parent: group.locator, name });
+      if (created.kind !== "project") throw new Error("Memory API did not create a project");
+      return created.locator;
     } finally {
       failingApi.nodeCreate = async () => { throw new Error("接口创建失败（测试注入）"); };
     }
   }
 
   /** 按项目名定位签元素（轮询等成签渲染；签文本=项目名）。 */
-  async function tabFor(wrapper: import("@vue/test-utils").VueWrapper, name: string) {
-    for (let i = 0; i < 100; i++) {
-      const found = wrapper.findAll('[data-testid^="project-tab-"]').find((t) => t.text().includes(name));
-      if (found) return found;
-      await flushPromises();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    throw new Error(`项目签未找到: ${name}`);
+  async function tabFor(wrapper: VueWrapper, name: string) {
+    let found: DOMWrapper<Element> | undefined;
+    await vi.waitFor(() => {
+      found = wrapper.findAll('[data-testid^="project-tab-"]').find((tab) => tab.text().includes(name));
+      expect(found).toBeDefined();
+    });
+    if (!found) throw new Error(`项目签未找到: ${name}`);
+    return found;
   }
 
   /** 主页点目标项目卡片成签并激活（无草稿源时干净切换；已活跃则 no-op）。 */
-  async function openSecondProjectTab(wrapper: import("@vue/test-utils").VueWrapper, name: string) {
+  async function openSecondProjectTab(wrapper: VueWrapper, name: string) {
     await wrapper.find('[data-testid="topbar-home"]').trigger("click");
     await flushPromises();
-    const card = wrapper.findAll('[data-testid^="project-card-"]').find((c) => c.text().includes(name))!;
-    await card.trigger("click");
+    const card = wrapper.findAll('[data-testid^="project-card-"]').find((candidate) => candidate.text().includes(name));
+    if (!card) throw new Error(`项目卡片未找到: ${name}`);
+    const tabs = wrapper.findComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+    const original = tabs.openProjectTab.bind(tabs);
+    let openTask: ReturnType<typeof original> | null = null;
+    tabs.openProjectTab = (...args) => {
+      openTask = original(...args);
+      return openTask;
+    };
+    try {
+      await card.trigger("click");
+      if (!openTask) throw new Error(`Opening project card did not invoke tabs.openProjectTab: ${name}`);
+      await openTask;
+    } finally {
+      tabs.openProjectTab = original;
+    }
     const tab = await tabFor(wrapper, name);
     expect(tab.classes()).toContain("active");
   }
 
   it("dirty 时切走当前签：确认前不切换；取消保持；确认丢弃后切签且设计器会话卸载", async () => {
-    const projectId = await seedSecondProject("切签目标项目");
+    const targetProject = await seedSecondProject("切签目标项目");
     // 脏流建在示例项目（被离开的签）名下——确认钩子的归属过滤按树 workflows 摘要判定
     const treeDto = await failingApi.treeGet();
-    const demoProject = treeDto.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目")!;
-    const wfA = await failingApi.wfCreate({ projectId: demoProject.id, name: "切签脏流" });
+    const demoProject = projectByLabel(treeDto, "示例项目");
+    const wfA = await failingApi.wfCreate({ locator: demoProject.locator, name: "切签脏流" });
     try {
       const wrapper = await mountApp();
       await openLocalDir(wrapper);
@@ -903,13 +1182,13 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       expect(designOf().workflowId).toBeNull();
       expect(designOf().dirty).toBe(false);
     } finally {
-      await failingApi.wfDelete(wfA.id).catch(() => undefined);
-      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+      await failingApi.wfDelete({ ...demoProject.locator, workflowId: wfA.id }).catch(() => undefined);
+      await failingApi.nodeDelete({ kind: "project", locator: targetProject }).catch(() => undefined);
     }
   });
 
   it("非 dirty 时切签：直接切换不弹确认（现状保持）", async () => {
-    const projectId = await seedSecondProject("干净目标项目");
+    const targetProject = await seedSecondProject("干净目标项目");
     try {
       const wrapper = await mountApp();
       await openLocalDir(wrapper);
@@ -917,12 +1196,12 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       await openSecondProjectTab(wrapper, "干净目标项目");
       expect(document.body.querySelector('[data-testid="dialog-confirm"]')).toBeNull();
     } finally {
-      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+      await failingApi.nodeDelete({ kind: "project", locator: targetProject }).catch(() => undefined);
     }
   });
 
   it("切到无接口记忆的项目签：编辑区不串显上一项目活跃会话；切回草稿驻留（任务 7 冒烟修复）", async () => {
-    const projectId = await seedSecondProject("无记忆目标项目");
+    const targetProject = await seedSecondProject("无记忆目标项目");
     try {
       const wrapper = await mountApp();
       await openLocalDir(wrapper);
@@ -930,14 +1209,11 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       // 确保示例项目签活跃（openLocalDir 打开的首卡按 UUID 序不保证是示例项目）
       await openSecondProjectTab(wrapper, "示例项目");
       // 展开作用域树至 api 叶可见并载入示例接口
-      for (let round = 0; round < 5 && !wrapper.find('[data-testid="tree-api"]').exists(); round++) {
-        for (const t of wrapper.findAll('[data-testid="tree-group-toggle"]')) await t.trigger("click");
-        await flushPromises();
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      await wrapper.find('[data-testid="tree-api"]').trigger("click");
+      await expandAllCollapsedTreeContainers(wrapper);
+      expect(wrapper.find('[data-testid="tree-api"]').exists()).toBe(true);
+      await clickApiAndWait(wrapper);
       await flushPromises();
-      const nameInput = wrapper.find('[data-testid="editor-name"]');
+      const nameInput = wrapper.find('[data-testid="asset-metadata-name"]');
       expect(nameInput.exists()).toBe(true);
       await nameInput.setValue("串显回归草稿");
       // 切到无任何接口记忆的目标项目签：编辑区必须回空白
@@ -948,11 +1224,11 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       const tabA = await tabFor(wrapper, "示例项目");
       await tabA.trigger("click");
       await flushPromises();
-      const back = wrapper.find('[data-testid="editor-name"]');
+      const back = wrapper.find('[data-testid="asset-metadata-name"]');
       expect(back.exists()).toBe(true);
       expect((back.element as HTMLInputElement).value).toBe("串显回归草稿");
     } finally {
-      await failingApi.nodeDelete("project", projectId).catch(() => undefined);
+      await failingApi.nodeDelete({ kind: "project", locator: targetProject }).catch(() => undefined);
     }
   });
 });
@@ -980,22 +1256,18 @@ async function cleanupOnlineLogin() {
 /** 主页 → 服务器视图 → 等工作区行出现（refreshOnline 异步）。 */
 async function gotoServerWorkspaces(wrapper: import("@vue/test-utils").VueWrapper) {
   await wrapper.find(`[data-testid="home-side-server-${ONLINE_SERVER}"]`).trigger("click");
-  await flushPromises();
-  for (let i = 0; i < 100 && !wrapper.find('[data-testid="home-ws-ws-online-1"]').exists(); i++) {
-    await flushPromises();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  await vi.waitFor(() => expect(wrapper.find('[data-testid="home-ws-ws-online-1"]').exists()).toBe(true));
 }
 
 /** 等待激活态项目签出现（成签链路是多拍宏任务：签元素先于激活完成渲染）。 */
 async function activeTabElement(wrapper: import("@vue/test-utils").VueWrapper) {
-  for (let i = 0; i < 100; i++) {
-    const tab = wrapper.findAll('[data-testid^="project-tab-"]').find((t) => t.attributes("data-active") === "true");
-    if (tab) return tab;
-    await flushPromises();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error("激活态项目签未出现");
+  let active: DOMWrapper<Element> | undefined;
+  await vi.waitFor(() => {
+    active = wrapper.findAll('[data-testid^="project-tab-"]').find((tab) => tab.attributes("data-active") === "true");
+    expect(active).toBeDefined();
+  });
+  if (!active) throw new Error("激活态项目签未出现");
+  return active;
 }
 
 describe("App 主页在线入口（终审 Important 1：纯在线用户死胡同修复）", () => {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createDefaultRegistry,
+  createProjectSnapshot,
   fileStorage,
   type ShardFailure,
   ShardFailureSchema,
@@ -22,10 +23,16 @@ let server: Server;
 let baseUrl = "";
 let root: string;
 let prevCwd = "";
+let definitionRevision = "";
 /** 本文件创建的临时工作区根（afterAll 统一清理，模式与姊妹文件 stress-subprocess.test.ts 一致）。 */
 const tempRoots: string[] = [];
 
-const API_PATH = "groups/demo/projects/svc/collections/api/apis/ok";
+const GROUP_ID = "00000000-0000-4000-8000-000000000002";
+const PROJECT_ID = "00000000-0000-4000-8000-000000000004";
+const COLLECTION_ID = "00000000-0000-4000-8000-000000000008";
+const API_ID = "00000000-0000-4000-8000-000000000011";
+const CASE_ID = "00000000-0000-4000-8000-000000000015";
+const API_PATH = `groups/${GROUP_ID}/projects/${PROJECT_ID}/collections/${COLLECTION_ID}/apis/${API_ID}`;
 
 const generator = () => ({
   availability: "available" as const,
@@ -56,25 +63,33 @@ beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "apicc-worker-"));
   tempRoots.push(root);
   const ws: Workspace = {
-    id: "00000000-0000-4000-8000-000000000001", name: "worker-e2e", variables: {},
+    formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "worker-e2e", variables: {},
     groups: [{
-      id: "00000000-0000-4000-8000-000000000002", name: "demo", projects: [{
-        id: "00000000-0000-4000-8000-000000000004", name: "svc", variables: {},
+      id: GROUP_ID, name: "demo", projects: [{
+        id: PROJECT_ID, name: "svc", variables: {}, globals: {}, components: [], models: [],
         stressPolicy: { trustedOrigins: [baseUrl] },
         workflows: [],
         environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
         collections: [{
-          id: "00000000-0000-4000-8000-000000000008", name: "api", variables: {}, folders: [],
+          id: COLLECTION_ID, name: "api", variables: {}, preOperations: [], postOperations: [], folders: [],
           apis: [{
-            id: "00000000-0000-4000-8000-000000000011", name: "ok", version: "1", deprecated: false, method: "GET",
-            url: "{{baseUrl}}/x", headers: [], query: [],
-            cases: [{ id: "00000000-0000-4000-8000-000000000015", name: "passes", scope: "base", parameters: {}, assertions: [] }],
+            contract: {
+              formatVersion: 1, id: API_ID,
+              metadata: { name: "ok", description: "", tags: [], version: "1", status: "published" },
+              request: { protocol: "http", method: "GET", baseUrl, path: "/x", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" } },
+              responses: [],
+            },
+            documentation: "",
+            cases: [{ id: CASE_ID, name: "passes", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] }],
           }],
         }],
       }],
     }],
   };
-  await fileStorage.save(root, ws);
+  const initial = await fileStorage.load(root);
+  await fileStorage.save(root, ws, { expectedRevision: initial.revision, deletions: [] });
+  const loaded = await fileStorage.load(root);
+  definitionRevision = createProjectSnapshot(loaded.workspace.groups[0]!.projects[0]!).definitionRevision;
   // run-stress 按“从 cwd 向上查找 apicc.workspace.yaml”定位工作区（与既有 e2e 同款模拟）。
   prevCwd = process.cwd();
   process.chdir(root);
@@ -98,8 +113,8 @@ describe("stress-worker 子命令", () => {
     const err: string[] = [];
     const deps: RunCliDeps = { workerOut: (l) => out.push(l), workerErr: (l) => err.push(l) };
     const code = await runCli(
-      ["stress-worker", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
-        "--iterations", "4", "--shard-id", "s0", "--workspace", root],
+      ["stress-worker", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "2",
+        "--iterations", "4", "--shard-id", "s0", "--workspace", root, "--definition-revision", definitionRevision, "--credential-versions", "{}"],
       createDefaultRegistry(),
       () => {},
       deps,
@@ -123,7 +138,7 @@ describe("stress-worker 子命令", () => {
     const deps: RunCliDeps = { workerOut: (l) => out.push(l), workerErr: (l) => err.push(l) };
     const code = await runCli(
       ["stress-worker", API_PATH, "--case", "不存在", "--env", "dev", "--concurrency", "2",
-        "--iterations", "4", "--shard-id", "s1", "--workspace", root],
+        "--iterations", "4", "--shard-id", "s1", "--workspace", root, "--definition-revision", definitionRevision, "--credential-versions", "{}"],
       createDefaultRegistry(),
       () => {},
       deps,
@@ -147,7 +162,7 @@ describe("run-stress --shards", () => {
         return async () => { throw new Error("shards=1 不应 spawn worker"); };
       },
     };
-    const runsDir = join(root, "runs-single");
+    const runsDir = join(root, ".apicc", "runs-single");
     const logs: string[] = [];
     const code = await runCli(
       ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
@@ -185,7 +200,7 @@ describe("run-stress --shards", () => {
         };
       },
     };
-    const runsDir = join(root, "runs-shards");
+    const runsDir = join(root, ".apicc", "runs-shards");
     const logs: string[] = [];
     const code = await runCli(
       ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "4",
@@ -205,7 +220,7 @@ describe("run-stress --shards", () => {
     for (const s of specs) {
       expect(s.protocolVersion).toBe(2);
       expect(s.apiPath).toBe(API_PATH);
-      expect(s.caseId).toBe("00000000-0000-4000-8000-000000000015");
+      expect(s.caseId).toBe(CASE_ID);
       expect(s.envName).toBe("dev");
       expect(s.workspaceRoot).toBe(root);
     }
@@ -245,7 +260,7 @@ describe("run-stress --shards", () => {
         };
       },
     };
-    const runsDir = join(root, "runs-partial");
+    const runsDir = join(root, ".apicc", "runs-partial");
     const logs: string[] = [];
     const code = await runCli(
       ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "4",
@@ -271,14 +286,14 @@ describe("run-stress --shards", () => {
 
   it("--shards 0 / --shards 2.5 非法值：前置校验拒绝（shards 必须为正整数）", async () => {
     await expect(runCli(
-      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
-        "--iterations", "4", "--shards", "0", "--runs-dir", join(root, "runs-invalid-0")],
+      ["run-stress", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "2",
+        "--iterations", "4", "--shards", "0", "--runs-dir", join(root, ".apicc", "runs-invalid-0")],
       createDefaultRegistry(),
       () => {},
     )).rejects.toThrow(/shards 必须为正整数，收到 0/);
     await expect(runCli(
-      ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--concurrency", "2",
-        "--iterations", "4", "--shards", "2.5", "--runs-dir", join(root, "runs-invalid-2.5")],
+      ["run-stress", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "2",
+        "--iterations", "4", "--shards", "2.5", "--runs-dir", join(root, ".apicc", "runs-invalid-2.5")],
       createDefaultRegistry(),
       () => {},
     )).rejects.toThrow(/shards 必须为正整数，收到 2\.5/);
@@ -287,8 +302,8 @@ describe("run-stress --shards", () => {
   it("--shards 2 非法数值参数：concurrency 0/NaN、iterations 3.5 前置守卫干净中文报错（不经 planShards 静默升级/ZodError）", async () => {
     // 多 shard 路径历史分歧：concurrency 0 被 planShards 静默升为 [1,1]（单机路径是 StressRunner 中文报错）；
     // concurrency/iterations 为 NaN 时在 StressWorkerSpecSchema.parse 抛裸英文 ZodError。
-    const base = ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--shards", "2",
-      "--runs-dir", join(root, "runs-invalid-numeric")];
+    const base = ["run-stress", API_PATH, "--case", CASE_ID, "--env", "dev", "--shards", "2",
+      "--runs-dir", join(root, ".apicc", "runs-invalid-numeric")];
     await expect(runCli([...base, "--concurrency", "0", "--iterations", "4"],
       createDefaultRegistry(), () => {})).rejects.toThrow(/concurrency 必须为正 safe integer，收到 0/);
     await expect(runCli([...base, "--concurrency", "abc", "--iterations", "4"],
@@ -303,7 +318,7 @@ describe("run-stress --shards", () => {
       spawned += 1;
       return async () => { throw new Error("should not spawn"); };
     } };
-    const common = ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--env", "dev", "--iterations", "4", "--runs-dir", join(root, "runs-safety")];
+    const common = ["run-stress", API_PATH, "--case", CASE_ID, "--env", "dev", "--iterations", "4", "--runs-dir", join(root, ".apicc", "runs-safety")];
     await expect(runCli([...common, "--concurrency", "1", "--shards", "2"], createDefaultRegistry(), () => {}, deps))
       .rejects.toThrow(/shards 不能大于 concurrency/);
     await expect(runCli([...common, "--concurrency", "4", "--shards", "2", "--max-rps", "10"], createDefaultRegistry(), () => {}, deps))
@@ -312,7 +327,7 @@ describe("run-stress --shards", () => {
   });
 
   it("CLI 在任何目标解析前拒绝 NaN/Infinity duration、fractional/overflow iterations", async () => {
-    const common = ["run-stress", API_PATH, "--case", "00000000-0000-4000-8000-000000000015", "--concurrency", "1"];
+    const common = ["run-stress", API_PATH, "--case", CASE_ID, "--concurrency", "1"];
     await expect(runCli([...common, "--duration", "abc"], createDefaultRegistry(), () => {}))
       .rejects.toThrow(/duration 必须为有限正数/);
     await expect(runCli([...common, "--duration", "Infinity"], createDefaultRegistry(), () => {}))

@@ -82,8 +82,8 @@ afterAll(() => new Promise<void>((r) => {
 const opts = { connectTimeoutMs: 2000, totalTimeoutMs: 3000 };
 
 /** 夹具请求：headers 透传握手、message 为「已解析」文本（变量解析在 runner，D7）。 */
-function wsReq(overrides: Partial<ExecutableRequest> = {}): ExecutableRequest {
-  return { method: "GET", url: wsUrl, headers: {}, query: [], protocol: "websocket", ...overrides };
+function wsReq(overrides: Partial<Extract<ExecutableRequest, { protocol: "websocket" }>> = {}): Extract<ExecutableRequest, { protocol: "websocket" }> {
+  return { url: wsUrl, headers: {}, query: [], protocol: "websocket", auth: { kind: "none" }, ...overrides };
 }
 
 /** 轮询等待服务端记录满足条件（连接正常关闭是异步握手，不 pin 时序）。 */

@@ -50,10 +50,14 @@ const fakeClient = (
   respond: (req: ExecutableRequest) => ExecutionResponse | Promise<ExecutionResponse>,
 ): ProtocolClient => ({ name: "fake", canHandle: () => true, execute: async (req) => respond(req) });
 
+const httpRequest = (url: string): ExecutableRequest => ({
+  protocol: "http", method: "GET", url, headers: {}, query: [], auth: { kind: "none" },
+});
+
 describe("StressRunner", () => {
   it("迭代模式：恰好 N 次请求、样本数一致、无失败", async () => {
     hit = 0;
-    const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));
+    const runner = makeRunner(() => httpRequest(`${baseUrl}/x`));
     const report = await runner.run({ concurrency: 4, maxIterations: 20 });
     expect(hit).toBe(20);
     expect(report.totalRequests).toBe(20);
@@ -62,7 +66,7 @@ describe("StressRunner", () => {
   });
 
   it("报告记录实际 connectionMode 配置", async () => {
-    const report = await makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] })).run({
+    const report = await makeRunner(() => httpRequest(`${baseUrl}/x`)).run({
       concurrency: 1, maxIterations: 1, connectionMode: "fresh",
     });
     expect(report.connectionMode).toBe("fresh");
@@ -70,14 +74,14 @@ describe("StressRunner", () => {
 
   it("时长模式：deadline 后停止且至少完成一次采样", async () => {
     hit = 0;
-    const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));
+    const runner = makeRunner(() => httpRequest(`${baseUrl}/x`));
     const report = await runner.run({ concurrency: 2, durationMs: 300 });
     expect(report.totalRequests).toBeGreaterThanOrEqual(1);
     expect(report.durationMs).toBeLessThan(5_000);
   });
 
   it("没有可评估样本时 verdict 失败并写入稳定 noData violation", async () => {
-    const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));
+    const runner = makeRunner(() => httpRequest(`${baseUrl}/x`));
     const controller = new AbortController();
     controller.abort();
     const report = await runner.run({ concurrency: 1, maxIterations: 1, signal: controller.signal });
@@ -88,21 +92,21 @@ describe("StressRunner", () => {
 
   it("都给时先到先停：迭代数先耗尽即停（远期 deadline 不拖尾）", async () => {
     hit = 0;
-    const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));
+    const runner = makeRunner(() => httpRequest(`${baseUrl}/x`));
     const report = await runner.run({ concurrency: 2, maxIterations: 3, durationMs: 60_000 });
     expect(hit).toBe(3);
     expect(report.totalRequests).toBe(3);
   });
 
   it("对拒连目标的错误计入 failed 且有错误分类", async () => {
-    const runner = makeRunner(() => ({ method: "GET", url: "http://127.0.0.1:1/", headers: {}, query: [] }));
+    const runner = makeRunner(() => httpRequest("http://127.0.0.1:1/"));
     const report = await runner.run({ concurrency: 2, maxIterations: 4 });
     expect(report.failed).toBe(4);
     expect(Object.keys(report.errorKinds).length).toBeGreaterThan(0);
   });
 
   it("都不给 maxIterations/durationMs 抛错；concurrency 非正整数抛错", async () => {
-    const runner = makeRunner(() => ({ method: "GET", url: `${baseUrl}/x`, headers: {}, query: [] }));
+    const runner = makeRunner(() => httpRequest(`${baseUrl}/x`));
     await expect(runner.run({ concurrency: 1 })).rejects.toThrow("maxIterations");
     await expect(runner.run({ concurrency: 0, maxIterations: 1 })).rejects.toThrow("concurrency");
   });
@@ -128,7 +132,7 @@ describe("StressRunner", () => {
     const runner = new StressRunner({
       createWorker: () => ({
         execute: async () => ({
-          request: { method: "GET" as const, url: "http://fake/", headers: {}, query: [] },
+          request: httpRequest("http://fake/"),
           requestStarted: true, requestCompleted: true,
           requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
           outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 1, assertions: [], failureKind: "aborted" as const },
@@ -150,7 +154,7 @@ describe("StressRunner", () => {
       createWorker: () => ({
         execute: async () => {
           calls += 1;
-          const request = { method: "GET" as const, url: "http://example.com/", headers: {}, query: [] };
+          const request = httpRequest("http://example.com/");
           if (calls === 1) {
             return {
               request, requestStarted: false, requestCompleted: false,
@@ -192,7 +196,7 @@ describe("StressRunner", () => {
     const runner = new StressRunner({
       createWorker: () => ({
         execute: async () => {
-          const request = { method: "GET" as const, url: "http://fake/", headers: {}, query: [] };
+          const request = httpRequest("http://fake/");
           const res = await client.execute(request, { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 });
           return { request, response: res, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
             outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 1, assertions: [], failureKind: "http" as const }, failureKind: "http" as const };
@@ -213,7 +217,7 @@ describe("StressRunner", () => {
     const runner = new StressRunner({
       createWorker: () => ({
         execute: async () => ({
-          request: { method: "GET" as const, url: "http://fake/", headers: {}, query: [] },
+          request: httpRequest("http://fake/"),
           response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 2, iterationTimeMs: 3,
           outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 3, assertions: [{ pass: false, message: "expected" }], failureKind: "assertion" as const },
           failureKind: "assertion" as const,
@@ -244,7 +248,7 @@ describe("StressRunner", () => {
         calls += 1;
         await new Promise((r) => setTimeout(r, 20));
         controller.abort();
-        const request = { method: "GET" as const, url: "http://fake/", headers: {}, query: [] };
+        const request = httpRequest("http://fake/");
         return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
           outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] }, };
       }, close: async () => { closed += 1; } }),
@@ -264,7 +268,7 @@ describe("StressRunner", () => {
           execute: async () => {
             await pause(10);
             return {
-              request: { method: "GET" as const, url: "http://fake/", headers: {}, query: [] },
+              request: httpRequest("http://fake/"),
               response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
               outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] },
             };
@@ -288,7 +292,7 @@ describe("StressRunner", () => {
     let i = 0;
     const runner = new StressRunner({
       createWorker: () => ({ execute: async () => {
-        const request = { method: "GET" as const, url: `req-${++i}`, headers: {}, query: [] };
+        const request = httpRequest(`req-${++i}`);
         seen.push(request.url);
         return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
           outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] }, };
@@ -309,9 +313,9 @@ describe("StressRunner", () => {
       return {
         execute: async () => {
           calls += 1;
-          if (index === 1) return { request: { method: "GET" as const, url: "worker-failed", headers: {}, query: [] }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+          if (index === 1) return { request: httpRequest("worker-failed"), requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
             outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 1, assertions: [], error: "worker failed", failureKind: "transport" as const }, failureKind: "transport" as const };
-          const request = { method: "GET" as const, url: `worker-${index}-${calls}`, headers: {}, query: [] };
+          const request = httpRequest(`worker-${index}-${calls}`);
           return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
             outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] }, };
         }, close: async () => { closeCounts[index] += 1; },
@@ -332,7 +336,7 @@ describe("StressRunner", () => {
         execute: async () => {
           calls += 1;
           await new Promise((resolve) => setTimeout(resolve, 10));
-          const request = { method: "GET" as const, url: "worker", headers: {}, query: [] };
+          const request = httpRequest("worker");
           return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
             outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] } };
         }, close: async () => { closed += 1; },
@@ -350,7 +354,7 @@ describe("StressRunner", () => {
       execute: async () => {
         calls += 1;
         await new Promise((resolve) => setTimeout(resolve, workerId === 0 ? 5 : 15));
-        const request = { method: "GET" as const, url: `worker-${workerId}`, headers: {}, query: [] };
+        const request = httpRequest(`worker-${workerId}`);
         return { request, response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
           outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: true, durationMs: 1, assertions: [] } };
       }, close: async () => { closed += 1; if (workerId === 0) throw new Error("close failed"); },
@@ -383,7 +387,7 @@ describe("StressRunner", () => {
       execute: async () => {
         if (workerId === 0) {
           await new Promise((resolve) => setTimeout(resolve, 1));
-          return { request: { method: "GET" as const, url: "a", headers: {}, query: [] }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+          return { request: httpRequest("a"), requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
             outcome: { apiId: "a", apiName: "a", caseId: "a", caseName: "a", passed: true, durationMs: 1, assertions: [] } };
         }
         await new Promise((resolve) => setTimeout(resolve, 10));

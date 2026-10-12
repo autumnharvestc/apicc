@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { createHttpClient, type ManagedProtocolClient } from "../../src/http/client.js";
 import { createDefaultRegistry } from "../../src/index.js";
 import { createEventBus } from "../../src/events/bus.js";
-import type { ApiDefinition, Project, TestCase, Workspace } from "../../src/domain/model.js";
+import { createContractExecutionProject, contractExecutionIds } from "../helpers/contractExecutionFixtures.js";
+import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import type { ProjectExecutionRun } from "../../src/runner/runner.js";
 import type { StressSample } from "../../src/stress/model.js";
 import { createStressCaseSession } from "../../src/stress/caseSession.js";
 import { StressRunner } from "../../src/stress/runner.js";
@@ -127,7 +129,7 @@ describe("HTTP network timing boundary", () => {
     await withTimedHttp(mode, async ({ client, url, advance, finish }) => {
       const headers = { get "x-prepared"() { advance(50); return "ready"; } };
       const query = [{ key: "q", get value() { advance(30); return "query"; }, enabled: true }];
-      const response = await finish(client.execute({ method: "GET", url, headers, query }, { connectTimeoutMs: 1000, totalTimeoutMs: 2000 }));
+      const response = await finish(client.execute({ protocol: "http", method: "GET", url, headers, query, auth: { kind: "none" } }, { connectTimeoutMs: 1000, totalTimeoutMs: 2000 }));
       expect(response).toMatchObject({ status: 200, bodyText: "complete body", timeMs: 17 });
       expect(response.headers["x-timing-metadata"]).toBe("converted");
     });
@@ -138,27 +140,41 @@ describe("HTTP network timing boundary", () => {
     await withTimedHttp(mode, async ({ client, url, advance, finish }) => {
       const registry = createDefaultRegistry();
       const engine = registry.getScriptEngine("javascript")!;
-      const testCase: TestCase = {
-        id: "case", name: "timed case", scope: "base", parameters: {},
-        preScript: "pm.variables.set('prepared', 'yes');",
-        postScript: "pm.assert(pm.response.time === 17, 'network timer');",
-        assertions: [{ id: "network", target: "responseTime", op: "eq", expected: "17" }],
+      const project = createContractExecutionProject(url);
+      const timedAsset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+      timedAsset.contract.request = {
+        protocol: "http", method: "GET", baseUrl: "{{baseUrl}}", path: "/",
+        pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" },
       };
-      const api: ApiDefinition = { id: "api", name: "timed", version: "1", deprecated: false, method: "GET", url, headers: [], query: [], cases: [testCase] };
-      const collection = { id: "collection", name: "collection", variables: {}, apis: [api], folders: [] };
-      const project: Project = { id: "project", name: "project", variables: {}, collections: [collection], environments: [], workflows: [] };
-      const workspace: Workspace = { id: "workspace", name: "workspace", variables: {}, globals: { variables: {}, query: [], headers: [] }, groups: [] };
+      const testCase = timedAsset.cases[0]!;
+      testCase.name = "timed case";
+      const preOperation = "pm.variables.set('prepared', 'yes');";
+      const postOperation = "pm.assert(pm.response.time === 17, 'network timer');";
+      testCase.preOperations = [{ id: "timed-pre", type: "script", content: preOperation }];
+      testCase.postOperations = [{ id: "timed-post", type: "script", content: postOperation }];
+      testCase.assertions = [{ id: "network", target: "responseTime", op: "eq", expected: "17" }];
+      const snapshot = createProjectSnapshot(project);
+      const execution: ProjectExecutionRun = {
+        snapshot,
+        credentialBindings: { resolve: (ref) => { throw new Error(`Unexpected credential ${ref.id}`); }, versions: {} },
+      };
       const bus = createEventBus();
       let eventTime: number | undefined;
       bus.on("afterResponse", (payload) => { eventTime = payload.timeMs; });
       const samples: StressSample[] = [];
-      const session = createStressCaseSession({ api, testCase, collection, project, workspace }, {
+      const session = createStressCaseSession({
+        run: execution,
+        collectionId: contractExecutionIds.collection,
+        apiId: contractExecutionIds.contract,
+        caseId: contractExecutionIds.case,
+        environmentId: contractExecutionIds.environment,
+      }, {
         createManagedClient: () => client,
         resolveProtocol: (request) => registry.getProtocol(request),
         resolveAuth: (type) => registry.getAuth(type),
         resolveAssert: (op) => registry.getAssert(op),
         scriptEngine: { language: "javascript", run(code, ctx) {
-          advance(code === testCase.preScript ? 11 : 13);
+          advance(code === preOperation ? 11 : 13);
           engine.run(code, ctx);
         } }, bus,
         timeouts: { connectTimeoutMs: 1000, totalTimeoutMs: 2000 },

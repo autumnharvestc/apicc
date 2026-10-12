@@ -49,13 +49,19 @@ describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级，path 实�
       ),
     );
     expect(dto.kind).toBe("root");
+    expect(dto.source).toBe("online");
     expect(dto.id).toBe("ws-1");
+    expect(dto.key).toBe(JSON.stringify(["online", "ws-1", "root", "ws-1"]));
     // 项目节点 id = 项目实体 id（树节点以 projectId 关联）；label = projects 行名称（非 path 段）
     const project = child(dto, "project", "订单服务");
     expect(project.id).toBe(P1);
+    expect(project.source).toBe("online");
+    expect(project.key).toBe(JSON.stringify(["online", "ws-1", "project", P1]));
+    expect(project).toHaveProperty("myRole", "EDITOR");
     const collection = child(project, "collection", "订单API");
     const api = child(collection, "api", "create-order");
     expect(api.id).toBe(`${P1}/collections/订单API/apis/create-order/api.yaml`);
+    expect(api.key).toBe(JSON.stringify(["online", "ws-1", "api", `${P1}/collections/订单API/apis/create-order/api.yaml`]));
     const folder = child(collection, "folder", "内部");
     expect(child(folder, "api", "query-order").id).toBe(`${P1}/collections/订单API/folders/内部/apis/query-order/api.yaml`);
     // 第二个项目独立成子树（无权项目天然不在输入清单里，映射不凭空造节点）
@@ -137,6 +143,13 @@ describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级，path 实�
     expect(dto.kind).toBe("root");
     expect(dto.label).toBe("团队空间");
     expect(dto.children ?? []).toEqual([]);
+  });
+
+  it("includes workspace and source in online UI keys", () => {
+    const first = onlineTreeToDto(treeOf([]));
+    const second = onlineTreeToDto({ ...treeOf([]), workspaceId: "ws-2" });
+    expect(first.key).not.toBe(second.key);
+    expect(first.key).toBe(JSON.stringify(["online", "ws-1", "root", "ws-1"]));
   });
 
   it("非项目布局的杂散路径不进树（映射只认约定层级），不抛——含实体化前旧 groups/ 形态（服务端不再产出）", () => {

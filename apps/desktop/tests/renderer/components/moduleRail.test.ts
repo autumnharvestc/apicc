@@ -88,6 +88,16 @@ describe("SideTree 搜索过滤（M8）", () => {
     return wrapper;
   }
 
+async function expandAllCollapsedTreeContainers(wrapper: ReturnType<typeof mount>) {
+  while (true) {
+    const collapsed = wrapper
+      .findAll('[data-testid="tree-group-toggle"]')
+      .find((toggle) => toggle.text().trim() === "▸");
+    if (!collapsed) return;
+    await collapsed.trigger("click");
+  }
+}
+
   it("命中叶子（「接口」）：命中项与其祖先链保留", async () => {
     const wrapper = await mountTree("接口");
     // 种子仅一个接口叶（示例接口）：命中后整条祖先链可见
@@ -108,8 +118,8 @@ describe("SideTree 搜索过滤（M8）", () => {
 
   it("空白过滤词：不过滤（展开容器后全部可见）", async () => {
     const wrapper = await mountTree("  ");
-    // 无过滤时不自动展开（保持既有折叠语义）：先点根层折叠钮展开后代容器
-    await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
+    // 无过滤时不自动展开（保持既有折叠语义）：显式展开所有可见折叠容器。
+    await expandAllCollapsedTreeContainers(wrapper);
     expect(wrapper.findAll('[data-testid="tree-api"]')).toHaveLength(1);
     expect(wrapper.text()).not.toContain("无匹配节点");
   });

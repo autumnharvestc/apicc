@@ -1,22 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import { AiSuggestError, suggestCases } from "../../src/ai/suggest.js";
-import { DEFAULT_SUGGEST_LIMIT, type AiChatMessage, type AiProvider } from "../../src/ai/types.js";
-import { TestCaseSchema, type ApiDefinition } from "../../src/domain/model.js";
+import { AiSuggestError, suggestCases as suggestSnapshotCases } from "../../src/ai/suggest.js";
+import { buildSuggestMessages } from "../../src/ai/prompt.js";
+import { AiSuggestOutputSchema, DEFAULT_SUGGEST_LIMIT, type AiChatMessage, type AiProvider } from "../../src/ai/types.js";
+import { TestCaseSchema } from "../../src/domain/model.js";
+import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import type { ProjectAssetContextReadView } from "../../src/assets/context.js";
+import type { ApiAsset } from "../../src/contract/model.js";
+import { contractExecutionIds, createContractExecutionProject } from "../helpers/contractExecutionFixtures.js";
 
-const api: ApiDefinition = {
-  id: "api-1",
-  name: "创建订单",
-  version: "1.0.0",
-  deprecated: false,
-  method: "POST",
-  url: "https://api.example.com/orders",
-  headers: [{ key: "content-type", value: "application/json", enabled: true }],
-  query: [],
-  body: { kind: "json", content: '{"sku":"A1","qty":1}' },
-  design: "# 创建订单\n- qty 必须为正整数",
-  cases: [{ id: "c0", name: "正常创建订单", scope: "base", parameters: {}, assertions: [] }],
-};
+const baseProject = createContractExecutionProject("https://api.example.com/v1");
+const baseMutableAsset = baseProject.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+baseMutableAsset.contract.metadata.name = "创建订单";
+baseMutableAsset.contract.request.baseUrl = "https://api.example.com";
+baseMutableAsset.contract.request.path = "/orders";
+baseMutableAsset.cases[0]!.name = "正常创建订单";
+baseMutableAsset.documentation = "# 创建订单\n- qty 必须为正整数";
+const baseSnapshot = createProjectSnapshot(baseProject);
+const api = baseSnapshot.project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+const context = baseSnapshot.context;
+
+function suggestCases(asset: typeof api, opts: Parameters<typeof suggestSnapshotCases>[2]) {
+  return suggestSnapshotCases(asset, context, opts);
+}
 
 const validCase = {
   name: "qty 为 0 应被拒绝",
@@ -26,7 +32,7 @@ const validCase = {
     { id: "a1", target: "bodyJson", op: "eq", path: "$.code", expected: "400" },
     { id: "a2", target: "status", op: "eq", expected: "400" },
   ],
-  postScript: "console.log('done')",
+  postOperations: [{ id: "op-post", type: "script" as const, content: "console.log('done')" }],
 };
 
 const content = (cases: unknown[]): string => JSON.stringify({ cases });
@@ -47,6 +53,67 @@ function scriptedProvider(...responses: string[]) {
 // ULID：26 位 Crockford Base32 大写（裁定④：本地 ULID，不信任 AI id）。
 const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
+describe("snapshot-based AI candidate contract", () => {
+  it("formats the supplied snapshot context and existing case names without including credential values", () => {
+    const project = createContractExecutionProject("https://api.example.com/v1");
+    const mutableAsset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    mutableAsset.contract.metadata.name = "创建订单";
+    mutableAsset.documentation = "qty 必须为正整数";
+    if (mutableAsset.contract.request.protocol !== "http") throw new Error("Expected the HTTP fixture.");
+    mutableAsset.contract.request.body = {
+      kind: "json",
+      content: '{"sku":"A1","password":"imported-secret"}',
+      schema: { kind: "modelRef", modelId: "10000000-0000-4000-8000-000000000009" },
+    };
+    project.models.push({
+      formatVersion: 1,
+      id: "10000000-0000-4000-8000-000000000009",
+      name: "OrderPayload",
+      description: "Order body model from the project snapshot.",
+      schema: { kind: "object", properties: { sku: { kind: "scalar", type: "string" } }, required: ["sku"], additionalProperties: false },
+    });
+    const snapshot = createProjectSnapshot(project);
+    const asset = snapshot.project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    const inputWithLegacyFields = Object.assign({}, asset, {
+      name: asset.contract.metadata.name,
+      protocol: "http",
+      method: "POST",
+      url: "https://api.example.com/orders",
+      headers: [],
+      query: [],
+      body: { kind: "json", content: '{"password":"imported-secret"}' },
+      design: asset.documentation,
+    }) as unknown as ApiAsset;
+    type SnapshotMessageBuilder = (
+      asset: ApiAsset,
+      context: ProjectAssetContextReadView,
+      options: { instruction?: string; limit: number },
+    ) => AiChatMessage[];
+    const buildSnapshotMessages = buildSuggestMessages as unknown as SnapshotMessageBuilder;
+    const messages = buildSnapshotMessages(inputWithLegacyFields, snapshot.context, { instruction: "补充边界用例", limit: 2 });
+    const user = messages.find((message) => message.role === "user")!;
+
+    expect(user.content).toContain("创建订单");
+    expect(user.content).toContain("OrderPayload");
+    expect(user.content).toContain("snapshot-case");
+    expect(user.content).toContain("qty 必须为正整数");
+    expect(user.content).toMatch(/最多生成 2 条/);
+    expect(user.content).not.toContain("imported-secret");
+    expect(user.content).not.toContain(contractExecutionIds.credential);
+  });
+
+  it("accepts formal postOperations on suggestions and rejects the removed postScript field", () => {
+    const formal = AiSuggestOutputSchema.safeParse({
+      cases: [{
+        name: "post operation candidate",
+        postOperations: [{ id: "operation-1", type: "script", content: "pm.variables.set('done', 'true');" }],
+      }],
+    });
+    expect(formal.success).toBe(true);
+    expect(AiSuggestOutputSchema.safeParse({ cases: [{ name: "legacy", postScript: "legacy script" }] }).success).toBe(false);
+  });
+});
+
 describe("suggestCases 解析成功路径", () => {
   it("字符串化 JSON 信封 → AiSuggestedCase[]：本地补 ULID、字段同构且过 TestCaseSchema", async () => {
     const { fn, calls } = scriptedProvider(content([validCase, { name: "仅含名称的最小用例" }]));
@@ -60,8 +127,8 @@ describe("suggestCases 解析成功路径", () => {
       expect(() => TestCaseSchema.parse(c)).not.toThrow();
     }
     expect(cases.map((c) => new Set(Object.keys(c)))).toEqual([
-      new Set(["id", "name", "scope", "parameters", "assertions", "postScript"]),
-      new Set(["id", "name", "scope", "parameters", "assertions"]),
+      new Set(["id", "name", "scope", "parameters", "preOperations", "postOperations", "assertions"]),
+      new Set(["id", "name", "scope", "parameters", "preOperations", "postOperations", "assertions"]),
     ]);
     expect(cases[0]!.name).toBe("qty 为 0 应被拒绝");
     expect(cases[0]!.assertions).toHaveLength(2);
@@ -79,11 +146,12 @@ describe("suggestCases 解析成功路径", () => {
     expect(system!.content).toMatch(/API 测试工程师/); // 角色（裁定⑥）
     expect(system!.content).toMatch(/\{"cases":\[\.\.\.\]\}/); // 只输出 JSON 对象
     expect(system!.content).toMatch(/避免.*重复/);
-    expect(system!.content).toMatch(/postScript/); // 字段 schema 说明
+    expect(system!.content).toMatch(/preOperations、postOperations/); // 正式操作字段 schema 说明
 
     expect(user!.role).toBe("user");
     expect(user!.content).toContain("创建订单");
-    expect(user!.content).toContain("https://api.example.com/orders");
+    expect(user!.content).toContain("https://api.example.com");
+    expect(user!.content).toContain("/orders");
     expect(user!.content).toContain("POST");
     expect(user!.content).toContain("json"); // body kind
     expect(user!.content).toContain("qty 必须为正整数"); // design
