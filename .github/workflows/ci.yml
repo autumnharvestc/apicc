@@ -61,14 +61,19 @@ jobs:
             m2-${{ runner.os }}-
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
+      - name: 构建 core（包入口类型检查的前置产物）
+        # Core 的包入口测试消费 exports 指向的 dist 声明，干净检出须先生成；
+        # build 自身检查 src 类型，随后 typecheck 补充覆盖 tests。
+        run: pnpm -C packages/core build
       - name: core 类型检查（含测试文件）
         # core 的 build 用 tsconfig.build.json 只编译 src（include: ["src"]），
         # vitest 走 esbuild 转译不查类型——core 测试文件的类型错误只有
         # `tsc --noEmit`（tsconfig.json include src+tests）能拦，故单列一步。
         # desktop 的 typecheck/typecheck:vue 已含在其 build 首两段，无需单列。
         run: pnpm -C packages/core typecheck
-      - name: 构建全部包
-        run: pnpm -r build
+      - name: 构建其他包（core 已构建）
+        # 显式排除 Core，其他包仍按依赖拓扑序构建，避免重复生成 Core 产物。
+        run: pnpm --filter "!@apicc/core" -r build
       - name: 全部包测试
         # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 core build，序列自洽
         run: pnpm -r test
