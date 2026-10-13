@@ -16,6 +16,7 @@ import {
   Alert as AAlert,
   Button as AButton,
   Input as AInput,
+  Layout as ALayout,
   LayoutSider as ALayoutSider,
   Select as ASelect,
   Space as ASpace,
@@ -575,7 +576,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         <template #closeText><span data-testid="wf-errors-close">{{ t("common.close") }}</span></template>
       </a-alert>
 
-      <div class="wf-body">
+      <a-layout class="wf-body" style="background: transparent; color: inherit">
         <!-- 中央画布（受控）：数据层唯一来源为 store 缓冲 -->
         <div class="wf-canvas-wrap" data-testid="wf-canvas">
           <VueFlow
@@ -624,7 +625,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
             />
           </div>
         </a-layout-sider>
-      </div>
+      </a-layout>
 
       <!-- 运行结果抽屉（任务 7）：纯展示，开关状态在本组件（运行完成自动打开） -->
       <WfResultDrawer :open="resultOpen" :result="design.runResult" @close="resultOpen = false" />

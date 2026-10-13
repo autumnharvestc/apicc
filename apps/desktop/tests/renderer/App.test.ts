@@ -646,6 +646,20 @@ describe("App 侧树工作流入口", () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
     await flushPromises();
+    const expectAppShellAboveWorkspace = () => {
+      const appRoot = wrapper.find('[data-testid="app-root"]');
+      expect(appRoot.classes()).not.toContain("ant-layout-has-sider");
+      const children = Array.from(appRoot.element.children);
+      const topbarIndex = children.findIndex((child) => child.matches('[data-testid="topbar"]'));
+      const tabsIndex = children.findIndex((child) => child.matches('[data-testid="project-tabs"]'));
+      const workspaceIndex = children.findIndex((child) => child.classList.contains("body"));
+      expect(topbarIndex).toBeGreaterThanOrEqual(0);
+      expect(tabsIndex).toBeGreaterThanOrEqual(0);
+      expect(workspaceIndex).toBeGreaterThanOrEqual(0);
+      expect(topbarIndex).toBeLessThan(workspaceIndex);
+      expect(tabsIndex).toBeLessThan(workspaceIndex);
+    };
+    expectAppShellAboveWorkspace();
     // 直连替身建工作流后重开工作区刷新树（打开钮对非工作区目录回退内存态）
     const tree = await failingApi.treeGet();
     const project = projectByLabel(tree, "示例项目");
@@ -658,6 +672,16 @@ describe("App 侧树工作流入口", () => {
     await wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("侧树入口流"))!.trigger("click");
     await load.settle();
     load.restore();
+    expectAppShellAboveWorkspace();
+    const workflowLayout = wrapper.findComponent(WfDesigner).find(".wf-body");
+    expect(workflowLayout.classes()).toContain("ant-layout");
+    expect(workflowLayout.classes()).toContain("ant-layout-has-sider");
+    expect((workflowLayout.element as HTMLElement).style.background).toBe("transparent");
+    expect((workflowLayout.element as HTMLElement).style.color).toBe("inherit");
+    expect(wrapper.find('[data-testid="wf-canvas"]').exists()).toBe(true);
+    const propertyPanel = wrapper.find('[data-testid="wf-panel"]');
+    expect(propertyPanel.classes()).toContain("ant-layout-sider");
+    expect(propertyPanel.attributes("style")).toMatch(/width:\s*280px/);
     // 视图切到 wf（rail 选中态）
     expect(wrapper.find('[data-testid="rail-wf"]').classes()).toContain("active");
     // 设计器载入点击的工作流（而非空态列表）
@@ -666,6 +690,10 @@ describe("App 侧树工作流入口", () => {
     expect(design.workflowId).toBe(wf.id);
     // 选中节点归属项目解析含 workflows 摘要：selectedProjectId 不因 kind=workflow 落空
     expect(designer.props("projectLocator")).toStrictEqual(project.locator);
+    await wrapper.find('[data-testid="rail-api"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.findComponent(WfDesigner).exists()).toBe(false);
+    expectAppShellAboveWorkspace();
   });
 
   it("设计器列表新建工作流后侧树同步出现（树摘要随 wfList 变更刷新）", async () => {
