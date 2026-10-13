@@ -50,7 +50,7 @@ function addTransferReferences(project: ContractProject): void {
   });
   api.cases[0]!.scope = "dev";
   secondCase.scope = "preview";
-  api.contract.request.query = [{ kind: "componentRef", id: uuid(203), componentId: IDS.parameter, expectedKind: "parameter" }];
+  api.contract.request.headers = [{ kind: "componentRef", id: uuid(203), componentId: IDS.parameter, expectedKind: "parameter" }];
   api.contract.request.auth = { kind: "componentRef", componentId: IDS.auth, expectedKind: "auth" };
   api.contract.request.body = { kind: "json", content: "{}", schema: { kind: "modelRef", modelId: IDS.model } };
   api.contract.responses = [{ kind: "componentRef", id: uuid(204), componentId: IDS.response, expectedKind: "response" }];
@@ -213,7 +213,7 @@ describe("asset transfer IPC", () => {
         throw new Error("Cloned asset links changed kind");
       }
       expect(clonedApi.contract.request.auth.componentId).toBe(clonedAuth.id);
-      expect(clonedApi.contract.request.query[0]).toMatchObject({ kind: "componentRef", componentId: clonedParameter.id });
+      expect(clonedApi.contract.request.headers[0]).toMatchObject({ kind: "componentRef", componentId: clonedParameter.id });
       if (clonedApi.contract.request.protocol !== "http") throw new Error("Expected the cloned API request to be HTTP.");
       if (clonedApi.contract.request.body.kind !== "json" || clonedApi.contract.request.body.schema?.kind !== "modelRef") {
         throw new Error("Cloned request body schema reference missing");

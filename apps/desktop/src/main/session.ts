@@ -369,6 +369,40 @@ function sourceAssetNames(project: ContractProject): ContractProject {
   return result;
 }
 
+function sanitizeModuleCaseScopes(project: ContractProject): void {
+  const sanitizeApiScopes = (api: ApiAsset): void => {
+    const originalScopesByCase = new Map<string, Map<string, string>>();
+    for (const testCase of api.cases) {
+      const originalScope = testCase.scope;
+      let normalizedScope = originalScope;
+      if (originalScope === "." || originalScope === ".."
+        || originalScope.includes("/") || originalScope.includes("\\") || originalScope.includes("\0")) {
+        normalizedScope = sanitizeNodeName(originalScope);
+        if (normalizedScope === "." || normalizedScope === "..") normalizedScope = sanitizeNodeName(normalizedScope);
+      }
+      let originalScopes = originalScopesByCase.get(testCase.id);
+      if (!originalScopes) {
+        originalScopes = new Map();
+        originalScopesByCase.set(testCase.id, originalScopes);
+      }
+      const previousScope = originalScopes.get(normalizedScope);
+      if (previousScope !== undefined && previousScope !== originalScope) {
+        throw new Error(`Source API case scopes collide after sanitization: ${testCase.id} / ${normalizedScope}`);
+      }
+      originalScopes.set(normalizedScope, originalScope);
+      testCase.scope = normalizedScope;
+    }
+  };
+  const visitFolder = (folder: ContractFolder): void => {
+    folder.apis.forEach(sanitizeApiScopes);
+    folder.folders.forEach(visitFolder);
+  };
+  for (const collection of project.collections) {
+    collection.apis.forEach(sanitizeApiScopes);
+    collection.folders.forEach(visitFolder);
+  }
+}
+
 function sanitizeApiName(api: ApiAsset, environmentNames: ReadonlyMap<string, string> = new Map()): void {
   api.contract.metadata.name = sanitizeNodeName(api.contract.metadata.name);
   api.cases.forEach((item) => {
@@ -1391,6 +1425,7 @@ function setContainerOperations(
       // normalizing environment names that will not be persisted with the imported module.
       moduleSource.environments = [];
       const module = sourceAssetNames(moduleSource);
+      sanitizeModuleCaseScopes(module);
       module.name = sanitizeNodeName(moduleName.trim() || module.name);
       module.workflows = [];
       module.models = [...closureByModel.values()];

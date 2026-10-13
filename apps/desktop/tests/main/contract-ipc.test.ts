@@ -571,6 +571,18 @@ describe("complete-locator IPC bridge", () => {
       const preview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "api.fixture", content: "fixture content" });
       expect(preview).toMatchObject({ importerName: "fixture-importer", project: importedProject, warnings: ["fixture warning"] });
       const previewBefore = structuredClone(preview.project);
+      const modulePreview = structuredClone(preview.project);
+      const moduleApi = findApi(modulePreview, IDS.sharedApi)!;
+      moduleApi.cases.push({
+        id: "long-scope-case",
+        name: "long scope smoke",
+        scope: "." + " ".repeat(79) + "/",
+        parameters: {},
+        preOperations: [],
+        postOperations: [],
+        assertions: [],
+      });
+      const modulePreviewBefore = structuredClone(modulePreview);
 
       await deps.handle(IpcChannel.ImportApply, null, { mode: "project", target: targetGroup, name: "Imported full project", project: preview.project });
       await deps.handle(IpcChannel.ImportApply, null, {
@@ -578,9 +590,10 @@ describe("complete-locator IPC bridge", () => {
         target: sourceProject,
         name: "Imported module",
         sourceEnvironmentName: "staging / blue",
-        project: preview.project,
+        project: modulePreview,
       });
       expect(preview.project).toEqual(previewBefore);
+      expect(modulePreview).toEqual(modulePreviewBefore);
 
       const beforeCyclicFullImport = session.workspace;
       const cyclicImportBytes = await fileBytes(temporary.path);
@@ -606,6 +619,25 @@ describe("complete-locator IPC bridge", () => {
         .toBe(importedStaging!.name);
       const importedModuleCollection = session.locateProject(sourceProject)!.project.collections.find((collection) => collection.name === "Imported module")!;
       expect(importedModuleCollection.variables.baseUrl).toBe("https://staging.example.test");
+      expect(importedModuleCollection.apis[0]!.cases).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "blue", scope: "blue" }),
+        expect.objectContaining({ name: "green", scope: "green" }),
+        expect.objectContaining({ name: "staging smoke", scope: "staging - blue" }),
+        expect.objectContaining({ name: "long scope smoke", scope: "未命名" }),
+      ]));
+      const scopeCollisionModule = structuredClone(preview.project);
+      const scopeCollisionApi = findApi(scopeCollisionModule, IDS.sharedApi)!;
+      const sourceScopedCase = scopeCollisionApi.cases.find((testCase) => testCase.name === "staging smoke")!;
+      scopeCollisionApi.cases.push({ ...sourceScopedCase, scope: "staging - blue" });
+      const scopeCollisionBefore = structuredClone(scopeCollisionModule);
+      const beforeScopeCollision = session.workspace;
+      const scopeCollisionBytes = await fileBytes(temporary.path);
+      await expect(deps.handle(IpcChannel.ImportApply, null, {
+        mode: "module", target: sourceProject, name: "scope collision module", project: scopeCollisionModule,
+      })).rejects.toThrow(/case scopes collide after sanitization/i);
+      expect(scopeCollisionModule).toEqual(scopeCollisionBefore);
+      expect(session.workspace).toEqual(beforeScopeCollision);
+      expect(await fileBytes(temporary.path)).toEqual(scopeCollisionBytes);
       const beforeAmbiguousModule = session.workspace;
       const ambiguousBytes = await fileBytes(temporary.path);
       const duplicateNameModule = structuredClone(preview.project);

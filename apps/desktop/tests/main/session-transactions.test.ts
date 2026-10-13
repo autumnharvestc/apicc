@@ -895,7 +895,7 @@ describe("desktop session file transactions", () => {
       const preview = projectOne(makeWorkspace());
       preview.id = IDS.projectTwo;
       const previewApi = findApi(preview, IDS.sharedApi)!;
-      previewApi.contract.request.query = [{
+      previewApi.contract.request.headers = [{
         kind: "componentRef", id: uuid(1201), componentId: IDS.parameter, expectedKind: "parameter",
       }];
       previewApi.contract.request.auth = { kind: "componentRef", componentId: IDS.auth, expectedKind: "auth" };
@@ -1268,7 +1268,7 @@ describe("desktop session file transactions", () => {
 
       const source = projectOne(makeWorkspace());
       const sourceApi = findApi(source, IDS.sharedApi)!;
-      sourceApi.contract.request.query = [{
+      sourceApi.contract.request.headers = [{
         kind: "componentRef", id: uuid(960), componentId: IDS.parameter, expectedKind: "parameter",
       }];
       sourceApi.contract.request.auth = { kind: "componentRef", componentId: IDS.auth, expectedKind: "auth" };
