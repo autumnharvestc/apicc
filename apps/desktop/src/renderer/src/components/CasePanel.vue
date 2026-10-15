@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Input as AInput, Select as ASelect, Table as ATable } from "ant-design-vue";
 import type { Assertion, TestCase } from "@apicc/core";
+import { ApiRequestSchema } from "@apicc/core/schema";
 import type { useCasesStore } from "../stores/cases.js";
 import type { CaseIdentity } from "../stores/cases.js";
 import type { useDebugStore } from "../stores/debug.js";
@@ -32,6 +33,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
 const { t } = useI18n();
+const overrideJson = ref("");
+const overrideError = ref("");
 
 const TARGET_OPTIONS = (["status", "header", "bodyJson", "responseTime"] as const).map((v) => ({ label: v, value: v }));
 const OP_OPTIONS = (["eq", "neq", "contains", "lt", "gt", "lte", "gte"] as const).map((v) => ({ label: v, value: v }));
@@ -48,6 +51,11 @@ const selected = computed(() => {
   const identity = props.cases.selectedCase;
   return list.find((c) => c.id === identity?.caseId && c.scope === identity.scope) ?? list[0] ?? null;
 });
+
+watch(() => selected.value ? `${selected.value.id}:${selected.value.scope}` : "", () => {
+  overrideJson.value = selected.value?.requestOverride ? JSON.stringify(selected.value.requestOverride, null, 2) : "";
+  overrideError.value = "";
+}, { immediate: true });
 
 // 断言表列（computed 包裹保持语言切换响应，EnvPanel 同款）。
 const assertColumns = computed(() => [
@@ -82,10 +90,65 @@ async function runCase(identity: CaseIdentity) {
 // 保存链路收口（任务 8 补课）：拒绝经可选 reportError 转报，不再作为未处理 rejection 静默吞没。
 async function saveCases() {
   if (props.readOnly) return;
+  if (overrideError.value) {
+    props.reportError?.(new Error(overrideError.value));
+    return;
+  }
   try {
     await props.cases.save();
   } catch (e) {
     props.reportError?.(e);
+  }
+}
+
+function inheritDefaultRequest() {
+  if (props.readOnly || !selected.value) return;
+  delete selected.value.requestOverride;
+  props.cases.clearRequestRestoreFields({ caseId: selected.value.id, scope: selected.value.scope });
+  overrideJson.value = "";
+  overrideError.value = "";
+}
+
+function copyDefaultRequest() {
+  if (props.readOnly || !selected.value || !props.editor.api) return;
+  selected.value.requestOverride = JSON.parse(JSON.stringify(props.editor.api.contract.request));
+  overrideJson.value = JSON.stringify(selected.value.requestOverride, null, 2);
+  overrideError.value = "";
+}
+
+function applyCurrentDebugDraft() {
+  if (props.readOnly || !selected.value || !props.editor.api || !props.debug) return;
+  const sessionKey = props.editor.activeKey;
+  if (!sessionKey) return;
+  const session = props.editor.sessions[sessionKey];
+  if (!session) return;
+  const identity = { caseId: selected.value.id, scope: selected.value.scope };
+  const persisted = (JSON.parse(session.snapshot) as typeof props.editor.api).cases.some((testCase) =>
+    testCase.id === identity.caseId && testCase.scope === identity.scope);
+  if (persisted && !window.confirm(t("debugLoop.applyDraftConfirm", { name: selected.value.name, scope: selected.value.scope }))) return;
+  const restore = props.debug.restoreForSession(sessionKey, session.generation);
+  const request = JSON.parse(JSON.stringify(props.editor.api.contract.request)) as typeof props.editor.api.contract.request;
+  const fields = restore?.fields.map((field) => ({ ...field })) ?? [];
+  const originalValues = restore ? { ...restore.originalValues } : {};
+  selected.value.requestOverride = request;
+  selected.value.parameters = restore ? { ...restore.parameters } : {};
+  if (Object.keys(props.debug.settings).length > 0) selected.value.requestSettingsOverride = { ...props.debug.settings };
+  else delete selected.value.requestSettingsOverride;
+  props.cases.setPendingRestoreFields(identity, fields, originalValues);
+  overrideJson.value = JSON.stringify(request, null, 2);
+  overrideError.value = "";
+}
+
+function updateRequestOverride(value: string) {
+  overrideJson.value = value;
+  if (!selected.value || !value.trim()) return;
+  try {
+    const parsed = ApiRequestSchema.parse(JSON.parse(value));
+    if (parsed.protocol !== props.editor.api?.contract.request.protocol) throw new Error("用例请求覆盖必须与接口协议一致");
+    selected.value.requestOverride = parsed;
+    overrideError.value = "";
+  } catch (error) {
+    overrideError.value = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -95,8 +158,7 @@ function removeSelected() {
 
 function updateScope(testCase: TestCase, scope: string) {
   if (props.readOnly) return;
-  testCase.scope = scope;
-  props.cases.select(testCase.id, scope);
+  props.cases.changeScope(testCase.id, testCase.scope, scope);
 }
 
 // strict schema：headerName 仅 header 需要、path 仅 bodyJson 需要，其余目标即时删除旧键。
@@ -215,6 +277,18 @@ function removeOp(kind: "pre" | "post", index: number) {
 
       <!-- 选中用例的断言表 + 前置/后置脚本 -->
       <template v-if="selected">
+        <section class="case-request-override" data-testid="case-request-override">
+          <div class="section-title">{{ t("debugLoop.caseRequest") }}</div>
+          <div class="override-toolbar">
+            <span data-testid="case-request-mode">{{ selected.requestOverride ? t("debugLoop.requestOverride") : t("debugLoop.inheritRequest") }}</span>
+            <a-button v-if="debug" size="small" :disabled="readOnly" data-testid="case-apply-debug-draft" @click="applyCurrentDebugDraft">{{ t("debugLoop.applyDebugDraft") }}</a-button>
+            <a-button v-else size="small" :disabled="readOnly" data-testid="case-request-copy-default" @click="copyDefaultRequest">{{ t("debugLoop.copyDefaultRequest") }}</a-button>
+            <a-button size="small" :disabled="readOnly || !selected.requestOverride" data-testid="case-request-inherit" @click="inheritDefaultRequest">{{ t("debugLoop.inheritRequest") }}</a-button>
+          </div>
+          <a-textarea v-if="selected.requestOverride" :value="overrideJson" :disabled="readOnly" :rows="8" data-testid="case-request-override-json" @update:value="updateRequestOverride" />
+          <span v-if="overrideError" class="override-error" data-testid="case-request-override-error">{{ overrideError }}</span>
+          <span class="note">{{ t("debugLoop.cookiesNotSavedWithCase") }}</span>
+        </section>
         <div class="section-title">{{ t("case.assertions") }}</div>
         <a-table
           :data-source="selected.assertions"
@@ -339,6 +413,11 @@ function removeOp(kind: "pre" | "post", index: number) {
 .na {
   color: var(--text-muted, #bbb);
 }
+.case-request-override { display: flex; flex-direction: column; gap: 6px; }
+.override-toolbar { display: flex; align-items: center; gap: 8px; }
+.override-toolbar span { flex: 1; }
+.override-error { color: var(--fail, #cf1322); }
+.note { color: var(--text-muted, #888); font-size: 12px; }
 .script-row {
   display: flex;
   align-items: flex-start;

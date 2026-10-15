@@ -17,6 +17,15 @@ import type {
   ProjectGlobals,
   StressThresholds,
   StressTargetPolicy,
+  DebugInvocation,
+  DebugFieldState,
+  DebugResult,
+  HttpCookieSummary,
+  DebugHistoryDiagnostic,
+  DebugHistoryListFilter,
+  DebugHistoryPage,
+  DebugHistoryPreferences,
+  DebugHistoryReadResult,
 } from "@apicc/core";
 import type {
   ApiLocator,
@@ -49,6 +58,7 @@ export type CreateComponentInput = ComponentAsset extends infer Asset
     ? Omit<Asset, "formatVersion" | "id">
     : never
   : never;
+export type { DebugHistoryListFilter, DebugHistoryPreferences };
 type LocatorKey =
   | "workspaceId" | "groupId" | "projectId" | "collectionId" | "folderIds" | "apiId"
   | "environmentId" | "modelId" | "componentKind" | "componentId" | "workflowId";
@@ -139,8 +149,27 @@ export interface WorkflowImpactEntryDTO {
   nodeLabel?: string;
 }
 export interface OpenResult { workspace: ContractWorkspace; problems: LoadProblem[]; root: string; readOnly: boolean; revision: string }
-export interface ApiDetail { api: ApiAsset; locator: ApiLocator; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> }
+export interface ApiDetail { api: ApiAsset; locator: ApiLocator; sourceApiRevision: string; sourceProjectRevision: string; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> }
+export interface ApiRequestDraftSaveResult { request: import("@apicc/core").ApiRequest; sourceApiRevision: string }
+export interface ApiSaveResult { api: ApiAsset; sourceApiRevision: string; sourceProjectRevision: string }
+export interface CaseDraftSaveResult { testCase: ApiTestCase; sourceApiRevision: string }
+export interface CaseDraftDeletion { caseId: string; scope: string }
+export interface DebugHistoryReplayResult extends DebugStartResult { locator: ApiLocator }
+export interface DebugFileReference { path: string; name: string; size: number }
+export type DebugCookieSummary = HttpCookieSummary;
+export interface DebugCookieInput { locator: ApiLocator; environmentId?: string }
 export interface DebugInput { locator: ApiLocator; caseId: string; envName?: string | null }
+export type DebugStartInput = DebugInvocation;
+export interface DebugRunIdInput { runId: string }
+export interface DebugStartResult { runId: string }
+export type DebugCancelResult = { status: "cancelled" | "no-active" };
+export interface DebugHistoryRestoreResult {
+  invocation: DebugInvocation;
+  sourceChanged: boolean;
+  sourceAvailable: boolean;
+}
+export interface DebugHistoryCleanupResult { deleted: number; diagnostics: DebugHistoryDiagnostic[] }
+export interface DebugHistoryPreferencesResult { preferences: DebugHistoryPreferences; diagnostics: DebugHistoryDiagnostic[] }
 /** env:create 入参：extends 按环境名引用父环境（规格 §6 继承链，运行时由 Runner 合并）。 */
 export interface EnvCreateInput {
   locator: ProjectLocator;
@@ -270,8 +299,10 @@ export interface ApiccApi {
   containerGet(target: ContainerTarget): Promise<ContainerDetail>;
   globalsGet(locator: ProjectLocator): Promise<ProjectGlobalSettings>;
   apiGet(locator: ApiLocator): Promise<ApiDetail>;
-  apiSave(locator: ApiLocator, api: ApiAsset): Promise<ApiAsset>;
-  caseSave(locator: CaseLocator, testCase: ApiTestCase): Promise<ApiTestCase>;
+  apiSave(locator: ApiLocator, api: ApiAsset, expectedSourceApiRevision: string): Promise<ApiSaveResult>;
+  apiRequestDraftSave(locator: ApiLocator, request: import("@apicc/core").ApiRequest, expectedSourceApiRevision: string, fields: DebugFieldState[]): Promise<ApiRequestDraftSaveResult>;
+  caseSave(locator: CaseLocator, testCase: ApiTestCase, expectedSourceApiRevision: string, fields: DebugFieldState[]): Promise<CaseDraftSaveResult>;
+  caseDraftSave(locator: CaseLocator, testCase: ApiTestCase, expectedSourceApiRevision: string, deletedCases: CaseDraftDeletion[], fields: DebugFieldState[]): Promise<CaseDraftSaveResult>;
   caseDelete(locator: CaseLocator): Promise<void>;
   modelList(locator: ProjectLocator): Promise<ModelAsset[]>;
   modelGet(locator: ModelLocator): Promise<ModelAsset>;
@@ -283,6 +314,21 @@ export interface ApiccApi {
   componentSave(locator: ComponentLocator, component: ComponentAsset): Promise<ComponentAsset>;
   assetReferences(locator: ProjectLocator, assetId: string): Promise<import("@apicc/core").AssetDiagnostic[]>;
   debugSend(input: DebugInput): Promise<DebugOutput>;
+  debugStart(input: DebugStartInput): Promise<DebugStartResult>;
+  debugWait(input: DebugRunIdInput): Promise<DebugResult>;
+  debugCancel(input: DebugRunIdInput): Promise<DebugCancelResult>;
+  debugCookiesList(input: DebugCookieInput): Promise<DebugCookieSummary[]>;
+  debugCookiesClear(input: DebugCookieInput): Promise<void>;
+  debugPickFile(): Promise<DebugFileReference | null>;
+  debugSaveProjected(defaultName: string, content: string): Promise<string>;
+  debugHistoryList(filter: DebugHistoryListFilter): Promise<DebugHistoryPage>;
+  debugHistoryGet(historyId: string): Promise<DebugHistoryReadResult>;
+  debugHistoryDelete(historyId: string): Promise<boolean>;
+  debugHistoryCleanup(): Promise<DebugHistoryCleanupResult>;
+  debugHistoryPreferencesGet(): Promise<DebugHistoryPreferencesResult>;
+  debugHistoryPreferencesUpdate(preferences: DebugHistoryPreferences): Promise<DebugHistoryPreferences>;
+  debugHistoryRestore(input: { historyId: string; exchangeOrder: number }): Promise<DebugHistoryRestoreResult>;
+  debugHistoryReplay(historyId: string): Promise<DebugHistoryReplayResult>;
   runCollection(input: RunCollectionInput): Promise<RunResult>;
   runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>>;
   runsGet(file: string): Promise<RunResult | StressReportDTO | null>;

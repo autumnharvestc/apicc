@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { Transform } from "node:stream";
 import * as undici from "undici";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpClient, type ManagedProtocolClient } from "../../src/http/client.js";
@@ -31,7 +32,7 @@ async function withTimedHttp(
     finish<T>(pending: Promise<T>): Promise<T>;
   }) => Promise<void>,
 ) {
-  const server = createServer((_req, res) => { res.end("complete body"); });
+  const server = createServer((_req, res) => { res.setHeader("content-type", "text/plain; charset=utf-8"); res.end("complete body"); });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/body`;
   const bodyRead = gate(), allowBody = gate(), yieldEntered = gate(), allowYield = gate(), closeEntered = gate(), allowClose = gate();
@@ -58,18 +59,24 @@ async function withTimedHttp(
     restore.push(() => clockSpy.mockRestore());
     const requestSpy = vi.mocked(undici.request).mockImplementation(async (...args) => {
       const response = await originalRequest(...args);
-      const readText = response.body.text.bind(response.body);
-      response.body.text = async () => {
-        const text = await readText();
-        bodyRead.release();
-        await allowBody.promise;
-        clock += 17;
-        bodyDone = true;
-        return text;
-      };
-      Object.defineProperty(response.headers, "x-timing-metadata", {
-        enumerable: true, get() { clock += 10; return "converted"; },
+      const rawHeaders = response.headers as unknown as string[];
+      const metadataHeaderIndex = rawHeaders.length;
+      rawHeaders[metadataHeaderIndex] = "x-timing-metadata";
+      rawHeaders[metadataHeaderIndex + 1] = "converted";
+      rawHeaders.length = metadataHeaderIndex + 2;
+      const gatedBody = new Transform({
+        transform(chunk, _encoding, callback) { callback(null, chunk); },
+        flush(callback) {
+          bodyRead.release();
+          void allowBody.promise.then(() => {
+            clock += 17;
+            bodyDone = true;
+            callback();
+          }, callback);
+        },
       });
+      response.body.pipe(gatedBody);
+      Object.defineProperty(response, "body", { configurable: true, value: gatedBody });
       return response;
     });
     restore.push(() => { requestSpy.mockReset(); requestSpy.mockImplementation(originalRequest); });
@@ -129,7 +136,10 @@ describe("HTTP network timing boundary", () => {
     await withTimedHttp(mode, async ({ client, url, advance, finish }) => {
       const headers = { get "x-prepared"() { advance(50); return "ready"; } };
       const query = [{ key: "q", get value() { advance(30); return "query"; }, enabled: true }];
-      const response = await finish(client.execute({ protocol: "http", method: "GET", url, headers, query, auth: { kind: "none" } }, { connectTimeoutMs: 1000, totalTimeoutMs: 2000 }));
+      const response = await finish(client.execute({ protocol: "http", method: "GET", url, headers, query, auth: { kind: "none" } }, {
+        connectTimeoutMs: 1000, totalTimeoutMs: 2000,
+        runtime: { observe(event) { if (event.type === "response") advance(10); } },
+      }));
       expect(response).toMatchObject({ status: 200, bodyText: "complete body", timeMs: 17 });
       expect(response.headers["x-timing-metadata"]).toBe("converted");
     });
@@ -178,6 +188,7 @@ describe("HTTP network timing boundary", () => {
           engine.run(code, ctx);
         } }, bus,
         timeouts: { connectTimeoutMs: 1000, totalTimeoutMs: 2000 },
+        observeHttp(event) { if (event.type === "response") advance(10); },
       }, { workerId: 0, confirmedTargetOrigins: [new URL(url).origin] });
       try {
         const report = await finish(new StressRunner({ createWorker: () => session, onSample: (sample) => samples.push(sample) })

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button as AButton, Dropdown as ADropdown, Menu as AMenu } from "ant-design-vue";
+import { Button as AButton, Dropdown as ADropdown, Menu as AMenu, MenuItem as AMenuItem } from "ant-design-vue";
 import { EllipsisOutlined } from "@ant-design/icons-vue";
 
 /**

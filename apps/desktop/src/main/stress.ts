@@ -1,5 +1,5 @@
 import { createDesktopCredentialHost } from "./credentials.js";
-import type { CredentialHost } from "./credentialHost.js";
+import type { DebugCredentialHost } from "./credentialHost.js";
 import { createStressControllerWithHost, type StressControllerDeps } from "./stressController.js";
 import type { createSession } from "./session.js";
 
@@ -11,7 +11,7 @@ type Session = ReturnType<typeof createSession>;
 export function createStressController(
   session: Session,
   deps: StressControllerDeps = {},
-  credentials: CredentialHost = createDesktopCredentialHost(session),
+  credentials: DebugCredentialHost = createDesktopCredentialHost(session),
 ) {
   return createStressControllerWithHost(session, deps, credentials);
 }

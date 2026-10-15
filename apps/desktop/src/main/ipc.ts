@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { WorkflowRunner, StressSafetyError, findProjectApi, createProjectSnapshot, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus } from "@apicc/core";
-import { join } from "node:path";
+import { stat } from "node:fs/promises";
+import { WorkflowRunner, StressSafetyError, createHttpSession, findProjectApi, createProjectSnapshot, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, getSourceApiRevision, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type CredentialRequestSelection } from "@apicc/core";
+import { realpathSync } from "node:fs";
+import { basename, join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type DebugInput, type DebugOutput, type EnvCreateInput, type ImportApplyInput, type ImportPreviewInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
+import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type DebugInput, type DebugOutput, type DebugHistoryReplayResult, type DebugHistoryRestoreResult, type DebugFileReference, type EnvCreateInput, type ImportApplyInput, type ImportPreviewInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
 import { parseIpcArgs, type IpcArgsMap, type IpcResultMap } from "../shared/ipc-contract.js";
 import type { ApiLocator, ApiParentLocator, CaseLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
 import { localTreeNodeKey } from "../shared/tree-dto.js";
 import type { OnlineFilesBatchInput, OnlineProjectMappingInput, OnlineWorkspaceOpenInput } from "../shared/online/types.js";
-import type { ApiTestCase, ComponentAsset, ModelAsset } from "@apicc/core";
+import type { ApiTestCase, ComponentAsset, DebugFieldState, ModelAsset } from "@apicc/core";
 import { createOnlineSession, type OnlineSession } from "./online/session.js";
 import { scanDirFiles, writeFiles } from "./online/migrate.js";
 import type { OnlineClient } from "./online/client.js";
 import type { TokenStore } from "./online/tokenStore.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
+import { createDebugController } from "./debugController.js";
+import { createDesktopDebugHistoryStore } from "./debugHistory.js";
 import { listRuns, readRun } from "./runs.js";
 import { createStressController } from "./stress.js";
 import type { createSession } from "./session.js";
@@ -43,7 +47,7 @@ async function runWorkflow(
   session: Session,
   input: WfRunInput,
   registrySource: PluginRegistry | (() => Promise<PluginRegistry>),
-  credentials: Pick<ReturnType<typeof createDesktopCredentialHost>, "prepareRun">,
+  credentials: Pick<ReturnType<typeof createDesktopCredentialHost>, "prepareRunForRequests">,
 ): Promise<WorkflowRunResult> {
   const captured = {
     locator: { ...input.locator },
@@ -67,19 +71,20 @@ async function runWorkflow(
     const location = node.apiId ? findProjectApi(snapshot.project, node.apiId) : undefined;
     const api = location?.api;
     const caseDef = api?.cases.find((candidate) => candidate.id === node.caseId);
-    return { location, api, caseDef };
+    const effectiveCase = api && caseDef
+      ? selectEffectiveCases(
+        api.cases,
+        resolveExecutionEnvironment(snapshot.project, location!.collection.id, env?.id).chain,
+        caseDef.id,
+      )[0]
+      : undefined;
+    return { location, api, caseDef, effectiveCase };
   });
   const hasMissingReference = requestReferences.some(({ location, api, caseDef }) => !location || !api || !caseDef);
-  const selectedAssets = captured.strict && hasMissingReference
+  const credentialSelections: CredentialRequestSelection[] = captured.strict && hasMissingReference
     ? []
-    : [...new Map(requestReferences.flatMap(({ location, api, caseDef }) =>
-      location && api && caseDef && selectEffectiveCases(
-        api.cases,
-        resolveExecutionEnvironment(snapshot.project, location.collection.id, env?.id).chain,
-        caseDef.id,
-      ).length > 0
-        ? [[api.contract.id, api as ApiAsset] as const]
-        : [])).values()];
+    : [...new Map(requestReferences.flatMap(({ api, effectiveCase }) =>
+      api && effectiveCase ? [[`${api.contract.id}\0${effectiveCase.id}\0${effectiveCase.scope}`, { asset: api, testCase: effectiveCase }] as const] : [])).values()];
   let prepared: PreparedDesktopExecutionRun;
   const scope = {
     workspaceId: captured.locator.workspaceId,
@@ -87,14 +92,15 @@ async function runWorkflow(
     projectId: captured.locator.projectId,
   };
   try {
-    prepared = await credentials.prepareRun(scope, snapshot, selectedAssets);
+    prepared = await credentials.prepareRunForRequests(scope, snapshot, credentialSelections);
   } catch (error) {
     throw createExecutionOutputBoundary([]).error(error);
   }
   const boundary = createExecutionOutputBoundary(prepared.markers);
+  const httpSession = createHttpSession();
   try {
     const registry = typeof registrySource === "function" ? await registrySource() : registrySource;
-    const runner = new WorkflowRunner({ registry, failFast: false, strict: captured.strict });
+    const runner = new WorkflowRunner({ registry, failFast: false, strict: captured.strict, workspaceRoot: root, httpSession });
     const result = await runner.run(prepared.run, workflow.id, env ? { environmentId: env.id } : {});
     const file = `workflow-${result.workflowId}-${randomUUID()}.json`;
     const path = join(workspaceRunsDir(root), file);
@@ -109,6 +115,8 @@ async function runWorkflow(
       : persisted.value);
   } catch (error) {
     throw boundary.error(error);
+  } finally {
+    await httpSession.close();
   }
 }
 
@@ -132,6 +140,8 @@ export interface IpcDepsOptions {
    * 返回保存路径（用户取消回传空串）；测试注入内存实现。
    */
   saveFile: (defaultName: string, content: string) => Promise<string>;
+  /** User-selected file metadata; the renderer never reads this path or its bytes. */
+  pickDebugFile?: () => Promise<DebugFileReference | null>;
   /** 导入器列表（任务 7）：默认取内置注册中心的全部导入器，测试注入固定 importer 替身。 */
   importers?: Importer[];
   /** 在线依赖（M3-B 任务 1）：省略时 online:* 频道抛「在线功能未配置」可读错误。 */
@@ -146,10 +156,21 @@ export interface IpcDepsOptions {
    */
   plugins?: PluginsRuntimeOptions;
   credentials?: DesktopCredentialHostOptions;
+  /** Lazy factory prevents unrelated IPC/debug tests from reading or creating app-data history. */
+  debugHistory?: () => ReturnType<typeof createDesktopDebugHistoryStore>;
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory, saveFile } = options;
+  const pickDebugFile = options.pickDebugFile ?? (async (): Promise<DebugFileReference | null> => {
+    const { dialog } = await import("electron");
+    const choice = await dialog.showOpenDialog({ properties: ["openFile"] });
+    if (choice.canceled || !choice.filePaths[0]) return null;
+    const path = choice.filePaths[0];
+    const metadata = await stat(path);
+    if (!metadata.isFile()) throw new Error("所选路径不是普通文件");
+    return { path, name: basename(path), size: metadata.size };
+  });
   // 插件运行时（M7-B 任务 2）：未配置 = loadPlugins:false（零加载零扰动）；summary/registry
   // memoized 装载，运行频道与 plugins:list、导入探测共用同一 registry。
   const pluginsRuntime = createPluginsRuntime(options.plugins ?? { loadPlugins: false });
@@ -174,6 +195,61 @@ export function createIpcDeps(options: IpcDepsOptions) {
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
   const credentials = createDesktopCredentialHost(session, options.credentials);
   const stress = createStressController(session, {}, credentials);
+  let debugHistoryStore: ReturnType<typeof createDesktopDebugHistoryStore> | undefined;
+  function requireDebugHistory(): ReturnType<typeof createDesktopDebugHistoryStore> {
+    if (debugHistoryStore) return debugHistoryStore;
+    if (!options.debugHistory) throw new Error("本机调试历史未配置");
+    debugHistoryStore = options.debugHistory();
+    return debugHistoryStore;
+  }
+  const debugHistoryAppender = options.debugHistory
+    ? { append: (result: import("@apicc/core").DebugResult, appendOptions: { ownerKey: string; parentHistoryId?: string }) => requireDebugHistory().append(result, appendOptions) }
+    : undefined;
+  const debug = createDebugController(session, () => pluginsRuntime.registry(), credentials, debugHistoryAppender);
+  const watchedDebugOwners = new WeakSet<object>();
+
+  function ownerFromEvent(event: unknown): object | undefined {
+    if (typeof event !== "object" || event === null) return undefined;
+    const sender = (event as { sender?: unknown }).sender;
+    return typeof sender === "object" && sender !== null ? sender : undefined;
+  }
+
+  function watchOwner(owner: object | undefined): void {
+    if (!owner || watchedDebugOwners.has(owner)) return;
+    watchedDebugOwners.add(owner);
+    const sender = owner as {
+      once?: (event: string, listener: () => void) => unknown;
+      on?: (event: string, listener: () => void) => unknown;
+    };
+    const cleanup = () => debug.clearOwner(owner);
+    if (typeof sender.once === "function") sender.once("destroyed", cleanup);
+    if (typeof sender.on === "function") sender.on("render-process-gone", cleanup);
+  }
+
+  function requireOwner(owner: object | undefined): object {
+    if (!owner) throw new TypeError("A renderer IPC sender is required to own a debug run.");
+    return owner;
+  }
+
+  async function requireHistoryRecord(historyId: string): Promise<DebugHistoryRecord> {
+    const loaded = await requireDebugHistory().get(historyId);
+    if (!loaded.record) {
+      const detail = loaded.diagnostics.map((item) => item.message).join(" ");
+      throw new Error(detail || "未找到调试历史记录");
+    }
+    return loaded.record;
+  }
+
+  function ownerKeyForInvocation(invocation: DebugInvocation): string {
+    const root = session.root;
+    if (!root) throw new Error("尚未打开工作区");
+    return createDebugHistoryOwnerKey(realpathSync(root), invocation.mode === "case" ? invocation.case : invocation.locator);
+  }
+
+  async function requireHistoryOwner(historyId: string, ownerKey: string): Promise<void> {
+    const owned = await requireDebugHistory().getOwned(historyId, ownerKey);
+    if (!owned.record) throw new Error("这条调试历史属于其他工作区或接口，当前不能重放。");
+  }
 
   async function createNode(input: NodeCreateInput): Promise<NodeCreatedDTO> {
     switch (input.kind) {
@@ -217,19 +293,21 @@ export function createIpcDeps(options: IpcDepsOptions) {
     return { api: structuredClone(located.api), context: snapshot.context };
   }
 
-  async function dispatch(channel: IpcChannelName, rawArgs: unknown[]): Promise<unknown> {
+  async function dispatch(channel: IpcChannelName, rawArgs: unknown[], owner?: object): Promise<unknown> {
     const a = parseIpcArgs(channel, rawArgs) as unknown[];
     switch (channel) {
       case IpcChannel.WsOpen: {
         // 工作区切换清理点（M2-D3 任务 1）：活动压测先 abort，部分报告由其收尾异步落回原工作区。
         // 计划 C 任务 2：裁定 E 互斥退役——本地打开不再关闭在线会话（本地 1 + 在线 N 并存驻留）。
         stress.abortActive();
+        if (owner) debug.clearOwner(owner);
         const r = await session.open(a[0] as string);
         return r satisfies OpenResult;
       }
       case IpcChannel.WsCreate: {
         // 同上：压测清理链保留；在线会话原样驻留（并存，互斥退役）。
         stress.abortActive();
+        if (owner) debug.clearOwner(owner);
         const r = await session.create(a[0] as string, a[1] as string);
         return r satisfies OpenResult;
       }
@@ -308,17 +386,59 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const detail: ApiDetail = {
           api: loc.api,
           locator,
+          sourceApiRevision: getSourceApiRevision(loc.api),
+          sourceProjectRevision: createProjectSnapshot(loc.project).definitionRevision,
           envs: loc.project.environments.map((e) => ({ id: e.id, name: e.name, locator: { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId, environmentId: e.id } })),
         };
         return detail satisfies IpcResultMap[typeof IpcChannel.ApiGet];
       }
       case IpcChannel.ApiSave: {
-        const [locator, api] = a as [ApiLocator, ApiAsset];
-        return await session.saveApi(locator, api) satisfies IpcResultMap[typeof IpcChannel.ApiSave];
+        const [locator, api, expectedRevision] = a as [ApiLocator, ApiAsset, string];
+        const draftWriteContext = session.captureDraftWriteContext();
+        const candidateRequests = [api.contract.request, ...api.cases.map((testCase) => testCase.requestOverride ?? api.contract.request)];
+        const knownCredentialLiterals = await credentials.getKnownCredentialLiterals(locator, candidateRequests, draftWriteContext);
+        return await session.saveApi(locator, api, knownCredentialLiterals, draftWriteContext, expectedRevision) satisfies IpcResultMap[typeof IpcChannel.ApiSave];
+      }
+      case IpcChannel.ApiRequestDraftSave: {
+        const [locator, request, expectedRevision, fields] = a as [ApiLocator, import("@apicc/core").ApiRequest, string, DebugFieldState[]];
+        if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存请求草稿。");
+        const draftWriteContext = session.captureDraftWriteContext();
+        const knownCredentialLiterals = await credentials.getKnownCredentialLiterals(locator, request, draftWriteContext);
+        return await session.saveRequestDraft(locator, request, expectedRevision, fields, knownCredentialLiterals, draftWriteContext) satisfies IpcResultMap[typeof IpcChannel.ApiRequestDraftSave];
       }
       case IpcChannel.CaseSave: {
-        const [locator, testCase] = a as [CaseLocator, ApiTestCase];
-        return await session.saveCase(locator, testCase) satisfies IpcResultMap[typeof IpcChannel.CaseSave];
+        const [locator, testCase, expectedRevision, fields] = a as [CaseLocator, ApiTestCase, string, DebugFieldState[]];
+        if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存用例。");
+        const draftWriteContext = session.captureDraftWriteContext();
+        const apiLocator: ApiLocator = {
+          workspaceId: locator.workspaceId,
+          groupId: locator.groupId,
+          projectId: locator.projectId,
+          collectionId: locator.collectionId,
+          folderIds: [...locator.folderIds],
+          apiId: locator.apiId,
+        };
+        const request = testCase.requestOverride ?? session.locateApi(apiLocator)?.api.contract.request;
+        if (!request) throw new Error(`未找到接口: ${JSON.stringify(locator)}`);
+        const knownCredentialLiterals = await credentials.getKnownCredentialLiterals(apiLocator, request, draftWriteContext);
+        return await session.saveCase(locator, testCase, expectedRevision, knownCredentialLiterals, draftWriteContext, fields) satisfies IpcResultMap[typeof IpcChannel.CaseSave];
+      }
+      case IpcChannel.CaseDraftSave: {
+        const [locator, testCase, expectedRevision, deletedCases, fields] = a as [CaseLocator, ApiTestCase, string, Array<{ caseId: string; scope: string }>, DebugFieldState[]];
+        if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存用例草稿。");
+        const draftWriteContext = session.captureDraftWriteContext();
+        const apiLocator: ApiLocator = {
+          workspaceId: locator.workspaceId,
+          groupId: locator.groupId,
+          projectId: locator.projectId,
+          collectionId: locator.collectionId,
+          folderIds: [...locator.folderIds],
+          apiId: locator.apiId,
+        };
+        const request = testCase.requestOverride ?? session.locateApi(apiLocator)?.api.contract.request;
+        if (!request) throw new Error(`未找到接口: ${JSON.stringify(locator)}`);
+        const knownCredentialLiterals = await credentials.getKnownCredentialLiterals(apiLocator, request, draftWriteContext);
+        return await session.saveDraftCase(locator, testCase, expectedRevision, deletedCases, knownCredentialLiterals, draftWriteContext, fields) satisfies IpcResultMap[typeof IpcChannel.CaseDraftSave];
       }
       case IpcChannel.CaseDelete:
         await session.deleteCase(a[0] as CaseLocator);
@@ -348,8 +468,65 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.AssetReferences:
         return session.referencesTo(a[0] as ProjectLocator, a[1] as string) satisfies IpcResultMap[typeof IpcChannel.AssetReferences];
       case IpcChannel.DebugSend: {
-        const result = await sendDebug(session, a[0] as DebugInput, () => pluginsRuntime.registry(), credentials);
+        const result = await sendDebug(session, a[0] as DebugInput, () => pluginsRuntime.registry(), credentials, debug, requireOwner(owner));
         return result satisfies DebugOutput;
+      }
+      case IpcChannel.DebugStart:
+        return debug.start(requireOwner(owner), a[0]) satisfies IpcResultMap[typeof IpcChannel.DebugStart];
+      case IpcChannel.DebugWait:
+        return await debug.wait(requireOwner(owner), (a[0] as { runId: string }).runId) satisfies IpcResultMap[typeof IpcChannel.DebugWait];
+      case IpcChannel.DebugCancel:
+        return debug.cancel(requireOwner(owner), (a[0] as { runId: string }).runId) satisfies IpcResultMap[typeof IpcChannel.DebugCancel];
+      case IpcChannel.DebugCookiesList:
+        return await debug.listCookies(a[0]) satisfies IpcResultMap[typeof IpcChannel.DebugCookiesList];
+      case IpcChannel.DebugCookiesClear:
+        await debug.clearCookies(a[0]);
+        return undefined satisfies IpcResultMap[typeof IpcChannel.DebugCookiesClear];
+      case IpcChannel.DebugPickFile:
+        return await pickDebugFile() satisfies IpcResultMap[typeof IpcChannel.DebugPickFile];
+      case IpcChannel.DebugSaveProjected:
+        return await saveFile(a[0] as string, a[1] as string) satisfies IpcResultMap[typeof IpcChannel.DebugSaveProjected];
+      case IpcChannel.DebugHistoryList:
+        return await requireDebugHistory().list(a[0] as Parameters<ReturnType<typeof createDesktopDebugHistoryStore>["list"]>[0]) satisfies IpcResultMap[typeof IpcChannel.DebugHistoryList];
+      case IpcChannel.DebugHistoryGet:
+        return await requireDebugHistory().get(a[0] as string) satisfies IpcResultMap[typeof IpcChannel.DebugHistoryGet];
+      case IpcChannel.DebugHistoryDelete:
+        return await requireDebugHistory().delete(a[0] as string) satisfies IpcResultMap[typeof IpcChannel.DebugHistoryDelete];
+      case IpcChannel.DebugHistoryCleanup:
+        return await requireDebugHistory().cleanup() satisfies IpcResultMap[typeof IpcChannel.DebugHistoryCleanup];
+      case IpcChannel.DebugHistoryPreferencesGet:
+        return await requireDebugHistory().getPreferences() satisfies IpcResultMap[typeof IpcChannel.DebugHistoryPreferencesGet];
+      case IpcChannel.DebugHistoryPreferencesUpdate:
+        return await requireDebugHistory().updatePreferences(a[0]) satisfies IpcResultMap[typeof IpcChannel.DebugHistoryPreferencesUpdate];
+      case IpcChannel.DebugHistoryRestore: {
+        const { historyId, exchangeOrder } = a[0] as { historyId: string; exchangeOrder: number };
+        const record = await requireHistoryRecord(historyId);
+        const invocation = restoreDebugHistoryExchange(record, exchangeOrder);
+        const root = session.root;
+        const currentOwnerIdentity = record.result.replay.mode === "case"
+          ? record.result.replay.case
+          : record.result.replay.locator;
+        let sourceAvailable = false;
+        if (root && currentOwnerIdentity) {
+          const ownerKey = createDebugHistoryOwnerKey(realpathSync(root), currentOwnerIdentity);
+          const owned = await requireDebugHistory().getOwned(historyId, ownerKey);
+          const location = session.locateApi(invocation.locator);
+          sourceAvailable = owned.record !== null && location !== undefined;
+          const sourceChanged = !sourceAvailable || (location !== undefined
+            && createProjectSnapshot(location.project).definitionRevision !== record.result.sourceProjectRevision);
+          return { invocation, sourceChanged, sourceAvailable } satisfies IpcResultMap[typeof IpcChannel.DebugHistoryRestore];
+        }
+        const result: DebugHistoryRestoreResult = { invocation, sourceChanged: true, sourceAvailable: false };
+        return result satisfies IpcResultMap[typeof IpcChannel.DebugHistoryRestore];
+      }
+      case IpcChannel.DebugHistoryReplay: {
+        const historyId = a[0] as string;
+        const record = await requireHistoryRecord(historyId);
+        const invocation = createDebugReplayInvocation(record);
+        await requireHistoryOwner(historyId, ownerKeyForInvocation(invocation));
+        const started = await debug.start(requireOwner(owner), invocation);
+        const result: DebugHistoryReplayResult = { ...started, locator: invocation.locator };
+        return result satisfies IpcResultMap[typeof IpcChannel.DebugHistoryReplay];
       }
       // 运行频道（任务 6）：run:collection 走完整 Runner 并固定落盘 .apicc/runs；
       // runs:list/get 读历史（目录不存在/文件损坏已在 runs.ts 侧降级为 []/null）。
@@ -582,10 +759,12 @@ export function createIpcDeps(options: IpcDepsOptions) {
 
   async function handle<Channel extends IpcChannelName>(
     channel: Channel,
-    _event: unknown,
+    event: unknown,
     ...args: HandleArgs<NoInfer<Channel>>
   ): Promise<IpcResultMap[Channel]> {
-    return await dispatch(channel, args) as IpcResultMap[Channel];
+    const owner = ownerFromEvent(event);
+    watchOwner(owner);
+    return await dispatch(channel, args, owner) as IpcResultMap[Channel];
   }
 
   return { handle, pluginsRuntime };

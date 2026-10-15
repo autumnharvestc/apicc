@@ -25,7 +25,7 @@ let dom: MinimalJSDOM | undefined;
 let mountComponent: typeof import("@vue/test-utils").mount;
 let responseViewer: Component;
 let createI18nInstance: typeof import("../../src/renderer/src/i18n/index.js").createI18nInstance;
-const domGlobalNames = ["window", "document", "navigator", "localStorage", "getComputedStyle", "Node", "Element", "HTMLElement", "SVGElement", "MutationObserver"] as const;
+const domGlobalNames = ["window", "document", "navigator", "localStorage", "getComputedStyle", "Node", "Element", "HTMLElement", "SVGElement", "ShadowRoot", "MutationObserver"] as const;
 const previousDomGlobals = new Map<(typeof domGlobalNames)[number], PropertyDescriptor | undefined>();
 const mountedViewers: VueWrapper[] = [];
 const caseIds: Record<string, string> = {};
@@ -37,6 +37,7 @@ type DomWindow = Window & {
   Element: typeof Element;
   HTMLElement: typeof HTMLElement;
   SVGElement: typeof SVGElement;
+  ShadowRoot: typeof ShadowRoot;
   MutationObserver: typeof MutationObserver;
 };
 type MinimalJSDOM = { window: DomWindow & { close(): void } };
@@ -57,6 +58,7 @@ beforeAll(async () => {
     Element: domWindow.Element,
     HTMLElement: domWindow.HTMLElement,
     SVGElement: domWindow.SVGElement,
+    ShadowRoot: domWindow.ShadowRoot,
     MutationObserver: domWindow.MutationObserver,
   };
   for (const name of domGlobalNames) {
@@ -93,9 +95,9 @@ beforeAll(async () => {
     .replace(/export default\s+/, "return ");
   const compileComponent = new Function(
     "vueRuntime", "vueI18n", "antDesign", "EmptyState",
-    `const { defineComponent: _defineComponent, unref: _unref, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, computed, ref } = vueRuntime;
+    `const { defineComponent: _defineComponent, unref: _unref, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, computed, ref, watch } = vueRuntime;
 const { useI18n } = vueI18n;
-const { Tabs: ATabs, Tag: ATag, Table: ATable, Typography: ATypography } = antDesign;
+const { Alert: AAlert, Button: AButton, Input: AInput, Select: ASelect, TabPane: ATabPane, Tabs: ATabs, Tag: ATag, Table: ATable, Typography: ATypography } = antDesign;
 ${moduleBody}`,
   ) as (
     vueRuntime: typeof vue,

@@ -1,8 +1,9 @@
 import type { ContractProject } from "../contract/workspace.js";
-import type { AuthBinding, InlineAuthBinding, SecretRef } from "../contract/model.js";
+import type { ApiAsset, ApiRequest, AuthBinding, InlineAuthBinding, SecretRef } from "../contract/model.js";
+import type { DeepReadonly } from "./snapshot.js";
 import { cloneDefinitionValue } from "./context.js";
 
-function secretRefForInlineAuth(auth: InlineAuthBinding): SecretRef | undefined {
+function secretRefForInlineAuth(auth: DeepReadonly<InlineAuthBinding>): DeepReadonly<SecretRef> | undefined {
   switch (auth.kind) {
     case "bearer": return auth.token;
     case "basic": return auth.password;
@@ -11,17 +12,23 @@ function secretRefForInlineAuth(auth: InlineAuthBinding): SecretRef | undefined 
   }
 }
 
-function secretRefForBinding(auth: AuthBinding): SecretRef | undefined {
+function secretRefForBinding(auth: DeepReadonly<AuthBinding>): DeepReadonly<SecretRef> | undefined {
   return auth.kind === "componentRef" ? undefined : secretRefForInlineAuth(auth);
 }
 
-function visitProjectSecretRefs(project: ContractProject, visit: (ref: SecretRef) => void): void {
-  const visitApi = (api: ContractProject["collections"][number]["apis"][number]) => {
-    const ref = secretRefForBinding(api.contract.request.auth);
+function visitProjectSecretRefs(project: DeepReadonly<ContractProject>, visit: (ref: DeepReadonly<SecretRef>) => void): void {
+  const visitRequest = (request: DeepReadonly<ApiRequest>) => {
+    const ref = secretRefForBinding(request.auth);
     if (ref) visit(ref);
   };
+  const visitApi = (api: DeepReadonly<ApiAsset>) => {
+    visitRequest(api.contract.request);
+    for (const testCase of api.cases) {
+      if (testCase.requestOverride) visitRequest(testCase.requestOverride);
+    }
+  };
 
-  const visitFolder = (folder: ContractProject["collections"][number]["folders"][number]): void => {
+  const visitFolder = (folder: DeepReadonly<ContractProject["collections"][number]["folders"][number]>): void => {
     for (const api of folder.apis) visitApi(api);
     for (const child of folder.folders) visitFolder(child);
   };
@@ -36,6 +43,12 @@ function visitProjectSecretRefs(project: ContractProject, visit: (ref: SecretRef
     const ref = secretRefForInlineAuth(component.definition);
     if (ref) visit(ref);
   }
+}
+
+export function collectDefinedProjectCredentialRefs(project: DeepReadonly<ContractProject>): SecretRef[] {
+  const refs = new Map<string, SecretRef>();
+  visitProjectSecretRefs(project, (ref) => refs.set(ref.id, { id: ref.id, policy: ref.policy }));
+  return [...refs.values()];
 }
 
 export function rotateProjectSecretRefs(
@@ -64,7 +77,7 @@ export function rotateProjectSecretRefs(
   visitProjectSecretRefs(candidate, (ref) => {
     const targetRefId = mappedIds.get(ref.id);
     if (targetRefId === undefined) throw new TypeError("SecretRef ID mapping is incomplete.");
-    ref.id = targetRefId;
+    (ref as SecretRef).id = targetRefId;
   });
   return candidate;
 }

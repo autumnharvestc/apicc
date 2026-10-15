@@ -176,6 +176,9 @@ importers:
       jsonpath-plus:
         specifier: ^10.4.0
         version: 10.4.0
+      tough-cookie:
+        specifier: 6.0.2
+        version: 6.0.2
       ulid:
         specifier: ^3.0.2
         version: 3.0.2

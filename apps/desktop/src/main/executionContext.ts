@@ -1,10 +1,15 @@
 import type { ApiAsset, Environment, ProjectSnapshot } from "@apicc/core";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ApiLocator } from "../shared/locations.js";
 
 /** Runtime-neutral helpers for resolving execution data from an immutable snapshot. */
 export function workspaceRunsDir(root: string): string {
   return join(root, ".apicc", "runs");
+}
+
+/** Stable owner key for the in-memory HTTP cookie jar; it never crosses IPC or disk. */
+export function debugHttpSessionKey(root: string, locator: Pick<ApiLocator, "workspaceId" | "groupId" | "projectId">, environmentId?: string): string {
+  return JSON.stringify([resolve(root), locator.workspaceId, locator.groupId, locator.projectId, environmentId ?? null]);
 }
 
 export function findSnapshotApi(snapshot: ProjectSnapshot, locator: ApiLocator): ApiAsset {

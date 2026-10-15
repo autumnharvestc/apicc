@@ -121,6 +121,14 @@ export function createMcpServer(root: string, options: McpServerOptions = {}): M
             location.project,
             [location.api],
             credentialOptions,
+            undefined,
+            undefined,
+            [{
+              collectionId: location.collection.id,
+              apiId: location.api.contract.id,
+              caseId: testCase.id,
+              scope: testCase.scope,
+            }],
           );
           sanitizer = createOutputSanitizer(prepared.secrets);
           const runner = new CollectionRunner({

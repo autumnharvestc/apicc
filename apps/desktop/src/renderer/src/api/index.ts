@@ -1,8 +1,10 @@
+/// <reference types="vite/client" />
+
 import type { ApiccApi } from "../../../shared/types.js";
 
 /**
  * 渲染层 API 单例：Electron 内取 preload 暴露的 window.apicc（IPC 契约）；
- * vitest（jsdom 无 preload）与浏览器直开调试回退内存替身。
+ * 仅开发态（Vite DEV / vitest 无 preload）回退内存替身，生产态缺少 preload 时拒绝。
  *
  * Electron 路径统一深平化入参（withPlainArgs）：store 返回的 Pinia/Vue 状态是
  * Proxy，跨 contextBridge 结构化克隆即抛「An object could not be cloned」
@@ -49,7 +51,14 @@ export function withPlainArgs(api: ApiccApi): ApiccApi {
 
 function lazyMemoryApi(): ApiccApi {
   let impl: Promise<ApiccApi> | null = null;
-  const load = () => (impl ??= import("./memory.js").then((m) => m.createMemoryApi()));
+  const load = () => {
+    if (impl) return impl;
+    if (!import.meta.env.DEV) {
+      return Promise.reject(new Error("The Electron preload API is unavailable; the memory API is development-only."));
+    }
+    impl = import("./memory.js").then((m) => m.createMemoryApi());
+    return impl;
+  };
   return new Proxy({} as ApiccApi, {
     get(_target, prop: string) {
       return async (...args: unknown[]) => {

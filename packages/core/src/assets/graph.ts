@@ -1,6 +1,7 @@
 import type {
   ApiAsset,
   ApiContract,
+  ApiRequest,
   AuthBinding,
   ComponentAsset,
   ExampleBinding,
@@ -11,6 +12,12 @@ import type {
   ResponseDefinition,
 } from "../contract/model.js";
 import type { SchemaNode } from "../contract/schemaNode.js";
+
+type DeepReadonlyValue<T> = T extends readonly (infer Item)[]
+  ? readonly DeepReadonlyValue<Item>[]
+  : T extends object
+    ? { readonly [Key in keyof T]: DeepReadonlyValue<T[Key]> }
+    : T;
 
 export type AssetReferenceKind = "model" | ComponentAsset["kind"];
 
@@ -31,22 +38,33 @@ export function referencesFromApiAsset(asset: ApiAsset): AssetReference[] {
   const references: AssetReference[] = [];
   const { contract } = asset;
   const ownerId = contract.id;
-  const request = contract.request;
+  references.push(...referencesFromApiRequest(contract.request, ownerId));
+  asset.cases.forEach((testCase, index) => {
+    if (testCase.requestOverride) {
+      references.push(...referencesFromApiRequest(testCase.requestOverride, ownerId, `cases[${index}].requestOverride`));
+    }
+  });
+  contract.responses.forEach((response, index) => collectResponseReferences(response, `contract.responses[${index}]`, ownerId, references));
+  return references;
+}
 
-  collectParameterReferences(request.pathParams, "contract.request.pathParams", ownerId, references);
-  collectParameterReferences(request.query, "contract.request.query", ownerId, references);
-  collectParameterReferences(request.headers, "contract.request.headers", ownerId, references);
-  collectParameterReferences(request.cookies, "contract.request.cookies", ownerId, references);
-  collectAuthReference(request.auth, "contract.request.auth", ownerId, references);
-
+export function referencesFromApiRequest(
+  request: DeepReadonlyValue<ApiRequest>,
+  ownerId: string,
+  path = "contract.request",
+): AssetReference[] {
+  const references: AssetReference[] = [];
+  collectParameterReferences(request.pathParams, `${path}.pathParams`, ownerId, references);
+  collectParameterReferences(request.query, `${path}.query`, ownerId, references);
+  collectParameterReferences(request.headers, `${path}.headers`, ownerId, references);
+  collectParameterReferences(request.cookies, `${path}.cookies`, ownerId, references);
+  collectAuthReference(request.auth, `${path}.auth`, ownerId, references);
   if (request.protocol === "http") {
     const body = request.body;
     if (body.kind === "json" || body.kind === "xml" || body.kind === "text") {
-      if (body.schema) collectSchemaReferences(body.schema, "contract.request.body.schema", ownerId, references);
+      if (body.schema) collectSchemaReferences(body.schema, `${path}.body.schema`, ownerId, references);
     }
   }
-
-  contract.responses.forEach((response, index) => collectResponseReferences(response, `contract.responses[${index}]`, ownerId, references));
   return references;
 }
 
@@ -75,7 +93,7 @@ export function collectProjectAssetReferences(input: ProjectAssetGraphInput): As
 }
 
 function collectParameterReferences(
-  parameters: ParameterBinding[],
+  parameters: readonly DeepReadonlyValue<ParameterBinding>[],
   path: string,
   ownerId: string,
   references: AssetReference[],
@@ -89,7 +107,7 @@ function collectParameterReferences(
   });
 }
 
-function collectAuthReference(auth: AuthBinding, path: string, ownerId: string, references: AssetReference[]): void {
+function collectAuthReference(auth: DeepReadonlyValue<AuthBinding>, path: string, ownerId: string, references: AssetReference[]): void {
   if (auth.kind === "componentRef") {
     references.push({ ownerId, path: `${path}.componentId`, targetId: auth.componentId, expectedKind: "auth" });
   }
@@ -135,10 +153,10 @@ function collectExampleReference(example: ExampleBinding, path: string, ownerId:
   }
 }
 
-function collectSchemaReferences(schema: SchemaNode, path: string, ownerId: string, references: AssetReference[]): AssetReference[] {
+function collectSchemaReferences(schema: DeepReadonlyValue<SchemaNode>, path: string, ownerId: string, references: AssetReference[]): AssetReference[] {
   const ancestors = new WeakSet<object>();
 
-  const visit = (node: SchemaNode, nodePath: string): void => {
+  const visit = (node: DeepReadonlyValue<SchemaNode>, nodePath: string): void => {
     if (ancestors.has(node)) return;
     ancestors.add(node);
     try {

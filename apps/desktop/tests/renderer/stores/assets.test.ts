@@ -138,8 +138,8 @@ describe("assets store", () => {
     secondDetail.api.contract.request.query.push({
       kind: "componentRef", id: "22222222-2222-4222-8222-222222222222", componentId: component.id, expectedKind: "parameter",
     });
-    await fixture.api.apiSave(fixture.apiLocator, firstDetail.api);
-    await fixture.api.apiSave(secondApi.locator, secondDetail.api);
+    await fixture.api.apiSave(fixture.apiLocator, firstDetail.api, firstDetail.sourceApiRevision);
+    await fixture.api.apiSave(secondApi.locator, secondDetail.api, secondDetail.sourceApiRevision);
     component.description = "one shared component source";
     await assets.saveComponent({ ...fixture.projectLocator, componentKind: "parameter", componentId: component.id }, component);
 

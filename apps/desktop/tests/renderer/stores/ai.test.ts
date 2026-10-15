@@ -242,9 +242,9 @@ describe("ai store：勾选采用与丢弃（裁定③④，沿用任务 1 语�
     const before = ctx.editor.api!.cases.length;
     let saveCalls = 0;
     const original = ctx.api.apiSave.bind(ctx.api);
-    ctx.api.apiSave = async (locator, asset) => {
+    ctx.api.apiSave = async (locator, asset, revision) => {
       saveCalls += 1;
-      return original(locator, asset);
+      return original(locator, asset, revision);
     };
     ctx.ai.toggleSelect(ctx.ai.suggestions![0]!.id);
     const beforeReadOnlyAdopt = JSON.parse(JSON.stringify(ctx.editor.api!.cases)) as unknown;

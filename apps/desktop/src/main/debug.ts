@@ -1,5 +1,5 @@
 import type { ApiAsset, CaseOutcome, Environment, PluginRegistry, Project, ProjectSnapshot, RunResult } from "@apicc/core";
-import { CollectionRunner, createDefaultRegistry, createEventBus, createProjectSnapshot, resolveExecutionEnvironment, selectEffectiveCases } from "@apicc/core";
+import { CollectionRunner, createDefaultRegistry, createEventBus, createHttpSession, createProjectSnapshot, resolveExecutionEnvironment, selectEffectiveCases } from "@apicc/core";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { findSnapshotApi, resolveSnapshotEnvironment, workspaceRunsDir } from "./executionContext.js";
@@ -7,8 +7,10 @@ export { findSnapshotApi, resolveSnapshotEnvironment, workspaceRunsDir } from ".
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
 import type { createSession } from "./session.js";
 import { createDesktopCredentialHost, type PreparedDesktopExecutionRun } from "./credentials.js";
+import type { DebugCredentialHost } from "./credentialHost.js";
 import type { DebugInput } from "../shared/types.js";
 import type { ResponseSnapshot } from "../shared/types.js";
+import { createDebugController } from "./debugController.js";
 
 type Session = ReturnType<typeof createSession>;
 
@@ -19,7 +21,6 @@ const timeouts = { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 };
 export interface DebugResult { run: RunResult; outcome: CaseOutcome; response?: ResponseSnapshot }
 
 type RegistrySource = PluginRegistry | (() => Promise<PluginRegistry>);
-type CredentialHost = Pick<ReturnType<typeof createDesktopCredentialHost>, "prepareRun">;
 
 /**
  * 集合运行（任务 6）：完整集合走 CollectionRunner（前置/后置脚本、断言、数据驱动、
@@ -31,7 +32,7 @@ export async function runCollection(
   session: Session,
   input: import("../shared/types.js").RunCollectionInput,
   registrySource: RegistrySource = defaultRegistry,
-  credentials: CredentialHost = createDesktopCredentialHost(session),
+  credentials: Pick<ReturnType<typeof createDesktopCredentialHost>, "prepareRunForRequests"> = createDesktopCredentialHost(session),
 ): Promise<RunResult> {
   const captured = {
     locator: { ...input.locator },
@@ -47,21 +48,28 @@ export async function runCollection(
   const executionEnvironment = resolveExecutionEnvironment(snapshot.project, collection.id, env?.id);
   const selectedAssets = collectCollectionApis(collection).filter((asset) =>
     selectEffectiveCases(asset.cases, executionEnvironment.chain).length > 0);
+  const credentialSelections = selectedAssets.flatMap((asset) =>
+    selectEffectiveCases(asset.cases, executionEnvironment.chain).map((testCase) => ({ asset, testCase })));
   let prepared: PreparedDesktopExecutionRun;
   try {
-    prepared = await credentials.prepareRun({
+    prepared = await credentials.prepareRunForRequests({
       workspaceId: captured.locator.workspaceId,
       groupId: captured.locator.groupId,
       projectId: captured.locator.projectId,
-    }, snapshot, selectedAssets);
+    }, snapshot, credentialSelections);
   } catch (error) {
     throw createExecutionOutputBoundary([]).error(error);
   }
   const boundary = createExecutionOutputBoundary(prepared.markers);
+  const httpSession = createHttpSession();
   try {
     const registry = typeof registrySource === "function" ? await registrySource() : registrySource;
     const runner = new CollectionRunner({ registry, bus: createEventBus(), timeouts, failFast: false });
-    const result = await runner.run(prepared.run, collection.id, env ? { environmentId: env.id } : {});
+    const result = await runner.run(prepared.run, collection.id, {
+      ...(env ? { environmentId: env.id } : {}),
+      workspaceRoot: root,
+      httpSession,
+    });
     const filename = `run-${collection.id}-${randomUUID()}.json`;
     const persisted = persistExecutionJson(
       join(workspaceRunsDir(root), filename),
@@ -72,6 +80,8 @@ export async function runCollection(
     return persisted.value;
   } catch (error) {
     throw boundary.error(error);
+  } finally {
+    await httpSession.close();
   }
 }
 function collectCollectionApis(collection: ProjectSnapshot["project"]["collections"][number]): ApiAsset[] {
@@ -106,7 +116,9 @@ export async function sendDebug(
   session: Session,
   input: DebugInput,
   registrySource: RegistrySource = defaultRegistry,
-  credentials: CredentialHost = createDesktopCredentialHost(session),
+  credentials: DebugCredentialHost = createDesktopCredentialHost(session),
+  controller = createDebugController(session, registrySource, credentials),
+  owner: object = {},
 ): Promise<DebugResult> {
   const capturedInput = {
     locator: { ...input.locator, folderIds: [...input.locator.folderIds] },
@@ -128,40 +140,80 @@ export async function sendDebug(
     const why = env ? `当前环境「${env.name}」的继承链不含该 scope` : "未选择环境";
     throw new Error(`用例「${capturedInput.caseId}」不适用于当前调试环境（${why}）`);
   }
-  let prepared: PreparedDesktopExecutionRun;
-  try {
-    prepared = await credentials.prepareRun({
-      workspaceId: capturedInput.locator.workspaceId,
-      groupId: capturedInput.locator.groupId,
-      projectId: capturedInput.locator.projectId,
-    }, snapshot, [asset]);
-  } catch (error) {
-    throw createExecutionOutputBoundary([]).error(error);
-  }
-  const output = createExecutionOutputBoundary(prepared.markers);
-  // 单用例调试只取最后一次 afterResponse 快照（事件可选增量 headers/bodyText，规格 §5.2）。
-  let response: ResponseSnapshot | undefined;
-  const bus = createEventBus();
-  const off = bus.on("afterResponse", (p) => {
-    response = { status: p.status, headers: p.headers ?? {}, bodyText: p.bodyText ?? "", timeMs: p.timeMs };
+  const { runId } = controller.start(owner, {
+    mode: "case",
+    locator: capturedInput.locator,
+    ...(env === undefined ? {} : { environmentId: env.id }),
+    case: { ...capturedInput.locator, caseId: target.id, scope: target.scope },
   });
+  let terminalFailureKind: string | undefined;
   try {
-    const registry = typeof registrySource === "function" ? await registrySource() : registrySource;
-    const runner = new CollectionRunner({ registry, bus, timeouts, failFast: false });
-    const run = await runner.run(prepared.run, collection.id, {
-      ...(env ? { environmentId: env.id } : {}),
-      caseSelection: { apiId: capturedInput.locator.apiId, caseId: target.id, folderIds: [...capturedInput.locator.folderIds] },
-    });
-    // env-scope 用例防护（宽审查修复 1）：无环境时 Runner 过滤掉非 base 用例 → run.cases
-    // 为空，直接取 [0] 会把 undefined 经 IPC 传给渲染层，打穿 ResponseViewer 模板。
-    if (run.cases.length === 0) {
-      throw new Error(`用例「${target.name}」不适用于当前调试环境`);
+    const result = await controller.wait(owner, runId);
+    const outcomes = result.outcomes.map(toLegacyOutcome);
+    const outcome = outcomes[0];
+    if (!outcome) {
+      terminalFailureKind = result.failureKind;
+      const message = result.error ?? (result.failureKind === "aborted"
+        ? "Debug execution was aborted."
+        : "Debug execution ended without a case outcome.");
+      const error = new Error(message);
+      if (result.errorName !== undefined) error.name = result.errorName;
+      throw error;
     }
-    const outcome = run.cases[0]!;
-    return output.value({ run, outcome, response });
+    if (result.run.identityAvailable !== true || result.run.collectionId === undefined) {
+      throw new Error("Debug result identity was withheld by safe projection.");
+    }
+    const run: RunResult = {
+      collectionId: result.run.collectionId,
+      collectionName: result.run.collectionName,
+      ...(result.run.envName === undefined ? {} : { envName: result.run.envName }),
+      startedAt: result.run.startedAt,
+      finishedAt: result.run.finishedAt,
+      total: result.run.total,
+      passed: result.run.passed,
+      failed: result.run.failed,
+      ...(result.run.skipped === undefined ? {} : { skipped: result.run.skipped }),
+      cases: outcomes,
+      ...(result.warnings.length === 0 ? {} : { warnings: result.warnings }),
+    };
+    const lastResponse = result.exchanges.slice().reverse().find((exchange) => exchange.response)?.response;
+    const response: ResponseSnapshot | undefined = lastResponse === undefined ? undefined : {
+      status: lastResponse.status,
+      headers: Object.fromEntries(lastResponse.headers.map(([name, value]) => [name.toLowerCase(), value])),
+      bodyText: lastResponse.body.kind === "text" ? lastResponse.body.text : "",
+      timeMs: result.exchanges.slice().reverse().find((exchange) => exchange.response)?.durationMs ?? 0,
+    };
+    return { run, outcome, ...(response === undefined ? {} : { response }) };
   } catch (error) {
-    throw output.error(error);
-  } finally {
-    off();
+    const safeError = createExecutionOutputBoundary([]).error(error);
+    if (terminalFailureKind !== undefined) {
+      Object.defineProperty(safeError, "failureKind", {
+        value: terminalFailureKind,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      });
+    }
+    throw safeError;
   }
+}
+
+function toLegacyOutcome(outcome: import("@apicc/core").DebugOutcome): CaseOutcome {
+  if (!outcome.identityAvailable || outcome.apiId === undefined || outcome.caseId === undefined) {
+    throw new Error("Debug result identity was withheld by safe projection.");
+  }
+  return {
+    apiId: outcome.apiId,
+    apiName: outcome.apiName,
+    caseId: outcome.caseId,
+    caseName: outcome.caseName,
+    ...(outcome.row === undefined ? {} : { row: outcome.row }),
+    passed: outcome.passed,
+    ...(outcome.skipped === undefined ? {} : { skipped: outcome.skipped }),
+    ...(outcome.skipReason === undefined ? {} : { skipReason: outcome.skipReason }),
+    durationMs: outcome.durationMs,
+    assertions: outcome.assertions,
+    ...(outcome.error === undefined ? {} : { error: outcome.error }),
+    ...(outcome.failureKind === undefined ? {} : { failureKind: outcome.failureKind }),
+  };
 }

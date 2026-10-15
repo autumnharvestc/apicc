@@ -23,6 +23,7 @@ interface MaterializedCommon {
   headers: Record<string, string>;
   query: KeyValuePair[];
   auth: RuntimeAuth;
+  cookieHeaderMode?: "none" | "explicit" | "parameters";
 }
 
 export type MaterializedRequest =
@@ -34,8 +35,9 @@ export function materializeRequest(
   contract: DeepReadonly<ApiContract>,
   context: ProjectAssetContextReadView,
   inputs: MaterializeInputs,
+  effectiveRequest: DeepReadonly<ApiRequest> = contract.request,
 ): MaterializedRequest {
-  const gate = context.checkGate("execution", contract.id);
+  const gate = context.checkGate("execution", contract.id, effectiveRequest);
   if (!gate.ok) {
     throw Object.assign(
       new RequestMaterializationError("ASSET_EXECUTION_BLOCKED", "The request has unresolved asset dependencies."),
@@ -43,7 +45,7 @@ export function materializeRequest(
     );
   }
 
-  const request = contract.request;
+  const request = effectiveRequest;
   const pathParams = materializeParameters(request.pathParams, "path", context, inputs.resolve);
   const path = materializePath(request.path, pathParams, inputs.resolve);
   const requestBaseUrl = inputs.resolve(request.baseUrl);
@@ -56,14 +58,19 @@ export function materializeRequest(
   const cookieParams = materializeParameters(request.cookies, "cookie", context, inputs.resolve);
   const query = mergeQuery(queryParams, inputs.globals.query ?? [], inputs.resolve);
   const { headers, explicitCookieHeader } = mergeHeaders(headerParams, inputs.globals.headers ?? [], inputs.resolve);
+  let cookieHeaderMode: MaterializedCommon["cookieHeaderMode"];
   if (explicitCookieHeader !== undefined) {
     headers.Cookie = explicitCookieHeader;
+    cookieHeaderMode = "explicit";
   } else {
     const cookies = mergeCookies(cookieParams, inputs.globals.cookies ?? [], inputs.resolve);
-    if (cookies !== undefined) headers.Cookie = cookies;
+    if (cookies !== undefined) {
+      headers.Cookie = cookies;
+      cookieHeaderMode = "parameters";
+    }
   }
   const auth = materializeAuth(request.auth, context, inputs);
-  const common: MaterializedCommon = { url, headers, query, auth };
+  const common: MaterializedCommon = { url, headers, query, auth, ...(cookieHeaderMode === undefined ? {} : { cookieHeaderMode }) };
 
   switch (request.protocol) {
     case "http": {

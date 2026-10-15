@@ -2,13 +2,19 @@ import {
   ApiAssetSchema,
   ContractProjectSchema,
   CredentialError,
+  collectCredentialMarkersForRequests,
+  collectCredentialRefsForRequests,
   collectCredentialOutputMarkers,
   collectProjectCredentialRefs,
+  getEffectiveCaseRequest,
   prepareCredentialBindings,
+  selectCredentialRequests,
   type ApiAsset,
+  type ApiRequest,
   type ContractFolder,
   type ContractProject,
   type CredentialScope,
+  type CredentialRequestSelection,
   type DeepReadonly,
   type ProjectExecutionRun,
   type ProjectSnapshot,
@@ -16,6 +22,7 @@ import {
   type SecretStore,
 } from "@apicc/core";
 import { ProjectLocatorSchema } from "../shared/locations.js";
+import type { ApiLocator } from "../shared/locations.js";
 import {
   CredentialPutInputSchema,
   CredentialRefInputSchema,
@@ -26,7 +33,7 @@ import {
   type CredentialStatusResult,
   type DesktopCredentialErrorCode,
 } from "../shared/credentials.js";
-import type { createSession } from "./session.js";
+import type { createSession, DraftWriteContext } from "./session.js";
 
 type Session = ReturnType<typeof createSession>;
 
@@ -37,6 +44,8 @@ export interface PreparedDesktopExecutionRun {
 }
 
 export type CredentialHost = Pick<ReturnType<typeof createCredentialHost>, "prepareRun">;
+export type DebugCredentialHost = Pick<ReturnType<typeof createCredentialHost>, "prepareRunForRequests">;
+export type DraftCredentialGuardHost = Pick<ReturnType<typeof createCredentialHost>, "getKnownCredentialLiterals">;
 
 const SUPPORTED_POLICY = "test-auto";
 
@@ -225,10 +234,99 @@ export function createCredentialHost(session: Session, getSecretStore: () => Sec
     }
   }
 
+  async function prepareRunForRequests(
+    scopeValue: CredentialScope,
+    snapshotValue: ProjectSnapshot,
+    selectionsValue: readonly CredentialRequestSelection[],
+  ): Promise<PreparedDesktopExecutionRun> {
+    const parsedScope = ProjectLocatorSchema.safeParse(scopeValue);
+    if (!parsedScope.success || !isSnapshot(snapshotValue) || !Array.isArray(selectionsValue)
+      || parsedScope.data.projectId !== snapshotValue.project.id) throw invalidPreparation();
+
+    let requests: ReturnType<typeof selectCredentialRequests>;
+    try {
+      requests = selectCredentialRequests(snapshotValue, selectionsValue);
+    } catch {
+      throw invalidPreparation();
+    }
+    const capturedScope: CredentialScope = Object.freeze({ ...parsedScope.data });
+    for (const selected of requests) {
+      const refs = collectCredentialRefsForRequests(snapshotValue.project, [selected]);
+      const unsupported = refs.find((ref) => ref.policy !== SUPPORTED_POLICY);
+      if (unsupported) throw new CredentialError("CREDENTIAL_POLICY_UNSUPPORTED", unsupported.id);
+    }
+    const refs: SecretRef[] = collectCredentialRefsForRequests(snapshotValue.project, requests)
+      .map((ref) => ({ id: ref.id, policy: ref.policy }));
+
+    try {
+      const bindings = await prepareCredentialBindings(capturedScope, refs, refs.length === 0 ? undefined as unknown as SecretStore : getSecretStore());
+      const markers = collectCredentialMarkersForRequests(snapshotValue.project, requests, bindings);
+      const run: ProjectExecutionRun = Object.freeze({ snapshot: snapshotValue, credentialBindings: bindings });
+      return { run, refs: Object.freeze(refs.map((ref) => Object.freeze({ ...ref }))), markers: Object.freeze([...markers]) };
+    } catch (error) {
+      const requestedRef = error instanceof CredentialError
+        ? refs.find((ref) => ref.id === error.refId)?.id ?? refs[0]?.id ?? ""
+        : refs[0]?.id ?? "";
+      const failureCode = error instanceof CredentialError && credentialCodes.has(error.code)
+        ? error.code
+        : "CREDENTIAL_UNAVAILABLE";
+      throw new CredentialError(failureCode, requestedRef);
+    }
+  }
+
+  async function getKnownCredentialLiterals(
+    locatorValue: ApiLocator,
+    candidateRequestValue: ApiRequest | readonly ApiRequest[],
+    draftWriteContext: DraftWriteContext,
+  ): Promise<readonly string[]> {
+    session.assertDraftWriteContext(draftWriteContext);
+    const candidateRequests: readonly ApiRequest[] = Array.isArray(candidateRequestValue)
+      ? candidateRequestValue
+      : [candidateRequestValue as ApiRequest];
+    const locator = ProjectLocatorSchema.parse({
+      workspaceId: locatorValue.workspaceId,
+      groupId: locatorValue.groupId,
+      projectId: locatorValue.projectId,
+    });
+    const location = session.locateApi(locatorValue);
+    if (!location || location.project.id !== locator.projectId) throw new Error("The API context is unavailable for draft credential checks.");
+    const assets = collectSnapshotAssets(location.project);
+    const selections = assets.flatMap((asset) => [
+      { asset, request: asset.contract.request },
+      ...asset.cases.map((testCase) => ({ asset, request: getEffectiveCaseRequest(asset, testCase) })),
+    ]);
+    const refs = new Map<string, SecretRef>();
+    for (const ref of collectCredentialRefsForRequests(location.project, [
+      ...selections,
+      ...candidateRequests.map((request) => ({ asset: location.api, request })),
+    ])) refs.set(ref.id, ref);
+    const supported = [...refs.values()].filter((ref) => ref.policy === SUPPORTED_POLICY);
+    if (supported.length === 0) return [];
+    const scope: CredentialScope = Object.freeze({ workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId });
+    const store = getSecretStore();
+    const literals = new Set<string>();
+    for (const ref of supported) {
+      try {
+        const state = await store.status(scope, ref);
+        session.assertDraftWriteContext(draftWriteContext);
+        if (state !== "available") continue;
+        const value = await store.resolve(scope, ref);
+        session.assertDraftWriteContext(draftWriteContext);
+        if (value.length > 0) literals.add(value);
+      } catch {
+        session.assertDraftWriteContext(draftWriteContext);
+        // An unavailable secret is not a known literal; ordinary draft editing remains possible.
+      }
+    }
+    return Object.freeze([...literals]);
+  }
+
   return {
     put: (input: CredentialPutInput) => mutate(input, "put"),
     remove: (input: CredentialRefInput) => mutate(input, "remove"),
     status,
     prepareRun,
+    prepareRunForRequests,
+    getKnownCredentialLiterals,
   };
 }

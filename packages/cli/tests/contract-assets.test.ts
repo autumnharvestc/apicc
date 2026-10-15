@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -9,6 +10,7 @@ import { CredentialError, createDefaultRegistry, createProjectSnapshot, fileStor
 import { createMcpServer } from "../src/mcp/server.js";
 import { prepareExecutionRun, stableCredentialError } from "../src/credentials.js";
 import { runCli } from "../src/main.js";
+import { spawnOwnedCliProcess } from "./helpers/ownedCliProcess.js";
 
 const groupA = "00000000-0000-4000-8000-000000000002";
 const groupB = "00000000-0000-4000-8000-000000000003";
@@ -30,7 +32,7 @@ let baseUrl = "";
 let root = "";
 let requestPath = "";
 let authorizationHeader = "";
-const observedRequests: Array<{ url: string; authorization: string }> = [];
+const observedRequests: Array<{ url: string; authorization: string; cookie?: string; body?: string }> = [];
 
 const deepApiPath = [
   "groups", groupA, "projects", projectId, "collections", collectionId,
@@ -176,11 +178,32 @@ function protoWorkerArgs(definitionRevision: string, credentialVersionsJson: str
 
 beforeAll(async () => {
   server = createServer((request, response) => {
-    requestPath = request.url ?? "";
-    authorizationHeader = request.headers.authorization ?? "";
-    observedRequests.push({ url: requestPath, authorization: authorizationHeader });
-    response.statusCode = 200;
-    response.end(JSON.stringify({ url: requestPath, authorization: authorizationHeader }));
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    request.on("end", () => {
+      requestPath = request.url ?? "";
+      authorizationHeader = request.headers.authorization ?? "";
+      const captureUpload = requestPath === "/child-override/child-parameter" || requestPath === "/cli-settings";
+      observedRequests.push({
+        url: requestPath,
+        authorization: authorizationHeader,
+        ...(captureUpload && request.headers.cookie ? { cookie: request.headers.cookie } : {}),
+        ...(captureUpload && chunks.length > 0 ? { body: Buffer.concat(chunks).toString("utf8") } : {}),
+      });
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      if (requestPath === "/cli-login") {
+        response.setHeader("set-cookie", "cli-run=ready; Path=/");
+        response.end(JSON.stringify({ url: requestPath, authorization: authorizationHeader }));
+      } else if (requestPath === "/cli-settings") {
+        setTimeout(() => {
+          if (!response.destroyed) response.end(JSON.stringify({ url: requestPath, authorization: authorizationHeader }));
+        }, 250);
+      } else {
+        if (captureUpload && !request.headers.cookie) response.setHeader("set-cookie", "cli-vu=ready; Path=/");
+        response.end(JSON.stringify({ url: requestPath, authorization: authorizationHeader }));
+      }
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -205,15 +228,69 @@ describe("contract workspace CLI/MCP consumption", () => {
     ];
     const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
     asset.contract.request.path = "/{{caseValue}}";
+    const childRequestOverride = structuredClone(asset.contract.request);
+    childRequestOverride.method = "POST";
+    childRequestOverride.path = "/child-override/{{caseValue}}";
+    childRequestOverride.auth = { kind: "bearer", token: { id: "effective-case-token", policy: "test-auto" } };
+    childRequestOverride.body = { kind: "binary", file: { path: ".apicc/fixture.bin" }, contentType: "application/octet-stream" };
     asset.cases = [
       { id: caseId, name: "base-version", scope: "base", parameters: { caseValue: "base-parameter" }, preOperations: [], postOperations: [], assertions: [] },
       { id: caseId, name: "parent-version", scope: "parent", parameters: { caseValue: "parent-parameter" }, preOperations: [], postOperations: [], assertions: [] },
-      { id: caseId, name: "child-version", scope: "child", parameters: { caseValue: "child-parameter" }, preOperations: [], postOperations: [], assertions: [] },
+      {
+        id: caseId, name: "child-version", scope: "child", parameters: { caseValue: "child-parameter" },
+        requestOverride: childRequestOverride,
+        requestSettingsOverride: { headersTimeoutMs: 500 },
+        preOperations: [], postOperations: [], assertions: [],
+      },
     ];
+    const loginCaseId = "cli-login-case";
+    const loginApiId = "00000000-0000-4000-8000-000000000092";
+    const loginApi = api(loginApiId, "login", "fixture run cookie", [{
+      id: loginCaseId, name: "login", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [],
+    }], "/cli-login");
+    loginApi.contract.request.baseUrl = baseUrl;
+    const settingsCaseId = "cli-settings-case";
+    const settingsApiId = "00000000-0000-4000-8000-000000000093";
+    const settingsApi = api(settingsApiId, "settings", "fixture selected timeout", [{
+      id: settingsCaseId, name: "selected timeout", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [],
+    }], "/default-settings");
+    settingsApi.contract.request.baseUrl = baseUrl;
+    const settingsOverride = structuredClone(settingsApi.contract.request);
+    settingsOverride.path = "/cli-settings";
+    settingsOverride.auth = { kind: "bearer", token: { id: "effective-case-token", policy: "test-auto" } };
+    settingsOverride.body = { kind: "binary", file: { path: ".apicc/fixture.bin" }, contentType: "application/octet-stream" };
+    settingsApi.cases[0]!.requestOverride = settingsOverride;
+    settingsApi.cases[0]!.requestSettingsOverride = { headersTimeoutMs: 80 };
+    project.collections[0]!.apis = [loginApi, settingsApi];
+    project.workflows = [{
+      id: "00000000-0000-4000-8000-000000000091",
+      name: "consume-effective-case",
+      status: "enabled",
+      nodes: [
+        { id: "login-node", kind: "request", apiId: loginApiId, caseId: loginCaseId },
+        { id: "effective-case-node", kind: "request", apiId: deepApiId, caseId },
+        { id: "settings-node", kind: "request", apiId: settingsApiId, caseId: settingsCaseId },
+      ],
+      edges: [
+        { id: "login-to-upload", from: "login-node", to: "effective-case-node" },
+        { id: "upload-to-settings", from: "effective-case-node", to: "settings-node" },
+      ],
+    }];
     const initial = await fileStorage.load(fixtureRoot);
     await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    mkdirSync(join(fixtureRoot, ".apicc"), { recursive: true });
+    const payload = "synthetic-cli-binary-payload";
+    writeFileSync(join(fixtureRoot, ".apicc", "fixture.bin"), payload);
     const runsDir = join(fixtureRoot, ".apicc", "runs");
     const collectionPath = `groups/${groupA}/projects/${projectId}/collections/${collectionId}`;
+    const workflowPath = `groups/${groupA}/projects/${projectId}/workflows/00000000-0000-4000-8000-000000000091`;
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) { expect(ref.id).toBe("effective-case-token"); return "synthetic-effective-case-token"; },
+      async version() { return "effective-case-token-v1"; },
+      async remove() {},
+      async status() { return "available"; },
+    };
     const previousCwd = process.cwd();
     let ancestorRoot: string | undefined;
     observedRequests.length = 0;
@@ -221,21 +298,69 @@ describe("contract workspace CLI/MCP consumption", () => {
       process.chdir(fixtureRoot);
       const collectionCode = await runCli([
         "run", collectionPath, "--env", "child", "--runs-dir", runsDir,
-      ], createDefaultRegistry(), () => {}, { loadPlugins: false });
-      expect(collectionCode).toBe(0);
+      ], createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore });
+      expect(collectionCode).toBe(1);
       const runFiles = readdirSync(runsDir).filter((file) => file.startsWith("run-") && file.endsWith(".json"));
       expect(runFiles).toHaveLength(1);
-      const runReport = JSON.parse(readFileSync(join(runsDir, runFiles[0]!), "utf8")) as { cases: Array<{ caseName: string }> };
-      expect(runReport.cases.map((outcome) => outcome.caseName)).toEqual(["child-version"]);
-      expect(observedRequests.map((request) => request.url)).toEqual(["/child-parameter"]);
+      const runReport = JSON.parse(readFileSync(join(runsDir, runFiles[0]!), "utf8")) as { cases: Array<{ apiId: string; caseName: string; passed: boolean }> };
+      expect(runReport.cases.some((outcome) => outcome.caseName === "child-version" && outcome.passed)).toBe(true);
+      expect(runReport.cases.find((outcome) => outcome.apiId === settingsApiId)?.passed).toBe(false);
+      expect(observedRequests.map((request) => request.url)).toContain("/cli-settings");
+      expect(observedRequests.map((request) => request.url)).not.toContain("/default-settings");
+      expect(observedRequests.find((request) => request.url === "/cli-settings")).toMatchObject({
+        authorization: "Bearer synthetic-effective-case-token", body: payload,
+      });
+      expect(observedRequests.find((request) => request.url === "/child-override/child-parameter")).toMatchObject({
+        authorization: "Bearer synthetic-effective-case-token", cookie: "cli-run=ready", body: payload,
+      });
+
+      observedRequests.length = 0;
+      const workflowCode = await runCli([
+        "run-workflow", workflowPath, "--env", "child", "--runs-dir", runsDir,
+      ], createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore });
+      expect(workflowCode).toBe(1);
+      const workflowFile = readdirSync(runsDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"));
+      if (!workflowFile) throw new Error("workflow consumer report was not written");
+      const workflowReport = JSON.parse(readFileSync(join(runsDir, workflowFile), "utf8")) as {
+        nodeResults: Array<{ nodeId: string; state: string }>;
+      };
+      expect(workflowReport.nodeResults.find((node) => node.nodeId === "settings-node")?.state).toBe("failed");
+      expect(observedRequests.map((request) => request.url)).toContain("/cli-settings");
+      expect(observedRequests.map((request) => request.url)).not.toContain("/default-settings");
+      expect(observedRequests.find((request) => request.url === "/cli-settings")).toMatchObject({
+        authorization: "Bearer synthetic-effective-case-token", body: payload,
+      });
+      expect(observedRequests.find((request) => request.url === "/child-override/child-parameter")).toMatchObject({
+        authorization: "Bearer synthetic-effective-case-token", cookie: "cli-run=ready", body: payload,
+      });
 
       observedRequests.length = 0;
       const stressCode = await runCli([
-        "run-stress", deepApiPath, "--case", caseId, "--env", "child", "--concurrency", "1", "--iterations", "1",
+        "run-stress", deepApiPath, "--case", caseId, "--env", "child", "--concurrency", "1", "--iterations", "2",
         "--runs-dir", runsDir,
-      ], createDefaultRegistry(), () => {}, { loadPlugins: false });
+      ], createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore });
       expect(stressCode).toBe(0);
-      expect(observedRequests.map((request) => request.url)).toEqual(["/child-parameter"]);
+      const stressUploads = observedRequests.filter((request) => request.url === "/child-override/child-parameter");
+      expect(stressUploads).toHaveLength(2);
+      expect(stressUploads[0]).toMatchObject({ authorization: "Bearer synthetic-effective-case-token", body: payload });
+      expect(stressUploads[0]?.cookie).toBeUndefined();
+      expect(stressUploads[1]?.cookie).toContain("cli-vu=ready");
+
+      observedRequests.length = 0;
+      const settingsApiPath = `groups/${groupA}/projects/${projectId}/collections/${collectionId}/apis/${settingsApiId}`;
+      const settingsStressCode = await runCli([
+        "run-stress", settingsApiPath, "--case", settingsCaseId, "--env", "child", "--concurrency", "1", "--iterations", "1",
+        "--runs-dir", runsDir,
+      ], createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore });
+      const settingsStressFile = readdirSync(runsDir).find((file) => file.startsWith(`stress-${settingsApiId}-`) && file.endsWith(".json"));
+      if (!settingsStressFile) throw new Error("single-iteration settings stress report was not written");
+      const settingsStressReport = JSON.parse(readFileSync(join(runsDir, settingsStressFile), "utf8")) as { totalRequests: number; failed: number };
+      expect(settingsStressCode).toBe(1);
+      expect(observedRequests.map((request) => request.url)).toContain("/cli-settings");
+      expect(observedRequests.find((request) => request.url === "/cli-settings")).toMatchObject({
+        authorization: "Bearer synthetic-effective-case-token", body: payload,
+      });
+      expect(settingsStressReport).toMatchObject({ totalRequests: 1, failed: 1 });
 
       ancestorRoot = mkdtempSync(join(tmpdir(), "apicc-effective-case-ancestor-cli-"));
       const ancestorWorkspace = workspace();
@@ -269,6 +394,315 @@ describe("contract workspace CLI/MCP consumption", () => {
       observedRequests.length = 0;
       if (ancestorRoot) rmSync(ancestorRoot, { recursive: true, force: true });
       rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("runs a stored request override through the real CLI subprocess without changing the contract default", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-debug-case-cli-"));
+    const fixtureWorkspace = workspace();
+    const fixtureProject = fixtureWorkspace.groups[0]!.projects[0]!;
+    const asset = fixtureProject.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.path = "/default";
+    const requestOverride = structuredClone(asset.contract.request);
+    requestOverride.path = "/override";
+    asset.cases = [{
+      id: caseId,
+      name: "stored-override",
+      scope: "base",
+      parameters: {},
+      requestOverride,
+      requestSettingsOverride: { headersTimeoutMs: 500 },
+      preOperations: [],
+      postOperations: [],
+      assertions: [],
+    }];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    const previousRequests = observedRequests.splice(0);
+    const entry = fileURLToPath(new URL("../dist/bin.js", import.meta.url));
+    const appData = join(fixtureRoot, ".apicc", "app-data");
+    try {
+      const child = spawnOwnedCliProcess({
+        command: process.execPath,
+        args: [
+        entry,
+        "--no-plugins",
+        "debug",
+        deepApiPath,
+        "--root",
+        fixtureRoot,
+        "--case",
+        caseId,
+        "--scope",
+        "base",
+        ],
+        cwd: tmpdir(),
+        env: { ...process.env, APPDATA: appData },
+      });
+      const childResult = await child.result;
+      expect(childResult.termination).toBe("exit");
+      expect(childResult.exitCode, childResult.stderr || childResult.stdout).toBe(0);
+      expect(childResult.stderr).toBe("");
+      const result = JSON.parse(childResult.stdout) as {
+        run: { failed: number; passed: number };
+        exchanges: Array<{ request?: { url?: string }; settings: { headersTimeoutMs: number } }>;
+      };
+      expect(result.run).toMatchObject({ passed: 1, failed: 0 });
+      expect(result.exchanges[0]?.request?.url).toBe(`${baseUrl}/override`);
+      expect(result.exchanges[0]?.settings.headersTimeoutMs).toBe(500);
+      expect(observedRequests.map((request) => request.url)).toEqual(["/override"]);
+      const recordsDirectory = join(appData, "apicc", "debug-history", "records");
+      const historyRecordCount = (): number => !existsSync(recordsDirectory) ? 0 : readdirSync(recordsDirectory)
+        .reduce((total, owner) => total + readdirSync(join(recordsDirectory, owner)).filter((file) => file.endsWith(".json")).length, 0);
+      expect(historyRecordCount()).toBe(1);
+
+      const reloaded = await fileStorage.load(fixtureRoot);
+      const reloadedApi = reloaded.workspace.groups[0]!.projects[0]!.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+      expect(reloadedApi.contract.request.path).toBe("/default");
+
+      mkdirSync(join(fixtureRoot, ".apicc"), { recursive: true });
+      const requestFile = join(fixtureRoot, ".apicc", "debug-request.json");
+      const request = structuredClone(reloadedApi.contract.request);
+      request.path = "/request-file";
+      writeFileSync(requestFile, JSON.stringify(request), "utf8");
+      observedRequests.length = 0;
+      const requestChild = spawnOwnedCliProcess({
+        command: process.execPath,
+        args: [
+          entry,
+          "--no-plugins",
+          "debug",
+          deepApiPath,
+          "--root",
+          fixtureRoot,
+          "--request",
+          ".apicc/debug-request.json",
+          "--settings",
+          JSON.stringify({ headersTimeoutMs: 500 }),
+          "--no-history",
+        ],
+        cwd: tmpdir(),
+        env: { ...process.env, APPDATA: appData },
+      });
+      const requestResult = await requestChild.result;
+      expect(requestResult.termination).toBe("exit");
+      expect(requestResult.exitCode, requestResult.stderr || requestResult.stdout).toBe(0);
+      expect(requestResult.stderr).toBe("");
+      const requestDebug = JSON.parse(requestResult.stdout) as {
+        run: { failed: number; passed: number };
+        exchanges: Array<{ request?: { url?: string }; settings: { headersTimeoutMs: number } }>;
+      };
+      expect(requestDebug.run).toMatchObject({ passed: 1, failed: 0 });
+      expect(requestDebug.exchanges[0]?.request?.url).toBe(`${baseUrl}/request-file`);
+      expect(requestDebug.exchanges[0]?.settings.headersTimeoutMs).toBe(500);
+      expect(observedRequests.map((request) => request.url)).toEqual(["/request-file"]);
+      expect(historyRecordCount()).toBe(1);
+    } finally {
+      observedRequests.splice(0);
+      observedRequests.push(...previousRequests);
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("manages an override-only credential ref without binding an unselected case", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-override-management-cli-"));
+    const fixtureWorkspace = workspace();
+    const fixtureProject = fixtureWorkspace.groups[0]!.projects[0]!;
+    const asset = fixtureProject.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.path = "/default-management";
+    asset.contract.request.auth = { kind: "none" };
+    const override = structuredClone(asset.contract.request);
+    override.path = "/inactive-override";
+    override.auth = { kind: "bearer", token: { id: "management-override-only-ref", policy: "test-auto" } };
+    asset.cases = [
+      { id: caseId, name: "base selected", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] },
+      { id: caseId, name: "inactive override", scope: "inactive", parameters: {}, requestOverride: override, preOperations: [], postOperations: [], assertions: [] },
+    ];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    const projectPath = `groups/${groupA}/projects/${projectId}`;
+    const collectionPath = `groups/${groupA}/projects/${projectId}/collections/${collectionId}`;
+    const values = new Map<string, string>();
+    const calls: string[] = [];
+    const secretStore: SecretStore = {
+      async put(_scope, ref, value) { calls.push(`put:${ref.id}`); values.set(ref.id, value); },
+      async resolve(_scope, ref) { calls.push(`resolve:${ref.id}`); return values.get(ref.id) ?? null; },
+      async version(_scope, ref) { calls.push(`version:${ref.id}`); return values.has(ref.id) ? "v1" : "missing"; },
+      async remove(_scope, ref) { calls.push(`remove:${ref.id}`); values.delete(ref.id); },
+      async status(_scope, ref) { calls.push(`status:${ref.id}`); return values.has(ref.id) ? "available" : "missing"; },
+    };
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(fixtureRoot);
+      const saved = await runCli(["credentials", "save", projectPath, "management-override-only-ref"], createDefaultRegistry(), () => {}, {
+        loadPlugins: false, secretStore, secretInput: async () => "synthetic-override-management-secret",
+      });
+      const status = await runCli(["credentials", "status", projectPath, "management-override-only-ref"], createDefaultRegistry(), () => {}, {
+        loadPlugins: false, secretStore,
+      });
+      expect(saved).toBe(0);
+      expect(status).toBe(0);
+      expect(calls).toEqual(["put:management-override-only-ref", "status:management-override-only-ref"]);
+
+      calls.length = 0;
+      observedRequests.length = 0;
+      const runCode = await runCli(["run", collectionPath, "--env", "dev", "--runs-dir", join(fixtureRoot, ".apicc", "runs")], createDefaultRegistry(), () => {}, {
+        loadPlugins: false, secretStore,
+      });
+      expect(runCode).toBe(0);
+      expect(calls).toEqual([]);
+      expect(observedRequests.map((request) => request.url)).toEqual(["/default-management"]);
+      expect(observedRequests[0]?.authorization).toBe("");
+    } finally {
+      process.chdir(previousCwd);
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns and records a failed debug terminal result when selected credentials are missing", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-debug-preparation-failure-"));
+    const fixtureWorkspace = workspace();
+    const fixtureProject = fixtureWorkspace.groups[0]!.projects[0]!;
+    const asset = fixtureProject.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.path = "/default-unbound";
+    asset.contract.request.auth = { kind: "none" };
+    const override = structuredClone(asset.contract.request);
+    override.path = "/must-not-send-missing-credential";
+    override.auth = { kind: "bearer", token: { id: "selected-but-missing-ref", policy: "test-auto" } };
+    asset.cases = [{ id: caseId, name: "selected override", scope: "base", parameters: {}, requestOverride: override, preOperations: [], postOperations: [], assertions: [] }];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    const logs: string[] = [];
+    const appData = join(fixtureRoot, ".apicc", "app-data");
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) { throw new CredentialError("CREDENTIAL_MISSING", ref.id); },
+      async version(_scope, ref) { throw new CredentialError("CREDENTIAL_MISSING", ref.id); },
+      async remove() {},
+      async status() { return "missing"; },
+    };
+    const previousCwd = process.cwd();
+    const previousExitCode = process.exitCode;
+    try {
+      process.chdir(fixtureRoot);
+      observedRequests.length = 0;
+      let thrown: unknown;
+      let code: number | undefined;
+      try {
+        code = await runCli(["debug", deepApiPath, "--case", caseId, "--scope", "base"], createDefaultRegistry(), (line) => logs.push(line), {
+          loadPlugins: false, secretStore, debugHistoryAppDataDirectory: appData,
+        });
+      } catch (error) { thrown = error; }
+      expect(thrown).toBeUndefined();
+      expect(code).toBe(1);
+      expect(logs).toHaveLength(1);
+      const result = JSON.parse(logs[0]!) as { failureKind?: string; run: { total: number; failed: number } };
+      expect(result).toMatchObject({ failureKind: "config", run: { total: 0, failed: 0 } });
+      expect(JSON.stringify(result)).not.toContain("selected-but-missing-ref");
+      expect(observedRequests).toEqual([]);
+      const recordsDirectory = join(appData, "apicc", "debug-history", "records");
+      const records = !existsSync(recordsDirectory) ? [] : readdirSync(recordsDirectory)
+        .flatMap((owner) => readdirSync(join(recordsDirectory, owner)).filter((file) => file.endsWith(".json")));
+      expect(records).toHaveLength(1);
+    } finally {
+      process.chdir(previousCwd);
+      process.exitCode = previousExitCode;
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns an aborted debug terminal result when cancellation wins during credential preparation", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-debug-preparation-abort-"));
+    const fixtureWorkspace = workspace();
+    const fixtureProject = fixtureWorkspace.groups[0]!.projects[0]!;
+    const asset = fixtureProject.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.path = "/default-abort";
+    asset.contract.request.auth = { kind: "none" };
+    const override = structuredClone(asset.contract.request);
+    override.path = "/must-not-send-aborted-preparation";
+    override.auth = { kind: "bearer", token: { id: "selected-abort-ref", policy: "test-auto" } };
+    asset.cases = [{ id: caseId, name: "selected override", scope: "base", parameters: {}, requestOverride: override, preOperations: [], postOperations: [], assertions: [] }];
+    const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    const logs: string[] = [];
+    const appData = join(fixtureRoot, ".apicc", "app-data");
+    let markPreparationStarted: () => void = () => {};
+    const preparationStarted = new Promise<void>((resolve) => { markPreparationStarted = resolve; });
+    let finishVersion: ((version: string) => void) | undefined;
+    let firstVersion = true;
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve() { return "synthetic-aborted-secret"; },
+      async version() {
+        if (firstVersion) {
+          firstVersion = false;
+          markPreparationStarted();
+          return new Promise<string>((resolve) => { finishVersion = resolve; });
+        }
+        return "synthetic-version";
+      },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    const previousCwd = process.cwd();
+    const previousExitCode = process.exitCode;
+    try {
+      process.chdir(fixtureRoot);
+      observedRequests.length = 0;
+      const pending = runCli(["debug", deepApiPath, "--case", caseId, "--scope", "base"], createDefaultRegistry(), (line) => logs.push(line), {
+        loadPlugins: false, secretStore, debugHistoryAppDataDirectory: appData,
+      });
+      await preparationStarted;
+      process.emit("SIGINT");
+      if (!finishVersion) throw new Error("credential preparation did not block in version lookup");
+      finishVersion("synthetic-version");
+      const code = await pending;
+      expect(code).toBe(1);
+      expect(logs).toHaveLength(1);
+      const result = JSON.parse(logs[0]!) as { failureKind?: string; run: { total: number } };
+      expect(result).toMatchObject({ failureKind: "aborted", run: { total: 0 } });
+      expect(observedRequests).toEqual([]);
+      const recordsDirectory = join(appData, "apicc", "debug-history", "records");
+      const records = !existsSync(recordsDirectory) ? [] : readdirSync(recordsDirectory)
+        .flatMap((owner) => readdirSync(join(recordsDirectory, owner)).filter((file) => file.endsWith(".json")));
+      expect(records).toHaveLength(1);
+    } finally {
+      process.chdir(previousCwd);
+      process.exitCode = previousExitCode;
+      observedRequests.length = 0;
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("debug-history config reads and updates the shared host preferences using an injected app-data root", async () => {
+    const appData = mkdtempSync(join(tmpdir(), "apicc-debug-history-cli-"));
+    const logs: string[] = [];
+    try {
+      const initialCode = await runCli(["debug-history", "config"], createDefaultRegistry(), (line) => logs.push(line), {
+        loadPlugins: false,
+        debugHistoryAppDataDirectory: appData,
+      });
+      expect(initialCode).toBe(0);
+      expect(JSON.parse(logs.pop()!)).toMatchObject({
+        preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
+        diagnostics: [],
+      });
+
+      const updateCode = await runCli([
+        "debug-history", "config", "--enabled", "false", "--days", "7", "--max-records", "50",
+      ], createDefaultRegistry(), (line) => logs.push(line), {
+        loadPlugins: false,
+        debugHistoryAppDataDirectory: appData,
+      });
+      expect(updateCode).toBe(0);
+      expect(JSON.parse(logs.pop()!)).toMatchObject({
+        preferences: { enabled: false, retentionDays: 7, maxRecords: 50 },
+        diagnostics: [],
+      });
+    } finally {
+      rmSync(appData, { recursive: true, force: true });
     }
   });
 

@@ -2,12 +2,14 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { isReactive, toRaw } from "vue";
 import type { ApiAsset } from "@apicc/core";
 import type { ApiDetail } from "../../../src/shared/types.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import { useCasesStore } from "../../../src/renderer/src/stores/cases.js";
+import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
 import { apiSessionKey } from "../../../src/renderer/src/stores/localIdentity.js";
 import { contractAssetFixture, duplicateContractProjectAcrossGroups } from "../helpers/contract-assets.js";
 
@@ -50,16 +52,85 @@ describe("editor store", () => {
     expect(api).not.toBe(fresh);
   });
 
+  it("commits the exact full-save revision acknowledgement without a post-save apiGet", async () => {
+    const { api, fixture, editor } = await seeded();
+    await editor.load(fixture.apiLocator);
+    const session = editor.sessions[editor.activeKey!]!;
+    const expectedSourceApiRevision = session.sourceApiRevision;
+    editor.api!.contract.request.path = "/acknowledged";
+    api.apiSave = async (_locator, asset, expected) => {
+      expect(expected).toBe(expectedSourceApiRevision);
+      return { api: asset, sourceApiRevision: "exact-api-ack", sourceProjectRevision: "exact-project-ack" };
+    };
+    const apiGet = vi.spyOn(api, "apiGet");
+
+    await editor.save();
+
+    expect(apiGet).not.toHaveBeenCalled();
+    expect(session.sourceApiRevision).toBe("exact-api-ack");
+    expect(session.sourceProjectRevision).toBe("exact-project-ack");
+    expect(editor.dirty).toBe(false);
+  });
+
+  it("blocks legacy full-asset save while the current request restore marker still needs input", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-editor-pending-request-"));
+    const { api, fixture, editor, context } = await seeded(root);
+    await editor.load(fixture.apiLocator);
+    const debug = useDebugStore(api, editor, () => context);
+    useCasesStore(api, editor);
+    const pathPlaceholder = "/request-restore-placeholder";
+    const invocation = {
+      mode: "request" as const,
+      locator: fixture.apiLocator,
+      request: { ...editor.api!.contract.request, path: pathPlaceholder },
+      parameters: {},
+      fields: [{ path: "request.path", status: "redacted" as const, needsInput: true }],
+    };
+    expect(debug.applyRestore(invocation, true, editor)).toBe(true);
+
+    await expect(editor.save()).rejects.toThrow(/补齐|input|needs/i);
+    expect((await api.apiGet(fixture.apiLocator)).api.contract.request.path).toBe("/");
+
+    editor.evictProject(fixture.projectLocator, fixture.root);
+    await editor.load(fixture.apiLocator);
+    editor.api!.contract.request.path = pathPlaceholder;
+    await editor.save();
+    expect((await api.apiGet(fixture.apiLocator)).api.contract.request.path).toBe(pathPlaceholder);
+  });
+
+  it("blocks legacy full-asset save while any current case restore marker still needs input", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apicc-editor-pending-case-"));
+    const { api, fixture, editor, context } = await seeded(root);
+    await editor.load(fixture.apiLocator);
+    const cases = useCasesStore(api, editor);
+    useDebugStore(api, editor, () => context);
+    const sessionKey = editor.activeKey!;
+    const session = editor.sessions[sessionKey]!;
+    const target = editor.api!.cases[0]!;
+    const pathPlaceholder = "/case-restore-placeholder";
+    const requestOverride = JSON.parse(JSON.stringify(editor.api!.contract.request)) as NonNullable<typeof target.requestOverride>;
+    if (requestOverride.protocol !== "http") throw new Error("Expected HTTP case request");
+    requestOverride.path = pathPlaceholder;
+    target.requestOverride = requestOverride;
+    cases.setPendingRestoreFields({ caseId: target.id, scope: target.scope }, [
+      { path: "request.path", status: "redacted", needsInput: true },
+    ], { "request.path": '"/case-restore-placeholder"' });
+
+    await expect(editor.save()).rejects.toThrow(/补齐|input|needs/i);
+    expect((await api.apiGet(fixture.apiLocator)).api.cases[0]?.requestOverride).toBeUndefined();
+    expect(editor.sessions[sessionKey]?.generation).toBe(session.generation);
+  });
+
   it("submits an ordinary object with the exact locator, not a reactive Proxy", async () => {
     const { api, fixture, editor } = await seeded();
     await editor.load(fixture.apiLocator);
     let submitted: unknown;
     let submittedLocator: unknown;
     const original = api.apiSave.bind(api);
-    api.apiSave = async (locator, asset) => {
+    api.apiSave = async (locator, asset, revision) => {
       submittedLocator = locator;
       submitted = asset;
-      return original(locator, asset);
+      return original(locator, asset, revision);
     };
     editor.api!.contract.metadata.description = "payload test";
     await editor.save();
@@ -149,7 +220,7 @@ describe("editor store", () => {
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const submitted: ApiAsset[] = [];
-    api.apiSave = async (_locator, asset) => { submitted.push(asset); await gate; return asset; };
+    api.apiSave = async (_locator, asset, revision) => { submitted.push(asset); await gate; return { api: asset, sourceApiRevision: revision, sourceProjectRevision: "project-revision" }; };
     const saving = editor.save();
     try {
       editor.api!.contract.request.path = "/edited-during-save";
@@ -175,7 +246,7 @@ describe("editor store", () => {
     editor.api!.contract.request.path = "/before-evict";
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    api.apiSave = async (_locator, asset) => { await gate; return asset; };
+    api.apiSave = async (_locator, asset, revision) => { await gate; return { api: asset, sourceApiRevision: revision, sourceProjectRevision: "project-revision" }; };
     const saving = editor.save();
     const evictedKey = editor.activeKey!;
     try {

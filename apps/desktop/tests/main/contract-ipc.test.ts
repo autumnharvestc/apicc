@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { readdir, readFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileStorage, WorkflowSchema as CoreWorkflowSchema, type SecretStore } from "@apicc/core";
+import { fileStorage, getSourceApiRevision, WorkflowSchema as CoreWorkflowSchema, type SecretStore } from "@apicc/core";
 import type { Importer } from "@apicc/core";
 import { parseIpcArgs } from "../../src/shared/ipc-contract.js";
 import type { OnlineClient } from "../../src/main/online/client.js";
 import type { TokenStore } from "../../src/main/online/tokenStore.js";
 import { IpcChannel } from "../../src/shared/channels.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
+import { createDesktopDebugHistoryStore } from "../../src/main/debugHistory.js";
 import { createSession } from "../../src/main/session.js";
 import { countingStorage, findApi, IDS, makeApi, makeTempRoot, makeWorkspace, persistWorkspace, projectOne, uuid } from "./helpers/contract-assets.js";
 
@@ -114,10 +116,234 @@ describe("complete-locator IPC bridge", () => {
         api: { contract: { id: IDS.sharedApi, metadata: { name: "project one API" } } },
         envs: [{ locator: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, environmentId: IDS.environment } }],
       });
+      expect(detail.sourceApiRevision).toBe(getSourceApiRevision(detail.api));
+      expect(detail.sourceProjectRevision).toEqual(expect.any(String));
+      const draftRequest = { ...detail.api.contract.request, path: "/ipc-request-draft" };
+      const savedDraft = await deps.handle(IpcChannel.ApiRequestDraftSave, null, locator, draftRequest, detail.sourceApiRevision, []);
+      expect(savedDraft).toMatchObject({ request: draftRequest, sourceApiRevision: expect.any(String) });
+      expect(session.locateApi(locator)?.api.contract.request.path).toBe("/ipc-request-draft");
       detail.api.contract.metadata.name = "mutated result view";
       expect(session.locateApi(locator)?.api.contract.metadata.name).toBe("project one API");
     } finally {
       await temporary.dispose();
+    }
+  });
+
+  it("rejects pending debug fields and known synthetic credential literals before any draft write", async () => {
+    const temporary = await makeTempRoot("apicc-draft-guard-");
+    try {
+      const workspace = makeWorkspace();
+      const asset = findApi(projectOne(workspace), IDS.sharedApi)!;
+      asset.contract.request.auth = { kind: "bearer", token: { id: "synthetic-secret-ref", policy: "test-auto" } };
+      await persistWorkspace(temporary.path, workspace);
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      counted.calls.length = 0;
+      let syntheticSecret = "synthetic-credential-literal-never-real";
+      const secretStore: SecretStore = {
+        put: async () => {},
+        resolve: async (_scope, ref) => {
+          if (ref.id !== "synthetic-secret-ref") throw new Error("unexpected ref");
+          return syntheticSecret;
+        },
+        version: async () => "synthetic-version",
+        remove: async () => {},
+        status: async () => "available",
+      };
+      const deps = createIpcDeps({ session, credentials: { secretStore }, pickDirectory: async () => "", saveFile: async () => "" });
+      const detail = await deps.handle(IpcChannel.ApiGet, null, locators().api) as { api: ReturnType<typeof makeApi>; sourceApiRevision: string };
+      const request = structuredClone(detail.api.contract.request);
+      if (request.protocol !== "http") throw new Error("Expected HTTP request");
+      request.headers.push({ kind: "inline", id: uuid(999), name: "x-token", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: syntheticSecret });
+
+      await expect(deps.handle(IpcChannel.ApiRequestDraftSave, null, locators().api, request, detail.sourceApiRevision, []))
+        .rejects.toThrow(/credential literal|凭据字面值/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+
+      await expect(deps.handle(IpcChannel.ApiRequestDraftSave, null, locators().api, { ...request, path: "/needs-input" }, detail.sourceApiRevision,
+        [{ path: "request.headers[0].value", status: "redacted", needsInput: true }]))
+        .rejects.toThrow(/complete|补齐|needs input/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+
+      syntheticSecret = "abc";
+      const shortLiteralRequest = structuredClone(detail.api.contract.request);
+      if (shortLiteralRequest.protocol !== "http") throw new Error("Expected HTTP request");
+      shortLiteralRequest.headers.push({ kind: "inline", id: uuid(998), name: "x-token", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "Bearer abc" });
+      await expect(deps.handle(IpcChannel.ApiRequestDraftSave, null, locators().api, shortLiteralRequest, detail.sourceApiRevision, []))
+        .rejects.toThrow(/credential literal|凭据字面值/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+
+      const selectedCase = session.locateApi(locators().api)!.api.cases[0]!;
+      const unsafeCase = structuredClone(selectedCase);
+      unsafeCase.parameters[`parameter-${syntheticSecret}-key`] = "ordinary safe value";
+      await expect(deps.handle(IpcChannel.CaseDraftSave, null,
+        { ...locators().api, caseId: selectedCase.id, scope: selectedCase.scope }, unsafeCase, detail.sourceApiRevision, [], []))
+        .rejects.toThrow(/credential literal|凭据字面值/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+
+      await expect(deps.handle(IpcChannel.CaseSave, null,
+        { ...locators().api, caseId: selectedCase.id, scope: selectedCase.scope }, unsafeCase, detail.sourceApiRevision, []))
+        .rejects.toThrow(/credential literal|凭据字面值/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+
+      await expect(deps.handle(IpcChannel.CaseSave, null,
+        { ...locators().api, caseId: selectedCase.id, scope: selectedCase.scope }, selectedCase, detail.sourceApiRevision,
+        [{ path: "request.path", status: "redacted", needsInput: true }]))
+        .rejects.toThrow(/complete|补齐|needs input/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+
+      const validLegacyCase = structuredClone(selectedCase);
+      validLegacyCase.name = "legacy case save";
+      const legacySaved = await deps.handle(IpcChannel.CaseSave, null,
+        { ...locators().api, caseId: selectedCase.id, scope: selectedCase.scope }, validLegacyCase, detail.sourceApiRevision, []) as { testCase: typeof selectedCase; sourceApiRevision: string };
+      expect(legacySaved.testCase.name).toBe("legacy case save");
+      expect(legacySaved.sourceApiRevision).not.toBe(detail.sourceApiRevision);
+      counted.calls.length = 0;
+      await expect(deps.handle(IpcChannel.CaseSave, null,
+        { ...locators().api, caseId: selectedCase.id, scope: selectedCase.scope }, selectedCase, detail.sourceApiRevision, []))
+        .rejects.toThrow(/revision|conflict|stale/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+
+      const pendingCase = structuredClone(selectedCase);
+      pendingCase.requestOverride = { ...detail.api.contract.request, path: "/needs-input" };
+      await expect(deps.handle(IpcChannel.CaseDraftSave, null,
+        { ...locators().api, caseId: selectedCase.id, scope: selectedCase.scope }, pendingCase, detail.sourceApiRevision, [],
+        [{ path: "request.path", status: "redacted", needsInput: true }]))
+        .rejects.toThrow(/complete|补齐|needs input/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+      expect(session.locateApi(locators().api)?.api.cases[0]).toEqual(validLegacyCase);
+      expect(session.locateApi(locators().api)?.api.contract.request.path).toBe("/items");
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("rejects known credential literals in legacy full-asset saves, including case overrides", async () => {
+    const temporary = await makeTempRoot("apicc-full-asset-credential-guard-");
+    try {
+      const workspace = makeWorkspace();
+      const asset = findApi(projectOne(workspace), IDS.sharedApi)!;
+      asset.contract.request.auth = { kind: "bearer", token: { id: "synthetic-full-save-ref", policy: "test-auto" } };
+      await persistWorkspace(temporary.path, workspace);
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      counted.calls.length = 0;
+      const secretStore: SecretStore = {
+        put: async () => {},
+        resolve: async (_scope, ref) => {
+          if (ref.id !== "synthetic-full-save-ref") throw new Error("unexpected ref");
+          return "synthetic-full-save-credential";
+        },
+        version: async () => "synthetic-version",
+        remove: async () => {},
+        status: async () => "available",
+      };
+      const deps = createIpcDeps({ session, credentials: { secretStore }, pickDirectory: async () => "", saveFile: async () => "" });
+      const detail = await deps.handle(IpcChannel.ApiGet, null, locators().api) as { api: ReturnType<typeof makeApi>; sourceApiRevision: string };
+
+      const unsafeDefault = structuredClone(detail.api);
+      if (unsafeDefault.contract.request.protocol !== "http") throw new Error("Expected HTTP request");
+      unsafeDefault.contract.request.headers.push({ kind: "inline", id: uuid(997), name: "x-token", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "synthetic-full-save-credential" });
+      await expect(deps.handle(IpcChannel.ApiSave, null, locators().api, unsafeDefault, detail.sourceApiRevision)).rejects.toThrow(/credential literal|凭据字面值/i);
+
+      const unsafeCase = structuredClone(detail.api);
+      const targetCase = unsafeCase.cases[0]!;
+      targetCase.requestOverride = structuredClone(unsafeCase.contract.request);
+      if (targetCase.requestOverride.protocol !== "http") throw new Error("Expected HTTP request");
+      targetCase.requestOverride.headers.push({ kind: "inline", id: uuid(996), name: "x-token", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "synthetic-full-save-credential" });
+      await expect(deps.handle(IpcChannel.ApiSave, null, locators().api, unsafeCase, detail.sourceApiRevision)).rejects.toThrow(/credential literal|凭据字面值/i);
+
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+      expect(session.locateApi(locators().api)?.api.contract.request.headers).not.toContainEqual(expect.objectContaining({ value: "synthetic-full-save-credential" }));
+      expect(session.locateApi(locators().api)?.api.cases[0]?.requestOverride).toBeUndefined();
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("rejects a draft save when the active root changes during credential lookup", async () => {
+    const source = await makeTempRoot("apicc-draft-context-source-");
+    const replacement = await makeTempRoot("apicc-draft-context-replacement-");
+    try {
+      const workspace = makeWorkspace();
+      findApi(projectOne(workspace), IDS.sharedApi)!.contract.request.auth = {
+        kind: "bearer", token: { id: "synthetic-context-ref", policy: "test-auto" },
+      };
+      await persistWorkspace(source.path, workspace);
+      await persistWorkspace(replacement.path, workspace);
+
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(source.path);
+      let notifyResolveStarted!: () => void;
+      const resolveStarted = new Promise<void>((resolve) => { notifyResolveStarted = resolve; });
+      let unlockResolve!: (value: string) => void;
+      const resolveGate = new Promise<string>((resolve) => { unlockResolve = resolve; });
+      const secretStore: SecretStore = {
+        put: async () => {},
+        resolve: async () => { notifyResolveStarted(); return resolveGate; },
+        version: async () => "synthetic-version",
+        remove: async () => {},
+        status: async () => "available",
+      };
+      const deps = createIpcDeps({ session, credentials: { secretStore }, pickDirectory: async () => "", saveFile: async () => "" });
+      const detail = await deps.handle(IpcChannel.ApiGet, null, locators().api) as { api: ReturnType<typeof makeApi>; sourceApiRevision: string };
+      const request = structuredClone(detail.api.contract.request);
+      if (request.protocol !== "http") throw new Error("Expected HTTP request");
+      request.path = "/must-not-write-to-replacement-root";
+      counted.calls.length = 0;
+
+      const saving = deps.handle(IpcChannel.ApiRequestDraftSave, null, locators().api, request, detail.sourceApiRevision, []);
+      await resolveStarted;
+      await session.open(replacement.path);
+      unlockResolve("synthetic-context-secret");
+
+      await expect(saving).rejects.toThrow(/context|workspace|工作区|上下文/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+      expect(session.locateApi(locators().api)?.api.contract.request.path).toBe("/items");
+    } finally {
+      await source.dispose();
+      await replacement.dispose();
+    }
+  });
+
+  it("keeps history IPC lazy and accepts its storage root only from the host", async () => {
+    const workspace = await makeTempRoot("apicc-history-ipc-workspace-");
+    const privateHistory = await makeTempRoot("apicc-history-ipc-private-");
+    try {
+      await persistWorkspace(workspace.path, makeWorkspace());
+      const session = createSession();
+      await session.open(workspace.path);
+      let factoryCalls = 0;
+      const deps = createIpcDeps({
+        session,
+        pickDirectory: async () => "",
+        saveFile: async () => "",
+        debugHistory: () => {
+          factoryCalls += 1;
+          return createDesktopDebugHistoryStore({ privateRoot: privateHistory.path });
+        },
+      });
+
+      await deps.handle(IpcChannel.ApiGet, null, locators().api);
+      expect(factoryCalls).toBe(0);
+      await expect(deps.handle(IpcChannel.DebugHistoryPreferencesGet, null)).resolves.toMatchObject({
+        preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
+      });
+      expect(factoryCalls).toBe(1);
+      expect(() => parseIpcArgs(IpcChannel.DebugHistoryList, [{ root: privateHistory.path }])).toThrow(/入参校验失败/);
+      await expect(deps.handle(IpcChannel.DebugHistoryPreferencesUpdate, null, {
+        enabled: false,
+        retentionDays: 30,
+        maxRecords: 1000,
+      })).resolves.toEqual({ enabled: false, retentionDays: 30, maxRecords: 1000 });
+      expect(parseIpcArgs(IpcChannel.DebugHistoryList, [{}])[0]).toMatchObject({ limit: 50, offset: 0 });
+      await expect(deps.handle(IpcChannel.DebugHistoryList, null, { limit: 50, offset: 0 })).resolves.toMatchObject({ items: [] });
+    } finally {
+      await workspace.dispose();
+      await privateHistory.dispose();
     }
   });
 
@@ -217,10 +443,12 @@ describe("complete-locator IPC bridge", () => {
       edited.contract.metadata.description = "edited at the first physical location";
       storage.calls.length = 0;
 
-      await expect(deps.handle(IpcChannel.ApiSave, null, first.api, edited)).resolves.toMatchObject({ contract: { id: IDS.sharedApi, metadata: { description: "edited at the first physical location" } } });
+      const apiSaved = await deps.handle(IpcChannel.ApiSave, null, first.api, edited, getSourceApiRevision(session.locateApi(first.api)!.api)) as { api: typeof edited; sourceApiRevision: string };
+      expect(apiSaved.api).toMatchObject({ contract: { id: IDS.sharedApi, metadata: { description: "edited at the first physical location" } } });
       const targetCase = { ...edited.cases.find((testCase) => testCase.scope === "blue")!, name: "blue edited" };
       await expect(deps.handle(IpcChannel.ApiGet, null, second.api)).resolves.toMatchObject({ locator: second.api, api: { contract: { metadata: { name: "project two API" } } } });
-      await expect(deps.handle(IpcChannel.CaseSave, null, { ...first.api, caseId: targetCase.id, scope: targetCase.scope }, targetCase)).resolves.toMatchObject({ name: "blue edited", scope: "blue" });
+      await expect(deps.handle(IpcChannel.CaseSave, null, { ...first.api, caseId: targetCase.id, scope: targetCase.scope }, targetCase, apiSaved.sourceApiRevision, []))
+        .resolves.toMatchObject({ testCase: { name: "blue edited", scope: "blue" }, sourceApiRevision: expect.any(String) });
       await expect(deps.handle(IpcChannel.ApiGet, null, second.api)).resolves.toMatchObject({ api: { contract: { metadata: { name: "project two API" } }, cases: [expect.objectContaining({ id: IDS.sharedCase, scope: "base" })] } });
       await deps.handle(IpcChannel.NodeRename, null, { kind: "api", locator: first.api }, "renamed first API");
       const green = edited.cases.find((testCase) => testCase.scope === "green")!;
@@ -465,7 +693,7 @@ describe("complete-locator IPC bridge", () => {
       const staleApi = structuredClone(stale.locateApi(winnerLocator)!.api);
       staleApi.contract.metadata.description = "must not commit";
       const staleDeps = createIpcDeps({ session: stale, pickDirectory: async () => "", saveFile: async () => "" });
-      await expect(staleDeps.handle(IpcChannel.ApiSave, null, winnerLocator, staleApi)).rejects.toThrow(/revision|冲突|conflict/i);
+      await expect(staleDeps.handle(IpcChannel.ApiSave, null, winnerLocator, staleApi, getSourceApiRevision(stale.locateApi(winnerLocator)!.api))).rejects.toThrow(/revision|冲突|conflict/i);
       expect(staleStorage.calls.filter((call) => call.kind === "save")).toHaveLength(1);
       expect(stale.workspace).toEqual(staleBefore);
       expect(stale.revision).toBe(staleRevisionBefore);
@@ -840,6 +1068,135 @@ describe("complete-locator IPC bridge", () => {
       expect(session.workspace).toEqual(before.workspace);
       expect(session.revision).toBe(before.revision);
     } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("executes effective desktop requests with file roots and isolated run/VU cookie sessions", async () => {
+    const temporary = await makeTempRoot("apicc-desktop-consumers-");
+    const payload = "synthetic-desktop-binary-payload";
+    const requests: Array<{ path: string; authorization?: string; cookie?: string; body: string }> = [];
+    let server: Server | undefined;
+    try {
+      server = createServer((request, response) => {
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        request.on("end", () => {
+          const path = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
+          requests.push({ path, authorization: request.headers.authorization, cookie: request.headers.cookie, body: Buffer.concat(chunks).toString("utf8") });
+          response.setHeader("content-type", "application/json");
+          if (path === "/login") {
+            response.setHeader("set-cookie", "desktop-run=ready; Path=/");
+            response.end(JSON.stringify({ ok: true }));
+          } else if (path === "/settings") {
+            setTimeout(() => { if (!response.destroyed) response.end(JSON.stringify({ ok: true })); }, 250);
+          } else {
+            if (path === "/upload" && !request.headers.cookie) response.setHeader("set-cookie", "desktop-vu=ready; Path=/");
+            response.end(JSON.stringify({ ok: true }));
+          }
+        });
+      });
+      await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+      const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      const workspace = makeWorkspace();
+      const project = projectOne(workspace);
+      const collection = project.collections.find((item) => item.id === IDS.collectionOne)!;
+      const loginCaseId = "desktop-login-case";
+      const uploadCaseId = IDS.sharedCase;
+      const slowCaseId = "desktop-settings-case";
+      const loginApi = makeApi(uuid(130), "desktop login", [{ id: loginCaseId, name: "login", scope: "base" }]);
+      loginApi.contract.request.baseUrl = baseUrl;
+      loginApi.contract.request.path = "/login";
+      loginApi.contract.request.auth = { kind: "none" };
+      const uploadApi = findApi(project, IDS.sharedApi)!;
+      uploadApi.contract.request.baseUrl = baseUrl;
+      uploadApi.contract.request.path = "/default-upload";
+      uploadApi.contract.request.auth = { kind: "none" };
+      uploadApi.cases = [{ id: uploadCaseId, name: "effective upload", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] }];
+      const uploadOverride = structuredClone(uploadApi.contract.request);
+      uploadOverride.path = "/upload";
+      uploadOverride.auth = { kind: "bearer", token: { id: "desktop-override-only-ref", policy: "test-auto" } };
+      if (uploadOverride.protocol !== "http") throw new Error("Expected HTTP upload request");
+      uploadOverride.body = { kind: "binary", file: { path: ".apicc/fixture.bin" }, contentType: "application/octet-stream" };
+      uploadApi.cases[0]!.requestOverride = uploadOverride;
+      uploadApi.cases[0]!.requestSettingsOverride = { headersTimeoutMs: 2_000 };
+
+      const slowApiId = uuid(131);
+      const slowApi = makeApi(slowApiId, "desktop settings", [{ id: slowCaseId, name: "selected settings", scope: "base" }]);
+      slowApi.contract.request.baseUrl = baseUrl;
+      slowApi.contract.request.path = "/default-settings";
+      const slowOverride = structuredClone(slowApi.contract.request);
+      slowOverride.path = "/settings";
+      slowApi.cases[0]!.requestOverride = slowOverride;
+      slowApi.cases[0]!.requestSettingsOverride = { headersTimeoutMs: 60 };
+      collection.apis = [loginApi, uploadApi, slowApi];
+      findApi(project, IDS.deepApi)!.cases = [];
+
+      const workflow = project.workflows.find((item) => item.id === IDS.workflow)!;
+      workflow.status = "enabled";
+      workflow.nodes = [
+        { id: "desktop-login-node", kind: "request", apiId: loginApi.contract.id, caseId: loginCaseId, label: "login", position: { x: 0, y: 0 } },
+        { id: "desktop-upload-node", kind: "request", apiId: uploadApi.contract.id, caseId: uploadCaseId, label: "upload", position: { x: 1, y: 0 } },
+        { id: "desktop-settings-node", kind: "request", apiId: slowApi.contract.id, caseId: slowCaseId, label: "settings", position: { x: 2, y: 0 } },
+      ];
+      workflow.edges = [
+        { id: "desktop-login-upload", from: "desktop-login-node", to: "desktop-upload-node" },
+        { id: "desktop-upload-settings", from: "desktop-upload-node", to: "desktop-settings-node" },
+      ];
+      await persistWorkspace(temporary.path, workspace);
+      await mkdir(join(temporary.path, ".apicc"), { recursive: true });
+      await writeFile(join(temporary.path, ".apicc", "fixture.bin"), payload);
+
+      const session = createSession();
+      await session.open(temporary.path);
+      const secretStore: SecretStore = {
+        async put() {},
+        async resolve(_scope, ref) {
+          if (ref.id !== "desktop-override-only-ref") throw new Error(`unexpected ref ${ref.id}`);
+          return "synthetic-desktop-credential";
+        },
+        async version() { return "desktop-override-v1"; },
+        async remove() {},
+        async status() { return "available"; },
+      };
+      const deps = createIpcDeps({ session, credentials: { secretStore }, pickDirectory: async () => "", saveFile: async () => "" });
+      const collectionLocator = locators().collection;
+      const workflowLocator = { ...locators().project, workflowId: IDS.workflow };
+      const uploadLocator = { ...locators().api };
+
+      requests.length = 0;
+      const collectionResult = await deps.handle(IpcChannel.RunCollection, null, { locator: collectionLocator, envName: null }) as { cases: Array<{ apiId: string; passed: boolean }> };
+      const collectionUpload = requests.find((request) => request.path === "/upload");
+      expect(collectionUpload).toMatchObject({ authorization: "Bearer synthetic-desktop-credential", cookie: "desktop-run=ready", body: payload });
+      expect(collectionResult.cases.find((outcome) => outcome.apiId === slowApiId)?.passed).toBe(false);
+
+      requests.length = 0;
+      const workflowResult = await deps.handle(IpcChannel.WfRun, null, { locator: workflowLocator, envName: null, strict: true }) as {
+        nodeResults: Array<{ nodeId: string; state: string }>;
+      };
+      const workflowUpload = requests.find((request) => request.path === "/upload");
+      expect(workflowUpload).toMatchObject({ authorization: "Bearer synthetic-desktop-credential", cookie: "desktop-run=ready", body: payload });
+      expect(workflowResult.nodeResults.find((node) => node.nodeId === "desktop-settings-node")?.state).toBe("failed");
+
+      requests.length = 0;
+      const stressResult = await deps.handle(IpcChannel.StressRun, null, {
+        locator: uploadLocator, caseId: uploadCaseId, envName: null, concurrency: 1, maxIterations: 2, durationMs: null,
+        thresholds: {}, connectionMode: "pooled", confirmedTargetOrigins: [baseUrl],
+      }) as { ok: boolean; report?: { totalRequests: number; failed: number } };
+      const stressUploads = requests.filter((request) => request.path === "/upload");
+      expect(stressResult).toMatchObject({ ok: true, report: { totalRequests: 2, failed: 0 } });
+      expect(stressUploads).toHaveLength(2);
+      expect(stressUploads[0]).toMatchObject({ authorization: "Bearer synthetic-desktop-credential", body: payload });
+      expect(stressUploads[0]?.cookie).toBeUndefined();
+      expect(stressUploads[1]?.cookie).toContain("desktop-vu=ready");
+
+      const settingsStress = await deps.handle(IpcChannel.StressRun, null, {
+        locator: { ...uploadLocator, apiId: slowApiId }, caseId: slowCaseId, envName: null, concurrency: 1, maxIterations: 1, durationMs: null,
+        thresholds: {}, connectionMode: "pooled", confirmedTargetOrigins: [baseUrl],
+      }) as { ok: boolean; report?: { totalRequests: number; failed: number } };
+      expect(settingsStress).toMatchObject({ ok: true, report: { totalRequests: 1, failed: 1 } });
+    } finally {
+      if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
       await temporary.dispose();
     }
   });

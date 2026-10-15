@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ContractProjectSchema, ContractWorkspaceSchema, fileStorage, createProjectAssetContext, listContractWorkspaceDefinitionFiles, type ContractWorkspace } from "@apicc/core";
+import { ContractProjectSchema, ContractWorkspaceSchema, fileStorage, createProjectAssetContext, getSourceApiRevision, listContractWorkspaceDefinitionFiles, type ApiRequest, type ContractWorkspace } from "@apicc/core";
 import { createSession } from "../../src/main/session.js";
 import {
   countingStorage,
@@ -79,6 +79,148 @@ async function expectModuleImportRejectedWithoutWrite(preview: ReturnType<typeof
 }
 
 describe("desktop session file transactions", () => {
+  it("saves a request draft in one revision-checked transaction without replacing cases", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      const workspace = makeWorkspace();
+      await persistWorkspace(temporary.path, workspace);
+      const session = createSession();
+      await session.open(temporary.path);
+      const before = session.locateApi(apiLocator)!;
+      const expectedSourceApiRevision = getSourceApiRevision(before.api);
+      const casesBefore = structuredClone(before.api.cases);
+      const request: ApiRequest = { ...structuredClone(before.api.contract.request), path: "/draft-only" };
+
+      const saved = await session.saveRequestDraft(apiLocator, request, expectedSourceApiRevision);
+
+      expect(saved.request.path).toBe("/draft-only");
+      expect(saved.sourceApiRevision).toBe(getSourceApiRevision(session.locateApi(apiLocator)!.api));
+      expect(session.locateApi(apiLocator)?.api.contract.request.path).toBe("/draft-only");
+      expect(session.locateApi(apiLocator)?.api.cases).toEqual(casesBefore);
+      expect((await fileStorage.load(temporary.path)).workspace.groups[0]?.projects[0]?.collections[0]?.apis[0]?.contract.request.path).toBe("/draft-only");
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("saves only the selected case draft in one revision-checked transaction", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      const before = session.locateApi(apiLocator)!;
+      const selected = structuredClone(before.api.cases[0]!);
+      const otherCases = structuredClone(before.api.cases.slice(1));
+      const removed = otherCases[0]!;
+      const locator = { ...apiLocator, caseId: selected.id, scope: selected.scope };
+      const expectedSourceApiRevision = getSourceApiRevision(before.api);
+      selected.name = "one-case draft";
+
+      await expect(session.saveDraftCase(locator, selected, expectedSourceApiRevision, [], [], undefined,
+        [{ path: "request.path", status: "redacted", needsInput: true }]))
+        .rejects.toThrow(/complete|补齐|needs input/i);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+
+      const saved = await session.saveDraftCase(locator, selected, expectedSourceApiRevision, [{ caseId: removed.id, scope: removed.scope }]);
+
+      const after = session.locateApi(apiLocator)!.api;
+      expect(saved.testCase.name).toBe("one-case draft");
+      expect(saved.sourceApiRevision).toBe(getSourceApiRevision(after));
+      expect(after.cases.find((testCase) => testCase.id === selected.id && testCase.scope === selected.scope)?.name).toBe("one-case draft");
+      expect(after.cases).toEqual([selected]);
+      expect(counted.calls.at(-1)?.deletions).toEqual([
+        `groups/${IDS.groupOne}/projects/${IDS.projectOne}/collections/${IDS.collectionOne}/apis/${IDS.sharedApi}/cases/${Buffer.from(removed.id).toString("hex")}.677265656e.yaml`,
+      ]);
+      const reopened = createSession();
+      await reopened.open(temporary.path);
+      expect(reopened.locateApi(apiLocator)?.api.cases).toEqual([selected]);
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("rejects a request save when a case changed after the draft source revision", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      const before = session.locateApi(apiLocator)!;
+      const staleSourceApiRevision = getSourceApiRevision(before.api);
+      const changedCase = structuredClone(before.api.cases[0]!);
+      changedCase.name = "saved elsewhere";
+      await session.saveCase({ ...apiLocator, caseId: changedCase.id, scope: changedCase.scope }, changedCase, staleSourceApiRevision);
+      const diskAfterOtherSave = await fileStorage.load(temporary.path);
+      counted.calls.length = 0;
+
+      await expect(session.saveRequestDraft(apiLocator, { ...before.api.contract.request, path: "/stale" }, staleSourceApiRevision))
+        .rejects.toThrow(/revision|conflict|stale/i);
+
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+      expect(session.locateApi(apiLocator)?.api.cases[0]?.name).toBe("saved elsewhere");
+      expect(session.locateApi(apiLocator)?.api.contract.request.path).toBe(before.api.contract.request.path);
+      expect(await fileStorage.load(temporary.path)).toMatchObject({ workspace: diskAfterOtherSave.workspace, revision: diskAfterOtherSave.revision });
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("rejects a stale legacy full-asset save after a case transaction without writing storage", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      const staleAsset = structuredClone(session.locateApi(apiLocator)!.api);
+      const staleRevision = getSourceApiRevision(staleAsset);
+      const changedCase = structuredClone(staleAsset.cases[0]!);
+      changedCase.name = "newer exact case";
+      await session.saveCase({ ...apiLocator, caseId: changedCase.id, scope: changedCase.scope }, changedCase, staleRevision);
+      counted.calls.length = 0;
+
+      await expect(session.saveApi(apiLocator, staleAsset, [], undefined, staleRevision)).rejects.toThrow(/source revision conflict/i);
+
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+      expect(session.locateApi(apiLocator)?.api.cases[0]?.name).toBe("newer exact case");
+      expect(session.locateApi(apiLocator)?.api.contract.request).toEqual(staleAsset.contract.request);
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("rejects a protocol change that conflicts with a saved case override and identifies that case", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      const workspace = makeWorkspace();
+      const api = findApi(projectOne(workspace), IDS.sharedApi)!;
+      api.cases[0]!.requestOverride = structuredClone(api.contract.request);
+      await persistWorkspace(temporary.path, workspace);
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      const source = session.locateApi(apiLocator)!;
+      const expectedSourceApiRevision = getSourceApiRevision(source.api);
+      const soapRequest: ApiRequest = {
+        protocol: "soap", method: "POST", baseUrl: "https://api.example.test", path: "/items",
+        pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, envelope: "<soap/>",
+      };
+      const diskBefore = await fileStorage.load(temporary.path);
+
+      await expect(session.saveRequestDraft(apiLocator, soapRequest, expectedSourceApiRevision))
+        .rejects.toThrow(new RegExp(`caseId.*${source.api.cases[0]!.id}|${source.api.cases[0]!.id}.*scope`));
+
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+      expect(session.locateApi(apiLocator)?.api.contract.request.protocol).toBe("http");
+      expect(await fileStorage.load(temporary.path)).toMatchObject({ workspace: diskBefore.workspace, revision: diskBefore.revision });
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
   it("keeps the active snapshot and disk unchanged when a storage write fails", async () => {
     const temporary = await makeTempRoot();
     try {
@@ -290,7 +432,7 @@ describe("desktop session file transactions", () => {
         kind: "componentRef", id: uuid(906), componentId: IDS.response, expectedKind: "response",
       }];
       await expect(session.saveApi(apiLocator, published)).resolves.toMatchObject({
-        contract: { metadata: { status: "published" } },
+        api: { contract: { metadata: { status: "published" } } },
       });
       expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(2);
       expect(session.locateApi(apiLocator)?.api.contract.metadata.status).toBe("published");
@@ -342,9 +484,10 @@ describe("desktop session file transactions", () => {
 
       const saved = await session.saveApi(apiLocator, input);
 
-      expect(saved.contract.request.path).toBe("/saved-api");
-      expect(saved.documentation).toBe("# saved design");
-      expect(saved.cases.map((testCase) => testCase.scope)).toEqual(["green"]);
+      expect(saved.api.contract.request.path).toBe("/saved-api");
+      expect(saved.api.documentation).toBe("# saved design");
+      expect(saved.api.cases.map((testCase) => testCase.scope)).toEqual(["green"]);
+      expect(saved.sourceApiRevision).toBe(getSourceApiRevision(saved.api));
       expect(counted.calls.at(-1)?.deletions).toEqual([
         `groups/${IDS.groupOne}/projects/${IDS.projectOne}/collections/${IDS.collectionOne}/apis/${IDS.sharedApi}/cases/${Buffer.from(IDS.sharedCase).toString("hex")}.626c7565.yaml`,
       ]);

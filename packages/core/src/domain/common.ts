@@ -2,21 +2,14 @@ import { z } from "zod";
 
 import { normalizeStressPolicy } from "../stress/safety.js";
 import { StringRecordSchema } from "../contract/schemaNode.js";
+import { ApiRequestSchema } from "../contract/request.js";
+import { RequestSettingsOverrideSchema } from "../request/settings.js";
+import { HttpMethodSchema, KeyValuePairSchema, ProtocolSchema, type HttpMethod, type KeyValuePair } from "./primitives.js";
+
+export { HttpMethodSchema, KeyValuePairSchema, ProtocolSchema } from "./primitives.js";
+export type { HttpMethod, KeyValuePair, Protocol } from "./primitives.js";
 
 export type ID = string;
-
-export const KeyValuePairSchema = z.object({
-  key: z.string(),
-  value: z.string(),
-  enabled: z.boolean(),
-}).strict();
-export type KeyValuePair = z.output<typeof KeyValuePairSchema>;
-
-export const HttpMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
-export type HttpMethod = z.output<typeof HttpMethodSchema>;
-
-export const ProtocolSchema = z.enum(["http", "websocket", "soap"]);
-export type Protocol = z.output<typeof ProtocolSchema>;
 
 export const AssertionSchema = z.object({
   id: z.string(),
@@ -46,6 +39,8 @@ export const TestCaseSchema = z.object({
   id: z.string(),
   name: z.string(),
   scope: z.string().default("base"),
+  requestOverride: ApiRequestSchema.optional(),
+  requestSettingsOverride: RequestSettingsOverrideSchema.optional(),
   parameters: StringRecordSchema(z.string()).default({}),
   dataDriver: DataDriverSchema.optional(),
   preOperations: OperationListSchema,
@@ -53,6 +48,8 @@ export const TestCaseSchema = z.object({
   assertions: z.array(AssertionSchema).default([]),
 }).strict();
 export type TestCase = z.output<typeof TestCaseSchema>;
+
+export type { RequestSettingsOverride } from "../request/settings.js";
 
 export const EnvironmentSchema = z.object({
   id: z.string(),

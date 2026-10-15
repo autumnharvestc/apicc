@@ -6,12 +6,16 @@ import type { ProjectGlobals, TestCase } from "../domain/common.js";
 import type { EventBus, RunEventMap } from "../events/bus.js";
 import type {
   AssertOperator, AuthProvider, ExecutableRequest, ExecutionResponse, HttpExecuteOptions,
-  PmApi, ProtocolClient, ScriptEngine,
+  HttpHopObservation, PmApi, ProtocolClient, ScriptEngine,
 } from "../plugin/types.js";
 import type { CaseOutcome } from "../report/types.js";
 import type { VariableResolver } from "../variables/resolver.js";
 import type { StressSafetyTarget } from "../stress/model.js";
 import { materializeRequest, type MaterializedRequest, type RuntimeAuth } from "../request/materialize.js";
+import { getEffectiveCaseRequest } from "../request/effective.js";
+import { assertRequestSettingsApplicable, resolveRequestSettings, type RequestSettingsOverride } from "../request/settings.js";
+import { captureRequestFiles, type CapturedRequestFiles } from "../http/files.js";
+import type { HttpSession } from "../http/session.js";
 
 export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "config" | "aborted";
 
@@ -39,7 +43,13 @@ export interface CaseExecutionDeps {
   resolveAuth(type: string): AuthProvider | undefined;
   resolveAssert(op: string): AssertOperator | undefined;
   scriptEngine: ScriptEngine;
-  timeouts?: HttpExecuteOptions;
+  timeouts?: Pick<HttpExecuteOptions, "connectTimeoutMs" | "totalTimeoutMs" | "signal">;
+  requestSettings?: RequestSettingsOverride;
+  /** Host-supplied workspace root for capturing explicit local request files. */
+  workspaceRoot?: string;
+  /** Explicitly owned by the surrounding run/session; never a process-global jar. */
+  httpSession?: HttpSession;
+  observeHttp?: (event: HttpHopObservation) => void | Promise<void>;
   bus?: EventBus;
   beforeSend?: (finalRequest: ExecutableRequest) => void | Promise<void>;
 }
@@ -75,6 +85,7 @@ function mutableRequest(request: MaterializedRequest): ExecutableRequest {
     headers: { ...request.headers },
     query: request.query.map((parameter) => ({ ...parameter })),
     auth: { ...request.auth },
+    ...(request.cookieHeaderMode === undefined ? {} : { cookieHeaderMode: request.cookieHeaderMode }),
   };
   switch (request.protocol) {
     case "http":
@@ -97,6 +108,40 @@ function invalidRequest(message: string): Error {
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(value);
   return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function isLocalFileReference(value: unknown): value is { path: string } {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    && typeof (value as { path?: unknown }).path === "string";
+}
+
+function isRuntimeHttpBody(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  switch (body.kind) {
+    case "json": case "xml": case "raw":
+      return typeof body.content === "string";
+    case "form":
+      return typeof body.content === "string" && Array.isArray(body.form) && body.form.every((entry) => {
+        if (typeof entry !== "object" || entry === null) return false;
+        const pair = entry as Record<string, unknown>;
+        return typeof pair.key === "string" && typeof pair.value === "string" && typeof pair.enabled === "boolean";
+      });
+    case "binary":
+      return isLocalFileReference(body.file) && typeof body.contentType === "string";
+    case "multipart":
+      return Array.isArray(body.entries) && body.entries.every((entry) => {
+        if (typeof entry !== "object" || entry === null) return false;
+        const part = entry as Record<string, unknown>;
+        if (typeof part.name !== "string") return false;
+        if (part.kind === "text") return typeof part.value === "string";
+        return part.kind === "file" && isLocalFileReference(part.file)
+          && typeof part.contentType === "string"
+          && (part.filename === undefined || typeof part.filename === "string");
+      });
+    default:
+      return false;
+  }
 }
 
 function isRuntimeAuth(value: unknown): value is RuntimeAuth {
@@ -133,7 +178,7 @@ function validateExecutableRequest(request: ExecutableRequest): void {
   switch (request.protocol) {
     case "http":
       if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(request.method)
-        || (request.body !== undefined && !(request.body.kind === "json" || request.body.kind === "xml" || request.body.kind === "raw" || request.body.kind === "form"))) {
+        || (request.body !== undefined && !isRuntimeHttpBody(request.body))) {
         throw invalidRequest("HTTP 执行请求结构无效");
       }
       return;
@@ -158,8 +203,17 @@ function responseView(response: ExecutionResponse): NonNullable<PmApi["response"
     status: response.status,
     headers: response.headers,
     time: response.timeMs,
-    text: () => response.bodyText,
-    json: () => (cachedJson ??= JSON.parse(response.bodyText)),
+    ...(response.textAvailable === undefined ? {} : { textAvailable: response.textAvailable }),
+    ...(response.jsonAvailable === undefined ? {} : { jsonAvailable: response.jsonAvailable }),
+    text: () => {
+      if (response.textAvailable === false) throw new TypeError("响应体不是可可靠解码的文本。");
+      return response.bodyText;
+    },
+    json: () => {
+      if (response.textAvailable === false) throw new TypeError("响应体不是可可靠解码的 JSON 文本。");
+      if (response.jsonAvailable === false) throw new TypeError("响应体不是有效的 JSON 文本。");
+      return (cachedJson ??= JSON.parse(response.bodyText));
+    },
   };
 }
 
@@ -181,7 +235,10 @@ function evaluateAssertions(
       case "header": actual = response?.headers[(assertion.headerName ?? "").toLowerCase()]; break;
       case "responseTime": actual = response?.time; break;
       case "bodyJson":
-        try { actual = response ? JSONPath({ path: assertion.path ?? "$", json: response.json() as object })[0] : undefined; }
+        if (!response) return { pass: false, message: "没有完整响应体可用于 JSON 断言。" };
+        if (response.textAvailable === false) return { pass: false, message: "响应体不是可可靠解码的 JSON 文本。" };
+        if (response.jsonAvailable === false) return { pass: false, message: "响应体不是有效的 JSON 文本。" };
+        try { actual = JSONPath({ path: assertion.path ?? "$", json: response.json() as object })[0]; }
         catch { actual = undefined; }
         break;
     }
@@ -212,8 +269,11 @@ function protocolFailureKind(error: unknown): CaseFailureKind {
 /** Execute one case with only explicitly supplied run/session state. */
 export async function executeCase(input: CaseExecutionInput, deps: CaseExecutionDeps): Promise<CaseExecutionResult> {
   const started = now();
-  const timeouts: HttpExecuteOptions = deps.timeouts ?? { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 };
   const { asset, testCase, resolver, envVars, persisted, persistedSnapshot } = input;
+  const effectiveRequest = getEffectiveCaseRequest(asset, testCase);
+  const signal = deps.timeouts?.signal;
+  let clientOptions: HttpExecuteOptions | undefined;
+  let capturedFiles: CapturedRequestFiles | undefined;
   const contractId = asset.contract.id;
   const apiName = asset.contract.metadata.name;
   const globals = input.globals ?? {};
@@ -262,12 +322,44 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     }
     const contract = input.assetContext.getContract(contractId);
     if (!contract) throw invalidRequest(`接口资产 ${contractId} 不在所选项目快照中`);
+    assertRequestSettingsApplicable(effectiveRequest.protocol, testCase.requestSettingsOverride ?? {}, deps.requestSettings ?? {});
+    const resolvedSettings = resolveRequestSettings(testCase.requestSettingsOverride, deps.requestSettings, {
+      connectTimeoutMs: deps.timeouts?.connectTimeoutMs ?? 10_000,
+      totalTimeoutMs: deps.timeouts?.totalTimeoutMs ?? 30_000,
+    });
+    clientOptions = {
+      connectTimeoutMs: resolvedSettings.connectTimeoutMs,
+      totalTimeoutMs: resolvedSettings.totalTimeoutMs,
+      ...(signal === undefined ? {} : { signal }),
+      ...(effectiveRequest.protocol === "http" ? resolvedSettings : {}),
+    };
     request = mutableRequest(materializeRequest(contract, input.assetContext, {
       resolve: (template) => resolver.resolve(template),
       envBaseUrl: input.envBaseUrl,
       globals,
       credentials: input.credentialBindings,
-    }));
+    }, effectiveRequest));
+    if (request.protocol === "http") {
+      capturedFiles = await captureRequestFiles(request, {
+        workspaceRoot: deps.workspaceRoot,
+        uploadLimitBytes: resolvedSettings.uploadLimitBytes,
+      });
+      clientOptions.runtime = {
+        files: capturedFiles,
+        ...(deps.httpSession === undefined ? {} : { session: deps.httpSession }),
+        ...(deps.observeHttp === undefined ? {} : { observe: deps.observeHttp }),
+        beforeRedirect: async (nextRequest) => {
+          validateExecutableRequest(nextRequest);
+          if (nextRequest.auth.kind !== "none") {
+            const auth = deps.resolveAuth(nextRequest.auth.kind);
+            if (!auth || auth.type !== nextRequest.auth.kind) throw invalidRequest(`无可用认证提供方: ${nextRequest.auth.kind}`);
+            auth.apply(nextRequest, nextRequest.auth);
+          }
+          if (deps.beforeSend) await deps.beforeSend(nextRequest);
+          validateExecutableRequest(nextRequest);
+        },
+      };
+    }
     await emit("beforeCase", { apiName, caseName: testCase.name, apiId: contractId, caseId: testCase.id, row: input.isDataDriven ? input.rowIndex : undefined });
     for (const operation of testCase.preOperations) if (operation.type === "script") runScript(operation.content);
     stage = "config";
@@ -287,16 +379,22 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     stage = "request";
     requestStarted = true;
     const requestStartAt = now();
+    let protocolError: unknown;
     try {
-      response = await client.execute(request, timeouts);
+      response = await client.execute(request, clientOptions);
     } catch (e) {
-      failureKind = isAbort(e, timeouts.signal) ? "aborted" : protocolFailureKind(e);
+      protocolError = e;
+      failureKind = isAbort(e, signal) ? "aborted" : protocolFailureKind(e);
       throw e;
     } finally {
       const attemptTimeMs = now() - requestStartAt;
+      const timing = protocolError as { networkStarted?: unknown; attemptTimeMs?: unknown } | null | undefined;
+      const hasNetworkTiming = typeof timing === "object" && timing !== null && typeof timing.networkStarted === "boolean";
       requestTimeMs = response && Number.isFinite(response.timeMs) && response.timeMs >= 0
         ? response.timeMs
-        : attemptTimeMs;
+        : hasNetworkTiming
+          ? timing.networkStarted && Number.isFinite(timing.attemptTimeMs) ? Number(timing.attemptTimeMs) : 0
+          : attemptTimeMs;
       if (response && response.timeMs !== requestTimeMs) {
         // Normalize invalid plugin metadata without mutating its response object.
         response = { ...response, timeMs: requestTimeMs };
@@ -308,9 +406,15 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     for (const operation of testCase.postOperations) if (operation.type === "script") runScript(operation.content);
   } catch (e) {
     error = errorMessage(e);
-    failureKind ??= isAbort(e, timeouts.signal)
+    failureKind ??= isAbort(e, signal)
       ? "aborted"
       : ((e as { caseFailureKind?: CaseFailureKind }).caseFailureKind ?? (String(stage) === "script" ? "script" : "config"));
+  } finally {
+    try { await capturedFiles?.close(); }
+    catch (e) {
+      error ??= errorMessage(e);
+      failureKind ??= (e as { caseFailureKind?: CaseFailureKind }).caseFailureKind ?? "config";
+    }
   }
 
   let assertions: Array<{ pass: boolean; message: string }> = [];

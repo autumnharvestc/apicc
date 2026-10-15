@@ -137,16 +137,20 @@ function collectApiMappings(asset: ApiAsset, projectId: string, mapper: IdMapper
     collectOperations(testCase.preOperations, operationScope(caseScope, "pre"), mapper);
     collectOperations(testCase.postOperations, operationScope(caseScope, "post"), mapper);
     for (const assertion of testCase.assertions) mapper.declare("assertion", assertion.id, caseScope);
+    if (testCase.requestOverride) collectRequestMappings(testCase.requestOverride, contractId, projectId, mapper);
   }
 
-  const request = asset.contract.request;
+  collectRequestMappings(asset.contract.request, contractId, projectId, mapper);
+  for (const response of asset.contract.responses) collectResponseMapping(response, contractId, projectId, mapper);
+}
+
+function collectRequestMappings(request: ApiRequest, contractId: string, projectId: string, mapper: IdMapper): void {
   for (const parameter of request.pathParams) collectParameterMapping(parameter, contractId, mapper);
   for (const parameter of request.query) collectParameterMapping(parameter, contractId, mapper);
   for (const parameter of request.headers) collectParameterMapping(parameter, contractId, mapper);
   for (const parameter of request.cookies) collectParameterMapping(parameter, contractId, mapper);
   collectAuthMapping(request.auth, projectId, mapper);
   if (request.protocol === "http") collectRequestBodyMappings(request, contractId, mapper);
-  for (const response of asset.contract.responses) collectResponseMapping(response, contractId, projectId, mapper);
 }
 
 function collectParameterMapping(parameter: ParameterBinding, ownerId: string, mapper: IdMapper): void {
@@ -259,6 +263,9 @@ function rewriteApiAsset(source: ApiAsset, target: ApiAsset, projectId: string, 
     outputCase.assertions.forEach((assertion, assertionIndex) => {
       assertion.id = mapper.reference("assertion", testCase.assertions[assertionIndex].id, caseScope);
     });
+    if (testCase.requestOverride && outputCase.requestOverride) {
+      rewriteRequest(testCase.requestOverride, outputCase.requestOverride, contractId, projectId, mapper);
+    }
   });
 
   const sourceRequest = source.contract.request;

@@ -6,16 +6,74 @@ import type { ApiAsset, ApiRequest, AuthBinding, ComponentAsset, SecretRef } fro
 import type { ContractProject } from "../../src/contract/workspace.js";
 import type { CredentialBindings } from "../../src/credentials/types.js";
 import {
+  collectCredentialMarkersForRequests,
   collectCredentialOutputMarkers,
+  collectCredentialRefsForRequests,
   collectProjectCredentialRefs,
   createCredentialOutputSanitizer,
+  selectCredentialRequests,
 } from "../../src/credentials/output.js";
+import { collectDefinedProjectCredentialRefs } from "../../src/assets/secretRefs.js";
 import { createContractExecutionProject } from "../helpers/contractExecutionFixtures.js";
 
 const componentId = "20000000-0000-4000-8000-000000000001";
 const unusedComponentId = "20000000-0000-4000-8000-000000000002";
 
 describe("shared credential output", () => {
+  it("selects only snapshot-owned effective case requests for credential refs and markers", () => {
+    const project = createContractExecutionProject("https://service.example.test");
+    const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.auth = { kind: "bearer", token: { id: "default-ref", policy: "test-auto" } };
+    const baseCase = asset.cases[0]!;
+    asset.cases = [
+      {
+        ...baseCase,
+        id: "selected-case",
+        requestOverride: { ...asset.contract.request, auth: { kind: "bearer", token: { id: "selected-ref", policy: "test-auto" } } },
+      },
+      {
+        ...baseCase,
+        id: "unselected-case",
+        requestOverride: { ...asset.contract.request, auth: { kind: "bearer", token: { id: "unselected-ref", policy: "test-auto" } } },
+      },
+    ];
+    project.components = [{
+      formatVersion: 1,
+      id: "20000000-0000-4000-8000-000000000003",
+      name: "unreferenced auth",
+      description: "",
+      kind: "auth",
+      definition: { kind: "bearer", token: { id: "component-ref", policy: "test-auto" } },
+    }];
+    const snapshot = createProjectSnapshot(project);
+    const snapshotAsset = snapshot.project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    const selected = selectCredentialRequests(snapshot, [{ asset: snapshotAsset, testCase: snapshotAsset.cases[0]! }]);
+
+    expect(selected[0]!.request).toBe(snapshotAsset.cases[0]!.requestOverride);
+    expect(collectCredentialRefsForRequests(snapshot.project, selected)).toEqual([{ id: "selected-ref", policy: "test-auto" }]);
+    expect(collectDefinedProjectCredentialRefs(snapshot.project)).toEqual([
+      { id: "default-ref", policy: "test-auto" },
+      { id: "selected-ref", policy: "test-auto" },
+      { id: "unselected-ref", policy: "test-auto" },
+      { id: "component-ref", policy: "test-auto" },
+    ]);
+
+    const resolved: string[] = [];
+    const bindings: CredentialBindings = {
+      resolve(ref) { resolved.push(ref.id); return `secret:${ref.id}`; },
+      versions: {},
+    };
+    expect(collectCredentialMarkersForRequests(snapshot.project, selected, bindings)).toEqual([
+      "secret:selected-ref",
+      "Bearer secret:selected-ref",
+    ]);
+    expect(resolved).toEqual(["selected-ref", "selected-ref"]);
+    expect(Object.isFrozen(selected)).toBe(true);
+    expect(() => (selected as unknown as unknown[]).pop()).toThrow(TypeError);
+    expect(() => selectCredentialRequests(snapshot, [{ asset: structuredClone(snapshotAsset) }])).toThrow(/snapshot/);
+    expect(() => selectCredentialRequests(snapshot, [{ asset: snapshotAsset, testCase: structuredClone(snapshotAsset.cases[0]!) }])).toThrow(/selected snapshot asset/);
+  });
+
   it("collects refs only from selected HTTP, WebSocket, and SOAP auth, deduping aliases without mutating readonly inputs", () => {
     const project = createContractExecutionProject("https://service.example.test");
     const baseAsset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;

@@ -43,10 +43,10 @@ describe("design store", () => {
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const submitted: string[] = [];
-    api.apiSave = async (_locator, asset) => {
+    api.apiSave = async (_locator, asset, revision) => {
       submitted.push(asset.documentation);
       await gate;
-      return asset;
+      return { api: asset, sourceApiRevision: revision, sourceProjectRevision: "project-revision" };
     };
 
     design.setContent("submitted A");
@@ -96,7 +96,7 @@ describe("design store", () => {
     design.setContent("submitted by old slot");
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    api.apiSave = async (_locator, asset) => { await gate; return asset; };
+    api.apiSave = async (_locator, asset, revision) => { await gate; return { api: asset, sourceApiRevision: revision, sourceProjectRevision: "project-revision" }; };
     let saving: Promise<void> | undefined;
     try {
       saving = design.save();

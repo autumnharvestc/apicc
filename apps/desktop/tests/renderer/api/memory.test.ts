@@ -150,7 +150,7 @@ describe("memory 替身正式资产入口", () => {
     detail.api.documentation = "正式文档草稿";
     detail.api.cases[0]!.preOperations = [{ id: "before", type: "script", content: "pm.variables.set('before', 'yes')" }];
     detail.api.cases[0]!.postOperations = [{ id: "after", type: "script", content: "pm.variables.set('after', 'yes')" }];
-    await fixture.api.apiSave(fixture.apiLocator, detail.api);
+    await fixture.api.apiSave(fixture.apiLocator, detail.api, detail.sourceApiRevision);
     const reopened = await fixture.api.apiGet(fixture.apiLocator);
     expect(reopened.api.documentation).toBe("正式文档草稿");
     expect(reopened.api.cases[0]!.preOperations).toEqual(detail.api.cases[0]!.preOperations);
@@ -214,7 +214,7 @@ describe("memory 替身凭据与持久化边界", () => {
     detail.api.contract.request.auth = { kind: "bearer", token: ref };
 
     failNextSave = true;
-    await expect(api.apiSave(fixture.apiLocator, detail.api)).rejects.toThrow("injected storage failure");
+    await expect(api.apiSave(fixture.apiLocator, detail.api, detail.sourceApiRevision)).rejects.toThrow("injected storage failure");
     expect(await api.credentialStatus({ locator: fixture.projectLocator, ref })).toEqual({ ok: true, status: "available" });
     expect(JSON.stringify(await api.credentialStatus({ locator: fixture.projectLocator, ref }))).not.toContain("secret-value-not-returned");
     expect((await api.apiGet(fixture.apiLocator)).api.contract.request.auth).toEqual({ kind: "none" });

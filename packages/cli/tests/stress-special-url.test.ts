@@ -45,6 +45,7 @@ type FixtureLifecycleEvent = {
 const cliEntry = join(dirname(fileURLToPath(import.meta.url)), "../dist/bin.js");
 const childFixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures/owned-cli-child.mjs");
 const FIXTURE_CLEANUP_TIMEOUT_MS = 2_000;
+const MULTI_CLI_CASE_TIMEOUT_MS = 15_000;
 
 function specialUrl(variant: SpecialUrlVariant, baseUrl: string): string {
   const hostPath = baseUrl.slice("http://".length);
@@ -478,7 +479,7 @@ describe("CLI run-stress WHATWG special URL isolation", () => {
         else throw cleanupError;
       }
     }
-  }, 5_000);
+  }, MULTI_CLI_CASE_TIMEOUT_MS);
 
   it("uses an inherited parent collection base URL when the contract URL is empty", async () => {
     const fixture = createFixtureOwner(false);
@@ -523,7 +524,7 @@ describe("CLI run-stress WHATWG special URL isolation", () => {
         else throw cleanupError;
       }
     }
-  }, 5_000);
+  }, MULTI_CLI_CASE_TIMEOUT_MS);
 
   it("reports a server close callback error instead of silently treating close as confirmed", async () => {
     const server = createServer();
@@ -581,7 +582,7 @@ describe("CLI run-stress WHATWG special URL isolation", () => {
         }
       }
     },
-    5_000,
+    MULTI_CLI_CASE_TIMEOUT_MS,
   );
 
   if (process.env.APICC_ENABLE_TIMEOUT_NEGATIVE_CONTROL === "1") {

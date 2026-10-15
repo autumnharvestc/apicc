@@ -4,12 +4,16 @@ import type { RunResult } from "../report/types.js";
 import type { WorkspaceLoadState } from "../storage/contractFiles.js";
 import type { RuntimeBody } from "../request/body.js";
 import type { RuntimeAuth } from "../request/materialize.js";
+import type { CapturedRequestFiles } from "../http/files.js";
+import type { HttpSession } from "../http/session.js";
 
 interface ExecutableRequestCommon {
   url: string;
   headers: Record<string, string>;
   query: KeyValuePair[];
   auth: RuntimeAuth;
+  /** Distinguishes a literal Cookie header from cookie parameters that can merge with the run jar. */
+  cookieHeaderMode?: "none" | "explicit" | "parameters";
 }
 
 /** Mutable per-attempt DTO; its protocol-specific fields match the materialized contract union. */
@@ -23,12 +27,79 @@ export interface ExecutionResponse {
   headers: Record<string, string>;
   bodyText: string;
   timeMs: number;
+  /** Fully received, decoded bytes. Absent for older protocol plugins. */
+  bodyBytes?: Uint8Array;
+  textAvailable?: boolean;
+  jsonAvailable?: boolean;
+  /** Reliable duplicate-preserving header pairs from the HTTP parser. */
+  rawHeaders?: readonly (readonly [name: string, value: string])[];
+  encodedBytes?: number;
+  decodedBytes?: number;
+  declaredLength?: number;
+}
+
+export interface HttpRequestBodyObservation {
+  /** File-content bytes consumed from captured sources, not static file size. */
+  fileBytesRead: number;
+  /** Encoded body bytes observed by Undici's per-request write callback, not socket-delivery confirmation. */
+  transportEncodedBytesWritten: number;
+  /** True when Undici reports the request body fully consumed for this hop or chain. */
+  complete: boolean;
+}
+
+export interface HttpIncompleteResponseObservation {
+  status: number;
+  headers: Record<string, string>;
+  rawHeaders: readonly (readonly [name: string, value: string])[];
+  encodedBytes: number;
+  decodedBytes: number;
+  declaredLength?: number;
+  bodyComplete: false;
+}
+
+export interface HttpCompleteResponseObservation extends Omit<HttpIncompleteResponseObservation, "bodyComplete"> {
+  bodyComplete: true;
+  bodyBytes: Uint8Array;
+  textAvailable: boolean;
+  jsonAvailable: boolean;
+  bodyText?: string;
+}
+
+/** Metadata captured from the request-scoped file binding; never contains a path or file bytes. */
+export interface HttpCapturedFileMetadata {
+  entryIndex: number;
+  available: boolean;
+  capturedFilename?: string;
+  capturedSizeBytes?: number;
+  effectiveFilename?: string;
+}
+
+export type HttpHopObservation =
+  | { type: "request"; hopIndex: number; request: ExecutableRequest; url: string; method: string; sessionCookieUsed?: boolean; capturedFiles?: readonly HttpCapturedFileMetadata[] }
+  | ({ type: "response"; hopIndex: number; url: string; requestBody: HttpRequestBodyObservation; requestBodyChain: HttpRequestBodyObservation } & HttpCompleteResponseObservation)
+  | { type: "failure"; hopIndex: number; url: string; stage: string; code: string; networkStarted: boolean; encodedBytes?: number; decodedBytes?: number; response?: HttpIncompleteResponseObservation; requestBody: HttpRequestBodyObservation; requestBodyChain: HttpRequestBodyObservation };
+
+export interface HttpRuntimeOptions {
+  files?: CapturedRequestFiles;
+  session?: HttpSession;
+  /** Called after redirect policy has transformed the next request, before that hop is sent. */
+  beforeRedirect?: (request: ExecutableRequest, context: { status: number; from: string; to: string; originChanged: boolean }) => void | Promise<void>;
+  /** Receives internal request observations; consumers must sanitize before persistence or IPC. */
+  observe?: (event: HttpHopObservation) => void | Promise<void>;
 }
 
 export interface HttpExecuteOptions {
   connectTimeoutMs: number; // 默认 10000
   totalTimeoutMs: number;   // 默认 30000
+  headersTimeoutMs?: number;
+  bodyTimeoutMs?: number;
+  followRedirects?: boolean;
+  maxRedirects?: number;
+  uploadLimitBytes?: number;
+  responseLimitBytes?: number;
   signal?: AbortSignal;
+  /** Runtime resources and callbacks are separate from pure JSON request settings. */
+  runtime?: HttpRuntimeOptions;
 }
 
 export interface ProtocolClient {
@@ -59,6 +130,8 @@ export interface PmApi {
     status: number;
     headers: Record<string, string>;
     time: number;
+    textAvailable?: boolean;
+    jsonAvailable?: boolean;
     text(): string;
     json(): unknown;
   };

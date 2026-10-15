@@ -32,6 +32,11 @@ function setupWithImporters(importers: Importer[]) {
   return { deps, dir, session };
 }
 
+/** Minimal renderer sender owner used by debug IPC fixtures. */
+function rendererEvent() {
+  return { sender: { once() {}, on() {} } };
+}
+
 function invalidIpc(deps: ReturnType<typeof createIpcDeps>, channel: string, ...args: unknown[]): Promise<unknown> {
   const rawHandle = deps.handle.bind(deps) as unknown as (
     channel: string,
@@ -173,7 +178,7 @@ describe("IPC 处理器", () => {
     const api = await createApi(deps, c, { name: "a", method: "GET", baseUrl: "http://127.0.0.1:1", path: "/x" });
     const detail = await deps.handle("api:get", {}, api.locator);
     (detail.api.contract.request as { path: string }).path = "/y";
-    await deps.handle("api:save", {}, api.locator, detail.api);
+    await deps.handle("api:save", {}, api.locator, detail.api, detail.sourceApiRevision);
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
     const fetched = await fresh.handle("api:get", {}, api.locator);
@@ -223,7 +228,7 @@ describe("IPC 处理器", () => {
     const c = await createCollection(deps, p, "c");
     const api = await createApi(deps, c, { name: "a", method: "GET", baseUrl: "http://127.0.0.1:1", path: "/" });
     const detail = await deps.handle("api:get", {}, api.locator);
-    const result = await deps.handle("debug:send", {}, { locator: api.locator, caseId: detail.api.cases[0]!.id, envName: undefined });
+    const result = await deps.handle("debug:send", rendererEvent(), { locator: api.locator, caseId: detail.api.cases[0]!.id, envName: undefined });
     expect(result.outcome.passed).toBe(false);
     expect(result.run.total).toBe(1);
   });
@@ -383,7 +388,7 @@ describe("IPC 处理器", () => {
     const api = await createApi(deps, c, { name: "a", method: "GET", baseUrl: "http://127.0.0.1:1", path: "/" });
     // debug:send envName=null → 通过校验，按无环境运行（resolveEnv 对 falsy 一视同仁）
     const detail = await deps.handle("api:get", {}, api.locator);
-    const result = await deps.handle("debug:send", {}, { locator: api.locator, caseId: detail.api.cases[0]!.id, envName: null });
+    const result = await deps.handle("debug:send", rendererEvent(), { locator: api.locator, caseId: detail.api.cases[0]!.id, envName: null });
     expect(result.outcome.passed).toBe(false); // 不可达地址 → 运行完成、用例失败（无环境语义）
     expect(result.run.total).toBe(1);
     // env:create extends=null → 通过校验且不把 null 写进模型（严格 EnvironmentSchema 可重开）
@@ -411,7 +416,7 @@ describe("工作流 IPC", () => {
     const collection = await createCollection(deps, project, "c");
     const api = await createApi(deps, collection, { name: "a", method: "GET", baseUrl: "http://127.0.0.1:1", path: "/" });
     const detail = await deps.handle("api:get", {}, api.locator);
-    return { deps, dir, project, api: detail.api, apiLocator: api.locator, session };
+    return { deps, dir, project, api: detail.api, apiLocator: api.locator, sourceApiRevision: detail.sourceApiRevision, session };
   }
 
   it("wf:create → wf:list → wf:get → wf:save → wf:set-status 全链路", async () => {
@@ -595,7 +600,7 @@ describe("工作流 IPC", () => {
   });
 
   it("wf:run 数据驱动 JSON 保留完整零基行且实际 handler verdict 失败", async () => {
-    const { deps, dir, project, api, apiLocator } = await setupWf();
+    const { deps, dir, project, api, apiLocator, sourceApiRevision } = await setupWf();
     const rowsDirectory = mkdtempSync(join(tmpdir(), "apicc-workflow-rows-"));
     const rowsPath = join(rowsDirectory, "workflow-rows.json");
     writeFileSync(rowsPath, JSON.stringify([{ expected: "200" }, { expected: "500" }]));
@@ -607,7 +612,7 @@ describe("工作流 IPC", () => {
       (api.contract.request as { baseUrl: string; path: string }).baseUrl = baseUrl;
       (api.contract.request as { baseUrl: string; path: string }).path = "/rows";
       api.cases[0] = { ...testCase, dataDriver: { sourcePath: rowsPath, format: "json" }, assertions: [{ id: "status", target: "status", op: "eq", expected: "{{expected}}" }] };
-      await deps.handle("api:save", {}, apiLocator, api);
+      await deps.handle("api:save", {}, apiLocator, api, sourceApiRevision);
       const wf = await createWorkflow(deps, project, "IPC 数据行流");
       await saveWorkflow(deps, project, { ...wf, nodes: [{ id: "data-row", kind: "request", apiId: api.contract.id, caseId: testCase.id }] });
       await setWorkflowStatus(deps, project, wf, "published");

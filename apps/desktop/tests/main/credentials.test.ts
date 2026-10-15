@@ -271,7 +271,7 @@ describe("desktop credential host", () => {
       const fileOnlyApi = structuredClone(initialApi);
       fileOnlyApi.contract.request.auth = { kind: "bearer", token: fileOnlyRef };
       await expect(session.saveApi(apiLocator, fileOnlyApi)).resolves.toMatchObject({
-        contract: { request: { auth: { kind: "bearer", token: fileOnlyRef } } },
+        api: { contract: { request: { auth: { kind: "bearer", token: fileOnlyRef } } } },
       });
       await expect(host.status({ locator, ref: fileOnlyRef })).resolves.toEqual({ ok: true, status: "missing" });
     } finally {

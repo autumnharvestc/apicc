@@ -4,14 +4,18 @@ import {
   createSystemSecretStore,
   defaultCredentialPrivateRoot,
   envChain,
-  collectCredentialOutputMarkers,
-  collectProjectCredentialRefs,
+  collectCredentialMarkersForRequests,
+  collectCredentialRefsForRequests,
+  collectDefinedProjectCredentialRefs,
   prepareCredentialBindings,
+  selectCredentialRequests,
   type ApiAsset,
   type CredentialBindings,
   type CredentialErrorCode,
   type CredentialScope,
   type Environment,
+  type CredentialRequestSelection,
+  type DeepReadonly,
   type Project,
   type SecretRef,
   type SecretStore,
@@ -31,12 +35,21 @@ export interface PreparedExecutionRun {
   secrets: string[];
 }
 
+export interface ExecutionCredentialSelection {
+  collectionId: string;
+  apiId: string;
+  caseId?: string;
+  scope?: string;
+}
+
 export function credentialScope(workspace: Workspace, groupId: string, project: Project): CredentialScope {
   return { workspaceId: workspace.id, groupId, projectId: project.id };
 }
 
 export function collectCredentialRefs(project: Project, assets: readonly ApiAsset[]): SecretRef[] {
-  return collectProjectCredentialRefs(project, assets);
+  const snapshot = createProjectSnapshot(project);
+  const locators = assets.map((asset) => ({ collectionId: findSourceApi(project, asset).collectionId, apiId: asset.contract.id }));
+  return collectCredentialRefsForRequests(snapshot.project, selectCredentialRequests(snapshot, resolveCredentialSelections(snapshot, locators)));
 }
 
 export async function prepareExecutionRun(
@@ -47,8 +60,39 @@ export async function prepareExecutionRun(
   options: CredentialHostOptions = {},
   expectedVersions?: Readonly<Record<string, string>>,
   expectedDefinitionRevision?: string,
+  selections?: readonly ExecutionCredentialSelection[],
 ): Promise<PreparedExecutionRun> {
-  const refs = collectCredentialRefs(project, assets);
+  const snapshot = createProjectSnapshot(project);
+  const selectedRequests = selections === undefined
+    ? assets.map((asset) => {
+      return { collectionId: findSourceApi(project, asset).collectionId, apiId: asset.contract.id };
+    })
+    : [...selections];
+  const credentialSelections = resolveCredentialSelections(snapshot, selectedRequests);
+  return prepareExecutionRunFromSnapshot(
+    workspace,
+    groupId,
+    project,
+    snapshot,
+    credentialSelections,
+    options,
+    expectedVersions,
+    expectedDefinitionRevision,
+  );
+}
+
+export async function prepareExecutionRunFromSnapshot(
+  workspace: Workspace,
+  groupId: string,
+  project: Project,
+  snapshot: ProjectSnapshot,
+  credentialSelections: readonly CredentialRequestSelection[],
+  options: CredentialHostOptions = {},
+  expectedVersions?: Readonly<Record<string, string>>,
+  expectedDefinitionRevision?: string,
+): Promise<PreparedExecutionRun> {
+  const requests = selectCredentialRequests(snapshot, credentialSelections);
+  const refs = collectCredentialRefsForRequests(snapshot.project, requests);
   if (expectedVersions !== undefined) {
     for (const ref of refs) {
       if (!Object.hasOwn(expectedVersions, ref.id) || typeof expectedVersions[ref.id] !== "string") {
@@ -57,7 +101,6 @@ export async function prepareExecutionRun(
     }
   }
 
-  const snapshot = createProjectSnapshot(project);
   if (expectedDefinitionRevision !== undefined && snapshot.definitionRevision !== expectedDefinitionRevision) {
     throw new Error("工作区定义在压测 worker 启动前发生变化；本次运行未发送请求");
   }
@@ -78,7 +121,7 @@ export async function prepareExecutionRun(
 
   let secrets: string[];
   try {
-    secrets = collectCredentialOutputMarkers(project, assets, credentialBindings);
+    secrets = collectCredentialMarkersForRequests(snapshot.project, requests, credentialBindings);
   } catch (error) {
     throw stableCredentialError(error);
   }
@@ -125,10 +168,56 @@ export function authRefsForAssets(project: Project, assets: readonly ApiAsset[])
 }
 
 export function findProjectCredentialRef(project: Project, refId: string): SecretRef {
-  const assets = project.collections.flatMap(apiAssetsInCollection);
-  const ref = collectCredentialRefs(project, assets).find((candidate) => candidate.id === refId);
+  const ref = collectDefinedProjectCredentialRefs(project).find((candidate) => candidate.id === refId);
   if (!ref) throw new Error(`项目未引用凭据 ${refId}`);
   return ref;
+}
+
+function findSourceApi(project: Project, sourceAsset: ApiAsset): { collectionId: string } {
+  for (const collection of project.collections) {
+    const visit = (folders: typeof collection.folders): boolean => {
+      for (const folder of folders) {
+        if (folder.apis.includes(sourceAsset)) return true;
+        if (visit(folder.folders)) return true;
+      }
+      return false;
+    };
+    if (collection.apis.includes(sourceAsset) || visit(collection.folders)) return { collectionId: collection.id };
+  }
+  throw new TypeError("Credential selections must use API assets from the supplied project.");
+}
+
+function resolveCredentialSelections(
+  snapshot: ProjectSnapshot,
+  locators: readonly ExecutionCredentialSelection[],
+): CredentialRequestSelection[] {
+  return locators.map(({ collectionId, apiId, caseId, scope }) => {
+    const collection = snapshot.project.collections.find((candidate) => candidate.id === collectionId);
+    if (!collection) throw new TypeError(`Credential collection ${collectionId} is not in the supplied project snapshot.`);
+    const api = findApiInCollection(collection, apiId);
+    if (!api) throw new TypeError(`Credential API ${apiId} is not in the selected project snapshot collection.`);
+    if (caseId === undefined) return { asset: api };
+    const testCase = api.cases.find((candidate) => candidate.id === caseId && (scope === undefined || candidate.scope === scope));
+    if (!testCase) throw new TypeError(`Credential case ${caseId} is not in the selected project snapshot API.`);
+    return { asset: api, testCase };
+  });
+}
+
+function findApiInCollection(
+  collection: ProjectSnapshot["project"]["collections"][number],
+  apiId: string,
+): DeepReadonly<ApiAsset> | undefined {
+  const matches: DeepReadonly<ApiAsset>[] = [];
+  const visit = (folders: typeof collection.folders): void => {
+    for (const folder of folders) {
+      matches.push(...folder.apis.filter((api) => api.contract.id === apiId));
+      visit(folder.folders);
+    }
+  };
+  matches.push(...collection.apis.filter((api) => api.contract.id === apiId));
+  visit(collection.folders);
+  if (matches.length > 1) throw new TypeError(`Credential API ${apiId} is ambiguous in the selected project snapshot collection.`);
+  return matches[0];
 }
 
 export function createCredentialHostStore(options: CredentialHostOptions = {}): SecretStore {

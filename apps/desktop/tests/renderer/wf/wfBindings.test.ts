@@ -59,6 +59,8 @@ function detail(apiId: string, cases: Array<{ id: string; name: string }>): ApiD
       cases: cases.map((c) => ({ id: c.id, name: c.name, scope: "base" as const, parameters: {}, preOperations: [], postOperations: [], assertions: [] })),
       documentation: "",
     },
+    sourceApiRevision: "source-api-revision",
+    sourceProjectRevision: "source-project-revision",
     envs: [],
   };
 }

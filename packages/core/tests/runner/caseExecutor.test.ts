@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createVariableResolver } from "../../src/variables/resolver.js";
 import { createEventBus } from "../../src/events/bus.js";
 import { executeCase, type CaseExecutionDeps, type CaseExecutionInput } from "../../src/runner/caseExecutor.js";
@@ -8,6 +12,7 @@ import type { ContractProject } from "../../src/contract/workspace.js";
 import type { ProjectGlobals, TestCase } from "../../src/domain/common.js";
 import type { ExecutableRequest, ExecutionResponse, ProtocolClient, ScriptEngine } from "../../src/plugin/types.js";
 import { builtinAuthProviders } from "../../src/http/auth.js";
+import { createHttpClient } from "../../src/http/client.js";
 import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
 
 const testCase: TestCase = {
@@ -21,7 +26,7 @@ const response: ExecutionResponse = { status: 200, headers: { "content-type": "a
 
 function input(options: {
   globals?: Partial<ProjectGlobals>;
-  request?: { baseUrl?: string; protocol?: "http" | "soap"; envelope?: string; body?: RequestBody };
+  request?: { baseUrl?: string; protocol?: "http" | "soap"; envelope?: string; method?: "GET" | "POST"; body?: RequestBody };
   testCase?: TestCase;
 } = {}): CaseExecutionInput {
   const selectedCase = options.testCase ?? testCase;
@@ -39,7 +44,7 @@ function input(options: {
           envelope: options.request.envelope ?? "<Envelope>{{orderId}}</Envelope>",
         }
         : {
-          protocol: "http", method: "GET", baseUrl: options.request?.baseUrl ?? "https://example.test", path: "/orders/{{orderId}}",
+          protocol: "http", method: options.request?.method ?? "GET", baseUrl: options.request?.baseUrl ?? "https://example.test", path: "/orders/{{orderId}}",
           pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "bearer", token: { id: secretId, policy: "test-auto" } },
           body: options.request?.body ?? { kind: "none" },
         },
@@ -124,6 +129,150 @@ describe("executeCase", () => {
     expect(result.failureKind).toBeUndefined();
     expect(result.requestStarted).toBe(true);
     expect(result.requestCompleted).toBe(true);
+  });
+
+  it("executes the selected case's complete request override", async () => {
+    let seenUrl = "";
+    const client: ProtocolClient = {
+      name: "test",
+      canHandle: () => true,
+      async execute(request) { seenUrl = request.url; return response; },
+    };
+    const state = input();
+    state.testCase = {
+      ...state.testCase,
+      requestOverride: { ...state.asset.contract.request, path: "/case-only/{{orderId}}" },
+    };
+
+    const result = await executeCase(state, deps(client));
+
+    expect(seenUrl).toBe("https://example.test/case-only/42");
+    expect(state.asset.contract.request.path).toBe("/orders/{{orderId}}");
+    expect(result.outcome.passed).toBe(true);
+  });
+
+  it("bodyJson neq 不能把无效 JSON 响应解释为 undefined 并通过", async () => {
+    const client: ProtocolClient = {
+      name: "test", canHandle: () => true,
+      async execute() { return { ...response, bodyText: "not json", textAvailable: true, jsonAvailable: false }; },
+    };
+    const state = input({ testCase: {
+      ...testCase,
+      assertions: [{ id: "body", target: "bodyJson", path: "$.value", op: "neq", expected: "present" }],
+    } });
+    const executionDeps = deps(client);
+    executionDeps.resolveAssert = (op) => ({ op, evaluate(actual, expected) {
+      const pass = op === "neq" ? String(actual) !== expected : String(actual) === expected;
+      return { pass, message: `expected ${op} ${expected}` };
+    } });
+
+    const result = await executeCase(state, executionDeps);
+
+    expect(result.outcome.passed).toBe(false);
+    expect(result.outcome.assertions[0]?.message).toContain("JSON");
+  });
+
+  it("keeps case settings above legacy runner defaults and explicit settings above both while preserving signal", async () => {
+    let seenOptions: Record<string, unknown> | undefined;
+    const client: ProtocolClient = {
+      name: "test",
+      canHandle: () => true,
+      async execute(_request, options) { seenOptions = options as unknown as Record<string, unknown>; return response; },
+    };
+    const state = input({ testCase: { ...testCase, requestSettingsOverride: {
+      connectTimeoutMs: 200,
+      headersTimeoutMs: 1500,
+      totalTimeoutMs: 4000,
+    } } });
+    const signal = new AbortController().signal;
+
+    await executeCase(state, {
+      ...deps(client),
+      timeouts: { connectTimeoutMs: 1000, totalTimeoutMs: 5000, signal },
+      requestSettings: { headersTimeoutMs: 700, followRedirects: true },
+    });
+
+    expect(seenOptions).toMatchObject({
+      connectTimeoutMs: 200,
+      headersTimeoutMs: 700,
+      bodyTimeoutMs: 30_000,
+      totalTimeoutMs: 4000,
+      followRedirects: true,
+      maxRedirects: 10,
+      uploadLimitBytes: 64 * 1024 * 1024,
+      responseLimitBytes: 32 * 1024 * 1024,
+      signal,
+    });
+    expect(seenOptions?.requestSettings).toBeUndefined();
+    expect(seenOptions?.runtime).toMatchObject({ files: { get: expect.any(Function), close: expect.any(Function) }, beforeRedirect: expect.any(Function) });
+  });
+
+  it("真实 CaseExecutor 将用例传输设置交给 HTTP 客户端并完成文件 307 重发", async () => {
+    const root = await mkdtemp(join(tmpdir(), "apicc-case-http-"));
+    const fileBytes = Buffer.from([0, 7, 128, 255]);
+    await writeFile(join(root, "payload.bin"), fileBytes);
+    const arrivals: Array<{ path: string; method: string; body: Buffer }> = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      arrivals.push({ path: request.url ?? "", method: request.method ?? "", body: Buffer.concat(chunks) });
+      if (arrivals.length === 1) {
+        response.writeHead(307, { location: "/redirected" });
+        response.end();
+      } else {
+        response.setHeader("content-type", "text/plain; charset=utf-8");
+        response.end("done");
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const client = createHttpClient();
+    try {
+      const state = input({ request: {
+        baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        method: "POST",
+        body: { kind: "binary", file: { path: "payload.bin" }, contentType: "application/octet-stream" },
+      } });
+      state.testCase = { ...state.testCase, requestSettingsOverride: {
+        headersTimeoutMs: 2000, bodyTimeoutMs: 2000, followRedirects: true,
+        maxRedirects: 2, uploadLimitBytes: fileBytes.length * 2, responseLimitBytes: 8,
+      } };
+      const result = await executeCase(state, {
+        ...deps(client),
+        workspaceRoot: root,
+      });
+
+      expect(result.outcome.passed).toBe(true);
+      expect(result.response?.bodyText).toBe("done");
+      expect(arrivals.map(({ path, method, body }) => ({ path, method, body }))).toEqual([
+        { path: "/orders/42", method: "POST", body: fileBytes },
+        { path: "/redirected", method: "POST", body: fileBytes },
+      ]);
+    } finally {
+      await client.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("HTTP 请求体准备在 network start 前失败时 requestTimeMs 为 0", async () => {
+    const client = createHttpClient();
+    try {
+      const state = input({ request: {
+        method: "POST",
+        body: { kind: "multipart", entries: [{ kind: "text", id: "10000000-0000-4000-8000-000000000004", name: "tag", value: "x", enabled: true }] },
+      } });
+      state.testCase = { ...state.testCase, preOperations: [], postOperations: [], assertions: [] };
+      const result = await executeCase(state, deps(client, (request) => {
+        request.headers["Content-Type"] = "application/json";
+      }));
+
+      expect(result).toMatchObject({ requestStarted: true, requestCompleted: true, requestTimeMs: 0 });
+      expect(result.response).toBeUndefined();
+      expect(result.outcome.error).toContain("conflicting Content-Type");
+    } finally {
+      await client.close();
+    }
   });
 
   it("passes final request to beforeSend and does not execute when hook rejects", async () => {
@@ -368,17 +517,32 @@ describe("executeCase", () => {
     expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { kind: "multipart", entries: [] },
-    { kind: "binary", file: { path: "C:/fixture.bin" }, contentType: "application/octet-stream" },
-  ] as const)("rejects unsupported $kind encoding as config with zero protocol I/O", async (body) => {
-    const client: ProtocolClient = { name: "test", canHandle: () => true, execute: vi.fn(async () => response) };
-    const resolveProtocol = vi.fn(() => client);
-    const result = await executeCase(input({ request: { body: body as RequestBody } }), { ...deps(client), resolveProtocol });
-    expect(result.failureKind).toBe("config");
-    expect(result.outcome.error).toContain("no supported transport");
-    expect(resolveProtocol).not.toHaveBeenCalled();
-    expect(client.execute).not.toHaveBeenCalled();
+  it("captures a binary request file before scripts and closes its handle after execute", async () => {
+    const root = await mkdtemp(join(tmpdir(), "apicc-case-file-"));
+    const bytes = Buffer.from([0, 2, 64, 128, 255]);
+    await writeFile(join(root, "payload.bin"), bytes);
+    let captured: import("../../src/http/files.js").CapturedFile | undefined;
+    const client: ProtocolClient = {
+      name: "test", canHandle: () => true,
+      async execute(request, options) {
+        if (request.protocol !== "http" || request.body?.kind !== "binary") throw new Error("expected binary runtime body");
+        captured = options.runtime?.files?.get(request.body.file);
+        const chunks: Buffer[] = [];
+        for await (const chunk of captured!.openStream()) chunks.push(Buffer.from(chunk));
+        expect(Buffer.concat(chunks)).toEqual(bytes);
+        return response;
+      },
+    };
+    try {
+      const result = await executeCase(input({ request: { body: { kind: "binary", file: { path: "payload.bin" }, contentType: "application/octet-stream" } } }), {
+        ...deps(client), workspaceRoot: root,
+      });
+      expect(result.outcome.passed).toBe(true);
+      expect(captured).toBeDefined();
+      expect(() => captured!.openStream()).toThrow(expect.objectContaining({ code: "FILE_SOURCE_NOT_REPLAYABLE" }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("preserves a plugin's explicit configuration error classification", async () => {

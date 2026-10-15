@@ -1,4 +1,55 @@
 export { version } from "./version.js";
+// Browser-safe debugger DTOs; execution services stay in the Node entry point.
+export {
+  DebugIdentitySchema,
+  DebugCaseIdentitySchema,
+  DebugFieldStateSchema,
+  DebugInvocationSchema,
+  DebugRequestBodySchema,
+  DebugResponseBodySchema,
+  DebugRequestSchema,
+  DebugResponseSchema,
+  DebugOutcomeSchema,
+  DebugRunSummarySchema,
+  DebugReplayDescriptorSchema,
+  DebugExchangeSchema,
+  DebugResultSchema,
+  DebugHistoryPreferencesSchema,
+  DebugHistoryRecordSchema,
+  DebugHistoryResultFilterSchema,
+  DebugHistorySummarySchema,
+  DebugHistoryListFilterSchema,
+  DebugHistoryDiagnosticSchema,
+  DebugHistoryPageSchema,
+  DebugHistoryReadResultSchema,
+} from "./debug/model.js";
+export type {
+  DebugIdentity,
+  DebugCaseIdentity,
+  DebugFieldState,
+  DebugInvocation,
+  DebugRequestBody,
+  DebugResponseBody,
+  DebugRequest,
+  DebugResponse,
+  DebugOutcome,
+  DebugRunSummary,
+  DebugReplayDescriptor,
+  DebugExchange,
+  DebugResult,
+  DebugHistoryPreferences,
+  DebugHistoryRecord,
+  DebugHistoryResultFilter,
+  DebugHistorySummary,
+  DebugHistoryListFilter,
+  DebugHistoryDiagnostic,
+  DebugHistoryPage,
+  DebugHistoryReadResult,
+  DebugExecutionIdentity,
+  DebugRequestOverride,
+  DebugRequestValue,
+  DebugFailureKind,
+} from "./debug/model.js";
 export {
   AssertionSchema,
   DataDriverSchema,
@@ -107,7 +158,7 @@ export type { ExecutionEnvironment } from "./domain/executionSelection.js";
 export { createEventBus } from "./events/bus.js";
 export type { RunEventMap } from "./events/bus.js";
 export type {
-  ExecutableRequest, ExecutionResponse, HttpExecuteOptions, ProtocolClient, AuthProvider,
+  ExecutableRequest, ExecutionResponse, HttpExecuteOptions, HttpRuntimeOptions, HttpHopObservation, ProtocolClient, AuthProvider,
   AssertResult, AssertOperator, PmVariables, PmApi, ScriptContext, ScriptEngine, Reporter,
   ImportedProject, ImportDiagnostic, Importer, LoadProblem, StorageSaveOptions, StorageAdapter,
   PluginContext, PluginRegistryApi, PluginDefinition,
@@ -132,17 +183,32 @@ export { createProjectSnapshot } from "./assets/snapshot.js";
 export type { ProjectSnapshot } from "./assets/snapshot.js";
 export { cloneProjectDefinition, cloneAssetBundle } from "./assets/clone.js";
 export type { CloneIdFactory, CloneIdKind, CloneIdMapping, ClonedAssetBundle, ClonedProjectDefinition } from "./assets/clone.js";
-export { rotateProjectSecretRefs } from "./assets/secretRefs.js";
+export { rotateProjectSecretRefs, collectDefinedProjectCredentialRefs } from "./assets/secretRefs.js";
 export { prepareCredentialBindings } from "./credentials/bindings.js";
 export { defaultCredentialPrivateRoot } from "./credentials/host.js";
 export type { CredentialScope, CredentialErrorCode, SecretStore, CredentialBindings } from "./credentials/types.js";
 export { CredentialError } from "./credentials/types.js";
 export {
+  selectCredentialRequests,
+  collectCredentialRefsForRequests,
+  collectCredentialMarkersForRequests,
   collectProjectCredentialRefs,
   collectCredentialOutputMarkers,
   createCredentialOutputSanitizer,
 } from "./credentials/output.js";
-export type { CredentialOutputSanitizer } from "./credentials/output.js";
+export type {
+  CredentialOutputSanitizer,
+  EffectiveCredentialRequest,
+  CredentialRequestSelection,
+} from "./credentials/output.js";
+export {
+  RequestSettingsSchema,
+  RequestSettingsOverrideSchema,
+  resolveRequestSettings,
+  assertRequestSettingsApplicable,
+} from "./request/settings.js";
+export type { RequestSettings, RequestSettingsOverride } from "./request/settings.js";
+export { getEffectiveCaseRequest } from "./request/effective.js";
 export { materializeRequest } from "./request/materialize.js";
 export type { MaterializeInputs, MaterializedRequest, RuntimeAuth } from "./request/materialize.js";
 export { createVariableResolver, CyclicVariableError } from "./variables/resolver.js";

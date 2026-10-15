@@ -1,5 +1,5 @@
 import type { ApiAsset, ApiTestCase, ComponentAsset, ModelAsset } from "@apicc/core";
-import type { ApiccApi, ApiDetail, ContainerDetail, ContainerSaveResult, CreateComponentInput, CreateModelInput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../../src/shared/types.js";
+import type { ApiccApi, ApiDetail, ApiSaveResult, CaseDraftSaveResult, ContainerDetail, ContainerSaveResult, CreateComponentInput, CreateModelInput, NodeCreateInput, NodeCreatedDTO, OpenResult } from "../../src/shared/types.js";
 import type { ApiLocator, CaseLocator, CollectionLocator, FolderLocator, GroupLocator, ProjectLocator, WorkflowLocator } from "../../src/shared/locations.js";
 import type { Environment, Workflow } from "@apicc/core";
 import type { IpcResultMap } from "../../src/shared/ipc-contract.js";
@@ -20,8 +20,8 @@ declare const model: ModelAsset;
 declare const component: ComponentAsset;
 
 const detail: Promise<ApiDetail> = api.apiGet(apiLocator);
-const savedApi: Promise<ApiAsset> = api.apiSave(apiLocator, asset);
-const savedCase: Promise<ApiTestCase> = api.caseSave({ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase);
+const savedApi: Promise<ApiSaveResult> = api.apiSave(apiLocator, asset, "source-revision");
+const savedCase: Promise<CaseDraftSaveResult> = api.caseSave({ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase, "source-revision", []);
 const savedContainer: Promise<ContainerSaveResult> = api.containerSave({
   kind: "collection",
   locator: collectionLocator,

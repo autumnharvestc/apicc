@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   ApiAssetSchema,
+  ApiRequestSchema,
   ApiTestCaseSchema,
   ComponentAssetSchema,
   ContractProjectSchema,
@@ -13,6 +14,10 @@ import {
   ResponseDefinitionSchema,
   SchemaNodeSchema,
   StressPolicySchema,
+  DebugInvocationSchema,
+  DebugFieldStateSchema,
+  DebugHistoryListFilterSchema,
+  DebugHistoryPreferencesSchema,
 } from "@apicc/core/schema";
 import {
   OnlineBaseUrlSchema,
@@ -210,8 +215,10 @@ export const IpcArgsSchemas = {
   [IpcChannel.GlobalsGet]: z.tuple([ProjectLocatorSchema]),
   [IpcChannel.StressPolicySave]: z.tuple([ProjectLocatorSchema, StressPolicySchema]),
   [IpcChannel.ApiGet]: z.tuple([ApiLocatorSchema]),
-  [IpcChannel.ApiSave]: z.tuple([ApiLocatorSchema, ApiAssetSchema]),
-  [IpcChannel.CaseSave]: z.tuple([CaseLocatorSchema, ApiTestCaseSchema]),
+  [IpcChannel.ApiSave]: z.tuple([ApiLocatorSchema, ApiAssetSchema, z.string().min(1)]),
+  [IpcChannel.ApiRequestDraftSave]: z.tuple([ApiLocatorSchema, ApiRequestSchema, z.string().min(1), z.array(DebugFieldStateSchema)]),
+  [IpcChannel.CaseSave]: z.tuple([CaseLocatorSchema, ApiTestCaseSchema, z.string().min(1), z.array(DebugFieldStateSchema)]),
+  [IpcChannel.CaseDraftSave]: z.tuple([CaseLocatorSchema, ApiTestCaseSchema, z.string().min(1), z.array(z.object({ caseId: z.string().min(1), scope: z.string().min(1) }).strict()), z.array(DebugFieldStateSchema)]),
   [IpcChannel.CaseDelete]: z.tuple([CaseLocatorSchema]),
   [IpcChannel.ModelList]: z.tuple([ProjectLocatorSchema]),
   [IpcChannel.ModelGet]: z.tuple([ModelLocatorSchema]),
@@ -223,6 +230,21 @@ export const IpcArgsSchemas = {
   [IpcChannel.ComponentSave]: z.tuple([ComponentLocatorSchema, ComponentAssetSchema]),
   [IpcChannel.AssetReferences]: z.tuple([ProjectLocatorSchema, z.string()]),
   [IpcChannel.DebugSend]: z.tuple([z.object({ locator: ApiLocatorSchema, caseId: z.string(), envName: z.string().nullish() }).strict()]),
+  [IpcChannel.DebugStart]: z.tuple([DebugInvocationSchema]),
+  [IpcChannel.DebugWait]: z.tuple([z.object({ runId: z.string().min(1) }).strict()]),
+  [IpcChannel.DebugCancel]: z.tuple([z.object({ runId: z.string().min(1) }).strict()]),
+  [IpcChannel.DebugCookiesList]: z.tuple([z.object({ locator: ApiLocatorSchema, environmentId: z.string().min(1).optional() }).strict()]),
+  [IpcChannel.DebugCookiesClear]: z.tuple([z.object({ locator: ApiLocatorSchema, environmentId: z.string().min(1).optional() }).strict()]),
+  [IpcChannel.DebugPickFile]: z.tuple([]),
+  [IpcChannel.DebugSaveProjected]: z.tuple([z.string().min(1), z.string()]),
+  [IpcChannel.DebugHistoryList]: z.tuple([DebugHistoryListFilterSchema]),
+  [IpcChannel.DebugHistoryGet]: z.tuple([z.string().uuid()]),
+  [IpcChannel.DebugHistoryDelete]: z.tuple([z.string().uuid()]),
+  [IpcChannel.DebugHistoryCleanup]: z.tuple([]),
+  [IpcChannel.DebugHistoryPreferencesGet]: z.tuple([]),
+  [IpcChannel.DebugHistoryPreferencesUpdate]: z.tuple([DebugHistoryPreferencesSchema]),
+  [IpcChannel.DebugHistoryRestore]: z.tuple([z.object({ historyId: z.string().uuid(), exchangeOrder: z.number().int().positive() }).strict()]),
+  [IpcChannel.DebugHistoryReplay]: z.tuple([z.string().uuid()]),
   [IpcChannel.RunCollection]: z.tuple([z.object({ locator: CollectionLocatorSchema, envName: z.string().nullish() }).strict()]),
   [IpcChannel.RunsList]: z.tuple([]),
   [IpcChannel.RunsGet]: z.tuple([z.string()]),
@@ -274,6 +296,7 @@ export const IpcArgsSchemas = {
 } satisfies Record<IpcChannelName, z.ZodTypeAny>;
 
 export type IpcArgsMap = { [Channel in IpcChannelName]: z.infer<(typeof IpcArgsSchemas)[Channel]> };
+export type IpcInputArgsMap = { [Channel in IpcChannelName]: z.input<(typeof IpcArgsSchemas)[Channel]> };
 
 type IpcArgsMatch = {
   // These existing public methods keep their scalar signatures while preload wraps
@@ -307,7 +330,9 @@ const resultMethodByChannel = {
   [IpcChannel.StressPolicySave]: "stressPolicySave",
   [IpcChannel.ApiGet]: "apiGet",
   [IpcChannel.ApiSave]: "apiSave",
+  [IpcChannel.ApiRequestDraftSave]: "apiRequestDraftSave",
   [IpcChannel.CaseSave]: "caseSave",
+  [IpcChannel.CaseDraftSave]: "caseDraftSave",
   [IpcChannel.CaseDelete]: "caseDelete",
   [IpcChannel.ModelList]: "modelList",
   [IpcChannel.ModelGet]: "modelGet",
@@ -319,6 +344,21 @@ const resultMethodByChannel = {
   [IpcChannel.ComponentSave]: "componentSave",
   [IpcChannel.AssetReferences]: "assetReferences",
   [IpcChannel.DebugSend]: "debugSend",
+  [IpcChannel.DebugStart]: "debugStart",
+  [IpcChannel.DebugWait]: "debugWait",
+  [IpcChannel.DebugCancel]: "debugCancel",
+  [IpcChannel.DebugCookiesList]: "debugCookiesList",
+  [IpcChannel.DebugCookiesClear]: "debugCookiesClear",
+  [IpcChannel.DebugPickFile]: "debugPickFile",
+  [IpcChannel.DebugSaveProjected]: "debugSaveProjected",
+  [IpcChannel.DebugHistoryList]: "debugHistoryList",
+  [IpcChannel.DebugHistoryGet]: "debugHistoryGet",
+  [IpcChannel.DebugHistoryDelete]: "debugHistoryDelete",
+  [IpcChannel.DebugHistoryCleanup]: "debugHistoryCleanup",
+  [IpcChannel.DebugHistoryPreferencesGet]: "debugHistoryPreferencesGet",
+  [IpcChannel.DebugHistoryPreferencesUpdate]: "debugHistoryPreferencesUpdate",
+  [IpcChannel.DebugHistoryRestore]: "debugHistoryRestore",
+  [IpcChannel.DebugHistoryReplay]: "debugHistoryReplay",
   [IpcChannel.RunCollection]: "runCollection",
   [IpcChannel.RunsList]: "runsList",
   [IpcChannel.RunsGet]: "runsGet",

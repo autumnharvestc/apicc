@@ -3,6 +3,7 @@ import {
   builtinAuthProviders,
   createDefaultRegistry,
   createHttpClient,
+  createHttpSession,
   createProjectSnapshot,
   createStressCaseSession,
   resolveExecutionEnvironment,
@@ -16,7 +17,7 @@ import {
   type StressReport,
 } from "@apicc/core";
 import { resolveSnapshotEnvironment, findSnapshotApi, workspaceRunsDir } from "./executionContext.js";
-import type { CredentialHost, PreparedDesktopExecutionRun } from "./credentialHost.js";
+import type { DebugCredentialHost, PreparedDesktopExecutionRun } from "./credentialHost.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
 import type { createSession } from "./session.js";
 import type { StressRunInput, StressRunOutput } from "../shared/types.js";
@@ -37,7 +38,7 @@ export interface StressControllerDeps {
 export function createStressControllerWithHost(
   session: Session,
   deps: StressControllerDeps,
-  credentials: CredentialHost,
+  credentials: DebugCredentialHost,
 ) {
   let active: { controller: AbortController; finished: Promise<StressRunOutput> } | null = null;
 
@@ -104,11 +105,11 @@ export function createStressControllerWithHost(
     const finished = Promise.resolve().then(async (): Promise<StressRunOutput> => {
       let prepared: PreparedDesktopExecutionRun;
       try {
-        prepared = await credentials.prepareRun({
+        prepared = await credentials.prepareRunForRequests({
           workspaceId: captured.locator.workspaceId,
           groupId: captured.locator.groupId,
           projectId: captured.locator.projectId,
-        }, snapshot, [api]);
+        }, snapshot, [{ asset: api, testCase }]);
       } catch (error) {
         throw createExecutionOutputBoundary([]).error(error);
       }
@@ -132,26 +133,41 @@ export function createStressControllerWithHost(
           }
         },
         createWorker: async (workerId) => {
-          return createStressCaseSession({
-            run: prepared.run,
-            collectionId: collection.id,
-            apiId: api.contract.id,
-            caseId: testCase.id,
-            ...(env ? { environmentId: env.id } : {}),
-          }, {
-            resolveProtocol: (request) => registry.getProtocol(request),
-            resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
-            resolveAssert: (op) => registry.getAssert(op),
-            scriptEngine: registry.getScriptEngine("javascript")!,
-            createManagedClient: () => deps.createManagedClient
-              ? deps.createManagedClient(workerId, captured.connectionMode ?? "pooled")
-              : createHttpClient({ connectionMode: captured.connectionMode }),
-          }, {
-            workerId,
-            concurrency: captured.concurrency,
-            maxRps: policy?.maxRps,
-            confirmedTargetOrigins: captured.confirmedTargetOrigins,
-          });
+          const httpSession = createHttpSession();
+          try {
+            const workerSession = createStressCaseSession({
+              run: prepared.run,
+              collectionId: collection.id,
+              apiId: api.contract.id,
+              caseId: testCase.id,
+              ...(env ? { environmentId: env.id } : {}),
+            }, {
+              resolveProtocol: (request) => registry.getProtocol(request),
+              resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
+              resolveAssert: (op) => registry.getAssert(op),
+              scriptEngine: registry.getScriptEngine("javascript")!,
+              workspaceRoot: root,
+              httpSession,
+              createManagedClient: () => deps.createManagedClient
+                ? deps.createManagedClient(workerId, captured.connectionMode ?? "pooled")
+                : createHttpClient({ connectionMode: captured.connectionMode }),
+            }, {
+              workerId,
+              concurrency: captured.concurrency,
+              maxRps: policy?.maxRps,
+              confirmedTargetOrigins: captured.confirmedTargetOrigins,
+            });
+            return {
+              execute: (signal) => workerSession.execute(signal),
+              async close() {
+                try { await workerSession.close(); }
+                finally { await httpSession.close(); }
+              },
+            };
+          } catch (error) {
+            await httpSession.close();
+            throw error;
+          }
         },
       });
 

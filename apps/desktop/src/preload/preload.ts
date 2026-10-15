@@ -1,12 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IpcChannel, IpcEvent } from "../shared/channels.js";
 import type { IpcChannelName } from "../shared/channels.js";
-import type { IpcArgsMap, IpcResultMap } from "../shared/ipc-contract.js";
+import type { IpcInputArgsMap, IpcResultMap } from "../shared/ipc-contract.js";
 import type { ApiccApi } from "../shared/types.js";
 import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "../shared/credentials.js";
 import { createStressPreloadApi } from "./stressBridge.js";
 
-function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcArgsMap[Channel]): Promise<IpcResultMap[Channel]> {
+function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcInputArgsMap[Channel]): Promise<IpcResultMap[Channel]> {
   return ipcRenderer.invoke(channel, ...args).then((result: unknown) => result as IpcResultMap[Channel]);
 }
 
@@ -30,8 +30,10 @@ const api: ApiccApi = {
   containerGet: (target) => invoke(IpcChannel.ContainerGet, target),
   globalsGet: (locator) => invoke(IpcChannel.GlobalsGet, locator),
   apiGet: (locator) => invoke(IpcChannel.ApiGet, locator),
-  apiSave: (locator, asset) => invoke(IpcChannel.ApiSave, locator, asset),
-  caseSave: (locator, testCase) => invoke(IpcChannel.CaseSave, locator, testCase),
+  apiSave: (locator, asset, expectedSourceApiRevision) => invoke(IpcChannel.ApiSave, locator, asset, expectedSourceApiRevision),
+  apiRequestDraftSave: (locator, request, revision, fields) => invoke(IpcChannel.ApiRequestDraftSave, locator, request, revision, fields),
+  caseSave: (locator, testCase, expectedSourceApiRevision, fields) => invoke(IpcChannel.CaseSave, locator, testCase, expectedSourceApiRevision, fields),
+  caseDraftSave: (locator, testCase, revision, deletedCases, fields) => invoke(IpcChannel.CaseDraftSave, locator, testCase, revision, deletedCases, fields),
   caseDelete: (locator) => invoke(IpcChannel.CaseDelete, locator),
   modelList: (locator) => invoke(IpcChannel.ModelList, locator),
   modelGet: (locator) => invoke(IpcChannel.ModelGet, locator),
@@ -43,6 +45,21 @@ const api: ApiccApi = {
   componentSave: (locator, component) => invoke(IpcChannel.ComponentSave, locator, component),
   assetReferences: (locator, assetId) => invoke(IpcChannel.AssetReferences, locator, assetId),
   debugSend: (input) => invoke(IpcChannel.DebugSend, input),
+  debugStart: (input) => invoke(IpcChannel.DebugStart, input),
+  debugWait: (input) => invoke(IpcChannel.DebugWait, input),
+  debugCancel: (input) => invoke(IpcChannel.DebugCancel, input),
+  debugCookiesList: (input) => invoke(IpcChannel.DebugCookiesList, input),
+  debugCookiesClear: (input) => invoke(IpcChannel.DebugCookiesClear, input),
+  debugPickFile: () => invoke(IpcChannel.DebugPickFile),
+  debugSaveProjected: (name, content) => invoke(IpcChannel.DebugSaveProjected, name, content),
+  debugHistoryList: (filter) => invoke(IpcChannel.DebugHistoryList, filter),
+  debugHistoryGet: (historyId) => invoke(IpcChannel.DebugHistoryGet, historyId),
+  debugHistoryDelete: (historyId) => invoke(IpcChannel.DebugHistoryDelete, historyId),
+  debugHistoryCleanup: () => invoke(IpcChannel.DebugHistoryCleanup),
+  debugHistoryPreferencesGet: () => invoke(IpcChannel.DebugHistoryPreferencesGet),
+  debugHistoryPreferencesUpdate: (preferences) => invoke(IpcChannel.DebugHistoryPreferencesUpdate, preferences),
+  debugHistoryRestore: (input) => invoke(IpcChannel.DebugHistoryRestore, input),
+  debugHistoryReplay: (historyId) => invoke(IpcChannel.DebugHistoryReplay, historyId),
   runCollection: (input) => invoke(IpcChannel.RunCollection, input),
   runsList: () => invoke(IpcChannel.RunsList),
   runsGet: (file) => invoke(IpcChannel.RunsGet, file),

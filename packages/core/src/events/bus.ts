@@ -4,7 +4,8 @@ import type { RunResult } from "../report/types.js";
  * 执行生命周期事件载荷。request 为可变引用，钩子直接修改即生效（规格 §5.2）。
  * 载荷契约增量（规格 §5.2 裁定）：用例级事件携带 apiId/caseId 标识；afterCase 另带
  * row/durationMs/error；afterRun 可携带完整 RunResult 引用；afterResponse 可携带
- * headers/bodyText 响应快照（desktop 调试视图消费）。新增字段全部可选，
+ * headers/bodyText 的兼容性快照。调试采集必须使用 Runner 的 observeHttp 逐 hop 端口；
+ * afterResponse 是有损事件，不能作为最终请求/响应或多行历史的来源。新增字段全部可选，
  * 保证既有处理器与 M2/M3 沿用时无需破坏性变更。
  */
 export interface RunEventMap {

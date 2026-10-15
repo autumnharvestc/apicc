@@ -1,16 +1,36 @@
 import { createServer, type Server } from "node:http";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createDefaultRegistry } from "@apicc/core";
 import { createSession } from "../../src/main/session.js";
 import { sendDebug } from "../../src/main/debug.js";
+import { createDebugController } from "../../src/main/debugController.js";
+import type { DebugCredentialHost, PreparedDesktopExecutionRun } from "../../src/main/credentialHost.js";
 import { findApi, IDS, makeWorkspace, makeTempRoot, persistWorkspace, projectOne } from "./helpers/contract-assets.js";
 import type { ApiLocator } from "../../src/shared/locations.js";
 
 let server: Server;
 let baseUrl = "";
+let serverHits = 0;
 const roots: Array<{ dispose: () => Promise<void> }> = [];
+
+function workspaceBytes(root: string): string {
+  const entries: Array<[string, string]> = [];
+  const visit = (directory: string): void => {
+    for (const item of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = join(directory, item.name);
+      if (item.isDirectory()) visit(path);
+      else entries.push([relative(root, path).replaceAll("\\", "/"), readFileSync(path).toString("base64")]);
+    }
+  };
+  visit(root);
+  return JSON.stringify(entries);
+}
 
 beforeAll(async () => {
   server = createServer((_req, res) => {
+    serverHits += 1;
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok: true }));
   });
@@ -102,5 +122,256 @@ describe("sendDebug", () => {
     const result = await sendDebug(session, { locator, caseId: api.cases[0]!.id, envName: undefined });
     expect(result.outcome.passed).toBe(false);
     expect(result.outcome.error).toContain("refused");
+  });
+});
+
+describe("debug controller", () => {
+  it("persists one record from the shared completion even when wait is repeated", async () => {
+    const { session, locator } = await setup();
+    const credentials: DebugCredentialHost = {
+      prepareRunForRequests: async (_scope, snapshot) => ({
+        run: { snapshot, credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} } },
+        refs: [],
+        markers: [],
+      }),
+    };
+    const persisted: unknown[] = [];
+    const history = {
+      append: async (result: unknown) => { persisted.push(result); },
+    };
+    const controller = createDebugController(session, () => createDefaultRegistry(), credentials, history as never);
+    const owner = {};
+    const started = controller.start(owner, {
+      mode: "request",
+      locator,
+      request: {
+        protocol: "http", method: "GET", baseUrl, path: "/history-once", pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" }, body: { kind: "none" },
+      },
+      parameters: {},
+      fields: [],
+    });
+
+    const result = await controller.wait(owner, started.runId);
+    const repeated = await controller.wait(owner, started.runId);
+
+    expect(result.failureKind).toBeUndefined();
+    expect(result.warnings).toEqual([]);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toBe(result);
+    expect(repeated).toBe(result);
+  });
+
+  it("keeps the completed network result when private history writing fails", async () => {
+    const { session, locator } = await setup();
+    const credentials: DebugCredentialHost = {
+      prepareRunForRequests: async (_scope, snapshot) => ({
+        run: { snapshot, credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} } },
+        refs: [],
+        markers: [],
+      }),
+    };
+    const controller = createDebugController(session, () => createDefaultRegistry(), credentials, {
+      append: async () => { throw new Error("synthetic private path detail"); },
+    });
+    const owner = {};
+    serverHits = 0;
+    const started = controller.start(owner, {
+      mode: "request",
+      locator,
+      request: {
+        protocol: "http", method: "GET", baseUrl, path: "/history-write-warning", pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" }, body: { kind: "none" },
+      },
+      parameters: {},
+      fields: [],
+    });
+
+    const result = await controller.wait(owner, started.runId);
+
+    expect(serverHits).toBe(1);
+    expect(result.failureKind).toBeUndefined();
+    expect(result.run).toMatchObject({ total: 1, passed: 1, failed: 0 });
+    expect(result.warnings).toContain("调试结果已完成，但本机历史写入或清理未完整成功。");
+    expect(JSON.stringify(result)).not.toContain("synthetic private path detail");
+  });
+
+  it("rejects a request with an unfilled consumed field before runId or async preparation", async () => {
+    const { session, locator } = await setup();
+    const sessionState = () => JSON.stringify({ root: session.root, workspace: session.workspace, readOnly: session.readOnly, revision: session.revision });
+    const before = sessionState();
+    const diskBefore = workspaceBytes(session.root!);
+    let preparationCalls = 0;
+    const credentials: DebugCredentialHost = {
+      prepareRunForRequests: async (_scope, snapshot) => {
+        preparationCalls += 1;
+        return {
+          run: { snapshot, credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} } },
+          refs: [],
+          markers: [],
+        };
+      },
+    };
+    const controller = createDebugController(session, () => createDefaultRegistry(), credentials);
+    const owner = {};
+    serverHits = 0;
+    let caught: unknown;
+    let started: ReturnType<typeof controller.start> | undefined;
+    try {
+      started = controller.start(owner, {
+        mode: "request",
+        locator,
+        request: {
+          protocol: "http",
+          method: "GET",
+          baseUrl,
+          path: "/needs-input-must-not-send",
+          pathParams: [], query: [], headers: [], cookies: [],
+          auth: { kind: "none" }, body: { kind: "none" },
+        },
+        parameters: {},
+        fields: [{ path: "request.body.content", status: "redacted", needsInput: true }],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    if (started) {
+      controller.cancel(owner, started.runId);
+      await controller.wait(owner, started.runId);
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(started).toBeUndefined();
+    expect(preparationCalls).toBe(0);
+    expect(serverHits).toBe(0);
+    expect(sessionState()).toBe(before);
+    expect(workspaceBytes(session.root!)).toBe(diskBefore);
+  });
+
+  it("returns a safe terminal result when credential preparation fails after start", async () => {
+    const { session, locator } = await setup();
+    const credentials: DebugCredentialHost = {
+      prepareRunForRequests: async () => { throw new Error("synthetic credential setup failure"); },
+    };
+    const controller = createDebugController(session, () => createDefaultRegistry(), credentials);
+    const owner = {};
+    const started = controller.start(owner, {
+      mode: "request", locator,
+      request: {
+        protocol: "http", method: "POST", baseUrl, path: "/must-not-send", pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" }, body: { kind: "text", content: "synthetic-unprepared-secret" },
+      },
+      parameters: {}, fields: [],
+    });
+
+    let result: Awaited<ReturnType<typeof controller.wait>> | undefined;
+    try {
+      result = await controller.wait(owner, started.runId);
+    } catch {
+      // The assertion below distinguishes a rejected completion from the required terminal result.
+    }
+
+    expect(result?.failureKind).toBe("config");
+    expect(result).toBeDefined();
+    expect(JSON.stringify(result)).not.toContain("synthetic-unprepared-secret");
+    if (result) expect(await controller.wait(owner, started.runId)).toBe(result);
+  });
+
+  it("returns runId synchronously and cancel before credential preparation settles makes no request", async () => {
+    const { session, locator } = await setup();
+    const sessionState = () => JSON.stringify({ root: session.root, workspace: session.workspace, readOnly: session.readOnly, revision: session.revision });
+    const before = sessionState();
+    const diskBefore = workspaceBytes(session.root!);
+    let releasePreparation: (() => void) | undefined;
+    let markPreparationStarted: () => void = () => {};
+    const preparationStarted = new Promise<void>((resolve) => { markPreparationStarted = resolve; });
+    const credentials: DebugCredentialHost = {
+      prepareRunForRequests: async (_scope, snapshot) => {
+        markPreparationStarted();
+        return new Promise<PreparedDesktopExecutionRun>((resolve) => {
+          releasePreparation = () => resolve({
+            run: { snapshot, credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} } },
+            refs: [],
+            markers: [],
+          });
+        });
+      },
+    };
+    const controller = createDebugController(session, () => createDefaultRegistry(), credentials);
+    const owner = {};
+    const otherOwner = {};
+    serverHits = 0;
+    const started = controller.start(owner, {
+      mode: "request",
+      locator,
+      request: {
+        protocol: "http",
+        method: "GET",
+        baseUrl,
+        path: "/cancel-before-network",
+        pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" }, body: { kind: "text", content: "synthetic-before-prep-secret" },
+      },
+      parameters: {},
+      fields: [],
+    });
+
+    expect(started.runId).toBeTruthy();
+    await preparationStarted;
+    expect(controller.cancel(otherOwner, started.runId)).toEqual({ status: "no-active" });
+    expect(controller.cancel(owner, started.runId)).toEqual({ status: "cancelled" });
+    if (!releasePreparation) throw new Error("credential preparation was not entered");
+    const result = await controller.wait(owner, started.runId);
+    releasePreparation();
+
+    expect(serverHits).toBe(0);
+    expect(result.failureKind).toBe("aborted");
+    expect(JSON.stringify(result).includes("synthetic-before-prep-secret")).toBe(false);
+    expect(result.replay.available).toBe(false);
+    expect(result.replay.fields).toContainEqual({ path: "request", status: "redacted", needsInput: true });
+    expect(sessionState()).toBe(before);
+    expect(workspaceBytes(session.root!)).toBe(diskBefore);
+    expect(await controller.wait(owner, started.runId)).toBe(result);
+  });
+
+  it("uses prepared credential markers when cancellation wins during registry loading", async () => {
+    const { session, locator } = await setup();
+    const marker = "synthetic-cancel-marker";
+    let markRegistryLoadStarted: () => void = () => {};
+    const registryLoadStarted = new Promise<void>((resolve) => { markRegistryLoadStarted = resolve; });
+    const credentials: DebugCredentialHost = {
+      prepareRunForRequests: async (_scope, snapshot) => ({
+        run: { snapshot, credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} } },
+        refs: [],
+        markers: [marker],
+      }),
+    };
+    const controller = createDebugController(session, () => {
+      markRegistryLoadStarted();
+      return new Promise<ReturnType<typeof createDefaultRegistry>>(() => {});
+    }, credentials);
+    const owner = {};
+    serverHits = 0;
+    const started = controller.start(owner, {
+      mode: "request",
+      locator,
+      request: {
+        protocol: "http", method: "POST", baseUrl, path: "/cancel-during-registry", pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" }, body: { kind: "text", content: marker },
+      },
+      parameters: {},
+      fields: [],
+    });
+
+    await registryLoadStarted;
+    expect(controller.cancel(owner, started.runId)).toEqual({ status: "cancelled" });
+    const result = await controller.wait(owner, started.runId);
+
+    expect(serverHits).toBe(0);
+    expect(result.failureKind).toBe("aborted");
+    expect(JSON.stringify(result).includes(marker)).toBe(false);
+    expect(result.replay.available).toBe(false);
+    expect(result.replay.fields).toContainEqual({ path: "request.body.content", status: "redacted", needsInput: true });
+    expect(await controller.wait(owner, started.runId)).toBe(result);
   });
 });

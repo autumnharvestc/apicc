@@ -139,8 +139,10 @@ describe("typed preload contract", () => {
       { invoke: () => api.containerGet({ kind: "folder", locator: folderLocator }), channel: IpcChannel.ContainerGet, payload: [{ kind: "folder", locator: folderLocator }] },
       { invoke: () => api.containerSave({ kind: "folder", locator: folderLocator, operations }), channel: IpcChannel.ContainerSave, payload: [{ kind: "folder", locator: folderLocator, operations }] },
       { invoke: () => api.apiGet(apiLocator), channel: IpcChannel.ApiGet, payload: [apiLocator] },
-      { invoke: () => api.apiSave(apiLocator, asset), channel: IpcChannel.ApiSave, payload: [apiLocator, asset] },
-      { invoke: () => api.caseSave({ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase), channel: IpcChannel.CaseSave, payload: [{ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase] },
+      { invoke: () => api.apiSave(apiLocator, asset, "source-revision"), channel: IpcChannel.ApiSave, payload: [apiLocator, asset, "source-revision"] },
+      { invoke: () => api.apiRequestDraftSave(apiLocator, asset.contract.request, "source-revision", []), channel: IpcChannel.ApiRequestDraftSave, payload: [apiLocator, asset.contract.request, "source-revision", []] },
+      { invoke: () => api.caseSave({ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase, "source-revision", []), channel: IpcChannel.CaseSave, payload: [{ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase, "source-revision", []] },
+      { invoke: () => api.caseDraftSave({ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase, "source-revision", [{ caseId: "old-case-id", scope: "old-scope" }], [{ path: "request.path", status: "redacted", needsInput: true }]), channel: IpcChannel.CaseDraftSave, payload: [{ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase, "source-revision", [{ caseId: "old-case-id", scope: "old-scope" }], [{ path: "request.path", status: "redacted", needsInput: true }]] },
       { invoke: () => api.caseDelete({ ...apiLocator, caseId: testCase.id, scope: testCase.scope }), channel: IpcChannel.CaseDelete, payload: [{ ...apiLocator, caseId: testCase.id, scope: testCase.scope }] },
       { invoke: () => api.modelList(projectLocator), channel: IpcChannel.ModelList, payload: [projectLocator] },
       { invoke: () => api.modelGet(modelLocator), channel: IpcChannel.ModelGet, payload: [modelLocator] },
@@ -184,7 +186,7 @@ describe("typed preload contract", () => {
       await test.invoke();
       expect(electron.invoke).toHaveBeenLastCalledWith(test.channel, ...test.payload);
     }
-    expect(cases).toHaveLength(54);
+    expect(cases).toHaveLength(56);
   });
 
   it("validates stress results at the actual preload boundary", async () => {

@@ -118,6 +118,39 @@ describe("project snapshots", () => {
     expect(() => createProjectSnapshot(defaultedUndefined)).toThrow();
   });
 
+  it("hashes multipart filename undefined the same as omission", () => {
+    const source = fixtureProject();
+    const request = source.collections[0].apis[0].contract.request;
+    if (request.protocol !== "http") throw new Error("Fixture must use HTTP.");
+    request.body = {
+      kind: "multipart",
+      entries: [{
+        kind: "file",
+        id: "00000000-0000-4000-8000-000000000903",
+        name: "asset",
+        file: { path: "asset.bin" },
+        filename: undefined,
+        enabled: true,
+      }],
+    };
+    const parsed = ContractProjectSchema.parse(source);
+    const entry = parsed.collections[0].apis[0].contract.request;
+    if (entry.protocol !== "http" || entry.body?.kind !== "multipart" || entry.body.entries[0]?.kind !== "file") {
+      throw new Error("Fixture must retain a multipart file entry.");
+    }
+    const omitted = structuredClone(parsed);
+    const omittedRequest = omitted.collections[0].apis[0].contract.request;
+    if (omittedRequest.protocol !== "http" || omittedRequest.body?.kind !== "multipart" || omittedRequest.body.entries[0]?.kind !== "file") {
+      throw new Error("Fixture must retain a multipart file entry.");
+    }
+    delete omittedRequest.body.entries[0].filename;
+
+    expect(Object.hasOwn(entry.body.entries[0], "filename")).toBe(true);
+    expect(ContractProjectSchema.safeParse(parsed).success).toBe(true);
+    expect(ContractProjectSchema.safeParse(omitted).success).toBe(true);
+    expect(createProjectSnapshot(parsed).definitionRevision).toBe(createProjectSnapshot(omitted).definitionRevision);
+  });
+
   it.each(assertionOptionalFields)("hashes parsed assertion.%s undefined the same as omission", (field) => {
     const source = fixtureProject();
     source.collections[0].apis[0].cases = [{

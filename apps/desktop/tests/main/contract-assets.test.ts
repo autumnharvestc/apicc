@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { getSourceApiRevision } from "@apicc/core";
 import { createSession, type CollectionContainerOperations } from "../../src/main/session.js";
 import {
   findApi,
@@ -357,9 +358,9 @@ describe("desktop contract workspace session", () => {
       const edited = await session.saveCase(blueLocator, {
         id: IDS.sharedCase, name: "blue edited", scope: "blue", parameters: { q: "1" },
         preOperations: [], postOperations: [], assertions: [],
-      });
+      }, getSourceApiRevision(session.locateApi(apiLocator)!.api));
 
-      expect(edited.name).toBe("blue edited");
+      expect(edited.testCase.name).toBe("blue edited");
       expect(session.locateApi(apiLocator)?.api.cases.map((testCase) => testCase.scope)).toEqual(["blue", "green"]);
       await session.deleteCase(blueLocator);
       expect(session.locateApi(apiLocator)?.api.cases.map((testCase) => testCase.scope)).toEqual(["green"]);

@@ -14,6 +14,7 @@
 import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
+import { reactive } from "vue";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
@@ -35,10 +36,11 @@ import EmptyState from "../../../src/renderer/src/components/EmptyState.vue";
 import ConfirmDialog from "../../../src/renderer/src/components/ConfirmDialog.vue";
 import TopBar from "../../../src/renderer/src/components/TopBar.vue";
 import RunsHistory from "../../../src/renderer/src/components/RunsHistory.vue";
+import DebugHistory from "../../../src/renderer/src/components/DebugHistory.vue";
 import StressPanel from "../../../src/renderer/src/components/StressPanel.vue";
 import StressReportView from "../../../src/renderer/src/components/StressReportView.vue";
-import type { ApiAsset, RunResult, StressReport } from "@apicc/core";
-import type { RunSummaryDTO, StressRunInput, StressRunOutput, StressRunSummaryDTO } from "../../../src/shared/types.js";
+import type { ApiAsset, DebugResult, RunResult, StressReport } from "@apicc/core";
+import type { ApiccApi, RunSummaryDTO, StressRunInput, StressRunOutput, StressRunSummaryDTO } from "../../../src/shared/types.js";
 import type { ApiLocator, ProjectLocator, WorkflowLocator } from "../../../src/shared/locations.js";
 import type { LocalGroupTreeNodeDTO, TreeNodeDTO } from "../../../src/shared/tree-dto.js";
 
@@ -125,14 +127,35 @@ function chooseSelect(wrapper: VueWrapper, testid: string, value: string): void 
 async function clickDebugSendAndWait(wrapper: VueWrapper, debug: ReturnType<typeof useDebugStore>): Promise<void> {
   const original = debug.send.bind(debug);
   let pending: ReturnType<typeof original> | null = null;
-  debug.send = (targetEditor, sendFn, explicitEnvName) => {
-    pending = original(targetEditor, sendFn, explicitEnvName);
+  debug.send = (targetEditor, runFn) => {
+    pending = original(targetEditor, runFn);
     return pending;
   };
   await wrapper.find('[data-testid="send-btn"]').trigger("click");
   if (!pending) throw new Error("Send button did not invoke the real debug action");
   await pending;
   await flushPromises();
+}
+
+function traceDebugStartWait(api: ApiccApi) {
+  const trace = {
+    invocations: [] as Array<Parameters<ApiccApi["debugStart"]>[0]>,
+    runIds: [] as string[],
+    waitedRunIds: [] as string[],
+  };
+  const originalStart = api.debugStart.bind(api);
+  api.debugStart = async (invocation) => {
+    trace.invocations.push(invocation);
+    const started = await originalStart(invocation);
+    trace.runIds.push(started.runId);
+    return started;
+  };
+  const originalWait = api.debugWait.bind(api);
+  api.debugWait = async (input) => {
+    trace.waitedRunIds.push(input.runId);
+    return originalWait(input);
+  };
+  return trace;
 }
 
 async function clickEditorSaveAndWait(wrapper: VueWrapper, editor: ReturnType<typeof useEditorStore>): Promise<void> {
@@ -674,7 +697,7 @@ describe("RequestEditor", () => {
     expect(request.body).toMatchObject({ kind: "urlencoded", fields: [{ id: expect.any(String), name: "", value: "", enabled: true }] });
   });
 
-  it("调试选择器：选环境/用例后发送按选择传参（envName/caseId 走 store 状态）", async () => {
+  it("调试选择器：发送使用 request invocation 和 environmentId，不自动应用选中用例", async () => {
     const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
     const { project, apiNode } = seededProjectAndApi(workspace);
     await editor.load(apiNode.locator);
@@ -682,19 +705,24 @@ describe("RequestEditor", () => {
     await api.envCreate({ locator: project.locator, name: "dev" });
     await editor.reloadEnvs();
     editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
-    // 包装实际 memory.debugSend 记录 UI 传参并继续真实调用（发送按钮不传显式 envName）。
-    const sent: Array<{ locator: ApiLocator; caseId: string; envName?: string | null }> = [];
-    const originalDebugSend = api.debugSend.bind(api);
-    api.debugSend = async (input) => {
-      sent.push(input);
-      return originalDebugSend(input);
-    };
+    const devEnvironment = editor.envs.find((environment) => environment.name === "dev");
+    if (!devEnvironment) throw new Error("Created dev environment did not reload into the editor");
+    const trace = traceDebugStartWait(api);
     chooseSelect(wrapper, "debug-env-select", "dev");
     chooseSelect(wrapper, "debug-case-select", JSON.stringify(["t2", "base"]));
     await clickDebugSendAndWait(wrapper, debug);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ caseId: "t2", envName: "dev" });
+    expect(debug.selectedCase).toEqual({ caseId: "t2", scope: "base" });
+    expect(trace.invocations).toHaveLength(1);
+    const invocation = trace.invocations[0]!;
+    expect(invocation.mode).toBe("request");
+    if (invocation.mode !== "request") throw new Error("RequestEditor send must use request mode");
+    expect(invocation.locator).toEqual(apiNode.locator);
+    expect(invocation.environmentId).toBe(devEnvironment.id);
+    expect(invocation.request).toEqual(editor.api!.contract.request);
+    expect(invocation).not.toHaveProperty("case");
+    expect(trace.waitedRunIds).toEqual(trace.runIds);
     expect(debug.result).not.toBeNull();
+    expect(debug.result?.mode).toBe("request");
     expect(debug.error).toBeNull();
     expect(debug.sending).toBe(false);
   });
@@ -703,19 +731,32 @@ describe("RequestEditor", () => {
     const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
     const { apiNode } = seededProjectAndApi(workspace);
     await editor.load(apiNode.locator);
-    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
+    const defaultPath = editor.api!.contract.request.path;
+    const selectedOverride = JSON.parse(JSON.stringify(editor.api!.contract.request));
+    selectedOverride.path = "/selected-case-only";
+    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [], requestOverride: selectedOverride });
     chooseSelect(wrapper, "debug-case-select", JSON.stringify(["t2", "base"]));
     expect(debug.selectedCase?.caseId).toBe("t2");
     // 模拟切接口：cases 整体换成不含 t2 的集合（store 选择状态不清除，仍指向失效 id）
-    editor.api!.cases = [{ id: "t9", name: "other", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] }];
+    const fallbackOverride = JSON.parse(JSON.stringify(editor.api!.contract.request));
+    fallbackOverride.path = "/fallback-case-only";
+    editor.api!.cases = [{ id: "t9", name: "other", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [], requestOverride: fallbackOverride }];
     await flushPromises();
-    // send 侧已静默回退 cases[0].id（stores/debug.ts），显示侧须同步回退而非渲染失效 id
+    // 显示侧须回退 cases[0]，但 request-mode 发送不得把回退用例的 override 应用到默认请求。
     expect(selectValue(wrapper, "debug-case-select")).toBe(JSON.stringify(["t9", "base"]));
-    const sent: Array<{ locator: ApiLocator; caseId: string; envName?: string | null }> = [];
-    const originalDebugSend = api.debugSend.bind(api);
-    api.debugSend = async (input) => { sent.push(input); return originalDebugSend(input); };
+    const trace = traceDebugStartWait(api);
     await clickDebugSendAndWait(wrapper, debug);
-    expect(sent).toMatchObject([{ locator: apiNode.locator, caseId: "t9" }]);
+    expect(trace.invocations).toHaveLength(1);
+    const invocation = trace.invocations[0]!;
+    expect(invocation.mode).toBe("request");
+    if (invocation.mode !== "request") throw new Error("RequestEditor send must use request mode");
+    expect(invocation.locator).toEqual(apiNode.locator);
+    expect(invocation.request.path).toBe(defaultPath);
+    expect(invocation.request.path).not.toBe("/selected-case-only");
+    expect(invocation.request.path).not.toBe("/fallback-case-only");
+    expect(invocation).not.toHaveProperty("case");
+    expect(trace.waitedRunIds).toEqual(trace.runIds);
+    expect(debug.result?.mode).toBe("request");
   });
 
   it("悬空环境选择显示回退：删环境后失效名不再显示，回退「无环境」（显示与 send 一致）", async () => {
@@ -724,20 +765,29 @@ describe("RequestEditor", () => {
     await editor.load(apiNode.locator);
     await api.envCreate({ locator: project.locator, name: "dev" });
     await editor.reloadEnvs();
+    const defaultPath = editor.api!.contract.request.path;
+    const caseOverride = JSON.parse(JSON.stringify(editor.api!.contract.request));
+    caseOverride.path = "/case-only";
+    editor.api!.cases[0]!.requestOverride = caseOverride;
     chooseSelect(wrapper, "debug-env-select", "dev");
     await flushPromises();
     expect(selectValue(wrapper, "debug-env-select")).toBe("dev");
     editor.envs.splice(0, editor.envs.length); // 模拟刷新结果已不含所选环境（send 回退 undefined → 无环境）
     await flushPromises();
     expect(selectValue(wrapper, "debug-env-select")).toBe("");
-    const sent: Array<{ locator: ApiLocator; caseId: string; envName?: string | null }> = [];
-    const originalDebugSend = api.debugSend.bind(api);
-    api.debugSend = async (input) => { sent.push(input); return originalDebugSend(input); };
-    const defaultCaseId = editor.api!.cases[0]!.id;
+    const trace = traceDebugStartWait(api);
     await clickDebugSendAndWait(wrapper, debug);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ locator: apiNode.locator, caseId: defaultCaseId });
-    expect(sent[0].envName).toBeUndefined();
+    expect(trace.invocations).toHaveLength(1);
+    const invocation = trace.invocations[0]!;
+    expect(invocation.mode).toBe("request");
+    if (invocation.mode !== "request") throw new Error("RequestEditor send must use request mode");
+    expect(invocation.locator).toEqual(apiNode.locator);
+    expect(invocation.environmentId).toBeUndefined();
+    expect(invocation.request.path).toBe(defaultPath);
+    expect(invocation.request.path).not.toBe("/case-only");
+    expect(invocation).not.toHaveProperty("case");
+    expect(trace.waitedRunIds).toEqual(trace.runIds);
+    expect(debug.result?.mode).toBe("request");
   });
 
   it("M5-B 协议选择：正式契约明确 HTTP 默认值，三协议选项文案走 i18n", async () => {
@@ -819,7 +869,7 @@ describe("RequestEditor", () => {
     // 旧“保存载荷”断言：apiSave 接收 locator + 完整 ApiAsset，且保存后可真实重读。
     const sent: Array<{ locator: ApiLocator; asset: ApiAsset }> = [];
     const original = api.apiSave.bind(api);
-    api.apiSave = async (locator, asset) => { sent.push({ locator, asset }); return original(locator, asset); };
+    api.apiSave = async (locator, asset, revision) => { sent.push({ locator, asset }); return original(locator, asset, revision); };
     chooseProtocol(wrapper, "websocket");
     await flushPromises();
     await clickEditorSaveAndWait(wrapper, editor);
@@ -950,6 +1000,137 @@ describe("ResponseViewer", () => {
     expect(wrapper.find('[data-testid="response-error"]').text()).toContain("网络不可达");
   });
 
+  it("shows failed and aborted DebugResult terminals with their host cause instead of a green zero-count run", () => {
+    const terminal: DebugResult = {
+      runId: "terminal-failure", sourceApiRevision: "api", sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
+      mode: "request", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z",
+      run: { collectionName: "collection", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z", total: 0, passed: 0, failed: 0 },
+      outcomes: [], exchanges: [], exchangeTotal: 0, omittedExchangeCount: 0,
+      replay: { mode: "request", parameters: {}, fields: [], available: false }, console: [], warnings: [],
+      failureKind: "config", error: "credential preparation failed",
+    };
+    const wrapper = mountWithI18n(ResponseViewer, { result: terminal });
+    expect(wrapper.find('[data-testid="response-outcome"]').text()).toContain("失败");
+    expect(wrapper.find('[data-testid="response-terminal-error"]').text()).toContain("credential preparation failed");
+    expect(wrapper.find('[data-testid="response-outcome"]').text()).not.toContain("通过");
+
+    wrapper.setProps({ result: { ...terminal, runId: "terminal-aborted", failureKind: "aborted", error: "cancelled by user" } });
+    return flushPromises().then(() => {
+      expect(wrapper.find('[data-testid="response-outcome"]').text()).toContain("已取消");
+      expect(wrapper.find('[data-testid="response-terminal-error"]').text()).toContain("cancelled by user");
+    });
+  });
+
+  it("marks truncated/redacted response projection in view and projected download", async () => {
+    const text = "{\"token\":\"[REDACTED]\"}";
+    const debugResult: DebugResult = {
+      runId: "projected-body", sourceApiRevision: "api", sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
+      mode: "request", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z",
+      run: { collectionName: "collection", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z", total: 1, passed: 1, failed: 0 },
+      outcomes: [], exchanges: [{ rowIndex: 0, hopIndex: 0, order: 1, transportState: "responded", observation: "http-hop", settings: {
+        connectTimeoutMs: 1000, headersTimeoutMs: 1000, bodyTimeoutMs: 1000, totalTimeoutMs: 1000, followRedirects: false, maxRedirects: 0, uploadLimitBytes: 1024, responseLimitBytes: 1024,
+      }, response: { status: 200, headers: [["content-type", "application/json"]], cookies: [], body: { kind: "text", text, contentBytes: 4096, truncated: true } }, startedAt: "2026-10-14T00:00:00.000Z" }],
+      exchangeTotal: 1, omittedExchangeCount: 0, replay: { mode: "request", parameters: {}, fields: [{ path: "request.headers[0].value", status: "redacted", needsInput: true }], available: false },
+      console: [], warnings: ["Response projection was truncated."],
+    };
+    const save = vi.fn(async (_defaultName: string, _content: string) => "");
+    const wrapper = mountWithI18n(ResponseViewer, { result: debugResult, api: { debugSaveProjected: save } as unknown as ApiccApi });
+    expect(wrapper.find('[data-testid="response-projection-note"]').text()).toContain("truncated");
+    expect(wrapper.find('[data-testid="response-projection-note"]').text()).toContain("redacted");
+    await wrapper.find('[data-testid="response-download"]').trigger("click");
+    await flushPromises();
+    expect(save.mock.calls[0]?.[1]).toContain("投影说明");
+    expect(save.mock.calls[0]?.[1]).toContain("request.headers[0].value");
+  });
+
+  it("renders rejected projected-download errors through registered Alert", async () => {
+    const api = { debugSaveProjected: vi.fn(async () => { throw new Error("synthetic save failure"); }) } as unknown as ApiccApi;
+    const wrapper = mountWithI18n(ResponseViewer, { result, api });
+    await wrapper.find('[data-testid="response-download"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="response-action-error"]').text()).toContain("synthetic save failure");
+  });
+
+  it("renders a P3 exchange projection as inert text and leaves absent byte counters unknown", async () => {
+    const html = "<script>must-not-run()</script>";
+    const debugResult: DebugResult = {
+      runId: "run-1",
+      sourceApiRevision: "api-revision",
+      sourceProjectRevision: "project-revision",
+      executionSnapshotRevision: "snapshot-revision",
+      mode: "request",
+      startedAt: "2026-10-14T00:00:00.000Z",
+      finishedAt: "2026-10-14T00:00:00.010Z",
+      run: {
+        collectionName: "collection", startedAt: "2026-10-14T00:00:00.000Z",
+        finishedAt: "2026-10-14T00:00:00.010Z", total: 0, passed: 0, failed: 0,
+      },
+      outcomes: [],
+      exchanges: [{
+        rowIndex: 0, hopIndex: 0, order: 1, transportState: "failed", observation: "http-hop", failureStage: "body", failureCode: "ECONNRESET",
+        settings: {
+          connectTimeoutMs: 1000, headersTimeoutMs: 1000, bodyTimeoutMs: 1000, totalTimeoutMs: 1000,
+          followRedirects: false, maxRedirects: 0, uploadLimitBytes: 1024, responseLimitBytes: 1024,
+        },
+        request: {
+          url: "https://example.test", method: "GET", query: [], headers: [], cookies: [], body: { kind: "none" },
+          sourceCategories: ["project", "module", "request-override", "auth", "session"],
+        },
+        response: {
+          status: 200, headers: [["content-type", "text/html"]], cookies: [],
+          body: { kind: "text", text: html, contentBytes: html.length, truncated: false },
+        },
+        startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z", durationMs: 10,
+      }],
+      exchangeTotal: 1,
+      omittedExchangeCount: 0,
+      replay: { mode: "request", parameters: {}, fields: [], available: true },
+      console: [],
+      warnings: [],
+    };
+    const wrapper = mountWithI18n(ResponseViewer, { result: debugResult });
+
+    expect(wrapper.find('[data-testid="response-body"]').text()).toBe(html);
+    expect(wrapper.find('[data-testid="response-body"] script').exists()).toBe(false);
+    await wrapper.find('[data-testid="response-tab-exchanges"]').trigger("click");
+    expect(wrapper.find('[data-testid="response-exchanges"]').text()).toContain("未知");
+    expect(wrapper.find('[data-testid="response-exchange-1"]').text()).toContain("body");
+    expect(wrapper.find('[data-testid="response-exchange-1"]').text()).toContain("ECONNRESET");
+    await wrapper.find('[data-testid="response-tab-request"]').trigger("click");
+    expect(wrapper.find('[data-testid="response-request-sources"]').text()).toContain("项目资源");
+    expect(wrapper.find('[data-testid="response-request-sources"]').text()).toContain("会话 Cookie Jar");
+  });
+
+  it("shows captured and effective upload filenames separately from upload byte counters", async () => {
+    const result: DebugResult = {
+      runId: "upload-metadata", sourceApiRevision: "api", sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
+      mode: "request", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z",
+      run: { collectionName: "collection", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z", total: 1, passed: 1, failed: 0 },
+      outcomes: [], exchanges: [{ rowIndex: 0, hopIndex: 0, order: 1, transportState: "responded", settings: {
+        connectTimeoutMs: 1000, headersTimeoutMs: 1000, bodyTimeoutMs: 1000, totalTimeoutMs: 1000,
+        followRedirects: false, maxRedirects: 0, uploadLimitBytes: 1024, responseLimitBytes: 1024,
+      }, request: {
+        url: "https://example.test", method: "POST", query: [], headers: [], cookies: [], sourceCategories: ["project"],
+        body: { kind: "multipart", entries: [{ kind: "file", name: "payload", filename: "override.bin", capturedFilename: "source.bin", capturedSizeBytes: 18, effectiveFilename: "override.bin", metadataAvailable: true, contentType: "application/octet-stream", source: "local-file" }] },
+      }, response: {
+        status: 200, headers: [], cookies: [], requestBody: { fileBytesRead: 18, transportEncodedBytesWritten: 176, complete: true },
+        body: { kind: "text", text: "ok", contentBytes: 2, truncated: false },
+      }, startedAt: "2026-10-14T00:00:00.000Z" }],
+      exchangeTotal: 1, omittedExchangeCount: 0, replay: { mode: "request", parameters: {}, fields: [], available: true }, console: [], warnings: [],
+    };
+    const wrapper = mountWithI18n(ResponseViewer, { result });
+    await wrapper.find('[data-testid="response-tab-request"]').trigger("click");
+    const body = wrapper.find('[data-testid="response-request-body"]').text();
+    expect(body).toContain("source.bin");
+    expect(body).toContain("override.bin");
+    expect(body).toContain("18 B");
+    expect(body).not.toContain("176 B");
+    const counters = wrapper.find('[data-testid="response-request-upload-counters"]').text();
+    expect(counters).toContain("18 B");
+    expect(counters).toContain("176 B");
+    expect(counters).toContain("true");
+  });
+
   // —— M5-B 任务 1：D3 响应映射契约 fixture（零分支核验，组件零改动）——
   it("M5-B D3 契约 fixture：WS 响应（status=101 握手 + bodyText=首帧）按既有渲染零分支呈现", async () => {
     const wsResult = {
@@ -971,7 +1152,7 @@ describe("ResponseViewer", () => {
     expect(headers.text()).toContain("websocket");
   });
 
-  it("M5-B D3 契约 fixture：SOAP 响应（HTTP 语义 + XML 体原样展示不臆造）零分支呈现", async () => {
+  it("pretty-prints well-formed XML as inert text while Raw preserves exact original body", async () => {
     const xml = "<Envelope><Body><echo>ok</echo></Body></Envelope>";
     const soapResult = {
       ...result,
@@ -979,8 +1160,116 @@ describe("ResponseViewer", () => {
     };
     const wrapper = mountWithI18n(ResponseViewer, { result: soapResult });
     expect(wrapper.find('[data-testid="response-status"]').text()).toContain("200");
-    // XML 非 JSON：bodyText 原样展示（不 pretty、不丢内容）
+    expect(wrapper.find('[data-testid="response-body"]').text()).toBe("<Envelope>\n  <Body>\n    <echo>ok</echo>\n  </Body>\n</Envelope>");
+    await chooseSelect(wrapper, "response-format", "raw");
     expect(wrapper.find('[data-testid="response-body"]').text()).toBe(xml);
+    await wrapper.setProps({ result: { ...soapResult, response: { ...soapResult.response, bodyText: "<Envelope><Body>" } } });
+    await chooseSelect(wrapper, "response-format", "pretty");
+    expect(wrapper.find('[data-testid="response-body"]').text()).toBe("<Envelope><Body>");
+
+    const significantLeafText = "<Envelope><Body><echo>  keep exact  </echo></Body></Envelope>";
+    await wrapper.setProps({ result: { ...soapResult, response: { ...soapResult.response, bodyText: significantLeafText } } });
+    expect(wrapper.find('[data-testid="response-body"]').text()).toBe("<Envelope>\n  <Body>\n    <echo>  keep exact  </echo>\n  </Body>\n</Envelope>");
+
+    for (const unsafeXml of [
+      "<p>before <b>bold</b> after</p>",
+      '<root xml:space="preserve"><leaf>  keep exact  </leaf></root>',
+      "<root><leaf><![CDATA[  keep exact  ]]></leaf></root>",
+    ]) {
+      await wrapper.setProps({ result: { ...soapResult, response: { ...soapResult.response, bodyText: unsafeXml } } });
+      expect(wrapper.find('[data-testid="response-body"]').text()).toBe(unsafeXml);
+    }
+  });
+});
+
+describe("DebugHistory filters", () => {
+  it("shows the selected history delete action in the active locale", async () => {
+    const previousLocale = localStorage.getItem("apicc.locale");
+    try {
+      for (const [locale, label] of [["zh-CN", "删除记录"], ["en", "Delete record"]] as const) {
+        localStorage.setItem("apicc.locale", locale);
+        const history = reactive({
+          filter: { limit: 50, offset: 0 }, items: [], diagnostics: [], error: null, loading: false, nextOffset: null,
+          selected: { record: { historyId: "selected-history", result: {
+            identityAvailable: false, replay: { identityAvailable: false, available: false }, exchanges: [],
+          } } },
+          preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
+          load: vi.fn(async () => {}), refresh: vi.fn(async () => {}), updatePreferences: vi.fn(async () => {}),
+          loadMore: vi.fn(async () => {}), openRecord: vi.fn(async () => {}), deleteRecord: vi.fn(async () => {}),
+        });
+        const wrapper = mountWithI18n(DebugHistory, {
+          open: true, api: {} as ApiccApi, history: history as never,
+          debug: { restoredFields: [], restoredTargetKey: null, restoredPreview: null, restoredSourceAvailable: null } as never,
+          editor: { activeKey: null, sessions: {} } as never,
+        });
+        try {
+          await flushPromises();
+          expect(expectBody("debug-history-delete").text()).toBe(label);
+          expect(expectBody("debug-history-delete").text()).not.toBe("debugLoop.deleteRecord");
+        } finally {
+          wrapper.unmount();
+        }
+      }
+    } finally {
+      if (previousLocale === null) localStorage.removeItem("apicc.locale");
+      else localStorage.setItem("apicc.locale", previousLocale);
+    }
+  });
+
+  it("applies the current API and a valid date range, resets pagination, and can return to all scope", async () => {
+    const history = reactive({
+      filter: { limit: 50, offset: 17, projectId: "old-project" }, items: [], diagnostics: [], error: null,
+      loading: false, nextOffset: 0, selected: null, preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
+      load: vi.fn(async () => {}), refresh: vi.fn(async () => {}), updatePreferences: vi.fn(async () => {}),
+      loadMore: vi.fn(async () => {}), openRecord: vi.fn(async () => {}), deleteRecord: vi.fn(async () => {}),
+    });
+    const editor = { activeKey: "active", sessions: { active: { locator: { projectId: "project-1", apiId: "api-1" } } } };
+    const debug = { restoredFields: [], restoredTargetKey: null, restoredPreview: null, restoredSourceAvailable: null };
+    const wrapper = mountWithI18n(DebugHistory, {
+      open: true,
+      api: {} as ApiccApi,
+      history: history as never,
+      debug: debug as never,
+      editor: editor as never,
+    });
+    await flushPromises();
+
+    await expectBody("debug-history-current-api").trigger("click");
+    await expectBody("debug-history-from").setValue("2026-10-14T09:00");
+    await expectBody("debug-history-to").setValue("2026-10-14T10:30");
+    await expectBody("debug-history-filter").trigger("click");
+    expect(history.filter).toMatchObject({
+      projectId: "project-1", apiId: "api-1", from: new Date("2026-10-14T09:00").toISOString(),
+      to: new Date("2026-10-14T10:30").toISOString(), limit: 50, offset: 0,
+    });
+    expect(history.refresh).toHaveBeenCalledWith(true);
+
+    await expectBody("debug-history-all-scope").trigger("click");
+    await expectBody("debug-history-filter").trigger("click");
+    expect(history.filter).not.toHaveProperty("projectId");
+    expect(history.filter).not.toHaveProperty("apiId");
+  });
+
+  it("rejects a reversed date range and disables scopes without current context", async () => {
+    const history = reactive({
+      filter: { limit: 50, offset: 4 }, items: [], diagnostics: [], error: null, loading: false, nextOffset: null,
+      selected: null, preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
+      load: vi.fn(async () => {}), refresh: vi.fn(async () => {}), updatePreferences: vi.fn(async () => {}),
+      loadMore: vi.fn(async () => {}), openRecord: vi.fn(async () => {}), deleteRecord: vi.fn(async () => {}),
+    });
+    const wrapper = mountWithI18n(DebugHistory, {
+      open: true, api: {} as ApiccApi, history: history as never,
+      debug: { restoredFields: [], restoredTargetKey: null } as never,
+      editor: { activeKey: null, sessions: {} } as never,
+    });
+    await flushPromises();
+    expect((expectBody("debug-history-current-project").element as HTMLButtonElement).disabled).toBe(true);
+    expect((expectBody("debug-history-current-api").element as HTMLButtonElement).disabled).toBe(true);
+    await expectBody("debug-history-from").setValue("2026-10-14T10:30");
+    await expectBody("debug-history-to").setValue("2026-10-14T09:00");
+    await expectBody("debug-history-filter").trigger("click");
+    expect(history.error).toContain("不能晚于");
+    expect(history.refresh).not.toHaveBeenCalled();
   });
 });
 
@@ -1110,7 +1399,7 @@ async function mountStress(props: Record<string, unknown> = {}, storeDeps: { tru
   const detail = await api.apiGet(apiLocator);
   if (detail.api.cases[0]) detail.api.cases[0].name = "冒烟";
   detail.api.cases.push({ id: "c2", name: "第二用例", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
-  await api.apiSave(apiLocator, detail.api);
+  await api.apiSave(apiLocator, detail.api, detail.sourceApiRevision);
   const fresh = await api.apiGet(apiLocator);
   const stress = createStressStore({ api, getContext: () => ({ root, locator: apiLocator }), ...storeDeps });
   const errors: unknown[] = [];

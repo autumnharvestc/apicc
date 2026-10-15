@@ -97,7 +97,7 @@ export async function contractAssetEditorFixture(
   detail.api.contract.responses.push({
     kind: "componentRef", id: randomUUID(), componentId: response.id, expectedKind: "response",
   });
-  await api.apiSave(fixture.apiLocator, detail.api);
+  await api.apiSave(fixture.apiLocator, detail.api, detail.sourceApiRevision);
   const secondDetail = await api.apiGet(second.locator);
   if (secondDetail.api.contract.request.protocol !== "http") throw new Error("Second API must use HTTP for editor fixture references");
   secondDetail.api.contract.request.body = {
@@ -109,7 +109,7 @@ export async function contractAssetEditorFixture(
       { kind: "componentRef", id: randomUUID(), componentId: example.id, expectedKind: "example" },
     ] } },
   }];
-  await api.apiSave(second.locator, secondDetail.api);
+  await api.apiSave(second.locator, secondDetail.api, secondDetail.sourceApiRevision);
   return {
     ...fixture,
     secondApiLocator: { ...second.locator, folderIds: [...second.locator.folderIds] },

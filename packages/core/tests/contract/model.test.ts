@@ -24,6 +24,99 @@ import {
 } from "../helpers/contractFixtures.js";
 
 describe("versioned contract assets", () => {
+  it("accepts an optional multipart upload filename", () => {
+    const asset = contractFixture();
+    const request = asset.contract.request;
+    if (request.protocol !== "http") throw new Error("fixture must be HTTP");
+    request.body = {
+      kind: "multipart",
+      entries: [{
+        kind: "file", id: "00000000-0000-4000-8000-000000000110", name: "upload",
+        file: { path: "upload.bin" }, filename: "renamed.bin", enabled: true,
+      }],
+    };
+
+    const parsed = ApiAssetSchema.parse(asset);
+    const body = parsed.contract.request.protocol === "http" ? parsed.contract.request.body : undefined;
+    expect(body?.kind === "multipart" ? body.entries[0] : undefined).toMatchObject({ filename: "renamed.bin" });
+  });
+
+  it("stores complete case request and request settings overrides without changing the contract default", () => {
+    const asset = contractFixture();
+    const draft = { ...asset.contract.request, path: "/case-only" };
+    asset.cases[0] = {
+      id: "case-with-request-override",
+      name: "case request",
+      parameters: {},
+      preOperations: [],
+      postOperations: [],
+      assertions: [],
+      requestOverride: draft,
+      requestSettingsOverride: { headersTimeoutMs: 1200, followRedirects: true },
+    };
+
+    const parsed = ApiAssetSchema.parse(asset);
+
+    expect(parsed.cases[0]?.requestOverride?.path).toBe("/case-only");
+    expect(parsed.cases[0]?.requestSettingsOverride).toEqual({ headersTimeoutMs: 1200, followRedirects: true });
+    expect(asset.contract.request.path).not.toBe("/case-only");
+  });
+
+  it("rejects a case request override that changes the API protocol", () => {
+    const asset = contractFixture();
+    asset.cases[0] = {
+      id: "case-with-wrong-protocol",
+      name: "wrong protocol",
+      parameters: {},
+      preOperations: [],
+      postOperations: [],
+      assertions: [],
+      requestOverride: protocolRequestFixtures()[1],
+    };
+
+    expect(ApiAssetSchema.safeParse(asset).success).toBe(false);
+  });
+
+  it("rejects invalid request setting override values", () => {
+    for (const requestSettingsOverride of [
+      { connectTimeoutMs: 0 },
+      { maxRedirects: 11 },
+      { uploadLimitBytes: 1024 * 1024 * 1024 + 1 },
+      { responseLimitBytes: 128 * 1024 * 1024 + 1 },
+    ]) {
+      const asset = contractFixture();
+      asset.cases[0] = {
+        id: "case-with-invalid-setting",
+        name: "invalid setting",
+        parameters: {},
+        preOperations: [],
+        postOperations: [],
+        assertions: [],
+        requestSettingsOverride,
+      };
+
+      expect(ApiAssetSchema.safeParse(asset).success).toBe(false);
+    }
+  });
+
+  it("rejects HTTP-only case settings on WebSocket requests while allowing connect and total timeouts", () => {
+    const websocketAsset = contractFixture(protocolRequestFixtures()[1]);
+    const testCase: Record<string, unknown> = {
+      id: "case-with-http-setting",
+      name: "http-only setting",
+      parameters: {},
+      preOperations: [],
+      postOperations: [],
+      assertions: [],
+      requestSettingsOverride: { connectTimeoutMs: 900, totalTimeoutMs: 2400 },
+    };
+    websocketAsset.cases[0] = testCase;
+    expect(ApiAssetSchema.safeParse(websocketAsset).success).toBe(true);
+
+    testCase.requestSettingsOverride = { bodyTimeoutMs: 2000 };
+    expect(ApiAssetSchema.safeParse(websocketAsset).success).toBe(false);
+  });
+
   it("keeps schema examples separate from an absent request value", () => {
     const asset = contractFixture();
     asset.contract.request.query = [inlineParameter({

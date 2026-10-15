@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
-// 注：pinia/vue 响应式需要 DOM 环境，渲染层 store 测试用文件级 pragma 指定 jsdom。
-import { describe, expect, it } from "vitest";
-import type { ApiLocator } from "../../../src/shared/locations.js";
+import { describe, expect, it, vi } from "vitest";
+import type { ApiRequest, DebugInvocation, DebugResult } from "@apicc/core";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
@@ -28,27 +27,50 @@ async function seeded() {
   return { api, ws, editor, debug, project, collectionNode, apiNode };
 }
 
-function fakeOutput(apiId: string, caseId: string, passed = true) {
+function fakeDebugResult(invocation: DebugInvocation, runId = "fake-run"): DebugResult {
   return {
-    run: { total: 1, passed: passed ? 1 : 0, failed: passed ? 0 : 1, cases: [], startedAt: "", finishedAt: "", collectionId: "c", collectionName: "c" },
-    outcome: { apiId, apiName: "a", caseId, caseName: caseId, passed, durationMs: 1, assertions: [] },
+    runId,
+    sourceApiRevision: "source-api-revision",
+    sourceProjectRevision: "source-project-revision",
+    executionSnapshotRevision: "execution-snapshot-revision",
+    mode: invocation.mode,
+    locator: invocation.locator,
+    identityAvailable: true,
+    startedAt: "2026-10-14T00:00:00.000Z",
+    finishedAt: "2026-10-14T00:00:00.000Z",
+    run: { collectionName: "fixture", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.000Z", total: 1, passed: 1, failed: 0 },
+    outcomes: [{ apiId: invocation.locator.apiId, apiName: "API", ...(invocation.mode === "case" ? { caseId: invocation.case.caseId } : {}), caseName: "debug", passed: true, durationMs: 1, assertions: [] }],
+    exchanges: [],
+    exchangeTotal: 0,
+    omittedExchangeCount: 0,
+    replay: invocation.mode === "request"
+      ? { mode: "request", locator: invocation.locator, request: invocation.request, requestTemplate: invocation.request, parameters: invocation.parameters, fields: invocation.fields, identityAvailable: true, available: true }
+      : { mode: "case", case: invocation.case, parameters: {}, fields: [], identityAvailable: true, available: true },
+    console: [],
+    warnings: [],
   };
 }
 
 describe("debug store", () => {
-  it("send 前保存编辑（脏→保存）并携带环境", async () => {
-    const { api, editor, debug, project } = await seeded();
-    await api.envCreate({ locator: project.locator, name: "dev" });
+  it("从未保存的请求草稿发送，不先保存正式资源", async () => {
+    const { api, editor, debug, project, apiNode } = await seeded();
+    const environment = await api.envCreate({ locator: project.locator, name: "dev" });
     await editor.reloadEnvs();
     editor.api!.contract.request.baseUrl = "/sent";
-    let captured: { locator: ApiLocator; caseId: string; envName?: string | null } | null = null;
-    await debug.send(editor, (input) => {
-      captured = input;
-      return Promise.resolve(fakeOutput(input.locator.apiId, input.caseId));
-    }, "dev");
-    expect(editor.dirty).toBe(false);
-    expect(captured).toMatchObject({ envName: "dev" });
-    expect(debug.result?.outcome.passed).toBe(true);
+    debug.selectEnv("dev");
+    const submittedRequest = JSON.parse(JSON.stringify(editor.api!.contract.request)) as ApiRequest;
+    const apiSave = vi.spyOn(api, "apiSave");
+    const start = vi.spyOn(api, "debugStart").mockImplementation(async (_invocation) => ({ runId: "run-request-draft" }));
+    vi.spyOn(api, "debugWait").mockImplementation(async ({ runId }) => fakeDebugResult({
+      mode: "request", locator: apiNode.locator, request: submittedRequest, parameters: {}, fields: [], environmentId: environment.id,
+    }, runId));
+    await debug.send(editor);
+    expect(apiSave).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "request", locator: apiNode.locator, request: submittedRequest, parameters: {}, fields: [], environmentId: environment.id,
+    }));
+    expect(editor.dirty).toBe(true);
+    expect(debug.result?.runId).toBe("run-request-draft");
     expect(debug.sending).toBe(false);
   });
 
@@ -59,81 +81,150 @@ describe("debug store", () => {
     expect(debug.sending).toBe(false);
   });
 
-  it("选择环境与用例后按选择发送；失效选择自动回退", async () => {
+  it("case run明确使用已保存identity且不会隐式保存草稿", async () => {
     const { api, editor, debug, project } = await seeded();
-    const baseCase = editor.api!.cases[0]!;
-    await debug.send(editor); // 初始选择回退至当前 contract 的首个 case
-    editor.api!.cases.push({ id: "t2", name: "second", scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
+    const testCase = editor.api!.cases[0]!;
     await api.envCreate({ locator: project.locator, name: "dev" });
     await editor.reloadEnvs();
-    debug.selectCase({ caseId: "t2", scope: "base" });
     debug.selectEnv("dev");
-    let captured: { locator: ApiLocator; caseId: string; envName?: string | null } | null = null;
-    await debug.send(editor, (input) => { captured = input; return Promise.resolve(fakeOutput(input.locator.apiId, input.caseId)); });
-    expect(captured).toMatchObject({ caseId: "t2", envName: "dev" });
-    // 失效回退：选中的用例和环境不在当前接口/项目里时回退首用例/无环境。
-    editor.api!.cases = editor.api!.cases.filter((item) => item.id === baseCase.id);
-    await api.nodeDelete({ kind: "environment", locator: editor.envs[0]!.locator });
-    await editor.reloadEnvs();
-    await debug.send(editor, (input) => { captured = input; return Promise.resolve(fakeOutput(input.locator.apiId, input.caseId)); });
-    expect(captured).toMatchObject({ caseId: baseCase.id });
-    expect(captured!.envName).toBeUndefined();
-  });
-});
+    let captured: DebugInvocation | undefined;
+    const runFn = async (invocation: DebugInvocation) => { captured = invocation; return fakeDebugResult(invocation); };
+    await debug.runCase(editor, { caseId: testCase.id, scope: testCase.scope }, runFn);
+    expect(captured).toMatchObject({ mode: "case", case: { caseId: testCase.id, scope: testCase.scope }, environmentId: editor.envs[0]?.id });
 
-// Result retention is keyed by workspace root plus the complete API locator.
-describe("debug 结果按完整 API 身份驻留", () => {
-  it("双接口各自结果驻留：A 发送 → B 发送 → 回 A 显示 A 的旧结果（不重发）", async () => {
+    editor.api!.cases[0]!.name = "unsaved";
+    const apiSave = vi.spyOn(api, "apiSave");
+    captured = undefined;
+    await debug.runCase(editor, { caseId: testCase.id, scope: testCase.scope }, runFn);
+    expect(captured).toBeUndefined();
+    expect(apiSave).not.toHaveBeenCalled();
+    expect(debug.error).toMatch(/显式保存/);
+  });
+
+  it("结果按完整接口身份驻留，并在切回时不重发", async () => {
     const { api, editor, debug, apiNode, collectionNode } = await seeded();
     const apiB = await api.nodeCreate({ kind: "api", parent: collectionNode.locator, api: { name: "接口B" } });
     if (apiB.kind !== "api") throw new Error("Memory API creation did not return an API node");
-    let sends = 0;
-    const sendFn = (input: { locator: ApiLocator; caseId: string }) => {
-      sends += 1;
-      return Promise.resolve(fakeOutput(input.locator.apiId, input.caseId));
+    const sent: string[] = [];
+    const runFn = async (invocation: DebugInvocation) => {
+      sent.push(invocation.locator.apiId);
+      return fakeDebugResult(invocation, `run-${invocation.locator.apiId}`);
     };
-    await debug.send(editor, sendFn);
-    expect(debug.result?.outcome.apiId).toBe(apiNode.locator.apiId);
+    await debug.send(editor, runFn);
+    expect(debug.result?.outcomes[0]?.apiId).toBe(apiNode.locator.apiId);
     await editor.load(apiB.locator);
-    await debug.send(editor, sendFn);
-    expect(debug.result?.outcome.apiId).toBe(apiB.locator.apiId);
-    await editor.load(apiNode.locator); // 回切 A：显示 A 的驻留结果，不重发
-    expect(debug.result?.outcome.apiId).toBe(apiNode.locator.apiId);
-    expect(sends).toBe(2);
-    expect(Object.values(debug.results).map((result) => result.outcome.apiId).sort()).toEqual([apiNode.locator.apiId, apiB.locator.apiId].sort());
-  });
-
-  it("setProject 切项目不清其他项目结果：results 按完整 API 身份累积驻留", async () => {
-    const { api, editor, debug, apiNode, ws } = await seeded();
-    await debug.send(editor, (input) => Promise.resolve(fakeOutput(input.locator.apiId, input.caseId)));
-    const group = ws.tree!.children.find((node) => node.kind === "group");
-    if (!group || group.kind !== "group") throw new Error("Memory workspace is missing a group");
-    const otherProject = await api.nodeCreate({ kind: "project", parent: group.locator, name: "另一个项目" });
-    if (otherProject.kind !== "project") throw new Error("Memory project creation did not return a project node");
-    debug.setProject(otherProject.locator);
-    expect(Object.values(debug.results).some((result) => result.outcome.apiId === apiNode.locator.apiId)).toBe(true);
-    expect(debug.result?.outcome.apiId).toBe(apiNode.locator.apiId); // editor 仍在原 API，驻留结果照常可读
-  });
-
-  it("无 editor 依赖时 result 回落最近发送槽", async () => {
-    const { api, ws, apiNode } = await seeded();
-    const context = () => ({ root: ws.root, readOnly: ws.readOnly });
-    const editor = useEditorStore(api, context);
-    const debug = useDebugStore(api, undefined, context);
+    await debug.send(editor, runFn);
+    expect(debug.result?.outcomes[0]?.apiId).toBe(apiB.locator.apiId);
     await editor.load(apiNode.locator);
-    expect(debug.result).toBeNull();
-    await debug.send(editor, (input) => Promise.resolve(fakeOutput(input.locator.apiId, input.caseId)));
-    expect(debug.result?.outcome.apiId).toBe(apiNode.locator.apiId);
+    expect(debug.result?.outcomes[0]?.apiId).toBe(apiNode.locator.apiId);
+    expect(sent).toEqual([apiNode.locator.apiId, apiB.locator.apiId]);
   });
 
-  it("注入 editor 但无当前 API 或当前 root 不同不回退到最近结果", async () => {
-    const { api, ws, editor, debug, apiNode } = await seeded();
-    await debug.send(editor, (input) => Promise.resolve(fakeOutput(input.locator.apiId, input.caseId)));
-    expect(debug.result?.outcome.apiId).toBe(apiNode.locator.apiId);
+  it("切换接口时丢弃迟到的旧结果", async () => {
+    const { api, editor, debug, collectionNode } = await seeded();
+    const apiB = await api.nodeCreate({ kind: "api", parent: collectionNode.locator, api: { name: "接口B" } });
+    if (apiB.kind !== "api") throw new Error("Memory API creation did not return an API node");
+    let finish!: (result: DebugResult) => void;
+    const pending = debug.send(editor, (invocation) => new Promise((resolve) => { finish = (result = fakeDebugResult(invocation)) => resolve(result); }));
+    await editor.load(apiB.locator);
+    finish(fakeDebugResult({ mode: "request", locator: apiB.locator, request: editor.api!.contract.request, parameters: {}, fields: [] }, "late"));
+    await pending;
+    expect(debug.results).toEqual({});
+    expect(debug.result).toBeNull();
+  });
 
-    ws.root = `${ws.root}-copied`;
+  it("array-style Core field paths repair the intended value and clear only that pending marker", async () => {
+    const { api, editor, debug, apiNode } = await seeded();
+    const request = JSON.parse(JSON.stringify(editor.api!.contract.request)) as ApiRequest;
+    if (request.protocol !== "http") throw new Error("Expected HTTP request");
+    request.headers.push({ kind: "inline", id: "header-1", name: "x-token", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "[REDACTED]" });
+    const invocation: Extract<DebugInvocation, { mode: "request" }> = {
+      mode: "request", locator: apiNode.locator, request, parameters: {},
+      fields: [{ path: "request.headers[0].value", status: "redacted", needsInput: true }, { path: "request.path", status: "missing", needsInput: true }],
+    };
+    expect(debug.applyRestore(invocation, true, editor)).toBe(true);
+    debug.repairRestoredField("request.headers[0].value", "synthetic-header", editor);
+    expect(editor.api!.contract.request).toMatchObject({ headers: [{ value: "synthetic-header" }] });
+    expect(debug.restoredFields).toEqual([
+      { path: "request.headers[0].value", status: "redacted", needsInput: false },
+      { path: "request.path", status: "missing", needsInput: true },
+    ]);
+    expect(api).toBeDefined();
+  });
+
+  it("history replay stores and guards the historical source slot instead of the active editor slot", async () => {
+    const { api, editor, debug, apiNode, collectionNode } = await seeded();
+    const apiB = await api.nodeCreate({ kind: "api", parent: collectionNode.locator, api: { name: "接口B" } });
+    if (apiB.kind !== "api") throw new Error("Memory API creation did not return an API node");
+    await editor.load(apiB.locator);
+    const replayResult = fakeDebugResult({ mode: "request", locator: apiNode.locator, request: apiNode.locator ? (await api.apiGet(apiNode.locator)).api.contract.request : editor.api!.contract.request, parameters: {}, fields: [] }, "historical-A");
+    api.debugHistoryReplay = async () => ({ runId: "history-A", locator: apiNode.locator });
+    api.debugWait = async () => replayResult;
+    await debug.replay("history-id", editor, apiNode.locator);
+    expect(Object.values(debug.results)).toEqual([replayResult]);
     expect(debug.result).toBeNull();
-    editor.deactivate();
-    expect(debug.result).toBeNull();
+    await editor.load(apiNode.locator);
+    expect(debug.result?.runId).toBe("historical-A");
+  });
+
+  it("discards a late history restore after the active API generation changes", async () => {
+    const { api, ws, editor, debug, apiNode, collectionNode } = await seeded();
+    const before = JSON.parse(JSON.stringify(editor.api!.contract.request)) as ApiRequest;
+    const invocation: Extract<DebugInvocation, { mode: "request" }> = {
+      mode: "request", locator: apiNode.locator, request: { ...before, path: "/historical" }, parameters: {}, fields: [],
+    };
+    let release!: (value: { invocation: typeof invocation; sourceChanged: boolean; sourceAvailable: boolean }) => void;
+    api.debugHistoryRestore = async () => new Promise((resolve) => { release = resolve; });
+    const restoring = debug.restoreHistory({ historyId: "00000000-0000-4000-8000-000000000001", exchangeOrder: 1 }, apiNode.locator, editor);
+    await Promise.resolve();
+    const second = await api.nodeCreate({ kind: "api", parent: collectionNode.locator, api: { name: "接口B" } });
+    if (second.kind !== "api") throw new Error("Memory API creation did not return an API node");
+    await editor.load(second.locator);
+    release({ invocation, sourceChanged: false, sourceAvailable: true });
+    await restoring;
+    expect(editor.api!.contract.request.path).toBe((await api.apiGet(second.locator)).api.contract.request.path);
+    expect(debug.restoredTargetKey).toBeNull();
+    expect(ws.root).toBe("/tmp/ws");
+  });
+
+  it("keeps a missing-source restore as a read-only preview without changing the active API", async () => {
+    const { editor, debug, apiNode } = await seeded();
+    const original = JSON.stringify(editor.api!.contract.request);
+    const invocation: Extract<DebugInvocation, { mode: "request" }> = {
+      mode: "request", locator: apiNode.locator, request: { ...editor.api!.contract.request, path: "/readonly-history" },
+      parameters: {}, fields: [{ path: "request.headers[0].value", status: "redacted", needsInput: true }],
+    };
+    expect(debug.applyRestore(invocation, false, editor)).toBe(true);
+    expect(JSON.stringify(editor.api!.contract.request)).toBe(original);
+    expect(debug.restoredPreview).toMatchObject({ locator: apiNode.locator, request: { path: "/readonly-history" } });
+    expect(debug.restoredTargetKey).toBeNull();
+    expect(debug.restoredPreview?.fields[0]?.needsInput).toBe(true);
+  });
+
+  it("keeps a pending restore bound to API A across API B and a read-only preview", async () => {
+    const { api, editor, debug, collectionNode, apiNode } = await seeded();
+    const apiB = await api.nodeCreate({ kind: "api", parent: collectionNode.locator, api: { name: "接口B" } });
+    if (apiB.kind !== "api") throw new Error("Memory API creation did not return an API node");
+    const requestA = JSON.parse(JSON.stringify(editor.api!.contract.request)) as ApiRequest;
+    const restoreA: Extract<DebugInvocation, { mode: "request" }> = {
+      mode: "request", locator: apiNode.locator, request: { ...requestA, path: "/redacted-a" }, parameters: {},
+      fields: [{ path: "request.path", status: "redacted", needsInput: true }],
+    };
+    expect(debug.applyRestore(restoreA, true, editor)).toBe(true);
+    const apiSave = vi.spyOn(api, "apiSave");
+    await editor.load(apiB.locator);
+    const readonlyB: Extract<DebugInvocation, { mode: "request" }> = {
+      mode: "request", locator: apiB.locator, request: { ...editor.api!.contract.request, path: "/readonly-b" }, parameters: {},
+      fields: [{ path: "request.path", status: "redacted", needsInput: true }],
+    };
+    expect(debug.applyRestore(readonlyB, false, editor)).toBe(true);
+    await editor.load(apiNode.locator);
+    const send = vi.fn(async (invocation: DebugInvocation) => fakeDebugResult(invocation));
+    await debug.send(editor, send);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(debug.restoredFields).toEqual([{ path: "request.path", status: "redacted", needsInput: true }]);
+    expect(editor.api!.contract.request.path).toBe("/redacted-a");
+    expect(apiSave).not.toHaveBeenCalled();
   });
 });

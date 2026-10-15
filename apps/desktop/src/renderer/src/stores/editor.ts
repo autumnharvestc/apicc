@@ -1,6 +1,8 @@
 import { createPinia, defineStore } from "pinia";
 import type { ApiAsset } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
+import type { CaseDraftDeletion } from "../../../shared/types.js";
+import type { DebugFieldState } from "@apicc/core";
 import type { ApiLocator, EnvironmentLocator, ProjectLocator } from "../../../shared/locations.js";
 import { apiSessionKey, projectSessionKey, type LocalWorkspaceContext } from "./localIdentity.js";
 
@@ -8,11 +10,15 @@ export interface EditorSession {
   root: string;
   locator: ApiLocator;
   api: ApiAsset;
+  sourceApiRevision: string;
+  sourceProjectRevision: string;
   envs: Array<{ id: string; name: string; locator: EnvironmentLocator }>;
   snapshot: string;
   protocolDrafts: Partial<Record<ApiAsset["contract"]["request"]["protocol"], unknown>>;
   generation: number;
 }
+
+export type FullAssetSaveGuard = (session: EditorSession) => void;
 
 function copy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -33,6 +39,7 @@ function activeSession(state: { sessions: Record<string, EditorSession>; activeK
 
 /** Asset editor sessions are keyed by directory plus the full immutable API location. */
 export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceContext) {
+  const fullAssetSaveGuards = new Set<FullAssetSaveGuard>();
   return defineStore("editor", {
     state: () => ({
       sessions: {} as Record<string, EditorSession>,
@@ -68,6 +75,9 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
       },
     },
     actions: {
+      registerFullAssetSaveGuard(guard: FullAssetSaveGuard): void {
+        fullAssetSaveGuards.add(guard);
+      },
       async load(locator: ApiLocator): Promise<void> {
         const context = getContext();
         const root = context.root;
@@ -93,6 +103,8 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
           root,
           locator: fixedLocator,
           api: copy(detail.api),
+          sourceApiRevision: detail.sourceApiRevision,
+          sourceProjectRevision: detail.sourceProjectRevision,
           envs: copy(detail.envs),
           snapshot: JSON.stringify(detail.api),
           protocolDrafts: {},
@@ -108,16 +120,71 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         const context = getContext();
         if (context.root !== current.root) throw new Error("当前工作区已切换，拒绝保存到其他工作区");
         if (context.readOnly) throw new Error("工作区处于只读模式，不能保存接口");
+        for (const guard of fullAssetSaveGuards) guard(current);
 
         const key = this.activeKey!;
         const generation = current.generation;
         const fixedLocator = locatorCopy(current.locator);
+        const expectedSourceApiRevision = current.sourceApiRevision;
         const submitted = copy(current.api);
         const submittedSnapshot = JSON.stringify(submitted);
-        const saved = await api.apiSave(fixedLocator, submitted);
+        const saved = await api.apiSave(fixedLocator, submitted, expectedSourceApiRevision);
         const original = this.sessions[key];
-        if (original?.generation === generation) original.snapshot = submittedSnapshot;
-        return copy(saved);
+        if (original?.generation === generation) {
+          original.snapshot = submittedSnapshot;
+          original.sourceApiRevision = saved.sourceApiRevision;
+          original.sourceProjectRevision = saved.sourceProjectRevision;
+        }
+        return copy(saved.api);
+      },
+
+      async saveRequestDraft(fields: DebugFieldState[] = []): Promise<ApiAsset | null> {
+        const current = activeSession(this);
+        if (!current) return null;
+        const context = getContext();
+        if (context.root !== current.root) throw new Error("当前工作区已切换，拒绝保存到其他工作区");
+        if (context.readOnly) throw new Error("工作区处于只读模式，不能保存接口请求");
+        const key = this.activeKey!;
+        const generation = current.generation;
+        const fixedLocator = locatorCopy(current.locator);
+        const submitted = copy(current.api.contract.request);
+        const baseline = copy(JSON.parse(current.snapshot) as ApiAsset);
+        baseline.contract.request = copy(submitted);
+        const saved = await api.apiRequestDraftSave(fixedLocator, submitted, current.sourceApiRevision, fields);
+        const original = this.sessions[key];
+        if (original?.generation === generation) {
+          original.sourceApiRevision = saved.sourceApiRevision;
+          original.snapshot = JSON.stringify(baseline);
+        }
+        return copy(current.api);
+      },
+
+      async saveCaseDraft(identity: { caseId: string; scope: string }, deletedCases: CaseDraftDeletion[] = [], fields: DebugFieldState[] = []): Promise<ApiAsset | null> {
+        const current = activeSession(this);
+        if (!current) return null;
+        const context = getContext();
+        if (context.root !== current.root) throw new Error("当前工作区已切换，拒绝保存到其他工作区");
+        if (context.readOnly) throw new Error("工作区处于只读模式，不能保存用例");
+        const testCase = current.api.cases.find((item) => item.id === identity.caseId && item.scope === identity.scope);
+        if (!testCase) throw new Error(`Case not found at complete API locator: ${JSON.stringify({ ...current.locator, ...identity })}`);
+        const key = this.activeKey!;
+        const generation = current.generation;
+        const fixedLocator = locatorCopy(current.locator);
+        const caseLocator = { ...fixedLocator, caseId: identity.caseId, scope: identity.scope };
+        const submitted = copy(testCase);
+        const baseline = copy(JSON.parse(current.snapshot) as ApiAsset);
+        const deletedKeys = new Set(deletedCases.map((item) => `${item.caseId}\0${item.scope}`));
+        baseline.cases = baseline.cases.filter((item) => !deletedKeys.has(`${item.id}\0${item.scope}`));
+        const previousIndex = baseline.cases.findIndex((item) => item.id === identity.caseId && item.scope === identity.scope);
+        if (previousIndex < 0) baseline.cases.push(copy(submitted));
+        else baseline.cases[previousIndex] = copy(submitted);
+        const saved = await api.caseDraftSave(caseLocator, submitted, current.sourceApiRevision, deletedCases.map((item) => ({ ...item })), fields.map((field) => ({ ...field })));
+        const original = this.sessions[key];
+        if (original?.generation === generation) {
+          original.sourceApiRevision = saved.sourceApiRevision;
+          original.snapshot = JSON.stringify(baseline);
+        }
+        return copy(current.api);
       },
 
       async reloadEnvs(): Promise<void> {

@@ -8,6 +8,7 @@ const nextRunFileId = monotonicFactory();
 import type { ApiAsset } from "../contract/model.js";
 import type { ContractCollection, ContractFolder } from "../contract/workspace.js";
 import type { Operation, ProjectGlobals, TestCase } from "../domain/common.js";
+import { resolveRequestSettings, type RequestSettings, type RequestSettingsOverride } from "../request/settings.js";
 import type { ProjectSnapshot } from "../assets/snapshot.js";
 import type { CredentialBindings } from "../credentials/types.js";
 import type { DeepReadonly } from "../assets/context.js";
@@ -15,9 +16,10 @@ import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/exe
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
 import type { EventBus } from "../events/bus.js";
 import type { PluginRegistry } from "../plugin/registry.js";
-import type { ExecutableRequest, PmApi, ScriptEngine } from "../plugin/types.js";
+import type { ExecutableRequest, HttpHopObservation, PmApi, ScriptEngine } from "../plugin/types.js";
+import type { HttpSession } from "../http/session.js";
 import type { CaseOutcome, RunResult } from "../report/types.js";
-import { executeCase } from "./caseExecutor.js";
+import { executeCase, type CaseExecutionResult } from "./caseExecutor.js";
 
 /** Container-level failure that preserves all case rows completed before the throw. */
 export class CollectionRunError extends Error {
@@ -36,6 +38,28 @@ export interface RunnerOptions {
   environmentId?: string;
   /** Restrict a workflow request node to its selected snapshot case and real ancestor path. */
   caseSelection?: { apiId: string; caseId: string; folderIds: readonly string[] };
+  /** Host-owned root for resolving explicit local request file references. */
+  workspaceRoot?: string;
+  /** Explicit run/session cookie scope; CollectionRunner never creates a process-global jar. */
+  httpSession?: HttpSession;
+  observeHttp?: (event: HttpHopObservation, identity: {
+    caseId: string;
+    scope: string;
+    rowIndex: number;
+    settings: RequestSettings;
+    parameters: Readonly<Record<string, string>>;
+  }) => void | Promise<void>;
+  /** Actual executeCase response and real row context for consumers that need legacy protocol observations. */
+  observeCaseExecution?: (execution: CaseExecutionResult, identity: {
+    apiId: string;
+    apiName: string;
+    caseId: string;
+    caseName: string;
+    scope: string;
+    rowIndex: number;
+    settings: RequestSettings;
+    parameters: Readonly<Record<string, string>>;
+  }) => void | Promise<void>;
   runtimeBridge?: {
     /** 读取外部携带的运行时变量（进入本 run 前注入 persisted 层）。 */
     get(): Record<string, string>;
@@ -64,7 +88,8 @@ export class CollectionRunner {
   constructor(private deps: {
     registry: PluginRegistry;
     bus: EventBus;
-    timeouts: { connectTimeoutMs: number; totalTimeoutMs: number };
+    timeouts: { connectTimeoutMs: number; totalTimeoutMs: number; signal?: AbortSignal };
+    requestSettings?: RequestSettingsOverride;
     failFast: boolean;
   }) {}
 
@@ -154,7 +179,12 @@ export class CollectionRunner {
           continue;
         }
         const caseResolver = createResolver(envVars, collection.variables, project.variables);
+        const observationSettings = resolveRequestSettings(tc.requestSettingsOverride, this.deps.requestSettings, {
+          connectTimeoutMs: this.deps.timeouts.connectTimeoutMs,
+          totalTimeoutMs: this.deps.timeouts.totalTimeoutMs,
+        });
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+          const rowParameters = Object.freeze({ ...tc.parameters, ...(rows[rowIndex] ?? {}) });
           const execution = await executeCase({
             asset, assetContext: selectedRun.snapshot.context, credentialBindings: selectedRun.credentialBindings,
             testCase: tc, row: rows[rowIndex], rowIndex, isDataDriven: rows.length > 1,
@@ -165,7 +195,27 @@ export class CollectionRunner {
             resolveAssert: (op) => this.deps.registry.getAssert(op),
             scriptEngine: engine,
             timeouts: this.deps.timeouts,
+            requestSettings: this.deps.requestSettings,
+            workspaceRoot: opts.workspaceRoot,
+            httpSession: opts.httpSession,
+            observeHttp: opts.observeHttp === undefined ? undefined : (event) => opts.observeHttp!(event, {
+              caseId: tc.id,
+              scope: tc.scope,
+              rowIndex,
+              settings: observationSettings,
+              parameters: rowParameters,
+            }),
             bus: this.deps.bus,
+          });
+          await opts.observeCaseExecution?.(execution, {
+            apiId: api.id,
+            apiName: api.metadata.name,
+            caseId: tc.id,
+            caseName: tc.name,
+            scope: tc.scope,
+            rowIndex,
+            settings: observationSettings,
+            parameters: rowParameters,
           });
           outcomes.push(execution.outcome);
           if (!execution.outcome.passed && this.deps.failFast) {

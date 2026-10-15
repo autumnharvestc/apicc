@@ -426,7 +426,7 @@ async function main() {
     if (first?.failureStage || !first?.workspaceId || !first?.groupId || !first?.projectId || !first?.apiLocator || !first?.caseId) {
       fail(`packed_ipc_initial_setup:${first?.failureStage ?? "assertion_failed"}`);
     } else {
-      const saved = await activeApp.renderer.evaluate(`(async()=>{ const detail=await window.apicc.apiGet(${JSON.stringify(first.apiLocator)}); detail.api.contract.request.auth={kind:"bearer",token:${JSON.stringify(reference)}}; await window.apicc.apiSave(${JSON.stringify(first.apiLocator)},detail.api); return true; })()`);
+      const saved = await activeApp.renderer.evaluate(`(async()=>{ const detail=await window.apicc.apiGet(${JSON.stringify(first.apiLocator)}); detail.api.contract.request.auth={kind:"bearer",token:${JSON.stringify(reference)}}; await window.apicc.apiSave(${JSON.stringify(first.apiLocator)},detail.api,detail.sourceApiRevision); return true; })()`);
       if (!saved) fail("packed_ipc_auth_contract_save_failed");
       credentialPutAttempted = true;
       const initialRequest = await activeApp.renderer.evaluate(expressionForCredentialRequest(first.apiLocator, first.caseId, "credential-smoke"));

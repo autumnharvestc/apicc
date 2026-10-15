@@ -85,21 +85,6 @@ function staticModuleSpecifiers(sourceFile) {
   return specifiers;
 }
 
-function dynamicModuleSpecifiers(sourceFile) {
-  const specifiers = [];
-  const visit = (node) => {
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      const argument = node.arguments[0];
-      if (argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))) {
-        specifiers.push(argument.text);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return specifiers;
-}
-
 function resolveRendererImport(fromFile, specifier) {
   if (!specifier.startsWith(".")) return undefined;
   const target = resolve(dirname(fromFile), specifier);
@@ -123,17 +108,15 @@ while (eagerPending.length > 0) {
   }
 }
 
-const memoryChunks = rendererFiles.filter((path) => readFileSync(path, "utf8").includes("apicc-memory-"));
-if (memoryChunks.length !== 1) throw new Error(`expected one isolated memory fallback chunk, found ${memoryChunks.length}`);
-const memoryChunk = memoryChunks[0];
-const memoryChunkName = relative(rendererRoot, memoryChunk);
+const rendererMemoryFallbackMarkers = ["apicc-memory-", "createMemoryApi"];
+const rendererMemoryFallbackFiles = rendererFiles.filter((path) => {
+  const contents = readFileSync(path, "utf8");
+  return rendererMemoryFallbackMarkers.some((marker) => contents.includes(marker));
+});
 const rendererEntrySource = eagerSources.get(rendererEntry);
-const entryDynamicTargets = rendererEntrySource
-  ? dynamicModuleSpecifiers(rendererEntrySource)
-    .map((specifier) => resolveRendererImport(rendererEntry, specifier))
-    .filter((target) => target !== undefined)
-  : [];
-const memoryFallbackIsDynamicAndIsolated = !eagerFiles.has(memoryChunk) && entryDynamicTargets.includes(memoryChunk);
+const rendererPreloadMissingGuardPresent = rendererEntrySource?.text.includes(
+  "The Electron preload API is unavailable; the memory API is development-only.",
+) ?? false;
 const eagerHits = [];
 for (const path of eagerFiles) {
   const contents = readFileSync(path, "utf8");
@@ -148,10 +131,17 @@ const result = {
   productionSourceLegacyHits: legacyHits,
   rendererJavaScriptFiles: rendererFiles.length,
   rendererEagerJavaScriptFiles: eagerFiles.size,
-  rendererMemoryFallbackChunk: memoryChunkName,
-  rendererMemoryFallbackIsolatedDynamicImport: memoryFallbackIsDynamicAndIsolated,
+  rendererMemoryFallbackFiles: rendererMemoryFallbackFiles.map((path) => relative(rendererRoot, path)),
+  rendererMemoryFallbackExcludedFromProduction: rendererMemoryFallbackFiles.length === 0,
+  rendererPreloadMissingGuardPresent,
   rendererEagerForbiddenHits: eagerHits,
   rendererCredentialForbiddenHits: rendererCredentialHits,
 };
 process.stdout.write(`${JSON.stringify(result)}\n`);
-if (legacyHits.length > 0 || !memoryFallbackIsDynamicAndIsolated || eagerHits.length > 0 || rendererCredentialHits.length > 0) process.exitCode = 1;
+if (
+  legacyHits.length > 0 ||
+  rendererMemoryFallbackFiles.length > 0 ||
+  !rendererPreloadMissingGuardPresent ||
+  eagerHits.length > 0 ||
+  rendererCredentialHits.length > 0
+) process.exitCode = 1;

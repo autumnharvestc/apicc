@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, toRaw } from "vue";
+import { computed, ref, toRaw, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Checkbox as ACheckbox, Input as AInput, RadioButton as ARadioButton, RadioGroup as ARadioGroup, Select as ASelect, TabPane as ATabPane, Tabs as ATabs, Textarea as ATextarea } from "ant-design-vue";
 import type { ApiRequest, ComponentAsset, ModelAsset, MultipartEntry, ParameterBinding, RequestBody } from "@apicc/core";
@@ -14,6 +14,7 @@ import SchemaEditor from "./SchemaEditor.vue";
 import ResponseEditor from "./ResponseEditor.vue";
 import CredentialEditor from "./CredentialEditor.vue";
 import ProjectAssetsPanel from "./ProjectAssetsPanel.vue";
+import DebugSettings from "./DebugSettings.vue";
 
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
@@ -33,6 +34,14 @@ const props = defineProps<{
 }>();
 const { t } = useI18n();
 const request = computed<ApiRequest | null>(() => props.editor.api?.contract.request ?? null);
+const currentRestoreMatches = computed(() => {
+  const activeKey = props.editor.activeKey;
+  const session = activeKey ? props.editor.sessions[activeKey] : undefined;
+  return !!session && props.debug.restoredTargetKey === activeKey
+    && props.debug.restoredTargetGeneration === session.generation;
+});
+const pendingRestoreFields = computed(() => currentRestoreMatches.value
+  ? props.debug.restoredFields.filter((field) => field.needsInput) : []);
 const bodyText = computed(() => {
   const body = request.value?.protocol === "http" ? request.value.body : undefined;
   return body && (body.kind === "json" || body.kind === "xml" || body.kind === "text") ? body : null;
@@ -59,11 +68,15 @@ const credentialContextKey = computed(() => {
 });
 const saveFeedback = ref("");
 const saveError = ref("");
+const settingsOpen = ref(false);
+const chosenFileInfo = ref<Record<string, { name: string; size: number }>>({});
 const methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const authKinds = ["none", "bearer", "basic", "apikey"];
 const bodyKinds = ["none", "json", "xml", "text", "graphql", "urlencoded", "multipart", "binary"];
 const parameterLocations = ["path", "query", "header", "cookie"] as const;
 type ParameterLocation = (typeof parameterLocations)[number];
+
+watch(() => request.value, () => props.debug.refreshRestoredFields(props.editor), { deep: true, flush: "post" });
 
 function cloneContract<T>(value: T): T {
   return JSON.parse(JSON.stringify(toRaw(value))) as T;
@@ -214,6 +227,22 @@ function setMultipartEntryKind(index: number, kind: "text" | "file") {
   body.entries.splice(index, 1, next);
 }
 
+async function chooseBinaryFile(target: { file: { path: string } }, key: string) {
+  if (!props.api || props.editor.readOnly) return;
+  try {
+    const selected = await props.api.debugPickFile();
+    if (!selected) return;
+    target.file.path = selected.path;
+    chosenFileInfo.value[key] = { name: selected.name, size: selected.size };
+  } catch (error) {
+    saveError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function localFileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
 function caseValue(identity: { caseId: string; scope: string }): string {
   return JSON.stringify([identity.caseId, identity.scope]);
 }
@@ -250,6 +279,17 @@ async function onSave() {
     saveError.value = error instanceof Error ? error.message : String(error);
   }
 }
+
+async function onSaveRequest() {
+  saveFeedback.value = "";
+  saveError.value = "";
+  try {
+    await props.editor.saveRequestDraft(currentRestoreMatches.value ? props.debug.restoredFields : []);
+    saveFeedback.value = t("debugLoop.requestSaved");
+  } catch (error) {
+    saveError.value = error instanceof Error ? error.message : String(error);
+  }
+}
 </script>
 
 <template>
@@ -273,8 +313,11 @@ async function onSave() {
       <a-input v-model:value="request.path" class="url" data-testid="editor-path" :disabled="editor.readOnly" :placeholder="t('editor.path')" />
       <a-select data-testid="debug-env-select" :value="(editor.envs ?? []).some((e) => e.name === debug.selectedEnvName) ? debug.selectedEnvName ?? '' : ''" :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: e.name }))]" @update:value="(value) => debug.selectEnv(value === '' ? null : (value as string))" />
       <a-select data-testid="debug-case-select" :value="activeCaseValue()" :options="(editor.api?.cases ?? []).map((item) => ({ label: `${item.name} (${item.scope})`, value: caseValue({ caseId: item.id, scope: item.scope }) }))" @update:value="(value) => selectDebugCase(value as string)" />
-      <a-button type="primary" data-testid="send-btn" :disabled="debug.sending" @click="debug.send(editor)">{{ debug.sending ? t('editor.sending') : t('editor.send') }}</a-button>
-      <a-button data-testid="save-btn" :disabled="editor.readOnly" @click="onSave">{{ t('editor.save') }}</a-button>
+      <a-button type="primary" data-testid="send-btn" :disabled="debug.sending || pendingRestoreFields.length > 0" @click="debug.send(editor)">{{ debug.sending ? t('editor.sending') : t('editor.send') }}</a-button>
+      <a-button v-if="debug.sending && debug.activeRunId" data-testid="debug-cancel" @click="debug.cancel()">{{ t('debugLoop.cancelRun') }}</a-button>
+      <a-button data-testid="debug-settings-open" @click="settingsOpen = true">{{ t('debugLoop.settings') }}</a-button>
+      <a-button data-testid="save-request-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSaveRequest">{{ t('debugLoop.saveRequest') }}</a-button>
+      <a-button data-testid="save-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSave">{{ t('editor.save') }}</a-button>
       <span v-if="saveFeedback" data-testid="save-feedback">{{ saveFeedback }}</span>
       <span v-if="saveError" data-testid="save-error">{{ saveError }}</span>
     </div>
@@ -349,7 +392,10 @@ async function onSave() {
                 <a-input v-model:value="field.value" data-testid="body-field-value" :disabled="editor.readOnly" />
               </template>
               <template v-else>
-                <a-input v-model:value="field.file.path" :data-testid="`body-file-path-${index}`" :disabled="editor.readOnly" />
+                <span :data-testid="`body-file-path-${index}`">{{ chosenFileInfo[`multipart-${field.id}`]?.name ?? (field.file.path ? localFileName(field.file.path) : t('debugLoop.noFileSelected')) }}</span>
+                <a-button size="small" :disabled="editor.readOnly" :data-testid="`body-file-pick-${index}`" @click="chooseBinaryFile(field, `multipart-${field.id}`)">{{ t('debugLoop.chooseFile') }}</a-button>
+                <span v-if="chosenFileInfo[`multipart-${field.id}`]">{{ chosenFileInfo[`multipart-${field.id}`].size }} B</span>
+                <a-input v-model:value="field.filename" :placeholder="t('debugLoop.filename')" :disabled="editor.readOnly" />
                 <a-input v-model:value="field.contentType" :data-testid="`body-file-content-type-${index}`" :disabled="editor.readOnly" />
               </template>
               <a-checkbox v-model:checked="field.enabled" :disabled="editor.readOnly" />
@@ -358,11 +404,11 @@ async function onSave() {
             <a-button data-testid="body-add-field" :disabled="editor.readOnly" @click="addBodyEntry(request.body)">{{ t('editor.addRow') }}</a-button>
           </template>
           <template v-else-if="request.body.kind === 'binary'">
-            <a-input v-model:value="request.body.file.path" data-testid="body-binary-path" :disabled="editor.readOnly" />
+            <span data-testid="body-binary-path">{{ chosenFileInfo.binary?.name ?? (request.body.file.path ? localFileName(request.body.file.path) : t('debugLoop.noFileSelected')) }}</span>
+            <a-button size="small" :disabled="editor.readOnly" data-testid="body-binary-pick" @click="chooseBinaryFile(request.body, 'binary')">{{ t('debugLoop.chooseFile') }}</a-button>
+            <span v-if="chosenFileInfo.binary">{{ chosenFileInfo.binary.size }} B</span>
             <a-input v-model:value="request.body.contentType" data-testid="body-binary-content-type" :disabled="editor.readOnly" />
-            <p>{{ t('contract.transferNotImplemented') }}</p>
           </template>
-          <p v-if="request.body.kind === 'multipart'">{{ t('contract.transferNotImplemented') }}</p>
           <section v-if="['json', 'xml', 'text'].includes(request.body.kind)" class="body-schema">
             <SchemaEditor :model-value="bodySchema()" :models="assets?.models ?? []" :read-only="editor.readOnly" @update:model-value="updateBodySchema($event as SchemaNode | undefined)" />
             <div v-if="bodyExamples().length" class="examples" data-testid="body-examples">
@@ -386,6 +432,7 @@ async function onSave() {
     <ResponseEditor v-if="assets" :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" />
     <ProjectAssetsPanel v-if="assets" :assets="assets" :api="api" :credential-context-key="credentialContextKey" :read-only="editor.readOnly" />
     <CredentialEditor v-if="api && projectLocator" :api="api" :locator="projectLocator" :auth="request.auth" :context-key="credentialContextKey" :read-only="editor.readOnly" />
+    <DebugSettings v-if="api" :open="settingsOpen" :api="api" :debug="debug" :editor="editor" @close="settingsOpen = false" />
   </section>
   <EmptyState v-else :text="t('editor.empty')" />
 </template>

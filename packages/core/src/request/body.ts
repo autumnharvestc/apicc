@@ -1,11 +1,17 @@
 import type { DeepReadonly } from "../assets/context.js";
 import type { RequestBody } from "../contract/model.js";
+import type { LocalFileReference } from "../contract/request.js";
 import type { KeyValuePair } from "../domain/model.js";
 import { RequestMaterializationError } from "./parameters.js";
 
 export type RuntimeBody =
   | { kind: "json" | "xml" | "raw"; content: string }
-  | { kind: "form"; content: string; form: KeyValuePair[] };
+  | { kind: "form"; content: string; form: KeyValuePair[] }
+  | { kind: "binary"; file: LocalFileReference; contentType: string }
+  | { kind: "multipart"; entries: Array<
+      | { kind: "text"; name: string; value: string; enabled?: boolean }
+      | { kind: "file"; name: string; file: LocalFileReference; filename?: string; contentType: string; enabled?: boolean }
+    > };
 
 export function materializeBody(
   body: DeepReadonly<RequestBody>,
@@ -49,7 +55,17 @@ export function materializeBody(
       return { kind: "form", content: "", form: [...fields, ...extra] };
     }
     case "multipart":
+      return {
+        kind: "multipart",
+        entries: body.entries.filter((entry) => entry.enabled).map((entry) => entry.kind === "text"
+          ? { kind: "text", name: entry.name, value: resolve(entry.value) }
+          : {
+              kind: "file", name: entry.name, file: { path: entry.file.path },
+              ...(entry.filename === undefined ? {} : { filename: entry.filename }),
+              contentType: entry.contentType ?? "application/octet-stream",
+            }),
+      };
     case "binary":
-      throw new RequestMaterializationError("UNSUPPORTED_BODY_ENCODING", "This request body encoding has no supported transport.");
+      return { kind: "binary", file: { path: body.file.path }, contentType: body.contentType };
   }
 }

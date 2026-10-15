@@ -3,7 +3,8 @@ import type { ApiAsset } from "../contract/model.js";
 import type { ContractProject } from "../contract/workspace.js";
 import type { Environment, TestCase } from "../domain/common.js";
 import type { PluginRegistry } from "../plugin/registry.js";
-import type { PmApi } from "../plugin/types.js";
+import type { HttpHopObservation, PmApi } from "../plugin/types.js";
+import type { HttpSession } from "../http/session.js";
 import { captureProjectExecutionRun, CollectionRunError, CollectionRunner } from "../runner/runner.js";
 import { createEventBus } from "../events/bus.js";
 import { validateWorkflowStructure } from "./validate.js";
@@ -47,6 +48,9 @@ export interface WorkflowRunnerOptions {
   environmentId?: string;
   failFast?: boolean;
   strict?: boolean;
+  workspaceRoot?: string;
+  httpSession?: HttpSession;
+  observeHttp?: (event: HttpHopObservation) => void | Promise<void>;
 }
 
 export type ConditionVerdict = { kind: "matched" } | { kind: "pruned" } | { kind: "error"; message: string };
@@ -62,7 +66,12 @@ interface ConditionPm extends PmApi {
 export class WorkflowRunner {
   constructor(private opts: WorkflowRunnerOptions) {}
 
-  async run(execution: ProjectExecutionRun, workflowId: string, options: { environmentId?: string } = {}): Promise<WorkflowRunResult> {
+  async run(execution: ProjectExecutionRun, workflowId: string, options: {
+    environmentId?: string;
+    workspaceRoot?: string;
+    httpSession?: HttpSession;
+    observeHttp?: (event: HttpHopObservation) => void | Promise<void>;
+  } = {}): Promise<WorkflowRunResult> {
     const selectedExecution = captureProjectExecutionRun(execution);
     const project = selectedExecution.snapshot.project;
     const workflow = project.workflows.find((candidate) => candidate.id === workflowId);
@@ -252,7 +261,11 @@ export class WorkflowRunner {
           nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, failureKind: "config", error: msg });
         } else {
           try {
-            const nodeRun = await runSingleNode(runner, selectedExecution, projectLocation, caseDef, environmentId, bridge);
+            const nodeRun = await runSingleNode(runner, selectedExecution, projectLocation, caseDef, environmentId, bridge, {
+              workspaceRoot: options.workspaceRoot ?? this.opts.workspaceRoot,
+              httpSession: options.httpSession ?? this.opts.httpSession,
+              observeHttp: options.observeHttp ?? this.opts.observeHttp,
+            });
             warnings.push(...nodeRun.warnings);
             const outcomes = nodeRun.outcomes;
             const state: NodeState = outcomes.every((o) => o.passed) ? "passed" : "failed";
@@ -368,11 +381,15 @@ async function runSingleNode(
   caseDef: DeepReadonly<TestCase>,
   environmentId: string | undefined,
   bridge: { get(): Record<string, string>; set(v: Record<string, string>): void },
+  httpOptions: { workspaceRoot?: string; httpSession?: HttpSession; observeHttp?: (event: HttpHopObservation) => void | Promise<void> },
 ): Promise<{ outcomes: CaseOutcome[]; warnings: string[] }> {
   const apiId = location.api.contract.id;
   const result = await runner.run(execution, location.collection.id, {
     environmentId,
     runtimeBridge: bridge,
+    workspaceRoot: httpOptions.workspaceRoot,
+    httpSession: httpOptions.httpSession,
+    observeHttp: httpOptions.observeHttp,
     caseSelection: { apiId, caseId: caseDef.id, folderIds: location.folders.map((folder) => folder.id) },
   });
   if (result.cases.length > 0) return { outcomes: result.cases, warnings: result.warnings ?? [] };

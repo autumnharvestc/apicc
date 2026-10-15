@@ -100,6 +100,13 @@ function sourceProject() {
     content: `literal ${api.contract.id}`,
     schema: { kind: "modelRef", modelId },
   };
+  api.cases[0].requestOverride = {
+    ...structuredClone(request),
+    path: "/case-only",
+    pathParams: [ParameterBindingSchema.parse(parameterReference(parameter.id, "00000000-0000-4000-8000-000000000308"))],
+    auth: { kind: "bearer", token: { id: "case-secret", policy: "test-auto" } },
+    body: { kind: "urlencoded", fields: [{ id: "00000000-0000-4000-8000-000000000309", name: "case", value: "local", enabled: true }] },
+  };
   api.contract.responses = [
     { kind: "componentRef", id: "00000000-0000-4000-8000-000000000304", componentId: response.id, expectedKind: "response" },
     {
@@ -177,12 +184,17 @@ describe("asset cloning", () => {
     const clonedResponseId = mapped(result.idMap, "component", componentIds.response, source.sourceProjectId);
     const clonedExampleId = mapped(result.idMap, "component", componentIds.example, source.sourceProjectId);
     const clonedSecretId = mapped(result.idMap, "secretRef", "shared-secret", source.sourceProjectId);
+    const clonedCaseSecretId = mapped(result.idMap, "secretRef", "case-secret", source.sourceProjectId);
     const clonedWorkflowId = mapped(result.idMap, "workflow", "workflow-fixture", source.sourceProjectId);
     const clonedNodeOneId = mapped(result.idMap, "workflowNode", "node-api-one", "workflow-fixture");
     const clonedNodeTwoId = mapped(result.idMap, "workflowNode", "node-api-two", "workflow-fixture");
     const clonedEdgeId = mapped(result.idMap, "workflowEdge", "edge-one", "workflow-fixture");
     const clonedApi = cloned.collections[0].apis[0];
     const clonedRequest = clonedApi.contract.request;
+    const clonedCaseRequest = clonedApi.cases[0].requestOverride;
+    if (!clonedCaseRequest || clonedCaseRequest.protocol !== "http") {
+      throw new Error("The cloned case override must preserve the HTTP request.");
+    }
 
     expect(cloned.id).not.toBe(source.project.id);
     expect(cloned.collections[0].id).toBe(clonedCollectionId);
@@ -197,6 +209,14 @@ describe("asset cloning", () => {
     expect(clonedApi.cases.map((testCase) => testCase.scope)).toEqual(["base", "local"]);
     expect(clonedApi.cases[0].preOperations[0].id).not.toBe("case-operation");
     expect(clonedApi.cases[0].assertions[0].id).not.toBe("case-assertion");
+    expect(clonedCaseRequest.path).toBe("/case-only");
+    expect(clonedCaseRequest.pathParams[0]?.id).not.toBe("00000000-0000-4000-8000-000000000308");
+    expect(clonedCaseRequest.pathParams[0]).toMatchObject({ componentId: clonedParameterId });
+    expect(clonedCaseRequest.auth).toEqual({ kind: "bearer", token: { id: clonedCaseSecretId, policy: "test-auto" } });
+    expect(clonedCaseRequest.body).toMatchObject({
+      kind: "urlencoded",
+      fields: [{ id: expect.not.stringMatching("00000000-0000-4000-8000-000000000309") }],
+    });
     expect(clonedSecondApiId).not.toBe(clonedApiId);
     expect(clonedSecondCaseId).not.toBe(clonedCaseId);
     expect(cloned.collections[0].apis[1].cases[0].id).toBe(clonedSecondCaseId);

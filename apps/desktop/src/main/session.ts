@@ -15,9 +15,11 @@ import {
   StressPolicySchema,
   WorkflowSchema,
   cloneProjectDefinition,
+  createProjectSnapshot,
   createProjectAssetContext,
   envChain,
   fileStorage,
+  getSourceApiRevision,
   listContractWorkspaceDefinitionFiles,
   mergedEnvVars,
   rotateProjectSecretRefs,
@@ -25,7 +27,9 @@ import {
   transitionWorkflowStatus,
   validateEnablement,
   type ApiAsset,
+  type ApiRequest,
   type ApiTestCase,
+  type DebugFieldState,
   type CloneIdFactory,
   type ComponentAsset,
   type ContractCollection,
@@ -44,6 +48,7 @@ import {
   type Workflow,
   type WorkflowStatus,
 } from "@apicc/core";
+import { ApiRequestSchema } from "@apicc/core/schema";
 import {
   ApiLocatorSchema,
   ApiParentLocatorSchema,
@@ -122,6 +127,9 @@ export interface SessionView {
   revision: string;
 }
 
+/** Main-process-only snapshot used to bind async draft credential checks to their queued write. */
+export interface DraftWriteContext { readonly root: string; readonly revision: string; readonly generation: number }
+
 interface ActiveSession extends SessionView {}
 interface MutationResult<T> { value: T; deletions?: string[]; noCommit?: true }
 
@@ -136,6 +144,18 @@ function parseLocator<T>(schema: { safeParse(value: unknown): { success: boolean
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new TypeError(`Invalid ${label} locator: ${parsed.error?.message ?? "shape mismatch"}`);
   return parsed.data as T;
+}
+
+function containsKnownCredentialLiteral(value: unknown, literals: readonly string[]): boolean {
+  if (literals.length === 0) return false;
+  if (typeof value === "string") return literals.some((literal) => literal.length > 0 && value.includes(literal));
+  if (Array.isArray(value)) return value.some((item) => containsKnownCredentialLiteral(item, literals));
+  if (typeof value !== "object" || value === null) return false;
+  return Object.entries(value).some(([key, item]) => {
+    if (key === "parameters" && typeof item === "object" && item !== null && !Array.isArray(item)
+      && Object.keys(item).some((parameter) => literals.some((literal) => literal.length > 0 && parameter.includes(literal)))) return true;
+    return containsKnownCredentialLiteral(item, literals);
+  });
 }
 
 function recordOfStrings(value: unknown, label: string): Record<string, string> {
@@ -535,6 +555,7 @@ export function createSession(options: SessionOptions = {}) {
   const storage = options.storage ?? fileStorage;
   const newId = options.newId ?? (() => randomUUID());
   let active: ActiveSession | null = null;
+  let activeContextGeneration = 0;
   let queue: Promise<unknown> = Promise.resolve();
 
   function enqueue<T>(action: () => Promise<T> | T): Promise<T> {
@@ -546,6 +567,18 @@ export function createSession(options: SessionOptions = {}) {
   function requireActive(): ActiveSession {
     if (!active) throw new Error("尚未打开工作区");
     return active;
+  }
+
+  function captureDraftWriteContext(): DraftWriteContext {
+    const current = requireActive();
+    return Object.freeze({ root: current.root, revision: current.revision, generation: activeContextGeneration });
+  }
+
+  function assertDraftWriteContext(context: DraftWriteContext, current = active): void {
+    if (!current || current.root !== context.root || current.revision !== context.revision
+      || activeContextGeneration !== context.generation) {
+      throw new Error("工作区上下文已更改，拒绝保存调试草稿。");
+    }
   }
 
   function checkedWorkspace(workspace: ContractWorkspace, workspaceId: string): void {
@@ -651,6 +684,7 @@ function setContainerOperations(
         revision: loaded.revision,
       };
       active = next;
+      activeContextGeneration += 1;
       return publicView(next);
     });
   }
@@ -669,6 +703,7 @@ function setContainerOperations(
       const saved = await storage.save(root, workspace, { expectedRevision: "empty", deletions: [] });
       const next: ActiveSession = { root, workspace, problems: [], readOnly: false, revision: saved.revision };
       active = next;
+      activeContextGeneration += 1;
       return publicView(next);
     });
   }
@@ -890,10 +925,20 @@ function setContainerOperations(
     });
   }
 
-  async function saveApi(locatorValue: ApiLocator, inputValue: ApiAsset): Promise<ApiAsset> {
+  async function saveApi(
+    locatorValue: ApiLocator,
+    inputValue: ApiAsset,
+    knownCredentialLiterals: readonly string[] = [],
+    draftWriteContext?: DraftWriteContext,
+    expectedSourceApiRevision?: string,
+  ): Promise<{ api: ApiAsset; sourceApiRevision: string; sourceProjectRevision: string }> {
     const locator = parseLocator(ApiLocatorSchema, locatorValue, "API");
     const input = ApiAssetSchema.parse(clone(inputValue));
     return mutate((candidate, current) => {
+      if (draftWriteContext) assertDraftWriteContext(draftWriteContext, current);
+      if (containsKnownCredentialLiteral(input, knownCredentialLiterals)) {
+        throw new Error("拒绝保存包含已知凭据字面值的接口资源。");
+      }
       const located = locateApiInCandidate(candidate, {
         workspaceId: locator.workspaceId,
         groupId: locator.groupId,
@@ -902,6 +947,12 @@ function setContainerOperations(
         folderIds: locator.folderIds,
         apiId: locator.apiId,
       });
+      if (expectedSourceApiRevision) {
+        const actualRevision = getSourceApiRevision(located.api);
+        if (actualRevision !== expectedSourceApiRevision) {
+          throw new Error(`API source revision conflict at ${JSON.stringify(locator)}: expected ${expectedSourceApiRevision}, received ${actualRevision}`);
+        }
+      }
       if (input.contract.id !== locator.apiId) throw new Error("API contract.id must match its locator");
       const removed = located.api.cases.filter((before) => !input.cases.some((after) => after.id === before.id && after.scope === before.scope));
       const removedLogicalCases = new Set(removed.map((testCase) => testCase.id).filter((caseId) => !input.cases.some((item) => item.id === caseId)));
@@ -926,15 +977,35 @@ function setContainerOperations(
       const beforeFiles = listContractWorkspaceDefinitionFiles(current.workspace);
       const afterFiles = listContractWorkspaceDefinitionFiles(candidate);
       const removedCaseFiles = removed.map((testCase) => casePath(locator, testCase)).filter((file) => beforeFiles.includes(file) && !afterFiles.includes(file));
-      return { value: input, deletions: removedCaseFiles };
+      return {
+        value: {
+          api: input,
+          sourceApiRevision: getSourceApiRevision(input),
+          sourceProjectRevision: createProjectSnapshot(located.project).definitionRevision,
+        },
+        deletions: removedCaseFiles,
+      };
     });
   }
 
-  async function saveCase(locatorValue: CaseLocator, inputValue: ApiTestCase): Promise<ApiTestCase> {
+  async function saveCase(
+    locatorValue: CaseLocator,
+    inputValue: ApiTestCase,
+    expectedSourceApiRevision: string,
+    knownCredentialLiterals: readonly string[] = [],
+    draftWriteContext?: DraftWriteContext,
+    fields: readonly DebugFieldState[] = [],
+  ): Promise<{ testCase: ApiTestCase; sourceApiRevision: string }> {
     const locator = parseLocator(CaseLocatorSchema, locatorValue, "case");
     const input = ApiTestCaseSchema.parse(clone(inputValue));
-    return mutate((candidate) => {
+    if (!expectedSourceApiRevision) throw new Error("API source revision is required to save a case");
+    return mutate((candidate, current) => {
+      if (draftWriteContext) assertDraftWriteContext(draftWriteContext, current);
       if (input.id !== locator.caseId || input.scope !== locator.scope) throw new Error("Case id and scope must match its locator");
+      if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存用例。");
+      if (containsKnownCredentialLiteral(input, knownCredentialLiterals)) {
+        throw new Error("拒绝保存包含已知凭据字面值的用例。");
+      }
       const located = locateApiInCandidate(candidate, {
         workspaceId: locator.workspaceId,
         groupId: locator.groupId,
@@ -943,10 +1014,122 @@ function setContainerOperations(
         folderIds: locator.folderIds,
         apiId: locator.apiId,
       });
+      const actualRevision = getSourceApiRevision(located.api);
+      if (actualRevision !== expectedSourceApiRevision) {
+        throw new Error(`API source revision conflict at ${JSON.stringify(locator)}: expected ${expectedSourceApiRevision}, received ${actualRevision}`);
+      }
       const index = located.api.cases.findIndex((testCase) => testCase.id === locator.caseId && testCase.scope === locator.scope);
       if (index < 0) located.api.cases.push(input);
       else located.api.cases[index] = input;
-      return { value: input };
+      return { value: { testCase: input, sourceApiRevision: getSourceApiRevision(located.api) } };
+    });
+  }
+
+  async function saveRequestDraft(
+    locatorValue: ApiLocator,
+    requestValue: ApiRequest,
+    expectedSourceApiRevision: string,
+    fields: readonly DebugFieldState[] = [],
+    knownCredentialLiterals: readonly string[] = [],
+    draftWriteContext?: DraftWriteContext,
+  ): Promise<{ request: ApiRequest; sourceApiRevision: string }> {
+    const locator = parseLocator(ApiLocatorSchema, locatorValue, "API");
+    const request = ApiRequestSchema.parse(clone(requestValue));
+    if (!expectedSourceApiRevision) throw new Error("API source revision is required to save a request draft");
+    return mutate((candidate, current) => {
+      if (draftWriteContext) assertDraftWriteContext(draftWriteContext, current);
+      const located = locateApiInCandidate(candidate, locator);
+      const actualRevision = getSourceApiRevision(located.api);
+      if (actualRevision !== expectedSourceApiRevision) {
+        throw new Error(`API source revision conflict at ${JSON.stringify(locator)}: expected ${expectedSourceApiRevision}, received ${actualRevision}`);
+      }
+      if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存请求草稿。");
+      if (containsKnownCredentialLiteral(request, knownCredentialLiterals)) {
+        throw new Error("拒绝保存包含已知凭据字面值的请求草稿。");
+      }
+      const incompatibleCase = located.api.cases.find((testCase) =>
+        testCase.requestOverride && testCase.requestOverride.protocol !== request.protocol,
+      );
+      if (incompatibleCase) {
+        const caseLocator: CaseLocator = { ...locator, caseId: incompatibleCase.id, scope: incompatibleCase.scope };
+        throw new Error(`Request protocol is incompatible with saved case override at ${JSON.stringify(caseLocator)}`);
+      }
+      const updated = ApiAssetSchema.parse({
+        ...located.api,
+        contract: { ...located.api.contract, request },
+      });
+      const container = locator.folderIds.length
+        ? findFolder(located.collection, locator.folderIds)?.folder
+        : located.collection;
+      if (!container) throw new Error(`API parent not found: ${JSON.stringify(locator)}`);
+      const index = container.apis.findIndex((item) => item.contract.id === locator.apiId);
+      if (index < 0) throw new Error(`API not found at complete locator: ${JSON.stringify(locator)}`);
+      container.apis[index] = updated;
+      return { value: { request: updated.contract.request, sourceApiRevision: getSourceApiRevision(updated) } };
+    });
+  }
+
+  async function saveDraftCase(
+    locatorValue: CaseLocator,
+    inputValue: ApiTestCase,
+    expectedSourceApiRevision: string,
+    deletedCasesValue: readonly { caseId: string; scope: string }[] = [],
+    knownCredentialLiterals: readonly string[] = [],
+    draftWriteContext?: DraftWriteContext,
+    fields: readonly DebugFieldState[] = [],
+  ): Promise<{ testCase: ApiTestCase; sourceApiRevision: string }> {
+    const locator = parseLocator(CaseLocatorSchema, locatorValue, "case");
+    const input = ApiTestCaseSchema.parse(clone(inputValue));
+    const deletedCases = deletedCasesValue.map((identity) => ({ caseId: identity.caseId, scope: identity.scope }));
+    if (deletedCases.some((identity) => !identity.caseId || !identity.scope)
+      || new Set(deletedCases.map((identity) => `${identity.caseId}\0${identity.scope}`)).size !== deletedCases.length) {
+      throw new TypeError("Invalid physical case deletion list.");
+    }
+    if (!expectedSourceApiRevision) throw new Error("API source revision is required to save a case draft");
+    return mutate((candidate, current) => {
+      if (draftWriteContext) assertDraftWriteContext(draftWriteContext, current);
+      if (input.id !== locator.caseId || input.scope !== locator.scope) throw new Error("Case id and scope must match its locator");
+      const located = locateApiInCandidate(candidate, locator);
+      const actualRevision = getSourceApiRevision(located.api);
+      if (actualRevision !== expectedSourceApiRevision) {
+        throw new Error(`API source revision conflict at ${JSON.stringify(locator)}: expected ${expectedSourceApiRevision}, received ${actualRevision}`);
+      }
+      if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存用例草稿。");
+      if (containsKnownCredentialLiteral(input, knownCredentialLiterals)) {
+        throw new Error("拒绝保存包含已知凭据字面值的用例草稿。");
+      }
+      if (deletedCases.some((identity) => identity.caseId === locator.caseId && identity.scope === locator.scope)) {
+        throw new Error("不能同时保存并删除同一物理用例。");
+      }
+      const removalTargets = deletedCases.map((identity) => {
+        const target = located.api.cases.find((item) => item.id === identity.caseId && item.scope === identity.scope);
+        if (!target) throw new Error(`Case version not found: ${identity.caseId} / ${identity.scope}`);
+        return target;
+      });
+      const deletedKeys = new Set(deletedCases.map((identity) => `${identity.caseId}\0${identity.scope}`));
+      const nextCases = located.api.cases.filter((item) =>
+        !deletedKeys.has(`${item.id}\0${item.scope}`)
+        && !(item.id === locator.caseId && item.scope === locator.scope),
+      );
+      nextCases.push(input);
+      for (const caseId of new Set(removalTargets.map((item) => item.id))) {
+        if (!nextCases.some((item) => item.id === caseId)) {
+          guardWorkflowReferences(located.project, new Set([locator.apiId]), caseId);
+        }
+      }
+      const updated = ApiAssetSchema.parse({
+        ...located.api,
+        cases: nextCases,
+      });
+      const container = locator.folderIds.length
+        ? findFolder(located.collection, locator.folderIds)?.folder
+        : located.collection;
+      if (!container) throw new Error(`API parent not found: ${JSON.stringify(locator)}`);
+      const index = container.apis.findIndex((item) => item.contract.id === locator.apiId);
+      if (index < 0) throw new Error(`API not found at complete locator: ${JSON.stringify(locator)}`);
+      container.apis[index] = updated;
+      const deletions = removalTargets.flatMap((target) => knownExactFile(current.workspace, casePath(locator, target)));
+      return { value: { testCase: input, sourceApiRevision: getSourceApiRevision(updated) }, ...(deletions.length ? { deletions } : {}) };
     });
   }
 
@@ -1477,6 +1660,8 @@ function setContainerOperations(
     get workspace(): ContractWorkspace | null { return active ? clone(active.workspace) : null; },
     get readOnly(): boolean { return active?.readOnly ?? false; },
     get revision(): string | null { return active?.revision ?? null; },
+    captureDraftWriteContext,
+    assertDraftWriteContext,
     open,
     create,
     ensureDefaultGroup,
@@ -1499,6 +1684,8 @@ function setContainerOperations(
     referencesTo,
     saveApi,
     saveCase,
+    saveRequestDraft,
+    saveDraftCase,
     deleteCase,
     createModel,
     saveModel,

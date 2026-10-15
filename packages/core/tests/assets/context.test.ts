@@ -88,6 +88,49 @@ describe("ProjectAssetContext", () => {
     expect(context.checkGate("execution", asset.contract.id)).toMatchObject({ ok: false });
   });
 
+  it("uses the selected case request for execution gates while managing every stored reference", () => {
+    const asset = apiAsset("00000000-0000-4000-8000-000000000161");
+    const defaultRequest = asset.contract.request;
+    if (defaultRequest.protocol !== "http") throw new Error("Fixture must use HTTP.");
+    defaultRequest.query = [ParameterBindingSchema.parse(parameterReference("00000000-0000-4000-8000-000000000199", "00000000-0000-4000-8000-000000000198"))];
+    defaultRequest.headers = [
+      ParameterBindingSchema.parse({ kind: "inline", id: "00000000-0000-4000-8000-000000000196", name: "X-Request", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "first" }),
+      ParameterBindingSchema.parse({ kind: "inline", id: "00000000-0000-4000-8000-000000000197", name: "x-request", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "second" }),
+    ];
+    asset.cases = [{
+      id: "case-clean-effective-request",
+      name: "clean case",
+      scope: "local",
+      parameters: {},
+      preOperations: [],
+      postOperations: [],
+      assertions: [],
+      requestOverride: { ...defaultRequest, query: [], headers: [], body: { kind: "none" } },
+    }];
+    asset.cases.push({
+      ...asset.cases[0]!,
+      id: "case-with-separate-bad-reference",
+      scope: "unselected",
+      requestOverride: { ...defaultRequest, path: "/unselected", body: { kind: "none" } },
+    });
+    const context = createProjectAssetContext({ projectId, assets: [asset], models: [], components: [] });
+
+    expect(context.checkGate("execution", asset.contract.id).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ASSET_REFERENCE_MISSING", path: "contract.request.query[0].componentId" }),
+    ]));
+    expect(context.checkGate("execution", asset.contract.id, asset.cases[0]!.requestOverride).ok).toBe(true);
+    expect(context.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ASSET_REFERENCE_MISSING", path: "contract.request.query[0].componentId" }),
+      expect.objectContaining({ code: "ASSET_REFERENCE_MISSING", path: "cases[1].requestOverride.query[0].componentId" }),
+      expect.objectContaining({ code: "ASSET_PARAMETER_NAME_DUPLICATE", path: "contract.request.headers[1].name" }),
+      expect.objectContaining({ code: "ASSET_PARAMETER_NAME_DUPLICATE", path: "cases[1].requestOverride.headers[1].name" }),
+    ]));
+    expect(context.checkGate("publish", asset.contract.id).diagnostics).toContainEqual(expect.objectContaining({
+      code: "ASSET_PARAMETER_NAME_DUPLICATE",
+      path: "cases[1].requestOverride.headers[1].name",
+    }));
+  });
+
   it("diagnoses effective parameter and response design conflicts without rejecting cross-location names", () => {
     const asset = apiAsset("00000000-0000-4000-8000-000000000121");
     const request = asset.contract.request;

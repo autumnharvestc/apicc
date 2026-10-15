@@ -58,7 +58,7 @@ async function mountCasePanel(props: Record<string, unknown> = {}, withDebug = f
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, editor, cases, debug, workspace };
+  return { wrapper, api, editor, cases, debug, workspace, apiLocator: apiNode.locator };
 }
 
 function deferred<T>() {
@@ -99,56 +99,219 @@ describe("CasePanel", () => {
     expect(cases.selectedCaseId).toBe(editor.api!.cases[1]!.id);
   });
 
-  it("保存成功路径：改名后 case-save 委托 editor.save 持久化并复位 dirty（任务 5 待办补课）", async () => {
-    const { wrapper, editor } = await mountCasePanel();
+  it("保存成功路径：改名后 case-save 经 caseDraftSave 持久化并复位 dirty，不改默认请求", async () => {
+    const { wrapper, api, editor, apiLocator } = await mountCasePanel();
+    const defaultRequest = JSON.parse(JSON.stringify(editor.api!.contract.request));
     await wrapper.find('[data-testid="case-add"]').trigger("click");
     await wrapper.findAll('[data-testid="case-name"]')[1]!.setValue("登录用例");
     expect(editor.dirty).toBe(true);
-    const save = editor.save.bind(editor);
-    let savePromise: ReturnType<typeof save> | null = null;
-    editor.save = () => (savePromise = save());
+    const fullAssetSave = vi.spyOn(api, "apiSave");
+    const originalCaseDraftSave = api.caseDraftSave.bind(api);
+    let savePromise: ReturnType<typeof api.caseDraftSave> | null = null;
+    let savedLocator: Parameters<typeof api.caseDraftSave>[0] | null = null;
+    let savedCase: Parameters<typeof api.caseDraftSave>[1] | null = null;
+    api.caseDraftSave = (locator, testCase, expectedRevision, deletedCases, fields) => {
+      savedLocator = locator;
+      savedCase = testCase;
+      savePromise = originalCaseDraftSave(locator, testCase, expectedRevision, deletedCases, fields);
+      return savePromise;
+    };
     await wrapper.find('[data-testid="case-save"]').trigger("click");
-    expect(savePromise).not.toBeNull();
+    if (!savePromise || !savedLocator || !savedCase) throw new Error("Case save did not invoke the real CaseDraftSave boundary");
     await savePromise;
     await flushPromises();
     expect(editor.dirty).toBe(false);
     expect(editor.api!.cases[1]!.name).toBe("登录用例");
+    expect(savedLocator).toMatchObject({ ...apiLocator, caseId: editor.api!.cases[1]!.id, scope: editor.api!.cases[1]!.scope });
+    expect(savedCase).toMatchObject({ name: "登录用例" });
+    expect(fullAssetSave).not.toHaveBeenCalled();
+    const persisted = await api.apiGet(apiLocator);
+    expect(persisted.api.contract.request).toEqual(defaultRequest);
+    expect(persisted.api.cases[1]!.name).toBe("登录用例");
   });
 
   it("保存链路拒绝时经 reportError 上报（任务 8：case-save 补错误通道）", async () => {
     const errors: unknown[] = [];
-    const { wrapper, api } = await mountCasePanel({ reportError: (e: unknown) => { errors.push(e); } });
-    api.apiSave = async () => { throw new Error("保存失败（测试注入）"); };
+    const { wrapper, api, editor, apiLocator } = await mountCasePanel({ reportError: (e: unknown) => { errors.push(e); } });
+    const defaultRequest = JSON.parse(JSON.stringify(editor.api!.contract.request));
+    editor.api!.cases[0]!.name = "尚未保存的名称";
+    expect(editor.dirty).toBe(true);
+    const fullAssetSave = vi.spyOn(api, "apiSave");
+    api.caseDraftSave = async () => { throw new Error("保存失败（测试注入）"); };
     await wrapper.find('[data-testid="case-save"]').trigger("click");
     await flushPromises();
     expect(errors).toHaveLength(1);
     expect((errors[0] as Error).message).toBe("保存失败（测试注入）");
+    expect(editor.dirty).toBe(true);
+    expect(fullAssetSave).not.toHaveBeenCalled();
+    const persisted = await api.apiGet(apiLocator);
+    expect(persisted.api.contract.request).toEqual(defaultRequest);
+    expect(persisted.api.cases[0]!.name).not.toBe("尚未保存的名称");
   });
 
-  it("captures root before the case-run save await and refuses to send after root changes", async () => {
-    const { wrapper, api, editor, debug, workspace } = await mountCasePanel({}, true);
+  it("applies the current debug draft only to the selected saved case and blocks pending fields", async () => {
+    const errors: unknown[] = [];
+    const { wrapper, api, editor, cases, debug, workspace, apiLocator } = await mountCasePanel({ reportError: (e: unknown) => { errors.push(e); } }, true);
+    if (!debug) throw new Error("Expected debug store in this case-draft fixture");
+    const caseDraftSaveCalls: unknown[][] = [];
+    const caseDraftSaveTasks: Promise<unknown>[] = [];
+    const caseDraftSaveResults: unknown[] = [];
+    const originalCaseDraftSave = api.caseDraftSave.bind(api);
+    api.caseDraftSave = async (...args) => {
+      caseDraftSaveCalls.push(args);
+      const task = originalCaseDraftSave(...args);
+      caseDraftSaveTasks.push(task);
+      const result = await task;
+      caseDraftSaveResults.push(result);
+      return result;
+    };
+    const targetBefore = JSON.parse(JSON.stringify(editor.api!.cases[0]!)) as NonNullable<typeof editor.api>["cases"][number];
+    const other = cases.addCase({ name: "other case", scope: "base" });
+    await cases.save();
+    cases.select(targetBefore.id, targetBefore.scope);
+    const formalRequestBefore = await api.apiGet(apiLocator);
+
+    const draftRequest = JSON.parse(JSON.stringify(editor.api!.contract.request)) as NonNullable<typeof editor.api>["contract"]["request"];
+    draftRequest.path = "/needs-input";
+    const explicitSettings = { headersTimeoutMs: 4321, followRedirects: false, maxRedirects: 1 };
+    const invocation = {
+      mode: "request" as const,
+      locator: apiLocator,
+      request: draftRequest,
+      parameters: { account: "[REDACTED]", region: "qa" },
+      fields: [
+        { path: "request.path", status: "redacted" as const, needsInput: true },
+        { path: "parameters.account", status: "redacted" as const, needsInput: true },
+      ],
+      settings: explicitSettings,
+    };
+    expect(debug.applyRestore(invocation, true, editor)).toBe(true);
+    const sourceGeneration = editor.sessions[editor.activeKey!]!.generation;
+    expect(debug.restoredTargetGeneration).toBe(sourceGeneration);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      await wrapper.find('[data-testid="case-apply-debug-draft"]').trigger("click");
+      await flushPromises();
+      expect(confirmSpy).toHaveBeenCalledOnce();
+      expect(confirmSpy.mock.calls[0]?.[0]).toContain(targetBefore.name);
+      const target = editor.api!.cases.find((testCase) => testCase.id === targetBefore.id && testCase.scope === targetBefore.scope)!;
+      expect(target).toMatchObject({
+        id: targetBefore.id,
+        scope: targetBefore.scope,
+        name: targetBefore.name,
+        assertions: targetBefore.assertions,
+        preOperations: targetBefore.preOperations,
+        postOperations: targetBefore.postOperations,
+        requestOverride: draftRequest,
+        parameters: invocation.parameters,
+        requestSettingsOverride: explicitSettings,
+      });
+      expect(editor.api!.cases.find((testCase) => testCase.id === other.id && testCase.scope === other.scope)).toEqual(other);
+      const formalBeforeSave = await api.apiGet(apiLocator);
+      expect(formalBeforeSave.api.contract.request).toEqual(formalRequestBefore.api.contract.request);
+      expect(formalBeforeSave.api.cases.find((testCase) => testCase.id === targetBefore.id && testCase.scope === targetBefore.scope)).toEqual(targetBefore);
+
+      debug.repairRestoredField("request.path", "/source-repaired", editor);
+      expect(target.requestOverride?.path).toBe("/needs-input");
+
+      await wrapper.find('[data-testid="case-save"]').trigger("click");
+      await flushPromises();
+      const firstPendingSave = caseDraftSaveTasks.at(-1);
+      if (!firstPendingSave) throw new Error("Case save did not invoke CaseDraftSave for the pending request field");
+      await expect(firstPendingSave).rejects.toThrow(/complete|补齐|needs input/i);
+      await flushPromises();
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toMatch(/补齐|pending|complete/i);
+
+      await wrapper.get('[data-testid="case-request-override-json"]').setValue(JSON.stringify({ ...target.requestOverride, path: "/case-repaired" }));
+      await wrapper.find('[data-testid="case-save"]').trigger("click");
+      await flushPromises();
+      const secondPendingSave = caseDraftSaveTasks.at(-1);
+      if (!secondPendingSave) throw new Error("Case save did not invoke CaseDraftSave for the pending parameter field");
+      await expect(secondPendingSave).rejects.toThrow(/complete|补齐|needs input/i);
+      await flushPromises();
+      expect(errors).toHaveLength(2);
+      expect((errors[1] as Error).message).toMatch(/补齐|pending|complete/i);
+
+      target.parameters.account = "case-account";
+      expect(target).toMatchObject({ requestOverride: { ...draftRequest, path: "/case-repaired" }, parameters: { account: "case-account", region: "qa" }, requestSettingsOverride: explicitSettings });
+      await wrapper.find('[data-testid="case-save"]').trigger("click");
+      await flushPromises();
+      const finalSave = caseDraftSaveTasks.at(-1);
+      if (!finalSave) throw new Error("Case save did not invoke CaseDraftSave after repairing both fields");
+      await expect(finalSave).resolves.toMatchObject({ testCase: { id: targetBefore.id } });
+      await flushPromises();
+      expect(errors).toHaveLength(2);
+      expect(caseDraftSaveCalls.at(-1)?.[0]).toMatchObject({ caseId: targetBefore.id, scope: targetBefore.scope });
+      expect(caseDraftSaveCalls.at(-1)?.[1]).toMatchObject({ requestOverride: { ...draftRequest, path: "/case-repaired" }, parameters: { account: "case-account", region: "qa" }, requestSettingsOverride: explicitSettings });
+      expect(caseDraftSaveResults.at(-1)).toMatchObject({ testCase: { id: targetBefore.id, requestOverride: { ...draftRequest, path: "/case-repaired" }, parameters: { account: "case-account", region: "qa" }, requestSettingsOverride: explicitSettings } });
+      const formalAfterSave = await api.apiGet(apiLocator);
+      expect(formalAfterSave.api.contract.request).toEqual(formalRequestBefore.api.contract.request);
+      expect(formalAfterSave.api.cases.find((testCase) => testCase.id === targetBefore.id && testCase.scope === targetBefore.scope)).toMatchObject({
+        id: targetBefore.id,
+        scope: targetBefore.scope,
+        requestOverride: { ...draftRequest, path: "/case-repaired" },
+        parameters: { account: "case-account", region: "qa" },
+        requestSettingsOverride: explicitSettings,
+      });
+      expect(formalAfterSave.api.cases.find((testCase) => testCase.id === other.id && testCase.scope === other.scope)).toEqual(other);
+
+      const projectLocator = { workspaceId: apiLocator.workspaceId, groupId: apiLocator.groupId, projectId: apiLocator.projectId };
+      editor.evictProject(projectLocator, workspace.root);
+      await editor.load(apiLocator);
+      expect(editor.sessions[editor.activeKey!]!.generation).not.toBe(sourceGeneration);
+      cases.select(targetBefore.id, targetBefore.scope);
+      const reloadedTarget = editor.api!.cases.find((testCase) => testCase.id === targetBefore.id && testCase.scope === targetBefore.scope)!;
+      await wrapper.find('[data-testid="case-apply-debug-draft"]').trigger("click");
+      await flushPromises();
+      expect(reloadedTarget.requestOverride).toEqual(formalRequestBefore.api.contract.request);
+      await wrapper.find('[data-testid="case-save"]').trigger("click");
+      await flushPromises();
+      expect(errors).toHaveLength(2);
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("captures the full case target before debugStart and refuses to wait after root changes without auto-saving", async () => {
+    const { wrapper, api, editor, debug, workspace, apiLocator } = await mountCasePanel({}, true);
     if (!debug) throw new Error("Expected debug store in this case-run fixture");
     editor.api!.documentation = "dirty before run";
-    const saveStarted = deferred<void>();
-    const saveGate = deferred<void>();
-    const originalSave = api.apiSave.bind(api);
-    api.apiSave = async (locator, asset) => {
-      saveStarted.resolve();
-      await saveGate.promise;
-      return originalSave(locator, asset);
+    const startStarted = deferred<void>();
+    const startGate = deferred<void>();
+    let startedInvocation: Parameters<typeof api.debugStart>[0] | null = null;
+    api.debugStart = async (invocation) => {
+      startedInvocation = invocation;
+      startStarted.resolve();
+      await startGate.promise;
+      return { runId: "late-case-run" };
     };
-    let sends = 0;
-    api.debugSend = async () => {
-      sends += 1;
-      throw new Error("debug send reached after root switch");
-    };
+    const debugWait = vi.spyOn(api, "debugWait");
+    const debugCancel = vi.spyOn(api, "debugCancel");
+    const fullAssetSave = vi.spyOn(api, "apiSave");
+    const caseDraftSave = vi.spyOn(api, "caseDraftSave");
     const caseId = editor.api!.cases[0]!.id;
+    const scope = editor.api!.cases[0]!.scope;
+    const initialRoot = workspace.root;
     await wrapper.get(`[data-testid="case-run-${caseId}"]`).trigger("click");
-    await saveStarted.promise;
-    expect(debug.sending).toBe(true); // case-run owns the whole save+send operation, not a pre-save detached from identity
-    workspace.root = `${workspace.root}-copied`;
-    saveGate.resolve();
+    await startStarted.promise;
+    if (!startedInvocation) throw new Error("Case run did not invoke DebugStart");
+    expect(debug.sending).toBe(true);
+    expect(startedInvocation).toMatchObject({
+      mode: "case",
+      locator: apiLocator,
+      case: { ...apiLocator, caseId, scope },
+    });
+    expect(fullAssetSave).not.toHaveBeenCalled();
+    expect(caseDraftSave).not.toHaveBeenCalled();
+    expect(workspace.root).toBe(initialRoot);
+    workspace.root = `${initialRoot}-copied`;
+    startGate.resolve();
     await vi.waitFor(() => expect(debug.sending).toBe(false));
-    expect(sends).toBe(0);
+    expect(debugCancel).toHaveBeenCalledWith({ runId: "late-case-run" });
+    expect(debugWait).not.toHaveBeenCalled();
+    expect(debug.activeRunId).toBeNull();
+    expect(debug.results).toEqual({});
+    expect(editor.dirty).toBe(true);
   });
 });

@@ -7,13 +7,27 @@
 // 本脚本覆盖打包产物「能起、无致命错、renderer 加载成功」三道底线，日常回归够用。
 // 前置：先执行 `pnpm -C apps/desktop dist:dir` 产出 release/win-unpacked/。
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const desktopDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-const exePath = join(desktopDir, "release", "win-unpacked", "apicc.exe");
+const args = process.argv.slice(2);
+let packageDir;
+let explicitExe;
+for (let index = 0; index < args.length; index += 1) {
+  if (args[index] === "--package-dir" && args[index + 1]) packageDir = args[++index];
+  else if (args[index] === "--exe" && args[index + 1]) explicitExe = args[++index];
+  else throw new Error(`未知或缺少参数: ${args[index]}`);
+}
+if (packageDir && explicitExe) throw new Error("--package-dir 与 --exe 不能同时使用");
+const exePath = explicitExe
+  ? explicitExe
+  : packageDir
+    ? join(packageDir, "apicc.exe")
+    : join(desktopDir, "release", "win-unpacked", "apicc.exe");
 const PRODUCT_NAME = "apicc";
 const ALIVE_WAIT_MS = 8_000;
 const CDP_TIMEOUT_MS = 20_000;
@@ -50,12 +64,27 @@ function killTree(child) {
 }
 
 if (process.platform !== "win32" || !existsSync(exePath)) {
-  console.error(`未找到打包产物 ${exePath}——请先执行 pnpm -C apps/desktop dist:dir`);
+  console.error(`未找到打包产物 ${exePath}——请先执行 Windows Electron 打包命令`);
   process.exit(1);
 }
 
+const temporaryRoot = mkdtempSync(join(tmpdir(), "apicc-smoke-dir-"));
+const privateRoots = ["profile", "workspace", "history", "credentials", "user-home"].map((name) => join(temporaryRoot, name));
+for (const root of privateRoots) mkdirSync(root, { recursive: true });
+const safeTempRoot = realpathSync(temporaryRoot);
+const systemTempRoot = realpathSync(tmpdir());
+if (dirname(safeTempRoot) !== systemTempRoot || !/^apicc-smoke-dir-[a-z0-9-]+$/i.test(safeTempRoot.slice(systemTempRoot.length + 1))) {
+  throw new Error("smoke 临时根不在预期的系统临时目录中");
+}
+for (const root of privateRoots) {
+  const resolved = realpathSync(root);
+  if (!resolved.startsWith(`${safeTempRoot}\\`)) throw new Error("smoke 私有根逃逸临时根");
+}
 const port = await pickFreePort();
-const child = spawn(exePath, [`--remote-debugging-port=${port}`], { windowsHide: true });
+const environment = { ...process.env, APICC_SMOKE_DIR: privateRoots[1], APICC_SMOKE_ISOLATED_ROOT: safeTempRoot, APICC_SMOKE_HIDE_WINDOW: "1" };
+delete environment.ELECTRON_RUN_AS_NODE;
+const child = spawn(exePath, [`--remote-debugging-port=${port}`, `--user-data-dir=${privateRoots[0]}`], { windowsHide: true, env: environment });
+const startedAt = Date.now();
 let output = "";
 child.stdout.on("data", (d) => (output += d));
 child.stderr.on("data", (d) => (output += d));
@@ -70,15 +99,7 @@ const timeout = setTimeout(() => {
 process.on("exit", () => killTree(child));
 
 try {
-  // —— 1. 存活：等待 8 秒后进程仍未退出 ——
-  await sleep(ALIVE_WAIT_MS);
-  if (child.exitCode === null && child.pid) {
-    ok(`存活 ${ALIVE_WAIT_MS / 1000}s（pid=${child.pid}，exitCode=null）`);
-  } else {
-    fail(`进程提前退出（exitCode=${child.exitCode}，signal=${child.signalCode}）`);
-  }
-
-  // —— 2. 无 FATAL：启动输出无致命错误关键字 ——
+  // —— 1. 无 FATAL：启动输出无致命错误关键字 ——
   const fatalHit = output.match(/FATAL|Cannot find module|ERR_MODULE_NOT_FOUND/gi);
   if (!fatalHit) {
     ok(`无 FATAL/模块缺失错误（输出 ${output.length} 字符）`);
@@ -110,11 +131,7 @@ try {
     if (!targets) {
       fail(`${CDP_TIMEOUT_MS / 1000}s 内未在 CDP 发现 dist-renderer 页面${cdpError ? `（${cdpError}）` : ""}`);
     } else {
-      if (String(targets.title).includes(PRODUCT_NAME)) {
-        ok(`renderer 加载成功：title="${targets.title}" url=${targets.url}`);
-      } else {
-        fail(`renderer 页 title="${targets.title}" 不含 "${PRODUCT_NAME}"`);
-      }
+      ok(`CDP 已发现 renderer 页面：url=${targets.url}`);
       // —— 4. 挂载非空：title 只证 index.html，渲染层模块求值崩溃（如 native 面误入渲染
       // bundle）会让 #app 空白而 title 照常——本检查由 2026-09-06 用户白屏报告引入。
       try {
@@ -139,6 +156,26 @@ try {
             }, 5000);
           });
         await send("Runtime.enable");
+        const titleResult = await send("Runtime.evaluate", {
+          expression: "document.title",
+          returnByValue: true,
+        });
+        const documentTitle = titleResult.result?.result?.value;
+        if (typeof documentTitle === "string" && documentTitle.toLowerCase().includes(PRODUCT_NAME.toLowerCase())) {
+          ok(`renderer 加载成功：document.title="${documentTitle}" url=${targets.url}`);
+        } else {
+          fail(`renderer document.title="${String(documentTitle ?? "")}" 不含 "${PRODUCT_NAME}"`);
+        }
+        try {
+          const window = await send("Browser.getWindowForTarget");
+          await send("Browser.setWindowBounds", { windowId: window.windowId, bounds: { windowState: "minimized" } });
+          ok("CDP 已将自动冒烟窗口最小化（windowsHide 仅隐藏进程控制台）");
+        } catch (e) {
+          fail(`CDP 窗口最小化未执行：${e instanceof Error ? e.message : String(e)}`);
+        }
+        await sleep(Math.max(0, ALIVE_WAIT_MS - (Date.now() - startedAt)));
+        if (child.exitCode === null && child.pid) ok(`存活至少 ${ALIVE_WAIT_MS / 1000}s（pid=${child.pid}，exitCode=null）`);
+        else fail(`进程提前退出（exitCode=${child.exitCode}，signal=${child.signalCode}）`);
         const r = await send("Runtime.evaluate", {
           expression: "document.querySelector('#app')?.children.length ?? -1",
           returnByValue: true,
@@ -163,4 +200,17 @@ try {
 }
 
 console.log(failures.length === 0 ? "打包冒烟全部通过" : `打包冒烟失败 ${failures.length} 项`);
+if (failures.length === 0) {
+  const resolvedTemp = realpathSync(temporaryRoot);
+  const tempStat = lstatSync(resolvedTemp);
+  if (dirname(resolvedTemp) === systemTempRoot && tempStat.isDirectory() && !tempStat.isSymbolicLink()
+    && /^apicc-smoke-dir-[a-z0-9-]+$/i.test(resolvedTemp.slice(systemTempRoot.length + 1))) {
+    rmSync(resolvedTemp, { recursive: true, force: false });
+  } else {
+    console.error(`安全检查失败，保留冒烟临时根：${temporaryRoot}`);
+    process.exit(1);
+  }
+} else {
+  console.error(`失败现场临时根保留：${temporaryRoot}`);
+}
 process.exit(failures.length === 0 ? 0 : 1);

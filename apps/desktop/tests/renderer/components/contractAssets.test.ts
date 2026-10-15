@@ -26,8 +26,9 @@ async function createEditor(current = fixture) {
   return editor;
 }
 
-async function mountRequestEditor(editor: ReturnType<typeof useEditorStore>, current = fixture, attachTo?: Element) {
-  const debug = useDebugStore(current.api, editor);
+async function mountRequestEditor(editor: ReturnType<typeof useEditorStore>, current = fixture, attachTo?: Element, debugOverride?: ReturnType<typeof useDebugStore>) {
+  vi.spyOn(current.api, "debugPickFile").mockResolvedValue({ path: "C:/fixtures/request.json", name: "request.json", size: 42 });
+  const debug = debugOverride ?? useDebugStore(current.api, editor);
   const assets = useAssetsStore(current.api, () => ({ root: current.root, readOnly: false }));
   await assets.load(current.projectLocator);
   const { i18n } = createI18nInstance();
@@ -87,6 +88,57 @@ afterEach(() => {
 });
 
 describe("Contract asset editor", () => {
+  it("saves a request-only draft from the dedicated editor action", async () => {
+    const current = await contractAssetEditorFixture(undefined, `C:/apicc-task5-request-draft-${randomUUID()}`);
+    const editor = await createEditor(current);
+    const debug = useDebugStore(current.api, editor, () => ({ root: current.root, readOnly: false }));
+    const wrapper = await mountRequestEditor(editor, current, undefined, debug);
+    const casesBefore = JSON.parse(JSON.stringify(editor.api!.cases)) as unknown[];
+    const saveDraft = vi.spyOn(editor, "saveRequestDraft");
+    const saveApiDraft = vi.spyOn(current.api, "apiRequestDraftSave");
+    const pathInput = wrapper.findAllComponents({ name: "AInput" })
+      .find((component) => component.attributes("data-testid") === "editor-path");
+    if (!pathInput) throw new Error("Request path input is missing");
+
+    pathInput.vm.$emit("update:value", "/request-draft-only");
+    await flushPromises();
+    expect(editor.api!.contract.request.path).toBe("/request-draft-only");
+    await wrapper.get('[data-testid="save-request-btn"]').trigger("click");
+    await flushPromises();
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="save-feedback"]').exists()).toBe(true));
+
+    expect(saveDraft).toHaveBeenCalledOnce();
+    expect(saveApiDraft).toHaveBeenCalledOnce();
+    expect(saveApiDraft.mock.calls[0]?.[1].path).toBe("/request-draft-only");
+    expect(wrapper.find('[data-testid="save-error"]').exists()).toBe(false);
+    const persisted = await current.api.apiGet(current.apiLocator);
+    expect(persisted.api.contract.request.path).toBe("/request-draft-only");
+    expect(persisted.api.cases).toEqual(casesBefore);
+
+    const pendingRequest = JSON.parse(JSON.stringify(editor.api!.contract.request)) as NonNullable<typeof editor.api>["contract"]["request"];
+    pendingRequest.path = "/needs-input";
+    expect(debug.applyRestore({
+      mode: "request",
+      locator: current.apiLocator,
+      request: pendingRequest,
+      parameters: {},
+      fields: [{ path: "request.path", status: "redacted", needsInput: true }],
+    }, true, editor)).toBe(true);
+    await flushPromises();
+    expect((wrapper.get('[data-testid="save-request-btn"]').element as HTMLButtonElement).disabled).toBe(true);
+    const sourceGeneration = editor.sessions[editor.activeKey!]!.generation;
+    editor.evictProject(current.projectLocator, current.root);
+    await editor.load(current.apiLocator);
+    expect(editor.sessions[editor.activeKey!]!.generation).not.toBe(sourceGeneration);
+    await flushPromises();
+    expect((wrapper.get('[data-testid="save-request-btn"]').element as HTMLButtonElement).disabled).toBe(false);
+    saveDraft.mockClear();
+    await wrapper.get('[data-testid="save-request-btn"]').trigger("click");
+    await vi.waitFor(() => expect(saveDraft).toHaveBeenCalledOnce());
+    expect(saveDraft).toHaveBeenCalledWith([]);
+    await saveDraft.mock.results[0]!.value;
+  });
+
   it("edits inline parameter schema and required at all four locations and persists them", async () => {
     const current = await contractAssetEditorFixture(undefined, `C:/apicc-task10b-parameters-${randomUUID()}`);
     const editor = await createEditor(current);
@@ -168,7 +220,8 @@ describe("Contract asset editor", () => {
     if (entries.kind !== "multipart") throw new Error("Multipart editor did not create multipart body");
     const index = entries.entries.length - 1;
     await wrapper.get(`[data-testid="body-field-kind-${index}"]`).setValue("file");
-    await wrapper.get(`[data-testid="body-file-path-${index}"]`).setValue("C:/fixtures/request.json");
+    await wrapper.get(`[data-testid="body-file-pick-${index}"]`).trigger("click");
+    await flushPromises();
     await wrapper.get(`[data-testid="body-file-content-type-${index}"]`).setValue("application/json");
     expect(entries.entries[index]).toMatchObject({
       kind: "file", file: { path: "C:/fixtures/request.json" }, contentType: "application/json",
@@ -195,8 +248,8 @@ describe("Contract asset editor", () => {
       text: { kind: "text", content: "plain body" },
       graphql: { kind: "graphql", query: "query Task10b { item }", variables: '{"id":7}', operationName: "Task10b" },
       urlencoded: { kind: "urlencoded", fields: [expect.objectContaining({ name: "form-field", value: "saved-form" })] },
-      multipart: { kind: "multipart", entries: [expect.objectContaining({ kind: "file", name: "upload", file: { path: "C:/fixtures/body.bin" } })] },
-      binary: { kind: "binary", file: { path: "C:/fixtures/payload.bin" }, contentType: "application/octet-stream" },
+      multipart: { kind: "multipart", entries: [expect.objectContaining({ kind: "file", name: "upload", file: { path: "C:/fixtures/request.json" } })] },
+      binary: { kind: "binary", file: { path: "C:/fixtures/request.json" }, contentType: "application/octet-stream" },
     };
 
     for (const kind of ["none", "json", "xml", "text", "graphql", "urlencoded", "multipart", "binary"] as const) {
@@ -219,10 +272,12 @@ describe("Contract asset editor", () => {
         await wrapper.get('[data-testid="body-add-field"]').trigger("click");
         await wrapper.get('[data-testid="body-field-name"]').setValue("upload");
         await wrapper.get('[data-testid="body-field-kind-0"]').setValue("file");
-        await wrapper.get('[data-testid="body-file-path-0"]').setValue("C:/fixtures/body.bin");
+        await wrapper.get('[data-testid="body-file-pick-0"]').trigger("click");
+        await flushPromises();
         await wrapper.get('[data-testid="body-file-content-type-0"]').setValue("application/octet-stream");
       } else if (kind === "binary") {
-        await wrapper.get('[data-testid="body-binary-path"]').setValue("C:/fixtures/payload.bin");
+        await wrapper.get('[data-testid="body-binary-pick"]').trigger("click");
+        await flushPromises();
         await wrapper.get('[data-testid="body-binary-content-type"]').setValue("application/octet-stream");
       }
 
@@ -331,7 +386,7 @@ describe("Contract asset editor", () => {
       kind: "inline", id: response.id, status: "200", description: "second owner",
       headers: { "Content-Type": "second/type" }, content: {},
     }];
-    await current.api.apiSave(current.secondApiLocator, second.api);
+    await current.api.apiSave(current.secondApiLocator, second.api, second.sourceApiRevision);
     const responseEditorElement = wrapper.get('[data-testid="response-editor"]').element;
     await editor.load(current.secondApiLocator);
     await flushPromises();
@@ -376,7 +431,7 @@ describe("Contract asset editor", () => {
     await current.api.componentSave(responseLocator, seededResponse);
     const second = await current.api.apiGet(current.secondApiLocator);
     second.api.contract.responses = [{ kind: "componentRef", id: randomUUID(), componentId: responseAsset.id, expectedKind: "response" }];
-    await current.api.apiSave(current.secondApiLocator, second.api);
+    await current.api.apiSave(current.secondApiLocator, second.api, second.sourceApiRevision);
 
     const editor = await createEditor(current);
     const wrapper = await mountRequestEditor(editor, current);
@@ -720,7 +775,7 @@ describe("Contract asset editor", () => {
     expect(wrapper.find('[data-testid="credential-saved"]').exists()).toBe(true);
     const secondDetail = await current.api.apiGet(current.secondApiLocator);
     secondDetail.api.contract.request.auth = binding;
-    await current.api.apiSave(current.secondApiLocator, secondDetail.api);
+    await current.api.apiSave(current.secondApiLocator, secondDetail.api, secondDetail.sourceApiRevision);
     const firstSaved = await current.api.apiGet(current.apiLocator);
     const secondSaved = await current.api.apiGet(current.secondApiLocator);
     expect(firstSaved.api.contract.request.auth).toEqual(binding);
@@ -744,7 +799,7 @@ describe("Contract asset editor", () => {
   it("rehydrates design on same-key editor generation rebuild and saves only the current draft", async () => {
     const initial = await fixture.api.apiGet(fixture.apiLocator);
     initial.api.documentation = "persisted v1";
-    await fixture.api.apiSave(fixture.apiLocator, initial.api);
+    await fixture.api.apiSave(fixture.apiLocator, initial.api, initial.sourceApiRevision);
     const editor = await createEditor();
     const design = useDesignStore(fixture.api, editor);
     design.load();
@@ -757,7 +812,7 @@ describe("Contract asset editor", () => {
 
     const remote = await fixture.api.apiGet(fixture.apiLocator);
     remote.api.documentation = "persisted v2";
-    await fixture.api.apiSave(fixture.apiLocator, remote.api);
+    await fixture.api.apiSave(fixture.apiLocator, remote.api, remote.sourceApiRevision);
     const previousKey = editor.activeKey;
     const previousGeneration = editor.sessions[previousKey!].generation;
     editor.evictProject(fixture.projectLocator, root);
@@ -949,7 +1004,7 @@ describe("Contract asset editor", () => {
     expect(persistedRequest.protocol).toBe("http");
     if (persistedRequest.protocol !== "http") throw new Error("Seed API must use HTTP for credential editing");
     persistedRequest.auth = { kind: "bearer", token: ref };
-    await fixture.api.apiSave(fixture.apiLocator, detail.api);
+    await fixture.api.apiSave(fixture.apiLocator, detail.api, detail.sourceApiRevision);
     const editor = await createEditor();
     const request = editor.api!.contract.request;
     const wrapper = await mountRequestEditor(editor);

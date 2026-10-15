@@ -1,7 +1,8 @@
-import type { ApiAsset, ApiContract, ComponentAsset, ModelAsset } from "../contract/model.js";
+import type { ApiAsset, ApiContract, ApiRequest, ComponentAsset, ModelAsset } from "../contract/model.js";
 import {
   collectProjectAssetReferences,
   referencesFromApiAsset,
+  referencesFromApiRequest,
   referencesFromComponentAsset,
   referencesFromModelAsset,
   type AssetReference,
@@ -49,7 +50,7 @@ export interface ProjectAssetContextReadView {
   readonly diagnostics: AssetDiagnostic[];
   referencesTo(id: string): AssetDiagnostic[];
   dependencyClosure(id: string): AssetBundle;
-  checkGate(gate: AssetGate, contractId?: string): AssetGateResult;
+  checkGate(gate: AssetGate, contractId?: string, effectiveRequest?: DeepReadonly<ApiRequest>): AssetGateResult;
 }
 
 export interface ProjectAssetContext extends ProjectAssetContextReadView {
@@ -164,7 +165,7 @@ function createContext(input: ProjectAssetContextInput, sharedReadOnly: boolean)
     dependencyClosure(id) {
       return buildDependencyClosure(currentInput(), id, copy);
     },
-    checkGate(gate, contractId) {
+    checkGate(gate, contractId, effectiveRequest) {
       if (gate === "publish") {
         const publishDiagnostics = contractId === undefined
           ? diagnostics()
@@ -175,7 +176,7 @@ function createContext(input: ProjectAssetContextInput, sharedReadOnly: boolean)
         const noContract: AssetDiagnostic[] = [{ code: "ASSET_NOT_FOUND", ownerId: input.projectId, path: "contractId", targetId: input.projectId }];
         return { ok: false, diagnostics: noContract };
       }
-      const executionDiagnostics = executionDiagnosticsFor(currentInput(), contractId);
+      const executionDiagnostics = executionDiagnosticsFor(currentInput(), contractId, effectiveRequest);
       return { ok: executionDiagnostics.length === 0, diagnostics: executionDiagnostics };
     },
   };
@@ -193,8 +194,8 @@ function createContext(input: ProjectAssetContextInput, sharedReadOnly: boolean)
     dependencyClosure(id) {
       return buildDependencyClosure(currentInput(), id, copy);
     },
-    checkGate(gate, contractId) {
-      return view.checkGate(gate, contractId);
+    checkGate(gate, contractId, effectiveRequest) {
+      return view.checkGate(gate, contractId, effectiveRequest);
     },
     rename(id, name) {
       const index = indexes();
@@ -308,45 +309,69 @@ function parameterDesignDiagnostics(input: ProjectAssetGraphInput): AssetDiagnos
   const indexes = buildIndexes(input);
   const diagnostics: AssetDiagnostic[] = [];
   for (const asset of input.assets) {
-    const request = asset.contract.request;
-    const groups = [
-      { location: "path", path: "contract.request.pathParams", bindings: request.pathParams },
-      { location: "query", path: "contract.request.query", bindings: request.query },
-      { location: "header", path: "contract.request.headers", bindings: request.headers },
-      { location: "cookie", path: "contract.request.cookies", bindings: request.cookies },
-    ] as const;
+    diagnostics.push(...parameterDesignDiagnosticsForRequest(
+      asset.contract.request,
+      asset.contract.id,
+      indexes,
+      "contract.request",
+    ));
+    asset.cases.forEach((testCase, caseIndex) => {
+      if (!testCase.requestOverride) return;
+      diagnostics.push(...parameterDesignDiagnosticsForRequest(
+        testCase.requestOverride,
+        asset.contract.id,
+        indexes,
+        `cases[${caseIndex}].requestOverride`,
+      ));
+    });
+  }
+  return diagnostics;
+}
 
-    for (const group of groups) {
-      const seenNames = new Set<string>();
-      group.bindings.forEach((binding, bindingIndex) => {
-        let name: string | undefined;
-        if (binding.kind === "inline") name = binding.name;
-        else {
-          const component = indexes.componentIds.get(binding.componentId);
-          if (component?.kind !== "parameter") return;
-          if (component.definition.location !== group.location) {
-            diagnostics.push({
-              code: "ASSET_PARAMETER_LOCATION_MISMATCH",
-              ownerId: asset.contract.id,
-              path: `${group.path}[${bindingIndex}].componentId`,
-              targetId: component.id,
-            });
-            return;
-          }
-          name = component.definition.name;
-        }
+function parameterDesignDiagnosticsForRequest(
+  request: DeepReadonly<ApiRequest>,
+  ownerId: string,
+  indexes: AssetIndexes,
+  rootPath: string,
+): AssetDiagnostic[] {
+  const diagnostics: AssetDiagnostic[] = [];
+  const groups = [
+    { location: "path", path: `${rootPath}.pathParams`, bindings: request.pathParams },
+    { location: "query", path: `${rootPath}.query`, bindings: request.query },
+    { location: "header", path: `${rootPath}.headers`, bindings: request.headers },
+    { location: "cookie", path: `${rootPath}.cookies`, bindings: request.cookies },
+  ] as const;
 
-        const key = group.location === "header" ? name.toLowerCase() : name;
-        if (seenNames.has(key)) {
-          const field = binding.kind === "inline" ? "name" : "componentId";
+  for (const group of groups) {
+    const seenNames = new Set<string>();
+    group.bindings.forEach((binding, bindingIndex) => {
+      let name: string;
+      if (binding.kind === "inline") name = binding.name;
+      else {
+        const component = indexes.componentIds.get(binding.componentId);
+        if (component?.kind !== "parameter") return;
+        if (component.definition.location !== group.location) {
           diagnostics.push({
-            code: "ASSET_PARAMETER_NAME_DUPLICATE",
-            ownerId: asset.contract.id,
-            path: `${group.path}[${bindingIndex}].${field}`,
+            code: "ASSET_PARAMETER_LOCATION_MISMATCH",
+            ownerId,
+            path: `${group.path}[${bindingIndex}].componentId`,
+            targetId: component.id,
           });
-        } else seenNames.add(key);
-      });
-    }
+          return;
+        }
+        name = component.definition.name;
+      }
+
+      const key = group.location === "header" ? name.toLowerCase() : name;
+      if (seenNames.has(key)) {
+        const field = binding.kind === "inline" ? "name" : "componentId";
+        diagnostics.push({
+          code: "ASSET_PARAMETER_NAME_DUPLICATE",
+          ownerId,
+          path: `${group.path}[${bindingIndex}].${field}`,
+        });
+      } else seenNames.add(key);
+    });
   }
   return diagnostics;
 }
@@ -410,7 +435,11 @@ function diagnoseReference(
   return [];
 }
 
-function executionDiagnosticsFor(input: ProjectAssetGraphInput, contractId: string): AssetDiagnostic[] {
+function executionDiagnosticsFor(
+  input: ProjectAssetGraphInput,
+  contractId: string,
+  effectiveRequest?: DeepReadonly<ApiRequest>,
+): AssetDiagnostic[] {
   const index = buildIndexes(input);
   const root = index.assetIds.get(contractId);
   if (!root) {
@@ -427,6 +456,11 @@ function executionDiagnosticsFor(input: ProjectAssetGraphInput, contractId: stri
   const visited = new Set<string>();
   const issues: AssetDiagnostic[] = [];
   const reachableModelIds = new Set<string>();
+  const requestToCheck = effectiveRequest ?? root.contract.request;
+  const caseIndex = effectiveRequest === undefined
+    ? -1
+    : root.cases.findIndex((testCase) => testCase.requestOverride === effectiveRequest);
+  const requestRootPath = caseIndex < 0 ? "contract.request" : `cases[${caseIndex}].requestOverride`;
   const allById = new Map<string, Array<{ kind: "contract" | "model" | "component"; componentKind?: ComponentAsset["kind"] }>>();
   for (const asset of input.assets) addKinds(allById, asset.contract.id, { kind: "contract" });
   for (const model of input.models) addKinds(allById, model.id, { kind: "model" });
@@ -441,7 +475,7 @@ function executionDiagnosticsFor(input: ProjectAssetGraphInput, contractId: stri
     if (node.kind === "model") reachableModelIds.add(node.id);
 
     const references = node.kind === "contract"
-      ? referencesFromApiAsset(node.asset).filter((reference) => reference.path.startsWith("contract.request."))
+      ? referencesFromApiRequest(requestToCheck, node.id, requestRootPath)
       : node.kind === "model"
         ? referencesFromModelAsset(node.model)
         : referencesFromComponentAsset(node.component);
@@ -459,6 +493,7 @@ function executionDiagnosticsFor(input: ProjectAssetGraphInput, contractId: stri
       }
     }
   }
+  issues.push(...parameterDesignDiagnosticsForRequest(requestToCheck, root.contract.id, index, requestRootPath));
   issues.push(...modelReferenceCycleDiagnostics(input.models, reachableModelIds));
   return issues;
 }

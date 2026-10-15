@@ -5,10 +5,14 @@ import { tmpdir } from "node:os";
 import {
   renderContractMarkdown,
   createProjectSnapshot,
+  getSourceApiRevision,
   StressSafetyError,
   CredentialError,
   type AiSuggestedCase,
   type ApiAsset,
+  type ApiRequest,
+  type DebugInvocation,
+  type DebugResult,
   type ApiTestCase,
   type AssetDiagnostic,
   type CaseOutcome,
@@ -109,6 +113,8 @@ import type {
   ApiccApi,
   DebugInput,
   DebugOutput,
+  DebugHistoryListFilter,
+  DebugHistoryPreferences,
   EnvCreateInput,
   ImportApplyInput,
   ImportPreviewInput,
@@ -166,6 +172,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   // 运行历史内存样例（新→旧，与主进程 listRuns 排序一致）：runCollection 产出，
   // runsList/runsGet 读回；runSeq 保证同毫秒多次运行不重名（对齐 Runner 落盘文件名语义）。
   const runs: Array<{ file: string; result: RunResult }> = [];
+  const memoryDebugInvocations = new Map<string, { invocation: DebugInvocation; startedAt: string }>();
   let runSeq = 0;
   // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
   const stressRuns: Array<{ file: string; report: StressReport }> = [];
@@ -527,6 +534,8 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       return {
         api: loc.api,
         locator: { ...locator, folderIds: [...locator.folderIds] },
+        sourceApiRevision: getSourceApiRevision(loc.api),
+        sourceProjectRevision: createProjectSnapshot(loc.project).definitionRevision,
         envs: loc.project.environments.map((environment) => ({
           id: environment.id,
           name: environment.name,
@@ -535,14 +544,24 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       };
     },
 
-    async apiSave(locator: ApiLocator, api: ApiAsset): Promise<ApiAsset> {
+    async apiSave(locator: ApiLocator, api: ApiAsset, expectedSourceApiRevision: string) {
       await ensureReady();
-      return session.saveApi(locator, api);
+      return session.saveApi(locator, api, [], undefined, expectedSourceApiRevision);
     },
 
-    async caseSave(locator, testCase) {
+    async apiRequestDraftSave(locator: ApiLocator, request: ApiRequest, expectedSourceApiRevision: string, fields) {
       await ensureReady();
-      return session.saveCase(locator, testCase);
+      return session.saveRequestDraft(locator, request, expectedSourceApiRevision, fields);
+    },
+
+    async caseSave(locator, testCase, expectedSourceApiRevision: string, fields) {
+      await ensureReady();
+      return session.saveCase(locator, testCase, expectedSourceApiRevision, [], undefined, fields);
+    },
+
+    async caseDraftSave(locator, testCase, expectedSourceApiRevision: string, deletedCases, fields) {
+      await ensureReady();
+      return session.saveDraftCase(locator, testCase, expectedSourceApiRevision, deletedCases, [], undefined, fields);
     },
 
     async caseDelete(locator) {
@@ -660,6 +679,107 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         cases: [outcome],
       };
       return { run, outcome };
+    },
+
+    async debugStart(input: DebugInvocation) {
+      await ensureReady();
+      const runId = randomUUID();
+      memoryDebugInvocations.set(runId, { invocation: structuredClone(input), startedAt: new Date().toISOString() });
+      return { runId };
+    },
+
+    async debugWait({ runId }): Promise<DebugResult> {
+      const entry = memoryDebugInvocations.get(runId);
+      if (!entry) throw new Error("Debug run not found in memory UI fixture.");
+      const invocation = entry.invocation;
+      memoryDebugInvocations.delete(runId);
+      const finishedAt = new Date().toISOString();
+      const located = session.locateApi(invocation.locator);
+      const sourceApiRevision = located ? getSourceApiRevision(located.api) : "memory-source-api";
+      const sourceProjectRevision = located ? createProjectSnapshot(located.project).definitionRevision : "memory-source-project";
+      const outcome = {
+        apiId: invocation.locator.apiId,
+        apiName: located?.api.contract.metadata.name ?? "API",
+        ...(invocation.mode === "case" ? { caseId: invocation.case.caseId } : {}),
+        caseName: invocation.mode === "case" ? located?.api.cases.find((item) => item.id === invocation.case.caseId)?.name ?? "Case" : "Request",
+        passed: true,
+        durationMs: 0,
+        assertions: [],
+      };
+      const replay = invocation.mode === "request"
+        ? { mode: "request" as const, locator: invocation.locator, request: invocation.request, requestTemplate: invocation.request, parameters: invocation.parameters, fields: invocation.fields, ...(invocation.settings ? { settings: invocation.settings } : {}), identityAvailable: Boolean(located), available: true }
+        : { mode: "case" as const, case: invocation.case, parameters: {}, fields: [], ...(invocation.settings ? { settings: invocation.settings } : {}), identityAvailable: Boolean(located), available: true };
+      return {
+        runId,
+        sourceApiRevision,
+        sourceProjectRevision,
+        executionSnapshotRevision: sourceProjectRevision,
+        mode: invocation.mode,
+        locator: invocation.locator,
+        identityAvailable: Boolean(located),
+        ...(invocation.environmentId ? { environmentId: invocation.environmentId } : {}),
+        startedAt: entry.startedAt,
+        finishedAt,
+        run: { collectionName: located?.collection.name ?? "Collection", startedAt: entry.startedAt, finishedAt, total: 1, passed: 1, failed: 0 },
+        outcomes: [outcome],
+        exchanges: [],
+        exchangeTotal: 0,
+        omittedExchangeCount: 0,
+        replay,
+        console: [],
+        warnings: ["Memory renderer fixture only; no desktop network request was made."],
+      };
+    },
+
+    async debugCancel({ runId }) {
+      return { status: memoryDebugInvocations.delete(runId) ? "cancelled" : "no-active" };
+    },
+
+    async debugCookiesList(_input) {
+      return [];
+    },
+
+    async debugCookiesClear(_input) {},
+
+    async debugPickFile() {
+      return null;
+    },
+
+    async debugSaveProjected(defaultName: string, content: string) {
+      designExportCalls.push({ file: defaultName, content });
+      return "";
+    },
+
+    async debugHistoryList(_filter: DebugHistoryListFilter) {
+      return { items: [], diagnostics: [] };
+    },
+
+    async debugHistoryGet(_historyId: string) {
+      return { record: null, diagnostics: [] };
+    },
+
+    async debugHistoryDelete(_historyId: string) {
+      return false;
+    },
+
+    async debugHistoryCleanup() {
+      return { deleted: 0, diagnostics: [] };
+    },
+
+    async debugHistoryPreferencesGet() {
+      return { preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 }, diagnostics: [] };
+    },
+
+    async debugHistoryPreferencesUpdate(preferences: DebugHistoryPreferences) {
+      return preferences;
+    },
+
+    async debugHistoryRestore(_input: { historyId: string; exchangeOrder: number }) {
+      throw new Error("Debug history is only available in the desktop main process.");
+    },
+
+    async debugHistoryReplay(_historyId: string) {
+      throw new Error("Debug history is only available in the desktop main process.");
     },
 
     // 集合运行（任务 6）：语义对齐 session——未命中集合抛「未找到」；不走真实网络，

@@ -51,6 +51,17 @@ apicc run groups/ecommerce/projects/order-service/collections/order-api --env de
 # 运行工作流（DAG 场景）
 apicc run-workflow groups/ecommerce/projects/order-service/workflows/checkout --env dev
 
+# 本地调试一个当前环境下最近有效的用例
+apicc debug groups/ecommerce/projects/order-service/apis/create-order --env dev --case ok --scope dev
+
+# 或执行绑定到该 API 的 ApiRequest JSON 草稿；请求文件相对工作区根
+apicc debug groups/ecommerce/projects/order-service/apis/create-order --root ./my-workspace \
+  --request .apicc/draft-request.json --settings '{"headersTimeoutMs":500}' --no-history
+
+# 查询/配置本机持久调试历史（--no-history 只影响单次运行，不修改此设置）
+apicc debug-history config
+apicc debug-history config --enabled false --days 14 --max-records 500
+
 # 压测接口（--case 与 --concurrency 必填）：本地并发 4、共 100 次迭代（也可用 --duration 按秒数施压）
 # 阈值和 --allow-target 只对本次运行生效；origin 必须与最终请求的 scheme/host/port 精确匹配
 apicc run-stress groups/ecommerce/projects/order-service/apis/create-order --case ok --env dev --concurrency 4 --iterations 100 \
@@ -65,6 +76,8 @@ apicc import order-api.json --group ecommerce
 ```
 
 各命令完整参数以 `apicc <command> --help` 为准。
+
+`debug` 只接受完整 API UUID 路径，并且必须指定 `--request <json-file>` 或成对的 `--case <id> --scope <scope>`；case scope 必须是当前环境下最近有效的版本。`--request` 文件必须位于工作区根目录内且符合该 API 的 `ApiRequest` 结构；CLI 不接受游离自由请求。输出为有界、安全投影 JSON，失败时退出码为 `1`。调试默认追加到本机私有历史，`--no-history` 仅跳过本次追加。
 
 `run-stress` 会执行所选用例的完整语义：参数、数据驱动行、前置/后置操作与脚本，以及声明式和脚本断言；HTTP 200 但断言失败仍计为业务失败并使 verdict 失败。`--allow-target <origin>` 只确认精确的 HTTP(S) origin，路径变化不需要重复确认，但 scheme、host 或 port 变化必须重新确认；项目 `deniedOrigins` 始终优先，不能由该参数覆盖。压测分片仅在本机以多进程运行，尚未提供跨机器远程 agent；`--shards` 必须不大于 `--concurrency`，且当前版本只允许单 shard 使用 `--max-rps`，多 shard + RPS 上限会在发起请求前拒绝（不会静默拆分上限）。
 

@@ -40,6 +40,7 @@ import OnlineConflictDialog from "./components/OnlineConflictDialog.vue";
 import OnlineMigrateDialog from "./components/OnlineMigrateDialog.vue";
 import RequestEditor from "./components/RequestEditor.vue";
 import ResponseViewer from "./components/ResponseViewer.vue";
+import DebugHistory from "./components/DebugHistory.vue";
 import CasePanel from "./components/CasePanel.vue";
 import EnvPanel from "./components/EnvPanel.vue";
 import RunView from "./components/RunView.vue";
@@ -54,6 +55,7 @@ import { useWorkspaceStore } from "./stores/workspace.js";
 import { useTreeStore } from "./stores/tree.js";
 import { useEditorStore } from "./stores/editor.js";
 import { useDebugStore } from "./stores/debug.js";
+import { useDebugHistoryStore } from "./stores/debugHistory.js";
 import { useAssetsStore } from "./stores/assets.js";
 import { useCasesStore } from "./stores/cases.js";
 import { useEnvsStore } from "./stores/envs.js";
@@ -107,6 +109,8 @@ const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly
 const editor = useEditorStore(apicc, localContext);
 const assets = useAssetsStore(apicc, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
 const debug = useDebugStore(apicc, editor, localContext);
+const debugHistory = useDebugHistoryStore(apicc);
+const historyOpen = ref(false);
 // —— 视图面板 store（任务 8 装配）：与既有 store 同一组合根一次性创建 ——
 const cases = useCasesStore(apicc, editor);
 const envs = useEnvsStore(apicc, localContext);
@@ -848,6 +852,7 @@ function onDividerDblClick() {
               <span class="head-spacer"></span>
               <!-- AI 入口（M6-C 任务 1）自 debug-ai-bar 收编于接口头部：全子视图可达 -->
               <a-space :size="8">
+                <a-button size="small" data-testid="debug-history-open" @click="historyOpen = true">{{ t("debugLoop.historyTitle") }}</a-button>
                 <a-button size="small" data-testid="api-import-btn" @click="importOpen = true">
                   {{ t("api.import") }}
                 </a-button>
@@ -891,7 +896,7 @@ function onDividerDblClick() {
                 @dblclick="onDividerDblClick"
               ></div>
               <div class="viewer-pane" data-testid="viewer-pane" :style="{ height: `${viewerPct}%` }">
-                <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
+                <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" :api="apicc" />
               </div>
             </template>
             <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" :read-only="workspace.readOnly" />
@@ -984,6 +989,7 @@ function onDividerDblClick() {
     <!-- AI 配置对话框与建议抽屉（M6-C 任务 1）：接口头部入口按钮置显隐/拉取 -->
     <AiConfigDialog :ai="ai" />
     <AiSuggestionsDrawer :ai="ai" />
+    <DebugHistory :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" @close="historyOpen = false" />
   </a-layout>
   </ConfigProvider>
 </template>

@@ -11,6 +11,7 @@ import type {
 import type { CredentialBindings } from "../../src/credentials/types.js";
 import type { ProjectGlobals } from "../../src/domain/model.js";
 import { materializeRequest } from "../../src/request/materialize.js";
+import { resolveRequestSettings } from "../../src/request/settings.js";
 
 const contractId = "00000000-0000-4000-8000-000000000101";
 const parameterComponentId = "00000000-0000-4000-8000-000000000102";
@@ -79,6 +80,23 @@ function materialize(request: ApiRequest, options: Parameters<typeof inputs>[0] 
 const parameterSchema = { kind: "scalar", type: "string" } as const;
 
 describe("materializeRequest", () => {
+  it("resolves settings from entry defaults, then case, then explicit invocation values", () => {
+    expect(resolveRequestSettings(
+      { connectTimeoutMs: 100, headersTimeoutMs: 1200, followRedirects: true },
+      { headersTimeoutMs: 1500 },
+      { connectTimeoutMs: 600, totalTimeoutMs: 4000 },
+    )).toEqual({
+      connectTimeoutMs: 100,
+      headersTimeoutMs: 1500,
+      bodyTimeoutMs: 30_000,
+      totalTimeoutMs: 4000,
+      followRedirects: true,
+      maxRedirects: 10,
+      uploadLimitBytes: 64 * 1024 * 1024,
+      responseLimitBytes: 32 * 1024 * 1024,
+    });
+  });
+
   it.each([
     ["https://example.test/v1", "users"],
     ["https://example.test/v1", "/users"],
@@ -90,6 +108,60 @@ describe("materializeRequest", () => {
 
   it("keeps the base URL path when the request path is empty", () => {
     expect(materialize(httpRequest({ path: "" })).url).toBe("https://example.test/v1");
+  });
+
+  it("materializes a supplied effective case request while leaving the contract default intact", () => {
+    const contract = contractFor(httpRequest({ path: "/default" }));
+    const effectiveRequest = httpRequest({ path: "/case-only" });
+
+    const result = materializeRequest(contract, contextFor(contract), inputs(), effectiveRequest);
+
+    expect(result.url).toBe("https://example.test/v1/case-only");
+    expect(contract.request.path).toBe("/default");
+  });
+
+  it("blocks materialization when the selected request contains duplicate header names", () => {
+    const contract = contractFor(httpRequest());
+    const selectedRequest = httpRequest({ headers: [
+      { kind: "inline", id: "00000000-0000-4000-8000-000000000110", name: "X-Request", schema: parameterSchema, required: false, enabled: true, description: "", value: "first" },
+      { kind: "inline", id: "00000000-0000-4000-8000-000000000111", name: "x-request", schema: parameterSchema, required: false, enabled: true, description: "", value: "second" },
+    ] });
+
+    expect(() => materializeRequest(contract, contextFor(contract), inputs(), selectedRequest)).toThrow(expect.objectContaining({
+      code: "ASSET_EXECUTION_BLOCKED",
+      diagnostics: expect.arrayContaining([expect.objectContaining({
+        code: "ASSET_PARAMETER_NAME_DUPLICATE",
+        path: "contract.request.headers[1].name",
+      })]),
+    }));
+  });
+
+  it("blocks materialization at the gate when a selected header reference targets a query parameter", () => {
+    const contract = contractFor(httpRequest());
+    const component: ComponentAsset = {
+      formatVersion: 1,
+      id: parameterComponentId,
+      name: "Query parameter",
+      description: "",
+      kind: "parameter",
+      definition: { location: "query", name: "q", schema: parameterSchema, required: false, description: "" },
+    };
+    const selectedRequest = httpRequest({ headers: [{
+      kind: "componentRef",
+      id: parameterBindingId,
+      componentId: parameterComponentId,
+      expectedKind: "parameter",
+      value: "blue",
+    }] });
+
+    expect(() => materializeRequest(contract, contextFor(contract, [component]), inputs(), selectedRequest)).toThrow(expect.objectContaining({
+      code: "ASSET_EXECUTION_BLOCKED",
+      diagnostics: expect.arrayContaining([expect.objectContaining({
+        code: "ASSET_PARAMETER_LOCATION_MISMATCH",
+        path: "contract.request.headers[0].componentId",
+        targetId: parameterComponentId,
+      })]),
+    }));
   });
 
   it.each(["https://other.test/users", "//other.test/users", "?page=2", "#section", "users?page=2", "users#section"])(
@@ -299,11 +371,32 @@ describe("materializeRequest", () => {
     expect(result.protocol === "http" ? result.body : undefined).toEqual({ kind: "form", content: "", form: [{ key: "q", value: "blue", enabled: true }, { key: "extra", value: "yes", enabled: true }] });
   });
 
-  it.each([
-    { kind: "multipart" as const, entries: [] },
-    { kind: "binary" as const, file: { path: "C:/private/data.bin" }, contentType: "application/octet-stream" },
-  ])("rejects body encoding without a transport implementation: $kind", (body) => {
-    expect(() => materialize(httpRequest({ method: "POST", body }))).toThrow(expect.objectContaining({ code: "UNSUPPORTED_BODY_ENCODING" }));
+  it("materializes enabled multipart fields in order and keeps captured file references as descriptors", () => {
+    const result = materialize(httpRequest({
+      method: "POST",
+      body: { kind: "multipart", entries: [
+        { kind: "text", id: "multipart-text", name: "label", value: "{{label}}", enabled: true },
+        { kind: "file", id: "multipart-file", name: "upload", file: { path: "data.bin" }, contentType: "application/octet-stream", enabled: true },
+        { kind: "text", id: "multipart-off", name: "ignored", value: "x", enabled: false },
+      ] },
+    }), { variables: { label: "ok" } });
+    expect(result.protocol === "http" ? result.body : undefined).toEqual({
+      kind: "multipart",
+      entries: [
+        { kind: "text", name: "label", value: "ok" },
+        { kind: "file", name: "upload", file: { path: "data.bin" }, contentType: "application/octet-stream" },
+      ],
+    });
+  });
+
+  it("materializes a binary file reference without reading its contents", () => {
+    const result = materialize(httpRequest({
+      method: "POST",
+      body: { kind: "binary", file: { path: "payload.dat" }, contentType: "application/octet-stream" },
+    }));
+    expect(result.protocol === "http" ? result.body : undefined).toEqual({
+      kind: "binary", file: { path: "payload.dat" }, contentType: "application/octet-stream",
+    });
   });
 
   it("keeps runtime auth separate from contract references and resolves only this request's secret binding", () => {
@@ -377,7 +470,7 @@ describe("materializeRequest", () => {
     first.headers["x-run"] = "changed";
     first.query[0]!.value = "changed";
     if (first.auth.kind === "bearer") first.auth.token = "changed";
-    if (first.protocol === "http" && first.body) first.body.content = "changed";
+    if (first.protocol === "http" && first.body?.kind === "json") first.body.content = "changed";
 
     expect(second.headers).toEqual({ "x-run": "initial" });
     expect(second.query).toEqual([{ key: "q", value: "initial", enabled: true }]);

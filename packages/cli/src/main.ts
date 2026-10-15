@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generatePluginPackage } from "./create-plugin.js";
 import {
@@ -11,6 +11,18 @@ import {
   CollectionRunError,
   createAiProvider,
   createProjectSnapshot,
+  createHttpSession,
+  createDebugHistoryStore,
+  createDebugHistoryOwnerKey,
+  defaultDebugHistoryRoot,
+  DebugHistoryStoreError,
+  DebugInvocationSchema,
+  abortedDebugResult,
+  failedDebugResult,
+  RequestSettingsOverrideSchema,
+  ApiRequestSchema,
+  prepareDebugExecution,
+  runDebugExecution,
   renderContractMarkdown,
   loadUserPlugins,
   findProjectApi,
@@ -40,6 +52,7 @@ import {
   createStressCaseSession,
   normalizeStressOrigin,
   resolveExecutionEnvironment,
+  envChain,
   selectEffectiveCases,
   validateStressRunOptions as validateCoreStressRunOptions,
   StressSafetyError,
@@ -51,10 +64,12 @@ import {
   createCredentialHostStore,
   findProjectCredentialRef,
   prepareExecutionRun,
+  prepareExecutionRunFromSnapshot,
   credentialScope,
   stableCredentialError,
   type CredentialHostOptions,
 } from "./credentials.js";
+import type { ExecutionCredentialSelection } from "./credentials.js";
 import { createOutputSanitizer } from "./output.js";
 import {
   assertWorkspaceUsable,
@@ -227,6 +242,8 @@ export interface RunCliDeps {
   secretStore?: import("@apicc/core").SecretStore;
   /** CLI 凭据宿主注入：指定独立 privateRoot，默认 Core 提供的用户级 privateRoot。 */
   credentialPrivateRoot?: string;
+  /** Debug history host-root override; tests must point this at a controlled temporary directory. */
+  debugHistoryAppDataDirectory?: string;
   /** CLI 凭据保存注入：默认仅从 stdin 读取，永不接受 argv 明文。 */
   secretInput?: () => Promise<string>;
 }
@@ -236,6 +253,43 @@ function credentialHostOptions(deps: RunCliDeps): CredentialHostOptions {
     ...(deps.secretStore ? { secretStore: deps.secretStore } : {}),
     ...(deps.credentialPrivateRoot ? { credentialPrivateRoot: deps.credentialPrivateRoot } : {}),
   };
+}
+
+function cliAppDataDirectory(): string {
+  if (platform() === "win32") return process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+  if (platform() === "darwin") return join(homedir(), "Library", "Application Support");
+  return process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+}
+
+function resolveWorkspaceFile(root: string, inputPath: string): string {
+  if (!inputPath || isAbsolute(inputPath)) throw new Error("--request 文件必须使用工作区根内的相对路径");
+  const candidate = resolve(root, inputPath);
+  const canonicalRoot = realpathSync(root);
+  const canonicalFile = realpathSync(candidate);
+  const rel = relative(canonicalRoot, canonicalFile);
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error("--request 文件必须位于工作区根目录内");
+  }
+  return canonicalFile;
+}
+
+function parseJsonOption(input: string, label: string): unknown {
+  try { return JSON.parse(input) as unknown; }
+  catch { throw new Error(`${label} 必须是有效 JSON`); }
+}
+
+function parseBooleanOption(input: string): boolean {
+  if (input === "true") return true;
+  if (input === "false") return false;
+  throw new Error("--enabled 只能是 true 或 false");
+}
+
+function parsePositiveIntegerOption(input: string, label: string, maximum = Number.MAX_SAFE_INTEGER): number {
+  const value = Number(input);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new Error(`${label} 必须是 1 到 ${maximum} 之间的正整数`);
+  }
+  return value;
 }
 
 function parseExpectedCredentialVersions(input: string): Record<string, string> {
@@ -417,7 +471,12 @@ async function resolveStressTarget(
   const collectionId = collection.id;
   const environmentId = env?.id;
   const prepared = await prepareExecutionRun(workspace, group.id, project, [api], credentialOptions,
-    expected?.credentialVersions, expected?.definitionRevision);
+    expected?.credentialVersions, expected?.definitionRevision, [{
+      collectionId,
+      apiId,
+      caseId: preflightCase.id,
+      scope: preflightCase.scope,
+    }]);
   const preparedProject = prepared.snapshot.project;
   const preparedLocation = findProjectApi(preparedProject, apiId);
   if (!preparedLocation || preparedLocation.collection.id !== collectionId) {
@@ -469,27 +528,42 @@ async function resolveStressTarget(
         createWorker: (workerId) => {
           let ownedHttp: ReturnType<typeof createHttpClient> | undefined;
           let ownedSoap: ReturnType<typeof createSoapClient> | undefined;
+          const httpSession = createHttpSession();
           const createOwnedHttp = () => ownedHttp ??= createHttpClient({ connectionMode: options.connectionMode });
-          return createStressCaseSession(target, {
-            resolveProtocol: (candidate) => {
-              if (candidate.protocol === "soap" && defaultClient.name === "soap") {
-                ownedSoap ??= createSoapClient(createOwnedHttp());
-                return ownedSoap;
-              }
-              return registry.getProtocol(candidate);
-            },
-            resolveAuth: (kind) => registry.getAuth(kind),
-            resolveAssert: (operator) => registry.getAssert(operator),
-            scriptEngine: registry.getScriptEngine("javascript")!,
-            createManagedClient: () => defaultClient.name === "http" || defaultClient.name === "soap"
-              ? createOwnedHttp()
-              : { ...defaultClient, close: async () => {} },
-          }, {
-            workerId,
-            concurrency: options.concurrency,
-            maxRps,
-            confirmedTargetOrigins: options.confirmedTargetOrigins,
-          });
+          try {
+            const session = createStressCaseSession(target, {
+              resolveProtocol: (candidate) => {
+                if (candidate.protocol === "soap" && defaultClient.name === "soap") {
+                  ownedSoap ??= createSoapClient(createOwnedHttp());
+                  return ownedSoap;
+                }
+                return registry.getProtocol(candidate);
+              },
+              resolveAuth: (kind) => registry.getAuth(kind),
+              resolveAssert: (operator) => registry.getAssert(operator),
+              scriptEngine: registry.getScriptEngine("javascript")!,
+              workspaceRoot: root,
+              httpSession,
+              createManagedClient: () => defaultClient.name === "http" || defaultClient.name === "soap"
+                ? createOwnedHttp()
+                : { ...defaultClient, close: async () => {} },
+            }, {
+              workerId,
+              concurrency: options.concurrency,
+              maxRps,
+              confirmedTargetOrigins: options.confirmedTargetOrigins,
+            });
+            return {
+              execute: (signal) => session.execute(signal),
+              async close() {
+                try { await session.close(); }
+                finally { await httpSession.close(); }
+              },
+            };
+          } catch (error) {
+            void httpSession.close();
+            throw error;
+          }
         },
       });
     },
@@ -618,12 +692,24 @@ export async function runCli(
       const env = project.environments.find((candidate) => candidate.name === opts.env);
       if (!env) throw new Error(`未找到环境: ${opts.env}`);
 
+      const executableAssets = apiAssetsWithExecutableCases(project, apiAssetsInCollection(collection), env);
+      const credentialSelections: ExecutionCredentialSelection[] = executableAssets.flatMap((asset) =>
+        selectEffectiveCases(asset.cases, envChain(env, project)).map((testCase) => ({
+          collectionId: collection.id,
+          apiId: asset.contract.id,
+          caseId: testCase.id,
+          scope: testCase.scope,
+        })),
+      );
       const prepared = await prepareExecutionRun(
         state.workspace,
         location.group.id,
         project,
-        apiAssetsWithExecutableCases(project, apiAssetsInCollection(collection), env),
+        executableAssets,
         credentialHostOptions(deps),
+        undefined,
+        undefined,
+        credentialSelections,
       );
       const sanitizer = createOutputSanitizer(prepared.secrets);
       const safeLog = (line: string): void => log(sanitizer.redactText(line));
@@ -638,13 +724,16 @@ export async function runCli(
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
       let result: import("@apicc/core").RunResult;
       let runFailure = false;
+      const httpSession = createHttpSession();
       try {
-        result = await runner.run(prepared.run, collection.id, { environmentId: env.id });
+        result = await runner.run(prepared.run, collection.id, { environmentId: env.id, workspaceRoot: root, httpSession });
       } catch (error) {
         if (!(error instanceof CollectionRunError)) throw error;
         result = error.partialResult;
         runFailure = true;
         safeLog(sanitizer.redactText(error.message));
+      } finally {
+        await httpSession.close();
       }
       const safeResult = sanitizer.redactValue(result);
       mkdirSync(runsOutDir, { recursive: true });
@@ -689,11 +778,44 @@ export async function runCli(
         const api = findProjectApi(project, node.apiId)?.api;
         return api ? [api as ApiAsset] : [];
       });
-      const prepared = await prepareExecutionRun(state.workspace, location.group.id, project, workflowAssets, credentialHostOptions(deps));
+      const chain = env ? envChain(env, project) : [];
+      const credentialSelections: ExecutionCredentialSelection[] = workflow.nodes.flatMap((node) => {
+        if (node.kind !== "request" || !node.apiId || !node.caseId) return [];
+        const apiLocation = findProjectApi(project, node.apiId);
+        if (!apiLocation) return [];
+        const testCase = selectEffectiveCases(apiLocation.api.cases, chain, node.caseId)[0];
+        if (!testCase) return [];
+        return [{
+          collectionId: apiLocation.collection.id,
+          apiId: apiLocation.api.contract.id,
+          caseId: testCase.id,
+          scope: testCase.scope,
+        }];
+      });
+      const prepared = await prepareExecutionRun(
+        state.workspace,
+        location.group.id,
+        project,
+        workflowAssets,
+        credentialHostOptions(deps),
+        undefined,
+        undefined,
+        credentialSelections,
+      );
       const sanitizer = createOutputSanitizer(prepared.secrets);
       const safeLog = (line: string): void => log(sanitizer.redactText(line));
       const runner = new WorkflowRunner({ registry, environmentId: env?.id, failFast: false, strict: opts.strict });
-      const wfr = sanitizer.redactValue(await runner.run(prepared.run, workflow.id, { environmentId: env?.id }));
+      const httpSession = createHttpSession();
+      let wfr: import("@apicc/core").WorkflowRunResult;
+      try {
+        wfr = sanitizer.redactValue(await runner.run(prepared.run, workflow.id, {
+          environmentId: env?.id,
+          workspaceRoot: root,
+          httpSession,
+        }));
+      } finally {
+        await httpSession.close();
+      }
       const result = sanitizer.redactValue(workflowToRunResult(wfr));
       // The projected raw result is durable before any reporter is invoked.
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
@@ -713,6 +835,162 @@ export async function runCli(
       }
       safeLog(`节点统计：总计 ${wfr.total} · 通过 ${wfr.passed} · 失败 ${wfr.failed} · 跳过 ${wfr.skipped}`);
       process.exitCode = wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0;
+    });
+
+  program
+    .command("debug")
+    .argument("<apiPath>", "接口完整 UUID 路径（groups/.../collections/.../apis/...）")
+    .option("--root <root>", "工作区根目录；缺省从当前目录向上查找")
+    .option("--env <name>", "环境名称")
+    .option("--request <json-file>", "工作区根内、已绑定到该 API 的 ApiRequest JSON 文件")
+    .option("--case <caseId>", "显式执行的用例 ID")
+    .option("--scope <scope>", "用例身份 scope；必须是当前环境的最近有效 scope")
+    .option("--settings <json>", "本次请求设置覆盖 JSON")
+    .option("--no-history", "不把本次投影结果追加到调试历史")
+    .action(async (apiPath: string, opts: {
+      root?: string;
+      env?: string;
+      request?: string;
+      case?: string;
+      scope?: string;
+      settings?: string;
+      history: boolean;
+    }) => {
+      const hasRequest = opts.request !== undefined;
+      const hasCaseInput = opts.case !== undefined || opts.scope !== undefined;
+      if (hasRequest === hasCaseInput) throw new Error("debug 必须且只能指定 --request <json-file> 或 --case <id> --scope <scope>");
+      if (!hasRequest && (!opts.case || !opts.scope)) throw new Error("--case 与 --scope 必须同时提供");
+
+      const workspaceRoot = opts.root === undefined ? findWorkspaceRoot(process.cwd()) : resolve(opts.root);
+      if (!workspaceRoot) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行或指定 --root");
+      if (!existsSync(join(workspaceRoot, "apicc.workspace.yaml"))) throw new Error(`未找到 apicc.workspace.yaml: ${workspaceRoot}`);
+      const root = realpathSync(workspaceRoot);
+      const state = await loadWorkspace(registry, root);
+      assertWorkspaceUsable(state);
+      const location = locateApi(state.workspace, apiPath);
+      const env = opts.env === undefined ? undefined : location.project.environments.find((candidate) => candidate.name === opts.env);
+      if (opts.env !== undefined && !env) throw new Error(`未找到环境: ${opts.env}`);
+      const locator = {
+        workspaceId: state.workspace.id,
+        groupId: location.group.id,
+        projectId: location.project.id,
+        collectionId: location.collection.id,
+        folderIds: [...location.folderIds],
+        apiId: location.api.contract.id,
+      };
+      const settings = opts.settings === undefined
+        ? undefined
+        : RequestSettingsOverrideSchema.parse(parseJsonOption(opts.settings, "--settings"));
+      const commonInvocation = {
+        locator,
+        ...(env === undefined ? {} : { environmentId: env.id }),
+        ...(settings === undefined ? {} : { settings }),
+      };
+      const invocation = DebugInvocationSchema.parse(hasRequest
+        ? {
+          ...commonInvocation,
+          mode: "request",
+          request: ApiRequestSchema.parse(JSON.parse(readFileSync(resolveWorkspaceFile(root, opts.request!), "utf8")) as unknown),
+          parameters: {},
+          fields: [],
+        }
+        : {
+          ...commonInvocation,
+          mode: "case",
+          case: { ...locator, caseId: opts.case!, scope: opts.scope! },
+        });
+      const plan = prepareDebugExecution(createProjectSnapshot(location.project), invocation);
+      const runId = randomUUID();
+      const startedAt = new Date().toISOString();
+      const controller = new AbortController();
+      const cancel = (): void => controller.abort();
+      process.on("SIGINT", cancel);
+      process.on("SIGTERM", cancel);
+      let httpSession: ReturnType<typeof createHttpSession> | undefined;
+      let result: import("@apicc/core").DebugResult;
+      let preparedSecrets: string[] = [];
+      let projectionReliable = false;
+      try {
+        result = await (async (): Promise<import("@apicc/core").DebugResult> => {
+          if (controller.signal.aborted) return abortedDebugResult(plan, runId, startedAt);
+          let prepared: Awaited<ReturnType<typeof prepareExecutionRunFromSnapshot>>;
+          try {
+            prepared = await prepareExecutionRunFromSnapshot(
+              state.workspace,
+              location.group.id,
+              location.project,
+              plan.snapshot,
+              plan.credentialSelections,
+              credentialHostOptions(deps),
+            );
+          } catch (error) {
+            return controller.signal.aborted
+              ? abortedDebugResult(plan, runId, startedAt)
+              : failedDebugResult(plan, runId, startedAt, error, { failureKind: "config" });
+          }
+          preparedSecrets = prepared.secrets;
+          projectionReliable = true;
+          if (controller.signal.aborted) {
+            return abortedDebugResult(plan, runId, startedAt, { markers: preparedSecrets, projectionReliable });
+          }
+          httpSession = createHttpSession();
+          return runDebugExecution(plan, prepared.run, {
+            registry,
+            workspaceRoot: root,
+            httpSession,
+            signal: controller.signal,
+            credentialMarkers: prepared.secrets,
+          }, runId);
+        })();
+      } finally {
+        process.removeListener("SIGINT", cancel);
+        process.removeListener("SIGTERM", cancel);
+        await httpSession?.close();
+      }
+
+      const sanitizer = createOutputSanitizer(preparedSecrets);
+      const safeResult = sanitizer.redactValue(result);
+      if (opts.history) {
+        const store = createDebugHistoryStore({
+          root: defaultDebugHistoryRoot(deps.debugHistoryAppDataDirectory ?? cliAppDataDirectory()),
+        });
+        const ownerIdentity = invocation.mode === "case" ? invocation.case : invocation.locator;
+        try {
+          await store.append(safeResult, {
+            ownerKey: createDebugHistoryOwnerKey(realpathSync(root), ownerIdentity),
+          });
+        } catch (error) {
+          // History is best-effort after the network outcome; it must not rewrite a completed run.
+          const diagnostic = error instanceof DebugHistoryStoreError ? error.diagnostic.code : "storage-failure";
+          process.stderr.write(`[debug] 历史写入失败（${diagnostic}）；本次网络结果已保留\n`);
+        }
+      }
+
+      log(JSON.stringify(safeResult, null, 2));
+      process.exitCode = result.failureKind !== undefined || result.run.failed > 0 ? 1 : 0;
+    });
+
+  const debugHistory = program.command("debug-history").description("查询或配置本机调试历史");
+  debugHistory
+    .command("config")
+    .option("--enabled <boolean>", "是否启用持久调试历史", parseBooleanOption)
+    .option("--days <days>", "保留天数", (value: string) => parsePositiveIntegerOption(value, "--days"))
+    .option("--max-records <count>", "最多保留条数（1..10000）", (value: string) => parsePositiveIntegerOption(value, "--max-records", 10_000))
+    .action(async (opts: { enabled?: boolean; days?: number; maxRecords?: number }) => {
+      const store = createDebugHistoryStore({
+        root: defaultDebugHistoryRoot(deps.debugHistoryAppDataDirectory ?? cliAppDataDirectory()),
+      });
+      if (opts.enabled === undefined && opts.days === undefined && opts.maxRecords === undefined) {
+        log(JSON.stringify(await store.getPreferences(), null, 2));
+        return;
+      }
+      const current = await store.getPreferences();
+      await store.updatePreferences({
+        enabled: opts.enabled ?? current.preferences.enabled,
+        retentionDays: opts.days ?? current.preferences.retentionDays,
+        maxRecords: opts.maxRecords ?? current.preferences.maxRecords,
+      });
+      log(JSON.stringify(await store.getPreferences(), null, 2));
     });
 
   // 压测运行（任务 4）：把 core 压测引擎（并发池执行 + 聚合报告）暴露为 CLI 命令；

@@ -2,7 +2,7 @@ import { createSystemSecretStore, defaultCredentialPrivateRoot, type SecretStore
 import type { createSession } from "./session.js";
 import { createCredentialHost } from "./credentialHost.js";
 
-export type { PreparedDesktopExecutionRun } from "./credentialHost.js";
+export type { CredentialHost, DebugCredentialHost, PreparedDesktopExecutionRun } from "./credentialHost.js";
 
 type Session = ReturnType<typeof createSession>;
 

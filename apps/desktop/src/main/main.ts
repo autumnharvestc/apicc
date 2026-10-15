@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from "electron";
 import { writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IpcChannel } from "../shared/channels.js";
 import { createIpcDeps } from "./ipc.js";
@@ -8,6 +8,7 @@ import { createSession } from "./session.js";
 import { createOnlineClient } from "./online/client.js";
 import { createTokenStore } from "./online/tokenStore.js";
 import { createAiKeyStore } from "./ai/config.js";
+import { createDesktopDebugHistoryStore } from "./debugHistory.js";
 import { attachQuitGuard } from "./quitGuard.js";
 import { defaultCredentialPrivateRoot } from "@apicc/core";
 
@@ -28,6 +29,7 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    show: process.env.APICC_SMOKE_HIDE_WINDOW !== "1",
     webPreferences: {
             preload: join(__dirname, "../preload.cjs"),
       contextIsolation: true,
@@ -66,6 +68,10 @@ function createWindow(): BrowserWindow {
 
 app.whenReady().then(() => {
   const session = createSession();
+  // Explicitly injected only by the isolated packaged-host smoke. Normal startup
+  // keeps Electron's user home/appData and the default credential root unchanged.
+  const smokeRoot = process.env.APICC_SMOKE_ISOLATED_ROOT;
+  const isolatedRoot = smokeRoot ? resolve(smokeRoot) : undefined;
   const pickDirectory = async (): Promise<string> => {
     // 冒烟/e2e 逃生口：无显示器环境无法操作原生目录选择对话框，
     // 设置 APICC_SMOKE_DIR 时直接返回该目录（不设置时走原生对话框，行为不变）。
@@ -98,9 +104,17 @@ app.whenReady().then(() => {
   // （~/.apicc/plugins.json，D4）；关闭通道 = IpcDepsOptions.plugins.loadPlugins:false
   // （与 CLI --no-plugins 对齐口径的编程关闭面，桌面 MVP 无 UI 开关——启用/停用 = 编辑
   // 用户级清单，D8）。createIpcDeps 未配置 plugins 时零加载（测试零扰动），生产必须显式启用。
-  const plugins = { homeDir: app.getPath("home") };
-  const deps = createIpcDeps({ session, pickDirectory, saveFile, online, ai, plugins, credentials: { credentialPrivateRoot: defaultCredentialPrivateRoot() } });
+  const plugins = { homeDir: isolatedRoot ? join(isolatedRoot, "user-home") : app.getPath("home") };
+  const deps = createIpcDeps({
+    session, pickDirectory, saveFile, online, ai, plugins,
+    credentials: { credentialPrivateRoot: isolatedRoot ? join(isolatedRoot, "credentials") : defaultCredentialPrivateRoot() },
+    debugHistory: () => isolatedRoot
+      ? createDesktopDebugHistoryStore({ privateRoot: join(isolatedRoot, "history") })
+      : createDesktopDebugHistoryStore({ appDataDirectory: app.getPath("appData") }),
+  });
   for (const channel of Object.values(IpcChannel)) {
+    // Preserve Electron's actual sender object through this boundary: the debugger binds
+    // start/wait/cancel and renderer teardown to event.sender, never a renderer-supplied id.
     ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
   }
   createWindow();

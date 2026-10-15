@@ -239,12 +239,12 @@ describe("desktop execution credential wiring", () => {
     const { session, credentials, temp } = await setup();
     let failPreparation = true;
     const retryCredentials = {
-      prepareRun: async (...args: Parameters<typeof credentials.prepareRun>) => {
+      prepareRunForRequests: async (...args: Parameters<typeof credentials.prepareRunForRequests>) => {
         if (failPreparation) {
           failPreparation = false;
           throw new Error("temporary preparation failure");
         }
-        return credentials.prepareRun(...args);
+        return credentials.prepareRunForRequests(...args);
       },
     };
     const controller = createStressController(session, {}, retryCredentials);
@@ -288,8 +288,8 @@ describe("desktop execution credential wiring", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let clients = 0;
     const gatedCredentials = {
-      prepareRun: async (...args: Parameters<typeof credentials.prepareRun>) => {
-        const prepared = await credentials.prepareRun(...args);
+      prepareRunForRequests: async (...args: Parameters<typeof credentials.prepareRunForRequests>) => {
+        const prepared = await credentials.prepareRunForRequests(...args);
         markPreparing();
         await gate;
         return prepared;
@@ -351,8 +351,8 @@ describe("desktop execution credential wiring", () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const gatedCredentials = {
-      prepareRun: async (...args: Parameters<typeof credentials.prepareRun>) => {
-        const run = await credentials.prepareRun(...args);
+      prepareRunForRequests: async (...args: Parameters<typeof credentials.prepareRunForRequests>) => {
+        const run = await credentials.prepareRunForRequests(...args);
         markPrepared();
         await gate;
         return run;

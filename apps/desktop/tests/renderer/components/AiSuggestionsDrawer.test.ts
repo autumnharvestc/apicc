@@ -151,9 +151,9 @@ describe("AiSuggestionsDrawer", () => {
     expect(expectBody("ai-adopt-btn").attributes("disabled")).toBeDefined();
     let saveCalls = 0;
     const original = api.apiSave.bind(api);
-    api.apiSave = async (locator, asset) => {
+    api.apiSave = async (locator, asset, revision) => {
       saveCalls += 1;
-      return original(locator, asset);
+      return original(locator, asset, revision);
     };
     const checks = bodyFindAll("ai-suggest-check");
     await checks[1]!.setValue(true);

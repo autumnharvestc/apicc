@@ -194,6 +194,16 @@ function toRequestBody(body: RuntimeBody | undefined, uuid: (value: string) => s
     case "json": return { kind: "json", content: body.content };
     case "xml": return { kind: "xml", content: body.content };
     case "raw": return { kind: "text", content: body.content };
+    case "binary": return { kind: "binary", file: body.file, contentType: body.contentType };
+    case "multipart": return {
+      kind: "multipart",
+      entries: body.entries.map((entry, index) => entry.kind === "text"
+        ? { kind: "text", id: uuid(`multipart:${index}:${entry.name}`), name: entry.name, value: entry.value, enabled: entry.enabled ?? true }
+        : {
+            kind: "file", id: uuid(`multipart:${index}:${entry.name}`), name: entry.name, file: entry.file,
+            ...(entry.filename === undefined ? {} : { filename: entry.filename }), contentType: entry.contentType, enabled: entry.enabled ?? true,
+          }),
+    };
   }
 }
 

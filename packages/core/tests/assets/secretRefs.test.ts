@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { rotateProjectSecretRefs } from "../../src/assets/secretRefs.js";
+import { collectDefinedProjectCredentialRefs, rotateProjectSecretRefs } from "../../src/assets/secretRefs.js";
 import { ApiAssetSchema, type AuthComponentAsset, type InlineAuthBinding } from "../../src/contract/model.js";
 import { ContractProjectSchema, ContractWorkspaceSchema, type ContractProject } from "../../src/contract/workspace.js";
 import { contractFixture, workspaceFixture } from "../helpers/contractFixtures.js";
@@ -177,6 +177,23 @@ function expectSourceUnchangedByValueAndIdentity(
 }
 
 describe("rotateProjectSecretRefs", () => {
+  it("includes every case request override in management scans and credential ID rotation", () => {
+    const project = projectFixture();
+    const asset = project.collections[0]!.apis[0]!;
+    asset.cases[0]!.requestOverride = {
+      ...asset.contract.request,
+      auth: { kind: "bearer", token: { id: "case-only-secret", policy: "test-auto" } },
+    };
+
+    expect(collectDefinedProjectCredentialRefs(project)).toContainEqual({ id: "case-only-secret", policy: "test-auto" });
+    const rotated = rotateProjectSecretRefs(project, { newId: (sourceId) => `rotated-${sourceId}` });
+    expect(rotated.collections[0]!.apis[0]!.cases[0]!.requestOverride?.auth).toEqual({
+      kind: "bearer",
+      token: { id: "rotated-case-only-secret", policy: "test-auto" },
+    });
+    expect(rotated.collections[0]!.apis[0]!.contract.request.auth).toEqual({ kind: "none" });
+  });
+
   it("rotates each formal auth ref once across protocols, nested collections, and unused auth components", () => {
     const project = mixedProjectFixture();
     const before = structuredClone(project);

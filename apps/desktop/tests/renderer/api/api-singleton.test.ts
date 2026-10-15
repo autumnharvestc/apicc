@@ -51,4 +51,14 @@ describe("api/index 生产包隔离单例（memory 回退）", () => {
     const refreshed = await apicc.treeGet();
     expect(refreshed.children?.some((group) => group.kind === "group" && group.locator.groupId === node.locator.groupId)).toBe(true);
   });
+
+  it("production 环境没有 preload 时拒绝，不加载内存替身", async () => {
+    vi.resetModules();
+    vi.stubEnv("DEV", false);
+    const productionApi = (await import("../../../src/renderer/src/api/index.js")).apicc;
+
+    await expect(productionApi.treeGet()).rejects.toThrow("The Electron preload API is unavailable");
+
+    vi.unstubAllEnvs();
+  });
 });

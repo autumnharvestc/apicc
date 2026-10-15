@@ -6,6 +6,7 @@ import { parse, stringify } from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import { ContractWorkspaceSchema, type ContractWorkspace } from "../../src/contract/workspace.js";
 import { ModelAssetSchema } from "../../src/contract/model.js";
+import { fileStorage } from "../../src/storage/fileStorage.js";
 import { encodeContractWorkspace, decodeContractWorkspace } from "../../src/storage/contractFiles.js";
 import { calculateWorkspaceRevision, commitWritePlan } from "../../src/storage/writeJournal.js";
 import {
@@ -112,6 +113,23 @@ async function expectRemovalRoundTrip(
 }
 
 describe("versioned contract workspace files", () => {
+  it("round-trips full request and settings overrides in a case YAML file", async () => {
+    const workspace = fixtureWorkspace();
+    const asset = workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!;
+    asset.cases[0]!.requestOverride = { ...asset.contract.request, path: "/case-only" };
+    asset.cases[0]!.requestSettingsOverride = { headersTimeoutMs: 1200, followRedirects: true };
+    const root = await temporaryRoot();
+    await fileStorage.save(root, workspace, { expectedRevision: "empty", deletions: [] });
+
+    const loaded = await fileStorage.load(root);
+    const reopenedAsset = loaded.workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!;
+    expect(reopenedAsset.cases[0]!.requestOverride?.path).toBe("/case-only");
+    expect(reopenedAsset.cases[0]!.requestSettingsOverride).toEqual({ headersTimeoutMs: 1200, followRedirects: true });
+    expect(reopenedAsset.contract.request.path).toBe("/users");
+    expect(loaded.readOnly).toBe(false);
+    expect(loaded.problems).toEqual([]);
+  });
+
   it("splits contract, design, scoped cases, project models and all component kinds, then round-trips", async () => {
     const workspace = fixtureWorkspace();
     const api = workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!;

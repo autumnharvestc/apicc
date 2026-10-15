@@ -82,6 +82,60 @@ export { JsonValueSchema, SchemaNodeSchema, StringRecordSchema } from "./contrac
 export type { JsonValue, SchemaAnnotations, SchemaNode } from "./contract/schemaNode.js";
 
 export {
+  DebugIdentitySchema,
+  DebugCaseIdentitySchema,
+  DebugFieldStateSchema,
+  DebugInvocationSchema,
+  DebugRequestBodySchema,
+  DebugResponseBodySchema,
+  DebugRequestSchema,
+  DebugResponseSchema,
+  DebugOutcomeSchema,
+  DebugRunSummarySchema,
+  DebugReplayDescriptorSchema,
+  DebugExchangeSchema,
+  DebugResultSchema,
+  DebugHistoryPreferencesSchema,
+  DebugHistoryRecordSchema,
+  DebugHistoryResultFilterSchema,
+  DebugHistorySummarySchema,
+  DebugHistoryListFilterSchema,
+  DebugHistoryDiagnosticSchema,
+  DebugHistoryPageSchema,
+  DebugHistoryReadResultSchema,
+} from "./debug/model.js";
+export type {
+  DebugIdentity,
+  DebugCaseIdentity,
+  DebugFieldState,
+  DebugInvocation,
+  DebugRequestBody,
+  DebugResponseBody,
+  DebugRequest,
+  DebugResponse,
+  DebugOutcome,
+  DebugRunSummary,
+  DebugReplayDescriptor,
+  DebugExchange,
+  DebugResult,
+  DebugHistoryPreferences,
+  DebugHistoryRecord,
+  DebugHistoryResultFilter,
+  DebugHistorySummary,
+  DebugHistoryListFilter,
+  DebugHistoryDiagnostic,
+  DebugHistoryPage,
+  DebugHistoryReadResult,
+} from "./debug/model.js";
+
+export {
+  RequestSettingsSchema,
+  RequestSettingsOverrideSchema,
+  resolveRequestSettings,
+} from "./request/settings.js";
+export type { RequestSettings, RequestSettingsOverride } from "./request/settings.js";
+
+export {
   ContractCollectionSchema,
   ContractEnvironmentSchema,
   ContractFolderSchema,

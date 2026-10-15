@@ -107,13 +107,14 @@ function isFormalOptionalProjectField(parent: Record<string, unknown>, key: stri
   if (parent.kind === "componentRef" && parent.expectedKind === "parameter" && (key === "value" || key === "enabled")) return true;
   if (parent.kind === "graphql" && Object.hasOwn(parent, "query") && (key === "variables" || key === "operationName")) return true;
   if ((kind === "json" || kind === "xml" || kind === "text") && Object.hasOwn(parent, "content") && key === "schema") return true;
-  if (parent.kind === "file" && Object.hasOwn(parent, "file") && key === "contentType") return true;
+  if (parent.kind === "file" && Object.hasOwn(parent, "file") && ["contentType", "filename"].includes(key)) return true;
   if (Array.isArray(parent.examples) && key === "schema") return true;
   if (Object.hasOwn(parent, "id") && Object.hasOwn(parent, "target") && Object.hasOwn(parent, "op")
     && ["expected", "headerName", "path"].includes(key)) return true;
   if ((kind === "request" || kind === "noop") && ["apiId", "caseId", "label", "position"].includes(key)) return true;
   if (Object.hasOwn(parent, "from") && Object.hasOwn(parent, "to") && key === "condition") return true;
-  if (Array.isArray(parent.assertions) && Object.hasOwn(parent, "parameters") && key === "dataDriver") return true;
+  if (Array.isArray(parent.assertions) && Object.hasOwn(parent, "parameters")
+    && ["dataDriver", "requestOverride", "requestSettingsOverride"].includes(key)) return true;
   if (Array.isArray(parent.trustedOrigins) && Array.isArray(parent.deniedOrigins)
     && (key === "maxConcurrency" || key === "maxRps")) return true;
   return false;

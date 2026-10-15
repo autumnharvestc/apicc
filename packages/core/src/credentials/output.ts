@@ -1,7 +1,34 @@
-import type { DeepReadonly } from "../assets/snapshot.js";
-import type { ApiAsset, AuthBinding, InlineAuthBinding, SecretRef } from "../contract/model.js";
+import type { DeepReadonly, ProjectSnapshot } from "../assets/snapshot.js";
+import type { ApiAsset, ApiRequest, AuthBinding, InlineAuthBinding, SecretRef } from "../contract/model.js";
 import type { ContractProject } from "../contract/workspace.js";
 import type { CredentialBindings } from "./types.js";
+import type { TestCase } from "../domain/common.js";
+import { getEffectiveCaseRequest } from "../request/effective.js";
+
+export interface EffectiveCredentialRequest {
+  readonly asset: DeepReadonly<ApiAsset>;
+  readonly request: DeepReadonly<ApiRequest>;
+}
+
+export interface CredentialRequestSelection {
+  readonly asset: DeepReadonly<ApiAsset>;
+  readonly testCase?: DeepReadonly<TestCase>;
+}
+
+export function selectCredentialRequests(
+  snapshot: ProjectSnapshot,
+  selections: readonly CredentialRequestSelection[],
+): readonly EffectiveCredentialRequest[] {
+  const assets = new Set(collectProjectApis(snapshot.project));
+  return Object.freeze(selections.map(({ asset, testCase }) => {
+    if (!assets.has(asset)) throw new TypeError("Credential request asset must belong to the supplied project snapshot.");
+    if (testCase !== undefined && !asset.cases.some((candidate) => candidate === testCase)) {
+      throw new TypeError("Credential request case must belong to the selected snapshot asset.");
+    }
+    const request = testCase === undefined ? asset.contract.request : getEffectiveCaseRequest(asset, testCase);
+    return Object.freeze({ asset, request });
+  }));
+}
 
 export interface CredentialOutputSanitizer {
   redactText(text: string): string;
@@ -12,9 +39,16 @@ export function collectProjectCredentialRefs(
   project: DeepReadonly<ContractProject>,
   selectedAssets: readonly DeepReadonly<ApiAsset>[],
 ): SecretRef[] {
+  return collectCredentialRefsForRequests(project, selectedAssets.map((asset) => ({ asset, request: asset.contract.request })));
+}
+
+export function collectCredentialRefsForRequests(
+  project: DeepReadonly<ContractProject>,
+  requests: readonly EffectiveCredentialRequest[],
+): SecretRef[] {
   const refs = new Map<string, SecretRef>();
-  for (const asset of selectedAssets) {
-    const auth = inlineAuth(project, asset.contract.request.auth);
+  for (const selected of requests) {
+    const auth = inlineAuth(project, selected.request.auth);
     if (auth) collectAuthRefs(auth, refs);
   }
   return [...refs.values()];
@@ -25,17 +59,29 @@ export function collectCredentialOutputMarkers(
   selectedAssets: readonly DeepReadonly<ApiAsset>[],
   preparedBindings: CredentialBindings,
 ): string[] {
+  return collectCredentialMarkersForRequests(
+    project,
+    selectedAssets.map((asset) => ({ asset, request: asset.contract.request })),
+    preparedBindings,
+  );
+}
+
+export function collectCredentialMarkersForRequests(
+  project: DeepReadonly<ContractProject>,
+  requests: readonly EffectiveCredentialRequest[],
+  preparedBindings: CredentialBindings,
+): string[] {
   const markers: string[] = [];
   const add = (value: string): void => {
     if (value.length > 0) markers.push(value);
   };
 
-  for (const ref of collectProjectCredentialRefs(project, selectedAssets)) {
+  for (const ref of collectCredentialRefsForRequests(project, requests)) {
     add(preparedBindings.resolve(ref));
   }
 
-  for (const asset of selectedAssets) {
-    const auth = inlineAuth(project, asset.contract.request.auth);
+  for (const selected of requests) {
+    const auth = inlineAuth(project, selected.request.auth);
     if (!auth) continue;
     switch (auth.kind) {
       case "none":
@@ -59,6 +105,23 @@ export function collectCredentialOutputMarkers(
   }
 
   return markers;
+}
+
+function collectProjectApis(project: DeepReadonly<ContractProject>): DeepReadonly<ApiAsset>[] {
+  const assets: DeepReadonly<ApiAsset>[] = [];
+  for (const collection of project.collections) {
+    assets.push(...collection.apis);
+    for (const folder of collection.folders) collectFolderApis(folder, assets);
+  }
+  return assets;
+}
+
+function collectFolderApis(
+  folder: DeepReadonly<ContractProject["collections"][number]["folders"][number]>,
+  assets: DeepReadonly<ApiAsset>[],
+): void {
+  assets.push(...folder.apis);
+  for (const child of folder.folders) collectFolderApis(child, assets);
 }
 
 export function createCredentialOutputSanitizer(markers: readonly string[]): CredentialOutputSanitizer {

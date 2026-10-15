@@ -130,7 +130,7 @@ function cleanSession(apiId: string, project: ProjectLocator = PROJECT_1): Edito
     },
     cases: [], documentation: "",
   };
-  return { root: LOCAL_REF.dir, locator, api, envs: [], snapshot: JSON.stringify(api), protocolDrafts: {}, generation: 1 };
+  return { root: LOCAL_REF.dir, locator, api, sourceApiRevision: "revision", sourceProjectRevision: "project-revision", envs: [], snapshot: JSON.stringify(api), protocolDrafts: {}, generation: 1 };
 }
 
 /** 脏会话槽：缓冲相对快照有未保存修改。 */

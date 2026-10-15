@@ -82,8 +82,8 @@ describe("soapClient（M5 D3/D4，裁定 A）", () => {
         expect(request.protocol).toBe("http");
         if (request.protocol !== "http") throw new Error("SOAP adapter must delegate HTTP");
         expect(request.method).toBe("POST");
-        expect(request.body?.kind).toBe("xml");
-        expect(request.body?.content).toContain("AddUser");
+        if (request.body?.kind !== "xml") throw new Error("SOAP adapter must delegate an XML body");
+        expect(request.body.content).toContain("AddUser");
         return { status: 200, headers: {}, bodyText: "ok", timeMs: 1 };
       },
       close: async () => { closeCount += 1; },
