@@ -420,7 +420,18 @@ describe("contract workspace CLI/MCP consumption", () => {
     await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
     const previousRequests = observedRequests.splice(0);
     const entry = fileURLToPath(new URL("../dist/bin.js", import.meta.url));
-    const appData = join(fixtureRoot, ".apicc", "app-data");
+    const privateHome = join(fixtureRoot, ".apicc", "private-home");
+    const appData = process.platform === "darwin"
+      ? join(privateHome, "Library", "Application Support")
+      : join(privateHome, "app-data");
+    const childEnv = {
+      ...process.env,
+      APPDATA: appData,
+      LOCALAPPDATA: appData,
+      XDG_CONFIG_HOME: appData,
+      HOME: privateHome,
+      USERPROFILE: privateHome,
+    };
     try {
       const child = spawnOwnedCliProcess({
         command: process.execPath,
@@ -437,7 +448,7 @@ describe("contract workspace CLI/MCP consumption", () => {
         "base",
         ],
         cwd: tmpdir(),
-        env: { ...process.env, APPDATA: appData },
+        env: childEnv,
       });
       const childResult = await child.result;
       expect(childResult.termination).toBe("exit");
@@ -482,7 +493,7 @@ describe("contract workspace CLI/MCP consumption", () => {
           "--no-history",
         ],
         cwd: tmpdir(),
-        env: { ...process.env, APPDATA: appData },
+        env: childEnv,
       });
       const requestResult = await requestChild.result;
       expect(requestResult.termination).toBe("exit");
