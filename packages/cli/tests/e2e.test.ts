@@ -274,41 +274,57 @@ describe("CLI 端到端", () => {
   });
 
   it("import --yes 导入 OpenAPI 样例退出码 0，重开工作区断言项目存在；重复导入同名并存（轨一同名放开）", async () => {
-    const { writeFileSync } = await import("node:fs");
-    const sample = join(dataRoot, "openapi-sample.yaml");
-    writeFileSync(sample, [
-      "openapi: 3.0.0",
-      "info:",
-      "  title: 宠物样例",
-      "  version: 1.0.0",
-      "servers:",
-      "  - url: http://127.0.0.1:1",
-      "paths:",
-      "  /pets:",
-      "    get:",
-      "      operationId: listPets",
-      "      responses:",
-      "        '200':",
-      "          description: ok",
-    ].join("\n"));
-    const logs: string[] = [];
-    const code = await runCli(["import", sample, "--group", "imported", "--yes"], createDefaultRegistry(), (l) => logs.push(l));
-    expect(code).toBe(0);
-    expect(logs.join("\n")).toContain("已导入项目「宠物样例」到分组「imported」");
-    // 重开工作区断言项目存在（分组不存在时由 import 创建；含导入集合与接口）
-    const { workspace } = await fileStorage.load(root);
-    const group = workspace.groups.find((g) => g.name === "imported");
-    expect(group).toBeDefined();
-    const project = group!.projects.find((p) => p.name === "宠物样例");
-    expect(project).toBeDefined();
-    expect(project!.collections[0]!.apis.map((asset) => asset.contract.metadata.name)).toContain("listPets");
-    // 重复导入同名项目：同名放开（轨一）后并存，不再拒绝——两个同名项目 id 不同
-    const code2 = await runCli(["import", sample, "--group", "imported", "--yes"], createDefaultRegistry());
-    expect(code2).toBe(0);
-    const { workspace: ws2 } = await fileStorage.load(root);
-    const same = ws2.groups.find((g) => g.name === "imported")!.projects.filter((p) => p.name === "宠物样例");
-    expect(same).toHaveLength(2);
-    expect(same[0]!.id).not.toBe(same[1]!.id);
+    const sampleRoot = mkdtempSync(join(tmpdir(), "apicc-e2e-import-source-"));
+    const importRoot = mkdtempSync(join(tmpdir(), "apicc-e2e-import-workspace-"));
+    const sample = join(sampleRoot, "openapi-sample.yaml");
+    try {
+      writeFileSync(sample, [
+        "openapi: 3.0.0",
+        "info:",
+        "  title: 宠物样例",
+        "  version: 1.0.0",
+        "servers:",
+        "  - url: http://127.0.0.1:1",
+        "paths:",
+        "  /pets:",
+        "    get:",
+        "      operationId: listPets",
+        "      responses:",
+        "        '200':",
+        "          description: ok",
+      ].join("\n"));
+      // Import has its own workspace and child-process cwd: a timed-out import cannot hold the shared workflow fixture read-only.
+      const base = await fileStorage.load(root);
+      const empty = await fileStorage.load(importRoot);
+      await fileStorage.save(importRoot, base.workspace, { expectedRevision: empty.revision, deletions: [] });
+
+      const firstImport = await runCliProcess(["import", sample, "--group", "imported", "--yes"], { cwd: importRoot });
+      expect(firstImport.code).toBe(0);
+      expect(firstImport.output).toContain("已导入项目「宠物样例」到分组「imported」");
+      // 重开独立工作区断言项目存在（分组不存在时由 import 创建；含导入集合与接口）。
+      const { workspace, readOnly, problems, revision } = await fileStorage.load(importRoot);
+      expect(readOnly).toBe(false);
+      expect(problems).toEqual([]);
+      const group = workspace.groups.find((g) => g.name === "imported");
+      expect(group).toBeDefined();
+      const project = group!.projects.find((p) => p.name === "宠物样例");
+      expect(project).toBeDefined();
+      expect(project!.collections[0]!.apis.map((asset) => asset.contract.metadata.name)).toContain("listPets");
+
+      // 重复导入同名项目：同名放开（轨一）后并存，不再拒绝——两个同名项目 id 不同。
+      const secondImport = await runCliProcess(["import", sample, "--group", "imported", "--yes"], { cwd: importRoot });
+      expect(secondImport.code).toBe(0);
+      const { workspace: ws2, readOnly: secondReadOnly, problems: secondProblems, revision: secondRevision } = await fileStorage.load(importRoot);
+      expect(secondReadOnly).toBe(false);
+      expect(secondProblems).toEqual([]);
+      const same = ws2.groups.find((g) => g.name === "imported")!.projects.filter((p) => p.name === "宠物样例");
+      expect(same).toHaveLength(2);
+      expect(same[0]!.id).not.toBe(same[1]!.id);
+      await expect(fileStorage.save(importRoot, ws2, { expectedRevision: secondRevision, deletions: [] })).resolves.toBeDefined();
+    } finally {
+      rmSync(importRoot, { recursive: true, force: true });
+      rmSync(sampleRoot, { recursive: true, force: true });
+    }
   });
 
   it("import 不带 --yes 只打印预览不写入工作区", async () => {
