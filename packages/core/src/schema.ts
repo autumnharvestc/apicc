@@ -1,5 +1,25 @@
 /** Side-effect-light schema entry point for renderer/preload runtime validation. */
 export {
+  OAuthProfileSchema,
+  OAuthProfileStatusSchema,
+  OAuthOperationStatusSchema,
+  OAuthProfileSummarySchema,
+  OAuthPublicResultSchema,
+  OAuthErrorCodeSchema,
+} from "./oauth/model.js";
+export type {
+  OAuthScope,
+  OAuthProfile,
+  OAuthFlow,
+  OAuthClientAuthentication,
+  OAuthProfileStatus,
+  OAuthOperationStatus,
+  OAuthProfileSummary,
+  OAuthPublicResult,
+  OAuthErrorCode,
+} from "./oauth/model.js";
+
+export {
   AssertionSchema,
   DataDriverSchema,
   EnvironmentSchema,
@@ -82,8 +102,29 @@ export { JsonValueSchema, SchemaNodeSchema, StringRecordSchema } from "./contrac
 export type { JsonValue, SchemaAnnotations, SchemaNode } from "./contract/schemaNode.js";
 
 export {
+  NetworkScopeSchema,
+  NetworkSelectionSchema,
+  NetworkProfileSchema,
+  NetworkConfigurationSchema,
+  emptyNetworkConfiguration,
+} from "./network/profiles.js";
+export type {
+  NetworkScope,
+  NetworkSelection,
+  NetworkTLSSettings,
+  NetworkTargetTLSBinding,
+  DirectNetworkProfile,
+  ProxyNetworkProfile,
+  NetworkProfile,
+  NetworkEnvironmentSelection,
+  NetworkConfiguration,
+} from "./network/profiles.js";
+
+export {
   DebugIdentitySchema,
   DebugCaseIdentitySchema,
+  DebugProjectIdentitySchema,
+  DebugHistoryOwnerIdentitySchema,
   DebugFieldStateSchema,
   DebugInvocationSchema,
   DebugRequestBodySchema,
@@ -95,6 +136,8 @@ export {
   DebugReplayDescriptorSchema,
   DebugExchangeSchema,
   DebugResultSchema,
+  DebugResultSourceSchema,
+  DebugExecutionSourceSchema,
   DebugHistoryPreferencesSchema,
   DebugHistoryRecordSchema,
   DebugHistoryResultFilterSchema,
@@ -107,6 +150,7 @@ export {
 export type {
   DebugIdentity,
   DebugCaseIdentity,
+  DebugProjectIdentity,
   DebugFieldState,
   DebugInvocation,
   DebugRequestBody,
@@ -126,6 +170,10 @@ export type {
   DebugHistoryDiagnostic,
   DebugHistoryPage,
   DebugHistoryReadResult,
+  DebugExecutionIdentity,
+  DebugExecutionSource,
+  DebugResultSource,
+  DebugHistoryOwnerIdentity,
 } from "./debug/model.js";
 
 export {

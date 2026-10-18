@@ -7,6 +7,7 @@ import type { CaseExecutionResult } from "../runner/caseExecutor.js";
 import type {
   DebugCaseIdentity, DebugExchange, DebugExecutionIdentity, DebugFieldState, DebugInvocation,
   DebugRequest, DebugRequestBody, DebugResponse, DebugResponseBody, DebugResult, DebugRunSummary, DebugSourceCategory,
+  DebugResultSource,
 } from "./model.js";
 
 const MAX_BODY_SUMMARY_BYTES = 1024 * 1024;
@@ -52,16 +53,16 @@ export function createDebugExchangeCollector(markers: readonly string[]): DebugE
   let total = 0;
 
   const keyFor = (identity: DebugExecutionIdentity, hopIndex: number): string =>
-    JSON.stringify([identity.apiId, identity.caseId, identity.scope, identity.rowIndex, hopIndex]);
+    JSON.stringify([identity.source, identity.rowIndex, hopIndex]);
   const rowKeyFor = (identity: DebugExecutionIdentity): string =>
-    JSON.stringify([identity.apiId, identity.caseId, identity.scope, identity.rowIndex]);
+    JSON.stringify([identity.source, identity.rowIndex]);
 
   const newDraft = (identity: DebugExecutionIdentity, hopIndex: number, order: number, startedAt: string): ExchangeDraft | undefined => {
     if (order > MAX_EXCHANGES) return undefined;
     const draft: ExchangeDraft = {
       startedAtMonotonic: performance.now(),
       value: {
-        case: caseIdentity(identity),
+        source: identity.source,
         observation: "http-hop",
         rowIndex: identity.rowIndex,
         hopIndex,
@@ -91,15 +92,14 @@ export function createDebugExchangeCollector(markers: readonly string[]): DebugE
       draft = newDraft(identity, event.hopIndex, total, timestamp);
       if (draft) {
         draft.requestMarkerGeneration = markerGeneration;
+        const sourceCategories = new Set<DebugSourceCategory>(identity.sourceCategories ?? ["unknown"]);
+        if (event.request.auth.kind === "none") sourceCategories.delete("auth");
+        if (event.sessionCookieUsed === true) sourceCategories.add("session");
+        if (event.sessionCookieUsed === undefined) sourceCategories.add("unknown");
         draft.value = {
           ...draft.value,
-          request: projectRequest(event.request, createCurrentSanitizer(), budget, event.url, event.method, reliable, [
-            ...new Set<DebugSourceCategory>([
-              ...(identity.sourceCategories ?? ["unknown"]),
-              ...(event.sessionCookieUsed === true ? ["session" as const] : []),
-              ...(event.sessionCookieUsed === undefined ? ["unknown" as const] : []),
-            ]),
-          ], event.capturedFiles),
+          request: projectRequest(event.request, createCurrentSanitizer(), budget, event.url, event.method, reliable,
+            [...sourceCategories], event.capturedFiles),
         };
       }
       return;
@@ -414,7 +414,7 @@ export function createDebugExchangeCollector(markers: readonly string[]): DebugE
 export function projectDebugResult(input: {
   plan: {
     invocation: DebugInvocation;
-    sourceApiRevision: string;
+    source: DebugResultSource;
     sourceProjectRevision: string;
     executionSnapshotRevision: string;
     requestTemplate?: ApiRequest;
@@ -436,10 +436,11 @@ export function projectDebugResult(input: {
   const projectionReliable = (input.projectionReliable ?? true) && collector.projectionReliable();
   const sanitizer = createCredentialOutputSanitizer(markers);
   const markerBytes = markers.map((marker) => Buffer.from(marker, "utf8")).filter((marker) => marker.length > 0);
-  const outcomes = run.cases.map((outcome) => projectOutcome(outcome, sanitizer, projectionReliable));
+  const exposeAssetIdentity = plan.source.sourceKind === "asset";
+  const outcomes = run.cases.map((outcome) => projectOutcome(outcome, sanitizer, projectionReliable, exposeAssetIdentity));
   const replay = projectReplay(plan, sanitizer, projectionReliable);
   const warnings = (run.warnings ?? []).map((warning) => projectionReliable ? sanitizer.redactText(warning) : "[REDACTED]");
-  if (replay.mode === "request" && !replay.available) warnings.push("The request replay descriptor is unavailable because credential projection would change its structure.");
+  if ((replay.mode === "request" || replay.mode === "free") && !replay.available) warnings.push("The request replay descriptor is unavailable because credential projection would change its structure.");
   const finalBodyBudget: SummaryBudget = { remaining: MAX_CALL_BODY_SUMMARY_BYTES };
   const exchanges = collector.exchanges().map((exchange) => projectFinalExchange(
     exchange,
@@ -450,7 +451,7 @@ export function projectDebugResult(input: {
     collector.lateMarkersFor(exchange, "response"),
     finalBodyBudget,
   ));
-  const safeLocator = projectIdentity(plan.invocation.locator, sanitizer, projectionReliable);
+  const safeSource = projectIdentity(plan.source, sanitizer, projectionReliable);
   const safeEnvironmentId = plan.invocation.environmentId === undefined
     ? undefined
     : projectScalarIdentity(plan.invocation.environmentId, sanitizer, projectionReliable);
@@ -462,15 +463,15 @@ export function projectDebugResult(input: {
     : projectionReliable ? sanitizer.redactText(input.errorName) : "[REDACTED]";
   return {
     runId,
-    sourceApiRevision: plan.sourceApiRevision,
+    source: safeSource ?? { sourceKind: "unavailable" },
     sourceProjectRevision: plan.sourceProjectRevision,
     executionSnapshotRevision: plan.executionSnapshotRevision,
     mode: plan.invocation.mode,
-    ...(safeLocator === undefined ? { identityAvailable: false } : { locator: safeLocator, identityAvailable: true }),
+    identityAvailable: safeSource !== undefined,
     ...(safeEnvironmentId === undefined ? {} : { environmentId: safeEnvironmentId }),
     startedAt,
     finishedAt,
-    run: projectRunSummary(run, sanitizer, projectionReliable),
+    run: projectRunSummary(run, sanitizer, projectionReliable, exposeAssetIdentity),
     outcomes,
     exchanges,
     exchangeTotal: collector.exchangeTotal(),
@@ -534,9 +535,10 @@ function projectOutcome(
   outcome: CaseOutcome,
   sanitizer: ReturnType<typeof createCredentialOutputSanitizer>,
   projectionReliable: boolean,
+  exposeAssetIdentity: boolean,
 ): DebugResult["outcomes"][number] {
-  const apiId = projectScalarIdentity(outcome.apiId, sanitizer, projectionReliable);
-  const caseId = projectScalarIdentity(outcome.caseId, sanitizer, projectionReliable);
+  const apiId = exposeAssetIdentity ? projectScalarIdentity(outcome.apiId, sanitizer, projectionReliable) : undefined;
+  const caseId = exposeAssetIdentity ? projectScalarIdentity(outcome.caseId, sanitizer, projectionReliable) : undefined;
   return {
     ...(apiId === undefined ? {} : { apiId }),
     ...(caseId === undefined ? {} : { caseId }),
@@ -558,8 +560,9 @@ function projectRunSummary(
   run: RunResult,
   sanitizer: ReturnType<typeof createCredentialOutputSanitizer>,
   projectionReliable: boolean,
+  exposeAssetIdentity: boolean,
 ): DebugRunSummary {
-  const collectionId = projectScalarIdentity(run.collectionId, sanitizer, projectionReliable);
+  const collectionId = exposeAssetIdentity ? projectScalarIdentity(run.collectionId, sanitizer, projectionReliable) : undefined;
   return {
     ...(collectionId === undefined ? {} : { collectionId }),
     identityAvailable: collectionId !== undefined,
@@ -578,6 +581,7 @@ function projectRunSummary(
 function projectReplay(
   plan: {
     invocation: DebugInvocation;
+    source: DebugResultSource;
     requestTemplate?: ApiRequest;
     baseParameters?: Readonly<Record<string, string>>;
     fields?: readonly DebugFieldState[];
@@ -586,20 +590,25 @@ function projectReplay(
   projectionReliable: boolean,
 ): DebugResult["replay"] {
   const { invocation } = plan;
-  const safeLocator = projectIdentity(invocation.locator, sanitizer, projectionReliable);
+  const isFree = invocation.mode === "free";
+  const safeLocator = invocation.mode !== "free" ? projectIdentity(invocation.locator, sanitizer, projectionReliable) : undefined;
   const safeCase = invocation.mode === "case" ? projectIdentity(invocation.case, sanitizer, projectionReliable) : undefined;
-  const requestTemplate = plan.requestTemplate ?? (invocation.mode === "request" ? invocation.request : undefined);
-  const baseParameters = plan.baseParameters ?? (invocation.mode === "request" ? invocation.parameters : {});
-  const initialFields = plan.fields ?? (invocation.mode === "request" ? invocation.fields : []);
+  const safeProject = invocation.mode === "free" ? projectIdentity(invocation.project, sanitizer, projectionReliable) : undefined;
+  const safeDraftId = invocation.mode === "free" ? projectScalarIdentity(invocation.draftId, sanitizer, projectionReliable) : undefined;
+  const requestTemplate = plan.requestTemplate ?? (invocation.mode === "request" || invocation.mode === "free" ? invocation.request : undefined);
+  const baseParameters = plan.baseParameters ?? (invocation.mode === "request" || invocation.mode === "free" ? invocation.parameters : {});
+  const initialFields = plan.fields ?? (invocation.mode === "request" || invocation.mode === "free" ? invocation.fields : []);
   const explicitSettings = invocation.settings === undefined ? {} : { settings: invocation.settings };
   if (!projectionReliable) {
     const fields: DebugFieldState[] = [
       { path: "request", status: "redacted", needsInput: true },
-      ...(invocation.mode === "request" ? [{ path: "parameters", status: "redacted" as const, needsInput: true }] : []),
+      ...(invocation.mode !== "case" ? [{ path: "parameters", status: "redacted" as const, needsInput: true }] : []),
     ];
     return invocation.mode === "case"
-      ? { mode: "case", ...(safeCase === undefined ? {} : { case: safeCase }), parameters: {}, fields, ...explicitSettings, identityAvailable: false, available: false }
-      : { mode: "request", ...(safeLocator === undefined ? {} : { locator: safeLocator }), parameters: {}, fields, ...explicitSettings, identityAvailable: false, available: false };
+      ? { mode: "case", sourceKind: "asset", ...(safeCase === undefined ? {} : { case: safeCase }), parameters: {}, fields, ...explicitSettings, identityAvailable: false, available: false }
+      : invocation.mode === "free"
+        ? { mode: "free", sourceKind: "free", ...(safeProject === undefined ? {} : { project: safeProject }), ...(safeDraftId === undefined ? {} : { draftId: safeDraftId }), parameters: {}, fields, ...explicitSettings, identityAvailable: false, available: false }
+        : { mode: "request", sourceKind: "asset", ...(safeLocator === undefined ? {} : { locator: safeLocator }), parameters: {}, fields, ...explicitSettings, identityAvailable: false, available: false };
   }
 
   let identityConflict = false;
@@ -650,11 +659,14 @@ function projectReplay(
   if (parameterConflict) addField(fields, { path: "parameters", status: "redacted", needsInput: true });
   if (identityConflict && projectedRequest !== undefined) addField(fields, { path: "request", status: "redacted", needsInput: true });
   const safeFields = [...fields.values()];
-  const available = !identityConflict && safeLocator !== undefined && (invocation.mode !== "case" || safeCase !== undefined)
+  const available = !identityConflict
+    && (invocation.mode === "free" ? safeProject !== undefined && safeDraftId !== undefined : safeLocator !== undefined)
+    && (invocation.mode !== "case" || safeCase !== undefined)
     && !safeFields.some((field) => field.needsInput);
   if (invocation.mode === "case") {
     return {
       mode: "case",
+      sourceKind: "asset",
       ...(safeCase === undefined ? {} : { case: safeCase }),
       ...(identityConflict ? {} : projectedRequest === undefined ? {} : { requestTemplate: projectedRequest }),
       parameters: parameterConflict ? {} : parameters,
@@ -664,8 +676,21 @@ function projectReplay(
       available,
     };
   }
+  if (invocation.mode === "free") return {
+    mode: "free",
+    sourceKind: "free",
+    ...(safeProject === undefined ? {} : { project: safeProject }),
+    ...(safeDraftId === undefined ? {} : { draftId: safeDraftId }),
+    ...(identityConflict ? {} : projectedRequest === undefined ? {} : { requestTemplate: projectedRequest }),
+    parameters: parameterConflict ? {} : parameters,
+    fields: safeFields,
+    ...explicitSettings,
+    identityAvailable: safeProject !== undefined && safeDraftId !== undefined,
+    available,
+  };
   return {
     mode: "request",
+    sourceKind: "asset",
     ...(safeLocator === undefined ? {} : { locator: safeLocator }),
     ...(identityConflict ? {} : projectedRequest === undefined ? {} : { requestTemplate: projectedRequest }),
     parameters: parameterConflict ? {} : parameters,
@@ -713,7 +738,7 @@ function projectFinalExchange(
   lateResponseMarkers: readonly string[],
   summaryBudget: SummaryBudget,
 ): DebugExchange {
-  const safeCase = exchange.case === undefined ? undefined : projectIdentity(exchange.case, sanitizer, reliable);
+  const safeSource = projectIdentity(exchange.source, sanitizer, reliable);
   const intent = exchange.intent === undefined ? undefined : projectRowIntent(exchange.intent, sanitizer, reliable);
   const requestBodyBudget: SummaryBudget = { remaining: MAX_BODY_SUMMARY_BYTES };
   const responseBodyBudget: SummaryBudget = { remaining: MAX_BODY_SUMMARY_BYTES };
@@ -739,7 +764,8 @@ function projectFinalExchange(
     body: projectFinalResponseBody(exchange.response.body, sanitizer, markerBytes, reliable, lateResponseMarkers, summaryBudget, responseBodyBudget),
   };
   return {
-    ...(safeCase === undefined ? { identityAvailable: false } : { case: safeCase, identityAvailable: true }),
+    source: safeSource ?? { sourceKind: "unavailable" },
+    identityAvailable: safeSource !== undefined,
     rowIndex: exchange.rowIndex,
     hopIndex: exchange.hopIndex,
     order: exchange.order,
@@ -951,19 +977,6 @@ function addField(fields: Map<string, DebugFieldState>, next: DebugFieldState): 
 
 function isRequestStructureValue(key: string): boolean {
   return ["id", "kind", "protocol", "method", "expectedKind", "componentId", "policy", "name", "key"].includes(key);
-}
-
-function caseIdentity(identity: DebugExecutionIdentity): DebugCaseIdentity {
-  return {
-    workspaceId: identity.workspaceId,
-    groupId: identity.groupId,
-    projectId: identity.projectId,
-    collectionId: identity.collectionId,
-    folderIds: [...identity.folderIds],
-    apiId: identity.apiId,
-    caseId: identity.caseId,
-    scope: identity.scope,
-  };
 }
 
 function projectRequestHeader(

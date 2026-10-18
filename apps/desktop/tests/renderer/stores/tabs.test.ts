@@ -341,7 +341,7 @@ describe("激活编排（activateTab）", () => {
     await openTab(tabs, LOCAL_REF, P2);
     await openTab(tabs, LOCAL_REF, P3);
     // 回到 P1，再从同一脏工作流并发切 P2/P3，模拟确认对话框交错。
-    tabs.activeTabId = "tab-1";
+    await tabs.activateTab("tab-1");
     ctx.deps.workflowDesign = { dirty: true, locator: { ...localLocator("p-1"), workflowId: "30000000-0000-4000-8000-000000000001" } };
     ctx.deps.confirmWorkflowDraft = vi.fn(() => new Promise<boolean>((resolve) => gates.push({ resolve })));
     const older = tabs.activateTab("tab-2");
@@ -442,6 +442,129 @@ describe("激活编排（activateTab）", () => {
     expect(tabs.offlineTabIds).toEqual(["tab-1"]);
     expect(tabs.activeTabId).toBeNull();
     expect(tabs.error).toContain("apicc.workspace.yaml");
+  });
+});
+
+describe("主页与项目页签导航（selectedPage + retained context）", () => {
+  it("回主页保留项目上下文和页签；重新点同签恢复项目页且不重开工作区", async () => {
+    const { deps, storage, workspace } = makeDeps();
+    const tabs = createTabsStore(deps);
+    await openTab(tabs, LOCAL_REF, P1);
+    const tabId = tabs.tabs[0]!.tabId;
+    const openCount = workspace.open.mock.calls.length;
+
+    tabs.activateHome();
+
+    expect(tabs.selectedPage).toEqual({ kind: "home" });
+    expect(tabs.contextTabId).toBe(tabId);
+    expect(tabs.activeTabId).toBeNull();
+    expect(tabs.activeTab).toBeNull();
+    expect(tabs.tabs).toHaveLength(1);
+    expect(JSON.parse(storage.getItem(STORAGE_KEY)!)).toMatchObject({ activeIndex: null });
+
+    await tabs.activateTab(tabId);
+
+    expect(tabs.selectedPage).toEqual({ kind: "project", tabId });
+    expect(tabs.contextTabId).toBe(tabId);
+    expect(tabs.activeTabId).toBe(tabId);
+    expect(workspace.open).toHaveBeenCalledTimes(openCount);
+  });
+
+  it("关闭主页上的后台签（含保留上下文签）不离开主页", async () => {
+    const { deps } = makeDeps();
+    const tabs = createTabsStore(deps);
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P2);
+    tabs.activateHome();
+
+    await tabs.closeTab("tab-1");
+    expect(tabs.selectedPage).toEqual({ kind: "home" });
+    expect(tabs.tabs.map(tabProjectId)).toEqual([localLocator("p-2").projectId]);
+    expect(tabs.contextTabId).toBe("tab-2");
+
+    await tabs.closeTab("tab-2");
+    expect(tabs.selectedPage).toEqual({ kind: "home" });
+    expect(tabs.contextTabId).toBeNull();
+    expect(tabs.tabs).toHaveLength(0);
+  });
+
+  it("主页关闭后台签时，待完成的另一签激活完成后仍停留主页", async () => {
+    const { deps, workspace } = makeDeps();
+    const tabs = createTabsStore(deps);
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P2);
+    await tabs.activateTab("tab-1");
+    tabs.activateHome();
+
+    let releaseRestore!: () => void;
+    const restoreGate = new Promise<void>((resolve) => { releaseRestore = resolve; });
+    let restoreStarted = false;
+    const pagesDuringRestore: string[] = [];
+    deps.onProjectActivated = async (tab, isCurrent) => {
+      if (tab.tabId !== "tab-1") return;
+      restoreStarted = true;
+      pagesDuringRestore.push(tabs.selectedPage.kind);
+      await restoreGate;
+      if (isCurrent()) pagesDuringRestore.push(tabs.selectedPage.kind);
+    };
+
+    let pendingOpen = true;
+    Object.assign(workspace, { hasPendingOpen: () => pendingOpen });
+    const releases: Array<() => void> = [];
+    workspace.open = vi.fn((dir: string, isCurrent: () => boolean = () => true) => new Promise<void>((resolve) => {
+      releases.push(() => {
+        if (isCurrent()) {
+          workspace.root = dir;
+          workspace.opened = true;
+          pendingOpen = false;
+        }
+        resolve();
+      });
+    }));
+
+    const activatingBackground = tabs.activateTab("tab-2");
+    await vi.waitFor(() => expect(workspace.open).toHaveBeenCalledTimes(1));
+    const closingBackground = tabs.closeTab("tab-2");
+    await vi.waitFor(() => expect(workspace.open).toHaveBeenCalledTimes(2));
+    releases.forEach((release) => release());
+    await vi.waitFor(() => expect(restoreStarted).toBe(true));
+
+    expect(tabs.selectedPage).toEqual({ kind: "home" });
+    expect(pagesDuringRestore).toEqual(["home"]);
+
+    releaseRestore();
+    await Promise.all([activatingBackground, closingBackground]);
+
+    expect(tabs.tabs.map(tabProjectId)).toEqual([localLocator("p-1").projectId]);
+    expect(tabs.contextTabId).toBe("tab-1");
+    expect(tabs.selectedPage).toEqual({ kind: "home" });
+    expect(pagesDuringRestore).toEqual(["home", "home"]);
+  });
+
+  it("主页意图使迟到的项目激活失效", async () => {
+    const { deps, workspace } = makeDeps();
+    const tabs = createTabsStore(deps);
+    await openTab(tabs, LOCAL_REF, P1);
+    const tabId = tabs.tabs[0]!.tabId;
+    tabs.activateHome();
+
+    let releaseOpen!: () => void;
+    const openGate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+    workspace.opened = false;
+    workspace.open = vi.fn(async (dir: string) => {
+      await openGate;
+      workspace.opened = true;
+      workspace.root = dir;
+    });
+    const activation = tabs.activateTab(tabId);
+    await vi.waitFor(() => expect(workspace.open).toHaveBeenCalledTimes(1));
+    tabs.activateHome();
+    releaseOpen();
+    await activation;
+
+    expect(tabs.selectedPage).toEqual({ kind: "home" });
+    expect(tabs.contextTabId).toBe(tabId);
+    expect(tabs.activeTabId).toBeNull();
   });
 });
 
@@ -947,5 +1070,28 @@ describe("切签工作流草稿确认（任务 6，规格勘误口径：workflow
     await openTab(tabs2, LOCAL_REF, P1);
     await openTab(tabs2, LOCAL_REF, P2);
     expect(tabs2.activeTabId).toBe("tab-2");
+  });
+});
+
+describe("异步项目签关闭的身份定位（Task2 I-6）", () => {
+  it("B 的驱逐等待期间先关闭 A，B 返回后仍只移除 B 而不误删 C", async () => {
+    const { deps } = makeDeps();
+    let releaseB!: () => void;
+    deps.evictProjectSessions = (tab) => tab.tabId === "tab-2"
+      ? new Promise<void>((resolve) => { releaseB = resolve; })
+      : undefined;
+    const tabs = createTabsStore(deps);
+    await openTab(tabs, LOCAL_REF, P1);
+    await openTab(tabs, LOCAL_REF, P2);
+    await openTab(tabs, LOCAL_REF, P3);
+
+    const closingB = tabs.closeTab("tab-2");
+    await vi.waitFor(() => expect(releaseB).toBeTypeOf("function"));
+    await tabs.closeTab("tab-1");
+    expect(tabs.tabs.map((tab) => tab.tabId)).toEqual(["tab-2", "tab-3"]);
+    releaseB();
+    await closingB;
+
+    expect(tabs.tabs.map((tab) => tab.tabId)).toEqual(["tab-3"]);
   });
 });

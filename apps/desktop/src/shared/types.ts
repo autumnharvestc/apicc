@@ -1,5 +1,6 @@
 import type {
   ApiAsset,
+  ApiRequest,
   ApiTestCase,
   CaseOutcome,
   ComponentAsset,
@@ -27,6 +28,7 @@ import type {
   DebugHistoryPreferences,
   DebugHistoryReadResult,
 } from "@apicc/core";
+import type { NetworkProfilesResult, NetworkProfilesSaveInput, NetworkProfilesSaveResult, NetworkSecretImportResult, NetworkSecretImportInput } from "./network.js";
 import type {
   ApiLocator,
   ApiParentLocator,
@@ -47,6 +49,17 @@ import type { KeyValuePair } from "@apicc/core";
 import { CurrentStressReportSchema } from "@apicc/core/schema";
 import { z } from "zod";
 import type { CredentialMutationResult, CredentialPutInput, CredentialRefInput, CredentialStatusResult } from "./credentials.js";
+import type {
+  OAuthProfileActionInput,
+  OAuthAuthorizationBeginInput,
+  OAuthAuthorizationSessionId,
+  OAuthAuthorizationSessionView,
+  OAuthProfileMutationResult,
+  OAuthProfileSaveInput,
+  OAuthProfileUnlinkInput,
+  OAuthProfilesGetInput,
+  OAuthProfilesResult,
+} from "./oauth.js";
 
 export type CreateModelInput = ModelAsset extends infer Asset
   ? Asset extends { formatVersion: number; id: string }
@@ -150,11 +163,24 @@ export interface WorkflowImpactEntryDTO {
 }
 export interface OpenResult { workspace: ContractWorkspace; problems: LoadProblem[]; root: string; readOnly: boolean; revision: string }
 export interface ApiDetail { api: ApiAsset; locator: ApiLocator; sourceApiRevision: string; sourceProjectRevision: string; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> }
+export interface CreateApiFromRequestDraftInput {
+  project: ProjectLocator;
+  targetParent: ApiParentLocator;
+  name: string;
+  request: ApiRequest;
+  sourceProjectRevision: string;
+  fields: DebugFieldState[];
+}
+export interface CreateApiFromRequestDraftResult { locator: ApiLocator; detail: ApiDetail }
+export interface DebugProjectContext { project: ProjectLocator; sourceProjectRevision: string; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> }
 export interface ApiRequestDraftSaveResult { request: import("@apicc/core").ApiRequest; sourceApiRevision: string }
 export interface ApiSaveResult { api: ApiAsset; sourceApiRevision: string; sourceProjectRevision: string }
 export interface CaseDraftSaveResult { testCase: ApiTestCase; sourceApiRevision: string }
 export interface CaseDraftDeletion { caseId: string; scope: string }
-export interface DebugHistoryReplayResult extends DebugStartResult { locator: ApiLocator }
+export type DebugHistoryReplayResult = DebugStartResult & (
+  | { sourceKind: "asset"; locator: ApiLocator }
+  | { sourceKind: "free"; project: ProjectLocator; draftId: string }
+);
 export interface DebugFileReference { path: string; name: string; size: number }
 export type DebugCookieSummary = HttpCookieSummary;
 export interface DebugCookieInput { locator: ApiLocator; environmentId?: string }
@@ -168,6 +194,8 @@ export interface DebugHistoryRestoreResult {
   sourceChanged: boolean;
   sourceAvailable: boolean;
 }
+export interface DebugHistoryRestoreInput { historyId: string; exchangeOrder: number; project?: ProjectLocator }
+export type DebugHistoryReplayInput = string | { historyId: string; project: ProjectLocator };
 export interface DebugHistoryCleanupResult { deleted: number; diagnostics: DebugHistoryDiagnostic[] }
 export interface DebugHistoryPreferencesResult { preferences: DebugHistoryPreferences; diagnostics: DebugHistoryDiagnostic[] }
 /** env:create 入参：extends 按环境名引用父环境（规格 §6 继承链，运行时由 Runner 合并）。 */
@@ -299,6 +327,8 @@ export interface ApiccApi {
   containerGet(target: ContainerTarget): Promise<ContainerDetail>;
   globalsGet(locator: ProjectLocator): Promise<ProjectGlobalSettings>;
   apiGet(locator: ApiLocator): Promise<ApiDetail>;
+  apiCreateFromRequestDraft(input: CreateApiFromRequestDraftInput): Promise<CreateApiFromRequestDraftResult>;
+  debugProjectContext(locator: ProjectLocator): Promise<DebugProjectContext>;
   apiSave(locator: ApiLocator, api: ApiAsset, expectedSourceApiRevision: string): Promise<ApiSaveResult>;
   apiRequestDraftSave(locator: ApiLocator, request: import("@apicc/core").ApiRequest, expectedSourceApiRevision: string, fields: DebugFieldState[]): Promise<ApiRequestDraftSaveResult>;
   caseSave(locator: CaseLocator, testCase: ApiTestCase, expectedSourceApiRevision: string, fields: DebugFieldState[]): Promise<CaseDraftSaveResult>;
@@ -327,8 +357,8 @@ export interface ApiccApi {
   debugHistoryCleanup(): Promise<DebugHistoryCleanupResult>;
   debugHistoryPreferencesGet(): Promise<DebugHistoryPreferencesResult>;
   debugHistoryPreferencesUpdate(preferences: DebugHistoryPreferences): Promise<DebugHistoryPreferences>;
-  debugHistoryRestore(input: { historyId: string; exchangeOrder: number }): Promise<DebugHistoryRestoreResult>;
-  debugHistoryReplay(historyId: string): Promise<DebugHistoryReplayResult>;
+  debugHistoryRestore(input: DebugHistoryRestoreInput): Promise<DebugHistoryRestoreResult>;
+  debugHistoryReplay(input: DebugHistoryReplayInput): Promise<DebugHistoryReplayResult>;
   runCollection(input: RunCollectionInput): Promise<RunResult>;
   runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>>;
   runsGet(file: string): Promise<RunResult | StressReportDTO | null>;
@@ -339,6 +369,19 @@ export interface ApiccApi {
   credentialPut(input: CredentialPutInput): Promise<CredentialMutationResult>;
   credentialRemove(input: CredentialRefInput): Promise<CredentialMutationResult>;
   credentialStatus(input: CredentialRefInput): Promise<CredentialStatusResult>;
+  oauthProfilesGet(input: OAuthProfilesGetInput): Promise<OAuthProfilesResult>;
+  oauthProfileSave(input: OAuthProfileSaveInput): Promise<OAuthProfileMutationResult>;
+  oauthProfileUnlink(input: OAuthProfileUnlinkInput): Promise<OAuthProfileMutationResult>;
+  oauthProfileAcquire(input: OAuthProfileActionInput): Promise<OAuthProfileMutationResult>;
+  oauthProfileRefresh(input: OAuthProfileActionInput): Promise<OAuthProfileMutationResult>;
+  oauthAuthorizeBegin(input: OAuthAuthorizationBeginInput): Promise<OAuthAuthorizationSessionView>;
+  oauthAuthorizeStatus(input: OAuthAuthorizationSessionId): Promise<OAuthAuthorizationSessionView | null>;
+  oauthAuthorizeWait(input: OAuthAuthorizationSessionId): Promise<OAuthAuthorizationSessionView | null>;
+  oauthAuthorizeCancel(input: OAuthAuthorizationSessionId): Promise<OAuthAuthorizationSessionView | null>;
+  networkProfilesGet(locator: ProjectLocator): Promise<NetworkProfilesResult>;
+  networkProfilesSave(input: NetworkProfilesSaveInput): Promise<NetworkProfilesSaveResult>;
+  /** The main process opens/reads a secret file; no path or secret bytes cross IPC. */
+  networkSecretImport(input: NetworkSecretImportInput): Promise<NetworkSecretImportResult>;
   importPreview(input: ImportPreviewInput): Promise<ImportPreviewResult>;
   importApply(input: ImportApplyInput): Promise<void>;
   /** project:clone：整项目深拷贝新 id 落回原分组，返回克隆体。 */

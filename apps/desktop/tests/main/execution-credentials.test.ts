@@ -1,17 +1,21 @@
-import { createServer, type IncomingMessage, type Server } from "node:http";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDefaultRegistry, type CredentialScope, type SecretRef, type SecretStore } from "@apicc/core";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createDefaultRegistry, createNetworkProfileHost, createOAuthProfileHost, createProjectSnapshot, fileStorage, NetworkProfileError, type CredentialScope, type SecretRef, type SecretStore, type StorageAdapter } from "@apicc/core";
+import * as Core from "@apicc/core";
 import { createDesktopCredentialHost } from "../../src/main/credentials.js";
 import { runCollection, sendDebug } from "../../src/main/debug.js";
 import { createStressController } from "../../src/main/stress.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
+import { IpcChannel } from "../../src/shared/channels.js";
 import { IDS, findApi, makeTempRoot, makeWorkspace, persistWorkspace, projectOne, uuid } from "./helpers/contract-assets.js";
 
 const SECRET_REF: SecretRef = { id: "desktop-run-secret", policy: "test-auto" };
 const SECRET = "desktop-execution-secret-8fe2";
+const OAUTH_BEARER_REF: SecretRef = { id: "desktop-run-oauth-bearer", policy: "test-auto" };
+const OAUTH_CLIENT_SECRET_REF: SecretRef = { id: "desktop-run-oauth-client-secret", policy: "test-auto" };
 const LOCATOR = {
   workspaceId: IDS.workspace,
   groupId: IDS.groupOne,
@@ -85,6 +89,7 @@ function createMemoryStore(initialValue: string) {
 
 async function setup() {
   const temp = await makeTempRoot("apicc-execution-credentials-");
+  const networkTemp = await makeTempRoot("apicc-network-private-");
   const workspace = makeWorkspace();
   const project = projectOne(workspace);
   const target = findApi(project, IDS.deepApi)!;
@@ -97,8 +102,14 @@ async function setup() {
   const session = createSession();
   await session.open(temp.path);
   const secretStore = createMemoryStore(SECRET);
-  const credentials = createDesktopCredentialHost(session, { secretStore: secretStore.store });
-  return { temp, session, secretStore, credentials };
+  const credentials = createDesktopCredentialHost(session, { secretStore: secretStore.store, networkPrivateRoot: networkTemp.path });
+  return {
+    temp: { path: temp.path, dispose: async () => { await Promise.all([temp.dispose(), networkTemp.dispose()]); } },
+    networkPrivateRoot: networkTemp.path,
+    session,
+    secretStore,
+    credentials,
+  };
 }
 
 function waitForNextRequest(): Promise<ObservedRequest> {
@@ -106,6 +117,324 @@ function waitForNextRequest(): Promise<ObservedRequest> {
 }
 
 describe("desktop execution credential wiring", () => {
+  it("rejects explicit OAuth writes from a read-only session before network, browser, or secret effects", async () => {
+    const temp = await makeTempRoot("apicc-readonly-oauth-");
+    const oauthPrivateRoot = await makeTempRoot("apicc-readonly-oauth-private-");
+    const networkPrivateRoot = await makeTempRoot("apicc-readonly-oauth-network-");
+    const values = new Map<string, string>();
+    const versions = new Map<string, number>();
+    const storeCalls: string[] = [];
+    let generation = 0;
+    const secretStore: SecretStore = {
+      async put(_scope, ref, value) { storeCalls.push("put"); values.set(ref.id, value); versions.set(ref.id, ++generation); },
+      async resolve(_scope, ref, expectedVersion) {
+        storeCalls.push("resolve");
+        if (expectedVersion !== undefined && expectedVersion !== String(versions.get(ref.id))) throw new Error("version mismatch");
+        const value = values.get(ref.id);
+        if (value === undefined) throw new Error("missing secret");
+        return value;
+      },
+      async version(_scope, ref) { storeCalls.push("version"); const value = versions.get(ref.id); if (value === undefined) throw new Error("missing secret"); return String(value); },
+      async remove(_scope, ref) { storeCalls.push("remove"); values.delete(ref.id); versions.delete(ref.id); },
+      async status(_scope, ref) { storeCalls.push("status"); return values.has(ref.id) ? "available" : "missing"; },
+    };
+    let tokenRequests = 0;
+    const tokenServer = createServer(async (request, response) => {
+      for await (const _chunk of request) { /* consume request */ }
+      tokenRequests += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "synthetic-readonly-access", token_type: "Bearer", expires_in: 300 }));
+    });
+    await new Promise<void>((resolve) => tokenServer.listen(0, "127.0.0.1", resolve));
+    const tokenEndpoint = `http://127.0.0.1:${(tokenServer.address() as { port: number }).port}/token`;
+    const workspace = makeWorkspace();
+    await persistWorkspace(temp.path, workspace);
+    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const environment = projectOne(workspace).environments![0]!;
+    const writableSession = createSession();
+    await writableSession.open(temp.path);
+    const profileHost = await createOAuthProfileHost({
+      workspaceRoot: temp.path,
+      project: locator,
+      environmentId: environment.id,
+      privateRoot: oauthPrivateRoot.path,
+      secretStore,
+    });
+    const profiles = [
+      {
+        profileId: "readonly-client-credentials",
+        environmentId: environment.id,
+        flow: "client_credentials" as const,
+        tokenEndpoint,
+        clientId: "synthetic-readonly-client",
+        clientAuthentication: "client_secret_post" as const,
+        bearerRef: { id: "readonly-client-bearer", policy: "test-auto" as const },
+        clientSecretRef: { id: "readonly-client-secret", policy: "test-auto" as const },
+      },
+      {
+        profileId: "readonly-refresh-token",
+        environmentId: environment.id,
+        flow: "refresh_token" as const,
+        tokenEndpoint,
+        clientId: "synthetic-readonly-refresh-client",
+        clientAuthentication: "none" as const,
+        bearerRef: { id: "readonly-refresh-bearer", policy: "test-auto" as const },
+        refreshTokenRef: { id: "readonly-refresh-token-ref", policy: "test-auto" as const },
+      },
+      {
+        profileId: "readonly-authorization-code",
+        environmentId: environment.id,
+        flow: "authorization_code" as const,
+        authorizationEndpoint: "http://127.0.0.1:1/authorize",
+        tokenEndpoint,
+        clientId: "synthetic-readonly-auth-client",
+        clientAuthentication: "none" as const,
+        bearerRef: { id: "readonly-auth-bearer", policy: "test-auto" as const },
+      },
+    ];
+    for (const [index, profile] of profiles.entries()) {
+      const options = index === 0 ? { clientSecret: "synthetic-readonly-client-secret" }
+        : index === 1 ? { refreshToken: "synthetic-readonly-refresh-token" } : undefined;
+      expect((await profileHost.saveProfile(profile, options)).status).toBe("success");
+    }
+    const readOnlyStorage: StorageAdapter = {
+      async load(root) { return { ...await fileStorage.load(root), readOnly: true }; },
+      save(root, candidate, options) { return fileStorage.save(root, candidate, options); },
+    };
+    const readOnlySession = createSession({ storage: readOnlyStorage });
+    await readOnlySession.open(temp.path);
+    let opened = false;
+    const readOnlyHost = createDesktopCredentialHost(readOnlySession, {
+      secretStore,
+      oauthPrivateRoot: oauthPrivateRoot.path,
+      networkPrivateRoot: networkPrivateRoot.path,
+      openExternal: async () => { opened = true; },
+    });
+    const owner = {};
+    const beforeCalls = storeCalls.length;
+    try {
+      await expect(readOnlyHost.oauthProfileAcquire({ locator, environmentId: environment.id, profileId: "readonly-client-credentials" }))
+        .rejects.toMatchObject({ code: "OAUTH_PROFILE_INVALID" });
+      await expect(readOnlyHost.oauthProfileRefresh({ locator, environmentId: environment.id, profileId: "readonly-refresh-token" }))
+        .rejects.toMatchObject({ code: "OAUTH_PROFILE_INVALID" });
+      await expect(readOnlyHost.oauthAuthorizationBegin(owner, { locator, environmentId: environment.id, profileId: "readonly-authorization-code" }))
+        .rejects.toMatchObject({ code: "OAUTH_PROFILE_INVALID" });
+      expect(tokenRequests).toBe(0);
+      expect(opened).toBe(false);
+      expect(values.has("readonly-client-bearer")).toBe(false);
+      expect(values.has("readonly-refresh-bearer")).toBe(false);
+      expect(values.has("readonly-auth-bearer")).toBe(false);
+      expect(storeCalls).toHaveLength(beforeCalls);
+    } finally {
+      readOnlyHost.closeOAuthOwner(owner);
+      await Promise.all([
+        new Promise<void>((resolve, reject) => tokenServer.close((error) => error ? reject(error) : resolve())),
+        temp.dispose(),
+        oauthPrivateRoot.dispose(),
+        networkPrivateRoot.dispose(),
+      ]);
+    }
+  });
+
+  it("automatically acquires an OAuth bearer before the ordinary business request is bound", async () => {
+    received.length = 0;
+    const temp = await makeTempRoot("apicc-desktop-oauth-run-");
+    const oauthPrivateRoot = await makeTempRoot("apicc-desktop-oauth-private-");
+    const networkPrivateRoot = await makeTempRoot("apicc-desktop-oauth-network-");
+    const tokenRequests: string[] = [];
+    let tokenResponseGate: { entered: () => void; wait: Promise<void> } | undefined;
+    const tokenServer = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      tokenRequests.push(Buffer.concat(chunks).toString("utf8"));
+      const gate = tokenResponseGate;
+      if (gate !== undefined) {
+        gate.entered();
+        await gate.wait;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "synthetic-refreshed-access-token", token_type: "Bearer", expires_in: 300 }));
+    });
+    await new Promise<void>((resolve) => tokenServer.listen(0, "127.0.0.1", resolve));
+    const tokenEndpoint = `http://127.0.0.1:${(tokenServer.address() as { port: number }).port}/token`;
+    const values = new Map<string, string>();
+    const versions = new Map<string, number>();
+    let nextVersion = 0;
+    const secretStore: SecretStore = {
+      async put(_scope, ref, value) {
+        values.set(ref.id, value);
+        versions.set(ref.id, ++nextVersion);
+      },
+      async resolve(_scope, ref, expectedVersion) {
+        if (expectedVersion !== undefined && expectedVersion !== String(versions.get(ref.id))) throw new Error("version mismatch");
+        const value = values.get(ref.id);
+        if (value === undefined) throw new Error("missing secret");
+        return value;
+      },
+      async version(_scope, ref) {
+        const version = versions.get(ref.id);
+        if (version === undefined) throw new Error("missing secret");
+        return String(version);
+      },
+      async remove(_scope, ref) { values.delete(ref.id); versions.delete(ref.id); },
+      async status(_scope, ref) { return values.has(ref.id) ? "available" : "missing"; },
+    };
+    const workspace = makeWorkspace();
+    const project = projectOne(workspace);
+    const target = findApi(project, IDS.deepApi)!;
+    target.contract.request.baseUrl = baseUrl;
+    target.contract.request.auth = { kind: "bearer", token: { ...OAUTH_BEARER_REF } };
+    project.environments![0]!.baseUrls[IDS.collectionOne] = baseUrl;
+    await persistWorkspace(temp.path, workspace);
+    const session = createSession();
+    await session.open(temp.path);
+    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const environment = project.environments![0]!;
+    const profileHost = await createOAuthProfileHost({
+      workspaceRoot: temp.path,
+      project: locator,
+      environmentId: environment.id,
+      privateRoot: oauthPrivateRoot.path,
+      secretStore,
+    });
+    const saved = await profileHost.saveProfile({
+      profileId: "desktop-run-oauth-profile",
+      environmentId: environment.id,
+      flow: "client_credentials",
+      tokenEndpoint,
+      clientId: "synthetic-desktop-client",
+      clientAuthentication: "client_secret_post",
+      bearerRef: { ...OAUTH_BEARER_REF },
+      clientSecretRef: { ...OAUTH_CLIENT_SECRET_REF },
+    }, { clientSecret: "synthetic-desktop-client-secret" });
+    const credentials = createDesktopCredentialHost(session, {
+      secretStore,
+      oauthPrivateRoot: oauthPrivateRoot.path,
+      networkPrivateRoot: networkPrivateRoot.path,
+    });
+
+    try {
+      expect(saved).toEqual({ status: "success" });
+      const result = await sendDebug(session, {
+        locator: { ...LOCATOR, folderIds: [...LOCATOR.folderIds] },
+        caseId: IDS.sharedCase,
+        envName: environment.name,
+      }, async () => createDefaultRegistry(), credentials);
+      const oauthIpc = createIpcDeps({
+        session,
+        pickDirectory: async () => temp.path,
+        saveFile: async () => "",
+        credentials: {
+          secretStore,
+          oauthPrivateRoot: oauthPrivateRoot.path,
+          networkPrivateRoot: networkPrivateRoot.path,
+        },
+      });
+      const acquireChannel = IpcChannel.OAuthProfileAcquire;
+      let enterTokenResponse!: () => void;
+      let releaseTokenResponse!: () => void;
+      const tokenEntered = new Promise<void>((resolve) => { enterTokenResponse = resolve; });
+      const tokenGate = new Promise<void>((resolve) => { releaseTokenResponse = resolve; });
+      tokenResponseGate = { entered: enterTokenResponse, wait: tokenGate };
+      let coordinatorSpy: { mockRestore(): void } | undefined;
+      let signalSecondJoin!: () => void;
+      const secondJoinedFlight = new Promise<void>((resolve) => { signalSecondJoin = resolve; });
+      let explicitExchangeCalls = 0;
+      const acquireInput = {
+        locator,
+        environmentId: environment.id,
+        profileId: "desktop-run-oauth-profile",
+      };
+      const acquireCountBefore = tokenRequests.length;
+      const originalCoordinatorFactory = Core.createOAuthProfileCoordinator;
+      coordinatorSpy = vi.spyOn(Core, "createOAuthProfileCoordinator").mockImplementation((options) => {
+        const coordinator = originalCoordinatorFactory(options);
+        return Object.freeze({
+          async prepareOAuthBearerRefs(input: Parameters<typeof coordinator.prepareOAuthBearerRefs>[0]) {
+            await coordinator.prepareOAuthBearerRefs(input);
+          },
+          async exchangeOAuthProfile(input: Parameters<typeof coordinator.exchangeOAuthProfile>[0]) {
+            // Ensure this instance's host Promise has resolved before entering its real exchange method.
+            await coordinator.prepareOAuthBearerRefs({ scope: locator, environmentId: environment.id, refs: [] });
+            const exchange = coordinator.exchangeOAuthProfile(input);
+            explicitExchangeCalls += 1;
+            if (explicitExchangeCalls === 2) {
+              // The real async method has resumed from its resolved host Promise and registered the waiter.
+              await Promise.resolve();
+              signalSecondJoin();
+            }
+            return await exchange;
+          },
+        });
+      });
+      let acquired: Awaited<ReturnType<typeof oauthIpc.handle>>;
+      let acquiredAgain: Awaited<ReturnType<typeof oauthIpc.handle>>;
+      try {
+        const firstAcquire = oauthIpc.handle(acquireChannel, {}, acquireInput);
+        await tokenEntered;
+        const secondAcquire = oauthIpc.handle(acquireChannel, {}, acquireInput);
+        await secondJoinedFlight;
+        releaseTokenResponse();
+        [acquired, acquiredAgain] = await Promise.all([firstAcquire, secondAcquire]);
+      } finally {
+        coordinatorSpy.mockRestore();
+        tokenResponseGate = undefined;
+      }
+      const refreshChannel = IpcChannel.OAuthProfileRefresh;
+      const refreshBearerRef = { id: "desktop-run-oauth-refresh-bearer", policy: "test-auto" as const };
+      const refreshTokenRef = { id: "desktop-run-oauth-refresh-token", policy: "test-auto" as const };
+      const refreshProfileSaved = await profileHost.saveProfile({
+        profileId: "desktop-run-oauth-refresh-profile",
+        environmentId: environment.id,
+        flow: "refresh_token",
+        tokenEndpoint,
+        clientId: "synthetic-desktop-refresh-client",
+        clientAuthentication: "none",
+        bearerRef: refreshBearerRef,
+        refreshTokenRef,
+      }, { refreshToken: "synthetic-desktop-refresh-token" });
+      expect(refreshProfileSaved.status).toBe("success");
+      const refreshed = await oauthIpc.handle(refreshChannel, {}, {
+        locator,
+        environmentId: environment.id,
+        profileId: "desktop-run-oauth-refresh-profile",
+      });
+      await expect(oauthIpc.handle(refreshChannel, {}, {
+        locator,
+        environmentId: environment.id,
+        profileId: "desktop-run-oauth-profile",
+      })).rejects.toMatchObject({ code: "OAUTH_PROFILE_INVALID" });
+      await expect(oauthIpc.handle(acquireChannel, {}, {
+        locator,
+        environmentId: environment.id,
+        profileId: "desktop-run-oauth-profile",
+        grant: { type: "refresh_token" },
+      } as never)).rejects.toThrow(/入参校验失败/);
+      const profiles = await profileHost.listProfiles();
+
+      expect(result.outcome.passed).toBe(true);
+      expect(acquired.result.status).toBe("success");
+      expect(acquired.result).toEqual(acquiredAgain.result);
+      expect(acquired.profileSnapshot.status).toBe("available");
+      expect(refreshed.result.status).toBe("success");
+      expect(refreshed.profileSnapshot.status).toBe("available");
+      expect(tokenRequests).toHaveLength(3);
+      expect(tokenRequests.slice(acquireCountBefore, acquireCountBefore + 1)).toHaveLength(1);
+      expect(new URLSearchParams(tokenRequests[0]).get("grant_type")).toBe("client_credentials");
+      expect(new URLSearchParams(tokenRequests[0]).get("client_secret")).toBe("synthetic-desktop-client-secret");
+      expect(new URLSearchParams(tokenRequests[2]).get("grant_type")).toBe("refresh_token");
+      expect(new URLSearchParams(tokenRequests[2]).get("refresh_token")).toBe("synthetic-desktop-refresh-token");
+      expect(received).toHaveLength(1);
+      expect(received[0]?.authorization).toBe("Bearer synthetic-refreshed-access-token");
+      expect(profiles.find((profile) => profile.profile.profileId === "desktop-run-oauth-profile"))
+        .toMatchObject({ status: "connected", expiresAt: expect.any(Number) });
+      expect(JSON.stringify(result)).not.toContain("synthetic-refreshed-access-token");
+    } finally {
+      await new Promise<void>((resolve, reject) => tokenServer.close((error) => error ? reject(error) : resolve()));
+      await Promise.all([temp.dispose(), oauthPrivateRoot.dispose(), networkPrivateRoot.dispose()]);
+    }
+  });
+
   it("runs a fully located debug case with one prepared credential and redacts echoed secrets", async () => {
     received.length = 0;
     const { session, secretStore, credentials, temp } = await setup();
@@ -152,6 +481,202 @@ describe("desktop execution credential wiring", () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
     expect(files).toHaveLength(1);
     expect(readFileSync(join(temp.path, ".apicc", "runs", files[0]!), "utf8")).not.toContain(SECRET);
+    await temp.dispose();
+  });
+
+  it("routes a desktop collection through its captured project/environment proxy profile", async () => {
+    received.length = 0;
+    const { session, credentials, secretStore, temp, networkPrivateRoot } = await setup();
+    const proxyRequests: string[] = [];
+    const proxy = createServer((request, response) => {
+      const target = new URL(request.url ?? "", baseUrl);
+      proxyRequests.push(`${request.method ?? "GET"} ${target.href}`);
+      const headers = { ...request.headers, host: target.host };
+      delete headers["proxy-authorization"];
+      const upstream = httpRequest(target, { method: request.method, headers }, (upstreamResponse) => {
+        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+        upstreamResponse.pipe(response);
+      });
+      request.pipe(upstream);
+      upstream.on("error", () => { response.writeHead(502); response.end(); });
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const environment = session.locateProject({ workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne })!.project.environments[0]!;
+    const profileHost = await createNetworkProfileHost({
+      workspaceRoot: temp.path,
+      project: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne },
+      environmentId: environment.id,
+      privateRoot: networkPrivateRoot,
+      secretStore: secretStore.store,
+    });
+    const current = await profileHost.store.load(profileHost.scope);
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+    const proxyPasswordRef = { id: "desktop-network-proxy-password", policy: "test-auto" as const };
+    await profileHost.store.save(profileHost.scope, {
+      formatVersion: 1,
+      profiles: [{ id: "desktop-proxy", name: "Desktop proxy", kind: "proxy", proxyUrl, username: "proxy-user", passwordRef: proxyPasswordRef, targetTlsBindings: [] }],
+      projectSelection: { kind: "direct" },
+      environmentSelections: [{ environmentId: environment.id, selection: { kind: "profile", profileId: "desktop-proxy" } }],
+    }, current.revision);
+
+    try {
+      secretStore.calls.length = 0;
+      const proxyPreparationCount = () => secretStore.calls.filter((call) => call.method === "resolve" && call.ref.id === proxyPasswordRef.id).length;
+      const atCapturedStartup = async <T>(run: () => Promise<T>, expectedRequests = 1): Promise<T> => {
+        const preparationsBefore = proxyPreparationCount();
+        const proxyRequestsBefore = proxyRequests.length;
+        const targetRequestsBefore = received.length;
+        const result = await run();
+        expect(proxyPreparationCount() - preparationsBefore).toBe(1);
+        expect(proxyRequests).toHaveLength(proxyRequestsBefore + expectedRequests);
+        expect(received).toHaveLength(targetRequestsBefore + expectedRequests);
+        return result;
+      };
+
+      const single = await atCapturedStartup(() => sendDebug(session, {
+        locator: { ...LOCATOR, folderIds: [...LOCATOR.folderIds] },
+        caseId: IDS.sharedCase,
+        envName: environment.name,
+      }, async () => createDefaultRegistry(), credentials));
+      expect(single.outcome.passed).toBe(true);
+
+      const collection = await atCapturedStartup(() => runCollection(session, {
+        locator: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, collectionId: IDS.collectionOne },
+        envName: environment.name,
+      }, async () => createDefaultRegistry(), credentials));
+      expect(collection.total).toBe(1);
+
+      const workflowLocator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, workflowId: IDS.workflow };
+      const workflow = session.locateWorkflow(workflowLocator)!.workflow;
+      await session.saveWorkflow(workflowLocator, {
+        ...workflow,
+        nodes: [{ id: IDS.workflowNode, kind: "request", apiId: IDS.deepApi, caseId: IDS.sharedCase }],
+        edges: [],
+      });
+      await session.setWorkflowStatus(workflowLocator, "published");
+      await session.setWorkflowStatus(workflowLocator, "enabled");
+      const ipc = createIpcDeps({
+        session,
+        pickDirectory: async () => temp.path,
+        saveFile: async () => "",
+        credentials: { secretStore: secretStore.store, networkPrivateRoot },
+      });
+      const workflowResult = await atCapturedStartup(() => ipc.handle("wf:run", {}, { locator: workflowLocator, envName: environment.name, strict: true }));
+      expect(workflowResult.verdict).toBe("passed");
+
+      const stress = createStressController(session, {}, credentials);
+      const stressResult = await atCapturedStartup(() => stress.run({
+        locator: { ...LOCATOR, folderIds: [...LOCATOR.folderIds] },
+        caseId: IDS.sharedCase,
+        envName: environment.name,
+        concurrency: 1,
+        maxIterations: 2,
+        confirmedTargetOrigins: [new URL(baseUrl).origin],
+      }), 2);
+      expect(stressResult.report.totalRequests).toBe(2);
+
+      expect(proxyRequests).toEqual(Array.from({ length: 5 }, () => `GET ${baseUrl}/items`));
+      expect(received.map((request) => request.path)).toEqual(Array.from({ length: 5 }, () => "/items"));
+    } finally {
+      await new Promise<void>((resolve, reject) => proxy.close((error) => error ? reject(error) : resolve()));
+      await temp.dispose();
+    }
+  });
+
+  it("persists project network settings separately from main-process secret file import", async () => {
+    const { session, temp, networkPrivateRoot } = await setup();
+    const importedSecret = "synthetic-private-key-not-for-ipc";
+    const secretFile = join(networkPrivateRoot, "synthetic-key.pem");
+    writeFileSync(secretFile, importedSecret, "utf8");
+    let storedSecret = "";
+    const scopedStore: SecretStore = {
+      async put(_scope, _ref, value) { storedSecret = value; },
+      async resolve() { return storedSecret; },
+      async version() { return "synthetic-version"; },
+      async remove() { storedSecret = ""; },
+      async status() { return storedSecret ? "available" : "missing"; },
+    };
+    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const ipc = createIpcDeps({
+      session,
+      pickDirectory: async () => temp.path,
+      saveFile: async () => "",
+      pickNetworkSecretFile: async () => secretFile,
+      credentials: { secretStore: scopedStore, networkPrivateRoot },
+    });
+    const initial = await ipc.handle(IpcChannel.NetworkProfilesGet, {}, locator);
+    const configuration = {
+      formatVersion: 1 as const,
+      profiles: [{ id: "saved-proxy", name: "Saved proxy", kind: "proxy" as const, proxyUrl: "http://127.0.0.1:8080", username: "synthetic-user", passwordRef: SECRET_REF, targetTlsBindings: [] }],
+      projectSelection: { kind: "profile" as const, profileId: "saved-proxy" },
+      environmentSelections: [],
+    };
+    const saved = await ipc.handle(IpcChannel.NetworkProfilesSave, {}, { locator, revision: initial.revision, configuration });
+    const reloaded = await ipc.handle(IpcChannel.NetworkProfilesGet, {}, locator);
+    expect(reloaded.revision).toBe(saved.revision);
+    expect(reloaded.configuration).toEqual(configuration);
+    expect(reloaded.secretStatuses).toEqual([{ ref: SECRET_REF, status: "missing" }]);
+
+    const imported = await ipc.handle(IpcChannel.NetworkSecretImport, {}, { locator, ref: SECRET_REF });
+    expect(imported).toEqual({ outcome: "saved", status: "available" });
+    expect(storedSecret).toBe(importedSecret);
+    expect(JSON.stringify(imported)).not.toContain(importedSecret);
+    expect(JSON.stringify(imported)).not.toContain(secretFile);
+    const afterImport = await ipc.handle(IpcChannel.NetworkProfilesGet, {}, locator);
+    expect(afterImport.secretStatuses).toEqual([{ ref: SECRET_REF, status: "available" }]);
+
+    const missingPath = join(networkPrivateRoot, "synthetic-missing-private-key.pem");
+    const rejectedPickerIpc = createIpcDeps({
+      session,
+      pickDirectory: async () => temp.path,
+      saveFile: async () => "",
+      pickNetworkSecretFile: async () => { throw new Error(`ENOENT: no such file, open '${missingPath}'`); },
+      credentials: { secretStore: scopedStore, networkPrivateRoot },
+    });
+    const failedImport = await rejectedPickerIpc.handle(IpcChannel.NetworkSecretImport, {}, { locator, ref: SECRET_REF });
+    expect(failedImport).toEqual({ outcome: "failed", message: "The selected secret file could not be saved." });
+    expect(JSON.stringify(failedImport)).not.toContain(missingPath);
+
+    const cancelledPickerIpc = createIpcDeps({
+      session,
+      pickDirectory: async () => temp.path,
+      saveFile: async () => "",
+      pickNetworkSecretFile: async () => null,
+      credentials: { secretStore: scopedStore, networkPrivateRoot },
+    });
+    expect(await cancelledPickerIpc.handle(IpcChannel.NetworkSecretImport, {}, { locator, ref: SECRET_REF })).toEqual({ outcome: "cancelled" });
+    await temp.dispose();
+  });
+
+  it("preserves typed network preparation failures instead of reporting credential-store failure", async () => {
+    const { session, credentials, temp, networkPrivateRoot } = await setup();
+    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const location = session.locateProject(locator)!;
+    const profileHost = await createNetworkProfileHost({
+      workspaceRoot: temp.path,
+      project: locator,
+      privateRoot: networkPrivateRoot,
+      secretStore: createMemoryStore(SECRET).store,
+    });
+    const current = await profileHost.store.load(profileHost.scope);
+    await profileHost.store.save(profileHost.scope, {
+      formatVersion: 1,
+      profiles: [{
+        id: "missing-ca-profile",
+        name: "Missing CA",
+        kind: "direct",
+        targetTlsBindings: [{ origin: "https://network-fixture.invalid", tls: { caCertificatePaths: [join(networkPrivateRoot, "missing-ca.pem")] } }],
+      }],
+      projectSelection: { kind: "profile", profileId: "missing-ca-profile" },
+      environmentSelections: [],
+    }, current.revision);
+
+    await expect(credentials.prepareRunForRequests(
+      locator,
+      createProjectSnapshot(location.project),
+      [],
+      { workspaceRoot: temp.path },
+    )).rejects.toMatchObject({ name: "NetworkProfileError", code: "NETWORK_CERTIFICATE_MISSING" });
     await temp.dispose();
   });
 
@@ -409,7 +934,7 @@ describe("desktop execution credential wiring", () => {
 
   it("runs a fully located workflow with the project snapshot credential context", async () => {
     received.length = 0;
-    const { session, secretStore, temp } = await setup();
+    const { session, secretStore, temp, networkPrivateRoot } = await setup();
     const workflowLocator = {
       workspaceId: IDS.workspace,
       groupId: IDS.groupOne,
@@ -428,7 +953,7 @@ describe("desktop execution credential wiring", () => {
       session,
       pickDirectory: async () => temp.path,
       saveFile: async () => "",
-      credentials: { secretStore: secretStore.store },
+      credentials: { secretStore: secretStore.store, networkPrivateRoot },
     });
     const result = await ipc.handle("wf:run", {}, { locator: workflowLocator, envName: "dev", strict: true });
 
@@ -446,7 +971,7 @@ describe("desktop execution credential wiring", () => {
 
   it("strict workflow missing references suppress credentials for otherwise valid request nodes", async () => {
     received.length = 0;
-    const { session, secretStore, temp } = await setup();
+    const { session, secretStore, temp, networkPrivateRoot } = await setup();
     const workflowLocator = {
       workspaceId: IDS.workspace,
       groupId: IDS.groupOne,
@@ -467,7 +992,7 @@ describe("desktop execution credential wiring", () => {
       session,
       pickDirectory: async () => temp.path,
       saveFile: async () => "",
-      credentials: { secretStore: secretStore.store },
+      credentials: { secretStore: secretStore.store, networkPrivateRoot },
     });
     const result = await ipc.handle("wf:run", {}, { locator: workflowLocator, strict: true });
 

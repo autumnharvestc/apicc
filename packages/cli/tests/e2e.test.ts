@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDefaultRegistry, fileStorage, workflowToRunResult } from "@apicc/core";
-import type { ShardOutcome, Workspace } from "@apicc/core";
-import { runCli } from "../src/main.js";
+import type { PluginRegistry, ShardOutcome, Workspace } from "@apicc/core";
+import { runCli as runCliActual, type RunCliDeps } from "../src/main.js";
 
 let server: Server;
 let baseUrl = "";
@@ -15,9 +15,14 @@ let root: string;
 let dataRoot: string;
 let credibilityCsv: string;
 let prevCwd = "";
+let networkPrivateRoot = "";
 const receivedPaths: string[] = [];
 type ObservedRequest = { method: string; url: string; headers: Record<string, string | undefined>; body: string };
 const receivedRequests: ObservedRequest[] = [];
+
+function runCli(argv: string[], registry: PluginRegistry, log: (line: string) => void = () => {}, deps: RunCliDeps = {}): Promise<number> {
+  return runCliActual(argv, registry, log, { networkPrivateRoot, ...deps });
+}
 
 const GROUP_A = "00000000-0000-4000-8000-000000000002";
 const GROUP_B = "00000000-0000-4000-8000-000000000003";
@@ -109,7 +114,8 @@ async function saveWorkflow(workflow: Workflow, groupId = GROUP_A, projectId = P
 
 function runCliProcess(args: string[], options: { cwd?: string; freezeNow?: boolean } = {}): Promise<{ code: number; output: string }> {
   const entry = join(dirname(fileURLToPath(import.meta.url)), "../dist/bin.js");
-  const env = { ...process.env };
+  const privateHome = mkdtempSync(join(tmpdir(), "apicc-e2e-cli-home-"));
+  const env = { ...process.env, HOME: privateHome, USERPROFILE: privateHome, APPDATA: join(privateHome, "Roaming"), LOCALAPPDATA: join(privateHome, "Local"), XDG_CONFIG_HOME: join(privateHome, "config") };
   if (options.freezeNow) {
     const preload = join(dirname(fileURLToPath(import.meta.url)), "freeze-date-now.cjs");
     env.NODE_OPTIONS = [env.NODE_OPTIONS, `--require=${preload}`].filter(Boolean).join(" ");
@@ -119,7 +125,10 @@ function runCliProcess(args: string[], options: { cwd?: string; freezeNow?: bool
     let output = "";
     child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
-    child.on("close", (code) => resolve({ code: code ?? 1, output }));
+    child.on("close", (code) => {
+      rmSync(privateHome, { recursive: true, force: true });
+      resolve({ code: code ?? 1, output });
+    });
   });
 }
 
@@ -147,6 +156,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
   root = mkdtempSync(join(tmpdir(), "apicc-e2e-"));
+  networkPrivateRoot = mkdtempSync(join(tmpdir(), "apicc-e2e-network-private-"));
   dataRoot = mkdtempSync(join(tmpdir(), "apicc-e2e-data-"));
   credibilityCsv = join(dataRoot, "credibility.csv");
   const ws: Workspace = {
@@ -207,6 +217,7 @@ beforeAll(async () => {
 });
 afterAll(() => {
   process.chdir(prevCwd);
+  if (networkPrivateRoot) rmSync(networkPrivateRoot, { recursive: true, force: true });
   if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
   return new Promise<void>((r) => server.close(() => r()));
 });
@@ -1018,25 +1029,27 @@ describe("CLI 端到端", () => {
 
     const multiDir = runsPath("stress-consistency-multi");
     const multiLogs: string[] = [];
+    const networkPrivateRoot = join(root, ".apicc-network-private");
     const spawnWorkerFactory = () => async (spec: {
       apiPath: string; caseId: string; envName?: string; concurrency: number; maxIterations?: number; durationMs?: number;
       maxRps?: number; maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
       connectionMode?: "pooled" | "fresh"; confirmedTargetOrigins?: string[]; shardId: string; workspaceRoot: string;
-      definitionRevision: string; credentialVersions: Record<string, string>;
+      definitionRevision: string; credentialVersions: Record<string, string>; networkIdentity: string;
     }): Promise<ShardOutcome> => {
       let wire = "";
       const code = await runCli([
         "stress-worker", spec.apiPath, "--case", spec.caseId, "--env", spec.envName!, "--concurrency", String(spec.concurrency),
         "--iterations", String(spec.maxIterations), "--shard-id", spec.shardId, "--workspace", spec.workspaceRoot,
         "--definition-revision", spec.definitionRevision, "--credential-versions", JSON.stringify(spec.credentialVersions),
+        "--network-identity", spec.networkIdentity,
         "--allow-target", ...(spec.confirmedTargetOrigins ?? []),
-      ], createDefaultRegistry(), () => {}, { workerOut: (line) => { wire = line; }, workerErr: () => {} });
+      ], createDefaultRegistry(), () => {}, { workerOut: (line) => { wire = line; }, workerErr: () => {}, networkPrivateRoot });
       expect(code).toBe(0);
       const outcome = JSON.parse(wire) as ShardOutcome;
       if (outcome.ok) outcome.generator = { ...outcome.generator, saturated: true, reasons: ["cpu"] };
       return outcome;
     };
-    const multiCode = await runCli(runArgs(multiDir, ["--shards", "2"]), createDefaultRegistry(), (line) => multiLogs.push(line), { spawnWorkerFactory });
+    const multiCode = await runCli(runArgs(multiDir, ["--shards", "2"]), createDefaultRegistry(), (line) => multiLogs.push(line), { spawnWorkerFactory, networkPrivateRoot });
     const multiFile = readdirSync(multiDir).find((name) => name.endsWith(".json"))!;
     const multi = JSON.parse(readFileSync(join(multiDir, multiFile), "utf8")) as {
       totalRequests: number; ok: number; failed: number; failures: Record<string, number>; statusDist: Record<string, number>;

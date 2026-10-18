@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Space as ASpace, Button as AButton, Tag as ATag, Typography as ATypography, Select as ASelect, Drawer as ADrawer } from "ant-design-vue";
-import { SettingOutlined, HomeOutlined } from "@ant-design/icons-vue";
+import { Space as ASpace, Button as AButton, Typography as ATypography, Select as ASelect, Drawer as ADrawer, Dropdown as ADropdown } from "ant-design-vue";
+import { EllipsisOutlined, SettingOutlined } from "@ant-design/icons-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
@@ -11,7 +11,9 @@ import type { createPluginsStore } from "../stores/plugins.js";
 import type { createTabsStore, ProjectTab } from "../stores/tabs.js";
 import type { ProjectLocator } from "../../../shared/locations.js";
 import ThemeLanguageToggle from "./ThemeLanguageToggle.vue";
+import ProjectTabs from "./ProjectTabs.vue";
 import PluginsView from "./PluginsView.vue";
+import NetworkSettings from "./NetworkSettings.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
 const ATypographyText = ATypography.Text;
@@ -34,10 +36,14 @@ const props = defineProps<{
   tabs: ReturnType<typeof createTabsStore>;
   reportError: (e: unknown) => void;
 }>();
-const emit = defineEmits<{ "open-home": [] }>();
 const { t } = useI18n();
 
 const settingsOpen = ref(false);
+const activeLocalProjectTab = computed(() => {
+  const tab = props.tabs.activeTab;
+  if (!tab || !("projectLocator" in tab) || tab.workspaceRef.kind !== "local" || props.workspace.root !== tab.workspaceRef.dir) return null;
+  return tab;
+});
 
 // —— 项目切换（本地模式）：value 为完整 ProjectLocator，避免跨分组同 ID 串项 ——
 const projects = computed(() =>
@@ -46,22 +52,21 @@ const projects = computed(() =>
     .filter((n) => n.kind === "project")
     .map((p) => ({ label: p.label, value: JSON.stringify(p.locator) })),
 );
-const activeProjectValue = computed(() => {
-  const sel = props.tree.selected;
-  if (!sel || sel.source !== "local") return undefined;
-  if (sel.kind === "project") return JSON.stringify(sel.locator);
-  if (sel.kind === "root" || sel.kind === "group") return undefined;
-  return JSON.stringify({ workspaceId: sel.locator.workspaceId, groupId: sel.locator.groupId, projectId: sel.locator.projectId });
-});
-
 function onProjectSelect(value: string) {
   try {
     const locator = JSON.parse(value) as ProjectLocator;
     const project = props.workspace.findProject(locator);
-    if (project) props.tree.select(project);
+    if (project) void props.tabs.openProjectTab(
+      { kind: "local", dir: props.workspace.root },
+      { locator: project.locator, name: project.label },
+    );
   } catch (error) {
     props.reportError(error);
   }
+}
+
+function openSettings() {
+  settingsOpen.value = true;
 }
 
 // —— 退出在线工作区（计划 C 任务 6，不变量 4：工作区级关闭唯一入口，确认弹窗列出受影响签）——
@@ -99,19 +104,15 @@ function onExitCancel() {
 
 <template>
   <header class="topbar" data-testid="topbar">
-    <a-typography-text strong data-testid="workspace-name">
+    <a-typography-text strong class="workspace-name" data-testid="workspace-name" :title="online.activeWorkspace?.name ?? (workspace.name || t('app.openWorkspace'))">
       {{ online.activeWorkspace?.name ?? (workspace.name || t("app.openWorkspace")) }}
     </a-typography-text>
-    <!-- 主页入口（M11）：取代本地/在线徽标位置——模式由打开项目的来源决定 -->
-    <a-button size="small" data-testid="topbar-home" @click="emit('open-home')">
-      <HomeOutlined />
-      {{ t("nav.home") }}
-    </a-button>
-    <!-- 项目切换（M9-C，本地模式）：归属项目的栏目随项目切换 -->
+    <ProjectTabs class="project-navigation" :tabs="tabs" />
+    <!-- 项目下拉是查找/打开入口；当前选择只由统一页签栏表示。 -->
     <a-select
       v-if="!online.activeWorkspace && workspace.opened"
       class="project-switch"
-      :value="activeProjectValue"
+      :value="undefined"
       :options="projects"
       :placeholder="t('topbar.projectPlaceholder')"
       data-testid="project-switch"
@@ -120,27 +121,42 @@ function onExitCancel() {
     <a-typography-text v-if="workspace.problems.length && !online.activeWorkspace" type="danger" data-testid="workspace-problems">
       {{ t("workspace.problems") }}: {{ workspace.problems.length }}
     </a-typography-text>
-    <span class="spacer"></span>
-    <a-space :size="8">
+    <a-space class="topbar-tools" :size="6">
       <!-- 迁移/退出（任务 3）：仅在线工作区激活时可见 -->
-      <a-button v-if="online.activeWorkspace" data-testid="online-migrate" @click="online.migrateDialogOpen = true">
+      <a-button v-if="online.activeWorkspace" size="small" data-testid="online-migrate" @click="online.migrateDialogOpen = true">
         {{ t("online.migrate") }}
       </a-button>
-      <a-button v-if="online.activeWorkspace" data-testid="online-exit" @click="requestExitOnline">
+      <a-button v-if="online.activeWorkspace" size="small" data-testid="online-exit" @click="requestExitOnline">
         {{ t("online.exitOnline") }}
       </a-button>
       <!-- 在线模式入口：对话框本体由组合根渲染，按钮只置 online.dialogOpen -->
-      <a-button data-testid="online-toggle" @click="props.online.dialogOpen = true">
-        <span v-if="online.loggedIn" data-testid="online-status">
+      <a-button size="small" class="online-toggle" data-testid="online-toggle" :title="online.loggedIn ? t('online.loggedInAs', { name: online.user?.displayName ?? '', server: online.activeName }) : t('online.title')" @click="props.online.dialogOpen = true">
+        <span class="online-icon" aria-hidden="true">◉</span>
+        <span v-if="online.loggedIn" class="online-label" data-testid="online-status">
           {{ t("online.loggedInAs", { name: online.user?.displayName ?? "", server: online.activeName }) }}
         </span>
-        <span v-else data-testid="online-status">{{ t("online.title") }}</span>
+        <span v-else class="online-label" data-testid="online-status">{{ t("online.title") }}</span>
       </a-button>
       <!-- 设置抽屉（M9-C 裁定 D5）：插件管理归应用设置项 -->
-      <a-button data-testid="settings-toggle" @click="settingsOpen = true">
+      <a-button size="small" data-testid="settings-toggle" :title="t('settings.title')" @click="openSettings">
         <SettingOutlined />
       </a-button>
-      <ThemeLanguageToggle />
+      <ThemeLanguageToggle class="topbar-theme" />
+      <a-dropdown class="topbar-more" :trigger="['click']" placement="bottomRight">
+        <a-button size="small" :title="t('topbar.more')" :aria-label="t('topbar.more')" data-testid="topbar-more">
+          <EllipsisOutlined />
+        </a-button>
+        <template #overlay>
+          <div class="topbar-more-menu" role="menu">
+            <button type="button" role="menuitem" data-testid="more-projects" @click="tabs.activateHome()">{{ t("topbar.projectPlaceholder") }}</button>
+            <button type="button" role="menuitem" data-testid="more-online-toggle" @click="online.dialogOpen = true">{{ t("online.title") }}</button>
+            <button type="button" role="menuitem" data-testid="more-settings" @click="openSettings">{{ t("settings.title") }}</button>
+            <button v-if="online.activeWorkspace" type="button" role="menuitem" data-testid="more-online-migrate" @click="online.migrateDialogOpen = true">{{ t("online.migrate") }}</button>
+            <button v-if="online.activeWorkspace" type="button" role="menuitem" data-testid="more-online-exit" @click="requestExitOnline">{{ t("online.exitOnline") }}</button>
+            <ThemeLanguageToggle class="more-theme" />
+          </div>
+        </template>
+      </a-dropdown>
     </a-space>
     <a-drawer
       v-model:open="settingsOpen"
@@ -149,6 +165,13 @@ function onExitCancel() {
       data-testid="settings-drawer"
     >
       <PluginsView :plugins="plugins" />
+      <NetworkSettings
+        v-if="activeLocalProjectTab"
+        :key="`${activeLocalProjectTab.workspaceRef.dir}:${activeLocalProjectTab.projectLocator.workspaceId}:${activeLocalProjectTab.projectLocator.groupId}:${activeLocalProjectTab.projectLocator.projectId}`"
+        :api="api"
+        :locator="activeLocalProjectTab.projectLocator"
+        :read-only="workspace.readOnly"
+      />
     </a-drawer>
     <!-- 退出在线工作区确认（计划 C 任务 6）：a-modal 传送门渲染于 body，受影响签清单走默认插槽 -->
     <ConfirmDialog
@@ -179,19 +202,76 @@ function onExitCancel() {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  flex: none;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
-.spacer { flex: 1; }
+.workspace-name {
+  flex: none;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.project-navigation { flex: 1 1 auto; }
+.topbar-tools { flex: none; min-width: 0; }
 .mode-badge {
   margin-inline-end: 0;
 }
-.project-switch { min-width: 180px; max-width: 260px; }
+.project-switch { width: 160px; flex: none; }
+.online-toggle { max-width: 170px; }
+.online-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.online-icon { display: none; }
+.topbar-more { display: none; }
+.topbar-more-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  padding: 4px;
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 18%);
+}
+.topbar-more-menu > button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  text-align: start;
+  cursor: pointer;
+}
+.topbar-more-menu > button:hover { background: var(--active-weak); }
+.more-theme { padding: 6px 8px; border-top: 1px solid var(--border); }
+.more-theme :deep(.toggles) { flex-wrap: wrap; }
 /* 退出在线确认的受影响签清单（ConfirmDialog 默认插槽内容） */
 .exit-impact-list {
   margin: 4px 0 0;
   padding-inline-start: 18px;
+}
+
+@media (max-width: 900px) {
+  .workspace-name { max-width: 86px; }
+  .project-switch { width: 120px; }
+}
+
+@media (max-width: 680px) {
+  .workspace-name { display: none; }
+  .project-switch { display: none; }
+  .topbar-theme { display: none; }
+  .topbar-more { display: inline-flex; }
+  .topbar-tools :deep([data-testid="online-migrate"]),
+  .topbar-tools :deep([data-testid="online-exit"]) { display: none; }
+  .online-toggle { width: 32px; min-width: 32px; padding-inline: 0; }
+  .online-label { display: none; }
+  .online-icon { display: inline; }
 }
 </style>

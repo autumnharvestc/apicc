@@ -2,6 +2,7 @@ import { JSONPath } from "jsonpath-plus";
 import type { ApiAsset } from "../contract/model.js";
 import type { DeepReadonly, ProjectAssetContextReadView } from "../assets/context.js";
 import type { CredentialBindings } from "../credentials/types.js";
+import type { PreparedNetworkRun } from "../network/prepare.js";
 import type { ProjectGlobals, TestCase } from "../domain/common.js";
 import type { EventBus, RunEventMap } from "../events/bus.js";
 import type {
@@ -26,6 +27,8 @@ export interface CaseExecutionInput {
   asset: DeepReadonly<ApiAsset>;
   assetContext: ProjectAssetContextReadView;
   credentialBindings: CredentialBindings;
+  /** Host-only immutable run context; consumed only by the built-in HTTP client. */
+  network?: PreparedNetworkRun;
   testCase: DeepReadonly<TestCase>;
   row?: Record<string, string>;
   rowIndex: number;
@@ -339,6 +342,9 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       globals,
       credentials: input.credentialBindings,
     }, effectiveRequest));
+    if (request.protocol !== "http" && input.network?.requiresHttpAdapter) {
+      throw invalidRequest("所选网络配置仅支持 HTTP 协议请求");
+    }
     if (request.protocol === "http") {
       capturedFiles = await captureRequestFiles(request, {
         workspaceRoot: deps.workspaceRoot,
@@ -346,6 +352,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       });
       clientOptions.runtime = {
         files: capturedFiles,
+        ...(input.network === undefined ? {} : { network: input.network }),
         ...(deps.httpSession === undefined ? {} : { session: deps.httpSession }),
         ...(deps.observeHttp === undefined ? {} : { observe: deps.observeHttp }),
         beforeRedirect: async (nextRequest) => {
@@ -374,6 +381,15 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     }
     if (deps.beforeSend) await deps.beforeSend(request);
     validateExecutableRequest(request);
+    if (request.protocol !== "http" && input.network?.requiresHttpAdapter) {
+      throw invalidRequest("所选网络配置仅支持 HTTP 协议请求");
+    }
+    let protocolOptions = clientOptions;
+    if (request.protocol !== "http" && clientOptions.runtime?.network) {
+      const runtime = { ...clientOptions.runtime };
+      delete runtime.network;
+      protocolOptions = { ...clientOptions, runtime };
+    }
     const client = deps.resolveProtocol(request);
     if (!client) throw invalidRequest(`无可用协议客户端处理 ${request.url}`);
     stage = "request";
@@ -381,7 +397,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     const requestStartAt = now();
     let protocolError: unknown;
     try {
-      response = await client.execute(request, clientOptions);
+      response = await client.execute(request, protocolOptions);
     } catch (e) {
       protocolError = e;
       failureKind = isAbort(e, signal) ? "aborted" : protocolFailureKind(e);

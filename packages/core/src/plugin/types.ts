@@ -6,6 +6,7 @@ import type { RuntimeBody } from "../request/body.js";
 import type { RuntimeAuth } from "../request/materialize.js";
 import type { CapturedRequestFiles } from "../http/files.js";
 import type { HttpSession } from "../http/session.js";
+import type { PreparedNetworkRun } from "../network/prepare.js";
 
 interface ExecutableRequestCommon {
   url: string;
@@ -82,6 +83,8 @@ export type HttpHopObservation =
 export interface HttpRuntimeOptions {
   files?: CapturedRequestFiles;
   session?: HttpSession;
+  /** Host-only immutable network state prepared once for this run. */
+  network?: PreparedNetworkRun;
   /** Called after redirect policy has transformed the next request, before that hop is sent. */
   beforeRedirect?: (request: ExecutableRequest, context: { status: number; from: string; to: string; originChanged: boolean }) => void | Promise<void>;
   /** Receives internal request observations; consumers must sanitize before persistence or IPC. */

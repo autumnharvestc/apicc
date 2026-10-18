@@ -270,18 +270,26 @@ describe("createSystemSecretStore", () => {
   });
 
   it.each([
-    ["UUID control", "33333333-3333-4333-8333-333333333333"],
-    ["ordinary ASCII identifier", "api-production-backend-authentication-token"],
-    ["ordinary Chinese identifier", "开发环境接口自动认证凭据测试引用标识"],
-  ] as const)("round-trips %s through the shared-root-length index", async (_kind, id) => {
+    ["UUID control", "33333333-3333-4333-8333-333333333333", undefined],
+    ["ordinary ASCII identifier", "api-production-backend-authentication-token", undefined],
+    ["ordinary Chinese identifier", "开发环境接口自动认证凭据测试引用标识", undefined],
+    ["fresh OAuth client-secret smoke ref", "f2b-smoke-client-secret-00000000-0000-4000-8000-000000000000", 67],
+  ] as const)("round-trips %s through the shared-root-length index", async (_kind, id, minimumPrivateRootLength) => {
     const { createSystemSecretStore } = await loadSystemStoreModule();
+    const { credentialIndexPath } = await loadPrivateIndexLockModule();
     const fake = makeBackend();
-    const minimumRootLength = join(homedir(), ".apicc", "private", "test-credentials", "v1").length;
+    const minimumRootLength = minimumPrivateRootLength
+      ?? join(homedir(), ".apicc", "private", "test-credentials", "v1").length;
     const longRoot = await makeTemporaryRootAtLeast(minimumRootLength);
     const logicalRef = { id, policy: "test-auto" };
 
     try {
       expect(longRoot.length).toBeGreaterThanOrEqual(minimumRootLength);
+      if (minimumPrivateRootLength !== undefined) {
+        const lockDbPath = `${credentialIndexPath(longRoot, scope, id)}.lock.sqlite`;
+        expect(lockDbPath.length).toBeGreaterThanOrEqual(252);
+        expect(`${lockDbPath}-journal`.length).toBeGreaterThanOrEqual(260);
+      }
       const store = createSystemSecretStore({ privateRoot: longRoot, loadBackend: async () => fake.backend });
       const firstValue = `${_kind}-initial-synthetic`;
       await store.put(scope, logicalRef, firstValue);
@@ -581,14 +589,21 @@ describe("createSystemSecretStore", () => {
     await expect(reopened.remove(scope, ref)).resolves.toBeUndefined();
   });
 
-  it("waits for a live child process SQLite writer and re-enters after that child exits", async () => {
+  it("waits for a live child process SQLite writer on a smoke-length path and re-enters after it exits", async () => {
     const { credentialIndexPath, withCredentialLock } = await loadPrivateIndexLockModule();
-    const lockDbPath = `${credentialIndexPath(privateRoot, scope, ref.id)}.lock.sqlite`;
+    const previousPrivateRoot = privateRoot;
+    privateRoot = await makeTemporaryRootAtLeast(67);
+    await rm(previousPrivateRoot, { recursive: true, force: true });
+    const longRef = { id: "f2b-smoke-client-secret-00000000-0000-4000-8000-000000000000", policy: "test-auto" };
+    const lockDbPath = `${credentialIndexPath(privateRoot, scope, longRef.id)}.lock.sqlite`;
+    expect(lockDbPath.length).toBeGreaterThanOrEqual(252);
+    expect(`${lockDbPath}-journal`.length).toBeGreaterThanOrEqual(260);
     await import("node:fs/promises").then(({ mkdir }) => mkdir(dirname(lockDbPath), { recursive: true }));
 
     const childSource = [
       "import { DatabaseSync } from 'node:sqlite';",
-      "const db = new DatabaseSync(process.argv[1]);",
+      "import path from 'node:path';",
+      "const db = new DatabaseSync(path.toNamespacedPath(process.argv[1]));",
       "db.exec('PRAGMA busy_timeout=0');",
       "db.exec('BEGIN IMMEDIATE');",
       "process.stdout.write('LOCK_HELD\\n');",
@@ -632,7 +647,7 @@ describe("createSystemSecretStore", () => {
         delay(5_000).then(() => { throw new Error("child did not acquire the SQLite test lock"); }),
       ]);
       let entered = false;
-      contender = withCredentialLock(privateRoot, scope, ref.id, async () => {
+      contender = withCredentialLock(privateRoot, scope, longRef.id, async () => {
         entered = true;
         return "contender-entered";
       });

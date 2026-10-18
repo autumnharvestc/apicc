@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import type { useEditorStore } from "../stores/editor.js";
 import type { useDebugStore } from "../stores/debug.js";
@@ -28,6 +29,12 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
 const { t } = useI18n();
+const requestTab = computed(() => props.editor.activeKey
+  ? props.debug.requestTabForSession(props.editor.activeKey) : null);
+const requestTabState = computed(() => requestTab.value ? props.debug.requestTabState(requestTab.value) : null);
+const result = computed(() => requestTabState.value ? requestTabState.value.result : props.debug.result);
+const sending = computed(() => requestTabState.value ? requestTabState.value.sending : props.debug.sending);
+const error = computed(() => requestTabState.value ? requestTabState.value.error : props.debug.error);
 
 </script>
 
@@ -37,10 +44,13 @@ const { t } = useI18n();
     <template v-if="pane === 'api-cases'">
       <EmptyState v-if="!editor.api" :text="t('test.pickApi')" />
       <template v-else>
-        <CasePanel :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" @stress="(caseId: string) => emit('stress', caseId)" />
-        <div v-if="debug.result" class="result" data-testid="test-result">
-          <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" />
-        </div>
+        <CasePanel :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" @stress="(caseId: string) => emit('stress', caseId)">
+          <template #after-cases>
+            <div v-if="result" class="result" data-testid="test-result">
+              <ResponseViewer :result="result" :sending="sending" :error="error" :tab-state="requestTabState" />
+            </div>
+          </template>
+        </CasePanel>
       </template>
     </template>
 
@@ -52,6 +62,6 @@ const { t } = useI18n();
 </template>
 
 <style scoped>
-.test-view { height: 100%; box-sizing: border-box; overflow: auto; }
+.test-view { height: 100%; min-height: 0; box-sizing: border-box; overflow: auto; }
 .result { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 6px; }
 </style>

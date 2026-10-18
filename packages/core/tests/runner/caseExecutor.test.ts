@@ -10,10 +10,11 @@ import { createProjectSnapshot } from "../../src/assets/snapshot.js";
 import type { ApiAsset, RequestBody } from "../../src/contract/model.js";
 import type { ContractProject } from "../../src/contract/workspace.js";
 import type { ProjectGlobals, TestCase } from "../../src/domain/common.js";
-import type { ExecutableRequest, ExecutionResponse, ProtocolClient, ScriptEngine } from "../../src/plugin/types.js";
+import type { ExecutableRequest, ExecutionResponse, HttpExecuteOptions, ProtocolClient, ScriptEngine } from "../../src/plugin/types.js";
 import { builtinAuthProviders } from "../../src/http/auth.js";
 import { createHttpClient } from "../../src/http/client.js";
 import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
+import type { PreparedNetworkRun } from "../../src/network/prepare.js";
 
 const testCase: TestCase = {
   id: "case-1", name: "order", scope: "base", parameters: { orderId: "from-parameter" },
@@ -474,6 +475,61 @@ describe("executeCase", () => {
     expect(result.requestCompleted).toBe(false);
     expect(resolveProtocol).not.toHaveBeenCalled();
     expect(client.execute).not.toHaveBeenCalled();
+  });
+
+  it("re-admits the final protocol and withholds the HTTP network carrier from non-HTTP clients", async () => {
+    const carrier = {
+      revision: "captured-revision",
+      identity: "captured-identity",
+      credentialVersions: {},
+      requiresHttpAdapter: true,
+      outputMarkers: ["synthetic-secret-marker"],
+      resolveForOrigin: vi.fn(() => ({
+        origin: "https://example.test",
+        route: { kind: "proxy" as const, url: "http://127.0.0.1:9", username: "synthetic-user", password: "synthetic-password" },
+        targetTLS: { verify: true, caMode: "append-runtime-defaults" as const, caCertificates: [], clientCertificates: [] },
+      })),
+    } satisfies PreparedNetworkRun;
+    const mutateProtocol = (request: ExecutableRequest) => {
+      Reflect.set(request, "protocol", "websocket");
+      Reflect.set(request, "url", "ws://example.test/socket");
+      Reflect.deleteProperty(request, "method");
+    };
+    const blockedExecute = vi.fn(async () => response);
+    const blockedClient: ProtocolClient = { name: "websocket-spy", canHandle: () => true, execute: blockedExecute };
+    const resolveBlockedProtocol = vi.fn(() => blockedClient);
+    const blockedState = input();
+    blockedState.network = carrier;
+
+    const blocked = await executeCase(blockedState, {
+      ...deps(blockedClient, mutateProtocol),
+      resolveProtocol: resolveBlockedProtocol,
+    });
+
+    expect(blocked.failureKind).toBe("config");
+    expect(blocked.requestStarted).toBe(false);
+    expect(resolveBlockedProtocol).not.toHaveBeenCalled();
+    expect(blockedExecute).not.toHaveBeenCalled();
+    expect(carrier.resolveForOrigin).not.toHaveBeenCalled();
+
+    const directCarrier = { ...carrier, requiresHttpAdapter: false } satisfies PreparedNetworkRun;
+    const acceptedState = input();
+    acceptedState.network = directCarrier;
+    let observedOptions: HttpExecuteOptions | undefined;
+    const acceptingClient: ProtocolClient = {
+      name: "websocket-spy",
+      canHandle: () => true,
+      async execute(_request, options) {
+        observedOptions = options;
+        return response;
+      },
+    };
+    const accepted = await executeCase(acceptedState, deps(acceptingClient, mutateProtocol));
+
+    expect(accepted.outcome.passed).toBe(true);
+    expect(observedOptions?.runtime).toBeDefined();
+    expect(observedOptions?.runtime).not.toHaveProperty("network");
+    expect(directCarrier.resolveForOrigin).not.toHaveBeenCalled();
   });
 
   it("allows scripts to read and replace ordinary RuntimeAuth strings before built-in auth application", async () => {

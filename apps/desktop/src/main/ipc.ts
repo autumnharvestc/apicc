@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { WorkflowRunner, StressSafetyError, createHttpSession, findProjectApi, createProjectSnapshot, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, getSourceApiRevision, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type CredentialRequestSelection } from "@apicc/core";
+import { WorkflowRunner, StressSafetyError, createHttpSession, findProjectApi, createProjectSnapshot, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, getSourceApiRevision, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type DebugHistoryOwnerIdentity, type CredentialRequestSelection } from "@apicc/core";
 import { realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type DebugInput, type DebugOutput, type DebugHistoryReplayResult, type DebugHistoryRestoreResult, type DebugFileReference, type EnvCreateInput, type ImportApplyInput, type ImportPreviewInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
+import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type CreateApiFromRequestDraftInput, type DebugInput, type DebugOutput, type DebugHistoryReplayResult, type DebugHistoryRestoreResult, type DebugFileReference, type EnvCreateInput, type ImportApplyInput, type ImportPreviewInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
 import { parseIpcArgs, type IpcArgsMap, type IpcResultMap } from "../shared/ipc-contract.js";
 import type { ApiLocator, ApiParentLocator, CaseLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
 import { localTreeNodeKey } from "../shared/tree-dto.js";
@@ -29,8 +29,10 @@ import type { PluginsListResult } from "../shared/plugins/contract.js";
 import { createDesktopCredentialHost, type DesktopCredentialHostOptions, type PreparedDesktopExecutionRun } from "./credentials.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
 import type { CredentialPutInput, CredentialRefInput } from "../shared/credentials.js";
+import type { NetworkProfilesSaveInput, NetworkSecretImportInput } from "../shared/network.js";
 
 type Session = ReturnType<typeof createSession>;
+type HistorySessionContext = Pick<ReturnType<Session["captureDraftWriteContext"]>, "root" | "generation">;
 type IsUnion<Value, Whole = Value> = Value extends Whole ? ([Whole] extends [Value] ? false : true) : never;
 type HandleArgs<Channel extends IpcChannelName> = IsUnion<Channel> extends true ? unknown[] : IpcArgsMap[Channel];
 
@@ -92,7 +94,10 @@ async function runWorkflow(
     projectId: captured.locator.projectId,
   };
   try {
-    prepared = await credentials.prepareRunForRequests(scope, snapshot, credentialSelections);
+    prepared = await credentials.prepareRunForRequests(scope, snapshot, credentialSelections, {
+      workspaceRoot: root,
+      ...(env === undefined ? {} : { environmentId: env.id }),
+    });
   } catch (error) {
     throw createExecutionOutputBoundary([]).error(error);
   }
@@ -142,6 +147,8 @@ export interface IpcDepsOptions {
   saveFile: (defaultName: string, content: string) => Promise<string>;
   /** User-selected file metadata; the renderer never reads this path or its bytes. */
   pickDebugFile?: () => Promise<DebugFileReference | null>;
+  /** Native picker stays in main; only the selected file's SecretStore outcome crosses IPC. */
+  pickNetworkSecretFile?: (locale: "zh-CN" | "en") => Promise<string | null>;
   /** 导入器列表（任务 7）：默认取内置注册中心的全部导入器，测试注入固定 importer 替身。 */
   importers?: Importer[];
   /** 在线依赖（M3-B 任务 1）：省略时 online:* 频道抛「在线功能未配置」可读错误。 */
@@ -170,6 +177,19 @@ export function createIpcDeps(options: IpcDepsOptions) {
     const metadata = await stat(path);
     if (!metadata.isFile()) throw new Error("所选路径不是普通文件");
     return { path, name: basename(path), size: metadata.size };
+  });
+  const pickNetworkSecretFile = options.pickNetworkSecretFile ?? (async (locale: "zh-CN" | "en"): Promise<string | null> => {
+    const { dialog } = await import("electron");
+    const choice = await dialog.showOpenDialog({
+      title: locale === "zh-CN" ? "导入网络秘密文件" : "Import network secret",
+      properties: ["openFile"],
+      filters: [{ name: locale === "zh-CN" ? "证书或密钥文件" : "Certificate or key material", extensions: ["pem", "key", "crt", "cer", "txt"] }],
+    });
+    if (choice.canceled || !choice.filePaths[0]) return null;
+    const path = choice.filePaths[0];
+    const metadata = await stat(path);
+    if (!metadata.isFile()) throw new Error("The selected path is not a regular file.");
+    return path;
   });
   // 插件运行时（M7-B 任务 2）：未配置 = loadPlugins:false（零加载零扰动）；summary/registry
   // memoized 装载，运行频道与 plugins:list、导入探测共用同一 registry。
@@ -221,7 +241,10 @@ export function createIpcDeps(options: IpcDepsOptions) {
       once?: (event: string, listener: () => void) => unknown;
       on?: (event: string, listener: () => void) => unknown;
     };
-    const cleanup = () => debug.clearOwner(owner);
+    const cleanup = () => {
+      debug.clearOwner(owner);
+      credentials.closeOAuthOwner(owner);
+    };
     if (typeof sender.once === "function") sender.once("destroyed", cleanup);
     if (typeof sender.on === "function") sender.on("render-process-gone", cleanup);
   }
@@ -240,10 +263,60 @@ export function createIpcDeps(options: IpcDepsOptions) {
     return loaded.record;
   }
 
-  function ownerKeyForInvocation(invocation: DebugInvocation): string {
-    const root = session.root;
+  function captureHistorySessionContext(): HistorySessionContext | undefined {
+    try {
+      const context = session.captureDraftWriteContext();
+      return { root: context.root, generation: context.generation };
+    } catch {
+      return undefined;
+    }
+  }
+
+  function assertHistorySessionContext(context: HistorySessionContext): void {
+    const current = session.captureDraftWriteContext();
+    if (current.root !== context.root || current.generation !== context.generation) {
+      throw new Error("工作区上下文已更改，拒绝继续读取或重放调试历史。");
+    }
+  }
+
+  function sameProject(left: ProjectLocator, right: ProjectLocator): boolean {
+    return left.workspaceId === right.workspaceId
+      && left.groupId === right.groupId
+      && left.projectId === right.projectId;
+  }
+
+  function assertHistoryProjectContext(
+    record: DebugHistoryRecord,
+    invocation: DebugInvocation,
+    project: ProjectLocator | undefined,
+  ): void {
+    if (invocation.mode === "free") {
+      const recordedProject = record.formatVersion === 2 && record.result.source.sourceKind === "free"
+        ? record.result.source.project
+        : undefined;
+      if (!project) throw new Error("Free 请求历史需要当前选中的项目上下文。");
+      if (!recordedProject || !sameProject(project, recordedProject) || !sameProject(project, invocation.project)) {
+        throw new Error("所选项目与 Free 请求历史来源不匹配，拒绝恢复或重放。");
+      }
+      return;
+    }
+
+    if (project) {
+      const recordedProject = invocation.mode === "case" ? invocation.case : invocation.locator;
+      if (!sameProject(project, recordedProject)) {
+        throw new Error("所选项目与资产调试历史来源不匹配，拒绝恢复或重放。");
+      }
+    }
+  }
+
+  function ownerKeyForInvocation(invocation: DebugInvocation, root = session.root): string {
     if (!root) throw new Error("尚未打开工作区");
-    return createDebugHistoryOwnerKey(realpathSync(root), invocation.mode === "case" ? invocation.case : invocation.locator);
+    const identity: DebugHistoryOwnerIdentity = invocation.mode === "free"
+      ? { sourceKind: "free", project: invocation.project, draftId: invocation.draftId }
+      : invocation.mode === "case"
+        ? { sourceKind: "asset", mode: "case", case: invocation.case }
+        : { sourceKind: "asset", mode: "request", locator: invocation.locator };
+    return createDebugHistoryOwnerKey(realpathSync(root), identity);
   }
 
   async function requireHistoryOwner(historyId: string, ownerKey: string): Promise<void> {
@@ -392,6 +465,28 @@ export function createIpcDeps(options: IpcDepsOptions) {
         };
         return detail satisfies IpcResultMap[typeof IpcChannel.ApiGet];
       }
+      case IpcChannel.ApiCreateFromRequestDraft: {
+        const input = a[0] as CreateApiFromRequestDraftInput;
+        if (input.fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存请求草稿。");
+        const draftWriteContext = session.captureDraftWriteContext();
+        const knownCredentialLiterals = await credentials.getKnownCredentialLiteralsForProject(input.project, input.request, draftWriteContext);
+        return await session.createApiFromRequestDraft(input, knownCredentialLiterals, draftWriteContext) satisfies IpcResultMap[typeof IpcChannel.ApiCreateFromRequestDraft];
+      }
+      case IpcChannel.DebugProjectContext: {
+        requireOwner(owner);
+        const locator = a[0] as ProjectLocator;
+        const location = session.locateProject(locator);
+        if (!location) throw new Error(`未找到项目: ${JSON.stringify(locator)}`);
+        return {
+          project: { ...locator },
+          sourceProjectRevision: createProjectSnapshot(location.project).definitionRevision,
+          envs: location.project.environments.map((environment) => ({
+            id: environment.id,
+            name: environment.name,
+            locator: { ...locator, environmentId: environment.id },
+          })),
+        } satisfies IpcResultMap[typeof IpcChannel.DebugProjectContext];
+      }
       case IpcChannel.ApiSave: {
         const [locator, api, expectedRevision] = a as [ApiLocator, ApiAsset, string];
         const draftWriteContext = session.captureDraftWriteContext();
@@ -499,33 +594,67 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.DebugHistoryPreferencesUpdate:
         return await requireDebugHistory().updatePreferences(a[0]) satisfies IpcResultMap[typeof IpcChannel.DebugHistoryPreferencesUpdate];
       case IpcChannel.DebugHistoryRestore: {
-        const { historyId, exchangeOrder } = a[0] as { historyId: string; exchangeOrder: number };
+        const { historyId, exchangeOrder, project: callerProject } = a[0] as {
+          historyId: string;
+          exchangeOrder: number;
+          project?: ProjectLocator;
+        };
+        const historyContext = captureHistorySessionContext();
         const record = await requireHistoryRecord(historyId);
+        if (historyContext) assertHistorySessionContext(historyContext);
         const invocation = restoreDebugHistoryExchange(record, exchangeOrder);
-        const root = session.root;
-        const currentOwnerIdentity = record.result.replay.mode === "case"
-          ? record.result.replay.case
-          : record.result.replay.locator;
+        assertHistoryProjectContext(record, invocation, callerProject);
+        const root = historyContext?.root;
+        const currentOwnerIdentity: DebugHistoryOwnerIdentity | undefined = record.formatVersion === 1
+          ? record.result.mode === "case" && record.result.replay.mode === "case" && record.result.replay.case
+            ? { sourceKind: "asset", mode: "case", case: record.result.replay.case }
+            : record.result.replay.mode === "request" && record.result.replay.locator
+              ? { sourceKind: "asset", mode: "request", locator: record.result.replay.locator }
+              : undefined
+          : record.result.source.sourceKind === "free"
+            ? { sourceKind: "free", project: record.result.source.project, draftId: record.result.source.draftId }
+            : record.result.source.sourceKind === "asset"
+              ? record.result.mode === "case" && record.result.replay.mode === "case" && record.result.replay.case
+                ? { sourceKind: "asset", mode: "case", case: record.result.replay.case }
+                : record.result.replay.mode === "request" && record.result.replay.locator
+                  ? { sourceKind: "asset", mode: "request", locator: record.result.replay.locator }
+                  : undefined
+              : undefined;
         let sourceAvailable = false;
         if (root && currentOwnerIdentity) {
           const ownerKey = createDebugHistoryOwnerKey(realpathSync(root), currentOwnerIdentity);
           const owned = await requireDebugHistory().getOwned(historyId, ownerKey);
-          const location = session.locateApi(invocation.locator);
-          sourceAvailable = owned.record !== null && location !== undefined;
-          const sourceChanged = !sourceAvailable || (location !== undefined
-            && createProjectSnapshot(location.project).definitionRevision !== record.result.sourceProjectRevision);
+          if (historyContext) assertHistorySessionContext(historyContext);
+          const project = invocation.mode === "free"
+            ? session.locateProject(callerProject!)?.project
+            : session.locateApi(invocation.locator)?.project;
+          sourceAvailable = owned.record !== null && project !== undefined;
+          const sourceChanged = !sourceAvailable || (project !== undefined
+            && createProjectSnapshot(project).definitionRevision !== record.result.sourceProjectRevision);
           return { invocation, sourceChanged, sourceAvailable } satisfies IpcResultMap[typeof IpcChannel.DebugHistoryRestore];
         }
         const result: DebugHistoryRestoreResult = { invocation, sourceChanged: true, sourceAvailable: false };
         return result satisfies IpcResultMap[typeof IpcChannel.DebugHistoryRestore];
       }
       case IpcChannel.DebugHistoryReplay: {
-        const historyId = a[0] as string;
+        const input = a[0] as string | { historyId: string; project: ProjectLocator };
+        const historyId = typeof input === "string" ? input : input.historyId;
+        const callerProject = typeof input === "string" ? undefined : input.project;
+        const historyContext = captureHistorySessionContext();
+        if (!historyContext) throw new Error("尚未打开工作区，不能重放调试历史。");
         const record = await requireHistoryRecord(historyId);
+        assertHistorySessionContext(historyContext);
         const invocation = createDebugReplayInvocation(record);
-        await requireHistoryOwner(historyId, ownerKeyForInvocation(invocation));
+        assertHistoryProjectContext(record, invocation, callerProject);
+        if (invocation.mode === "free" && !session.locateProject(callerProject!)?.project) {
+          throw new Error("Free 请求历史来源项目已不存在，不能重放。");
+        }
+        await requireHistoryOwner(historyId, ownerKeyForInvocation(invocation, historyContext.root));
+        assertHistorySessionContext(historyContext);
         const started = await debug.start(requireOwner(owner), invocation);
-        const result: DebugHistoryReplayResult = { ...started, locator: invocation.locator };
+        const result: DebugHistoryReplayResult = invocation.mode === "free"
+          ? { ...started, sourceKind: "free", project: invocation.project, draftId: invocation.draftId }
+          : { ...started, sourceKind: "asset", locator: invocation.locator };
         return result satisfies IpcResultMap[typeof IpcChannel.DebugHistoryReplay];
       }
       // 运行频道（任务 6）：run:collection 走完整 Runner 并固定落盘 .apicc/runs；
@@ -658,6 +787,38 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return await credentials.remove(a[0] as CredentialRefInput) satisfies IpcResultMap[typeof IpcChannel.CredentialRemove];
       case IpcChannel.CredentialStatus:
         return await credentials.status(a[0] as CredentialRefInput) satisfies IpcResultMap[typeof IpcChannel.CredentialStatus];
+      case IpcChannel.OAuthProfilesGet:
+        return await credentials.oauthProfilesGet(a[0] as Parameters<typeof credentials.oauthProfilesGet>[0]) satisfies IpcResultMap[typeof IpcChannel.OAuthProfilesGet];
+      case IpcChannel.OAuthProfileSave:
+        return await credentials.oauthProfileSave(a[0] as Parameters<typeof credentials.oauthProfileSave>[0]) satisfies IpcResultMap[typeof IpcChannel.OAuthProfileSave];
+      case IpcChannel.OAuthProfileUnlink:
+        return await credentials.oauthProfileUnlink(a[0] as Parameters<typeof credentials.oauthProfileUnlink>[0]) satisfies IpcResultMap[typeof IpcChannel.OAuthProfileUnlink];
+      case IpcChannel.OAuthProfileAcquire:
+        return await credentials.oauthProfileAcquire(a[0] as Parameters<typeof credentials.oauthProfileAcquire>[0]) satisfies IpcResultMap[typeof IpcChannel.OAuthProfileAcquire];
+      case IpcChannel.OAuthProfileRefresh:
+        return await credentials.oauthProfileRefresh(a[0] as Parameters<typeof credentials.oauthProfileRefresh>[0]) satisfies IpcResultMap[typeof IpcChannel.OAuthProfileRefresh];
+      case IpcChannel.OAuthAuthorizeBegin:
+        return await credentials.oauthAuthorizationBegin(requireOwner(owner), a[0] as Parameters<typeof credentials.oauthAuthorizationBegin>[1]) satisfies IpcResultMap[typeof IpcChannel.OAuthAuthorizeBegin];
+      case IpcChannel.OAuthAuthorizeStatus:
+        return credentials.oauthAuthorizationStatus(requireOwner(owner), (a[0] as { sessionId: string }).sessionId) ?? null satisfies IpcResultMap[typeof IpcChannel.OAuthAuthorizeStatus];
+      case IpcChannel.OAuthAuthorizeWait:
+        return await credentials.oauthAuthorizationWait(requireOwner(owner), (a[0] as { sessionId: string }).sessionId) ?? null satisfies IpcResultMap[typeof IpcChannel.OAuthAuthorizeWait];
+      case IpcChannel.OAuthAuthorizeCancel:
+        return credentials.oauthAuthorizationCancel(requireOwner(owner), (a[0] as { sessionId: string }).sessionId) ?? null satisfies IpcResultMap[typeof IpcChannel.OAuthAuthorizeCancel];
+      case IpcChannel.NetworkProfilesGet:
+        return await credentials.networkProfilesGet(a[0] as ProjectLocator) satisfies IpcResultMap[typeof IpcChannel.NetworkProfilesGet];
+      case IpcChannel.NetworkProfilesSave:
+        return await credentials.networkProfilesSave(a[0] as NetworkProfilesSaveInput) satisfies IpcResultMap[typeof IpcChannel.NetworkProfilesSave];
+      case IpcChannel.NetworkSecretImport: {
+        const input = a[0] as NetworkSecretImportInput;
+        try {
+          const path = await pickNetworkSecretFile(input.locale ?? "en");
+          if (!path) return { outcome: "cancelled" } satisfies IpcResultMap[typeof IpcChannel.NetworkSecretImport];
+          return await credentials.networkSecretImportFromFile(input.locator, input.ref, path) satisfies IpcResultMap[typeof IpcChannel.NetworkSecretImport];
+        } catch {
+          return { outcome: "failed", message: "The selected secret file could not be saved." } satisfies IpcResultMap[typeof IpcChannel.NetworkSecretImport];
+        }
+      }
       // 在线频道（M3-B 任务 1）：全部委派 online session（登录态串联/冲突出口转换在其内聚）。
       // login 出口不含 token（token 留 main 进程）；put/delete 的 409 转为 outcome 结果对象。
       case IpcChannel.OnlineRegister: {

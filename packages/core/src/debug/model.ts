@@ -6,6 +6,7 @@ import type { RequestSettings, RequestSettingsOverride } from "../request/settin
 import type { CaseFailureKind } from "../runner/caseExecutor.js";
 
 const IdentityStringSchema = z.string().min(1);
+const HistoryUuidSchema = z.string().uuid();
 
 export const DebugIdentitySchema = z.object({
   workspaceId: IdentityStringSchema,
@@ -34,6 +35,24 @@ const DebugInvocationCommonSchema = z.object({
   parentHistoryId: IdentityStringSchema.optional(),
 });
 
+export const DebugProjectIdentitySchema = z.object({
+  workspaceId: IdentityStringSchema,
+  groupId: IdentityStringSchema,
+  projectId: IdentityStringSchema,
+}).strict();
+
+export const DebugHistoryOwnerIdentitySchema = z.union([
+  z.object({ sourceKind: z.literal("asset"), mode: z.literal("request"), locator: DebugIdentitySchema }).strict(),
+  z.object({ sourceKind: z.literal("asset"), mode: z.literal("case"), case: DebugCaseIdentitySchema }).strict(),
+  z.object({ sourceKind: z.literal("free"), project: DebugProjectIdentitySchema, draftId: HistoryUuidSchema }).strict(),
+]);
+
+const DebugFreeInvocationOptionsSchema = z.object({
+  environmentId: IdentityStringSchema.optional(),
+  settings: RequestSettingsOverrideSchema.optional(),
+  parentHistoryId: IdentityStringSchema.optional(),
+});
+
 export const DebugInvocationSchema = z.discriminatedUnion("mode", [
   DebugInvocationCommonSchema.extend({
     mode: z.literal("request"),
@@ -45,10 +64,19 @@ export const DebugInvocationSchema = z.discriminatedUnion("mode", [
     mode: z.literal("case"),
     case: DebugCaseIdentitySchema,
   }).strict(),
+  DebugFreeInvocationOptionsSchema.extend({
+    mode: z.literal("free"),
+    project: DebugProjectIdentitySchema,
+    draftId: z.string().uuid(),
+    request: ApiRequestSchema,
+    parameters: z.record(z.string(), z.string()),
+    fields: z.array(DebugFieldStateSchema),
+  }).strict(),
 ]);
 
 export type DebugIdentity = z.infer<typeof DebugIdentitySchema>;
 export type DebugCaseIdentity = z.infer<typeof DebugCaseIdentitySchema>;
+export type DebugProjectIdentity = z.infer<typeof DebugProjectIdentitySchema>;
 export type DebugFieldState = z.infer<typeof DebugFieldStateSchema>;
 export type DebugInvocation = z.infer<typeof DebugInvocationSchema>;
 
@@ -157,6 +185,7 @@ export const DebugRunSummarySchema = z.object({
 export const DebugReplayDescriptorSchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("request"),
+    sourceKind: z.literal("asset"),
     locator: DebugIdentitySchema.optional(),
     request: ApiRequestSchema.optional(),
     requestTemplate: ApiRequestSchema.optional(),
@@ -168,7 +197,21 @@ export const DebugReplayDescriptorSchema = z.discriminatedUnion("mode", [
   }).strict(),
   z.object({
     mode: z.literal("case"),
+    sourceKind: z.literal("asset"),
     case: DebugCaseIdentitySchema.optional(),
+    requestTemplate: ApiRequestSchema.optional(),
+    parameters: z.record(z.string(), z.string()),
+    fields: z.array(DebugFieldStateSchema),
+    settings: RequestSettingsOverrideSchema.optional(),
+    identityAvailable: z.boolean().optional(),
+    available: z.boolean(),
+  }).strict(),
+  z.object({
+    mode: z.literal("free"),
+    sourceKind: z.literal("free"),
+    project: DebugProjectIdentitySchema.optional(),
+    draftId: HistoryUuidSchema.optional(),
+    request: ApiRequestSchema.optional(),
     requestTemplate: ApiRequestSchema.optional(),
     parameters: z.record(z.string(), z.string()),
     fields: z.array(DebugFieldStateSchema),
@@ -178,8 +221,29 @@ export const DebugReplayDescriptorSchema = z.discriminatedUnion("mode", [
   }).strict(),
 ]);
 
+export const DebugExecutionSourceSchema = z.discriminatedUnion("sourceKind", [
+  z.object({ sourceKind: z.literal("asset"), case: DebugCaseIdentitySchema }).strict(),
+  z.object({ sourceKind: z.literal("free"), project: DebugProjectIdentitySchema, draftId: HistoryUuidSchema }).strict(),
+  z.object({ sourceKind: z.literal("unavailable") }).strict(),
+]);
+
+export const DebugResultSourceSchema = z.discriminatedUnion("sourceKind", [
+  z.object({
+    sourceKind: z.literal("asset"),
+    locator: DebugIdentitySchema,
+    sourceApiRevision: z.string().min(1),
+  }).strict(),
+  z.object({
+    sourceKind: z.literal("free"),
+    project: DebugProjectIdentitySchema,
+    draftId: HistoryUuidSchema,
+    draftRevision: z.string().min(1),
+  }).strict(),
+  z.object({ sourceKind: z.literal("unavailable") }).strict(),
+]);
+
 export const DebugExchangeSchema = z.object({
-  case: DebugCaseIdentitySchema.optional(),
+  source: DebugExecutionSourceSchema,
   identityAvailable: z.boolean().optional(),
   rowIndex: NonNegativeIntegerSchema,
   hopIndex: NonNegativeIntegerSchema,
@@ -203,11 +267,10 @@ export const DebugExchangeSchema = z.object({
 
 export const DebugResultSchema = z.object({
   runId: IdentityStringSchema,
-  sourceApiRevision: z.string().min(1),
+  source: DebugResultSourceSchema,
   sourceProjectRevision: z.string().min(1),
   executionSnapshotRevision: z.string().min(1),
-  mode: z.enum(["request", "case"]),
-  locator: DebugIdentitySchema.optional(),
+  mode: z.enum(["request", "case", "free"]),
   identityAvailable: z.boolean().optional(),
   environmentId: IdentityStringSchema.optional(),
   startedAt: z.string(),
@@ -225,7 +288,77 @@ export const DebugResultSchema = z.object({
   errorName: z.string().optional(),
 }).strict();
 
-const HistoryUuidSchema = z.string().uuid();
+// Version 1 records retain their exact original shape and are parsed read-only.
+export const DebugReplayDescriptorV1Schema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("request"),
+    locator: DebugIdentitySchema.optional(),
+    request: ApiRequestSchema.optional(),
+    requestTemplate: ApiRequestSchema.optional(),
+    parameters: z.record(z.string(), z.string()),
+    fields: z.array(DebugFieldStateSchema),
+    settings: RequestSettingsOverrideSchema.optional(),
+    identityAvailable: z.boolean().optional(),
+    available: z.boolean(),
+  }).strict(),
+  z.object({
+    mode: z.literal("case"),
+    case: DebugCaseIdentitySchema.optional(),
+    requestTemplate: ApiRequestSchema.optional(),
+    parameters: z.record(z.string(), z.string()),
+    fields: z.array(DebugFieldStateSchema),
+    settings: RequestSettingsOverrideSchema.optional(),
+    identityAvailable: z.boolean().optional(),
+    available: z.boolean(),
+  }).strict(),
+]);
+
+export const DebugExchangeV1Schema = z.object({
+  case: DebugCaseIdentitySchema.optional(),
+  identityAvailable: z.boolean().optional(),
+  rowIndex: NonNegativeIntegerSchema,
+  hopIndex: NonNegativeIntegerSchema,
+  order: z.number().finite().int().positive(),
+  transportState: z.enum(["prepared", "entered", "headers-received", "responded", "failed"]),
+  observation: z.enum(["http-hop", "legacy-text"]).optional(),
+  settings: RequestSettingsSchema,
+  request: DebugRequestSchema.optional(),
+  response: DebugResponseSchema.optional(),
+  intent: z.object({
+    parameters: z.record(z.string(), z.string()),
+    fields: z.array(DebugFieldStateSchema),
+    available: z.boolean(),
+  }).strict().optional(),
+  startedAt: z.string(),
+  finishedAt: z.string().optional(),
+  durationMs: NonNegativeNumberSchema.optional(),
+  failureStage: z.string().optional(),
+  failureCode: z.string().optional(),
+}).strict();
+
+export const DebugResultV1Schema = z.object({
+  runId: IdentityStringSchema,
+  sourceApiRevision: z.string().min(1),
+  sourceProjectRevision: z.string().min(1),
+  executionSnapshotRevision: z.string().min(1),
+  mode: z.enum(["request", "case"]),
+  locator: DebugIdentitySchema.optional(),
+  identityAvailable: z.boolean().optional(),
+  environmentId: IdentityStringSchema.optional(),
+  startedAt: z.string(),
+  finishedAt: z.string(),
+  run: DebugRunSummarySchema,
+  outcomes: z.array(DebugOutcomeSchema),
+  exchanges: z.array(DebugExchangeV1Schema).max(100),
+  exchangeTotal: NonNegativeIntegerSchema,
+  omittedExchangeCount: NonNegativeIntegerSchema,
+  replay: DebugReplayDescriptorV1Schema,
+  console: z.array(z.object({ level: z.enum(["log", "info", "warn", "error"]), message: z.string() }).strict()),
+  warnings: z.array(z.string()),
+  failureKind: OutcomeFailureSchema.optional(),
+  error: z.string().optional(),
+  errorName: z.string().optional(),
+}).strict();
 
 export const DebugHistoryPreferencesSchema = z.object({
   enabled: z.boolean(),
@@ -233,13 +366,26 @@ export const DebugHistoryPreferencesSchema = z.object({
   maxRecords: z.number().finite().int().positive().max(10_000),
 }).strict();
 
-export const DebugHistoryRecordSchema = z.object({
+export const DebugHistoryRecordV1Schema = z.object({
   formatVersion: z.literal(1),
+  historyId: HistoryUuidSchema,
+  createdAt: z.string().datetime(),
+  parentHistoryId: HistoryUuidSchema.optional(),
+  result: DebugResultV1Schema,
+}).strict();
+
+export const DebugHistoryRecordV2Schema = z.object({
+  formatVersion: z.literal(2),
   historyId: HistoryUuidSchema,
   createdAt: z.string().datetime(),
   parentHistoryId: HistoryUuidSchema.optional(),
   result: DebugResultSchema,
 }).strict();
+
+export const DebugHistoryRecordSchema = z.discriminatedUnion("formatVersion", [
+  DebugHistoryRecordV1Schema,
+  DebugHistoryRecordV2Schema,
+]);
 
 export const DebugHistoryResultFilterSchema = z.enum(["passed", "failed", "aborted"]);
 
@@ -248,10 +394,13 @@ export const DebugHistorySummarySchema = z.object({
   createdAt: z.string().datetime(),
   parentHistoryId: HistoryUuidSchema.optional(),
   runId: IdentityStringSchema,
-  mode: z.enum(["request", "case"]),
+  mode: z.enum(["request", "case", "free"]),
+  sourceKind: z.enum(["asset", "free", "unavailable"]),
   result: DebugHistoryResultFilterSchema,
   workspaceId: IdentityStringSchema.optional(),
+  groupId: IdentityStringSchema.optional(),
   projectId: IdentityStringSchema.optional(),
+  draftId: HistoryUuidSchema.optional(),
   collectionId: IdentityStringSchema.optional(),
   apiId: IdentityStringSchema.optional(),
   caseId: IdentityStringSchema.optional(),
@@ -266,6 +415,7 @@ export const DebugHistorySummarySchema = z.object({
 }).strict();
 
 export const DebugHistoryListFilterSchema = z.object({
+  sourceKind: z.enum(["asset", "free", "unavailable"]).optional(),
   projectId: IdentityStringSchema.optional(),
   apiId: IdentityStringSchema.optional(),
   from: z.string().datetime().optional(),
@@ -310,8 +460,12 @@ export type DebugResponse = z.infer<typeof DebugResponseSchema>;
 export type DebugOutcome = z.infer<typeof DebugOutcomeSchema>;
 export type DebugRunSummary = z.infer<typeof DebugRunSummarySchema>;
 export type DebugReplayDescriptor = z.infer<typeof DebugReplayDescriptorSchema>;
+export type DebugReplayDescriptorV1 = z.infer<typeof DebugReplayDescriptorV1Schema>;
 export type DebugExchange = z.infer<typeof DebugExchangeSchema>;
 export type DebugResult = z.infer<typeof DebugResultSchema>;
+export type DebugResultV1 = z.infer<typeof DebugResultV1Schema>;
+export type DebugExecutionSource = z.infer<typeof DebugExecutionSourceSchema>;
+export type DebugResultSource = z.infer<typeof DebugResultSourceSchema>;
 export type DebugHistoryPreferences = z.infer<typeof DebugHistoryPreferencesSchema>;
 export type DebugHistoryRecord = z.infer<typeof DebugHistoryRecordSchema>;
 export type DebugHistoryResultFilter = z.infer<typeof DebugHistoryResultFilterSchema>;
@@ -321,13 +475,20 @@ export type DebugHistoryDiagnostic = z.infer<typeof DebugHistoryDiagnosticSchema
 export type DebugHistoryPage = z.infer<typeof DebugHistoryPageSchema>;
 export type DebugHistoryReadResult = z.infer<typeof DebugHistoryReadResultSchema>;
 
-export interface DebugExecutionIdentity extends DebugCaseIdentity {
+export type DebugHistoryOwnerIdentity = z.infer<typeof DebugHistoryOwnerIdentitySchema>;
+
+export interface DebugExecutionObservation {
   rowIndex: number;
   settings: RequestSettings;
   parameters?: Readonly<Record<string, string>>;
   fields?: readonly DebugFieldState[];
   sourceCategories?: readonly DebugSourceCategory[];
 }
+
+export type DebugExecutionIdentity = DebugExecutionObservation & (
+  | { source: { sourceKind: "asset"; case: DebugCaseIdentity } }
+  | { source: { sourceKind: "free"; project: DebugProjectIdentity; draftId: string } }
+);
 
 export type DebugRequestOverride = RequestSettingsOverride;
 export type DebugRequestValue = ApiRequest;

@@ -206,10 +206,13 @@ async function mountTabs(deps: TabsStoreDeps) {
 }
 
 describe("ProjectTabs 渲染与激活（计划 C 任务 5）", () => {
-  it("空签表不渲染签条；成签后逐签渲染项目名与关闭钮", async () => {
+  it("零项目时主页仍为固定首签；成签后逐签渲染项目名与关闭钮", async () => {
     const { deps } = makeDeps();
     const { wrapper, tabs } = await mountTabs(deps);
-    expect(wrapper.find('[data-testid="project-tabs"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="project-tabs"]').attributes("role")).toBe("tablist");
+    expect(wrapper.get('[data-testid="topbar-home"]').attributes("role")).toBe("tab");
+    expect(wrapper.get('[data-testid="topbar-home"]').attributes("aria-selected")).toBe("true");
+    expect(wrapper.find('[data-testid="tab-close-home"]').exists()).toBe(false);
     await tabs.openProjectTab(LOCAL_REF, P1);
     await tabs.openProjectTab(LOCAL_REF, P2);
     await flushPromises();
@@ -221,6 +224,26 @@ describe("ProjectTabs 渲染与激活（计划 C 任务 5）", () => {
     expect(wrapper.find('[data-testid="project-tab-0"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="tab-close-0"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="tab-close-1"]').exists()).toBe(true);
+    expect(wrapper.findAll('[role="tab"][aria-selected="true"]')).toHaveLength(1);
+    expect(wrapper.get('[data-testid="project-tab-1"]').attributes("aria-selected")).toBe("true");
+  });
+
+  it("主页与项目共享唯一选择；在主页点关闭钮不激活被关闭签", async () => {
+    const { deps } = makeDeps();
+    const { wrapper, tabs } = await mountTabs(deps);
+    await tabs.openProjectTab(LOCAL_REF, P1);
+    await tabs.openProjectTab(LOCAL_REF, P2);
+    await flushPromises();
+    await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+    expect(wrapper.findAll('[role="tab"][aria-selected="true"]')).toHaveLength(1);
+    expect(wrapper.get('[data-testid="topbar-home"]').attributes("aria-selected")).toBe("true");
+
+    await wrapper.get('[data-testid="tab-close-0"]').trigger("click");
+    await flushPromises();
+
+    expect(tabs.activeTabId).toBeNull();
+    expect(wrapper.get('[data-testid="topbar-home"]').attributes("aria-selected")).toBe("true");
+    expect(tabs.tabs.map(projectIdOf)).toEqual([PROJECT_2.projectId]);
   });
 
   it("激活高亮：活跃签 active 类 + data-active；点另一签走 activateTab 编排（本地项目选中）并迁移高亮", async () => {

@@ -1,8 +1,15 @@
+import { isAbsolute } from "node:path";
+
 import {
   CredentialError,
   createProjectSnapshot,
   createSystemSecretStore,
+  createNetworkProfileHost,
+  createOAuthProfileCoordinator,
+  defaultNetworkPrivateRoot,
   defaultCredentialPrivateRoot,
+  defaultOAuthPrivateRoot,
+  collectBearerCredentialRefsForRequests,
   envChain,
   collectCredentialMarkersForRequests,
   collectCredentialRefsForRequests,
@@ -20,12 +27,22 @@ import {
   type SecretRef,
   type SecretStore,
   type Workspace,
+  type PreparedNetworkRun,
 } from "@apicc/core";
 import type { ProjectExecutionRun, ProjectSnapshot } from "@apicc/core";
 
 export interface CredentialHostOptions {
   secretStore?: SecretStore;
   credentialPrivateRoot?: string;
+  networkPrivateRoot?: string;
+  oauthPrivateRoot?: string;
+}
+
+export interface ExecutionPreparationContext {
+  workspaceRoot: string;
+  environmentId?: string;
+  expectedNetworkIdentity?: string;
+  signal?: AbortSignal;
 }
 
 export interface PreparedExecutionRun {
@@ -33,6 +50,38 @@ export interface PreparedExecutionRun {
   snapshot: ProjectSnapshot;
   refs: SecretRef[];
   secrets: string[];
+  network?: PreparedNetworkRun;
+}
+
+/** Prepare the selected network configuration once for this process/run and pin it on the host wrapper. */
+export async function prepareNetworkForExecution(
+  prepared: PreparedExecutionRun,
+  workspace: Workspace,
+  groupId: string,
+  project: Project,
+  workspaceRoot: string,
+  environmentId: string | undefined,
+  options: CredentialHostOptions = {},
+  expectedIdentity?: string,
+  signal?: AbortSignal,
+): Promise<PreparedExecutionRun> {
+  const host = await createNetworkProfileHost({
+    workspaceRoot,
+    project: { workspaceId: workspace.id, groupId, projectId: project.id },
+    ...(environmentId === undefined ? {} : { environmentId }),
+    privateRoot: options.networkPrivateRoot ?? defaultNetworkPrivateRoot(),
+    secretStore: createCredentialHostStore(options),
+  });
+  const network = await host.prepare(signal === undefined ? {} : { signal });
+  if (expectedIdentity !== undefined && network.identity !== expectedIdentity) {
+    throw new Error("压测 worker 网络配置或公开证书材料与协调端捕获身份不一致；本次运行未发送请求");
+  }
+  return {
+    ...prepared,
+    run: { ...prepared.run, network },
+    secrets: [...prepared.secrets, ...network.outputMarkers],
+    network,
+  };
 }
 
 export interface ExecutionCredentialSelection {
@@ -61,6 +110,7 @@ export async function prepareExecutionRun(
   expectedVersions?: Readonly<Record<string, string>>,
   expectedDefinitionRevision?: string,
   selections?: readonly ExecutionCredentialSelection[],
+  runContext?: ExecutionPreparationContext,
 ): Promise<PreparedExecutionRun> {
   const snapshot = createProjectSnapshot(project);
   const selectedRequests = selections === undefined
@@ -78,6 +128,7 @@ export async function prepareExecutionRun(
     options,
     expectedVersions,
     expectedDefinitionRevision,
+    runContext,
   );
 }
 
@@ -90,6 +141,7 @@ export async function prepareExecutionRunFromSnapshot(
   options: CredentialHostOptions = {},
   expectedVersions?: Readonly<Record<string, string>>,
   expectedDefinitionRevision?: string,
+  runContext?: ExecutionPreparationContext,
 ): Promise<PreparedExecutionRun> {
   const requests = selectCredentialRequests(snapshot, credentialSelections);
   const refs = collectCredentialRefsForRequests(snapshot.project, requests);
@@ -105,15 +157,56 @@ export async function prepareExecutionRunFromSnapshot(
     throw new Error("工作区定义在压测 worker 启动前发生变化；本次运行未发送请求");
   }
   const scope = credentialScope(workspace, groupId, project);
+  const store = refs.length === 0 ? undefined : options.secretStore ?? createSystemSecretStore({
+    privateRoot: options.credentialPrivateRoot ?? defaultCredentialPrivateRoot(),
+  });
+
+  let network: PreparedNetworkRun | undefined;
+  if (runContext !== undefined) {
+    if (!isAbsolute(runContext.workspaceRoot)) throw new Error("运行网络工作区根目录无效");
+    const networkHost = await createNetworkProfileHost({
+      workspaceRoot: runContext.workspaceRoot,
+      project: { workspaceId: workspace.id, groupId, projectId: project.id },
+      ...(runContext.environmentId === undefined ? {} : { environmentId: runContext.environmentId }),
+      privateRoot: options.networkPrivateRoot ?? defaultNetworkPrivateRoot(),
+      secretStore: store ?? options.secretStore ?? createSystemSecretStore({
+        privateRoot: options.credentialPrivateRoot ?? defaultCredentialPrivateRoot(),
+      }),
+    });
+    network = await networkHost.prepare(runContext.signal === undefined ? {} : { signal: runContext.signal });
+    if (runContext.expectedNetworkIdentity !== undefined && network.identity !== runContext.expectedNetworkIdentity) {
+      throw new Error("压测 worker 网络配置或公开证书材料与协调端捕获身份不一致；本次运行未发送请求");
+    }
+
+    const bearerRefs = collectBearerCredentialRefsForRequests(snapshot.project, requests);
+    const oauthCoordinationEnabled = options.oauthPrivateRoot !== undefined || options.secretStore === undefined;
+    if (oauthCoordinationEnabled && bearerRefs.length > 0) {
+      const oauthCoordinator = createOAuthProfileCoordinator({
+        workspaceRoot: runContext.workspaceRoot,
+        project: { workspaceId: workspace.id, groupId, projectId: project.id },
+        ...(runContext.environmentId === undefined ? {} : { environmentId: runContext.environmentId }),
+        privateRoot: options.oauthPrivateRoot ?? defaultOAuthPrivateRoot(),
+        secretStore: store ?? options.secretStore ?? createSystemSecretStore({
+          privateRoot: options.credentialPrivateRoot ?? defaultCredentialPrivateRoot(),
+        }),
+        network,
+        refreshEnabled: expectedVersions === undefined,
+      });
+      await oauthCoordinator.prepareOAuthBearerRefs({
+        scope,
+        ...(runContext.environmentId === undefined ? {} : { environmentId: runContext.environmentId }),
+        refs: bearerRefs,
+        ...(runContext.signal === undefined ? {} : { signal: runContext.signal }),
+      });
+    }
+  }
+
   let credentialBindings: CredentialBindings;
   try {
     if (refs.length === 0) {
       credentialBindings = await prepareCredentialBindings(scope, [], {} as SecretStore);
     } else {
-      const store = options.secretStore ?? createSystemSecretStore({
-        privateRoot: options.credentialPrivateRoot ?? defaultCredentialPrivateRoot(),
-      });
-      credentialBindings = await prepareCredentialBindings(scope, refs, store, expectedVersions);
+      credentialBindings = await prepareCredentialBindings(scope, refs, store!, expectedVersions);
     }
   } catch (error) {
     throw stableCredentialError(error);
@@ -122,14 +215,16 @@ export async function prepareExecutionRunFromSnapshot(
   let secrets: string[];
   try {
     secrets = collectCredentialMarkersForRequests(snapshot.project, requests, credentialBindings);
+    if (network !== undefined) secrets.push(...network.outputMarkers);
   } catch (error) {
     throw stableCredentialError(error);
   }
   return {
-    run: { snapshot, credentialBindings },
+    run: { snapshot, credentialBindings, ...(network === undefined ? {} : { network }) },
     snapshot,
     refs,
     secrets,
+    ...(network === undefined ? {} : { network }),
   };
 }
 

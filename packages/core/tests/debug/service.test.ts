@@ -10,11 +10,14 @@ import type { ApiRequest } from "../../src/contract/model.js";
 import type { ContractProject } from "../../src/contract/workspace.js";
 import type { ProjectExecutionRun } from "../../src/runner/runner.js";
 import type { RunResult as ProjectRunResult } from "../../src/report/types.js";
+import type { DebugInvocation } from "../../src/debug/model.js";
+import type { DebugExecutionIdentity } from "../../src/debug/model.js";
 import { abortedDebugResult, prepareDebugExecution, runDebugExecution } from "../../src/debug/service.js";
 import { createDebugExchangeCollector, projectDebugResult } from "../../src/debug/projection.js";
 import { resolveRequestSettings } from "../../src/request/settings.js";
 import { createDebugReplayInvocation } from "../../src/debug/replay.js";
 import { createContractExecutionProject, contractExecutionIds } from "../helpers/contractExecutionFixtures.js";
+import type { ExecutableRequest } from "../../src/plugin/types.js";
 
 const ids = {
   workspaceId: "10000000-0000-4000-8000-000000000010",
@@ -29,12 +32,17 @@ const observedSessionCookie = "synthetic-session-secret";
 let server: Server;
 let baseUrl = "";
 let hits: string[] = [];
+let observedDebugHeaders: Array<{ freeScope?: string; moduleOperation?: string }> = [];
 const tempDirs: string[] = [];
 
 beforeAll(async () => {
   server = createServer((request, response) => {
     const path = request.url ?? "";
     hits.push(path);
+    observedDebugHeaders.push({
+      ...(typeof request.headers["x-free-scope"] === "string" ? { freeScope: request.headers["x-free-scope"] } : {}),
+      ...(typeof request.headers["x-module-operation"] === "string" ? { moduleOperation: request.headers["x-module-operation"] } : {}),
+    });
     response.setHeader("content-type", "application/octet-stream");
     response.setHeader("set-cookie", `sid=${observedSessionCookie}; HttpOnly; SameSite=Lax`);
     response.end(Buffer.from(path.startsWith("/rows/one")
@@ -85,6 +93,126 @@ function execution(project: ContractProject) {
 }
 
 describe("Core debug service", () => {
+  it("removes template auth provenance when a cross-origin redirect observation has no auth", () => {
+    const collector = createDebugExchangeCollector([]);
+    const identity: DebugExecutionIdentity = {
+      rowIndex: 0,
+      settings: resolveRequestSettings(),
+      source: { sourceKind: "asset", case: { ...ids, caseId: "redirect-auth-case", scope: "base" } },
+      sourceCategories: ["project", "environment", "request-override", "module", "auth"],
+    };
+    const firstUrl = "https://first.synthetic.test/redirect";
+    const redirectedUrl = "https://second.synthetic.test/inspect";
+    const firstRequest: ExecutableRequest = {
+      protocol: "http", method: "GET", url: firstUrl,
+      headers: { authorization: "Bearer synthetic" }, query: [],
+      auth: { kind: "bearer", token: "synthetic" },
+    };
+    const redirectedRequest: ExecutableRequest = {
+      ...firstRequest, url: redirectedUrl, headers: {}, auth: { kind: "none" },
+    };
+
+    collector.observe({
+      type: "request", hopIndex: 0, request: firstRequest, url: firstUrl, method: "GET",
+    }, identity);
+    collector.observe({
+      type: "request", hopIndex: 1, request: redirectedRequest, url: redirectedUrl, method: "GET", sessionCookieUsed: true,
+    }, identity);
+
+    const exchanges = collector.exchanges();
+    expect(exchanges[0]?.request?.sourceCategories).toEqual(["project", "environment", "request-override", "module", "auth", "unknown"]);
+    expect(exchanges[1]?.request?.sourceCategories).toEqual(["project", "environment", "request-override", "module", "session"]);
+  });
+
+  it("prepares a free request for a project with no modules without changing its source snapshot", () => {
+    const project = createContractExecutionProject(baseUrl);
+    project.collections = [];
+    const snapshot = createProjectSnapshot(project);
+    const before = JSON.stringify(snapshot);
+    const invocation: DebugInvocation = {
+      mode: "free",
+      project: { workspaceId: ids.workspaceId, groupId: ids.groupId, projectId: ids.projectId },
+      draftId: "10000000-0000-4000-8000-000000000027",
+      environmentId: contractExecutionIds.environment,
+      request: requestAt("/free-plan"),
+      parameters: {},
+      fields: [],
+    };
+
+    const plan = prepareDebugExecution(snapshot, invocation);
+
+    expect(plan.invocation.mode).toBe("free");
+    expect(JSON.stringify(snapshot)).toBe(before);
+    expect("sourceApiRevision" in plan).toBe(false);
+    expect(plan.snapshot.project.collections).toHaveLength(1);
+    expect(plan.snapshot.project.collections[0]!.apis).toHaveLength(1);
+  });
+
+  it("runs a free request with project context and no module headers, operations, variables, or base URL mapping", async () => {
+    hits = [];
+    observedDebugHeaders = [];
+    const project = createContractExecutionProject(baseUrl);
+    project.variables.scope = "project-value";
+    project.environments[0]!.variables.scope = "environment-value";
+    project.environments[0]!.variables.baseUrl = baseUrl;
+    project.environments[0]!.baseUrls[contractExecutionIds.collection] = "http://127.0.0.1:1";
+    project.collections[0]!.variables.scope = "module-value";
+    project.collections[0]!.preOperations = [{
+      id: "10000000-0000-4000-8000-000000000028",
+      type: "script",
+      content: 'pm.request.headers["X-Module-Operation"] = "ran";',
+    }];
+    const projectBefore = JSON.stringify(project);
+    const snapshot = createProjectSnapshot(project);
+    const request = requestAt("/free/{{scope}}");
+    request.baseUrl = "{{baseUrl}}";
+    request.query = [{
+      kind: "inline",
+      id: "10000000-0000-4000-8000-000000000029",
+      name: "scope",
+      schema: { kind: "scalar", type: "string" },
+      required: false,
+      enabled: true,
+      description: "",
+      value: "{{scope}}",
+    }];
+    request.headers = [{
+      kind: "inline",
+      id: "10000000-0000-4000-8000-000000000030",
+      name: "X-Free-Scope",
+      schema: { kind: "scalar", type: "string" },
+      required: false,
+      enabled: true,
+      description: "",
+      value: "{{scope}}",
+    }];
+    const invocation: DebugInvocation = {
+      mode: "free",
+      project: { workspaceId: ids.workspaceId, groupId: ids.groupId, projectId: ids.projectId },
+      draftId: "10000000-0000-4000-8000-000000000031",
+      environmentId: contractExecutionIds.environment,
+      request,
+      parameters: {},
+      fields: [],
+    };
+
+    const plan = prepareDebugExecution(snapshot, invocation);
+    const run: ProjectExecutionRun = {
+      snapshot: plan.snapshot,
+      credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} },
+    };
+    const result = await runDebugExecution(plan, run, { registry: createDefaultRegistry(), credentialMarkers: [] });
+
+    const freeUrl = new URL(hits[0] ?? "", baseUrl);
+    expect(freeUrl.pathname).toBe("/free/environment-value");
+    expect([...freeUrl.searchParams.entries()].sort()).toEqual([["global", "global-value"], ["scope", "environment-value"]]);
+    expect(observedDebugHeaders).toEqual([{ freeScope: "environment-value" }]);
+    expect(JSON.stringify(project)).toBe(projectBefore);
+    expect(JSON.stringify(snapshot.project)).toBe(projectBefore);
+    expect(result.mode).toBe("free");
+    expect(result.run.total).toBe(1);
+  });
+
   it("sends a dirty request against an API with no formal cases without changing the source project", async () => {
     hits = [];
     const project = createContractExecutionProject(baseUrl);
@@ -219,7 +347,7 @@ describe("Core debug service", () => {
     });
 
     const replayInvocation = createDebugReplayInvocation({
-      formatVersion: 1,
+      formatVersion: 2,
       historyId: "10000000-0000-4000-8000-000000000099",
       createdAt: "2026-10-13T00:00:00.000Z",
       result,
@@ -241,7 +369,7 @@ describe("Core debug service", () => {
     expect(result.exchangeTotal).toBe(101);
     expect(result.exchanges).toHaveLength(100);
     expect(result.omittedExchangeCount).toBe(1);
-    expect(result.exchanges.slice(0, 2).map((exchange) => [exchange.case?.caseId, exchange.rowIndex, exchange.hopIndex])).toEqual([
+    expect(result.exchanges.slice(0, 2).map((exchange) => [exchange.source.sourceKind === "asset" ? exchange.source.case.caseId : undefined, exchange.rowIndex, exchange.hopIndex])).toEqual([
       ["rows-case", 0, 0],
       ["rows-case", 1, 0],
     ]);
@@ -267,7 +395,10 @@ describe("Core debug service", () => {
   it("reapplies one-MiB body and two-MiB call budgets after late marker projection", () => {
     const { plan } = execution(createContractExecutionProject(baseUrl));
     const collector = createDebugExchangeCollector([]);
-    const identity = (rowIndex: number) => ({ ...ids, caseId: "budget-case", scope: "base", rowIndex, settings: resolveRequestSettings() });
+    const identity = (rowIndex: number) => ({
+      rowIndex, settings: resolveRequestSettings(),
+      source: { sourceKind: "asset" as const, case: { ...ids, caseId: "budget-case", scope: "base" } },
+    });
     const transfer = { fileBytesRead: 0, transportEncodedBytesWritten: 0, complete: true };
     const bodyText = "k".repeat(600 * 1024);
     const observeText = (rowIndex: number, text: string, rawHeaders: Array<[string, string]> = []) => {
@@ -306,7 +437,10 @@ describe("Core debug service", () => {
   it("omits captured and effective filenames when their initial summaries are truncated", () => {
     const { plan } = execution(createContractExecutionProject(baseUrl));
     const collector = createDebugExchangeCollector([]);
-    const identityAt = (rowIndex: number) => ({ ...ids, caseId: "filename-budget-case", scope: "base", rowIndex, settings: resolveRequestSettings() });
+    const identityAt = (rowIndex: number) => ({
+      rowIndex, settings: resolveRequestSettings(),
+      source: { sourceKind: "asset" as const, case: { ...ids, caseId: "filename-budget-case", scope: "base" } },
+    });
     const oversizedFilename = "f".repeat(1024 * 1024 + 1);
     const observeFileRequest = (rowIndex: number, body: { kind: "binary"; file: { path: string }; contentType: string } | {
       kind: "multipart"; entries: Array<{ kind: "file"; name: string; file: { path: string }; filename: string; contentType: string }>;
@@ -371,7 +505,7 @@ describe("Core debug service", () => {
     });
     expect(requestResult.replay.available).toBe(false);
     expect(JSON.stringify(requestResult).includes("synthetic-marker")).toBe(false);
-    expect(requestResult.locator).toBeUndefined();
+    expect(requestResult.source).toMatchObject({ sourceKind: "asset", locator: ids });
     expect(requestResult.outcomes[0]?.apiId).toBeUndefined();
     expect(requestResult.outcomes[0]?.identityAvailable).toBe(false);
 
@@ -396,11 +530,9 @@ describe("Core debug service", () => {
     const oversizedCookie = "synthetic-overflow-cookie-".repeat(1000);
     const collector = createDebugExchangeCollector([]);
     const identity = {
-      ...ids,
-      caseId: contractExecutionIds.case,
-      scope: "base",
       rowIndex: 0,
       settings: resolveRequestSettings(),
+      source: { sourceKind: "asset" as const, case: { ...ids, caseId: contractExecutionIds.case, scope: "base" } },
     };
     const rawCookie = `sid=${oversizedCookie}; HttpOnly`;
     collector.observe({
@@ -483,11 +615,9 @@ describe("Core debug service", () => {
         requestBody: { fileBytesRead: 0, transportEncodedBytesWritten: 0, complete: true },
         requestBodyChain: { fileBytesRead: 0, transportEncodedBytesWritten: 0, complete: true },
       }, {
-        ...ids,
-        caseId: contractExecutionIds.case,
-        scope: "base",
         rowIndex,
         settings: resolveRequestSettings(),
+        source: { sourceKind: "asset" as const, case: { ...ids, caseId: contractExecutionIds.case, scope: "base" } },
       });
     };
 
@@ -654,7 +784,8 @@ describe("Core debug service", () => {
       body: { kind: "form" as const, content: "", form: [{ key: "a", value: "X".repeat(800 * 1024), enabled: true }, { key: "b", value: "Y".repeat(800 * 1024), enabled: true }] },
     };
     collector.observe({ type: "request", hopIndex: 0, request, url: request.url, method: request.method }, {
-      ...ids, caseId: "case", scope: "base", rowIndex: 0, settings: resolveRequestSettings(),
+      rowIndex: 0, settings: resolveRequestSettings(),
+      source: { sourceKind: "asset" as const, case: { ...ids, caseId: "case", scope: "base" } },
     });
 
     const body = collector.exchanges()[0]!.request!.body;

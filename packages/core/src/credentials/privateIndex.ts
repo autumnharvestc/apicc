@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { open, readFile, rename, rm, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, toNamespacedPath } from "node:path";
 import { credentialIndexPath, isCredentialGeneration } from "./address.js";
 import { CredentialError, type CredentialScope } from "./types.js";
 
@@ -35,7 +35,7 @@ async function beginLockTransaction(databasePath: string): Promise<SQLiteDatabas
   while (true) {
     let database: SQLiteDatabase | undefined;
     try {
-      database = new DatabaseSync(databasePath);
+      database = new DatabaseSync(toNamespacedPath(databasePath));
       database.exec("PRAGMA busy_timeout = 0");
       database.exec("BEGIN IMMEDIATE");
       return database;

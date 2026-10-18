@@ -17,16 +17,21 @@ import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } 
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
 import { createMemoryApi } from "../../src/renderer/src/api/memory.js";
 import HomeView from "../../src/renderer/src/components/HomeView.vue";
+import DebugHistory from "../../src/renderer/src/components/DebugHistory.vue";
 import ProjectTabs from "../../src/renderer/src/components/ProjectTabs.vue";
+import RequestTabs from "../../src/renderer/src/components/RequestTabs.vue";
+import TopBar from "../../src/renderer/src/components/TopBar.vue";
 import WfDesigner from "../../src/renderer/src/components/WfDesigner.vue";
 import CasePanel from "../../src/renderer/src/components/CasePanel.vue";
 import EnvPanel from "../../src/renderer/src/components/EnvPanel.vue";
 import RequestEditor from "../../src/renderer/src/components/RequestEditor.vue";
+import OAuthManager from "../../src/renderer/src/components/OAuthManager.vue";
 import SideTree from "../../src/renderer/src/components/SideTree.vue";
 import ImportWizard from "../../src/renderer/src/components/ImportWizard.vue";
 import StressPanel from "../../src/renderer/src/components/StressPanel.vue";
 import type { useWorkspaceStore } from "../../src/renderer/src/stores/workspace.js";
 import type { createTabsStore } from "../../src/renderer/src/stores/tabs.js";
+import type { createRequestTabsStore, RequestTab } from "../../src/renderer/src/stores/requestTabs.js";
 import type { useTreeStore } from "../../src/renderer/src/stores/tree.js";
 import type { useWorkflowDesignStore } from "../../src/renderer/src/stores/workflowDesign.js";
 import type { useWfListStore } from "../../src/renderer/src/stores/wfList.js";
@@ -36,8 +41,9 @@ import type { useEditorStore } from "../../src/renderer/src/stores/editor.js";
 import { useModuleMemoryStore } from "../../src/renderer/src/stores/moduleMemory.js";
 import type { WfBindIndex } from "../../src/renderer/src/wf/wfBindings.js";
 import type { ProjectLocator } from "../../src/shared/locations.js";
+import type { ApiccApi } from "../../src/shared/types.js";
 import type { LocalProjectTreeNodeDTO, LocalTreeNodeDTO } from "../../src/shared/tree-dto.js";
-import type { StressReport } from "@apicc/core";
+import type { DebugInvocation, StressReport } from "@apicc/core";
 
 const failingApi = createMemoryApi();
 failingApi.seedWorkspace();
@@ -96,6 +102,12 @@ function expectBody(testid: string): DOMWrapper<Element> {
   const w = bodyFind(testid);
   if (!w) throw new Error(`document.body 中找不到 [data-testid="${testid}"]（Modal 传送门未渲染？）`);
   return w;
+}
+
+function chooseAppSelect(wrapper: VueWrapper, testid: string, value: string): void {
+  const select = wrapper.findAllComponents({ name: "ASelect" }).find((item) => item.attributes("data-testid") === testid);
+  if (!select) throw new Error(`ASelect 未找到: ${testid}`);
+  select.vm.$emit("update:value", value);
 }
 
 /** 语言下拉菜单项（a-dropdown 传送门渲染在 document.body，菜单项带 data-locale）。 */
@@ -254,6 +266,618 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     expect(split.element.children.length).toBe(4);
     const ids = Array.from(split.element.children).map((el) => el.getAttribute("data-testid"));
     expect(ids).toEqual(["api-head", "editor-pane", "split-divider", "viewer-pane"]);
+  });
+
+  it("当前项目可打开 free 请求签并用完整 URL 保留重复 query 顺序发送", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    const name = "空模块 free 请求项目";
+    const previousNodeCreate = failingApi.nodeCreate;
+    const previousOAuthProfilesGet = failingApi.oauthProfilesGet;
+    const profileReads: Parameters<ApiccApi["oauthProfilesGet"]>[0][] = [];
+    failingApi.oauthProfilesGet = async (input) => {
+      profileReads.push(input);
+      return { revision: "free-app-revision", profiles: [] };
+    };
+    let projectLocator: ProjectLocator | null = null;
+    try {
+      const rootTree = await failingApi.treeGet();
+      const group = rootTree.children!.find((node) => node.kind === "group");
+      if (!group || group.kind !== "group") throw new Error("Memory workspace is missing its group");
+      failingApi.nodeCreate = realNodeCreate;
+      try {
+        const created = await failingApi.nodeCreate({ kind: "project", parent: group.locator, name });
+        if (created.kind !== "project") throw new Error("Memory API did not create the empty project");
+        projectLocator = created.locator;
+        await failingApi.envCreate({ locator: created.locator, name: "free-oauth-env" });
+      } finally {
+        failingApi.nodeCreate = previousNodeCreate;
+      }
+      const projectTree = projectByLabel(await failingApi.treeGet(), name);
+      expect(projectTree.children ?? []).toEqual([]);
+
+      const workspace = wrapper.findComponent(SideTree).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+      await workspace.refresh();
+      await wrapper.find('[data-testid="topbar-home"]').trigger("click");
+      await flushPromises();
+      const projectCard = wrapper.findAll('[data-testid^="project-card-"]').find((candidate) => candidate.text().includes(name));
+      if (!projectCard) throw new Error("Empty project was not rendered on HomeView");
+      await projectCard.trigger("click");
+      await vi.waitFor(() => expect(wrapper.findAll('[data-testid^="project-tab-"]').some((tab) => tab.text().includes(name))).toBe(true));
+      expect(wrapper.find('[data-testid="request-tab-new-free"]').isVisible()).toBe(true);
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+
+      const requestEditor = wrapper.findComponent(RequestEditor);
+      const editor = requestEditor.props("editor") as ReturnType<typeof useEditorStore>;
+      const debug = requestEditor.props("debug") as ReturnType<typeof useDebugStore>;
+      expect(editor.activeFreeSession).toBeTruthy();
+      expect(editor.activeFreeSession?.project).toEqual(projectLocator);
+      expect(editor.api).toBeNull();
+      expect(requestEditor.attributes("data-source-kind")).toBe("free");
+      expect(wrapper.find('[data-testid="save-free-btn"]').exists()).toBe(true);
+      expect((wrapper.find('[data-testid="save-free-btn"]').element as HTMLButtonElement).disabled).toBe(false);
+      const currentTab = requestEditor.props("requestTab") as RequestTab;
+      const freeEnvironment = editor.activeFreeSession!.envs.find((item) => item.name === "free-oauth-env");
+      if (!freeEnvironment) throw new Error("Free request context did not load its project environment");
+      debug.requestTabState(currentTab).selectedEnvironmentId = freeEnvironment.id;
+      await flushPromises();
+      const oauthManager = requestEditor.findComponent(OAuthManager);
+      expect(oauthManager.exists()).toBe(true);
+      expect(typeof oauthManager.props("api").oauthProfilesGet).toBe("function");
+      expect(oauthManager.props("locator")).toEqual(projectLocator);
+      expect(oauthManager.props("environmentId")).toBe(freeEnvironment.id);
+      expect(JSON.parse(oauthManager.props("contextKey"))).toMatchObject({
+        root: currentTab.root,
+        project: projectLocator,
+        tabId: currentTab.tabId,
+        generation: currentTab.generation,
+        environmentId: freeEnvironment.id,
+        bearerRef: null,
+      });
+      expect(profileReads.length).toBeGreaterThan(0);
+      expect(profileReads.every((input) => JSON.stringify(input.locator) === JSON.stringify(projectLocator))).toBe(true);
+      expect(profileReads.at(-1)).toEqual({ locator: projectLocator, environmentId: freeEnvironment.id });
+
+      const input = wrapper.get('[data-testid="editor-full-url"]');
+      await input.setValue("https://example.test/a%20b?x=1&x=two+words&encoded=%2F");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="editor-base-url"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="editor-path"]').exists()).toBe(false);
+      const session = editor.activeFreeSession!;
+      expect(session.request).toMatchObject({ baseUrl: "https://example.test", path: "/a%20b" });
+      expect(session.request.query.filter((item) => item.kind === "inline").map((item) => [item.name, item.value])).toEqual([
+        ["x", "1"], ["x", "two words"], ["encoded", "/"],
+      ]);
+      expect(session.urlDraft).toBe("https://example.test/a%20b?x=1&x=two%20words&encoded=%2F");
+
+      await wrapper.get(`[data-testid="request-tab-close-${currentTab.tabId}"]`).trigger("click");
+      await flushPromises();
+      expect(document.body.textContent ?? "").toContain("此请求页签");
+      expect(document.body.textContent ?? "").not.toContain("此项目有未保存");
+      await expectBody("dialog-cancel").trigger("click");
+      await flushPromises();
+
+      await wrapper.get('[data-testid="tab-query"]').trigger("click");
+      await flushPromises();
+      const queryValues = wrapper.findAll('[data-testid="kv-value"]');
+      await queryValues[0]!.setValue("updated value");
+      await flushPromises();
+      expect(session.request.query.filter((item) => item.kind === "inline").map((item) => [item.name, item.value])).toEqual([
+        ["x", "updated value"], ["x", "two words"], ["encoded", "/"],
+      ]);
+      expect(session.urlDraft).toBe("https://example.test/a%20b?x=updated%20value&x=two%20words&encoded=%2F");
+
+      let captured: DebugInvocation | undefined;
+      const originalDebugStart = failingApi.debugStart;
+      failingApi.debugStart = async (invocation) => {
+        captured = invocation;
+        return originalDebugStart(invocation);
+      };
+      try {
+        await wrapper.get('[data-testid="send-btn"]').trigger("click");
+        await flushPromises();
+      } finally {
+        failingApi.debugStart = originalDebugStart;
+      }
+      expect(captured).toMatchObject({ mode: "free", request: { query: [
+        { name: "x", value: "updated value" }, { name: "x", value: "two words" }, { name: "encoded", value: "/" },
+      ] } });
+      const tabState = Object.values(debug.requestTabs).find((state) => state.result?.mode === "free");
+      expect(tabState?.result?.source).toMatchObject({ sourceKind: "free", project: projectLocator });
+      const freeDebugState = debug.requestTabs[session.tabId]!;
+      freeDebugState.settings = { totalTimeoutMs: 4321 };
+      freeDebugState.parameters = { retainedParameter: "kept" };
+
+      await wrapper.get('[data-testid="save-free-btn"]').trigger("click");
+      await flushPromises();
+      expect(bodyFind("free-save-needs-module")).not.toBeNull();
+      const originalFreeTabValue = requestEditor.props("requestTab") as { tabId: string; generation: number };
+      const originalFreeTab = { tabId: originalFreeTabValue.tabId, generation: originalFreeTabValue.generation };
+      await expectBody("free-save-name").setValue("Saved full URL request");
+      await expectBody("free-save-module-name").setValue("Free destination");
+      expect((expectBody("free-save-module-name").element as HTMLInputElement).value).toBe("Free destination");
+      expect((expectBody("free-save-create-module").element as HTMLButtonElement).disabled).toBe(false);
+      const createModule = vi.fn(realNodeCreate);
+      failingApi.nodeCreate = createModule;
+      try {
+        await expectBody("free-save-create-module").trigger("click");
+        await flushPromises();
+        await flushPromises();
+      } finally {
+        failingApi.nodeCreate = previousNodeCreate;
+      }
+      expect(createModule).toHaveBeenCalledExactlyOnceWith({ kind: "collection", parent: projectLocator, name: "Free destination" });
+      const createdModule = await createModule.mock.results[0]?.value;
+      expect(createdModule).toMatchObject({ kind: "collection", label: "Free destination", locator: { ...projectLocator } });
+      const freeSaveError = bodyFind("free-save-error");
+      if (freeSaveError) throw new Error(`创建 Free 保存模块失败：${freeSaveError.text()}`);
+      const createdProjectTree = projectByLabel(await failingApi.treeGet(), name);
+      expect(createdProjectTree.children?.some((node) => node.kind === "collection" && node.label === "Free destination"),
+        JSON.stringify(createdProjectTree.children?.map((node) => ({ kind: node.kind, label: node.label, locator: node.locator })))).toBe(true);
+      expect(requestEditor.props("requestTab")).toMatchObject({ ...originalFreeTab, tabId: session.tabId, source: { kind: "free" } });
+
+      expect(bodyFind("free-save-name")).not.toBeNull();
+      await vi.waitFor(() => expect(bodyFind("free-save-target")).not.toBeNull());
+      expect((expectBody("free-save-submit").element as HTMLButtonElement).disabled).toBe(false);
+      await expectBody("free-save-submit").trigger("click");
+      await flushPromises();
+      await flushPromises();
+      const finalFreeSaveError = bodyFind("free-save-error");
+      if (finalFreeSaveError) throw new Error(`有效 URL 保存被拒绝：${finalFreeSaveError.text()}`);
+      await vi.waitFor(() => expect(wrapper.findComponent(RequestEditor).attributes("data-source-kind")).toBe("asset"));
+
+      const convertedRequestEditor = wrapper.findComponent(RequestEditor);
+      expect(convertedRequestEditor.attributes("data-source-kind")).toBe("asset");
+      expect(editor.activeFreeSession).toBeNull();
+      expect(editor.api).not.toBeNull();
+      expect(editor.api!.contract.request.query.filter((item) => item.kind === "inline").map((item) => [item.name, item.value])).toEqual([
+        ["x", "updated value"], ["x", "two words"], ["encoded", "/"],
+      ]);
+      expect(debug.requestTabs[session.tabId]).toMatchObject({
+        generation: (convertedRequestEditor.props("requestTab") as { generation: number }).generation,
+        result: { mode: "free" },
+        settings: { totalTimeoutMs: 4321 },
+        parameters: { retainedParameter: "kept" },
+      });
+      expect(convertedRequestEditor.find('[data-testid="save-btn"]').exists()).toBe(true);
+      expect(convertedRequestEditor.find('[data-testid="save-feedback"]').text()).toContain("目标模块继承");
+      expect(convertedRequestEditor.find('[data-testid="send-btn"]').exists()).toBe(true);
+      expect(convertedRequestEditor.find('[data-testid="debug-case-select"]').exists()).toBe(true);
+      const baseCase = editor.api!.cases[0];
+      if (!baseCase) throw new Error("保存后的正式接口缺少默认用例入口");
+      chooseAppSelect(convertedRequestEditor, "debug-case-select", JSON.stringify([baseCase.id, baseCase.scope]));
+      expect(debug.requestTabs[session.tabId]?.selectedCase).toEqual({ caseId: baseCase.id, scope: baseCase.scope });
+
+      let formalSend: DebugInvocation | undefined;
+      const previousDebugStart = failingApi.debugStart;
+      failingApi.debugStart = async (invocation) => {
+        formalSend = invocation;
+        return previousDebugStart(invocation);
+      };
+      try {
+        await convertedRequestEditor.get('[data-testid="send-btn"]').trigger("click");
+        await flushPromises();
+      } finally {
+        failingApi.debugStart = previousDebugStart;
+      }
+      expect(formalSend).toMatchObject({ mode: "request", locator: editor.locator, request: { query: [
+        { name: "x", value: "updated value" }, { name: "x", value: "two words" }, { name: "encoded", value: "/" },
+      ] } });
+      const convertedRequestTab = convertedRequestEditor.props("requestTab") as { tabId: string; generation: number; source: { kind: string } };
+      expect(convertedRequestTab.tabId).toBe(originalFreeTab.tabId);
+      expect(convertedRequestTab.generation).toBeGreaterThan(originalFreeTab.generation);
+      const convertedTab = convertedRequestTab.source;
+      expect(convertedTab.kind).toBe("asset");
+    } finally {
+      failingApi.nodeCreate = previousNodeCreate;
+      failingApi.oauthProfilesGet = previousOAuthProfilesGet;
+      if (projectLocator) await failingApi.nodeDelete({ kind: "project", locator: projectLocator }).catch(() => undefined);
+    }
+  });
+
+  it("无效 Free URL 不保存；保存等待期间 URL 改变时保留原 free 草稿", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    const name = "Free URL pending guard";
+    const previousNodeCreate = failingApi.nodeCreate;
+    let projectLocator: ProjectLocator | null = null;
+    let targetParent: Parameters<typeof failingApi.apiCreateFromRequestDraft>[0]["targetParent"] | null = null;
+    try {
+      const rootTree = await failingApi.treeGet();
+      const group = rootTree.children!.find((node) => node.kind === "group");
+      if (!group || group.kind !== "group") throw new Error("Memory workspace is missing its group");
+      failingApi.nodeCreate = realNodeCreate;
+      try {
+        const createdProject = await failingApi.nodeCreate({ kind: "project", parent: group.locator, name });
+        if (createdProject.kind !== "project") throw new Error("Memory API did not create the Free URL fixture project");
+        projectLocator = createdProject.locator;
+        const createdModule = await failingApi.nodeCreate({ kind: "collection", parent: createdProject.locator, name: "Destination" });
+        if (createdModule.kind !== "collection") throw new Error("Memory API did not create the destination module");
+        targetParent = createdModule.locator;
+      } finally {
+        failingApi.nodeCreate = previousNodeCreate;
+      }
+
+      const workspace = wrapper.findComponent(SideTree).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+      await workspace.refresh();
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      await flushPromises();
+      const projectCard = wrapper.findAll('[data-testid^="project-card-"]').find((candidate) => candidate.text().includes(name));
+      if (!projectCard) throw new Error("Free URL fixture project was not rendered on HomeView");
+      await projectCard.trigger("click");
+      await vi.waitFor(() => expect(wrapper.findAll('[data-testid^="project-tab-"]').some((tab) => tab.text().includes(name))).toBe(true));
+      await flushPromises();
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+
+      const requestEditor = wrapper.findComponent(RequestEditor);
+      const editor = requestEditor.props("editor") as ReturnType<typeof useEditorStore>;
+      const session = editor.activeFreeSession;
+      if (!session || !projectLocator || !targetParent) throw new Error("Free URL fixture session was not initialized");
+      const tab = requestEditor.props("requestTab") as { tabId: string; generation: number };
+      const input = wrapper.get('[data-testid="editor-full-url"]');
+      await input.setValue("https://example.test/pending?value=original");
+      await flushPromises();
+      const validUrlDraft = session.urlDraft;
+      await wrapper.get('[data-testid="save-free-btn"]').trigger("click");
+      await flushPromises();
+      await vi.waitFor(() => expect(bodyFind("free-save-target")).not.toBeNull());
+      chooseAppSelect(wrapper, "free-save-target", JSON.stringify(targetParent));
+      await expectBody("free-save-name").setValue("Pending URL draft");
+
+      await input.setValue("not a full URL");
+      await flushPromises();
+      expect(session.urlDraftInvalid).toBe(true);
+      const saveFreeRequest = requestEditor.props("saveFreeRequest");
+      if (!saveFreeRequest) throw new Error("Free save callback was not provided");
+      const originalCreateFromDraft = failingApi.apiCreateFromRequestDraft.bind(failingApi);
+      const createFromDraft = vi.fn(originalCreateFromDraft);
+      failingApi.apiCreateFromRequestDraft = createFromDraft;
+      try {
+        await expect(saveFreeRequest(tab as never, targetParent, "Invalid URL draft", session.request, []))
+          .rejects.toThrow();
+        expect(createFromDraft).not.toHaveBeenCalled();
+      } finally {
+        failingApi.apiCreateFromRequestDraft = originalCreateFromDraft;
+      }
+      expect((wrapper.get('[data-testid="save-free-btn"]').element as HTMLButtonElement).disabled).toBe(true);
+      expect((expectBody("free-save-submit").element as HTMLButtonElement).disabled).toBe(true);
+      expect(wrapper.find('[data-testid="free-url-draft-error"]').exists()).toBe(true);
+
+      await input.setValue(validUrlDraft);
+      await flushPromises();
+      let releaseCreate!: () => void;
+      let markCreateStarted!: () => void;
+      const createStarted = new Promise<void>((resolve) => { markCreateStarted = resolve; });
+      const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+      const deferredCreate = vi.fn(async (draftInput: Parameters<typeof originalCreateFromDraft>[0]) => {
+        markCreateStarted();
+        await createGate;
+        return originalCreateFromDraft(draftInput);
+      });
+      failingApi.apiCreateFromRequestDraft = deferredCreate;
+      try {
+        await expectBody("free-save-submit").trigger("click");
+        await createStarted;
+        await input.setValue("not a full URL");
+        await flushPromises();
+        releaseCreate();
+        const persisted = await deferredCreate.mock.results[0]?.value;
+        expect(persisted?.locator).toMatchObject({ ...targetParent, apiId: expect.any(String) });
+        await vi.waitFor(() => expect(bodyFind("free-save-error")?.text()).toContain("源请求签已变化"));
+        expect(editor.freeSessions[session.tabId]).toBe(session);
+        expect(requestEditor.props("requestTab")).toMatchObject({ ...tab, source: { kind: "free" } });
+        expect(session.urlDraft).toBe("not a full URL");
+        expect(session.urlDraftInvalid).toBe(true);
+        expect(bodyFind("free-save-name")).not.toBeNull();
+      } finally {
+        releaseCreate();
+        failingApi.apiCreateFromRequestDraft = originalCreateFromDraft;
+      }
+    } finally {
+      failingApi.nodeCreate = previousNodeCreate;
+      if (projectLocator) await failingApi.nodeDelete({ kind: "project", locator: projectLocator }).catch(() => undefined);
+    }
+  });
+
+  it("Free history 响应迟到时尊重原请求签与项目导航代次", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    const requestTabs = wrapper.findComponent(RequestTabs).props("tabs") as ReturnType<typeof createRequestTabsStore>;
+    const editor = wrapper.findComponent(RequestEditor).props("editor") as ReturnType<typeof useEditorStore>;
+    const history = wrapper.findComponent(DebugHistory);
+    const debug = history.props("debug") as ReturnType<typeof useDebugStore>;
+    const replayFree = history.props("replayFree");
+    if (!replayFree) throw new Error("Free history replay callback was not provided");
+    const firstTab = requestTabs.activeTab;
+    const firstSession = editor.activeFreeSession;
+    if (!firstTab || firstTab.source.kind !== "free" || !firstSession) throw new Error("Initial Free request tab was not initialized");
+
+    type RestoreResult = Awaited<ReturnType<typeof failingApi.debugHistoryRestore>>;
+    const pendingReplies: Array<(result: RestoreResult) => void> = [];
+    const originalRestore = failingApi.debugHistoryRestore;
+    const originalReplay = failingApi.debugHistoryReplay;
+    const deferredRestore = vi.fn(async (_input: Parameters<typeof failingApi.debugHistoryRestore>[0]) =>
+      new Promise<RestoreResult>((resolve) => pendingReplies.push(resolve)));
+    const replayHistory = vi.fn(async (_input: Parameters<typeof failingApi.debugHistoryReplay>[0]) => {
+      throw new Error("late history replay must not start");
+    });
+    failingApi.debugHistoryRestore = deferredRestore;
+    failingApi.debugHistoryReplay = replayHistory;
+    const historyDraftId = "30000000-0000-4000-8000-000000000004";
+    const makeRestoreResult = (request: typeof firstSession.request, sourceAvailable = true): RestoreResult => ({
+      invocation: {
+        mode: "free",
+        project: { ...project.locator },
+        draftId: historyDraftId,
+        request: JSON.parse(JSON.stringify(request)) as typeof firstSession.request,
+        parameters: {},
+        fields: [],
+      },
+      sourceChanged: false,
+      sourceAvailable,
+    });
+    const sentinelPreview = {
+      mode: "free" as const,
+      project: { ...project.locator },
+      draftId: "30000000-0000-4000-8000-000000000005",
+      request: { ...firstSession.request, path: "/preserved-preview" },
+      parameters: {},
+      fields: [],
+    };
+    const previewState = debug as unknown as { freeRestoredPreview: DebugInvocation | null };
+    previewState.freeRestoredPreview = sentinelPreview;
+    const replay = (historyId: string) => replayFree({ historyId, exchangeOrder: 1, project: project.locator, draftId: historyDraftId });
+    const releaseNext = async (sourceAvailable = true, request = firstSession.request) => {
+      await vi.waitFor(() => expect(pendingReplies).toHaveLength(1));
+      pendingReplies.shift()!(makeRestoreResult(request, sourceAvailable));
+    };
+
+    try {
+      const firstLateReplay = replay("30000000-0000-4000-8000-000000000006");
+      await vi.waitFor(() => expect(pendingReplies).toHaveLength(1));
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await flushPromises();
+      const secondTabId = requestTabs.activeId;
+      expect(secondTabId).not.toBeNull();
+      expect(secondTabId).not.toBe(firstTab.tabId);
+      await releaseNext(false);
+      await firstLateReplay;
+      expect(requestTabs.order).toHaveLength(2);
+      expect(requestTabs.activeId).toBe(secondTabId);
+      expect(previewState.freeRestoredPreview).toEqual(sentinelPreview);
+      expect(replayHistory).not.toHaveBeenCalled();
+
+      const secondSession = editor.freeSessions[secondTabId!]!;
+      const closingLateReplay = replay("30000000-0000-4000-8000-000000000007");
+      await vi.waitFor(() => expect(pendingReplies).toHaveLength(1));
+      await wrapper.get(`[data-testid="request-tab-close-${secondTabId}"]`).trigger("click");
+      await vi.waitFor(() => expect(requestTabs.tabs[secondTabId!]).toBeUndefined());
+      await releaseNext(true, secondSession.request);
+      await closingLateReplay;
+      expect(requestTabs.order).toEqual([firstTab.tabId]);
+      expect(requestTabs.activeId).toBe(firstTab.tabId);
+      expect(previewState.freeRestoredPreview).toEqual(sentinelPreview);
+      expect(replayHistory).not.toHaveBeenCalled();
+
+      await wrapper.get(`[data-testid="request-tab-close-${firstTab.tabId}"]`).trigger("click");
+      await vi.waitFor(() => expect(requestTabs.order).toHaveLength(0));
+      expect(requestTabs.activeId).toBeNull();
+      const noTabLateReplay = replay("30000000-0000-4000-8000-000000000008");
+      await vi.waitFor(() => expect(pendingReplies).toHaveLength(1));
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
+      await flushPromises();
+      expect(history.props("projectLocator")).toEqual(project.locator);
+      await releaseNext(true);
+      await noTabLateReplay;
+      expect(requestTabs.order).toHaveLength(0);
+      expect(requestTabs.activeId).toBeNull();
+      expect(previewState.freeRestoredPreview).toEqual(sentinelPreview);
+      expect(replayHistory).not.toHaveBeenCalled();
+    } finally {
+      failingApi.debugHistoryRestore = originalRestore;
+      failingApi.debugHistoryReplay = originalReplay;
+    }
+  });
+
+  it("free context 尚未返回时不把上一正式接口暴露为 free 签的可编辑请求", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const collection = project.children!.find((node) => node.kind === "collection");
+    const apiNode = collection?.children?.find((node) => node.kind === "api");
+    if (!apiNode || apiNode.kind !== "api") throw new Error("示例项目缺少用于加载隔离回归的接口");
+    const editor = wrapper.findComponent(RequestEditor).props("editor") as ReturnType<typeof useEditorStore>;
+    await editor.load(apiNode.locator);
+    const originalPath = editor.api!.contract.request.path;
+    const detail = await failingApi.debugProjectContext(project.locator);
+    let release!: (value: typeof detail) => void;
+    const originalContext = failingApi.debugProjectContext;
+    failingApi.debugProjectContext = async () => new Promise((resolve) => { release = resolve; });
+    try {
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await flushPromises();
+      const leakedPath = wrapper.find('[data-testid="editor-path"]');
+      if (leakedPath.exists()) await leakedPath.setValue("/wrong-free-owner");
+      expect(editor.api!.contract.request.path).toBe(originalPath);
+      expect(wrapper.find('[data-testid="editor-path"]').exists()).toBe(false);
+    } finally {
+      release(detail);
+      failingApi.debugProjectContext = originalContext;
+    }
+  });
+
+  it("关闭项目签对 dirty 请求签只确认一次；拒绝不驱逐，接受后清除所属请求会话", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+    await flushPromises();
+    await flushPromises();
+    const requestEditor = wrapper.findComponent(RequestEditor);
+    const editor = requestEditor.props("editor") as ReturnType<typeof useEditorStore>;
+    const debug = requestEditor.props("debug") as ReturnType<typeof useDebugStore>;
+    const tabs = wrapper.findComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+    const session = editor.activeFreeSession;
+    if (!session) throw new Error("Free request session was not initialized");
+    await wrapper.get('[data-testid="editor-full-url"]').setValue("https://example.test/dirty");
+    await flushPromises();
+    expect(editor.dirty).toBe(true);
+
+    await wrapper.get('[data-testid="tab-close-0"]').trigger("click");
+    await flushPromises();
+    expect(document.body.querySelector('[data-testid="dialog-confirm"]')).not.toBeNull();
+    expect(tabs.tabs).toHaveLength(1);
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    expect(tabs.tabs).toHaveLength(1);
+    expect(editor.freeSessions[session.tabId]).toBe(session);
+    expect(debug.requestTabs[session.tabId]).toBeDefined();
+
+    await wrapper.get('[data-testid="tab-close-0"]').trigger("click");
+    await flushPromises();
+    await expectBody("dialog-confirm").trigger("click");
+    await vi.waitFor(() => expect(tabs.tabs).toHaveLength(0));
+    expect(editor.freeSessions[session.tabId]).toBeUndefined();
+    expect(debug.requestTabs[session.tabId]).toBeUndefined();
+    expect(document.body.querySelector('[data-testid="dialog-confirm"]')).toBeNull();
+  });
+
+  it("唯一项目签从主页切回时恢复原项目及未保存请求草稿", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+
+    const tabs = wrapper.findComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+    expect(tabs.tabs).toHaveLength(1);
+    const tabId = tabs.tabs[0]!.tabId;
+    const workspace = wrapper.findComponent(TopBar).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+    const workspaceOpen = vi.spyOn(workspace, "open");
+    const editor = wrapper.findComponent(RequestEditor).props("editor") as ReturnType<typeof import("../../src/renderer/src/stores/editor.js").useEditorStore>;
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const collection = project.children!.find((node) => node.kind === "collection");
+    const apiNode = collection?.children?.find((node) => node.kind === "api");
+    if (!apiNode || apiNode.kind !== "api") throw new Error("示例项目缺少用于回归的接口");
+    await editor.load(apiNode.locator);
+    const draftPath = "/f2b-home-return-draft";
+    editor.api!.contract.request.path = draftPath;
+    expect(editor.dirty).toBe(true);
+
+    await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+    expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
+    expect(wrapper.findComponent(RequestEditor).exists()).toBe(true);
+    expect(tabs.tabs).toHaveLength(1);
+    expect(tabs.tabs[0]!.tabId).toBe(tabId);
+    expect(editor.api?.contract.request.path).toBe(draftPath);
+    expect(editor.dirty).toBe(true);
+    expect(workspaceOpen).not.toHaveBeenCalled();
+  });
+
+  it("主页保留本地项目调试环境及用例上下文，在线工作区不暴露请求操作", async () => {
+    await seedOnlineLogin();
+    let environmentId: string | null = null;
+    let projectLocator: ProjectLocator | null = null;
+    try {
+      const wrapper = await mountApp();
+      await openLocalDir(wrapper);
+      const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+      projectLocator = project.locator;
+      const created = await failingApi.envCreate({ locator: project.locator, name: "fix1-dev" });
+      environmentId = created.id;
+      await clickApiAndWait(wrapper);
+
+      const requestEditor = wrapper.findComponent(RequestEditor);
+      const editor = requestEditor.props("editor") as ReturnType<typeof useEditorStore>;
+      const debug = requestEditor.props("debug") as ReturnType<typeof useDebugStore>;
+      const firstCase = editor.api?.cases[0];
+      if (!firstCase) throw new Error("示例接口缺少用于回归的用例");
+      const selectedCase = { caseId: firstCase.id, scope: firstCase.scope };
+      const draftPath = "/f2b-fix1-home-draft";
+      editor.api!.contract.request.path = draftPath;
+      debug.selectEnv("fix1-dev");
+      debug.selectCase(selectedCase);
+      expect(editor.dirty).toBe(true);
+      expect(editor.envs.map((entry) => entry.name)).toContain("fix1-dev");
+
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      await gotoServerWorkspaces(wrapper);
+      await wrapper.find('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      expect(debug.selectedEnvName).toBe("fix1-dev");
+      expect(debug.selectedCase).toEqual(selectedCase);
+      expect(editor.api?.contract.request.path).toBe(draftPath);
+      expect(editor.dirty).toBe(true);
+      expect(wrapper.find('[data-testid="send-btn"]').exists()).toBe(false);
+
+      await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
+      expect(debug.selectedEnvName).toBe("fix1-dev");
+      expect(debug.selectedCase).toEqual(selectedCase);
+      expect(editor.api?.contract.request.path).toBe(draftPath);
+      expect(editor.dirty).toBe(true);
+    } finally {
+      if (environmentId && projectLocator) {
+        await failingApi.nodeDelete({
+          kind: "environment",
+          locator: { ...projectLocator, environmentId },
+        }).catch(() => undefined);
+      }
+      await cleanupOnlineLogin();
+    }
+  });
+
+  it("主页导航使迟到的项目激活不能抢回页面", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    const tabs = wrapper.findComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+    const tabId = tabs.tabs[0]!.tabId;
+    const workspace = wrapper.findComponent(TopBar).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+    const originalOpen = workspace.open.bind(workspace);
+    let releaseOpen!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+    let openStarted = false;
+    await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+    workspace.opened = false;
+    workspace.open = async (rootPath) => {
+      openStarted = true;
+      await gate;
+      workspace.root = rootPath;
+      workspace.opened = true;
+    };
+
+    try {
+      const activation = tabs.activateTab(tabId);
+      await vi.waitFor(() => expect(openStarted).toBe(true));
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      releaseOpen();
+      await activation;
+      await flushPromises();
+
+      expect(tabs.selectedPage).toEqual({ kind: "home" });
+      expect(tabs.contextTabId).toBe(tabId);
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+    } finally {
+      releaseOpen();
+      workspace.open = originalOpen;
+      workspace.opened = true;
+    }
   });
 });
 
@@ -651,13 +1275,11 @@ describe("App 侧树工作流入口", () => {
       expect(appRoot.classes()).not.toContain("ant-layout-has-sider");
       const children = Array.from(appRoot.element.children);
       const topbarIndex = children.findIndex((child) => child.matches('[data-testid="topbar"]'));
-      const tabsIndex = children.findIndex((child) => child.matches('[data-testid="project-tabs"]'));
       const workspaceIndex = children.findIndex((child) => child.classList.contains("body"));
       expect(topbarIndex).toBeGreaterThanOrEqual(0);
-      expect(tabsIndex).toBeGreaterThanOrEqual(0);
       expect(workspaceIndex).toBeGreaterThanOrEqual(0);
       expect(topbarIndex).toBeLessThan(workspaceIndex);
-      expect(tabsIndex).toBeLessThan(workspaceIndex);
+      expect(children[topbarIndex]!.querySelector('[data-testid="project-tabs"]')).not.toBeNull();
     };
     expectAppShellAboveWorkspace();
     // 直连替身建工作流后重开工作区刷新树（打开钮对非工作区目录回退内存态）
@@ -1172,43 +1794,49 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       const wrapper = await mountApp();
       await openLocalDir(wrapper);
       await flushPromises();
-      const designOf = () =>
-        wrapper.findComponent(WfDesigner).props("workflowDesign") as {
-          workflowId: string | null;
-          dirty: boolean;
-        };
-      // 两个项目各成签（首卡随机——openLocalDir 只点首卡；均无草稿源，干净切换）
       await openSecondProjectTab(wrapper, "切签目标项目");
       await openSecondProjectTab(wrapper, "示例项目");
+      const designStore = wrapper.findComponent(SideTree).props("workflowDesign") as {
+        workflowId: string | null;
+        dirty: boolean;
+      };
+      // 两个项目各成签（首卡随机——openLocalDir 只点首卡；均无草稿源，干净切换）
       const tabA = await tabFor(wrapper, "示例项目");
       expect(tabA.classes()).toContain("active");
       await wrapper.findAll('[data-testid="tree-workflow"]').find((n) => n.text().includes("切签脏流"))!.trigger("click");
       await flushPromises();
       await wrapper.find('[data-testid="wf-add-request"]').trigger("click");
       await flushPromises();
-      expect(designOf().dirty).toBe(true);
-      expect(designOf().workflowId).toBe(wfA.id);
-      // dirty 时切到目标项目签：确认框弹出，活跃签与缓冲不变（修复前：直切，编辑静默丢失）
+      expect(designStore.dirty).toBe(true);
+      expect(designStore.workflowId).toBe(wfA.id);
+      const tabs = wrapper.findComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+      const tabAId = tabs.tabs.find((tab) => tab.projectName === "示例项目")!.tabId;
+      // A → 主页 → B 仍按保留上下文 A 检查工作流草稿。
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
       const tabB = await tabFor(wrapper, "切签目标项目");
       await tabB.trigger("click");
       await flushPromises();
       expect(expectBody("dialog-cancel").exists()).toBe(true);
-      expect(designOf().workflowId).toBe(wfA.id);
-      expect(designOf().dirty).toBe(true);
-      expect(tabA.classes()).toContain("active");
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      expect(designStore.workflowId).toBe(wfA.id);
+      expect(designStore.dirty).toBe(true);
+      expect(tabs.activeTabId).toBeNull();
+      expect(tabs.contextTabId).toBe(tabAId);
       // 取消：不切换，草稿原样
       await expectBody("dialog-cancel").trigger("click");
       await flushPromises();
-      expect(tabA.classes()).toContain("active");
-      expect(designOf().dirty).toBe(true);
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      expect(tabs.contextTabId).toBe(tabAId);
+      expect(designStore.dirty).toBe(true);
       // 再切并确认丢弃：切签完成 + 设计器会话卸载（dirty 复位，避免下次切签重复纠缠）
       await tabB.trigger("click");
       await flushPromises();
       await expectBody("dialog-confirm").trigger("click");
       await flushPromises();
       expect(tabB.classes()).toContain("active");
-      expect(designOf().workflowId).toBeNull();
-      expect(designOf().dirty).toBe(false);
+      expect(designStore.workflowId).toBeNull();
+      expect(designStore.dirty).toBe(false);
     } finally {
       await failingApi.wfDelete({ ...demoProject.locator, workflowId: wfA.id }).catch(() => undefined);
       await failingApi.nodeDelete({ kind: "project", locator: targetProject }).catch(() => undefined);
@@ -1261,10 +1889,7 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
   });
 });
 
-// —— 计划 C 终审 Important 1：纯在线用户主页死胡同——在线项目成签入口在主页视图不可达 ——
-// 修复后：①主页开在线工作区 → 组合根回调切接口模块（侧栏 v-show 与 ModuleRail v-if 随
-// onlineMode 亮起，在线树/成签入口可达）；②主页在线区在活跃工作区下列项目卡片，点卡片
-// 直连 tabs.openProjectTab（online 分支 workspaceRef）成签激活。
+// —— 主页在线入口：在线工作区与项目发现留在主页，项目卡片成签后进入统一项目页 ——
 // 置于文件末尾：用例预置在线登录态（apicc.onlineServers），结束即清，不污染文件内更早用例。
 const ONLINE_SERVER = "http://127.0.0.1:8080";
 
@@ -1299,20 +1924,24 @@ async function activeTabElement(wrapper: import("@vue/test-utils").VueWrapper) {
 }
 
 describe("App 主页在线入口（终审 Important 1：纯在线用户死胡同修复）", () => {
-  it("主页开在线工作区 → 视图离开主页（侧栏/在线编辑区亮起），在线树点项目名即可成签", async () => {
+  it("主页开在线工作区仍可发现项目；项目卡片成签后在线树可用", async () => {
     await seedOnlineLogin();
     try {
       const wrapper = await mountApp();
       expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
       await gotoServerWorkspaces(wrapper);
-      // 打开在线工作区：组合根回调切接口模块（修复前 view 停留 home 且侧栏/rail 双隐藏——死胡同）
+      // 打开在线工作区后保留主页，活跃工作区下的项目卡片承接成签入口。
       await wrapper.find('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="project-card-300"]').exists()).toBe(true);
+      await wrapper.find('[data-testid="project-card-300"]').trigger("click");
       await flushPromises();
       expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
       expect(wrapper.find('[data-testid="module-rail"]').exists()).toBe(true);
       expect(wrapper.find('[data-testid="sidebar-api"]').isVisible()).toBe(true);
       expect(wrapper.find('[data-testid="online-guide"]').exists()).toBe(true);
-      // 成签路径可达：在线侧树展开 → 项目名入口（任务 7）→ 项目签创建并激活
+      // 项目页内在线树仍可发现并定位当前项目。
       await wrapper.find('[data-testid="tree-group-toggle"]').trigger("click");
       await flushPromises();
       const projLabel = wrapper.findAll(".label").find((e) => e.text() === "示例项目");
@@ -1334,7 +1963,7 @@ describe("App 主页在线入口（终审 Important 1：纯在线用户死胡同
       await gotoServerWorkspaces(wrapper);
       await wrapper.find('[data-testid="home-ws-ws-online-1"]').trigger("click");
       await flushPromises();
-      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false); // ① 开工作区即切离主页
+      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true); // 工作区仍从主页展示项目
       // 回主页 → 服务器视图：活跃工作区下列出其项目卡片（online.projects，ProjectCard 复用）
       await wrapper.find('[data-testid="topbar-home"]').trigger("click");
       await flushPromises();

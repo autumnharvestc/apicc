@@ -114,6 +114,15 @@ export interface CreateApiInput {
   path?: string;
 }
 
+export interface CreateApiFromRequestDraftInput {
+  project: ProjectLocator;
+  targetParent: ApiParentLocator;
+  name: string;
+  request: ApiRequest;
+  sourceProjectRevision: string;
+  fields: readonly DebugFieldState[];
+}
+
 export type CreateModelInput = Omit<ModelAsset, "formatVersion" | "id">;
 export type CreateComponentInput = Omit<ComponentAsset, "formatVersion" | "id">;
 export type CreateEnvironmentInput = Omit<Environment, "id" | "variables" | "baseUrls"> & Partial<Pick<Environment, "variables" | "baseUrls">>;
@@ -925,6 +934,79 @@ function setContainerOperations(
     });
   }
 
+  async function createApiFromRequestDraft(
+    inputValue: CreateApiFromRequestDraftInput,
+    knownCredentialLiterals: readonly string[] = [],
+    draftWriteContext?: DraftWriteContext,
+  ): Promise<{ locator: ApiLocator; detail: { api: ApiAsset; locator: ApiLocator; sourceApiRevision: string; sourceProjectRevision: string; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> } }> {
+    const projectLocator = parseLocator(ProjectLocatorSchema, inputValue.project, "project");
+    const targetParent = parseLocator(ApiParentLocatorSchema, inputValue.targetParent, "API parent");
+    const request = ApiRequestSchema.parse(clone(inputValue.request));
+    const name = inputValue.name;
+    const expectedProjectRevision = inputValue.sourceProjectRevision;
+    const fields = clone(inputValue.fields);
+    if (!expectedProjectRevision) throw new Error("Project source revision is required to save a free request.");
+    return mutate((candidate, current) => {
+      if (draftWriteContext) assertDraftWriteContext(draftWriteContext, current);
+      if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存请求草稿。");
+      if (containsKnownCredentialLiteral(request, knownCredentialLiterals)) {
+        throw new Error("拒绝保存包含已知凭据字面值的请求草稿。");
+      }
+      if (targetParent.workspaceId !== projectLocator.workspaceId
+        || targetParent.groupId !== projectLocator.groupId
+        || targetParent.projectId !== projectLocator.projectId) {
+        throw new Error("Free request target module must belong to its captured project.");
+      }
+      const located = locateCollectionInCandidate(candidate, targetParent);
+      if (located.project.id !== projectLocator.projectId) {
+        throw new Error(`Project mismatch for free request target: ${JSON.stringify(targetParent)}`);
+      }
+      const actualProjectRevision = createProjectSnapshot(located.project).definitionRevision;
+      if (actualProjectRevision !== expectedProjectRevision) {
+        throw new Error(`Project source revision conflict at ${JSON.stringify(projectLocator)}: expected ${expectedProjectRevision}, received ${actualProjectRevision}`);
+      }
+      const api = makeDefaultApi({
+        name,
+        protocol: request.protocol,
+        ...(request.protocol === "http" || request.protocol === "soap" ? { method: request.method } : {}),
+        baseUrl: request.baseUrl,
+        path: request.path,
+      }, newId, located.project.id);
+      const completeApi = ApiAssetSchema.parse({
+        ...api,
+        contract: { ...api.contract, request },
+      });
+      if (allProjectIds(located.project).has(completeApi.contract.id)) {
+        throw new Error(`Target identity collision for contract:${completeApi.contract.id}`);
+      }
+      const container = "folderIds" in targetParent
+        ? findFolder(located.collection, targetParent.folderIds)?.folder
+        : located.collection;
+      if (!container) throw new Error(`Parent folder not found: ${JSON.stringify(targetParent)}`);
+      container.apis.push(completeApi);
+      const locator: ApiLocator = {
+        workspaceId: targetParent.workspaceId,
+        groupId: targetParent.groupId,
+        projectId: targetParent.projectId,
+        collectionId: targetParent.collectionId,
+        folderIds: "folderIds" in targetParent ? [...targetParent.folderIds] : [],
+        apiId: completeApi.contract.id,
+      };
+      const detail = {
+        api: completeApi,
+        locator,
+        sourceApiRevision: getSourceApiRevision(completeApi),
+        sourceProjectRevision: createProjectSnapshot(located.project).definitionRevision,
+        envs: located.project.environments.map((environment) => ({
+          id: environment.id,
+          name: environment.name,
+          locator: { ...projectLocator, environmentId: environment.id },
+        })),
+      };
+      return { value: { locator, detail } };
+    });
+  }
+
   async function saveApi(
     locatorValue: ApiLocator,
     inputValue: ApiAsset,
@@ -1671,6 +1753,7 @@ function setContainerOperations(
     createCollection,
     createFolder,
     createApi,
+    createApiFromRequestDraft,
     locateProject,
     locateApi,
     locateCollection,

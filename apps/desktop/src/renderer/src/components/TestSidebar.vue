@@ -74,36 +74,38 @@ const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collectio
       </button>
     </div>
 
-    <template v-if="pane === 'api-cases'">
-      <div v-for="m in moduleNames" :key="m" class="group-block">
-        <div class="group-name">{{ m }}</div>
-        <button
-          v-for="a in apis.filter((x) => x.collection === m)"
-          :key="a.key"
-          type="button"
-          class="api-item"
-          :class="{ active: sameApi(activeApiLocator, a.locator) }"
-          :data-testid="`test-api-${encodeURIComponent(a.key)}`"
-          @click="emit('pick-api', a.locator)"
-        >
-          {{ a.label }}
-        </button>
-      </div>
-      <span v-if="apis.length === 0" class="muted" data-testid="test-no-apis">{{ t("test.noApis") }}</span>
-    </template>
+    <div class="test-list" data-testid="test-navigation-list">
+      <template v-if="pane === 'api-cases'">
+        <div v-for="m in moduleNames" :key="m" class="group-block">
+          <div class="group-name">{{ m }}</div>
+          <button
+            v-for="a in apis.filter((x) => x.collection === m)"
+            :key="a.key"
+            type="button"
+            class="api-item"
+            :class="{ active: sameApi(activeApiLocator, a.locator) }"
+            :data-testid="`test-api-${encodeURIComponent(a.key)}`"
+            @click="emit('pick-api', a.locator)"
+          >
+            {{ a.label }}
+          </button>
+        </div>
+        <span v-if="apis.length === 0" class="muted" data-testid="test-no-apis">{{ t("test.noApis") }}</span>
+      </template>
 
-    <template v-else>
-      <div v-for="w in scenarios" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
-        <span class="scenario-name">{{ w.name }}</span>
-        <a-tooltip :title="t('test.scenarioStressDeferred')">
-          <a-button size="small" type="text" disabled data-testid="test-scenario-stress">{{ t("case.stress") }}</a-button>
-        </a-tooltip>
-        <a-button size="small" type="text" :data-testid="`test-scenario-run-${encodeURIComponent(JSON.stringify(w.locator))}`" @click="emit('open-workflow', w.locator)">
-          {{ t("case.run") }}
-        </a-button>
-      </div>
-      <span v-if="scenarios.length === 0" class="muted" data-testid="test-no-scenarios">{{ t("test.noScenarios") }}</span>
-    </template>
+      <template v-else>
+        <div v-for="w in scenarios" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
+          <span class="scenario-name">{{ w.name }}</span>
+          <a-tooltip :title="t('test.scenarioStressDeferred')">
+            <a-button size="small" type="text" disabled data-testid="test-scenario-stress">{{ t("case.stress") }}</a-button>
+          </a-tooltip>
+          <a-button size="small" type="text" :data-testid="`test-scenario-run-${encodeURIComponent(JSON.stringify(w.locator))}`" @click="emit('open-workflow', w.locator)">
+            {{ t("case.run") }}
+          </a-button>
+        </div>
+        <span v-if="scenarios.length === 0" class="muted" data-testid="test-no-scenarios">{{ t("test.noScenarios") }}</span>
+      </template>
+    </div>
   </aside>
 </template>
 
@@ -113,14 +115,16 @@ const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collectio
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
   border-right: 1px solid var(--border);
   background: var(--bg);
-  overflow-y: auto;
+  overflow: hidden;
 }
-.side-head { padding: 8px 10px 0; }
+.side-head { flex: none; padding: 8px 10px 0; }
 .side-title { font-weight: 600; font-size: 13px; }
-.anchors { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 4px; }
+.anchors { flex: none; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 4px; }
+.test-list { flex: 1; min-height: 0; overflow-y: auto; }
 .anchor-item {
   text-align: left;
   border: none;

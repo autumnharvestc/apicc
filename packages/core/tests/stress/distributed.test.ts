@@ -54,7 +54,7 @@ describe("planShards", () => {
   it("多 shard 请求 maxRps 时在 spawn 前稳定拒绝全局不可证明的组合", async () => {
     let spawned = 0;
     await expect(new DistributedStressCoordinator().run(
-      { apiPath: "/api/pet", caseId: "c1", definitionRevision: "rev-1", credentialVersions: {}, workspaceRoot: "/ws", concurrency: 4, maxIterations: 8, maxRps: 10 },
+      { apiPath: "/api/pet", caseId: "c1", definitionRevision: "rev-1", credentialVersions: {}, networkIdentity: `sha256:${"0".repeat(64)}`, workspaceRoot: "/ws", concurrency: 4, maxIterations: 8, maxRps: 10 },
       { shards: 2, spawnWorker: async () => { spawned += 1; return shardFailure("shard-0", "unexpected"); } },
     )).rejects.toThrow(/shard.*maxRps|maxRps.*shard|全局/);
     expect(spawned).toBe(0);
@@ -124,9 +124,11 @@ describe("StressWorkerSpec contract revision descriptors", () => {
       ...base,
       definitionRevision: "sha256:project-revision",
       credentialVersions: { "ref-1": "version-3" },
+      networkIdentity: `sha256:${"0".repeat(64)}`,
     })).toMatchObject({
       definitionRevision: "sha256:project-revision",
       credentialVersions: { "ref-1": "version-3" },
+      networkIdentity: `sha256:${"0".repeat(64)}`,
     });
     expect(() => StressWorkerSpecSchema.parse({
       ...base,
@@ -145,6 +147,7 @@ describe("StressWorkerSpec contract revision descriptors", () => {
       caseId: "case-1",
       definitionRevision: "sha256:project-revision",
       credentialVersions: versions,
+      networkIdentity: `sha256:${"0".repeat(64)}`,
       concurrency: 1,
       maxIterations: 1,
       workspaceRoot: "C:/workspace",
@@ -167,6 +170,7 @@ describe("DistributedStressCoordinator", () => {
     caseId: "c1",
     definitionRevision: "rev-1",
     credentialVersions: {},
+    networkIdentity: `sha256:${"0".repeat(64)}`,
     workspaceRoot: "/ws",
     concurrency: 3,
     maxIterations: 8,

@@ -31,6 +31,8 @@ import { useRunStore } from "../../../src/renderer/src/stores/run.js";
 import SideTree from "../../../src/renderer/src/components/SideTree.vue";
 import HomeView from "../../../src/renderer/src/components/HomeView.vue";
 import RequestEditor from "../../../src/renderer/src/components/RequestEditor.vue";
+import CredentialEditor from "../../../src/renderer/src/components/CredentialEditor.vue";
+import OAuthManager from "../../../src/renderer/src/components/OAuthManager.vue";
 import ResponseViewer from "../../../src/renderer/src/components/ResponseViewer.vue";
 import EmptyState from "../../../src/renderer/src/components/EmptyState.vue";
 import ConfirmDialog from "../../../src/renderer/src/components/ConfirmDialog.vue";
@@ -52,6 +54,11 @@ const stressStoreLocator: ApiLocator = {
   collectionId: "00000000-0000-4000-8000-000000000024",
   folderIds: [],
   apiId: "00000000-0000-4000-8000-000000000025",
+};
+const debugFixtureSource = { sourceKind: "asset" as const, locator: stressStoreLocator, sourceApiRevision: "api-revision" };
+const debugFixtureExchangeSource = {
+  sourceKind: "asset" as const,
+  case: { ...stressStoreLocator, caseId: "00000000-0000-4000-8000-000000000026", scope: "project" },
 };
 
 beforeAll(() => {
@@ -642,6 +649,394 @@ function paneActive(wrapper: VueWrapper, testid: string): boolean {
 }
 
 describe("RequestEditor", () => {
+  it("OAuth 状态只显示安全摘要；显式授权可取消，刷新部分失败可见，解绑不删除 Bearer 凭据", async () => {
+    const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
+    const { project, apiNode } = seededProjectAndApi(workspace);
+    await editor.load(apiNode.locator);
+    const environment = await api.envCreate({ locator: project.locator, name: "oauth-dev" });
+    await editor.reloadEnvs();
+    const bearerRef = { id: "oauth-managed-access", policy: "test-auto" };
+    const refreshTokenRef = { id: "oauth-managed-refresh", policy: "test-auto" };
+    await api.credentialPut({ locator: project.locator, ref: bearerRef, value: "never-render-this-access-secret" });
+    const requestTab = {
+      tabId: "request-oauth-ui",
+      root: workspace.root!,
+      project: project.locator,
+      source: { kind: "asset" as const, locator: apiNode.locator },
+      generation: 7,
+    };
+    debug.requestTabState(requestTab).selectedEnvironmentId = environment.id;
+    const request = editor.api!.contract.request;
+    if (request.protocol !== "http") throw new Error("Seeded API request must be HTTP");
+    request.auth = { kind: "bearer", token: bearerRef };
+
+    const profile = {
+      profileId: "oauth-managed-profile",
+      environmentId: environment.id,
+      flow: "authorization_code" as const,
+      authorizationEndpoint: "https://issuer.example/authorize",
+      tokenEndpoint: "https://issuer.example/token",
+      clientId: "client-ui",
+      clientAuthentication: "none" as const,
+      bearerRef,
+      refreshTokenRef,
+    };
+    const summary = {
+      profile,
+      configurationFingerprint: "sha256:ui-fixture",
+      status: "connected" as const,
+      expiresAt: 2_000_000_000_000,
+    } satisfies Awaited<ReturnType<ApiccApi["oauthProfilesGet"]>>["profiles"][number];
+    const alternateProfile = {
+      profileId: "oauth-managed-profile-alternate",
+      environmentId: environment.id,
+      flow: "authorization_code" as const,
+      authorizationEndpoint: "https://issuer.example/authorize",
+      tokenEndpoint: "https://issuer.example/token",
+      clientId: "client-ui-alternate",
+      clientAuthentication: "none" as const,
+      bearerRef: { id: "oauth-managed-access-alternate", policy: "test-auto" as const },
+    };
+    const alternateSummary = {
+      profile: alternateProfile,
+      configurationFingerprint: "sha256:ui-fixture-alternate",
+      status: "connected" as const,
+    } satisfies Awaited<ReturnType<ApiccApi["oauthProfilesGet"]>>["profiles"][number];
+    let profiles: Awaited<ReturnType<ApiccApi["oauthProfilesGet"]>>["profiles"] = [summary];
+    const profileReads: Parameters<ApiccApi["oauthProfilesGet"]>[0][] = [];
+    const acquires: Parameters<ApiccApi["oauthProfileAcquire"]>[0][] = [];
+    const refreshes: Parameters<ApiccApi["oauthProfileRefresh"]>[0][] = [];
+    const unlinks: Parameters<ApiccApi["oauthProfileUnlink"]>[0][] = [];
+    const begins: Parameters<ApiccApi["oauthAuthorizeBegin"]>[0][] = [];
+    const cancels: Parameters<ApiccApi["oauthAuthorizeCancel"]>[0][] = [];
+    const waitResolvers = new Map<string, (value: Awaited<ReturnType<ApiccApi["oauthAuthorizeWait"]>>) => void>();
+    const sessionIds = [
+      "00000000-0000-4000-8000-000000000041",
+      "00000000-0000-4000-8000-000000000042",
+      "00000000-0000-4000-8000-000000000043",
+      "00000000-0000-4000-8000-000000000044",
+    ];
+    const sessionProfiles = new Map<string, string>();
+    let deferNextBegin = false;
+    let resolveDeferredBegin: ((value: Awaited<ReturnType<ApiccApi["oauthAuthorizeBegin"]>>) => void) | undefined;
+    let deferAcquires = false;
+    const acquireResolvers: Array<(value: Awaited<ReturnType<ApiccApi["oauthProfileAcquire"]>>) => void> = [];
+    api.oauthProfilesGet = async (input) => {
+      profileReads.push(input);
+      const visibleProfiles = input.environmentId && input.environmentId !== environment.id
+        ? profiles.map((item) => ({ ...item, profile: { ...item.profile, environmentId: input.environmentId } }))
+        : profiles;
+      return { revision: input.environmentId === environment.id ? "revision-ui-1" : "revision-ui-other", profiles: visibleProfiles };
+    };
+    api.oauthProfileAcquire = async (input) => {
+      acquires.push(input);
+      if (deferAcquires) return new Promise((resolve) => { acquireResolvers.push(resolve); });
+      return { result: { status: "success", expiresAt: 2_000_000_000_000 }, profileSnapshot: { status: "available", revision: "revision-ui-1", profiles } };
+    };
+    api.oauthProfileRefresh = async (input) => {
+      refreshes.push(input);
+      return { result: { status: "partial_success", errorCode: "OAUTH_REFRESH_TOKEN_SAVE_FAILED" }, profileSnapshot: { status: "unavailable" } };
+    };
+    api.oauthProfileUnlink = async (input) => {
+      unlinks.push(input);
+      profiles = [];
+      return { result: { status: "success" }, profileSnapshot: { status: "available", revision: "revision-ui-2", profiles } };
+    };
+    api.oauthAuthorizeBegin = async (input) => {
+      begins.push(input);
+      const sessionId = sessionIds[begins.length - 1]!;
+      sessionProfiles.set(sessionId, input.profileId);
+      if (deferNextBegin) {
+        deferNextBegin = false;
+        return new Promise((resolve) => { resolveDeferredBegin = resolve; });
+      }
+      return { sessionId, profileId: input.profileId, status: "pending", sessionExpiresAt: 2_000_000_300_000 };
+    };
+    api.oauthAuthorizeWait = async ({ sessionId }) => new Promise((resolve) => { waitResolvers.set(sessionId, resolve); });
+    api.oauthAuthorizeCancel = async (input) => {
+      cancels.push(input);
+      return { sessionId: input.sessionId, profileId: sessionProfiles.get(input.sessionId) ?? profile.profileId, status: "cancelled", sessionExpiresAt: 2_000_000_300_000 };
+    };
+    const credentialRemove = vi.fn(api.credentialRemove.bind(api));
+    api.credentialRemove = credentialRemove;
+
+    await wrapper.setProps({ projectLocator: project.locator, requestTab } as never);
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="oauth-manager"]').exists()).toBe(true);
+    expect(profileReads).toEqual([{ locator: project.locator, environmentId: environment.id }]);
+    expect(acquires).toHaveLength(0);
+    expect(begins).toHaveLength(0);
+    expect(wrapper.get('[data-testid="oauth-profile-status"]').text()).toContain("已连接");
+    expect(wrapper.get('[data-testid="oauth-profile-expiry"]').text()).toContain("2033");
+    expect(wrapper.text()).not.toContain("never-render-this-access-secret");
+    expect(wrapper.get('[data-testid="credential-save"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.get('[data-testid="oauth-authorize"]').trigger("click");
+    await flushPromises();
+    expect(begins).toEqual([{ locator: project.locator, environmentId: environment.id, profileId: profile.profileId }]);
+    expect(waitResolvers.get(sessionIds[0]!)).toBeTypeOf("function");
+    await wrapper.get('[data-testid="oauth-cancel"]').trigger("click");
+    await flushPromises();
+    expect(cancels).toEqual([{ sessionId: sessionIds[0] }]);
+    waitResolvers.get(sessionIds[0]!)?.({ sessionId: sessionIds[0]!, profileId: profile.profileId, status: "success", sessionExpiresAt: 2_000_000_300_000, operationResult: { status: "success", expiresAt: 2_000_000_000_000 } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="oauth-session-status"]').text()).toContain("已取消");
+
+    await wrapper.get('[data-testid="oauth-refresh"]').trigger("click");
+    await flushPromises();
+    expect(refreshes).toEqual([{ locator: project.locator, environmentId: environment.id, profileId: profile.profileId }]);
+    expect(wrapper.get('[data-testid="oauth-action-result"]').text()).toContain("Refresh Token 保存失败");
+    expect(wrapper.get('[data-testid="oauth-snapshot-status"]').text()).toContain("不可用");
+
+    await wrapper.get('[data-testid="oauth-reload"]').trigger("click");
+    await flushPromises();
+    expect(profileReads).toEqual([
+      { locator: project.locator, environmentId: environment.id },
+      { locator: project.locator, environmentId: environment.id },
+    ]);
+    await wrapper.get('[data-testid="oauth-unlink"]').trigger("click");
+    await flushPromises();
+    expect(unlinks).toEqual([{ locator: project.locator, environmentId: environment.id, profileId: profile.profileId, expectedRevision: "revision-ui-1" }]);
+    expect(credentialRemove).not.toHaveBeenCalled();
+    expect(wrapper.get('[data-testid="oauth-snapshot-status"]').text()).toContain("可用");
+    expect((wrapper.get('[data-testid="credential-value"]').element as HTMLInputElement).disabled).toBe(false);
+
+    const credentialPut = vi.fn(api.credentialPut.bind(api));
+    api.credentialPut = credentialPut;
+    const savedProfiles: Parameters<ApiccApi["oauthProfileSave"]>[0][] = [];
+    let failNextProfileSave = false;
+    api.oauthProfileSave = async (input) => {
+      savedProfiles.push(input);
+      if (failNextProfileSave) {
+        failNextProfileSave = false;
+        return {
+          result: { status: "failed", errorCode: "OAUTH_PROFILE_REVISION_CONFLICT" },
+          profileSnapshot: { status: "available", revision: "revision-ui-3", profiles },
+        };
+      }
+      profiles = [{ ...summary, profile: input.profile }, alternateSummary];
+      return {
+        result: { status: "success" },
+        profileSnapshot: { status: "available", revision: savedProfiles.length === 1 ? "revision-ui-3" : "revision-ui-4", profiles },
+      };
+    };
+    await wrapper.get('[data-testid="oauth-flow"]').setValue("client_credentials");
+    await wrapper.get('[data-testid="oauth-token-endpoint"]').setValue("https://issuer.example/new-token");
+    await wrapper.get('[data-testid="oauth-client-id"]').setValue("client-created-in-form");
+    await wrapper.get('[data-testid="oauth-client-secret"]').setValue("synthetic-new-client-secret");
+    expect((wrapper.get('[data-testid="oauth-client-secret"]').element as HTMLInputElement).value).toBe("synthetic-new-client-secret");
+    expect((wrapper.get('[data-testid="oauth-save"]').element as HTMLButtonElement).disabled).toBe(false);
+    await wrapper.get('[data-testid="oauth-profile-form"]').trigger("submit");
+    await flushPromises();
+    await flushPromises();
+    expect(credentialPut).toHaveBeenCalledTimes(1);
+    expect(savedProfiles).toHaveLength(1);
+    const savedProfile = savedProfiles[0]!.profile;
+    expect(savedProfiles[0]).toMatchObject({
+      locator: project.locator,
+      environmentId: environment.id,
+      expectedRevision: "revision-ui-2",
+      profile: {
+        flow: "client_credentials",
+        tokenEndpoint: "https://issuer.example/new-token",
+        clientId: "client-created-in-form",
+        clientAuthentication: "client_secret_post",
+        bearerRef: { policy: "test-auto" },
+        clientSecretRef: { policy: "test-auto" },
+      },
+    });
+    expect(savedProfile.bearerRef.id).not.toBe(bearerRef.id);
+    expect(credentialPut).toHaveBeenCalledExactlyOnceWith({
+      locator: project.locator,
+      ref: savedProfile.clientSecretRef,
+      value: "synthetic-new-client-secret",
+    });
+    expect(request.auth).toEqual({ kind: "bearer", token: savedProfile.bearerRef });
+    expect(wrapper.text()).not.toContain("synthetic-new-client-secret");
+    expect((wrapper.get('[data-testid="oauth-save"]').element as HTMLButtonElement).disabled).toBe(false);
+    expect(wrapper.find('[data-testid="oauth-acquire"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="oauth-acquire"]').trigger("click");
+    await flushPromises();
+    expect(acquires).toEqual([{ locator: project.locator, environmentId: environment.id, profileId: savedProfile.profileId }]);
+
+    const previousSecretRef = savedProfile.clientSecretRef!;
+    failNextProfileSave = true;
+    await wrapper.get('[data-testid="oauth-client-secret"]').setValue("synthetic-updated-client-secret");
+    await wrapper.get('[data-testid="oauth-profile-form"]').trigger("submit");
+    await flushPromises();
+    const failedEdit = savedProfiles[1]!;
+    expect(failedEdit.profile.profileId).toBe(savedProfile.profileId);
+    expect(failedEdit.profile.bearerRef).toEqual(savedProfile.bearerRef);
+    expect(failedEdit.profile.clientSecretRef!.id).not.toBe(previousSecretRef.id);
+    expect(credentialPut).toHaveBeenCalledTimes(2);
+    expect(credentialPut).toHaveBeenLastCalledWith({ locator: project.locator, ref: failedEdit.profile.clientSecretRef, value: "synthetic-updated-client-secret" });
+    expect((wrapper.get('[data-testid="oauth-client-secret"]').element as HTMLInputElement).value).toBe("");
+    expect(wrapper.get('[data-testid="oauth-refs"]').text()).toContain(failedEdit.profile.clientSecretRef!.id);
+    expect(wrapper.get('[data-testid="oauth-error"]').text()).toContain("秘密值已保存");
+    expect((wrapper.get('[data-testid="oauth-save"]').element as HTMLButtonElement).disabled).toBe(false);
+
+    await wrapper.get('[data-testid="oauth-profile-form"]').trigger("submit");
+    await flushPromises();
+    const retriedEdit = savedProfiles[2]!;
+    expect(retriedEdit.expectedRevision).toBe("revision-ui-3");
+    expect(retriedEdit.profile.clientSecretRef).toEqual(failedEdit.profile.clientSecretRef);
+    expect(retriedEdit.profile.bearerRef).toEqual(savedProfile.bearerRef);
+    expect(credentialPut).toHaveBeenCalledTimes(2);
+    expect((wrapper.get('[data-testid="oauth-save"]').element as HTMLButtonElement).disabled).toBe(false);
+
+    const secondEnvironment = await api.envCreate({ locator: project.locator, name: "oauth-busy-next-context" });
+    await editor.reloadEnvs();
+    deferAcquires = true;
+    await wrapper.get('[data-testid="oauth-acquire"]').trigger("click");
+    await flushPromises();
+    expect(acquireResolvers).toHaveLength(1);
+    expect((wrapper.get('[data-testid="oauth-acquire"]').element as HTMLButtonElement).disabled).toBe(true);
+    chooseSelect(wrapper, "debug-env-select", secondEnvironment.id);
+    await flushPromises();
+    await flushPromises();
+    expect(wrapper.get('[data-testid="oauth-snapshot-status"]').text()).toContain("可用");
+    expect((wrapper.get('[data-testid="oauth-acquire"]').element as HTMLButtonElement).disabled).toBe(false);
+    await wrapper.get('[data-testid="oauth-acquire"]').trigger("click");
+    await flushPromises();
+    expect(acquireResolvers).toHaveLength(2);
+    expect((wrapper.get('[data-testid="oauth-acquire"]').element as HTMLButtonElement).disabled).toBe(true);
+    acquireResolvers[0]!({ result: { status: "success" }, profileSnapshot: { status: "available", revision: "stale-context", profiles } });
+    await flushPromises();
+    expect((wrapper.get('[data-testid="oauth-acquire"]').element as HTMLButtonElement).disabled).toBe(true);
+    acquireResolvers[1]!({ result: { status: "success" }, profileSnapshot: { status: "available", revision: "revision-ui-other", profiles } });
+    await flushPromises();
+    expect((wrapper.get('[data-testid="oauth-acquire"]').element as HTMLButtonElement).disabled).toBe(false);
+
+    chooseSelect(wrapper, "debug-env-select", environment.id);
+    await flushPromises();
+    await flushPromises();
+    await wrapper.get('[data-testid="oauth-profile-select"]').setValue(alternateProfile.profileId);
+    await flushPromises();
+    await wrapper.get('[data-testid="oauth-authorize"]').trigger("click");
+    await flushPromises();
+    expect(waitResolvers.get(sessionIds[1]!)).toBeTypeOf("function");
+    await wrapper.get('[data-testid="oauth-profile-select"]').setValue(savedProfile.profileId);
+    await flushPromises();
+    expect(cancels).toContainEqual({ sessionId: sessionIds[1] });
+    waitResolvers.get(sessionIds[1]!)?.({ sessionId: sessionIds[1]!, profileId: alternateProfile.profileId, status: "success", sessionExpiresAt: 2_000_000_300_000, operationResult: { status: "success", expiresAt: 2_000_000_000_000 } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="oauth-session-status"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="oauth-action-result"]').exists()).toBe(false);
+
+    deferNextBegin = true;
+    await wrapper.get('[data-testid="oauth-profile-select"]').setValue(alternateProfile.profileId);
+    await wrapper.get('[data-testid="oauth-authorize"]').trigger("click");
+    await flushPromises();
+    expect(resolveDeferredBegin).toBeTypeOf("function");
+    await wrapper.get('[data-testid="oauth-profile-select"]').setValue(savedProfile.profileId);
+    await flushPromises();
+    resolveDeferredBegin?.({ sessionId: sessionIds[2]!, profileId: alternateProfile.profileId, status: "pending", sessionExpiresAt: 2_000_000_300_000 });
+    await flushPromises();
+    expect(cancels).toContainEqual({ sessionId: sessionIds[2] });
+
+    deferNextBegin = true;
+    await wrapper.get('[data-testid="oauth-profile-select"]').setValue(alternateProfile.profileId);
+    await wrapper.get('[data-testid="oauth-authorize"]').trigger("click");
+    await flushPromises();
+    expect(resolveDeferredBegin).toBeTypeOf("function");
+    wrapper.unmount();
+    resolveDeferredBegin?.({ sessionId: sessionIds[3]!, profileId: alternateProfile.profileId, status: "pending", sessionExpiresAt: 2_000_000_300_000 });
+    await flushPromises();
+    expect(cancels).toContainEqual({ sessionId: sessionIds[3] });
+  });
+
+  it("free OAuth 管理按真实 tab owner/environment/Bearer 隔离，旧 owner 迟到快照不能覆盖新签", async () => {
+    const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
+    const { project: firstProject } = seededProjectAndApi(workspace);
+    const firstEnvironment = await api.envCreate({ locator: firstProject.locator, name: "free-owner-a" });
+    const rootTree = await api.treeGet();
+    const group = rootTree.kind === "root" ? rootTree.children.find((node) => node.kind === "group") : undefined;
+    if (!group || group.kind !== "group") throw new Error("Memory workspace is missing the project owner group");
+    const secondProject = await api.nodeCreate({ kind: "project", parent: group.locator, name: "Free OAuth owner B" });
+    if (secondProject.kind !== "project") throw new Error("Memory API did not create the second OAuth owner");
+    const secondEnvironment = await api.envCreate({ locator: secondProject.locator, name: "free-owner-b" });
+    const firstBearer = { id: "free-oauth-bearer-a", policy: "test-auto" as const };
+    const secondBearer = { id: "free-oauth-bearer-b", policy: "test-auto" as const };
+    const firstTab = {
+      tabId: "free-oauth-tab-a",
+      root: workspace.root!,
+      project: firstProject.locator,
+      source: { kind: "free" as const, project: firstProject.locator, draftId: "free-oauth-draft-a" },
+      generation: 11,
+    };
+    const secondTab = {
+      tabId: "free-oauth-tab-b",
+      root: workspace.root!,
+      project: secondProject.locator,
+      source: { kind: "free" as const, project: secondProject.locator, draftId: "free-oauth-draft-b" },
+      generation: 29,
+    };
+    await editor.loadFreeRequestTab(firstTab);
+    debug.requestTabState(firstTab).selectedEnvironmentId = firstEnvironment.id;
+    editor.freeSessions[firstTab.tabId]!.request.auth = { kind: "bearer", token: firstBearer };
+
+    const makeSummary = (profileId: string, environmentId: string, bearerRef: typeof firstBearer) => ({
+      profile: {
+        profileId,
+        environmentId,
+        flow: "authorization_code" as const,
+        authorizationEndpoint: "https://issuer.example/authorize",
+        tokenEndpoint: "https://issuer.example/token",
+        clientId: "safe-client-id",
+        clientAuthentication: "none" as const,
+        bearerRef,
+      },
+      configurationFingerprint: `sha256:${profileId}`,
+      status: "connected" as const,
+    } satisfies Awaited<ReturnType<ApiccApi["oauthProfilesGet"]>>["profiles"][number]);
+    let resolveFirstRead!: (value: Awaited<ReturnType<ApiccApi["oauthProfilesGet"]>>) => void;
+    const profileReads: Parameters<ApiccApi["oauthProfilesGet"]>[0][] = [];
+    api.oauthProfilesGet = async (input) => {
+      profileReads.push(input);
+      if (profileReads.length === 1) return new Promise((resolve) => { resolveFirstRead = resolve; });
+      return { revision: "revision-owner-b", profiles: [makeSummary("owner-b-profile", secondEnvironment.id, secondBearer)] };
+    };
+
+    await wrapper.setProps({ requestTab: firstTab, projectLocator: firstProject.locator } as never);
+    await flushPromises();
+    const manager = wrapper.findComponent(OAuthManager);
+    expect(manager.exists()).toBe(true);
+    expect(manager.props("locator")).toEqual(firstProject.locator);
+    expect(profileReads).toEqual([{ locator: firstProject.locator, environmentId: firstEnvironment.id }]);
+
+    await editor.loadFreeRequestTab(secondTab);
+    debug.requestTabState(secondTab).selectedEnvironmentId = secondEnvironment.id;
+    editor.freeSessions[secondTab.tabId]!.request.auth = { kind: "bearer", token: secondBearer };
+    await wrapper.setProps({ requestTab: secondTab, projectLocator: secondProject.locator } as never);
+    await flushPromises();
+    await flushPromises();
+
+    expect(profileReads).toEqual([
+      { locator: firstProject.locator, environmentId: firstEnvironment.id },
+      { locator: secondProject.locator, environmentId: secondEnvironment.id },
+    ]);
+    const currentManager = wrapper.findComponent(OAuthManager);
+    expect(currentManager.props("locator")).toEqual(secondProject.locator);
+    expect(JSON.parse(currentManager.props("contextKey"))).toMatchObject({
+      root: workspace.root,
+      project: secondProject.locator,
+      tabId: secondTab.tabId,
+      generation: secondTab.generation,
+      environmentId: secondEnvironment.id,
+      bearerRef: secondBearer,
+    });
+    expect(wrapper.get('[data-testid="oauth-profile-select"]').text()).toContain("owner-b-profile");
+
+    resolveFirstRead({ revision: "revision-owner-a", profiles: [makeSummary("owner-a-late-profile", firstEnvironment.id, firstBearer)] });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="oauth-profile-select"]').text()).toContain("owner-b-profile");
+    expect(wrapper.get('[data-testid="oauth-profile-select"]').text()).not.toContain("owner-a-late-profile");
+    const credentialEditor = wrapper.findComponent(CredentialEditor);
+    expect(credentialEditor.props("locator")).toEqual(secondProject.locator);
+    expect(credentialEditor.props("auth")).toEqual({ kind: "bearer", token: secondBearer });
+  });
+
   it("编辑 URL 触发 update 且显示发送按钮", async () => {
     const { wrapper, editor, workspace } = await mountWith(RequestEditor);
     // 未加载接口时是空态，无编辑输入
@@ -1002,11 +1397,11 @@ describe("ResponseViewer", () => {
 
   it("shows failed and aborted DebugResult terminals with their host cause instead of a green zero-count run", () => {
     const terminal: DebugResult = {
-      runId: "terminal-failure", sourceApiRevision: "api", sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
+      runId: "terminal-failure", source: debugFixtureSource, sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
       mode: "request", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z",
       run: { collectionName: "collection", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z", total: 0, passed: 0, failed: 0 },
       outcomes: [], exchanges: [], exchangeTotal: 0, omittedExchangeCount: 0,
-      replay: { mode: "request", parameters: {}, fields: [], available: false }, console: [], warnings: [],
+      replay: { mode: "request", sourceKind: "asset", parameters: {}, fields: [], available: false }, console: [], warnings: [],
       failureKind: "config", error: "credential preparation failed",
     };
     const wrapper = mountWithI18n(ResponseViewer, { result: terminal });
@@ -1024,13 +1419,13 @@ describe("ResponseViewer", () => {
   it("marks truncated/redacted response projection in view and projected download", async () => {
     const text = "{\"token\":\"[REDACTED]\"}";
     const debugResult: DebugResult = {
-      runId: "projected-body", sourceApiRevision: "api", sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
+      runId: "projected-body", source: debugFixtureSource, sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
       mode: "request", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z",
       run: { collectionName: "collection", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z", total: 1, passed: 1, failed: 0 },
-      outcomes: [], exchanges: [{ rowIndex: 0, hopIndex: 0, order: 1, transportState: "responded", observation: "http-hop", settings: {
+      outcomes: [], exchanges: [{ source: debugFixtureExchangeSource, rowIndex: 0, hopIndex: 0, order: 1, transportState: "responded", observation: "http-hop", settings: {
         connectTimeoutMs: 1000, headersTimeoutMs: 1000, bodyTimeoutMs: 1000, totalTimeoutMs: 1000, followRedirects: false, maxRedirects: 0, uploadLimitBytes: 1024, responseLimitBytes: 1024,
       }, response: { status: 200, headers: [["content-type", "application/json"]], cookies: [], body: { kind: "text", text, contentBytes: 4096, truncated: true } }, startedAt: "2026-10-14T00:00:00.000Z" }],
-      exchangeTotal: 1, omittedExchangeCount: 0, replay: { mode: "request", parameters: {}, fields: [{ path: "request.headers[0].value", status: "redacted", needsInput: true }], available: false },
+      exchangeTotal: 1, omittedExchangeCount: 0, replay: { mode: "request", sourceKind: "asset", parameters: {}, fields: [{ path: "request.headers[0].value", status: "redacted", needsInput: true }], available: false },
       console: [], warnings: ["Response projection was truncated."],
     };
     const save = vi.fn(async (_defaultName: string, _content: string) => "");
@@ -1055,7 +1450,7 @@ describe("ResponseViewer", () => {
     const html = "<script>must-not-run()</script>";
     const debugResult: DebugResult = {
       runId: "run-1",
-      sourceApiRevision: "api-revision",
+      source: debugFixtureSource,
       sourceProjectRevision: "project-revision",
       executionSnapshotRevision: "snapshot-revision",
       mode: "request",
@@ -1067,6 +1462,7 @@ describe("ResponseViewer", () => {
       },
       outcomes: [],
       exchanges: [{
+        source: debugFixtureExchangeSource,
         rowIndex: 0, hopIndex: 0, order: 1, transportState: "failed", observation: "http-hop", failureStage: "body", failureCode: "ECONNRESET",
         settings: {
           connectTimeoutMs: 1000, headersTimeoutMs: 1000, bodyTimeoutMs: 1000, totalTimeoutMs: 1000,
@@ -1084,7 +1480,7 @@ describe("ResponseViewer", () => {
       }],
       exchangeTotal: 1,
       omittedExchangeCount: 0,
-      replay: { mode: "request", parameters: {}, fields: [], available: true },
+      replay: { mode: "request", sourceKind: "asset", parameters: {}, fields: [], available: true },
       console: [],
       warnings: [],
     };
@@ -1103,10 +1499,10 @@ describe("ResponseViewer", () => {
 
   it("shows captured and effective upload filenames separately from upload byte counters", async () => {
     const result: DebugResult = {
-      runId: "upload-metadata", sourceApiRevision: "api", sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
+      runId: "upload-metadata", source: debugFixtureSource, sourceProjectRevision: "project", executionSnapshotRevision: "snapshot",
       mode: "request", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z",
       run: { collectionName: "collection", startedAt: "2026-10-14T00:00:00.000Z", finishedAt: "2026-10-14T00:00:00.010Z", total: 1, passed: 1, failed: 0 },
-      outcomes: [], exchanges: [{ rowIndex: 0, hopIndex: 0, order: 1, transportState: "responded", settings: {
+      outcomes: [], exchanges: [{ source: debugFixtureExchangeSource, rowIndex: 0, hopIndex: 0, order: 1, transportState: "responded", settings: {
         connectTimeoutMs: 1000, headersTimeoutMs: 1000, bodyTimeoutMs: 1000, totalTimeoutMs: 1000,
         followRedirects: false, maxRedirects: 0, uploadLimitBytes: 1024, responseLimitBytes: 1024,
       }, request: {
@@ -1116,7 +1512,7 @@ describe("ResponseViewer", () => {
         status: 200, headers: [], cookies: [], requestBody: { fileBytesRead: 18, transportEncodedBytesWritten: 176, complete: true },
         body: { kind: "text", text: "ok", contentBytes: 2, truncated: false },
       }, startedAt: "2026-10-14T00:00:00.000Z" }],
-      exchangeTotal: 1, omittedExchangeCount: 0, replay: { mode: "request", parameters: {}, fields: [], available: true }, console: [], warnings: [],
+      exchangeTotal: 1, omittedExchangeCount: 0, replay: { mode: "request", sourceKind: "asset", parameters: {}, fields: [], available: true }, console: [], warnings: [],
     };
     const wrapper = mountWithI18n(ResponseViewer, { result });
     await wrapper.find('[data-testid="response-tab-request"]').trigger("click");
@@ -1183,6 +1579,51 @@ describe("ResponseViewer", () => {
 });
 
 describe("DebugHistory filters", () => {
+  it("keeps formal case history replayable when captured request availability is stale", async () => {
+    const locator = {
+      workspaceId: "30000000-0000-4000-8000-000000000001",
+      groupId: "30000000-0000-4000-8000-000000000002",
+      projectId: "30000000-0000-4000-8000-000000000003",
+      collectionId: "30000000-0000-4000-8000-000000000004",
+      folderIds: [],
+      apiId: "30000000-0000-4000-8000-000000000005",
+    };
+    const caseIdentity = { ...locator, caseId: "30000000-0000-4000-8000-000000000006" };
+    const replay = {
+      mode: "case", case: caseIdentity, available: false, identityAvailable: true,
+      fields: [{ path: "request.auth.token", status: "missing", needsInput: true }],
+    };
+
+    for (const record of [
+      { formatVersion: 1, historyId: "legacy-case", result: {
+        mode: "case", locator, caseId: caseIdentity.caseId, sourceProjectRevision: "revision",
+        identityAvailable: true, replay, exchanges: [],
+      } },
+      { formatVersion: 2, historyId: "current-case", result: {
+        mode: "case", source: { sourceKind: "asset", locator }, sourceProjectRevision: "revision",
+        identityAvailable: true, replay, exchanges: [],
+      } },
+    ]) {
+      const history = reactive({
+        filter: { limit: 50, offset: 0 }, items: [], diagnostics: [], error: null, loading: false, nextOffset: null,
+        selected: { record }, preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
+        load: vi.fn(async () => {}), refresh: vi.fn(async () => {}), updatePreferences: vi.fn(async () => {}),
+        loadMore: vi.fn(async () => {}), openRecord: vi.fn(async () => {}), deleteRecord: vi.fn(async () => {}),
+      });
+      const wrapper = mountWithI18n(DebugHistory, {
+        open: true, api: {} as ApiccApi, history: history as never,
+        debug: { restoredFields: [], restoredTargetKey: null, restoredPreview: null, restoredSourceAvailable: null } as never,
+        editor: { activeKey: "active", sessions: { active: { locator, sourceProjectRevision: "revision" } } } as never,
+      });
+      try {
+        await flushPromises();
+        expect((expectBody("debug-history-replay").element as HTMLButtonElement).disabled).toBe(false);
+      } finally {
+        wrapper.unmount();
+      }
+    }
+  });
+
   it("shows the selected history delete action in the active locale", async () => {
     const previousLocale = localStorage.getItem("apicc.locale");
     try {
@@ -1270,6 +1711,115 @@ describe("DebugHistory filters", () => {
     await expectBody("debug-history-filter").trigger("click");
     expect(history.error).toContain("不能晚于");
     expect(history.refresh).not.toHaveBeenCalled();
+  });
+
+  it("filters Free sources, shows project and draft identity, and restores only into the matching project", async () => {
+    const project: ProjectLocator = {
+      workspaceId: "20000000-0000-4000-8000-000000000001",
+      groupId: "20000000-0000-4000-8000-000000000002",
+      projectId: "20000000-0000-4000-8000-000000000003",
+    };
+    const draftId = "20000000-0000-4000-8000-000000000004";
+    const request = { protocol: "http", method: "GET", baseUrl: "https://example.test", path: "/free", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" } };
+    const item = {
+      historyId: "20000000-0000-4000-8000-000000000005", createdAt: new Date("2026-10-15T10:00:00.000Z").toISOString(),
+      runId: "free-run", mode: "free", sourceKind: "free", projectId: project.projectId, draftId,
+      result: "passed", method: "GET", total: 1, passed: 1, failed: 0, exchangeTotal: 1, searchText: "free /free",
+    };
+    const history = reactive({
+      filter: { limit: 50, offset: 0 }, items: [item], diagnostics: [], error: null, loading: false, nextOffset: null,
+      selected: { record: { formatVersion: 2, historyId: item.historyId, createdAt: item.createdAt, result: {
+        mode: "free", identityAvailable: true, sourceProjectRevision: "project-rev",
+        source: { sourceKind: "free", project, draftId },
+        replay: { mode: "free", sourceKind: "free", project, draftId, request, requestTemplate: request, parameters: {}, fields: [], available: true, identityAvailable: true },
+        exchanges: [{ order: 1, transportState: "complete", request, intent: { available: true, fields: [] } }],
+      } } },
+      preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
+      load: vi.fn(async () => {}), refresh: vi.fn(async () => {}), updatePreferences: vi.fn(async () => {}),
+      loadMore: vi.fn(async () => {}), openRecord: vi.fn(async () => {}), deleteRecord: vi.fn(async () => {}),
+    });
+    const restoreFree = vi.fn(async () => ({ sourceChanged: false, sourceAvailable: true }));
+    const replayFree = vi.fn(async () => {});
+    const wrapper = mountWithI18n(DebugHistory, {
+      open: true, api: {} as ApiccApi, history: history as never,
+      debug: { restoredFields: [], restoredTargetKey: null, restoredPreview: null, freeRestoredPreview: null, restoredSourceAvailable: null } as never,
+      editor: { activeKey: null, activeFreeSession: null, sessions: {} } as never,
+      projectLocator: project, restoreFree, replayFree,
+    });
+    await flushPromises();
+
+    expect(expectBody("debug-history-free-source").text()).toContain(project.projectId);
+    expect(expectBody("debug-history-free-source").text()).toContain(draftId);
+    chooseSelect(wrapper, "debug-history-source-filter", "free");
+    await expectBody("debug-history-filter").trigger("click");
+    expect(history.filter).toMatchObject({ sourceKind: "free", offset: 0 });
+    await expectBody("debug-history-restore").trigger("click");
+    await flushPromises();
+    expect(restoreFree).toHaveBeenCalledExactlyOnceWith({ historyId: item.historyId, exchangeOrder: 1, project });
+    await expectBody("debug-history-replay").trigger("click");
+    await flushPromises();
+    expect(replayFree).toHaveBeenCalledExactlyOnceWith({ historyId: item.historyId, exchangeOrder: 1, project, draftId });
+
+    await wrapper.setProps({ projectLocator: { ...project, projectId: "other-project" } });
+    expect((expectBody("debug-history-restore").element as HTMLButtonElement).disabled).toBe(true);
+    expect((expectBody("debug-history-replay").element as HTMLButtonElement).disabled).toBe(true);
+    expect(bodyFind("debug-history-switch-project")).not.toBeNull();
+    expect(restoreFree).toHaveBeenCalledTimes(1);
+    expect(replayFree).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps valid v1/v2 case replay enabled when captured request intent is unavailable or needs input", async () => {
+    const locator = { ...stressStoreLocator };
+    const caseIdentity = { ...locator, caseId: "00000000-0000-4000-8000-000000000026", scope: "project" };
+    const template = {
+      protocol: "http", method: "GET", baseUrl: "https://example.test", path: "/case", pathParams: [], query: [],
+      headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" },
+    };
+    const exchangeRequest = {
+      url: "https://example.test/case", method: "GET", query: [], headers: [], cookies: [], body: { kind: "none" },
+    };
+    const capturedField = { path: "request.body.token", status: "missing", needsInput: true };
+    const v1Id = "00000000-0000-4000-8000-000000000027";
+    const v2Id = "00000000-0000-4000-8000-000000000028";
+    const item = {
+      historyId: v1Id, createdAt: new Date("2026-10-15T10:00:00.000Z").toISOString(), mode: "case", sourceKind: "asset",
+      projectId: locator.projectId, apiId: locator.apiId, method: "GET", passed: 1, total: 1,
+    };
+    const v1Record = {
+      formatVersion: 1, historyId: v1Id, createdAt: item.createdAt,
+      result: {
+        mode: "case", locator, identityAvailable: true,
+        replay: { mode: "case", case: caseIdentity, requestTemplate: template, parameters: {}, fields: [], identityAvailable: true, available: false },
+        exchanges: [{ order: 1, transportState: "complete", request: exchangeRequest, intent: { parameters: {}, fields: [], available: false } }],
+      },
+    };
+    const v2Record = {
+      formatVersion: 2, historyId: v2Id, createdAt: item.createdAt,
+      result: {
+        mode: "case", identityAvailable: true,
+        source: { sourceKind: "asset", locator, sourceApiRevision: "api-revision" },
+        replay: { mode: "case", sourceKind: "asset", case: caseIdentity, requestTemplate: template, parameters: {}, fields: [capturedField], identityAvailable: true, available: true },
+        exchanges: [{ order: 1, transportState: "complete", request: exchangeRequest, intent: { parameters: {}, fields: [capturedField], available: false } }],
+      },
+    };
+    const history = reactive({
+      filter: { limit: 50, offset: 0 }, items: [item], diagnostics: [], error: null, loading: false, nextOffset: null,
+      selected: { record: v1Record as never },
+      preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
+      load: vi.fn(async () => {}), refresh: vi.fn(async () => {}), updatePreferences: vi.fn(async () => {}),
+      loadMore: vi.fn(async () => {}), openRecord: vi.fn(async () => {}), deleteRecord: vi.fn(async () => {}),
+    });
+    const wrapper = mountWithI18n(DebugHistory, {
+      open: true, api: {} as ApiccApi, history: history as never,
+      debug: { restoredFields: [], restoredTargetKey: null, restoredPreview: null } as never,
+      editor: { activeKey: null, activeFreeSession: null, sessions: {} } as never,
+    });
+    await flushPromises();
+
+    expect((expectBody("debug-history-replay").element as HTMLButtonElement).disabled).toBe(false);
+    history.selected = { record: v2Record as never };
+    await flushPromises();
+    expect((expectBody("debug-history-replay").element as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

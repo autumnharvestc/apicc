@@ -233,6 +233,29 @@ describe("IPC 处理器", () => {
     expect(result.run.total).toBe(1);
   });
 
+  it("debug:project-context returns only the full read-only project locator and environment descriptors", async () => {
+    const { deps, dir, session } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const group = await createGroup(deps, session, "g");
+    const project = await createProject(deps, group, "p");
+    const environment = await deps.handle("env:create", {}, { locator: project.locator, name: "dev" });
+    const before = structuredClone(session.workspace);
+
+    const context = await deps.handle("debug:project-context", rendererEvent(), project.locator);
+
+    expect(context).toMatchObject({
+      project: project.locator,
+      sourceProjectRevision: expect.any(String),
+      envs: [{ id: environment.id, name: "dev", locator: { ...project.locator, environmentId: environment.id } }],
+    });
+    expect(Object.keys(context).sort()).toEqual(["envs", "project", "sourceProjectRevision"]);
+    expect(session.workspace).toEqual(before);
+    await expect(deps.handle("debug:project-context", rendererEvent(), {
+      ...project.locator,
+      projectId: "00000000-0000-4000-8000-000000009999",
+    })).rejects.toThrow(/未找到项目/);
+  });
+
   it("import:preview 按 detect 命中注入 importer，返回 importerName/project/warnings；无命中抛「无法识别的导入格式」", async () => {
     const { deps, dir } = setupWithImporters([fixedImporter]);
     await deps.handle("ws:create", {}, dir, "w");

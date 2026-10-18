@@ -95,7 +95,7 @@ beforeAll(async () => {
     .replace(/export default\s+/, "return ");
   const compileComponent = new Function(
     "vueRuntime", "vueI18n", "antDesign", "EmptyState",
-    `const { defineComponent: _defineComponent, unref: _unref, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, computed, ref, watch } = vueRuntime;
+    `const { defineComponent: _defineComponent, unref: _unref, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, computed, nextTick, ref, watch } = vueRuntime;
 const { useI18n } = vueI18n;
 const { Alert: AAlert, Button: AButton, Input: AInput, Select: ASelect, TabPane: ATabPane, Tabs: ATabs, Tag: ATag, Table: ATable, Typography: ATypography } = antDesign;
 ${moduleBody}`,

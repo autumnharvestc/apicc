@@ -139,6 +139,7 @@ describe("typed preload contract", () => {
       { invoke: () => api.containerGet({ kind: "folder", locator: folderLocator }), channel: IpcChannel.ContainerGet, payload: [{ kind: "folder", locator: folderLocator }] },
       { invoke: () => api.containerSave({ kind: "folder", locator: folderLocator, operations }), channel: IpcChannel.ContainerSave, payload: [{ kind: "folder", locator: folderLocator, operations }] },
       { invoke: () => api.apiGet(apiLocator), channel: IpcChannel.ApiGet, payload: [apiLocator] },
+      { invoke: () => api.debugProjectContext(projectLocator), channel: IpcChannel.DebugProjectContext, payload: [projectLocator] },
       { invoke: () => api.apiSave(apiLocator, asset, "source-revision"), channel: IpcChannel.ApiSave, payload: [apiLocator, asset, "source-revision"] },
       { invoke: () => api.apiRequestDraftSave(apiLocator, asset.contract.request, "source-revision", []), channel: IpcChannel.ApiRequestDraftSave, payload: [apiLocator, asset.contract.request, "source-revision", []] },
       { invoke: () => api.caseSave({ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase, "source-revision", []), channel: IpcChannel.CaseSave, payload: [{ ...apiLocator, caseId: testCase.id, scope: testCase.scope }, testCase, "source-revision", []] },
@@ -186,7 +187,7 @@ describe("typed preload contract", () => {
       await test.invoke();
       expect(electron.invoke).toHaveBeenLastCalledWith(test.channel, ...test.payload);
     }
-    expect(cases).toHaveLength(56);
+    expect(cases).toHaveLength(57);
   });
 
   it("validates stress results at the actual preload boundary", async () => {

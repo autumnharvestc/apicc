@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createProjectSnapshot, fileStorage, ShardFailureSchema, ShardResultSchema, type Workspace } from "@apicc/core";
+import { createOAuthProfileHost, createProjectSnapshot, fileStorage, ShardFailureSchema, ShardResultSchema, type OAuthProfileRecord, type SecretStore, type Workspace } from "@apicc/core";
 
 // 本文件覆盖 M2-D1 任务 3：defaultSpawnWorkerFactory 真实子进程端到端（任务 2 审查移交的覆盖缺口）。
 // Windows 约束：spawn process.execPath + [dist/bin.js]，禁 shell:true。
@@ -29,13 +29,22 @@ interface SpawnResult { code: number; stdout: string; stderr: string }
 /** 真实子进程执行 CLI（与 defaultSpawnWorkerFactory 同款传输：node 直接调 bin.js）。 */
 function spawnCli(args: string[], cwd: string): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [BIN_PATH, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const privateHome = mkdtempSync(join(tmpdir(), "apicc-stress-worker-home-"));
+    const env = { ...process.env, HOME: privateHome, USERPROFILE: privateHome, APPDATA: join(privateHome, "Roaming"), LOCALAPPDATA: join(privateHome, "Local"), XDG_CONFIG_HOME: join(privateHome, "config") };
+    const child = spawn(process.execPath, [BIN_PATH, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
     child.stderr?.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
     child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    child.on("close", (code) => {
+      rmSync(privateHome, { recursive: true, force: true });
+      resolve({ code: code ?? -1, stdout, stderr });
+    });
+    child.on("error", (error) => {
+      rmSync(privateHome, { recursive: true, force: true });
+      reject(error);
+    });
   });
 }
 
@@ -65,6 +74,7 @@ function apiAsset(id: string, name: string, path: string, caseId: string, caseNa
 let server: Server;
 let baseUrl = "";
 let receivedRequests = 0;
+let lastAuthorization: string | undefined;
 /** 本文件各用例创建的临时工作区根（afterAll 统一清理）。 */
 const tempRoots: string[] = [];
 
@@ -77,6 +87,7 @@ beforeAll(async () => {
   // 端口动态，故每用例独立建工作区。
   server = createServer((req, res) => {
     receivedRequests += 1;
+    lastAuthorization = req.headers.authorization;
     res.setHeader("content-type", "application/json");
     if (req.url === "/boom") {
       res.statusCode = 500;
@@ -95,6 +106,41 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 });
+
+/** Spawn an OS child running the CLI's real stress-worker command with synthetic injected SecretStore data. */
+function spawnSyntheticCredentialWorker(args: string[], cwd: string, roots: { oauth: string; network: string; pluginHome: string }, versions: { access: string; refresh: string }): Promise<SpawnResult> {
+  return new Promise((resolve, reject) => {
+    const privateHome = mkdtempSync(join(tmpdir(), "apicc-oauth-worker-home-"));
+    const env = {
+      ...process.env,
+      HOME: privateHome,
+      USERPROFILE: privateHome,
+      APPDATA: join(privateHome, "Roaming"),
+      LOCALAPPDATA: join(privateHome, "Local"),
+      XDG_CONFIG_HOME: join(privateHome, "config"),
+      APICC_TEST_OAUTH_ROOT: roots.oauth,
+      APICC_TEST_NETWORK_ROOT: roots.network,
+      APICC_TEST_PLUGIN_HOME: roots.pluginHome,
+      APICC_TEST_ACCESS_VERSION: versions.access,
+      APICC_TEST_REFRESH_VERSION: versions.refresh,
+      APICC_TEST_ACCESS_TOKEN: "synthetic-child-access-token",
+    };
+    const fixturePath = fileURLToPath(new URL("./fixtures/oauth-worker-child.mjs", import.meta.url));
+    const child = spawn(process.execPath, [fixturePath, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    child.on("error", (error) => {
+      rmSync(privateHome, { recursive: true, force: true });
+      reject(error);
+    });
+    child.on("close", (code) => {
+      rmSync(privateHome, { recursive: true, force: true });
+      resolve({ code: code ?? -1, stdout, stderr });
+    });
+  });
+}
 afterAll(() => {
   // 临时工作区清理（best effort：单个删除失败不阻塞其余清理，也不致测试失败）。
   for (const dir of tempRoots) {
@@ -267,6 +313,94 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     expect(result.stdout.trim().split(/\r?\n/)).toHaveLength(1);
     expect(result.stderr).toBe("");
     expect(receivedRequests).toBe(requestsBefore + 1);
+  }, 60000);
+
+  it("OAuth worker child keeps the parent bearer version near expiry and rejects version drift before sending", async () => {
+    const root = await makeWorkspace("oauth-pinned-token");
+    const loadedWorkspace = await fileStorage.load(root);
+    const nextWorkspace = structuredClone(loadedWorkspace.workspace);
+    const project = nextWorkspace.groups[0]!.projects[0]!;
+    const api = project.collections[0]!.apis.find((item) => item.contract.id === OK_API_ID)!;
+    api.contract.request.auth = { kind: "bearer", token: { id: "synthetic-oauth-access", policy: "test-auto" } };
+    const workspaceSave = await fileStorage.save(root, nextWorkspace, { expectedRevision: loadedWorkspace.revision, deletions: [] });
+    expect(workspaceSave.revision).toEqual(expect.any(String));
+
+    const privateRoots = {
+      oauth: join(root, ".apicc", "synthetic-oauth"),
+      network: join(root, ".apicc", "synthetic-network"),
+      pluginHome: join(root, ".apicc", "synthetic-plugin-home"),
+    };
+    const parentStore: SecretStore = {
+      async put() {},
+      async resolve() { throw new Error("parent store unused"); },
+      async version() { throw new Error("parent store unused"); },
+      async remove() {},
+      async status() { return "missing"; },
+    };
+    const environmentId = project.environments[0]!.id;
+    const host = await createOAuthProfileHost({
+      workspaceRoot: root,
+      project: { workspaceId: nextWorkspace.id, groupId: GROUP_ID, projectId: PROJECT_ID },
+      environmentId,
+      privateRoot: privateRoots.oauth,
+      secretStore: parentStore,
+    });
+    let tokenExchangeRequests = 0;
+    const tokenServer = createServer(async (request, response) => {
+      tokenExchangeRequests += 1;
+      for await (const _chunk of request) { /* consume the synthetic form body */ }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "unexpected-refreshed-token", token_type: "Bearer", expires_in: 300 }));
+    });
+    await new Promise<void>((resolve) => tokenServer.listen(0, "127.0.0.1", resolve));
+    const tokenPort = (tokenServer.address() as { port: number }).port;
+    const profile = {
+      profileId: "synthetic-refresh-profile",
+      environmentId,
+      flow: "refresh_token" as const,
+      tokenEndpoint: `http://127.0.0.1:${tokenPort}/token`,
+      clientId: "synthetic-cli-client",
+      clientAuthentication: "none" as const,
+      bearerRef: { id: "synthetic-oauth-access", policy: "test-auto" as const },
+      refreshTokenRef: { id: "synthetic-oauth-refresh", policy: "test-auto" as const },
+    };
+    const record: OAuthProfileRecord = {
+      canonicalRoot: host.scope.canonicalRoot,
+      profile,
+      state: { status: "connected", expiresAt: Date.now() + 1_000 },
+      credentialVersions: { accessToken: "synthetic-access-v1", refreshToken: "synthetic-refresh-v1" },
+    };
+    await host.store.save(host.scope, [record], "missing");
+
+    const snapshot = createProjectSnapshot(project);
+    const workerArgs = [
+      "stress-worker", API_PATH(OK_API_ID), "--case", OK_CASE_ID,
+      "--concurrency", "1", "--iterations", "1", "--shard-id", "oauth-parent-version",
+      "--workspace", root, "--env", "dev", "--definition-revision", snapshot.definitionRevision,
+      "--credential-versions", JSON.stringify({ "synthetic-oauth-access": "synthetic-access-v1" }),
+    ];
+    const requestsBefore = receivedRequests;
+    try {
+      const stable = await spawnSyntheticCredentialWorker(workerArgs, root, privateRoots, {
+        access: "synthetic-access-v1", refresh: "synthetic-refresh-v1",
+      });
+      expect(stable.code).toBe(0);
+      expect(ShardResultSchema.parse(JSON.parse(stable.stdout.trim()))).toMatchObject({ ok: true, shardId: "oauth-parent-version" });
+      expect(receivedRequests).toBe(requestsBefore + 1);
+      expect(lastAuthorization).toBe("Bearer synthetic-child-access-token");
+      expect(tokenExchangeRequests).toBe(0);
+
+      const beforeDrift = receivedRequests;
+      const drifted = await spawnSyntheticCredentialWorker(workerArgs, root, privateRoots, {
+        access: "synthetic-access-v2", refresh: "synthetic-refresh-v1",
+      });
+      expect(drifted.code).toBe(1);
+      expect(ShardFailureSchema.parse(JSON.parse(drifted.stdout.trim()))).toMatchObject({ ok: false, shardId: "oauth-parent-version" });
+      expect(receivedRequests).toBe(beforeDrift);
+      expect(tokenExchangeRequests).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => tokenServer.close(() => resolve()));
+    }
   }, 60000);
 
   it("shard 崩溃传播：/slow 挂起 + --shard-timeout 1 → 两 worker 超时判失败，exit 1 且不伪造缺 generator 报告", async () => {

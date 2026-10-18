@@ -21,13 +21,13 @@ import {
 import zhCN from "ant-design-vue/es/locale/zh_CN";
 import enUS from "ant-design-vue/es/locale/en_US";
 import { apicc } from "./api";
+import type { ApiRequest, DebugFieldState } from "@apicc/core";
 import type { OnlineTreeNodeDTO, TreeNodeDTO } from "../../shared/tree-dto.js";
 import type { LocalTreeNodeDTO } from "../../shared/tree-dto.js";
 import type { NodeCreatedDTO } from "../../shared/types.js";
-import type { ApiLocator, CollectionLocator, ProjectLocator, WorkflowLocator } from "../../shared/locations.js";
+import type { ApiLocator, ApiParentLocator, CollectionLocator, ProjectLocator, WorkflowLocator } from "../../shared/locations.js";
 import type { OnlineWorkspaceSummary } from "../../shared/online/contract.js";
 import TopBar from "./components/TopBar.vue";
-import ProjectTabs from "./components/ProjectTabs.vue";
 import HomeView from "./components/HomeView.vue";
 import TestView from "./components/TestView.vue";
 import TestSidebar from "./components/TestSidebar.vue";
@@ -40,6 +40,7 @@ import OnlineConflictDialog from "./components/OnlineConflictDialog.vue";
 import OnlineMigrateDialog from "./components/OnlineMigrateDialog.vue";
 import RequestEditor from "./components/RequestEditor.vue";
 import ResponseViewer from "./components/ResponseViewer.vue";
+import RequestTabs from "./components/RequestTabs.vue";
 import DebugHistory from "./components/DebugHistory.vue";
 import CasePanel from "./components/CasePanel.vue";
 import EnvPanel from "./components/EnvPanel.vue";
@@ -68,6 +69,7 @@ import { createStressStore } from "./stores/stress.js";
 import { createOnlineStore } from "./stores/online.js";
 import { createAiStore } from "./stores/ai.js";
 import { createPluginsStore } from "./stores/plugins.js";
+import { createRequestTabsStore, type RequestTab, type RequestCloseState } from "./stores/requestTabs.js";
 import {
   createTabsStore,
   createEvictProjectSessions,
@@ -108,7 +110,40 @@ const tree = useTreeStore(apicc, workspace);
 const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly });
 const editor = useEditorStore(apicc, localContext);
 const assets = useAssetsStore(apicc, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
-const debug = useDebugStore(apicc, editor, localContext);
+let debugInstance: ReturnType<typeof useDebugStore> | null = null;
+let requestTabsRef: ReturnType<typeof createRequestTabsStore> | null = null;
+let requestContextRoot = "";
+let requestProjectContext: ProjectLocator | null = null;
+const requestCloseConfirmOpen = ref(false);
+let requestCloseResolve: ((accepted: boolean) => void) | null = null;
+function confirmRequestTabClose(_tabId: string, _state: RequestCloseState): Promise<boolean> {
+  if (requestCloseResolve) return Promise.resolve(false);
+  requestCloseConfirmOpen.value = true;
+  return new Promise<boolean>((resolve) => { requestCloseResolve = resolve; });
+}
+function finishRequestTabClose(accepted: boolean) {
+  requestCloseConfirmOpen.value = false;
+  requestCloseResolve?.(accepted);
+  requestCloseResolve = null;
+}
+const requestTabs = createRequestTabsStore({
+  getContext: () => ({ root: workspace.root, project: requestContextRoot === workspace.root ? requestProjectContext : null }),
+  isDirty: (tabId) => {
+    const tab = requestTabsRef?.tabs[tabId];
+    return !!tab && (editor.isRequestDirty(tab) || debugInstance?.isRequestTabDirty(tabId) === true);
+  },
+  isRunning: (tabId) => debugInstance?.isRequestTabRunning(tabId) ?? false,
+  confirmClose: confirmRequestTabClose,
+  confirmCloseMany: (_tabs: RequestTab[], state: RequestCloseState) => confirmRequestTabClose("multiple", state),
+  cancelRun: async (tabId) => { await debugInstance?.cancelRequestTab(tabId); },
+  evict: (tabId) => {
+    const tab = requestTabsRef?.tabs[tabId];
+    if (tab) editor.evictRequestTab(tab);
+    debugInstance?.evictRequestTab(tabId);
+  },
+});
+requestTabsRef = requestTabs;
+const debug = debugInstance = useDebugStore(apicc, editor, localContext, requestTabs);
 const debugHistory = useDebugHistoryStore(apicc);
 const historyOpen = ref(false);
 // —— 视图面板 store（任务 8 装配）：与既有 store 同一组合根一次性创建 ——
@@ -146,7 +181,8 @@ const tabs = createTabsStore({
   online,
   editor,
   workflowDesign,
-  evictProjectSessions: createEvictProjectSessions({ editor, online, workflowDesign }),
+  requestTabs,
+  evictProjectSessions: createEvictProjectSessions({ editor, online, workflowDesign, requestTabs }),
   onProjectActivated: restoreLastApiForTab,
   confirmWorkflowDraft,
 });
@@ -172,11 +208,54 @@ function projectOfLocator(locator: ProjectLocator | ApiLocator | WorkflowLocator
 }
 
 /** One local API activation path keeps editor, project assets, and design drafts on the same locator. */
-async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean = () => true): Promise<void> {
+async function activateRequestTab(tabId: string, showRequestEditor = true): Promise<void> {
+  const tab = requestTabs.tabs[tabId];
+  if (!tab || tab.root !== workspace.root) return;
+  requestTabs.activate(tabId);
+  if (showRequestEditor) {
+    view.value = "api";
+    apiSubView.value = "debug";
+  }
+  const isCurrent = () => requestTabs.activeId === tabId && requestTabs.isCurrent(tabId, tab.generation, tab.root);
+  debug.requestTabState(tab);
+  if (tab.source.kind === "free") {
+    const session = await editor.loadFreeRequestTab(tab, isCurrent);
+    if (!session || !isCurrent()) return;
+    editor.activateFree(tabId);
+    return;
+  }
+  const nodeKey = localTreeNodeKey({ source: "local", kind: "api", locator: tab.source.locator });
+  const node = findLocalNodeByKey(nodeKey);
+  if (node?.kind === "api") tree.select(node);
+  await loadApiIntoEditor(tab.source.locator, isCurrent, false);
+}
+
+function openFreeRequestTab(): void {
+  const context = selectedProjectContext.value;
+  if (!context || isHome.value || onlineMode.value || context.root !== workspace.root) return;
+  requestContextRoot = context.root;
+  requestProjectContext = { ...context.locator };
+  try {
+    const tabId = requestTabs.open({ kind: "free", project: { ...context.locator }, draftId: crypto.randomUUID() });
+    void activateRequestTab(tabId).catch(reportError);
+  } catch (error) {
+    reportError(error);
+  }
+}
+
+async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean = () => true, openRequestTab = true): Promise<void> {
   const root = workspace.root;
   const expected = { ...locator, folderIds: [...locator.folderIds] };
   if (!isCurrent()) return;
-  await editor.load(locator);
+  if (openRequestTab) {
+    const project = projectOfLocator(expected);
+    requestContextRoot = root;
+    requestProjectContext = project;
+    const tabId = requestTabs.open({ kind: "asset", locator: expected });
+    await activateRequestTab(tabId, false);
+    return;
+  }
+  await editor.load(locator, isCurrent);
   if (!isCurrent() || workspace.root !== root || !editor.locator || JSON.stringify(editor.locator) !== JSON.stringify(expected)) return;
   const project = workspace.projectLocatorForApi(expected);
   if (!project) throw new Error("接口 locator 在当前本地树中不存在");
@@ -195,6 +274,13 @@ async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean =
 async function restoreLastApiForTab(tab: ProjectTab, isCurrent: () => boolean = () => true): Promise<void> {
   if (!isCurrent() || !("projectLocator" in tab) || workspace.root !== tab.workspaceRef.dir) return;
   moduleMemory.activateProject(tab.workspaceRef.dir, tab.projectLocator);
+  requestContextRoot = tab.workspaceRef.dir;
+  requestProjectContext = { ...tab.projectLocator };
+  const retainedRequestTabId = requestTabs.activateProject(tab.workspaceRef.dir, tab.projectLocator);
+  if (retainedRequestTabId) {
+    await activateRequestTab(retainedRequestTabId, false);
+    return;
+  }
   try {
     const last = moduleMemory.test.apiLocator ?? moduleMemory.apiTree.lastApiLocator;
     if (last && sameProjectLocator(projectOfLocator(last), tab.projectLocator)) {
@@ -247,7 +333,6 @@ onMounted(async () => {
   // 启动按签恢复（不变量 5）：本地签重开目录、活跃签走完整激活编排（含 lastApi 按项目
   // 过滤恢复）；失败签标记离线（可再激活），活跃落空 → 停留主页
   await tabs.restore();
-  if (tabs.activeTab) view.value = "api";
 });
 
 // —— 视图切换（M8 模块化）：ModuleRail v-model:view；接口模块子视图独立状态 ——
@@ -255,8 +340,8 @@ onMounted(async () => {
 // 视图恒可用；其余工作区级；压测接口级。
 const VIEWS: SwitchView[] = SWITCH_VIEWS;
 const SUB_VIEWS: ApiSubView[] = API_SUB_VIEWS;
-// M11：视图含 home（顶栏入口；非 rail 模块）。缺省 home——启动恢复逻辑成功后切 api。
-const view = ref<SwitchView | "home">("home");
+// 项目模块保持原状态；主页/项目页面选择只由 tabs.selectedPage 控制。
+const view = ref<SwitchView>("api");
 const apiSubView = ref<ApiSubView>("debug");
 // —— 内容上下文由活跃签驱动（计划 C 任务 5）：活跃签是本地签 → 本地内容；活跃签是在线签
 // （或无签但有活跃在线工作区——主页打开在线工作区尚未成签的过渡态）→ 在线内容。切到本地
@@ -266,13 +351,15 @@ function isLocalProjectTab(tab: ProjectTab | null): tab is Extract<ProjectTab, {
 }
 
 const activeLocalProjectTab = computed(() => isLocalProjectTab(tabs.activeTab) ? tabs.activeTab : null);
+const retainedLocalProjectTab = computed(() => isLocalProjectTab(tabs.contextTab) ? tabs.contextTab : null);
+const isHome = computed(() => tabs.selectedPage.kind === "home");
 const onlineMode = computed(() => online.activeWorkspace !== null && activeLocalProjectTab.value === null);
 const railGate = computed(() => ({
   workspaceOpened: workspace.opened,
   onlineActive: onlineMode.value,
-  apiSelected: !!editor.apiId,
+  apiSelected: !!editor.apiId || !!editor.activeFreeSession,
 }));
-const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !!editor.apiId }));
+const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !!editor.apiId || !!editor.activeFreeSession }));
 // 主页项目卡片高亮（任务 5 D）：该项目签存在且激活（从 tabs store 算，不再看树选中）
 const homeActiveProjectId = computed(() => activeLocalProjectTab.value?.projectLocator.projectId ?? null);
 // 主页在线项目卡片高亮（终审 Important 1 ②）：活跃签为在线签时的 projectId
@@ -280,14 +367,6 @@ const homeActiveOnlineProjectId = computed(() => {
   const tab = tabs.activeTab;
   return tab && !isLocalProjectTab(tab) ? tab.projectId : null;
 });
-
-// 活跃签变化：从主页点签直接进入项目内容（主页仅经 topbar-home / 点签离开）
-watch(
-  () => tabs.activeTab,
-  (tab) => {
-    if (tab && view.value === "home") view.value = "api";
-  },
-);
 
 // 激活失败文案（离线标记等）上屏到既有错误通道（tabs store 契约：error 组件上屏）
 watch(
@@ -384,7 +463,6 @@ async function onSelect(node: TreeNodeDTO | NodeCreatedDTO) {
     return;
   }
   if (node.kind === "api") {
-    if (view.value === "home") view.value = "api";
     await loadApiIntoEditor(node.locator);
   }
   if (node.kind === "workflow") {
@@ -460,6 +538,9 @@ function onWfTabSwitchCancel() {
   wfTabSwitchResolve = null;
 }
 
+function onRequestTabCloseConfirm() { finishRequestTabClose(true); }
+function onRequestTabCloseCancel() { finishRequestTabClose(false); }
+
 // —— 退出程序 dirty 拦截（计划 C 任务 6，不变量 6）——
 // main 关窗询问（app:dirty-check）的渲染层应答器：聚合全部草稿源——本地 editor 任一会话
 // 槽 dirty + workflowDesign 单会话 + online 各驻留会话任一缓冲槽 dirty（遍历全表，任务 4
@@ -467,6 +548,13 @@ function onWfTabSwitchCancel() {
 function aggregateHasDrafts(): boolean {
   for (const session of Object.values(editor.sessions)) {
     if (session.api !== null && JSON.stringify(session.api) !== session.snapshot) return true;
+  }
+  for (const session of Object.values(editor.freeSessions)) {
+    const tab = requestTabs.tabs[session.tabId];
+    if (tab && editor.isRequestDirty(tab)) return true;
+  }
+  for (const tabId of requestTabs.order) {
+    if (debug.isRequestTabDirty(tabId) || debug.isRequestTabRunning(tabId)) return true;
   }
   if (workflowDesign.dirty) return true;
   for (const session of Object.values(online.sessions)) {
@@ -510,15 +598,231 @@ function collectionOfLocalNode(node: LocalTreeIdentity): CollectionLocator | nul
 }
 
 // 本地面板都消费树 DTO 已携带的完整 locator，在线节点不进入本地合同。
-const selectedProjectLocator = computed(() => {
+const selectedProjectContext = computed(() => {
+  // Home 不选中任何签，但保留上下文仍归原本地项目所有。用签自身的 root，避免
+  // 后台工作区切换/修复期间把环境记忆与调试选择临时挂到别的目录。
+  if (isHome.value) {
+    const retained = retainedLocalProjectTab.value;
+    return retained ? { root: retained.workspaceRef.dir, locator: { ...retained.projectLocator } } : null;
+  }
   const selected = tree.selected;
-  return !onlineMode.value && selected?.source === "local" ? projectOfLocalNode(selected) : null;
+  if (onlineMode.value || selected?.source !== "local") return null;
+  const locator = projectOfLocalNode(selected);
+  return locator ? { root: workspace.root, locator } : null;
 });
+const selectedProjectLocator = computed(() => selectedProjectContext.value?.locator ?? null);
 const activeProjectLocator = computed(() => selectedProjectLocator.value ? { ...selectedProjectLocator.value } : null);
+const activeRequestTab = computed(() => {
+  const tab = requestTabs.activeTab;
+  const context = selectedProjectContext.value;
+  return tab && context && tab.root === context.root && sameProjectLocator(tab.project, context.locator) ? tab : null;
+});
+const historyNavigationGeneration = ref(0);
+watch(
+  () => JSON.stringify([
+    workspace.root,
+    tabs.selectedPage,
+    tabs.contextTabId,
+    selectedProjectContext.value
+      ? [selectedProjectContext.value.root, selectedProjectContext.value.locator.workspaceId,
+        selectedProjectContext.value.locator.groupId, selectedProjectContext.value.locator.projectId]
+      : null,
+    requestTabs.activeId,
+    requestTabs.activeTab?.generation ?? null,
+  ]),
+  () => { historyNavigationGeneration.value += 1; },
+  { flush: "sync" },
+);
+
+async function createFreeRequestModule(tab: RequestTab, name: string): Promise<ApiParentLocator> {
+  if (tab.source.kind !== "free" || workspace.readOnly || workspace.root !== tab.root
+    || !requestTabs.isCurrent(tab.tabId, tab.generation, tab.root)
+    || !sameProjectLocator(requestTabs.tabs[tab.tabId]?.project ?? tab.project, tab.source.project)) {
+    throw new Error("Free 请求来源已变化，不能在其他工作区或项目创建模块。");
+  }
+  const created = await apicc.nodeCreate({ kind: "collection", parent: { ...tab.source.project }, name });
+  if (created.kind !== "collection") throw new Error("创建接口模块失败。");
+  if (workspace.root === tab.root) await workspace.refresh();
+  if (workspace.root !== tab.root || !requestTabs.isCurrent(tab.tabId, tab.generation, tab.root)) {
+    throw new Error("模块已创建，但请求签上下文已变化；请切回来源项目后继续。");
+  }
+  const free = editor.freeSessions[tab.tabId];
+  if (!free || free.root !== tab.root || free.draftId !== tab.source.draftId || !sameProjectLocator(free.project, tab.source.project)) {
+    throw new Error("模块已创建，但 Free 请求草稿上下文已变化；请重新打开请求签。");
+  }
+  const context = await apicc.debugProjectContext({ ...tab.source.project });
+  if (workspace.root !== tab.root || !requestTabs.isCurrent(tab.tabId, tab.generation, tab.root)
+    || editor.freeSessions[tab.tabId] !== free || !sameProjectLocator(context.project, tab.source.project)) {
+    throw new Error("模块已创建，但请求签上下文已变化；请切回来源项目后继续。");
+  }
+  free.sourceProjectRevision = context.sourceProjectRevision;
+  free.envs = context.envs.map((environment) => ({ ...environment, locator: { ...environment.locator } }));
+  return { ...created.locator };
+}
+
+async function saveFreeRequestAsApi(
+  tab: RequestTab,
+  targetParent: ApiParentLocator,
+  name: string,
+  request: ApiRequest,
+  fields: DebugFieldState[],
+): Promise<void> {
+  if (tab.source.kind !== "free") throw new Error("当前请求签不是 Free 请求。");
+  const root = tab.root;
+  const sourceProject = { ...tab.source.project };
+  const free = editor.freeSessions[tab.tabId];
+  if (!free || free.root !== root || free.draftId !== tab.source.draftId
+    || !sameProjectLocator(free.project, sourceProject)
+    || JSON.stringify(free.request) !== JSON.stringify(request)) throw new Error("Free 请求草稿已变化，请重试保存。");
+  if (free.urlDraftInvalid) throw new Error("完整 URL 草稿无效，请修正后再保存为正式接口。");
+  const submittedUrlDraft = {
+    urlDraft: free.urlDraft,
+    urlDraftInvalid: free.urlDraftInvalid,
+    draftRevision: free.draftRevision,
+  };
+  if (workspace.readOnly || workspace.root !== root || !requestTabs.isCurrent(tab.tabId, tab.generation, root)
+    || !sameProjectLocator(selectedProjectContext.value?.locator ?? sourceProject, sourceProject)
+    || selectedProjectContext.value?.root !== root) throw new Error("项目上下文已变化或处于只读模式，拒绝保存 Free 请求。");
+  if (targetParent.workspaceId !== sourceProject.workspaceId || targetParent.groupId !== sourceProject.groupId
+    || targetParent.projectId !== sourceProject.projectId) throw new Error("保存目标必须属于 Free 请求的来源项目。");
+  if (debug.isRequestTabRunning(tab.tabId)) throw new Error("请求运行期间不能保存为正式接口。");
+  if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存为正式接口。");
+
+  const submitted = JSON.parse(JSON.stringify(request)) as ApiRequest;
+  const submittedFields = fields.map((field) => ({ ...field }));
+  const freeGeneration = free.generation;
+  const expected = { root, generation: tab.generation, project: sourceProject, draftId: tab.source.draftId };
+  const wasActive = requestTabs.activeId === tab.tabId;
+  const created = await apicc.apiCreateFromRequestDraft({
+    project: sourceProject,
+    targetParent: "folderIds" in targetParent
+      ? { ...targetParent, folderIds: [...targetParent.folderIds] }
+      : { ...targetParent },
+    name,
+    request: submitted,
+    sourceProjectRevision: free.sourceProjectRevision,
+    fields: submittedFields,
+  });
+
+  const current = requestTabs.tabs[tab.tabId];
+  const currentFree = editor.freeSessions[tab.tabId];
+  const currentProjectContext = selectedProjectContext.value;
+  if (!current || current.root !== root || current.generation !== expected.generation || current.source.kind !== "free"
+    || current.source.draftId !== expected.draftId || !sameProjectLocator(current.source.project, sourceProject)
+    || !currentFree || currentFree.generation !== freeGeneration || JSON.stringify(currentFree.request) !== JSON.stringify(submitted)
+    || currentFree.urlDraft !== submittedUrlDraft.urlDraft || currentFree.urlDraftInvalid !== submittedUrlDraft.urlDraftInvalid
+    || currentFree.draftRevision !== submittedUrlDraft.draftRevision
+    || workspace.root !== root || !currentProjectContext || currentProjectContext.root !== root
+    || !sameProjectLocator(currentProjectContext.locator, sourceProject)) {
+    throw new Error("接口已在来源项目创建，但源请求签已变化；草稿保持原样，请切回来源项目刷新后查看新接口。");
+  }
+  if (!requestTabs.canConvertFreeToAsset(tab.tabId, expected, created.locator)) {
+    throw new Error("接口已创建，但请求签上下文已变化；原 Free 请求仍保留，请从项目树打开新接口。");
+  }
+  if (!editor.canAdoptCreatedApiForFreeTab(current, freeGeneration, submitted, created.detail, submittedUrlDraft)) {
+    throw new Error("接口已创建，但源草稿未能安全转换；原 Free 请求仍保留，请从项目树打开新接口。");
+  }
+  if (!debug.canConvertRequestTab(tab.tabId, expected)) {
+    throw new Error("接口已创建，但调试会话上下文已变化；原 Free 请求仍保留，请从项目树打开新接口。");
+  }
+  // All fallible guards run before the first mutation. Keep these three store commits
+  // in one synchronous turn: no async callback can invalidate the preflight between them.
+  const adopted = editor.adoptCreatedApiForFreeTab(current, freeGeneration, submitted, created.detail, submittedUrlDraft);
+  if (!adopted) throw new Error("接口已创建，但请求签状态未能安全转换；请从项目树打开新接口。");
+  const converted = requestTabs.commitFreeToAsset(tab.tabId, created.locator);
+  debug.commitRequestTabConversion(converted, adopted.generation);
+
+  await workspace.refresh();
+  if (!wasActive || requestTabs.activeId !== tab.tabId || workspace.root !== root
+    || !requestTabs.isCurrent(tab.tabId, converted.generation, root)) return;
+  const node = findLocalNodeByKey(localTreeNodeKey({ source: "local", kind: "api", locator: created.locator }));
+  if (node?.kind === "api") tree.select(node);
+  view.value = "api";
+  apiSubView.value = "debug";
+  await activateRequestTab(tab.tabId, true);
+}
+
+function historyProjectIsCurrent(root: string, project: ProjectLocator): boolean {
+  const context = selectedProjectContext.value;
+  return workspace.root === root && !!context && context.root === root && sameProjectLocator(context.locator, project);
+}
+
+async function openFreeHistoryRequest(input: { historyId: string; exchangeOrder: number; project: ProjectLocator }): Promise<{
+  sourceChanged: boolean;
+  sourceAvailable: boolean;
+  invocation: Extract<import("@apicc/core").DebugInvocation, { mode: "free" }> | null;
+  tab: RequestTab | null;
+  isCurrent: () => boolean;
+} | null> {
+  const root = workspace.root;
+  const originatingTabId = requestTabs.activeId;
+  const originatingTabGeneration = originatingTabId ? requestTabs.tabs[originatingTabId]?.generation ?? null : null;
+  const originatingNavigationGeneration = historyNavigationGeneration.value;
+  const sourceProject = { ...input.project };
+  const originIsCurrent = () => historyNavigationGeneration.value === originatingNavigationGeneration
+    && workspace.root === root
+    && requestTabs.activeId === originatingTabId
+    && (originatingTabId === null || (originatingTabGeneration !== null
+      && requestTabs.isCurrent(originatingTabId, originatingTabGeneration, root ?? "")))
+    && !!root && historyProjectIsCurrent(root, sourceProject);
+  if (!root || !historyProjectIsCurrent(root, input.project)) throw new Error("请先切换到 Free 请求的来源项目。");
+  const restored = await apicc.debugHistoryRestore({ historyId: input.historyId, exchangeOrder: input.exchangeOrder, project: sourceProject });
+  if (!originIsCurrent()) return null;
+  if (restored.invocation.mode !== "free" || !sameProjectLocator(restored.invocation.project, sourceProject)) {
+    throw new Error("所选历史不是当前项目的 Free 请求。");
+  }
+  debug.freeRestoredPreview = restored.sourceAvailable ? null : JSON.parse(JSON.stringify(restored.invocation));
+  debug.restoredPreview = null;
+  debug.restoredSourceAvailable = restored.sourceAvailable;
+  if (!restored.sourceAvailable) return {
+    sourceChanged: restored.sourceChanged, sourceAvailable: false, invocation: restored.invocation, tab: null, isCurrent: originIsCurrent,
+  };
+
+  const tabId = requestTabs.open({ kind: "free", project: sourceProject, draftId: crypto.randomUUID() });
+  const tab = requestTabs.tabs[tabId];
+  if (!tab || tab.source.kind !== "free") throw new Error("无法创建 Free 历史请求签。");
+  const restoredNavigationGeneration = historyNavigationGeneration.value;
+  const isCurrent = () => historyNavigationGeneration.value === restoredNavigationGeneration
+    && requestTabs.activeId === tabId && requestTabs.isCurrent(tabId, tab.generation, root)
+    && historyProjectIsCurrent(root, sourceProject);
+  try {
+    await activateRequestTab(tabId, true);
+    if (!isCurrent()) throw new Error("恢复期间请求签或项目已切换，未应用迟到的历史请求。");
+    const free = await editor.applyFreeHistoryRequest(tab, restored.invocation, isCurrent);
+    if (!free || !isCurrent()) throw new Error("Free 历史请求未能安全恢复到新请求签。");
+    if (!debug.applyFreeHistoryRestore(tab, restored.invocation, free.generation, editor)) {
+      throw new Error("Free 历史调试状态未能安全恢复到新请求签。");
+    }
+    if (!isCurrent()) throw new Error("恢复期间请求签或项目已切换，未应用迟到的历史请求。");
+    debug.freeRestoredPreview = null;
+    return { sourceChanged: restored.sourceChanged, sourceAvailable: true, invocation: restored.invocation, tab, isCurrent };
+  } catch (error) {
+    if (requestTabs.tabs[tabId]) await requestTabs.closeMany([tabId], false);
+    throw error;
+  }
+}
+
+async function restoreFreeHistory(input: { historyId: string; exchangeOrder: number; project: ProjectLocator }) {
+  const restored = await openFreeHistoryRequest(input);
+  if (!restored) return null;
+  return { sourceChanged: restored.sourceChanged, sourceAvailable: restored.sourceAvailable };
+}
+
+async function replayFreeHistory(input: { historyId: string; exchangeOrder: number; project: ProjectLocator; draftId: string }): Promise<void> {
+  const restored = await openFreeHistoryRequest(input);
+  if (!restored || !restored.sourceAvailable || !restored.invocation || !restored.tab || !restored.isCurrent()) return;
+  if (restored.invocation.fields.some((field) => field.needsInput)) throw new Error("请先补齐历史请求中的必填字段，或先恢复为新请求签后再重放。");
+  await debug.replayFreeHistory(input.historyId, input.project, input.draftId, restored.tab, editor);
+}
 
 watch(
-  () => selectedProjectLocator.value ? JSON.stringify([workspace.root, selectedProjectLocator.value]) : null,
-  () => moduleMemory.activateProject(workspace.root, selectedProjectLocator.value),
+  () => selectedProjectContext.value ? JSON.stringify([selectedProjectContext.value.root, selectedProjectContext.value.locator]) : null,
+  () => {
+    const context = selectedProjectContext.value;
+    moduleMemory.activateProject(context?.root ?? workspace.root, context?.locator ?? null);
+    requestContextRoot = context?.root ?? "";
+    requestProjectContext = context ? { ...context.locator } : null;
+  },
   { immediate: true },
 );
 
@@ -532,7 +836,7 @@ watch(
 watch(
   () => tree.selected,
   (selected) => {
-    if (!selected || selected.source !== "local" || selected.kind !== "project" || tabs.restoring || onlineMode.value) return;
+    if (!selected || selected.source !== "local" || selected.kind !== "project" || isHome.value || tabs.restoring || onlineMode.value) return;
     const project = findLocalNodeByKey(selected.key);
     if (project?.kind === "project") openProjectTabFor(project);
   },
@@ -565,29 +869,25 @@ function openProjectTabFor(node: TreeNodeDTO | NodeCreatedDTO): void {
   }
 }
 
-/** 主页「打开项目」：本地项目成签并激活（不变量 1，选中由激活编排承接），切接口模块保持既有行为。 */
+/** 主页「打开项目」：本地项目成签并激活，页面选择由 tabs store 统一承接。 */
 function openProjectFromHome(locator: ProjectLocator) {
   const node = findProjectNode(workspace.tree, locator);
   if (node) void tabs.openProjectTab({ kind: "local", dir: workspace.root }, { locator: node.locator, name: node.label });
-  view.value = "api";
 }
 
 /**
- * 主页「打开在线工作区」（终审 Important 1 ①，open-project 同款组合根回调模式）：打开
- * 驻留会话后切接口模块——纯在线用户（无本地工作区）从主页打开在线工作区后由此离开主页，
- * 在线侧栏（v-show）与 ModuleRail（v-if）随之亮起，在线树/成签入口可达（修复前 view 停留
- * home 的死胡同）。失败（openWorkspace 不抛但活跃指针未随动）上屏错误通道并停留主页。
+ * 主页「打开在线工作区」：打开驻留会话后仍留在主页，让主页项目卡片承接成签；失败
+ * （openWorkspace 不抛但活跃指针未随动）上屏错误通道并停留主页。
  */
 async function openOnlineWorkspaceFromHome(ws: OnlineWorkspaceSummary) {
   await online.openWorkspace(ws);
-  if (online.activeWorkspace?.id === ws.id) view.value = "api";
-  else if (online.error) reportError(new Error(online.error));
+  if (online.activeWorkspace?.id !== ws.id && online.error) reportError(new Error(online.error));
 }
 
 /**
  * 主页在线项目卡片成签（终审 Important 1 ②）：直连 tabs.openProjectTab（online 分支
  * workspaceRef，项目名取活跃会话 projects 清单）——纯在线用户在主页即可点项目成签；
- * 激活编排完成项目选中，活跃签变化 watcher 随之把视图带离主页。
+ * 激活编排完成后统一切到该项目页。
  */
 function openOnlineProjectFromHome(projectId: string) {
   const ws = online.activeWorkspace;
@@ -640,7 +940,7 @@ const saveSelectedProjectPolicy = async (policy: Parameters<typeof workspace.sav
 // 环境选中态项目记忆（M10）：项目切换即换挡（恢复该项目记忆值或「无环境」）；
 // 调试与压测共享同一状态源（StressPanel 传 debug）。
 watch(
-  () => selectedProjectLocator.value ? JSON.stringify([workspace.root, selectedProjectLocator.value]) : null,
+  () => selectedProjectContext.value ? JSON.stringify([selectedProjectContext.value.root, selectedProjectContext.value.locator]) : null,
   () => {
     debug.setProject(selectedProjectLocator.value);
   },
@@ -746,18 +1046,16 @@ function onDividerDblClick() {
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :report-error="reportError" @open-home="view = 'home'" />
-      <!-- 项目页签栏（计划 C 任务 5）：顶栏第二行，成签/切签/关签确认/离线态 -->
-      <ProjectTabs :tabs="tabs" />
+      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :report-error="reportError" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
       </a-alert>
       <div class="body">
-        <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；主页视图不显示（用户裁定）；
+        <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；主页不显示；
              在线模式全禁用 -->
         <ModuleRail
-          v-if="view !== 'home'"
+          v-if="!isHome"
           :view="view"
           :gate="railGate"
           @update:view="(v: SwitchView) => (view = v)"
@@ -766,7 +1064,7 @@ function onDividerDblClick() {
              在线模式侧栏必须可见（回归修复：M11 的 !online.activeWorkspace 条件把在线树整个藏死，
              导致在线工作区无任何项目入口——在线时 treeRoot 已切在线树，侧栏跟随显示） -->
         <div
-          v-show="onlineMode ? view !== 'home' : view === 'api'"
+          v-show="!isHome && (onlineMode || view === 'api')"
           class="sider-col-wrap"
           data-testid="sidebar-api"
         >
@@ -802,7 +1100,7 @@ function onDividerDblClick() {
           />
         </div>
         <!-- 测试模块侧栏（M11）：与接口树各自独立记忆 -->
-        <div v-show="view === 'test' && !onlineMode" class="sider-col-wrap" data-testid="sidebar-test">
+        <div v-show="!isHome && view === 'test' && !onlineMode" class="sider-col-wrap" data-testid="sidebar-test">
           <TestSidebar
             :workspace="workspace"
             :active-project-locator="selectedProjectLocator"
@@ -815,10 +1113,20 @@ function onDividerDblClick() {
             @open-workflow="openWorkflowInDesigner"
           />
         </div>
+        <div class="right-col-wrap">
+          <RequestTabs
+            v-show="!isHome && !onlineMode && view === 'api' && selectedProjectContext"
+            :tabs="requestTabs"
+            :editor="editor"
+            :root="workspace.root"
+            :project="selectedProjectLocator"
+            @new-free="openFreeRequestTab"
+            @activate="(tabId) => { void activateRequestTab(tabId).catch(reportError); }"
+          />
         <div class="right-col" data-testid="main-split">
           <!-- 主页（M9-C；轨三左右栏）：落点选择/项目卡片/连接管理，恒可用 -->
           <HomeView
-            v-if="view === 'home'"
+            v-if="isHome"
             class="panel-view"
             :api="apicc"
             :workspace="workspace"
@@ -885,7 +1193,17 @@ function onDividerDblClick() {
             <!-- 调试子视图：上编辑器 / 可拖拽分割条 / 下响应（结构契约：main-split 四子元素） -->
             <template v-else-if="apiSubView === 'debug'">
               <div class="editor-pane" data-testid="editor-pane">
-                <RequestEditor :editor="editor" :debug="debug" :api="apicc" :assets="assets" :project-locator="assets.projectLocator" />
+                <RequestEditor
+                  :editor="editor"
+                  :debug="debug"
+                  :api="apicc"
+                  :assets="activeRequestTab?.source.kind === 'asset' ? assets : undefined"
+                  :project-locator="activeRequestTab?.project ?? null"
+                  :request-tab="activeRequestTab"
+                  :project-node="activeRequestTab ? workspace.findProject(activeRequestTab.project) : null"
+                  :create-free-module="createFreeRequestModule"
+                  :save-free-request="saveFreeRequestAsApi"
+                />
               </div>
               <div
                 class="split-divider"
@@ -896,7 +1214,13 @@ function onDividerDblClick() {
                 @dblclick="onDividerDblClick"
               ></div>
               <div class="viewer-pane" data-testid="viewer-pane" :style="{ height: `${viewerPct}%` }">
-                <ResponseViewer :result="debug.result" :sending="debug.sending" :error="debug.error" :api="apicc" />
+                <ResponseViewer
+                  :result="activeRequestTab ? debug.requestTabState(activeRequestTab).result : debug.result"
+                  :sending="activeRequestTab ? debug.requestTabState(activeRequestTab).sending : debug.sending"
+                  :error="activeRequestTab ? debug.requestTabState(activeRequestTab).error : debug.error"
+                  :tab-state="activeRequestTab ? debug.requestTabState(activeRequestTab) : null"
+                  :api="apicc"
+                />
               </div>
             </template>
             <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" :read-only="workspace.readOnly" />
@@ -962,6 +1286,7 @@ function onDividerDblClick() {
             :report-error="reportError"
           />
         </div>
+        </div>
       </div>
     <!-- 侧树切换工作流的 dirty 丢弃确认（审查 I1）：a-modal 传送门渲染于 body -->
     <ConfirmDialog
@@ -977,6 +1302,12 @@ function onDividerDblClick() {
       @confirm="onWfTabSwitchConfirm"
       @cancel="onWfTabSwitchCancel"
     />
+    <ConfirmDialog
+      :open="requestCloseConfirmOpen"
+      :title="t('requestTabs.closeConfirm')"
+      @confirm="onRequestTabCloseConfirm"
+      @cancel="onRequestTabCloseCancel"
+    />
     <!-- 在线登录与服务器配置对话框（M3-B 任务 2）：a-modal 传送门渲染于 body；
          显隐由 online store 的 dialogOpen 驱动（TopBar 入口 / 对话框关闭双向读写）。
          计划 C 任务 2：打开在线工作区不再关本地（并存驻留），无需 workspace 注入。
@@ -989,15 +1320,15 @@ function onDividerDblClick() {
     <!-- AI 配置对话框与建议抽屉（M6-C 任务 1）：接口头部入口按钮置显隐/拉取 -->
     <AiConfigDialog :ai="ai" />
     <AiSuggestionsDrawer :ai="ai" />
-    <DebugHistory :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" @close="historyOpen = false" />
+    <DebugHistory :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" :project-locator="selectedProjectLocator" :restore-free="restoreFreeHistory" :replay-free="replayFreeHistory" @close="historyOpen = false" />
   </a-layout>
   </ConfigProvider>
 </template>
 
 <style>
 html, body, #app { height: 100%; margin: 0; }
-.app { height: 100%; background: var(--bg); color: var(--text); }
-.body { flex: 1; display: flex; min-height: 0; }
+.app { height: 100%; min-height: 0; overflow: hidden; background: var(--bg); color: var(--text); }
+.body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 /* 树面板列（M8）：240px 定宽 + 头部（模块标题/搜索）+ 侧树；替代原 a-layout-sider */
 .sider-col-wrap {
   width: 240px;
@@ -1005,6 +1336,7 @@ html, body, #app { height: 100%; margin: 0; }
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
   border-right: 1px solid var(--border);
   background: var(--bg);
 }
@@ -1012,8 +1344,9 @@ html, body, #app { height: 100%; margin: 0; }
 .sider-title { font-weight: 600; font-size: 13px; }
 .sider-search { padding: 6px 10px; }
 .side-col { flex: 1; min-height: 0; }
-.right-col { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.editor-pane { flex: 1; min-height: 0; overflow: auto; }
+.right-col-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; flex: 1; }
+.right-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; flex: 1; }
+.editor-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 /* 可拖拽分割条（M8）：5px 命中区，hover/拖拽高亮 */
 .split-divider {
   flex: none;
@@ -1023,7 +1356,7 @@ html, body, #app { height: 100%; margin: 0; }
   background: transparent;
 }
 .split-divider:hover { background: var(--active-weak); }
-.viewer-pane { flex: none; overflow: auto; border-top: 1px solid var(--border); box-sizing: border-box; }
+.viewer-pane { flex: none; min-height: 0; overflow: hidden; border-top: 1px solid var(--border); box-sizing: border-box; }
 /* 接口模块头部（M8）：子视图页签 + 右侧 AI 入口 */
 .api-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; }
 .api-head .head-spacer { flex: 1; }

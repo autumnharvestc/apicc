@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,10 +6,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { CredentialError, createDefaultRegistry, createProjectSnapshot, fileStorage, type AuthBinding, type SecretStore, type Workspace } from "@apicc/core";
+import { CredentialError, createDefaultRegistry, createProjectSnapshot, createNetworkProfileHost, createOAuthProfileHost, fileStorage, type AuthBinding, type PluginRegistry, type SecretStore, type Workspace } from "@apicc/core";
 import { createMcpServer } from "../src/mcp/server.js";
 import { prepareExecutionRun, stableCredentialError } from "../src/credentials.js";
-import { runCli } from "../src/main.js";
+import { formatOAuthActionFailure, runCli as runCliActual, type RunCliDeps } from "../src/main.js";
 import { spawnOwnedCliProcess } from "./helpers/ownedCliProcess.js";
 
 const groupA = "00000000-0000-4000-8000-000000000002";
@@ -30,9 +30,15 @@ const queryRefId = "query-key";
 let server: ReturnType<typeof createServer>;
 let baseUrl = "";
 let root = "";
+let networkPrivateRoot = "";
+let workerNetworkIdentity = "";
 let requestPath = "";
 let authorizationHeader = "";
 const observedRequests: Array<{ url: string; authorization: string; cookie?: string; body?: string }> = [];
+
+function runCli(argv: string[], registry: PluginRegistry, log: (line: string) => void = () => {}, deps: RunCliDeps = {}): Promise<number> {
+  return runCliActual(argv, registry, log, { networkPrivateRoot, ...deps });
+}
 
 const deepApiPath = [
   "groups", groupA, "projects", projectId, "collections", collectionId,
@@ -168,11 +174,12 @@ function resultText(result: { content: Array<{ type: string; text: string }> }):
   return result.content.map((entry) => entry.text).join("\n");
 }
 
-function protoWorkerArgs(definitionRevision: string, credentialVersionsJson: string): string[] {
+function protoWorkerArgs(definitionRevision: string, credentialVersionsJson: string, networkIdentity = workerNetworkIdentity): string[] {
   return [
     "stress-worker", `groups/${groupB}/projects/${projectId}/collections/${collectionId}/apis/${otherApiId}`,
     "--case", workerCaseId, "--concurrency", "1", "--iterations", "1", "--shard-id", "proto-worker",
     "--workspace", root, "--definition-revision", definitionRevision, "--credential-versions", credentialVersionsJson,
+    "--network-identity", networkIdentity,
   ];
 }
 
@@ -210,14 +217,164 @@ beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "apicc-contract-assets-"));
   const initial = await fileStorage.load(root);
   await fileStorage.save(root, workspace(), { expectedRevision: initial.revision, deletions: [] });
+  networkPrivateRoot = mkdtempSync(join(tmpdir(), "apicc-network-private-"));
+  const identityHost = await createNetworkProfileHost({
+    workspaceRoot: root,
+    project: { workspaceId: workspace().id, groupId: groupB, projectId },
+    privateRoot: networkPrivateRoot,
+    secretStore: { async put() {}, async resolve() { throw new Error("unexpected network secret"); }, async version() { return "unused"; }, async remove() {}, async status() { return "missing"; } },
+  });
+  workerNetworkIdentity = (await identityHost.prepare()).identity;
 });
 
 afterAll(async () => {
+  if (networkPrivateRoot) rmSync(networkPrivateRoot, { recursive: true, force: true });
   if (root) rmSync(root, { recursive: true, force: true });
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
 describe("contract workspace CLI/MCP consumption", () => {
+  it("preserves safe partial and reauthorization OAuth results in CLI failures", () => {
+    const partial = formatOAuthActionFailure("acquire", {
+      status: "partial_success",
+      errorCode: "OAUTH_METADATA_SAVE_FAILED",
+      expiresAt: 1_800_000_123_000,
+    });
+    const reauthorization = formatOAuthActionFailure("refresh", {
+      status: "reauthorization_required",
+      errorCode: "OAUTH_METADATA_SAVE_FAILED",
+      expiresAt: 1_800_000_456_000,
+    });
+
+    expect(partial).toContain('"status":"partial_success"');
+    expect(partial).toContain('"errorCode":"OAUTH_METADATA_SAVE_FAILED"');
+    expect(partial).toContain('"expiresAt":1800000123000');
+    expect(reauthorization).toContain('"status":"reauthorization_required"');
+    expect(reauthorization).toContain("重新授权");
+    expect(partial).not.toMatch(/access_token|refresh_token|synthetic-client-secret/i);
+    expect(reauthorization).not.toMatch(/access_token|refresh_token|synthetic-client-secret/i);
+  });
+
+  it("routes a CLI collection run through the selected project/environment proxy profile", async () => {
+    const proxyRequests: string[] = [];
+    const tokenRequests: Array<{ method: string; body: string }> = [];
+    const tokenServer = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      request.on("end", () => {
+        tokenRequests.push({ method: request.method ?? "GET", body: Buffer.concat(chunks).toString("utf8") });
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ access_token: "synthetic-cli-oauth-access", token_type: "Bearer", expires_in: 3600 }));
+      });
+    });
+    await new Promise<void>((resolve) => tokenServer.listen(0, "127.0.0.1", resolve));
+    const tokenEndpoint = `http://127.0.0.1:${(tokenServer.address() as { port: number }).port}/token`;
+    const oauthPrivateRoot = mkdtempSync(join(tmpdir(), "apicc-cli-oauth-private-"));
+    const proxy = createServer((request, response) => {
+      const target = new URL(request.url ?? "", baseUrl);
+      proxyRequests.push(`${request.method ?? "GET"} ${target.href}`);
+      const headers = { ...request.headers, host: target.host };
+      delete headers["proxy-authorization"];
+      const upstream = httpRequest(target, { method: request.method, headers }, (upstreamResponse) => {
+        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+        upstreamResponse.pipe(response);
+      });
+      request.pipe(upstream);
+      upstream.on("error", () => { response.writeHead(502); response.end(); });
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+    const state = await fileStorage.load(root);
+    const project = state.workspace.groups[0]!.projects[0]!;
+    const dev = project.environments.find((environment) => environment.name === "dev")!;
+    const host = await createNetworkProfileHost({
+      workspaceRoot: root,
+      project: { workspaceId: state.workspace.id, groupId: groupA, projectId },
+      environmentId: dev.id,
+      privateRoot: networkPrivateRoot,
+      secretStore: { async put() {}, async resolve() { throw new Error("unexpected network secret"); }, async version() { return "unused"; }, async remove() {}, async status() { return "missing"; } },
+    });
+    const proxyPasswordRef = { id: "cli-network-proxy-password", policy: "test-auto" as const };
+    const current = await host.store.load(host.scope);
+    await host.store.save(host.scope, {
+      formatVersion: 1,
+      profiles: [{ id: "cli-proxy", name: "CLI proxy", kind: "proxy", proxyUrl, username: "proxy-user", passwordRef: proxyPasswordRef, targetTlsBindings: [] }],
+      projectSelection: { kind: "direct" },
+      environmentSelections: [{ environmentId: dev.id, selection: { kind: "profile", profileId: "cli-proxy" } }],
+    }, current.revision);
+    const previousCwd = process.cwd();
+    observedRequests.length = 0;
+    let proxyPasswordResolveCount = 0;
+    const oauthClientSecretRef = { id: "cli-explicit-acquire-client-secret", policy: "test-auto" as const };
+    const secretStore: SecretStore = {
+      async put() {},
+      async resolve(_scope, ref) {
+        if (ref.id === proxyPasswordRef.id) proxyPasswordResolveCount += 1;
+        if (ref.id === oauthClientSecretRef.id) return "synthetic-cli-client-secret";
+        return "synthetic-cli-proxy-secret";
+      },
+      async version() { return "cli-proxy-generation-1"; },
+      async remove() {},
+      async status() { return "available"; },
+    };
+    try {
+      const oauthHost = await createOAuthProfileHost({
+        workspaceRoot: root,
+        project: { workspaceId: state.workspace.id, groupId: groupA, projectId },
+        environmentId: dev.id,
+        privateRoot: oauthPrivateRoot,
+        secretStore,
+      });
+      const profileId = "cli-explicit-acquire-proxy-profile";
+      expect(await oauthHost.saveProfile({
+        profileId,
+        environmentId: dev.id,
+        flow: "client_credentials",
+        tokenEndpoint,
+        clientId: "synthetic-cli-client",
+        clientAuthentication: "client_secret_post",
+        bearerRef: { id: "cli-explicit-acquire-bearer", policy: "test-auto" },
+        clientSecretRef: oauthClientSecretRef,
+      }, { clientSecret: "synthetic-cli-client-secret" })).toEqual({ status: "success" });
+      process.chdir(root);
+      const code = await runCli([
+        "run", `groups/${groupA}/projects/${projectId}/collections/${collectionId}`,
+        "--env", "dev", "--runs-dir", join(root, ".apicc", "cli-proxy-run"),
+      ], createDefaultRegistry(), () => {}, {
+        loadPlugins: false,
+        secretStore,
+        credentialPrivateRoot: networkPrivateRoot,
+        networkPrivateRoot,
+      });
+      expect(code).toBe(0);
+      const acquireCode = await runCli([
+        "oauth", "acquire", `groups/${groupA}/projects/${projectId}`, profileId, "--env", dev.id,
+      ], createDefaultRegistry(), () => {}, {
+        loadPlugins: false,
+        secretStore,
+        credentialPrivateRoot: networkPrivateRoot,
+        networkPrivateRoot,
+        oauthPrivateRoot,
+      });
+      expect(acquireCode).toBe(0);
+      expect(proxyPasswordResolveCount).toBe(2);
+      expect(proxyRequests).toEqual([
+        `GET ${baseUrl}/preserved/preserved`,
+        `POST ${tokenEndpoint}`,
+      ]);
+      expect(tokenRequests).toEqual([{
+        method: "POST",
+        body: "grant_type=client_credentials&client_id=synthetic-cli-client&client_secret=synthetic-cli-client-secret",
+      }]);
+      expect(observedRequests.map((request) => request.url)).toEqual(["/preserved/preserved"]);
+    } finally {
+      process.chdir(previousCwd);
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+      await new Promise<void>((resolve) => tokenServer.close(() => resolve()));
+      rmSync(oauthPrivateRoot, { recursive: true, force: true });
+    }
+  });
+
   it("runs the child version and then an ancestor-only version through fileStorage and runCli", async () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-effective-case-cli-"));
     const fixtureWorkspace = workspace();
@@ -420,7 +577,7 @@ describe("contract workspace CLI/MCP consumption", () => {
     await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
     const previousRequests = observedRequests.splice(0);
     const entry = fileURLToPath(new URL("../dist/bin.js", import.meta.url));
-    const privateHome = join(fixtureRoot, ".apicc", "private-home");
+    const privateHome = mkdtempSync(join(tmpdir(), "apicc-cli-private-home-"));
     const appData = process.platform === "darwin"
       ? join(privateHome, "Library", "Application Support")
       : join(privateHome, "app-data");
@@ -511,6 +668,7 @@ describe("contract workspace CLI/MCP consumption", () => {
     } finally {
       observedRequests.splice(0);
       observedRequests.push(...previousRequests);
+      rmSync(privateHome, { recursive: true, force: true });
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
   });
@@ -1489,7 +1647,7 @@ describe("contract workspace CLI/MCP consumption", () => {
     requestPath = "";
     authorizationHeader = "";
     const code = await runCli(protoWorkerArgs(revision, versionWire), createDefaultRegistry(), () => {}, {
-      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore,
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore, networkPrivateRoot,
     });
 
     expect(code).toBe(0);
@@ -1515,7 +1673,7 @@ describe("contract workspace CLI/MCP consumption", () => {
     const err: string[] = [];
     requestPath = "";
     const code = await runCli(protoWorkerArgs(createProjectSnapshot(project).definitionRevision, "{}"), createDefaultRegistry(), () => {}, {
-      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore,
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore, networkPrivateRoot,
     });
 
     expect(code).toBe(1);
@@ -1540,13 +1698,38 @@ describe("contract workspace CLI/MCP consumption", () => {
     const err: string[] = [];
     requestPath = "";
     const code = await runCli(protoWorkerArgs("stale-definition-revision", '{"__proto__":"version-own-proto"}'), createDefaultRegistry(), () => {}, {
-      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore,
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore, networkPrivateRoot,
     });
 
     expect(code).toBe(1);
     expect(storeCalls).toBe(0);
     expect(requestPath).toBe("");
     expect(err.join("\n")).toContain("定义在压测 worker 启动前发生变化");
+    expect(out.join("\n")).not.toContain("synthetic-worker-secret");
+  });
+
+  it("network identity mismatch fails before a worker request is sent", async () => {
+    const state = await fileStorage.load(root);
+    const project = state.workspace.groups[1]!.projects[0]!;
+    const out: string[] = [];
+    const err: string[] = [];
+    requestPath = "";
+    const wrongIdentity = `sha256:${"f".repeat(64)}`;
+    const code = await runCli(protoWorkerArgs(
+      createProjectSnapshot(project).definitionRevision,
+      '{"__proto__":"version-own-proto"}',
+      wrongIdentity,
+    ), createDefaultRegistry(), () => {}, {
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), networkPrivateRoot,
+      secretStore: {
+        async put() {}, async resolve() { return "synthetic-worker-secret"; }, async version() { return "version-own-proto"; },
+        async remove() {}, async status() { return "available"; },
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(requestPath).toBe("");
+    expect(err.join("\n")).toContain("网络配置或公开证书材料");
     expect(out.join("\n")).not.toContain("synthetic-worker-secret");
   });
 
@@ -1571,7 +1754,7 @@ describe("contract workspace CLI/MCP consumption", () => {
     const err: string[] = [];
     requestPath = "";
     const code = await runCli(protoWorkerArgs(createProjectSnapshot(project).definitionRevision, '{"__proto__":"version-own-proto"}'), createDefaultRegistry(), () => {}, {
-      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore,
+      workerOut: (line) => out.push(line), workerErr: (line) => err.push(line), secretStore, networkPrivateRoot,
     });
 
     expect(code).toBe(1);

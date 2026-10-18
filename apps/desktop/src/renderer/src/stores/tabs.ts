@@ -5,6 +5,7 @@ import type { useWorkflowDesignStore } from "./workflowDesign.js";
 import type { OnlineStore } from "./online.js";
 import type { LocalProjectTreeNodeDTO, LocalRootTreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { ProjectLocator } from "../../../shared/locations.js";
+import type { RequestTabsStore } from "./requestTabs.js";
 import { ProjectLocatorSchema } from "../../../shared/locations.js";
 
 /**
@@ -23,6 +24,8 @@ interface ProjectTabBase {
 type LocalProjectTab = ProjectTabBase & { workspaceRef: Extract<WorkspaceRef, { kind: "local" }>; projectLocator: ProjectLocator };
 type OnlineProjectTab = ProjectTabBase & { workspaceRef: Extract<WorkspaceRef, { kind: "online" }>; projectId: string };
 export type ProjectTab = LocalProjectTab | OnlineProjectTab;
+
+export type SelectedPage = { kind: "home" } | { kind: "project"; tabId: string };
 
 type LocalPersistedProjectTab = { workspaceRef: Extract<WorkspaceRef, { kind: "local" }>; projectLocator: ProjectLocator; projectName: string };
 type OnlinePersistedProjectTab = { workspaceRef: Extract<WorkspaceRef, { kind: "online" }>; projectId: string; projectName: string };
@@ -146,12 +149,14 @@ export interface TabsStoreDeps {
    * 属于该项目且 dirty 即需确认。App 组合根注入；未注入时跳过该草稿源。
    */
   workflowDesign?: Pick<ReturnType<typeof useWorkflowDesignStore>, "dirty" | "locator"> & { root?: string | null };
+  /** Request workbench tabs contribute dirty/running state and are evicted with their project. */
+  requestTabs?: Pick<RequestTabsStore, "hasProjectDrafts" | "closeProject">;
   /**
    * 关签驱逐钩子（不变量 3：关签=项目关闭）：驱逐该项目的编辑器会话（本地 editor 会话）
    * 与在线编辑缓冲。计划 C 任务 4 落地：用 createEvictProjectSessions 装配真实实现
    * （App 组合根任务 5 接 ProjectTabs 时传入）。
    */
-  evictProjectSessions?: (tab: ProjectTab) => void;
+  evictProjectSessions?: (tab: ProjectTab) => Promise<void> | void;
   /**
    * 激活尾部钩子（编排第③步）：editor 上下文由活跃项目驱动。
    * 计划 C 任务 4 接线；任务 3 缺省 no-op（留接口）。
@@ -179,12 +184,15 @@ export interface TabsStoreDeps {
  */
 export function createTabsStore(deps: TabsStoreDeps) {
   const storage = deps.storage ?? localStorage;
+  const closingTabs = new Set<string>();
   return defineStore("projectTabs", {
     state: () => ({
       /** 签注册表（栏上顺序即数组序）。 */
       tabs: [] as ProjectTab[],
-      /** 活跃签 id；null = 无活跃（回主页）。 */
-      activeTabId: null as string | null,
+      /** 当前页面与唯一高亮来源；主页不是项目签。 */
+      selectedPage: { kind: "home" } as SelectedPage,
+      /** 主页保留的最近项目上下文；不会控制页面选择或标签高亮。 */
+      contextTabId: null as string | null,
       /** 离线签（恢复失败/激活失败）；运行期态不落盘——重启恢复时按重建结果重新推导。 */
       offlineTabIds: [] as string[],
       /** tabId 自增计数（运行期）。 */
@@ -197,8 +205,18 @@ export function createTabsStore(deps: TabsStoreDeps) {
       restoring: false,
     }),
     getters: {
+      /** 兼容旧导航读口；仅在项目页选中签时返回 id。 */
+      activeTabId(state): string | null {
+        return state.selectedPage.kind === "project" ? state.selectedPage.tabId : null;
+      },
       activeTab(state): ProjectTab | null {
-        return state.tabs.find((t) => t.tabId === state.activeTabId) ?? null;
+        const selectedPage = state.selectedPage;
+        if (selectedPage.kind !== "project") return null;
+        return state.tabs.find((t) => t.tabId === selectedPage.tabId) ?? null;
+      },
+      /** 项目上下文读口：主页期间仍保留，供工作流草稿等上下文消费者使用。 */
+      contextTab(state): ProjectTab | null {
+        return state.tabs.find((t) => t.tabId === state.contextTabId) ?? null;
       },
       /** 离线判定（任务 5 渲染禁用态）。 */
       isTabOffline(state): (tabId: string) => boolean {
@@ -210,6 +228,15 @@ export function createTabsStore(deps: TabsStoreDeps) {
       markOffline(tabId: string, message: string): void {
         if (!this.offlineTabIds.includes(tabId)) this.offlineTabIds.push(tabId);
         this.error = message;
+      },
+
+      /** 显示主页并使在途项目激活失效；保留签、工作区、编辑器与请求草稿。 */
+      activateHome(): void {
+        this.activationEpoch += 1;
+        this.restoring = false;
+        this.selectedPage = { kind: "home" };
+        this.error = null;
+        this.persist();
       },
 
       /**
@@ -307,14 +334,20 @@ export function createTabsStore(deps: TabsStoreDeps) {
         if (!tab) return;
         const epoch = ++this.activationEpoch;
         const isCurrent = () => this.activationEpoch === epoch && this.tabs.some((entry) => entry.tabId === tabId);
-        if (this.activeTabId === tabId && !deps.workspace.hasPendingOpen?.()) return;
-        const leaving = this.activeTabId === tabId ? null : this.activeTab;
+        if (this.selectedPage.kind === "project" && this.selectedPage.tabId === tabId
+          && !deps.workspace.hasPendingOpen?.()) return;
+        const retainedContextReady = this.contextTabId === tabId && (hasOnlineProjectId(tab)
+          ? deps.online.activeWorkspaceId === tab.workspaceRef.workspaceId
+          : deps.workspace.opened && deps.workspace.root === tab.workspaceRef.dir && !deps.workspace.hasPendingOpen?.());
+        const leaving = this.contextTabId === tabId ? null : this.contextTab;
         if (deps.confirmWorkflowDraft && leaving && this.leavingTabHasWorkflowDraft(leaving)) {
           if (!(await deps.confirmWorkflowDraft()) || !isCurrent()) return;
         }
         if (!(await this.ensureWorkspaceContext(tab, isCurrent)) || !isCurrent()) return;
         // ② 项目选中（工作区上下文就位后）
-        if (hasOnlineProjectId(tab)) {
+        if (retainedContextReady) {
+          // 主页切回仍驻留的项目上下文：保留原树选中、编辑器与草稿，不重跑恢复钩子。
+        } else if (hasOnlineProjectId(tab)) {
           await deps.online.selectNode("project", tab.projectId);
           if (!isCurrent() || deps.online.activeWorkspaceId !== tab.workspaceRef.workspaceId) return;
         }
@@ -328,11 +361,12 @@ export function createTabsStore(deps: TabsStoreDeps) {
           deps.tree.select(node);
         } else return;
         if (!isCurrent()) return;
-        this.activeTabId = tabId;
+        this.contextTabId = tabId;
+        this.selectedPage = { kind: "project", tabId };
         this.offlineTabIds = this.offlineTabIds.filter((id) => id !== tabId);
         this.persist();
         // ③ editor 上下文由活跃项目驱动（任务 4 接线点）
-        if (!isCurrent()) return;
+        if (!isCurrent() || retainedContextReady) return;
         await deps.onProjectActivated?.(tab, isCurrent);
       },
 
@@ -364,6 +398,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
       projectHasDrafts(tabId: string): boolean {
         const tab = this.tabs.find((t) => t.tabId === tabId);
         if (!tab) return false;
+        if (hasProjectLocator(tab) && deps.requestTabs?.hasProjectDrafts(tab.workspaceRef.dir, tab.projectLocator)) return true;
         const wf = deps.workflowDesign;
         if (wf?.dirty && wf.locator && hasProjectLocator(tab)
           && (!wf.root || wf.root === tab.workspaceRef.dir)
@@ -401,28 +436,62 @@ export function createTabsStore(deps: TabsStoreDeps) {
        */
       async closeTab(tabId: string): Promise<void> {
         const index = this.tabs.findIndex((t) => t.tabId === tabId);
-        if (index < 0) return;
-        this.activationEpoch += 1;
+        if (index < 0 || closingTabs.has(tabId)) return;
+        closingTabs.add(tabId);
         const tab = this.tabs[index]!;
-        deps.evictProjectSessions?.(tab);
-        this.tabs.splice(index, 1);
-        this.offlineTabIds = this.offlineTabIds.filter((id) => id !== tabId);
-        if (this.activeTabId === tabId) {
-          this.activeTabId = null;
-          const adjacent = this.tabs[Math.min(index, this.tabs.length - 1)];
-          if (adjacent) await this.activateTab(adjacent.tabId);
-        } else if (this.activeTabId && deps.workspace.hasPendingOpen?.()) {
-          // Closing a non-active target invalidates its in-flight activation too. Reassert
-          // the still-active tab so the workspace queue restores its actual root after that
-          // already-issued wsOpen completes.
-          await this.activateTab(this.activeTabId);
+        try {
+          this.activationEpoch += 1;
+          const eviction = deps.evictProjectSessions?.(tab);
+          if (eviction && typeof (eviction as Promise<void>).then === "function") await eviction;
+          const currentIndex = this.tabs.findIndex((entry) => entry.tabId === tabId);
+          if (currentIndex < 0) return;
+          this.tabs.splice(currentIndex, 1);
+          this.offlineTabIds = this.offlineTabIds.filter((id) => id !== tabId);
+          if (this.selectedPage.kind === "project" && this.selectedPage.tabId === tabId) {
+            this.selectedPage = { kind: "home" };
+            this.contextTabId = null;
+            const adjacent = this.tabs[Math.min(currentIndex, this.tabs.length - 1)];
+            if (adjacent) await this.activateTab(adjacent.tabId);
+          } else if (this.selectedPage.kind === "home" && this.contextTabId === tabId) {
+            this.contextTabId = null;
+          } else if (this.contextTabId && deps.workspace.hasPendingOpen?.()) {
+          // Closing a non-active target invalidates its in-flight activation too. Repair the
+          // retained workspace context without using activateTab: that public action changes
+          // selectedPage before its async editor hook settles, which would flash the project
+          // page while the user is on Home.
+            const contextTabId = this.contextTabId;
+            const contextTab = this.tabs.find((entry) => entry.tabId === contextTabId);
+            const repairEpoch = ++this.activationEpoch;
+            const isCurrent = () => this.activationEpoch === repairEpoch
+              && this.tabs.some((entry) => entry.tabId === contextTabId);
+            this.persist();
+            if (contextTab && await this.ensureWorkspaceContext(contextTab, isCurrent) && isCurrent()) {
+              if (hasOnlineProjectId(contextTab)) {
+                await deps.online.selectNode("project", contextTab.projectId);
+                if (!isCurrent() || deps.online.activeWorkspaceId !== contextTab.workspaceRef.workspaceId) return;
+              } else if (hasProjectLocator(contextTab)) {
+                const node = findProjectNode(deps.workspace.tree, contextTab.projectLocator);
+                if (!node) {
+                  this.markOffline(contextTab.tabId, `本地项目 locator 在当前树中不存在: ${contextTab.projectName}`);
+                  return;
+                }
+                deps.tree.select(node);
+              } else return;
+              if (!isCurrent()) return;
+              this.offlineTabIds = this.offlineTabIds.filter((id) => id !== contextTabId);
+              await deps.onProjectActivated?.(contextTab, isCurrent);
+            }
+          }
+          this.persist();
+        } finally {
+          closingTabs.delete(tabId);
         }
-        this.persist();
       },
 
       /** 持久化签结构（不变量 5：只记签结构，草稿/离线态不落盘；成签/关签/切签成功后自动调用）。 */
       persist(): void {
-        const index = this.activeTabId !== null ? this.tabs.findIndex((t) => t.tabId === this.activeTabId) : -1;
+        const selectedTabId = this.selectedPage.kind === "project" ? this.selectedPage.tabId : null;
+        const index = selectedTabId !== null ? this.tabs.findIndex((t) => t.tabId === selectedTabId) : -1;
         writePersistedTabs(storage, {
           tabs: this.tabs.map((t) => hasProjectLocator(t)
             ? { workspaceRef: { ...t.workspaceRef }, projectLocator: { ...t.projectLocator }, projectName: t.projectName }
@@ -444,15 +513,14 @@ export function createTabsStore(deps: TabsStoreDeps) {
         try {
           const persisted = readPersistedTabs(storage);
           this.tabs = [];
-          this.activeTabId = null;
+          this.selectedPage = { kind: "home" };
+          this.contextTabId = null;
           this.offlineTabIds = [];
           this.seq = 0;
-          const rebuiltTabIds: string[] = [];
-          for (const row of persisted.tabs) {
+          this.tabs = persisted.tabs.map((row) => ({ tabId: `tab-${++this.seq}`, ...row }));
+          const rebuiltTabIds = this.tabs.map((tab) => tab.tabId);
+          for (const tab of this.tabs) {
             if (!isCurrent()) return;
-            const tab: ProjectTab = { tabId: `tab-${++this.seq}`, ...row };
-            this.tabs.push(tab);
-            rebuiltTabIds.push(tab.tabId);
             // 逐签重建工作区上下文（非活跃签不选项目——选中留给激活时）
             await this.ensureWorkspaceContext(tab, isCurrent);
             if (!isCurrent()) return;
@@ -463,7 +531,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
             await this.activateTab(activeId);
             return;
           }
-          this.activeTabId = null; // 活跃签离线/无活跃记录 → 回主页
+          this.selectedPage = { kind: "home" }; // 活跃签离线/无活跃记录 → 留在主页
         } finally {
           if (isCurrent()) this.restoring = false;
         }
@@ -482,6 +550,8 @@ export interface EvictProjectSessionsDeps {
   online: Pick<OnlineStore, "evictProjectBuffers">;
   /** 本地工作流草稿：只卸载其 root 与项目均归属于被关闭签的会话。 */
   workflowDesign?: Pick<ReturnType<typeof useWorkflowDesignStore>, "root" | "locator" | "unload">;
+  /** Request tab lifecycle is closed before the owning project sessions are evicted. */
+  requestTabs?: Pick<RequestTabsStore, "closeProject">;
 }
 
 /** 按完整 locator 查找项目节点，避免同 id 跨 group/workspace 的碰撞。 */
@@ -505,7 +575,7 @@ export function findProjectNode(root: LocalRootTreeNodeDTO | null, locator: Proj
  */
 export function createEvictProjectSessions(
   deps: EvictProjectSessionsDeps,
-): (tab: ProjectTab) => void {
+): (tab: ProjectTab) => Promise<void> | void {
   return (tab) => {
     try {
       if (hasOnlineProjectId(tab)) {
@@ -513,10 +583,20 @@ export function createEvictProjectSessions(
         return;
       }
       if (!hasProjectLocator(tab)) return;
-      deps.editor.evictProject(tab.projectLocator, tab.workspaceRef.dir);
-      const workflow = deps.workflowDesign;
-      if (workflow?.root === tab.workspaceRef.dir && workflow.locator
-        && sameProjectLocator(tab.projectLocator, workflow.locator)) workflow.unload();
+      const evictEditorSessions = () => {
+        deps.editor.evictProject(tab.projectLocator, tab.workspaceRef.dir);
+        const workflow = deps.workflowDesign;
+        if (workflow?.root === tab.workspaceRef.dir && workflow.locator
+          && sameProjectLocator(tab.projectLocator, workflow.locator)) workflow.unload();
+      };
+      if (!deps.requestTabs) {
+        evictEditorSessions();
+        return;
+      }
+      return deps.requestTabs.closeProject(tab.workspaceRef.dir, tab.projectLocator, true).then(evictEditorSessions).catch((e: unknown) => {
+        const identity = JSON.stringify(tab.projectLocator);
+        console.warn(`关签驱逐项目编辑会话失败（project=${identity}）: ${e instanceof Error ? e.message : String(e)}`);
+      });
     } catch (e) {
       const identity = hasProjectLocator(tab) ? JSON.stringify(tab.projectLocator) : tab.projectId;
       console.warn(`关签驱逐项目编辑会话失败（project=${identity}）: ${e instanceof Error ? e.message : String(e)}`);

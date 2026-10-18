@@ -210,8 +210,9 @@ describe("desktop session file transactions", () => {
       };
       const diskBefore = await fileStorage.load(temporary.path);
 
+      const expectedCaseLocator = { ...apiLocator, caseId: source.api.cases[0]!.id, scope: source.api.cases[0]!.scope };
       await expect(session.saveRequestDraft(apiLocator, soapRequest, expectedSourceApiRevision))
-        .rejects.toThrow(new RegExp(`caseId.*${source.api.cases[0]!.id}|${source.api.cases[0]!.id}.*scope`));
+        .rejects.toThrow(`Request protocol is incompatible with saved case override at ${JSON.stringify(expectedCaseLocator)}`);
 
       expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
       expect(session.locateApi(apiLocator)?.api.contract.request.protocol).toBe("http");

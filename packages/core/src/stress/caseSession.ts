@@ -252,6 +252,7 @@ export function createStressCaseSession(
         asset: location.asset,
         assetContext: selectedRun.snapshot.context,
         credentialBindings: selectedRun.credentialBindings,
+        ...(selectedRun.network === undefined ? {} : { network: selectedRun.network }),
         testCase,
         row: rows[rowIndex],
         rowIndex,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileStorage, getSourceApiRevision, WorkflowSchema as CoreWorkflowSchema, type SecretStore } from "@apicc/core";
+import { createProjectSnapshot, fileStorage, getSourceApiRevision, WorkflowSchema as CoreWorkflowSchema, type SecretStore } from "@apicc/core";
 import type { Importer } from "@apicc/core";
 import { parseIpcArgs } from "../../src/shared/ipc-contract.js";
 import type { OnlineClient } from "../../src/main/online/client.js";
@@ -15,6 +15,10 @@ import { countingStorage, findApi, IDS, makeApi, makeTempRoot, makeWorkspace, pe
 
 function invokeRaw(deps: ReturnType<typeof createIpcDeps>, channel: string, ...args: unknown[]): Promise<unknown> {
   return Reflect.apply(deps.handle, undefined, [channel, null, ...args]) as Promise<unknown>;
+}
+
+function invokeFrom(deps: ReturnType<typeof createIpcDeps>, channel: string, event: unknown, ...args: unknown[]): Promise<unknown> {
+  return Reflect.apply(deps.handle, undefined, [channel, event, ...args]) as Promise<unknown>;
 }
 
 function locators(groupId = IDS.groupOne, projectId = IDS.projectOne, collectionId = IDS.collectionOne) {
@@ -124,6 +128,44 @@ describe("complete-locator IPC bridge", () => {
       expect(session.locateApi(locator)?.api.contract.request.path).toBe("/ipc-request-draft");
       detail.api.contract.metadata.name = "mutated result view";
       expect(session.locateApi(locator)?.api.contract.metadata.name).toBe("project one API");
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("creates a free request asset through one validated IPC transaction", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      counted.calls.length = 0;
+      const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "" });
+      const project = locators().project;
+      const definition = session.locateProject(project)?.project;
+      if (!definition) throw new Error("Project fixture is unavailable");
+      const request = structuredClone(definition.collections[0]!.apis[0]!.contract.request);
+      const input = {
+        project,
+        targetParent: locators().collection,
+        name: "project one API",
+        request,
+        sourceProjectRevision: createProjectSnapshot(definition).definitionRevision,
+        fields: [],
+      };
+
+      const result = await invokeRaw(deps, IpcChannel.ApiCreateFromRequestDraft, input) as {
+        locator: ReturnType<typeof locators>["api"];
+        detail: { api: ReturnType<typeof makeApi>; locator: unknown };
+      };
+
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(1);
+      expect(result.detail.locator).toEqual(result.locator);
+      expect(result.detail.api.contract.metadata.name).toBe("project one API");
+      expect(result.detail.api.contract.request).toEqual(request);
+      expect(session.locateApi(result.locator)?.api).toEqual(result.detail.api);
+      expect(() => parseIpcArgs(IpcChannel.ApiCreateFromRequestDraft, [{ ...input, unexpected: true }])).toThrow(/unexpected|校验/i);
     } finally {
       await temporary.dispose();
     }
@@ -343,6 +385,179 @@ describe("complete-locator IPC bridge", () => {
       await expect(deps.handle(IpcChannel.DebugHistoryList, null, { limit: 50, offset: 0 })).resolves.toMatchObject({ items: [] });
     } finally {
       await workspace.dispose();
+      await privateHistory.dispose();
+    }
+  });
+
+  it("requires the caller project before restoring or replaying free-request history", async () => {
+    const workspace = await makeTempRoot("apicc-free-history-context-workspace-");
+    const replacement = await makeTempRoot("apicc-free-history-context-replacement-");
+    const privateHistory = await makeTempRoot("apicc-free-history-context-private-");
+    let serverHits = 0;
+    const server = createServer((_request, response) => {
+      serverHits += 1;
+      response.end("ok");
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const workspaceValue = makeWorkspace();
+      projectOne(workspaceValue).collections = [];
+      await persistWorkspace(workspace.path, workspaceValue);
+      await persistWorkspace(replacement.path, structuredClone(workspaceValue));
+      const session = createSession();
+      await session.open(workspace.path);
+      const history = createDesktopDebugHistoryStore({ privateRoot: privateHistory.path });
+      let announceRead: () => void = () => {};
+      let delayedRead: Promise<void> | undefined;
+      const historyWithDeferredRead = {
+        ...history,
+        get: async (historyId: string) => {
+          const gate = delayedRead;
+          if (gate) {
+            delayedRead = undefined;
+            announceRead();
+            await gate;
+          }
+          return history.get(historyId);
+        },
+      };
+      const deps = createIpcDeps({
+        session,
+        pickDirectory: async () => "",
+        saveFile: async () => "",
+        debugHistory: () => historyWithDeferredRead,
+      });
+      const event = { sender: {} };
+      const request = {
+        protocol: "http" as const,
+        method: "GET" as const,
+        baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        path: "/free-history",
+        pathParams: [],
+        query: [],
+        headers: [],
+        cookies: [],
+        auth: { kind: "none" as const },
+        body: { kind: "none" as const },
+      };
+      const project = locators().project;
+      const started = await deps.handle(IpcChannel.DebugStart, event, {
+        mode: "free",
+        project,
+        draftId: uuid(901),
+        request,
+        parameters: {},
+        fields: [],
+      }) as { runId: string };
+      await deps.handle(IpcChannel.DebugWait, event, { runId: started.runId });
+      const page = await deps.handle(IpcChannel.DebugHistoryList, null, { sourceKind: "free", limit: 50, offset: 0 }) as { items: Array<{ historyId: string }> };
+      const historyId = page.items[0]!.historyId;
+      expect(parseIpcArgs(IpcChannel.DebugHistoryRestore, [{ historyId, exchangeOrder: 1, project }])[0])
+        .toEqual({ historyId, exchangeOrder: 1, project });
+      expect(parseIpcArgs(IpcChannel.DebugHistoryReplay, [{ historyId, project }])[0]).toEqual({ historyId, project });
+
+      const restored = await invokeRaw(deps, IpcChannel.DebugHistoryRestore, { historyId, exchangeOrder: 1, project }) as {
+        invocation: { mode: string; project?: unknown };
+        sourceChanged: boolean;
+        sourceAvailable: boolean;
+      };
+      expect(restored).toMatchObject({
+        invocation: { mode: "free", project },
+        sourceChanged: false,
+        sourceAvailable: true,
+      });
+
+      const replayed = await invokeFrom(deps, IpcChannel.DebugHistoryReplay, event, { historyId, project }) as { runId: string; sourceKind: string };
+      expect(replayed).toMatchObject({ runId: expect.any(String), sourceKind: "free" });
+      await deps.handle(IpcChannel.DebugWait, event, { runId: replayed.runId });
+      expect(serverHits).toBe(2);
+
+      const otherProject = locators(IDS.groupTwo, IDS.projectTwo).project;
+      let mismatchedRestoreError: unknown;
+      try {
+        await invokeRaw(deps, IpcChannel.DebugHistoryRestore, { historyId, exchangeOrder: 1, project: otherProject });
+      } catch (error) {
+        mismatchedRestoreError = error;
+      }
+      expect(mismatchedRestoreError).toBeInstanceOf(Error);
+
+      const expectReplayRefusal = async (input: unknown) => {
+        let failure: unknown;
+        try {
+          const result = await invokeFrom(deps, IpcChannel.DebugHistoryReplay, event, input) as { runId?: string };
+          if (result.runId) await deps.handle(IpcChannel.DebugWait, event, { runId: result.runId });
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(Error);
+      };
+      await expectReplayRefusal({ historyId, project: otherProject });
+      let missingProjectRestoreError: unknown;
+      try {
+        await invokeRaw(deps, IpcChannel.DebugHistoryRestore, { historyId, exchangeOrder: 1 });
+      } catch (error) {
+        missingProjectRestoreError = error;
+      }
+      expect(missingProjectRestoreError).toBeInstanceOf(Error);
+      await expectReplayRefusal(historyId);
+
+      const hitsBeforeSwitch = serverHits;
+      let unlockRead!: () => void;
+      const readGate = new Promise<void>((resolve) => { unlockRead = resolve; });
+      let readStarted!: () => void;
+      const readStartedPromise = new Promise<void>((resolve) => { readStarted = resolve; });
+      delayedRead = readGate;
+      announceRead = readStarted;
+      const switchedReplay = invokeFrom(deps, IpcChannel.DebugHistoryReplay, event, { historyId, project });
+      await readStartedPromise;
+      await session.open(replacement.path);
+      unlockRead();
+      let switchedReplayError: unknown;
+      try {
+        const result = await switchedReplay as { runId?: string };
+        if (result.runId) await deps.handle(IpcChannel.DebugWait, event, { runId: result.runId });
+      } catch (error) {
+        switchedReplayError = error;
+      }
+      expect(switchedReplayError).toBeInstanceOf(Error);
+      expect(serverHits).toBe(hitsBeforeSwitch);
+
+      await session.open(workspace.path);
+      await deps.handle(IpcChannel.NodeDelete, null, { kind: "project", locator: project });
+      const unavailable = await invokeRaw(deps, IpcChannel.DebugHistoryRestore, { historyId, exchangeOrder: 1, project }) as {
+        invocation: { mode: string; project?: unknown };
+        sourceChanged: boolean;
+        sourceAvailable: boolean;
+      };
+      expect(unavailable).toMatchObject({ invocation: { mode: "free", project }, sourceChanged: true, sourceAvailable: false });
+      await expectReplayRefusal({ historyId, project });
+      expect(serverHits).toBe(hitsBeforeSwitch);
+
+      const noRootDeps = createIpcDeps({
+        session: createSession(),
+        pickDirectory: async () => "",
+        saveFile: async () => "",
+        debugHistory: () => historyWithDeferredRead,
+      });
+      const noRootRestore = await invokeRaw(noRootDeps, IpcChannel.DebugHistoryRestore, { historyId, exchangeOrder: 1, project }) as {
+        invocation: { mode: string; project?: unknown };
+        sourceChanged: boolean;
+        sourceAvailable: boolean;
+      };
+      expect(noRootRestore).toMatchObject({ invocation: { mode: "free", project }, sourceChanged: true, sourceAvailable: false });
+      let noRootReplayError: unknown;
+      try {
+        await invokeFrom(noRootDeps, IpcChannel.DebugHistoryReplay, event, { historyId, project });
+      } catch (error) {
+        noRootReplayError = error;
+      }
+      expect(noRootReplayError).toBeInstanceOf(Error);
+      expect(serverHits).toBe(hitsBeforeSwitch);
+    } finally {
+      server.closeAllConnections();
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      await workspace.dispose();
+      await replacement.dispose();
       await privateHistory.dispose();
     }
   });

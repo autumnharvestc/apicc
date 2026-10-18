@@ -10,6 +10,7 @@ const props = defineProps<{
   locator: ProjectLocator;
   auth: ApiRequest["auth"];
   contextKey?: string;
+  managedState?: "managed" | "unmanaged" | "unknown";
   readOnly?: boolean;
 }>();
 const { t } = useI18n();
@@ -19,6 +20,7 @@ const error = ref("");
 const saving = ref(false);
 const mutationFeedback = ref<"" | "saved" | "removed">("");
 let contextEpoch = 0;
+const credentialDisabled = computed(() => props.readOnly || saving.value || props.managedState === "managed" || props.managedState === "unknown");
 
 const refValue = computed<SecretRef | null>(() => {
   const auth = props.auth;
@@ -82,7 +84,7 @@ watch([contextToken, () => props.api], () => {
 async function saveCredential() {
   const context = captureContext();
   const submittedValue = value.value;
-  if (!context.ref || !submittedValue || props.readOnly || saving.value) return;
+  if (!context.ref || !submittedValue || credentialDisabled.value) return;
   saving.value = true;
   error.value = "";
   mutationFeedback.value = "";
@@ -105,7 +107,7 @@ async function saveCredential() {
 
 async function removeCredential() {
   const context = captureContext();
-  if (!context.ref || props.readOnly || saving.value) return;
+  if (!context.ref || credentialDisabled.value) return;
   saving.value = true;
   error.value = "";
   mutationFeedback.value = "";
@@ -129,9 +131,11 @@ async function removeCredential() {
   <section class="credentials" data-testid="credential-editor">
     <template v-if="refValue">
       <p class="credential-warning" role="note" data-testid="credential-warning">{{ t('contract.credentialWarning') }}</p>
-      <label>{{ t('contract.credentialValue') }}<input v-model="value" type="password" autocomplete="new-password" data-testid="credential-value" :disabled="readOnly || saving" /></label>
-      <button type="button" data-testid="credential-save" :disabled="readOnly || saving || !value" @click="saveCredential">{{ t('contract.credentialSave') }}</button>
-      <button type="button" data-testid="credential-remove" :disabled="readOnly || saving" @click="removeCredential">{{ t('contract.credentialRemove') }}</button>
+      <p v-if="managedState === 'managed'" role="note" data-testid="credential-oauth-managed">{{ t('contract.credentialOAuthManaged') }}</p>
+      <p v-else-if="managedState === 'unknown'" role="status" data-testid="credential-oauth-unknown">{{ t('contract.credentialOAuthUnknown') }}</p>
+      <label>{{ t('contract.credentialValue') }}<input v-model="value" type="password" autocomplete="new-password" data-testid="credential-value" :disabled="credentialDisabled" /></label>
+      <button type="button" data-testid="credential-save" :disabled="credentialDisabled || !value" @click="saveCredential">{{ t('contract.credentialSave') }}</button>
+      <button type="button" data-testid="credential-remove" :disabled="credentialDisabled" @click="removeCredential">{{ t('contract.credentialRemove') }}</button>
       <p class="credential-remove-impact" role="note" data-testid="credential-remove-impact">{{ t('contract.credentialRemoveImpact') }}</p>
       <span v-if="mutationFeedback === 'saved'" data-testid="credential-saved">{{ t('contract.credentialSaved') }}</span>
       <span v-else-if="mutationFeedback === 'removed'" data-testid="credential-removed">{{ t('contract.credentialRemoved') }}</span>

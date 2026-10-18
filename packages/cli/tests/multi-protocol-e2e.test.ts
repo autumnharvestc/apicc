@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
-import { fileStorage, type Workspace } from "@apicc/core";
-import { runCli, type RunCliDeps } from "../src/main.js";
+import { fileStorage, type PluginRegistry, type Workspace } from "@apicc/core";
+import { runCli as runCliActual, type RunCliDeps } from "../src/main.js";
 
 /**
  * M5 验收演示路径（规格 §5.3）：混合集合（HTTP + WS + SOAP 各一用例）`apicc run` 全过；
@@ -67,7 +67,12 @@ function apiAsset(
 }
 
 let root: string;
+let networkPrivateRoot = "";
 let prevCwd = "";
+
+function runCli(argv: string[], registry: PluginRegistry, hostLog: (line: string) => void = () => {}, injected: RunCliDeps = {}): Promise<number> {
+  return runCliActual(argv, registry, hostLog, { networkPrivateRoot, ...injected });
+}
 
 beforeAll(async () => {
   httpServer = createServer((req, res) => {
@@ -104,6 +109,7 @@ beforeAll(async () => {
   // 临时工作区：以内存对象为准经 fileStorage.save 一次性写全（save 会覆盖手写 yaml，
   // 故 environments/apis 必须在对象中真实携带）。
   root = mkdtempSync(join(tmpdir(), "apicc-mixed-"));
+  networkPrivateRoot = mkdtempSync(join(tmpdir(), "apicc-mixed-network-private-"));
   // CLI 按「cwd 向上查找 apicc.workspace.yaml」定位工作区（e2e.test.ts 同款 chdir 模拟）。
   prevCwd = process.cwd();
   process.chdir(root);
@@ -148,6 +154,7 @@ beforeAll(async () => {
 afterAll(() => {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });
+  rmSync(networkPrivateRoot, { recursive: true, force: true });
   return new Promise<void>((r) => {
     wss.close(() => httpServer.close(() => r()));
   });

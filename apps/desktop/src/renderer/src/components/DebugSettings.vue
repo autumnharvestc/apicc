@@ -5,12 +5,14 @@ import { Alert as AAlert, Button as AButton, InputNumber as AInputNumber, Modal 
 import type { ApiccApi, DebugCookieSummary } from "../../../shared/types.js";
 import type { useDebugStore } from "../stores/debug.js";
 import type { useEditorStore } from "../stores/editor.js";
+import type { RequestTab } from "../stores/requestTabs.js";
 
 const props = defineProps<{
   open: boolean;
   api: ApiccApi;
   debug: ReturnType<typeof useDebugStore>;
   editor: ReturnType<typeof useEditorStore>;
+  requestTab?: RequestTab | null;
 }>();
 const emit = defineEmits<{ (event: "close"): void }>();
 const { t } = useI18n();
@@ -18,8 +20,11 @@ const cookies = ref<Awaited<ReturnType<ApiccApi["debugCookiesList"]>>>([]);
 const cookieError = ref("");
 const loadingCookies = ref(false);
 
-const environmentId = computed(() => props.editor.envs.find((item) => item.name === props.debug.selectedEnvName)?.id);
-const cookieInput = computed(() => props.editor.locator
+const requestTabState = computed(() => props.requestTab ? props.debug.requestTabState(props.requestTab) : null);
+const settings = computed(() => requestTabState.value?.settings ?? props.debug.settings);
+const environmentId = computed(() => requestTabState.value?.selectedEnvironmentId
+  ?? props.editor.envs.find((item) => item.name === props.debug.selectedEnvName)?.id);
+const cookieInput = computed(() => props.requestTab?.source.kind === "free" ? null : props.editor.locator
   ? { locator: props.editor.locator, ...(environmentId.value ? { environmentId: environmentId.value } : {}) }
   : null);
 const cookieColumns = computed(() => [
@@ -40,21 +45,26 @@ const defaults = {
 type NumericSetting = keyof typeof defaults;
 
 function settingValue(key: NumericSetting): number {
-  return props.debug.settings[key] ?? defaults[key];
+  return settings.value[key] ?? defaults[key];
+}
+
+function updateSettings(value: typeof settings.value) {
+  if (requestTabState.value) requestTabState.value.settings = value;
+  else props.debug.settings = value;
 }
 
 function updateSetting(key: NumericSetting, value: number | null) {
   if (value === null || !Number.isFinite(value) || value <= 0) return;
-  props.debug.settings = { ...props.debug.settings, [key]: Math.floor(value) };
+  updateSettings({ ...settings.value, [key]: Math.floor(value) });
 }
 
 function updateFollowRedirects(value: boolean) {
-  props.debug.settings = { ...props.debug.settings, followRedirects: value, maxRedirects: value ? props.debug.settings.maxRedirects ?? 10 : 0 };
+  updateSettings({ ...settings.value, followRedirects: value, maxRedirects: value ? settings.value.maxRedirects ?? 10 : 0 });
 }
 
 function updateMaxRedirects(value: number | null) {
   if (value === null || !Number.isInteger(value) || value < 0 || value > 10) return;
-  props.debug.settings = { ...props.debug.settings, maxRedirects: value, followRedirects: value > 0 };
+  updateSettings({ ...settings.value, maxRedirects: value, followRedirects: value > 0 });
 }
 
 function cookieCell(record: unknown, dataIndex: unknown): string {
@@ -84,7 +94,7 @@ async function clearCookies() {
   } catch (error) { cookieError.value = error instanceof Error ? error.message : String(error); }
 }
 
-watch(() => [props.open, props.editor.activeKey, environmentId.value] as const, ([open]) => {
+watch(() => [props.open, props.editor.activeKey, props.requestTab?.tabId, environmentId.value] as const, ([open]) => {
   if (open) void refreshCookies();
 });
 </script>
@@ -100,18 +110,18 @@ watch(() => [props.open, props.editor.activeKey, environmentId.value] as const, 
         </label>
         <label>
           <span>{{ t("debugLoop.followRedirects") }}</span>
-          <input type="checkbox" :checked="props.debug.settings.followRedirects ?? false" data-testid="debug-setting-followRedirects" @change="updateFollowRedirects(($event.target as HTMLInputElement).checked)" />
+        <input type="checkbox" :checked="settings.followRedirects ?? false" data-testid="debug-setting-followRedirects" @change="updateFollowRedirects(($event.target as HTMLInputElement).checked)" />
         </label>
         <label>
           <span>{{ t("debugLoop.maxRedirects") }}</span>
-          <a-input-number :value="props.debug.settings.maxRedirects ?? 10" :min="0" :max="10" :disabled="!(props.debug.settings.followRedirects ?? false)" data-testid="debug-setting-maxRedirects" @update:value="(value) => updateMaxRedirects(value as number | null)" />
+          <a-input-number :value="settings.maxRedirects ?? 10" :min="0" :max="10" :disabled="!(settings.followRedirects ?? false)" data-testid="debug-setting-maxRedirects" @update:value="(value) => updateMaxRedirects(value as number | null)" />
         </label>
         <label v-for="key in ['uploadLimitBytes','responseLimitBytes'] as NumericSetting[]" :key="key">
           <span>{{ t(`debugLoop.${key}`) }}</span>
           <a-input-number :value="settingValue(key)" :min="1" :max="key === 'uploadLimitBytes' ? 1073741824 : 134217728" :data-testid="`debug-setting-${key}`" @update:value="(value) => updateSetting(key, value as number | null)" />
         </label>
       </div>
-      <section class="cookies">
+      <section v-if="requestTab?.source.kind !== 'free'" class="cookies">
         <div class="cookie-head">
           <h3>{{ t("debugLoop.cookiesTitle") }}</h3>
           <a-button size="small" :loading="loadingCookies" data-testid="debug-cookies-refresh" @click="refreshCookies">{{ t("debugLoop.refresh") }}</a-button>

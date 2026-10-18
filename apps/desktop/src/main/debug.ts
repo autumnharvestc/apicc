@@ -56,7 +56,10 @@ export async function runCollection(
       workspaceId: captured.locator.workspaceId,
       groupId: captured.locator.groupId,
       projectId: captured.locator.projectId,
-    }, snapshot, credentialSelections);
+    }, snapshot, credentialSelections, {
+      workspaceRoot: root,
+      ...(env === undefined ? {} : { environmentId: env.id }),
+    });
   } catch (error) {
     throw createExecutionOutputBoundary([]).error(error);
   }

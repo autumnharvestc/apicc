@@ -11,6 +11,7 @@ import type { Operation, ProjectGlobals, TestCase } from "../domain/common.js";
 import { resolveRequestSettings, type RequestSettings, type RequestSettingsOverride } from "../request/settings.js";
 import type { ProjectSnapshot } from "../assets/snapshot.js";
 import type { CredentialBindings } from "../credentials/types.js";
+import type { PreparedNetworkRun } from "../network/prepare.js";
 import type { DeepReadonly } from "../assets/context.js";
 import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/executionSelection.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
@@ -71,6 +72,8 @@ export interface RunnerOptions {
 export interface ProjectExecutionRun {
   readonly snapshot: ProjectSnapshot;
   readonly credentialBindings: CredentialBindings;
+  /** Host-only network state prepared once for this immutable execution. */
+  readonly network?: PreparedNetworkRun;
 }
 
 /** Pin one caller-selected run wrapper so later wrapper replacement cannot mix revisions. */
@@ -81,7 +84,11 @@ export function captureProjectExecutionRun(run: ProjectExecutionRun): ProjectExe
     context: selectedSnapshot.context,
     definitionRevision: selectedSnapshot.definitionRevision,
   });
-  return Object.freeze({ snapshot, credentialBindings: run.credentialBindings });
+  return Object.freeze({
+    snapshot,
+    credentialBindings: run.credentialBindings,
+    ...(run.network === undefined ? {} : { network: run.network }),
+  });
 }
 
 export class CollectionRunner {
@@ -187,6 +194,7 @@ export class CollectionRunner {
           const rowParameters = Object.freeze({ ...tc.parameters, ...(rows[rowIndex] ?? {}) });
           const execution = await executeCase({
             asset, assetContext: selectedRun.snapshot.context, credentialBindings: selectedRun.credentialBindings,
+          ...(selectedRun.network === undefined ? {} : { network: selectedRun.network }),
             testCase: tc, row: rows[rowIndex], rowIndex, isDataDriven: rows.length > 1,
             resolver: caseResolver, envVars, envBaseUrl: baseUrl, globals: mutableGlobals(globals), persisted, persistedSnapshot,
           }, {

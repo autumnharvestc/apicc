@@ -161,13 +161,14 @@ function makeFixture() {
 
 async function mountTopBar(fixture: ReturnType<typeof makeFixture>) {
   const { i18n } = createI18nInstance();
+  const plugins = { entries: [], error: null, refresh: async () => {} } as unknown as ReturnType<typeof createPluginsStore>;
   const wrapper = mount(TopBar, {
     props: {
       workspace: fixture.workspace as unknown as ReturnType<typeof useWorkspaceStore>,
       tree: fixture.tree as unknown as ReturnType<typeof useTreeStore>,
       api: {} as ApiccApi,
       online: fixture.topbarOnline,
-      plugins: {} as ReturnType<typeof createPluginsStore>,
+      plugins,
       tabs: fixture.tabs,
       reportError: vi.fn(),
     },
@@ -186,6 +187,41 @@ async function seedTabs(fixture: ReturnType<typeof makeFixture>) {
   await fixture.tabs.openProjectTab({ kind: "local", dir: "/tmp/ws-local" }, { locator: P3.locator, name: P3.name }); // tab-3
   await flushPromises();
 }
+
+describe("TopBar network settings scope", () => {
+  it("shows network settings only for the active local project tab, not Home or an online tab", async () => {
+    const fixture = makeFixture();
+    await seedTabs(fixture);
+    fixture.workspace.tree = {
+      source: "local", kind: "root", id: P3.locator.workspaceId, key: "root", label: "本地工作区",
+      locator: { workspaceId: P3.locator.workspaceId },
+      children: [{
+        source: "local", kind: "group", id: P3.locator.groupId, key: "group", label: "本地分组",
+        locator: { workspaceId: P3.locator.workspaceId, groupId: P3.locator.groupId },
+        children: [{
+          source: "local", kind: "project", id: P3.locator.projectId, key: "project", label: P3.name,
+          locator: P3.locator, envs: [], workflows: [], children: [],
+        }],
+      }],
+    };
+    const localTab = fixture.tabs.tabs.find((tab) => tab.workspaceRef.kind === "local");
+    if (!localTab) throw new Error("Fixture is missing a local project tab");
+    await fixture.tabs.activateTab(localTab.tabId);
+    const wrapper = await mountTopBar(fixture);
+    await wrapper.find('[data-testid="settings-toggle"]').trigger("click");
+    await flushPromises();
+    expect(bodyFind("network-settings")).not.toBeNull();
+
+    await fixture.tabs.activateHome();
+    await flushPromises();
+    expect(bodyFind("network-settings")).toBeNull();
+    const onlineTab = fixture.tabs.tabs.find((tab) => tab.workspaceRef.kind === "online");
+    if (!onlineTab) throw new Error("Fixture is missing an online project tab");
+    await fixture.tabs.activateTab(onlineTab.tabId);
+    await flushPromises();
+    expect(bodyFind("network-settings")).toBeNull();
+  });
+});
 
 describe("TopBar 退出在线工作区确认（计划 C 任务 6，不变量 4）", () => {
   it("点击退出 → 确认弹窗列出该工作区签与草稿态；取消不动（会话与签表原样）", async () => {

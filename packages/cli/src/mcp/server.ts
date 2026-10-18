@@ -129,6 +129,7 @@ export function createMcpServer(root: string, options: McpServerOptions = {}): M
               caseId: testCase.id,
               scope: testCase.scope,
             }],
+            { workspaceRoot: root },
           );
           sanitizer = createOutputSanitizer(prepared.secrets);
           const runner = new CollectionRunner({

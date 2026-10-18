@@ -1,8 +1,51 @@
 export { version } from "./version.js";
+export {
+  NetworkScopeSchema,
+  NetworkSelectionSchema,
+  NetworkProfileSchema,
+  NetworkConfigurationSchema,
+  emptyNetworkConfiguration,
+  NetworkProfileError,
+} from "./network/profiles.js";
+export type {
+  NetworkProjectIdentity,
+  NetworkScope,
+  NetworkSelection,
+  NetworkTLSSettings,
+  NetworkTargetTLSBinding,
+  DirectNetworkProfile,
+  ProxyNetworkProfile,
+  NetworkProfile,
+  NetworkEnvironmentSelection,
+  NetworkConfiguration,
+  NetworkProfileErrorCode,
+} from "./network/profiles.js";
+// Browser-safe profile and status DTOs; token exchange and persistence stay in the Node entry point.
+export {
+  OAuthProfileSchema,
+  OAuthProfileStatusSchema,
+  OAuthOperationStatusSchema,
+  OAuthProfileSummarySchema,
+  OAuthPublicResultSchema,
+  OAuthErrorCodeSchema,
+} from "./oauth/model.js";
+export type {
+  OAuthScope,
+  OAuthProfile,
+  OAuthFlow,
+  OAuthClientAuthentication,
+  OAuthProfileStatus,
+  OAuthOperationStatus,
+  OAuthProfileSummary,
+  OAuthPublicResult,
+  OAuthErrorCode,
+} from "./oauth/model.js";
 // Browser-safe debugger DTOs; execution services stay in the Node entry point.
 export {
   DebugIdentitySchema,
   DebugCaseIdentitySchema,
+  DebugProjectIdentitySchema,
+  DebugHistoryOwnerIdentitySchema,
   DebugFieldStateSchema,
   DebugInvocationSchema,
   DebugRequestBodySchema,
@@ -14,6 +57,8 @@ export {
   DebugReplayDescriptorSchema,
   DebugExchangeSchema,
   DebugResultSchema,
+  DebugResultSourceSchema,
+  DebugExecutionSourceSchema,
   DebugHistoryPreferencesSchema,
   DebugHistoryRecordSchema,
   DebugHistoryResultFilterSchema,
@@ -26,6 +71,7 @@ export {
 export type {
   DebugIdentity,
   DebugCaseIdentity,
+  DebugProjectIdentity,
   DebugFieldState,
   DebugInvocation,
   DebugRequestBody,
@@ -46,6 +92,9 @@ export type {
   DebugHistoryPage,
   DebugHistoryReadResult,
   DebugExecutionIdentity,
+  DebugExecutionSource,
+  DebugResultSource,
+  DebugHistoryOwnerIdentity,
   DebugRequestOverride,
   DebugRequestValue,
   DebugFailureKind,
@@ -191,6 +240,8 @@ export { CredentialError } from "./credentials/types.js";
 export {
   selectCredentialRequests,
   collectCredentialRefsForRequests,
+  collectBearerCredentialRefsForRequests,
+  collectCredentialRefsFromRequestDrafts,
   collectCredentialMarkersForRequests,
   collectProjectCredentialRefs,
   collectCredentialOutputMarkers,

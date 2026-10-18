@@ -15,15 +15,17 @@ import { CollectionRunner, CollectionRunError } from "../runner/runner.js";
 import type { RunResult } from "../report/types.js";
 import { RequestSettingsOverrideSchema } from "../request/settings.js";
 import {
-  DebugIdentitySchema, DebugInvocationSchema, DebugResultSchema,
-  type DebugCaseIdentity, type DebugExecutionIdentity, type DebugFieldState, type DebugInvocation, type DebugResult, type DebugSourceCategory,
+  DebugIdentitySchema, DebugInvocationSchema, DebugProjectIdentitySchema, DebugResultSchema,
+  type DebugCaseIdentity, type DebugExecutionIdentity, type DebugFieldState, type DebugIdentity, type DebugInvocation, type DebugProjectIdentity,
+  type DebugResult, type DebugResultSource, type DebugSourceCategory,
 } from "./model.js";
 import { createDebugExchangeCollector, projectDebugResult } from "./projection.js";
 
-export interface DebugExecutionPlan {
-  readonly invocation: DebugInvocation;
+type DebugAssetInvocation = Exclude<DebugInvocation, { mode: "free" }>;
+type DebugFreeInvocation = Extract<DebugInvocation, { mode: "free" }>;
+
+interface DebugExecutionPlanBase {
   readonly snapshot: ProjectSnapshot;
-  readonly sourceApiRevision: string;
   readonly sourceProjectRevision: string;
   readonly executionSnapshotRevision: string;
   readonly collectionId: string;
@@ -37,6 +39,20 @@ export interface DebugExecutionPlan {
   readonly caseSelection: { apiId: string; caseId: string; folderIds: readonly string[] };
 }
 
+export interface DebugAssetExecutionPlan extends DebugExecutionPlanBase {
+  readonly invocation: DebugAssetInvocation;
+  readonly source: Extract<DebugResultSource, { sourceKind: "asset" }>;
+  readonly sourceApiRevision: string;
+}
+
+export interface DebugFreeExecutionPlan extends DebugExecutionPlanBase {
+  readonly invocation: DebugFreeInvocation;
+  readonly source: Extract<DebugResultSource, { sourceKind: "free" }>;
+  readonly draftRevision: string;
+}
+
+export type DebugExecutionPlan = DebugAssetExecutionPlan | DebugFreeExecutionPlan;
+
 export interface RunDebugExecutionOptions {
   registry: PluginRegistry;
   workspaceRoot?: string;
@@ -49,19 +65,20 @@ export interface RunDebugExecutionOptions {
 export function prepareDebugExecution(snapshot: ProjectSnapshot, invocationValue: DebugInvocation): DebugExecutionPlan {
   const invocation = DebugInvocationSchema.parse(invocationValue);
   assertRequestFieldsReady(invocation);
-  DebugIdentitySchema.parse(invocation.locator);
   if (invocation.settings !== undefined) RequestSettingsOverrideSchema.parse(invocation.settings);
+  return invocation.mode === "free"
+    ? prepareFreeExecution(snapshot, invocation)
+    : prepareAssetExecution(snapshot, invocation);
+}
+
+function prepareAssetExecution(snapshot: ProjectSnapshot, invocation: DebugAssetInvocation): DebugAssetExecutionPlan {
+  DebugIdentitySchema.parse(invocation.locator);
   if (invocation.locator.projectId !== snapshot.project.id) throw new TypeError("The debug locator does not belong to the supplied project snapshot.");
   const collection = snapshot.project.collections.find((candidate) => candidate.id === invocation.locator.collectionId);
   if (!collection) throw new TypeError(`Debug collection ${invocation.locator.collectionId} is not in the supplied project snapshot.`);
   const sourceAsset = findApi(collection as unknown as ContractCollection, invocation.locator.folderIds, invocation.locator.apiId);
   const sourceApiRevision = getSourceApiRevision(sourceAsset);
-  const environment = invocation.environmentId === undefined
-    ? undefined
-    : snapshot.project.environments.find((candidate) => candidate.id === invocation.environmentId);
-  if (invocation.environmentId !== undefined && !environment) {
-    throw new TypeError(`Debug environment ${invocation.environmentId} is not in the supplied project snapshot.`);
-  }
+  const environment = findEnvironment(snapshot, invocation.environmentId);
   const chain = resolveExecutionEnvironment(snapshot.project, collection.id, environment?.id).chain;
   const mutableProject = cloneDefinitionValue(snapshot.project) as unknown as ContractProject;
   const mutableCollection = mutableProject.collections.find((candidate) => candidate.id === invocation.locator.collectionId)!;
@@ -119,6 +136,7 @@ export function prepareDebugExecution(snapshot: ProjectSnapshot, invocationValue
   return Object.freeze({
     invocation,
     snapshot: executionSnapshot,
+    source: Object.freeze({ sourceKind: "asset", locator: invocation.locator, sourceApiRevision }),
     sourceApiRevision,
     sourceProjectRevision: snapshot.definitionRevision,
     executionSnapshotRevision: executionSnapshot.definitionRevision,
@@ -138,8 +156,105 @@ export function prepareDebugExecution(snapshot: ProjectSnapshot, invocationValue
   });
 }
 
+function prepareFreeExecution(snapshot: ProjectSnapshot, invocation: DebugFreeInvocation): DebugFreeExecutionPlan {
+  const projectIdentity: DebugProjectIdentity = DebugProjectIdentitySchema.parse(invocation.project);
+  if (projectIdentity.projectId !== snapshot.project.id) throw new TypeError("The free request project does not belong to the supplied project snapshot.");
+  const environment = findEnvironment(snapshot, invocation.environmentId);
+  const temporaryCollectionId = randomUUID();
+  const temporaryApiId = randomUUID();
+  const temporaryCaseId = randomUUID();
+  const chain = resolveExecutionEnvironment(snapshot.project, temporaryCollectionId, environment?.id).chain;
+  const mutableProject = cloneDefinitionValue(snapshot.project) as unknown as ContractProject;
+  const temporaryCase: TestCase = {
+    id: temporaryCaseId,
+    name: "Free request",
+    scope: "base",
+    parameters: { ...invocation.parameters },
+    preOperations: [],
+    postOperations: [],
+    assertions: [],
+  };
+  const temporaryAsset: ApiAsset = {
+    contract: {
+      formatVersion: 1,
+      id: temporaryApiId,
+      metadata: { name: "Free request", description: "", tags: [], version: "1", status: "draft" },
+      request: cloneDefinitionValue(invocation.request) as ApiRequest,
+      responses: [],
+    },
+    cases: [temporaryCase],
+    documentation: "",
+  };
+  const temporaryCollection: ContractCollection = {
+    id: temporaryCollectionId,
+    name: "Free request",
+    variables: {},
+    preOperations: [],
+    postOperations: [],
+    folders: [],
+    apis: [temporaryAsset],
+  };
+  mutableProject.collections.push(temporaryCollection);
+
+  const executionSnapshot = createProjectSnapshot(mutableProject);
+  const executionCollection = executionSnapshot.project.collections.find((candidate) => candidate.id === temporaryCollectionId);
+  const executionAsset = executionCollection?.apis[0];
+  const executionCase = executionAsset?.cases[0];
+  if (!executionCollection || !executionAsset || !executionCase) throw new TypeError("The temporary free request was not present in the execution snapshot.");
+
+  const draftRevision = getFreeDraftRevision(invocation);
+  const requestTemplate = cloneDefinitionValue(invocation.request) as ApiRequest;
+  const sourceCategories: DebugSourceCategory[] = ["project"];
+  if (environment !== undefined) sourceCategories.push("environment");
+  sourceCategories.push("request-override");
+  if (containsComponentReference(requestTemplate)) sourceCategories.push("module");
+  if (requestTemplate.auth.kind !== "none") sourceCategories.push("auth");
+
+  return Object.freeze({
+    invocation,
+    snapshot: executionSnapshot,
+    source: Object.freeze({ sourceKind: "free", project: projectIdentity, draftId: invocation.draftId, draftRevision }),
+    draftRevision,
+    sourceProjectRevision: snapshot.definitionRevision,
+    executionSnapshotRevision: executionSnapshot.definitionRevision,
+    collectionId: temporaryCollection.id,
+    collectionName: temporaryCollection.name,
+    requestTemplate,
+    sourceCategories: Object.freeze(sourceCategories),
+    baseParameters: Object.freeze({ ...invocation.parameters }),
+    fields: Object.freeze(invocation.fields.map((field) => ({ ...field }))),
+    ...(environment === undefined ? {} : { environmentName: environment.name }),
+    credentialSelections: Object.freeze([{ asset: executionAsset, testCase: executionCase }]),
+    caseSelection: Object.freeze({
+      apiId: temporaryApiId,
+      caseId: temporaryCaseId,
+      folderIds: Object.freeze([]),
+    }),
+  });
+}
+
+function findEnvironment(snapshot: ProjectSnapshot, environmentId: string | undefined) {
+  const environment = environmentId === undefined
+    ? undefined
+    : snapshot.project.environments.find((candidate) => candidate.id === environmentId);
+  if (environmentId !== undefined && !environment) {
+    throw new TypeError(`Debug environment ${environmentId} is not in the supplied project snapshot.`);
+  }
+  return environment;
+}
+
+function getFreeDraftRevision(invocation: DebugFreeInvocation): string {
+  return stableHash({
+    request: invocation.request,
+    parameters: invocation.parameters,
+    fields: invocation.fields,
+    ...(invocation.environmentId === undefined ? {} : { environmentId: invocation.environmentId }),
+    ...(invocation.settings === undefined ? {} : { settings: invocation.settings }),
+  });
+}
+
 function assertRequestFieldsReady(invocation: DebugInvocation): void {
-  if (invocation.mode !== "request") return;
+  if (invocation.mode !== "request" && invocation.mode !== "free") return;
   const pendingConsumedField = invocation.fields.some((field) => field.needsInput
     && (field.path === "request" || field.path.startsWith("request.")
       || field.path === "parameters" || field.path.startsWith("parameters.")));
@@ -168,26 +283,8 @@ export async function runDebugExecution(
     caseSelection: plan.caseSelection,
     ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
     ...(options.httpSession === undefined ? {} : { httpSession: options.httpSession }),
-    observeHttp: (event, identity) => collector.observe(event, {
-      ...plan.invocation.locator,
-      caseId: identity.caseId,
-      scope: identity.scope,
-      rowIndex: identity.rowIndex,
-      settings: identity.settings,
-      parameters: identity.parameters,
-      fields: plan.fields,
-      sourceCategories: plan.sourceCategories,
-    }),
-    observeCaseExecution: (execution, identity) => collector.observeExecution(execution, {
-      ...plan.invocation.locator,
-      caseId: identity.caseId,
-      scope: identity.scope,
-      rowIndex: identity.rowIndex,
-      settings: identity.settings,
-      parameters: identity.parameters,
-      fields: plan.fields,
-      sourceCategories: plan.sourceCategories,
-    }),
+    observeHttp: (event, identity) => collector.observe(event, observationIdentity(plan, identity)),
+    observeCaseExecution: (execution, identity) => collector.observeExecution(execution, observationIdentity(plan, identity)),
   };
   let run: RunResult;
   let containerFailure: CollectionRunError | undefined;
@@ -214,6 +311,34 @@ export async function runDebugExecution(
     }),
   });
   return DebugResultSchema.parse(result);
+}
+
+function observationIdentity(
+  plan: DebugExecutionPlan,
+  identity: { caseId: string; scope: string; rowIndex: number; settings: DebugExecutionIdentity["settings"]; parameters?: Readonly<Record<string, string>> },
+): DebugExecutionIdentity {
+  const common = {
+    rowIndex: identity.rowIndex,
+    settings: identity.settings,
+    ...(identity.parameters === undefined ? {} : { parameters: identity.parameters }),
+    fields: plan.fields,
+    sourceCategories: plan.sourceCategories,
+  };
+  if (plan.source.sourceKind === "asset") return {
+    ...common,
+    source: {
+      sourceKind: "asset",
+      case: {
+        ...plan.source.locator,
+        caseId: identity.caseId,
+        scope: identity.scope,
+      },
+    },
+  };
+  return {
+    ...common,
+    source: { sourceKind: "free", project: plan.source.project, draftId: plan.source.draftId },
+  };
 }
 
 /** Safe completion for cancellation that wins while the host is still preparing credentials. */
@@ -314,7 +439,7 @@ function findApi(
   return asset as ApiAsset;
 }
 
-function sameLocator(left: DebugInvocation["locator"], right: DebugCaseIdentity): boolean {
+function sameLocator(left: DebugIdentity, right: DebugCaseIdentity): boolean {
   return left.workspaceId === right.workspaceId && left.groupId === right.groupId
     && left.projectId === right.projectId && left.collectionId === right.collectionId
     && left.apiId === right.apiId && left.folderIds.length === right.folderIds.length

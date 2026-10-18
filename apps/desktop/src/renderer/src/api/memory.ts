@@ -36,8 +36,9 @@ import {
   type WorkflowRunResult,
   type WorkflowStatus,
   type StressTargetPolicy,
+  type NetworkConfiguration,
 } from "@apicc/core";
-import { ContractProjectSchema } from "@apicc/core/schema";
+import { ContractProjectSchema, emptyNetworkConfiguration, NetworkConfigurationSchema } from "@apicc/core/schema";
 import { createSession } from "../../../main/session.js";
 import { toTreeNode } from "../../../main/tree.js";
 import { createCredentialHost } from "../../../main/credentialHost.js";
@@ -47,6 +48,8 @@ import { localTreeNodeKey, type LocalRootTreeNodeDTO, type LocalTreeIdentity, ty
 import type { ContainerSaveInput, ContainerSaveResult, ProjectGlobalSettings, WorkflowImpactEntryDTO } from "../../../shared/types.js";
 import type { DesktopCredentialErrorCode } from "../../../shared/credentials.js";
 import type { CredentialMutationResult, CredentialPutInput, CredentialRefInput, CredentialStatusResult } from "../../../shared/credentials.js";
+import type { NetworkProfilesGetInput, NetworkProfilesResult, NetworkProfilesSaveInput, NetworkSecretImportInput, NetworkSecretImportResult } from "../../../shared/network.js";
+import type { OAuthAuthorizationBeginInput, OAuthAuthorizationSessionId, OAuthAuthorizationSessionView, OAuthProfileActionInput, OAuthProfileMutationResult, OAuthProfilesGetInput, OAuthProfilesResult, OAuthProfileSaveInput, OAuthProfileUnlinkInput } from "../../../shared/oauth.js";
 import { OnlineTreeSchema, type OnlineTree } from "../../../shared/online/contract.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "../../../shared/ai/contract.js";
 
@@ -176,6 +179,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   let runSeq = 0;
   // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
   const stressRuns: Array<{ file: string; report: StressReport }> = [];
+  const networkProfiles = new Map<string, { revision: string; configuration: NetworkConfiguration }>();
   // 压测生命周期由正式 controller 管理；此 Promise 仅用于 renderer 替身的单活动拒绝与 stop 等待。
   let stressActive: Promise<StressRunResult> | null = null;
   let stressController: ReturnType<typeof createStressControllerWithHost> | null = null;
@@ -368,6 +372,10 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     }
   }
 
+  function networkProfileKey(locator: ProjectLocator): string {
+    return JSON.stringify([root, locator.workspaceId, locator.groupId, locator.projectId]);
+  }
+
   return {
     // 载入问题列表读写口：测试直接赋值 api.problems 模拟「工作区带问题文件」。
     get problems(): LoadProblem[] {
@@ -544,6 +552,26 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       };
     },
 
+    async apiCreateFromRequestDraft(input) {
+      await ensureReady();
+      return session.createApiFromRequestDraft(input);
+    },
+
+    async debugProjectContext(locator: ProjectLocator) {
+      await ensureReady();
+      const location = session.locateProject(locator);
+      if (!location) throw new Error(`未找到项目: ${JSON.stringify(locator)}`);
+      return {
+        project: { ...locator },
+        sourceProjectRevision: createProjectSnapshot(location.project).definitionRevision,
+        envs: location.project.environments.map((environment) => ({
+          id: environment.id,
+          name: environment.name,
+          locator: { ...locator, environmentId: environment.id },
+        })),
+      };
+    },
+
     async apiSave(locator: ApiLocator, api: ApiAsset, expectedSourceApiRevision: string) {
       await ensureReady();
       return session.saveApi(locator, api, [], undefined, expectedSourceApiRevision);
@@ -656,6 +684,95 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       }
     },
 
+    async oauthProfilesGet(_input: OAuthProfilesGetInput): Promise<OAuthProfilesResult> {
+      throw new Error("OAuth profiles are unavailable in the in-memory browser API.");
+    },
+
+    async oauthProfileSave(_input: OAuthProfileSaveInput): Promise<OAuthProfileMutationResult> {
+      throw new Error("OAuth profile changes are unavailable in the in-memory browser API.");
+    },
+
+    async oauthProfileUnlink(_input: OAuthProfileUnlinkInput): Promise<OAuthProfileMutationResult> {
+      throw new Error("OAuth profile changes are unavailable in the in-memory browser API.");
+    },
+
+    async oauthProfileAcquire(_input: OAuthProfileActionInput): Promise<OAuthProfileMutationResult> {
+      throw new Error("OAuth token acquisition is unavailable in the in-memory browser API.");
+    },
+
+    async oauthProfileRefresh(_input: OAuthProfileActionInput): Promise<OAuthProfileMutationResult> {
+      throw new Error("OAuth token refresh is unavailable in the in-memory browser API.");
+    },
+
+    async oauthAuthorizeBegin(_input: OAuthAuthorizationBeginInput): Promise<OAuthAuthorizationSessionView> {
+      throw new Error("OAuth authorization is unavailable in the in-memory browser API.");
+    },
+
+    async oauthAuthorizeStatus(_input: OAuthAuthorizationSessionId): Promise<OAuthAuthorizationSessionView | null> {
+      throw new Error("OAuth authorization is unavailable in the in-memory browser API.");
+    },
+
+    async oauthAuthorizeWait(_input: OAuthAuthorizationSessionId): Promise<OAuthAuthorizationSessionView | null> {
+      throw new Error("OAuth authorization is unavailable in the in-memory browser API.");
+    },
+
+    async oauthAuthorizeCancel(_input: OAuthAuthorizationSessionId): Promise<OAuthAuthorizationSessionView | null> {
+      throw new Error("OAuth authorization is unavailable in the in-memory browser API.");
+    },
+
+    async networkProfilesGet(locator: NetworkProfilesGetInput): Promise<NetworkProfilesResult> {
+      await ensureReady();
+      const location = session.locateProject(locator);
+      if (!location) throw new Error("Network profile project context is unavailable.");
+      const key = networkProfileKey(locator);
+      const current = networkProfiles.get(key) ?? { revision: "memory:0", configuration: emptyNetworkConfiguration() };
+      networkProfiles.set(key, current);
+      const refs = new Map<string, SecretRef>();
+      for (const profile of current.configuration.profiles) {
+        if (profile.kind === "proxy" && profile.passwordRef) refs.set(`${profile.passwordRef.policy}:${profile.passwordRef.id}`, profile.passwordRef);
+        const tlsSettings = [...profile.targetTlsBindings.map((binding) => binding.tls), ...(profile.kind === "proxy" && profile.proxyTLS ? [profile.proxyTLS] : [])];
+        for (const tls of tlsSettings) for (const ref of [tls.clientPrivateKeyRef, tls.clientKeyPassphraseRef]) {
+          if (ref) refs.set(`${ref.policy}:${ref.id}`, ref);
+        }
+      }
+      const secretStatuses = await Promise.all([...refs.values()].map(async (ref) => {
+        try {
+          const status = await secretStore.status(credentialScope(locator), ref);
+          return { ref, status: status === "available" || status === "missing" ? status : "unavailable" as const };
+        } catch {
+          return { ref, status: "unavailable" as const };
+        }
+      }));
+      return {
+        revision: current.revision,
+        configuration: structuredClone(current.configuration),
+        environments: location.project.environments.map(({ id, name }) => ({ id, name })),
+        secretStatuses,
+      };
+    },
+
+    async networkProfilesSave(input: NetworkProfilesSaveInput) {
+      await ensureReady();
+      if (!credentialContextExists(input.locator)) throw new Error("Network profile project context is unavailable.");
+      if (session.readOnly) throw new Error("Network profile settings are read-only.");
+      const parsed = NetworkConfigurationSchema.safeParse(input.configuration);
+      if (!parsed.success) throw new Error("Network profile configuration is invalid.");
+      const key = networkProfileKey(input.locator);
+      const current = networkProfiles.get(key) ?? { revision: "memory:0", configuration: emptyNetworkConfiguration() };
+      if (current.revision !== input.revision) throw new Error("Network profile settings changed; reload before saving.");
+      const next = {
+        revision: `memory:${Number(current.revision.slice("memory:".length)) + 1}`,
+        configuration: structuredClone(parsed.data),
+      };
+      networkProfiles.set(key, next);
+      return { revision: next.revision };
+    },
+
+    async networkSecretImport(_input: NetworkSecretImportInput): Promise<NetworkSecretImportResult> {
+      // The browser substitute has no native file picker. It intentionally never accepts secret bytes.
+      return { outcome: "cancelled" };
+    },
+
     async debugSend(input: DebugInput): Promise<DebugOutput> {
       await ensureReady();
       const loc = session.locateApi(input.locator);
@@ -694,10 +811,22 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       const invocation = entry.invocation;
       memoryDebugInvocations.delete(runId);
       const finishedAt = new Date().toISOString();
-      const located = session.locateApi(invocation.locator);
-      const sourceApiRevision = located ? getSourceApiRevision(located.api) : "memory-source-api";
-      const sourceProjectRevision = located ? createProjectSnapshot(located.project).definitionRevision : "memory-source-project";
-      const outcome = {
+      const isFree = invocation.mode === "free";
+      const located = isFree ? undefined : session.locateApi(invocation.locator);
+      const project = isFree ? session.locateProject(invocation.project)?.project : located?.project;
+      const sourceProjectRevision = project ? createProjectSnapshot(project).definitionRevision : "memory-source-project";
+      const source = isFree
+        ? project
+          ? { sourceKind: "free" as const, project: invocation.project, draftId: invocation.draftId, draftRevision: "memory-draft-revision" }
+          : { sourceKind: "unavailable" as const }
+        : { sourceKind: "asset" as const, locator: invocation.locator, sourceApiRevision: located ? getSourceApiRevision(located.api) : "memory-source-api" };
+      const outcome = isFree ? {
+        apiName: "Free request",
+        caseName: "Free request",
+        passed: true,
+        durationMs: 0,
+        assertions: [],
+      } : {
         apiId: invocation.locator.apiId,
         apiName: located?.api.contract.metadata.name ?? "API",
         ...(invocation.mode === "case" ? { caseId: invocation.case.caseId } : {}),
@@ -706,21 +835,22 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         durationMs: 0,
         assertions: [],
       };
-      const replay = invocation.mode === "request"
-        ? { mode: "request" as const, locator: invocation.locator, request: invocation.request, requestTemplate: invocation.request, parameters: invocation.parameters, fields: invocation.fields, ...(invocation.settings ? { settings: invocation.settings } : {}), identityAvailable: Boolean(located), available: true }
-        : { mode: "case" as const, case: invocation.case, parameters: {}, fields: [], ...(invocation.settings ? { settings: invocation.settings } : {}), identityAvailable: Boolean(located), available: true };
+      const replay = invocation.mode === "free"
+        ? { mode: "free" as const, sourceKind: "free" as const, project: invocation.project, draftId: invocation.draftId, request: invocation.request, requestTemplate: invocation.request, parameters: invocation.parameters, fields: invocation.fields, ...(invocation.settings ? { settings: invocation.settings } : {}), identityAvailable: Boolean(project), available: Boolean(project) }
+        : invocation.mode === "request"
+          ? { mode: "request" as const, sourceKind: "asset" as const, locator: invocation.locator, request: invocation.request, requestTemplate: invocation.request, parameters: invocation.parameters, fields: invocation.fields, ...(invocation.settings ? { settings: invocation.settings } : {}), identityAvailable: Boolean(located), available: true }
+          : { mode: "case" as const, sourceKind: "asset" as const, case: invocation.case, parameters: {}, fields: [], ...(invocation.settings ? { settings: invocation.settings } : {}), identityAvailable: Boolean(located), available: true };
       return {
         runId,
-        sourceApiRevision,
+        source,
         sourceProjectRevision,
         executionSnapshotRevision: sourceProjectRevision,
         mode: invocation.mode,
-        locator: invocation.locator,
-        identityAvailable: Boolean(located),
+        identityAvailable: source.sourceKind !== "unavailable",
         ...(invocation.environmentId ? { environmentId: invocation.environmentId } : {}),
         startedAt: entry.startedAt,
         finishedAt,
-        run: { collectionName: located?.collection.name ?? "Collection", startedAt: entry.startedAt, finishedAt, total: 1, passed: 1, failed: 0 },
+        run: { collectionName: isFree ? "Free request" : located?.collection.name ?? "Collection", startedAt: entry.startedAt, finishedAt, total: 1, passed: 1, failed: 0 },
         outcomes: [outcome],
         exchanges: [],
         exchangeTotal: 0,
@@ -774,11 +904,11 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       return preferences;
     },
 
-    async debugHistoryRestore(_input: { historyId: string; exchangeOrder: number }) {
+    async debugHistoryRestore(_input: Parameters<ApiccApi["debugHistoryRestore"]>[0]) {
       throw new Error("Debug history is only available in the desktop main process.");
     },
 
-    async debugHistoryReplay(_historyId: string) {
+    async debugHistoryReplay(_input: Parameters<ApiccApi["debugHistoryReplay"]>[0]) {
       throw new Error("Debug history is only available in the desktop main process.");
     },
 

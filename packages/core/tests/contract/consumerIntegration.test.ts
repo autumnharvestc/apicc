@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { request as forwardHttpRequest, createServer, type IncomingMessage, type Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
 import type { ApiAsset } from "../../src/contract/model.js";
@@ -8,6 +8,8 @@ import { createHttpClient } from "../../src/http/client.js";
 import { createDefaultRegistry, CollectionRunner, WorkflowRunner } from "../../src/index.js";
 import type { ProjectExecutionRun } from "../../src/runner/runner.js";
 import { createStressCaseSession, type StressCaseSessionDeps } from "../../src/stress/caseSession.js";
+import { prepareNetworkRun } from "../../src/network/prepare.js";
+import type { SecretStore } from "../../src/credentials/types.js";
 import type { ExecutableRequest, ScriptContext } from "../../src/plugin/types.js";
 import { contractExecutionIds, createContractExecutionProject } from "../helpers/contractExecutionFixtures.js";
 
@@ -167,6 +169,93 @@ function createTrackedStressDeps(registry: ReturnType<typeof createDefaultRegist
 }
 
 describe("project snapshot execution consumers", () => {
+  it("routes collection, workflow, and stress through one captured network profile", async () => {
+    received.length = 0;
+    const proxyRequests: string[] = [];
+    const proxy = createServer((request, response) => {
+      const target = new URL(request.url ?? "");
+      proxyRequests.push(target.pathname);
+      const upstream = forwardHttpRequest(target, {
+        method: request.method,
+        headers: { ...request.headers, host: target.host },
+      }, (upstreamResponse) => {
+        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+        upstreamResponse.pipe(response);
+      });
+      upstream.on("error", (error) => response.destroy(error));
+      request.pipe(upstream);
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+    let preparations = 0;
+    const network = await prepareNetworkRun({
+      scope: {
+        canonicalRoot: process.cwd(),
+        project: { workspaceId: "network-test-workspace", groupId: "network-test-group", projectId: "network-test-project" },
+      },
+      store: {
+        async load() {
+          preparations += 1;
+          return {
+            revision: "network-test-revision",
+            configuration: {
+              formatVersion: 1,
+              profiles: [{ id: "shared-proxy", name: "Shared proxy", kind: "proxy", proxyUrl, targetTlsBindings: [] }],
+              projectSelection: { kind: "profile", profileId: "shared-proxy" },
+              environmentSelections: [],
+            },
+          };
+        },
+        async save() { throw new Error("unexpected profile save"); },
+      },
+      secretStore: {} as SecretStore,
+    });
+    const project = createContractExecutionProject(baseUrl);
+    const selectedRun = {
+      snapshot: createProjectSnapshot(project),
+      credentialBindings: run.credentialBindings,
+      network,
+    } as ProjectExecutionRun;
+    const registry = createDefaultRegistry();
+
+    try {
+      const collectionResult = await new CollectionRunner({
+        registry,
+        bus: createEventBus(),
+        timeouts: { connectTimeoutMs: 2_000, totalTimeoutMs: 3_000 },
+        failFast: false,
+      }).run(selectedRun, contractExecutionIds.collection, { environmentId: contractExecutionIds.environment });
+      const workflowResult = await new WorkflowRunner({ registry, environmentId: contractExecutionIds.environment })
+        .run(selectedRun, contractExecutionIds.workflow);
+      const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+      const stressSession = createStressCaseSession({
+        run: selectedRun,
+        collectionId: contractExecutionIds.collection,
+        apiId: asset.contract.id,
+        caseId: contractExecutionIds.case,
+        environmentId: contractExecutionIds.environment,
+      }, {
+        resolveProtocol: (request) => registry.getProtocol(request),
+        resolveAuth: (kind) => registry.getAuth(kind),
+        resolveAssert: (op) => registry.getAssert(op),
+        scriptEngine: registry.getScriptEngine("javascript")!,
+        createManagedClient: () => createHttpClient({ connectionMode: "fresh" }),
+      }, { workerId: 0, concurrency: 1, confirmedTargetOrigins: [baseUrl] });
+      const stressResult = await stressSession.execute();
+      await stressSession.close();
+
+      expect(collectionResult.failed).toBe(0);
+      expect(workflowResult.failed).toBe(0);
+      expect(stressResult.outcome.passed).toBe(true);
+      expect(preparations).toBe(1);
+      expect(proxyRequests).toHaveLength(3);
+      expect(proxyRequests).toEqual(["/nested/items", "/nested/items", "/nested/items"]);
+      expect(received).toHaveLength(3);
+    } finally {
+      await new Promise<void>((resolve, reject) => proxy.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it("uses the nearest effective case version for collection, workflow, and stress", async () => {
     received.length = 0;
     authorizedStressRequests.length = 0;

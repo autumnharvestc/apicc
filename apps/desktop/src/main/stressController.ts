@@ -109,7 +109,11 @@ export function createStressControllerWithHost(
           workspaceId: captured.locator.workspaceId,
           groupId: captured.locator.groupId,
           projectId: captured.locator.projectId,
-        }, snapshot, [{ asset: api, testCase }]);
+        }, snapshot, [{ asset: api, testCase }], {
+          workspaceRoot: root,
+          ...(env === undefined ? {} : { environmentId: env.id }),
+          signal: controller.signal,
+        });
       } catch (error) {
         throw createExecutionOutputBoundary([]).error(error);
       }

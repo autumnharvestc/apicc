@@ -12,6 +12,7 @@ import {
   DebugHistoryReadResultSchema,
   DebugHistorySummarySchema,
   DebugIdentitySchema,
+  DebugHistoryOwnerIdentitySchema,
   DebugResultSchema,
   type DebugHistoryDiagnostic,
   type DebugHistoryListFilter,
@@ -20,6 +21,7 @@ import {
   type DebugHistoryRecord,
   type DebugHistoryReadResult,
   type DebugHistorySummary,
+  type DebugHistoryOwnerIdentity,
   type DebugResult,
 } from "./model.js";
 
@@ -42,8 +44,17 @@ const SidecarSchema = z.object({
   recordFingerprint: z.string().min(1).max(256),
   summary: DebugHistorySummarySchema,
 }).strict();
+const LegacySidecarSchema = z.object({
+  formatVersion: z.literal(1),
+  ownerHash: z.string().regex(HASH_DIRECTORY_PATTERN),
+  recordSize: z.number().finite().int().nonnegative(),
+  recordFingerprint: z.string().min(1).max(256),
+  summary: DebugHistorySummarySchema.omit({ sourceKind: true, groupId: true, draftId: true })
+    .extend({ mode: z.enum(["request", "case"]) }),
+}).strict();
 
 export type DebugHistoryWriter = (path: string, contents: string) => Promise<void>;
+export type { DebugHistoryOwnerIdentity } from "./model.js";
 
 export interface DebugHistoryStoreOptions {
   /** Private application data directory; never accept this value from renderer IPC. */
@@ -54,15 +65,16 @@ export interface DebugHistoryStoreOptions {
   scanLimit?: number;
 }
 
-export type DebugHistoryOwnerIdentity = z.infer<typeof DebugIdentitySchema> | z.infer<typeof DebugCaseIdentitySchema>;
-
-/** Produces the private record partition for a validated locator and canonical workspace root. */
+/** Produces the private record partition for a validated source identity and canonical workspace root. */
 export function createDebugHistoryOwnerKey(canonicalWorkspaceRoot: string, identityValue: DebugHistoryOwnerIdentity): string {
   if (canonicalWorkspaceRoot.trim().length === 0) throw new TypeError("A canonical workspace root is required.");
   const canonicalRoot = resolve(canonicalWorkspaceRoot);
-  const caseIdentity = DebugCaseIdentitySchema.safeParse(identityValue);
-  const identity = caseIdentity.success ? caseIdentity.data : DebugIdentitySchema.parse(identityValue);
-  return createHash("sha256").update(`${canonicalRoot}\0${stableCanonical(identity)}`, "utf8").digest("hex");
+  const identity = DebugHistoryOwnerIdentitySchema.parse(identityValue);
+  // Asset keys deliberately keep the v1 canonical payload so existing records remain owner-addressable.
+  const keyIdentity = identity.sourceKind === "asset"
+    ? identity.mode === "request" ? identity.locator : identity.case
+    : identity;
+  return createHash("sha256").update(`${canonicalRoot}\0${stableCanonical(keyIdentity)}`, "utf8").digest("hex");
 }
 
 export class DebugHistoryStoreError extends Error {
@@ -96,7 +108,7 @@ export function createDebugHistoryStore(options: DebugHistoryStoreOptions) {
   async function append(
     resultValue: DebugResult,
     appendOptions: { ownerKey: string; parentHistoryId?: string },
-  ): Promise<DebugHistoryRecord | undefined> {
+  ): Promise<Extract<DebugHistoryRecord, { formatVersion: 2 }> | undefined> {
     const preferences = await readPreferencesState();
     if (!preferences.valid) throw configurationError(preferences.diagnostics[0]!);
     if (!preferences.preferences.enabled) return undefined;
@@ -115,12 +127,13 @@ export function createDebugHistoryStore(options: DebugHistoryStoreOptions) {
     const createdAt = new Date();
     const result = fitResultForHistory(DebugResultSchema.parse(resultValue), historyId, createdAt, appendOptions.parentHistoryId);
     const record = DebugHistoryRecordSchema.parse({
-      formatVersion: 1,
+      formatVersion: 2,
       historyId,
       createdAt: createdAt.toISOString(),
       ...(appendOptions.parentHistoryId === undefined ? {} : { parentHistoryId: appendOptions.parentHistoryId }),
       result,
     });
+    if (record.formatVersion !== 2) throw new TypeError("Debug history writer returned a non-v2 record.");
     const recordDirectory = await ensureOwnedDirectory(root, join(root, "records", ownerKey));
     const summaryDirectory = await ensureOwnedDirectory(root, join(root, "summaries", ownerKey));
     const recordPath = safeChild(recordDirectory, `${record.historyId}.json`);
@@ -343,7 +356,10 @@ export function createDebugHistoryStore(options: DebugHistoryStoreOptions) {
     const sidecar = await readSidecar(root, path);
     if (sidecar && sidecar.ownerHash === entry.ownerHash && sidecar.recordSize === recordInfo.size
       && sidecar.recordFingerprint === recordInfo.fingerprint
-      && sidecar.summary.historyId === entry.historyId) return sidecar.summary;
+      && sidecar.summary.historyId === entry.historyId) {
+      const currentSummary = DebugHistorySummarySchema.safeParse(sidecar.summary);
+      return currentSummary.success ? currentSummary.data : migrateLegacySummary(sidecar.summary);
+    }
 
     const read = await readRecordFile(root, entry.path, entry.ownerHash, entry.historyId);
     if (!read.record) {
@@ -368,13 +384,16 @@ export function createDebugHistoryStore(options: DebugHistoryStoreOptions) {
     return summary;
   }
 
-  async function readSidecar(root: string, path: string): Promise<z.infer<typeof SidecarSchema> | undefined> {
+  async function readSidecar(root: string, path: string): Promise<z.infer<typeof SidecarSchema> | z.infer<typeof LegacySidecarSchema> | undefined> {
     try {
       const info = await safeFileInfo(root, path);
       if (!info || info.size > MAX_SUMMARY_BYTES) return undefined;
       const contents = await readFile(info.path, "utf8");
-      const parsed = SidecarSchema.safeParse(JSON.parse(contents) as unknown);
-      return parsed.success ? parsed.data : undefined;
+      const value = JSON.parse(contents) as unknown;
+      const parsed = SidecarSchema.safeParse(value);
+      if (parsed.success) return parsed.data;
+      const legacy = LegacySidecarSchema.safeParse(value);
+      return legacy.success ? legacy.data : undefined;
     } catch {
       return undefined;
     }
@@ -441,7 +460,7 @@ export function createDebugHistoryStore(options: DebugHistoryStoreOptions) {
         return { diagnostic: diagnostic("corrupt-record", historyId) };
       }
       if (typeof value === "object" && value !== null && "formatVersion" in value
-        && typeof value.formatVersion === "number" && value.formatVersion > 1) {
+        && typeof value.formatVersion === "number" && value.formatVersion > 2) {
         return { diagnostic: diagnostic("future-version", historyId) };
       }
       const parsed = DebugHistoryRecordSchema.safeParse(value);
@@ -528,7 +547,7 @@ interface SafeFileInfo {
 
 function fitResultForHistory(result: DebugResult, historyId: string, createdAt: Date, parentHistoryId?: string): DebugResult {
   const makeRecord = (candidate: DebugResult): DebugHistoryRecord => DebugHistoryRecordSchema.parse({
-    formatVersion: 1,
+    formatVersion: 2,
     historyId,
     createdAt: createdAt.toISOString(),
     ...(parentHistoryId === undefined ? {} : { parentHistoryId }),
@@ -594,9 +613,18 @@ function mergeNeedsInput(fields: readonly DebugResult["replay"]["fields"][number
   return [...merged.values()];
 }
 
+function migrateLegacySummary(summary: z.infer<typeof LegacySidecarSchema>["summary"] | DebugHistorySummary): DebugHistorySummary {
+  if ("sourceKind" in summary) return DebugHistorySummarySchema.parse(summary);
+  const hasAssetIdentity = Boolean(summary.workspaceId && summary.projectId && summary.collectionId && summary.apiId);
+  return DebugHistorySummarySchema.parse({
+    ...summary,
+    sourceKind: hasAssetIdentity ? "asset" : "unavailable",
+  });
+}
+
 function createSummary(record: DebugHistoryRecord): DebugHistorySummary {
   const { result } = record;
-  const identity = recordIdentity(result);
+  const identity = recordIdentity(record);
   const firstOutcome = result.outcomes[0];
   const firstRequest = result.exchanges.find((exchange) => exchange.request !== undefined)?.request;
   const resultStatus = result.failureKind === "aborted" || result.outcomes.some((outcome) => outcome.failureKind === "aborted")
@@ -608,9 +636,9 @@ function createSummary(record: DebugHistoryRecord): DebugHistorySummary {
     result.run.collectionName,
     firstOutcome?.apiName,
     firstOutcome?.caseName,
-    identity?.apiId,
+    identity?.sourceKind === "asset" ? identity.apiId : undefined,
     identity?.projectId,
-    result.replay.mode === "case" ? result.replay.case?.caseId : undefined,
+    result.mode === "case" && result.replay.mode === "case" ? result.replay.case?.caseId : undefined,
     firstRequest?.method,
     firstRequest?.url,
     result.error,
@@ -622,14 +650,18 @@ function createSummary(record: DebugHistoryRecord): DebugHistorySummary {
     ...(record.parentHistoryId === undefined ? {} : { parentHistoryId: record.parentHistoryId }),
     runId: result.runId,
     mode: result.mode,
+    sourceKind: identity?.sourceKind ?? (record.formatVersion === 2 ? record.result.source.sourceKind : "unavailable"),
     result: resultStatus,
     ...(identity === undefined ? {} : {
       workspaceId: identity.workspaceId,
+      groupId: identity.groupId,
       projectId: identity.projectId,
-      collectionId: identity.collectionId,
-      apiId: identity.apiId,
+      ...(identity.sourceKind === "free" ? { draftId: identity.draftId } : {
+        collectionId: identity.collectionId,
+        apiId: identity.apiId,
+      }),
     }),
-    ...(result.replay.mode === "case" && result.replay.case?.caseId ? { caseId: result.replay.case.caseId } : {}),
+    ...(result.mode === "case" && result.replay.mode === "case" && result.replay.case?.caseId ? { caseId: result.replay.case.caseId } : {}),
     ...(result.run.collectionName.length === 0 ? {} : { collectionName: result.run.collectionName }),
     ...(firstOutcome === undefined ? {} : { apiName: firstOutcome.apiName }),
     ...(firstRequest === undefined ? {} : { method: firstRequest.method }),
@@ -642,6 +674,7 @@ function createSummary(record: DebugHistoryRecord): DebugHistorySummary {
 }
 
 function matchesFilter(summary: DebugHistorySummary, filter: z.output<typeof DebugHistoryListFilterSchema>): boolean {
+  if (filter.sourceKind !== undefined && summary.sourceKind !== filter.sourceKind) return false;
   if (filter.projectId !== undefined && summary.projectId !== filter.projectId) return false;
   if (filter.apiId !== undefined && summary.apiId !== filter.apiId) return false;
   if (filter.result !== undefined && summary.result !== filter.result) return false;
@@ -652,19 +685,43 @@ function matchesFilter(summary: DebugHistorySummary, filter: z.output<typeof Deb
   return true;
 }
 
-function recordIdentity(result: DebugResult): { workspaceId: string; groupId: string; projectId: string; collectionId: string; folderIds: string[]; apiId: string; caseId?: string; scope?: string } | undefined {
+type HistoryIdentity =
+  | ({ sourceKind: "asset" } & z.infer<typeof DebugCaseIdentitySchema>)
+  | { sourceKind: "free"; workspaceId: string; groupId: string; projectId: string; draftId: string };
+
+function recordIdentity(record: DebugHistoryRecord): HistoryIdentity | undefined {
+  if (record.formatVersion === 1) {
+    const { result } = record;
+    if (result.identityAvailable === false || result.replay.identityAvailable === false) return undefined;
+    if (result.mode === "case" && result.replay.mode === "case" && result.replay.case !== undefined) {
+      const parsed = DebugCaseIdentitySchema.safeParse(result.replay.case);
+      return parsed.success ? { sourceKind: "asset", ...parsed.data } : undefined;
+    }
+    if (result.replay.mode === "request" && result.replay.locator !== undefined) {
+      const parsed = DebugIdentitySchema.safeParse(result.replay.locator);
+      return parsed.success ? { sourceKind: "asset", ...parsed.data, caseId: "", scope: "" } : undefined;
+    }
+    if (result.locator !== undefined) {
+      const parsed = DebugIdentitySchema.safeParse(result.locator);
+      return parsed.success ? { sourceKind: "asset", ...parsed.data, caseId: "", scope: "" } : undefined;
+    }
+    return undefined;
+  }
+
+  const { result } = record;
   if (result.identityAvailable === false || result.replay.identityAvailable === false) return undefined;
+  if (result.source.sourceKind === "free") {
+    if (result.replay.mode !== "free" || result.replay.project === undefined || result.replay.draftId === undefined) return undefined;
+    return { sourceKind: "free", ...result.replay.project, draftId: result.replay.draftId };
+  }
+  if (result.source.sourceKind !== "asset") return undefined;
   if (result.mode === "case" && result.replay.mode === "case" && result.replay.case !== undefined) {
     const parsed = DebugCaseIdentitySchema.safeParse(result.replay.case);
-    return parsed.success ? parsed.data : undefined;
+    return parsed.success ? { sourceKind: "asset", ...parsed.data } : undefined;
   }
   if (result.replay.mode === "request" && result.replay.locator !== undefined) {
     const parsed = DebugIdentitySchema.safeParse(result.replay.locator);
-    return parsed.success ? parsed.data : undefined;
-  }
-  if (result.locator !== undefined) {
-    const parsed = DebugIdentitySchema.safeParse(result.locator);
-    return parsed.success ? parsed.data : undefined;
+    return parsed.success ? { sourceKind: "asset", ...parsed.data, caseId: "", scope: "" } : undefined;
   }
   return undefined;
 }

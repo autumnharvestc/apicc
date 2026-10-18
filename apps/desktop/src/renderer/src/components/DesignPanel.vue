@@ -106,9 +106,13 @@ async function onExport() {
   box-sizing: border-box;
 }
 .toolbar {
+  position: sticky;
+  top: 8px;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 6px;
+  background: var(--bg);
 }
 .saved {
   color: var(--pass, #389e0d);
@@ -120,7 +124,6 @@ async function onExport() {
 .preview {
   border-top: 1px solid var(--border, #d9d9d9);
   padding-top: 6px;
-  overflow: auto;
 }
 .preview-text {
   margin: 0;

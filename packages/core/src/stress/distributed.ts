@@ -30,6 +30,7 @@ export const StressWorkerSpecSchema = z.object({
   caseId: z.string(),
   definitionRevision: z.string().min(1),
   credentialVersions: credentialVersionsSchema,
+  networkIdentity: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   envName: z.string().optional(),
   concurrency: z.number().int().positive().safe(),
   maxIterations: z.number().int().positive().safe().optional(),

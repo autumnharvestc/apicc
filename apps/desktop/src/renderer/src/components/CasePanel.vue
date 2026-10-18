@@ -35,6 +35,10 @@ const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
 const { t } = useI18n();
 const overrideJson = ref("");
 const overrideError = ref("");
+const requestTab = computed(() => props.debug && props.editor.activeKey
+  ? props.debug.requestTabForSession(props.editor.activeKey) : null);
+const requestTabState = computed(() => requestTab.value && props.debug
+  ? props.debug.requestTabState(requestTab.value) : null);
 
 const TARGET_OPTIONS = (["status", "header", "bodyJson", "responseTime"] as const).map((v) => ({ label: v, value: v }));
 const OP_OPTIONS = (["eq", "neq", "contains", "lt", "gt", "lte", "gte"] as const).map((v) => ({ label: v, value: v }));
@@ -48,9 +52,14 @@ const scopeOptions = computed(() => [
 // 选中用例：store 未选中/悬空（如刚切换接口）时回退第一个，保证面板始终有编辑目标。
 const selected = computed(() => {
   const list = props.editor.api?.cases ?? [];
-  const identity = props.cases.selectedCase;
+  const identity = requestTabState.value ? requestTabState.value.selectedCase : props.cases.selectedCase;
   return list.find((c) => c.id === identity?.caseId && c.scope === identity.scope) ?? list[0] ?? null;
 });
+
+function selectCase(caseId: string, scope: string) {
+  props.cases.select(caseId, scope);
+  if (requestTabState.value) requestTabState.value.selectedCase = { caseId, scope };
+}
 
 watch(() => selected.value ? `${selected.value.id}:${selected.value.scope}` : "", () => {
   overrideJson.value = selected.value?.requestOverride ? JSON.stringify(selected.value.requestOverride, null, 2) : "";
@@ -132,7 +141,8 @@ function applyCurrentDebugDraft() {
   const originalValues = restore ? { ...restore.originalValues } : {};
   selected.value.requestOverride = request;
   selected.value.parameters = restore ? { ...restore.parameters } : {};
-  if (Object.keys(props.debug.settings).length > 0) selected.value.requestSettingsOverride = { ...props.debug.settings };
+  const settings = requestTabState.value?.settings ?? props.debug.settings;
+  if (Object.keys(settings).length > 0) selected.value.requestSettingsOverride = { ...settings };
   else delete selected.value.requestSettingsOverride;
   props.cases.setPendingRestoreFields(identity, fields, originalValues);
   overrideJson.value = JSON.stringify(request, null, 2);
@@ -247,7 +257,7 @@ function removeOp(kind: "pre" | "post", index: number) {
           class="case-row"
           :class="{ active: c.id === selected?.id && c.scope === selected?.scope }"
           data-testid="case-row"
-          @click="cases.select(c.id, c.scope)"
+          @click="selectCase(c.id, c.scope)"
         >
           <a-input :value="c.name" :disabled="readOnly" class="case-name" data-testid="case-name" :placeholder="t('tree.namePlaceholder')" @update:value="(value) => setCaseName(c, value as string)" />
           <a-select :value="c.scope" :disabled="readOnly" class="scope-select" :options="scopeOptions" data-testid="case-scope" @update:value="(value) => updateScope(c, value as string)" />
@@ -362,6 +372,7 @@ function removeOp(kind: "pre" | "post", index: number) {
           </div>
         </div>
       </template>
+      <slot name="after-cases" />
     </template>
   </section>
 </template>
@@ -375,9 +386,13 @@ function removeOp(kind: "pre" | "post", index: number) {
   gap: 8px;
 }
 .toolbar {
+  position: sticky;
+  top: 8px;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 6px;
+  background: var(--bg);
 }
 .case-list {
   display: flex;

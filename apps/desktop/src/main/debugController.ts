@@ -13,7 +13,7 @@ import {
 } from "@apicc/core";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { ApiLocatorSchema, CaseLocatorSchema, EnvironmentLocatorSchema } from "../shared/locations.js";
+import { ApiLocatorSchema, CaseLocatorSchema, EnvironmentLocatorSchema, ProjectLocatorSchema } from "../shared/locations.js";
 import { DebugInvocationSchema } from "@apicc/core/schema";
 import { debugHttpSessionKey } from "./executionContext.js";
 import type { createSession } from "./session.js";
@@ -49,7 +49,9 @@ export function createDebugController(
   function start(ownerValue: unknown, inputValue: unknown): { runId: string } {
     const owner = requireOwner(ownerValue);
     const invocation = parseInvocation(inputValue);
-    const identity = ApiLocatorSchema.parse(invocation.locator);
+    const identity = invocation.mode === "free"
+      ? ProjectLocatorSchema.parse(invocation.project)
+      : ApiLocatorSchema.parse(invocation.locator);
     if (invocation.mode === "case") CaseLocatorSchema.parse(invocation.case);
     if (invocation.environmentId !== undefined) EnvironmentLocatorSchema.parse({
       workspaceId: identity.workspaceId,
@@ -59,21 +61,33 @@ export function createDebugController(
     });
     const root = session.root;
     if (!root) throw new Error("尚未打开工作区");
-    const located = session.locateApi(identity);
-    if (!located
-      || located.project.id !== identity.projectId
-      || located.group.id !== identity.groupId
-      || located.collection.id !== identity.collectionId
-      || located.api.contract.id !== identity.apiId) {
-      throw new Error(`未找到接口: ${JSON.stringify(identity)}`);
+    const project = invocation.mode === "free"
+      ? session.locateProject(ProjectLocatorSchema.parse(invocation.project))?.project
+      : session.locateApi(ApiLocatorSchema.parse(invocation.locator))?.project;
+    if (!project || project.id !== identity.projectId) {
+      throw new Error(invocation.mode === "free" ? `未找到项目: ${JSON.stringify(identity)}` : `未找到接口: ${JSON.stringify(identity)}`);
     }
-    const snapshot = createProjectSnapshot(located.project);
+    if (invocation.mode !== "free") {
+      const assetIdentity = ApiLocatorSchema.parse(invocation.locator);
+      const located = session.locateApi(assetIdentity);
+      if (!located
+        || located.group.id !== assetIdentity.groupId
+        || located.collection.id !== assetIdentity.collectionId
+        || located.api.contract.id !== assetIdentity.apiId) {
+        throw new Error(`未找到接口: ${JSON.stringify(assetIdentity)}`);
+      }
+    }
+    const snapshot = createProjectSnapshot(project);
     const plan = prepareDebugExecution(snapshot, invocation);
     // Capture validated ownership synchronously at start; completion never consults the mutable Session.
     let historyOwnerKey: string | undefined;
     try {
       const ownerRoot = realpathSync(root);
-      const ownerIdentity = invocation.mode === "case" ? invocation.case : invocation.locator;
+      const ownerIdentity = invocation.mode === "free"
+        ? { sourceKind: "free" as const, project: invocation.project, draftId: invocation.draftId }
+        : invocation.mode === "case"
+          ? { sourceKind: "asset" as const, mode: "case" as const, case: invocation.case }
+          : { sourceKind: "asset" as const, mode: "request" as const, locator: invocation.locator };
       historyOwnerKey = createDebugHistoryOwnerKey(ownerRoot, ownerIdentity);
     } catch {
       // History ownership capture is best-effort and must not reject an otherwise valid run.
@@ -127,7 +141,11 @@ export function createDebugController(
           projectId: identity.projectId,
         };
         const preparation = await withAbort(
-          Promise.resolve().then(() => credentials.prepareRunForRequests(scope, plan.snapshot, plan.credentialSelections)),
+          Promise.resolve().then(() => credentials.prepareRunForRequests(scope, plan.snapshot, plan.credentialSelections, {
+            workspaceRoot: root,
+            ...(invocation.environmentId === undefined ? {} : { environmentId: invocation.environmentId }),
+            signal: abort.signal,
+          })),
           abort.signal,
         );
         if (preparation.kind === "aborted") {

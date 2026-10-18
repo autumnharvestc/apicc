@@ -9,6 +9,7 @@ import {
   collectCredentialMarkersForRequests,
   collectCredentialOutputMarkers,
   collectCredentialRefsForRequests,
+  collectCredentialRefsFromRequestDrafts,
   collectProjectCredentialRefs,
   createCredentialOutputSanitizer,
   selectCredentialRequests,
@@ -20,6 +21,25 @@ const componentId = "20000000-0000-4000-8000-000000000001";
 const unusedComponentId = "20000000-0000-4000-8000-000000000002";
 
 describe("shared credential output", () => {
+  it("collects credential refs from free request drafts without inventing an owning API asset", () => {
+    const project = createContractExecutionProject("https://service.example.test");
+    const authComponent: ComponentAsset = {
+      formatVersion: 1,
+      id: componentId,
+      name: "free request auth",
+      description: "",
+      kind: "auth",
+      definition: { kind: "bearer", token: { id: "free-auth-ref", policy: "test-auto" } },
+    };
+    project.components = [authComponent];
+    const request = structuredClone(project.collections[0]!.folders[0]!.folders[0]!.apis[0]!.contract.request);
+    request.auth = { kind: "componentRef", componentId, expectedKind: "auth" };
+
+    expect(collectCredentialRefsFromRequestDrafts(project, [request])).toEqual([
+      { id: "free-auth-ref", policy: "test-auto" },
+    ]);
+  });
+
   it("selects only snapshot-owned effective case requests for credential refs and markers", () => {
     const project = createContractExecutionProject("https://service.example.test");
     const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;

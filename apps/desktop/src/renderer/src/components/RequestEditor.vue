@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { computed, ref, toRaw, watch } from "vue";
+import { computed, nextTick, ref, toRaw, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button as AButton, Checkbox as ACheckbox, Input as AInput, RadioButton as ARadioButton, RadioGroup as ARadioGroup, Select as ASelect, TabPane as ATabPane, Tabs as ATabs, Textarea as ATextarea } from "ant-design-vue";
-import type { ApiRequest, ComponentAsset, ModelAsset, MultipartEntry, ParameterBinding, RequestBody } from "@apicc/core";
+import { Alert as AAlert, Button as AButton, Checkbox as ACheckbox, Input as AInput, Modal as AModal, RadioButton as ARadioButton, RadioGroup as ARadioGroup, Select as ASelect, TabPane as ATabPane, Tabs as ATabs, Textarea as ATextarea } from "ant-design-vue";
+import type { ApiRequest, ComponentAsset, DebugFieldState, ModelAsset, MultipartEntry, ParameterBinding, RequestBody } from "@apicc/core";
 import type { SchemaNode } from "@apicc/core/schema";
 import type { ApiccApi, CreateComponentInput, CreateModelInput } from "../../../shared/types.js";
-import type { ComponentLocator, ModelLocator, ProjectLocator } from "../../../shared/locations.js";
+import type { ApiParentLocator, ComponentLocator, ModelLocator, ProjectLocator } from "../../../shared/locations.js";
+import type { LocalProjectTreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { useEditorStore } from "../stores/editor.js";
 import type { useDebugStore } from "../stores/debug.js";
+import type { RequestTab } from "../stores/requestTabs.js";
+import { apiSessionKey } from "../stores/localIdentity.js";
 import type { DeleteAssetResult } from "../stores/assets.js";
 import EmptyState from "./EmptyState.vue";
 import SchemaEditor from "./SchemaEditor.vue";
 import ResponseEditor from "./ResponseEditor.vue";
 import CredentialEditor from "./CredentialEditor.vue";
+import OAuthManager from "./OAuthManager.vue";
 import ProjectAssetsPanel from "./ProjectAssetsPanel.vue";
 import DebugSettings from "./DebugSettings.vue";
 
@@ -31,17 +35,43 @@ const props = defineProps<{
     deleteAsset(input: { kind: "model"; locator: ModelLocator } | { kind: "component"; locator: ComponentLocator }): Promise<DeleteAssetResult>;
   };
   projectLocator?: ProjectLocator | null;
+  requestTab?: RequestTab | null;
+  projectNode?: LocalProjectTreeNodeDTO | null;
+  createFreeModule?: (tab: RequestTab, name: string) => Promise<ApiParentLocator>;
+  saveFreeRequest?: (tab: RequestTab, targetParent: ApiParentLocator, name: string, request: ApiRequest, fields: DebugFieldState[]) => Promise<void>;
 }>();
 const { t } = useI18n();
-const request = computed<ApiRequest | null>(() => props.editor.api?.contract.request ?? null);
+const isFreeRequest = computed(() => props.requestTab?.source.kind === "free");
+const freeSession = computed(() => {
+  const tab = props.requestTab;
+  if (!tab || tab.source.kind !== "free" || props.editor.activeFreeId !== tab.tabId) return null;
+  const session = props.editor.freeSessions[tab.tabId];
+  return session?.root === tab.root && session.draftId === tab.source.draftId
+    && session.project.workspaceId === tab.source.project.workspaceId
+    && session.project.groupId === tab.source.project.groupId
+    && session.project.projectId === tab.source.project.projectId ? session : null;
+});
+const request = computed<ApiRequest | null>(() => {
+  const tab = props.requestTab;
+  if (!tab) return props.editor.api?.contract.request ?? null;
+  if (tab.source.kind === "free") return freeSession.value?.request ?? null;
+  const key = apiSessionKey(tab.root, tab.source.locator);
+  if (!key || props.editor.activeKey !== key) return null;
+  const session = props.editor.sessions[key];
+  return session?.root === tab.root ? session.api.contract.request : null;
+});
+const tabDebugState = computed(() => props.requestTab ? props.debug.requestTabState(props.requestTab) : null);
 const currentRestoreMatches = computed(() => {
+  if (tabDebugState.value && props.requestTab) {
+    return tabDebugState.value.root === props.requestTab.root && tabDebugState.value.generation === props.requestTab.generation;
+  }
   const activeKey = props.editor.activeKey;
   const session = activeKey ? props.editor.sessions[activeKey] : undefined;
   return !!session && props.debug.restoredTargetKey === activeKey
     && props.debug.restoredTargetGeneration === session.generation;
 });
 const pendingRestoreFields = computed(() => currentRestoreMatches.value
-  ? props.debug.restoredFields.filter((field) => field.needsInput) : []);
+  ? (tabDebugState.value?.fields ?? props.debug.restoredFields).filter((field) => field.needsInput) : []);
 const bodyText = computed(() => {
   const body = request.value?.protocol === "http" ? request.value.body : undefined;
   return body && (body.kind === "json" || body.kind === "xml" || body.kind === "text") ? body : null;
@@ -54,8 +84,16 @@ const multipartEntries = computed(() => {
   const body = request.value?.protocol === "http" ? request.value.body : undefined;
   return body?.kind === "multipart" ? body.entries : [];
 });
-const metadata = computed(() => props.editor.api?.contract.metadata ?? null);
+const metadata = computed(() => isFreeRequest.value ? null : props.editor.api?.contract.metadata ?? null);
 const credentialContextKey = computed(() => {
+  const tab = props.requestTab;
+  if (tab) return JSON.stringify({
+    root: tab.root,
+    project: tab.project,
+    tabId: tab.tabId,
+    source: tab.source.kind === "asset" ? { kind: tab.source.kind, locator: tab.source.locator } : { kind: tab.source.kind, draftId: tab.source.draftId },
+    generation: tab.generation,
+  });
   const activeKey = props.editor.activeKey;
   const session = activeKey ? props.editor.sessions[activeKey] : undefined;
   if (!session) return "";
@@ -68,15 +106,151 @@ const credentialContextKey = computed(() => {
 });
 const saveFeedback = ref("");
 const saveError = ref("");
+const freeSaveOpen = ref(false);
+const freeSaveBusy = ref(false);
+const freeSaveName = ref("");
+const freeSaveParentKey = ref("");
+const freeModuleName = ref("");
+const createdFreeSaveParents = ref<Array<{ key: string; label: string; locator: ApiParentLocator }>>([]);
+let freeSaveOperation = 0;
 const settingsOpen = ref(false);
 const chosenFileInfo = ref<Record<string, { name: string; size: number }>>({});
+const editorElement = ref<HTMLElement | null>(null);
+const localRequestPanel = ref("path");
+const requestPanel = computed({
+  get: () => tabDebugState.value?.requestPanel ?? localRequestPanel.value,
+  set: (value: string) => {
+    localRequestPanel.value = value;
+    if (tabDebugState.value) tabDebugState.value.requestPanel = value;
+  },
+});
 const methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const authKinds = ["none", "bearer", "basic", "apikey"];
 const bodyKinds = ["none", "json", "xml", "text", "graphql", "urlencoded", "multipart", "binary"];
 const parameterLocations = ["path", "query", "header", "cookie"] as const;
 type ParameterLocation = (typeof parameterLocations)[number];
+const credentialProjectLocator = computed(() => props.requestTab?.project ?? props.projectLocator ?? null);
+const oauthManagedState = ref<"managed" | "unmanaged" | "unknown">("unmanaged");
 
-watch(() => request.value, () => props.debug.refreshRestoredFields(props.editor), { deep: true, flush: "post" });
+const freeSaveParents = computed(() => {
+  const project = props.projectNode;
+  const tab = props.requestTab;
+  const result: Array<{ key: string; label: string; locator: ApiParentLocator }> = [];
+  if (project && tab && tab.source.kind === "free"
+    && project.locator.workspaceId === tab.project.workspaceId
+    && project.locator.groupId === tab.project.groupId
+    && project.locator.projectId === tab.project.projectId) {
+    for (const child of project.children) {
+      if (child.kind !== "collection") continue;
+      const collectionLocator: ApiParentLocator = { ...child.locator };
+      result.push({ key: JSON.stringify(collectionLocator), label: child.label, locator: collectionLocator });
+      const visitFolders = (nodes: typeof child.children, prefix: string): void => {
+        for (const node of nodes ?? []) {
+          if (node.kind !== "folder") continue;
+          const folderLocator: ApiParentLocator = { ...node.locator, folderIds: [...node.locator.folderIds] };
+          const label = `${prefix}/${node.label}`;
+          result.push({ key: JSON.stringify(folderLocator), label, locator: folderLocator });
+          visitFolders(node.children ?? [], label);
+        }
+      };
+      visitFolders(child.children ?? [], child.label);
+    }
+  }
+  for (const created of createdFreeSaveParents.value) {
+    if (!result.some((item) => item.key === created.key)) result.push(created);
+  }
+  return result;
+});
+
+watch(() => props.requestTab?.tabId, () => {
+  freeSaveOperation += 1;
+  freeSaveOpen.value = false;
+  freeSaveBusy.value = false;
+  freeSaveParentKey.value = "";
+  freeSaveName.value = "";
+  freeModuleName.value = "";
+  createdFreeSaveParents.value = [];
+});
+
+function openFreeSaveDialog() {
+  saveError.value = "";
+  saveFeedback.value = "";
+  freeSaveName.value = "";
+  freeSaveParentKey.value = "";
+  freeSaveOpen.value = true;
+}
+
+async function onCreateFreeModule() {
+  const tab = props.requestTab;
+  const name = freeModuleName.value.trim();
+  if (!tab || tab.source.kind !== "free" || !props.createFreeModule || !name) return;
+  const operation = ++freeSaveOperation;
+  freeSaveBusy.value = true;
+  saveError.value = "";
+  try {
+    const locator = await props.createFreeModule(tab, name);
+    if (operation !== freeSaveOperation || props.requestTab?.tabId !== tab.tabId
+      || props.requestTab.generation !== tab.generation || props.requestTab.source.kind !== "free") return;
+    const key = JSON.stringify(locator);
+    createdFreeSaveParents.value = [...createdFreeSaveParents.value, { key, label: name, locator }];
+    freeSaveParentKey.value = key;
+    freeModuleName.value = "";
+  } catch (error) {
+    if (operation === freeSaveOperation) saveError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (operation === freeSaveOperation) freeSaveBusy.value = false;
+  }
+}
+
+async function submitFreeSave() {
+  const tab = props.requestTab;
+  const current = request.value;
+  const target = freeSaveParents.value.find((item) => item.key === freeSaveParentKey.value)?.locator;
+  if (!tab || tab.source.kind !== "free" || !current || !target || !props.saveFreeRequest || !freeSaveName.value.trim()) return;
+  if (freeSession.value?.urlDraftInvalid) {
+    saveError.value = t("editor.invalidFullUrl");
+    return;
+  }
+  if (tabDebugState.value?.fields.some((field) => field.needsInput)) {
+    saveError.value = t("debugLoop.restoreFieldsRequired");
+    return;
+  }
+  const operation = ++freeSaveOperation;
+  freeSaveBusy.value = true;
+  saveError.value = "";
+  try {
+    await props.saveFreeRequest(tab, target, freeSaveName.value.trim(), cloneContract(current),
+      (tabDebugState.value?.fields ?? []).map((field) => ({ ...field })));
+    if (operation !== freeSaveOperation || props.requestTab?.tabId !== tab.tabId) return;
+    saveFeedback.value = t("debugLoop.freeSavedInherited");
+    freeSaveOpen.value = false;
+  } catch (error) {
+    if (operation === freeSaveOperation) saveError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (operation === freeSaveOperation) freeSaveBusy.value = false;
+  }
+}
+
+watch(() => request.value, (value) => {
+  const session = freeSession.value;
+  if (!session || !value) return;
+  session.draftRevision += 1;
+  if (!session.urlDraftInvalid) session.urlDraft = requestUrl(value);
+}, { deep: true, flush: "sync" });
+
+watch(() => request.value, () => {
+  if (props.requestTab && tabDebugState.value) props.debug.refreshRequestTabRestoreFields(props.requestTab, props.editor);
+  else props.debug.refreshRestoredFields(props.editor);
+}, { deep: true, flush: "post" });
+
+watch(() => props.requestTab?.tabId, async () => {
+  await nextTick();
+  if (editorElement.value && tabDebugState.value) editorElement.value.scrollTop = tabDebugState.value.requestScrollTop;
+}, { immediate: true, flush: "post" });
+
+function captureRequestScroll(event: Event) {
+  if (tabDebugState.value) tabDebugState.value.requestScrollTop = (event.currentTarget as HTMLElement).scrollTop;
+}
 
 function cloneContract<T>(value: T): T {
   return JSON.parse(JSON.stringify(toRaw(value))) as T;
@@ -87,15 +261,17 @@ function secretRef() {
 }
 
 function switchProtocol(next: ApiRequest["protocol"]) {
-  const asset = props.editor.api;
-  const slotKey = props.editor.activeKey;
-  const session = slotKey ? props.editor.sessions[slotKey] : undefined;
-  const current = asset?.contract.request;
-  if (!asset || !session || !current || current.protocol === next) return;
+  const current = request.value;
+  const session = freeSession.value ?? (props.editor.activeKey ? props.editor.sessions[props.editor.activeKey] : undefined);
+  if (!session || !current || current.protocol === next) return;
   session.protocolDrafts[current.protocol] = cloneContract(current);
   const saved = session.protocolDrafts[next] as ApiRequest | undefined;
   if (saved) {
-    asset.contract.request = cloneContract(saved);
+    setRequest(cloneContract(saved));
+    if (freeSession.value) {
+      freeSession.value.urlDraft = requestUrl(saved);
+      freeSession.value.urlDraftInvalid = false;
+    }
     return;
   }
   const common = {
@@ -107,9 +283,102 @@ function switchProtocol(next: ApiRequest["protocol"]) {
     cookies: cloneContract(current.cookies),
     auth: cloneContract(current.auth),
   };
-  if (next === "http") asset.contract.request = { ...common, protocol: "http", method: "GET", body: { kind: "none" } };
-  else if (next === "websocket") asset.contract.request = { ...common, protocol: "websocket" };
-  else asset.contract.request = { ...common, protocol: "soap", method: "POST", envelope: "" };
+  if (next === "http") setRequest({ ...common, protocol: "http", method: "GET", body: { kind: "none" } });
+  else if (next === "websocket") setRequest({ ...common, protocol: "websocket" });
+  else setRequest({ ...common, protocol: "soap", method: "POST", envelope: "" });
+  if (freeSession.value && request.value) {
+    freeSession.value.urlDraft = requestUrl(request.value);
+    freeSession.value.urlDraftInvalid = false;
+  }
+}
+
+function setRequest(value: ApiRequest) {
+  if (freeSession.value) freeSession.value.request = value;
+  else if (props.editor.api) props.editor.api.contract.request = value;
+}
+
+const selectedEnvironmentId = computed(() => {
+  if (tabDebugState.value) return tabDebugState.value.selectedEnvironmentId ?? "";
+  return props.editor.envs.some((environment) => environment.name === props.debug.selectedEnvName)
+    ? props.debug.selectedEnvName ?? "" : "";
+});
+
+const oauthContextKey = computed(() => JSON.stringify({
+  root: props.requestTab?.root ?? null,
+  project: credentialProjectLocator.value,
+  tabId: props.requestTab?.tabId ?? null,
+  source: props.requestTab?.source.kind === "asset"
+    ? { kind: "asset", locator: props.requestTab.source.locator }
+    : props.requestTab?.source.kind === "free"
+      ? { kind: "free", draftId: props.requestTab.source.draftId }
+      : null,
+  generation: props.requestTab?.generation ?? null,
+  environmentId: selectedEnvironmentId.value || null,
+  bearerRef: request.value?.auth.kind === "bearer" ? request.value.auth.token : null,
+}));
+
+watch(credentialContextKey, () => {
+  oauthManagedState.value = props.requestTab ? "unknown" : "unmanaged";
+}, { flush: "sync" });
+
+function updateRequestAuth(auth: ApiRequest["auth"]): void {
+  const current = request.value;
+  if (!current || props.editor.readOnly) return;
+  current.auth = auth;
+}
+
+function selectEnvironment(value: string) {
+  if (tabDebugState.value) tabDebugState.value.selectedEnvironmentId = value || null;
+  else props.debug.selectEnv(value || null);
+}
+
+function onSend() {
+  if (props.requestTab) void props.debug.sendRequestTab(props.requestTab, props.editor);
+  else void props.debug.send(props.editor);
+}
+
+function onCancel() {
+  if (props.requestTab) void props.debug.cancelRequestTab(props.requestTab.tabId);
+  else void props.debug.cancel();
+}
+
+function updateFullUrl(value: string) {
+  const session = freeSession.value;
+  if (!session) return;
+  session.draftRevision += 1;
+  session.urlDraft = value;
+  session.urlDraftInvalid = true;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+    if (request.value?.protocol !== "http") return;
+    const current = request.value;
+    current.baseUrl = parsed.origin;
+    current.path = parsed.pathname || "/";
+    current.query = [...parsed.searchParams.entries()].map(([name, itemValue]) => ({
+      kind: "inline" as const,
+      id: crypto.randomUUID(),
+      name,
+      schema: { kind: "scalar" as const, type: "string" as const },
+      required: false,
+      enabled: true,
+      description: "",
+      value: itemValue,
+    }));
+    session.urlDraft = requestUrl(current);
+    session.urlDraftInvalid = false;
+  } catch {
+    session.urlDraftInvalid = true;
+    // Keep incomplete input in the editor while leaving the last valid request intact.
+  }
+}
+
+function requestUrl(current: ApiRequest): string {
+  const base = current.baseUrl.replace(/\/$/, "");
+  const path = current.path.startsWith("/") ? current.path : `/${current.path}`;
+  const query = current.protocol === "http" ? current.query.filter((item) => item.kind === "inline" && item.enabled !== false && item.name)
+    .map((item) => `${encodeURIComponent(item.kind === "inline" ? item.name : "")}=${encodeURIComponent(item.value ?? "")}`).join("&") : "";
+  return `${base}${path}${query ? `?${query}` : ""}`;
 }
 
 function parameterList(location: ParameterLocation): ParameterBinding[] {
@@ -248,8 +517,9 @@ function caseValue(identity: { caseId: string; scope: string }): string {
 }
 
 function activeCaseValue(): string {
+  if (isFreeRequest.value) return "";
   const cases = props.editor.api?.cases ?? [];
-  const selected = props.debug.selectedCase;
+  const selected = tabDebugState.value?.selectedCase ?? props.debug.selectedCase;
   const active = cases.find((item) => item.id === selected?.caseId && item.scope === selected.scope) ?? cases[0];
   return active ? caseValue({ caseId: active.id, scope: active.scope }) : "";
 }
@@ -258,10 +528,12 @@ function selectDebugCase(value: string) {
   try {
     const parsed: unknown = JSON.parse(value);
     if (Array.isArray(parsed) && typeof parsed[0] === "string" && typeof parsed[1] === "string") {
-      props.debug.selectCase({ caseId: parsed[0], scope: parsed[1] });
+      if (tabDebugState.value) tabDebugState.value.selectedCase = { caseId: parsed[0], scope: parsed[1] };
+      else props.debug.selectCase({ caseId: parsed[0], scope: parsed[1] });
     }
   } catch {
-    props.debug.selectCase(null);
+    if (tabDebugState.value) tabDebugState.value.selectedCase = null;
+    else props.debug.selectCase(null);
   }
 }
 
@@ -284,7 +556,7 @@ async function onSaveRequest() {
   saveFeedback.value = "";
   saveError.value = "";
   try {
-    await props.editor.saveRequestDraft(currentRestoreMatches.value ? props.debug.restoredFields : []);
+    await props.editor.saveRequestDraft(currentRestoreMatches.value ? tabDebugState.value?.fields ?? props.debug.restoredFields : []);
     saveFeedback.value = t("debugLoop.requestSaved");
   } catch (error) {
     saveError.value = error instanceof Error ? error.message : String(error);
@@ -293,8 +565,57 @@ async function onSaveRequest() {
 </script>
 
 <template>
-  <section v-if="editor.api && request && metadata" class="editor" data-testid="request-editor">
-    <section class="metadata" aria-label="API metadata">
+  <section v-if="request" class="editor" data-testid="request-editor" :data-source-kind="isFreeRequest ? 'free' : 'asset'">
+    <div class="editor-header">
+    <div class="top-row">
+      <a-radio-group :value="request.protocol" data-testid="editor-protocol" :disabled="editor.readOnly" @update:value="switchProtocol">
+        <a-radio-button v-for="protocol in ['http', 'websocket', 'soap']" :key="protocol" :value="protocol">{{ t(`protocol.${protocol}`) }}</a-radio-button>
+      </a-radio-group>
+      <a-select v-if="request.protocol === 'http'" v-model:value="request.method" class="method-select" data-testid="editor-method" :disabled="editor.readOnly" :options="methods.map((value) => ({ label: value, value }))" />
+      <span v-else-if="request.protocol === 'soap'" data-testid="editor-method">POST</span>
+      <template v-if="isFreeRequest && freeSession && request.protocol === 'http'">
+        <a-input :value="freeSession.urlDraft" class="url full-url" data-testid="editor-full-url" :disabled="editor.readOnly" :placeholder="t('editor.fullUrl')" @update:value="updateFullUrl" />
+        <a-alert v-if="freeSession.urlDraftInvalid" type="error" :message="t('editor.invalidFullUrl')" data-testid="free-url-draft-error" />
+      </template>
+      <template v-else>
+        <a-input v-model:value="request.baseUrl" class="url" data-testid="editor-base-url" :disabled="editor.readOnly" :placeholder="t('editor.baseUrl')" />
+        <a-input v-model:value="request.path" class="url" data-testid="editor-path" :disabled="editor.readOnly" :placeholder="t('editor.path')" />
+      </template>
+      <a-select data-testid="debug-env-select" :value="selectedEnvironmentId" :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: tabDebugState ? e.id : e.name }))]" @update:value="(value) => selectEnvironment(value as string)" />
+      <a-select v-if="!isFreeRequest" data-testid="debug-case-select" :value="activeCaseValue()" :options="(editor.api?.cases ?? []).map((item) => ({ label: `${item.name} (${item.scope})`, value: caseValue({ caseId: item.id, scope: item.scope }) }))" @update:value="(value) => selectDebugCase(value as string)" />
+      <a-button type="primary" data-testid="send-btn" :disabled="(tabDebugState?.sending ?? debug.sending) || pendingRestoreFields.length > 0" @click="onSend">{{ (tabDebugState?.sending ?? debug.sending) ? t('editor.sending') : t('editor.send') }}</a-button>
+      <a-button v-if="(tabDebugState?.sending ?? debug.sending) && (tabDebugState?.activeRunId ?? debug.activeRunId)" data-testid="debug-cancel" @click="onCancel">{{ t('debugLoop.cancelRun') }}</a-button>
+      <a-button data-testid="debug-settings-open" @click="settingsOpen = true">{{ t('debugLoop.settings') }}</a-button>
+      <template v-if="!isFreeRequest">
+        <a-button data-testid="save-request-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSaveRequest">{{ t('debugLoop.saveRequest') }}</a-button>
+        <a-button data-testid="save-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSave">{{ t('editor.save') }}</a-button>
+      </template>
+      <a-button v-else data-testid="save-free-btn" :disabled="editor.readOnly || freeSession?.urlDraftInvalid || pendingRestoreFields.length > 0 || !props.saveFreeRequest" @click="openFreeSaveDialog">{{ t('debugLoop.freeSaveAsApi') }}</a-button>
+      <span v-if="saveFeedback" data-testid="save-feedback">{{ saveFeedback }}</span>
+      <span v-if="saveError" data-testid="save-error">{{ saveError }}</span>
+    </div>
+    </div>
+
+    <a-modal :open="freeSaveOpen" :title="t('debugLoop.freeSaveTitle')" :confirm-loading="freeSaveBusy" @cancel="freeSaveOpen = false">
+      <a-input v-model:value="freeSaveName" data-testid="free-save-name" :placeholder="t('debugLoop.freeSaveName')" />
+      <template v-if="freeSaveParents.length">
+        <a-select v-model:value="freeSaveParentKey" class="free-save-target" :placeholder="t('debugLoop.freeSaveTarget')" :options="freeSaveParents.map((item) => ({ label: item.label, value: item.key }))" data-testid="free-save-target" />
+        <p class="note">{{ t("debugLoop.freeSaveInheritanceNote") }}</p>
+      </template>
+      <template v-else>
+        <a-alert type="warning" show-icon :message="t('debugLoop.freeSaveNeedsModule')" data-testid="free-save-needs-module" />
+        <a-input v-model:value="freeModuleName" data-testid="free-save-module-name" :placeholder="t('debugLoop.freeSaveModuleName')" />
+        <a-button data-testid="free-save-create-module" :disabled="editor.readOnly || !freeModuleName.trim() || !props.createFreeModule" :loading="freeSaveBusy" @click="onCreateFreeModule">{{ t("debugLoop.freeSaveCreateModule") }}</a-button>
+      </template>
+      <a-alert v-if="saveError" type="error" show-icon :message="saveError" data-testid="free-save-error" />
+      <template #footer>
+        <a-button @click="freeSaveOpen = false">{{ t("debugLoop.freeSaveCancel") }}</a-button>
+        <a-button type="primary" data-testid="free-save-submit" :disabled="editor.readOnly || freeSession?.urlDraftInvalid || !freeSaveParents.some((item) => item.key === freeSaveParentKey) || !freeSaveName.trim() || !props.saveFreeRequest || pendingRestoreFields.length > 0 || tabDebugState?.fields.some((field) => field.needsInput)" :loading="freeSaveBusy" @click="submitFreeSave">{{ t("debugLoop.freeSaveSubmit") }}</a-button>
+      </template>
+    </a-modal>
+
+    <div ref="editorElement" class="editor-content" data-testid="request-editor-scroll" @scroll="captureRequestScroll">
+    <section v-if="metadata" class="metadata" aria-label="API metadata">
       <a-input v-model:value="metadata.name" data-testid="asset-metadata-name" :disabled="editor.readOnly" :placeholder="t('contract.metadataName')" />
       <a-input v-model:value="metadata.description" data-testid="asset-metadata-description" :disabled="editor.readOnly" :placeholder="t('contract.metadataDescription')" />
       <a-input :value="metadata.tags.join(', ')" data-testid="asset-metadata-tags" :disabled="editor.readOnly" :placeholder="t('contract.metadataTags')" @update:value="metadataTags" />
@@ -302,27 +623,7 @@ async function onSaveRequest() {
       <a-select v-model:value="metadata.status" data-testid="asset-metadata-status" :disabled="editor.readOnly" :options="['draft', 'published', 'deprecated'].map((value) => ({ label: t(`contract.status.${value}`), value }))" />
       <span v-if="editor.dirty" class="dirty" :title="t('editor.unsaved')">●</span>
     </section>
-
-    <div class="top-row">
-      <a-radio-group :value="request.protocol" data-testid="editor-protocol" :disabled="editor.readOnly" @update:value="switchProtocol">
-        <a-radio-button v-for="protocol in ['http', 'websocket', 'soap']" :key="protocol" :value="protocol">{{ t(`protocol.${protocol}`) }}</a-radio-button>
-      </a-radio-group>
-      <a-select v-if="request.protocol === 'http'" v-model:value="request.method" class="method-select" data-testid="editor-method" :disabled="editor.readOnly" :options="methods.map((value) => ({ label: value, value }))" />
-      <span v-else-if="request.protocol === 'soap'" data-testid="editor-method">POST</span>
-      <a-input v-model:value="request.baseUrl" class="url" data-testid="editor-base-url" :disabled="editor.readOnly" :placeholder="t('editor.baseUrl')" />
-      <a-input v-model:value="request.path" class="url" data-testid="editor-path" :disabled="editor.readOnly" :placeholder="t('editor.path')" />
-      <a-select data-testid="debug-env-select" :value="(editor.envs ?? []).some((e) => e.name === debug.selectedEnvName) ? debug.selectedEnvName ?? '' : ''" :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: e.name }))]" @update:value="(value) => debug.selectEnv(value === '' ? null : (value as string))" />
-      <a-select data-testid="debug-case-select" :value="activeCaseValue()" :options="(editor.api?.cases ?? []).map((item) => ({ label: `${item.name} (${item.scope})`, value: caseValue({ caseId: item.id, scope: item.scope }) }))" @update:value="(value) => selectDebugCase(value as string)" />
-      <a-button type="primary" data-testid="send-btn" :disabled="debug.sending || pendingRestoreFields.length > 0" @click="debug.send(editor)">{{ debug.sending ? t('editor.sending') : t('editor.send') }}</a-button>
-      <a-button v-if="debug.sending && debug.activeRunId" data-testid="debug-cancel" @click="debug.cancel()">{{ t('debugLoop.cancelRun') }}</a-button>
-      <a-button data-testid="debug-settings-open" @click="settingsOpen = true">{{ t('debugLoop.settings') }}</a-button>
-      <a-button data-testid="save-request-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSaveRequest">{{ t('debugLoop.saveRequest') }}</a-button>
-      <a-button data-testid="save-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSave">{{ t('editor.save') }}</a-button>
-      <span v-if="saveFeedback" data-testid="save-feedback">{{ saveFeedback }}</span>
-      <span v-if="saveError" data-testid="save-error">{{ saveError }}</span>
-    </div>
-
-    <a-tabs>
+    <a-tabs v-model:active-key="requestPanel">
       <a-tab-pane v-for="location in parameterLocations" :key="location">
         <template #tab><span :data-testid="`tab-${location}`">{{ t(`contract.location.${location}`) }}</span></template>
         <div class="panel">
@@ -429,20 +730,34 @@ async function onSaveRequest() {
         <a-input v-model:value="request.soapAction" data-testid="editor-soap-action" :disabled="editor.readOnly" />
       </a-tab-pane>
     </a-tabs>
-    <ResponseEditor v-if="assets" :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" />
-    <ProjectAssetsPanel v-if="assets" :assets="assets" :api="api" :credential-context-key="credentialContextKey" :read-only="editor.readOnly" />
-    <CredentialEditor v-if="api && projectLocator" :api="api" :locator="projectLocator" :auth="request.auth" :context-key="credentialContextKey" :read-only="editor.readOnly" />
-    <DebugSettings v-if="api" :open="settingsOpen" :api="api" :debug="debug" :editor="editor" @close="settingsOpen = false" />
+    <ResponseEditor v-if="assets && !isFreeRequest && metadata && editor.api" :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" />
+    <ProjectAssetsPanel v-if="assets && !isFreeRequest" :assets="assets" :api="api" :credential-context-key="credentialContextKey" :read-only="editor.readOnly" />
+    <CredentialEditor v-if="api && credentialProjectLocator" :api="api" :locator="credentialProjectLocator" :auth="request.auth" :context-key="credentialContextKey" :managed-state="oauthManagedState" :read-only="editor.readOnly" />
+    <OAuthManager
+      v-if="api && credentialProjectLocator && requestTab?.root"
+      :api="api"
+      :locator="credentialProjectLocator"
+      :context-key="oauthContextKey"
+      :environment-id="selectedEnvironmentId || undefined"
+      :auth="request.auth"
+      :read-only="editor.readOnly"
+      @update:auth="updateRequestAuth"
+      @managed-state="oauthManagedState = $event"
+    />
+    </div>
+    <DebugSettings v-if="api" :open="settingsOpen" :api="api" :debug="debug" :editor="editor" :request-tab="requestTab" @close="settingsOpen = false" />
   </section>
   <EmptyState v-else :text="t('editor.empty')" />
 </template>
 
 <style scoped>
-.editor { display: flex; flex-direction: column; gap: 8px; padding: 10px; height: 100%; box-sizing: border-box; overflow: auto; }
+.editor { display: flex; flex: 1; flex-direction: column; gap: 8px; min-height: 0; padding: 10px; box-sizing: border-box; overflow: hidden; }
+.editor-header { flex: none; display: flex; flex-direction: column; gap: 8px; }
+.editor-content { flex: 1; min-height: 0; overflow: auto; }
 .metadata { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 6px; align-items: center; }
 .top-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .url { flex: 1; min-width: 120px; }
-.panel { display: flex; flex-direction: column; gap: 6px; overflow: auto; }
+.panel { display: flex; flex-direction: column; gap: 6px; overflow: visible; }
 .kv-row { display: flex; gap: 6px; align-items: center; }
 .kv-row > * { flex: 1; }
 .dirty { color: var(--accent); }

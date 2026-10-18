@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Button as AButton, Input as AInput, InputNumber as AInputNumber, Modal as AModal, Select as ASelect, Tag as ATag } from "ant-design-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { DebugHistorySummary } from "@apicc/core";
+import type { ProjectLocator } from "../../../shared/locations.js";
 import type { useDebugStore } from "../stores/debug.js";
 import type { useDebugHistoryStore } from "../stores/debugHistory.js";
 import type { useEditorStore } from "../stores/editor.js";
@@ -15,6 +16,9 @@ const props = defineProps<{
   history: ReturnType<typeof useDebugHistoryStore>;
   debug: ReturnType<typeof useDebugStore>;
   editor: ReturnType<typeof useEditorStore>;
+  projectLocator?: ProjectLocator | null;
+  restoreFree?: (input: { historyId: string; exchangeOrder: number; project: ProjectLocator }) => Promise<{ sourceChanged: boolean; sourceAvailable: boolean } | null>;
+  replayFree?: (input: { historyId: string; exchangeOrder: number; project: ProjectLocator; draftId: string }) => Promise<void>;
 }>();
 const emit = defineEmits<{ (event: "close"): void }>();
 const { t } = useI18n();
@@ -24,13 +28,19 @@ const busyAction = ref("");
 const searchText = ref("");
 const method = ref("");
 const resultFilter = ref("");
+const sourceFilter = ref("");
 const projectId = ref(props.history.filter.projectId ?? "");
 const apiId = ref(props.history.filter.apiId ?? "");
 const fromDate = ref(toLocalDateTime(props.history.filter.from));
 const toDate = ref(toLocalDateTime(props.history.filter.to));
 
 const activeSession = computed(() => props.editor.activeKey ? props.editor.sessions[props.editor.activeKey] : undefined);
-const currentProjectId = computed(() => activeSession.value?.locator.projectId ?? "");
+const currentProject = computed(() => props.projectLocator ?? (activeSession.value ? {
+  workspaceId: activeSession.value.locator.workspaceId,
+  groupId: activeSession.value.locator.groupId,
+  projectId: activeSession.value.locator.projectId,
+} : null));
+const currentProjectId = computed(() => currentProject.value?.projectId ?? "");
 const currentApiId = computed(() => activeSession.value?.locator.apiId ?? "");
 const record = computed(() => props.history.selected?.record ?? null);
 const exchanges = computed(() => record.value?.result.exchanges ?? []);
@@ -51,17 +61,71 @@ const selectedExchangeDisplay = computed(() => {
 const selectedSummary = computed(() => record.value ? props.history.items.find((item) => item.historyId === record.value!.historyId) ?? null : null);
 const currentSourceChanged = computed(() => {
   const current = props.editor.activeKey ? props.editor.sessions[props.editor.activeKey] : undefined;
-  return Boolean(record.value && current && JSON.stringify(current.locator) === JSON.stringify(record.value.result.locator)
-    && current.sourceProjectRevision !== record.value.result.sourceProjectRevision);
+  const selected = record.value;
+  if (!selected) return false;
+  if (selected.formatVersion === 1) {
+    if (!current) return false;
+    const result = selected.result;
+    return JSON.stringify(current.locator) === JSON.stringify(result.locator)
+      && current.sourceProjectRevision !== result.sourceProjectRevision;
+  }
+  const result = selected.result;
+  if (!result.source) return false;
+  if (result.source.sourceKind === "asset") {
+    if (!current) return false;
+    return JSON.stringify(current.locator) === JSON.stringify(result.source.locator)
+      && current.sourceProjectRevision !== result.sourceProjectRevision;
+  }
+  if (result.source.sourceKind === "free") {
+    const project = result.source.project;
+    const free = props.editor.activeFreeSession;
+    const currentMatches = !!current && current.locator.workspaceId === project.workspaceId
+      && current.locator.groupId === project.groupId
+      && current.locator.projectId === project.projectId;
+    const freeMatches = free?.project.workspaceId === project.workspaceId
+      && free.project.groupId === project.groupId && free.project.projectId === project.projectId;
+    return (currentMatches && current.sourceProjectRevision !== result.sourceProjectRevision)
+      || (freeMatches && free.sourceProjectRevision !== result.sourceProjectRevision);
+  }
+  return false;
 });
 const hasPendingInput = computed(() => props.debug.restoredFields.some((field) => field.needsInput));
 const canRestoreSelected = computed(() => {
   const selected = selectedExchange.value;
   const replay = record.value?.result.replay;
   if (!selected?.intent || !replay || record.value?.result.identityAvailable === false || replay.identityAvailable === false) return false;
+  if (replay.mode === "free") return sameProjectLocator(replay.project, currentProject.value)
+    && Boolean(selected.intent.available || selected.intent.fields.some((field) => field.needsInput));
   const identity = replay.mode === "request" ? replay.locator : replay.case;
   const template = replay.mode === "request" ? replay.requestTemplate ?? replay.request : replay.requestTemplate;
   return Boolean(identity && template && (selected.intent.available || selected.intent.fields.some((field) => field.needsInput)));
+});
+const canReplaySelected = computed(() => {
+  const replay = record.value?.result.replay;
+  const selected = record.value;
+  if (!selected || !replay || selected.result.identityAvailable === false || replay.identityAvailable === false) return false;
+  if (replay.mode === "case") {
+    const source = selected.formatVersion === 1
+      ? selected.result.mode === "case" ? selected.result.locator : null
+      : selected.result.mode === "case" && selected.result.source?.sourceKind === "asset"
+        ? selected.result.source.locator
+        : null;
+    return Boolean(source && replay.case?.caseId
+      && source.workspaceId === replay.case.workspaceId
+      && source.groupId === replay.case.groupId
+      && source.projectId === replay.case.projectId
+      && source.collectionId === replay.case.collectionId
+      && source.apiId === replay.case.apiId
+      && JSON.stringify(source.folderIds) === JSON.stringify(replay.case.folderIds));
+  }
+  if (!replay.available) return false;
+  if (replay.mode === "free") return sameProjectLocator(replay.project, currentProject.value) && !replay.fields.some((field) => field.needsInput);
+  if (replay.mode === "request") return !replay.fields.some((field) => field.needsInput);
+  return false;
+});
+const freeSourceMatchesCurrentProject = computed(() => {
+  const replay = record.value?.result.replay;
+  return replay?.mode === "free" && sameProjectLocator(replay.project, currentProject.value);
 });
 
 watch(() => props.open, (open) => {
@@ -70,6 +134,7 @@ watch(() => props.open, (open) => {
   searchText.value = "";
   method.value = "";
   resultFilter.value = "";
+  sourceFilter.value = "";
   restoreResult.value = null;
 });
 
@@ -86,6 +151,7 @@ async function applyFilters() {
     offset: 0,
     ...(projectId.value ? { projectId: projectId.value } : {}),
     ...(apiId.value ? { apiId: apiId.value } : {}),
+    ...(sourceFilter.value ? { sourceKind: sourceFilter.value as "asset" | "free" | "unavailable" } : {}),
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
     ...(searchText.value.trim() ? { text: searchText.value.trim() } : {}),
@@ -127,7 +193,14 @@ function parseLocalDateTime(value: string): string | undefined | null {
 
 function summaryLabel(item: DebugHistorySummary): string {
   const when = new Date(item.createdAt).toLocaleString();
-  return `${when} · ${item.method ?? item.mode.toUpperCase()} · ${item.apiName ?? item.collectionName ?? item.apiId ?? t("debugLoop.unknownApi")} · ${item.passed}/${item.total}`;
+  const source = item.sourceKind === "free"
+    ? `${t("debugLoop.freeSource")} · ${item.projectId ?? "?"} · ${item.draftId ?? "?"}`
+    : item.sourceKind === "unavailable" ? t("debugLoop.unavailableSource") : t("debugLoop.assetSource");
+  return `${when} · ${item.method ?? item.mode.toUpperCase()} · ${item.apiName ?? item.collectionName ?? item.apiId ?? t("debugLoop.unknownApi")} · ${source} · ${item.passed}/${item.total}`;
+}
+
+function sameProjectLocator(left: ProjectLocator | null | undefined, right: ProjectLocator | null | undefined): boolean {
+  return !!left && !!right && left.workspaceId === right.workspaceId && left.groupId === right.groupId && left.projectId === right.projectId;
 }
 
 async function openRecord(item: DebugHistorySummary) {
@@ -167,9 +240,19 @@ async function clearAll() {
 
 async function restoreSelected() {
   if (!record.value || !selectedExchange.value) return;
-  const identity = record.value.result.replay.mode === "request"
-    ? record.value.result.replay.locator
-    : record.value.result.replay.case;
+  const replay = record.value.result.replay;
+  if (replay.mode === "free") {
+    if (!replay.project || !props.restoreFree || !sameProjectLocator(replay.project, currentProject.value)) return;
+    busyAction.value = "restore";
+    try {
+      const restored = await props.restoreFree({ historyId: record.value.historyId, exchangeOrder: selectedExchange.value.order, project: replay.project });
+      if (restored) restoreResult.value = restored;
+    } catch (error) {
+      props.history.error = error instanceof Error ? error.message : String(error);
+    } finally { busyAction.value = ""; }
+    return;
+  }
+  const identity = replay.mode === "request" ? replay.locator : replay.case;
   if (!identity) return;
   const locator = { workspaceId: identity.workspaceId, groupId: identity.groupId, projectId: identity.projectId,
     collectionId: identity.collectionId, folderIds: [...identity.folderIds], apiId: identity.apiId };
@@ -190,6 +273,16 @@ async function restoreSelected() {
 async function replaySelected() {
   if (!record.value) return;
   const replay = record.value.result.replay;
+  if (replay.mode === "free") {
+    if (!replay.project || !props.replayFree || !sameProjectLocator(replay.project, currentProject.value) || !replay.draftId) return;
+    busyAction.value = "replay";
+    try {
+      await props.replayFree({ historyId: record.value.historyId, exchangeOrder: selectedExchange.value?.order ?? 0, project: replay.project, draftId: replay.draftId });
+    } catch (error) {
+      props.history.error = error instanceof Error ? error.message : String(error);
+    } finally { busyAction.value = ""; }
+    return;
+  }
   const identity = replay.mode === "request" ? replay.locator : replay.case;
   if (!identity) return;
   const locator = { workspaceId: identity.workspaceId, groupId: identity.groupId, projectId: identity.projectId,
@@ -213,6 +306,7 @@ async function savePreferences() {
       <div class="history-toolbar">
         <a-input v-model:value="searchText" allow-clear :placeholder="t('debugLoop.searchHistory')" data-testid="debug-history-search" @press-enter="applyFilters" />
         <a-input v-model:value="method" allow-clear :placeholder="t('debugLoop.methodFilter')" data-testid="debug-history-method" @press-enter="applyFilters" />
+        <a-select v-model:value="sourceFilter" allow-clear :placeholder="t('debugLoop.sourceFilter')" :options="[{label:t('debugLoop.assetSource'),value:'asset'},{label:t('debugLoop.freeSource'),value:'free'},{label:t('debugLoop.unavailableSource'),value:'unavailable'}]" data-testid="debug-history-source-filter" />
         <a-select v-model:value="resultFilter" allow-clear :placeholder="t('debugLoop.resultFilter')" :options="[{label:t('debugLoop.passed'),value:'passed'},{label:t('debugLoop.failed'),value:'failed'},{label:t('debugLoop.aborted'),value:'aborted'}]" data-testid="debug-history-result-filter" />
         <a-button :disabled="!currentProjectId" data-testid="debug-history-current-project" @click="scopeToCurrentProject">{{ t("debugLoop.currentProject") }}</a-button>
         <a-button :disabled="!currentProjectId || !currentApiId" data-testid="debug-history-current-api" @click="scopeToCurrentApi">{{ t("debugLoop.currentApi") }}</a-button>
@@ -239,8 +333,14 @@ async function savePreferences() {
               <span>{{ selectedSummary ? summaryLabel(selectedSummary) : record.historyId }}</span>
               <a-button size="small" danger :loading="busyAction === 'delete'" data-testid="debug-history-delete" @click="deleteRecord">{{ t("debugLoop.deleteRecord") }}</a-button>
             </div>
+            <div v-if="record.formatVersion === 2 && record.result.source.sourceKind === 'free'" class="history-source" data-testid="debug-history-free-source">
+              <span>{{ t("debugLoop.freeSource") }}</span>
+              <code>{{ record.result.source.project.projectId }}</code>
+              <code>{{ record.result.source.draftId }}</code>
+            </div>
             <a-alert v-if="record.result.identityAvailable === false || record.result.replay.identityAvailable === false" type="warning" :message="t('debugLoop.identityUnavailable')" />
             <a-alert v-if="currentSourceChanged || restoreResult?.sourceChanged" type="warning" :message="t('debugLoop.sourceChanged')" data-testid="debug-history-source-changed" />
+            <a-alert v-if="record.result.replay.mode === 'free' && !freeSourceMatchesCurrentProject" type="warning" :message="t('debugLoop.switchToSourceProject')" data-testid="debug-history-switch-project" />
             <div class="exchange-select">
               <label>{{ t("debugLoop.exchange") }}</label>
               <a-select :value="selectedExchangeOrder ?? undefined" :options="exchanges.map((item) => ({ label: `#${item.order} · ${item.transportState}${item.observation ? ` · ${item.observation}` : ''}`, value: item.order }))" data-testid="debug-history-exchange" @update:value="(value) => selectedExchangeOrder = value as number" />
@@ -256,6 +356,14 @@ async function savePreferences() {
                 <span v-for="field in debug.restoredPreview.fields.filter((item) => item.needsInput)" :key="field.path">{{ field.path }} · {{ field.status }}</span>
               </div>
             </section>
+            <section v-if="debug.freeRestoredPreview && debug.restoredSourceAvailable === false" class="restore-preview" data-testid="debug-history-free-readonly-restore">
+              <a-alert type="warning" show-icon :message="t('debugLoop.freeSourceUnavailable')" />
+              <span class="note">{{ debug.freeRestoredPreview.project.projectId }} · {{ debug.freeRestoredPreview.draftId }}</span>
+              <pre class="projected-exchange">{{ JSON.stringify(debug.freeRestoredPreview.request, null, 2) }}</pre>
+              <div v-if="debug.freeRestoredPreview.fields.some((field) => field.needsInput)" class="needs-input" data-testid="debug-history-free-pending-readonly">
+                <span v-for="field in debug.freeRestoredPreview.fields.filter((item) => item.needsInput)" :key="field.path">{{ field.path }} · {{ field.status }}</span>
+              </div>
+            </section>
             <div v-if="debug.restoredTargetKey && hasPendingInput" class="needs-input" data-testid="debug-history-needs-input">
               <label v-for="field in debug.restoredFields.filter((item) => item.needsInput)" :key="field.path">
                 <span>{{ field.path }} · {{ field.status }}</span>
@@ -263,8 +371,8 @@ async function savePreferences() {
               </label>
             </div>
             <div class="detail-actions">
-              <a-button type="primary" :disabled="!canRestoreSelected" :loading="busyAction === 'restore'" data-testid="debug-history-restore" @click="restoreSelected">{{ t("debugLoop.restoreRequest") }}</a-button>
-              <a-button :disabled="!record.result.replay.available || record.result.identityAvailable === false" :loading="busyAction === 'replay'" data-testid="debug-history-replay" @click="replaySelected">{{ t("debugLoop.replay") }}</a-button>
+              <a-button type="primary" :disabled="!canRestoreSelected" :loading="busyAction === 'restore'" data-testid="debug-history-restore" @click="restoreSelected">{{ record.result.replay.mode === 'free' ? t("debugLoop.restoreFreeRequest") : t("debugLoop.restoreRequest") }}</a-button>
+              <a-button :disabled="!canReplaySelected" :loading="busyAction === 'replay'" data-testid="debug-history-replay" @click="replaySelected">{{ t("debugLoop.replay") }}</a-button>
             </div>
           </template>
           <EmptyState v-else :text="t('debugLoop.selectHistory')" />

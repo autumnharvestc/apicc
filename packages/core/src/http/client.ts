@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { LookupFunction } from "node:net";
-import { Agent, request } from "undici";
+import { request } from "undici";
 import type { Dispatcher } from "undici";
 import type {
   ExecutableRequest, ExecutionResponse, HttpExecuteOptions, HttpHopObservation,
@@ -8,7 +8,9 @@ import type {
 } from "../plugin/types.js";
 import { resolveRequestSettings } from "../request/settings.js";
 import { canHandleProtocol } from "../protocol/index.js";
+import type { PreparedNetworkResolution, PreparedNetworkTLS } from "../network/prepare.js";
 import { prepareHttpBody, type UploadBudget } from "./body.js";
+import { HttpDispatcherPool, type HttpDispatcherFactory, type HttpDispatcherLease } from "./dispatchers.js";
 import { legacyHeaders, rawHeaderPairs, readBoundedResponseBody } from "./response.js";
 
 export type HttpErrorKind = "dns" | "refused" | "timeout" | "tls" | "unknown";
@@ -61,6 +63,8 @@ export interface HttpClientOptions {
   connectionMode?: "pooled" | "fresh";
   /** Host resolver override, also useful for bounded local connection fixtures. */
   lookup?: LookupFunction;
+  /** Internal dispatcher seam for lifecycle tests; production should omit it. */
+  dispatcherFactory?: HttpDispatcherFactory;
 }
 
 export interface ManagedProtocolClient extends ProtocolClient {
@@ -217,14 +221,6 @@ function transformRedirect(request: HttpRequest, status: number, fromUrl: string
   return { request: next, url: next.url, fromUrl, originChanged };
 }
 
-function createAgent(settings: ReturnType<typeof resolveRequestSettings>, lookup?: LookupFunction): Agent {
-  return new Agent({
-    connect: { timeout: settings.connectTimeoutMs, ...(lookup === undefined ? {} : { lookup }) },
-    headersTimeout: settings.headersTimeoutMs,
-    bodyTimeout: settings.bodyTimeoutMs,
-  });
-}
-
 function responseValue(status: number, headers: Record<string, string>, rawHeaders: readonly (readonly [string, string])[], body: Awaited<ReturnType<typeof readBoundedResponseBody>>, timeMs: number): ExecutionResponse {
   return {
     status,
@@ -243,15 +239,13 @@ function responseValue(status: number, headers: Record<string, string>, rawHeade
 
 export function createHttpClient(options: HttpClientOptions = {}): ManagedProtocolClient {
   const connectionMode = options.connectionMode ?? "pooled";
-  const agents = new Map<string, Agent>();
-
-  function agentFor(settings: ReturnType<typeof resolveRequestSettings>): Agent {
-    const key = `${settings.connectTimeoutMs}:${settings.headersTimeoutMs}:${settings.bodyTimeoutMs}`;
-    if (connectionMode === "fresh") return createAgent(settings, options.lookup);
-    let agent = agents.get(key);
-    if (!agent) { agent = createAgent(settings, options.lookup); agents.set(key, agent); }
-    return agent;
-  }
+  const pool = new HttpDispatcherPool(connectionMode, options.dispatcherFactory);
+  const defaultTLS: PreparedNetworkTLS = Object.freeze({
+    verify: true,
+    caMode: "append-runtime-defaults",
+    caCertificates: Object.freeze([]),
+    clientCertificates: Object.freeze([]),
+  });
 
   return {
     name: "http",
@@ -282,7 +276,6 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
       let requestBodyProgress: HttpRequestBodyObservation = { fileBytesRead: 0, transportEncodedBytesWritten: 0, complete: false };
       let responseFailureObservation: HttpIncompleteResponseObservation | undefined;
       const boundary = req.body?.kind === "multipart" ? `----apicc-${randomUUID()}` : undefined;
-      const agent = agentFor(settings);
       const isFresh = connectionMode === "fresh";
       let currentRequest: HttpRequest = req;
       let currentUrl = buildUrl(req);
@@ -294,15 +287,40 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
       let connectTimeoutExpired = false;
       let headersTimeoutExpired = false;
       let totalTimeout: ReturnType<typeof setTimeout> | undefined;
+      let activeLease: HttpDispatcherLease | undefined;
       const totalAbort = new AbortController();
       const signal = opts.signal ? AbortSignal.any([opts.signal, totalAbort.signal]) : totalAbort.signal;
       const observe = async (event: HttpHopObservation) => { await opts.runtime?.observe?.(event); };
       try {
         while (true) {
           if (signal.aborted) throw Object.assign(new Error("请求已取消"), { name: "AbortError", code: "REQUEST_ABORTED", stage: currentStage });
+          const parsedUrl = new URL(currentUrl);
+          const network = opts.runtime?.network;
+          const resolution: PreparedNetworkResolution = network?.resolveForOrigin(parsedUrl) ?? {
+            origin: parsedUrl.origin,
+            route: { kind: "direct" },
+            targetTLS: defaultTLS,
+          };
+          activeLease = pool.acquire({
+            origin: parsedUrl.origin,
+            ...(network === undefined ? {} : { networkRevision: network.revision }),
+            credentialVersions: network?.credentialVersions ?? {},
+            settings: {
+              connectTimeoutMs: settings.connectTimeoutMs,
+              headersTimeoutMs: settings.headersTimeoutMs,
+              bodyTimeoutMs: settings.bodyTimeoutMs,
+              totalTimeoutMs: settings.totalTimeoutMs,
+            },
+            resolution,
+            ...(options.lookup === undefined ? {} : { lookup: options.lookup }),
+          });
           requestBodyProgress = { fileBytesRead: 0, transportEncodedBytesWritten: 0, complete: false };
           responseFailureObservation = undefined;
           const sendHeaders = { ...currentRequest.headers };
+          if (resolution.route.kind === "proxy") {
+            const proxyAuthorization = headerKey(sendHeaders, "proxy-authorization");
+            if (proxyAuthorization !== undefined) delete sendHeaders[proxyAuthorization];
+          }
           const preparedBody = prepareHttpBody(currentRequest, {
             files: opts.runtime?.files,
             budget: uploadBudget,
@@ -366,7 +384,7 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
             hopAbort.abort(error);
             rejectTimeout?.(error);
           }, settings.connectTimeoutMs);
-          const requestDispatcher = agent.compose((dispatch) => (dispatchOptions, dispatchHandler) => {
+          const requestDispatcher = activeLease.dispatcher.compose((dispatch) => (dispatchOptions, dispatchHandler) => {
             const requestHandler = new Proxy(dispatchHandler, {
               get(target, property, receiver) {
                 if (property === "onRequestStart") {
@@ -473,6 +491,8 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
               status: response.statusCode, from: transition.fromUrl, to: currentUrl,
               originChanged: transition.originChanged,
             });
+            await activeLease.release();
+            activeLease = undefined;
             currentUrl = buildUrl(currentRequest);
             continue;
           }
@@ -514,17 +534,14 @@ export function createHttpClient(options: HttpClientOptions = {}): ManagedProtoc
         throw wrapped;
       } finally {
         if (totalTimeout !== undefined) clearTimeout(totalTimeout);
-        if (isFresh) {
-          if (connectTimeoutExpired || headersTimeoutExpired || totalTimeoutExpired || opts.signal?.aborted) {
-            await agent.destroy(new Error("The HTTP attempt was aborted."));
-          } else await agent.close();
-        }
+        await activeLease?.release({
+          destroy: isFresh && (connectTimeoutExpired || headersTimeoutExpired || totalTimeoutExpired || opts.signal?.aborted === true),
+          reason: new Error("The HTTP attempt was aborted."),
+        });
       }
     },
     async close() {
-      const active = [...agents.values()];
-      agents.clear();
-      await Promise.all(active.map((agent) => agent.close()));
+      await pool.close();
     },
   };
 }

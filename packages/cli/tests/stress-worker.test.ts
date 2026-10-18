@@ -14,7 +14,7 @@ import {
   type StressWorkerSpec,
   type Workspace,
 } from "@apicc/core";
-import { parseShardOutcomeStdout, runCli, type RunCliDeps } from "../src/main.js";
+import { parseShardOutcomeStdout, runCli as runCliActual, type RunCliDeps } from "../src/main.js";
 
 // 本文件覆盖 M2-D1 任务 2：stress-worker 子命令（stdout 末行 JSON 契约）与 run-stress --shards
 // 协调分支（spawn 实现可注入——真实子进程端到端留任务 3）。
@@ -24,8 +24,13 @@ let baseUrl = "";
 let root: string;
 let prevCwd = "";
 let definitionRevision = "";
+let networkPrivateRoot = "";
 /** 本文件创建的临时工作区根（afterAll 统一清理，模式与姊妹文件 stress-subprocess.test.ts 一致）。 */
 const tempRoots: string[] = [];
+
+function runCli(argv: string[], registry: Parameters<typeof runCliActual>[1], log: (line: string) => void = () => {}, deps: RunCliDeps = {}): Promise<number> {
+  return runCliActual(argv, registry, log, { networkPrivateRoot, ...deps });
+}
 
 const GROUP_ID = "00000000-0000-4000-8000-000000000002";
 const PROJECT_ID = "00000000-0000-4000-8000-000000000004";
@@ -62,6 +67,8 @@ beforeAll(async () => {
 
   root = mkdtempSync(join(tmpdir(), "apicc-worker-"));
   tempRoots.push(root);
+  networkPrivateRoot = mkdtempSync(join(tmpdir(), "apicc-worker-network-private-"));
+  tempRoots.push(networkPrivateRoot);
   const ws: Workspace = {
     formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "worker-e2e", variables: {},
     groups: [{

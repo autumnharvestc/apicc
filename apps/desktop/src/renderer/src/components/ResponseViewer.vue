@@ -1,19 +1,28 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Button as AButton, Input as AInput, Select as ASelect, TabPane as ATabPane, Tabs as ATabs, Table as ATable, Tag as ATag, Typography as ATypography } from "ant-design-vue";
 import type { DebugResult } from "@apicc/core";
 import type { ApiccApi, DebugOutput } from "../../../shared/types.js";
+import type { RequestTabDebugState } from "../stores/debug.js";
 import EmptyState from "./EmptyState.vue";
 
-const props = withDefaults(defineProps<{ result?: DebugResult | DebugOutput | null; sending?: boolean; error?: string | null; api?: ApiccApi }>(), {
+const props = withDefaults(defineProps<{ result?: DebugResult | DebugOutput | null; sending?: boolean; error?: string | null; api?: ApiccApi; tabState?: RequestTabDebugState | null }>(), {
   result: null,
   sending: false,
   error: null,
 });
 const ATypographyText = ATypography.Text;
 const { t } = useI18n();
-const tab = ref("body");
+const viewerElement = ref<HTMLElement | null>(null);
+const localTab = ref("body");
+const tab = computed({
+  get: () => props.tabState?.responsePanel ?? localTab.value,
+  set: (value: string) => {
+    localTab.value = value;
+    if (props.tabState) props.tabState.responsePanel = value;
+  },
+});
 const format = ref<"raw" | "pretty">("pretty");
 const search = ref("");
 const exchangeOrder = ref<number | null>(null);
@@ -136,6 +145,15 @@ watch(() => debugResult.value?.runId, () => {
   exchangeOrder.value = debugResult.value?.exchanges.at(-1)?.order ?? null;
 });
 
+watch(() => props.tabState?.tabId, async () => {
+  await nextTick();
+  if (viewerElement.value && props.tabState) viewerElement.value.scrollTop = props.tabState.responseScrollTop;
+}, { immediate: true, flush: "post" });
+
+function captureResponseScroll(event: Event) {
+  if (props.tabState) props.tabState.responseScrollTop = (event.currentTarget as HTMLElement).scrollTop;
+}
+
 function headerRowKey(_record: unknown, index?: number): number { return index ?? 0; }
 function assertionRowKey(_record: unknown, index?: number): number { return index ?? 0; }
 function assertionRowProps(): Record<string, string> { return { "data-testid": "assertion-row" }; }
@@ -230,7 +248,7 @@ function prettyXml(source: string): string | null {
 </script>
 
 <template>
-  <section class="viewer" data-testid="response-viewer">
+  <section ref="viewerElement" class="viewer" data-testid="response-viewer" @scroll="captureResponseScroll">
     <div v-if="!result" data-testid="response-empty"><EmptyState :text="t('response.empty')" /></div>
     <a-tabs v-else v-model:active-key="tab" class="resp-tabs">
       <template #tabBarExtraContent>
@@ -317,9 +335,8 @@ function prettyXml(source: string): string | null {
 </template>
 
 <style scoped>
-.viewer { display: flex; flex-direction: column; gap: 8px; padding: 10px; height: 100%; box-sizing: border-box; overflow: auto; }
+.viewer { display: flex; flex-direction: column; gap: 8px; padding: 10px; height: 100%; min-height: 0; box-sizing: border-box; overflow: auto; }
 .resp-tabs { flex: 1; min-height: 0; }
-.resp-tabs :deep(.ant-tabs-content) { overflow: auto; }
 .meta,.body-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .body-tools :deep(.ant-input) { width: 180px; }
 .body-tools :deep(.ant-select) { width: 100px; }

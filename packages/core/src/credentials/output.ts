@@ -46,9 +46,30 @@ export function collectCredentialRefsForRequests(
   project: DeepReadonly<ContractProject>,
   requests: readonly EffectiveCredentialRequest[],
 ): SecretRef[] {
+  return collectCredentialRefsFromRequestDrafts(project, requests.map((selected) => selected.request));
+}
+
+/** Collect only selected effective Bearer refs for pre-binding OAuth coordination. */
+export function collectBearerCredentialRefsForRequests(
+  project: DeepReadonly<ContractProject>,
+  requests: readonly EffectiveCredentialRequest[],
+): SecretRef[] {
   const refs = new Map<string, SecretRef>();
   for (const selected of requests) {
     const auth = inlineAuth(project, selected.request.auth);
+    if (auth?.kind === "bearer") refs.set(auth.token.id, { ...auth.token });
+  }
+  return [...refs.values()];
+}
+
+/** Collect refs from unsaved requests without requiring a fabricated owning ApiAsset. */
+export function collectCredentialRefsFromRequestDrafts(
+  project: DeepReadonly<ContractProject>,
+  requests: readonly DeepReadonly<ApiRequest>[],
+): SecretRef[] {
+  const refs = new Map<string, SecretRef>();
+  for (const request of requests) {
+    const auth = inlineAuth(project, request.auth);
     if (auth) collectAuthRefs(auth, refs);
   }
   return [...refs.values()];

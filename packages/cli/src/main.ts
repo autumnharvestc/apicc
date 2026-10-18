@@ -7,11 +7,19 @@ import { fileURLToPath } from "node:url";
 import { generatePluginPackage } from "./create-plugin.js";
 import {
   ShardOutcomeSchema,
+  CredentialError,
   CurrentStressReportSchema,
   CollectionRunError,
   createAiProvider,
   createProjectSnapshot,
   createHttpSession,
+  createFileOAuthProfileStore,
+  withOAuthBearerRefLock,
+  defaultOAuthPrivateRoot,
+  defaultNetworkPrivateRoot,
+  createNetworkProfileHost,
+  createOAuthProfileHost,
+  createOAuthProfileCoordinator,
   createDebugHistoryStore,
   createDebugHistoryOwnerKey,
   defaultDebugHistoryRoot,
@@ -35,6 +43,8 @@ import {
   type PluginLoadEntry,
   type PluginRegistry,
   type Project,
+  type OAuthProfileSummary,
+  type OAuthPublicResult,
   type SecretRef,
   type ShardFailure,
   type ShardOutcome,
@@ -242,17 +252,55 @@ export interface RunCliDeps {
   secretStore?: import("@apicc/core").SecretStore;
   /** CLI 凭据宿主注入：指定独立 privateRoot，默认 Core 提供的用户级 privateRoot。 */
   credentialPrivateRoot?: string;
+  /** CLI OAuth profile/coordinator root; tests and embedded hosts should own this path. */
+  oauthPrivateRoot?: string;
+  /** CLI network-profile host injection for deterministic tests and embedded hosts. */
+  networkPrivateRoot?: string;
   /** Debug history host-root override; tests must point this at a controlled temporary directory. */
   debugHistoryAppDataDirectory?: string;
   /** CLI 凭据保存注入：默认仅从 stdin 读取，永不接受 argv 明文。 */
   secretInput?: () => Promise<string>;
 }
 
+export function formatOAuthActionFailure(action: "acquire" | "refresh", result: OAuthPublicResult): string {
+  const safeResult = {
+    status: result.status,
+    ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
+    ...(result.expiresAt === undefined ? {} : { expiresAt: result.expiresAt }),
+  };
+  const guidance = result.status === "reauthorization_required"
+    ? "刷新链不可继续，请在桌面端重新授权；不要盲目重试。"
+    : result.status === "partial_success"
+      ? "部分操作已生效，请检查 OAuth profile 状态后再继续。"
+      : "操作失败。";
+  return `[${result.errorCode ?? "OAUTH_TOKEN_REQUEST_FAILED"}] OAuth ${action} ${guidance} result=${JSON.stringify(safeResult)}`;
+}
+
 function credentialHostOptions(deps: RunCliDeps): CredentialHostOptions {
   return {
     ...(deps.secretStore ? { secretStore: deps.secretStore } : {}),
     ...(deps.credentialPrivateRoot ? { credentialPrivateRoot: deps.credentialPrivateRoot } : {}),
+    ...(deps.networkPrivateRoot ? { networkPrivateRoot: deps.networkPrivateRoot } : {}),
+    ...(deps.oauthPrivateRoot ? { oauthPrivateRoot: deps.oauthPrivateRoot } : {}),
   };
+}
+
+async function withCredentialMutationGuard<T>(
+  deps: RunCliDeps,
+  scope: ReturnType<typeof credentialScope>,
+  ref: SecretRef,
+  operation: () => Promise<T>,
+): Promise<T> {
+  // Injected SecretStores stay isolated unless paired with an explicitly owned OAuth root.
+  if (deps.secretStore !== undefined && deps.oauthPrivateRoot === undefined) return operation();
+  const privateRoot = deps.oauthPrivateRoot ?? defaultOAuthPrivateRoot();
+  const profileStore = createFileOAuthProfileStore({ privateRoot });
+  return withOAuthBearerRefLock(privateRoot, scope, ref.id, async () => {
+    if (await profileStore.findBearerRegistration(scope, ref.id)) {
+      throw new CredentialError("CREDENTIAL_VERSION_CONFLICT", ref.id);
+    }
+    return operation();
+  });
 }
 
 function cliAppDataDirectory(): string {
@@ -403,6 +451,7 @@ const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec
       ...((spec.confirmedTargetOrigins ?? []).flatMap((origin) => ["--allow-target", origin])),
       "--definition-revision", spec.definitionRevision,
       "--credential-versions", JSON.stringify(spec.credentialVersions),
+      "--network-identity", spec.networkIdentity,
     ];
     const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     child.stderr?.pipe(process.stderr);
@@ -438,7 +487,7 @@ async function resolveStressTarget(
   caseId: string,
   envName: string | undefined,
   credentialOptions: CredentialHostOptions = {},
-  expected?: { definitionRevision: string; credentialVersions: Readonly<Record<string, string>> },
+  expected?: { definitionRevision: string; credentialVersions: Readonly<Record<string, string>>; networkIdentity?: string },
 ): Promise<{
   apiPath: string;
   apiId: string;
@@ -476,7 +525,11 @@ async function resolveStressTarget(
       apiId,
       caseId: preflightCase.id,
       scope: preflightCase.scope,
-    }]);
+    }], {
+      workspaceRoot: root,
+      ...(environmentId === undefined ? {} : { environmentId }),
+      ...(expected?.networkIdentity === undefined ? {} : { expectedNetworkIdentity: expected.networkIdentity }),
+    });
   const preparedProject = prepared.snapshot.project;
   const preparedLocation = findProjectApi(preparedProject, apiId);
   if (!preparedLocation || preparedLocation.collection.id !== collectionId) {
@@ -629,8 +682,9 @@ export async function runCli(
       const value = deps.secretInput ? await deps.secretInput() : await readSecretFromStdin();
       if (value.length === 0) throw new Error("标准输入未提供凭据值；请通过管道传入非空值");
       const store = createCredentialHostStore(credentialHostOptions(deps));
+      const scope = credentialScope(state.workspace, group.id, project);
       try {
-        await store.put(credentialScope(state.workspace, group.id, project), ref, value);
+        await withCredentialMutationGuard(deps, scope, ref, () => store.put(scope, ref, value));
       } catch (error) {
         throw stableCredentialError(error);
       }
@@ -666,13 +720,144 @@ export async function runCli(
       assertWorkspaceUsable(state);
       const { group, project } = locateProject(state.workspace, projectPath);
       const ref = findProjectCredentialRef(project, refId);
+      const scope = credentialScope(state.workspace, group.id, project);
       try {
-        await createCredentialHostStore(credentialHostOptions(deps))
-          .remove(credentialScope(state.workspace, group.id, project), ref);
+        const store = createCredentialHostStore(credentialHostOptions(deps));
+        await withCredentialMutationGuard(deps, scope, ref, () => store.remove(scope, ref));
       } catch (error) {
         throw stableCredentialError(error);
       }
       log(`凭据已移除：${projectPath} ${ref.id}`);
+    });
+
+  const oauth = program.command("oauth").description("查看或操作项目 OAuth profile（授权码首次授权请使用桌面端）");
+  async function resolveOAuthContext(projectPath: string, environmentId?: string) {
+    const root = findWorkspaceRoot(process.cwd());
+    if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+    const state = await loadWorkspace(registry, root);
+    assertWorkspaceUsable(state);
+    const { group, project } = locateProject(state.workspace, projectPath);
+    if (environmentId !== undefined && !project.environments.some((environment) => environment.id === environmentId)) {
+      throw new Error(`未找到环境 ID: ${environmentId}`);
+    }
+    const secretStore = createCredentialHostStore(credentialHostOptions(deps));
+    const host = await createOAuthProfileHost({
+      workspaceRoot: root,
+      project: { workspaceId: state.workspace.id, groupId: group.id, projectId: project.id },
+      ...(environmentId === undefined ? {} : { environmentId }),
+      privateRoot: deps.oauthPrivateRoot ?? defaultOAuthPrivateRoot(),
+      secretStore,
+    });
+    return { root, state, group, project, environmentId, secretStore, host };
+  }
+  async function prepareOAuthNetwork(context: Awaited<ReturnType<typeof resolveOAuthContext>>) {
+    const networkHost = await createNetworkProfileHost({
+      workspaceRoot: context.root,
+      project: {
+        workspaceId: context.state.workspace.id,
+        groupId: context.group.id,
+        projectId: context.project.id,
+      },
+      ...(context.environmentId === undefined ? {} : { environmentId: context.environmentId }),
+      privateRoot: deps.networkPrivateRoot ?? defaultNetworkPrivateRoot(),
+      secretStore: context.secretStore,
+    });
+    return await networkHost.prepare();
+  }
+  const publicOAuthStatus = (summary: OAuthProfileSummary) => ({
+    profileId: summary.profile.profileId,
+    flow: summary.profile.flow,
+    status: summary.status,
+    ...(summary.expiresAt === undefined ? {} : { expiresAt: summary.expiresAt }),
+    ...(summary.grantedScope === undefined ? {} : { grantedScope: summary.grantedScope }),
+    ...(summary.errorCode === undefined ? {} : { errorCode: summary.errorCode }),
+  });
+  oauth.command("list")
+    .argument("<projectPath>", "项目完整 UUID 路径")
+    .option("--env <environmentId>", "环境 UUID；省略表示项目级 profile")
+    .action(async (projectPath: string, opts: { env?: string }) => {
+      const { host } = await resolveOAuthContext(projectPath, opts.env);
+      const summaries = await host.listProfiles();
+      for (const summary of summaries) log(JSON.stringify(publicOAuthStatus(summary)));
+    });
+  oauth.command("status")
+    .argument("<projectPath>", "项目完整 UUID 路径")
+    .argument("<profileId>", "OAuth profile ID")
+    .option("--env <environmentId>", "环境 UUID；省略表示项目级 profile")
+    .action(async (projectPath: string, profileId: string, opts: { env?: string }) => {
+      const { host } = await resolveOAuthContext(projectPath, opts.env);
+      const summary = (await host.listProfiles()).find((item) => item.profile.profileId === profileId);
+      if (summary === undefined) throw new Error("[OAUTH_PROFILE_NOT_FOUND] 未找到指定 profile");
+      log(JSON.stringify(publicOAuthStatus(summary)));
+    });
+  oauth.command("acquire")
+    .argument("<projectPath>", "项目完整 UUID 路径")
+    .argument("<profileId>", "client-credentials profile ID")
+    .option("--env <environmentId>", "环境 UUID；省略表示项目级 profile")
+    .action(async (projectPath: string, profileId: string, opts: { env?: string }) => {
+      const context = await resolveOAuthContext(projectPath, opts.env);
+      const { host } = context;
+      const summary = (await host.listProfiles()).find((item) => item.profile.profileId === profileId);
+      if (summary === undefined) throw new Error("[OAUTH_PROFILE_NOT_FOUND] 未找到指定 profile");
+      if (summary.profile.flow !== "client_credentials") {
+        throw new Error("[OAUTH_AUTHORIZATION_REQUIRED] CLI acquire 仅支持 client_credentials；授权码首次授权请使用桌面端");
+      }
+      const network = await prepareOAuthNetwork(context);
+      const coordinator = createOAuthProfileCoordinator({
+        workspaceRoot: context.root,
+        project: { workspaceId: context.state.workspace.id, groupId: context.group.id, projectId: context.project.id },
+        ...(context.environmentId === undefined ? {} : { environmentId: context.environmentId }),
+        privateRoot: deps.oauthPrivateRoot ?? defaultOAuthPrivateRoot(),
+        secretStore: context.secretStore,
+        network,
+      });
+      const result = await coordinator.exchangeOAuthProfile({
+        profileId,
+        grant: { type: "client_credentials" },
+        expectedConfigurationFingerprint: summary.configurationFingerprint,
+      });
+      if (result.status !== "success") throw new Error(formatOAuthActionFailure("acquire", result));
+      log("OAuth acquire succeeded (token value withheld)");
+    });
+  oauth.command("refresh")
+    .argument("<projectPath>", "项目完整 UUID 路径")
+    .argument("<profileId>", "OAuth profile ID")
+    .option("--env <environmentId>", "环境 UUID；省略表示项目级 profile")
+    .action(async (projectPath: string, profileId: string, opts: { env?: string }) => {
+      const context = await resolveOAuthContext(projectPath, opts.env);
+      const { host } = context;
+      const summary = (await host.listProfiles()).find((item) => item.profile.profileId === profileId);
+      if (summary === undefined) throw new Error("[OAUTH_PROFILE_NOT_FOUND] 未找到指定 profile");
+      if (summary.profile.refreshTokenRef === undefined) {
+        throw new Error("[OAUTH_REFRESH_TOKEN_MISSING] profile 未绑定 refresh token");
+      }
+      const network = await prepareOAuthNetwork(context);
+      const coordinator = createOAuthProfileCoordinator({
+        workspaceRoot: context.root,
+        project: { workspaceId: context.state.workspace.id, groupId: context.group.id, projectId: context.project.id },
+        ...(context.environmentId === undefined ? {} : { environmentId: context.environmentId }),
+        privateRoot: deps.oauthPrivateRoot ?? defaultOAuthPrivateRoot(),
+        secretStore: context.secretStore,
+        network,
+      });
+      const result = await coordinator.exchangeOAuthProfile({
+        profileId,
+        grant: { type: "refresh_token" },
+        expectedConfigurationFingerprint: summary.configurationFingerprint,
+      });
+      if (result.status !== "success") throw new Error(formatOAuthActionFailure("refresh", result));
+      log("OAuth refresh succeeded (token value withheld)");
+    });
+  oauth.command("unlink")
+    .argument("<projectPath>", "项目完整 UUID 路径")
+    .argument("<profileId>", "OAuth profile ID")
+    .option("--env <environmentId>", "环境 UUID；省略表示项目级 profile")
+    .action(async (projectPath: string, profileId: string, opts: { env?: string }) => {
+      const { host } = await resolveOAuthContext(projectPath, opts.env);
+      const loaded = await host.store.load(host.scope);
+      const result = await host.unlinkProfile(profileId, loaded.revision);
+      if (result.status !== "success") throw new Error(`[${result.errorCode ?? "OAUTH_PROFILE_STORAGE_FAILED"}] OAuth unlink failed`);
+      log("OAuth profile unlinked; credential values were not removed");
     });
 
   program
@@ -710,8 +895,10 @@ export async function runCli(
         undefined,
         undefined,
         credentialSelections,
+        { workspaceRoot: root, environmentId: env.id },
       );
-      const sanitizer = createOutputSanitizer(prepared.secrets);
+      const runPrepared = prepared;
+      const sanitizer = createOutputSanitizer(runPrepared.secrets);
       const safeLog = (line: string): void => log(sanitizer.redactText(line));
 
       const { CollectionRunner } = await import("@apicc/core");
@@ -726,7 +913,7 @@ export async function runCli(
       let runFailure = false;
       const httpSession = createHttpSession();
       try {
-        result = await runner.run(prepared.run, collection.id, { environmentId: env.id, workspaceRoot: root, httpSession });
+        result = await runner.run(runPrepared.run, collection.id, { environmentId: env.id, workspaceRoot: root, httpSession });
       } catch (error) {
         if (!(error instanceof CollectionRunError)) throw error;
         result = error.partialResult;
@@ -801,14 +988,16 @@ export async function runCli(
         undefined,
         undefined,
         credentialSelections,
+        { workspaceRoot: root, ...(env === undefined ? {} : { environmentId: env.id }) },
       );
-      const sanitizer = createOutputSanitizer(prepared.secrets);
+      const runPrepared = prepared;
+      const sanitizer = createOutputSanitizer(runPrepared.secrets);
       const safeLog = (line: string): void => log(sanitizer.redactText(line));
       const runner = new WorkflowRunner({ registry, environmentId: env?.id, failFast: false, strict: opts.strict });
       const httpSession = createHttpSession();
       let wfr: import("@apicc/core").WorkflowRunResult;
       try {
-        wfr = sanitizer.redactValue(await runner.run(prepared.run, workflow.id, {
+        wfr = sanitizer.redactValue(await runner.run(runPrepared.run, workflow.id, {
           environmentId: env?.id,
           workspaceRoot: root,
           httpSession,
@@ -899,6 +1088,7 @@ export async function runCli(
           mode: "case",
           case: { ...locator, caseId: opts.case!, scope: opts.scope! },
         });
+      if (invocation.mode === "free") throw new Error("CLI debug requires a saved API or case identity.");
       const plan = prepareDebugExecution(createProjectSnapshot(location.project), invocation);
       const runId = randomUUID();
       const startedAt = new Date().toISOString();
@@ -922,6 +1112,9 @@ export async function runCli(
               plan.snapshot,
               plan.credentialSelections,
               credentialHostOptions(deps),
+              undefined,
+              undefined,
+              { workspaceRoot: root, ...(env === undefined ? {} : { environmentId: env.id }), signal: controller.signal },
             );
           } catch (error) {
             return controller.signal.aborted
@@ -954,7 +1147,9 @@ export async function runCli(
         const store = createDebugHistoryStore({
           root: defaultDebugHistoryRoot(deps.debugHistoryAppDataDirectory ?? cliAppDataDirectory()),
         });
-        const ownerIdentity = invocation.mode === "case" ? invocation.case : invocation.locator;
+        const ownerIdentity = invocation.mode === "case"
+          ? { sourceKind: "asset" as const, mode: "case" as const, case: invocation.case }
+          : { sourceKind: "asset" as const, mode: "request" as const, locator: invocation.locator };
         try {
           await store.append(safeResult, {
             ownerKey: createDebugHistoryOwnerKey(realpathSync(root), ownerIdentity),
@@ -1105,6 +1300,7 @@ export async function runCli(
           definitionRevision: targetInfo.prepared.snapshot.definitionRevision,
           credentialVersions: Object.fromEntries(Object.keys(targetInfo.prepared.run.credentialBindings.versions)
             .map((refId) => [refId, targetInfo.prepared.run.credentialBindings.versions[refId]!])),
+          networkIdentity: targetInfo.prepared.network!.identity,
           envName: opts.env,
           concurrency: opts.concurrency,
           workspaceRoot: root,
@@ -1221,11 +1417,13 @@ export async function runCli(
     .requiredOption("--workspace <root>", "工作区根目录（由协调端传入）")
     .requiredOption("--definition-revision <revision>", "协调端固定的项目定义版本描述符")
     .requiredOption("--credential-versions <json>", "协调端固定的凭据版本 JSON 字典（不含凭据值）")
+    .option("--network-identity <digest>", "协调端固定的非秘密网络配置与公开证书材料身份摘要")
     .action(async (apiPath: string, opts: {
       case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number;
       maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
       connectionMode: "pooled" | "fresh"; allowTarget: string[]; shardId: string; workspace: string;
       definitionRevision: string; credentialVersions: string;
+      networkIdentity?: string;
     }) => {
       const out = deps.workerOut ?? ((line: string) => { process.stdout.write(`${line}\n`); });
       const err = deps.workerErr ?? ((line: string) => { console.error(line); });
@@ -1259,7 +1457,7 @@ export async function runCli(
           opts.case,
           opts.env,
           credentialHostOptions(deps),
-          { definitionRevision: opts.definitionRevision, credentialVersions },
+          { definitionRevision: opts.definitionRevision, credentialVersions, networkIdentity: opts.networkIdentity },
         );
         const sanitizer = createOutputSanitizer(targetInfo.prepared.secrets);
         redactText = sanitizer.redactText;

@@ -5,6 +5,7 @@ import {
   CredentialError,
   ContractWorkspaceSchema,
   createProjectSnapshot,
+  createOAuthProfileHost,
   fileStorage,
   listContractWorkspaceDefinitionFiles,
   type CredentialScope,
@@ -112,6 +113,73 @@ function diagnosticText(value: unknown): string {
 }
 
 describe("desktop credential host", () => {
+  it("refuses ordinary credential edits for a foreign OAuth registration and preserves normal revision conflicts", async () => {
+    const temporary = await makeTempRoot("apicc-cross-owner-oauth-");
+    const oauthPrivateRoot = await makeTempRoot("apicc-cross-owner-oauth-private-");
+    try {
+      const workspace = makeWorkspace();
+      await persistWorkspace(temporary.path, workspace);
+      const session = createSession();
+      await session.open(temporary.path);
+      const synthetic = createMemoryStore();
+      const host = createDesktopCredentialHost(session, {
+        secretStore: synthetic.store,
+        oauthPrivateRoot: oauthPrivateRoot.path,
+      });
+      const localEnvironmentId = projectOne(workspace).environments![0]!.id;
+      const foreignEnvironmentId = "synthetic-foreign-environment";
+      const foreignOwner = await createOAuthProfileHost({
+        workspaceRoot: temporary.path,
+        project: locator,
+        environmentId: foreignEnvironmentId,
+        privateRoot: oauthPrivateRoot.path,
+        secretStore: synthetic.store,
+      });
+      const foreignProfile = {
+        profileId: "foreign-owner-profile",
+        environmentId: foreignEnvironmentId,
+        flow: "authorization_code" as const,
+        authorizationEndpoint: "http://127.0.0.1:1/authorize",
+        tokenEndpoint: "http://127.0.0.1:1/token",
+        clientId: "synthetic-foreign-client",
+        clientAuthentication: "none" as const,
+        bearerRef: { ...supportedRef },
+      };
+
+      await expect(host.put({ locator, ref: supportedRef, value: "foreign-managed-access" })).resolves.toEqual({ ok: true });
+      expect((await host.oauthProfilesGet({ locator, environmentId: localEnvironmentId })).profiles).toHaveLength(0);
+      expect((await foreignOwner.saveProfile(foreignProfile)).status).toBe("success");
+
+      const blockedPut = await host.put({ locator, ref: supportedRef, value: "must-not-replace-managed-access" });
+      const blockedRemove = await host.remove({ locator, ref: supportedRef });
+      expect(blockedPut).toMatchObject({ ok: false, error: { code: "CREDENTIAL_VERSION_CONFLICT", refId: supportedRef.id } });
+      expect(blockedRemove).toMatchObject({ ok: false, error: { code: "CREDENTIAL_VERSION_CONFLICT", refId: supportedRef.id } });
+      const originalVersion = await synthetic.store.version(scope, supportedRef);
+      await expect(synthetic.store.resolve(scope, supportedRef, originalVersion)).resolves.toBe("foreign-managed-access");
+      await expect(foreignOwner.listProfiles()).resolves.toMatchObject([{ profile: { profileId: foreignProfile.profileId, bearerRef: supportedRef } }]);
+
+      const beforeConcurrentSave = await foreignOwner.store.load(foreignOwner.scope);
+      const secondProfile = {
+        ...foreignProfile,
+        profileId: "foreign-owner-second-profile",
+        bearerRef: { id: "foreign-second-bearer", policy: "test-auto" as const },
+      };
+      expect((await foreignOwner.saveProfile(secondProfile)).status).toBe("success");
+      const staleUpdate = await foreignOwner.saveProfile({ ...foreignProfile, scope: "updated-but-stale" }, {
+        expectedRevision: beforeConcurrentSave.revision,
+      });
+      expect(staleUpdate).toEqual({ status: "failed", errorCode: "OAUTH_PROFILE_REVISION_CONFLICT" });
+      const finalProfiles = await foreignOwner.listProfiles();
+      expect(finalProfiles.map((item) => item.profile.profileId)).toEqual([foreignProfile.profileId, secondProfile.profileId]);
+      expect(finalProfiles[0]?.profile.scope).toBeUndefined();
+      const finalVersion = await synthetic.store.version(scope, supportedRef);
+      expect(finalVersion).toBe(originalVersion);
+      await expect(synthetic.store.resolve(scope, supportedRef, finalVersion)).resolves.toBe("foreign-managed-access");
+    } finally {
+      await Promise.all([temporary.dispose(), oauthPrivateRoot.dispose()]);
+    }
+  });
+
   it("stores an unreferenced secret through the active complete project scope without changing workspace files", async () => {
     const temporary = await makeTempRoot("apicc-9b3b1-");
     try {

@@ -6,6 +6,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { Agent } from "undici";
+import type { Dispatcher } from "undici";
 import { captureRequestFiles } from "../../src/http/files.js";
 import { createHttpSession } from "../../src/http/session.js";
 import type { ExecutableRequest } from "../../src/plugin/types.js";
@@ -736,6 +738,69 @@ describe("managed HTTP client lifecycle", () => {
       lifecycleServer.off("connection", onConnection);
       lifecycleServer.closeAllConnections();
       await new Promise<void>((resolve) => lifecycleServer.close(() => resolve()));
+    }
+  });
+
+  it("池仅保留 16 个闲置 dispatcher、不驱逐在途租用并由 close 全量回收", async () => {
+    const created: Array<{ closed: number; destroyed: number }> = [];
+    const dispatcherFactory = () => {
+      const target = new Agent();
+      const record = { closed: 0, destroyed: 0 };
+      created.push(record);
+      return new Proxy(target, {
+        get(dispatcher, property) {
+          if (property === "close") return async () => { record.closed += 1; await dispatcher.close(); };
+          if (property === "destroy") return async (error?: Error) => { record.destroyed += 1; await dispatcher.destroy(error ?? new Error("test dispatcher destroyed")); };
+          const value = Reflect.get(dispatcher, property, dispatcher);
+          return typeof value === "function" ? value.bind(dispatcher) : value;
+        },
+      }) as Dispatcher;
+    };
+    const holdServer = createServer((_request, response) => {
+      if (_request.url === "/hold") {
+        heldResponse = response;
+        resolveArrival();
+        return;
+      }
+      response.end("ok");
+    });
+    let heldResponse: import("node:http").ServerResponse | undefined;
+    let resolveArrival!: () => void;
+    const arrived = new Promise<void>((resolve) => { resolveArrival = resolve; });
+    await new Promise<void>((resolve, reject) => {
+      holdServer.once("error", reject);
+      holdServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = holdServer.address();
+    if (!address || typeof address === "string") throw new Error("The dispatcher lease fixture did not bind a TCP port.");
+    const url = `http://127.0.0.1:${address.port}`;
+    const client = createHttpClient({ dispatcherFactory });
+    let active: Promise<unknown> | undefined;
+    try {
+      active = client.execute(httpRequest(`${url}/hold`), { ...opts, connectTimeoutMs: 1_000 });
+      active.catch(() => undefined);
+      await arrived;
+      const activeDispatcher = created[0];
+      expect(activeDispatcher).toBeDefined();
+
+      for (let index = 0; index < 17; index += 1) {
+        await client.execute(httpRequest(`${url}/idle-${index}`), { ...opts, connectTimeoutMs: 1_100 + index });
+      }
+
+      expect(created).toHaveLength(18);
+      expect(activeDispatcher).toEqual({ closed: 0, destroyed: 0 });
+      expect(created.filter((dispatcher) => dispatcher.closed + dispatcher.destroyed > 0)).toHaveLength(1);
+
+      await client.close();
+      await active.catch(() => undefined);
+      expect(activeDispatcher).toEqual({ closed: 0, destroyed: 1 });
+      expect(created.every((dispatcher) => dispatcher.closed + dispatcher.destroyed > 0)).toBe(true);
+    } finally {
+      heldResponse?.end("released");
+      await active?.catch(() => undefined);
+      await client.close();
+      holdServer.closeAllConnections();
+      await new Promise<void>((resolve) => holdServer.close(() => resolve()));
     }
   });
 

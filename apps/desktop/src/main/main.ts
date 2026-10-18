@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
 import { writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,7 @@ import { createTokenStore } from "./online/tokenStore.js";
 import { createAiKeyStore } from "./ai/config.js";
 import { createDesktopDebugHistoryStore } from "./debugHistory.js";
 import { attachQuitGuard } from "./quitGuard.js";
-import { defaultCredentialPrivateRoot } from "@apicc/core";
+import { defaultCredentialPrivateRoot, defaultNetworkPrivateRoot, defaultOAuthPrivateRoot } from "@apicc/core";
 
 // package.json 为 type:module，编译产物是 ESM，须用 import.meta 推导 __dirname。
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -107,7 +107,12 @@ app.whenReady().then(() => {
   const plugins = { homeDir: isolatedRoot ? join(isolatedRoot, "user-home") : app.getPath("home") };
   const deps = createIpcDeps({
     session, pickDirectory, saveFile, online, ai, plugins,
-    credentials: { credentialPrivateRoot: isolatedRoot ? join(isolatedRoot, "credentials") : defaultCredentialPrivateRoot() },
+    credentials: {
+      credentialPrivateRoot: isolatedRoot ? join(isolatedRoot, "credentials") : defaultCredentialPrivateRoot(),
+      networkPrivateRoot: isolatedRoot ? join(isolatedRoot, "network") : defaultNetworkPrivateRoot(),
+      oauthPrivateRoot: isolatedRoot ? join(isolatedRoot, "oauth") : defaultOAuthPrivateRoot(),
+      openExternal: (url) => shell.openExternal(url),
+    },
     debugHistory: () => isolatedRoot
       ? createDesktopDebugHistoryStore({ privateRoot: join(isolatedRoot, "history") })
       : createDesktopDebugHistoryStore({ appDataDirectory: app.getPath("appData") }),

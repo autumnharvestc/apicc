@@ -80,6 +80,19 @@ async function setup(options: { environment?: boolean; scope?: string; unreachab
   return { session, locator, api, project };
 }
 
+async function setupProjectWithoutCollections() {
+  const root = await makeTempRoot("apicc-debug-free-");
+  roots.push(root);
+  const workspace = makeWorkspace();
+  const project = projectOne(workspace);
+  project.collections = [];
+  await persistWorkspace(root.path, workspace);
+  const session = createSession();
+  await session.open(root.path);
+  const projectLocator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+  return { session, project, projectLocator };
+}
+
 describe("sendDebug", () => {
   it("以基座用例调试：返回单条结果且断言评估", async () => {
     const { session, locator, api } = await setup({ assertStatus: true });
@@ -126,6 +139,94 @@ describe("sendDebug", () => {
 });
 
 describe("debug controller", () => {
+  it("runs a project-owned free request without persisting or exposing its temporary asset identity", async () => {
+    const { session, project, projectLocator } = await setupProjectWithoutCollections();
+    const diskBefore = workspaceBytes(session.root!);
+    const projectBefore = JSON.stringify(session.locateProject(projectLocator)?.project);
+    let preparedScope: unknown;
+    const credentials: DebugCredentialHost = {
+      prepareRunForRequests: async (scope, snapshot) => {
+        preparedScope = scope;
+        return {
+          run: { snapshot, credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} } },
+          refs: [],
+          markers: [],
+        };
+      },
+    };
+    const persisted: unknown[] = [];
+    const controller = createDebugController(session, () => createDefaultRegistry(), credentials, {
+      append: async (result: unknown) => { persisted.push(result); },
+    } as never);
+    const owner = {};
+    serverHits = 0;
+    const started = controller.start(owner, {
+      mode: "free",
+      project: projectLocator,
+      draftId: "10000000-0000-4000-8000-000000000079",
+      request: {
+        protocol: "http", method: "GET", baseUrl, path: "/free-project", pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" }, body: { kind: "none" },
+      },
+      parameters: {},
+      fields: [],
+    });
+
+    const result = await controller.wait(owner, started.runId);
+
+    expect(preparedScope).toEqual(projectLocator);
+    expect(result.mode).toBe("free");
+    expect(result.source).toMatchObject({ sourceKind: "free", project: projectLocator, draftId: "10000000-0000-4000-8000-000000000079" });
+    expect(JSON.stringify(result)).not.toMatch(/collectionId|apiId|caseId|__debug/);
+    expect(serverHits).toBe(1);
+    expect(persisted).toEqual([result]);
+    expect(project.collections).toEqual([]);
+    expect(JSON.stringify(session.locateProject(projectLocator)?.project)).toBe(projectBefore);
+    expect(workspaceBytes(session.root!)).toBe(diskBefore);
+  });
+
+  it("rejects a free request for an unknown project or environment in the opened workspace", async () => {
+    const { session, project } = await setupProjectWithoutCollections();
+    let appends = 0;
+    const controller = createDebugController(session, () => createDefaultRegistry(), {
+      prepareRunForRequests: async (_scope, snapshot) => ({
+        run: { snapshot, credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} } },
+        refs: [],
+        markers: [],
+      }),
+    }, { append: async () => { appends += 1; } } as never);
+    serverHits = 0;
+
+    expect(() => controller.start({}, {
+      mode: "free",
+      project: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: "10000000-0000-4000-8000-000000000079" },
+      draftId: "10000000-0000-4000-8000-000000000080",
+      request: {
+        protocol: "http", method: "GET", baseUrl, path: "/must-not-send", pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" }, body: { kind: "none" },
+      },
+      parameters: {},
+      fields: [],
+    })).toThrow(/未找到项目/);
+
+    expect(() => controller.start({}, {
+      mode: "free",
+      project: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne },
+      draftId: "10000000-0000-4000-8000-000000000081",
+      environmentId: "10000000-0000-4000-8000-000000000082",
+      request: {
+        protocol: "http", method: "GET", baseUrl, path: "/must-not-send", pathParams: [], query: [], headers: [], cookies: [],
+        auth: { kind: "none" }, body: { kind: "none" },
+      },
+      parameters: {},
+      fields: [],
+    })).toThrow();
+
+    expect(serverHits).toBe(0);
+    expect(appends).toBe(0);
+    expect(project.collections).toEqual([]);
+  });
+
   it("persists one record from the shared completion even when wait is repeated", async () => {
     const { session, locator } = await setup();
     const credentials: DebugCredentialHost = {

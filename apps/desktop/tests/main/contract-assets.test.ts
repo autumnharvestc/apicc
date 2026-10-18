@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getSourceApiRevision } from "@apicc/core";
+import { createProjectSnapshot, getSourceApiRevision, listContractWorkspaceDefinitionFiles, type ApiRequest, type StorageAdapter } from "@apicc/core";
 import { createSession, type CollectionContainerOperations } from "../../src/main/session.js";
 import {
   findApi,
@@ -232,6 +232,104 @@ describe("desktop contract workspace session", () => {
       expect(reopened.locateApi({ ...collectionLocator, folderIds: [], apiId: http.contract.id })?.api).toEqual(http);
       expect(reopened.locateApi({ ...collectionLocator, folderIds: [folder.id], apiId: websocket.contract.id })?.api).toEqual(websocket);
       expect(reopened.locateApi({ ...collectionLocator, folderIds: [], apiId: soap.contract.id })?.api).toEqual(soap);
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("saves a free request as one complete API mutation and leaves no partial asset after storage failure", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const writes: string[] = [];
+      let failNextWrite = false;
+      const storage: StorageAdapter = {
+        load: (root) => import("@apicc/core").then((core) => core.fileStorage.load(root)),
+        async save(root, workspace, options) {
+          writes.push(root);
+          if (failNextWrite) {
+            failNextWrite = false;
+            throw new Error("injected storage failure");
+          }
+          return import("@apicc/core").then((core) => core.fileStorage.save(root, workspace, options));
+        },
+      };
+      const session = createSession({ storage });
+      await session.open(temporary.path);
+      const project = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+      const projectDefinition = session.locateProject(project)?.project;
+      if (!projectDefinition) throw new Error("Project fixture is unavailable");
+      const sourceProjectRevision = createProjectSnapshot(projectDefinition).definitionRevision;
+      const targetParent = { ...project, collectionId: IDS.collectionOne };
+      const request: ApiRequest = {
+        protocol: "http", method: "GET", baseUrl: "https://free.example.test", path: "/items",
+        pathParams: [],
+        query: [
+          { kind: "inline", id: uuid(801), name: "q", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "a+b" },
+          { kind: "inline", id: uuid(802), name: "q", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "x y" },
+        ],
+        headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" },
+      };
+      const input = { project, targetParent, name: "project one API", request, sourceProjectRevision, fields: [] };
+      const before = await import("@apicc/core").then((core) => core.fileStorage.load(temporary.path));
+      const beforeFiles = listContractWorkspaceDefinitionFiles(before.workspace);
+
+      failNextWrite = true;
+      await expect(session.createApiFromRequestDraft(input)).rejects.toThrow("injected storage failure");
+      expect(writes).toHaveLength(1);
+      expect(session.workspace).toEqual(before.workspace);
+      expect(session.locateProject(project)?.project.collections[0]?.apis).toHaveLength(1);
+      expect(listContractWorkspaceDefinitionFiles(session.workspace!)).toEqual(beforeFiles);
+      expect(await import("@apicc/core").then((core) => core.fileStorage.load(temporary.path))).toMatchObject({
+        workspace: before.workspace,
+        revision: before.revision,
+      });
+
+      const saved = await session.createApiFromRequestDraft(input);
+      expect(writes).toHaveLength(2);
+      expect(saved.detail.api.contract.metadata.name).toBe("project one API");
+      expect(saved.detail.api.contract.request).toEqual(request);
+      expect(saved.locator.projectId).toBe(project.projectId);
+      expect(saved.detail.locator).toEqual(saved.locator);
+      expect(session.locateProject(project)?.project.collections[0]?.apis).toHaveLength(2);
+      expect(saved.detail.api.contract.id).not.toBe(IDS.sharedApi);
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("rejects saving a free request from a stale project revision without a second write", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const core = await import("@apicc/core");
+      let writes = 0;
+      const session = createSession({ storage: {
+        load: (root) => core.fileStorage.load(root),
+        save: async (root, workspace, options) => {
+          writes += 1;
+          return core.fileStorage.save(root, workspace, options);
+        },
+      } });
+      await session.open(temporary.path);
+      const project = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+      const originalProject = session.locateProject(project)?.project;
+      if (!originalProject) throw new Error("Project fixture is unavailable");
+      const staleRevision = createProjectSnapshot(originalProject).definitionRevision;
+      await session.createCollection(project, "Revision change");
+      expect(writes).toBe(1);
+      const input = {
+        project,
+        targetParent: { ...project, collectionId: IDS.collectionOne },
+        name: "stale free request",
+        request: structuredClone(projectOne(makeWorkspace()).collections[0]!.apis[0]!.contract.request),
+        sourceProjectRevision: staleRevision,
+        fields: [],
+      };
+
+      await expect(session.createApiFromRequestDraft(input)).rejects.toThrow(/project source revision conflict/i);
+      expect(writes).toBe(1);
+      expect(session.locateProject(project)?.project.collections[0]?.apis).toHaveLength(1);
     } finally {
       await temporary.dispose();
     }
