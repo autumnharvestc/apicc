@@ -12,7 +12,9 @@ describe("smoke", () => {
     expect(reg.getScriptEngine("javascript")).toBeDefined();
     expect(reg.getReporter("html")).toBeDefined();
     expect(reg.getReporter("junit")).toBeDefined();
-    expect(reg.listImporters()).toHaveLength(2);
+    expect(new Set(reg.listImporters().map((importer) => importer.name))).toEqual(
+      new Set(["collection-v21", "openapi", "curl"]),
+    );
     expect(reg.listAsserts().length).toBeGreaterThanOrEqual(7);
   });
 
