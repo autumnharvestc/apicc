@@ -72,6 +72,72 @@ describe("design store", () => {
     }
   });
 
+  it("uses the captured editor root and rejects a late preview after switching away and back", async () => {
+    const { api, fixture, editor, design } = await seeded();
+    const created = await api.nodeCreate({ kind: "api", parent: fixture.collection.locator, api: { name: "接口 B" } });
+    if (created.kind !== "api") throw new Error("Expected an API node");
+    const session = editor.sessions[editor.activeKey!]!;
+    design.setContent("未保存说明");
+
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = api.designPreview.bind(api);
+    let received: Parameters<typeof api.designPreview>[0] | undefined;
+    api.designPreview = async (input) => {
+      received = input;
+      await gate;
+      return original(input);
+    };
+
+    const pending = design.preview();
+    try {
+      expect(received).toMatchObject({
+        sourceRoot: session.root,
+        locator: fixture.apiLocator,
+        sourceProjectRevision: session.sourceProjectRevision,
+        assetDraft: { documentation: "未保存说明" },
+      });
+      await editor.load(created.locator);
+      design.load();
+      await editor.load(fixture.apiLocator);
+      design.load();
+      release!();
+      await pending;
+
+      expect(design.previewStatus).toBe("idle");
+      expect(design.previewResult).toBeNull();
+    } finally {
+      release!();
+      await pending.catch(() => {});
+    }
+  });
+
+  it("invalidates a pending same-session preview when content or a valid control draft changes", async () => {
+    const { api, design } = await seeded();
+    const original = api.designPreview.bind(api);
+    const releases: Array<() => void> = [];
+    const gates = [0, 1].map(() => new Promise<void>((resolve) => releases.push(resolve)));
+    let requestIndex = 0;
+    api.designPreview = async (input) => {
+      await gates[requestIndex++]!;
+      return original(input);
+    };
+
+    design.setContent("before first preview");
+    const first = design.preview();
+    design.setContent("edited in the same session");
+    expect(design.previewStatus).toBe("idle");
+
+    const second = design.preview();
+    design.setControlDraft("contract.request.body.schema.default", '"valid control edit"', null);
+    expect(design.previewStatus).toBe("idle");
+
+    releases.forEach((release) => release());
+    await Promise.all([first, second]);
+    expect(design.previewStatus).toBe("idle");
+    expect(design.previewResult).toBeNull();
+  });
+
   it("drops a documentation draft when its editor slot is evicted and reloads the same key", async () => {
     const { fixture, editor, design } = await seeded();
     const key = editor.activeKey!;
@@ -125,14 +191,19 @@ describe("design store", () => {
     const { design, api, editor, fixture } = await seeded();
     let received: unknown;
     const original = api.designExport.bind(api);
-    api.designExport = async (locator) => {
-      received = locator;
-      return original(locator);
+    api.designExport = async (input) => {
+      received = input;
+      return original(input);
     };
-    const path = await design.exportMarkdown();
-    expect(received).toEqual(fixture.apiLocator);
+    const path = await design.exportDocument("markdown", { kind: "project" });
+    expect(received).toEqual({
+      sourceRoot: fixture.root,
+      locator: fixture.apiLocator,
+      format: "markdown",
+      scope: { kind: "project" },
+    });
     expect(editor.locator).toEqual(fixture.apiLocator);
-    expect(path).toContain("示例接口");
+    expect(path).toContain("示例项目.md");
     expect(path.endsWith(".md")).toBe(true);
   });
 });

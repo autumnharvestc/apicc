@@ -78,6 +78,7 @@ import {
   type ProjectTab,
 } from "./stores/tabs.js";
 import { useModuleMemoryStore } from "./stores/moduleMemory.js";
+import { apiSessionKey } from "./stores/localIdentity.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import {
   isViewDisabled,
@@ -109,6 +110,7 @@ const workspace = useWorkspaceStore(apicc);
 const tree = useTreeStore(apicc, workspace);
 const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly });
 const editor = useEditorStore(apicc, localContext);
+const design = useDesignStore(apicc, editor);
 const assets = useAssetsStore(apicc, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
 let debugInstance: ReturnType<typeof useDebugStore> | null = null;
 let requestTabsRef: ReturnType<typeof createRequestTabsStore> | null = null;
@@ -130,7 +132,12 @@ const requestTabs = createRequestTabsStore({
   getContext: () => ({ root: workspace.root, project: requestContextRoot === workspace.root ? requestProjectContext : null }),
   isDirty: (tabId) => {
     const tab = requestTabsRef?.tabs[tabId];
-    return !!tab && (editor.isRequestDirty(tab) || debugInstance?.isRequestTabDirty(tabId) === true);
+    const session = tab?.source.kind === "asset"
+      ? editor.sessions[apiSessionKey(tab.root, tab.source.locator)]
+      : undefined;
+    return !!tab && (editor.isRequestDirty(tab)
+      || debugInstance?.isRequestTabDirty(tabId) === true
+      || (session ? design.hasControlDrafts(session) : false));
   },
   isRunning: (tabId) => debugInstance?.isRequestTabRunning(tabId) ?? false,
   confirmClose: confirmRequestTabClose,
@@ -138,7 +145,13 @@ const requestTabs = createRequestTabsStore({
   cancelRun: async (tabId) => { await debugInstance?.cancelRequestTab(tabId); },
   evict: (tabId) => {
     const tab = requestTabsRef?.tabs[tabId];
-    if (tab) editor.evictRequestTab(tab);
+    if (tab) {
+      if (tab.source.kind === "asset") {
+        const session = editor.sessions[apiSessionKey(tab.root, tab.source.locator)];
+        if (session) design.evictControlDrafts(session);
+      }
+      editor.evictRequestTab(tab);
+    }
     debugInstance?.evictRequestTab(tabId);
   },
 });
@@ -151,7 +164,6 @@ const cases = useCasesStore(apicc, editor);
 const envs = useEnvsStore(apicc, localContext);
 const run = useRunStore(apicc);
 const importW = useImportWizardStore(apicc, workspace);
-const design = useDesignStore(apicc, editor);
 // —— 工作流设计器 store（M2-B 任务 4 装配）：同一组合根一次性创建 ——
 const wfList = useWfListStore(apicc, localContext);
 const workflowDesign = useWorkflowDesignStore(apicc, localContext);
@@ -182,7 +194,13 @@ const tabs = createTabsStore({
   editor,
   workflowDesign,
   requestTabs,
-  evictProjectSessions: createEvictProjectSessions({ editor, online, workflowDesign, requestTabs }),
+  evictProjectSessions: createEvictProjectSessions({
+    editor,
+    online,
+    workflowDesign,
+    requestTabs,
+    mockProjectClose: async (root, locator) => { await apicc.mockProjectClose({ root, locator }); },
+  }),
   onProjectActivated: restoreLastApiForTab,
   confirmWorkflowDraft,
 });
@@ -547,7 +565,7 @@ function onRequestTabCloseCancel() { finishRequestTabClose(false); }
 // 移交口径；判定先例同 editorDirty/projectHasDrafts 的快照比对）。
 function aggregateHasDrafts(): boolean {
   for (const session of Object.values(editor.sessions)) {
-    if (session.api !== null && JSON.stringify(session.api) !== session.snapshot) return true;
+    if ((session.api !== null && JSON.stringify(session.api) !== session.snapshot) || design.hasControlDrafts(session)) return true;
   }
   for (const session of Object.values(editor.freeSessions)) {
     const tab = requestTabs.tabs[session.tabId];
@@ -1185,6 +1203,7 @@ function onDividerDblClick() {
               class="panel-view"
               mode="module"
               :target-project-locator="activeProjectLocator"
+              :target-collection-locator="selectedCollectionLocator"
               :import-w="importW"
               :plugins="plugins"
               :report-error="reportError"
@@ -1203,6 +1222,7 @@ function onDividerDblClick() {
                   :project-node="activeRequestTab ? workspace.findProject(activeRequestTab.project) : null"
                   :create-free-module="createFreeRequestModule"
                   :save-free-request="saveFreeRequestAsApi"
+                  @new-free-request="openFreeRequestTab"
                 />
               </div>
               <div
@@ -1223,7 +1243,7 @@ function onDividerDblClick() {
                 />
               </div>
             </template>
-            <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :report-error="reportError" :read-only="workspace.readOnly" />
+            <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :workspace="workspace" :assets="assets" :report-error="reportError" :read-only="workspace.readOnly" />
           </template>
           <EnvPanel
             v-else-if="view === 'envs'"

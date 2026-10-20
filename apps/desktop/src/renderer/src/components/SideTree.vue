@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Tree as ATree, Button as AButton } from "ant-design-vue";
-import { AppstoreOutlined, FolderOutlined, ProjectOutlined } from "@ant-design/icons-vue";
+import { Tree as ATree, Tooltip as ATooltip } from "ant-design-vue";
+import { AppstoreOutlined, DeleteOutlined, EditOutlined, FolderOutlined, MoreOutlined, ProjectOutlined } from "@ant-design/icons-vue";
 import type { WorkflowImpactEntryDTO } from "../../../shared/types.js";
 import type { ApiccApi, ContainerTarget, NodeCreateInput, NodeCreatedDTO } from "../../../shared/types.js";
 import type { NodeLocator, ProjectLocator } from "../../../shared/locations.js";
@@ -60,6 +60,7 @@ const { t } = useI18n();
 const expanded = ref(new Set<string>(props.moduleMemory?.apiTree.expanded ?? []));
 const isReadOnly = computed(() => !!props.readonly || (props.treeRoot === undefined && props.workspace.readOnly));
 const selectedKeys = ref<string[]>([]);
+const openMoreKey = ref<string | null>(null);
 watch(() => props.tree.selected?.key ?? null, (key) => { selectedKeys.value = key ? [key] : []; }, { immediate: true });
 watch(() => props.moduleMemory?.apiTree.expanded, (keys) => {
   if (!props.treeRoot && props.activeProjectLocator) expanded.value = new Set(keys ?? []);
@@ -205,6 +206,17 @@ function selectNode(node: TreeNodeDTO) {
     }
   }
   emit("select", node);
+}
+
+function toggleMore(node: TreeNodeDTO, event: MouseEvent) {
+  event.stopPropagation();
+  openMoreKey.value = openMoreKey.value === node.key ? null : node.key;
+}
+
+function runMoreAction(node: TreeNodeDTO, action: "manage" | "api" | "folder") {
+  openMoreKey.value = null;
+  if (action === "manage") openManage(node);
+  else startCreate(node, action);
 }
 
 // —— 容器管理对话框（M10）：以完整 ContainerTarget 定位，不接受裸 kind/id ——
@@ -426,14 +438,15 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
       >
         <template #title="{ dto }">
           <!-- 接口叶子：整行 tree-api-row，选中经 tree-api 按钮 emit select -->
-          <div v-if="dto.kind === 'api'" class="node leaf" data-testid="tree-api-row">
-            <button class="api-btn" data-testid="tree-api" :data-node-id="dto.id" @click="selectNode(dto)">
+          <div v-if="dto.kind === 'api'" class="node leaf api-row" data-testid="tree-api-row">
+            <button class="api-btn" data-testid="tree-api" :data-node-id="dto.id" @click.stop="selectNode(dto)">
               <!-- 在线树 api 叶无 method 字段（只读浏览），徽标仅本地接口渲染 -->
-              <span v-if="dto.method" class="method" :class="`m-${dto.method.toLowerCase()}`">{{ dto.method }}</span>{{ dto.label }}
+              <span v-if="dto.method" class="method" :class="`m-${dto.method.toLowerCase()}`">{{ dto.method }}</span>
+              <span class="api-name" :title="dto.label">{{ dto.label }}</span>
             </button>
-            <span v-if="!isReadOnly" class="actions">
-              <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
-              <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
+            <span v-if="!isReadOnly" class="action-rail">
+              <a-tooltip :title="t('tree.renameTooltip')" :trigger="['hover', 'focus']" placement="top"><button type="button" class="icon-action" data-testid="node-rename" :aria-label="t('tree.renameTooltip')" :title="t('tree.renameTooltip')" @click.stop="startRename(dto)"><EditOutlined /></button></a-tooltip>
+              <a-tooltip :title="t('tree.deleteTooltip')" :trigger="['hover', 'focus']" placement="top"><button type="button" class="icon-action danger" data-testid="node-delete" :aria-label="t('tree.deleteTooltip')" :title="t('tree.deleteTooltip')" @click.stop="startDelete(dto)"><DeleteOutlined /></button></a-tooltip>
             </span>
           </div>
           <!-- 只读配置叶（M3-B 任务 3）：在线工作区的工作流/环境/项目/集合配置等，仅选中浏览 -->
@@ -455,7 +468,7 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
           </div>
           <!-- 容器节点：折叠钮 + 层级图标（M11：模块/文件夹/项目 图标区分）+ 悬停动作钮 -->
           <div v-else class="node">
-            <button class="toggle" data-testid="tree-group-toggle" @click="toggle(dto)">
+              <button class="toggle" data-testid="tree-group-toggle" @click.stop="toggle(dto)">
               {{ expanded.has(dto.key) ? "▾" : "▸" }}
             </button>
             <AppstoreOutlined v-if="dto.kind === 'collection'" class="kind-icon mod" />
@@ -467,18 +480,26 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
             <span
               class="label"
               :class="{ 'label-link': dto.kind === 'project' }"
+              :title="dto.kind === 'collection' || dto.kind === 'folder' ? dto.label : undefined"
               @click="dto.kind === 'project' && selectNode(dto)"
             >{{ dto.label }}</span>
-            <span v-if="!isReadOnly" class="actions">
+            <span v-if="!isReadOnly && (dto.kind === 'collection' || dto.kind === 'folder')" class="action-rail">
+              <a-tooltip :title="t('tree.moreActions')" :trigger="['hover', 'focus']" placement="top">
+                <button type="button" class="icon-action more-trigger" data-testid="tree-more" :aria-label="t('tree.moreActions')" :title="t('tree.moreActions')" :aria-expanded="openMoreKey === dto.key" @click.stop="toggleMore(dto, $event)"><MoreOutlined /></button>
+              </a-tooltip>
+              <a-tooltip :title="t('tree.renameTooltip')" :trigger="['hover', 'focus']" placement="top"><button type="button" class="icon-action" data-testid="node-rename" :aria-label="t('tree.renameTooltip')" :title="t('tree.renameTooltip')" @click.stop="startRename(dto)"><EditOutlined /></button></a-tooltip>
+              <a-tooltip :title="t('tree.deleteTooltip')" :trigger="['hover', 'focus']" placement="top"><button type="button" class="icon-action danger" data-testid="node-delete" :aria-label="t('tree.deleteTooltip')" :title="t('tree.deleteTooltip')" @click.stop="startDelete(dto)"><DeleteOutlined /></button></a-tooltip>
+              <div v-if="openMoreKey === dto.key" class="more-menu" role="menu" :aria-label="t('tree.moreActions')" @click.stop>
+                <button v-if="dto.kind === 'collection' || dto.kind === 'folder'" type="button" role="menuitem" data-testid="container-manage" @click.stop="runMoreAction(dto, 'manage')">{{ t('container.manage') }}</button>
+                <button type="button" role="menuitem" data-testid="new-api" @click.stop="runMoreAction(dto, 'api')">{{ t('tree.newApi') }}</button>
+                <button type="button" role="menuitem" data-testid="new-folder" @click.stop="runMoreAction(dto, 'folder')">{{ t('tree.newFolder') }}</button>
+              </div>
+            </span>
+            <span v-else-if="!isReadOnly" class="actions legacy-actions">
               <button v-if="dto.kind === 'group'" class="act" data-testid="new-project" @click="startCreate(dto, 'project')">{{ t("tree.newProject") }}</button>
               <button v-if="dto.kind === 'project'" class="act" data-testid="new-collection" @click="startCreate(dto, 'collection')">{{ t("tree.newCollection") }}</button>
-              <button v-if="dto.kind === 'collection'" class="act" data-testid="container-manage" @click="openManage(dto)">{{ t("container.manage") }}</button>
-              <button v-if="dto.kind === 'collection'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
-              <button v-if="dto.kind === 'collection'" class="act" data-testid="new-folder" @click="startCreate(dto, 'folder')">{{ t("tree.newFolder") }}</button>
-              <button v-if="dto.kind === 'folder'" class="act" data-testid="container-manage" @click="openManage(dto)">{{ t("container.manage") }}</button>
-              <button v-if="dto.kind === 'folder'" class="act" data-testid="new-api" @click="startCreate(dto, 'api')">{{ t("tree.newApi") }}</button>
-              <button class="act" data-testid="node-rename" @click="startRename(dto)">{{ t("tree.rename") }}</button>
-              <button class="act danger" data-testid="node-delete" @click="startDelete(dto)">{{ t("tree.delete") }}</button>
+              <button class="act" data-testid="node-rename" @click.stop="startRename(dto)">{{ t("tree.rename") }}</button>
+              <button class="act danger" data-testid="node-delete" @click.stop="startDelete(dto)">{{ t("tree.delete") }}</button>
             </span>
           </div>
         </template>
@@ -533,9 +554,13 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 }
 /* a-tree 自带的切换箭头隐藏（自绘折叠钮）；缩进保留——M11 用户澄清④：层级不平铺 */
 .side :deep(.ant-tree-switcher) { display: none; }
+/* 原生每级 24px 会耗尽窄侧栏；保留层级步进并限制深树占用，名称仍独立省略。 */
+.side :deep(.ant-tree-indent) { flex: 0 0 auto; max-width: 48px; overflow: hidden; }
+.side :deep(.ant-tree-indent-unit) { width: 12px; }
 .side :deep(.ant-tree-node-content-wrapper) { flex: 1; min-width: 0; }
 .side :deep(.ant-tree-block-node) { width: 100%; }
 .node {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -549,9 +574,12 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
   color: var(--text-muted);
   cursor: pointer;
   width: 16px;
+  flex: 0 0 16px;
   padding: 0;
 }
 .label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -572,6 +600,59 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
   gap: 2px;
 }
 .node:hover .actions { display: inline-flex; }
+.legacy-actions { flex: 0 0 auto; }
+.api-row { min-width: 0; }
+.api-row:hover, .api-row:focus-within { background: var(--panel); }
+.action-rail {
+  margin-left: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0;
+  width: 72px;
+  min-width: 72px;
+  flex: 0 0 72px;
+}
+.api-row .action-rail { width: 48px; min-width: 48px; flex-basis: 48px; }
+.icon-action {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease;
+}
+.node:hover .action-rail .icon-action,
+.node:focus-within .action-rail .icon-action,
+.api-row:hover .action-rail .icon-action,
+.api-row:focus-within .action-rail .icon-action { opacity: 1; pointer-events: auto; }
+.icon-action:hover, .icon-action:focus-visible { background: var(--border); outline: 2px solid var(--accent); outline-offset: 1px; }
+.icon-action.danger { color: var(--fail); }
+.more-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  z-index: 30;
+  display: grid;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--border, #d9d9d9);
+  border-radius: 4px;
+  background: var(--bg, #fff);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 15%);
+}
+.more-menu button { border: 0; background: transparent; color: var(--text); text-align: left; padding: 6px 8px; cursor: pointer; }
+.more-menu button:hover, .more-menu button:focus-visible { background: var(--panel); outline: none; }
 .act, .api-btn {
   border: none;
   background: none;
@@ -590,15 +671,18 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
   font-size: 13px;
   padding: 2px 4px;
   min-width: 0;
+  flex: 1 1 auto;
   text-align: left;
 }
 .api-btn:hover { background: var(--border); }
+.api-name { display: block; min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 在线只读配置叶：弱化字重视觉区分（无动作钮） */
 .file-btn {
   color: var(--text-muted);
   font-size: 12px;
 }
 .method {
+  flex: 0 0 auto;
   font-size: 10px;
   font-weight: 600;
   color: var(--accent);

@@ -2,6 +2,26 @@ import { createSystemSecretStore as createInternalSystemSecretStore } from "./cr
 import type { SecretStore as SecretStoreContract } from "./credentials/types.js";
 
 export * from "./shared.js";
+export { buildImportMergePlan } from "./import/merge.js";
+export { deduplicateImportDiagnostics, normalizeImportDiagnostics, projectAssetImportDiagnostics } from "./import/diagnostics.js";
+export type {
+  ImportExchangeDiagnostic,
+  ImportMergeAction,
+  ImportMergeDecisions,
+  ImportMergeEntry,
+  ImportMergeItemDecision,
+  ImportMergePlan,
+} from "./import/merge.js";
+export { generateMockJsonValue } from "./mock/generate.js";
+export type { GenerateMockJsonOptions, GenerateMockJsonResult } from "./mock/generate.js";
+export { compileProjectMock } from "./mock/compile.js";
+export type { CompileProjectMockResult, CompiledMockPlan, CompiledMockRoute, CompiledMockRule, CompiledPathSegment } from "./mock/compile.js";
+export { startMockServer, MockServerError } from "./mock/server.js";
+export type { MockRequestLog, MockServerHandle, MockServerState, StartMockServerOptions } from "./mock/server.js";
+// Node-only assembly from an immutable project snapshot; browser consumers use the DTO schemas in shared.js.
+export { buildDocumentProjection } from "./design/projection.js";
+export { exportOpenapi } from "./design/openapi.js";
+export type { OpenapiExportDiagnostic, OpenapiExportOptions, OpenapiExportResult } from "./design/openapi.js";
 
 // Node-only debugger execution service; browser consumers get DTOs from shared.js.
 export { prepareDebugExecution, runDebugExecution, abortedDebugResult, failedDebugResult, getSourceApiRevision } from "./debug/service.js";

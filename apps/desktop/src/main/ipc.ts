@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { WorkflowRunner, StressSafetyError, createHttpSession, findProjectApi, createProjectSnapshot, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, getSourceApiRevision, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type DebugHistoryOwnerIdentity, type CredentialRequestSelection } from "@apicc/core";
+import { WorkflowRunner, StressSafetyError, buildImportMergePlan, deduplicateImportDiagnostics, normalizeImportDiagnostics, projectAssetImportDiagnostics, createHttpSession, findProjectApi, createProjectSnapshot, buildDocumentProjection, exportOpenapi, renderDocumentHtml, renderDocumentMarkdown, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, getSourceApiRevision, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type DebugHistoryOwnerIdentity, type CredentialRequestSelection, type ContractProject } from "@apicc/core";
+import { ContractProjectSchema } from "@apicc/core/schema";
 import { realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
-import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type CreateApiFromRequestDraftInput, type DebugInput, type DebugOutput, type DebugHistoryReplayResult, type DebugHistoryRestoreResult, type DebugFileReference, type EnvCreateInput, type ImportApplyInput, type ImportPreviewInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
+import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type CreateApiFromRequestDraftInput, type DebugInput, type DebugOutput, type DebugHistoryReplayResult, type DebugHistoryRestoreResult, type DebugFileReference, type EnvCreateInput, type ImportApplyInput, type ImportApplyResult, type ImportExchangeDiagnostic, type ImportPlanInput, type ImportPlanResult, type ImportPreviewInput, type ImportPreviewResult, type ImportUndoInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
 import { parseIpcArgs, type IpcArgsMap, type IpcResultMap } from "../shared/ipc-contract.js";
 import type { ApiLocator, ApiParentLocator, CaseLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
 import { localTreeNodeKey } from "../shared/tree-dto.js";
@@ -25,11 +26,14 @@ import type { AiKeyStore } from "./ai/config.js";
 import { runAiSuggest, runAiTestConfig, type AiRuntimeDeps } from "./ai/suggest.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput } from "../shared/ai/contract.js";
 import { createPluginsRuntime, type PluginsRuntime, type PluginsRuntimeOptions } from "./plugins/runtime.js";
+import { previewDesignDraft } from "./designPreview.js";
+import { createMockManager } from "./mockManager.js";
 import type { PluginsListResult } from "../shared/plugins/contract.js";
 import { createDesktopCredentialHost, type DesktopCredentialHostOptions, type PreparedDesktopExecutionRun } from "./credentials.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
 import type { CredentialPutInput, CredentialRefInput } from "../shared/credentials.js";
 import type { NetworkProfilesSaveInput, NetworkSecretImportInput } from "../shared/network.js";
+import type { DesignExportInput, DesignPreviewInput } from "../shared/design.js";
 
 type Session = ReturnType<typeof createSession>;
 type HistorySessionContext = Pick<ReturnType<Session["captureDraftWriteContext"]>, "root" | "generation">;
@@ -141,10 +145,16 @@ export interface IpcDepsOptions {
   session: Session;
   pickDirectory: () => Promise<string>;
   /**
-   * 文件保存（design:export 用，任务 8）：生产实现 = dialog.showSaveDialog + 写盘，
-   * 返回保存路径（用户取消回传空串）；测试注入内存实现。
+   * 文件保存（design:export）：生成完毕后显示原生保存对话框并原子替换目标；取消为空串。
    */
-  saveFile: (defaultName: string, content: string) => Promise<string>;
+  saveFile: (
+    defaultName: string,
+    content: string,
+    format?: DesignExportInput["format"],
+    encoding?: NonNullable<DesignExportInput["encoding"]>,
+  ) => Promise<string>;
+  /** The native host asks for consent only after the exporter identifies semantic loss. */
+  confirmLossyExport?: (diagnostics: readonly { code: string; path: string; message: string }[]) => Promise<boolean>;
   /** User-selected file metadata; the renderer never reads this path or its bytes. */
   pickDebugFile?: () => Promise<DebugFileReference | null>;
   /** Native picker stays in main; only the selected file's SecretStore outcome crosses IPC. */
@@ -169,6 +179,47 @@ export interface IpcDepsOptions {
 
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory, saveFile } = options;
+  type SessionContext = ReturnType<Session["captureDraftWriteContext"]>;
+  type Receipt = { value: unknown; committed: boolean; beforeWorkspace: NonNullable<Session["workspace"]>; context: SessionContext; addedDefinitionFiles: string[] };
+  type PreviewRecord = { project: ContractProject; importerName: string; diagnostics: ImportExchangeDiagnostic[]; sourceHash: string; context: SessionContext; environmentOptions: Map<string, string> };
+  type PlanRecord = { input: ImportPlanInput; previewToken: string; sourceHash: string; context: SessionContext; result: ImportPlanResult; sourceEnvironmentName?: string; applied?: ImportApplyResult };
+  type UndoRecord = {
+    context: SessionContext;
+    workspace: NonNullable<Session["workspace"]>;
+    addedDefinitionFiles: string[];
+    mockAfterUndo: { kind: "stop" | "refresh"; locator: ProjectLocator };
+  };
+  const importPreviews = new Map<string, PreviewRecord>();
+  const importPlans = new Map<string, PlanRecord>();
+  const importUndos = new Map<string, UndoRecord>();
+  const currentImportContext = (): SessionContext => session.captureDraftWriteContext();
+  const assertImportContext = (expected: SessionContext): void => {
+    const current = currentImportContext();
+    if (current.root !== expected.root || current.revision !== expected.revision || current.generation !== expected.generation) {
+      throw new Error("导入预览已过期：工作区上下文已更改，请重新预览。");
+    }
+  };
+  const redactImportText = (value: string): string => value
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/(?:[A-Za-z]:\\|\/(?:Users|home|tmp|var|etc)\/)[^\s"'<>]*/g, "[local path]");
+  const importTree = (project: ContractProject): ImportPreviewResult["tree"] => project.collections.map((collection) => {
+    const apis: ImportPreviewResult["tree"][number]["apis"] = [];
+    const visit = (folder: ContractProject["collections"][number]["folders"][number], prefix: string): void => {
+      const path = `${prefix}/${folder.name}`;
+      for (const asset of folder.apis) {
+        const request = asset.contract.request;
+        apis.push({ id: asset.contract.id, name: redactImportText(asset.contract.metadata.name), method: request.protocol === "websocket" ? "WS" : request.method, path: redactImportText(request.path) });
+      }
+      folder.folders.forEach((child) => visit(child, path));
+    };
+    for (const asset of collection.apis) {
+      const request = asset.contract.request;
+      apis.push({ id: asset.contract.id, name: redactImportText(asset.contract.metadata.name), method: request.protocol === "websocket" ? "WS" : request.method, path: redactImportText(request.path) });
+    }
+    collection.folders.forEach((folder) => visit(folder, collection.name));
+    return { id: collection.id, name: redactImportText(collection.name), apis };
+  });
+  const confirmLossyExport = options.confirmLossyExport ?? (async () => false);
   const pickDebugFile = options.pickDebugFile ?? (async (): Promise<DebugFileReference | null> => {
     const { dialog } = await import("electron");
     const choice = await dialog.showOpenDialog({ properties: ["openFile"] });
@@ -215,6 +266,18 @@ export function createIpcDeps(options: IpcDepsOptions) {
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
   const credentials = createDesktopCredentialHost(session, options.credentials);
   const stress = createStressController(session, {}, credentials);
+  const mockManager = createMockManager({ session });
+  async function refreshSavedMock(locator: ProjectLocator, context?: { root: string; generation: number }): Promise<void> {
+    try {
+      if (context) {
+        const current = session.captureDraftWriteContext();
+        if (current.root !== context.root || current.generation !== context.generation) return;
+      }
+      await mockManager.saved(locator, context);
+    } catch {
+      // A save has already committed. Context changes and Mock diagnostics must not turn it into a reported save failure.
+    }
+  }
   let debugHistoryStore: ReturnType<typeof createDesktopDebugHistoryStore> | undefined;
   function requireDebugHistory(): ReturnType<typeof createDesktopDebugHistoryStore> {
     if (debugHistoryStore) return debugHistoryStore;
@@ -373,15 +436,19 @@ export function createIpcDeps(options: IpcDepsOptions) {
         // 工作区切换清理点（M2-D3 任务 1）：活动压测先 abort，部分报告由其收尾异步落回原工作区。
         // 计划 C 任务 2：裁定 E 互斥退役——本地打开不再关闭在线会话（本地 1 + 在线 N 并存驻留）。
         stress.abortActive();
-        if (owner) debug.clearOwner(owner);
-        const r = await session.open(a[0] as string);
+        const r = await mockManager.transitionWorkspace(async () => {
+          if (owner) debug.clearOwner(owner);
+          return session.open(a[0] as string);
+        });
         return r satisfies OpenResult;
       }
       case IpcChannel.WsCreate: {
         // 同上：压测清理链保留；在线会话原样驻留（并存，互斥退役）。
         stress.abortActive();
-        if (owner) debug.clearOwner(owner);
-        const r = await session.create(a[0] as string, a[1] as string);
+        const r = await mockManager.transitionWorkspace(async () => {
+          if (owner) debug.clearOwner(owner);
+          return session.create(a[0] as string, a[1] as string);
+        });
         return r satisfies OpenResult;
       }
       case IpcChannel.WsPickDirectory:
@@ -402,7 +469,29 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return undefined satisfies IpcResultMap[typeof IpcChannel.NodeRename];
       }
       case IpcChannel.NodeDelete: {
-        await session.deleteNode(a[0] as Parameters<Session["deleteNode"]>[0]);
+        const node = a[0] as Parameters<Session["deleteNode"]>[0];
+        const context = session.captureDraftWriteContext();
+        const workspace = session.workspace;
+        const removedProjects = node.kind === "group"
+          ? workspace?.groups.find((group) => group.id === node.locator.groupId)?.projects.map((project) => ({
+            workspaceId: node.locator.workspaceId,
+            groupId: node.locator.groupId,
+            projectId: project.id,
+          })) ?? []
+          : node.kind === "project" ? [node.locator] : [];
+        const affectedProject = node.kind === "project" || node.kind === "group"
+          ? null
+          : {
+            workspaceId: node.locator.workspaceId,
+            groupId: node.locator.groupId,
+            projectId: node.locator.projectId,
+          };
+        await session.deleteNode(node);
+        if (removedProjects.length) {
+          await Promise.all(removedProjects.map((locator) => mockManager.stopProject(context.root, locator)));
+        } else if (affectedProject) {
+          await refreshSavedMock(affectedProject, context);
+        }
         return undefined satisfies IpcResultMap[typeof IpcChannel.NodeDelete];
       }
       case IpcChannel.EnvCreate: {
@@ -470,7 +559,9 @@ export function createIpcDeps(options: IpcDepsOptions) {
         if (input.fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存请求草稿。");
         const draftWriteContext = session.captureDraftWriteContext();
         const knownCredentialLiterals = await credentials.getKnownCredentialLiteralsForProject(input.project, input.request, draftWriteContext);
-        return await session.createApiFromRequestDraft(input, knownCredentialLiterals, draftWriteContext) satisfies IpcResultMap[typeof IpcChannel.ApiCreateFromRequestDraft];
+        const result = await session.createApiFromRequestDraft(input, knownCredentialLiterals, draftWriteContext);
+        await refreshSavedMock(input.project, draftWriteContext);
+        return result satisfies IpcResultMap[typeof IpcChannel.ApiCreateFromRequestDraft];
       }
       case IpcChannel.DebugProjectContext: {
         requireOwner(owner);
@@ -492,14 +583,18 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const draftWriteContext = session.captureDraftWriteContext();
         const candidateRequests = [api.contract.request, ...api.cases.map((testCase) => testCase.requestOverride ?? api.contract.request)];
         const knownCredentialLiterals = await credentials.getKnownCredentialLiterals(locator, candidateRequests, draftWriteContext);
-        return await session.saveApi(locator, api, knownCredentialLiterals, draftWriteContext, expectedRevision) satisfies IpcResultMap[typeof IpcChannel.ApiSave];
+        const result = await session.saveApi(locator, api, knownCredentialLiterals, draftWriteContext, expectedRevision);
+        await refreshSavedMock({ workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId }, draftWriteContext);
+        return result satisfies IpcResultMap[typeof IpcChannel.ApiSave];
       }
       case IpcChannel.ApiRequestDraftSave: {
         const [locator, request, expectedRevision, fields] = a as [ApiLocator, import("@apicc/core").ApiRequest, string, DebugFieldState[]];
         if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存请求草稿。");
         const draftWriteContext = session.captureDraftWriteContext();
         const knownCredentialLiterals = await credentials.getKnownCredentialLiterals(locator, request, draftWriteContext);
-        return await session.saveRequestDraft(locator, request, expectedRevision, fields, knownCredentialLiterals, draftWriteContext) satisfies IpcResultMap[typeof IpcChannel.ApiRequestDraftSave];
+        const result = await session.saveRequestDraft(locator, request, expectedRevision, fields, knownCredentialLiterals, draftWriteContext);
+        await refreshSavedMock({ workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId }, draftWriteContext);
+        return result satisfies IpcResultMap[typeof IpcChannel.ApiRequestDraftSave];
       }
       case IpcChannel.CaseSave: {
         const [locator, testCase, expectedRevision, fields] = a as [CaseLocator, ApiTestCase, string, DebugFieldState[]];
@@ -535,9 +630,10 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const knownCredentialLiterals = await credentials.getKnownCredentialLiterals(apiLocator, request, draftWriteContext);
         return await session.saveDraftCase(locator, testCase, expectedRevision, deletedCases, knownCredentialLiterals, draftWriteContext, fields) satisfies IpcResultMap[typeof IpcChannel.CaseDraftSave];
       }
-      case IpcChannel.CaseDelete:
+      case IpcChannel.CaseDelete: {
         await session.deleteCase(a[0] as CaseLocator);
         return undefined satisfies IpcResultMap[typeof IpcChannel.CaseDelete];
+      }
       case IpcChannel.ModelList:
         return session.listModels(a[0] as ProjectLocator) satisfies IpcResultMap[typeof IpcChannel.ModelList];
       case IpcChannel.ModelGet: {
@@ -545,10 +641,21 @@ export function createIpcDeps(options: IpcDepsOptions) {
         if (!location) throw new Error(`Model not found at complete locator: ${JSON.stringify(a[0])}`);
         return location.model satisfies IpcResultMap[typeof IpcChannel.ModelGet];
       }
-      case IpcChannel.ModelCreate:
-        return await session.createModel(a[0] as ProjectLocator, a[1] as Parameters<Session["createModel"]>[1]) satisfies IpcResultMap[typeof IpcChannel.ModelCreate];
+      case IpcChannel.ModelCreate: {
+        const locator = a[0] as ProjectLocator;
+        const context = session.captureDraftWriteContext();
+        const result = await session.createModel(locator, a[1] as Parameters<Session["createModel"]>[1]);
+        await refreshSavedMock(locator, context);
+        return result satisfies IpcResultMap[typeof IpcChannel.ModelCreate];
+      }
       case IpcChannel.ModelSave:
-        return await session.saveModel(a[0] as ModelLocator, a[1] as ModelAsset) satisfies IpcResultMap[typeof IpcChannel.ModelSave];
+      {
+        const locator = a[0] as ModelLocator;
+        const context = session.captureDraftWriteContext();
+        const result = await session.saveModel(locator, a[1] as ModelAsset);
+        await refreshSavedMock({ workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId }, context);
+        return result satisfies IpcResultMap[typeof IpcChannel.ModelSave];
+      }
       case IpcChannel.ComponentList:
         return session.listComponents(a[0] as ProjectLocator) satisfies IpcResultMap[typeof IpcChannel.ComponentList];
       case IpcChannel.ComponentGet: {
@@ -556,10 +663,47 @@ export function createIpcDeps(options: IpcDepsOptions) {
         if (!location) throw new Error(`Component not found at complete locator: ${JSON.stringify(a[0])}`);
         return location.component satisfies IpcResultMap[typeof IpcChannel.ComponentGet];
       }
-      case IpcChannel.ComponentCreate:
-        return await session.createComponent(a[0] as ProjectLocator, a[1] as Parameters<Session["createComponent"]>[1]) satisfies IpcResultMap[typeof IpcChannel.ComponentCreate];
+      case IpcChannel.ComponentCreate: {
+        const locator = a[0] as ProjectLocator;
+        const context = session.captureDraftWriteContext();
+        const result = await session.createComponent(locator, a[1] as Parameters<Session["createComponent"]>[1]);
+        await refreshSavedMock(locator, context);
+        return result satisfies IpcResultMap[typeof IpcChannel.ComponentCreate];
+      }
       case IpcChannel.ComponentSave:
-        return await session.saveComponent(a[0] as ComponentLocator, a[1] as ComponentAsset) satisfies IpcResultMap[typeof IpcChannel.ComponentSave];
+      {
+        const locator = a[0] as ComponentLocator;
+        const context = session.captureDraftWriteContext();
+        const result = await session.saveComponent(locator, a[1] as ComponentAsset);
+        await refreshSavedMock({ workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId }, context);
+        return result satisfies IpcResultMap[typeof IpcChannel.ComponentSave];
+      }
+      case IpcChannel.MockGet:
+        return mockManager.get(a[0] as ProjectLocator) satisfies IpcResultMap[typeof IpcChannel.MockGet];
+      case IpcChannel.MockConfigSave: {
+        const input = a[0] as import("../shared/mock.js").MockConfigSaveInput;
+        const context = session.captureDraftWriteContext();
+        await session.saveMockConfig(input.locator, input.config, input.sourceProjectRevision, context);
+        await refreshSavedMock(input.locator, context);
+        return mockManager.get(input.locator) satisfies IpcResultMap[typeof IpcChannel.MockConfigSave];
+      }
+      case IpcChannel.MockStart: {
+        const input = a[0] as import("../shared/mock.js").MockStartInput;
+        return await mockManager.start(input.locator, input.port ?? 0, input.sourceProjectRevision) satisfies IpcResultMap[typeof IpcChannel.MockStart];
+      }
+      case IpcChannel.MockStop: {
+        const input = a[0] as import("../shared/mock.js").MockControlInput;
+        return await mockManager.stop(input.locator) satisfies IpcResultMap[typeof IpcChannel.MockStop];
+      }
+      case IpcChannel.MockReload: {
+        const input = a[0] as import("../shared/mock.js").MockControlInput;
+        return await mockManager.reload(input.locator, input.sourceProjectRevision) satisfies IpcResultMap[typeof IpcChannel.MockReload];
+      }
+      case IpcChannel.MockProjectClose: {
+        const input = a[0] as import("../shared/mock.js").MockProjectCloseInput;
+        await mockManager.stopProject(input.root, input.locator);
+        return undefined satisfies IpcResultMap[typeof IpcChannel.MockProjectClose];
+      }
       case IpcChannel.AssetReferences:
         return session.referencesTo(a[0] as ProjectLocator, a[1] as string) satisfies IpcResultMap[typeof IpcChannel.AssetReferences];
       case IpcChannel.DebugSend: {
@@ -672,31 +816,164 @@ export function createIpcDeps(options: IpcDepsOptions) {
         if (!session.root) throw new Error("尚未打开工作区");
         return readRun(workspaceRunsDir(session.root), a[0] as string);
       }
-      // 导入频道（任务 7）：preview 逐个 detect，命中即 parse（产物 id 均为新 UUID）；
-      // apply 委派 session.importProject（缺分组建组、同分组重名拒绝），其内部显式落盘。
-      // 探测清单（M7-B 任务 2）：显式注入优先（测试替身），否则插件运行时 registry
-      // （内置 + 插件贡献导入器参与探测——T1 去留口径的 T2 落地）。
+      // Import payloads stay in this host closure; renderer only receives opaque preview/plan tokens.
       case IpcChannel.ImportPreview: {
         const input = a[0] as ImportPreviewInput;
         const importers = injectedImporters ?? (await pluginsRuntime.registry()).listImporters();
         const importer = importers.find((i) => i.detect(input.fileName, input.content));
         if (!importer) throw new Error("无法识别的导入格式");
-        const { project, warnings } = importer.parse(input.content);
-        return { importerName: importer.name, project, warnings } satisfies IpcResultMap[typeof IpcChannel.ImportPreview];
+        const parsed = importer.parse(input.content);
+        const project = ContractProjectSchema.parse(parsed.project);
+        const token = randomUUID();
+        const context = currentImportContext();
+        const diagnostics = deduplicateImportDiagnostics([
+          ...normalizeImportDiagnostics(parsed),
+          ...projectAssetImportDiagnostics(project),
+        ]);
+        const sourceHash = createHash("sha256").update(input.fileName).update("\0").update(input.content).digest("hex");
+        const environmentOptions = new Map<string, string>();
+        const publicEnvironments = project.environments.map((environment) => {
+          const optionToken = randomUUID();
+          environmentOptions.set(optionToken, environment.name);
+          return { optionToken, label: redactImportText(environment.name) };
+        });
+        importPreviews.set(token, { project, importerName: importer.name, diagnostics, sourceHash, context, environmentOptions });
+        while (importPreviews.size > 12) importPreviews.delete(importPreviews.keys().next().value as string);
+        return {
+          token,
+          importerName: importer.name,
+          summary: {
+            projectName: redactImportText(project.name),
+            collections: project.collections.length,
+            apis: importTree(project).reduce((count, collection) => count + collection.apis.length, 0),
+            environments: publicEnvironments,
+          },
+          tree: importTree(project),
+          diagnostics,
+        } satisfies IpcResultMap[typeof IpcChannel.ImportPreview];
+      }
+      case IpcChannel.ImportPlan: {
+        const input = a[0] as ImportPlanInput;
+        const preview = importPreviews.get(input.previewToken);
+        if (!preview) throw new Error("导入预览令牌无效或已过期，请重新预览。");
+        assertImportContext(preview.context);
+        let sourceEnvironmentName: string | undefined;
+        if (input.mode === "module" && input.sourceEnvironmentOptionToken !== undefined) {
+          sourceEnvironmentName = preview.environmentOptions.get(input.sourceEnvironmentOptionToken);
+          if (sourceEnvironmentName === undefined) throw new Error("来源环境选项无效，请重新预览并选择来源环境。");
+        }
+        let summary: ImportPlanResult["summary"] = { added: 0, overwritten: 0, skipped: 0 };
+        let entries: ImportPlanResult["entries"] = [];
+        let diagnostics = [...preview.diagnostics];
+        let cancelled = false;
+        if (input.mode === "project") {
+          if (!session.workspace?.groups.some((group) => group.id === input.target.groupId)) throw new Error("目标分组不属于当前工作区。");
+          summary = { added: 1, overwritten: 0, skipped: 0 };
+        } else if (input.mode === "module") {
+          const target = session.locateProject(input.target);
+          if (!target) throw new Error("导入目标项目不存在。");
+          entries = importTree(preview.project).flatMap((collection) => collection.apis.map((api) => ({
+            sourceApiId: api.id, sourceName: api.name, sourcePath: collection.name, method: api.method, path: api.path,
+            status: "added" as const, targetApiIds: [],
+          })));
+          summary = { added: entries.length, overwritten: 0, skipped: 0 };
+        } else {
+          const target = session.locateCollection(input.target);
+          if (!target) throw new Error("导入目标模块不存在。");
+          const plan = buildImportMergePlan(target.project, preview.project, {
+            targetCollectionId: input.target.collectionId,
+            sourceCollectionIds: input.sourceCollectionIds,
+            decisions: input.decisions,
+          });
+          summary = plan.summary;
+          entries = plan.entries.map((entry) => ({
+            ...entry,
+            sourceName: redactImportText(entry.sourceName),
+            sourcePath: redactImportText(entry.sourcePath),
+            path: redactImportText(entry.path),
+            ...(entry.targetName === undefined ? {} : { targetName: redactImportText(entry.targetName) }),
+          }));
+          diagnostics = deduplicateImportDiagnostics([
+            ...diagnostics,
+            ...normalizeImportDiagnostics({ diagnostics: plan.diagnostics }),
+          ]);
+          cancelled = plan.cancelled;
+        }
+        const token = randomUUID();
+        const result: ImportPlanResult = { token, mode: input.mode, summary, entries, diagnostics, cancelled };
+        importPlans.set(token, {
+          input: structuredClone(input), previewToken: input.previewToken, sourceHash: preview.sourceHash, context: preview.context, result,
+          ...(sourceEnvironmentName === undefined ? {} : { sourceEnvironmentName }),
+        });
+        while (importPlans.size > 20) importPlans.delete(importPlans.keys().next().value as string);
+        return result satisfies IpcResultMap[typeof IpcChannel.ImportPlan];
       }
       case IpcChannel.ImportApply: {
         const input = a[0] as ImportApplyInput;
-        // 轨二双模式：project=整包落库到所选分组；module=产物集合改名后并入目标项目
-        // （baseUrl 进模块变量、不造环境）。同名并存（同名放开）。
-        if (input.mode === "module") {
-          await session.importModuleToProject(input.target, input.name, {
-            project: input.project,
-            ...(input.sourceEnvironmentName === undefined ? {} : { sourceEnvironmentName: input.sourceEnvironmentName }),
-          });
-        } else {
-          await session.importProjectToGroup(input.target, input.name, { project: input.project });
+        const plan = importPlans.get(input.planToken);
+        if (!plan) throw new Error("导入计划令牌无效或已过期，请重新预览。");
+        if (plan.applied) return plan.applied;
+        assertImportContext(plan.context);
+        const preview = importPreviews.get(plan.previewToken);
+        if (!preview || preview.sourceHash !== plan.sourceHash) throw new Error("导入来源摘要已失效，请重新预览。");
+        if (plan.result.diagnostics.some((item) => item.severity === "error")) throw new Error("导入计划包含结构或引用错误，不能应用。");
+        if (plan.result.diagnostics.some((item) => item.lossy) && !input.allowLossy) throw new Error("导入包含语义损失；请显式确认后再应用。");
+        if (plan.result.cancelled) {
+          const cancelled: ImportApplyResult = { committed: false, summary: plan.result.summary };
+          plan.applied = cancelled;
+          return cancelled;
         }
-        return undefined satisfies IpcResultMap[typeof IpcChannel.ImportApply];
+
+        let receipt: Receipt;
+        let refreshLocator: ProjectLocator;
+        const source = preview.project;
+        if (plan.input.mode === "project") {
+          receipt = await session.importProjectToGroupTransaction(plan.context, plan.input.target, plan.input.name, { project: source });
+          refreshLocator = { ...plan.input.target, projectId: (receipt.value as ContractProject).id };
+        } else if (plan.input.mode === "module") {
+          receipt = await session.importModuleToProjectTransaction(plan.context, plan.input.target, plan.input.name, {
+            project: source,
+            ...(plan.sourceEnvironmentName === undefined ? {} : { sourceEnvironmentName: plan.sourceEnvironmentName }),
+          });
+          refreshLocator = { ...plan.input.target };
+        } else {
+          const decisions = { targetCollectionId: plan.input.target.collectionId, sourceCollectionIds: plan.input.sourceCollectionIds, decisions: plan.input.decisions };
+          receipt = await session.mergeImportIntoCollectionTransaction(plan.context, plan.input.target, source, decisions);
+          refreshLocator = { workspaceId: plan.input.target.workspaceId, groupId: plan.input.target.groupId, projectId: plan.input.target.projectId };
+        }
+        const applied: ImportApplyResult = {
+          committed: receipt.committed,
+          ...(receipt.committed ? { undoToken: randomUUID() } : {}),
+          summary: plan.result.summary,
+        };
+        if (receipt.committed && applied.undoToken) {
+          importUndos.set(applied.undoToken, {
+            context: receipt.context,
+            workspace: receipt.beforeWorkspace,
+            addedDefinitionFiles: receipt.addedDefinitionFiles,
+            mockAfterUndo: { kind: plan.input.mode === "project" ? "stop" : "refresh", locator: refreshLocator },
+          });
+          await refreshSavedMock(refreshLocator, { root: receipt.context.root, generation: receipt.context.generation });
+        }
+        plan.applied = applied;
+        return applied satisfies IpcResultMap[typeof IpcChannel.ImportApply];
+      }
+      case IpcChannel.ImportUndo: {
+        const input = a[0] as ImportUndoInput;
+        const undo = importUndos.get(input.undoToken);
+        if (!undo) throw new Error("撤销句柄无效或已使用；工作区可能已更改或应用已重启。");
+        await session.restoreImportUndo(undo.context, undo.workspace, undo.addedDefinitionFiles);
+        importUndos.delete(input.undoToken);
+        try {
+          if (undo.mockAfterUndo.kind === "stop") {
+            await mockManager.stopProject(undo.context.root, undo.mockAfterUndo.locator);
+          } else {
+            await refreshSavedMock(undo.mockAfterUndo.locator, { root: undo.context.root, generation: undo.context.generation });
+          }
+        } catch {
+          // The workspace restore is already committed and the one-use receipt is consumed.
+        }
+        return undefined satisfies IpcResultMap[typeof IpcChannel.ImportUndo];
       }
       // 项目克隆/移动（轨二）：克隆=整项目深拷贝新 id 落回原分组；移动=换分组。
       case IpcChannel.ProjectClone: {
@@ -706,14 +983,50 @@ export function createIpcDeps(options: IpcDepsOptions) {
         await session.moveProject(a[0] as ProjectLocator, a[1] as GroupLocator);
         return undefined satisfies IpcResultMap[typeof IpcChannel.ProjectMove];
       }
-      // 详细设计导出（任务 8）：取接口 → core renderDesignMarkdown 渲染 → 注入的
-      // saveFile（生产 = showSaveDialog + 写盘）落盘并返回路径（取消为空串）。
+      // Project-scoped design-document export: render the complete saved projection before
+      // entering the injected native save boundary (production cancellation returns an empty path).
       case IpcChannel.DesignExport: {
-        const locator = a[0] as ApiLocator;
-        const loc = session.locateApi(locator);
-        if (!loc) throw new Error(`未找到接口: ${JSON.stringify(locator)}`);
+        const input = a[0] as DesignExportInput;
+        if (input.sourceRoot !== session.root) throw new Error("设计文档导出已拒绝：当前工作区根目录已变化");
+        const loc = session.locateApi(input.locator);
+        if (!loc) throw new Error(`未找到接口: ${JSON.stringify(input.locator)}`);
         const snapshot = createProjectSnapshot(loc.project);
-        return await saveFile(`${loc.api.contract.metadata.name}.design.md`, renderContractMarkdown(loc.api, snapshot.context)) satisfies IpcResultMap[typeof IpcChannel.DesignExport];
+        if (input.format === "openapi-3.0" || input.format === "openapi-3.1") {
+          const encoding = input.encoding ?? "json";
+          const result = exportOpenapi(snapshot, input.scope, {
+            version: input.format === "openapi-3.0" ? "3.0" : "3.1",
+            ...(input.infoVersion === undefined ? {} : { infoVersion: input.infoVersion }),
+            allowLossy: false,
+          });
+          if (result.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+            throw new Error("OpenAPI 导出包含结构错误；未写入输出文件");
+          }
+          if (result.blocked) {
+            const diagnostics = result.diagnostics.filter((diagnostic) => diagnostic.lossy)
+              .map(({ code, path, message }) => ({ code, path, message }));
+            if (!(await confirmLossyExport(diagnostics))) return "";
+          }
+          let content: string;
+          if (encoding === "yaml") {
+            const { stringify: stringifyYaml } = await import("yaml");
+            content = stringifyYaml(result.document);
+          } else {
+            content = `${JSON.stringify(result.document, null, 2)}\n`;
+          }
+          const extension = encoding === "yaml" ? "yaml" : "json";
+          const savedPath = await saveFile(`${loc.project.name}.openapi.${extension}`, content, input.format, encoding);
+          return savedPath satisfies IpcResultMap[typeof IpcChannel.DesignExport];
+        }
+        const projection = buildDocumentProjection(snapshot, input.scope);
+        if (projection.apis.length === 0 || projection.diagnostics.some((diagnostic) => diagnostic.severity === "error" && diagnostic.path.startsWith("scope."))) {
+          throw new Error("文档范围没有匹配的接口或包含无效目标；未写入输出文件");
+        }
+        const content = input.format === "html" ? renderDocumentHtml(projection) : renderDocumentMarkdown(projection);
+        const extension = input.format === "html" ? "html" : "md";
+        return await saveFile(`${loc.project.name}.${extension}`, content, input.format) satisfies IpcResultMap[typeof IpcChannel.DesignExport];
+      }
+      case IpcChannel.DesignPreview: {
+        return previewDesignDraft(session, a[0] as DesignPreviewInput) satisfies IpcResultMap[typeof IpcChannel.DesignPreview];
       }
       // 工作流频道（M2-B 任务 1）：变更分支显式 save（session 变更操作不自动落盘，
       // 语义备忘同环境频道）；set-status 仅在迁移成功（errors 为空）时落盘。
@@ -928,5 +1241,5 @@ export function createIpcDeps(options: IpcDepsOptions) {
     return await dispatch(channel, args, owner) as IpcResultMap[Channel];
   }
 
-  return { handle, pluginsRuntime };
+  return { handle, pluginsRuntime, stopMocks: () => mockManager.stopAll() };
 }

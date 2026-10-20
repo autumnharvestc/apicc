@@ -4,6 +4,7 @@ import { createProjectSnapshot } from "../../src/assets/snapshot.js";
 import { ContractProjectSchema, ContractWorkspaceSchema, type ContractProject } from "../../src/contract/workspace.js";
 import { ParameterBindingSchema } from "../../src/contract/model.js";
 import { workspaceFixture } from "../helpers/contractFixtures.js";
+import { createMockConfiguredProject } from "../helpers/mockFixtures.js";
 
 function fixtureProject(): ContractProject {
   return ContractWorkspaceSchema.parse(workspaceFixture()).groups[0].projects[0];
@@ -33,6 +34,35 @@ describe("project snapshots", () => {
     revisionAfter((project) => { project.models[0].name = "changed model"; });
     revisionAfter((project) => { project.components[0].name = "changed component"; });
     revisionAfter((project) => { project.collections[0].apis[0].documentation = "changed API"; });
+  });
+
+  it("accepts the optional strict mock config and includes it in the saved snapshot revision", () => {
+    const legacy = fixtureProject();
+    expect(Object.hasOwn(legacy, "mock")).toBe(false);
+
+    const configured = createMockConfiguredProject();
+    const parsed = ContractProjectSchema.safeParse(configured);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw new Error("Mock configuration must satisfy the project schema.");
+
+    const manyEnabledContracts = structuredClone(configured);
+    manyEnabledContracts.mock.enabledContractIds = [
+      configured.mock.enabledContractIds[0]!,
+      ...Array.from({ length: 64 }, (_, index) => `20000000-0000-4000-8000-${(index + 1).toString(16).padStart(12, "0")}`),
+    ];
+    expect(ContractProjectSchema.safeParse(manyEnabledContracts).success).toBe(true);
+
+    const snapshot = createProjectSnapshot(parsed.data);
+    expect(snapshot.project.mock).toEqual(configured.mock);
+    expect(snapshot.definitionRevision).not.toBe(createProjectSnapshot(legacy).definitionRevision);
+
+    const unsupportedVersion = structuredClone(configured);
+    Reflect.set(Reflect.get(unsupportedVersion, "mock") as object, "formatVersion", 2);
+    expect(ContractProjectSchema.safeParse(unsupportedVersion).success).toBe(false);
+
+    const unknownConfigField = structuredClone(configured);
+    Reflect.set(Reflect.get(unknownConfigField, "mock") as object, "unexpected", true);
+    expect(ContractProjectSchema.safeParse(unknownConfigField).success).toBe(false);
   });
 
   it("uses canonical object-key order while retaining array order", () => {

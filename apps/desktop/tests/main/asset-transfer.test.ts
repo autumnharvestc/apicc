@@ -162,13 +162,18 @@ describe("asset transfer IPC", () => {
         .toBe("other-group synthetic value");
 
       const preview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "transfer.fixture", content: "fixture" });
-      expect(preview).toMatchObject({ importerName: "asset-transfer-fixture", project: importedProject });
+      expect(preview).toMatchObject({ importerName: "asset-transfer-fixture", summary: { projectName: "Imported source" } });
+      expect(preview).not.toHaveProperty("project");
       expect(JSON.stringify(preview)).not.toContain("source-only synthetic value");
-      await deps.handle(IpcChannel.ImportApply, null, {
+      const plan = await deps.handle(IpcChannel.ImportPlan, null, {
+        previewToken: preview.token,
         mode: "project",
         target: { workspaceId: IDS.workspace, groupId: IDS.groupTwo },
         name: "Imported asset",
-        project: preview.project,
+      });
+      await deps.handle(IpcChannel.ImportApply, null, {
+        planToken: plan.token,
+        allowLossy: false,
       });
       await session.open(temporary.path);
       const imported = session.workspace!.groups.find((group) => group.id === IDS.groupTwo)!.projects.find((project) => project.name === "Imported asset")!;
@@ -275,6 +280,64 @@ describe("asset transfer IPC", () => {
       expect(await secretStore.status(historicalTargetScope, moveRef)).toBe("available");
       expect(await secretStore.resolve(historicalTargetScope, moveRef)).toBe("historical target binding");
       expect(session.locateProject(secondProjectLocator)).toBeUndefined();
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("keeps masked import environment labels separate from preview-bound selection identity", async () => {
+    const temporary = await makeTempRoot("apicc-masked-environment-");
+    try {
+      const workspace = makeWorkspace();
+      await persistWorkspace(temporary.path, workspace);
+      const importedProject = projectOne(makeWorkspace());
+      addTransferReferences(importedProject);
+      const selectedName = "Bearer hidden-source-environment";
+      const selectedEnvironment = importedProject.environments.find((environment) => environment.name === "preview");
+      if (!selectedEnvironment) throw new Error("Transfer fixture must contain the preview environment");
+      selectedEnvironment.name = selectedName;
+      selectedEnvironment.baseUrls[IDS.collectionOne] = "https://masked-selection.example.test";
+      const importedApi = findApi(importedProject, IDS.sharedApi)!;
+      importedApi.cases.find((testCase) => testCase.scope === "preview")!.scope = selectedName;
+      const importer: Importer = {
+        name: "masked-environment-fixture",
+        detect: (fileName, content) => fileName === "masked.fixture" && content === "fixture",
+        parse: () => ({ project: structuredClone(importedProject), diagnostics: [], warnings: [] }),
+      };
+      const session = createSession();
+      await session.open(temporary.path);
+      const deps = createIpcDeps({ session, importers: [importer], pickDirectory: async () => "", saveFile: async () => "" });
+      const target = sourceLocator;
+      const preview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "masked.fixture", content: "fixture" });
+      const otherPreview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "masked.fixture", content: "fixture" });
+      const selectedOption = preview.summary.environments.find((option) => option.label === "Bearer [redacted]");
+
+      expect(preview.summary.environments).toContainEqual(expect.objectContaining({ label: "Bearer [redacted]", optionToken: expect.any(String) }));
+      expect(JSON.stringify(preview)).not.toContain("hidden-source-environment");
+      expect(selectedOption).toBeDefined();
+      if (!selectedOption) throw new Error("The masked source environment must remain selectable");
+      const otherOption = otherPreview.summary.environments.find((option) => option.label === "Bearer [redacted]");
+      if (!otherOption) throw new Error("The second preview must contain the same masked environment label");
+      expect(otherOption.optionToken).not.toBe(selectedOption.optionToken);
+
+      await expect(deps.handle(IpcChannel.ImportPlan, null, {
+        previewToken: preview.token,
+        mode: "module",
+        target,
+        name: "Rejected cross-preview module",
+        sourceEnvironmentOptionToken: otherOption.optionToken,
+      })).rejects.toThrow(/来源环境选项无效/);
+
+      const plan = await deps.handle(IpcChannel.ImportPlan, null, {
+        previewToken: preview.token,
+        mode: "module",
+        target,
+        name: "Selected masked module",
+        sourceEnvironmentOptionToken: selectedOption.optionToken,
+      });
+      await deps.handle(IpcChannel.ImportApply, null, { planToken: plan.token, allowLossy: false });
+      const importedCollection = session.locateProject(target)!.project.collections.find((collection) => collection.name === "Selected masked module");
+      expect(importedCollection?.variables.baseUrl).toBe("https://masked-selection.example.test");
     } finally {
       await temporary.dispose();
     }

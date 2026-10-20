@@ -18,7 +18,10 @@ import ResponseEditor from "./ResponseEditor.vue";
 import CredentialEditor from "./CredentialEditor.vue";
 import OAuthManager from "./OAuthManager.vue";
 import ProjectAssetsPanel from "./ProjectAssetsPanel.vue";
+import MockPanel from "./MockPanel.vue";
 import DebugSettings from "./DebugSettings.vue";
+
+const emit = defineEmits<{ "new-free-request": [] }>();
 
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
@@ -732,6 +735,7 @@ async function onSaveRequest() {
     </a-tabs>
     <ResponseEditor v-if="assets && !isFreeRequest && metadata && editor.api" :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" />
     <ProjectAssetsPanel v-if="assets && !isFreeRequest" :assets="assets" :api="api" :credential-context-key="credentialContextKey" :read-only="editor.readOnly" />
+    <MockPanel v-if="api && projectLocator" :api="api" :root="requestTab?.root" :locator="projectLocator" :read-only="editor.readOnly" @new-free-request="emit('new-free-request')" />
     <CredentialEditor v-if="api && credentialProjectLocator" :api="api" :locator="credentialProjectLocator" :auth="request.auth" :context-key="credentialContextKey" :managed-state="oauthManagedState" :read-only="editor.readOnly" />
     <OAuthManager
       v-if="api && credentialProjectLocator && requestTab?.root"

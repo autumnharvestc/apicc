@@ -63,6 +63,20 @@ function syntheticSecretStore() {
 }
 
 describe("memory 替身正式压力控制器入口", () => {
+  it("Mock 仅仿真 UI 状态，不绑定 HTTP 地址或生成网络日志", async () => {
+    const { api, locator: apiLocator } = await seededMemory();
+    const locator = { workspaceId: apiLocator.workspaceId, groupId: apiLocator.groupId, projectId: apiLocator.projectId };
+    const initial = await api.mockGet(locator);
+    expect(initial).toMatchObject({ simulated: true, status: "stopped", address: null, logs: [] });
+    const saved = await api.mockConfigSave({
+      locator,
+      sourceProjectRevision: initial.sourceProjectRevision,
+      config: { formatVersion: 1, seed: "memory-seed", enabledContractIds: [], rules: [] },
+    });
+    const started = await api.mockStart({ locator, sourceProjectRevision: saved.sourceProjectRevision, port: 0 });
+    expect(started).toMatchObject({ simulated: true, status: "running", address: null, logs: [] });
+  });
+
   it("未确认目标通过结构化结果返回精确 origin，而不是抛出带自定义字段的 Error", async () => {
     const { api, locator, caseId } = await seededMemory();
     const out = await api.stressRun({ locator, caseId, concurrency: 1, maxIterations: 1 });

@@ -116,8 +116,9 @@ describe("typed preload contract", () => {
       description: "",
       definition: { location: "header" as const, name: "x-token", schema: { kind: "scalar" as const, type: "string" as const }, required: false, description: "" },
     };
-    const projectImport = { mode: "project" as const, target: groupLocator, name: "imported", project };
-    const moduleImport = { mode: "module" as const, target: projectLocator, name: "module", project };
+    const importApply = { planToken: "00000000-0000-4000-8000-000000000031", allowLossy: false };
+    const importPlan = { previewToken: "00000000-0000-4000-8000-000000000032", mode: "project" as const, target: groupLocator, name: "imported" };
+    const importUndo = { undoToken: "00000000-0000-4000-8000-000000000033" };
     const cases: Array<{ invoke: () => Promise<unknown>; channel: string; payload: unknown[] }> = [
       { invoke: () => api.wsOpen("C:/fixture"), channel: IpcChannel.WsOpen, payload: ["C:/fixture"] },
       { invoke: () => api.wsCreate("C:/new", "new workspace"), channel: IpcChannel.WsCreate, payload: ["C:/new", "new workspace"] },
@@ -153,15 +154,22 @@ describe("typed preload contract", () => {
       { invoke: () => api.componentGet(componentLocator), channel: IpcChannel.ComponentGet, payload: [componentLocator] },
       { invoke: () => api.componentCreate(projectLocator, componentInput), channel: IpcChannel.ComponentCreate, payload: [projectLocator, componentInput] },
       { invoke: () => api.componentSave(componentLocator, project.components.find((item) => item.id === IDS.parameter)!), channel: IpcChannel.ComponentSave, payload: [componentLocator, project.components.find((item) => item.id === IDS.parameter)!] },
+      { invoke: () => api.mockGet(projectLocator), channel: IpcChannel.MockGet, payload: [projectLocator] },
+      { invoke: () => api.mockConfigSave({ locator: projectLocator, sourceProjectRevision: "source-revision", config: { formatVersion: 1, seed: "saved", enabledContractIds: [], rules: [] } }), channel: IpcChannel.MockConfigSave, payload: [{ locator: projectLocator, sourceProjectRevision: "source-revision", config: { formatVersion: 1, seed: "saved", enabledContractIds: [], rules: [] } }] },
+      { invoke: () => api.mockStart({ locator: projectLocator, sourceProjectRevision: "source-revision", port: 0 }), channel: IpcChannel.MockStart, payload: [{ locator: projectLocator, sourceProjectRevision: "source-revision", port: 0 }] },
+      { invoke: () => api.mockStop({ locator: projectLocator, sourceProjectRevision: "source-revision" }), channel: IpcChannel.MockStop, payload: [{ locator: projectLocator, sourceProjectRevision: "source-revision" }] },
+      { invoke: () => api.mockReload({ locator: projectLocator, sourceProjectRevision: "source-revision" }), channel: IpcChannel.MockReload, payload: [{ locator: projectLocator, sourceProjectRevision: "source-revision" }] },
+      { invoke: () => api.mockProjectClose({ root: "C:/fixture", locator: projectLocator }), channel: IpcChannel.MockProjectClose, payload: [{ root: "C:/fixture", locator: projectLocator }] },
       { invoke: () => api.assetReferences(projectLocator, IDS.model), channel: IpcChannel.AssetReferences, payload: [projectLocator, IDS.model] },
       { invoke: () => api.debugSend({ locator: apiLocator, caseId: testCase.id, envName: null }), channel: IpcChannel.DebugSend, payload: [{ locator: apiLocator, caseId: testCase.id, envName: null }] },
       { invoke: () => api.runCollection({ locator: collectionLocator, envName: null }), channel: IpcChannel.RunCollection, payload: [{ locator: collectionLocator, envName: null }] },
-      { invoke: () => api.importApply(projectImport), channel: IpcChannel.ImportApply, payload: [projectImport] },
-      { invoke: () => api.importApply(moduleImport), channel: IpcChannel.ImportApply, payload: [moduleImport] },
+      { invoke: () => api.importPlan(importPlan), channel: IpcChannel.ImportPlan, payload: [importPlan] },
+      { invoke: () => api.importApply(importApply), channel: IpcChannel.ImportApply, payload: [importApply] },
+      { invoke: () => api.importUndo(importUndo), channel: IpcChannel.ImportUndo, payload: [importUndo] },
       { invoke: () => api.importPreview({ fileName: "fixture.json", content: "{}" }), channel: IpcChannel.ImportPreview, payload: [{ fileName: "fixture.json", content: "{}" }] },
       { invoke: () => api.projectClone(projectLocator), channel: IpcChannel.ProjectClone, payload: [projectLocator] },
       { invoke: () => api.projectMove(projectLocator, groupLocator), channel: IpcChannel.ProjectMove, payload: [projectLocator, groupLocator] },
-      { invoke: () => api.designExport(apiLocator), channel: IpcChannel.DesignExport, payload: [apiLocator] },
+      { invoke: () => api.designExport({ sourceRoot: "C:/fixture", locator: apiLocator, format: "markdown", scope: { kind: "project" } }), channel: IpcChannel.DesignExport, payload: [{ sourceRoot: "C:/fixture", locator: apiLocator, format: "markdown", scope: { kind: "project" } }] },
       { invoke: () => api.wfList(projectLocator), channel: IpcChannel.WfList, payload: [projectLocator] },
       { invoke: () => api.wfGet(workflowLocator), channel: IpcChannel.WfGet, payload: [workflowLocator] },
       { invoke: () => api.wfCreate({ locator: projectLocator, name: "new workflow" }), channel: IpcChannel.WfCreate, payload: [{ locator: projectLocator, name: "new workflow" }] },
@@ -187,7 +195,7 @@ describe("typed preload contract", () => {
       await test.invoke();
       expect(electron.invoke).toHaveBeenLastCalledWith(test.channel, ...test.payload);
     }
-    expect(cases).toHaveLength(57);
+    expect(cases).toHaveLength(64);
   });
 
   it("validates stress results at the actual preload boundary", async () => {

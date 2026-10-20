@@ -1,5 +1,4 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
-import { writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IpcChannel } from "../shared/channels.js";
@@ -10,6 +9,7 @@ import { createTokenStore } from "./online/tokenStore.js";
 import { createAiKeyStore } from "./ai/config.js";
 import { createDesktopDebugHistoryStore } from "./debugHistory.js";
 import { attachQuitGuard } from "./quitGuard.js";
+import { atomicWriteFile } from "./atomicFile.js";
 import { defaultCredentialPrivateRoot, defaultNetworkPrivateRoot, defaultOAuthPrivateRoot } from "@apicc/core";
 
 // package.json 为 type:module，编译产物是 ESM，须用 import.meta 推导 __dirname。
@@ -21,8 +21,27 @@ process.env.APP_ROOT = join(__dirname);
 // 经此标志补刀 app.quit()（darwin 销毁后无窗不自动 quit，不补刀则应用无窗僵留）。取消/
 // 手动关窗由守卫消费并复位标志，不继承退出意图（darwin 红点关窗保持「无窗驻留」习惯）。
 let quitRequested = false;
-app.on("before-quit", () => {
+let stopDesktopMocks: (() => Promise<void>) | undefined;
+let mockShutdown: Promise<void> | undefined;
+let bypassNextBeforeQuit = false;
+app.on("before-quit", (event) => {
   quitRequested = true;
+  if (bypassNextBeforeQuit) {
+    bypassNextBeforeQuit = false;
+    return;
+  }
+  if (!stopDesktopMocks) return;
+  event.preventDefault();
+  if (mockShutdown) return;
+  const shutdown = Promise.resolve().then(() => stopDesktopMocks!());
+  mockShutdown = shutdown;
+  const continueQuit = () => {
+    if (mockShutdown !== shutdown) return;
+    mockShutdown = undefined;
+    bypassNextBeforeQuit = true;
+    void app.quit();
+  };
+  void shutdown.then(continueQuit, continueQuit);
 });
 
 function createWindow(): BrowserWindow {
@@ -80,13 +99,40 @@ app.whenReady().then(() => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
     return result.canceled || result.filePaths.length === 0 ? "" : result.filePaths[0]!;
   };
-  const saveFile = async (defaultName: string, content: string): Promise<string> => {
-    // design:export（任务 8）：原生保存对话框（defaultPath = <接口名>.design.md），
-    // 取消回传空串；选择路径后写盘并返回完整路径。
-    const result = await dialog.showSaveDialog({ defaultPath: defaultName });
+  const saveFile = async (
+    defaultName: string,
+    content: string,
+    format?: "markdown" | "html" | "openapi-3.0" | "openapi-3.1",
+    encoding?: "json" | "yaml",
+  ): Promise<string> => {
+    const filters = format === "html"
+      ? [{ name: "HTML document", extensions: ["html"] }]
+      : format === "markdown"
+        ? [{ name: "Markdown document", extensions: ["md"] }]
+        : format?.startsWith("openapi-")
+          ? encoding === "yaml"
+            ? [{ name: "OpenAPI YAML", extensions: ["yaml", "yml"] }]
+            : [{ name: "OpenAPI JSON", extensions: ["json"] }]
+          : undefined;
+    const result = await dialog.showSaveDialog({ defaultPath: defaultName, ...(filters ? { filters } : {}) });
     if (result.canceled || !result.filePath) return "";
-    await writeFile(result.filePath, content, "utf8");
+    await atomicWriteFile(result.filePath, content);
     return result.filePath;
+  };
+  const confirmLossyExport = async (diagnostics: readonly { code: string; path: string; message: string }[]): Promise<boolean> => {
+    const visible = diagnostics.slice(0, 10).map(({ code, path, message }) => `${code} — ${path}: ${message}`);
+    if (diagnostics.length > visible.length) visible.push(`… ${diagnostics.length - visible.length} more diagnostic(s)`);
+    const result = await dialog.showMessageBox({
+      type: "warning",
+      title: "OpenAPI export may lose semantics",
+      message: "The selected OpenAPI document omits or transforms some contract semantics. Continue exporting?",
+      detail: visible.join("\n"),
+      buttons: ["Cancel", "Export anyway"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    return result.response === 1;
   };
   // 在线依赖（M3-B 任务 1，规格 §2 D9）：token 存 userData 目录（safeStorage 加密，
   // 不可用降级明文 + warn）；client 用全局 fetch（Node 22 内置），超时默认 15s。
@@ -106,7 +152,7 @@ app.whenReady().then(() => {
   // 用户级清单，D8）。createIpcDeps 未配置 plugins 时零加载（测试零扰动），生产必须显式启用。
   const plugins = { homeDir: isolatedRoot ? join(isolatedRoot, "user-home") : app.getPath("home") };
   const deps = createIpcDeps({
-    session, pickDirectory, saveFile, online, ai, plugins,
+    session, pickDirectory, saveFile, confirmLossyExport, online, ai, plugins,
     credentials: {
       credentialPrivateRoot: isolatedRoot ? join(isolatedRoot, "credentials") : defaultCredentialPrivateRoot(),
       networkPrivateRoot: isolatedRoot ? join(isolatedRoot, "network") : defaultNetworkPrivateRoot(),
@@ -117,6 +163,7 @@ app.whenReady().then(() => {
       ? createDesktopDebugHistoryStore({ privateRoot: join(isolatedRoot, "history") })
       : createDesktopDebugHistoryStore({ appDataDirectory: app.getPath("appData") }),
   });
+  stopDesktopMocks = deps.stopMocks;
   for (const channel of Object.values(IpcChannel)) {
     // Preserve Electron's actual sender object through this boundary: the debugger binds
     // start/wait/cancel and renderer teardown to event.sender, never a renderer-supplied id.

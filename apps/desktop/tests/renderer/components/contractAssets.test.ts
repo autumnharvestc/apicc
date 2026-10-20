@@ -8,6 +8,7 @@ import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { useAssetsStore } from "../../../src/renderer/src/stores/assets.js";
 import { useCasesStore } from "../../../src/renderer/src/stores/cases.js";
 import { useDesignStore } from "../../../src/renderer/src/stores/design.js";
+import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { createAiStore } from "../../../src/renderer/src/stores/ai.js";
 import RequestEditor from "../../../src/renderer/src/components/RequestEditor.vue";
 import CredentialEditor from "../../../src/renderer/src/components/CredentialEditor.vue";
@@ -802,9 +803,11 @@ describe("Contract asset editor", () => {
     await fixture.api.apiSave(fixture.apiLocator, initial.api, initial.sourceApiRevision);
     const editor = await createEditor();
     const design = useDesignStore(fixture.api, editor);
+    const workspace = useWorkspaceStore(fixture.api);
+    await workspace.open(fixture.root);
     design.load();
     const { i18n } = createI18nInstance();
-    const wrapper = mount(DesignPanel, { props: { editor, design }, global: { plugins: [i18n] } });
+    const wrapper = mount(DesignPanel, { props: { editor, design, workspace }, global: { plugins: [i18n] } });
     mountedWrappers.push(wrapper);
     await flushPromises();
     await wrapper.get('[data-testid="design-content"]').setValue("stale unsaved draft");
@@ -960,22 +963,43 @@ describe("Contract asset editor", () => {
     expect(request.body.content).toBe('{\n  "title": "valid recovery"\n}');
   });
 
+  it("shows local response-header validation in the shared unscoped editor", async () => {
+    const editor = await createEditor();
+    editor.api!.contract.responses = [{
+      kind: "inline", id: randomUUID(), status: "200", description: "OK", headers: { "X-Trace": "" },
+      content: { "application/json": { examples: [] } },
+    }];
+    const wrapper = await mountRequestEditor(editor);
+    const headerName = wrapper.get('[data-testid="response-header-name-0-0"]');
+    await headerName.setValue(" ");
+    expect(headerName.attributes("aria-invalid")).toBe("true");
+    expect(wrapper.find('[data-testid="response-header-error"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="response-header-error"]').text()).toContain("响应头名称不能为空且不能重复。");
+  });
+
   it("edits and persists an inline response definition through the mounted editor", async () => {
     const editor = await createEditor();
     const id = randomUUID();
     const exampleId = randomUUID();
+    const exampleComponent = fixture.components.find((component) => component.kind === "example");
+    if (!exampleComponent || exampleComponent.kind !== "example") throw new Error("The project fixture must contain an example component");
     editor.api!.contract.responses = [{
       kind: "inline", id, status: "200", description: "OK", headers: {},
-      content: { "application/json": { schema: { kind: "scalar", type: "string" }, examples: [{ kind: "inline", id: exampleId, name: "valid", value: { ready: true } }] } },
+      content: { "application/json": { schema: { kind: "scalar", type: "string" }, examples: [{ kind: "componentRef", id: exampleId, componentId: exampleComponent.id, expectedKind: "example" }] } },
     }];
     const wrapper = await mountRequestEditor(editor);
+    await wrapper.get(".example select").setValue("");
+    expect(editor.api!.contract.responses[0]).toMatchObject({
+      kind: "inline",
+      content: { "application/json": { examples: [{ kind: "inline", id: exampleId, name: "Success example", value: { ok: true } }] } },
+    });
     const responseExample = wrapper.get('[data-testid="response-example-0-0"]');
     await responseExample.setValue('{invalid json');
     expect(wrapper.get('[data-testid="response-example-error"]').attributes("role")).toBe("alert");
     expect(responseExample.element).toHaveProperty("value", "{invalid json");
     expect(editor.api!.contract.responses[0]).toMatchObject({
       kind: "inline",
-      content: { "application/json": { examples: [{ kind: "inline", id: exampleId, value: { ready: true } }] } },
+      content: { "application/json": { examples: [{ kind: "inline", id: exampleId, value: { ok: true } }] } },
     });
     await responseExample.setValue('{"ready":false}');
     expect(wrapper.find('[data-testid="response-example-error"]').exists()).toBe(false);

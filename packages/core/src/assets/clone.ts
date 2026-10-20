@@ -9,6 +9,7 @@ import type {
   ResponseDefinition,
   SecretRef,
 } from "../contract/model.js";
+import type { MockRule } from "../mock/config.js";
 import { cloneDefinitionValue, type AssetBundle } from "./context.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../contract/workspace.js";
 import type { Workflow } from "../workflow/model.js";
@@ -17,7 +18,7 @@ import type { SchemaNode } from "../contract/schemaNode.js";
 export type CloneIdKind =
   | "project" | "collection" | "folder" | "environment" | "workflow" | "workflowNode" | "workflowEdge"
   | "contract" | "case" | "model" | "component" | "operation" | "assertion"
-  | "parameterInstance" | "responseInstance" | "exampleInstance" | "requestEntry" | "secretRef";
+  | "parameterInstance" | "responseInstance" | "exampleInstance" | "requestEntry" | "secretRef" | "mockRule";
 
 export interface CloneIdMapping {
   kind: CloneIdKind;
@@ -61,6 +62,12 @@ class IdMapper {
 
   reference(kind: CloneIdKind, sourceId: string, ownerId?: string): string {
     return this.ids.get(this.identity(kind, sourceId, ownerId)) ?? sourceId;
+  }
+
+  requireReference(kind: CloneIdKind, sourceId: string, ownerId?: string): string {
+    const targetId = this.ids.get(this.identity(kind, sourceId, ownerId));
+    if (targetId === undefined) throw new Error(`Cannot clone unresolved ${kind} reference ${sourceId}.`);
+    return targetId;
   }
 
   result(): CloneIdMapping[] {
@@ -109,6 +116,7 @@ function collectProjectMappings(project: ContractProject, mapper: IdMapper): voi
   for (const workflow of project.workflows) collectWorkflowMappings(workflow, project.id, mapper);
   for (const model of project.models) mapper.declare("model", model.id, project.id);
   for (const component of project.components) collectComponentMappings(component, project.id, mapper);
+  project.mock?.rules.forEach((rule) => mapper.declare("mockRule", rule.id, project.id));
 }
 
 function collectCollectionMappings(collection: ContractCollection, projectId: string, scope: string, mapper: IdMapper): void {
@@ -220,6 +228,57 @@ function rewriteProject(source: ContractProject, target: ContractProject, mapper
     rewriteSchema(target.models[index].schema, source.id, mapper);
   });
   source.components.forEach((component, index) => rewriteComponent(component, target.components[index], source.id, mapper));
+  if (source.mock && target.mock) {
+    target.mock.enabledContractIds = source.mock.enabledContractIds.map((id) => mapper.requireReference("contract", id, source.id));
+    target.mock.rules = source.mock.rules.map((rule, index) => rewriteMockRule(source, rule, target.mock!.rules[index]!, mapper));
+  }
+}
+
+function rewriteMockRule(project: ContractProject, rule: MockRule, target: MockRule, mapper: IdMapper): MockRule {
+  target.id = mapper.requireReference("mockRule", rule.id, project.id);
+  target.contractId = mapper.requireReference("contract", rule.contractId, project.id);
+  target.responseBindingId = mapper.requireReference("responseInstance", rule.responseBindingId, rule.contractId);
+  if (rule.source.kind === "example") {
+    target.source = {
+      kind: "example",
+      exampleBindingId: mapper.requireReference(
+        "exampleInstance",
+        rule.source.exampleBindingId,
+        findMockExampleOwner(project, rule),
+      ),
+    };
+  } else if (rule.source.kind === "schema") target.source = { kind: "schema" };
+  else target.source = { kind: "literal", text: rule.source.text };
+  return target;
+}
+
+function findMockExampleOwner(project: ContractProject, rule: MockRule): string {
+  const asset = findApiAsset(project, rule.contractId);
+  const response = asset?.contract.responses.find((binding) => binding.id === rule.responseBindingId);
+  if (!response) throw new Error(`Cannot clone unresolved mock response ${rule.responseBindingId}.`);
+  return response.kind === "inline" ? rule.contractId : response.componentId;
+}
+
+function findApiAsset(project: ContractProject, contractId: string): ApiAsset | undefined {
+  for (const collection of project.collections) {
+    const direct = collection.apis.find((asset) => asset.contract.id === contractId);
+    if (direct) return direct;
+    for (const folder of collection.folders) {
+      const nested = findFolderApiAsset(folder, contractId);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+function findFolderApiAsset(folder: ContractFolder, contractId: string): ApiAsset | undefined {
+  const direct = folder.apis.find((asset) => asset.contract.id === contractId);
+  if (direct) return direct;
+  for (const child of folder.folders) {
+    const nested = findFolderApiAsset(child, contractId);
+    if (nested) return nested;
+  }
+  return undefined;
 }
 
 function rewriteCollection(source: ContractCollection, target: ContractCollection, projectId: string, mapper: IdMapper, scope: string): void {

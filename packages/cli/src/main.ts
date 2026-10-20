@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generatePluginPackage } from "./create-plugin.js";
 import {
@@ -12,6 +12,8 @@ import {
   CollectionRunError,
   createAiProvider,
   createProjectSnapshot,
+  compileProjectMock,
+  startMockServer,
   createHttpSession,
   createFileOAuthProfileStore,
   withOAuthBearerRefLock,
@@ -31,6 +33,15 @@ import {
   ApiRequestSchema,
   prepareDebugExecution,
   runDebugExecution,
+  buildDocumentProjection,
+  exportOpenapi,
+  buildImportMergePlan,
+  projectAssetImportDiagnostics,
+  normalizeImportDiagnostics,
+  ContractProjectSchema,
+  DocumentScopeSchema,
+  renderDocumentHtml,
+  renderDocumentMarkdown,
   renderContractMarkdown,
   loadUserPlugins,
   findProjectApi,
@@ -57,6 +68,9 @@ import {
   type StressWorkerSpecBase,
   type Workspace,
   type Workflow,
+  type DocumentScope,
+  type ImportMergeAction,
+  type ImportMergeItemDecision,
   createHttpClient,
   createSoapClient,
   createStressCaseSession,
@@ -93,6 +107,36 @@ import {
 
 function collectOption(value: string, previous: string[] = []): string[] {
   return [...previous, value];
+}
+
+function redactImportOutput(value: string): string {
+  return value
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/(?:[A-Za-z]:\\|\/(?:Users|home|tmp|var|etc)\/)[^\s"'<>]*/g, "[local path]");
+}
+
+function projectApis(project: Project, collectionIds: ReadonlySet<string>): Array<Project["collections"][number]["apis"][number]> {
+  const result: Array<Project["collections"][number]["apis"][number]> = [];
+  const visit = (folder: Project["collections"][number]["folders"][number]): void => {
+    result.push(...folder.apis);
+    folder.folders.forEach(visit);
+  };
+  for (const collection of project.collections) {
+    if (!collectionIds.has(collection.id)) continue;
+    result.push(...collection.apis);
+    collection.folders.forEach(visit);
+  }
+  return result;
+}
+
+function sameImportRoute(left: Project["collections"][number]["apis"][number], right: Project["collections"][number]["apis"][number]): boolean {
+  const a = left.contract.request;
+  const b = right.contract.request;
+  if (a.protocol !== b.protocol) return false;
+  const methodA = a.protocol === "websocket" ? "WS" : a.method;
+  const methodB = b.protocol === "websocket" ? "WS" : b.method;
+  const canonical = (path: string) => path.split(/[?#]/, 1)[0]!.replace(/\{[^/{}]+\}/g, "{}").replace(/\/+$/, "") || "/";
+  return methodA === methodB && canonical(a.path) === canonical(b.path);
 }
 
 function validateStressOriginOption(value: string): string {
@@ -633,7 +677,7 @@ export async function runCli(
   // 进入时重置进程退出码：同进程多次调用 runCli（编程/测试场景）互不串扰，
   // 各命令只反映本次调用的结果（bin.ts 执行完毕后会把返回值写回 process.exitCode）。
   process.exitCode = 0;
-  const { Command } = await import("commander");
+  const { Command, Option } = await import("commander");
   const program = new Command();
   program.name("apicc").description("apicc 命令行——接口定义与测试驱动开发").version("0.1.0");
 
@@ -1523,6 +1567,145 @@ export async function runCli(
     });
 
   program
+    .command("mock")
+    .description("在前台为已保存项目提供本机 Mock HTTP 服务")
+    .argument("<projectPath>", "项目完整 UUID 路径（groups/<groupId>/projects/<projectId>）")
+    .option("--port <port>", "监听端口（0 表示自动选择）", (value: string) => {
+      const port = Number(value);
+      if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error("--port 必须是 0 到 65535 之间的整数");
+      return port;
+    }, 0)
+    .option("--seed <seed>", "仅本次进程覆盖已保存的 Mock seed；不会写回项目")
+    .action(async (projectPath: string, opts: { port: number; seed?: string }) => {
+      if (opts.seed !== undefined && opts.seed.length === 0) throw new Error("--seed 必须是非空字符串");
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+      const state = await loadWorkspace(registry, root);
+      assertWorkspaceUsable(state);
+      const { project } = locateProject(state.workspace, projectPath);
+      if (!project.mock) throw new Error(`项目没有已保存的 Mock 配置: ${projectPath}`);
+      const snapshot = createProjectSnapshot({
+        ...project,
+        mock: opts.seed === undefined ? project.mock : { ...project.mock, seed: opts.seed },
+      });
+      const compiled = compileProjectMock(snapshot);
+      if (!compiled.ok) {
+        const summary = compiled.diagnostics.filter((item) => item.severity === "error").map((item) => `${item.path}: ${item.message}`).join("; ");
+        throw new Error(summary || "Mock 项目编译失败");
+      }
+      const handle = await startMockServer(compiled.plan, { port: opts.port });
+      const { address, port } = handle.address;
+      const host = address.includes(":") ? `[${address}]` : address;
+      log(`MOCK_READY http://${host}:${port} revision=${compiled.plan.sourceProjectRevision}`);
+
+      let stopPromise: Promise<void> | undefined;
+      let finish!: () => void;
+      const terminated = new Promise<void>((resolve) => { finish = resolve; });
+      const stop = () => {
+        if (stopPromise) return;
+        stopPromise = handle.stop();
+        void stopPromise.then(finish, (error: unknown) => {
+          process.exitCode = 1;
+          log(`Mock server stop failed: ${error instanceof Error ? error.message : String(error)}`);
+          finish();
+        });
+      };
+      const signals: NodeJS.Signals[] = process.platform === "win32"
+        ? ["SIGINT", "SIGTERM", "SIGBREAK"]
+        : ["SIGINT", "SIGTERM"];
+      for (const signal of signals) process.once(signal, stop);
+      try {
+        await terminated;
+      } finally {
+        for (const signal of signals) process.off(signal, stop);
+        if (stopPromise) await stopPromise;
+        else await handle.stop();
+      }
+    });
+
+  program
+    .command("export")
+    .description("导出当前项目的 Markdown、HTML 或 OpenAPI 文档")
+    .argument("<projectPath>", "项目完整 UUID 路径（groups/<groupId>/projects/<projectId>）")
+    .requiredOption("--format <format>", "导出格式：markdown、html、openapi-3.0 或 openapi-3.1")
+    .requiredOption("--output <path>", "输出文件路径")
+    .option("--encoding <encoding>", "OpenAPI 编码：json 或 yaml", "json")
+    .option("--info-version <version>", "OpenAPI info.version（不影响 OpenAPI 规范版本）")
+    .option("--allow-lossy", "确认接受诊断中列出的 OpenAPI 语义损失", false)
+    .option("--collection <id...>", "仅导出所选模块中的接口")
+    .option("--api <id...>", "仅导出所选接口")
+    .option("--tag <tag...>", "导出任一命中所选标签的接口")
+    .action(async (projectPath: string, opts: {
+      format: string;
+      output: string;
+      encoding: string;
+      infoVersion?: string;
+      allowLossy: boolean;
+      collection?: string[];
+      api?: string[];
+      tag?: string[];
+    }) => {
+      const openapiFormat = opts.format === "openapi-3.0" || opts.format === "openapi-3.1";
+      if (opts.format !== "markdown" && opts.format !== "html" && !openapiFormat) {
+        throw new Error("--format 只支持 markdown、html、openapi-3.0 或 openapi-3.1");
+      }
+      if (openapiFormat && opts.encoding !== "json" && opts.encoding !== "yaml") {
+        throw new Error("--encoding 只支持 json 或 yaml");
+      }
+      if (!opts.output.trim()) throw new Error("--output 必须提供文件路径");
+      const filters = [opts.collection, opts.api, opts.tag].filter((filter) => filter !== undefined);
+      if (filters.length > 1) throw new Error("--collection、--api、--tag 只能选择一种范围");
+      const scope: DocumentScope = opts.collection !== undefined
+        ? { kind: "collections", collectionIds: opts.collection }
+        : opts.api !== undefined
+          ? { kind: "apis", contractIds: opts.api }
+          : opts.tag !== undefined
+            ? { kind: "tags", tags: opts.tag }
+            : { kind: "project" };
+      const parsedScope = DocumentScopeSchema.safeParse(scope);
+      if (!parsedScope.success) throw new Error("文档导出范围无效");
+      const root = findWorkspaceRoot(process.cwd());
+      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
+      const state = await loadWorkspace(registry, root);
+      assertWorkspaceUsable(state);
+      const { project } = locateProject(state.workspace, projectPath);
+      const snapshot = createProjectSnapshot(project);
+      let content: string;
+      let count: number;
+      if (openapiFormat) {
+        const result = exportOpenapi(snapshot, parsedScope.data, {
+          version: opts.format === "openapi-3.0" ? "3.0" : "3.1",
+          ...(opts.infoVersion === undefined ? {} : { infoVersion: opts.infoVersion }),
+          allowLossy: opts.allowLossy,
+        });
+        for (const diagnostic of result.diagnostics) {
+          log(`${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.path}: ${diagnostic.message}`);
+        }
+        if (result.blocked) throw new Error("OpenAPI 导出包含结构错误或未确认的语义损失；未写入输出文件");
+        if (opts.encoding === "yaml") {
+          const { stringify: stringifyYaml } = await import("yaml");
+          content = stringifyYaml(result.document);
+        } else {
+          content = `${JSON.stringify(result.document, null, 2)}\n`;
+        }
+        count = Object.keys(result.document.paths as Record<string, unknown>).length;
+      } else {
+        const projection = buildDocumentProjection(snapshot, parsedScope.data);
+        if (projection.apis.length === 0 || projection.diagnostics.some((diagnostic) => diagnostic.severity === "error" && diagnostic.path.startsWith("scope."))) {
+          throw new Error("文档范围没有匹配的接口或包含无效目标；未写入输出文件");
+        }
+        content = opts.format === "html" ? renderDocumentHtml(projection) : renderDocumentMarkdown(projection);
+        count = projection.apis.length;
+      }
+      try {
+        writeDocumentAtomically(opts.output, content);
+      } catch {
+        throw new Error("文档导出失败：无法写入目标文件");
+      }
+      log(`文档已导出：${count} 个接口路径（${opts.format}${openapiFormat ? `/${opts.encoding}` : ""}）`);
+    });
+
+  program
     .command("export-design")
     .argument("<apiPath>", "接口完整 UUID 路径（groups/<groupId>/projects/<projectId>/collections/<collectionId>/.../apis/<apiId>）")
     .action(async (apiPath: string) => {
@@ -1592,34 +1775,128 @@ export async function runCli(
       }
     });
 
-  // 非交互导入（任务 7）：默认只预览，--yes 确认写入；分组不存在则创建，同名项目并存（轨一同名放开）。
+  // Import: preview by default; project creation and explicit single-module merge share the Core plan.
   program
     .command("import")
     .argument("<file>", "导入文件路径")
-    .requiredOption("--group <name>", "目标分组名")
+    .option("--group <name>", "新增项目的目标分组名")
+    .option("--target-collection <path>", "显式合并目标集合 locator，例如 groups/<group>/projects/<project>/collections/<collection>")
+    .addOption(new Option("--policy <action>", "冲突策略：skip|rename|overwrite|cancel").choices(["skip", "rename", "overwrite", "cancel"]))
+    .option("--target-api <id>", "歧义覆盖时显式选择稳定的目标 API ID（可重复）", collectOption, [])
     .option("--yes", "跳过预览直接写入", false)
-    .action(async (file: string, opts: { group: string; yes: boolean }) => {
+    .option("--allow-lossy", "确认接受导入语义损失；与 --yes 分开", false)
+    .action(async (file: string, opts: {
+      group?: string;
+      targetCollection?: string;
+      policy?: ImportMergeAction;
+      targetApi: string[];
+      yes: boolean;
+      allowLossy: boolean;
+    }) => {
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml");
       const content = readFileSync(file, "utf8");
       const importer = registry.listImporters().find((i) => i.detect(file, content));
       if (!importer) throw new Error("无法识别的导入格式");
-      const { project, warnings } = importer.parse(content);
-      if (!opts.yes) {
-        log(`预览：将导入项目「${project.name}」（集合 ${project.collections.length} 个）`);
-        for (const w of warnings) log(`[警告] ${w}`);
-        log("非交互模式请加 --yes 确认写入");
-        return;
+      const imported = importer.parse(content);
+      const project = ContractProjectSchema.parse(imported.project);
+      const merging = opts.targetCollection !== undefined;
+      const diagnostics = merging
+        ? normalizeImportDiagnostics(imported)
+        : [...normalizeImportDiagnostics(imported), ...projectAssetImportDiagnostics(project)];
+      let conflictPolicy: ImportMergeAction | undefined;
+      if (merging) {
+        if (opts.group !== undefined) throw new Error("--target-collection 合并模式不能同时指定 --group。");
+        if (opts.policy === undefined) throw new Error("合并模式必须显式指定 --policy。");
+        conflictPolicy = opts.policy;
+      } else {
+        if (!opts.group) throw new Error("新增项目模式必须指定 --group。");
+        if (opts.policy !== undefined || opts.targetApi.length > 0) {
+          throw new Error("--policy 和 --target-api 仅用于 --target-collection 合并模式。");
+        }
       }
       const storage = registry.getStorage()!;
-      const { workspace, revision } = await storage.load(root);
-      let group = workspace.groups.find((x) => x.name === opts.group);
-      if (!group) { group = { id: crypto.randomUUID(), name: opts.group, projects: [] }; workspace.groups.push(group); }
-      // 同名放开（轨一）：同名项目直接并存（id 为身份），不再拒绝
-      group.projects.push(project);
-      await storage.save(root, workspace, { expectedRevision: revision, deletions: [] });
-      for (const w of warnings) log(`[警告] ${w}`);
-      log(`已导入项目「${project.name}」到分组「${opts.group}」`);
+      const loaded = await storage.load(root);
+      assertWorkspaceUsable(loaded);
+      const workspace = structuredClone(loaded.workspace);
+      let mergePlan: ReturnType<typeof buildImportMergePlan> | undefined;
+      if (merging) {
+        const target = locateCollection(workspace, opts.targetCollection!);
+        const sourceIds = project.collections.map((collection) => collection.id);
+        const sourceApis = projectApis(project, new Set(sourceIds));
+        const targetApis = projectApis(target.project, new Set([target.collection.id]));
+        if (opts.targetApi.length > 0 && conflictPolicy !== "overwrite") throw new Error("--target-api 仅适用于 --policy overwrite。");
+        const decisions: Record<string, ImportMergeItemDecision> = {};
+        const usedTargetIds = new Set<string>();
+        for (const source of sourceApis) {
+          const matches = targetApis.filter((candidate) => sameImportRoute(candidate, source));
+          if (matches.length === 0) continue;
+          const selections = opts.targetApi.filter((id) => matches.some((candidate) => candidate.contract.id === id));
+          if (selections.length > 1) throw new Error(`API ${redactImportOutput(source.contract.metadata.name)} 有多个 --target-api 选择，请只保留一个目标 ID。`);
+          const targetApiId = selections[0];
+          if (targetApiId) usedTargetIds.add(targetApiId);
+          decisions[source.contract.id] = {
+            action: conflictPolicy!,
+            ...(targetApiId === undefined ? {} : { targetApiId }),
+          };
+        }
+        if (opts.targetApi.some((id) => !usedTargetIds.has(id))) throw new Error("--target-api 必须是预览中该冲突路由列出的目标 API ID。");
+        mergePlan = buildImportMergePlan(target.project, project, {
+          targetCollectionId: target.collection.id,
+          sourceCollectionIds: sourceIds,
+          decisions,
+        });
+        diagnostics.push(...mergePlan.diagnostics.map((item) => ({
+          severity: item.severity,
+          code: item.code,
+          path: redactImportOutput(item.path),
+          message: redactImportOutput(item.message),
+          lossy: item.lossy,
+        })));
+        if (!mergePlan.cancelled && !mergePlan.diagnostics.some((item) => item.severity === "error")) {
+          const group = workspace.groups.find((candidate) => candidate.id === target.group.id)!;
+          const targetIndex = group.projects.findIndex((candidate) => candidate.id === target.project.id);
+          group.projects[targetIndex] = mergePlan.project;
+        }
+        log(`预览：合并「${redactImportOutput(project.name)}」到显式目标集合「${redactImportOutput(target.collection.name)}」`);
+        log(`计划：新增 ${mergePlan.summary.added} · 覆盖 ${mergePlan.summary.overwritten} · 跳过 ${mergePlan.summary.skipped}`);
+        for (const entry of mergePlan.entries) {
+          log(`  [${entry.status}] ${redactImportOutput(`${entry.method} ${entry.path} · ${entry.sourceName}`)}`);
+          const targetChoices = entry.targetApiIds.flatMap((id) => {
+            const candidate = targetApis.find((api) => api.contract.id === id);
+            return candidate ? [`${redactImportOutput(candidate.contract.metadata.name)} (${id})`] : [];
+          });
+          if (targetChoices.length > 1) log(`    覆盖目标候选：${targetChoices.join(" · ")}；再次调用时用 --target-api <id> 显式选择。`);
+        }
+      } else {
+        const group = workspace.groups.find((candidate) => candidate.name === opts.group);
+        const newProjectGroup = group ?? { id: randomUUID(), name: opts.group!, projects: [] };
+        if (!group) workspace.groups.push(newProjectGroup);
+        // Keep the legacy behavior: same-name projects coexist by identity.
+        newProjectGroup.projects.push(project);
+        log(`预览：将导入项目「${redactImportOutput(project.name)}」（集合 ${project.collections.length} 个）到分组「${redactImportOutput(opts.group!)}」`);
+        log(`计划：新增项目 1`);
+      }
+      for (const diagnostic of diagnostics) {
+        log(`[${diagnostic.severity === "error" ? "错误" : "警告"}${diagnostic.lossy ? " · 有损" : ""}] ${diagnostic.code}: ${diagnostic.message}`);
+      }
+      if (!opts.yes) {
+        log("预览未写入工作区；确认写入请加 --yes。若计划包含有损诊断，还须单独加 --allow-lossy。");
+        return;
+      }
+      if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) throw new Error("导入包含结构、引用或冲突错误，不能写入。");
+      if (diagnostics.some((diagnostic) => diagnostic.lossy) && !opts.allowLossy) throw new Error("导入包含语义损失；请显式加 --allow-lossy 确认后再应用。");
+      if (mergePlan?.cancelled) {
+        log("合并已取消；工作区未更改。");
+        return;
+      }
+      if (mergePlan && mergePlan.summary.added + mergePlan.summary.overwritten === 0) {
+        log("合并计划没有变更；工作区未更改。");
+        return;
+      }
+      await storage.save(root, workspace, { expectedRevision: loaded.revision, deletions: [] });
+      if (merging) log(`已原子合并到集合「${redactImportOutput(locateCollection(workspace, opts.targetCollection!).collection.name)}」`);
+      else log(`已导入项目「${redactImportOutput(project.name)}」到分组「${redactImportOutput(opts.group!)}」`);
     });
 
   // M7-A：插件管理命令组——list 展示已加载（name/version/贡献计数）与失败项原因（D3/D5 展示口径）。
@@ -1666,4 +1943,16 @@ export async function runCli(
     if (!(e as { handled?: boolean }).handled) throw e;
   }
   return process.exitCode ?? 0;
+}
+
+function writeDocumentAtomically(outputPath: string, content: string): void {
+  const target = resolve(outputPath);
+  const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" });
+    renameSync(temporary, target);
+  } catch (error) {
+    try { unlinkSync(temporary); } catch { /* The temporary file was not created or was already moved. */ }
+    throw error;
+  }
 }

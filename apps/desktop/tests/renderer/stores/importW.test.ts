@@ -25,10 +25,10 @@ describe("importW store", () => {
     const importW = useImportWizardStore(api, ws);
     const preview = await importW.previewFile("sample.yaml", "openapi: 3.0.0");
     expect(importW.preview).toEqual(preview);
-    // memory 替身固定样例：importerName/project.name/warnings 可断言
+    // Renderer receives a host token and public summary only.
     expect(importW.preview!.importerName).toBe("sample");
-    expect(importW.preview!.project.name).toBe("导入示例项目");
-    expect(importW.preview!.warnings).toEqual(["示例警告"]);
+    expect(importW.preview!.summary.projectName).toBe("导入示例项目");
+    expect(importW.preview).not.toHaveProperty("project");
 
     let release!: () => void;
     let notifyStarted!: () => void;
@@ -72,9 +72,11 @@ describe("importW store", () => {
       applyInputs.push(input);
       return originalImportApply(input);
     };
-    await importW.apply({ mode: "project", target: groupCandidate.locator, name: "导入示例项目" });
+    const target = { mode: "project" as const, target: groupCandidate.locator, name: "导入示例项目" };
+    await importW.makePlan(target);
+    await importW.apply(target);
     expect(applyInputs).toHaveLength(1);
-    expect(applyInputs[0]).toMatchObject({ mode: "project", target: groupCandidate.locator, name: "导入示例项目" });
+    expect(applyInputs[0]).toMatchObject({ planToken: expect.any(String), allowLossy: false });
     // memory.importApply 记录调用（可断言）
     expect(api.importApplyCalls).toEqual([
       { mode: "project", groupId: groupCandidate.id, name: "导入示例项目" },
@@ -112,12 +114,16 @@ describe("importW store", () => {
       await originalRefresh();
     };
     await importW.previewFile("old-root.yaml", "x");
-    const oldApply = importW.apply({ mode: "project", target: groupCandidate.locator, name: "旧根迟到导入" });
+    const oldTarget = { mode: "project" as const, target: groupCandidate.locator, name: "旧根迟到导入" };
+    await importW.makePlan(oldTarget);
+    const oldApply = importW.apply(oldTarget);
     await oldStarted;
     await ws.open("/tmp/ws-import-root-switch");
     importW.reset();
     await importW.previewFile("current-root.yaml", "x");
-    const currentApply = importW.apply({ mode: "project", target: groupCandidate.locator, name: "当前根导入" });
+    const currentTarget = { mode: "project" as const, target: groupCandidate.locator, name: "当前根导入" };
+    await importW.makePlan(currentTarget);
+    const currentApply = importW.apply(currentTarget);
     await currentStarted;
     releaseOld();
     await expect(oldApply).rejects.toThrow(/工作区已变更/);
@@ -144,9 +150,11 @@ describe("importW store", () => {
       applyInputs.push(input);
       return originalImportApply(input);
     };
-    await importW.apply({ mode: "module", target: projectCandidate.locator, name: "导入示例集合" });
+    const target = { mode: "module" as const, target: projectCandidate.locator, name: "导入示例集合" };
+    await importW.makePlan(target);
+    await importW.apply(target);
     expect(applyInputs).toHaveLength(1);
-    expect(applyInputs[0]).toMatchObject({ mode: "module", target: projectCandidate.locator, name: "导入示例集合" });
+    expect(applyInputs[0]).toMatchObject({ planToken: expect.any(String), allowLossy: false });
     expect(api.importApplyCalls).toEqual([
       { mode: "module", projectId: projectCandidate.id, name: "导入示例集合" },
     ]);

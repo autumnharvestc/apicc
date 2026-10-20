@@ -8,8 +8,16 @@ const props = withDefaults(defineProps<{
   modelValue?: SchemaNode;
   models?: ModelAsset[];
   readOnly?: boolean;
+  /** Optional identity-scoped raw-value bridge used by the formal Design view. */
+  draftScope?: string;
+  drafts?: Record<string, { value: string; error: string }>;
 }>(), { models: () => [], readOnly: false });
-const emit = defineEmits<{ "update:modelValue": [value: SchemaNode | undefined] }>();
+const emit = defineEmits<{
+  "update:modelValue": [value: SchemaNode | undefined];
+  "update:controlDraft": [path: string, value: string, error: string | null];
+  "clear:control-drafts": [prefix: string];
+  "move:control-drafts": [fromPrefix: string, toPrefix: string];
+}>();
 const { t } = useI18n();
 const propertyName = ref("");
 type AnnotationField = "default" | "examples" | "enum";
@@ -23,6 +31,25 @@ const modelRefExists = computed(() => {
 });
 const kinds = ["scalar", "object", "array", "allOf", "oneOf", "anyOf", "modelRef"] as const;
 const scalarTypes = ["string", "number", "integer", "boolean", "null"] as const;
+
+function forwardControlDraft(path: string, value: string, error: string | null) {
+  emit("update:controlDraft", path, value, error);
+}
+
+function clearControlDrafts(prefix: string): void {
+  if (props.draftScope && prefix) emit("clear:control-drafts", prefix);
+}
+
+function clearSchemaChildren(): void {
+  if (!props.draftScope) return;
+  for (const child of ["properties", "items", "additionalProperties", "variants"]) {
+    clearControlDrafts(`${props.draftScope}.${child}`);
+  }
+}
+
+function propertyScope(name: string): string | undefined {
+  return props.draftScope ? `${props.draftScope}.properties.${encodeURIComponent(name).replace(/\./g, "%2E")}` : undefined;
+}
 
 function replace(mutator: (copy: SchemaNode) => void) {
   if (!node.value) return;
@@ -47,10 +74,22 @@ function createKind(kind: (typeof kinds)[number]): SchemaNode {
 
 function setKind(kind: string) {
   if (!kinds.includes(kind as (typeof kinds)[number])) return;
+  if (node.value?.kind === kind) return;
+  clearSchemaChildren();
   emit("update:modelValue", createKind(kind as (typeof kinds)[number]));
 }
 
-function setProperty(name: string, value: SchemaNode) {
+function setProperty(name: string, value: SchemaNode | undefined) {
+  if (!value) {
+    const scope = propertyScope(name);
+    if (scope) clearControlDrafts(scope);
+    replace((copy) => {
+      if (copy.kind !== "object") return;
+      delete copy.properties[name];
+      copy.required = copy.required.filter((item) => item !== name);
+    });
+    return;
+  }
   replace((copy) => { if (copy.kind === "object") copy.properties[name] = value; });
 }
 
@@ -70,6 +109,8 @@ function addProperty() {
 }
 
 function removeProperty(name: string) {
+  const scope = propertyScope(name);
+  if (scope) clearControlDrafts(scope);
   replace((copy) => {
     if (copy.kind !== "object") return;
     delete copy.properties[name];
@@ -92,6 +133,10 @@ function additionalMode(): "false" | "true" | "schema" {
 
 function setAdditionalMode(mode: string) {
   if (mode !== "false" && mode !== "true" && mode !== "schema") return;
+  const current = node.value;
+  if (mode !== "schema" && current?.kind === "object" && typeof current.additionalProperties === "object" && props.draftScope) {
+    clearControlDrafts(`${props.draftScope}.additionalProperties`);
+  }
   replace((copy) => {
     if (copy.kind !== "object") return;
     if (mode === "schema") {
@@ -111,6 +156,13 @@ function addVariant() {
 }
 
 function removeVariant(index: number) {
+  if (node.value?.kind !== "allOf" && node.value?.kind !== "oneOf" && node.value?.kind !== "anyOf") return;
+  if (props.draftScope) {
+    clearControlDrafts(`${props.draftScope}.variants.${index}`);
+    for (let current = index + 1; current < node.value.variants.length; current += 1) {
+      emit("move:control-drafts", `${props.draftScope}.variants.${current}`, `${props.draftScope}.variants.${current - 1}`);
+    }
+  }
   replace((copy) => { if (copy.kind === "allOf" || copy.kind === "oneOf" || copy.kind === "anyOf") copy.variants.splice(index, 1); });
 }
 
@@ -126,15 +178,34 @@ function annotationText(value: JsonValue | JsonValue[] | undefined): string {
 }
 
 function annotationEditorText(key: AnnotationField, value: JsonValue | JsonValue[] | undefined): string {
+  if (props.draftScope) {
+    return props.drafts?.[`${props.draftScope}.${key}`]?.value ?? annotationText(value);
+  }
   return annotationDrafts.value[key] ?? annotationText(value);
 }
 
 function annotationError(key: AnnotationField): string | undefined {
+  if (props.draftScope) {
+    const external = props.drafts?.[`${props.draftScope}.${key}`];
+    return external?.error || undefined;
+  }
   return annotationErrors.value[key];
+}
+
+function annotationValidation(key: AnnotationField, value: string): string | null {
+  if (!value.trim()) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (key !== "default" && !Array.isArray(parsed)) return t("design.jsonArrayRequired");
+    return null;
+  } catch {
+    return t("design.invalidJson");
+  }
 }
 
 function updateAnnotationDraft(key: AnnotationField, value: string) {
   annotationDrafts.value = { ...annotationDrafts.value, [key]: value };
+  if (props.draftScope) emit("update:controlDraft", `${props.draftScope}.${key}`, value, annotationValidation(key, value));
 }
 
 function clearAnnotationDraft(key: AnnotationField) {
@@ -144,6 +215,7 @@ function clearAnnotationDraft(key: AnnotationField) {
   delete errors[key];
   annotationDrafts.value = drafts;
   annotationErrors.value = errors;
+  if (props.draftScope) emit("update:controlDraft", `${props.draftScope}.${key}`, "", null);
 }
 
 function parseAnnotation(key: AnnotationField, value: string) {
@@ -157,12 +229,12 @@ function parseAnnotation(key: AnnotationField, value: string) {
     if (key === "default") setAnnotation("default", parsed as JsonValue);
     else if (Array.isArray(parsed)) setAnnotation(key, parsed as JsonValue[]);
     else {
-      annotationErrors.value = { ...annotationErrors.value, [key]: "此项必须是 JSON 数组" };
+      annotationErrors.value = { ...annotationErrors.value, [key]: t("design.jsonArrayRequired") };
       return;
     }
     clearAnnotationDraft(key);
   } catch {
-    annotationErrors.value = { ...annotationErrors.value, [key]: "JSON 格式无效" };
+    annotationErrors.value = { ...annotationErrors.value, [key]: t("design.invalidJson") };
   }
 }
 </script>
@@ -198,7 +270,7 @@ function parseAnnotation(key: AnnotationField, value: string) {
             <label><input type="checkbox" :checked="node.required.includes(name)" data-testid="schema-required" @change="setRequired(name, ($event.target as HTMLInputElement).checked)" />{{ t('contract.required') }}</label>
             <button type="button" data-testid="schema-property-remove" @click="removeProperty(name)">×</button>
           </div>
-          <SchemaEditor :model-value="child" :models="models" :read-only="readOnly" @update:model-value="setProperty(name, $event as SchemaNode)" />
+          <SchemaEditor :model-value="child" :models="models" :read-only="readOnly" :draft-scope="propertyScope(name)" :drafts="drafts" @update:model-value="setProperty(name, $event as SchemaNode | undefined)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
         </div>
         <div class="row">
           <input v-model="propertyName" data-testid="schema-property-name" :placeholder="t('contract.propertyName')" />
@@ -210,17 +282,17 @@ function parseAnnotation(key: AnnotationField, value: string) {
           <option value="schema">schema</option>
         </select></label>
         <div v-if="typeof node.additionalProperties === 'object'" data-testid="schema-additional-schema">
-          <SchemaEditor :model-value="node.additionalProperties" :models="models" :read-only="readOnly" @update:model-value="replace((copy) => { if (copy.kind === 'object' && $event) copy.additionalProperties = $event; })" />
+          <SchemaEditor :model-value="node.additionalProperties" :models="models" :read-only="readOnly" :draft-scope="draftScope ? `${draftScope}.additionalProperties` : undefined" :drafts="drafts" @update:model-value="replace((copy) => { if (copy.kind === 'object' && $event) copy.additionalProperties = $event; })" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
         </div>
       </div>
       <div v-else-if="node.kind === 'array'" class="nested">
         <label>{{ t('contract.arrayItems') }}</label>
-        <SchemaEditor :model-value="node.items" :models="models" :read-only="readOnly" @update:model-value="replace((copy) => { if (copy.kind === 'array' && $event) copy.items = $event; })" />
+          <SchemaEditor :model-value="node.items" :models="models" :read-only="readOnly" :draft-scope="draftScope ? `${draftScope}.items` : undefined" :drafts="drafts" @update:model-value="replace((copy) => { if (copy.kind === 'array' && $event) copy.items = $event; })" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
       </div>
       <div v-else-if="node.kind === 'allOf' || node.kind === 'oneOf' || node.kind === 'anyOf'" class="nested">
         <div v-for="(variant, index) in node.variants" :key="index" class="property">
           <div class="row"><strong>{{ t('contract.schemaVariant', { index: index + 1 }) }}</strong><button type="button" @click="removeVariant(index)">×</button></div>
-          <SchemaEditor :model-value="variant" :models="models" :read-only="readOnly" @update:model-value="setVariant(index, $event as SchemaNode)" />
+          <SchemaEditor :model-value="variant" :models="models" :read-only="readOnly" :draft-scope="draftScope ? `${draftScope}.variants.${index}` : undefined" :drafts="drafts" @update:model-value="setVariant(index, $event as SchemaNode)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
         </div>
         <button type="button" data-testid="schema-variant-add" @click="addVariant">{{ t('contract.schemaAddVariant') }}</button>
       </div>

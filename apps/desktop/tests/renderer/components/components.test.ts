@@ -312,6 +312,61 @@ async function seedTreeWorkflow(
 }
 
 describe("SideTree", () => {
+  it.each(["api", "module", "folder"] as const)("%s 行固定图标操作具有可访问名称与 tooltip，模块/目录操作收纳于更多菜单", async (kind) => {
+    const { wrapper, api, workspace } = await mountWith(SideTree);
+    const { collection } = seededProjectAndApi(workspace);
+    let row: DOMWrapper<Element> | undefined;
+    let expectedLabel = "";
+
+    if (kind === "folder") {
+      const parent = await api.nodeCreate({ kind: "folder", parent: collection.locator, name: "嵌套目录父级" });
+      if (parent.kind !== "folder") throw new Error("Expected the folder parent to be created");
+      const child = await api.nodeCreate({ kind: "folder", parent: { ...collection.locator, folderIds: [parent.id] }, name: "嵌套目录子级" });
+      if (child.kind !== "folder") throw new Error("Expected the nested folder to be created");
+      expectedLabel = child.label;
+      await workspace.refresh();
+    }
+
+    await expandAllCollapsedTreeContainers(wrapper);
+    if (kind === "api") row = wrapper.find('[data-testid="tree-api-row"]');
+    else {
+      expectedLabel ||= kind === "module" ? collection.label : "嵌套目录子级";
+      row = wrapper.findAll(".node").find((candidate) =>
+        candidate.find(".label").exists() && candidate.find(".label").text() === expectedLabel);
+    }
+    if (!row?.exists()) throw new Error(`Expected the ${kind} row to be rendered`);
+
+    const rename = row.find('[data-testid="node-rename"]');
+    const remove = row.find('[data-testid="node-delete"]');
+    expect(rename.attributes("aria-label")).toBe("重命名");
+    expect(rename.attributes("title")).toBe("重命名");
+    expect(rename.text()).toBe("");
+    expect(remove.attributes("aria-label")).toBe("删除");
+    expect(remove.attributes("title")).toBe("删除");
+    expect(remove.classes()).toContain("danger");
+
+    if (kind !== "api") {
+      expect(row.find(".label").attributes("title")).toBe(expectedLabel);
+      const expandedBefore = row.find('[data-testid="tree-group-toggle"]').text();
+      await row.find('[data-testid="tree-more"]').trigger("click");
+      expect(row.find('[data-testid="tree-group-toggle"]').text()).toBe(expandedBefore);
+      expect(row.find('[data-testid="new-api"]').exists()).toBe(true);
+      expect(row.find('[data-testid="new-folder"]').exists()).toBe(true);
+      expect(row.find('[data-testid="container-manage"]').exists()).toBe(true);
+      expect(wrapper.emitted("select")).toBeUndefined();
+    }
+
+    await rename.trigger("click");
+    expect(wrapper.emitted("select")).toBeUndefined();
+    await expectBody("dialog-cancel").trigger("click");
+
+    const readonly = await mountWith(SideTree, { readonly: true });
+    await expandAllCollapsedTreeContainers(readonly.wrapper);
+    expect(readonly.wrapper.find('[data-testid="node-rename"]').exists()).toBe(false);
+    expect(readonly.wrapper.find('[data-testid="node-delete"]').exists()).toBe(false);
+    expect(readonly.wrapper.find('[data-testid="tree-more"]').exists()).toBe(false);
+  });
+
   it("渲染工作区树并支持选中接口", async () => {
     const { wrapper } = await mountWith(SideTree);
     // 分组/项目/集合默认折叠：接口初始不可见
@@ -326,6 +381,7 @@ describe("SideTree", () => {
   it("新建接口：集合动作钮经对话框输入后创建并选中", async () => {
     const { wrapper, tree } = await mountWith(SideTree);
     await expandAllCollapsedTreeContainers(wrapper);
+    await wrapper.find('[data-testid="tree-more"]').trigger("click");
     await wrapper.find('[data-testid="new-api"]').trigger("click");
     // 创建走 ConfirmDialog 复用的输入对话框（a-modal 渲染于 body）
     const input = expectBody("dialog-input");
@@ -346,6 +402,7 @@ describe("SideTree", () => {
     const errors: unknown[] = [];
     const { wrapper, api, tree } = await mountWith(SideTree, { reportError: (e: unknown) => { errors.push(e); } });
     await expandAllCollapsedTreeContainers(wrapper);
+    await wrapper.find('[data-testid="tree-more"]').trigger("click");
     await wrapper.find('[data-testid="new-api"]').trigger("click");
     await expectBody("dialog-input").setValue("x");
     api.nodeCreate = async () => { throw new Error("boom"); };

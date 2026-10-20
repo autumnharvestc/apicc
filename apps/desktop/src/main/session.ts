@@ -15,6 +15,8 @@ import {
   StressPolicySchema,
   WorkflowSchema,
   cloneProjectDefinition,
+  buildImportMergePlan,
+  projectAssetImportDiagnostics,
   createProjectSnapshot,
   createProjectAssetContext,
   envChain,
@@ -37,10 +39,13 @@ import {
   type ContractGroup,
   type ContractProject,
   type ContractWorkspace,
+  type ImportMergeDecisions,
+  type ImportMergePlan,
   type Environment,
   type HttpMethod,
   type LoadProblem,
   type ModelAsset,
+  type MockProjectConfig,
   type Operation,
   type ProjectGlobals,
   type StorageAdapter,
@@ -48,7 +53,7 @@ import {
   type Workflow,
   type WorkflowStatus,
 } from "@apicc/core";
-import { ApiRequestSchema } from "@apicc/core/schema";
+import { ApiRequestSchema, MockProjectConfigSchema } from "@apicc/core/schema";
 import {
   ApiLocatorSchema,
   ApiParentLocatorSchema,
@@ -141,6 +146,13 @@ export interface DraftWriteContext { readonly root: string; readonly revision: s
 
 interface ActiveSession extends SessionView {}
 interface MutationResult<T> { value: T; deletions?: string[]; noCommit?: true }
+export interface ImportMutationReceipt<T> {
+  value: T;
+  committed: boolean;
+  beforeWorkspace: ContractWorkspace;
+  context: DraftWriteContext;
+  addedDefinitionFiles: string[];
+}
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -608,6 +620,59 @@ export function createSession(options: SessionOptions = {}) {
       });
       active = { ...current, workspace: parsed, revision: saved.revision };
       return clone(result.value);
+    });
+  }
+
+  function mutateImport<T>(
+    context: DraftWriteContext,
+    operation: (candidate: ContractWorkspace, current: ActiveSession) => MutationResult<T>,
+  ): Promise<ImportMutationReceipt<T>> {
+    return enqueue(async () => {
+      const current = requireActive();
+      if (current.readOnly) throw new Error("工作区处于只读模式，不能写入");
+      if (current.root !== context.root || current.revision !== context.revision || activeContextGeneration !== context.generation) {
+        throw new Error("导入预览已过期：工作区上下文已更改，请重新预览。");
+      }
+      const beforeWorkspace = clone(current.workspace);
+      const candidate = clone(current.workspace);
+      const result = operation(candidate, current);
+      if (result.noCommit) {
+        return {
+          value: clone(result.value), committed: false, beforeWorkspace,
+          context: { root: current.root, revision: current.revision, generation: activeContextGeneration },
+          addedDefinitionFiles: [],
+        };
+      }
+      const parsed = ContractWorkspaceSchema.parse(candidate);
+      const beforeFiles = new Set(listContractWorkspaceDefinitionFiles(current.workspace));
+      const afterFiles = listContractWorkspaceDefinitionFiles(parsed);
+      const addedDefinitionFiles = afterFiles.filter((file) => !beforeFiles.has(file));
+      const saved = await storage.save(current.root, parsed, {
+        expectedRevision: current.revision,
+        deletions: result.deletions ?? [],
+      });
+      active = { ...current, workspace: parsed, revision: saved.revision };
+      return {
+        value: clone(result.value), committed: true, beforeWorkspace,
+        context: { root: current.root, revision: saved.revision, generation: activeContextGeneration },
+        addedDefinitionFiles,
+      };
+    });
+  }
+
+  function restoreImportUndo(context: DraftWriteContext, workspaceValue: ContractWorkspace, addedDefinitionFiles: string[]): Promise<void> {
+    return enqueue(async () => {
+      const current = requireActive();
+      if (current.readOnly) throw new Error("工作区处于只读模式，不能撤销导入");
+      if (current.root !== context.root || current.revision !== context.revision || activeContextGeneration !== context.generation) {
+        throw new Error("撤销已失效：工作区在导入后已更改或已切换。");
+      }
+      const workspace = ContractWorkspaceSchema.parse(clone(workspaceValue));
+      const saved = await storage.save(current.root, workspace, {
+        expectedRevision: current.revision,
+        deletions: [...new Set(addedDefinitionFiles)],
+      });
+      active = { ...current, workspace, revision: saved.revision };
     });
   }
 
@@ -1283,6 +1348,27 @@ function setContainerOperations(
     });
   }
 
+  async function saveMockConfig(
+    locatorValue: ProjectLocator,
+    inputValue: MockProjectConfig,
+    expectedSourceProjectRevision: string,
+    context: Pick<DraftWriteContext, "root" | "generation">,
+  ): Promise<MockProjectConfig> {
+    const locator = parseLocator(ProjectLocatorSchema, locatorValue, "project");
+    const config = MockProjectConfigSchema.parse(clone(inputValue));
+    return mutate((candidate, current) => {
+      if (current.root !== context.root || activeContextGeneration !== context.generation) {
+        throw new Error("工作区上下文已更改，拒绝保存 Mock 配置。");
+      }
+      const { project } = locateProjectInCandidate(candidate, locator);
+      if (createProjectSnapshot(project).definitionRevision !== expectedSourceProjectRevision) {
+        throw new Error("Mock 配置已变化，请刷新后重试。");
+      }
+      project.mock = config;
+      return { value: config };
+    });
+  }
+
   async function createEnvironment(locatorValue: ProjectLocator, inputValue: CreateEnvironmentInput): Promise<Environment> {
     const locator = parseLocator(ProjectLocatorSchema, locatorValue, "project");
     const input = clone(inputValue);
@@ -1651,89 +1737,153 @@ function setContainerOperations(
     });
   }
 
-  async function importProjectToGroup(targetValue: GroupLocator, projectName: string, importedValue: { project: ContractProject }): Promise<ContractProject> {
-    const targetLocator = parseLocator(GroupLocatorSchema, targetValue, "target group");
+  function assertImportAssetGraph(project: ContractProject): void {
+    const diagnostics = projectAssetImportDiagnostics(project);
+    if (diagnostics.length > 0) throw new Error(diagnostics.map(({ code, path, message }) => `${code} at ${path}: ${message}`).join("; "));
+  }
+
+  function appendImportedProjectCandidate(
+    candidate: ContractWorkspace,
+    targetLocator: GroupLocator,
+    projectName: string,
+    importedValue: { project: ContractProject },
+  ): ContractProject {
+    checkedWorkspace(candidate, targetLocator.workspaceId);
+    const target = findGroup(candidate, targetLocator.groupId);
+    if (!target) throw new Error(`Target group not found: ${JSON.stringify(targetLocator)}`);
     const imported = ContractProjectSchema.parse(clone(importedValue.project));
     uniqueEnvironmentNames(imported);
     const normalized = sourceAssetNames(imported);
     normalized.name = sanitizeNodeName(projectName.trim() || normalized.name);
-    return mutate((candidate) => {
-      checkedWorkspace(candidate, targetLocator.workspaceId);
-      const target = findGroup(candidate, targetLocator.groupId);
-      if (!target) throw new Error(`Target group not found: ${JSON.stringify(targetLocator)}`);
-      const occupiedProjectIds = new Set(target.projects.map((project) => project.id));
-      const factory = checkedCloneFactory(newId, new Set(), allSecretRefs(candidate));
-      const cloned = cloneProjectDefinition(normalized, { newId: factory });
-      if (occupiedProjectIds.has(cloned.project.id)) throw new Error(`Target identity collision for project:${cloned.project.id}`);
-      target.projects.push(cloned.project);
-      return { value: cloned.project };
-    });
+    const occupiedProjectIds = new Set(target.projects.map((project) => project.id));
+    const factory = checkedCloneFactory(newId, new Set(), allSecretRefs(candidate));
+    const project = cloneProjectDefinition(normalized, { newId: factory }).project;
+    if (occupiedProjectIds.has(project.id)) throw new Error(`Target identity collision for project:${project.id}`);
+    assertImportAssetGraph(project);
+    target.projects.push(project);
+    return project;
+  }
+
+  function appendImportedModuleCandidate(
+    candidate: ContractWorkspace,
+    targetLocator: ProjectLocator,
+    moduleName: string,
+    importedValue: { project: ContractProject; sourceEnvironmentName?: string },
+  ): ContractCollection[] {
+    const target = locateProjectInCandidate(candidate, targetLocator).project;
+    const imported = ContractProjectSchema.parse(clone(importedValue.project));
+    const apiAssets = projectApis(imported);
+    const context = createProjectAssetContext({ projectId: imported.id, assets: apiAssets, models: imported.models, components: imported.components });
+    const closureByModel = new Map<string, ModelAsset>();
+    const closureByComponent = new Map<string, ComponentAsset>();
+    for (const asset of apiAssets) {
+      const closure = context.dependencyClosure(asset.contract.id);
+      for (const model of closure.models) closureByModel.set(model.id, model);
+      for (const component of closure.components) closureByComponent.set(`${component.kind}:${component.id}`, component);
+    }
+
+    const moduleSource = clone(imported);
+    moduleSource.environments = [];
+    const module = sourceAssetNames(moduleSource);
+    sanitizeModuleCaseScopes(module);
+    module.name = sanitizeNodeName(moduleName.trim() || module.name);
+    module.workflows = [];
+    module.models = [...closureByModel.values()];
+    module.components = [...closureByComponent.values()];
+    const environmentsByName = uniqueEnvironmentNames(imported);
+    const sourceCollectionsById = new Map<string, ContractCollection>();
+    for (const sourceCollection of imported.collections) {
+      if (sourceCollectionsById.has(sourceCollection.id)) throw new Error(`Ambiguous source collection identity: ${sourceCollection.id}`);
+      sourceCollectionsById.set(sourceCollection.id, sourceCollection);
+    }
+    for (const collection of module.collections) {
+      const sourceCollection = sourceCollectionsById.get(collection.id);
+      if (!sourceCollection) throw new Error(`Unresolvable source collection identity: ${collection.id}`);
+      collection.name = sanitizeNodeName(moduleName.trim() || collection.name);
+      const baseUrl = resolveImportedCollectionBaseUrl(imported, sourceCollection, environmentsByName, importedValue.sourceEnvironmentName);
+      if (baseUrl) collection.variables = { ...collection.variables, baseUrl };
+    }
+    module.environments = [];
+
+    const existingIds = allProjectIds(target);
+    const secretIds = allSecretRefs(candidate);
+    const sourceIds = allProjectIds(module);
+    const temporaryProjectId = randomUUID();
+    if (sourceIds.has(temporaryProjectId) || existingIds.has(temporaryProjectId) || temporaryProjectId === target.id) {
+      throw new Error("Unable to allocate a temporary module project identity");
+    }
+    module.id = temporaryProjectId;
+    const factory = checkedCloneFactory(newId, existingIds, secretIds, target.id);
+    const cloned = cloneProjectDefinition(module, { newId: factory }).project;
+    if (cloned.collections.some((collection) => target.collections.some((item) => item.id === collection.id))) {
+      throw new Error("Target collection identity collision during module import");
+    }
+    const newAssetIds = new Set<string>();
+    for (const id of [...cloned.models.map((model) => model.id), ...cloned.components.map((component) => component.id), ...projectApis(cloned).map((asset) => asset.contract.id)]) {
+      if (newAssetIds.has(id) || existingIds.has(id)) throw new Error(`Target asset identity collision: ${id}`);
+      newAssetIds.add(id);
+    }
+    assertImportAssetGraph(cloned);
+    target.collections.push(...cloned.collections);
+    target.models.push(...cloned.models);
+    target.components.push(...cloned.components);
+    return cloned.collections;
+  }
+
+  async function importProjectToGroup(targetValue: GroupLocator, projectName: string, importedValue: { project: ContractProject }): Promise<ContractProject> {
+    const targetLocator = parseLocator(GroupLocatorSchema, targetValue, "target group");
+    return mutate((candidate) => ({ value: appendImportedProjectCandidate(candidate, targetLocator, projectName, importedValue) }));
+  }
+
+  async function importProjectToGroupTransaction(
+    context: DraftWriteContext,
+    targetValue: GroupLocator,
+    projectName: string,
+    importedValue: { project: ContractProject },
+  ): Promise<ImportMutationReceipt<ContractProject>> {
+    const targetLocator = parseLocator(GroupLocatorSchema, targetValue, "target group");
+    return mutateImport(context, (candidate) => ({ value: appendImportedProjectCandidate(candidate, targetLocator, projectName, importedValue) }));
   }
 
   async function importModuleToProject(targetValue: ProjectLocator, moduleName: string, importedValue: { project: ContractProject; sourceEnvironmentName?: string }): Promise<ContractCollection[]> {
     const targetLocator = parseLocator(ProjectLocatorSchema, targetValue, "target project");
-    const imported = ContractProjectSchema.parse(clone(importedValue.project));
-    return mutate((candidate) => {
-      const target = locateProjectInCandidate(candidate, targetLocator).project;
-      const apiAssets = projectApis(imported);
-      const context = createProjectAssetContext({ projectId: imported.id, assets: apiAssets, models: imported.models, components: imported.components });
-      const closureByModel = new Map<string, ModelAsset>();
-      const closureByComponent = new Map<string, ComponentAsset>();
-      for (const asset of apiAssets) {
-        const closure = context.dependencyClosure(asset.contract.id);
-        for (const model of closure.models) closureByModel.set(model.id, model);
-        for (const component of closure.components) closureByComponent.set(`${component.kind}:${component.id}`, component);
-      }
+    return mutate((candidate) => ({ value: appendImportedModuleCandidate(candidate, targetLocator, moduleName, importedValue) }));
+  }
 
-      const moduleSource = clone(imported);
-      // Module imports discard source environments; keep their original scope names instead of
-      // normalizing environment names that will not be persisted with the imported module.
-      moduleSource.environments = [];
-      const module = sourceAssetNames(moduleSource);
-      sanitizeModuleCaseScopes(module);
-      module.name = sanitizeNodeName(moduleName.trim() || module.name);
-      module.workflows = [];
-      module.models = [...closureByModel.values()];
-      module.components = [...closureByComponent.values()];
-      const environmentsByName = uniqueEnvironmentNames(imported);
-      const sourceCollectionsById = new Map<string, ContractCollection>();
-      for (const sourceCollection of imported.collections) {
-        if (sourceCollectionsById.has(sourceCollection.id)) {
-          throw new Error(`Ambiguous source collection identity: ${sourceCollection.id}`);
-        }
-        sourceCollectionsById.set(sourceCollection.id, sourceCollection);
-      }
-      for (const collection of module.collections) {
-        const sourceCollection = sourceCollectionsById.get(collection.id);
-        if (!sourceCollection) throw new Error(`Unresolvable source collection identity: ${collection.id}`);
-        collection.name = sanitizeNodeName(moduleName.trim() || collection.name);
-        const baseUrl = resolveImportedCollectionBaseUrl(imported, sourceCollection, environmentsByName, importedValue.sourceEnvironmentName);
-        if (baseUrl) collection.variables = { ...collection.variables, baseUrl };
-      }
-      module.environments = [];
+  async function importModuleToProjectTransaction(
+    contextValue: DraftWriteContext,
+    targetValue: ProjectLocator,
+    moduleName: string,
+    importedValue: { project: ContractProject; sourceEnvironmentName?: string },
+  ): Promise<ImportMutationReceipt<ContractCollection[]>> {
+    const targetLocator = parseLocator(ProjectLocatorSchema, targetValue, "target project");
+    return mutateImport(contextValue, (candidate) => ({ value: appendImportedModuleCandidate(candidate, targetLocator, moduleName, importedValue) }));
+  }
 
-      const existingIds = allProjectIds(target);
-      const secretIds = allSecretRefs(candidate);
-      const sourceIds = allProjectIds(module);
-      const temporaryProjectId = randomUUID();
-      if (sourceIds.has(temporaryProjectId) || existingIds.has(temporaryProjectId) || temporaryProjectId === target.id) {
-        throw new Error("Unable to allocate a temporary module project identity");
+  async function mergeImportIntoCollectionTransaction(
+    context: DraftWriteContext,
+    targetValue: CollectionLocator,
+    importedValue: ContractProject,
+    decisions: ImportMergeDecisions,
+  ): Promise<ImportMutationReceipt<ImportMergePlan>> {
+    const targetLocator = parseLocator(CollectionLocatorSchema, targetValue, "target collection");
+    const imported = ContractProjectSchema.parse(clone(importedValue));
+    return mutateImport(context, (candidate) => {
+      const location = locateCollectionInCandidate(candidate, targetLocator);
+      const plan = buildImportMergePlan(location.project, imported, decisions);
+      if (plan.diagnostics.some((item) => item.severity === "error")) {
+        throw new Error(plan.diagnostics.map((item) => item.message).join("; "));
       }
-      module.id = temporaryProjectId;
-      const factory = checkedCloneFactory(newId, existingIds, secretIds, target.id);
-      const cloned = cloneProjectDefinition(module, { newId: factory }).project;
-      if (cloned.collections.some((collection) => target.collections.some((item) => item.id === collection.id))) {
-        throw new Error("Target collection identity collision during module import");
+      if (plan.cancelled || plan.summary.added + plan.summary.overwritten === 0) {
+        return { value: plan, noCommit: true };
       }
-      const newAssetIds = new Set<string>();
-      for (const id of [...cloned.models.map((model) => model.id), ...cloned.components.map((component) => component.id), ...projectApis(cloned).map((asset) => asset.contract.id)]) {
-        if (newAssetIds.has(id) || existingIds.has(id)) throw new Error(`Target asset identity collision: ${id}`);
-        newAssetIds.add(id);
-      }
-      target.collections.push(...cloned.collections);
-      target.models.push(...cloned.models);
-      target.components.push(...cloned.components);
-      return { value: cloned.collections };
+      const group = findGroup(candidate, targetLocator.groupId)!;
+      const project = group.projects.find((item) => item.id === targetLocator.projectId)!;
+      project.collections = plan.project.collections;
+      project.models = plan.project.models;
+      project.components = plan.project.components;
+      project.mock = plan.project.mock;
+      return { value: plan };
     });
   }
 
@@ -1774,6 +1924,7 @@ function setContainerOperations(
     saveModel,
     createComponent,
     saveComponent,
+    saveMockConfig,
     createEnvironment,
     setEnvironmentVariables,
     setEnvironmentBaseUrls,
@@ -1793,6 +1944,10 @@ function setContainerOperations(
     cloneProject,
     moveProject,
     importProjectToGroup,
+    importProjectToGroupTransaction,
     importModuleToProject,
+    importModuleToProjectTransaction,
+    mergeImportIntoCollectionTransaction,
+    restoreImportUndo,
   };
 }

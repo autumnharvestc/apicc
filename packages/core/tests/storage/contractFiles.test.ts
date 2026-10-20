@@ -19,6 +19,7 @@ import {
   workspaceFilePath,
 } from "../../src/storage/paths.js";
 import { modelAssetFixture, workspaceFixture } from "../helpers/contractFixtures.js";
+import { createMockConfiguredProject } from "../helpers/mockFixtures.js";
 
 const roots: string[] = [];
 const groupId = "00000000-0000-4000-8000-000000000017";
@@ -113,6 +114,23 @@ async function expectRemovalRoundTrip(
 }
 
 describe("versioned contract workspace files", () => {
+  it("persists and reopens the optional versioned project mock configuration", async () => {
+    const workspace = fixtureWorkspace();
+    const configured = createMockConfiguredProject();
+    workspace.groups[0]!.projects[0] = configured;
+    const root = await temporaryRoot();
+    await fileStorage.save(root, workspace, { expectedRevision: "empty", deletions: [] });
+
+    const loaded = await fileStorage.load(root);
+    expect(loaded.workspace.groups[0]!.projects[0]!.mock).toEqual(configured.mock);
+    expect(loaded.readOnly).toBe(false);
+    expect(loaded.problems).toEqual([]);
+
+    const unsupportedVersion = structuredClone(workspace);
+    Reflect.set(unsupportedVersion.groups[0]!.projects[0]!.mock!, "formatVersion", 2);
+    expect(() => encodeContractWorkspace(unsupportedVersion)).toThrow(/invalid or unsupported contract data/i);
+  });
+
   it("round-trips full request and settings overrides in a case YAML file", async () => {
     const workspace = fixtureWorkspace();
     const asset = workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!;

@@ -232,6 +232,8 @@ export { createProjectSnapshot } from "./assets/snapshot.js";
 export type { ProjectSnapshot } from "./assets/snapshot.js";
 export { cloneProjectDefinition, cloneAssetBundle } from "./assets/clone.js";
 export type { CloneIdFactory, CloneIdKind, CloneIdMapping, ClonedAssetBundle, ClonedProjectDefinition } from "./assets/clone.js";
+export { MockConditionSchema, MockProjectConfigSchema, MockResponseSourceSchema, MockRuleSchema } from "./mock/config.js";
+export type { MockCondition, MockDiagnostic, MockProjectConfig, MockResponseSource, MockRule } from "./mock/config.js";
 export { rotateProjectSecretRefs, collectDefinedProjectCredentialRefs } from "./assets/secretRefs.js";
 export { prepareCredentialBindings } from "./credentials/bindings.js";
 export { defaultCredentialPrivateRoot } from "./credentials/host.js";
@@ -272,10 +274,17 @@ export {
 } from "./runner/caseExecutor.js";
 export type { RunResult, CaseOutcome } from "./report/types.js";
 export { renderDesignMarkdown, renderContractMarkdown } from "./design/export.js";
+export { DocumentDiagnosticSchema, DocumentProjectionSchema, DocumentScopeSchema } from "./design/projection.js";
+export type { DocumentApi, DocumentDiagnostic, DocumentProjection, DocumentScope } from "./design/projection.js";
+export { generateRequestSnippet, renderDocumentHtml, renderDocumentMarkdown, RequestSnippetLanguageSchema, RequestSnippetResultSchema } from "./design/document.js";
+export type { RequestSnippetLanguage, RequestSnippetResult } from "./design/document.js";
 export { htmlReporter } from "./report/html.js";
 export { junitReporter } from "./report/junit.js";
 export { collectionV21Importer } from "./import/collection21.js";
 export { openapiImporter } from "./import/openapi.js";
+export { parseCurlRequest, CurlParseError } from "./import/curl.js";
+export type { CurlParseResult, CurlBodyDeclaration, CurlDiagnostic, CurlSourcePosition } from "./import/curl.js";
+export { curlImporter, parseContractCurl } from "./import/curlImporter.js";
 export { WorkflowStatusSchema, WorkflowNodeSchema, WorkflowEdgeSchema, WorkflowSchema } from "./workflow/model.js";
 export type { WorkflowStatus, WorkflowNode, WorkflowEdge, Workflow } from "./workflow/model.js";
 export { validateWorkflowStructure, transitionWorkflowStatus, validateEnablement, type ValidationIssue } from "./workflow/validate.js";
@@ -348,6 +357,7 @@ import { htmlReporter } from "./report/html.js";
 import { junitReporter } from "./report/junit.js";
 import { collectionV21Importer } from "./import/collection21.js";
 import { openapiImporter } from "./import/openapi.js";
+import { curlImporter } from "./import/curlImporter.js";
 
 /** 创建注册了全部内置插件的注册中心（内置功能即普通插件，规格 §4）。 */
 export function createDefaultRegistry(): PluginRegistry {
@@ -363,5 +373,6 @@ export function createDefaultRegistry(): PluginRegistry {
   registry.registerReporter(junitReporter);
   registry.registerImporter(collectionV21Importer);
   registry.registerImporter(openapiImporter);
+  registry.registerImporter(curlImporter);
   return registry;
 }

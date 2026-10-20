@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, toRaw, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ComponentAsset, ExampleBinding, JsonValue, ModelAsset, ResponseBinding, ResponseContent, ResponseDefinition } from "@apicc/core";
 import type { SchemaNode } from "@apicc/core/schema";
@@ -10,6 +10,14 @@ const props = defineProps<{
   assets: { components: ComponentAsset[]; models: ModelAsset[] };
   readOnly?: boolean;
   contextKey?: string;
+  /** Optional identity-scoped JSON value drafts used by the formal Design view. */
+  draftScope?: string;
+  drafts?: Record<string, { value: string; error: string }>;
+}>();
+const emit = defineEmits<{
+  "update:controlDraft": [path: string, value: string, error: string | null];
+  "clear:control-drafts": [prefix: string];
+  "move:control-drafts": [fromPrefix: string, toPrefix: string];
 }>();
 const { t } = useI18n();
 const newMediaType = ref("application/json");
@@ -17,7 +25,17 @@ const headerError = ref("");
 const headerNameDrafts = ref(new Map<string, string>());
 const exampleDrafts = ref(new Map<string, string>());
 const exampleErrors = ref(new Map<string, string>());
-const headerRowIds = new Map<ResponseBinding, Map<string, string>>();
+function forwardControlDraft(path: string, value: string, error: string | null) {
+  emit("update:controlDraft", path, value, error);
+}
+
+function clearControlDrafts(prefix: string) {
+  if (props.draftScope && prefix) emit("clear:control-drafts", prefix);
+}
+
+function forwardMoveControlDrafts(fromPrefix: string, toPrefix: string) {
+  emit("move:control-drafts", fromPrefix, toPrefix);
+}
 
 // Track binding/session boundaries, without observing header edits that must retain focus.
 watch(() => [props.contextKey, props.readOnly, props.responses.map((response) => [
@@ -26,9 +44,16 @@ watch(() => [props.contextKey, props.readOnly, props.responses.map((response) =>
   headerNameDrafts.value.clear();
   exampleDrafts.value.clear();
   exampleErrors.value.clear();
-  headerRowIds.clear();
   headerError.value = "";
 }, { flush: "sync" });
+
+function responseDraftPrefix(response: ResponseBinding): string {
+  return `${props.draftScope}.response.${response.id}`;
+}
+
+function ownerSegment(value: string): string {
+  return encodeURIComponent(value).replace(/\./g, "%2E");
+}
 
 function emptyResponse(): ResponseBinding {
   return {
@@ -44,6 +69,8 @@ function addResponse() {
 
 function removeResponse(index: number) {
   if (props.readOnly) return;
+  const response = props.responses[index];
+  if (response) clearControlDrafts(responseDraftPrefix(response));
   props.responses.splice(index, 1);
 }
 
@@ -61,6 +88,7 @@ function useResponseComponent(index: number, componentId: string) {
   if (!current || !componentId) return;
   const priorId = current.id;
   if (!responseComponents().some((item) => item.id === componentId)) return;
+  clearControlDrafts(responseDraftPrefix(current));
   props.responses.splice(index, 1, { kind: "componentRef", id: priorId, componentId, expectedKind: "response" });
 }
 
@@ -68,6 +96,7 @@ function editAsInline(index: number) {
   if (props.readOnly) return;
   const current = props.responses[index];
   if (!current || current.kind !== "componentRef") return;
+  clearControlDrafts(responseDraftPrefix(current));
   props.responses.splice(index, 1, { ...emptyResponse(), id: current.id });
 }
 
@@ -85,36 +114,43 @@ function addHeader(response: ResponseBinding) {
 }
 
 function headerRowId(response: ResponseBinding, name: string): string {
-  let rows = headerRowIds.get(response);
-  if (!rows) {
-    rows = new Map<string, string>();
-    headerRowIds.set(response, rows);
-  }
-  let id = rows.get(name);
-  if (!id) {
-    id = crypto.randomUUID();
-    rows.set(name, id);
-  }
-  return id;
+  return `${response.id}:${name}`;
+}
+
+function headerDraftPath(response: ResponseBinding, name: string): string {
+  return `${responseDraftPrefix(response)}.header.${ownerSegment(name)}`;
 }
 
 function displayedHeaderName(response: ResponseBinding, name: string): string {
   if (props.readOnly || response.kind !== "inline") return name;
-  return headerNameDrafts.value.get(headerRowId(response, name)) ?? name;
+  return props.drafts?.[headerDraftPath(response, name)]?.value
+    ?? headerNameDrafts.value.get(headerRowId(response, name)) ?? name;
+}
+
+function headerDraftError(response: ResponseBinding, name: string): string | undefined {
+  return props.drafts?.[headerDraftPath(response, name)]?.error || undefined;
+}
+
+function localHeaderDraftError(response: ResponseBinding, name: string): string | undefined {
+  if (response.kind !== "inline") return undefined;
+  const rawName = headerNameDrafts.value.get(headerRowId(response, name));
+  return rawName === undefined ? undefined : headerNameError(response, name, rawName) ?? undefined;
 }
 
 function headerNameError(response: Extract<ResponseBinding, { kind: "inline" }>, previousName: string, rawName: string): string | null {
   const nextName = rawName.trim();
-  if (!nextName) return "响应头名称不能为空或重复";
+  if (!nextName) return t("design.headerNameInvalid");
   const duplicate = Object.keys(response.headers).some((name) =>
     name !== previousName && name.toLowerCase() === nextName.toLowerCase());
-  return duplicate ? "响应头名称不能为空或重复" : null;
+  return duplicate ? t("design.headerNameInvalid") : null;
 }
 
 function updateHeaderNameDraft(response: ResponseBinding, previousName: string, rawName: string) {
   if (props.readOnly || response.kind !== "inline") return;
   headerNameDrafts.value.set(headerRowId(response, previousName), rawName);
-  headerError.value = headerNameError(response, previousName, rawName) ?? "";
+  const error = headerNameError(response, previousName, rawName);
+  headerError.value = error ?? "";
+  if (props.draftScope) emit("update:controlDraft", headerDraftPath(response, previousName), rawName, error);
 }
 
 function commitHeaderName(response: ResponseBinding, previousName: string) {
@@ -132,11 +168,9 @@ function commitHeaderName(response: ResponseBinding, previousName: string) {
   if (nextName !== previousName) {
     response.headers = Object.fromEntries(Object.entries(response.headers).map(([name, value]) =>
       name === previousName ? [nextName, value] : [name, value]));
-    const rows = headerRowIds.get(response);
-    rows?.delete(previousName);
-    rows?.set(nextName, rowId);
   }
   headerNameDrafts.value.delete(rowId);
+  if (props.draftScope) emit("update:controlDraft", headerDraftPath(response, previousName), "", null);
 }
 
 function removeHeader(response: ResponseBinding, name: string) {
@@ -144,7 +178,7 @@ function removeHeader(response: ResponseBinding, name: string) {
   const rowId = headerRowId(response, name);
   delete response.headers[name];
   headerNameDrafts.value.delete(rowId);
-  headerRowIds.get(response)?.delete(name);
+  clearControlDrafts(headerDraftPath(response, name));
 }
 
 function addMedia(response: ResponseBinding) {
@@ -157,12 +191,18 @@ function addMedia(response: ResponseBinding) {
 function removeMedia(response: ResponseBinding, media: string) {
   if (props.readOnly || response.kind !== "inline") return;
   const current = response;
-  if (current) delete current.content[media];
+  if (current) {
+    clearControlDrafts(`${responseDraftPrefix(response)}.${ownerSegment(media)}`);
+    delete current.content[media];
+  }
 }
 
-function setSchema(response: ResponseBinding, content: ResponseContent, value: SchemaNode | undefined) {
+function setSchema(response: ResponseBinding, content: ResponseContent, media: string, value: SchemaNode | undefined) {
   if (props.readOnly || response.kind !== "inline") return;
-  if (value === undefined) delete content.schema;
+  if (value === undefined) {
+    clearControlDrafts(`${responseDraftPrefix(response)}.${ownerSegment(media)}.schema`);
+    delete content.schema;
+  }
   else content.schema = value;
 }
 
@@ -171,12 +211,25 @@ function addExample(response: ResponseBinding, content: ResponseContent) {
   content.examples.push({ kind: "inline", id: crypto.randomUUID(), name: "", value: {} });
 }
 
-function useExampleComponent(response: ResponseBinding, content: ResponseContent, index: number, componentId: string) {
+function useExampleComponent(response: ResponseBinding, content: ResponseContent, media: string, index: number, componentId: string) {
   if (props.readOnly || response.kind !== "inline") return;
-  if (!componentId) return;
-  const component = exampleComponents().find((item) => item.id === componentId);
   const previous = content.examples[index];
-  if (!component || !previous) return;
+  if (!previous) return;
+  const path = exampleDraftPath(response, previous, media);
+  if (!componentId) {
+    if (previous.kind !== "componentRef") return;
+    const component = exampleComponents().find((item) => item.id === previous.componentId);
+    const inlineExample: ExampleBinding = {
+      kind: "inline", id: previous.id, name: component?.name ?? "",
+      value: component ? structuredClone(toRaw(component.definition.value)) : {},
+    };
+    clearControlDrafts(path);
+    content.examples.splice(index, 1, inlineExample);
+    return;
+  }
+  const component = exampleComponents().find((item) => item.id === componentId);
+  if (!component || (previous.kind === "componentRef" && previous.componentId === componentId)) return;
+  clearControlDrafts(path);
   content.examples.splice(index, 1, { kind: "componentRef", id: previous.id, componentId, expectedKind: "example" });
 }
 
@@ -185,28 +238,44 @@ function setExampleName(response: ResponseBinding, binding: ExampleBinding, name
   binding.name = name;
 }
 
-function setExampleValue(response: ResponseBinding, binding: ExampleBinding, raw: string) {
+function setExampleValue(response: ResponseBinding, binding: ExampleBinding, media: string, raw: string) {
   if (props.readOnly || response.kind !== "inline" || binding.kind !== "inline") return;
   try {
     binding.value = JSON.parse(raw) as JsonValue;
     exampleDrafts.value.delete(binding.id);
     exampleErrors.value.delete(binding.id);
+    if (props.draftScope) emit("update:controlDraft", exampleDraftPath(response, binding, media), "", null);
   } catch {
-    exampleErrors.value.set(binding.id, "JSON 格式无效");
+    const error = t("design.invalidJson");
+    exampleErrors.value.set(binding.id, error);
+    if (props.draftScope) emit("update:controlDraft", exampleDraftPath(response, binding, media), raw, error);
   }
 }
 
-function updateExampleDraft(binding: ExampleBinding, raw: string) {
+function exampleDraftPath(response: ResponseBinding, binding: ExampleBinding, media: string): string {
+  return `${responseDraftPrefix(response)}.${ownerSegment(media)}.example.${binding.id}`;
+}
+
+function updateExampleDraft(response: ResponseBinding, binding: ExampleBinding, media: string, raw: string) {
   if (props.readOnly || binding.kind !== "inline") return;
   exampleDrafts.value.set(binding.id, raw);
+  if (props.draftScope) {
+    let error: string | null = null;
+    try { JSON.parse(raw); } catch { error = t("design.invalidJson"); }
+    emit("update:controlDraft", exampleDraftPath(response, binding, media), raw, error);
+  }
 }
 
-function exampleError(binding: ExampleBinding): string | undefined {
-  return exampleErrors.value.get(binding.id);
+function exampleError(response: ResponseBinding, binding: ExampleBinding, media: string): string | undefined {
+  const external = props.draftScope ? props.drafts?.[exampleDraftPath(response, binding, media)] : undefined;
+  return external ? external.error || undefined : exampleErrors.value.get(binding.id);
 }
 
-function displayExample(binding: ExampleBinding): string {
-  if (binding.kind === "inline") return exampleDrafts.value.get(binding.id) ?? JSON.stringify(binding.value, null, 2);
+function displayExample(response: ResponseBinding, binding: ExampleBinding, media: string): string {
+  if (binding.kind === "inline") {
+    const external = props.draftScope ? props.drafts?.[exampleDraftPath(response, binding, media)] : undefined;
+    return external?.value ?? exampleDrafts.value.get(binding.id) ?? JSON.stringify(binding.value, null, 2);
+  }
   return JSON.stringify(exampleComponents().find((item) => item.id === binding.componentId)?.definition.value ?? {}, null, 2);
 }
 
@@ -250,25 +319,26 @@ function exampleAddTestId(index: number, media: string): string {
         <div class="headers">
           <strong>{{ t('contract.responseHeaders') }}</strong>
           <div v-for="(value, name) in definition(response)!.headers" :key="headerRowId(response, name)" class="row">
-            <input :value="displayedHeaderName(response, name)" :data-testid="`response-header-name-${index}-${Object.keys(definition(response)!.headers).indexOf(name)}`" :disabled="readOnly || response.kind !== 'inline'" @input="updateHeaderNameDraft(response, name, ($event.target as HTMLInputElement).value)" @change="commitHeaderName(response, name)" />
+            <input :value="displayedHeaderName(response, name)" :data-testid="`response-header-name-${index}-${Object.keys(definition(response)!.headers).indexOf(name)}`" :disabled="readOnly || response.kind !== 'inline'" :aria-invalid="headerDraftError(response, name) || localHeaderDraftError(response, name) ? 'true' : undefined" @input="updateHeaderNameDraft(response, name, ($event.target as HTMLInputElement).value)" @change="commitHeaderName(response, name)" />
+            <span v-if="headerDraftError(response, name)" role="alert" data-testid="response-header-error">{{ headerDraftError(response, name) }}</span>
             <input :value="value" :data-testid="`response-header-value-${index}-${Object.keys(definition(response)!.headers).indexOf(name)}`" :disabled="readOnly || response.kind !== 'inline'" @input="(event) => { if (!readOnly && response.kind === 'inline') response.headers[name] = (event.target as HTMLInputElement).value; }" />
             <button type="button" :data-testid="`response-header-remove-${index}-${Object.keys(definition(response)!.headers).indexOf(name)}`" :disabled="readOnly || response.kind !== 'inline'" @click="removeHeader(response, name)">×</button>
           </div>
+          <span v-if="!draftScope && headerError" role="alert" data-testid="response-header-error">{{ headerError }}</span>
           <button type="button" data-testid="response-header-add" :disabled="readOnly || response.kind !== 'inline'" @click="addHeader(response)">{{ t('contract.responseHeaderAdd') }}</button>
-          <p v-if="headerError" data-testid="response-header-error">{{ headerError }}</p>
         </div>
         <div v-for="(content, media) in definition(response)!.content" :key="media" class="media">
           <header><strong>{{ media }}</strong><button type="button" :disabled="readOnly || response.kind !== 'inline'" @click="removeMedia(response, media)">×</button></header>
-          <SchemaEditor :model-value="content.schema" :models="assets.models" :read-only="readOnly || response.kind !== 'inline'" @update:model-value="setSchema(response, content, $event as SchemaNode | undefined)" />
+          <SchemaEditor :model-value="content.schema" :models="assets.models" :read-only="readOnly || response.kind !== 'inline'" :draft-scope="draftScope ? `${draftScope}.response.${response.id}.${ownerSegment(media)}.schema` : undefined" :drafts="drafts" @update:model-value="setSchema(response, content, media, $event as SchemaNode | undefined)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="forwardMoveControlDrafts" />
           <div v-for="(example, exampleIndex) in content.examples" :key="example.id" class="example">
             <input v-if="example.kind === 'inline'" :value="example.name" :disabled="readOnly || response.kind !== 'inline'" :placeholder="t('contract.exampleName')" @input="setExampleName(response, example, ($event.target as HTMLInputElement).value)" />
             <span v-else>{{ exampleRefName(example) }}</span>
-            <select v-if="exampleComponents().length" :value="example.kind === 'componentRef' ? example.componentId : ''" :disabled="readOnly || response.kind !== 'inline'" @change="useExampleComponent(response, content, exampleIndex, ($event.target as HTMLSelectElement).value)">
+            <select v-if="exampleComponents().length" :value="example.kind === 'componentRef' ? example.componentId : ''" :disabled="readOnly || response.kind !== 'inline'" @change="useExampleComponent(response, content, media, exampleIndex, ($event.target as HTMLSelectElement).value)">
               <option value="">{{ t('contract.inlineExample') }}</option>
               <option v-for="asset in exampleComponents()" :key="asset.id" :value="asset.id">{{ asset.name }}</option>
             </select>
-            <textarea :value="displayExample(example)" :disabled="readOnly || response.kind !== 'inline' || example.kind === 'componentRef'" :aria-invalid="exampleError(example) ? 'true' : undefined" :data-testid="`response-example-${index}-${exampleIndex}`" @input="updateExampleDraft(example, ($event.target as HTMLTextAreaElement).value)" @change="setExampleValue(response, example, ($event.target as HTMLTextAreaElement).value)" />
-            <span v-if="exampleError(example)" role="alert" data-testid="response-example-error">{{ exampleError(example) }}</span>
+            <textarea :value="displayExample(response, example, media)" :disabled="readOnly || response.kind !== 'inline' || example.kind === 'componentRef'" :aria-invalid="exampleError(response, example, media) ? 'true' : undefined" :data-testid="`response-example-${index}-${exampleIndex}`" @input="updateExampleDraft(response, example, media, ($event.target as HTMLTextAreaElement).value)" @change="setExampleValue(response, example, media, ($event.target as HTMLTextAreaElement).value)" />
+            <span v-if="exampleError(response, example, media)" role="alert" data-testid="response-example-error">{{ exampleError(response, example, media) }}</span>
           </div>
           <button type="button" :data-testid="exampleAddTestId(index, media)" :disabled="readOnly || response.kind !== 'inline'" @click="addExample(response, content)">{{ t('contract.exampleAdd') }}</button>
         </div>

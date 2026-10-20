@@ -552,6 +552,8 @@ export interface EvictProjectSessionsDeps {
   workflowDesign?: Pick<ReturnType<typeof useWorkflowDesignStore>, "root" | "locator" | "unload">;
   /** Request tab lifecycle is closed before the owning project sessions are evicted. */
   requestTabs?: Pick<RequestTabsStore, "closeProject">;
+  /** Main-process Mock instance owned by this exact physical root and full project locator. */
+  mockProjectClose?: (root: string, locator: ProjectLocator) => Promise<void> | void;
 }
 
 /** 按完整 locator 查找项目节点，避免同 id 跨 group/workspace 的碰撞。 */
@@ -589,11 +591,22 @@ export function createEvictProjectSessions(
         if (workflow?.root === tab.workspaceRef.dir && workflow.locator
           && sameProjectLocator(tab.projectLocator, workflow.locator)) workflow.unload();
       };
-      if (!deps.requestTabs) {
+      const stopMock = deps.mockProjectClose?.(tab.workspaceRef.dir, tab.projectLocator);
+      if (!deps.requestTabs && !stopMock) {
         evictEditorSessions();
         return;
       }
-      return deps.requestTabs.closeProject(tab.workspaceRef.dir, tab.projectLocator, true).then(evictEditorSessions).catch((e: unknown) => {
+      const closeProjectResources = async () => {
+        if (stopMock && typeof (stopMock as Promise<void>).then === "function") {
+          try { await stopMock; }
+          catch (e) {
+            console.warn(`关闭项目 Mock 失败（project=${JSON.stringify(tab.projectLocator)}）: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+        if (deps.requestTabs) await deps.requestTabs.closeProject(tab.workspaceRef.dir, tab.projectLocator, true);
+        evictEditorSessions();
+      };
+      return closeProjectResources().catch((e: unknown) => {
         const identity = JSON.stringify(tab.projectLocator);
         console.warn(`关签驱逐项目编辑会话失败（project=${identity}）: ${e instanceof Error ? e.message : String(e)}`);
       });

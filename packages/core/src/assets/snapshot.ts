@@ -99,6 +99,7 @@ function canonicalize(value: unknown, ancestors: WeakSet<object>): string {
 
 function isFormalOptionalProjectField(parent: Record<string, unknown>, key: string): boolean {
   const kind = parent.kind;
+  if (key === "mock" && Object.hasOwn(parent, "globals") && Object.hasOwn(parent, "stressPolicy") && Object.hasOwn(parent, "collections")) return true;
   if (isSchemaNodeKind(kind) && ["description", "default", "examples", "enum"].includes(key)) return true;
   if (key === "extends" && Object.hasOwn(parent, "baseUrls") && Object.hasOwn(parent, "variables")) return true;
   if (parent.protocol === "websocket" && key === "message") return true;

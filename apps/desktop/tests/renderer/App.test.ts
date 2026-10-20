@@ -41,7 +41,7 @@ import type { useEditorStore } from "../../src/renderer/src/stores/editor.js";
 import { useModuleMemoryStore } from "../../src/renderer/src/stores/moduleMemory.js";
 import type { WfBindIndex } from "../../src/renderer/src/wf/wfBindings.js";
 import type { ProjectLocator } from "../../src/shared/locations.js";
-import type { ApiccApi } from "../../src/shared/types.js";
+import type { ApiccApi, ImportPreviewResult } from "../../src/shared/types.js";
 import type { LocalProjectTreeNodeDTO, LocalTreeNodeDTO } from "../../src/shared/tree-dto.js";
 import type { DebugInvocation, StressReport } from "@apicc/core";
 
@@ -142,6 +142,15 @@ async function expandAllCollapsedTreeContainers(wrapper: VueWrapper): Promise<vo
     if (!collapsed) return;
     await collapsed.trigger("click");
   }
+}
+
+/** Create an API through the current container More menu, matching the visible SideTree path. */
+async function openNewApiFromContainer(wrapper: VueWrapper, label: string): Promise<void> {
+  const row = wrapper.findAll(".node").find((candidate) =>
+    candidate.find(".label").exists() && candidate.find(".label").text() === label);
+  if (!row) throw new Error(`Expected the ${label} container row to be rendered`);
+  await row.get('[data-testid="tree-more"]').trigger("click");
+  await row.get('[data-testid="new-api"]').trigger("click");
 }
 
 /** Open the real workspace, await its store action, then open the named seed project tab. */
@@ -752,6 +761,46 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     expect(document.body.querySelector('[data-testid="dialog-confirm"]')).toBeNull();
   });
 
+  it("只有正式设计器原始 JSON 草稿也触发请求签关闭确认，取消后保留原文", async () => {
+    const dirtyCheckRegistration = vi.spyOn(failingApi, "onDirtyCheck");
+    const wrapper = await mountApp();
+    const aggregateHasDrafts = dirtyCheckRegistration.mock.calls.at(-1)?.[0];
+    dirtyCheckRegistration.mockRestore();
+    if (!aggregateHasDrafts) throw new Error("App did not register its exit dirty-check handler");
+    await openLocalDir(wrapper);
+    await flushPromises();
+    await clickApiAndWait(wrapper);
+    const requestEditor = wrapper.findComponent(RequestEditor);
+    const editor = requestEditor.props("editor") as ReturnType<typeof useEditorStore>;
+    const tabs = wrapper.findComponent(RequestTabs).props("tabs") as ReturnType<typeof createRequestTabsStore>;
+    const tabId = tabs.activeId;
+    if (!tabId || tabs.tabs[tabId]?.source.kind !== "asset") throw new Error("The selected API request tab was not initialized");
+    const session = editor.sessions[editor.activeKey!]!;
+    if (session.api.contract.request.protocol !== "http") throw new Error("The seeded API must use HTTP");
+    session.api.contract.request.body = { kind: "json", content: "{}", schema: { kind: "scalar", type: "string" } };
+    session.snapshot = JSON.stringify(session.api);
+    expect(editor.dirty).toBe(false);
+    expect(aggregateHasDrafts()).toBe(false);
+
+    await subRadio(wrapper, "design").setValue(true);
+    await flushPromises();
+    await wrapper.get('[data-testid="design-contract-tab"]').trigger("click");
+    await wrapper.get('[data-testid="schema-default"]').setValue("invalid-only-raw-draft");
+    expect(editor.dirty).toBe(false);
+    expect(aggregateHasDrafts()).toBe(true);
+
+    await wrapper.get(`[data-testid="request-tab-close-${tabId}"]`).trigger("click");
+    await flushPromises();
+    expect(bodyFind("dialog-confirm")).not.toBeNull();
+    expect(tabs.activeId).toBe(tabId);
+    await expectBody("dialog-cancel").trigger("click");
+    await flushPromises();
+    expect(aggregateHasDrafts()).toBe(true);
+    expect(tabs.activeId).toBe(tabId);
+    expect(editor.sessions[editor.activeKey!]!.api).toBe(session.api);
+    expect((wrapper.get('[data-testid="schema-default"]').element as HTMLTextAreaElement).value).toBe("invalid-only-raw-draft");
+  });
+
   it("唯一项目签从主页切回时恢复原项目及未保存请求草稿", async () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
@@ -887,8 +936,8 @@ describe("App 错误反馈通道（宽审查 I1）", () => {
     // 打开工作区：memory 替身 wsOpen 对非工作区目录回退内存态（已 seed）
     await openLocalDir(wrapper);
     await flushPromises();
-    // 展开分组（一次点击递归展开后代容器）后点集合行的「新建接口」
-    await wrapper.find('[data-testid="new-api"]').trigger("click");
+    // 展开分组后经集合行 More 菜单选择「新建接口」
+    await openNewApiFromContainer(wrapper, "示例集合");
     await expectBody("dialog-input").setValue("x");
     await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
@@ -968,11 +1017,12 @@ describe("App 视图切换装配（M8 模块化）", () => {
     await flushPromises();
     expect(wrapper.find('[data-testid="import-preview-tree"]').exists()).toBe(true);
     expect((wrapper.get('[data-testid="import-name-input"]').element as HTMLInputElement).value).toBe("导入示例项目");
-    const importW = wrapper.findComponent(ImportWizard).props("importW") as {
-      preview: { importerName: string; project: { name: string }; warnings: string[] } | null;
-    };
+    const importW = wrapper.findComponent(ImportWizard).props("importW") as { preview: ImportPreviewResult | null };
     expect(importW.preview?.importerName).toBe("sample");
-    expect(importW.preview?.warnings).toContain("示例警告");
+    expect(importW.preview?.diagnostics).toContainEqual(expect.objectContaining({
+      severity: "warning", code: "IMPORT_SAMPLE_WARNING", message: "示例警告",
+    }));
+    expect(wrapper.get('[data-testid="import-warnings"]').text()).toContain("示例警告");
     await wrapper.find('[data-testid="import-cancel"]').trigger("click");
     await flushPromises();
     expect(importW.preview).toBeNull();
@@ -1232,7 +1282,7 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
       expect(before!.apiIds.size).toBe(1);
 
       // 项目内经侧树新增接口：nodeCreate + workspace.refresh 换新 tree 引用
-      await wrapper.find('[data-testid="new-api"]').trigger("click");
+      await openNewApiFromContainer(wrapper, "示例集合");
       await expectBody("dialog-input").setValue("联动新接口");
       const tree = wrapper.findComponent(SideTree).props("tree") as ReturnType<typeof useTreeStore>;
       const originalCreate = tree.createNode.bind(tree);
@@ -1635,7 +1685,7 @@ describe("App 测试模块装配（M9-D）", () => {
       await flushPromises();
       expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(true);
       // 切接口：压测会话清空（clear 裁定）——新建第二接口并选中
-      await wrapper.find('[data-testid="new-api"]').trigger("click");
+      await openNewApiFromContainer(wrapper, "示例集合");
       await expectBody("dialog-input").setValue("第二接口");
       await expectBody("dialog-confirm").trigger("click");
       await flushPromises();

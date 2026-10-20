@@ -798,6 +798,49 @@ describe("关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessi
     expect(ctx.editor.locator).toEqual(ctx.apiB.locator); // 活跃不在驱逐集合 → 不动
   });
 
+  it("本地项目关闭等待精确 root+locator 的 Mock 停止；不因切活跃项目而触发", async () => {
+    const ctx = await localContext();
+    let releaseMock!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseMock = resolve; });
+    const mockProjectClose = vi.fn(async () => gate);
+    const requestTabs = { closeProject: vi.fn(async () => true) };
+    const evict = createEvictProjectSessions({
+      editor: ctx.editor,
+      online: ctx.online,
+      requestTabs,
+      mockProjectClose,
+    });
+    const tabs = createTabsStore({
+      workspace: ctx.workspace,
+      tree: { select: () => undefined },
+      online: {
+        sessions: {}, activeWorkspaceId: null, error: null,
+        activateWorkspace: async () => {}, selectNode: async () => {}, evictProjectBuffers: () => {},
+      } as unknown as TabsStoreDeps["online"],
+      editor: ctx.editor,
+      evictProjectSessions: evict,
+      storage: memStorage(),
+    });
+    const root = ctx.workspace.root;
+    const secondProject = {
+      workspaceId: ctx.apiB.locator.workspaceId,
+      groupId: ctx.apiB.locator.groupId,
+      projectId: ctx.apiB.locator.projectId,
+    };
+    await tabs.openProjectTab({ kind: "local", dir: root }, { locator: ctx.projectNode.locator, name: ctx.projectNode.label });
+    await tabs.openProjectTab({ kind: "local", dir: root }, { locator: secondProject, name: "项目二" });
+    await tabs.activateTab("tab-1");
+    expect(mockProjectClose).not.toHaveBeenCalled(); // 活跃项目切换不是项目关闭
+
+    const closing = tabs.closeTab("tab-1");
+    expect(mockProjectClose).toHaveBeenCalledWith(ctx.workspace.root, ctx.projectNode.locator);
+    expect(requestTabs.closeProject).not.toHaveBeenCalled();
+    releaseMock();
+    await closing;
+    expect(requestTabs.closeProject).toHaveBeenCalledWith(ctx.workspace.root, ctx.projectNode.locator, true);
+    expect(tabs.activeTabId).toBe("tab-2");
+  });
+
   it("在线 ref：路由到 online.evictProjectBuffers(workspaceId, projectId)", async () => {
     const ctx = await localContext();
     const evict = createEvictProjectSessions({ editor: ctx.editor, online: ctx.online });

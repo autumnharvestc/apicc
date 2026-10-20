@@ -15,6 +15,10 @@
       "types": "./dist/assets/context.d.ts",
       "default": "./dist/assets/context.js"
     },
+    "./design/document": {
+      "types": "./dist/design/document.d.ts",
+      "default": "./dist/design/document.js"
+    },
     "./schema": {
       "types": "./dist/schema.d.ts",
       "default": "./dist/schema.js"

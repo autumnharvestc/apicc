@@ -100,6 +100,12 @@ export type {
 } from "./contract/model.js";
 export { JsonValueSchema, SchemaNodeSchema, StringRecordSchema } from "./contract/schemaNode.js";
 export type { JsonValue, SchemaAnnotations, SchemaNode } from "./contract/schemaNode.js";
+export { MockConditionSchema, MockProjectConfigSchema, MockResponseSourceSchema, MockRuleSchema } from "./mock/config.js";
+export type { MockCondition, MockDiagnostic, MockProjectConfig, MockResponseSource, MockRule } from "./mock/config.js";
+export { DocumentDiagnosticSchema, DocumentProjectionSchema, DocumentScopeSchema } from "./design/projection.js";
+export type { DocumentApi, DocumentDiagnostic, DocumentProjection, DocumentScope } from "./design/projection.js";
+export { RequestSnippetLanguageSchema, RequestSnippetResultSchema } from "./design/document.js";
+export type { RequestSnippetLanguage, RequestSnippetResult } from "./design/document.js";
 
 export {
   NetworkScopeSchema,

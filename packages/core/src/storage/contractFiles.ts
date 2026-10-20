@@ -27,6 +27,7 @@ import { StringRecordSchema } from "../contract/schemaNode.js";
 import { createProjectAssetContext } from "../assets/context.js";
 import type { LoadProblem } from "../plugin/types.js";
 import { WorkflowSchema } from "../workflow/model.js";
+import { MockProjectConfigSchema } from "../mock/config.js";
 import {
   isSafeCaseFileName,
   apiCaseIndexFilePath,
@@ -91,6 +92,7 @@ const ProjectFileSchema = z.object({
   collectionOrder: z.array(IdSchema),
   modelOrder: z.array(IdSchema),
   componentOrder: z.array(ComponentOrderSchema),
+  mock: MockProjectConfigSchema.optional(),
 }).strict();
 const CollectionFileSchema = z.object({
   id: IdSchema,
@@ -204,6 +206,7 @@ function encodeProject(files: Map<string, string>, groupId: string, project: Con
   const { id, name, variables, globals, environments, workflows, stressPolicy } = project;
   addYamlFile(files, projectMetadataFilePath(groupId, project.id), ProjectFileSchema, {
     id, name, variables, globals, environments, workflows, stressPolicy,
+    ...(project.mock === undefined ? {} : { mock: project.mock }),
     collectionOrder: project.collections.map((collection) => collection.id),
     modelOrder: project.models.map((model) => model.id),
     componentOrder: project.components.map((component) => ({ kind: component.kind, id: component.id })),
@@ -954,6 +957,7 @@ async function loadProjects(
       stressPolicy: data.stressPolicy,
       models,
       components,
+      ...(data.mock === undefined ? {} : { mock: data.mock }),
     });
   }
   return projects;

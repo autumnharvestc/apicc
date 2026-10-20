@@ -351,6 +351,23 @@ describe("CLI 端到端", () => {
     expect(workspace.groups.some((g) => g.name === "preview-group")).toBe(false);
   });
 
+  it("import cURL 文本文件仅预览，不执行命令或读取 body 文件", async () => {
+    const sample = join(dataRoot, "preview-command.txt");
+    const before = await fileStorage.load(root);
+    const requestCount = receivedPaths.length;
+    writeFileSync(sample, `curl --data-binary '@missing-private-body.bin' -u 'alice:synthetic-secret' '${baseUrl}/must-not-send'`);
+    const preview = await runCliProcess(["import", sample, "--group", "curl-preview-group"]);
+    expect(preview.code).toBe(0);
+    expect(preview.output).toContain("预览：将导入项目「Imported cURL」");
+    expect(preview.output).toContain("--yes");
+    expect(preview.output).toContain("select the local file again");
+    expect(preview.output).not.toMatch(/synthetic-secret|missing-private-body/);
+    expect(receivedPaths).toHaveLength(requestCount);
+    const after = await fileStorage.load(root);
+    expect(after.revision).toBe(before.revision);
+    expect(after.workspace.groups.some((group) => group.name === "curl-preview-group")).toBe(false);
+  });
+
   it("import 无法识别的格式抛「无法识别的导入格式」", async () => {
     const { writeFileSync } = await import("node:fs");
     const sample = join(dataRoot, "unknown-format.txt");

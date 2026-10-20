@@ -153,6 +153,8 @@ import type {
   OnlineWorkspaceView,
 } from "./online/types.js";
 import type { WorkflowImpactLocator } from "./locations.js";
+import type { DesignExportInput, DesignPreviewInput, DesignPreviewResult } from "./design.js";
+import type { MockConfigSaveInput, MockControlInput, MockProjectCloseInput, MockStartInput, MockStatus } from "./mock.js";
 
 export interface WorkflowImpactEntryDTO {
   workflowId: string;
@@ -284,13 +286,33 @@ export type StressPolicyInput = StressTargetPolicy;
 
 /** import:preview 入参：渲染层经 input[type=file] 读出文本与文件名（不新增文件选择 IPC）。 */
 export interface ImportPreviewInput { fileName: string; content: string }
-/** import:preview 返回：命中的导入器名 + 解析产物（id 均为新生成 UUID）+ 警告列表。 */
-export interface ImportPreviewResult { importerName: string; project: ContractProject; warnings: string[] }
-/** import:apply 入参（轨二双模式）：project=整包落到所选分组（name=项目名，预填 title 可改）；
- * module=产物集合改名后并入目标项目（baseUrl 进模块变量、不造环境）。同名并存（同名放开）。 */
-export type ImportApplyInput =
-  | { mode: "project"; target: GroupLocator; name: string; project: ContractProject }
-  | { mode: "module"; target: ProjectLocator; name: string; project: ContractProject; sourceEnvironmentName?: string };
+export interface ImportExchangeDiagnostic { severity: "warning" | "error"; code: string; path: string; message: string; lossy: boolean; ownerId?: string }
+export interface ImportPreviewApi { id: string; name: string; method: string; path: string }
+export interface ImportPreviewCollection { id: string; name: string; apis: ImportPreviewApi[] }
+export interface ImportPreviewEnvironmentOption { optionToken: string; label: string }
+/** Renderer-visible preview deliberately excludes the parsed project and every credential/asset payload. */
+export interface ImportPreviewResult {
+  token: string;
+  importerName: string;
+  summary: { projectName: string; collections: number; apis: number; environments: ImportPreviewEnvironmentOption[] };
+  tree: ImportPreviewCollection[];
+  diagnostics: ImportExchangeDiagnostic[];
+}
+export type ImportPlanInput =
+  | { previewToken: string; mode: "project"; target: GroupLocator; name: string }
+  | { previewToken: string; mode: "module"; target: ProjectLocator; name: string; sourceEnvironmentOptionToken?: string }
+  | { previewToken: string; mode: "merge"; target: CollectionLocator; sourceCollectionIds: string[]; decisions: Record<string, { action: "skip" | "rename" | "overwrite" | "cancel"; targetApiId?: string; name?: string }> };
+export interface ImportPlanResult {
+  token: string;
+  mode: ImportPlanInput["mode"];
+  summary: { added: number; overwritten: number; skipped: number };
+  entries: Array<{ sourceApiId: string; sourceName: string; sourcePath: string; method: string; path: string; status: "added" | "overwritten" | "skipped"; targetApiIds: string[]; targetName?: string }>;
+  diagnostics: ImportExchangeDiagnostic[];
+  cancelled: boolean;
+}
+export interface ImportApplyInput { planToken: string; allowLossy: boolean }
+export interface ImportApplyResult { committed: boolean; undoToken?: string; summary: ImportPlanResult["summary"] }
+export interface ImportUndoInput { undoToken: string }
 
 /** wf:list 行摘要：工作流列表（侧树「工作流」分组与列表视图共用，规格 §3）。 */
 export interface WorkflowSummary { id: string; name: string; status: WorkflowStatus; locator: WorkflowLocator }
@@ -342,6 +364,12 @@ export interface ApiccApi {
   componentGet(locator: ComponentLocator): Promise<ComponentAsset>;
   componentCreate(locator: ProjectLocator, input: CreateComponentInput): Promise<ComponentAsset>;
   componentSave(locator: ComponentLocator, component: ComponentAsset): Promise<ComponentAsset>;
+  mockGet(locator: ProjectLocator): Promise<MockStatus>;
+  mockConfigSave(input: MockConfigSaveInput): Promise<MockStatus>;
+  mockStart(input: MockStartInput): Promise<MockStatus>;
+  mockStop(input: MockControlInput): Promise<MockStatus>;
+  mockReload(input: MockControlInput): Promise<MockStatus>;
+  mockProjectClose(input: MockProjectCloseInput): Promise<void>;
   assetReferences(locator: ProjectLocator, assetId: string): Promise<import("@apicc/core").AssetDiagnostic[]>;
   debugSend(input: DebugInput): Promise<DebugOutput>;
   debugStart(input: DebugStartInput): Promise<DebugStartResult>;
@@ -383,13 +411,17 @@ export interface ApiccApi {
   /** The main process opens/reads a secret file; no path or secret bytes cross IPC. */
   networkSecretImport(input: NetworkSecretImportInput): Promise<NetworkSecretImportResult>;
   importPreview(input: ImportPreviewInput): Promise<ImportPreviewResult>;
-  importApply(input: ImportApplyInput): Promise<void>;
+  importPlan(input: ImportPlanInput): Promise<ImportPlanResult>;
+  importApply(input: ImportApplyInput): Promise<ImportApplyResult>;
+  importUndo(input: ImportUndoInput): Promise<void>;
   /** project:clone：整项目深拷贝新 id 落回原分组，返回克隆体。 */
   projectClone(locator: ProjectLocator): Promise<ContractProject>;
   /** project:move：项目移入目标分组。 */
   projectMove(source: ProjectLocator, target: GroupLocator): Promise<void>;
-  /** design:export：主进程渲染 agent 设计 md → showSaveDialog 落盘；返回保存路径（取消为空串）。 */
-  designExport(locator: ApiLocator): Promise<string>;
+  /** design:export：从当前项目已保存快照按格式/范围生成文档，经原生保存入口落盘；取消返回空串。 */
+  designExport(input: DesignExportInput): Promise<string>;
+  /** design:preview：仅在主进程克隆项目快照、替换当前草稿预览，不保存输入。 */
+  designPreview(input: DesignPreviewInput): Promise<DesignPreviewResult>;
   /** 工作流频道（M2-B 任务 1）：语义与主进程 session 一致，错误文案逐字对齐。 */
   wfList(locator: ProjectLocator): Promise<WorkflowSummary[]>;
   wfGet(locator: WorkflowLocator): Promise<WorkflowDetail>;

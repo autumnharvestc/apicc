@@ -13,6 +13,7 @@ import {
 import { WorkflowSchema } from "../workflow/model.js";
 import { ApiAssetSchema, ComponentAssetSchema, ModelAssetSchema, type ApiAsset, type ComponentAsset, type ModelAsset } from "./model.js";
 import { StringRecordSchema } from "./schemaNode.js";
+import { MockProjectConfigSchema, type MockProjectConfig } from "../mock/config.js";
 
 export const ContractEnvironmentSchema = EnvironmentSchema;
 
@@ -46,6 +47,7 @@ export interface ContractProject {
   stressPolicy: StressPolicy;
   models: ModelAsset[];
   components: ComponentAsset[];
+  mock?: MockProjectConfig;
 }
 
 export interface ContractCollection {
@@ -97,6 +99,7 @@ export const ContractProjectSchema: z.ZodType<ContractProject> = z.object({
   stressPolicy: StressPolicySchema,
   models: z.array(ModelAssetSchema).default([]),
   components: z.array(ComponentAssetSchema).default([]),
+  mock: MockProjectConfigSchema.optional(),
 }).strict();
 
 export const ContractGroupSchema: z.ZodType<ContractGroup> = z.object({

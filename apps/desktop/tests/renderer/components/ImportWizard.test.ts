@@ -10,8 +10,13 @@ import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js
 import { useImportWizardStore } from "../../../src/renderer/src/stores/importW.js";
 import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
 import ImportWizard from "../../../src/renderer/src/components/ImportWizard.vue";
-import { ApiAssetSchema } from "@apicc/core/schema";
-import type { ImportApplyInput } from "../../../src/shared/types.js";
+import { ApiAssetSchema, ContractProjectSchema } from "@apicc/core/schema";
+import { curlImporter } from "@apicc/core";
+import { countingStorage, IDS, makeTempRoot, makeWorkspace, persistWorkspace } from "../../main/helpers/contract-assets.js";
+import { createIpcDeps } from "../../../src/main/ipc.js";
+import { createSession } from "../../../src/main/session.js";
+import { IpcChannel } from "../../../src/shared/channels.js";
+import type { ImportApplyInput, ImportApplyResult } from "../../../src/shared/types.js";
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -76,6 +81,34 @@ async function pickFile(wrapper: Awaited<ReturnType<typeof mountWizard>>["wrappe
 }
 
 describe("ImportWizard", () => {
+  it("粘贴 cURL 沿现有预览和项目落点进入向导", async () => {
+    const api = createMemoryApi();
+    const originalPreview = api.importPreview.bind(api);
+    api.importPreview = async ({ content }) => {
+      const preview = await originalPreview({ fileName: "pasted.curl", content });
+      const project = curlImporter.parse(content).project;
+      api.setImportPreviewCandidate(preview.token, project);
+      const tree = project.collections.map((collection) => ({
+        id: collection.id, name: collection.name,
+        apis: collection.apis.map((asset) => ({
+          id: asset.contract.id, name: asset.contract.metadata.name,
+          method: asset.contract.request.protocol === "websocket" ? "WS" : asset.contract.request.method,
+          path: asset.contract.request.path,
+        })),
+      }));
+      return { ...preview, importerName: "curl", summary: { ...preview.summary, projectName: project.name, collections: tree.length, apis: tree.reduce((n, c) => n + c.apis.length, 0) }, tree };
+    };
+    const { wrapper, importW } = await mountWizard({ groups: [{ label: "示例分组" }] }, api);
+    await wrapper.get('[data-testid="import-curl-input"]').setValue("curl http://localhost/items");
+    await wrapper.get('[data-testid="import-curl-preview"]').trigger("click");
+    await flushPromises();
+    expect(importW.previewIsCurrent).toBe(true);
+    expect(importW.preview?.tree[0]?.apis[0]).toMatchObject({ method: "GET", path: "/items" });
+    expect(wrapper.find('[data-testid="import-preview-tree"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="import-group-select"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false);
+  });
+
   it("project 模式三步推进：选文件进预览 → 选分组/项目名导入 → 完成态（整包落库、树已刷新）", async () => {
     const api = createMemoryApi();
     api.seedWorkspace();
@@ -87,7 +120,7 @@ describe("ImportWizard", () => {
       defaultGroupId: gId,
     }, api);
     const originalStoreApply = importW.apply.bind(importW);
-    let initialApply: Promise<void> | undefined;
+    let initialApply: Promise<ImportApplyResult> | undefined;
     importW.apply = (input) => (initialApply = originalStoreApply(input));
     // 第一步：只有文件选择，没有落点表单
     expect(wrapper.find('[data-testid="import-file-input"]').exists()).toBe(true);
@@ -98,6 +131,8 @@ describe("ImportWizard", () => {
     expect(wrapper.find('[data-testid="import-warnings"]').text()).toContain("示例警告");
     expect(wrapper.find('[data-testid="import-group-select"]').exists()).toBe(true);
     expect((wrapper.find('[data-testid="import-name-input"]').element as HTMLInputElement).value).toBe("导入示例项目");
+    await wrapper.find('[data-testid="import-build-plan"]').trigger("click");
+    await flushPromises();
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     if (!initialApply) throw new Error("The wizard must start the import apply");
     await initialApply;
@@ -122,11 +157,13 @@ describe("ImportWizard", () => {
       await refreshGate;
       await originalRefresh();
     };
-    let oldApply: Promise<void> | undefined;
+    let oldApply: Promise<ImportApplyResult> | undefined;
     importW.apply = (input) => (oldApply = originalStoreApply(input));
     await pickFile(wrapper, "old-import.yaml", "x");
     await wrapper.find('[data-testid="import-name-input"]').setValue("迟到导入");
     const oldContext = importW.previewContext;
+    await wrapper.find('[data-testid="import-build-plan"]').trigger("click");
+    await flushPromises();
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     await refreshStarted;
     await wrapper.find('[data-testid="import-prev"]').trigger("click");
@@ -134,13 +171,154 @@ describe("ImportWizard", () => {
     const replacementContext = importW.previewContext;
     releaseRefresh();
     if (!oldApply) throw new Error("The component must start the original import apply");
-    await expect(oldApply).rejects.toThrow(/工作区已变更/);
+    await expect(oldApply).resolves.toMatchObject({ committed: true, undoToken: expect.any(String) });
     await flushPromises();
     expect(replacementContext).not.toBe(oldContext);
     expect(importW.previewIsCurrent).toBe(true);
     expect(wrapper.find('[data-testid="import-done"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="import-name-input"]').exists()).toBe(true);
     expect(errors).toEqual([]);
+  });
+
+  it("真实 session/storage 已提交后 treeGet 拒绝：显示已提交、禁止重复 mutation，并支持仅刷新恢复", async () => {
+    const temporary = await makeTempRoot("apicc-c3-refresh-");
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      const initialProjectCount = session.workspace!.groups.reduce((count, group) => count + group.projects.length, 0);
+      const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "" });
+      const api = createMemoryApi();
+      api.importPreview = (input) => deps.handle(IpcChannel.ImportPreview, null, input);
+      api.importPlan = (input) => deps.handle(IpcChannel.ImportPlan, null, input);
+      api.importApply = (input) => deps.handle(IpcChannel.ImportApply, null, input);
+      api.importUndo = (input) => deps.handle(IpcChannel.ImportUndo, null, input);
+      api.treeGet = () => deps.handle(IpcChannel.TreeGet, null);
+
+      const workspace = useWorkspaceStore(api);
+      workspace.apply({
+        workspace: session.workspace!,
+        root: temporary.path,
+        problems: [],
+        readOnly: false,
+        revision: session.revision!,
+      });
+      const initialTree = await api.treeGet();
+      if (initialTree.source !== "local" || initialTree.kind !== "root") throw new Error("The host must return a local workspace root tree.");
+      workspace.tree = initialTree;
+      const groupNode = initialTree.children.find((node) => node.kind === "group");
+      if (!groupNode || groupNode.kind !== "group") throw new Error("The persisted project workspace must contain its target group.");
+
+      const actualTreeGet = api.treeGet.bind(api);
+      let rejectFirstRefresh = true;
+      api.treeGet = async () => {
+        if (rejectFirstRefresh) {
+          rejectFirstRefresh = false;
+          throw new Error("transient tree refresh failure");
+        }
+        return actualTreeGet();
+      };
+      const importW = useImportWizardStore(api, workspace);
+      const plugins = createPluginsStore({ api });
+      await plugins.init();
+      const { i18n } = createI18nInstance();
+      const reportedErrors: unknown[] = [];
+      const wrapper = mount(ImportWizard, {
+        props: {
+          mode: "project",
+          importW,
+          plugins,
+          reportError: (error: unknown) => { reportedErrors.push(error); },
+          groups: [{ locator: groupNode.locator, label: groupNode.label }],
+          defaultGroupLocator: groupNode.locator,
+        },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const content = JSON.stringify({ openapi: "3.0.3", info: { title: "Committed refresh candidate", version: "1.0.0" }, paths: {} });
+      await pickFile(wrapper, "refresh.openapi.json", content);
+      await wrapper.find('[data-testid="import-build-plan"]').trigger("click");
+      await flushPromises();
+      const originalApply = importW.apply.bind(importW);
+      let applyRequest: Promise<ImportApplyResult> | undefined;
+      importW.apply = (target) => (applyRequest = originalApply(target));
+      expect(importW.plan, JSON.stringify({ previewDiagnostics: importW.preview?.diagnostics, reportedErrors })).not.toBeNull();
+      expect(wrapper.find('[data-testid="import-apply"]').attributes("disabled")).toBeUndefined();
+      await wrapper.find('[data-testid="import-apply"]').trigger("click");
+      if (!applyRequest) throw new Error("The wizard must start the real import apply.");
+      await applyRequest;
+      await flushPromises();
+
+      expect(importW.applyResult?.committed).toBe(true);
+      expect(importW.refreshError).toContain("transient tree refresh failure");
+      expect(wrapper.find('[data-testid="import-done"]').text()).toContain("导入完成");
+      expect(wrapper.find('[data-testid="import-refresh-error"]').text()).toContain("已提交，但工作区树刷新失败；请仅重试刷新，不要重复应用。");
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(1);
+      const committedRevision = session.revision;
+      const committedProjectCount = session.workspace!.groups.reduce((count, group) => count + group.projects.length, 0);
+      expect(committedProjectCount).toBe(initialProjectCount + 1);
+      const target = { mode: "project" as const, target: groupNode.locator, name: "Committed refresh candidate" };
+      await expect(importW.apply(target)).rejects.toThrow(/已提交/);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(1);
+
+      await wrapper.find('[data-testid="import-refresh-only"]').trigger("click");
+      await flushPromises();
+      expect(importW.refreshError).toBe("");
+      expect(session.revision).toBe(committedRevision);
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(1);
+      const refreshedGroup = workspace.tree!.children.find((node) => node.kind === "group" && node.id === groupNode.id);
+      expect(refreshedGroup?.children?.some((node) => node.kind === "project" && node.label === "Committed refresh candidate")).toBe(true);
+      const refreshedProjectCount = workspace.tree!.children.reduce((count, node) => count + (node.kind === "group"
+        ? (node.children ?? []).filter((child) => child.kind === "project").length
+        : 0), 0);
+      expect(refreshedProjectCount).toBe(committedProjectCount);
+    } finally {
+      await temporary.dispose();
+    }
+  });
+
+  it("displays plan diagnostics and disables Apply for structural errors", async () => {
+    const api = createMemoryApi();
+    api.seedWorkspace();
+    const tree = await api.treeGet();
+    if (tree.source !== "local" || tree.kind !== "root") throw new Error("The memory fixture must return a local workspace root tree.");
+    const group = tree.children.find((node) => node.kind === "group");
+    if (!group || group.kind !== "group") throw new Error("The memory fixture must contain its target group.");
+    const originalPlan = api.importPlan.bind(api);
+    api.importPlan = async (input) => {
+      const plan = await originalPlan(input);
+      return {
+        ...plan,
+        diagnostics: [...plan.diagnostics, {
+          severity: "error",
+          code: "ASSET_REFERENCE_MISSING",
+          path: "contract.request.body.schema.modelId",
+          message: "引用的目标资产不存在。",
+          lossy: false,
+        }],
+      };
+    };
+    let applyCalls = 0;
+    api.importApply = async () => {
+      applyCalls += 1;
+      return { committed: true, summary: { added: 1, overwritten: 0, skipped: 0 } };
+    };
+    const { wrapper } = await mountWizard({
+      mode: "project",
+      groups: [{ locator: group.locator, label: group.label }],
+      defaultGroupLocator: group.locator,
+    }, api);
+    await pickFile(wrapper, "valid.openapi.json", "openapi: 3.0.0");
+    await wrapper.find('[data-testid="import-build-plan"]').trigger("click");
+    await flushPromises();
+
+    const diagnostics = wrapper.findAll('[data-testid="import-warnings"]').map((alert) => alert.text()).join("\n");
+    expect(diagnostics).toContain("ASSET_REFERENCE_MISSING");
+    expect(diagnostics).toContain("contract.request.body.schema.modelId");
+    expect(diagnostics).toContain("引用的目标资产不存在。");
+    expect(wrapper.find('[data-testid="import-apply"]').attributes("disabled")).toBeDefined();
+    expect(applyCalls).toBe(0);
   });
 
   it("project 模式无可用分组时导入按钮禁用（防无落点提交）", async () => {
@@ -156,45 +334,41 @@ describe("ImportWizard", () => {
     const projectNode = seeded.children!.flatMap((group) => group.children ?? []).find((node) => node.kind === "project");
     if (!projectNode || projectNode.kind !== "project") throw new Error("fixture must contain the seeded project");
     const pId = projectNode.id;
+    const importedProject = ContractProjectSchema.parse({
+      id: "c2e8a7f1-3c07-42ea-85a4-15ed01d7a201", name: "导入示例项目", globals: {},
+      environments: [
+        { id: "env-production", name: "production", variables: {}, baseUrls: { "2e8a7f71-3c07-42ea-85a4-15ed01d7a201": "https://production.example.test" } },
+        { id: "env-staging", name: "staging", extends: "production", variables: {}, baseUrls: { "2e8a7f71-3c07-42ea-85a4-15ed01d7a201": "https://staging.example.test" } },
+      ],
+      collections: [{
+        id: "2e8a7f71-3c07-42ea-85a4-15ed01d7a201", name: "来源集合", variables: {}, preOperations: [], postOperations: [], folders: [],
+        apis: [ApiAssetSchema.parse({
+          contract: {
+            formatVersion: 1, id: "2e8a7f71-3c07-42ea-85a4-15ed01d7a202",
+            metadata: { name: "来源接口", description: "", tags: [], version: "1.0.0", status: "draft" },
+            request: { protocol: "http", method: "GET", baseUrl: "https://fallback.example.test", path: "/ping", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" } },
+            responses: [],
+          }, cases: [], documentation: "",
+        })],
+      }],
+    });
     const originalPreview = api.importPreview.bind(api);
     api.importPreview = async (input) => {
       const preview = await originalPreview(input);
-      const collectionId = "2e8a7f71-3c07-42ea-85a4-15ed01d7a201";
-      preview.project.environments = [
-        { id: "env-production", name: "production", variables: {}, baseUrls: { [collectionId]: "https://production.example.test" } },
-        { id: "env-staging", name: "staging", extends: "production", variables: {}, baseUrls: { [collectionId]: "https://staging.example.test" } },
-      ];
-      preview.project.collections = [{
-        id: collectionId,
-        name: "来源集合",
-        variables: {},
-        preOperations: [],
-        postOperations: [],
-        folders: [],
-        apis: [ApiAssetSchema.parse({
-          contract: {
-            formatVersion: 1,
-            id: "2e8a7f71-3c07-42ea-85a4-15ed01d7a202",
-            metadata: { name: "来源接口", description: "", tags: [], version: "1.0.0", status: "draft" },
-            request: {
-              protocol: "http", method: "GET", baseUrl: "https://fallback.example.test", path: "/ping",
-              pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" },
-            },
-            responses: [],
-          },
-          cases: [],
-          documentation: "",
-        })],
-      }];
-      return preview;
+      api.setImportPreviewCandidate(preview.token, importedProject);
+      const collection = importedProject.collections[0]!;
+      return { ...preview,
+        summary: { ...preview.summary, collections: 1, apis: 1 },
+        tree: [{ id: collection.id, name: collection.name, apis: collection.apis.map((asset) => ({ id: asset.contract.id, name: asset.contract.metadata.name, method: asset.contract.request.protocol === "websocket" ? "WS" : asset.contract.request.method, path: asset.contract.request.path })) }],
+      };
     };
     const applied: ImportApplyInput[] = [];
     const originalApply = api.importApply.bind(api);
-    api.importApply = async (input) => { applied.push(input); await originalApply(input); };
+    api.importApply = async (input) => { applied.push(input); return originalApply(input); };
     const { wrapper, workspace, importW, errors } = await mountWizard({ mode: "module", targetProjectLocator: projectNode.locator }, api);
     expect(wrapper.props("targetProjectLocator")).toEqual(projectNode.locator);
     const originalStoreApply = importW.apply.bind(importW);
-    let applyPromise: Promise<void> | undefined;
+    let applyPromise: Promise<ImportApplyResult> | undefined;
     importW.apply = (input) => (applyPromise = originalStoreApply(input));
     await pickFile(wrapper, "sample.yaml", "openapi: 3.0.0");
     // module 模式不出现分组下拉
@@ -209,6 +383,8 @@ describe("ImportWizard", () => {
     await flushPromises();
     expect(wrapper.find('[data-testid="import-source-environment-select"]').text()).toContain("staging");
     await wrapper.find('[data-testid="import-name-input"]').setValue("并入模块");
+    await wrapper.find('[data-testid="import-build-plan"]').trigger("click");
+    await flushPromises();
     expect(wrapper.find('[data-testid="import-apply"]').attributes("disabled")).toBeUndefined();
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     expect(applyPromise).toBeDefined();
@@ -218,7 +394,7 @@ describe("ImportWizard", () => {
     expect(errors.map((error) => error instanceof Error ? error.message : String(error))).toEqual([]);
     expect(wrapper.find('[data-testid="import-done"]').exists()).toBe(true);
     expect(applied).toHaveLength(1);
-    expect(applied[0]).toMatchObject({ mode: "module", sourceEnvironmentName: "staging", name: "并入模块" });
+    expect(applied[0]).toMatchObject({ planToken: expect.any(String), allowLossy: false });
     expect(api.importApplyCalls).toEqual([{ mode: "module", projectId: pId, name: "并入模块" }]);
     const targetProject = workspace.tree!.children!.flatMap((g) => g.children!).find((p) => p.label === "示例项目");
     expect(targetProject!.children!.map((c) => c.label)).toContain("并入模块");
@@ -265,9 +441,11 @@ describe("ImportWizard", () => {
       defaultGroupId: gId,
     }, api);
     const originalStoreApply = importW.apply.bind(importW);
-    let applyPromise: Promise<void> | undefined;
+    let applyPromise: Promise<ImportApplyResult> | undefined;
     importW.apply = (input) => (applyPromise = originalStoreApply(input));
     await pickFile(wrapper, "sample.yaml", "x");
+    await wrapper.find('[data-testid="import-build-plan"]').trigger("click");
+    await flushPromises();
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     if (!applyPromise) throw new Error("The wizard must start the import apply");
     await applyPromise;
@@ -285,10 +463,12 @@ describe("ImportWizard", () => {
       defaultGroupId: "g",
     });
     const originalStoreApply = importW.apply.bind(importW);
-    let initialApply: Promise<void> | undefined;
+    let initialApply: Promise<ImportApplyResult> | undefined;
     api.importApply = async () => { throw new Error("落库失败（注入）"); };
     importW.apply = (input) => (initialApply = originalStoreApply(input));
     await pickFile(wrapper, "sample.yaml", "x");
+    await wrapper.find('[data-testid="import-build-plan"]').trigger("click");
+    await flushPromises();
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     if (!initialApply) throw new Error("The wizard must start the import apply");
     await expect(initialApply).rejects.toThrow("落库失败");
@@ -302,13 +482,15 @@ describe("ImportWizard", () => {
     let rejectLateApply!: (error: Error) => void;
     let notifyLateApplyStarted!: () => void;
     const lateApplyStarted = new Promise<void>((resolve) => { notifyLateApplyStarted = resolve; });
-    const lateFailure = new Promise<void>((_resolve, reject) => { rejectLateApply = reject; });
+    const lateFailure = new Promise<ImportApplyResult>((_resolve, reject) => { rejectLateApply = reject; });
     api.importApply = async () => {
       notifyLateApplyStarted();
-      await lateFailure;
+      return await lateFailure;
     };
-    let oldApply: Promise<void> | undefined;
+    let oldApply: Promise<ImportApplyResult> | undefined;
     importW.apply = (input) => (oldApply = originalStoreApply(input));
+    await wrapper.find('[data-testid="import-build-plan"]').trigger("click");
+    await flushPromises();
     await wrapper.find('[data-testid="import-apply"]').trigger("click");
     await lateApplyStarted;
     await wrapper.find('[data-testid="import-prev"]').trigger("click");

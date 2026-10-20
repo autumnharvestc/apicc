@@ -4,6 +4,7 @@ import { cloneAssetBundle, cloneProjectDefinition, type CloneIdKind, type CloneI
 import { ApiAssetSchema, ComponentAssetSchema, ModelAssetSchema, ParameterBindingSchema, type ApiAsset, type ComponentAsset, type ModelAsset } from "../../src/contract/model.js";
 import { ContractWorkspaceSchema } from "../../src/contract/workspace.js";
 import { componentFixtures, contractFixture, modelAssetFixture, parameterReference, workspaceFixture } from "../helpers/contractFixtures.js";
+import { createMockConfiguredProject, mockFixtureIds } from "../helpers/mockFixtures.js";
 
 const newProjectId = "00000000-0000-4000-8000-000000000900";
 const componentIds = {
@@ -166,6 +167,39 @@ function sourceProject() {
 }
 
 describe("asset cloning", () => {
+  it("remaps the saved mock rule, contract, response, and example references", () => {
+    const source = createMockConfiguredProject();
+    source.mock.rules[0]!.conditions = [{ source: "query", op: "equals", name: "view", value: "source" }];
+    const result = cloneProjectDefinition(source, { newId: deterministicIdFactory() });
+    const sourceMock = source.mock;
+    const clonedMock = result.project.mock;
+    if (!clonedMock) throw new Error("Cloned project must preserve mock configuration.");
+    const sourceRule = sourceMock.rules[0]!;
+    const clonedRule = clonedMock.rules[0]!;
+    const clonedContractId = mapped(result.idMap, "contract", sourceRule.contractId, source.id);
+    const clonedResponseId = mapped(result.idMap, "responseInstance", sourceRule.responseBindingId, sourceRule.contractId);
+    const clonedExampleId = mapped(result.idMap, "exampleInstance", mockFixtureIds.example, sourceRule.contractId);
+
+    expect(clonedMock.enabledContractIds).toEqual([clonedContractId]);
+    expect(clonedRule.id).toBe(mapped(result.idMap, "mockRule" as CloneIdKind, sourceRule.id, source.id));
+    expect(clonedRule.id).not.toBe(sourceRule.id);
+    expect(clonedRule.contractId).toBe(clonedContractId);
+    expect(clonedRule.responseBindingId).toBe(clonedResponseId);
+    expect(clonedRule.source).toEqual({ kind: "example", exampleBindingId: clonedExampleId });
+    expect(clonedRule.source).not.toEqual(sourceRule.source);
+    expect(clonedRule.conditions).not.toBe(sourceRule.conditions);
+    const sourceCondition = sourceRule.conditions[0];
+    const clonedCondition = clonedRule.conditions[0];
+    if (sourceCondition?.op !== "equals" || clonedCondition?.op !== "equals") {
+      throw new Error("Mock fixture conditions must be equals conditions.");
+    }
+    expect(clonedCondition).not.toBe(sourceCondition);
+    clonedCondition.value = "clone-only";
+    clonedRule.conditions.push({ source: "body", op: "exists", pointer: "/item" });
+    expect(sourceCondition.value).toBe("source");
+    expect(sourceRule.conditions).toEqual([{ source: "query", op: "equals", name: "view", value: "source" }]);
+  });
+
   it("clones a complete project in two passes and rewrites every declared identity and typed reference", () => {
     const source = sourceProject();
     const before = structuredClone(source.project);

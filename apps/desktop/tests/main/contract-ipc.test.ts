@@ -8,8 +8,10 @@ import { parseIpcArgs } from "../../src/shared/ipc-contract.js";
 import type { OnlineClient } from "../../src/main/online/client.js";
 import type { TokenStore } from "../../src/main/online/tokenStore.js";
 import { IpcChannel } from "../../src/shared/channels.js";
+import type { DesignPreviewResult } from "../../src/shared/design.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createDesktopDebugHistoryStore } from "../../src/main/debugHistory.js";
+import { atomicWriteFile } from "../../src/main/atomicFile.js";
 import { createSession } from "../../src/main/session.js";
 import { countingStorage, findApi, IDS, makeApi, makeTempRoot, makeWorkspace, persistWorkspace, projectOne, uuid } from "./helpers/contract-assets.js";
 
@@ -46,6 +48,22 @@ async function fileBytes(root: string): Promise<Map<string, string>> {
 }
 
 describe("complete-locator IPC bridge", () => {
+  it("uses strict Mock control DTOs and exposes no renderer file-read channel", () => {
+    const locator = locators().project;
+    const control = { locator, sourceProjectRevision: "source-revision" };
+    const config = { formatVersion: 1, seed: "saved", enabledContractIds: [], rules: [] };
+    expect(parseIpcArgs(IpcChannel.MockGet, [locator])).toEqual([locator]);
+    expect(parseIpcArgs(IpcChannel.MockConfigSave, [{ ...control, config }])).toEqual([{ ...control, config }]);
+    expect(parseIpcArgs(IpcChannel.MockStart, [{ ...control, port: 0 }])).toEqual([{ ...control, port: 0 }]);
+    expect(parseIpcArgs(IpcChannel.MockStop, [control])).toEqual([control]);
+    expect(parseIpcArgs(IpcChannel.MockReload, [control])).toEqual([control]);
+    expect(parseIpcArgs(IpcChannel.MockProjectClose, [{ root: "C:/fixture", locator }])).toEqual([{ root: "C:/fixture", locator }]);
+    expect(() => parseIpcArgs(IpcChannel.MockStart, [{ ...control, port: 65_536 }])).toThrow(/入参校验失败/);
+    expect(() => parseIpcArgs(IpcChannel.MockConfigSave, [{ ...control, config, filePath: "C:/secret" }])).toThrow(/入参校验失败/);
+    expect(() => parseIpcArgs(IpcChannel.MockProjectClose, [{ root: "C:/fixture", locator, generation: 1 }])).toThrow(/入参校验失败/);
+    expect(Object.keys(IpcChannel).some((channel) => /read.?file|file.?read/i.test(channel))).toBe(false);
+  });
+
   it("keeps the light workflow IPC schema in exact acceptance/default parity with Core", () => {
     const locator = { ...locators().project, workflowId: IDS.workflow };
     const validInputs: unknown[] = [
@@ -981,7 +999,7 @@ describe("complete-locator IPC bridge", () => {
       const duplicateProject = structuredClone(projectOne(workspace));
       workspace.groups.find((group) => group.id === IDS.groupTwo)!.projects.push(duplicateProject);
       await persistWorkspace(temporary.path, workspace);
-      const importedProject = structuredClone(projectOne(makeWorkspace()));
+      let importedProject = structuredClone(projectOne(makeWorkspace()));
       const sourceEnvironment = importedProject.environments[0]!;
       importedProject.environments = [
         { ...sourceEnvironment, name: "production / blue", baseUrls: { [IDS.collectionOne]: "https://production.example.test" } },
@@ -1012,9 +1030,10 @@ describe("complete-locator IPC bridge", () => {
       expect(session.workspace).toEqual(beforeConflictingMove);
       expect(await fileBytes(temporary.path)).toEqual(bytesBeforeConflictingMove);
       const preview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "api.fixture", content: "fixture content" });
-      expect(preview).toMatchObject({ importerName: "fixture-importer", project: importedProject, warnings: ["fixture warning"] });
-      const previewBefore = structuredClone(preview.project);
-      const modulePreview = structuredClone(preview.project);
+      expect(preview).toMatchObject({ importerName: "fixture-importer", summary: { projectName: importedProject.name }, diagnostics: [expect.objectContaining({ message: "fixture warning" })] });
+      expect(preview).not.toHaveProperty("project");
+      const previewBefore = structuredClone(importedProject);
+      let modulePreview = structuredClone(importedProject);
       const moduleApi = findApi(modulePreview, IDS.sharedApi)!;
       moduleApi.cases.push({
         id: "long-scope-case",
@@ -1027,26 +1046,35 @@ describe("complete-locator IPC bridge", () => {
       });
       const modulePreviewBefore = structuredClone(modulePreview);
 
-      await deps.handle(IpcChannel.ImportApply, null, { mode: "project", target: targetGroup, name: "Imported full project", project: preview.project });
+      const fullProjectPlan = await deps.handle(IpcChannel.ImportPlan, null, { previewToken: preview.token, mode: "project", target: targetGroup, name: "Imported full project" });
+      await deps.handle(IpcChannel.ImportApply, null, { planToken: fullProjectPlan.token, allowLossy: false });
+      importedProject = modulePreview;
+      const modulePreviewDto = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "api.fixture", content: "fixture content" });
+      expect(modulePreviewDto).not.toHaveProperty("project");
+      const stagingOption = modulePreviewDto.summary.environments.find((option) => option.label === "staging / blue");
+      if (!stagingOption) throw new Error("The source preview must expose its staging environment option");
       await deps.handle(IpcChannel.ImportApply, null, {
-        mode: "module",
-        target: sourceProject,
-        name: "Imported module",
-        sourceEnvironmentName: "staging / blue",
-        project: modulePreview,
+        planToken: (await deps.handle(IpcChannel.ImportPlan, null, {
+          previewToken: modulePreviewDto.token,
+          mode: "module",
+          target: sourceProject,
+          name: "Imported module",
+          sourceEnvironmentOptionToken: stagingOption.optionToken,
+        })).token,
+        allowLossy: false,
       });
-      expect(preview.project).toEqual(previewBefore);
+      expect(importedProject).toEqual(modulePreviewBefore);
       expect(modulePreview).toEqual(modulePreviewBefore);
 
       const beforeCyclicFullImport = session.workspace;
       const cyclicImportBytes = await fileBytes(temporary.path);
-      const cyclicProject = structuredClone(preview.project);
+      const cyclicProject = structuredClone(importedProject);
       cyclicProject.environments[0]!.extends = cyclicProject.environments[1]!.name;
+      importedProject = cyclicProject;
+      const cyclicPreview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "api.fixture", content: "fixture content" });
       await expect(deps.handle(IpcChannel.ImportApply, null, {
-        mode: "project",
-        target: targetGroup,
-        name: "Cyclic full project",
-        project: cyclicProject,
+        planToken: (await deps.handle(IpcChannel.ImportPlan, null, { previewToken: cyclicPreview.token, mode: "project", target: targetGroup, name: "Cyclic full project" })).token,
+        allowLossy: false,
       })).rejects.toThrow(/Cyclic source environment inheritance/);
       expect(session.workspace).toEqual(beforeCyclicFullImport);
       expect(await fileBytes(temporary.path)).toEqual(cyclicImportBytes);
@@ -1068,30 +1096,43 @@ describe("complete-locator IPC bridge", () => {
         expect.objectContaining({ name: "staging smoke", scope: "staging - blue" }),
         expect.objectContaining({ name: "long scope smoke", scope: "未命名" }),
       ]));
-      const scopeCollisionModule = structuredClone(preview.project);
+      const scopeCollisionModule = structuredClone(importedProject);
       const scopeCollisionApi = findApi(scopeCollisionModule, IDS.sharedApi)!;
       const sourceScopedCase = scopeCollisionApi.cases.find((testCase) => testCase.name === "staging smoke")!;
       scopeCollisionApi.cases.push({ ...sourceScopedCase, scope: "staging - blue" });
       const scopeCollisionBefore = structuredClone(scopeCollisionModule);
       const beforeScopeCollision = session.workspace;
       const scopeCollisionBytes = await fileBytes(temporary.path);
+      importedProject = scopeCollisionModule;
+      const scopeCollisionPreview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "api.fixture", content: "fixture content" });
       await expect(deps.handle(IpcChannel.ImportApply, null, {
-        mode: "module", target: sourceProject, name: "scope collision module", project: scopeCollisionModule,
+        planToken: (await deps.handle(IpcChannel.ImportPlan, null, { previewToken: scopeCollisionPreview.token, mode: "module", target: sourceProject, name: "scope collision module" })).token,
+        allowLossy: false,
       })).rejects.toThrow(/case scopes collide after sanitization/i);
       expect(scopeCollisionModule).toEqual(scopeCollisionBefore);
       expect(session.workspace).toEqual(beforeScopeCollision);
       expect(await fileBytes(temporary.path)).toEqual(scopeCollisionBytes);
       const beforeAmbiguousModule = session.workspace;
       const ambiguousBytes = await fileBytes(temporary.path);
-      const duplicateNameModule = structuredClone(preview.project);
+      const duplicateNameModule = structuredClone(modulePreviewBefore);
       duplicateNameModule.environments.push({ ...duplicateNameModule.environments[0]!, id: uuid(900), name: duplicateNameModule.environments[0]!.name, baseUrls: { [IDS.collectionOne]: "https://ambiguous.example.test" } });
-      await expect(deps.handle(IpcChannel.ImportApply, null, { mode: "module", target: sourceProject, name: "duplicate-name module", project: duplicateNameModule })).rejects.toThrow(`Ambiguous source environment name: ${duplicateNameModule.environments[0]!.name}`);
+      importedProject = duplicateNameModule;
+      const duplicateNamePreview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "api.fixture", content: "fixture content" });
+      await expect(deps.handle(IpcChannel.ImportApply, null, {
+        planToken: (await deps.handle(IpcChannel.ImportPlan, null, { previewToken: duplicateNamePreview.token, mode: "module", target: sourceProject, name: "duplicate-name module" })).token,
+        allowLossy: false,
+      })).rejects.toThrow(`Ambiguous source environment name: ${duplicateNameModule.environments[0]!.name}`);
       expect(session.workspace).toEqual(beforeAmbiguousModule);
       expect(await fileBytes(temporary.path)).toEqual(ambiguousBytes);
 
-      const distinctEnvironmentModule = structuredClone(preview.project);
+      const distinctEnvironmentModule = structuredClone(modulePreviewBefore);
       distinctEnvironmentModule.environments.push({ ...distinctEnvironmentModule.environments[0]!, id: uuid(901), name: "preproduction", baseUrls: { [IDS.collectionOne]: "https://preproduction.example.test" } });
-      await expect(deps.handle(IpcChannel.ImportApply, null, { mode: "module", target: sourceProject, name: "ambiguous-base-url module", project: distinctEnvironmentModule })).rejects.toThrow(`Ambiguous source environment baseUrl for collection ${IDS.collectionOne}; choose a source environment`);
+      importedProject = distinctEnvironmentModule;
+      const distinctEnvironmentPreview = await deps.handle(IpcChannel.ImportPreview, null, { fileName: "api.fixture", content: "fixture content" });
+      await expect(deps.handle(IpcChannel.ImportApply, null, {
+        planToken: (await deps.handle(IpcChannel.ImportPlan, null, { previewToken: distinctEnvironmentPreview.token, mode: "module", target: sourceProject, name: "ambiguous-base-url module" })).token,
+        allowLossy: false,
+      })).rejects.toThrow(`Ambiguous source environment baseUrl for collection ${IDS.collectionOne}; choose a source environment`);
       expect(session.workspace).toEqual(beforeAmbiguousModule);
       expect(await fileBytes(temporary.path)).toEqual(ambiguousBytes);
 
@@ -1123,11 +1164,22 @@ describe("complete-locator IPC bridge", () => {
       api.contract.request.body = { kind: "json", content: "{}", schema: { kind: "modelRef", modelId: IDS.model } };
       api.contract.request.auth = { kind: "bearer", token: { id: "secret-value-should-not-export", policy: "fixture-reference-only" } };
       api.contract.metadata.description = "context-bearing design export";
+      api.cases.push({
+        id: uuid(777),
+        name: "token=case-name-secret",
+        scope: "base",
+        parameters: { access_token: "case-parameter-secret" },
+        preOperations: [{ id: "case-pre-op", type: "script", content: "case-script-secret" }],
+        postOperations: [],
+        assertions: [{ id: "case-assertion", target: "bodyJson", op: "eq", path: "private.path", expected: "case-expected-secret" }],
+      });
       await persistWorkspace(temporary.path, workspace);
       const session = createSession();
       await session.open(temporary.path);
       let savedName = "";
       let savedContent = "";
+      let savedFormat = "";
+      let saveCalls = 0;
       let cancelNextSave = false;
       const tokenCalls: string[] = [];
       const createClientCalls: Array<{ baseUrl: string; onUnauthorized: () => void }> = [];
@@ -1141,9 +1193,11 @@ describe("complete-locator IPC bridge", () => {
       const deps = createIpcDeps({
         session,
         pickDirectory: async () => "",
-        saveFile: async (name, content) => {
+        saveFile: async (name, content, format) => {
+          saveCalls += 1;
           savedName = name;
           savedContent = content;
+          savedFormat = format ?? "";
           if (cancelNextSave) {
             cancelNextSave = false;
             return "";
@@ -1165,13 +1219,41 @@ describe("complete-locator IPC bridge", () => {
         },
       });
       const apiLocator = locators().api;
+      const exportInput = {
+        sourceRoot: temporary.path,
+        locator: apiLocator,
+        format: "markdown" as const,
+        scope: { kind: "project" as const },
+      };
       const activeBefore = { root: session.root, workspace: session.workspace, revision: session.revision };
 
-      await expect(deps.handle(IpcChannel.DesignExport, null, apiLocator)).resolves.toBe("C:/exports/design.md");
-      expect(savedName).toBe("project one API.design.md");
+      await expect(deps.handle(IpcChannel.DesignExport, null, exportInput)).resolves.toBe("C:/exports/design.md");
+      expect(savedName).toBe("project one.md");
+      expect(savedFormat).toBe("markdown");
       expect(savedContent).toContain("context-bearing design export");
       expect(savedContent).toContain("Payload");
+      expect(savedContent).toContain("| token=**** | base | 1 |");
       expect(savedContent).not.toContain("secret-value-should-not-export");
+      expect(savedContent).not.toContain("case-parameter-secret");
+      expect(savedContent).not.toContain("case-script-secret");
+      expect(savedContent).not.toContain("case-expected-secret");
+      expect(savedContent).not.toContain("private.path");
+      await expect(deps.handle(IpcChannel.DesignExport, null, { ...exportInput, sourceRoot: "C:/stale-workspace" })).rejects.toThrow(/根目录已变化/);
+
+      const htmlApiInput = { ...exportInput, format: "html" as const, scope: { kind: "apis" as const, contractIds: [apiLocator.apiId] } };
+      await expect(deps.handle(IpcChannel.DesignExport, null, htmlApiInput)).resolves.toBe("C:/exports/design.md");
+      expect(savedName).toBe("project one.html");
+      expect(savedFormat).toBe("html");
+      expect(savedContent).toContain("<!doctype html>");
+      expect(savedContent).toContain("<td>token=****</td><td>base</td><td>1</td>");
+      expect(savedContent).not.toContain("case-name-secret");
+      expect(savedContent).not.toContain("case-parameter-secret");
+      expect(savedContent).not.toContain("case-script-secret");
+      expect(savedContent).not.toContain("case-expected-secret");
+      expect(savedContent).not.toContain("private.path");
+      const saveCallsAfterHtml = saveCalls;
+      await expect(deps.handle(IpcChannel.DesignExport, null, { ...exportInput, scope: { kind: "tags", tags: ["no-such-tag"] } })).rejects.toThrow(/没有匹配/);
+      expect(saveCalls).toBe(saveCallsAfterHtml);
 
       await deps.handle(IpcChannel.OnlineLogin, null, { baseUrl: "https://resident.example.test", username: "alice", password: "password8" });
       const residentView = await deps.handle(IpcChannel.OnlineWorkspaceOpen, null, { workspaceId: "resident-ws", name: "resident workspace", myRole: "EDITOR" });
@@ -1192,9 +1274,15 @@ describe("complete-locator IPC bridge", () => {
       expect({ root: session.root, workspace: session.workspace, revision: session.revision }).toEqual(activeBefore);
 
       cancelNextSave = true;
-      await expect(deps.handle(IpcChannel.DesignExport, null, apiLocator)).resolves.toBe("");
+      await expect(deps.handle(IpcChannel.DesignExport, null, exportInput)).resolves.toBe("");
       expect(savedContent).toContain("context-bearing design export");
       expect(savedContent).not.toContain("secret-value-should-not-export");
+
+      const atomicTarget = join(temporary.path, "atomic-export.md");
+      await writeFile(atomicTarget, "previous saved document", "utf8");
+      await expect(atomicWriteFile(atomicTarget, "replacement document", async () => { throw new Error("replace denied"); })).rejects.toThrow("replace denied");
+      await expect(readFile(atomicTarget, "utf8")).resolves.toBe("previous saved document");
+      expect((await readdir(temporary.path)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
 
       await expect(invokeRaw(deps, IpcChannel.OnlineAuthConfig)).rejects.toThrow(/入参校验失败/);
       await expect(invokeRaw(deps, IpcChannel.OnlineAuthConfig, "file:///tmp")).rejects.toThrow(/入参校验失败/);
@@ -1412,6 +1500,77 @@ describe("complete-locator IPC bridge", () => {
       expect(settingsStress).toMatchObject({ ok: true, report: { totalRequests: 1, failed: 1 } });
     } finally {
       if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
+      await temporary.dispose();
+    }
+  });
+
+  it("previews a draft against its exact root and revision without saving or crossing project identity", async () => {
+    const temporary = await makeTempRoot("apicc-design-preview-");
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const counted = countingStorage();
+      const session = createSession({ storage: counted.storage });
+      await session.open(temporary.path);
+      counted.calls.length = 0;
+      const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "" });
+      const locator = locators().api;
+      const located = session.locateApi(locator);
+      if (!located) throw new Error("Project one API fixture is unavailable");
+      const sourceProjectRevision = createProjectSnapshot(located.project).definitionRevision;
+      const draft = structuredClone(located.api);
+      draft.contract.metadata.name = "preview-only draft";
+      draft.contract.request.path = "/preview-only";
+      const input = { sourceRoot: temporary.path, locator, sourceProjectRevision, assetDraft: draft };
+
+      const ready = await invokeRaw(deps, IpcChannel.DesignPreview, input) as DesignPreviewResult;
+      expect(ready).toMatchObject({ status: "ready", source: "draft", sourceRoot: temporary.path, locator, sourceProjectRevision });
+      if (ready.status !== "ready") throw new Error("Expected a successful draft preview");
+      expect(ready.sourceApiRevision).toBe(getSourceApiRevision(draft));
+      expect(ready.projection.sourceProjectRevision).toBe(sourceProjectRevision);
+      expect(ready.projection.apis).toHaveLength(1);
+      expect(ready.projection.apis[0]).toMatchObject({
+        contractId: locator.apiId,
+        metadata: { name: "preview-only draft" },
+        request: { path: "/preview-only" },
+      });
+      expect(JSON.stringify(ready.projection)).not.toContain(temporary.path);
+      expect(session.locateApi(locator)?.api.contract.metadata.name).toBe("project one API");
+      expect(session.locateApi(locator)?.api.contract.request.path).toBe("/items");
+      expect(session.locateApi(locators(IDS.groupTwo, IDS.projectTwo, IDS.collectionTwo).api)?.api.contract.metadata.name)
+        .toBe("project two API");
+
+      const wrongRoot = await invokeRaw(deps, IpcChannel.DesignPreview, {
+        ...input,
+        sourceRoot: `${temporary.path}-previous-root`,
+      }) as DesignPreviewResult;
+      expect(wrongRoot).toMatchObject({
+        status: "conflict",
+        code: "root-mismatch",
+        diagnostics: [expect.objectContaining({ severity: "error", path: "sourceRoot" })],
+      });
+
+      const staleRevision = await invokeRaw(deps, IpcChannel.DesignPreview, {
+        ...input,
+        sourceProjectRevision: "stale-project-revision",
+      }) as DesignPreviewResult;
+      expect(staleRevision).toMatchObject({ status: "conflict", code: "project-revision-changed" });
+
+      const wrongWorkspace = await invokeRaw(deps, IpcChannel.DesignPreview, {
+        ...input,
+        locator: { ...locator, workspaceId: uuid(900) },
+      }) as DesignPreviewResult;
+      expect(wrongWorkspace).toMatchObject({ status: "conflict", code: "locator-mismatch" });
+
+      const invalidDraft = structuredClone(draft);
+      invalidDraft.contract.metadata.status = "raw-secret-sentinel" as typeof invalidDraft.contract.metadata.status;
+      const invalid = await invokeRaw(deps, IpcChannel.DesignPreview, { ...input, assetDraft: invalidDraft }) as DesignPreviewResult;
+      expect(invalid).toMatchObject({
+        status: "invalid",
+        diagnostics: [expect.objectContaining({ code: "DOCUMENT_PREVIEW_INVALID_DRAFT", path: "contract.metadata.status" })],
+      });
+      expect(JSON.stringify(invalid)).not.toContain("raw-secret-sentinel");
+      expect(counted.calls.filter((call) => call.kind === "save")).toHaveLength(0);
+    } finally {
       await temporary.dispose();
     }
   });

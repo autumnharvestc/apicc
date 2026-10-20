@@ -3,7 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  renderContractMarkdown,
+  renderDocumentHtml,
+  renderDocumentMarkdown,
+  buildImportMergePlan,
+  buildDocumentProjection,
+  exportOpenapi,
   createProjectSnapshot,
   getSourceApiRevision,
   StressSafetyError,
@@ -43,10 +47,13 @@ import { createSession } from "../../../main/session.js";
 import { toTreeNode } from "../../../main/tree.js";
 import { createCredentialHost } from "../../../main/credentialHost.js";
 import { createStressControllerWithHost } from "../../../main/stressController.js";
+import { previewDesignDraft } from "../../../main/designPreview.js";
 import type { ApiLocator, ApiParentLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, NodeLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../../../shared/locations.js";
+import type { MockStatus } from "../../../shared/mock.js";
 import { localTreeNodeKey, type LocalRootTreeNodeDTO, type LocalTreeIdentity, type LocalTreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { ContainerSaveInput, ContainerSaveResult, ProjectGlobalSettings, WorkflowImpactEntryDTO } from "../../../shared/types.js";
 import type { DesktopCredentialErrorCode } from "../../../shared/credentials.js";
+import type { DesignExportInput, DesignPreviewInput, DesignPreviewResult } from "../../../shared/design.js";
 import type { CredentialMutationResult, CredentialPutInput, CredentialRefInput, CredentialStatusResult } from "../../../shared/credentials.js";
 import type { NetworkProfilesGetInput, NetworkProfilesResult, NetworkProfilesSaveInput, NetworkSecretImportInput, NetworkSecretImportResult } from "../../../shared/network.js";
 import type { OAuthAuthorizationBeginInput, OAuthAuthorizationSessionId, OAuthAuthorizationSessionView, OAuthProfileActionInput, OAuthProfileMutationResult, OAuthProfilesGetInput, OAuthProfilesResult, OAuthProfileSaveInput, OAuthProfileUnlinkInput } from "../../../shared/oauth.js";
@@ -120,8 +127,12 @@ import type {
   DebugHistoryPreferences,
   EnvCreateInput,
   ImportApplyInput,
+  ImportApplyResult,
+  ImportPlanInput,
+  ImportPlanResult,
   ImportPreviewInput,
   ImportPreviewResult,
+  ImportUndoInput,
   NodeCreateInput,
   NodeCreatedDTO,
   OpenResult,
@@ -164,7 +175,7 @@ export const ONLINE_SEED_PROJECT_ID = "300";
  */
 type MemoryManagedClient = ProtocolClient & { close(): Promise<void> };
 
-export function createMemoryApi(options?: { root?: string; stressClient?: MemoryManagedClient; storage?: StorageAdapter; secretStore?: SecretStore }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; importApplyCalls: ReadonlyArray<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
+export function createMemoryApi(options?: { root?: string; stressClient?: MemoryManagedClient; storage?: StorageAdapter; secretStore?: SecretStore }): ApiccApi & { seedWorkspace(): void; problems: LoadProblem[]; setImportPreviewCandidate(token: string, project: ContractProject): void; importApplyCalls: ReadonlyArray<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }>; designExportCalls: ReadonlyArray<{ file: string; content: string }>; aiSaveConfigCalls: ReadonlyArray<AiSaveConfigInput> } {
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
@@ -180,6 +191,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
   const stressRuns: Array<{ file: string; report: StressReport }> = [];
   const networkProfiles = new Map<string, { revision: string; configuration: NetworkConfiguration }>();
+  const mockStates = new Map<string, MockStatus>();
   // 压测生命周期由正式 controller 管理；此 Promise 仅用于 renderer 替身的单活动拒绝与 stop 等待。
   let stressActive: Promise<StressRunResult> | null = null;
   let stressController: ReturnType<typeof createStressControllerWithHost> | null = null;
@@ -192,6 +204,9 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   };
   // 导入向导（任务 7）：importApply 调用记录（供测试断言；语义对齐 session.importProject）。
   const importApplyCalls: Array<{ mode: "project"; groupId: string; name: string } | { mode: "module"; projectId: string; name: string }> = [];
+  const memoryPreviews = new Map<string, { project: ContractProject; context: ReturnType<typeof session.captureDraftWriteContext>; environmentOptions: Map<string, string>; result: ImportPreviewResult }>();
+  const memoryPlans = new Map<string, { input: ImportPlanInput; project: ContractProject; context: ReturnType<typeof session.captureDraftWriteContext>; summary: ImportPlanResult["summary"]; entries: ImportPlanResult["entries"]; diagnostics: ImportPlanResult["diagnostics"]; cancelled: boolean; sourceEnvironmentName?: string; applied?: ImportApplyResult }>();
+  const memoryUndos = new Map<string, { context: ReturnType<typeof session.captureDraftWriteContext>; workspace: ContractWorkspace; files: string[] }>();
   // 详细设计导出（任务 8）：designExport 调用记录（供测试断言渲染产物）。
   const designExportCalls: Array<{ file: string; content: string }> = [];
   // 在线状态（M3-B 任务 1）：替身不发网络——登录态 + 内存工作区/文件版本模型，
@@ -376,7 +391,41 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     return JSON.stringify([root, locator.workspaceId, locator.groupId, locator.projectId]);
   }
 
+  function memoryMockStatus(locator: ProjectLocator): MockStatus {
+    const location = session.locateProject(locator);
+    if (!location) throw new Error(`Project not found at complete locator: ${JSON.stringify(locator)}`);
+    const sourceProjectRevision = createProjectSnapshot(location.project).definitionRevision;
+    const key = networkProfileKey(locator);
+    const previous = mockStates.get(key);
+    const next: MockStatus = {
+      locator: { ...locator },
+      config: location.project.mock ?? null,
+      sourceProjectRevision,
+      status: previous?.status ?? "stopped",
+      address: null,
+      diagnostics: previous?.diagnostics ?? [],
+      logs: [],
+      simulated: true,
+    };
+    mockStates.set(key, next);
+    return structuredClone(next);
+  }
+
   return {
+    setImportPreviewCandidate(token: string, project: ContractProject): void {
+      const preview = memoryPreviews.get(token);
+      if (!preview) throw new Error("Unknown memory import preview token");
+      preview.project = ContractProjectSchema.parse(structuredClone(project));
+      preview.environmentOptions.clear();
+      preview.result.summary.environments = preview.project.environments.map((environment) => {
+        const optionToken = randomUUID();
+        preview.environmentOptions.set(optionToken, environment.name);
+        const label = environment.name
+          .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+          .replace(/(?:[A-Za-z]:\\|\/(?:Users|home|tmp|var|etc)\/)[^\s"'<>]*/g, "[local path]");
+        return { optionToken, label };
+      });
+    },
     // 载入问题列表读写口：测试直接赋值 api.problems 模拟「工作区带问题文件」。
     get problems(): LoadProblem[] {
       return problems;
@@ -639,6 +688,55 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     async componentSave(locator: ComponentLocator, component: ComponentAsset): Promise<ComponentAsset> {
       await ensureReady();
       return session.saveComponent(locator, component);
+    },
+
+    async mockGet(locator: ProjectLocator): Promise<MockStatus> {
+      await ensureReady();
+      return memoryMockStatus(locator);
+    },
+
+    async mockConfigSave(input): Promise<MockStatus> {
+      await ensureReady();
+      const current = memoryMockStatus(input.locator);
+      if (current.sourceProjectRevision !== input.sourceProjectRevision) throw new Error("Mock 配置已变化，请刷新后重试。");
+      const context = session.captureDraftWriteContext();
+      await session.saveMockConfig(input.locator, input.config, input.sourceProjectRevision, context);
+      return memoryMockStatus(input.locator);
+    },
+
+    async mockStart(input): Promise<MockStatus> {
+      await ensureReady();
+      const current = memoryMockStatus(input.locator);
+      if (current.sourceProjectRevision !== input.sourceProjectRevision) throw new Error("Mock 配置已变化，请刷新后重试。");
+      const next: MockStatus = current.config
+        ? { ...current, status: "running", diagnostics: [] }
+        : { ...current, status: "invalid", diagnostics: [{ severity: "error", code: "MOCK_NOT_CONFIGURED", path: "mock", message: "The project has no saved Mock configuration.", lossy: false, ownerId: input.locator.projectId }] };
+      mockStates.set(networkProfileKey(input.locator), next);
+      return structuredClone(next);
+    },
+
+    async mockStop(input): Promise<MockStatus> {
+      await ensureReady();
+      const current = memoryMockStatus(input.locator);
+      if (current.sourceProjectRevision !== input.sourceProjectRevision) throw new Error("Mock 配置已变化，请刷新后重试。");
+      const next: MockStatus = { ...current, status: "stopped" };
+      mockStates.set(networkProfileKey(input.locator), next);
+      return structuredClone(next);
+    },
+
+    async mockReload(input): Promise<MockStatus> {
+      await ensureReady();
+      const current = memoryMockStatus(input.locator);
+      if (current.sourceProjectRevision !== input.sourceProjectRevision) throw new Error("Mock 配置已变化，请刷新后重试。");
+      const next: MockStatus = current.config
+        ? { ...current, status: current.status === "stopped" ? "stopped" : "running", diagnostics: [] }
+        : { ...current, status: current.status === "stopped" ? "stopped" : "invalid", diagnostics: [{ severity: "error", code: "MOCK_NOT_CONFIGURED", path: "mock", message: "The project has no saved Mock configuration.", lossy: false, ownerId: input.locator.projectId }] };
+      mockStates.set(networkProfileKey(input.locator), next);
+      return structuredClone(next);
+    },
+
+    async mockProjectClose(input): Promise<void> {
+      mockStates.delete(JSON.stringify([input.root, input.locator.workspaceId, input.locator.groupId, input.locator.projectId]));
     },
 
     async assetReferences(locator: ProjectLocator, assetId: string): Promise<AssetDiagnostic[]> {
@@ -1031,28 +1129,91 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       return result;
     },
 
-    // 导入向导（任务 7）：importPreview 返回固定样例（渲染层替身不做格式探测——替身
-    // 语义只钉「api.importPreview 返回结构入 store 状态」）；importApply 语义对齐
-    // session 双模式（轨二：project=按分组 id 整包落库；module=集合并入目标项目、
-    // baseUrl 进模块变量不造环境）并记录调用供测试断言。
+    // Memory fixture mirrors the token-only exchange surface while retaining real session writes.
     async importPreview(_input: ImportPreviewInput): Promise<ImportPreviewResult> {
       await ensureReady();
       const project = ContractProjectSchema.parse({ id: randomUUID(), name: "导入示例项目", globals: {} });
-      return { importerName: "sample", project, warnings: ["示例警告"] };
+      const token = randomUUID();
+      const result: ImportPreviewResult = {
+        token, importerName: "sample",
+        summary: { projectName: project.name, collections: 0, apis: 0, environments: [] },
+        tree: [], diagnostics: [{ severity: "warning", code: "IMPORT_SAMPLE_WARNING", path: "", message: "示例警告", lossy: false }],
+      };
+      memoryPreviews.set(token, { project, context: session.captureDraftWriteContext(), environmentOptions: new Map(), result });
+      return result;
     },
 
-    async importApply(input: ImportApplyInput): Promise<void> {
+    async importPlan(input: ImportPlanInput): Promise<ImportPlanResult> {
       await ensureReady();
-      if (input.mode === "module") {
-        await session.importModuleToProject(input.target, input.name, {
-          project: input.project,
-          ...(input.sourceEnvironmentName === undefined ? {} : { sourceEnvironmentName: input.sourceEnvironmentName }),
-        });
-        importApplyCalls.push({ mode: "module", projectId: input.target.projectId, name: input.name });
-        return;
+      const preview = memoryPreviews.get(input.previewToken);
+      if (!preview) throw new Error("导入预览令牌无效");
+      let sourceEnvironmentName: string | undefined;
+      if (input.mode === "module" && input.sourceEnvironmentOptionToken !== undefined) {
+        sourceEnvironmentName = preview.environmentOptions.get(input.sourceEnvironmentOptionToken);
+        if (sourceEnvironmentName === undefined) throw new Error("来源环境选项无效，请重新预览并选择来源环境");
       }
-      await session.importProjectToGroup(input.target, input.name, { project: input.project });
-      importApplyCalls.push({ mode: "project", groupId: input.target.groupId, name: input.name });
+      let summary: ImportPlanResult["summary"] = { added: 0, overwritten: 0, skipped: 0 };
+      let entries: ImportPlanResult["entries"] = [];
+      let diagnostics: ImportPlanResult["diagnostics"] = [];
+      let cancelled = false;
+      if (input.mode === "project") summary = { added: 1, overwritten: 0, skipped: 0 };
+      else if (input.mode === "module") {
+        const target = session.locateProject(input.target);
+        if (!target) throw new Error("导入目标项目不存在");
+      } else {
+        const target = session.locateCollection(input.target);
+        if (!target) throw new Error("导入目标模块不存在");
+        const plan = buildImportMergePlan(target.project, preview.project, {
+          targetCollectionId: input.target.collectionId, sourceCollectionIds: input.sourceCollectionIds, decisions: input.decisions,
+        });
+        summary = plan.summary;
+        entries = plan.entries;
+        diagnostics = plan.diagnostics;
+        cancelled = plan.cancelled;
+      }
+      const token = randomUUID();
+      const result: ImportPlanResult = { token, mode: input.mode, summary, entries, diagnostics, cancelled };
+      memoryPlans.set(token, { input, project: preview.project, context: preview.context, summary, entries, diagnostics, cancelled, ...(sourceEnvironmentName === undefined ? {} : { sourceEnvironmentName }) });
+      return result;
+    },
+
+    async importApply(input: ImportApplyInput): Promise<ImportApplyResult> {
+      await ensureReady();
+      const plan = memoryPlans.get(input.planToken);
+      if (!plan) throw new Error("导入计划令牌无效");
+      if (plan.applied) return plan.applied;
+      if (plan.diagnostics.some((item) => item.severity === "error") || (plan.diagnostics.some((item) => item.lossy) && !input.allowLossy)) throw new Error("导入计划不可应用");
+      if (plan.cancelled) return plan.applied = { committed: false, summary: plan.summary };
+      let receipt;
+      let call: typeof importApplyCalls[number] | undefined;
+      if (plan.input.mode === "project") {
+        receipt = await session.importProjectToGroupTransaction(plan.context, plan.input.target, plan.input.name, { project: plan.project });
+        call = { mode: "project", groupId: plan.input.target.groupId, name: plan.input.name };
+      } else if (plan.input.mode === "module") {
+        receipt = await session.importModuleToProjectTransaction(plan.context, plan.input.target, plan.input.name, {
+          project: plan.project,
+          ...(plan.sourceEnvironmentName === undefined ? {} : { sourceEnvironmentName: plan.sourceEnvironmentName }),
+        });
+        call = { mode: "module", projectId: plan.input.target.projectId, name: plan.input.name };
+      } else {
+        const decisions = { targetCollectionId: plan.input.target.collectionId, sourceCollectionIds: plan.input.sourceCollectionIds, decisions: plan.input.decisions };
+        receipt = await session.mergeImportIntoCollectionTransaction(plan.context, plan.input.target, plan.project, decisions);
+      }
+      if (receipt.committed) {
+        const undoToken = randomUUID();
+        memoryUndos.set(undoToken, { context: receipt.context, workspace: receipt.beforeWorkspace, files: receipt.addedDefinitionFiles });
+        plan.applied = { committed: true, undoToken, summary: plan.summary };
+      } else plan.applied = { committed: false, summary: plan.summary };
+      if (call) importApplyCalls.push(call);
+      return plan.applied;
+    },
+
+    async importUndo(input: ImportUndoInput): Promise<void> {
+      await ensureReady();
+      const undo = memoryUndos.get(input.undoToken);
+      if (!undo) throw new Error("撤销句柄无效或已使用");
+      await session.restoreImportUndo(undo.context, undo.workspace, undo.files);
+      memoryUndos.delete(input.undoToken);
     },
 
     /** project:clone（轨二）：整项目深拷贝、全部实体新 id，落回原分组（名称不变）。 */
@@ -1067,16 +1228,46 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       await session.moveProject(source, target);
     },
 
-    // 详细设计导出（任务 8）：用 core renderDesignMarkdown 渲染（与主进程同一实现），
-    // 记录渲染产物供测试断言；替身不落盘（主进程语义是 showSaveDialog 后写盘并返回
-    // 路径），返回「工作区根/<接口名>.design.md」占位路径。
-    async designExport(locator: ApiLocator): Promise<string> {
+    // 设计文档导出：与主进程共用已保存快照投影/exporter，替身仅记录目标内容。
+    async designExport(input: DesignExportInput): Promise<string> {
       await ensureReady();
-      const loc = session.locateApi(locator);
-      if (!loc) throw new Error(`未找到接口: ${JSON.stringify(locator)}`);
-      const file = join(root, `${loc.api.contract.metadata.name}.design.md`);
-      designExportCalls.push({ file, content: renderContractMarkdown(loc.api, createProjectSnapshot(loc.project).context) });
+      if (input.sourceRoot !== root) throw new Error("设计文档导出已拒绝：当前工作区根目录已变化");
+      const loc = session.locateApi(input.locator);
+      if (!loc) throw new Error(`未找到接口: ${JSON.stringify(input.locator)}`);
+      const snapshot = createProjectSnapshot(loc.project);
+      let content: string;
+      let extension: string;
+      if (input.format === "openapi-3.0" || input.format === "openapi-3.1") {
+        const encoding = input.encoding ?? "json";
+        const result = exportOpenapi(snapshot, input.scope, {
+          version: input.format === "openapi-3.0" ? "3.0" : "3.1",
+          ...(input.infoVersion === undefined ? {} : { infoVersion: input.infoVersion }),
+          allowLossy: false,
+        });
+        if (result.blocked) throw new Error("OpenAPI 导出包含结构错误或尚未确认的语义损失；未写入输出文件");
+        if (encoding === "yaml") {
+          const { stringify: stringifyYaml } = await import("yaml");
+          content = stringifyYaml(result.document);
+        } else {
+          content = `${JSON.stringify(result.document, null, 2)}\n`;
+        }
+        extension = `openapi.${encoding}`;
+      } else {
+        const projection = buildDocumentProjection(snapshot, input.scope);
+        if (projection.apis.length === 0 || projection.diagnostics.some((diagnostic) => diagnostic.severity === "error" && diagnostic.path.startsWith("scope."))) {
+          throw new Error("文档范围没有匹配的接口或包含无效目标；未写入输出文件");
+        }
+        content = input.format === "html" ? renderDocumentHtml(projection) : renderDocumentMarkdown(projection);
+        extension = input.format === "html" ? "html" : "md";
+      }
+      const file = join(root, `${loc.project.name}.${extension}`);
+      designExportCalls.push({ file, content });
       return file;
+    },
+
+    async designPreview(input: DesignPreviewInput): Promise<DesignPreviewResult> {
+      await ensureReady();
+      return previewDesignDraft(session, input);
     },
 
     // 工作流频道（M2-B 任务 1）：语义与主进程 session 一致（错误文案逐字对齐）——

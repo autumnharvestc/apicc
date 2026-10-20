@@ -3,13 +3,16 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { ContractProjectSchema } from "@apicc/core";
 import type { ContractProject, Importer, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
+import { createMockConfiguredProject } from "../../../../packages/core/tests/helpers/mockFixtures.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
 import { createStressPreloadApi } from "../../src/preload/stressBridge.js";
+import { IpcChannel } from "../../src/shared/channels.js";
 import type { WorkflowLocator } from "../../src/shared/locations.js";
 import type { NodeCreateInput, NodeCreatedDTO, WfSetStatusResult, WorkflowDetail, WorkflowSummary } from "../../src/shared/types.js";
-import { IDS, makeWorkspace, persistWorkspace, projectOne, projectTwo } from "./helpers/contract-assets.js";
+import { IDS, makeTempRoot, makeWorkspace, persistWorkspace, projectOne, projectTwo, uuid } from "./helpers/contract-assets.js";
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-"));
@@ -129,6 +132,102 @@ function importProject(): ContractProject {
 }
 
 describe("IPC 处理器", () => {
+  it("Mock IPC 保存/启动共用主进程服务，精确项目关闭释放监听器", async () => {
+    const temporary = await makeTempRoot("apicc-b3-mock-ipc-");
+    const workspace = makeWorkspace();
+    workspace.groups[0]!.projects[0] = ContractProjectSchema.parse({ ...createMockConfiguredProject(), id: IDS.projectOne });
+    await persistWorkspace(temporary.path, workspace);
+    const session = createSession();
+    const deps = createIpcDeps({ session, pickDirectory: async () => temporary.path, saveFile: async () => "" });
+    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    try {
+      await deps.handle(IpcChannel.WsOpen, {}, temporary.path);
+      const initial = await deps.handle(IpcChannel.MockGet, {}, locator);
+      expect(initial.simulated).toBe(false);
+      const updated = await deps.handle(IpcChannel.MockConfigSave, {}, {
+        locator,
+        sourceProjectRevision: initial.sourceProjectRevision,
+        config: { ...initial.config!, seed: "ipc-saved-seed" },
+      });
+      expect(updated.config?.seed).toBe("ipc-saved-seed");
+      const started = await deps.handle(IpcChannel.MockStart, {}, {
+        locator, sourceProjectRevision: updated.sourceProjectRevision, port: 0,
+      });
+      expect(started).toMatchObject({ status: "running", simulated: false, address: { address: "127.0.0.1" } });
+      const response = await fetch(`http://127.0.0.1:${started.address!.port}/items/item-7`);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ id: "item-7" });
+
+      await deps.handle(IpcChannel.MockProjectClose, {}, { root: temporary.path, locator });
+      await expect(fetch(`http://127.0.0.1:${started.address!.port}/items/item-7`)).rejects.toThrow();
+    } finally {
+      await deps.stopMocks();
+      await temporary.dispose();
+    }
+  });
+
+  it("NodeDelete recompiles a removed API and stops only removed project/group Mock instances", async () => {
+    const temporary = await makeTempRoot("apicc-b3-fix1-node-delete-");
+    const workspace = makeWorkspace();
+    const firstProject = ContractProjectSchema.parse({ ...createMockConfiguredProject(), id: IDS.projectOne });
+    firstProject.workflows = [];
+    const secondProject = ContractProjectSchema.parse({ ...createMockConfiguredProject(), id: IDS.projectTwo });
+    const groupProjectId = uuid(27);
+    const groupProject = ContractProjectSchema.parse({ ...createMockConfiguredProject(), id: groupProjectId });
+    workspace.groups[0]!.projects[0] = firstProject;
+    workspace.groups[1]!.projects = [secondProject, groupProject];
+    await persistWorkspace(temporary.path, workspace);
+    const session = createSession();
+    const deps = createIpcDeps({ session, pickDirectory: async () => temporary.path, saveFile: async () => "" });
+    const firstLocator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const secondLocator = { workspaceId: IDS.workspace, groupId: IDS.groupTwo, projectId: IDS.projectTwo };
+    const groupProjectLocator = { workspaceId: IDS.workspace, groupId: IDS.groupTwo, projectId: groupProjectId };
+    const api = firstProject.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    const apiNode = {
+      kind: "api" as const,
+      locator: {
+        ...firstLocator,
+        collectionId: firstProject.collections[0]!.id,
+        folderIds: [firstProject.collections[0]!.folders[0]!.id, firstProject.collections[0]!.folders[0]!.folders[0]!.id],
+        apiId: api.contract.id,
+      },
+    };
+    try {
+      await deps.handle(IpcChannel.WsOpen, {}, temporary.path);
+      async function start(locator: typeof firstLocator) {
+        const state = await deps.handle(IpcChannel.MockGet, {}, locator);
+        return deps.handle(IpcChannel.MockStart, {}, { locator, sourceProjectRevision: state.sourceProjectRevision, port: 0 });
+      }
+      const first = await start(firstLocator);
+      const second = await start(secondLocator);
+      const grouped = await start(groupProjectLocator);
+      expect(first.status).toBe("running");
+      expect(second.status).toBe("running");
+      expect(grouped.status).toBe("running");
+
+      await expect(deps.handle(IpcChannel.NodeDelete, {}, {
+        kind: "project",
+        locator: { ...secondLocator, projectId: uuid(28) },
+      })).rejects.toThrow();
+      expect((await fetch(`http://127.0.0.1:${second.address!.port}/items/item-7`)).status).toBe(200);
+
+      await deps.handle(IpcChannel.NodeDelete, {}, apiNode);
+      expect((await deps.handle(IpcChannel.MockGet, {}, firstLocator)).status).toBe("invalid");
+      expect((await fetch(`http://127.0.0.1:${first.address!.port}/items/item-7`)).status).toBe(503);
+
+      await deps.handle(IpcChannel.NodeDelete, {}, { kind: "project", locator: secondLocator });
+      await expect(fetch(`http://127.0.0.1:${second.address!.port}/items/item-7`)).rejects.toThrow();
+      expect((await fetch(`http://127.0.0.1:${first.address!.port}/items/item-7`)).status).toBe(503);
+
+      await deps.handle(IpcChannel.NodeDelete, {}, { kind: "group", locator: { workspaceId: IDS.workspace, groupId: IDS.groupTwo } });
+      await expect(fetch(`http://127.0.0.1:${grouped.address!.port}/items/item-7`)).rejects.toThrow();
+      expect((await fetch(`http://127.0.0.1:${first.address!.port}/items/item-7`)).status).toBe(503);
+    } finally {
+      await deps.stopMocks();
+      await temporary.dispose();
+    }
+  });
+
   it("ws:create → tree:get → node:create → api:get 全链路", async () => {
     const { deps, dir, session } = setup();
     const opened = await deps.handle("ws:create", {}, dir, "演示");
@@ -256,13 +355,14 @@ describe("IPC 处理器", () => {
     })).rejects.toThrow(/未找到项目/);
   });
 
-  it("import:preview 按 detect 命中注入 importer，返回 importerName/project/warnings；无命中抛「无法识别的导入格式」", async () => {
+  it("import:preview 按 detect 命中注入 importer，只返回摘要和诊断；无命中抛「无法识别的导入格式」", async () => {
     const { deps, dir } = setupWithImporters([fixedImporter]);
     await deps.handle("ws:create", {}, dir, "w");
     const preview = await deps.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
     expect(preview.importerName).toBe("fixed");
-    expect(preview.project.name).toBe("导入项目");
-    expect(preview.warnings).toEqual(["示例警告"]);
+    expect(preview.summary.projectName).toBe("导入项目");
+    expect(preview.diagnostics).toEqual([expect.objectContaining({ message: "示例警告", lossy: false })]);
+    expect(preview).not.toHaveProperty("project");
     await expect(deps.handle("import:preview", {}, { fileName: "x.yaml", content: "no-marker" })).rejects.toThrow(/无法识别的导入格式/);
   });
 
@@ -274,7 +374,7 @@ describe("IPC 处理器", () => {
       content: ["openapi: 3.0.0", "info:", "  title: 默认导入", "  version: 1.0.0", "servers:", "  - url: http://127.0.0.1:1", "paths: {}"].join("\n"),
     });
     expect(preview.importerName).toBe("openapi");
-    expect(preview.project.name).toBe("默认导入");
+    expect(preview.summary.projectName).toBe("默认导入");
   });
 
   it("import:apply project 模式落到所选分组（按 id 选择）、落盘可重开；重复导入同名并存（轨二）", async () => {
@@ -282,7 +382,8 @@ describe("IPC 处理器", () => {
     await deps.handle("ws:create", {}, dir, "w");
     const g = await createGroup(deps, session, "目标分组");
     const preview = await deps.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
-    await deps.handle("import:apply", {}, { mode: "project", target: g.locator, name: "导入项目", project: preview.project });
+    const plan = await deps.handle("import:plan", {}, { previewToken: preview.token, mode: "project", target: g.locator, name: "导入项目" });
+    await deps.handle("import:apply", {}, { planToken: plan.token, allowLossy: false });
     // 重开读回：分组与项目均已落盘（apply 分支显式 save 语义）
     const fresh = createIpcDeps({ session: createSession(), pickDirectory: async () => dir, saveFile: async () => "" });
     await fresh.handle("ws:open", {}, dir);
@@ -291,7 +392,9 @@ describe("IPC 处理器", () => {
     expect(importedGroup).toBeDefined();
     expect(importedGroup.children!.map((n: { label: string }) => n.label)).toContain("导入项目");
     // 同分组重复导入同名项目：同名放开（轨二）并存，两次导入 id 不同
-    await deps.handle("import:apply", {}, { mode: "project", target: g.locator, name: "导入项目", project: preview.project });
+    const secondPreview = await deps.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
+    const secondPlan = await deps.handle("import:plan", {}, { previewToken: secondPreview.token, mode: "project", target: g.locator, name: "导入项目" });
+    await deps.handle("import:apply", {}, { planToken: secondPlan.token, allowLossy: false });
     const tree2 = await deps.handle("tree:get", {});
     const dup = tree2.children!.find((n: { id: string }) => n.id === g.id)!.children!.filter((n: { label: string }) => n.label === "导入项目");
     expect(dup).toHaveLength(2);
@@ -322,7 +425,8 @@ describe("IPC 处理器", () => {
     };
     const deps2 = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "", importers: [importer] });
     const preview = await deps2.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
-    await deps2.handle("import:apply", {}, { mode: "module", target: p.locator, name: "并入模块", project: preview.project });
+    const plan = await deps2.handle("import:plan", {}, { previewToken: preview.token, mode: "module", target: p.locator, name: "并入模块" });
+    await deps2.handle("import:apply", {}, { planToken: plan.token, allowLossy: false });
     const ws = session.workspace!;
     const host = ws.groups.find((x) => x.id === g.id)!.projects.find((x) => x.id === p.id)!;
     expect(host.collections.map((c) => c.name)).toEqual(["并入模块"]);
@@ -335,7 +439,8 @@ describe("IPC 处理器", () => {
     await deps.handle("ws:create", {}, dir, "w");
     const g = await createGroup(deps, session, "已有分组");
     const preview = await deps.handle("import:preview", {}, { fileName: "x.yaml", content: "FIXED-MAGIC" });
-    await deps.handle("import:apply", {}, { mode: "project", target: g.locator, name: "导入项目", project: preview.project });
+    const plan = await deps.handle("import:plan", {}, { previewToken: preview.token, mode: "project", target: g.locator, name: "导入项目" });
+    await deps.handle("import:apply", {}, { planToken: plan.token, allowLossy: false });
     const tree = await deps.handle("tree:get", {});
     expect(tree.children).toHaveLength(2); // 默认分组 + 已有分组
     const existingGroup = tree.children!.find((n) => n.kind === "group" && n.id === g.id);
@@ -353,15 +458,15 @@ describe("IPC 处理器", () => {
     await expect(invalidIpc(deps, "import:apply", { mode: "bogus" })).rejects.toThrow(/\[import:apply\]/);
   });
 
-  it("design:export 渲染 agent 设计 md 经注入的 saveFile 落盘并返回路径；取消返回空串", async () => {
+  it("design:export renders a selected saved snapshot through the native save boundary; cancel returns empty", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-ipc-"));
     const session = createSession();
-    const writes: Array<{ defaultName: string; content: string }> = [];
+    const writes: Array<{ defaultName: string; content: string; format?: string }> = [];
     const deps = createIpcDeps({
       session,
       pickDirectory: async () => dir,
-      saveFile: async (defaultName, content) => {
-        writes.push({ defaultName, content });
+      saveFile: async (defaultName, content, format) => {
+        writes.push({ defaultName, content, format });
         return `C:\\fake\\${defaultName}`;
       },
     });
@@ -370,19 +475,21 @@ describe("IPC 处理器", () => {
     const p = await createProject(deps, g, "p");
     const c = await createCollection(deps, p, "c");
     const api = await createApi(deps, c, { name: "下单", method: "POST", baseUrl: "http://127.0.0.1:1", path: "/orders" });
-    const path = await deps.handle("design:export", {}, api.locator);
-    expect(path).toBe("C:\\fake\\下单.design.md");
+    const exportInput = { sourceRoot: dir, locator: api.locator, format: "markdown" as const, scope: { kind: "project" as const } };
+    const path = await deps.handle("design:export", {}, exportInput);
+    expect(path).toBe("C:\\fake\\p.md");
     expect(writes).toHaveLength(1);
-    expect(writes[0]!.defaultName).toBe("下单.design.md");
-    // 渲染产物 = core renderDesignMarkdown（agent 可消费的详细设计 md）
-    expect(writes[0]!.content).toContain("# 下单");
-    expect(writes[0]!.content).toContain("- Method: POST");
-    expect(writes[0]!.content).toContain("- Path: /orders");
+    expect(writes[0]!.defaultName).toBe("p.md");
+    expect(writes[0]!.format).toBe("markdown");
+    // Renderer receives the project's saved projection rather than any editor draft object.
+    expect(writes[0]!.content).toContain("# p");
+    expect(writes[0]!.content).toContain("| Method | POST |");
+    expect(writes[0]!.content).toContain("| Path | /orders |");
     // 用户取消保存对话框：主进程 saveFile 回传空串，频道原样返回
     const cancelDeps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
-    expect(await cancelDeps.handle("design:export", {}, api.locator)).toBe("");
+    expect(await cancelDeps.handle("design:export", {}, exportInput)).toBe("");
     // 未找到接口：可读错误
-    await expect(deps.handle("design:export", {}, { ...api.locator, apiId: "00000000-0000-4000-8000-000000009999" })).rejects.toThrow(/未找到接口/);
+    await expect(deps.handle("design:export", {}, { ...exportInput, locator: { ...api.locator, apiId: "00000000-0000-4000-8000-000000009999" } })).rejects.toThrow(/未找到接口/);
   });
 
   it("入参形状非法时抛带频道名的可读错误（单参/无参频道的类型与缺参）", async () => {

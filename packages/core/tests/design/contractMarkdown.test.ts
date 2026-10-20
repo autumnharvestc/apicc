@@ -1,91 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
-import { ContractProjectSchema, type ContractProject } from "../../src/contract/workspace.js";
 import { contractAiView } from "../../src/ai/contractView.js";
 import { renderContractMarkdown } from "../../src/design/contractMarkdown.js";
 import { parseContractCollection21 } from "../../src/import/contractCollection21.js";
 import { parseContractOpenapi } from "../../src/import/contractOpenapi.js";
+import { designDocumentIds, projectionProject } from "../helpers/designDocumentFixture.js";
 
-const projectId = "10000000-0000-4000-8000-000000000001";
-const contractId = "10000000-0000-4000-8000-000000000002";
-const queryId = "10000000-0000-4000-8000-000000000003";
-const responseId = "10000000-0000-4000-8000-000000000004";
-const exampleId = "10000000-0000-4000-8000-000000000005";
-const modelId = "10000000-0000-4000-8000-000000000006";
-const parameterComponentId = "10000000-0000-4000-8000-000000000007";
-
-function projectionProject(): ContractProject {
-  return ContractProjectSchema.parse({
-    id: projectId,
-    name: "Projection fixture",
-    variables: {},
-    globals: { query: [], headers: [], cookies: [], body: [] },
-    environments: [],
-    collections: [{
-      id: "10000000-0000-4000-8000-000000000008",
-      name: "Users",
-      variables: {},
-      preOperations: [],
-      postOperations: [],
-      folders: [],
-      apis: [{
-        contract: {
-          formatVersion: 1,
-          id: contractId,
-          metadata: { name: "Get user", description: "Read a user", tags: [], version: "1.0.0", status: "draft" },
-          request: {
-            protocol: "http",
-            method: "GET",
-            baseUrl: "https://api.example.test/v1",
-            path: "/users/{id}",
-            pathParams: [{ kind: "componentRef", id: "10000000-0000-4000-8000-00000000000a", componentId: parameterComponentId, expectedKind: "parameter" }],
-            query: [{ kind: "inline", id: queryId, name: "access_token", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "synthetic-import-token" }],
-            headers: [{ kind: "inline", id: "10000000-0000-4000-8000-000000000009", name: "Authorization", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "Bearer synthetic-import-token" }],
-            cookies: [],
-            auth: { kind: "bearer", token: { id: "credential-ref-id", policy: "test-auto" } },
-            body: { kind: "json", content: '{"password":"synthetic-import-token","profile":"visible"}', schema: { kind: "modelRef", modelId } },
-          },
-          responses: [{
-            kind: "inline",
-            id: responseId,
-            status: "200",
-            description: "ok",
-            headers: {},
-            content: { "application/json": { examples: [{ kind: "inline", id: exampleId, name: "sample", value: { refresh_token: "synthetic-import-token", status: "ok" } }] } },
-          }],
-        },
-        cases: [],
-        documentation: "",
-      }],
-    }],
-    workflows: [],
-    stressPolicy: { trustedOrigins: [], deniedOrigins: [] },
-    models: [{
-      formatVersion: 1,
-      id: modelId,
-      name: "User",
-      description: "Recursive user model",
-      schema: {
-        kind: "object",
-        properties: {
-          password: { kind: "scalar", type: "string", default: "synthetic-import-token" },
-          related: { kind: "modelRef", modelId },
-        },
-        required: [],
-        additionalProperties: false,
-      },
-    }],
-    components: [{
-      formatVersion: 1,
-      id: parameterComponentId,
-      name: "Shared ID",
-      description: "Reusable parameter",
-      kind: "parameter",
-      definition: { location: "path", name: "id", schema: { kind: "scalar", type: "integer" }, required: true, description: "User ID" },
-    }],
-  });
-}
+const { contract: contractId, model: modelId, parameterComponent: parameterComponentId } = designDocumentIds;
 
 describe("contract-derived views", () => {
   it("renders a read-only snapshot with reference IDs and masks common credential fields in Markdown and AI output", () => {

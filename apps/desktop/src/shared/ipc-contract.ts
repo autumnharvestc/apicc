@@ -54,9 +54,18 @@ import {
   OAuthProfilesGetInputSchema,
 } from "./oauth.js";
 import { IpcChannel, type IpcChannelName } from "./channels.js";
+import { DesignExportInputSchema, DesignPreviewInputSchema } from "./design.js";
+import {
+  MockConfigSaveInputSchema,
+  MockControlInputSchema,
+  MockProjectCloseInputSchema,
+  MockStartInputSchema,
+} from "./mock.js";
 import type {
   ApiccApi,
   ImportApplyInput,
+  ImportPlanInput,
+  ImportUndoInput,
   NodeCreateInput,
   StressRunInput,
 } from "./types.js";
@@ -183,10 +192,17 @@ const StressRunInputSchema = z.object({
   confirmedTargetOrigins: StressOriginListSchema.optional(),
 }).strict();
 const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() }).strict();
-const ImportApplyInputSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("project"), target: GroupLocatorSchema, name: z.string(), project: ContractProjectSchema }).strict(),
-  z.object({ mode: z.literal("module"), target: ProjectLocatorSchema, name: z.string(), sourceEnvironmentName: z.string().optional(), project: ContractProjectSchema }).strict(),
+const ImportPlanInputSchema = z.discriminatedUnion("mode", [
+  z.object({ previewToken: z.string().uuid(), mode: z.literal("project"), target: GroupLocatorSchema, name: z.string() }).strict(),
+  z.object({ previewToken: z.string().uuid(), mode: z.literal("module"), target: ProjectLocatorSchema, name: z.string(), sourceEnvironmentOptionToken: z.string().min(1).optional() }).strict(),
+  z.object({
+    previewToken: z.string().uuid(), mode: z.literal("merge"), target: CollectionLocatorSchema,
+    sourceCollectionIds: z.array(z.string()).min(1),
+    decisions: z.record(z.string(), z.object({ action: z.enum(["skip", "rename", "overwrite", "cancel"]), targetApiId: z.string().optional(), name: z.string().optional() }).strict()),
+  }).strict(),
 ]);
+const ImportApplyInputSchema = z.object({ planToken: z.string().uuid(), allowLossy: z.boolean() }).strict();
+const ImportUndoInputSchema = z.object({ undoToken: z.string().uuid() }).strict();
 const OnlineWorkspaceIdSchema = z.object({ workspaceId: z.string().min(1) }).strict();
 const OnlineWorkspaceOpenSchema = z.object({ workspaceId: z.string().min(1), name: z.string().min(1), myRole: OnlineRoleSchema }).strict();
 const OnlineFilesGetSchema = z.object({ workspaceId: z.string().min(1), paths: z.array(z.string()).min(1).max(200) }).strict();
@@ -246,6 +262,12 @@ export const IpcArgsSchemas = {
   [IpcChannel.ComponentGet]: z.tuple([ComponentLocatorSchema]),
   [IpcChannel.ComponentCreate]: z.tuple([ProjectLocatorSchema, CreateComponentInputSchema]),
   [IpcChannel.ComponentSave]: z.tuple([ComponentLocatorSchema, ComponentAssetSchema]),
+  [IpcChannel.MockGet]: z.tuple([ProjectLocatorSchema]),
+  [IpcChannel.MockConfigSave]: z.tuple([MockConfigSaveInputSchema]),
+  [IpcChannel.MockStart]: z.tuple([MockStartInputSchema]),
+  [IpcChannel.MockStop]: z.tuple([MockControlInputSchema]),
+  [IpcChannel.MockReload]: z.tuple([MockControlInputSchema]),
+  [IpcChannel.MockProjectClose]: z.tuple([MockProjectCloseInputSchema]),
   [IpcChannel.AssetReferences]: z.tuple([ProjectLocatorSchema, z.string()]),
   [IpcChannel.DebugSend]: z.tuple([z.object({ locator: ApiLocatorSchema, caseId: z.string(), envName: z.string().nullish() }).strict()]),
   [IpcChannel.DebugStart]: z.tuple([DebugInvocationSchema]),
@@ -274,10 +296,13 @@ export const IpcArgsSchemas = {
   [IpcChannel.RunsList]: z.tuple([]),
   [IpcChannel.RunsGet]: z.tuple([z.string()]),
   [IpcChannel.ImportPreview]: z.tuple([ImportPreviewInputSchema]),
+  [IpcChannel.ImportPlan]: z.tuple([ImportPlanInputSchema]),
   [IpcChannel.ImportApply]: z.tuple([ImportApplyInputSchema]),
+  [IpcChannel.ImportUndo]: z.tuple([ImportUndoInputSchema]),
   [IpcChannel.ProjectClone]: z.tuple([ProjectLocatorSchema]),
   [IpcChannel.ProjectMove]: z.tuple([ProjectLocatorSchema, GroupLocatorSchema]),
-  [IpcChannel.DesignExport]: z.tuple([ApiLocatorSchema]),
+  [IpcChannel.DesignExport]: z.tuple([DesignExportInputSchema]),
+  [IpcChannel.DesignPreview]: z.tuple([DesignPreviewInputSchema]),
   [IpcChannel.WfList]: z.tuple([ProjectLocatorSchema]),
   [IpcChannel.WfGet]: z.tuple([WorkflowLocatorSchema]),
   [IpcChannel.WfCreate]: z.tuple([z.object({ locator: ProjectLocatorSchema, name: z.string() }).strict()]),
@@ -381,6 +406,12 @@ const resultMethodByChannel = {
   [IpcChannel.ComponentGet]: "componentGet",
   [IpcChannel.ComponentCreate]: "componentCreate",
   [IpcChannel.ComponentSave]: "componentSave",
+  [IpcChannel.MockGet]: "mockGet",
+  [IpcChannel.MockConfigSave]: "mockConfigSave",
+  [IpcChannel.MockStart]: "mockStart",
+  [IpcChannel.MockStop]: "mockStop",
+  [IpcChannel.MockReload]: "mockReload",
+  [IpcChannel.MockProjectClose]: "mockProjectClose",
   [IpcChannel.AssetReferences]: "assetReferences",
   [IpcChannel.DebugSend]: "debugSend",
   [IpcChannel.DebugStart]: "debugStart",
@@ -402,10 +433,13 @@ const resultMethodByChannel = {
   [IpcChannel.RunsList]: "runsList",
   [IpcChannel.RunsGet]: "runsGet",
   [IpcChannel.ImportPreview]: "importPreview",
+  [IpcChannel.ImportPlan]: "importPlan",
   [IpcChannel.ImportApply]: "importApply",
+  [IpcChannel.ImportUndo]: "importUndo",
   [IpcChannel.ProjectClone]: "projectClone",
   [IpcChannel.ProjectMove]: "projectMove",
   [IpcChannel.DesignExport]: "designExport",
+  [IpcChannel.DesignPreview]: "designPreview",
   [IpcChannel.WfList]: "wfList",
   [IpcChannel.WfGet]: "wfGet",
   [IpcChannel.WfCreate]: "wfCreate",
@@ -478,4 +512,4 @@ export function parseIpcArgs<Channel extends IpcChannelName>(channel: Channel, r
   return result.data as IpcArgsMap[Channel];
 }
 
-export type { ImportApplyInput, NodeCreateInput, StressRunInput };
+export type { ImportApplyInput, ImportPlanInput, ImportUndoInput, NodeCreateInput, StressRunInput };
