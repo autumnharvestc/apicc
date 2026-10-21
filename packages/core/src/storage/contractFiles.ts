@@ -28,6 +28,7 @@ import { createProjectAssetContext } from "../assets/context.js";
 import type { LoadProblem } from "../plugin/types.js";
 import { WorkflowSchema } from "../workflow/model.js";
 import { MockProjectConfigSchema } from "../mock/config.js";
+import { DatasetAssetSchema, SuiteAssetSchema } from "../testing/model.js";
 import {
   isSafeCaseFileName,
   apiCaseIndexFilePath,
@@ -43,6 +44,8 @@ import {
   groupDirectoryPath,
   groupMetadataFilePath,
   modelAssetFilePath,
+  datasetAssetFilePath,
+  suiteAssetFilePath,
   projectDirectoryPath,
   projectMetadataFilePath,
   validateRelativeFilePath,
@@ -92,6 +95,8 @@ const ProjectFileSchema = z.object({
   collectionOrder: z.array(IdSchema),
   modelOrder: z.array(IdSchema),
   componentOrder: z.array(ComponentOrderSchema),
+  datasetOrder: z.array(IdSchema).default([]),
+  suiteOrder: z.array(IdSchema).default([]),
   mock: MockProjectConfigSchema.optional(),
 }).strict();
 const CollectionFileSchema = z.object({
@@ -210,9 +215,13 @@ function encodeProject(files: Map<string, string>, groupId: string, project: Con
     collectionOrder: project.collections.map((collection) => collection.id),
     modelOrder: project.models.map((model) => model.id),
     componentOrder: project.components.map((component) => ({ kind: component.kind, id: component.id })),
+    datasetOrder: (project.datasets ?? []).map((asset) => asset.id),
+    suiteOrder: (project.suites ?? []).map((asset) => asset.id),
   });
   for (const collection of project.collections) encodeCollection(files, projectLocation, collection);
   for (const model of project.models) addYamlFile(files, modelAssetFilePath(projectLocation, model.id), ModelAssetSchema, model);
+  for (const dataset of project.datasets ?? []) addYamlFile(files, datasetAssetFilePath(projectLocation, dataset.id), DatasetAssetSchema, dataset);
+  for (const suite of project.suites ?? []) addYamlFile(files, suiteAssetFilePath(projectLocation, suite.id), SuiteAssetSchema, suite);
   for (const component of project.components) {
     addYamlFile(files, componentAssetFilePath(projectLocation, component.kind, component.id), ComponentAssetSchema, component);
   }
@@ -483,6 +492,9 @@ function appendSemanticDiagnostics(workspace: ContractWorkspace, problems: LoadP
         assets: collectProjectApis(project),
         models: project.models,
         components: project.components,
+        project,
+        datasets: project.datasets,
+        suites: project.suites,
       });
       for (const diagnostic of context.diagnostics) {
         const target = diagnostic.targetId === undefined ? "" : ` target=${diagnostic.targetId}`;
@@ -823,6 +835,25 @@ async function loadModels(
   });
 }
 
+async function loadTestingAssets<T extends { id: string }>(root: string, location: ProjectFileLocation, directory: "datasets" | "suites", expectedOrder: readonly string[], schema: z.ZodType<T>, problems: LoadProblem[], snapshot?: ContractFileSnapshot): Promise<T[]> {
+  const base = `${projectDirectoryPath(location.groupId, location.projectId)}/${directory}`;
+  const entries = await listFiles(root, base, problems, snapshot);
+  const files = entries.filter((entry) => entry.isFile && !entry.isSymbolicLink && entry.name.endsWith(".yaml"));
+  for (const entry of entries) if (!files.includes(entry)) problems.push({ file: base, message: "Testing asset is not a regular YAML file." });
+  const ids = orderChildIds(expectedOrder, files.map((entry) => entry.name.slice(0, -5)), base, problems);
+  const result: T[] = [];
+  for (const id of ids) {
+    if (!validUuidFolder(id)) { problems.push({ file: base, message: "Testing asset filename must be a UUID." }); continue; }
+    const path = `${base}/${id}.yaml`;
+    const parsed = await parseFile(root, path, schema, true, snapshot);
+    attachProblem(problems, parsed.problem);
+    if (!parsed.value) continue;
+    if (parsed.value.id !== id) { problems.push({ file: path, message: "Testing asset identity does not match its filename." }); continue; }
+    result.push(parsed.value);
+  }
+  return result;
+}
+
 interface FileEntry {
   name: string;
   isFile: boolean;
@@ -935,7 +966,7 @@ async function loadProjects(
       continue;
     }
     const path = projectMetadataFilePath(groupId, projectId);
-    await validateContainerEntries(root, projectDirectoryPath(groupId, projectId), ["project.yaml"], ["collections", "models", "components"], problems, snapshot);
+    await validateContainerEntries(root, projectDirectoryPath(groupId, projectId), ["project.yaml"], ["collections", "models", "components", "datasets", "suites"], problems, snapshot);
     const data = await parseMetadata(root, path, ProjectFileSchema, problems, snapshot);
     if (!data) continue;
     if (data.id !== projectId) {
@@ -957,6 +988,8 @@ async function loadProjects(
       stressPolicy: data.stressPolicy,
       models,
       components,
+      datasets: await loadTestingAssets(root, location, "datasets", data.datasetOrder, DatasetAssetSchema, problems, snapshot),
+      suites: await loadTestingAssets(root, location, "suites", data.suiteOrder, SuiteAssetSchema, problems, snapshot),
       ...(data.mock === undefined ? {} : { mock: data.mock }),
     });
   }
@@ -1086,7 +1119,7 @@ export function validateManagedWorkspaceFilePath(path: string): string {
   }
   if (parts.length === 5 && parts[4] === "project.yaml") return safePath;
   const assetFile = (name: string | undefined): boolean => Boolean(name?.endsWith(".yaml") && validUuidFolder(name.slice(0, -5)));
-  if (parts[4] === "models" && parts.length === 6 && assetFile(parts[5])) return safePath;
+  if (["models", "datasets", "suites"].includes(parts[4] ?? "") && parts.length === 6 && assetFile(parts[5])) return safePath;
   if (parts[4] === "components" && parts.length === 7
     && ["parameter", "auth", "response", "example"].includes(parts[5] ?? "")
     && assetFile(parts[6])) return safePath;
@@ -1151,6 +1184,11 @@ export function validateSerializedWorkspaceFile(path: string, content: string): 
   if (parts[4] === "models" && parts.length === 6 && parts[5]!.endsWith(".yaml")) {
     const model = matches(ModelAssetSchema);
     if (model.id !== parts[5]!.slice(0, -5)) throw new TypeError(`Model file identity does not match its path: ${safePath}`);
+    return;
+  }
+  if ((parts[4] === "datasets" || parts[4] === "suites") && parts.length === 6) {
+    const asset = parts[4] === "datasets" ? matches(DatasetAssetSchema) : matches(SuiteAssetSchema);
+    if (asset.id !== parts[5]!.slice(0, -5)) throw new TypeError(`Testing asset identity does not match its path: ${safePath}`);
     return;
   }
   if (parts[4] === "components" && parts.length === 7 && parts[6]!.endsWith(".yaml")) {

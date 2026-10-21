@@ -12,7 +12,8 @@
 //    app-error-close）仍在组件 DOM 内，照旧 wrapper.find。
 // TopBar 现代化（计划 2C 任务 2）适配：3. a-dropdown（语言切换）展开的菜单同样
 //    传送门渲染到 body，菜单项用 langOption（data-locale）查询。
-import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
+import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from "vitest";
+import { Button as AButton } from "ant-design-vue";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
 import { createMemoryApi } from "../../src/renderer/src/api/memory.js";
@@ -29,6 +30,8 @@ import OAuthManager from "../../src/renderer/src/components/OAuthManager.vue";
 import SideTree from "../../src/renderer/src/components/SideTree.vue";
 import ImportWizard from "../../src/renderer/src/components/ImportWizard.vue";
 import StressPanel from "../../src/renderer/src/components/StressPanel.vue";
+import RunView from "../../src/renderer/src/components/RunView.vue";
+import TestView from "../../src/renderer/src/components/TestView.vue";
 import type { useWorkspaceStore } from "../../src/renderer/src/stores/workspace.js";
 import type { createTabsStore } from "../../src/renderer/src/stores/tabs.js";
 import type { createRequestTabsStore, RequestTab } from "../../src/renderer/src/stores/requestTabs.js";
@@ -63,7 +66,11 @@ function projectByLabel(tree: LocalTreeNodeDTO, label: string): LocalProjectTree
   throw new Error(`Project not found: ${label}`);
 }
 
+const jsdomComputedStyle = window.getComputedStyle;
 beforeAll(() => {
+  // Antd measures modal scrollbars via a pseudo-element. jsdom has no pseudo-element
+  // layout; use the element's real computed style for that measurement only.
+  window.getComputedStyle = (element) => jsdomComputedStyle.call(window, element);
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     configurable: true,
@@ -88,6 +95,7 @@ beforeAll(() => {
   };
   localStorage.setItem("apicc.locale", "zh-CN");
 });
+afterAll(() => { window.getComputedStyle = jsdomComputedStyle; });
 
 // a-modal 传送门内容随组件卸载移除：每条用例后自动卸载，防止跨用例 body 残留。
 enableAutoUnmount(afterEach);
@@ -124,7 +132,7 @@ async function mountApp() {
   // 为启动恢复的数据源（恢复用例自行播种后由 mountApp 清理隔离）。
   for (const k of ["apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory", "apicc.projectTabs"]) localStorage.removeItem(k);
   const { default: App } = await import("../../src/renderer/src/App.vue");
-  const wrapper = mount(App, { global: { plugins: [initI18n().i18n] } });
+  const wrapper = mount(App, { global: { plugins: [initI18n().i18n], components: { AButton } } });
   await flushPromises();
   return wrapper;
 }
@@ -1077,6 +1085,45 @@ describe("ConfigProvider 消费侧（计划 1 遗留 T1①）", () => {
 
 // —— 审查 I1：侧树切换工作流必须过 dirty 确认，编辑不得静默丢失 ——
 describe("App 侧树切换工作流 dirty 确认（审查 I1）", () => {
+  it("C1 Fix1 evidence locate keeps the same dirty workflow and confirms another captured workflow", async () => {
+    const wrapper = await mountApp(); await openLocalDir(wrapper);
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const wfA = await failingApi.wfCreate({ locator: project.locator, name: "证据脏草稿" });
+    const wfB = await failingApi.wfCreate({ locator: project.locator, name: "证据另一工作流" });
+    await openLocalDir(wrapper);
+    const design = await openWorkflowDesigner(wrapper);
+    const loadA = captureWorkflowLoad(design);
+    await wrapper.findAll('[data-testid="tree-workflow"]').find((node) => node.text().includes("证据脏草稿"))!.trigger("click");
+    await loadA.settle(); loadA.restore();
+    await wrapper.get('[data-testid="wf-add-request"]').trigger("click"); await flushPromises();
+    expect(design.dirty).toBe(true);
+    const draft = JSON.stringify(design.workflow);
+    const selected = wrapper.findComponent(SideTree).props("tree") as ReturnType<typeof useTreeStore>;
+    const oldSelection = selected.selected;
+    const emitLocate = async (workflowId: string) => {
+      await wrapper.get('[data-testid="rail-run"]').trigger("click");
+      wrapper.findComponent(RunView).vm.$emit("locate-evidence", { projectId: project.id, definitionRevision: "historical", workflowId });
+      await flushPromises();
+    };
+    const sameLoad = captureWorkflowLoad(design);
+    await emitLocate(wfA.id);
+    expect(sameLoad.called()).toBe(false); sameLoad.restore();
+    expect(JSON.stringify(design.workflow)).toBe(draft);
+    expect(design.dirty).toBe(true);
+    const blocked = captureWorkflowLoad(design);
+    await emitLocate(wfB.id);
+    expect(blocked.called()).toBe(false);
+    expect(JSON.stringify(design.workflow)).toBe(draft);
+    await expectBody("dialog-cancel").trigger("click"); await flushPromises(); blocked.restore();
+    expect(design.workflowId).toBe(wfA.id); expect(design.dirty).toBe(true);
+    expect(JSON.stringify(design.workflow)).toBe(draft);
+    expect(selected.selected).toEqual(oldSelection);
+    const confirmed = captureWorkflowLoad(design);
+    await emitLocate(wfB.id);
+    await expectBody("dialog-confirm").trigger("click");
+    await confirmed.settle(); confirmed.restore();
+    expect(design.workflowId).toBe(wfB.id); expect(design.dirty).toBe(false);
+  });
   it("dirty 时点击另一工作流：确认前缓冲不变；取消保持；确认后新流载入", async () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
@@ -1611,6 +1658,102 @@ function stressReportFixture(): StressReport {
 }
 
 describe("App 测试模块装配（M9-D）", () => {
+  it("R19 Fix1 rejects late evidence after same-project request-tab A-B-A navigation", async () => {
+    const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper);
+    const editor = wrapper.findComponent(RequestEditor).props("editor") as ReturnType<typeof useEditorStore>;
+    const requestTabs = wrapper.findComponent(RequestTabs).props("tabs") as ReturnType<typeof createRequestTabsStore>;
+    const locator = { ...editor.locator!, folderIds: [...editor.locator!.folderIds] };
+    const tabA = requestTabs.activeId!;
+    await wrapper.get('[data-testid="rail-test"]').trigger("click"); await flushPromises();
+    const panel = wrapper.findComponent(CasePanel); const cases = panel.props("cases"); const debug = panel.props("debug")!;
+    const first = editor.api!.cases[0]!;
+    const target = cases.addCase({ name: "迟到证据目标", scope: "base" });
+    const draft = JSON.stringify(editor.api);
+    const identity = { projectId: locator.projectId, definitionRevision: "historical", locator: {
+      collectionId: locator.collectionId, folderIds: locator.folderIds, apiId: locator.apiId, caseId: target.id, scope: target.scope,
+    } };
+    await wrapper.get('[data-testid="rail-api"]').trigger("click");
+    await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click"); await flushPromises();
+    const tabB = requestTabs.activeId!; expect(tabB).not.toBe(tabA);
+    // The locate's own B→A activation is legitimate and must not invalidate itself.
+    await wrapper.get('[data-testid="rail-run"]').trigger("click");
+    wrapper.findComponent(RunView).vm.$emit("locate-evidence", identity);
+    await vi.waitFor(() => expect(wrapper.findComponent(CasePanel).exists()).toBe(true));
+    expect(requestTabs.activeId).toBe(tabA);
+    expect(wrapper.get('[data-testid="case-row"].active').find('input').element.value).toBe(target.name);
+
+    await wrapper.get('[data-testid="rail-api"]').trigger("click");
+    await wrapper.get(`[data-testid="request-tab-${tabB}"]`).trigger("click"); await flushPromises();
+    type Models = Awaited<ReturnType<typeof failingApi.modelList>>;
+    const originalModels = failingApi.modelList;
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    let entered = false; let armed = true;
+    failingApi.modelList = async (project) => {
+      const models: Models = await originalModels(project);
+      if (armed) { armed = false; entered = true; await gate; }
+      return models;
+    };
+    try {
+      await wrapper.get('[data-testid="rail-run"]').trigger("click");
+      wrapper.findComponent(RunView).vm.$emit("locate-evidence", identity);
+      await vi.waitFor(() => expect(entered).toBe(true));
+      expect(requestTabs.activeId).toBe(tabA);
+      await wrapper.get('[data-testid="rail-api"]').trigger("click");
+      await wrapper.get(`[data-testid="request-tab-${tabB}"]`).trigger("click"); await flushPromises();
+      await wrapper.get(`[data-testid="request-tab-${tabA}"]`).trigger("click"); await flushPromises();
+      await wrapper.get('[data-testid="rail-test"]').trigger("click"); await flushPromises();
+      await wrapper.findAll('[data-testid="case-row"]')[0]!.trigger("click");
+      await wrapper.get('[data-testid="rail-api"]').trigger("click");
+      release(); await flushPromises(); await flushPromises();
+      expect(wrapper.findComponent(CasePanel).exists()).toBe(false);
+      expect(wrapper.findComponent(RequestEditor).exists()).toBe(true);
+      expect(requestTabs.activeId).toBe(tabA); expect(editor.locator).toEqual(locator);
+      expect(cases.selectedCase).toEqual({ caseId: first.id, scope: first.scope });
+      expect(debug.requestTabState(requestTabs.tabs[tabA]!).selectedCase).toEqual({ caseId: first.id, scope: first.scope });
+      expect(JSON.stringify(editor.api)).toBe(draft); expect(editor.dirty).toBe(true);
+    } finally { release(); failingApi.modelList = originalModels; }
+  });
+  it("R19 evidence locate reveals the exact case from suites/history and respects dirty pane cancellation", async () => {
+    const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper);
+    const editor = wrapper.findComponent(RequestEditor).props("editor") as ReturnType<typeof useEditorStore>;
+    const locator = { ...editor.locator!, folderIds: [...editor.locator!.folderIds] };
+    const memory = wrapper.findComponent(SideTree).props("moduleMemory")!;
+    await wrapper.get('[data-testid="rail-test"]').trigger("click"); await flushPromises();
+    const panel = wrapper.findComponent(CasePanel);
+    const cases = panel.props("cases"); const debug = panel.props("debug")!;
+    const target = cases.addCase({ name: "精确定位脏用例", scope: "base" });
+    const tab = debug.requestTabForSession(editor.activeKey!)!;
+    debug.requestTabState(tab).selectedCase = { caseId: editor.api!.cases[0]!.id, scope: "base" };
+    const draft = JSON.stringify(editor.api);
+    const identity = { projectId: locator.projectId, definitionRevision: "historical", locator: {
+      collectionId: locator.collectionId, folderIds: locator.folderIds, apiId: locator.apiId, caseId: target.id, scope: target.scope,
+    } };
+    await wrapper.get('[data-testid="test-tab-suites"]').trigger("click"); await flushPromises();
+    wrapper.findComponent(TestView).vm.$emit("locate-evidence", identity);
+    await vi.waitFor(() => expect(wrapper.findComponent(CasePanel).exists()).toBe(true));
+    const assertLocated = () => {
+      expect(wrapper.get('[data-testid="test-tab-api-cases"]').classes()).toContain("active");
+      expect(wrapper.get('[data-testid="case-row"].active').find('input').element.value).toBe(target.name);
+      expect(editor.locator).toEqual(locator); expect(JSON.stringify(editor.api)).toBe(draft); expect(editor.dirty).toBe(true);
+      expect(memory.test.apiLocator).toEqual(locator); expect(memory.apiTree.lastApiLocator).toEqual(locator);
+      expect(wrapper.find('[data-testid="test-navigation-list"] .api-item.active').exists()).toBe(true);
+    };
+    assertLocated();
+    const testing = wrapper.findComponent(TestView).props("testing")!;
+    await wrapper.get('[data-testid="test-tab-suites"]').trigger("click"); await flushPromises();
+    await testing.newSuite("尚未保存的套件");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      await wrapper.get('[data-testid="rail-run"]').trigger("click");
+      wrapper.findComponent(RunView).vm.$emit("locate-evidence", identity); await flushPromises();
+      expect(wrapper.findComponent(RunView).exists()).toBe(true); expect(testing.dirty).toBe(true);
+      expect(memory.test.pane).toBe("suites"); expect(JSON.stringify(editor.api)).toBe(draft);
+      confirm.mockReturnValue(true);
+      wrapper.findComponent(RunView).vm.$emit("locate-evidence", identity);
+      await vi.waitFor(() => expect(wrapper.findComponent(CasePanel).exists()).toBe(true));
+      assertLocated(); expect(testing.dirty).toBe(false);
+    } finally { confirm.mockRestore(); }
+  });
   it("rail-test 打开测试模块：单接口用例面板选接口后可编辑，case-run 运行结果内嵌上屏", async () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
@@ -1687,11 +1830,27 @@ describe("App 测试模块装配（M9-D）", () => {
       // 切接口：压测会话清空（clear 裁定）——新建第二接口并选中
       await openNewApiFromContainer(wrapper, "示例集合");
       await expectBody("dialog-input").setValue("第二接口");
-      await expectBody("dialog-confirm").trigger("click");
+      const treeStore = wrapper.findComponent(SideTree).props("tree") as ReturnType<typeof useTreeStore>;
+      const originalCreate = treeStore.createNode.bind(treeStore);
+      let creating: ReturnType<typeof originalCreate> | null = null;
+      treeStore.createNode = (...args) => (creating = originalCreate(...args));
+      try {
+        await expectBody("dialog-confirm").trigger("click");
+        if (!creating) throw new Error("API dialog did not create the new API");
+        await creating;
+      } finally { treeStore.createNode = originalCreate; }
       await flushPromises();
       // 新接口在测试模块：进入压测上下文前报告已清空
       const newApiBtn = wrapper.findAll('[data-testid^="test-api-"]').at(-1)!;
-      await newApiBtn.trigger("click");
+      const caseEditor = wrapper.findComponent(CasePanel).props("editor") as ReturnType<typeof import("../../src/renderer/src/stores/editor.js").useEditorStore>;
+      const originalLoad = caseEditor.load.bind(caseEditor);
+      let clickedLoad: ReturnType<typeof originalLoad> | null = null;
+      caseEditor.load = (...args) => (clickedLoad = originalLoad(...args));
+      try {
+        await newApiBtn.trigger("click");
+        if (!clickedLoad) throw new Error("Test sidebar click did not load the selected API");
+        await clickedLoad;
+      } finally { caseEditor.load = originalLoad; }
       await flushPromises();
       const stressBtn2 = wrapper.find('[data-testid^="case-stress-"]');
       await stressBtn2.trigger("click");

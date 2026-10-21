@@ -13,6 +13,17 @@ const sample = {
 };
 
 describe("runs 历史", () => {
+  it("C1 separates project and suite/workflow kind while reading old evidence-free JSON unchanged", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apicc-c1-history-"));
+    writeFileSync(join(dir, "old.json"), JSON.stringify(sample));
+    writeFileSync(join(dir, "suite.json"), JSON.stringify({ ...sample, kind: "suite", projectId: "project-a", suite: { projectId: "project-a" } }));
+    writeFileSync(join(dir, "workflow.json"), JSON.stringify({ ...sample, kind: "workflow", projectId: "project-b", workflowId: "wf" }));
+    expect(listRuns(dir).find((row) => row.file === "suite.json")).toMatchObject({ kind: "suite", projectId: "project-a" });
+    expect(listRuns(dir).find((row) => row.file === "workflow.json")).toMatchObject({ kind: "workflow", projectId: "project-b" });
+    expect(readRun(dir, "old.json")).toEqual(sample);
+    writeFileSync(join(dir, "container.json"), JSON.stringify({ ...sample, total: 1, passed: 1, failed: 0, reportingUnits: { total: 2, passed: 1, failed: 1, skipped: 0, entryDiagnostics: 1 } }));
+    expect(listRuns(dir).find((row) => row.file === "container.json")).toMatchObject({ total: 1, passed: 1, failed: 0, reportingUnits: { total: 2, failed: 1, entryDiagnostics: 1 } });
+  });
   it("listRuns 返回摘要（新→旧），readRun 读回完整结果", () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-runslist-"));
     mkdirSync(dir, { recursive: true });

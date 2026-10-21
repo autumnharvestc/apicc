@@ -14,11 +14,14 @@ import { cloneDefinitionValue, type AssetBundle } from "./context.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../contract/workspace.js";
 import type { Workflow } from "../workflow/model.js";
 import type { SchemaNode } from "../contract/schemaNode.js";
+import { JsonValueSchema, SchemaNodeSchema } from "../contract/schemaNode.js";
+import type { SuiteAsset } from "../testing/model.js";
 
 export type CloneIdKind =
   | "project" | "collection" | "folder" | "environment" | "workflow" | "workflowNode" | "workflowEdge"
   | "contract" | "case" | "model" | "component" | "operation" | "assertion"
-  | "parameterInstance" | "responseInstance" | "exampleInstance" | "requestEntry" | "secretRef" | "mockRule";
+  | "parameterInstance" | "responseInstance" | "exampleInstance" | "requestEntry" | "secretRef" | "mockRule"
+  | "dataset" | "suite" | "extractor" | "suiteEntry";
 
 export interface CloneIdMapping {
   kind: CloneIdKind;
@@ -100,6 +103,7 @@ export function cloneAssetBundle(
   for (const asset of bundle.assets) collectApiMappings(asset, options.newProjectId, mapper);
   for (const model of bundle.models) mapper.declare("model", model.id, options.newProjectId);
   for (const component of bundle.components) collectComponentMappings(component, options.newProjectId, mapper);
+  for (const dataset of bundle.datasets ?? []) mapper.declare("dataset", dataset.id, options.newProjectId);
 
   bundle.assets.forEach((asset, index) => rewriteApiAsset(asset, cloned.assets[index], options.newProjectId, mapper));
   bundle.models.forEach((model, index) => {
@@ -107,6 +111,7 @@ export function cloneAssetBundle(
     rewriteSchema(cloned.models[index].schema, options.newProjectId, mapper);
   });
   bundle.components.forEach((component, index) => rewriteComponent(component, cloned.components[index], options.newProjectId, mapper));
+  bundle.datasets?.forEach((dataset, index) => { cloned.datasets![index]!.id = mapper.reference("dataset", dataset.id, options.newProjectId); });
   return { bundle: cloned, idMap: mapper.result() };
 }
 
@@ -117,6 +122,8 @@ function collectProjectMappings(project: ContractProject, mapper: IdMapper): voi
   for (const model of project.models) mapper.declare("model", model.id, project.id);
   for (const component of project.components) collectComponentMappings(component, project.id, mapper);
   project.mock?.rules.forEach((rule) => mapper.declare("mockRule", rule.id, project.id));
+  for (const dataset of project.datasets ?? []) mapper.declare("dataset", dataset.id, project.id);
+  for (const suite of project.suites ?? []) collectSuiteMappings(suite, project.id, mapper);
 }
 
 function collectCollectionMappings(collection: ContractCollection, projectId: string, scope: string, mapper: IdMapper): void {
@@ -145,6 +152,7 @@ function collectApiMappings(asset: ApiAsset, projectId: string, mapper: IdMapper
     collectOperations(testCase.preOperations, operationScope(caseScope, "pre"), mapper);
     collectOperations(testCase.postOperations, operationScope(caseScope, "post"), mapper);
     for (const assertion of testCase.assertions) mapper.declare("assertion", assertion.id, caseScope);
+    for (const extractor of testCase.extractors ?? []) mapper.declare("extractor", extractor.id, caseScope);
     if (testCase.requestOverride) collectRequestMappings(testCase.requestOverride, contractId, projectId, mapper);
   }
 
@@ -215,6 +223,31 @@ function collectWorkflowMappings(workflow: Workflow, projectId: string, mapper: 
   for (const edge of workflow.edges) mapper.declare("workflowEdge", edge.id, workflow.id);
 }
 
+function collectSuiteMappings(suite: SuiteAsset, projectId: string, mapper: IdMapper): void {
+  mapper.declare("suite", suite.id, projectId);
+  if (suite.selection.kind === "explicit") for (const entry of suite.selection.entries) mapper.declare("suiteEntry", entry.id, suite.id);
+}
+
+function rewriteSuite(source: SuiteAsset, target: SuiteAsset, projectId: string, mapper: IdMapper): void {
+  target.id = mapper.reference("suite", source.id, projectId);
+  if (source.environmentId !== undefined) target.environmentId = mapper.reference("environment", source.environmentId, projectId);
+  if (source.datasetId !== undefined) target.datasetId = mapper.reference("dataset", source.datasetId, projectId);
+  if (source.selection.kind === "query" && target.selection.kind === "query") target.selection.collectionIds = source.selection.collectionIds?.map((id) => mapper.reference("collection", id, projectId));
+  else if (source.selection.kind === "explicit" && target.selection.kind === "explicit") source.selection.entries.forEach((entry, index) => {
+    const output = target.selection.kind === "explicit" ? target.selection.entries[index]! : undefined;
+    if (!output) return;
+    output.id = mapper.reference("suiteEntry", entry.id, source.id);
+    if (entry.kind === "workflow" && output.kind === "workflow") output.workflowId = mapper.reference("workflow", entry.workflowId, projectId);
+    else if (entry.kind === "case" && output.kind === "case") {
+      output.collectionId = mapper.reference("collection", entry.collectionId, projectId);
+      let scope = collectionScope(entry.collectionId);
+      output.folderIds = entry.folderIds.map((id) => { const mapped = mapper.reference("folder", id, scope); scope = folderScope(scope, id); return mapped; });
+      output.apiId = mapper.reference("contract", entry.apiId, projectId);
+      output.caseId = mapper.reference("case", entry.caseId, entry.apiId);
+    }
+  });
+}
+
 function rewriteProject(source: ContractProject, target: ContractProject, mapper: IdMapper): void {
   target.id = mapper.reference("project", source.id);
   source.environments.forEach((environment, index) => {
@@ -228,6 +261,8 @@ function rewriteProject(source: ContractProject, target: ContractProject, mapper
     rewriteSchema(target.models[index].schema, source.id, mapper);
   });
   source.components.forEach((component, index) => rewriteComponent(component, target.components[index], source.id, mapper));
+  source.datasets?.forEach((dataset, index) => { target.datasets![index]!.id = mapper.reference("dataset", dataset.id, source.id); });
+  source.suites?.forEach((suite, index) => rewriteSuite(suite, target.suites![index]!, source.id, mapper));
   if (source.mock && target.mock) {
     target.mock.enabledContractIds = source.mock.enabledContractIds.map((id) => mapper.requireReference("contract", id, source.id));
     target.mock.rules = source.mock.rules.map((rule, index) => rewriteMockRule(source, rule, target.mock!.rules[index]!, mapper));
@@ -321,7 +356,13 @@ function rewriteApiAsset(source: ApiAsset, target: ApiAsset, projectId: string, 
     });
     outputCase.assertions.forEach((assertion, assertionIndex) => {
       assertion.id = mapper.reference("assertion", testCase.assertions[assertionIndex].id, caseScope);
+      if (assertion.op === "schema" && assertion.options?.schema !== undefined) {
+        const parsed = SchemaNodeSchema.safeParse(assertion.options.schema);
+        if (parsed.success) { rewriteSchema(parsed.data, projectId, mapper); assertion.options.schema = JsonValueSchema.parse(parsed.data); }
+      }
     });
+    outputCase.extractors?.forEach((extractor, extractorIndex) => { extractor.id = mapper.reference("extractor", testCase.extractors![extractorIndex]!.id, caseScope); });
+    if (outputCase.dataDriver && "kind" in outputCase.dataDriver) outputCase.dataDriver.datasetId = mapper.requireReference("dataset", outputCase.dataDriver.datasetId, projectId);
     if (testCase.requestOverride && outputCase.requestOverride) {
       rewriteRequest(testCase.requestOverride, outputCase.requestOverride, contractId, projectId, mapper);
     }

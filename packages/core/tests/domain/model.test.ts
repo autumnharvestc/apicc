@@ -12,6 +12,7 @@ import {
   TestCaseSchema,
   WorkspaceSchema,
 } from "../../src/domain/model.js";
+import { AssertionSchema, DatasetAssetSchema, SuiteAssetSchema } from "../../src/testing/model.js";
 
 const id = "00000000-0000-4000-8000-000000000001";
 
@@ -39,6 +40,8 @@ function apiAsset() {
       id: "case-1",
       name: "default",
       scope: "base",
+      tags: [],
+      extractors: [],
       parameters: {},
       preOperations: [],
       postOperations: [],
@@ -49,6 +52,22 @@ function apiAsset() {
 }
 
 describe("共享叶子域", () => {
+  it("validates bounded extensible assertions, extractor destinations and ordered testing assets", () => {
+    expect(AssertionSchema.parse({ id: "a", target: "bodyXml", op: "vendor:custom", path: "//p:item", namespaces: { p: "urn:test" }, options: { null: null, zero: 0, false: false } })).toMatchObject({ op: "vendor:custom", match: "first" });
+    for (const op of ["", " ", "界".repeat(43)]) expect(AssertionSchema.safeParse({ id: "a", target: "status", op }).success).toBe(false);
+    expect(AssertionSchema.safeParse({ id: "a", target: "status", op: "eq", cookieName: "token" }).success).toBe(false);
+    const extractor = { id: "e", name: "token", selector: { target: "bodyJson", path: "$.token" }, method: "value", defaultValue: null };
+    const parsed = TestCaseSchema.parse({ id: "case", name: "case", extractors: [extractor] });
+    expect(parsed.tags).toEqual([]);
+    expect(parsed.extractors![0]).toMatchObject({ required: true, sensitive: false, defaultValue: null, selector: { match: "first" } });
+    expect(TestCaseSchema.safeParse({ id: "case", name: "case", extractors: [extractor, { ...extractor, id: "other" }] }).success).toBe(false);
+    expect(TestCaseSchema.safeParse({ id: "case", name: "case", extractors: [{ ...extractor, method: "regex", pattern: "x", selector: { target: "bodyText", match: "all" } }] }).success).toBe(false);
+    const dataset = { formatVersion: 1, id, name: "draft", columns: [], rows: [] };
+    expect(DatasetAssetSchema.safeParse(dataset).success).toBe(true);
+    expect(DatasetAssetSchema.safeParse({ ...dataset, columns: ["x", "x"] }).success).toBe(false);
+    const entry = { id, kind: "case", collectionId: id, folderIds: [], apiId: id, caseId: "case" };
+    expect(SuiteAssetSchema.safeParse({ formatVersion: 1, id, name: "suite", selection: { kind: "explicit", entries: [entry, { ...entry, id: "00000000-0000-4000-8000-000000000002" }] } }).success).toBe(false);
+  });
   it("TestCase 只接受 operation 列表，拒绝旧脚本字段", () => {
     const currentShape = {
       id: "case-1",
@@ -108,6 +127,8 @@ describe("标准 contract 域聚合", () => {
     const project = ProjectSchema.parse(projectInput);
     expect(project.models).toEqual([]);
     expect(project.components).toEqual([]);
+    expect(project.datasets).toEqual([]);
+    expect(project.suites).toEqual([]);
     expect(project.stressPolicy).toEqual({ trustedOrigins: [], deniedOrigins: [] });
 
     const normalizedProject = ProjectSchema.parse({

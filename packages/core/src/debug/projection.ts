@@ -29,6 +29,7 @@ interface ExchangeDraft {
 }
 
 export interface DebugExchangeCollector {
+  addMarkers(values: readonly string[]): void;
   observe(event: HttpHopObservation, identity: DebugExecutionIdentity): void;
   observeExecution(execution: CaseExecutionResult, identity: DebugExecutionIdentity): void;
   exchanges(): DebugExchange[];
@@ -163,6 +164,7 @@ export function createDebugExchangeCollector(markers: readonly string[]): DebugE
   return {
     observe,
     observeExecution,
+    addMarkers: (values) => { for (const value of values) addObservedMarker(value); },
     exchanges: () => drafts.map((draft) => draft.value),
     exchangeTotal: () => total,
     markers: () => currentMarkerStrings(),
@@ -543,6 +545,7 @@ function projectOutcome(
     ...(apiId === undefined ? {} : { apiId }),
     ...(caseId === undefined ? {} : { caseId }),
     identityAvailable: apiId !== undefined && caseId !== undefined,
+    ...(outcome.evidence === undefined ? {} : { evidence: outcome.evidence }),
     apiName: projectionReliable ? sanitizer.redactText(outcome.apiName) : "[REDACTED]",
     caseName: projectionReliable ? sanitizer.redactText(outcome.caseName) : "[REDACTED]",
     ...(outcome.row === undefined ? {} : { row: outcome.row }),
@@ -979,7 +982,7 @@ function isRequestStructureValue(key: string): boolean {
   return ["id", "kind", "protocol", "method", "expectedKind", "componentId", "policy", "name", "key"].includes(key);
 }
 
-function projectRequestHeader(
+export function projectRequestHeader(
   name: string,
   value: string,
   sanitizer: ReturnType<typeof createCredentialOutputSanitizer>,
@@ -990,12 +993,14 @@ function projectRequestHeader(
   return sanitizer.redactText(value);
 }
 
-function projectResponseHeader(
+export function projectResponseHeader(
   name: string,
   value: string,
   sanitizer: ReturnType<typeof createCredentialOutputSanitizer>,
 ): string {
-  return name.toLowerCase() === "set-cookie" ? projectSetCookie(value, sanitizer) : sanitizer.redactText(value);
+  const normalized = name.toLowerCase();
+  if (["authorization", "proxy-authorization", "cookie"].includes(normalized)) return "[REDACTED]";
+  return normalized === "set-cookie" ? projectSetCookie(value, sanitizer) : sanitizer.redactText(value);
 }
 
 function projectCookies(

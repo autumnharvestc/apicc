@@ -5,6 +5,7 @@ import type { IpcInputArgsMap, IpcResultMap } from "../shared/ipc-contract.js";
 import type { ApiccApi } from "../shared/types.js";
 import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "../shared/credentials.js";
 import { createStressPreloadApi } from "./stressBridge.js";
+import { EvidenceInvocationSchema } from "../shared/testing.js";
 
 function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcInputArgsMap[Channel]): Promise<IpcResultMap[Channel]> {
   return ipcRenderer.invoke(channel, ...args).then((result: unknown) => result as IpcResultMap[Channel]);
@@ -13,6 +14,19 @@ function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcIn
 const stressApi = createStressPreloadApi(ipcRenderer);
 
 const api: ApiccApi = {
+  inspectEvidence: (input) => invoke(IpcChannel.EvidenceInspect, EvidenceInvocationSchema.parse(input)),
+  rerunEvidence: (input) => invoke(IpcChannel.EvidenceRerun, EvidenceInvocationSchema.parse(input)),
+  cancelEvidence: (input) => invoke(IpcChannel.EvidenceCancel, EvidenceInvocationSchema.parse(input)),
+  listTestingAssets: (input) => invoke(IpcChannel.TestingList, input),
+  assertionOperators: () => invoke(IpcChannel.AssertionOperators),
+  saveDataset: (input) => invoke(IpcChannel.DatasetSave, input),
+  saveSuite: (input) => invoke(IpcChannel.SuiteSave, input),
+  deleteTestingAsset: (input) => invoke(IpcChannel.TestingDelete, input),
+  importDataset: (input) => invoke(IpcChannel.DatasetImport, input),
+  exportDataset: (input) => invoke(IpcChannel.DatasetExport, input),
+  previewSuite: (input) => invoke(IpcChannel.SuitePreview, input),
+  runSuite: (input) => invoke(IpcChannel.SuiteRun, input),
+  cancelSuite: (input) => invoke(IpcChannel.SuiteCancel, input),
   wsOpen: (rootPath) => invoke(IpcChannel.WsOpen, rootPath),
   wsCreate: (rootPath, name) => invoke(IpcChannel.WsCreate, rootPath, name),
   wsPickDirectory: () => invoke(IpcChannel.WsPickDirectory),

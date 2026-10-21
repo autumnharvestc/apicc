@@ -4,15 +4,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { WorkflowRunner as ProjectSnapshotWorkflowRunner } from "../../src/workflow/runner.js";
+import { WorkflowRunner as ProjectSnapshotWorkflowRunner, type WorkflowCaseObserver } from "../../src/workflow/runner.js";
 import type { Workflow } from "../../src/workflow/model.js";
 import type { ApiAsset, RequestBody } from "../../src/contract/model.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../../src/contract/workspace.js";
 import type { Assertion, Environment, KeyValuePair, Operation } from "../../src/domain/common.js";
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import { prepareTestData, testDataSelectionsForRequests } from "../../src/testing/data.js";
+import { findProjectApi } from "../../src/workflow/references.js";
+import { resolveExecutionEnvironment, selectEffectiveCases } from "../../src/domain/executionSelection.js";
 import type { ProjectExecutionRun } from "../../src/runner/runner.js";
 import { createDefaultRegistry, createPluginRegistry } from "../../src/index.js";
 import { workflowToRunResult } from "../../src/workflow/adapter.js";
+import { reportingUnits } from "../../src/report/units.js";
 
 let server: Server;
 let baseUrl = "";
@@ -39,6 +43,7 @@ interface FixtureCase {
   preOperations?: Operation[];
   postOperations?: Operation[];
   assertions?: Assertion[];
+  extractors?: import("../../src/testing/model.js").ExtractionDefinition[];
   dataDriver?: { sourcePath: string; format: "csv" | "json" };
 }
 interface FixtureApi {
@@ -184,6 +189,7 @@ function fixtureApiAsset(api: FixtureApi): ApiAsset {
       preOperations: testCase.preOperations ?? (testCase.preScript ? [{ id: stableId("operation", `${testCase.id}:pre`), type: "script" as const, content: testCase.preScript }] : []),
       postOperations: testCase.postOperations ?? (testCase.postScript ? [{ id: stableId("operation", `${testCase.id}:post`), type: "script" as const, content: testCase.postScript }] : []),
       assertions: testCase.assertions ?? [],
+      ...(testCase.extractors === undefined ? {} : { extractors: testCase.extractors }),
       ...(testCase.dataDriver === undefined ? {} : { dataDriver: testCase.dataDriver }),
     })),
     documentation: "",
@@ -296,13 +302,22 @@ class WorkflowRunner {
       ...(options.strict === undefined ? {} : { strict: options.strict }),
     });
   }
-  run(workflow: Workflow, context: { project?: FixtureProject; workspace?: typeof ws } = {}) {
+  async run(workflow: Workflow, context: { project?: FixtureProject; workspace?: typeof ws; observeCaseExecution?: WorkflowCaseObserver } = {}) {
     const sourceProject = context.project ?? project;
     const { execution, workflowId } = executionFor(workflow, sourceProject, this.options.resolve);
     const environment = this.options.envName === undefined
       ? undefined
       : sourceProject.environments.find(({ name }) => name === this.options.envName)?.id ?? this.options.envName;
-    return this.production.run(execution, workflowId, environment === undefined ? {} : { environmentId: stableId("environment", environment) });
+    const environmentId = environment === undefined ? undefined : stableId("environment", environment);
+    const snapshot = execution.snapshot;
+    const requests = snapshot.project.workflows[0]!.nodes.flatMap((node) => {
+      const location = node.apiId ? findProjectApi(snapshot.project, node.apiId) : undefined;
+      if (!location || node.kind !== "request") return [];
+      const testCase = selectEffectiveCases(location.api.cases, resolveExecutionEnvironment(snapshot.project, location.collection.id, environmentId).chain, node.caseId)[0];
+      return testCase ? [{ asset: location.api, testCase }] : [];
+    });
+    const preparedTestData = await prepareTestData(snapshot, testDataSelectionsForRequests(snapshot, requests, environmentId), { workspaceRoot: tmpdir() });
+    return this.production.run({ ...execution, preparedTestData }, workflowId, { ...(environmentId === undefined ? {} : { environmentId }), observeCaseExecution: context.observeCaseExecution });
   }
 }
 
@@ -789,9 +804,9 @@ describe("WorkflowRunner", () => {
       .run(wf([{ id: "n1", kind: "request" as const, apiId: "asit", caseId: "case-asit", label: "sit" }], []), { project, workspace: ws });
     expect(r.nodeResults[0]!.state).toBe("failed");
     expect(r.nodeResults[0]!.error).toContain("用例不适用于当前环境");
-    expect(r.nodeResults[0]!.outcome?.passed).toBe(false);
+    expect(r.nodeResults[0]!.outcomes).toEqual([]);
     expect(r.nodeResults[0]!.failureKind).toBe("config");
-    expect(r.nodeResults[0]!.outcome?.failureKind).toBe("config");
+    expect(reportingUnits(workflowToRunResult(r)).summary).toMatchObject({ total: 1, failed: 1, entryDiagnostics: 1 });
   });
 
   it("fan-in 双败级联：a、b 均失败 → c skipped 且计数正确", async () => {
@@ -935,10 +950,11 @@ describe("WorkflowRunner", () => {
     const barrier = createServer((req, res) => {
       const seed = String(req.headers["x-seed"] ?? "");
       if (req.url === "/first") {
+        res.setHeader("content-type", "application/json");
         seenSeeds.add(seed);
         if (seenSeeds.size === 2) while (waiting.length > 0) waiting.shift()!();
-        else waiting.push(() => res.end("ok"));
-        if (seenSeeds.size === 2) res.end("ok");
+        else waiting.push(() => res.end(JSON.stringify({ token: seed })));
+        if (seenSeeds.size === 2) res.end(JSON.stringify({ token: seed }));
         return;
       }
       if (req.url === "/second") seenCarriedTokens.push(String(req.headers["x-carried-token"] ?? ""));
@@ -955,12 +971,14 @@ describe("WorkflowRunner", () => {
         type: "script",
         content: 'pm.variables.set("token", pm.variables.get("seed"));',
       }];
+      first.cases![0]!.extractors = [{ id: "declarative-token", name: "extractedToken", method: "value", selector: { target: "bodyJson", path: "$.token" } }];
+      first.cases![0]!.assertions!.push({ id: "extracted-current", target: "bodyJson", path: "$.token", op: "eq", expected: "{{extractedToken}}" });
       const second = apiOf("second", `${barrierBase}/second`);
       second.headers = [{ key: "x-carried-token", value: "{{token}}", enabled: true }];
       second.cases![0]!.postOperations = [{
         id: "assert-carried-token",
         type: "script",
-        content: 'pm.assert(pm.variables.get("token") === pm.variables.get("seed"), "run isolation");',
+        content: 'pm.assert(pm.variables.get("token") === pm.variables.get("seed"), "run isolation"); pm.assert(pm.variables.get("extractedToken") === pm.variables.get("seed"), "extraction isolation");',
       }];
       const cleanApi = apiOf("clean", `${barrierBase}/clean`);
       cleanApi.cases![0]!.preOperations = [{
@@ -971,7 +989,7 @@ describe("WorkflowRunner", () => {
       cleanApi.cases![0]!.postOperations = [{
         id: "assert-clean-token",
         type: "script",
-        content: 'pm.assert(pm.variables.get("token") === undefined, "stale token");',
+        content: 'pm.assert(pm.variables.get("token") === undefined, "stale token"); pm.assert(pm.variables.get("extractedToken") === undefined, "stale extraction");',
       }];
       const locals = [first, second, cleanApi];
       const runner = new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith(locals), envName: "dev", failFast: false });
@@ -1065,7 +1083,8 @@ describe("WorkflowRunner", () => {
       const config = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: resolveWith([bad]), envName: "dev", failFast: false })
         .run(wf([{ id: "bad", kind: "request", apiId: "bad-data", caseId: "case-bad" }], []), { project, workspace: ws });
       expect(config.nodeResults[0]?.state).toBe("failed");
-      expect(config.nodeResults[0]?.outcomes?.[0]?.failureKind).toBe("config");
+      expect(config.nodeResults[0]?.outcomes).toEqual([]);
+      expect(config.nodeResults[0]?.failureKind).toBe("config");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1169,16 +1188,21 @@ describe("WorkflowRunner", () => {
     };
     try {
       seenPaths.length = 0;
+      const observed: Array<[number | undefined, string, number]> = [];
       const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve: () => undefined, envName: "dev", failFast: false })
-        .run(wf([{ id: "container", kind: "request", apiId: "container-data", caseId: "case-container-data" }], []), { project: projectWithContainer, workspace: ws });
+        .run(wf([{ id: "container", kind: "request", apiId: "container-data", caseId: "case-container-data" }], []), { project: projectWithContainer, workspace: ws,
+          observeCaseExecution: async (execution, identity) => { observed.push([execution.outcome.row, identity.nodeId, identity.rowIndex]); } });
       const node = result.nodeResults[0]!;
       expect(seenPaths).toEqual(["/container", "/container"]);
+      expect(observed).toEqual([[0, "container", 0], [1, "container", 1]]);
       expect(node.state).toBe("failed");
       expect(node.failureKind).toBe("script");
       expect(node.error).toContain("post explode");
-      expect(node.outcomes?.map((outcome) => outcome.row)).toEqual([0, 1, undefined]);
-      expect(node.outcomes?.slice(0, 2).every((outcome) => outcome.passed)).toBe(true);
-      expect(node.outcomes?.[2]?.failureKind).toBe("script");
+      expect(node.outcomes?.map((outcome) => outcome.row)).toEqual([0, 1]);
+      expect(node.outcomes?.every((outcome) => outcome.passed)).toBe(true);
+      const report = workflowToRunResult(result);
+      expect([report.total, report.passed, report.failed, report.workflow?.failed]).toEqual([2, 2, 0, 1]);
+      expect(reportingUnits(report).summary).toMatchObject({ total: 3, failed: 1, entryDiagnostics: 1 });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1217,12 +1241,14 @@ describe("WorkflowRunner", () => {
       expect(node.error, variant.name).toContain(variant.name);
       if (variant.pre) {
         expect(seenPaths, variant.name).toEqual([]);
-        expect(node.outcomes?.map((outcome) => outcome.passed), variant.name).toEqual([false]);
+        expect(node.outcomes, variant.name).toEqual([]);
       } else {
         expect(seenPaths, variant.name).toEqual(["/ancestor"]);
-        expect(node.outcomes?.map((outcome) => outcome.passed), variant.name).toEqual([true, false]);
-        expect(node.outcomes?.[1]?.failureKind, variant.name).toBe("script");
+        expect(node.outcomes?.map((outcome) => outcome.passed), variant.name).toEqual([true]);
       }
+      const report = workflowToRunResult(result);
+      expect([report.total, report.passed, report.failed, report.workflow?.failed], variant.name).toEqual([variant.pre ? 0 : 1, variant.pre ? 0 : 1, 0, 1]);
+      expect(reportingUnits(report).summary.entryDiagnostics, variant.name).toBe(1);
     }
   });
 

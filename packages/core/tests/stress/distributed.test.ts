@@ -14,6 +14,10 @@ import type {
 } from "../../src/stress/distributed.js";
 import { CurrentStressReportSchema, StressGeneratorSchema, StressMeasurementWindowSchema, StressReportSchema, StressSampleSchema } from "../../src/stress/model.js";
 import type { StressSample } from "../../src/stress/model.js";
+import { StressRunner } from "../../src/stress/runner.js";
+import type { CaseExecutionResult } from "../../src/runner/caseExecutor.js";
+import { createExecutionEvidenceCollector, redactExecutionOutput } from "../../src/report/evidence.js";
+import { createCredentialOutputSanitizer } from "../../src/credentials/output.js";
 
 /** 成功 shard 替身回传：固定样本批。 */
 const shardResult = (
@@ -164,6 +168,95 @@ describe("StressWorkerSpec contract revision descriptors", () => {
 });
 
 describe("DistributedStressCoordinator", () => {
+  it("C1 Fix2 private completion failure releases waiting peers and aborts owned transports without partial output", async () => {
+    const signals: AbortSignal[] = [];
+    await expect(new DistributedStressCoordinator().run({ apiPath: "/api", caseId: "c", definitionRevision: "r", credentialVersions: {}, networkIdentity: `sha256:${"0".repeat(64)}`, workspaceRoot: "/ws", concurrency: 2, maxIterations: 2 }, {
+      shards: 2, shardTimeoutMs: 30,
+      spawnWorker: async (spec, control) => {
+        signals.push(control.signal);
+        if (spec.shardId === "shard-1") return new Promise<ShardOutcome>(() => {});
+        await control.finalizeEvidence(["private-marker"]);
+        return shardResult(spec.shardId, [1]);
+      },
+    })).rejects.toThrow("completion incomplete");
+    expect(signals).toHaveLength(2); expect(signals.every((signal) => signal.aborted)).toBe(true);
+    await expect(new DistributedStressCoordinator().run({ apiPath: "/api", caseId: "c", definitionRevision: "r", credentialVersions: {}, networkIdentity: `sha256:${"0".repeat(64)}`, workspaceRoot: "/ws", concurrency: 1, maxIterations: 1 }, {
+      shards: 1, spawnWorker: async (spec, control) => {
+        await control.finalizeEvidence(["x".repeat(16 * 1024 * 1024)]);
+        return shardResult(spec.shardId, [1]);
+      },
+    })).rejects.toThrow("completion incomplete");
+    let partialHandshake = false;
+    await expect(new DistributedStressCoordinator().run({ apiPath: "/api", caseId: "c", definitionRevision: "r", credentialVersions: {}, networkIdentity: `sha256:${"0".repeat(64)}`, workspaceRoot: "/ws", concurrency: 2, maxIterations: 2 }, {
+      shards: 2, spawnWorker: async (spec, control) => {
+        if (spec.shardId === "shard-0") { await control.finalizeEvidence([]); return shardResult(spec.shardId, [1]); }
+        await new StressRunner({ finalizeEvidence: async (markers) => { partialHandshake = true; return control.finalizeEvidence(markers); },
+          createWorker: () => ({ close: async () => {}, execute: async () => ({
+            request: { protocol: "http", method: "GET", url: "https://example.test", headers: {}, query: [], auth: { kind: "none" } },
+            outcome: { apiId: "a", apiName: "a", caseId: "c", caseName: "c", passed: true, durationMs: 1, assertions: [] },
+            requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+            extractionOutcomes: [{ id: "e", name: "secret", selector: { target: "bodyText", match: "first" }, status: "extracted", code: "OK", pass: true, sensitive: true, published: true, message: "capacity", value: "z".repeat(16 * 1024 * 1024) }],
+          }) }),
+        }).run({ concurrency: 1, maxIterations: 1 });
+        return shardResult(spec.shardId, [1]);
+      },
+    })).rejects.toThrow("completion incomplete");
+    expect(partialHandshake).toBe(false);
+  });
+  it("C1 Fix2 unions successful and unsampled worker markers before complete rich content is clipped", async () => {
+    const cutoff = "cutoff-hidden-secret"; const nested = "nested-private-key";
+    const encoded = "private/encoded value";
+    const identity = { projectId: "project-passed", definitionRevision: "revision-passed" };
+    const { report } = await new DistributedStressCoordinator().run({ apiPath: "/api", caseId: "case", definitionRevision: "r", credentialVersions: {}, networkIdentity: `sha256:${"0".repeat(64)}`, workspaceRoot: "/ws", concurrency: 2, maxIterations: 44 }, {
+      shards: 2,
+      spawnWorker: async (spec, control) => {
+        let index = 0; const samples: ShardResult["samples"] = [];
+        const result = await new StressRunner({ evidenceIdentity: identity,
+          finalizeEvidence: async (markers) => { const union = await control.finalizeEvidence(markers); expect([...union]).toEqual([...union].sort()); return union; },
+          onSample: (sample) => samples.push({ requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1, requestStarted: true, requestCompleted: true, status: sample.status, ok: sample.ok, failureKind: sample.failureKind, error: sample.error, safety: sample.safety }),
+          createWorker: () => ({ execute: async () => {
+            const row = index++; const learns = spec.shardId === "shard-1";
+            const passed = learns && row === 21;
+            return { request: { protocol: "http", method: "GET", url: `https://example.test/${nested}`, query: [], headers: { business: encoded }, auth: { kind: "none" } },
+              response: { status: 200, headers: {}, bodyText: "rich detail " + "x".repeat(65536 - 6 - 12) + cutoff + ` ${nested} ${encodeURIComponent(encoded)}`, timeMs: 1 },
+              outcome: { apiId: "api-passed", caseId: "case-passed", apiName: "public API", caseName: "public case", passed, row, durationMs: 1, assertions: [], error: passed ? undefined : nested, failureKind: passed ? undefined : "assertion" },
+              assertionOutcomes: [{ id: "assertion-passed", op: "eq", selector: { target: "bodyText", match: "first", path: nested }, pass: false, code: "ASSERTION_FAILED", message: nested, actual: encoded, expected: "public expected" }],
+              extractionOutcomes: learns && row >= 20 ? [{ id: "extract", name: "token", selector: { target: "bodyText", match: "first" }, pass: true, status: "extracted", code: "OK", message: "learned", sensitive: true, published: true, value: passed ? cutoff : { [nested]: [encoded, "passed"] } }] : [],
+              safety: { origin: `https://${nested}.test`, confirmation: "confirmed", policy: "allowed", appliedPolicy: { trustedOrigins: [], deniedOrigins: [] } },
+              requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1, requestStarted: true, requestCompleted: true, failureKind: passed ? undefined : "assertion" } as CaseExecutionResult;
+          }, close: async () => {} }),
+        }).run({ concurrency: 1, maxIterations: 22 });
+        return { protocolVersion: 2, ok: true, shardId: spec.shardId, samples, generator: result.generator!, measurementWindow: result.measurementWindow!, failureEvidence: result.failureEvidence };
+      },
+    });
+    expect(report).toMatchObject({ totalRequests: 44, ok: 1, failed: 43, distributed: { dataComplete: true } });
+    expect(report.failureEvidence).toHaveLength(20);
+    expect(report.failureEvidence![0]!.identity).toMatchObject(identity);
+    expect(report.failureEvidence![0]!.request?.protocol).toBe("http");
+    const body = report.failureEvidence![0]!.response!.body;
+    expect(body.text).toContain("rich detail"); expect(body.text).not.toContain("cutoff"); expect(body.truncated).toBe(true);
+    expect(report.failureEvidence![0]!.assertions![0]!.expected?.text).toBe("public expected");
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain(nested); expect(serialized).not.toContain(encoded); expect(serialized).not.toContain(encodeURIComponent(encoded));
+    expect(serialized).not.toContain("markers"); expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(16 * 1024 * 1024);
+    // The final merged boundary shares its value/report budget across every business diagnostic channel.
+    const longDiagnostic = "D".repeat(4068) + cutoff + "z".repeat(8192);
+    const diagnostics = createExecutionEvidenceCollector(identity, [cutoff, nested, encoded]).projectStressReport({ ...report,
+      generator: { availability: "unavailable", unavailableReason: longDiagnostic },
+      distributed: { ...report.distributed!, perShard: report.distributed!.perShard.map((shard) => ({ ...shard, generator: { availability: "unavailable", unavailableReason: longDiagnostic } })), shardErrors: [{ shardId: "shard-0", error: longDiagnostic }] },
+      safety: { ...report.safety!, unavailableReason: longDiagnostic, targetOrigins: [{ ...report.safety!.targetOrigins[0]!, origin: longDiagnostic, appliedPolicy: { trustedOrigins: Array(150_000).fill("https://public.test"), deniedOrigins: [longDiagnostic] } }] },
+    }, true);
+    const values = [diagnostics.generator!.unavailableReason!, diagnostics.distributed!.perShard[0]!.generator.unavailableReason!, diagnostics.distributed!.shardErrors![0]!.error,
+      diagnostics.safety!.unavailableReason!, diagnostics.safety!.targetOrigins[0]!.origin, diagnostics.safety!.targetOrigins[0]!.appliedPolicy!.deniedOrigins![0]!];
+    for (const value of values) { expect(Buffer.byteLength(value)).toBeLessThanOrEqual(4096); expect(value).toMatch(/truncated|omitted/); expect(value).not.toContain("cuto"); }
+    const origins = diagnostics.safety!.targetOrigins[0]!.appliedPolicy!.trustedOrigins!;
+    expect(origins.length).toBeLessThan(150_000); expect(origins.at(-1)).toContain("omitted");
+    expect(diagnostics).toMatchObject({ totalRequests: 44, ok: 1, failed: 43 });
+    expect(diagnostics.failureEvidence).toHaveLength(20); expect(Buffer.byteLength(JSON.stringify(diagnostics))).toBeLessThanOrEqual(16 * 1024 * 1024);
+    const finalSink = redactExecutionOutput({ ...report, generator: { availability: "unavailable" as const, unavailableReason: longDiagnostic } }, createCredentialOutputSanitizer([cutoff, "D"]));
+    expect(Buffer.byteLength(finalSink.generator!.unavailableReason!)).toBeLessThanOrEqual(4096);
+    expect(finalSink.generator!.unavailableReason).toContain("truncated/omitted");
+  });
   // 定位/份额基础规格：concurrency 3 → 两 shard 分得 [2,1]；iterations 8 → [4,4]。
   const specBase = {
     apiPath: "/api/pet",
@@ -542,8 +635,8 @@ describe("StressReportSchema 旧报告兼容（D6）", () => {
     expect(CurrentStressReportSchema.safeParse(legacy).success).toBe(false);
     const current = {
       ...legacy,
-      failures: { transport: 0, http: 0, script: 0, assertion: 0, config: 0, aborted: 0 },
-      eligibleFailureCounts: { transport: 0, http: 0, script: 0, assertion: 0, config: 0, aborted: 0 },
+      failures: { transport: 0, http: 0, script: 0, assertion: 0, extraction: 0, config: 0, aborted: 0 },
+      eligibleFailureCounts: { transport: 0, http: 0, script: 0, assertion: 0, extraction: 0, config: 0, aborted: 0 },
       scriptLatency: legacy.latency, iterationLatency: legacy.latency,
       verdict: { passed: false, violations: [{ metric: "noData", actual: 0, expected: 1, message: "NO_DATA" }] },
       generator: {
@@ -560,6 +653,10 @@ describe("StressReportSchema 旧报告兼容（D6）", () => {
       measurementWindow: { startWallMs: 1_000, endWallMs: 1_000, monotonicDurationMs: 0, eligibleCompletedAttempts: 0 },
     };
     expect(CurrentStressReportSchema.safeParse(current).success).toBe(true);
+    const { extraction: _extraction, ...oldCounts } = current.failures;
+    const historical = { ...current, failures: oldCounts, eligibleFailureCounts: oldCounts };
+    expect(StressReportSchema.parse(historical).failures?.extraction).toBe(0);
+    expect(CurrentStressReportSchema.safeParse(historical).success).toBe(false);
   });
 });
 

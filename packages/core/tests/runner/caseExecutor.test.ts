@@ -14,6 +14,8 @@ import type { ExecutableRequest, ExecutionResponse, HttpExecuteOptions, Protocol
 import { builtinAuthProviders } from "../../src/http/auth.js";
 import { createHttpClient } from "../../src/http/client.js";
 import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
+import { builtinAssertOperators } from "../../src/assert/operators.js";
+import { prepareCaseExecution } from "../../src/runner/caseExecutor.js";
 import type { PreparedNetworkRun } from "../../src/network/prepare.js";
 
 const testCase: TestCase = {
@@ -108,6 +110,162 @@ function deps(client: ProtocolClient, beforeSend?: CaseExecutionDeps["beforeSend
 }
 
 describe("executeCase", () => {
+  // Both the old assertion message and dynamic-config error must keep host values out of reports.
+  it.each(["eq", "typed-config"] as const)("A3 Fix1 sensitive extraction stays host-internal for %s output", async (mode) => {
+    const token = "synthetic-sensitive-a3";
+    const state = input({ testCase: { ...testCase, preOperations: [], postOperations: [], assertions: [
+      mode === "eq"
+        ? { id: "secret-expected", target: "status", op: "eq", expected: "{{token}}" }
+        : { id: "secret-config", target: "status", op: "typed-config", expected: "{{token}}" },
+    ], extractors: [{ id: "secret", name: "token", method: "value", selector: { target: "bodyJson", path: "$.token" }, sensitive: true }] } });
+    const result = await executeCase(state, {
+      ...deps({ name: "sensitive-response", canHandle: () => true, async execute() { return { ...response, bodyText: JSON.stringify({ token }) }; } }),
+      resolveAssert: (op) => op === "typed-config" ? {
+        op, descriptor: { expectedFormat: "json", expectedRequired: true },
+        evaluate(_actual, expected) {
+          try { JSON.parse(expected!); return { pass: true, message: "JSON expected accepted" }; }
+          catch { return { pass: false, kind: "config", message: `Invalid JSON expected: ${expected}` }; }
+        },
+      } : builtinAssertOperators.find((operator) => operator.op === op),
+    });
+    expect(result.failureKind).toBe(mode === "eq" ? "assertion" : "config");
+    expect(result.assertionOutcomes?.[0]?.expected).toBe(token);
+    expect(result.assertionOutcomes?.[0]?.message).toContain(token);
+    expect(result.extractionOutcomes?.[0]).toMatchObject({ value: token, sensitive: true, published: true });
+    expect(JSON.stringify(result.outcome)).not.toContain(token);
+  });
+
+  it.each([null, false, 0, ""])("A3 optional defaults retain the JSON value %s and sensitivity", async (defaultValue) => {
+    const state = input({ testCase: { ...testCase, preOperations: [], postOperations: [], assertions: [], extractors: [
+      { id: "default", name: "defaulted", method: "value", selector: { target: "bodyJson", path: "$.missing" }, required: false, defaultValue },
+      { id: "cookie", name: "cookie", method: "value", selector: { target: "header", headerName: "Authorization" } },
+    ] } });
+    const result = await executeCase(state, deps({ name: "values", canHandle: () => true, async execute() { return { ...response, headers: { Authorization: "secret" } }; } }));
+    expect(result.outcome.passed).toBe(true);
+    expect(state.resolver.get("defaulted")).toBe(typeof defaultValue === "string" ? defaultValue : JSON.stringify(defaultValue));
+    expect(result.extractionOutcomes?.[0]).toMatchObject({ status: "defaulted", value: defaultValue });
+    expect(result.extractionOutcomes?.[1]?.sensitive).toBe(true);
+    expect(result.outcome).not.toHaveProperty("extractionOutcomes");
+  });
+
+  it("A3 optional absence removes the extraction binding and restores current row priority", async () => {
+    const extractionState = { bindings: new Map(), prepared: new WeakMap() };
+    const state = { ...input({ testCase: { ...testCase, parameters: { chosen: "parameter" }, preOperations: [], postOperations: [], assertions: [], extractors: [
+      { id: "optional", name: "chosen", method: "value", selector: { target: "bodyJson", path: "$.chosen" }, required: false },
+    ] } }), extractionState, row: { chosen: "row" } };
+    let first = true;
+    const executionDeps = deps({ name: "optional", canHandle: () => true, async execute() {
+      const bodyText = first ? '{"chosen":"current"}' : '{}'; first = false; return { ...response, bodyText };
+    } });
+    expect((await executeCase(state, executionDeps)).outcome.passed).toBe(true);
+    expect(state.resolver.get("chosen")).toBe("current");
+    const absent = await executeCase(state, executionDeps);
+    expect(absent.outcome.passed).toBe(true);
+    expect(absent.extractionOutcomes?.[0]?.status).toBe("absent");
+    expect(state.resolver.get("chosen")).toBe("row");
+  });
+
+  it.each(["script", "transport", "aborted"] as const)("A3 preserves earlier %s failure and clears extraction targets", async (kind) => {
+    const extractionState = { bindings: new Map([["extracted", { value: "old", text: "old", sensitive: false }]]), prepared: new WeakMap() };
+    const state = { ...input({ testCase: { ...testCase, assertions: [], preOperations: [], postOperations: kind === "script" ? [{ id: "fail", type: "script", content: "fail" }] : [], extractors: [
+      { id: "value", name: "extracted", method: "value", selector: { target: "bodyJson", path: "$.missing" } },
+    ] } }), extractionState };
+    const result = await executeCase(state, { ...deps({ name: "primary", canHandle: () => true, async execute() {
+      if (kind !== "script") throw Object.assign(new Error("request primary"), { name: kind === "aborted" ? "AbortError" : "Error" });
+      return response;
+    } }), scriptEngine: { language: "javascript", run() { throw new Error("script primary"); } } });
+    expect(result.failureKind).toBe(kind);
+    expect(result.extractionsCommitted).toBe(false);
+    expect(result.extractionOutcomes?.[0]?.status).toBe("notExecuted");
+    expect(extractionState.bindings.size).toBe(0);
+    expect(state.resolver.get("extracted")).toBeUndefined();
+  });
+
+  it("A3 preflights static config before dispatch and preserves dynamic assertion config kind", async () => {
+    let sent = 0;
+    const executionDeps = { ...deps({ name: "config", canHandle: () => true, async execute() { sent++; return response; } }),
+      resolveAssert: (op: string) => builtinAssertOperators.find((operator) => operator.op === op),
+    };
+    const invalid = input({ testCase: { ...testCase, preOperations: [], postOperations: [], assertions: [{ id: "unknown", op: "absent-plugin", target: "status" }] } });
+    expect((await executeCase(invalid, executionDeps)).failureKind).toBe("config");
+    expect(sent).toBe(0);
+    const badExtraction = input({ testCase: { ...testCase, preOperations: [], postOperations: [], assertions: [], extractors: [
+      { id: "bad-regex", name: "bad", method: "regex", selector: { target: "bodyText" }, pattern: "(?=unsupported)", required: false },
+    ] } });
+    const bad = await executeCase(badExtraction, executionDeps);
+    expect(bad.failureKind).toBe("config");
+    expect(bad.extractionOutcomes?.[0]).toMatchObject({ kind: "config", code: "REGEX_CONFIG", published: false });
+    expect(sent).toBe(0);
+    const dynamic = input({ testCase: { ...testCase, preOperations: [], postOperations: [], parameters: { expected: "invalid json" }, assertions: [{ id: "dynamic", op: "deepEqual", target: "bodyJson", expected: "{{expected}}" }] } });
+    const result = await executeCase(dynamic, executionDeps);
+    expect(sent).toBe(1);
+    expect(result.failureKind).toBe("config");
+    expect(result.assertionOutcomes?.[0]).toMatchObject({ kind: "config", code: "EXPECTED_CONFIG" });
+    expect(result.outcome.assertions[0]).not.toHaveProperty("actual");
+  });
+
+  it("A3 optional malformed response fails extraction and literal regex preparation is reused", async () => {
+    const state = input({ testCase: { ...testCase, preOperations: [], postOperations: [], assertions: [], extractors: [
+      { id: "regex", name: "text", method: "regex", selector: { target: "bodyJson", path: "$.text" }, pattern: "id=(\\d+)", group: 1, required: false },
+      { id: "cookie", name: "cookie", method: "value", selector: { target: "cookie", cookieName: "sid" }, required: false },
+    ] } });
+    const executionDeps = deps({ name: "malformed", canHandle: () => true, async execute() { return { ...response, bodyText: "not JSON" }; } });
+    const prepared = prepareCaseExecution(state.testCase, state.assetContext, state.asset.contract.id, executionDeps.resolveAssert);
+    const regex = prepared.extractions?.entries[0]?.regex;
+    const result = await executeCase({ ...state, prepared }, executionDeps);
+    expect(result.failureKind).toBe("extraction");
+    expect(result.extractionOutcomes?.[0]).toMatchObject({ code: "RESPONSE_PARSE", kind: "extraction" });
+    expect(regex).toBeDefined();
+    const headerPairs: [string, string][] = [["Set-Cookie", "sid=first"]];
+    const sharedResponse = { ...response, bodyText: '{"text":"id=7"}', rawHeaders: headerPairs };
+    executionDeps.resolveProtocol = () => ({ name: "reuse", canHandle: () => true, async execute() { return sharedResponse; } });
+    const first = await executeCase({ ...state, prepared }, executionDeps);
+    expect(first.extractionOutcomes?.[0]).toMatchObject({ status: "extracted", value: "7" });
+    expect(first.extractionOutcomes?.[1]).toMatchObject({ value: "first", sensitive: true });
+    sharedResponse.bodyText = '{"text":"id=8"}';
+    headerPairs[0]![1] = "sid=second";
+    const second = await executeCase({ ...state, prepared }, executionDeps);
+    expect(second.extractionOutcomes?.[0]).toMatchObject({ status: "extracted", value: "8" });
+    expect(first.response?.bodyText).toBe('{"text":"id=7"}');
+    expect(first.response?.rawHeaders?.[0]?.[1]).toBe("sid=first");
+    expect(second.extractionOutcomes?.[1]?.value).toBe("second");
+    expect(first.response).not.toBe(second.response);
+  });
+  // Missing publication, falsy handling or batch cleanup must break this real HTTP cycle.
+  it("A3 atomically extracts zero for current assertions and later cases, clearing a failed batch", async () => {
+    let attempt = 0;
+    const server = createServer((_request, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(attempt++ === 0 ? { id: 0, token: "fresh" } : { id: 1 }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const client = createHttpClient();
+    const extractionState = { bindings: new Map(), prepared: new WeakMap() };
+    const selected: TestCase = { ...testCase, preOperations: [], postOperations: [], parameters: {},
+      extractors: [
+        { id: "id", name: "id", method: "value", selector: { target: "bodyJson", path: "$.id" } },
+        { id: "token", name: "token", method: "value", selector: { target: "bodyJson", path: "$.token" } },
+      ], assertions: [{ id: "id", target: "bodyJson", path: "$.id", op: "eq", expected: "{{id}}" }],
+    };
+    const state = { ...input({ testCase: selected, request: { baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}` } }), extractionState };
+    try {
+      const first = await executeCase(state, deps(client));
+      expect(first.outcome.passed).toBe(true);
+      expect(first.extractionOutcomes?.map((outcome) => outcome.published)).toEqual([true, true]);
+      expect(state.resolver.get("id")).toBe("0");
+      const next = { ...state, testCase: { ...selected, extractors: [], assertions: [], preOperations: [{ id: "observe", type: "script" as const, content: 'pm.assert(pm.variables.get("id") === "0", "next case id");' }] } };
+      expect((await executeCase(next, { ...deps(client), scriptEngine: jsScriptEngine })).outcome.passed).toBe(true);
+      const failed = await executeCase(state, deps(client));
+      expect(failed.failureKind).toBe("extraction");
+      expect(failed.extractionOutcomes?.map((outcome) => outcome.published)).toEqual([false, false]);
+      expect(state.resolver.get("id")).toBeUndefined();
+      expect(state.resolver.get("token")).toBe("token-from-script");
+    } finally {
+      await client.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
   it("executes final request with row, scripts, auth, assertions and persists variables", async () => {
     let seen: ExecutableRequest | undefined;
     const client: ProtocolClient = {
@@ -394,14 +552,16 @@ describe("executeCase", () => {
       testCase: { ...validInput.testCase, assertions: [{ id: "unknown", target: "status", op: "missing" as never, expected: "200" }] },
     }, { ...deps({ name: "test", canHandle: () => true, execute: async () => response }), resolveAssert: () => undefined });
     expect(unknown.failureKind).toBe("config");
-    expect(unknown.outcome.error).toContain("未知断言操作符");
+    expect(unknown.outcome.error).toBeTruthy();
+    expect(unknown.assertionOutcomes?.[0]).toMatchObject({ kind: "config", code: "OPERATOR_UNKNOWN" });
 
     const throwing = await executeCase(input(), {
       ...deps({ name: "test", canHandle: () => true, execute: async () => response }),
       resolveAssert: () => ({ op: "eq", evaluate() { throw new Error("assert plugin exploded"); } }),
     });
     expect(throwing.failureKind).toBe("config");
-    expect(throwing.outcome.error).toBe("assert plugin exploded");
+    expect(throwing.assertionOutcomes?.[0]?.message).toContain("assert plugin exploded");
+    expect(throwing.outcome.error).not.toContain("assert plugin exploded");
   });
 
   it("classifies missing SOAP envelope as config without protocol I/O", async () => {

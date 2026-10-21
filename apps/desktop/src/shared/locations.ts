@@ -15,6 +15,8 @@ export const ComponentLocatorSchema = ProjectLocatorSchema.extend({
   componentId: IdSchema,
 }).strict();
 export const WorkflowLocatorSchema = ProjectLocatorSchema.extend({ workflowId: IdSchema }).strict();
+export const DatasetLocatorSchema = ProjectLocatorSchema.extend({ datasetId: IdSchema }).strict();
+export const SuiteLocatorSchema = ProjectLocatorSchema.extend({ suiteId: IdSchema }).strict();
 export const CaseLocatorSchema = ApiLocatorSchema.extend({ caseId: z.string(), scope: z.string() }).strict();
 export const WorkflowImpactLocatorSchema = ApiLocatorSchema.extend({ caseId: z.string().optional() }).strict();
 
@@ -42,6 +44,8 @@ export type EnvironmentLocator = z.infer<typeof EnvironmentLocatorSchema>;
 export type ModelLocator = z.infer<typeof ModelLocatorSchema>;
 export type ComponentLocator = z.infer<typeof ComponentLocatorSchema>;
 export type WorkflowLocator = z.infer<typeof WorkflowLocatorSchema>;
+export type DatasetLocator = z.infer<typeof DatasetLocatorSchema>;
+export type SuiteLocator = z.infer<typeof SuiteLocatorSchema>;
 export type CaseLocator = z.infer<typeof CaseLocatorSchema>;
 export type WorkflowImpactLocator = z.infer<typeof WorkflowImpactLocatorSchema>;
 export type ApiParentLocator = z.infer<typeof ApiParentLocatorSchema>;

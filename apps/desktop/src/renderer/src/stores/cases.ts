@@ -70,6 +70,8 @@ export function useCasesStore(_api: ApiccApi, editor: Editor) {
           preOperations: [],
           postOperations: [],
           assertions: [],
+          tags: [],
+          extractors: [],
         };
         editor.api.cases.push(created);
         this.selectedCase = { caseId: created.id, scope: created.scope };

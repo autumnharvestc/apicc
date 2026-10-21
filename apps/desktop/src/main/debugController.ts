@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { ApiLocatorSchema, CaseLocatorSchema, EnvironmentLocatorSchema, ProjectLocatorSchema } from "../shared/locations.js";
 import { DebugInvocationSchema } from "@apicc/core/schema";
-import { debugHttpSessionKey } from "./executionContext.js";
+import { debugHttpSessionKey, prepareDesktopTestData } from "./executionContext.js";
 import type { createSession } from "./session.js";
 import type { DebugCredentialHost } from "./credentialHost.js";
 
@@ -153,7 +153,7 @@ export function createDebugController(
           return;
         }
         if (preparation.kind === "error") throw preparation.error;
-        const prepared = preparation.value;
+        const prepared = await prepareDesktopTestData(preparation.value, plan.credentialSelections, root, invocation.environmentId);
         credentialMarkers = prepared.markers;
         projectionReliable = true;
         if (abort.signal.aborted) {

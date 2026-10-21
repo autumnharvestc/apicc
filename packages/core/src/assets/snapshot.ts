@@ -23,16 +23,21 @@ export function createProjectSnapshot(project: ContractProject): ProjectSnapshot
   if (!ContractProjectSchema.safeParse(frozenProject).success) {
     throw new TypeError("Project snapshots require a valid contract project definition.");
   }
-  const definitionRevision = createHash("sha256").update(canonicalJson(frozenProject)).digest("hex");
-  deepFreeze(frozenProject);
-  const assets = collectProjectApis(frozenProject);
+  canonicalJson(frozenProject);
+  const normalized = ContractProjectSchema.parse(frozenProject);
+  const definitionRevision = createHash("sha256").update(canonicalJson(normalized)).digest("hex");
+  deepFreeze(normalized);
+  const assets = collectProjectApis(normalized);
   const context = createReadonlyProjectAssetContext({
-    projectId: frozenProject.id,
+    projectId: normalized.id,
     assets,
-    models: frozenProject.models,
-    components: frozenProject.components,
+    models: normalized.models,
+    components: normalized.components,
+    datasets: normalized.datasets,
+    suites: normalized.suites,
+    project: normalized,
   });
-  return { project: frozenProject, context, definitionRevision };
+  return { project: normalized, context, definitionRevision };
 }
 
 function collectProjectApis(project: ContractProject): ApiAsset[] {
@@ -99,7 +104,7 @@ function canonicalize(value: unknown, ancestors: WeakSet<object>): string {
 
 function isFormalOptionalProjectField(parent: Record<string, unknown>, key: string): boolean {
   const kind = parent.kind;
-  if (key === "mock" && Object.hasOwn(parent, "globals") && Object.hasOwn(parent, "stressPolicy") && Object.hasOwn(parent, "collections")) return true;
+  if (["mock", "datasets", "suites"].includes(key) && Object.hasOwn(parent, "globals") && Object.hasOwn(parent, "stressPolicy") && Object.hasOwn(parent, "collections")) return true;
   if (isSchemaNodeKind(kind) && ["description", "default", "examples", "enum"].includes(key)) return true;
   if (key === "extends" && Object.hasOwn(parent, "baseUrls") && Object.hasOwn(parent, "variables")) return true;
   if (parent.protocol === "websocket" && key === "message") return true;
@@ -111,11 +116,16 @@ function isFormalOptionalProjectField(parent: Record<string, unknown>, key: stri
   if (parent.kind === "file" && Object.hasOwn(parent, "file") && ["contentType", "filename"].includes(key)) return true;
   if (Array.isArray(parent.examples) && key === "schema") return true;
   if (Object.hasOwn(parent, "id") && Object.hasOwn(parent, "target") && Object.hasOwn(parent, "op")
-    && ["expected", "headerName", "path"].includes(key)) return true;
+    && ["expected", "headerName", "path", "cookieName", "namespaces", "match", "options"].includes(key)) return true;
+  if (Object.hasOwn(parent, "selector") && ["pattern", "flags", "group", "regexMatch", "required", "defaultValue", "sensitive"].includes(key)) return true;
+  if (Object.hasOwn(parent, "target") && ["path", "headerName", "cookieName", "namespaces", "match"].includes(key)) return true;
+  if (parent.formatVersion === 1 && Object.hasOwn(parent, "selection") && ["description", "tags", "environmentId", "datasetId", "failFast", "reporters"].includes(key)) return true;
+  if (parent.formatVersion === 1 && Array.isArray(parent.columns) && key === "description") return true;
+  if (parent.kind === "query" && ["collectionIds", "caseTags"].includes(key)) return true;
   if ((kind === "request" || kind === "noop") && ["apiId", "caseId", "label", "position"].includes(key)) return true;
   if (Object.hasOwn(parent, "from") && Object.hasOwn(parent, "to") && key === "condition") return true;
   if (Array.isArray(parent.assertions) && Object.hasOwn(parent, "parameters")
-    && ["dataDriver", "requestOverride", "requestSettingsOverride"].includes(key)) return true;
+    && ["dataDriver", "requestOverride", "requestSettingsOverride", "tags", "extractors"].includes(key)) return true;
   if (Array.isArray(parent.trustedOrigins) && Array.isArray(parent.deniedOrigins)
     && (key === "maxConcurrency" || key === "maxRps")) return true;
   return false;

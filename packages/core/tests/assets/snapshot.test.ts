@@ -33,6 +33,8 @@ describe("project snapshots", () => {
     revisionAfter((project) => { project.stressPolicy.maxConcurrency = 7; });
     revisionAfter((project) => { project.models[0].name = "changed model"; });
     revisionAfter((project) => { project.components[0].name = "changed component"; });
+    revisionAfter((project) => { project.datasets = [{ formatVersion: 1, id: "00000000-0000-4000-8000-000000000080", name: "typed", columns: ["v"], rows: [{ v: false }] }]; });
+    revisionAfter((project) => { project.suites = [{ formatVersion: 1, id: "00000000-0000-4000-8000-000000000081", name: "draft", tags: [], selection: { kind: "query", caseTags: ["smoke"] }, failFast: false, reporters: ["html"] }]; });
     revisionAfter((project) => { project.collections[0].apis[0].documentation = "changed API"; });
   });
 

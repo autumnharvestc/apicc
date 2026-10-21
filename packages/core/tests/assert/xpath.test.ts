@@ -1,10 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { builtinAssertOperators } from "../../src/assert/operators.js";
 import { createDefaultRegistry } from "../../src/index.js";
+import { selectResponseValue } from "../../src/assert/selection.js";
+import { compileCaseAssertions, evaluateCaseAssertions } from "../../src/assert/evaluate.js";
+import { createProjectAssetContext } from "../../src/assets/context.js";
+import { TestCaseSchema } from "../../src/domain/common.js";
+import { createVariableResolver } from "../../src/variables/resolver.js";
 
 const xpathOp = builtinAssertOperators.find((o) => o.op === "xpath");
 
 describe("xpath 断言操作符（M5 D6，裁定 B）", () => {
+  it.each(["0 div 0", "1 div 0"])("Fix1 selector rejects non-finite XPath scalar %s", (path) => {
+    const response = { status: 200, timeMs: 1, headers: {}, bodyText: "<root/>" };
+    expect(() => selectResponseValue({ target: "bodyXml", path, match: "first" }, response)).toThrow(expect.objectContaining({ kind: "assertion", code: "SELECTOR_VALUE" }));
+  });
+  it.each(["0 div 0", "1 div 0"])("Fix1 exists cannot pass a non-finite XPath scalar %s", (path) => {
+    const context = createProjectAssetContext({ projectId: "p", assets: [], models: [], components: [] });
+    const testCase = TestCaseSchema.parse({ id: "case", name: "case", assertions: [{ id: "finite", target: "bodyXml", path, op: "exists" }] });
+    const compiled = compileCaseAssertions(testCase, context, createDefaultRegistry());
+    expect(compiled.diagnostics).toEqual([]);
+    const [outcome] = evaluateCaseAssertions(compiled, { status: 200, timeMs: 1, headers: {}, bodyText: "<root/>" }, createVariableResolver({ layers: [] }));
+    expect(outcome).toMatchObject({ pass: false, kind: "assertion", code: "SELECTOR_VALUE" });
+    expect(outcome).not.toHaveProperty("actual");
+  });
+  it("F4 selector binds namespaces, returns JSON scalars and ordered node strings", () => {
+    const response = { status: 200, timeMs: 1, headers: {}, bodyText: '<n:Users xmlns:n="urn:x"><n:id>1</n:id><n:id>2</n:id></n:Users>' };
+    expect(selectResponseValue({ target: "bodyXml", path: "//n:id", namespaces: { n: "urn:x" }, match: "all" }, response).value).toEqual(["1", "2"]);
+    expect(selectResponseValue({ target: "bodyXml", path: "count(//n:id)", namespaces: { n: "urn:x" }, match: "first" }, response).value).toBe(2);
+    expect(selectResponseValue({ target: "bodyXml", path: "false()", match: "first" }, response)).toMatchObject({ found: true, value: false });
+    expect(() => selectResponseValue({ target: "bodyXml", path: "//unbound:id", match: "first" }, response)).toThrow("XPath namespace");
+    expect(() => selectResponseValue({ target: "bodyXml", path: "//id", match: "first" }, { ...response, bodyText: "<root><id>1</id>" })).toThrow("parse failed");
+  });
   it("注册进 builtinAssertOperators 并可经 createDefaultRegistry 取用", () => {
     expect(xpathOp).toBeDefined();
     expect(createDefaultRegistry().getAssert("xpath")).toBe(xpathOp);

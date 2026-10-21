@@ -1,12 +1,15 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createExecutionEvidenceCollector, redactExecutionOutput, type EvidenceOutputBoundary } from "@apicc/core";
 import { homedir, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generatePluginPackage } from "./create-plugin.js";
+import { createPrivateStressWorkerFactory, createWorkerEvidenceFinalizer } from "./stressWorkerTransport.js";
 import {
   ShardOutcomeSchema,
+  PreparedTestDataSchema,
+  type PreparedTestData,
   CredentialError,
   CurrentStressReportSchema,
   CollectionRunError,
@@ -95,6 +98,7 @@ import {
 } from "./credentials.js";
 import type { ExecutionCredentialSelection } from "./credentials.js";
 import { createOutputSanitizer } from "./output.js";
+import { registerTestingCommands } from "./testing.js";
 import {
   assertWorkspaceUsable,
   listApiLocations,
@@ -282,6 +286,8 @@ export interface RunCliDeps {
   workerOut?: (line: string) => void;
   /** stress-worker 人类日志通道（默认 console.error → stderr；stdout 只许末行 JSON）。 */
   workerErr?: (line: string) => void;
+  /** Run-private completion seam for injected worker fixtures; never part of a public result. */
+  workerFinalizeEvidence?: (markers: readonly string[]) => Promise<readonly string[]>;
   /** 默认 SpawnWorker 工厂（默认本地子进程实现；入参为 shard 超时毫秒，与协调器同值）。 */
   spawnWorkerFactory?: (shardTimeoutMs: number) => SpawnWorker;
   /** AI 配置解析注入：env 快照（裁定⑤；缺省 process.env，测试显式注入保证确定性）。 */
@@ -452,8 +458,7 @@ export function parseShardOutcomeStdout(
     }
     const parsed = ShardOutcomeSchema.safeParse(value);
     if (!parsed.success) {
-      const detail = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
-      throw new Error(`shard ${ctx.shardId} 协议输出无效[protocol_invalid]：${detail}`);
+      throw new Error(`shard ${ctx.shardId} 协议输出无效[protocol_invalid]`);
     }
     const integerExitCode = Number.isInteger(ctx.exitCode) && Number.isFinite(ctx.exitCode);
     if (parsed.data.ok && ctx.exitCode !== 0) {
@@ -473,10 +478,9 @@ export function parseShardOutcomeStdout(
  * 默认 SpawnWorker 工厂（D2 MVP 本地子进程 stdio 传输）：spawn node + [bin.js, stress-worker, …]。
  * 裁定 A：自带与协调器同值的超时并 child.kill()——协调器放弃后真实子进程不得残留；kill 后仍按失败 shard 计。
  * 裁定 B：按行从末解析 stdout（parseShardOutcomeStdout 纯函数，防 worker 日志污染 stdout 致协议崩坏）；
- * 子进程 stderr 透传父进程 stderr。
+ * 私有 IPC 在所有 worker 完成后汇合敏感标记；stderr 仅宿主消耗，不透传未经全局投影的诊断。
  */
-const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec) =>
-  new Promise<ShardOutcome>((resolve, reject) => {
+const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => createPrivateStressWorkerFactory(shardTimeoutMs, (spec) => {
     const args = [
       cliEntryPath(), "stress-worker", spec.apiPath,
       "--case", spec.caseId,
@@ -497,31 +501,9 @@ const defaultSpawnWorkerFactory = (shardTimeoutMs: number): SpawnWorker => (spec
       "--credential-versions", JSON.stringify(spec.credentialVersions),
       "--network-identity", spec.networkIdentity,
     ];
-    const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
-    child.stderr?.pipe(process.stderr);
-    let stdout = "";
-    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const settle = (fn: () => void): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      fn();
-    };
-    timer = setTimeout(() => {
-      child.kill();
-      settle(() => reject(new Error(`shard ${spec.shardId} 超时：${shardTimeoutMs}ms 内未完成，已终止子进程`)));
-    }, shardTimeoutMs);
-    child.on("error", (e: Error) => settle(() => reject(e)));
-    child.on("close", (code) => settle(() => {
-      try {
-        resolve(parseShardOutcomeStdout(stdout, { shardId: spec.shardId, exitCode: code }));
-      } catch (e) {
-        reject(e instanceof Error ? e : new Error(String(e)));
-      }
-    }));
-  });
+    if (spec.preparedTestData !== undefined) args.push("--prepared-data-stdin");
+    return args;
+  }, parseShardOutcomeStdout);
 
 /** Prepare one immutable snapshot and the selected API's credentials for stress or its worker. */
 async function resolveStressTarget(
@@ -531,7 +513,7 @@ async function resolveStressTarget(
   caseId: string,
   envName: string | undefined,
   credentialOptions: CredentialHostOptions = {},
-  expected?: { definitionRevision: string; credentialVersions: Readonly<Record<string, string>>; networkIdentity?: string },
+  expected?: { definitionRevision: string; credentialVersions: Readonly<Record<string, string>>; networkIdentity?: string; preparedTestData?: PreparedTestData },
 ): Promise<{
   apiPath: string;
   apiId: string;
@@ -548,6 +530,9 @@ async function resolveStressTarget(
     confirmedTargetOrigins?: string[];
     connectionMode?: "pooled" | "fresh";
     onSample?: (sample: StressSample) => void;
+    finalizeEvidence?: (markers: readonly string[]) => Promise<readonly string[]>;
+    onEvidenceMarkers?: (markers: readonly string[]) => void;
+    onEvidenceOutputBoundary?: (boundary: EvidenceOutputBoundary) => void;
   }) => StressRunner;
 }> {
   const location = await locateApiTarget(registry, root, apiPath);
@@ -573,6 +558,7 @@ async function resolveStressTarget(
       workspaceRoot: root,
       ...(environmentId === undefined ? {} : { environmentId }),
       ...(expected?.networkIdentity === undefined ? {} : { expectedNetworkIdentity: expected.networkIdentity }),
+      ...(expected === undefined ? {} : { preparedTestData: expected.preparedTestData ?? null }),
     });
   const preparedProject = prepared.snapshot.project;
   const preparedLocation = findProjectApi(preparedProject, apiId);
@@ -621,7 +607,12 @@ async function resolveStressTarget(
     createRunner: (options = {}) => {
       const maxRps = options.maxRps ?? project.stressPolicy?.maxRps;
       return new StressRunner({
+        evidenceIdentity: { projectId: prepared.snapshot.project.id, definitionRevision: prepared.snapshot.definitionRevision, environmentId: env?.id, dataDigest: prepared.run.preparedTestData?.digest },
+        evidenceMarkers: prepared.secrets,
         onSample: options.onSample,
+        finalizeEvidence: options.finalizeEvidence,
+        onEvidenceMarkers: options.onEvidenceMarkers,
+        onEvidenceOutputBoundary: options.onEvidenceOutputBoundary,
         createWorker: (workerId) => {
           let ownedHttp: ReturnType<typeof createHttpClient> | undefined;
           let ownedSoap: ReturnType<typeof createSoapClient> | undefined;
@@ -680,6 +671,7 @@ export async function runCli(
   const { Command, Option } = await import("commander");
   const program = new Command();
   program.name("apicc").description("apicc 命令行——接口定义与测试驱动开发").version("0.1.0");
+  registerTestingCommands(program, { registry, log, workspaceRoot: () => findWorkspaceRoot(process.cwd()), credentialOptions: credentialHostOptions(deps) });
 
   // M7-A D4：命令分发前加载用户级插件（~/.apicc/plugins.json）。--no-plugins 逃生开关（commander
   // 布尔取反：缺省 opts.plugins === true，传旗标即 false）；deps.loadPlugins=false 为编程关闭通道
@@ -911,7 +903,9 @@ export async function runCli(
     .option("--reporters <list>", "报告格式，逗号分隔", "html")
     .option("--runs-dir <dir>", "运行历史输出目录")
     .option("--fail-fast", "首个失败后停止", false)
-    .action(async (collectionPath: string, opts: { env: string; reporters: string; runsDir?: string; failFast: boolean }) => {
+    .option("--evidence <mode>", "证据正文 none,failures,all", "failures")
+    .action(async (collectionPath: string, opts: { env: string; reporters: string; runsDir?: string; failFast: boolean; evidence: "none" | "failures" | "all" }) => {
+      if (!["none", "failures", "all"].includes(opts.evidence)) throw new Error("证据模式仅支持 none,failures,all");
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
       const state = await loadWorkspace(registry, root);
@@ -954,26 +948,29 @@ export async function runCli(
       // Host persists only the projected result; do not let Core write an unredacted raw result.
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
       let result: import("@apicc/core").RunResult;
+      const evidence = createExecutionEvidenceCollector({ projectId: runPrepared.snapshot.project.id, definitionRevision: runPrepared.snapshot.definitionRevision, environmentId: env.id, dataDigest: runPrepared.run.preparedTestData?.digest }, runPrepared.secrets, { mode: opts.evidence });
       let runFailure = false;
+      let runError: string | undefined;
       const httpSession = createHttpSession();
       try {
-        result = await runner.run(runPrepared.run, collection.id, { environmentId: env.id, workspaceRoot: root, httpSession });
+        result = await runner.run(runPrepared.run, collection.id, { environmentId: env.id, workspaceRoot: root, httpSession, observeCaseExecution: evidence.observe });
       } catch (error) {
         if (!(error instanceof CollectionRunError)) throw error;
         result = error.partialResult;
         runFailure = true;
-        safeLog(sanitizer.redactText(error.message));
+        runError = error.message;
       } finally {
         await httpSession.close();
       }
-      const safeResult = sanitizer.redactValue(result);
+      const safeResult = evidence.projectRun(result);
+      if (runError) safeLog(evidence.boundary().redactText(runError).slice(0, 4096));
       mkdirSync(runsOutDir, { recursive: true });
       writeFileSync(join(runsOutDir, `run-${nextRunFileId()}.json`), JSON.stringify(safeResult, null, 2));
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
         if (!reporter) throw new Error(`未注册报告格式: ${format}`);
-        const file = await reporter.render(safeResult, runsOutDir);
-        safeLog(`报告已生成: ${file}`);
+        try { const file = await reporter.render(safeResult, runsOutDir); safeLog(`报告已生成: ${file}`); }
+        catch { runFailure = true; safeLog(`${format} 报告渲染失败；安全 JSON 已保留`); }
       }
       safeLog(`总计 ${safeResult.total} · 通过 ${safeResult.passed} · 失败 ${safeResult.failed}`);
       process.exitCode = runFailure || safeResult.failed > 0 ? 1 : 0;
@@ -989,7 +986,9 @@ export async function runCli(
     .option("--no-strict", "缺失引用不中断独立节点诊断（本次结果仍失败）")
     .option("--reporters <list>", "报告格式，逗号分隔", "html")
     .option("--runs-dir <dir>", "运行历史输出目录")
-    .action(async (workflowPath: string, opts: { env?: string; forceDraft: boolean; strict: boolean; reporters: string; runsDir?: string }) => {
+    .option("--evidence <mode>", "证据正文 none,failures,all", "failures")
+    .action(async (workflowPath: string, opts: { env?: string; forceDraft: boolean; strict: boolean; reporters: string; runsDir?: string; evidence: "none" | "failures" | "all" }) => {
+      if (!["none", "failures", "all"].includes(opts.evidence)) throw new Error("证据模式仅支持 none,failures,all");
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
       const state = await loadWorkspace(registry, root);
@@ -1040,25 +1039,28 @@ export async function runCli(
       const runner = new WorkflowRunner({ registry, environmentId: env?.id, failFast: false, strict: opts.strict });
       const httpSession = createHttpSession();
       let wfr: import("@apicc/core").WorkflowRunResult;
+      const evidence = createExecutionEvidenceCollector({ projectId: runPrepared.snapshot.project.id, definitionRevision: runPrepared.snapshot.definitionRevision, workflowId: workflow.id, environmentId: env?.id, dataDigest: runPrepared.run.preparedTestData?.digest }, runPrepared.secrets, { mode: opts.evidence });
       try {
-        wfr = sanitizer.redactValue(await runner.run(runPrepared.run, workflow.id, {
+        wfr = evidence.projectWorkflow(await runner.run(runPrepared.run, workflow.id, {
           environmentId: env?.id,
           workspaceRoot: root,
           httpSession,
+          observeCaseExecution: (execution, identity) => evidence.observe(execution, { ...identity, entryId: identity.nodeId }),
         }));
       } finally {
         await httpSession.close();
       }
-      const result = sanitizer.redactValue(workflowToRunResult(wfr));
+      const result = wfr.report!;
       // The projected raw result is durable before any reporter is invoked.
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
       mkdirSync(runsOutDir, { recursive: true });
-      writeFileSync(join(runsOutDir, `workflow-${wfr.workflowId}-${randomUUID()}.json`), JSON.stringify(wfr, null, 2));
+      writeFileSync(join(runsOutDir, `workflow-${wfr.workflowId}-${randomUUID()}.json`), JSON.stringify(result, null, 2));
+      let reportFailure = false;
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
         if (!reporter) throw new Error(`未注册报告格式: ${format}`);
-        const file = await reporter.render(result, runsOutDir);
-        safeLog(`报告已生成: ${file}`);
+        try { const file = await reporter.render(result, runsOutDir); safeLog(`报告已生成: ${file}`); }
+        catch { reportFailure = true; safeLog(`${format} 报告渲染失败；安全 JSON 已保留`); }
       }
       for (const w of wfr.warnings) safeLog(`[警告] ${w}`);
       for (const node of wfr.nodeResults) {
@@ -1067,7 +1069,7 @@ export async function runCli(
         }
       }
       safeLog(`节点统计：总计 ${wfr.total} · 通过 ${wfr.passed} · 失败 ${wfr.failed} · 跳过 ${wfr.skipped}`);
-      process.exitCode = wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0;
+      process.exitCode = reportFailure || wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0;
     });
 
   program
@@ -1185,8 +1187,7 @@ export async function runCli(
         await httpSession?.close();
       }
 
-      const sanitizer = createOutputSanitizer(preparedSecrets);
-      const safeResult = sanitizer.redactValue(result);
+      const safeResult = result; // DebugResultSchema already finalized the typed, marker-safe DTO.
       if (opts.history) {
         const store = createDebugHistoryStore({
           root: defaultDebugHistoryRoot(deps.debugHistoryAppDataDirectory ?? cliAppDataDirectory()),
@@ -1345,6 +1346,7 @@ export async function runCli(
           credentialVersions: Object.fromEntries(Object.keys(targetInfo.prepared.run.credentialBindings.versions)
             .map((refId) => [refId, targetInfo.prepared.run.credentialBindings.versions[refId]!])),
           networkIdentity: targetInfo.prepared.network!.identity,
+          preparedTestData: targetInfo.prepared.run.preparedTestData,
           envName: opts.env,
           concurrency: opts.concurrency,
           workspaceRoot: root,
@@ -1382,7 +1384,9 @@ export async function runCli(
         throw new Error(`压测报告契约校验失败[current_report_invalid]：${detail}`);
       }
       report = currentReport.data;
-      report = sanitizer.redactValue(report);
+      report.projectId = targetInfo.project.id;
+      report.definitionRevision = targetInfo.prepared.snapshot.definitionRevision;
+      report = redactExecutionOutput(report, sanitizer);
       writeFileSync(join(runsOutDir, `stress-${apiId}-${Date.now()}.json`), JSON.stringify(report, null, 2));
       const l = report.latency;
       log(`压测完成：总计 ${report.totalRequests} · 成功 ${report.ok} · 失败 ${report.failed} · RPS ${report.rps.toFixed(1)}`);
@@ -1462,19 +1466,36 @@ export async function runCli(
     .requiredOption("--definition-revision <revision>", "协调端固定的项目定义版本描述符")
     .requiredOption("--credential-versions <json>", "协调端固定的凭据版本 JSON 字典（不含凭据值）")
     .option("--network-identity <digest>", "协调端固定的非秘密网络配置与公开证书材料身份摘要")
+    .option("--prepared-data-stdin", "从协调端标准输入接收固定数据快照", false)
+    .option("--private-evidence-ipc", "协调端专用运行完成控制通道", false)
     .action(async (apiPath: string, opts: {
       case: string; env?: string; concurrency: number; iterations?: number; duration?: number; maxRps?: number;
       maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
       connectionMode: "pooled" | "fresh"; allowTarget: string[]; shardId: string; workspace: string;
       definitionRevision: string; credentialVersions: string;
       networkIdentity?: string;
+      preparedDataStdin: boolean;
+      privateEvidenceIpc: boolean;
     }) => {
       const out = deps.workerOut ?? ((line: string) => { process.stdout.write(`${line}\n`); });
       const err = deps.workerErr ?? ((line: string) => { console.error(line); });
       let redactText = (line: string): string => line;
+      const privateFinalize = deps.workerFinalizeEvidence ?? (opts.privateEvidenceIpc ? createWorkerEvidenceFinalizer(opts.shardId) : undefined);
+      let workerMarkers: readonly string[] = []; let finalized = false; let executionStarted = false;
+      let workerBoundary: EvidenceOutputBoundary | undefined;
+      const acceptBoundary = (boundary: EvidenceOutputBoundary) => { workerBoundary = boundary; redactText = boundary.redactText; };
+      const acceptMarkers = (markers: readonly string[]) => {
+        workerMarkers = markers;
+        acceptBoundary(createExecutionEvidenceCollector({ projectId: "", definitionRevision: opts.definitionRevision }, workerMarkers).boundary());
+      };
+      const finalize = async (markers: readonly string[]) => {
+        finalized = true;
+        acceptMarkers(await privateFinalize!(markers));
+        return workerMarkers;
+      };
       const fail = (message: string): void => {
         const safeMessage = redactText(message);
-        err(`[stress-worker ${opts.shardId}] ${safeMessage}`);
+        if (!opts.privateEvidenceIpc) err(`[stress-worker ${opts.shardId}] ${safeMessage}`);
         const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: opts.shardId, error: safeMessage };
         out(JSON.stringify(failure));
         process.exitCode = 1;
@@ -1494,6 +1515,19 @@ export async function runCli(
         }
         const confirmedTargetOrigins = [...new Set((opts.allowTarget ?? []).map(validateStressOriginOption))];
         const credentialVersions = parseExpectedCredentialVersions(opts.credentialVersions);
+        let preparedTestData: PreparedTestData | undefined;
+        if (opts.preparedDataStdin) {
+          const chunks: Buffer[] = [];
+          let size = 0;
+          for await (const chunk of process.stdin) {
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            size += buffer.length;
+            if (size > 128 * 1024 * 1024) throw new Error("worker 准备数据消息超过容量限制");
+            chunks.push(buffer);
+          }
+          try { preparedTestData = PreparedTestDataSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+          catch { throw new Error("worker 准备数据消息无效"); }
+        }
         const targetInfo = await resolveStressTarget(
           registry,
           opts.workspace,
@@ -1501,9 +1535,10 @@ export async function runCli(
           opts.case,
           opts.env,
           credentialHostOptions(deps),
-          { definitionRevision: opts.definitionRevision, credentialVersions, networkIdentity: opts.networkIdentity },
+          { definitionRevision: opts.definitionRevision, credentialVersions, networkIdentity: opts.networkIdentity, ...(preparedTestData === undefined ? {} : { preparedTestData }) },
         );
         const sanitizer = createOutputSanitizer(targetInfo.prepared.secrets);
+        workerMarkers = targetInfo.prepared.secrets;
         redactText = sanitizer.redactText;
         const effectiveMaxRps = opts.maxRps === undefined
           ? targetInfo.project.stressPolicy?.maxRps
@@ -1523,20 +1558,22 @@ export async function runCli(
           ...(opts.maxP95Ms !== undefined ? { maxP95Ms: opts.maxP95Ms } : {}),
           ...(opts.minRps !== undefined ? { minRps: opts.minRps } : {}),
         };
+        executionStarted = true;
         const report = await targetInfo.createRunner({
-          onSample: (sample) => samples.push(sanitizer.redactValue({
+          ...(privateFinalize ? { finalizeEvidence: finalize } : { onEvidenceOutputBoundary: acceptBoundary }),
+          onSample: (sample) => samples.push({
           requestTimeMs: sample.requestTimeMs ?? sample.timeMs ?? 0,
           scriptTimeMs: sample.scriptTimeMs ?? 0,
           iterationTimeMs: sample.iterationTimeMs ?? sample.requestTimeMs ?? sample.timeMs ?? 0,
           status: sample.status,
           ok: sample.ok,
           ...(sample.timeMs !== undefined ? { timeMs: sample.timeMs } : {}),
-          ...(sample.error !== undefined ? { error: sample.error } : {}),
+          ...(sample.error !== undefined ? { error: sample.failureKind ?? "execution-failed" } : {}),
           ...(sample.requestStarted !== undefined ? { requestStarted: sample.requestStarted } : {}),
           ...(sample.requestCompleted !== undefined ? { requestCompleted: sample.requestCompleted } : {}),
           ...(sample.failureKind !== undefined ? { failureKind: sample.failureKind } : {}),
           ...(sample.safety !== undefined ? { safety: sample.safety } : {}),
-        })), concurrency: opts.concurrency, maxRps: effectiveMaxRps,
+        }), concurrency: opts.concurrency, maxRps: effectiveMaxRps,
         confirmedTargetOrigins, connectionMode: opts.connectionMode,
         }).run({
           concurrency: opts.concurrency,
@@ -1555,14 +1592,21 @@ export async function runCli(
         });
         if (!report.generator) throw new Error("worker 未生成 generator 指标");
         if (!report.measurementWindow) throw new Error("worker 未生成 pressure measurement window");
-        const result: ShardResult = sanitizer.redactValue({
+        const result: ShardResult = redactExecutionOutput({
           protocolVersion: 2, ok: true, shardId: opts.shardId, samples, generator: report.generator,
+          failureEvidence: report.failureEvidence,
           measurementWindow: report.measurementWindow,
-        });
+        }, workerBoundary ?? createExecutionEvidenceCollector({ projectId: "", definitionRevision: opts.definitionRevision }, workerMarkers).boundary());
         out(JSON.stringify(ShardOutcomeSchema.parse(result)));
         process.exitCode = 0;
       } catch (e) {
+        if (privateFinalize && !finalized && !executionStarted) {
+          try { await finalize(workerMarkers); }
+          catch { fail("Private evidence completion failed; worker output withheld"); return; }
+        }
         fail(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (opts.privateEvidenceIpc && process.connected) process.disconnect?.();
       }
     });
 

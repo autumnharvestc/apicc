@@ -1,4 +1,9 @@
-import { JSONPath } from "jsonpath-plus";
+import { compileCaseAssertions, evaluateCaseAssertions, type AssertionOutcome, type CompiledCaseAssertions } from "../assert/evaluate.js";
+import { createPluginRegistry } from "../plugin/registry.js";
+import { AssertionValueError } from "../assert/selection.js";
+import { createExtractionRuntimeState, evaluateExtractions, extractionVariables, prepareExtractions, skippedExtractions, type ExtractionOutcome, type ExtractionRuntimeState, type PreparedExtractions } from "../testing/extraction.js";
+import type { ExtractionDefinition } from "../testing/model.js";
+import type { CaseReferenceLocator } from "../testing/references.js";
 import type { ApiAsset } from "../contract/model.js";
 import type { DeepReadonly, ProjectAssetContextReadView } from "../assets/context.js";
 import type { CredentialBindings } from "../credentials/types.js";
@@ -18,9 +23,29 @@ import { assertRequestSettingsApplicable, resolveRequestSettings, type RequestSe
 import { captureRequestFiles, type CapturedRequestFiles } from "../http/files.js";
 import type { HttpSession } from "../http/session.js";
 
-export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "config" | "aborted";
+export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "extraction" | "config" | "aborted";
 
-const CASE_FAILURE_KINDS = new Set<CaseFailureKind>(["transport", "http", "script", "assertion", "config", "aborted"]);
+const CASE_FAILURE_KINDS = new Set<CaseFailureKind>(["transport", "http", "script", "assertion", "extraction", "config", "aborted"]);
+
+export interface CaseExecutionLocator extends CaseReferenceLocator { caseId: string; scope: string }
+export interface PreparedCaseExecution {
+  testCase: DeepReadonly<TestCase>;
+  assertions: CompiledCaseAssertions;
+  definitions: readonly ExtractionDefinition[];
+  extractions?: PreparedExtractions;
+  extractionError?: { code: string; message: string };
+}
+/** Capture literal programs once against the exact immutable owning snapshot. */
+export function prepareCaseExecution(testCase: DeepReadonly<TestCase>, context: ProjectAssetContextReadView,
+  contractId: string, resolveAssert: CaseExecutionDeps["resolveAssert"]): PreparedCaseExecution {
+  const registry = createPluginRegistry();
+  registry.getAssert = resolveAssert;
+  const copied = structuredClone(testCase) as TestCase;
+  const prepared: PreparedCaseExecution = { testCase, assertions: compileCaseAssertions(copied, context, registry, { contractId }), definitions: copied.extractors ?? [] };
+  try { prepared.extractions = prepareExtractions(prepared.definitions); }
+  catch (error) { prepared.extractionError = { code: error instanceof AssertionValueError ? error.code : "EXTRACTION_CONFIG", message: errorMessage(error) }; }
+  return prepared;
+}
 
 /** Run-scoped state for one case. Nothing here is read from CollectionRunner. */
 export interface CaseExecutionInput {
@@ -30,6 +55,9 @@ export interface CaseExecutionInput {
   /** Host-only immutable run context; consumed only by the built-in HTTP client. */
   network?: PreparedNetworkRun;
   testCase: DeepReadonly<TestCase>;
+  locator?: CaseExecutionLocator;
+  prepared?: PreparedCaseExecution;
+  extractionState?: ExtractionRuntimeState;
   row?: Record<string, string>;
   rowIndex: number;
   isDataDriven: boolean;
@@ -59,6 +87,10 @@ export interface CaseExecutionDeps {
 
 export interface CaseExecutionResult {
   outcome: CaseOutcome;
+  /** Complete host-internal values. Project before any IPC or report persistence. */
+  assertionOutcomes?: AssertionOutcome[];
+  extractionOutcomes?: ExtractionOutcome[];
+  extractionsCommitted?: boolean;
   request: ExecutableRequest;
   response?: ExecutionResponse;
   /** Returned protocol latency, or elapsed attempt time when no valid response timing exists. */
@@ -204,7 +236,7 @@ function responseView(response: ExecutionResponse): NonNullable<PmApi["response"
   let cachedJson: unknown;
   return {
     status: response.status,
-    headers: response.headers,
+    headers: { ...response.headers },
     time: response.timeMs,
     ...(response.textAvailable === undefined ? {} : { textAvailable: response.textAvailable }),
     ...(response.jsonAvailable === undefined ? {} : { jsonAvailable: response.jsonAvailable }),
@@ -218,39 +250,6 @@ function responseView(response: ExecutionResponse): NonNullable<PmApi["response"
       return (cachedJson ??= JSON.parse(response.bodyText));
     },
   };
-}
-
-function evaluateAssertions(
-  testCase: DeepReadonly<TestCase>,
-  ctx: { pm: PmApi },
-  resolver: VariableResolver,
-  resolveAssert: (op: string) => AssertOperator | undefined,
-) {
-  const response = ctx.pm.response;
-  return testCase.assertions.map((assertion) => {
-    const op = resolveAssert(assertion.op);
-    if (!op) {
-      throw Object.assign(new Error(`未知断言操作符: ${assertion.op}`), { caseFailureKind: "config" as const });
-    }
-    let actual: unknown;
-    switch (assertion.target) {
-      case "status": actual = response?.status; break;
-      case "header": actual = response?.headers[(assertion.headerName ?? "").toLowerCase()]; break;
-      case "responseTime": actual = response?.time; break;
-      case "bodyJson":
-        if (!response) return { pass: false, message: "没有完整响应体可用于 JSON 断言。" };
-        if (response.textAvailable === false) return { pass: false, message: "响应体不是可可靠解码的 JSON 文本。" };
-        if (response.jsonAvailable === false) return { pass: false, message: "响应体不是有效的 JSON 文本。" };
-        try { actual = JSONPath({ path: assertion.path ?? "$", json: response.json() as object })[0]; }
-        catch { actual = undefined; }
-        break;
-    }
-    try {
-      return op.evaluate(actual, assertion.expected === undefined ? undefined : resolver.resolve(assertion.expected));
-    } catch (e) {
-      throw Object.assign(new Error(errorMessage(e)), { caseFailureKind: "config" as const });
-    }
-  });
 }
 
 function validFailureKind(value: unknown): CaseFailureKind | undefined {
@@ -273,6 +272,17 @@ function protocolFailureKind(error: unknown): CaseFailureKind {
 export async function executeCase(input: CaseExecutionInput, deps: CaseExecutionDeps): Promise<CaseExecutionResult> {
   const started = now();
   const { asset, testCase, resolver, envVars, persisted, persistedSnapshot } = input;
+  const extractionState = input.extractionState ?? createExtractionRuntimeState();
+  const prepared = input.prepared ?? prepareCaseExecution(testCase, input.assetContext, asset.contract.id, deps.resolveAssert);
+  const scriptWrites = new Map<string, string>();
+  const restoreVariables = () => {
+    resolver.clearRuntime();
+    for (const [key, value] of persisted) resolver.setRuntime(key, value);
+    for (const [key, value] of Object.entries(extractionVariables(extractionState))) resolver.setRuntime(key, value);
+    for (const [key, value] of Object.entries(testCase.parameters)) resolver.setRuntime(key, value);
+    for (const [key, value] of Object.entries(input.row ?? {})) resolver.setRuntime(key, value);
+    for (const [key, value] of scriptWrites) resolver.setRuntime(key, value);
+  };
   const effectiveRequest = getEffectiveCaseRequest(asset, testCase);
   const signal = deps.timeouts?.signal;
   let clientOptions: HttpExecuteOptions | undefined;
@@ -288,7 +298,10 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   const pm: PmApi = {
     variables: {
       get: (name) => resolver.get(name),
-      set: (name, value) => { persisted.set(name, value); persistedSnapshot[name] = value; resolver.setRuntime(name, value); },
+      set: (name, value) => {
+        persisted.set(name, value); persistedSnapshot[name] = value; resolver.setRuntime(name, value);
+        scriptWrites.set(name, value); extractionState.bindings.delete(name);
+      },
     },
     environment: { get: (name) => envVars[name] },
     get request() { return request; },
@@ -316,10 +329,11 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   };
 
   try {
-    resolver.clearRuntime();
-    for (const [key, value] of persisted) resolver.setRuntime(key, value);
-    for (const [key, value] of Object.entries(testCase.parameters)) resolver.setRuntime(key, value);
-    for (const [key, value] of Object.entries(input.row ?? {})) resolver.setRuntime(key, value);
+    restoreVariables();
+    if (prepared.testCase !== testCase || prepared.assertions.context !== input.assetContext || prepared.assertions.owner?.contractId !== contractId) throw invalidRequest("Prepared case does not belong to the selected snapshot and owner");
+    if (prepared.assertions.diagnostics.length) throw invalidRequest("声明式断言配置无效");
+    if (prepared.extractionError) throw invalidRequest("声明式提取配置无效");
+    if (prepared.extractions) extractionState.prepared.set(prepared.definitions, prepared.extractions);
     if (!asset.cases.some((candidate) => candidate.id === testCase.id)) {
       throw invalidRequest(`用例 ${testCase.id} 不属于接口资产 ${contractId}`);
     }
@@ -417,7 +431,12 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       }
       requestCompleted = true;
     }
-    await emit("afterResponse", { status: response.status, timeMs: response.timeMs, headers: response.headers, bodyText: response.bodyText });
+    // Each attempt owns one immutable complete response, including plugins that reuse response objects.
+    response = Object.freeze({ ...response, headers: Object.freeze({ ...response.headers }),
+      ...(response.rawHeaders ? { rawHeaders: Object.freeze(response.rawHeaders.map(([name, value]) => Object.freeze([name, value] as const))) } : {}),
+      ...(response.bodyBytes ? { bodyBytes: new Uint8Array(response.bodyBytes) } : {}),
+    });
+    await emit("afterResponse", { status: response.status, timeMs: response.timeMs, headers: { ...response.headers }, bodyText: response.bodyText });
     pm.response = responseView(response);
     for (const operation of testCase.postOperations) if (operation.type === "script") runScript(operation.content);
   } catch (e) {
@@ -433,14 +452,36 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     }
   }
 
-  let assertions: Array<{ pass: boolean; message: string }> = [];
-  try {
-    assertions = [...evaluateAssertions(testCase, ctx, resolver, deps.resolveAssert), ...pmAsserts];
-  } catch (e) {
-    if (error === undefined) {
-      error = errorMessage(e);
-      failureKind = (e as { caseFailureKind?: CaseFailureKind }).caseFailureKind ?? "config";
-    }
+  let extractionOutcomes: ExtractionOutcome[];
+  let extractionsCommitted = false;
+  if (error !== undefined) {
+    extractionOutcomes = skippedExtractions(prepared.definitions, extractionState);
+    if (prepared.extractionError) extractionOutcomes = extractionOutcomes.map((outcome) => ({
+      ...outcome, status: "failed", kind: "config", code: prepared.extractionError!.code, message: prepared.extractionError!.message,
+    }));
+  }
+  else {
+    const batch = evaluateExtractions(prepared.definitions, response!, extractionState);
+    extractionOutcomes = batch.outcomes;
+    extractionsCommitted = batch.committed;
+    if (batch.failureKind) { failureKind = batch.failureKind; error = batch.failureKind === "config" ? "声明式提取配置无效" : "声明式提取失败"; }
+  }
+  restoreVariables();
+  // Current publication overrides row/parameters; prior publication only belongs to the prior-runtime layer.
+  if (extractionsCommitted) for (const definition of prepared.definitions) {
+    const binding = extractionState.bindings.get(definition.name);
+    if (binding) resolver.setRuntime(definition.name, binding.text);
+  }
+  const assertionOutcomes = evaluateCaseAssertions(prepared.assertions, response, resolver);
+  // Operator diagnostics can embed complete actual/expected, including sensitive extraction values.
+  // Until C1 projects evidence, only value-free summaries may enter the existing report fields.
+  const assertions = [...assertionOutcomes.map(({ pass, selector, kind }) => ({
+    pass,
+    message: `${selector.target === "bodyJson" ? "JSON 断言" : "断言"}${pass ? "通过" : kind === "config" ? "配置无效" : "失败"}`,
+  })), ...pmAsserts];
+  if (error === undefined && assertionOutcomes.some((entry) => !entry.pass && entry.kind === "config")) {
+    failureKind = "config";
+    error = "声明式断言配置无效";
   }
   if (error === undefined && response && response.status >= 400 && request.protocol !== "soap") {
     error = `HTTP 响应失败: ${response.status}`;
@@ -452,6 +493,8 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   const outcome: CaseOutcome = {
     apiId: contractId, apiName, caseId: testCase.id, caseName: testCase.name,
     row: input.isDataDriven ? input.rowIndex : undefined,
+    ...(input.locator ? { locator: { ...input.locator, folderIds: [...input.locator.folderIds] } } : {}),
+    scope: testCase.scope,
     passed: error === undefined && assertionsPass,
     durationMs: iterationTimeMs,
     assertions,
@@ -470,5 +513,5 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     outcome.failureKind ??= "config";
     failureKind ??= outcome.failureKind;
   }
-  return { outcome, request, response, requestTimeMs, scriptTimeMs, iterationTimeMs, requestStarted, requestCompleted, failureKind };
+  return { outcome, assertionOutcomes, extractionOutcomes, extractionsCommitted, request, response, requestTimeMs, scriptTimeMs, iterationTimeMs, requestStarted, requestCompleted, failureKind };
 }

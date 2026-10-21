@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import type { TestingPane } from "../../../shared/testing.js";
+import type { TestingStore } from "../stores/testing.js";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Tooltip as ATooltip } from "ant-design-vue";
 import type { useWorkspaceStore } from "../stores/workspace.js";
@@ -16,16 +18,23 @@ const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
   activeProjectLocator: ProjectLocator | null;
   activeApiLocator: ApiLocator | null;
-  pane: "api-cases" | "scenario";
+  pane: TestingPane;
+  testing?: TestingStore;
   scenarios: Array<{ id: string; name: string; locator: WorkflowLocator }>;
   reportError: (e: unknown) => void;
 }>();
 const emit = defineEmits<{
-  "update:pane": [pane: "api-cases" | "scenario"];
+  "update:pane": [pane: TestingPane];
   "pick-api": [locator: ApiLocator];
   "open-workflow": [locator: WorkflowLocator];
 }>();
 const { t } = useI18n();
+const search = ref("");
+const matches = (name: string) => name.toLocaleLowerCase().includes(search.value.toLocaleLowerCase());
+const testingCurrent = computed(() => {
+  const actual = props.testing?.view?.context.project; const selected = props.activeProjectLocator;
+  return props.testing?.current && actual && selected && actual.workspaceId === selected.workspaceId && actual.groupId === selected.groupId && actual.projectId === selected.projectId;
+});
 
 const apis = computed(() => {
   const project = props.activeProjectLocator ? props.workspace.findProject(props.activeProjectLocator) : null;
@@ -38,7 +47,7 @@ const apis = computed(() => {
     for (const child of node.children ?? []) visit(child, node.kind === "collection" ? node.label : collection);
   };
   for (const child of project?.children ?? []) visit(child, "");
-  return result;
+  return result.filter(item => matches(item.label));
 });
 
 function sameApi(left: ApiLocator | null, right: ApiLocator): boolean {
@@ -46,6 +55,7 @@ function sameApi(left: ApiLocator | null, right: ApiLocator): boolean {
 }
 
 const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collection))]);
+async function editAsset(action: () => unknown | Promise<unknown>) { try { await action(); } catch (error) { props.reportError(error); } }
 </script>
 
 <template>
@@ -72,7 +82,10 @@ const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collectio
       >
         {{ t("test.scenarios") }}
       </button>
+      <button type="button" class="anchor-item" :class="{active: pane === 'suites'}" data-testid="test-tab-suites" @click="emit('update:pane','suites')">{{ t('testing.suites') }}</button>
+      <button type="button" class="anchor-item" :class="{active: pane === 'datasets'}" data-testid="test-tab-datasets" @click="emit('update:pane','datasets')">{{ t('testing.datasets') }}</button>
     </div>
+    <div class="fixed-actions"><input v-model="search" :placeholder="t('testing.search')" :aria-label="t('testing.search')" /><button v-if="pane === 'datasets'" :disabled="!testingCurrent || testing?.readOnly" @click="editAsset(() => testing?.newDataset(t('testing.newDataset')))">{{ t('testing.newDataset') }}</button><button v-if="pane === 'suites'" :disabled="!testingCurrent || testing?.readOnly" @click="editAsset(() => testing?.newSuite(t('testing.newSuite')))">{{ t('testing.newSuite') }}</button></div>
 
     <div class="test-list" data-testid="test-navigation-list">
       <template v-if="pane === 'api-cases'">
@@ -93,8 +106,8 @@ const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collectio
         <span v-if="apis.length === 0" class="muted" data-testid="test-no-apis">{{ t("test.noApis") }}</span>
       </template>
 
-      <template v-else>
-        <div v-for="w in scenarios" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
+      <template v-else-if="pane === 'scenario'">
+        <div v-for="w in scenarios.filter(item => matches(item.name))" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
           <span class="scenario-name">{{ w.name }}</span>
           <a-tooltip :title="t('test.scenarioStressDeferred')">
             <a-button size="small" type="text" disabled data-testid="test-scenario-stress">{{ t("case.stress") }}</a-button>
@@ -104,6 +117,9 @@ const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collectio
           </a-button>
         </div>
         <span v-if="scenarios.length === 0" class="muted" data-testid="test-no-scenarios">{{ t("test.noScenarios") }}</span>
+      </template>
+      <template v-else-if="testingCurrent && testing">
+        <button v-for="item in (pane === 'datasets' ? testing.view?.datasets : testing.view?.suites)?.filter(item => matches(item.name))" :key="item.id" type="button" class="api-item" :class="{active: testing.dataset?.id === item.id || testing.suite?.id === item.id}" @click="editAsset(() => testing!.select(pane === 'datasets' ? 'dataset' : 'suite',item.id))">{{ item.name }}</button>
       </template>
     </div>
   </aside>
@@ -124,6 +140,7 @@ const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collectio
 .side-head { flex: none; padding: 8px 10px 0; }
 .side-title { font-weight: 600; font-size: 13px; }
 .anchors { flex: none; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 4px; }
+.fixed-actions{flex:none;display:flex;flex-direction:column;gap:5px;padding:4px 10px 8px}.fixed-actions input{width:100%;box-sizing:border-box;padding:5px;border:1px solid var(--border);background:var(--bg);color:var(--text)}
 .test-list { flex: 1; min-height: 0; overflow-y: auto; }
 .anchor-item {
   text-align: left;

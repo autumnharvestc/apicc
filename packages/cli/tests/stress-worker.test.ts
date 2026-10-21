@@ -1,11 +1,17 @@
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { Readable } from "node:stream";
+import { PassThrough } from "node:stream";
+import { EventEmitter, getEventListeners } from "node:events";
+import type { ChildProcess, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { join, relative } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createDefaultRegistry,
   createProjectSnapshot,
+  StressRunner,
+  type StressRunnerOptions,
   fileStorage,
   type ShardFailure,
   ShardFailureSchema,
@@ -15,6 +21,7 @@ import {
   type Workspace,
 } from "@apicc/core";
 import { parseShardOutcomeStdout, runCli as runCliActual, type RunCliDeps } from "../src/main.js";
+import { createPrivateStressWorkerFactory, createWorkerEvidenceFinalizer } from "../src/stressWorkerTransport.js";
 
 // 本文件覆盖 M2-D1 任务 2：stress-worker 子命令（stdout 末行 JSON 契约）与 run-stress --shards
 // 协调分支（spawn 实现可注入——真实子进程端到端留任务 3）。
@@ -25,6 +32,7 @@ let root: string;
 let prevCwd = "";
 let definitionRevision = "";
 let networkPrivateRoot = "";
+const seenPaths: string[] = [];
 /** 本文件创建的临时工作区根（afterAll 统一清理，模式与姊妹文件 stress-subprocess.test.ts 一致）。 */
 const tempRoots: string[] = [];
 
@@ -58,7 +66,8 @@ function readLastReport(runsDir: string): Record<string, unknown> {
 }
 
 beforeAll(async () => {
-  server = createServer((_req, res) => {
+  server = createServer((req, res) => {
+    seenPaths.push(req.url ?? "");
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok: true }));
   });
@@ -115,10 +124,119 @@ afterAll(() => {
 });
 
 describe("stress-worker 子命令", () => {
+  it("C1 Fix3 actual normal worker retains projection billing and complete local markers while private completion stays outside", async () => {
+    const original = StressRunner.prototype.run;
+    let projected = false; let stopped = false; let projectedAtStop = false; let failGenerator = false;
+    let unavailableCookies = false; let failClose = false; let thrownMessage = "";
+    const cookieSecret = "unavailable-cookie-private";
+    const probe = vi.spyOn(StressRunner.prototype, "run").mockImplementation(function (this: StressRunner, options) {
+      const runnerOptions = (this as unknown as { opts: StressRunnerOptions }).opts;
+      const createWorker = runnerOptions.createWorker;
+      runnerOptions.createWorker = async (id) => {
+        const session = await createWorker(id);
+        return { ...session, close: async () => { await session.close(); if (failClose) throw new Error(`${cookieSecret} close fault`); }, execute: async (signal) => {
+          const execution = await session.execute(signal);
+          return { ...execution, outcome: { ...execution.outcome, passed: false, failureKind: "assertion" }, failureKind: "assertion",
+            extractionOutcomes: [{ id: "learned", name: "token", selector: { target: "bodyText", match: "first" }, status: "extracted", code: "OK", pass: true, sensitive: true, published: true, message: "learned", value: "local-learned-secret" }],
+            response: { ...execution.response!, ...(unavailableCookies ? { headers: { "set-cookie": `first=first-private; Path=/, second=${cookieSecret}; Path=/` }, rawHeaders: undefined } : {}), get bodyText() { projected = true; return "local-learned-secret public detail"; } },
+            safety: { ...execution.safety!, origin: "https://local-learned-secret.test" },
+          };
+        } };
+      };
+      runnerOptions.createGeneratorCollector = () => ({ recordSchedulerBacklog() {}, stop() {
+        projectedAtStop = projected; stopped = true;
+        if (failGenerator) throw new Error("local-learned-secret generator fault");
+        return { availability: "unavailable", unavailableReason: "fixture" };
+      } });
+      return original.call(this, options).catch(error => { thrownMessage = error.message; throw error; });
+    });
+    try {
+      for (const privateCompletion of [false, true]) {
+        projected = false; stopped = false; projectedAtStop = false;
+        const out: string[] = [];
+        const code = await runCli(["stress-worker", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "1", "--iterations", "1", "--shard-id", "normal-billing", "--workspace", root, "--definition-revision", definitionRevision, "--credential-versions", "{}"], createDefaultRegistry(), () => {}, {
+          workerOut: (line) => out.push(line), workerErr: () => {},
+          ...(privateCompletion ? { workerFinalizeEvidence: async (markers: readonly string[]) => { expect(stopped).toBe(true); expect(projected).toBe(false); expect(markers).toContain("local-learned-secret"); return markers; } } : {}),
+        });
+        expect(code, JSON.stringify(out)).toBe(0); expect(projectedAtStop).toBe(!privateCompletion);
+        const result = ShardResultSchema.parse(JSON.parse(out[0]!));
+        expect(result.samples).toMatchObject([{ ok: false, failureKind: "assertion", safety: { origin: "https://[REDACTED].test" } }]);
+        expect(result.failureEvidence![0]!.response!.body.text).toContain("public detail");
+        expect(out[0]).not.toContain("local-learned-secret");
+      }
+      failGenerator = true;
+      const failedOut: string[] = []; const failedErr: string[] = [];
+      const failedCode = await runCli(["stress-worker", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "1", "--iterations", "1", "--shard-id", "normal-error", "--workspace", root, "--definition-revision", definitionRevision, "--credential-versions", "{}"], createDefaultRegistry(), () => {}, { workerOut: (line) => failedOut.push(line), workerErr: (line) => failedErr.push(line) });
+      expect(failedCode).toBe(1); expect(ShardFailureSchema.parse(JSON.parse(failedOut[0]!)).error).toBe("[REDACTED] generator fault");
+      expect(failedErr.join(" ")).not.toContain("local-learned-secret");
+      unavailableCookies = true; failGenerator = false; projected = false; stopped = false;
+      const fallbackOut: string[] = [];
+      const fallbackArgs = ["stress-worker", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "1", "--iterations", "1", "--shard-id", "cookie-fallback", "--workspace", root, "--definition-revision", definitionRevision, "--credential-versions", "{}"];
+      expect(await runCli(fallbackArgs, createDefaultRegistry(), () => {}, { workerOut: line => fallbackOut.push(line), workerErr: () => {} })).toBe(0);
+      const fallback = ShardResultSchema.parse(JSON.parse(fallbackOut[0]!));
+      expect(fallback).toMatchObject({ ok: true, shardId: "cookie-fallback", samples: [{ ok: false, failureKind: "assertion", status: 200, safety: { origin: "[omitted: unavailable Set-Cookie boundaries]" } }] });
+      expect(fallback.failureEvidence![0]!.response!.body.omitted).toBe(true);
+      expect(projectedAtStop).toBe(true);
+      failClose = true; failGenerator = true; const unsafeErrorOut: string[] = []; const unsafeErrorErr: string[] = [];
+      expect(await runCli(fallbackArgs, createDefaultRegistry(), () => {}, { workerOut: line => unsafeErrorOut.push(line), workerErr: line => unsafeErrorErr.push(line) })).toBe(1);
+      expect(thrownMessage).toBe(`${cookieSecret} close fault`); // Preserve the original higher-priority cleanup failure in the host.
+      expect(ShardFailureSchema.parse(JSON.parse(unsafeErrorOut[0]!))).toMatchObject({ ok: false, shardId: "cookie-fallback", error: "[omitted: unavailable Set-Cookie boundaries]" });
+      expect(JSON.stringify([fallbackOut, unsafeErrorOut, unsafeErrorErr])).not.toContain(cookieSecret);
+      expect(JSON.stringify([fallbackOut, unsafeErrorOut, unsafeErrorErr])).not.toContain("local-learned-secret");
+    } finally { probe.mockRestore(); }
+  });
+  it("B1 coordinator captures once and stdin worker consumes old rows after file replacement", async () => {
+    const isolatedRoot = mkdtempSync(join(tmpdir(), "apicc-b1-worker-"));
+    tempRoots.push(isolatedRoot);
+    const dataRoot = mkdtempSync(join(tmpdir(), "apicc-b1-worker-data-"));
+    tempRoots.push(dataRoot);
+    const dataPath = join(dataRoot, "rows.csv");
+    const workspace = (await fileStorage.load(root)).workspace;
+    const project = workspace.groups[0]!.projects[0]!;
+    const api = project.collections[0]!.apis[0]!;
+    api.contract.request.path = "/{{row}}";
+    api.cases[0]!.dataDriver = { sourcePath: relative(isolatedRoot, dataPath), format: "csv" };
+    const initial = await fileStorage.load(isolatedRoot);
+    await fileStorage.save(isolatedRoot, workspace, { expectedRevision: initial.revision, deletions: [] });
+    writeFileSync(dataPath, "row\nOLD\n");
+    const specs: StressWorkerSpec[] = [];
+    process.chdir(isolatedRoot);
+    try {
+      const coordinatorCode = await runCli(["run-stress", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "2", "--iterations", "2", "--shards", "2"], createDefaultRegistry(), () => {}, {
+        spawnWorkerFactory: () => async (spec) => {
+          specs.push(spec);
+          writeFileSync(dataPath, "row\nNEW\n");
+          return { protocolVersion: 2, ok: true, shardId: spec.shardId, samples: [sample(1)], generator: generator(), measurementWindow: measurementWindow(1) };
+        },
+      });
+      expect(coordinatorCode).toBe(0);
+      expect(specs).toHaveLength(2);
+      expect(specs[0]!.preparedTestData!.digest).toBe(specs[1]!.preparedTestData!.digest);
+      expect(specs[0]!.preparedTestData!.sources[0]!.rows[0]!.values.row).toBe("OLD");
+      const spec = specs[0]!;
+      const input = Readable.from([JSON.stringify(spec.preparedTestData)]);
+      const stdin = vi.spyOn(process, "stdin", "get").mockReturnValue(input as typeof process.stdin);
+      const out: string[] = [];
+      const before = seenPaths.length;
+      try {
+        const workerCode = await runCli(["stress-worker", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "1", "--iterations", "1", "--shard-id", "b1", "--workspace", isolatedRoot, "--definition-revision", spec.definitionRevision, "--credential-versions", "{}", "--network-identity", spec.networkIdentity, "--prepared-data-stdin"], createDefaultRegistry(), () => {}, { workerOut: (line) => out.push(line), workerErr: () => {} });
+        expect(workerCode).toBe(0);
+      } finally { stdin.mockRestore(); }
+      expect(ShardResultSchema.parse(JSON.parse(out[0]!)).samples[0]!.ok).toBe(true);
+      expect(seenPaths.slice(before)).toEqual(["/OLD"]);
+      const next = await runCli(["run-stress", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "1", "--iterations", "1"], createDefaultRegistry());
+      expect(next).toBe(0);
+      expect(seenPaths.at(-1)).toBe("/NEW");
+    } finally { process.chdir(root); }
+  });
+
   it("成功：stdout 仅末行 JSON 且通过 ShardResultSchema，样本数等于迭代数，退出码 0", async () => {
     const out: string[] = [];
     const err: string[] = [];
-    const deps: RunCliDeps = { workerOut: (l) => out.push(l), workerErr: (l) => err.push(l) };
+    let completions = 0;
+    const deps: RunCliDeps = { workerOut: (l) => out.push(l), workerErr: (l) => err.push(l), workerFinalizeEvidence: async (markers) => {
+      expect(out).toHaveLength(0); completions++; return [...markers, "ok"];
+    } };
     const code = await runCli(
       ["stress-worker", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "2",
         "--iterations", "4", "--shard-id", "s0", "--workspace", root, "--definition-revision", definitionRevision, "--credential-versions", "{}"],
@@ -137,6 +255,7 @@ describe("stress-worker 子命令", () => {
     // totalRequests 以 samples.length 验证（计划步骤 1 测试 1 的口径）。
     expect(outcome.samples).toHaveLength(4);
     expect(outcome.samples.every((s) => s.ok && s.status === 200)).toBe(true);
+    expect(completions).toBe(1); expect(out[0]).not.toContain("markers");
   });
 
   it("用例不存在：末行通过 ShardFailureSchema、错误信息走 stderr、退出码 1", async () => {
@@ -346,7 +465,68 @@ describe("run-stress --shards", () => {
   });
 });
 
+describe("C1 Fix2 dedicated private worker IPC", () => {
+  function ownedChild() {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), connected: true,
+      send: vi.fn((_frame: unknown, callback: (error: Error | null) => void) => { callback(null); return true; }),
+      disconnect: vi.fn(() => { child.connected = false; child.emit("disconnect"); }),
+      kill: vi.fn(() => { child.emit("close", null); return true; }),
+    });
+    return child;
+  }
+  const spec: StressWorkerSpec = { protocolVersion: 2, shardId: "s0", apiPath: "/api", caseId: "c", definitionRevision: "r", credentialVersions: {}, networkIdentity: `sha256:${"0".repeat(64)}`, concurrency: 1, maxIterations: 1, workspaceRoot: "/ws" };
+
+  it("exchanges markers only over IPC, drains raw diagnostics and removes owned listeners on completion", async () => {
+    const child = ownedChild(); const abort = new AbortController();
+    const channel = Object.assign(new EventEmitter(), { connected: true, send: (frame: unknown, callback: (error: Error | null) => void) => { child.emit("message", frame); callback(null); return true; } });
+    child.send.mockImplementation((frame, callback) => { callback(null); channel.emit("message", frame); return true; });
+    const spawnFake = vi.fn(() => child as unknown as ChildProcess);
+    const pipe = vi.spyOn(child.stderr, "pipe");
+    const result = createPrivateStressWorkerFactory(1000, () => ["synthetic-cli", "stress-worker"], parseShardOutcomeStdout, spawnFake as unknown as typeof spawn)(spec, {
+      signal: abort.signal, finalizeEvidence: async (markers) => { expect(markers).toEqual(["private-ipc-token"]); return [...markers, "other-worker-token"]; },
+    });
+    child.stderr.emit("data", Buffer.from("raw private-ipc-token must never reach human stderr"));
+    const union = await createWorkerEvidenceFinalizer("s0", channel as unknown as NodeJS.Process)(["private-ipc-token"]);
+    expect(union).toEqual(["private-ipc-token", "other-worker-token"]);
+    expect(JSON.stringify(spawnFake.mock.calls)).not.toContain("private-ipc-token");
+    const publicResult: ShardResult = { protocolVersion: 2, ok: true, shardId: "s0", samples: [sample(1)], generator: generator(), measurementWindow: measurementWindow(1) };
+    child.stdout.emit("data", Buffer.from(JSON.stringify(publicResult)));
+    child.disconnect(); child.emit("close", 0);
+    expect(await result).toEqual(publicResult); expect(pipe).not.toHaveBeenCalled();
+    expect(JSON.stringify(await result)).not.toContain("markers");
+    for (const event of ["message", "disconnect", "error", "close"]) expect(child.listenerCount(event)).toBe(0);
+    expect(channel.listenerCount("message")).toBe(0); expect(channel.listenerCount("disconnect")).toBe(0);
+    expect(child.stdout.listenerCount("data")).toBe(0); expect(child.stderr.listenerCount("data")).toBe(0);
+    expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("disconnect and timeout settle private waiters, kill only the owned child and never echo a malformed payload", async () => {
+    const channel = Object.assign(new EventEmitter(), { connected: true, send: (_value: unknown, callback: (error: Error | null) => void) => { callback(null); return true; } });
+    const waiting = createWorkerEvidenceFinalizer("s0", channel as unknown as NodeJS.Process)(["private-before-disconnect"]);
+    channel.emit("disconnect"); await expect(waiting).rejects.toThrow("Private evidence exchange failed");
+    expect(channel.listenerCount("message")).toBe(0); expect(channel.listenerCount("disconnect")).toBe(0);
+    const child = ownedChild(); const abort = new AbortController();
+    const result = createPrivateStressWorkerFactory(1000, () => [], parseShardOutcomeStdout, (() => child) as unknown as typeof spawn)(spec, { signal: abort.signal, finalizeEvidence: async () => [] });
+    child.emit("message", { kind: "bad", "private-invalid-value": "raw" });
+    await expect(result).rejects.toThrow("private_protocol_invalid");
+    expect(child.kill).toHaveBeenCalledTimes(1); expect(child.listenerCount("error")).toBe(0); expect(child.listenerCount("close")).toBe(0);
+    expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
+    const timedChild = ownedChild();
+    await expect(createPrivateStressWorkerFactory(10, () => [], parseShardOutcomeStdout, (() => timedChild) as unknown as typeof spawn)(spec, { signal: new AbortController().signal, finalizeEvidence: async () => [] })).rejects.toThrow("timeout");
+    expect(timedChild.kill).toHaveBeenCalledTimes(1); expect(timedChild.listenerCount("error")).toBe(0); expect(timedChild.listenerCount("close")).toBe(0);
+  });
+});
+
 describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行解析纯函数）", () => {
+  it("C1 Fix2 malformed worker output never echoes private or unvalidated business keys", () => {
+    let message = "";
+    try { parseShardOutcomeStdout(JSON.stringify({ protocolVersion: 2, ok: false, shardId: "s0", error: "normal", "unvalidated-private-value": "raw" }), { shardId: "s0", exitCode: 1 }); }
+    catch (error) { message = (error as Error).message; }
+    expect(message).toContain("protocol_invalid");
+    expect(message).not.toContain("unvalidated-private-value");
+  });
   const ctx = { shardId: "s0", exitCode: 0 } as const;
 
   it("污染行 + 末行 JSON：跳过日志行取末条合法 ShardOutcome", () => {

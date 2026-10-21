@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SafeExecutionEvidenceSchema } from "../stress/model.js";
 import { ApiRequestSchema } from "../contract/request.js";
 import { RequestSettingsOverrideSchema, RequestSettingsSchema } from "../request/settings.js";
 import type { ApiRequest } from "../contract/model.js";
@@ -151,8 +152,9 @@ export const DebugResponseSchema = z.object({
 }).strict();
 
 const AssertionOutcomeSchema = z.object({ pass: z.boolean(), message: z.string() }).strict();
-const OutcomeFailureSchema = z.enum(["transport", "http", "script", "assertion", "config", "aborted"]);
+const OutcomeFailureSchema = z.enum(["transport", "http", "script", "assertion", "extraction", "config", "aborted"]);
 export const DebugOutcomeSchema = z.object({
+  evidence: SafeExecutionEvidenceSchema.optional(),
   apiId: IdentityStringSchema.optional(),
   apiName: z.string(),
   caseId: IdentityStringSchema.optional(),

@@ -3,7 +3,10 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Drawer as ADrawer, Table as ATable, Tag as ATag } from "ant-design-vue";
 import type { CaseOutcome, NodeResult, NodeState, WorkflowRunResult } from "@apicc/core";
+import { reportingUnits } from "@apicc/core/report/units";
+import { workflowToRunResult } from "@apicc/core/workflow/adapter";
 import { stateTagColor } from "../wf/wfCanvas.js";
+import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 
 /**
  * 运行结果抽屉（M2-B 任务 7，纯展示组件）：props 只收 open/result（WorkflowRunResult），
@@ -35,19 +38,14 @@ interface ResultRow {
 const rows = computed<ResultRow[]>(() => props.result?.nodeResults.flatMap((node) => {
   const outcomes = node.outcomes?.length ? node.outcomes : node.outcome ? [node.outcome] : [];
   if (outcomes.length === 0) return [{ node, state: node.state, key: `${node.nodeId}:0` }];
-  const expanded = outcomes.map((outcome, index) => ({
+  const expanded: ResultRow[] = outcomes.map((outcome, index) => ({
     node, outcome, state: outcome.skipped ? "skipped" as const : outcome.passed ? "passed" as const : "failed" as const,
     key: `${node.nodeId}:${index}`,
   }));
   // 条件/路由失败不能改写已经通过的 HTTP 数据行；追加独立节点诊断行。
-  if (node.state === "failed" && expanded.every((row) => row.outcome?.passed)) {
+  if (reportingUnits(workflowToRunResult(props.result!)).diagnostics.some((entry) => entry.entryId === node.nodeId)) {
     expanded.push({
       node,
-      outcome: {
-        apiId: node.nodeId, apiName: node.label ?? node.nodeId, caseId: node.nodeId,
-        caseName: `${node.label ?? node.nodeId}（节点诊断）`, passed: false, durationMs: 0,
-        assertions: [], error: node.error ?? "节点执行失败", failureKind: node.failureKind,
-      },
       state: "failed", key: `${node.nodeId}:diagnostic`,
     });
   }
@@ -96,8 +94,10 @@ function formatMs(ms: number): string {
         data-testid="wf-result-table"
         :custom-row="(): Record<string, any> => ({ 'data-testid': 'wf-result-node' })"
       >
+        <template #expandedRowRender="{ record }"><CaseEvidencePanel :evidence="record.outcome?.evidence" /></template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'label'">
+            <span v-if="record.key.endsWith(':diagnostic')">NON-HTTP entry-diagnostic · </span>
             {{ record.outcome?.caseName || record.node.label || record.node.nodeId }}
           </template>
           <template v-else-if="column.key === 'state'">

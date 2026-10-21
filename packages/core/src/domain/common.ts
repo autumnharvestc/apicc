@@ -5,26 +5,19 @@ import { StringRecordSchema } from "../contract/schemaNode.js";
 import { ApiRequestSchema } from "../contract/request.js";
 import { RequestSettingsOverrideSchema } from "../request/settings.js";
 import { HttpMethodSchema, KeyValuePairSchema, ProtocolSchema, type HttpMethod, type KeyValuePair } from "./primitives.js";
+import { NormalizedAssertionSchema, ExtractionListSchema, TestTagsSchema } from "../testing/model.js";
+export { AssertionSchema } from "../testing/model.js";
+export type { Assertion } from "../testing/model.js";
 
 export { HttpMethodSchema, KeyValuePairSchema, ProtocolSchema } from "./primitives.js";
 export type { HttpMethod, KeyValuePair, Protocol } from "./primitives.js";
 
 export type ID = string;
 
-export const AssertionSchema = z.object({
-  id: z.string(),
-  target: z.enum(["status", "header", "bodyJson", "responseTime"]),
-  op: z.enum(["eq", "neq", "contains", "lt", "gt", "lte", "gte"]),
-  expected: z.string().optional(),
-  headerName: z.string().optional(),
-  path: z.string().optional(),
-}).strict();
-export type Assertion = z.output<typeof AssertionSchema>;
-
-export const DataDriverSchema = z.object({
+export const DataDriverSchema = z.union([z.object({
   sourcePath: z.string(),
   format: z.enum(["csv", "json"]),
-}).strict();
+}).strict(), z.object({ kind: z.literal("dataset"), datasetId: z.string().uuid() }).strict()]);
 export type DataDriver = z.output<typeof DataDriverSchema>;
 
 export const OperationSchema = z.object({
@@ -35,7 +28,7 @@ export const OperationSchema = z.object({
 export type Operation = z.output<typeof OperationSchema>;
 export const OperationListSchema = z.array(OperationSchema).default([]);
 
-export const TestCaseSchema = z.object({
+export const NormalizedTestCaseSchema = z.object({
   id: z.string(),
   name: z.string(),
   scope: z.string().default("base"),
@@ -45,9 +38,17 @@ export const TestCaseSchema = z.object({
   dataDriver: DataDriverSchema.optional(),
   preOperations: OperationListSchema,
   postOperations: OperationListSchema,
-  assertions: z.array(AssertionSchema).default([]),
+  assertions: z.array(NormalizedAssertionSchema).max(256).default([]),
+  tags: TestTagsSchema.default([]),
+  extractors: ExtractionListSchema.default([]),
 }).strict();
-export type TestCase = z.output<typeof TestCaseSchema>;
+export type NormalizedTestCase = z.output<typeof NormalizedTestCaseSchema>;
+export type TestCase = Omit<NormalizedTestCase, "tags" | "extractors" | "assertions"> & {
+  tags?: z.output<typeof TestTagsSchema>;
+  extractors?: import("../testing/model.js").ExtractionDefinition[];
+  assertions: import("../testing/model.js").Assertion[];
+};
+export const TestCaseSchema: z.ZodType<TestCase, z.input<typeof NormalizedTestCaseSchema>> = NormalizedTestCaseSchema;
 
 export type { RequestSettingsOverride } from "../request/settings.js";
 

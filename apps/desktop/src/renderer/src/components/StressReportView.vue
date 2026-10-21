@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Table as ATable } from "ant-design-vue";
 import type { DesktopStressReport } from "../../../shared/types.js";
+import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 
 /**
  * 压测报告纯展示组件（M2-D3 任务 2，裁定 C）：props 报告对象 → 摘要行（total/ok/failed/
@@ -77,6 +78,7 @@ const eligibleCompletedAttempts = computed(() => props.report?.eligibleCompleted
 
 <template>
   <section v-if="report" class="stress-report" data-testid="stress-report">
+    <details><summary>失败证据（最多 20 个；其余仅聚合）</summary><p v-if="!report.failureEvidence">旧记录未采集</p><CaseEvidencePanel v-for="(evidence,index) in report.failureEvidence" :key="index" :evidence="evidence" /></details>
     <div class="verdict" :data-verdict="verdict" data-testid="stress-verdict">
       <strong v-if="verdict === 'passed'">{{ t("stress.verdictPassed") }}</strong>
       <strong v-else-if="verdict === 'failed'">{{ t("stress.verdictFailed") }}</strong>

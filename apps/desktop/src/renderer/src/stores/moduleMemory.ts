@@ -6,6 +6,7 @@ import { createPinia, defineStore } from "pinia";
 import { ApiLocatorSchema, ProjectLocatorSchema, WorkflowLocatorSchema } from "../../../shared/locations.js";
 import type { ApiLocator, ProjectLocator, WorkflowLocator } from "../../../shared/locations.js";
 import { projectSessionKey } from "./localIdentity.js";
+import type { TestingPane } from "../../../shared/testing.js";
 
 const STORAGE_KEY = "apicc.moduleMemory";
 
@@ -18,7 +19,7 @@ interface ScopedMemory {
 
 interface ModuleMemory {
   apiTree: { filter: string; expanded: string[]; lastApiLocator: ApiLocator | null };
-  test: { pane: "api-cases" | "scenario"; apiLocator: ApiLocator | null; workflowLocator: WorkflowLocator | null };
+  test: { pane: TestingPane; apiLocator: ApiLocator | null; workflowLocator: WorkflowLocator | null };
   activeScopeKey: string | null;
   scopes: Record<string, ScopedMemory>;
 }
@@ -51,7 +52,7 @@ function parseStored(): ModuleMemory {
     const apiTree = typeof value.apiTree === "object" && value.apiTree !== null ? value.apiTree as Record<string, unknown> : {};
     const test = typeof value.test === "object" && value.test !== null ? value.test as Record<string, unknown> : {};
     state.apiTree.filter = typeof apiTree.filter === "string" ? apiTree.filter : "";
-    state.test.pane = test.pane === "scenario" ? "scenario" : "api-cases";
+    state.test.pane = test.pane === "scenario" || test.pane === "datasets" || test.pane === "suites" ? test.pane : "api-cases";
 
     const scopes = typeof value.scopes === "object" && value.scopes !== null ? value.scopes as Record<string, unknown> : {};
     for (const [key, rowValue] of Object.entries(scopes)) {

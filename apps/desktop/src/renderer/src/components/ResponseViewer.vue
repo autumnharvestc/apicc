@@ -6,6 +6,7 @@ import type { DebugResult } from "@apicc/core";
 import type { ApiccApi, DebugOutput } from "../../../shared/types.js";
 import type { RequestTabDebugState } from "../stores/debug.js";
 import EmptyState from "./EmptyState.vue";
+import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 
 const props = withDefaults(defineProps<{ result?: DebugResult | DebugOutput | null; sending?: boolean; error?: string | null; api?: ApiccApi; tabState?: RequestTabDebugState | null }>(), {
   result: null,
@@ -249,6 +250,7 @@ function prettyXml(source: string): string | null {
 
 <template>
   <section ref="viewerElement" class="viewer" data-testid="response-viewer" @scroll="captureResponseScroll">
+    <CaseEvidencePanel v-if="firstOutcome" :evidence="firstOutcome.evidence" />
     <div v-if="!result" data-testid="response-empty"><EmptyState :text="t('response.empty')" /></div>
     <a-tabs v-else v-model:active-key="tab" class="resp-tabs">
       <template #tabBarExtraContent>

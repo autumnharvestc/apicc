@@ -16,7 +16,7 @@ import {
   StressSafetyError,
   type StressReport,
 } from "@apicc/core";
-import { resolveSnapshotEnvironment, findSnapshotApi, workspaceRunsDir } from "./executionContext.js";
+import { resolveSnapshotEnvironment, findSnapshotApi, workspaceRunsDir, prepareDesktopTestData } from "./executionContext.js";
 import type { DebugCredentialHost, PreparedDesktopExecutionRun } from "./credentialHost.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
 import type { createSession } from "./session.js";
@@ -117,6 +117,7 @@ export function createStressControllerWithHost(
       } catch (error) {
         throw createExecutionOutputBoundary([]).error(error);
       }
+      prepared = await prepareDesktopTestData(prepared, [{ asset: api, testCase }], root, env?.id);
       const boundary = createExecutionOutputBoundary(prepared.markers);
       if (controller.signal.aborted) throw new Error("压测准备已取消");
 
@@ -124,6 +125,8 @@ export function createStressControllerWithHost(
       const policy = snapshot.project.stressPolicy;
       let safetyFailure: StressSafetyError | undefined;
       const runner = new StressRunner({
+        evidenceIdentity: { projectId: snapshot.project.id, definitionRevision: snapshot.definitionRevision, environmentId: env?.id, dataDigest: prepared.run.preparedTestData?.digest },
+        evidenceMarkers: prepared.markers,
         createGeneratorCollector: deps.createGeneratorCollector,
         onSample: (sample) => {
           const target = sample.safety;

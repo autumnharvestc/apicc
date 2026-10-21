@@ -8,6 +8,10 @@ import type { useRunStore } from "../stores/run.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import EmptyState from "./EmptyState.vue";
 import RunsHistory from "./RunsHistory.vue";
+import CaseEvidencePanel from "./CaseEvidencePanel.vue";
+import type { EvidenceIdentity } from "@apicc/core";
+import { reportingUnits, reportEntryEvidence } from "@apicc/core/report/units";
+const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void }>();
 
 /**
  * 运行视图（任务 6）：集合/环境 a-select（集合选项来自树 DTO；环境选项 = 选中集合
@@ -91,7 +95,7 @@ function outcomeState(record: Record<string, any>): OutcomeState {
 
 // CaseOutcome 无独立 id：apiId+caseId+数据行号合成稳定 rowKey（EnvPanel row-key 告警教训）。
 function rowKey(record: CaseOutcome): string {
-  return `${record.apiId}:${record.caseId}:${record.row ?? -1}`;
+  return JSON.stringify([record.locator, record.apiId, record.caseId, record.scope, record.entryId, record.suiteRow, record.row, record.nodeId]);
 }
 
 function formatMs(ms: number): string {
@@ -126,6 +130,12 @@ function formatMs(ms: number): string {
       </div>
       <div v-if="run.result" class="summary" data-testid="run-summary">
         {{ t("run.summary", { total: run.result.total, passed: run.result.passed, failed: run.result.failed, skipped: run.result.skipped ?? 0 }) }}
+        <p v-if="run.result.suite">条目 {{ run.result.suite.total }} · 失败 {{ run.result.suite.failed }} · 跳过 {{ run.result.suite.skipped }} · {{ run.result.suite.verdict }}</p>
+        <p v-if="run.result.reportingUnits">reporting-units {{ run.result.reportingUnits.total }} · failed {{ run.result.reportingUnits.failed }}</p>
+        <details v-if="run.result.workflow"><summary>工作流节点统计及状态</summary><pre>{{ JSON.stringify(run.result.workflow, null, 2) }}</pre></details>
+        <p v-for="entry in run.result.suite?.entries" :key="JSON.stringify([entry.entryId,entry.suiteRow])">{{ entry.entryId }} · {{ entry.suiteRow === undefined ? "—" : entry.suiteRow + 1 }} · {{ entry.status }} · {{ entry.error }}</p>
+        <p v-for="warning in run.result.warnings" :key="warning">{{ warning }}</p>
+        <CaseEvidencePanel v-for="entry in reportingUnits(run.result).diagnostics" :key="JSON.stringify([entry.entryId,entry.suiteRow])" :evidence="reportEntryEvidence(run.result, entry)" :disabled="run.running" :inspect="run.inspectEvidence" :rerun="run.rerunEvidence" @locate="emit('locate-evidence', $event)" />
       </div>
       <a-table
         v-if="run.result"
@@ -137,7 +147,7 @@ function formatMs(ms: number): string {
         data-testid="run-table"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'row'">{{ record.row ?? "—" }}</template>
+          <template v-if="column.key === 'row'">{{ record.row === undefined ? "—" : record.row + 1 }}</template>
           <template v-else-if="column.key === 'passed'">
             <a-tag
               :color="outcomeState(record) === 'passed' ? 'success' : outcomeState(record) === 'skipped' ? 'default' : 'error'"
@@ -154,6 +164,7 @@ function formatMs(ms: number): string {
         </template>
         <template #expandedRowRender="{ record }">
           <div class="case-detail" data-testid="run-detail">
+            <CaseEvidencePanel :evidence="record.evidence" :disabled="run.running" :inspect="run.inspectEvidence" :rerun="run.rerunEvidence" @locate="emit('locate-evidence', $event)" />
             <div v-if="record.skipReason" class="detail-skip">{{ record.skipReason }}</div>
             <div v-if="record.failureKind" class="detail-failure-kind">{{ record.failureKind }}</div>
             <div v-if="record.error" class="detail-error">{{ record.error }}</div>

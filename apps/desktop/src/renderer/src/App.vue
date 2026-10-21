@@ -59,6 +59,8 @@ import { useDebugStore } from "./stores/debug.js";
 import { useDebugHistoryStore } from "./stores/debugHistory.js";
 import { useAssetsStore } from "./stores/assets.js";
 import { useCasesStore } from "./stores/cases.js";
+import { createTestingStore } from "./stores/testing.js";
+import type { TestingPane } from "../../shared/testing.js";
 import { useEnvsStore } from "./stores/envs.js";
 import { useRunStore } from "./stores/run.js";
 import { useImportWizardStore } from "./stores/importW.js";
@@ -187,6 +189,11 @@ const plugins = createPluginsStore({ api: apicc });
 // 关签驱逐按 createEvictProjectSessions 组装（不变量 3：关签=项目关闭）；onProjectActivated
 // 钩子 = lastApi 记忆按活跃签项目过滤恢复（restoreLastApiForTab，编排第③步 editor 上下文）；
 // confirmWorkflowDraft = 切签工作流草稿确认（任务 6 规格勘误口径，弹窗与钩子实现见下文）。
+const testing = createTestingStore(apicc, {
+  confirmDiscard: () => window.confirm(t('testing.discardConfirm')),
+  getActive: () => !isHome.value && !onlineMode.value && selectedProjectContext.value ? { root: selectedProjectContext.value.root, project: selectedProjectContext.value.locator, readOnly: workspace.readOnly } : null,
+});
+const evictSessions = createEvictProjectSessions({ editor, online, workflowDesign, requestTabs, mockProjectClose: async (root, locator) => { await apicc.mockProjectClose({ root, locator }); } });
 const tabs = createTabsStore({
   workspace,
   tree,
@@ -194,15 +201,14 @@ const tabs = createTabsStore({
   editor,
   workflowDesign,
   requestTabs,
-  evictProjectSessions: createEvictProjectSessions({
-    editor,
-    online,
-    workflowDesign,
-    requestTabs,
-    mockProjectClose: async (root, locator) => { await apicc.mockProjectClose({ root, locator }); },
-  }),
+  evictProjectSessions: async (tab) => {
+    await evictSessions(tab);
+    if (tab.workspaceRef.kind === 'local' && 'projectLocator' in tab) await testing.evict(tab.workspaceRef.dir, tab.projectLocator);
+  },
   onProjectActivated: restoreLastApiForTab,
   confirmWorkflowDraft,
+  confirmTestingDraft: () => testing.leave(),
+  testingHasDrafts: (root, project) => testing.dirty && testing.view?.context.root === root && sameProjectLocator(testing.view.context.project, project),
 });
 
 // 启动恢复由签表驱动；模块选择与树状态由按 root+ProjectLocator 分区的 moduleMemory 持久化。
@@ -226,15 +232,15 @@ function projectOfLocator(locator: ProjectLocator | ApiLocator | WorkflowLocator
 }
 
 /** One local API activation path keeps editor, project assets, and design drafts on the same locator. */
-async function activateRequestTab(tabId: string, showRequestEditor = true): Promise<void> {
+async function activateRequestTab(tabId: string, showRequestEditor = true, navigationIsCurrent: () => boolean = () => true): Promise<void> {
   const tab = requestTabs.tabs[tabId];
-  if (!tab || tab.root !== workspace.root) return;
+  if (!tab || tab.root !== workspace.root || !navigationIsCurrent()) return;
   requestTabs.activate(tabId);
   if (showRequestEditor) {
     view.value = "api";
     apiSubView.value = "debug";
   }
-  const isCurrent = () => requestTabs.activeId === tabId && requestTabs.isCurrent(tabId, tab.generation, tab.root);
+  const isCurrent = () => navigationIsCurrent() && requestTabs.activeId === tabId && requestTabs.isCurrent(tabId, tab.generation, tab.root);
   debug.requestTabState(tab);
   if (tab.source.kind === "free") {
     const session = await editor.loadFreeRequestTab(tab, isCurrent);
@@ -261,7 +267,7 @@ function openFreeRequestTab(): void {
   }
 }
 
-async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean = () => true, openRequestTab = true): Promise<void> {
+async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean = () => true, openRequestTab = true, onRequestActivated?: (tab: RequestTab) => void): Promise<void> {
   const root = workspace.root;
   const expected = { ...locator, folderIds: [...locator.folderIds] };
   if (!isCurrent()) return;
@@ -270,7 +276,8 @@ async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean =
     requestContextRoot = root;
     requestProjectContext = project;
     const tabId = requestTabs.open({ kind: "asset", locator: expected });
-    await activateRequestTab(tabId, false);
+    onRequestActivated?.(requestTabs.tabs[tabId]!);
+    await activateRequestTab(tabId, false, isCurrent);
     return;
   }
   await editor.load(locator, isCurrent);
@@ -484,18 +491,65 @@ async function onSelect(node: TreeNodeDTO | NodeCreatedDTO) {
     await loadApiIntoEditor(node.locator);
   }
   if (node.kind === "workflow") {
-    if (workflowDesign.dirty) {
-      pendingSwitchLocator = { root: workspace.root, locator: { ...node.locator } };
-      wfSwitchConfirmOpen.value = true;
-      return;
-    }
-    await openWorkflowInDesigner(node.locator);
+    await requestWorkflowNavigation(node.locator, workspace.root);
   }
+}
+let evidenceNavigation = 0;
+async function locateExecutionEvidence(identity: import("@apicc/core").EvidenceIdentity) {
+  const project = selectedProjectLocator.value;
+  if (!project || project.projectId !== identity.projectId) { reportError(new Error("历史证据不属于当前项目")); return; }
+  if (identity.workflowId) { await requestWorkflowNavigation({ ...project, workflowId: identity.workflowId }, workspace.root); return; }
+  if (!identity.locator) { reportError(new Error("旧记录未采集精确定位")); return; }
+  const root = workspace.root;
+  const token = ++evidenceNavigation;
+  const navigation = historyNavigationGeneration.value;
+  const locator: ApiLocator = { ...project, collectionId: identity.locator.collectionId, folderIds: [...identity.locator.folderIds], apiId: identity.locator.apiId };
+  const nodeKey = localTreeNodeKey({ source: "local", kind: "api", locator });
+  const node = findLocalNodeByKey(nodeKey);
+  if (node?.kind !== "api") { reportError(new Error("当前资源已不存在，不能定位历史用例")); return; }
+  let activated: { tabId: string; generation: number; navigation: number } | null = null;
+  const isCurrent = () => token === evidenceNavigation && workspace.root === root
+    && !!selectedProjectLocator.value && sameProjectLocator(selectedProjectLocator.value, project)
+    && (!activated || (historyNavigationGeneration.value === activated.navigation
+      && requestTabs.activeId === activated.tabId && requestTabs.isCurrent(activated.tabId, activated.generation, root)));
+  try {
+    if (moduleMemory.test.pane !== "api-cases" && !(await testing.leave())) return;
+    if (!isCurrent() || historyNavigationGeneration.value !== navigation) return;
+    // Existing request/editor sessions retain their live dirty buffer; never reload to reveal it.
+    await loadApiIntoEditor(locator, isCurrent, true, tab => {
+      // Capture after our own synchronous open/activation, before any loading await.
+      activated = { tabId: tab.tabId, generation: tab.generation, navigation: historyNavigationGeneration.value };
+    });
+    if (!isCurrent() || !editor.locator || localTreeNodeKey({ source: "local", kind: "api", locator: editor.locator }) !== nodeKey) return;
+    const selected = editor.api?.cases.find(item => item.id === identity.locator!.caseId && item.scope === identity.locator!.scope);
+    if (!selected) { reportError(new Error("当前用例已变化或删除，不能定位到其它同名用例")); return; }
+    const caseIdentity = { caseId: selected.id, scope: selected.scope };
+    cases.selectedCase = caseIdentity;
+    const requestTab = editor.activeKey ? debug.requestTabForSession(editor.activeKey) : null;
+    if (requestTab) debug.requestTabState(requestTab).selectedCase = { ...caseIdentity };
+    tree.select(node);
+    moduleMemory.test.apiLocator = { ...locator, folderIds: [...locator.folderIds] };
+    moduleMemory.apiTree.lastApiLocator = { ...locator, folderIds: [...locator.folderIds] };
+    moduleMemory.test.pane = "api-cases"; moduleMemory.touch();
+    testStressOpen.value = false;
+    view.value = "test";
+  } catch (error) { reportError(error); }
 }
 
 // —— 工作流切换按完整 locator 捕获，确认等待期间不重新读取活动选中目标 ——
 const wfSwitchConfirmOpen = ref(false);
 let pendingSwitchLocator: { root: string; locator: WorkflowLocator } | null = null;
+
+async function requestWorkflowNavigation(locator: WorkflowLocator, root: string) {
+  const captured = { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId, workflowId: locator.workflowId };
+  if (workspace.root !== root) return;
+  const current = workflowDesign.locator;
+  // Locating the already-open workflow reveals its live buffer, never reloads a dirty draft.
+  if (workflowDesign.root === root && current && current.workspaceId === captured.workspaceId && current.groupId === captured.groupId
+    && current.projectId === captured.projectId && current.workflowId === captured.workflowId) { view.value = "wf"; return; }
+  if (workflowDesign.dirty) { pendingSwitchLocator = { root, locator: captured }; wfSwitchConfirmOpen.value = true; return; }
+  await openWorkflowInDesigner(captured, root);
+}
 
 async function openWorkflowInDesigner(locator: WorkflowLocator, root = workspace.root) {
   if (workspace.root !== root) return;
@@ -564,6 +618,7 @@ function onRequestTabCloseCancel() { finishRequestTabClose(false); }
 // 槽 dirty + workflowDesign 单会话 + online 各驻留会话任一缓冲槽 dirty（遍历全表，任务 4
 // 移交口径；判定先例同 editorDirty/projectHasDrafts 的快照比对）。
 function aggregateHasDrafts(): boolean {
+  if (testing.dirty) return true;
   for (const session of Object.values(editor.sessions)) {
     if ((session.api !== null && JSON.stringify(session.api) !== session.snapshot) || design.hasControlDrafts(session)) return true;
   }
@@ -630,6 +685,16 @@ const selectedProjectContext = computed(() => {
 });
 const selectedProjectLocator = computed(() => selectedProjectContext.value?.locator ?? null);
 const activeProjectLocator = computed(() => selectedProjectLocator.value ? { ...selectedProjectLocator.value } : null);
+watch(() => JSON.stringify([isHome.value, onlineMode.value, selectedProjectContext.value]), () => {
+  const context = selectedProjectContext.value;
+  if (isHome.value) return;
+  void testing.activate(context?.root ?? '', !onlineMode.value ? context?.locator ?? null : null, workspace.readOnly).catch(reportError);
+});
+async function onTestPane(pane: TestingPane) {
+  if (pane !== moduleMemory.test.pane && !(await testing.leave())) return;
+  moduleMemory.test.pane = pane; moduleMemory.touch();
+  if ((pane === 'datasets' || pane === 'suites') && testing.current && !testing.dirty) await testing.refresh().catch(reportError);
+}
 const activeRequestTab = computed(() => {
   const tab = requestTabs.activeTab;
   const context = selectedProjectContext.value;
@@ -1125,8 +1190,9 @@ function onDividerDblClick() {
             :active-api-locator="editor.locator"
             :pane="moduleMemory.test.pane"
             :scenarios="testScenarios"
+            :testing="testing"
             :report-error="reportError"
-            @update:pane="(p) => { moduleMemory.test.pane = p; moduleMemory.touch(); }"
+            @update:pane="onTestPane"
             @pick-api="onTestPickApi"
             @open-workflow="openWorkflowInDesigner"
           />
@@ -1260,6 +1326,7 @@ function onDividerDblClick() {
             :workspace="workspace"
             :selected-collection-locator="selectedCollectionLocator"
             :report-error="reportError"
+            @locate-evidence="locateExecutionEvidence"
           />
           <!-- 测试模块（M11）：侧栏导航 + 主区用例面板/压测上下文 -->
           <template v-else-if="view === 'test'">
@@ -1290,9 +1357,11 @@ function onDividerDblClick() {
               :envs="envs"
               :stress="stress"
               :pane="moduleMemory.test.pane"
+              :testing="testing"
               :report-error="reportError"
               :read-only="workspace.readOnly"
               @stress="onTestStress"
+              @locate-evidence="locateExecutionEvidence"
             />
           </template>
           <WfDesigner

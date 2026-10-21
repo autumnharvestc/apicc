@@ -1,12 +1,12 @@
-import { readFileSync } from "node:fs";
-import { parse as parseCsv } from "csv-parse/sync";
 import type { DeepReadonly, ProjectSnapshot } from "../assets/snapshot.js";
 import type { ApiAsset } from "../contract/model.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../contract/workspace.js";
 import type { Operation, ProjectGlobals, StressPolicy } from "../domain/common.js";
 import type { CredentialBindings } from "../credentials/types.js";
 import type { CaseExecutionDeps, CaseExecutionResult } from "../runner/caseExecutor.js";
-import { executeCase } from "../runner/caseExecutor.js";
+import { executeCase, prepareCaseExecution } from "../runner/caseExecutor.js";
+import { createExtractionRuntimeState, type ExtractionRuntimeState } from "../testing/extraction.js";
+import { readPreparedCaseData } from "../testing/data.js";
 import { captureProjectExecutionRun, type ProjectExecutionRun } from "../runner/runner.js";
 import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/executionSelection.js";
 import type { ManagedProtocolClient } from "../http/client.js";
@@ -65,11 +65,12 @@ function operationContext(
   envVars: Record<string, string>,
   persisted: Map<string, string>,
   persistedSnapshot: Record<string, string>,
+  extractionState: ExtractionRuntimeState,
 ): { pm: PmApi } {
   const pm: PmApi = {
     variables: {
       get: (name) => resolver.get(name),
-      set: (name, value) => { persisted.set(name, value); persistedSnapshot[name] = value; resolver.setRuntime(name, value); },
+      set: (name, value) => { persisted.set(name, value); persistedSnapshot[name] = value; resolver.setRuntime(name, value); extractionState.bindings.delete(name); },
     },
     environment: { get: (name) => envVars[name] },
     request: { protocol: "http", method: "GET", url: "", headers: {}, query: [], auth: { kind: "none" } },
@@ -82,6 +83,7 @@ function operationContext(
 function runContainerOperations(
   containers: readonly SnapshotContainer[], phase: "pre" | "post", deps: StressCaseSessionDeps,
   resolver: VariableResolver, envVars: Record<string, string>, persisted: Map<string, string>, persistedSnapshot: Record<string, string>,
+  extractionState: ExtractionRuntimeState,
 ): void {
   const ordered = phase === "pre" ? containers : [...containers].reverse();
   let firstError: unknown;
@@ -94,30 +96,10 @@ function runContainerOperations(
   for (const container of ordered) {
     const operations: readonly DeepReadonly<Operation>[] = phase === "pre" ? container.preOperations : container.postOperations;
     for (const operation of operations) {
-      if (operation.type === "script") runHook(() => deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot)));
+      if (operation.type === "script") runHook(() => deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot, extractionState)));
     }
   }
   if (hasError) throw firstError;
-}
-
-function parseDataRows(sourcePath: string, format: "csv" | "json"): Array<Record<string, string> | undefined> {
-  const raw = readFileSync(sourcePath, "utf8");
-  const records: unknown = format === "csv"
-    ? parseCsv(raw, { columns: true, skip_empty_lines: true })
-    : JSON.parse(raw);
-  if (!Array.isArray(records)) throw new Error("数据源必须是记录数组");
-  const rows = records.map((record, index) => {
-    if (typeof record !== "object" || record === null || Array.isArray(record)) {
-      throw new Error(`数据源第 ${index + 1} 行必须是对象`);
-    }
-    const row: Record<string, string> = {};
-    for (const [key, value] of Object.entries(record)) {
-      if (typeof value !== "string") throw new Error(`数据源第 ${index + 1} 行字段 ${key} 必须是字符串`);
-      row[key] = value;
-    }
-    return row;
-  });
-  return rows.length > 0 ? rows : [undefined];
 }
 
 function mutableGlobals(globals: DeepReadonly<ProjectGlobals>): ProjectGlobals {
@@ -186,11 +168,13 @@ export function createStressCaseSession(
   const resolver = createVariableResolver({ layers: [envVars, location.collection.variables, project.variables] });
   const persisted = new Map<string, string>();
   const persistedSnapshot: Record<string, string> = {};
-  const rows = testCase.dataDriver
-    ? parseDataRows(testCase.dataDriver.sourcePath, testCase.dataDriver.format)
-    : [undefined];
+  const extractionState = createExtractionRuntimeState();
+  const prepared = prepareCaseExecution(testCase, selectedRun.snapshot.context, location.asset.contract.id, deps.resolveAssert);
+  const locator = { collectionId: location.collection.id, folderIds: location.containers.slice(1).map((container) => container.id), apiId: location.asset.contract.id, caseId: testCase.id, scope: testCase.scope };
+  const source = readPreparedCaseData(selectedRun.snapshot, selectedRun.preparedTestData, locator);
+  const rows = source && source.rows.length > 0 ? source.rows.map((row) => row.values) : [undefined];
   let cursor = 0;
-  runContainerOperations(location.containers, "pre", deps, resolver, envVars, persisted, persistedSnapshot);
+  runContainerOperations(location.containers, "pre", deps, resolver, envVars, persisted, persistedSnapshot, extractionState);
   let client: ManagedProtocolClient | undefined;
   const clientPromise = Promise.resolve(deps.createManagedClient(options.workerId));
   let closePromise: Promise<void> | undefined;
@@ -254,9 +238,12 @@ export function createStressCaseSession(
         credentialBindings: selectedRun.credentialBindings,
         ...(selectedRun.network === undefined ? {} : { network: selectedRun.network }),
         testCase,
+        prepared,
+        extractionState,
+        locator,
         row: rows[rowIndex],
         rowIndex,
-        isDataDriven: rows.length > 1,
+        isDataDriven: source !== undefined,
         resolver,
         envVars,
         envBaseUrl: baseUrl,
@@ -272,7 +259,7 @@ export function createStressCaseSession(
       closePromise = (async () => {
         let firstError: unknown;
         let hasError = false;
-        try { runContainerOperations(location.containers, "post", deps, resolver, envVars, persisted, persistedSnapshot); }
+        try { runContainerOperations(location.containers, "post", deps, resolver, envVars, persisted, persistedSnapshot, extractionState); }
         catch (error) { hasError = true; firstError = error; }
         try {
           client ??= await clientPromise;

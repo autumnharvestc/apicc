@@ -55,6 +55,19 @@ const httpRequest = (url: string): ExecutableRequest => ({
 });
 
 describe("StressRunner", () => {
+  it("C1 keeps at most 20 safe failure evidence samples while aggregating all 25 failures", async () => {
+    let projectionStarted = false; let projectedBeforeStop = false;
+    const report = await new StressRunner({ createGeneratorCollector: () => ({ recordSchedulerBacklog() {}, stop() { projectedBeforeStop = projectionStarted; return { availability: "unavailable", unavailableReason: "fixture" }; } }), createWorker: () => ({
+      async execute() { return { request: httpRequest("https://example.test"), response: { status: 200, headers: {}, get bodyText() { projectionStarted = true; return "private-token"; }, timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+        requestStarted: true, requestCompleted: true, failureKind: "extraction", outcome: { apiId: "a", apiName: "a", caseId: "c", caseName: "c", passed: false, durationMs: 1, assertions: [], failureKind: "extraction" },
+        extractionOutcomes: [{ id: "x", name: "token", selector: { target: "bodyText", match: "first" }, status: "failed", pass: false, sensitive: true, published: false, code: "EXTRACTION", message: "private-token", value: "private-token" }] } as CaseExecutionResult; },
+      async close() {},
+    }) }).run({ concurrency: 1, maxIterations: 25 });
+    expect(report.totalRequests).toBe(25); expect(report.failed).toBe(25);
+    expect(report.failureEvidence).toHaveLength(20);
+    expect(projectedBeforeStop).toBe(true); // Non-private local runs retain their original generator billing boundary.
+    expect(JSON.stringify(report)).not.toContain("private-token");
+  });
   it("迭代模式：恰好 N 次请求、样本数一致、无失败", async () => {
     hit = 0;
     const runner = makeRunner(() => httpRequest(`${baseUrl}/x`));
@@ -213,21 +226,21 @@ describe("StressRunner", () => {
     expect(report.verdict?.violations[0]?.metric).toBe("businessFailures");
   });
 
-  it("HTTP 200 但断言失败归类 assertion 并导致 verdict 失败", async () => {
+  it.each(["assertion", "extraction"] as const)("A3 HTTP 200 failure %s causes failed verdict", async (failureKind) => {
     const runner = new StressRunner({
       createWorker: () => ({
         execute: async () => ({
           request: httpRequest("http://fake/"),
           response: { status: 200, headers: {}, bodyText: "", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 2, iterationTimeMs: 3,
-          outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 3, assertions: [{ pass: false, message: "expected" }], failureKind: "assertion" as const },
-          failureKind: "assertion" as const,
+          outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", passed: false, durationMs: 3, assertions: [{ pass: false, message: "expected" }], failureKind },
+          failureKind,
         }),
         close: async () => {},
       }),
     });
     const report = await runner.run({ concurrency: 1, maxIterations: 1 });
     expect(report.ok).toBe(0);
-    expect(report.failures.assertion).toBe(1);
+    expect(report.failures[failureKind]).toBe(1);
     expect(report.statusDist).toEqual({ "200": 1 });
     expect(report.verdict?.passed).toBe(false);
   });

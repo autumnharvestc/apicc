@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { CollectionRunError, CredentialError, StressSafetyError, createCredentialOutputSanitizer } from "@apicc/core";
+import { CollectionRunError, CredentialError, StressSafetyError, createCredentialOutputSanitizer, redactExecutionOutput } from "@apicc/core";
 
 const credentialMessages: Record<CredentialError["code"], string> = {
   CREDENTIAL_MISSING: "Credential is not available.",
@@ -35,14 +35,16 @@ export function createExecutionOutputBoundary(markers: readonly string[]): Execu
   const sanitizer = createCredentialOutputSanitizer(markers);
   return {
     value<T>(value: T): T {
-      return sanitizer.redactValue(toPlainData(value, new WeakMap<object, unknown>())) as T;
+      return redactExecutionOutput(toPlainData(value, new WeakMap<object, unknown>()), sanitizer) as T;
     },
     text(value: string): string {
       return sanitizer.redactText(value);
     },
     error(value: unknown): Error {
       const details = errorDetails(value);
-      const projected = sanitizer.redactValue(toPlainData(details, new WeakMap<object, unknown>())) as ErrorDetails;
+      const projected: ErrorDetails = { ...details, message: sanitizer.redactText(details.message),
+        ...(details.targetOrigin === undefined ? {} : { targetOrigin: sanitizer.redactText(details.targetOrigin) }),
+        ...(details.partialResult === undefined ? {} : { partialResult: redactExecutionOutput(toPlainData(details.partialResult, new WeakMap<object, unknown>()), sanitizer) }) };
       const error = new Error(projected.message);
       error.name = projected.name;
       error.stack = "";

@@ -2,7 +2,10 @@ import { DOMParser } from "@xmldom/xmldom";
 // xpath 包为 CommonJS 且具名导出不可被 cjs-module-lexer 静态探测——Node 原生 ESM（core dist
 // 被桌面端/子进程加载）下具名导入会 SyntaxError，必须经默认导出解构（vitest interop 会掩盖此问题）。
 import xpathDefault from "xpath";
-import type { AssertOperator, AssertResult } from "../plugin/types.js";
+import type { AssertOperator, AssertResult, AssertEvaluationContext, AssertOperatorDescriptor } from "../plugin/types.js";
+import { AssertionValueError } from "./selection.js";
+import { compileRegex } from "./regex.js";
+import { firstDifference, prepareValueSchema, validateSchemaValue } from "./schemaValue.js";
 import type { SelectedValue, SelectReturnType } from "xpath";
 
 const { select, isArrayOfNodes } = xpathDefault as typeof import("xpath");
@@ -14,6 +17,7 @@ function num(v: unknown): number {
 function make(op: string, test: (actual: unknown, expected: string | undefined) => boolean): AssertOperator {
   return {
     op,
+    descriptor: { expectedFormat: "text", expectedRequired: true },
     evaluate(actual, expected) {
       // fail-closed：actual 或 expected 缺失一律 fail（neq/contains 等若不拦截会把缺值误判为通过）
       if (actual === undefined || expected === undefined) {
@@ -98,5 +102,61 @@ export const builtinAssertOperators: AssertOperator[] = [
   make("gt", (a, e) => num(a) > num(e)),
   make("lte", (a, e) => num(a) <= num(e)),
   make("gte", (a, e) => num(a) >= num(e)),
-  { op: "xpath", evaluate: xpathEvaluate },
+  { op: "xpath", descriptor: { targets: ["bodyText"], expectedFormat: "xpath", expectedRequired: true }, evaluate: xpathEvaluate },
+  typed("exists", { expectedFormat: "none", expectedRequired: false }, (actual, _expected, context) => context?.found ?? actual !== undefined),
+  typed("notExists", { expectedFormat: "none", expectedRequired: false }, (actual, _expected, context) => !(context?.found ?? actual !== undefined)),
+  typed("regex", { expectedFormat: "pattern", expectedRequired: true }, (actual, expected, context) => {
+    if (typeof actual !== "string") throw new AssertionValueError("ACTUAL_TYPE", "Regex requires text", "assertion");
+    return (context?.regex ?? compileRegex(expected!, context?.options?.flags as string | undefined)).test(actual);
+  }),
+  typed("length", { expectedFormat: "integer", expectedRequired: true }, (actual, expected) => {
+    if (!/^(0|[1-9]\d*)$/.test(expected!) || !Number.isSafeInteger(Number(expected))) throw new AssertionValueError("EXPECTED_CONFIG", "Length expected must be a nonnegative safe integer");
+    if (typeof actual !== "string" && !Array.isArray(actual)) throw new AssertionValueError("ACTUAL_TYPE", "Length requires text or array", "assertion");
+    return (typeof actual === "string" ? [...actual].length : actual.length) === Number(expected);
+  }),
+  ...["in", "notIn"].map((op) => typed(op, { expectedFormat: "jsonArray", expectedRequired: true }, (actual, expected) => {
+    const values = parseExpected(expected!);
+    if (!Array.isArray(values)) throw new AssertionValueError("EXPECTED_CONFIG", "Membership expected must be a JSON array");
+    const included = values.some((value) => firstDifference(actual, value) === undefined);
+    return op === "in" ? included : !included;
+  })),
+  typed("deepEqual", { expectedFormat: "json", expectedRequired: true }, (actual, expected) => {
+    const differencePath = firstDifference(actual, parseExpected(expected!));
+    return { pass: differencePath === undefined, message: differencePath ? `Values differ at ${differencePath}` : "Values deeply equal", ...(differencePath ? { differencePath } : {}) };
+  }),
+  typed("schema", { expectedFormat: "none", expectedRequired: false }, (actual, _expected, context) => {
+    if (!context?.assets) throw new AssertionValueError("SCHEMA_CONFIG", "Schema assertion requires asset context");
+    const schema = context.schema ?? prepareValueSchema(context.options?.schema, context.assets);
+    return validateSchemaValue(actual, schema, context.assets);
+  }),
 ];
+
+/** Data-only metadata; importing this module does not load host filesystem, keyring or HTTP. */
+export const builtinAssertDescriptors: Readonly<Record<string, AssertOperatorDescriptor>> = Object.fromEntries(
+  builtinAssertOperators.map((operator) => [operator.op, {
+    targets: ["status", "responseTime", "header", "bodyText", "bodyJson", "bodyXml", "cookie"] as const,
+    ...operator.descriptor,
+  }]),
+);
+
+export function parseExpected(expected: string): unknown {
+  try { return JSON.parse(expected); }
+  catch { throw new AssertionValueError("EXPECTED_CONFIG", "Expected must be valid JSON"); }
+}
+function typed(op: string, descriptor: AssertOperatorDescriptor, test: (actual: unknown, expected: string | undefined, context?: AssertEvaluationContext) => boolean | AssertResult): AssertOperator {
+  return {
+    op, descriptor,
+    evaluate(actual, expected, context) {
+      try {
+        if (descriptor.expectedRequired && expected === undefined) throw new AssertionValueError("EXPECTED_CONFIG", "Expected value is required");
+        // Missing is exceptional only for the explicit absence operator.
+        if ((context?.found === false || actual === undefined) && op !== "notExists") return { pass: false, message: "Actual value is missing", kind: "assertion", code: "ASSERTION_MISSING" };
+        const result = test(actual, expected, context);
+        return typeof result === "boolean" ? { pass: result, message: `${op} ${result ? "passed" : "failed"}` } : result;
+      } catch (error) {
+        return error instanceof AssertionValueError ? { pass: false, message: error.message, kind: error.kind, code: error.code }
+          : { pass: false, message: String(error), kind: "config", code: "ASSERTION_CONFIG" };
+      }
+    },
+  };
+}

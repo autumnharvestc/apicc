@@ -146,9 +146,11 @@ export function exportOpenapi(
 
   const hasLocalExecutionData = snapshot.project.workflows.length > 0
     || contexts.some(({ location }) => location.asset.cases.length > 0)
+    || (snapshot.project.datasets?.length ?? 0) > 0
+    || (snapshot.project.suites?.length ?? 0) > 0
     || snapshot.project.mock !== undefined;
   if (hasLocalExecutionData) {
-    addDiagnostic(diagnostics, "warning", "OPENAPI_LOCAL_EXECUTION_DATA_OMITTED", "project", "Local test cases, workflows, and Mock execution configuration are not part of OpenAPI.", false);
+    addDiagnostic(diagnostics, "warning", "OPENAPI_LOCAL_EXECUTION_DATA_OMITTED", "project", "Local test cases, datasets, suites, workflows, and Mock execution configuration are not part of OpenAPI.", false);
   }
 
   const title = sanitizeDocumentText(snapshot.project.name, allSecretRefIds);

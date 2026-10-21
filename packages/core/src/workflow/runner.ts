@@ -5,16 +5,18 @@ import type { Environment, TestCase } from "../domain/common.js";
 import type { PluginRegistry } from "../plugin/registry.js";
 import type { HttpHopObservation, PmApi } from "../plugin/types.js";
 import type { HttpSession } from "../http/session.js";
-import { captureProjectExecutionRun, CollectionRunError, CollectionRunner } from "../runner/runner.js";
+import { captureProjectExecutionRun, CollectionRunError, CollectionRunner, type RunnerOptions } from "../runner/runner.js";
+import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/executionSelection.js";
+import { createExtractionRuntimeState, extractionVariables, type ExtractionRuntimeState } from "../testing/extraction.js";
 import { createEventBus } from "../events/bus.js";
 import { validateWorkflowStructure } from "./validate.js";
 import { findProjectApi } from "./references.js";
 import type { Workflow, WorkflowEdge, WorkflowNode } from "./model.js";
-import type { CaseOutcome } from "../report/types.js";
+import type { CaseOutcome, RunResult } from "../report/types.js";
 import type { ProjectExecutionRun } from "../runner/runner.js";
 
 export type NodeState = "passed" | "failed" | "skipped" | "noop";
-export type NodeSkipReason = "condition-pruned" | "upstream-failed" | "fail-fast" | "reference-missing" | "reference-invalid" | "unreachable";
+export type NodeSkipReason = "condition-pruned" | "upstream-failed" | "fail-fast" | "reference-missing" | "reference-invalid" | "unreachable" | "aborted";
 
 export interface NodeResult {
   nodeId: string;
@@ -29,6 +31,7 @@ export interface NodeResult {
 }
 
 export interface WorkflowRunResult {
+  report?: import("../report/types.js").RunResult;
   workflowId: string;
   workflowName: string;
   status: Workflow["status"];
@@ -54,6 +57,7 @@ export interface WorkflowRunnerOptions {
 }
 
 export type ConditionVerdict = { kind: "matched" } | { kind: "pruned" } | { kind: "error"; message: string };
+export type WorkflowCaseObserver = (execution: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[0], identity: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[1] & { nodeId: string }) => void | Promise<void>;
 
 /** 条件求值沙箱上下文：在 PmApi 之上扩展只读的 prev/vars/env 与求值结果槽位 __value。 */
 interface ConditionPm extends PmApi {
@@ -71,6 +75,9 @@ export class WorkflowRunner {
     workspaceRoot?: string;
     httpSession?: HttpSession;
     observeHttp?: (event: HttpHopObservation) => void | Promise<void>;
+    signal?: AbortSignal;
+    preparedRowIndex?: number;
+    observeCaseExecution?: WorkflowCaseObserver;
   } = {}): Promise<WorkflowRunResult> {
     const selectedExecution = captureProjectExecutionRun(execution);
     const project = selectedExecution.snapshot.project;
@@ -115,7 +122,7 @@ export class WorkflowRunner {
     const runner = new CollectionRunner({
       registry: this.opts.registry,
       bus: createEventBus(),
-      timeouts: { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 },
+      timeouts: { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000, signal: options.signal },
       failFast: this.opts.failFast ?? false,
     });
     // 携带变量属于一次 run，避免同一实例的顺序/并发调用相互污染。
@@ -125,6 +132,7 @@ export class WorkflowRunner {
     // 桥方法异常兜底（同上）：get 失败包装为可读错误整体拒绝；
     // set 失败绝不吞掉已产生的 WorkflowRunResult，折进 warnings 而非整体拒绝。
     const bridge = {
+      extractions: createExtractionRuntimeState(),
       get: () => {
         try {
           return { ...carried };
@@ -214,6 +222,7 @@ export class WorkflowRunner {
     let deferredInRow = 0;
 
     while (queue.length > 0) {
+      if (options.signal?.aborted) break;
       const node = queue.shift()!;
       if (settled.has(node.id)) continue;
 
@@ -248,23 +257,21 @@ export class WorkflowRunner {
         const reference = resolveNodeReference(node, project);
         const projectLocation = reference.location;
         const api = reference.api;
-        const caseDef = reference.caseDef;
+        const caseDef = projectLocation ? selectEffectiveCases(projectLocation.api.cases, resolveExecutionEnvironment(project, projectLocation.collection.id, environmentId).chain, node.caseId)[0] : undefined;
         if (!projectLocation || !api || !caseDef) {
           // 非严格模式允许其他独立节点继续，但缺引用本身始终是 failed/config，不能伪装成 skipped/pass。
-          const msg = missingReferenceMessage(node);
+          const msg = projectLocation && api && reference.caseDef
+            ? `用例不适用于当前环境（scope=${reference.caseDef.scope}），已按失败处理` : missingReferenceMessage(node);
           warnings.push(msg);
-          const outcome: CaseOutcome = {
-            apiId: node.apiId ?? "", apiName: node.apiId ?? node.id,
-            caseId: node.caseId ?? "", caseName: node.caseId ?? node.id,
-            passed: false, durationMs: 0, assertions: [], error: msg, failureKind: "config",
-          };
-          nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, failureKind: "config", error: msg });
+          nodeResults.set(node.id, missingNodeResult(node, msg));
         } else {
           try {
             const nodeRun = await runSingleNode(runner, selectedExecution, projectLocation, caseDef, environmentId, bridge, {
               workspaceRoot: options.workspaceRoot ?? this.opts.workspaceRoot,
               httpSession: options.httpSession ?? this.opts.httpSession,
               observeHttp: options.observeHttp ?? this.opts.observeHttp,
+              preparedRowIndex: options.preparedRowIndex,
+              observeCaseExecution: options.observeCaseExecution === undefined ? undefined : (value, identity) => options.observeCaseExecution!(value, { ...identity, nodeId: node.id }),
             });
             warnings.push(...nodeRun.warnings);
             const outcomes = nodeRun.outcomes;
@@ -274,12 +281,8 @@ export class WorkflowRunner {
           } catch (e) {
             if (e instanceof CollectionRunError) {
               warnings.push(...(e.partialResult.warnings ?? []));
-              const diagnostic: CaseOutcome = {
-                apiId: api.contract.id, apiName: api.contract.metadata.name, caseId: caseDef.id, caseName: caseDef.name,
-                passed: false, durationMs: 0, assertions: [], error: e.message, failureKind: e.failureKind,
-              };
-              const outcomes = [...e.partialResult.cases, diagnostic];
-              const outcome = outcomes.find((candidate) => !candidate.passed) ?? diagnostic;
+              const outcomes = e.partialResult.cases;
+              const outcome = outcomes.find((candidate) => !candidate.passed) ?? outcomes[0];
               nodeResults.set(node.id, {
                 nodeId: node.id, label: node.label, kind: "request", state: "failed",
                 outcomes, outcome, error: e.message, failureKind: e.failureKind,
@@ -287,11 +290,7 @@ export class WorkflowRunner {
             } else {
               const error = e instanceof Error ? e.message : String(e);
               const failureKind: CaseOutcome["failureKind"] = /脚本引擎|接口\/用例|环境|数据源/.test(error) ? "config" : "script";
-              const outcome: CaseOutcome = {
-                apiId: api.contract.id, apiName: api.contract.metadata.name, caseId: caseDef.id, caseName: caseDef.name,
-                passed: false, durationMs: 0, assertions: [], error, failureKind,
-              };
-              nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [outcome], outcome, error, failureKind });
+              nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "request", state: "failed", outcomes: [], error, failureKind });
             }
           }
         }
@@ -301,7 +300,7 @@ export class WorkflowRunner {
       // 满足则下游入队（多入只入队一次）。
       for (const edge of outgoing.get(node.id) ?? []) {
         if (edge.condition) {
-          const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, carried, envVars, this.opts.registry);
+          const verdict = evaluateCondition(edge.condition, nodeResults.get(node.id)!, { ...carried, ...extractionVariables(bridge.extractions) }, envVars, this.opts.registry);
           if (verdict.kind === "pruned") {
             pruned.add(edge.id);
             continue;
@@ -342,7 +341,7 @@ export class WorkflowRunner {
     propagateBlocked();
     // 未触达节点（failFast 中断遗留）→ skipped。
     for (const n of workflow.nodes) {
-      if (!settled.has(n.id)) settleSkipped(n, this.opts.failFast ? "fail-fast" : "unreachable");
+      if (!settled.has(n.id)) settleSkipped(n, options.signal?.aborted ? "aborted" : this.opts.failFast ? "fail-fast" : "unreachable");
     }
 
     // 先按执行顺序，再按工作流声明顺序补齐 skipped 节点（级联/未触达者不在 order 中）。
@@ -380,27 +379,38 @@ async function runSingleNode(
   location: NonNullable<ReturnType<typeof findProjectApi>>,
   caseDef: DeepReadonly<TestCase>,
   environmentId: string | undefined,
-  bridge: { get(): Record<string, string>; set(v: Record<string, string>): void },
-  httpOptions: { workspaceRoot?: string; httpSession?: HttpSession; observeHttp?: (event: HttpHopObservation) => void | Promise<void> },
+  bridge: { get(): Record<string, string>; set(v: Record<string, string>): void; extractions: ExtractionRuntimeState },
+  httpOptions: { workspaceRoot?: string; httpSession?: HttpSession; observeHttp?: (event: HttpHopObservation) => void | Promise<void>; preparedRowIndex?: number; observeCaseExecution?: RunnerOptions["observeCaseExecution"] },
 ): Promise<{ outcomes: CaseOutcome[]; warnings: string[] }> {
   const apiId = location.api.contract.id;
-  const result = await runner.run(execution, location.collection.id, {
-    environmentId,
-    runtimeBridge: bridge,
-    workspaceRoot: httpOptions.workspaceRoot,
-    httpSession: httpOptions.httpSession,
-    observeHttp: httpOptions.observeHttp,
-    caseSelection: { apiId, caseId: caseDef.id, folderIds: location.folders.map((folder) => folder.id) },
-  });
-  if (result.cases.length > 0) return { outcomes: result.cases, warnings: result.warnings ?? [] };
-  // 被引用用例 scope 与所选环境不匹配时，单用例被 CollectionRunner 的 scope 过滤剔除（cases 为空）——
-  // 构造可读 failed outcome 留痕，而非让 outcome undefined 裸崩（节点记 failed，遍历继续）。
-  return { outcomes: [{
-    apiId, apiName: location.api.contract.metadata.name, caseId: caseDef.id, caseName: caseDef.name,
-    passed: false, durationMs: 0, assertions: [],
-    error: `用例不适用于当前环境（scope=${caseDef.scope}），已按失败处理`,
-    failureKind: "config",
-  }], warnings: result.warnings ?? [] };
+  // CollectionRunner also has legacy pre-execution diagnostic rows (including rows with
+  // a locator). Only the executeCase observation establishes a new workflow's actual row.
+  const actual: CaseOutcome[] = [];
+  const actualResult = (result: RunResult): RunResult => ({ ...result, cases: actual, total: actual.length,
+    passed: actual.filter((outcome) => outcome.passed).length, failed: actual.filter((outcome) => !outcome.passed).length });
+  let result: RunResult;
+  try {
+    result = await runner.run(execution, location.collection.id, {
+      environmentId,
+      runtimeBridge: bridge,
+      workspaceRoot: httpOptions.workspaceRoot,
+      httpSession: httpOptions.httpSession,
+      observeHttp: httpOptions.observeHttp,
+      preparedRowIndex: httpOptions.preparedRowIndex,
+      observeCaseExecution: async (value, identity) => { actual.push(value.outcome); await httpOptions.observeCaseExecution?.(value, identity); },
+      caseSelection: { apiId, caseId: caseDef.id, scope: caseDef.scope, folderIds: location.folders.map((folder) => folder.id) },
+    });
+  } catch (error) {
+    if (error instanceof CollectionRunError) throw new CollectionRunError(error.message, actualResult(error.partialResult), error.failureKind);
+    throw error;
+  }
+  if (result.cases.length !== actual.length) {
+    const observed = new Set(actual); const diagnostic = result.cases.find((outcome) => !observed.has(outcome));
+    throw new CollectionRunError(diagnostic?.error ?? "用例未产生实际执行行", actualResult(result), diagnostic?.failureKind ?? "config");
+  }
+  if (actual.length > 0) return { outcomes: actual, warnings: result.warnings ?? [] };
+  // No executeCase row was produced; retain the failure on the node, not as a synthetic HTTP case.
+  throw new CollectionRunError(`用例不适用于当前环境（scope=${caseDef.scope}），已按失败处理`, result, "config");
 }
 
 /**
@@ -418,10 +428,10 @@ function evaluateCondition(expr: string, upstream: NodeResult, carried: Record<s
   const prev = deepReadonlySnapshot(representative
     ? {
       passed: upstream.state === "passed" || upstream.state === "noop",
-      caseName: representative.caseName, error: representative.error,
+      caseName: representative.caseName, error: upstream.error ?? representative.error,
       assertions: representative.assertions, outcomes: upstream.outcomes,
     }
-    : { passed: upstream.state === "noop", caseName: upstream.label, error: undefined, assertions: [], outcomes: upstream.outcomes });
+    : { passed: upstream.state === "noop", caseName: upstream.label, error: upstream.error, assertions: [], outcomes: upstream.outcomes });
   const pm: ConditionPm = {
     variables: { get: () => undefined, set: () => {} },
     environment: { get: () => undefined },
@@ -491,14 +501,9 @@ function missingReferenceMessage(node: WorkflowNode): string {
 }
 
 function missingNodeResult(node: WorkflowNode, message: string): NodeResult {
-  const outcome: CaseOutcome = {
-    apiId: node.apiId ?? "", apiName: node.apiId ?? node.id,
-    caseId: node.caseId ?? "", caseName: node.caseId ?? node.id,
-    passed: false, durationMs: 0, assertions: [], error: message, failureKind: "config",
-  };
   return {
     nodeId: node.id, label: node.label, kind: "request", state: "failed",
-    outcomes: [outcome], outcome, failureKind: "config", error: message,
+    outcomes: [], failureKind: "config", error: message,
   };
 }
 

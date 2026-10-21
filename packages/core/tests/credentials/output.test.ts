@@ -16,6 +16,105 @@ import {
 } from "../../src/credentials/output.js";
 import { collectDefinedProjectCredentialRefs } from "../../src/assets/secretRefs.js";
 import { createContractExecutionProject } from "../helpers/contractExecutionFixtures.js";
+import { createExecutionEvidenceCollector, redactExecutionOutput } from "../../src/report/evidence.js";
+import type { CaseExecutionResult } from "../../src/runner/caseExecutor.js";
+
+it("G preserves duplicate Cookie boundaries, unavailable bodies and exact rerun row association", () => {
+  const locator = { collectionId: "collection", folderIds: ["folder"], apiId: "api", caseId: "case", scope: "base" };
+  const base = { projectId: "project", definitionRevision: "current-revision", entryId: "suite-entry", suiteRow: 1, rowIndex: 1, datasetId: "dataset", dataDigest: "current-digest" };
+  const collector = createExecutionEvidenceCollector(base, [], { mode: "all" });
+  const raw: CaseExecutionResult = { outcome: { apiId: "api", apiName: "api", caseId: "case", caseName: "case", scope: "base", locator, row: 1, passed: false, durationMs: 1, assertions: [] },
+    request: { protocol: "http", method: "POST", url: "https://example.test", headers: {}, query: [], auth: { kind: "none" }, body: { kind: "raw", content: "request row two" } },
+    response: { status: 200, headers: { "set-cookie": "first=first-private; Path=/, second=second-private; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/" }, rawHeaders: [["Set-Cookie", "first=first-private; Path=/"], ["Set-Cookie", "second=second-private; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/"]], bodyText: "business second-private", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+    assertionOutcomes: [
+      { id: "exact-assertion-id", op: "eq", selector: { target: "bodyXml", match: "first", path: "/dynamic-private-path", namespaces: { "dynamic-private-prefix": "urn:dynamic-private-namespace" } }, code: "ASSERTION_FAILED", pass: false, message: "dynamic-private-message", actual: "dynamic-private-actual", expected: "dynamic-private-expected" },
+      { id: "exact-header-id", op: "exists", selector: { target: "header", match: "all", headerName: "dynamic-private-header" }, code: "OK", pass: true, message: "dynamic-private-message" },
+    ],
+    extractionOutcomes: [{ id: "exact-extraction-id", name: "dynamic-private-name", selector: { target: "cookie", match: "first", cookieName: "dynamic-private-cookie" }, status: "extracted", pass: true, code: "OK", published: true, sensitive: false, value: "dynamic-private-value", message: "dynamic-private-message" }],
+  };
+  collector.observe(raw, { rowIndex: 1 });
+  const duplicate = { ...raw, response: { ...raw.response!, bodyText: "duplicate row evidence" } };
+  collector.observe(duplicate, { rowIndex: 1 });
+  const run = { collectionId: "collection", collectionName: "second-private", startedAt: "", finishedAt: "", total: 2, passed: 0, failed: 2, cases: [structuredClone(raw.outcome), structuredClone(raw.outcome)] };
+  const safe = collector.projectRun(run);
+  expect(JSON.stringify(safe)).not.toContain("second-private");
+  expect(JSON.stringify(safe)).not.toContain("first-private");
+  expect(safe.cases.map(row => row.evidence?.response?.body.text)).toEqual(["business [REDACTED]", "duplicate row evidence"]);
+  expect(safe.cases[0]!.evidence).toMatchObject({ state: "collected", identity: { ...base, locator }, request: { body: { text: "request row two" } } });
+  expect(safe.cases[0]!.evidence!.response!.headers.text).toContain("Expires=Wed, 21 Oct 2037 07:28:00 GMT");
+  expect(safe.cases[0]!.evidence!.assertions![0]).toMatchObject({ id: { text: "exact-assertion-id" }, op: { text: "eq" }, code: { text: "ASSERTION_FAILED" }, actual: { text: "dynamic-private-actual" }, expected: { text: "dynamic-private-expected" } });
+  expect(JSON.parse(safe.cases[0]!.evidence!.assertions![0]!.selector.text)).toEqual({ target: "bodyXml", match: "first", path: "/dynamic-private-path", namespaces: { "dynamic-private-prefix": "urn:dynamic-private-namespace" } });
+  expect(JSON.parse(safe.cases[0]!.evidence!.assertions![1]!.selector.text)).toEqual({ target: "header", match: "all", headerName: "dynamic-private-header" });
+  expect(safe.cases[0]!.evidence!.extractions![0]).toMatchObject({ id: { text: "exact-extraction-id" }, code: { text: "OK" }, value: { text: "dynamic-private-value" } });
+  expect(JSON.parse(safe.cases[0]!.evidence!.extractions![0]!.selector.text)).toEqual({ target: "cookie", match: "first", cookieName: "dynamic-private-cookie" });
+  const workflow = createExecutionEvidenceCollector({ ...base, workflowId: "original-dependent-workflow" }, [], { mode: "all" });
+  workflow.observe(raw, { nodeId: "node", entryId: "node", rowIndex: 1 });
+  const projected = workflow.projectWorkflow({ workflowId: "original-dependent-workflow", workflowName: "workflow", status: "enabled", nodeResults: [{ nodeId: "node", kind: "request", state: "failed", outcomes: [raw.outcome], outcome: raw.outcome }], total: 1, passed: 0, failed: 1, skipped: 0, verdict: "failed", warnings: [], startedAt: "", finishedAt: "" });
+  expect(projected.nodeResults[0]!.outcomes![0]!.evidence).toMatchObject({ state: "collected", identity: { suiteRow: 1, rowIndex: 1, entryId: "node", nodeId: "node", definitionRevision: "current-revision", dataDigest: "current-digest" }, response: { body: { text: "business [REDACTED]" } } });
+  const unavailable = createExecutionEvidenceCollector(base, [], { mode: "all" });
+  unavailable.observe({ ...raw, response: { status: 200, headers: {}, bodyText: "", textAvailable: false, timeMs: 1 } });
+  const binary = unavailable.projectRun({ ...run, cases: [raw.outcome], total: 1, failed: 1 });
+  expect(binary.cases[0]!.evidence?.response).toMatchObject({ status: 200, body: { omitted: true, text: "unavailable" } });
+  const mergedOnly = createExecutionEvidenceCollector(base, [], { mode: "all" });
+  mergedOnly.observe({ ...raw, response: { ...raw.response!, rawHeaders: undefined } });
+  const unavailableCookies = mergedOnly.projectRun(run);
+  expect(JSON.stringify(unavailableCookies)).not.toContain("second-private");
+  expect(unavailableCookies.cases[0]!.evidence?.response?.body).toMatchObject({ omitted: true, text: expect.stringContaining("unavailable") });
+  const fallbackEvidence = unavailableCookies.cases[0]!.evidence!;
+  expect(fallbackEvidence.assertions![0]).toMatchObject({ id: { text: "exact-assertion-id" }, op: { text: "eq" }, code: { text: "ASSERTION_FAILED" }, pass: false, actual: { omitted: true }, expected: { omitted: true }, message: { omitted: true } });
+  expect(fallbackEvidence.assertions![0]!.id.omitted).toBeUndefined();
+  expect(JSON.parse(fallbackEvidence.assertions![0]!.selector.text)).toMatchObject({ target: "bodyXml", match: "first", path: "[omitted: unavailable Set-Cookie boundaries]", namespaces: { "[omitted: unavailable Set-Cookie boundaries]": "[omitted: unavailable Set-Cookie boundaries]" } });
+  expect(JSON.parse(fallbackEvidence.assertions![1]!.selector.text)).toEqual({ target: "header", match: "all", headerName: "[omitted: unavailable Set-Cookie boundaries]" });
+  expect(fallbackEvidence.extractions![0]).toMatchObject({ id: { text: "exact-extraction-id" }, code: { text: "OK" }, status: "extracted", published: true, sensitive: false, name: { omitted: true }, value: { omitted: true } });
+  expect(JSON.parse(fallbackEvidence.extractions![0]!.selector.text)).toEqual({ target: "cookie", match: "first", cookieName: "[omitted: unavailable Set-Cookie boundaries]" });
+  expect(JSON.stringify(unavailableCookies)).not.toContain("dynamic-private-");
+  expect(() => mergedOnly.markers()).toThrow(/marker set unavailable/);
+  const privateCookies = createExecutionEvidenceCollector(base, [], { privateMarkers: true });
+  expect(() => privateCookies.observe({ ...raw, response: { ...raw.response!, rawHeaders: undefined } })).toThrow(/markers incomplete/);
+  expect(() => privateCookies.markers()).toThrow(/markers incomplete/);
+  expect(() => privateCookies.projectRun(run)).toThrow(/markers incomplete/);
+  const plain = createExecutionEvidenceCollector({ projectId: "project", definitionRevision: "revision" }, [], { mode: "all" });
+  const noData = { ...raw, outcome: { ...raw.outcome, row: undefined } };
+  plain.observe(noData, { rowIndex: 0 });
+  const ordinary = plain.projectRun({ ...run, cases: [structuredClone(noData.outcome)], total: 1, failed: 1 });
+  expect(ordinary.cases[0]!.evidence?.state).toBe("collected");
+  expect(collector.projectRun({ ...run, cases: [{ ...raw.outcome, entryId: "different-entry" }] }).cases[0]!.evidence?.state).toBe("not-collected");
+});
+
+it("C1 Fix1 preserves typed verdicts and opaque identity when sensitive business content equals protocol metadata", () => {
+  const identity = { projectId: "project-passed", definitionRevision: "revision-passed", locator: { collectionId: "collection-passed", folderIds: ["folder-passed"], apiId: "api-passed", caseId: "case-passed", scope: "scope-passed" } };
+  const collector = createExecutionEvidenceCollector(identity, ["fix1-distinct-secret", "http"], { mode: "all" });
+  const raw: CaseExecutionResult = { outcome: { ...identity.locator, apiName: "fix1-distinct-secret", caseName: "passed", passed: true, durationMs: 1, assertions: [{ pass: true, message: "passed fix1-distinct-secret" }], locator: identity.locator },
+    request: { protocol: "http", method: "GET", url: "https://example.test", headers: {}, query: [], auth: { kind: "none" } }, response: { status: 200, headers: {}, bodyText: "passed fix1-distinct-secret", timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+    extractionOutcomes: [{ id: "extract-passed", name: "passed", selector: { target: "bodyText", match: "first" }, status: "extracted", pass: true, published: true, sensitive: true, code: "OK", message: "passed", value: "passed" }] };
+  collector.observe(raw);
+  const safe = collector.projectRun({ collectionId: identity.locator.collectionId, collectionName: "passed fix1-distinct-secret", startedAt: "start", finishedAt: "end", total: 1, passed: 1, failed: 0, cases: [raw.outcome],
+    suite: { suiteRunId: "suite-passed", projectId: identity.projectId, definitionRevision: identity.definitionRevision, verdict: "passed", total: 1, passed: 1, failed: 0, skipped: 0, entries: [{ entryId: "entry-passed", kind: "case", status: "passed" }] } });
+  expect(safe).toMatchObject({ passed: 1, failed: 0, total: 1, projectId: identity.projectId, definitionRevision: identity.definitionRevision, suite: { verdict: "passed", entries: [{ status: "passed", entryId: "entry-passed" }] } });
+  expect(safe.cases[0]).toMatchObject({ passed: true, locator: identity.locator });
+  expect(safe.reportingUnits).toEqual({ total: 1, passed: 1, failed: 0, skipped: 0, entryDiagnostics: 0 });
+  expect(safe.cases[0]!.evidence?.identity).toMatchObject(identity);
+  expect(safe.cases[0]!.evidence?.request?.protocol).toBe("http");
+  expect(safe.cases[0]!.evidence?.response?.body.text).toBe("[REDACTED] [REDACTED]");
+  expect(safe.cases[0]!.caseName).toBe("[REDACTED]");
+  expect(JSON.stringify(safe)).not.toContain("fix1-distinct-secret");
+  const final = redactExecutionOutput(safe, createCredentialOutputSanitizer(["passed", "http", "fix1-distinct-secret"]));
+  expect(final).toMatchObject({ passed: 1, suite: { verdict: "passed" }, cases: [{ passed: true, locator: identity.locator }] });
+  const worker = redactExecutionOutput({ protocolVersion: 2, ok: true, shardId: "shard-passed", samples: [{ status: 200, ok: true, requestStarted: true, requestCompleted: true, error: "fix1-distinct-secret", safety: { origin: "https://fix1-distinct-secret.test", confirmation: "passed", policy: "passed" } }], generator: { availability: "unavailable", unavailableReason: "fix1-distinct-secret" }, measurementWindow: { startWallMs: 0, endWallMs: 1, monotonicDurationMs: 1, eligibleCompletedAttempts: 1 } }, createCredentialOutputSanitizer(["passed", "fix1-distinct-secret"]));
+  expect(worker).toMatchObject({ ok: true, shardId: "shard-passed", samples: [{ ok: true, status: 200, safety: { confirmation: "passed", policy: "passed" } }] });
+  expect(JSON.stringify(worker)).not.toContain("fix1-distinct-secret");
+});
+
+it("C1 reprojects all legacy script primary-error sinks after a later unpublished sensitive extraction", () => {
+  const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, []);
+  const outcome = { apiId: "a", apiName: "a", caseId: "c", caseName: "c", passed: false, durationMs: 1, error: "script: sensitive-later", assertions: [{ pass: false, message: "pm.assert sensitive-later" }] };
+  const raw: CaseExecutionResult = { outcome, request: { protocol: "http", method: "GET", url: "https://example.test", headers: {}, query: [], auth: { kind: "none" } }, requestTimeMs: 1, scriptTimeMs: 1, iterationTimeMs: 2 };
+  collector.observe(raw);
+  collector.observe({ ...raw, extractionOutcomes: [{ id: "x", name: "token", selector: { target: "bodyText", match: "first" }, sensitive: true, status: "failed", pass: false, published: false, code: "EXTRACTION_FAILED", message: "sensitive-later", value: "sensitive-later" }] });
+  const safe = collector.projectRun({ collectionId: "c", collectionName: "c", startedAt: "now", finishedAt: "now", total: 1, passed: 0, failed: 1, cases: [outcome] });
+  expect(safe.cases[0]!.error).toBe("script: [REDACTED]");
+  expect(safe.cases[0]!.assertions[0]!.message).toBe("pm.assert [REDACTED]");
+});
 
 const componentId = "20000000-0000-4000-8000-000000000001";
 const unusedComponentId = "20000000-0000-4000-8000-000000000002";

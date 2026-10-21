@@ -32,8 +32,8 @@ function latency(values: number[]) {
   };
 }
 
-function freshFailureCounts(): StressFailureCounts {
-  return Object.fromEntries(STRESS_FAILURE_KINDS.map((kind) => [kind, 0])) as StressFailureCounts;
+function freshFailureCounts(): Required<StressFailureCounts> {
+  return Object.fromEntries(STRESS_FAILURE_KINDS.map((kind) => [kind, 0])) as Required<StressFailureCounts>;
 }
 
 function effectiveRequestTime(sample: StressSample): number {
@@ -93,8 +93,8 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
     if (s.status !== 0 && isEligibleCompletedAttempt(s)) bump(statusDist, String(s.status));
     const failureKind = s.failureKind
       ?? (s.status >= 400 ? "http" : (!s.ok && s.error ? "transport" : undefined));
-    if (failureKind) failures[failureKind] += 1;
-    if (failureKind && isEligibleCompletedAttempt(s)) eligibleFailureCounts[failureKind] += 1;
+    if (failureKind) failures[failureKind] = (failures[failureKind] ?? 0) + 1;
+    if (failureKind && isEligibleCompletedAttempt(s)) eligibleFailureCounts[failureKind] = (eligibleFailureCounts[failureKind] ?? 0) + 1;
     if (s.error) {
       // 网络错误：取 error 首个冒号前 token（如 ECONNREFUSED），空则记 unknown。
       if (s.failureKind === "http" && s.status !== 0) bump(errorKinds, `HTTP_${s.status}`);

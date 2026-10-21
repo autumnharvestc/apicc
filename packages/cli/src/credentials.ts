@@ -16,6 +16,10 @@ import {
   collectDefinedProjectCredentialRefs,
   prepareCredentialBindings,
   selectCredentialRequests,
+  prepareTestData,
+  bindPreparedTestData,
+  testDataSelectionsForRequests,
+  type PreparedTestData,
   type ApiAsset,
   type CredentialBindings,
   type CredentialErrorCode,
@@ -43,6 +47,8 @@ export interface ExecutionPreparationContext {
   environmentId?: string;
   expectedNetworkIdentity?: string;
   signal?: AbortSignal;
+  /** Workers bind coordinator rows. null explicitly disables local preparation. */
+  preparedTestData?: PreparedTestData | null;
 }
 
 export interface PreparedExecutionRun {
@@ -144,6 +150,9 @@ export async function prepareExecutionRunFromSnapshot(
   runContext?: ExecutionPreparationContext,
 ): Promise<PreparedExecutionRun> {
   const requests = selectCredentialRequests(snapshot, credentialSelections);
+  const preparedTestData = runContext?.preparedTestData === null ? undefined
+    : runContext?.preparedTestData !== undefined ? bindPreparedTestData(snapshot, runContext.preparedTestData)
+      : runContext === undefined ? undefined : await prepareTestData(snapshot, testDataSelectionsForRequests(snapshot, credentialSelections, runContext.environmentId), { workspaceRoot: runContext.workspaceRoot });
   const refs = collectCredentialRefsForRequests(snapshot.project, requests);
   if (expectedVersions !== undefined) {
     for (const ref of refs) {
@@ -220,7 +229,7 @@ export async function prepareExecutionRunFromSnapshot(
     throw stableCredentialError(error);
   }
   return {
-    run: { snapshot, credentialBindings, ...(network === undefined ? {} : { network }) },
+    run: { snapshot, credentialBindings, ...(network === undefined ? {} : { network }), ...(preparedTestData === undefined ? {} : { preparedTestData }) },
     snapshot,
     refs,
     secrets,

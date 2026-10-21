@@ -24,7 +24,7 @@ describe("cases store", () => {
     const created = cases.addCase({ name: "新用例", scope: "base" });
     expect(editor.api!.cases.length).toBe(before + 1);
     expect(cases.selectedCase).toEqual({ caseId: created.id, scope: "base" });
-    expect(created).toMatchObject({ preOperations: [], postOperations: [] });
+    expect(created).toMatchObject({ preOperations: [], postOperations: [], tags: [], extractors: [] });
     expect(editor.dirty).toBe(true);
   });
 

@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { computeReport, isEligibleCompletedAttempt, measurementWindowDurationMs, type ComputeReportOptions } from "./aggregate.js";
 import type { StressDistributed, StressGeneratorMetrics, StressMeasurementWindow, StressReport, StressSafetyRun, StressSample, StressThresholds } from "./model.js";
-import { CurrentStressReportSchema, StressGeneratorSchema, StressMeasurementWindowSchema, StressSampleSchema } from "./model.js";
+import { CurrentStressReportSchema, SafeExecutionEvidenceSchema, StressGeneratorSchema, StressMeasurementWindowSchema, StressSampleSchema } from "./model.js";
+import { PreparedTestDataSchema, type PreparedTestData } from "../testing/dataModel.js";
+import { createExecutionEvidenceCollector, privateEvidenceMarkers, PRIVATE_EVIDENCE_BYTES } from "../report/evidence.js";
 
 // Zod's default z.record parser materializes into a normal object and drops an own
 // `__proto__` entry. Credential reference IDs are opaque strings, so preserve every
@@ -31,6 +33,7 @@ export const StressWorkerSpecSchema = z.object({
   definitionRevision: z.string().min(1),
   credentialVersions: credentialVersionsSchema,
   networkIdentity: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  preparedTestData: PreparedTestDataSchema.optional(),
   envName: z.string().optional(),
   concurrency: z.number().int().positive().safe(),
   maxIterations: z.number().int().positive().safe().optional(),
@@ -44,10 +47,11 @@ export const StressWorkerSpecSchema = z.object({
   connectionMode: z.enum(["pooled", "fresh"]).optional(),
   workspaceRoot: z.string(),
 }).strict();
-export type StressWorkerSpec = z.infer<typeof StressWorkerSpecSchema>;
+export type StressWorkerSpec = Omit<z.infer<typeof StressWorkerSpecSchema>, "preparedTestData"> & { preparedTestData?: PreparedTestData };
 
 /** 成功 shard 回传的原始样本批（样本结构与其余 StressSample 同构，D1：合并后统一算分位）。 */
 export const ShardResultSchema = z.object({
+  failureEvidence: z.array(SafeExecutionEvidenceSchema).max(20).optional(),
   protocolVersion: z.literal(2),
   ok: z.literal(true),
   shardId: z.string(),
@@ -146,7 +150,11 @@ export function planShards(
 }
 
 /** shard 执行器注入签名：传输层实现按 spec 启动一个 worker 并回传协议结果（D2，MVP 为本地子进程）。 */
-export type SpawnWorker = (spec: StressWorkerSpec) => Promise<ShardOutcome>;
+export interface PrivateWorkerControl {
+  signal: AbortSignal;
+  finalizeEvidence(markers: readonly string[]): Promise<readonly string[]>;
+}
+export type SpawnWorker = (spec: StressWorkerSpec, control: PrivateWorkerControl) => Promise<ShardOutcome>;
 
 /** 协调器运行选项。 */
 export interface DistributedRunOptions {
@@ -247,11 +255,34 @@ export class DistributedStressCoordinator {
       return StressWorkerSpecSchema.parse(spec);
     });
 
-    // Promise.resolve 包一层：spawnWorker 同步抛错同样进入 rejected，归入该 shard 失败。
+    // Run-private barrier: no raw observations leave a worker, and no worker clips before the union.
+    const states = specs.map(() => ({ ready: false, done: false, abort: new AbortController() }));
+    const markers = new Set<string>(); let markerBytes = 2; let privateFailure = false; let privateUsed = false;
+    let release!: (markers: readonly string[]) => void;
+    const union = new Promise<readonly string[]>((resolve) => { release = resolve; });
+    const releaseReady = () => { if (states.every((state) => state.ready || state.done)) release([...markers].sort()); };
+    const controls: PrivateWorkerControl[] = states.map((state) => ({ signal: state.abort.signal, finalizeEvidence: async (input) => {
+      privateUsed = true;
+      if (state.ready || state.done) { privateFailure = true; throw new Error("Private evidence completion is invalid"); }
+      try {
+        for (const marker of privateEvidenceMarkers(input)) if (!markers.has(marker)) {
+          markerBytes += Buffer.byteLength(JSON.stringify(marker)) + 1;
+          if (markerBytes > PRIVATE_EVIDENCE_BYTES) throw new Error("Private evidence union exceeds capacity");
+          markers.add(marker);
+        }
+        state.ready = true; releaseReady();
+        return await union;
+      } catch { privateFailure = true; throw new Error("Private evidence completion failed"); }
+    } }));
     const attempts = await Promise.allSettled(
-      specs.map((spec) => withTimeout(Promise.resolve().then(() => spawnWorker(spec)), spec.shardId, shardTimeoutMs)),
+      specs.map((spec, i) => withTimeout(Promise.resolve().then(() => spawnWorker(spec, controls[i]!)), spec.shardId, shardTimeoutMs).finally(() => {
+        states[i]!.done = true; states[i]!.abort.abort(); releaseReady();
+      })),
     );
+    // An exited/crashed private participant may have learned undisclosed markers. Never publish partial rich output.
+    if (privateFailure || (privateUsed && states.some((state) => !state.ready))) throw new Error("Private evidence completion incomplete; merged output withheld");
     const merged: StressSample[] = [];
+    const failureEvidence: import("../report/types.js").SafeExecutionEvidence[] = [];
     const perShard: StressDistributed["perShard"] = [];
     const shardErrors: { shardId: string; error: string }[] = [];
     const generators: StressGeneratorMetrics[] = [];
@@ -269,8 +300,7 @@ export class DistributedStressCoordinator {
       } else {
         const parsed = ShardOutcomeSchema.safeParse(settled.value);
         if (!parsed.success) {
-          const detail = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
-          attempt = { ok: false, error: `协议解析失败：${detail}` };
+          attempt = { ok: false, error: "协议解析失败[protocol_invalid]" };
         } else if (parsed.data.shardId !== spec.shardId) {
           attempt = { ok: false, error: `协议错误[shard_id_mismatch]：期望 ${spec.shardId}，实际 ${parsed.data.shardId}` };
         } else if (seenShardIds.has(parsed.data.shardId)) {
@@ -317,6 +347,7 @@ export class DistributedStressCoordinator {
         shardErrors.push({ shardId: spec.shardId, error: `协议错误[NO_DATA]：shard ${spec.shardId} 未返回可评估样本` });
         return;
       }
+      failureEvidence.push(...(attempt.result.failureEvidence ?? []).slice(0, Math.max(0, 20 - failureEvidence.length)));
       merged.push(...samples);
       if (attempt.result.generator.availability === "unavailable") unavailableGeneratorCount += 1;
       else {
@@ -389,7 +420,10 @@ export class DistributedStressCoordinator {
         ],
       };
     }
-    const current = CurrentStressReportSchema.safeParse(report);
+    report.failureEvidence = failureEvidence;
+    const safeReport = createExecutionEvidenceCollector({ projectId: "", definitionRevision: specBase.definitionRevision }, [...markers].sort()).projectStressReport(report, true);
+    markers.clear();
+    const current = CurrentStressReportSchema.safeParse(safeReport);
     if (!current.success) {
       const detail = current.error.issues.map((issue) => `${issue.path.join(".") || "(根字段)"}: ${issue.message}`).join("; ");
       throw new Error(`压测报告契约校验失败[current_report_invalid]：${detail}`);

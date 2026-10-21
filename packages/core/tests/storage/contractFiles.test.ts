@@ -56,6 +56,20 @@ function fixtureWorkspace(): ContractWorkspace {
   return ContractWorkspaceSchema.parse(workspaceFixture());
 }
 
+function testingWorkspace() {
+  const workspace = fixtureWorkspace();
+  const project = workspace.groups[0]!.projects[0]!;
+  const api = project.collections[0]!.apis[0]!;
+  Object.assign(project, {
+    datasets: [{ formatVersion: 1, id: "00000000-0000-4000-8000-000000000080", name: "typed rows", columns: ["zero", "false", "null"], rows: [{ zero: 0, false: false, null: null }] }],
+    suites: [{ formatVersion: 1, id: "00000000-0000-4000-8000-000000000081", name: "regression", tags: ["smoke"], failFast: false, reporters: ["html"], datasetId: "00000000-0000-4000-8000-000000000080", selection: { kind: "explicit", entries: [{ id: "00000000-0000-4000-8000-000000000082", kind: "case", collectionId, folderIds: [], apiId, caseId: api.cases[0]!.id }] } }],
+  });
+  Object.assign(api.cases[0]!, { tags: ["smoke"], extractors: [{ id: "extract-1", name: "token", selector: { target: "bodyJson", path: "$.token", match: "first" }, method: "value", required: true, sensitive: false, defaultValue: false }], assertions: [{ id: "xpath", target: "bodyText", op: "xpath", expected: "//token", match: "first" }, { id: "plugin", target: "bodyJson", path: "$.value", op: "my-plugin:check", match: "all", options: { zero: 0, false: false, null: null } }] });
+  const suite = project.suites![0]!;
+  if (suite.selection.kind === "explicit") suite.selection.entries.push({ id: "00000000-0000-4000-8000-000000000083", kind: "workflow", workflowId: project.workflows[0]!.id });
+  return ContractWorkspaceSchema.parse(workspace);
+}
+
 function uppercaseUuidValues(value: unknown): unknown {
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const ids = new Map<string, string>();
@@ -114,6 +128,18 @@ async function expectRemovalRoundTrip(
 }
 
 describe("versioned contract workspace files", () => {
+  it("round-trips testing assets, extensible assertions and typed dataset values with a new revision", async () => {
+    const root = await temporaryRoot();
+    const initial = await save(root, encodeContractWorkspace(fixtureWorkspace()));
+    const workspace = testingWorkspace();
+    const saved = await commitWritePlan(root, encodeContractWorkspace(workspace), { expectedRevision: initial.revision, deletions: [] });
+    const loaded = await decodeContractWorkspace(root);
+    expect(loaded.readOnly).toBe(false);
+    expect(loaded.workspace).toEqual(workspace);
+    expect(saved.revision).not.toBe(initial.revision);
+    expect(loaded.revision).toBe(saved.revision);
+    expect(parse(await readFile(join(root, `groups/${groupId}/projects/${projectId}/datasets/00000000-0000-4000-8000-000000000080.yaml`), "utf8")).rows).toEqual([{ zero: 0, false: false, null: null }]);
+  });
   it("persists and reopens the optional versioned project mock configuration", async () => {
     const workspace = fixtureWorkspace();
     const configured = createMockConfiguredProject();
@@ -208,21 +234,23 @@ describe("versioned contract workspace files", () => {
   });
 
   it("rejects a future asset format version without changing that asset's bytes", async () => {
-    const workspace = fixtureWorkspace();
+    const workspace = testingWorkspace();
     const plan = encodeContractWorkspace(workspace);
     const root = await temporaryRoot();
     await save(root, plan);
     const contractPath = apiContractFilePath({ groupId, projectId, collectionId, folderIds: [], apiId });
-    const absolutePath = join(root, contractPath);
-    const invalid = parse(plan.files.get(contractPath)!);
-    invalid.formatVersion = 2;
-    const raw = stringify(invalid);
-    await writeFile(absolutePath, raw, "utf8");
-
-    const loaded = await decodeContractWorkspace(root);
-    expect(loaded.readOnly).toBe(true);
-    expect(loaded.problems.length).toBeGreaterThan(0);
-    expect(await readFile(absolutePath, "utf8")).toBe(raw);
+    for (const path of [contractPath, `groups/${groupId}/projects/${projectId}/datasets/00000000-0000-4000-8000-000000000080.yaml`, `groups/${groupId}/projects/${projectId}/suites/00000000-0000-4000-8000-000000000081.yaml`]) {
+      const absolutePath = join(root, path);
+      const invalid = parse(plan.files.get(path)!);
+      invalid.formatVersion = 2;
+      const raw = stringify(invalid);
+      await writeFile(absolutePath, raw, "utf8");
+      const loaded = await decodeContractWorkspace(root);
+      expect(loaded.readOnly).toBe(true);
+      expect(loaded.problems.some((problem) => problem.file === path)).toBe(true);
+      expect(await readFile(absolutePath, "utf8")).toBe(raw);
+      await writeFile(absolutePath, plan.files.get(path)!, "utf8");
+    }
   });
 
   it("rejects case identifiers that are path separators or dot-directory escapes", () => {

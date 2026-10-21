@@ -1,4 +1,11 @@
 {
+  "testing": {
+    "caseData": "用例数据", "externalFile": "旧本机文件引用", "externalFileHint": "外部 JSON 单元仍须为字符串；相对路径从工作区根目录解析。旧空文件按一次无数据执行。",
+    "datasets": "数据集", "suites": "测试套件", "name": "名称", "description": "说明", "save": "保存", "remove": "删除", "unsaved": "未保存", "search": "搜索当前项目", "newDataset": "新建数据集", "newSuite": "新建套件", "pickDataset": "在侧栏选择或新建数据集", "pickSuite": "在侧栏选择或新建测试套件", "discardConfirm": "测试资产有未保存的修改，是否丢弃？",
+    "extractions": "响应提取", "addExtraction": "添加提取", "variableName": "变量名", "cookieName": "Cookie 名", "match": "选择匹配", "method": "方法", "pattern": "正则模式", "flags": "标记 i/m/s", "group": "捕获组", "regexMatch": "正则匹配", "required": "必须存在", "sensitive": "敏感值", "defaultValue": "缺失默认值（JSON）", "options": "操作选项（JSON 对象）", "namespaces": "命名空间（JSON 对象）", "unknownOperator": "操作符 {op} 未注册，已保留配置；执行预检会失败。", "manualOperator": "已注册插件未提供描述，可手工配置 expected/options。", "targetUnsupported": "该操作不支持当前目标，执行前请修改。", "regexHint": "使用 RE2 兼容正则，仅支持 i/m/s；不支持环视和反向引用，不回退 JavaScript 正则。", "extractionHint": "提取只写入本次运行变量；敏感头和 Cookie 自动遮罩。可选缺失且无默认值时会清除本层旧值，低优先级变量仍可能生效。", "arrayRequired": "期望值必须是 JSON 数组", "integerRequired": "期望值必须是非负整数", "objectRequired": "必须是 JSON 对象", "schemaChoice": "schema 与 useContractResponse=true 必须二选一",
+    "columns": "列（每行一个列名）", "applyColumns": "应用列", "columnInvalid": "列名不可重复，最多 256 列", "columnInUse": "待删除的列仍有值，请先清除对应单元", "typedCellHint": "单元使用 JSON：字符串请加双引号；空白表示缺字段，\"\" 表示空字符串，null 保留空值。", "cellInvalid": "单元必须是有效 JSON；字符串请加双引号", "missing": "缺字段", "rows": "行", "addRow": "添加行", "emptyDraft": "空数据集可保存为草稿；选择它运行时会拒绝执行。", "sourceLimit": "源文件不能超过 10 MiB", "importExport": "导入 / 导出", "importContent": "CSV 或 JSON 源内容", "importPreview": "预览导入", "importRows": "已解析 {count} 行，预览前 100 行；确认后替换草稿表格。", "applyImport": "应用导入", "exportPreview": "导出预览（已保存版本）", "download": "下载", "csvHint": "JSON 保留类型和缺字段；CSV 将值转成文本，缺字段与空字符串均导出为空单元。",
+    "tags": "标签（逗号分隔）", "selection": "选择方式", "explicit": "显式有序条目", "query": "模块 / 标签筛选", "collections": "模块", "caseTags": "用例标签（逗号分隔）", "queryHint": "模块与标签条件取 AND；同组标签取 OR；空筛选代表当前项目所有适用用例。", "environment": "环境", "dataset": "外层数据集", "none": "无", "failFast": "失败后停止后续条目", "reporters": "报告格式偏好", "suiteIsolation": "套件条目和外层数据轮次隔离变量与 Cookie；有序共享状态请使用现有场景。外层数据与子用例数据驱动冲突会在发送前拒绝。", "allowDraft": "本次允许运行草稿场景", "preview": "预览选择与规模", "run": "运行套件", "cancel": "取消运行", "scale": "{entries} 个条目，{rows} 轮，预计 {executions} 次用例执行", "legacyEmpty": "旧空文件按一次无数据执行（legacy-empty-fallback）", "entryCounts": "条目：{total} 总计 / {passed} 通过 / {failed} 失败 / {skipped} 跳过", "caseCounts": "实际用例行：{total} 总计 / {passed} 通过 / {failed} 失败"
+  },
   "app": {
     "openWorkspace": "打开工作区",
     "newWorkspace": "新建工作区",
@@ -393,7 +400,7 @@
     ,"generatorUnavailable": "未采集/不可用"
     ,"generatorPartial": "部分采集/不可用"
     ,"metric": {"errorRate": "错误率", "assertionFailureRate": "断言失败率", "p95": "P95", "rps": "RPS", "businessFailures": "业务失败", "noData": "无数据"}
-    ,"failure": {"transport": "传输", "http": "HTTP", "script": "脚本", "assertion": "断言", "config": "配置", "aborted": "中止"}
+    ,"failure": {"transport": "传输", "http": "HTTP", "script": "脚本", "assertion": "断言", "extraction": "提取", "config": "配置", "aborted": "中止"}
   },
   "import": {
     "title": "导入接口",

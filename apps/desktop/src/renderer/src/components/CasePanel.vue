@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button as AButton, Input as AInput, Select as ASelect, Table as ATable } from "ant-design-vue";
-import type { Assertion, TestCase } from "@apicc/core";
+import { Button as AButton, Input as AInput, Select as ASelect } from "ant-design-vue";
+import type { DatasetAsset, TestCase } from "@apicc/core";
 import { ApiRequestSchema } from "@apicc/core/schema";
 import type { useCasesStore } from "../stores/cases.js";
 import type { CaseIdentity } from "../stores/cases.js";
 import type { useDebugStore } from "../stores/debug.js";
 import type { useEditorStore } from "../stores/editor.js";
 import EmptyState from "./EmptyState.vue";
+import AssertionEditor from "./AssertionEditor.vue";
+import ExtractionEditor from "./ExtractionEditor.vue";
+import type { AssertionOperatorDTO } from "../../../shared/testing.js";
 
 const ATextarea = AInput.TextArea;
 
@@ -30,18 +33,19 @@ const props = defineProps<{
   debug?: ReturnType<typeof useDebugStore>;
   reportError?: (e: unknown) => void;
   readOnly?: boolean;
+  operators?: AssertionOperatorDTO[];
+  datasets?: DatasetAsset[];
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
 const { t } = useI18n();
 const overrideJson = ref("");
 const overrideError = ref("");
+const assertionError = ref("");
+const extractionError = ref("");
 const requestTab = computed(() => props.debug && props.editor.activeKey
   ? props.debug.requestTabForSession(props.editor.activeKey) : null);
 const requestTabState = computed(() => requestTab.value && props.debug
   ? props.debug.requestTabState(requestTab.value) : null);
-
-const TARGET_OPTIONS = (["status", "header", "bodyJson", "responseTime"] as const).map((v) => ({ label: v, value: v }));
-const OP_OPTIONS = (["eq", "neq", "contains", "lt", "gt", "lte", "gte"] as const).map((v) => ({ label: v, value: v }));
 
 // scope 可选项 = base + 当前接口所属项目的环境名列表（editor.envs，取 name）。
 const scopeOptions = computed(() => [
@@ -55,6 +59,10 @@ const selected = computed(() => {
   const identity = requestTabState.value ? requestTabState.value.selectedCase : props.cases.selectedCase;
   return list.find((c) => c.id === identity?.caseId && c.scope === identity.scope) ?? list[0] ?? null;
 });
+const selectedDatasetId = computed(() => {
+  const driver = selected.value?.dataDriver;
+  return driver && 'kind' in driver ? driver.datasetId : null;
+});
 
 function selectCase(caseId: string, scope: string) {
   props.cases.select(caseId, scope);
@@ -64,17 +72,9 @@ function selectCase(caseId: string, scope: string) {
 watch(() => selected.value ? `${selected.value.id}:${selected.value.scope}` : "", () => {
   overrideJson.value = selected.value?.requestOverride ? JSON.stringify(selected.value.requestOverride, null, 2) : "";
   overrideError.value = "";
+  assertionError.value = "";
+  extractionError.value = "";
 }, { immediate: true });
-
-// 断言表列（computed 包裹保持语言切换响应，EnvPanel 同款）。
-const assertColumns = computed(() => [
-  { key: "target", title: t("case.target") },
-  { key: "op", title: t("case.op") },
-  { key: "expected", title: t("case.expected") },
-  { key: "headerName", title: t("case.headerName") },
-  { key: "path", title: t("case.path") },
-  { key: "actions", title: "" },
-]);
 
 function addCase() {
   if (props.readOnly) return;
@@ -99,8 +99,8 @@ async function runCase(identity: CaseIdentity) {
 // 保存链路收口（任务 8 补课）：拒绝经可选 reportError 转报，不再作为未处理 rejection 静默吞没。
 async function saveCases() {
   if (props.readOnly) return;
-  if (overrideError.value) {
-    props.reportError?.(new Error(overrideError.value));
+  if (overrideError.value || assertionError.value || extractionError.value) {
+    props.reportError?.(new Error(overrideError.value || assertionError.value || extractionError.value));
     return;
   }
   try {
@@ -171,23 +171,21 @@ function updateScope(testCase: TestCase, scope: string) {
   props.cases.changeScope(testCase.id, testCase.scope, scope);
 }
 
-// strict schema：headerName 仅 header 需要、path 仅 bodyJson 需要，其余目标即时删除旧键。
-function setTarget(record: Assertion, target: Assertion["target"]) {
-  if (props.readOnly) return;
-  record.target = target;
-  if (target === "header") record.headerName = record.headerName ?? "";
-  else delete record.headerName;
-  if (target === "bodyJson") record.path = record.path ?? "";
-  else delete record.path;
-}
-
 function addAssertion() {
-  if (props.readOnly) return;
+  if (props.readOnly || (selected.value?.assertions.length ?? 0) >= 256) return;
   selected.value?.assertions.push({ id: crypto.randomUUID(), target: "status", op: "eq", expected: "" });
 }
 
-function setAssertionField<K extends keyof Assertion>(record: Assertion, key: K, value: Assertion[K]) {
-  if (!props.readOnly) record[key] = value;
+function setTags(value: string) { if (!props.readOnly && selected.value) selected.value.tags = value.split(',').map(item => item.trim()).filter(Boolean); }
+function dataDriver(value: string) {
+  if (props.readOnly || !selected.value) return;
+  if (value === 'none') delete selected.value.dataDriver;
+  else if (value === 'file') selected.value.dataDriver = { sourcePath: '', format: 'csv' };
+  else selected.value.dataDriver = { kind: 'dataset', datasetId: value };
+}
+function fileDriver(field: 'sourcePath' | 'format', value: string) {
+  const driver = selected.value?.dataDriver;
+  if (!props.readOnly && driver && !('kind' in driver)) Object.assign(driver, { [field]: value });
 }
 
 // —— M10 操作列表：增删/排序（数组不存在时先初始化——旧数据兼容） ——
@@ -215,11 +213,6 @@ function moveOp(kind: "pre" | "post", index: number, delta: -1 | 1) {
   if (target < 0 || target >= list.length) return;
   const [item] = list.splice(index, 1);
   list.splice(target, 0, item!);
-}
-
-function removeAssertion(index: number) {
-  if (props.readOnly) return;
-  selected.value?.assertions.splice(index, 1);
 }
 
 function setOperationContent(op: CaseOperation, content: string) {
@@ -287,6 +280,9 @@ function removeOp(kind: "pre" | "post", index: number) {
 
       <!-- 选中用例的断言表 + 前置/后置脚本 -->
       <template v-if="selected">
+        <label>{{ t('testing.tags') }}<a-input :value="selected.tags?.join(', ')" :disabled="readOnly" @update:value="value => setTags(value ?? '')" /></label>
+        <label>{{ t('testing.caseData') }}<select :value="!selected.dataDriver ? 'none' : selectedDatasetId ?? 'file'" :disabled="readOnly" @change="dataDriver(($event.target as HTMLSelectElement).value)"><option value="none">{{ t('testing.none') }}</option><option value="file">{{ t('testing.externalFile') }}</option><option v-for="dataset in datasets" :key="dataset.id" :value="dataset.id">{{ dataset.name }}</option><option v-if="selectedDatasetId && !datasets?.some(item => item.id === selectedDatasetId)" :value="selectedDatasetId">{{ selectedDatasetId }}</option></select></label>
+        <div v-if="selected.dataDriver && !('kind' in selected.dataDriver)"><input :value="selected.dataDriver.sourcePath" :disabled="readOnly" :aria-label="t('testing.externalFile')" @input="fileDriver('sourcePath',($event.target as HTMLInputElement).value)" /><select :value="selected.dataDriver.format" :disabled="readOnly" @change="fileDriver('format',($event.target as HTMLSelectElement).value)"><option>csv</option><option>json</option></select><p class="note">{{ t('testing.externalFileHint') }}</p></div>
         <section class="case-request-override" data-testid="case-request-override">
           <div class="section-title">{{ t("debugLoop.caseRequest") }}</div>
           <div class="override-toolbar">
@@ -300,45 +296,10 @@ function removeOp(kind: "pre" | "post", index: number) {
           <span class="note">{{ t("debugLoop.cookiesNotSavedWithCase") }}</span>
         </section>
         <div class="section-title">{{ t("case.assertions") }}</div>
-        <a-table
-          :data-source="selected.assertions"
-          :columns="assertColumns"
-          row-key="id"
-          :pagination="false"
-          size="small"
-          data-testid="assert-table"
-        >
-          <template #bodyCell="{ column, record, index }">
-            <template v-if="column.key === 'target'">
-              <!-- 断言行 record 为表格槽宽类型、v 为 SelectValue：选项值恒为 target 联合内字符串，断言收窄。 -->
-              <a-select
-                :value="record.target"
-                :disabled="readOnly"
-                :options="TARGET_OPTIONS"
-                data-testid="assert-target"
-                @update:value="(v) => setTarget(record as Assertion, v as Assertion['target'])"
-              />
-            </template>
-            <template v-else-if="column.key === 'op'">
-              <a-select :value="record.op" :disabled="readOnly" :options="OP_OPTIONS" data-testid="assert-op" @update:value="(v) => setAssertionField(record as Assertion, 'op', v as Assertion['op'])" />
-            </template>
-            <template v-else-if="column.key === 'expected'">
-              <a-input :value="record.expected" :disabled="readOnly" data-testid="assert-expected" @update:value="(v) => setAssertionField(record as Assertion, 'expected', v as string)" />
-            </template>
-            <template v-else-if="column.key === 'headerName'">
-              <a-input v-if="record.target === 'header'" :value="record.headerName ?? ''" :disabled="readOnly" data-testid="assert-header-name" @update:value="(v) => setAssertionField(record as Assertion, 'headerName', v as string)" />
-              <span v-else class="na">—</span>
-            </template>
-            <template v-else-if="column.key === 'path'">
-              <a-input v-if="record.target === 'bodyJson'" :value="record.path ?? ''" :disabled="readOnly" data-testid="assert-path" @update:value="(v) => setAssertionField(record as Assertion, 'path', v as string)" />
-              <span v-else class="na">—</span>
-            </template>
-            <template v-else>
-              <a-button size="small" danger type="text" data-testid="assert-delete" :disabled="readOnly" @click="removeAssertion(index)">×</a-button>
-            </template>
-          </template>
-        </a-table>
-        <a-button size="small" data-testid="assert-add" :disabled="readOnly" @click="addAssertion">{{ t("case.addAssert") }}</a-button>
+        <AssertionEditor :key="`${editor.activeKey}:${selected.id}:${selected.scope}:assertions`" :assertions="selected.assertions" :read-only="readOnly" :operators="operators" @validity="message => assertionError = message" />
+        <a-button size="small" data-testid="assert-add" :disabled="readOnly || selected.assertions.length >= 256" @click="addAssertion">{{ t("case.addAssert") }}</a-button>
+        <ExtractionEditor :key="`${editor.activeKey}:${selected.id}:${selected.scope}:extractions`" :items="selected.extractors ?? (selected.extractors = [])" :read-only="readOnly" @validity="message => extractionError = message" />
+        <p v-if="assertionError || extractionError" class="override-error" role="alert">{{ assertionError || extractionError }}</p>
 
         <!-- M10：前置/后置操作（有序脚本操作列表；legacy preScript/postScript 保留只读迁移提示） -->
         <div class="scripts">

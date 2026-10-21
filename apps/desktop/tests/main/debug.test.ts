@@ -43,7 +43,7 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-async function setup(options: { environment?: boolean; scope?: string; unreachable?: boolean; assertStatus?: boolean } = {}) {
+async function setup(options: { environment?: boolean; scope?: string; unreachable?: boolean; assertStatus?: boolean; dataset?: boolean } = {}) {
   const root = await makeTempRoot("apicc-debug-assets-");
   roots.push(root);
   const workspace = makeWorkspace();
@@ -60,6 +60,12 @@ async function setup(options: { environment?: boolean; scope?: string; unreachab
   };
   api.contract.request.auth = { kind: "none" };
   api.cases[0]!.scope = options.scope ?? "base";
+  if (options.dataset) {
+    const datasetId = "10000000-0000-4000-8000-000000000099";
+    project.datasets = [{ formatVersion: 1, id: datasetId, name: "debug-values", columns: ["number", "flag", "nil", "empty"], rows: [{ number: 0, flag: false, nil: null, empty: "" }] }];
+    api.cases[0]!.dataDriver = { kind: "dataset", datasetId };
+    api.cases[0]!.postOperations = [{ id: "b1-debug-values", type: "script", content: 'pm.assert(pm.variables.get("number") === "0" && pm.variables.get("flag") === "false" && pm.variables.get("nil") === "null" && pm.variables.get("empty") === "", "typed dataset text");' }];
+  }
   if (options.assertStatus) api.cases[0]!.assertions.push({ id: "as1", target: "status", op: "eq", expected: "200" });
   if (options.environment) {
     const environment = project.environments[0]!;
@@ -94,6 +100,14 @@ async function setupProjectWithoutCollections() {
 }
 
 describe("sendDebug", () => {
+  it("B1 desktop debug prepares selected project data and retains single row identity", async () => {
+    const { session, locator, api } = await setup({ dataset: true });
+    const result = await sendDebug(session, { locator, caseId: api.cases[0]!.id });
+    expect(result.run.total).toBe(1);
+    expect(result.outcome.passed).toBe(true);
+    expect(result.outcome.row).toBe(0);
+    expect(result.outcome.assertions).toContainEqual({ pass: true, message: "typed dataset text" });
+  });
   it("以基座用例调试：返回单条结果且断言评估", async () => {
     const { session, locator, api } = await setup({ assertStatus: true });
     const result = await sendDebug(session, { locator, caseId: api.cases[0]!.id, envName: undefined });

@@ -13,6 +13,9 @@ import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
 import { useCasesStore } from "../../../src/renderer/src/stores/cases.js";
 import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
 import CasePanel from "../../../src/renderer/src/components/CasePanel.vue";
+import ExtractionEditor from "../../../src/renderer/src/components/ExtractionEditor.vue";
+import AssertionEditor from "../../../src/renderer/src/components/AssertionEditor.vue";
+import type { Assertion } from "@apicc/core";
 
 beforeAll(() => {
   // jsdom 未实现 matchMedia；antd 组件（响应式断点）挂载时需要。
@@ -68,6 +71,68 @@ function deferred<T>() {
 }
 
 describe("CasePanel", () => {
+  it("G validates typed constants and clears only hidden XML namespace parse errors", async () => {
+    const row: Assertion = { id: "typed", target: "bodyText", op: "length", expected: "0" };
+    const { i18n } = createI18nInstance(); const panel = mount(AssertionEditor, { props: { assertions: [row] }, global: { plugins: [i18n] } });
+    const validity = () => panel.emitted("validity")!.at(-1)![0];
+    const field = (id: string) => panel.findAllComponents({ name: id === "assert-target" || id === "assert-op" ? "ASelect" : "AInput" }).find(component => component.attributes("data-testid") === id)!;
+    for (const expected of ["", "01", "9007199254740992"]) {
+      field("assert-expected").vm.$emit("update:value", expected); await flushPromises();
+      expect(validity()).not.toBe("");
+    }
+    field("assert-expected").vm.$emit("update:value", "{{runtimeLength}}"); await flushPromises(); expect(validity()).toBe("");
+    field("assert-op").vm.$emit("update:value", "in");
+    field("assert-expected").vm.$emit("update:value", ""); await flushPromises(); expect(validity()).not.toBe("");
+    field("assert-op").vm.$emit("update:value", "eq");
+    field("assert-expected").vm.$emit("update:value", "200");
+    field("assert-target").vm.$emit("update:value", "bodyXml"); await flushPromises();
+    panel.findAllComponents(AInput).at(-1)!.vm.$emit("update:value", "{"); await flushPromises(); expect(validity()).not.toBe("");
+    field("assert-options").vm.$emit("update:value", "{"); await flushPromises();
+    field("assert-target").vm.$emit("update:value", "status"); await flushPromises(); expect(validity()).not.toBe("");
+    field("assert-options").vm.$emit("update:value", "{}"); await flushPromises();
+    expect(validity()).toBe(""); expect(row.namespaces).toBeUndefined();
+  });
+  it.each([false, true])("saves and reopens value extraction after rejecting regex (JSON error: %s)", async withJsonError => {
+    const { wrapper, editor, cases, api, apiLocator } = await mountCasePanel();
+    await wrapper.get('[data-testid="extraction-add"]').trigger("click");
+    const extraction = wrapper.findComponent(ExtractionEditor);
+    const selects = () => extraction.findAll("select");
+    await selects()[2]!.setValue("regex");
+    const pattern = extraction.findAll("input").find(input => input.element.parentElement?.textContent?.includes("正则模式"));
+    if (!pattern) throw new Error("Expected regex pattern field");
+    await pattern.setValue("(?=unsupported)");
+    expect(extraction.find('[role="alert"]').exists()).toBe(true);
+    const defaultValue = extraction.findAll("input").find(input => input.element.parentElement?.textContent?.includes("缺失默认值"));
+    if (!defaultValue) throw new Error("Expected default JSON field");
+    if (withJsonError) await defaultValue.setValue("{");
+    await selects()[2]!.setValue("value");
+    expect(extraction.find('[role="alert"]').exists()).toBe(withJsonError);
+    await defaultValue.setValue("false");
+    expect(extraction.find('[role="alert"]').exists()).toBe(false);
+    let saving: Promise<void> | undefined; const save = cases.save.bind(cases); cases.save = () => (saving = save());
+    await wrapper.get('[data-testid="case-save"]').trigger("click"); await saving; await flushPromises();
+    const reopened = await api.apiGet(apiLocator);
+    expect(reopened.api.cases[0]!.extractors).toMatchObject([{ method: "value", defaultValue: false }]);
+    expect(editor.dirty).toBe(false);
+  });
+  it("edits structured extraction and preserves an unknown persisted operator with a visible diagnostic", async () => {
+    const { wrapper, editor, api, apiLocator, cases } = await mountCasePanel();
+    let saving: Promise<void> | undefined;
+    const save = cases.save.bind(cases);
+    cases.save = () => (saving = save());
+    editor.api!.cases[0]!.assertions.push({ id: "unknown", op: "plugin.missing", target: "bodyJson", path: "$.ok", expected: "true" });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="assertion-unknown"]').text()).toContain("plugin.missing");
+    await wrapper.find('[data-testid="extraction-add"]').trigger("click");
+    await wrapper.find('[data-testid="extraction-name"]').setValue("token");
+    await wrapper.find('[data-testid="extraction-sensitive"]').setValue(true);
+    await wrapper.find('[data-testid="case-save"]').trigger("click");
+    await saving;
+    await flushPromises();
+    const reopened = await api.apiGet(apiLocator);
+    expect(reopened.api.cases[0]!.extractors).toMatchObject([{ name: "token", method: "value", sensitive: true, required: true }]);
+    expect(reopened.api.cases[0]!.assertions).toContainEqual(expect.objectContaining({ op: "plugin.missing", path: "$.ok" }));
+  });
   it("只读模式禁用本地写控件并拒绝直接输入事件，同时保留运行入口", async () => {
     const { wrapper, editor } = await mountCasePanel({ readOnly: true }, true);
     const initialName = editor.api!.cases[0]!.name;

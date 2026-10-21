@@ -225,7 +225,7 @@ export type { IndexedObject, IndexedObjectIdentity, IndexedAssetReference } from
 export type { WorkspaceLoadState } from "./storage/contractFiles.js";
 export { createProjectAssetContext } from "./assets/context.js";
 export type {
-  AssetBundle, AssetDiagnostic, AssetGate, AssetGateResult, AssetMutationResult, DeepReadonly,
+  AssetBundle, AssetDiagnostic, AssetGate, AssetGateResult, AssetMutationResult, AssetReferenceTarget, DeepReadonly,
   ProjectAssetContext, ProjectAssetContextInput, ProjectAssetContextReadView,
 } from "./assets/context.js";
 export { createProjectSnapshot } from "./assets/snapshot.js";
@@ -268,11 +268,18 @@ export { createVariableResolver, CyclicVariableError } from "./variables/resolve
 export { withBaseUrl } from "./variables/baseUrl.js";
 export { CollectionRunner, CollectionRunError } from "./runner/runner.js";
 export type { ProjectExecutionRun, RunnerOptions } from "./runner/runner.js";
+export { PreparedTestDataSchema } from "./testing/dataModel.js";
+export type { PreparedCaseSelection, PreparedTestData, PreparedDataSource, TestDataDiagnostic } from "./testing/dataModel.js";
 export {
   executeCase,
-  type CaseExecutionDeps, CaseExecutionInput, CaseExecutionResult, CaseFailureKind,
+  prepareCaseExecution,
+  type CaseExecutionDeps, CaseExecutionInput, CaseExecutionResult, CaseFailureKind, CaseExecutionLocator, PreparedCaseExecution,
 } from "./runner/caseExecutor.js";
+export { evaluateExtractions, prepareExtractions, createExtractionRuntimeState, extractionVariables, clearExtractionTargets } from "./testing/extraction.js";
+export type { ExtractionRuntimeState, ExtractionOutcome, ExtractionBinding, ExtractionBatchResult, PreparedExtractions } from "./testing/extraction.js";
 export type { RunResult, CaseOutcome } from "./report/types.js";
+export type { SafeExecutionEvidence, EvidenceIdentity, EvidencePreview, ReportingUnitSummary } from "./report/types.js";
+export { reportingUnits, caseReportingIdentity, reportEntryEvidence } from "./report/units.js";
 export { renderDesignMarkdown, renderContractMarkdown } from "./design/export.js";
 export { DocumentDiagnosticSchema, DocumentProjectionSchema, DocumentScopeSchema } from "./design/projection.js";
 export type { DocumentApi, DocumentDiagnostic, DocumentProjection, DocumentScope } from "./design/projection.js";
@@ -330,7 +337,7 @@ export {
   StressWorkerSpecSchema, ShardResultSchema, ShardFailureSchema, ShardOutcomeSchema,
   planShards, mergeStressReport, DistributedStressCoordinator,
   type StressWorkerSpec, type StressWorkerSpecBase, type ShardResult, type ShardFailure,
-  type ShardOutcome, type SpawnWorker, type ShardPlan, type DistributedRunOptions, type CoordinatorRunResult,
+  type ShardOutcome, type SpawnWorker, type PrivateWorkerControl, type ShardPlan, type DistributedRunOptions, type CoordinatorRunResult,
 } from "./stress/distributed.js";
 export {
   createAiProvider, AiProviderError, type AiProviderDeps, type AiProviderErrorKind,
@@ -376,3 +383,16 @@ export function createDefaultRegistry(): PluginRegistry {
   registry.registerImporter(curlImporter);
   return registry;
 }
+export * from "./testing/model.js";
+export * from "./testing/references.js";
+export * from "./testing/selection.js";
+export type { SuiteRunResult, SuiteCaseOutcome, SuiteEntryResult, SuiteRunnerOptions } from "./testing/suiteRunner.js";
+export { suiteToRunResult } from "./report/suiteAdapter.js";
+export { selectResponseValue, validateResponseSelector, AssertionValueError } from "./assert/selection.js";
+export type { SelectedResponseValue } from "./assert/selection.js";
+export { compileCaseAssertions, evaluateCaseAssertions } from "./assert/evaluate.js";
+export type { AssertionOutcome, CompiledAssertion, CompiledCaseAssertions } from "./assert/evaluate.js";
+export { compileRegex } from "./assert/regex.js";
+export type { CompiledRegex } from "./assert/regex.js";
+export type { AssertOperatorDescriptor, AssertEvaluationContext } from "./plugin/types.js";
+export { builtinAssertDescriptors } from "./assert/operators.js";

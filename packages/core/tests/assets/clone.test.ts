@@ -5,6 +5,8 @@ import { ApiAssetSchema, ComponentAssetSchema, ModelAssetSchema, ParameterBindin
 import { ContractWorkspaceSchema } from "../../src/contract/workspace.js";
 import { componentFixtures, contractFixture, modelAssetFixture, parameterReference, workspaceFixture } from "../helpers/contractFixtures.js";
 import { createMockConfiguredProject, mockFixtureIds } from "../helpers/mockFixtures.js";
+import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import { createProjectAssetContext } from "../../src/assets/context.js";
 
 const newProjectId = "00000000-0000-4000-8000-000000000900";
 const componentIds = {
@@ -167,6 +169,61 @@ function sourceProject() {
 }
 
 describe("asset cloning", () => {
+  it.each(["dataset", "model"] as const)("separates a suite case ID from a %s target with the same raw ID", (kind) => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const collection = project.collections[0]!;
+    const api = collection.apis[0]!;
+    const targetId = "00000000-0000-4000-8000-000000000080";
+    api.cases[0]!.id = targetId;
+    const otherApi = structuredClone(api);
+    otherApi.contract.id = "00000000-0000-4000-8000-000000000099";
+    collection.apis.push(otherApi);
+    if (kind === "model") project.models.push(modelAsset(targetId));
+    project.datasets = kind === "dataset" ? [{ formatVersion: 1, id: targetId, name: "same ID", columns: [], rows: [] }] : [];
+    project.suites = [{ formatVersion: 1, id: "00000000-0000-4000-8000-000000000081", name: "case only", tags: [], failFast: false, reporters: ["html"], selection: { kind: "explicit", entries: [{ id: "00000000-0000-4000-8000-000000000082", kind: "case", collectionId: collection.id, folderIds: [], apiId: api.contract.id, caseId: targetId }] } }];
+    const context = () => createProjectAssetContext({ projectId: project.id, project, assets: collection.apis, models: project.models, components: project.components, datasets: project.datasets, suites: project.suites });
+    expect(context().delete(targetId)).toEqual({ ok: true });
+    const locator = { collectionId: collection.id, folderIds: [], apiId: api.contract.id };
+    expect(context().referencesTo({ kind: "case", id: targetId, ...locator })).toMatchObject([{ expectedKind: "case", caseLocator: locator }]);
+    expect(context().referencesTo({ kind: "case", id: targetId, ...locator, apiId: "00000000-0000-4000-8000-000000000099" })).toEqual([]);
+    if (kind === "dataset") project.suites[0]!.datasetId = targetId;
+    else api.cases[0]!.assertions = [{ id: "schema", target: "bodyJson", op: "schema", options: { schema: { kind: "modelRef", modelId: targetId } } }];
+    expect(context().delete(targetId)).toMatchObject({ ok: false, code: "ASSET_REFERENCED", references: [expect.objectContaining({ expectedKind: kind })] });
+  });
+  it("closes dataset and assertion model dependencies, remaps suite identities and protects references", () => {
+    const { project } = sourceProject();
+    const collection = project.collections[0]!;
+    const api = collection.apis[0]!;
+    const testCase = api.cases[0]!;
+    const datasetId = "00000000-0000-4000-8000-000000000080";
+    project.datasets = [{ formatVersion: 1, id: datasetId, name: "typed", columns: ["v"], rows: [{ v: 0 }] }];
+    testCase.dataDriver = { kind: "dataset", datasetId };
+    testCase.extractors = [{ id: "extractor", name: "value", selector: { target: "bodyJson" }, method: "value" }];
+    testCase.assertions = [{ id: "schema", target: "bodyJson", op: "schema", options: { schema: { kind: "modelRef", modelId } } }];
+    project.suites = [{ formatVersion: 1, id: "00000000-0000-4000-8000-000000000081", name: "mixed", tags: [], environmentId: project.environments[0]!.id, datasetId, failFast: false, reporters: ["html"], selection: { kind: "explicit", entries: [{ id: "00000000-0000-4000-8000-000000000082", kind: "case", collectionId: collection.id, folderIds: [], apiId: api.contract.id, caseId: testCase.id }, { id: "00000000-0000-4000-8000-000000000083", kind: "workflow", workflowId: project.workflows[0]!.id }] } }];
+    const snapshot = createProjectSnapshot(project);
+    const editable = createProjectAssetContext({ projectId: project.id, project, assets: collection.apis, models: project.models, components: project.components, datasets: project.datasets, suites: project.suites });
+    expect(editable.delete(datasetId)).toMatchObject({ ok: false, code: "ASSET_REFERENCED" });
+    expect(editable.delete(api.contract.id)).toMatchObject({ ok: false, code: "ASSET_REFERENCED" });
+    expect(snapshot.context.referencesTo(datasetId)).toHaveLength(2);
+    expect(snapshot.context.referencesTo(modelId).some((ref) => ref.path.includes("options.schema"))).toBe(true);
+    const closure = snapshot.context.dependencyClosure(api.contract.id);
+    expect(closure.datasets).toEqual(project.datasets);
+    const bundle = cloneAssetBundle(closure, { newProjectId, newId: deterministicIdFactory() }).bundle;
+    expect(bundle.assets[0]!.cases[0]!.dataDriver).toEqual({ kind: "dataset", datasetId: bundle.datasets![0]!.id });
+    expect(() => cloneAssetBundle({ ...closure, datasets: [] }, { newProjectId, newId: deterministicIdFactory() })).toThrow(/unresolved dataset/);
+    const cloned = cloneProjectDefinition(project, { newId: deterministicIdFactory() }).project;
+    const clonedApi = cloned.collections[0]!.apis[0]!;
+    expect(cloned.datasets![0]!.id).not.toBe(datasetId);
+    expect(clonedApi.cases[0]!.extractors![0]!.id).not.toBe("extractor");
+    expect(clonedApi.cases[0]!.assertions[0]!.options!.schema).toEqual({ kind: "modelRef", modelId: cloned.models[0]!.id });
+    expect(cloned.suites![0]!.selection).toMatchObject({ kind: "explicit", entries: [{ kind: "case", collectionId: cloned.collections[0]!.id, apiId: clonedApi.contract.id, caseId: clonedApi.cases[0]!.id }, { kind: "workflow", workflowId: cloned.workflows[0]!.id }] });
+    expect(createProjectSnapshot(cloned).context.diagnostics.filter((diagnostic) => diagnostic.code.includes("REFERENCE"))).toEqual([]);
+    project.suites![0]!.datasetId = "00000000-0000-4000-8000-000000000099";
+    const foreign = cloneProjectDefinition(project, { newId: deterministicIdFactory() }).project;
+    expect(foreign.suites![0]!.datasetId).toBe("00000000-0000-4000-8000-000000000099");
+    expect(createProjectSnapshot(foreign).context.diagnostics).toContainEqual(expect.objectContaining({ code: "ASSET_REFERENCE_MISSING", targetId: "00000000-0000-4000-8000-000000000099" }));
+  });
   it("remaps the saved mock rule, contract, response, and example references", () => {
     const source = createMockConfiguredProject();
     source.mock.rules[0]!.conditions = [{ source: "query", op: "equals", name: "view", value: "source" }];

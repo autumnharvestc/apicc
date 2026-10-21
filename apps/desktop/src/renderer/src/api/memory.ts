@@ -9,6 +9,7 @@ import {
   buildDocumentProjection,
   exportOpenapi,
   createProjectSnapshot,
+  reportingUnits,
   getSourceApiRevision,
   StressSafetyError,
   CredentialError,
@@ -46,6 +47,8 @@ import { ContractProjectSchema, emptyNetworkConfiguration, NetworkConfigurationS
 import { createSession } from "../../../main/session.js";
 import { toTreeNode } from "../../../main/tree.js";
 import { createCredentialHost } from "../../../main/credentialHost.js";
+import { createDefaultRegistry } from "@apicc/core";
+import { createTestingController } from "../../../main/testing.js";
 import { createStressControllerWithHost } from "../../../main/stressController.js";
 import { previewDesignDraft } from "../../../main/designPreview.js";
 import type { ApiLocator, ApiParentLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, NodeLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../../../shared/locations.js";
@@ -369,6 +372,9 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     createManagedClient: () => stressClient,
     writeReport: () => {},
   }, createCredentialHost(session, () => secretStore));
+  const testingRegistry = createDefaultRegistry();
+  for (const name of ["http", "websocket", "soap"] as const) testingRegistry.registerProtocol({ name, canHandle: (request) => request.protocol === name, execute: (request, context) => stressClient.execute(request, context) });
+  const testing = createTestingController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), { persist(path, value) { runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result: value }); return { value }; }, render: false });
 
   function credentialScope(locator: ProjectLocator): { workspaceId: string; groupId: string; projectId: string } {
     return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
@@ -412,6 +418,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
   }
 
   return {
+    ...testing,
     setImportPreviewCandidate(token: string, project: ContractProject): void {
       const preview = memoryPreviews.get(token);
       if (!preview) throw new Error("Unknown memory import preview token");
@@ -1054,7 +1061,8 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
 
     async runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>> {
       const collectionRows: RunSummaryDTO[] = runs.map(({ file, result }) => ({
-        kind: "collection",
+        kind: result.suite ? "suite" : result.workflowId ? "workflow" : result.kind ?? "collection",
+        projectId: result.projectId ?? result.suite?.projectId,
         file,
         collectionName: result.collectionName,
         startedAt: result.startedAt,
@@ -1062,6 +1070,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         passed: result.passed,
         failed: result.failed,
         skipped: result.skipped ?? 0,
+        reportingUnits: result.reportingUnits ?? reportingUnits(result).summary,
       }));
       // 压测行（M2-D3 任务 1）：startedAt 由 epoch ms 格式化为 ISO，与主进程 listRuns 同口径。
       const stressRows: StressRunSummaryDTO[] = stressRuns.map(({ file, report }) => ({

@@ -234,6 +234,51 @@ afterAll(async () => {
 });
 
 describe("contract workspace CLI/MCP consumption", () => {
+  it("B2 test preview matches the core plan without reading credentials; run preserves suite rows and invocation-only overrides", async () => {
+    const suiteId = "00000000-0000-4000-8000-000000000091";
+    const datasetId = "00000000-0000-4000-8000-000000000090";
+    const fixtureWorkspace = workspace(); const project = fixtureWorkspace.groups[0]!.projects[0]!;
+    const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.path = "/b2/{{value}}";
+    asset.contract.request.auth = { kind: "bearer", token: { id: "suite-secret", policy: "test-auto" } };
+    asset.cases.push({ ...asset.cases[0]!, scope: "dev", assertions: [{ id: "fail-status", target: "status", op: "eq", expected: "201" }] });
+    project.datasets = [{ formatVersion: 1, id: datasetId, name: "suite data", columns: ["value"], rows: [{ value: "a" }, { value: "b" }] }];
+    project.suites = [{ formatVersion: 1, id: suiteId, name: "CLI suite", tags: [], failFast: false, reporters: ["json"], datasetId,
+      selection: { kind: "explicit", entries: [{ id: "00000000-0000-4000-8000-000000000092", kind: "case", collectionId, folderIds: [outerFolderId, innerFolderId], apiId: deepApiId, caseId }] } }];
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-b2-cli-"));
+    const initial = await fileStorage.load(fixtureRoot); await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    const stored = await fileStorage.load(fixtureRoot); const previousCwd = process.cwd();
+    let credentialReads = 0;
+    const store: SecretStore = { async put() {}, async resolve() { credentialReads++; return "synthetic-suite-secret"; }, async version() { credentialReads++; return "one"; }, async remove() {}, async status() { credentialReads++; return "available"; } };
+    try {
+      process.chdir(fixtureRoot); observedRequests.length = 0;
+      const lines: string[] = []; const projectPath = `groups/${groupA}/projects/${projectId}`;
+      const code = await runCli(["test", "preview", suiteId, "--project", projectPath, "--fail-fast"], createDefaultRegistry(), (line) => lines.push(line), { loadPlugins: false, secretStore: store });
+      expect(code).toBe(0); expect(credentialReads).toBe(0); expect(observedRequests).toEqual([]);
+      const core = await import("@apicc/core"); const snapshot = createProjectSnapshot(stored.workspace.groups[0]!.projects[0]!);
+      const plan = core.resolveSuitePlan(snapshot, suiteId, { failFast: true });
+      const data = await core.prepareTestData(snapshot, plan.selections, { workspaceRoot: fixtureRoot });
+      expect(JSON.parse(lines[0]!)).toEqual(core.validateSuiteData(plan, data));
+      const list: string[] = [];
+      expect(await runCli(["test", "list", "--project", projectPath], createDefaultRegistry(), (line) => list.push(line), { loadPlugins: false, secretStore: store })).toBe(0);
+      expect(JSON.parse(list[0]!).map((suite: { id: string }) => suite.id)).toEqual([suiteId]);
+      const runsDir = join(fixtureRoot, ".apicc", "reports");
+      expect(await runCli(["test", "run", suiteId, "--project", projectPath, "--reporters", "json", "--runs-dir", runsDir], createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore: store })).toBe(0);
+      expect(observedRequests.map((r) => r.url)).toEqual(["/b2/a", "/b2/b"]);
+      expect(credentialReads).toBeGreaterThan(0);
+      expect((await fileStorage.load(fixtureRoot)).revision).toBe(stored.revision);
+      const output = readdirSync(runsDir).filter((file) => file.endsWith(".json")).map((file) => JSON.parse(readFileSync(join(runsDir, file), "utf8")));
+      expect(output.some((result) => result.suite?.total === 2 && result.total === 2)).toBe(true);
+      expect(JSON.stringify(output)).not.toContain("synthetic-suite-secret");
+      observedRequests.length = 0; const readsBefore = credentialReads;
+      expect(await runCli(["test", "run", suiteId, "--project", projectPath, "--dataset", "00000000-0000-4000-8000-000000000099"], createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore: store })).toBe(1);
+      expect(credentialReads).toBe(readsBefore); expect(observedRequests).toEqual([]);
+      expect(await runCli(["test", "run", suiteId, "--project", projectPath, "--env", "dev", "--fail-fast", "--runs-dir", runsDir], createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore: store })).toBe(1);
+      expect(observedRequests.map((r) => r.url)).toEqual(["/b2/a"]);
+      expect((await fileStorage.load(fixtureRoot)).revision).toBe(stored.revision);
+    } finally { process.exitCode = 0; process.chdir(previousCwd); rmSync(fixtureRoot, { recursive: true, force: true }); }
+  });
+
   it("preserves safe partial and reauthorization OAuth results in CLI failures", () => {
     const partial = formatOAuthActionFailure("acquire", {
       status: "partial_success",

@@ -5,11 +5,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDefaultRegistry, createNetworkProfileHost, createOAuthProfileHost, createProjectSnapshot, fileStorage, NetworkProfileError, type CredentialScope, type SecretRef, type SecretStore, type StorageAdapter } from "@apicc/core";
 import * as Core from "@apicc/core";
 import { createDesktopCredentialHost } from "../../src/main/credentials.js";
-import { runCollection, sendDebug } from "../../src/main/debug.js";
+import { runCollection, sendDebug, workspaceRunsDir } from "../../src/main/debug.js";
 import { createStressController } from "../../src/main/stress.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
 import { IpcChannel } from "../../src/shared/channels.js";
+import { createTestingController } from "../../src/main/testing.js";
 import { IDS, findApi, makeTempRoot, makeWorkspace, persistWorkspace, projectOne, uuid } from "./helpers/contract-assets.js";
 
 const SECRET_REF: SecretRef = { id: "desktop-run-secret", policy: "test-auto" };
@@ -117,6 +118,65 @@ function waitForNextRequest(): Promise<ObservedRequest> {
 }
 
 describe("desktop execution credential wiring", () => {
+  it("G reruns a suite data row and its string-ID workflow with current evidence and visible persistence warnings", async () => {
+    const { session, credentials, temp } = await setup();
+    try {
+      const workspace = session.workspace!; const project = projectOne(workspace); const asset = findApi(project, IDS.deepApi)!;
+      asset.contract.request.path = "/{{value}}";
+      if (asset.contract.request.protocol !== "http") throw new Error("Expected HTTP fixture");
+      asset.contract.request.method = "POST"; asset.contract.request.body = { kind: "text", content: "request {{value}}" };
+      asset.cases[0]!.assertions = [{ id: "failure", target: "status", op: "eq", expected: "500" }];
+      const datasetId = uuid(90); const entryId = uuid(91); const workflowId = "original-dependent-workflow";
+      project.datasets = [{ formatVersion: 1, id: datasetId, name: "rows", columns: ["value"], rows: [{ value: "one" }, { value: "two" }] }];
+      project.workflows.push({ id: workflowId, name: "original workflow", status: "enabled", nodes: [{ id: "node", kind: "request", apiId: IDS.deepApi, caseId: asset.cases[0]!.id }], edges: [] });
+      await fileStorage.save(temp.path, Core.ContractWorkspaceSchema.parse(workspace), { expectedRevision: session.revision!, deletions: [] }); await session.open(temp.path);
+      const context = { root: temp.path, project: { workspaceId: LOCATOR.workspaceId, groupId: LOCATOR.groupId, projectId: LOCATOR.projectId }, revision: session.revision! };
+      const testing = createTestingController(session, async () => createDefaultRegistry(), credentials, { render: false, persist: (_path, value) => ({ value, warning: "安全 JSON 报告保存失败" }) });
+      const identity = { projectId: IDS.projectOne, definitionRevision: "old-definition", dataDigest: "old-digest", entryId, suiteRow: 1, rowIndex: 1, datasetId, locator: { collectionId: IDS.collectionOne, folderIds: [...LOCATOR.folderIds], apiId: IDS.deepApi, caseId: asset.cases[0]!.id, scope: asset.cases[0]!.scope } };
+      const input = { context, identity, invocationId: crypto.randomUUID() };
+      const workflowInput = { ...input, identity: { ...identity, workflowId }, invocationId: crypto.randomUUID() };
+      expect(await testing.inspectEvidence(workflowInput)).toMatchObject({ available: true, changed: true });
+      expect(await testing.cancelEvidence(workflowInput)).toBe(false);
+      const single = await testing.rerunEvidence(input);
+      expect(single.cases).toHaveLength(1);
+      expect(single.cases[0]!.evidence).toMatchObject({ state: "collected", identity: { entryId, suiteRow: 1, rowIndex: 1, datasetId }, request: { body: { text: "request two" } }, response: { status: 200, body: { text: expect.stringContaining("[REDACTED]") } } });
+      expect(single.cases[0]!.evidence!.identity.definitionRevision).not.toBe("old-definition");
+      expect(single.cases[0]!.evidence!.identity.dataDigest).not.toBe("old-digest");
+      expect(single.reportFailure).toBe(true); expect(single.warnings).toContain("安全 JSON 报告保存失败");
+      const workflow = await testing.rerunEvidence(workflowInput);
+      expect(workflow.cases).toHaveLength(1);
+      expect(workflow.cases[0]!.evidence).toMatchObject({ state: "collected", identity: { workflowId, suiteRow: 1, rowIndex: 1, datasetId, nodeId: "node", entryId: "node", dataDigest: single.cases[0]!.evidence!.identity.dataDigest }, request: { body: { text: "request two" } }, response: { status: 200, body: { text: expect.stringContaining("[REDACTED]") } } });
+      expect(workflow.reportFailure).toBe(true); expect(workflow.warnings).toContain("安全 JSON 报告保存失败");
+      expect(received.slice(-2).map(item => item.path)).toEqual(["/two", "/two"]);
+      expect(JSON.stringify([single, workflow])).not.toContain(SECRET);
+    } finally { await temp.dispose(); }
+  });
+  it("C1 compares definition revision in the same project and reruns the exact current case with fresh credential preparation", async () => {
+    const { session, credentials, secretStore, temp } = await setup();
+    try {
+      // Exercise the actual persistence/rerun boundary with a marker colliding with protocol metadata.
+      secretStore.replace("passed", "generation-1");
+      const result = await runCollection(session, { locator: { workspaceId: LOCATOR.workspaceId, groupId: LOCATOR.groupId, projectId: LOCATOR.projectId, collectionId: LOCATOR.collectionId }, envName: "dev" }, createDefaultRegistry(), credentials);
+      expect(typeof result.passed).toBe("number"); expect(typeof result.cases[0]?.passed).toBe("boolean");
+      const saved = JSON.parse(readFileSync(join(workspaceRunsDir(temp.path), readdirSync(workspaceRunsDir(temp.path))[0]!), "utf8"));
+      expect(saved.passed).toBe(result.passed); expect(saved.cases[0].passed).toBe(result.cases[0]!.passed);
+      expect(saved.cases[0].evidence.identity).toEqual(result.cases[0]!.evidence!.identity);
+      expect(JSON.stringify(saved)).not.toContain("Bearer passed");
+      const identity = result.cases[0]!.evidence!.identity;
+      const testing = createTestingController(session, async () => createDefaultRegistry(), credentials);
+      const context = { root: temp.path, project: { workspaceId: LOCATOR.workspaceId, groupId: LOCATOR.groupId, projectId: LOCATOR.projectId }, revision: session.revision! };
+      const input = { context, identity, invocationId: crypto.randomUUID() };
+      expect(await testing.inspectEvidence(input)).toMatchObject({ available: true, changed: false });
+      expect(await testing.inspectEvidence({ ...input, identity: { ...identity, definitionRevision: "old-definition" } })).toMatchObject({ available: true, changed: true });
+      expect(await testing.inspectEvidence({ ...input, identity: { ...identity, locator: { ...identity.locator!, scope: "missing" } } })).toMatchObject({ available: false });
+      const rerun = await testing.rerunEvidence({ ...input, identity: { ...identity, definitionRevision: "old-definition" } });
+      expect(rerun.cases).toHaveLength(1); expect(rerun.cases[0]?.locator).toEqual(identity.locator);
+      expect(typeof rerun.passed).toBe("number"); expect(typeof rerun.cases[0]?.passed).toBe("boolean");
+      expect(rerun.warnings?.join(" ")).toContain("资源定义已变化");
+      expect(secretStore.calls.filter((call) => call.method === "resolve")).toHaveLength(2);
+      expect(JSON.stringify(rerun)).not.toContain(SECRET);
+    } finally { await temp.dispose(); }
+  });
   it("rejects explicit OAuth writes from a read-only session before network, browser, or secret effects", async () => {
     const temp = await makeTempRoot("apicc-readonly-oauth-");
     const oauthPrivateRoot = await makeTempRoot("apicc-readonly-oauth-private-");

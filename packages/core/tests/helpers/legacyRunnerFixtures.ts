@@ -1,4 +1,6 @@
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import { tmpdir } from "node:os";
+import { prepareTestData, testDataSelectionsForRequests } from "../../src/testing/data.js";
 import type { ApiAsset, ParameterBinding, RequestBody } from "../../src/contract/model.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../../src/contract/workspace.js";
 import type { Environment, Operation, ProjectGlobals, TestCase } from "../../src/domain/common.js";
@@ -104,7 +106,14 @@ export async function runLegacyCollection(
   };
   const snapshot = createProjectSnapshot(project);
   const credentialBindings: CredentialBindings = { resolve: () => { throw new Error("No credentials are used by legacy runner fixtures."); }, versions: {} };
-  const execution: ProjectExecutionRun = { snapshot, credentialBindings };
+  const requests: import("../../src/credentials/output.js").CredentialRequestSelection[] = [];
+  const visit = (container: typeof snapshot.project.collections[number] | typeof snapshot.project.collections[number]["folders"][number]): void => {
+    for (const asset of container.apis) requests.push({ asset });
+    for (const folder of container.folders) visit(folder);
+  };
+  visit(snapshot.project.collections[0]!);
+  const preparedTestData = await prepareTestData(snapshot, testDataSelectionsForRequests(snapshot, requests, environment.id), { workspaceRoot: options.workspaceRoot ?? tmpdir() });
+  const execution: ProjectExecutionRun = { snapshot, credentialBindings, preparedTestData };
   return runner.run(execution, collectionId, { ...options, environmentId: environment.id });
 }
 

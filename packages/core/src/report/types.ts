@@ -1,12 +1,37 @@
 import type { AssertResult } from "../plugin/types.js";
-import type { CaseFailureKind } from "../runner/caseExecutor.js";
+import type { CaseExecutionLocator, CaseFailureKind } from "../runner/caseExecutor.js";
+
+export interface EvidencePreview { text: string; truncated: boolean; omitted?: boolean }
+export interface EvidenceIdentity {
+  projectId: string; definitionRevision: string; locator?: CaseExecutionLocator;
+  suiteRunId?: string; entryId?: string; suiteRow?: number; rowIndex?: number; nodeId?: string; workflowId?: string;
+  environmentId?: string; dataDigest?: string; datasetId?: string;
+}
+export interface SafeExecutionEvidence {
+  identity: EvidenceIdentity;
+  state: "collected" | "not-collected" | "omitted";
+  timings?: { requestMs: number; scriptMs: number; iterationMs: number };
+  request?: { protocol: string; method?: string; url: EvidencePreview; headers: EvidencePreview; body: EvidencePreview };
+  response?: { status: number; headers: EvidencePreview; body: EvidencePreview };
+  bodyUnavailable?: boolean;
+  assertions?: Array<{ id: EvidencePreview; op: EvidencePreview; selector: EvidencePreview; code: EvidencePreview; pass: boolean; message: EvidencePreview; actual?: EvidencePreview; expected?: EvidencePreview; differencePath?: EvidencePreview; schemaPath?: EvidencePreview }>;
+  extractions?: Array<{ id: EvidencePreview; name: EvidencePreview; selector: EvidencePreview; status: string; code: EvidencePreview; published: boolean; sensitive: boolean; value?: EvidencePreview; message: EvidencePreview }>;
+  scriptDiagnostics: "existing-assertions-only" | "not-collected";
+  truncated: boolean;
+}
+export interface ReportingUnitSummary { total: number; passed: number; failed: number; skipped: number; entryDiagnostics: number }
 
 export interface CaseOutcome {
+  evidence?: SafeExecutionEvidence;
+  entryId?: string;
+  suiteRow?: number;
   apiId: string;
   apiName: string;
   caseId: string;
   caseName: string;
   row?: number;
+  locator?: CaseExecutionLocator;
+  scope?: string;
   /** 工作流节点归属；普通 collection 报告可省略。 */
   nodeId?: string;
   passed: boolean;
@@ -21,6 +46,17 @@ export interface CaseOutcome {
 }
 
 export interface RunResult {
+  executionIdentity?: EvidenceIdentity;
+  evidenceOmitted?: boolean;
+  reportFailure?: boolean;
+  kind?: "collection" | "workflow" | "suite";
+  projectId?: string;
+  definitionRevision?: string;
+  workflowId?: string;
+  workflow?: { verdict?: "passed" | "failed"; total: number; passed: number; failed: number; skipped: number; entries: Array<{ entryId: string; kind: "workflow"; workflowId: string; suiteRow?: number; nodeKind?: string; label?: string; state?: string; skipReason?: string; failureKind?: CaseFailureKind; status: "passed" | "failed" | "skipped"; error?: string }> };
+  reportingUnits?: ReportingUnitSummary;
+  suite?: { suiteRunId: string; projectId: string; definitionRevision: string; environmentId?: string; datasetId?: string; dataDigest?: string; verdict: "passed" | "failed" | "aborted"; total: number; passed: number; failed: number; skipped: number;
+    entries?: Array<{ entryId: string; kind: "case" | "workflow"; workflowId?: string; caseLocator?: CaseExecutionLocator; suiteRow?: number; status: "passed" | "failed" | "skipped" | "aborted"; skipReason?: "fail-fast" | "aborted"; error?: string }> };
   collectionId: string;
   collectionName: string;
   envName?: string;

@@ -72,6 +72,11 @@ function addTransferReferences(project: ContractProject): void {
   const noopId = uuid(206);
   workflow.nodes.push({ id: noopId, kind: "noop" });
   workflow.edges.push({ id: uuid(207), from: IDS.workflowNode, to: noopId });
+  project.datasets = [{ formatVersion: 1, id: uuid(220), name: "typed rows", columns: ["v"], rows: [{ v: false }, { v: 0 }, { v: null }] }];
+  api.cases[0]!.dataDriver = { kind: "dataset", datasetId: uuid(220) };
+  api.cases[0]!.extractors = [{ id: "extract-token", name: "token", selector: { target: "bodyJson", path: "$.token" }, method: "value" }];
+  api.cases[0]!.assertions = [{ id: "plugin-check", target: "bodyText", op: "vendor:check", expected: "ok" }];
+  project.suites = [{ formatVersion: 1, id: uuid(221), name: "mixed", tags: [], failFast: false, reporters: ["html"], datasetId: uuid(220), selection: { kind: "explicit", entries: [{ id: uuid(222), kind: "case", collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi, caseId: IDS.sharedCase }, { id: uuid(223), kind: "workflow", workflowId: IDS.workflow }] } }];
 }
 
 function secretFromAuth(project: ContractProject, componentId: string): { id: string; policy: string } {
@@ -202,6 +207,12 @@ describe("asset transfer IPC", () => {
       expect(clonedEnvironment.extends).toBe("dev");
       expect(clonedEnvironment.baseUrls).toEqual({ [clonedSecondCollection.id]: "https://preview.example.test" });
       const clonedApi = findApi(clone, clone.collections[0]!.apis[0]!.contract.id)!;
+      expect(clone.datasets![0]!.id).not.toBe(uuid(220));
+      expect(clone.datasets![0]!.rows).toEqual([{ v: false }, { v: 0 }, { v: null }]);
+      expect(clonedApi.cases[0]!.dataDriver).toEqual({ kind: "dataset", datasetId: clone.datasets![0]!.id });
+      expect(clonedApi.cases[0]!.extractors![0]!.id).not.toBe("extract-token");
+      expect(clonedApi.cases[0]!.assertions[0]!.op).toBe("vendor:check");
+      expect(clone.suites![0]!.selection).toMatchObject({ kind: "explicit", entries: [{ kind: "case", collectionId: clonedCollection.id, apiId: clonedApi.contract.id, caseId: clonedApi.cases[0]!.id }, { kind: "workflow", workflowId: clone.workflows[0]!.id }] });
       expect(clonedApi.contract.id).not.toBe(IDS.sharedApi);
       const clonedModel = clone.models.find((model) => model.name === "Payload")!;
       expect(clonedModel.id).not.toBe(IDS.model);

@@ -140,6 +140,14 @@ export function modelAssetFilePath(location: ProjectFileLocation, modelId: strin
   return `${projectBase(location)}/models/${requireUuid(modelId, "modelId")}.yaml`;
 }
 
+export function datasetAssetFilePath(location: ProjectFileLocation, datasetId: string): string {
+  return `${projectBase(location)}/datasets/${requireUuid(datasetId, "datasetId")}.yaml`;
+}
+
+export function suiteAssetFilePath(location: ProjectFileLocation, suiteId: string): string {
+  return `${projectBase(location)}/suites/${requireUuid(suiteId, "suiteId")}.yaml`;
+}
+
 export type ComponentKindPath = "parameter" | "auth" | "response" | "example";
 
 export function componentAssetFilePath(location: ProjectFileLocation, kind: ComponentKindPath, componentId: string): string {

@@ -29,18 +29,18 @@ type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 const viewingStress = ref(false);
 
 function kindLabel(s: RunSummary): string {
-  return s.kind === "collection" ? t("run.kindCollection") : t("run.kindStress");
+  return s.kind === "collection" ? t("run.kindCollection") : s.kind === "stress" ? t("run.kindStress") : s.kind;
 }
 function rowName(s: RunSummary): string {
-  return s.kind === "collection" ? s.collectionName : "";
+  return s.kind !== "stress" ? s.collectionName : "";
 }
 function rowMeta(s: RunSummary): string {
-  return s.kind === "collection"
-    ? t("run.summary", { total: s.total, passed: s.passed, failed: s.failed, skipped: s.skipped ?? 0 })
+  return s.kind !== "stress"
+    ? t("run.summary", { total: s.total, passed: s.passed, failed: s.failed, skipped: s.skipped ?? 0 }) + (s.reportingUnits ? ` · reporting-units ${s.reportingUnits.total} (failed ${s.reportingUnits.failed}) · NON-HTTP ${s.reportingUnits.entryDiagnostics}` : "")
     : t("run.stressSummary", { total: s.totalRequests, failed: s.failed, rps: fmtRps(s.rps) });
 }
 function rowFailed(s: RunSummary): number {
-  return s.failed;
+  return s.kind === "stress" ? s.failed : s.reportingUnits?.failed ?? s.failed;
 }
 /** rps 两位小数内联格式化（与 StressReportView 同口径，禁 NaN：来源为校验过的数值）。 */
 function fmtRps(v: number): string {
@@ -75,7 +75,7 @@ async function onOpen(s: RunSummary) {
       props.reportError(new Error(t("run.fileMissing")));
       return;
     }
-    if (s.kind === "collection") {
+    if (s.kind !== "stress") {
       props.run.historyOpen = false;
     } else {
       viewingStress.value = true; // 抽屉保持打开，内嵌切到压测报告
@@ -117,6 +117,7 @@ function onBack() {
             data-testid="history-kind"
           >{{ kindLabel(s) }}</a-tag>
           <span v-if="rowName(s)">{{ rowName(s) }}</span>
+          <small>{{ s.projectId ?? '旧记录：项目身份未采集' }}</small>
         </div>
         <div class="row-meta">
           <span>{{ s.startedAt }}</span>

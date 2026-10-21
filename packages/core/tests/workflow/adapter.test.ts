@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { workflowToRunResult } from "../../src/workflow/adapter.js";
 import type { WorkflowRunResult } from "../../src/workflow/runner.js";
+import { reportingUnits } from "../../src/report/units.js";
 
 const sample: WorkflowRunResult = {
   workflowId: "wf", workflowName: "条件流", status: "enabled",
@@ -15,20 +16,20 @@ const sample: WorkflowRunResult = {
 };
 
 describe("workflowToRunResult", () => {
-  it("映射为 RunResult：请求节点带 outcome，noop/skipped 生成合成用例", () => {
+  it("映射真实请求行并保留 noop/skipped 的节点身份与独立计数", () => {
     const r = workflowToRunResult(sample);
     expect(r.collectionName).toBe("条件流");
-    expect(r.total).toBe(4);
-    expect(r.cases).toHaveLength(4);
+    expect(r.total).toBe(2);
+    expect(r.cases).toHaveLength(2);
     expect(r.cases[0]!.caseName).toBe("one-用例");
-    expect(r.cases[1]!.caseName).toBe("占位");
-    expect(r.cases[1]!.passed).toBe(true);
-    expect(r.cases[2]!.passed).toBe(false);
-    expect(r.cases[2]!.skipped).toBe(true);
-    expect(r.skipped).toBe(1);
+    expect(r.cases[1]!.passed).toBe(false);
+    expect(r.workflow).toMatchObject({ total: 4, passed: 2, failed: 1, skipped: 1 });
+    expect(r.workflow?.entries[1]).toMatchObject({ entryId: "n2", label: "占位", state: "noop" });
+    expect(r.workflow?.entries[2]).toMatchObject({ entryId: "n3", state: "skipped", skipReason: "condition-pruned" });
+    expect(r.skipped).toBe(0);
     expect(r.failed).toBe(1);
-    expect(r.cases[2]!.error).toContain("skipped");
-    expect(r.cases[3]!.assertions.some((a) => !a.pass)).toBe(true);
+    expect(r.cases[1]!.assertions.some((a) => !a.pass)).toBe(true);
+    expect(reportingUnits(r).summary).toMatchObject({ total: 2, failed: 1, entryDiagnostics: 0 });
     expect(r.warnings).toEqual(["边 n2 → n3 条件不满足"]);
   });
 
@@ -50,18 +51,18 @@ describe("workflowToRunResult", () => {
       total: 0, passed: 0, failed: 0, skipped: 0,
     });
 
-    expect(r.cases).toHaveLength(5);
+    expect(r.cases).toHaveLength(3);
     expect(r.cases.slice(0, 3).map((c) => c.row)).toEqual([1, 2, 3]);
     expect(r.cases.slice(0, 3).every((c) => c.nodeId === "rows")).toBe(true);
     expect(r.total).toBe(r.passed + r.failed + (r.skipped ?? 0));
-    expect(r.passed).toBe(3);
+    expect(r.passed).toBe(2);
     expect(r.failed).toBe(1);
-    expect(r.skipped).toBe(1);
-    expect(r.cases[4]!.skipped).toBe(true);
-    expect(r.cases[4]!.assertions).toEqual([]);
+    expect(r.skipped).toBe(0);
+    expect(r.workflow?.entries[1]).toMatchObject({ entryId: "empty", state: "noop" });
+    expect(r.workflow?.entries[2]).toMatchObject({ entryId: "pruned", state: "skipped" });
   });
 
-  it("节点失败但实际请求行通过时追加节点级失败诊断", () => {
+  it("节点失败但实际请求行通过时使用独立 NON-HTTP 报告单元", () => {
     const r = workflowToRunResult({
       ...sample,
       nodeResults: [{
@@ -72,13 +73,11 @@ describe("workflowToRunResult", () => {
       total: 0, passed: 0, failed: 0, skipped: 0,
     });
 
-    expect(r.cases).toHaveLength(2);
+    expect(r.cases).toHaveLength(1);
     expect(r.cases[0]!.passed).toBe(true);
-    expect(r.cases[1]!.passed).toBe(false);
-    expect(r.cases[1]!.nodeId).toBe("route");
-    expect(r.cases[1]!.failureKind).toBe("script");
-    expect(r.cases[1]!.error).toBe("条件脚本失败");
-    expect(r.failed).toBe(1);
+    expect(r.workflow?.entries[0]).toMatchObject({ entryId: "route", failureKind: "script", error: "条件脚本失败" });
+    expect(r.failed).toBe(0);
+    expect(reportingUnits(r).summary).toEqual({ total: 2, passed: 1, failed: 1, skipped: 0, entryDiagnostics: 1 });
   });
 
   it("保留旧版单 outcome 形状并给相同接口的节点附带 nodeId", () => {

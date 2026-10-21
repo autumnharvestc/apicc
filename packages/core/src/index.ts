@@ -2,6 +2,8 @@ import { createSystemSecretStore as createInternalSystemSecretStore } from "./cr
 import type { SecretStore as SecretStoreContract } from "./credentials/types.js";
 
 export * from "./shared.js";
+export { SuiteRunner, validateSuiteExecution } from "./testing/suiteRunner.js";
+export { prepareTestData, parseDatasetContent, validateDatasetTable, bindPreparedTestData, readPreparedCaseData, preparedCaseKey, testDataSelectionsForRequests, TestDataError } from "./testing/data.js";
 export { buildImportMergePlan } from "./import/merge.js";
 export { deduplicateImportDiagnostics, normalizeImportDiagnostics, projectAssetImportDiagnostics } from "./import/diagnostics.js";
 export type {
@@ -89,3 +91,6 @@ export type {
 export function createSystemSecretStore(options: { privateRoot: string }): SecretStoreContract {
   return createInternalSystemSecretStore({ privateRoot: options.privateRoot });
 }
+export * from "./testing/model.js";
+export * from "./report/evidence.js";
+export * from "./testing/references.js";

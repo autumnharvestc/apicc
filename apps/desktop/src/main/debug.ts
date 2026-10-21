@@ -1,8 +1,8 @@
 import type { ApiAsset, CaseOutcome, Environment, PluginRegistry, Project, ProjectSnapshot, RunResult } from "@apicc/core";
-import { CollectionRunner, createDefaultRegistry, createEventBus, createHttpSession, createProjectSnapshot, resolveExecutionEnvironment, selectEffectiveCases } from "@apicc/core";
+import { createExecutionEvidenceCollector, CollectionRunner, createDefaultRegistry, createEventBus, createHttpSession, createProjectSnapshot, resolveExecutionEnvironment, selectEffectiveCases } from "@apicc/core";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { findSnapshotApi, resolveSnapshotEnvironment, workspaceRunsDir } from "./executionContext.js";
+import { findSnapshotApi, resolveSnapshotEnvironment, workspaceRunsDir, prepareDesktopTestData } from "./executionContext.js";
 export { findSnapshotApi, resolveSnapshotEnvironment, workspaceRunsDir } from "./executionContext.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
 import type { createSession } from "./session.js";
@@ -63,7 +63,9 @@ export async function runCollection(
   } catch (error) {
     throw createExecutionOutputBoundary([]).error(error);
   }
+  prepared = await prepareDesktopTestData(prepared, credentialSelections, root, env?.id);
   const boundary = createExecutionOutputBoundary(prepared.markers);
+  const evidence = createExecutionEvidenceCollector({ projectId: snapshot.project.id, definitionRevision: snapshot.definitionRevision, environmentId: env?.id, dataDigest: prepared.run.preparedTestData?.digest }, prepared.markers);
   const httpSession = createHttpSession();
   try {
     const registry = typeof registrySource === "function" ? await registrySource() : registrySource;
@@ -72,17 +74,22 @@ export async function runCollection(
       ...(env ? { environmentId: env.id } : {}),
       workspaceRoot: root,
       httpSession,
+      observeCaseExecution: evidence.observe,
     });
     const filename = `run-${collection.id}-${randomUUID()}.json`;
+    const safe = evidence.projectRun(result);
+    // Keep the existing collection-vs-stress IPC discrimination for old consumers.
+    delete safe.kind;
     const persisted = persistExecutionJson(
       join(workspaceRunsDir(root), filename),
-      result,
+      safe,
       boundary,
       (error) => `集合运行报告落盘失败（${join(workspaceRunsDir(root), filename)}）: ${error instanceof Error ? error.message : String(error)}`,
     );
     return persisted.value;
   } catch (error) {
-    throw boundary.error(error);
+    if (error && typeof error === "object" && "partialResult" in error) error.partialResult = evidence.projectRun(error.partialResult as RunResult);
+    throw createExecutionOutputBoundary(evidence.markers()).error(error);
   } finally {
     await httpSession.close();
   }
@@ -207,6 +214,7 @@ function toLegacyOutcome(outcome: import("@apicc/core").DebugOutcome): CaseOutco
   }
   return {
     apiId: outcome.apiId,
+    evidence: outcome.evidence,
     apiName: outcome.apiName,
     caseId: outcome.caseId,
     caseName: outcome.caseName,

@@ -28,12 +28,14 @@ import {
   sanitizeNodeName,
   transitionWorkflowStatus,
   validateEnablement,
+  validateDatasetTable,
   type ApiAsset,
   type ApiRequest,
   type ApiTestCase,
   type DebugFieldState,
   type CloneIdFactory,
   type ComponentAsset,
+  type DatasetAsset,
   type ContractCollection,
   type ContractFolder,
   type ContractGroup,
@@ -54,6 +56,7 @@ import {
   type WorkflowStatus,
 } from "@apicc/core";
 import { ApiRequestSchema, MockProjectConfigSchema } from "@apicc/core/schema";
+import { DatasetSaveInputSchema, SuiteSaveInputSchema, TestingContextSchema, TestingDeleteInputSchema, type DatasetSaveInput, type SuiteSaveInput, type TestingContext, type TestingDeleteInput } from "../shared/testing.js";
 import {
   ApiLocatorSchema,
   ApiParentLocatorSchema,
@@ -269,6 +272,9 @@ function projectAssetContext(project: ContractProject) {
     assets: projectApis(project),
     models: project.models,
     components: project.components,
+    datasets: project.datasets,
+    suites: project.suites,
+    project,
   });
 }
 
@@ -365,7 +371,11 @@ function workflowCallers(project: ContractProject, apiIds: ReadonlySet<string>, 
   return hits;
 }
 
-function guardWorkflowReferences(project: ContractProject, apiIds: ReadonlySet<string>, caseId?: string): void {
+function guardWorkflowReferences(project: ContractProject, apiIds: ReadonlySet<string>, caseId?: string, locator?: Pick<ApiLocator, "collectionId" | "folderIds" | "apiId">): void {
+  const target = caseId !== undefined && locator ? { kind: "case" as const, id: caseId, collectionId: locator.collectionId, folderIds: locator.folderIds, apiId: locator.apiId } : undefined;
+  const suiteOwners = target ? new Set(projectAssetContext(project).referencesTo(target).map(item => item.ownerId)) : undefined;
+  const suites = (project.suites ?? []).filter((suite) => suiteOwners ? suiteOwners.has(suite.id) : suite.selection.kind === "explicit" && suite.selection.entries.some((entry) => entry.kind === "case" && apiIds.has(entry.apiId) && (caseId === undefined || entry.caseId === caseId) && (!locator || entry.collectionId === locator.collectionId && JSON.stringify(entry.folderIds) === JSON.stringify(locator.folderIds))));
+  if (suites.length) throw new Error(`Cannot delete referenced API/case; suite callers remain: ${suites.map((suite) => suite.name).join(", ")}`);
   const hits = workflowCallers(project, apiIds, caseId);
   if (hits.length) {
     const callers = hits.map(({ workflow, nodeId, label }) => `${workflow.name} (${nodeId}${label ? `: ${label}` : ""})`).join(", ");
@@ -1103,7 +1113,7 @@ function setContainerOperations(
       if (input.contract.id !== locator.apiId) throw new Error("API contract.id must match its locator");
       const removed = located.api.cases.filter((before) => !input.cases.some((after) => after.id === before.id && after.scope === before.scope));
       const removedLogicalCases = new Set(removed.map((testCase) => testCase.id).filter((caseId) => !input.cases.some((item) => item.id === caseId)));
-      for (const caseId of removedLogicalCases) guardWorkflowReferences(located.project, new Set([locator.apiId]), caseId);
+      for (const caseId of removedLogicalCases) guardWorkflowReferences(located.project, new Set([locator.apiId]), caseId, locator);
       const container = locator.folderIds.length
         ? findFolder(located.collection, locator.folderIds)?.folder
         : located.collection;
@@ -1261,7 +1271,7 @@ function setContainerOperations(
       nextCases.push(input);
       for (const caseId of new Set(removalTargets.map((item) => item.id))) {
         if (!nextCases.some((item) => item.id === caseId)) {
-          guardWorkflowReferences(located.project, new Set([locator.apiId]), caseId);
+          guardWorkflowReferences(located.project, new Set([locator.apiId]), caseId, locator);
         }
       }
       const updated = ApiAssetSchema.parse({
@@ -1288,7 +1298,7 @@ function setContainerOperations(
       if (index < 0) throw new Error(`Case version not found: ${locator.caseId} / ${locator.scope}`);
       const target = located.api.cases[index];
       if (!located.api.cases.some((testCase, itemIndex) => itemIndex !== index && testCase.id === target.id)) {
-        guardWorkflowReferences(located.project, new Set([locator.apiId]), target.id);
+        guardWorkflowReferences(located.project, new Set([locator.apiId]), target.id, locator);
       }
       located.api.cases.splice(index, 1);
       const path = casePath(locator, target);
@@ -1478,6 +1488,61 @@ function setContainerOperations(
     });
   }
 
+  function assertTestingContext(contextValue: TestingContext, locator: ProjectLocator = contextValue.project): void {
+    const context = TestingContextSchema.parse(contextValue);
+    const current = requireActive();
+    if (current.root !== context.root || current.revision !== context.revision) throw new Error("Testing context root/revision changed");
+    if (locator.workspaceId !== context.project.workspaceId || locator.groupId !== context.project.groupId || locator.projectId !== context.project.projectId) throw new Error("Testing project locator mismatch");
+    if (!findProject(current.workspace, context.project)) throw new Error("Testing project not found");
+  }
+
+  function saveDataset(value: DatasetSaveInput): Promise<DatasetAsset> {
+    const input = DatasetSaveInputSchema.parse(clone(value));
+    validateDatasetTable(input.asset);
+    return mutate((candidate) => {
+      assertTestingContext(input.context, input.locator);
+      if (input.asset.id !== input.locator.datasetId) throw new Error("Dataset id must match locator");
+      const project = locateProjectInCandidate(candidate, input.context.project).project;
+      const assets = project.datasets ??= [];
+      const index = assets.findIndex((asset) => asset.id === input.asset.id);
+      if (input.create ? index >= 0 : index < 0) throw new Error("Dataset create/update identity conflict");
+      if (input.create) assets.push(input.asset); else assets[index] = input.asset;
+      return { value: input.asset };
+    });
+  }
+
+  function saveSuite(value: SuiteSaveInput): Promise<import("@apicc/core").SuiteAsset> {
+    const input = SuiteSaveInputSchema.parse(clone(value));
+    return mutate((candidate) => {
+      assertTestingContext(input.context, input.locator);
+      if (input.asset.id !== input.locator.suiteId) throw new Error("Suite id must match locator");
+      const project = locateProjectInCandidate(candidate, input.context.project).project;
+      const assets = project.suites ??= [];
+      const index = assets.findIndex((asset) => asset.id === input.asset.id);
+      if (input.create ? index >= 0 : index < 0) throw new Error("Suite create/update identity conflict");
+      if (input.create) assets.push(input.asset); else assets[index] = input.asset;
+      const diagnostics = projectAssetImportDiagnostics(project);
+      if (diagnostics.length) throw new Error(diagnostics.map((item) => item.message).join("; "));
+      return { value: input.asset };
+    });
+  }
+
+  function deleteTestingAsset(value: TestingDeleteInput): Promise<void> {
+    const input = TestingDeleteInputSchema.parse(clone(value));
+    return mutate((candidate, current) => {
+      assertTestingContext(input.context, input.target.locator);
+      const { project, group } = locateProjectInCandidate(candidate, input.context.project);
+      const kind = input.target.kind;
+      const id = kind === "dataset" ? (input.target.locator as import("../shared/locations.js").DatasetLocator).datasetId : (input.target.locator as import("../shared/locations.js").SuiteLocator).suiteId;
+      if (projectAssetContext(project).referencesTo({ kind, id }).length) throw new Error("Cannot delete referenced testing asset");
+      const assets = kind === "dataset" ? project.datasets ?? [] : project.suites ?? [];
+      const index = assets.findIndex((asset) => asset.id === id);
+      if (index < 0) throw new Error("Testing asset not found");
+      assets.splice(index, 1);
+      return { value: undefined, deletions: knownExactFile(current.workspace, `groups/${group.id}/projects/${project.id}/${kind === "dataset" ? "datasets" : "suites"}/${id}.yaml`) };
+    });
+  }
+
   async function saveWorkflow(locatorValue: WorkflowLocator, inputValue: Workflow): Promise<Workflow> {
     const locator = parseLocator(WorkflowLocatorSchema, locatorValue, "workflow");
     const input = WorkflowSchema.parse(clone(inputValue));
@@ -1529,6 +1594,7 @@ function setContainerOperations(
       const found = locateProjectInCandidate(candidate, locator);
       const index = found.project.workflows.findIndex((item) => item.id === locator.workflowId);
       if (index < 0) throw new Error(`Workflow not found: ${locator.workflowId}`);
+      if (projectAssetContext(found.project).referencesTo({ kind: "workflow", id: locator.workflowId }).length) throw new Error("Cannot delete referenced workflow; suite callers remain.");
       found.project.workflows.splice(index, 1);
       return { value: undefined };
     });
@@ -1613,6 +1679,7 @@ function setContainerOperations(
         }
         case "collection": {
           const found = locateCollectionInCandidate(candidate, node.locator);
+          if (projectAssetContext(found.project).referencesTo({ kind: "collection", id: found.collection.id }).length) throw new Error("Cannot delete referenced collection; suite callers remain.");
           const ids = new Set([ ...found.collection.apis.map((api) => api.contract.id) ]);
           walkFolders(found.collection.folders, (folder) => folder.apis.forEach((api) => ids.add(api.contract.id)));
           guardWorkflowReferences(found.project, ids);
@@ -1624,6 +1691,7 @@ function setContainerOperations(
           const found = locateCollectionInCandidate(candidate, node.locator);
           const folderPath = findFolder(found.collection, node.locator.folderIds);
           if (!folderPath) throw new Error(`Folder not found: ${JSON.stringify(node.locator)}`);
+          if (projectAssetContext(found.project).referencesTo({ kind: "folder", id: folderPath.folder.id }).length) throw new Error("Cannot delete referenced folder; suite callers remain.");
           const apiIds = new Set(folderPath.folder.apis.map((api) => api.contract.id));
           walkFolders(folderPath.folder.folders, (folder) => folder.apis.forEach((api) => apiIds.add(api.contract.id)));
           guardWorkflowReferences(found.project, apiIds);
@@ -1638,7 +1706,7 @@ function setContainerOperations(
         }
         case "api": {
           const found = locateApiInCandidate(candidate, node.locator);
-          guardWorkflowReferences(found.project, new Set([found.api.contract.id]));
+          guardWorkflowReferences(found.project, new Set([found.api.contract.id]), undefined, node.locator);
           const container = node.locator.folderIds.length
             ? findFolder(found.collection, node.locator.folderIds)?.folder
             : found.collection;
@@ -1649,6 +1717,7 @@ function setContainerOperations(
         }
         case "environment": {
           const found = locateProjectInCandidate(candidate, node.locator);
+          if (projectAssetContext(found.project).referencesTo({ kind: "environment", id: node.locator.environmentId }).length) throw new Error("Cannot delete referenced environment; suite callers remain.");
           const before = found.project.environments.length;
           found.project.environments = found.project.environments.filter((item) => item.id !== node.locator.environmentId);
           if (found.project.environments.length === before) throw new Error(`Environment not found: ${node.locator.environmentId}`);
@@ -1656,7 +1725,7 @@ function setContainerOperations(
         }
         case "model": {
           const found = locateProjectInCandidate(candidate, node.locator);
-          const references = projectAssetContext(found.project).referencesTo(node.locator.modelId);
+          const references = projectAssetContext(found.project).referencesTo({ kind: "model", id: node.locator.modelId });
           if (references.length) throw new Error(`Asset is referenced: ${JSON.stringify(references)}`);
           const before = found.project.models.length;
           found.project.models = found.project.models.filter((item) => item.id !== node.locator.modelId);
@@ -1667,7 +1736,7 @@ function setContainerOperations(
         }
         case "component": {
           const found = locateProjectInCandidate(candidate, node.locator);
-          const references = projectAssetContext(found.project).referencesTo(node.locator.componentId);
+          const references = projectAssetContext(found.project).referencesTo({ kind: node.locator.componentKind, id: node.locator.componentId });
           if (references.length) throw new Error(`Asset is referenced: ${JSON.stringify(references)}`);
           const before = found.project.components.length;
           found.project.components = found.project.components.filter((item) => !(item.kind === node.locator.componentKind && item.id === node.locator.componentId));
@@ -1678,6 +1747,7 @@ function setContainerOperations(
         }
         case "workflow": {
           const found = locateProjectInCandidate(candidate, node.locator);
+          if (projectAssetContext(found.project).referencesTo({ kind: "workflow", id: node.locator.workflowId }).length) throw new Error("Cannot delete referenced workflow; suite callers remain.");
           const before = found.project.workflows.length;
           found.project.workflows = found.project.workflows.filter((item) => item.id !== node.locator.workflowId);
           if (found.project.workflows.length === before) throw new Error(`Workflow not found: ${node.locator.workflowId}`);
@@ -1773,13 +1843,15 @@ function setContainerOperations(
     const target = locateProjectInCandidate(candidate, targetLocator).project;
     const imported = ContractProjectSchema.parse(clone(importedValue.project));
     const apiAssets = projectApis(imported);
-    const context = createProjectAssetContext({ projectId: imported.id, assets: apiAssets, models: imported.models, components: imported.components });
+    const context = projectAssetContext(imported);
     const closureByModel = new Map<string, ModelAsset>();
     const closureByComponent = new Map<string, ComponentAsset>();
+    const closureByDataset = new Map<string, DatasetAsset>();
     for (const asset of apiAssets) {
       const closure = context.dependencyClosure(asset.contract.id);
       for (const model of closure.models) closureByModel.set(model.id, model);
       for (const component of closure.components) closureByComponent.set(`${component.kind}:${component.id}`, component);
+      for (const dataset of closure.datasets ?? []) closureByDataset.set(dataset.id, dataset);
     }
 
     const moduleSource = clone(imported);
@@ -1788,8 +1860,10 @@ function setContainerOperations(
     sanitizeModuleCaseScopes(module);
     module.name = sanitizeNodeName(moduleName.trim() || module.name);
     module.workflows = [];
+    module.suites = [];
     module.models = [...closureByModel.values()];
     module.components = [...closureByComponent.values()];
+    module.datasets = [...closureByDataset.values()];
     const environmentsByName = uniqueEnvironmentNames(imported);
     const sourceCollectionsById = new Map<string, ContractCollection>();
     for (const sourceCollection of imported.collections) {
@@ -1819,7 +1893,7 @@ function setContainerOperations(
       throw new Error("Target collection identity collision during module import");
     }
     const newAssetIds = new Set<string>();
-    for (const id of [...cloned.models.map((model) => model.id), ...cloned.components.map((component) => component.id), ...projectApis(cloned).map((asset) => asset.contract.id)]) {
+    for (const id of [...cloned.models.map((model) => model.id), ...cloned.components.map((component) => component.id), ...(cloned.datasets ?? []).map((dataset) => dataset.id), ...projectApis(cloned).map((asset) => asset.contract.id)]) {
       if (newAssetIds.has(id) || existingIds.has(id)) throw new Error(`Target asset identity collision: ${id}`);
       newAssetIds.add(id);
     }
@@ -1827,6 +1901,7 @@ function setContainerOperations(
     target.collections.push(...cloned.collections);
     target.models.push(...cloned.models);
     target.components.push(...cloned.components);
+    target.datasets = [...(target.datasets ?? []), ...(cloned.datasets ?? [])];
     return cloned.collections;
   }
 
@@ -1935,6 +2010,10 @@ function setContainerOperations(
     saveContainer,
     createWorkflow,
     saveWorkflow,
+    assertTestingContext,
+    saveDataset,
+    saveSuite,
+    deleteTestingAsset,
     setWorkflowStatus,
     renameWorkflow,
     deleteWorkflow,

@@ -3,11 +3,15 @@ import { computeReport } from "./aggregate.js";
 import { createGeneratorMetricsCollector, type GeneratorMetricsCollector, type GeneratorMetricsProbe } from "./generatorMetrics.js";
 import type { StressReport, StressSafetyRun, StressSample, StressThresholds } from "./model.js";
 import type { StressWorkerSession } from "./caseSession.js";
+import { createExecutionEvidenceCollector, type EvidenceOutputBoundary } from "../report/evidence.js";
+import type { EvidenceIdentity } from "../report/types.js";
 
 type StressSetTimeout = (handler: () => void, timeout: number) => NodeJS.Timeout;
 type StressClearTimeout = (timer: NodeJS.Timeout) => void;
 
 export interface StressRunnerOptions {
+  evidenceIdentity?: EvidenceIdentity;
+  evidenceMarkers?: readonly string[];
   /** Creates one isolated virtual-user session for each concurrent worker. */
   createWorker: (workerId: number) => Promise<StressWorkerSession> | StressWorkerSession;
   /** Optional injectable generator collector used by deterministic tests. */
@@ -20,6 +24,13 @@ export interface StressRunnerOptions {
   clearTimeout?: StressClearTimeout;
   /** Optional wire-protocol hook receiving each complete Task 4 sample. */
   onSample?: (sample: StressSample) => void;
+  /** Synchronous host-local marker notification; it is not a cross-worker barrier. */
+  onEvidenceMarkers?: (markers: readonly string[]) => void;
+  /** Ordinary single-process host's final boundary, including explicit unavailable business-text projection.
+   * Never serialized or used as a private worker completion barrier. */
+  onEvidenceOutputBoundary?: (boundary: EvidenceOutputBoundary) => void;
+  /** Host-private run completion barrier; executes after measurement/cleanup, before evidence projection. */
+  finalizeEvidence?: (markers: readonly string[]) => Promise<readonly string[]>;
 }
 export interface StressRunOptions {
   concurrency: number;
@@ -267,6 +278,7 @@ export class StressRunner {
       );
 
     const samples: StressSample[] = [];
+    const evidence = createExecutionEvidenceCollector(this.opts.evidenceIdentity ?? { projectId: "", definitionRevision: "" }, this.opts.evidenceMarkers ?? [], { maxSamples: 20, privateMarkers: !!this.opts.finalizeEvidence });
     let stopped = false;
     let hasPrimaryError = false;
     let primaryError: unknown;
@@ -362,7 +374,9 @@ export class StressRunner {
           }
           if (signal?.aborted || stopped) break;
           try {
-            const sample = sampleFromResult(await session.execute(signal));
+            const execution = await session.execute(signal);
+            evidence.observe(execution, { rowIndex: execution.outcome.row });
+            const sample = sampleFromResult(execution);
             samples.push(sample);
             this.opts.onSample?.(sample);
           } catch (error) {
@@ -386,6 +400,7 @@ export class StressRunner {
       if (hasPrimaryError) throw primaryError;
       if (hasCleanupError) throw cleanupError;
       report = computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds, measurementWindow });
+      if (this.opts.evidenceIdentity) { report.projectId = this.opts.evidenceIdentity.projectId; report.definitionRevision = this.opts.evidenceIdentity.definitionRevision; }
       if (runOpts.connectionMode !== undefined) report.connectionMode = runOpts.connectionMode;
       const safetyTargets = samples
         .map((sample) => sample.safety)
@@ -407,17 +422,24 @@ export class StressRunner {
         availability: uniqueSafety.length > 0 ? "available" : "unavailable",
         ...(uniqueSafety.length === 0 ? { unavailableReason: "没有样本携带目标安全采集" } : {}),
       };
-      return report;
+      // Keep the original single-process generator boundary. Only private workers stop before their barrier.
+      if (!this.opts.finalizeEvidence) { report = evidence.projectStressReport(report); return report; }
     } finally {
       if (!sessionsClosed) await closeSessions();
       stopLimiter();
       clearDeadlineTimer();
       try {
+        if (!this.opts.finalizeEvidence) this.opts.onEvidenceOutputBoundary?.(evidence.boundary());
+        this.opts.onEvidenceMarkers?.(evidence.markers());
+      } catch (error) { stopCleanup(error); }
+      try {
         const generator = collector.stop();
         if (report) report.generator = generator;
       } catch (error) { stopCleanup(error); }
+      if (this.opts.finalizeEvidence) evidence.addMarkers(await this.opts.finalizeEvidence(evidence.markers()));
       if (hasPrimaryError) throw primaryError;
       if (hasCleanupError) throw cleanupError;
     }
+    return evidence.projectStressReport(report!);
   }
 }

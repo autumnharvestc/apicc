@@ -1,11 +1,11 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { StressReportSchema, type RunResult } from "@apicc/core";
+import { StressReportSchema, reportingUnits, workflowToRunResult, type RunResult, type WorkflowRunResult } from "@apicc/core";
 import type { DesktopStressReport } from "../shared/types.js";
 
-export interface RunSummaryDTO { kind: "collection"; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number }
-export interface StressRunSummaryDTO { kind: "stress"; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
+export interface RunSummaryDTO { kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"] }
+export interface StressRunSummaryDTO { kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
 /** runs:get 对 stress 文件的返回（M2-D3 任务 1）：kind 判别 + 完整压测报告。 */
@@ -29,6 +29,10 @@ const RunResultShapeSchema = z.object({
 /** 解析 + 最小形状校验；任一失败返回 null（非法 JSON 与形状不对同策略：跳过/不可读）。 */
 function parseRunResult(raw: string): RunResult | null {
   const json = parseJson(raw);
+  if (json && typeof json === "object" && "workflowId" in json && "nodeResults" in json && Array.isArray(json.nodeResults) && "workflowName" in json && typeof json.workflowName === "string" && "startedAt" in json && typeof json.startedAt === "string") {
+    const old = json as WorkflowRunResult;
+    return old.report && RunResultShapeSchema.safeParse(old.report).success ? old.report : workflowToRunResult(old);
+  }
   return json !== null && RunResultShapeSchema.safeParse(json).success ? (json as RunResult) : null;
 }
 
@@ -59,12 +63,12 @@ function summarize(runsDir: string, file: string): RunSummary | null {
     const raw = readFileSync(join(runsDir, file), "utf8");
     const r = parseRunResult(raw);
     if (r) {
-      return { kind: "collection", file, collectionName: r.collectionName, startedAt: r.startedAt, total: r.total, passed: r.passed, failed: r.failed, skipped: r.skipped ?? 0 };
+      return { kind: r.suite ? "suite" : r.workflowId ? "workflow" : r.kind ?? "collection", projectId: r.projectId ?? r.suite?.projectId, file, collectionName: r.collectionName, startedAt: r.startedAt, total: r.total, passed: r.passed, failed: r.failed, skipped: r.skipped ?? 0, reportingUnits: r.reportingUnits ?? reportingUnits(r).summary };
     }
     const s = parseStressReport(raw);
     if (s) {
       // 压测报告 startedAt 为 epoch ms，摘要统一为 ISO 字符串（与集合行同口径排序）。
-      return { kind: "stress", file, startedAt: new Date(s.startedAt).toISOString(), totalRequests: s.totalRequests, ok: s.ok, failed: s.failed, rps: s.rps };
+      return { kind: "stress", projectId: s.projectId, file, startedAt: new Date(s.startedAt).toISOString(), totalRequests: s.totalRequests, ok: s.ok, failed: s.failed, rps: s.rps };
     }
     return null;
   } catch {

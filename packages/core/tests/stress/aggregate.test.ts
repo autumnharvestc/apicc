@@ -69,7 +69,7 @@ describe("computeReport", () => {
       classifiedSample(70, "aborted"),
     ], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
 
-    expect(r.failures).toEqual({ transport: 1, http: 1, script: 1, assertion: 1, config: 1, aborted: 1 });
+    expect(r.failures).toEqual({ transport: 1, http: 1, script: 1, assertion: 1, extraction: 0, config: 1, aborted: 1 });
     expect(r.latency.p95).toBe(60);
     expect(r.scriptLatency.avg).toBe(3);
     expect(r.iterationLatency.p95).toBe(73);
@@ -81,6 +81,18 @@ describe("computeReport", () => {
     expect(r.ok).toBe(0);
     expect(r.failures.assertion).toBe(1);
     expect(r.totalRequests).toBe(1);
+  });
+
+  it("A3 HTTP 200 extraction failures retain request timing and fail business thresholds", () => {
+    const report = computeReport([classifiedSample(10, "extraction")], { concurrency: 1, startedAt: 0, finishedAt: 100 });
+    expect(report.ok).toBe(0);
+    expect(report.failed).toBe(1);
+    expect(report.failures.extraction).toBe(1);
+    expect(report.eligibleFailureCounts?.extraction).toBe(1);
+    expect(report.latency.p95).toBe(10);
+    expect(evaluateStressThresholds(report).passed).toBe(false);
+    expect(evaluateStressThresholds(report, { maxErrorRate: 0 }).passed).toBe(false);
+    expect(evaluateStressThresholds(report, { maxErrorRate: 1 }).passed).toBe(true);
   });
 
   it("未实际发包的 request latency 不进入 p95，95 个 pre-I/O 失败加 5 个请求时 p95 为请求耗时", () => {

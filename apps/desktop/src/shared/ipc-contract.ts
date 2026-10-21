@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EvidenceInvocationSchema, TestingReadInputSchema, DatasetSaveInputSchema, SuiteSaveInputSchema, TestingDeleteInputSchema, DatasetExchangeInputSchema, DatasetExportInputSchema, SuiteInvocationSchema } from "./testing.js";
 import {
   ApiAssetSchema,
   ApiRequestSchema,
@@ -223,6 +224,19 @@ const AiSuggestSchema = z.object({ locator: ApiLocatorSchema, baseUrl: z.string(
 const AiTestConfigSchema = z.object({ baseUrl: z.string().min(1), model: z.string().min(1) }).strict();
 
 export const IpcArgsSchemas = {
+  [IpcChannel.EvidenceInspect]: z.tuple([EvidenceInvocationSchema]),
+  [IpcChannel.EvidenceRerun]: z.tuple([EvidenceInvocationSchema]),
+  [IpcChannel.EvidenceCancel]: z.tuple([EvidenceInvocationSchema]),
+  [IpcChannel.TestingList]: z.tuple([TestingReadInputSchema]),
+  [IpcChannel.AssertionOperators]: z.tuple([]),
+  [IpcChannel.DatasetSave]: z.tuple([DatasetSaveInputSchema]),
+  [IpcChannel.SuiteSave]: z.tuple([SuiteSaveInputSchema]),
+  [IpcChannel.TestingDelete]: z.tuple([TestingDeleteInputSchema]),
+  [IpcChannel.DatasetImport]: z.tuple([DatasetExchangeInputSchema]),
+  [IpcChannel.DatasetExport]: z.tuple([DatasetExportInputSchema]),
+  [IpcChannel.SuitePreview]: z.tuple([SuiteInvocationSchema]),
+  [IpcChannel.SuiteRun]: z.tuple([SuiteInvocationSchema]),
+  [IpcChannel.SuiteCancel]: z.tuple([SuiteInvocationSchema]),
   [IpcChannel.WsOpen]: z.tuple([z.string()]),
   [IpcChannel.WsCreate]: z.tuple([z.string(), z.string()]),
   [IpcChannel.WsPickDirectory]: z.tuple([]),
@@ -374,7 +388,20 @@ type IpcArgsMatch = {
 };
 
 const resultMethodByChannel = {
+  [IpcChannel.EvidenceInspect]: "inspectEvidence",
+  [IpcChannel.EvidenceRerun]: "rerunEvidence",
+  [IpcChannel.EvidenceCancel]: "cancelEvidence",
   [IpcChannel.WsOpen]: "wsOpen",
+  [IpcChannel.TestingList]: "listTestingAssets",
+  [IpcChannel.AssertionOperators]: "assertionOperators",
+  [IpcChannel.DatasetSave]: "saveDataset",
+  [IpcChannel.SuiteSave]: "saveSuite",
+  [IpcChannel.TestingDelete]: "deleteTestingAsset",
+  [IpcChannel.DatasetImport]: "importDataset",
+  [IpcChannel.DatasetExport]: "exportDataset",
+  [IpcChannel.SuitePreview]: "previewSuite",
+  [IpcChannel.SuiteRun]: "runSuite",
+  [IpcChannel.SuiteCancel]: "cancelSuite",
   [IpcChannel.WsCreate]: "wsCreate",
   [IpcChannel.WsPickDirectory]: "wsPickDirectory",
   [IpcChannel.WsValidate]: "wsValidate",

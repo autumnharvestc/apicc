@@ -4,7 +4,7 @@ const completedCount = (report: StressReport): number =>
   Math.max(0, report.eligibleCompletedAttempts ?? (report.totalRequests - (report.failures?.aborted ?? 0)));
 
 const failureCounts = (report: StressReport): StressFailureCounts => report.failures ?? {
-  transport: 0, http: 0, script: 0, assertion: 0, config: 0, aborted: 0,
+  transport: 0, http: 0, script: 0, assertion: 0, extraction: 0, config: 0, aborted: 0,
 };
 
 /** Evaluate performance and business-result thresholds without mutating the report. */
@@ -15,7 +15,7 @@ export function evaluateStressThresholds(report: StressReport, thresholds: Stres
   // denominator. Correctness must retain every non-aborted failure, including
   // pre-I/O config/script/safety rejection samples which are intentionally not
   // eligible request attempts.
-  const businessFailures = failures.transport + failures.http + failures.script + failures.assertion + failures.config;
+  const businessFailures = failures.transport + failures.http + failures.script + failures.assertion + (failures.extraction ?? 0) + failures.config;
   const errorRate = denominator === 0 ? 0 : businessFailures / denominator;
   const assertionFailureRate = denominator === 0 ? 0 : failures.assertion / denominator;
   const violations: StressViolation[] = [];

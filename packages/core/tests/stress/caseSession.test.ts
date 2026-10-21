@@ -7,6 +7,7 @@ import type { ApiAsset, RequestBody } from "../../src/contract/model.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../../src/contract/workspace.js";
 import type { Assertion, Environment, KeyValuePair, Operation, TestCase as ContractTestCase } from "../../src/domain/common.js";
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import { prepareTestData, testDataSelectionsForRequests } from "../../src/testing/data.js";
 import type { ProjectExecutionRun } from "../../src/runner/runner.js";
 import { createStressCaseSession as createSnapshotStressCaseSession, type StressCaseSessionDeps, type StressCaseTarget } from "../../src/stress/caseSession.js";
 import type { ManagedProtocolClient } from "../../src/http/client.js";
@@ -187,6 +188,7 @@ function fixtureApiAsset(source: FixtureApi, credentials: Map<string, string>, s
       preOperations: fixtureOperations(testCase, "pre"),
       postOperations: fixtureOperations(testCase, "post"),
       assertions: testCase.assertions,
+      ...(testCase.extractors === undefined ? {} : { extractors: testCase.extractors }),
       ...(testCase.dataDriver === undefined ? {} : { dataDriver: testCase.dataDriver }),
     })),
     documentation: "",
@@ -269,6 +271,18 @@ function createStressCaseSession(target: FixtureTarget, deps: StressCaseSessionD
   return createSnapshotStressCaseSession(createProjectExecutionTarget(target), deps, options);
 }
 
+async function prepareTargetData(target: StressCaseTarget): Promise<StressCaseTarget> {
+  const snapshot = target.run.snapshot;
+  const requests: import("../../src/credentials/output.js").CredentialRequestSelection[] = [];
+  const visit = (container: typeof snapshot.project.collections[number] | typeof snapshot.project.collections[number]["folders"][number]): void => {
+    for (const asset of container.apis) requests.push({ asset });
+    for (const folder of container.folders) visit(folder);
+  };
+  for (const collection of snapshot.project.collections) visit(collection);
+  const preparedTestData = await prepareTestData(snapshot, testDataSelectionsForRequests(snapshot, requests, target.environmentId), { workspaceRoot: tmpdir() });
+  return { ...target, run: { ...target.run, preparedTestData } };
+}
+
 function deps(seen: string[], close: () => Promise<void>, created: (workerId: number) => ManagedProtocolClient): StressCaseSessionDeps {
   const client: ManagedProtocolClient = {
     name: "fake", canHandle: () => true,
@@ -302,7 +316,7 @@ function deps(seen: string[], close: () => Promise<void>, created: (workerId: nu
 }
 
 describe("createStressCaseSession", () => {
-  it("隔离每个 session 的变量和数据游标，并执行完整用例语义", async () => {
+  it("B1 固定准备快照并隔离每个 session 的变量和 0/1/0 数据游标", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-session-"));
     const dataPath = join(dir, "rows.csv");
     writeFileSync(dataPath, "row\nA\nB\n");
@@ -315,23 +329,33 @@ describe("createStressCaseSession", () => {
     const seen: string[] = [];
     const close = vi.fn(async (): Promise<void> => {});
     const created = vi.fn((_: number): ManagedProtocolClient => ({ name: "fake", canHandle: () => true, execute: async () => response, close }));
-    const sharedTarget = createProjectExecutionTarget(target(testCase, dataPath));
+    const sharedTarget = await prepareTargetData(createProjectExecutionTarget(target(testCase, dataPath)));
+    writeFileSync(dataPath, "row\nNEW\n");
     const sharedRevision = sharedTarget.run.snapshot.definitionRevision;
     const sessionA = createSnapshotStressCaseSession(sharedTarget, deps(seen, close, created), { workerId: 0 });
     const sessionB = createSnapshotStressCaseSession(sharedTarget, deps(seen, close, created), { workerId: 1 });
 
-    expect((await sessionA.execute()).outcome.passed).toBe(true);
-    expect((await sessionA.execute()).outcome.passed).toBe(true);
+    expect((await sessionA.execute()).outcome.row).toBe(0);
+    expect((await sessionA.execute()).outcome.row).toBe(1);
+    expect((await sessionA.execute()).outcome.row).toBe(0);
     expect((await sessionB.execute()).outcome.passed).toBe(true);
     expect((await sessionB.execute()).outcome.passed).toBe(true);
     expect(seen).toEqual([
       "http://trusted.example/orders/A?vu=1&row=A", "http://trusted.example/orders/B?vu=2&row=B",
+      "http://trusted.example/orders/A?vu=3&row=A",
       "http://trusted.example/orders/A?vu=1&row=A", "http://trusted.example/orders/B?vu=2&row=B",
     ]);
     expect(created).toHaveBeenCalledTimes(2);
     expect(sharedTarget.run.snapshot.definitionRevision).toBe(sharedRevision);
     await Promise.all([sessionA.close(), sessionA.close(), sessionB.close()]);
     expect(close).toHaveBeenCalledTimes(2);
+    const nextTarget = await prepareTargetData(createProjectExecutionTarget(target(testCase, dataPath)));
+    expect(nextTarget.run.preparedTestData!.digest).not.toBe(sharedTarget.run.preparedTestData!.digest);
+    const next = createSnapshotStressCaseSession(nextTarget, deps(seen, close, created), { workerId: 2 });
+    const result = await next.execute();
+    expect(result.outcome.row).toBe(0);
+    expect(seen.at(-1)).toBe("http://trusted.example/orders/NEW?vu=1&row=NEW");
+    await next.close();
   });
 
   it("在发包前对最终请求执行授权，拒绝时不触发协议 I/O", async () => {
@@ -436,7 +460,8 @@ describe("createStressCaseSession", () => {
     };
     writeFileSync(sourcePath, "host\nforbidden.example\n");
     const originApi = { ...api, url: "https://allowed.example/{{host}}", auth: { type: "bearer" as const, token: "{{token}}", placement: "header" as const } };
-    const session = createStressCaseSession({ ...target(testCase), api: originApi, collection: { ...collection, apis: [originApi] } }, {
+    const preparedTarget = await prepareTargetData(createProjectExecutionTarget({ ...target(testCase), api: originApi, collection: { ...collection, apis: [originApi] } }));
+    const session = createSnapshotStressCaseSession(preparedTarget, {
       createManagedClient: () => managed,
       resolveProtocol: () => managed,
       resolveAuth: () => ({ type: "bearer", apply(request) { request.headers.Authorization = "Bearer final-token"; } }),
@@ -743,7 +768,7 @@ describe("createStressCaseSession", () => {
     expect(resolveProtocol).not.toHaveBeenCalled();
   });
 
-  it("空数据源按单行 undefined，并在创建时校验数据文件", async () => {
+  it("B1 旧空数据源提示 fallback，缺少准备或来源错误拒绝", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-session-empty-"));
     const dataPath = join(dir, "empty.csv");
     writeFileSync(dataPath, "row\n");
@@ -751,11 +776,16 @@ describe("createStressCaseSession", () => {
     const seen: string[] = [];
     const close = vi.fn(async () => {});
     const created = vi.fn();
-    const session = createStressCaseSession(target(testCase, dataPath), deps(seen, close, created), { workerId: 0 });
+    const preparedTarget = await prepareTargetData(createProjectExecutionTarget(target(testCase, dataPath)));
+    expect(preparedTarget.run.preparedTestData!.sources[0]!.diagnostics[0]!.code).toBe("legacy-empty-fallback");
+    const session = createSnapshotStressCaseSession(preparedTarget, deps(seen, close, created), { workerId: 0 });
     await session.execute();
     await session.execute();
     expect(seen).toHaveLength(2);
     expect(() => createStressCaseSession(target(testCase, join(dir, "missing.csv")), deps([], close, created), { workerId: 1 })).toThrow();
+    const failed = await prepareTargetData(createProjectExecutionTarget(target(testCase, join(dir, "missing.csv"))));
+    expect(() => createSnapshotStressCaseSession(failed, deps([], close, created), { workerId: 1 })).toThrow(/无法读取/);
+    await session.close();
   });
 
   it("按 collection 到 folder 的外到内执行容器前置，并在 close 内到外执行后置", async () => {
@@ -916,17 +946,25 @@ describe("createStressCaseSession", () => {
     const factory = vi.fn((workerId: number): ManagedProtocolClient => {
       const client: ManagedProtocolClient = {
         name: `client-${workerId}`, canHandle: () => true,
-        execute: async () => response,
+        execute: async () => ({ ...response, headers: { "x-vu": String(workerId) } }),
         close: async () => { closeCounts[workerId] = (closeCounts[workerId] ?? 0) + 1; },
       };
       clients.push(client);
       return client;
     });
-    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [] };
-    const base = deps([], async () => {}, vi.fn());
+    const testCase: TestCase = { id: "case-1", name: "case", scope: "base", parameters: {}, assertions: [
+      { id: "vu", target: "header", headerName: "x-vu", op: "eq", expected: "{{extractedVU}}" },
+    ], extractors: [{ id: "vu", name: "extractedVU", method: "value", selector: { target: "header", headerName: "x-vu" } }],
+    preOperations: [{ id: "prior", type: "script", content: "prior-vu" }] };
+    const previous: Array<string | undefined> = [];
+    const base = { ...deps([], async () => {}, vi.fn()), scriptEngine: { language: "javascript", run(_code: string, ctx: { pm: import("../../src/plugin/types.js").PmApi }) { previous.push(ctx.pm.variables.get("extractedVU")); } } };
     const sessionA = createStressCaseSession(target(testCase), { ...base, createManagedClient: factory }, { workerId: 0 });
     const sessionB = createStressCaseSession(target(testCase), { ...base, createManagedClient: factory }, { workerId: 1 });
-    await Promise.all([sessionA.execute(), sessionB.execute()]);
+    const first = await Promise.all([sessionA.execute(), sessionB.execute()]);
+    expect(first.map((result) => result.outcome.passed)).toEqual([true, true]);
+    const second = await Promise.all([sessionA.execute(), sessionB.execute()]);
+    expect(second.map((result) => result.outcome.passed)).toEqual([true, true]);
+    expect(previous).toEqual([undefined, undefined, "0", "1"]);
     expect(clients[0]).not.toBe(clients[1]);
     await Promise.all([sessionA.close(), sessionA.close(), sessionB.close(), sessionB.close()]);
     expect(closeCounts).toEqual([1, 1]);

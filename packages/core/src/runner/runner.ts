@@ -1,6 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse as parseCsv } from "csv-parse/sync";
 import { monotonicFactory } from "ulid";
 
 /** runs 落盘文件名 ID：进程内单调递增，同毫秒多次运行不重名。 */
@@ -20,7 +19,10 @@ import type { PluginRegistry } from "../plugin/registry.js";
 import type { ExecutableRequest, HttpHopObservation, PmApi, ScriptEngine } from "../plugin/types.js";
 import type { HttpSession } from "../http/session.js";
 import type { CaseOutcome, RunResult } from "../report/types.js";
-import { executeCase, type CaseExecutionResult } from "./caseExecutor.js";
+import { executeCase, prepareCaseExecution, type CaseExecutionResult } from "./caseExecutor.js";
+import { createExtractionRuntimeState, type ExtractionRuntimeState } from "../testing/extraction.js";
+import { bindPreparedTestData, readPreparedCaseData } from "../testing/data.js";
+import type { PreparedTestData } from "../testing/dataModel.js";
 
 /** Container-level failure that preserves all case rows completed before the throw. */
 export class CollectionRunError extends Error {
@@ -38,7 +40,9 @@ export interface RunnerOptions {
   runsDir?: string;
   environmentId?: string;
   /** Restrict a workflow request node to its selected snapshot case and real ancestor path. */
-  caseSelection?: { apiId: string; caseId: string; folderIds: readonly string[] };
+  caseSelection?: { apiId: string; caseId: string; folderIds: readonly string[]; scope?: string };
+  /** Execute exactly one row from the captured source, preserving its original index. */
+  preparedRowIndex?: number;
   /** Host-owned root for resolving explicit local request file references. */
   workspaceRoot?: string;
   /** Explicit run/session cookie scope; CollectionRunner never creates a process-global jar. */
@@ -66,6 +70,8 @@ export interface RunnerOptions {
     get(): Record<string, string>;
     /** 本 run 结束后接收本次累计提取的运行时变量（仅脚本 pm.variables.set 写过的键）；外部携带者应做加法式合并。 */
     set(vars: Record<string, string>): void;
+    /** Workflow-owned extraction layer, including deletions, shared only within this entry. */
+    extractions?: ExtractionRuntimeState;
   };
 }
 
@@ -74,6 +80,8 @@ export interface ProjectExecutionRun {
   readonly credentialBindings: CredentialBindings;
   /** Host-only network state prepared once for this immutable execution. */
   readonly network?: PreparedNetworkRun;
+  /** Serializable, immutable source rows captured before dispatch. */
+  readonly preparedTestData?: PreparedTestData;
 }
 
 /** Pin one caller-selected run wrapper so later wrapper replacement cannot mix revisions. */
@@ -88,6 +96,7 @@ export function captureProjectExecutionRun(run: ProjectExecutionRun): ProjectExe
     snapshot,
     credentialBindings: run.credentialBindings,
     ...(run.network === undefined ? {} : { network: run.network }),
+    ...(run.preparedTestData === undefined ? {} : { preparedTestData: bindPreparedTestData(snapshot, run.preparedTestData) }),
   });
 }
 
@@ -137,6 +146,7 @@ export class CollectionRunner {
     const persisted = new Map<string, string>();
     // 桥回写快照：只在 pm.variables.set 时增长（语义 =「本次运行累计提取的变量」），run 结束整体写回外部桥。
     const persistedSnapshot: Record<string, string> = {};
+    const extractionState = opts.runtimeBridge?.extractions ?? createExtractionRuntimeState();
     // 运行时桥（工作流节点间传值基座）：进入本 run 前把外部携带变量注入持久层与运行时层——
     // 注入 persisted 使其与脚本提取值同语义：经每用例 clearRuntime 重放存活，不被运行时层清空冲掉。
     const carried = opts.runtimeBridge?.get() ?? {};
@@ -149,7 +159,8 @@ export class CollectionRunner {
       const operationResolver = createResolver(envVars, collection.variables, project.variables);
       restorePersisted(operationResolver, persisted);
       for (const operation of ops) {
-        if (operation.type === "script") engine.run(operation.content, this.buildContext(operationResolver, envVars, undefined, undefined, persisted, persistedSnapshot));
+        for (const [name, binding] of extractionState.bindings) operationResolver.setRuntime(name, binding.text);
+        if (operation.type === "script") engine.run(operation.content, this.buildContext(operationResolver, envVars, undefined, undefined, persisted, persistedSnapshot, extractionState));
       }
     };
 
@@ -168,34 +179,47 @@ export class CollectionRunner {
     const runApi = async (asset: DeepReadonly<ApiAsset>, folders: readonly DeepReadonly<ContractFolder>[]): Promise<void> => {
       const api = asset.contract;
       if (opts.caseSelection && api.id !== opts.caseSelection.apiId) return;
-      const applicable = selectEffectiveCases(asset.cases, chain, opts.caseSelection?.caseId);
+      if (opts.caseSelection && JSON.stringify(folders.map((folder) => folder.id)) !== JSON.stringify(opts.caseSelection.folderIds)) return;
+      const applicable = selectEffectiveCases(asset.cases, chain, opts.caseSelection?.caseId).filter((tc) => opts.caseSelection?.scope === undefined || tc.scope === opts.caseSelection.scope);
       for (const tc of applicable) {
-        if (state.stopped) return;
+        if (state.stopped || this.deps.timeouts.signal?.aborted) return;
         // 数据源读取/解析失败折进当用例 outcome，不中断整轮（与单用例隔离语义一致）。
         let rows: Array<Record<string, string> | undefined>;
+        const locator = { collectionId: collection.id, folderIds: folders.map((folder) => folder.id), apiId: api.id, caseId: tc.id, scope: tc.scope };
+        let isDataDriven = tc.dataDriver !== undefined;
         try {
-          rows = this.expandDataRows(tc);
+          const source = readPreparedCaseData(selectedRun.snapshot, selectedRun.preparedTestData, locator);
+          rows = source && source.rows.length > 0 ? source.rows.map((row) => row.values) : [undefined];
+          if (opts.preparedRowIndex !== undefined && (!source || !Number.isSafeInteger(opts.preparedRowIndex) || opts.preparedRowIndex < 0 || opts.preparedRowIndex >= source.rows.length)) throw new Error("所选 prepared 数据行不存在");
+          isDataDriven ||= source !== undefined;
+          for (const warning of source?.diagnostics ?? []) if (!warnings.includes(warning.message)) warnings.push(warning.message);
         } catch (e) {
           outcomes.push({
             apiId: api.id, apiName: api.metadata.name, caseId: tc.id, caseName: tc.name,
             passed: false, durationMs: 0, assertions: [],
             error: `数据源读取失败: ${e instanceof Error ? e.message : String(e)}`,
             failureKind: "config",
+            locator, scope: tc.scope,
           });
           if (this.deps.failFast) state.stopped = true;
           continue;
         }
         const caseResolver = createResolver(envVars, collection.variables, project.variables);
+        const prepared = prepareCaseExecution(tc, selectedRun.snapshot.context, api.id, (op) => this.deps.registry.getAssert(op));
         const observationSettings = resolveRequestSettings(tc.requestSettingsOverride, this.deps.requestSettings, {
           connectTimeoutMs: this.deps.timeouts.connectTimeoutMs,
           totalTimeoutMs: this.deps.timeouts.totalTimeoutMs,
         });
-        for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+        const rowIndexes = opts.preparedRowIndex === undefined ? rows.map((_, index) => index) : [opts.preparedRowIndex];
+        for (const rowIndex of rowIndexes) {
+          if (this.deps.timeouts.signal?.aborted) return;
           const rowParameters = Object.freeze({ ...tc.parameters, ...(rows[rowIndex] ?? {}) });
           const execution = await executeCase({
             asset, assetContext: selectedRun.snapshot.context, credentialBindings: selectedRun.credentialBindings,
           ...(selectedRun.network === undefined ? {} : { network: selectedRun.network }),
-            testCase: tc, row: rows[rowIndex], rowIndex, isDataDriven: rows.length > 1,
+            testCase: tc, prepared, extractionState,
+            locator,
+            row: rows[rowIndex], rowIndex, isDataDriven,
             resolver: caseResolver, envVars, envBaseUrl: baseUrl, globals: mutableGlobals(globals), persisted, persistedSnapshot,
           }, {
             resolveProtocol: (request) => this.deps.registry.getProtocol(request),
@@ -298,27 +322,17 @@ export class CollectionRunner {
     return result;
   }
 
-  /** 数据驱动逐行展开；无数据源或空数据按单行处理。 */
-  private expandDataRows(tc: DeepReadonly<TestCase>): Array<Record<string, string> | undefined> {
-    if (!tc.dataDriver) return [undefined];
-    const raw = readFileSync(tc.dataDriver.sourcePath, "utf8");
-    const records: Array<Record<string, string>> =
-      tc.dataDriver.format === "csv"
-        ? parseCsv(raw, { columns: true, skip_empty_lines: true })
-        : JSON.parse(raw);
-    return records.length > 0 ? records : [undefined];
-  }
-
   private buildContext(
     resolver: VariableResolver, envVars: Record<string, string>,
     request?: ExecutableRequest,
     pmAsserts?: Array<{ pass: boolean; message: string }>,
     persisted?: Map<string, string>, persistedSnapshot?: Record<string, string>,
+    extractionState?: ExtractionRuntimeState,
   ): { pm: PmApi } {
     const pm: PmApi = {
       variables: {
         get: (name) => resolver.get(name),
-        set: (name, value) => { persisted?.set(name, value); if (persistedSnapshot) persistedSnapshot[name] = value; resolver.setRuntime(name, value); },
+        set: (name, value) => { persisted?.set(name, value); if (persistedSnapshot) persistedSnapshot[name] = value; resolver.setRuntime(name, value); extractionState?.bindings.delete(name); },
       },
       environment: { get: (name) => envVars[name] },
       request: request ?? { protocol: "http", method: "GET", url: "", headers: {}, query: [], auth: { kind: "none" } },

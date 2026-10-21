@@ -12,6 +12,9 @@ import type {
   ResponseDefinition,
 } from "../contract/model.js";
 import type { SchemaNode } from "../contract/schemaNode.js";
+import { SchemaNodeSchema } from "../contract/schemaNode.js";
+import type { DatasetAsset, SuiteAsset } from "../testing/model.js";
+import type { ContractProject } from "../contract/workspace.js";
 
 type DeepReadonlyValue<T> = T extends readonly (infer Item)[]
   ? readonly DeepReadonlyValue<Item>[]
@@ -19,7 +22,7 @@ type DeepReadonlyValue<T> = T extends readonly (infer Item)[]
     ? { readonly [Key in keyof T]: DeepReadonlyValue<T[Key]> }
     : T;
 
-export type AssetReferenceKind = "model" | ComponentAsset["kind"];
+export type AssetReferenceKind = "model" | "dataset" | ComponentAsset["kind"];
 
 export interface AssetReference {
   ownerId: string;
@@ -32,6 +35,9 @@ export interface ProjectAssetGraphInput {
   assets: ApiAsset[];
   models: ModelAsset[];
   components: ComponentAsset[];
+  datasets?: DatasetAsset[];
+  suites?: SuiteAsset[];
+  project?: ContractProject;
 }
 
 export function referencesFromApiAsset(asset: ApiAsset): AssetReference[] {
@@ -40,6 +46,12 @@ export function referencesFromApiAsset(asset: ApiAsset): AssetReference[] {
   const ownerId = contract.id;
   references.push(...referencesFromApiRequest(contract.request, ownerId));
   asset.cases.forEach((testCase, index) => {
+    if (testCase.dataDriver && "kind" in testCase.dataDriver) references.push({ ownerId, path: `cases[${index}].dataDriver.datasetId`, targetId: testCase.dataDriver.datasetId, expectedKind: "dataset" });
+    testCase.assertions.forEach((assertion, assertionIndex) => {
+      if (assertion.op !== "schema" || assertion.options?.schema === undefined) return;
+      const parsed = SchemaNodeSchema.safeParse(assertion.options.schema);
+      if (parsed.success) collectSchemaReferences(parsed.data, `cases[${index}].assertions[${assertionIndex}].options.schema`, ownerId, references);
+    });
     if (testCase.requestOverride) {
       references.push(...referencesFromApiRequest(testCase.requestOverride, ownerId, `cases[${index}].requestOverride`));
     }

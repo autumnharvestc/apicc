@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createTestingController } from "./testing.js";
+import { createExecutionEvidenceCollector } from "@apicc/core";
+import { prepareDesktopTestData } from "./executionContext.js";
 import { stat } from "node:fs/promises";
 import { WorkflowRunner, StressSafetyError, buildImportMergePlan, deduplicateImportDiagnostics, normalizeImportDiagnostics, projectAssetImportDiagnostics, createHttpSession, findProjectApi, createProjectSnapshot, buildDocumentProjection, exportOpenapi, renderDocumentHtml, renderDocumentMarkdown, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, getSourceApiRevision, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type DebugHistoryOwnerIdentity, type CredentialRequestSelection, type ContractProject } from "@apicc/core";
 import { ContractProjectSchema } from "@apicc/core/schema";
@@ -105,23 +108,24 @@ async function runWorkflow(
   } catch (error) {
     throw createExecutionOutputBoundary([]).error(error);
   }
+  prepared = await prepareDesktopTestData(prepared, credentialSelections, root, env?.id);
   const boundary = createExecutionOutputBoundary(prepared.markers);
+  const evidence = createExecutionEvidenceCollector({ projectId: snapshot.project.id, definitionRevision: snapshot.definitionRevision, workflowId: workflow.id, environmentId: env?.id, dataDigest: prepared.run.preparedTestData?.digest }, prepared.markers);
   const httpSession = createHttpSession();
   try {
     const registry = typeof registrySource === "function" ? await registrySource() : registrySource;
     const runner = new WorkflowRunner({ registry, failFast: false, strict: captured.strict, workspaceRoot: root, httpSession });
-    const result = await runner.run(prepared.run, workflow.id, env ? { environmentId: env.id } : {});
+    const result = evidence.projectWorkflow(await runner.run(prepared.run, workflow.id, { environmentId: env?.id, observeCaseExecution: (execution, identity) => evidence.observe(execution, { ...identity, entryId: identity.nodeId }) }));
     const file = `workflow-${result.workflowId}-${randomUUID()}.json`;
     const path = join(workspaceRunsDir(root), file);
     const persisted = persistExecutionJson(
       path,
-      result,
+      result.report!,
       boundary,
       (error) => `工作流报告落盘失败（${path}）: ${error instanceof Error ? error.message : String(error)}`,
     );
-    return boundary.value(persisted.warning
-      ? { ...persisted.value, warnings: [...persisted.value.warnings, persisted.warning] }
-      : persisted.value);
+    const { report: _hostReport, ...dto } = result;
+    return boundary.value(persisted.warning ? { ...dto, warnings: [...dto.warnings, persisted.warning] } : dto);
   } catch (error) {
     throw boundary.error(error);
   } finally {
@@ -289,6 +293,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
     ? { append: (result: import("@apicc/core").DebugResult, appendOptions: { ownerKey: string; parentHistoryId?: string }) => requireDebugHistory().append(result, appendOptions) }
     : undefined;
   const debug = createDebugController(session, () => pluginsRuntime.registry(), credentials, debugHistoryAppender);
+  const testing = createTestingController(session, () => pluginsRuntime.registry(), credentials);
   const watchedDebugOwners = new WeakSet<object>();
 
   function ownerFromEvent(event: unknown): object | undefined {
@@ -306,6 +311,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
     };
     const cleanup = () => {
       debug.clearOwner(owner);
+      testing.clearOwner(owner);
       credentials.closeOAuthOwner(owner);
     };
     if (typeof sender.once === "function") sender.once("destroyed", cleanup);
@@ -432,7 +438,21 @@ export function createIpcDeps(options: IpcDepsOptions) {
   async function dispatch(channel: IpcChannelName, rawArgs: unknown[], owner?: object): Promise<unknown> {
     const a = parseIpcArgs(channel, rawArgs) as unknown[];
     switch (channel) {
+      case IpcChannel.EvidenceInspect: return testing.inspectEvidence(a[0] as Parameters<typeof testing.inspectEvidence>[0]);
+      case IpcChannel.EvidenceRerun: return testing.rerunEvidence(a[0] as Parameters<typeof testing.rerunEvidence>[0], requireOwner(owner));
+      case IpcChannel.EvidenceCancel: return testing.cancelEvidence(a[0] as Parameters<typeof testing.cancelEvidence>[0], requireOwner(owner));
+      case IpcChannel.TestingList: return testing.listTestingAssets(a[0] as Parameters<typeof testing.listTestingAssets>[0]);
+      case IpcChannel.AssertionOperators: return testing.assertionOperators();
+      case IpcChannel.DatasetSave: return testing.saveDataset(a[0] as Parameters<typeof testing.saveDataset>[0]);
+      case IpcChannel.SuiteSave: return testing.saveSuite(a[0] as Parameters<typeof testing.saveSuite>[0]);
+      case IpcChannel.TestingDelete: return testing.deleteTestingAsset(a[0] as Parameters<typeof testing.deleteTestingAsset>[0]);
+      case IpcChannel.DatasetImport: return testing.importDataset(a[0] as Parameters<typeof testing.importDataset>[0]);
+      case IpcChannel.DatasetExport: return testing.exportDataset(a[0] as Parameters<typeof testing.exportDataset>[0]);
+      case IpcChannel.SuitePreview: return testing.previewSuite(a[0] as Parameters<typeof testing.previewSuite>[0]);
+      case IpcChannel.SuiteRun: return testing.runSuite(a[0] as Parameters<typeof testing.runSuite>[0], requireOwner(owner));
+      case IpcChannel.SuiteCancel: return testing.cancelSuite(a[0] as Parameters<typeof testing.cancelSuite>[0], requireOwner(owner));
       case IpcChannel.WsOpen: {
+        testing.abortActive();
         // 工作区切换清理点（M2-D3 任务 1）：活动压测先 abort，部分报告由其收尾异步落回原工作区。
         // 计划 C 任务 2：裁定 E 互斥退役——本地打开不再关闭在线会话（本地 1 + 在线 N 并存驻留）。
         stress.abortActive();
@@ -443,6 +463,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return r satisfies OpenResult;
       }
       case IpcChannel.WsCreate: {
+        testing.abortActive();
         // 同上：压测清理链保留；在线会话原样驻留（并存，互斥退役）。
         stress.abortActive();
         const r = await mockManager.transitionWorkspace(async () => {

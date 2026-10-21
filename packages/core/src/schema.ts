@@ -222,3 +222,6 @@ export {
   StressSafetySchema,
 } from "./stress/model.js";
 export type { StressReport, CurrentStressReport } from "./stress/model.js";
+export * from "./testing/model.js";
+export type { AssertOperatorDescriptor } from "./plugin/types.js";
+export { builtinAssertDescriptors } from "./assert/operators.js";

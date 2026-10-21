@@ -45,6 +45,7 @@ import type {
   WorkspaceLocator,
 } from "./locations.js";
 import type { LocalTreeNodeDTO } from "./tree-dto.js";
+import type { TestingApi } from "./testing.js";
 import type { KeyValuePair } from "@apicc/core";
 import { CurrentStressReportSchema } from "@apicc/core/schema";
 import { z } from "zod";
@@ -218,12 +219,12 @@ export interface RunCollectionInput { locator: CollectionLocator; envName?: stri
  * 字段变更需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
  * kind 必填（M2-D3 任务 1）：运行历史按 kind 区分集合/压测两类报告（规格 §2 D11）。
  */
-export interface RunSummaryDTO { kind: "collection"; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number }
+export interface RunSummaryDTO { kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"] }
 /**
  * runs:list 行摘要（压测，M2-D3 任务 1）：startedAt 为 report.startedAt（epoch ms）格式化的
  * ISO 字符串，与集合行的 startedAt 同口径排序。
  */
-export interface StressRunSummaryDTO { kind: "stress"; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
+export interface StressRunSummaryDTO { kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
 /** stress:run 入参：maxIterations/durationMs 至少给其一（都给先到先停），二者可传 null（渲染层「清空」惯例）。 */
@@ -331,7 +332,7 @@ export type WfImpactInput = WorkflowImpactLocator;
 /** wf:run 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
 export interface WfRunInput { locator: WorkflowLocator; envName?: string | null; strict?: boolean }
 
-export interface ApiccApi {
+export interface ApiccApi extends TestingApi {
   wsOpen(rootPath: string): Promise<OpenResult>;
   wsCreate(rootPath: string, name: string): Promise<OpenResult>;
   wsPickDirectory(): Promise<string>;

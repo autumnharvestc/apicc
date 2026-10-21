@@ -108,6 +108,20 @@ async function getExporter(): Promise<OpenapiExporter> {
 }
 
 describe("exportOpenapi", () => {
+  it.each(["dataset", "suite"] as const)("warns when a project contains only local %s assets and omits their data", async (kind) => {
+    const exportOpenapi = await getExporter();
+    const project = makeOpenapiProject();
+    project.workflows = [];
+    delete project.mock;
+    const marker = `local-${kind}-asset-only`;
+    if (kind === "dataset") project.datasets = [{ formatVersion: 1, id: "20000000-0000-4000-8000-000000000080", name: marker, columns: ["value"], rows: [{ value: marker }] }];
+    else project.suites = [{ formatVersion: 1, id: "20000000-0000-4000-8000-000000000081", name: marker, tags: [marker], selection: { kind: "query" }, failFast: false, reporters: ["html"] }];
+    const result = exportOpenapi(createProjectSnapshot(project), { kind: "project" }, { version: "3.1", allowLossy: false });
+    expect(result.blocked).toBe(false);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "OPENAPI_LOCAL_EXECUTION_DATA_OMITTED", severity: "warning", path: "project", message: expect.stringMatching(kind === "dataset" ? /datasets/i : /suites/i), lossy: false }));
+    expect(JSON.stringify(result.document)).not.toContain(marker);
+    expect(stringifyYaml(result.document)).not.toContain(marker);
+  });
   it.each([
     ["3.0", "3.0.3"],
     ["3.1", "3.1.0"],

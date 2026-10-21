@@ -1,4 +1,7 @@
 import type { ApiAsset, ApiContract, ApiRequest, ComponentAsset, ModelAsset } from "../contract/model.js";
+import type { DatasetAsset } from "../testing/model.js";
+import { referencesFromSuite, suiteReferenceDiagnostics } from "../testing/references.js";
+import type { CaseReferenceLocator, TestingReference } from "../testing/references.js";
 import {
   collectProjectAssetReferences,
   referencesFromApiAsset,
@@ -14,12 +17,19 @@ export interface AssetDiagnostic {
   ownerId: string;
   path: string;
   targetId?: string;
+  expectedKind?: AssetReferenceTarget["kind"];
+  caseLocator?: CaseReferenceLocator;
 }
+
+export type AssetReferenceTarget =
+  | { kind: Exclude<AssetReference["expectedKind"] | TestingReference["expectedKind"] | "suite", "case">; id: string }
+  | ({ kind: "case"; id: string } & CaseReferenceLocator);
 
 export interface AssetBundle {
   assets: ApiAsset[];
   models: ModelAsset[];
   components: ComponentAsset[];
+  datasets?: DatasetAsset[];
 }
 
 export type AssetMutationResult =
@@ -48,7 +58,7 @@ export interface ProjectAssetContextReadView {
   getModel(id: string): DeepReadonly<ModelAsset> | undefined;
   getComponent(id: string): DeepReadonly<ComponentAsset> | undefined;
   readonly diagnostics: AssetDiagnostic[];
-  referencesTo(id: string): AssetDiagnostic[];
+  referencesTo(target: string | AssetReferenceTarget): AssetDiagnostic[];
   dependencyClosure(id: string): AssetBundle;
   checkGate(gate: AssetGate, contractId?: string, effectiveRequest?: DeepReadonly<ApiRequest>): AssetGateResult;
 }
@@ -123,6 +133,9 @@ export function createProjectAssetContext(input: ProjectAssetContextInput): Proj
     assets: cloneDefinitionValue(input.assets),
     models: cloneDefinitionValue(input.models),
     components: cloneDefinitionValue(input.components),
+    datasets: cloneDefinitionValue(input.datasets ?? []),
+    suites: cloneDefinitionValue(input.suites ?? []),
+    ...(input.project ? { project: cloneDefinitionValue(input.project) } : {}),
   }, false);
 }
 
@@ -137,8 +150,10 @@ function createContext(input: ProjectAssetContextInput, sharedReadOnly: boolean)
   let assets = input.assets;
   let models = input.models;
   let components = input.components;
+  let datasets = input.datasets ?? [];
+  let suites = input.suites ?? [];
 
-  const currentInput = (): ProjectAssetGraphInput => ({ assets, models, components });
+  const currentInput = (): ProjectAssetGraphInput => ({ assets, models, components, datasets, suites, ...(input.project ? { project: { ...input.project, datasets, suites } } : {}) });
   const indexes = (): AssetIndexes => buildIndexes(currentInput());
   const diagnostics = (): AssetDiagnostic[] => buildDiagnostics(currentInput());
   const copy = <T extends object>(value: T): T => sharedReadOnly ? value : cloneDefinitionValue(value);
@@ -159,8 +174,8 @@ function createContext(input: ProjectAssetContextInput, sharedReadOnly: boolean)
     get diagnostics() {
       return diagnostics();
     },
-    referencesTo(id) {
-      return inboundReferences(currentInput(), id);
+    referencesTo(target) {
+      return inboundReferences(currentInput(), target);
     },
     dependencyClosure(id) {
       return buildDependencyClosure(currentInput(), id, copy);
@@ -188,8 +203,8 @@ function createContext(input: ProjectAssetContextInput, sharedReadOnly: boolean)
     get diagnostics() {
       return diagnostics();
     },
-    referencesTo(id) {
-      return inboundReferences(currentInput(), id);
+    referencesTo(target) {
+      return inboundReferences(currentInput(), target);
     },
     dependencyClosure(id) {
       return buildDependencyClosure(currentInput(), id, copy);
@@ -216,13 +231,19 @@ function createContext(input: ProjectAssetContextInput, sharedReadOnly: boolean)
         component.name = name;
         return { ok: true };
       }
+      const testingAsset = [...datasets, ...suites].find((asset) => asset.id === id);
+      if (testingAsset) { testingAsset.name = name; return { ok: true }; }
       return { ok: false, code: "ASSET_NOT_FOUND", references: [] };
     },
     delete(id) {
       const index = indexes();
       if ((index.counts.get(id) ?? 0) !== 1) return { ok: false, code: "ASSET_NOT_FOUND", references: [] };
-      const references = inboundReferences(currentInput(), id);
+      const target = managedReferenceTarget(currentInput(), id);
+      if (!target) return { ok: false, code: "ASSET_NOT_FOUND", references: [] };
+      const references = inboundReferences(currentInput(), target);
       if (references.length > 0) return { ok: false, code: "ASSET_REFERENCED", references };
+      if (datasets.some((asset) => asset.id === id)) { datasets = datasets.filter((asset) => asset.id !== id); return { ok: true }; }
+      if (suites.some((asset) => asset.id === id)) { suites = suites.filter((asset) => asset.id !== id); return { ok: true }; }
 
       const assetIndex = assets.findIndex((asset) => asset.contract.id === id);
       if (assetIndex >= 0) {
@@ -250,6 +271,7 @@ function buildIndexes(input: ProjectAssetGraphInput): AssetIndexes {
   for (const asset of input.assets) increment(counts, asset.contract.id);
   for (const model of input.models) increment(counts, model.id);
   for (const component of input.components) increment(counts, component.id);
+  for (const asset of [...(input.datasets ?? []), ...(input.suites ?? [])]) increment(counts, asset.id);
 
   const assetIds = new Map<string, ApiAsset>();
   const modelIds = new Map<string, ModelAsset>();
@@ -266,13 +288,17 @@ function buildDiagnostics(input: ProjectAssetGraphInput): AssetDiagnostic[] {
   input.assets.forEach((asset, index) => pushDuplicate(seen, duplicateDiagnostics, asset.contract.id, `assets[${index}].contract.id`));
   input.models.forEach((model, index) => pushDuplicate(seen, duplicateDiagnostics, model.id, `models[${index}].id`));
   input.components.forEach((component, index) => pushDuplicate(seen, duplicateDiagnostics, component.id, `components[${index}].id`));
+  (input.datasets ?? []).forEach((asset, index) => pushDuplicate(seen, duplicateDiagnostics, asset.id, `datasets[${index}].id`));
+  (input.suites ?? []).forEach((asset, index) => pushDuplicate(seen, duplicateDiagnostics, asset.id, `suites[${index}].id`));
 
   const allById = new Map<string, Array<{ kind: "contract" | "model" | "component"; componentKind?: ComponentAsset["kind"] }>>();
   for (const asset of input.assets) addKinds(allById, asset.contract.id, { kind: "contract" });
   for (const model of input.models) addKinds(allById, model.id, { kind: "model" });
   for (const component of input.components) addKinds(allById, component.id, { kind: "component", componentKind: component.kind });
 
-  const referenceDiagnostics = collectProjectAssetReferences(input).flatMap((reference) => diagnoseReference(reference, allById));
+  const referenceDiagnostics = collectProjectAssetReferences(input).flatMap((reference) => reference.expectedKind === "dataset"
+    ? (input.datasets ?? []).filter((asset) => asset.id === reference.targetId).length === 1 ? [] : [{ code: "ASSET_REFERENCE_MISSING", ownerId: reference.ownerId, path: reference.path, targetId: reference.targetId }]
+    : diagnoseReference(reference, allById));
   const cycleDiagnostics = modelReferenceCycleDiagnostics(input.models);
   return [
     ...duplicateDiagnostics,
@@ -280,6 +306,7 @@ function buildDiagnostics(input: ProjectAssetGraphInput): AssetDiagnostic[] {
     ...parameterDesignDiagnostics(input),
     ...responseDesignDiagnostics(input),
     ...cycleDiagnostics,
+    ...(input.project ? suiteReferenceDiagnostics(input.project, input.suites) : []),
   ];
 }
 
@@ -404,14 +431,36 @@ function responseDesignDiagnostics(input: ProjectAssetGraphInput): AssetDiagnost
   return diagnostics;
 }
 
-function inboundReferences(input: ProjectAssetGraphInput, id: string): AssetDiagnostic[] {
-  return collectProjectAssetReferences(input)
-    .filter((reference) => reference.targetId === id)
+function managedReferenceTarget(input: ProjectAssetGraphInput, id: string): AssetReferenceTarget | undefined {
+  if (input.assets.some((asset) => asset.contract.id === id)) return { kind: "contract", id };
+  if (input.models.some((asset) => asset.id === id)) return { kind: "model", id };
+  const component = input.components.find((asset) => asset.id === id);
+  if (component) return { kind: component.kind, id };
+  if (input.datasets?.some((asset) => asset.id === id)) return { kind: "dataset", id };
+  if (input.suites?.some((asset) => asset.id === id)) return { kind: "suite", id };
+  return undefined;
+}
+
+function inboundReferences(input: ProjectAssetGraphInput, query: string | AssetReferenceTarget): AssetDiagnostic[] {
+  const target = typeof query === "string" ? managedReferenceTarget(input, query) : query;
+  const id = typeof query === "string" ? query : query.id;
+  return [...collectProjectAssetReferences(input), ...(input.suites ?? []).flatMap(referencesFromSuite)]
+    .filter((reference) => {
+      if (reference.targetId !== id || (target && reference.expectedKind !== target.kind)) return false;
+      if (target?.kind !== "case") return true;
+      if (!("caseLocator" in reference) || !reference.caseLocator) return false;
+      const locator = reference.caseLocator;
+      return locator.collectionId === target.collectionId && locator.apiId === target.apiId
+        && locator.folderIds.length === target.folderIds.length
+        && locator.folderIds.every((folderId, index) => folderId === target.folderIds[index]);
+    })
     .map((reference) => ({
       code: "ASSET_REFERENCE",
       ownerId: reference.ownerId,
       path: reference.path,
       targetId: reference.targetId,
+      expectedKind: reference.expectedKind,
+      ...("caseLocator" in reference && reference.caseLocator ? { caseLocator: { ...reference.caseLocator, folderIds: [...reference.caseLocator.folderIds] } } : {}),
     }));
 }
 
@@ -591,10 +640,12 @@ function buildDependencyClosure(input: ProjectAssetGraphInput, id: string, copy:
   const assetIds = new Set([...visited].filter((key) => key.startsWith("contract:")).map((key) => key.slice("contract:".length)));
   const modelIds = new Set([...visited].filter((key) => key.startsWith("model:")).map((key) => key.slice("model:".length)));
   const componentIds = new Set([...visited].filter((key) => key.startsWith("component:")).map((key) => key.slice("component:".length)));
+  const datasetIds = new Set(input.assets.filter((asset) => assetIds.has(asset.contract.id)).flatMap(referencesFromApiAsset).filter((reference) => reference.expectedKind === "dataset").map((reference) => reference.targetId));
   return {
     assets: input.assets.filter((asset) => assetIds.has(asset.contract.id)).map(copy),
     models: input.models.filter((model) => modelIds.has(model.id)).map(copy),
     components: input.components.filter((component) => componentIds.has(component.id)).map(copy),
+    ...(datasetIds.size ? { datasets: (input.datasets ?? []).filter((asset) => datasetIds.has(asset.id)).map(copy) } : {}),
   };
 }
 

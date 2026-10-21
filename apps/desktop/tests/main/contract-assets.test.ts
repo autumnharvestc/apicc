@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createProjectSnapshot, getSourceApiRevision, listContractWorkspaceDefinitionFiles, type ApiRequest, type StorageAdapter } from "@apicc/core";
+import { createDefaultRegistry, createProjectSnapshot, fileStorage, getSourceApiRevision, listContractWorkspaceDefinitionFiles, type ApiRequest, type StorageAdapter } from "@apicc/core";
+import { createIpcDeps } from "../../src/main/ipc.js";
+import { IpcChannel } from "../../src/shared/channels.js";
+import { createTestingController } from "../../src/main/testing.js";
+import { createCredentialHost } from "../../src/main/credentialHost.js";
 import { createSession, type CollectionContainerOperations } from "../../src/main/session.js";
+import { createMemoryApi } from "../../src/renderer/src/api/memory.js";
 import {
   findApi,
   IDS,
@@ -13,6 +18,166 @@ import {
 } from "./helpers/contract-assets.js";
 
 describe("desktop contract workspace session", () => {
+  it("enforces strict testing IPC and readonly saves at the real transaction boundary", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const session = createSession(); await session.open(temporary.path);
+      const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "" });
+      const project = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+      const before = await deps.handle(IpcChannel.TestingList, null, { root: temporary.path, project });
+      const dataset = { formatVersion: 1 as const, id: uuid(242), name: "ipc", columns: ["value"], rows: [{ value: false }] };
+      const input = { context: before.context, locator: { ...project, datasetId: dataset.id }, asset: dataset, create: true };
+      const saved = await deps.handle(IpcChannel.DatasetSave, null, JSON.parse(JSON.stringify(input)));
+      expect(saved.datasets).toEqual([dataset]);
+      await expect(Reflect.apply(deps.handle, undefined, [IpcChannel.DatasetSave, null, { ...input, filePath: "C:/unselected" }])).rejects.toThrow(/入参校验/);
+      const readonly = createSession({ storage: { async load(root) { return { ...await fileStorage.load(root), readOnly: true }; }, async save() { throw new Error("Unexpected storage write"); } } });
+      await readonly.open(temporary.path);
+      const context = { ...saved.context, revision: readonly.revision! };
+      await expect(readonly.saveDataset({ ...input, context, create: false })).rejects.toThrow(/只读/);
+      await expect(readonly.saveSuite({ context, locator: { ...project, suiteId: uuid(243) }, create: true, asset: { formatVersion: 1, id: uuid(243), name: "readonly", tags: [], failFast: false, reporters: ["json"], selection: { kind: "explicit", entries: [] } } })).rejects.toThrow(/只读/);
+      expect(projectOne((await session.open(temporary.path)).workspace).datasets).toEqual([dataset]);
+    } finally { await temporary.dispose(); }
+  });
+  it("previews without credential/protocol access and cancels only the bound owner's active suite", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      const workspace = makeWorkspace(); const project = projectOne(workspace);
+      project.workflows = [];
+      const selected = findApi(project, IDS.sharedApi)!;
+      selected.cases = [{ ...selected.cases[0]!, scope: "base" }]; selected.contract.request.auth = { kind: "none" };
+      project.suites = [{ formatVersion: 1, id: uuid(238), name: "cancel", tags: [], reporters: ["json"], failFast: false, selection: { kind: "explicit", entries: [{ id: uuid(239), kind: "case", collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi, caseId: IDS.sharedCase }] } }];
+      await persistWorkspace(temporary.path, workspace);
+      const session = createSession(); await session.open(temporary.path);
+      const registry = createDefaultRegistry(); let requests = 0; let credentialPreparations = 0;
+      let entered!: () => void; const executing = new Promise<void>(resolve => { entered = resolve; });
+      registry.registerProtocol({ name: "http", canHandle: request => request.protocol === "http", execute: async (_request, options) => {
+        requests++; entered();
+        return new Promise(resolve => options.signal!.addEventListener("abort", () => resolve({ status: 0, headers: {}, bodyText: "", timeMs: 0 }), { once: true }));
+      } });
+      const host = createCredentialHost(session, () => { throw new Error("No native credential reads allowed"); });
+      const controller = createTestingController(session, async () => registry, { prepareRunForRequests: async (...args) => { credentialPreparations++; return host.prepareRunForRequests(...args); } });
+      const owner = {}; const otherOwner = {};
+      const view = await controller.listTestingAssets({ root: temporary.path, project: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne } });
+      const input = { context: view.context, locator: { ...view.context.project, suiteId: uuid(238) }, invocationId: uuid(240) };
+      expect((await controller.previewSuite(input)).plannedExecutions).toBe(1);
+      expect([credentialPreparations, requests]).toEqual([0, 0]);
+      const pending = controller.runSuite(input, owner); await executing;
+      expect(await controller.cancelSuite(input, otherOwner)).toBe(false);
+      expect(await controller.cancelSuite({ ...input, context: { ...input.context, project: { ...input.context.project, projectId: IDS.projectTwo } } }, owner)).toBe(false);
+      expect(await controller.cancelSuite(input, owner)).toBe(true);
+      const output = await pending;
+      expect(output.result.suite).toMatchObject({ verdict: "aborted", failed: 1 });
+      expect([credentialPreparations, requests]).toEqual([1, 1]);
+      expect(await controller.cancelSuite(input, owner)).toBe(false);
+    } finally { await temporary.dispose(); }
+  });
+  it("imports raw JSON cells, shares suite preview/run data and rejects empty dataset execution", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      const workspace = makeWorkspace();
+      projectOne(workspace).workflows = [];
+      const selectedApi = findApi(projectOne(workspace), IDS.sharedApi)!;
+      selectedApi.cases = [{ ...selectedApi.cases[0]!, scope: "base" }];
+      selectedApi.contract.request.auth = { kind: "none" };
+      await persistWorkspace(temporary.path, workspace);
+      const api = createMemoryApi({ root: temporary.path });
+      await api.wsOpen(temporary.path);
+      const project = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+      let view = await api.listTestingAssets({ root: temporary.path, project });
+      const parsed = await api.importDataset({ context: view.context, format: "json", content: '[{"value":{"nested":[0,false,null]}},{"value":""}]' });
+      expect(parsed.rows).toEqual([{ value: { nested: [0, false, null] } }, { value: "" }]);
+      expect(await api.importDataset({ context: view.context, format: "csv", content: '\uFEFFa,b\r\n"hello,\nworld",""\r\n' })).toEqual({ columns: ["a", "b"], rows: [{ a: "hello,\nworld", b: "" }] });
+      const dataset = { formatVersion: 1 as const, id: uuid(232), name: "typed", ...parsed };
+      view = await api.saveDataset({ context: view.context, locator: { ...project, datasetId: dataset.id }, asset: dataset, create: true });
+      expect(JSON.parse(await api.exportDataset({ context: view.context, locator: { ...project, datasetId: dataset.id }, format: "json" }))).toEqual(parsed.rows);
+      const suite = { formatVersion: 1 as const, id: uuid(233), name: "suite", tags: [], failFast: false, reporters: ["json" as const], datasetId: dataset.id, selection: { kind: "explicit" as const, entries: [{ id: uuid(234), kind: "case" as const, collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi, caseId: IDS.sharedCase }] } };
+      view = await api.saveSuite({ context: view.context, locator: { ...project, suiteId: suite.id }, asset: suite, create: true });
+      const input = { context: view.context, locator: { ...project, suiteId: suite.id }, invocationId: uuid(235) };
+      const preview = await api.previewSuite(input);
+      expect(preview.plannedExecutions).toBe(2);
+      expect(preview.outerRows).toBe(2);
+      expect(preview.plan.entries[0]!.cases[0]!.locator).toMatchObject({ apiId: IDS.sharedApi, scope: "base", folderIds: [] });
+      const output = await api.runSuite(input);
+      expect(output.result.total).toBe(2);
+      expect(output.result.suite?.total).toBe(2);
+      expect(output.result.suite?.definitionRevision).toBe(preview.plan.definitionRevision);
+      expect(output.result.cases.every((item) => item.passed)).toBe(true);
+      view = await api.saveDataset({ context: view.context, locator: { ...project, datasetId: dataset.id }, asset: { ...dataset, rows: [] } });
+      await expect(api.previewSuite({ ...input, context: view.context })).rejects.toThrow(/为空|empty/);
+      await expect(api.importDataset({ context: view.context, format: "csv", content: 'a,a\n1,2' })).rejects.toThrow(/重复|Duplicate/);
+    } finally { await temporary.dispose(); }
+  });
+  it("round trips typed datasets and suites transactionally, rejects stale identities and guards dataset references", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      await persistWorkspace(temporary.path, makeWorkspace());
+      const session = createSession();
+      await session.open(temporary.path);
+      const project = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+      const context = () => ({ root: temporary.path, project, revision: session.revision! });
+      const dataset: import("@apicc/core").DatasetAsset = { formatVersion: 1, id: uuid(230), name: "typed", columns: ["value", "optional"], rows: [{ value: { nested: [0, false, null] } }, { value: "", optional: null }] };
+      const first = context();
+      await session.saveDataset({ context: first, locator: { ...project, datasetId: dataset.id }, asset: dataset, create: true });
+      await expect(session.saveDataset({ context: first, locator: { ...project, datasetId: dataset.id }, asset: dataset })).rejects.toThrow(/context|revision|上下文/i);
+      const suite = { formatVersion: 1 as const, id: uuid(231), name: "suite", tags: [], failFast: false, reporters: ["json" as const], datasetId: dataset.id, selection: { kind: "query" as const } };
+      await session.saveSuite({ context: context(), locator: { ...project, suiteId: suite.id }, asset: suite, create: true });
+      await expect(session.deleteTestingAsset({ context: context(), target: { kind: "dataset", locator: { ...project, datasetId: dataset.id } } })).rejects.toThrow(/referenced/i);
+      await expect(session.saveDataset({ context: { ...context(), root: `${temporary.path}-other` }, locator: { ...project, datasetId: dataset.id }, asset: dataset })).rejects.toThrow(/context|root|上下文/i);
+      await expect(session.saveDataset({ context: context(), locator: { ...project, projectId: IDS.projectTwo, datasetId: dataset.id }, asset: dataset })).rejects.toThrow(/project|locator/i);
+      const reopened = await session.open(temporary.path);
+      expect(projectOne(reopened.workspace).datasets).toEqual([dataset]);
+      expect(projectOne(reopened.workspace).suites).toEqual([suite]);
+      await session.deleteTestingAsset({ context: context(), target: { kind: "suite", locator: { ...project, suiteId: suite.id } } });
+      await session.deleteTestingAsset({ context: context(), target: { kind: "dataset", locator: { ...project, datasetId: dataset.id } } });
+      expect(projectOne((await session.open(temporary.path)).workspace).datasets).toEqual([]);
+      expect(projectOne(session.workspace!).suites).toEqual([]);
+    } finally { await temporary.dispose(); }
+  });
+  it.each(["method", "node"] as const)("deletes an unrelated workflow sharing a suite case raw ID through the %s entry point", async (entryPoint) => {
+    const temporary = await makeTempRoot();
+    try {
+      const workspace = makeWorkspace();
+      const project = projectOne(workspace);
+      const api = findApi(project, IDS.sharedApi)!;
+      api.cases = [{ ...api.cases[0]!, id: IDS.workflow }];
+      project.workflows[0]!.nodes = [];
+      project.suites = [{ formatVersion: 1, id: uuid(220), name: "case only", tags: [], failFast: false, reporters: ["html"], selection: { kind: "explicit", entries: [{ id: uuid(221), kind: "case", collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi, caseId: IDS.workflow }] } }];
+      await persistWorkspace(temporary.path, workspace);
+      const session = createSession();
+      const before = await session.open(temporary.path);
+      const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, workflowId: IDS.workflow };
+      if (entryPoint === "method") await session.deleteWorkflow(locator);
+      else await session.deleteNode({ kind: "workflow", locator });
+      const after = await session.open(temporary.path);
+      expect(after.revision).not.toBe(before.revision);
+      expect(projectOne(after.workspace).workflows).toEqual([]);
+      expect(projectOne(after.workspace).suites).toEqual(project.suites);
+      expect(after.readOnly).toBe(false);
+      expect(after.problems).toEqual([]);
+    } finally { await temporary.dispose(); }
+  });
+  it("refuses suite-referenced case, workflow and assertion model removal without changing revision", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      const workspace = makeWorkspace();
+      const project = projectOne(workspace);
+      const api = findApi(project, IDS.sharedApi)!;
+      project.workflows[0]!.nodes = [];
+      api.cases[0]!.assertions = [{ id: "schema", target: "bodyJson", op: "schema", options: { schema: { kind: "modelRef", modelId: IDS.model } } }];
+      project.suites = [{ formatVersion: 1, id: uuid(220), name: "saved suite", tags: [], failFast: false, reporters: ["html"], selection: { kind: "explicit", entries: [{ id: uuid(221), kind: "case", collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi, caseId: IDS.sharedCase }, { id: uuid(222), kind: "workflow", workflowId: IDS.workflow }] } }];
+      await persistWorkspace(temporary.path, workspace);
+      const session = createSession();
+      const opened = await session.open(temporary.path);
+      const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+      await expect(session.deleteNode({ kind: "api", locator: { ...locator, collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi } })).rejects.toThrow(/suite/i);
+      await expect(session.deleteNode({ kind: "model", locator: { ...locator, modelId: IDS.model } })).rejects.toThrow(/referenced/i);
+      await expect(session.deleteWorkflow({ ...locator, workflowId: IDS.workflow })).rejects.toThrow(/suite/i);
+      await expect(session.deleteNode({ kind: "workflow", locator: { ...locator, workflowId: IDS.workflow } })).rejects.toThrow(/suite/i);
+      await session.saveWorkflow({ ...locator, workflowId: IDS.workflow }, project.workflows[0]!);
+      expect((await session.open(temporary.path)).revision).toBe(opened.revision);
+    } finally { await temporary.dispose(); }
+  });
   it("reports the absolute root, problems, read-only state, and revision when opening", async () => {
     const temporary = await makeTempRoot();
     try {

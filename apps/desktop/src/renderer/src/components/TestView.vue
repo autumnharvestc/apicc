@@ -9,6 +9,10 @@ import type { createStressStore } from "../stores/stress.js";
 import CasePanel from "./CasePanel.vue";
 import ResponseViewer from "./ResponseViewer.vue";
 import EmptyState from "./EmptyState.vue";
+import DatasetPanel from "./DatasetPanel.vue";
+import SuitePanel from "./SuitePanel.vue";
+import type { TestingStore } from "../stores/testing.js";
+import type { TestingPane } from "../../../shared/testing.js";
 
 /**
  * 测试模块主视图（M11：导航列迁至 TestSidebar——API 栏按模块专用，澄清③）。
@@ -23,11 +27,12 @@ const props = defineProps<{
   cases: ReturnType<typeof useCasesStore>;
   envs: ReturnType<typeof useEnvsStore>;
   stress: ReturnType<typeof createStressStore>;
-  pane: "api-cases" | "scenario";
+  pane: TestingPane;
+  testing?: TestingStore;
   reportError: (e: unknown) => void;
   readOnly?: boolean;
 }>();
-const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
+const emit = defineEmits<{ (e: "stress", caseId: string): void; (e: "locate-evidence", identity: import("@apicc/core").EvidenceIdentity): void }>();
 const { t } = useI18n();
 const requestTab = computed(() => props.editor.activeKey
   ? props.debug.requestTabForSession(props.editor.activeKey) : null);
@@ -40,11 +45,13 @@ const error = computed(() => requestTabState.value ? requestTabState.value.error
 
 <template>
   <section class="test-view" data-testid="test-view">
+    <DatasetPanel v-if="pane === 'datasets' && testing?.current" :testing="testing" />
+    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :testing="testing" @locate-evidence="emit('locate-evidence', $event)" />
     <!-- 单接口用例：用例面板 + 运行结果内嵌上屏 -->
-    <template v-if="pane === 'api-cases'">
+    <template v-else-if="pane === 'api-cases'">
       <EmptyState v-if="!editor.api" :text="t('test.pickApi')" />
       <template v-else>
-        <CasePanel :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" @stress="(caseId: string) => emit('stress', caseId)">
+        <CasePanel :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" @stress="(caseId: string) => emit('stress', caseId)">
           <template #after-cases>
             <div v-if="result" class="result" data-testid="test-result">
               <ResponseViewer :result="result" :sending="sending" :error="error" :tab-state="requestTabState" />

@@ -2,15 +2,28 @@ import { z } from "zod";
 import type { StressTargetPolicy } from "../domain/model.js";
 import type { CaseFailureKind } from "../runner/caseExecutor.js";
 import type { CaseOutcome } from "../report/types.js";
+import type { SafeExecutionEvidence } from "../report/types.js";
+
+const evidencePreviewSchema = z.object({ text: z.string(), truncated: z.boolean(), omitted: z.boolean().optional() }).strict();
+export const SafeExecutionEvidenceSchema: z.ZodType<SafeExecutionEvidence> = z.object({
+  identity: z.object({ projectId: z.string(), definitionRevision: z.string(), locator: z.object({ collectionId: z.string(), folderIds: z.array(z.string()), apiId: z.string(), caseId: z.string(), scope: z.string() }).strict().optional(),
+    suiteRunId: z.string().optional(), entryId: z.string().optional(), suiteRow: z.number().optional(), rowIndex: z.number().optional(), nodeId: z.string().optional(), workflowId: z.string().optional(), environmentId: z.string().optional(), dataDigest: z.string().optional(), datasetId: z.string().optional() }).strict(),
+  state: z.enum(["collected", "not-collected", "omitted"]), truncated: z.boolean(), scriptDiagnostics: z.enum(["existing-assertions-only", "not-collected"]),
+  timings: z.object({ requestMs: z.number(), scriptMs: z.number(), iterationMs: z.number() }).strict().optional(),
+  request: z.object({ protocol: z.string(), method: z.string().optional(), url: evidencePreviewSchema, headers: evidencePreviewSchema, body: evidencePreviewSchema }).strict().optional(),
+  response: z.object({ status: z.number(), headers: evidencePreviewSchema, body: evidencePreviewSchema }).strict().optional(), bodyUnavailable: z.boolean().optional(),
+  assertions: z.array(z.object({ id: evidencePreviewSchema, op: evidencePreviewSchema, selector: evidencePreviewSchema, code: evidencePreviewSchema, pass: z.boolean(), message: evidencePreviewSchema, actual: evidencePreviewSchema.optional(), expected: evidencePreviewSchema.optional(), differencePath: evidencePreviewSchema.optional(), schemaPath: evidencePreviewSchema.optional() }).strict()).optional(),
+  extractions: z.array(z.object({ id: evidencePreviewSchema, name: evidencePreviewSchema, selector: evidencePreviewSchema, status: z.string(), code: evidencePreviewSchema, published: z.boolean(), sensitive: z.boolean(), value: evidencePreviewSchema.optional(), message: evidencePreviewSchema }).strict()).optional(),
+}).strict();
 
 /** Stable business-result categories shared by case execution and stress reports. */
 export type StressFailureKind = CaseFailureKind;
 
 export const STRESS_FAILURE_KINDS: readonly StressFailureKind[] = [
-  "transport", "http", "script", "assertion", "config", "aborted",
+  "transport", "http", "script", "assertion", "extraction", "config", "aborted",
 ];
 
-export type StressFailureCounts = Record<StressFailureKind, number>;
+export type StressFailureCounts = Record<Exclude<StressFailureKind, "extraction">, number> & { extraction?: number };
 
 export interface StressThresholds {
   maxErrorRate?: number;
@@ -116,7 +129,7 @@ export const StressSampleSchema = z.object({
   error: z.string().optional(),
   requestStarted: z.boolean().optional(),
   requestCompleted: z.boolean().optional(),
-  failureKind: z.enum(["transport", "http", "script", "assertion", "config", "aborted"]).optional(),
+  failureKind: z.enum(["transport", "http", "script", "assertion", "extraction", "config", "aborted"]).optional(),
   safety: z.object({
     origin: z.string(), confirmation: z.string(), policy: z.string(), loopback: z.boolean().optional(),
     appliedPolicy: z.object({
@@ -147,6 +160,7 @@ const latencySchema = z.object({
 export const StressFailureCountsSchema = z.object({
   transport: z.number().int().nonnegative(), http: z.number().int().nonnegative(), script: z.number().int().nonnegative(),
   assertion: z.number().int().nonnegative(), config: z.number().int().nonnegative(), aborted: z.number().int().nonnegative(),
+  extraction: z.number().int().nonnegative().default(0),
 }).strict();
 
 const thresholdsSchema = z.object({
@@ -235,6 +249,9 @@ export const StressDistributedSchema = z.object({
 export type StressDistributed = z.infer<typeof StressDistributedSchema>;
 
 export const StressReportSchema = z.object({
+  projectId: z.string().optional(),
+  definitionRevision: z.string().optional(),
+  failureEvidence: z.array(SafeExecutionEvidenceSchema).max(20).optional(),
   concurrency: z.number().int().positive(),
   totalRequests: z.number().int().nonnegative(),
   ok: z.number().int().nonnegative(),
@@ -267,8 +284,8 @@ export const StressReportSchema = z.object({
  * new CLI/worker output must pass this stricter shape before it is emitted.
  */
 export const CurrentStressReportSchema = StressReportSchema.extend({
-  failures: StressFailureCountsSchema,
-  eligibleFailureCounts: StressFailureCountsSchema,
+  failures: StressFailureCountsSchema.extend({ extraction: z.number().int().nonnegative() }),
+  eligibleFailureCounts: StressFailureCountsSchema.extend({ extraction: z.number().int().nonnegative() }),
   scriptLatency: latencySchema,
   iterationLatency: latencySchema,
   verdict: verdictSchema,

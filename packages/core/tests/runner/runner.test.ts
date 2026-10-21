@@ -162,9 +162,9 @@ describe("CollectionRunner", () => {
     expect(result.cases[0]!.error).toContain("press 版被执行");
   });
 
-  it("数据驱动：CSV 每行执行一次并注入运行时变量", async () => {
+  it("B1 数据驱动：BOM quoted newline CSV 每行执行一次并保留真实行号", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-run-"));
-    writeFileSync(join(dir, "data.csv"), "sku\nA1\nB2");
+    writeFileSync(join(dir, "data.csv"), '\ufeffsku\n"A1\nquoted"\nB2');
     const col: LegacyRunnerCollection = {
       id: "c1", name: "c", variables: {}, folders: [],
       apis: [{
@@ -172,7 +172,7 @@ describe("CollectionRunner", () => {
         cases: [{
           id: "t1", name: "row", scope: "base", parameters: {},
           dataDriver: { sourcePath: join(dir, "data.csv"), format: "csv" },
-          postScript: "if (pm.variables.get('sku') === undefined) throw new Error('sku 未注入');",
+          postScript: "if (!['A1\\nquoted', 'B2'].includes(pm.variables.get('sku'))) throw new Error('sku 未正确注入');",
           assertions: [],
         }],
       }],
@@ -180,6 +180,7 @@ describe("CollectionRunner", () => {
     const result = await buildDeps().run(col, env, project, workspace, {});
     expect(result.total).toBe(2);
     expect(result.passed).toBe(2);
+    expect(result.cases.map((outcome) => outcome.row)).toEqual([0, 1]);
   });
 
   it("同一 CollectionRunner 并发运行不同 project.globals 时真实 echo 保持隔离", async () => {

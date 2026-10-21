@@ -1,6 +1,13 @@
-import type { ApiAsset, Environment, ProjectSnapshot } from "@apicc/core";
+import { prepareTestData, testDataSelectionsForRequests, type ApiAsset, type Environment, type ProjectSnapshot, type ProjectExecutionRun, type CredentialRequestSelection } from "@apicc/core";
 import { join, resolve } from "node:path";
 import type { ApiLocator } from "../shared/locations.js";
+
+/** One selected data capture per host invocation, before any runner/VU is dispatched. */
+export async function prepareDesktopTestData<T extends { run: ProjectExecutionRun }>(prepared: T, selections: readonly CredentialRequestSelection[], workspaceRoot: string, environmentId?: string): Promise<T> {
+  const snapshot = prepared.run.snapshot;
+  const preparedTestData = await prepareTestData(snapshot, testDataSelectionsForRequests(snapshot, selections, environmentId), { workspaceRoot });
+  return { ...prepared, run: { ...prepared.run, preparedTestData } };
+}
 
 /** Runtime-neutral helpers for resolving execution data from an immutable snapshot. */
 export function workspaceRunsDir(root: string): string {

@@ -20,6 +20,7 @@ import {
   type DebugResult, type DebugResultSource, type DebugSourceCategory,
 } from "./model.js";
 import { createDebugExchangeCollector, projectDebugResult } from "./projection.js";
+import { createExecutionEvidenceCollector } from "../report/evidence.js";
 
 type DebugAssetInvocation = Exclude<DebugInvocation, { mode: "free" }>;
 type DebugFreeInvocation = Extract<DebugInvocation, { mode: "free" }>;
@@ -271,6 +272,7 @@ export async function runDebugExecution(
   if (preparedRun.snapshot !== plan.snapshot) throw new TypeError("Credential preparation must use the exact debug execution snapshot.");
   const startedAt = new Date().toISOString();
   const collector = createDebugExchangeCollector(options.credentialMarkers ?? []);
+  const evidence = createExecutionEvidenceCollector({ projectId: plan.snapshot.project.id, definitionRevision: plan.sourceProjectRevision, environmentId: plan.invocation.environmentId, dataDigest: preparedRun.preparedTestData?.digest }, options.credentialMarkers ?? []);
   const runner = new CollectionRunner({
     registry: options.registry,
     bus: createEventBus(),
@@ -284,7 +286,7 @@ export async function runDebugExecution(
     ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
     ...(options.httpSession === undefined ? {} : { httpSession: options.httpSession }),
     observeHttp: (event, identity) => collector.observe(event, observationIdentity(plan, identity)),
-    observeCaseExecution: (execution, identity) => collector.observeExecution(execution, observationIdentity(plan, identity)),
+    observeCaseExecution: (execution, identity) => { evidence.observe(execution, identity); collector.addMarkers(evidence.markers()); collector.observeExecution(execution, observationIdentity(plan, identity)); },
   };
   let run: RunResult;
   let containerFailure: CollectionRunError | undefined;
@@ -298,7 +300,7 @@ export async function runDebugExecution(
   const result = projectDebugResult({
     plan,
     runId,
-    run,
+    run: evidence.projectRun(run),
     collector,
     markers: collector.markers(),
     projectionReliable: collector.projectionReliable(),

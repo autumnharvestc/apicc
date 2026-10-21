@@ -116,11 +116,30 @@ export interface AuthProvider {
   apply(request: ExecutableRequest, auth: Exclude<RuntimeAuth, { kind: "none" }>): void;
 }
 
-export interface AssertResult { pass: boolean; message: string }
+export interface AssertResult {
+  pass: boolean; message: string;
+  kind?: "config" | "assertion";
+  code?: string;
+  differencePath?: string;
+  schemaPath?: string;
+}
+export interface AssertOperatorDescriptor {
+  targets?: readonly import("../testing/model.js").ResponseSelector["target"][];
+  expectedFormat?: "text" | "pattern" | "integer" | "json" | "jsonArray" | "xpath" | "none";
+  expectedRequired?: boolean;
+}
+export interface AssertEvaluationContext {
+  found?: boolean;
+  options?: Record<string, import("../contract/schemaNode.js").JsonValue>;
+  assets?: import("../assets/context.js").ProjectAssetContextReadView;
+  schema?: import("../assets/context.js").DeepReadonly<import("../contract/schemaNode.js").SchemaNode>;
+  regex?: import("../assert/regex.js").CompiledRegex;
+}
 
 export interface AssertOperator {
   op: string;
-  evaluate(actual: unknown, expected: string | undefined): AssertResult;
+  descriptor?: AssertOperatorDescriptor;
+  evaluate(actual: unknown, expected: string | undefined, context?: AssertEvaluationContext): AssertResult;
 }
 
 export interface PmVariables { get(name: string): string | undefined; set(name: string, value: string): void }

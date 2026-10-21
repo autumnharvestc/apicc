@@ -170,6 +170,8 @@ export interface TabsStoreDeps {
    * （App 组合根必注入；store 单测可省）。
    */
   confirmWorkflowDraft?: () => Promise<boolean>;
+  confirmTestingDraft?: () => boolean | Promise<boolean>;
+  testingHasDrafts?: (root: string, project: ProjectLocator) => boolean;
   /** 持久化存储（缺省 localStorage；测试注入内存 Storage 隔离）。 */
   storage?: Storage;
 }
@@ -340,6 +342,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
           ? deps.online.activeWorkspaceId === tab.workspaceRef.workspaceId
           : deps.workspace.opened && deps.workspace.root === tab.workspaceRef.dir && !deps.workspace.hasPendingOpen?.());
         const leaving = this.contextTabId === tabId ? null : this.contextTab;
+        if (leaving && deps.confirmTestingDraft && (!(await deps.confirmTestingDraft()) || !isCurrent())) return;
         if (deps.confirmWorkflowDraft && leaving && this.leavingTabHasWorkflowDraft(leaving)) {
           if (!(await deps.confirmWorkflowDraft()) || !isCurrent()) return;
         }
@@ -398,6 +401,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
       projectHasDrafts(tabId: string): boolean {
         const tab = this.tabs.find((t) => t.tabId === tabId);
         if (!tab) return false;
+        if (hasProjectLocator(tab) && deps.testingHasDrafts?.(tab.workspaceRef.dir, tab.projectLocator)) return true;
         if (hasProjectLocator(tab) && deps.requestTabs?.hasProjectDrafts(tab.workspaceRef.dir, tab.projectLocator)) return true;
         const wf = deps.workflowDesign;
         if (wf?.dirty && wf.locator && hasProjectLocator(tab)

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
+import { prepareTestData, testDataSelectionsForRequests } from "../../src/testing/data.js";
 import { createHttpSession } from "../../src/http/session.js";
 import { createDefaultRegistry } from "../../src/shared.js";
 import type { ApiRequest } from "../../src/contract/model.js";
@@ -340,7 +341,8 @@ describe("Core debug service", () => {
       credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} },
     };
 
-    const result = await runDebugExecution(plan, run, {
+    const preparedTestData = await prepareTestData(plan.snapshot, testDataSelectionsForRequests(plan.snapshot, plan.credentialSelections), { workspaceRoot: dir });
+    const result = await runDebugExecution(plan, { ...run, preparedTestData }, {
       registry: createDefaultRegistry(),
       httpSession: createHttpSession(),
       credentialMarkers: ["synthetic-marker"],
@@ -357,7 +359,8 @@ describe("Core debug service", () => {
       snapshot: replayPlan.snapshot,
       credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} },
     };
-    const replayResult = await runDebugExecution(replayPlan, replayRun, {
+    const replayData = await prepareTestData(replayPlan.snapshot, testDataSelectionsForRequests(replayPlan.snapshot, replayPlan.credentialSelections), { workspaceRoot: dir });
+    const replayResult = await runDebugExecution(replayPlan, { ...replayRun, preparedTestData: replayData }, {
       registry: createDefaultRegistry(),
       httpSession: createHttpSession(),
       credentialMarkers: ["synthetic-marker"],
@@ -768,7 +771,8 @@ describe("Core debug service", () => {
       credentialBindings: { resolve: () => { throw new Error("No credentials are used by this test."); }, versions: {} },
     };
 
-    const result = await runDebugExecution(plan, run, { registry });
+    const preparedTestData = await prepareTestData(plan.snapshot, testDataSelectionsForRequests(plan.snapshot, plan.credentialSelections), { workspaceRoot: dir });
+    const result = await runDebugExecution(plan, { ...run, preparedTestData }, { registry });
 
     expect(legacyCalls).toBe(101);
     expect(result.exchanges).toHaveLength(100);

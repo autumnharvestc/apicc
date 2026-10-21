@@ -253,7 +253,11 @@ describe("contract workspace write journal", () => {
     const originalPlan = plan();
     const initial = await commit(root, originalPlan, { expectedRevision: "empty", deletions: [] });
     const before = await filesUnder(root);
-    const changedPlan = plan();
+    const changedWorkspace = ContractWorkspaceSchema.parse(workspaceFixture());
+    const project = changedWorkspace.groups[0]!.projects[0]!;
+    project.datasets = [{ formatVersion: 1, id: "00000000-0000-4000-8000-000000000080", name: "typed", columns: ["v"], rows: [{ v: false }] }];
+    project.suites = [{ formatVersion: 1, id: "00000000-0000-4000-8000-000000000081", name: "suite", tags: [], selection: { kind: "query" }, datasetId: project.datasets[0]!.id, failFast: false, reporters: ["html"] }];
+    const changedPlan = encodeContractWorkspace(changedWorkspace);
     changedPlan.files.set("apicc.workspace.yaml", `${changedPlan.files.get("apicc.workspace.yaml")}\n`);
 
     await expect(commitWritePlan(root, changedPlan, {
