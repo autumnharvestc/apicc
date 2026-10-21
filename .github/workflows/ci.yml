@@ -76,7 +76,9 @@ jobs:
         run: pnpm --filter "!@apicc/core" -r build
       - name: 全部包测试
         # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 core build，序列自洽
-        run: pnpm -r test
+        # 与 scripts/test-all.ps1 保持一致：不让 admin pretest/build 与 Core 争用 CPU，
+        # 并将 worker 上限作为 test 脚本参数传给各包，而非 pnpm 自身参数。
+        run: pnpm -r --workspace-concurrency=1 test --maxWorkers=2
 
   server-test:
     name: 服务端测试（JDK 21）

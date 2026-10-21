@@ -206,6 +206,11 @@ describe("DistributedStressCoordinator", () => {
   it("C1 Fix2 unions successful and unsampled worker markers before complete rich content is clipped", async () => {
     const cutoff = "cutoff-hidden-secret"; const nested = "nested-private-key";
     const encoded = "private/encoded value";
+    // Preserve the real 64-KiB byte boundary, but avoid rewalking 64K ASCII code points
+    // for every retained sample. The complete secret still starts six bytes before it.
+    const bodyPrefix = "rich detail "; const paddingBytes = 65536 - 6 - Buffer.byteLength(bodyPrefix);
+    const responseBody = bodyPrefix + "🙂".repeat(Math.floor(paddingBytes / 4)) + "x".repeat(paddingBytes % 4) + cutoff + ` ${nested} ${encodeURIComponent(encoded)}`;
+    expect(Buffer.byteLength(responseBody.slice(0, responseBody.indexOf(cutoff)))).toBe(65536 - 6);
     const identity = { projectId: "project-passed", definitionRevision: "revision-passed" };
     const { report } = await new DistributedStressCoordinator().run({ apiPath: "/api", caseId: "case", definitionRevision: "r", credentialVersions: {}, networkIdentity: `sha256:${"0".repeat(64)}`, workspaceRoot: "/ws", concurrency: 2, maxIterations: 44 }, {
       shards: 2,
@@ -218,7 +223,7 @@ describe("DistributedStressCoordinator", () => {
             const row = index++; const learns = spec.shardId === "shard-1";
             const passed = learns && row === 21;
             return { request: { protocol: "http", method: "GET", url: `https://example.test/${nested}`, query: [], headers: { business: encoded }, auth: { kind: "none" } },
-              response: { status: 200, headers: {}, bodyText: "rich detail " + "x".repeat(65536 - 6 - 12) + cutoff + ` ${nested} ${encodeURIComponent(encoded)}`, timeMs: 1 },
+              response: { status: 200, headers: {}, bodyText: responseBody, timeMs: 1 },
               outcome: { apiId: "api-passed", caseId: "case-passed", apiName: "public API", caseName: "public case", passed, row, durationMs: 1, assertions: [], error: passed ? undefined : nested, failureKind: passed ? undefined : "assertion" },
               assertionOutcomes: [{ id: "assertion-passed", op: "eq", selector: { target: "bodyText", match: "first", path: nested }, pass: false, code: "ASSERTION_FAILED", message: nested, actual: encoded, expected: "public expected" }],
               extractionOutcomes: learns && row >= 20 ? [{ id: "extract", name: "token", selector: { target: "bodyText", match: "first" }, pass: true, status: "extracted", code: "OK", message: "learned", sensitive: true, published: true, value: passed ? cutoff : { [nested]: [encoded, "passed"] } }] : [],
@@ -235,6 +240,7 @@ describe("DistributedStressCoordinator", () => {
     expect(report.failureEvidence![0]!.request?.protocol).toBe("http");
     const body = report.failureEvidence![0]!.response!.body;
     expect(body.text).toContain("rich detail"); expect(body.text).not.toContain("cutoff"); expect(body.truncated).toBe(true);
+    expect(Buffer.byteLength(body.text)).toBe(65536);
     expect(report.failureEvidence![0]!.assertions![0]!.expected?.text).toBe("public expected");
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain(nested); expect(serialized).not.toContain(encoded); expect(serialized).not.toContain(encodeURIComponent(encoded));
