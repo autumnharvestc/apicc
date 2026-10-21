@@ -922,7 +922,7 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     expect(rows[0]!.textContent).not.toContain("script");
     expect(rows[0]!.textContent).not.toContain("路由条件失败");
     expect(rows[1]!.textContent).toContain("行2");
-    const diagnostic = Array.from(rows).find((row) => row.textContent?.includes("节点诊断"));
+    const diagnostic = Array.from(rows).find((row) => row.textContent?.includes("NON-HTTP entry-diagnostic"));
     expect(diagnostic?.textContent).toContain("script");
     expect(diagnostic?.textContent).toContain("路由条件失败");
   });

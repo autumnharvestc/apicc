@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 注：pinia/vue 响应式需要 DOM 环境，渲染层 store 测试用文件级 pragma 指定 jsdom。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RunResult } from "@apicc/core";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
@@ -75,6 +75,9 @@ describe("run store", () => {
     };
     const first = run.runCollection(root, collectionNode.locator);
     const second = run.runCollection(root, collectionNode.locator); // 运行中被门控忽略
+    expect(run.running).toBe(true);
+    // Collection execution now awaits captured evidence cleanup before entering the API.
+    await vi.waitFor(() => expect(calls).toBe(1));
     release();
     await Promise.all([first, second]);
     expect(calls).toBe(1);

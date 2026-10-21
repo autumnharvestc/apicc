@@ -143,7 +143,8 @@ describe("IPC run 频道", () => {
     const { collection } = await createRunFixture(deps, dir);
     // 不可达地址 → 用例失败但运行本身完成（Runner 语义，与 debug:send 测试同款）
     const run = await deps.handle("run:collection", {}, { locator: collection.locator });
-    if (!run || "kind" in run) throw new Error("Expected collection run result");
+    if (!run) throw new Error("Expected collection run result");
+    expect(run.kind ?? "collection").toBe("collection");
     expect(run.collectionName).toBe("c");
     expect(run.total).toBe(1);
     expect(run.failed).toBe(1);
@@ -154,7 +155,8 @@ describe("IPC run 频道", () => {
     expect(summary.collectionName).toBe("c");
     expect(summary.failed).toBe(1);
     const detail = await deps.handle("runs:get", {}, summary.file);
-    if (!detail || "kind" in detail) throw new Error("Expected collection run detail");
+    if (!detail || detail.kind === "stress") throw new Error("Expected collection run detail");
+    expect(detail.kind ?? "collection").toBe("collection");
     expect(detail.total).toBe(1);
     expect(detail.collectionName).toBe("c");
   });

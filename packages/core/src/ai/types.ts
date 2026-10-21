@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { AssertionSchema, OperationListSchema } from "../domain/common.js";
+import { builtinAssertDescriptors } from "../assert/operators.js";
 
 // M6-A core ai 模块契约面（规格 §2 D1/D3）。core 只认显式传入的 config，
 // 配置解析（env/用户级文件）归宿主（CLI/桌面），密钥永不落工作区。
@@ -37,7 +38,7 @@ export const AiCaseDraftSchema = z.object({
   parameters: z.record(z.string(), z.string()).default({}),
   preOperations: OperationListSchema,
   postOperations: OperationListSchema,
-  assertions: z.array(AssertionSchema).default([]),
+  assertions: z.array(AssertionSchema.refine(assertion => Object.hasOwn(builtinAssertDescriptors, assertion.op), "Unsupported AI assertion operator")).default([]),
 }).strict();
 export type AiCaseDraft = z.output<typeof AiCaseDraftSchema>;
 

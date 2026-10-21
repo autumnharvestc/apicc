@@ -154,12 +154,14 @@ describe("assets store", () => {
       ownerId: firstDetail.api.contract.id,
       path: "contract.request.query[0].componentId",
       targetId: component.id,
+      expectedKind: "parameter",
     });
     expect(references).toContainEqual({
       code: "ASSET_REFERENCE",
       ownerId: secondDetail.api.contract.id,
       path: "contract.request.query[0].componentId",
       targetId: component.id,
+      expectedKind: "parameter",
     });
     expect((await fixture.api.apiGet(fixture.apiLocator)).api.contract.request.query).toContainEqual(expect.objectContaining({ componentId: component.id }));
     expect((await fixture.api.apiGet(secondApi.locator)).api.contract.request.query).toContainEqual(expect.objectContaining({ componentId: component.id }));

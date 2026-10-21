@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { CredentialError, createDefaultRegistry, createProjectSnapshot, createNetworkProfileHost, createOAuthProfileHost, fileStorage, type AuthBinding, type PluginRegistry, type SecretStore, type Workspace } from "@apicc/core";
+import { CredentialError, createDefaultRegistry, createProjectSnapshot, createNetworkProfileHost, createOAuthProfileHost, fileStorage, type AuthBinding, type PluginRegistry, type RunResult, type SecretStore, type Workspace } from "@apicc/core";
 import { createMcpServer } from "../src/mcp/server.js";
 import { prepareExecutionRun, stableCredentialError } from "../src/credentials.js";
 import { formatOAuthActionFailure, runCli as runCliActual, type RunCliDeps } from "../src/main.js";
@@ -523,10 +523,9 @@ describe("contract workspace CLI/MCP consumption", () => {
       expect(workflowCode).toBe(1);
       const workflowFile = readdirSync(runsDir).find((file) => file.startsWith("workflow-") && file.endsWith(".json"));
       if (!workflowFile) throw new Error("workflow consumer report was not written");
-      const workflowReport = JSON.parse(readFileSync(join(runsDir, workflowFile), "utf8")) as {
-        nodeResults: Array<{ nodeId: string; state: string }>;
-      };
-      expect(workflowReport.nodeResults.find((node) => node.nodeId === "settings-node")?.state).toBe("failed");
+      const workflowReport = JSON.parse(readFileSync(join(runsDir, workflowFile), "utf8")) as RunResult;
+      expect(workflowReport.workflow!.entries.find(entry => entry.entryId === "settings-node")?.state).toBe("failed");
+      expect(workflowReport.cases.filter(item => item.nodeId === "settings-node").some(item => !item.passed)).toBe(true);
       expect(observedRequests.map((request) => request.url)).toContain("/cli-settings");
       expect(observedRequests.map((request) => request.url)).not.toContain("/default-settings");
       expect(observedRequests.find((request) => request.url === "/cli-settings")).toMatchObject({

@@ -450,8 +450,8 @@ describe("fileStorage — Task 4 contract file adapter", () => {
       { id: "operation-case-after", type: "script", content: "response.checked = true;" },
     ]);
     expect(loadedCase.assertions).toEqual([
-      { id: "assert-created", target: "status", op: "eq", expected: "201" },
-      { id: "assert-user-id", target: "bodyJson", op: "eq", path: "id", expected: "17" },
+      { id: "assert-created", target: "status", op: "eq", expected: "201", match: "first" },
+      { id: "assert-user-id", target: "bodyJson", op: "eq", path: "id", expected: "17", match: "first" },
     ]);
     expect(loadedProject.components).toEqual(sourceProject.components);
     expect(loaded.revision).toBe(saved.revision);

@@ -165,6 +165,7 @@ describe("Core debug service", () => {
     }];
     const projectBefore = JSON.stringify(project);
     const snapshot = createProjectSnapshot(project);
+    const snapshotBefore = JSON.stringify(snapshot.project);
     const request = requestAt("/free/{{scope}}");
     request.baseUrl = "{{baseUrl}}";
     request.query = [{
@@ -209,9 +210,11 @@ describe("Core debug service", () => {
     expect([...freeUrl.searchParams.entries()].sort()).toEqual([["global", "global-value"], ["scope", "environment-value"]]);
     expect(observedDebugHeaders).toEqual([{ freeScope: "environment-value" }]);
     expect(JSON.stringify(project)).toBe(projectBefore);
-    expect(JSON.stringify(snapshot.project)).toBe(projectBefore);
+    expect(JSON.stringify(snapshot.project)).toBe(snapshotBefore);
     expect(result.mode).toBe("free");
     expect(result.run.total).toBe(1);
+    expect(result.outcomes[0]?.evidence?.identity.projectId).toBe(project.id);
+    expect(JSON.stringify(result)).not.toMatch(/collectionId|apiId|caseId|__debug/);
   });
 
   it("sends a dirty request against an API with no formal cases without changing the source project", async () => {
@@ -741,7 +744,7 @@ describe("Core debug service", () => {
       id: "legacy-rows-case", name: "legacy rows", scope: "base", parameters: {},
       dataDriver: { sourcePath: dataPath, format: "json" },
       preOperations: [],
-      postOperations: [{ id: "echo-cookie-into-assertion", type: "script", content: 'pm.assert(false, pm.response?.headers["set-cookie"] ?? "missing-cookie")' }],
+      postOperations: [{ id: "echo-cookie-into-assertion", type: "script", content: 'pm.assert(false, pm.response?.headers["set-cookie"] ?? pm.response.text())' }],
       assertions: [],
     }];
     const snapshot = createProjectSnapshot(project);
@@ -760,7 +763,7 @@ describe("Core debug service", () => {
         return {
           status: 200,
           headers,
-          bodyText: "ok",
+          bodyText: lateCookie,
           timeMs: 4,
         };
       },
@@ -778,6 +781,9 @@ describe("Core debug service", () => {
     expect(result.exchanges).toHaveLength(100);
     expect(result.exchangeTotal).toBe(101);
     expect(result.outcomes[100]?.assertions).toContainEqual({ pass: false, message: "[REDACTED]" });
+    expect(result.outcomes).toHaveLength(101);
+    expect(result.outcomes[0]?.assertions).toContainEqual({ pass: false, message: "[REDACTED]" });
+    expect(result.exchanges[0]).toMatchObject({ observation: "legacy-text", transportState: "responded", response: { status: 200, body: { kind: "metadata", omittedReason: "unreliable" } } });
     expect(JSON.stringify(result).includes(lateCookie)).toBe(false);
   });
 

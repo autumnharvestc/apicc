@@ -98,6 +98,14 @@ function compile(assertions: Assertion[]) {
 }
 const resolver = () => createVariableResolver({ layers: [] });
 describe("F4 response selection and prepared evaluation", () => {
+  it("adapts legacy rootless property/index assertions without loosening new selectors", () => {
+    const prepared = compile([{ id: "legacy", target: "bodyJson", op: "eq", path: "nested.id", expected: "2" },
+      { id: "legacy-index", target: "bodyJson", op: "eq", path: "values[2]", expected: "0" }]);
+    expect(prepared.diagnostics).toEqual([]);
+    expect(evaluateCaseAssertions(prepared, response, resolver()).map(outcome => outcome.pass)).toEqual([true, true]);
+    expect(() => selectResponseValue({ target: "bodyJson", path: "nested.id", match: "first" }, response)).toThrow(/begin with/);
+    expect(compile([{ id: "new", target: "bodyJson", op: "exists", path: "nested.id" }]).diagnostics[0]).toMatchObject({ kind: "config", code: "SELECTOR_SYNTAX" });
+  });
   it.each([[0, null], [1, false], [2, 0], [3, ""]])("keeps explicit JSON value at %s", (index, value) => {
     expect(selectResponseValue({ target: "bodyJson", path: `$.values[${index}]`, match: "first" }, response)).toMatchObject({ found: true, value });
   });

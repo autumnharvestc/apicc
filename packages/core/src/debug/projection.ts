@@ -541,11 +541,17 @@ function projectOutcome(
 ): DebugResult["outcomes"][number] {
   const apiId = exposeAssetIdentity ? projectScalarIdentity(outcome.apiId, sanitizer, projectionReliable) : undefined;
   const caseId = exposeAssetIdentity ? projectScalarIdentity(outcome.caseId, sanitizer, projectionReliable) : undefined;
+  let evidence = outcome.evidence;
+  if (evidence && !exposeAssetIdentity) {
+    // Free requests use a temporary execution asset, never a navigable persisted resource.
+    const { locator: _temporaryLocator, ...identity } = evidence.identity;
+    evidence = { ...evidence, identity };
+  }
   return {
     ...(apiId === undefined ? {} : { apiId }),
     ...(caseId === undefined ? {} : { caseId }),
     identityAvailable: apiId !== undefined && caseId !== undefined,
-    ...(outcome.evidence === undefined ? {} : { evidence: outcome.evidence }),
+    ...(evidence === undefined ? {} : { evidence }),
     apiName: projectionReliable ? sanitizer.redactText(outcome.apiName) : "[REDACTED]",
     caseName: projectionReliable ? sanitizer.redactText(outcome.caseName) : "[REDACTED]",
     ...(outcome.row === undefined ? {} : { row: outcome.row }),

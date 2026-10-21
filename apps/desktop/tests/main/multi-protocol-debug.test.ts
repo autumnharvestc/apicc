@@ -84,18 +84,20 @@ beforeAll(async () => {
   const emptyState = await import("../../src/renderer/src/components/EmptyState.vue");
   mountComponent = testUtils.mount;
   createI18nInstance = i18n.createI18nInstance;
-  const source = readFileSync(new URL("../../src/renderer/src/components/ResponseViewer.vue", import.meta.url), "utf8");
-  const { descriptor, errors } = compiler.parse(source, { filename: "ResponseViewer.vue" });
-  if (errors.length > 0 || !descriptor.template) throw new Error("Could not parse the ResponseViewer template for the manual DOM harness.");
-  const compiled = compiler.compileScript(descriptor, { id: "manual-response-viewer", inlineTemplate: true });
+  // Both SFCs need this existing client compiler: Node-environment imports yield SSR-only SFCs.
+  const compileClientComponent = (filename: "ResponseViewer.vue" | "CaseEvidencePanel.vue", evidencePanel?: Component): Component => {
+  const source = readFileSync(new URL(`../../src/renderer/src/components/${filename}`, import.meta.url), "utf8");
+  const { descriptor, errors } = compiler.parse(source, { filename });
+  if (errors.length > 0 || !descriptor.template) throw new Error(`Could not parse ${filename} for the manual DOM harness.`);
+  const compiled = compiler.compileScript(descriptor, { id: `manual-${filename}`, inlineTemplate: true });
   const moduleBody = typescript.transpileModule(compiled.content, {
     compilerOptions: { module: typescript.ModuleKind.ESNext, target: typescript.ScriptTarget.ES2022 },
   }).outputText
     .replace(/^\s*import\s+.*?from\s+["'][^"']+["'];?\s*$/gm, "")
     .replace(/export default\s+/, "return ");
   const compileComponent = new Function(
-    "vueRuntime", "vueI18n", "antDesign", "EmptyState",
-    `const { defineComponent: _defineComponent, unref: _unref, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, computed, nextTick, ref, watch } = vueRuntime;
+    "vueRuntime", "vueI18n", "antDesign", "EmptyState", "CaseEvidencePanel",
+    `const { defineComponent: _defineComponent, unref: _unref, Fragment: _Fragment, renderList: _renderList, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, computed, nextTick, ref, watch } = vueRuntime;
 const { useI18n } = vueI18n;
 const { Alert: AAlert, Button: AButton, Input: AInput, Select: ASelect, TabPane: ATabPane, Tabs: ATabs, Tag: ATag, Table: ATable, Typography: ATypography } = antDesign;
 ${moduleBody}`,
@@ -104,8 +106,11 @@ ${moduleBody}`,
     vueI18nRuntime: typeof vueI18n,
     antDesignRuntime: typeof antDesign,
     emptyStateComponent: Component,
+    caseEvidenceComponent?: Component,
   ) => Component;
-  responseViewer = compileComponent(vue, vueI18n, antDesign, emptyState.default);
+  return compileComponent(vue, vueI18n, antDesign, emptyState.default, evidencePanel);
+  };
+  responseViewer = compileClientComponent("ResponseViewer.vue", compileClientComponent("CaseEvidencePanel.vue"));
 
   const websocketServer = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   wss = websocketServer;

@@ -56,7 +56,10 @@ describe("buildImportMergePlan", () => {
     expect(overwritten.summary).toEqual({ added: 1, overwritten: 1, skipped: 0 });
     expect(applied.contract.id).toBe(targetApi.contract.id);
     expect(applied.contract.metadata.name).toBe("incomingUsers");
-    expect(applied.cases).toEqual([localCase]);
+    expect(applied.cases).toEqual([{
+      id: "00000000-0000-4000-8000-000000000101", name: "local regression", scope: "base",
+      parameters: {}, preOperations: [], postOperations: [], assertions: [], tags: [], extractors: [],
+    }]);
     expect(applied.documentation).toBe("Target-owned notes");
     expect(overwritten.project.collections[0]!.apis.map((api) => api.contract.id)).not.toContain(allApis(imported)[1]?.contract.id);
   });

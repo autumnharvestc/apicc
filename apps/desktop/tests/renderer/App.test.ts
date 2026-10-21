@@ -321,7 +321,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       if (!projectCard) throw new Error("Empty project was not rendered on HomeView");
       await projectCard.trigger("click");
       await vi.waitFor(() => expect(wrapper.findAll('[data-testid^="project-tab-"]').some((tab) => tab.text().includes(name))).toBe(true));
-      expect(wrapper.find('[data-testid="request-tab-new-free"]').isVisible()).toBe(true);
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="request-tab-new-free"]').isVisible()).toBe(true));
       await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
       await flushPromises();
       await flushPromises();

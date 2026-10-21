@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ContractProjectSchema } from "@apicc/core";
-import type { ContractProject, Importer, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
+import type { ContractProject, Importer, RunResult, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
 import { createMockConfiguredProject } from "../../../../packages/core/tests/helpers/mockFixtures.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
@@ -721,11 +721,12 @@ describe("工作流 IPC", () => {
     expect(files).toHaveLength(2);
     const runIds = files.map((f) => f.slice(`workflow-${wf.id}-`.length, -".json".length));
     expect(new Set(runIds).size).toBe(2);
-    const reports = files.map((f) => JSON.parse(readFileSync(join(dir, ".apicc", "runs", f), "utf8")) as { workflowId: string; workflowName: string; startedAt: string; nodeResults: Array<{ nodeId: string }> });
+    const reports = files.map((f) => JSON.parse(readFileSync(join(dir, ".apicc", "runs", f), "utf8")) as RunResult);
     expect(reports).toHaveLength(2);
     expect(reports.every((report) => report.workflowId === wf.id)).toBe(true);
-    expect(reports.every((report) => report.nodeResults.some((node) => node.nodeId === "noop"))).toBe(true);
-    expect(reports.map((report) => report.workflowName).sort()).toEqual(["同毫秒乙", "同毫秒甲"].sort());
+    expect(reports.every((report) => report.workflow!.entries.some(entry => entry.entryId === "noop" && entry.state === "noop"))).toBe(true);
+    expect(reports.every((report) => report.total === 0 && report.cases.length === 0 && report.workflow!.total === 1)).toBe(true);
+    expect(reports.map((report) => report.collectionName).sort()).toEqual(["同毫秒乙", "同毫秒甲"].sort());
     expect(reports[0]!.startedAt).toBe(reports[1]!.startedAt);
   });
 

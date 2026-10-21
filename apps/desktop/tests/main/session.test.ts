@@ -539,7 +539,7 @@ describe("createStressController with formal session assets", () => {
       concurrency: 1,
       maxIterations: 1,
       confirmedTargetOrigins: confirmed,
-    })).rejects.toThrow(/missing-rows\.json/);
+    })).rejects.toThrow(/数据源 file:1: 无法读取所选本地文件/);
     expect(created).toBe(0);
     expect(closed).toBe(0);
   });

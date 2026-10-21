@@ -286,7 +286,13 @@ export async function runDebugExecution(
     ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
     ...(options.httpSession === undefined ? {} : { httpSession: options.httpSession }),
     observeHttp: (event, identity) => collector.observe(event, observationIdentity(plan, identity)),
-    observeCaseExecution: (execution, identity) => { evidence.observe(execution, identity); collector.addMarkers(evidence.markers()); collector.observeExecution(execution, observationIdentity(plan, identity)); },
+    observeCaseExecution: (execution, identity) => {
+      evidence.observe(execution, identity);
+      // A legacy response still counts after the display cap, even when its combined
+      // Cookie header cannot provide a complete marker set. Never export a partial set.
+      if (!evidence.boundary().businessUnavailable) collector.addMarkers(evidence.markers());
+      collector.observeExecution(execution, observationIdentity(plan, identity));
+    },
   };
   let run: RunResult;
   let containerFailure: CollectionRunError | undefined;
@@ -303,7 +309,7 @@ export async function runDebugExecution(
     run: evidence.projectRun(run),
     collector,
     markers: collector.markers(),
-    projectionReliable: collector.projectionReliable(),
+    projectionReliable: collector.projectionReliable() && !evidence.boundary().businessUnavailable,
     startedAt,
     finishedAt: new Date().toISOString(),
     ...(containerFailure === undefined ? {} : {

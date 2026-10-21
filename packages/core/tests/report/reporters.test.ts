@@ -39,8 +39,10 @@ describe("C1 final evidence boundary", () => {
     first.outcome.error = "legacy error late-sensitive known-private";
     first.outcome.assertions = [{ pass: false, message: "pm.assert legacy late-sensitive" }];
     first.assertionOutcomes![0]!.expected = "late-sensitive";
+    first.outcome.entryId = "one"; first.outcome.row = 0;
     collector.observe(first, { entryId: "one", rowIndex: 0 });
     const later = execution("later");
+    later.outcome.entryId = "two"; later.outcome.row = 1;
     later.extractionOutcomes = [{ id: "extract", name: "token", selector: { target: "bodyText", match: "first" }, status: "failed", pass: false, published: false, sensitive: true, code: "FAILED", message: "failed", value: sensitiveObject }];
     collector.observe(later, { entryId: "two", rowIndex: 1 });
     const safe = collector.projectRun({ ...sample, cases: [first.outcome, later.outcome] });

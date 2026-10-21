@@ -45,9 +45,10 @@ Write-Host "[GATE] $nodeVersion OK"
 
 Invoke-Checked 'node' @('scripts/check-brand-neutral.mjs', '--self-check')
 Invoke-Checked 'node' @('scripts/check-brand-neutral.mjs')
+Invoke-Checked 'pnpm' @('-C', 'packages/core', 'build')
 Invoke-Checked 'pnpm' @('-C', 'packages/core', 'typecheck')
-Invoke-Checked 'pnpm' @('-r', 'build')
-Invoke-Checked 'pnpm' @('-r', 'test')
+Invoke-Checked 'pnpm' @('--filter', '!@apicc/core', '-r', 'build')
+Invoke-Checked 'pnpm' @('-r', '--workspace-concurrency=1', 'test', '--maxWorkers=2')
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("apicc-maven-gate-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot | Out-Null

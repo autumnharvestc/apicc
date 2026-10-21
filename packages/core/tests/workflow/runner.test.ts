@@ -415,10 +415,14 @@ describe("WorkflowRunner", () => {
     expect(result.skipped).toBe(1);
     expect(result.verdict).toBe("failed");
     const adapted = workflowToRunResult(result);
-    expect(adapted.cases.filter((c) => c.nodeId === "missing-root")).toHaveLength(1);
-    expect(adapted.cases.filter((c) => c.nodeId === "independent")).toMatchObject([{ skipped: true, skipReason: "fail-fast" }]);
-    expect(adapted.failed).toBe(1);
-    expect(adapted.skipped).toBe(1);
+    expect(adapted.cases).toEqual([]);
+    expect(adapted).toMatchObject({ total: 0, passed: 0, failed: 0, skipped: 0 });
+    expect(adapted.workflow).toMatchObject({ total: 2, passed: 0, failed: 1, skipped: 1, verdict: "failed" });
+    expect(adapted.workflow!.entries).toMatchObject([
+      { entryId: "missing-root", status: "failed", failureKind: "config", error: expect.stringMatching(/不存在/) },
+      { entryId: "independent", status: "skipped", skipReason: "fail-fast" },
+    ]);
+    expect(reportingUnits(adapted).summary).toEqual({ total: 1, passed: 0, failed: 1, skipped: 0, entryDiagnostics: 1 });
   });
 
   it("strict=false/failFast=true：活动边上的非根缺失节点同样阻断 HTTP", async () => {
@@ -463,15 +467,15 @@ describe("WorkflowRunner", () => {
     expect(result.warnings.filter((warning) => /不存在/.test(warning))).toHaveLength(1);
     expect(new Set(result.nodeResults.map((node) => node.nodeId)).size).toBe(result.total);
     const adapted = workflowToRunResult(result);
-    expect(adapted.cases.map((c) => c.nodeId).sort()).toEqual(["child", "grandchild", "independent", "missing-root"]);
-    expect(adapted.cases.filter((c) => c.nodeId === "missing-root")).toHaveLength(1);
-    expect(adapted.cases.filter((c) => c.nodeId === "child" || c.nodeId === "grandchild")).toMatchObject([
-      { skipped: true, skipReason: "upstream-failed" },
-      { skipped: true, skipReason: "upstream-failed" },
+    expect(adapted.cases.map((c) => c.nodeId)).toEqual(["independent"]);
+    expect(adapted.workflow).toMatchObject({ total: 4, passed: 1, failed: 1, skipped: 2, verdict: "failed" });
+    expect(adapted.workflow!.entries.find(entry => entry.entryId === "missing-root")).toMatchObject({ status: "failed", failureKind: "config", error: expect.stringMatching(/不存在/) });
+    expect(adapted.workflow!.entries.filter(entry => entry.entryId === "child" || entry.entryId === "grandchild")).toMatchObject([
+      { status: "skipped", skipReason: "upstream-failed" },
+      { status: "skipped", skipReason: "upstream-failed" },
     ]);
-    expect(adapted.cases).toHaveLength(4);
-    expect(adapted.failed).toBe(1);
-    expect(adapted.skipped).toBe(2);
+    expect(adapted).toMatchObject({ total: 1, passed: 1, failed: 0, skipped: 0 });
+    expect(reportingUnits(adapted).summary).toEqual({ total: 2, passed: 1, failed: 1, skipped: 0, entryDiagnostics: 1 });
   });
 
   it("strict=false/failFast=true：假边后的 API/用例缺失可报告但不阻断独立 HTTP", async () => {
@@ -498,16 +502,21 @@ describe("WorkflowRunner", () => {
     expect(result.verdict).toBe("failed");
     expect(result.warnings.filter((warning) => /不存在/.test(warning))).toHaveLength(2);
     const adapted = workflowToRunResult(result);
-    expect(adapted.cases.filter((c) => c.failureKind === "config")).toHaveLength(2);
-    expect(new Set(adapted.cases.map((c) => c.nodeId)).size).toBe(adapted.cases.length);
-    expect(adapted.cases).toHaveLength(4);
+    expect(adapted.cases.map(c => c.nodeId)).toEqual(["independent"]);
+    expect(adapted).toMatchObject({ total: 1, passed: 1, failed: 0, skipped: 0 });
+    expect(adapted.workflow).toMatchObject({ total: 4, passed: 2, failed: 2, skipped: 0, verdict: "failed" });
+    expect(reportingUnits(adapted).diagnostics).toMatchObject([
+      { entryId: "hidden-api", failureKind: "config", error: expect.stringMatching(/不存在/) },
+      { entryId: "hidden-case", failureKind: "config", error: expect.stringMatching(/不存在/) },
+    ]);
+    expect(reportingUnits(adapted).summary).toEqual({ total: 3, passed: 1, failed: 2, skipped: 0, entryDiagnostics: 2 });
   });
 
   // Catch the dequeue path replacing a queued config failure after a later edge fails its source.
   it.each([
     ["API", "ghost"],
     ["case", "a1"],
-  ])("先入队再被条件错误阻断的缺失 %s 保留 config 事实和适配行", async (_kind, apiId) => {
+  ])("先入队再被条件错误阻断的缺失 %s 保留 config 事实和独立诊断", async (_kind, apiId) => {
     seenPaths.length = 0;
     const result = await new WorkflowRunner({ registry: createDefaultRegistry(), resolve, envName: "dev", strict: false, failFast: false })
       .run(wf([
@@ -524,8 +533,7 @@ describe("WorkflowRunner", () => {
       ]), { project, workspace: ws });
     expect(result.nodeResults.find((n) => n.nodeId === "root")).toMatchObject({ state: "failed", failureKind: "script" });
     const missing = result.nodeResults.find((n) => n.nodeId === "missing");
-    expect(missing).toMatchObject({ state: "failed", failureKind: "config", outcomes: [{ passed: false, failureKind: "config" }] });
-    expect(missing?.outcomes).toHaveLength(1);
+    expect(missing).toMatchObject({ state: "failed", failureKind: "config", outcomes: [], error: expect.stringMatching(/不存在/) });
     expect(missing?.skipReason).toBeUndefined();
     for (const nodeId of ["sink", "child", "grandchild"]) {
       expect(result.nodeResults.find((n) => n.nodeId === nodeId)).toMatchObject({ state: "skipped", skipReason: "upstream-failed" });
@@ -537,10 +545,15 @@ describe("WorkflowRunner", () => {
     expect(result.warnings.filter((warning) => /条件求值失败/.test(warning))).toHaveLength(1);
     expect(result.warnings).toHaveLength(2);
     const adapted = workflowToRunResult(result);
-    expect(adapted).toMatchObject({ total: 5, passed: 0, failed: 2, skipped: 3 });
-    expect(adapted.cases.filter((c) => c.nodeId === "missing")).toMatchObject([{ passed: false, failureKind: "config" }]);
-    expect(adapted.cases.filter((c) => c.failureKind === "script")).toHaveLength(1);
-    expect(new Set(adapted.cases.map((c) => c.nodeId)).size).toBe(5);
+    expect(adapted).toMatchObject({ total: 0, passed: 0, failed: 0, skipped: 0, cases: [] });
+    expect(adapted.workflow).toMatchObject({ total: 5, passed: 0, failed: 2, skipped: 3, verdict: "failed" });
+    expect(adapted.workflow!.entries.filter(entry => entry.status === "skipped")).toHaveLength(3);
+    expect(reportingUnits(adapted).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entryId: "missing", failureKind: "config", error: expect.stringMatching(/不存在/) }),
+      expect.objectContaining({ entryId: "root", failureKind: "script", error: expect.stringMatching(/条件求值失败/) }),
+    ]));
+    expect(reportingUnits(adapted).summary).toEqual({ total: 2, passed: 0, failed: 2, skipped: 0, entryDiagnostics: 2 });
+    expect(new Set(adapted.workflow!.entries.map(entry => entry.entryId)).size).toBe(5);
   });
 
   // Catch late materialization leaving hidden config descendants unreachable, or stopping independent work.
@@ -564,7 +577,7 @@ describe("WorkflowRunner", () => {
         { id: "also-pruned", from: "root", to: "child", condition: "false" },
         { id: "grandchild-edge", from: "child", to: "grandchild" },
       ]), { project, workspace: ws });
-    expect(result.nodeResults.find((n) => n.nodeId === "missing")).toMatchObject({ state: "failed", failureKind: "config", outcomes: [{ passed: false, failureKind: "config" }] });
+    expect(result.nodeResults.find((n) => n.nodeId === "missing")).toMatchObject({ state: "failed", failureKind: "config", outcomes: [], error: expect.stringMatching(/不存在/) });
     for (const nodeId of ["child", "grandchild"]) {
       expect(result.nodeResults.find((n) => n.nodeId === nodeId)).toMatchObject({ state: "skipped", skipReason: "upstream-failed" });
     }
@@ -576,12 +589,15 @@ describe("WorkflowRunner", () => {
     expect(result.warnings.filter((warning) => /孤立节点/.test(warning))).toHaveLength(1);
     expect(result.warnings).toHaveLength(2);
     const adapted = workflowToRunResult(result);
-    expect(adapted).toMatchObject({ total: 5, passed: 2, failed: 1, skipped: 2 });
-    expect(adapted.cases.filter((c) => c.nodeId === "missing")).toMatchObject([{ passed: false, failureKind: "config" }]);
-    expect(adapted.cases.filter((c) => c.skipped)).toMatchObject([
-      { skipReason: "upstream-failed" }, { skipReason: "upstream-failed" },
+    expect(adapted).toMatchObject({ total: 1, passed: 1, failed: 0, skipped: 0 });
+    expect(adapted.cases.map(c => c.nodeId)).toEqual(["independent"]);
+    expect(adapted.workflow).toMatchObject({ total: 5, passed: 2, failed: 1, skipped: 2, verdict: "failed" });
+    expect(adapted.workflow!.entries.filter(entry => entry.status === "skipped")).toMatchObject([
+      { entryId: "grandchild", skipReason: "upstream-failed" }, { entryId: "child", skipReason: "upstream-failed" },
     ]);
-    expect(new Set(adapted.cases.map((c) => c.nodeId)).size).toBe(5);
+    expect(reportingUnits(adapted).diagnostics).toMatchObject([{ entryId: "missing", failureKind: "config", error: expect.stringMatching(/不存在/) }]);
+    expect(reportingUnits(adapted).summary).toEqual({ total: 2, passed: 1, failed: 1, skipped: 0, entryDiagnostics: 1 });
+    expect(new Set(adapted.workflow!.entries.map(entry => entry.entryId)).size).toBe(5);
   });
 
   // A hidden config diagnostic must not settle an unresolved valid alternate path.
@@ -604,8 +620,12 @@ describe("WorkflowRunner", () => {
     expect(result.nodeResults.filter((n) => n.nodeId === "join")).toMatchObject([{ state: "passed" }]);
     expect(result).toMatchObject({ total: 4, passed: 3, failed: 1, skipped: 0, verdict: "failed" });
     const adapted = workflowToRunResult(result);
-    expect(adapted).toMatchObject({ total: 4, passed: 3, failed: 1, skipped: 0 });
-    expect(new Set(adapted.cases.map((c) => c.nodeId)).size).toBe(4);
+    expect(adapted).toMatchObject({ total: 2, passed: 2, failed: 0, skipped: 0 });
+    expect(adapted.cases.map(c => c.nodeId).sort()).toEqual(["alternate", "join"]);
+    expect(adapted.workflow).toMatchObject({ total: 4, passed: 3, failed: 1, skipped: 0, verdict: "failed" });
+    expect(new Set(adapted.workflow!.entries.map(entry => entry.entryId)).size).toBe(4);
+    expect(reportingUnits(adapted).diagnostics).toMatchObject([{ entryId: "missing", failureKind: "config", error: expect.stringMatching(/不存在/) }]);
+    expect(reportingUnits(adapted).summary).toEqual({ total: 3, passed: 2, failed: 1, skipped: 0, entryDiagnostics: 1 });
   });
 
   it("strict=false 隐藏在条件剪枝和上游失败后的缺失引用仍保持 failed/config", async () => {
