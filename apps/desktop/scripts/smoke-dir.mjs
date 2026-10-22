@@ -12,6 +12,7 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { waitForRendererReady } from "./smoke-readiness.mjs";
 
 const desktopDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -31,7 +32,6 @@ const exePath = explicitExe
 const PRODUCT_NAME = "apicc";
 const ALIVE_WAIT_MS = 8_000;
 const CDP_TIMEOUT_MS = 20_000;
-const CDP_INTERVAL_MS = 500;
 
 const failures = [];
 const ok = (msg) => console.log(`[OK]   ${msg}`);
@@ -113,84 +113,95 @@ try {
   } else {
     const deadline = Date.now() + CDP_TIMEOUT_MS;
     let targets = null;
-    let cdpError = "";
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/json/list`);
-        const list = (await res.json()).filter((t) => t.type === "page");
-        const page = list.find((t) => String(t.url).includes("dist-renderer/index.html"));
-        if (page) {
-          targets = page;
-          break;
-        }
-      } catch (e) {
-        cdpError = e instanceof Error ? e.message : String(e);
-      }
-      await sleep(CDP_INTERVAL_MS);
-    }
-    if (!targets) {
-      fail(`${CDP_TIMEOUT_MS / 1000}s 内未在 CDP 发现 dist-renderer 页面${cdpError ? `（${cdpError}）` : ""}`);
-    } else {
-      ok(`CDP 已发现 renderer 页面：url=${targets.url}`);
+    let ws;
+    const readinessTimeout = () => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("CDP 就绪预算已耗尽");
+      return Math.min(5000, remaining);
+    };
+    const documentExpression = `({ url: location.href, readyState: document.readyState,
+      title: document.title, children: document.querySelector('#app')?.children.length ?? -1 })`;
       // —— 4. 挂载非空：title 只证 index.html，渲染层模块求值崩溃（如 native 面误入渲染
       // bundle）会让 #app 空白而 title 照常——本检查由 2026-09-06 用户白屏报告引入。
       try {
-        const ws = new WebSocket(targets.webSocketDebuggerUrl);
-        await new Promise((r, j) => {
-          ws.onopen = r;
-          ws.onerror = () => j(new Error("CDP WebSocket 连接失败"));
-        });
         let mid = 0;
         const pending = new Map();
-        ws.onmessage = (ev) => {
-          const m = JSON.parse(ev.data);
-          if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-        };
-        const send = (method, params = {}) =>
+        const send = (method, params = {}, timeoutMs = 5000) =>
           new Promise((resolve, reject) => {
             const myId = ++mid;
-            pending.set(myId, resolve);
-            ws.send(JSON.stringify({ id: myId, method, params }));
-            setTimeout(() => {
+            const timer = setTimeout(() => {
               if (pending.has(myId)) { pending.delete(myId); reject(new Error("CDP evaluate 超时")); }
-            }, 5000);
+            }, timeoutMs);
+            pending.set(myId, (message) => {
+              clearTimeout(timer);
+              if (message.error) reject(Object.assign(new Error(JSON.stringify(message.error)), { code: "ERR_CDP_PROTOCOL" }));
+              else resolve(message);
+            });
+            try { ws.send(JSON.stringify({ id: myId, method, params })); }
+            catch (error) { clearTimeout(timer); pending.delete(myId); reject(error); }
           });
-        await send("Runtime.enable");
-        const titleResult = await send("Runtime.evaluate", {
-          expression: "document.title",
-          returnByValue: true,
+        await waitForRendererReady({
+          deadline,
+          isAlive: () => child.exitCode === null && child.signalCode === null,
+          observe: async (budget) => {
+            if (!targets) {
+              const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(budget) });
+              const list = (await res.json()).filter((t) => t.type === "page");
+              targets = list.find((t) => String(t.url).includes("dist-renderer/index.html"));
+              if (!targets) return null;
+              ok(`CDP 已发现 renderer 页面：url=${targets.url}`);
+            }
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+              ws?.close();
+              const connectionTimeout = readinessTimeout();
+              ws = new WebSocket(targets.webSocketDebuggerUrl);
+              await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error("CDP WebSocket 连接超时")), connectionTimeout);
+                ws.onopen = () => { clearTimeout(timer); resolve(); };
+                ws.onerror = () => { clearTimeout(timer); reject(new Error("CDP WebSocket 连接失败")); };
+              });
+              ws.onmessage = (ev) => {
+                const message = JSON.parse(ev.data);
+                if (message.id && pending.has(message.id)) {
+                  pending.get(message.id)(message);
+                  pending.delete(message.id);
+                }
+              };
+              await send("Runtime.enable", {}, readinessTimeout());
+            }
+            const result = await send("Runtime.evaluate", {
+              expression: documentExpression,
+              returnByValue: true,
+            }, readinessTimeout());
+            if (result.result?.exceptionDetails) throw new Error(JSON.stringify(result.result.exceptionDetails));
+            return result.result?.result?.value;
+          },
         });
-        const documentTitle = titleResult.result?.result?.value;
-        if (typeof documentTitle === "string" && documentTitle.toLowerCase().includes(PRODUCT_NAME.toLowerCase())) {
-          ok(`renderer 加载成功：document.title="${documentTitle}" url=${targets.url}`);
-        } else {
-          fail(`renderer document.title="${String(documentTitle ?? "")}" 不含 "${PRODUCT_NAME}"`);
-        }
-        try {
-          const window = await send("Browser.getWindowForTarget");
-          await send("Browser.setWindowBounds", { windowId: window.windowId, bounds: { windowState: "minimized" } });
-          ok("CDP 已将自动冒烟窗口最小化（windowsHide 仅隐藏进程控制台）");
-        } catch (e) {
-          fail(`CDP 窗口最小化未执行：${e instanceof Error ? e.message : String(e)}`);
-        }
         await sleep(Math.max(0, ALIVE_WAIT_MS - (Date.now() - startedAt)));
         if (child.exitCode === null && child.pid) ok(`存活至少 ${ALIVE_WAIT_MS / 1000}s（pid=${child.pid}，exitCode=null）`);
         else fail(`进程提前退出（exitCode=${child.exitCode}，signal=${child.signalCode}）`);
         const r = await send("Runtime.evaluate", {
-          expression: "document.querySelector('#app')?.children.length ?? -1",
+          expression: documentExpression,
           returnByValue: true,
         });
-        const children = r.result?.result?.value;
+        const finalDocument = r.result?.result?.value;
+        const documentTitle = finalDocument?.title;
+        if (typeof documentTitle === "string" && documentTitle.toLowerCase().includes(PRODUCT_NAME.toLowerCase())) {
+          ok(`renderer 加载成功：document.title="${documentTitle}" url=${finalDocument.url}`);
+        } else {
+          fail(`renderer document.title="${String(documentTitle ?? "")}" 不含 "${PRODUCT_NAME}"`);
+        }
+        const children = finalDocument?.children;
         if (typeof children === "number" && children > 0) {
           ok(`renderer 挂载非空：#app 子元素 ${children} 个`);
         } else {
           fail(`renderer 挂载为空（#app 子元素 ${children}）——渲染层模块求值期崩溃`);
         }
-        ws.close();
       } catch (e) {
         fail(`挂载非空检查未执行：${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        ws?.close();
       }
-    }
   }
 } finally {
   settled = true;
