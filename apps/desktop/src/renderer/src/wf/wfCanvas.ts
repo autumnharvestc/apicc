@@ -1,4 +1,9 @@
 import type { NodeResult, NodeState, Workflow, WorkflowEdge, WorkflowNode, WorkflowRunResult } from "@apicc/core";
+import { WorkflowSchema } from "@apicc/core/schema";
+
+// Validate version-specific edits while preserving references of untouched canvas nodes.
+function assertWorkflowEdit(value: unknown): asserts value is Workflow { WorkflowSchema.parse(value); }
+function checkedWorkflowEdit(value: unknown): Workflow { assertWorkflowEdit(value); return value; }
 
 /**
  * 工作流画布纯函数数据层（M2-B 任务 3，TDD 主战场）：Workflow ↔ Vue Flow 元素
@@ -48,6 +53,7 @@ export interface WfFlowEdge {
   id: string;
   source: string;
   target: string;
+  sourceHandle?: string;
   type: "wfEdge";
   data: WfEdgeData;
 }
@@ -120,8 +126,9 @@ export function toFlowElements(
       id: edge.id,
       source: edge.from,
       target: edge.to,
+      sourceHandle: "port" in edge ? edge.port : undefined,
       type: "wfEdge" as const,
-      data: { condition: edge.condition, edge },
+      data: { condition: "condition" in edge ? edge.condition : undefined, edge },
     })),
   };
 }
@@ -134,16 +141,16 @@ function defaultPosition(index: number): { x: number; y: number } {
 /** 追加节点（不可变）：position 缺省时按网格摆放补齐，不改动入参 node。 */
 export function applyNodeAdd(workflow: Workflow, node: WorkflowNode): Workflow {
   const position = node.position ?? defaultPosition(workflow.nodes.length);
-  return { ...workflow, nodes: [...workflow.nodes, { ...node, position }] };
+  return checkedWorkflowEdit({ ...workflow, nodes: [...workflow.nodes, { ...node, position }] });
 }
 
 /** 移除节点并级联移除其关联边（不可变）；id 未命中时等价于仅换缓冲引用。 */
 export function applyNodeRemove(workflow: Workflow, nodeId: string): Workflow {
-  return {
+  return checkedWorkflowEdit({
     ...workflow,
     nodes: workflow.nodes.filter((n) => n.id !== nodeId),
     edges: workflow.edges.filter((e) => e.from !== nodeId && e.to !== nodeId),
-  };
+  });
 }
 
 /** 画布连线入参（Vue Flow @connect 事件形状；condition 由属性面板后续编辑补写）。 */
@@ -151,6 +158,7 @@ export interface WfEdgeAddInput {
   source: string;
   target: string;
   condition?: string;
+  port?: "true" | "false";
 }
 
 /**
@@ -169,32 +177,58 @@ export function applyEdgeAdd(workflow: Workflow, input: WfEdgeAddInput): Workflo
     (e) =>
       e.from === input.source &&
       e.to === input.target &&
-      (e.condition === input.condition || e.condition === undefined || input.condition === undefined),
+      (workflow.executionVersion === 2 ? ("port" in e ? e.port : undefined) === input.port
+        : (("condition" in e ? e.condition : undefined) === input.condition || !("condition" in e) || e.condition === undefined || input.condition === undefined)),
   );
   if (duplicate) {
     throw new Error(`边已存在: ${input.source} → ${input.target}（同 from-to-condition 的边不可重复创建）`);
   }
   const edge: WorkflowEdge = { id: crypto.randomUUID(), from: input.source, to: input.target };
+  if (workflow.executionVersion === 2 && input.port) edge.port = input.port;
   if (input.condition !== undefined) edge.condition = input.condition;
-  return { ...workflow, edges: [...workflow.edges, edge] };
+  return checkedWorkflowEdit({ ...workflow, edges: [...workflow.edges, edge] });
 }
 
 /** 按 id 移除边（不可变）；id 未命中时等价于仅换缓冲引用。 */
 export function applyEdgeRemove(workflow: Workflow, edgeId: string): Workflow {
-  return { ...workflow, edges: workflow.edges.filter((e) => e.id !== edgeId) };
+  return checkedWorkflowEdit({ ...workflow, edges: workflow.edges.filter((e) => e.id !== edgeId) });
 }
 
 // —— 任务 4：属性面板/拖拽写回的编辑变换（WfDesigner 薄壳消费，全部不可变） ——
 
 /** 属性面板可编辑的节点属性子集（画布不触达 id）。 */
-export type WfNodePatch = Partial<Pick<WorkflowNode, "label" | "kind" | "apiId" | "caseId">>;
+export type WfNodePatch = { [K in WorkflowNode["kind"]]: Partial<Omit<Extract<WorkflowNode, { kind: K }>, "id" | "position">> }[WorkflowNode["kind"]];
+
+/** Each kind starts with a schema-valid payload; unfinished graph references remain draft findings. */
+export function createDesignerNode(kind: WorkflowNode["kind"], workflowId: string): WorkflowNode {
+  const base = { id: crypto.randomUUID(), kind };
+  const predicate = { op: "eq" as const, left: { kind: "ref" as const, source: "vars" as const, path: [] }, right: { kind: "literal" as const, value: true } };
+  switch (kind) {
+    case "assign": return { ...base, kind, assignments: {} };
+    case "delay": return { ...base, kind, delayMs: 0 };
+    case "assert": case "condition": return { ...base, kind, predicate };
+    case "subflow": return { ...base, kind, workflowId, inputs: {}, outputs: {} };
+    case "loop": return { ...base, kind, workflowId, inputs: {}, outputs: {}, count: 1, maxIterations: 100 };
+    case "parallel": return { ...base, kind, join: "all", branches: [1, 2].map(() => ({ id: crypto.randomUUID(), workflowId, inputs: {}, outputs: {} })) };
+    default: return { ...base, kind };
+  }
+}
+
+export function applyEdgePort(workflow: Workflow, edgeId: string, port?: "true" | "false"): Workflow {
+  return checkedWorkflowEdit({ ...workflow, edges: workflow.edges.map(edge => {
+    if (edge.id !== edgeId) return edge;
+    const next: WorkflowEdge = { ...edge }; delete next.port;
+    if (port) next.port = port;
+    return next;
+  }) });
+}
 
 /** 合并节点属性（不可变）：patch 键覆盖原值，未命中 id 时等价于仅换缓冲引用。 */
 export function applyNodeUpdate(workflow: Workflow, nodeId: string, patch: WfNodePatch): Workflow {
-  return {
+  return checkedWorkflowEdit({
     ...workflow,
     nodes: workflow.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)),
-  };
+  });
 }
 
 /**
@@ -203,24 +237,25 @@ export function applyNodeUpdate(workflow: Workflow, nodeId: string, patch: WfNod
  * position 脱离画布引用，后续原地拖拽不再悄悄改写已保存快照比对所依赖的数据。
  */
 export function applyNodeMove(workflow: Workflow, nodeId: string, position: { x: number; y: number }): Workflow {
-  return {
+  return checkedWorkflowEdit({
     ...workflow,
     nodes: workflow.nodes.map((n) =>
       n.id === nodeId ? { ...n, position: { x: position.x, y: position.y } } : n,
     ),
-  };
+  });
 }
 
 /** 写回边条件（不可变）：空串/undefined 清除 condition 键（对齐模型的 optional 语义）。 */
 export function applyEdgeCondition(workflow: Workflow, edgeId: string, condition: string | undefined): Workflow {
   const text = condition?.trim();
-  return {
+  return checkedWorkflowEdit({
     ...workflow,
     edges: workflow.edges.map((e) => {
       if (e.id !== edgeId) return e;
-      const next: WorkflowEdge = { id: e.id, from: e.from, to: e.to };
+      const next: WorkflowEdge = { ...e };
+      delete next.condition;
       if (text) next.condition = text;
       return next;
     }),
-  };
+  });
 }

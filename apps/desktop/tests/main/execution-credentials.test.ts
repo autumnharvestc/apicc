@@ -118,6 +118,27 @@ function waitForNextRequest(): Promise<ObservedRequest> {
 }
 
 describe("desktop execution credential wiring", () => {
+  it("prepares nested workflow credentials once for ordinary IPC and evidence reruns", async () => {
+    const { session, credentials, secretStore, temp, networkPrivateRoot } = await setup();
+    try {
+      const workspace = session.workspace!; const project = projectOne(workspace); const asset = findApi(project, IDS.deepApi)!;
+      const childId = uuid(94); const parentId = uuid(95);
+      project.workflows.push({ id: childId, name: "child", status: "enabled", nodes: [{ id: "request", kind: "request", apiId: IDS.deepApi, caseId: asset.cases[0]!.id }], edges: [] });
+      project.workflows.push(Core.WorkflowSchema.parse({ id: parentId, name: "parent", status: "enabled", executionVersion: 2, nodes: [{ id: "twice", kind: "loop", workflowId: childId, count: 2, inputs: {}, outputs: {} }], edges: [] }));
+      await fileStorage.save(temp.path, Core.ContractWorkspaceSchema.parse(workspace), { expectedRevision: session.revision!, deletions: [] }); await session.open(temp.path);
+      const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "", credentials: { secretStore: secretStore.store, networkPrivateRoot } });
+      const locator = { workspaceId: LOCATOR.workspaceId, groupId: LOCATOR.groupId, projectId: LOCATOR.projectId, workflowId: parentId };
+      const ordinary = await deps.handle(IpcChannel.WfRun, null, { locator, envName: "dev", strict: true }) as Core.WorkflowRunResult;
+      expect(ordinary.verdict).toBe("passed");
+      expect(secretStore.calls.filter((call) => call.method === "resolve")).toHaveLength(1);
+      const testing = createTestingController(session, async () => createDefaultRegistry(), credentials, { render: false, persist: (_path, value) => ({ value }) });
+      const identity = { projectId: IDS.projectOne, definitionRevision: "old", workflowId: parentId, entryId: "twice", rowIndex: 0 };
+      const rerun = await testing.rerunEvidence({ invocationId: crypto.randomUUID(), context: { root: temp.path, project: { workspaceId: LOCATOR.workspaceId, groupId: LOCATOR.groupId, projectId: LOCATOR.projectId }, revision: session.revision! }, identity });
+      expect(rerun.cases).toHaveLength(2);
+      expect(secretStore.calls.filter((call) => call.method === "resolve")).toHaveLength(2);
+      expect(JSON.stringify([ordinary, rerun])).not.toContain(SECRET);
+    } finally { await temp.dispose(); }
+  });
   it("G reruns a suite data row and its string-ID workflow with current evidence and visible persistence warnings", async () => {
     const { session, credentials, temp } = await setup();
     try {

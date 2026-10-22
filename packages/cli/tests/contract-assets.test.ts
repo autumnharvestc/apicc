@@ -11,6 +11,7 @@ import { createMcpServer } from "../src/mcp/server.js";
 import { prepareExecutionRun, stableCredentialError } from "../src/credentials.js";
 import { formatOAuthActionFailure, runCli as runCliActual, type RunCliDeps } from "../src/main.js";
 import { spawnOwnedCliProcess } from "./helpers/ownedCliProcess.js";
+import { workflowReportScenarios } from "../../core/tests/helpers/contractExecutionFixtures.js";
 
 const groupA = "00000000-0000-4000-8000-000000000002";
 const groupB = "00000000-0000-4000-8000-000000000003";
@@ -234,6 +235,133 @@ afterAll(async () => {
 });
 
 describe("contract workspace CLI/MCP consumption", () => {
+  it("keeps retry OR and recover CLI exits and JSON HTML JUnit verdicts consistent", async () => {
+    const ws = workspace(); const project = ws.groups[0]!.projects[0]!; project.workflows = workflowReportScenarios(deepApiId, caseId);
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-c1-report-cli-")); const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, ws, { expectedRevision: initial.revision, deletions: [] });
+    const previousCwd = process.cwd(); const selected = createDefaultRegistry(); let calls = 0;
+    selected.registerProtocol({ name: "http", canHandle: () => true, execute: async () => { if (++calls !== 2) throw new Error("transport failure"); return { status: 200, headers: {}, bodyText: "", timeMs: 0 }; } });
+    try {
+      process.chdir(fixtureRoot);
+      for (const flow of project.workflows.slice(0, 3)) {
+        const out = join(fixtureRoot, ".apicc", flow.name);
+        expect(await runCli(["run-workflow", `groups/${groupA}/projects/${projectId}/workflows/${flow.id}`, "--runs-dir", out, "--reporters", "html,junit"], selected, () => {}, { loadPlugins: false })).toBe(0);
+        const files = readdirSync(out); const report = JSON.parse(readFileSync(join(out, files.find((file) => file.endsWith(".json"))!), "utf8")) as RunResult;
+        expect(report.workflow?.verdict).toBe("passed"); expect(report.reportingUnits).toMatchObject({ total: 1, passed: 1, failed: 0 });
+        if (flow.name !== "or") expect(report.cases.some((row) => !row.passed)).toBe(true);
+        expect(readFileSync(join(out, files.find((file) => file.endsWith(".xml"))!), "utf8")).toContain('tests="1" failures="0"');
+        expect(readFileSync(join(out, files.find((file) => file.endsWith(".html"))!), "utf8")).toContain("workflow-invocation-v2");
+      }
+      selected.registerReporter({ format: "broken", render: async () => { throw new Error("private renderer error"); } });
+      const out = join(fixtureRoot, ".apicc", "broken");
+      expect(await runCli(["run-workflow", `groups/${groupA}/projects/${projectId}/workflows/${project.workflows[1]!.id}`, "--runs-dir", out, "--reporters", "broken"], selected, () => {}, { loadPlugins: false })).toBe(1);
+      expect(readdirSync(out).some((file) => file.endsWith(".json"))).toBe(true);
+    } finally { process.exitCode = 0; process.chdir(previousCwd); rmSync(fixtureRoot, { recursive: true, force: true }); }
+  });
+  it("validates workflow run inputs before credentials and cancels through signals with safe partial JSON", async () => {
+    const core = await import("@apicc/core"); const ws = workspace(); const project = ws.groups[0]!.projects[0]!;
+    project.collections[0]!.folders[0]!.folders[0]!.apis[0]!.contract.request.auth = { kind: "bearer", token: { id: "cancel-prepare", policy: "test-auto" } };
+    const id = "00000000-0000-4000-8000-000000000096";
+    project.workflows = [core.WorkflowSchema.parse({ id, name: "C1", status: "enabled", executionVersion: 2, inputs: { required: { required: true } },
+      nodes: [{ id: "request", kind: "request", apiId: deepApiId, caseId }], edges: [] })];
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-c1-cli-")); const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, ws, { expectedRevision: initial.revision, deletions: [] });
+    const previousCwd = process.cwd(); const out = join(fixtureRoot, ".apicc", "runs");
+    const args = ["run-workflow", `groups/${groupA}/projects/${projectId}/workflows/${id}`, "--runs-dir", out];
+    const selected = createDefaultRegistry(); let calls = 0; let release!: () => void; let entered!: () => void;
+    let preparationAbort = false; let preparationReject = false;
+    const secretStore: SecretStore = { async put() {}, async remove() {}, async status() { return "available"; }, async resolve() { return "safe-preparation-secret"; }, async version() { if (preparationAbort) { preparationAbort = false; process.emit("SIGTERM"); } if (preparationReject) throw new Error("private-preparation-failure"); return "one"; } };
+    const started = new Promise<void>((resolve) => { entered = resolve; }); const pending = new Promise<void>((resolve) => { release = resolve; });
+    selected.registerProtocol({ name: "http", canHandle: () => true, execute: async () => { calls++; entered(); await pending; return { status: 200, headers: {}, bodyText: "", timeMs: 0 }; } });
+    try {
+      process.chdir(fixtureRoot);
+      await expect(runCli([...args, "--inputs", "{}"], selected, () => {}, { loadPlugins: false })).rejects.toThrow(/input/);
+      await expect(runCli([...args, "--inputs", '{"required":1}', "--concurrency", "33"], selected, () => {}, { loadPlugins: false })).rejects.toThrow();
+      expect(calls).toBe(0);
+      preparationAbort = true; const beforeRequestOut = join(fixtureRoot, ".apicc", "preparation-abort");
+      expect(await runCli([...args, "--inputs", '{"required":1}', "--runs-dir", beforeRequestOut], selected, () => {}, { loadPlugins: false, secretStore })).toBe(1);
+      const beforeRequestReport = JSON.parse(readFileSync(join(beforeRequestOut, readdirSync(beforeRequestOut).find((file) => file.endsWith(".json"))!), "utf8")) as RunResult;
+      expect(beforeRequestReport.workflow?.verdict).toBe("aborted"); expect(beforeRequestReport.cases).toEqual([]); expect(calls).toBe(0);
+      const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+      preparationAbort = preparationReject = true;
+      const rejectedOut = join(fixtureRoot, ".apicc", "rejected-preparation-abort");
+      expect(await runCli([...args, "--inputs", '{"required":1}', "--runs-dir", rejectedOut], selected, () => {}, { loadPlugins: false, secretStore })).toBe(1);
+      const rejectedJson = readFileSync(join(rejectedOut, readdirSync(rejectedOut).find((file) => file.endsWith(".json"))!), "utf8");
+      const rejectedReport = JSON.parse(rejectedJson) as RunResult;
+      expect(rejectedReport).toMatchObject({ reportingMode: "workflow-invocation-v2", total: 0, failed: 0, cases: [], requestFacts: { requestStarted: 0, requestCompleted: 0, httpExchanges: 0 }, workflow: { verdict: "aborted" } });
+      expect(rejectedReport.executionIdentity?.invocationId).toBeTruthy();
+      expect(rejectedJson).not.toContain("private-preparation-failure"); expect(rejectedJson).not.toContain("safe-preparation-secret");
+      expect(calls).toBe(0); expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+      await expect(runCli([...args, "--inputs", '{"required":1}'], selected, () => {}, { loadPlugins: false, secretStore })).rejects.toMatchObject({ name: "StableCredentialError", code: "CREDENTIAL_UNAVAILABLE" });
+      expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before); preparationReject = false;
+      let settled = false;
+      const running = runCli([...args, "--inputs", '{"required":1}', "--concurrency", "1", "--timeout-ms", "2000", "--reporters", "json"], selected, () => {}, { loadPlugins: false, secretStore });
+      running.then(() => { settled = true; }, () => { settled = true; });
+      await started; process.emit("SIGINT"); await Promise.resolve(); expect(settled).toBe(false); release();
+      expect(await running).toBe(1);
+      expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+      const report = JSON.parse(readFileSync(join(out, readdirSync(out).find((file) => file.startsWith("workflow-"))!), "utf8")) as RunResult;
+      expect(report.workflow?.verdict).toBe("aborted"); expect(report.reportingMode).toBe("workflow-invocation-v2"); expect(report.cases).toHaveLength(1);
+      expect((await fileStorage.load(fixtureRoot)).workspace.groups[0]!.projects[0]!.workflows[0]).toEqual(project.workflows[0]);
+    } finally { release?.(); process.exitCode = 0; process.chdir(previousCwd); rmSync(fixtureRoot, { recursive: true, force: true }); }
+  });
+  it("returns nonzero for a stopped standalone v1 root while preserving the late passed row and drain", async () => {
+    const ws = workspace(); const project = ws.groups[0]!.projects[0]!;
+    const id = "00000000-0000-4000-8000-000000000097";
+    project.workflows = [{ id, name: "v1 stop", status: "enabled", nodes: [{ id: "request", kind: "request", apiId: deepApiId, caseId }], edges: [] }];
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-v1-stop-cli-")); const initial = await fileStorage.load(fixtureRoot);
+    await fileStorage.save(fixtureRoot, ws, { expectedRevision: initial.revision, deletions: [] });
+    const previousCwd = process.cwd(); const out = join(fixtureRoot, ".apicc", "runs");
+    const selected = createDefaultRegistry(); let release!: () => void; let entered!: () => void; let active = 0; let calls = 0;
+    const started = new Promise<void>((resolve) => { entered = resolve; }); const pending = new Promise<void>((resolve) => { release = resolve; });
+    selected.registerProtocol({ name: "http", canHandle: () => true, execute: async () => {
+      calls++; active++; entered(); await pending; active--; return { status: 200, headers: {}, bodyText: "", timeMs: 0 };
+    } });
+    const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+    let running: Promise<number> | undefined;
+    try {
+      process.chdir(fixtureRoot); let settled = false;
+      running = runCli(["run-workflow", `groups/${groupA}/projects/${projectId}/workflows/${id}`, "--runs-dir", out, "--reporters", "json"], selected, () => {}, { loadPlugins: false });
+      running.then(() => { settled = true; }, () => { settled = true; });
+      await started; process.emit("SIGINT"); await Promise.resolve();
+      expect(settled).toBe(false); expect(active).toBe(1);
+      release(); const code = await running;
+      expect(active).toBe(0); expect(calls).toBe(1);
+      const report = JSON.parse(readFileSync(join(out, readdirSync(out).find((file) => file.startsWith("workflow-"))!), "utf8")) as RunResult;
+      expect(report.workflow?.verdict).toBe("aborted"); expect(code).toBe(1);
+      expect(report.reportingMode).toBeUndefined(); expect(report.cases).toHaveLength(1);
+      expect(report.cases[0]).toMatchObject({ passed: true }); expect(report.cases[0]!.failureKind).toBeUndefined();
+      expect(report).toMatchObject({ total: 1, passed: 1, failed: 0 });
+      expect(report.workflow?.entries).toMatchObject([{ entryId: "request", status: "failed", failureKind: "aborted" }]);
+      expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+    } finally { release(); await running; process.exitCode = 0; process.chdir(previousCwd); rmSync(fixtureRoot, { recursive: true, force: true }); }
+  });
+  it("prepares the full workflow closure once and rejects a missing child reference before credentials", async () => {
+    const fixtureWorkspace = workspace(); const project = fixtureWorkspace.groups[0]!.projects[0]!;
+    const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.path = "/b1-child";
+    asset.contract.request.auth = { kind: "bearer", token: { id: "child-token", policy: "test-auto" } };
+    const childId = "00000000-0000-4000-8000-000000000094"; const parentId = "00000000-0000-4000-8000-000000000095";
+    const core = await import("@apicc/core");
+    project.workflows = [{ id: childId, name: "child", status: "enabled", nodes: [{ id: "request", kind: "request", apiId: deepApiId, caseId }], edges: [] }, core.WorkflowSchema.parse({ id: parentId, name: "parent", status: "enabled", executionVersion: 2, nodes: [{ id: "loop", kind: "loop", workflowId: childId, count: 2, inputs: {}, outputs: {} }], edges: [] })];
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "apicc-b1-cli-"));
+    const initial = await fileStorage.load(fixtureRoot); await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: initial.revision, deletions: [] });
+    const previousCwd = process.cwd(); let resolves = 0;
+    const store: SecretStore = { async put() {}, async resolve() { resolves++; return "synthetic-child-secret"; }, async version() { return "one"; }, async remove() {}, async status() { return "available"; } };
+    try {
+      process.chdir(fixtureRoot); observedRequests.length = 0;
+      const args = ["run-workflow", `groups/${groupA}/projects/${projectId}/workflows/${parentId}`, "--runs-dir", join(fixtureRoot, ".apicc", "reports")];
+      expect(await runCli(args, createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore: store })).toBe(0);
+      expect(observedRequests.map((item) => [item.url, item.authorization])).toEqual([["/b1-child", "Bearer synthetic-child-secret"], ["/b1-child", "Bearer synthetic-child-secret"]]);
+      expect(resolves).toBe(1);
+      const stored = await fileStorage.load(fixtureRoot);
+      project.workflows[0]!.nodes = [{ id: "missing", kind: "request", apiId: deepApiId, caseId: "missing" }];
+      await fileStorage.save(fixtureRoot, fixtureWorkspace, { expectedRevision: stored.revision, deletions: [] });
+      observedRequests.length = 0;
+      await expect(runCli(args, createDefaultRegistry(), () => {}, { loadPlugins: false, secretStore: store })).rejects.toThrow(/case-reference/);
+      expect(resolves).toBe(1); expect(observedRequests).toEqual([]);
+    } finally { process.exitCode = 0; process.chdir(previousCwd); rmSync(fixtureRoot, { recursive: true, force: true }); }
+  });
   it("B2 test preview matches the core plan without reading credentials; run preserves suite rows and invocation-only overrides", async () => {
     const suiteId = "00000000-0000-4000-8000-000000000091";
     const datasetId = "00000000-0000-4000-8000-000000000090";

@@ -89,6 +89,7 @@ export const IpcChannel = {
   WfSetStatus: "wf:set-status",
   WfImpact: "wf:impact",
   WfRun: "wf:run",
+  WfCancel: "wf:cancel",
   StressRun: "stress:run",
   StressStop: "stress:stop",
   CredentialPut: "credentials:put",

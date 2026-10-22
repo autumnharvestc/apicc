@@ -495,6 +495,11 @@ async function onSelect(node: TreeNodeDTO | NodeCreatedDTO) {
   }
 }
 let evidenceNavigation = 0;
+async function locateWorkflowEvidence(identity: import('@apicc/core').EvidenceIdentity, project: ProjectLocator, root: string) {
+  if (workspace.root !== root || !selectedProjectLocator.value || !sameProjectLocator(selectedProjectLocator.value, project)) { reportError(new Error('运行证据不属于当前工作区/项目')); return; }
+  // A real case locator takes precedence over workflowId; use the existing dirty-aware case navigation.
+  await locateExecutionEvidence({ ...identity, workflowId: undefined });
+}
 async function locateExecutionEvidence(identity: import("@apicc/core").EvidenceIdentity) {
   const project = selectedProjectLocator.value;
   if (!project || project.projectId !== identity.projectId) { reportError(new Error("历史证据不属于当前项目")); return; }
@@ -1373,6 +1378,7 @@ function onDividerDblClick() {
             :project-locator="selectedProjectLocator"
             :bind-index="wfBindIndex"
             :report-error="reportError"
+            @locate-evidence="locateWorkflowEvidence"
           />
         </div>
         </div>

@@ -1,8 +1,11 @@
 import { createPinia, defineStore } from "pinia";
-import type { Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
+import { shallowRef } from "vue";
+import type { JsonValue, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { WorkflowLocator } from "../../../shared/locations.js";
 import type { LocalWorkspaceContext } from "./localIdentity.js";
+
+const RUN_HISTORY_LIMIT = 2;
 
 function copyLocator(locator: WorkflowLocator): WorkflowLocator {
   return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId, workflowId: locator.workflowId };
@@ -18,13 +21,16 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
     state: () => ({
       root: null as string | null,
       locator: null as WorkflowLocator | null,
-      workflow: null as Workflow | null,
+      workflow: shallowRef<Workflow | null>(null),
       snapshot: "",
       saving: false,
       validationErrors: [] as string[],
       warnings: [] as string[],
       runResult: null as WorkflowRunResult | null,
       running: false,
+      stopping: false,
+      activeRun: null as { locator: WorkflowLocator; root: string; invocationId: string; epoch: number } | null,
+      runHistory: [] as Array<{ locator: WorkflowLocator; root: string; invocationId: string; result: WorkflowRunResult }>,
       loadEpoch: 0,
     }),
     getters: {
@@ -52,7 +58,7 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         this.warnings = [];
         this.runResult = null;
         this.saving = false;
-        this.running = false;
+        // The captured run survives editor navigation until its real promise settles.
       },
       update(workflow: Workflow) {
         this.assertWritable();
@@ -69,7 +75,6 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         this.validationErrors = [];
         this.warnings = [];
         this.runResult = null;
-        this.running = false;
       },
       async save() {
         if (!this.workflow || !this.locator) return;
@@ -115,22 +120,48 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
       dismissValidation() {
         this.validationErrors = [];
       },
-      async run(envName?: string) {
+      async cancel() {
+        const active = this.activeRun;
+        if (!active || !this.running || this.stopping) return;
+        this.stopping = true;
+        try {
+          const accepted = await api.wfCancel({ locator: copyLocator(active.locator), root: active.root, invocationId: active.invocationId });
+          if (!accepted) throw new Error("未接受该运行的停止请求");
+          // Acceptance is not completion. Only wfRun settling releases the session.
+        } catch (error) {
+          if (this.activeRun?.invocationId === active.invocationId) this.stopping = false;
+          throw error;
+        }
+      },
+      async run(envName?: string, inputs?: Readonly<Record<string, JsonValue>>) {
         if (this.running || !this.workflow || !this.locator) return;
         this.assertCurrentRoot();
+        if (this.dirty || this.saving) {
+          this.validationErrors = ["工作流有未保存修改，请先保存"];
+          return;
+        }
         if (this.workflow.status === "draft") {
           this.validationErrors = ["工作流为草稿，请先发布启用"];
           return;
         }
         const epoch = this.loadEpoch;
-        const root = this.root;
+        const root = this.root!;
         const locator = copyLocator(this.locator);
+        const invocationId = crypto.randomUUID();
+        this.activeRun = { locator, root, invocationId, epoch };
         this.running = true;
+        this.stopping = false;
         try {
-          const result = await api.wfRun({ locator, envName });
+          const result = await api.wfRun({ locator, envName, invocationId, root, ...(inputs ? { inputs: JSON.parse(JSON.stringify(inputs)) } : {}) });
+          this.runHistory.push({ locator, root, invocationId, result });
+          if (this.runHistory.length > RUN_HISTORY_LIMIT) this.runHistory.splice(0, this.runHistory.length - RUN_HISTORY_LIMIT);
           if (epoch === this.loadEpoch && getContext().root === root && sameLocator(this.locator, locator)) this.runResult = result;
         } finally {
-          if (epoch === this.loadEpoch) this.running = false;
+          if (this.activeRun?.invocationId === invocationId) {
+            this.running = false;
+            this.stopping = false;
+            this.activeRun = null;
+          }
         }
       },
     },

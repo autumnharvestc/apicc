@@ -1,9 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createTestingController } from "./testing.js";
-import { createExecutionEvidenceCollector } from "@apicc/core";
-import { prepareDesktopTestData } from "./executionContext.js";
+import { createWorkflowController } from "./workflow.js";
 import { stat } from "node:fs/promises";
-import { WorkflowRunner, StressSafetyError, buildImportMergePlan, deduplicateImportDiagnostics, normalizeImportDiagnostics, projectAssetImportDiagnostics, createHttpSession, findProjectApi, createProjectSnapshot, buildDocumentProjection, exportOpenapi, renderDocumentHtml, renderDocumentMarkdown, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, validateWorkflowStructure, getSourceApiRevision, type Importer, type PluginRegistry, type RunResult, type WorkflowRunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type DebugHistoryOwnerIdentity, type CredentialRequestSelection, type ContractProject } from "@apicc/core";
+import { StressSafetyError, buildImportMergePlan, deduplicateImportDiagnostics, normalizeImportDiagnostics, projectAssetImportDiagnostics, findProjectApi, createProjectSnapshot, buildDocumentProjection, exportOpenapi, renderDocumentHtml, renderDocumentMarkdown, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, getSourceApiRevision, type Importer, type RunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type DebugHistoryOwnerIdentity, type ContractProject } from "@apicc/core";
 import { ContractProjectSchema } from "@apicc/core/schema";
 import { realpathSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -32,8 +31,8 @@ import { createPluginsRuntime, type PluginsRuntime, type PluginsRuntimeOptions }
 import { previewDesignDraft } from "./designPreview.js";
 import { createMockManager } from "./mockManager.js";
 import type { PluginsListResult } from "../shared/plugins/contract.js";
-import { createDesktopCredentialHost, type DesktopCredentialHostOptions, type PreparedDesktopExecutionRun } from "./credentials.js";
-import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
+import { createDesktopCredentialHost, type DesktopCredentialHostOptions } from "./credentials.js";
+import { createExecutionOutputBoundary } from "./executionOutput.js";
 import type { CredentialPutInput, CredentialRefInput } from "../shared/credentials.js";
 import type { NetworkProfilesSaveInput, NetworkSecretImportInput } from "../shared/network.js";
 import type { DesignExportInput, DesignPreviewInput } from "../shared/design.js";
@@ -45,93 +44,6 @@ type HandleArgs<Channel extends IpcChannelName> = IsUnion<Channel> extends true 
 
 // IPC argument schemas and channel/result maps are centralized in shared/ipc-contract.ts.
 
-
-/**
- * 工作流运行（M2-B 任务 1，仿 CLI run-workflow）：draft 直接拒绝（UI 对 draft 禁用运行
- * 按钮，此为护栏）；envName 传给 WorkflowRunner 按名解析（未命中抛「未找到环境: xxx」）；
- * 结果固定落盘 .apicc/runs/workflow-<id>-<uuid>.json（生成物隔离，规格 §6/§8）。
- * registry 由调用方注入插件运行时的 registry（M7-B 任务 2：插件贡献在运行频道可选）。
- */
-async function runWorkflow(
-  session: Session,
-  input: WfRunInput,
-  registrySource: PluginRegistry | (() => Promise<PluginRegistry>),
-  credentials: Pick<ReturnType<typeof createDesktopCredentialHost>, "prepareRunForRequests">,
-): Promise<WorkflowRunResult> {
-  const captured = {
-    locator: { ...input.locator },
-    envName: input.envName ?? undefined,
-    strict: input.strict ?? true,
-  };
-  const loc = session.locateWorkflow(captured.locator);
-  if (!loc) throw new Error(`未找到工作流: ${JSON.stringify(captured.locator)}`);
-  if (loc.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
-  const root = session.root!;
-  const snapshot = createProjectSnapshot(loc.project);
-  const workflow = snapshot.project.workflows.find((candidate) => candidate.id === captured.locator.workflowId);
-  if (!workflow) throw new Error(`未找到工作流: ${JSON.stringify(captured.locator)}`);
-  const structuralErrors = validateWorkflowStructure(workflow).filter((issue) => issue.level === "error");
-  if (structuralErrors.length > 0) throw new Error(structuralErrors.map((issue) => issue.message).join("; "));
-  const env = captured.envName
-    ? snapshot.project.environments.find((candidate) => candidate.name === captured.envName)
-    : undefined;
-  if (captured.envName && !env) throw new Error(`未找到环境: ${captured.envName}`);
-  const requestReferences = workflow.nodes.filter((node) => node.kind === "request").map((node) => {
-    const location = node.apiId ? findProjectApi(snapshot.project, node.apiId) : undefined;
-    const api = location?.api;
-    const caseDef = api?.cases.find((candidate) => candidate.id === node.caseId);
-    const effectiveCase = api && caseDef
-      ? selectEffectiveCases(
-        api.cases,
-        resolveExecutionEnvironment(snapshot.project, location!.collection.id, env?.id).chain,
-        caseDef.id,
-      )[0]
-      : undefined;
-    return { location, api, caseDef, effectiveCase };
-  });
-  const hasMissingReference = requestReferences.some(({ location, api, caseDef }) => !location || !api || !caseDef);
-  const credentialSelections: CredentialRequestSelection[] = captured.strict && hasMissingReference
-    ? []
-    : [...new Map(requestReferences.flatMap(({ api, effectiveCase }) =>
-      api && effectiveCase ? [[`${api.contract.id}\0${effectiveCase.id}\0${effectiveCase.scope}`, { asset: api, testCase: effectiveCase }] as const] : [])).values()];
-  let prepared: PreparedDesktopExecutionRun;
-  const scope = {
-    workspaceId: captured.locator.workspaceId,
-    groupId: captured.locator.groupId,
-    projectId: captured.locator.projectId,
-  };
-  try {
-    prepared = await credentials.prepareRunForRequests(scope, snapshot, credentialSelections, {
-      workspaceRoot: root,
-      ...(env === undefined ? {} : { environmentId: env.id }),
-    });
-  } catch (error) {
-    throw createExecutionOutputBoundary([]).error(error);
-  }
-  prepared = await prepareDesktopTestData(prepared, credentialSelections, root, env?.id);
-  const boundary = createExecutionOutputBoundary(prepared.markers);
-  const evidence = createExecutionEvidenceCollector({ projectId: snapshot.project.id, definitionRevision: snapshot.definitionRevision, workflowId: workflow.id, environmentId: env?.id, dataDigest: prepared.run.preparedTestData?.digest }, prepared.markers);
-  const httpSession = createHttpSession();
-  try {
-    const registry = typeof registrySource === "function" ? await registrySource() : registrySource;
-    const runner = new WorkflowRunner({ registry, failFast: false, strict: captured.strict, workspaceRoot: root, httpSession });
-    const result = evidence.projectWorkflow(await runner.run(prepared.run, workflow.id, { environmentId: env?.id, observeCaseExecution: (execution, identity) => evidence.observe(execution, { ...identity, entryId: identity.nodeId }) }));
-    const file = `workflow-${result.workflowId}-${randomUUID()}.json`;
-    const path = join(workspaceRunsDir(root), file);
-    const persisted = persistExecutionJson(
-      path,
-      result.report!,
-      boundary,
-      (error) => `工作流报告落盘失败（${path}）: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    const { report: _hostReport, ...dto } = result;
-    return boundary.value(persisted.warning ? { ...dto, warnings: [...dto.warnings, persisted.warning] } : dto);
-  } catch (error) {
-    throw boundary.error(error);
-  } finally {
-    await httpSession.close();
-  }
-}
 
 export interface OnlineIpcDeps {
   /** client 工厂（生产 = createOnlineClient + globalThis.fetch，测试 = 假 fetch）。 */
@@ -294,6 +206,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
     : undefined;
   const debug = createDebugController(session, () => pluginsRuntime.registry(), credentials, debugHistoryAppender);
   const testing = createTestingController(session, () => pluginsRuntime.registry(), credentials);
+  const workflowRuns = createWorkflowController(session, () => pluginsRuntime.registry(), credentials);
   const watchedDebugOwners = new WeakSet<object>();
 
   function ownerFromEvent(event: unknown): object | undefined {
@@ -312,6 +225,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
     const cleanup = () => {
       debug.clearOwner(owner);
       testing.clearOwner(owner);
+      workflowRuns.clearOwner(owner);
       credentials.closeOAuthOwner(owner);
     };
     if (typeof sender.once === "function") sender.once("destroyed", cleanup);
@@ -452,6 +366,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.SuiteRun: return testing.runSuite(a[0] as Parameters<typeof testing.runSuite>[0], requireOwner(owner));
       case IpcChannel.SuiteCancel: return testing.cancelSuite(a[0] as Parameters<typeof testing.cancelSuite>[0], requireOwner(owner));
       case IpcChannel.WsOpen: {
+        workflowRuns.abortActive();
         testing.abortActive();
         // 工作区切换清理点（M2-D3 任务 1）：活动压测先 abort，部分报告由其收尾异步落回原工作区。
         // 计划 C 任务 2：裁定 E 互斥退役——本地打开不再关闭在线会话（本地 1 + 在线 N 并存驻留）。
@@ -463,6 +378,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return r satisfies OpenResult;
       }
       case IpcChannel.WsCreate: {
+        workflowRuns.abortActive();
         testing.abortActive();
         // 同上：压测清理链保留；在线会话原样驻留（并存，互斥退役）。
         stress.abortActive();
@@ -1070,7 +986,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.WfCreate: {
         const input = a[0] as WfCreateInput;
-        return await session.createWorkflow(input.locator, input.name) satisfies IpcResultMap[typeof IpcChannel.WfCreate];
+        return await session.createWorkflow(input.locator, input.name, input.executionVersion) satisfies IpcResultMap[typeof IpcChannel.WfCreate];
       }
       case IpcChannel.WfDelete:
         await session.deleteWorkflow(a[0] as WorkflowLocator);
@@ -1092,8 +1008,10 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return session.workflowImpact(input) satisfies IpcResultMap[typeof IpcChannel.WfImpact];
       }
       case IpcChannel.WfRun: {
-        return runWorkflow(session, a[0] as WfRunInput, () => pluginsRuntime.registry(), credentials);
+        const input = a[0] as WfRunInput;
+        return workflowRuns.run(input, input.invocationId ? requireOwner(owner) : owner);
       }
+      case IpcChannel.WfCancel: return workflowRuns.cancel(a[0] as import("../shared/types.js").WfCancelInput, requireOwner(owner));
       // 压测频道（M2-D3 任务 1）：run 返回最终报告 + 落盘文件名；stop 返回中止后的
       // 部分报告（abort 语义见 stress.ts）。返回前报告已深拷贝（DataCloneError 防御）。
       case IpcChannel.StressRun: {

@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ContractProjectSchema, ContractWorkspaceSchema, fileStorage, createProjectAssetContext, getSourceApiRevision, listContractWorkspaceDefinitionFiles, type ApiRequest, type ContractWorkspace } from "@apicc/core";
+import { ContractProjectSchema, ContractWorkspaceSchema, WorkflowSchema, fileStorage, createProjectAssetContext, getSourceApiRevision, listContractWorkspaceDefinitionFiles, type ApiRequest, type ContractWorkspace } from "@apicc/core";
 import { createSession } from "../../src/main/session.js";
 import {
   countingStorage,
@@ -22,6 +22,28 @@ const apiLocator = {
   folderIds: [],
   apiId: IDS.sharedApi,
 };
+
+it("saves and reopens v2 configuration and refuses deleting a child still referenced by a parent", async () => {
+  const temporary = await makeTempRoot();
+  try {
+    const workspace = makeWorkspace();
+    const owner = projectOne(workspace);
+    const parentId = uuid(9001); const childId = uuid(9002);
+    owner.workflows = [WorkflowSchema.parse({ id: parentId, name: "parent", executionVersion: 2, nodes: [{ id: "call", kind: "subflow", workflowId: childId }] }),
+      WorkflowSchema.parse({ id: childId, name: "child", executionVersion: 2, nodes: [{ id: "wait", kind: "delay", delayMs: 0 }] })];
+    await persistWorkspace(temporary.path, workspace);
+    const session = createSession();
+    await session.open(temporary.path);
+    const childLocator = { ...projectLocator, workflowId: childId };
+    const saved = WorkflowSchema.parse({ ...owner.workflows[1], outputs: { done: { kind: "literal", value: true } } });
+    await session.saveWorkflow(childLocator, saved);
+    const reopened = createSession();
+    await reopened.open(temporary.path);
+    expect(reopened.locateWorkflow(childLocator)?.workflow).toEqual(saved);
+    await expect(reopened.deleteWorkflow(childLocator)).rejects.toThrow(/parent/);
+    await expect(reopened.deleteNode({ kind: "workflow", locator: childLocator })).rejects.toThrow(/parent/);
+  } finally { await temporary.dispose(); }
+});
 
 function observeActiveWorkspaceReference(session: { readonly workspace: ContractWorkspace | null }): ContractWorkspace {
   const originalClone = globalThis.structuredClone;
@@ -461,8 +483,8 @@ describe("desktop session file transactions", () => {
       await session.deleteCase({ ...apiLocator, caseId: IDS.sharedCase, scope: "green" });
 
       expect(session.locateApi(apiLocator)?.api.cases).toHaveLength(0);
-      expect(session.locateWorkflow({ ...projectLocator, workflowId: IDS.workflow })?.workflow.nodes[0].apiId)
-        .toBe(IDS.secondApi);
+      expect(session.locateWorkflow({ ...projectLocator, workflowId: IDS.workflow })?.workflow.nodes[0])
+        .toMatchObject({ apiId: IDS.secondApi });
       expect(session.workspace!.groups.find((group) => group.id === IDS.groupTwo)!.projects[0].workflows)
         .toHaveLength(1);
     } finally {

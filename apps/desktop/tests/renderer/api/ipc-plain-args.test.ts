@@ -24,6 +24,17 @@ const environmentLocator: EnvironmentLocator = {
 const nodeLocator: NodeLocator = { kind: "collection", locator: { ...projectLocator, collectionId: "00000000-0000-4000-8000-000000000005" } };
 
 describe("IPC 入参深平化（withPlainArgs，回归：An object could not be cloned）", () => {
+  it("keeps v2 creation and the captured run/stop identity cloneable with typed inputs", async () => {
+    const received: unknown[] = [];
+    const fake = { wfCreate: async (input: unknown) => { received.push(structuredClone(input)); }, wfRun: async (input: unknown) => { received.push(structuredClone(input)); }, wfCancel: async (input: unknown) => { received.push(structuredClone(input)); return true; } } as unknown as ApiccApi;
+    const api = withPlainArgs(fake);
+    const locator = reactive({ ...projectLocator, workflowId: '00000000-0000-4000-8000-000000000011' });
+    const capture = reactive({ locator, root: 'C:/workspace', invocationId: '00000000-0000-4000-8000-000000000012' });
+    await api.wfCreate(reactive({ locator: projectLocator, name: 'v2', executionVersion: 2 as const }));
+    await api.wfRun(reactive({ ...capture, inputs: { flag: false, count: 0, object: { nested: null } } }));
+    await api.wfCancel(capture);
+    expect(received).toEqual([{ locator: projectLocator, name: 'v2', executionVersion: 2 }, { ...capture, inputs: { flag: false, count: 0, object: { nested: null } } }, { ...capture }]);
+  });
   it("前置假设：structuredClone 对 Vue 响应式 Proxy 抛错（与 Electron 同源的判定器）", () => {
     expect(typeof structuredClone).toBe("function");
     const proxy = reactive({ project: { name: "商店 API", apis: [{ name: "updatePet" }] } });

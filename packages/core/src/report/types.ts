@@ -1,8 +1,9 @@
 import type { AssertResult } from "../plugin/types.js";
 import type { CaseExecutionLocator, CaseFailureKind } from "../runner/caseExecutor.js";
+import type { WorkflowNodeIdentity } from "../workflow/trace.js";
 
 export interface EvidencePreview { text: string; truncated: boolean; omitted?: boolean }
-export interface EvidenceIdentity {
+export interface EvidenceIdentity extends Partial<WorkflowNodeIdentity> {
   projectId: string; definitionRevision: string; locator?: CaseExecutionLocator;
   suiteRunId?: string; entryId?: string; suiteRow?: number; rowIndex?: number; nodeId?: string; workflowId?: string;
   environmentId?: string; dataDigest?: string; datasetId?: string;
@@ -20,8 +21,13 @@ export interface SafeExecutionEvidence {
   truncated: boolean;
 }
 export interface ReportingUnitSummary { total: number; passed: number; failed: number; skipped: number; entryDiagnostics: number }
+export interface WorkflowReportingUnit {
+  entryId: string; suiteRow?: number; workflowId: string; invocationId?: string;
+  verdict: "passed" | "failed" | "aborted" | "skipped"; error?: string;
+}
+export interface RequestFacts { requestStarted: number; requestCompleted: number; httpExchanges: number }
 
-export interface CaseOutcome {
+export interface CaseOutcome extends Partial<WorkflowNodeIdentity> {
   evidence?: SafeExecutionEvidence;
   entryId?: string;
   suiteRow?: number;
@@ -46,6 +52,10 @@ export interface CaseOutcome {
 }
 
 export interface RunResult {
+  reportingMode?: "workflow-invocation-v2" | "mixed-suite-v2";
+  workflowUnits?: WorkflowReportingUnit[];
+  requestFacts?: RequestFacts;
+  trace?: import("../workflow/trace.js").WorkflowTrace;
   executionIdentity?: EvidenceIdentity;
   evidenceOmitted?: boolean;
   reportFailure?: boolean;
@@ -53,7 +63,7 @@ export interface RunResult {
   projectId?: string;
   definitionRevision?: string;
   workflowId?: string;
-  workflow?: { verdict?: "passed" | "failed"; total: number; passed: number; failed: number; skipped: number; entries: Array<{ entryId: string; kind: "workflow"; workflowId: string; suiteRow?: number; nodeKind?: string; label?: string; state?: string; skipReason?: string; failureKind?: CaseFailureKind; status: "passed" | "failed" | "skipped"; error?: string }> };
+  workflow?: { verdict?: "passed" | "failed" | "aborted"; total: number; passed: number; failed: number; skipped: number; entries: Array<{ entryId: string; kind: "workflow"; workflowId: string; suiteRow?: number; nodeKind?: string; label?: string; state?: string; skipReason?: string; failureKind?: CaseFailureKind; status: "passed" | "failed" | "skipped"; error?: string }> };
   reportingUnits?: ReportingUnitSummary;
   suite?: { suiteRunId: string; projectId: string; definitionRevision: string; environmentId?: string; datasetId?: string; dataDigest?: string; verdict: "passed" | "failed" | "aborted"; total: number; passed: number; failed: number; skipped: number;
     entries?: Array<{ entryId: string; kind: "case" | "workflow"; workflowId?: string; caseLocator?: CaseExecutionLocator; suiteRow?: number; status: "passed" | "failed" | "skipped" | "aborted"; skipReason?: "fail-fast" | "aborted"; error?: string }> };

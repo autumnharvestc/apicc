@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { toFlowElements, applyNodeAdd, applyNodeRemove, applyNodeUpdate, applyNodeMove, applyEdgeAdd, applyEdgeCondition, applyEdgeRemove, colorForState, nodeStatesFromRunResult, stateTagColor } from "../../../src/renderer/src/wf/wfCanvas.js";
+import { toFlowElements, applyNodeAdd, applyNodeRemove, applyNodeUpdate, applyNodeMove, applyEdgeAdd, applyEdgeCondition, applyEdgePort, applyEdgeRemove, colorForState, nodeStatesFromRunResult, stateTagColor } from "../../../src/renderer/src/wf/wfCanvas.js";
+import { WorkflowSchema } from "@apicc/core/schema";
 import type { NodeResult, Workflow, WorkflowRunResult } from "@apicc/core";
 
 const wf: Workflow = {
@@ -12,6 +13,22 @@ const wf: Workflow = {
 };
 
 describe("toFlowElements", () => {
+  it("preserves v2 payloads during movement and allows true/false ports to converge", () => {
+    const source = WorkflowSchema.parse({ id: "v2", name: "v2", executionVersion: 2, nodes: [
+      { id: "condition", kind: "condition", predicate: { op: "exists", value: { kind: "ref", source: "inputs", path: ["flag"] } } },
+      { id: "body", kind: "loop", workflowId: "child", inputs: { flag: { kind: "literal", value: false } }, outputs: { value: "result" }, count: 2, maxIterations: 4, policy: { onError: { workflowId: "handler", mode: "recover" } } },
+    ], edges: [] });
+    const truePath = applyEdgeAdd(source, { source: "condition", target: "body", port: "true" });
+    const both = applyEdgeAdd(truePath, { source: "condition", target: "body", port: "false" });
+    expect(toFlowElements(both).edges.map(edge => edge.sourceHandle)).toEqual(["true", "false"]);
+    const edited = applyNodeUpdate(both, "body", { inputs: { flag: { kind: "ref", source: "vars", path: ["next"] } }, count: 3 });
+    const moved = applyNodeMove(edited, "body", { x: 120, y: 80 });
+    expect(moved.nodes[1]).toMatchObject({ kind: "loop", workflowId: "child", count: 3, maxIterations: 4, outputs: { value: "result" }, policy: { onError: { workflowId: "handler", mode: "recover", timeoutMs: 5000 } } });
+    expect(WorkflowSchema.parse(moved)).toEqual(moved);
+    const changed = applyEdgePort(moved, moved.edges[0]!.id, "false");
+    expect(changed.edges[0]).toMatchObject({ port: "false" });
+    expect(source.edges).toHaveLength(0);
+  });
   it("Workflow → Vue Flow 元素：节点带 position/自定义 data，边带 condition 标签数据", () => {
     const { nodes, edges } = toFlowElements(wf);
     expect(nodes).toHaveLength(2);
@@ -130,7 +147,7 @@ describe("编辑变换·属性面板与拖拽（任务 4）", () => {
   });
   it("applyEdgeCondition 写回条件表达式（空串清除 condition 键）", () => {
     const set = applyEdgeCondition(wf, "e1", "prev.failed");
-    expect(set.edges[0]!.condition).toBe("prev.failed");
+    expect(set.edges[0]!).toMatchObject({ condition: "prev.failed" });
     const cleared = applyEdgeCondition(set, "e1", "");
     expect(cleared.edges[0]).toEqual({ id: "e1", from: "n1", to: "n2" }); // 无 condition 键
     expect(Object.keys(cleared.edges[0]!)).not.toContain("condition");

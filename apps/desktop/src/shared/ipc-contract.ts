@@ -9,6 +9,7 @@ import {
   HttpMethodSchema,
   InlineAuthBindingSchema,
   JsonValueSchema,
+  StringRecordSchema,
   KeyValuePairSchema,
   ModelAssetSchema,
   OperationSchema,
@@ -19,6 +20,10 @@ import {
   DebugFieldStateSchema,
   DebugHistoryListFilterSchema,
   DebugHistoryPreferencesSchema,
+  WorkflowStatusSchema,
+  WorkflowNodeSchema,
+  WorkflowEdgeSchema,
+  WorkflowSchema,
 } from "@apicc/core/schema";
 import {
   OnlineBaseUrlSchema,
@@ -78,23 +83,6 @@ import type {
 } from "@apicc/core";
 
 const StringMapSchema = z.record(z.string(), z.string());
-const WorkflowStatusSchema = z.enum(["draft", "published", "enabled"]);
-const WorkflowNodeSchema = z.object({
-  id: z.string(),
-  kind: z.enum(["request", "noop"]),
-  apiId: z.string().optional(),
-  caseId: z.string().optional(),
-  label: z.string().optional(),
-  position: z.object({ x: z.number(), y: z.number() }).strict().optional(),
-}).strict();
-const WorkflowEdgeSchema = z.object({ id: z.string(), from: z.string(), to: z.string(), condition: z.string().optional() }).strict();
-const WorkflowSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  status: WorkflowStatusSchema.default("draft"),
-  nodes: z.array(WorkflowNodeSchema).default([]),
-  edges: z.array(WorkflowEdgeSchema).default([]),
-}).strict();
 type ExactType<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends (<Value>() => Value extends Right ? 1 : 2)
     ? ((<Value>() => Value extends Right ? 1 : 2) extends (<Value>() => Value extends Left ? 1 : 2) ? true : false)
@@ -319,13 +307,14 @@ export const IpcArgsSchemas = {
   [IpcChannel.DesignPreview]: z.tuple([DesignPreviewInputSchema]),
   [IpcChannel.WfList]: z.tuple([ProjectLocatorSchema]),
   [IpcChannel.WfGet]: z.tuple([WorkflowLocatorSchema]),
-  [IpcChannel.WfCreate]: z.tuple([z.object({ locator: ProjectLocatorSchema, name: z.string() }).strict()]),
+  [IpcChannel.WfCreate]: z.tuple([z.object({ locator: ProjectLocatorSchema, name: z.string(), executionVersion: z.union([z.literal(1), z.literal(2)]).optional() }).strict()]),
   [IpcChannel.WfDelete]: z.tuple([WorkflowLocatorSchema]),
   [IpcChannel.WfRename]: z.tuple([WorkflowLocatorSchema, z.string()]),
   [IpcChannel.WfSave]: z.tuple([WorkflowLocatorSchema, WorkflowSchema]),
   [IpcChannel.WfSetStatus]: z.tuple([WorkflowLocatorSchema, WorkflowStatusSchema]),
   [IpcChannel.WfImpact]: z.tuple([WorkflowImpactLocatorSchema]),
-  [IpcChannel.WfRun]: z.tuple([z.object({ locator: WorkflowLocatorSchema, envName: z.string().nullish(), strict: z.boolean().optional() }).strict()]),
+  [IpcChannel.WfRun]: z.tuple([z.object({ locator: WorkflowLocatorSchema, envName: z.string().nullish(), strict: z.boolean().optional(), invocationId: z.string().uuid().optional(), root: z.string().min(1).optional(), inputs: StringRecordSchema(JsonValueSchema).optional() }).strict()]),
+  [IpcChannel.WfCancel]: z.tuple([z.object({ locator: WorkflowLocatorSchema, invocationId: z.string().uuid(), root: z.string().min(1) }).strict()]),
   [IpcChannel.StressRun]: z.tuple([StressRunInputSchema]),
   [IpcChannel.StressStop]: z.tuple([]),
   [IpcChannel.CredentialPut]: z.tuple([CredentialPutInputSchema]),
@@ -476,6 +465,7 @@ const resultMethodByChannel = {
   [IpcChannel.WfSetStatus]: "wfSetStatus",
   [IpcChannel.WfImpact]: "wfImpact",
   [IpcChannel.WfRun]: "wfRun",
+  [IpcChannel.WfCancel]: "wfCancel",
   [IpcChannel.StressRun]: "stressRun",
   [IpcChannel.StressStop]: "stressStop",
   [IpcChannel.CredentialPut]: "credentialPut",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as core from "../../src/index.js";
-import { createContractExecutionProject, contractExecutionIds as ids } from "../helpers/contractExecutionFixtures.js";
+import { createContractExecutionProject, contractExecutionIds as ids, workflowReportScenarios } from "../helpers/contractExecutionFixtures.js";
 import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
 
 const suiteId = "10000000-0000-4000-8000-000000000091";
@@ -36,6 +36,72 @@ function registry(seen: string[], callback?: (index: number) => void) {
 }
 
 describe("B2 suite selection and orchestration", () => {
+  it("keeps retry OR and recover success as logical suite units with original failed rows", async () => {
+    const { project, asset } = fixture(); delete project.suites![0]!.datasetId;
+    project.workflows = workflowReportScenarios(asset.contract.id, asset.cases[0]!.id);
+    project.suites![0]!.selection = { kind: "explicit", entries: project.workflows.slice(0, 3).map((flow, index) => ({ id: `10000000-0000-4000-8000-00000000010${index}`, kind: "workflow" as const, workflowId: flow.id })) };
+    project.workflows.push(core.WorkflowSchema.parse({ id: "legacy", name: "legacy", status: "enabled", nodes: [{ id: "legacy-request", kind: "request", apiId: asset.contract.id, caseId: asset.cases[0]!.id }], edges: [] }));
+    project.suites![0]!.selection.entries.push({ id: entryId, kind: "case", collectionId: ids.collection, folderIds: [ids.outerFolder, ids.innerFolder], apiId: asset.contract.id, caseId: asset.cases[0]!.id }, { id: workflowEntryId, kind: "workflow", workflowId: "legacy" });
+    const snapshot = core.createProjectSnapshot(project); const plan = core.resolveSuitePlan(snapshot, suiteId);
+    const data = await core.prepareTestData(snapshot, plan.selections, { workspaceRoot: process.cwd() });
+    const selected = registry([]); let calls = 0;
+    selected.registerProtocol({ name: "suite-observer", canHandle: () => true, execute: async () => { if ([1, 3].includes(++calls)) throw new Error("transport failure"); return { status: 200, headers: {}, bodyText: "", timeMs: 0 }; } });
+    const result = await new core.SuiteRunner({ registry: selected }).run({ snapshot, credentialBindings: credentials, preparedTestData: data }, plan);
+    expect(result.verdict).toBe("passed"); expect(result.entries.map((entry) => entry.status)).toEqual(["passed", "passed", "passed", "passed", "passed"]);
+    expect(result.cases.filter((row) => !row.passed)).toHaveLength(2);
+    const report = core.suiteToRunResult(result); expect(report.reportingMode).toBe("mixed-suite-v2");
+    expect(core.reportingUnits(report).summary).toMatchObject({ total: 5, passed: 5, failed: 0 });
+    expect(report.workflowUnits).toHaveLength(3); expect(report.failed).toBe(2);
+    expect(report.requestFacts).toEqual({ requestStarted: 5, requestCompleted: 5, httpExchanges: 0 });
+    expect(report.trace?.events.filter((event) => event.type === "branch-winner").map((event) => event.branchId)).toEqual(["good"]);
+    expect(report.trace?.events.filter((event) => event.type === "branch-end")).toHaveLength(2);
+    const handler = report.trace!.events.find((event) => event.type === "handler-start")!;
+    expect(handler.childInvocation!.invocationId).not.toBe(handler.invocationId);
+    expect(handler.childInvocation!.parentInvocationId).toBe(handler.invocationId);
+    expect(handler.childInvocation!.invocationPath.at(-1)?.handler).toBe("onError");
+    const abort = new AbortController(); abort.abort();
+    const stopped = await new core.SuiteRunner({ registry: selected }).run({ snapshot, credentialBindings: credentials, preparedTestData: data }, plan, { signal: abort.signal });
+    expect(core.reportingUnits(core.suiteToRunResult(stopped)).summary).toMatchObject({ total: 3, failed: 0, skipped: 3 });
+  });
+  it("does not treat an internally cancelled OR loser as a user-aborted suite", async () => {
+    const { project, asset } = fixture(); delete project.suites![0]!.datasetId;
+    project.workflows = [core.WorkflowSchema.parse({ id: "root", name: "root", status: "enabled", executionVersion: 2, nodes: [{ id: "or", kind: "parallel", join: "any-success", branches: ["fast", "slow"].map((who) => ({ id: who, workflowId: "leaf", inputs: { who: { kind: "literal", value: who } }, outputs: {} })) }], edges: [] }),
+      core.WorkflowSchema.parse({ id: "leaf", name: "leaf", status: "enabled", executionVersion: 2, inputs: { who: { required: true } }, nodes: [{ id: "copy", kind: "assign", assignments: { value: { kind: "ref", source: "inputs", path: ["who"] } } }, { id: "request", kind: "request", apiId: asset.contract.id, caseId: asset.cases[0]!.id }], edges: [{ id: "e", from: "copy", to: "request" }] })];
+    project.suites![0]!.selection = { kind: "explicit", entries: [{ id: workflowEntryId, kind: "workflow", workflowId: "root" }] };
+    const snapshot = core.createProjectSnapshot(project); const plan = core.resolveSuitePlan(snapshot, suiteId);
+    const data = await core.prepareTestData(snapshot, plan.selections, { workspaceRoot: process.cwd() });
+    const selected = registry([]); let entered!: () => void; const barrier = new Promise<void>((resolve) => { entered = resolve; }); let active = 0;
+    selected.registerProtocol({ name: "suite-observer", canHandle: () => true, execute: async (request, options) => { if (++active === 2) entered(); await barrier; if (new URL(request.url).pathname === "/slow") await new Promise<void>((_resolve, reject) => options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true })); return { status: 200, headers: {}, bodyText: "", timeMs: 0 }; } });
+    const result = await new core.SuiteRunner({ registry: selected }).run({ snapshot, credentialBindings: credentials, preparedTestData: data }, plan);
+    expect(result.cases.some((row) => row.failureKind === "aborted")).toBe(true);
+    expect(result.verdict).toBe("passed"); expect(result.entries[0]!.status).toBe("passed");
+  });
+  it("prepares a child closure once, preserves suite row selection through loops, and bounds logical executions", async () => {
+    const { project } = fixture();
+    const child = project.workflows[0]!;
+    project.workflows = [child, core.WorkflowSchema.parse({ id: "parent", name: "parent", status: "enabled", executionVersion: 2, nodes: [{ id: "loop", kind: "loop", workflowId: ids.workflow, count: 2, inputs: {}, outputs: {} }], edges: [] })];
+    project.suites![0]!.selection = { kind: "explicit", entries: [{ id: workflowEntryId, kind: "workflow", workflowId: "parent" }] };
+    const snapshot = core.createProjectSnapshot(project);
+    const plan = core.resolveSuitePlan(snapshot, suiteId);
+    expect(core.suiteCaseRequests(snapshot, plan)).toHaveLength(1);
+    const data = await core.prepareTestData(snapshot, plan.selections, { workspaceRoot: process.cwd() });
+    expect(core.validateSuiteData(plan, data).plannedExecutions).toBe(4);
+    const seen: string[] = [];
+    const result = await new core.SuiteRunner({ registry: registry(seen) }).run({ snapshot, credentialBindings: credentials, preparedTestData: data }, plan);
+    expect(result.verdict).toBe("passed");
+    expect(result.cases.map((row) => [row.suiteRow, row.row])).toEqual([[0, 0], [0, 0], [1, 1], [1, 1]]);
+    expect(seen.map((url) => url.split("|")[0])).toEqual(["http://suite.test/one", "http://suite.test/one", "http://suite.test/two", "http://suite.test/two"]);
+    const loop = project.workflows[1]!.nodes[0]!;
+    if (loop.kind !== "loop") throw new Error("Expected loop");
+    loop.count = 10000; loop.maxIterations = 10000;
+    child.nodes.push({ id: "repeat", kind: "request", apiId: ids.contract, caseId: ids.case }); child.edges.push({ id: "repeat", from: ids.requestNode, to: "repeat" });
+    project.datasets![0]!.rows.push({ value: "three" });
+    const large = core.createProjectSnapshot(project);
+    const largePlan = core.resolveSuitePlan(large, suiteId);
+    expect(largePlan.selections).toHaveLength(1);
+    const largeData = await core.prepareTestData(large, largePlan.selections, { workspaceRoot: process.cwd() });
+    expect(() => core.validateSuiteData(largePlan, largeData)).toThrow(/50000/);
+  });
   it("resolves ordered physical locators and runs each outer row exactly once with isolated entry sessions", async () => {
     const { project, testCase } = fixture();
     testCase.preOperations = [{ id: "carry", type: "script", content: 'pm.request.headers["X-Carried"] = pm.variables.get("carried") ?? "none"; pm.variables.set("carried", "set");' }];
@@ -81,7 +147,11 @@ describe("B2 suite selection and orchestration", () => {
   it.each(["empty", "dangling", "conflict", "draft", "duplicate"])("rejects %s before protocols", async (kind) => {
     const { project, testCase } = fixture();
     if (kind === "empty") project.suites![0]!.selection = { kind: "query", caseTags: ["absent"] };
-    if (kind === "dangling") project.workflows[0]!.nodes[0]!.apiId = "another-project";
+    if (kind === "dangling") {
+      const node = project.workflows[0]!.nodes[0]!;
+      if (node.kind !== "request") throw new Error("Expected request fixture");
+      node.apiId = "another-project";
+    }
     if (kind === "conflict") testCase.dataDriver = { kind: "dataset", datasetId };
     if (kind === "draft") project.workflows[0]!.status = "draft";
     // Snapshot schema rejects duplicates too; the resolver must reject handoff objects independently.
@@ -114,7 +184,9 @@ describe("B2 suite selection and orchestration", () => {
     const { project, asset, testCase } = fixture();
     delete project.suites![0]!.datasetId;
     asset.cases.push({ ...testCase, id: "bad", assertions: [{ id: "bad", target: "status", op: "unregistered" }] });
-    project.workflows[0]!.nodes[0]!.caseId = "bad";
+    const node = project.workflows[0]!.nodes[0]!;
+    if (node.kind !== "request") throw new Error("Expected request fixture");
+    node.caseId = "bad";
     const snapshot = core.createProjectSnapshot(project); const plan = core.resolveSuitePlan(snapshot, suiteId);
     const data = await core.prepareTestData(snapshot, plan.selections, { workspaceRoot: process.cwd() });
     const seen: string[] = [];

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { StressReportSchema, reportingUnits, workflowToRunResult, type RunResult, type WorkflowRunResult } from "@apicc/core";
 import type { DesktopStressReport } from "../shared/types.js";
 
-export interface RunSummaryDTO { kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"] }
+export interface RunSummaryDTO { kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"]; reportingMode?: RunResult["reportingMode"]; logicalVerdict?: "passed" | "failed" | "aborted" }
 export interface StressRunSummaryDTO { kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
@@ -63,7 +63,8 @@ function summarize(runsDir: string, file: string): RunSummary | null {
     const raw = readFileSync(join(runsDir, file), "utf8");
     const r = parseRunResult(raw);
     if (r) {
-      return { kind: r.suite ? "suite" : r.workflowId ? "workflow" : r.kind ?? "collection", projectId: r.projectId ?? r.suite?.projectId, file, collectionName: r.collectionName, startedAt: r.startedAt, total: r.total, passed: r.passed, failed: r.failed, skipped: r.skipped ?? 0, reportingUnits: r.reportingUnits ?? reportingUnits(r).summary };
+      return { kind: r.suite ? "suite" : r.workflowId ? "workflow" : r.kind ?? "collection", projectId: r.projectId ?? r.suite?.projectId, file, collectionName: r.collectionName, startedAt: r.startedAt, total: r.total, passed: r.passed, failed: r.failed, skipped: r.skipped ?? 0, reportingUnits: r.reportingUnits ?? reportingUnits(r).summary,
+        ...(r.reportingMode ? { reportingMode: r.reportingMode, logicalVerdict: r.suite?.verdict ?? r.workflow?.verdict } : {}) };
     }
     const s = parseStressReport(raw);
     if (s) {

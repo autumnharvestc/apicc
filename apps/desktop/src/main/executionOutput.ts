@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { CollectionRunError, CredentialError, StressSafetyError, createCredentialOutputSanitizer, redactExecutionOutput } from "@apicc/core";
+import { CollectionRunError, CredentialError, StressSafetyError, createCredentialOutputSanitizer, createEvidenceBudget, redactExecutionOutput, type EvidenceBudget } from "@apicc/core";
 
 const credentialMessages: Record<CredentialError["code"], string> = {
   CREDENTIAL_MISSING: "Credential is not available.",
@@ -23,6 +23,7 @@ interface ErrorDetails {
 }
 
 export interface ExecutionOutputBoundary {
+  readonly maxBytes?: number;
   value<T>(value: T): T;
   text(value: string): string;
   error(value: unknown): Error;
@@ -31,11 +32,12 @@ export interface ExecutionOutputBoundary {
 export interface PersistedExecution<T> { value: T; warning?: string }
 
 /** Project host execution data to a detached, cloneable DTO before it crosses IPC or reaches disk. */
-export function createExecutionOutputBoundary(markers: readonly string[]): ExecutionOutputBoundary {
+export function createExecutionOutputBoundary(markers: readonly string[], limits: Partial<Omit<EvidenceBudget, "remaining">> = {}): ExecutionOutputBoundary {
   const sanitizer = createCredentialOutputSanitizer(markers);
   return {
+    maxBytes: createEvidenceBudget(limits).reportBytes,
     value<T>(value: T): T {
-      return redactExecutionOutput(toPlainData(value, new WeakMap<object, unknown>()), sanitizer) as T;
+      return redactExecutionOutput(toPlainData(value, new WeakMap<object, unknown>()), sanitizer, limits) as T;
     },
     text(value: string): string {
       return sanitizer.redactText(value);
@@ -44,7 +46,7 @@ export function createExecutionOutputBoundary(markers: readonly string[]): Execu
       const details = errorDetails(value);
       const projected: ErrorDetails = { ...details, message: sanitizer.redactText(details.message),
         ...(details.targetOrigin === undefined ? {} : { targetOrigin: sanitizer.redactText(details.targetOrigin) }),
-        ...(details.partialResult === undefined ? {} : { partialResult: redactExecutionOutput(toPlainData(details.partialResult, new WeakMap<object, unknown>()), sanitizer) }) };
+        ...(details.partialResult === undefined ? {} : { partialResult: redactExecutionOutput(toPlainData(details.partialResult, new WeakMap<object, unknown>()), sanitizer, limits) }) };
       const error = new Error(projected.message);
       error.name = projected.name;
       error.stack = "";
@@ -67,8 +69,13 @@ export function persistExecutionJson<T>(
 ): PersistedExecution<T> {
   const safeValue = boundary.value(value);
   try {
+    // Check the actual final wire bytes, not a previous projection's compact size.
+    const maxBytes = boundary.maxBytes ?? 16 * 1024 * 1024;
+    let content = JSON.stringify(safeValue, null, 2);
+    if (Buffer.byteLength(content) > maxBytes) content = JSON.stringify(safeValue);
+    if (Buffer.byteLength(content) > maxBytes) throw new Error("Execution JSON exceeds capacity");
     mkdirSync(dirname(path), { recursive: true });
-    write(path, JSON.stringify(safeValue, null, 2));
+    write(path, content);
     return { value: safeValue };
   } catch (error) {
     const warning = boundary.text(failureMessage(error));

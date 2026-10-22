@@ -25,9 +25,11 @@ const { t } = useI18n();
       <template v-if="data.node.kind === 'request'">
         {{ data.apiName || t("wf.unbound") }}<template v-if="data.caseName"> · {{ data.caseName }}</template>
       </template>
-      <template v-else>{{ t("wf.noopRef") }}</template>
+      <template v-else-if="data.node.kind === 'noop'">{{ t("wf.noopRef") }}</template>
+      <template v-else>{{ t(`wf.control.kinds.${data.node.kind}`) }}<template v-if="data.node.kind === 'parallel'"> · {{ data.node.branches.length }} · {{ t(data.node.join === 'all' ? 'wf.control.all' : 'wf.control.anySuccess') }}</template><template v-if="data.node.kind === 'loop'"> · {{ data.node.count ?? t('wf.control.while') }} / {{ data.node.maxIterations }}</template></template>
     </div>
-    <Handle type="source" :position="Position.Bottom" class="wf-handle" />
+    <template v-if="data.node.kind === 'condition'"><span class="wf-ports">{{ t('wf.control.truePort') }} / {{ t('wf.control.falsePort') }}</span><Handle id="true" type="source" :position="Position.Bottom" class="wf-handle" :style="{ left: '30%' }" /><Handle id="false" type="source" :position="Position.Bottom" class="wf-handle" :style="{ left: '70%' }" /></template>
+    <Handle v-else type="source" :position="Position.Bottom" class="wf-handle" />
   </div>
 </template>
 

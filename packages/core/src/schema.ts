@@ -223,5 +223,9 @@ export {
 } from "./stress/model.js";
 export type { StressReport, CurrentStressReport } from "./stress/model.js";
 export * from "./testing/model.js";
+export * from "./workflow/model.js";
+export * from "./workflow/predicate.js";
+export * from "./workflow/scope.js";
+export * from "./workflow/trace.js";
 export type { AssertOperatorDescriptor } from "./plugin/types.js";
 export { builtinAssertDescriptors } from "./assert/operators.js";

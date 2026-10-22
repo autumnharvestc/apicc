@@ -1,4 +1,4 @@
-import { createExecutionEvidenceCollector, createProjectSnapshot, parseDatasetContent, prepareTestData, resolveSuitePlan, suiteCaseRequests, suiteToRunResult, SuiteRunner, validateSuiteData, validateSuiteExecution, type PluginRegistry } from "@apicc/core";
+import { createExecutionEvidenceCollector, createProjectSnapshot, compileWorkflowPlan, workflowPlanRequests, parseDatasetContent, prepareTestData, resolveSuitePlan, suiteCaseRequests, suiteToRunResult, SuiteRunner, validateSuiteData, validateSuiteExecution, type PluginRegistry } from "@apicc/core";
 import { join } from "node:path";
 import { CollectionRunner, WorkflowRunner, createEventBus, createHttpSession, testDataSelectionsForRequests, resolveExecutionEnvironment, selectEffectiveCases, type CredentialRequestSelection, type RunResult } from "@apicc/core";
 import { EvidenceInvocationSchema, type EvidenceInvocation } from "../shared/testing.js";
@@ -6,6 +6,7 @@ import { DatasetExchangeInputSchema, DatasetExportInputSchema, SuiteInvocationSc
 import type { createSession } from "./session.js";
 import type { DebugCredentialHost } from "./credentialHost.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
+import { validateWorkflowRunOptions } from "@apicc/core";
 
 /** Host-only orchestration. The captured plan/data stay here for C1 evidence projection. */
 export function createTestingController(session: ReturnType<typeof createSession>, registrySource: () => Promise<PluginRegistry>, credentials: DebugCredentialHost,
@@ -145,19 +146,12 @@ export function createTestingController(session: ReturnType<typeof createSession
     if (input.identity.workflowId) {
       const workflow = snapshot.project.workflows.find((item) => item.id === input.identity.workflowId);
       available = !!workflow && workflow.status !== "draft";
-      for (const node of workflow?.nodes ?? []) if (node.kind === "request") {
-        const assets = listAssets(snapshot.project);
-        const selected = assets.find((item) => item.asset.contract.id === node.apiId);
-        const testCase = selected ? selectEffectiveCases(selected.asset.cases, resolveExecutionEnvironment(snapshot.project, selected.collectionId, input.identity.environmentId).chain, node.caseId)[0] : undefined;
-        if (selected && testCase) selections.push({ asset: selected.asset, testCase }); else available = false;
+      if (available) {
+        try { validateWorkflowRunOptions(workflow!); selections.push(...workflowPlanRequests(snapshot, compileWorkflowPlan(snapshot, input.identity.workflowId, { environmentId: input.identity.environmentId }))); }
+        catch { available = false; }
       }
     } else if (input.identity.locator) available = exact(input.identity.locator);
     return { input, snapshot, selections, target: { available, changed: snapshot.definitionRevision !== input.identity.definitionRevision, definitionRevision: snapshot.definitionRevision, ...(available ? {} : { reason: "当前精确资源已删除、scope 不匹配或工作流不可运行" }) } };
-  }
-  function listAssets(project: ReturnType<typeof createProjectSnapshot>["project"]) {
-    const result: Array<{ asset: CredentialRequestSelection["asset"]; collectionId: string }> = [];
-    const visit = (container: typeof project.collections[number] | typeof project.collections[number]["folders"][number], collectionId: string) => { result.push(...container.apis.map((asset) => ({ asset, collectionId }))); for (const folder of container.folders) visit(folder, collectionId); };
-    for (const collection of project.collections) visit(collection, collection.id); return result;
   }
   async function inspectEvidence(raw: EvidenceInvocation) { return plain(evidenceTarget(raw).target); }
   async function rerunEvidence(raw: EvidenceInvocation, owner = defaultOwner) {

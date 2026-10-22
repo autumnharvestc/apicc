@@ -4,6 +4,7 @@ import type { RunResult } from "./types.js";
 /** Compatibility container uses suite identity; physical module identity stays on each case locator. */
 export function suiteToRunResult(result: SuiteRunResult): RunResult {
   return { collectionId: result.suiteId, collectionName: result.suiteName, startedAt: result.startedAt, finishedAt: result.finishedAt,
+    ...(result.workflowUnits?.length ? { reportingMode: "mixed-suite-v2" as const, workflowUnits: result.workflowUnits, requestFacts: result.requestFacts, trace: result.trace } : {}),
     total: result.cases.length, passed: result.cases.filter((item) => item.passed).length, failed: result.cases.filter((item) => !item.passed).length,
     cases: result.cases, warnings: result.warnings,
     suite: { suiteRunId: result.suiteRunId, projectId: result.projectId, definitionRevision: result.definitionRevision, verdict: result.verdict,

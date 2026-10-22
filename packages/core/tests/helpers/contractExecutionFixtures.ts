@@ -1,4 +1,20 @@
 import type { ContractProject } from "../../src/contract/workspace.js";
+import { WorkflowSchema } from "../../src/workflow/model.js";
+
+/** The same three invocation/report scenarios are consumed by Core and both run hosts. */
+export function workflowReportScenarios(apiId: string, caseId: string) {
+  const ids = [91, 92, 93, 94, 95].map((id) => `10000000-0000-4000-8000-${String(id).padStart(12, "0")}`);
+  const [retry, or, recover, noop, bad] = ids;
+  const request = { id: "request", kind: "request", apiId, caseId };
+  const flow = (id: string | undefined, name: string, node: unknown) => WorkflowSchema.parse({ id, name, executionVersion: 2, status: "enabled", nodes: [node], edges: [] });
+  return [
+    flow(retry, "retry", { ...request, policy: { retry: { maxAttempts: 2, retryOn: ["transport"], delayMs: 0 } } }),
+    flow(or, "or", { id: "or", kind: "parallel", join: "any-success", branches: [{ id: "bad", workflowId: bad }, { id: "good", workflowId: noop }] }),
+    flow(recover, "recover", { ...request, policy: { onError: { workflowId: noop, mode: "recover" } } }),
+    flow(noop, "noop", { id: "noop", kind: "noop" }),
+    flow(bad, "bad", { id: "assert", kind: "assert", predicate: { op: "eq", left: { kind: "literal", value: 1 }, right: { kind: "literal", value: 2 } } }),
+  ];
+}
 
 export const contractExecutionIds = {
   project: "10000000-0000-4000-8000-000000000001",

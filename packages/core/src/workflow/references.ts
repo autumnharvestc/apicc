@@ -2,6 +2,25 @@ import type { DeepReadonly } from "../assets/context.js";
 import type { ApiAsset } from "../contract/model.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../contract/workspace.js";
 import type { TestCase } from "../domain/common.js";
+import type { WorkflowNode, WorkflowValue } from "./model.js";
+
+export interface WorkflowCallReference {
+  kind: "subflow" | "loop" | "branch" | "onError" | "finally";
+  workflowId: string;
+  branchId?: string;
+  inputs: DeepReadonly<Record<string, WorkflowValue>>;
+  outputs: Readonly<Record<string, string>>;
+  path: string;
+}
+/** The single direct-call enumerator used by compilation, impact and clone consumers. */
+export function workflowCalls(node: DeepReadonly<WorkflowNode>): WorkflowCallReference[] {
+  const calls: WorkflowCallReference[] = [];
+  if (node.kind === "subflow" || node.kind === "loop") calls.push({ kind: node.kind, workflowId: node.workflowId, inputs: node.inputs, outputs: node.outputs, path: "workflowId" });
+  if (node.kind === "parallel") node.branches.forEach((branch, index) => calls.push({ kind: "branch", branchId: branch.id, workflowId: branch.workflowId, inputs: branch.inputs, outputs: branch.outputs, path: `branches[${index}].workflowId` }));
+  if (node.policy?.onError) calls.push({ kind: "onError", workflowId: node.policy.onError.workflowId, inputs: {}, outputs: {}, path: "policy.onError.workflowId" });
+  if (node.policy?.finally) calls.push({ kind: "finally", workflowId: node.policy.finally.workflowId, inputs: {}, outputs: {}, path: "policy.finally.workflowId" });
+  return calls;
+}
 
 export interface ProjectApiLocation {
   api: DeepReadonly<ApiAsset>;

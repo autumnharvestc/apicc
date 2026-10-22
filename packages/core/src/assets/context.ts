@@ -1,5 +1,6 @@
 import type { ApiAsset, ApiContract, ApiRequest, ComponentAsset, ModelAsset } from "../contract/model.js";
 import type { DatasetAsset } from "../testing/model.js";
+import { workflowCalls } from "../workflow/references.js";
 import { referencesFromSuite, suiteReferenceDiagnostics } from "../testing/references.js";
 import type { CaseReferenceLocator, TestingReference } from "../testing/references.js";
 import {
@@ -444,7 +445,8 @@ function managedReferenceTarget(input: ProjectAssetGraphInput, id: string): Asse
 function inboundReferences(input: ProjectAssetGraphInput, query: string | AssetReferenceTarget): AssetDiagnostic[] {
   const target = typeof query === "string" ? managedReferenceTarget(input, query) : query;
   const id = typeof query === "string" ? query : query.id;
-  return [...collectProjectAssetReferences(input), ...(input.suites ?? []).flatMap(referencesFromSuite)]
+  return [...collectProjectAssetReferences(input), ...(input.suites ?? []).flatMap(referencesFromSuite),
+    ...(input.project?.workflows ?? []).flatMap((workflow) => workflow.nodes.flatMap((node, index) => workflowCalls(node).map((call): TestingReference => ({ ownerId: workflow.id, path: `nodes[${index}].${call.path}`, targetId: call.workflowId, expectedKind: "workflow" }))))]
     .filter((reference) => {
       if (reference.targetId !== id || (target && reference.expectedKind !== target.kind)) return false;
       if (target?.kind !== "case") return true;

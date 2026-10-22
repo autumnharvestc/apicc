@@ -22,7 +22,8 @@ import {
   Space as ASpace,
   Tag as ATag,
 } from "ant-design-vue";
-import type { NodeState, WorkflowStatus } from "@apicc/core";
+import type { EvidenceIdentity, JsonValue, NodeState, WorkflowNode, WorkflowStatus, WorkflowV2 } from "@apicc/core";
+import { JsonValueSchema } from "@apicc/core/schema";
 import type { WorkflowSummary } from "../../../shared/types.js";
 import type { ProjectLocator, WorkflowLocator } from "../../../shared/locations.js";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
@@ -33,6 +34,8 @@ import {
   applyEdgeAdd,
   applyEdgeCondition,
   applyEdgeRemove,
+  applyEdgePort,
+  createDesignerNode,
   applyNodeAdd,
   applyNodeMove,
   applyNodeRemove,
@@ -81,6 +84,7 @@ const props = defineProps<{
   reportError: (e: unknown) => void;
 }>();
 const { t } = useI18n();
+const emit = defineEmits<{ "locate-evidence": [identity: EvidenceIdentity, project: ProjectLocator, root: string] }>();
 
 const design = computed(() => props.workflowDesign);
 const wf = computed(() => props.workflowDesign.workflow);
@@ -92,8 +96,15 @@ const designBindIndex = computed(() => {
   const index = props.bindIndex;
   return index && sameProjectLocator(index.projectLocator, designProjectLocator.value) ? index : null;
 });
+const workflowOptions = computed(() => {
+  const project = designProjectLocator.value;
+  if (!project) return [];
+  return props.wfList.root === design.value.root && sameProjectLocator(props.wfList.projectLocator, project)
+    ? props.wfList.items : props.workspace.findProject(project)?.workflows ?? [];
+});
 
 const newName = ref("");
+const createVersion = ref<1 | 2>(2);
 async function createAndOpen() {
   const name = newName.value.trim();
   const projectLocator = props.projectLocator;
@@ -101,7 +112,7 @@ async function createAndOpen() {
   if (!name || !projectLocator || props.workspace.readOnly || props.wfList.root !== root
     || !sameProjectLocator(props.wfList.projectLocator, projectLocator)) return;
   try {
-    const created = await props.wfList.create(name, projectLocator);
+    const created = await props.wfList.create(name, projectLocator, createVersion.value);
     if (props.workspace.root !== root || !sameProjectLocator(props.projectLocator, projectLocator)) return;
     await props.workflowDesign.load(root, { ...projectLocator, workflowId: created.id });
     clearSelection();
@@ -124,6 +135,14 @@ async function selectWorkflow(locator: WorkflowLocator) {
   } catch (e) {
     props.reportError(e);
   }
+}
+
+function openReference(workflowId: string) {
+  const locator = design.value.locator;
+  if (!locator) return;
+  const fixed = { ...locator, workflowId };
+  if (workflowId === locator.workflowId) { clearSelection(); return; }
+  requestUnload(() => { void selectWorkflow(fixed); });
 }
 
 // —— 列表项删除（审查 I3：规格 D3 承诺删除/重命名，删除入口在此补齐）——
@@ -202,33 +221,87 @@ const runEnvOptions = computed(() => [
 
 /** 结果抽屉开关：运行完成自动打开（裁定）；顶栏「结果」按钮重开；关闭由抽屉 emit。 */
 const resultOpen = ref(false);
+const runInputs = ref<Record<string, JsonValue>>({});
+const inputErrors = ref<Record<string, string>>({});
+function definedRunInputs<T>(values: Record<string, T>): Record<string, T> {
+  const definitions = wf.value?.executionVersion === 2 ? wf.value.inputs : null;
+  return Object.fromEntries(Object.entries(values).filter(([name]) => definitions && Object.hasOwn(definitions, name)));
+}
+function syncRunInputDefinitions() {
+  runInputs.value = definedRunInputs(runInputs.value);
+  inputErrors.value = definedRunInputs(inputErrors.value);
+}
+watch(
+  () => wf.value?.executionVersion === 2 ? Object.keys(wf.value.inputs) : [],
+  syncRunInputDefinitions,
+  { flush: "sync" },
+);
+function setRunInput(name: string, event: Event) {
+  const text = (event.target as HTMLInputElement).value;
+  try {
+    const entries = Object.entries(runInputs.value).filter(([key]) => key !== name);
+    runInputs.value = Object.fromEntries(text === "" ? entries : [...entries, [name, JsonValueSchema.parse(JSON.parse(text))]]);
+    delete inputErrors.value[name];
+  } catch { inputErrors.value = Object.fromEntries([...Object.entries(inputErrors.value).filter(([key]) => key !== name), [name, t('wf.control.invalidJson')]]); }
+}
 
-// 切流（load/unload 改 workflowId）即重置运行会话态：环境选择与抽屉开关不跨流残留
+// 切流或同 locator 重载均开启新编辑会话，不保留上次运行输入或校验错误。
 // （残留失效环境名会被主进程「未找到环境」显式拒绝）。编辑不改 workflowId，不重置。
 watch(
-  () => JSON.stringify([design.value.root, design.value.locator]),
+  () => JSON.stringify([design.value.root, design.value.locator, design.value.loadEpoch]),
   () => {
     runEnv.value = "";
     resultOpen.value = false;
+    runInputs.value = {};
+    inputErrors.value = {};
   },
+  { flush: "sync" },
 );
 
 /** 顶栏「运行」：design.run 门控 draft/在途（store 内），链路拒绝统一转报错误通道。 */
 async function onRun() {
+  syncRunInputDefinitions();
+  if (Object.keys(inputErrors.value).length) return;
   const targetLocator = design.value.locator ? { ...design.value.locator } : null;
   const targetRoot = design.value.root;
   const targetGeneration = design.value.loadEpoch;
   try {
-    await design.value.run(runEnv.value || undefined);
+    await design.value.run(runEnv.value || undefined, wf.value?.executionVersion === 2 ? definedRunInputs(runInputs.value) : undefined);
   } catch (e) {
-    props.reportError(e);
+    if (design.value.loadEpoch === targetGeneration && design.value.root === targetRoot) props.reportError(e);
     return;
   }
   // 运行完成自动打开结果抽屉；切流守卫同 store（await 期间换流，旧流结果不弹）。
   if (design.value.runResult && targetLocator && targetRoot
     && props.workspace.root === targetRoot && design.value.root === targetRoot
+    && sameProjectLocator(props.projectLocator, targetLocator)
     && design.value.loadEpoch === targetGeneration
     && JSON.stringify(design.value.locator) === JSON.stringify(targetLocator)) resultOpen.value = true;
+}
+async function stop() { try { await design.value.cancel(); } catch (error) { props.reportError(error); } }
+function workflowChange(value: WorkflowV2) { if (!props.workspace.readOnly) design.value.update(value); }
+function edgePort(port?: "true" | "false") {
+  if (!props.workspace.readOnly && wf.value && selectedEdgeId.value) design.value.update(applyEdgePort(wf.value, selectedEdgeId.value, port));
+}
+function locate(identity: EvidenceIdentity) {
+  if (identity.locator) {
+    const project = designProjectLocator.value;
+    if (project && design.value.root === props.workspace.root) emit('locate-evidence', identity, { ...project }, design.value.root);
+    return;
+  }
+  const id = identity.workflowId ?? identity.invocationPath?.at(-1)?.workflowId;
+  const nodeId = identity.nodeId;
+  if (!id || !design.value.locator) return;
+  const root = design.value.root;
+  const target = { ...design.value.locator, workflowId: id };
+  const reveal = async () => {
+    if (root !== props.workspace.root) return;
+    if (id !== design.value.workflowId) await selectWorkflow(target);
+    if (root !== design.value.root || id !== design.value.workflowId) return;
+    selectedNodeId.value = nodeId && wf.value?.nodes.some(node => node.id === nodeId) ? nodeId : null;
+    selectedEdgeId.value = null;
+  };
+  if (id === design.value.workflowId) void reveal(); else requestUnload(() => { void reveal(); });
 }
 
 // —— 工作流列表入口：进入视图/切换项目时拉取（选中与新建即 load 进设计器） ——
@@ -303,12 +376,14 @@ const flowNodes = computed(() => {
     data: {
       ...n.data,
       apiName: (() => {
+        if (n.data.node.kind !== "request" && n.data.node.kind !== "noop") return undefined;
         const apiId = n.data.node.apiId;
         const candidates = apiId ? index?.apiLocatorsById.get(apiId) : undefined;
         const locator = candidates?.length === 1 ? candidates[0] : undefined;
         return locator && index ? index.apiNames.get(apiLocatorKey(locator)) : undefined;
       })(),
       caseName: (() => {
+        if (n.data.node.kind !== "request" && n.data.node.kind !== "noop") return undefined;
         const apiId = n.data.node.apiId;
         const caseId = n.data.node.caseId;
         const candidates = apiId ? index?.apiLocatorsById.get(apiId) : undefined;
@@ -334,6 +409,40 @@ const flowEdges = computed(() => {
 const selectedNodeData = computed(() =>
   selectedNodeId.value ? (flowNodes.value.find((n) => n.id === selectedNodeId.value)?.data ?? null) : null,
 );
+const selectedReferences = computed(() => {
+  const node = selectedNodeData.value?.node;
+  if (!node) return [];
+  return [...('workflowId' in node ? [node.workflowId] : []), ...(node.kind === 'parallel' ? node.branches.map(branch => branch.workflowId) : []),
+    ...(node.policy?.onError ? [node.policy.onError.workflowId] : []), ...(node.policy?.finally ? [node.policy.finally.workflowId] : [])];
+});
+// Local draft hints are advisory. Authoritative closure/preparation validation remains in Core.
+const draftFindings = computed(() => {
+  const workflow = wf.value;
+  if (workflow?.executionVersion !== 2) return [];
+  const findings: Array<{ nodeId?: string; field: string; message: string }> = [];
+  const add = (nodeId: string | undefined, field: string, key: string) => findings.push({ nodeId, field, message: t(`wf.control.${key}`) });
+  const entries = workflow.nodes.filter(node => !workflow.edges.some(edge => edge.to === node.id));
+  if (entries.length !== 1) add(undefined, 'nodes', 'entryCount');
+  for (const node of workflow.nodes) {
+    const edges = workflow.edges.filter(edge => edge.from === node.id);
+    if (node.kind === 'condition') {
+      if (edges.some(edge => !edge.port) || new Set(edges.map(edge => edge.port)).size !== edges.length) add(node.id, 'edges.port', 'conditionPorts');
+    } else if (edges.length > 1) add(node.id, 'edges', 'fanOut');
+    if (workflow.nodes.length > 1 && !workflow.edges.some(edge => edge.to === node.id || edge.from === node.id)) add(node.id, 'edges', 'graphIncomplete');
+    const calls = node.kind === 'parallel' ? node.branches : 'workflowId' in node ? [node] : [];
+    const targets = new Set<string>();
+    calls.forEach((call, index) => {
+      const field = node.kind === 'parallel' ? `branches[${index}]` : '';
+      if (!workflowOptions.value.some(item => item.id === call.workflowId)) add(node.id, `${field}.workflowId`, 'missingReference');
+      const local = new Set<string>();
+      for (const target of Object.values(call.outputs)) {
+        if (local.has(target) || (node.kind === 'parallel' && node.join === 'all' && targets.has(target))) add(node.id, `${field}.outputs`, 'outputConflict');
+        local.add(target); targets.add(target);
+      }
+    });
+  }
+  return findings;
+});
 const selectedEdgeData = computed(() =>
   selectedEdgeId.value ? (flowEdges.value.find((e) => e.id === selectedEdgeId.value)?.data ?? null) : null,
 );
@@ -348,12 +457,14 @@ function onEdgeClick({ edge }: EdgeMouseEvent) {
   selectedNodeId.value = null;
 }
 
-function addNode(kind: "request" | "noop") {
+const nodeKind = ref<WorkflowNode["kind"]>("request");
+const kinds: WorkflowNode["kind"][] = ["request", "noop", "assign", "delay", "assert", "condition", "subflow", "loop", "parallel"];
+function addNode(kind: WorkflowNode["kind"]) {
   if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w) return;
   design.value.update(
-    applyNodeAdd(w, { id: crypto.randomUUID(), kind, label: kind === "request" ? t("wf.newRequest") : t("wf.newNoop") }),
+    applyNodeAdd(w, { ...createDesignerNode(kind, workflowOptions.value.find(item => item.id !== w.id)?.id ?? w.id), label: w.executionVersion === 2 ? t(`wf.control.kinds.${kind}`) : kind === 'request' ? t('wf.newRequest') : t('wf.newNoop') }),
   );
 }
 
@@ -379,13 +490,13 @@ function onEdgeConditionChange(condition: string) {
   design.value.update(applyEdgeCondition(w, selectedEdgeId.value, condition));
 }
 
-function onConnect({ source, target }: Connection) {
+function onConnect({ source, target, sourceHandle }: Connection) {
   if (props.workspace.readOnly) return;
   const w = wf.value;
   if (!w || !source || !target) return;
   // 自环/重复边拒绝在数据层（错误文案统一），此处仅转报
   try {
-    design.value.update(applyEdgeAdd(w, { source, target }));
+    design.value.update(applyEdgeAdd(w, { source, target, ...(sourceHandle === "true" || sourceHandle === "false" ? { port: sourceHandle } : {}) }));
   } catch (e) {
     props.reportError(e);
   }
@@ -451,10 +562,12 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
 
 <template>
   <div class="wf-designer" data-testid="wf-designer">
+    <div v-if="design.running && (!wf || design.activeRun?.epoch !== design.loadEpoch)" class="wf-inflight" data-testid="wf-background-run"><span>{{ design.activeRun?.locator.workflowId }} · {{ t(design.stopping ? 'wf.control.stopping' : 'wf.run') }}</span><button type="button" :disabled="design.stopping" @click="stop">{{ t('wf.control.stop') }}</button></div>
     <!-- 未选工作流：空态 + 列表入口（项目内工作流的新建与打开） -->
     <div v-if="!wf" class="wf-empty" data-testid="wf-empty">
       <EmptyState :text="t('wf.empty')" />
       <div class="wf-create">
+        <select v-model="createVersion" data-testid="wf-create-version" :disabled="workspace.readOnly" :aria-label="t('wf.control.version')"><option :value="2">{{ t('wf.control.v2') }}</option><option :value="1">{{ t('wf.control.v1') }}</option></select>
         <a-input
           v-model:value="newName"
           class="wf-new-name"
@@ -492,8 +605,9 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         <span v-if="design.dirty" class="wf-dirty" data-testid="wf-dirty" :title="t('wf.unsaved')">●</span>
         <a-button size="small" data-testid="wf-back-to-list" @click="backToList">{{ t("wf.backToList") }}</a-button>
         <a-space class="wf-actions">
-          <a-button size="small" data-testid="wf-add-request" :disabled="workspace.readOnly" @click="addNode('request')">{{ t("wf.addRequest") }}</a-button>
-          <a-button size="small" data-testid="wf-add-noop" :disabled="workspace.readOnly" @click="addNode('noop')">{{ t("wf.addNoop") }}</a-button>
+          <template v-if="wf.executionVersion === 2"><select v-model="nodeKind" data-testid="wf-kind-select" :disabled="workspace.readOnly" :aria-label="t('wf.control.nodeKind')"><option v-for="kind in kinds" :key="kind" :value="kind">{{ t(`wf.control.kinds.${kind}`) }}</option></select><a-button size="small" data-testid="wf-add-node" :disabled="workspace.readOnly" @click="addNode(nodeKind)">{{ t('wf.control.addNode') }}</a-button></template>
+          <template v-else><a-button size="small" data-testid="wf-add-request" :disabled="workspace.readOnly" @click="addNode('request')">{{ t("wf.addRequest") }}</a-button>
+          <a-button size="small" data-testid="wf-add-noop" :disabled="workspace.readOnly" @click="addNode('noop')">{{ t("wf.addNoop") }}</a-button></template>
           <a-button size="small" type="primary" data-testid="wf-save" :loading="design.saving" :disabled="workspace.readOnly" @click="save">
             {{ t("wf.save") }}
           </a-button>
@@ -539,13 +653,14 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           <a-button
             size="small"
             data-testid="wf-run"
-            :disabled="wf.status === 'draft'"
+            :disabled="wf.status === 'draft' || design.dirty || design.saving || design.running || Object.keys(inputErrors).length > 0"
             :loading="design.running"
             :title="wf.status === 'draft' ? t('wf.runDraftDisabled') : undefined"
             @click="onRun"
           >
             {{ t("wf.run") }}
           </a-button>
+          <a-button v-if="design.running" size="small" data-testid="wf-stop" :disabled="design.stopping" @click="stop">{{ t(design.stopping ? 'wf.control.stopping' : 'wf.control.stop') }}</a-button>
           <!-- 「结果」：运行结果就绪后可打开结果抽屉（运行完成亦会自动打开） -->
           <a-button
             size="small"
@@ -557,6 +672,11 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           </a-button>
         </a-space>
       </div>
+      <details v-if="wf.executionVersion === 2 && Object.keys(wf.inputs).length" class="wf-run-inputs" data-testid="wf-run-inputs">
+        <summary>{{ t('wf.control.runInputs') }}</summary><label v-for="(definition, name) in wf.inputs" :key="name">{{ name }}{{ definition.required ? ' *' : '' }}<input :value="Object.hasOwn(runInputs, name) ? JSON.stringify(runInputs[name]) : ''" :placeholder="definition.default === undefined ? t('wf.control.jsonValue') : JSON.stringify(definition.default)" :disabled="design.running" @change="setRunInput(name, $event)" /><span v-if="Object.hasOwn(inputErrors, name)" role="alert">{{ inputErrors[name] }}</span></label>
+      </details>
+      <p v-if="wf.executionVersion !== 2" class="wf-version-hint">{{ t('wf.control.legacyHint') }}</p>
+      <details v-if="draftFindings.length" class="wf-draft-findings" data-testid="wf-draft-findings"><summary>{{ t('wf.control.findings') }} · {{ draftFindings.length }}</summary><ul><li v-for="(finding, index) in draftFindings" :key="index"><button v-if="finding.nodeId" type="button" @click="selectedNodeId = finding.nodeId; selectedEdgeId = null">{{ finding.nodeId }}</button> · {{ finding.field }} · {{ finding.message }}</li></ul></details>
 
       <!-- 启用校验错误（set-status 返回 errors 非空）：逐条展示，可关闭（store.dismissValidation） -->
       <a-alert
@@ -619,16 +739,22 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
               :node-data="selectedNodeData"
               :edge-data="selectedEdgeData"
               :bind-options="designBindIndex?.options ?? []"
+              :workflow="wf"
+              :workflows="workflowOptions"
               @node-change="onNodeChange"
               @edge-condition="onEdgeConditionChange"
               @remove-node="removeSelectedNode"
+              @workflow-change="workflowChange"
+              @edge-port="edgePort"
+              @navigate="openReference"
             />
           </div>
+          <div v-if="workspace.readOnly && selectedReferences.length" class="wf-readonly-references"><button v-for="(id, index) in selectedReferences" :key="index" type="button" @click="openReference(id)">{{ t('wf.control.openReference') }} · {{ workflowOptions.find(item => item.id === id)?.name ?? id }}</button></div>
         </a-layout-sider>
       </a-layout>
 
       <!-- 运行结果抽屉（任务 7）：纯展示，开关状态在本组件（运行完成自动打开） -->
-      <WfResultDrawer :open="resultOpen" :result="design.runResult" @close="resultOpen = false" />
+      <WfResultDrawer :open="resultOpen" :result="design.runResult" :project-locator="designProjectLocator" @close="resultOpen = false" @locate="locate" />
     </template>
 
     <!-- 离开确认（返回列表/换项目遇 dirty）：确认丢弃后卸载编辑会话 -->
@@ -646,6 +772,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
 
 <style scoped>
 .wf-designer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.wf-inflight { flex-shrink: 0; display: flex; gap: 8px; padding: 6px 12px; font-size: 12px; overflow-wrap: anywhere; }
 .wf-empty { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: auto; }
 .wf-create { display: flex; gap: 8px; max-width: 420px; }
 .wf-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -686,10 +813,19 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  max-height: 36vh;
+  overflow: auto;
 }
 .wf-title { font-weight: 600; }
 .wf-dirty { color: var(--accent); }
-.wf-actions { margin-left: auto; }
+.wf-actions { margin-left: auto; flex-wrap: wrap; }
+.wf-run-inputs { max-height: 18vh; overflow: auto; padding: 4px 12px; flex-shrink: 0; }
+.wf-run-inputs label { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0; }
+.wf-version-hint { margin: 4px 12px; font-size: 12px; color: var(--text-muted); }
+.wf-draft-findings { max-height: 16vh; overflow: auto; flex-shrink: 0; padding: 4px 12px; font-size: 12px; overflow-wrap: anywhere; }
+.wf-readonly-references { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
 .wf-run-env { width: 120px; }
 .wf-errors { margin: 8px 12px 0; }
 .wf-errors-title { font-weight: 600; }

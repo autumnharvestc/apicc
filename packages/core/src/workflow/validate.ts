@@ -2,6 +2,7 @@ import type { Workflow, WorkflowNode, WorkflowEdge } from "./model.js";
 import type { Project, Workspace } from "../domain/model.js";
 import type { DeepReadonly } from "../assets/context.js";
 import { findProjectApi } from "./references.js";
+import { inspectWorkflowClosure } from "./plan.js";
 
 export interface ValidationIssue { level: "error" | "warning"; code: string; message: string }
 
@@ -19,6 +20,18 @@ export function validateWorkflowStructure(wf: DeepReadonly<Workflow>): Validatio
     if (count > 1) issues.push({ level: "error", code: "duplicate-edge-id", message: `边 ID 重复: ${id}` });
   }
   const ids = new Set(wf.nodes.map((n) => n.id));
+  if (wf.executionVersion === 2) {
+    const roots = wf.nodes.filter((node) => !wf.edges.some((edge) => edge.to === node.id));
+    if (roots.length !== 1) issues.push({ level: "error", code: "entry-count", message: "v2 工作流必须有唯一入口" });
+    for (const node of wf.nodes) {
+      const outgoing = wf.edges.filter((edge) => edge.from === node.id);
+      if (node.kind !== "condition" && outgoing.length > 1) issues.push({ level: "error", code: "implicit-fanout", message: `节点 ${node.id} 不允许隐式扇出` });
+      if (outgoing.some((edge) => node.kind !== "condition" ? edge.port !== undefined : edge.port === undefined)
+        || (node.kind === "condition" && new Set(outgoing.map((edge) => edge.port)).size !== outgoing.length)) {
+        issues.push({ level: "error", code: "condition-port", message: `节点 ${node.id} 条件端口无效或重复` });
+      }
+    }
+  }
 
   for (const e of wf.edges) {
     if (!ids.has(e.from) || !ids.has(e.to)) {
@@ -55,14 +68,14 @@ export function validateWorkflowStructure(wf: DeepReadonly<Workflow>): Validatio
   const hasInOut = new Set(wf.edges.flatMap((e) => [e.from, e.to]));
   for (const n of wf.nodes) {
     if (!hasInOut.has(n.id) && wf.nodes.length > 1) {
-      issues.push({ level: "warning", code: "isolated-node", message: `节点「${n.label ?? n.id}」没有任何连线（孤立节点）` });
+      issues.push({ level: wf.executionVersion === 2 ? "error" : "warning", code: "isolated-node", message: `节点「${n.label ?? n.id}」没有任何连线（孤立节点）` });
     }
   }
 
   // 完全重复边（同 from/to/condition）
   const seen = new Map<string, number>();
   for (const e of wf.edges) {
-    const key = `${e.from}\u0000${e.to}\u0000${e.condition ?? ""}`;
+    const key = `${e.from}\u0000${e.to}\u0000${"condition" in e ? e.condition ?? "" : "port" in e ? e.port ?? "" : ""}`;
     seen.set(key, (seen.get(key) ?? 0) + 1);
     if (seen.get(key) === 2) {
       issues.push({ level: "warning", code: "duplicate-edge", message: `存在完全重复的边: ${e.from} → ${e.to}` });
@@ -116,6 +129,13 @@ export function validateEnablement(wf: Workflow, workspace: Workspace, project?:
   // 显式 project 时严格限制在该项目；否则若能定位工作流所属项目则优先该项目，
   // 仅独立验证（没有所属项目）才退回 workspace 全局查找。
   const owner = project ?? workspace.groups.flatMap((group) => group.projects).find((candidate) => candidate.workflows.some((item) => item.id === wf.id));
+  if (wf.executionVersion === 2) {
+    if (!owner) errors.push("v2 工作流必须属于同一项目");
+    else {
+      try { inspectWorkflowClosure({ ...owner, workflows: [...owner.workflows.filter((item) => item.id !== wf.id), wf] }, wf.id, { allowDraft: true }, "enablement"); }
+      catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    }
+  }
 
   // 三层查找：collections 直属 apis 与 folder apis 两种归属都要覆盖。
   const findCase = (apiId: string, caseId: string): boolean => {

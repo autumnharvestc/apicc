@@ -95,7 +95,7 @@ function outcomeState(record: Record<string, any>): OutcomeState {
 
 // CaseOutcome 无独立 id：apiId+caseId+数据行号合成稳定 rowKey（EnvPanel row-key 告警教训）。
 function rowKey(record: CaseOutcome): string {
-  return JSON.stringify([record.locator, record.apiId, record.caseId, record.scope, record.entryId, record.suiteRow, record.row, record.nodeId]);
+  return JSON.stringify([record.locator, record.apiId, record.caseId, record.scope, record.entryId, record.suiteRow, record.row, record.nodeId, record.invocationId, record.invocationPath, record.nodeVisitId, record.attempt]);
 }
 
 function formatMs(ms: number): string {
@@ -129,7 +129,8 @@ function formatMs(ms: number): string {
         <a-button data-testid="runs-history-btn" @click="run.historyOpen = true">{{ t("run.history") }}</a-button>
       </div>
       <div v-if="run.result" class="summary" data-testid="run-summary">
-        {{ t("run.summary", { total: run.result.total, passed: run.result.passed, failed: run.result.failed, skipped: run.result.skipped ?? 0 }) }}
+        <p v-if="run.result.reportingMode" data-testid="run-logical-summary">{{ t('wf.control.mode') }}: {{ run.result.reportingMode }} · {{ t('wf.control.logicalVerdict') }}: {{ run.result.suite?.verdict ?? run.result.workflowUnits?.[0]?.verdict ?? '—' }} · {{ t('wf.control.logicalUnits') }}: {{ reportingUnits(run.result).summary.total }} · {{ t('wf.control.rawRows') }}: {{ run.result.total }} · {{ t('wf.control.rawFailed') }}: {{ run.result.failed }}</p>
+        <span v-else>{{ t("run.summary", { total: run.result.total, passed: run.result.passed, failed: run.result.failed, skipped: run.result.skipped ?? 0 }) }}</span>
         <p v-if="run.result.suite">条目 {{ run.result.suite.total }} · 失败 {{ run.result.suite.failed }} · 跳过 {{ run.result.suite.skipped }} · {{ run.result.suite.verdict }}</p>
         <p v-if="run.result.reportingUnits">reporting-units {{ run.result.reportingUnits.total }} · failed {{ run.result.reportingUnits.failed }}</p>
         <details v-if="run.result.workflow"><summary>工作流节点统计及状态</summary><pre>{{ JSON.stringify(run.result.workflow, null, 2) }}</pre></details>

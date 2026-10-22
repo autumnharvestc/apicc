@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CredentialError, fileStorage, StressReportSchema, type CredentialScope, type ProtocolClient, type SecretRef, type SecretStore, type StorageAdapter } from "@apicc/core";
+import { CredentialError, fileStorage, StressReportSchema, WorkflowSchema, type CredentialScope, type ProtocolClient, type SecretRef, type SecretStore, type StorageAdapter } from "@apicc/core";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { contractAssetFixture, duplicateContractProjectAcrossGroups } from "../helpers/contract-assets.js";
 
@@ -178,6 +178,78 @@ describe("memory 替身正式资产入口", () => {
 });
 
 describe("memory 替身正式工作流入口", () => {
+  it("runs v2 through the shared controller and labels its synthetic demonstration", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "apicc-memory-workflow-normalized-"));
+    const normalizedClient = hangingClient();
+    const normalizedApi = createMemoryApi({ root: directory, stressClient: normalizedClient.client });
+    const created = await normalizedApi.wsCreate(`${directory}/.`, "normalized root");
+    const project = await normalizedApi.nodeCreate({ kind: "project", parent: { workspaceId: created.workspace.id, groupId: created.workspace.groups[0]!.id }, name: "normalized project" });
+    if (project.kind !== "project") throw new Error("Expected normalized project");
+    const normalizedWorkflow = await normalizedApi.wfCreate({ locator: project.locator, name: "normalized workflow", executionVersion: 2 });
+    const normalizedLocator = { ...project.locator, workflowId: normalizedWorkflow.id };
+    await normalizedApi.wfSave(normalizedLocator, WorkflowSchema.parse({ ...normalizedWorkflow, nodes: [{ id: "noop", kind: "noop" }] }));
+    await normalizedApi.wfSetStatus(normalizedLocator, "published");
+    expect(await normalizedApi.wfRun({ locator: normalizedLocator, root: created.root })).toMatchObject({ verdict: "passed" });
+    expect(await normalizedApi.wsPickDirectory()).toBe(created.root);
+    const opened = await normalizedApi.wsOpen(`${directory}/`);
+    expect(await normalizedApi.wfRun({ locator: normalizedLocator, root: opened.root })).toMatchObject({ verdict: "passed" });
+    expect(await normalizedApi.wsPickDirectory()).toBe(opened.root);
+    const collection = await normalizedApi.nodeCreate({ kind: "collection", parent: project.locator, name: "normalized collection" });
+    if (collection.kind !== "collection") throw new Error("Expected normalized collection");
+    const api = await normalizedApi.nodeCreate({ kind: "api", parent: collection.locator, api: { name: "normalized request", method: "GET", baseUrl: "http://127.0.0.1", path: "/" } });
+    if (api.kind !== "api") throw new Error("Expected normalized API");
+    const normalizedDetail = await normalizedApi.apiGet(api.locator);
+    await normalizedApi.wfSave(normalizedLocator, WorkflowSchema.parse({ ...normalizedWorkflow, nodes: [{ id: "request", kind: "request", apiId: api.id, caseId: normalizedDetail.api.cases[0]!.id }] }));
+    const normalizedCapture = { locator: normalizedLocator, root: opened.root, invocationId: "10000000-0000-4000-8000-000000000003" };
+    const normalizedRun = normalizedApi.wfRun(normalizedCapture);
+    try {
+      await normalizedClient.waitEntered();
+      expect(await normalizedApi.wfCancel({ ...normalizedCapture, root: `${directory}/` })).toBe(false);
+      expect(await normalizedApi.wfCancel(normalizedCapture)).toBe(true);
+      normalizedClient.release();
+      expect(await normalizedRun).toMatchObject({ verdict: "aborted" });
+    } finally {
+      normalizedClient.release();
+      await normalizedRun.catch(() => undefined);
+    }
+
+    const fake = hangingClient();
+    const fixture = await contractAssetFixture(createMemoryApi({ stressClient: fake.client }));
+    const workflow = await fixture.api.wfCreate({ locator: fixture.projectLocator, name: "v2 演示" });
+    const locator = { ...fixture.projectLocator, workflowId: workflow.id };
+    await fixture.api.wfSave(locator, WorkflowSchema.parse({ ...workflow, executionVersion: 2, nodes: [{ id: "noop", kind: "noop" }], edges: [] }));
+    await fixture.api.wfSetStatus(locator, "published");
+    const result = await fixture.api.wfRun({ locator, invocationId: "10000000-0000-4000-8000-000000000001" });
+    expect(result).toMatchObject({ verdict: "passed", reportingMode: "workflow-invocation-v2" });
+    expect(result.warnings.join(" ")).toContain("内存演示");
+    expect(await fixture.api.wfCancel({ locator, invocationId: result.invocationId!, root: "unused" })).toBe(false);
+    await expect(fixture.api.wfRun({ locator, invocationId: result.invocationId, root: `${fixture.root}-wrong` })).rejects.toThrow(/workspace context changed/);
+    expect(await fixture.api.wfRun({ locator, invocationId: result.invocationId, root: fixture.root })).toMatchObject({ verdict: "passed" });
+
+    const detail = await fixture.api.apiGet(fixture.apiLocator);
+    await fixture.api.wfSave(locator, WorkflowSchema.parse({ ...workflow, executionVersion: 2, nodes: [{ id: "request", kind: "request", apiId: fixture.apiLocator.apiId, caseId: detail.api.cases[0]!.id }], edges: [] }));
+    const capture = { locator, root: fixture.root, invocationId: "10000000-0000-4000-8000-000000000002" };
+    let settled = false;
+    const running = fixture.api.wfRun(capture).finally(() => { settled = true; });
+    try {
+      await fake.waitEntered();
+      await expect(fixture.api.wfRun(capture)).rejects.toThrow(/already active/);
+      expect(await fixture.api.wfCancel({ ...capture, root: `${fixture.root}-wrong` })).toBe(false);
+      expect(await fixture.api.wfCancel(capture)).toBe(true);
+      expect(settled).toBe(false); // accepted cancellation still waits for the real synthetic client
+      await fixture.api.wsOpen(`${fixture.root}-copy`);
+      expect(await fixture.api.wfCancel(capture)).toBe(false);
+      expect(await fixture.api.wfCancel({ ...capture, root: `${fixture.root}-copy` })).toBe(false);
+      await fixture.api.wsOpen(fixture.root);
+      expect(await fixture.api.wfCancel(capture)).toBe(false); // A → B → A does not revive ownership
+      expect(settled).toBe(false);
+      fake.release();
+      expect(await running).toMatchObject({ verdict: "aborted" });
+    } finally {
+      fake.release();
+      await running.catch(() => undefined);
+    }
+  });
   it("用完整 WorkflowLocator 假执行已发布工作流", async () => {
     const fixture = await contractAssetFixture();
     const workflow = await fixture.api.wfCreate({ locator: fixture.projectLocator, name: "可运行工作流" });

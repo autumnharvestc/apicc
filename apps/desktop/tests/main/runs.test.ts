@@ -21,6 +21,8 @@ describe("runs 历史", () => {
     expect(listRuns(dir).find((row) => row.file === "suite.json")).toMatchObject({ kind: "suite", projectId: "project-a" });
     expect(listRuns(dir).find((row) => row.file === "workflow.json")).toMatchObject({ kind: "workflow", projectId: "project-b" });
     expect(readRun(dir, "old.json")).toEqual(sample);
+    writeFileSync(join(dir, "v2.json"), JSON.stringify({ ...sample, kind: "workflow", workflowId: "wf", reportingMode: "workflow-invocation-v2", workflowUnits: [{ entryId: "wf", workflowId: "wf", invocationId: "invocation", verdict: "passed" }], workflow: { verdict: "passed" } }));
+    expect(listRuns(dir).find((row) => row.file === "v2.json")).toMatchObject({ failed: 1, reportingMode: "workflow-invocation-v2", logicalVerdict: "passed", reportingUnits: { total: 1, passed: 1, failed: 0 } });
     writeFileSync(join(dir, "container.json"), JSON.stringify({ ...sample, total: 1, passed: 1, failed: 0, reportingUnits: { total: 2, passed: 1, failed: 1, skipped: 0, entryDiagnostics: 1 } }));
     expect(listRuns(dir).find((row) => row.file === "container.json")).toMatchObject({ total: 1, passed: 1, failed: 0, reportingUnits: { total: 2, failed: 1, entryDiagnostics: 1 } });
   });

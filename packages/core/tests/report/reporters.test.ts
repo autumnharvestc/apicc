@@ -24,11 +24,77 @@ const sample: RunResult = {
 };
 
 describe("C1 final evidence boundary", () => {
+  it("budgets the first trace projection before visiting omitted business messages", () => {
+    let reads = 0;
+    const events = Array.from({ length: 12 }, () => ({ type: "node-end" as const, nodeId: "E", get message() { reads++; return "E".repeat(256); } }));
+    const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, ["E", "D"]);
+    const safe = collector.projectRun({ ...sample, cases: [], trace: { events, totalEvents: events.length, truncated: false } }, { reportBytes: 4096, valueBytes: 256 });
+    expect(safe.trace?.truncated).toBe(true); expect(reads).toBeLessThan(events.length);
+    expect(safe.trace?.events.every((event) => event.nodeId === "E")).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(safe))).toBeLessThanOrEqual(4096);
+  });
   const execution = (text: string): CaseExecutionResult => ({
     request: { protocol: "http", method: "GET", url: "https://example.test", headers: { Authorization: "Bearer private", Cookie: "sid=cookie-private" }, query: [], auth: { kind: "none" } },
     response: { status: 200, headers: {}, bodyText: text, timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 2, iterationTimeMs: 3,
     outcome: { ...sample.cases[1]!, locator: { collectionId: "c1", folderIds: [], apiId: "a1", caseId: "t2", scope: "base" }, error: text, assertions: [{ pass: false, message: text }] },
     assertionOutcomes: [{ id: "assert-1", op: "eq", selector: { target: "bodyText", match: "first" }, code: "MISMATCH", pass: false, message: text, actual: text, expected: text, differencePath: "$.x" }],
+  });
+  it("keeps exact v2 attempt evidence when rows are reordered and final logical success in all reporters", async () => {
+    const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "rev" }, [], { mode: "all" });
+    const identity = { invocationId: "root", invocationPath: [{ workflowId: "wf", branchId: "branch", iteration: 0, handler: "finally" as const }], nodeVisitId: "visit" };
+    const failed = execution("early late-secret"); Object.assign(failed.outcome, identity, { attempt: 1, nodeId: "n", entryId: "n" });
+    failed.requestStarted = false; failed.requestCompleted = false;
+    const passed = execution("second"); Object.assign(passed.outcome, identity, { attempt: 2, nodeId: "n", entryId: "n", passed: true });
+    passed.extractionOutcomes = [{ id: "secret", name: "s", selector: { target: "bodyText", match: "first" }, status: "extracted", pass: true, published: true, sensitive: true, code: "OK", message: "ok", value: "late-secret" }];
+    collector.observe(failed, { ...identity, attempt: 1, entryId: "n" }); collector.observe(passed, { ...identity, attempt: 2, entryId: "n" });
+    const raw: import("../../src/workflow/runner.js").WorkflowRunResult = { ...identity, workflowId: "wf", workflowName: "wf", status: "enabled", total: 1, passed: 1, failed: 0, skipped: 0, verdict: "passed", warnings: [], startedAt: sample.startedAt, finishedAt: sample.finishedAt,
+      requestFacts: { requestStarted: 1, requestCompleted: 1, httpExchanges: 1 },
+      trace: { events: [
+        { ...identity, type: "node-end", nodeId: "n", state: "passed", message: "early late-secret" },
+        { ...identity, type: "branch-winner", nodeId: "n", branchId: "winner<&" },
+        { ...identity, type: "retry-wait", nodeId: "n", attempt: 1, delayMs: 7 },
+        { ...identity, type: "recovered", nodeId: "n" },
+        { ...identity, type: "loop-iteration", nodeId: "n", iteration: 0 },
+        { ...identity, type: "cleanup-end", nodeId: "n", state: "passed" },
+      ], truncated: false, totalEvents: 6 },
+      nodeResults: [{ ...identity, attempt: 1, nodeId: "n", label: "request <node>", kind: "request", state: "passed", outcomes: [passed.outcome, failed.outcome], recoveredError: { code: "node-failed", cause: "failure", failureKind: "assertion", message: "late-secret" } }] };
+    const safe = collector.projectWorkflow(raw);
+    const report = safe.report!;
+    expect(report.reportingMode).toBe("workflow-invocation-v2");
+    expect(report.cases[0]!.evidence?.response?.body.text).toBe("second");
+    expect(report.cases[1]!.evidence?.identity).toMatchObject({ ...identity, attempt: 1 });
+    expect(report.cases[1]!.passed).toBe(false);
+    expect(safe.nodeResults[0]!.recoveredError?.message).not.toContain("late-secret");
+    expect(JSON.stringify(safe)).not.toContain("late-secret");
+    const out = mkdtempSync(join(tmpdir(), "apicc-f5-logical-"));
+    const xml = readFileSync(await junitReporter.render(report, out), "utf8");
+    expect(xml).toContain('tests="1" failures="0"'); expect(xml).not.toContain("<failure"); expect(xml).toContain("failed-attempts");
+    const html = readFileSync(await htmlReporter.render(report, out), "utf8");
+    expect(html).toContain("workflow-invocation-v2"); expect(html).toContain("passed"); expect(html).toContain("early");
+    expect(html.match(/<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1]).toBe("最终逻辑调用 · 总计 1 · 通过 1 · 失败 0 · 跳过 0");
+    const facts = /<section id="execution-facts">([\s\S]*?)<\/section>/.exec(html)![1]!;
+    expect(facts).toContain("真实执行行 2"); expect(facts).toContain("原始失败行 1");
+    expect(facts).toContain("requestStarted 1"); expect(facts).toContain("requestCompleted 1"); expect(facts).toContain("httpExchanges 1");
+    const nodes = /<section id="workflow-nodes">([\s\S]*?)<\/section>/.exec(html)![1]!;
+    expect(nodes).toContain("<th>节点</th>"); expect(nodes).toContain("<th>类型</th>"); expect(nodes).toContain("<th>状态</th>");
+    expect(nodes).toContain("request &lt;node&gt;"); expect(nodes).toContain("通过（passed）");
+    const trace = /<section id="trace">([\s\S]*?)<\/section>/.exec(html)![1]!;
+    const readableTrace = trace.replace(/<details>[\s\S]*?<\/details>/g, "");
+    expect(readableTrace).toContain("分支胜出（branch-winner）"); expect(readableTrace).toContain("重试等待（retry-wait）");
+    expect(readableTrace).toContain("错误已恢复（recovered）"); expect(readableTrace).toContain("清理结束（cleanup-end）");
+    expect(readableTrace).toContain("winner&lt;&amp;"); expect(readableTrace).toContain("循环 1"); expect(readableTrace).not.toContain("循环 0");
+    expect(readableTrace).toContain("attempt 1"); expect(readableTrace).toContain("等待 7 ms");
+    expect(readableTrace.indexOf("node-end")).toBeLessThan(readableTrace.indexOf("branch-winner"));
+    expect(readableTrace.indexOf("recovered")).toBeLessThan(readableTrace.indexOf("cleanup-end"));
+    expect(trace).toContain('"invocationId": "root"'); expect(trace).toContain('"nodeVisitId": "visit"'); expect(trace).toContain('"invocationPath"');
+    expect(html.match(/<tr class="(?:pass|fail|skip)">/g)).toHaveLength(2);
+    expect(html).not.toContain("条目 {}"); expect(html).not.toContain("late-secret");
+    const truncatedHtml = readFileSync(await htmlReporter.render({ ...report, trace: { ...report.trace!, truncated: true, totalEvents: 9 } }, out), "utf8");
+    expect(truncatedHtml).toContain("轨迹已截断"); expect(truncatedHtml).toContain("显示 6 / 9 个事件");
+    const bounded = collector.projectWorkflow({ ...raw, trace: { events: Array.from({ length: 20001 }, () => ({ ...identity, type: "node-end", message: "late-secret" })), totalEvents: 20001, truncated: false } });
+    expect(bounded.trace?.truncated).toBe(true); expect(bounded.trace!.events.length).toBeLessThanOrEqual(20000);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(16 * 1024 * 1024);
+    expect(JSON.stringify(bounded)).not.toContain("late-secret");
   });
   it("reprojects earlier legacy errors, script assertions and complete bodies with late sensitive markers before truncation", async () => {
     const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "rev" }, ["known-private"]);
@@ -91,6 +157,25 @@ describe("C1 final evidence boundary", () => {
     expect(html).toContain("container &lt;failed&gt;");
     expect(html).not.toContain("NON-HTTP entry-diagnostic");
     expect(html).toContain("条目"); expect(html).toContain("reporting-units"); expect(html).toContain("总计 1");
+    const suiteSection = /<section id="suite-entries">([\s\S]*?)<\/section>/.exec(html);
+    expect(suiteSection, "suite entries need a readable table, not only raw JSON").not.toBeNull();
+    const entries = suiteSection![1]!.replace(/<details>[\s\S]*?<\/details>/g, "");
+    expect(entries).toContain("<th>条目</th>"); expect(entries).toContain("<th>状态</th>"); expect(entries).toContain("container &lt;failed&gt;");
+    expect(entries).toContain("跳过（skipped）"); expect(entries).toContain("<td>3</td>");
+  });
+  it("labels mixed logical units separately from raw execution and leaves absent request facts uncollected", async () => {
+    const result: RunResult = { ...sample, reportingMode: "mixed-suite-v2", total: 3, passed: 2, failed: 1,
+      workflowUnits: [{ entryId: "flow", workflowId: "wf", invocationId: "inv", verdict: "passed" }],
+      cases: [{ ...sample.cases[1]!, entryId: "flow" }, { ...sample.cases[0]!, entryId: "flow" }, { ...sample.cases[0]!, entryId: "case" }] };
+    const html = readFileSync(await htmlReporter.render(result, mkdtempSync(join(tmpdir(), "apicc-mixed-readable-"))), "utf8");
+    expect(html.match(/<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1]).toBe("混合逻辑报告单位 · 总计 2 · 通过 2 · 失败 0 · 跳过 0");
+    const facts = /<section id="execution-facts">([\s\S]*?)<\/section>/.exec(html)![1]!;
+    expect(facts).toContain("真实执行行 3"); expect(facts).toContain("原始失败行 1");
+    for (const key of ["requestStarted", "requestCompleted", "httpExchanges"]) {
+      expect(facts).toContain(`${key} 未采集`); expect(facts).not.toContain(`${key} 0`);
+    }
+    expect(html).not.toContain("最终逻辑调用");
+    expect(result).toMatchObject({ total: 3, passed: 2, failed: 1 });
   });
 });
 
@@ -103,7 +188,8 @@ describe("htmlReporter", () => {
       { ...sample.cases[1]!, apiName: "alpha", row: 1 },
       { ...sample.cases[1]!, caseId: "beta-first", apiName: "beta", row: 0 },
       { ...sample.cases[1]!, caseId: "beta-second", apiName: "beta", row: 1 },
-    ] };
+    ], workflow: { total: 1, passed: 1, failed: 0, skipped: 0, entries: [{ entryId: "node", workflowId: "wf", kind: "workflow", nodeKind: "request", status: "passed" }] },
+    trace: { events: [{ type: "node-end", nodeId: "node", state: "passed" }], totalEvents: 1, truncated: false } };
     const html = readFileSync(await htmlReporter.render(result, mkdtempSync(join(tmpdir(), "apicc-clear-"))), "utf8");
     // Only the generated script's small DOM boundary; no browser/layout emulation.
     const elements = new Map<string, { tag: string; attrs: string; value: string; checked: boolean; hidden: boolean; listeners: Record<string, () => void>; addEventListener: (name: string, fn: () => void) => void; focus: () => void }>();
@@ -118,6 +204,7 @@ describe("htmlReporter", () => {
       classList: { contains: (name: string) => match[1] === name },
       cells: [...match[2]!.matchAll(/<td>([\s\S]*?)<\/td>/g)].map(cell => ({ textContent: cell[1]! })),
     }));
+    expect(rows).toHaveLength(4); // Node/trace statuses must never enter the case filter's selector.
     const document = { getElementById: (id: string) => elements.get(id), querySelectorAll: (selector: string) => {
       if (selector === "input") return [...elements.values()].filter(element => element.tag === "input");
       if (selector === "tr.pass,tr.fail,tr.skip") return rows;

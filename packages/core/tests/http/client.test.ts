@@ -17,6 +17,22 @@ const httpRequest = (url: string, overrides: Partial<HttpRequest> = {}): HttpReq
   protocol: "http", method: "GET", url, headers: {}, query: [], auth: { kind: "none" }, ...overrides,
 });
 
+it("forks a private Cookie snapshot without child or sibling writeback", async () => {
+  const parent = createHttpSession();
+  await parent.storeResponseCookies("https://example.com/", [["set-cookie", "login=parent; Path=/"]]);
+  const left = await parent.fork(); const right = await parent.fork();
+  try {
+    expect(await left.getCookieHeader("https://example.com/")).toBe("login=parent");
+    await left.storeResponseCookies("https://example.com/", [["set-cookie", "login=left; Path=/"]]);
+    await parent.storeResponseCookies("https://example.com/", [["set-cookie", "later=parent; Path=/"]]);
+    expect(await left.getCookieHeader("https://example.com/")).toBe("login=left");
+    expect(await right.getCookieHeader("https://example.com/")).toBe("login=parent");
+    expect(await parent.getCookieHeader("https://example.com/")).toBe("login=parent; later=parent");
+    expect((await left.listCookies())[0]).not.toHaveProperty("value");
+  } finally { await left.close(); await right.close(); await parent.close(); }
+  await expect(parent.fork()).rejects.toThrow(/closed/);
+});
+
 let server: Server;
 let secondServer: Server;
 let baseUrl = "";

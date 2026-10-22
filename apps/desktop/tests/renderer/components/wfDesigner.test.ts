@@ -18,6 +18,13 @@ import { applyEdgeAdd, applyNodeUpdate } from "../../../src/renderer/src/wf/wfCa
 import type { Workflow, WorkflowNode } from "@apicc/core";
 import WfDesigner from "../../../src/renderer/src/components/WfDesigner.vue";
 import WfPropertyPanel from "../../../src/renderer/src/components/WfPropertyPanel.vue";
+import WfResultDrawer from "../../../src/renderer/src/components/WfResultDrawer.vue";
+import type { WorkflowRunResult } from "@apicc/core";
+import RunsHistory from "../../../src/renderer/src/components/RunsHistory.vue";
+import { useRunStore } from "../../../src/renderer/src/stores/run.js";
+import RunView from "../../../src/renderer/src/components/RunView.vue";
+import { workflowToRunResult } from "@apicc/core/workflow/adapter";
+import { VueFlow } from "@vue-flow/core";
 import { Cascader as ACascader } from "ant-design-vue";
 
 const root = "/tmp/ws";
@@ -190,6 +197,206 @@ async function selectNode(wrapper: ReturnType<typeof mount>, index: number) {
 }
 
 describe("WfDesigner 装配", () => {
+  it("synchronizes run input values and errors with edited definitions and same-locator reloads", async () => {
+    const ctx = await mountDesigner();
+    await ctx.wrapper.get('[data-testid="wf-new-name"]').setValue('input session');
+    await ctx.wrapper.get('[data-testid="wf-new-create"]').trigger('click');
+    await waitForWorkflowLoad(ctx);
+    const definition = (name: string) => {
+      const field = ctx.wrapper.findAll('[data-editor="definitions"] > fieldset').find(field => (field.get('input').element as HTMLInputElement).value === name);
+      if (!field) throw new Error(`Missing input definition: ${name}`);
+      return field;
+    };
+    const runInput = (name: string) => {
+      const label = ctx.wrapper.get('[data-testid="wf-run-inputs"]').findAll('label').find(label => label.text().startsWith(name));
+      if (!label) throw new Error(`Missing run input: ${name}`);
+      return label.get('input');
+    };
+    for (const name of ['keep', 'old', 'rename', 'bad', 'badRename', '__proto__', 'constructor']) {
+      await ctx.wrapper.get('[data-testid="wf-input-add"]').trigger('click');
+      await definition('input1').get('input').setValue(name);
+    }
+    await ctx.wrapper.get('[data-testid="wf-kind-select"]').setValue('noop');
+    await ctx.wrapper.get('[data-testid="wf-add-node"]').trigger('click');
+    await saveWorkflowFromUi(ctx);
+    await setStatusFromUi(ctx, 'wf-publish');
+    await setStatusFromUi(ctx, 'wf-enable');
+    await runInput('keep').setValue('0');
+    await runInput('old').setValue('false');
+    await runInput('rename').setValue('{"old":true}');
+    await runInput('__proto__').setValue('false');
+    await runInput('constructor').setValue('{"flag":false}');
+    await runInput('bad').setValue('{');
+    await runInput('badRename').setValue('{');
+    expect((ctx.wrapper.get('[data-testid="wf-run"]').element as HTMLButtonElement).disabled).toBe(true);
+
+    await definition('old').get('button').trigger('click');
+    await definition('bad').get('button').trigger('click');
+    await definition('rename').get('input').setValue('new');
+    await definition('badRename').get('input').setValue('newError');
+    await saveWorkflowFromUi(ctx);
+    expect((runInput('keep').element as HTMLInputElement).value).toBe('0');
+    expect((runInput('__proto__').element as HTMLInputElement).value).toBe('false');
+    expect((runInput('constructor').element as HTMLInputElement).value).toBe('{"flag":false}');
+    expect((ctx.wrapper.get('[data-testid="wf-run"]').element as HTMLButtonElement).disabled).toBe(false);
+    expect(ctx.wrapper.get('[data-testid="wf-run-inputs"]').findAll('[role="alert"]')).toHaveLength(0);
+    const sent: Parameters<typeof ctx.api.wfRun>[0][] = [];
+    const original = ctx.api.wfRun.bind(ctx.api);
+    ctx.api.wfRun = input => { sent.push(input); return original(input); };
+    await runWorkflowFromUi(ctx);
+    expect(sent[0]?.inputs).toEqual(JSON.parse('{"keep":0,"__proto__":false,"constructor":{"flag":false}}'));
+
+    await runInput('keep').setValue('99');
+    await runInput('newError').setValue('{');
+    expect((ctx.wrapper.get('[data-testid="wf-run"]').element as HTMLButtonElement).disabled).toBe(true);
+    await ctx.design.load(ctx.root, { ...ctx.design.locator! });
+    await nextTick();
+    expect((runInput('keep').element as HTMLInputElement).value).toBe('');
+    expect((ctx.wrapper.get('[data-testid="wf-run"]').element as HTMLButtonElement).disabled).toBe(false);
+    expect(ctx.wrapper.get('[data-testid="wf-run-inputs"]').findAll('[role="alert"]')).toHaveLength(0);
+    await runWorkflowFromUi(ctx);
+    expect(sent[1]?.inputs).toEqual({});
+    expect(ctx.errors).toEqual([]);
+  });
+  it("shows AND output conflicts and keeps structured predicates retry confirmation and root definitions", async () => {
+    const ctx = await mountDesigner();
+    await ctx.wrapper.get('[data-testid="wf-new-name"]').setValue("structured");
+    await ctx.wrapper.get('[data-testid="wf-new-create"]').trigger("click");
+    await waitForWorkflowLoad(ctx);
+    await ctx.wrapper.get('[data-testid="wf-input-add"]').trigger("click");
+    const definitions = ctx.wrapper.get('[data-editor="definitions"]').findAll('input');
+    await definitions[1]!.setValue(true);
+    await definitions[2]!.setValue('0');
+    const limits = ctx.wrapper.get('[data-editor="workflow"]').findAll('input[type="number"]');
+    await limits[0]!.setValue('2');
+    await limits[1]!.setValue('10000');
+    await ctx.wrapper.get('[data-editor="workflow"] [data-testid="wf-map-add"]').trigger('click');
+    await ctx.wrapper.get('[data-editor="workflow"] [data-testid="wf-value-literal"]').setValue('false');
+    await ctx.wrapper.get('[data-testid="wf-kind-select"]').setValue("condition");
+    await ctx.wrapper.get('[data-testid="wf-add-node"]').trigger("click");
+    await selectNode(ctx.wrapper, 0);
+    await ctx.wrapper.get('[data-testid="wf-predicate-op"]').setValue("exists");
+    await ctx.wrapper.get('[data-testid="wf-value-kind"]').setValue("ref");
+    await ctx.wrapper.get('[data-testid="wf-value-source"]').setValue("inputs");
+    await ctx.wrapper.get('[data-testid="wf-value-path"]').setValue('["input1"]');
+    await ctx.wrapper.get('[data-testid="wf-kind-select"]').setValue("request");
+    await ctx.wrapper.get('[data-testid="wf-add-node"]').trigger("click");
+    await selectNode(ctx.wrapper, 1);
+    await ctx.wrapper.get('[data-testid="wf-retry-enable"]').setValue(true);
+    expect(ctx.wrapper.get('[data-testid="wf-retry-hint"]').text()).toContain("全部选中数据行");
+    await ctx.wrapper.get('[data-testid="wf-retry-side-effects"]').setValue(true);
+    const [condition, request] = ctx.design.workflow!.nodes;
+    const flow = ctx.wrapper.findComponent(VueFlow);
+    flow.vm.$emit('connect', { source: condition!.id, target: request!.id, sourceHandle: 'true' });
+    flow.vm.$emit('connect', { source: condition!.id, target: request!.id, sourceHandle: 'false' });
+    await nextTick();
+    expect(ctx.design.workflow!.edges.map(edge => 'port' in edge ? edge.port : undefined)).toEqual(['true', 'false']);
+    flow.vm.$emit('edge-click', { edge: { id: ctx.design.workflow!.edges[0]!.id } });
+    await nextTick();
+    await ctx.wrapper.get('[data-testid="wf-edge-port"]').setValue('false');
+    expect(ctx.wrapper.get('[data-testid="wf-draft-findings"]').text()).toContain('condition');
+    await ctx.wrapper.get('[data-testid="wf-edge-port"]').setValue('true');
+    await ctx.wrapper.get('[data-testid="wf-kind-select"]').setValue("parallel");
+    await ctx.wrapper.get('[data-testid="wf-add-node"]').trigger("click");
+    await selectNode(ctx.wrapper, 2);
+    for (const button of ctx.wrapper.findAll('[data-testid="wf-output-add"]')) await button.trigger("click");
+    expect(ctx.wrapper.get('[data-testid="wf-draft-findings"]').text()).toContain("输出目标冲突");
+    await saveWorkflowFromUi(ctx);
+    const saved = ctx.design.workflow!;
+    await ctx.design.load(ctx.root, ctx.design.locator!);
+    expect(ctx.design.workflow).toEqual(saved);
+    expect(ctx.design.workflow?.nodes[0]).toMatchObject({ kind: "condition", predicate: { op: "exists", value: { kind: "ref", source: "inputs", path: ["input1"] } } });
+    expect(ctx.design.workflow?.nodes[1]).toMatchObject({ policy: { retry: { allowRepeatSideEffects: true } } });
+    expect(ctx.design.workflow).toMatchObject({ inputs: { input1: { required: true, default: 0 } }, outputs: { value1: { kind: 'literal', value: false } }, limits: { maxConcurrency: 2, timeoutMs: 10000 } });
+  });
+
+  it("renders v2 logical verdict separately from raw failure and locates nested attempts with full identity", async () => {
+    const { i18n } = createI18nInstance();
+    const child: WorkflowRunResult = { workflowId: "child", workflowName: "child", status: "enabled", reportingMode: "workflow-invocation-v2", verdict: "passed", invocationId: "child-call", parentInvocationId: "root-call", invocationPath: [{ workflowId: "root" }, { workflowId: "child", nodeId: "loop", iteration: 0 }],
+      nodeResults: [{ nodeId: "same-node", kind: "request", state: "passed", invocationId: "child-call", nodeVisitId: "visit-1", attempt: 2,
+        invocationPath: [{ workflowId: "root" }, { workflowId: "child", nodeId: "loop", iteration: 0 }], recoveredError: { code: "transport", cause: "failure", message: "recovered", failureKind: "transport" },
+        outcomes: [{ apiId: "a", apiName: "A", caseId: "c", caseName: "failed row", row: 0, passed: false, durationMs: 1, assertions: [], invocationId: "child-call", nodeVisitId: "visit-1", attempt: 1,
+          locator: { collectionId: "collection", folderIds: ["folder"], apiId: "a", caseId: "c", scope: "base" } }] }], total: 1, passed: 0, failed: 1, skipped: 0, warnings: [], startedAt: "now", finishedAt: "now" };
+    const result: WorkflowRunResult = { ...child, workflowId: "root", workflowName: "root", invocationId: "root-call", parentInvocationId: undefined, invocationPath: [{ workflowId: "root" }], nodeResults: [{ nodeId: "loop", kind: "loop", state: "passed", outcomes: [], childInvocations: [child] }], trace: { totalEvents: 1, truncated: false, events: [{ type: "cleanup-skipped", nodeId: "loop", invocationId: "root-call", nodeVisitId: "root-visit", attempt: 1, cause: "user-abort", invocationPath: [{ workflowId: "root" }] }] } };
+    const wrapper = mount(WfResultDrawer, { props: { open: true, result, projectLocator: { workspaceId: "ws", groupId: "g", projectId: "p" } }, global: { plugins: [i18n] } });
+    await flushPromises();
+    const verdict = document.body.querySelector('[data-testid="wf-logical-verdict"]');
+    expect(verdict?.textContent).toContain("passed");
+    const nested = document.body.querySelector('[data-testid="wf-invocation-child-call"]');
+    expect(nested?.textContent).toContain("轮次 1");
+    const button = nested?.querySelector('[data-testid="wf-locate-row"]');
+    expect(button).not.toBeNull();
+    await new DOMWrapper(button!).trigger("click");
+    expect(wrapper.emitted("locate")?.at(-1)?.[0]).toMatchObject({ projectId: "p", invocationId: "child-call", nodeVisitId: "visit-1", attempt: 1, workflowId: "child", nodeId: "same-node", locator: { collectionId: "collection", folderIds: ["folder"], caseId: "c" } });
+    expect(document.body.textContent).toContain("cleanup-skipped");
+    const history = useRunStore(createMemoryApi());
+    history.summaries = [{ kind: "workflow", file: "new.json", collectionName: "logical pass", startedAt: "now", total: 2, passed: 1, failed: 1, reportingMode: "workflow-invocation-v2", logicalVerdict: "passed", reportingUnits: { total: 1, passed: 1, failed: 0, skipped: 0, entryDiagnostics: 0 } },
+      { kind: "collection", file: "old.json", collectionName: "legacy", startedAt: "then", total: 1, passed: 0, failed: 1 }];
+    history.historyOpen = true;
+    mount(RunsHistory, { props: { run: history, reportError: () => {} }, global: { plugins: [i18n] } });
+    await flushPromises();
+    const newHistory = document.body.querySelector('[data-file="new.json"]')!;
+    expect(newHistory.textContent).toContain("最终逻辑结论: passed");
+    expect(newHistory.textContent).toContain("原始失败行: 1");
+    expect(newHistory.querySelector('.fail')).toBeNull();
+    expect(document.body.querySelector('[data-file="old.json"] .fail')).not.toBeNull();
+    const api = createMemoryApi(); api.seedWorkspace();
+    const workspace = useWorkspaceStore(api); await workspace.open(root);
+    const run = useRunStore(api);
+    const runView = mount(RunView, { props: { run, workspace, selectedCollectionLocator: null, reportError: () => {} }, global: { plugins: [i18n] } });
+    run.result = workflowToRunResult(result);
+    await nextTick();
+    expect(runView.get('[data-testid="run-logical-summary"]').text()).toContain("最终逻辑结论: passed");
+    expect(runView.get('[data-testid="run-logical-summary"]').text()).toContain("原始失败行: 1");
+  });
+  it("creates v2 from the real UI and edits parallel loop and subflow payloads through save/reopen", async () => {
+    const ctx = await mountDesigner();
+    await ctx.wrapper.get('[data-testid="wf-new-name"]').setValue("v2 controls");
+    await ctx.wrapper.get('[data-testid="wf-new-create"]').trigger("click");
+    await waitForWorkflowLoad(ctx);
+    expect(ctx.design.workflow?.executionVersion).toBe(2);
+    const child = await ctx.wfList.create("legacy child", ctx.projectLocator);
+    for (const kind of ["parallel", "loop", "subflow"]) {
+      await ctx.wrapper.get('[data-testid="wf-kind-select"]').setValue(kind);
+      await ctx.wrapper.get('[data-testid="wf-add-node"]').trigger("click");
+    }
+    await selectNode(ctx.wrapper, 0);
+    await ctx.wrapper.get('[data-testid="wf-join"]').setValue("any-success");
+    const refs = ctx.wrapper.findAll('[data-testid="wf-call-workflow"]');
+    for (const control of refs) await control.setValue(child.id);
+    await selectNode(ctx.wrapper, 1);
+    await ctx.wrapper.get('[data-testid="wf-loop-count"]').setValue("3");
+    await ctx.wrapper.get('[data-testid="wf-loop-max"]').setValue("7");
+    await selectNode(ctx.wrapper, 2);
+    await ctx.wrapper.get('[data-testid="wf-call-workflow"]').setValue(child.id);
+    await ctx.wrapper.get('[data-testid="wf-map-add"]').trigger('click');
+    await ctx.wrapper.get('[data-testid="wf-value-literal"]').setValue('{"flag":false,"index":0}');
+    await ctx.wrapper.get('[data-testid="wf-output-add"]').trigger('click');
+    await ctx.wrapper.get('[data-testid="wf-onError-workflow"]').setValue(child.id);
+    await ctx.wrapper.get('[data-testid="wf-error-mode"]').setValue('recover');
+    await ctx.wrapper.get('[data-testid="wf-finally-workflow"]').setValue(child.id);
+    await ctx.wrapper.get('[data-testid="wf-reference-open"]').trigger('click');
+    expect(ctx.design.workflow?.name).toBe('v2 controls');
+    await bodyClick('dialog-cancel'); // referenced navigation uses the existing dirty confirmation
+    for (const kind of ['assign', 'delay', 'assert']) {
+      await ctx.wrapper.get('[data-testid="wf-kind-select"]').setValue(kind);
+      await ctx.wrapper.get('[data-testid="wf-add-node"]').trigger('click');
+    }
+    await selectNode(ctx.wrapper, 3);
+    await ctx.wrapper.get('[data-testid="wf-map-add"]').trigger('click');
+    await ctx.wrapper.get('[data-testid="wf-value-literal"]').setValue('0');
+    await selectNode(ctx.wrapper, 4);
+    await ctx.wrapper.get('[data-testid="wf-delay"]').setValue('12');
+    await selectNode(ctx.wrapper, 5);
+    await ctx.wrapper.get('[data-testid="wf-predicate-op"]').setValue('and');
+    await ctx.wrapper.get('[data-testid="wf-predicate-op"]').setValue('or');
+    await saveWorkflowFromUi(ctx); // incomplete graph is a legal draft
+    const saved = JSON.parse(JSON.stringify(ctx.design.workflow));
+    await ctx.design.load(ctx.root, ctx.design.locator!);
+    expect(ctx.design.workflow).toEqual(saved);
+    expect(ctx.design.workflow?.nodes).toMatchObject([{ kind: "parallel", join: "any-success" }, { kind: "loop", count: 3, maxIterations: 7 }, { kind: "subflow", workflowId: child.id, inputs: { value1: { kind: 'literal', value: { flag: false, index: 0 } } }, policy: { onError: { workflowId: child.id, mode: 'recover' }, finally: { workflowId: child.id } } }, { kind: 'assign', assignments: { value1: { kind: 'literal', value: 0 } } }, { kind: 'delay', delayMs: 12 }, { kind: 'assert', predicate: { op: 'or' } }]);
+    expect(ctx.errors).toEqual([]);
+  });
   it("只读工作区禁用工作流写控件并拒绝直接属性变更", async () => {
     const ctx = await mountDesigner();
     const { wrapper, design, workspace } = ctx;
@@ -337,7 +544,7 @@ describe("WfDesigner 装配", () => {
     wrapper.findComponent(WfPropertyPanel).vm.$emit("node-change", { kind: "noop" });
     await nextTick();
     expect(design.workflow!.nodes[0]!.kind).toBe("noop");
-    expect(design.workflow!.nodes[0]!.apiId).toBe(apiId);
+    expect(design.workflow!.nodes[0]!).toMatchObject({ apiId });
   });
 
   it("missing 红框：未绑定/引用不在项目内 → missing class；改绑后消失", async () => {
@@ -417,7 +624,7 @@ describe("WfDesigner 装配", () => {
     const cond = wrapper.find('[data-testid="wf-edge-condition"]');
     expect((cond.element as HTMLTextAreaElement).value).toBe("prev.passed");
     await cond.setValue("vars.ok === true");
-    expect(design.workflow!.edges[0]!.condition).toBe("vars.ok === true");
+    expect(design.workflow!.edges[0]!).toMatchObject({ condition: "vars.ok === true" });
     expect(design.dirty).toBe(true);
   });
 });
@@ -715,11 +922,12 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     const original = ctx.api.wfRun.bind(ctx.api);
     ctx.api.wfRun = async (input) => { calls.push([input]); return original(input); };
     await runWorkflowFromUi(ctx);
-    expect(calls).toStrictEqual([[{ locator: ctx.design.locator, envName: undefined }]]);
+    expect(calls).toStrictEqual([[{ locator: ctx.design.locator, envName: undefined, root: ctx.root, invocationId: expect.any(String) }]]);
     expect(ctx.design.running).toBe(false);
     expect(ctx.design.runResult).not.toBeNull();
     expect(ctx.design.runResult!.nodeResults.map((n) => n.nodeId))
       .toStrictEqual(ctx.design.workflow!.nodes.map((n) => n.id));
+    expect(ctx.design.runResult!.warnings.join(' ')).toContain('内存演示');
   });
 
   it("I06: a copied-root run completing late cannot reopen the new session's result drawer", async () => {
@@ -730,10 +938,13 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     let releaseRun!: () => void;
     const gate = new Promise<void>((resolve) => { releaseRun = resolve; });
     const pendingRun: { promise: ReturnType<typeof ctx.api.wfRun> | null } = { promise: null };
+    const completedRun: { promise: ReturnType<typeof ctx.api.wfRun> | null } = { promise: null };
     ctx.api.wfRun = (input) => {
+      completedRun.promise = trackedRun(input);
       pendingRun.promise = (async () => {
+        const result = await completedRun.promise!;
         await gate;
-        return trackedRun(input);
+        return result;
       })();
       return pendingRun.promise;
     };
@@ -741,6 +952,7 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
     try {
       await vi.waitFor(() => expect(pendingRun.promise).not.toBeNull());
+      await completedRun.promise;
 
       await ctx.workspace.open(copyRoot);
       ctx.context.root = copyRoot;
@@ -771,13 +983,21 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let calls = 0;
     const original = ctx.api.wfRun.bind(ctx.api);
-    ctx.api.wfRun = async (input) => { calls += 1; await gate; return original(input); };
+    let captured: Parameters<typeof ctx.api.wfRun>[0] | undefined;
+    const stopped: Parameters<typeof ctx.api.wfCancel>[0][] = [];
+    ctx.api.wfCancel = async input => { stopped.push(input); return true; };
+    ctx.api.wfRun = async (input) => { captured = input; calls += 1; await gate; return original(input); };
 
     await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click");
     await nextTick();
     expect(ctx.design.running).toBe(true);
     expect(ctx.wrapper.find('[data-testid="wf-run"]').classes()).toContain("ant-btn-loading");
     await ctx.wrapper.find('[data-testid="wf-run"]').trigger("click"); // 在途重复点击
+    await ctx.wrapper.get('[data-testid="wf-stop"]').trigger('click');
+    expect(stopped).toEqual([{ locator: captured!.locator, root: captured!.root, invocationId: captured!.invocationId }]);
+    expect(ctx.wrapper.get('[data-testid="wf-stop"]').text()).toContain('等待实际收尾');
+    expect(ctx.design.running).toBe(true);
+    expect(ctx.design.stopping).toBe(true);
     release();
     await waitForTrackedPromise(ctx.getLastWfRun);
     await vi.waitFor(() => expect(ctx.design.runResult).not.toBeNull());
@@ -944,7 +1164,7 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     ctx.api.wfRun = async (input) => { calls.push([input]); return original(input); };
     chooseSelect(ctx.wrapper, "wf-run-env", "dev");
     await runWorkflowFromUi(ctx);
-    expect(calls[0]).toStrictEqual([{ locator: ctx.design.locator, envName: "dev" }]);
+    expect(calls[0]).toStrictEqual([{ locator: ctx.design.locator, envName: "dev", root: ctx.root, invocationId: expect.any(String) }]);
 
     // 切走再切回（load 重置会话态）：环境选择不跨流残留
     await ctx.wrapper.find('[data-testid="wf-back-to-list"]').trigger("click");
@@ -953,7 +1173,8 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     await ctx.wrapper.findAll('[data-testid="wf-list-item"]')[0]!.trigger("click");
     await waitForWorkflowLoad(ctx);
     await runWorkflowFromUi(ctx);
-    expect(calls[1]).toStrictEqual([{ locator: ctx.design.locator, envName: undefined }]);
+    expect(calls[1]).toStrictEqual([{ locator: ctx.design.locator, envName: undefined, root: ctx.root, invocationId: expect.any(String) }]);
+    expect((calls[1]![0] as { invocationId: string }).invocationId).not.toBe((calls[0]![0] as { invocationId: string }).invocationId);
   });
 
   it("运行链路拒绝 → reportError 上报；结果抽屉不自动打开", async () => {

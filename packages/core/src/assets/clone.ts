@@ -21,7 +21,7 @@ export type CloneIdKind =
   | "project" | "collection" | "folder" | "environment" | "workflow" | "workflowNode" | "workflowEdge"
   | "contract" | "case" | "model" | "component" | "operation" | "assertion"
   | "parameterInstance" | "responseInstance" | "exampleInstance" | "requestEntry" | "secretRef" | "mockRule"
-  | "dataset" | "suite" | "extractor" | "suiteEntry";
+  | "dataset" | "suite" | "extractor" | "suiteEntry" | "workflowBranch";
 
 export interface CloneIdMapping {
   kind: CloneIdKind;
@@ -219,7 +219,10 @@ function collectOperations(operations: ContractProject["collections"][number]["p
 
 function collectWorkflowMappings(workflow: Workflow, projectId: string, mapper: IdMapper): void {
   mapper.declare("workflow", workflow.id, projectId);
-  for (const node of workflow.nodes) mapper.declare("workflowNode", node.id, workflow.id);
+  for (const node of workflow.nodes) {
+    mapper.declare("workflowNode", node.id, workflow.id);
+    if (node.kind === "parallel") for (const branch of node.branches) mapper.declare("workflowBranch", branch.id, JSON.stringify([workflow.id, node.id]));
+  }
   for (const edge of workflow.edges) mapper.declare("workflowEdge", edge.id, workflow.id);
 }
 
@@ -469,8 +472,17 @@ function rewriteWorkflow(source: Workflow, target: Workflow, projectId: string, 
   source.nodes.forEach((node, index) => {
     const output = target.nodes[index];
     output.id = mapper.reference("workflowNode", node.id, source.id);
-    if (node.apiId !== undefined) output.apiId = mapper.reference("contract", node.apiId, projectId);
-    if (node.caseId !== undefined && node.apiId !== undefined) output.caseId = mapper.reference("case", node.caseId, node.apiId);
+    if ((node.kind === "request" || node.kind === "noop") && (output.kind === "request" || output.kind === "noop")) {
+      if (node.apiId !== undefined) output.apiId = mapper.reference("contract", node.apiId, projectId);
+      if (node.caseId !== undefined && node.apiId !== undefined) output.caseId = mapper.reference("case", node.caseId, node.apiId);
+    }
+    if ((output.kind === "subflow" || output.kind === "loop")) output.workflowId = mapper.reference("workflow", output.workflowId, projectId);
+    if (output.kind === "parallel") output.branches.forEach((branch) => {
+      branch.id = mapper.reference("workflowBranch", branch.id, JSON.stringify([source.id, node.id]));
+      branch.workflowId = mapper.reference("workflow", branch.workflowId, projectId);
+    });
+    if ("policy" in output && output.policy?.onError) output.policy.onError.workflowId = mapper.reference("workflow", output.policy.onError.workflowId, projectId);
+    if ("policy" in output && output.policy?.finally) output.policy.finally.workflowId = mapper.reference("workflow", output.policy.finally.workflowId, projectId);
   });
   source.edges.forEach((edge, index) => {
     const output = target.edges[index];

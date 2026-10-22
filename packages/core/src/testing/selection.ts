@@ -4,7 +4,7 @@ import type { ContractFolder } from "../contract/workspace.js";
 import type { TestCase } from "../domain/common.js";
 import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/executionSelection.js";
 import type { CaseExecutionLocator } from "../runner/caseExecutor.js";
-import { validateWorkflowStructure } from "../workflow/validate.js";
+import { compileWorkflowPlan, workflowPlanRequests, type WorkflowExecutionTerm } from "../workflow/plan.js";
 import { SuiteAssetSchema } from "./model.js";
 import type { PreparedCaseSelection, PreparedTestData } from "./dataModel.js";
 
@@ -21,6 +21,7 @@ export interface ResolvedSuiteEntry {
   readonly kind: "case" | "workflow";
   readonly workflowId?: string;
   readonly cases: readonly ResolvedSuiteCase[];
+  readonly executionTerms?: readonly WorkflowExecutionTerm[];
 }
 export interface ResolvedSuitePlan {
   readonly projectId: string;
@@ -90,21 +91,12 @@ export function resolveSuitePlan(snapshot: ProjectSnapshot, suiteId: string, ove
         if (cases.length !== 1) fail("逻辑用例不存在或不适用于当前环境");
         entries.push({ id: entry.id, kind: "case", cases: [resolved(location, cases[0]!)] });
       } else {
-        const workflows = snapshot.project.workflows.filter((wf) => wf.id === entry.workflowId);
-        if (workflows.length !== 1) fail("工作流不存在或有歧义");
-        const workflow = workflows[0]!;
-        if (workflow.status === "draft" && !allowDraft) fail("draft 工作流需要本次 allowDraft");
-        if (workflow.nodes.length === 0) fail("工作流没有节点");
-        const errors = validateWorkflowStructure(workflow).filter((item) => item.level === "error");
-        if (errors.length) fail(errors.map((e) => e.message).join("; "));
-        const cases = workflow.nodes.filter((node) => node.kind === "request").map((node) => {
-          const candidates = all.filter((loc) => loc.asset.contract.id === node.apiId);
-          if (candidates.length !== 1) fail("工作流接口不存在或有歧义");
-          const location = candidates[0]!; const selected = effective(location, node.caseId);
-          if (!node.caseId || selected.length !== 1) fail("工作流用例不存在或不适用于当前环境");
-          return resolved(location, selected[0]!, node.id);
-        });
-        entries.push({ id: entry.id, kind: "workflow", workflowId: workflow.id, cases });
+        try {
+          const compiled = compileWorkflowPlan(snapshot, entry.workflowId, { environmentId, allowDraft });
+          const requests = workflowPlanRequests(snapshot, compiled);
+          const cases = compiled.selections.map((selection, index) => resolved({ asset: requests[index]!.asset, collectionId: selection.collectionId, folderIds: selection.folderIds }, selection.testCase));
+          entries.push({ id: entry.id, kind: "workflow", workflowId: entry.workflowId, cases, executionTerms: compiled.conservativeExecutions.terms });
+        } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
       }
     }
   } else {
@@ -149,10 +141,11 @@ export function validateSuiteData(plan: ResolvedSuitePlan, data: PreparedTestDat
   const outerRows = plan.datasetId === undefined ? 1 : counts.values().next().value ?? 1;
   const entries = plan.entries.map((entry) => {
     const rows = entry.cases.map((selected) => counts.get(suiteCaseKey(selected.locator)) ?? 1);
-    return { id: entry.id, rows, plannedExecutions: rows.reduce((sum, count) => sum + count, 0) };
+    const executions = entry.executionTerms ? entry.executionTerms.reduce((sum, term) => term.maxCalls === null ? Infinity : sum + term.maxCalls * term.maxAttempts * (rows[term.selectionIndex] ?? 1), 0) : rows.reduce((sum, count) => sum + count, 0);
+    return { id: entry.id, rows, plannedExecutions: executions };
   });
   const plannedExecutions = entries.reduce((sum, entry) => sum + entry.plannedExecutions, 0);
-  if (plannedExecutions > 50000) fail("预计 executeCase 超过 50000 次");
+  if (!Number.isSafeInteger(plannedExecutions) || plannedExecutions > 50000) fail("预计 executeCase 超过 50000 次");
   return freezeSuiteValue({ plan, outerRows, plannedExecutions, entries, sources: data.sources.map((source) => ({ label: source.label, ...(source.digest === undefined ? {} : { digest: source.digest }), rowCount: source.rows.length, legacyEmptyFallback: source.legacyEmptyFallback })) });
 }
 

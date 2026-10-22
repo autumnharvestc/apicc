@@ -55,10 +55,10 @@ function collectFolderApis(folder: ContractFolder, assets: ApiAsset[]): void {
 }
 
 function canonicalJson(value: unknown): string {
-  return canonicalize(value, new WeakSet<object>());
+  return canonicalize(value, new WeakSet<object>(), workflowOptionalFields(value));
 }
 
-function canonicalize(value: unknown, ancestors: WeakSet<object>): string {
+function canonicalize(value: unknown, ancestors: WeakSet<object>, workflowFields: WeakMap<object, ReadonlySet<string>>): string {
   if (value === null) return "null";
   if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
   if (typeof value === "number") {
@@ -76,7 +76,7 @@ function canonicalize(value: unknown, ancestors: WeakSet<object>): string {
       for (let index = 0; index < value.length; index += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
         if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw new TypeError("Project arrays must be dense enumerable data arrays.");
-        entries.push(canonicalize(descriptor.value, ancestors));
+        entries.push(canonicalize(descriptor.value, ancestors, workflowFields));
       }
       return `[${entries.join(",")}]`;
     }
@@ -91,15 +91,43 @@ function canonicalize(value: unknown, ancestors: WeakSet<object>): string {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw new TypeError("Project objects must contain enumerable data properties.");
       if (descriptor.value === undefined) {
-        if (isFormalOptionalProjectField(value as Record<string, unknown>, key)) continue;
+        if (workflowFields.get(value)?.has(key) || isFormalOptionalProjectField(value as Record<string, unknown>, key)) continue;
         throw new TypeError("Project snapshots only omit schema-optional undefined properties.");
       }
-      entries.push(`${JSON.stringify(key)}:${canonicalize(descriptor.value, ancestors)}`);
+      entries.push(`${JSON.stringify(key)}:${canonicalize(descriptor.value, ancestors, workflowFields)}`);
     }
     return `{${entries.join(",")}}`;
   } finally {
     ancestors.delete(value);
   }
+}
+
+/** Register schema fields by structural location, never by the shape of literal business JSON. */
+function workflowOptionalFields(value: unknown): WeakMap<object, ReadonlySet<string>> {
+  const fields = new WeakMap<object, ReadonlySet<string>>();
+  if (!value || typeof value !== "object" || !("workflows" in value) || !Array.isArray(value.workflows)) return fields;
+  const add = (object: unknown, keys: string[]) => { if (object && typeof object === "object") fields.set(object, new Set(keys)); };
+  for (const workflow of value.workflows as ContractProject["workflows"]) {
+    add(workflow, workflow.executionVersion === 2 ? ["nodes", "edges", "status", "inputs", "outputs", "limits"] : ["nodes", "edges", "status", "executionVersion"]);
+    if (workflow.executionVersion === 2) {
+      add(workflow.limits, ["maxConcurrency", "timeoutMs"]);
+      for (const definition of Object.values(workflow.inputs ?? {})) add(definition, ["default"]);
+    }
+    for (const node of workflow.nodes ?? []) {
+      add(node, ["label", "position", ...(node.kind === "request" || node.kind === "noop" ? ["apiId", "caseId"] : []),
+        ...(workflow.executionVersion === 2 ? ["policy"] : []), ...(node.kind === "subflow" || node.kind === "loop" ? ["inputs", "outputs"] : []),
+        ...(node.kind === "loop" ? ["count", "while", "until", "maxIterations"] : [])]);
+      if (node.kind === "parallel") for (const branch of node.branches) add(branch, ["inputs", "outputs"]);
+      if ("policy" in node) {
+        add(node.policy, ["timeoutMs", "onError", "finally", ...(node.kind === "request" ? ["retry"] : [])]);
+        add(node.policy?.onError, ["timeoutMs"]);
+        add(node.policy?.finally, ["timeoutMs"]);
+        if (node.kind === "request") add(node.policy?.retry, ["maxAttempts", "retryOn", "delayMs", "backoff", "allowRepeatSideEffects"]);
+      }
+    }
+    for (const edge of workflow.edges ?? []) add(edge, workflow.executionVersion === 2 ? ["port"] : ["condition"]);
+  }
+  return fields;
 }
 
 function isFormalOptionalProjectField(parent: Record<string, unknown>, key: string): boolean {

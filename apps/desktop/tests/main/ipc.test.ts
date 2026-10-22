@@ -3,7 +3,11 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ContractProjectSchema } from "@apicc/core";
+import { ContractProjectSchema, WorkflowV1Schema, WorkflowSchema, createDefaultRegistry, type WorkflowV1 } from "@apicc/core";
+import { createWorkflowController } from "../../src/main/workflow.js";
+import { createExecutionOutputBoundary, persistExecutionJson } from "../../src/main/executionOutput.js";
+import { createCredentialHost } from "../../src/main/credentialHost.js";
+import { workflowReportScenarios } from "../../../../packages/core/tests/helpers/contractExecutionFixtures.js";
 import type { ContractProject, Importer, RunResult, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
 import { createMockConfiguredProject } from "../../../../packages/core/tests/helpers/mockFixtures.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
@@ -20,6 +24,32 @@ function setup() {
   const deps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
   return { deps, dir, session };
 }
+
+it("reapplies the workflow budget after the last host rewrite for IPC and persistence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "apicc-output-budget-"));
+  try {
+    const boundary = createExecutionOutputBoundary(["E", "D", "late-secret"], { reportBytes: 4096, valueBytes: 256 });
+    const raw: WorkflowRunResult = { invocationId: "E", invocationPath: [{ workflowId: "E" }], workflowId: "E", workflowName: "late-secret", status: "enabled", verdict: "failed", total: 0, passed: 0, failed: 0, skipped: 0, warnings: [], nodeResults: [], startedAt: "", finishedAt: "",
+      trace: { totalEvents: 1, truncated: false, events: [{ type: "node-failure", nodeId: "E", message: "E".repeat(512) + "late-secret" }] } };
+    const ipc = boundary.value(raw);
+    expect(ipc.invocationId).toBe("E"); expect(ipc.trace?.events[0]?.nodeId).toBe("E"); expect(ipc.verdict).toBe("failed");
+    expect(ipc.trace?.events[0]?.message).toContain("truncated/omitted");
+    expect(Buffer.byteLength(JSON.stringify(ipc))).toBeLessThanOrEqual(4096);
+    let written = "";
+    const saved = persistExecutionJson(join(dir, "safe.json"), ipc, boundary, () => "failed", (_path, content) => { written = content; });
+    expect(saved.warning).toBeUndefined(); expect(Buffer.byteLength(written)).toBeLessThanOrEqual(4096);
+    expect(JSON.parse(written)).toEqual(JSON.parse(JSON.stringify(saved.value))); expect(written).not.toContain("late-secret");
+    // Identity framing is never shortened to make a DTO fit.
+    expect(() => createExecutionOutputBoundary([], { reportBytes: 512 }).value({ ...raw, trace: undefined, invocationPath: [{ workflowId: "w".repeat(600) }] })).toThrow(/capacity/);
+    // Pretty-print whitespace cannot bypass the final persistence limit either.
+    const framing = { rows: Array.from({ length: 8 }, () => ({ id: "identity", state: "failed" })) };
+    const compactBytes = Buffer.byteLength(JSON.stringify(framing));
+    expect(Buffer.byteLength(JSON.stringify(framing, null, 2))).toBeGreaterThan(compactBytes);
+    const framingBoundary = createExecutionOutputBoundary([], { reportBytes: compactBytes });
+    const framed = persistExecutionJson(join(dir, "framing.json"), framing, framingBoundary, () => "failed", (_path, content) => { written = content; });
+    expect(framed.warning).toBeUndefined(); expect(Buffer.byteLength(written)).toBe(compactBytes); expect(JSON.parse(written)).toEqual(framing);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 /** 固定 importer 替身：detect 按 MAGIC 标记命中，parse 返回固定项目与警告（导入器由 deps 注入）。 */
 const fixedImporter: Importer = {
@@ -93,8 +123,8 @@ function workflowLocator(project: CreatedProject, workflow: Workflow): WorkflowL
   return { ...project.locator, workflowId: workflow.id };
 }
 
-async function createWorkflow(deps: ReturnType<typeof createIpcDeps>, project: CreatedProject, name: string): Promise<Workflow> {
-  return deps.handle("wf:create", {}, { locator: project.locator, name });
+async function createWorkflow(deps: ReturnType<typeof createIpcDeps>, project: CreatedProject, name: string): Promise<WorkflowV1> {
+  return WorkflowV1Schema.parse(await deps.handle("wf:create", {}, { locator: project.locator, name }));
 }
 
 async function saveWorkflow(deps: ReturnType<typeof createIpcDeps>, project: CreatedProject, workflow: Workflow): Promise<Workflow> {
@@ -548,6 +578,52 @@ describe("工作流 IPC", () => {
     const detail = await deps.handle("api:get", {}, api.locator);
     return { deps, dir, project, api: detail.api, apiLocator: api.locator, sourceApiRevision: detail.sourceApiRevision, session };
   }
+
+  it("keeps retry OR and recover Desktop verdicts with safe logical history and failed rows", async () => {
+    const ws = makeWorkspace(); const project = projectOne(ws); project.workflows = workflowReportScenarios(IDS.deepApi, IDS.sharedCase);
+    const dir = mkdtempSync(join(tmpdir(), "apicc-c1-report-desktop-")); await persistWorkspace(dir, ws);
+    const session = createSession(); await session.open(dir);
+    const selected = createDefaultRegistry(); let calls = 0;
+    selected.registerProtocol({ name: "http", canHandle: () => true, execute: async () => { if (++calls !== 2) throw new Error("transport failure"); return { status: 200, headers: {}, bodyText: "", timeMs: 0 }; } });
+    const controller = createWorkflowController(session, async () => selected, createCredentialHost(session, () => ({ put: async () => {}, remove: async () => {}, resolve: async () => "", version: async () => "", status: async () => "available" })));
+    for (const flow of project.workflows.slice(0, 3)) {
+      const result = await controller.run({ locator: { workspaceId: ws.id, groupId: IDS.groupOne, projectId: project.id, workflowId: flow.id }, root: dir, invocationId: uuid(1000 + calls) });
+      expect(result.verdict).toBe("passed"); expect(result.reportingMode).toBe("workflow-invocation-v2");
+      if (flow.name !== "or") expect(result.nodeResults[0]!.outcomes?.some((row) => !row.passed)).toBe(true);
+    }
+    const reports = readdirSync(join(dir, ".apicc", "runs")).map((file) => JSON.parse(readFileSync(join(dir, ".apicc", "runs", file), "utf8")) as RunResult);
+    expect(reports).toHaveLength(3); expect(reports.every((report) => report.reportingUnits?.failed === 0 && report.workflow?.verdict === "passed")).toBe(true);
+    expect(reports.reduce((total, report) => total + report.failed, 0)).toBe(2);
+  });
+
+  it("owns workflow cancellation by window project and workspace and waits for actual adapter drain", async () => {
+    const { deps, dir, session, project, api } = await setupWf();
+    const created = await createWorkflow(deps, project, "C1 drain");
+    const wf = WorkflowSchema.parse({ ...created, executionVersion: 2, status: "enabled", nodes: [{ id: "request", kind: "request", apiId: api.contract.id, caseId: api.cases[0]!.id }], edges: [] });
+    await saveWorkflow(deps, project, wf);
+    await setWorkflowStatus(deps, project, wf, "published");
+    await setWorkflowStatus(deps, project, wf, "enabled");
+    const selected = createDefaultRegistry(); let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; }); const barrier = new Promise<void>((resolve) => { release = resolve; });
+    selected.registerProtocol({ name: "http", canHandle: () => true, execute: async () => { entered(); await barrier; return { status: 200, headers: {}, bodyText: "", timeMs: 0 }; } });
+    const controller = createWorkflowController(session, async () => selected, createCredentialHost(session, () => ({ put: async () => {}, remove: async () => {}, resolve: async () => "", version: async () => "", status: async () => "available" })));
+    const owner = {}; const input = { locator: workflowLocator(project, wf), invocationId: uuid(900), root: session.root!, inputs: {} };
+    let settled = false; const running = controller.run(input, owner); running.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await started;
+      expect(await controller.cancel(input, {})).toBe(false);
+      expect(await controller.cancel({ ...input, root: input.root + "-other" }, owner)).toBe(false);
+      expect(await controller.cancel({ ...input, locator: { ...input.locator, projectId: uuid(901) } }, owner)).toBe(false);
+      await renameWorkflow(deps, project, wf, "edited while running");
+      expect(await controller.cancel(input, owner)).toBe(true); await Promise.resolve(); expect(settled).toBe(false);
+      await expect(controller.run(input, owner)).rejects.toThrow(/already active/);
+      release(); const result = await running;
+      expect(result.invocationId).toBe(input.invocationId); expect(result.verdict).toBe("aborted"); expect(result.nodeResults[0]!.outcomes).toHaveLength(1);
+      expect(await controller.cancel(input, owner)).toBe(false);
+      const report = JSON.parse(readFileSync(join(dir, ".apicc", "runs", readdirSync(join(dir, ".apicc", "runs")).find((name) => name.startsWith("workflow-"))!), "utf8")) as RunResult;
+      expect(report.reportingMode).toBe("workflow-invocation-v2"); expect(report.workflow?.verdict).toBe("aborted");
+    } finally { release(); await running; }
+  });
 
   it("wf:create → wf:list → wf:get → wf:save → wf:set-status 全链路", async () => {
     const { deps, dir, project, api } = await setupWf();

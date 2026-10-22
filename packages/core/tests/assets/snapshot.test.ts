@@ -5,6 +5,7 @@ import { ContractProjectSchema, ContractWorkspaceSchema, type ContractProject } 
 import { ParameterBindingSchema } from "../../src/contract/model.js";
 import { workspaceFixture } from "../helpers/contractFixtures.js";
 import { createMockConfiguredProject } from "../helpers/mockFixtures.js";
+import { WorkflowSchema } from "../../src/workflow/model.js";
 
 function fixtureProject(): ContractProject {
   return ContractWorkspaceSchema.parse(workspaceFixture()).groups[0].projects[0];
@@ -22,6 +23,15 @@ function revisionAfter(change: (project: ContractProject) => void): string {
 const assertionOptionalFields = ["expected", "headerName", "path"] as const;
 
 describe("project snapshots", () => {
+  it("normalizes only declared optional v2 fields, leaving literal JSON undefined invalid", () => {
+    const owner = fixtureProject();
+    const workflow = WorkflowSchema.parse({ id: "v2", name: "v2", executionVersion: 2,
+      inputs: { optional: { required: false, default: undefined } }, nodes: [{ id: "wait", kind: "delay", delayMs: 0, policy: { timeoutMs: undefined } }] });
+    owner.workflows = [workflow];
+    expect(() => createProjectSnapshot(owner)).not.toThrow();
+    const literal = { kind: "literal", value: { timeoutMs: undefined } };
+    expect(() => WorkflowSchema.parse({ ...workflow, outputs: { invalid: literal } })).toThrow();
+  });
   it("hashes the complete project definition, including shared settings, environments, containers and workflow", () => {
     revisionAfter((project) => { project.variables.global = "changed"; });
     revisionAfter((project) => { project.globals.headers.push({ key: "X-Global", value: "changed", enabled: true }); });

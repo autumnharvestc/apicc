@@ -49,6 +49,7 @@ import { toTreeNode } from "../../../main/tree.js";
 import { createCredentialHost } from "../../../main/credentialHost.js";
 import { createDefaultRegistry } from "@apicc/core";
 import { createTestingController } from "../../../main/testing.js";
+import { createWorkflowController } from "../../../main/workflow.js";
 import { createStressControllerWithHost } from "../../../main/stressController.js";
 import { previewDesignDraft } from "../../../main/designPreview.js";
 import type { ApiLocator, ApiParentLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, NodeLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../../../shared/locations.js";
@@ -375,6 +376,9 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
   const testingRegistry = createDefaultRegistry();
   for (const name of ["http", "websocket", "soap"] as const) testingRegistry.registerProtocol({ name, canHandle: (request) => request.protocol === name, execute: (request, context) => stressClient.execute(request, context) });
   const testing = createTestingController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), { persist(path, value) { runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result: value }); return { value }; }, render: false });
+  const workflowRuns = createWorkflowController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), { persist(path, result) { runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result }); return {}; } });
+  let workflowEpoch = 0;
+  const workflowContexts = new Map<string, { logicalRoot: string; epoch: number }>();
 
   function credentialScope(locator: ProjectLocator): { workspaceId: string; groupId: string; projectId: string } {
     return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
@@ -457,10 +461,12 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     },
 
     async wsOpen(rootPath: string): Promise<OpenResult> {
+      workflowEpoch += 1;
+      workflowRuns.abortActive();
       if (pendingSeed) await pendingSeed;
       if (existsSync(join(rootPath, WORKSPACE_FILE))) {
         const view = await session.open(rootPath);
-        root = rootPath;
+        root = view.root;
         problems = view.problems;
         return { workspace: view.workspace, problems: view.problems, root: view.root, readOnly: view.readOnly, revision: view.revision };
       }
@@ -473,8 +479,10 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     },
 
     async wsCreate(rootPath: string, name: string): Promise<OpenResult> {
+      workflowEpoch += 1;
+      workflowRuns.abortActive();
       const view = await session.create(rootPath, name);
-      root = rootPath;
+      root = view.root;
       problems = view.problems;
       return { workspace: view.workspace, problems: view.problems, root: view.root, readOnly: view.readOnly, revision: view.revision };
     },
@@ -1071,6 +1079,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         failed: result.failed,
         skipped: result.skipped ?? 0,
         reportingUnits: result.reportingUnits ?? reportingUnits(result).summary,
+        ...(result.reportingMode ? { reportingMode: result.reportingMode, logicalVerdict: result.suite?.verdict ?? result.workflow?.verdict } : {}),
       }));
       // 压测行（M2-D3 任务 1）：startedAt 由 epoch ms 格式化为 ISO，与主进程 listRuns 同口径。
       const stressRows: StressRunSummaryDTO[] = stressRuns.map(({ file, report }) => ({
@@ -1303,7 +1312,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
 
     async wfCreate(input: WfCreateInput): Promise<Workflow> {
       await ensureReady();
-      return session.createWorkflow(input.locator, input.name);
+      return session.createWorkflow(input.locator, input.name, input.executionVersion);
     },
 
     async wfDelete(locator: WorkflowLocator): Promise<void> {
@@ -1335,6 +1344,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
 
     async wfRun(input: WfRunInput): Promise<WorkflowRunResult> {
       await ensureReady();
+      if (input.root !== undefined && input.root !== root) throw new Error("Workflow workspace context changed");
       const loc = findWorkflow(input.locator);
       if (!loc) throw new Error(`Workflow not found at complete locator: ${JSON.stringify(input.locator)}`);
       if (loc.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
@@ -1344,6 +1354,19 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       }
       // 固定成功样例：request 节点 → passed（合成 outcome，不发请求）、noop 节点 → noop；
       // nodeResults 按实际节点 id 生成，任务 7 运行着色可据此断言 stateClass 映射。
+      if (loc.workflow.executionVersion === 2) {
+        const invocationId = input.invocationId ?? randomUUID();
+        if (workflowContexts.has(invocationId)) throw new Error("Workflow invocation already active");
+        const captured = { logicalRoot: root, epoch: workflowEpoch };
+        workflowContexts.set(invocationId, captured);
+        try {
+          // The memory UI may use an alias while the shared controller owns a private temp root.
+          const result = await workflowRuns.run({ ...input, invocationId, root: session.captureDraftWriteContext().root });
+          return { ...result, warnings: [...result.warnings, "内存演示：使用合成协议响应，不代表真实网络执行验收"] };
+        } finally {
+          if (workflowContexts.get(invocationId) === captured) workflowContexts.delete(invocationId);
+        }
+      }
       const startedAt = new Date().toISOString();
       const nodeResults: NodeResult[] = loc.workflow.nodes.map((n) =>
         n.kind === "noop"
@@ -1359,8 +1382,15 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       return {
         workflowId: loc.workflow.id, workflowName: loc.workflow.name, status: loc.workflow.status,
         nodeResults, total: nodeResults.length, passed: nodeResults.length, failed: 0, skipped: 0,
-        warnings: [], startedAt, finishedAt: startedAt,
+        warnings: ["内存演示：v1 合成节点结果，不代表真实网络执行验收"], startedAt, finishedAt: startedAt,
       };
+    },
+
+    async wfCancel(input): Promise<boolean> {
+      await ensureReady();
+      const captured = workflowContexts.get(input.invocationId);
+      if (!captured || input.root !== root || captured.logicalRoot !== root || captured.epoch !== workflowEpoch) return false;
+      return workflowRuns.cancel({ ...input, root: session.captureDraftWriteContext().root });
     },
 
     // —— 在线频道（M3-B 任务 1）：与主进程 online session 同构的替身（不发网络）——

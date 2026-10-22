@@ -15,6 +15,8 @@ import {
   CollectionRunError,
   createAiProvider,
   createProjectSnapshot,
+  compileWorkflowPlan,
+  workflowPlanRequests,
   compileProjectMock,
   startMockServer,
   createHttpSession,
@@ -984,10 +986,13 @@ export async function runCli(
     .option("--env <name>", "环境名称")
     .option("--force-draft", "允许运行草稿（跳过生命周期与启用校验，仅结构校验）", false)
     .option("--no-strict", "缺失引用不中断独立节点诊断（本次结果仍失败）")
+    .option("--inputs <json>", "本次工作流 JSON 输入")
+    .option("--concurrency <n>", "本次叶子并发数（1..32）", (value: string) => parsePositiveIntegerOption(value, "--concurrency", 32))
+    .option("--timeout-ms <n>", "本次总期限毫秒（1..3600000）", (value: string) => parsePositiveIntegerOption(value, "--timeout-ms", 3600000))
     .option("--reporters <list>", "报告格式，逗号分隔", "html")
     .option("--runs-dir <dir>", "运行历史输出目录")
     .option("--evidence <mode>", "证据正文 none,failures,all", "failures")
-    .action(async (workflowPath: string, opts: { env?: string; forceDraft: boolean; strict: boolean; reporters: string; runsDir?: string; evidence: "none" | "failures" | "all" }) => {
+    .action(async (workflowPath: string, opts: { inputs?: string; concurrency?: number; timeoutMs?: number; env?: string; forceDraft: boolean; strict: boolean; reporters: string; runsDir?: string; evidence: "none" | "failures" | "all" }) => {
       if (!["none", "failures", "all"].includes(opts.evidence)) throw new Error("证据模式仅支持 none,failures,all");
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
@@ -1002,64 +1007,71 @@ export async function runCli(
       if (workflow.status === "draft" && !opts.forceDraft) {
         throw new Error("工作流为草稿，请先发布启用或加 --force-draft");
       }
-      const { WorkflowRunner, workflowToRunResult } = await import("@apicc/core");
-      const workflowAssets = workflow.nodes.flatMap((node) => {
-        if (node.kind !== "request" || !node.apiId) return [];
-        const api = findProjectApi(project, node.apiId)?.api;
-        return api ? [api as ApiAsset] : [];
-      });
-      const chain = env ? envChain(env, project) : [];
-      const credentialSelections: ExecutionCredentialSelection[] = workflow.nodes.flatMap((node) => {
-        if (node.kind !== "request" || !node.apiId || !node.caseId) return [];
-        const apiLocation = findProjectApi(project, node.apiId);
-        if (!apiLocation) return [];
-        const testCase = selectEffectiveCases(apiLocation.api.cases, chain, node.caseId)[0];
-        if (!testCase) return [];
-        return [{
-          collectionId: apiLocation.collection.id,
-          apiId: apiLocation.api.contract.id,
-          caseId: testCase.id,
-          scope: testCase.scope,
-        }];
-      });
-      const prepared = await prepareExecutionRun(
+      const { WorkflowRunner, validateWorkflowRunOptions, createWorkflowInvocation } = await import("@apicc/core");
+      const overrides = { ...(opts.inputs === undefined ? {} : { inputs: parseJsonOption(opts.inputs, "--inputs") as Readonly<Record<string, import("@apicc/core").JsonValue>> }), maxConcurrency: opts.concurrency, timeoutMs: opts.timeoutMs };
+      validateWorkflowRunOptions(workflow, overrides);
+      const snapshot = createProjectSnapshot(project);
+      const plan = compileWorkflowPlan(snapshot, workflow.id, { environmentId: env?.id, allowDraft: opts.forceDraft, ...(workflow.executionVersion === 2 ? {} : { legacyRootReferenceMode: "report" as const }) });
+      const selected = workflowPlanRequests(snapshot, plan);
+      const credentialSelections = opts.strict && plan.referenceDiagnostics.some((item) => item.logicalMissing) ? [] : selected;
+      const controller = new AbortController(); const cancel = () => controller.abort();
+      process.on("SIGINT", cancel); process.on("SIGTERM", cancel);
+      try {
+      let prepared: Awaited<ReturnType<typeof prepareExecutionRunFromSnapshot>> | undefined;
+      try { prepared = await prepareExecutionRunFromSnapshot(
         state.workspace,
         location.group.id,
         project,
-        workflowAssets,
+        snapshot,
+        credentialSelections,
         credentialHostOptions(deps),
         undefined,
         undefined,
-        credentialSelections,
-        { workspaceRoot: root, ...(env === undefined ? {} : { environmentId: env.id }) },
-      );
+        { workspaceRoot: root, ...(env === undefined ? {} : { environmentId: env.id }), signal: controller.signal },
+      ); } catch (error) {
+        // Preparation can reject before any complete marker set or execution exists.
+        // Never project that error, credentials, inputs or definition business strings.
+        if (!controller.signal.aborted) throw error;
+      }
       const runPrepared = prepared;
-      const sanitizer = createOutputSanitizer(runPrepared.secrets);
-      const safeLog = (line: string): void => log(sanitizer.redactText(line));
+      const sanitizer = createOutputSanitizer(runPrepared?.secrets ?? []);
+      let finalBoundary = sanitizer;
+      const safeLog = (line: string): void => log(finalBoundary.redactText(line));
+      let wfr: import("@apicc/core").WorkflowRunResult;
+      const evidence = createExecutionEvidenceCollector({ projectId: snapshot.project.id, definitionRevision: snapshot.definitionRevision, workflowId: workflow.id, environmentId: env?.id, dataDigest: runPrepared?.run.preparedTestData?.digest }, runPrepared?.secrets ?? [], { mode: opts.evidence });
+      if (!runPrepared) {
+        const now = new Date().toISOString();
+        wfr = evidence.projectWorkflow({ ...(workflow.executionVersion === 2 ? { ...createWorkflowInvocation(workflow.id), requestFacts: { requestStarted: 0, requestCompleted: 0, httpExchanges: 0 } } : {}),
+          workflowId: workflow.id, workflowName: "[aborted before execution preparation completed]", status: workflow.status, verdict: "aborted", startedAt: now, finishedAt: now,
+          total: 0, passed: 0, failed: 0, skipped: 0, warnings: ["Execution preparation cancelled; no requests started."], nodeResults: [] });
+      } else {
       const runner = new WorkflowRunner({ registry, environmentId: env?.id, failFast: false, strict: opts.strict });
       const httpSession = createHttpSession();
-      let wfr: import("@apicc/core").WorkflowRunResult;
-      const evidence = createExecutionEvidenceCollector({ projectId: runPrepared.snapshot.project.id, definitionRevision: runPrepared.snapshot.definitionRevision, workflowId: workflow.id, environmentId: env?.id, dataDigest: runPrepared.run.preparedTestData?.digest }, runPrepared.secrets, { mode: opts.evidence });
       try {
         wfr = evidence.projectWorkflow(await runner.run(runPrepared.run, workflow.id, {
           environmentId: env?.id,
           workspaceRoot: root,
           httpSession,
+          ...overrides, signal: controller.signal,
           observeCaseExecution: (execution, identity) => evidence.observe(execution, { ...identity, entryId: identity.nodeId }),
         }));
       } finally {
         await httpSession.close();
       }
+      }
       const result = wfr.report!;
+      finalBoundary = evidence.boundary();
       // The projected raw result is durable before any reporter is invoked.
       const runsOutDir = opts.runsDir ?? join(root, ".apicc", "runs");
       mkdirSync(runsOutDir, { recursive: true });
-      writeFileSync(join(runsOutDir, `workflow-${wfr.workflowId}-${randomUUID()}.json`), JSON.stringify(result, null, 2));
+      let json = JSON.stringify(result, null, 2);
+      if (Buffer.byteLength(json) > 16 * 1024 * 1024) json = JSON.stringify(result);
+      if (Buffer.byteLength(json) > 16 * 1024 * 1024) throw new Error("Workflow JSON exceeds capacity");
+      writeFileSync(join(runsOutDir, `workflow-${wfr.workflowId}-${randomUUID()}.json`), json);
       let reportFailure = false;
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
-        if (!reporter) throw new Error(`未注册报告格式: ${format}`);
-        try { const file = await reporter.render(result, runsOutDir); safeLog(`报告已生成: ${file}`); }
+        try { if (!reporter) throw new Error("报告格式未注册"); const file = await reporter.render(result, runsOutDir); safeLog(`报告已生成: ${file}`); }
         catch { reportFailure = true; safeLog(`${format} 报告渲染失败；安全 JSON 已保留`); }
       }
       for (const w of wfr.warnings) safeLog(`[警告] ${w}`);
@@ -1069,7 +1081,9 @@ export async function runCli(
         }
       }
       safeLog(`节点统计：总计 ${wfr.total} · 通过 ${wfr.passed} · 失败 ${wfr.failed} · 跳过 ${wfr.skipped}`);
-      process.exitCode = reportFailure || wfr.verdict === "failed" || wfr.failed > 0 ? 1 : 0;
+      safeLog(`最终调用：${wfr.verdict ?? (wfr.failed ? "failed" : "passed")} · 真实执行行 ${result.total} · 历史失败行 ${result.failed}`);
+      process.exitCode = reportFailure || !runPrepared || wfr.verdict === "aborted" || (wfr.invocationId ? wfr.verdict !== "passed" : wfr.verdict === "failed" || wfr.failed > 0) ? 1 : 0;
+      } finally { process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel); }
     });
 
   program

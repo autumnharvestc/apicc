@@ -119,6 +119,7 @@ const api: ApiccApi = {
   wfSetStatus: (locator, next) => invoke(IpcChannel.WfSetStatus, locator, next),
   wfImpact: (input) => invoke(IpcChannel.WfImpact, input),
   wfRun: (input) => invoke(IpcChannel.WfRun, input),
+  wfCancel: (input) => invoke(IpcChannel.WfCancel, input),
   authConfig: (baseUrl) => invoke(IpcChannel.OnlineAuthConfig, baseUrl),
   onlineRegister: (input) => invoke(IpcChannel.OnlineRegister, input),
   onlineLogin: (input) => invoke(IpcChannel.OnlineLogin, input),

@@ -16,6 +16,18 @@ const sample: WorkflowRunResult = {
 };
 
 describe("workflowToRunResult", () => {
+  it("reports a v2 invocation once while retaining every failed attempt and deduplicating aggregate aliases", () => {
+    const identity = { invocationId: "child", parentInvocationId: "root", invocationPath: [{ workflowId: "wf" }, { workflowId: "leaf", nodeId: "loop", iteration: 0, handler: "onError" as const }], nodeVisitId: "visit", attempt: 1 };
+    const first = { ...sample.nodeResults[3]!.outcome!, ...identity, nodeId: "request" };
+    const last = { ...first, attempt: 2, passed: true };
+    const child: WorkflowRunResult = { ...sample, ...identity, nodeResults: [{ ...identity, nodeId: "request", kind: "request", state: "passed", outcomes: [first, last] }], verdict: "passed", failed: 0 };
+    const result = workflowToRunResult({ ...sample, invocationId: "root", invocationPath: [{ workflowId: "wf" }], verdict: "passed", failed: 0,
+      nodeResults: [{ nodeId: "loop", kind: "loop", state: "passed", outcomes: [first, last], childInvocations: [child] }] });
+    expect(result.reportingMode).toBe("workflow-invocation-v2");
+    expect(result.cases.map((row) => [row.nodeId, row.attempt, row.passed])).toEqual([["request", 1, false], ["request", 2, true]]);
+    expect(result.failed).toBe(1);
+    expect(reportingUnits(result).summary).toMatchObject({ total: 1, passed: 1, failed: 0 });
+  });
   it("映射真实请求行并保留 noop/skipped 的节点身份与独立计数", () => {
     const r = workflowToRunResult(sample);
     expect(r.collectionName).toBe("条件流");

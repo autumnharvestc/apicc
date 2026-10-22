@@ -2,7 +2,8 @@
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Drawer as ADrawer, Table as ATable, Tag as ATag } from "ant-design-vue";
-import type { CaseOutcome, NodeResult, NodeState, WorkflowRunResult } from "@apicc/core";
+import type { CaseOutcome, EvidenceIdentity, NodeResult, NodeState, WorkflowRunResult, WorkflowTraceEvent } from "@apicc/core";
+import type { ProjectLocator } from "../../../shared/locations.js";
 import { reportingUnits } from "@apicc/core/report/units";
 import { workflowToRunResult } from "@apicc/core/workflow/adapter";
 import { stateTagColor } from "../wf/wfCanvas.js";
@@ -15,8 +16,8 @@ import CaseEvidencePanel from "./CaseEvidencePanel.vue";
  * Tag（stateTagColor，复用 colorForState 语义）/ 耗时（outcome?.durationMs）/ 错误）。
  * 组件内零 store/工厂调用；耗时无 outcome（noop/skipped）与无 error 以「—」占位。
  */
-const props = defineProps<{ open: boolean; result: WorkflowRunResult | null }>();
-const emit = defineEmits<{ close: [] }>();
+const props = withDefaults(defineProps<{ open: boolean; result: WorkflowRunResult | null; projectLocator?: ProjectLocator | null; embedded?: boolean }>(), { embedded: false });
+const emit = defineEmits<{ close: []; locate: [identity: EvidenceIdentity] }>();
 const { t } = useI18n();
 
 const columns = computed(() => [
@@ -25,7 +26,32 @@ const columns = computed(() => [
   { key: "state", title: t("wf.colState"), dataIndex: "state" },
   { key: "duration", title: t("wf.colDuration"), dataIndex: "duration" },
   { key: "error", title: t("wf.colError"), dataIndex: "error" },
+  { key: "locate", title: t("wf.control.locate") },
 ]);
+const isV2 = computed(() => props.result?.reportingMode === 'workflow-invocation-v2');
+const facts = computed(() => props.result ? workflowToRunResult(props.result) : null);
+function formatPath(path: WorkflowRunResult['invocationPath']) { return path?.map(segment => [segment.workflowId, segment.branchId,
+  segment.iteration === undefined ? undefined : t('wf.control.iteration', { n: segment.iteration + 1 }), segment.handler].filter(Boolean).join(' · ')).join(' → '); }
+const summary = computed(() => formatPath(props.result?.invocationPath));
+function locate(node: NodeResult, outcome?: CaseOutcome) {
+  const result = props.result;
+  if (!result || !props.projectLocator) return;
+  const collected = outcome?.evidence?.identity;
+  emit('locate', { projectId: props.projectLocator.projectId, definitionRevision: collected?.definitionRevision ?? '',
+    invocationId: outcome?.invocationId ?? node.invocationId ?? result.invocationId,
+    parentInvocationId: outcome?.parentInvocationId ?? node.parentInvocationId ?? result.parentInvocationId,
+    invocationPath: outcome?.invocationPath ?? node.invocationPath ?? result.invocationPath,
+    nodeVisitId: outcome?.nodeVisitId ?? node.nodeVisitId, attempt: outcome?.attempt ?? node.attempt,
+    workflowId: result.workflowId, nodeId: node.nodeId, locator: outcome?.locator ?? collected?.locator,
+    rowIndex: outcome?.row, ...collected });
+}
+function locateTrace(event: WorkflowTraceEvent) {
+  const workflowId = event.invocationPath?.at(-1)?.workflowId ?? props.result?.workflowId;
+  if (!props.projectLocator || !workflowId || !event.nodeId) return;
+  emit('locate', { projectId: props.projectLocator.projectId, definitionRevision: '', workflowId,
+    invocationId: event.invocationId, parentInvocationId: event.parentInvocationId, invocationPath: event.invocationPath,
+    nodeId: event.nodeId, nodeVisitId: event.nodeVisitId, attempt: event.attempt });
+}
 
 interface ResultRow {
   node: NodeResult;
@@ -37,16 +63,17 @@ interface ResultRow {
 /** 展开节点的全部实际数据行；旧报告无 outcomes 时回退 outcome。 */
 const rows = computed<ResultRow[]>(() => props.result?.nodeResults.flatMap((node) => {
   const outcomes = node.outcomes?.length ? node.outcomes : node.outcome ? [node.outcome] : [];
-  if (outcomes.length === 0) return [{ node, state: node.state, key: `${node.nodeId}:0` }];
+  const identity = JSON.stringify([node.invocationId, node.invocationPath, node.nodeVisitId, node.nodeId]);
+  if (outcomes.length === 0) return [{ node, state: node.state, key: `${identity}:0` }];
   const expanded: ResultRow[] = outcomes.map((outcome, index) => ({
     node, outcome, state: outcome.skipped ? "skipped" as const : outcome.passed ? "passed" as const : "failed" as const,
-    key: `${node.nodeId}:${index}`,
+    key: `${identity}:${JSON.stringify([outcome.invocationId, outcome.nodeVisitId, outcome.attempt, outcome.locator, outcome.row, index])}`,
   }));
   // 条件/路由失败不能改写已经通过的 HTTP 数据行；追加独立节点诊断行。
-  if (reportingUnits(workflowToRunResult(props.result!)).diagnostics.some((entry) => entry.entryId === node.nodeId)) {
+  if (!isV2.value && reportingUnits(workflowToRunResult(props.result!)).diagnostics.some((entry) => entry.entryId === node.nodeId)) {
     expanded.push({
       node,
-      state: "failed", key: `${node.nodeId}:diagnostic`,
+      state: "failed", key: `${identity}:diagnostic`,
     });
   }
   return expanded;
@@ -62,14 +89,33 @@ function formatMs(ms: number): string {
 </script>
 
 <template>
-  <a-drawer
+  <component
+    :is="embedded ? 'section' : ADrawer"
     :open="open"
     :title="t('wf.resultTitle')"
-    :width="460"
-    data-testid="wf-result-drawer"
+    :width="'min(840px, 95vw)'"
+    :data-testid="embedded ? `wf-invocation-${result?.invocationId}` : 'wf-result-drawer'"
     @close="emit('close')"
   >
     <template v-if="result">
+      <div v-if="isV2 || embedded" class="wf-invocation">
+        <p data-testid="wf-logical-verdict">{{ t('wf.control.logicalVerdict') }}: <strong>{{ result.verdict ?? '—' }}</strong> · {{ t('wf.control.rawRows') }}: {{ facts?.total ?? 0 }} · {{ t('wf.control.rawFailed') }}: {{ facts?.failed ?? 0 }}</p>
+        <p>{{ t('wf.control.mode') }}: {{ result.reportingMode ?? 'v1' }} · {{ result.workflowName }}</p>
+        <p class="wf-identity">{{ t('wf.control.invocation') }}: {{ result.invocationId }} · {{ summary }}</p>
+        <p v-if="result.requestFacts">{{ t('wf.control.requestFacts', { started: result.requestFacts.requestStarted, completed: result.requestFacts.requestCompleted, http: result.requestFacts.httpExchanges }) }}</p>
+        <p class="wf-identity">{{ t('wf.control.currentAssetHint') }}</p>
+        <details v-for="node in result.nodeResults" :key="JSON.stringify([node.invocationId, node.nodeVisitId, node.nodeId])" open class="wf-call-node">
+          <summary>{{ node.label || node.nodeId }} · {{ node.state }} · {{ t('wf.control.visit') }} {{ node.nodeVisitId ?? '—' }}</summary>
+          <p v-if="node.primaryError">{{ t('wf.control.primary') }}: {{ node.primaryError.code }} · {{ node.primaryError.message }}</p>
+          <p v-if="node.recoveredError" data-testid="wf-recovered">{{ t('wf.control.recovered') }}: {{ node.recoveredError.code }} · {{ node.recoveredError.message }}</p>
+          <p v-for="(error, index) in node.secondaryErrors" :key="index">{{ t('wf.control.secondary') }}: {{ error.code }} · {{ error.message }}</p>
+          <p v-for="attempt in node.attempts" :key="attempt.attempt">{{ t('wf.control.attempt', { n: attempt.attempt }) }} · {{ attempt.state }} · {{ attempt.error?.message }}</p>
+          <p v-for="branch in node.branches" :key="branch.invocationId">{{ branch.branchId }} · {{ branch.state }} · {{ t(branch.winner ? 'wf.control.winner' : 'wf.control.loser') }} · {{ branch.cause }} <span v-if="branch.cleanupFailed">{{ t('wf.control.cleanupFailed') }}</span></p>
+          <p v-for="(event, index) in node.policyEvents" :key="index">{{ event.type }}<template v-if="'cause' in event"> · {{ event.cause }}</template></p>
+          <details v-for="child in node.childInvocations" :key="child.invocationId" open><summary>{{ t('wf.control.invocation') }} · {{ child.workflowName }} · {{ child.verdict }}</summary><WfResultDrawer embedded :open="true" :result="child" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
+          <details v-for="child in node.policyInvocations" :key="`${child.role}:${child.result.invocationId}`" open><summary>{{ t(`wf.control.${child.role}`) }} · {{ child.result.verdict }}</summary><WfResultDrawer embedded :open="true" :result="child.result" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
+        </details>
+      </div>
       <!-- warnings 置顶（结构性告警如悬空边——不阻断运行但必须可见，core runner 折进 warnings） -->
       <a-alert
         v-if="result.warnings.length > 0"
@@ -105,7 +151,8 @@ function formatMs(ms: number): string {
               {{ t(`wf.nodeState.${record.state}`) }}
             </a-tag>
           </template>
-          <template v-else-if="column.key === 'row'">{{ record.outcome?.row ?? "—" }}</template>
+          <template v-else-if="column.key === 'row'">{{ record.outcome?.row === undefined ? '—' : record.outcome.row + 1 }}<span v-if="record.outcome?.attempt"> · {{ t('wf.control.attempt', { n: record.outcome.attempt }) }}</span></template>
+          <template v-else-if="column.key === 'locate'"><button type="button" data-testid="wf-locate-row" :disabled="!projectLocator" @click="locate(record.node, record.outcome)">{{ t('wf.control.locate') }}</button></template>
           <template v-else-if="column.key === 'duration'">
             {{ record.outcome ? formatMs(record.outcome.durationMs) : "—" }}
           </template>
@@ -126,8 +173,12 @@ function formatMs(ms: number): string {
           </template>
         </template>
       </a-table>
+      <details v-if="result.trace" class="wf-trace"><summary>{{ t('wf.control.trace') }} · {{ result.trace.totalEvents }}</summary>
+        <p v-if="result.trace.truncated">{{ t('wf.control.truncated', { shown: result.trace.events.length, total: result.trace.totalEvents }) }}</p>
+        <ol><li v-for="(event, index) in result.trace.events" :key="index"><button type="button" :disabled="!event.nodeId || !projectLocator" @click="locateTrace(event)">{{ event.type }}</button> · {{ event.state }} · {{ event.cause }} · {{ event.code }} · {{ event.message }}<span v-if="event.iteration !== undefined"> · {{ t('wf.control.iteration', { n: event.iteration + 1 }) }}</span><span v-if="event.attempt !== undefined"> · {{ t('wf.control.attempt', { n: event.attempt }) }}</span><small class="wf-identity">{{ event.invocationId }} · {{ event.nodeVisitId }} · {{ formatPath(event.invocationPath) }}<template v-if="event.childInvocation"> → {{ event.childInvocation.invocationId }}</template></small></li></ol>
+      </details>
     </template>
-  </a-drawer>
+  </component>
 </template>
 
 <style scoped>
@@ -137,4 +188,8 @@ function formatMs(ms: number): string {
 .wf-result-warning-list { margin: 4px 0 0; padding-left: 18px; }
 .wf-result-warning-list li { word-break: break-all; }
 .wf-result-error { word-break: break-all; }
+.wf-invocation, .wf-call-node, .wf-trace { overflow-wrap: anywhere; min-width: 0; }
+.wf-identity { display: block; font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.wf-call-node { margin: 8px 0; padding-left: 8px; border-left: 2px solid var(--border); }
+.wf-trace { max-height: 45vh; overflow: auto; }
 </style>

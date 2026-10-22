@@ -1,6 +1,8 @@
 import { CookieJar } from "tough-cookie";
 
 export interface HttpSession {
+  /** Host-local private Cookie snapshot. The caller owns and closes the fork. */
+  fork(): Promise<HttpSession>;
   getCookieHeader(url: string): Promise<string | undefined>;
   storeResponseCookies(url: string, rawHeaders: readonly (readonly [string, string])[]): Promise<void>;
   listCookies(): Promise<HttpCookieSummary[]>;
@@ -21,9 +23,18 @@ export interface HttpCookieSummary {
 
 /** Create an in-memory cookie jar owned by one explicit run or virtual-user session. */
 export function createHttpSession(): HttpSession {
-  const jar = new CookieJar();
+  return sessionWithJar(new CookieJar());
+}
+
+function sessionWithJar(jar: CookieJar): HttpSession {
   let closed = false;
   return {
+    async fork() {
+      if (closed) throw new Error("The HTTP session is closed.");
+      const snapshot = jar.cloneSync();
+      if (!snapshot) throw new Error("The HTTP session could not be forked.");
+      return sessionWithJar(snapshot);
+    },
     async getCookieHeader(url) {
       if (closed) throw new Error("The HTTP session is closed.");
       const value = await jar.getCookieString(url);

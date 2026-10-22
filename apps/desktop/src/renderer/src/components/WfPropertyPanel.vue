@@ -13,6 +13,8 @@ import {
 } from "ant-design-vue";
 import type { WfEdgeData, WfNodeData, WfNodePatch } from "../wf/wfCanvas.js";
 import { findBindPath, type BindOption } from "../wf/wfBindings.js";
+import type { Workflow, WorkflowV2 } from "@apicc/core";
+import WfControlFields from "./WfControlFields.vue";
 
 /**
  * 设计器右侧属性面板（M2-B 任务 4）：无选中 → 提示；节点选中 → label 输入 /
@@ -25,18 +27,24 @@ const props = defineProps<{
   nodeData: WfNodeData | null;
   edgeData: WfEdgeData | null;
   bindOptions: BindOption[];
+  workflow?: Workflow;
+  workflows?: Array<{ id: string; name: string }>;
 }>();
 const emit = defineEmits<{
   "node-change": [patch: WfNodePatch];
   "edge-condition": [condition: string];
   "remove-node": [];
+  "workflow-change": [workflow: WorkflowV2];
+  "edge-port": [port?: "true" | "false"];
+  navigate: [workflowId: string];
 }>();
 const { t } = useI18n();
 
 /** cascader 受控 value：由当前绑定反查路径（只绑接口为两段，未绑定为空）。 */
-const bindPath = computed(() =>
-  props.nodeData ? findBindPath(props.bindOptions, props.nodeData.node.apiId, props.nodeData.node.caseId) : [],
-);
+const bindPath = computed(() => {
+  const node = props.nodeData?.node;
+  return node && (node.kind === "request" || node.kind === "noop") ? findBindPath(props.bindOptions, node.apiId, node.caseId) : [];
+});
 
 /** 改绑回写：选到接口层即生效（用例可后补）；清空解除绑定。 */
 function onBind(value: unknown) {
@@ -57,6 +65,7 @@ function onKindToggle(checked: unknown) {
   <!-- 无选中：占位提示 -->
   <div v-if="!nodeData && !edgeData" class="panel-empty" data-testid="wf-panel-empty">
     <p class="hint">{{ t("wf.panelEmpty") }}</p>
+    <WfControlFields v-if="workflow?.executionVersion === 2" mode="workflow" :workflow="workflow" @workflow="emit('workflow-change', $event)" />
   </div>
 
   <!-- 节点选中 -->
@@ -88,7 +97,7 @@ function onKindToggle(checked: unknown) {
           @change="onBind"
         />
       </a-form-item>
-      <a-form-item :label="t('wf.noopSwitch')">
+      <a-form-item v-if="workflow?.executionVersion !== 2 && (nodeData.node.kind === 'request' || nodeData.node.kind === 'noop')" :label="t('wf.noopSwitch')">
         <a-switch
           :checked="nodeData.node.kind === 'noop'"
           data-testid="wf-node-noop"
@@ -96,6 +105,7 @@ function onKindToggle(checked: unknown) {
         />
       </a-form-item>
     </a-form>
+    <WfControlFields v-if="workflow?.executionVersion === 2" :key="nodeData.node.id" :node="nodeData.node" :workflows="workflows" @node="emit('node-change', $event)" @navigate="emit('navigate', $event)" />
     <a-button danger block data-testid="wf-node-delete" @click="emit('remove-node')">
       {{ t("wf.deleteNode") }}
     </a-button>
@@ -104,7 +114,7 @@ function onKindToggle(checked: unknown) {
   <!-- 边选中 -->
   <div v-else class="panel-edge" data-testid="wf-panel-edge">
     <a-form layout="vertical" class="panel-form">
-      <a-form-item :label="t('wf.condition')">
+      <a-form-item v-if="workflow?.executionVersion !== 2" :label="t('wf.condition')">
         <a-textarea
           :value="edgeData?.edge.condition ?? ''"
           :rows="4"
@@ -113,8 +123,9 @@ function onKindToggle(checked: unknown) {
           @change="emit('edge-condition', ($event.target as HTMLTextAreaElement).value)"
         />
       </a-form-item>
+      <label v-else>{{ t('wf.control.port') }}<select :value="edgeData?.edge.port ?? ''" data-testid="wf-edge-port" @change="emit('edge-port', (($event.target as HTMLSelectElement).value || undefined) as 'true' | 'false' | undefined)"><option value="">{{ t('wf.control.normalPort') }}</option><option value="true">{{ t('wf.control.truePort') }}</option><option value="false">{{ t('wf.control.falsePort') }}</option></select></label>
     </a-form>
-    <div class="edge-hints" data-testid="wf-edge-vars">
+    <div v-if="workflow?.executionVersion !== 2" class="edge-hints" data-testid="wf-edge-vars">
       <p>{{ t("wf.varsHint") }}</p>
       <p>{{ t("wf.syntaxHint") }}</p>
     </div>

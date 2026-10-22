@@ -14,11 +14,28 @@ import { findProjectApi } from "./references.js";
 import type { Workflow, WorkflowEdge, WorkflowNode } from "./model.js";
 import type { CaseOutcome, RunResult } from "../report/types.js";
 import type { ProjectExecutionRun } from "../runner/runner.js";
+import { runWorkflowV2 } from "./v2Runner.js";
+import { createWorkflowNodeIdentity, type WorkflowInvocationIdentity, type WorkflowNodeIdentity } from "./trace.js";
+import type { WorkflowScheduler } from "./scheduler.js";
+import type { WorkflowFailure } from "./policy.js";
+import { cancellationFailure } from "./policy.js";
+import { validateWorkflowRunOptions } from "./plan.js";
+import type { WorkflowPolicyEvent } from "./trace.js";
+
+/** Internal legacy-child adapter. Root v1 deliberately supplies none of these. */
+export interface LegacyWorkflowInvocation {
+  inputs: Readonly<Record<string, import("../contract/schemaNode.js").JsonValue>>;
+  identity: WorkflowInvocationIdentity;
+  consumeVisit(): void;
+  runLeaf?: WorkflowScheduler["runLeaf"];
+  observeTrace?: (event: import("./trace.js").WorkflowTraceEvent) => void;
+  exportValues(values: Readonly<Record<string, import("../contract/schemaNode.js").JsonValue>>): void;
+}
 
 export type NodeState = "passed" | "failed" | "skipped" | "noop";
 export type NodeSkipReason = "condition-pruned" | "upstream-failed" | "fail-fast" | "reference-missing" | "reference-invalid" | "unreachable" | "aborted";
 
-export interface NodeResult {
+export interface NodeResult extends Partial<WorkflowNodeIdentity> {
   nodeId: string;
   label?: string;
   kind: WorkflowNode["kind"];
@@ -28,9 +45,21 @@ export interface NodeResult {
   error?: string;
   skipReason?: NodeSkipReason;
   failureKind?: CaseOutcome["failureKind"];
+  /** Internal policy facts; C1 projects these with the common output boundary. */
+  primaryError?: WorkflowFailure;
+  secondaryErrors?: WorkflowFailure[];
+  recoveredError?: WorkflowFailure;
+  attempts?: Array<{ attempt: number; state: "passed" | "failed"; error?: WorkflowFailure }>;
+  policyEvents?: WorkflowPolicyEvent[];
+  policyInvocations?: Array<{ role: "onError" | "finally"; result: WorkflowRunResult }>;
+  childInvocations?: WorkflowRunResult[];
+  branches?: Array<WorkflowInvocationIdentity & { branchId: string; state: "passed" | "failed" | "cancelled"; winner: boolean; cause?: import("./policy.js").WorkflowFailureCause; cleanupFailed?: boolean }>;
 }
 
-export interface WorkflowRunResult {
+export interface WorkflowRunResult extends Partial<WorkflowInvocationIdentity> {
+  reportingMode?: "workflow-invocation-v2";
+  requestFacts?: import("../report/types.js").RequestFacts;
+  trace?: import("./trace.js").WorkflowTrace;
   report?: import("../report/types.js").RunResult;
   workflowId: string;
   workflowName: string;
@@ -40,7 +69,7 @@ export interface WorkflowRunResult {
   passed: number;
   failed: number;
   skipped: number;
-  verdict?: "passed" | "failed";
+  verdict?: "passed" | "failed" | "aborted";
   warnings: string[];
   startedAt: string;
   finishedAt: string;
@@ -57,7 +86,7 @@ export interface WorkflowRunnerOptions {
 }
 
 export type ConditionVerdict = { kind: "matched" } | { kind: "pruned" } | { kind: "error"; message: string };
-export type WorkflowCaseObserver = (execution: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[0], identity: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[1] & { nodeId: string }) => void | Promise<void>;
+export type WorkflowCaseObserver = (execution: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[0], identity: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[1] & { nodeId: string } & Partial<WorkflowNodeIdentity>) => void | Promise<void>;
 
 /** 条件求值沙箱上下文：在 PmApi 之上扩展只读的 prev/vars/env 与求值结果槽位 __value。 */
 interface ConditionPm extends PmApi {
@@ -78,11 +107,23 @@ export class WorkflowRunner {
     signal?: AbortSignal;
     preparedRowIndex?: number;
     observeCaseExecution?: WorkflowCaseObserver;
+    inputs?: Readonly<Record<string, import("../contract/schemaNode.js").JsonValue>>;
+    invocationId?: string;
+    maxConcurrency?: number;
+    timeoutMs?: number;
   } = {}): Promise<WorkflowRunResult> {
     const selectedExecution = captureProjectExecutionRun(execution);
     const project = selectedExecution.snapshot.project;
     const workflow = project.workflows.find((candidate) => candidate.id === workflowId);
     if (!workflow) throw new Error(`配置错误: 项目快照中不存在工作流 ${workflowId}`);
+    validateWorkflowRunOptions(workflow, options);
+    if (workflow.executionVersion === 2) return runWorkflowV2(selectedExecution, workflowId, this.opts, options);
+    return this.runLegacy(selectedExecution, workflowId, options);
+  }
+
+  async runLegacy(selectedExecution: ProjectExecutionRun, workflowId: string, options: Parameters<WorkflowRunner["run"]>[2] = {}, invocation?: LegacyWorkflowInvocation): Promise<WorkflowRunResult> {
+    const project = selectedExecution.snapshot.project;
+    const workflow = project.workflows.find((candidate) => candidate.id === workflowId)!;
     const startedAt = new Date().toISOString();
     const warnings: string[] = [];
     // 结构错误必须在任何节点执行前拒绝；否则重复 ID/悬空端点会让拓扑调度产生
@@ -126,7 +167,7 @@ export class WorkflowRunner {
       failFast: this.opts.failFast ?? false,
     });
     // 携带变量属于一次 run，避免同一实例的顺序/并发调用相互污染。
-    const carried: Record<string, string> = {};
+    const carried: Record<string, string> = Object.fromEntries(Object.entries(invocation?.inputs ?? {}).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]));
     // 运行时桥（任务 6 审查核定，必须累加语义）：set 用 Object.assign 合并进 carried，
     // 禁止替换式赋值（carried = v 会丢未被下游重新提取的变量）。
     // 桥方法异常兜底（同上）：get 失败包装为可读错误整体拒绝；
@@ -194,9 +235,11 @@ export class WorkflowRunner {
 
     // A blocked node is terminal for scheduling without being executed. Keep
     // any independently recorded config outcome instead of replacing it with a skip.
-    const settleSkipped = (node: WorkflowNode, skipReason: NodeSkipReason): void => {
+    const settleSkipped = (node: DeepReadonly<WorkflowNode>, skipReason: NodeSkipReason): void => {
       if (!nodeResults.has(node.id)) {
-        nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: node.kind, state: "skipped", skipReason });
+        const identity = invocation ? createWorkflowNodeIdentity(invocation.identity) : undefined;
+        nodeResults.set(node.id, { ...identity, nodeId: node.id, label: node.label, kind: node.kind, state: "skipped", skipReason });
+        invocation?.observeTrace?.({ ...identity, nodeId: node.id, type: "node-skipped", state: "skipped" });
       }
       settled.add(node.id);
     };
@@ -216,7 +259,7 @@ export class WorkflowRunner {
     };
 
     // 从入度 0 节点拓扑遍历（环已被拒绝，入度 0 节点必存在且覆盖全图）。
-    const queue: WorkflowNode[] = workflow.nodes.filter((n) => (incoming.get(n.id) ?? []).length === 0);
+    const queue: DeepReadonly<WorkflowNode>[] = workflow.nodes.filter((n) => (incoming.get(n.id) ?? []).length === 0);
     const order: string[] = [];
     // 防活锁：连续延后计数。一轮队列全部被延后（无任何节点可执行、状态零进展）= 调度停滞。
     let deferredInRow = 0;
@@ -246,14 +289,25 @@ export class WorkflowRunner {
         continue;
       }
       deferredInRow = 0;
+      const identity = invocation ? createWorkflowNodeIdentity(invocation.identity) : undefined;
+      invocation?.observeTrace?.({ ...identity, nodeId: node.id, type: "node-start" });
       order.push(node.id);
+      try { invocation?.consumeVisit(); }
+      catch (error) {
+        const cancellation = invocation && options.signal?.aborted ? cancellationFailure(options.signal) : undefined;
+        nodeResults.set(node.id, { ...identity, nodeId: node.id, label: node.label, kind: node.kind, state: "failed", failureKind: cancellation?.failureKind ?? "config", error: error instanceof Error ? error.message : String(error), ...(cancellation ? { primaryError: cancellation } : {}) });
+        invocation?.observeTrace?.({ ...identity, nodeId: node.id, type: "node-end", state: "failed", cause: cancellation?.cause });
+        settled.add(node.id);
+        propagateBlocked();
+        break;
+      }
 
       const knownMissing = !strict ? missingReferenceByNodeId.get(node.id) : undefined;
       if (knownMissing) {
         nodeResults.set(node.id, missingNodeResult(node, missingReferenceMessage(node)));
       } else if (node.kind === "noop") {
         nodeResults.set(node.id, { nodeId: node.id, label: node.label, kind: "noop", state: "noop" });
-      } else {
+      } else if (node.kind === "request") {
         const reference = resolveNodeReference(node, project);
         const projectLocation = reference.location;
         const api = reference.api;
@@ -266,13 +320,17 @@ export class WorkflowRunner {
           nodeResults.set(node.id, missingNodeResult(node, msg));
         } else {
           try {
-            const nodeRun = await runSingleNode(runner, selectedExecution, projectLocation, caseDef, environmentId, bridge, {
+            const executeAttempt = () => runSingleNode(runner, selectedExecution, projectLocation, caseDef, environmentId, bridge, {
               workspaceRoot: options.workspaceRoot ?? this.opts.workspaceRoot,
               httpSession: options.httpSession ?? this.opts.httpSession,
               observeHttp: options.observeHttp ?? this.opts.observeHttp,
               preparedRowIndex: options.preparedRowIndex,
-              observeCaseExecution: options.observeCaseExecution === undefined ? undefined : (value, identity) => options.observeCaseExecution!(value, { ...identity, nodeId: node.id }),
+              observeCaseExecution: (value, rowIdentity) => {
+                if (identity) Object.assign(value.outcome, identity, { nodeId: node.id });
+                return options.observeCaseExecution?.(value, { ...rowIdentity, ...identity, nodeId: node.id });
+              },
             });
+            const nodeRun = invocation?.runLeaf ? await invocation.runLeaf(executeAttempt, options.signal) : await executeAttempt();
             warnings.push(...nodeRun.warnings);
             const outcomes = nodeRun.outcomes;
             const state: NodeState = outcomes.every((o) => o.passed) ? "passed" : "failed";
@@ -296,6 +354,15 @@ export class WorkflowRunner {
         }
       }
 
+      // Cancellation is a node diagnostic, independent of the actual case rows.
+      // A standalone v1 root also waits for the real request before recording it.
+      if (options.signal?.aborted) {
+        const cancelled = nodeResults.get(node.id)!;
+        const failure = cancellationFailure(options.signal);
+        cancelled.state = "failed"; cancelled.failureKind = failure.failureKind;
+        cancelled.error = failure.message; cancelled.primaryError = failure;
+      }
+      if (identity) Object.assign(nodeResults.get(node.id)!, identity);
       // 出边求值：条件为假是预期剪枝，不产生异常 warning；to 端就绪裁决不再等待此上游；
       // 满足则下游入队（多入只入队一次）。
       for (const edge of outgoing.get(node.id) ?? []) {
@@ -327,6 +394,7 @@ export class WorkflowRunner {
       // Edge evaluation can change a previously passed source into a failure;
       // only now is its state terminal for readiness and failure propagation.
       settled.add(node.id);
+      invocation?.observeTrace?.({ ...identity, nodeId: node.id, type: "node-end", state: nodeResults.get(node.id)?.state, message: nodeResults.get(node.id)?.error });
       propagateBlocked();
       if (this.opts.failFast && nodeResults.get(node.id)?.state === "failed") break;
     }
@@ -356,10 +424,12 @@ export class WorkflowRunner {
     const passed = list.filter((n) => n.state === "passed" || n.state === "noop").length;
     const failed = list.filter((n) => n.state === "failed").length;
     const skipped = list.filter((n) => n.state === "skipped").length;
+    if (invocation && workflowVerdict(list, failed) === "passed") invocation.exportValues({ ...carried, ...Object.fromEntries([...bridge.extractions.bindings].map(([name, binding]) => [name, binding.value])) });
     return {
+      ...invocation?.identity,
       workflowId: workflow.id, workflowName: workflow.name, status: workflow.status,
       nodeResults: list, total, passed, failed, skipped,
-      verdict: workflowVerdict(list, failed), warnings,
+      verdict: !invocation && options.signal?.aborted ? "aborted" : workflowVerdict(list, failed), warnings,
       startedAt, finishedAt: new Date().toISOString(),
     };
   }
@@ -373,7 +443,7 @@ function resolveEnv(project: DeepReadonly<ContractProject>, environmentId: strin
 }
 
 /** request 节点路径：CollectionRunner 完整语义（脚本/断言/变量/环境）。 */
-async function runSingleNode(
+export async function runSingleNode(
   runner: CollectionRunner,
   execution: ProjectExecutionRun,
   location: NonNullable<ReturnType<typeof findProjectApi>>,
@@ -466,7 +536,7 @@ interface NodeReference {
 }
 
 function resolveNodeReference(
-  node: WorkflowNode,
+  node: DeepReadonly<WorkflowNode>,
   project: DeepReadonly<ContractProject>,
 ): NodeReference {
   if (node.kind !== "request") return {};
@@ -496,11 +566,11 @@ function mergedEnvironmentVariables(env: DeepReadonly<Environment> | undefined, 
   return variables;
 }
 
-function missingReferenceMessage(node: WorkflowNode): string {
-  return `节点「${node.label ?? node.id}」引用的接口/用例不存在（apiId=${node.apiId ?? ""}, caseId=${node.caseId ?? ""}）`;
+function missingReferenceMessage(node: DeepReadonly<WorkflowNode>): string {
+  return `节点「${node.label ?? node.id}」引用的接口/用例不存在（apiId=${"apiId" in node ? node.apiId ?? "" : ""}, caseId=${"caseId" in node ? node.caseId ?? "" : ""}）`;
 }
 
-function missingNodeResult(node: WorkflowNode, message: string): NodeResult {
+function missingNodeResult(node: DeepReadonly<WorkflowNode>, message: string): NodeResult {
   return {
     nodeId: node.id, label: node.label, kind: "request", state: "failed",
     outcomes: [], failureKind: "config", error: message,

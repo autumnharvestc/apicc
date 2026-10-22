@@ -36,13 +36,13 @@ export function useWfListStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         if (epoch !== this.loadEpoch || getContext().root !== root || !sameProject(this.projectLocator, fixed)) return;
         this.items = items;
       },
-      async create(name: string, projectLocator: ProjectLocator): Promise<Workflow> {
+      async create(name: string, projectLocator: ProjectLocator, executionVersion?: 1 | 2): Promise<Workflow> {
         this.assertWritable();
         const root = getContext().root;
         if (!root) throw new Error("尚未选择本地工作区");
         const locator = copyProject(projectLocator);
         if (this.root !== root || !this.projectLocator) throw new Error("工作流列表上下文已变化");
-        const workflow = await api.wfCreate({ locator, name });
+        const workflow = await api.wfCreate({ locator, name, ...(executionVersion === undefined ? {} : { executionVersion }) });
         if (root === getContext().root && this.root === root && sameProject(this.projectLocator, locator)) await this.load(root, locator);
         return workflow;
       },

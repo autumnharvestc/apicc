@@ -740,6 +740,7 @@
     "credentialStatus": { "available": "凭据可用", "missing": "凭据未保存", "unavailable": "凭据不可用" }
   },
   "common": {
+    "delete": "删除",
     "cancel": "取消",
     "confirm": "确定",
     "close": "关闭"
@@ -878,6 +879,18 @@
     "refresh": "刷新"
   },
   "wf": {
+    "control": {
+      "logicalUnits": "逻辑报告单位",
+      "version": "执行版本", "v2": "v2 强编排", "v1": "v1 兼容流程", "legacyHint": "旧 v1 语义：串行、多入 OR、原字符串条件保留；不自动转换为 v2。", "nodeKind": "节点类型", "addNode": "添加节点",
+      "kinds": { "request": "请求", "noop": "占位", "assign": "赋值", "delay": "延时", "assert": "断言", "condition": "条件", "subflow": "子流程", "loop": "循环", "parallel": "并行" },
+      "source": "值来源", "literal": "字面值", "reference": "字段引用", "path": "字段路径（JSON 数组，如 [\"token\",0]）", "jsonValue": "JSON 值（字符串加双引号）", "invalidJson": "请输入有效 JSON 值", "operator": "操作", "sources": { "inputs": "流程输入", "vars": "局部变量", "env": "只读环境", "previous": "前一逻辑节点", "error": "错误摘要", "loop": "循环上下文" },
+      "ops": { "eq": "等于", "neq": "不等于", "lt": "小于", "lte": "小于等于", "gt": "大于", "gte": "大于等于", "exists": "存在", "notExists": "不存在", "and": "全部满足 AND", "or": "任一满足 OR", "not": "取反 NOT" },
+      "name": "名称", "uniqueName": "名称不能为空或重复", "numberRange": "请输入 {min} 到 {max} 的整数", "addCondition": "添加条件", "addMapping": "添加映射", "outputName": "子输出名称", "targetVariable": "父局部变量", "required": "必填", "default": "默认值（空白表示未定义）", "addInput": "添加输入", "workflow": "引用流程", "openReference": "打开引用流程", "inputMappings": "子输入映射", "outputMappings": "子输出 → 父变量", "inputs": "流程输入定义", "outputs": "流程输出定义", "concurrency": "叶子请求并发（1–32，非 VU/RPS）", "rootTimeout": "流程总期限 ms（默认 300000）", "delay": "延时 ms", "callIsolation": "子流程变量隔离；仅成功的显式输出发布。远端副作用与 Cookie 不回滚。v1 子流程保留原脚本依赖。",
+      "loopMode": "循环方式", "count": "固定次数", "while": "进入条件 while", "maxIterations": "最大轮次（默认 100，上限 10000）", "until": "成功后提前结束 until", "countBudget": "固定次数不能超过最大轮次", "loopHint": "0 次合法且不发布输出；while 用尽预算仍为真会失败。数据行与循环轮次独立，套件外层行不隐式递增。", "join": "汇聚规则", "all": "AND · 全部成功", "anySuccess": "OR · 首个成功胜出", "branch": "分支 {n}", "addBranch": "添加分支", "parallelHint": "AND 输出目标不可冲突；OR 仅发布实际胜出者的输出，取消落败分支并等待收尾。分支变量与 Cookie 隔离，Cookie 不回灌父会话。",
+      "policy": "节点策略", "nodeTimeout": "节点主体期限 ms（空白继承）", "retry": "请求节点重试", "maxAttempts": "最大尝试次数（含首次，1–5）", "retryKinds": { "transport": "传输错误", "http": "HTTP 错误", "assertion": "断言失败", "extraction": "提取失败" }, "retryDelay": "退避 ms（0–30000）", "backoff": "退避方式", "fixed": "固定", "exponential": "指数（封顶 30000ms）", "allowSideEffects": "我确认允许重复远端副作用", "retryHint": "每次重试重新执行整个请求节点的全部选中数据行及原容器操作；远端副作用和 Cookie 不回滚。非 GET/HEAD/OPTIONS 必须确认；即便 GET 也可能有副作用，不代表请求未到服务端。",
+      "onError": "错误处理 onError", "finally": "收尾 finally", "none": "不配置", "handlerTimeout": "处理器期限 ms（默认 5000，上限 30000）", "errorMode": "错误处理方式", "propagate": "保留原故障", "recover": "成功后恢复可恢复故障", "cancelCleanupHint": "用户/祖先取消、总期限耗尽或 OR 落败后不再新启网络错误处理或 finally；已启动调用等待实际收尾。局部超时使用独立有界处理器，不能延长流程期限。", "port": "连线端口", "normalPort": "普通后继", "truePort": "真 true", "falsePort": "假 false", "runInputs": "本次流程输入（空白使用默认值或不传）", "stop": "停止", "stopping": "停止中 · 等待实际收尾",
+      "logicalVerdict": "最终逻辑结论", "rawRows": "真实执行行", "rawFailed": "原始失败行", "requestFacts": "协议事实：启动 {started} / 完成 {completed} / HTTP 交换 {http}", "mode": "报告模式", "invocation": "调用", "visit": "节点访问", "attempt": "尝试 {n}", "iteration": "轮次 {n}", "recovered": "已恢复故障", "primary": "当前主故障", "secondary": "次要故障", "winner": "实际胜出", "loser": "落败/非胜出", "cleanupFailed": "本地资源释放失败", "locate": "定位当前资产", "notCollected": "未采集精确定位", "trace": "运行轨迹", "truncated": "轨迹已截断：展示 {shown} / 共 {total} 事件", "currentAssetHint": "定位到当前资产，不重放历史快照。", "findings": "草稿诊断（允许保存；运行/启用前须修复）", "outputConflict": "输出目标冲突", "entryCount": "v2 必须有唯一入口", "fanOut": "普通节点不能隐式扇出", "conditionPorts": "condition 后继必须分别使用 true/false 端口", "missingReference": "引用流程不存在", "graphIncomplete": "图含未连线节点"
+    },
     "empty": "创建或选择一个工作流开始编排",
     "listEmpty": "当前项目暂无工作流",
     "namePlaceholder": "工作流名称",

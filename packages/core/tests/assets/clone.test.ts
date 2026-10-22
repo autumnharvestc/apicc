@@ -7,8 +7,29 @@ import { componentFixtures, contractFixture, modelAssetFixture, parameterReferen
 import { createMockConfiguredProject, mockFixtureIds } from "../helpers/mockFixtures.js";
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
 import { createProjectAssetContext } from "../../src/assets/context.js";
+import { WorkflowSchema } from "../../src/workflow/model.js";
 
 const newProjectId = "00000000-0000-4000-8000-000000000900";
+
+it("clones v2 structural child/branch/handler identities while preserving literal business values", () => {
+  const { project: source } = sourceProject();
+  source.workflows = [WorkflowSchema.parse({ id: "root", name: "root", executionVersion: 2, nodes: [{ id: "parallel", kind: "parallel", join: "all", branches: [
+    { id: "a", workflowId: "child", inputs: { literal: { kind: "literal", value: "child" } } }, { id: "b", workflowId: "child" },
+  ], policy: { onError: { workflowId: "child", mode: "recover" }, finally: { workflowId: "child" } } }] }),
+  WorkflowSchema.parse({ id: "child", name: "child", executionVersion: 2, nodes: [{ id: "end", kind: "noop" }] })];
+  const result = cloneProjectDefinition(source, { newId: deterministicIdFactory() });
+  const node = result.project.workflows[0]!.nodes[0]!;
+  if (node.kind !== "parallel") throw new Error("Expected parallel");
+  expect(node.branches[0]!.workflowId).toBe(result.project.workflows[1]!.id);
+  expect(node.branches[0]!.id).not.toBe("a");
+  expect(node.branches[0]!.inputs.literal).toEqual({ kind: "literal", value: "child" });
+  expect(node.policy?.onError?.workflowId).toBe(result.project.workflows[1]!.id);
+  expect(node.policy?.finally?.workflowId).toBe(result.project.workflows[1]!.id);
+  const snapshot = createProjectSnapshot(source);
+  expect(snapshot.context.referencesTo({ kind: "workflow", id: "child" }).map((item) => item.path)).toEqual([
+    "nodes[0].branches[0].workflowId", "nodes[0].branches[1].workflowId", "nodes[0].policy.onError.workflowId", "nodes[0].policy.finally.workflowId",
+  ]);
+});
 const componentIds = {
   parameter: "00000000-0000-4000-8000-000000000006",
   auth: "00000000-0000-4000-8000-000000000007",

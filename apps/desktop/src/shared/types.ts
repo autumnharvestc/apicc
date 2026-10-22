@@ -219,7 +219,7 @@ export interface RunCollectionInput { locator: CollectionLocator; envName?: stri
  * 字段变更需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
  * kind 必填（M2-D3 任务 1）：运行历史按 kind 区分集合/压测两类报告（规格 §2 D11）。
  */
-export interface RunSummaryDTO { kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"] }
+export interface RunSummaryDTO { kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"]; reportingMode?: RunResult["reportingMode"]; logicalVerdict?: "passed" | "failed" | "aborted" }
 /**
  * runs:list 行摘要（压测，M2-D3 任务 1）：startedAt 为 report.startedAt（epoch ms）格式化的
  * ISO 字符串，与集合行的 startedAt 同口径排序。
@@ -320,7 +320,7 @@ export interface WorkflowSummary { id: string; name: string; status: WorkflowSta
 /** wf:get 返回：完整工作流 + 所属项目 id（设计器级联数据按项目定位）。 */
 export interface WorkflowDetail { workflow: Workflow; locator: WorkflowLocator }
 /** wf:create 入参：目标项目 + 工作流名（同项目重名拒绝「工作流已存在: name」）。 */
-export interface WfCreateInput { locator: ProjectLocator; name: string }
+export interface WfCreateInput { locator: ProjectLocator; name: string; executionVersion?: 1 | 2 }
 /**
  * wf:set-status 返回：迁移后的工作流 + 启用校验错误/警告。
  * published→enabled 校验未过时 workflow 为状态不变的原工作流、errors 非空；
@@ -330,7 +330,8 @@ export interface WfSetStatusResult { workflow: Workflow; errors: string[]; warni
 /** wf:impact 入参：按用例/接口 id 反查工作流引用（规格 §3.1 影响分析）。 */
 export type WfImpactInput = WorkflowImpactLocator;
 /** wf:run 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
-export interface WfRunInput { locator: WorkflowLocator; envName?: string | null; strict?: boolean }
+export interface WfRunInput { locator: WorkflowLocator; envName?: string | null; strict?: boolean; invocationId?: string; root?: string; inputs?: Readonly<Record<string, import("@apicc/core").JsonValue>> }
+export interface WfCancelInput { locator: WorkflowLocator; invocationId: string; root: string }
 
 export interface ApiccApi extends TestingApi {
   wsOpen(rootPath: string): Promise<OpenResult>;
@@ -436,6 +437,7 @@ export interface ApiccApi extends TestingApi {
   wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntryDTO[]>;
   /** wf:run：draft 拒绝（「工作流为草稿，请先发布启用」）；结果由主进程落盘 .apicc/runs。 */
   wfRun(input: WfRunInput): Promise<WorkflowRunResult>;
+  wfCancel(input: WfCancelInput): Promise<boolean>;
   // —— 在线频道（M3-B 任务 1，规格 §2 D9 / §3）：main 进程 onlineClient 的 IPC 出口 ——
   /** 注册（不建立登录态）。 */
   authConfig(baseUrl: string): Promise<{ allowRegistration: boolean }>;

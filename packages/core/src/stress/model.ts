@@ -7,6 +7,8 @@ import type { SafeExecutionEvidence } from "../report/types.js";
 const evidencePreviewSchema = z.object({ text: z.string(), truncated: z.boolean(), omitted: z.boolean().optional() }).strict();
 export const SafeExecutionEvidenceSchema: z.ZodType<SafeExecutionEvidence> = z.object({
   identity: z.object({ projectId: z.string(), definitionRevision: z.string(), locator: z.object({ collectionId: z.string(), folderIds: z.array(z.string()), apiId: z.string(), caseId: z.string(), scope: z.string() }).strict().optional(),
+    invocationId: z.string().optional(), parentInvocationId: z.string().optional(), nodeVisitId: z.string().optional(), attempt: z.number().int().min(1).max(5).optional(),
+    invocationPath: z.array(z.object({ workflowId: z.string(), nodeId: z.string().optional(), branchId: z.string().optional(), iteration: z.number().int().nonnegative().optional(), handler: z.enum(["onError", "finally"]).optional() }).strict()).optional(),
     suiteRunId: z.string().optional(), entryId: z.string().optional(), suiteRow: z.number().optional(), rowIndex: z.number().optional(), nodeId: z.string().optional(), workflowId: z.string().optional(), environmentId: z.string().optional(), dataDigest: z.string().optional(), datasetId: z.string().optional() }).strict(),
   state: z.enum(["collected", "not-collected", "omitted"]), truncated: z.boolean(), scriptDiagnostics: z.enum(["existing-assertions-only", "not-collected"]),
   timings: z.object({ requestMs: z.number(), scriptMs: z.number(), iterationMs: z.number() }).strict().optional(),

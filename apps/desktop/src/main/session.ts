@@ -383,6 +383,17 @@ function guardWorkflowReferences(project: ContractProject, apiIds: ReadonlySet<s
   }
 }
 
+function guardWorkflowCallers(project: ContractProject, workflowId: string): void {
+  const references = projectAssetContext(project).referencesTo({ kind: "workflow", id: workflowId });
+  if (references.length === 0) return;
+  const callers = references.map((reference) => {
+    const name = project.workflows.find((workflow) => workflow.id === reference.ownerId)?.name
+      ?? project.suites?.find((suite) => suite.id === reference.ownerId)?.name ?? reference.ownerId;
+    return `${name} (${reference.path})`;
+  });
+  throw new Error(`Cannot delete referenced workflow; workflow/suite callers remain: ${callers.join(", ")}`);
+}
+
 function sourceAssetNames(project: ContractProject): ContractProject {
   const result = clone(project);
   result.name = sanitizeNodeName(result.name);
@@ -1476,13 +1487,13 @@ function setContainerOperations(
     return mutate((candidate) => ({ value: setContainerOperations(candidate, locator, input) }));
   }
 
-  async function createWorkflow(locatorValue: ProjectLocator, rawName: string): Promise<Workflow> {
+  async function createWorkflow(locatorValue: ProjectLocator, rawName: string, executionVersion?: 1 | 2): Promise<Workflow> {
     const locator = parseLocator(ProjectLocatorSchema, locatorValue, "project");
     return mutate((candidate) => {
       const { project } = locateProjectInCandidate(candidate, locator);
       const id = newId("workflow", undefined, project.id);
       if (project.workflows.some((item) => item.id === id)) throw new Error(`Target identity collision for workflow:${id}`);
-      const workflow = WorkflowSchema.parse({ id, name: sanitizeNodeName(rawName), status: "draft", nodes: [], edges: [] });
+      const workflow = WorkflowSchema.parse({ id, name: sanitizeNodeName(rawName), status: "draft", nodes: [], edges: [], ...(executionVersion === undefined ? {} : { executionVersion }) });
       project.workflows.push(workflow);
       return { value: workflow };
     });
@@ -1594,7 +1605,7 @@ function setContainerOperations(
       const found = locateProjectInCandidate(candidate, locator);
       const index = found.project.workflows.findIndex((item) => item.id === locator.workflowId);
       if (index < 0) throw new Error(`Workflow not found: ${locator.workflowId}`);
-      if (projectAssetContext(found.project).referencesTo({ kind: "workflow", id: locator.workflowId }).length) throw new Error("Cannot delete referenced workflow; suite callers remain.");
+      guardWorkflowCallers(found.project, locator.workflowId);
       found.project.workflows.splice(index, 1);
       return { value: undefined };
     });
@@ -1747,7 +1758,7 @@ function setContainerOperations(
         }
         case "workflow": {
           const found = locateProjectInCandidate(candidate, node.locator);
-          if (projectAssetContext(found.project).referencesTo({ kind: "workflow", id: node.locator.workflowId }).length) throw new Error("Cannot delete referenced workflow; suite callers remain.");
+          guardWorkflowCallers(found.project, node.locator.workflowId);
           const before = found.project.workflows.length;
           found.project.workflows = found.project.workflows.filter((item) => item.id !== node.locator.workflowId);
           if (found.project.workflows.length === before) throw new Error(`Workflow not found: ${node.locator.workflowId}`);

@@ -68,6 +68,7 @@ describe("complete-locator IPC bridge", () => {
     const locator = { ...locators().project, workflowId: IDS.workflow };
     const validInputs: unknown[] = [
       { id: "minimal", name: "minimal workflow" },
+      { id: "v2", name: "v2", executionVersion: 2, nodes: [{ id: "wait", kind: "delay", delayMs: 0 }], edges: [], inputs: {}, outputs: {} },
       {
         id: "all-optional-fields",
         name: "all optional fields",
@@ -983,7 +984,16 @@ describe("complete-locator IPC bridge", () => {
       expect(await deps.handle(IpcChannel.WfSetStatus, null, createdLocator, "published")).toMatchObject({ workflow: { id: created.id, status: "published" }, errors: [] });
       await deps.handle(IpcChannel.WfDelete, null, createdLocator);
 
+      const v2 = await deps.handle(IpcChannel.WfCreate, null, { locator: project, name: "v2 draft", executionVersion: 2 });
+      expect(created.executionVersion).toBeUndefined(); // legacy callers still create v1
+      expect(v2).toMatchObject({ executionVersion: 2, inputs: {}, outputs: {}, limits: { maxConcurrency: 4, timeoutMs: 300000 } });
+      const v2Locator = { ...project, workflowId: v2.id };
+      const v2Draft = CoreWorkflowSchema.parse({ ...v2, nodes: [{ id: "one", kind: "noop" }, { id: "two", kind: "noop" }], inputs: { count: { required: true, default: 0 } }, outputs: { count: { kind: "ref", source: "inputs", path: ["count"] } } });
+      expect(await deps.handle(IpcChannel.WfSave, null, v2Locator, v2Draft)).toEqual(v2Draft);
+      expect(() => parseIpcArgs(IpcChannel.WfCreate, [{ locator: project, name: "future", executionVersion: 3 }])).toThrow();
+
       await session.open(temporary.path);
+      expect(session.locateWorkflow(v2Locator)?.workflow).toEqual(v2Draft);
       expect(session.locateWorkflow(createdLocator)).toBeUndefined();
       expect(session.locateWorkflow(workflow)?.workflow.status).toBe("draft");
       expect(await deps.handle(IpcChannel.WfImpact, null, { ...api, caseId: IDS.sharedCase })).toHaveLength(1);
@@ -1316,6 +1326,14 @@ describe("complete-locator IPC bridge", () => {
     expect(parseIpcArgs(IpcChannel.DebugSend, [debug])).toEqual([debug]);
     expect(parseIpcArgs(IpcChannel.RunCollection, [runCollection])).toEqual([runCollection]);
     expect(parseIpcArgs(IpcChannel.WfRun, [runWorkflow])).toEqual([runWorkflow]);
+    const invocation = { ...runWorkflow, invocationId: "10000000-0000-4000-8000-000000000001", inputs: { token: { nested: [1, null] } } };
+    expect(parseIpcArgs(IpcChannel.WfRun, [invocation])).toEqual([invocation]);
+    const ownInputs = JSON.parse('{"__proto__":{"x":1},"constructor":2}') as Record<string, unknown>;
+    const ownParsed = parseIpcArgs(IpcChannel.WfRun, [{ ...invocation, inputs: ownInputs }])[0];
+    expect(Object.keys(ownParsed.inputs!)).toEqual(["__proto__", "constructor"]);
+    const cancel = { locator: runWorkflow.locator, invocationId: invocation.invocationId, root: "C:/workspace" };
+    expect(parseIpcArgs(IpcChannel.WfCancel, [cancel])).toEqual([cancel]);
+    expect(() => parseIpcArgs(IpcChannel.WfCancel, [{ ...cancel, extra: true }])).toThrow(/入参校验失败/);
     expect(parseIpcArgs(IpcChannel.StressRun, [stress])).toEqual([{ ...stress, confirmedTargetOrigins: ["https://api.example.test"] }]);
     expect(() => parseIpcArgs(IpcChannel.DebugSend, [{ apiId: api.apiId, caseId: IDS.sharedCase }])).toThrow(/入参校验失败/);
     expect(() => parseIpcArgs(IpcChannel.DebugSend, [{ ...debug, extra: true }])).toThrow(/入参校验失败/);

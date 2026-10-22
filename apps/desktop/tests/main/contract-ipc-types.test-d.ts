@@ -30,6 +30,10 @@ const savedContainer: Promise<ContainerSaveResult> = api.containerSave({
 const createdNode: Promise<NodeCreatedDTO> = api.nodeCreate({ kind: "folder", parent: folderLocator, name: "nested" });
 const workflowList = api.wfList(projectLocator);
 const workflow = api.wfGet(workflowLocator);
+const stoppedWorkflow: Promise<boolean> = api.wfCancel({ locator: workflowLocator, invocationId: "run-id", root: "C:/workspace" });
+const stopIpcResult: IpcResultMap[typeof IpcChannel.WfCancel] = true;
+// @ts-expect-error Cancel needs the captured workspace root.
+api.wfCancel({ locator: workflowLocator, invocationId: "run-id" });
 const createdWorkflow: Promise<Workflow> = api.wfCreate({ locator: projectLocator, name: "build workflow" });
 const authConfig = api.authConfig("https://contracts.example.test");
 const credentialPut: Promise<CredentialMutationResult> = api.credentialPut({ locator: projectLocator, ref: { id: "credential-ref", policy: "test-auto" }, value: "" });

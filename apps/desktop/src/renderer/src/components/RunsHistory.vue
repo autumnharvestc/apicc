@@ -35,11 +35,15 @@ function rowName(s: RunSummary): string {
   return s.kind !== "stress" ? s.collectionName : "";
 }
 function rowMeta(s: RunSummary): string {
+  if (s.kind !== 'stress' && s.reportingMode) {
+    return `${t('wf.control.mode')}: ${s.reportingMode} · ${t('wf.control.logicalVerdict')}: ${s.logicalVerdict ?? '—'} · ${t('wf.control.logicalUnits')}: ${s.reportingUnits?.total ?? '—'} (${s.reportingUnits?.failed ?? '—'} failed) · ${t('wf.control.rawRows')}: ${s.total} · ${t('wf.control.rawFailed')}: ${s.failed}`;
+  }
   return s.kind !== "stress"
     ? t("run.summary", { total: s.total, passed: s.passed, failed: s.failed, skipped: s.skipped ?? 0 }) + (s.reportingUnits ? ` · reporting-units ${s.reportingUnits.total} (failed ${s.reportingUnits.failed}) · NON-HTTP ${s.reportingUnits.entryDiagnostics}` : "")
     : t("run.stressSummary", { total: s.totalRequests, failed: s.failed, rps: fmtRps(s.rps) });
 }
 function rowFailed(s: RunSummary): number {
+  if (s.kind !== 'stress' && s.reportingMode && s.logicalVerdict) return s.logicalVerdict === 'passed' ? 0 : 1;
   return s.kind === "stress" ? s.failed : s.reportingUnits?.failed ?? s.failed;
 }
 /** rps 两位小数内联格式化（与 StressReportView 同口径，禁 NaN：来源为校验过的数值）。 */

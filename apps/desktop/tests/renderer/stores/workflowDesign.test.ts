@@ -2,7 +2,7 @@
 // 注：pinia/vue 响应式需要 DOM 环境，渲染层 store 测试用文件级 pragma 指定 jsdom。
 import { describe, expect, it } from "vitest";
 import { isReactive } from "vue";
-import type { Workflow, WorkflowRunResult } from "@apicc/core";
+import { WorkflowSchema, type Workflow, type WorkflowRunResult } from "@apicc/core";
 import type { ApiLocator, ProjectLocator, WorkflowLocator } from "../../../src/shared/locations.js";
 import type { WfSetStatusResult } from "../../../src/shared/types.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
@@ -33,7 +33,7 @@ async function seedWorkflow(
   patch?: Partial<Workflow>,
 ): Promise<Workflow> {
   const wf = await api.wfCreate({ locator: projectLocator, name });
-  return api.wfSave({ ...projectLocator, workflowId: wf.id }, { ...wf, ...patch });
+  return api.wfSave({ ...projectLocator, workflowId: wf.id }, WorkflowSchema.parse({ ...wf, ...patch }));
 }
 
 /** 引用种子接口用例的有效 request 节点（启用校验可通过）。 */
@@ -62,6 +62,67 @@ async function loadWorkflow(
 }
 
 describe("workflowDesign store", () => {
+  it("retains only the latest two complete results FIFO across loads, unloads and late workspace completion", async () => {
+    const { api, ws, design, context, projectNode } = await seeded();
+    const wf = await seedWorkflow(api, projectNode.locator, "bounded history", { nodes: [{ id: "n", kind: "noop" }] });
+    const locator = workflowLocator(projectNode.locator, wf.id);
+    await loadWorkflow(design, projectNode.locator, wf); await design.setStatus("published");
+    await design.run(); const first = design.runHistory[0]!;
+    await design.run(); const second = design.runHistory[1]!;
+    expect(design.runHistory).toHaveLength(2);
+    const trackedRun = api.wfRun.bind(api);
+    let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+    let completed!: Promise<WorkflowRunResult>;
+    api.wfRun = (input) => { completed = trackedRun(input); return completed.then(async (result) => { await gate; return result; }); };
+    const running = design.run(); const lateId = design.activeRun!.invocationId;
+    try {
+      const lateResult = await completed;
+      const copyRoot = `${root}-history-copy`; await ws.open(copyRoot); context.root = copyRoot;
+      design.unload(); await design.load(copyRoot, locator);
+      const currentResult = await trackedRun({ locator, root: copyRoot }); design.runResult = currentResult;
+      expect(design.running).toBe(true); expect(design.runHistory.map((entry) => entry.invocationId)).toEqual([first.invocationId, second.invocationId]);
+      release(); await running;
+      expect(design.runResult).toEqual(currentResult); expect(design.running).toBe(false); expect(design.activeRun).toBeNull();
+      expect(design.runHistory.map((entry) => entry.invocationId)).toEqual([second.invocationId, lateId]);
+      expect(design.runHistory[1]).toMatchObject({ locator, root, result: lateResult });
+      api.wfRun = trackedRun; await design.run();
+      expect(design.runHistory).toHaveLength(2);
+      expect(design.runHistory[0]?.invocationId).toBe(lateId);
+      expect(design.runHistory[1]).toMatchObject({ locator, root: copyRoot, result: design.runResult });
+      design.unload(); await design.load(copyRoot, locator);
+      expect(design.runHistory).toHaveLength(2); expect(design.runHistory[0]?.invocationId).toBe(lateId);
+    } finally { release(); await running; }
+  });
+
+  it("captures one run identity for stop, waits for drain and rejects late ABA results", async () => {
+    const { api, design, projectNode } = await seeded();
+    const wf = await seedWorkflow(api, projectNode.locator, "stoppable", { nodes: [{ id: "n", kind: "noop" }] });
+    await loadWorkflow(design, projectNode.locator, wf);
+    await design.setStatus("published");
+    let input: Parameters<typeof api.wfRun>[0] | undefined;
+    let finish!: (value: WorkflowRunResult) => void;
+    api.wfRun = (value) => { input = value; return new Promise(resolve => { finish = resolve; }); };
+    const cancels: Parameters<typeof api.wfCancel>[0][] = [];
+    api.wfCancel = async value => { cancels.push(value); return true; };
+    const running = design.run();
+    expect(input?.invocationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(input?.root).toBe(root);
+    const other = await seedWorkflow(api, projectNode.locator, 'other');
+    await loadWorkflow(design, projectNode.locator, other);
+    await design.cancel();
+    expect(cancels).toEqual([{ locator: workflowLocator(projectNode.locator, wf.id), root, invocationId: input!.invocationId }]);
+    expect(design.stopping).toBe(true);
+    expect(design.running).toBe(true);
+    await loadWorkflow(design, projectNode.locator, wf); // A → A still changes the session generation
+    expect(design.running).toBe(true);
+    expect(design.stopping).toBe(true);
+    finish({ workflowId: wf.id, workflowName: wf.name, status: "published", nodeResults: [], total: 0, passed: 0, failed: 0, skipped: 0,
+      warnings: [], startedAt: "now", finishedAt: "now", verdict: "aborted" });
+    await running;
+    expect(design.runResult).toBeNull();
+    expect(design.runHistory).toHaveLength(1);
+    expect(design.runHistory[0]?.result.verdict).toBe("aborted");
+  });
   it("拒绝只读本地编辑，并在工作区根变化后拒绝旧草稿保存", async () => {
     const { api, design, context, projectNode } = await seeded();
     const wf = await seedWorkflow(api, projectNode.locator);

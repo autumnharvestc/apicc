@@ -1,16 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { transitionWorkflowStatus, validateEnablement, validateWorkflowStructure } from "../../src/workflow/validate.js";
-import type { Workflow } from "../../src/workflow/model.js";
+import { WorkflowSchema, type Workflow, type WorkflowV1 } from "../../src/workflow/model.js";
 import type { Workspace } from "../../src/domain/model.js";
 import type { ApiAsset } from "../../src/contract/model.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../../src/contract/workspace.js";
 
-function wf(nodes: Workflow["nodes"], edges: Workflow["edges"]): Workflow {
+function wf(nodes: WorkflowV1["nodes"], edges: WorkflowV1["edges"]): WorkflowV1 {
   return { id: "w", name: "wf", status: "draft", nodes, edges };
 }
 const req = (id: string) => ({ id, kind: "request" as const, apiId: `a-${id}`, caseId: `c-${id}` });
 
 describe("validateWorkflowStructure", () => {
+  it("rejects implicit v2 fanout and unlabelled condition ports", () => {
+    const value = WorkflowSchema.parse({ ...wf([req("a"), req("b"), req("c")], [
+      { id: "ab", from: "a", to: "b" }, { id: "ac", from: "a", to: "c" },
+    ]), executionVersion: 2 });
+    expect(validateWorkflowStructure(value).some((issue) => issue.code === "implicit-fanout" && issue.level === "error")).toBe(true);
+  });
   it("合法链式图零 error 零 warning", () => {
     const issues = validateWorkflowStructure(wf([req("n1"), req("n2")], [{ id: "e", from: "n1", to: "n2" }]));
     expect(issues.filter((i) => i.level === "error")).toEqual([]);
@@ -80,7 +86,7 @@ describe("validateWorkflowStructure", () => {
 });
 
 // 生命周期/启用校验共用的单一定义辅助（合并原 wf 局部函数，status 缺省 published）。
-const wfFactory = (nodes: Workflow["nodes"], edges: Workflow["edges"], status: Workflow["status"] = "published"): Workflow =>
+const wfFactory = (nodes: WorkflowV1["nodes"], edges: WorkflowV1["edges"], status: Workflow["status"] = "published"): WorkflowV1 =>
   ({ id: "w", name: "wf", status, nodes, edges });
 
 function apiAsset(apiId: string, name: string, caseIds: readonly string[]): ApiAsset {
@@ -152,6 +158,18 @@ describe("transitionWorkflowStatus", () => {
 });
 
 describe("validateEnablement", () => {
+  it("rejects indirect recursive and missing child references without rejecting a shared child", () => {
+    const child = WorkflowSchema.parse({ id: "child", name: "child", executionVersion: 2, nodes: [{ id: "end", kind: "noop" }] });
+    const root = WorkflowSchema.parse({ id: "root", name: "root", executionVersion: 2, nodes: [{ id: "fork", kind: "parallel", join: "all", branches: [
+      { id: "one", workflowId: "child" }, { id: "two", workflowId: "child" },
+    ] }] });
+    const owner = project("p", [], [root, child]);
+    expect(validateEnablement(root, workspace(owner), owner).ok).toBe(true);
+    child.nodes = [{ id: "recurse", kind: "subflow", workflowId: "root", inputs: {}, outputs: {} }];
+    expect(validateEnablement(root, workspace(owner), owner).errors.join(" ")).toMatch(/递归|recurs/i);
+    child.nodes = [{ id: "missing", kind: "subflow", workflowId: "outside", inputs: {}, outputs: {} }];
+    expect(validateEnablement(root, workspace(owner), owner).errors.join(" ")).toMatch(/不存在|missing/i);
+  });
   const workspaceWith = (apis: Array<{ id: string }>, cases: Array<{ id: string; apiId: string }>): Workspace => workspace(
     project("p", apis.map((api) => collection(
       `collection-${api.id}`,
