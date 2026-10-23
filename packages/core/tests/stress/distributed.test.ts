@@ -44,11 +44,11 @@ function privateChannels(): [StressWorkerChannel, StressWorkerChannel] {
 }
 
 describe("v3 remote VU coordinator", () => {
-  async function phaseAtDiagnostic(nominal: number, boundary: number) {
+  async function phaseAtDiagnostic(nominal: number, boundary: number, measurementBegins = false) {
     // Real v3 peers/worker/phase-at/snapshot merge; the injected host has one known phase boundary.
     // Anchor send0/receive2/worker100 gives delta=-99 and uncertainty1ms, without sleeps or I/O.
-    let reads = 0, workerNow = 100;
-    const clock: StressClock = { now: () => ++reads === 1 ? 0 : reads === 2 ? 2 : 1000, wallNow: () => 0,
+    let reads = 0, workerNow = 100, current = 998;
+    const clock: StressClock = { now: () => ++reads === 1 ? 0 : reads === 2 ? 2 : current, wallNow: () => 0,
       async sleep() { throw new Error("No clock wait expected in this finite diagnostic"); } };
     const workerClock: StressClock = { ...clock, now: () => workerNow };
     const metricPlan = legacyStressMetricPlan, runId = `phase-at-${boundary}`;
@@ -70,6 +70,7 @@ describe("v3 remote VU coordinator", () => {
         const worker = serveLocalStressWorker(channels[1], identity, async () => ({ clock: workerClock, metricPlan,
           evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }), host: {
             async createVu(_id, _inputs, host) { return { async execute(context) {
+              current = 1000;
               workerNow = nominal + 99;
               host!.observe({ kind: "case", ...context.observation!(), vuId: context.vuId, iterationId: context.iterationId, stageId: context.stageId,
                 ok: true, status: 200, requestStarted: true, requestCompleted: true, failureKind: null,
@@ -87,31 +88,48 @@ describe("v3 remote VU coordinator", () => {
         return channels[0];
       },
     });
-    const phaseAt = (atMs: number) => ({ atMs, phase: atMs < boundary ? "measurement" as const : "drain" as const });
+    const phaseAt = (atMs: number) => ({ atMs, phase: measurementBegins
+      ? atMs < boundary ? "vu-setup" as const : "measurement" as const
+      : atMs < boundary ? "measurement" as const : "drain" as const });
     try {
       const vu = await local.deps.createVu("1", {}, { runId, vuId: "1", signal: local.deps.signal, clock,
-        gate: local.deps.gate, observation: () => phaseAt(1000), observationAt(atMs) {
-          if (atMs < 0 || atMs > 1000) throw new Error("Host cannot resolve an unobserved time");
+        gate: local.deps.gate, observation: () => phaseAt(current), observationAt(atMs) {
+          if (atMs < 0 || atMs > current) throw new Error("Host cannot resolve an unobserved time");
           return phaseAt(atMs);
         }, observe: accumulator.observe, lifecycle: undefined, reportLifecycle() { return {}; } });
+      if (measurementBegins) current = 1000;
       const result = await vu.execute({ runId, vuId: "1", iterationId: "1", stageId: null, phase: "measurement", scheduledOffsetMs: 0, signal: local.deps.signal });
       expect(result).toEqual({ state: "passed", durationMs: 1 });
       accumulator.observe({ kind: "iteration", phase: "measurement", stageId: null, atMs: 1000,
         started: 1, passed: 1, failed: 0, aborted: 0, dropped: 0, durationMs: 1, startDelayMs: 0 });
       await vu.close({ reason: "duration", signal: local.deps.signal, allowNetworkCleanup: false });
       await local.deps.closeRun!();
-      const summary = local.deps.metrics.finish({ startedAt: 0, finishedAt: 1100, measurementStartOffsetMs: 0, measurementEndOffsetMs: 1100,
+      const summary = local.deps.metrics.finish({ startedAt: measurementBegins ? boundary : 0, finishedAt: 1100, measurementStartOffsetMs: measurementBegins ? boundary : 0, measurementEndOffsetMs: 1100,
         stopReason: "duration", plannedIterations: 1, lifecycle: [],
-        load: { plannedDurationMs: 1100, measurementDurationMs: Math.min(boundary, 1100), drainDurationMs: Math.max(0, 1100 - boundary),
+        load: { plannedDurationMs: 1100, measurementDurationMs: measurementBegins ? 1100 - boundary : Math.min(boundary, 1100), drainDurationMs: measurementBegins ? 0 : Math.max(0, 1100 - boundary),
           policyLimitedMs: 0, saturated: false, maxVus: 1, maxRequestConcurrency: 1 },
         completeness: { execution: { complete: true, reasons: [] }, metrics: { complete: true, reasons: [] }, load: { complete: true, reasons: [] } },
-        phaseWindows: [{ phase: "measurement", stageId: null, startOffsetMs: 0, endOffsetMs: Math.min(boundary, 1100) },
-          ...(boundary < 1100 ? [{ phase: "drain" as const, stageId: null, startOffsetMs: boundary, endOffsetMs: 1100 }] : [])] });
+        phaseWindows: measurementBegins
+          ? [{ phase: "vu-setup", stageId: null, startOffsetMs: 0, endOffsetMs: boundary }, { phase: "measurement", stageId: null, startOffsetMs: boundary, endOffsetMs: 1100 }]
+          : [{ phase: "measurement", stageId: null, startOffsetMs: 0, endOffsetMs: Math.min(boundary, 1100) },
+            ...(boundary < 1100 ? [{ phase: "drain" as const, stageId: null, startOffsetMs: boundary, endOffsetMs: 1100 }] : [])] });
       return { nominal, current: 1000, uncertainty: local.deps.timelineUncertaintyMs!(), boundary, responses, snapshots,
         requests: summary.requests, phases: summary.phases.map(p => ({ phase: p.phase, requests: p.requests })),
         completeness: summary.completeness, timeline: { aligned: summary.timeline.aligned, uncertaintyMs: summary.timeline.uncertaintyMs }, verdict: summary.verdict };
     } finally { await local.close(); }
   }
+  it("phase-at intersects clock uncertainty with the causal execute dispatch boundary", async () => {
+    // Measurement begins999.75; execute is sent1000; the worker event nominal999.5 ±1
+    // cannot predate that command, even though its clock-only interval includes VU setup.
+    const actual = await phaseAtDiagnostic(999.5, 999.75, true);
+    expect(actual.uncertainty).toBe(1);
+    expect.soft(actual.responses).toEqual([{ atMs: 999.5, value: { phase: "measurement", atMs: 1000, uncertain: false } }]);
+    expect.soft(actual.snapshots).toEqual([{ sourceId: "worker-1", scope: "observations", sequence: 1, reasons: [] }]);
+    expect.soft(actual.completeness.metrics).toEqual({ complete: true, reasons: [] });
+    expect.soft(actual.timeline).toEqual({ aligned: true, uncertaintyMs: 1 });
+    expect.soft(actual.verdict.status).toBe("passed");
+    expect(actual.requests).toEqual({ started: 1, completed: 1, eligibleCompleted: 1, failed: 0 });
+  });
   it("phase-at diagnosis accepts bounded nominal future within one observed phase", async () => {
     // A 0.5ms nominal lead inside known1ms mapping uncertainty is not by itself a lost phase.
     const actual = await phaseAtDiagnostic(1000.5, 2000);

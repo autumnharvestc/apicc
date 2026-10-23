@@ -27,7 +27,7 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
   const failures = new Set<StressCompletenessReason>();
   const childAbort = new AbortController();
   const signal = AbortSignal.any([options.signal, childAbort.signal]);
-  const states: { id: string; peer: StressWorkerPeer; controller: AbortController; vus: Map<string, { host: StressVuHostContext; iteration: string | null; stage: string | null; closed: boolean }>; leases: Map<string, { vuId: string; requestId: string; release(): void }>; drained: boolean; counts?: { total: number; ok: number; failed: number; eligibleCompleted: number }; generator?: StressGeneratorMetrics }[] = [];
+  const states: { id: string; peer: StressWorkerPeer; controller: AbortController; vus: Map<string, { host: StressVuHostContext; iteration: string | null; stage: string | null; closed: boolean; notBeforeMs: number }>; leases: Map<string, { vuId: string; requestId: string; release(): void }>; drained: boolean; counts?: { total: number; ok: number; failed: number; eligibleCompleted: number }; generator?: StressGeneratorMetrics }[] = [];
   let uncertainty = 0, leaseSerial = 0, privateComplete = false, evidence: import("../report/types.js").SafeExecutionEvidence[] = [];
   let drainPromise: Promise<void> | undefined, closed: Promise<void> | undefined;
   let pluginMismatchShard: string | undefined;
@@ -48,12 +48,14 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
         if (command.type === "phase-at") {
           if (command.stageId !== vu.stage || !vu.host.observationAt) throw new Error("worker-incompatible");
           const current = vu.host.observation().atMs;
-          if (command.atMs > current + uncertainty) throw new Error("timeline-unaligned");
-          const atMs = Math.min(command.atMs, current), stamp = vu.host.observationAt(atMs);
-          // Intersect the original mapped interval with observed causal time; clamping
-          // its center first would widen the past bound when nominal leads current.
-          const before = vu.host.observationAt(Math.max(0, command.atMs - uncertainty));
-          const after = vu.host.observationAt(Math.min(current, command.atMs + uncertainty));
+          // This operation's worker events cannot precede its coordinator command,
+          // or follow this response. Retain the original measured clock interval.
+          const earliest = Math.max(0, vu.notBeforeMs, command.atMs - uncertainty);
+          const latest = Math.min(current, command.atMs + uncertainty);
+          if (earliest > latest) throw new Error("timeline-unaligned");
+          const atMs = Math.max(earliest, Math.min(command.atMs, latest)), stamp = vu.host.observationAt(atMs);
+          const before = vu.host.observationAt(earliest);
+          const after = vu.host.observationAt(latest);
           return { ...stamp, uncertain: before.phase !== after.phase };
         }
         if (command.type === "request-permit") {
@@ -105,7 +107,7 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
     async createVu(vuId, inputs, host) {
       if (!host) throw new Error("Missing coordinator VU host");
       const state = states[(Number(vuId) - 1) % states.length]!;
-      const vu = { host, iteration: null as string | null, stage: null as string | null, closed: false }; state.vus.set(vuId, vu);
+      const vu = { host, iteration: null as string | null, stage: null as string | null, closed: false, notBeforeMs: host.observation().atMs }; state.vus.set(vuId, vu);
       let mappedInputs: Readonly<Record<string, unknown>> = inputs;
       const records = (value: unknown) => z.array(StressWorkerLifecycleSchema).max(2).parse(value).forEach((record) => { mappedInputs = host.reportLifecycle(record.role, record.result); });
       const created = z.object({ ok: z.boolean(), records: z.array(StressWorkerLifecycleSchema).max(2), mappedInputs: z.record(z.string(), z.unknown()) }).strict().parse(await state.peer.request({ type: "create", vuId, inputs: structuredClone(inputs), runStart: options.clock.now() - host.observation().atMs }));
@@ -113,13 +115,14 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
       if (JSON.stringify(Object.entries(mappedInputs).sort()) !== JSON.stringify(Object.entries(created.mappedInputs).sort())) throw new Error("worker-incompatible");
       if (!created.ok) { vu.closed = true; throw new Error("VU initialization failed"); }
       return { async execute(context) {
-        vu.iteration = context.iterationId; vu.stage = context.stageId;
+        vu.iteration = context.iterationId; vu.stage = context.stageId; vu.notBeforeMs = host.observation().atMs;
         const cancel = () => { void state.peer.request({ type: "stop" }).catch(() => {}); }; context.signal.addEventListener("abort", cancel, { once: true });
         try { return z.object({ state: z.enum(["passed", "failed", "aborted"]), durationMs: z.number().finite().nonnegative() }).strict().parse(await state.peer.request({ type: "execute", vuId, iterationId: context.iterationId, stageId: context.stageId, phase: context.phase, scheduledOffsetMs: context.scheduledOffsetMs })); }
         finally { context.signal.removeEventListener("abort", cancel); vu.iteration = null; vu.stage = null; }
       }, async close(closeOptions) {
         try {
           if (closeOptions.signal.aborted) await state.peer.request({ type: "stop" });
+          vu.notBeforeMs = host.observation().atMs;
           const value = z.object({ records: z.array(StressWorkerLifecycleSchema).max(1) }).strict().parse(await state.peer.request({ type: "close", vuId, reason: closeOptions.reason, allowNetworkCleanup: closeOptions.allowNetworkCleanup })); records(value.records);
         } finally { vu.closed = true; }
       } };
