@@ -12,6 +12,7 @@
 // 4. a-tabs 的页签触发钩子（tab-*）经 #tab slot 渲染成可点击 span，点击冒泡到
 //    a-tabs 内部处理器完成切换，测试仍直接对该 data-testid trigger("click")。
 import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
+import { legacyStressRun } from "../../helpers/legacyStress.js";
 import { randomUUID } from "node:crypto";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { reactive } from "vue";
@@ -2080,7 +2081,7 @@ describe("stressStore", () => {
     const api = createMemoryApi();
     api.seedWorkspace();
     let resolveRun!: (v: StressRunOutput) => void;
-    api.stressRun = (): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; });
+    api.stressRun = legacyStressRun((): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; }));
     const stress = createStressStore({ api, getContext: () => ({ root: stressStoreRoot, locator: stressStoreLocator }) });
     stress.form.caseId = "c1";
     const first = stress.start(stressStoreLocator);
@@ -2098,7 +2099,7 @@ describe("stressStore", () => {
     expect(stress.running).toBe(false);
     // 陈旧拒绝同样不污染：clear 后旧 run reject → error 不置位、不向组件层重抛
     let rejectRun!: (e: Error) => void;
-    api.stressRun = (): Promise<StressRunOutput> => new Promise((_res, rej) => { rejectRun = rej; });
+    api.stressRun = legacyStressRun((): Promise<StressRunOutput> => new Promise((_res, rej) => { rejectRun = rej; }));
     const second = stress.start(stressStoreLocator);
     await flushPromises();
     stress.clear();
@@ -2134,11 +2135,11 @@ describe("StressPanel", () => {
     const sent: StressRunInput[] = [];
     let resolveFirst!: (v: StressRunOutput) => void;
     const { wrapper, api, apiLocator, cases } = await mountStress();
-    api.stressRun = (input: StressRunInput): Promise<StressRunOutput> => {
+    api.stressRun = legacyStressRun((input: StressRunInput): Promise<StressRunOutput> => {
       sent.push(input);
       if (sent.length === 1) return new Promise<StressRunOutput>((res) => { resolveFirst = res; });
       return Promise.resolve({ ok: true, report: makeReport({ totalRequests: 2, ok: 2, failed: 0 }) });
-    };
+    });
     // 初态：无活动运行，停止禁用
     expect(wrapper.find('[data-testid="stress-stop"]').attributes("disabled")).toBeDefined();
     chooseSelect(wrapper, "stress-case-select", "c2");
@@ -2179,11 +2180,11 @@ describe("StressPanel", () => {
     const reportA = makeReport();
     let call = 0;
     const { wrapper, api, stress, errors } = await mountStress();
-    api.stressRun = async (): Promise<StressRunOutput> => {
+    api.stressRun = legacyStressRun(async (): Promise<StressRunOutput> => {
       call += 1;
       if (call === 1) return { ok: true, report: reportA, file: "stress-a.json" };
       throw new Error("已有压测进行中");
-    };
+    });
     await wrapper.find('[data-testid="stress-start"]').trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
@@ -2208,7 +2209,7 @@ describe("StressPanel", () => {
     const { wrapper, api } = await mountStress();
     // 挂起制造活动窗口；abort 后在途 run 收尾（与主进程 StressRunner signal 语义一致，
     // store.start 的 finally 才能复位 running）
-    api.stressRun = (): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; });
+    api.stressRun = legacyStressRun((): Promise<StressRunOutput> => new Promise((res) => { resolveRun = res; }));
     api.stressStop = async (): Promise<StressRunOutput> => {
       resolveRun({ ok: true, report: partial, file: "stress-partial.json" });
       return { ok: true, report: partial, file: "stress-partial.json" };
@@ -2263,7 +2264,7 @@ describe("StressPanel", () => {
       { ok: true as const, report: makeReport() },
     ];
     const calls: StressRunInput[] = [];
-    api.stressRun = async (input) => { calls.push(input); return outputs.shift()!; };
+    api.stressRun = legacyStressRun(async (input) => { calls.push(input); return outputs.shift()!; });
     await wrapper.find('[data-testid="stress-start"]').trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="stress-target-confirmation"]').text()).toContain("https://example.com");
@@ -2282,7 +2283,7 @@ describe("StressPanel", () => {
       { ok: false as const, error: { code: "target_confirmation_required" as const, message: "confirm", targetOrigin: "https://example.com" } },
       { ok: true as const, report: makeReport() },
     ];
-    second.api.stressRun = async () => secondOutputs.shift()!;
+    second.api.stressRun = legacyStressRun(async () => secondOutputs.shift()!);
     await second.wrapper.find('[data-testid="stress-start"]').trigger("click");
     await flushPromises();
     await second.wrapper.find('[data-testid="stress-trust-project"]').trigger("click");

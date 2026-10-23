@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   StressReportSchema,
+  StressPlanSchema,
   type ApiAsset,
   type GeneratorMetricsCollector,
   type ProtocolClient,
@@ -72,6 +74,77 @@ async function setupStress() {
 }
 
 describe("formal Session transactions", () => {
+  it("flushes the final plan progress only after real close and cancels stale tails on success or failure", async () => {
+    // A delayed final callback must not be left behind the run reply or survive into the next run.
+    const { s } = await setupStress();
+    const events: import('../../src/shared/types.js').StressProgressDTO[] = [], persistedAtFinish: boolean[] = [];
+    let enterClose!: () => void, releaseClose!: () => void;
+    const closing = new Promise<void>(resolve => { enterClose = resolve; });
+    const heldClose = new Promise<void>(resolve => { releaseClose = resolve; });
+    const controller = createStressController(s, {
+      onProgress: value => {
+        events.push(value);
+        if (value.state === 'finished') persistedAtFinish.push(existsSync(join(s.root!, '.apicc', 'runs', `stress-plan-${value.runId}.json`)));
+      },
+      createManagedClient: () => ({ name: 'progress-fixture', canHandle: () => true,
+        execute: async () => ({ status: 200, headers: {}, bodyText: '{}', timeMs: 1 }),
+        close: async () => { enterClose(); await heldClose; },
+      }),
+    });
+    const input = { kind: 'plan' as const, root: s.root!, invocationId: uuid(991), projectLocator, plan: StressPlanSchema.parse({ formatVersion: 1,
+      target: { kind: 'case', collectionId: apiLocator.collectionId, apiId: apiLocator.apiId, caseId: IDS.sharedCase }, load: { kind: 'constant-vus', vus: 1 }, termination: { maxIterations: 2 } }),
+      confirmedTargetOrigins: ['http://127.0.0.1:1'] };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const run = controller.run(input);
+    try {
+      await closing;
+      expect(events.some(value => value.state === 'finished')).toBe(false);
+      releaseClose(); const output = await run;
+      expect(output.report.iterations).toMatchObject({ started: 2, completed: 2, dropped: 0 });
+      expect(events.at(-1)).toMatchObject({ runId: output.runId, state: 'finished', activeVus: 0, startedIterations: 2, completedIterations: 2, droppedIterations: 0 });
+      expect(persistedAtFinish).toEqual([true]);
+      expect(performance.now()).toBe(0); // No timer advance/250ms completion delay is permitted.
+      expect(vi.getTimerCount()).toBe(0);
+      const count = events.length; await vi.advanceTimersByTimeAsync(500); expect(events).toHaveLength(count);
+      await expect(controller.run({ ...input, invocationId: uuid(992), confirmedTargetOrigins: [] })).rejects.toMatchObject({ code: 'target_confirmation_required' });
+      const afterFailure = events.length;
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(500); expect(events).toHaveLength(afterFailure);
+      expect(events.slice(count).some(value => value.state === 'finished')).toBe(false);
+    } finally { releaseClose(); await run.catch(() => {}); vi.useRealTimers(); }
+  });
+  it("receipts a plan before held credential preparation and stops only its real run identity", async () => {
+    const { s } = await setupStress();
+    let release!: () => void, capturedSignal: AbortSignal | undefined, clients = 0;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const events: import('../../src/shared/types.js').StressProgressDTO[] = [];
+    const controller = createStressController(s, { onProgress: value => events.push(value), createManagedClient: () => { clients++; throw new Error('must not create a client'); } }, {
+      async prepareRunForRequests(_scope, _snapshot, _selections, options) {
+        capturedSignal = options?.signal; await held;
+        if (capturedSignal?.aborted) throw new Error('cancelled-preparation');
+        throw new Error('unexpected preparation');
+      },
+    });
+    const invocationId = uuid(990);
+    const input = { kind: 'plan' as const, root: s.root!, invocationId, projectLocator, plan: StressPlanSchema.parse({ formatVersion: 1,
+      target: { kind: 'case', collectionId: apiLocator.collectionId, apiId: apiLocator.apiId, caseId: IDS.sharedCase }, load: { kind: 'constant-vus', vus: 1 }, termination: { maxIterations: 1 } }) };
+    const other = await tempRoot(); let preparations = 0;
+    const preflight = createStressController(s, {}, { async prepareRunForRequests() { preparations++; throw new Error('entered-preparation'); } });
+    await expect(Promise.resolve().then(() => preflight.run({ ...input, root: other.path }))).rejects.toThrow(/root|根/);
+    expect(preparations).toBe(0);
+    const run = controller.run(input);
+    const outcome = run.catch(error => error as Error);
+    const first = events[0];
+    try {
+      expect(first).toMatchObject({ invocationId, sourceRoot: input.root, state: 'preparing', phase: null, startedIterations: 0, target: { kind: 'case', apiId: apiLocator.apiId } });
+      await Promise.resolve();
+      const stop = controller.stop({ runId: first!.runId, root: first!.root, projectLocator }).catch(error => error as Error);
+      expect(capturedSignal?.aborted).toBe(true); expect(clients).toBe(0);
+      let settled = false; void stop.then(() => { settled = true; }); await Promise.resolve(); expect(settled).toBe(false);
+      release(); expect(await outcome).toMatchObject({ message: 'cancelled-preparation' }); await stop;
+      expect(clients).toBe(0);
+    } finally { release(); await outcome; }
+  });
   it("creates a formal workspace with one default group and a committed revision", async () => {
     const temporary = await tempRoot();
     const unopened = createSession();
@@ -293,6 +366,29 @@ function hangingClient() {
 
 describe("createStressController with formal session assets", () => {
   const confirmed = ["http://127.0.0.1:1"];
+
+  it("gates each redirect hop in the real legacy Desktop factory at concurrency one", async () => {
+    const hops: number[] = [];
+    const server = createServer((req, res) => {
+      hops.push(performance.now());
+      if (req.url?.startsWith('/f6-redirect')) { res.writeHead(302, { location: '/f6-final' }); res.end(); }
+      else { res.writeHead(200); res.end('ok'); }
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing server address');
+    try {
+      const origin = `http://127.0.0.1:${address.port}`, { s, api } = await setupStress();
+      const edited = structuredClone(s.locateApi(api.locator)!.api);
+      edited.contract.request.baseUrl = origin; edited.contract.request.path = '/f6-redirect';
+      edited.cases[0]!.requestSettingsOverride = { followRedirects: true };
+      await s.saveApi(api.locator, edited);
+      await s.setStressPolicy(projectLocator, { trustedOrigins: [origin], maxConcurrency: 1, maxRps: 1 });
+      const output = await createStressController(s).run({ locator: api.locator, caseId: api.cases[0]!.id, concurrency: 1, maxIterations: 1 });
+      expect(output.report).toMatchObject({ totalRequests: 1, ok: 1 });
+      expect(hops).toHaveLength(2);
+      expect(hops[1]! - hops[0]!).toBeGreaterThanOrEqual(950);
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  });
 
   it.each(["pooled", "fresh"] as const)("%s connection mode creates and closes one managed client per worker", async (connectionMode) => {
     const { s, api } = await setupStress();

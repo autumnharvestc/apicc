@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiccApi } from "../../src/shared/types.js";
 import type { ApiTestCase } from "@apicc/core";
 import { IpcChannel } from "../../src/shared/channels.js";
+import { createStressPreloadApi } from "../../src/preload/stressBridge.js";
+import { stressV2Report } from '../helpers/stressV2.js';
 import { toTreeNode } from "../../src/main/tree.js";
 import { IDS, makeApi, makeWorkspace, projectOne, uuid } from "./helpers/contract-assets.js";
 
@@ -18,6 +20,23 @@ vi.mock("electron", () => ({
 }));
 
 describe("typed preload contract", () => {
+  it('validates scoped stress history inputs and outputs across the preload boundary', async () => {
+    const scope = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const report = stressV2Report();
+    const row = { kind: 'stress', file: 'saved.json', projectId: report.projectId, startedAt: new Date(report.startedAt).toISOString(), totalRequests: 1, ok: 1, failed: 0, rps: null };
+    const calls: unknown[] = [];
+    const api = createStressPreloadApi({ invoke: async (channel, ...args) => { calls.push([channel, ...args]); return channel === IpcChannel.StressRunsList ? [row] : { kind: 'stress', report }; } });
+    expect(await api.stressRunsList(scope)).toEqual([row]); expect(await api.stressRunsGet(scope, 'saved.json')).toEqual({ kind: 'stress', report });
+    expect(calls).toEqual([[IpcChannel.StressRunsList, scope], [IpcChannel.StressRunsGet, scope, 'saved.json']]);
+    await expect(api.stressRunsGet(scope, '../saved.json')).rejects.toThrow();
+    const invalid = createStressPreloadApi({ invoke: async () => ({ kind: 'stress', report, unexpected: true }) });
+    await expect(invalid.stressRunsGet(scope, 'saved.json')).rejects.toThrow();
+    await expect(invalid.stressRunsList(scope)).rejects.toThrow();
+  });
+  it("rejects malformed saved-plan output at the stress preload boundary", async () => {
+    const api = createStressPreloadApi({ invoke: async () => ({ id: "bad", name: "bad" }) });
+    await expect(api.stressPlansGet({ workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne }, uuid(999))).rejects.toThrow();
+  });
   beforeEach(() => {
     electron.invoke.mockReset();
     electron.invoke.mockResolvedValue(undefined);
@@ -242,5 +261,17 @@ describe("typed preload contract", () => {
     listener();
     expect(handler).toHaveBeenCalledOnce();
     expect(electron.send).toHaveBeenCalledWith("app:dirty-check:reply", true);
+  });
+  it("validates stress progress and detaches its exact listener", () => {
+    const listeners = new Map<string, (_event: unknown, value: import("../../src/shared/types.js").StressProgressDTO) => void>();
+    const received: unknown[] = [];
+    const bridge = createStressPreloadApi({ invoke: async () => undefined,
+      on(channel, listener) { listeners.set(channel, listener); }, removeListener(channel, listener) { if (listeners.get(channel) === listener) listeners.delete(channel); } });
+    const unsubscribe = bridge.onStressProgress((value) => received.push(value));
+    const progress = { runId: "00000000-0000-4000-8000-000000000099", root: "C:/fixture", projectLocator: { workspaceId: "w", groupId: "g", projectId: "p" }, generation: 1,
+      state: "running" as const, phase: "measurement" as const, stageId: null, atMs: 1, activeVus: 1, startedIterations: 1, completedIterations: 0, droppedIterations: 0 };
+    listeners.get("stress:progress")!({}, progress);
+    listeners.get("stress:progress")!({}, { ...progress, secret: "must-not-pass" } as typeof progress);
+    expect(received).toEqual([progress]); unsubscribe(); expect(listeners.has("stress:progress")).toBe(false);
   });
 });

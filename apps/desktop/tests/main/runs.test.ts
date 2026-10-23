@@ -2,10 +2,12 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { listRuns, readRun } from "../../src/main/runs.js";
+import { listRuns, readRun, readScopedStressRun, writeStressRunScope } from "../../src/main/runs.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
+import { createStressController } from "../../src/main/stress.js";
 import { IDS, uuid } from "./helpers/contract-assets.js";
+import { computeReport, StressPlanSchema } from "@apicc/core";
 
 const sample = {
   collectionId: "c", collectionName: "demo", startedAt: "2026-09-02T00:00:00.000Z",
@@ -13,6 +15,24 @@ const sample = {
 };
 
 describe("runs 历史", () => {
+  it("reads explicit v2 unavailable metrics without a legacy numeric projection and rejects unknown versions", () => {
+    const dir = mkdtempSync(join(tmpdir(), "f6-v2-history-"));
+    const legacy = computeReport([], { concurrency: 1, startedAt: 0, finishedAt: 0 });
+    const missing = { availability: "unavailable", reason: "no-data" }, complete = { complete: true, reasons: [] };
+    const target = { kind: "workflow", workflowId: "wf" };
+    const value = { ...legacy, formatVersion: 2, runId: "r", projectId: IDS.projectOne, definitionRevision: "rev", target,
+      plan: StressPlanSchema.parse({ formatVersion: 1, target, load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: 1 } }),
+      environmentId: null, dataIdentity: { digest: null, datasetIds: [] }, rps: missing, latency: missing, scriptLatency: missing, iterationLatency: missing,
+      verdict: { status: "no-data", passed: false, violations: [] }, iterations: { planned: 0, started: 0, completed: 0, passed: 0, failed: 0, aborted: 0, dropped: 0, latency: missing, startDelay: missing },
+      caseRows: { total: 0, ok: 0, failed: 0, failures: legacy.failures }, requests: { started: 0, completed: 0, eligibleCompleted: 0, failed: 0 }, httpExchanges: { started: 0, completed: 0 },
+      phases: [], nodes: [], lifecycle: [], timeline: { bucketWidthMs: 1000, aligned: true, uncertaintyMs: 0, buckets: [] },
+      load: { plannedDurationMs: null, measurementDurationMs: 0, drainDurationMs: 0, policyLimitedMs: 0, saturated: false, maxVus: 1, maxRequestConcurrency: 1 },
+      statistics: { method: "exact-nearest-rank", exact: true, relativeError: 0, minValueMs: 0.001, gamma: 1.01, bucketCount: 4608, exactLimit: 256, underflow: 0, overflow: 0 }, completeness: { execution: complete, metrics: complete, load: complete } };
+    writeFileSync(join(dir, "v2.json"), JSON.stringify(value)); writeFileSync(join(dir, "unknown.json"), JSON.stringify({ ...value, formatVersion: 3 }));
+    expect(readRun(dir, "v2.json")).toMatchObject({ kind: "stress", report: { formatVersion: 2, rps: missing } });
+    expect(listRuns(dir)).toEqual([expect.objectContaining({ formatVersion: 2, file: "v2.json", rps: null, verdict: "no-data" })]);
+    expect(readRun(dir, "unknown.json")).toBeNull();
+  });
   it("C1 separates project and suite/workflow kind while reading old evidence-free JSON unchanged", () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-c1-history-"));
     writeFileSync(join(dir, "old.json"), JSON.stringify(sample));
@@ -83,6 +103,17 @@ const stressReport = {
 };
 
 describe("runs kind 判别", () => {
+  it("requires proven root/full-project ownership and rejects changed report bytes", () => {
+    const root = mkdtempSync(join(tmpdir(), "f6-scope-")), dir = join(root, ".apicc", "runs"); mkdirSync(dir, { recursive: true });
+    const scope = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const value = { ...stressReport, projectId: IDS.projectOne }; writeFileSync(join(dir, "saved.json"), JSON.stringify(value));
+    expect(() => readScopedStressRun(root, scope, "saved.json")).toThrow(/归属未证明/);
+    writeStressRunScope(root, "saved.json", scope);
+    expect(readScopedStressRun(root, scope, "saved.json")).toEqual(value);
+    expect(() => readScopedStressRun(root, { ...scope, groupId: IDS.groupTwo }, "saved.json")).toThrow(/归属/);
+    writeFileSync(join(dir, "saved.json"), JSON.stringify({ ...value, ok: 2 }));
+    expect(() => readScopedStressRun(root, scope, "saved.json")).toThrow(/归属/);
+  });
   it("listRuns 判别 collection/stress 两行，形状不对的 JSON 跳过（不产 undefined 字段行）", () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-runs-kind-"));
     mkdirSync(dir, { recursive: true });
@@ -140,6 +171,42 @@ async function createRunFixture(deps: ReturnType<typeof createIpcDeps>, dir: str
 }
 
 describe("IPC run 频道", () => {
+  it("saves scoped configuration and exports/compares only proven same-project saved files", async () => {
+    const { deps, dir, session } = setup(); const { project } = await createRunFixture(deps, dir), scope = project.locator;
+    const plan = StressPlanSchema.parse({ formatVersion: 1, target: { kind: "workflow", workflowId: "wf" }, load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: 1 } });
+    const saved = await deps.handle("stress-plans:save", {}, scope, { name: "nightly", plan });
+    expect(await deps.handle("stress-plans:get", {}, scope, saved.id)).toEqual(saved);
+    const reopened = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
+    expect(await reopened.handle("stress-plans:list", {}, scope)).toEqual([saved]);
+    const runs = join(dir, ".apicc", "runs"); mkdirSync(runs, { recursive: true });
+    const value = { ...stressReport, projectId: scope.projectId }; writeFileSync(join(runs, "base.json"), JSON.stringify(value)); writeFileSync(join(runs, "next.json"), JSON.stringify({ ...value, rps: 50 }));
+    await expect(deps.handle("stress:compare", {}, scope, { baseFile: "base.json", candidateFile: "next.json" })).rejects.toThrow(/归属/);
+    writeStressRunScope(dir, "base.json", scope); writeStressRunScope(dir, "next.json", scope);
+    writeFileSync(join(runs, 'other-group.json'), JSON.stringify(value));
+    writeStressRunScope(dir, 'other-group.json', { ...scope, groupId: IDS.groupTwo });
+    writeFileSync(join(runs, 'unproved.json'), JSON.stringify(stressReport));
+    expect((await deps.handle('stress-runs:list', {}, scope)).map(row => row.file).sort()).toEqual(['base.json', 'next.json']);
+    expect(await deps.handle('stress-runs:get', {}, scope, 'base.json')).toEqual({ kind: 'stress', report: value });
+    await expect(deps.handle('stress-runs:get', {}, scope, 'other-group.json')).rejects.toThrow(/归属/);
+    await expect(deps.handle('stress-runs:get', {}, scope, 'unproved.json')).rejects.toThrow(/归属/);
+    expect((await deps.handle('runs:list', {})).map(row => row.file).sort()).toEqual(['base.json', 'next.json', 'other-group.json', 'unproved.json']);
+    expect(await deps.handle('runs:get', {}, 'unproved.json')).toEqual({ kind: 'stress', report: stressReport });
+    expect(await deps.handle("stress:compare", {}, scope, { baseFile: "base.json", candidateFile: "next.json" })).toMatchObject({ metrics: { rps: { absolute: 10, relative: 0.25 } } });
+    let content = "";
+    const exporter = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async (_name, value) => { content = value; return "selected.html"; } });
+    expect(await exporter.handle("stress:export", {}, scope, { file: "next.json", baselineFile: "base.json", format: "html" })).toEqual({ saved: true, file: "selected.html" }); expect(content).toContain("Failure evidence");
+    expect(await reopened.handle("stress:export", {}, scope, { file: "next.json", format: "json" })).toEqual({ saved: false, file: "" });
+    expect(await deps.handle("stress-plans:remove", {}, scope, saved.id)).toEqual(saved);
+    writeFileSync(join(runs, 'next.json'), JSON.stringify({ ...value, rps: 60 }));
+    await expect(deps.handle('stress-runs:get', {}, scope, 'next.json')).rejects.toThrow(/内容已改变/);
+  });
+  it("retains a safe in-memory report without claiming saved success when ownership persistence fails", async () => {
+    const { deps, dir, session } = setup(); const { api } = await createRunFixture(deps, dir);
+    const controller = createStressController(session, { writeReportScope: () => { throw new Error("interrupted scope write"); } });
+    const detail = await deps.handle("api:get", {}, api.locator);
+    const output = await controller.run({ locator: api.locator, caseId: detail.api.cases[0]!.id, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: ["http://127.0.0.1:1"] });
+    expect(output.ok).toBe(true); expect(output.report.totalRequests).toBe(1); expect(output).not.toHaveProperty("file");
+  });
   it("run:collection 走完整集合运行并落盘历史；runs:list/runs:get 读回", async () => {
     const { deps, dir } = setup();
     const { collection } = await createRunFixture(deps, dir);

@@ -8,6 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDefaultRegistry, fileStorage, reportingUnits } from "@apicc/core";
 import type { PluginRegistry, RunResult, ShardOutcome, Workspace } from "@apicc/core";
 import { runCli as runCliActual, type RunCliDeps } from "../src/main.js";
+import { localStressWorker } from "./helpers/localStressWorker.js";
+import { createGeneratorMetricsCollector } from "@apicc/core";
 
 let server: Server;
 let baseUrl = "";
@@ -1036,26 +1038,14 @@ describe("CLI 端到端", () => {
     const multiDir = runsPath("stress-consistency-multi");
     const multiLogs: string[] = [];
     const networkPrivateRoot = join(root, ".apicc-network-private");
-    const spawnWorkerFactory = () => async (spec: {
-      apiPath: string; caseId: string; envName?: string; concurrency: number; maxIterations?: number; durationMs?: number;
-      maxRps?: number; maxErrorRate?: number; maxAssertionFailureRate?: number; maxP95Ms?: number; minRps?: number;
-      connectionMode?: "pooled" | "fresh"; confirmedTargetOrigins?: string[]; shardId: string; workspaceRoot: string;
-      definitionRevision: string; credentialVersions: Record<string, string>; networkIdentity: string;
-    }): Promise<ShardOutcome> => {
-      let wire = "";
-      const code = await runCli([
-        "stress-worker", spec.apiPath, "--case", spec.caseId, "--env", spec.envName!, "--concurrency", String(spec.concurrency),
-        "--iterations", String(spec.maxIterations), "--shard-id", spec.shardId, "--workspace", spec.workspaceRoot,
-        "--definition-revision", spec.definitionRevision, "--credential-versions", JSON.stringify(spec.credentialVersions),
-        "--network-identity", spec.networkIdentity,
-        "--allow-target", ...(spec.confirmedTargetOrigins ?? []),
-      ], createDefaultRegistry(), () => {}, { workerOut: (line) => { wire = line; }, workerErr: () => {}, networkPrivateRoot });
-      expect(code).toBe(0);
-      const outcome = JSON.parse(wire) as ShardOutcome;
-      if (outcome.ok) outcome.generator = { ...outcome.generator, saturated: true, reasons: ["cpu"] };
-      return outcome;
-    };
-    const multiCode = await runCli(runArgs(multiDir, ["--shards", "2"]), createDefaultRegistry(), (line) => multiLogs.push(line), { spawnWorkerFactory, networkPrivateRoot });
+    const spawnLocalStressWorker: NonNullable<RunCliDeps["spawnLocalStressWorker"]> = (identity, timeout, prepare) => localStressWorker(identity, timeout, async (configuration) => {
+      const runtime = await prepare(configuration);
+      return { ...runtime, createGeneratorCollector() {
+        const collector = createGeneratorMetricsCollector();
+        return { ...collector, stop() { return { ...collector.stop(), saturated: true, reasons: ["cpu"] }; } };
+      } };
+    });
+    const multiCode = await runCli(runArgs(multiDir, ["--shards", "2"]), createDefaultRegistry(), (line) => multiLogs.push(line), { spawnLocalStressWorker, networkPrivateRoot });
     const multiFile = readdirSync(multiDir).find((name) => name.endsWith(".json"))!;
     const multi = JSON.parse(readFileSync(join(multiDir, multiFile), "utf8")) as {
       totalRequests: number; ok: number; failed: number; failures: Record<string, number>; statusDist: Record<string, number>;

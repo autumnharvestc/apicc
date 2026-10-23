@@ -22,6 +22,7 @@ import { getEffectiveCaseRequest } from "../request/effective.js";
 import { assertRequestSettingsApplicable, resolveRequestSettings, type RequestSettingsOverride } from "../request/settings.js";
 import { captureRequestFiles, type CapturedRequestFiles } from "../http/files.js";
 import type { HttpSession } from "../http/session.js";
+import type { StressRequestGate } from "../stress/execution.js";
 
 export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "extraction" | "config" | "aborted";
 
@@ -83,6 +84,7 @@ export interface CaseExecutionDeps {
   observeHttp?: (event: HttpHopObservation) => void | Promise<void>;
   bus?: EventBus;
   beforeSend?: (finalRequest: ExecutableRequest) => void | Promise<void>;
+  requestGate?: StressRequestGate;
 }
 
 export interface CaseExecutionResult {
@@ -378,6 +380,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
           }
           if (deps.beforeSend) await deps.beforeSend(nextRequest);
           validateExecutableRequest(nextRequest);
+          if (deps.requestGate) await deps.requestGate.beforeRedirect(nextRequest, signal ?? new AbortController().signal);
         },
       };
     }
@@ -406,6 +409,8 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     }
     const client = deps.resolveProtocol(request);
     if (!client) throw invalidRequest(`无可用协议客户端处理 ${request.url}`);
+    const release = deps.requestGate ? await deps.requestGate.enter(request, signal ?? new AbortController().signal) : undefined;
+    if (deps.requestGate && signal?.aborted) { release?.(); throw new DOMException("Aborted", "AbortError"); }
     stage = "request";
     requestStarted = true;
     const requestStartAt = now();
@@ -430,6 +435,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
         response = { ...response, timeMs: requestTimeMs };
       }
       requestCompleted = true;
+      release?.();
     }
     // Each attempt owns one immutable complete response, including plugins that reuse response objects.
     response = Object.freeze({ ...response, headers: Object.freeze({ ...response.headers }),

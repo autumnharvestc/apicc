@@ -32,8 +32,13 @@ describe("evaluateStressThresholds", () => {
   it("aborted 样本不进入业务错误率和断言失败率分母", () => {
     const report = computeReport([s(10), s(20, "aborted")], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
     const verdict = evaluateStressThresholds(report, { maxErrorRate: 0, maxAssertionFailureRate: 0 });
-    expect(verdict.passed).toBe(true);
-    expect(verdict.violations).toEqual([]);
+    expect(report.eligibleCompletedAttempts).toBe(1);
+    expect(report.failures?.aborted).toBe(1);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.violations).toEqual([expect.objectContaining({ metric: "incomplete", actual: 1, expected: 0 })]);
+    for (const metric of ["errorRate", "assertionFailureRate", "businessFailures"]) expect(verdict.violations.map(value => value.metric)).not.toContain(metric);
+    const complete = computeReport([s(10)], { concurrency: 1, startedAt: 0, finishedAt: 1_000 });
+    expect(evaluateStressThresholds(complete, { maxErrorRate: 0, maxAssertionFailureRate: 0 })).toEqual({ passed: true, violations: [] });
   });
 
   it("未提供阈值但有非 aborted 业务失败仍产生 businessFailures", () => {

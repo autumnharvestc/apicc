@@ -227,12 +227,16 @@ export function compileWorkflowPlan(snapshot: ProjectSnapshot, workflowId: strin
 }
 
 export function workflowPlanRequests(snapshot: ProjectSnapshot, plan: CompiledWorkflowPlan): CredentialRequestSelection[] {
-  if (owners.get(plan) !== snapshot || snapshot.definitionRevision !== plan.definitionRevision || snapshot.project.id !== plan.projectId) fail("plan-snapshot", "计划不属于此固定快照或 revision 已改变");
+  assertWorkflowPlanOwner(snapshot, plan);
   return plan.selections.map((selection) => {
     const location = findProjectApi(snapshot.project, selection.apiId);
     if (location?.api !== selection.asset || !location.api.cases.includes(selection.testCase)) fail("plan-selection", "计划所选请求不属于此快照");
     return { asset: selection.asset, testCase: selection.testCase };
   });
+}
+/** Constant-time host owner check; prepared runs already validated selections/data once. */
+export function assertWorkflowPlanOwner(snapshot: ProjectSnapshot, plan: CompiledWorkflowPlan): void {
+  if (owners.get(plan) !== snapshot || snapshot.definitionRevision !== plan.definitionRevision || snapshot.project.id !== plan.projectId) fail("plan-snapshot", "计划不属于此固定快照或 revision 已改变");
 }
 /** Resolve logical multipliers against the actual prepared physical rows, never expand invocations. */
 export function validateWorkflowPlanData(snapshot: ProjectSnapshot, plan: CompiledWorkflowPlan, data: PreparedTestData | undefined,

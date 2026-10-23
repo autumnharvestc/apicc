@@ -9,7 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CredentialError, createDefaultRegistry, createProjectSnapshot, createNetworkProfileHost, createOAuthProfileHost, fileStorage, type AuthBinding, type PluginRegistry, type RunResult, type SecretStore, type Workspace } from "@apicc/core";
 import { createMcpServer } from "../src/mcp/server.js";
 import { prepareExecutionRun, stableCredentialError } from "../src/credentials.js";
-import { formatOAuthActionFailure, runCli as runCliActual, type RunCliDeps } from "../src/main.js";
+import { formatOAuthActionFailure, runCli as runCliActual, registerLegacyStressWorkerAdapter, type RunCliDeps } from "../src/main.js";
 import { spawnOwnedCliProcess } from "./helpers/ownedCliProcess.js";
 import { workflowReportScenarios } from "../../core/tests/helpers/contractExecutionFixtures.js";
 
@@ -38,7 +38,7 @@ let authorizationHeader = "";
 const observedRequests: Array<{ url: string; authorization: string; cookie?: string; body?: string }> = [];
 
 function runCli(argv: string[], registry: PluginRegistry, log: (line: string) => void = () => {}, deps: RunCliDeps = {}): Promise<number> {
-  return runCliActual(argv, registry, log, { networkPrivateRoot, ...deps });
+  return runCliActual(argv, registry, log, { networkPrivateRoot, ...(argv[0] === "stress-worker" ? { legacyStressWorkerAdapter: registerLegacyStressWorkerAdapter } : {}), ...deps });
 }
 
 const deepApiPath = [

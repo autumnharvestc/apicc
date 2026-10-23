@@ -101,6 +101,10 @@ apicc mcp --workspace /path/to/your-workspace [--allow-run]
 
 ## 开发
 
+涉及页面或离线 HTML 的设计、实现与审核，请遵循[页面展示规范](docs/ui-presentation-guidelines.md)：主视图面向用户可读，原始 JSON 次级可查；API 正文和契约编辑等必要场景保留原格式。
+
+暂不排期的功能见[低优先级需求池](docs/backlog.md)；用户明确无限期暂缓的专项仍以[无限期延迟清单](docs/deferred-work.md)为准。
+
 ```bash
 pnpm -r test   # 各包测试（vitest）
 pnpm -r build  # 全量构建

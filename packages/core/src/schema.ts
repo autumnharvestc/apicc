@@ -222,6 +222,9 @@ export {
   StressSafetySchema,
 } from "./stress/model.js";
 export type { StressReport, CurrentStressReport } from "./stress/model.js";
+export * from "./stress/plan.js";
+export * from "./stress/reportV2.js";
+export { StressStatisticsSchema, type StressStatistics } from "./stress/model.js";
 export * from "./testing/model.js";
 export * from "./workflow/model.js";
 export * from "./workflow/predicate.js";
@@ -229,3 +232,5 @@ export * from "./workflow/scope.js";
 export * from "./workflow/trace.js";
 export type { AssertOperatorDescriptor } from "./plugin/types.js";
 export { builtinAssertDescriptors } from "./assert/operators.js";
+export { StressComparisonSchema } from "./stress/compare.js";
+export { stressArrivalWindowNotices, type StressArrivalWindowNotice } from "./stress/arrivalWindow.js";

@@ -13,8 +13,14 @@ import type { ManagedProtocolClient } from "../http/client.js";
 import type { ExecutableRequest, PmApi } from "../plugin/types.js";
 import { createVariableResolver, type VariableResolver } from "../variables/resolver.js";
 import { assertStressTargetAllowed, isLoopbackStressOrigin, normalizeStressPolicy, StressSafetyError } from "./safety.js";
+import { createHttpSession } from "../http/session.js";
+import type { StressIterationContext, StressMetricEvent, StressVuHostContext, StressVuSession } from "./execution.js";
+import type { createExecutionEvidenceCollector } from "../report/evidence.js";
+import type { JsonValue } from "../contract/schemaNode.js";
 
 export interface StressWorkerSession {
+  /** True only when executeCase uses the supplied run gate for every actual hop. */
+  readonly gateManaged?: boolean;
   execute(signal?: AbortSignal): Promise<CaseExecutionResult>;
   close(): Promise<void>;
 }
@@ -26,11 +32,15 @@ export interface StressCaseTarget {
   apiId: string;
   caseId: string;
   environmentId?: string;
+  /** Trusted host has already pinned and validated this run for the whole plan. */
+  fixedRun?: true;
 }
 
 export interface StressCaseSessionDeps extends Omit<CaseExecutionDeps, "beforeSend"> {
   /** Creates the protocol client owned by this virtual-user session. */
-  createManagedClient: (workerId: number) => ManagedProtocolClient | Promise<ManagedProtocolClient>;
+  createManagedClient?: (workerId: number) => ManagedProtocolClient | Promise<ManagedProtocolClient>;
+  /** Borrowed from a run/VU owner; this session never closes it. */
+  managedClient?: ManagedProtocolClient;
 }
 
 type SnapshotContainer = DeepReadonly<ContractCollection | ContractFolder>;
@@ -149,9 +159,11 @@ export function createStressCaseSession(
     maxRps?: number;
     confirmedTargetOrigins?: string[];
     authorizeRequest?(request: ExecutableRequest): void | Promise<void>;
+    initialInputs?: Readonly<Record<string, string>>;
   },
 ): StressWorkerSession {
-  const selectedRun = captureProjectExecutionRun(target.run);
+  if (!deps.managedClient && !deps.createManagedClient) throw new Error("Stress session requires a managed client or factory");
+  const selectedRun = target.fixedRun ? target.run : captureProjectExecutionRun(target.run);
   const project = selectedRun.snapshot.project;
   const stressPolicy = mutableStressPolicy(project.stressPolicy);
   const location = locateApi(project, target.collectionId, target.apiId);
@@ -166,8 +178,10 @@ export function createStressCaseSession(
   const envVars = environment.variables;
   const baseUrl = environment.baseUrl;
   const resolver = createVariableResolver({ layers: [envVars, location.collection.variables, project.variables] });
-  const persisted = new Map<string, string>();
-  const persistedSnapshot: Record<string, string> = {};
+  const persisted = new Map<string, string>(Object.entries(options.initialInputs ?? {}));
+  const persistedSnapshot: Record<string, string> = { ...(options.initialInputs ?? {}) };
+  for (const [key, value] of persisted) resolver.setRuntime(key, value);
+  const httpSession = deps.httpSession ?? createHttpSession();
   const extractionState = createExtractionRuntimeState();
   const prepared = prepareCaseExecution(testCase, selectedRun.snapshot.context, location.asset.contract.id, deps.resolveAssert);
   const locator = { collectionId: location.collection.id, folderIds: location.containers.slice(1).map((container) => container.id), apiId: location.asset.contract.id, caseId: testCase.id, scope: testCase.scope };
@@ -176,7 +190,7 @@ export function createStressCaseSession(
   let cursor = 0;
   runContainerOperations(location.containers, "pre", deps, resolver, envVars, persisted, persistedSnapshot, extractionState);
   let client: ManagedProtocolClient | undefined;
-  const clientPromise = Promise.resolve(deps.createManagedClient(options.workerId));
+  const clientPromise = Promise.resolve(deps.managedClient ?? deps.createManagedClient!(options.workerId));
   let closePromise: Promise<void> | undefined;
 
   const resolveProtocol = (request: ExecutableRequest) => {
@@ -186,12 +200,14 @@ export function createStressCaseSession(
   };
 
   return {
+    gateManaged: deps.requestGate !== undefined,
     async execute(signal) {
       client ??= await clientPromise;
       const rowIndex = cursor++ % rows.length;
       let safety: CaseExecutionResult["safety"];
       const executionDeps: CaseExecutionDeps = {
         ...deps,
+        httpSession,
         resolveProtocol,
         timeouts: { ...(deps.timeouts ?? { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 }), signal },
         beforeSend: async (request) => {
@@ -216,6 +232,7 @@ export function createStressCaseSession(
               loopback: decision.loopback,
               appliedPolicy: decision.appliedPolicy,
             };
+            deps.requestGate?.recordTarget?.(safety);
           } catch (error) {
             if (error instanceof StressSafetyError && error.targetOrigin) {
               let appliedPolicy: ReturnType<typeof normalizeStressPolicy> | undefined;
@@ -227,6 +244,7 @@ export function createStressCaseSession(
                 loopback: isLoopbackStressOrigin(error.targetOrigin),
                 ...(appliedPolicy ? { appliedPolicy } : {}),
               };
+              deps.requestGate?.recordTarget?.(safety);
             }
             throw error;
           }
@@ -263,11 +281,50 @@ export function createStressCaseSession(
         catch (error) { hasError = true; firstError = error; }
         try {
           client ??= await clientPromise;
-          await client.close();
+          if (!deps.managedClient) await client.close();
         } catch (error) { if (!hasError) firstError = error; hasError = true; }
+        if (!deps.httpSession) {
+          try { await httpSession.close(); }
+          catch (error) { if (!hasError) firstError = error; hasError = true; }
+        }
         if (hasError) throw firstError;
       })();
       return closePromise;
     },
+  };
+}
+
+/** Planned case adapter; lifecycle composition remains with the owning host/VU. */
+export function createStressCaseVuSession(target: StressCaseTarget, deps: StressCaseSessionDeps,
+  options: Omit<Parameters<typeof createStressCaseSession>[2], "initialInputs"> & { host: StressVuHostContext; evidence: ReturnType<typeof createExecutionEvidenceCollector>; initialInputs: Readonly<Record<string, JsonValue>> }): StressVuSession {
+  const initialInputs: Record<string, string> = {};
+  for (const [key, value] of Object.entries(options.initialInputs)) { if (typeof value !== "string") throw new Error("Case initial inputs must be strings"); initialInputs[key] = value; }
+  let current: StressIterationContext | undefined;
+  const pendingHops = new Set<number>();
+  const observe = (event: StressMetricEvent) => (current?.observe ?? options.host.observe)(event);
+  const identity = () => ({ ...(current?.observation ?? options.host.observation)(), stageId: current?.stageId ?? null, vuId: options.host.vuId, ...(current ? { iterationId: current.iterationId } : {}) });
+  const session = createStressCaseSession(target, { ...deps, requestGate: options.host.gate,
+    async observeHttp(event) {
+      if (event.type === "request") { pendingHops.add(event.hopIndex); observe({ kind: "http", ...identity(), started: 1, completed: 0, nodeKey: null }); }
+      else if (pendingHops.delete(event.hopIndex)) observe({ kind: "http", ...identity(), started: 0, completed: 1, nodeKey: null });
+      await deps.observeHttp?.(event);
+    },
+  }, { ...options, initialInputs });
+  return {
+    async execute(context) {
+      if (current) throw new Error("Stress case VU cannot execute concurrently");
+      current = context;
+      try {
+        const result = await session.execute(context.signal);
+        options.evidence.observe(result, { stressRunId: context.runId, vuId: context.vuId, iterationId: context.iterationId, stageId: context.stageId, rowIndex: result.outcome.row });
+        const failureKind = result.outcome.passed ? null : result.failureKind ?? result.outcome.failureKind ?? "config";
+        observe({ kind: "case", ...identity(), ok: result.outcome.passed, status: result.response?.status ?? 0,
+          requestStarted: result.requestStarted === true, requestCompleted: result.requestCompleted === true, failureKind,
+          requestTimeMs: result.requestTimeMs, scriptTimeMs: result.scriptTimeMs, iterationTimeMs: result.iterationTimeMs,
+          locator: result.outcome.locator!, nodeKey: null });
+        return { state: failureKind === "aborted" ? "aborted" : result.outcome.passed ? "passed" : "failed", durationMs: result.iterationTimeMs };
+      } finally { current = undefined; pendingHops.clear(); }
+    },
+    async close() { await session.close(); },
   };
 }

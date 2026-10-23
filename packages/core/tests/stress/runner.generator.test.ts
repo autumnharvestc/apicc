@@ -16,6 +16,10 @@ function collector(stop: () => StressGeneratorMetrics): GeneratorMetricsCollecto
   return { recordSchedulerBacklog: vi.fn(), stop };
 }
 
+// Flush the current promise turn before advancing virtual time. The number of
+// awaits inside the production scheduler is intentionally not a test contract.
+const settleCurrentTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 class FakeScheduler {
   nowValue = 0;
   lastDelay = 0;
@@ -104,7 +108,7 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     let settled = false;
     const pending = runner.run({ concurrency: 3, maxIterations: 10, maxRps: 5 }).finally(() => { settled = true; });
     for (let i = 0; i < 8 && !settled; i += 1) {
-      for (let microtask = 0; microtask < 8; microtask += 1) await Promise.resolve();
+      await settleCurrentTurn();
       if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
     }
     await pending;
@@ -128,7 +132,7 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     let settled = false;
     const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: 0.5 }).finally(() => { settled = true; });
     for (let i = 0; i < 8 && !settled; i += 1) {
-      await Promise.resolve();
+      await settleCurrentTurn();
       if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
     }
     await pending;
@@ -151,7 +155,7 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     let settled = false;
     const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: 1 }).finally(() => { settled = true; });
     for (let i = 0; i < 8 && !settled; i += 1) {
-      await Promise.resolve();
+      await settleCurrentTurn();
       if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
     }
     const report = await pending;
@@ -204,7 +208,7 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     let settled = false;
     const pending = runner.run({ concurrency: 3, maxIterations: 3, maxRps: 1 }).finally(() => { settled = true; });
     for (let i = 0; i < 8 && !settled; i += 1) {
-      await Promise.resolve();
+      await settleCurrentTurn();
       if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
     }
     await pending;
@@ -224,7 +228,7 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     let settled = false;
     const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: 1 }).finally(() => { settled = true; });
     for (let i = 0; i < 8 && !settled; i += 1) {
-      await Promise.resolve();
+      await settleCurrentTurn();
       if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
     }
     await pending;
@@ -273,7 +277,7 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     });
     const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: Number.MIN_VALUE, signal: controller.signal });
     for (let i = 0; i < 4; i += 1) {
-      await Promise.resolve();
+      await settleCurrentTurn();
       if (scheduler.hasTimers()) { controller.abort(); break; }
     }
     await pending;
@@ -291,7 +295,7 @@ describe("StressRunner generator lifecycle and safety rate", () => {
     let settled = false;
     const pending = runner.run({ concurrency: 1, maxIterations: 2, maxRps: 1e-9 }).finally(() => { settled = true; });
     for (let i = 0; i < 600 && !settled; i += 1) {
-      for (let microtask = 0; microtask < 4; microtask += 1) await Promise.resolve();
+      await settleCurrentTurn();
       if (!settled && scheduler.hasTimers()) scheduler.advanceToNextTimer();
     }
     await pending;

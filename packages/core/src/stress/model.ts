@@ -8,6 +8,7 @@ const evidencePreviewSchema = z.object({ text: z.string(), truncated: z.boolean(
 export const SafeExecutionEvidenceSchema: z.ZodType<SafeExecutionEvidence> = z.object({
   identity: z.object({ projectId: z.string(), definitionRevision: z.string(), locator: z.object({ collectionId: z.string(), folderIds: z.array(z.string()), apiId: z.string(), caseId: z.string(), scope: z.string() }).strict().optional(),
     invocationId: z.string().optional(), parentInvocationId: z.string().optional(), nodeVisitId: z.string().optional(), attempt: z.number().int().min(1).max(5).optional(),
+    stressRunId: z.string().optional(), vuId: z.string().optional(), iterationId: z.string().optional(), stageId: z.string().nullable().optional(),
     invocationPath: z.array(z.object({ workflowId: z.string(), nodeId: z.string().optional(), branchId: z.string().optional(), iteration: z.number().int().nonnegative().optional(), handler: z.enum(["onError", "finally"]).optional() }).strict()).optional(),
     suiteRunId: z.string().optional(), entryId: z.string().optional(), suiteRow: z.number().optional(), rowIndex: z.number().optional(), nodeId: z.string().optional(), workflowId: z.string().optional(), environmentId: z.string().optional(), dataDigest: z.string().optional(), datasetId: z.string().optional() }).strict(),
   state: z.enum(["collected", "not-collected", "omitted"]), truncated: z.boolean(), scriptDiagnostics: z.enum(["existing-assertions-only", "not-collected"]),
@@ -34,7 +35,7 @@ export interface StressThresholds {
   minRps?: number;
 }
 
-export type StressViolationMetric = "errorRate" | "assertionFailureRate" | "p95" | "rps" | "businessFailures" | "noData";
+export type StressViolationMetric = "errorRate" | "assertionFailureRate" | "p95" | "rps" | "businessFailures" | "noData" | "incomplete";
 
 export interface StressViolation {
   metric: StressViolationMetric;
@@ -175,7 +176,7 @@ const thresholdsSchema = z.object({
 const verdictSchema = z.object({
   passed: z.boolean(),
   violations: z.array(z.object({
-    metric: z.enum(["errorRate", "assertionFailureRate", "p95", "rps", "businessFailures", "noData"]),
+    metric: z.enum(["errorRate", "assertionFailureRate", "p95", "rps", "businessFailures", "noData", "incomplete"]),
     actual: z.number().finite(), expected: z.number().finite(), message: z.string(),
   }).strict()),
 }).strict();
@@ -233,7 +234,7 @@ export const StressSafetySchema = z.object({
 
 /** distributed 段：多 shard 汇聚信息（M2-D）。shardErrors 无失败时省略。 */
 export const StressDistributedSchema = z.object({
-  protocolVersion: z.literal(2),
+  protocolVersion: z.union([z.literal(2), z.literal(3)]),
   dataComplete: z.boolean(),
   shards: z.number().int().positive(),
   perShard: z.array(z.object({
@@ -250,7 +251,17 @@ export const StressDistributedSchema = z.object({
 }).strict();
 export type StressDistributed = z.infer<typeof StressDistributedSchema>;
 
+/** Precision metadata is optional only when reading historical reports. */
+export const StressStatisticsSchema = z.object({
+  method: z.enum(["exact-nearest-rank", "log-histogram"]), exact: z.boolean(),
+  relativeError: z.number().finite().min(0).max(0.01), minValueMs: z.literal(0.001),
+  gamma: z.literal(1.01), bucketCount: z.literal(4608), exactLimit: z.literal(256),
+  underflow: z.number().int().nonnegative(), overflow: z.number().int().nonnegative(),
+}).strict();
+export type StressStatistics = z.infer<typeof StressStatisticsSchema>;
+
 export const StressReportSchema = z.object({
+  statistics: StressStatisticsSchema.optional(),
   projectId: z.string().optional(),
   definitionRevision: z.string().optional(),
   failureEvidence: z.array(SafeExecutionEvidenceSchema).max(20).optional(),

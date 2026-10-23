@@ -932,6 +932,44 @@ describe("工作流 IPC", () => {
 });
 
 describe("压测 IPC", () => {
+  it("runs a strict plan and rejects stale run/owner stops while progress exposes only safe identity and counters", async () => {
+    const { deps, dir, session } = setup();
+    await deps.handle("ws:create", {}, dir, "w");
+    const group = await createGroup(deps, session, "g"), project = await createProject(deps, group, "p"), collection = await createCollection(deps, project, "c");
+    let release!: () => void, reached!: () => void;
+    const received = new Promise<void>((resolve) => { reached = resolve; });
+    const server = createServer((_req, response) => { reached(); release = () => response.end("ok"); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const api = await createApi(deps, collection, { name: "plan", method: "GET", baseUrl: origin, path: "/" });
+    const detail = await deps.handle("api:get", {}, api.locator);
+    const events: import("../../src/shared/types.js").StressProgressDTO[] = [];
+    const times: number[] = []; let progressFinished!: () => void;
+    const finishedProgress = new Promise<void>((resolve) => { progressFinished = resolve; });
+    const sender = { send(_channel: string, progress: import("../../src/shared/types.js").StressProgressDTO) { times.push(performance.now()); events.push(progress); if (progress.state === "finished") progressFinished(); } };
+    try {
+      const plan = { formatVersion: 1 as const, target: { kind: "case" as const, collectionId: collection.id, apiId: api.id, caseId: detail.api.cases[0]!.id }, load: { kind: "constant-vus" as const, vus: 1 }, termination: { maxIterations: 1 } };
+      const { StressPlanSchema } = await import("@apicc/core");
+      const input = { kind: "plan" as const, root: dir, invocationId: uuid(997), projectLocator: project.locator, plan: StressPlanSchema.parse(plan), confirmedTargetOrigins: [origin] };
+      const running = deps.handle("stress:run", { sender }, input);
+      await received;
+      expect(events.length).toBeGreaterThan(0);
+      const identity = events[0]!;
+      await expect(deps.handle("stress:stop", { sender }, { runId: uuid(999), root: identity.root, projectLocator: project.locator })).rejects.toThrow(/身份不匹配/);
+      await expect(deps.handle("stress:stop", { sender: {} }, { runId: identity.runId, root: identity.root, projectLocator: project.locator })).rejects.toThrow(/身份不匹配/);
+      expect(events.some((event) => event.state === "finished")).toBe(false);
+      release(); const result = await running;
+      await finishedProgress;
+      expect(result.ok).toBe(true);
+      if (!result.ok || !("kind" in result)) throw new Error("Expected strict plan output");
+      expect(result.kind).toBe("plan"); expect(result.report.formatVersion).toBe(2); expect(result.report.iterations.completed).toBe(1);
+      expect(events.at(-1)?.state).toBe("finished");
+      expect(times.slice(1).every((value, index) => value - times[index]! >= 249)).toBe(true);
+      expect(Object.keys(identity).sort()).toEqual(["activeVus", "atMs", "completedIterations", "droppedIterations", "generation", "invocationId", "phase", "projectLocator", "root", "runId", "sourceRoot", "stageId", "startedIterations", "state", "target"]);
+      expect(identity.invocationId).toBe(input.invocationId); expect(identity.target).toEqual(plan.target);
+      await expect(deps.handle("stress:run", { sender }, { ...input, projectLocator: { ...project.locator, projectId: uuid(998) } })).rejects.toThrow();
+    } finally { release?.(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
   // —— 压测频道（M2-D3 任务 1）：stress:run 主进程执行并落盘，runs:list/get 按 kind 判别 ——
   it("stress:run 执行压测并落盘 stress-*.json；runs:list/get 按 kind 判别；无活动 stop 抛「没有进行中的压测」", async () => {
     const { deps, dir, session } = setup();

@@ -2,6 +2,18 @@ import { createSystemSecretStore as createInternalSystemSecretStore } from "./cr
 import type { SecretStore as SecretStoreContract } from "./credentials/types.js";
 
 export * from "./shared.js";
+export * from "./stress/execution.js";
+export { runStressSchedule } from "./stress/loadScheduler.js";
+export { runStressPlan } from "./stress/plannedRunner.js";
+export * from "./stress/workerProtocol.js";
+export * from "./stress/localWorker.js";
+export { runLocalStressWorkers, createLocalStressWorkerDeps, type LocalStressWorkerOptions } from "./stress/distributed.js";
+export { legacyStressMetricPlan } from "./stress/runner.js";
+export type { StressRunnerOptions } from "./stress/runner.js";
+export { createStressRequestGate } from "./stress/requestGate.js";
+export { createStressCaseVuSession } from "./stress/caseSession.js";
+export { createStressAccumulator, StressMetricsError } from "./stress/metrics.js";
+export type { StressAccumulatorOptions } from "./stress/metrics.js";
 export { SuiteRunner, validateSuiteExecution } from "./testing/suiteRunner.js";
 export { prepareTestData, parseDatasetContent, validateDatasetTable, bindPreparedTestData, readPreparedCaseData, preparedCaseKey, testDataSelectionsForRequests, TestDataError } from "./testing/data.js";
 export { buildImportMergePlan } from "./import/merge.js";
@@ -94,3 +106,5 @@ export function createSystemSecretStore(options: { privateRoot: string }): Secre
 export * from "./testing/model.js";
 export * from "./report/evidence.js";
 export * from "./testing/references.js";
+export * from "./workflow/prepared.js";
+export * from "./stress/workflowSession.js";

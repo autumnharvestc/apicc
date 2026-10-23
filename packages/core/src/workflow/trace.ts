@@ -15,6 +15,13 @@ export interface WorkflowNodeIdentity extends WorkflowInvocationIdentity {
   readonly nodeVisitId: string;
   readonly attempt: number;
 }
+/** Host-only terminal observation; old trace timestamps/interpretation remain unchanged. */
+export interface WorkflowNodeObservation extends Partial<WorkflowNodeIdentity> {
+  readonly workflowId: string;
+  readonly nodeId: string;
+  readonly state: "passed" | "failed" | "skipped" | "noop";
+  readonly durationMs: number;
+}
 export type WorkflowPolicyEvent =
   | { readonly type: "attempt-start" | "attempt-end"; readonly attempt: number; readonly state?: "passed" | "failed" }
   | { readonly type: "retry-wait"; readonly attempt: number; readonly delayMs: number }

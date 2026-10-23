@@ -3,7 +3,10 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Table as ATable } from "ant-design-vue";
 import type { DesktopStressReport } from "../../../shared/types.js";
+import type { StressReportV2, StressLatencyMetric, StressNumericMetric } from "@apicc/core";
+import { stressArrivalWindowNotices } from "@apicc/core/schema";
 import CaseEvidencePanel from "./CaseEvidencePanel.vue";
+import StressTrendView from "./StressTrendView.vue";
 
 /**
  * 压测报告纯展示组件（M2-D3 任务 2，裁定 C）：props 报告对象 → 摘要行（total/ok/failed/
@@ -11,8 +14,12 @@ import CaseEvidencePanel from "./CaseEvidencePanel.vue";
  * totalRequests=0 展示「无样本」态。数字格式化 helper 内联（毫秒取整、rps 两位小数），
  * 任何数值路径不产 NaN；面板与运行历史详情（任务 3）复用本组件。
  */
-const props = defineProps<{ report: DesktopStressReport | null }>();
+const props = defineProps<{ report: DesktopStressReport | StressReportV2 | null }>();
 const { t } = useI18n();
+const v2 = computed(() => props.report && 'formatVersion' in props.report ? props.report : null);
+const report = computed(() => props.report && !('formatVersion' in props.report) ? props.report : null);
+const metric = (v: StressNumericMetric | undefined) => v?.availability === 'available' ? fmtRps(v.value) : `${t('stress.workbench.notCollected')}${v?.availability === 'unavailable' ? ` (${v.reason})` : ''}`;
+const latencyMetric = (v: StressLatencyMetric) => v.availability === 'available' ? `${fmtRps(v.value.p95)} ms` : `${t('stress.workbench.notCollected')} (${v.reason})`;
 
 // —— 数字格式化（内联 helper，禁 NaN：所有输入来自 StressReportSchema 校验过的数值） ——
 function fmtInt(v: number): string {
@@ -26,7 +33,7 @@ function fmtRps(v: number): string {
 }
 
 const summary = computed(() => {
-  const r = props.report;
+  const r = report.value;
   if (!r) return "";
   return t("stress.summary", {
     total: fmtInt(r.totalRequests),
@@ -41,7 +48,7 @@ const summary = computed(() => {
 const LATENCY_KEYS = ["min", "avg", "p50", "p90", "p95", "p99", "max"] as const;
 const latencyColumns = computed(() => LATENCY_KEYS.map((k) => ({ key: k, title: k, dataIndex: k })));
 const latencyRows = computed(() => {
-  const l = props.report?.latency;
+  const l = report.value?.latency;
   if (!l) return [];
   const row: Record<string, string> = { key: "latency" };
   for (const k of LATENCY_KEYS) row[k] = fmtMs(l[k]);
@@ -52,8 +59,8 @@ const latencyRows = computed(() => {
 function distRows(dist: Record<string, number>): Array<{ label: string; count: number }> {
   return Object.entries(dist).map(([label, count]) => ({ label, count }));
 }
-const statusRows = computed(() => distRows(props.report?.statusDist ?? {}));
-const errorRows = computed(() => distRows(props.report?.errorKinds ?? {}));
+const statusRows = computed(() => distRows(report.value?.statusDist ?? {}));
+const errorRows = computed(() => distRows(report.value?.errorKinds ?? {}));
 const statusColumns = computed(() => [
   { key: "label", title: t("stress.statusCol"), dataIndex: "label" },
   { key: "count", title: t("stress.count"), dataIndex: "count" },
@@ -63,21 +70,42 @@ const errorColumns = computed(() => [
   { key: "count", title: t("stress.count"), dataIndex: "count" },
 ]);
 const verdict = computed(() => {
-  if (!props.report?.verdict) return "unassessed";
-  return props.report.verdict.passed ? "passed" : "failed";
+  if (!report.value?.verdict) return "unassessed";
+  return report.value.verdict.passed ? "passed" : "failed";
 });
-const violationRows = computed(() => (props.report?.verdict?.violations ?? []).map((violation) => ({
+const violationRows = computed(() => (report.value?.verdict?.violations ?? []).map((violation) => ({
   metric: t(`stress.metric.${violation.metric}`), actual: String(violation.actual), expected: String(violation.expected), message: violation.message,
 })));
-const failureRows = computed(() => Object.entries(props.report?.failures ?? {}).filter(([, count]) => count > 0).map(([kind, count]) => ({ kind: t(`stress.failure.${kind}`), count })));
-const safetyRows = computed(() => props.report?.safety?.targetOrigins ?? []);
-const safetyRun = computed(() => props.report?.safety?.run);
-const generator = computed(() => props.report?.generator);
-const eligibleCompletedAttempts = computed(() => props.report?.eligibleCompletedAttempts ?? props.report?.totalRequests ?? 0);
+const failureRows = computed(() => Object.entries(report.value?.failures ?? {}).filter(([, count]) => count > 0).map(([kind, count]) => ({ kind: t(`stress.failure.${kind}`), count })));
+const safetyRows = computed(() => report.value?.safety?.targetOrigins ?? []);
+const safetyRun = computed(() => report.value?.safety?.run);
+const generator = computed(() => report.value?.generator);
+const eligibleCompletedAttempts = computed(() => report.value?.eligibleCompletedAttempts ?? report.value?.measurementWindow?.eligibleCompletedAttempts ?? report.value?.totalRequests ?? 0);
 </script>
 
 <template>
-  <section v-if="report" class="stress-report" data-testid="stress-report">
+  <section v-if="v2" class="stress-report" data-testid="stress-report">
+    <div class="verdict" :data-verdict="v2.verdict.status" data-testid="stress-verdict">{{ t(`stress.workbench.verdict.${v2.verdict.status}`) }}</div>
+    <p class="identity">{{ v2.target.kind }} · {{ v2.target.kind === 'workflow' ? v2.target.workflowId : v2.target.caseId }} · {{ v2.runId }} · {{ v2.definitionRevision }}</p>
+    <div class="completeness" data-testid="stress-completeness"><p v-for="(part,key) in v2.completeness" :key="key">{{ t(`stress.workbench.${key}`) }}: {{ t(part.complete ? 'stress.workbench.complete' : 'stress.workbench.incomplete') }} <span v-if="part.reasons.length">({{ part.reasons.join(', ') }})</span></p></div>
+    <p data-testid="stress-iteration-counts">{{ t('stress.workbench.iterations') }}: planned {{ v2.iterations.planned }} · started {{ v2.iterations.started }} · completed {{ v2.iterations.completed }} · passed {{ v2.iterations.passed }} · failed {{ v2.iterations.failed }} · aborted {{ v2.iterations.aborted }} · dropped {{ v2.iterations.dropped }} · p95 {{ latencyMetric(v2.iterations.latency) }}</p>
+    <p data-testid="stress-request-counts">{{ t('stress.workbench.requests') }}: started {{ v2.requests.started }} · completed {{ v2.requests.completed }} · eligible {{ v2.requests.eligibleCompleted }} · {{ t('stress.workbench.requestFailures') }} {{ v2.requests.failed }} · {{ t('stress.workbench.httpRps') }} {{ metric(v2.rps) }} · p95 {{ latencyMetric(v2.latency) }}</p>
+    <p>case rows {{ v2.caseRows.total }} (failed {{ v2.caseRows.failed }}) · HTTP hops {{ v2.httpExchanges.started }}/{{ v2.httpExchanges.completed }}</p>
+    <p>{{ t('stress.workbench.capacity') }}: VU {{ v2.load.maxVus }} · {{ t('stress.workbench.requestConcurrency') }} {{ v2.load.maxRequestConcurrency }} · {{ t('stress.maxRps') }} {{ v2.load.effectiveMaxRps ?? '—' }} · {{ t('stress.workbench.arrivalRate') }} {{ metric(v2.load.targetArrivalRate) }} · {{ t('stress.workbench.actualStartRate') }} {{ metric(v2.load.actualStartRate) }}</p>
+    <p>{{ t('stress.workbench.measurement') }} {{ v2.load.measurementDurationMs }} ms · drain {{ v2.load.drainDurationMs }} ms · policy-limited {{ v2.load.policyLimitedMs }} ms</p>
+    <p v-for="notice in stressArrivalWindowNotices(v2)" :key="notice.code" data-testid="stress-arrival-window-notice">{{ t(`stress.workbench.arrivalWindow.${notice.code}`) }}</p>
+    <div v-if="v2.load.saturated || v2.generator?.saturated || v2.iterations.dropped" class="saturated-warning" data-testid="stress-generator-saturated">{{ t('stress.generatorSaturated') }} · dropped {{ v2.iterations.dropped }}</div>
+    <p>{{ t('stress.workbench.precision') }}: {{ v2.statistics.method }} · {{ v2.statistics.overflow > 0 ? t('stress.workbench.overflowPrecision') : v2.statistics.exact ? 'exact' : t('stress.workbench.rangePrecision', { percent: v2.statistics.relativeError * 100 }) }} <span v-if="v2.statistics.underflow > 0"> · {{ t('stress.workbench.underflowPrecision', { resolution: v2.statistics.minValueMs }) }}</span> · {{ t('stress.workbench.resolution') }} {{ v2.statistics.minValueMs }} ms · {{ t('stress.workbench.seriesBounds') }} {{ v2.statistics.underflow }}/{{ v2.statistics.overflow }}</p>
+    <p>{{ t('stress.generator') }}: {{ v2.generator?.availability ?? t('stress.workbench.notCollected') }} · CPU {{ v2.generator?.cpuPercent ?? '—' }}% · RSS {{ v2.generator?.rssPeakBytes ?? '—' }} · event loop p95 {{ v2.generator?.eventLoopDelayP95Ms ?? '—' }} ms · backlog {{ v2.generator?.schedulerBacklogMax ?? '—' }}</p>
+    <StressTrendView :timeline="v2.timeline" :phases="v2.phases" />
+    <details open><summary>{{ t('stress.workbench.nodes') }} ({{ v2.nodes.length }})</summary><p>{{ t('stress.workbench.otherHint') }}</p><div class="table-scroll"><table><thead><tr><th>{{ t('stress.workbench.node') }}</th><th>visits / failed / aborted / skipped</th><th>{{ t('stress.workbench.requests') }}</th><th>HTTP p95</th><th>{{ t('stress.workbench.node') }} p95</th></tr></thead><tbody><tr v-for="node in v2.nodes" :key="node.key"><td :title="node.key">{{ node.other ? 'other' : `${node.workflowId} / ${node.nodeId}` }}</td><td>{{ node.visits }} / {{ node.failed }} / {{ node.aborted }} / {{ node.skipped }}</td><td>{{ node.requests.eligibleCompleted }} / {{ node.requests.failed }}</td><td>{{ latencyMetric(node.requestLatency) }}</td><td>{{ latencyMetric(node.nodeLatency) }}</td></tr></tbody></table></div></details>
+    <details><summary>{{ t('stress.workbench.lifecycle') }}</summary><div class="table-scroll"><p v-for="(step,index) in v2.lifecycle" :key="index">{{ step.role }} · {{ step.vuId ?? 'run' }} · {{ step.state }} · {{ step.durationMs }} ms · {{ step.failureKind ?? '—' }}</p></div></details>
+    <details><summary>{{ t('stress.failureKinds') }} / {{ t('stress.violations') }}</summary><p v-for="(count,kind) in v2.failures" :key="kind">{{ kind }}: {{ count }}</p><p v-for="(count,kind) in v2.errorKinds" :key="kind">{{ kind }}: {{ count }}</p><p v-for="(violation,index) in v2.verdict.violations" :key="index">{{ violation.metric }}: {{ violation.actual }} / {{ violation.expected }} · {{ violation.message }}</p></details>
+    <details><summary>{{ t('stress.safety') }}</summary><p>{{ v2.safety?.availability ?? t('stress.workbench.notCollected') }}</p><p v-for="row in v2.safety?.targetOrigins" :key="row.origin">{{ row.origin }} · {{ row.confirmation }} · {{ row.policy }}</p></details>
+    <details><summary>{{ t('stress.workbench.evidence') }}</summary><CaseEvidencePanel v-for="(evidence,index) in v2.failureEvidence" :key="index" :evidence="evidence" /></details>
+  </section>
+  <section v-else-if="report" class="stress-report" data-testid="stress-report">
+    <p class="legacy-note">{{ t('stress.workbench.legacy') }}</p>
     <details><summary>失败证据（最多 20 个；其余仅聚合）</summary><p v-if="!report.failureEvidence">旧记录未采集</p><CaseEvidencePanel v-for="(evidence,index) in report.failureEvidence" :key="index" :evidence="evidence" /></details>
     <div class="verdict" :data-verdict="verdict" data-testid="stress-verdict">
       <strong v-if="verdict === 'passed'">{{ t("stress.verdictPassed") }}</strong>
@@ -108,7 +136,7 @@ const eligibleCompletedAttempts = computed(() => props.report?.eligibleCompleted
     <div class="generator" data-testid="stress-generator">
       <h4 class="block-title">{{ t("stress.generator") }}</h4>
       <span v-if="!generator || generator.availability === 'unavailable'">{{ generator?.unavailableReason ?? t("stress.generatorUnavailable") }}</span>
-      <span v-else>{{ generator.availability === 'partial' ? `${t("stress.generatorPartial")} · ` : "" }}CPU {{ fmtInt(generator.cpuPercent ?? 0) }}% · RSS {{ fmtInt(generator.rssPeakBytes ?? 0) }} · {{ fmtMs(generator.eventLoopDelayP95Ms ?? 0) }} · backlog {{ generator.schedulerBacklogMax ?? 0 }}</span>
+      <span v-else>{{ generator.availability === 'partial' ? `${t("stress.generatorPartial")} · ` : "" }}CPU {{ generator.cpuPercent ?? '—' }}% · RSS {{ generator.rssPeakBytes ?? '—' }} · {{ generator.eventLoopDelayP95Ms ?? '—' }} ms · backlog {{ generator.schedulerBacklogMax ?? '—' }}</span>
     </div>
     <div v-if="eligibleCompletedAttempts === 0" class="no-samples" data-testid="stress-no-samples">
       {{ t("stress.noSamples") }}
@@ -159,6 +187,7 @@ const eligibleCompletedAttempts = computed(() => props.report?.eligibleCompleted
   gap: 6px;
   margin-top: 4px;
 }
+.stress-report p { margin: 3px 0; } .identity { overflow-wrap:anywhere; } .legacy-note { color:var(--text-muted,#666); } .completeness { border:1px solid var(--border,#ddd);padding:6px; } .table-scroll { max-height:300px;overflow:auto; } table { border-collapse:collapse;width:100%;font-size:12px; } td,th { text-align:left;padding:6px;border-bottom:1px solid var(--border,#ddd);white-space:nowrap; }
 .summary {
   color: var(--text-muted, #666);
 }

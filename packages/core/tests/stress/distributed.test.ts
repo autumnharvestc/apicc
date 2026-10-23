@@ -18,6 +18,221 @@ import { StressRunner } from "../../src/stress/runner.js";
 import type { CaseExecutionResult } from "../../src/runner/caseExecutor.js";
 import { createExecutionEvidenceCollector, redactExecutionOutput } from "../../src/report/evidence.js";
 import { createCredentialOutputSanitizer } from "../../src/credentials/output.js";
+import { createLocalStressWorkerDeps } from "../../src/stress/distributed.js";
+import { serveLocalStressWorker } from "../../src/stress/localWorker.js";
+import { createStressWorkerPeer, mergeStressWorkerMarkers, type StressWorkerChannel } from "../../src/stress/workerProtocol.js";
+import { runStressSchedule } from "../../src/stress/loadScheduler.js";
+import { createStressAccumulator } from "../../src/stress/metrics.js";
+import { createStressRequestGate } from "../../src/stress/requestGate.js";
+import { legacyStressMetricPlan } from "../../src/stress/runner.js";
+import type { StressClock, StressIterationContext } from "../../src/stress/execution.js";
+
+function privateChannels(): [StressWorkerChannel, StressWorkerChannel] {
+  const listeners = [new Set<(value: unknown) => void>(), new Set<(value: unknown) => void>()];
+  const closes = [new Set<() => void>(), new Set<() => void>()];
+  const exits: ((value: { code: number | null; signal: string | null }) => void)[] = [];
+  const exited = [0, 1].map((i) => new Promise<{ code: number | null; signal: string | null }>((resolve) => { exits[i] = resolve; }));
+  const make = (index: number): StressWorkerChannel => ({
+    send(value: unknown) { const copy = structuredClone(value); queueMicrotask(() => listeners[1 - index]!.forEach((listener) => listener(copy))); },
+    subscribe(listener: (value: unknown) => void) { listeners[index]!.add(listener); return () => listeners[index]!.delete(listener); },
+    onClose(listener: () => void) { closes[index]!.add(listener); return () => closes[index]!.delete(listener); },
+    waitForExit() { return exited[index]!; },
+    async finish() { exits[1 - index]!({ code: 0, signal: null }); closes[1 - index]!.forEach((listener) => listener()); },
+    async close() { exits[1 - index]!({ code: 1, signal: null }); closes[1 - index]!.forEach((listener) => listener()); },
+  });
+  return [make(0), make(1)];
+}
+
+describe("v3 remote VU coordinator", () => {
+  async function phaseAtDiagnostic(nominal: number, boundary: number) {
+    // Real v3 peers/worker/phase-at/snapshot merge; the injected host has one known phase boundary.
+    // Anchor send0/receive2/worker100 gives delta=-99 and uncertainty1ms, without sleeps or I/O.
+    let reads = 0, workerNow = 100;
+    const clock: StressClock = { now: () => ++reads === 1 ? 0 : reads === 2 ? 2 : 1000, wallNow: () => 0,
+      async sleep() { throw new Error("No clock wait expected in this finite diagnostic"); } };
+    const workerClock: StressClock = { ...clock, now: () => workerNow };
+    const metricPlan = legacyStressMetricPlan, runId = `phase-at-${boundary}`;
+    const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: 1100, maxIterations: 1, maxVus: 1,
+      warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
+      requested: { maxRequestConcurrency: 1, maxRps: null }, effective: { maxRequestConcurrency: 1, maxRps: null } };
+    const accumulator = createStressAccumulator(metricPlan, runId);
+    const responses: { atMs: number; value: unknown }[] = [];
+    const snapshots: { sourceId: string; scope: string; sequence: number; reasons: readonly string[] }[] = [];
+    const local = await createLocalStressWorkerDeps(schedule, { runId, clock, shards: 1, configuration: {}, signal: new AbortController().signal,
+      evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }),
+      metrics: { ...accumulator, merge(snapshot) {
+        snapshots.push({ sourceId: snapshot.sourceId, scope: snapshot.scope, sequence: snapshot.sequence, reasons: snapshot.incompleteReasons });
+        accumulator.merge(snapshot);
+      } }, gate: createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest() {} }),
+      createVu: async () => { throw new Error("Remote only"); },
+      async spawnWorker(identity) {
+        const channels = privateChannels();
+        const worker = serveLocalStressWorker(channels[1], identity, async () => ({ clock: workerClock, metricPlan,
+          evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }), host: {
+            async createVu(_id, _inputs, host) { return { async execute(context) {
+              workerNow = nominal + 99;
+              host!.observe({ kind: "case", ...context.observation!(), vuId: context.vuId, iterationId: context.iterationId, stageId: context.stageId,
+                ok: true, status: 200, requestStarted: true, requestCompleted: true, failureKind: null,
+                requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
+                locator: { collectionId: "c", folderIds: [], apiId: "a", caseId: "x", scope: "base" }, nodeKey: null });
+              return { state: "passed", durationMs: 1 };
+            }, async close() {} }; },
+          } }));
+        const request = worker.request.bind(worker);
+        worker.request = async command => {
+          const value = await request(command);
+          if (command.type === "phase-at") responses.push({ atMs: command.atMs, value });
+          return value;
+        };
+        return channels[0];
+      },
+    });
+    const phaseAt = (atMs: number) => ({ atMs, phase: atMs < boundary ? "measurement" as const : "drain" as const });
+    try {
+      const vu = await local.deps.createVu("1", {}, { runId, vuId: "1", signal: local.deps.signal, clock,
+        gate: local.deps.gate, observation: () => phaseAt(1000), observationAt(atMs) {
+          if (atMs < 0 || atMs > 1000) throw new Error("Host cannot resolve an unobserved time");
+          return phaseAt(atMs);
+        }, observe: accumulator.observe, lifecycle: undefined, reportLifecycle() { return {}; } });
+      const result = await vu.execute({ runId, vuId: "1", iterationId: "1", stageId: null, phase: "measurement", scheduledOffsetMs: 0, signal: local.deps.signal });
+      expect(result).toEqual({ state: "passed", durationMs: 1 });
+      accumulator.observe({ kind: "iteration", phase: "measurement", stageId: null, atMs: 1000,
+        started: 1, passed: 1, failed: 0, aborted: 0, dropped: 0, durationMs: 1, startDelayMs: 0 });
+      await vu.close({ reason: "duration", signal: local.deps.signal, allowNetworkCleanup: false });
+      await local.deps.closeRun!();
+      const summary = local.deps.metrics.finish({ startedAt: 0, finishedAt: 1100, measurementStartOffsetMs: 0, measurementEndOffsetMs: 1100,
+        stopReason: "duration", plannedIterations: 1, lifecycle: [],
+        load: { plannedDurationMs: 1100, measurementDurationMs: Math.min(boundary, 1100), drainDurationMs: Math.max(0, 1100 - boundary),
+          policyLimitedMs: 0, saturated: false, maxVus: 1, maxRequestConcurrency: 1 },
+        completeness: { execution: { complete: true, reasons: [] }, metrics: { complete: true, reasons: [] }, load: { complete: true, reasons: [] } },
+        phaseWindows: [{ phase: "measurement", stageId: null, startOffsetMs: 0, endOffsetMs: Math.min(boundary, 1100) },
+          ...(boundary < 1100 ? [{ phase: "drain" as const, stageId: null, startOffsetMs: boundary, endOffsetMs: 1100 }] : [])] });
+      return { nominal, current: 1000, uncertainty: local.deps.timelineUncertaintyMs!(), boundary, responses, snapshots,
+        requests: summary.requests, phases: summary.phases.map(p => ({ phase: p.phase, requests: p.requests })),
+        completeness: summary.completeness, timeline: { aligned: summary.timeline.aligned, uncertaintyMs: summary.timeline.uncertaintyMs }, verdict: summary.verdict };
+    } finally { await local.close(); }
+  }
+  it("phase-at diagnosis accepts bounded nominal future within one observed phase", async () => {
+    // A 0.5ms nominal lead inside known1ms mapping uncertainty is not by itself a lost phase.
+    const actual = await phaseAtDiagnostic(1000.5, 2000);
+    expect(actual.uncertainty).toBe(1);
+    expect.soft(actual.responses).toEqual([{ atMs: 1000.5, value: { phase: "measurement", atMs: 1000, uncertain: false } }]);
+    expect.soft(actual.snapshots).toEqual([{ sourceId: "worker-1", scope: "observations", sequence: 1, reasons: [] }]);
+    expect.soft(actual.completeness.metrics).toEqual({ complete: true, reasons: [] });
+    expect.soft(actual.timeline).toEqual({ aligned: true, uncertaintyMs: 1 });
+    expect.soft(actual.verdict.status).toBe("passed");
+    expect(actual.requests).toEqual({ started: 1, completed: 1, eligibleCompleted: 1, failed: 0 });
+    // Clamp-first [999,1000] crosses999.25; the actual feasible [999.5,1000] is entirely drain.
+    // Merely deleting the independent future predicate must not leave this false positive behind.
+    const near = await phaseAtDiagnostic(1000.5, 999.25);
+    expect.soft(near.responses).toEqual([{ atMs: 1000.5, value: { phase: "drain", atMs: 1000, uncertain: false } }]);
+    expect.soft(near.snapshots).toEqual([{ sourceId: "worker-1", scope: "observations", sequence: 1, reasons: [] }]);
+    expect.soft(near.completeness).toEqual({ execution: { complete: true, reasons: [] }, metrics: { complete: true, reasons: [] }, load: { complete: true, reasons: [] } });
+    expect.soft(near.timeline).toEqual({ aligned: true, uncertaintyMs: 1 }); expect.soft(near.verdict.status).toBe("passed");
+    expect(near.requests).toEqual({ started: 1, completed: 1, eligibleCompleted: 1, failed: 0 });
+  });
+  it("phase-at diagnosis preserves uncertainty across an actual phase boundary", async () => {
+    // Nominal999.5 is not future; its ±1ms interval crosses the known1000ms measurement/drain edge.
+    const actual = await phaseAtDiagnostic(999.5, 1000);
+    expect(actual.uncertainty).toBe(1);
+    expect(actual.responses).toEqual([{ atMs: 999.5, value: { phase: "measurement", atMs: 999.5, uncertain: true } }]);
+    expect(actual.snapshots).toEqual([{ sourceId: "worker-1", scope: "observations", sequence: 1, reasons: ["timeline-unaligned"] }]);
+    expect(actual.requests).toEqual({ started: 1, completed: 1, eligibleCompleted: 1, failed: 0 });
+    expect(actual.completeness).toEqual({ execution: { complete: true, reasons: [] }, metrics: { complete: false, reasons: ["timeline-unaligned"] }, load: { complete: true, reasons: [] } });
+    expect(actual.timeline).toEqual({ aligned: false, uncertaintyMs: 1 }); expect(actual.verdict.status).toBe("incomplete");
+  });
+  it.each(["duplicate-final", "missing-snapshot", "exit-with-lease"])("withholds rich output and conserves leases for %s", async (fault) => {
+    const clock: StressClock = { now: () => performance.now(), wallNow: () => Date.now(), sleep: async () => {} }, metricPlan = legacyStressMetricPlan;
+    const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: null, maxIterations: 1, maxVus: 1, warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
+      requested: { maxRequestConcurrency: 1, maxRps: null }, effective: { maxRequestConcurrency: 1, maxRps: null } };
+    const gate = createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest() {} }); let leases = 0, acquired = 0, rootClosed = false;
+    const local = await createLocalStressWorkerDeps(schedule, { runId: "fault", clock, shards: 1, configuration: {}, signal: new AbortController().signal,
+      evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }), metrics: createStressAccumulator(metricPlan, "fault"),
+      gate: { ...gate, async enter(request, signal) { const release = await gate.enter(request, signal); leases++; acquired++; return () => { leases--; release(); }; } },
+      createVu: async () => { throw new Error("remote only"); }, closeRun: async () => { rootClosed = true; },
+      async spawnWorker(identity) {
+        const pair = privateChannels(), wire = pair[1], pieces = new Map<string, string[]>(), send = wire.send.bind(wire);
+        wire.send = (raw) => {
+          const chunk = raw as { transferId: string; index: number; total: number; data: string };
+          const parts = pieces.get(chunk.transferId) ?? []; parts.push(chunk.data); pieces.set(chunk.transferId, parts);
+          if (chunk.index + 1 !== chunk.total) return;
+          pieces.delete(chunk.transferId);
+          const frame = JSON.parse(parts.join(""));
+          if (frame.value?.type === "drained" && fault === "missing-snapshot") delete frame.value.snapshot;
+          const text = JSON.stringify(frame), total = Math.ceil(text.length / 16384);
+          const packets = Array.from({ length: total }, (_, i) => ({ ...raw as object, index: i, total, bytes: Buffer.byteLength(text), data: text.slice(i * 16384, (i + 1) * 16384) }));
+          for (const packet of packets) void send(packet);
+          if (frame.value?.type === "drained" && fault === "duplicate-final") for (const packet of packets) void send({ ...packet, transferId: `duplicate-${chunk.transferId}` });
+        };
+        serveLocalStressWorker(wire, identity, async () => ({ clock, metricPlan, evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }), host: {
+          async createVu(_id, _inputs, host) { return { async execute(context) {
+            if (fault === "exit-with-lease") { await host!.gate.enter({ protocol: "http", method: "GET", url: "http://127.0.0.1/", headers: {}, query: [], auth: { kind: "none" } }, context.signal); await wire.close(); }
+            return { state: "passed", durationMs: 1 };
+          }, close: async () => {} }; },
+        } })); return pair[0];
+      },
+    });
+    try {
+      await expect(runStressSchedule(schedule, local.deps)).rejects.toThrow("withheld");
+      expect(local.richOutputComplete()).toBe(false); expect(rootClosed).toBe(true); expect(leases).toBe(0); expect(acquired).toBe(fault === "exit-with-lease" ? 1 : 0);
+    } finally { await local.close(); }
+  });
+  it("stops consuming a marker source as soon as the private union budget is exhausted", () => {
+    // An eager Set union consumes every participant's marker strings before noticing the byte ceiling.
+    let consumed = 0; const union = new Set<string>(), value = "x".repeat(1024 * 1024);
+    function* markers() { for (let i = 0; i < 20; i++) { consumed++; yield `${i}:${value}`; } }
+    expect(() => mergeStressWorkerMarkers(union, markers())).toThrow();
+    expect(consumed).toBeLessThan(20);
+  });
+  it("rejects a mixed-version participant before accepting any result", async () => {
+    const [coordinator, worker] = privateChannels();
+    const peer = createStressWorkerPeer(coordinator, { runId: "current", workerId: "worker-1" }, async () => ({}));
+    const pending = peer.request({ type: "clock" });
+    const data = JSON.stringify({ protocolVersion: 2, runId: "current", workerId: "worker-1", kind: "response", id: "1", ok: true, value: { workerNow: 1 } });
+    worker.send({ protocolVersion: 3, runId: "current", workerId: "worker-1", kind: "chunk", transferId: "1", index: 0, total: 1, bytes: Buffer.byteLength(data), data });
+    await expect(pending).rejects.toThrow("worker-failed"); expect(peer.failed).toBe(true); await peer.close();
+  });
+  it("conserves a single budget and gate across two workers and includes coordinator late markers before finish", async () => {
+    // Independent shard loops would overspend five slots or hold two simultaneous request permits.
+    const clock: StressClock = { now: () => performance.now(), wallNow: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+    const metricPlan = legacyStressMetricPlan;
+    const schedule = { load: { kind: "constant-vus" as const, vus: 2 }, durationMs: null, maxIterations: 5, maxVus: 2, warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
+      requested: { maxRequestConcurrency: 1, maxRps: null }, effective: { maxRequestConcurrency: 1, maxRps: null } };
+    const evidence = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { maxSamples: 20, privateMarkers: true });
+    const workerEvidence: ReturnType<typeof createExecutionEvidenceCollector>[] = [];
+    const ids: string[] = []; let active = 0, peak = 0, rootClosed = false, finished = false;
+    const accumulator = createStressAccumulator(metricPlan, "remote-budget");
+    const local = await createLocalStressWorkerDeps(schedule, { runId: "remote-budget", clock, signal: new AbortController().signal, evidence,
+      gate: createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest() {} }), metrics: { ...accumulator, merge(snapshot) { accumulator.merge(snapshot); Reflect.set(snapshot.observations.caseRows, "total", 999); } },
+      createVu: async () => { throw new Error("local VU must not execute"); },
+      async closeRun() { rootClosed = true; evidence.addMarkers(["late-root-secret"]); },
+      onProgress(progress) { if (progress.state === "finished") { finished = true; expect(rootClosed).toBe(true); } },
+      shards: 2, configuration: {}, async spawnWorker(identity) {
+        const channels = privateChannels();
+        const privateEvidence = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [identity.workerId], { maxSamples: 20, privateMarkers: true }); workerEvidence.push(privateEvidence);
+        serveLocalStressWorker(channels[1], identity, async () => ({ metricPlan, clock, evidence: privateEvidence, host: {
+          async createVu(_id, _inputs, host) { return {
+            async execute(context: StressIterationContext) {
+              ids.push(context.iterationId);
+              const release = await host!.gate.enter({ protocol: "http", method: "GET", url: "http://127.0.0.1/", headers: {}, query: [], auth: { kind: "none" } }, context.signal);
+              active++; peak = Math.max(peak, active); const begin = clock.now(); await clock.sleep(2);
+              host!.observe({ kind: "http", ...context.observation!(), vuId: context.vuId, iterationId: context.iterationId, stageId: context.stageId, nodeKey: null, started: 1, completed: 1 });
+              active--; release(); return { state: "passed", durationMs: clock.now() - begin };
+            }, async close() {},
+          }; },
+        } })); return channels[0];
+      },
+    });
+    try {
+      const summary = await runStressSchedule(schedule, local.deps);
+      expect(summary.iterations).toMatchObject({ planned: 5, started: 5, completed: 5, dropped: 0 });
+      expect(new Set(ids).size).toBe(5); expect(ids).toHaveLength(5); expect(peak).toBe(1);
+      expect(summary.httpExchanges).toEqual({ started: 5, completed: 5 }); expect(finished).toBe(true);
+      expect(local.distributed(summary).perShard.map((worker) => worker.totalRequests)).toEqual([0, 0]); // The merge-owned full snapshot is not retained for metadata.
+      for (const collected of workerEvidence) expect(collected.boundary().redactText("late-root-secret")).not.toContain("late-root-secret");
+    } finally { await local.close(); }
+  });
+});
 
 /** 成功 shard 替身回传：固定样本批。 */
 const shardResult = (

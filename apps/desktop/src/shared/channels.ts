@@ -91,6 +91,14 @@ export const IpcChannel = {
   WfRun: "wf:run",
   WfCancel: "wf:cancel",
   StressRun: "stress:run",
+  StressPlansList: "stress-plans:list",
+  StressRunsList: "stress-runs:list",
+  StressRunsGet: "stress-runs:get",
+  StressPlansGet: "stress-plans:get",
+  StressPlansSave: "stress-plans:save",
+  StressPlansRemove: "stress-plans:remove",
+  StressCompare: "stress:compare",
+  StressExport: "stress:export",
   StressStop: "stress:stop",
   CredentialPut: "credentials:put",
   CredentialRemove: "credentials:remove",
@@ -156,6 +164,7 @@ export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel];
  *   onDirtyCheck 注册）回传聚合 dirty 布尔。
  */
 export const IpcEvent = {
+  StressProgress: "stress:progress",
   AppDirtyCheck: "app:dirty-check",
   AppDirtyCheckReply: "app:dirty-check:reply",
 } as const;

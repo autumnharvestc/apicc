@@ -6,7 +6,7 @@ import { StressSafetyError, buildImportMergePlan, deduplicateImportDiagnostics, 
 import { ContractProjectSchema } from "@apicc/core/schema";
 import { realpathSync } from "node:fs";
 import { basename, join } from "node:path";
-import { IpcChannel, type IpcChannelName } from "../shared/channels.js";
+import { IpcChannel, IpcEvent, type IpcChannelName } from "../shared/channels.js";
 import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type CreateApiFromRequestDraftInput, type DebugInput, type DebugOutput, type DebugHistoryReplayResult, type DebugHistoryRestoreResult, type DebugFileReference, type EnvCreateInput, type ImportApplyInput, type ImportApplyResult, type ImportExchangeDiagnostic, type ImportPlanInput, type ImportPlanResult, type ImportPreviewInput, type ImportPreviewResult, type ImportUndoInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
 import { parseIpcArgs, type IpcArgsMap, type IpcResultMap } from "../shared/ipc-contract.js";
 import type { ApiLocator, ApiParentLocator, CaseLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
@@ -20,7 +20,9 @@ import type { TokenStore } from "./online/tokenStore.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
 import { createDebugController } from "./debugController.js";
 import { createDesktopDebugHistoryStore } from "./debugHistory.js";
-import { listRuns, readRun } from "./runs.js";
+import { listRuns, readRun, readScopedStressRun, listScopedStressRuns } from "./runs.js";
+import { createStressPlanRepository } from "./stressPlans.js";
+import { compareStressReports, renderStressHtml } from "@apicc/core";
 import { createStressController } from "./stress.js";
 import type { createSession } from "./session.js";
 import { toTreeNode } from "./tree.js";
@@ -95,6 +97,11 @@ export interface IpcDepsOptions {
 
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory, saveFile } = options;
+  function stressProject(scope: ProjectLocator, write = false): string {
+    if (!session.root || !session.locateProject(scope)) throw new Error("未找到当前压测项目");
+    if (write && session.readOnly) throw new Error("工作区处于只读模式，不能写入");
+    return realpathSync(session.root);
+  }
   type SessionContext = ReturnType<Session["captureDraftWriteContext"]>;
   type Receipt = { value: unknown; committed: boolean; beforeWorkspace: NonNullable<Session["workspace"]>; context: SessionContext; addedDefinitionFiles: string[] };
   type PreviewRecord = { project: ContractProject; importerName: string; diagnostics: ImportExchangeDiagnostic[]; sourceHash: string; context: SessionContext; environmentOptions: Map<string, string> };
@@ -181,7 +188,10 @@ export function createIpcDeps(options: IpcDepsOptions) {
   // 压测控制器（M2-D3 任务 1）：状态挂 deps 闭包（进程内单例），ws:open/ws:create 切换
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
   const credentials = createDesktopCredentialHost(session, options.credentials);
-  const stress = createStressController(session, {}, credentials);
+  const stress = createStressController(session, { onProgress(progress, owner) {
+    const sender = owner as { send?: (channel: string, value: unknown) => void; isDestroyed?: () => boolean } | undefined;
+    if (sender?.send && !sender.isDestroyed?.()) sender.send(IpcEvent.StressProgress, progress);
+  } }, credentials);
   const mockManager = createMockManager({ session });
   async function refreshSavedMock(locator: ProjectLocator, context?: { root: string; generation: number }): Promise<void> {
     try {
@@ -753,6 +763,24 @@ export function createIpcDeps(options: IpcDepsOptions) {
         if (!session.root) throw new Error("尚未打开工作区");
         return readRun(workspaceRunsDir(session.root), a[0] as string);
       }
+      case IpcChannel.StressPlansList: { const scope = a[0] as ProjectLocator; return createStressPlanRepository(stressProject(scope)).list(scope); }
+      case IpcChannel.StressRunsList: { const [scope] = a as IpcArgsMap[typeof IpcChannel.StressRunsList]; return listScopedStressRuns(stressProject(scope), scope); }
+      case IpcChannel.StressRunsGet: { const [scope, file] = a as IpcArgsMap[typeof IpcChannel.StressRunsGet]; return { kind: 'stress' as const, report: readScopedStressRun(stressProject(scope), scope, file) }; }
+      case IpcChannel.StressPlansGet: { const [scope, id] = a as IpcArgsMap[typeof IpcChannel.StressPlansGet]; return createStressPlanRepository(stressProject(scope)).get(scope, id); }
+      case IpcChannel.StressPlansSave: { const [scope, input] = a as IpcArgsMap[typeof IpcChannel.StressPlansSave]; return createStressPlanRepository(stressProject(scope, true)).save(scope, input); }
+      case IpcChannel.StressPlansRemove: { const [scope, id] = a as IpcArgsMap[typeof IpcChannel.StressPlansRemove]; return createStressPlanRepository(stressProject(scope, true)).remove(scope, id); }
+      case IpcChannel.StressCompare: {
+        const [scope, input] = a as IpcArgsMap[typeof IpcChannel.StressCompare], root = stressProject(scope);
+        return compareStressReports(readScopedStressRun(root, scope, input.baseFile), readScopedStressRun(root, scope, input.candidateFile));
+      }
+      case IpcChannel.StressExport: {
+        const [scope, input] = a as IpcArgsMap[typeof IpcChannel.StressExport], root = stressProject(scope);
+        const report = readScopedStressRun(root, scope, input.file);
+        const comparison = input.baselineFile ? compareStressReports(readScopedStressRun(root, scope, input.baselineFile), report) : undefined;
+        const content = input.format === "html" ? renderStressHtml(report, comparison) : JSON.stringify(comparison ? { report, comparison } : report, null, 2);
+        const file = await saveFile(`${input.file.slice(0, -5)}.${input.format}`, content, input.format === "html" ? "html" : undefined);
+        return { saved: Boolean(file), file } satisfies IpcResultMap[typeof IpcChannel.StressExport];
+      }
       // Import payloads stay in this host closure; renderer only receives opaque preview/plan tokens.
       case IpcChannel.ImportPreview: {
         const input = a[0] as ImportPreviewInput;
@@ -1016,7 +1044,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
       // 部分报告（abort 语义见 stress.ts）。返回前报告已深拷贝（DataCloneError 防御）。
       case IpcChannel.StressRun: {
         try {
-          const out = await stress.run(a[0] as StressRunInput);
+          const out = await stress.run(a[0] as StressRunInput, owner);
           return StressRunResultSchema.parse(out) satisfies StressRunResult;
         } catch (error) {
           if (error instanceof StressSafetyError) {
@@ -1030,8 +1058,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         }
       }
       case IpcChannel.StressStop: {
-        const out = await stress.stop();
-        return out satisfies StressRunOutput;
+        return await stress.stop(a[0] as import("../shared/types.js").StressStopInput | undefined, owner);
       }
       case IpcChannel.CredentialPut:
         return await credentials.put(a[0] as CredentialPutInput) satisfies IpcResultMap[typeof IpcChannel.CredentialPut];

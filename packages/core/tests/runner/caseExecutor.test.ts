@@ -110,6 +110,20 @@ function deps(client: ProtocolClient, beforeSend?: CaseExecutionDeps["beforeSend
 }
 
 describe("executeCase", () => {
+  it("F6 cancellation while waiting for the request gate never enters protocol I/O", async () => {
+    // Moving gate.enter after requestStarted/client.execute would fabricate a sent sample.
+    const controller = new AbortController();
+    let protocolCalls = 0;
+    const selected = deps({ name: "controlled", canHandle: () => true, async execute() { protocolCalls++; return response; } });
+    selected.timeouts = { connectTimeoutMs: 100, totalTimeoutMs: 100, signal: controller.signal };
+    selected.requestGate = {
+      async enter() { controller.abort(); throw new DOMException("Aborted", "AbortError"); },
+      async beforeRedirect() {},
+    };
+    const result = await executeCase(input(), selected);
+    expect(protocolCalls).toBe(0);
+    expect(result).toMatchObject({ requestStarted: false, requestCompleted: false, requestTimeMs: 0, failureKind: "aborted" });
+  });
   // Both the old assertion message and dynamic-config error must keep host values out of reports.
   it.each(["eq", "typed-config"] as const)("A3 Fix1 sensitive extraction stays host-internal for %s output", async (mode) => {
     const token = "synthetic-sensitive-a3";

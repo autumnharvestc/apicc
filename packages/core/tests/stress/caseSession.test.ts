@@ -12,6 +12,12 @@ import type { ProjectExecutionRun } from "../../src/runner/runner.js";
 import { createStressCaseSession as createSnapshotStressCaseSession, type StressCaseSessionDeps, type StressCaseTarget } from "../../src/stress/caseSession.js";
 import type { ManagedProtocolClient } from "../../src/http/client.js";
 import type { ExecutableRequest, ExecutionResponse } from "../../src/plugin/types.js";
+import { createStressCaseVuSession } from "../../src/stress/caseSession.js";
+import { createStressAccumulator } from "../../src/stress/metrics.js";
+import { legacyStressMetricPlan, StressRunner } from "../../src/stress/runner.js";
+import { createStressRequestGate } from "../../src/stress/requestGate.js";
+import { createExecutionEvidenceCollector } from "../../src/report/evidence.js";
+import type { StressClock, StressVuHostContext } from "../../src/stress/execution.js";
 
 const response: ExecutionResponse = { status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 };
 
@@ -316,6 +322,58 @@ function deps(seen: string[], close: () => Promise<void>, created: (workerId: nu
 }
 
 describe("createStressCaseSession", () => {
+  it("F6 fix I-1 shares the global rate between a real managed case session and an opaque callback", async () => {
+    // Two independent limiters would grant both paths their first permit at time zero.
+    const prepared = await prepareTargetData(createProjectExecutionTarget(target({ id: "case-1", name: "case", scope: "base", parameters: { row: "A", counter: "0" }, assertions: [] })));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    try {
+      const starts: number[] = [];
+      const selected = deps([], async () => {}, () => ({ name: "unused", canHandle: () => true, execute: async () => response, close: async () => {} }));
+      selected.createManagedClient = () => ({ name: "controlled", canHandle: () => true,
+        async execute() { starts.push(performance.now()); return response; }, async close() {} });
+      const runner = new StressRunner({ createWorker(workerId, context) {
+        if (workerId === 0) return createSnapshotStressCaseSession(prepared, { ...selected, requestGate: context!.requestGate }, { workerId });
+        return { async execute() {
+          starts.push(performance.now());
+          return { request: { protocol: "http", method: "GET", url: "http://trusted.example/opaque", headers: {}, query: [], auth: { kind: "none" } }, response,
+            requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1, requestStarted: true, requestCompleted: true,
+            outcome: { apiId: "opaque-api", apiName: "opaque", caseId: "opaque-case", caseName: "opaque", passed: true, durationMs: 1, assertions: [] } };
+        }, async close() {} };
+      } });
+      const run = runner.run({ concurrency: 2, maxIterations: 2, maxRps: 1 });
+      await vi.advanceTimersByTimeAsync(1000);
+      const report = await run;
+      expect(starts).toEqual([0, 1000]);
+      expect(report.totalRequests).toBe(2);
+    } finally { vi.useRealTimers(); }
+  });
+  it("F6 planned case VU observes real case/hop facts and preserves initial runtime variables", async () => {
+    // Returning only the logical iteration result would lose every real case and hop.
+    const prepared = await prepareTargetData(createProjectExecutionTarget(target({ id: "case-1", name: "case", scope: "base", parameters: {}, preScript: "increment", assertions: [] })));
+    const metrics = createStressAccumulator(legacyStressMetricPlan, "planned-case");
+    const clock: StressClock = { now: () => performance.now(), wallNow: () => Date.now(), sleep: async () => {} };
+    const gate = createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest() {} });
+    const host: StressVuHostContext = { runId: "planned-case", vuId: "vu-1", clock, gate, signal: new AbortController().signal, lifecycle: undefined,
+      observation: () => ({ phase: "measurement", atMs: 2 }), observe: metrics.observe, reportLifecycle: () => ({}) };
+    const seen: string[] = []; let closes = 0;
+    const selected = deps(seen, async () => { closes++; }, () => ({ name: "unused", canHandle: () => true, execute: async () => response, close: async () => {} }));
+    selected.createManagedClient = () => ({ name: "observable", canHandle: () => true, async execute(request, opts) {
+      if (request.protocol !== "http") throw new Error("Fixture only supports HTTP");
+      seen.push(`${request.url}?${request.query.map((entry) => `${entry.key}=${entry.value}`).join("&")}`);
+      await opts.runtime?.observe?.({ type: "request", hopIndex: 0, request, url: request.url, method: request.method });
+      await opts.runtime?.observe?.({ type: "response", hopIndex: 0, url: request.url, status: 200, headers: {}, rawHeaders: [], encodedBytes: 11, decodedBytes: 11,
+        bodyComplete: true, bodyBytes: new TextEncoder().encode('{"ok":true}'), textAvailable: true, jsonAvailable: true, bodyText: '{"ok":true}',
+        requestBody: { fileBytesRead: 0, transportEncodedBytesWritten: 0, complete: true }, requestBodyChain: { fileBytesRead: 0, transportEncodedBytesWritten: 0, complete: true } });
+      return response;
+    }, async close() { closes++; } });
+    const session = createStressCaseVuSession(prepared, selected, { workerId: 0, host, evidence: createExecutionEvidenceCollector({ projectId: prepared.run.snapshot.project.id, definitionRevision: prepared.run.snapshot.definitionRevision }, []), initialInputs: { counter: "41", row: "A" } });
+    const result = await session.execute({ runId: "planned-case", vuId: "vu-1", iterationId: "1", stageId: null, phase: "measurement", scheduledOffsetMs: 0, signal: host.signal, observation: host.observation, observe: host.observe });
+    await session.close({ reason: "iteration-budget", signal: host.signal, allowNetworkCleanup: true });
+    expect(result.state).toBe("passed");
+    expect(seen[0]).toContain("vu=42");
+    expect(metrics.snapshot().observations).toMatchObject({ caseRows: { total: 1, ok: 1 }, requests: { started: 1, completed: 1, eligibleCompleted: 1 }, httpExchanges: { started: 1, completed: 1 } });
+    expect(closes).toBe(1);
+  });
   it("B1 固定准备快照并隔离每个 session 的变量和 0/1/0 数据游标", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apicc-session-"));
     const dataPath = join(dir, "rows.csv");

@@ -27,6 +27,7 @@ const emit = defineEmits<{
   "update:pane": [pane: TestingPane];
   "pick-api": [locator: ApiLocator];
   "open-workflow": [locator: WorkflowLocator];
+  "stress-workflow": [locator: WorkflowLocator];
 }>();
 const { t } = useI18n();
 const search = ref("");
@@ -109,8 +110,8 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
       <template v-else-if="pane === 'scenario'">
         <div v-for="w in scenarios.filter(item => matches(item.name))" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
           <span class="scenario-name">{{ w.name }}</span>
-          <a-tooltip :title="t('test.scenarioStressDeferred')">
-            <a-button size="small" type="text" disabled data-testid="test-scenario-stress">{{ t("case.stress") }}</a-button>
+          <a-tooltip :title="t('stress.workbench.title')">
+            <a-button size="small" type="text" data-testid="test-scenario-stress" @click.stop="emit('stress-workflow', w.locator)">{{ t("case.stress") }}</a-button>
           </a-tooltip>
           <a-button size="small" type="text" :data-testid="`test-scenario-run-${encodeURIComponent(JSON.stringify(w.locator))}`" @click="emit('open-workflow', w.locator)">
             {{ t("case.run") }}

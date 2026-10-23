@@ -13,6 +13,8 @@
 // TopBar 现代化（计划 2C 任务 2）适配：3. a-dropdown（语言切换）展开的菜单同样
 //    传送门渲染到 body，菜单项用 langOption（data-locale）查询。
 import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from "vitest";
+import { createStressRunInvoker } from "../../src/shared/types.js";
+import { stressV2Report } from "../helpers/stressV2.js";
 import { Button as AButton } from "ant-design-vue";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
@@ -1798,13 +1800,17 @@ describe("App 测试模块装配（M9-D）", () => {
       await flushPromises();
       await wrapper.find('[data-testid="rail-test"]').trigger("click");
       await flushPromises();
-      failingApi.stressRun = async () => ({ ok: true, report: stressReportFixture(), file: "stress-x.json" });
+      failingApi.stressRun = createStressRunInvoker(async input => {
+        if (!('kind' in input)) throw new Error('expected plan');
+        const report = stressV2Report(); report.projectId = input.projectLocator.projectId; report.target = input.plan.target; report.plan = input.plan;
+        return { ok: true, kind: 'plan', runId: report.runId, report, file: 'stress-x.json' };
+      });
       // 用例行点「压测」：内嵌 StressPanel + 预选该用例
       const stressBtn = wrapper.find('[data-testid^="case-stress-"]');
       const caseId = stressBtn.attributes("data-case-id") as string;
       await stressBtn.trigger("click");
       await flushPromises();
-      expect(wrapper.find('[data-testid="stress-panel"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="stress-workbench"]').exists()).toBe(true);
       const panel = wrapper.findComponent(StressPanel);
       const apiId = wrapper.find('[data-testid="tree-api"]').attributes("data-node-id") as string;
       expect((panel.props("apiLocator") as { apiId: string }).apiId).toBe(apiId);
@@ -1821,7 +1827,7 @@ describe("App 测试模块装配（M9-D）", () => {
       const stress = panel.props("stress") as { form: { caseId: string; concurrency: number } };
       expect(stress.form.caseId).toBe(caseId);
       // 压测跑一轮出报告，返回用例再进入保留（store 会话不随视图切换清空）
-      await wrapper.find('[data-testid="stress-start"]').trigger("click");
+      await wrapper.find('[data-testid="stress-plan-start"]').trigger("click");
       await flushPromises();
       expect(wrapper.find('[data-testid="stress-report"]').exists()).toBe(true);
       await wrapper.find('[data-testid="test-back-to-cases"]').trigger("click");
@@ -1861,7 +1867,7 @@ describe("App 测试模块装配（M9-D）", () => {
     }
   });
 
-  it("场景用例：项目工作流清单渲染，点击「运行」切工作流模块并载入；场景压测为禁用态", async () => {
+  it("场景用例：未打开接口也能进入同项目工作台，主页往返仍可用，设计器入口复用同一工作台", async () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
     await flushPromises();
@@ -1873,14 +1879,21 @@ describe("App 测试模块装配（M9-D）", () => {
     await openLocalDir(wrapper);
     await flushPromises();
     await flushPromises();
-    await clickApiAndWait(wrapper);
+    await wrapper.get('[data-testid="topbar-home"]').trigger('click'); await flushPromises();
+    const tabs = wrapper.findComponent(ProjectTabs).props('tabs') as ReturnType<typeof createTabsStore>;
+    await tabs.activateTab(tabs.tabs[0]!.tabId);
     await flushPromises();
     await wrapper.find('[data-testid="rail-test"]').trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="test-tab-scenario"]').trigger("click");
     await flushPromises();
-    // 场景压测禁用（裁定 D2：延后不做假入口）
-    expect(wrapper.find('[data-testid="test-scenario-stress"]').attributes("disabled")).toBeDefined();
+    const stressButton = wrapper.findAll('[data-testid="test-scenario-stress"]').find(button => button.element.closest('.scenario-row')?.textContent?.includes('场景流'))!;
+    expect(stressButton.attributes('disabled')).toBeUndefined();
+    await stressButton.trigger('click'); await flushPromises();
+    expect(wrapper.find('[data-testid="stress-workbench"]').exists()).toBe(true);
+    expect(wrapper.findComponent(StressPanel).props('stress').plan!.target).toEqual({ kind: 'workflow', workflowId: wf.id });
+    expect(wrapper.findComponent(StressPanel).props('apiLocator')).toBeNull();
+    await wrapper.get('[data-testid="test-back-to-cases"]').trigger('click'); await flushPromises();
     // 运行：切到工作流模块且设计器载入该流
     const designStore = wrapper.findComponent(SideTree).props("workflowDesign") as ReturnType<typeof useWorkflowDesignStore>;
     const load = captureWorkflowLoad(designStore);
@@ -1893,6 +1906,8 @@ describe("App 测试模块装配（M9-D）", () => {
     expect(wrapper.find('[data-testid="rail-wf"]').classes()).toContain("active");
     const design = wrapper.findComponent(WfDesigner).props("workflowDesign") as { workflowId: string | null };
     expect(design.workflowId).toBe(wf.id);
+    await wrapper.get('[data-testid="wf-stress"]').trigger('click'); await flushPromises();
+    expect(wrapper.find('[data-testid="stress-workbench"]').exists()).toBe(true);
   });
 });
 

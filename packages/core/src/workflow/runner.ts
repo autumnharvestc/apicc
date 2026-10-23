@@ -21,6 +21,8 @@ import type { WorkflowFailure } from "./policy.js";
 import { cancellationFailure } from "./policy.js";
 import { validateWorkflowRunOptions } from "./plan.js";
 import type { WorkflowPolicyEvent } from "./trace.js";
+import type { WorkflowNodeObservation } from "./trace.js";
+import { assertPreparedWorkflowExecution, type PreparedWorkflowExecution } from "./prepared.js";
 
 /** Internal legacy-child adapter. Root v1 deliberately supplies none of these. */
 export interface LegacyWorkflowInvocation {
@@ -85,6 +87,25 @@ export interface WorkflowRunnerOptions {
   observeHttp?: (event: HttpHopObservation) => void | Promise<void>;
 }
 
+export interface WorkflowRunOptions extends Pick<RunnerOptions, "beforeSend" | "requestGate" | "resolveProtocol"> {
+  /** Host monotonic clock, shared with load observations when supplied. */
+  monotonicNow?: () => number;
+  environmentId?: string;
+  workspaceRoot?: string;
+  httpSession?: HttpSession;
+  observeHttp?: (event: HttpHopObservation, identity?: { workflowId: string; nodeId: string } & Partial<WorkflowNodeIdentity>) => void | Promise<void>;
+  signal?: AbortSignal;
+  preparedRowIndex?: number;
+  observeCaseExecution?: WorkflowCaseObserver;
+  observeNodeExecution?: (observation: WorkflowNodeObservation) => void;
+  /** Host-only declared output boundary, consumed immediately by lifecycle owners. */
+  observeOutputs?: (outputs: Readonly<Record<string, import("../contract/schemaNode.js").JsonValue>>) => void;
+  inputs?: Readonly<Record<string, import("../contract/schemaNode.js").JsonValue>>;
+  invocationId?: string;
+  maxConcurrency?: number;
+  timeoutMs?: number;
+}
+
 export type ConditionVerdict = { kind: "matched" } | { kind: "pruned" } | { kind: "error"; message: string };
 export type WorkflowCaseObserver = (execution: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[0], identity: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[1] & { nodeId: string } & Partial<WorkflowNodeIdentity>) => void | Promise<void>;
 
@@ -99,19 +120,7 @@ interface ConditionPm extends PmApi {
 export class WorkflowRunner {
   constructor(private opts: WorkflowRunnerOptions) {}
 
-  async run(execution: ProjectExecutionRun, workflowId: string, options: {
-    environmentId?: string;
-    workspaceRoot?: string;
-    httpSession?: HttpSession;
-    observeHttp?: (event: HttpHopObservation) => void | Promise<void>;
-    signal?: AbortSignal;
-    preparedRowIndex?: number;
-    observeCaseExecution?: WorkflowCaseObserver;
-    inputs?: Readonly<Record<string, import("../contract/schemaNode.js").JsonValue>>;
-    invocationId?: string;
-    maxConcurrency?: number;
-    timeoutMs?: number;
-  } = {}): Promise<WorkflowRunResult> {
+  async run(execution: ProjectExecutionRun, workflowId: string, options: WorkflowRunOptions = {}): Promise<WorkflowRunResult> {
     const selectedExecution = captureProjectExecutionRun(execution);
     const project = selectedExecution.snapshot.project;
     const workflow = project.workflows.find((candidate) => candidate.id === workflowId);
@@ -121,7 +130,19 @@ export class WorkflowRunner {
     return this.runLegacy(selectedExecution, workflowId, options);
   }
 
+  async runPrepared(prepared: PreparedWorkflowExecution, options: WorkflowRunOptions = {}): Promise<WorkflowRunResult> {
+    assertPreparedWorkflowExecution(prepared);
+    const environmentId = options.environmentId ?? this.opts.environmentId ?? prepared.plan.environmentId;
+    if (environmentId !== prepared.plan.environmentId) throw new Error("Prepared workflow environment mismatch");
+    options = { ...options, environmentId };
+    const root = prepared.plan.workflows.find((flow) => flow.id === prepared.plan.rootWorkflowId)!;
+    validateWorkflowRunOptions(root, options);
+    if (root.executionVersion === 2) return runWorkflowV2(prepared.run, root.id, this.opts, options, prepared.plan);
+    return this.runLegacy(prepared.run, root.id, options);
+  }
+
   async runLegacy(selectedExecution: ProjectExecutionRun, workflowId: string, options: Parameters<WorkflowRunner["run"]>[2] = {}, invocation?: LegacyWorkflowInvocation): Promise<WorkflowRunResult> {
+    const now = options.monotonicNow ?? (() => performance.now());
     const project = selectedExecution.snapshot.project;
     const workflow = project.workflows.find((candidate) => candidate.id === workflowId)!;
     const startedAt = new Date().toISOString();
@@ -236,12 +257,15 @@ export class WorkflowRunner {
     // A blocked node is terminal for scheduling without being executed. Keep
     // any independently recorded config outcome instead of replacing it with a skip.
     const settleSkipped = (node: DeepReadonly<WorkflowNode>, skipReason: NodeSkipReason): void => {
+      if (settled.has(node.id)) return;
       if (!nodeResults.has(node.id)) {
         const identity = invocation ? createWorkflowNodeIdentity(invocation.identity) : undefined;
         nodeResults.set(node.id, { ...identity, nodeId: node.id, label: node.label, kind: node.kind, state: "skipped", skipReason });
         invocation?.observeTrace?.({ ...identity, nodeId: node.id, type: "node-skipped", state: "skipped" });
       }
       settled.add(node.id);
+      const result = nodeResults.get(node.id)!;
+      options.observeNodeExecution?.({ ...result, workflowId, durationMs: 0 });
     };
     // Reach a fixed point regardless of node declaration order, including
     // hidden config failures and their descendants. This never invokes fail-fast.
@@ -289,6 +313,7 @@ export class WorkflowRunner {
         continue;
       }
       deferredInRow = 0;
+      const nodeStarted = now();
       const identity = invocation ? createWorkflowNodeIdentity(invocation.identity) : undefined;
       invocation?.observeTrace?.({ ...identity, nodeId: node.id, type: "node-start" });
       order.push(node.id);
@@ -297,6 +322,7 @@ export class WorkflowRunner {
         const cancellation = invocation && options.signal?.aborted ? cancellationFailure(options.signal) : undefined;
         nodeResults.set(node.id, { ...identity, nodeId: node.id, label: node.label, kind: node.kind, state: "failed", failureKind: cancellation?.failureKind ?? "config", error: error instanceof Error ? error.message : String(error), ...(cancellation ? { primaryError: cancellation } : {}) });
         invocation?.observeTrace?.({ ...identity, nodeId: node.id, type: "node-end", state: "failed", cause: cancellation?.cause });
+        options.observeNodeExecution?.({ ...identity, workflowId, nodeId: node.id, state: "failed", durationMs: now() - nodeStarted });
         settled.add(node.id);
         propagateBlocked();
         break;
@@ -323,7 +349,8 @@ export class WorkflowRunner {
             const executeAttempt = () => runSingleNode(runner, selectedExecution, projectLocation, caseDef, environmentId, bridge, {
               workspaceRoot: options.workspaceRoot ?? this.opts.workspaceRoot,
               httpSession: options.httpSession ?? this.opts.httpSession,
-              observeHttp: options.observeHttp ?? this.opts.observeHttp,
+              observeHttp: (event) => (options.observeHttp ?? this.opts.observeHttp)?.(event, { ...identity, workflowId, nodeId: node.id }),
+              beforeSend: options.beforeSend, requestGate: options.requestGate, resolveProtocol: options.resolveProtocol,
               preparedRowIndex: options.preparedRowIndex,
               observeCaseExecution: (value, rowIdentity) => {
                 if (identity) Object.assign(value.outcome, identity, { nodeId: node.id });
@@ -395,6 +422,7 @@ export class WorkflowRunner {
       // only now is its state terminal for readiness and failure propagation.
       settled.add(node.id);
       invocation?.observeTrace?.({ ...identity, nodeId: node.id, type: "node-end", state: nodeResults.get(node.id)?.state, message: nodeResults.get(node.id)?.error });
+      options.observeNodeExecution?.({ ...identity, workflowId, nodeId: node.id, state: nodeResults.get(node.id)!.state, durationMs: now() - nodeStarted });
       propagateBlocked();
       if (this.opts.failFast && nodeResults.get(node.id)?.state === "failed") break;
     }
@@ -450,7 +478,7 @@ export async function runSingleNode(
   caseDef: DeepReadonly<TestCase>,
   environmentId: string | undefined,
   bridge: { get(): Record<string, string>; set(v: Record<string, string>): void; extractions: ExtractionRuntimeState },
-  httpOptions: { workspaceRoot?: string; httpSession?: HttpSession; observeHttp?: (event: HttpHopObservation) => void | Promise<void>; preparedRowIndex?: number; observeCaseExecution?: RunnerOptions["observeCaseExecution"] },
+  httpOptions: Pick<RunnerOptions, "workspaceRoot" | "httpSession" | "preparedRowIndex" | "observeCaseExecution" | "beforeSend" | "requestGate" | "resolveProtocol"> & { observeHttp?: (event: HttpHopObservation) => void | Promise<void> },
 ): Promise<{ outcomes: CaseOutcome[]; warnings: string[] }> {
   const apiId = location.api.contract.id;
   // CollectionRunner also has legacy pre-execution diagnostic rows (including rows with
@@ -460,12 +488,13 @@ export async function runSingleNode(
     passed: actual.filter((outcome) => outcome.passed).length, failed: actual.filter((outcome) => !outcome.passed).length });
   let result: RunResult;
   try {
-    result = await runner.run(execution, location.collection.id, {
+    result = await runner.runPrepared(execution, location.collection.id, {
       environmentId,
       runtimeBridge: bridge,
       workspaceRoot: httpOptions.workspaceRoot,
       httpSession: httpOptions.httpSession,
       observeHttp: httpOptions.observeHttp,
+      beforeSend: httpOptions.beforeSend, requestGate: httpOptions.requestGate, resolveProtocol: httpOptions.resolveProtocol,
       preparedRowIndex: httpOptions.preparedRowIndex,
       observeCaseExecution: async (value, identity) => { actual.push(value.outcome); await httpOptions.observeCaseExecution?.(value, identity); },
       caseSelection: { apiId, caseId: caseDef.id, scope: caseDef.scope, folderIds: location.folders.map((folder) => folder.id) },

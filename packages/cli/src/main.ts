@@ -6,6 +6,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { generatePluginPackage } from "./create-plugin.js";
 import { createPrivateStressWorkerFactory, createWorkerEvidenceFinalizer } from "./stressWorkerTransport.js";
+import { registerStressPlanCommands } from "./stressPlanCommand.js";
+import { spawnLocalStressWorker } from "./stressWorkerTransport.js";
 import {
   ShardOutcomeSchema,
   PreparedTestDataSchema,
@@ -284,6 +286,9 @@ async function locateApiTarget(registry: PluginRegistry, root: string, apiPath: 
 
 /** runCli 可注入依赖：worker 协议/日志通道与默认 SpawnWorker 工厂（测试注入替身即可进程内闭环）。 */
 export interface RunCliDeps {
+  /** @deprecated Library-only v2 adapter. The executable never supplies this registration function. */
+  legacyStressWorkerAdapter?: typeof registerLegacyStressWorkerAdapter;
+  spawnLocalStressWorker?: (identity: { runId: string; workerId: string }, timeoutMs: number, prepare: (configuration: unknown, signal?: AbortSignal) => Promise<import("@apicc/core").StressWorkerRuntime>) => Promise<import("@apicc/core").StressWorkerChannel>;
   /** stress-worker 协议行输出通道（默认真实 stdout——协调器按行解析的契约通道，裁定 B）。 */
   workerOut?: (line: string) => void;
   /** stress-worker 人类日志通道（默认 console.error → stderr；stdout 只许末行 JSON）。 */
@@ -313,6 +318,8 @@ export interface RunCliDeps {
   /** CLI 凭据保存注入：默认仅从 stdin 读取，永不接受 argv 明文。 */
   secretInput?: () => Promise<string>;
 }
+/** @deprecated Explicit programmatic compatibility only; not a command-line option. */
+export function registerLegacyStressWorkerAdapter(register: () => void): void { register(); }
 
 export function formatOAuthActionFailure(action: "acquire" | "refresh", result: OAuthPublicResult): string {
   const safeResult = {
@@ -516,6 +523,7 @@ async function resolveStressTarget(
   envName: string | undefined,
   credentialOptions: CredentialHostOptions = {},
   expected?: { definitionRevision: string; credentialVersions: Readonly<Record<string, string>>; networkIdentity?: string; preparedTestData?: PreparedTestData },
+  signal?: AbortSignal,
 ): Promise<{
   apiPath: string;
   apiId: string;
@@ -525,6 +533,7 @@ async function resolveStressTarget(
   project: ProjectExecutionRun["snapshot"]["project"];
   workspace: Workspace;
   prepared: Awaited<ReturnType<typeof prepareExecutionRun>>;
+  createProtocols: (connectionMode?: "pooled" | "fresh") => ReturnType<typeof ownedStressProtocols>;
   targetOrigin?: string;
   createRunner: (options?: {
     concurrency?: number;
@@ -535,6 +544,11 @@ async function resolveStressTarget(
     finalizeEvidence?: (markers: readonly string[]) => Promise<readonly string[]>;
     onEvidenceMarkers?: (markers: readonly string[]) => void;
     onEvidenceOutputBoundary?: (boundary: EvidenceOutputBoundary) => void;
+    runSchedule?: import("@apicc/core").StressRunnerOptions["runSchedule"];
+    additionalFailureEvidence?: import("@apicc/core").StressRunnerOptions["additionalFailureEvidence"];
+    distributed?: import("@apicc/core").StressRunnerOptions["distributed"];
+    richOutputComplete?: import("@apicc/core").StressRunnerOptions["richOutputComplete"];
+    generatorOverride?: import("@apicc/core").StressRunnerOptions["generatorOverride"];
   }) => StressRunner;
 }> {
   const location = await locateApiTarget(registry, root, apiPath);
@@ -558,6 +572,7 @@ async function resolveStressTarget(
       scope: preflightCase.scope,
     }], {
       workspaceRoot: root,
+      signal,
       ...(environmentId === undefined ? {} : { environmentId }),
       ...(expected?.networkIdentity === undefined ? {} : { expectedNetworkIdentity: expected.networkIdentity }),
       ...(expected === undefined ? {} : { preparedTestData: expected.preparedTestData ?? null }),
@@ -605,6 +620,7 @@ async function resolveStressTarget(
     project: preparedProject,
     workspace,
     prepared,
+    createProtocols: (connectionMode?: "pooled" | "fresh") => ownedStressProtocols(registry, defaultClient, connectionMode),
     ...(targetOrigin !== undefined ? { targetOrigin } : {}),
     createRunner: (options = {}) => {
       const maxRps = options.maxRps ?? project.stressPolicy?.maxRps;
@@ -615,28 +631,22 @@ async function resolveStressTarget(
         finalizeEvidence: options.finalizeEvidence,
         onEvidenceMarkers: options.onEvidenceMarkers,
         onEvidenceOutputBoundary: options.onEvidenceOutputBoundary,
-        createWorker: (workerId) => {
-          let ownedHttp: ReturnType<typeof createHttpClient> | undefined;
-          let ownedSoap: ReturnType<typeof createSoapClient> | undefined;
-          const httpSession = createHttpSession();
-          const createOwnedHttp = () => ownedHttp ??= createHttpClient({ connectionMode: options.connectionMode });
+        runSchedule: options.runSchedule,
+        additionalFailureEvidence: options.additionalFailureEvidence,
+        distributed: options.distributed,
+        richOutputComplete: options.richOutputComplete,
+        generatorOverride: options.generatorOverride,
+        createWorker: (workerId, context) => {
+          const protocols = ownedStressProtocols(registry, defaultClient, options.connectionMode);
+          const { httpSession } = protocols;
           try {
             const session = createStressCaseSession(target, {
-              resolveProtocol: (candidate) => {
-                if (candidate.protocol === "soap" && defaultClient.name === "soap") {
-                  ownedSoap ??= createSoapClient(createOwnedHttp());
-                  return ownedSoap;
-                }
-                return registry.getProtocol(candidate);
-              },
+              ...protocols,
               resolveAuth: (kind) => registry.getAuth(kind),
               resolveAssert: (operator) => registry.getAssert(operator),
               scriptEngine: registry.getScriptEngine("javascript")!,
               workspaceRoot: root,
-              httpSession,
-              createManagedClient: () => defaultClient.name === "http" || defaultClient.name === "soap"
-                ? createOwnedHttp()
-                : { ...defaultClient, close: async () => {} },
+              requestGate: context?.requestGate,
             }, {
               workerId,
               concurrency: options.concurrency,
@@ -644,6 +654,7 @@ async function resolveStressTarget(
               confirmedTargetOrigins: options.confirmedTargetOrigins,
             });
             return {
+              gateManaged: session.gateManaged,
               execute: (signal) => session.execute(signal),
               async close() {
                 try { await session.close(); }
@@ -657,6 +668,16 @@ async function resolveStressTarget(
         },
       });
     },
+  };
+}
+
+function ownedStressProtocols(registry: PluginRegistry, defaultClient: NonNullable<ReturnType<PluginRegistry["getProtocol"]>>, connectionMode?: "pooled" | "fresh") {
+  let http: ReturnType<typeof createHttpClient> | undefined, soap: ReturnType<typeof createSoapClient> | undefined;
+  const httpSession = createHttpSession(), ownedHttp = () => http ??= createHttpClient({ connectionMode });
+  return { httpSession,
+    resolveProtocol: (request: import("@apicc/core").ExecutableRequest) => request.protocol === "soap" && defaultClient.name === "soap"
+      ? soap ??= createSoapClient(ownedHttp()) : registry.getProtocol(request),
+    createManagedClient: () => defaultClient.name === "http" || defaultClient.name === "soap" ? ownedHttp() : { ...defaultClient, close: async () => {} },
   };
 }
 
@@ -674,6 +695,29 @@ export async function runCli(
   const program = new Command();
   program.name("apicc").description("apicc 命令行——接口定义与测试驱动开发").version("0.1.0");
   registerTestingCommands(program, { registry, log, workspaceRoot: () => findWorkspaceRoot(process.cwd()), credentialOptions: credentialHostOptions(deps) });
+  const prepareLocalWorker = registerStressPlanCommands(program, { registry, log, root: () => findWorkspaceRoot(process.cwd()) ?? undefined, credentials: credentialHostOptions(deps),
+    workerArgs: (identity) => [cliEntryPath(), "stress-plan-worker", "--run-id", identity.runId, "--worker-id", identity.workerId], spawnWorker: deps.spawnLocalStressWorker,
+    prepareLegacy: async (configuration, signal) => {
+      const config = configuration;
+      const target = await resolveStressTarget(registry, config.workspaceRoot, config.apiPath, config.caseId, config.envName, credentialHostOptions(deps), config, signal);
+      const { createStressCaseVuSession, legacyStressMetricPlan } = await import("@apicc/core");
+      const evidence = createExecutionEvidenceCollector({ projectId: target.prepared.snapshot.project.id, definitionRevision: target.prepared.snapshot.definitionRevision }, target.prepared.secrets, { maxSamples: 20, privateMarkers: true });
+      return { clock: (await import("./stressPlanCommand.js")).localStressClock, metricPlan: legacyStressMetricPlan, evidence, host: {
+        async createVu(vuId, initialInputs, host) {
+          if (!host) throw new Error("Missing worker VU host");
+          const protocols = target.createProtocols(config.connectionMode);
+          try {
+          const session = createStressCaseVuSession({ run: target.prepared.run, fixedRun: true, collectionId: target.collection.id, apiId: target.apiId, caseId: config.caseId,
+            environmentId: config.envName ? target.project.environments.find((env) => env.name === config.envName)?.id : undefined }, {
+            ...protocols, workspaceRoot: config.workspaceRoot, resolveAuth: (type) => registry.getAuth(type), resolveAssert: (op) => registry.getAssert(op),
+            scriptEngine: registry.getScriptEngine("javascript")!,
+          }, { workerId: Number(vuId), concurrency: config.concurrency, maxRps: config.maxRps, confirmedTargetOrigins: config.confirmedTargetOrigins, initialInputs, host, evidence });
+          return { execute: (context) => session.execute(context), async close(options) { try { await session.close(options); } finally { await protocols.httpSession.close(); } } };
+          } catch (error) { await protocols.httpSession.close(); throw error; }
+        },
+      } };
+    },
+  });
 
   // M7-A D4：命令分发前加载用户级插件（~/.apicc/plugins.json）。--no-plugins 逃生开关（commander
   // 布尔取反：缺省 opts.plugins === true，传旗标即 false）；deps.loadPlugins=false 为编程关闭通道
@@ -1295,9 +1339,6 @@ export async function runCli(
       if (opts.shards > opts.concurrency) {
         throw new Error(`shards 不能大于 concurrency（${opts.concurrency}）`);
       }
-      if (opts.shards > 1 && opts.maxRps !== undefined) {
-        throw new Error("多 shard + maxRps 不受支持：无法证明全局滑动窗口上限");
-      }
       const root = findWorkspaceRoot(process.cwd());
       if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
       // 定位/env/resolver 与 stress-worker 共享 helper（不复制）；校验通过才落协调或进程内执行。
@@ -1309,9 +1350,6 @@ export async function runCli(
       const effectiveMaxRps = opts.maxRps === undefined
         ? projectMaxRps
         : projectMaxRps === undefined ? opts.maxRps : Math.min(opts.maxRps, projectMaxRps);
-      if (opts.shards > 1 && effectiveMaxRps !== undefined) {
-        throw new Error("多 shard + maxRps 不受支持：项目安全策略也不能拆成可证明的全局滑动窗口");
-      }
       if (targetInfo.project.stressPolicy?.maxConcurrency !== undefined
         && opts.concurrency > targetInfo.project.stressPolicy.maxConcurrency) {
         throw new StressSafetyError(
@@ -1333,6 +1371,9 @@ export async function runCli(
 
       let report: StressReport;
       let shardFailureCount = 0;
+      const stressAbort = new AbortController(), cancelStress = () => stressAbort.abort();
+      process.on("SIGINT", cancelStress); process.on("SIGTERM", cancelStress);
+      try {
       if (opts.shards === 1) {
         // 单 shard：既有进程内路径，零行为变化（裁定 C：不挂 distributed 段，保持 M2-C 报告原样）。
         report = await createRunner({
@@ -1340,6 +1381,7 @@ export async function runCli(
           connectionMode: opts.connectionMode,
         }).run({
           concurrency: opts.concurrency, maxIterations: opts.iterations, durationMs,
+          signal: stressAbort.signal,
           maxRps: effectiveMaxRps, ...(hasThresholds ? { thresholds } : {}),
           connectionMode: opts.connectionMode,
           safetyRun: {
@@ -1352,7 +1394,7 @@ export async function runCli(
         });
       } else {
         // 多 shard：构造 specBase（workspaceRoot 显式传给子进程 worker），协调器拆分/并发/汇聚。
-        const { DistributedStressCoordinator } = await import("@apicc/core");
+        const { createLocalStressWorkerDeps, runStressSchedule } = await import("@apicc/core");
         const specBase: StressWorkerSpecBase = {
           apiPath: targetInfo.apiPath,
           caseId: opts.case,
@@ -1375,12 +1417,17 @@ export async function runCli(
           ...(confirmedTargetOrigins.length > 0 ? { confirmedTargetOrigins } : {}),
         };
         const shardTimeoutMs = opts.shardTimeout * 1000;
-        const coordinator = new DistributedStressCoordinator();
-        ({ report, shardFailureCount } = await coordinator.run(specBase, {
-          shards: opts.shards,
-          shardTimeoutMs,
-          // 默认本地子进程 spawn（同值超时 kill，裁定 A）；测试注入进程内替身。
-          spawnWorker: (deps.spawnWorkerFactory ?? defaultSpawnWorkerFactory)(shardTimeoutMs),
+        let local: Awaited<ReturnType<typeof createLocalStressWorkerDeps>> | undefined;
+        try { report = await createRunner({ concurrency: opts.concurrency, maxRps: effectiveMaxRps, confirmedTargetOrigins, connectionMode: opts.connectionMode,
+          async runSchedule(schedule, execution) {
+            local = await createLocalStressWorkerDeps(schedule, { ...execution, allowNumericFailure: true, shards: opts.shards, configuration: { ...specBase, kind: "legacy" },
+              spawnWorker: (identity) => deps.spawnLocalStressWorker ? deps.spawnLocalStressWorker(identity, shardTimeoutMs, prepareLocalWorker)
+                : Promise.resolve(spawnLocalStressWorker([cliEntryPath(), "stress-plan-worker", "--run-id", identity.runId, "--worker-id", identity.workerId], shardTimeoutMs)) });
+            return runStressSchedule(schedule, local.deps);
+          }, additionalFailureEvidence: () => local?.failureEvidence() ?? [], distributed: (summary) => local!.distributed(summary), richOutputComplete: () => local?.richOutputComplete() ?? false,
+          generatorOverride: (coordinator) => local!.generator(coordinator),
+        }).run({ concurrency: opts.concurrency, maxIterations: opts.iterations, durationMs, signal: stressAbort.signal, maxRps: effectiveMaxRps,
+          thresholds: hasThresholds ? thresholds : undefined, connectionMode: opts.connectionMode,
           safetyRun: {
             requestedConcurrency: opts.concurrency,
             effectiveConcurrency: opts.concurrency,
@@ -1388,8 +1435,9 @@ export async function runCli(
             effectiveMaxRps: effectiveMaxRps ?? null,
             connectionMode: opts.connectionMode,
           },
-        }));
+        }); } finally { await local?.close(); }
       }
+      } finally { process.off("SIGINT", cancelStress); process.off("SIGTERM", cancelStress); }
       const currentReport = CurrentStressReportSchema.safeParse(report);
       if (!currentReport.success) {
         const detail = currentReport.error.issues
@@ -1460,7 +1508,7 @@ export async function runCli(
   // 分布式压测 worker（M2-D 任务 2）：由 run-stress --shards 协调端以子进程方式调起，也可手工单独运行。
   // stdout 契约（裁定 B）：只许末行一行协议 JSON（ShardResult/ShardFailure），人类日志一律 stderr——
   // 协调端按行从末解析 stdout。定位/env/resolver 与 run-stress 共享 helper（不复制）。
-  program
+  const registerLegacyWorker = () => { program
     .command("stress-worker")
     .argument("<apiPath>", "接口目录（相对工作区根）")
     .requiredOption("--case <caseId>", "用例 ID")
@@ -1622,7 +1670,8 @@ export async function runCli(
       } finally {
         if (opts.privateEvidenceIpc && process.connected) process.disconnect?.();
       }
-    });
+    }); };
+  deps.legacyStressWorkerAdapter?.(registerLegacyWorker);
 
   program
     .command("mock")

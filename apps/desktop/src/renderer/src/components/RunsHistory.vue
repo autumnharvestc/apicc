@@ -47,8 +47,8 @@ function rowFailed(s: RunSummary): number {
   return s.kind === "stress" ? s.failed : s.reportingUnits?.failed ?? s.failed;
 }
 /** rps 两位小数内联格式化（与 StressReportView 同口径，禁 NaN：来源为校验过的数值）。 */
-function fmtRps(v: number): string {
-  return String(Math.round(v * 100) / 100);
+function fmtRps(v: number | null): string {
+  return v === null ? "—" : String(Math.round(v * 100) / 100);
 }
 
 async function loadHistory() {
@@ -134,7 +134,7 @@ function onBack() {
       <a-button size="small" class="back-btn" data-testid="history-back" @click="onBack">
         {{ t("run.back") }}
       </a-button>
-      <StressReportView :report="run.stressReport?.report ?? null" />
+      <StressReportView v-if="run.stressReport" :report="run.stressReport.report" />
     </template>
   </a-drawer>
 </template>

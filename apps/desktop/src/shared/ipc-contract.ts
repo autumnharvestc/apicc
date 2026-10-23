@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { StressPlanSaveInputSchema, StressCompareInputSchema, StressExportInputSchema, StressReportFileSchema } from "./types.js";
+import { StressPlanSchema } from "@apicc/core/schema";
 import { EvidenceInvocationSchema, TestingReadInputSchema, DatasetSaveInputSchema, SuiteSaveInputSchema, TestingDeleteInputSchema, DatasetExchangeInputSchema, DatasetExportInputSchema, SuiteInvocationSchema } from "./testing.js";
 import {
   ApiAssetSchema,
@@ -169,7 +171,7 @@ const StressOriginSchema = z.string().superRefine((value, ctx) => {
   return parsed.origin;
 });
 const StressOriginListSchema = z.array(StressOriginSchema).transform((values) => [...new Set(values)]);
-const StressRunInputSchema = z.object({
+const LegacyStressRunInputSchema = z.object({
   locator: ApiLocatorSchema,
   caseId: z.string(),
   envName: z.string().nullish(),
@@ -180,6 +182,7 @@ const StressRunInputSchema = z.object({
   connectionMode: z.enum(["pooled", "fresh"]).optional(),
   confirmedTargetOrigins: StressOriginListSchema.optional(),
 }).strict();
+const StressRunInputSchema = z.union([LegacyStressRunInputSchema, z.object({ kind: z.literal("plan"), root: z.string().min(1), invocationId: z.string().uuid(), projectLocator: ProjectLocatorSchema, plan: StressPlanSchema, confirmedTargetOrigins: StressOriginListSchema.optional() }).strict()]);
 const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() }).strict();
 const ImportPlanInputSchema = z.discriminatedUnion("mode", [
   z.object({ previewToken: z.string().uuid(), mode: z.literal("project"), target: GroupLocatorSchema, name: z.string() }).strict(),
@@ -316,7 +319,15 @@ export const IpcArgsSchemas = {
   [IpcChannel.WfRun]: z.tuple([z.object({ locator: WorkflowLocatorSchema, envName: z.string().nullish(), strict: z.boolean().optional(), invocationId: z.string().uuid().optional(), root: z.string().min(1).optional(), inputs: StringRecordSchema(JsonValueSchema).optional() }).strict()]),
   [IpcChannel.WfCancel]: z.tuple([z.object({ locator: WorkflowLocatorSchema, invocationId: z.string().uuid(), root: z.string().min(1) }).strict()]),
   [IpcChannel.StressRun]: z.tuple([StressRunInputSchema]),
-  [IpcChannel.StressStop]: z.tuple([]),
+  [IpcChannel.StressPlansList]: z.tuple([ProjectLocatorSchema]),
+  [IpcChannel.StressRunsList]: z.tuple([ProjectLocatorSchema]),
+  [IpcChannel.StressRunsGet]: z.tuple([ProjectLocatorSchema, StressReportFileSchema]),
+  [IpcChannel.StressPlansGet]: z.tuple([ProjectLocatorSchema, z.string().uuid()]),
+  [IpcChannel.StressPlansSave]: z.tuple([ProjectLocatorSchema, StressPlanSaveInputSchema]),
+  [IpcChannel.StressPlansRemove]: z.tuple([ProjectLocatorSchema, z.string().uuid()]),
+  [IpcChannel.StressCompare]: z.tuple([ProjectLocatorSchema, StressCompareInputSchema]),
+  [IpcChannel.StressExport]: z.tuple([ProjectLocatorSchema, StressExportInputSchema]),
+  [IpcChannel.StressStop]: z.union([z.tuple([]), z.tuple([z.object({ runId: z.string().uuid(), root: z.string().min(1), projectLocator: ProjectLocatorSchema }).strict()])]),
   [IpcChannel.CredentialPut]: z.tuple([CredentialPutInputSchema]),
   [IpcChannel.CredentialRemove]: z.tuple([CredentialRefInputSchema]),
   [IpcChannel.CredentialStatus]: z.tuple([CredentialRefInputSchema]),
@@ -467,6 +478,14 @@ const resultMethodByChannel = {
   [IpcChannel.WfRun]: "wfRun",
   [IpcChannel.WfCancel]: "wfCancel",
   [IpcChannel.StressRun]: "stressRun",
+  [IpcChannel.StressPlansList]: "stressPlansList",
+  [IpcChannel.StressRunsList]: "stressRunsList",
+  [IpcChannel.StressRunsGet]: "stressRunsGet",
+  [IpcChannel.StressPlansGet]: "stressPlansGet",
+  [IpcChannel.StressPlansSave]: "stressPlansSave",
+  [IpcChannel.StressPlansRemove]: "stressPlansRemove",
+  [IpcChannel.StressCompare]: "stressCompare",
+  [IpcChannel.StressExport]: "stressExport",
   [IpcChannel.StressStop]: "stressStop",
   [IpcChannel.CredentialPut]: "credentialPut",
   [IpcChannel.CredentialRemove]: "credentialRemove",

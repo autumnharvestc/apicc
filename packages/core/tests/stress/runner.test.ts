@@ -1,6 +1,8 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { StressRunner } from "../../src/stress/runner.js";
+import { createStressAccumulator } from "../../src/stress/metrics.js";
+import { runStressSchedule } from "../../src/stress/loadScheduler.js";
 import { httpClient } from "../../src/http/client.js";
 import type { CaseExecutionResult } from "../../src/runner/caseExecutor.js";
 import type { ExecutableRequest, ExecutionResponse, ProtocolClient } from "../../src/plugin/types.js";
@@ -55,6 +57,31 @@ const httpRequest = (url: string): ExecutableRequest => ({
 });
 
 describe("StressRunner", () => {
+  it("preserves joint HTTP failure/status facts for mixed script400 and http500 locally and after worker merge", async () => {
+    const facts = [{ status: 400, failureKind: "script" as const }, { status: 500, failureKind: "http" as const }];
+    const local = await new StressRunner({ createWorker: () => { let cursor = 0; return { async execute() {
+      const fact = facts[cursor++]!;
+      return { request: httpRequest("http://127.0.0.1/"), response: { status: fact.status, headers: {}, bodyText: "", timeMs: 1 },
+        requestTimeMs: 1, scriptTimeMs: 1, iterationTimeMs: 2, requestStarted: true, requestCompleted: true, failureKind: fact.failureKind,
+        outcome: { apiId: "a", apiName: "a", caseId: "c", caseName: "c", passed: false, durationMs: 2, assertions: [], failureKind: fact.failureKind, error: "synthetic-failure" } };
+    }, close: async () => {} }; } }).run({ concurrency: 1, maxIterations: 2 });
+    const remote = await new StressRunner({ createWorker: () => { throw new Error("remote VU only"); }, async runSchedule(schedule, deps) {
+      const observations = createStressAccumulator(schedule.metricPlan, deps.runId, { sourceId: "worker", scope: "observations" }); let cursor = 0;
+      return runStressSchedule(schedule, { ...deps, createVu: async () => ({ async execute(context) {
+        const fact = facts[cursor++]!;
+        observations.observe({ kind: "case", ...context.observation!(), stageId: context.stageId, vuId: context.vuId, iterationId: context.iterationId,
+          ok: false, status: fact.status, failureKind: fact.failureKind, requestStarted: true, requestCompleted: true, requestTimeMs: 1, scriptTimeMs: 1, iterationTimeMs: 2,
+          locator: { collectionId: "c", folderIds: [], apiId: "a", caseId: "c", scope: "base" }, nodeKey: null });
+        return { state: "failed", durationMs: 2 };
+      }, close: async () => {} }), closeRun: async () => { deps.metrics.merge(observations.snapshot()); } });
+    } }).run({ concurrency: 1, maxIterations: 2 });
+    expect(local.errorKinds).toEqual({ script: 1, HTTP_500: 1 });
+    expect(remote.errorKinds).toEqual({ script: 1, HTTP_500: 1 });
+    for (const report of [local, remote]) {
+      expect(report.statusDist).toEqual({ 400: 1, 500: 1 }); expect(report.failed).toBe(2);
+      expect(report.failures).toMatchObject({ script: 1, http: 1 }); expect(report.eligibleFailureCounts).toMatchObject({ script: 1, http: 1 });
+    }
+  });
   it("C1 keeps at most 20 safe failure evidence samples while aggregating all 25 failures", async () => {
     let projectionStarted = false; let projectedBeforeStop = false;
     const report = await new StressRunner({ createGeneratorCollector: () => ({ recordSchedulerBacklog() {}, stop() { projectedBeforeStop = projectionStarted; return { availability: "unavailable", unavailableReason: "fixture" }; } }), createWorker: () => ({

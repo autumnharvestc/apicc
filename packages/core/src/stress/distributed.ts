@@ -4,6 +4,178 @@ import type { StressDistributed, StressGeneratorMetrics, StressMeasurementWindow
 import { CurrentStressReportSchema, SafeExecutionEvidenceSchema, StressGeneratorSchema, StressMeasurementWindowSchema, StressSampleSchema } from "./model.js";
 import { PreparedTestDataSchema, type PreparedTestData } from "../testing/dataModel.js";
 import { createExecutionEvidenceCollector, privateEvidenceMarkers, PRIVATE_EVIDENCE_BYTES } from "../report/evidence.js";
+import type { PreparedStressExecution, StressAggregateSnapshot, StressExecutionDeps, StressVuHostContext, StressMetricsSummary } from "./execution.js";
+import type { StressSchedule } from "./plan.js";
+import type { StressCompletenessReason, StressReportV2 } from "./reportV2.js";
+import { runStressPlan } from "./plannedRunner.js";
+import { createStressWorkerPeer, mergeStressWorkerMarkers, type StressWorkerChannel, type StressWorkerPeer } from "./workerProtocol.js";
+import { StressWorkerLifecycleSchema } from "./localWorker.js";
+import type { ExecutableRequest } from "../plugin/types.js";
+
+export interface LocalStressWorkerOptions extends StressExecutionDeps {
+  /** Legacy report compatibility: publish fixed-code numeric diagnostics only if the private barrier failed. */
+  readonly allowNumericFailure?: boolean;
+  readonly shards: number;
+  readonly configuration: unknown;
+  readonly spawnWorker: (identity: { runId: string; workerId: string }) => Promise<StressWorkerChannel>;
+}
+/** Lightweight session substitution; the scheduler remains the sole budget/load owner. */
+export async function createLocalStressWorkerDeps(schedule: StressSchedule, options: LocalStressWorkerOptions): Promise<{
+  deps: StressExecutionDeps; richOutputComplete(): boolean; generator(coordinator: StressGeneratorMetrics): StressGeneratorMetrics; failureEvidence(): import("../report/types.js").SafeExecutionEvidence[]; distributed(summary: StressMetricsSummary): StressDistributed; close(): Promise<void>;
+}> {
+  if (!Number.isSafeInteger(options.shards) || options.shards < 1 || options.shards > schedule.maxVus) throw new Error("shards exceeds VU capacity");
+  const failures = new Set<StressCompletenessReason>();
+  const childAbort = new AbortController();
+  const signal = AbortSignal.any([options.signal, childAbort.signal]);
+  const states: { id: string; peer: StressWorkerPeer; controller: AbortController; vus: Map<string, { host: StressVuHostContext; iteration: string | null; stage: string | null; closed: boolean }>; leases: Map<string, { vuId: string; requestId: string; release(): void }>; drained: boolean; counts?: { total: number; ok: number; failed: number; eligibleCompleted: number }; generator?: StressGeneratorMetrics }[] = [];
+  let uncertainty = 0, leaseSerial = 0, privateComplete = false, evidence: import("../report/types.js").SafeExecutionEvidence[] = [];
+  let drainPromise: Promise<void> | undefined, closed: Promise<void> | undefined;
+  const releaseState = (state: typeof states[number]) => { state.controller.abort(); for (const lease of state.leases.values()) lease.release(); state.leases.clear(); };
+  const stop = () => { for (const state of states) { void state.peer.request({ type: "stop" }).catch(() => {}); } };
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    for (let i = 0; i < options.shards; i++) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const id = `worker-${i + 1}`, channel = await options.spawnWorker({ runId: options.runId, workerId: id });
+      const state: typeof states[number] = { id, peer: undefined!, controller: new AbortController(), vus: new Map(), leases: new Map(), drained: false };
+      state.peer = createStressWorkerPeer(channel, { runId: options.runId, workerId: id }, async (command) => {
+        if (state.drained) throw new Error("worker-incompatible");
+        if (!("vuId" in command)) throw new Error("worker-incompatible");
+        const vu = state.vus.get(command.vuId); if (!vu || vu.closed) throw new Error("worker-incompatible");
+        if ("iterationId" in command && command.iterationId !== vu.iteration) throw new Error("worker-incompatible");
+        if (command.type === "record-target") { options.gate.recordTarget?.(command.target); return {}; }
+        if (command.type === "phase-at") {
+          if (command.stageId !== vu.stage || !vu.host.observationAt) throw new Error("worker-incompatible");
+          const current = vu.host.observation().atMs;
+          if (command.atMs > current + uncertainty) throw new Error("timeline-unaligned");
+          const atMs = Math.min(command.atMs, current), stamp = vu.host.observationAt(atMs);
+          // Intersect the original mapped interval with observed causal time; clamping
+          // its center first would widen the past bound when nominal leads current.
+          const before = vu.host.observationAt(Math.max(0, command.atMs - uncertainty));
+          const after = vu.host.observationAt(Math.min(current, command.atMs + uncertainty));
+          return { ...stamp, uncertain: before.phase !== after.phase };
+        }
+        if (command.type === "request-permit") {
+          const request: ExecutableRequest = command.request;
+          const permitSignal = AbortSignal.any([vu.host.signal, state.controller.signal]);
+          if (command.redirect) { await options.gate.beforeRedirect(request, permitSignal); return { leaseId: "redirect" }; }
+          const release = await options.gate.enter(request, permitSignal);
+          if (state.controller.signal.aborted || vu.closed) { release(); throw new Error("worker-failed"); }
+          const leaseId = `${state.id}:${++leaseSerial}`; state.leases.set(leaseId, { vuId: command.vuId, requestId: command.requestId, release }); return { leaseId };
+        }
+        if (command.type === "release") {
+          const lease = state.leases.get(command.leaseId);
+          if (!lease || lease.vuId !== command.vuId || lease.requestId !== command.requestId) throw new Error("worker-incompatible");
+          state.leases.delete(command.leaseId); lease.release(); return {};
+        }
+        throw new Error("worker-incompatible");
+      }, () => { failures.add("worker-failed"); releaseState(state); childAbort.abort(); });
+      states.push(state);
+      z.object({ type: z.literal("run-ready"), workerNow: z.number().finite().nonnegative() }).strict().parse(await state.peer.request({ type: "prepare", configuration: options.configuration }));
+      const sent = options.clock.now();
+      const ready = z.object({ workerNow: z.number().finite().nonnegative() }).strict().parse(await state.peer.request({ type: "clock" }));
+      const received = options.clock.now(), rtt = received - sent;
+      uncertainty = Math.max(uncertainty, rtt / 2);
+      await state.peer.request({ type: "start", coordinatorNow: (sent + received) / 2, workerNow: ready.workerNow, uncertaintyMs: rtt / 2 });
+    }
+  } catch (error) {
+    if (!options.allowNumericFailure) { signal.removeEventListener("abort", stop); await Promise.allSettled(states.map((s) => s.peer.close())); throw error; }
+    failures.add("worker-missing"); childAbort.abort();
+  }
+  const drain = () => drainPromise ??= (async () => {
+    for (const state of states) {
+      try {
+        const value = z.object({ type: z.literal("drained"), generator: StressGeneratorSchema, snapshot: z.custom<StressAggregateSnapshot>((s) => !!s && typeof s === "object") }).strict().parse(await state.peer.request({ type: "drain" }));
+        const s = value.snapshot;
+        if (s.runId !== options.runId || s.sourceId !== state.id || s.scope !== "observations" || s.sequence !== 1 || s.iterations !== null) throw new Error("snapshot-invalid");
+        const counts = { total: s.observations.caseRows.total, ok: s.observations.caseRows.ok, failed: s.observations.caseRows.failed, eligibleCompleted: s.observations.requests.eligibleCompleted };
+        options.metrics.merge(s); state.counts = counts; state.generator = value.generator; state.drained = true;
+      } catch { failures.add("snapshot-missing"); releaseState(state); }
+    }
+  })();
+  const base = options;
+  const deps: StressExecutionDeps = { ...options, signal, timelineUncertaintyMs: () => uncertainty,
+    metrics: { ...options.metrics, finish(context) {
+      if (!privateComplete && !options.allowNumericFailure) throw new Error("Private evidence completion incomplete; merged output withheld");
+      const completeness = { ...context.completeness, metrics: { complete: context.completeness.metrics.complete && failures.size === 0, reasons: [...new Set([...context.completeness.metrics.reasons, ...failures])] } };
+      return options.metrics.finish({ ...context, completeness, timelineUncertaintyMs: uncertainty });
+    } },
+    async createVu(vuId, inputs, host) {
+      if (!host) throw new Error("Missing coordinator VU host");
+      const state = states[(Number(vuId) - 1) % states.length]!;
+      const vu = { host, iteration: null as string | null, stage: null as string | null, closed: false }; state.vus.set(vuId, vu);
+      let mappedInputs: Readonly<Record<string, unknown>> = inputs;
+      const records = (value: unknown) => z.array(StressWorkerLifecycleSchema).max(2).parse(value).forEach((record) => { mappedInputs = host.reportLifecycle(record.role, record.result); });
+      const created = z.object({ ok: z.boolean(), records: z.array(StressWorkerLifecycleSchema).max(2), mappedInputs: z.record(z.string(), z.unknown()) }).strict().parse(await state.peer.request({ type: "create", vuId, inputs: structuredClone(inputs), runStart: options.clock.now() - host.observation().atMs }));
+      records(created.records);
+      if (JSON.stringify(Object.entries(mappedInputs).sort()) !== JSON.stringify(Object.entries(created.mappedInputs).sort())) throw new Error("worker-incompatible");
+      if (!created.ok) { vu.closed = true; throw new Error("VU initialization failed"); }
+      return { async execute(context) {
+        vu.iteration = context.iterationId; vu.stage = context.stageId;
+        const cancel = () => { void state.peer.request({ type: "stop" }).catch(() => {}); }; context.signal.addEventListener("abort", cancel, { once: true });
+        try { return z.object({ state: z.enum(["passed", "failed", "aborted"]), durationMs: z.number().finite().nonnegative() }).strict().parse(await state.peer.request({ type: "execute", vuId, iterationId: context.iterationId, stageId: context.stageId, phase: context.phase, scheduledOffsetMs: context.scheduledOffsetMs })); }
+        finally { context.signal.removeEventListener("abort", cancel); vu.iteration = null; vu.stage = null; }
+      }, async close(closeOptions) {
+        try {
+          if (closeOptions.signal.aborted) await state.peer.request({ type: "stop" });
+          const value = z.object({ records: z.array(StressWorkerLifecycleSchema).max(1) }).strict().parse(await state.peer.request({ type: "close", vuId, reason: closeOptions.reason, allowNetworkCleanup: closeOptions.allowNetworkCleanup })); records(value.records);
+        } finally { vu.closed = true; }
+      } };
+    },
+    async runLifecycle(role, inputs, lifecycleSignal, host) { if (role === "teardown") await drain(); if (!base.runLifecycle) throw new Error("Missing lifecycle host"); return base.runLifecycle(role, inputs, lifecycleSignal, host); },
+    closeRun() { return closed ??= (async () => {
+      await drain(); await base.closeRun?.();
+      // A failed private participant may have learned undisclosed markers: withhold rich output.
+      if (states.length !== options.shards || states.some((s) => !s.drained || s.peer.failed)) {
+        if (options.allowNumericFailure) { await Promise.allSettled(states.map((state) => state.peer.close())); return; }
+        throw new Error("Private evidence completion incomplete; merged output withheld");
+      }
+      const markers = new Set(base.evidence.markers());
+      for (const state of states) {
+        const ready = z.object({ type: z.literal("marker-ready"), markers: z.unknown() }).strict().parse(await state.peer.request({ type: "marker-ready" }));
+        mergeStressWorkerMarkers(markers, privateEvidenceMarkers(ready.markers));
+      }
+      const union = privateEvidenceMarkers([...markers]); base.evidence.addMarkers(union);
+      for (const state of states) {
+        const rich = z.object({ type: z.literal("evidence"), samples: z.array(SafeExecutionEvidenceSchema).max(20) }).strict().parse(await state.peer.request({ type: "marker-union", markers: union }));
+        evidence.push(...rich.samples.slice(0, Math.max(0, 20 - evidence.length)));
+      }
+      try { for (const state of states) await state.peer.shutdown(); }
+      catch {
+        failures.add("worker-failed");
+        await Promise.allSettled(states.map((state) => state.peer.close()));
+        if (options.allowNumericFailure) return;
+        throw new Error("Private evidence completion incomplete; merged output withheld");
+      }
+      privateComplete = true;
+    })(); },
+  };
+  return { deps, richOutputComplete: () => privateComplete, generator(coordinator) {
+    const all = [...states.flatMap((s) => s.generator ? [s.generator] : []), coordinator];
+    const available = all.filter((g) => g.availability !== "unavailable");
+    return available.length ? aggregateGeneratorMetrics(available, available.length === options.shards + 1 && all.every((g) => g.availability !== "partial") ? "available" : "partial") : { availability: "unavailable", unavailableReason: "worker_incomplete" };
+  }, failureEvidence: () => evidence, distributed(summary) {
+    return { protocolVersion: 3, shards: options.shards, dataComplete: privateComplete && failures.size === 0,
+      ...(!privateComplete ? { shardErrors: Array.from({ length: options.shards }, (_, i) => ({ shardId: `worker-${i + 1}`, error: "worker_incomplete_rich_output_withheld" })) } : {}), perShard: states.flatMap((state) => {
+      if (!state.counts || !state.generator) return [];
+      const s = state.counts;
+      return [{ shardId: state.id, totalRequests: s.total, ok: s.ok, failed: s.failed,
+        rps: summary.durationMs > 0 ? s.eligibleCompleted * 1000 / summary.durationMs : 0, generator: state.generator,
+        measurementWindow: { startWallMs: summary.startedAt, endWallMs: summary.finishedAt, monotonicDurationMs: summary.durationMs, eligibleCompletedAttempts: s.eligibleCompleted } }];
+    }) };
+  }, async close() { signal.removeEventListener("abort", stop); await Promise.allSettled(states.map(async (s) => { releaseState(s); await s.peer.close(); })); } };
+}
+
+export async function runLocalStressWorkers(prepared: PreparedStressExecution, options: LocalStressWorkerOptions): Promise<StressReportV2> {
+  const local = await createLocalStressWorkerDeps(prepared.compiled.schedule, options);
+  try {
+    const report = await runStressPlan(prepared, local.deps);
+    if (report.generator) report.generator = local.generator(report.generator);
+    report.distributed = { protocolVersion: 3, workers: options.shards, dataComplete: report.completeness.metrics.complete && report.completeness.execution.complete, timeAligned: report.timeline.aligned };
+    report.failureEvidence = [...(report.failureEvidence ?? []), ...local.failureEvidence()].slice(0, 20);
+    return options.evidence.projectStressReport(report, true);
+  } finally { await local.close(); }
+}
 
 // Zod's default z.record parser materializes into a normal object and drops an own
 // `__proto__` entry. Credential reference IDs are opaque strings, so preserve every

@@ -299,7 +299,7 @@ export * from "./workflow/trace.js";
 export * from "./workflow/plan.js";
 export { validateWorkflowStructure, transitionWorkflowStatus, validateEnablement, type ValidationIssue } from "./workflow/validate.js";
 export { workflowImpact, type WorkflowImpactEntry } from "./workflow/impact.js";
-export { WorkflowRunner, type WorkflowRunResult, type NodeResult, type NodeState, type NodeSkipReason, type ConditionVerdict, type WorkflowRunnerOptions } from "./workflow/runner.js";
+export { WorkflowRunner, type WorkflowRunResult, type NodeResult, type NodeState, type NodeSkipReason, type ConditionVerdict, type WorkflowRunnerOptions, type WorkflowRunOptions } from "./workflow/runner.js";
 export { findProjectApi, selectWorkflowCollection, type ProjectApiLocation } from "./workflow/references.js";
 export { workflowToRunResult } from "./workflow/adapter.js";
 export { mergedEnvVars } from "./domain/envChain.js";
@@ -315,7 +315,13 @@ export type {
   CurrentStressReport, StressReport,
 } from "./stress/model.js";
 export { computeReport } from "./stress/aggregate.js";
+export * from "./stress/plan.js";
+export * from "./stress/reportV2.js";
+export * from "./stress/compare.js";
+export { renderStressHtml } from "./stress/html.js";
+export { StressStatisticsSchema, type StressStatistics } from "./stress/model.js";
 export { evaluateStressThresholds } from "./stress/thresholds.js";
+export { stressArrivalWindowNotices, type StressArrivalWindowNotice } from "./stress/arrivalWindow.js";
 export { buildStressRequest } from "./stress/build.js";
 export {
   assertStressTargetAllowed, normalizeStressOrigin, normalizeStressPolicy, isLoopbackStressOrigin, StressSafetyError,

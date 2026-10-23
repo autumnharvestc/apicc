@@ -4,6 +4,7 @@ import type { WorkflowNodeIdentity } from "../workflow/trace.js";
 
 export interface EvidencePreview { text: string; truncated: boolean; omitted?: boolean }
 export interface EvidenceIdentity extends Partial<WorkflowNodeIdentity> {
+  stressRunId?: string; vuId?: string; iterationId?: string; stageId?: string | null;
   projectId: string; definitionRevision: string; locator?: CaseExecutionLocator;
   suiteRunId?: string; entryId?: string; suiteRow?: number; rowIndex?: number; nodeId?: string; workflowId?: string;
   environmentId?: string; dataDigest?: string; datasetId?: string;

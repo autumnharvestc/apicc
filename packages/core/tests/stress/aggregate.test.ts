@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { computeReport } from "../../src/stress/aggregate.js";
 import { evaluateStressThresholds } from "../../src/stress/thresholds.js";
 import type { StressSample } from "../../src/stress/model.js";
+import { SafeExecutionEvidenceSchema, StressReportSchema } from "../../src/stress/model.js";
 
 const sample = (timeMs: number, status = 200, error?: string): StressSample =>
   ({ timeMs, status, ok: status >= 200 && status < 400 && !error, error });
@@ -17,6 +18,37 @@ const classifiedSample = (requestTimeMs: number, failureKind?: StressSample["fai
 });
 
 describe("computeReport", () => {
+  it("does not claim a complete passing legacy report on histogram overflow", () => {
+    const report = computeReport([sample(1e30)], { concurrency: 1, startedAt: 0, finishedAt: 1000 });
+    expect(report.incomplete).toBe(true); expect(report.verdict?.passed).toBe(false);
+    expect(report.statistics?.overflow).toBe(1);
+  });
+  it("bounds large numeric distributions and reports conservative approximate precision", () => {
+    const report = computeReport(Array.from({ length: 1000 }, (_, i) => sample(i + 1)), { concurrency: 1, startedAt: 0, finishedAt: 1000 });
+    expect(report.statistics).toMatchObject({ method: "log-histogram", exact: false, underflow: 0, overflow: 0 });
+    expect(report.latency.p95).toBeGreaterThanOrEqual(950);
+    expect(report.latency.p95).toBeLessThanOrEqual(959.5);
+    const scriptHeavy = computeReport([sample(10), ...Array.from({ length: 256 }, () => ({ requestTimeMs: 0, scriptTimeMs: 3, iterationTimeMs: 3, requestStarted: false, requestCompleted: false, status: 0, ok: false, failureKind: "config" as const }))], { concurrency: 1, startedAt: 0, finishedAt: 1000 });
+    expect(scriptHeavy.statistics?.exact).toBe(false); // Request distribution alone is still exact.
+  });
+  it("reads legacy reports with optional explicit statistical precision without inventing F6 counts", () => {
+    const legacy = computeReport([sample(10)], { concurrency: 1, startedAt: 0, finishedAt: 1000 });
+    const parsed = StressReportSchema.parse({ ...legacy, statistics: {
+      method: "log-histogram", exact: false, relativeError: 0.01, minValueMs: 0.001,
+      gamma: 1.01, bucketCount: 4608, exactLimit: 256, underflow: 0, overflow: 0,
+    } });
+    expect(parsed.statistics?.exact).toBe(false);
+    expect(parsed.totalRequests).toBe(1);
+    expect(parsed).not.toHaveProperty("iterations");
+  });
+
+  it("keeps optional stress execution identities in safe historical evidence", () => {
+    const evidence = SafeExecutionEvidenceSchema.parse({ identity: {
+      projectId: "project", definitionRevision: "revision", stressRunId: "stress-run",
+      vuId: "vu-1", iterationId: "iteration-2", stageId: "hold",
+    }, state: "not-collected", truncated: false, scriptDiagnostics: "not-collected" });
+    expect(evidence.identity).toMatchObject({ stressRunId: "stress-run", vuId: "vu-1", iterationId: "iteration-2", stageId: "hold" });
+  });
   it("聚合计数/RPS/时长", () => {
     const r = computeReport(
       [sample(10), sample(20), sample(30)],

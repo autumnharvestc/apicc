@@ -7,7 +7,8 @@ import { reportingUnits } from "./units.js";
 import { workflowToRunResult } from "../workflow/adapter.js";
 import type { WorkflowRunResult } from "../workflow/runner.js";
 import type { StressReport, StressSafetyTarget } from "../stress/model.js";
-import { StressReportSchema } from "../stress/model.js";
+import { StressReportSchema, STRESS_FAILURE_KINDS } from "../stress/model.js";
+import { StressReportV2Schema, type StressReportV2 } from "../stress/reportV2.js";
 
 export type EvidenceOutputBoundary = CredentialOutputSanitizer & { businessUnavailable?: boolean };
 /** Run-private marker messages share the existing report byte ceiling; never include their values in errors. */
@@ -23,9 +24,9 @@ export function createEvidenceBudget(limits: Partial<Omit<EvidenceBudget, "remai
 }
 export interface ExecutionEvidenceInput { execution: CaseExecutionResult; identity: EvidenceIdentity; mode?: "none" | "failures" | "all" }
 function identityDto(input: EvidenceIdentity): EvidenceIdentity {
-  const { projectId, definitionRevision, suiteRunId, entryId, suiteRow, rowIndex, nodeId, workflowId, environmentId, dataDigest, datasetId } = input;
+  const { projectId, definitionRevision, suiteRunId, entryId, suiteRow, rowIndex, nodeId, workflowId, environmentId, dataDigest, datasetId, stressRunId, vuId, iterationId, stageId } = input;
   const locator = input.locator && { collectionId: input.locator.collectionId, folderIds: [...input.locator.folderIds], apiId: input.locator.apiId, caseId: input.locator.caseId, scope: input.locator.scope };
-  return { projectId, definitionRevision, suiteRunId, entryId, suiteRow, rowIndex, nodeId, workflowId, environmentId, dataDigest, datasetId, locator, ...workflowIdentityDto(input) };
+  return { projectId, definitionRevision, suiteRunId, entryId, suiteRow, rowIndex, nodeId, workflowId, environmentId, dataDigest, datasetId, stressRunId, vuId, iterationId, stageId, locator, ...workflowIdentityDto(input) };
 }
 function workflowIdentityDto(input: Partial<import("../workflow/trace.js").WorkflowNodeIdentity>) {
   return { invocationId: input.invocationId, parentInvocationId: input.parentInvocationId, nodeVisitId: input.nodeVisitId, attempt: input.attempt,
@@ -206,9 +207,10 @@ function redactSafetyTarget<T extends { origin: string; appliedPolicy?: { truste
   return { ...structuredClone(raw), origin: boundary.redactText(raw.origin), appliedPolicy: raw.appliedPolicy && { ...structuredClone(raw.appliedPolicy),
     trustedOrigins: raw.appliedPolicy.trustedOrigins?.map((origin) => boundary.redactText(origin)), deniedOrigins: raw.appliedPolicy.deniedOrigins?.map((origin) => boundary.redactText(origin)) } };
 }
-function redactStressOutput(raw: StressReport, boundary: EvidenceOutputBoundary, budget = createEvidenceBudget(), evidenceCharged = false): StressReport {
+function redactStressOutput<T extends StressReport | StressReportV2>(raw: T, boundary: EvidenceOutputBoundary, budget = createEvidenceBudget(), evidenceCharged = false): T {
   // The strict existing schema supplies this protocol allowlist; all other report fields are numeric/enum/identity.
-  const safe = StressReportSchema.parse(raw) as StressReport;
+  const v2 = "formatVersion" in raw && raw.formatVersion === 2;
+  const safe = (v2 ? StressReportV2Schema.parse(raw) : StressReportSchema.parse(raw)) as T;
   if (!evidenceCharged) budget.remaining = Math.max(0, budget.remaining - Buffer.byteLength(JSON.stringify(safe.failureEvidence ?? [])));
   const text = (value: string) => budget.remaining < 128 ? "[omitted diagnostics: budget exhausted]" : diagnosticText(value, boundary, budget);
   const collection = (items: readonly string[] | undefined): string[] | undefined => {
@@ -223,7 +225,8 @@ function redactStressOutput(raw: StressReport, boundary: EvidenceOutputBoundary,
   };
   safe.errorKinds = {};
   for (const [error, count] of Object.entries(raw.errorKinds)) {
-    const key = text(error);
+    const fixedCategory = error === "other" || STRESS_FAILURE_KINDS.some((kind) => kind === error);
+    const key = v2 && fixedCategory ? error : text(error);
     Object.defineProperty(safe.errorKinds, key, { value: (Object.hasOwn(safe.errorKinds, key) ? safe.errorKinds[key]! : 0) + count, enumerable: true, configurable: true, writable: true });
   }
   if (safe.verdict) safe.verdict.violations = safe.verdict.violations.map((item, index) => ({ ...item, message: text(raw.verdict!.violations[index]!.message) }));
@@ -232,8 +235,21 @@ function redactStressOutput(raw: StressReport, boundary: EvidenceOutputBoundary,
     origin: text(target.origin), appliedPolicy: target.appliedPolicy && { ...target.appliedPolicy, trustedOrigins: collection(target.appliedPolicy.trustedOrigins), deniedOrigins: collection(target.appliedPolicy.deniedOrigins) } })) });
   if (safe.generator) safe.generator = redactGenerator(safe.generator);
   if (safe.safety) safe.safety = redactSafety(safe.safety);
-  if (safe.distributed) safe.distributed = { ...safe.distributed, perShard: safe.distributed.perShard.map((shard) => ({ ...shard, generator: redactGenerator(shard.generator), safety: shard.safety && redactSafety(shard.safety) })),
+  if (safe.distributed && "perShard" in safe.distributed) safe.distributed = { ...safe.distributed, perShard: safe.distributed.perShard.map((shard) => ({ ...shard, generator: redactGenerator(shard.generator), safety: shard.safety && redactSafety(shard.safety) })),
     shardErrors: safe.distributed.shardErrors?.map((shard) => ({ ...shard, error: text(shard.error) })) };
+  if (v2) {
+    const report = safe as StressReportV2;
+    // Inputs are business JSON; the surrounding identifiers/enums remain opaque typed metadata.
+    const projectInputs = (owner: { inputs?: Record<string, import("../contract/schemaNode.js").JsonValue> }) => {
+      if (boundary.businessUnavailable) delete owner.inputs;
+      else if (owner.inputs) owner.inputs = boundary.redactValue(owner.inputs);
+    };
+    if (report.target.kind === "workflow") projectInputs(report.target);
+    if (report.plan.target.kind === "workflow") projectInputs(report.plan.target);
+    for (const role of ["setup", "vuSetup", "vuTeardown", "teardown"] as const) {
+      const step = report.plan.lifecycle?.[role]; if (step) projectInputs(step);
+    }
+  }
   if (Buffer.byteLength(JSON.stringify(safe)) > budget.reportBytes) throw new Error("Merged evidence report exceeds capacity");
   return safe;
 }
@@ -250,7 +266,7 @@ export function redactExecutionOutput<T>(value: T, boundary: EvidenceOutputBound
       if (Buffer.byteLength(JSON.stringify(safe)) > budget.reportBytes) throw new Error("Execution output exceeds capacity");
       return safe as T;
     }
-    if (typeof raw.totalRequests === "number" && typeof raw.concurrency === "number") return redactStressOutput(value as unknown as StressReport, boundary) as T;
+    if (typeof raw.totalRequests === "number" && typeof raw.concurrency === "number") return redactStressOutput(value as unknown as StressReport | StressReportV2, boundary, createEvidenceBudget(limits)) as T;
     if (raw.protocolVersion === 2 && typeof raw.shardId === "string") {
       if (raw.ok === false) return { protocolVersion: 2, shardId: raw.shardId, ok: false, error: boundary.redactText(String(raw.error)) } as T;
       if (Array.isArray(raw.samples)) {
@@ -285,6 +301,7 @@ export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers
   const records: Record[] = [];
   const byIdentity = new Map<string, Record[]>();
   const identityFor = (outcome: CaseOutcome, context: Partial<EvidenceIdentity> = {}): EvidenceIdentity => identityDto({ ...base, ...context,
+    ...Object.fromEntries(["stressRunId", "vuId", "iterationId", "stageId"].filter((key) => outcome.evidence?.identity && Object.hasOwn(outcome.evidence.identity, key)).map((key) => [key, outcome.evidence!.identity[key as "stressRunId" | "vuId" | "iterationId" | "stageId"]])),
     ...Object.fromEntries(Object.entries(workflowIdentityDto(outcome)).filter(([, value]) => value !== undefined)),
     workflowId: outcome.invocationPath?.at(-1)?.workflowId ?? context.invocationPath?.at(-1)?.workflowId ?? context.workflowId ?? base.workflowId,
     locator: outcome.locator ?? context.locator ?? base.locator, rowIndex: outcome.row ?? context.rowIndex ?? base.rowIndex,
@@ -293,6 +310,7 @@ export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers
     identity.locator && [identity.locator.collectionId, identity.locator.folderIds, identity.locator.apiId, identity.locator.caseId, identity.locator.scope],
     outcome.apiId, outcome.caseId, outcome.scope ?? identity.locator?.scope, identity.entryId, identity.suiteRow, outcome.row, identity.rowIndex ?? 0, identity.nodeId,
     identity.invocationId, identity.parentInvocationId, identity.invocationPath, identity.nodeVisitId, identity.attempt,
+    identity.stressRunId, identity.vuId, identity.iterationId, identity.stageId,
   ]);
   const boundary = (): EvidenceOutputBoundary => {
     assertMarkersComplete(); const safe = createCredentialOutputSanitizer(expandMarkers([...sensitive]));
@@ -390,7 +408,7 @@ export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers
     if (Buffer.byteLength(JSON.stringify(safe)) > 16 * 1024 * 1024) throw new Error("Workflow evidence report exceeds capacity");
     return safe;
   }
-  function projectStressReport(raw: StressReport, retainedEvidence = false): StressReport {
+  function projectStressReport<T extends StressReport | StressReportV2>(raw: T, retainedEvidence = false): T {
     const budget = createEvidenceBudget(); const sanitizer = boundary();
     const failureEvidence = retainedEvidence ? raw.failureEvidence : records.map((record) => projectExecutionEvidence({ ...record, mode: "all" }, sanitizer, budget));
     if (retainedEvidence) budget.remaining = Math.max(0, budget.remaining - Buffer.byteLength(JSON.stringify(failureEvidence ?? [])));

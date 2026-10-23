@@ -1,5 +1,6 @@
 import { STRESS_FAILURE_KINDS, type StressFailureCounts, type StressMeasurementWindow, type StressReport, type StressSafetyRun, type StressSample, type StressThresholds } from "./model.js";
 import { evaluateStressThresholds } from "./thresholds.js";
+import { StressHistogram, summarizeStressHistogramStatistics } from "./histogram.js";
 
 export interface ComputeReportOptions {
   concurrency: number;
@@ -11,25 +12,8 @@ export interface ComputeReportOptions {
   safetyRun?: Partial<StressSafetyRun>;
 }
 
-/** nearest-rank 分位：sorted 为升序数组，取第 ceil(p/100*n) 个（1-based）；空数组返回 0。 */
-function quantile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
-}
-
 function bump(dist: Record<string, number>, key: string): void {
   dist[key] = (dist[key] ?? 0) + 1;
-}
-
-function latency(values: number[]) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const sum = values.reduce((total, value) => total + value, 0);
-  return {
-    min: sorted.length > 0 ? sorted[0]! : 0,
-    avg: values.length > 0 ? sum / values.length : 0,
-    max: sorted.length > 0 ? sorted[sorted.length - 1]! : 0,
-    p50: quantile(sorted, 50), p90: quantile(sorted, 90), p95: quantile(sorted, 95), p99: quantile(sorted, 99),
-  };
 }
 
 function freshFailureCounts(): Required<StressFailureCounts> {
@@ -76,18 +60,18 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
   const errorKinds: Record<string, number> = {};
   const failures = freshFailureCounts();
   const eligibleFailureCounts = freshFailureCounts();
-  const requestTimes: number[] = [];
-  const scriptTimes: number[] = [];
-  const iterationTimes: number[] = [];
+  const requestTimes = new StressHistogram();
+  const scriptTimes = new StressHistogram();
+  const iterationTimes = new StressHistogram();
   let completedAttempts = 0;
 
   for (const s of samples) {
     const requestTimeMs = effectiveRequestTime(s);
     const scriptTimeMs = s.scriptTimeMs ?? 0;
     const iterationTimeMs = s.iterationTimeMs ?? requestTimeMs + scriptTimeMs;
-    if (isEligibleCompletedAttempt(s)) requestTimes.push(requestTimeMs);
-    scriptTimes.push(scriptTimeMs);
-    iterationTimes.push(iterationTimeMs);
+    if (isEligibleCompletedAttempt(s)) requestTimes.add(requestTimeMs);
+    scriptTimes.add(scriptTimeMs);
+    iterationTimes.add(iterationTimeMs);
     if (isEligibleCompletedAttempt(s)) completedAttempts += 1;
     if (s.ok) ok += 1;
     if (s.status !== 0 && isEligibleCompletedAttempt(s)) bump(statusDist, String(s.status));
@@ -121,7 +105,7 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
       ? completedAttempts / (measurementWindow.monotonicDurationMs / 1000)
       : durationMs > 0 ? completedAttempts / (durationMs / 1000) : 0,
     latency: {
-      ...latency(requestTimes),
+      ...requestTimes.values(),
     },
     statusDist,
     errorKinds,
@@ -131,9 +115,10 @@ export function computeReport(samples: StressSample[], opts: ComputeReportOption
     eligibleFailureCounts,
     measurementWindow,
     failures,
-    scriptLatency: latency(scriptTimes),
-    iterationLatency: latency(iterationTimes),
-    incomplete: failures.aborted > 0,
+    scriptLatency: scriptTimes.values(),
+    iterationLatency: iterationTimes.values(),
+    statistics: summarizeStressHistogramStatistics([requestTimes, scriptTimes, iterationTimes]),
+    incomplete: failures.aborted > 0 || requestTimes.statistics().overflow > 0 || scriptTimes.statistics().overflow > 0 || iterationTimes.statistics().overflow > 0,
     thresholds: opts.thresholds,
     connectionMode: opts.connectionMode,
   };

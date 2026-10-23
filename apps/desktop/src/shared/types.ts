@@ -47,7 +47,7 @@ import type {
 import type { LocalTreeNodeDTO } from "./tree-dto.js";
 import type { TestingApi } from "./testing.js";
 import type { KeyValuePair } from "@apicc/core";
-import { CurrentStressReportSchema } from "@apicc/core/schema";
+import { CurrentStressReportSchema, StressReportSchema, StressPlanSchema, StressReportV2Schema, SavedStressPlanSchema } from "@apicc/core/schema";
 import { z } from "zod";
 import type { CredentialMutationResult, CredentialPutInput, CredentialRefInput, CredentialStatusResult } from "./credentials.js";
 import type {
@@ -224,11 +224,12 @@ export interface RunSummaryDTO { kind: "collection" | "suite" | "workflow"; proj
  * runs:list 行摘要（压测，M2-D3 任务 1）：startedAt 为 report.startedAt（epoch ms）格式化的
  * ISO 字符串，与集合行的 startedAt 同口径排序。
  */
-export interface StressRunSummaryDTO { kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number }
+export interface StressRunSummaryDTO { kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number | null;
+  formatVersion?: 2; verdict?: import("@apicc/core").StressReportV2["verdict"]["status"]; target?: import("@apicc/core").StressTarget; completeness?: import("@apicc/core").StressCompleteness; rpsMetric?: import("@apicc/core").StressNumericMetric }
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
 /** stress:run 入参：maxIterations/durationMs 至少给其一（都给先到先停），二者可传 null（渲染层「清空」惯例）。 */
-export interface StressRunInput {
+export interface LegacyStressRunInput {
   locator: ApiLocator;
   caseId: string;
   envName?: string | null;
@@ -240,6 +241,18 @@ export interface StressRunInput {
   /** Explicit, canonical origins approved only for this run. */
   confirmedTargetOrigins?: string[];
 }
+export interface StressPlanRunInput { kind: "plan"; root: string; invocationId: string; projectLocator: ProjectLocator; plan: import("@apicc/core").StressPlan; confirmedTargetOrigins?: string[] }
+export type StressRunInput = LegacyStressRunInput | StressPlanRunInput;
+export interface StressStopInput { runId: string; root: string; projectLocator: ProjectLocator }
+export type StressTargetIdentity = { kind: "case"; collectionId: string; apiId: string; caseId: string } | { kind: "workflow"; workflowId: string };
+export function stressTargetIdentity(target: import("@apicc/core").StressTarget): StressTargetIdentity {
+  return target.kind === "case" ? { kind: "case", collectionId: target.collectionId, apiId: target.apiId, caseId: target.caseId } : { kind: "workflow", workflowId: target.workflowId };
+}
+export type StressProgressDTO = import("@apicc/core").StressProgress & { root: string; sourceRoot?: string; projectLocator: ProjectLocator; generation: number; invocationId?: string; target?: StressTargetIdentity };
+export const StressProgressDTOSchema = z.object({ runId: z.string().uuid(), root: z.string(), sourceRoot: z.string().optional(), projectLocator: z.object({ workspaceId: z.string(), groupId: z.string(), projectId: z.string() }).strict(),
+  generation: z.number().int().nonnegative(), invocationId: z.string().uuid().optional(), target: z.discriminatedUnion("kind", [z.object({ kind: z.literal("case"), collectionId: z.string(), apiId: z.string(), caseId: z.string() }).strict(), z.object({ kind: z.literal("workflow"), workflowId: z.string() }).strict()]).optional(), state: z.enum(["preparing", "ready", "running", "stopping", "finished"]),
+  phase: z.enum(["setup", "vu-setup", "warmup", "measurement", "drain", "vu-teardown", "teardown"]).nullable(), stageId: z.string().nullable(), atMs: z.number().finite().nonnegative(),
+  activeVus: z.number().int().nonnegative(), startedIterations: z.number().int().nonnegative(), completedIterations: z.number().int().nonnegative(), droppedIterations: z.number().int().nonnegative() }).strict();
 /**
  * stress:run / stress:stop 返回：最终（或中止后的部分）报告 + 落盘文件名。
  * 落盘降级不影响报告返回，与集合运行口径一致（core Runner 落盘失败仅告警仍返回完整结果）：
@@ -257,11 +270,12 @@ const StressRunErrorCodeSchema = z.enum([
 // type remains the historical StressReport supertype so deterministic test doubles
 // and report viewers can still represent legacy-shaped data.
 const StressRunCurrentReportSchema = CurrentStressReportSchema.transform((report) => report as StressReport);
-const StressRunSuccessSchema = z.object({
+export const StressRunSuccessSchema = z.object({
   ok: z.literal(true),
   report: StressRunCurrentReportSchema,
   file: z.string().optional(),
 }).strict();
+export const StressPlanRunSuccessSchema = z.object({ ok: z.literal(true), kind: z.literal("plan"), runId: z.string().uuid(), report: StressReportV2Schema, file: z.string().optional() }).strict();
 const StressRunErrorSchema = z.object({
   ok: z.literal(false),
   error: z.object({
@@ -271,10 +285,23 @@ const StressRunErrorSchema = z.object({
   }).strict(),
 }).strict();
 /** Structured-clone-safe outcome for stress start; unknown main exceptions still reject IPC. */
-export const StressRunResultSchema = z.discriminatedUnion("ok", [StressRunSuccessSchema, StressRunErrorSchema]);
+export const StressRunResultSchema = z.union([StressRunSuccessSchema, StressPlanRunSuccessSchema, StressRunErrorSchema]);
 export type StressRunOutput = z.infer<typeof StressRunSuccessSchema>;
+export type StressPlanRunOutput = z.infer<typeof StressPlanRunSuccessSchema>;
+export type AnyStressRunOutput = StressRunOutput | StressPlanRunOutput;
 export type StressRunError = z.infer<typeof StressRunErrorSchema>;
 export type StressRunResult = z.infer<typeof StressRunResultSchema>;
+export function createStressRunInvoker(invoke: (input: StressRunInput) => Promise<unknown>) {
+  function run(input: LegacyStressRunInput): Promise<StressRunOutput | StressRunError>;
+  function run(input: StressPlanRunInput): Promise<StressPlanRunOutput | StressRunError>;
+  function run(input: StressRunInput): Promise<StressRunResult>;
+  async function run(input: StressRunInput): Promise<StressRunResult> {
+    const result = StressRunResultSchema.parse(await invoke(input));
+    if (!result.ok) return result;
+    return "kind" in input ? StressPlanRunSuccessSchema.parse(result) : StressRunSuccessSchema.parse(result);
+  }
+  return run;
+}
 /** runs:get 对 stress 文件的返回：kind 判别 + 完整压测报告（集合文件返回既有 RunResult 形状）。 */
 export type DesktopStressReport = Omit<StressReport, "failures" | "scriptLatency" | "iterationLatency"> & {
   /** Historical reports may omit fields introduced after their creation. */
@@ -282,7 +309,22 @@ export type DesktopStressReport = Omit<StressReport, "failures" | "scriptLatency
   scriptLatency?: StressReport["scriptLatency"];
   iterationLatency?: StressReport["iterationLatency"];
 };
-export interface StressReportDTO { kind: "stress"; report: DesktopStressReport }
+export interface StressReportDTO { kind: "stress"; report: DesktopStressReport | import("@apicc/core").StressReportV2 }
+export const StressReportFileSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/);
+export const StressReportDTOSchema = z.object({ kind: z.literal('stress'), report: z.union([StressReportV2Schema, StressReportSchema]) }).strict();
+export const StressRunSummaryDTOSchema = z.object({ kind: z.literal('stress'), projectId: z.string().optional(), file: StressReportFileSchema,
+  startedAt: z.string().datetime(), totalRequests: z.number().int().nonnegative(), ok: z.number().int().nonnegative(), failed: z.number().int().nonnegative(), rps: z.number().finite().nonnegative().nullable(),
+  formatVersion: z.literal(2).optional(), verdict: StressReportV2Schema.shape.verdict.shape.status.optional(), target: StressReportV2Schema.shape.target.optional(),
+  completeness: StressReportV2Schema.shape.completeness.optional(), rpsMetric: StressReportV2Schema.shape.rps.optional() }).strict();
+export const StressPlanSaveInputSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(200), plan: StressPlanSchema }).strict();
+export const StressCompareInputSchema = z.object({ baseFile: StressReportFileSchema, candidateFile: StressReportFileSchema }).strict();
+export const StressExportInputSchema = z.object({ file: StressReportFileSchema, baselineFile: StressReportFileSchema.optional(), format: z.enum(["html", "json"]) }).strict();
+export const StressExportResultSchema = z.object({ saved: z.boolean(), file: z.string() }).strict();
+export const SavedStressPlanResultSchema = SavedStressPlanSchema.extend({ id: z.string().uuid() });
+export type StressPlanSaveInput = z.infer<typeof StressPlanSaveInputSchema>;
+export type StressCompareInput = z.infer<typeof StressCompareInputSchema>;
+export type StressExportInput = z.infer<typeof StressExportInputSchema>;
+export type StressExportResult = z.infer<typeof StressExportResultSchema>;
 export type StressPolicyInput = StressTargetPolicy;
 
 /** import:preview 入参：渲染层经 input[type=file] 读出文本与文件名（不新增文件选择 IPC）。 */
@@ -393,9 +435,18 @@ export interface ApiccApi extends TestingApi {
   runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>>;
   runsGet(file: string): Promise<RunResult | StressReportDTO | null>;
   /** stress:run（M2-D3 任务 1）：main 进程执行压测，返回最终报告 + 落盘文件名；单活动约束（「已有压测进行中」）。 */
-  stressRun(input: StressRunInput): Promise<StressRunResult>;
+  stressRun: ReturnType<typeof createStressRunInvoker>;
+  stressPlansList(scope: ProjectLocator): Promise<import("@apicc/core").SavedStressPlan[]>;
+  stressRunsList(scope: ProjectLocator): Promise<StressRunSummaryDTO[]>;
+  stressRunsGet(scope: ProjectLocator, file: string): Promise<StressReportDTO>;
+  stressPlansGet(scope: ProjectLocator, id: string): Promise<import("@apicc/core").SavedStressPlan | null>;
+  stressPlansSave(scope: ProjectLocator, input: StressPlanSaveInput): Promise<import("@apicc/core").SavedStressPlan>;
+  stressPlansRemove(scope: ProjectLocator, id: string): Promise<import("@apicc/core").SavedStressPlan | null>;
+  stressCompare(scope: ProjectLocator, input: StressCompareInput): Promise<import("@apicc/core").StressComparison>;
+  stressExport(scope: ProjectLocator, input: StressExportInput): Promise<StressExportResult>;
   /** stress:stop：abort 活动运行（停发新采样、等在途完成），返回部分报告；无活动运行抛「没有进行中的压测」。 */
-  stressStop(): Promise<StressRunOutput>;
+  stressStop(input?: StressStopInput): Promise<AnyStressRunOutput>;
+  onStressProgress(listener: (progress: StressProgressDTO) => void): () => void;
   credentialPut(input: CredentialPutInput): Promise<CredentialMutationResult>;
   credentialRemove(input: CredentialRefInput): Promise<CredentialMutationResult>;
   credentialStatus(input: CredentialRefInput): Promise<CredentialStatusResult>;

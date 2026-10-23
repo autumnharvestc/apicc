@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,6 +12,8 @@ import {
   reportingUnits,
   getSourceApiRevision,
   StressSafetyError,
+  compareStressReports, renderStressHtml, isStressReportV2, parseStressReport,
+  type ReadableStressReport, type SavedStressPlan,
   CredentialError,
   type AiSuggestedCase,
   type ApiAsset,
@@ -43,7 +45,9 @@ import {
   type StressTargetPolicy,
   type NetworkConfiguration,
 } from "@apicc/core";
-import { ContractProjectSchema, emptyNetworkConfiguration, NetworkConfigurationSchema } from "@apicc/core/schema";
+import { ContractProjectSchema, emptyNetworkConfiguration, NetworkConfigurationSchema, SavedStressPlanSchema } from "@apicc/core/schema";
+import { z } from "zod";
+import { StressPlanSaveInputSchema, StressCompareInputSchema, StressExportInputSchema, StressReportFileSchema } from "../../../shared/types.js";
 import { createSession } from "../../../main/session.js";
 import { toTreeNode } from "../../../main/tree.js";
 import { createCredentialHost } from "../../../main/credentialHost.js";
@@ -154,7 +158,7 @@ import type {
   WorkflowSummary,
   WfSetStatusResult,
 } from "../../../shared/types.js";
-import { StressRunResultSchema } from "../../../shared/types.js";
+import { StressRunResultSchema, createStressRunInvoker, type AnyStressRunOutput, type StressStopInput, type StressProgressDTO } from "../../../shared/types.js";
 
 const WORKSPACE_FILE = "apicc.workspace.yaml";
 
@@ -193,11 +197,25 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   const memoryDebugInvocations = new Map<string, { invocation: DebugInvocation; startedAt: string }>();
   let runSeq = 0;
   // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
-  const stressRuns: Array<{ file: string; report: StressReport }> = [];
+  const stressRuns: Array<{ file: string; report: ReadableStressReport }> = [];
+  const savedStressPlans = new Map<string, SavedStressPlan[]>();
+  const stressRunOwners = new Map<string, { root: string; scope: ProjectLocator }>();
+  const stressMemoryScope = (locator: ProjectLocator, write = false): string => {
+    if (!session.root || !session.locateProject(locator)) throw new Error("未找到当前压测项目");
+    if (write && session.readOnly) throw new Error("工作区处于只读模式，不能写入");
+    return JSON.stringify([realpathSync(session.root), locator.workspaceId, locator.groupId, locator.projectId]);
+  };
+  const memoryStressReport = (scope: ProjectLocator, file: string): ReadableStressReport => {
+    const key = stressMemoryScope(scope), owner = stressRunOwners.get(file), found = stressRuns.find((r) => r.file === file);
+    if (!owner || !found || key !== JSON.stringify([owner.root, owner.scope.workspaceId, owner.scope.groupId, owner.scope.projectId])) throw new Error("压测报告归属未证明");
+    return structuredClone(found.report);
+  };
   const networkProfiles = new Map<string, { revision: string; configuration: NetworkConfiguration }>();
   const mockStates = new Map<string, MockStatus>();
   // 压测生命周期由正式 controller 管理；此 Promise 仅用于 renderer 替身的单活动拒绝与 stop 等待。
   let stressActive: Promise<StressRunResult> | null = null;
+  let stressOwner: { sourceRoot: string; hostRoot: string } | undefined;
+  const stressProgressListeners = new Set<(progress: StressProgressDTO) => void>();
   let stressController: ReturnType<typeof createStressControllerWithHost> | null = null;
   // 压测 client：默认假实现（200 成功、零时延），测试可注入挂起/自定义 client，不发真实网络。
   const stressClient: MemoryManagedClient = options?.stressClient ?? {
@@ -370,8 +388,14 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
   // system provider and the injected fake transport never reaches the network. The controller's
   // report writer is intentionally a no-op; runsList/runsGet below expose only in-memory history.
   stressController = createStressControllerWithHost(session, {
+    onProgress: (progress, owner) => {
+      const source = owner && 'sourceRoot' in owner && typeof owner.sourceRoot === 'string' ? owner.sourceRoot : undefined;
+      const value = source && progress.invocationId ? { ...progress, sourceRoot: source } : progress;
+      stressProgressListeners.forEach((listener) => listener(structuredClone(value)));
+    },
     createManagedClient: () => stressClient,
     writeReport: () => {},
+    writeReportScope: (savedRoot, file, scope) => { stressRunOwners.set(file, { root: realpathSync(savedRoot), scope: structuredClone(scope) }); },
   }, createCredentialHost(session, () => secretStore));
   const testingRegistry = createDefaultRegistry();
   for (const name of ["http", "websocket", "soap"] as const) testingRegistry.registerProtocol({ name, canHandle: (request) => request.protocol === name, execute: (request, context) => stressClient.execute(request, context) });
@@ -1089,7 +1113,9 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         totalRequests: report.totalRequests,
         ok: report.ok,
         failed: report.failed,
-        rps: report.rps,
+        projectId: report.projectId,
+        rps: isStressReportV2(report) ? report.rps.availability === "available" ? report.rps.value : null : report.rps,
+        ...(isStressReportV2(report) ? { formatVersion: 2 as const, verdict: report.verdict.status, target: report.target, completeness: report.completeness, rpsMetric: report.rps } : {}),
       }));
       return [...collectionRows, ...stressRows].sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
     },
@@ -1103,19 +1129,25 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
 
     // 正式 controller 负责 locator 捕获、凭据准备、worker/session、计时和确认策略；内存替身
     // 只提供假 transport 与内存历史。历史/返回报告彼此分离，避免调用方改写历史内容。
-    async stressRun(input: StressRunInput): Promise<StressRunResult> {
+    stressRun: createStressRunInvoker(async (input: StressRunInput): Promise<StressRunResult> => {
       if (stressActive) throw new Error("已有压测进行中");
       await ensureReady();
       const controller = stressController;
       if (!controller) throw new Error("压测控制器尚未初始化");
+      if (stressActive) throw new Error("已有压测进行中");
+      const owner = 'kind' in input ? { sourceRoot: input.root, hostRoot: session.root! } : undefined;
+      if ('kind' in input && input.root !== root) throw new Error('压测调用 root 不属于当前内存工作区');
+      const captured: StressRunInput = 'kind' in input ? { ...input, root: owner!.hostRoot } : input;
+      stressOwner = owner;
       let finished: Promise<StressRunResult>;
-      finished = (async (): Promise<StressRunResult> => {
+      finished = Promise.resolve().then(async (): Promise<StressRunResult> => {
         try {
-          const output: StressRunOutput = await controller.run(input);
+          const output = await controller.run(captured, owner);
+          if ("kind" in output) { if (output.file) stressRuns.unshift({ file: output.file, report: structuredClone(output.report) }); return output; }
           const report: StressReport = structuredClone(output.report);
           const file = output.file;
           try {
-            if (file) stressRuns.unshift({ file, report: structuredClone(report) });
+            if (file) stressRuns.unshift({ file, report: parseStressReport(report) });
             return StressRunResultSchema.parse({ ok: true, report, ...(file ? { file } : {}) });
           } catch (e) {
             console.warn(`压测历史记录失败（${file ?? "memory"}）: ${e instanceof Error ? e.message : String(e)}`);
@@ -1131,17 +1163,49 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
           }
           throw error;
         }
-      })().finally(() => {
-        if (stressActive === finished) stressActive = null;
+      }).finally(() => {
+        if (stressActive === finished) { stressActive = null; stressOwner = undefined; }
       });
       stressActive = finished;
       return await finished;
+    }),
+    onStressProgress(listener: (progress: StressProgressDTO) => void) { stressProgressListeners.add(listener); return () => { stressProgressListeners.delete(listener); }; },
+    async stressPlansList(scope) { await ensureReady(); return structuredClone(savedStressPlans.get(stressMemoryScope(scope)) ?? []); },
+    async stressRunsList(scope) {
+      await ensureReady(); stressMemoryScope(scope);
+      return stressRuns.flatMap(({ file }) => {
+        try {
+          const report = memoryStressReport(scope, file);
+          return [{ kind: 'stress' as const, file, projectId: report.projectId, startedAt: new Date(report.startedAt).toISOString(), totalRequests: report.totalRequests, ok: report.ok, failed: report.failed,
+            rps: isStressReportV2(report) ? report.rps.availability === 'available' ? report.rps.value : null : report.rps,
+            ...(isStressReportV2(report) ? { formatVersion: 2 as const, verdict: report.verdict.status, target: report.target, completeness: report.completeness, rpsMetric: report.rps } : {}) }];
+        } catch { return []; }
+      }).sort((a,b) => a.startedAt < b.startedAt ? 1 : -1);
+    },
+    async stressRunsGet(scope, file) { await ensureReady(); StressReportFileSchema.parse(file); return { kind: 'stress' as const, report: memoryStressReport(scope, file) }; },
+    async stressPlansGet(scope, id) { await ensureReady(); z.string().uuid().parse(id); return structuredClone(savedStressPlans.get(stressMemoryScope(scope))?.find((p) => p.id === id) ?? null); },
+    async stressPlansSave(scope, value) {
+      await ensureReady(); const key = stressMemoryScope(scope, true), input = StressPlanSaveInputSchema.parse(value), current = savedStressPlans.get(key) ?? [];
+      if (input.id && !current.some((p) => p.id === input.id)) throw new Error("Stress plan does not exist in this project");
+      const saved = SavedStressPlanSchema.parse({ formatVersion: 1, id: input.id ?? randomUUID(), name: input.name, plan: input.plan, updatedAt: Date.now() });
+      savedStressPlans.set(key, [saved, ...current.filter((p) => p.id !== saved.id)]); return structuredClone(saved);
+    },
+    async stressPlansRemove(scope, id) {
+      await ensureReady(); z.string().uuid().parse(id); const key = stressMemoryScope(scope, true), current = savedStressPlans.get(key) ?? [], saved = current.find((p) => p.id === id) ?? null;
+      savedStressPlans.set(key, current.filter((p) => p.id !== id)); return structuredClone(saved);
+    },
+    async stressCompare(scope, value) { await ensureReady(); const input = StressCompareInputSchema.parse(value); return compareStressReports(memoryStressReport(scope, input.baseFile), memoryStressReport(scope, input.candidateFile)); },
+    async stressExport(scope, value) {
+      await ensureReady(); const input = StressExportInputSchema.parse(value), report = memoryStressReport(scope, input.file);
+      const comparison = input.baselineFile ? compareStressReports(memoryStressReport(scope, input.baselineFile), report) : undefined;
+      const file = `${input.file.slice(0, -5)}.${input.format}`, content = input.format === "html" ? renderStressHtml(report, comparison) : JSON.stringify(comparison ? { report, comparison } : report, null, 2);
+      designExportCalls.push({ file, content }); return { saved: true, file };
     },
 
-    async stressStop(): Promise<StressRunOutput> {
+    async stressStop(input?: StressStopInput): Promise<AnyStressRunOutput> {
       const active = stressActive;
       if (!active) throw new Error("没有进行中的压测");
-      stressController?.abortActive();
+      await stressController?.stop(input, stressOwner);
       const result = await active;
       if (!result.ok) throw Object.assign(new Error(result.error.message), result.error);
       return result;

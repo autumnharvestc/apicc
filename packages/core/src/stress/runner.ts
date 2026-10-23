@@ -1,444 +1,177 @@
 import type { CaseExecutionResult } from "../runner/caseExecutor.js";
-import { computeReport } from "./aggregate.js";
 import { createGeneratorMetricsCollector, type GeneratorMetricsCollector, type GeneratorMetricsProbe } from "./generatorMetrics.js";
 import type { StressReport, StressSafetyRun, StressSample, StressThresholds } from "./model.js";
 import type { StressWorkerSession } from "./caseSession.js";
 import { createExecutionEvidenceCollector, type EvidenceOutputBoundary } from "../report/evidence.js";
 import type { EvidenceIdentity } from "../report/types.js";
+import type { StressClock, StressRequestGate, StressExecutionDeps, StressMetricsSummary } from "./execution.js";
+import type { StressMetricPlan, StressSchedule } from "./plan.js";
+import { createStressAccumulator } from "./metrics.js";
+import { createStressOriginAudit, createStressRequestGateWithAdmission } from "./requestGate.js";
+import { runStressSchedule } from "./loadScheduler.js";
+import { evaluateStressThresholds } from "./thresholds.js";
 
 type StressSetTimeout = (handler: () => void, timeout: number) => NodeJS.Timeout;
 type StressClearTimeout = (timer: NodeJS.Timeout) => void;
-
 export interface StressRunnerOptions {
+  runId?: string;
+  onProgress?: StressExecutionDeps["onProgress"];
   evidenceIdentity?: EvidenceIdentity;
   evidenceMarkers?: readonly string[];
-  /** Creates one isolated virtual-user session for each concurrent worker. */
-  createWorker: (workerId: number) => Promise<StressWorkerSession> | StressWorkerSession;
-  /** Optional injectable generator collector used by deterministic tests. */
+  createWorker: (workerId: number, context?: { readonly requestGate: StressRequestGate }) => Promise<StressWorkerSession> | StressWorkerSession;
   createGeneratorCollector?: () => GeneratorMetricsCollector;
-  /** Alias retained for callers that use the concrete collector name. */
   createGeneratorMetricsCollector?: () => GeneratorMetricsCollector;
   generatorMetricsProbe?: GeneratorMetricsProbe;
   now?: () => number;
   setTimeout?: StressSetTimeout;
   clearTimeout?: StressClearTimeout;
-  /** Optional wire-protocol hook receiving each complete Task 4 sample. */
   onSample?: (sample: StressSample) => void;
-  /** Synchronous host-local marker notification; it is not a cross-worker barrier. */
   onEvidenceMarkers?: (markers: readonly string[]) => void;
-  /** Ordinary single-process host's final boundary, including explicit unavailable business-text projection.
-   * Never serialized or used as a private worker completion barrier. */
   onEvidenceOutputBoundary?: (boundary: EvidenceOutputBoundary) => void;
-  /** Host-private run completion barrier; executes after measurement/cleanup, before evidence projection. */
   finalizeEvidence?: (markers: readonly string[]) => Promise<readonly string[]>;
+  /** Host-only v3 session substitution; legacy calls retain their original numeric range. */
+  runSchedule?: (schedule: StressSchedule, deps: StressExecutionDeps) => Promise<StressMetricsSummary>;
+  additionalFailureEvidence?: () => readonly import("../report/types.js").SafeExecutionEvidence[];
+  distributed?: (summary: StressMetricsSummary) => import("./model.js").StressDistributed;
+  richOutputComplete?: () => boolean;
+  generatorOverride?: (coordinator: import("./model.js").StressGeneratorMetrics) => import("./model.js").StressGeneratorMetrics;
 }
 export interface StressRunOptions {
-  concurrency: number;
-  maxIterations?: number;
-  durationMs?: number;
-  /** Stops starting new iterations; the same signal is forwarded to the session. */
-  signal?: AbortSignal;
-  thresholds?: StressThresholds;
-  /** Safety upper bound shared by all workers. It is not an arrival-rate target. */
-  maxRps?: number;
-  connectionMode?: "pooled" | "fresh";
-  /** Optional audit override when a caller requested a value later capped by policy. */
-  safetyRun?: Partial<StressSafetyRun>;
+  concurrency: number; maxIterations?: number; durationMs?: number; signal?: AbortSignal;
+  thresholds?: StressThresholds; maxRps?: number; connectionMode?: "pooled" | "fresh"; safetyRun?: Partial<StressSafetyRun>;
 }
-
-interface PermitWaiter {
-  resolve: (granted: boolean) => void;
-  reject: (error: unknown) => void;
-  signal?: AbortSignal;
-  onAbort?: () => void;
+export function validateStressRunOptions(input: { concurrency: number; maxIterations?: number; durationMs?: number; maxRps?: number }): void {
+  if (!Number.isSafeInteger(input.concurrency) || input.concurrency < 1) throw new Error(`concurrency 必须为正 safe integer，收到 ${input.concurrency}`);
+  if (input.maxIterations !== undefined && (!Number.isSafeInteger(input.maxIterations) || input.maxIterations <= 0)) throw new Error(`maxIterations 必须为正 safe integer，收到 ${input.maxIterations}`);
+  if (input.durationMs !== undefined && (!Number.isFinite(input.durationMs) || input.durationMs <= 0 || input.durationMs > Number.MAX_SAFE_INTEGER)) throw new Error(`durationMs 必须为有限正数且不可溢出，收到 ${input.durationMs}`);
+  if (input.maxRps !== undefined && (!Number.isFinite(input.maxRps) || input.maxRps <= 0)) throw new Error(`maxRps 必须为正数，收到 ${input.maxRps}`);
 }
-
-const MAX_TIMER_DELAY_MS = 2_147_000_000;
-const MAX_SAFE_DURATION_MS = Number.MAX_SAFE_INTEGER;
-
-/** Validate termination values before collector/session creation or protocol I/O. */
-export function validateStressRunOptions(input: {
-  concurrency: number;
-  maxIterations?: number;
-  durationMs?: number;
-  maxRps?: number;
-}): void {
-  if (!Number.isSafeInteger(input.concurrency) || input.concurrency < 1) {
-    throw new Error(`concurrency 必须为正 safe integer，收到 ${input.concurrency}`);
-  }
-  if (input.maxIterations !== undefined && (!Number.isSafeInteger(input.maxIterations) || input.maxIterations <= 0)) {
-    throw new Error(`maxIterations 必须为正 safe integer，收到 ${input.maxIterations}`);
-  }
-  if (input.durationMs !== undefined && (!Number.isFinite(input.durationMs) || input.durationMs <= 0 || input.durationMs > MAX_SAFE_DURATION_MS)) {
-    throw new Error(`durationMs 必须为有限正数且不可溢出，收到 ${input.durationMs}`);
-  }
-  if (input.maxRps !== undefined && (!Number.isFinite(input.maxRps) || input.maxRps <= 0)) {
-    throw new Error(`maxRps 必须为正数，收到 ${input.maxRps}`);
-  }
-}
-
-/** A shared sliding-window limiter. Waiting for a permit is not scheduler backlog. */
-class SlidingWindowPermitLimiter {
-  private readonly timestamps: number[] = [];
-  private readonly waiters: PermitWaiter[] = [];
-  private timer: NodeJS.Timeout | undefined;
-  private stopped = false;
-  private readonly capacity: number;
-  private timerVersion = 0;
-  private nextPermitAt: number | undefined;
-  private lastClock = Number.NEGATIVE_INFINITY;
-  private readonly reciprocalIntervalMs: number | undefined;
-  private runtimeError: unknown;
-  private hasRuntimeError = false;
-  private stopError: unknown;
-  private hasStopError = false;
-
-  constructor(
-    private readonly maxRps: number,
-    private readonly now: () => number,
-    private readonly setTimeoutFn: StressSetTimeout,
-    private readonly clearTimeoutFn: StressClearTimeout,
-  ) {
-    this.capacity = Math.max(1, Math.floor(maxRps));
-    if (maxRps < 1) {
-      const interval = 1_000 / maxRps;
-      this.reciprocalIntervalMs = Number.isFinite(interval) ? interval : Number.MAX_VALUE;
-    }
-  }
-
-  private monotonicNow(): number {
-    const observed = this.now();
-    if (!Number.isFinite(observed)) return this.lastClock === Number.NEGATIVE_INFINITY ? 0 : this.lastClock;
-    if (observed < this.lastClock) return this.lastClock;
-    this.lastClock = observed;
-    return observed;
-  }
-
-  acquire(signal?: AbortSignal): Promise<boolean> {
-    if (this.hasRuntimeError) return Promise.reject(this.runtimeError);
-    if (this.stopped || signal?.aborted) return Promise.resolve(false);
-    return new Promise<boolean>((resolve, reject) => {
-      const waiter: PermitWaiter = { resolve, reject, signal };
-      waiter.onAbort = () => {
-        const index = this.waiters.indexOf(waiter);
-        if (index >= 0) this.waiters.splice(index, 1);
-        resolve(false);
-        try { this.process(); }
-        catch (error) { this.failRuntime(error); }
-      };
-      if (signal) signal.addEventListener("abort", waiter.onAbort, { once: true });
-      this.waiters.push(waiter);
-      this.process();
-    });
-  }
-
-  stop(): void {
-    if (this.stopped) {
-      if (this.hasStopError) throw this.stopError;
-      if (this.hasRuntimeError) throw this.runtimeError;
-      return;
-    }
-    this.stopped = true;
-    let firstError: unknown;
-    let hasError = false;
-    if (this.timer !== undefined) {
-      this.timerVersion += 1;
-      try { this.clearTimeoutFn(this.timer); }
-      catch (error) { hasError = true; firstError = error; }
-    }
-    this.timer = undefined;
-    for (const waiter of this.waiters.splice(0)) {
-      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
-      waiter.resolve(false);
-    }
-    if (hasError) {
-      this.stopError = firstError;
-      this.hasStopError = true;
-      throw firstError;
-    }
-  }
-
-  private failRuntime(error: unknown): void {
-    if (this.hasRuntimeError) return;
-    this.runtimeError = error;
-    this.hasRuntimeError = true;
-    this.stopped = true;
-    if (this.timer !== undefined) {
-      this.timerVersion += 1;
-      try { this.clearTimeoutFn(this.timer); } catch { /* preserve runtime error */ }
-    }
-    this.timer = undefined;
-    for (const waiter of this.waiters.splice(0)) {
-      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
-      waiter.reject(error);
-    }
-  }
-
-  private process(): void {
-    if (this.stopped) return;
-    // Cancel the old wake-up before resolving any permit. A stale callback may
-    // still be queued, but it cannot retain a live timer reference or race a
-    // newly scheduled wake-up after this point.
-    if (this.timer !== undefined) {
-      const scheduledTimer = this.timer;
-      this.timer = undefined;
-      this.timerVersion += 1;
-      try { this.clearTimeoutFn(scheduledTimer); }
-      catch (error) {
-        // A failed clear is retried once for hosts whose first clear reports an
-        // error after releasing the native handle. The first error remains the
-        // primary runtime failure either way.
-        try { this.clearTimeoutFn(scheduledTimer); } catch { /* preserve first error */ }
-        this.failRuntime(error);
-        return;
-      }
-    }
-    const current = this.monotonicNow();
-    if (this.maxRps >= 1) {
-      while (this.timestamps.length > 0 && current - this.timestamps[0]! >= 1_000) this.timestamps.shift();
-    }
-    // For rates below one request per second, a single permit is spaced by the
-    // reciprocal rate. For ordinary rates, the timestamp window is the bound.
-    while (this.waiters.length > 0) {
-      const next = this.waiters[0]!;
-      if (next.signal?.aborted) {
-        this.waiters.shift();
-        next.resolve(false);
-        continue;
-      }
-      if (this.maxRps < 1 && this.nextPermitAt !== undefined && current < this.nextPermitAt) break;
-      if (this.maxRps >= 1 && this.timestamps.length >= this.capacity) break;
-      this.waiters.shift();
-      if (next.signal && next.onAbort) next.signal.removeEventListener("abort", next.onAbort);
-      if (this.maxRps < 1) this.nextPermitAt = current + this.reciprocalIntervalMs!;
-      else this.timestamps.push(current);
-      next.resolve(true);
-    }
-    if (this.waiters.length === 0) {
-      if (this.timer !== undefined) this.clearTimeoutFn(this.timer);
-      this.timer = undefined;
-      return;
-    }
-    const oldest = this.maxRps < 1
-      ? (this.nextPermitAt ?? current + this.reciprocalIntervalMs!)
-      : (this.timestamps[0] ?? current) + 1_000;
-    const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(1, oldest - current));
-    const version = ++this.timerVersion;
-    this.timer = this.setTimeoutFn(() => {
-      if (version !== this.timerVersion) return;
-      this.timer = undefined;
-      try { this.process(); }
-      catch (error) { this.failRuntime(error); }
-    }, delay);
-  }
-}
-
+/** Legacy parameters intentionally bypass the saved-plan UI limits. */
+export const legacyStressMetricPlan: StressMetricPlan = {
+  stableNodeKeys: [], histogram: { minValueMs: .001, gamma: 1.01, bucketCount: 4608, exactLimit: 256 },
+  timeline: { initialBucketWidthMs: 1000, maxBuckets: 120 }, node: { maxKeys: 512, otherKey: "other" }, error: { maxKeys: 128, otherKey: "other" },
+  evidence: { maxSamples: 20, bodyBytes: 65536, valueBytes: 4096, caseBytes: 262144, reportBytes: 16777216 }, memory: { maxNumericBytes: 67108864 },
+};
 function sampleFromResult(result: CaseExecutionResult): StressSample {
-  const status = result.response?.status ?? 0;
-  const error = result.outcome.error;
-  const failureKind = result.failureKind ?? result.outcome.failureKind;
-  return {
-    timeMs: result.requestTimeMs,
-    requestTimeMs: result.requestTimeMs,
-    scriptTimeMs: result.scriptTimeMs,
-    iterationTimeMs: result.iterationTimeMs,
-    requestStarted: result.requestStarted,
-    requestCompleted: result.requestCompleted,
-    status,
-    ok: result.outcome.passed,
-    error,
-    failureKind,
-    outcome: result.outcome,
-    safety: result.safety,
+  return { timeMs: result.requestTimeMs, requestTimeMs: result.requestTimeMs, scriptTimeMs: result.scriptTimeMs, iterationTimeMs: result.iterationTimeMs,
+    requestStarted: result.requestStarted, requestCompleted: result.requestCompleted, status: result.response?.status ?? 0, ok: result.outcome.passed,
+    error: result.outcome.error, failureKind: result.failureKind ?? result.outcome.failureKind, outcome: result.outcome, safety: result.safety };
+}
+/** Separate whitelist: a missing marker participant forbids projecting any rich record. */
+function numericFailureReport(report: StressReport): StressReport {
+  const distributed = report.distributed;
+  return { concurrency: report.concurrency, totalRequests: report.totalRequests, ok: report.ok, failed: report.failed, durationMs: report.durationMs,
+    rps: report.rps, latency: { ...report.latency }, scriptLatency: report.scriptLatency && { ...report.scriptLatency }, iterationLatency: report.iterationLatency && { ...report.iterationLatency },
+    statusDist: Object.fromEntries(Object.entries(report.statusDist).filter(([key]) => /^(0|[1-9][0-9]*)$/.test(key))), errorKinds: {},
+    startedAt: report.startedAt, finishedAt: report.finishedAt, eligibleCompletedAttempts: report.eligibleCompletedAttempts, measurementWindow: report.measurementWindow && { ...report.measurementWindow },
+    failures: report.failures && { ...report.failures }, eligibleFailureCounts: report.eligibleFailureCounts && { ...report.eligibleFailureCounts }, statistics: report.statistics && { ...report.statistics },
+    incomplete: true, failureEvidence: [], verdict: { passed: false, violations: [
+      { metric: "incomplete", actual: 1, expected: 0, message: "worker_incomplete_rich_output_withheld" },
+      ...(!report.eligibleCompletedAttempts ? [{ metric: "noData" as const, actual: 0, expected: 1, message: "NO_DATA" }] : []),
+    ] },
+    generator: { availability: "unavailable", unavailableReason: "worker_incomplete_rich_output_withheld" },
+    safety: { targetOrigins: [], availability: "unavailable", unavailableReason: "worker_incomplete_rich_output_withheld", run: report.safety?.run && { ...report.safety.run } },
+    ...(distributed ? { distributed: { protocolVersion: 3, shards: distributed.shards, dataComplete: false, perShard: distributed.perShard.map((worker, i) => ({
+      shardId: `worker-${i + 1}`, totalRequests: worker.totalRequests, ok: worker.ok, failed: worker.failed, rps: worker.rps,
+      generator: { availability: "unavailable" as const, unavailableReason: "worker_incomplete_rich_output_withheld" }, measurementWindow: { ...worker.measurementWindow },
+    })), shardErrors: Array.from({ length: distributed.shards }, (_, i) => ({ shardId: `worker-${i + 1}`, error: "worker_incomplete_rich_output_withheld" })) } } : {}),
   };
 }
-
-/** Runs a bounded pool of virtual-user sessions with deterministic cleanup. */
 export class StressRunner {
   constructor(private readonly opts: StressRunnerOptions) {}
-
   async run(runOpts: StressRunOptions): Promise<StressReport> {
-    const { concurrency, maxIterations, durationMs, signal, maxRps } = runOpts;
-    if (maxIterations === undefined && durationMs === undefined) {
-      throw new Error("压测终止条件缺失：maxIterations 与 durationMs 必须给其一");
-    }
-    validateStressRunOptions({ concurrency, maxIterations, durationMs, maxRps });
-
-    const createCollector: () => GeneratorMetricsCollector = this.opts.createGeneratorCollector
-      ?? this.opts.createGeneratorMetricsCollector
-      ?? (() => createGeneratorMetricsCollector(this.opts.generatorMetricsProbe));
-    const collector = createCollector();
-    const limiter = maxRps === undefined
-      ? undefined
-      : new SlidingWindowPermitLimiter(
-        maxRps,
-        this.opts.now ?? (() => performance.now()),
-        this.opts.setTimeout ?? ((handler, timeout) => setTimeout(handler, timeout)),
-        this.opts.clearTimeout ?? ((timer) => clearTimeout(timer)),
-      );
-
-    const samples: StressSample[] = [];
+    if (runOpts.maxIterations === undefined && runOpts.durationMs === undefined) throw new Error("压测终止条件缺失：maxIterations 与 durationMs 必须给其一");
+    validateStressRunOptions(runOpts);
+    const collector = (this.opts.createGeneratorCollector ?? this.opts.createGeneratorMetricsCollector ?? (() => createGeneratorMetricsCollector(this.opts.generatorMetricsProbe)))();
     const evidence = createExecutionEvidenceCollector(this.opts.evidenceIdentity ?? { projectId: "", definitionRevision: "" }, this.opts.evidenceMarkers ?? [], { maxSamples: 20, privateMarkers: !!this.opts.finalizeEvidence });
-    let stopped = false;
-    let hasPrimaryError = false;
-    let primaryError: unknown;
-    let hasCleanupError = false;
-    let cleanupError: unknown;
-    let cleanupPriority = 0;
-    const stopCleanup = (error: unknown, priority = 1): void => {
-      stopped = true;
-      if (!hasCleanupError || priority > cleanupPriority) {
-        hasCleanupError = true;
-        cleanupError = error;
-        cleanupPriority = priority;
-      }
-    };
-    const stopLimiter = (): void => {
-      try { limiter?.stop(); }
-      catch (error) { stopCleanup(error); }
-    };
-    const stopPrimary = (error: unknown): void => {
-      stopped = true;
-      stopLimiter();
-      if (!hasPrimaryError) { hasPrimaryError = true; primaryError = error; }
-    };
-
-    const sessions: StressWorkerSession[] = [];
-    let sessionsClosed = false;
-    let report: StressReport | undefined;
-    let deadlineTimer: NodeJS.Timeout | undefined;
-
-    const clearDeadlineTimer = (): void => {
-      if (deadlineTimer === undefined) return;
-      const timer = deadlineTimer;
-      deadlineTimer = undefined;
-      try {
-        if (this.opts.clearTimeout) this.opts.clearTimeout(timer);
-        else clearTimeout(timer);
-      } catch (error) { stopCleanup(error); }
-    };
-
-    const closeSessions = async (): Promise<void> => {
-      if (sessionsClosed) return;
-      sessionsClosed = true;
-      for (const session of sessions) {
-        try { await session.close(); }
-        catch (error) { stopCleanup(error, 2); }
-      }
-    };
-
+    let primary: unknown, hasPrimary = false, cleanup: unknown, hasCleanup = false, cleanupPriority = 0;
+    const primaryError = (error: unknown) => { if (!hasPrimary) { primary = error; hasPrimary = true; } };
+    const cleanupError = (error: unknown, priority = 1) => { if (!hasCleanup || priority > cleanupPriority) { cleanup = error; hasCleanup = true; cleanupPriority = priority; } };
+    const setTimer: StressSetTimeout = this.opts.setTimeout ?? ((handler, delay) => setTimeout(handler, delay));
+    const clearTimer: StressClearTimeout = this.opts.clearTimeout ?? ((timer) => clearTimeout(timer));
+    let lastNow = -Infinity;
+    const clock: StressClock = { now: () => { const value = (this.opts.now ?? (() => performance.now()))(); if (Number.isFinite(value)) lastNow = Math.max(lastNow, value); return lastNow === -Infinity ? 0 : lastNow; }, wallNow: () => Date.now(),
+      sleep: (ms, signal) => new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
+        let timer: NodeJS.Timeout;
+        const abort = () => { try { clearTimer(timer); } catch (error) { primaryError(error); try { clearTimer(timer); } catch {} reject(error); return; } reject(new DOMException("Aborted", "AbortError")); };
+        try { timer = setTimer(() => { signal?.removeEventListener("abort", abort); resolve(); }, Math.min(2_147_000_000, Math.max(1, ms))); signal?.addEventListener("abort", abort, { once: true }); }
+        catch (error) { primaryError(error); reject(error); }
+      }) };
+    const { gate, admission: opaqueAdmission } = createStressRequestGateWithAdmission({ clock, maxConcurrency: runOpts.concurrency, maxRps: runOpts.maxRps, authorizeRequest() {} });
+    const audit = createStressOriginAudit(), errorKinds: Record<string, number> = {};
+    const runId = this.opts.runId ?? globalThis.crypto.randomUUID();
+    const metrics = createStressAccumulator(legacyStressMetricPlan, runId);
+    const schedule: StressSchedule = { load: { kind: "constant-vus", vus: runOpts.concurrency }, durationMs: runOpts.durationMs ?? null, maxIterations: runOpts.maxIterations ?? null,
+      // Legacy callbacks historically wait for all reserved iterations, including tiny-rate admission.
+      maxVus: runOpts.concurrency, warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: Infinity, metricPlan: legacyStressMetricPlan,
+      requested: { maxRequestConcurrency: runOpts.concurrency, maxRps: runOpts.maxRps ?? null }, effective: { maxRequestConcurrency: runOpts.concurrency, maxRps: runOpts.maxRps ?? null } };
+    let report: StressReport | undefined; const thisRunner = this;
     try {
-      for (let workerId = 0; workerId < concurrency; workerId += 1) {
-        if (stopped) break;
-        try {
-          sessions.push(await this.opts.createWorker(workerId));
-        } catch (error) {
-          stopPrimary(error);
-          break;
-        }
-      }
-
-      if (hasPrimaryError) {
-        await closeSessions();
-        throw primaryError;
-      }
-
-      // Only the interval between all sessions being ready and all worker loops ending
-      // is the measurement window. Setup and teardown must not distort RPS.
-      const wallNow = () => Date.now();
-      const monotonicNow = this.opts.now ?? (() => performance.now());
-      const startedAt = wallNow();
-      const startedMonotonic = monotonicNow();
-      const deadline = durationMs === undefined ? Number.POSITIVE_INFINITY : startedAt + durationMs;
-      if (limiter && durationMs !== undefined) {
-        const setDeadline: StressSetTimeout = this.opts.setTimeout
-          ? ((handler, timeout) => this.opts.setTimeout!(handler, timeout))
-          : ((handler, timeout) => setTimeout(handler, timeout));
-        deadlineTimer = setDeadline(() => stopLimiter(), Math.max(0, durationMs));
-      }
-      let remaining = maxIterations;
-      const worker = async (session: StressWorkerSession): Promise<void> => {
-        while (!signal?.aborted && !stopped) {
-          if (remaining !== undefined) {
-            if (remaining <= 0) break;
-            remaining -= 1;
-          }
-          if (wallNow() >= deadline) break;
-          if (limiter) {
+      const summary = await (this.opts.runSchedule ?? runStressSchedule)(schedule, { runId, clock, gate, metrics, evidence, onProgress: this.opts.onProgress, signal: runOpts.signal ?? new AbortController().signal, execution: { thresholds: runOpts.thresholds },
+        createVu: async (id) => {
+          let session: StressWorkerSession;
+          try { session = await this.opts.createWorker(Number(id) - 1, { requestGate: gate }); } catch (error) { primaryError(error); throw error; }
+          return { async execute(context) {
+            let release: (() => void) | undefined;
             try {
-              if (!await limiter.acquire(signal)) break;
-            } catch (error) {
-              stopPrimary(error);
-              break;
-            }
-          }
-          if (signal?.aborted || stopped) break;
-          try {
-            const execution = await session.execute(signal);
-            evidence.observe(execution, { rowIndex: execution.outcome.row });
-            const sample = sampleFromResult(execution);
-            samples.push(sample);
-            this.opts.onSample?.(sample);
-          } catch (error) {
-            stopPrimary(error);
-            break;
-          }
+              if (!session.gateManaged) {
+                try { release = await opaqueAdmission.enter(context.admissionSignal ? AbortSignal.any([context.admissionSignal, context.signal]) : context.signal); }
+                catch (error) { if (context.admissionSignal?.aborted || context.signal.aborted) return { state: "aborted", durationMs: 0 }; throw error; }
+                if (context.admissionSignal?.aborted || context.signal.aborted) return { state: "aborted", durationMs: 0 };
+              }
+              const execution = await session.execute(session.gateManaged ? context.signal : runOpts.signal ?? context.signal);
+              evidence.observe(execution, { rowIndex: execution.outcome.row, stressRunId: context.runId, vuId: context.vuId, iterationId: context.iterationId, stageId: context.stageId });
+              const sample = sampleFromResult(execution);
+              if (sample.safety) audit.recordTarget(sample.safety);
+              const legacy = sample.requestStarted === undefined && sample.requestCompleted === undefined;
+              const started = legacy || sample.requestStarted === true, completed = legacy || sample.requestCompleted === true;
+              const kind = sample.ok ? null : sample.failureKind ?? (sample.status >= 400 ? "http" : sample.error ? "transport" : "assertion");
+              context.observe?.({ kind: "case", ...context.observation!(), stageId: context.stageId, ok: sample.ok, status: sample.status,
+                requestStarted: started, requestCompleted: completed, failureKind: kind, requestTimeMs: started ? sample.requestTimeMs ?? 0 : 0, scriptTimeMs: sample.scriptTimeMs ?? 0, iterationTimeMs: sample.iterationTimeMs ?? 0,
+                locator: execution.outcome.locator ?? { collectionId: "", folderIds: [], apiId: execution.outcome.apiId ?? "", caseId: execution.outcome.caseId ?? "", scope: execution.outcome.scope ?? "base" }, nodeKey: null });
+              const errorKey = sample.error ? sample.failureKind === "http" && sample.status !== 0 ? `HTTP_${sample.status}` : sample.failureKind ?? (sample.error.split(":", 1)[0]!.trim() || "unknown") : sample.status !== 101 && (sample.status < 200 || sample.status >= 300) ? `HTTP_${sample.status}` : undefined;
+              if (errorKey) { const key = Object.hasOwn(errorKinds, errorKey) || Object.keys(errorKinds).length < 128 ? errorKey : "other"; errorKinds[key] = (errorKinds[key] ?? 0) + 1; }
+              thisRunner.opts.onSample?.(sample);
+              return { state: kind === "aborted" ? "aborted" : sample.ok ? "passed" : "failed", durationMs: execution.iterationTimeMs };
+            } catch (error) { primaryError(error); throw error; } finally { release?.(); }
+          }, async close() { try { await session.close(); } catch (error) { cleanupError(error, 2); throw error; } } };
+        },
+      });
+      if (hasPrimary) throw primary; if (hasCleanup) throw cleanup;
+      if (!summary.eligibleFailureCounts) throw new Error("Stress accumulator omitted eligible failure counts");
+      const zero = { min: 0, avg: 0, max: 0, p50: 0, p90: 0, p95: 0, p99: 0 };
+      const safety = audit.snapshot(); const gateAudit = gate.audit!();
+      const uniqueTargets = [...safety.targetOrigins, ...gateAudit.targetOrigins].filter((target, index, all) => all.findIndex((candidate) => candidate.origin === target.origin) === index);
+      const originOverflow = uniqueTargets.length > 256, targets = uniqueTargets.slice(0, 256);
+      report = { concurrency: runOpts.concurrency, totalRequests: summary.totalRequests, ok: summary.ok, failed: summary.failed, durationMs: summary.durationMs,
+        rps: summary.rps.availability === "available" ? summary.rps.value : 0, latency: summary.latency.availability === "available" ? { ...summary.latency.value } : zero,
+        scriptLatency: summary.scriptLatency.availability === "available" ? { ...summary.scriptLatency.value } : zero, iterationLatency: summary.iterationLatency.availability === "available" ? { ...summary.iterationLatency.value } : zero,
+        statusDist: { ...summary.statusDist }, errorKinds: this.opts.runSchedule ? { ...summary.errorKinds } : errorKinds, startedAt: summary.startedAt, finishedAt: summary.finishedAt, eligibleCompletedAttempts: summary.requests.eligibleCompleted,
+        eligibleFailureCounts: { ...summary.eligibleFailureCounts }, failures: { ...summary.caseRows.failures }, statistics: { ...summary.statistics },
+        measurementWindow: { startWallMs: summary.startedAt, endWallMs: summary.finishedAt, monotonicDurationMs: summary.durationMs, eligibleCompletedAttempts: summary.requests.eligibleCompleted },
+        thresholds: runOpts.thresholds, connectionMode: runOpts.connectionMode,
+        incomplete: originOverflow || safety.incomplete || gateAudit.incomplete || Object.values(summary.completeness).some((part) => !part.complete),
+        safety: { targetOrigins: targets, availability: targets.length ? originOverflow || safety.incomplete || gateAudit.incomplete ? "partial" : "available" : "unavailable",
+          ...(!targets.length ? { unavailableReason: "没有样本携带目标安全采集" } : {}), run: { requestedConcurrency: runOpts.safetyRun?.requestedConcurrency ?? runOpts.concurrency,
+            effectiveConcurrency: runOpts.safetyRun?.effectiveConcurrency ?? runOpts.concurrency, requestedMaxRps: runOpts.safetyRun?.requestedMaxRps ?? runOpts.maxRps ?? null,
+            effectiveMaxRps: runOpts.safetyRun?.effectiveMaxRps ?? runOpts.maxRps ?? null, connectionMode: runOpts.safetyRun?.connectionMode ?? runOpts.connectionMode ?? "pooled" } } };
+      report.verdict = evaluateStressThresholds(report, runOpts.thresholds);
+      if (this.opts.distributed) report.distributed = this.opts.distributed(summary);
+      if (!this.opts.finalizeEvidence) {
+        if (this.opts.richOutputComplete?.() === false) {
+          report = numericFailureReport(report);
+          return report;
         }
-      };
-
-      await Promise.all(sessions.map((session) => worker(session)));
-      const finishedAt = wallNow();
-      const finishedMonotonic = monotonicNow();
-      const measurementWindow = {
-        startWallMs: startedAt,
-        endWallMs: finishedAt,
-        monotonicDurationMs: Math.max(0, finishedMonotonic - startedMonotonic),
-        eligibleCompletedAttempts: 0,
-      } as const;
-      await closeSessions();
-      clearDeadlineTimer();
-      if (hasPrimaryError) throw primaryError;
-      if (hasCleanupError) throw cleanupError;
-      report = computeReport(samples, { concurrency, startedAt, finishedAt, thresholds: runOpts.thresholds, measurementWindow });
-      if (this.opts.evidenceIdentity) { report.projectId = this.opts.evidenceIdentity.projectId; report.definitionRevision = this.opts.evidenceIdentity.definitionRevision; }
-      if (runOpts.connectionMode !== undefined) report.connectionMode = runOpts.connectionMode;
-      const safetyTargets = samples
-        .map((sample) => sample.safety)
-        .filter((target): target is NonNullable<typeof target> => target !== undefined);
-      const uniqueSafety = safetyTargets.filter((target, index, all) => all.findIndex((candidate) => candidate.origin === target.origin) === index);
-      // Current reports always carry a safety section.  An empty list is the
-      // explicit no-data/no-I/O shape; legacy callers still read through the
-      // optional StressReportSchema.
-      const safetyRun: StressSafetyRun = {
-        requestedConcurrency: runOpts.safetyRun?.requestedConcurrency ?? concurrency,
-        effectiveConcurrency: runOpts.safetyRun?.effectiveConcurrency ?? concurrency,
-        requestedMaxRps: runOpts.safetyRun?.requestedMaxRps ?? maxRps ?? null,
-        effectiveMaxRps: runOpts.safetyRun?.effectiveMaxRps ?? maxRps ?? null,
-        connectionMode: runOpts.safetyRun?.connectionMode ?? runOpts.connectionMode ?? "pooled",
-      };
-      report.safety = {
-        targetOrigins: uniqueSafety,
-        run: safetyRun,
-        availability: uniqueSafety.length > 0 ? "available" : "unavailable",
-        ...(uniqueSafety.length === 0 ? { unavailableReason: "没有样本携带目标安全采集" } : {}),
-      };
-      // Keep the original single-process generator boundary. Only private workers stop before their barrier.
-      if (!this.opts.finalizeEvidence) { report = evidence.projectStressReport(report); return report; }
+        report = evidence.projectStressReport(report);
+        if (this.opts.additionalFailureEvidence) report = evidence.projectStressReport({ ...report, failureEvidence: [...(report.failureEvidence ?? []), ...this.opts.additionalFailureEvidence()].slice(0, 20) }, true);
+        return report;
+      }
     } finally {
-      if (!sessionsClosed) await closeSessions();
-      stopLimiter();
-      clearDeadlineTimer();
-      try {
-        if (!this.opts.finalizeEvidence) this.opts.onEvidenceOutputBoundary?.(evidence.boundary());
-        this.opts.onEvidenceMarkers?.(evidence.markers());
-      } catch (error) { stopCleanup(error); }
-      try {
-        const generator = collector.stop();
-        if (report) report.generator = generator;
-      } catch (error) { stopCleanup(error); }
+      try { if (!this.opts.finalizeEvidence) this.opts.onEvidenceOutputBoundary?.(evidence.boundary()); this.opts.onEvidenceMarkers?.(evidence.markers()); } catch (error) { cleanupError(error); }
+      try { const generator = collector.stop(); if (report) report.generator = this.opts.richOutputComplete?.() === false ? { availability: "unavailable", unavailableReason: "worker_incomplete_rich_output_withheld" } : this.opts.generatorOverride?.(generator) ?? generator; } catch (error) { cleanupError(error); }
       if (this.opts.finalizeEvidence) evidence.addMarkers(await this.opts.finalizeEvidence(evidence.markers()));
-      if (hasPrimaryError) throw primaryError;
-      if (hasCleanupError) throw cleanupError;
+      if (hasPrimary) throw primary; if (hasCleanup) throw cleanup;
     }
     return evidence.projectStressReport(report!);
   }

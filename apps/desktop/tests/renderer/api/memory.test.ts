@@ -13,7 +13,7 @@ async function seededMemory(client?: TestManagedClient) {
   const api = createMemoryApi(client ? { stressClient: client } : undefined);
   const fixture = await contractAssetFixture(api);
   const detail = await api.apiGet(fixture.apiLocator);
-  return { api, locator: fixture.apiLocator, caseId: detail.api.cases[0]!.id };
+  return { api, root: fixture.root, locator: fixture.apiLocator, caseId: detail.api.cases[0]!.id };
 }
 
 /** 挂起假 client：execute 进入即计数并停在 gate 上，制造活动运行窗口。 */
@@ -63,6 +63,48 @@ function syntheticSecretStore() {
 }
 
 describe("memory 替身正式压力控制器入口", () => {
+  it("accepts an exact stop from the initial preparing receipt before any request starts", async () => {
+    let requests = 0;
+    const { api, root, locator, caseId } = await seededMemory({ name: 'counted', canHandle: () => true, execute: async () => { requests++; return { status: 200, headers: {}, bodyText: '', timeMs: 0 }; }, close: async () => {} });
+    const { StressPlanSchema } = await import('@apicc/core/schema');
+    let stopping: Promise<unknown> | undefined;
+    const dispose = api.onStressProgress(value => {
+      if (value.state === 'preparing' && !stopping) stopping = api.stressStop({ runId: value.runId, root: value.root, projectLocator: value.projectLocator }).catch(error => error);
+    });
+    try {
+      const out = await api.stressRun({ kind: 'plan', root, invocationId: crypto.randomUUID(), projectLocator: { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId }, plan: StressPlanSchema.parse({ formatVersion: 1, target: { kind: 'case', collectionId: locator.collectionId, apiId: locator.apiId, caseId }, load: { kind: 'constant-vus', vus: 1 }, termination: { maxIterations: 1 } }), confirmedTargetOrigins: ['http://127.0.0.1'] });
+      expect(await stopping).not.toBeInstanceOf(Error);
+      expect(out).toMatchObject({ ok: true, kind: 'plan', report: { verdict: { status: 'aborted' }, requests: { started: 0 } } });
+      expect(requests).toBe(0);
+    } finally { dispose(); }
+  });
+  it("returns the plan branch through the same controller and publishes disposable safe progress", async () => {
+    const { api, root, locator, caseId } = await seededMemory();
+    const { StressPlanSchema } = await import("@apicc/core");
+    const progress: import("../../../src/shared/types.js").StressProgressDTO[] = [];
+    let completed!: () => void; const finished = new Promise<void>((resolve) => { completed = resolve; });
+    const unsubscribe = api.onStressProgress((value) => { progress.push(value); if (value.state === "finished") completed(); });
+    const result = await api.stressRun({ kind: "plan", root, invocationId: crypto.randomUUID(), projectLocator: { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId },
+      plan: StressPlanSchema.parse({ formatVersion: 1, target: { kind: "case", collectionId: locator.collectionId, apiId: locator.apiId, caseId }, load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: 1 } }),
+      confirmedTargetOrigins: ["http://127.0.0.1"] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error.message);
+    await finished;
+    expect(result.kind).toBe("plan"); expect(result.report.iterations.completed).toBe(1); expect(progress.at(-1)?.state).toBe("finished");
+    const scope = { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
+    const saved = await api.stressPlansSave(scope, { name: "memory plan", plan: result.report.plan });
+    expect(await api.stressPlansGet(scope, saved.id)).toEqual(saved); expect(await api.stressPlansList(scope)).toEqual([saved]);
+    expect(result.file).toBeTruthy();
+    expect((await api.stressRunsList(scope)).map(row => row.file)).toEqual([result.file]);
+    expect(await api.stressRunsGet(scope, result.file!)).toMatchObject({ kind: 'stress', report: { formatVersion: 2 } });
+    expect(await api.runsGet(result.file!)).toMatchObject({ kind: "stress", report: { formatVersion: 2 } });
+    expect((await api.runsList()).find((r) => r.file === result.file)).toMatchObject({ formatVersion: 2, projectId: scope.projectId });
+    expect(await api.stressCompare(scope, { baseFile: result.file!, candidateFile: result.file! })).toMatchObject({ directlyComparable: true, metrics: { rps: { absolute: 0 } } });
+    expect(await api.stressExport(scope, { file: result.file!, format: "html" })).toMatchObject({ saved: true });
+    expect(api.designExportCalls.at(-1)?.content).toContain("Timeline");
+    expect(await api.stressPlansRemove(scope, saved.id)).toEqual(saved); expect(await api.stressPlansList(scope)).toEqual([]);
+    unsubscribe();
+  });
   it("Mock 仅仿真 UI 状态，不绑定 HTTP 地址或生成网络日志", async () => {
     const { api, locator: apiLocator } = await seededMemory();
     const locator = { workspaceId: apiLocator.workspaceId, groupId: apiLocator.groupId, projectId: apiLocator.projectId };

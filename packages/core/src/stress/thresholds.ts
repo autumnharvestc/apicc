@@ -1,4 +1,21 @@
 import type { StressFailureCounts, StressReport, StressThresholds, StressVerdict, StressViolation } from "./model.js";
+import type { StressLatencyMetric, StressNumericMetric, StressRequests } from "./reportV2.js";
+
+/** Logical iteration correctness and explicit real-request thresholds are orthogonal. */
+export function evaluateStressMetricsThresholds(metrics: { requests: StressRequests; eligibleFailureCounts: StressFailureCounts; latency: StressLatencyMetric; rps: StressNumericMetric; failedIterations: number }, thresholds: StressThresholds = {}): StressVerdict {
+  const violations: StressViolation[] = [];
+  const violation = (metric: StressViolation["metric"], actual: number, expected: number) => violations.push({ metric, actual, expected, message: metric });
+  const denominator = metrics.requests.eligibleCompleted;
+  if (!denominator) violation("noData", 0, 1);
+  const errorRate = denominator ? metrics.requests.failed / denominator : 0;
+  const assertionRate = denominator ? metrics.eligibleFailureCounts.assertion / denominator : 0;
+  if (thresholds.maxErrorRate !== undefined && errorRate > thresholds.maxErrorRate) violation("errorRate", errorRate, thresholds.maxErrorRate);
+  if (thresholds.maxAssertionFailureRate !== undefined && assertionRate > thresholds.maxAssertionFailureRate) violation("assertionFailureRate", assertionRate, thresholds.maxAssertionFailureRate);
+  if (thresholds.maxP95Ms !== undefined && metrics.latency.availability === "available" && metrics.latency.value.p95 > thresholds.maxP95Ms) violation("p95", metrics.latency.value.p95, thresholds.maxP95Ms);
+  if (thresholds.minRps !== undefined && metrics.rps.availability === "available" && metrics.rps.value < thresholds.minRps) violation("rps", metrics.rps.value, thresholds.minRps);
+  if (metrics.failedIterations) violation("businessFailures", metrics.failedIterations, 0);
+  return { passed: violations.length === 0, violations };
+}
 
 const completedCount = (report: StressReport): number =>
   Math.max(0, report.eligibleCompletedAttempts ?? (report.totalRequests - (report.failures?.aborted ?? 0)));
@@ -19,6 +36,7 @@ export function evaluateStressThresholds(report: StressReport, thresholds: Stres
   const errorRate = denominator === 0 ? 0 : businessFailures / denominator;
   const assertionFailureRate = denominator === 0 ? 0 : failures.assertion / denominator;
   const violations: StressViolation[] = [];
+  if (report.incomplete || (report.statistics?.overflow ?? 0) > 0) violations.push({ metric: "incomplete", actual: 1, expected: 0, message: "Incomplete stress measurements" });
 
   if (denominator === 0) {
     violations.push({ metric: "noData", actual: 0, expected: 1, message: "NO_DATA: 没有可评估的压测样本" });

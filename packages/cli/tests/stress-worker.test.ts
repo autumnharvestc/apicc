@@ -20,8 +20,9 @@ import {
   type StressWorkerSpec,
   type Workspace,
 } from "@apicc/core";
-import { parseShardOutcomeStdout, runCli as runCliActual, type RunCliDeps } from "../src/main.js";
+import { parseShardOutcomeStdout, runCli as runCliActual, registerLegacyStressWorkerAdapter, type RunCliDeps } from "../src/main.js";
 import { createPrivateStressWorkerFactory, createWorkerEvidenceFinalizer } from "../src/stressWorkerTransport.js";
+import { localStressWorker } from "./helpers/localStressWorker.js";
 
 // 本文件覆盖 M2-D1 任务 2：stress-worker 子命令（stdout 末行 JSON 契约）与 run-stress --shards
 // 协调分支（spawn 实现可注入——真实子进程端到端留任务 3）。
@@ -33,11 +34,13 @@ let prevCwd = "";
 let definitionRevision = "";
 let networkPrivateRoot = "";
 const seenPaths: string[] = [];
+let interruptRequest: (() => void) | undefined;
+const redirectHops: number[] = [];
 /** 本文件创建的临时工作区根（afterAll 统一清理，模式与姊妹文件 stress-subprocess.test.ts 一致）。 */
 const tempRoots: string[] = [];
 
 function runCli(argv: string[], registry: Parameters<typeof runCliActual>[1], log: (line: string) => void = () => {}, deps: RunCliDeps = {}): Promise<number> {
-  return runCliActual(argv, registry, log, { networkPrivateRoot, ...deps });
+  return runCliActual(argv, registry, log, { networkPrivateRoot, ...(argv[0] === "stress-worker" ? { legacyStressWorkerAdapter: registerLegacyStressWorkerAdapter } : {}), ...deps });
 }
 
 const GROUP_ID = "00000000-0000-4000-8000-000000000002";
@@ -68,6 +71,11 @@ function readLastReport(runsDir: string): Record<string, unknown> {
 beforeAll(async () => {
   server = createServer((req, res) => {
     seenPaths.push(req.url ?? "");
+    if (req.url === "/f6-redirect" || req.url === "/f6-final") {
+      redirectHops.push(performance.now());
+      if (req.url === "/f6-redirect") { res.writeHead(302, { location: "/f6-final" }); res.end(); return; }
+    }
+    interruptRequest?.();
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok: true }));
   });
@@ -199,15 +207,13 @@ describe("stress-worker 子命令", () => {
     const initial = await fileStorage.load(isolatedRoot);
     await fileStorage.save(isolatedRoot, workspace, { expectedRevision: initial.revision, deletions: [] });
     writeFileSync(dataPath, "row\nOLD\n");
-    const specs: StressWorkerSpec[] = [];
+    const specs: import("@apicc/core").StressWorkerSpecBase[] = [];
     process.chdir(isolatedRoot);
     try {
       const coordinatorCode = await runCli(["run-stress", API_PATH, "--case", CASE_ID, "--env", "dev", "--concurrency", "2", "--iterations", "2", "--shards", "2"], createDefaultRegistry(), () => {}, {
-        spawnWorkerFactory: () => async (spec) => {
-          specs.push(spec);
-          writeFileSync(dataPath, "row\nNEW\n");
-          return { protocolVersion: 2, ok: true, shardId: spec.shardId, samples: [sample(1)], generator: generator(), measurementWindow: measurementWindow(1) };
-        },
+        spawnLocalStressWorker: (identity, timeout, prepare) => localStressWorker(identity, timeout, async (value) => {
+          specs.push(value as import("@apicc/core").StressWorkerSpecBase); writeFileSync(dataPath, "row\nNEW\n"); return prepare(value);
+        }),
       });
       expect(coordinatorCode).toBe(0);
       expect(specs).toHaveLength(2);
@@ -280,6 +286,29 @@ describe("stress-worker 子命令", () => {
 });
 
 describe("run-stress --shards", () => {
+  it("prepare cancellation completes before an unrelated next event-loop turn and sends no requests", async () => {
+    let entered!: () => void, release!: () => void;
+    const preparing = new Promise<void>((resolve) => { entered = resolve; }), before = seenPaths.length;
+    const running = runCli(["run-stress", API_PATH, "--case", CASE_ID, "--concurrency", "2", "--iterations", "2", "--shards", "2", "--runs-dir", join(root, ".apicc", "runs-prepare-cancel")], createDefaultRegistry(), () => {}, {
+      spawnLocalStressWorker: (identity, timeout) => localStressWorker(identity, timeout, async (_configuration, signal) => new Promise<never>((_resolve, reject) => {
+        const abort = () => reject(new DOMException("Aborted", "AbortError"));
+        signal?.addEventListener("abort", abort, { once: true }); release = () => { signal?.removeEventListener("abort", abort); reject(new Error("fixture released")); }; entered();
+      })),
+    });
+    await preparing; process.emit("SIGINT");
+    try {
+      const outcome = await Promise.race([running.then(() => "finished"), new Promise<string>((resolve) => setImmediate(() => resolve("still-preparing")))]);
+      expect(outcome).toBe("finished"); expect(await running).toBe(1); expect(seenPaths.length).toBe(before);
+    } finally { release(); await running; }
+  });
+  it("SIGINT stops the single-process legacy entry and returns a nonzero incomplete report", async () => {
+    const runsDir = join(root, ".apicc", "runs-interrupt");
+    interruptRequest = () => { interruptRequest = undefined; process.emit("SIGINT"); };
+    try {
+      const code = await runCli(["run-stress", API_PATH, "--case", CASE_ID, "--concurrency", "1", "--iterations", "100", "--runs-dir", runsDir], createDefaultRegistry());
+      expect(code).toBe(1); expect(readLastReport(runsDir)).toMatchObject({ incomplete: true, verdict: { passed: false } });
+    } finally { interruptRequest = undefined; }
+  });
   it("--shards 1 零行为变化：不 spawn 子进程、报告不挂 distributed 段", async () => {
     const factoryCalls: number[] = [];
     const deps: RunCliDeps = {
@@ -307,23 +336,40 @@ describe("run-stress --shards", () => {
     expect(logs.join("\n")).toContain("压测完成");
   });
 
-  it("--shards 2 走协调分支（注入进程内替身）：spec 正确拆分、报告合并并挂 distributed 段", async () => {
-    const specs: StressWorkerSpec[] = [];
+  it("gates each redirect hop in the real legacy CLI factory at concurrency one", async () => {
+    const state = await fileStorage.load(root), project = state.workspace.groups[0]!.projects[0]!;
+    const asset = project.collections[0]!.apis[0]!, originalPath = asset.contract.request.path, originalSettings = asset.cases[0]!.requestSettingsOverride;
+    asset.contract.request.path = "/f6-redirect";
+    asset.cases[0]!.requestSettingsOverride = { followRedirects: true };
+    await fileStorage.save(root, state.workspace, { expectedRevision: state.revision, deletions: [] });
+    redirectHops.length = 0;
+    try {
+      const code = await runCli(["run-stress", API_PATH, "--case", CASE_ID, "--concurrency", "1", "--iterations", "1", "--max-rps", "1", "--runs-dir", join(root, ".apicc", "redirect-run")], createDefaultRegistry());
+      expect(code).toBe(0); expect(redirectHops).toHaveLength(2);
+      expect(redirectHops[1]! - redirectHops[0]!).toBeGreaterThanOrEqual(950);
+      expect(readLastReport(join(root, ".apicc", "redirect-run"))).toMatchObject({ totalRequests: 1, ok: 1 });
+      const planFile = join(root, '.apicc', 'short-arrival.json'), logs: string[] = [];
+      writeFileSync(planFile, JSON.stringify({ formatVersion: 1, target: { kind: 'case', collectionId: COLLECTION_ID, apiId: API_ID, caseId: CASE_ID },
+        load: { kind: 'constant-arrival', rate: 0.6 }, maxVus: 1, termination: { durationMs: 1000 } }));
+      await runCli(['run-stress-plan', `groups/${GROUP_ID}/projects/${PROJECT_ID}`, '--plan', planFile, '--runs-dir', join(root, '.apicc', 'short-arrival-run')], createDefaultRegistry(), line => logs.push(line));
+      expect(logs.join('\n')).toContain('fewer than 20 planned slots');
+      expect(logs.join('\n')).toContain('cannot verify 5%');
+    } finally {
+      const current = await fileStorage.load(root);
+      current.workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!.contract.request.path = originalPath;
+      current.workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!.cases[0]!.requestSettingsOverride = originalSettings;
+      await fileStorage.save(root, current.workspace, { expectedRevision: current.revision, deletions: [] });
+    }
+  });
+
+  it("--shards 2 uses v3 remote sessions with a single shared budget and preserves distributed diagnostics", async () => {
+    const specs: import("@apicc/core").StressWorkerSpecBase[] = [];
+    const workerIds: string[] = [];
     let factoryTimeoutMs = -1;
     const deps: RunCliDeps = {
-      spawnWorkerFactory: (ms) => {
-        factoryTimeoutMs = ms;
-        return async (spec) => {
-          specs.push(spec);
-          const samples = Array.from({ length: spec.maxIterations ?? 0 }, (_, i) => ({
-            timeMs: 5 + i, status: 200, ok: true,
-          }));
-          return {
-            protocolVersion: 2, ok: true as const, shardId: spec.shardId,
-            samples: samples.map((s) => ({ ...s, requestTimeMs: s.timeMs, scriptTimeMs: 0, iterationTimeMs: s.timeMs, requestStarted: true, requestCompleted: true })),
-            generator: generator(), measurementWindow: measurementWindow(samples.length),
-          };
-        };
+      spawnLocalStressWorker: (identity, ms, prepare) => {
+        factoryTimeoutMs = ms; workerIds.push(identity.workerId);
+        return localStressWorker(identity, ms, async (value) => { specs.push(value as import("@apicc/core").StressWorkerSpecBase); return prepare(value); });
       },
     };
     const runsDir = join(root, ".apicc", "runs-shards");
@@ -340,11 +386,11 @@ describe("run-stress --shards", () => {
     expect(factoryTimeoutMs).toBe(300_000);
     // specBase 组装正确：8 次迭代/并发 4 拆成两份（planShards D3），锚点字段齐备。
     expect(specs).toHaveLength(2);
-    expect(specs.map((s) => s.maxIterations).sort()).toEqual([4, 4]);
-    expect(specs.map((s) => s.concurrency).sort()).toEqual([2, 2]);
-    expect(specs.map((s) => s.shardId)).toEqual(["shard-0", "shard-1"]);
+    expect(specs.map((s) => s.maxIterations)).toEqual([8, 8]); // Descriptors are global; workers never schedule them.
+    expect(specs.map((s) => s.concurrency)).toEqual([4, 4]);
+    expect(workerIds).toEqual(["worker-1", "worker-2"]);
     for (const s of specs) {
-      expect(s.protocolVersion).toBe(2);
+      expect("protocolVersion" in s).toBe(false);
       expect(s.apiPath).toBe(API_PATH);
       expect(s.caseId).toBe(CASE_ID);
       expect(s.envName).toBe("dev");
@@ -358,32 +404,20 @@ describe("run-stress --shards", () => {
       shardErrors?: unknown;
     };
     expect(distributed.shards).toBe(2);
-    expect(distributed.perShard.map((p) => p.totalRequests).sort()).toEqual([4, 4]);
-    expect(distributed.perShard.every((p) => p.ok === 4 && p.failed === 0)).toBe(true);
+    expect(distributed.perShard.reduce((sum, p) => sum + p.totalRequests, 0)).toBe(8);
+    expect(distributed.perShard.every((p) => p.ok === p.totalRequests && p.failed === 0)).toBe(true);
     expect(distributed.shardErrors).toBeUndefined();
     // 摘要日志含各 shard 行（计划步骤 2：摘要日志含各 shard 行）。
-    expect(logs.join("\n")).toContain("shard-0");
-    expect(logs.join("\n")).toContain("shard-1");
+    expect(logs.join("\n")).toContain("worker-1");
+    expect(logs.join("\n")).toContain("worker-2");
   });
 
   it("部分 shard 失败：退出码 1、打「shard 失败」摘要、报告留成功样本与 shardErrors；--shard-timeout 透传工厂", async () => {
     let factoryTimeoutMs = -1;
     const deps: RunCliDeps = {
-      spawnWorkerFactory: (ms) => {
+      spawnLocalStressWorker: (identity, ms, prepare) => {
         factoryTimeoutMs = ms;
-        return async (spec) => {
-          if (spec.shardId === "shard-1") {
-            return { protocolVersion: 2, ok: false as const, shardId: spec.shardId, error: "注入的 shard 失败" };
-          }
-          const samples = Array.from({ length: spec.maxIterations ?? 0 }, (_, i) => ({
-            timeMs: 3 + i, status: 200, ok: true,
-          }));
-          return {
-            protocolVersion: 2, ok: true as const, shardId: spec.shardId,
-            samples: samples.map((s) => ({ ...s, requestTimeMs: s.timeMs, scriptTimeMs: 0, iterationTimeMs: s.timeMs, requestStarted: true, requestCompleted: true })),
-            generator: generator(), measurementWindow: measurementWindow(samples.length),
-          };
-        };
+        return localStressWorker(identity, ms, async (value) => { if (identity.workerId === "worker-2") throw new Error("private worker failure text"); return prepare(value); });
       },
     };
     const runsDir = join(root, ".apicc", "runs-partial");
@@ -399,15 +433,16 @@ describe("run-stress --shards", () => {
     // --shard-timeout 秒 → 毫秒透传 spawnWorkerFactory（裁定 A 同值超时口径）。
     expect(factoryTimeoutMs).toBe(7_000);
     expect(logs.join("\n")).toContain("shard 失败");
-    expect(logs.join("\n")).toContain("注入的 shard 失败");
+    expect(logs.join("\n")).toContain("worker_incomplete_rich_output_withheld");
+    expect(logs.join("\n")).not.toContain("private worker failure text");
     const report = readLastReport(runsDir);
-    expect(report.totalRequests).toBe(4); // 仅成功 shard 样本
+    expect(report.totalRequests).toBe(0); // Preparation failed before the shared start barrier.
     const distributed = report.distributed as {
       perShard: Array<{ shardId: string }>;
       shardErrors: Array<{ shardId: string; error: string }>;
     };
-    expect(distributed.perShard.map((p) => p.shardId)).toEqual(["shard-0"]);
-    expect(distributed.shardErrors).toEqual([{ shardId: "shard-1", error: "注入的 shard 失败" }]);
+    expect(distributed.perShard).toMatchObject([{ shardId: "worker-1", totalRequests: 0 }]);
+    expect(distributed.shardErrors).toEqual(["worker-1", "worker-2"].map((shardId) => ({ shardId, error: "worker_incomplete_rich_output_withheld" })));
   });
 
   it("--shards 0 / --shards 2.5 非法值：前置校验拒绝（shards 必须为正整数）", async () => {
@@ -438,18 +473,15 @@ describe("run-stress --shards", () => {
       createDefaultRegistry(), () => {})).rejects.toThrow(/iterations 必须为正 safe integer，收到 3\.5/);
   });
 
-  it("全局安全上限：shards 不能超过 concurrency，多 shard maxRps 在 spawn 前拒绝", async () => {
+  it("keeps the VU capacity guard and supports a single global maxRps with multiple workers", async () => {
     let spawned = 0;
-    const deps: RunCliDeps = { spawnWorkerFactory: () => {
-      spawned += 1;
-      return async () => { throw new Error("should not spawn"); };
-    } };
+    const deps: RunCliDeps = { spawnLocalStressWorker: (...args) => { spawned++; return localStressWorker(...args); } };
     const common = ["run-stress", API_PATH, "--case", CASE_ID, "--env", "dev", "--iterations", "4", "--runs-dir", join(root, ".apicc", "runs-safety")];
     await expect(runCli([...common, "--concurrency", "1", "--shards", "2"], createDefaultRegistry(), () => {}, deps))
       .rejects.toThrow(/shards 不能大于 concurrency/);
-    await expect(runCli([...common, "--concurrency", "4", "--shards", "2", "--max-rps", "10"], createDefaultRegistry(), () => {}, deps))
-      .rejects.toThrow(/多 shard \+ maxRps/);
     expect(spawned).toBe(0);
+    expect(await runCli([...common, "--concurrency", "4", "--shards", "2", "--max-rps", "10"], createDefaultRegistry(), () => {}, deps)).toBe(0);
+    expect(spawned).toBe(2);
   });
 
   it("CLI 在任何目标解析前拒绝 NaN/Infinity duration、fractional/overflow iterations", async () => {

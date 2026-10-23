@@ -172,7 +172,7 @@ const workflowDesign = useWorkflowDesignStore(apicc, localContext);
 // —— 压测 store（M2-D3 任务 3 装配，裁定 A）：同一组合根一次性创建，经 props 下传 ——
 const stress = createStressStore({
   api: apicc,
-  getContext: () => ({ root: workspace.root, locator: editor.locator }),
+  getContext: () => ({ root: workspace.root, locator: editor.locator, projectLocator: !isHome.value && !onlineMode.value ? selectedProjectLocator.value : null }),
   trustOrigin: (locator, origin) => workspace.trustStressOrigin(locator, origin).then(() => undefined),
 });
 // —— 在线 store（M3-B 任务 2 装配）：同一组合根一次性创建；挂载后对上次激活的服务器
@@ -423,17 +423,6 @@ watch(
   () => envs.envs.length,
   () => {
     void editor.reloadEnvs().catch(reportError);
-  },
-);
-
-// —— 压测会话随接口切换清空（M2-D3 任务 3，裁定 A）——
-// 旧接口的压测报告不能带到新接口：editor.apiId 变化（含首次 null→id，此时本就是空会话）
-// 即调 store.clear()（只清报告/file/错误，form 保留；同时代际 +1，在途旧 run 的完成/
-// 拒绝不再上屏——终审修复）；同接口视图往返不动 apiId，form/报告原样保留。
-watch(
-  () => JSON.stringify([workspace.root, editor.locator]),
-  () => {
-    stress.clear();
   },
 );
 
@@ -990,12 +979,28 @@ function openOnlineProjectFromHome(projectId: string) {
 
 // —— 测试模块（M11）：压测上下文 + 场景清单 + 侧栏选接口载入编辑器 ——
 const testStressOpen = ref(false);
+watch(() => JSON.stringify([workspace.root, isHome.value, onlineMode.value, selectedProjectLocator.value]), () => {
+  stress.clear(); testStressOpen.value = false;
+});
 
-function onTestStress(caseId: string) {
-  if (!editor.locator) return;
+async function onTestStress(caseId: string) {
+  if (!editor.locator || !selectedProjectLocator.value) return;
   stress.form.caseId = caseId;
   stress.form.envName = debug.selectedEnvName; // 与调试共享项目环境选中态
-  testStressOpen.value = true;
+  try {
+    await stress.openWorkbench(selectedProjectLocator.value, { kind: 'case', collectionId: editor.locator.collectionId, apiId: editor.locator.apiId, caseId });
+    if (stress.plan && debug.selectedEnvName) stress.plan.environmentId = editor.envs.find(env => env.name === debug.selectedEnvName)?.id;
+    testStressOpen.value = !!stress.planOwner;
+  } catch (e) { reportError(e); }
+}
+async function onTestWorkflowStress(locator: WorkflowLocator) {
+  const scope = selectedProjectLocator.value;
+  if (!scope || !sameProjectLocator(scope, locator)) return;
+  try {
+    await stress.openWorkbench(scope, { kind: 'workflow', workflowId: locator.workflowId });
+    if (!stress.planOwner || !sameProjectLocator(scope, selectedProjectLocator.value ?? locator)) return;
+    view.value = 'test'; testStressOpen.value = true;
+  } catch (e) { reportError(e); }
 }
 
 function onTestPickApi(locator: ApiLocator) {
@@ -1013,6 +1018,7 @@ function onTestPickApi(locator: ApiLocator) {
 const testScenarios = computed(() => {
   return selectedProjectLocator.value ? workspace.findProject(selectedProjectLocator.value)?.workflows ?? [] : [];
 });
+const stressEnvs = computed(() => selectedProjectLocator.value ? workspace.findProject(selectedProjectLocator.value)?.envs ?? [] : []);
 
 // 导入向导显隐（M10 归接口模块）：向导 close 事件由模板内联 importOpen=false 处理。
 
@@ -1200,6 +1206,7 @@ function onDividerDblClick() {
             @update:pane="onTestPane"
             @pick-api="onTestPickApi"
             @open-workflow="openWorkflowInDesigner"
+            @stress-workflow="onTestWorkflowStress"
           />
         </div>
         <div class="right-col-wrap">
@@ -1335,7 +1342,7 @@ function onDividerDblClick() {
           />
           <!-- 测试模块（M11）：侧栏导航 + 主区用例面板/压测上下文 -->
           <template v-else-if="view === 'test'">
-            <template v-if="testStressOpen && editor.locator">
+            <template v-if="testStressOpen && stress.planOwner">
               <div class="api-head">
                 <a-button size="small" data-testid="test-back-to-cases" @click="testStressOpen = false">{{ t("test.backToCases") }}</a-button>
                 <a-tag color="orange">{{ t("test.stressContext") }}</a-tag>
@@ -1344,8 +1351,10 @@ function onDividerDblClick() {
                 class="panel-view"
                 :stress="stress"
                 :api-locator="editor.locator"
+                :project-locator="selectedProjectLocator"
+                :workflows="testScenarios"
                 :cases="editor.api?.cases ?? []"
-                :envs="editor.envs"
+                :envs="stressEnvs"
                 :debug="debug"
                 :report-error="reportError"
                 :policy="selectedProjectStressPolicy"
@@ -1379,6 +1388,7 @@ function onDividerDblClick() {
             :bind-index="wfBindIndex"
             :report-error="reportError"
             @locate-evidence="locateWorkflowEvidence"
+            @stress-workflow="onTestWorkflowStress"
           />
         </div>
         </div>

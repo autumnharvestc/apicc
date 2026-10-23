@@ -84,7 +84,7 @@ const props = defineProps<{
   reportError: (e: unknown) => void;
 }>();
 const { t } = useI18n();
-const emit = defineEmits<{ "locate-evidence": [identity: EvidenceIdentity, project: ProjectLocator, root: string] }>();
+const emit = defineEmits<{ "locate-evidence": [identity: EvidenceIdentity, project: ProjectLocator, root: string]; "stress-workflow": [locator: WorkflowLocator] }>();
 
 const design = computed(() => props.workflowDesign);
 const wf = computed(() => props.workflowDesign.workflow);
@@ -661,6 +661,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
             {{ t("wf.run") }}
           </a-button>
           <a-button v-if="design.running" size="small" data-testid="wf-stop" :disabled="design.stopping" @click="stop">{{ t(design.stopping ? 'wf.control.stopping' : 'wf.control.stop') }}</a-button>
+          <a-button size="small" data-testid="wf-stress" :disabled="design.dirty || design.saving || !design.locator" @click="design.locator && emit('stress-workflow', { ...design.locator })">{{ t('case.stress') }}</a-button>
           <!-- 「结果」：运行结果就绪后可打开结果抽屉（运行完成亦会自动打开） -->
           <a-button
             size="small"

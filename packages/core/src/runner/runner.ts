@@ -19,7 +19,7 @@ import type { PluginRegistry } from "../plugin/registry.js";
 import type { ExecutableRequest, HttpHopObservation, PmApi, ScriptEngine } from "../plugin/types.js";
 import type { HttpSession } from "../http/session.js";
 import type { CaseOutcome, RunResult } from "../report/types.js";
-import { executeCase, prepareCaseExecution, type CaseExecutionResult } from "./caseExecutor.js";
+import { executeCase, prepareCaseExecution, type CaseExecutionResult, type CaseExecutionDeps } from "./caseExecutor.js";
 import { createExtractionRuntimeState, type ExtractionRuntimeState } from "../testing/extraction.js";
 import { bindPreparedTestData, readPreparedCaseData } from "../testing/data.js";
 import type { PreparedTestData } from "../testing/dataModel.js";
@@ -37,6 +37,9 @@ export class CollectionRunError extends Error {
 }
 
 export interface RunnerOptions {
+  beforeSend?: CaseExecutionDeps["beforeSend"];
+  requestGate?: CaseExecutionDeps["requestGate"];
+  resolveProtocol?: CaseExecutionDeps["resolveProtocol"];
   runsDir?: string;
   environmentId?: string;
   /** Restrict a workflow request node to its selected snapshot case and real ancestor path. */
@@ -110,7 +113,11 @@ export class CollectionRunner {
   }) {}
 
   async run(run: ProjectExecutionRun, collectionId: string, opts: RunnerOptions = {}): Promise<RunResult> {
-    const selectedRun = captureProjectExecutionRun(run);
+    return this.runPrepared(captureProjectExecutionRun(run), collectionId, opts);
+  }
+
+  /** Host-owned fixed run: preserves prepared snapshot/data ownership without recapture. */
+  async runPrepared(selectedRun: ProjectExecutionRun, collectionId: string, opts: RunnerOptions = {}): Promise<RunResult> {
     const project = selectedRun.snapshot.project;
     const collection = project.collections.find((candidate) => candidate.id === collectionId);
     if (!collection) throw new Error(`配置错误: 项目快照中不存在集合 ${collectionId}`);
@@ -222,7 +229,9 @@ export class CollectionRunner {
             row: rows[rowIndex], rowIndex, isDataDriven,
             resolver: caseResolver, envVars, envBaseUrl: baseUrl, globals: mutableGlobals(globals), persisted, persistedSnapshot,
           }, {
-            resolveProtocol: (request) => this.deps.registry.getProtocol(request),
+            resolveProtocol: opts.resolveProtocol ?? ((request) => this.deps.registry.getProtocol(request)),
+            beforeSend: opts.beforeSend,
+            requestGate: opts.requestGate,
             resolveAuth: (type) => this.deps.registry.getAuth(type),
             resolveAssert: (op) => this.deps.registry.getAssert(op),
             scriptEngine: engine,

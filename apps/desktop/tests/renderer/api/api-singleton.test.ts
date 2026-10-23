@@ -61,4 +61,8 @@ describe("api/index 生产包隔离单例（memory 回退）", () => {
 
     vi.unstubAllEnvs();
   });
+  it("returns an immediate disposer for the lazy stress progress subscription", () => {
+    const unsubscribe = getApi().onStressProgress(() => { throw new Error("disposed listener"); });
+    expect(typeof unsubscribe).toBe("function"); unsubscribe();
+  });
 });

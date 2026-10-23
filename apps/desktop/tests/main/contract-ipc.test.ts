@@ -48,6 +48,18 @@ async function fileBytes(root: string): Promise<Map<string, string>> {
 }
 
 describe("complete-locator IPC bridge", () => {
+  it("accepts only full project scopes and saved stress report IDs for compare/export", () => {
+    const scope = locators().project;
+    expect(parseIpcArgs("stress:compare", [scope, { baseFile: "base.json", candidateFile: "next.json" }])).toEqual([scope, { baseFile: "base.json", candidateFile: "next.json" }]);
+    expect(parseIpcArgs("stress:export", [scope, { file: "next.json", format: "html" }])).toEqual([scope, { file: "next.json", format: "html" }]);
+    expect(() => parseIpcArgs("stress:compare", [scope, { baseFile: "../base.json", candidateFile: "next.json" }])).toThrow();
+    expect(() => parseIpcArgs("stress:export", [{ projectId: scope.projectId }, { file: "next.json", format: "json" }])).toThrow();
+    expect(() => parseIpcArgs("stress:export", [scope, { file: "next.json", format: "html", path: "C:/secret" }])).toThrow();
+    expect(parseIpcArgs('stress-runs:list', [scope])).toEqual([scope]);
+    expect(parseIpcArgs('stress-runs:get', [scope, 'next.json'])).toEqual([scope, 'next.json']);
+    expect(() => parseIpcArgs('stress-runs:list', [{ projectId: scope.projectId }])).toThrow();
+    expect(() => parseIpcArgs('stress-runs:get', [scope, '../next.json'])).toThrow();
+  });
   it("uses strict Mock control DTOs and exposes no renderer file-read channel", () => {
     const locator = locators().project;
     const control = { locator, sourceProjectRevision: "source-revision" };

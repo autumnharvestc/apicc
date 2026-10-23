@@ -3,7 +3,7 @@ import type { ProjectExecutionRun } from "../runner/runner.js";
 import { CollectionRunner, CollectionRunError } from "../runner/runner.js";
 import { createEventBus } from "../events/bus.js";
 import { mergedEnvVars } from "../domain/envChain.js";
-import { compileWorkflowPlan, validateWorkflowRunOptions } from "./plan.js";
+import { assertWorkflowPlanOwner, compileWorkflowPlan, validateWorkflowRunOptions, type CompiledWorkflowPlan } from "./plan.js";
 import { findProjectApi } from "./references.js";
 import { WorkflowRunner, runSingleNode, type NodeResult, type WorkflowRunnerOptions, type WorkflowRunResult } from "./runner.js";
 import { evaluateWorkflowPredicate, resolveWorkflowValue, WORKFLOW_MISSING } from "./predicate.js";
@@ -19,13 +19,15 @@ import { cancellationFailure, createWorkflowDeadline, recoverableWorkflowFailure
 export type WorkflowV2RunOptions = Parameters<WorkflowRunner["run"]>[2];
 
 /** Structured v2 execution, sharing one captured plan, budget and leaf scheduler. */
-export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: string, deps: WorkflowRunnerOptions, options: WorkflowV2RunOptions = {}): Promise<WorkflowRunResult> {
+export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: string, deps: WorkflowRunnerOptions, options: WorkflowV2RunOptions = {}, preparedPlan?: CompiledWorkflowPlan): Promise<WorkflowRunResult> {
+  const now = options.monotonicNow ?? (() => performance.now());
   const environmentId = options.environmentId ?? deps.environmentId;
-  const plan = compileWorkflowPlan(execution.snapshot, workflowId, { environmentId, allowDraft: true, strict: deps.strict });
+  const plan = preparedPlan ?? compileWorkflowPlan(execution.snapshot, workflowId, { environmentId, allowDraft: true, strict: deps.strict });
+  if (preparedPlan) assertWorkflowPlanOwner(execution.snapshot, preparedPlan);
   for (const flow of plan.workflows) for (const node of flow.nodes) {
     if (!["request", "noop", "assign", "delay", "assert", "condition", "subflow", "loop", "parallel"].includes(node.kind)) throw new Error(`v2 ${node.kind} 尚未实现 (unsupported kind ${node.kind})`);
   }
-  validateWorkflowPlanData(execution.snapshot, plan, execution.preparedTestData, { preparedRowIndex: options.preparedRowIndex });
+  if (!preparedPlan || options.preparedRowIndex !== undefined) validateWorkflowPlanData(execution.snapshot, plan, execution.preparedTestData, { preparedRowIndex: options.preparedRowIndex });
   const root = plan.workflows.find((flow) => flow.id === workflowId)!;
   if (root.executionVersion !== 2) throw new Error("Expected v2 workflow");
   validateWorkflowRunOptions(root, options);
@@ -36,7 +38,7 @@ export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: 
   options = { ...options, observeCaseExecution: async (value, identity) => {
     requestFacts.requestStarted += Number(value.requestStarted === true); requestFacts.requestCompleted += Number(value.requestCompleted === true);
     await rawOptions.observeCaseExecution?.(value, identity);
-  }, observeHttp: async (event) => { if (event.type === "request") requestFacts.httpExchanges++; await (rawOptions.observeHttp ?? deps.observeHttp)?.(event); } };
+  }, observeHttp: async (event, identity) => { if (event.type === "request") requestFacts.httpExchanges++; await (rawOptions.observeHttp ?? deps.observeHttp)?.(event, identity); } };
   const project = execution.snapshot.project;
   const env = mergedEnvVars(project.environments.find((item) => item.id === environmentId), project);
   const suppliedSession = options.httpSession ?? deps.httpSession;
@@ -110,6 +112,7 @@ export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: 
   let terminalReason: "upstream-failed" | "aborted" | "fail-fast" | undefined;
     while (current) {
       const node = current;
+      const nodeStarted = now();
       const identity = createWorkflowNodeIdentity(invocation);
       const result: NodeResult = { ...identity, nodeId: node.id, label: node.label, kind: node.kind, state: "passed" };
       emit({ ...identity, nodeId: node.id, type: "node-start" });
@@ -313,7 +316,8 @@ export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: 
                 emit({ ...attemptIdentity, nodeId: node.id, type: "leaf-start" });
                 return runSingleNode(runner, execution, location, selection.testCase, environmentId, bridge, {
                 workspaceRoot: options.workspaceRoot ?? deps.workspaceRoot, httpSession,
-                observeHttp: options.observeHttp ?? deps.observeHttp, preparedRowIndex: options.preparedRowIndex,
+                observeHttp: (event) => (options.observeHttp ?? deps.observeHttp)?.(event, { ...attemptIdentity, workflowId: id, nodeId: node.id }), preparedRowIndex: options.preparedRowIndex,
+                beforeSend: options.beforeSend, requestGate: options.requestGate, resolveProtocol: options.resolveProtocol,
                 observeCaseExecution: async (value, rowIdentity) => {
                   Object.assign(value.outcome, attemptIdentity, { nodeId: node.id });
                   await options.observeCaseExecution?.(value, { ...rowIdentity, ...attemptIdentity, nodeId: node.id });
@@ -414,6 +418,7 @@ export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: 
       if (result.primaryError) { result.state = "failed"; result.error = result.primaryError.message; result.failureKind = result.primaryError.failureKind; }
       else if (result.recoveredError) { result.state = "passed"; result.error = undefined; result.failureKind = undefined; }
       emit({ ...identity, nodeId: node.id, type: "node-end", state: result.state, cause: result.primaryError?.cause, code: result.primaryError?.code, failureKind: result.failureKind, message: result.error });
+      options.observeNodeExecution?.({ ...identity, workflowId: id, nodeId: node.id, state: result.state, durationMs: now() - nodeStarted });
       // previous is a logical summary only; response values require explicit extraction.
       frame.setPrevious({ nodeId: node.id, kind: node.kind, state: result.state, passed: result.state === "passed" || result.state === "noop", ...(result.failureKind ? { failureKind: result.failureKind } : {}) });
       if (condition !== undefined) selectedPorts.set(node.id, String(condition));
@@ -434,6 +439,7 @@ export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: 
       const identity = createWorkflowNodeIdentity(invocation);
       results.set(node.id, { ...identity, nodeId: node.id, label: node.label, kind: node.kind, state: "skipped", skipReason: reachable.has(node.id) ? terminalReason ?? "condition-pruned" : "condition-pruned" });
       emit({ ...identity, nodeId: node.id, type: "node-skipped", state: "skipped", cause: signal.aborted ? cancellationFailure(signal).cause : undefined });
+      options.observeNodeExecution?.({ ...identity, workflowId: id, nodeId: node.id, state: "skipped", durationMs: 0 });
     }
     const nodeResults = [...results.values()];
     const failed = nodeResults.filter((item) => item.state === "failed").length;
@@ -446,7 +452,9 @@ export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: 
   }
   try {
     const identity = createWorkflowInvocation(workflowId);
-    const result = (await invoke(workflowId, options.inputs ?? {}, options.invocationId ? { ...identity, invocationId: options.invocationId } : identity)).result;
+    const executed = await invoke(workflowId, options.inputs ?? {}, options.invocationId ? { ...identity, invocationId: options.invocationId } : identity);
+    const result = executed.result;
+    if (result.verdict === "passed" && options.observeOutputs) options.observeOutputs(expressions(root.outputs, executed.frame));
     result.reportingMode = "workflow-invocation-v2"; result.trace = trace; result.requestFacts = requestFacts;
     return result;
   } finally {
