@@ -944,9 +944,14 @@ describe("压测 IPC", () => {
     const api = await createApi(deps, collection, { name: "plan", method: "GET", baseUrl: origin, path: "/" });
     const detail = await deps.handle("api:get", {}, api.locator);
     const events: import("../../src/shared/types.js").StressProgressDTO[] = [];
-    const times: number[] = []; let progressFinished!: () => void;
+    const times: number[] = []; let progressFinished!: () => void, regularProgressReady!: () => void;
     const finishedProgress = new Promise<void>((resolve) => { progressFinished = resolve; });
-    const sender = { send(_channel: string, progress: import("../../src/shared/types.js").StressProgressDTO) { times.push(performance.now()); events.push(progress); if (progress.state === "finished") progressFinished(); } };
+    const regularProgress = new Promise<void>((resolve) => { regularProgressReady = resolve; });
+    const sender = { send(_channel: string, progress: import("../../src/shared/types.js").StressProgressDTO) {
+      events.push(progress);
+      if (progress.state === "finished") progressFinished();
+      else { times.push(performance.now()); if (times.length >= 2) regularProgressReady(); }
+    } };
     try {
       const plan = { formatVersion: 1 as const, target: { kind: "case" as const, collectionId: collection.id, apiId: api.id, caseId: detail.api.cases[0]!.id }, load: { kind: "constant-vus" as const, vus: 1 }, termination: { maxIterations: 1 } };
       const { StressPlanSchema } = await import("@apicc/core");
@@ -958,12 +963,16 @@ describe("压测 IPC", () => {
       await expect(deps.handle("stress:stop", { sender }, { runId: uuid(999), root: identity.root, projectLocator: project.locator })).rejects.toThrow(/身份不匹配/);
       await expect(deps.handle("stress:stop", { sender: {} }, { runId: identity.runId, root: identity.root, projectLocator: project.locator })).rejects.toThrow(/身份不匹配/);
       expect(events.some((event) => event.state === "finished")).toBe(false);
+      await regularProgress;
       release(); const result = await running;
       await finishedProgress;
       expect(result.ok).toBe(true);
       if (!result.ok || !("kind" in result)) throw new Error("Expected strict plan output");
       expect(result.kind).toBe("plan"); expect(result.report.formatVersion).toBe(2); expect(result.report.iterations.completed).toBe(1);
       expect(events.at(-1)?.state).toBe("finished");
+      expect(events.filter((event) => event.state === "finished")).toHaveLength(1);
+      // G-05 permits one immediate final flush after real close/persist; ordinary progress remains throttled.
+      expect(times.length).toBeGreaterThanOrEqual(2);
       expect(times.slice(1).every((value, index) => value - times[index]! >= 249)).toBe(true);
       expect(Object.keys(identity).sort()).toEqual(["activeVus", "atMs", "completedIterations", "droppedIterations", "generation", "invocationId", "phase", "projectLocator", "root", "runId", "sourceRoot", "stageId", "startedIterations", "state", "target"]);
       expect(identity.invocationId).toBe(input.invocationId); expect(identity.target).toEqual(plan.target);
