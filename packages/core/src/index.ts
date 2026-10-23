@@ -2,6 +2,10 @@ import { createSystemSecretStore as createInternalSystemSecretStore } from "./cr
 import type { SecretStore as SecretStoreContract } from "./credentials/types.js";
 
 export * from "./shared.js";
+export { loadUserPlugins } from "./plugins/loader.js";
+export { createUserPluginHost, createUserPluginHostFromSnapshot, assertPluginRuntimeSnapshot } from "./plugins/runtime.js";
+export type { PluginManifest, PluginLoadEntry, PluginLoadResult, PluginLoaderOptions, PluginContributionSummary,
+  UserPluginHost, UserPluginBindings, PluginRuntimeEntryV1, PluginRuntimeSnapshotV1 } from "./plugins/types.js";
 export * from "./stress/execution.js";
 export { runStressSchedule } from "./stress/loadScheduler.js";
 export { runStressPlan } from "./stress/plannedRunner.js";

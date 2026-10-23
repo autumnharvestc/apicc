@@ -81,6 +81,10 @@ export type HttpHopObservation =
   | { type: "failure"; hopIndex: number; url: string; stage: string; code: string; networkStarted: boolean; encodedBytes?: number; decodedBytes?: number; response?: HttpIncompleteResponseObservation; requestBody: HttpRequestBodyObservation; requestBodyChain: HttpRequestBodyObservation };
 
 export interface HttpRuntimeOptions {
+  /** Original per-run/VU managed client, owned and closed exclusively by the host. */
+  pluginTransport?: ProtocolClient;
+  pluginRunId?: string;
+  pluginVuId?: string;
   files?: CapturedRequestFiles;
   session?: HttpSession;
   /** Host-only immutable network state prepared once for this run. */
@@ -106,6 +110,10 @@ export interface HttpExecuteOptions {
 }
 
 export interface ProtocolClient {
+  /** Internal marker set only by the SDK adapter. */
+  sdkProtocol?: true;
+  /** Internal borrowed owner for host wrappers; never exposed in SDK views. */
+  sdkTransport?: ProtocolClient;
   name: string;
   canHandle(request: ExecutableRequest): boolean;
   execute(request: ExecutableRequest, opts: HttpExecuteOptions): Promise<ExecutionResponse>;
@@ -168,10 +176,16 @@ export interface ScriptEngine {
   run(code: string, ctx: ScriptContext): void;
 }
 
+export interface ReporterOutputOptions {
+  /** Current run boundary; never stored on a shared registry or catalog. */
+  boundary?: import("../report/evidence.js").EvidenceOutputBoundary;
+  /** Host explicitly confirms that projectRun/redactExecutionOutput already ran. */
+  alreadyProjected?: boolean;
+}
 export interface Reporter {
   format: string;
   /** 写出报告文件并返回绝对路径。 */
-  render(result: RunResult, outDir: string): Promise<string>;
+  render(result: RunResult, outDir: string, output?: ReporterOutputOptions): Promise<string>;
 }
 
 export interface ImportedProject {
@@ -194,7 +208,11 @@ export interface Importer {
   parse(content: string): ImportedProject;
 }
 
-export interface LoadProblem { file: string; message: string }
+export interface LoadProblem {
+  file: string; message: string;
+  code?: string; stage?: string; pluginId?: string; contributionId?: string;
+  actual?: string | number; required?: string | number; action?: string;
+}
 
 export interface StorageSaveOptions {
   expectedRevision: string;

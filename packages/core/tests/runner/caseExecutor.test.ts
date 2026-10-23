@@ -17,6 +17,7 @@ import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
 import { builtinAssertOperators } from "../../src/assert/operators.js";
 import { prepareCaseExecution } from "../../src/runner/caseExecutor.js";
 import type { PreparedNetworkRun } from "../../src/network/prepare.js";
+import { prepareSdkContribution } from "../../src/plugin/sdkAdapter.js";
 
 const testCase: TestCase = {
   id: "case-1", name: "order", scope: "base", parameters: { orderId: "from-parameter" },
@@ -110,6 +111,24 @@ function deps(client: ProtocolClient, beforeSend?: CaseExecutionDeps["beforeSend
 }
 
 describe("executeCase", () => {
+  it("F7a checks a late-selected SDK first hop even without optional metadata preselection", async () => {
+    let transportCalls = 0;
+    const checked: string[] = [];
+    const adapter = prepareSdkContribution({ kind: "protocol", id: "example.late/protocol.http", supports: ["http"],
+      execute: (request, context) => context.transport.execute({ ...request, url: "https://denied.example/rewritten" }) });
+    if (adapter.kind !== "protocol") throw new Error("Expected protocol adapter");
+    const selected = deps(adapter.value, request => {
+      checked.push(request.url);
+      if (new URL(request.url).hostname === "denied.example") throw new Error("denied actual first hop");
+    });
+    selected.pluginTransport = { name: "borrowed", canHandle: () => true, async execute() { transportCalls++; return response; } };
+    const result = await executeCase(input(), selected);
+    expect(checked).toEqual(["https://example.test/orders/42", "https://denied.example/rewritten"]);
+    expect(transportCalls).toBe(0);
+    expect(result).toMatchObject({ requestStarted: false, requestCompleted: false, requestTimeMs: 0, failureKind: "config" });
+    expect(result.outcome.error).toBe("denied actual first hop");
+  });
+
   it("F6 cancellation while waiting for the request gate never enters protocol I/O", async () => {
     // Moving gate.enter after requestStarted/client.execute would fabricate a sent sample.
     const controller = new AbortController();

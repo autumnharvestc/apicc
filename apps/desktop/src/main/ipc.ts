@@ -188,7 +188,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
   // 压测控制器（M2-D3 任务 1）：状态挂 deps 闭包（进程内单例），ws:open/ws:create 切换
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
   const credentials = createDesktopCredentialHost(session, options.credentials);
-  const stress = createStressController(session, { onProgress(progress, owner) {
+  const stress = createStressController(session, { registry: () => pluginsRuntime.registry(), onProgress(progress, owner) {
     const sender = owner as { send?: (channel: string, value: unknown) => void; isDestroyed?: () => boolean } | undefined;
     if (sender?.send && !sender.isDestroyed?.()) sender.send(IpcEvent.StressProgress, progress);
   } }, credentials);

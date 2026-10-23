@@ -15,9 +15,17 @@ import type { PluginsListResult } from "../../shared/plugins/contract.js";
  */
 export function createPluginsListFixture(): PluginsListResult {
   return {
+    enabled: true,
+    hostVersion: "0.1.0",
+    bindings: [],
     plugins: [
       {
+        key: "loaded:example.demo",
         kind: "loaded",
+        pluginId: "example.demo",
+        source: "C:/example/plugins/demo",
+        apiVersion: 1,
+        requiredHost: ">=0.1.0 <0.2.0",
         name: "apicc-plugin-example",
         version: "1.0.0",
         contributions: {
@@ -25,19 +33,24 @@ export function createPluginsListFixture(): PluginsListResult {
           auths: [],
           asserts: [],
           scripts: [],
-          reporters: ["example-md"],
-          importers: ["example-csv"],
+          reporters: ["example.demo/reporter.example-md"],
+          importers: ["example.demo/importer.example-csv"],
         },
       },
       {
+        key: "failed:example.broken",
         kind: "failed",
+        pluginId: "example.broken",
+        source: "C:/example/plugins/broken",
+        code: "setup_failed",
+        stage: "setup",
         name: "apicc-plugin-broken",
         error: "入口模块语法错误: Unexpected token (1:0)",
       },
     ],
     importers: [
       ...createDefaultRegistry().listImporters().map((i) => i.name),
-      "example-csv",
+      "example.demo/importer.example-csv",
     ],
   };
 }

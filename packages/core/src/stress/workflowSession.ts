@@ -6,7 +6,7 @@ import { JsonValueSchema, StringRecordSchema, type JsonValue } from "../contract
 import { assertPreparedStressExecution, type PreparedStressExecution, type StressExecutionDeps, type StressIterationContext, type StressIterationResult, type StressLifecycleHostContext, type StressLifecycleResult, type StressMetricEvent, type StressVuHostContext, type StressVuSession } from "./execution.js";
 import { createHttpClient, type ManagedProtocolClient } from "../http/client.js";
 import { createHttpSession, type HttpSession } from "../http/session.js";
-import type { ExecutableRequest } from "../plugin/types.js";
+import type { ExecutableRequest, ProtocolClient } from "../plugin/types.js";
 import { assertStressTargetAllowed, isLoopbackStressOrigin, normalizeStressPolicy, StressSafetyError } from "./safety.js";
 import { createStressCaseVuSession } from "./caseSession.js";
 import { validateWorkflowRunOptions } from "../workflow/plan.js";
@@ -49,10 +49,17 @@ async function executeObservedWorkflow(target: PreparedWorkflowExecution, deps: 
   const stamp = () => ({ ...(context?.observation ?? host.observation)(), stageId: context?.stageId ?? null,
     ...("vuId" in host ? { vuId: String(host.vuId) } : {}), ...(context ? { iterationId: context.iterationId } : {}) });
   let outputs: Readonly<Record<string, JsonValue>> = {};
+  const withOwner = (selected: ProtocolClient | undefined): ProtocolClient | undefined => selected?.sdkProtocol ? {
+    ...selected, sdkTransport: resources.client, execute: (input, options) => selected.execute(input, { ...options,
+      runtime: { ...options.runtime, pluginTransport: options.runtime?.pluginTransport ?? resources.client,
+        pluginRunId: options.runtime?.pluginRunId ?? host.runId, pluginVuId: options.runtime?.pluginVuId ?? ("vuId" in host ? String(host.vuId) : undefined) } }),
+  } : undefined;
   try {
     const root = target.plan.workflows.find((flow) => flow.id === target.plan.rootWorkflowId)!;
     const result = await runner.runPrepared(target, { environmentId: target.plan.environmentId, ...(root.executionVersion === 2 ? { inputs } : {}), signal,
-      httpSession: resources.httpSession, resolveProtocol: (request) => resources.client.canHandle(request) ? resources.client : undefined,
+      httpSession: resources.httpSession,
+      resolveSdkProtocol: (request) => withOwner(deps.registry.getSdkProtocol(request)),
+      resolveProtocol: (request) => withOwner(deps.registry.getProtocol(request)) ?? (resources.client.canHandle(request) ? resources.client : undefined),
       beforeSend, requestGate: host.gate, monotonicNow: () => host.clock.now(),
       observeOutputs: context ? undefined : (value) => { outputs = value; },
       observeHttp(event, identity) {
@@ -159,7 +166,8 @@ export function createPreparedStressHost(prepared: PreparedStressExecution, deps
         } else {
           const engine = deps.registry.getScriptEngine("javascript"); if (!engine) throw new Error("Missing javascript engine");
           session = createStressCaseVuSession({ run, fixedRun: true, collectionId: target.collectionId, apiId: target.apiId, caseId: target.caseId, environmentId: compiled.plan.environmentId }, {
-            managedClient: owner.client, httpSession: owner.httpSession, workspaceRoot: deps.workspaceRoot, resolveProtocol: (request) => owner.client.canHandle(request) ? owner.client : undefined,
+            managedClient: owner.client, httpSession: owner.httpSession, workspaceRoot: deps.workspaceRoot, resolveProtocol: (request) => deps.registry.getProtocol(request),
+            resolveSdkProtocol: (request) => deps.registry.getSdkProtocol(request),
             resolveAuth: (type) => deps.registry.getAuth(type), resolveAssert: (op) => deps.registry.getAssert(op), scriptEngine: engine,
           }, { workerId: Number(vuId), host, evidence: deps.evidence, initialInputs: inputs,
             concurrency: compiled.schedule.effective.maxRequestConcurrency, maxRps: compiled.schedule.effective.maxRps ?? undefined,

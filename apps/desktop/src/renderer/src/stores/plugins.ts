@@ -1,5 +1,5 @@
 import { createPinia, defineStore } from "pinia";
-import type { PluginLoadEntry } from "../../../shared/plugins/contract.js";
+import type { PluginLoadEntry, PluginsListResult } from "../../../shared/plugins/contract.js";
 import type { ApiccApi } from "../../../shared/types.js";
 
 /**
@@ -21,6 +21,9 @@ export function createPluginsStore(deps: { api: ApiccApi }) {
     state: () => ({
       entries: [] as PluginLoadEntry[],
       importers: [] as string[],
+      bindings: [] as NonNullable<PluginsListResult["bindings"]>,
+      enabled: true,
+      hostVersion: "",
       loading: false,
       loaded: false,
       /** 拉取失败的可读错误（init/refresh 共用通道；成功拉取即清空）。 */
@@ -43,6 +46,9 @@ export function createPluginsStore(deps: { api: ApiccApi }) {
           const result = await api.pluginsList();
           this.entries = result.plugins;
           this.importers = result.importers;
+          this.bindings = result.bindings ?? [];
+          this.enabled = result.enabled !== false;
+          this.hostVersion = result.hostVersion ?? "";
         } catch (e) {
           this.error = e instanceof Error ? e.message : String(e);
         } finally {

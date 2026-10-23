@@ -10,10 +10,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm -C ../core build && pnpm build && vitest run"
+    "test": "pnpm -C ../plugin-sdk build && pnpm -C ../core build && pnpm build && vitest run"
   },
   "dependencies": {
     "@apicc/core": "workspace:*",
+    "@apicc/plugin-sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "commander": "^15.0.0",
     "yaml": "^2.9.0",

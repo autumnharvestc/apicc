@@ -1,5 +1,5 @@
 # CI 四 job 工作流（M2-D 规格决策 D7；M3-C 任务 2 增 server-test）：
-#   test          — 三包 build + test，core 另行 typecheck（覆盖测试文件类型；
+#   test          — SDK 与各包 build + test，SDK/core 另行 typecheck（覆盖测试文件类型；
 #                   build 的 tsc 只编译 src，vitest 转译不查类型）（ubuntu，跳过 Electron 二进制下载）
 #   server-test   — 服务端 mvn test（ubuntu，JDK 21，统一 settings.xml 镜像，Maven 仓库缓存）
 #   brand-gate    — 品牌中立门禁：脚本词表自检 + git 跟踪文件全树扫描
@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   test:
-    name: 三包 build + test
+    name: SDK 与各包 build + test
     runs-on: ubuntu-latest
     env:
       # 单测与构建不启动 Electron，跳过其运行时二进制下载省 ~100MB 与数分钟；
@@ -61,6 +61,10 @@ jobs:
             m2-${{ runner.os }}-
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
+      - name: 构建 SDK（Core 的前置产物）
+        run: pnpm -C packages/plugin-sdk build
+      - name: SDK 类型检查（含测试文件）
+        run: pnpm -C packages/plugin-sdk typecheck
       - name: 构建 core（包入口类型检查的前置产物）
         # Core 的包入口测试消费 exports 指向的 dist 声明，干净检出须先生成；
         # build 自身检查 src 类型，随后 typecheck 补充覆盖 tests。
@@ -71,11 +75,11 @@ jobs:
         # `tsc --noEmit`（tsconfig.json include src+tests）能拦，故单列一步。
         # desktop 的 typecheck/typecheck:vue 已含在其 build 首两段，无需单列。
         run: pnpm -C packages/core typecheck
-      - name: 构建其他包（core 已构建）
-        # 显式排除 Core，其他包仍按依赖拓扑序构建，避免重复生成 Core 产物。
-        run: pnpm --filter "!@apicc/core" -r build
+      - name: 构建其他包（SDK 与 core 已构建）
+        # 显式排除 SDK/Core，其他包仍按依赖拓扑序构建，避免重复生成产物。
+        run: pnpm --filter "!@apicc/core" --filter "!@apicc/plugin-sdk" -r build
       - name: 全部包测试
-        # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 core build，序列自洽
+        # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 SDK/core build，序列自洽
         # 与 scripts/test-all.ps1 保持一致：不让 admin pretest/build 与 Core 争用 CPU，
         # 并将 worker 上限作为 test 脚本参数传给各包，而非 pnpm 自身参数。
         run: pnpm -r --workspace-concurrency=1 test --maxWorkers=2
@@ -169,16 +173,20 @@ jobs:
         env:
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
         run: node node_modules/electron/install.js
+      - name: 构建 SDK（Core 的前置产物）
+        run: pnpm -C packages/plugin-sdk build
+      - name: SDK 类型检查（含测试文件）
+        run: pnpm -C packages/plugin-sdk typecheck
       - name: 构建 core 与 cli（desktop 构建的前置类型依赖）
         # @apicc/core 的 types 指向构建产物 dist/index.d.ts（desktop 无 paths 映射），
         # fresh runner 上 core/dist 缺失时 desktop 的 typecheck（dist:dir 首段）会以
         # `Cannot find module '@apicc/core'` 崩溃并连锁 implicit any——首次 CI 红的根因。
         # filter 按 package.json 的 name 匹配（pnpm filter 不认目录路径：目录形式
         # "!apps/desktop" 匹配不到任何包，pnpm 11 实测退化为全量构建），故用包名否定，
-        # 只建 core+cli；desktop 由下方 dist:dir 自建（三段构建含 typecheck），避免重复。
+        # SDK 已在前一步构建；desktop 由下方 dist:dir 自建（三段构建含 typecheck），避免重复。
         # 注：否定 filter 会打印一行 `No projects matched the filters "…apps\desktop"` 告警，
         # 是 pnpm 对被排除包的例行输出（exit 0），非失败，勿误读。
-        run: pnpm --filter "!@apicc/desktop" -r build
+        run: pnpm --filter "!@apicc/desktop" --filter "!@apicc/plugin-sdk" -r build
       - name: 生成应用图标
         run: pnpm -C apps/desktop gen:icon
       - name: 打包（dir 模式，含三段构建）

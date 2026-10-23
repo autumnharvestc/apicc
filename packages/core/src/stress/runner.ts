@@ -74,7 +74,7 @@ function numericFailureReport(report: StressReport): StressReport {
     ...(distributed ? { distributed: { protocolVersion: 3, shards: distributed.shards, dataComplete: false, perShard: distributed.perShard.map((worker, i) => ({
       shardId: `worker-${i + 1}`, totalRequests: worker.totalRequests, ok: worker.ok, failed: worker.failed, rps: worker.rps,
       generator: { availability: "unavailable" as const, unavailableReason: "worker_incomplete_rich_output_withheld" }, measurementWindow: { ...worker.measurementWindow },
-    })), shardErrors: Array.from({ length: distributed.shards }, (_, i) => ({ shardId: `worker-${i + 1}`, error: "worker_incomplete_rich_output_withheld" })) } } : {}),
+    })), shardErrors: Array.from({ length: distributed.shards }, (_, i) => ({ shardId: `worker-${i + 1}`, error: distributed.shardErrors?.some(e => e.shardId === `worker-${i + 1}` && e.error === "plugin_runtime_mismatch") ? "plugin_runtime_mismatch" : "worker_incomplete_rich_output_withheld" })) } } : {}),
   };
 }
 export class StressRunner {

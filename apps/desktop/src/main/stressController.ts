@@ -13,6 +13,7 @@ import {
   StressRunner,
   validateStressRunOptions,
   type ProtocolClient,
+  type PluginRegistry,
   type GeneratorMetricsCollector,
   CurrentStressReportSchema,
   StressSafetyError,
@@ -32,6 +33,7 @@ type Session = ReturnType<typeof createSession>;
 export type ManagedProtocolClient = ProtocolClient & { close(): Promise<void> };
 
 export interface StressControllerDeps {
+  registry?: () => Promise<PluginRegistry>;
   createManagedClient?: (workerId: number, connectionMode: "pooled" | "fresh") => ManagedProtocolClient;
   createGeneratorCollector?: () => GeneratorMetricsCollector;
   writeReport?: (path: string, content: string) => void;
@@ -159,7 +161,7 @@ export function createStressControllerWithHost(
       const boundary = createExecutionOutputBoundary(prepared.markers);
       if (controller.signal.aborted) throw new Error("压测准备已取消");
 
-      const registry = createDefaultRegistry();
+      const registry = await (deps.registry?.() ?? Promise.resolve(createDefaultRegistry()));
       const policy = snapshot.project.stressPolicy;
       let safetyFailure: StressSafetyError | undefined;
       const runner = new StressRunner({
@@ -189,6 +191,7 @@ export function createStressControllerWithHost(
               ...(env ? { environmentId: env.id } : {}),
             }, {
               resolveProtocol: (request) => registry.getProtocol(request),
+              resolveSdkProtocol: (request) => registry.getSdkProtocol(request),
               resolveAuth: (type) => registry.getAuth(type) ?? builtinAuthProviders.find((provider) => provider.type === type),
               resolveAssert: (op) => registry.getAssert(op),
               scriptEngine: registry.getScriptEngine("javascript")!,
@@ -200,6 +203,7 @@ export function createStressControllerWithHost(
                 : createHttpClient({ connectionMode: captured.connectionMode }),
             }, {
               workerId,
+              runId,
               concurrency: captured.concurrency,
               maxRps: policy?.maxRps,
               confirmedTargetOrigins: captured.confirmedTargetOrigins,
@@ -267,7 +271,7 @@ export function createStressControllerWithHost(
       prepared = await prepareDesktopTestData(prepared, selections, root, plan.environmentId);
       const execution = bindPreparedStressExecution(compiled, prepared.run);
       const evidence = createExecutionEvidenceCollector({ projectId: snapshot.project.id, definitionRevision: snapshot.definitionRevision, environmentId: plan.environmentId, dataDigest: prepared.run.preparedTestData?.digest }, prepared.markers, { maxSamples: 20 });
-      const registry = createDefaultRegistry();
+      const registry = await (deps.registry?.() ?? Promise.resolve(createDefaultRegistry()));
       const clock: StressClock = { now: () => performance.now(), wallNow: () => Date.now(), sleep(ms, signal) { return new Promise<void>((resolve, reject) => {
         if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
         const abort = () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); };

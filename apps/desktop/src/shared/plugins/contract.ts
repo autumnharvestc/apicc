@@ -23,8 +23,18 @@ export interface PluginContributions {
  * - failed：name + error（加载/校验/setup 失败原因，D3 失败隔离的桌面可见面），不带贡献。
  */
 export interface PluginLoadEntry {
-  kind: "loaded" | "failed";
+  key?: string;
+  kind: "loaded" | "failed" | "disabled";
   name: string;
+  pluginId?: string;
+  source?: string;
+  apiVersion?: number;
+  requiredHost?: string;
+  code?: string;
+  stage?: string;
+  actual?: string | number;
+  required?: string | number;
+  action?: string;
   version?: string;
   contributions?: PluginContributions;
   error?: string;
@@ -37,6 +47,9 @@ export interface PluginLoadEntry {
  *   数据源（D5），随任务 2 真加载后自动纳入插件贡献。
  */
 export interface PluginsListResult {
+  enabled?: boolean;
+  hostVersion?: string;
+  bindings?: { key: string; kind: "protocols" | "auths"; target: string; contributionId: string; active: boolean }[];
   plugins: PluginLoadEntry[];
   importers: string[];
 }

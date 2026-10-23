@@ -1,51 +1,56 @@
+import type { AuthKindV1, ProtocolKindV1, ReadonlyJsonObject } from "@apicc/plugin-sdk";
 import type { LoadProblem } from "../plugin/types.js";
+import type { PluginCatalog } from "../plugin/catalog.js";
+import type { PluginRegistry } from "../plugin/registry.js";
 
-/**
- * 用户级插件清单形状（规格 M7 D1）：~/.apicc/plugins.json。
- * 仅用户级——不支持工作区级清单（工作区文件会进 Git，克隆即执行任意代码是供应链陷阱）。
- */
+export interface UserPluginEntry { source: string; enabled?: boolean; config?: unknown }
+export interface UserPluginBindings {
+  protocols: Partial<Record<ProtocolKindV1, string>>;
+  auths: Partial<Record<AuthKindV1, string>>;
+}
+/** User-owned ~/.apicc/plugins.json. Never read from project assets. */
 export interface PluginManifest {
-  plugins: string[];
+  plugins: (string | UserPluginEntry)[];
+  bindings?: Partial<UserPluginBindings>;
 }
-
-/**
- * 单插件贡献摘要（规格 D5 分类口径）：该插件 setup 执行期间经注册面注册的各类贡献计数。
- * 经注册面包装代理统计（先计数再原样委托同一 registry，注册语义不变）。
- */
 export interface PluginContributionSummary {
-  protocols: number;
-  auths: number;
-  asserts: number;
-  scriptEngines: number;
-  reporters: number;
-  importers: number;
-  storage: number;
+  protocols: number; auths: number; asserts: number; scriptEngines: number;
+  reporters: number; importers: number; storage: number;
 }
-
-/** 已成功加载并注册的插件条目（CLI `plugins list` 与桌面插件视图的展示口径）。 */
 export interface PluginLoadEntry {
-  name: string;
-  version: string;
-  /** 清单登记的原始条目（npm 包名或本地路径），诊断时可回溯到用户写法。 */
-  source: string;
-  contributions: PluginContributionSummary;
+  source: string; pluginId: string; name: string; version: string; apiVersion: number;
+  engines: { apicc: string }; contributions: PluginContributionSummary;
+  contributionIds: string[];
 }
-
-/** loadUserPlugins 结果：成功条目与失败问题（失败已隔离，不抛出）。 */
 export interface PluginLoadResult {
-  loaded: PluginLoadEntry[];
-  problems: LoadProblem[];
+  loaded: PluginLoadEntry[]; problems: LoadProblem[];
+  bindings: UserPluginBindings;
+  disabled?: { source: string }[];
 }
-
 export interface PluginLoaderOptions {
-  /**
-   * 用户级目录（清单位于 <homeDir>/.apicc/plugins.json）；缺省 os.homedir()。
-   * 测试注入临时目录，免真写 HOME。
-   */
   homeDir?: string;
-  /**
-   * 动态 import 注入（规格 D4：纯函数化便于测试）；缺省为源码原生 import()——
-   * TS 按 NodeNext/ESNext 编译不降级转译，产物即真实 Node ESM 加载（裁定②口径，报告已注明）。
-   */
+  /** Supplied by the product composition root, never inferred from SDK/Core. */
+  hostVersion?: string;
+  enabled?: boolean;
+  /** Optional composition-root base; preserves embedded storage and extensions. */
+  registry?: PluginRegistry;
   importFn?: (specifier: string) => Promise<unknown>;
+}
+export interface PluginRuntimeEntryV1 {
+  /** Fixed absolute static manifest path, independent of worker HOME/cwd. */
+  source: string; pluginId: string; version: string; apiVersion: 1;
+  manifestDigest: string; entryDigest: string; config: ReadonlyJsonObject;
+}
+export interface PluginRuntimeSnapshotV1 {
+  pluginRuntimeVersion: 1; enabled: boolean; hostVersion: string; digest: string;
+  entries: PluginRuntimeEntryV1[]; bindings: UserPluginBindings;
+}
+export interface UserPluginHost {
+  registry(): Promise<PluginRegistry>;
+  summary(): Promise<PluginLoadResult>;
+  snapshot(): Promise<PluginRuntimeSnapshotV1>;
+}
+/** Internal assembly state; not part of public list/IPC output. */
+export interface PluginLoadState {
+  catalog: PluginCatalog; entries: PluginRuntimeEntryV1[];
 }

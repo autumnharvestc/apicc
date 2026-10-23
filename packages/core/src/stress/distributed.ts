@@ -30,6 +30,7 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
   const states: { id: string; peer: StressWorkerPeer; controller: AbortController; vus: Map<string, { host: StressVuHostContext; iteration: string | null; stage: string | null; closed: boolean }>; leases: Map<string, { vuId: string; requestId: string; release(): void }>; drained: boolean; counts?: { total: number; ok: number; failed: number; eligibleCompleted: number }; generator?: StressGeneratorMetrics }[] = [];
   let uncertainty = 0, leaseSerial = 0, privateComplete = false, evidence: import("../report/types.js").SafeExecutionEvidence[] = [];
   let drainPromise: Promise<void> | undefined, closed: Promise<void> | undefined;
+  let pluginMismatchShard: string | undefined;
   const releaseState = (state: typeof states[number]) => { state.controller.abort(); for (const lease of state.leases.values()) lease.release(); state.leases.clear(); };
   const stop = () => { for (const state of states) { void state.peer.request({ type: "stop" }).catch(() => {}); } };
   signal.addEventListener("abort", stop, { once: true });
@@ -80,6 +81,7 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
     }
   } catch (error) {
     if (!options.allowNumericFailure) { signal.removeEventListener("abort", stop); await Promise.allSettled(states.map((s) => s.peer.close())); throw error; }
+    if ((error as { code?: unknown } | null)?.code === "plugin_runtime_mismatch") pluginMismatchShard = states.at(-1)?.id;
     failures.add("worker-missing"); childAbort.abort();
   }
   const drain = () => drainPromise ??= (async () => {
@@ -156,7 +158,7 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
     return available.length ? aggregateGeneratorMetrics(available, available.length === options.shards + 1 && all.every((g) => g.availability !== "partial") ? "available" : "partial") : { availability: "unavailable", unavailableReason: "worker_incomplete" };
   }, failureEvidence: () => evidence, distributed(summary) {
     return { protocolVersion: 3, shards: options.shards, dataComplete: privateComplete && failures.size === 0,
-      ...(!privateComplete ? { shardErrors: Array.from({ length: options.shards }, (_, i) => ({ shardId: `worker-${i + 1}`, error: "worker_incomplete_rich_output_withheld" })) } : {}), perShard: states.flatMap((state) => {
+      ...(!privateComplete ? { shardErrors: Array.from({ length: options.shards }, (_, i) => ({ shardId: `worker-${i + 1}`, error: pluginMismatchShard === `worker-${i + 1}` ? "plugin_runtime_mismatch" : "worker_incomplete_rich_output_withheld" })) } : {}), perShard: states.flatMap((state) => {
       if (!state.counts || !state.generator) return [];
       const s = state.counts;
       return [{ shardId: state.id, totalRequests: s.total, ok: s.ok, failed: s.failed,

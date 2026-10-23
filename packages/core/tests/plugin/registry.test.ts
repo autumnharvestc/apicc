@@ -7,6 +7,23 @@ import type { ProtocolClient } from "../../src/plugin/types.js";
 import { fileStorage } from "../../src/storage/fileStorage.js";
 import { ContractWorkspaceSchema } from "../../src/contract/workspace.js";
 import { workspaceFixture } from "../helpers/contractFixtures.js";
+import { createPluginCatalog } from "../../src/plugin/catalog.js";
+import { installSdkContributions } from "../../src/plugin/sdkAdapter.js";
+import type { AssertContributionV1, PluginManifestV1 } from "@apicc/plugin-sdk";
+
+const demoManifest: PluginManifestV1 = {
+  manifestVersion: 1, id: "example.demo", name: "apicc-plugin-demo", version: "0.1.0",
+  apiVersion: 1, engines: { apicc: ">=0.1.0 <0.2.0" }, entry: "./dist/index.js",
+  capabilities: ["assert"], contributions: [{ kind: "assert", id: "example.demo/assert.has-field" }],
+};
+const demoAssert: AssertContributionV1 = {
+  kind: "assert", id: "example.demo/assert.has-field",
+  evaluate(actual, expected) {
+    const pass = actual !== null && typeof actual === "object" && !Array.isArray(actual)
+      && expected !== undefined && Object.hasOwn(actual, expected);
+    return { pass, message: pass ? "包含字段" : "缺少字段" };
+  },
+};
 
 const fakeAssert = {
   op: "eq",
@@ -17,6 +34,39 @@ const fakeAssert = {
 };
 
 describe("PluginRegistry", () => {
+  it("publishes only complete SDK transactions and preserves prior contributions", () => {
+    const reg = createPluginRegistry();
+    reg.registerAssert(fakeAssert);
+    const catalog = createPluginCatalog();
+    installSdkContributions(reg, catalog, {});
+    const failed = catalog.begin(demoManifest, {});
+    try { failed.context.register(demoAssert); throw new Error("setup failed"); }
+    catch { failed.abort(); }
+    expect(reg.getAssert(demoAssert.id)).toBeUndefined();
+    expect(reg.getAssert("eq")).toBe(fakeAssert);
+    expect(() => failed.context.register(demoAssert)).toThrow();
+    expect.soft(() => failed.context.register(demoAssert)).toThrowError(expect.objectContaining({ code: "registration_closed" }));
+    const missing = catalog.begin(demoManifest, {});
+    expect.soft(() => missing.commit()).toThrowError(expect.objectContaining({ code: "contribution_invalid" }));
+    const poisoned = catalog.begin(demoManifest, {});
+    poisoned.context.register(demoAssert);
+    expect(() => poisoned.context.register(demoAssert)).toThrow();
+    expect(() => poisoned.commit()).toThrow();
+    expect(catalog.summary()).toEqual([]);
+    const good = catalog.begin(demoManifest, {});
+    const competing = catalog.begin(demoManifest, {});
+    competing.context.register(demoAssert);
+    good.context.register(demoAssert);
+    const original = demoAssert.evaluate;
+    demoAssert.evaluate = () => ({ pass: false, message: "mutated" });
+    good.commit();
+    demoAssert.evaluate = original;
+    expect(() => competing.commit()).toThrow();
+    expect(reg.getAssert(demoAssert.id)?.evaluate({ name: "Ada" }, "name").pass).toBe(true);
+    expect(() => catalog.begin(demoManifest, {}).commit()).toThrow();
+    expect(reg.listAsserts()).toHaveLength(2);
+    expect(catalog.contributions()).toEqual([{ kind: "assert", id: demoAssert.id }]);
+  });
   it("注册、获取、注销断言操作符", () => {
     const reg = createPluginRegistry();
     reg.registerAssert(fakeAssert);

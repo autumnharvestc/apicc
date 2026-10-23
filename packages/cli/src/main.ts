@@ -50,7 +50,8 @@ import {
   renderDocumentHtml,
   renderDocumentMarkdown,
   renderContractMarkdown,
-  loadUserPlugins,
+  createUserPluginHost,
+  type UserPluginHost,
   findProjectApi,
   type AiProviderConfig,
   type ApiAsset,
@@ -80,6 +81,7 @@ import {
   type ImportMergeItemDecision,
   createHttpClient,
   createSoapClient,
+  wsClient,
   createStressCaseSession,
   normalizeStressOrigin,
   resolveExecutionEnvironment,
@@ -675,9 +677,15 @@ function ownedStressProtocols(registry: PluginRegistry, defaultClient: NonNullab
   let http: ReturnType<typeof createHttpClient> | undefined, soap: ReturnType<typeof createSoapClient> | undefined;
   const httpSession = createHttpSession(), ownedHttp = () => http ??= createHttpClient({ connectionMode });
   return { httpSession,
+    resolveSdkProtocol: (request: import("@apicc/core").ExecutableRequest) => registry.getSdkProtocol(request),
     resolveProtocol: (request: import("@apicc/core").ExecutableRequest) => request.protocol === "soap" && defaultClient.name === "soap"
       ? soap ??= createSoapClient(ownedHttp()) : registry.getProtocol(request),
-    createManagedClient: () => defaultClient.name === "http" || defaultClient.name === "soap" ? ownedHttp() : { ...defaultClient, close: async () => {} },
+    createManagedClient: () => defaultClient.sdkProtocol ? {
+      name: "sdk-owned-transport", canHandle: (request: import("@apicc/core").ExecutableRequest) => ["http", "soap", "websocket"].includes(request.protocol),
+      execute: (request: import("@apicc/core").ExecutableRequest, options: import("@apicc/core").HttpExecuteOptions) => request.protocol === "soap"
+        ? (soap ??= createSoapClient(ownedHttp())).execute(request, options) : request.protocol === "websocket" ? wsClient.execute(request, options) : ownedHttp().execute(request, options),
+      close: async () => { await http?.close(); },
+    } : defaultClient.name === "http" || defaultClient.name === "soap" ? ownedHttp() : { ...defaultClient, close: async () => {} },
   };
 }
 
@@ -693,11 +701,16 @@ export async function runCli(
   process.exitCode = 0;
   const { Command, Option } = await import("commander");
   const program = new Command();
-  program.name("apicc").description("apicc 命令行——接口定义与测试驱动开发").version("0.1.0");
+  const hostVersion: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  let pluginHost: UserPluginHost | undefined;
+  const getPluginHost = () => pluginHost ??= createUserPluginHost({ hostVersion, registry, homeDir: deps.pluginsHomeDir,
+    enabled: (program.opts() as { plugins?: boolean }).plugins !== false && deps.loadPlugins !== false });
+  program.name("apicc").description("apicc 命令行——接口定义与测试驱动开发").version(hostVersion);
   registerTestingCommands(program, { registry, log, workspaceRoot: () => findWorkspaceRoot(process.cwd()), credentialOptions: credentialHostOptions(deps) });
-  const prepareLocalWorker = registerStressPlanCommands(program, { registry, log, root: () => findWorkspaceRoot(process.cwd()) ?? undefined, credentials: credentialHostOptions(deps),
+  const prepareLocalWorker = registerStressPlanCommands(program, { registry, hostVersion, pluginSnapshot: () => getPluginHost().snapshot(), log, root: () => findWorkspaceRoot(process.cwd()) ?? undefined, credentials: credentialHostOptions(deps),
     workerArgs: (identity) => [cliEntryPath(), "stress-plan-worker", "--run-id", identity.runId, "--worker-id", identity.workerId], spawnWorker: deps.spawnLocalStressWorker,
-    prepareLegacy: async (configuration, signal) => {
+    prepareLegacy: async (configuration, signal, workerRegistry) => {
+      const registry = workerRegistry;
       const config = configuration;
       const target = await resolveStressTarget(registry, config.workspaceRoot, config.apiPath, config.caseId, config.envName, credentialHostOptions(deps), config, signal);
       const { createStressCaseVuSession, legacyStressMetricPlan } = await import("@apicc/core");
@@ -722,14 +735,14 @@ export async function runCli(
   // M7-A D4：命令分发前加载用户级插件（~/.apicc/plugins.json）。--no-plugins 逃生开关（commander
   // 布尔取反：缺省 opts.plugins === true，传旗标即 false）；deps.loadPlugins=false 为编程关闭通道
   // （嵌入方/既有测试零扰动，裁定①）。加载失败已隔离为 problems，不阻断启动；摘要供 plugins list 展示。
-  let pluginLoad: { loaded: PluginLoadEntry[]; problems: LoadProblem[] } | undefined;
+  let pluginLoad: import("@apicc/core").PluginLoadResult | undefined;
   let pluginsDisabled = false;
   program.option("--no-plugins", "跳过用户级插件加载（逃生开关）");
   program.hook("preAction", async () => {
     const enabled = (program.opts() as { plugins?: boolean }).plugins !== false && deps.loadPlugins !== false;
     pluginsDisabled = !enabled;
-    if (!enabled) return;
-    pluginLoad = await loadUserPlugins(registry, { homeDir: deps.pluginsHomeDir });
+    if (argv[0] === "stress-plan-worker" || argv[0] === "stress-worker") return;
+    pluginLoad = await getPluginHost().summary();
   });
 
   program
@@ -1015,7 +1028,7 @@ export async function runCli(
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
         if (!reporter) throw new Error(`未注册报告格式: ${format}`);
-        try { const file = await reporter.render(safeResult, runsOutDir); safeLog(`报告已生成: ${file}`); }
+        try { const file = await reporter.render(safeResult, runsOutDir, { alreadyProjected: true }); safeLog(`报告已生成: ${file}`); }
         catch { runFailure = true; safeLog(`${format} 报告渲染失败；安全 JSON 已保留`); }
       }
       safeLog(`总计 ${safeResult.total} · 通过 ${safeResult.passed} · 失败 ${safeResult.failed}`);
@@ -1115,7 +1128,7 @@ export async function runCli(
       let reportFailure = false;
       for (const format of opts.reporters.split(",")) {
         const reporter = registry.getReporter(format.trim());
-        try { if (!reporter) throw new Error("报告格式未注册"); const file = await reporter.render(result, runsOutDir); safeLog(`报告已生成: ${file}`); }
+        try { if (!reporter) throw new Error("报告格式未注册"); const file = await reporter.render(result, runsOutDir, { alreadyProjected: true }); safeLog(`报告已生成: ${file}`); }
         catch { reportFailure = true; safeLog(`${format} 报告渲染失败；安全 JSON 已保留`); }
       }
       for (const w of wfr.warnings) safeLog(`[警告] ${w}`);
@@ -1420,7 +1433,7 @@ export async function runCli(
         let local: Awaited<ReturnType<typeof createLocalStressWorkerDeps>> | undefined;
         try { report = await createRunner({ concurrency: opts.concurrency, maxRps: effectiveMaxRps, confirmedTargetOrigins, connectionMode: opts.connectionMode,
           async runSchedule(schedule, execution) {
-            local = await createLocalStressWorkerDeps(schedule, { ...execution, allowNumericFailure: true, shards: opts.shards, configuration: { ...specBase, kind: "legacy" },
+            local = await createLocalStressWorkerDeps(schedule, { ...execution, allowNumericFailure: true, shards: opts.shards, configuration: { ...specBase, kind: "legacy", pluginRuntimeVersion: 1, pluginRuntimeSnapshot: await getPluginHost().snapshot() },
               spawnWorker: (identity) => deps.spawnLocalStressWorker ? deps.spawnLocalStressWorker(identity, shardTimeoutMs, prepareLocalWorker)
                 : Promise.resolve(spawnLocalStressWorker([cliEntryPath(), "stress-plan-worker", "--run-id", identity.runId, "--worker-id", identity.workerId], shardTimeoutMs)) });
             return runStressSchedule(schedule, local.deps);
@@ -2012,7 +2025,9 @@ export async function runCli(
   pluginsCmd
     .command("list")
     .description("列出用户级清单加载的插件与失败项")
-    .action(async () => {
+    .option("--json", "输出结构化加载摘要（不含配置值）")
+    .action(async (opts: { json?: boolean }) => {
+      if (opts.json) { log(JSON.stringify({ enabled: !pluginsDisabled, hostVersion, ...pluginLoad })); return; }
       if (pluginsDisabled) log("插件加载已关闭（--no-plugins 或注入关闭）");
       const loaded = pluginLoad?.loaded ?? [];
       const problems = pluginLoad?.problems ?? [];
@@ -2028,7 +2043,11 @@ export async function runCli(
           );
         }
       }
-      for (const pr of problems) log(`[加载失败] ${pr.file}: ${pr.message}`);
+      for (const p of pluginLoad?.loaded ?? []) log(`  ${p.pluginId} · API ${p.apiVersion} · 需要宿主 ${p.engines.apicc} · 来源 ${p.source}`);
+      for (const pr of problems) log(`[加载失败] ${pr.pluginId ?? pr.file}: ${pr.message} · 阶段 ${pr.stage ?? "未知"} · 代码 ${pr.code ?? "未知"}${pr.actual === undefined ? "" : ` · 实际 ${pr.actual}`}${pr.required === undefined ? "" : ` · 要求 ${pr.required}`} · 检查清单、版本和配置后重启`);
+      for (const p of pluginLoad?.disabled ?? []) log(`[已停用] ${p.source}`);
+      for (const kind of ["protocols", "auths"] as const) for (const [target, id] of Object.entries(pluginLoad?.bindings[kind] ?? {})) log(`[显式绑定] ${kind === "protocols" ? "协议" : "认证"} ${target} → ${id}`);
+      log("修改插件清单后需重启；本次摘要不触发热加载。");
     });
 
   // M7-A D6：插件脚手架——生成本地目录（模板内联字符串，裁定①），名称前缀警告不阻断（约定非强制）。

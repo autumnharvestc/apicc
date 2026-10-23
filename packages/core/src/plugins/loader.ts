@@ -1,162 +1,128 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { z } from "zod";
-import type {
-  LoadProblem, PluginContext, PluginDefinition, PluginRegistryApi,
-} from "../plugin/types.js";
+import { validatePluginConfig } from "@apicc/plugin-sdk";
+import type { PluginDefinitionV1 } from "@apicc/plugin-sdk";
+import { createPluginCatalog, PluginCatalogError } from "../plugin/catalog.js";
+import { installSdkContributions } from "../plugin/sdkAdapter.js";
+import type { LoadProblem } from "../plugin/types.js";
 import type { PluginRegistry } from "../plugin/registry.js";
-import type {
-  PluginContributionSummary, PluginLoaderOptions, PluginLoadResult,
-} from "./types.js";
+import { PluginLoadError } from "./compatibility.js";
+import { canonicalJson, normalizeManifest, readJson, readStaticPlugin } from "./manifest.js";
+import type { PluginLoadResult, PluginLoaderOptions, PluginLoadState, PluginRuntimeEntryV1, UserPluginBindings, UserPluginEntry } from "./types.js";
 
-/**
- * 默认动态 import（裁定②口径修正，报告注明）：源码写原生 import()。TS 以 NodeNext/ESNext
- * 编译时不会降级转译，产物即真实 Node ESM 动态加载；vitest 下被改写为模块运行器的
- * 动态导入，对 file:// 夹具仍走真实 ESM 加载。（new Function('return import(s)') 口径在
- * vitest 的 VM realm 中抛「A dynamic import callback was not specified」，故弃用。）
- */
 const dynamicImport = (specifier: string): Promise<unknown> => import(specifier);
-
-/** 插件形状校验（规格 D2）：name/version 字符串、setup 函数——zod 逐项判定。 */
-const PluginDefinitionSchema = z.object({
-  name: z.string().min(1),
-  version: z.string().min(1),
-  setup: z.function(),
+export const emptyBindings = (): UserPluginBindings => ({ protocols: {}, auths: {} });
+export function normalizeBindings(input: unknown): UserPluginBindings {
+  if (input === undefined) return emptyBindings();
+  const fail = (): never => { throw new PluginLoadError("binding_invalid", "bindings 须使用 protocols/auths 及现有协议/认证种类和完整贡献 ID", "bindings"); };
+  if (!input || typeof input !== "object" || Array.isArray(input)) return fail();
+  const record = input as Record<string, unknown>;
+  if (Object.keys(record).some(k => k !== "protocols" && k !== "auths")) return fail();
+  const result = emptyBindings();
+  for (const [field, allowed, kind] of [["protocols", ["http", "websocket", "soap"], "protocol"], ["auths", ["bearer", "basic", "apikey"], "auth"]] as const) {
+    const value = record[field]; if (value === undefined) continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
+    for (const [key, id] of Object.entries(value)) {
+      if (!(allowed as readonly string[]).includes(key) || typeof id !== "string" || !new RegExp(`^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+/${kind}\\.[a-z0-9.-]+$`).test(id)) return fail();
+      Object.defineProperty(result[field], key, { value: id, enumerable: true });
+    }
+  }
+  return result;
+}
+const problemFrom = (file: string, error: unknown, stage: string, pluginId?: string): LoadProblem => ({
+  file, pluginId, code: error instanceof PluginLoadError || error instanceof PluginCatalogError ? error.code : "setup_failed",
+  stage: error instanceof PluginLoadError ? error.stage : stage,
+  message: error instanceof Error ? error.message : String(error),
+  ...(error instanceof PluginLoadError ? { actual: error.actual, required: error.required } : {}),
+  action: "检查用户插件清单、插件版本和配置后重启宿主",
 });
-
-const emptyContributions = (): PluginContributionSummary => ({
-  protocols: 0, auths: 0, asserts: 0, scriptEngines: 0, reporters: 0, importers: 0, storage: 0,
-});
-
-/** 注册面计数代理：先计数再原样委托同一 registry——setup 收到的注册语义不变（规格 D2）。 */
-function countingRegistryApi(api: PluginRegistryApi, counts: PluginContributionSummary): PluginRegistryApi {
-  return {
-    registerProtocol: (client) => { counts.protocols += 1; api.registerProtocol(client); },
-    registerAuth: (provider) => { counts.auths += 1; api.registerAuth(provider); },
-    registerAssert: (operator) => { counts.asserts += 1; api.registerAssert(operator); },
-    registerScriptEngine: (engine) => { counts.scriptEngines += 1; api.registerScriptEngine(engine); },
-    registerReporter: (reporter) => { counts.reporters += 1; api.registerReporter(reporter); },
-    registerImporter: (importer) => { counts.importers += 1; api.registerImporter(importer); },
-    registerStorage: (adapter) => { counts.storage += 1; api.registerStorage(adapter); },
-  };
+export function readUserPluginDocument(options: PluginLoaderOptions): { document: unknown; file: string } {
+  const file = join(options.homeDir ?? homedir(), ".apicc", "plugins.json");
+  if (options.enabled === false || !existsSync(file)) return { document: { plugins: [] }, file };
+  return { document: readJson(file), file };
 }
 
-const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
-/**
- * 清单条目 → import specifier：
- * - 本地路径（绝对路径，或 ./ ../ 及其 Windows 反斜杠形态 .\ ..\ 开头的相对路径）→ 相对清单文件
- *   所在目录解析（规格 D1；反斜杠先归一为正斜杠再判定，任务 1 审查顺修②），
- *   目录条目按 package.json main（缺省 index.js）定位入口文件，经 pathToFileURL 保证 Windows 可用；
- * - 其余视为 npm 包名，按裸导入原样传给 import（解析交给 Node，加载器零网络行为）。
- */
-function toImportSpecifier(source: string, manifestDir: string): string {
-  const normalized = source.split("\\").join("/");
-  const isLocal = isAbsolute(source) || normalized.startsWith("./") || normalized.startsWith("../");
-  if (!isLocal) return source;
-  const absolute = isAbsolute(source) ? resolve(source) : resolve(manifestDir, normalized);
-  return pathToFileURL(resolveLocalEntry(absolute)).href;
-}
-
-/** 本地目录条目 → 入口文件（package.json main，缺省 index.js）；文件条目原样返回。 */
-function resolveLocalEntry(absolute: string): string {
-  if (!existsSync(absolute) || !statSync(absolute).isDirectory()) return absolute;
-  let main = "index.js";
-  const pkgFile = join(absolute, "package.json");
-  if (existsSync(pkgFile)) {
+/** Internal worker replay uses this same admission/transaction path with fixed sources. */
+export async function loadPluginDocument(registry: PluginRegistry, document: unknown, file: string,
+  options: PluginLoaderOptions, state: PluginLoadState, expected?: readonly PluginRuntimeEntryV1[]): Promise<PluginLoadResult> {
+  const result: PluginLoadResult = { loaded: [], problems: [], bindings: emptyBindings() };
+  if (options.enabled === false) { installSdkContributions(registry, state.catalog, {}); return result; }
+  const doc = document as { plugins?: unknown; bindings?: unknown } | null;
+  let bindingsValid = true;
+  try { result.bindings = normalizeBindings(doc?.bindings); }
+  catch (error) {
+    result.problems.push(problemFrom(file, error, "bindings"));
+    // An explicit invalid binding must never silently send through builtin auth/transport.
+    const reject = (): never => { throw new PluginLoadError("binding_invalid", "用户插件 bindings 结构无效", "bindings"); };
+    registry.installSdkResolver({ getAssert: () => undefined, listAsserts: () => [], getReporter: () => undefined,
+      listImporters: () => [], getAuth: reject, getProtocol: reject });
+    bindingsValid = false;
+  }
+  if (bindingsValid) installSdkContributions(registry, state.catalog, { protocol: result.bindings.protocols, auth: result.bindings.auths });
+  if (!doc || !Array.isArray(doc.plugins)) {
+    result.problems.push(problemFrom(file, new PluginLoadError("manifest_invalid", "插件清单的 plugins 字段须为数组"), "manifest"));
+    return result;
+  }
+  if (!bindingsValid) return result;
+  for (const input of doc.plugins) {
+    let source = file; let pluginId: string | undefined; let stage = "manifest";
+    let transaction: ReturnType<PluginLoadState["catalog"]["begin"]> | undefined;
     try {
-      const parsed = JSON.parse(readFileSync(pkgFile, "utf8")) as { main?: unknown };
-      if (typeof parsed.main === "string" && parsed.main) main = parsed.main;
-    } catch {
-      // package.json 不可读时回落 index.js，失败交由后续 import 抛错进 problems（隔离口径）。
+      let entry: UserPluginEntry;
+      if (typeof input === "string") entry = { source: input };
+      else if (input && typeof input === "object" && !Array.isArray(input)) entry = input as UserPluginEntry;
+      else throw new PluginLoadError("manifest_invalid", `清单条目须为字符串或 source 对象，收到 ${typeof input}`);
+      if (typeof entry.source !== "string" || !entry.source.trim() || (entry.enabled !== undefined && typeof entry.enabled !== "boolean")) throw new PluginLoadError("manifest_invalid", "插件条目 source 须为非空字符串，enabled 须为布尔值");
+      source = entry.source;
+      if (entry.enabled === false) { (result.disabled ??= []).push({ source }); continue; }
+      const staticPlugin = readStaticPlugin(source, dirname(file), options.hostVersion ?? "未提供产品版本");
+      const { manifest } = staticPlugin; pluginId = manifest.id;
+      const configured = validatePluginConfig(manifest, entry.config === undefined ? {} : entry.config);
+      if (!configured.ok) throw new PluginLoadError("invalid_config", configured.problems.map(p => `${p.path}: ${p.reason}`).join("; "), "config");
+      if (state.catalog.hasPlugin(manifest.id) || manifest.contributions.some(c => state.catalog.hasContribution(c.id))) throw new PluginLoadError("contribution_conflict", `插件 ${manifest.id} 或贡献 ID 已提交`, "conflict");
+      const runtimeEntry: PluginRuntimeEntryV1 = { source: staticPlugin.source, pluginId, version: manifest.version, apiVersion: 1,
+        manifestDigest: staticPlugin.manifestDigest, entryDigest: staticPlugin.entryDigest, config: configured.config! };
+      if (expected && canonicalJson(runtimeEntry) !== canonicalJson(expected[state.entries.length])) throw new PluginLoadError("plugin_runtime_mismatch", "插件静态清单、入口或配置与父进程快照不一致", "identity");
+      stage = "import";
+      const mod = await (options.importFn ?? dynamicImport)(pathToFileURL(staticPlugin.entry).href) as { plugin?: unknown; default?: unknown } | null;
+      const definition = mod?.plugin ?? mod?.default;
+      if (!definition || typeof definition !== "object" || typeof (definition as PluginDefinitionV1).setup !== "function") throw new PluginLoadError("definition_mismatch", "插件形状不符：须导出 plugin/default，包含 manifest 和同步 setup 函数", "definition");
+      const def = definition as PluginDefinitionV1;
+      let moduleManifest;
+      try { moduleManifest = normalizeManifest(def.manifest, options.hostVersion ?? ""); }
+      catch { throw new PluginLoadError("definition_mismatch", "模块 manifest 无效或与静态清单不一致", "definition"); }
+      if (canonicalJson(moduleManifest) !== canonicalJson(manifest)) throw new PluginLoadError("definition_mismatch", "模块 manifest 与静态清单不一致", "definition");
+      transaction = state.catalog.begin(manifest, configured.config);
+      stage = "setup";
+      const returned: unknown = def.setup(transaction.context);
+      if (returned !== null && (typeof returned === "object" || typeof returned === "function") && typeof (returned as { then?: unknown }).then === "function") {
+        // Observe an async rejection while still rejecting the unsupported async setup contract.
+        void Promise.resolve(returned).catch(() => {});
+        throw new PluginLoadError("setup_failed", "setup 必须同步，不能返回 Promise/thenable", "setup");
+      }
+      transaction.commit();
+      const committed = state.catalog.summary().find(p => p.id === pluginId)!;
+      const counts = { protocols: 0, auths: 0, asserts: 0, scriptEngines: 0, reporters: 0, importers: 0, storage: 0 };
+      const fields = { protocol: "protocols", auth: "auths", assert: "asserts", reporter: "reporters", importer: "importers" } as const;
+      for (const c of committed.contributions) counts[fields[c.kind]]++;
+      result.loaded.push({ source, pluginId, name: committed.name, version: committed.version, apiVersion: committed.apiVersion,
+        engines: { ...manifest.engines }, contributions: counts, contributionIds: committed.contributions.map(c => c.id) });
+      state.entries.push(runtimeEntry);
+    } catch (error) {
+      transaction?.abort();
+      result.problems.push(problemFrom(source, error, stage, pluginId));
     }
   }
-  return join(absolute, main);
+  return result;
 }
 
-/** 单条目加载与形状校验（规格 D2）：动态 import → 取 plugin 具名导出或 default → zod 校验。 */
-async function importPluginDefinition(
-  source: string,
-  manifestDir: string,
-  importFn: (specifier: string) => Promise<unknown>,
-): Promise<PluginDefinition> {
-  let mod: { plugin?: unknown; default?: unknown };
-  try {
-    mod = await importFn(toImportSpecifier(source, manifestDir)) as { plugin?: unknown; default?: unknown };
-  } catch (e) {
-    throw new Error(`动态 import 失败: ${message(e)}`);
-  }
-  const candidate = mod.plugin ?? mod.default;
-  if (candidate === undefined) throw new Error("插件未导出 plugin 或 default");
-  const parsed = PluginDefinitionSchema.safeParse(candidate);
-  if (!parsed.success) {
-    throw new Error(`插件形状不符（须含 name/version 字符串与 setup 函数）: ${message(parsed.error)}`);
-  }
-  return parsed.data as PluginDefinition;
-}
-
-/**
- * 外部插件加载器（规格 M7-A 任务 1 / D1–D4）：
- * 读取用户级清单 <homeDir>/.apicc/plugins.json（仅用户级，无工作区级——D1 供应链边界），
- * 逐条动态 import 并经形状校验后注册（复用 PluginDefinition 契约，D2）。
- * 失败隔离（D3）：单条目的清单读取/解析/import/形状/setup 抛错一律收集为 LoadProblem，
- * 继续处理其余条目，启动不阻断。清单不存在 → 空结果零加载（不报错）。
- */
-export async function loadUserPlugins(
-  registry: PluginRegistry,
-  options: PluginLoaderOptions = {},
-): Promise<PluginLoadResult> {
-  const importFn = options.importFn ?? dynamicImport;
-  const manifestFile = join(options.homeDir ?? homedir(), ".apicc", "plugins.json");
-  const loaded: PluginLoadResult["loaded"] = [];
-  const problems: LoadProblem[] = [];
-  if (!existsSync(manifestFile)) return { loaded, problems };
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(manifestFile, "utf8"));
-  } catch (e) {
-    return { loaded, problems: [{ file: manifestFile, message: `插件清单不是合法 JSON: ${message(e)}` }] };
-  }
-  const pluginsField = (parsed as { plugins?: unknown } | null)?.plugins;
-  if (!Array.isArray(pluginsField)) {
-    return { loaded, problems: [{ file: manifestFile, message: "插件清单的 plugins 字段须为字符串数组" }] };
-  }
-  const entries: string[] = [];
-  for (const entry of pluginsField) {
-    if (typeof entry !== "string") {
-      problems.push({ file: manifestFile, message: `清单条目须为字符串，收到 ${typeof entry}` });
-    } else {
-      entries.push(entry);
-    }
-  }
-
-  const manifestDir = dirname(manifestFile);
-  for (const source of entries) {
-    let def: PluginDefinition;
-    try {
-      def = await importPluginDefinition(source, manifestDir, importFn);
-    } catch (e) {
-      // LoadProblem.file 放插件标识（裁定③）：沿用清单登记的原始条目，诊断可直接回溯用户写法。
-      problems.push({ file: source, message: message(e) });
-      continue;
-    }
-    const contributions = emptyContributions();
-    try {
-      // 规格 D2 管线终点 registry.plugin(def)：setup 经包装先计数再委托同一注册面，
-      // 注册语义不变，仅旁路统计该插件贡献（D5 分类口径）。
-      registry.plugin({
-        name: def.name,
-        version: def.version,
-        setup: (ctx: PluginContext) => def.setup({ registry: countingRegistryApi(ctx.registry, contributions) }),
-      });
-    } catch (e) {
-      problems.push({ file: source, message: `插件 setup 执行失败: ${message(e)}` });
-      continue;
-    }
-    loaded.push({ name: def.name, version: def.version, source, contributions });
-  }
-  return { loaded, problems };
+/** User registered local plugins only; static rejection always precedes import. */
+export async function loadUserPlugins(registry: PluginRegistry, options: PluginLoaderOptions = {}): Promise<PluginLoadResult> {
+  const state: PluginLoadState = { catalog: createPluginCatalog(), entries: [] };
+  let input;
+  try { input = readUserPluginDocument(options); }
+  catch (error) { return { loaded: [], problems: [problemFrom(join(options.homeDir ?? homedir(), ".apicc", "plugins.json"), error, "manifest")], bindings: emptyBindings() }; }
+  return loadPluginDocument(registry, input.document, input.file, options, state);
 }

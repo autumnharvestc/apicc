@@ -65,7 +65,7 @@ const envelope = { protocolVersion: z.literal(3), runId: id, workerId: id };
 const frameSchema = z.discriminatedUnion("kind", [
   z.object({ ...envelope, kind: z.literal("request"), id, command: StressWorkerCommandSchema }).strict(),
   z.object({ ...envelope, kind: z.literal("response"), id, ok: z.literal(true), value: z.unknown() }).strict(),
-  z.object({ ...envelope, kind: z.literal("failure"), id, code: z.literal("worker-failed") }).strict(),
+  z.object({ ...envelope, kind: z.literal("failure"), id, code: z.enum(["worker-failed", "plugin_runtime_mismatch"]) }).strict(),
 ]);
 const CHUNK_UNITS = 16384;
 const MAX_CHUNKS = Math.ceil(STRESS_WORKER_SNAPSHOT_BYTES / CHUNK_UNITS);
@@ -111,10 +111,13 @@ export function createStressWorkerPeer(channel: StressWorkerChannel, identity: {
         if (failed) return;
         await send({ ...identity, protocolVersion: 3, kind: "response", id: frame.id, ok: true, value });
         if (frame.command.type === "shutdown") { shutdownAcknowledged = true; await channel.finish?.(); shutdownComplete = true; }
-      }, async () => { if (!failed) await send({ ...identity, protocolVersion: 3, kind: "failure", id: frame.id, code: "worker-failed" }); }).catch(failure);
+      }, async (error: unknown) => {
+        const code = frame.command.type === "prepare" && (error as { code?: unknown } | null)?.code === "plugin_runtime_mismatch" ? "plugin_runtime_mismatch" : "worker-failed";
+        if (!failed) await send({ ...identity, protocolVersion: 3, kind: "failure", id: frame.id, code });
+      }).catch(failure);
     } else {
       const pending = waiting.get(frame.id); if (!pending) throw new Error("worker-incompatible");
-      if (frame.kind === "failure") { waiting.delete(frame.id); pending.reject(new Error(frame.code)); } else {
+      if (frame.kind === "failure") { waiting.delete(frame.id); pending.reject(Object.assign(new Error(frame.code), { code: frame.code })); } else {
         if (pending.shutdown) { z.object({ type: z.literal("shutdown") }).strict().parse(frame.value); shutdownAcknowledged = true; }
         waiting.delete(frame.id);
         pending.resolve(frame.value);

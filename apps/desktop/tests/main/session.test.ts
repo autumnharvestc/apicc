@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,7 @@ import {
 } from "@apicc/core";
 import { createSession, sameName } from "../../src/main/session.js";
 import { createStressController } from "../../src/main/stress.js";
+import { createIpcDeps } from "../../src/main/ipc.js";
 import {
   findApi,
   IDS,
@@ -366,6 +368,47 @@ function hangingClient() {
 
 describe("createStressController with formal session assets", () => {
   const confirmed = ["http://127.0.0.1:1"];
+
+  it("uses the user plugin assertion in real Desktop stress and reports its missing-field failure", async () => {
+    const { s, api } = await setupStress();
+    const home = await tempRoot();
+    mkdirSync(join(home.path, ".apicc"));
+    const source = fileURLToPath(new URL("../../../../packages/cli/tests/fixtures/sample-plugin", import.meta.url));
+    const protocolDir = join(home.path, "protocol"); mkdirSync(protocolDir);
+    const manifest = { manifestVersion: 1, id: "example.transport", name: "transport", version: "0.1.0", apiVersion: 1,
+      engines: { apicc: ">=0.1.0 <0.2.0" }, entry: "./index.mjs", capabilities: ["protocol"], contributions: [{ kind: "protocol", id: "example.transport/protocol.http" }] };
+    writeFileSync(join(protocolDir, "apicc-plugin.json"), JSON.stringify(manifest));
+    writeFileSync(join(protocolDir, "package.json"), JSON.stringify({ name: manifest.name, version: manifest.version, type: "module" }));
+    writeFileSync(join(protocolDir, "index.mjs"), `export default {manifest:${JSON.stringify(manifest)},setup(ctx){ctx.register({kind:'protocol',id:'example.transport/protocol.http',supports:['http'],execute(request,context){return context.transport.execute({...request,headers:{...request.headers,'x-plugin':'delegated'}})}})}}`);
+    writeFileSync(join(home.path, ".apicc", "plugins.json"), JSON.stringify({ plugins: [source, protocolDir], bindings: { protocols: { http: "example.transport/protocol.http" } } }));
+    let calls = 0;
+    const server = createServer((req, res) => { if (req.headers['x-plugin'] === 'delegated') calls++; res.setHeader("content-type", "application/json"); res.end('{"other":true}'); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing server address");
+      const origin = `http://127.0.0.1:${address.port}`;
+      const edited = structuredClone(s.locateApi(api.locator)!.api);
+      edited.contract.request.baseUrl = origin;
+      edited.cases[0]!.assertions = [{ id: "field", op: "example.demo/assert.has-field", target: "bodyJson", expected: "requiredField" }];
+      await s.saveApi(api.locator, edited);
+      const deps = createIpcDeps({ session: s, pickDirectory: async () => "", saveFile: async () => "", plugins: { homeDir: home.path } });
+      expect((await deps.pluginsRuntime.summary()).plugins.filter(p => p.kind === 'loaded')).toHaveLength(2);
+      const output = await deps.handle("stress:run", {}, { locator: api.locator, caseId: IDS.sharedCase, concurrency: 1, maxIterations: 1, confirmedTargetOrigins: [origin] });
+      expect(JSON.stringify(output)).toContain("缺少字段");
+      expect(output).toMatchObject({ report: { totalRequests: 1, failed: 1 } });
+      expect(calls).toBe(1);
+      let managedCalls = 0, closes = 0;
+      const planController = createStressController(s, { registry: () => deps.pluginsRuntime.registry(), createManagedClient: () => ({
+        name: "original-vu-client", canHandle: () => true,
+        async execute(request) { expect(request.headers['x-plugin']).toBe('delegated'); managedCalls++; return { status: 200, headers: {}, bodyText: '{"other":true}', timeMs: 1 }; },
+        async close() { closes++; },
+      }) });
+      const planOutput = await planController.run({ kind: "plan", root: s.root!, invocationId: uuid(993), projectLocator,
+        plan: StressPlanSchema.parse({ formatVersion: 1, target: { kind: "case", collectionId: apiLocator.collectionId, apiId: apiLocator.apiId, caseId: IDS.sharedCase }, load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: 1 } }), confirmedTargetOrigins: [origin] });
+      expect(JSON.stringify(planOutput)).toContain("缺少字段");
+      expect(managedCalls).toBe(1); expect(closes).toBe(1);
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  });
 
   it("gates each redirect hop in the real legacy Desktop factory at concurrency one", async () => {
     const hops: number[] = [];

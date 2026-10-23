@@ -864,6 +864,17 @@
     }
   },
   "plugins": {
+    "refreshHint": "Refresh shows the current process loading result. Changes require a restart; plugins are not hot reloaded.",
+    "hostVersion": "Host version", "apiVersion": "Plugin API", "requiredHost": "Required host", "kindDisabled": "Disabled",
+    "globallyDisabled": "User plugin loading is disabled; this run does not read the user plugin directory.",
+    "source": "Full source", "reasonCode": "Reason code", "stage": "Failure stage", "actual": "Actual", "required": "Required",
+    "repairAction": "Check the user plugin list, plugin version and configuration, then restart the host.",
+    "bindings": "Explicit bindings", "bindingActive": "Active", "bindingUnavailable": "Contribution not loaded or target kind unsupported; fix the binding and restart",
+    "rawSummary": "Raw loading summary (configuration values excluded)",
+    "originalError": "Original error details",
+    "configRules": { "object": "Config must be a plain object", "undeclared": "Config field is not declared", "required": "Required config field is missing", "type": "Config value must match the declared type and choices" },
+    "reasons": { "host_incompatible": "Host version is incompatible with the plugin requirements", "api_incompatible": "Plugin API version is incompatible", "unsupported_capability": "The host does not support a declared capability", "manifest_missing": "The static plugin manifest could not be read", "manifest_invalid": "The static plugin manifest is invalid", "invalid_config": "Plugin configuration is invalid", "definition_mismatch": "The module does not match the static manifest", "contribution_conflict": "Plugin or contribution identity conflicts", "contribution_invalid": "A plugin contribution violates its contract", "setup_failed": "Plugin registration failed", "binding_invalid": "An explicit binding is invalid", "plugin_runtime_mismatch": "Coordinator and worker plugin runtime identities differ" },
+    "stages": { "manifest": "Static manifest", "compatibility": "Version compatibility", "config": "Configuration validation", "conflict": "Contribution conflict", "import": "Module import", "definition": "Module contract", "setup": "Contribution registration", "bindings": "Explicit binding", "identity": "Runtime identity" },
     "title": "Plugins",
     "colName": "Plugin",
     "status": "Status",

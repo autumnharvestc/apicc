@@ -87,7 +87,7 @@ export interface WorkflowRunnerOptions {
   observeHttp?: (event: HttpHopObservation) => void | Promise<void>;
 }
 
-export interface WorkflowRunOptions extends Pick<RunnerOptions, "beforeSend" | "requestGate" | "resolveProtocol"> {
+export interface WorkflowRunOptions extends Pick<RunnerOptions, "beforeSend" | "requestGate" | "resolveProtocol" | "resolveSdkProtocol"> {
   /** Host monotonic clock, shared with load observations when supplied. */
   monotonicNow?: () => number;
   environmentId?: string;
@@ -350,7 +350,7 @@ export class WorkflowRunner {
               workspaceRoot: options.workspaceRoot ?? this.opts.workspaceRoot,
               httpSession: options.httpSession ?? this.opts.httpSession,
               observeHttp: (event) => (options.observeHttp ?? this.opts.observeHttp)?.(event, { ...identity, workflowId, nodeId: node.id }),
-              beforeSend: options.beforeSend, requestGate: options.requestGate, resolveProtocol: options.resolveProtocol,
+              beforeSend: options.beforeSend, requestGate: options.requestGate, resolveProtocol: options.resolveProtocol, resolveSdkProtocol: options.resolveSdkProtocol,
               preparedRowIndex: options.preparedRowIndex,
               observeCaseExecution: (value, rowIdentity) => {
                 if (identity) Object.assign(value.outcome, identity, { nodeId: node.id });
@@ -478,7 +478,7 @@ export async function runSingleNode(
   caseDef: DeepReadonly<TestCase>,
   environmentId: string | undefined,
   bridge: { get(): Record<string, string>; set(v: Record<string, string>): void; extractions: ExtractionRuntimeState },
-  httpOptions: Pick<RunnerOptions, "workspaceRoot" | "httpSession" | "preparedRowIndex" | "observeCaseExecution" | "beforeSend" | "requestGate" | "resolveProtocol"> & { observeHttp?: (event: HttpHopObservation) => void | Promise<void> },
+  httpOptions: Pick<RunnerOptions, "workspaceRoot" | "httpSession" | "preparedRowIndex" | "observeCaseExecution" | "beforeSend" | "requestGate" | "resolveProtocol" | "resolveSdkProtocol"> & { observeHttp?: (event: HttpHopObservation) => void | Promise<void> },
 ): Promise<{ outcomes: CaseOutcome[]; warnings: string[] }> {
   const apiId = location.api.contract.id;
   // CollectionRunner also has legacy pre-execution diagnostic rows (including rows with
@@ -494,7 +494,7 @@ export async function runSingleNode(
       workspaceRoot: httpOptions.workspaceRoot,
       httpSession: httpOptions.httpSession,
       observeHttp: httpOptions.observeHttp,
-      beforeSend: httpOptions.beforeSend, requestGate: httpOptions.requestGate, resolveProtocol: httpOptions.resolveProtocol,
+      beforeSend: httpOptions.beforeSend, requestGate: httpOptions.requestGate, resolveProtocol: httpOptions.resolveProtocol, resolveSdkProtocol: httpOptions.resolveSdkProtocol,
       preparedRowIndex: httpOptions.preparedRowIndex,
       observeCaseExecution: async (value, identity) => { actual.push(value.outcome); await httpOptions.observeCaseExecution?.(value, identity); },
       caseSelection: { apiId, caseId: caseDef.id, scope: caseDef.scope, folderIds: location.folders.map((folder) => folder.id) },

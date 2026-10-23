@@ -213,7 +213,6 @@ export type {
   PluginContext, PluginRegistryApi, PluginDefinition,
 } from "./plugin/types.js";
 export { createPluginRegistry, type PluginRegistry } from "./plugin/registry.js";
-export { loadUserPlugins } from "./plugins/loader.js";
 export type {
   PluginManifest, PluginContributionSummary, PluginLoadEntry, PluginLoadResult, PluginLoaderOptions,
 } from "./plugins/types.js";

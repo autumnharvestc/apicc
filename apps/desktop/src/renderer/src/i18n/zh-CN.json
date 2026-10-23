@@ -864,6 +864,17 @@
     }
   },
   "plugins": {
+    "refreshHint": "刷新仅重新查看当前进程的加载结果，不会热加载；修改清单后请重启。",
+    "hostVersion": "宿主版本", "apiVersion": "插件 API", "requiredHost": "需要宿主", "kindDisabled": "已停用",
+    "globallyDisabled": "用户插件加载已关闭；本次不读取用户插件目录。",
+    "source": "完整来源", "reasonCode": "原因代码", "stage": "失败阶段", "actual": "实际值", "required": "要求值",
+    "repairAction": "检查用户插件清单、插件版本与配置后重启宿主。",
+    "bindings": "显式绑定", "bindingActive": "已启用", "bindingUnavailable": "贡献未加载或不支持此目标类型；修正绑定后重启",
+    "rawSummary": "原始加载清单（不含配置值）",
+    "originalError": "原始错误详情",
+    "configRules": { "object": "配置必须是普通对象", "undeclared": "配置字段未声明", "required": "缺少必填配置字段", "type": "配置值必须符合声明的类型和可选值" },
+    "reasons": { "host_incompatible": "宿主版本不满足插件要求", "api_incompatible": "插件 API 版本不兼容", "unsupported_capability": "宿主不支持插件声明的能力", "manifest_missing": "未找到可读取的插件静态清单", "manifest_invalid": "插件静态清单无效", "invalid_config": "插件配置无效", "definition_mismatch": "插件模块与静态清单不一致", "contribution_conflict": "插件或贡献身份冲突", "contribution_invalid": "插件贡献不符合契约", "setup_failed": "插件注册失败", "binding_invalid": "显式绑定无效", "plugin_runtime_mismatch": "父进程与 worker 的插件运行身份不一致" },
+    "stages": { "manifest": "静态清单", "compatibility": "版本兼容性", "config": "配置校验", "conflict": "贡献冲突", "import": "模块导入", "definition": "模块契约", "setup": "贡献注册", "bindings": "显式绑定", "identity": "运行身份" },
     "title": "插件",
     "colName": "插件",
     "status": "状态",

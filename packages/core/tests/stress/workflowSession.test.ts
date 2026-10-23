@@ -25,6 +25,9 @@ import { createHttpClient } from "../../src/http/client.js";
 import { runStressPlan } from "../../src/stress/plannedRunner.js";
 import { workflowPlanRequests } from "../../src/workflow/plan.js";
 import { testDataSelectionsForRequests } from "../../src/testing/data.js";
+import { createPluginCatalog } from "../../src/plugin/catalog.js";
+import { installSdkContributions } from "../../src/plugin/sdkAdapter.js";
+import { assertStressTargetAllowed } from "../../src/stress/safety.js";
 
 const clock: StressClock = { now: () => performance.now(), wallNow: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 
@@ -65,6 +68,51 @@ async function preparedFixture(baseUrl: string) {
 }
 
 describe("stress workflow host wiring", () => {
+  it("F7a checks the SDK rewritten workflow first hop through the borrowed transport", async () => {
+    let hits = 0, closes = 0;
+    const server = createServer((_request, response) => { hits++; response.end("ok"); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const denied = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+    const allowed = "http://127.0.0.1:1";
+    const project = createContractExecutionProject(allowed);
+    project.stressPolicy = { trustedOrigins: [allowed], deniedOrigins: [denied] };
+    const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
+    asset.contract.request.auth = { kind: "none" };
+    const snapshot = createProjectSnapshot(project);
+    const target = prepareWorkflowExecution({ snapshot, credentialBindings: { versions: {}, resolve() { throw Error("No credentials expected"); } } }, ids.workflow, { environmentId: ids.environment });
+    const registry = createDefaultRegistry(), catalog = createPluginCatalog();
+    const transaction = catalog.begin({ manifestVersion: 1, id: "example.workflow-hop", name: "workflow-hop", version: "0.1.0", apiVersion: 1,
+      engines: { apicc: ">=0.1.0 <0.2.0" }, entry: "./index.js", capabilities: ["protocol"],
+      contributions: [{ kind: "protocol", id: "example.workflow-hop/protocol.http" }] }, {});
+    transaction.context.register({ kind: "protocol", id: "example.workflow-hop/protocol.http", supports: ["http"],
+      execute: (request, context) => context.transport.execute({ ...request, url: `${denied}/rewritten-workflow` }) });
+    transaction.commit();
+    installSdkContributions(registry, catalog, { protocol: { http: "example.workflow-hop/protocol.http" } });
+    const authorized: string[] = [];
+    const gate = createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest(request) { authorized.push(request.url); } });
+    const signal = new AbortController().signal;
+    const host: StressVuHostContext = { runId: "first-hop", vuId: "1", signal, clock, gate, lifecycle: undefined,
+      observation: () => ({ phase: "measurement", atMs: clock.now() }), observe() {}, reportLifecycle: () => ({}) };
+    const httpSession = createHttpSession(), client = createHttpClient();
+    const session = createStressWorkflowSession(target, { registry, evidence: createExecutionEvidenceCollector({ projectId: ids.project, definitionRevision: snapshot.definitionRevision }, []),
+      resources: { httpSession, client: { ...client, async close() { closes++; await client.close(); } } },
+    }, { host, initialInputs: {}, beforeSend(request) {
+      assertStressTargetAllowed({ url: request.url, policy: project.stressPolicy, concurrency: 1, confirmedTargetOrigins: [allowed] });
+    } });
+    try {
+      expect(registry.getProtocol({ protocol: "http", method: "GET", url: `${allowed}/allowed`, headers: {}, query: [], auth: { kind: "none" } })?.sdkProtocol).toBe(true);
+      const result = await session.execute({ runId: host.runId, vuId: host.vuId, iterationId: "1", phase: "measurement", stageId: null, scheduledOffsetMs: 0, signal });
+      expect.soft(hits).toBe(0);
+      expect.soft(result.state).toBe("failed");
+      expect.soft(authorized).toEqual([]);
+    } finally {
+      await session.close({ reason: "iteration-budget", signal, allowNetworkCleanup: true });
+      expect(closes).toBe(0);
+      await client.close(); await httpSession.close();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   // A lost final-request hook used to dispatch both legacy roots and v2 legacy children.
   it("blocks the actual final request in a v1 root and a v1 child of v2", async () => {
     const project = createContractExecutionProject("http://localhost:18080");

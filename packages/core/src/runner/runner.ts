@@ -40,6 +40,7 @@ export interface RunnerOptions {
   beforeSend?: CaseExecutionDeps["beforeSend"];
   requestGate?: CaseExecutionDeps["requestGate"];
   resolveProtocol?: CaseExecutionDeps["resolveProtocol"];
+  resolveSdkProtocol?: CaseExecutionDeps["resolveSdkProtocol"];
   runsDir?: string;
   environmentId?: string;
   /** Restrict a workflow request node to its selected snapshot case and real ancestor path. */
@@ -230,6 +231,7 @@ export class CollectionRunner {
             resolver: caseResolver, envVars, envBaseUrl: baseUrl, globals: mutableGlobals(globals), persisted, persistedSnapshot,
           }, {
             resolveProtocol: opts.resolveProtocol ?? ((request) => this.deps.registry.getProtocol(request)),
+            resolveSdkProtocol: opts.resolveSdkProtocol ?? (opts.resolveProtocol ? undefined : (request) => this.deps.registry.getSdkProtocol(request)),
             beforeSend: opts.beforeSend,
             requestGate: opts.requestGate,
             resolveAuth: (type) => this.deps.registry.getAuth(type),

@@ -112,7 +112,7 @@ export function createTestingController(session: ReturnType<typeof createSession
       const persisted = storage ? storage.persist(join(outDir, `suite-run-${result.suiteRunId}.json`), safe) : persistExecutionJson(join(outDir, `suite-run-${result.suiteRunId}.json`), safe, boundary, () => "安全 JSON 报告保存失败");
       if (persisted.warning) { safe.reportFailure = true; safe.warnings = [...(safe.warnings ?? []), persisted.warning]; }
       else if (storage?.render !== false) for (const format of plan.reporters) if (format !== "json") {
-        try { const reporter = registry.getReporter(format); if (!reporter) throw new Error("报告格式未注册"); await reporter.render(safe, outDir); }
+        try { const reporter = registry.getReporter(format); if (!reporter) throw new Error("报告格式未注册"); await reporter.render(safe, outDir, { alreadyProjected: true }); }
         catch { safe.reportFailure = true; safe.warnings = [...(safe.warnings ?? []), `${format} 报告渲染失败；安全 JSON 已保留`]; }
       }
       ensureCurrent();

@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync, cpSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { PassThrough } from "node:stream";
 import { EventEmitter, getEventListeners } from "node:events";
@@ -21,7 +22,7 @@ import {
   type Workspace,
 } from "@apicc/core";
 import { parseShardOutcomeStdout, runCli as runCliActual, registerLegacyStressWorkerAdapter, type RunCliDeps } from "../src/main.js";
-import { createPrivateStressWorkerFactory, createWorkerEvidenceFinalizer } from "../src/stressWorkerTransport.js";
+import { createPrivateStressWorkerFactory, createWorkerEvidenceFinalizer, spawnLocalStressWorker } from "../src/stressWorkerTransport.js";
 import { localStressWorker } from "./helpers/localStressWorker.js";
 
 // 本文件覆盖 M2-D1 任务 2：stress-worker 子命令（stdout 末行 JSON 契约）与 run-stress --shards
@@ -286,6 +287,81 @@ describe("stress-worker 子命令", () => {
 });
 
 describe("run-stress --shards", () => {
+  it("delegates SDK SOAP stress and ordinary requests through the owned HTTP transport", async () => {
+    const isolated = mkdtempSync(join(tmpdir(), "apicc-plugin-soap-")); tempRoots.push(isolated);
+    const home = join(isolated, "home"), source = join(isolated, "plugin"), workspaceRoot = join(isolated, "workspace");
+    mkdirSync(join(home, ".apicc"), { recursive: true }); mkdirSync(source); mkdirSync(workspaceRoot);
+    const manifest = { manifestVersion: 1, id: "example.soap", name: "soap-plugin", version: "0.1.0", apiVersion: 1, engines: { apicc: ">=0.1.0 <0.2.0" }, entry: "./index.mjs", capabilities: ["protocol"], contributions: [{ kind: "protocol", id: "example.soap/protocol.soap" }] };
+    writeFileSync(join(source, "package.json"), JSON.stringify({ name: manifest.name, version: manifest.version, type: "module" }));
+    writeFileSync(join(source, "apicc-plugin.json"), JSON.stringify(manifest));
+    writeFileSync(join(source, "index.mjs"), `export default {manifest:${JSON.stringify(manifest)},setup(ctx){ctx.register({kind:'protocol',id:'example.soap/protocol.soap',supports:['soap'],execute(request,context){return context.transport.execute(request)}})}}`);
+    writeFileSync(join(home, ".apicc", "plugins.json"), JSON.stringify({ plugins: [source], bindings: { protocols: { soap: "example.soap/protocol.soap" } } }));
+    const workspace = structuredClone((await fileStorage.load(root)).workspace), api = workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!;
+    api.contract.request = { protocol: "soap", method: "POST", baseUrl, path: "/sdk-soap", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, envelope: "<Envelope/>" };
+    const initial = await fileStorage.load(workspaceRoot); await fileStorage.save(workspaceRoot, workspace, { expectedRevision: initial.revision, deletions: [] });
+    const previous = process.cwd(); process.chdir(workspaceRoot);
+    try {
+      const before = seenPaths.length;
+      const registry = createDefaultRegistry();
+      const code = await runCli(["run-stress", API_PATH, "--case", CASE_ID, "--concurrency", "1", "--iterations", "1", "--runs-dir", join(isolated, "stress")], registry, () => {}, { pluginsHomeDir: home });
+      expect(registry.getProtocol({ protocol: "soap", method: "POST", url: baseUrl, envelope: "<Envelope/>", headers: {}, query: [], auth: { kind: "none" } })?.sdkProtocol).toBe(true);
+      expect(JSON.stringify(readLastReport(join(isolated, "stress")))).not.toContain("SDK managed transport cannot handle this request");
+      expect(code).toBe(0); expect(seenPaths.length - before).toBe(1);
+      const normal = await runCli(["run", `groups/${GROUP_ID}/projects/${PROJECT_ID}/collections/${COLLECTION_ID}`, "--env", "dev", "--reporters", "html", "--runs-dir", join(isolated, "normal")], createDefaultRegistry(), () => {}, { pluginsHomeDir: home });
+      expect(normal).toBe(0); expect(seenPaths.length - before).toBe(2);
+    } finally { process.chdir(previous); }
+  });
+  it("replays the coordinator plugin in real plan and legacy children without reading child HOME", async () => {
+    const isolated = mkdtempSync(join(tmpdir(), "apicc-plugin-child-")); tempRoots.push(isolated);
+    const workspaceRoot = join(isolated, "workspace"), home = join(isolated, "home"), childHome = join(isolated, "child-home");
+    mkdirSync(workspaceRoot); mkdirSync(join(home, ".apicc"), { recursive: true }); mkdirSync(join(childHome, ".apicc"), { recursive: true });
+    const source = join(isolated, "sample"); cpSync(fileURLToPath(new URL("./fixtures/sample-plugin", import.meta.url)), source, { recursive: true });
+    const evil = join(isolated, "evil"); cpSync(source, evil, { recursive: true });
+    const marker = join(isolated, "child-home-was-read");
+    writeFileSync(join(evil, "index.js"), `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'read');\n` + readFileSync(join(evil, "index.js"), "utf8"));
+    writeFileSync(join(home, ".apicc", "plugins.json"), JSON.stringify({ plugins: [source] }));
+    writeFileSync(join(childHome, ".apicc", "plugins.json"), JSON.stringify({ plugins: [evil] }));
+    const state = await fileStorage.load(root), workspace = structuredClone(state.workspace);
+    workspace.groups[0]!.projects[0]!.collections[0]!.apis[0]!.cases[0]!.assertions = [{ id: "field", target: "bodyJson", op: "example.demo/assert.has-field", expected: "missingField" }];
+    const initial = await fileStorage.load(workspaceRoot); await fileStorage.save(workspaceRoot, workspace, { expectedRevision: initial.revision, deletions: [] });
+    const planFile = join(isolated, "plan.json"); writeFileSync(planFile, JSON.stringify({ formatVersion: 1, maxVus: 2, target: { kind: "case", collectionId: COLLECTION_ID, apiId: API_ID, caseId: CASE_ID }, load: { kind: "constant-vus", vus: 2 }, termination: { maxIterations: 2 } }));
+    const previous = process.cwd(); process.chdir(workspaceRoot);
+    try {
+      for (const kind of ["legacy", "plan"] as const) {
+        const runsDir = join(isolated, kind), logs: string[] = [], before = seenPaths.length;
+        const args = kind === "legacy" ? ["run-stress", API_PATH, "--case", CASE_ID, "--concurrency", "2", "--iterations", "2"]
+          : ["run-stress-plan", `groups/${GROUP_ID}/projects/${PROJECT_ID}`, "--plan", planFile];
+        const code = await runCli([...args, "--shards", "2", "--runs-dir", runsDir], createDefaultRegistry(), line => logs.push(line), {
+          pluginsHomeDir: home,
+          spawnLocalStressWorker: async (identity, timeout) => spawnLocalStressWorker([fileURLToPath(new URL("../dist/bin.js", import.meta.url)), "stress-plan-worker", "--run-id", identity.runId, "--worker-id", identity.workerId], timeout,
+            { env: { ...process.env, USERPROFILE: childHome, HOME: childHome } }),
+        });
+        expect(code, logs.join("\n")).toBe(1);
+        const files = readdirSync(runsDir).filter(f => f.endsWith(".json")); expect(files).toHaveLength(1);
+        const reportText = readFileSync(join(runsDir, files[0]!), "utf8");
+        expect(reportText).toContain("缺少字段"); expect(reportText).not.toContain("OPERATOR_UNKNOWN");
+        expect(seenPaths.length - before).toBe(2);
+        expect(existsSync(marker)).toBe(false);
+      }
+    } finally { process.chdir(previous); }
+  });
+
+  it("preserves plugin_runtime_mismatch from prepare before any VU or HTTP request", async () => {
+    let captured = "", prepared = 0;
+    const before = seenPaths.length;
+    const running = runCli(["run-stress", API_PATH, "--case", CASE_ID, "--concurrency", "2", "--iterations", "2", "--shards", "2", "--runs-dir", join(root, ".apicc", "plugin-mismatch")], createDefaultRegistry(), () => {}, {
+      loadPlugins: false,
+      spawnLocalStressWorker: (identity, timeout, prepare) => localStressWorker(identity, timeout, async value => {
+        const corrupted = structuredClone(value) as { pluginRuntimeSnapshot: { digest: string } };
+        corrupted.pluginRuntimeSnapshot.digest = "0".repeat(64); prepared++;
+        try { return await prepare(corrupted); } catch (error) { captured = (error as { code: string }).code; throw error; }
+      }),
+    });
+    expect(await running).toBe(1);
+    expect(captured).toBe("plugin_runtime_mismatch"); expect(prepared).toBeGreaterThan(0);
+    expect(seenPaths.length).toBe(before);
+    expect(JSON.stringify(readLastReport(join(root, ".apicc", "plugin-mismatch")))).toContain("plugin_runtime_mismatch");
+  });
   it("prepare cancellation completes before an unrelated next event-loop turn and sends no requests", async () => {
     let entered!: () => void, release!: () => void;
     const preparing = new Promise<void>((resolve) => { entered = resolve; }), before = seenPaths.length;

@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiAsset, RequestBody } from "../../src/contract/model.js";
 import type { ContractCollection, ContractFolder, ContractProject } from "../../src/contract/workspace.js";
@@ -18,6 +19,11 @@ import { legacyStressMetricPlan, StressRunner } from "../../src/stress/runner.js
 import { createStressRequestGate } from "../../src/stress/requestGate.js";
 import { createExecutionEvidenceCollector } from "../../src/report/evidence.js";
 import type { StressClock, StressVuHostContext } from "../../src/stress/execution.js";
+import { createDefaultRegistry } from "../../src/shared.js";
+import { createHttpClient } from "../../src/http/client.js";
+import { createPluginCatalog } from "../../src/plugin/catalog.js";
+import { installSdkContributions } from "../../src/plugin/sdkAdapter.js";
+import { assertStressTargetAllowed } from "../../src/stress/safety.js";
 
 const response: ExecutionResponse = { status: 200, headers: {}, bodyText: '{"ok":true}', timeMs: 1 };
 
@@ -322,6 +328,88 @@ function deps(seen: string[], close: () => Promise<void>, created: (workerId: nu
 }
 
 describe("createStressCaseSession", () => {
+  it("F7a rejects the SDK rewritten first hop before real I/O and records the actual denied target", async () => {
+    let hits = 0, closes = 0;
+    const server = createServer((_request, response) => { hits++; response.end("ok"); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const denied = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+    const allowed = "http://127.0.0.1:1";
+    const policy = { trustedOrigins: [allowed], deniedOrigins: [denied] };
+    const registry = createDefaultRegistry(), catalog = createPluginCatalog();
+    const transaction = catalog.begin({ manifestVersion: 1, id: "example.first-hop", name: "first-hop", version: "0.1.0", apiVersion: 1,
+      engines: { apicc: ">=0.1.0 <0.2.0" }, entry: "./index.js", capabilities: ["protocol"],
+      contributions: [{ kind: "protocol", id: "example.first-hop/protocol.http" }] }, {});
+    transaction.context.register({ kind: "protocol", id: "example.first-hop/protocol.http", supports: ["http"],
+      execute: (request, context) => context.transport.execute({ ...request, url: `${denied}/rewritten-first-hop` }) });
+    transaction.commit();
+    installSdkContributions(registry, catalog, { protocol: { http: "example.first-hop/protocol.http" } });
+    const gateUrls: string[] = [];
+    const gate = createStressRequestGate({ clock: { now: () => performance.now(), wallNow: () => Date.now(), sleep: async () => {} }, maxConcurrency: 1,
+      authorizeRequest(request) { gateUrls.push(request.url); assertStressTargetAllowed({ url: request.url, policy, concurrency: 1, confirmedTargetOrigins: [allowed] }); } });
+    const fixture = target({ id: "case-first-hop", name: "first-hop", scope: "base", parameters: {}, assertions: [] });
+    fixture.api = { ...fixture.api, url: `${allowed}/allowed` };
+    fixture.project = { ...fixture.project, stressPolicy: policy };
+    const client = createHttpClient();
+    const session = createStressCaseSession(fixture, { createManagedClient: () => ({ ...client, async close() { closes++; await client.close(); } }),
+      requestGate: gate, resolveProtocol: request => registry.getProtocol(request), resolveAuth: type => registry.getAuth(type), resolveAssert: op => registry.getAssert(op),
+      resolveSdkProtocol: request => registry.getSdkProtocol(request),
+      scriptEngine: registry.getScriptEngine("javascript")!, timeouts: { connectTimeoutMs: 1000, totalTimeoutMs: 2000 },
+    }, { workerId: 1, concurrency: 1, confirmedTargetOrigins: [allowed] });
+    try {
+      expect(registry.getProtocol({ protocol: "http", method: "GET", url: `${allowed}/allowed`, headers: {}, query: [], auth: { kind: "none" } })?.sdkProtocol).toBe(true);
+      expect(() => assertStressTargetAllowed({ url: denied, policy, concurrency: 1, confirmedTargetOrigins: [allowed] })).toThrowError(expect.objectContaining({ code: "target_denied" }));
+      const result = await session.execute(new AbortController().signal);
+      expect.soft(hits).toBe(0);
+      expect.soft(result.outcome.passed).toBe(false);
+      expect.soft(result.safety).toMatchObject({ origin: denied, confirmation: "rejected", policy: "target_denied" });
+      expect.soft(gate.audit!().targetOrigins).toEqual([expect.objectContaining({ origin: denied, confirmation: "rejected" })]);
+      expect.soft(gateUrls).not.toContain(`${allowed}/allowed`);
+    } finally {
+      await session.close();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+    expect(closes).toBe(1);
+  });
+
+  it("F7a permits SDK URL rewrites with one shared rate permit per actual first hop", async () => {
+    const paths: string[] = [], authorized: string[] = [], checked: string[] = [], sleeps: number[] = [];
+    let monotonic = 0, closes = 0;
+    const server = createServer((request, response) => { paths.push(request.url!); response.end("ok"); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const actual = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`, original = "http://127.0.0.1:1";
+    const registry = createDefaultRegistry(), catalog = createPluginCatalog();
+    const transaction = catalog.begin({ manifestVersion: 1, id: "example.rewrite", name: "rewrite", version: "0.1.0", apiVersion: 1,
+      engines: { apicc: ">=0.1.0 <0.2.0" }, entry: "./index.js", capabilities: ["protocol"],
+      contributions: [{ kind: "protocol", id: "example.rewrite/protocol.http" }] }, {});
+    transaction.context.register({ kind: "protocol", id: "example.rewrite/protocol.http", supports: ["http"],
+      execute: (request, context) => context.transport.execute({ ...request, url: `${actual}/rewritten` }) });
+    transaction.commit(); installSdkContributions(registry, catalog, { protocol: { http: "example.rewrite/protocol.http" } });
+    const gate = createStressRequestGate({ clock: { now: () => monotonic, wallNow: () => monotonic, async sleep(ms) { sleeps.push(ms); monotonic += ms; } },
+      maxConcurrency: 1, maxRps: 1, authorizeRequest(request) { authorized.push(request.url); } });
+    const fixture = target({ id: "case-rewrite", name: "rewrite", scope: "base", parameters: {}, assertions: [] });
+    fixture.api = { ...fixture.api, url: `${original}/original` };
+    fixture.project = { ...fixture.project, stressPolicy: { trustedOrigins: [original, actual] } };
+    const client = createHttpClient();
+    const session = createStressCaseSession(fixture, { createManagedClient: () => ({ ...client, async close() { closes++; await client.close(); } }), requestGate: gate,
+      resolveSdkProtocol: request => registry.getSdkProtocol(request), resolveProtocol: request => registry.getProtocol(request), resolveAuth: type => registry.getAuth(type),
+      resolveAssert: op => registry.getAssert(op), scriptEngine: registry.getScriptEngine("javascript")!, timeouts: { connectTimeoutMs: 1000, totalTimeoutMs: 2000 },
+    }, { workerId: 1, concurrency: 1, maxRps: 1, authorizeRequest(request) { checked.push(request.url); } });
+    try {
+      const results = [await session.execute(), await session.execute()];
+      expect(results.map(result => result.outcome.passed)).toEqual([true, true]);
+      expect(paths).toEqual(["/rewritten", "/rewritten"]);
+      expect(checked).toEqual([`${actual}/rewritten`, `${actual}/rewritten`]);
+      expect(authorized).toEqual([`${actual}/rewritten`, `${actual}/rewritten`]);
+      expect(sleeps).toEqual([1000]);
+      expect(gate.audit!().targetOrigins.map(target => target.origin)).toEqual([actual]);
+      expect(results.map(result => result.request.url)).toEqual([`${actual}/rewritten`, `${actual}/rewritten`]);
+    } finally {
+      await session.close();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+    expect(closes).toBe(1);
+  });
+
   it("F6 fix I-1 shares the global rate between a real managed case session and an opaque callback", async () => {
     // Two independent limiters would grant both paths their first permit at time zero.
     const prepared = await prepareTargetData(createProjectExecutionTarget(target({ id: "case-1", name: "case", scope: "base", parameters: { row: "A", counter: "0" }, assertions: [] })));

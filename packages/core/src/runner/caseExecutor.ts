@@ -23,6 +23,9 @@ import { assertRequestSettingsApplicable, resolveRequestSettings, type RequestSe
 import { captureRequestFiles, type CapturedRequestFiles } from "../http/files.js";
 import type { HttpSession } from "../http/session.js";
 import type { StressRequestGate } from "../stress/execution.js";
+import { createHttpClient } from "../http/client.js";
+import { createSoapClient } from "../protocol/soap.js";
+import { wsClient } from "../protocol/websocket.js";
 
 export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "extraction" | "config" | "aborted";
 
@@ -71,7 +74,13 @@ export interface CaseExecutionInput {
 }
 
 export interface CaseExecutionDeps {
+  /** Borrowed from the surrounding execution owner; never closed here. */
+  pluginTransport?: ProtocolClient;
+  pluginRunId?: string;
+  pluginVuId?: string;
   resolveProtocol(request: ExecutableRequest): ProtocolClient | undefined;
+  /** Pure SDK binding preselection; absent callers still recheck the delegated first hop. */
+  resolveSdkProtocol?(request: ExecutableRequest): ProtocolClient | undefined;
   resolveAuth(type: string): AuthProvider | undefined;
   resolveAssert(op: string): AssertOperator | undefined;
   scriptEngine: ScriptEngine;
@@ -288,6 +297,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   const effectiveRequest = getEffectiveCaseRequest(asset, testCase);
   const signal = deps.timeouts?.signal;
   let clientOptions: HttpExecuteOptions | undefined;
+  let ownedPluginTransport: ReturnType<typeof createHttpClient> | undefined;
   let capturedFiles: CapturedRequestFiles | undefined;
   const contractId = asset.contract.id;
   const apiName = asset.contract.metadata.name;
@@ -396,10 +406,13 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       if (!auth || auth.type !== runtimeAuth.kind) throw invalidRequest(`无可用认证提供方: ${runtimeAuth.kind}`);
       auth.apply(request, runtimeAuth);
     }
-    if (deps.beforeSend) await deps.beforeSend(request);
-    validateExecutableRequest(request);
-    if (request.protocol !== "http" && input.network?.requiresHttpAdapter) {
-      throw invalidRequest("所选网络配置仅支持 HTTP 协议请求");
+    const sdkClient = deps.resolveSdkProtocol?.(request);
+    if (!sdkClient) {
+      if (deps.beforeSend) await deps.beforeSend(request);
+      validateExecutableRequest(request);
+      if (request.protocol !== "http" && input.network?.requiresHttpAdapter) {
+        throw invalidRequest("所选网络配置仅支持 HTTP 协议请求");
+      }
     }
     let protocolOptions = clientOptions;
     if (request.protocol !== "http" && clientOptions.runtime?.network) {
@@ -407,36 +420,56 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       delete runtime.network;
       protocolOptions = { ...clientOptions, runtime };
     }
-    const client = deps.resolveProtocol(request);
+    const client = sdkClient ?? deps.resolveProtocol(request);
     if (!client) throw invalidRequest(`无可用协议客户端处理 ${request.url}`);
-    const release = deps.requestGate ? await deps.requestGate.enter(request, signal ?? new AbortController().signal) : undefined;
-    if (deps.requestGate && signal?.aborted) { release?.(); throw new DOMException("Aborted", "AbortError"); }
-    stage = "request";
-    requestStarted = true;
-    const requestStartAt = now();
-    let protocolError: unknown;
-    try {
-      response = await client.execute(request, protocolOptions);
-    } catch (e) {
-      protocolError = e;
-      failureKind = isAbort(e, signal) ? "aborted" : protocolFailureKind(e);
-      throw e;
-    } finally {
-      const attemptTimeMs = now() - requestStartAt;
-      const timing = protocolError as { networkStarted?: unknown; attemptTimeMs?: unknown } | null | undefined;
-      const hasNetworkTiming = typeof timing === "object" && timing !== null && typeof timing.networkStarted === "boolean";
-      requestTimeMs = response && Number.isFinite(response.timeMs) && response.timeMs >= 0
-        ? response.timeMs
-        : hasNetworkTiming
-          ? timing.networkStarted && Number.isFinite(timing.attemptTimeMs) ? Number(timing.attemptTimeMs) : 0
-          : attemptTimeMs;
-      if (response && response.timeMs !== requestTimeMs) {
-        // Normalize invalid plugin metadata without mutating its response object.
-        response = { ...response, timeMs: requestTimeMs };
+    // Share the original gate/timing/release path between ordinary protocols and
+    // the SDK's restored first hop. Nothing is admitted for the pre-rewrite URL.
+    const executeAttempt = async (transport: ProtocolClient, actualRequest: ExecutableRequest, options: HttpExecuteOptions): Promise<ExecutionResponse> => {
+      const release = deps.requestGate ? await deps.requestGate.enter(actualRequest, signal ?? new AbortController().signal) : undefined;
+      if (deps.requestGate && signal?.aborted) { release?.(); throw new DOMException("Aborted", "AbortError"); }
+      stage = "request";
+      requestStarted = true;
+      const requestStartAt = now();
+      let protocolError: unknown, actualResponse: ExecutionResponse | undefined;
+      try {
+        actualResponse = await transport.execute(actualRequest, options);
+        return actualResponse;
+      } catch (e) {
+        protocolError = e;
+        failureKind = isAbort(e, signal) ? "aborted" : protocolFailureKind(e);
+        throw e;
+      } finally {
+        const attemptTimeMs = now() - requestStartAt;
+        const timing = protocolError as { networkStarted?: unknown; attemptTimeMs?: unknown } | null | undefined;
+        const hasNetworkTiming = typeof timing === "object" && timing !== null && typeof timing.networkStarted === "boolean";
+        requestTimeMs = actualResponse && Number.isFinite(actualResponse.timeMs) && actualResponse.timeMs >= 0
+          ? actualResponse.timeMs
+          : hasNetworkTiming
+            ? timing.networkStarted && Number.isFinite(timing.attemptTimeMs) ? Number(timing.attemptTimeMs) : 0
+            : attemptTimeMs;
+        requestCompleted = true;
+        release?.();
       }
-      requestCompleted = true;
-      release?.();
+    };
+    if (client.sdkProtocol) {
+      const transport = deps.pluginTransport ?? client.sdkTransport ?? (request.protocol === "websocket" ? wsClient
+        : request.protocol === "soap" ? createSoapClient(ownedPluginTransport ??= createHttpClient())
+        : (ownedPluginTransport ??= createHttpClient()));
+      const checkedTransport: ProtocolClient = { name: transport.name, canHandle: next => transport.canHandle(next), async execute(next, options) {
+        request = next;
+        validateExecutableRequest(next);
+        if (deps.beforeSend) await deps.beforeSend(next);
+        validateExecutableRequest(next);
+        if (next.protocol !== "http" && input.network?.requiresHttpAdapter) throw invalidRequest("所选网络配置仅支持 HTTP 协议请求");
+        return executeAttempt(transport, next, options);
+      } };
+      protocolOptions = { ...protocolOptions, runtime: { ...protocolOptions.runtime, pluginTransport: checkedTransport,
+        pluginRunId: deps.pluginRunId, pluginVuId: deps.pluginVuId } };
+      response = await client.execute(request, protocolOptions);
+    } else {
+      response = await executeAttempt(client, request, protocolOptions);
     }
+    if (response.timeMs !== requestTimeMs) response = { ...response, timeMs: requestTimeMs };
     // Each attempt owns one immutable complete response, including plugins that reuse response objects.
     response = Object.freeze({ ...response, headers: Object.freeze({ ...response.headers }),
       ...(response.rawHeaders ? { rawHeaders: Object.freeze(response.rawHeaders.map(([name, value]) => Object.freeze([name, value] as const))) } : {}),
@@ -451,6 +484,8 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       ? "aborted"
       : ((e as { caseFailureKind?: CaseFailureKind }).caseFailureKind ?? (String(stage) === "script" ? "script" : "config"));
   } finally {
+    try { await ownedPluginTransport?.close(); }
+    catch (e) { error ??= errorMessage(e); failureKind ??= "transport"; }
     try { await capturedFiles?.close(); }
     catch (e) {
       error ??= errorMessage(e);

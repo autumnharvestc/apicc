@@ -11,6 +11,7 @@ import {
   StressWorkerSpecSchema, type StressWorkerRuntime,
   parseStressReport, compareStressReports, renderStressHtml,
   stressArrivalWindowNotices,
+  createUserPluginHostFromSnapshot, assertPluginRuntimeSnapshot, type PluginRuntimeSnapshotV1,
 } from "@apicc/core";
 import { prepareExecutionRunFromSnapshot, type CredentialHostOptions } from "./credentials.js";
 import { assertWorkspaceUsable, loadWorkspace, locateProject } from "./workspace.js";
@@ -26,8 +27,8 @@ export const localStressClock: StressClock = { now: () => performance.now(), wal
 } };
 const workerConfigSchema = z.object({ kind: z.literal("plan"), root: z.string(), projectPath: z.string(), plan: StressPlanSchema,
   definitionRevision: z.string(), credentialVersions: StressWorkerSpecSchema.shape.credentialVersions, networkIdentity: z.string(),
-  preparedTestData: PreparedTestDataSchema, confirmedTargetOrigins: z.array(z.string()) }).strict();
-const legacyWorkerConfigSchema = StressWorkerSpecSchema.omit({ protocolVersion: true, shardId: true }).extend({ kind: z.literal("legacy") }).strict();
+  preparedTestData: PreparedTestDataSchema, confirmedTargetOrigins: z.array(z.string()), pluginRuntimeVersion: z.literal(1), pluginRuntimeSnapshot: z.unknown() }).strict();
+const legacyWorkerConfigSchema = StressWorkerSpecSchema.omit({ protocolVersion: true, shardId: true }).extend({ kind: z.literal("legacy"), pluginRuntimeVersion: z.literal(1), pluginRuntimeSnapshot: z.unknown() }).strict();
 export async function prepareCliStressPlan(registry: PluginRegistry, root: string, projectPath: string, plan: StressPlan, credentials: CredentialHostOptions,
   signal: AbortSignal, expected?: { definitionRevision: string; credentialVersions: Record<string, string>; networkIdentity: string; preparedTestData: PreparedTestData }) {
   const state = await loadWorkspace(registry, root); assertWorkspaceUsable(state);
@@ -55,18 +56,26 @@ export function createPlanGate(execution: Awaited<ReturnType<typeof prepareCliSt
 }
 
 export interface StressPlanCommandDeps {
+  hostVersion: string; pluginSnapshot(): Promise<PluginRuntimeSnapshotV1>;
   registry: PluginRegistry; root(): string | undefined; credentials: CredentialHostOptions; log(line: string): void;
   workerArgs(identity: { runId: string; workerId: string }): string[];
   spawnWorker?: (identity: { runId: string; workerId: string }, timeoutMs: number, prepare: (configuration: unknown, signal?: AbortSignal) => Promise<StressWorkerRuntime>) => Promise<StressWorkerChannel>;
-  prepareLegacy(configuration: z.infer<typeof legacyWorkerConfigSchema>, signal?: AbortSignal): Promise<StressWorkerRuntime>;
+  prepareLegacy(configuration: z.infer<typeof legacyWorkerConfigSchema>, signal: AbortSignal, registry: PluginRegistry): Promise<StressWorkerRuntime>;
 }
 export function registerStressPlanCommands(program: Command, deps: StressPlanCommandDeps): (configuration: unknown, signal?: AbortSignal) => Promise<StressWorkerRuntime> {
   const prepareWorker = async (value: unknown, signal = new AbortController().signal): Promise<StressWorkerRuntime> => {
-    const legacy = legacyWorkerConfigSchema.safeParse(value); if (legacy.success) return deps.prepareLegacy(legacy.data, signal);
+    const envelope = value as { pluginRuntimeVersion?: unknown; pluginRuntimeSnapshot?: unknown } | null;
+    if (envelope?.pluginRuntimeVersion !== 1) throw Object.assign(new Error("plugin_runtime_mismatch: 插件运行版本缺失或无效"), { code: "plugin_runtime_mismatch" });
+    assertPluginRuntimeSnapshot(envelope.pluginRuntimeSnapshot, envelope.pluginRuntimeSnapshot);
+    const expected = envelope.pluginRuntimeSnapshot;
+    const workerHost = createUserPluginHostFromSnapshot(expected, { hostVersion: deps.hostVersion });
+    assertPluginRuntimeSnapshot(expected, await workerHost.snapshot());
+    const registry = await workerHost.registry();
+    const legacy = legacyWorkerConfigSchema.safeParse(value); if (legacy.success) return deps.prepareLegacy(legacy.data, signal, registry);
     const config = workerConfigSchema.parse(value);
-    const { execution, evidence } = await prepareCliStressPlan(deps.registry, config.root, config.projectPath, config.plan, deps.credentials, signal, config);
+    const { execution, evidence } = await prepareCliStressPlan(registry, config.root, config.projectPath, config.plan, deps.credentials, signal, config);
     return { clock: localStressClock, metricPlan: execution.compiled.metricPlan, lifecycle: config.plan.lifecycle, evidence,
-      host: createPreparedStressHost(execution, { registry: deps.registry, evidence, workspaceRoot: config.root }, { confirmedTargetOrigins: config.confirmedTargetOrigins }) };
+      host: createPreparedStressHost(execution, { registry, evidence, workspaceRoot: config.root }, { confirmedTargetOrigins: config.confirmedTargetOrigins }) };
   };
   program.command("run-stress-plan").argument("<projectPath>").requiredOption("--plan <file>")
     .option("--shards <n>", "本机 worker 数", Number, 1).option("--shard-timeout <s>", "worker 超时秒数", Number, 300)
@@ -89,7 +98,8 @@ export function registerStressPlanCommands(program: Command, deps: StressPlanCom
           metrics: createStressAccumulator(execution.compiled.metricPlan, runId), evidence, signal: controller.signal };
         const report = opts.shards === 1 ? await runStressPlan(execution, common) : await runLocalStressWorkers(execution, { ...common, shards: opts.shards,
           configuration: { kind: "plan", root, projectPath, plan, definitionRevision: prepared.snapshot.definitionRevision, credentialVersions: prepared.run.credentialBindings.versions,
-            networkIdentity: prepared.network!.identity, preparedTestData: prepared.run.preparedTestData, confirmedTargetOrigins },
+            networkIdentity: prepared.network!.identity, preparedTestData: prepared.run.preparedTestData, confirmedTargetOrigins,
+            pluginRuntimeVersion: 1, pluginRuntimeSnapshot: await deps.pluginSnapshot() },
           spawnWorker: (identity) => deps.spawnWorker ? deps.spawnWorker(identity, timeout, prepareWorker) : Promise.resolve(spawnLocalStressWorker(deps.workerArgs(identity), timeout)) });
         const dir = opts.runsDir ?? join(root, ".apicc", "runs"); mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, `stress-plan-${runId}.json`), JSON.stringify(report, null, 2));

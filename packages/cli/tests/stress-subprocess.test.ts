@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createOAuthProfileHost, createProjectSnapshot, fileStorage, ShardFailureSchema, ShardResultSchema, type OAuthProfileRecord, type SecretStore, type Workspace } from "@apicc/core";
+import { createOAuthProfileHost, createProjectSnapshot, createUserPluginHost, fileStorage, ShardFailureSchema, ShardResultSchema, type OAuthProfileRecord, type SecretStore, type Workspace } from "@apicc/core";
 import { createLocalStressWorkerDeps, runStressSchedule, createStressAccumulator, createStressRequestGate, createExecutionEvidenceCollector, legacyStressMetricPlan, createNetworkProfileHost, prepareTestData } from "@apicc/core";
 import { localStressClock } from "../src/stressPlanCommand.js";
 import { spawnLocalStressWorker } from "../src/stressWorkerTransport.js";
@@ -140,6 +140,8 @@ async function runV3PrivateWorker(args: string[], cwd: string, roots?: { oauth: 
     const network = await networkHost.prepare();
     const preparedTestData = await prepareTestData(snapshot, [{ locator: { collectionId: COLLECTION_ID, folderIds: [], apiId: args[1]!.split("/").at(-1)!, caseId: option("--case")!, scope: "base" } }], { workspaceRoot: cwd });
     const runId = globalThis.crypto.randomUUID(), metricPlan = legacyStressMetricPlan;
+    const hostVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
+    const pluginRuntimeSnapshot = await createUserPluginHost({ hostVersion, homeDir: roots?.pluginHome ?? privateHome, enabled: roots === undefined }).snapshot();
     const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: null, maxIterations: 1, maxVus: 1, warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
       requested: { maxRequestConcurrency: 1, maxRps: null }, effective: { maxRequestConcurrency: 1, maxRps: null } };
     const entry = roots ? fileURLToPath(new URL("./fixtures/oauth-worker-child.mjs", import.meta.url)) : BIN_PATH;
@@ -149,7 +151,8 @@ async function runV3PrivateWorker(args: string[], cwd: string, roots?: { oauth: 
       evidence: createExecutionEvidenceCollector({ projectId: project.id, definitionRevision: snapshot.definitionRevision }, [], { maxSamples: 20, privateMarkers: true }),
       createVu: async () => { throw new Error("Coordinator must use remote VUs"); },
       configuration: { kind: "legacy", apiPath: args[1], caseId: option("--case"), workspaceRoot: cwd, envName: option("--env"), concurrency: 1, maxIterations: 1,
-        definitionRevision: option("--definition-revision"), credentialVersions: JSON.parse(option("--credential-versions") ?? "{}"), networkIdentity: network.identity, preparedTestData },
+        definitionRevision: option("--definition-revision"), credentialVersions: JSON.parse(option("--credential-versions") ?? "{}"), networkIdentity: network.identity, preparedTestData,
+        pluginRuntimeVersion: 1, pluginRuntimeSnapshot },
       spawnWorker: async (identity) => channel = spawnLocalStressWorker([entry, "stress-plan-worker", "--run-id", identity.runId, "--worker-id", identity.workerId], 300000, { cwd, env }),
     });
     try {

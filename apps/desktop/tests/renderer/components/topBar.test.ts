@@ -14,7 +14,8 @@ import TopBar from "../../../src/renderer/src/components/TopBar.vue";
 import type { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import type { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
 import type { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
-import type { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
+import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
+import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import type { OnlineSession } from "../../../src/renderer/src/stores/online.js";
 import {
   createEvictProjectSessions,
@@ -161,7 +162,7 @@ function makeFixture() {
 
 async function mountTopBar(fixture: ReturnType<typeof makeFixture>) {
   const { i18n } = createI18nInstance();
-  const plugins = { entries: [], error: null, refresh: async () => {} } as unknown as ReturnType<typeof createPluginsStore>;
+  const plugins = createPluginsStore({ api: createMemoryApi() });
   const wrapper = mount(TopBar, {
     props: {
       workspace: fixture.workspace as unknown as ReturnType<typeof useWorkspaceStore>,

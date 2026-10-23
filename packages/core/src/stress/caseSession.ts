@@ -155,6 +155,7 @@ export function createStressCaseSession(
   deps: StressCaseSessionDeps,
   options: {
     workerId: number;
+    runId?: string;
     concurrency?: number;
     maxRps?: number;
     confirmedTargetOrigins?: string[];
@@ -194,6 +195,8 @@ export function createStressCaseSession(
   let closePromise: Promise<void> | undefined;
 
   const resolveProtocol = (request: ExecutableRequest) => {
+    const selected = deps.resolveSdkProtocol?.(request);
+    if (selected?.sdkProtocol) return selected;
     if (request.protocol !== "http") return deps.resolveProtocol(request);
     if (client && client.canHandle(request)) return client;
     return undefined;
@@ -209,6 +212,9 @@ export function createStressCaseSession(
         ...deps,
         httpSession,
         resolveProtocol,
+        pluginTransport: client,
+        pluginRunId: options.runId,
+        pluginVuId: String(options.workerId),
         timeouts: { ...(deps.timeouts ?? { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000 }), signal },
         beforeSend: async (request) => {
           await options.authorizeRequest?.(request);
@@ -309,7 +315,7 @@ export function createStressCaseVuSession(target: StressCaseTarget, deps: Stress
       else if (pendingHops.delete(event.hopIndex)) observe({ kind: "http", ...identity(), started: 0, completed: 1, nodeKey: null });
       await deps.observeHttp?.(event);
     },
-  }, { ...options, initialInputs });
+  }, { ...options, runId: options.host.runId, initialInputs });
   return {
     async execute(context) {
       if (current) throw new Error("Stress case VU cannot execute concurrently");

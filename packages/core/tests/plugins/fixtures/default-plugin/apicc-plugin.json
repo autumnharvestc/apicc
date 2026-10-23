@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture.default",
+  "name": "default-fixture",
+  "version": "2.0.0",
+  "apiVersion": 1,
+  "engines": {
+    "apicc": ">=0.1.0 <0.2.0"
+  },
+  "entry": "./index.js",
+  "capabilities": [
+    "reporter"
+  ],
+  "contributions": [
+    {
+      "kind": "reporter",
+      "id": "fixture.default/reporter.text"
+    }
+  ]
+}

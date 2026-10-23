@@ -1,140 +1,68 @@
 <script setup lang="ts">
-import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { Alert as AAlert, Button as AButton, Table as ATable, Tag as ATag } from "ant-design-vue";
-import type { PluginLoadEntry } from "../../../shared/plugins/contract.js";
 import type { PluginsStore } from "../stores/plugins.js";
+import type { PluginLoadEntry } from "../../../shared/plugins/contract.js";
 import EmptyState from "./EmptyState.vue";
-
-/**
- * 插件管理视图（M7-B 任务 1，规格 §2 D3/D5，裁定①②③）：只读清单——
- * 已加载插件（名称/版本/贡献分类 tag：分类 + 计数 + 名称明细）+ 失败项红 tag 与原因列
- * （D3 失败隔离诊断可见，裁定②）；空清单给「未登记插件」空态并指引 docs/plugins.md
- * （裁定③）。store 经 props 注入（组合根一次装配，组件内零工厂调用）；刷新钮走
- * store.refresh（失败经组件内 alert 上屏，既有清单保留）。
- */
-const props = defineProps<{ plugins: PluginsStore }>();
-const { t } = useI18n();
-
-const columns = computed(() => [
-  { title: t("plugins.colName"), dataIndex: "name", key: "name" },
-  { title: t("plugins.status"), key: "kind", width: 88 },
-  { title: t("plugins.colVersion"), dataIndex: "version", key: "version", width: 88 },
-  { title: t("plugins.colContrib"), key: "contrib" },
-  { title: t("plugins.colError"), key: "error" },
-]);
-
-// 六类贡献（与契约 PluginContributions 一致）：仅渲染非空分类，计数 = 名称数组长度。
-const CONTRIB_KEYS = ["protocols", "auths", "asserts", "scripts", "reporters", "importers"] as const;
-
-function contribTags(entry: PluginLoadEntry): Array<{ key: string; label: string; names: string[] }> {
-  const c = entry.contributions;
-  if (!c) return [];
-  return CONTRIB_KEYS.map((key) => ({ key, label: t(`plugins.contrib.${key}`), names: c[key] })).filter(
-    (g) => g.names.length > 0,
-  );
-}
-
-/** 行级属性：testid 钩子 + 失败行红标（裁定②，CSS 按 data-failed 淡红底）。 */
-function rowAttrs(record: PluginLoadEntry): Record<string, unknown> {
-  return {
-    "data-testid": "plugins-row",
-    ...(record.kind === "failed" ? { "data-failed": "true" } : {}),
-  };
-}
-
-function onRefresh() {
-  void props.plugins.refresh();
-}
+defineProps<{ plugins: PluginsStore }>();
+const { t, te } = useI18n();
+const categories = ["protocols", "auths", "asserts", "scripts", "reporters", "importers"] as const;
+const groups = (p: PluginLoadEntry) => categories.filter(k => p.contributions?.[k].length).map(k => ({ key: k, names: p.contributions![k] }));
+const stageLabel = (stage: string) => te(`plugins.stages.${stage}`) ? t(`plugins.stages.${stage}`) : stage;
+const reasonLabel = (p: PluginLoadEntry) => p.code && te(`plugins.reasons.${p.code}`) ? t(`plugins.reasons.${p.code}`) : p.error;
+const configRules: Record<string, string> = {
+  "Config must be a plain object": "object",
+  "Config field is not declared": "undeclared",
+  "Required config field is missing": "required",
+  "Config value must match the declared type and choices": "type",
+};
+const reasonDetail = (p: PluginLoadEntry): string => {
+  const message = p.error?.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  if (/^[{\[]/.test(message)) return "";
+  if (p.code !== "invalid_config") return message;
+  // The loader joins stable SDK rules as path: reason; preserve author field names.
+  return message.split("; ").map(part => {
+    const separator = part.lastIndexOf(": ");
+    const path = separator < 0 ? "" : part.slice(0, separator + 2);
+    const rule = separator < 0 ? part : part.slice(separator + 2);
+    return configRules[rule] ? path + t(`plugins.configRules.${configRules[rule]}`) : part;
+  }).join("; ");
+};
 </script>
 
 <template>
   <section class="plugins-view" data-testid="plugins-view">
-    <div class="head">
-      <span class="title">{{ t("plugins.title") }}</span>
-      <a-button size="small" data-testid="plugins-refresh" @click="onRefresh">{{ t("plugins.refresh") }}</a-button>
+    <div class="head"><strong>{{ t('plugins.title') }}</strong><button data-testid="plugins-refresh" :disabled="plugins.loading" @click="plugins.refresh()">{{ t('plugins.refresh') }}</button></div>
+    <p class="muted">{{ t('plugins.refreshHint') }}</p>
+    <p v-if="plugins.hostVersion">{{ t('plugins.hostVersion') }}: {{ plugins.hostVersion }} · {{ t('plugins.apiVersion') }} 1</p>
+    <p v-if="!plugins.enabled" role="status">{{ t('plugins.globallyDisabled') }}</p>
+    <p v-if="plugins.error" role="alert" data-testid="plugins-error-alert">{{ plugins.error }}</p>
+    <div v-else-if="plugins.entries.length === 0" data-testid="plugins-empty"><EmptyState :text="t('plugins.empty')" /><p>{{ t('plugins.emptyGuide') }}</p></div>
+    <div v-else class="table-scroll">
+      <table data-testid="plugins-table">
+        <thead><tr><th>{{ t('plugins.colName') }}</th><th>{{ t('plugins.status') }}</th><th>{{ t('plugins.colVersion') }}</th><th>{{ t('plugins.colContrib') }}</th><th>{{ t('plugins.colError') }}</th></tr></thead>
+        <tbody><tr v-for="(p, index) in plugins.entries" :key="p.key ?? `${p.kind}:${p.source ?? p.name}:${index}`" data-testid="plugins-row" :data-failed="p.kind === 'failed' ? 'true' : undefined">
+          <td><strong>{{ p.name }}</strong><div v-if="p.pluginId">{{ p.pluginId }}</div><details v-if="p.source"><summary>{{ t('plugins.source') }}</summary><span>{{ p.source }}</span></details></td>
+          <td><span data-testid="plugins-kind" :data-kind="p.kind">{{ t(p.kind === 'loaded' ? 'plugins.kindLoaded' : p.kind === 'disabled' ? 'plugins.kindDisabled' : 'plugins.kindFailed') }}</span></td>
+          <td>{{ p.version ?? '—' }}<div v-if="p.apiVersion">API {{ p.apiVersion }}</div><div v-if="p.requiredHost">{{ t('plugins.requiredHost') }}: {{ p.requiredHost }}</div></td>
+          <td><div v-for="g in groups(p)" :key="g.key" data-testid="plugins-contrib-tag">{{ t(`plugins.contrib.${g.key}`) }} ×{{ g.names.length }}: {{ g.names.join(', ') }}</div><span v-if="!groups(p).length">—</span></td>
+          <td><template v-if="p.error"><div class="error-text" data-testid="plugins-error"><div>{{ reasonLabel(p) }}</div><div v-if="reasonDetail(p) && reasonDetail(p) !== reasonLabel(p)" class="reason-detail">{{ reasonDetail(p) }}</div></div><div v-if="p.code">{{ t('plugins.reasonCode') }}: {{ p.code }}</div><div v-if="p.stage">{{ t('plugins.stage') }}: {{ stageLabel(p.stage) }}</div><div v-if="p.actual !== undefined">{{ t('plugins.actual') }}: {{ p.actual }}</div><div v-if="p.required !== undefined">{{ t('plugins.required') }}: {{ p.required }}</div><p>{{ t('plugins.repairAction') }}</p><details v-if="reasonLabel(p) !== p.error"><summary>{{ t('plugins.originalError') }}</summary><span>{{ p.error }}</span></details></template><span v-else>—</span></td>
+        </tr></tbody>
+      </table>
     </div>
-    <a-alert v-if="plugins.error" type="error" :message="plugins.error" show-icon data-testid="plugins-error-alert" />
-    <!-- 空清单（裁定③）：未登记插件空态 + 登记与开发指引（指向 docs/plugins.md） -->
-    <div v-else-if="plugins.entries.length === 0" class="plugins-empty" data-testid="plugins-empty">
-      <EmptyState :text="t('plugins.empty')" />
-      <p class="guide">{{ t("plugins.emptyGuide") }}</p>
-    </div>
-    <a-table
-      v-else
-      class="table"
-      :data-source="plugins.entries"
-      :columns="columns"
-      :pagination="false"
-      :custom-row="rowAttrs"
-      row-key="name"
-      size="small"
-      data-testid="plugins-table"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'kind'">
-          <a-tag :color="record.kind === 'failed' ? 'error' : 'success'" data-testid="plugins-kind" :data-kind="record.kind">
-            {{ record.kind === "failed" ? t("plugins.kindFailed") : t("plugins.kindLoaded") }}
-          </a-tag>
-        </template>
-        <template v-else-if="column.key === 'version'">
-          <span>{{ record.version ?? "—" }}</span>
-        </template>
-        <template v-else-if="column.key === 'contrib'">
-          <!-- 行数据经 data-source（PluginLoadEntry[]）进入：slot 的宽 Record 类型在此收窄 -->
-          <a-tag v-for="g in contribTags(record as PluginLoadEntry)" :key="g.key" class="contrib-tag" data-testid="plugins-contrib-tag">
-            {{ g.label }} ×{{ g.names.length }}: {{ g.names.join(", ") }}
-          </a-tag>
-          <span v-if="contribTags(record as PluginLoadEntry).length === 0" class="muted">—</span>
-        </template>
-        <template v-else-if="column.key === 'error'">
-          <span v-if="record.error" class="error-text" data-testid="plugins-error">{{ record.error }}</span>
-          <span v-else class="muted">—</span>
-        </template>
-      </template>
-    </a-table>
+    <section v-if="plugins.bindings.length"><h3>{{ t('plugins.bindings') }}</h3><ul><li v-for="b in plugins.bindings" :key="b.key">{{ t(`plugins.contrib.${b.kind}`) }} · {{ b.target }} → {{ b.contributionId }} · {{ t(b.active ? 'plugins.bindingActive' : 'plugins.bindingUnavailable') }}</li></ul></section>
+    <details v-if="plugins.entries.length" class="raw"><summary>{{ t('plugins.rawSummary') }}</summary><pre>{{ JSON.stringify({ plugins: plugins.entries, bindings: plugins.bindings }, null, 2) }}</pre></details>
   </section>
 </template>
 
 <style scoped>
-.plugins-view {
-  padding: 8px 10px;
-  font-size: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.title {
-  font-weight: 600;
-}
-.plugins-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 24px 0;
-}
-.guide {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-.contrib-tag {
-  margin-inline-end: 4px;
-}
-.error-text {
-  color: var(--fail);
-}
-.muted {
-  color: var(--text-muted);
-}
-/* 失败行淡红底（红 tag + 原因列之外的行级红标钩子） */
-.plugins-view :deep(tr[data-failed="true"]) {
-  background: color-mix(in srgb, var(--fail) 8%, transparent);
-}
+.plugins-view { padding: 10px; min-width: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.head { display: flex; justify-content: space-between; align-items: center; }
+p { margin: 4px 0; } .muted { color: var(--text-secondary, #666); }
+.table-scroll { overflow: auto; max-width: 100%; } table { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 760px; }
+th, td { padding: 8px; border-bottom: 1px solid var(--border-color, #ddd); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+th { white-space: nowrap; } th:nth-child(2) { width: 70px; } th:nth-child(3) { width: 160px; }
+tr[data-failed=true] { background: rgba(255, 77, 79, .06); } .error-text { color: var(--color-error, #b42318); }
+.reason-detail { max-height: 160px; overflow: auto; }
+li { overflow-wrap: anywhere; } details span { display: block; max-height: 160px; overflow: auto; } summary { cursor: pointer; }
+.raw pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

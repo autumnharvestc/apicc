@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 1,
+  "id": "local.apicc-plugin-demo",
+  "name": "apicc-plugin-demo",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "engines": {
+    "apicc": ">=0.1.0 <0.2.0"
+  },
+  "entry": "./dist/index.js",
+  "capabilities": [
+    "assert",
+    "reporter"
+  ],
+  "contributions": [
+    {
+      "kind": "assert",
+      "id": "local.apicc-plugin-demo/assert.has-field"
+    },
+    {
+      "kind": "reporter",
+      "id": "local.apicc-plugin-demo/reporter.text"
+    }
+  ]
+}

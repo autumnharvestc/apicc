@@ -13,7 +13,6 @@ import ImportWizard from "../../../src/renderer/src/components/ImportWizard.vue"
 import { ApiAssetSchema, ContractProjectSchema } from "@apicc/core/schema";
 import { curlImporter } from "@apicc/core";
 import { countingStorage, IDS, makeTempRoot, makeWorkspace, persistWorkspace } from "../../main/helpers/contract-assets.js";
-import { createIpcDeps } from "../../../src/main/ipc.js";
 import { createSession } from "../../../src/main/session.js";
 import { IpcChannel } from "../../../src/shared/channels.js";
 import type { ImportApplyInput, ImportApplyResult } from "../../../src/shared/types.js";
@@ -181,6 +180,7 @@ describe("ImportWizard", () => {
   });
 
   it("真实 session/storage 已提交后 treeGet 拒绝：显示已提交、禁止重复 mutation，并支持仅刷新恢复", async () => {
+    const { createIpcDeps } = await import("../../../src/main/ipc.js");
     const temporary = await makeTempRoot("apicc-c3-refresh-");
     try {
       await persistWorkspace(temporary.path, makeWorkspace());
@@ -524,7 +524,7 @@ describe("ImportWizard", () => {
     expect(names).toContain("collection-v21");
     expect(names).toContain("openapi");
     // 插件贡献导入器（fixture：apicc-plugin-example 贡献）
-    expect(names).toContain("example-csv");
+    expect(names).toContain("example.demo/importer.example-csv");
   });
 
   it("plugins:list 拉取失败：格式清单空但不阻断文件选择链路", async () => {

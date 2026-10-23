@@ -40,6 +40,42 @@ async function mountView(api = createMemoryApi()) {
 }
 
 describe("PluginsView（M7-B 任务 1）", () => {
+  it("shows readable compatibility, disabled and binding status in both languages without exposing config", async () => {
+    const api = createMemoryApi();
+    api.pluginsList = async () => ({ enabled: true, hostVersion: "0.1.0", importers: [],
+      plugins: [{ key: "ok", kind: "loaded", name: "same name", pluginId: "example.good", source: "C:/" + "long/".repeat(50), version: "1.2.0", apiVersion: 1, requiredHost: ">=0.1.0 <0.2.0" },
+        { key: "bad", kind: "failed", name: "same name", source: "C:/bad", error: "宿主版本不满足要求", code: "host_incompatible", stage: "compatibility", actual: "0.1.0", required: ">=2.0.0", action: "检查用户插件清单、插件版本和配置后重启宿主" },
+        { key: "config", kind: "failed", name: "required config", source: "C:/config", error: "config.prefix: Required config field is missing", code: "invalid_config", stage: "config", action: "检查用户插件清单、插件版本和配置后重启宿主" },
+        { key: "off", kind: "disabled", name: "disabled source", source: "C:/disabled" }],
+      bindings: [{ key: "protocols:http", kind: "protocols", target: "http", contributionId: "example.good/protocol.http", active: true }] });
+    const { wrapper } = await mountView(api);
+    expect(wrapper.text()).toContain("需要宿主");
+    expect(wrapper.text()).toContain("已停用");
+    expect(wrapper.text()).toContain("显式绑定");
+    expect(wrapper.text()).toContain("重启");
+    expect(wrapper.find("details").attributes("open")).toBeUndefined();
+    expect(wrapper.findAll('[data-testid="plugins-row"]')).toHaveLength(4);
+    const configRow = wrapper.findAll('[data-testid="plugins-row"]').find(row => row.find('strong').text() === "required config")!;
+    const configReason = configRow.find('[data-testid="plugins-error"]');
+    expect(configReason.element.closest("details")).toBeNull();
+    expect(configReason.text()).toContain("config.prefix");
+    expect(configReason.text()).toContain("缺少必填配置字段");
+    expect(configRow.findAll("details[open]")).toHaveLength(0);
+    expect(wrapper.find("details.raw").attributes("open")).toBeUndefined();
+    localStorage.setItem("apicc.locale", "en");
+    const english = await mountView(api);
+    expect(english.wrapper.text()).toContain("Required host");
+    expect(english.wrapper.text()).toContain("Disabled");
+    expect(english.wrapper.text()).toContain("Explicit bindings");
+    expect(english.wrapper.text()).toContain("Host version is incompatible");
+    const englishConfigRow = english.wrapper.findAll('[data-testid="plugins-row"]').find(row => row.find('strong').text() === "required config")!;
+    const englishConfigReason = englishConfigRow.find('[data-testid="plugins-error"]');
+    expect(englishConfigReason.element.closest("details")).toBeNull();
+    expect(englishConfigReason.text()).toContain("config.prefix");
+    expect(englishConfigReason.text()).toContain("Required config field is missing");
+    expect(englishConfigRow.findAll("details[open]")).toHaveLength(0);
+    localStorage.setItem("apicc.locale", "zh-CN");
+  });
   it("渲染已加载插件行：名称/版本/贡献分类 tag（分类 + 计数 + 名称）", async () => {
     const { wrapper } = await mountView();
     expect(wrapper.find('[data-testid="plugins-view"]').exists()).toBe(true);

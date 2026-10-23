@@ -317,7 +317,7 @@ export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: 
                 return runSingleNode(runner, execution, location, selection.testCase, environmentId, bridge, {
                 workspaceRoot: options.workspaceRoot ?? deps.workspaceRoot, httpSession,
                 observeHttp: (event) => (options.observeHttp ?? deps.observeHttp)?.(event, { ...attemptIdentity, workflowId: id, nodeId: node.id }), preparedRowIndex: options.preparedRowIndex,
-                beforeSend: options.beforeSend, requestGate: options.requestGate, resolveProtocol: options.resolveProtocol,
+                beforeSend: options.beforeSend, requestGate: options.requestGate, resolveProtocol: options.resolveProtocol, resolveSdkProtocol: options.resolveSdkProtocol,
                 observeCaseExecution: async (value, rowIdentity) => {
                   Object.assign(value.outcome, attemptIdentity, { nodeId: node.id });
                   await options.observeCaseExecution?.(value, { ...rowIdentity, ...attemptIdentity, nodeId: node.id });
