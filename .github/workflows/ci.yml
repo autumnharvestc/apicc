@@ -35,6 +35,7 @@ jobs:
       # 打包冒烟（package-smoke job）需要真实二进制，故该变量只在此 job 设置。
       # 仓库 .npmrc 的镜像只影响二进制下载源，跳过后无谓，不必再设镜像变量。
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      APICC_STRESS_DIAGNOSTICS_DIR: ${{ github.workspace }}/local/ci-stress-diagnostics
     steps:
       - uses: actions/checkout@v5 # v5
       - uses: pnpm/action-setup@v4 # v4
@@ -83,6 +84,17 @@ jobs:
         # 与 scripts/test-all.ps1 保持一致：不让 admin pretest/build 与 Core 争用 CPU，
         # 并将 worker 上限作为 test 脚本参数传给各包，而非 pnpm 自身参数。
         run: pnpm -r --workspace-concurrency=1 test --maxWorkers=2
+      - name: 归档失败压测的合成诊断
+        if: failure()
+        uses: actions/upload-artifact@v4 # v4
+        with:
+          name: ci-stress-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            local/ci-stress-diagnostics/normal-eight-*/summary.json
+            local/ci-stress-diagnostics/normal-eight-*/diagnostics.json
+            local/ci-stress-diagnostics/normal-eight-*/capture.json
+          retention-days: 7
+          if-no-files-found: warn
 
   server-test:
     name: 服务端测试（JDK 21）

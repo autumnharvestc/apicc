@@ -278,7 +278,7 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     const captured = captureStressSubprocessEvidence({ root, runsDir, diagnosticFile, result: res,
       evidenceRoot: process.env.APICC_STRESS_DIAGNOSTICS_DIR ?? join(dirname(BIN_PATH), "../../..", "local", "f6-cli-diagnostics") });
     const report = captured.report!;
-    expect(res.code, `${captured.directory}\n${res.stdout}${res.stderr}`).toBe(0);
+    expect(res.code, captured.summary).toBe(0);
     expect(res.stdout).toContain("压测完成");
     // 摘要含各 shard 行（真实子进程产出，非注入替身）。
     expect(res.stdout).toContain("worker-1");
