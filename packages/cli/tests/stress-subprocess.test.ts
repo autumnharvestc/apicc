@@ -9,6 +9,7 @@ import { createOAuthProfileHost, createProjectSnapshot, createUserPluginHost, fi
 import { createLocalStressWorkerDeps, runStressSchedule, createStressAccumulator, createStressRequestGate, createExecutionEvidenceCollector, legacyStressMetricPlan, createNetworkProfileHost, prepareTestData } from "@apicc/core";
 import { localStressClock } from "../src/stressPlanCommand.js";
 import { spawnLocalStressWorker } from "../src/stressWorkerTransport.js";
+import * as stressTransport from "../src/stressWorkerTransport.js";
 import { captureStressSubprocessEvidence } from "./helpers/stressSubprocessEvidence.js";
 
 // 本文件覆盖 M2-D1 任务 3：defaultSpawnWorkerFactory 真实子进程端到端（任务 2 审查移交的覆盖缺口）。
@@ -205,6 +206,38 @@ async function makeWorkspace(name: string): Promise<string> {
 }
 
 describe("run-stress 真实子进程多 shard 端到端", () => {
+  it.each(["native", "injected-worker", "injected-parent", "cloned-channel"] as const)("native clock negotiation with delayed read-only tap: %s", async (mode) => {
+    // A deliberate 40ms clock-response delay must widen only the injected clock's IPC mapping.
+    const injected = mode === "injected-worker", runId = `native-${mode}`, metricPlan = legacyStressMetricPlan;
+    const clock = mode === "injected-parent" ? { ...localStressClock } : localStressClock;
+    const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: null, maxIterations: 1, maxVus: 1,
+      warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
+      requested: { maxRequestConcurrency: 1, maxRps: null }, effective: { maxRequestConcurrency: 1, maxRps: null } };
+    const binding = Reflect.get(stressTransport, "localStressClockDomain");
+    const local = await createLocalStressWorkerDeps(schedule, { runId, clock, shards: 1, configuration: {},
+      ...(binding ? { clockDomain: binding } : {}), signal: new AbortController().signal,
+      metrics: createStressAccumulator(metricPlan, runId), gate: createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest() {} }),
+      evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }),
+      createVu: async () => { throw new Error("Remote only"); },
+      async spawnWorker(identity) {
+        const channel = spawnLocalStressWorker([fileURLToPath(new URL("./fixtures/v3-native-clock-worker.mjs", import.meta.url)), identity.runId, identity.workerId, injected ? "injected" : "native"], 300000);
+        const subscribe = channel.subscribe.bind(channel);
+        channel.subscribe = listener => subscribe(raw => {
+          const chunk = raw as { data: string }, frame = JSON.parse(chunk.data);
+          if (frame.kind === "response" && typeof frame.value?.workerNow === "number" && !frame.value?.type) setTimeout(() => listener(raw), 40);
+          else listener(raw);
+        });
+        return mode === "cloned-channel" ? { ...channel } : channel;
+      },
+    });
+    try {
+      await runStressSchedule(schedule, local.deps);
+      const uncertainty = local.deps.timelineUncertaintyMs!();
+      expect(uncertainty).toBeGreaterThan(0);
+      if (mode !== "native") expect(uncertainty).toBeGreaterThanOrEqual(20);
+      else expect(uncertainty).toBeLessThan(20);
+    } finally { await local.close(); }
+  });
   it.each(["early-zero", "early-seven", "fenced"])("checks actual OS completion, independently of verdict: %s", async (mode) => {
     const metricPlan = legacyStressMetricPlan, runId = "exit-run";
     const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: null, maxIterations: 1, maxVus: 1, warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
@@ -297,12 +330,27 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
     const l = report.latency as { min: number; max: number; p50: number };
     expect(l.p50).toBeGreaterThanOrEqual(l.min);
     expect(l.p50).toBeLessThanOrEqual(l.max);
-    const diagnostics = JSON.parse(readFileSync(diagnosticFile, "utf8")) as { runs: Array<{ runId: string; completeness: unknown; timeline: unknown }>; workers: Array<{ runId: string; workerId: string; code: number | null; signal: string | null }> };
+    const diagnostics = JSON.parse(readFileSync(diagnosticFile, "utf8")) as { runs: Array<{ runId: string; completeness: unknown; timeline: unknown;
+      trace: Array<{ type: string; direction: string; worker: number; requestSeq: number; parentNowMs: number; uncertaintyMs?: number; runStart?: number }> }>;
+      workers: Array<{ runId: string; workerId: string; code: number | null; signal: string | null }> };
     expect(diagnostics.runs).toHaveLength(1);
     expect(diagnostics.runs[0]).toMatchObject({ completeness: { execution: { complete: true, reasons: [] }, metrics: { complete: true, reasons: [] }, load: { complete: true, reasons: [] } }, timeline: { aligned: true, uncertaintyMs: expect.any(Number) } });
     expect(diagnostics.workers).toHaveLength(2);
     expect(diagnostics.workers.map((worker) => worker.workerId).sort()).toEqual(["worker-1", "worker-2"]);
     expect(diagnostics.workers.every((worker) => worker.runId === diagnostics.runs[0]!.runId && worker.code === 0 && worker.signal === null)).toBe(true);
+    // The original diagnostic wrapper must preserve native qualification, rather than happen
+    // to pass this short workload with a fallback interval that will fail at a later phase edge.
+    const trace = diagnostics.runs[0]!.trace;
+    for (const sent of trace.filter(row => row.type === "clock" && row.direction === "send")) {
+      const received = trace.find(row => row.type === "clock" && row.direction === "receive" && row.worker === sent.worker && row.requestSeq === sent.requestSeq)!;
+      const start = trace.find(row => row.type === "start" && row.direction === "send" && row.worker === sent.worker)!;
+      expect(start.uncertaintyMs).toBeGreaterThan(0);
+      expect(start.uncertaintyMs).toBeLessThan((received.parentNowMs - sent.parentNowMs) / 2);
+    }
+    const origins = trace.filter(row => row.type === "create" && row.direction === "send").map(row => row.runStart);
+    expect(origins).toHaveLength(2);
+    expect(origins[0]).toBeTypeOf("number");
+    expect(origins[1]).toBe(origins[0]);
     retainedRoots.delete(root);
   }, 60000);
 

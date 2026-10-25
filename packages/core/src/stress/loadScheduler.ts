@@ -222,7 +222,7 @@ export async function runStressSchedule(schedule: StressSchedule, deps: StressEx
     changePhase("vu-setup"); const vuSetupBegin = offset(); pendingVuSetupStart = vuSetupBegin;
     for (let n = 0; n < schedule.maxVus && !controller.signal.aborted && !fatal; n++) {
       const id = `${n + 1}`, reported = new Set<string>(); let vuInputs: Readonly<Record<string, JsonValue>> = inputs;
-      const session = await deps.createVu(id, inputs, { runId: deps.runId, vuId: id, signal: controller.signal, gate: deps.gate, clock: deps.clock, lifecycle: deps.execution?.lifecycle,
+      const session = await deps.createVu(id, inputs, { runId: deps.runId, vuId: id, runStart, signal: controller.signal, gate: deps.gate, clock: deps.clock, lifecycle: deps.execution?.lifecycle,
         observation, observationAt, observe: (event) => observe({ ...event, stageId: null, vuId: id }),
         reportLifecycle(role, result) {
           if (reported.has(role)) throw new Error("VU lifecycle reported twice"); reported.add(role);

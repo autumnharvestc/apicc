@@ -15,16 +15,9 @@ import {
 } from "@apicc/core";
 import { prepareExecutionRunFromSnapshot, type CredentialHostOptions } from "./credentials.js";
 import { assertWorkspaceUsable, loadWorkspace, locateProject } from "./workspace.js";
-import { processStressWorkerChannel, spawnLocalStressWorker } from "./stressWorkerTransport.js";
-
-export const localStressClock: StressClock = { now: () => performance.now(), wallNow: () => Date.now(), sleep(ms, signal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
-    const abort = () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); };
-    const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, Math.min(2147000000, Math.max(1, ms)));
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-} };
+import { localStressClockDomain, processStressWorkerChannel, spawnLocalStressWorker } from "./stressWorkerTransport.js";
+import { localStressClock } from "./nodeStressClock.js";
+export { localStressClock } from "./nodeStressClock.js";
 const workerConfigSchema = z.object({ kind: z.literal("plan"), root: z.string(), projectPath: z.string(), plan: StressPlanSchema,
   definitionRevision: z.string(), credentialVersions: StressWorkerSpecSchema.shape.credentialVersions, networkIdentity: z.string(),
   preparedTestData: PreparedTestDataSchema, confirmedTargetOrigins: z.array(z.string()), pluginRuntimeVersion: z.literal(1), pluginRuntimeSnapshot: z.unknown() }).strict();
@@ -96,7 +89,7 @@ export function registerStressPlanCommands(program: Command, deps: StressPlanCom
         const host = createPreparedStressHost(execution, { registry: deps.registry, evidence, workspaceRoot: root }, { confirmedTargetOrigins });
         const runId = randomUUID(), common = { ...host, runId, clock: localStressClock, gate: createPlanGate(execution, confirmedTargetOrigins, localStressClock),
           metrics: createStressAccumulator(execution.compiled.metricPlan, runId), evidence, signal: controller.signal };
-        const report = opts.shards === 1 ? await runStressPlan(execution, common) : await runLocalStressWorkers(execution, { ...common, shards: opts.shards,
+        const report = opts.shards === 1 ? await runStressPlan(execution, common) : await runLocalStressWorkers(execution, { ...common, shards: opts.shards, clockDomain: localStressClockDomain,
           configuration: { kind: "plan", root, projectPath, plan, definitionRevision: prepared.snapshot.definitionRevision, credentialVersions: prepared.run.credentialBindings.versions,
             networkIdentity: prepared.network!.identity, preparedTestData: prepared.run.preparedTestData, confirmedTargetOrigins,
             pluginRuntimeVersion: 1, pluginRuntimeSnapshot: await deps.pluginSnapshot() },
@@ -113,7 +106,7 @@ export function registerStressPlanCommands(program: Command, deps: StressPlanCom
     });
   program.command("stress-plan-worker").requiredOption("--run-id <id>").requiredOption("--worker-id <id>")
     .action((opts: { runId: string; workerId: string }) => {
-      const peer = serveLocalStressWorker(processStressWorkerChannel(), opts, prepareWorker);
+      const peer = serveLocalStressWorker(processStressWorkerChannel(), opts, prepareWorker, localStressClockDomain);
       process.once("disconnect", () => { void peer.close(); });
     });
   return prepareWorker;

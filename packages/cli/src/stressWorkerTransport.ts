@@ -1,7 +1,12 @@
 import { spawn, type ChildProcess, type Serializable } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { privateEvidenceMarkers, PRIVATE_EVIDENCE_BYTES, type ShardOutcome, type SpawnWorker, type StressWorkerSpec } from "@apicc/core";
-import type { StressWorkerChannel } from "@apicc/core";
+import type { StressClockDomainBinding, StressWorkerChannel } from "@apicc/core";
+import { nativeStressClockDomain } from "./nodeStressClock.js";
+
+const nativeChannels = new WeakSet<StressWorkerChannel>();
+/** Only real local IPC and the exact native clock can opt into system-coordinate mapping. */
+export const localStressClockDomain: StressClockDomainBinding = (clock, channel) => nativeChannels.has(channel) ? nativeStressClockDomain(clock) : undefined;
 
 /** v3 children speak only the dedicated private channel; even early stdout is a protocol failure. */
 export function spawnLocalStressWorker(args: string[], timeoutMs: number, options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): StressWorkerChannel {
@@ -17,7 +22,7 @@ export function spawnLocalStressWorker(args: string[], timeoutMs: number, option
   child.on("error", kill); child.on("close", ended); child.on("disconnect", () => { if (!shutdownExpected) kill(); });
   child.stdout?.on("data", kill);
   child.stderr?.on("data", (chunk: Buffer) => { diagnostics += chunk.length; if (diagnostics > PRIVATE_EVIDENCE_BYTES) kill(); });
-  return {
+  const channel: StressWorkerChannel = {
     send(value) { return new Promise<void>((resolve, reject) => {
       if (closed || !child.connected) { reject(new Error("worker-failed")); return; }
       child.send(value as Serializable, (error) => { if (error) { kill(); reject(new Error("worker-failed")); } else resolve(); });
@@ -30,17 +35,21 @@ export function spawnLocalStressWorker(args: string[], timeoutMs: number, option
       await exited;
     },
   };
+  nativeChannels.add(channel);
+  return channel;
 }
 
 export function processStressWorkerChannel(channel: NodeJS.Process = process): StressWorkerChannel {
   if (!channel.send || !channel.connected) throw new Error("Private worker channel unavailable");
-  return {
+  const transport: StressWorkerChannel = {
     send(value) { return new Promise<void>((resolve, reject) => channel.send!(value as Serializable, (error: Error | null) => { if (error) { channel.exitCode = 1; reject(new Error("worker-failed")); } else resolve(); })); },
     subscribe(listener) { channel.on("message", listener); return () => { channel.off("message", listener); }; },
     onClose(listener) { channel.on("disconnect", listener); return () => { channel.off("disconnect", listener); }; },
     async close() { if (channel.connected) channel.disconnect?.(); },
     async finish() { if (channel.connected) channel.disconnect?.(); },
   };
+  if (channel === process) nativeChannels.add(transport);
+  return transport;
 }
 
 const READY = "apicc:private-evidence-ready";

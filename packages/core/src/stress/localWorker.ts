@@ -5,7 +5,7 @@ import { createGeneratorMetricsCollector, type GeneratorMetricsCollector } from 
 import type { StressAccumulator, StressClock, StressExecutionDeps, StressIterationContext, StressLifecycleResult, StressMetricEvent, StressRequestGate, StressVuSession } from "./execution.js";
 import type { StressMetricPlan, StressPlan } from "./plan.js";
 import { StressPhaseSchema, type StressCompletenessReason } from "./reportV2.js";
-import { createStressWorkerPeer, STRESS_WORKER_PENDING_BYTES, stressWorkerRequest, type StressWorkerChannel, type StressWorkerPeer } from "./workerProtocol.js";
+import { createStressWorkerPeer, STRESS_WORKER_PENDING_BYTES, stressWorkerRequest, sameStressClockDomain, StressClockDomainSchema, type StressClockDomainBinding, type StressWorkerChannel, type StressWorkerPeer } from "./workerProtocol.js";
 
 export interface StressWorkerRuntime {
   readonly host: Pick<StressExecutionDeps, "createVu" | "closeRun">;
@@ -21,9 +21,9 @@ const phaseSchema = z.object({ phase: StressPhaseSchema, atMs: z.number().finite
 
 /** Worker owns VUs and observations; no load curve, iteration allocator, or local request limiter. */
 export function serveLocalStressWorker(channel: StressWorkerChannel, identity: { runId: string; workerId: string },
-  prepare: (configuration: unknown, signal: AbortSignal) => Promise<StressWorkerRuntime>): StressWorkerPeer {
+  prepare: (configuration: unknown, signal: AbortSignal) => Promise<StressWorkerRuntime>, clockDomain?: StressClockDomainBinding): StressWorkerPeer {
   let runtime: StressWorkerRuntime | undefined, metrics: StressAccumulator | undefined, started = false, drained = false, readyMarkers = false, unionDone = false;
-  let delta = 0, runStart = 0, requestSerial = 0, pendingBytes = 0;
+  let delta = 0, runStart: number | undefined, requestSerial = 0, pendingBytes = 0;
   const abort = new AbortController(), reasons = new Set<StressCompletenessReason>();
   let generator: GeneratorMetricsCollector | undefined;
   const vus = new Map<string, { session?: StressVuSession; busy: boolean; closed: boolean; iterationId: string | null; stageId: string | null; phase: StressIterationContext["phase"]; records: z.infer<typeof StressWorkerLifecycleSchema>[] }>();
@@ -39,15 +39,27 @@ export function serveLocalStressWorker(channel: StressWorkerChannel, identity: {
       return { type: "run-ready", workerNow: runtime.clock.now() };
     }
     if (!runtime || !metrics) throw new Error("worker-incompatible");
-    if (command.type === "clock") return { workerNow: runtime.clock.now() };
-    if (command.type === "start") { if (started) throw new Error("worker-incompatible"); delta = command.coordinatorNow - command.workerNow; started = true; return { type: "started" }; }
+    if (command.type === "clock") {
+      const domain = clockDomain?.(runtime.clock, channel);
+      return { workerNow: runtime.clock.now(), ...(domain ? { clockDomain: StressClockDomainSchema.parse(domain) } : {}) };
+    }
+    if (command.type === "start") {
+      if (started) throw new Error("worker-incompatible");
+      if (command.clockDomain) {
+        const own = clockDomain?.(runtime.clock, channel);
+        if (!own || !sameStressClockDomain(StressClockDomainSchema.parse(own), command.clockDomain)) throw new Error("worker-incompatible");
+        delta = 0;
+      } else delta = command.coordinatorNow - command.workerNow;
+      started = true; return { type: "started" };
+    }
     if (!started) throw new Error("worker-incompatible");
     if (command.type === "create") {
       if (drained || abort.signal.aborted || vus.has(command.vuId)) throw new Error("worker-incompatible");
-      runStart = command.runStart;
+      if (runStart !== undefined && runStart !== command.runStart) throw new Error("worker-incompatible");
+      runStart ??= command.runStart;
       const vu = { busy: false, closed: false, iterationId: null as string | null, stageId: null as string | null, phase: "vu-setup" as StressIterationContext["phase"], records: [] as z.infer<typeof StressWorkerLifecycleSchema>[] , session: undefined as StressVuSession | undefined };
       vus.set(command.vuId, vu);
-      const observation = () => ({ phase: vu.phase, atMs: Math.max(0, runtime!.clock.now() + delta - runStart) });
+      const observation = () => ({ phase: vu.phase, atMs: Math.max(0, runtime!.clock.now() + delta - runStart!) });
       const observe = (event: StressMetricEvent) => {
         const bytes = Buffer.byteLength(JSON.stringify(event));
         if (event.kind === "iteration" || pending.size >= 2048 || pendingBytes + bytes > STRESS_WORKER_PENDING_BYTES) { failMetrics("metrics-budget-exhausted"); return; }
@@ -74,7 +86,7 @@ export function serveLocalStressWorker(channel: StressWorkerChannel, identity: {
       };
       let mapped = command.inputs;
       try {
-        vu.session = await runtime.host.createVu(command.vuId, command.inputs, { runId: identity.runId, vuId: command.vuId, signal: abort.signal, clock: runtime.clock, gate, observation, observe, lifecycle: runtime.lifecycle,
+        vu.session = await runtime.host.createVu(command.vuId, command.inputs, { runId: identity.runId, vuId: command.vuId, runStart, signal: abort.signal, clock: runtime.clock, gate, observation, observe, lifecycle: runtime.lifecycle,
           reportLifecycle(role, result) {
             if (vu.records.some((record) => record.role === role)) throw new Error("worker-incompatible");
             const outputs: Record<string, JsonValue> = {};
@@ -99,7 +111,7 @@ export function serveLocalStressWorker(channel: StressWorkerChannel, identity: {
       vu.busy = true; vu.iterationId = command.iterationId; vu.stageId = command.stageId; vu.phase = command.phase;
       try {
         const result = await vu.session.execute({ ...identity, ...command, runId: identity.runId, signal: abort.signal,
-          observation: () => ({ phase: vu.phase, atMs: Math.max(0, runtime!.clock.now() + delta - runStart) }) });
+          observation: () => ({ phase: vu.phase, atMs: Math.max(0, runtime!.clock.now() + delta - runStart!) }) });
         await flush(); return result;
       } finally { vu.busy = false; vu.iterationId = null; vu.stageId = null; }
     }

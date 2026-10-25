@@ -39,6 +39,19 @@ beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date
 afterEach(() => vi.useRealTimers());
 
 describe("unified load scheduling", () => {
+  it("delivers the captured origin to every VU while clock reads keep advancing", async () => {
+    // Reconstructing origin as now()-observation().atMs loses one advancing read on each VU.
+    let current = 99;
+    const origins: unknown[] = [];
+    const selected = deps(async (_id, _values, host) => {
+      origins.push(Reflect.get(host!, "runStart"));
+      return { async execute() { return { state: "passed", durationMs: 1 }; }, async close() {} };
+    });
+    await runStressSchedule(schedule({ load: { kind: "constant-vus", vus: 2 }, maxVus: 2, durationMs: null, maxIterations: 2 }), {
+      ...selected, clock: { ...clock, now: () => ++current },
+    });
+    expect(origins).toEqual([100, 100]);
+  });
   it("publishes bounded live counters through execution and real close without delaying completion", async () => {
     // Boundary-only notifications leave a live run at VU0/0; a detached heartbeat leaks after close.
     const events: StressProgress[] = []; let returned = false;

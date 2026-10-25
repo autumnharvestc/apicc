@@ -230,6 +230,8 @@ export interface StressLifecycleHostContext {
 }
 export interface StressVuHostContext extends StressLifecycleHostContext {
   readonly vuId: string;
+  /** Exact scheduler capture on this clock axis; never reconstructed using later reads. */
+  readonly runStart?: number;
   readonly lifecycle: DeepReadonly<StressPlan["lifecycle"]>;
   /** Called before factory rejection, and retained by the session for teardown.
    * Returns only explicitly mapped initial inputs; outputs are consumed immediately. */

@@ -66,6 +66,8 @@ describe("v3 bounded framing and lifecycle privacy", () => {
     try {
       await peer.request({ type: "prepare", configuration: {} }); await peer.request({ type: "start", coordinatorNow: 1, workerNow: 1, uncertaintyMs: 0 });
       await expect(peer.request({ type: "create", vuId: "1", inputs: {}, runStart: 1 })).resolves.toEqual({ ok: true, mappedInputs: { input: "mapped" }, records: [{ role: "vuSetup", result: { state: "passed", durationMs: 2, outputs: { needed: "mapped" } } }] });
+      // A second VU cannot redefine the coordinate origin already retained by the first VU.
+      await expect(peer.request({ type: "create", vuId: "2", inputs: {}, runStart: 2 })).rejects.toThrow("worker-failed");
       await expect(peer.request({ type: "close", vuId: "1", reason: "iteration-budget", allowNetworkCleanup: true })).resolves.toEqual({ records: [{ role: "vuTeardown", result: { state: "failed", durationMs: 3, failureKind: "assertion", outputs: {} } }] });
     } finally { await peer.close(); await worker.close(); }
   });

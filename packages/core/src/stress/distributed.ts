@@ -8,7 +8,7 @@ import type { PreparedStressExecution, StressAggregateSnapshot, StressExecutionD
 import type { StressSchedule } from "./plan.js";
 import type { StressCompletenessReason, StressReportV2 } from "./reportV2.js";
 import { runStressPlan } from "./plannedRunner.js";
-import { createStressWorkerPeer, mergeStressWorkerMarkers, type StressWorkerChannel, type StressWorkerPeer } from "./workerProtocol.js";
+import { createStressWorkerPeer, mergeStressWorkerMarkers, sameStressClockDomain, StressClockDomainSchema, type StressClockDomainBinding, type StressWorkerChannel, type StressWorkerPeer } from "./workerProtocol.js";
 import { StressWorkerLifecycleSchema } from "./localWorker.js";
 import type { ExecutableRequest } from "../plugin/types.js";
 
@@ -17,6 +17,7 @@ export interface LocalStressWorkerOptions extends StressExecutionDeps {
   readonly allowNumericFailure?: boolean;
   readonly shards: number;
   readonly configuration: unknown;
+  readonly clockDomain?: StressClockDomainBinding;
   readonly spawnWorker: (identity: { runId: string; workerId: string }) => Promise<StressWorkerChannel>;
 }
 /** Lightweight session substitution; the scheduler remains the sole budget/load owner. */
@@ -27,7 +28,7 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
   const failures = new Set<StressCompletenessReason>();
   const childAbort = new AbortController();
   const signal = AbortSignal.any([options.signal, childAbort.signal]);
-  const states: { id: string; peer: StressWorkerPeer; controller: AbortController; vus: Map<string, { host: StressVuHostContext; iteration: string | null; stage: string | null; closed: boolean; notBeforeMs: number }>; leases: Map<string, { vuId: string; requestId: string; release(): void }>; drained: boolean; counts?: { total: number; ok: number; failed: number; eligibleCompleted: number }; generator?: StressGeneratorMetrics }[] = [];
+  const states: { id: string; peer: StressWorkerPeer; controller: AbortController; uncertainty: number; vus: Map<string, { host: StressVuHostContext; iteration: string | null; stage: string | null; closed: boolean; notBeforeMs: number }>; leases: Map<string, { vuId: string; requestId: string; release(): void }>; drained: boolean; counts?: { total: number; ok: number; failed: number; eligibleCompleted: number }; generator?: StressGeneratorMetrics }[] = [];
   let uncertainty = 0, leaseSerial = 0, privateComplete = false, evidence: import("../report/types.js").SafeExecutionEvidence[] = [];
   let drainPromise: Promise<void> | undefined, closed: Promise<void> | undefined;
   let pluginMismatchShard: string | undefined;
@@ -38,7 +39,7 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
     for (let i = 0; i < options.shards; i++) {
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
       const id = `worker-${i + 1}`, channel = await options.spawnWorker({ runId: options.runId, workerId: id });
-      const state: typeof states[number] = { id, peer: undefined!, controller: new AbortController(), vus: new Map(), leases: new Map(), drained: false };
+      const state: typeof states[number] = { id, peer: undefined!, controller: new AbortController(), vus: new Map(), leases: new Map(), drained: false, uncertainty: 0 };
       state.peer = createStressWorkerPeer(channel, { runId: options.runId, workerId: id }, async (command) => {
         if (state.drained) throw new Error("worker-incompatible");
         if (!("vuId" in command)) throw new Error("worker-incompatible");
@@ -50,8 +51,8 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
           const current = vu.host.observation().atMs;
           // This operation's worker events cannot precede its coordinator command,
           // or follow this response. Retain the original measured clock interval.
-          const earliest = Math.max(0, vu.notBeforeMs, command.atMs - uncertainty);
-          const latest = Math.min(current, command.atMs + uncertainty);
+          const earliest = Math.max(0, vu.notBeforeMs, command.atMs - state.uncertainty);
+          const latest = Math.min(current, command.atMs + state.uncertainty);
           if (earliest > latest) throw new Error("timeline-unaligned");
           const atMs = Math.max(earliest, Math.min(command.atMs, latest)), stamp = vu.host.observationAt(atMs);
           const before = vu.host.observationAt(earliest);
@@ -76,10 +77,14 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
       states.push(state);
       z.object({ type: z.literal("run-ready"), workerNow: z.number().finite().nonnegative() }).strict().parse(await state.peer.request({ type: "prepare", configuration: options.configuration }));
       const sent = options.clock.now();
-      const ready = z.object({ workerNow: z.number().finite().nonnegative() }).strict().parse(await state.peer.request({ type: "clock" }));
+      const ready = z.object({ workerNow: z.number().finite().nonnegative(), clockDomain: StressClockDomainSchema.optional() }).strict().parse(await state.peer.request({ type: "clock" }));
       const received = options.clock.now(), rtt = received - sent;
-      uncertainty = Math.max(uncertainty, rtt / 2);
-      await state.peer.request({ type: "start", coordinatorNow: (sent + received) / 2, workerNow: ready.workerNow, uncertaintyMs: rtt / 2 });
+      const own = options.clockDomain?.(options.clock, channel);
+      const shared = own && ready.clockDomain && sameStressClockDomain(StressClockDomainSchema.parse(own), ready.clockDomain);
+      state.uncertainty = shared ? own.uncertaintyMs + ready.clockDomain!.uncertaintyMs : rtt / 2;
+      uncertainty = Math.max(uncertainty, state.uncertainty);
+      await state.peer.request({ type: "start", coordinatorNow: (sent + received) / 2, workerNow: ready.workerNow, uncertaintyMs: state.uncertainty,
+        ...(shared ? { clockDomain: own } : {}) });
     }
   } catch (error) {
     if (!options.allowNumericFailure) { signal.removeEventListener("abort", stop); await Promise.allSettled(states.map((s) => s.peer.close())); throw error; }
@@ -110,7 +115,8 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
       const vu = { host, iteration: null as string | null, stage: null as string | null, closed: false, notBeforeMs: host.observation().atMs }; state.vus.set(vuId, vu);
       let mappedInputs: Readonly<Record<string, unknown>> = inputs;
       const records = (value: unknown) => z.array(StressWorkerLifecycleSchema).max(2).parse(value).forEach((record) => { mappedInputs = host.reportLifecycle(record.role, record.result); });
-      const created = z.object({ ok: z.boolean(), records: z.array(StressWorkerLifecycleSchema).max(2), mappedInputs: z.record(z.string(), z.unknown()) }).strict().parse(await state.peer.request({ type: "create", vuId, inputs: structuredClone(inputs), runStart: options.clock.now() - host.observation().atMs }));
+      if (host.runStart === undefined) throw new Error("Missing fixed coordinator origin");
+      const created = z.object({ ok: z.boolean(), records: z.array(StressWorkerLifecycleSchema).max(2), mappedInputs: z.record(z.string(), z.unknown()) }).strict().parse(await state.peer.request({ type: "create", vuId, inputs: structuredClone(inputs), runStart: host.runStart }));
       records(created.records);
       if (JSON.stringify(Object.entries(mappedInputs).sort()) !== JSON.stringify(Object.entries(created.mappedInputs).sort())) throw new Error("worker-incompatible");
       if (!created.ok) { vu.closed = true; throw new Error("VU initialization failed"); }

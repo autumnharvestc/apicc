@@ -23,6 +23,8 @@ export interface StressRunnerOptions {
   createGeneratorMetricsCollector?: () => GeneratorMetricsCollector;
   generatorMetricsProbe?: GeneratorMetricsProbe;
   now?: () => number;
+  /** Native host clock shared by scheduler, request gate and local worker transport. */
+  clock?: StressClock;
   setTimeout?: StressSetTimeout;
   clearTimeout?: StressClearTimeout;
   onSample?: (sample: StressSample) => void;
@@ -90,7 +92,7 @@ export class StressRunner {
     const setTimer: StressSetTimeout = this.opts.setTimeout ?? ((handler, delay) => setTimeout(handler, delay));
     const clearTimer: StressClearTimeout = this.opts.clearTimeout ?? ((timer) => clearTimeout(timer));
     let lastNow = -Infinity;
-    const clock: StressClock = { now: () => { const value = (this.opts.now ?? (() => performance.now()))(); if (Number.isFinite(value)) lastNow = Math.max(lastNow, value); return lastNow === -Infinity ? 0 : lastNow; }, wallNow: () => Date.now(),
+    const clock: StressClock = this.opts.clock ?? { now: () => { const value = (this.opts.now ?? (() => performance.now()))(); if (Number.isFinite(value)) lastNow = Math.max(lastNow, value); return lastNow === -Infinity ? 0 : lastNow; }, wallNow: () => Date.now(),
       sleep: (ms, signal) => new Promise<void>((resolve, reject) => {
         if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
         let timer: NodeJS.Timeout;

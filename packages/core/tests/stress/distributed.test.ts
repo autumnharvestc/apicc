@@ -44,21 +44,29 @@ function privateChannels(): [StressWorkerChannel, StressWorkerChannel] {
 }
 
 describe("v3 remote VU coordinator", () => {
-  async function phaseAtDiagnostic(nominal: number, boundary: number, measurementBegins = false) {
+  async function phaseAtDiagnostic(nominal: number, boundary: number, measurementBegins = false, domain?: "shared" | "mismatch" | "basis-mismatch" | "precision-mismatch" | "untrusted" | "mixed") {
     // Real v3 peers/worker/phase-at/snapshot merge; the injected host has one known phase boundary.
     // Anchor send0/receive2/worker100 gives delta=-99 and uncertainty1ms, without sleeps or I/O.
-    let reads = 0, workerNow = 100, current = 998;
-    const clock: StressClock = { now: () => ++reads === 1 ? 0 : reads === 2 ? 2 : current, wallNow: () => 0,
+    let reads = 0, workerNow = domain ? 10 : 100, current = 998;
+    const clock: StressClock = { now: () => {
+      reads++;
+      if (reads === 1 || domain === "mixed" && reads === 3) return 0;
+      if (reads === 2 || domain === "mixed" && reads === 4) return domain ? 20 : 2;
+      return current;
+    }, wallNow: () => 0,
       async sleep() { throw new Error("No clock wait expected in this finite diagnostic"); } };
     const workerClock: StressClock = { ...clock, now: () => workerNow };
     const metricPlan = legacyStressMetricPlan, runId = `phase-at-${boundary}`;
-    const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: 1100, maxIterations: 1, maxVus: 1,
+    const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: 1100, maxIterations: 1, maxVus: domain === "mixed" ? 2 : 1,
       warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
       requested: { maxRequestConcurrency: 1, maxRps: null }, effective: { maxRequestConcurrency: 1, maxRps: null } };
     const accumulator = createStressAccumulator(metricPlan, runId);
     const responses: { atMs: number; value: unknown }[] = [];
     const snapshots: { sourceId: string; scope: string; sequence: number; reasons: readonly string[] }[] = [];
-    const local = await createLocalStressWorkerDeps(schedule, { runId, clock, shards: 1, configuration: {}, signal: new AbortController().signal,
+    // This callback stands in for the host's authenticated transport/clock binding, not a wire flag.
+    const clockDomain = () => ({ id: "fixture-native-domain", basis: "0", precision: "fixture-bound", resolutionMs: .001, uncertaintyMs: .001 });
+    const local = await createLocalStressWorkerDeps(schedule, { runId, clock, shards: domain === "mixed" ? 2 : 1, configuration: {}, signal: new AbortController().signal,
+      ...(domain && domain !== "untrusted" ? { clockDomain } : {}),
       evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }),
       metrics: { ...accumulator, merge(snapshot) {
         snapshots.push({ sourceId: snapshot.sourceId, scope: snapshot.scope, sequence: snapshot.sequence, reasons: snapshot.incompleteReasons });
@@ -67,18 +75,22 @@ describe("v3 remote VU coordinator", () => {
       createVu: async () => { throw new Error("Remote only"); },
       async spawnWorker(identity) {
         const channels = privateChannels();
-        const worker = serveLocalStressWorker(channels[1], identity, async () => ({ clock: workerClock, metricPlan,
+        const prepare: Parameters<typeof serveLocalStressWorker>[2] = async () => ({ clock: workerClock, metricPlan,
           evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }), host: {
             async createVu(_id, _inputs, host) { return { async execute(context) {
               current = 1000;
-              workerNow = nominal + 99;
+              workerNow = domain ? nominal : nominal + 99;
               host!.observe({ kind: "case", ...context.observation!(), vuId: context.vuId, iterationId: context.iterationId, stageId: context.stageId,
                 ok: true, status: 200, requestStarted: true, requestCompleted: true, failureKind: null,
                 requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1,
                 locator: { collectionId: "c", folderIds: [], apiId: "a", caseId: "x", scope: "base" }, nodeKey: null });
               return { state: "passed", durationMs: 1 };
             }, async close() {} }; },
-          } }));
+          } });
+        const worker = serveLocalStressWorker(channels[1], identity, prepare,
+          domain && !(domain === "mixed" && identity.workerId === "worker-2") ? () => ({ ...clockDomain(),
+            id: domain === "mismatch" ? "other-native-domain" : "fixture-native-domain",
+            basis: domain === "basis-mismatch" ? "1" : "0", precision: domain === "precision-mismatch" ? "other-bound" : "fixture-bound" }) : undefined);
         const request = worker.request.bind(worker);
         worker.request = async command => {
           const value = await request(command);
@@ -92,7 +104,7 @@ describe("v3 remote VU coordinator", () => {
       ? atMs < boundary ? "vu-setup" as const : "measurement" as const
       : atMs < boundary ? "measurement" as const : "drain" as const });
     try {
-      const vu = await local.deps.createVu("1", {}, { runId, vuId: "1", signal: local.deps.signal, clock,
+      const vu = await local.deps.createVu("1", {}, { runId, vuId: "1", runStart: 0, signal: local.deps.signal, clock,
         gate: local.deps.gate, observation: () => phaseAt(current), observationAt(atMs) {
           if (atMs < 0 || atMs > current) throw new Error("Host cannot resolve an unobserved time");
           return phaseAt(atMs);
@@ -118,6 +130,55 @@ describe("v3 remote VU coordinator", () => {
         completeness: summary.completeness, timeline: { aligned: summary.timeline.aligned, uncertaintyMs: summary.timeline.uncertaintyMs }, verdict: summary.verdict };
     } finally { await local.close(); }
   }
+  it("shared native coordinates keep a known measurement event complete despite a 20ms IPC round trip", async () => {
+    // Send0/worker10/receive20 already share one axis. Event999.5 is 0.5ms before drain1000;
+    // native .001ms precision stays in measurement, whereas the old ±10ms IPC interval straddles drain.
+    const actual = await phaseAtDiagnostic(999.5, 1000, false, "shared");
+    expect(actual.responses).toEqual([{ atMs: 999.5, value: { phase: "measurement", atMs: 999.5, uncertain: false } }]);
+    expect(actual.timeline).toEqual({ aligned: true, uncertaintyMs: .002 });
+    expect(actual.completeness.metrics).toEqual({ complete: true, reasons: [] });
+    expect(actual.verdict.status).toBe("passed");
+  });
+  it.each(["mismatch", "basis-mismatch", "precision-mismatch", "untrusted"] as const)("keeps %s domains on the strict IPC estimate", async (domain) => {
+    const actual = await phaseAtDiagnostic(999.5, 1000, false, domain);
+    expect(actual.timeline).toEqual({ aligned: false, uncertaintyMs: 10 });
+    expect(actual.completeness.metrics).toEqual({ complete: false, reasons: ["timeline-unaligned"] });
+    expect(actual.verdict.status).toBe("incomplete");
+  });
+  it("keeps mixed workers' phase intervals independent while reporting the conservative maximum", async () => {
+    const actual = await phaseAtDiagnostic(999.5, 1000, false, "mixed");
+    expect(actual.uncertainty).toBe(10);
+    expect(actual.responses).toEqual([{ atMs: 999.5, value: { phase: "measurement", atMs: 999.5, uncertain: false } }]);
+    expect(actual.completeness.metrics).toEqual({ complete: true, reasons: [] });
+    expect(actual.timeline).toEqual({ aligned: true, uncertaintyMs: 10 });
+  });
+  it("retains the same wire origin for two VUs with continuously advancing host reads", async () => {
+    let current = 0;
+    const clock: StressClock = { now: () => ++current, wallNow: () => 0, async sleep() { throw new Error("Finite iteration run needs no sleep"); } };
+    const runId = "advancing-origin", metricPlan = legacyStressMetricPlan, origins: unknown[] = [];
+    const schedule = { load: { kind: "constant-vus" as const, vus: 2 }, durationMs: null, maxIterations: 2, maxVus: 2,
+      warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
+      requested: { maxRequestConcurrency: 2, maxRps: null }, effective: { maxRequestConcurrency: 2, maxRps: null } };
+    const evidence = () => createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true });
+    const local = await createLocalStressWorkerDeps(schedule, { runId, clock, shards: 1, configuration: {}, signal: new AbortController().signal,
+      evidence: evidence(), metrics: createStressAccumulator(metricPlan, runId), gate: createStressRequestGate({ clock, maxConcurrency: 2, authorizeRequest() {} }),
+      createVu: async () => { throw new Error("Remote only"); }, async spawnWorker(identity) {
+        const pair = privateChannels();
+        serveLocalStressWorker(pair[1], identity, async () => ({ clock, metricPlan, evidence: evidence(), host: {
+          async createVu(_id, _inputs, host) {
+            origins.push(host!.runStart);
+            return { async execute() { return { state: "passed", durationMs: 1 }; }, async close() {} };
+          },
+        } }));
+        return pair[0];
+      },
+    });
+    try {
+      current = 99; // Scheduler captures100; all later reads advance by1, including the second VU.
+      await runStressSchedule(schedule, local.deps);
+      expect(origins).toEqual([100, 100]);
+    } finally { await local.close(); }
+  });
   it("phase-at intersects clock uncertainty with the causal execute dispatch boundary", async () => {
     // Measurement begins999.75; execute is sent1000; the worker event nominal999.5 ±1
     // cannot predate that command, even though its clock-only interval includes VU setup.

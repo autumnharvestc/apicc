@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { generatePluginPackage } from "./create-plugin.js";
 import { createPrivateStressWorkerFactory, createWorkerEvidenceFinalizer } from "./stressWorkerTransport.js";
 import { registerStressPlanCommands } from "./stressPlanCommand.js";
-import { spawnLocalStressWorker } from "./stressWorkerTransport.js";
+import { localStressClockDomain, spawnLocalStressWorker } from "./stressWorkerTransport.js";
+import { localStressClock } from "./nodeStressClock.js";
 import {
   ShardOutcomeSchema,
   PreparedTestDataSchema,
@@ -627,6 +628,7 @@ async function resolveStressTarget(
     createRunner: (options = {}) => {
       const maxRps = options.maxRps ?? project.stressPolicy?.maxRps;
       return new StressRunner({
+        clock: localStressClock,
         evidenceIdentity: { projectId: prepared.snapshot.project.id, definitionRevision: prepared.snapshot.definitionRevision, environmentId: env?.id, dataDigest: prepared.run.preparedTestData?.digest },
         evidenceMarkers: prepared.secrets,
         onSample: options.onSample,
@@ -1433,7 +1435,7 @@ export async function runCli(
         let local: Awaited<ReturnType<typeof createLocalStressWorkerDeps>> | undefined;
         try { report = await createRunner({ concurrency: opts.concurrency, maxRps: effectiveMaxRps, confirmedTargetOrigins, connectionMode: opts.connectionMode,
           async runSchedule(schedule, execution) {
-            local = await createLocalStressWorkerDeps(schedule, { ...execution, allowNumericFailure: true, shards: opts.shards, configuration: { ...specBase, kind: "legacy", pluginRuntimeVersion: 1, pluginRuntimeSnapshot: await getPluginHost().snapshot() },
+            local = await createLocalStressWorkerDeps(schedule, { ...execution, clockDomain: localStressClockDomain, allowNumericFailure: true, shards: opts.shards, configuration: { ...specBase, kind: "legacy", pluginRuntimeVersion: 1, pluginRuntimeSnapshot: await getPluginHost().snapshot() },
               spawnWorker: (identity) => deps.spawnLocalStressWorker ? deps.spawnLocalStressWorker(identity, shardTimeoutMs, prepareLocalWorker)
                 : Promise.resolve(spawnLocalStressWorker([cliEntryPath(), "stress-plan-worker", "--run-id", identity.runId, "--worker-id", identity.workerId], shardTimeoutMs)) });
             return runStressSchedule(schedule, local.deps);

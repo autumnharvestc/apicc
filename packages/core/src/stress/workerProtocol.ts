@@ -5,6 +5,7 @@ import type { ExecutableRequest } from "../plugin/types.js";
 import { StressSafetySchema } from "./model.js";
 import { HttpMethodSchema, KeyValuePairSchema } from "../domain/primitives.js";
 import { PRIVATE_EVIDENCE_BYTES } from "../report/evidence.js";
+import type { StressClock } from "./execution.js";
 
 /** Merge the private marker source into the run-owned union. */
 export function mergeStressWorkerMarkers(target: Set<string>, values: Iterable<string>): void {
@@ -21,6 +22,14 @@ export const STRESS_WORKER_PROTOCOL_VERSION = 3;
 export const STRESS_WORKER_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 export const STRESS_WORKER_PENDING_BYTES = 1024 * 1024;
 const id = z.string().min(1).max(256), n = z.number().finite().nonnegative();
+export const StressClockDomainSchema = z.object({ id, basis: z.string().regex(/^\d+$/), precision: id, resolutionMs: n.positive(), uncertaintyMs: n }).strict()
+  .refine(value => value.uncertaintyMs >= value.resolutionMs);
+export type StressClockDomain = z.infer<typeof StressClockDomainSchema>;
+/** Trusted host capability authenticates the actual clock and transport, never a wire flag. */
+export type StressClockDomainBinding = (clock: StressClock, channel: StressWorkerChannel) => StressClockDomain | undefined;
+export function sameStressClockDomain(left: StressClockDomain, right: StressClockDomain): boolean {
+  return left.id === right.id && left.basis === right.basis && left.precision === right.precision;
+}
 const inputs = StringRecordSchema(JsonValueSchema);
 const auth = z.discriminatedUnion("kind", [z.object({ kind: z.literal("none") }).strict(), z.object({ kind: z.literal("bearer"), token: z.string() }).strict(),
   z.object({ kind: z.literal("basic"), username: z.string(), password: z.string() }).strict(), z.object({ kind: z.literal("apikey"), name: z.string(), placement: z.enum(["header", "query"]), value: z.string() }).strict()]);
@@ -36,7 +45,7 @@ const request = z.discriminatedUnion("protocol", [z.object({ ...commonRequest, p
 export const StressWorkerCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("prepare"), configuration: z.unknown() }).strict(),
   z.object({ type: z.literal("clock") }).strict(),
-  z.object({ type: z.literal("start"), coordinatorNow: n, workerNow: n, uncertaintyMs: n }).strict(),
+  z.object({ type: z.literal("start"), coordinatorNow: n, workerNow: n, uncertaintyMs: n, clockDomain: StressClockDomainSchema.optional() }).strict(),
   z.object({ type: z.literal("create"), vuId: id, inputs, runStart: n }).strict(),
   z.object({ type: z.literal("execute"), vuId: id, iterationId: id, stageId: z.string().nullable(), phase: StressPhaseSchema, scheduledOffsetMs: n }).strict(),
   z.object({ type: z.literal("close"), vuId: id, reason: z.enum(["duration", "iteration-budget", "user", "root-abort", "drain-timeout", "setup-failed", "execution-failed"]), allowNetworkCleanup: z.boolean() }).strict(),
