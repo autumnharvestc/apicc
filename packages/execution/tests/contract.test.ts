@@ -15,7 +15,7 @@ const id = { messageId: "100", jobId: "10", executionId: "11" };
 const start = { ...id, kind: "start-request", inputsDigest: hash, policyVersion: "1", scriptPlanDigest: hash, scriptRequirements: [], executionProfile: "no-script", runtimeCompatibilityId: "controlled-node22-v1", credentialVersions: {} };
 
 it("admits the real Electron main combination after the shared semantic probe and rejects unknown combinations", () => {
-  const scriptApi = "4c7c797e04a8eb8769ea8d65e6248a40853e7cf1793d0e37d3e862146edac572";
+  const scriptApi = "afaf628a48532cff1e1e9264f328830ea1678b877853e324bab040039d0721d0";
   expect(runtimeCompatibilityIdForRuntime("24.19.0", "15.2.124.18-electron.0", scriptApi)).toBe(`node-24.19.0-v8-15.2.124.18-electron.0-script-${scriptApi}`);
   expect(() => runtimeCompatibilityIdForRuntime("24.19.1", "15.2.124.18-electron.0", scriptApi)).toThrow(/Unknown/);
   expect(() => runtimeCompatibilityIdForRuntime("24.19.0", "15.2.124.18-electron.1", scriptApi)).toThrow(/Unknown/);

@@ -22,7 +22,7 @@ export const ProjectExecutionAgentsSchema = z.object({
 }).strict();
 export type ProjectExecutionAgents = z.infer<typeof ProjectExecutionAgentsSchema>;
 /** Initial controlled compatibility entry. Expanding this list requires runtime equivalence evidence. */
-export const CONTROLLED_RUNTIME = Object.freeze({ nodeVersion: "22.19.0", v8Version: "12.4.254.21-node.29", scriptApiId: "4c7c797e04a8eb8769ea8d65e6248a40853e7cf1793d0e37d3e862146edac572" });
+export const CONTROLLED_RUNTIME = Object.freeze({ nodeVersion: "22.19.0", v8Version: "12.4.254.21-node.29", scriptApiId: "afaf628a48532cff1e1e9264f328830ea1678b877853e324bab040039d0721d0" });
 /** Electron 44.1.0 main and Linux Node 22.19.0 passed the same real Core fixture (T11). */
 export const CONTROLLED_RUNTIMES = Object.freeze([
   CONTROLLED_RUNTIME,

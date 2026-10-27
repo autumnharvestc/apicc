@@ -1,0 +1,14 @@
+# Execution identities hash source bytes. Keep those bytes identical in Windows,
+# Linux and Docker checkouts without weakening content-sensitive fingerprints.
+/pnpm-lock.yaml text eol=lf
+/pnpm-workspace.yaml text eol=lf
+/packages/core/*.json text eol=lf
+/packages/core/src/**/*.ts text eol=lf
+/packages/core/src/**/*.json text eol=lf
+/packages/plugin-sdk/*.json text eol=lf
+/packages/plugin-sdk/src/**/*.ts text eol=lf
+/packages/plugin-sdk/src/**/*.json text eol=lf
+/packages/execution/*.json text eol=lf
+/packages/execution/src/**/*.ts text eol=lf
+/packages/execution/src/**/*.json text eol=lf
+/packages/execution/scripts/build-identity.mjs text eol=lf
