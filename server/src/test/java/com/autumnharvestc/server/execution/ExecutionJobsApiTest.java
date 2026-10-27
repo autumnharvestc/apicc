@@ -23,7 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 abstract class JobsFixture {
     static final String HASH="a".repeat(64), EMPTY="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945";
     static final String UUID="10000000-0000-4000-8000-000000000001";
-    static final String SCRIPT_API="4c7c797e04a8eb8769ea8d65e6248a40853e7cf1793d0e37d3e862146edac572", RUNTIME="node-22.19.0-v8-12.4.254.21-node.29-script-"+SCRIPT_API;
+    static final String SCRIPT_API="afaf628a48532cff1e1e9264f328830ea1678b877853e324bab040039d0721d0", RUNTIME="node-22.19.0-v8-12.4.254.21-node.29-script-"+SCRIPT_API;
     static final Path KEY;
     static {try{KEY=Files.createTempFile("apicc-t6-key-",".bin");Files.write(KEY,new byte[32]);KEY.toFile().deleteOnExit();}catch(Exception e){throw new ExceptionInInitializerError(e);}}
     @DynamicPropertySource static void props(DynamicPropertyRegistry r){r.add("apicc.execution.materials.master-key-file",()->KEY.toString());}

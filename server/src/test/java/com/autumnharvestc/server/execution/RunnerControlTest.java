@@ -42,6 +42,12 @@ class RunnerControlTest extends JobsFixture {
         registration.put("nodeVersion","22.19.0");registration.put("v8Version","12.4.254.21-node.29");registration.put("runtimeCompatibilityId",RUNTIME);registration.put("capabilities",List.of("task:suite","protocol:http"));
         registration.put("configuration",Map.of("configVersion","0","appliedConfigVersion","0","pendingFields",List.of(),"restartRequiredFields",List.of(),"status","applied"));
         agent(f,post("/api/v1/runner/runtime"),registration).andExpect(status().isOk()).andExpect(jsonPath("$.registered").value(true));
+        String oldScript="4c7c797e04a8eb8769ea8d65e6248a40853e7cf1793d0e37d3e862146edac572";
+        for(var changes:List.of(Map.of("scriptApiId",oldScript,"runtimeCompatibilityId","node-22.19.0-v8-12.4.254.21-node.29-script-"+oldScript),
+                Map.of("scriptApiId","b".repeat(64)),Map.of("nodeVersion","22.19.1"),Map.of("v8Version","12.4.254.21-node.30"),Map.of("runtimeCompatibilityId","unknown-runtime"))){
+            var unsupported=new LinkedHashMap<String,Object>(registration);unsupported.putAll(changes);
+            agent(f,post("/api/v1/runner/runtime"),unsupported).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("runtime_unsupported"));
+        }
         var submit=submission(f,"runtime-mismatch");preparation(submit).put("requiredCoreBuildId","f".repeat(64));String job=seed(f,"queued",submit);
         agent(f,post("/api/v1/runner/heartbeat"),new com.autumnharvestc.server.execution.jobs.JobDtos.Exchange("session-runtime","0",1L,0L,List.of())).andExpect(status().isOk());assertThat(state(job)).isEqualTo("ended");
         registerRuntime(f,"session-one","0");

@@ -35,7 +35,7 @@ public class RunnerControlService {
         if(nodes.require(agent,true).revoked())throw error(UNAUTHORIZED,"unauthorized","代理身份已撤销");
         if(value==null||!Objects.equals(value.protocolVersion(),1L))bad("运行协议版本无效");
         opaque(value.sessionId());hash(value.coreBuildId());hash(value.scriptApiId());opaque(value.nodeVersion());opaque(value.v8Version());opaque(value.runtimeCompatibilityId());
-        String script="4c7c797e04a8eb8769ea8d65e6248a40853e7cf1793d0e37d3e862146edac572";
+        String script="afaf628a48532cff1e1e9264f328830ea1678b877853e324bab040039d0721d0";
         if(!value.nodeVersion().equals("22.19.0")||!value.v8Version().equals("12.4.254.21-node.29")||!value.scriptApiId().equals(script)||!value.runtimeCompatibilityId().equals("node-"+value.nodeVersion()+"-v8-"+value.v8Version()+"-script-"+script))throw error(CONFLICT,"runtime_unsupported","运行时组合未经兼容验证");
         var allowed=Set.of("task:debug","task:suite","task:workflow","protocol:http","protocol:soap","protocol:websocket","script:trusted-core");
         if(value.capabilities()==null||value.capabilities().isEmpty()||!allowed.containsAll(value.capabilities())||new HashSet<>(value.capabilities()).size()!=value.capabilities().size())bad("运行能力声明无效");
