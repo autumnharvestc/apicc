@@ -10,6 +10,7 @@ import { runtimeCompatibilityIdForRuntime } from "../src/contract/runtime.js";
 const repository = fileURLToPath(new URL("../../../", import.meta.url));
 const identityScript = "packages/execution/scripts/build-identity.mjs";
 const scriptSource = "packages/core/src/sandbox/jsEngine.ts";
+const javaBoundary = "server/src/main/resources/execution-input-boundary.json";
 let temporary: string;
 let windowsCheckout: string;
 let lfCheckout: string;
@@ -24,7 +25,7 @@ beforeAll(() => {
   const seed = join(temporary, "seed");
   mkdirSync(seed);
   const sourceFiles = identity(repository).sourceFiles;
-  for (const path of [...sourceFiles, ...(existsSync(join(repository, ".gitattributes")) ? [".gitattributes"] : [])]) {
+  for (const path of [...sourceFiles, javaBoundary, ...(existsSync(join(repository, ".gitattributes")) ? [".gitattributes"] : [])]) {
     const destination = join(seed, path);
     mkdirSync(dirname(destination), { recursive: true });
     // Seed one canonical committed tree; only Git's checkout settings differ below.
@@ -53,6 +54,12 @@ afterAll(() => {
 });
 
 describe("source identity across real Git checkouts", () => {
+  it("keeps the generated Java boundary identical to its LF generator output", () => {
+    const canonical = readFileSync(join(repository, javaBoundary), "utf8").replaceAll("\r\n", "\n");
+    expect(readFileSync(join(windowsCheckout, javaBoundary), "utf8")).toBe(canonical);
+    expect(readFileSync(join(lfCheckout, javaBoundary), "utf8")).toBe(canonical);
+  });
+
   it("keeps every fingerprint input and generated identity identical with Windows and LF checkout settings", () => {
     const windows = identity(windowsCheckout);
     const lf = identity(lfCheckout);
