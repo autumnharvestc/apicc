@@ -80,10 +80,10 @@ describe("online:workspace:open / online:tree:view（裁定 A/E）", () => {
   it("未打开在线工作区 → tree:view 可读错误；close 后同样拒绝", async () => {
     const { deps } = setup((url) => (url.endsWith("/auth/login") ? json(200, { token: "tok", expiresAt: "2026-10-03T00:00:00Z", user: USER }) : json(200, TREE)));
     await deps.handle("online:login", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
-    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/^online-workspace-not-open$/);
     await loginAndOpen(deps);
     await deps.handle("online:workspace:close", {});
-    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/^online-workspace-not-open$/);
   });
 
   it("树取回失败（网络错误）→ 不残留半开会话：closeWorkspace 已随失败清理", async () => {
@@ -94,7 +94,7 @@ describe("online:workspace:open / online:tree:view（裁定 A/E）", () => {
     });
     await expect(loginAndOpen(deps)).rejects.toThrow(/network_error|fetch failed/);
     // 失败后会话已关：重新取视图必须先重新 open（不残留半开会话）
-    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/^online-workspace-not-open$/);
   });
 });
 
@@ -115,13 +115,13 @@ describe("online:workspace:activate / close 带 id（计划 C 任务 1 会话表
   it("activate 通道：双工作区驻留下显式切换活跃——切换后 tree:view 按新活跃放行，未知 id 拒绝", async () => {
     const { deps, calls } = setup(echoTreeHandler);
     await openTwo(deps); // open 置活跃 → 当前活跃 ws-2
-    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/^online-workspace-not-open$/);
     await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" });
     const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };
     expect(view.workspaceId).toBe("ws-1");
     // ws-1 的树缓存保留（activate 纯切指针不清缓存）：/tree 各工作区只取过一次
     expect(calls.filter((c) => c.url.endsWith("/tree"))).toHaveLength(2);
-    await expect(deps.handle("online:workspace:activate", {}, { workspaceId: "ws-404" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:workspace:activate", {}, { workspaceId: "ws-404" })).rejects.toThrow(/^online-workspace-not-open$/);
   });
 
   it("close 带 workspaceId：出表指定工作区不动活跃——其余驻留工作区不受影响", async () => {
@@ -129,8 +129,8 @@ describe("online:workspace:activate / close 带 id（计划 C 任务 1 会话表
     await openTwo(deps);
     await deps.handle("online:workspace:close", {}, { workspaceId: "ws-1" });
     // ws-1 已出表：视图与激活都拒绝
-    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
-    await expect(deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })).rejects.toThrow(/^online-workspace-not-open$/);
+    await expect(deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" })).rejects.toThrow(/^online-workspace-not-open$/);
     // ws-2 活跃未动：视图照常
     const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })) as { workspaceId: string };
     expect(view.workspaceId).toBe("ws-2");
@@ -140,7 +140,7 @@ describe("online:workspace:activate / close 带 id（计划 C 任务 1 会话表
     const { deps } = setup(echoTreeHandler);
     await openTwo(deps);
     await deps.handle("online:workspace:close", {});
-    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(deps.handle("online:tree:view", {}, { workspaceId: "ws-2" })).rejects.toThrow(/^online-workspace-not-open$/);
     // ws-1 仍驻留：显式激活后恢复
     await deps.handle("online:workspace:activate", {}, { workspaceId: "ws-1" });
     const view = (await deps.handle("online:tree:view", {}, { workspaceId: "ws-1" })) as { workspaceId: string };

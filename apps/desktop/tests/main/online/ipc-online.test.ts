@@ -97,7 +97,7 @@ describe("online:* 频道接线", () => {
     await deps.handle("online:login", {}, { baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
     await expect(deps.handle("online:me", {})).rejects.toMatchObject({ message: "登录已过期" });
     expect(getCleared()).toEqual(["http://127.0.0.1:8080"]);
-    await expect(deps.handle("online:me", {})).rejects.toThrow(/尚未登录/);
+    await expect(deps.handle("online:me", {})).rejects.toThrow(/^online-not-signed-in$/);
   });
 
   it("online:logout → 调用服务端吊销并清 token；后续调用抛「尚未登录」", async () => {
@@ -107,12 +107,12 @@ describe("online:* 频道接线", () => {
     expect(calls[1]!.method).toBe("POST");
     expect(calls[1]!.url).toBe("http://127.0.0.1:8080/api/v1/auth/logout");
     expect(getCleared()).toEqual(["http://127.0.0.1:8080"]);
-    await expect(deps.handle("online:me", {})).rejects.toThrow(/尚未登录/);
+    await expect(deps.handle("online:me", {})).rejects.toThrow(/^online-not-signed-in$/);
   });
 
   it("未登录时内容频道抛「尚未登录」；入参非法走 zod 校验错误", async () => {
     const { deps } = setup(() => json(200, []));
-    await expect(deps.handle("online:workspaces:list", {})).rejects.toThrow(/尚未登录/);
+    await expect(deps.handle("online:workspaces:list", {})).rejects.toThrow(/^online-not-signed-in$/);
     await expect(deps.handle("online:login", {}, { baseUrl: "ftp://x", username: "a", password: "b" })).rejects.toThrow(/入参校验失败/);
     await expect(deps.handle("online:files:put", {}, { workspaceId: "ws-1", path: "../x", content: "", baseVersion: 0 })).rejects.toThrow(/入参校验失败/);
   });

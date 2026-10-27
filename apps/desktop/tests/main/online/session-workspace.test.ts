@@ -123,9 +123,9 @@ describe("online session 工作区会话表（计划 C 任务 1）", () => {
     session.openWorkspace(WS);
     session.openWorkspace(WS2);
     // ws-1 仍驻留但非活跃：视图请求拒绝（切换只由 activateWorkspace 显式驱动）
-    await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(session.getTreeView("ws-1")).rejects.toThrow(/^online-workspace-not-open$/);
     session.activateWorkspace("ws-1");
-    await expect(session.getTreeView("ws-2")).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(session.getTreeView("ws-2")).rejects.toThrow(/^online-workspace-not-open$/);
     expect((await session.getTreeView("ws-1")).workspaceId).toBe("ws-1");
   });
 
@@ -133,12 +133,12 @@ describe("online session 工作区会话表（计划 C 任务 1）", () => {
     const { session } = setup();
     session.openWorkspace(WS);
     // 未登录：即使表中已有也不切（激活前提 = 登录态 + 驻留）
-    expect(() => session.activateWorkspace("ws-1")).toThrow(/尚未打开在线工作区/);
+    expect(() => session.activateWorkspace("ws-1")).toThrow(/^online-workspace-not-open$/);
     await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
     session.openWorkspace(WS2);
     session.activateWorkspace("ws-1"); // 表中有且已登录 → 纯切指针
     expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
-    expect(() => session.activateWorkspace("ws-404")).toThrow(/尚未打开在线工作区/); // 表中无
+    expect(() => session.activateWorkspace("ws-404")).toThrow(/^online-workspace-not-open$/); // 表中无
   });
 
   it("closeWorkspace(id) 出表指定工作区：非活跃出表不动活跃指针（不自动切）", async () => {
@@ -151,7 +151,7 @@ describe("online session 工作区会话表（计划 C 任务 1）", () => {
     session.closeWorkspace("ws-1");
     // 活跃指针不动：仍是 ws-2；ws-1 已出表（activate 拒绝）
     expect(session.workspace).toEqual({ id: "ws-2", name: "另一空间", myRole: "VIEWER" });
-    expect(() => session.activateWorkspace("ws-1")).toThrow(/尚未打开在线工作区/);
+    expect(() => session.activateWorkspace("ws-1")).toThrow(/^online-workspace-not-open$/);
     // ws-2 的缓存不受影响：视图命中不重发 /tree
     await session.getTreeView("ws-2");
     expect(treeCalls(calls)).toBe(2);
@@ -167,7 +167,7 @@ describe("online session 工作区会话表（计划 C 任务 1）", () => {
     session.closeWorkspace();
     expect(session.workspace).toBeNull();
     // 不自动切：ws-1 仍驻留但活跃为 null，取视图/未显式激活前拒绝
-    await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未打开在线工作区/);
+    await expect(session.getTreeView("ws-1")).rejects.toThrow(/^online-workspace-not-open$/);
     // ws-1 仍在表中：显式激活后恢复
     session.activateWorkspace("ws-1");
     expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
@@ -201,9 +201,9 @@ describe("online session 工作区会话表（计划 C 任务 1）", () => {
     session.openWorkspace(WS2);
     await session.logout();
     expect(session.workspace).toBeNull();
-    await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未打开在线工作区/);
-    expect(() => session.activateWorkspace("ws-1")).toThrow(/尚未打开在线工作区/);
-    expect(() => session.activateWorkspace("ws-2")).toThrow(/尚未打开在线工作区/);
+    await expect(session.getTreeView("ws-1")).rejects.toThrow(/^online-workspace-not-open$/);
+    expect(() => session.activateWorkspace("ws-1")).toThrow(/^online-workspace-not-open$/);
+    expect(() => session.activateWorkspace("ws-2")).toThrow(/^online-workspace-not-open$/);
   });
 
   it("putFile 成功前移版本；文件版本由渲染层自持（main 不缓存文件内容——次要 5 顺修备案）", async () => {
@@ -250,7 +250,7 @@ describe("online session 工作区会话表（计划 C 任务 1）", () => {
     const { session } = setup();
     session.openWorkspace(WS);
     expect(session.workspace).toEqual({ id: "ws-1", name: "团队空间", myRole: "EDITOR" });
-    await expect(session.getTreeView("ws-1")).rejects.toThrow(/尚未登录/);
+    await expect(session.getTreeView("ws-1")).rejects.toThrow(/^online-not-signed-in$/);
   });
 
   it("getTreeView 分组层（计划 C 任务 3）：/groups 清单注入 groupNames → 项目挂 group:<groupId> 合成组节点（树+组同取同缓存）", async () => {
