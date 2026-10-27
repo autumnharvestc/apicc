@@ -63,6 +63,16 @@
     <directory>${apicc.build.directory}</directory>
     <plugins>
       <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <!-- POM defaults are not JVM properties unless explicitly forwarded. -->
+            <apicc.build.directory>${project.build.directory}</apicc.build.directory>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+      <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
       </plugin>
