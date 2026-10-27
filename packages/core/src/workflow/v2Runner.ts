@@ -49,7 +49,7 @@ export async function runWorkflowV2(execution: ProjectExecutionRun, workflowId: 
   const timeout = setTimeout(() => controller.abort(new WorkflowPolicyError("root-timeout", "root-timeout", "Workflow root timeout")), options.timeoutMs ?? root.limits.timeoutMs);
   const scheduler = createWorkflowScheduler({ maxConcurrency: options.maxConcurrency ?? root.limits.maxConcurrency, signal: controller.signal });
   const makeRunner = (signal: AbortSignal) => new CollectionRunner({ registry: deps.registry, bus: createEventBus(),
-    timeouts: { connectTimeoutMs: 10000, totalTimeoutMs: 30000, signal }, failFast: false });
+    timeouts: { connectTimeoutMs: 10000, totalTimeoutMs: 30000, signal }, requestSettings: options.requestSettings, failFast: false });
   const rootContext = { signal: controller.signal, httpSession, runner: makeRunner(controller.signal) };
   // Host-owned fork cleanup failures cannot be recovered by any ancestor OR.
   // This evidence belongs to this root only; business failures and cancellations never enter it.

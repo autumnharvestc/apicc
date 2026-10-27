@@ -18,6 +18,66 @@ import { collectDefinedProjectCredentialRefs } from "../../src/assets/secretRefs
 import { createContractExecutionProject } from "../helpers/contractExecutionFixtures.js";
 import { createExecutionEvidenceCollector, redactExecutionOutput } from "../../src/report/evidence.js";
 import type { CaseExecutionResult } from "../../src/runner/caseExecutor.js";
+import { suiteToRunResult } from "../../src/report/suiteAdapter.js";
+import { reportingUnits } from "../../src/report/units.js";
+import type { SuiteRunResult } from "../../src/testing/suiteRunner.js";
+
+it("F7b configured evidence previews and shared report budget apply inside the collector", () => {
+  const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { mode: "all", limits: { bodyBytes: 8, valueBytes: 12, caseBytes: 3000, reportBytes: 16000, workflowMetadataBytes: 1000 } });
+  const raw: CaseExecutionResult = { outcome: { apiId: "a", caseId: "c", apiName: "api", caseName: "case", passed: false, durationMs: 1, assertions: [], error: "actual failure" }, request: { protocol: "http", method: "GET", url: "https://example.test/long-value", headers: {}, query: [], auth: { kind: "none" } }, response: { status: 500, headers: {}, bodyText: "a".repeat(500), timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1 };
+  collector.observe(raw);
+  const report = collector.projectRun({ collectionId: "col", collectionName: "col", startedAt: "", finishedAt: "", total: 1, passed: 0, failed: 1, cases: [raw.outcome] });
+  expect(report.cases[0]!.evidence!.response!.body.text).toBe("aaaaaaaa");
+  expect(report.cases[0]!.evidence!.response!.body.truncated).toBe(true);
+  expect(report.cases[0]!.evidence!.request!.url.text).toBe("https://exam");
+  expect(Buffer.byteLength(JSON.stringify(report))).toBeLessThanOrEqual(16000);
+});
+
+it("R1 I-4 includes truncation markers in tiny diagnostic field budgets", () => {
+  const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { limits: { valueBytes: 12, bodyBytes: 8, caseBytes: 700, reportBytes: 16000 } });
+  const report = collector.projectRun({ collectionId: "col", collectionName: "col", startedAt: "", finishedAt: "", total: 1, passed: 0, failed: 1, cases: [{ apiId: "a", caseId: "c", apiName: "long api name", caseName: "case", passed: false, durationMs: 1, error: "actual failure", assertions: [] }] });
+  expect(Buffer.byteLength(report.cases[0]!.apiName)).toBeLessThanOrEqual(12);
+  expect(report.cases[0]!.failureKind).toBeUndefined();
+});
+
+it("R1 I-4 rejects a case ceiling smaller than immutable case and evidence framing", () => {
+  const projectId = "10000000-0000-4000-8000-000000000001"; const apiId = "10000000-0000-4000-8000-000000000005"; const caseId = "10000000-0000-4000-8000-000000000006";
+  const locator = { collectionId: "10000000-0000-4000-8000-000000000002", folderIds: ["10000000-0000-4000-8000-000000000003"], apiId, caseId, scope: "base" };
+  const collector = createExecutionEvidenceCollector({ projectId, definitionRevision: "a".repeat(64), locator }, [], { limits: { bodyBytes: 8, valueBytes: 64, caseBytes: 256, reportBytes: 16000 } });
+  expect(() => collector.projectRun({ collectionId: locator.collectionId, collectionName: "col", startedAt: "", finishedAt: "", total: 1, passed: 0, failed: 1, cases: [{ apiId, caseId, apiName: "api", caseName: "case", locator, scope: "base", passed: false, durationMs: 1, failureKind: "assertion", error: "actual assertion failure", assertions: [] }] })).toThrow(/case.*capacity|case.*budget|用例.*预算/i);
+});
+
+it("F7b workflow metadata shares a configured ceiling with its aliases", () => {
+  const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { limits: { valueBytes: 2048, reportBytes: 16000, workflowMetadataBytes: 1000 } });
+  const projected = collector.projectWorkflow({ workflowId: "wf", workflowName: "workflow", status: "enabled", nodeResults: [{ nodeId: "n", kind: "noop", state: "failed", error: "actual failure ".repeat(400) }], total: 1, passed: 0, failed: 1, skipped: 0, warnings: [], startedAt: "", finishedAt: "" });
+  const metadata = { ...projected, report: undefined, nodeResults: projected.nodeResults.map(node => ({ ...node, outcome: undefined, outcomes: undefined })) };
+  expect(Buffer.byteLength(JSON.stringify(metadata))).toBeLessThanOrEqual(1000);
+  expect(projected.nodeResults[0]!.state).toBe("failed");
+  expect(Buffer.byteLength(JSON.stringify(projected))).toBeLessThanOrEqual(16000);
+});
+
+it("R2 N-1 preserves the original logical population when compact failure output omits unit details", () => {
+  const uuid = (suffix: number) => `10000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
+  const states = ["failed", "passed", "failed"] as const;
+  const suite: SuiteRunResult = {
+    kind: "suite", suiteRunId: uuid(1), projectId: uuid(2), suiteId: uuid(3), suiteName: "suite", definitionRevision: "a".repeat(64), dataDigest: "b".repeat(64), allowDraft: false,
+    startedAt: "", finishedAt: "", verdict: "failed", total: 3, passed: 1, failed: 2, skipped: 0, cases: [], warnings: [], requestFacts: { requestStarted: 0, requestCompleted: 0, httpExchanges: 0 },
+    entries: states.map((status, index) => ({ entryId: uuid(10 + index), kind: "workflow", workflowId: uuid(20 + index), status, cases: [], ...(status === "failed" ? { error: "Workflow assertion failed" } : {}) })),
+    workflowUnits: states.map((verdict, index) => ({ entryId: uuid(10 + index), workflowId: uuid(20 + index), invocationId: uuid(30 + index), verdict, ...(verdict === "failed" ? { error: "Workflow assertion failed" } : {}) })),
+  };
+  const raw = suiteToRunResult(suite);
+  const expected = { total: 3, passed: 1, failed: 2, skipped: 0, entryDiagnostics: 0 };
+  expect(reportingUnits(raw).summary).toEqual(expected);
+  const collector = createExecutionEvidenceCollector({ projectId: suite.projectId, definitionRevision: suite.definitionRevision }, [], { limits: { bodyBytes: 8, valueBytes: 128, caseBytes: 3000, reportBytes: 16000, workflowMetadataBytes: 500 } });
+  const result = collector.projectRunFailure(raw);
+  expect.soft(result.reportingUnits).toEqual(expected);
+  expect.soft(reportingUnits(result).summary).toEqual(expected);
+  expect.soft(result.reportingMode).toBe("mixed-suite-v2");
+  expect(result.suite).toMatchObject({ total: 3, passed: 1, failed: 2 });
+  expect(result.cases).toEqual([]);
+  expect(result.requestFacts).toEqual({ requestStarted: 0, requestCompleted: 0, httpExchanges: 0 });
+  expect(result.reportFailure).toBe(true); expect(result.evidenceOmitted).toBe(true);
+});
 
 it("G preserves duplicate Cookie boundaries, unavailable bodies and exact rerun row association", () => {
   const locator = { collectionId: "collection", folderIds: ["folder"], apiId: "api", caseId: "case", scope: "base" };

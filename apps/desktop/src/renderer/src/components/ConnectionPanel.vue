@@ -1,25 +1,28 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Button as AButton, Input as AInput, Tag as ATag } from "ant-design-vue";
 import { OnlineBaseUrlSchema } from "../../../shared/online/contract.js";
 import type { createOnlineStore } from "../stores/online.js";
+import { onlineSessionErrorKey } from '../i18n/index.js';
 
 /**
  * 连接管理面板（主页右栏形态；轨三收口）：服务器档案的增删改+登录唯一管理入口——
  * - 连接列表行：色块头像（按地址哈希确定性生成）+ 昵称 + 地址 + 登录状态；
  *   行内操作：登录（激活档案并打开登录对话框）/ 浏览（激活并切服务器视图）/ 编辑 / 删除。
- * - 新增/编辑表单：地址（OnlineBaseUrlSchema 校验）+ 昵称；同地址保存=改昵称（store 语义）。
+ * - 新增/编辑表单：地址（OnlineBaseUrlSchema 校验）+ 昵称；编辑保留原条目身份，不自动合并。
  * **档案管理唯一入口**：登录对话框（OnlineLoginDialog）不再提供档案增删改（轨三收口裁定）。
  */
 const props = defineProps<{
   online: ReturnType<typeof createOnlineStore>;
 }>();
 const { t } = useI18n();
+const apiError = computed(() => { const key = onlineSessionErrorKey(props.online.error); return key ? t(key) : props.online.error; });
 
 const emit = defineEmits<{ (e: "browse", baseUrl: string): void }>();
 
 const editing = ref(false);
+const originalBaseUrl = ref<string | null>(null);
 const editUrl = ref("");
 const editName = ref("");
 const editError = ref("");
@@ -34,6 +37,7 @@ function avatarColor(seed: string): string {
 
 function startAdd() {
   editing.value = true;
+  originalBaseUrl.value = null;
   editUrl.value = "";
   editName.value = "";
   editError.value = "";
@@ -41,6 +45,7 @@ function startAdd() {
 
 function startEdit(baseUrl: string, name: string) {
   editing.value = true;
+  originalBaseUrl.value = baseUrl;
   editUrl.value = baseUrl;
   editName.value = name;
   editError.value = "";
@@ -62,7 +67,16 @@ function saveConnection() {
     editError.value = t("online.serverUrlInvalid");
     return;
   }
-  props.online.addProfile(url, editName.value);
+  if (originalBaseUrl.value !== null) {
+    const result = props.online.updateProfile(originalBaseUrl.value, url, editName.value);
+    if (result !== "updated") {
+      editError.value = t(result === "duplicate" ? "online.serverAlreadyExists" : "online.serverUrlInvalid");
+      return;
+    }
+  } else if (!props.online.addProfile(url, editName.value)) {
+    editError.value = t("online.serverUrlInvalid");
+    return;
+  }
   editing.value = false;
 }
 
@@ -126,7 +140,7 @@ function browseConnection(baseUrl: string) {
         </a-tag>
         <span class="spacer"></span>
         <a-button size="small" type="text" data-testid="connection-login" @click="loginConnection(p.baseUrl)">
-          {{ online.loggedIn && online.activeBaseUrl === p.baseUrl ? t("home.connectionBrowse") : t("home.connectionLogin") }}
+          {{ online.loggedIn && online.activeBaseUrl === p.baseUrl ? t("home.connectionAccount") : t("home.connectionLogin") }}
         </a-button>
         <a-button size="small" type="text" data-testid="connection-browse" @click="browseConnection(p.baseUrl)">
           {{ t("home.connectionBrowse") }}
@@ -145,7 +159,7 @@ function browseConnection(baseUrl: string) {
       class="api-error"
       type="error"
       show-icon
-      :message="online.error"
+      :message="apiError"
       data-testid="connections-error"
     />
   </div>

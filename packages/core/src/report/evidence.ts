@@ -18,8 +18,10 @@ export function privateEvidenceMarkers(input: unknown): string[] {
   return input;
 }
 export interface EvidenceBudget { bodyBytes: number; valueBytes: number; caseBytes: number; reportBytes: number; remaining: number }
+export type EvidenceLimits = Partial<Omit<EvidenceBudget, "remaining">> & { workflowMetadataBytes?: number };
 export function createEvidenceBudget(limits: Partial<Omit<EvidenceBudget, "remaining">> = {}): EvidenceBudget {
   const budget = { bodyBytes: 64 * 1024, valueBytes: 4 * 1024, caseBytes: 256 * 1024, reportBytes: 16 * 1024 * 1024, ...limits };
+  for (const value of Object.values(budget)) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError("Invalid evidence budget");
   return { ...budget, remaining: budget.reportBytes };
 }
 export interface ExecutionEvidenceInput { execution: CaseExecutionResult; identity: EvidenceIdentity; mode?: "none" | "failures" | "all" }
@@ -40,15 +42,17 @@ function traceEventDto(event: import("../workflow/trace.js").WorkflowTraceEvent,
     childInvocation: child && { invocationId: child.invocationId, parentInvocationId: child.parentInvocationId, invocationPath: workflowIdentityDto(child).invocationPath! } };
 }
 function diagnosticText(value: string, boundary: EvidenceOutputBoundary, budget: EvidenceBudget): string {
-  if (budget.remaining < 128) return "[omitted diagnostics: budget exhausted]";
   return boundedSafeText(boundary.redactText(value), budget);
 }
 function boundedSafeText(safe: string, budget: EvidenceBudget): string {
-  const allowance = Math.max(0, Math.min(budget.valueBytes - 24, budget.remaining - 128));
+  const allowance = Math.max(0, Math.min(budget.valueBytes, budget.remaining - 128));
+  const fullBytes = Buffer.byteLength(JSON.stringify(safe)) - 2;
+  const suffix = fullBytes <= allowance ? "" : allowance >= 20 ? " [truncated/omitted]" : allowance >= 1 ? "~" : "";
+  const contentAllowance = allowance - Buffer.byteLength(suffix);
   let text = ""; let used = 0;
-  for (const char of safe) { const size = Buffer.byteLength(JSON.stringify(char)) - 2; if (used + size > allowance) break; text += char; used += size; }
-  budget.remaining = Math.max(0, budget.remaining - used - 128);
-  return text.length < safe.length ? text + " [truncated/omitted]" : text;
+  for (const char of safe) { const size = Buffer.byteLength(JSON.stringify(char)) - 2; if (used + size > contentAllowance) break; text += char; used += size; }
+  budget.remaining = Math.max(0, budget.remaining - used - Buffer.byteLength(suffix) - 128);
+  return text + suffix;
 }
 function redactTraceOutput(raw: RunResult["trace"], boundary: EvidenceOutputBoundary, budget: EvidenceBudget): RunResult["trace"] {
   if (!raw) return undefined;
@@ -171,11 +175,19 @@ function redactCaseOutput(raw: CaseOutcome, boundary: EvidenceOutputBoundary): C
 }
 function redactBudgetedCaseOutput(raw: CaseOutcome, boundary: EvidenceOutputBoundary, budget: EvidenceBudget): CaseOutcome {
   const rowBudget = { ...budget, remaining: Math.min(budget.caseBytes, budget.remaining) };
-  const safe = redactCaseOutput(raw, { ...boundary, redactText: (value) => rowBudget.remaining < 128 ? "[omitted diagnostics: budget exhausted]" : boundedSafeText(boundary.redactText(value), rowBudget) });
+  const safe = redactCaseOutput(raw, { ...boundary, redactText: (value) => boundedSafeText(boundary.redactText(value), rowBudget) });
+  return enforceCaseBudget(safe, budget);
+}
+/** Immutable identity/facts cannot be silently clipped to fit a smaller case ceiling. */
+function enforceCaseBudget(safe: CaseOutcome, budget: EvidenceBudget): CaseOutcome {
+  const omitEvidence = () => { if (safe.evidence) safe.evidence = { identity: safe.evidence.identity, state: "omitted", truncated: true, bodyUnavailable: true, scriptDiagnostics: "not-collected" }; };
+  if (safe.evidence && Buffer.byteLength(JSON.stringify(safe.evidence)) > budget.caseBytes) omitEvidence();
+  if (safe.evidence && Buffer.byteLength(JSON.stringify(safe.evidence)) > budget.caseBytes) throw new Error("Execution case evidence identity framing exceeds capacity");
   if (Buffer.byteLength(JSON.stringify(safe)) > budget.caseBytes) {
-    safe.apiName = safe.caseName = "[omitted diagnostics: case budget]";
-    safe.error = safe.error === undefined ? undefined : "[omitted diagnostics: case budget]"; safe.assertions = [];
-    if (safe.evidence) safe.evidence = { identity: safe.evidence.identity, state: "omitted", truncated: true, bodyUnavailable: true, scriptDiagnostics: "not-collected" };
+    const marker = boundedSafeText("[omitted diagnostics: case budget]", { ...budget, remaining: budget.valueBytes + 128 });
+    safe.apiName = safe.caseName = marker;
+    safe.error = safe.error === undefined ? undefined : marker; safe.assertions = [];
+    omitEvidence();
   }
   if (Buffer.byteLength(JSON.stringify(safe)) > budget.caseBytes) throw new Error("Execution case identity framing exceeds capacity");
   return safe;
@@ -285,7 +297,7 @@ export function redactExecutionOutput<T>(value: T, boundary: EvidenceOutputBound
 }
 
 /** Raw observations live only until the host finalizes output. No marker values enter the returned DTO. */
-export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers: readonly string[], options: { mode?: ExecutionEvidenceInput["mode"]; maxSamples?: number; privateMarkers?: boolean } = {}) {
+export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers: readonly string[], options: { mode?: ExecutionEvidenceInput["mode"]; maxSamples?: number; privateMarkers?: boolean; limits?: EvidenceLimits } = {}) {
   const sensitive = new Set<string>(); let markerBytes = 2; let markerFailure: string | undefined; let cookiesUnavailable = false;
   const assertMarkersComplete = () => { if (markerFailure) throw new Error(`Private evidence markers incomplete: ${markerFailure}`); };
   const addMarkers = (values: readonly string[]) => {
@@ -330,8 +342,8 @@ export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers
     const key = keyFor(execution.outcome, record.identity); const bucket = byIdentity.get(key);
     if (bucket) bucket.push(record); else byIdentity.set(key, [record]);
   };
-  function projectRun(raw: RunResult, limits: Partial<Omit<EvidenceBudget, "remaining">> = {}): RunResult {
-    const sanitizer = boundary(); const budget = createEvidenceBudget(limits);
+  function projectRun(raw: RunResult, limits: Partial<Omit<EvidenceBudget, "remaining">> = {}, sharedBudget?: EvidenceBudget): RunResult {
+    const sanitizer = boundary(); const budget = sharedBudget ?? createEvidenceBudget({ ...options.limits, ...limits });
     let activeBudget = budget;
     const safe = redactRunOutput(raw, { ...sanitizer, redactText: (value) => diagnosticText(value, sanitizer, budget) }, budget, false);
     const cursors = new Map<string, number>();
@@ -368,30 +380,62 @@ export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers
         : { identity: identityDto({ ...identity, workflowId: suiteEntries.get(JSON.stringify([identity.entryId, identity.suiteRow]))?.workflowId ?? identity.workflowId }), state: "not-collected", scriptDiagnostics: "not-collected", bodyUnavailable: true, truncated: false };
       if (projected.assertions.length !== outcome.assertions.length) projected.evidence.truncated = true;
       budget.remaining = Math.max(0, budget.remaining - (allowance - rowBudget.remaining)); activeBudget = budget;
-      return projected;
+      return enforceCaseBudget(projected, budget);
     });
     safe.reportingUnits = reportingUnits(safe).summary;
+    if (options.limits?.workflowMetadataBytes !== undefined) {
+      const metadataBytes = () => Buffer.byteLength(JSON.stringify({ workflow: safe.workflow, workflowUnits: safe.workflowUnits, trace: safe.trace }));
+      while (safe.trace?.events.length && metadataBytes() > options.limits.workflowMetadataBytes) { safe.trace.events.pop(); safe.trace.truncated = true; safe.evidenceOmitted = true; }
+      if (metadataBytes() > options.limits.workflowMetadataBytes && safe.workflow) {
+        const marker = boundedSafeText("[omitted metadata: budget]", { ...budget, remaining: budget.valueBytes + 128 });
+        safe.workflow.entries = safe.workflow.entries.map(entry => ({ ...entry, label: entry.label === undefined ? undefined : marker, error: entry.error === undefined ? undefined : marker }));
+      }
+      if (metadataBytes() > options.limits.workflowMetadataBytes) throw new Error("Workflow metadata identity framing exceeds capacity");
+    }
     // Structural framing also counts. Keep exact identities/facts if attachments exceed the ceiling.
     if (Buffer.byteLength(JSON.stringify(safe)) > budget.reportBytes) {
       safe.evidenceOmitted = true;
+      const marker = boundedSafeText("[omitted diagnostics: report budget]", { ...budget, remaining: budget.valueBytes + 128 });
       for (const row of safe.cases) {
         row.evidence = { identity: row.evidence!.identity, state: "omitted", truncated: true, bodyUnavailable: true, scriptDiagnostics: "not-collected" };
-        row.apiName = row.caseName = "[omitted diagnostics: report budget]"; row.error = row.error === undefined ? undefined : "[omitted diagnostics: report budget]"; row.assertions = [];
+        row.apiName = row.caseName = marker; row.error = row.error === undefined ? undefined : marker; row.assertions = [];
+        enforceCaseBudget(row, budget);
       }
-      safe.warnings = ["[omitted diagnostics: report budget]"];
+      safe.warnings = [marker];
       if (safe.trace) safe.trace = { ...safe.trace, events: [], truncated: true };
     }
     if (Buffer.byteLength(JSON.stringify(safe)) > budget.reportBytes) throw new Error("Evidence report identity framing exceeds capacity");
     return safe;
   }
+  /** Capacity failure keeps real aggregates and primary failure facts; attachments may be omitted. */
+  function projectRunFailure(raw: RunResult): RunResult {
+    const failure = { ...raw, reportFailure: true, evidenceOmitted: true, reportingUnits: { ...reportingUnits(raw).summary } };
+    try { return projectRun(failure); } catch { /* reduce aliases/attachments, never raise selected ceilings */ }
+    const firstCase = raw.cases.find(row => !row.passed && !row.skipped);
+    const firstNode = raw.workflow?.entries.find(entry => entry.status === "failed");
+    const firstEntry = raw.suite?.entries?.find(entry => entry.status === "failed" || entry.status === "aborted");
+    const primary = firstNode?.error ?? firstCase?.error ?? firstEntry?.error;
+    const classification = firstNode?.failureKind ?? firstCase?.failureKind;
+    const warnings = [...(raw.warnings ?? []), ...(primary ? [`${classification ? `${classification}: ` : ""}${primary}`] : [])];
+    const compact: RunResult = { ...failure, cases: [], trace: undefined, workflowUnits: undefined, warnings,
+      workflow: raw.workflow && { ...raw.workflow, entries: firstNode ? [{ ...firstNode, label: undefined }] : [] },
+      suite: raw.suite && { ...raw.suite, entries: firstEntry ? [{ ...firstEntry }] : [] } };
+    try { return projectRun(compact); } catch { /* minimal framing may only fit aggregates plus bounded primary diagnostics */ }
+    return projectRun({ ...compact, workflow: compact.workflow && { ...compact.workflow, entries: [] }, suite: compact.suite && { ...compact.suite, entries: [] } });
+  }
   function projectWorkflow(raw: WorkflowRunResult): WorkflowRunResult {
+    const configured = options.limits !== undefined;
+    const shared = createEvidenceBudget(options.limits);
     // The legacy singular outcome aliases the first row in IPC. Reserve both copies.
-    const report = projectRun(workflowToRunResult(raw), { caseBytes: 128 * 1024, reportBytes: 4 * 1024 * 1024 });
+    const report = configured ? projectRun(workflowToRunResult(raw), {}, shared) : projectRun(workflowToRunResult(raw), { caseBytes: 128 * 1024, reportBytes: 4 * 1024 * 1024 });
     // Node metadata and its aliases share the other half of the same 16 MiB ceiling.
-    const metadataBudget = createEvidenceBudget({ reportBytes: 4 * 1024 * 1024 });
+    const metadataLimit = options.limits?.workflowMetadataBytes ?? 4 * 1024 * 1024;
+    const framing = configured ? Buffer.byteLength(JSON.stringify(redactWorkflowOutput(raw, { redactText: () => "", redactValue: value => value }, shared, false))) : 0;
+    if (configured && framing > metadataLimit) throw new Error("Workflow metadata identity framing exceeds capacity");
+    const metadataBudget = configured ? { ...shared, remaining: Math.min(shared.remaining, metadataLimit - framing) } : createEvidenceBudget({ reportBytes: 4 * 1024 * 1024 });
     const sanitizer = boundary();
     const safe = redactWorkflowOutput(raw, { ...sanitizer, redactText: (value) => diagnosticText(value, sanitizer, metadataBudget) }, metadataBudget, false);
-    safe.warnings = report.warnings ?? [];
+    if (!configured) safe.warnings = report.warnings ?? [];
     safe.report = report;
     const entries = new Map(report.workflow?.entries.map((entry) => [entry.entryId, entry]));
     const rows = new Map<string, CaseOutcome[]>();
@@ -400,21 +444,33 @@ export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers
     const attach = (flow: WorkflowRunResult) => {
       for (const node of flow.nodeResults) {
         node.outcomes = rows.get(key(node)) ?? []; node.outcome = raw.invocationId ? undefined : node.outcomes[0];
-        if (!raw.invocationId) node.error = entries.get(node.nodeId)?.error;
+        if (!raw.invocationId && !configured) node.error = entries.get(node.nodeId)?.error;
         node.childInvocations?.forEach(attach); node.policyInvocations?.forEach((child) => attach(child.result));
       }
     };
+    if (configured && Buffer.byteLength(JSON.stringify({ ...safe, report: undefined })) > metadataLimit) throw new Error("Workflow metadata exceeds capacity");
     attach(safe); safe.trace = report.trace;
-    if (Buffer.byteLength(JSON.stringify(safe)) > 16 * 1024 * 1024) throw new Error("Workflow evidence report exceeds capacity");
+    if (configured && safe.trace) {
+      const metadata = (flow: WorkflowRunResult): unknown => ({ ...flow, report: undefined, nodeResults: flow.nodeResults.map(node => ({ ...node, outcome: undefined, outcomes: undefined, childInvocations: node.childInvocations?.map(metadata), policyInvocations: node.policyInvocations?.map(child => ({ role: child.role, result: metadata(child.result) })) })) });
+      const metadataBytes = () => Buffer.byteLength(JSON.stringify(metadata(safe)));
+      while (safe.trace.events.length && metadataBytes() > metadataLimit) { safe.trace.events.pop(); safe.trace.truncated = true; report.evidenceOmitted = true; }
+      if (metadataBytes() > metadataLimit) { safe.trace = undefined; report.trace = undefined; report.evidenceOmitted = true; }
+    }
+    if (Buffer.byteLength(JSON.stringify(safe)) > shared.reportBytes) {
+      // The report is canonical. Drop duplicate row aliases before abandoning real facts.
+      const omitAliases = (flow: WorkflowRunResult) => { for (const node of flow.nodeResults) { node.outcomes = undefined; node.outcome = undefined; node.childInvocations?.forEach(omitAliases); node.policyInvocations?.forEach(child => omitAliases(child.result)); } };
+      omitAliases(safe); report.evidenceOmitted = true;
+    }
+    if (Buffer.byteLength(JSON.stringify(safe)) > shared.reportBytes) throw new Error("Workflow evidence report exceeds capacity");
     return safe;
   }
   function projectStressReport<T extends StressReport | StressReportV2>(raw: T, retainedEvidence = false): T {
-    const budget = createEvidenceBudget(); const sanitizer = boundary();
+    const budget = createEvidenceBudget(options.limits); const sanitizer = boundary();
     const failureEvidence = retainedEvidence ? raw.failureEvidence : records.map((record) => projectExecutionEvidence({ ...record, mode: "all" }, sanitizer, budget));
     if (retainedEvidence) budget.remaining = Math.max(0, budget.remaining - Buffer.byteLength(JSON.stringify(failureEvidence ?? [])));
     return redactStressOutput({ ...raw, failureEvidence }, sanitizer, budget, true);
   }
-  return { observe, addMarkers, projectRun, projectWorkflow, projectStressReport, boundary,
+  return { observe, addMarkers, projectRun, projectRunFailure, projectWorkflow, projectStressReport, boundary,
     markers: () => { assertMarkersComplete(); if (cookiesUnavailable) throw new Error("Evidence marker set unavailable: Set-Cookie boundaries unavailable"); return [...sensitive]; },
-    projectSamples: () => { const budget = createEvidenceBudget(); const safe = boundary(); return records.map((record) => projectExecutionEvidence({ ...record, mode: "all" }, safe, budget)); } };
+    projectSamples: () => { const budget = createEvidenceBudget(options.limits); const safe = boundary(); return records.map((record) => projectExecutionEvidence({ ...record, mode: "all" }, safe, budget)); } };
 }

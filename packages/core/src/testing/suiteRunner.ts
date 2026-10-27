@@ -11,6 +11,8 @@ import { workflowCaseRows } from "../workflow/adapter.js";
 import { validateWorkflowRunOptions } from "../workflow/plan.js";
 import { resolveSuitePlan, suiteCaseRequests, validateSuiteData, type ResolvedSuitePlan } from "./selection.js";
 import { bindPreparedTestData, readPreparedCaseData } from "./data.js";
+import type { RequestSettingsOverride } from "../request/settings.js";
+import { assertScriptRequirements, collectionScriptRequirements, workflowScriptRequirements } from "../runner/scriptRequirements.js";
 
 export interface SuiteCaseOutcome extends CaseOutcome { suiteRunId: string; entryId: string; suiteRow?: number; definitionRevision: string }
 export interface SuiteEntryResult {
@@ -51,6 +53,8 @@ export interface SuiteRunResult {
   warnings: string[];
 }
 export interface SuiteRunnerOptions {
+  requestSettings?: RequestSettingsOverride;
+  observeHttp?: (event: Parameters<NonNullable<RunnerOptions["observeHttp"]>>[0]) => void | Promise<void>;
   workspaceRoot?: string;
   signal?: AbortSignal;
   observeCaseExecution?: (execution: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[0], identity: Parameters<NonNullable<RunnerOptions["observeCaseExecution"]>>[1] & { suiteRunId: string; entryId: string; suiteRow?: number; nodeId?: string }) => void | Promise<void>;
@@ -61,7 +65,10 @@ export function validateSuiteExecution(snapshot: ProjectSnapshot, plan: Resolved
   const actual = resolveSuitePlan(snapshot, plan.suiteId, { environmentId: plan.environmentId, datasetId: plan.datasetId, failFast: plan.failFast, allowDraft: plan.allowDraft, reporters: plan.reporters });
   if (JSON.stringify(actual) !== JSON.stringify(plan)) throw new Error("套件计划与当前快照不匹配");
   for (const entry of plan.entries) if (entry.kind === "workflow") validateWorkflowRunOptions(snapshot.project.workflows.find((flow) => flow.id === entry.workflowId)!);
-  if (!registry.getScriptEngine("javascript")) throw new Error("缺少 javascript 脚本引擎插件");
+  for (const entry of plan.entries) {
+    if (entry.kind === "workflow") assertScriptRequirements(registry, workflowScriptRequirements(snapshot, entry.workflowId!, plan.environmentId));
+    else for (const { locator } of entry.cases) assertScriptRequirements(registry, collectionScriptRequirements(snapshot, locator.collectionId, { environmentId: plan.environmentId, caseSelection: locator }));
+  }
   for (const { asset, testCase } of suiteCaseRequests(snapshot, plan)) {
     const prepared = prepareCaseExecution(testCase, snapshot.context, asset.contract.id, (op) => registry.getAssert(op));
     if (prepared.assertions.diagnostics.length || prepared.extractionError) throw new Error("套件用例声明式断言或提取配置无效");
@@ -100,20 +107,20 @@ export class SuiteRunner {
           requestFacts.requestStarted += Number(value.requestStarted === true); requestFacts.requestCompleted += Number(value.requestCompleted === true);
           await options.observeCaseExecution?.(value, { ...identity, suiteRunId, entryId: entry.id, ...(suiteRow === undefined ? {} : { suiteRow }) });
         };
-        const observeHttp = (event: Parameters<NonNullable<RunnerOptions["observeHttp"]>>[0]) => { if (event.type === "request") requestFacts.httpExchanges++; };
+        const observeHttp = async (event: Parameters<NonNullable<RunnerOptions["observeHttp"]>>[0]) => { if (event.type === "request") requestFacts.httpExchanges++; await options.observeHttp?.(event); };
         let actual: CaseOutcome[] = [];
         let structuredWorkflow = false;
         try {
           if (entry.kind === "case") {
             const locator = entry.cases[0]!.locator;
-            const runner = new CollectionRunner({ registry: this.deps.registry, bus: createEventBus(), failFast: plan.failFast, timeouts: { connectTimeoutMs: 10000, totalTimeoutMs: 30000, signal: options.signal } });
+            const runner = new CollectionRunner({ registry: this.deps.registry, bus: createEventBus(), failFast: plan.failFast, requestSettings: options.requestSettings, timeouts: { connectTimeoutMs: 10000, totalTimeoutMs: 30000, signal: options.signal } });
             const value = await runner.run(execution, locator.collectionId, { environmentId: plan.environmentId, workspaceRoot: options.workspaceRoot, httpSession: session,
               caseSelection: { apiId: locator.apiId, caseId: locator.caseId, folderIds: locator.folderIds, scope: locator.scope }, preparedRowIndex: suiteRow, observeCaseExecution: observer, observeHttp });
             actual = value.cases; warnings.push(...(value.warnings ?? []));
             if (value.failed > 0) result.status = "failed";
           } else {
             const value = await new WorkflowRunner({ registry: this.deps.registry, failFast: plan.failFast }).run(execution, entry.workflowId!, { environmentId: plan.environmentId,
-              workspaceRoot: options.workspaceRoot, httpSession: session, signal: options.signal, preparedRowIndex: suiteRow, observeCaseExecution: observer, observeHttp });
+              workspaceRoot: options.workspaceRoot, httpSession: session, signal: options.signal, requestSettings: options.requestSettings, preparedRowIndex: suiteRow, observeCaseExecution: observer, observeHttp });
             // Noop and unvisited nodes are entry metadata, never fabricated passing case rows.
             actual = workflowCaseRows(value).filter((outcome) => outcome.locator !== undefined);
             warnings.push(...value.warnings);

@@ -83,6 +83,6 @@ export function createUserPluginHost(options: PluginLoaderOptions & { hostVersio
 }
 /** Node-only companion for worker prepare. Never reads a worker's HOME/plugins.json. */
 export function createUserPluginHostFromSnapshot(expected: PluginRuntimeSnapshotV1,
-  options: { hostVersion: string; importFn?: PluginLoaderOptions["importFn"] }): UserPluginHost {
+  options: { hostVersion: string; importFn?: PluginLoaderOptions["importFn"]; registry?: PluginLoaderOptions["registry"] }): UserPluginHost {
   return createHost({ ...options }, structuredClone(checkedSnapshot(expected)));
 }

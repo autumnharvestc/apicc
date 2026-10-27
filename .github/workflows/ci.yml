@@ -15,6 +15,7 @@ on:
       - main
       - "feature/**"
       - "fix/**"
+      - "codex/**"
   pull_request:
 
 # 最小权限：门禁只需读源码与拉 action，不持有写权限
@@ -31,6 +32,7 @@ jobs:
     name: SDK 与各包 build + test
     runs-on: ubuntu-latest
     env:
+      npm_config_verify_deps_before_run: "false"
       # 单测与构建不启动 Electron，跳过其运行时二进制下载省 ~100MB 与数分钟；
       # 打包冒烟（package-smoke job）需要真实二进制，故该变量只在此 job 设置。
       # 仓库 .npmrc 的镜像只影响二进制下载源，跳过后无谓，不必再设镜像变量。
@@ -44,7 +46,7 @@ jobs:
           version: 11.21.0
       - uses: actions/setup-node@v4 # v4
         with:
-          node-version: 22
+          node-version: 22.19.0
           cache: pnpm
       # desktop 的 e2e-server 集成测试会构建并启动 Java 服务端，需要 JDK 21 的
       # JAVA_HOME（setup-java 就地提供；runner 自带 maven 供其构建 jar）。
@@ -76,14 +78,26 @@ jobs:
         # `tsc --noEmit`（tsconfig.json include src+tests）能拦，故单列一步。
         # desktop 的 typecheck/typecheck:vue 已含在其 build 首两段，无需单列。
         run: pnpm -C packages/core typecheck
-      - name: 构建其他包（SDK 与 core 已构建）
-        # 显式排除 SDK/Core，其他包仍按依赖拓扑序构建，避免重复生成产物。
-        run: pnpm --filter "!@apicc/core" --filter "!@apicc/plugin-sdk" -r build
+      - name: 构建 execution 并校验生成契约漂移
+        run: |
+          pnpm -C packages/execution build
+          pnpm -C packages/execution typecheck
+          pnpm -C packages/execution check:java-input-schema
+      - name: 构建消费者及 src/tests 类型门
+        run: |
+          pnpm -C apps/runner-agent build
+          pnpm -C apps/runner-agent typecheck
+          pnpm -C apps/desktop build
+          pnpm -C apps/admin-web build
+          pnpm -C packages/cli build
+          pnpm -C packages/cli typecheck
       - name: 全部包测试
         # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 SDK/core build，序列自洽
         # 与 scripts/test-all.ps1 保持一致：不让 admin pretest/build 与 Core 争用 CPU，
         # 并将 worker 上限作为 test 脚本参数传给各包，而非 pnpm 自身参数。
-        run: pnpm -r --workspace-concurrency=1 test --maxWorkers=2
+        run: |
+          docker build -f Dockerfile.agent -t apicc-f7b-t11-agent:candidate .
+          pnpm -r --workspace-concurrency=1 test --maxWorkers=2
       - name: 归档失败压测的合成诊断
         if: failure()
         uses: actions/upload-artifact@v4 # v4
@@ -132,15 +146,19 @@ jobs:
       - uses: actions/setup-node@v4 # v4
         with:
           # 仅跑零依赖 mjs 脚本，不装依赖、不配 pnpm 缓存
-          node-version: 22
+          node-version: 22.19.0
       - name: 词表自检
         run: node scripts/check-brand-neutral.mjs --self-check
       - name: 全树扫描
-        run: node scripts/check-brand-neutral.mjs
+        run: |
+          node --test scripts/tests/check-brand-neutral.test.mjs
+          node scripts/check-brand-neutral.mjs --include-untracked
 
   package-smoke:
     name: Windows 打包冒烟
     runs-on: windows-latest
+    env:
+      npm_config_verify_deps_before_run: "false"
     # 打包冒烟分钟级耗时且依赖 electron-builder，仅对 main push 生效：
     # PR 阶段由 test job 把关，合入 main 后才验证真实打包产物能起、能加载。
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -151,7 +169,7 @@ jobs:
           version: 11.21.0
       - uses: actions/setup-node@v4 # v4
         with:
-          node-version: 22
+          node-version: 22.19.0
           cache: pnpm
       # 此 job 不设 ELECTRON_SKIP_BINARY_DOWNLOAD：electron-builder 打包需要
       # 真实 Electron dist。二进制走缓存 + 仓库 .npmrc 的 npmmirror 镜像
@@ -206,3 +224,30 @@ jobs:
       - name: 打包产物冒烟
         # smoke:dir 对 release/win-unpacked/apicc.exe 做存活/致命错/加载三检
         run: pnpm -C apps/desktop smoke:dir
+
+  deployment-smoke:
+    name: Linux 新镜像与局部 CA 部署冒烟
+    runs-on: ubuntu-latest
+    needs: [test, server-test, brand-gate]
+    steps:
+      - uses: actions/checkout@v5 # v5
+      - uses: actions/setup-node@v4 # v4
+        with:
+          node-version: 22.19.0
+      - uses: actions/setup-java@v4 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: 构建同候选控制与代理镜像
+        run: |
+          docker build -t apicc-server:local .
+          docker build -f Dockerfile.agent -t apicc-runner-agent:local .
+      - name: HTTP 与私有 CA HTTPS 健康检查和 Linux 原生闭包
+        run: node scripts/smoke-runner-agent.mjs
+      - name: 归档部署冒烟身份与生命周期
+        if: always()
+        uses: actions/upload-artifact@v4 # v4
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: local/f7b-t11/apicc-runner-smoke-*.json
+          if-no-files-found: warn

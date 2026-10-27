@@ -96,11 +96,12 @@ function selfCheck() {
 /** 列出仓库全部 git 跟踪文件（\0 分隔，避免路径含空格被拆错）。 */
 function listTrackedFiles() {
   try {
-    const out = execFileSync("git", ["ls-files", "-z"], {
+    const args = process.argv.includes("--include-untracked") ? ["ls-files", "--cached", "--others", "--exclude-standard", "-z"] : ["ls-files", "-z"];
+    const out = execFileSync("git", args, {
       cwd: REPO_ROOT,
       maxBuffer: 64 * 1024 * 1024,
     });
-    return out.toString().split("\0").filter(Boolean);
+    return [...new Set(out.toString().split("\0").filter(Boolean))];
   } catch (err) {
     // fail-closed：拿不到跟踪清单就无法证明树是干净的，抛错使进程非零退出。
     throw new Error(
@@ -149,7 +150,7 @@ function main() {
     for (const e of readErrors) console.error(`  ${e.file}：${e.message}`);
     process.exit(1);
   }
-  console.log(`品牌中立门禁通过：git 跟踪文件全树扫描无命中（词表 ${WORDS.length} 词）。`);
+  console.log(`品牌中立门禁通过：git ${process.argv.includes("--include-untracked") ? "跟踪及未跟踪非忽略" : "跟踪"}文件全树扫描无命中（词表 ${WORDS.length} 词）。`);
 }
 
 main();

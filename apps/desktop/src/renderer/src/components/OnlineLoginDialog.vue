@@ -12,6 +12,7 @@ import {
 } from "ant-design-vue";
 import { OnlineBaseUrlSchema } from "../../../shared/online/contract.js";
 import type { createOnlineStore } from "../stores/online.js";
+import { onlineSessionErrorKey } from '../i18n/index.js';
 import type { createTabsStore, ProjectTab, WorkspaceRef } from "../stores/tabs.js";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
@@ -44,6 +45,7 @@ const props = defineProps<{
   tabs: ReturnType<typeof createTabsStore>;
 }>();
 const { t } = useI18n();
+const apiError = computed(() => { const key = onlineSessionErrorKey(props.online.error); return key ? t(key) : props.online.error; });
 
 const mode = ref<"login" | "register">("login");
 // 注册开关（服务端 auth/config）：关闭时隐藏注册页签（独立部署/非注册模式不显示不可用的功能）
@@ -302,7 +304,7 @@ function onLogoutCancel() {
         class="api-error"
         type="error"
         show-icon
-        :message="online.error"
+        :message="apiError"
         data-testid="online-error"
       />
     </div>

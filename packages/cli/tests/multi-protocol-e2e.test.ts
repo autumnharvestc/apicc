@@ -118,7 +118,7 @@ beforeAll(async () => {
     id: "00000000-0000-4000-8000-000000000041", name: "ws-mixed", variables: {},
     groups: [{
       id: GROUP_ID, name: "demo", projects: [{
-        id: PROJECT_ID, name: "mixed", variables: {}, globals: {},
+        id: PROJECT_ID, name: "mixed", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] },
         environments: [{ id: "00000000-0000-4000-8000-000000000044", name: "dev", variables: {}, baseUrls: {} }],
         models: [], components: [], stressPolicy: { trustedOrigins: [httpBaseUrl], deniedOrigins: [] },
         collections: [{

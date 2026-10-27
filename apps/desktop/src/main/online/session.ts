@@ -20,6 +20,7 @@
  * （selectNode 取数即入缓冲、saveApi 前移），main 侧只写不读的缓存已删除。
  */
 import type { OnlineClient } from "./client.js";
+import type { OnlineExecutionContext } from "../../shared/online/execution.js";
 import { OnlineConflictError } from "./client.js";
 import type { TokenStore } from "./tokenStore.js";
 import { onlineTreeNodeKey, type OnlineTreeKind, type OnlineTreeNodeDTO } from "../../shared/tree-dto.js";
@@ -222,7 +223,8 @@ interface OnlineWorkspaceSession {
 }
 
 export function createOnlineSession(deps: OnlineSessionDeps) {
-  let current: { baseUrl: string; client: OnlineClient } | null = null;
+  let current: { baseUrl: string; client: OnlineClient; userId: string } | null = null;
+  let authenticationGeneration = 0;
   // 计划 C 任务 1：会话表——Map<workspaceId, {workspaceState, treeCache}> + 活跃指针。
   // 工作区驻留：open 入表（不覆盖其他驻留工作区）；切换只由 activateWorkspace 显式驱动；
   // 出表后活跃指针置 null（不自动切）。树缓存随表项走（按工作区隔离，内容变更只失效对应项）。
@@ -236,7 +238,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
 
   function requireWorkspace(workspaceId: string): OnlineWorkspaceState {
     const active = activeSession();
-    if (!active || active.workspaceState.id !== workspaceId) throw new Error("尚未打开在线工作区");
+    if (!active || active.workspaceState.id !== workspaceId) throw new Error("online-workspace-not-open");
     return active.workspaceState;
   }
 
@@ -251,7 +253,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
   }
 
   function requireClient(): OnlineClient {
-    if (!current) throw new Error("尚未登录在线服务器");
+    if (!current) throw new Error("online-not-signed-in");
     return current.client;
   }
 
@@ -266,6 +268,18 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
   }
 
   return {
+    /** Only main consumes this capture. Tokens never enter renderer DTOs. */
+    captureExecution(context: OnlineExecutionContext) {
+      const captured = current;
+      const serverId = captured ? `${captured.baseUrl.replace(/\/$/, "")}/api/v1` : "";
+      const assertCurrent = () => {
+        if (!captured || current !== captured || context.ownerId !== captured.userId || context.serverId !== serverId || activeId !== context.scope.workspaceId || !sessions.has(context.scope.workspaceId)) throw new Error("online-session-changed");
+      };
+      assertCurrent();
+      const base = new URL(serverId);
+      if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new Error("execution-requires-https");
+      return { serverId, userId: captured!.userId, token: () => { assertCurrent(); if (!captured!.client.token) throw new Error("online-session-changed"); return captured!.client.token; }, assertCurrent };
+    },
     /** 当前登录态信息（任务 2 顶栏/登录面板消费）；未登录为 null。 */
     get current(): { baseUrl: string } | null {
       return current ? { baseUrl: current.baseUrl } : null;
@@ -299,7 +313,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
      * 表中有且已登录才切换；否则抛既有「尚未打开在线工作区」口径错误。
      */
     activateWorkspace(workspaceId: string): void {
-      if (!current || !sessions.has(workspaceId)) throw new Error("尚未打开在线工作区");
+      if (!current || !sessions.has(workspaceId)) throw new Error("online-workspace-not-open");
       activeId = workspaceId;
     },
 
@@ -350,11 +364,13 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     },
 
     async login(input: OnlineLoginInput): Promise<OnlineLoginOutput> {
+      const generation = ++authenticationGeneration;
       // 401 钩子按捕获的 baseUrl 清档（审查重要 1）：不经 current 反查，避免串档。
-      const client = deps.createClient(input.baseUrl, { onUnauthorized: () => invalidate(input.baseUrl) });
+      const client = deps.createClient(input.baseUrl, { onUnauthorized: () => { if (generation === authenticationGeneration) invalidate(input.baseUrl); } });
       const result = await client.login({ username: input.username, password: input.password });
+      if (generation !== authenticationGeneration) throw new Error("online-session-changed");
       deps.tokenStore.save(input.baseUrl, result.token); // 登录 → 按服务器存档（client 已注入，后续请求自动带头）
-      current = { baseUrl: input.baseUrl, client };
+      current = { baseUrl: input.baseUrl, client, userId: result.user.id };
       return { expiresAt: result.expiresAt, user: result.user }; // token 不出 main 进程
     },
 
@@ -367,23 +383,26 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
      * 钩子只清 resume 目标的存档、不摘未归属的 current——修复前会串档清旧会话的有效存档。
      */
     async resume(baseUrl: string): Promise<OnlineResumeOutput> {
+      const generation = ++authenticationGeneration;
       const token = deps.tokenStore.load(baseUrl);
       if (token === null) return { outcome: "signed-out" };
-      const client = deps.createClient(baseUrl, { onUnauthorized: () => invalidate(baseUrl) });
+      const client = deps.createClient(baseUrl, { onUnauthorized: () => { if (generation === authenticationGeneration) invalidate(baseUrl); } });
       client.setToken(token);
       try {
         const user = await client.me();
-        current = { baseUrl, client };
+        if (generation !== authenticationGeneration) return { outcome: "signed-out" };
+        current = { baseUrl, client, userId: user.id };
         return { outcome: "restored", user };
       } catch {
         // 验活失败（过期/网络/协议）：清档保持登出态（裁定 A 原文语义）。401 路径钩子已按
         // 同一 baseUrl 清过（幂等），此处收口覆盖不经 401 钩子的网络/协议失败路径。
-        invalidate(baseUrl);
+        if (generation === authenticationGeneration) invalidate(baseUrl);
         return { outcome: "signed-out" };
       }
     },
 
     async logout(): Promise<void> {
+      authenticationGeneration++;
       // 计划 C 任务 1：登出清全表（工作区驻留随登录态失效——token 已不可用，缓存无意义）。
       sessions.clear();
       activeId = null;

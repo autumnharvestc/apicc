@@ -23,7 +23,9 @@ describe("CLI import exchange", () => {
         info: { title: "Plugin project with a missing model", version: "1.0.0" },
         paths: { "/detached": { get: { operationId: "detached" } } },
       }).project;
-      imported.collections[0]!.apis[0]!.contract.request.body = {
+      const importedRequest = imported.collections[0]!.apis[0]!.contract.request;
+      if (importedRequest.protocol !== "http") throw new Error("Expected imported HTTP fixture");
+      importedRequest.body = {
         kind: "json",
         content: "{}",
         schema: { kind: "modelRef", modelId: uuid(900) },

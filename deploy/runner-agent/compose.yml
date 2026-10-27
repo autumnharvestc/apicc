@@ -1,0 +1,40 @@
+services:
+  control:
+    image: ${APICC_SERVER_IMAGE:-apicc-server:local}
+    init: true
+    ports:
+      - "127.0.0.1:${APICC_HTTPS_PORT:-8443}:8443"
+    environment:
+      SERVER_PORT: "8443"
+      SERVER_SSL_ENABLED: "true"
+      SERVER_SSL_KEY_STORE: file:/run/apicc/tls/control.p12
+      SERVER_SSL_KEY_STORE_TYPE: PKCS12
+      SERVER_SSL_KEY_STORE_PASSWORD: ${APICC_TLS_STORE_PASSWORD:?Set the PKCS12 password}
+      APICC_SERVER_ADMIN_USERNAME: ${APICC_SERVER_ADMIN_USERNAME:-admin}
+      APICC_SERVER_ADMIN_PASSWORD: ${APICC_SERVER_ADMIN_PASSWORD:?Set a deployment password}
+      APICC_EXECUTION_CONTROL_BASE_URL: ${APICC_CONTROL_BASE_URL:?Set canonical HTTPS API base}
+      APICC_EXECUTION_MATERIALS_MASTER_KEY_FILE: /run/apicc/materials-key
+      APICC_HEALTHCHECK_URL: https://localhost:8443/api/v1/ping
+      APICC_HEALTHCHECK_CA_FILE: /run/apicc/tls/control-ca.pem
+    volumes:
+      - control-data:/data
+      - ${APICC_TLS_DIRECTORY:?Set TLS directory}:/run/apicc/tls:ro
+      - ${APICC_MASTER_KEY_FILE:?Set independent 32-byte key file}:/run/apicc/materials-key:ro
+  agent:
+    image: ${APICC_AGENT_IMAGE:-apicc-runner-agent:local}
+    init: true
+    read_only: true
+    stop_grace_period: 30s
+    depends_on:
+      control:
+        condition: service_healthy
+    tmpfs:
+      - /tmp:size=${APICC_AGENT_TMPFS_SIZE:-4g},mode=1777
+    volumes:
+      - agent-data:/data
+      - ${APICC_AGENT_CONFIG_FILE:?Set deployment JSON path}:/run/apicc/deployment.json:ro
+      - ${APICC_AGENT_TOKEN_FILE:?Set enrolled agent token path}:/run/apicc/agent-token:ro
+      - ${APICC_AGENT_CA_FILE:?Set private control CA path}:/run/apicc/control-ca.pem:ro
+volumes:
+  control-data:
+  agent-data:

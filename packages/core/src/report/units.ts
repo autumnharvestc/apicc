@@ -11,6 +11,14 @@ export function reportEntryEvidence(result: RunResult, entry: NonNullable<NonNul
 
 /** Output-only entry units never become HTTP cases or affect runner metrics. */
 export function reportingUnits(result: RunResult) {
+  const units = deriveReportingUnits(result);
+  // Capacity projection may omit unit/row details. Its captured population remains
+  // authoritative for every report consumer; retained attachments are only a partial view.
+  if (result.reportFailure && result.evidenceOmitted && result.reportingUnits) units.summary = { ...result.reportingUnits };
+  return units;
+}
+
+function deriveReportingUnits(result: RunResult) {
   if (result.reportingMode && result.workflowUnits) {
     const key = (entryId: string | undefined, row: number | undefined) => JSON.stringify([entryId, row]);
     const logical = new Set(result.workflowUnits.map((unit) => key(unit.entryId, unit.suiteRow)));

@@ -21,6 +21,8 @@ import MembersView from "../views/MembersView.vue";
 import ProjectAclView from "../views/ProjectAclView.vue";
 import UsersView from "../views/UsersView.vue";
 import OrgView from "../views/OrgView.vue";
+import AgentsView from "../views/AgentsView.vue";
+import { createAgentsStore, type AgentsStore } from "../stores/agents.js";
 
 export interface AppRouterDeps {
   session: SessionStore;
@@ -30,6 +32,7 @@ export interface AppRouterDeps {
   users: UsersStore;
   /** 组织管理（任务 6）：分组/项目清单成员可读、写动作 ADMIN+ 由服务端裁决。 */
   org: OrgStore;
+  agents?: AgentsStore;
   /**
    * 首航验活 promise（生产 = main.ts 的 session.initialize() 返回值，任务 5 审查重要 1）：
    * 守卫 await 其收口后再读 session.role——否则 /me 未落地时 role 仍为默认 USER，超管
@@ -40,6 +43,7 @@ export interface AppRouterDeps {
 }
 
 export function createAppRoutes(deps: AppRouterDeps): RouteRecordRaw[] {
+  const agents=deps.agents??createAgentsStore({client:deps.client});
   return [
     { path: "/login", name: "login", component: LoginView, props: { session: deps.session, client: deps.client } },
     {
@@ -56,7 +60,9 @@ export function createAppRoutes(deps: AppRouterDeps): RouteRecordRaw[] {
         { path: "workspaces/:id/members", name: "workspace-members", component: MembersView, props: { workspaces: deps.workspaces } },
         { path: "workspaces/:id/acl", name: "workspace-acl", component: ProjectAclView, props: { workspaces: deps.workspaces } },
         // 组织管理（任务 6）：分组/项目 CRUD；页面成员可读，操作按钮按 myRole ADMIN+ 显隐
-        { path: "workspaces/:id/org", name: "workspace-org", component: OrgView, props: { workspaces: deps.workspaces, org: deps.org } },
+        { path: "workspaces/:id/org", name: "workspace-org", component: OrgView, props: { workspaces: deps.workspaces, org: deps.org, agents } },
+        { path: "agents", name: "agents", component: AgentsView, props: () => ({ agents, platform: deps.session.role==='SUPERADMIN' }), meta: { requiresSuperadmin: true } },
+        { path: "workspaces/:id/agents", name: "workspace-agents", component: AgentsView, props: route => ({ agents, platform: false, workspaceId: String(route.params.id) }) },
         // 用户管理（任务 5，超管专属）：注入 users 实例；守卫按 session.role 校验
         { path: "users", name: "users", component: UsersView, props: { users: deps.users }, meta: { requiresSuperadmin: true } },
       ],

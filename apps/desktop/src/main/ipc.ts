@@ -14,6 +14,9 @@ import { localTreeNodeKey } from "../shared/tree-dto.js";
 import type { OnlineFilesBatchInput, OnlineProjectMappingInput, OnlineWorkspaceOpenInput } from "../shared/online/types.js";
 import type { ApiTestCase, ComponentAsset, DebugFieldState, ModelAsset } from "@apicc/core";
 import { createOnlineSession, type OnlineSession } from "./online/session.js";
+import { createOnlineExecutionHost } from "./online/execution.js";
+import { createSystemSecretStore, defaultCredentialPrivateRoot } from "@apicc/core";
+import { OnlineExecutionResultSchema, type OnlineExecutionInput } from "../shared/online/execution.js";
 import { scanDirFiles, writeFiles } from "./online/migrate.js";
 import type { OnlineClient } from "./online/client.js";
 import type { TokenStore } from "./online/tokenStore.js";
@@ -48,6 +51,7 @@ type HandleArgs<Channel extends IpcChannelName> = IsUnion<Channel> extends true 
 
 
 export interface OnlineIpcDeps {
+  fetch?: typeof fetch;
   /** client 工厂（生产 = createOnlineClient + globalThis.fetch，测试 = 假 fetch）。 */
   createClient: (baseUrl: string, hooks: { onUnauthorized: () => void }) => OnlineClient;
   /** token 安全存储（生产 = userData 目录 + electron safeStorage）。 */
@@ -175,6 +179,9 @@ export function createIpcDeps(options: IpcDepsOptions) {
   const online: OnlineSession | null = options.online
     ? createOnlineSession({ createClient: options.online.createClient, tokenStore: options.online.tokenStore })
     : null;
+  const onlineExecution = online ? createOnlineExecutionHost({ session: online, plugins: pluginsRuntime, fetch: options.online?.fetch,
+    localStore: () => options.credentials?.secretStore ?? createSystemSecretStore({ privateRoot: options.credentials?.credentialPrivateRoot ?? defaultCredentialPrivateRoot() }),
+  }) : null;
   function requireOnline(): OnlineSession {
     if (!online) throw new Error("在线功能未配置");
     return online;
@@ -1103,6 +1110,9 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.OnlineRegister: {
         return requireOnline().register(a[0] as Parameters<OnlineSession["register"]>[0]);
       }
+      case IpcChannel.OnlineExecution:
+        if (!onlineExecution) throw new Error("在线执行未配置");
+        return OnlineExecutionResultSchema.parse(await onlineExecution.handle(a[0] as OnlineExecutionInput));
       case IpcChannel.OnlineLogin: {
         return requireOnline().login(a[0] as Parameters<OnlineSession["login"]>[0]);
       }
@@ -1207,5 +1217,5 @@ export function createIpcDeps(options: IpcDepsOptions) {
     return await dispatch(channel, args, owner) as IpcResultMap[Channel];
   }
 
-  return { handle, pluginsRuntime, stopMocks: () => mockManager.stopAll() };
+  return { handle, pluginsRuntime, stopMocks: () => mockManager.stopAll(), stopOnlineExecutions: () => onlineExecution?.close() ?? Promise.resolve() };
 }

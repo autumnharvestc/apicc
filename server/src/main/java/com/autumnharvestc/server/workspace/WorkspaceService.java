@@ -25,7 +25,7 @@ import java.util.List;
  * 事务约定（裁定 B + 计划要求的例外）：默认不使用 @Transactional——各写步骤以单条语句自持原子；
  * 例外是 create：三次 DB 写（工作区行/OWNER 成员行/默认分组行）包裹同一事务，任一失败全部回滚，
  * 不产生「有工作区、无默认分组」的永久半状态（审查修复）。
- * 删除按裁定 D（维持逐条自持，不包事务）：逻辑校验 OWNER → 清 memberships/project_acl/file_versions
+ * F7b 删除一致性例外：OWNER 校验后按项目 ID 顺序锁定全部项目，单事务清 memberships/project_acl/file_versions
  * → projects → groups（fk_projects_group 依赖顺序：先删引用行再删被引用行）→ 删工作区行。
  * 内容随 file_versions.content 入库（规格 §5），磁盘内容树退役——建区/删区不再有任何目录操作。
  * id 口径（规格 2026-09-09 BIGINT 化）：对外路径 id 为字符串化数字，控制器接 String、
@@ -101,9 +101,11 @@ public class WorkspaceService {
     }
 
     /** 删除工作区（规格 §3.2：OWNER；内容随版本行同删，无磁盘面）。 */
+    @Transactional
     public void delete(UserAccount caller, String workspaceId) {
         long wsId = EntityIds.parse(workspaceId);
         guard.requireOwner(wsId, caller);
+        fileVersions.lockWorkspaceProjects(wsId);
         memberships.deleteByWorkspace(wsId);
         acl.deleteByWorkspace(wsId);
         fileVersions.deleteByWorkspace(wsId);

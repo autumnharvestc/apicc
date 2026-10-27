@@ -3,6 +3,7 @@
 // 网络层 → network_error；401 → 会话失效回调，登录自身 401 不触发——裁定④同 desktop 语义）。
 import { describe, expect, it, vi } from "vitest";
 import { createAdminClient, AdminApiError, AdminProtocolError } from "../../src/api/client.js";
+import { createAgentsApi } from "../../src/api/agents.js";
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown; signal: AbortSignal }
 type FetchHandler = (req: CapturedRequest) => Response | Promise<Response>;
@@ -182,6 +183,15 @@ describe("adminClient 请求拼装", () => {
 });
 
 describe("adminClient 错误归一（裁定④：同 desktop onlineClient 语义）", () => {
+  it("代理客户端复用认证/拒绝原因，并以配置版本和策略版本各自CAS且保留明确作用域",async()=>{
+    const {calls,impl}=fetchStub(()=>json(409,{code:'version_conflict',message:'配置版本已变化'}));
+    const api=createAgentsApi(createAdminClient({baseUrl:BASE,fetch:impl,token:'tok-agent-admin'}));
+    await expect(api.save('1','7',{maxConcurrentJobs:2},{expectedPolicyVersion:'3',policy:{maxQueuedJobs:20}})).rejects.toMatchObject({status:409,code:'version_conflict',message:'配置版本已变化'});
+    expect(calls[0]!.body).toEqual({expectedVersion:'7',config:{maxConcurrentJobs:2},expectedPolicyVersion:'3',policy:{maxQueuedJobs:20}});
+    expect(calls[0]!.headers.Authorization).toBe('Bearer tok-agent-admin');
+    await expect(api.candidates('2','3')).rejects.toMatchObject({status:409});
+    expect(calls[1]!.url).toBe(`${BASE}/workspaces/2/projects/3/agent-candidates`);
+  });
   it("错误体 { code, message } → AdminApiError 保留 status/code/message", async () => {
     const { impl } = fetchStub(() => json(400, { code: "validation_failed", message: "校验失败" }));
     const client = createAdminClient({ baseUrl: BASE, fetch: impl });

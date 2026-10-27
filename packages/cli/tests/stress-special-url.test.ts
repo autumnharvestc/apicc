@@ -391,7 +391,7 @@ function workspaceFor(baseUrl: string, requestBaseUrl: string): Workspace {
         id: "00000000-0000-4000-8000-000000000103",
         name: "svc",
         variables: {},
-        globals: {},
+        globals: { query: [], headers: [], cookies: [], body: [] },
         components: [],
         models: [],
         stressPolicy: { trustedOrigins: [], deniedOrigins: [] },

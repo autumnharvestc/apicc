@@ -23,6 +23,8 @@ import { validateWorkflowRunOptions } from "./plan.js";
 import type { WorkflowPolicyEvent } from "./trace.js";
 import type { WorkflowNodeObservation } from "./trace.js";
 import { assertPreparedWorkflowExecution, type PreparedWorkflowExecution } from "./prepared.js";
+import type { RequestSettingsOverride } from "../request/settings.js";
+import { assertScriptRequirements, workflowScriptRequirements } from "../runner/scriptRequirements.js";
 
 /** Internal legacy-child adapter. Root v1 deliberately supplies none of these. */
 export interface LegacyWorkflowInvocation {
@@ -88,6 +90,7 @@ export interface WorkflowRunnerOptions {
 }
 
 export interface WorkflowRunOptions extends Pick<RunnerOptions, "beforeSend" | "requestGate" | "resolveProtocol" | "resolveSdkProtocol"> {
+  requestSettings?: RequestSettingsOverride;
   /** Host monotonic clock, shared with load observations when supplied. */
   monotonicNow?: () => number;
   environmentId?: string;
@@ -126,6 +129,7 @@ export class WorkflowRunner {
     const workflow = project.workflows.find((candidate) => candidate.id === workflowId);
     if (!workflow) throw new Error(`配置错误: 项目快照中不存在工作流 ${workflowId}`);
     validateWorkflowRunOptions(workflow, options);
+    assertScriptRequirements(this.opts.registry, workflowScriptRequirements(selectedExecution.snapshot, workflowId, options.environmentId ?? this.opts.environmentId));
     if (workflow.executionVersion === 2) return runWorkflowV2(selectedExecution, workflowId, this.opts, options);
     return this.runLegacy(selectedExecution, workflowId, options);
   }
@@ -137,6 +141,7 @@ export class WorkflowRunner {
     options = { ...options, environmentId };
     const root = prepared.plan.workflows.find((flow) => flow.id === prepared.plan.rootWorkflowId)!;
     validateWorkflowRunOptions(root, options);
+    assertScriptRequirements(this.opts.registry, workflowScriptRequirements(prepared.run.snapshot, root.id, environmentId));
     if (root.executionVersion === 2) return runWorkflowV2(prepared.run, root.id, this.opts, options, prepared.plan);
     return this.runLegacy(prepared.run, root.id, options);
   }
@@ -183,6 +188,7 @@ export class WorkflowRunner {
     const envVars = mergedEnvironmentVariables(env, project);
     const runner = new CollectionRunner({
       registry: this.opts.registry,
+      requestSettings: options.requestSettings,
       bus: createEventBus(),
       timeouts: { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000, signal: options.signal },
       failFast: this.opts.failFast ?? false,

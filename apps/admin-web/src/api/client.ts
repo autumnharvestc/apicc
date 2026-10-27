@@ -85,6 +85,8 @@ export interface AdminClientDeps {
 
 /** 管理面端点（裁定⑤子集）：auth 四端点 + §3.2 工作区/成员 + §3.3 ACL（含 DELETE 修订）+ tree + 规格 2026-09-08 §2 账号管理（任务 5）。 */
 export interface AdminClient {
+  /** Shared authenticated transport for feature clients, including standard error/401 handling. */
+  request(opts: { method: string; path: string; query?: Record<string, string>; body?: unknown; schema?: z.ZodTypeAny }): Promise<unknown>;
   readonly baseUrl: string;
   readonly token: string | undefined;
   setToken(token: string): void;
@@ -251,6 +253,7 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
   }
 
   return {
+    request,
     baseUrl,
     get token() {
       return token;

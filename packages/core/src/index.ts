@@ -2,6 +2,9 @@ import { createSystemSecretStore as createInternalSystemSecretStore } from "./cr
 import type { SecretStore as SecretStoreContract } from "./credentials/types.js";
 
 export * from "./shared.js";
+export * from "./plugin/executionRegistry.js";
+export * from "./runner/scriptRequirements.js";
+export { createJsScriptEngine } from "./sandbox/jsEngine.js";
 export { loadUserPlugins } from "./plugins/loader.js";
 export { createUserPluginHost, createUserPluginHostFromSnapshot, assertPluginRuntimeSnapshot } from "./plugins/runtime.js";
 export type { PluginManifest, PluginLoadEntry, PluginLoadResult, PluginLoaderOptions, PluginContributionSummary,
@@ -112,3 +115,5 @@ export * from "./report/evidence.js";
 export * from "./testing/references.js";
 export * from "./workflow/prepared.js";
 export * from "./stress/workflowSession.js";
+export { encodeContractProjectFiles, decodeContractProjectFiles, type ContractProjectLoadState } from "./storage/contractFiles.js";
+export { apiCaseFilePath, collectionMetadataFilePath, folderMetadataFilePath, projectDirectoryPath } from "./storage/paths.js";

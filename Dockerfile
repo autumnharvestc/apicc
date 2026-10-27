@@ -3,7 +3,7 @@
 # 构建上下文 = 仓库根：docker build -t apicc-server:local .
 
 # —— 阶段 1：管理后台静态产物（pnpm 与仓库同版本，pnpm-workspace.yaml 的 allowBuilds 同步生效）——
-FROM node:22-alpine AS console
+FROM node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90 AS console
 WORKDIR /build
 RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
 # 拷贝全部工作区清单（pnpm-lock 记账含各 importer，缺包目录会使 --frozen-lockfile 失败），
@@ -11,8 +11,15 @@ RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
 COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/ apps/
 COPY packages/ packages/
-RUN pnpm --filter @apicc/admin-web install --frozen-lockfile \
- && pnpm --filter @apicc/admin-web build
+COPY server/src/main/resources/execution-input-boundary.json server/src/main/resources/execution-input-boundary.json
+ENV npm_config_verify_deps_before_run=false
+ARG APICC_NPM_REGISTRY=https://registry.npmjs.org
+RUN --mount=type=cache,id=apicc-pnpm11,target=/root/.local/share/pnpm/store pnpm --config.verify-deps-before-run=false --filter @apicc/admin-web... install --frozen-lockfile --registry="$APICC_NPM_REGISTRY" \
+ && pnpm --config.verify-deps-before-run=false -C packages/plugin-sdk build \
+ && pnpm --config.verify-deps-before-run=false -C packages/core build \
+ && pnpm --config.verify-deps-before-run=false -C packages/execution build \
+ && pnpm --config.verify-deps-before-run=false -C packages/execution check:java-input-schema \
+ && pnpm --config.verify-deps-before-run=false -C apps/admin-web build
 
 # —— 阶段 2：服务端 fat jar（settings.xml 为阿里云镜像——Maven Central 不可达环境约束）——
 FROM maven:3.9-eclipse-temurin-21 AS server
@@ -26,6 +33,7 @@ RUN mvn -s .mvn/settings.xml -B -q package -DskipTests
 # —— 阶段 3：运行镜像（固定 uid/gid 10001，k8s securityContext/fsGroup 对齐）——
 FROM eclipse-temurin:21-jre-alpine
 RUN addgroup -S -g 10001 apicc && adduser -S -u 10001 -G apicc apicc \
+ && apk add --no-cache curl ca-certificates \
  && mkdir -p /data /app/console && chown -R apicc:apicc /data /app
 COPY --from=server /build/target/apicc-server-*.jar /app/app.jar
 COPY --from=console /build/apps/admin-web/dist/ /app/console/
@@ -41,5 +49,5 @@ VOLUME /data
 EXPOSE 8080
 # 健康探测复用无认证 ping 端点（D8）；shell 形态使 SERVER_PORT 运行时展开
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-  CMD wget -qO- "http://127.0.0.1:${SERVER_PORT}/api/v1/ping" || exit 1
+  CMD url="${APICC_HEALTHCHECK_URL:-http://127.0.0.1:${SERVER_PORT}/api/v1/ping}"; if [ -n "$APICC_HEALTHCHECK_CA_FILE" ]; then curl --fail --silent --show-error --cacert "$APICC_HEALTHCHECK_CA_FILE" "$url"; else curl --fail --silent --show-error "$url"; fi
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

@@ -12,6 +12,14 @@ export type Locale = (typeof LOCALES)[number];
 
 const STORAGE_KEY = "apicc.admin.locale";
 
+/** Update the installed app's locale ref and the same preference used on next startup. */
+export function setAdminLocale(localeRef: { value: string }, locale: Locale): void {
+  localeRef.value = locale;
+  localStorage.setItem(STORAGE_KEY, locale);
+  document.documentElement.lang = locale;
+  document.title = (locale === "zh-CN" ? zhCN : en).app.title;
+}
+
 export function initialLocale(): Locale {
   const saved = localStorage.getItem(STORAGE_KEY) as Locale | null;
   if (saved && LOCALES.includes(saved)) return saved;
@@ -28,8 +36,7 @@ export function createAdminI18n() {
   return {
     i18n,
     setLocale(locale: Locale) {
-      i18n.global.locale.value = locale;
-      localStorage.setItem(STORAGE_KEY, locale);
+      setAdminLocale(i18n.global.locale, locale);
     },
   };
 }

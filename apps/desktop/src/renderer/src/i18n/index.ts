@@ -6,6 +6,12 @@ export const LOCALES = ["zh-CN", "en"] as const;
 export type Locale = (typeof LOCALES)[number];
 const STORAGE_KEY = "apicc.locale";
 
+/** Only known session codes at the end of plain/main IPC errors are presentation keys. */
+export function onlineSessionErrorKey(message: string | null | undefined): string | null {
+  const code = message?.match(/(?:^|Error: )(online-not-signed-in|online-workspace-not-open|online-session-changed)(?:['"])?$/)?.[1];
+  return code ? `online.sessionErrors.${code}` : null;
+}
+
 export function initialLocale(): Locale {
   const saved = localStorage.getItem(STORAGE_KEY) as Locale | null;
   if (saved && LOCALES.includes(saved)) return saved;

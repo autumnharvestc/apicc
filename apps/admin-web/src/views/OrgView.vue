@@ -13,15 +13,21 @@
  */
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { Alert as AAlert, Button as AButton, Input as AInput, Modal as AModal, Select as ASelect, Tag as ATag } from "ant-design-vue";
 import type { AdminGroup, AdminProject } from "../api/contract.js";
 import type { OrgStore } from "../stores/org.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
+import type { AgentsStore } from "../stores/agents.js";
+import ProjectAgentsView from "./ProjectAgentsView.vue";
 
-const props = defineProps<{ org: OrgStore; workspaces: WorkspacesStore }>();
+const props = defineProps<{ org: OrgStore; workspaces: WorkspacesStore; agents?: AgentsStore }>();
 const { t } = useI18n();
 const route = useRoute();
+const router = useRouter();
+const executionProject=computed(()=>route.query.section==='execution'&&typeof route.query.projectId==='string'?route.query.projectId:'');
+const executionAgent=computed(()=>typeof route.query.agentId==='string'?route.query.agentId:undefined);
+function openExecution(projectId:string){void router.replace({query:{section:'execution',projectId}});}
 
 /** 路由参数工作区 id（组织页数据寻址，MembersView 同款口径）。 */
 const workspaceId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
@@ -301,24 +307,30 @@ async function onProjectDelete(): Promise<void> {
         </div>
         <div v-else class="cards">
           <div v-for="p in filteredProjects" :key="p.id" class="project-card" :data-testid="`org-project-card-${p.id}`">
-            <span class="avatar" :style="{ background: avatarColor(p.id) }">{{ (p.name || "?").slice(0, 1) }}</span>
-            <span class="card-name" :title="p.name">{{ p.name }}</span>
-            <span v-if="canManage" class="card-actions">
-              <a-button size="small" :data-testid="`org-project-rename-${p.id}`" @click="openProjectRename(p)">
-                {{ t("org.renameAction") }}
-              </a-button>
-              <a-button size="small" :data-testid="`org-project-move-${p.id}`" @click="openProjectMove(p)">
-                {{ t("org.moveAction") }}
-              </a-button>
-              <a-button size="small" danger :data-testid="`org-project-delete-${p.id}`" @click="openProjectDelete(p)">
-                {{ t("org.deleteAction") }}
-              </a-button>
-            </span>
+            <div class="card-heading">
+              <span class="avatar" :style="{ background: avatarColor(p.id) }">{{ (p.name || "?").slice(0, 1) }}</span>
+              <span class="card-name" :title="p.name">{{ p.name }}</span>
+            </div>
+            <div v-if="agents || canManage" class="card-actions">
+              <a-button v-if="agents" size="small" :data-testid="`org-project-execution-${p.id}`" @click="openExecution(p.id)">{{ t('agents.projectTitle') }}</a-button>
+              <template v-if="canManage">
+                <a-button size="small" :data-testid="`org-project-rename-${p.id}`" @click="openProjectRename(p)">
+                  {{ t("org.renameAction") }}
+                </a-button>
+                <a-button size="small" :data-testid="`org-project-move-${p.id}`" @click="openProjectMove(p)">
+                  {{ t("org.moveAction") }}
+                </a-button>
+                <a-button size="small" danger :data-testid="`org-project-delete-${p.id}`" @click="openProjectDelete(p)">
+                  {{ t("org.deleteAction") }}
+                </a-button>
+              </template>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
+    <ProjectAgentsView v-if="agents&&executionProject" :key="workspaceId+':'+executionProject" :agents="agents" :workspace-id="workspaceId" :project-id="executionProject" :agent-id="executionAgent" />
     <!-- 建分组 -->
     <a-modal v-if="groupCreateOpen" :open="groupCreateOpen" :title="t('org.groupCreateTitle')" data-testid="org-group-create-modal" @cancel="groupCreateOpen = false">
       <a-input
@@ -574,12 +586,19 @@ async function onProjectDelete(): Promise<void> {
 }
 .project-card {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
   padding: 12px;
   border: 1px solid #f0f0f0;
   border-radius: 8px;
   background: #fff;
+}
+.card-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .avatar {
   flex: none;
@@ -602,7 +621,14 @@ async function onProjectDelete(): Promise<void> {
 }
 .card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+}
+.card-actions :deep(.ant-btn) {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+  text-align: start;
 }
 .pane-empty {
   color: #999;

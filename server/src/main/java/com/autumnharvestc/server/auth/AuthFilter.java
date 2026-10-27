@@ -13,6 +13,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.core.annotation.Order;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -27,6 +28,7 @@ import java.util.Set;
  * 认证成功后以请求属性向下传递身份（{@link #ATTR_USER}）与令牌哈希（{@link #ATTR_TOKEN_HASH}，logout 用）。
  */
 @Component
+@Order(20)
 public class AuthFilter extends OncePerRequestFilter {
 
     /** 当前用户（store.UserAccount）——受保护端点经 @RequestAttribute 取用。 */
@@ -52,7 +54,8 @@ public class AuthFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return !path.startsWith("/api/v1/") || PUBLIC_PATHS.contains(path);
+        return !path.startsWith("/api/v1/") || PUBLIC_PATHS.contains(path)
+                || path.equals("/api/v1/runner") || path.startsWith("/api/v1/runner/");
     }
 
     @Override

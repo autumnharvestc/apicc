@@ -1,0 +1,21 @@
+{
+  "name": "@apicc/execution",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./host": { "types": "./dist/host/index.d.ts", "default": "./dist/host/index.js" },
+    "./contract": { "types": "./dist/contract/index.d.ts", "default": "./dist/contract/index.js" },
+    "./client": { "types": "./dist/client/index.d.ts", "default": "./dist/client/index.js" },
+    "./buildIdentity": { "types": "./dist/buildIdentity.d.ts", "default": "./dist/buildIdentity.js" }
+  },
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/build-identity.mjs",
+    "typecheck": "tsc --noEmit",
+    "generate:java-input-schema": "node scripts/generate-java-input-schema.mjs",
+    "check:java-input-schema": "node scripts/generate-java-input-schema.mjs --check",
+    "test": "vitest run"
+  },
+  "dependencies": { "@apicc/core": "workspace:*", "zod": "^4.5.4" },
+  "devDependencies": { "@types/node": "^26.4.0", "typescript": "^5.9.2", "vitest": "^4.1.11" }
+}

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { OnlineExecutionInputSchema } from "./online/execution.js";
 import { StressPlanSaveInputSchema, StressCompareInputSchema, StressExportInputSchema, StressReportFileSchema } from "./types.js";
 import { StressPlanSchema } from "@apicc/core/schema";
 import { EvidenceInvocationSchema, TestingReadInputSchema, DatasetSaveInputSchema, SuiteSaveInputSchema, TestingDeleteInputSchema, DatasetExchangeInputSchema, DatasetExportInputSchema, SuiteInvocationSchema } from "./testing.js";
@@ -364,6 +365,7 @@ export const IpcArgsSchemas = {
   [IpcChannel.OnlineMigrateWrite]: z.tuple([OnlineMigrateWriteSchema]),
   [IpcChannel.OnlineProjectMapping]: z.tuple([OnlineProjectMappingSchema]),
   [IpcChannel.OnlineGroupsList]: z.tuple([OnlineWorkspaceIdSchema]),
+  [IpcChannel.OnlineExecution]: z.tuple([OnlineExecutionInputSchema]),
   [IpcChannel.AiSaveConfig]: z.tuple([AiSaveConfigSchema]),
   [IpcChannel.AiGetConfig]: z.tuple([]),
   [IpcChannel.AiSuggest]: z.tuple([AiSuggestSchema]),
@@ -523,6 +525,7 @@ const resultMethodByChannel = {
   [IpcChannel.OnlineMigrateWrite]: "onlineMigrateWrite",
   [IpcChannel.OnlineProjectMapping]: "onlineProjectMapping",
   [IpcChannel.OnlineGroupsList]: "onlineGroupsList",
+  [IpcChannel.OnlineExecution]: "onlineExecution",
   [IpcChannel.AiSaveConfig]: "aiSaveConfig",
   [IpcChannel.AiGetConfig]: "aiGetConfig",
   [IpcChannel.AiSuggest]: "aiSuggest",

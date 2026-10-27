@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPluginRegistry } from "../../src/plugin/registry.js";
+import { createBuiltinExecutionRegistry } from "../../src/plugin/executionRegistry.js";
 import { createEventBus } from "../../src/events/bus.js";
 import { CollectionRunner } from "../../src/runner/runner.js";
 import { httpClient } from "../../src/http/client.js";
@@ -73,6 +74,19 @@ function collectionWith(cases: LegacyRunnerCase[]): LegacyRunnerCollection {
 }
 
 describe("CollectionRunner", () => {
+  it("F7b executes no-script collections without an engine and rejects selected post scripts before requests", async () => {
+    let hits = 0;
+    const registry = createBuiltinExecutionRegistry({ profile: "no-script" });
+    registry.registerProtocol({ name: "http", canHandle: () => true, execute: async () => { hits++; return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; } });
+    const runner = adaptRunner(new CollectionRunner({ registry, bus: createEventBus(), timeouts: { connectTimeoutMs: 2000, totalTimeoutMs: 3000 }, failFast: false }));
+    const col = collectionWith([{ id: "plain", name: "plain", scope: "base", parameters: {}, assertions: [] }]);
+    expect((await runner.run(col, env, project, workspace, {})).passed).toBe(1);
+    hits = 0;
+    col.apis[0]!.cases.push({ id: "script", name: "script", scope: "base", parameters: {}, assertions: [], postScript: "pm.assert(true, 'ok')" });
+    await expect(runner.run(col, env, project, workspace, {})).rejects.toThrow(/javascript/);
+    expect(hits).toBe(0);
+    await registry.close();
+  });
   it("基座用例：断言通过计入 passed", async () => {
     const col = collectionWith([
       { id: "t1", name: "ok", scope: "base", parameters: {}, assertions: [

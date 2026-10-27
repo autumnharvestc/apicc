@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { CredentialError, createDefaultRegistry, createProjectSnapshot, createNetworkProfileHost, createOAuthProfileHost, fileStorage, type AuthBinding, type PluginRegistry, type RunResult, type SecretStore, type Workspace } from "@apicc/core";
+import { CredentialError, createDefaultRegistry, createProjectSnapshot, createNetworkProfileHost, createOAuthProfileHost, fileStorage, type AuthBinding, type HttpRequest, type PluginRegistry, type RunResult, type SecretStore, type Workspace } from "@apicc/core";
 import { createMcpServer } from "../src/mcp/server.js";
 import { prepareExecutionRun, stableCredentialError } from "../src/credentials.js";
 import { formatOAuthActionFailure, runCli as runCliActual, registerLegacyStressWorkerAdapter, type RunCliDeps } from "../src/main.js";
@@ -66,8 +66,8 @@ function api(
         path,
         pathParams: [], query: [], headers: [], cookies: [],
         auth,
-        body: { kind: "none" as const },
-      },
+        body: { kind: "none" },
+      } satisfies HttpRequest as HttpRequest,
       responses: [],
     },
     cases,
@@ -92,8 +92,8 @@ function workspace(): Workspace {
           id: projectId,
           name: "same-project",
           variables: {},
-          globals: {},
-        environments: [{ id: "00000000-0000-4000-8000-000000000039", name: "dev", variables: {} }],
+          globals: { query: [], headers: [], cookies: [], body: [] },
+        environments: [{ id: "00000000-0000-4000-8000-000000000039", name: "dev", variables: {}, baseUrls: {} }],
           workflows: [],
           stressPolicy: { trustedOrigins: [baseUrl], deniedOrigins: [] },
           models: [],
@@ -130,8 +130,8 @@ function workspace(): Workspace {
           id: projectId,
           name: "same-project",
           variables: {},
-          globals: {},
-          environments: [{ id: "00000000-0000-4000-8000-000000000040", name: "dev", variables: {} }],
+          globals: { query: [], headers: [], cookies: [], body: [] },
+          environments: [{ id: "00000000-0000-4000-8000-000000000040", name: "dev", variables: {}, baseUrls: {} }],
           workflows: [],
         stressPolicy: { trustedOrigins: [baseUrl], deniedOrigins: [] },
           models: [],
@@ -558,6 +558,7 @@ describe("contract workspace CLI/MCP consumption", () => {
     ];
     const asset = project.collections[0]!.folders[0]!.folders[0]!.apis[0]!;
     asset.contract.request.path = "/{{caseValue}}";
+    if (asset.contract.request.protocol !== "http") throw new Error("Expected HTTP fixture");
     const childRequestOverride = structuredClone(asset.contract.request);
     childRequestOverride.method = "POST";
     childRequestOverride.path = "/child-override/{{caseValue}}";
@@ -867,7 +868,7 @@ describe("contract workspace CLI/MCP consumption", () => {
     const calls: string[] = [];
     const secretStore: SecretStore = {
       async put(_scope, ref, value) { calls.push(`put:${ref.id}`); values.set(ref.id, value); },
-      async resolve(_scope, ref) { calls.push(`resolve:${ref.id}`); return values.get(ref.id) ?? null; },
+      async resolve(_scope, ref) { calls.push(`resolve:${ref.id}`); const value = values.get(ref.id); if (value === undefined) throw new CredentialError("CREDENTIAL_MISSING", "Synthetic credential not found"); return value; },
       async version(_scope, ref) { calls.push(`version:${ref.id}`); return values.has(ref.id) ? "v1" : "missing"; },
       async remove(_scope, ref) { calls.push(`remove:${ref.id}`); values.delete(ref.id); },
       async status(_scope, ref) { calls.push(`status:${ref.id}`); return values.has(ref.id) ? "available" : "missing"; },
@@ -1481,7 +1482,7 @@ describe("contract workspace CLI/MCP consumption", () => {
       id: workerCaseId,
       name: "basic-source",
       scope: "base",
-      parameters,
+      parameters: Object.fromEntries(Object.entries(parameters).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
       preOperations,
       postOperations: [],
       assertions: [{ id: "basic-echo", target: "bodyJson", path: "$.authorization", op: "contains", expected: "Basic" }],

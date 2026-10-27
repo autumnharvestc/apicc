@@ -1,5 +1,6 @@
 # 构建上下文瘦身：镜像只需工作区清单/源码（构建过程说明见 Dockerfile）
 .git
+.superpowers
 .gitignore
 .gitattributes
 local/
@@ -8,6 +9,9 @@ scripts/
 deploy/
 **/node_modules
 **/dist
+**/dist-electron
+**/dist-renderer
+**/release
 **/target
 **/test-data*
 server/server-data

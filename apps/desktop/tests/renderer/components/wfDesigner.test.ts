@@ -197,6 +197,19 @@ async function selectNode(wrapper: ReturnType<typeof mount>, index: number) {
 }
 
 describe("WfDesigner 装配", () => {
+  it("localizes recorded workflow verdicts and trace codes without changing user-defined labels", async () => {
+    const result: WorkflowRunResult = { workflowId: 'flow', workflowName: 'User-defined workflow', status: 'enabled', reportingMode: 'workflow-invocation-v2', verdict: 'passed', invocationId: 'call', invocationPath: [{ workflowId: 'flow' }], total: 1, passed: 1, failed: 0, skipped: 0, warnings: [], startedAt: '2026-10-27T00:00:00.000Z', finishedAt: '2026-10-27T00:00:00.001Z', nodeResults: [{ nodeId: 'assert', label: 'User-defined assertion', kind: 'assert', state: 'passed', policyEvents: [{ type: 'attempt-start', attempt: 1 }, { type: 'attempt-end', attempt: 1, state: 'passed' }] }], trace: { totalEvents: 2, truncated: false, events: [{ type: 'attempt-start', nodeId: 'assert' }, { type: 'attempt-end', nodeId: 'assert', state: 'passed' }] } };
+    for (const language of ['zh-CN', 'en'] as const) {
+      const { i18n } = createI18nInstance(); i18n.global.locale.value = language;
+      const wrapper = mount(WfResultDrawer, { props: { open: true, result, embedded: true }, global: { plugins: [i18n] } });
+      await flushPromises();
+      expect.soft(wrapper.get('[data-testid="wf-logical-verdict"]').text()).toContain(language === 'zh-CN' ? '通过' : 'Passed');
+      expect.soft(wrapper.text()).toContain(language === 'zh-CN' ? '调用级工作流报告' : 'Workflow invocation report');
+      expect.soft(wrapper.text()).toContain(language === 'zh-CN' ? '尝试开始' : 'Attempt started');
+      expect.soft(wrapper.text()).toContain(language === 'zh-CN' ? '尝试结束' : 'Attempt ended');
+      expect(wrapper.text()).toContain('User-defined assertion'); expect(wrapper.text()).toContain('User-defined workflow'); wrapper.unmount();
+    }
+  });
   it("synchronizes run input values and errors with edited definitions and same-locator reloads", async () => {
     const ctx = await mountDesigner();
     await ctx.wrapper.get('[data-testid="wf-new-name"]').setValue('input session');
@@ -321,14 +334,14 @@ describe("WfDesigner 装配", () => {
     const wrapper = mount(WfResultDrawer, { props: { open: true, result, projectLocator: { workspaceId: "ws", groupId: "g", projectId: "p" } }, global: { plugins: [i18n] } });
     await flushPromises();
     const verdict = document.body.querySelector('[data-testid="wf-logical-verdict"]');
-    expect(verdict?.textContent).toContain("passed");
+    expect(verdict?.textContent).toContain("通过");
     const nested = document.body.querySelector('[data-testid="wf-invocation-child-call"]');
     expect(nested?.textContent).toContain("轮次 1");
     const button = nested?.querySelector('[data-testid="wf-locate-row"]');
     expect(button).not.toBeNull();
     await new DOMWrapper(button!).trigger("click");
     expect(wrapper.emitted("locate")?.at(-1)?.[0]).toMatchObject({ projectId: "p", invocationId: "child-call", nodeVisitId: "visit-1", attempt: 1, workflowId: "child", nodeId: "same-node", locator: { collectionId: "collection", folderIds: ["folder"], caseId: "c" } });
-    expect(document.body.textContent).toContain("cleanup-skipped");
+    expect(document.body.textContent).toContain("跳过清理");
     const history = useRunStore(createMemoryApi());
     history.summaries = [{ kind: "workflow", file: "new.json", collectionName: "logical pass", startedAt: "now", total: 2, passed: 1, failed: 1, reportingMode: "workflow-invocation-v2", logicalVerdict: "passed", reportingUnits: { total: 1, passed: 1, failed: 0, skipped: 0, entryDiagnostics: 0 } },
       { kind: "collection", file: "old.json", collectionName: "legacy", startedAt: "then", total: 1, passed: 0, failed: 1 }];
@@ -1099,9 +1112,9 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     const rows = document.body.querySelectorAll('[data-testid="wf-result-node"]');
     expect(rows).toHaveLength(3);
     expect(document.body.textContent).toContain("行2");
-    expect(document.body.textContent).toContain("config");
+    expect(document.body.textContent).toContain("配置失败");
     expect(document.body.textContent).toContain("引用缺失");
-    expect(document.body.textContent).toContain("upstream-failed");
+    expect(document.body.textContent).toContain("上游失败");
   });
 
   it("抽屉显示无 outcome 节点的 failureKind 与 error", async () => {
@@ -1116,9 +1129,9 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
       total: 2, passed: 0, failed: 1, skipped: 1, warnings: [], startedAt: "", finishedAt: "",
     });
     await runWorkflowFromUi(ctx);
-    expect(document.body.textContent).toContain("script");
+    expect(document.body.textContent).toContain("脚本失败");
     expect(document.body.textContent).toContain("条件求值失败");
-    expect(document.body.textContent).toContain("config");
+    expect(document.body.textContent).toContain("配置失败");
     expect(document.body.textContent).toContain("上游节点失败");
   });
 
@@ -1139,11 +1152,11 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     const rows = document.body.querySelectorAll('[data-testid="wf-result-node"]');
     expect(rows).toHaveLength(4); // 两个 HTTP 行 + 独立诊断 + noop skipped
     expect(rows[0]!.textContent).toContain("行1");
-    expect(rows[0]!.textContent).not.toContain("script");
+    expect(rows[0]!.textContent).not.toContain("脚本失败");
     expect(rows[0]!.textContent).not.toContain("路由条件失败");
     expect(rows[1]!.textContent).toContain("行2");
-    const diagnostic = Array.from(rows).find((row) => row.textContent?.includes("NON-HTTP entry-diagnostic"));
-    expect(diagnostic?.textContent).toContain("script");
+    const diagnostic = Array.from(rows).find((row) => row.textContent?.includes("非请求条目诊断"));
+    expect(diagnostic?.textContent).toContain("脚本失败");
     expect(diagnostic?.textContent).toContain("路由条件失败");
   });
 

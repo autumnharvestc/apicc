@@ -10,6 +10,12 @@ files:
   - dist-electron/**/*
   - dist-renderer/**/*
   - package.json
+  # pnpm workspace symlinks are not all collected by the dependency walk.
+  - from: ../../packages/execution
+    to: node_modules/@apicc/execution
+    filter:
+      - package.json
+      - dist/**/*
   # workspace 包 @apicc/core 被 electron-builder 沿符号链接整包复制，排除其本地产物垃圾
   - "!node_modules/@apicc/core/coverage"
   # electron-builder 默认剔除依赖中的 .d.ts；独立文件集保留公开 SDK 的声明闭包。

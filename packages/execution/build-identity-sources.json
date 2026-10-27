@@ -1,0 +1,16 @@
+{
+  "manifestVersion": 1,
+  "algorithm": "apicc-execution-source-sha256-v1",
+  "sourceDirectories": ["packages/core/src", "packages/plugin-sdk/src", "packages/execution/src"],
+  "sourceExtensions": [".ts", ".json"],
+  "excludeNames": ["dist", "tests", "local", "node_modules", "generatedBuildIdentity.ts", "build-identity.json"],
+  "files": [
+    "pnpm-lock.yaml", "pnpm-workspace.yaml",
+    "packages/core/package.json", "packages/core/tsconfig.json", "packages/core/tsconfig.build.json",
+    "packages/plugin-sdk/package.json", "packages/plugin-sdk/tsconfig.json", "packages/plugin-sdk/tsconfig.build.json",
+    "packages/execution/package.json", "packages/execution/tsconfig.json", "packages/execution/tsconfig.build.json",
+    "packages/execution/build-identity-sources.json", "packages/execution/scripts/build-identity.mjs"
+  ],
+  "scriptApiFiles": ["packages/core/src/sandbox/jsEngine.ts", "packages/core/src/plugin/types.ts", "packages/plugin-sdk/src/index.ts"],
+  "capabilities": ["protocol:http", "protocol:soap", "protocol:websocket", "script:trusted-core", "task:debug", "task:suite", "task:workflow"]
+}

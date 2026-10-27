@@ -62,6 +62,30 @@ export class OnlineApiError extends Error {
   }
 }
 
+/** Execution uses the canonical HTTPS API base; legacy browsing keeps its service-root client. */
+export function createExecutionRequest(binding: { serverId: string; token(): string; assertCurrent(): void }, fetcher: typeof fetch = globalThis.fetch, parentSignal?: AbortSignal) {
+  return async function request<T>(method: string, path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
+    binding.assertCurrent();
+    const controller = new AbortController();
+    const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
+    const timeout = setTimeout(() => controller.abort(new Error("execution-control-timeout")), 120000);
+    try {
+      signal.throwIfAborted();
+      const response = await fetcher(`${binding.serverId}/${path}`, { method, redirect: "error", cache: "no-store", signal, headers: { authorization: `Bearer ${binding.token()}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      signal.throwIfAborted();
+      binding.assertCurrent();
+      const raw: unknown = response.status === 204 ? undefined : await response.json();
+      signal.throwIfAborted();
+      binding.assertCurrent();
+      if (!response.ok) {
+        const code = typeof raw === "object" && raw !== null && "code" in raw && typeof raw.code === "string" && /^[a-z][a-z0-9_-]{0,95}$/.test(raw.code) ? raw.code : "execution-request-failed";
+        throw new OnlineApiError(response.status, code, code);
+      }
+      return schema.parse(raw);
+    } finally { clearTimeout(timeout); }
+  };
+}
+
 /** 契约形状不符（错误体/成功体均可能）：服务端不是本规格的对端。 */
 export class OnlineProtocolError extends Error {
   readonly code = "protocol_error";

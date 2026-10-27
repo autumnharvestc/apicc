@@ -60,6 +60,11 @@ const route = (req: CapturedRequest): Response => {
 };
 
 describe("online session resume（任务 2 裁定 A）", () => {
+  it("reports stable sign-in and workspace codes rather than Chinese main-process prose", async () => {
+    const { makeSession } = setup(route); const session = makeSession();
+    await expect.soft(session.me()).rejects.toThrow('online-not-signed-in');
+    await expect.soft(session.getTreeView('missing')).rejects.toThrow('online-workspace-not-open');
+  });
   it("重启语义：存档 → 新 session 实例 → resume → 登录态恢复（me 验活带头，后续请求可用）", async () => {
     const { makeSession, calls } = setup(route);
     await makeSession().login({ baseUrl: SERVER_A, username: "alice", password: "password8" });
@@ -88,7 +93,7 @@ describe("online session resume（任务 2 裁定 A）", () => {
     expect(cleared.every((b) => b === SERVER_A)).toBe(true);
     expect(getSaved(SERVER_A)).toBeNull();
     expect(fresh.current).toBeNull();
-    await expect(fresh.me()).rejects.toThrow(/尚未登录/);
+    await expect(fresh.me()).rejects.toThrow('online-not-signed-in');
   });
 
   it("resume 验活 401 只清目标服务器存档，不串档清当前会话存档（审查重要 1）", async () => {

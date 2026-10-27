@@ -91,10 +91,10 @@ beforeAll(async () => {
     formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "worker-e2e", variables: {},
     groups: [{
       id: GROUP_ID, name: "demo", projects: [{
-        id: PROJECT_ID, name: "svc", variables: {}, globals: {}, components: [], models: [],
+        id: PROJECT_ID, name: "svc", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] }, components: [], models: [],
         stressPolicy: { trustedOrigins: [baseUrl] },
         workflows: [],
-        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
+        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl }, baseUrls: {} }],
         collections: [{
           id: COLLECTION_ID, name: "api", variables: {}, preOperations: [], postOperations: [], folders: [],
           apis: [{
@@ -673,7 +673,7 @@ describe("parseShardOutcomeStdout（裁定 B①：协调端 stdout 从末按行�
   it.each([
     [null, "null"], [undefined, "undefined"], [Number.NaN, "NaN"],
     [Number.POSITIVE_INFINITY, "Infinity"], [1.5, "1.5"],
-  ])("ShardFailure 拒绝非法退出状态 %s", (exitCode) => {
+  ])("ShardFailure 拒绝非法退出状态 %s", (exitCode, _label) => {
     const failure: ShardFailure = { protocolVersion: 2, ok: false, shardId: "s0", error: "原始失败" };
     expect(() => parseShardOutcomeStdout(JSON.stringify(failure), { shardId: "s0", exitCode }))
       .toThrow(/protocol_exit_mismatch/);

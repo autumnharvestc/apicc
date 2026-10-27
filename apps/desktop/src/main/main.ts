@@ -163,7 +163,7 @@ app.whenReady().then(() => {
       ? createDesktopDebugHistoryStore({ privateRoot: join(isolatedRoot, "history") })
       : createDesktopDebugHistoryStore({ appDataDirectory: app.getPath("appData") }),
   });
-  stopDesktopMocks = deps.stopMocks;
+  stopDesktopMocks = async () => { await Promise.allSettled([deps.stopMocks(), deps.stopOnlineExecutions()]); };
   for (const channel of Object.values(IpcChannel)) {
     // Preserve Electron's actual sender object through this boundary: the debugger binds
     // start/wait/cancel and renderer teardown to event.sender, never a renderer-supplied id.

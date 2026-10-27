@@ -23,6 +23,7 @@ import { executeCase, prepareCaseExecution, type CaseExecutionResult, type CaseE
 import { createExtractionRuntimeState, type ExtractionRuntimeState } from "../testing/extraction.js";
 import { bindPreparedTestData, readPreparedCaseData } from "../testing/data.js";
 import type { PreparedTestData } from "../testing/dataModel.js";
+import { assertScriptRequirements, collectionScriptRequirements } from "./scriptRequirements.js";
 
 /** Container-level failure that preserves all case rows completed before the throw. */
 export class CollectionRunError extends Error {
@@ -138,7 +139,7 @@ export class CollectionRunner {
     const baseUrl = executionEnvironment.baseUrl;
     const resolver = createResolver(envVars, collection.variables, project.variables);
     const engine = this.deps.registry.getScriptEngine("javascript");
-    if (!engine) throw new Error("缺少 javascript 脚本引擎插件");
+    assertScriptRequirements(this.deps.registry, collectionScriptRequirements(selectedRun.snapshot, collectionId, opts));
     // 预留：报告与运行历史可经 this.deps.registry.getStorage() 适配，本任务不消费。
 
     // 运行级钩子失败极性（规格 §5.2）：beforeRun/afterRun 处理器抛错记入 warnings，不中断运行。
@@ -168,7 +169,7 @@ export class CollectionRunner {
       restorePersisted(operationResolver, persisted);
       for (const operation of ops) {
         for (const [name, binding] of extractionState.bindings) operationResolver.setRuntime(name, binding.text);
-        if (operation.type === "script") engine.run(operation.content, this.buildContext(operationResolver, envVars, undefined, undefined, persisted, persistedSnapshot, extractionState));
+        if (operation.type === "script") engine!.run(operation.content, this.buildContext(operationResolver, envVars, undefined, undefined, persisted, persistedSnapshot, extractionState));
       }
     };
 

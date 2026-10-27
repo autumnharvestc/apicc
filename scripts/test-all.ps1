@@ -8,6 +8,11 @@ function Invoke-Checked([string]$FilePath, [string[]]$Arguments) {
   & $FilePath @Arguments
   if ($LASTEXITCODE -ne 0) { throw "外部命令失败（exit $LASTEXITCODE）：$FilePath" }
 }
+function Invoke-Pnpm([string[]]$PnpmArguments) {
+  if ($env:APICC_PNPM_CLI) { Invoke-Checked 'node' (@($env:APICC_PNPM_CLI, '--config.verify-deps-before-run=false') + $PnpmArguments) }
+  else { Invoke-Checked 'pnpm' (@('--config.verify-deps-before-run=false') + $PnpmArguments) }
+}
+$env:npm_config_verify_deps_before_run = 'false'
 
 if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME)) { throw 'JAVA_HOME 必须指向 JDK 21 根目录。' }
 $javaExe = Join-Path -Path $env:JAVA_HOME -ChildPath 'bin/java.exe'
@@ -40,17 +45,26 @@ try {
 $nodeVersion = (& node --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw "node --version 失败（exit $LASTEXITCODE）" }
 $nodeMatch = [regex]::Match($nodeVersion, '^v(\d+)\.(\d+)\.(\d+)')
-if (-not $nodeMatch.Success -or (([int]$nodeMatch.Groups[1].Value * 1000000) + ([int]$nodeMatch.Groups[2].Value * 1000) + [int]$nodeMatch.Groups[3].Value) -lt 22019000) { throw "Node >=22.19.0 required，实际：$nodeVersion" }
+if ($nodeVersion -ne 'v22.19.0') { throw "最终候选门禁要求固定 Node22.19.0，实际：$nodeVersion" }
 Write-Host "[GATE] $nodeVersion OK"
+Invoke-Pnpm @('--version')
+$nestedPnpmVersion = (& pnpm --config.verify-deps-before-run=false --version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $nestedPnpmVersion -ne '11.21.0') { throw "脚本内嵌 pnpm 也必须由 PATH 解析为11.21.0，实际：$nestedPnpmVersion；请在当前子进程PATH前置同版本shim。" }
 
 Invoke-Checked 'node' @('scripts/check-brand-neutral.mjs', '--self-check')
-Invoke-Checked 'node' @('scripts/check-brand-neutral.mjs')
-Invoke-Checked 'pnpm' @('-C', 'packages/plugin-sdk', 'build')
-Invoke-Checked 'pnpm' @('-C', 'packages/plugin-sdk', 'typecheck')
-Invoke-Checked 'pnpm' @('-C', 'packages/core', 'build')
-Invoke-Checked 'pnpm' @('-C', 'packages/core', 'typecheck')
-Invoke-Checked 'pnpm' @('--filter', '!@apicc/core', '--filter', '!@apicc/plugin-sdk', '-r', 'build')
-Invoke-Checked 'pnpm' @('-r', '--workspace-concurrency=1', 'test', '--maxWorkers=2')
+Invoke-Checked 'node' @('--test', 'scripts/tests/check-brand-neutral.test.mjs')
+Invoke-Checked 'node' @('scripts/check-brand-neutral.mjs', '--include-untracked')
+foreach ($package in @('packages/plugin-sdk', 'packages/core', 'packages/execution')) {
+  Invoke-Pnpm @('-C', $package, 'build')
+  Invoke-Pnpm @('-C', $package, 'typecheck')
+}
+Invoke-Pnpm @('-C', 'packages/execution', 'check:java-input-schema')
+foreach ($package in @('apps/runner-agent', 'apps/desktop', 'apps/admin-web', 'packages/cli')) {
+  Invoke-Pnpm @('-C', $package, 'build')
+  # desktop/admin build already include their src+tests type checks.
+  if ($package -in @('apps/runner-agent', 'packages/cli')) { Invoke-Pnpm @('-C', $package, 'typecheck') }
+}
+Invoke-Pnpm @('-r', '--workspace-concurrency=1', 'test', '--maxWorkers=2')
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("apicc-maven-gate-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot | Out-Null

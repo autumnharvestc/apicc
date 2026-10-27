@@ -5,7 +5,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 export const JsonValueSchema: z.ZodType<JsonValue> = z.custom<JsonValue>(
   (value) => isJsonValue(value, new Set<object>()),
   { message: "Expected a JSON value" },
-);
+).meta({ apiccJsonWireSchema: z.json() });
 
 export function StringRecordSchema<Value>(valueSchema: z.ZodType<Value>): z.ZodType<Record<string, Value>> {
   return z.custom<Record<string, unknown>>(isPlainStringRecord, { message: "Expected a plain string-keyed object" })
@@ -53,7 +53,7 @@ export function StringRecordSchema<Value>(valueSchema: z.ZodType<Value>): z.ZodT
         });
       }
       return output;
-    });
+    }).meta({ apiccJsonWireSchema: z.record(z.string(), valueSchema) });
 }
 
 export interface SchemaAnnotations {
@@ -129,7 +129,10 @@ export const SchemaNodeSchema: z.ZodType<SchemaNode> = z.unknown()
       context.addIssue({ code: "custom", path: [], message: "SchemaNode must be a finite object tree" });
     }
   })
-  .pipe(schemaNodeShapeSchema);
+  .pipe(schemaNodeShapeSchema)
+  // HTTP JSON has finite plain data trees: this exposes the same structural boundary
+  // for build-time schema generation without weakening the in-memory cycle checks.
+  .meta({ apiccJsonWireSchema: schemaNodeShapeSchema });
 
 function isJsonValue(value: unknown, ancestors: Set<object>): value is JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;

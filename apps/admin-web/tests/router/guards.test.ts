@@ -93,4 +93,13 @@ describe("路由守卫（裁定 C：requiresAuth + redirect 回跳）", () => {
   it("token 键名钉住：apicc.admin.token（裁定 B）", async () => {
     expect(TOKEN_KEY).toBe("apicc.admin.token");
   });
+
+  it("项目管理权限不放行平台代理路由；未登录保留批准入口完整查询",async()=>{
+    const {session,router}=setup();
+    await router.push('/workspaces/1/org?projectId=2&section=execution&agentId=3');
+    expect(router.currentRoute.value.query.redirect).toBe('/workspaces/1/org?projectId=2&section=execution&agentId=3');
+    await session.login({username:'alice',password:'password8'});
+    await router.push('/agents');
+    expect(router.currentRoute.value.name).toBe('workspaces');
+  });
 });

@@ -20,7 +20,8 @@ import {
   type DebugResult, type DebugResultSource, type DebugSourceCategory,
 } from "./model.js";
 import { createDebugExchangeCollector, projectDebugResult } from "./projection.js";
-import { createExecutionEvidenceCollector } from "../report/evidence.js";
+import { createExecutionEvidenceCollector, type EvidenceLimits } from "../report/evidence.js";
+import type { RequestSettingsOverride } from "../request/settings.js";
 
 type DebugAssetInvocation = Exclude<DebugInvocation, { mode: "free" }>;
 type DebugFreeInvocation = Extract<DebugInvocation, { mode: "free" }>;
@@ -55,6 +56,12 @@ export interface DebugFreeExecutionPlan extends DebugExecutionPlanBase {
 export type DebugExecutionPlan = DebugAssetExecutionPlan | DebugFreeExecutionPlan;
 
 export interface RunDebugExecutionOptions {
+  /** Host-private terminal facts, captured before final evidence/display projection. */
+  observeRunResult?: (run: RunResult, failure?: Pick<CollectionRunError, "message" | "failureKind">) => void;
+  observeCaseExecution?: RunnerOptions["observeCaseExecution"];
+  observeHttp?: RunnerOptions["observeHttp"];
+  requestSettings?: RequestSettingsOverride;
+  evidenceLimits?: EvidenceLimits;
   registry: PluginRegistry;
   workspaceRoot?: string;
   httpSession?: HttpSession;
@@ -271,13 +278,13 @@ export async function runDebugExecution(
 ): Promise<DebugResult> {
   if (preparedRun.snapshot !== plan.snapshot) throw new TypeError("Credential preparation must use the exact debug execution snapshot.");
   const startedAt = new Date().toISOString();
-  const collector = createDebugExchangeCollector(options.credentialMarkers ?? []);
-  const evidence = createExecutionEvidenceCollector({ projectId: plan.snapshot.project.id, definitionRevision: plan.sourceProjectRevision, environmentId: plan.invocation.environmentId, dataDigest: preparedRun.preparedTestData?.digest }, options.credentialMarkers ?? []);
+  const collector = createDebugExchangeCollector(options.credentialMarkers ?? [], options.evidenceLimits);
+  const evidence = createExecutionEvidenceCollector({ projectId: plan.snapshot.project.id, definitionRevision: plan.sourceProjectRevision, environmentId: plan.invocation.environmentId, dataDigest: preparedRun.preparedTestData?.digest }, options.credentialMarkers ?? [], { limits: options.evidenceLimits });
   const runner = new CollectionRunner({
     registry: options.registry,
     bus: createEventBus(),
     timeouts: { connectTimeoutMs: 10_000, totalTimeoutMs: 30_000, ...(options.signal === undefined ? {} : { signal: options.signal }) },
-    requestSettings: plan.invocation.settings,
+    requestSettings: { ...plan.invocation.settings, ...options.requestSettings },
     failFast: false,
   });
   const runOptions: RunnerOptions = {
@@ -285,9 +292,10 @@ export async function runDebugExecution(
     caseSelection: plan.caseSelection,
     ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
     ...(options.httpSession === undefined ? {} : { httpSession: options.httpSession }),
-    observeHttp: (event, identity) => collector.observe(event, observationIdentity(plan, identity)),
-    observeCaseExecution: (execution, identity) => {
+    observeHttp: async (event, identity) => { collector.observe(event, observationIdentity(plan, identity)); await options.observeHttp?.(event, identity); },
+    observeCaseExecution: async (execution, identity) => {
       evidence.observe(execution, identity);
+      await options.observeCaseExecution?.(execution, identity);
       // A legacy response still counts after the display cap, even when its combined
       // Cookie header cannot provide a complete marker set. Never export a partial set.
       if (!evidence.boundary().businessUnavailable) collector.addMarkers(evidence.markers());
@@ -303,7 +311,9 @@ export async function runDebugExecution(
     run = error.partialResult;
     containerFailure = error;
   }
+  options.observeRunResult?.(run, containerFailure);
   const result = projectDebugResult({
+    limits: options.evidenceLimits,
     plan,
     runId,
     run: evidence.projectRun(run),

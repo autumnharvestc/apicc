@@ -14,13 +14,14 @@ import { useRoute, useRouter } from "vue-router";
 import { Button as AButton, Layout as ALayout, Menu as AMenu, MenuItem as AMenuItem } from "ant-design-vue";
 import type { SessionStore } from "../stores/session.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
+import { setAdminLocale } from "../i18n/index.js";
 
 const ALayoutSider = ALayout.Sider;
 const ALayoutHeader = ALayout.Header;
 const ALayoutContent = ALayout.Content;
 
 const props = defineProps<{ session: SessionStore; workspaces: WorkspacesStore }>();
-const { t } = useI18n();
+const { t, locale } = useI18n({ useScope: "global" });
 const route = useRoute();
 const router = useRouter();
 
@@ -69,6 +70,11 @@ async function onLogout(): Promise<void> {
   await props.session.logout();
   await router.push({ name: "login" });
 }
+
+function onLocaleChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value;
+  if (value === "zh-CN" || value === "en") setAdminLocale(locale, value);
+}
 </script>
 
 <template>
@@ -91,10 +97,19 @@ async function onLogout(): Promise<void> {
         <a-menu-item v-if="session.role === 'SUPERADMIN'" key="users" data-testid="menu-users" @click="goUsers">
           {{ t("nav.users") }}
         </a-menu-item>
+        <a-menu-item v-if="session.role === 'SUPERADMIN'" key="agents" data-testid="menu-agents" @click="router.push({name:'agents'})">{{ t('agents.title') }}</a-menu-item>
+        <a-menu-item v-if="manageVisible" key="workspace-agents" data-testid="menu-workspace-agents" @click="router.push({name:'workspace-agents',params:{id:workspaces.current!.id}})">{{ t('agents.workspaceTitle') }}</a-menu-item>
       </a-menu>
     </a-layout-sider>
     <a-layout>
       <a-layout-header class="header" data-testid="layout-header">
+        <label class="locale-control">
+          <span>{{ t("nav.language") }}</span>
+          <select :value="locale" :aria-label="t('nav.language')" data-testid="layout-locale" @change="onLocaleChange">
+            <option value="zh-CN">{{ t("nav.languageChinese") }}</option>
+            <option value="en">{{ t("nav.languageEnglish") }}</option>
+          </select>
+        </label>
         <span class="user" data-testid="layout-user">{{ session.user?.displayName }}</span>
         <a-button data-testid="layout-logout" @click="onLogout">{{ t("nav.logout") }}</a-button>
       </a-layout-header>
@@ -127,6 +142,20 @@ async function onLogout(): Promise<void> {
 }
 .user {
   font-size: 13px;
+}
+.locale-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.locale-control select {
+  height: 32px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #fff;
+  color: inherit;
 }
 .content {
   padding: 24px;

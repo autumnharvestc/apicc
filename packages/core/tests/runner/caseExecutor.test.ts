@@ -28,6 +28,14 @@ const testCase: TestCase = {
 
 const response: ExecutionResponse = { status: 200, headers: { "content-type": "application/json" }, bodyText: '{"ok":true}', timeMs: 3 };
 
+it("F7b pre variables materialize this request while direct URL and header writes survive", async () => {
+  const selected = { ...testCase, postOperations: [], preOperations: [{ id: "pre", type: "script" as const, content: "pm.variables.set('orderId', 'fresh'); pm.request.url += '?direct=yes'; pm.request.headers['X-Direct'] = 'kept';" }] };
+  const value = input({ testCase: selected, globals: { headers: [{ key: "X-Template", value: "{{orderId}}", enabled: true }] } });
+  const result = await executeCase(value, { resolveProtocol: () => ({ name: "capture", canHandle: () => true, execute: async () => response }), resolveAuth: type => builtinAuthProviders.find(p => p.type === type), resolveAssert: op => builtinAssertOperators.find(p => p.op === op), scriptEngine: jsScriptEngine });
+  expect(result.request.url).toBe("https://example.test/orders/fresh?direct=yes");
+  expect(result.request.headers).toMatchObject({ "X-Template": "fresh", "X-Direct": "kept" });
+});
+
 function input(options: {
   globals?: Partial<ProjectGlobals>;
   request?: { baseUrl?: string; protocol?: "http" | "soap"; envelope?: string; method?: "GET" | "POST"; body?: RequestBody };

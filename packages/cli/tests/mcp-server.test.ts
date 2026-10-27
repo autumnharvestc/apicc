@@ -12,6 +12,7 @@ import {
   fileStorage,
   renderContractMarkdown,
   type Workspace,
+  type SecretStore,
 } from "@apicc/core";
 import { createMcpServer } from "../src/mcp/server.js";
 import { runCli } from "../src/main.js";
@@ -97,7 +98,7 @@ beforeAll(async () => {
     formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "mcp-a", variables: {},
     groups: [{
       id: GROUP_A, name: "demo", projects: [{
-        id: PROJECT_A, name: "svc", variables: {}, globals: {}, components: [], models: [], workflows: [], environments: [],
+        id: PROJECT_A, name: "svc", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] }, components: [], models: [], workflows: [], environments: [],
         stressPolicy: {},
         collections: [{
           id: COLLECTION_A, name: "api", variables: {}, preOperations: [], postOperations: [],
@@ -129,7 +130,7 @@ beforeAll(async () => {
     formatVersion: 1, id: "00000000-0000-4000-8000-000000000011", name: "mcp-b", variables: {},
     groups: [{
       id: "00000000-0000-4000-8000-000000000003", name: "other", projects: [{
-        id: "00000000-0000-4000-8000-000000000005", name: "bee", variables: {}, globals: {}, components: [], models: [], workflows: [], environments: [], stressPolicy: {},
+        id: "00000000-0000-4000-8000-000000000005", name: "bee", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] }, components: [], models: [], workflows: [], environments: [], stressPolicy: {},
         collections: [{
           id: "00000000-0000-4000-8000-000000000009", name: "col", variables: {}, preOperations: [], postOperations: [], folders: [],
           apis: [apiAsset("00000000-0000-4000-8000-000000000035", "bee", "/", [testCase("00000000-0000-4000-8000-000000000036", "bee-passes", "base")], "", "GET")],

@@ -23,6 +23,14 @@ import { useImportWizardStore } from "../../../src/renderer/src/stores/importW.j
 import HomeView from "../../../src/renderer/src/components/HomeView.vue";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import OnlineApiEditor from "../../../src/renderer/src/components/OnlineApiEditor.vue";
+import OnlineExecutionPanel from "../../../src/renderer/src/components/online/OnlineExecutionPanel.vue";
+import OnlineProjectAssets from "../../../src/renderer/src/components/online/OnlineProjectAssets.vue";
+import { createOnlineProjectAdapter } from "../../../src/renderer/src/stores/onlineProjectAdapter.js";
+import { ContractWorkspaceSchema } from "@apicc/core/schema";
+import { workspaceFixture } from "../../../../../packages/core/tests/helpers/contractFixtures.js";
+import type { OnlineExecutionContext, OnlineLocalResult, OnlineExecutionInput, OnlineJob } from "../../../src/shared/online/execution.js";
+import { InvocationOutputSchema } from "../../../src/shared/online/execution.js";
+import { createOnlineExecutionStore } from "../../../src/renderer/src/stores/onlineExecution.js";
 import OnlineConflictDialog from "../../../src/renderer/src/components/OnlineConflictDialog.vue";
 import OnlineMigrateDialog from "../../../src/renderer/src/components/OnlineMigrateDialog.vue";
 import TopBar from "../../../src/renderer/src/components/TopBar.vue";
@@ -32,6 +40,156 @@ import type { ApiccApi } from "../../../src/shared/types.js";
 import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
 
 const SERVER = "http://127.0.0.1:8080";
+const EXECUTION_CONTEXT: OnlineExecutionContext = { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } };
+function failureResult(runId: string): OnlineLocalResult { return { location: { kind: 'local' }, runId, snapshotId: '66', manifestHash: 'a'.repeat(64), runtimeCompatibilityId: 'recorded-local-runtime', scriptTimeoutMs: 3000, output: { kind: 'failure', targetKind: 'workflow', error: 'Safe failure: missing declared material', result: { collectionId: '', collectionName: 'workflow', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', total: 0, passed: 0, failed: 1, cases: [], warnings: ['Evidence is incomplete'] } } }; }
+function flowLayoutFixture() {
+  const saved = new Map(['ResizeObserver', 'DOMMatrixReadOnly'].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  const dimensions = new Map(['offsetWidth', 'offsetHeight'].map(name => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)]));
+  Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, writable: true, value: class { observe() {} unobserve() {} disconnect() {} } });
+  Object.defineProperty(globalThis, 'DOMMatrixReadOnly', { configurable: true, writable: true, value: class { m22 = 1; } });
+  for (const [name, descriptor] of dimensions) Object.defineProperty(HTMLElement.prototype, name, { configurable: true, get(this: HTMLElement) { return this.classList.contains('vue-flow') ? name === 'offsetWidth' ? 960 : 600 : descriptor?.get?.call(this) ?? 0; } });
+  return () => { for (const [name, descriptor] of dimensions) { if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor); else Reflect.deleteProperty(HTMLElement.prototype, name); } for (const [name, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name); } };
+}
+
+describe('online execution readable projection', () => {
+  it('shows Core logical failure and entry diagnostics separately from successful or absent physical requests', () => {
+    const debug: OnlineLocalResult = { ...failureResult('00000000-0000-4000-8000-000000000075'), output: { kind: 'debug', result: {
+      runId: 'debug-post', source: { sourceKind: 'unavailable' }, sourceProjectRevision: 'revision', executionSnapshotRevision: 'snapshot', mode: 'case',
+      startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', run: { collectionName: 'module', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', total: 1, passed: 1, failed: 0 },
+      outcomes: [], exchanges: [], exchangeTotal: 1, omittedExchangeCount: 1, replay: { mode: 'case', sourceKind: 'asset', parameters: {}, fields: [], available: false }, console: [], warnings: [], failureKind: 'script', error: 'Post script rejected',
+    } } };
+    const suite: OnlineLocalResult['output'] = { kind: 'suite', result: { collectionId: 'suite', collectionName: 'logical suite', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', total: 0, passed: 0, failed: 0, cases: [], reportingMode: 'mixed-suite-v2', workflowUnits: [{ entryId: 'entry', workflowId: 'flow', verdict: 'failed', error: 'Logical assertion rejected' }], requestFacts: { requestStarted: 0, requestCompleted: 0, httpExchanges: 0 }, suite: { suiteRunId: 'run', projectId: 'project', definitionRevision: 'revision', verdict: 'failed', total: 1, passed: 0, failed: 1, skipped: 0, entries: [{ entryId: 'entry', kind: 'workflow', workflowId: 'flow', status: 'failed', error: 'Logical assertion rejected' }] } } };
+    expect(InvocationOutputSchema.safeParse(debug.output).success).toBe(true);
+    expect(InvocationOutputSchema.safeParse(suite).success).toBe(true);
+    const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = 'en';
+    execution.localResult = debug;
+    const first = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+    expect.soft(first.get('[data-testid="online-execution-report"] > p').text()).toContain('Logical verdict: Failed');
+    first.unmount();
+    execution.localResult = null; execution.report = { executionId: 'suite-run', verdict: 'failed', output: suite };
+    const second = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+    expect.soft(second.text()).toContain('Logical executions: 1 total, 0 passed, 1 failed');
+    expect.soft(second.text()).toContain('Logical assertion rejected');
+    expect(second.text()).toContain('Observed requests: 0 started, 0 completed, 0 HTTP exchanges');
+    expect(second.find('textarea').exists()).toBe(false); second.unmount();
+  });
+  it('rejects malformed Core elements before a local result can reach its viewer and exposes a bounded error', async () => {
+    const malformedSuite = { kind: 'suite', result: { ...failureResult('00000000-0000-4000-8000-000000000076').output.result, cases: [null] } };
+    const malformedWorkflow = { kind: 'workflow', result: { workflowId: 'flow', nodeResults: [null] } };
+    expect.soft(InvocationOutputSchema.safeParse(malformedSuite).success).toBe(false);
+    expect.soft(InvocationOutputSchema.safeParse(malformedWorkflow).success).toBe(false);
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const execution = createOnlineExecutionStore({ onlineExecution: async input => ({ ...failureResult(input.operation === 'run' ? input.runId : 'unexpected'), output: malformedSuite }) });
+    execution.activate(EXECUTION_CONTEXT); execution.setVisible(true); execution.project = project; execution.saved = JSON.stringify(project);
+    execution.view = { project, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
+    await expect.soft(execution.run({ kind: 'workflow', workflowId: '00000000-0000-4000-8000-000000000091' })).rejects.toThrow('invalid-core-output');
+    expect.soft(execution.localResult).toBeNull();
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = 'en';
+    const wrapper = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+    expect.soft(wrapper.find('[role="alert"]').text()).toContain('Execution report is invalid');
+    expect(wrapper.find('textarea').exists()).toBe(false); wrapper.unmount(); execution.setVisible(false);
+  });
+  it('keeps a malformed remote report failure readable after main IPC serialization', () => {
+    const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
+    execution.error = "Error invoking remote method 'online:execution': Error: invalid-core-output";
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = 'en';
+    const wrapper = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+    expect(wrapper.get('[role="alert"]').text()).toBe('Execution report is invalid; no result was opened.');
+    expect(execution.report).toBeNull();
+    wrapper.unmount();
+  });
+  it('shows empty-case Core failure reasons and evidence warnings in both languages without raw data', () => {
+    for (const language of ['zh-CN', 'en'] as const) {
+      const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
+      execution.localResult = failureResult('00000000-0000-4000-8000-000000000074');
+      const { i18n } = createI18nInstance(); i18n.global.locale.value = language;
+      const wrapper = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+      expect(wrapper.text()).toContain('Safe failure: missing declared material');
+      expect(wrapper.text()).toContain('Evidence is incomplete');
+      expect(wrapper.text()).toContain(language === 'zh-CN' ? '运行失败原因' : 'Execution failure reason');
+      expect(wrapper.find('textarea').exists()).toBe(false); expect(wrapper.find('details[open]').exists()).toBe(false);
+      wrapper.unmount();
+    }
+  });
+  it('keeps a long recorded runtime identity short in the summary and preserves the full value for inspection', () => {
+    const runtime = 'node-22.19.0-v8-12.4.254.21-node.29-script-' + 'f'.repeat(64);
+    const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
+    execution.localResult = { ...failureResult('00000000-0000-4000-8000-000000000077'), runtimeCompatibilityId: runtime };
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = 'en';
+    const wrapper = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+    const cell = wrapper.findAll('.summary div').find(row => row.text().includes('Actual runtime compatibility'))!.get('dd');
+    expect.soft(cell.text().length).toBeLessThan(80);
+    const full = cell.find('[title]');
+    expect.soft(full.exists() ? full.attributes('title') : cell.attributes('title')).toBe(runtime);
+    wrapper.unmount();
+  });
+  it('shows the selected historical runtime and marks unrecorded timeout instead of borrowing current settings', async () => {
+    const historical: OnlineJob = { jobId: '99', executionId: '100', agentId: '5', state: 'ended', cancelState: 'none', executionReleased: true, reportState: 'pending', task: { protocolVersion: 1, jobId: '99', executionId: '100', scope: EXECUTION_CONTEXT.scope, submittedByUserId: '7', contractProjectId: '00000000-0000-4000-8000-000000000018', snapshotId: '66', manifestHash: 'a'.repeat(64), target: { kind: 'workflow', workflowId: '00000000-0000-4000-8000-000000000091' }, policyVersion: '0', requiredCoreBuildId: 'b'.repeat(64), scriptPlanDigest: 'c'.repeat(64), executionProfile: 'no-script', runtimeCompatibilityId: 'recorded-historical-runtime', dispatchKind: 'dedicated-task', requiredCapabilities: ['task:workflow'] } };
+    const execution = createOnlineExecutionStore({ onlineExecution: async () => [] }); execution.activate(EXECUTION_CONTEXT); execution.setVisible(true); execution.jobs = [historical];
+    await execution.inspect(historical);
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
+    const wrapper = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+    expect(wrapper.text()).toContain('recorded-historical-runtime');
+    const timeoutRow = wrapper.findAll('.summary div').find(row => row.text().includes('有效脚本时限'))!;
+    expect(timeoutRow.text()).toContain('未采集');
+    await execution.inspect({ ...historical, scriptTimeoutMs: 1250 });
+    await flushPromises();
+    expect(wrapper.findAll('.summary div').find(row => row.text().includes('有效脚本时限'))!.text()).toContain('1250 ms');
+    execution.jobs = [{ ...historical, state: 'running', canCancel: false }];
+    await flushPromises();
+    expect(wrapper.find('[data-testid="online-jobs"] tbody tr td:last-child button').exists()).toBe(false);
+    execution.jobs = [{ ...historical, state: 'running', canCancel: true }];
+    await flushPromises();
+    expect(wrapper.find('[data-testid="online-jobs"] tbody tr td:last-child button').exists()).toBe(true);
+    wrapper.unmount(); execution.setVisible(false);
+  });
+  it('uses the project execution environment as the only online workflow environment source', async () => {
+    const restoreLayout = flowLayoutFixture();
+    try {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const environmentId = '00000000-0000-4000-8000-000000000019';
+    project.environments = [{ id: environmentId, name: 'Selected online environment', variables: {}, baseUrls: {} }];
+    project.workflows = [{ id: '00000000-0000-4000-8000-000000000091', name: 'Online workflow', status: 'enabled', nodes: [{ id: 'only', kind: 'noop' }], edges: [] }];
+    let submitted: OnlineExecutionInput | undefined;
+    const api = { assertionOperators: async () => [], onlineExecution: async (input: OnlineExecutionInput) => { if (input.operation !== 'run') throw new Error('Unexpected operation'); submitted = input; return failureResult(input.runId); } } as unknown as ApiccApi;
+    const online = createOnlineStore({ api }); const execution = online.execution;
+    execution.activate(EXECUTION_CONTEXT); execution.setVisible(true); execution.project = project; execution.saved = JSON.stringify(project); execution.view = { project, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
+    const adapter = createOnlineProjectAdapter(execution, api, () => false, () => true);
+    await adapter.workflowDesign.load(adapter.editorRoot(), { ...adapter.locator(), workflowId: project.workflows[0]!.id });
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
+    const wrapper = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
+    try {
+      await wrapper.get('[data-testid="online-execution-environment"]').setValue(environmentId);
+      await wrapper.findAll('nav.tabs button').find(button => button.text() === '工作流')!.trigger('click'); await flushPromises();
+      expect(wrapper.find('[data-testid="wf-run-env"]').exists()).toBe(false);
+      expect(wrapper.text()).toContain('运行环境使用项目执行栏的选择');
+      await wrapper.get('[data-testid="wf-run"]').trigger('click'); await flushPromises();
+      expect(submitted).toMatchObject({ operation: 'run', environmentId, target: { kind: 'workflow', workflowId: project.workflows[0]!.id } });
+    } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
+    } finally { restoreLayout(); }
+  });
+  it('shows connection, cancellation, release and missing evidence in Chinese and English without opening raw data', () => {
+    for (const language of ['zh-CN', 'en'] as const) {
+      const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
+      execution.connection = 'disconnected';
+      execution.report = { executionId: '100', verdict: 'interrupted', executionFact: 'uncertain', reasonCode: 'input-capacity-exceeded' };
+      execution.jobs = [{ jobId: '99', executionId: '100', agentId: '5', state: 'running', cancelState: 'requested', executionReleased: false, reportState: 'pending', task: { protocolVersion: 1, jobId: '99', executionId: '100', scope: { workspaceId: '11', groupId: '22', projectId: '33' }, submittedByUserId: '7', contractProjectId: '00000000-0000-4000-8000-000000000018', snapshotId: '66', manifestHash: 'a'.repeat(64), target: { kind: 'workflow', workflowId: '00000000-0000-4000-8000-000000000091' }, policyVersion: '0', requiredCoreBuildId: 'b'.repeat(64), scriptPlanDigest: 'c'.repeat(64), executionProfile: 'no-script', runtimeCompatibilityId: 'persisted-controlled-runtime', dispatchKind: 'dedicated-task', requiredCapabilities: ['task:workflow'] } }];
+      const { i18n } = createI18nInstance(); i18n.global.locale.value = language;
+      const wrapper = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+      const text = wrapper.text();
+      expect(text).toContain(language === 'zh-CN' ? '控制连接' : 'Control connection');
+      expect(text).toContain(language === 'zh-CN' ? '已申请取消，等待收束确认' : 'Cancellation requested; awaiting release confirmation');
+      expect(text).toContain(language === 'zh-CN' ? '尚未确认释放' : 'Release not confirmed');
+      expect(text).toContain(language === 'zh-CN' ? '是否执行尚不确定' : 'Execution is uncertain');
+      expect(text).toContain(language === 'zh-CN' ? '完整 Core 输出不可用' : 'Complete Core output is unavailable');
+      expect(wrapper.find('textarea').exists()).toBe(false);
+      expect(wrapper.find('details[open]').exists()).toBe(false);
+      expect(text).not.toContain('onlineExecution.');
+      wrapper.unmount();
+    }
+  });
+});
 // path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（memory 替身种子常量防漂移）
 const API_PATH = `${ONLINE_SEED_PROJECT_ID}/collections/示例集合/apis/示例接口/api.yaml`;
 const VALID_API_YAML = [
@@ -175,11 +333,14 @@ async function seedValidApi(fixture_: Fixture) {
 }
 
 describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 problems）", () => {
-  it("未选中任何文件 → 引导空态（含拉取到本地的调试边界文案）", async () => {
+  it("未选中任何文件 → 区分有效项目本机/代理执行与旧格式迁移", async () => {
     const f = await fixture();
     const wrapper = await f.mount(OnlineApiEditor);
     expect(wrapper.find('[data-testid="online-guide"]').exists()).toBe(true);
-    expect(wrapper.text()).toContain("拉取");
+    expect.soft(wrapper.get('[data-testid="online-guide"]').text()).toContain("有效项目");
+    expect.soft(wrapper.get('[data-testid="online-guide"]').text()).toContain("本机");
+    expect.soft(wrapper.get('[data-testid="online-guide"]').text()).toContain("代理");
+    expect.soft(wrapper.get('[data-testid="online-guide"]').text()).toContain("旧格式");
   });
 
   it("EDITOR 选中接口：表单渲染、可改、保存推送（版本前移 + 已保存提示）", async () => {

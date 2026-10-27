@@ -36,6 +36,8 @@ import SideTree from "./components/SideTree.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import OnlineLoginDialog from "./components/OnlineLoginDialog.vue";
 import OnlineApiEditor from "./components/OnlineApiEditor.vue";
+import OnlineProjectAssets from "./components/online/OnlineProjectAssets.vue";
+import { createOnlineProjectAdapter } from "./stores/onlineProjectAdapter.js";
 import OnlineConflictDialog from "./components/OnlineConflictDialog.vue";
 import OnlineMigrateDialog from "./components/OnlineMigrateDialog.vue";
 import RequestEditor from "./components/RequestEditor.vue";
@@ -179,6 +181,7 @@ const stress = createStressStore({
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
 // TopBar 的在线入口按钮只置 online.dialogOpen。 ——
 const online = createOnlineStore({ api: apicc });
+const onlineProjectAdapter = createOnlineProjectAdapter(online.execution, apicc, () => !online.execution.context || !online.canEdit(`${online.execution.context.scope.projectId}/project.yaml`), () => window.confirm(t('testing.discardConfirm')));
 // —— AI store（M6-C 任务 1 装配）：同一组合根一次性创建；挂载后读持久化配置与 key
 // 状态（init 全程不抛）。对话框/抽屉本体在组合根渲染，接口头部入口按钮只置显隐/拉取。 ——
 const ai = createAiStore({ api: apicc, editor, getContext: localContext });
@@ -392,6 +395,16 @@ const homeActiveOnlineProjectId = computed(() => {
   const tab = tabs.activeTab;
   return tab && !isLocalProjectTab(tab) ? tab.projectId : null;
 });
+watch(() => JSON.stringify([isHome.value, onlineMode.value, homeActiveOnlineProjectId.value, online.activeBaseUrl, online.user?.id]), async () => {
+  const context = online.executionContext(homeActiveOnlineProjectId.value);
+  online.execution.activate(context);
+  online.execution.setVisible(!isHome.value && onlineMode.value && context !== null);
+  if (online.execution.visible) {
+    await online.execution.load();
+    if (online.editorPath && online.editorKind === 'api' && !online.editorDirty) await online.selectNode('api', online.editorPath, { force: true });
+  }
+}, { immediate: true });
+const onlinePublishProjects = computed(() => workspace.workspace?.groups.flatMap(group => group.projects.map(project => ({ label: `${group.name} / ${project.name}`, project }))) ?? []);
 
 // 激活失败文案（离线标记等）上屏到既有错误通道（tabs store 契约：error 组件上屏）
 watch(
@@ -1238,6 +1251,7 @@ function onDividerDblClick() {
             :active-online-project-id="homeActiveOnlineProjectId"
           />
           <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
+          <OnlineProjectAssets v-else-if="onlineMode && online.execution.context" class="panel-view" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects" @published="openOnlineProjectFromHome"><OnlineApiEditor :online="online" /></OnlineProjectAssets>
           <OnlineApiEditor v-else-if="onlineMode" class="panel-view" :online="online" />
           <!-- 接口模块（M8）：头部（子视图页签 + AI 入口）+ 调试/设计/用例子视图 -->
           <template v-else-if="view === 'api'">

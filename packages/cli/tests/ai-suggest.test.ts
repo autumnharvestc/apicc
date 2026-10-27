@@ -62,7 +62,7 @@ beforeAll(async () => {
     formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "ai-e2e", variables: {},
     groups: [{
       id: GROUP_ID, name: "demo", projects: [{
-        id: PROJECT_ID, name: "svc", variables: {}, globals: {}, workflows: [],
+        id: PROJECT_ID, name: "svc", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] }, workflows: [],
         environments: [], models: [], components: [], stressPolicy: {},
         collections: [{
           id: COLLECTION_ID, name: "api", variables: {}, preOperations: [], postOperations: [], folders: [],

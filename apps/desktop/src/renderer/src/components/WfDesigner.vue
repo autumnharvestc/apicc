@@ -82,6 +82,7 @@ const props = defineProps<{
   projectLocator: ProjectLocator | null;
   bindIndex: WfBindIndex | null;
   reportError: (e: unknown) => void;
+  externalRun?: (workflow: import("@apicc/core").Workflow, inputs?: Readonly<Record<string, JsonValue>>) => Promise<void>;
 }>();
 const { t } = useI18n();
 const emit = defineEmits<{ "locate-evidence": [identity: EvidenceIdentity, project: ProjectLocator, root: string]; "stress-workflow": [locator: WorkflowLocator] }>();
@@ -266,6 +267,7 @@ async function onRun() {
   const targetRoot = design.value.root;
   const targetGeneration = design.value.loadEpoch;
   try {
+    if (props.externalRun && wf.value) { await props.externalRun(wf.value, wf.value.executionVersion === 2 ? definedRunInputs(runInputs.value) : undefined); return; }
     await design.value.run(runEnv.value || undefined, wf.value?.executionVersion === 2 ? definedRunInputs(runInputs.value) : undefined);
   } catch (e) {
     if (design.value.loadEpoch === targetGeneration && design.value.root === targetRoot) props.reportError(e);
@@ -644,12 +646,14 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           </a-button>
           <!-- 运行接线（任务 7）：draft 禁用并提示先发布；环境按名称引用（首项=不传 envName） -->
           <a-select
+            v-if="!externalRun"
             v-model:value="runEnv"
             class="wf-run-env"
             size="small"
             :options="runEnvOptions"
             data-testid="wf-run-env"
           />
+          <span v-else class="hint" data-testid="wf-online-environment">{{ t('onlineExecution.workflowEnvironmentSource') }}</span>
           <a-button
             size="small"
             data-testid="wf-run"

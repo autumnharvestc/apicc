@@ -1517,16 +1517,12 @@ describe("WorkflowRunner", () => {
     expect(project.environments[0]!.variables.baseUrl).toBe(baseUrl);
   });
 
-  it("无 javascript 引擎时条件源节点 failed/script，不伪装成剪枝成功", async () => {
-    const result = await new WorkflowRunner({ registry: createPluginRegistry(), resolve, envName: "dev", failFast: false })
+  it("无 javascript 引擎时在执行 v1 条件前拒绝整个工作流", async () => {
+    await expect(new WorkflowRunner({ registry: createPluginRegistry(), resolve, envName: "dev", failFast: false })
       .run(wf([
         { id: "n1", kind: "noop" as const },
         { id: "n2", kind: "noop" as const },
-      ], [{ id: "edge", from: "n1", to: "n2", condition: "true" }]), { project, workspace: ws });
-    expect(result.nodeResults.find((n) => n.nodeId === "n1")?.failureKind).toBe("script");
-    expect(result.nodeResults.find((n) => n.nodeId === "n1")?.error).toContain("edge");
-    expect(result.nodeResults.find((n) => n.nodeId === "n2")?.skipReason).toBe("upstream-failed");
-    expect(result.verdict).toBe("failed");
+      ], [{ id: "edge", from: "n1", to: "n2", condition: "true" }]), { project, workspace: ws })).rejects.toThrow(/javascript.*edge/);
   });
 
   it("noop 节点直接通过；非严格 missing 引用 failed/config 带告警", async () => {

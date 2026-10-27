@@ -1,4 +1,24 @@
 {
+  "startRejectionLabels": { "submitter_unavailable":"提交者已停用或不可用", "forbidden":"当前项目权限不允许执行", "project_forbidden":"项目访问授权已失效", "agent_unavailable":"代理当前不允许新任务启动", "agent_not_associated":"代理的项目授权或关联已撤销", "script_mode_denied":"代理不允许受信脚本", "script_grant_missing":"所需脚本批准已撤销或缺失", "script_grant_changed":"脚本批准已变化，请重新准备运行", "credential_version_conflict":"凭据版本已变化，请重新准备运行", "credential_missing":"所需项目凭据缺失", "policy_changed":"执行策略已变化，请重新准备运行", "agent_capacity":"代理执行容量已下调", "shared_capacity":"共享调试容量已下调", "resource_capacity":"输入或待传结果容量已下调", "debug_session_expired":"调试会话已过期，请显式开始新会话" },
+  "executionLabels": {
+    "entry-diagnostic":"非请求条目诊断",
+    "passed":"通过","failed":"失败","aborted":"中止","skipped":"跳过","noop":"无操作","cancelled":"已取消",
+    "workflow-invocation-v2":"调用级工作流报告","mixed-suite-v2":"混合套件调用报告","v1":"旧版报告",
+    "attempt-start":"尝试开始","attempt-end":"尝试结束","retry-wait":"等待重试","handler-start":"错误处理开始","handler-end":"错误处理结束","handler-skipped":"跳过错误处理","cleanup-start":"清理开始","cleanup-end":"清理结束","cleanup-skipped":"跳过清理","recovered":"已恢复",
+    "node-start":"节点开始","node-end":"节点结束","node-failure":"节点失败","node-skipped":"跳过节点","leaf-wait":"请求等待中","leaf-start":"请求开始","branch-start":"分支开始","branch-end":"分支结束","branch-winner":"获胜分支","session-cleanup-failed":"会话清理失败","loop-iteration":"循环轮次",
+    "failure":"执行失败","user-abort":"用户取消","root-timeout":"运行期限已到","ancestor-cancel":"上级已取消","or-superseded":"其他分支已获胜","node-timeout":"节点期限已到","handler-timeout":"错误处理期限已到","cleanup-timeout":"清理期限已到","invocation-timeout":"调用期限已到","limit":"已达执行限制",
+    "transport":"传输失败","http":"HTTP 失败","script":"脚本失败","assertion":"断言失败","extraction":"提取失败","config":"配置失败","condition-pruned":"未选中此条件分支","upstream-failed":"上游失败","fail-fast":"遇错停止","reference-missing":"引用缺失","reference-invalid":"引用无效","unreachable":"节点不可达"
+  },
+  "onlineExecution": {
+    "expiredArchive": "报告已到期；执行身份和归档确认保留",
+    "invalidOutput": "执行报告结构无效，未打开结果。",
+    "agent": "代理", "nextRunSettings": "下一次运行（当前配置）", "recordedRun": "选中运行的记录事实", "recordedPolicy": "记录的策略版本", "failureReason": "运行失败原因", "evidenceWarnings": "证据与完整性提示", "workflowEnvironmentSource": "运行环境使用项目执行栏的选择", "runInProgress": "本项目仍有一次运行正在准备或执行，请等待其结束或取消后再运行。",
+    "location":"执行位置","local":"本机","environment":"环境","baseEnvironment":"基础环境","refresh":"状态刷新间隔","refreshNow":"刷新任务","connection":"控制连接","snapshot":"快照 / 短指纹","dispatch":"执行方式","scriptTimeout":"有效脚本时限","runtime":"实际运行兼容档位","configuration":"配置应用 / 保存版本","notCollected":"未采集","notPrepared":"尚未准备","runtimeCheckedAtStart":"启动前核对本机实际 Node / V8","scripts":"受信脚本与批准","scriptCapability":"现有同步 Core pm API：变量读写、环境读取、请求/响应和断言；不支持任意 npm 模块或异步脚本生命周期。","scriptRisk":"仅运行受信内部脚本；脚本可能接触授权请求中的认证材料并主动外发。node:vm 不是安全沙箱。","projectTrustRisk":"此代理信任整个项目，批准会覆盖未来脚本修改，且脚本可能读取授权认证材料。","approvalEntry":"前往项目脚本批准管理","askAdmin":"需要项目 OWNER / ADMIN 批准所需脚本版本。","localLifetime":"本机任务依赖桌面进程；关闭后不会交给后端或其他代理自动重跑。","agentLifetime":"代理任务独立运行；重新打开本项目可查询。控制断开不等于执行失败，重连不会重跑目标。","task":"任务","state":"任务状态","verdict":"逻辑结论","release":"执行资源","archive":"报告归档","actions":"操作","cancel":"申请取消","noTasks":"当前页没有代理任务；只查询最近 20 条，不拉取全部历史。","requestFact":"目标请求事实","incompleteReport":"完整 Core 输出不可用；请结合执行事实与原因判断，不能视为通过。","startedAt":"开始","finishedAt":"结束","raw":"原始数据（默认折叠）","logicalTotals":"逻辑执行：共 {total}，通过 {passed}，失败 {failed}","requestTotals":"真实请求事实：已开始 {started}，已完成 {completed}，HTTP 交换 {exchanges}","loading":"正在读取在线项目资产…","legacy":"此项目不是有效的 contract-files-v1 项目，现有内容保留，不能直接执行或自动覆盖。","publishEmpty":"可将有效本地项目显式发布到空的新在线项目；项目凭据值不会随定义上传。","localProject":"选择本地项目","publish":"显式发布项目定义","debug":"调试当前接口（草稿仅作用于本次快照）","pickApi":"选择本项目接口","runCase":"运行已保存用例","authInProject":"接口认证在本项目维护。项目凭据默认加密保存在服务端；勾选仅本机后，只供本次本机运行使用。","refId":"凭据引用 ID","username":"用户名","keyName":"API Key 名称","saveAuth":"保存认证定义","localOnly":"仅本机临时凭据（不会上传，代理执行不可用）",
+    "newSession":"显式新建调试会话","pluginDifference":"本机保留用户已登记的受信插件；代理只使用内置执行能力。含插件的本机任务不承诺与代理语义等价。","pluginLoaded":"本机已加载","materials":"项目材料","attachmentRef":"附件引用 ID","attachmentPath":"逻辑项目相对路径","upload":"显式上传附件","bindAttachment":"绑定本次运行路径","attachmentHint":"仅上传普通文件或公共证书；私钥和口令必须使用凭据引用。未声明的文件不会从开发机路径补取。","file":"普通文件","networkPublic":"公共证书","version":"版本","bytes":"大小（bytes）","materialState":"材料状态",
+    "panes":{"api":"接口调试","cases":"用例与脚本","environments":"环境","datasets":"数据集","suites":"测试套件","workflows":"工作流","auth":"认证","materials":"项目材料"},
+    "states":{"available":"可接单且近期连接","runtime-missing":"尚未登记运行身份","disconnected":"连接断开 / 未连接","stale":"最近连接已过期","not-accepting":"已停止接单","revoked":"代理已撤销","unknown":"尚未查询","connected":"已连接","applied":"已应用","pending":"待归档 / 待应用","restart-required":"需要重启应用","shared-debug":"共享无脚本调试","dedicated-task":"独占任务","queued":"排队中","preparing":"准备中","running":"执行中","ended":"已结束","cancel-requested":"已申请取消，等待收束确认","cancel-confirmed":"取消已确认","released":"已确认释放","retained":"尚未确认释放","none":"尚无归档","archived":"已归档","passed":"通过","failed":"失败","completed":"已完成","cancelled":"已取消","timed-out":"超时","interrupted":"中断","rejected":"已拒绝","not-started":"确定未启动","started":"已启动","uncertain":"是否执行尚不确定","debug":"接口调试","suite":"测试套件","workflow":"工作流"},
+    "reasons":{"online-session-changed":"在线会话或项目已变化，请回到当前项目重新准备。","local-material-required":"所选材料仅在本机可用。请显式保存项目材料，或自行选择本机执行。","runtime-mismatch":"实际 Node / V8 / Core 或脚本 API 与受控兼容档位不符，目标请求未开始。","agent-unavailable":"此代理暂不可用，请检查接单、最近连接和配置应用状态。","script-admission-denied":"以下脚本 / 版本未获批准，请项目管理员批准：","version_conflict":"服务端项目版本已变化。请刷新并核对修改后重新保存。","save-before-running":"请先保存套件或工作流，避免执行旧内容。","debug-session-expired":"调试会话已过期。请显式新建调试会话后运行。","debug-session-scope-mismatch":"调试会话不属于当前服务器、项目、用户或代理。请显式新建会话。","debug-session-capacity-exceeded":"调试会话容量已满，请关闭不再使用的会话。","input-capacity-exceeded":"准备材料超出输入额度，请减少材料或联系管理员。","fixed-input-mismatch":"固定快照、材料版本或准备摘要不一致，请重新准备。","policy-mismatch":"运行参数与当前有效策略不符，请调整后重新准备。","result-capacity-exceeded":"结果超出归档预算，完整输出不可用。","execution-requires-https":"在线执行要求配置有效的 HTTPS 服务地址。","local-run-unavailable-no-backend-handoff":"本机运行已不可用；没有将它转交后端，也没有自动重跑。"}
+  },
   "testing": {
     "caseData": "用例数据", "externalFile": "旧本机文件引用", "externalFileHint": "外部 JSON 单元仍须为字符串；相对路径从工作区根目录解析。旧空文件按一次无数据执行。",
     "datasets": "数据集", "suites": "测试套件", "name": "名称", "description": "说明", "save": "保存", "remove": "删除", "unsaved": "未保存", "search": "搜索当前项目", "newDataset": "新建数据集", "newSuite": "新建套件", "pickDataset": "在侧栏选择或新建数据集", "pickSuite": "在侧栏选择或新建测试套件", "discardConfirm": "测试资产有未保存的修改，是否丢弃？",
@@ -794,6 +814,7 @@
     "serverDelete": "删除档案",
     "serverRequired": "请填写服务器地址",
     "serverUrlInvalid": "服务器地址必须以 http:// 或 https:// 开头",
+    "serverAlreadyExists": "该服务器地址的连接已存在，请使用其他地址；两条连接均未更改。",
     "serverMissing": "该地址尚未保存为档案",
     "loginTab": "登录",
     "registerTab": "注册",
@@ -823,7 +844,8 @@
     "wsOpen": "打开",
     "readonlyBadge": "只读",
     "editorEmpty": "在左侧选择一个接口查看/编辑其定义",
-    "pullGuide": "在线工作区不提供调试/运行：如需调试请先在「迁移」中拉取到本地目录。",
+    "pullGuide": "有效项目（contract-files-v1）支持在本机或已授权代理上调试接口、运行套件和工作流，请先选择项目及执行位置。旧格式内容仍可浏览或迁移拉取，不能直接执行。",
+    "sessionErrors": { "online-not-signed-in":"请先登录在线服务器。", "online-workspace-not-open":"请先打开此在线工作区。", "online-session-changed":"在线会话已变化，请重新打开项目后再试。" },
     "problemsTitle": "接口定义校验失败（仅展示原文，禁止推送）",
     "baseUrl": "基础 URL",
     "path": "路径",
@@ -1012,6 +1034,7 @@
     "connectionSave": "保存",
     "connectionDelete": "删除",
     "connectionLogin": "登录",
+    "connectionAccount": "账户登录",
     "connectionBrowse": "浏览",
     "connectionEmpty": "尚未添加远程服务器",
     "loggedInAs": "已登录",

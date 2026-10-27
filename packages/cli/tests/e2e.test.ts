@@ -117,7 +117,7 @@ async function saveWorkflow(workflow: Workflow, groupId = GROUP_A, projectId = P
 function runCliProcess(args: string[], options: { cwd?: string; freezeNow?: boolean } = {}): Promise<{ code: number; output: string }> {
   const entry = join(dirname(fileURLToPath(import.meta.url)), "../dist/bin.js");
   const privateHome = mkdtempSync(join(tmpdir(), "apicc-e2e-cli-home-"));
-  const env = { ...process.env, HOME: privateHome, USERPROFILE: privateHome, APPDATA: join(privateHome, "Roaming"), LOCALAPPDATA: join(privateHome, "Local"), XDG_CONFIG_HOME: join(privateHome, "config") };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: privateHome, USERPROFILE: privateHome, APPDATA: join(privateHome, "Roaming"), LOCALAPPDATA: join(privateHome, "Local"), XDG_CONFIG_HOME: join(privateHome, "config") };
   if (options.freezeNow) {
     const preload = join(dirname(fileURLToPath(import.meta.url)), "freeze-date-now.cjs");
     env.NODE_OPTIONS = [env.NODE_OPTIONS, `--require=${preload}`].filter(Boolean).join(" ");
@@ -165,7 +165,7 @@ beforeAll(async () => {
     formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "e2e", variables: {},
     groups: [{
       id: GROUP_A, name: "demo", projects: [{
-        id: PROJECT_A, name: "svc", variables: {}, globals: {},
+        id: PROJECT_A, name: "svc", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] },
         stressPolicy: { trustedOrigins: [baseUrl], deniedOrigins: [] },
         workflows: [], models: [], components: [],
         environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl }, baseUrls: {} }],
@@ -199,7 +199,7 @@ beforeAll(async () => {
       }],
     }, {
       id: GROUP_B, name: "demo2", projects: [{
-        id: PROJECT_B, name: "svc", variables: {}, globals: {},
+        id: PROJECT_B, name: "svc", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] },
         workflows: [], models: [], components: [], stressPolicy: { trustedOrigins: [baseUrl], deniedOrigins: [] },
         environments: [{ id: "00000000-0000-4000-8000-000000000007", name: "dev", variables: { baseUrl }, baseUrls: {} }],
         collections: [{
@@ -496,9 +496,10 @@ describe("CLI 端到端", () => {
 
   it("run-workflow 消费 verdict：false 通过、第二行失败、坏条件失败、force-draft 不绕过 strict，报告三态一致", async () => {
     const { readdirSync, readFileSync, existsSync } = await import("node:fs");
-    const writeWorkflow = (id: string, name: string, status: Workflow["status"], nodes: Workflow["nodes"], edges: Workflow["edges"] = []) =>
+    type LegacyWorkflow = Extract<Workflow, { executionVersion?: 1 }>;
+    const writeWorkflow = (id: string, name: string, status: Workflow["status"], nodes: LegacyWorkflow["nodes"], edges: LegacyWorkflow["edges"] = []) =>
       saveWorkflow({ id, name, status, nodes, edges });
-    const noop = (id: string, label: string): Workflow["nodes"][number] => ({ id, kind: "noop", label });
+    const noop = (id: string, label: string): LegacyWorkflow["nodes"][number] => ({ id, kind: "noop", label });
     await writeWorkflow("00000000-0000-4000-8000-000000000025", "条件通过流", "enabled", [
       noop("start", "start"), noop("pruned", "pruned"),
     ], [{ id: "false-edge", from: "start", to: "pruned", condition: "false" }]);

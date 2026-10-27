@@ -77,8 +77,8 @@ function defaultHandler(req: CapturedRequest): Response {
 }
 
 /** 已登录装配：seed token → initialize 验活（main.ts 装配同款）→ mount → 落在 /workspaces 列表。 */
-async function mountLayout(handler: FetchHandler = defaultHandler) {
-  localStorage.clear();
+async function mountLayout(handler: FetchHandler = defaultHandler, resetStorage = true) {
+  if (resetStorage) localStorage.clear();
   localStorage.setItem(TOKEN_KEY, "tok-abc123");
   window.history.replaceState(null, "", "/"); // 重置 jsdom URL（跨用例残留会改变初始路由）
   const stub = fetchStub(handler);
@@ -98,6 +98,35 @@ async function mountLayout(handler: FetchHandler = defaultHandler) {
 }
 
 describe("LayoutView 布局壳（裁定 A）", () => {
+  it("lets a signed-in user switch the whole console language and remembers it on reopening", async () => {
+    const emptyWorkspaces = (request: CapturedRequest) => request.url === `${BASE}/workspaces` && request.method === "GET" ? json(200, []) : defaultHandler(request);
+    const first = await mountLayout(emptyWorkspaces);
+    expect(first.session.isAuthenticated).toBe(true);
+    expect(first.wrapper.find("[data-testid=menu-workspaces]").text()).toBe("Workspaces");
+    const language = first.wrapper.find("[data-testid=layout-locale]");
+    expect(language.exists(), "a signed-in user needs a visible language entry").toBe(true);
+    expect(language.findAll("option").map(option => option.text())).toEqual(["中文", "English"]);
+    await language.setValue("zh-CN");
+    await flushPromises();
+    expect(first.wrapper.find("[data-testid=menu-workspaces]").text()).toBe("工作区");
+    expect(first.wrapper.find("[data-testid=layout-logout]").text()).toBe("退出登录");
+    expect(first.wrapper.find("[data-testid=workspaces-view] h2").text()).toBe("工作区");
+    expect(first.wrapper.find("[data-testid=ws-table]").text()).toContain("暂无数据");
+    expect(localStorage.getItem("apicc.admin.locale")).toBe("zh-CN");
+    expect(document.documentElement.lang).toBe("zh-CN");
+    expect(document.title).toBe("管理控制台");
+    first.wrapper.unmount();
+    const reopened = await mountLayout(emptyWorkspaces, false);
+    expect(reopened.wrapper.find("[data-testid=menu-workspaces]").text()).toBe("工作区");
+    expect((reopened.wrapper.find("[data-testid=layout-locale]").element as HTMLSelectElement).value).toBe("zh-CN");
+    await reopened.wrapper.find("[data-testid=layout-locale]").setValue("en");
+    await flushPromises();
+    expect(reopened.wrapper.find("[data-testid=menu-workspaces]").text()).toBe("Workspaces");
+    expect(reopened.wrapper.find("[data-testid=ws-table]").text()).toContain("No data");
+    expect(localStorage.getItem("apicc.admin.locale")).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
+  });
+
   it("已登录渲染：顶栏当前用户 + 工作区菜单项；默认落在工作区列表；未选中时成员/ACL 入口隐藏（防闪烁）", async () => {
     const { wrapper, router, session } = await mountLayout();
     expect(session.isAuthenticated).toBe(true);

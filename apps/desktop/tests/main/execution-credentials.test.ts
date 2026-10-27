@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDefaultRegistry, createNetworkProfileHost, createOAuthProfileHost, createProjectSnapshot, fileStorage, NetworkProfileError, type CredentialScope, type SecretRef, type SecretStore, type StorageAdapter } from "@apicc/core";
 import * as Core from "@apicc/core";
 import { createDesktopCredentialHost } from "../../src/main/credentials.js";
+import { createOnlineLocalCredentialStore } from "../../src/main/online/projectCredentials.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "../../src/main/debug.js";
 import { createStressController } from "../../src/main/stress.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
@@ -87,6 +88,25 @@ function createMemoryStore(initialValue: string) {
     replace(value: string, version: string) { currentValue = value; currentVersion = version; },
   };
 }
+
+describe("online project credential routing", () => {
+  it("uses explicit local-only selection and does not upload the personal value", async () => {
+    const project = createMemoryStore("online-project-value"); const local = createMemoryStore("personal-local-value");
+    const scope = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const store = createOnlineLocalCredentialStore({ contractScope: scope, projectStore: project.store, localStore: local.store, localOnlyRefIds: [SECRET_REF.id] });
+    expect(await store.resolve(scope, SECRET_REF)).toBe("personal-local-value");
+    expect(project.calls).toHaveLength(0);
+  });
+  it("never fills a missing project credential from a same-name personal credential", async () => {
+    const local = createMemoryStore("personal-local-value");
+    const project = createMemoryStore("unused").store;
+    project.resolve = async () => { throw new Core.CredentialError("CREDENTIAL_MISSING", SECRET_REF.id); };
+    const scope = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const store = createOnlineLocalCredentialStore({ contractScope: scope, projectStore: project, localStore: local.store });
+    await expect(store.resolve(scope, SECRET_REF)).rejects.toMatchObject({ code: "CREDENTIAL_MISSING" });
+    expect(local.calls).toHaveLength(0);
+  });
+});
 
 async function setup() {
   const temp = await makeTempRoot("apicc-execution-credentials-");

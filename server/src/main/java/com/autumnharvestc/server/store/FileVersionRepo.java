@@ -4,6 +4,10 @@ import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
+import com.autumnharvestc.server.core.ContentPaths;
+import com.autumnharvestc.server.core.ApiException;
+import org.springframework.http.HttpStatus;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -39,8 +43,10 @@ public class FileVersionRepo {
      * 新文件首写落版本（契约：新文件 baseVersion=0 → 服务端写入 version=1），内容随行同条 INSERT。
      * (workspace_id, path) 唯一——并发首写时落败方收 DuplicateKeyException，由服务层转冲突语义。
      */
+    @Transactional
     public void insertNew(Long workspaceId, String path, String content,
                           String contentHash, Long updatedBy) {
+        requireLegacyWritable(workspaceId, path);
         jdbc.update("""
                 INSERT INTO file_versions (workspace_id, path, content, content_hash, version, updated_by, updated_at)
                 VALUES (?, ?, ?, ?, 1, ?, ?)
@@ -53,8 +59,10 @@ public class FileVersionRepo {
      * 天然同事务（规格 §5），不存在「版本已进、内容未进」的中间态。
      * 单条 SQL 带 version 条件——两个并发写者至多一个成功，其余返回 false。
      */
+    @Transactional
     public boolean bumpVersion(Long workspaceId, String path, long baseVersion,
                                String newContent, String newContentHash, Long updatedBy) {
+        requireLegacyWritable(workspaceId, path);
         return jdbc.update("""
                 UPDATE file_versions
                 SET version = version + 1, content = ?, content_hash = ?, updated_by = ?, updated_at = ?
@@ -91,6 +99,16 @@ public class FileVersionRepo {
                 workspaceId, projectId + "/%");
     }
 
+    /** Administrative deletion shares the assets publication lock; caller owns the transaction. */
+    public boolean lockProject(Long workspaceId, Long projectId) {
+        return !jdbc.queryForList("SELECT id FROM projects WHERE workspace_id = ? AND id = ? FOR UPDATE", workspaceId, projectId).isEmpty();
+    }
+
+    /** Stable lock order before workspace member/ACL/file cleanup. Caller owns the transaction. */
+    public void lockWorkspaceProjects(Long workspaceId) {
+        jdbc.queryForList("SELECT id FROM projects WHERE workspace_id = ? ORDER BY id FOR UPDATE", workspaceId);
+    }
+
     /**
      * 树清单：工作区全部版本行，按路径字典序稳定输出（GET tree 的数据源）。
      * 不拉 content 正文（tree 面不需要）；size 口径取 OCTET_LENGTH(content) 的 UTF-8 字节长。
@@ -115,17 +133,61 @@ public class FileVersionRepo {
         return sum == null ? 0L : sum;
     }
 
+    /** Full project bytes; caller holds the project publication lock. */
+    public List<FileVersionRecord> listByProject(Long workspaceId, Long projectId) {
+        return jdbc.query("""
+                SELECT workspace_id, path, content_hash, version, updated_by, updated_at,
+                       content, OCTET_LENGTH(content) AS content_size
+                FROM file_versions WHERE workspace_id = ? AND path LIKE ? ORDER BY path
+                """, FULL_MAPPER, workspaceId, projectId + "/%");
+    }
+
+    /** Atomic assets service only, under the project row lock. */
+    public void applyProjectAssetFile(Long workspaceId, String path, String content, String hash, Long userId) {
+        var current = find(workspaceId, path);
+        if (current.isEmpty()) {
+            jdbc.update("""
+                    INSERT INTO file_versions (workspace_id, path, content, content_hash, version, updated_by, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?, ?)
+                    """, workspaceId, path, content, hash, userId, OffsetDateTime.now(ZoneOffset.UTC));
+        } else if (!current.get().contentHash().equals(hash)) {
+            jdbc.update("""
+                    UPDATE file_versions SET content = ?, content_hash = ?, version = version + 1,
+                    updated_by = ?, updated_at = ? WHERE workspace_id = ? AND path = ?
+                    """, content, hash, userId, OffsetDateTime.now(ZoneOffset.UTC), workspaceId, path);
+        }
+    }
+
+    public void deleteProjectAssetFile(Long workspaceId, String path) {
+        jdbc.update("DELETE FROM file_versions WHERE workspace_id = ? AND path = ?", workspaceId, path);
+    }
+
     /**
      * 条件删除（DELETE 端点并发语义核心）：仅当行仍处于 expectedVersion 时删——
      * 与 bumpVersion 的条件 UPDATE 同构，同版本并发双 DELETE / DELETE×PUT 交错至多一方得手。
      * 返回 false = 有并发写者/删者抢先，服务层 re-read 转 409（有行）或 404（行已删）。
      * 行内 content 随行同删——版本与内容的生灭同表同语句，无独立撤销面。
      */
+    @Transactional
     public boolean deleteIfVersion(Long workspaceId, String path, long expectedVersion) {
+        requireLegacyWritable(workspaceId, path);
         return jdbc.update("""
                 DELETE FROM file_versions
                 WHERE workspace_id = ? AND path = ? AND version = ?
                 """, workspaceId, path, expectedVersion) > 0;
+    }
+
+    /** The lock and mutation share this repository transaction, including each legacy batch item.
+     * First publication holds the same row lock: a racing old writer either finishes first
+     * (publication then rejects nonempty legacy content), or sees the marker and cannot write. */
+    private void requireLegacyWritable(Long workspaceId, String path) {
+        var projectId = ContentPaths.parseProject(path).flatMap(ContentPaths::parseProjectId);
+        if (projectId.isEmpty()) return;
+        var markers = jdbc.queryForList("SELECT asset_format FROM projects WHERE workspace_id = ? AND id = ? FOR UPDATE", workspaceId, projectId.get());
+        if (markers.isEmpty()) throw new ApiException(HttpStatus.NOT_FOUND, "project_not_found", "项目已删除，不能写入文件");
+        if (markers.getFirst().get("asset_format") != null)
+            // Existing batch mapper handles forbidden per item, preserving partial success.
+            throw new ApiException(HttpStatus.FORBIDDEN, "forbidden", "contract-files-v1 项目请使用项目原子资产接口");
     }
 
     /** 读面行映射：content 正文与字节长都取。 */

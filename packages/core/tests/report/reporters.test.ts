@@ -122,7 +122,9 @@ describe("C1 final evidence boundary", () => {
       expect(contents).not.toContain("late-sensitive"); expect(contents).not.toContain("known-private");
       expect(contents).not.toContain("object-key-secret"); expect(contents).not.toContain("nested-key-secret"); expect(contents).not.toContain("array-key-secret");
     }
-    const omitted = projectExecutionEvidence({ execution: first, identity: { projectId: "p", definitionRevision: "rev", entryId: "one" } }, createCredentialOutputSanitizer(["late-sensitive"]), createEvidenceBudget({ reportBytes: 0 }));
+    const exhaustedBudget = createEvidenceBudget();
+    exhaustedBudget.remaining = 0;
+    const omitted = projectExecutionEvidence({ execution: first, identity: { projectId: "p", definitionRevision: "rev", entryId: "one" } }, createCredentialOutputSanitizer(["late-sensitive"]), exhaustedBudget);
     expect(omitted.identity.entryId).toBe("one");
     expect(omitted.state).toBe("omitted");
     const small = projectExecutionEvidence({ execution: first, identity: { projectId: "p", definitionRevision: "rev" } }, createCredentialOutputSanitizer(["late-sensitive"]), createEvidenceBudget({ caseBytes: 1024, reportBytes: 1024 }));

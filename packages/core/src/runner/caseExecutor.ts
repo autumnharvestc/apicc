@@ -26,6 +26,7 @@ import type { StressRequestGate } from "../stress/execution.js";
 import { createHttpClient } from "../http/client.js";
 import { createSoapClient } from "../protocol/soap.js";
 import { wsClient } from "../protocol/websocket.js";
+import { mergeTemplateFields } from "./templateFields.js";
 
 export type CaseFailureKind = "transport" | "http" | "script" | "assertion" | "extraction" | "config" | "aborted";
 
@@ -83,7 +84,7 @@ export interface CaseExecutionDeps {
   resolveSdkProtocol?(request: ExecutableRequest): ProtocolClient | undefined;
   resolveAuth(type: string): AuthProvider | undefined;
   resolveAssert(op: string): AssertOperator | undefined;
-  scriptEngine: ScriptEngine;
+  scriptEngine?: ScriptEngine;
   timeouts?: Pick<HttpExecuteOptions, "connectTimeoutMs" | "totalTimeoutMs" | "signal">;
   requestSettings?: RequestSettingsOverride;
   /** Host-supplied workspace root for capturing explicit local request files. */
@@ -305,6 +306,8 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   // The diagnostic request is always available, even when variable resolution fails.
   // Every nested request object is owned by this invocation; scripts/plugins may mutate it.
   let request = emptyRequest();
+  let materialized: ExecutableRequest | undefined;
+  let refreshRequest: (() => void) | undefined;
 
   const pmAsserts: Array<{ pass: boolean; message: string }> = [];
   const pm: PmApi = {
@@ -313,6 +316,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       set: (name, value) => {
         persisted.set(name, value); persistedSnapshot[name] = value; resolver.setRuntime(name, value);
         scriptWrites.set(name, value); extractionState.bindings.delete(name);
+        refreshRequest?.();
       },
     },
     environment: { get: (name) => envVars[name] },
@@ -333,7 +337,10 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
   const runScript = (code: string): void => {
     stage = "script";
     const before = now();
-    try { deps.scriptEngine.run(code, ctx); }
+    try {
+      if (!deps.scriptEngine) throw new Error("缺少 javascript 脚本引擎插件");
+      deps.scriptEngine.run(code, ctx);
+    }
     finally { scriptTimeMs += now() - before; }
   };
   const emit = async <K extends keyof RunEventMap>(type: K, payload: RunEventMap[K]) => {
@@ -342,6 +349,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
 
   try {
     restoreVariables();
+    if (!deps.scriptEngine && [...testCase.preOperations, ...testCase.postOperations].some(operation => operation.type === "script")) throw invalidRequest("缺少 javascript 脚本引擎插件");
     if (prepared.testCase !== testCase || prepared.assertions.context !== input.assetContext || prepared.assertions.owner?.contractId !== contractId) throw invalidRequest("Prepared case does not belong to the selected snapshot and owner");
     if (prepared.assertions.diagnostics.length) throw invalidRequest("声明式断言配置无效");
     if (prepared.extractionError) throw invalidRequest("声明式提取配置无效");
@@ -362,12 +370,19 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       ...(signal === undefined ? {} : { signal }),
       ...(effectiveRequest.protocol === "http" ? resolvedSettings : {}),
     };
-    request = mutableRequest(materializeRequest(contract, input.assetContext, {
+    const materialize = () => mutableRequest(materializeRequest(contract, input.assetContext, {
       resolve: (template) => resolver.resolve(template),
       envBaseUrl: input.envBaseUrl,
       globals,
       credentials: input.credentialBindings,
     }, effectiveRequest));
+    request = materialize(); materialized = structuredClone(request);
+    // Rebind untouched fields on pre-script variable writes; direct edits retain precedence.
+    refreshRequest = () => {
+      const next = materialize();
+      mergeTemplateFields(request as unknown as Record<string, unknown>, materialized as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
+      materialized = structuredClone(next);
+    };
     if (request.protocol !== "http" && input.network?.requiresHttpAdapter) {
       throw invalidRequest("所选网络配置仅支持 HTTP 协议请求");
     }
@@ -396,6 +411,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
     }
     await emit("beforeCase", { apiName, caseName: testCase.name, apiId: contractId, caseId: testCase.id, row: input.isDataDriven ? input.rowIndex : undefined });
     for (const operation of testCase.preOperations) if (operation.type === "script") runScript(operation.content);
+    refreshRequest = undefined;
     stage = "config";
     await emit("beforeRequest", { request });
 

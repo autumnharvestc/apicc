@@ -18,7 +18,8 @@ import CaseEvidencePanel from "./CaseEvidencePanel.vue";
  */
 const props = withDefaults(defineProps<{ open: boolean; result: WorkflowRunResult | null; projectLocator?: ProjectLocator | null; embedded?: boolean }>(), { embedded: false });
 const emit = defineEmits<{ close: []; locate: [identity: EvidenceIdentity] }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
+function label(code: string | undefined) { if (!code) return '—'; const key = `executionLabels.${code}`; return te(key) ? t(key) : code; }
 
 const columns = computed(() => [
   { key: "label", title: t("wf.colNode"), dataIndex: "label" },
@@ -99,21 +100,21 @@ function formatMs(ms: number): string {
   >
     <template v-if="result">
       <div v-if="isV2 || embedded" class="wf-invocation">
-        <p data-testid="wf-logical-verdict">{{ t('wf.control.logicalVerdict') }}: <strong>{{ result.verdict ?? '—' }}</strong> · {{ t('wf.control.rawRows') }}: {{ facts?.total ?? 0 }} · {{ t('wf.control.rawFailed') }}: {{ facts?.failed ?? 0 }}</p>
-        <p>{{ t('wf.control.mode') }}: {{ result.reportingMode ?? 'v1' }} · {{ result.workflowName }}</p>
+        <p data-testid="wf-logical-verdict">{{ t('wf.control.logicalVerdict') }}: <strong>{{ label(result.verdict) }}</strong> · {{ t('wf.control.rawRows') }}: {{ facts?.total ?? 0 }} · {{ t('wf.control.rawFailed') }}: {{ facts?.failed ?? 0 }}</p>
+        <p>{{ t('wf.control.mode') }}: {{ label(result.reportingMode ?? 'v1') }} · {{ result.workflowName }}</p>
         <p class="wf-identity">{{ t('wf.control.invocation') }}: {{ result.invocationId }} · {{ summary }}</p>
         <p v-if="result.requestFacts">{{ t('wf.control.requestFacts', { started: result.requestFacts.requestStarted, completed: result.requestFacts.requestCompleted, http: result.requestFacts.httpExchanges }) }}</p>
         <p class="wf-identity">{{ t('wf.control.currentAssetHint') }}</p>
         <details v-for="node in result.nodeResults" :key="JSON.stringify([node.invocationId, node.nodeVisitId, node.nodeId])" open class="wf-call-node">
-          <summary>{{ node.label || node.nodeId }} · {{ node.state }} · {{ t('wf.control.visit') }} {{ node.nodeVisitId ?? '—' }}</summary>
+          <summary>{{ node.label || node.nodeId }} · {{ label(node.state) }} · {{ t('wf.control.visit') }} {{ node.nodeVisitId ?? '—' }}</summary>
           <p v-if="node.primaryError">{{ t('wf.control.primary') }}: {{ node.primaryError.code }} · {{ node.primaryError.message }}</p>
           <p v-if="node.recoveredError" data-testid="wf-recovered">{{ t('wf.control.recovered') }}: {{ node.recoveredError.code }} · {{ node.recoveredError.message }}</p>
           <p v-for="(error, index) in node.secondaryErrors" :key="index">{{ t('wf.control.secondary') }}: {{ error.code }} · {{ error.message }}</p>
-          <p v-for="attempt in node.attempts" :key="attempt.attempt">{{ t('wf.control.attempt', { n: attempt.attempt }) }} · {{ attempt.state }} · {{ attempt.error?.message }}</p>
-          <p v-for="branch in node.branches" :key="branch.invocationId">{{ branch.branchId }} · {{ branch.state }} · {{ t(branch.winner ? 'wf.control.winner' : 'wf.control.loser') }} · {{ branch.cause }} <span v-if="branch.cleanupFailed">{{ t('wf.control.cleanupFailed') }}</span></p>
-          <p v-for="(event, index) in node.policyEvents" :key="index">{{ event.type }}<template v-if="'cause' in event"> · {{ event.cause }}</template></p>
-          <details v-for="child in node.childInvocations" :key="child.invocationId" open><summary>{{ t('wf.control.invocation') }} · {{ child.workflowName }} · {{ child.verdict }}</summary><WfResultDrawer embedded :open="true" :result="child" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
-          <details v-for="child in node.policyInvocations" :key="`${child.role}:${child.result.invocationId}`" open><summary>{{ t(`wf.control.${child.role}`) }} · {{ child.result.verdict }}</summary><WfResultDrawer embedded :open="true" :result="child.result" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
+          <p v-for="attempt in node.attempts" :key="attempt.attempt">{{ t('wf.control.attempt', { n: attempt.attempt }) }} · {{ label(attempt.state) }} · {{ attempt.error?.message }}</p>
+          <p v-for="branch in node.branches" :key="branch.invocationId">{{ branch.branchId }} · {{ label(branch.state) }} · {{ t(branch.winner ? 'wf.control.winner' : 'wf.control.loser') }} · {{ label(branch.cause) }} <span v-if="branch.cleanupFailed">{{ t('wf.control.cleanupFailed') }}</span></p>
+          <p v-for="(event, index) in node.policyEvents" :key="index">{{ label(event.type) }}<template v-if="'cause' in event"> · {{ label(event.cause) }}</template></p>
+          <details v-for="child in node.childInvocations" :key="child.invocationId" open><summary>{{ t('wf.control.invocation') }} · {{ child.workflowName }} · {{ label(child.verdict) }}</summary><WfResultDrawer embedded :open="true" :result="child" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
+          <details v-for="child in node.policyInvocations" :key="`${child.role}:${child.result.invocationId}`" open><summary>{{ t(`wf.control.${child.role}`) }} · {{ label(child.result.verdict) }}</summary><WfResultDrawer embedded :open="true" :result="child.result" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
         </details>
       </div>
       <!-- warnings 置顶（结构性告警如悬空边——不阻断运行但必须可见，core runner 折进 warnings） -->
@@ -143,7 +144,7 @@ function formatMs(ms: number): string {
         <template #expandedRowRender="{ record }"><CaseEvidencePanel :evidence="record.outcome?.evidence" /></template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'label'">
-            <span v-if="record.key.endsWith(':diagnostic')">NON-HTTP entry-diagnostic · </span>
+            <span v-if="record.key.endsWith(':diagnostic')">{{ t('executionLabels.entry-diagnostic') }} · </span>
             {{ record.outcome?.caseName || record.node.label || record.node.nodeId }}
           </template>
           <template v-else-if="column.key === 'state'">
@@ -159,15 +160,15 @@ function formatMs(ms: number): string {
           <template v-else-if="column.key === 'error'">
             <span class="wf-result-error">
               <template v-if="record.outcome">
-                <template v-if="record.outcome.skipReason">{{ record.outcome.skipReason }}</template>
-                <template v-if="record.outcome.failureKind">{{ record.outcome.failureKind }}</template>
+                <template v-if="record.outcome.skipReason">{{ label(record.outcome.skipReason) }}</template>
+                <template v-if="record.outcome.failureKind">{{ label(record.outcome.failureKind) }}</template>
                 <template v-if="record.outcome.error">{{ record.outcome.error }}</template>
                 <template v-if="!record.outcome.skipReason && !record.outcome.failureKind && !record.outcome.error">—</template>
               </template>
               <template v-else>
-                <template v-if="record.node.failureKind">{{ record.node.failureKind }}</template>
+                <template v-if="record.node.failureKind">{{ label(record.node.failureKind) }}</template>
                 <template v-if="record.node.error">{{ record.node.error }}</template>
-                <template v-if="!record.node.failureKind && !record.node.error">{{ record.node.skipReason ?? "—" }}</template>
+                <template v-if="!record.node.failureKind && !record.node.error">{{ label(record.node.skipReason) }}</template>
               </template>
             </span>
           </template>
@@ -175,7 +176,7 @@ function formatMs(ms: number): string {
       </a-table>
       <details v-if="result.trace" class="wf-trace"><summary>{{ t('wf.control.trace') }} · {{ result.trace.totalEvents }}</summary>
         <p v-if="result.trace.truncated">{{ t('wf.control.truncated', { shown: result.trace.events.length, total: result.trace.totalEvents }) }}</p>
-        <ol><li v-for="(event, index) in result.trace.events" :key="index"><button type="button" :disabled="!event.nodeId || !projectLocator" @click="locateTrace(event)">{{ event.type }}</button> · {{ event.state }} · {{ event.cause }} · {{ event.code }} · {{ event.message }}<span v-if="event.iteration !== undefined"> · {{ t('wf.control.iteration', { n: event.iteration + 1 }) }}</span><span v-if="event.attempt !== undefined"> · {{ t('wf.control.attempt', { n: event.attempt }) }}</span><small class="wf-identity">{{ event.invocationId }} · {{ event.nodeVisitId }} · {{ formatPath(event.invocationPath) }}<template v-if="event.childInvocation"> → {{ event.childInvocation.invocationId }}</template></small></li></ol>
+        <ol><li v-for="(event, index) in result.trace.events" :key="index"><button type="button" :disabled="!event.nodeId || !projectLocator" @click="locateTrace(event)">{{ label(event.type) }}</button> · {{ label(event.state) }} · {{ label(event.cause) }} · {{ event.code }} · {{ event.message }}<span v-if="event.iteration !== undefined"> · {{ t('wf.control.iteration', { n: event.iteration + 1 }) }}</span><span v-if="event.attempt !== undefined"> · {{ t('wf.control.attempt', { n: event.attempt }) }}</span><small class="wf-identity">{{ event.invocationId }} · {{ event.nodeVisitId }} · {{ formatPath(event.invocationPath) }}<template v-if="event.childInvocation"> → {{ event.childInvocation.invocationId }}</template></small></li></ol>
       </details>
     </template>
   </component>

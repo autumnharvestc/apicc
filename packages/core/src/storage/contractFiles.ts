@@ -16,6 +16,7 @@ import {
 } from "../contract/model.js";
 import {
   ContractEnvironmentSchema,
+  ContractProjectSchema,
   ContractWorkspaceSchema,
   type ContractCollection,
   type ContractFolder,
@@ -58,6 +59,45 @@ import { calculateWorkspaceRevision, recoverPendingWriteJournal, type LoadFaultI
 
 export interface WorkspaceWritePlan {
   files: Map<string, string>;
+}
+
+export interface ContractProjectLoadState {
+  project?: ContractProject;
+  problems: LoadProblem[];
+  readOnly: boolean;
+}
+
+/** Project-relative contract-files-v1, without any server entity prefix. */
+export function encodeContractProjectFiles(project: ContractProject): WorkspaceWritePlan {
+  const parsed = ContractProjectSchema.parse(project);
+  const groupId = "00000000-0000-4000-8000-000000000000";
+  const encoded = new Map<string, string>();
+  encodeProject(encoded, groupId, parsed);
+  const prefix = `${projectDirectoryPath(groupId, parsed.id)}/`;
+  return { files: new Map([...encoded].map(([path, content]) => [path.slice(prefix.length), content])) };
+}
+
+export async function decodeContractProjectFiles(files: ReadonlyMap<string, string | Uint8Array>): Promise<ContractProjectLoadState> {
+  // All readers receive this byte snapshot: none of the filesystem branches are used.
+  const bytes = new Map<string, Buffer>();
+  for (const [path, content] of files) {
+    if (validateRelativeFilePath(path) !== path) throw new TypeError("Project file path is not canonical");
+    bytes.set(path, typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content));
+  }
+  const metadata = await parseFile(".", "project.yaml", ProjectFileSchema, false, bytes);
+  if (!metadata.value) return { problems: [metadata.problem!], readOnly: true };
+  const groupId = "00000000-0000-4000-8000-000000000000";
+  const prefix = `${projectDirectoryPath(groupId, metadata.value.id)}/`;
+  const snapshot = new Map([...bytes].map(([path, content]) => [`${prefix}${path}`, content]));
+  const problems: LoadProblem[] = [];
+  const projects = await loadProjects(".", groupId, [metadata.value.id], problems, snapshot);
+  let project: ContractProject | undefined;
+  const parsed = ContractProjectSchema.safeParse(projects[0]);
+  if (parsed.success) {
+    project = parsed.data;
+    appendSemanticDiagnostics({ formatVersion: 1, id: groupId, name: "", variables: {}, groups: [{ id: groupId, name: "", projects: [project] }] }, problems);
+  } else problems.push({ file: `${prefix}project.yaml`, message: "Project metadata and assets could not be assembled." });
+  return { project, problems: problems.map(problem => ({ ...problem, file: problem.file.startsWith(prefix) ? problem.file.slice(prefix.length) : problem.file })), readOnly: problems.length > 0 };
 }
 
 export interface WorkspaceLoadState<T> {

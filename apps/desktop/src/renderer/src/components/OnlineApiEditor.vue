@@ -17,7 +17,7 @@ const ATypographyText = ATypography.Text;
  * - VIEWER 只读态（工作区或项目 ACL VIEWER/NONE）：输入禁用 + 无保存钮 + 只读徽标。
  * - 坏数据（schema 校验失败）：problems 展示原文，不崩、无表单、不可推送。
  * - 只读配置叶（file）：原文浏览（工作流/环境/项目/集合配置等）。
- * - 调试/运行边界：在线工作区不提供调试/运行入口（空态给「先拉取到本地」引导文案）。
+ * - 有效在线项目经项目执行栏选择本机/代理；旧格式内容保留浏览与迁移入口。
  * store 经 props 注入（组合根一次装配；组件内零工厂调用）。
  */
 const props = defineProps<{
@@ -138,7 +138,7 @@ function authDescription(request_: ApiRequest | null): string {
       <a-typography-text strong data-testid="online-file-name">{{ online.editorPath }}</a-typography-text>
       <a-tag data-testid="online-readonly-badge">{{ t("online.readonlyBadge") }}</a-tag>
     </div>
-    <pre class="raw" data-testid="online-raw">{{ online.editorRaw }}</pre>
+    <details><summary>{{ t('onlineExecution.raw') }}</summary><pre class="raw" data-testid="online-raw">{{ online.editorRaw }}</pre></details>
   </section>
 
   <!-- api.yaml：坏数据 → problems + 原文；好数据 → 表单（只读态禁用） -->
@@ -151,7 +151,7 @@ function authDescription(request_: ApiRequest | null): string {
           </ul>
         </template>
       </a-alert>
-      <pre class="raw" data-testid="online-raw">{{ online.editorRaw }}</pre>
+      <details><summary>{{ t('onlineExecution.raw') }}</summary><pre class="raw" data-testid="online-raw">{{ online.editorRaw }}</pre></details>
     </template>
 
     <template v-else-if="api && request">

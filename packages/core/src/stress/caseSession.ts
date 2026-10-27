@@ -106,7 +106,10 @@ function runContainerOperations(
   for (const container of ordered) {
     const operations: readonly DeepReadonly<Operation>[] = phase === "pre" ? container.preOperations : container.postOperations;
     for (const operation of operations) {
-      if (operation.type === "script") runHook(() => deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot, extractionState)));
+      if (operation.type === "script") runHook(() => {
+        if (!deps.scriptEngine) throw new Error("缺少 javascript 脚本引擎插件");
+        deps.scriptEngine.run(operation.content, operationContext(resolver, envVars, persisted, persistedSnapshot, extractionState));
+      });
     }
   }
   if (hasError) throw firstError;

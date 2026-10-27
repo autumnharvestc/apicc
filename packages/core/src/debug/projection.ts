@@ -4,6 +4,7 @@ import type { ExecutableRequest, ExecutionResponse, HttpCapturedFileMetadata, Ht
 import type { ApiRequest } from "../contract/model.js";
 import type { RunResult, CaseOutcome } from "../report/types.js";
 import type { CaseExecutionResult } from "../runner/caseExecutor.js";
+import type { EvidenceLimits } from "../report/evidence.js";
 import type {
   DebugCaseIdentity, DebugExchange, DebugExecutionIdentity, DebugFieldState, DebugInvocation,
   DebugRequest, DebugRequestBody, DebugResponse, DebugResponseBody, DebugResult, DebugRunSummary, DebugSourceCategory,
@@ -19,7 +20,7 @@ const MAX_OBSERVED_MARKER_COUNT = 512;
 const MAX_OBSERVED_MARKER_BYTES = 512 * 1024;
 const MAX_OBSERVED_MARKER_LENGTH = 16 * 1024;
 
-interface SummaryBudget { remaining: number }
+interface SummaryBudget { remaining: number; bodyBytes?: number }
 
 interface ExchangeDraft {
   value: DebugExchange;
@@ -39,14 +40,14 @@ export interface DebugExchangeCollector {
   projectionReliable(): boolean;
 }
 
-export function createDebugExchangeCollector(markers: readonly string[]): DebugExchangeCollector {
+export function createDebugExchangeCollector(markers: readonly string[], limits?: EvidenceLimits): DebugExchangeCollector {
   const markerValues = new Set(markers.filter(Boolean));
   const observedMarkerValues = new Set<string>();
   const markerGenerations = new Map<string, number>();
   let markerGeneration = 0;
   let observedMarkerBytes = 0;
   let reliable = true;
-  const budget: SummaryBudget = { remaining: MAX_CALL_BODY_SUMMARY_BYTES };
+  const budget: SummaryBudget = { remaining: Math.min(MAX_CALL_BODY_SUMMARY_BYTES, limits?.reportBytes ?? MAX_CALL_BODY_SUMMARY_BYTES), bodyBytes: limits?.bodyBytes };
   const drafts: ExchangeDraft[] = [];
   const byKey = new Map<string, ExchangeDraft>();
   const observedKeys = new Set<string>();
@@ -318,7 +319,7 @@ export function createDebugExchangeCollector(markers: readonly string[]): DebugE
       case "raw":
         return summarizeRequestTextBody(body.content, textSanitizer, summaryBudget);
       case "form": {
-        const bodyBudget: SummaryBudget = { remaining: MAX_BODY_SUMMARY_BYTES };
+        const bodyBudget: SummaryBudget = { remaining: summaryBudget.bodyBytes ?? MAX_BODY_SUMMARY_BYTES };
         return {
           kind: "form",
           fields: body.form.map((field) => {
@@ -331,10 +332,10 @@ export function createDebugExchangeCollector(markers: readonly string[]): DebugE
       case "binary":
         return {
           kind: "binary", contentType: textSanitizer.redactText(body.contentType), source: "local-file",
-          ...projectCapturedFile(capturedFiles?.find((file) => file.entryIndex === 0), textSanitizer, summaryBudget, { remaining: MAX_BODY_SUMMARY_BYTES }),
+          ...projectCapturedFile(capturedFiles?.find((file) => file.entryIndex === 0), textSanitizer, summaryBudget, { remaining: summaryBudget.bodyBytes ?? MAX_BODY_SUMMARY_BYTES }),
         };
       case "multipart": {
-        const bodyBudget: SummaryBudget = { remaining: MAX_BODY_SUMMARY_BYTES };
+        const bodyBudget: SummaryBudget = { remaining: summaryBudget.bodyBytes ?? MAX_BODY_SUMMARY_BYTES };
         return {
           kind: "multipart",
           entries: body.entries.map((entry, entryIndex) => entry.kind === "text"
@@ -399,7 +400,7 @@ export function createDebugExchangeCollector(markers: readonly string[]): DebugE
     if (knownBytes.some((marker) => marker.length > 0 && byteView.indexOf(marker) !== -1)) {
       return { kind: "binary", contentBytes, truncated: bytes.byteLength > 0, omittedReason: "credential-match" };
     }
-    const budgetBytes = Math.max(0, Math.min(MAX_BODY_SUMMARY_BYTES, summaryBudget.remaining));
+    const budgetBytes = Math.max(0, Math.min(summaryBudget.bodyBytes ?? MAX_BODY_SUMMARY_BYTES, summaryBudget.remaining));
     const previewBytes = Math.min(bytes.byteLength, MAX_BINARY_PREVIEW_BYTES, Math.floor(budgetBytes / 2));
     if (previewBytes <= 0) return { kind: "binary", contentBytes, truncated: bytes.byteLength > 0, omittedReason: "budget" };
     const previewHex = byteView.subarray(0, previewBytes).toString("hex");
@@ -414,6 +415,7 @@ export function createDebugExchangeCollector(markers: readonly string[]): DebugE
 }
 
 export function projectDebugResult(input: {
+  limits?: EvidenceLimits;
   plan: {
     invocation: DebugInvocation;
     source: DebugResultSource;
@@ -443,7 +445,7 @@ export function projectDebugResult(input: {
   const replay = projectReplay(plan, sanitizer, projectionReliable);
   const warnings = (run.warnings ?? []).map((warning) => projectionReliable ? sanitizer.redactText(warning) : "[REDACTED]");
   if ((replay.mode === "request" || replay.mode === "free") && !replay.available) warnings.push("The request replay descriptor is unavailable because credential projection would change its structure.");
-  const finalBodyBudget: SummaryBudget = { remaining: MAX_CALL_BODY_SUMMARY_BYTES };
+  const finalBodyBudget: SummaryBudget = { remaining: Math.min(MAX_CALL_BODY_SUMMARY_BYTES, input.limits?.reportBytes ?? MAX_CALL_BODY_SUMMARY_BYTES), bodyBytes: input.limits?.bodyBytes };
   const exchanges = collector.exchanges().map((exchange) => projectFinalExchange(
     exchange,
     sanitizer,
@@ -463,7 +465,7 @@ export function projectDebugResult(input: {
   const errorName = input.errorName === undefined
     ? undefined
     : projectionReliable ? sanitizer.redactText(input.errorName) : "[REDACTED]";
-  return {
+  const result: DebugResult = {
     runId,
     source: safeSource ?? { sourceKind: "unavailable" },
     sourceProjectRevision: plan.sourceProjectRevision,
@@ -485,6 +487,71 @@ export function projectDebugResult(input: {
     ...(errorText === undefined ? {} : { error: errorText }),
     ...(errorName === undefined ? {} : { errorName }),
   };
+  return input.limits ? boundDebugResult(result, input.limits) : result;
+}
+
+/** Configured preview limits also cover the debugger's display/replay aliases. */
+function boundDebugResult(result: DebugResult, limits: EvidenceLimits): DebugResult {
+  const valueBytes = limits.valueBytes ?? 4096; const reportBytes = limits.reportBytes ?? 16 * 1024 * 1024;
+  let remaining = reportBytes;
+  const text = (value: string): string => {
+    let safe = ""; let bytes = 0; const allowance = Math.min(valueBytes, Math.max(0, remaining - 128));
+    for (const char of value) { const size = Buffer.byteLength(JSON.stringify(char)) - 2; if (bytes + size > allowance) break; safe += char; bytes += size; }
+    remaining = Math.max(0, remaining - bytes - 128); return safe;
+  };
+  const pairs = (values: Array<[string, string]>) => values.map(([name, value]) => [text(name), text(value)] as [string, string]);
+  result.run.collectionName = text(result.run.collectionName);
+  if (result.run.envName !== undefined) result.run.envName = text(result.run.envName);
+  result.run.warnings = result.run.warnings?.map(text); result.warnings = result.warnings.map(text);
+  if (result.error !== undefined) result.error = text(result.error);
+  for (const outcome of result.outcomes) {
+    outcome.apiName = text(outcome.apiName); outcome.caseName = text(outcome.caseName);
+    if (outcome.error !== undefined) outcome.error = text(outcome.error);
+    outcome.assertions = outcome.assertions.map(assertion => ({ ...assertion, message: text(assertion.message) }));
+    if (Buffer.byteLength(JSON.stringify(outcome)) > (limits.caseBytes ?? 256 * 1024)) {
+      if (outcome.evidence) outcome.evidence = { identity: outcome.evidence.identity, state: "omitted", truncated: true, bodyUnavailable: true, scriptDiagnostics: "not-collected" };
+      outcome.assertions = [];
+    }
+    if (outcome.evidence && Buffer.byteLength(JSON.stringify(outcome.evidence)) > (limits.caseBytes ?? 256 * 1024)) throw new Error("Debug case evidence identity framing exceeds capacity");
+    if (Buffer.byteLength(JSON.stringify(outcome)) > (limits.caseBytes ?? 256 * 1024)) throw new Error("Debug case identity framing exceeds capacity");
+  }
+  for (const exchange of result.exchanges) {
+    if (exchange.request) {
+      exchange.request.url = text(exchange.request.url); exchange.request.headers = pairs(exchange.request.headers); exchange.request.cookies = pairs(exchange.request.cookies);
+      exchange.request.query = exchange.request.query.map(value => ({ ...value, key: text(value.key), value: text(value.value) }));
+    }
+    if (exchange.response) {
+      exchange.response.headers = pairs(exchange.response.headers); exchange.response.rawHeaders = exchange.response.rawHeaders && pairs(exchange.response.rawHeaders); exchange.response.cookies = exchange.response.cookies.map(text);
+    }
+    if (exchange.intent) {
+      const parameters: Record<string, string> = {};
+      for (const [key, value] of Object.entries(exchange.intent.parameters)) {
+        const safeKey = text(key); const safeValue = text(value);
+        if (safeKey !== key) {
+          exchange.intent.fields.push({ path: "parameters", status: "truncated", needsInput: true });
+          exchange.intent.available = false;
+          continue;
+        }
+        parameters[key] = safeValue;
+        if (safeValue !== value) {
+          exchange.intent.fields.push({ path: `parameters.${key}`, status: "truncated", needsInput: true });
+          exchange.intent.available = false;
+        }
+      }
+      exchange.intent.parameters = parameters;
+    }
+  }
+  const bytes = () => Buffer.byteLength(JSON.stringify(result));
+  if (bytes() > reportBytes) {
+    result.replay = { ...result.replay, available: false, requestTemplate: undefined, parameters: {}, fields: [{ path: "request", status: "truncated", needsInput: true }, { path: "parameters", status: "truncated", needsInput: true }] };
+    if ("request" in result.replay) result.replay.request = undefined;
+    result.warnings.push(text("[omitted diagnostics: report budget]"));
+  }
+  while (result.exchanges.length && bytes() > reportBytes) result.exchanges.pop();
+  result.omittedExchangeCount = result.exchangeTotal - result.exchanges.length;
+  if (bytes() > reportBytes) for (const outcome of result.outcomes) if (outcome.evidence) outcome.evidence = { identity: outcome.evidence.identity, state: "omitted", truncated: true, bodyUnavailable: true, scriptDiagnostics: "not-collected" };
+  if (bytes() > reportBytes) throw new Error("Debug result identity framing exceeds capacity");
+  return result;
 }
 
 function observeRequestCredentials(request: ExecutableRequest, addMarker: (value: string) => void): void {
@@ -749,8 +816,8 @@ function projectFinalExchange(
 ): DebugExchange {
   const safeSource = projectIdentity(exchange.source, sanitizer, reliable);
   const intent = exchange.intent === undefined ? undefined : projectRowIntent(exchange.intent, sanitizer, reliable);
-  const requestBodyBudget: SummaryBudget = { remaining: MAX_BODY_SUMMARY_BYTES };
-  const responseBodyBudget: SummaryBudget = { remaining: MAX_BODY_SUMMARY_BYTES };
+  const requestBodyBudget: SummaryBudget = { remaining: summaryBudget.bodyBytes ?? MAX_BODY_SUMMARY_BYTES };
+  const responseBodyBudget: SummaryBudget = { remaining: summaryBudget.bodyBytes ?? MAX_BODY_SUMMARY_BYTES };
   const request = exchange.request === undefined ? undefined : {
     ...exchange.request,
     url: reliable ? sanitizer.redactText(exchange.request.url) : "[REDACTED]",
@@ -932,7 +999,7 @@ function projectFinalResponseBody(
   if (body.truncated && lateMarkers.length > 0) {
     return { kind: "metadata", ...(body.contentBytes === undefined ? {} : { contentBytes: body.contentBytes }), omittedReason: "unreliable" };
   }
-  const allowance = Math.max(0, Math.min(MAX_BODY_SUMMARY_BYTES, summaryBudget.remaining, bodyBudget.remaining));
+  const allowance = Math.max(0, Math.min(summaryBudget.bodyBytes ?? MAX_BODY_SUMMARY_BYTES, summaryBudget.remaining, bodyBudget.remaining));
   const availableHexLength = Math.min(body.previewHex.length, allowance);
   const previewLength = availableHexLength - (availableHexLength % 2);
   const previewHex = body.previewHex.slice(0, previewLength);
@@ -1051,7 +1118,7 @@ function summarizeText(
 ): { text: string; truncated: boolean } {
   const safe = sanitizer.redactText(raw);
   const safeBytes = Buffer.byteLength(safe, "utf8");
-  const allowance = Math.max(0, Math.min(MAX_BODY_SUMMARY_BYTES, budget.remaining, bodyBudget?.remaining ?? Number.POSITIVE_INFINITY));
+  const allowance = Math.max(0, Math.min(budget.bodyBytes ?? MAX_BODY_SUMMARY_BYTES, budget.remaining, bodyBudget?.remaining ?? Number.POSITIVE_INFINITY));
   if (safeBytes <= allowance) {
     budget.remaining -= safeBytes;
     if (bodyBudget) bodyBudget.remaining -= safeBytes;

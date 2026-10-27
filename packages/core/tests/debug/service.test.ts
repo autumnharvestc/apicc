@@ -16,7 +16,7 @@ import type { DebugExecutionIdentity } from "../../src/debug/model.js";
 import { abortedDebugResult, prepareDebugExecution, runDebugExecution } from "../../src/debug/service.js";
 import { createDebugExchangeCollector, projectDebugResult } from "../../src/debug/projection.js";
 import { resolveRequestSettings } from "../../src/request/settings.js";
-import { createDebugReplayInvocation } from "../../src/debug/replay.js";
+import { createDebugReplayInvocation, restoreDebugHistoryExchange } from "../../src/debug/replay.js";
 import { createContractExecutionProject, contractExecutionIds } from "../helpers/contractExecutionFixtures.js";
 import type { ExecutableRequest } from "../../src/plugin/types.js";
 
@@ -94,6 +94,14 @@ function execution(project: ContractProject) {
 }
 
 describe("Core debug service", () => {
+  it("R1 I-2 restores intact captured parameters when debug evidence budgets are configured", async () => {
+    const project = createContractExecutionProject(baseUrl); const snapshot = createProjectSnapshot(project);
+    const plan = prepareDebugExecution(snapshot, { mode: "request", locator: ids, environmentId: contractExecutionIds.environment, request: requestAt("/budget-replay"), parameters: { p: "abc" }, fields: [] });
+    const result = await runDebugExecution(plan, { snapshot: plan.snapshot, credentialBindings: { versions: {}, resolve: () => { throw new Error("No credentials"); } } }, { registry: createDefaultRegistry(), evidenceLimits: { bodyBytes: 8, valueBytes: 4096, caseBytes: 5000, reportBytes: 16000 } });
+    const restored = restoreDebugHistoryExchange({ formatVersion: 2, historyId: "10000000-0000-4000-8000-000000000099", createdAt: new Date().toISOString(), result }, 1);
+    expect(restored).toMatchObject({ mode: "request", parameters: { p: "abc" }, fields: [], request: { path: "/budget-replay" } });
+    expect(result.exchanges[0]!.intent).toMatchObject({ available: true, parameters: { p: "abc" }, fields: [] });
+  });
   it("removes template auth provenance when a cross-origin redirect observation has no auth", () => {
     const collector = createDebugExchangeCollector([]);
     const identity: DebugExecutionIdentity = {

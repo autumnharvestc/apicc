@@ -234,6 +234,43 @@ describe("登录 / 登出 / 注册（plan 任务 2 步骤 1③④）", () => {
 });
 
 describe("init / resume / setActive（裁定 A 渲染侧恢复链路）", () => {
+  it("stale authentication cannot replace the user or error of the newly active address", async () => {
+    const { api, store } = setup();
+    store.addProfile(SERVER_A, "甲");
+    store.addProfile(SERVER_B, "乙");
+    await flush();
+    let finishOld!: (value: OnlineResumeOutput) => void;
+    api.onlineResume = async ({ baseUrl }): Promise<OnlineResumeOutput> => baseUrl === SERVER_A
+      ? new Promise(resolve => { finishOld = resolve; })
+      : { outcome: "restored", user: { ...USER, username: "new-server-user" } };
+    store.setActive(SERVER_A);
+    store.setActive(SERVER_B);
+    await flush();
+    expect(store.activeBaseUrl).toBe(SERVER_B);
+    expect(store.user?.username).toBe("new-server-user");
+    finishOld({ outcome: "restored", user: { ...USER, username: "old-server-user" } });
+    await flush();
+    expect(store.activeBaseUrl).toBe(SERVER_B);
+    expect(store.user?.username).toBe("new-server-user");
+    expect(store.loggedIn).toBe(true);
+    expect(store.restoring).toBe(false);
+    expect(store.error).toBeNull();
+    api.onlineResume = async ({ baseUrl }) => ({ outcome: "restored", user: { ...USER, username: baseUrl === SERVER_B ? "new-server-user" : "old-server-user" } });
+    store.setActive(SERVER_A);
+    await flush();
+    let failOldLogin!: (error: Error) => void;
+    api.onlineLogin = async () => new Promise((_, reject) => { failOldLogin = reject; });
+    const oldLogin = store.login("old-server-user", "password8");
+    store.setActive(SERVER_B);
+    await flush();
+    expect(store.user?.username).toBe("new-server-user");
+    failOldLogin(new Error("old-server-login-failed"));
+    await oldLogin;
+    expect(store.user?.username).toBe("new-server-user");
+    expect(store.error).toBeNull();
+    expect(store.submitting).toBe(false);
+  });
+
   it("init：载入档案并对激活档案 resume；存档有效（替身已登录）→ 登录态恢复", async () => {
     const { api, storage } = setup();
     await api.onlineLogin({ baseUrl: SERVER_A, username: "alice", password: "password8" });

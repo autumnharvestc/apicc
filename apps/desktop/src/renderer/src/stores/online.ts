@@ -11,6 +11,8 @@ import type { OnlineGroup } from "../../../shared/online/contract.js";
 import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { MigrationResult, OnlineServerProfile } from "../../../shared/online/types.js";
 import type { ApiccApi } from "../../../shared/types.js";
+import { createOnlineExecutionStore } from "./onlineExecution.js";
+import { OnlineExecutionContextSchema } from "../../../shared/online/execution.js";
 
 /**
  * 服务器档案存储键（任务 2 裁定 C）：与既有偏好存储同一先例（renderer localStorage——
@@ -148,6 +150,9 @@ function activeBufferOf(state: { sessions: Record<string, OnlineSession>; active
 export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
   const api = deps.api;
   const storage = deps.storage ?? localStorage;
+  const execution = createOnlineExecutionStore(api);
+  // Renderer results belong to the authentication attempt that selected their target.
+  let authenticationGeneration = 0;
   return defineStore("online", {
     state: () => ({
       /** 服务器档案（url + 昵称，多档案并存）。 */
@@ -185,6 +190,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       migrateDialogOpen: false,
     }),
     getters: {
+      execution: () => execution,
       /** 激活档案显示名：昵称为空回退 baseUrl（顶栏/对话框统一出口）。 */
       activeName(state): string {
         const profile = state.profiles.find((p) => p.baseUrl === state.activeBaseUrl);
@@ -265,6 +271,11 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       },
     },
     actions: {
+      executionContext(projectId: string | null) {
+        const row = this.projects.find(project => project.id === projectId);
+        const parsed = OnlineExecutionContextSchema.safeParse({ serverId: this.activeBaseUrl ? `${this.activeBaseUrl.replace(/\/$/, '')}/api/v1` : '', ownerId: this.user?.id, scope: { workspaceId: this.activeWorkspaceId, groupId: row?.groupId, projectId: row?.id } });
+        return this.loggedIn && parsed.success ? parsed.data : null;
+      },
       persistProfiles(): void {
         writePersisted(storage, { active: this.activeBaseUrl, servers: this.profiles.map((p) => ({ ...p })) });
       },
@@ -293,9 +304,12 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 层面异常（不抛的契约被破坏时）记入 error，不崩。
        */
       async resume(baseUrl: string): Promise<void> {
+        const generation = ++authenticationGeneration;
         this.restoring = true;
+        this.submitting = false;
         try {
           const out = await api.onlineResume({ baseUrl });
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           if (out.outcome === "restored") {
             this.user = out.user;
             this.loggedIn = true;
@@ -304,9 +318,10 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             this.clearLoginState();
           }
         } catch (e) {
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           this.error = e instanceof Error ? e.message : String(e);
         } finally {
-          this.restoring = false;
+          if (generation === authenticationGeneration) this.restoring = false;
         }
       },
 
@@ -327,9 +342,30 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         this.persistProfiles();
         if (switched) {
           this.clearLoginState();
+          this.error = null;
           void this.resume(url);
         }
         return true;
+      },
+
+      /** Edit in place; URL equivalence is only for comparison, never a token-key migration. */
+      updateProfile(originalBaseUrl: string, baseUrl: string, name: string): "updated" | "duplicate" | "invalid" {
+        const parsed = OnlineBaseUrlSchema.safeParse(baseUrl.trim());
+        const index = this.profiles.findIndex(profile => profile.baseUrl === originalBaseUrl);
+        if (!parsed.success || index < 0) return "invalid";
+        const equivalent = (url: string) => url.trim().replace(/\/+$/, "");
+        const changed = equivalent(originalBaseUrl) !== equivalent(parsed.data);
+        if (changed && this.profiles.some((profile, other) => other !== index && equivalent(profile.baseUrl) === equivalent(parsed.data))) return "duplicate";
+        const url = changed ? parsed.data : originalBaseUrl;
+        this.profiles[index] = { baseUrl: url, name: name.trim() };
+        if (changed && this.activeBaseUrl === originalBaseUrl) {
+          this.activeBaseUrl = url;
+          this.clearLoginState();
+          this.error = null;
+          void this.resume(url);
+        }
+        this.persistProfiles();
+        return "updated";
       },
 
       /**
@@ -341,6 +377,9 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         if (index < 0) return;
         this.profiles.splice(index, 1);
         if (this.activeBaseUrl === baseUrl) {
+          authenticationGeneration++;
+          this.restoring = false;
+          this.submitting = false;
           this.activeBaseUrl = null;
           if (this.loggedIn) {
             api.onlineLogout().catch(() => undefined);
@@ -355,6 +394,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         if (!this.profiles.some((p) => p.baseUrl === baseUrl)) return;
         this.activeBaseUrl = baseUrl;
         this.clearLoginState();
+        this.error = null;
         this.persistProfiles();
         void this.resume(baseUrl);
       },
@@ -363,17 +403,21 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       async login(username: string, password: string): Promise<void> {
         const baseUrl = this.activeBaseUrl;
         if (!baseUrl || this.submitting) return;
+        const generation = ++authenticationGeneration;
         this.submitting = true;
+        this.restoring = false;
         this.error = null;
         try {
           const out = await api.onlineLogin({ baseUrl, username, password });
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           this.user = out.user;
           this.expiresAt = out.expiresAt;
           this.loggedIn = true;
         } catch (e) {
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           this.error = e instanceof Error ? e.message : String(e);
         } finally {
-          this.submitting = false;
+          if (generation === authenticationGeneration) this.submitting = false;
         }
       },
 
@@ -400,11 +444,15 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 不再逐会话 closeWorkspace，出表即弃各会话编辑缓冲）。
        */
       async logout(): Promise<void> {
+        const generation = ++authenticationGeneration;
+        this.restoring = false;
+        this.submitting = false;
         try {
           await api.onlineLogout();
         } catch (e) {
-          this.error = e instanceof Error ? e.message : String(e);
+          if (generation === authenticationGeneration) this.error = e instanceof Error ? e.message : String(e);
         }
+        if (generation !== authenticationGeneration) return;
         this.sessions = {};
         this.activeWorkspaceId = null;
         this.conflict = null;
@@ -574,6 +622,12 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             return;
           }
           slot.kind = "api";
+          if (execution.project && execution.context?.scope.workspaceId === wsId && id.startsWith(`${execution.context.scope.projectId}/`)) {
+            const apiId = id.split('/').at(-2); const matches: ApiAsset[] = [];
+            const visit = (container: { apis: ApiAsset[]; folders: Array<{ apis: ApiAsset[]; folders: unknown[] }> }) => { for (const asset of container.apis) if (asset.contract.id === apiId) matches.push(asset); for (const folder of container.folders) visit(folder as typeof container); };
+            for (const collection of execution.project.collections) visit(collection);
+            if (matches.length === 1) { slot.api = JSON.parse(JSON.stringify(matches[0])); slot.snapshot = JSON.stringify(slot.api); slot.problems = []; return; }
+          }
           try {
             const parsed = ApiAssetSchema.safeParse(parseYaml(file.content));
             if (parsed.success) {
@@ -627,6 +681,15 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           if (!parsed.success) {
             this.error = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`).join("\n");
             return;
+          }
+          if (execution.project && execution.context?.scope.workspaceId === wsId && path.startsWith(`${execution.context.scope.projectId}/`)) {
+            const draft = JSON.parse(JSON.stringify(execution.project)) as typeof execution.project;
+            let changed = false;
+            const visit = (container: { apis: ApiAsset[]; folders: Array<{ apis: ApiAsset[]; folders: unknown[] }> }) => { const index = container.apis.findIndex(asset => asset.contract.id === parsed.data.contract.id); if (index >= 0) { if (JSON.stringify(container.apis[index]) !== buffer.snapshot) throw new Error("version_conflict"); container.apis[index] = parsed.data; changed = true; } for (const folder of container.folders) visit(folder as typeof container); };
+            for (const collection of draft.collections) visit(collection);
+            if (!changed) throw new Error("online-project-scope-mismatch");
+            await execution.saveProject(draft);
+            buffer.api = parsed.data; buffer.snapshot = JSON.stringify(parsed.data); return;
           }
           const content = stringifyYaml(JSON.parse(JSON.stringify(parsed.data)) as Record<string, unknown>);
           const outcome = await api.onlineFilePut({

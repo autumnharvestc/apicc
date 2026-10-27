@@ -7,6 +7,7 @@ import type { createSession } from "./session.js";
 import type { DebugCredentialHost } from "./credentialHost.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
 import { validateWorkflowRunOptions } from "@apicc/core";
+import { importDatasetContent, exportDatasetContent } from "./datasetExchange.js";
 
 /** Host-only orchestration. The captured plan/data stay here for C1 evidence projection. */
 export function createTestingController(session: ReturnType<typeof createSession>, registrySource: () => Promise<PluginRegistry>, credentials: DebugCredentialHost,
@@ -75,16 +76,14 @@ export function createTestingController(session: ReturnType<typeof createSession
     async importDataset(raw) {
       const input = DatasetExchangeInputSchema.parse(raw);
       session.assertTestingContext(input.context);
-      return parseDatasetContent(new TextEncoder().encode(input.content), input.format);
+      return importDatasetContent(input.content, input.format);
     },
     async exportDataset(raw) {
       const input = DatasetExportInputSchema.parse(raw);
       session.assertTestingContext(input.context, input.locator);
       const dataset = session.locateProject(input.context.project)?.project.datasets?.find((item) => item.id === input.locator.datasetId);
       if (!dataset) throw new Error("Dataset not found");
-      if (input.format === "json") return JSON.stringify(dataset.rows, null, 2);
-      const cell = (value: string) => `"${value.replace(/"/g, '""')}"`;
-      return [dataset.columns.map(cell).join(","), ...dataset.rows.map((row) => dataset.columns.map((name) => cell(!(name in row) ? "" : typeof row[name] === "string" ? row[name] : JSON.stringify(row[name]))).join(","))].join("\r\n");
+      return exportDatasetContent(dataset, input.format);
     },
     async previewSuite(raw) { const prepared = await prepare(SuiteInvocationSchema.parse(raw)); return plain(prepared.preview); },
     runSuite: (input) => runSuite(input),

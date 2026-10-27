@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { OnlineExecutionResultSchema } from "../shared/online/execution.js";
 import { IpcChannel, IpcEvent } from "../shared/channels.js";
 import type { IpcChannelName } from "../shared/channels.js";
 import type { IpcInputArgsMap, IpcResultMap } from "../shared/ipc-contract.js";
@@ -14,6 +15,7 @@ function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcIn
 const stressApi = createStressPreloadApi(ipcRenderer);
 
 const api: ApiccApi = {
+  onlineExecution: async (input) => OnlineExecutionResultSchema.parse(await invoke(IpcChannel.OnlineExecution, input)),
   inspectEvidence: (input) => invoke(IpcChannel.EvidenceInspect, EvidenceInvocationSchema.parse(input)),
   rerunEvidence: (input) => invoke(IpcChannel.EvidenceRerun, EvidenceInvocationSchema.parse(input)),
   cancelEvidence: (input) => invoke(IpcChannel.EvidenceCancel, EvidenceInvocationSchema.parse(input)),

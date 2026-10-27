@@ -1476,6 +1476,9 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       seedOnlineWorkspace();
       return { expiresAt: onlineExpiresAt, user: onlineUser };
     },
+    async onlineExecution() {
+      throw new Error("online-execution-requires-connected-server");
+    },
 
     async onlineLogout(): Promise<void> {
       onlineUser = null;

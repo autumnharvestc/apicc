@@ -13,6 +13,7 @@ import com.autumnharvestc.server.store.WorkspaceRecord;
 import com.autumnharvestc.server.store.WorkspaceRepo;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -23,7 +24,7 @@ import java.util.List;
  * 清单（GET）= 成员可读。
  * 项目名允许同名（§4，身份=id，不查重）；分组归属校验在服务层——fk_projects_group 仅保证
  * 分组全局存在，「项目须挂同工作区分组」是业务规则（404 group_not_found，外键不保证，留痕）。
- * 删除级联（裁定 D 逐条自持，不包事务——失败中断留部分行可重试删除）：先内容版本行
+ * 删除级联（F7b 一致性例外：同项目锁及单事务，失败全部回滚）：先内容版本行
  * （file_versions 按 {@code <projectId>/%} 前缀删，数字 id 无 SQL 通配字符，LIKE 安全），
  * 再项目 ACL 行，最后实体行。
  * connect：取唯一工作区（空库 404 workspace_not_found）→ 成员守卫（非成员 403 forbidden）
@@ -111,11 +112,15 @@ public class ProjectService {
     }
 
     /** 删除（ADMIN+）：级联内容版本行（前缀删）→ ACL 行 → 实体行（依赖顺序）。 */
+    @Transactional
     public void delete(UserAccount caller, String workspaceId, String projectId) {
         long wsId = EntityIds.parse(workspaceId);
         guard.requireAdmin(wsId, caller);
         long pid = EntityIds.parse(projectId);
         findInWorkspace(wsId, pid);
+        if (!fileVersions.lockProject(wsId, pid)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "project_not_found", "项目已删除");
+        }
         fileVersions.deleteByProjectPrefix(wsId, pid);
         acl.deleteByProject(wsId, pid);
         projects.delete(pid);

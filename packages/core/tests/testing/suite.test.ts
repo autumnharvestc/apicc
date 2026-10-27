@@ -36,6 +36,23 @@ function registry(seen: string[], callback?: (index: number) => void) {
 }
 
 describe("B2 suite selection and orchestration", () => {
+  it("F7b runs no-script suite selection without requiring an engine", async () => {
+    const { project } = fixture();
+    const snapshot = core.createProjectSnapshot(project); const plan = core.resolveSuitePlan(snapshot, suiteId);
+    const data = await core.prepareTestData(snapshot, plan.selections, { workspaceRoot: process.cwd() });
+    const selected = core.createPluginRegistry();
+    selected.registerProtocol({ name: "plain", canHandle: () => true, execute: async () => ({ status: 200, headers: {}, bodyText: "", timeMs: 1 }) });
+    expect((await new core.SuiteRunner({ registry: selected }).run({ snapshot, credentialBindings: credentials, preparedTestData: data }, plan)).verdict).toBe("passed");
+  });
+  it("F7b propagates run request settings to suite and workflow leaves", async () => {
+    const { project } = fixture();
+    const snapshot = core.createProjectSnapshot(project); const plan = core.resolveSuitePlan(snapshot, suiteId);
+    const data = await core.prepareTestData(snapshot, plan.selections, { workspaceRoot: process.cwd() });
+    const timeouts: number[] = []; const selected = registry([]);
+    selected.registerProtocol({ name: "suite-observer", canHandle: () => true, execute: async (_request, options) => { timeouts.push(options.totalTimeoutMs); return { status: 200, headers: {}, bodyText: "", timeMs: 1 }; } });
+    await new core.SuiteRunner({ registry: selected }).run({ snapshot, credentialBindings: credentials, preparedTestData: data }, plan, { requestSettings: { totalTimeoutMs: 1234 } } as core.SuiteRunnerOptions);
+    expect(timeouts).toEqual([1234, 1234, 1234, 1234]);
+  });
   it("keeps retry OR and recover success as logical suite units with original failed rows", async () => {
     const { project, asset } = fixture(); delete project.suites![0]!.datasetId;
     project.workflows = workflowReportScenarios(asset.contract.id, asset.cases[0]!.id);

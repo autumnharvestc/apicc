@@ -137,6 +137,7 @@ async function runV3PrivateWorker(args: string[], cwd: string, roots?: { oauth: 
     const option = (name: string) => { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1]; };
     const state = await fileStorage.load(cwd), project = state.workspace.groups[0]!.projects[0]!, snapshot = createProjectSnapshot(project);
     const networkHost = await createNetworkProfileHost({ workspaceRoot: cwd, project: { workspaceId: state.workspace.id, groupId: GROUP_ID, projectId: PROJECT_ID },
+      secretStore: { async put() {}, async remove() {}, async resolve() { throw new Error("No network credentials in this fixture"); }, async version() { throw new Error("No network credentials in this fixture"); }, async status() { return "missing"; } },
       environmentId: option("--env") ? project.environments.find((env) => env.name === option("--env"))?.id : undefined, privateRoot: roots?.network ?? join(privateHome, "network") });
     const network = await networkHost.prepare();
     const preparedTestData = await prepareTestData(snapshot, [{ locator: { collectionId: COLLECTION_ID, folderIds: [], apiId: args[1]!.split("/").at(-1)!, caseId: option("--case")!, scope: "base" } }], { workspaceRoot: cwd });
@@ -184,10 +185,10 @@ async function makeWorkspace(name: string): Promise<string> {
     formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: `subproc-${name}`, variables: {},
     groups: [{
       id: GROUP_ID, name: "demo", projects: [{
-        id: PROJECT_ID, name: "svc", variables: {}, globals: {}, components: [], models: [],
+        id: PROJECT_ID, name: "svc", variables: {}, globals: { query: [], headers: [], cookies: [], body: [] }, components: [], models: [],
         stressPolicy: { trustedOrigins: [baseUrl] },
         workflows: [],
-        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl } }],
+        environments: [{ id: "00000000-0000-4000-8000-000000000006", name: "dev", variables: { baseUrl }, baseUrls: {} }],
         collections: [{
           id: COLLECTION_ID, name: "api", variables: {}, preOperations: [], postOperations: [], folders: [],
           apis: [

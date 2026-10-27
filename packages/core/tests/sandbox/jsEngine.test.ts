@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jsScriptEngine } from "../../src/sandbox/jsEngine.js";
+import { createJsScriptEngine, jsScriptEngine } from "../../src/sandbox/jsEngine.js";
 import type { PmApi, ScriptContext } from "../../src/plugin/types.js";
 
 const pm: PmApi = {
@@ -15,6 +15,14 @@ const pm: PmApi = {
 const ctx: ScriptContext = { pm };
 
 describe("jsScriptEngine", () => {
+  it("F7b isolates per-task synchronous script deadlines", () => {
+    const short = createJsScriptEngine({ timeoutMs: 5 });
+    const longer = createJsScriptEngine({ timeoutMs: 1000 });
+    const code = "const end = Date.now() + 40; while(Date.now() < end) {} pm.__completed = true";
+    expect(() => short.run(code, ctx)).toThrow(/5ms/);
+    expect(() => longer.run(code, ctx)).not.toThrow();
+    expect((ctx.pm as { __completed?: boolean }).__completed).toBe(true);
+  });
   it("把同一个 pm 对象传入沙箱（脚本的读写直接作用于该对象）", () => {
     jsScriptEngine.run("pm.variables.set('token', 'abc'); pm.__probe = true;", ctx);
     expect((ctx.pm as { __probe?: boolean }).__probe).toBe(true);

@@ -176,6 +176,14 @@ async function mountOrg(
 }
 
 describe("OrgView 清单与过滤", () => {
+  it("T9批准深链消费明确项目和代理查询，无权时显示拒绝且不切换其他项目",async()=>{
+    const handler=orgHandler();
+    const {wrapper,router}=await mountOrg(req=>req.url.includes('/projects/999/')?json(403,{code:'project_forbidden',message:'该项目不可见，请联系管理员授权'}):handler(req),{path:'/workspaces/ws-1/org?projectId=999&section=execution&agentId=123'});
+    expect(wrapper.get('[data-testid="project-agents-view"]').text()).toContain('999');
+    expect(wrapper.get('[data-testid="project-agents-view"]').text()).toContain('该项目不可见，请联系管理员授权');
+    expect(router.currentRoute.value.query.projectId).toBe('999');
+    expect(router.currentRoute.value.query.agentId).toBe('123');
+  });
   it("分组清单渲染：名称 + isDefault「默认」标记；默认组改名/删除禁用（isDefault 判据），非默认组可用", async () => {
     const { wrapper } = await mountOrg(orgHandler());
     expect(wrapper.find("[data-testid=org-view]").exists()).toBe(true);
