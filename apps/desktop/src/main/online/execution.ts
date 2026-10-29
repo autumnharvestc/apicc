@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { isDeepStrictEqual } from 'node:util';
+import { StressPlanSchema } from '@apicc/core/schema';
 import { createHash, randomUUID } from "node:crypto";
 import { createSystemSecretStore, defaultCredentialPrivateRoot, prepareTestData, testDataSelectionsForRequests, prepareNetworkRun, selectCredentialRequests, createHttpSession, createUserPluginHostFromSnapshot, type SecretStore, type NetworkTLSSettings, type PreparedNetworkRun } from "@apicc/core";
-import { ProjectAssetsSchema, ExecutionSnapshotSchema, ProjectExecutionAgentsSchema, SubmitJobSchema, PolicyConfigSchema, runtimeCompatibilityIdForRuntime, logicalNetworkPath, resolveEffectiveConfig, defaultAgentConfig } from "@apicc/execution/contract";
-import { prepareProjectFiles, invokeExecution, createOnlineProjectSecretStore, prepareRunCredentials, withRunCredentials, withDeclaredInputFiles, createExecutionRegistry } from "@apicc/execution/host";
+import { ProjectAssetsSchema, ExecutionSnapshotSchema, ProjectExecutionAgentsSchema, SubmitJobSchema, PolicyConfigSchema, StressRunConfigSchema, runtimeCompatibilityIdForRuntime, logicalNetworkPath, resolveEffectiveConfig, defaultAgentConfig } from "@apicc/execution/contract";
+import { prepareProjectFiles, invokeExecution, assertStressExecutionDeadline, createOnlineProjectSecretStore, prepareRunCredentials, withRunCredentials, withDeclaredInputFiles, createExecutionRegistry } from "@apicc/execution/host";
 import { createMemberMaterialsClient } from "@apicc/execution/client";
 import { readBuildIdentity } from "@apicc/execution/buildIdentity";
 import { OnlineExecutionInputSchema, OnlineJobSchema, OnlineLocalResultSchema, OnlineReportSchema, type OnlineExecutionInput, type OnlineLocalResult, type OnlineReport } from "../../shared/online/execution.js";
@@ -13,6 +15,7 @@ import { encodeContractProjectFiles } from "@apicc/core";
 import { createOnlineLocalCredentialStore } from "./projectCredentials.js";
 import type { PluginsRuntime } from "../plugins/runtime.js";
 import { importDatasetContent, exportDatasetContent } from "../datasetExchange.js";
+import { runDesktopStress, type DesktopStressConfiguration } from './stressProcess.js';
 
 type LocalRun = { context: string; abort: AbortController; completion: Promise<OnlineLocalResult>; result?: OnlineLocalResult; failure?: OnlineReport; started: boolean; settled: boolean };
 export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?: typeof fetch; localStore?: () => SecretStore; plugins?: PluginsRuntime }) {
@@ -132,6 +135,13 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
             throw error;
           });
           if (report.executionId !== job.executionId) throw new Error("fixed-input-mismatch");
+          if(report.processObservation&&job.task.target.kind!=='stress')throw new Error('fixed-input-mismatch');
+          if (report.output && (job.task.target.kind === 'stress') !== (report.output.kind === 'stress' || report.output.kind === 'stress-failure')) throw new Error('fixed-input-mismatch');
+          if (report.output?.kind === 'stress' && job.task.target.kind === 'stress') {
+            const environmentId = job.task.target.plan.environmentId ?? job.task.environmentId;
+            const plan = StressPlanSchema.parse({ ...job.task.target.plan, ...(environmentId ? { environmentId } : {}) });
+            if (report.output.result.projectId !== job.task.contractProjectId || report.output.result.environmentId !== (environmentId ?? null) || !isDeepStrictEqual(report.output.result.plan, plan) || !isDeepStrictEqual(report.output.result.target, plan.target)) throw new Error('fixed-input-mismatch');
+          }
           return report;
         }
         case "run": {
@@ -140,6 +150,7 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
           if (localRuns.has(input.runId)) throw new Error("run-already-started");
           const abort = new AbortController();
           let run: LocalRun | undefined; let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+          let processObservation:import('@apicc/execution/contract').StressProcessObservation|undefined;
           let deadline = input.runConfig.jobTimeoutMs === undefined ? undefined : admittedAt + input.runConfig.jobTimeoutMs;
           const checkAlive = () => { if (deadline !== undefined && performance.now() >= deadline && !abort.signal.aborted) abort.abort(new Error("job-timeout")); abort.signal.throwIfAborted(); };
           const armDeadline = () => { if (deadlineTimer) clearTimeout(deadlineTimer); if (deadline === undefined || abort.signal.aborted) return; const remaining = deadline - performance.now(); if (remaining <= 0) abort.abort(new Error("job-timeout")); else deadlineTimer = setTimeout(armDeadline, Math.min(remaining, 2147483647)); };
@@ -155,6 +166,7 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
           const agent = agentId ? view.agents.find(agent => agent.id === agentId) : undefined;
           if (input.location.kind === "agent" && (!agent || agent.availability !== "available" || !agent.runtime || agent.configuration.status !== "applied")) throw new Error("agent-unavailable");
           const policy = PolicyConfigSchema.parse(agent?.policy ?? view.policy);
+          if (input.target.kind === 'stress' && !agent && (input.runConfig.stress?.workerCount ?? 1) > policy.maxStressWorkers) throw new Error('stress-worker-policy-exceeded');
           const effective = resolveEffectiveConfig({ policy, run: input.runConfig });
           // Client preparation is bounded here; this is not the server agent task's deadline.
           deadline = admittedAt + effective.jobTimeoutMs; armDeadline(); checkAlive();
@@ -181,12 +193,19 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
             }
           }
           const debugSessionScope = localSession ? { serverId: binding.serverId, scope: input.context.scope, submittedByUserId: binding.userId, debugSessionId: localSession.id } : undefined;
-          const prepareInput = { target: input.target, environmentId: input.environmentId, requestSettings: input.runConfig.requestSettings, scriptTimeoutMs: effective.policy.scriptTimeoutMs, maxScriptTimeoutMs: policy.maxScriptTimeoutMs, debugSessionScope, evidenceLimits: { bodyBytes: policy.bodyPreviewBytes, valueBytes: policy.valuePreviewBytes, caseBytes: policy.caseEvidenceBytes, reportBytes: policy.reportBytes, workflowMetadataBytes: policy.workflowMetadataBytes } };
+          const prepareInput = { target: input.target, environmentId: input.environmentId, requestSettings: input.runConfig.requestSettings, scriptTimeoutMs: effective.policy.scriptTimeoutMs, maxScriptTimeoutMs: policy.maxScriptTimeoutMs, debugSessionScope, evidenceLimits: { bodyBytes: policy.bodyPreviewBytes, valueBytes: policy.valuePreviewBytes, caseBytes: policy.caseEvidenceBytes, reportBytes: policy.reportBytes, workflowMetadataBytes: policy.workflowMetadataBytes },
+            ...(input.target.kind === 'stress' && agent ? { stressConfig: { configuration: { ...agent.stressConfiguration, policy }, run: StressRunConfigSchema.parse(input.runConfig.stress ?? {}) } } : {}),
+            ...(input.target.kind === 'stress' && !agent ? { stressRun: StressRunConfigSchema.parse(input.runConfig.stress ?? {}), stressCompileOptions: { numericMemoryBytes: policy.stressMetricMemoryBytes, evidenceMaxSamples: policy.stressEvidenceMaxSamples } } : {}),
+          };
           let prepared = await prepareProjectFiles(snapshot.assets, { ...prepareInput, profile: "trusted-core-script" });
           checkAlive();
           const hasScripts = prepared.scriptRequirements.length > 0;
           if (!hasScripts) prepared = await prepareProjectFiles(snapshot.assets, { ...prepareInput, profile: "no-script" });
           checkAlive();
+          if (!agent && prepared.prepared.stressPlan) {
+            const schedule = prepared.prepared.stressPlan.schedule;
+            if (schedule.maxVus > policy.maxStressVus || schedule.effective.maxRequestConcurrency > policy.maxStressRequestConcurrency || schedule.effective.maxRps !== null && schedule.effective.maxRps > policy.maxStressRps) throw new Error('stress-local-budget-exceeded');
+          }
           if (agent) {
             if (identity.coreBuildId !== agent.runtime!.coreBuildId || identity.scriptApiId !== agent.runtime!.scriptApiId || prepared.prepared.requiredCapabilities.some(capability => !agent.runtime!.capabilities.includes(capability))) throw new Error("runtime-mismatch");
             const rejected = prepared.scriptRequirements.filter(script => !agent.scriptsAllowed || agent.scriptGrant.version === "0" || agent.scriptGrant.scope !== "project" && !agent.scriptGrant.scripts.some(grant => grant.scriptId === script.scriptId && grant.contentHash === script.contentHash));
@@ -214,10 +233,16 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
               const data = await prepareTestData(prepared.prepared.snapshot, prepared.prepared.suitePlan?.selections ?? testDataSelectionsForRequests(prepared.prepared.snapshot, prepared.prepared.selections, prepared.prepared.environmentId), { workspaceRoot: files.workspaceRoot });
               checkAlive();
               let network: PreparedNetworkRun | undefined;
+              let fixedNetwork: DesktopStressConfiguration['network'];
               if (input.network) {
                 const fixed = structuredClone(input.network); const mapTLS = (tls: NetworkTLSSettings | undefined) => { if (tls?.caCertificatePaths) tls.caCertificatePaths = tls.caCertificatePaths.map(path => files.pathFor(logicalNetworkPath(path))); if (tls?.clientCertificatePaths) tls.clientCertificatePaths = tls.clientCertificatePaths.map(path => files.pathFor(logicalNetworkPath(path))); };
                 for (const profile of fixed.configuration.profiles) { for (const binding of profile.targetTlsBindings) mapTLS(binding.tls); if (profile.kind === "proxy") mapTLS(profile.proxyTLS); }
                 network = await prepareNetworkRun({ scope: { canonicalRoot: files.workspaceRoot, project: contractScope, ...(prepared.prepared.environmentId ? { environmentId: prepared.prepared.environmentId } : {}) }, secretStore: store, store: { load: async () => ({ revision: fixed.revision, configuration: fixed.configuration }), save: async () => { throw new Error("fixed-network-read-only"); } }, selection: fixed.selection, signal: abort.signal });
+                if (!agent && input.target.kind === 'stress') {
+                  const values: Record<string, string> = {};
+                  for (const [refId, version] of Object.entries(network.credentialVersions)) values[refId] = await store.resolve(contractScope, { id: refId, policy: 'test-auto' }, version);
+                  fixedNetwork = { ...fixed, scope: contractScope, identity: network.identity, credentialVersions: { ...network.credentialVersions }, values };
+                }
               }
               const credentials = await prepareRunCredentials(prepared.prepared, materialBinding, store);
               try { checkAlive(); } catch (error) { credentials.dispose(); throw error; }
@@ -227,7 +252,7 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
                 try {
                   const fixedMaterials = { ...input.materials, credentials: Object.entries(versions).map(([refId, version]) => ({ refId, version })) };
                   const submission = SubmitJobSchema.parse({ intentId: input.runId, agentId: agent.id, snapshotId: snapshot.snapshotId, target: input.target, environmentId: input.environmentId, debugSessionId: input.debugSessionId, runConfig: input.runConfig, materials: fixedMaterials, network: input.network,
-                    preparation: { scope: input.context.scope, manifestHash: snapshot.assets.manifestHash, scriptPlanDigest: prepared.scriptPlanDigest, ...(hasScripts ? { scriptGrantVersion: agent.scriptGrant.version } : {}), scriptRequirements: prepared.scriptRequirements, executionProfile: hasScripts ? "trusted-core-script" : "no-script", dispatchKind: input.target.kind === "debug" && !hasScripts ? "shared-debug" : "dedicated-task", requiredCoreBuildId: identity.coreBuildId, requiredCapabilities: prepared.prepared.requiredCapabilities, runtimeCompatibilityId } });
+                    preparation: { scope: input.context.scope, manifestHash: snapshot.assets.manifestHash, scriptPlanDigest: prepared.scriptPlanDigest, ...(prepared.prepared.stressBinding ? { stressBinding: prepared.prepared.stressBinding } : {}), ...(hasScripts ? { scriptGrantVersion: agent.scriptGrant.version } : {}), scriptRequirements: prepared.scriptRequirements, executionProfile: hasScripts ? "trusted-core-script" : "no-script", dispatchKind: input.target.kind === "debug" && !hasScripts ? "shared-debug" : "dedicated-task", requiredCoreBuildId: identity.coreBuildId, requiredCapabilities: prepared.prepared.requiredCapabilities, runtimeCompatibilityId } });
                   binding.assertCurrent(); checkAlive();
                   return assertJob(await request("POST", `${path}/jobs`, submission, OnlineJobSchema));
                 } finally { credentials.dispose(); }
@@ -236,6 +261,13 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
               return withRunCredentials(credentials, async credentialBindings => {
                 const pluginSnapshot = await deps.plugins?.snapshot();
                 binding.assertCurrent(); checkAlive();
+                if (input.target.kind === 'stress') {
+                  const remainingMs = deadline! - performance.now(); assertStressExecutionDeadline(prepared.prepared, remainingMs);
+                  const values = Object.fromEntries(Object.keys(credentialBindings.versions).map(refId => [refId, credentialBindings.resolve({ id: refId, policy: 'test-auto' })]));
+                  const { stressConfig: _agentConfig, debugSessionScope: _debugScope, ...fixedPrepare } = prepareInput;
+                  if (run) run.started = true;
+                  return runDesktopStress({ protocolVersion: 1, identity: { context: input.context, runId: input.runId, snapshotId: snapshot.snapshotId, manifestHash: snapshot.assets.manifestHash, coreBuildId: identity.coreBuildId, scriptApiId: identity.scriptApiId, runtimeCompatibilityId, scriptPlanDigest: prepared.scriptPlanDigest }, assets: snapshot.assets, prepare: { ...fixedPrepare, profile: prepared.prepared.profile }, deadlineAt: Date.now() + remainingMs, cancelGraceMs: policy.cancelGraceMs, workspaceRoot: files.workspaceRoot, preparedTestData: data, credentials: { scope: contractScope, versions: { ...credentialBindings.versions }, values }, ...(fixedNetwork ? { network: fixedNetwork } : {}), ...(pluginSnapshot ? { pluginSnapshot } : {}) }, abort.signal,value=>{processObservation=value;});
+                }
                 if (run) run.started = true;
                 return invokeExecution(prepared.prepared, { credentialBindings, preparedTestData: data, network, workspaceRoot: files.workspaceRoot, ...(debugSessionScope && localSession ? { debugSession: { scope: debugSessionScope, session: localSession.record.session } } : {}) }, { signal: abort.signal,
                   ...(pluginSnapshot ? { registryFactory: async (options: Parameters<typeof createExecutionRegistry>[0]) => {
@@ -248,12 +280,13 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
             });
             binding.assertCurrent(); checkAlive();
             if (agent) return result as z.infer<typeof OnlineJobSchema>;
-            return OnlineLocalResultSchema.parse({ location: { kind: "local" }, runId: input.runId, snapshotId: snapshot.snapshotId, manifestHash: snapshot.assets.manifestHash, runtimeCompatibilityId, scriptTimeoutMs: effective.policy.scriptTimeoutMs, ...(localSession ? { debugSessionId: localSession.id } : {}), output: JSON.parse(JSON.stringify(result)) });
+            const workerCount = prepared.prepared.stressRunConfig?.workerCount;
+            return OnlineLocalResultSchema.parse({ location: { kind: "local" }, runId: input.runId, snapshotId: snapshot.snapshotId, manifestHash: snapshot.assets.manifestHash, runtimeCompatibilityId, scriptTimeoutMs: effective.policy.scriptTimeoutMs, ...(localSession ? { debugSessionId: localSession.id } : {}), ...(workerCount ? { localStress: { workerCount, processBudget: workerCount === 1 ? 1 : workerCount + 1, runtime: { coreBuildId: identity.coreBuildId, scriptApiId: identity.scriptApiId, nodeVersion: process.versions.node, v8Version: process.versions.v8, runtimeCompatibilityId },...(processObservation?{processObservation}:{}) } } : {}), output: JSON.parse(JSON.stringify(result)) });
           }).then(result => { if (run) run.result = OnlineLocalResultSchema.parse(result); return result; }, error => {
             if (run) {
               const rawCode = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : error instanceof Error ? error.message.split(":", 1)[0]! : "";
               const reasonCode = /^[a-z][a-z0-9_-]{0,95}$/.test(rawCode) ? rawCode : run.started ? "local-execution-failed" : "local-preparation-failed";
-              run.failure = OnlineReportSchema.parse({ executionId: input.runId, verdict: abort.signal.reason instanceof Error && abort.signal.reason.message === "local-run-cancelled" ? "cancelled" : reasonCode === "job-timeout" ? "timed-out" : "failed", executionFact: run.started ? "uncertain" : "not-started", reasonCode });
+              run.failure = OnlineReportSchema.parse({ executionId: input.runId, verdict: abort.signal.reason instanceof Error && abort.signal.reason.message === "local-run-cancelled" ? "cancelled" : reasonCode === "job-timeout" ? "timed-out" : "failed", executionFact: run.started ? "uncertain" : "not-started", reasonCode,...(processObservation?{processObservation}:{}) });
             }
             throw error;
           }).finally(() => { if (localSession && --localSession.record.refs === 0) localSession.record.idleSince = performance.now(); if (deadlineTimer) clearTimeout(deadlineTimer); if (run) { run.settled = true; trimHistory(); } });

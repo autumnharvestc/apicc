@@ -10,6 +10,8 @@ import type { ExecutableRequest, ProtocolClient } from "../plugin/types.js";
 import { assertStressTargetAllowed, isLoopbackStressOrigin, normalizeStressPolicy, StressSafetyError } from "./safety.js";
 import { createStressCaseVuSession } from "./caseSession.js";
 import { validateWorkflowRunOptions } from "../workflow/plan.js";
+import { assertScriptRequirements, collectionScriptRequirements, workflowScriptRequirements } from "../runner/scriptRequirements.js";
+import { RequestSettingsOverrideSchema, type RequestSettingsOverride } from "../request/settings.js";
 
 /** A parent run or VU owns these; a borrowing target/lifecycle never closes them. */
 export interface StressSessionResources { readonly httpSession: HttpSession; readonly client: ManagedProtocolClient }
@@ -30,6 +32,7 @@ export interface StressWorkflowSessionDeps {
   registry: PluginRegistry;
   evidence: ReturnType<typeof createExecutionEvidenceCollector>;
   workspaceRoot?: string;
+  requestSettings?: RequestSettingsOverride;
   resources?: StressSessionResources;
   createManagedClient?: (vuId: string) => ManagedProtocolClient | Promise<ManagedProtocolClient>;
 }
@@ -57,6 +60,7 @@ async function executeObservedWorkflow(target: PreparedWorkflowExecution, deps: 
   try {
     const root = target.plan.workflows.find((flow) => flow.id === target.plan.rootWorkflowId)!;
     const result = await runner.runPrepared(target, { environmentId: target.plan.environmentId, ...(root.executionVersion === 2 ? { inputs } : {}), signal,
+      requestSettings: deps.requestSettings,
       httpSession: resources.httpSession,
       resolveSdkProtocol: (request) => withOwner(deps.registry.getSdkProtocol(request)),
       resolveProtocol: (request) => withOwner(deps.registry.getProtocol(request)) ?? (resources.client.canHandle(request) ? resources.client : undefined),
@@ -110,6 +114,7 @@ export function createStressWorkflowSession(target: PreparedWorkflowExecution, d
 
 export interface PreparedStressHostDeps extends Omit<StressWorkflowSessionDeps, "resources"> {}
 export interface PreparedStressHostOptions {
+  requestSettings?: RequestSettingsOverride;
   confirmedTargetOrigins?: string[];
   authorizeRequest?: (request: ExecutableRequest) => void | Promise<void>;
 }
@@ -118,6 +123,14 @@ export interface PreparedStressHostOptions {
 export function createPreparedStressHost(prepared: PreparedStressExecution, deps: PreparedStressHostDeps, options: PreparedStressHostOptions = {}): Pick<StressExecutionDeps, "createVu" | "runLifecycle" | "closeRun"> {
   assertPreparedStressExecution(prepared);
   const { compiled, run } = prepared;
+  deps.evidence.configureStressBudget(compiled.metricPlan.evidence);
+  const requestSettings = RequestSettingsOverrideSchema.parse(options.requestSettings ?? deps.requestSettings ?? {});
+  deps = { ...deps, requestSettings };
+  for (const target of compiled.targets) {
+    const requirements = target.workflowId ? workflowScriptRequirements(run.snapshot, target.workflowId, compiled.plan.environmentId)
+      : target.requests.flatMap(selection => collectionScriptRequirements(run.snapshot, selection.collectionId, { environmentId: compiled.plan.environmentId, caseSelection: selection }));
+    assertScriptRequirements(deps.registry, requirements);
+  }
   const handles = new Map(compiled.workflowPlans.map((plan) => [plan.rootWorkflowId,
     prepareWorkflowExecution(run, plan.rootWorkflowId, { environmentId: plan.environmentId, compiledPlan: plan })]));
   const factory = (ownerId: string) => createResources(() => deps.createManagedClient?.(ownerId) ?? createHttpClient({ connectionMode: compiled.plan.connectionMode }));
@@ -164,9 +177,9 @@ export function createPreparedStressHost(prepared: PreparedStressExecution, deps
           validateWorkflowRunOptions(workflow, workflow.executionVersion === 2 ? { inputs } : {});
           session = createStressWorkflowSession(handle, { ...deps, resources: owner }, { host, initialInputs: inputs, beforeSend: authorize(host) });
         } else {
-          const engine = deps.registry.getScriptEngine("javascript"); if (!engine) throw new Error("Missing javascript engine");
+          const engine = deps.registry.getScriptEngine("javascript");
           session = createStressCaseVuSession({ run, fixedRun: true, collectionId: target.collectionId, apiId: target.apiId, caseId: target.caseId, environmentId: compiled.plan.environmentId }, {
-            managedClient: owner.client, httpSession: owner.httpSession, workspaceRoot: deps.workspaceRoot, resolveProtocol: (request) => deps.registry.getProtocol(request),
+            managedClient: owner.client, httpSession: owner.httpSession, workspaceRoot: deps.workspaceRoot, requestSettings, resolveProtocol: (request) => deps.registry.getProtocol(request),
             resolveSdkProtocol: (request) => deps.registry.getSdkProtocol(request),
             resolveAuth: (type) => deps.registry.getAuth(type), resolveAssert: (op) => deps.registry.getAssert(op), scriptEngine: engine,
           }, { workerId: Number(vuId), host, evidence: deps.evidence, initialInputs: inputs,

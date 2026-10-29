@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { prepareTestData, testDataSelectionsForRequests, selectCredentialRequests, prepareNetworkRun, type HttpSession, type NetworkTLSSettings, type PreparedNetworkRun } from "@apicc/core";
-import { prepareProjectFiles, createOnlineProjectSecretStore, prepareRunCredentials, withRunCredentials, withDeclaredInputFiles, type ExecutionMaterials, type InvocationOutput, invokeExecution, type DebugSessionScope, type PreparedProjectFiles } from "@apicc/execution/host";
-import { ExecutionInputsSchema, ProjectRunMaterialsSchema, executionInputsDigestText, logicalNetworkPath, runtimeCompatibilityIdForRuntime, type ExecutionInputs, type ProjectRunMaterials, type TaskEnvelopeV1, type PolicyConfig, type AgentCommandV1 } from "@apicc/execution/contract";
+import { prepareProjectFiles, createOnlineProjectSecretStore, prepareRunCredentials, withRunCredentials, withDeclaredInputFiles, type ExecutionMaterials, type InvocationOutput, invokeExecution, type DebugSessionScope, type PreparedProjectFiles, type NodeStressRunOptions } from "@apicc/execution/host";
+import { ExecutionInputsSchema, ProjectRunMaterialsSchema, executionInputsDigestText, logicalNetworkPath, runtimeCompatibilityIdForRuntime, resolveEffectiveConfig, type AgentConfig, type ConfigSource, type ExecutionInputs, type ProjectRunMaterials, type TaskEnvelopeV1, type PolicyConfig, type AgentCommandV1 } from "@apicc/execution/contract";
 import type { BuildIdentity } from "@apicc/execution/buildIdentity";
 export type StartPermit = Extract<AgentCommandV1, { kind: "start-permit" }>;
-export interface InvocationDTO { task: TaskEnvelopeV1; inputs: ExecutionInputs; materials: ProjectRunMaterials; serverId: string; minFreeDiskBytes: number; runtimeCompatibilityId: string }
+export interface InvocationDTO { task: TaskEnvelopeV1; inputs: ExecutionInputs; materials: ProjectRunMaterials; serverId: string; minFreeDiskBytes: number; runtimeCompatibilityId: string; appliedAgentConfig?: AgentConfig; deadlineAt?: number }
 export interface PreparedMetadata { project: PreparedProjectFiles; credentialVersions: Readonly<Record<string, string>>; inputBytes: number }
 /** Public localization keys only: exception text, material values and host paths never cross the control boundary. */
-export type PreparationReasonCode = "runtime-mismatch" | "script-admission-denied" | "fixed-input-mismatch" | "policy-mismatch" | "input-capacity-exceeded" | "result-capacity-exceeded" | "shared-debug-capacity-exceeded" | "debug-session-expired" | "debug-session-scope-mismatch" | "debug-session-capacity-exceeded";
+export type PreparationReasonCode = "runtime-mismatch" | "script-admission-denied" | "fixed-input-mismatch" | "policy-mismatch" | "input-capacity-exceeded" | "result-capacity-exceeded" | "stress-capacity-exceeded" | "shared-debug-capacity-exceeded" | "debug-session-expired" | "debug-session-scope-mismatch" | "debug-session-capacity-exceeded";
 class PreparationRejection extends Error {
   constructor(readonly reasonCode: PreparationReasonCode) { super(reasonCode); }
 }
@@ -39,7 +39,22 @@ export async function withInvocation<T>(raw: InvocationDTO, signal: AbortSignal,
   if (inputs.executionId !== task.executionId || inputs.snapshot.snapshotId !== task.snapshotId || inputs.snapshot.assets.manifestHash !== task.manifestHash || inputs.snapshot.assets.contractProjectId !== task.contractProjectId || !equal(task.scope, materials.scope) || !equal(task.scope, { workspaceId: inputs.snapshot.assets.workspaceId, groupId: inputs.snapshot.assets.groupId, projectId: inputs.snapshot.assets.projectId }) || materials.snapshotId !== task.snapshotId || digest(executionInputsDigestText(inputs)) !== inputs.inputsDigest) rejectPreparation("fixed-input-mismatch");
   const scope = sessionScope(dto);
   if ((inputs.runConfig.scriptTimeoutMs ?? policy.scriptTimeoutMs) > policy.maxScriptTimeoutMs) rejectPreparation("policy-mismatch");
+  let stressConfig;
+  if (task.target.kind === "stress") {
+    if (!dto.appliedAgentConfig || !inputs.stressBinding) rejectPreparation("fixed-input-mismatch");
+    const configuration = resolveEffectiveConfig({ agent: dto.appliedAgentConfig, policy });
+    // Only provenance already authenticated by control is restored. Numeric values remain independently resolved.
+    for (const [field, source] of Object.entries(inputs.stressBinding.sources)) {
+      if (source === "plan") continue;
+      const name = field === "maxRps" ? "maxStressRps" : "maxStressRequestConcurrency";
+      const match = /^(policy|agent)\.(maxStressRps|maxStressRequestConcurrency):(default|deployment|agent|workspace|project)$/.exec(source);
+      if (!match || match[2] !== name || (match[1] === "agent" ? !["default", "agent"].includes(match[3]!) : match[3] === "agent")) rejectPreparation("fixed-input-mismatch");
+      configuration.sources[`${match[1]}.${name}`] = match[3] as ConfigSource;
+    }
+    stressConfig = { configuration, run: inputs.runConfig.stress };
+  }
   const project = await prepareProjectFiles(inputs.snapshot.assets, { target: task.target, profile: task.executionProfile, environmentId: task.environmentId, requestSettings: inputs.runConfig.requestSettings, scriptTimeoutMs: inputs.runConfig.scriptTimeoutMs ?? policy.scriptTimeoutMs, maxScriptTimeoutMs: policy.maxScriptTimeoutMs, requiredCapabilities: task.requiredCapabilities, debugSessionScope: scope,
+    ...(stressConfig ? { stressConfig, stressRun: inputs.runConfig.stress, expectedStressBinding: inputs.stressBinding } : {}),
     evidenceLimits: { bodyBytes: policy.bodyPreviewBytes, valueBytes: policy.valuePreviewBytes, caseBytes: policy.caseEvidenceBytes, reportBytes: policy.reportBytes, workflowMetadataBytes: policy.workflowMetadataBytes } });
   if (project.scriptPlanDigest !== task.scriptPlanDigest) rejectPreparation("fixed-input-mismatch");
   for (const selected of inputs.materials.credentials) {
@@ -76,7 +91,15 @@ export async function withInvocation<T>(raw: InvocationDTO, signal: AbortSignal,
     return withRunCredentials(credentials, async credentialBindings => { signal.throwIfAborted(); return action({ project, credentialVersions: Object.freeze(versions), inputBytes }, { credentialBindings, preparedTestData: data, network, workspaceRoot: files.workspaceRoot, ...(scope && session ? { debugSession: { scope, session } } : {}) }); });
   });
 }
-export async function executeInvocation(dto: InvocationDTO, permit: StartPermit, identity: BuildIdentity, signal: AbortSignal, session?: HttpSession, onBusinessStart?: () => void): Promise<InvocationOutput> {
+export async function executeInvocation(dto: InvocationDTO, permit: StartPermit, identity: BuildIdentity, signal: AbortSignal, session?: HttpSession, onBusinessStart?: () => void, stress?: Omit<NodeStressRunOptions, "signal" | "confirmedTargetOrigins">): Promise<InvocationOutput> {
   validateRuntime(dto.task, identity, dto.runtimeCompatibilityId);
-  return withInvocation(dto, signal, async (metadata, materials) => { validatePermit(dto, metadata, permit); signal.throwIfAborted(); onBusinessStart?.(); return invokeExecution(metadata.project.prepared, materials, { signal }); }, session, dto.minFreeDiskBytes);
+  return withInvocation(dto, signal, async (metadata, materials) => {
+    validatePermit(dto, metadata, permit); signal.throwIfAborted();
+    if (dto.task.target.kind !== "stress") { onBusinessStart?.(); return invokeExecution(metadata.project.prepared, materials, { signal }); }
+    let confirmed = false;
+    const started = () => { if (!confirmed) { confirmed = true; onBusinessStart?.(); } };
+    const output = await invokeExecution(metadata.project.prepared, materials, { signal, stress: { ...stress, onProgress(progress) { if (progress.state === "running" || progress.requests.started > 0) started(); stress?.onProgress?.(progress); } } });
+    if (output.kind === "stress-failure" ? output.started : output.kind === "stress" && (output.result.iterations.started > 0 || output.result.lifecycle.some(row => row.state !== "skipped"))) started();
+    return output;
+  }, session, dto.minFreeDiskBytes);
 }

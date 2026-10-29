@@ -8,6 +8,19 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.*;
 
 class ExecutionConfigTest extends ExecutionManagementFixture {
+    @Test void stressDefaultsAndPolicyInheritanceMatchTheSharedContract() throws Exception {
+        var f=fixture();
+        assertThat((Map<String,Object>)configs.agent(f.admin(),f.agent()).get("config")).containsAllEntriesOf(Map.of(
+            "maxConcurrentStressJobs",1,"maxStressProcesses",5,"maxStressVus",100,"maxStressRequestConcurrency",100,
+            "maxStressRps",1000,"maxStressMetricMemoryBytes",335544320,"stressProgressIntervalMs",1000));
+        configs.saveProject(f.admin(),f.ws(),f.project(),"0",Map.of("maxStressRps",1.5,"stressMetricMemoryBytes",1048576));
+        var effective=configs.project(f.admin(),f.ws(),f.project(),null);
+        assertThat((Map<String,Object>)effective.get("policy")).containsEntry("maxStressWorkers",4L).containsEntry("stressEvidenceMaxSamples",20L).containsEntry("maxStressRps",1.5);
+        assertThat((Map<String,Object>)effective.get("sources")).containsEntry("policy.maxStressRps","project");
+        assertThatThrownBy(()->configs.saveProject(f.admin(),f.ws(),f.project(),"1",Map.of("maxStressRps",1000.1))).isInstanceOf(ApiException.class);
+        for(var patch:java.util.List.of(Map.<String,Object>of("stressMetricMemoryBytes",1048575),Map.<String,Object>of("stressEvidenceMaxSamples",21),Map.<String,Object>of("maxStressVus",1001),Map.<String,Object>of("maxStressWorkers",1.5)))
+            assertThatThrownBy(()->configs.saveProject(f.admin(),f.ws(),f.project(),"1",patch)).isInstanceOf(ApiException.class);
+    }
     @Autowired ExecutionConfigService configs;
     @Autowired ExecutionProperties properties;
     @Autowired com.autumnharvestc.server.execution.agent.AgentService agents;

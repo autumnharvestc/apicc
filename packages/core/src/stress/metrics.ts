@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { StressAccumulator, StressAggregateSnapshot, StressFinishContext, StressMetricEvent, StressObservationCounts, StressMetricsSummary, StressHistogramSnapshot } from "./execution.js";
 import type { StressMetricPlan, StressPhase } from "./plan.js";
+import { StressMetricBudgetsSchema } from "./plan.js";
 import { StressHistogram, summarizeStressHistogramStatistics } from "./histogram.js";
 import { STRESS_FAILURE_KINDS, type StressFailureCounts } from "./model.js";
 import { evaluateStressMetricsThresholds } from "./thresholds.js";
@@ -51,7 +52,7 @@ export function createStressAccumulator(input: StressMetricPlan, runId: string, 
   const plan = structuredClone(input), sourceId = options?.sourceId ?? "coordinator", scope = options?.scope ?? "all", config = canonical(plan);
   if (!runId || !sourceId || !["all", "observations"].includes(scope) || plan.stableNodeKeys.length > 512 || new Set(plan.stableNodeKeys.map((n) => n.key)).size !== plan.stableNodeKeys.length || plan.stableNodeKeys.some((n) => n.key !== JSON.stringify([n.workflowId, n.nodeId]))
     || canonical(plan.histogram) !== canonical({ minValueMs: .001, gamma: 1.01, bucketCount: 4608, exactLimit: 256 }) || canonical(plan.timeline) !== canonical({ initialBucketWidthMs: 1000, maxBuckets: 120 }) || canonical(plan.node) !== canonical({ maxKeys: 512, otherKey: "other" }) || canonical(plan.error) !== canonical({ maxKeys: 128, otherKey: "other" })
-    || plan.memory.maxNumericBytes !== 67108864 || canonical(plan.evidence) !== canonical({ maxSamples: 20, bodyBytes: 65536, valueBytes: 4096, caseBytes: 262144, reportBytes: 16777216 })) throw new StressMetricsError("snapshot-invalid");
+    || !StressMetricBudgetsSchema.safeParse({ memory: plan.memory, evidence: plan.evidence }).success) throw new StressMetricsError("snapshot-invalid");
   const reserved = options?.reservedNumericBytes ?? 0;
   if (!Number.isSafeInteger(reserved) || reserved < 0 || reserved >= plan.memory.maxNumericBytes) throw new StressMetricsError("metrics-budget-exhausted");
   const reasons = new Set<StressCompletenessReason>(); let bytes = 256 + reserved, sequence = 0;
@@ -242,5 +243,5 @@ export function createStressAccumulator(input: StressMetricPlan, runId: string, 
       timeline: { bucketWidthMs: width, aligned: !reasons.has("timeline-unaligned"), uncertaintyMs, buckets: [...buckets.values()].sort((a, b) => a.startOffsetMs - b.startOffsetMs).map((b) => { const endOffsetMs = Math.max(b.startOffsetMs, Math.min(b.startOffsetMs + width, lastCovered)); return { startOffsetMs: b.startOffsetMs, endOffsetMs, rps: measuredRate(b.observations.requests.eligibleCompleted, endOffsetMs - b.startOffsetMs), ...publicCounts(b.observations), latency: metric(b.requestLatency), sources: [...b.sources.values()].map((s) => ({ phase: s.phase, stageId: s.stageId, ...publicCounts(s.observations) })) }; }) },
       nodes: [...nodes.values()].map((n) => ({ key: n.key, workflowId: nodeKeys.get(n.key)?.workflowId ?? null, nodeId: nodeKeys.get(n.key)?.nodeId ?? null, other: n.key === "other", visits: n.visits, passed: n.passed, failed: n.failed, aborted: n.aborted, skipped: n.skipped, requests: { ...n.observations.requests }, requestLatency: metric(n.requestLatency), nodeLatency: metric(n.nodeLatency) })), load: structuredClone(context.load), statistics: summarizeStressHistogramStatistics(liveHistograms), lifecycle: structuredClone(context.lifecycle), completeness };
   };
-  return { observe, snapshot, merge, finish };
+  return { observe, snapshot, merge, finish, readProgress: () => ({ requests: { ...observation.requests }, incompleteReasons: [...reasons] }) };
 }

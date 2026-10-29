@@ -1,20 +1,22 @@
-import { reactive, shallowReactive } from "vue";
-import { ClientConfigSchema, ProjectExecutionAgentsSchema, type ProjectExecutionAgents, type TaskTarget, type AssetDelta } from "@apicc/execution/contract";
+import { reactive, shallowReactive, ref } from "vue";
+import { ClientConfigSchema, ProjectExecutionAgentsSchema, StressRunConfigSchema, type ProjectExecutionAgents, type TaskTarget, type AssetDelta } from "@apicc/execution/contract";
 import type { ContractProject } from "@apicc/core";
 import type { PluginsListResult } from "../../../shared/plugins/contract.js";
 import { OnlineProjectViewSchema, OnlineJobSchema, OnlineLocalResultSchema, OnlineReportSchema, OnlineMaterialsMetadataSchema, type OnlineExecutionContext, type ExecutionLocation, type OnlineExecutionPort, type OnlineProjectView, type OnlineJob, type OnlineLocalResult, type OnlineReport } from "../../../shared/online/execution.js";
 import type { AttachmentWriteSchema } from "@apicc/execution/contract";
 import { z } from "zod";
 type ResultSelection = { kind: 'local'; runId: string; environmentId?: string } | { kind: 'agent'; runId: string } | { kind: 'agent'; job: OnlineJob };
-type RunRecord = { context: OnlineExecutionContext; runId: string; location: ExecutionLocation; environmentId?: string; pending: boolean; result?: OnlineLocalResult; job?: OnlineJob; error: string };
+type RunRecord = { context: OnlineExecutionContext; runId: string; target: TaskTarget; location: ExecutionLocation; environmentId?: string; pending: boolean; result?: OnlineLocalResult; job?: OnlineJob; error: string };
 export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsList?(): Promise<PluginsListResult> }) {
   let generation = 0; let timer: ReturnType<typeof setTimeout> | undefined;
+  const stressConfirmation = ref('');
   const selections = new Map<string, { location: ExecutionLocation; environmentId?: string }>();
   const debugSessions = new Map<string, string>();
   const runs = new Map<string, RunRecord>();
   const key = (context: OnlineExecutionContext | null) => JSON.stringify(context);
   const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
   const editableProject = (value: ContractProject | null): ContractProject | null => value ? reactive(plain(value) as object) as ContractProject : null;
+  const stressIntent = (plan: import('@apicc/core').StressPlan) => JSON.stringify([store.context, store.view?.assets.version, store.location, plan, store.environmentId, store.stressWorkerCount, store.stressConfirmedOrigins]);
   const current = (token: number, context: OnlineExecutionContext) => generation === token && store.visible && key(context) === key(store.context);
   const stop = () => { if (timer) clearTimeout(timer); timer = undefined; };
   const schedule = () => {
@@ -29,18 +31,29 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     localResult: null as OnlineLocalResult | null, report: null as OnlineReport | null, selectedJobId: "",
     resultSelection: null as ResultSelection | null,
     localPlugins: null as PluginsListResult | null, activeLocalRunId: "",
+    stressConfirmedOrigins: [] as string[], stressWorkerCount: 1,
     materialMetadata: null as z.infer<typeof OnlineMaterialsMetadataSchema> | null,
     localOnlyRefIds: [] as string[], materials: { credentials: [] as Array<{ refId: string; version: string }>, attachments: [] as Array<{ refId: string; version: string; hash: string }>, attachmentPaths: {} as Record<string, { refId: string; version: string; hash: string }> },
     get dirty(): boolean { return !!store.project && JSON.stringify(store.project) !== store.saved; },
+    get activeStressLocalRunId(): string { const run = runs.get(key(store.context)); return store.activeLocalRunId && run?.target.kind === 'stress' && run.runId === store.activeLocalRunId ? run.runId : ''; },
     activate(context: OnlineExecutionContext | null) {
       if (key(context) === key(store.context)) return;
       if (store.context) selections.set(key(store.context), { location: plain(store.location), environmentId: store.environmentId });
       generation++; stop(); store.context = context ? plain(context) : null; store.jobs = []; store.view = null; store.project = null; store.agents = null; store.saved = ""; store.error = ""; store.localResult = null; store.report = null; store.busy = false; store.running = false; store.connection = "unknown"; store.localOnlyRefIds = []; store.materials = { credentials: [], attachments: [], attachmentPaths: {} };
+      stressConfirmation.value = ''; store.stressConfirmedOrigins = []; store.stressWorkerCount = 1;
       store.materialMetadata = null; store.activeLocalRunId = ''; store.selectedJobId = ''; store.resultSelection = null;
       const selection = selections.get(key(context)); store.location = selection?.location ?? { kind: "local" }; store.environmentId = selection?.environmentId;
       const run = runs.get(key(context)); if (run) { chooseRun(run); publishRun(run); }
     },
-    selectLocation(location: ExecutionLocation) { store.location = plain(location); },
+    selectLocation(location: ExecutionLocation) { if (JSON.stringify(location) !== JSON.stringify(store.location)) store.stressConfirmedOrigins = []; store.location = plain(location); },
+    invalidateStressConfirmation() { stressConfirmation.value = ''; store.stressConfirmedOrigins = []; },
+    confirmStressOrigins(plan: import('@apicc/core').StressPlan, origins: string[]) {
+      store.invalidateStressConfirmation();
+      const run = StressRunConfigSchema.parse({ workerCount: store.stressWorkerCount, confirmedTargetOrigins: origins });
+      if (!run.confirmedTargetOrigins.length) throw new Error('stress-confirmation-required');
+      store.stressConfirmedOrigins = [...run.confirmedTargetOrigins]; stressConfirmation.value = stressIntent(plan);
+    },
+    isStressConfirmed(plan: import('@apicc/core').StressPlan) { return !!stressConfirmation.value && stressConfirmation.value === stressIntent(plan); },
     newDebugSession() { debugSessions.delete(JSON.stringify([store.context, store.location])); },
     async load() {
       const context = store.context && plain(store.context); if (!context || !store.visible) return;
@@ -104,14 +117,23 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     },
     async run(target: TaskTarget) {
       const context = store.context && plain(store.context); if (!context || !store.view || !store.visible) throw new Error("online-project-unavailable");
+      if (target.kind === 'stress' && store.location.kind === 'agent') {
+        const agentId = store.location.agentId; const agent = store.agents?.agents.find(row => row.id === agentId);
+        if (!agent || agent.availability !== 'available' || agent.configuration.status !== 'applied' || !agent.runtime?.capabilities.includes('task:stress') || !agent.runtime.capabilities.includes('stress:local-workers-v1')) throw new Error('stress-agent-unavailable');
+      }
       if (target.kind !== "debug" && store.dirty) throw new Error("save-before-running");
+      if (target.kind === 'stress' && !store.project?.stressPlans?.some(saved => JSON.stringify(saved.plan) === JSON.stringify(target.plan))) throw new Error('save-before-running');
+      if (target.kind === 'stress' && target.plan.environmentId && store.environmentId && target.plan.environmentId !== store.environmentId) throw new Error('stress-environment-mismatch');
+      if (target.kind === 'stress' && !store.isStressConfirmed(target.plan)) throw new Error('stress-confirmation-required');
       if (store.location.kind === "agent" && store.localOnlyRefIds.length) throw new Error("local-material-required");
       if (runs.get(key(context))?.pending) throw new Error('online-run-in-progress');
+      const stress = target.kind === 'stress' ? StressRunConfigSchema.parse({ workerCount: store.stressWorkerCount, confirmedTargetOrigins: [...store.stressConfirmedOrigins] }) : undefined;
+      if (stress) store.invalidateStressConfirmation();
       const runId = crypto.randomUUID(); const location = plain(store.location); const sessionKey = JSON.stringify([context, location]);
-      const run: RunRecord = { context, runId, location, environmentId: store.environmentId, pending: true, error: '' };
+      const run: RunRecord = { context, runId, target: plain(target), location, environmentId: store.environmentId, pending: true, error: '' };
       runs.set(key(context), run); chooseRun(run); store.error = ''; publishRun(run);
       try {
-        const raw = await api.onlineExecution({ operation: "run", context, runId, location, target: plain(target), expectedVersion: store.view.assets.version, environmentId: run.environmentId, ...(target.kind === 'debug' && debugSessions.has(sessionKey) ? { debugSessionId: debugSessions.get(sessionKey) } : {}), runConfig: {}, materials: { projectId: context.scope.projectId, ...plain(store.materials) }, localOnlyRefIds: [...store.localOnlyRefIds] });
+        const raw = await api.onlineExecution({ operation: "run", context, runId, location, target: plain(target), expectedVersion: store.view.assets.version, environmentId: run.environmentId, ...(target.kind === 'debug' && debugSessions.has(sessionKey) ? { debugSessionId: debugSessions.get(sessionKey) } : {}), runConfig: stress ? { stress } : {}, materials: { projectId: context.scope.projectId, ...plain(store.materials) }, localOnlyRefIds: [...store.localOnlyRefIds] });
         if (location.kind === 'local') { const result = OnlineLocalResultSchema.parse(raw); if (result.runId !== runId) throw new Error('fixed-input-mismatch'); run.result = result; if (result.debugSessionId) debugSessions.set(sessionKey, result.debugSessionId); }
         else { run.job = OnlineJobSchema.parse(raw); if (run.job.task.debugSessionId) debugSessions.set(sessionKey, run.job.task.debugSessionId); }
       } catch (error) { const failure = error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('output')) ? new Error('invalid-core-output') : error; run.error = failure instanceof Error ? failure.message : String(failure); throw failure; }

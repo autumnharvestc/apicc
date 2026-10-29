@@ -12,6 +12,7 @@ import static com.autumnharvestc.server.execution.jobs.JobService.bad;
 public class CoreInputValidator {
     private final JsonSchema target;
     private final JsonSchema runConfig;
+    private final JsonSchema stressBinding;
 
     public CoreInputValidator(ObjectMapper json) {
         try (var stream = CoreInputValidator.class.getResourceAsStream("/execution-input-boundary.json")) {
@@ -22,9 +23,15 @@ public class CoreInputValidator {
             var config = SchemaValidatorsConfig.builder().formatAssertionsEnabled(true).build();
             target = factory.getSchema(SchemaLocation.of("urn:apicc:execution:target"), document.get("target"), config);
             runConfig = factory.getSchema(SchemaLocation.of("urn:apicc:execution:run-config"), document.get("runConfig"), config);
+            stressBinding = factory.getSchema(SchemaLocation.of("urn:apicc:execution:stress-binding"), document.get("stressBinding"), config);
         } catch (Exception e) {
             throw new IllegalStateException("Cannot load the local generated Core input boundary", e);
         }
+    }
+
+    public void requireStressBinding(JsonNode binding) {
+        requireFiniteJson(binding);
+        if(binding==null||!stressBinding.validate(binding).isEmpty())bad("stressBinding 不符合 Core 公开编译声明结构");
     }
 
     public void requireValid(JsonNode targetInput, JsonNode runInput) {

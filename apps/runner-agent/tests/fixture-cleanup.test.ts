@@ -2,10 +2,32 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import ts from "typescript";
+import { stressFixture, stressHarness } from "./helpers/stressFixture.js";
+import { alive, descendants } from "./helpers/processEvidence.js";
 
 type Owner = "e2e" | "ui" | "server";
+
+it("closes a live stress fixture subtree before deleting its private ledger directory", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "apicc-stress-cleanup-"));
+  let started = 0;
+  const responses = new Set<import("node:http").ServerResponse>();
+  const server = createServer((request, response) => { request.resume(); started++; responses.add(response); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const item = await stressFixture(origin, 951, 2), h = stressHarness([item], {}, directory); let pids: number[] = [];
+  try {
+    h.supervisor.receive(item.delivery); await vi.waitFor(() => expect(started).toBe(2), { timeout: 10000 });
+    const coordinator = h.supervisor.processState().dedicatedPids[0]!; pids = [coordinator, ...await descendants(coordinator)]; expect(pids).toHaveLength(3);
+  } finally {
+    await h.supervisor.close();
+    for (const response of responses) response.end("owned fixture closed"); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    expect(pids.some(alive)).toBe(false);
+    expect(server.listening).toBe(false);
+    if (pids.every(pid => !alive(pid))) rmSync(directory, { recursive: true });
+  }
+});
 // Run the actual owner teardown block without executing its Java/Docker startup.
 // Only external Docker/child-stop operations are replaced; sockets and evidence files are real and private.
 function cleanupBody(owner: Owner): string {

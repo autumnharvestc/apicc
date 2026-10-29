@@ -269,7 +269,8 @@ describe("typed preload contract", () => {
       on(channel, listener) { listeners.set(channel, listener); }, removeListener(channel, listener) { if (listeners.get(channel) === listener) listeners.delete(channel); } });
     const unsubscribe = bridge.onStressProgress((value) => received.push(value));
     const progress = { runId: "00000000-0000-4000-8000-000000000099", root: "C:/fixture", projectLocator: { workspaceId: "w", groupId: "g", projectId: "p" }, generation: 1,
-      state: "running" as const, phase: "measurement" as const, stageId: null, atMs: 1, activeVus: 1, startedIterations: 1, completedIterations: 0, droppedIterations: 0 };
+      state: "running" as const, phase: "measurement" as const, stageId: null, atMs: 1, activeVus: 1, startedIterations: 1, completedIterations: 0, droppedIterations: 0,
+      requests: { started: 2, completed: 1, eligibleCompleted: 1, failed: 1 }, completeness: { execution: { complete: false, reasons: ['cancelled' as const] }, metrics: { complete: false, reasons: ['snapshot-missing' as const] }, load: { complete: true, reasons: [] } } };
     listeners.get("stress:progress")!({}, progress);
     listeners.get("stress:progress")!({}, { ...progress, secret: "must-not-pass" } as typeof progress);
     expect(received).toEqual([progress]); unsubscribe(); expect(listeners.has("stress:progress")).toBe(false);

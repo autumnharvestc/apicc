@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ContractWorkspaceSchema, type ContractWorkspace } from "../../src/contract/workspace.js";
 import { ModelAssetSchema } from "../../src/contract/model.js";
 import { fileStorage } from "../../src/storage/fileStorage.js";
-import { encodeContractWorkspace, decodeContractWorkspace } from "../../src/storage/contractFiles.js";
+import { encodeContractWorkspace, decodeContractWorkspace, encodeContractProjectFiles, decodeContractProjectFiles } from "../../src/storage/contractFiles.js";
 import { calculateWorkspaceRevision, commitWritePlan } from "../../src/storage/writeJournal.js";
 import {
   apiCaseIndexFilePath,
@@ -128,6 +128,41 @@ async function expectRemovalRoundTrip(
 }
 
 describe("versioned contract workspace files", () => {
+  it("round-trips only explicitly selected online stress plans in project metadata", async () => {
+    const workspace = fixtureWorkspace();
+    const selected = { formatVersion: 1, id: "selected", name: "Selected plan", updatedAt: 10,
+      plan: { formatVersion: 1, target: { kind: "workflow", workflowId: "flow" }, load: { kind: "constant-vus", vus: 2 }, maxVus: 2, termination: { maxIterations: 4 } } };
+    Object.assign(workspace.groups[0]!.projects[0]!, { stressPlans: [selected] });
+    const accepted = ContractWorkspaceSchema.safeParse(workspace);
+    expect(accepted.success).toBe(true);
+    if (!accepted.success) return;
+    const root = await temporaryRoot();
+    const encoded = encodeContractWorkspace(accepted.data);
+    expect(parse(encoded.files.get(projectMetadataFilePath(groupId, projectId))!).stressPlans).toHaveLength(1);
+    await save(root, encoded);
+    const loaded = await decodeContractWorkspace(root);
+    expect(loaded.readOnly).toBe(false);
+    expect(loaded.workspace).toEqual(accepted.data);
+    const projectFiles = encodeContractProjectFiles(accepted.data.groups[0]!.projects[0]!);
+    const snapshot = await decodeContractProjectFiles(projectFiles.files);
+    expect(snapshot.readOnly).toBe(false);
+    expect(snapshot.project).toEqual(accepted.data.groups[0]!.projects[0]!);
+    const duplicate = structuredClone(accepted.data);
+    const project = duplicate.groups[0]!.projects[0]!;
+    Object.assign(project, { stressPlans: [selected, selected] });
+    expect(ContractWorkspaceSchema.safeParse(duplicate).success).toBe(false);
+  });
+  it("preserves absent and explicit empty online stress plan collections", async () => {
+    for (const plans of [undefined, []]) {
+      const workspace = fixtureWorkspace();
+      if (plans !== undefined) workspace.groups[0]!.projects[0]!.stressPlans = plans;
+      const root = await temporaryRoot();
+      const encoded = encodeContractWorkspace(workspace);
+      expect(parse(encoded.files.get(projectMetadataFilePath(groupId, projectId))!).stressPlans).toEqual(plans);
+      await save(root, encoded);
+      expect((await decodeContractWorkspace(root)).workspace).toEqual(workspace);
+    }
+  });
   it("round-trips testing assets, extensible assertions and typed dataset values with a new revision", async () => {
     const root = await temporaryRoot();
     const initial = await save(root, encodeContractWorkspace(fixtureWorkspace()));

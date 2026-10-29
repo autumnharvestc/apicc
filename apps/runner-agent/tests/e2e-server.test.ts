@@ -1,10 +1,11 @@
 import { beforeAll, afterAll, expect, it } from "vitest";
 import { createServer, type ServerResponse } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { encodeContractProjectFiles, type ContractProject } from "@apicc/core";
+import { acceptanceStress } from "./helpers/acceptanceStress.js";
 import { prepareProjectFiles, type InvocationOutput } from "@apicc/execution/host";
 import { readBuildIdentity } from "@apicc/execution/buildIdentity";
 import { defaultAgentConfig, runtimeCompatibilityIdForRuntime, type ProjectAssets, type TaskTarget } from "@apicc/execution/contract";
@@ -18,6 +19,7 @@ const gates = new Map<string, ServerResponse>();
 let origin = "", token = "", ownerId = "", ws = "", group = "", projectId = "", agentId = "", assets: ProjectAssets;
 const name = `apicc-f7b-t11-agent-${process.pid}`, volume = `apicc-f7b-t11-data-${process.pid}`;
 let containerCreated = false, volumeCreated = false;
+let uiReady = false;
 const image = process.env.APICC_RUNNER_E2E_IMAGE ?? "apicc-f7b-t11-agent:candidate";
 async function api(method: string, path: string, body?: unknown, auth = token): Promise<any> {
   const response = await server.trustedFetch(`${server.baseUrl}/api/v1/${path}`, { method, headers: { "content-type": "application/json", ...(auth ? { authorization: `Bearer ${auth}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) });
@@ -45,12 +47,34 @@ async function electron(operations: unknown[], cleanup: unknown[] = []) {
   const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
   expect(code, logs).toBe(0); return JSON.parse(readFileSync(output, "utf8"));
 }
+/** Network probes must leave this process's actual HTTPS proxy and HTTP target event loop live. */
+async function networkProbe(label: string, executable: string, args: string[], env: NodeJS.ProcessEnv = process.env) {
+  const startedAt = new Date().toISOString();
+  const child = spawn(executable, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "", code: number | null = null, signal: NodeJS.Signals | null = null;
+  child.stdout.on("data", bytes => { stdout += bytes; }); child.stderr.on("data", bytes => { stderr += bytes; });
+  try { code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", (value, exitSignal) => { signal = exitSignal; resolve(value); }); }); }
+  finally {
+    writeFileSync(join(server.root, `${label}.stdout.log`), stdout);
+    writeFileSync(join(server.root, `${label}.stderr.log`), stderr);
+    writeFileSync(join(server.root, `${label}.process.json`), JSON.stringify({ cwd: process.cwd(), executable, args, pid: child.pid, startedAt, endedAt: new Date().toISOString(), code, signal }, null, 2));
+  }
+  expect(code, `${stdout}\n${stderr}`).toBe(0); return stdout.trim();
+}
 function run(target: TaskTarget, kind: "local" | "agent", extra: Record<string, unknown> = {}) {
   return { operation: "run", runId: randomUUID(), location: kind === "local" ? { kind } : { kind, agentId }, target, expectedVersion: assets.version, environmentId: semanticIds.environment, runConfig: { jobTimeoutMs: 30000 }, materials: { projectId, credentials: [{ refId: "synthetic-credential", version: "1" }], attachments: [] }, localOnlyRefIds: [], ...extra };
 }
 async function report(job: { jobId: string }) {
   await until(() => api("GET", `jobs/${job.jobId}`), status => status.state === "ended" && status.executionReleased && status.reportState === "archived");
   return api("GET", `jobs/${job.jobId}/report`);
+}
+function ledgerIntent(executionId: string): any {
+  return JSON.parse(command("docker", ["exec", name, "node", "-e", `const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('/data/execution-ledger.sqlite',{readOnly:true});const state=JSON.parse(db.prepare('select state from ledger where id=1').get().state);console.log(JSON.stringify(state.intents.find(value=>value.executionId===${JSON.stringify(executionId)})??null));db.close();`]));
+}
+async function configureStress(config: Record<string, unknown>) {
+  const current = await api("GET", `agents/${agentId}`);
+  await api("PATCH", `agents/${agentId}`, { expectedVersion: current.configVersion, config });
+  return until(() => api("GET", `agents/${agentId}`), value => value.status === "applied" && value.runtime.configuration.appliedConfigVersion === value.configVersion);
 }
 beforeAll(async () => {
   server = await serverFixture();
@@ -59,7 +83,10 @@ beforeAll(async () => {
     let body = ""; request.on("data", bytes => { body += bytes; }); request.on("end", () => {
       seen.push({ path: request.url!, data: request.headers["x-data"] as string, environment: request.headers["x-environment"] as string, cookie: request.headers.cookie, authorization: request.headers.authorization });
       response.setHeader("content-type", "application/json"); response.setHeader("set-cookie", "t11=synthetic-cookie; Path=/");
-      if (request.url!.startsWith("/hold")) gates.set(request.url!, response); else response.end('{"token":"fixed-token"}');
+      if (request.url!.startsWith("/hold")) gates.set(request.url!, response); else {
+        if (request.url === "/stress-recovered") response.statusCode = 500;
+        response.end('{"token":"fixed-token"}');
+      }
     });
   });
   await new Promise<void>(resolve => target.listen(0, "0.0.0.0", resolve)); origin = `http://${server.authorityHost}:${(target.address() as { port: number }).port}`;
@@ -81,13 +108,23 @@ beforeAll(async () => {
   const registered = await until(() => api("GET", `agents/${agentId}`), value => value.runtime && value.status === "applied" && value.runtime.configuration.appliedConfigVersion === value.configVersion);
   const identity = await readBuildIdentity(); expect(registered.runtime.coreBuildId).toBe(identity.coreBuildId);
   expect(registered.runtime.runtimeCompatibilityId).toBe(runtimeCompatibilityIdForRuntime("22.19.0", "12.4.254.21-node.29", identity.scriptApiId));
+  const wrongCa = await networkProbe("wrong-ca-bootstrap", "docker", ["exec", name, "node", "--input-type=module", "-e", `import assert from 'node:assert/strict';import {bootstrapAgent} from './apps/runner-agent/dist/bootstrap.js';const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),3000);let rejected;try{await bootstrapAgent({baseUrl:${JSON.stringify(`${server.baseUrl}/api/v1`)},agentId:${JSON.stringify(agentId)},tokenFile:'/run/apicc/agent-token',trustedCaFile:'/app/packages/core/tests/http/fixtures/network/synthetic-target-ca.pem',dataDirectory:'/tmp/t8-wrong-ca'},controller.signal);}catch(error){rejected=error;}finally{clearTimeout(timer);}const codes=[];for(let error=rejected;error;error=error.cause)if(error.code)codes.push(error.code);assert.ok(codes.some(code=>['UNABLE_TO_VERIFY_LEAF_SIGNATURE','SELF_SIGNED_CERT_IN_CHAIN','UNABLE_TO_GET_ISSUER_CERT_LOCALLY'].includes(code)),String(rejected));console.log(JSON.stringify({wrongCaRejected:true,codes,runtime:process.versions}));`]);
+  writeFileSync(join(server.root, "linux-wrong-ca.json"), wrongCa + "\n");
   await api("PUT", `${projectPath()}/credentials/synthetic-credential`, { expectedVersion: "0", value: "t11-synthetic-secret" });
-  writeFileSync(join(server.root, "context.json"), JSON.stringify({ baseUrl: server.baseUrl, origin, ws, group, projectId, agentId, ownerId, image, name, volume, identity, javaVersion: server.javaVersion }, null, 2));
+  writeFileSync(join(server.root, "context.json"), JSON.stringify({ baseUrl: server.baseUrl, origin, ws, group, projectId, agentId, ownerId, image, name, volume, identity, javaPid: server.serverPid(), javaVersion: server.javaVersion }, null, 2));
 }, 600000);
 
 afterAll(async () => {
   const errors: unknown[] = [];
   const attempt = async (action: () => unknown) => { try { await action(); } catch (error) { errors.push(error); } };
+  await attempt(async () => { if (server && uiReady && process.env.APICC_RUNNER_E2E_HOLD_FOR_UI === "1") {
+    const context = JSON.parse(readFileSync(join(server.root, "context.json"), "utf8"));
+    writeFileSync(join(server.root, "ui-context.json"), JSON.stringify({ ...context, expectedVersion: assets.version, username: "t11-owner", password: "t11-password8", releaseFile: join(server.root, "ui-release"), profile: join(server.root, "native-profile"), isolatedRoot: join(server.root, "native-isolation"), nodeExtraCaCerts: join(server.root, "control-ca.pem"), executable: process.env.APICC_RUNNER_E2E_PACKAGED_EXE }, null, 2));
+    console.log(`T8_UI_READY ${join(server.root, "ui-context.json")}`);
+    const deadline = Date.now() + 1800000;
+    while (!existsSync(join(server.root, "ui-release")) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 500));
+    if (!existsSync(join(server.root, "ui-release"))) appendFileSync(join(server.root, "lifecycle.log"), "UI hold deadline elapsed; continue owned cleanup\n");
+  } });
   for (const response of gates.values()) await attempt(() => response.end('{"token":"fixed-token"}'));
   gates.clear();
   let stopped = false, copied = false, removed = false;
@@ -121,7 +158,7 @@ afterAll(async () => {
     if (server) await attempt(() => appendFileSync(join(server.root, "cleanup-errors.log"), errors.map(String).join("\n") + "\n"));
     throw new AggregateError(errors, `Owned E2E cleanup failed: ${errors.map(String).join("; ")}`);
   }
-}, 60000);
+}, process.env.APICC_RUNNER_E2E_HOLD_FOR_UI === "1" ? 1860000 : 60000);
 
 it("uses the same project and actual desktop host versus independent Linux main over verified HTTPS", async () => {
   for (const [label, kind, scripts, failing] of [["plain", "debug", false, false], ["trusted", "debug", true, false], ["suite", "suite", true, false], ["workflow-v2", "workflow", true, false], ["failure", "debug", true, true]] as const) {
@@ -201,3 +238,103 @@ it.runIf(process.platform === "win32")("keeps an actual Windows personal credent
   expect(seen.filter(row => row.path === "/personal-local-only")).toHaveLength(1);
   expect((await api("GET", `${projectPath()}/credentials`)).some((value: { refId: string }) => value.refId === "t11-local-only")).toBe(false);
 }, 30000);
+
+// Break caught: an admitted stress task loses its fixed worker/lifecycle binding at the real Java/agent/desktop boundary.
+it("runs bounded case and recovered lifecycle workflow stress on the same actual desktop and Linux agent", async () => {
+  for (const workflow of [false, true]) {
+    const fixture = acceptanceStress(origin, workflow ? "stress-recovered" : "stress-case", workflow);
+    await publish(fixture.project);
+    const workerCount = workflow ? 2 : 1, start = seen.length;
+    const config = { runConfig: { jobTimeoutMs: 30000, stress: { workerCount, confirmedTargetOrigins: [origin] } } };
+    const local = await electron([run(fixture.target, "local", config)]);
+    const submitted = (await electron([run(fixture.target, "agent", config)])).results[0];
+    const remote = await report(submitted);
+    expect(local.results[0].output).toMatchObject({ kind: "stress", result: { iterations: { completed: 4 }, requests: { completed: 4, failed: workflow ? 4 : 0 } } });
+    expect(remote.output).toMatchObject({ kind: "stress", result: { iterations: { completed: 4 }, requests: { completed: 4, failed: workflow ? 4 : 0 } } });
+    const facts = seen.slice(start);
+    // Per run: 4 measurement HTTP calls; workflow additionally has setup/teardown and two VU setup/teardown calls.
+    expect(facts).toHaveLength(workflow ? 20 : 8);
+    if (workflow) {
+      expect(remote.output.result.lifecycle).toHaveLength(6);
+      expect(remote.output.result.verdict.passed).toBe(true);
+      expect(remote.output.result.distributed.workers).toBe(2);
+    }
+    expect(JSON.stringify({ local, remote })).not.toContain("t11-synthetic-secret");
+    appendFileSync(join(server.root, "stress-semantic-results.jsonl"), JSON.stringify({ workflow, workerCount, local, submitted, remote, targetRequests: facts.map(({ authorization: _auth, ...row }) => row) }) + "\n");
+  }
+  const linux = command("docker", ["exec", name, "node", "apps/runner-agent/tests/fixtures/linux-process-evidence.mjs"]);
+  writeFileSync(join(server.root, "linux-process-evidence.json"), linux + "\n");
+}, 120000);
+
+// Break caught: authority releases a stress reservation before Linux descendants exit, or an ACK retry reexecutes HTTP.
+it("keeps Linux stress reservations through controlled derating, cancellation, worker exit and lost report ACK", async () => {
+  const treeRecorded = (value: any) => value?.processes?.length === 3
+    && value.processes.map((row: any) => row.role).sort().join(",") === "coordinator,worker,worker"
+    && value.processes.every((row: any) => Number.isSafeInteger(row.pid) && row.pid > 0 && !row.exited
+      && (row.role === "coordinator" || typeof row.birth === "string" && /^[1-9]\d*$/.test(row.birth)));
+  const captureOwnedTree = (intent: any) => {
+    const actual = JSON.parse(command("docker", ["exec", name, "node", "--input-type=module", "-e", `import assert from 'node:assert/strict';import {readProcessIdentity,matchesStressWorkerProcess} from './apps/runner-agent/dist/processIdentity.js';const intent=${JSON.stringify(intent)};const scope=${JSON.stringify({ workspaceId: ws, groupId: group, projectId })};const rows=intent.processes;assert.equal(rows.length,3);assert.equal(new Set(rows.map(row=>row.pid)).size,3);assert.equal(new Set(rows.map(row=>row.id)).size,3);assert.deepEqual(rows.map(row=>row.role).sort(),['coordinator','worker','worker']);const coordinator=rows.find(row=>row.role==='coordinator');const result=[];for(const row of rows){const fixed=intent.processIntents.find(value=>value.id===row.id);assert.ok(fixed);assert.deepEqual(row.scope,scope);assert.deepEqual(fixed.scope,scope);assert.equal(row.role,fixed.role);assert.equal(row.epoch,fixed.epoch);assert.equal(row.exited,false);const identity=await readProcessIdentity(row.pid);assert.ok(identity);assert.equal(identity.pid,row.pid);assert.equal(identity.executable,process.execPath);assert.ok(matchesStressWorkerProcess(identity.commandLine,fixed));if(row.role==='worker'){assert.equal(identity.birth,row.birth);assert.equal(identity.parentPid,coordinator.pid);}result.push({id:row.id,role:row.role,scope:row.scope,recordedBirth:row.birth,identity});}console.log(JSON.stringify(result));`]));
+    writeFileSync(join(server.root, `stress-owned-processes-${intent.executionId}.json`), JSON.stringify(actual, null, 2));
+    return actual;
+  };
+  const fixture = acceptanceStress(origin, "hold-stress-capacity", true);
+  await publish(fixture.project);
+  const config = { runConfig: { jobTimeoutMs: 30000, stress: { workerCount: 2, confirmedTargetOrigins: [origin] } } };
+  const start = seen.length;
+  const first = (await electron([run(fixture.target, "agent", config)])).results[0];
+  const active = await until(async () => ledgerIntent(first.executionId), treeRecorded);
+  const activeIdentities = captureOwnedTree(active);
+  await until(async () => seen.slice(start).filter(row => row.path === "/hold-stress-capacity").length, count => count === 2);
+  const second = (await electron([run(fixture.target, "agent", config)])).results[0];
+  const waiting = await until(() => api("GET", `jobs/${second.jobId}`), value => value.state === "queued" && !!value.capacityWaitReason);
+  expect(ledgerIntent(second.executionId)?.processes ?? []).toEqual([]);
+  const neighborTarget = semanticTarget("debug") as Extract<TaskTarget, { kind: "debug" }>;
+  if (neighborTarget.invocation.mode !== "case") throw new Error("Case fixture required");
+  neighborTarget.invocation.locator.apiId = "10000000-0000-4000-8000-000000000099";
+  neighborTarget.invocation.case.apiId = "10000000-0000-4000-8000-000000000099";
+  const neighbor = (await electron([run(neighborTarget, "agent")])).results[0];
+  await until(async () => gates.has("/hold-packaged-disconnect"), Boolean);
+  await configureStress({ maxConcurrentStressJobs: 0 });
+  expect((await api("GET", `jobs/${first.jobId}`)).state).toBe("running");
+  expect(ledgerIntent(second.executionId)?.processes ?? []).toEqual([]);
+  await api("POST", `jobs/${second.jobId}/cancel`, {});
+  await api("POST", `jobs/${first.jobId}/cancel`, {});
+  await report(first);
+  const released = ledgerIntent(first.executionId);
+  expect(released.processes).toHaveLength(3); expect(released.processes.every((row: any) => row.exited)).toBe(true);
+  const physical = JSON.parse(command("docker", ["exec", name, "node", "--input-type=module", "-e", `import {readProcessIdentity} from './apps/runner-agent/dist/processIdentity.js';console.log(JSON.stringify(await Promise.all(${JSON.stringify(active.processes.map((row: any) => row.pid))}.map(async pid=>({pid,identity:await readProcessIdentity(pid)??null})))));`]));
+  expect(physical.every((row: any) => row.identity === null)).toBe(true);
+  expect((await api("GET", `jobs/${neighbor.jobId}`)).state).toBe("running");
+  gates.get("/hold-packaged-disconnect")!.end('{"token":"fixed-token"}'); gates.delete("/hold-packaged-disconnect");
+  expect((await report(neighbor)).verdict).toBe("passed");
+  await configureStress({ maxConcurrentStressJobs: 1 });
+  const faulted = (await electron([run(fixture.target, "agent", config)])).results[0];
+  const faultProcesses = await until(async () => ledgerIntent(faulted.executionId), treeRecorded);
+  const faultIdentities = captureOwnedTree(faultProcesses);
+  const worker = faultProcesses.processes.find((row: any) => row.role === "worker");
+  command("docker", ["exec", name, "node", "--input-type=module", "-e", `import {readProcessIdentity} from './apps/runner-agent/dist/processIdentity.js';const row=await readProcessIdentity(${worker.pid});if(!row||row.birth!==${JSON.stringify(worker.birth)})throw Error('Owned Linux worker identity changed');process.kill(row.pid,'SIGKILL');`]);
+  const faultReport = await report(faulted); expect(faultReport.verdict).not.toBe("passed");
+  expect(ledgerIntent(faulted.executionId).processes.every((row: any) => row.exited)).toBe(true);
+  const plain = acceptanceStress(origin, "stress-lost-ack"); await publish(plain.project);
+  const before = seen.length, archives = server.faults.archives, drops = server.faults.dropped;
+  server.faults.dropMessageAck = 1; server.faults.dropArchiveAck = 1;
+  const retry = (await electron([run(plain.target, "agent", { runConfig: { jobTimeoutMs: 30000, stress: { workerCount: 1, confirmedTargetOrigins: [origin] } } })])).results[0];
+  expect((await report(retry)).output).toMatchObject({ kind: "stress", result: { requests: { completed: 4 } } });
+  await until(async () => ledgerIntent(retry.executionId), value => value.archived && !value.report);
+  expect(seen.slice(before).filter(row => row.path === "/stress-lost-ack")).toHaveLength(4);
+  expect(server.faults.dropped - drops).toBe(2); expect(server.faults.archives - archives).toBeGreaterThanOrEqual(2);
+  writeFileSync(join(server.root, "stress-control-results.json"), JSON.stringify({ first, second, neighbor, waiting, active, activeIdentities, released, physical, faulted, faultProcesses, faultIdentities, faultReport, retry, faults: server.faults, requests: seen.slice(start).map(({ authorization: _auth, ...row }) => row) }, null, 2));
+}, 120000);
+
+it.runIf(process.platform === "win32" && !!process.env.APICC_RUNNER_E2E_PACKAGED_EXE)("uses actual asar packaged Electron Node-mode workers and cleans children on main IPC disconnect", async () => {
+  const fixture = acceptanceStress(origin, "stress-recovered", true); await publish(fixture.project);
+  const operations = [run(fixture.target, "local", { runConfig: { jobTimeoutMs: 30000, stress: { workerCount: 2, confirmedTargetOrigins: [origin] } } })];
+  const input = join(server.root, "packaged-stress.input.json"), output = join(server.root, "packaged-stress.output.json");
+  writeFileSync(input, JSON.stringify({ executable: process.env.APICC_RUNNER_E2E_PACKAGED_EXE, baseUrl: server.baseUrl, username: "t11-owner", password: "t11-password8", privateRoot: server.root, scope: { workspaceId: ws, groupId: group, projectId }, context: { serverId: `${server.baseUrl}/api/v1`, ownerId, scope: { workspaceId: ws, groupId: group, projectId } }, operations, expectedProcesses: 3, disconnectOperation: run(fixture.heldTarget, "local", { runConfig: { jobTimeoutMs: 30000, stress: { workerCount: 2, confirmedTargetOrigins: [origin] } } }) }));
+  await networkProbe("packaged-stress-driver", process.execPath, [join(repo, "apps/desktop/tests/main/online/packaged-stress-probe.mjs"), input, output], { ...process.env, NODE_EXTRA_CA_CERTS: join(server.root, "control-ca.pem") });
+  const actual = JSON.parse(readFileSync(output, "utf8"));
+  expect(actual.results[0].output).toMatchObject({ kind: "stress", result: { requests: { completed: 4, failed: 4 }, lifecycle: expect.any(Array) } });
+  expect(actual.results[0].localStress.runtime.nodeVersion).toBe("24.19.0");
+  expect(actual.disconnectExit.every((row: any) => !row.alive)).toBe(true);
+  uiReady = true;
+}, 120000);

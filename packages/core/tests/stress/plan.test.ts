@@ -39,6 +39,42 @@ function recoveredWorkflowReport() {
 }
 
 describe("stress plans", () => {
+  it("uses the supplied numeric and report budgets in the real compiled plan", () => {
+    const snapshot = createProjectSnapshot(projectFixture());
+    const compiled = compileStressPlan(snapshot, StressPlanSchema.parse(rawPlan()), {
+      numericMemoryBytes: 1048576,
+      evidenceMaxSamples: 2,
+      evidenceLimits: { bodyBytes: 1024, valueBytes: 256, caseBytes: 4096, reportBytes: 16384 },
+    });
+    expect(compiled.metricPlan.memory.maxNumericBytes).toBe(1048576);
+    expect(compiled.metricPlan.evidence).toMatchObject({ maxSamples: 2, reportBytes: 16384 });
+  });
+  it("enforces host limits for explicit values and supplies omitted request limits", () => {
+    const snapshot = createProjectSnapshot(projectFixture());
+    const limits = { maxVus: 2, maxRequestConcurrency: 1, maxRps: 3 };
+    expect(compileStressPlan(snapshot, StressPlanSchema.parse(rawPlan()), { limits }).schedule.effective).toEqual({ maxRequestConcurrency: 1, maxRps: 3 });
+    for (const override of [{ maxVus: 3 }, { maxRequestConcurrency: 2 }, { maxRps: 4 }]) {
+      expect(() => compileStressPlan(snapshot, StressPlanSchema.parse({ ...rawPlan(), ...override }), { limits })).toThrow(/limit|capacity/i);
+    }
+  });
+  it("retains the existing EvidenceLimits range rather than treating default previews as hard ceilings", () => {
+    let compiled: ReturnType<typeof compileStressPlan> | undefined;
+    expect(() => { compiled = compileStressPlan(createProjectSnapshot(projectFixture()), StressPlanSchema.parse(rawPlan()), {
+      evidenceLimits: { bodyBytes: 131072, valueBytes: 8192, caseBytes: 524288, reportBytes: 33554432 },
+    }); }).not.toThrow();
+    expect(compiled!.metricPlan.evidence).toMatchObject({ bodyBytes: 131072, valueBytes: 8192, caseBytes: 524288, reportBytes: 33554432 });
+  });
+  it.each([
+    { numericMemoryBytes: 1048575 }, { numericMemoryBytes: 67108865 }, { numericMemoryBytes: 1048576.5 },
+    { evidenceMaxSamples: 0 }, { evidenceMaxSamples: 21 },
+    { evidenceLimits: { bodyBytes: 4097, valueBytes: 256, caseBytes: 4096, reportBytes: 16384 } },
+    { evidenceLimits: { bodyBytes: 1024, valueBytes: 256, caseBytes: 4096, reportBytes: 4095 } },
+    { limits: { maxVus: 1001, maxRequestConcurrency: 1, maxRps: 3 } },
+    { limits: { maxVus: 1, maxRequestConcurrency: 1001, maxRps: 3 } },
+    { limits: { maxVus: 1, maxRequestConcurrency: 1, maxRps: Infinity } },
+  ])("rejects invalid host capacities and evidence hierarchy: %j", (options) => {
+    expect(() => compileStressPlan(createProjectSnapshot(projectFixture()), StressPlanSchema.parse(rawPlan()), options)).toThrow();
+  });
   it("strictly dispatches historical and v2 reports, requiring iteration and integrity data", () => {
     const legacy = computeReport([], { concurrency: 1, startedAt: 0, finishedAt: 0 });
     expect(parseStressReport(legacy)).not.toHaveProperty("iterations");

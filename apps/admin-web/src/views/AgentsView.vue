@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { defaultAgentConfig, defaultPolicyConfig, displayValue, wireValue, fieldUnit, readableTime, validationMessage, type AgentPatch, type PolicyPatch } from "../api/agents.js";
 import type { AgentsStore } from "../stores/agents.js";
+import StressCapacityView from '../components/StressCapacityView.vue';
 const props = defineProps<{ agents: AgentsStore; platform: boolean; workspaceId?: string }>();
 const { t } = useI18n();
 const draft = ref<Record<string,string|number>>({}), policyDraft = ref<Record<string,string|number>>({});
@@ -64,6 +65,7 @@ function refresh(){
       </div>
       <h3>{{ t("agents.workspacePolicy") }}</h3>
       <p>{{ t("agents.inheritHint") }}</p>
+      <p>{{ t('agents.stressBudgetHint') }}</p>
       <form v-if="agents.workspace" @submit.prevent="saveWorkspace">
         <div class="table-scroll"><table><thead><tr><th>{{ t("agents.field") }}</th><th>{{ t("agents.default") }}</th><th>{{ t("agents.effective") }}</th><th>{{ t("agents.source") }}</th><th>{{ t("agents.override") }}</th></tr></thead>
           <tbody><tr v-for="key in policyFields" :key="key"><th>{{ t(`agents.fields.${key}`) }} ({{ t(`agents.units.${fieldUnit(key)}`) }})</th><td>{{ displayValue(key,defaultPolicyConfig[key]) }}</td><td>{{ displayValue(key,agents.workspace.policy[key]) }}</td><td>{{ t(`agents.sources.${agents.workspace.sources[`policy.${key}`]??'default'}`) }}</td><td><input type="number" step="any" :value="policyDraft[key]" @input="policyDraft[key]=($event.target as HTMLInputElement).value" :aria-label="t(`agents.fields.${key}`)" :disabled="agents.busy||agents.conflict" /></td></tr></tbody></table></div>
@@ -78,6 +80,7 @@ function refresh(){
       <div class="node-layout">
         <nav :aria-label="t('agents.title')"><button v-for="n in agents.nodes" :key="n.id" @click="platform&&agents.selectNode(n.id)">{{ n.name }} · {{ n.id }}<span v-if="n.revoked"> · {{ t("agents.availability.revoked") }}</span></button></nav>
         <div v-if="agents.node" class="node-detail">
+          <StressCapacityView v-if="agents.node.stressCapacity" :capacity="agents.node.stressCapacity" />
           <p>{{ t(`agents.availability.${agents.node.availability}`) }} · {{ t("agents.lastSeen") }}: {{ readableTime(agents.node.lastSeenAt) }}</p>
           <p data-testid="agent-application">{{ t(`agents.application.${agents.node.status}`) }} · {{ t("agents.savedVersion") }}: {{ agents.node.configVersion }} · {{ t("agents.appliedVersion") }}: {{ agents.node.appliedConfigVersion }}<span v-if="agents.node.runtime"> · {{ t("agents.runtimeAppliedVersion") }}: {{ agents.node.runtime.configuration.appliedConfigVersion }}</span></p>
           <p>{{ t("agents.pending") }}: {{ agents.node.pendingFields.map(k=>t(`agents.fields.${k}`)).join('、')||t('agents.none') }} · {{ t("agents.restart") }}: {{ agents.node.restartRequiredFields.map(k=>t(`agents.fields.${k}`)).join('、')||t('agents.none') }}</p>
@@ -92,6 +95,7 @@ function refresh(){
             <label>{{ t("agents.name") }} <input v-model="nodeName" :disabled="locked" required maxlength="128" /></label>
             <label><input type="checkbox" v-model="accepting" :disabled="locked" />{{ t("agents.accepting") }}</label>
             <p v-if="!platform">{{ t("agents.platformOnly") }}</p>
+            <p>{{ t('agents.stressBudgetHint') }}</p>
             <div class="table-scroll"><table><thead><tr><th>{{ t("agents.field") }}</th><th>{{ t("agents.default") }}</th><th>{{ t("agents.effective") }}</th><th>{{ t("agents.source") }}</th><th>{{ t("agents.edit") }}</th></tr></thead>
               <tbody><tr v-for="key in agentFields" :key="key"><th>{{ t(`agents.fields.${key}`) }} {{key==='scriptMode'?'':`(${t(`agents.units.${fieldUnit(key)}`)})`}}</th><td>{{ key==='scriptMode'?t(`agents.scriptModes.${defaultAgentConfig[key]}`):displayValue(key,defaultAgentConfig[key]) }}</td><td>{{ key==='scriptMode'?t(`agents.scriptModes.${agents.node.config[key]}`):displayValue(key,nodeEffective(key)) }}</td><td>{{ t(`agents.sources.${agents.node.sources[key]??'default'}`) }}</td><td>
 <select v-if="key==='scriptMode'" v-model="draft[key]" :disabled="locked" :aria-label="t(`agents.fields.${key}`)"><option value="deny">{{ t('agents.scriptModes.deny') }}</option><option value="trusted-core">{{ t('agents.scriptModes.trusted-core') }}</option></select>

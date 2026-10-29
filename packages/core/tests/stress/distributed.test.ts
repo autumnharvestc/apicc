@@ -44,7 +44,7 @@ function privateChannels(): [StressWorkerChannel, StressWorkerChannel] {
 }
 
 describe("v3 remote VU coordinator", () => {
-  async function phaseAtDiagnostic(nominal: number, boundary: number, measurementBegins = false, domain?: "shared" | "mismatch" | "basis-mismatch" | "precision-mismatch" | "untrusted" | "mixed") {
+  async function phaseAtDiagnostic(nominal: number, boundary: number, measurementBegins = false, domain?: "shared" | "mismatch" | "basis-mismatch" | "precision-mismatch" | "untrusted" | "mixed", progressMode?: "backwards" | "impossible" | "unknown" | "overflow" | "ahead-final") {
     // Real v3 peers/worker/phase-at/snapshot merge; the injected host has one known phase boundary.
     // Anchor send0/receive2/worker100 gives delta=-99 and uncertainty1ms, without sleeps or I/O.
     let reads = 0, workerNow = domain ? 10 : 100, current = 998;
@@ -57,7 +57,7 @@ describe("v3 remote VU coordinator", () => {
       async sleep() { throw new Error("No clock wait expected in this finite diagnostic"); } };
     const workerClock: StressClock = { ...clock, now: () => workerNow };
     const metricPlan = legacyStressMetricPlan, runId = `phase-at-${boundary}`;
-    const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: 1100, maxIterations: 1, maxVus: domain === "mixed" ? 2 : 1,
+    const schedule = { load: { kind: "constant-vus" as const, vus: 1 }, durationMs: 1100, maxIterations: 1, maxVus: domain === "mixed" || progressMode === "overflow" ? 2 : 1,
       warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
       requested: { maxRequestConcurrency: 1, maxRps: null }, effective: { maxRequestConcurrency: 1, maxRps: null } };
     const accumulator = createStressAccumulator(metricPlan, runId);
@@ -65,7 +65,8 @@ describe("v3 remote VU coordinator", () => {
     const snapshots: { sourceId: string; scope: string; sequence: number; reasons: readonly string[] }[] = [];
     // This callback stands in for the host's authenticated transport/clock binding, not a wire flag.
     const clockDomain = () => ({ id: "fixture-native-domain", basis: "0", precision: "fixture-bound", resolutionMs: .001, uncertaintyMs: .001 });
-    const local = await createLocalStressWorkerDeps(schedule, { runId, clock, shards: domain === "mixed" ? 2 : 1, configuration: {}, signal: new AbortController().signal,
+    const local = await createLocalStressWorkerDeps(schedule, { runId, clock, shards: domain === "mixed" || progressMode === "overflow" ? 2 : 1, configuration: {}, signal: new AbortController().signal,
+      ...(progressMode ? { onProgress() {} } : {}),
       ...(domain && domain !== "untrusted" ? { clockDomain } : {}),
       evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }),
       metrics: { ...accumulator, merge(snapshot) {
@@ -75,6 +76,24 @@ describe("v3 remote VU coordinator", () => {
       createVu: async () => { throw new Error("Remote only"); },
       async spawnWorker(identity) {
         const channels = privateChannels();
+        if (progressMode) {
+          const send = channels[1].send.bind(channels[1]); let samples = 0;
+          channels[1].send = value => {
+            const chunk = value as { total: number; data: string; bytes: number };
+            if (chunk.total === 1) {
+              const frame = JSON.parse(chunk.data);
+              if (frame.value?.requests && typeof frame.value.pending === "boolean" && ++samples > 1) {
+                if (progressMode === "backwards") frame.value.requests = { started: 0, completed: 0, eligibleCompleted: 0, failed: 0 };
+                if (progressMode === "impossible") frame.value.requests = { started: 1, completed: 2, eligibleCompleted: 1, failed: 0 };
+                if (progressMode === "overflow") frame.value.requests = { started: Number.MAX_SAFE_INTEGER, completed: Number.MAX_SAFE_INTEGER, eligibleCompleted: Number.MAX_SAFE_INTEGER, failed: 0 };
+                if (progressMode === "ahead-final") frame.value.requests = { started: 2, completed: 2, eligibleCompleted: 2, failed: 0 };
+                if (progressMode === "unknown") frame.value.internal = "untrusted-private";
+                const data = JSON.stringify(frame); return send({ ...chunk, data, bytes: Buffer.byteLength(data) });
+              }
+            }
+            return send(value);
+          };
+        }
         const prepare: Parameters<typeof serveLocalStressWorker>[2] = async () => ({ clock: workerClock, metricPlan,
           evidence: createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { privateMarkers: true }), host: {
             async createVu(_id, _inputs, host) { return { async execute(context) {
@@ -112,6 +131,14 @@ describe("v3 remote VU coordinator", () => {
       if (measurementBegins) current = 1000;
       const result = await vu.execute({ runId, vuId: "1", iterationId: "1", stageId: null, phase: "measurement", scheduledOffsetMs: 0, signal: local.deps.signal });
       expect(result).toEqual({ state: "passed", durationMs: 1 });
+      if (progressMode) {
+        const tick = () => local.deps.onProgress!({ runId, state: "running", phase: "measurement", stageId: null, atMs: 1000, activeVus: 0, startedIterations: 1, completedIterations: 1, droppedIterations: 0,
+          requests: { started: 0, completed: 0, eligibleCompleted: 0, failed: 0 }, completeness: { execution: { complete: true, reasons: [] }, metrics: { complete: true, reasons: [] }, load: { complete: true, reasons: [] } } });
+        tick(); await new Promise<void>(resolve => setImmediate(resolve));
+        expect(local.deps.metrics.readProgress().requests.completed).toBe(1);
+        tick(); await new Promise<void>(resolve => setImmediate(resolve));
+        if (progressMode === "overflow") expect(() => local.deps.metrics.readProgress()).toThrow(/snapshot-invalid/);
+      }
       accumulator.observe({ kind: "iteration", phase: "measurement", stageId: null, atMs: 1000,
         started: 1, passed: 1, failed: 0, aborted: 0, dropped: 0, durationMs: 1, startDelayMs: 0 });
       await vu.close({ reason: "duration", signal: local.deps.signal, allowNetworkCleanup: false });
@@ -130,6 +157,17 @@ describe("v3 remote VU coordinator", () => {
         completeness: summary.completeness, timeline: { aligned: summary.timeline.aligned, uncertaintyMs: summary.timeline.uncertaintyMs }, verdict: summary.verdict };
     } finally { await local.close(); }
   }
+  it.each(["backwards", "impossible", "unknown"] as const)("rejects %s private worker progress without adding it to final observations", async mode => {
+    const actual = await phaseAtDiagnostic(999.5, 1000, false, "shared", mode);
+    expect(actual.completeness.metrics.reasons).toContain("snapshot-invalid");
+    expect(actual.requests).toMatchObject({ started: 1, completed: 1, eligibleCompleted: 1 });
+  });
+  it("rejects overflowing private worker progress and withholds its contradictory final snapshot", async () => {
+    await expect(phaseAtDiagnostic(999.5, 1000, false, "shared", "overflow")).rejects.toThrow(/Private evidence completion incomplete/);
+  });
+  it("withholds rich output when a final snapshot falls behind acknowledged worker progress", async () => {
+    await expect(phaseAtDiagnostic(999.5, 1000, false, "shared", "ahead-final")).rejects.toThrow(/Private evidence completion incomplete/);
+  });
   it("shared native coordinates keep a known measurement event complete despite a 20ms IPC round trip", async () => {
     // Send0/worker10/receive20 already share one axis. Event999.5 is 0.5ms before drain1000;
     // native .001ms precision stays in measurement, whereas the old ±10ms IPC interval straddles drain.
@@ -271,10 +309,10 @@ describe("v3 remote VU coordinator", () => {
     worker.send({ protocolVersion: 3, runId: "current", workerId: "worker-1", kind: "chunk", transferId: "1", index: 0, total: 1, bytes: Buffer.byteLength(data), data });
     await expect(pending).rejects.toThrow("worker-failed"); expect(peer.failed).toBe(true); await peer.close();
   });
-  it("conserves a single budget and gate across two workers and includes coordinator late markers before finish", async () => {
+  it.each([{ samples: 20, numericBytes: 67108864 }, { samples: 2, numericBytes: 67108864 }, { samples: 2, numericBytes: 1048576 }])("conserves a single budget and gate across two workers and includes coordinator late markers before finish: %j", async ({ samples, numericBytes }) => {
     // Independent shard loops would overspend five slots or hold two simultaneous request permits.
     const clock: StressClock = { now: () => performance.now(), wallNow: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
-    const metricPlan = legacyStressMetricPlan;
+    const metricPlan = { ...legacyStressMetricPlan, memory: { maxNumericBytes: numericBytes }, evidence: { maxSamples: samples, bodyBytes: 64, valueBytes: 32, caseBytes: 2048, reportBytes: 32768 } };
     const schedule = { load: { kind: "constant-vus" as const, vus: 2 }, durationMs: null, maxIterations: 5, maxVus: 2, warmupMs: 0, thinkTimeMs: 0, pacingMs: 0, gracefulStopMs: 30000, metricPlan,
       requested: { maxRequestConcurrency: 1, maxRps: null }, effective: { maxRequestConcurrency: 1, maxRps: null } };
     const evidence = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { maxSamples: 20, privateMarkers: true });
@@ -293,6 +331,10 @@ describe("v3 remote VU coordinator", () => {
           async createVu(_id, _inputs, host) { return {
             async execute(context: StressIterationContext) {
               ids.push(context.iterationId);
+              privateEvidence.observe({ outcome: { apiId: "a", apiName: "a", caseId: "c", caseName: "c", passed: false, assertions: [], durationMs: 1 },
+                request: { protocol: "http", method: "GET", url: "http://127.0.0.1/", headers: {}, query: [], auth: { kind: "none" } },
+                response: { status: 503, headers: {}, bodyText: `late-root-secret ${"x".repeat(1000)}`, timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 0, iterationTimeMs: 1 },
+              { vuId: context.vuId, iterationId: context.iterationId });
               const release = await host!.gate.enter({ protocol: "http", method: "GET", url: "http://127.0.0.1/", headers: {}, query: [], auth: { kind: "none" } }, context.signal);
               active++; peak = Math.max(peak, active); const begin = clock.now(); await clock.sleep(2);
               host!.observe({ kind: "http", ...context.observation!(), vuId: context.vuId, iterationId: context.iterationId, stageId: context.stageId, nodeKey: null, started: 1, completed: 1 });
@@ -309,6 +351,9 @@ describe("v3 remote VU coordinator", () => {
       expect(summary.httpExchanges).toEqual({ started: 5, completed: 5 }); expect(finished).toBe(true);
       expect(local.distributed(summary).perShard.map((worker) => worker.totalRequests)).toEqual([0, 0]); // The merge-owned full snapshot is not retained for metadata.
       for (const collected of workerEvidence) expect(collected.boundary().redactText("late-root-secret")).not.toContain("late-root-secret");
+      expect(local.failureEvidence()).toHaveLength(Math.min(5, samples));
+      expect(local.failureEvidence().every(sample => Buffer.byteLength(sample.response!.body.text) <= 64 && sample.response!.body.truncated)).toBe(true);
+      expect(JSON.stringify(local.failureEvidence())).not.toContain("late-root-secret");
     } finally { await local.close(); }
   });
 });

@@ -4,7 +4,7 @@ import { createStressAccumulator } from "./metrics.js";
 import { createGeneratorMetricsCollector, type GeneratorMetricsCollector } from "./generatorMetrics.js";
 import type { StressAccumulator, StressClock, StressExecutionDeps, StressIterationContext, StressLifecycleResult, StressMetricEvent, StressRequestGate, StressVuSession } from "./execution.js";
 import type { StressMetricPlan, StressPlan } from "./plan.js";
-import { StressPhaseSchema, type StressCompletenessReason } from "./reportV2.js";
+import { StressPhaseSchema, StressRequestsSchema, StressCompletenessReasonSchema, type StressCompletenessReason } from "./reportV2.js";
 import { createStressWorkerPeer, STRESS_WORKER_PENDING_BYTES, stressWorkerRequest, sameStressClockDomain, StressClockDomainSchema, type StressClockDomainBinding, type StressWorkerChannel, type StressWorkerPeer } from "./workerProtocol.js";
 
 export interface StressWorkerRuntime {
@@ -18,12 +18,15 @@ export interface StressWorkerRuntime {
 const resultSchema = z.object({ state: z.enum(["passed", "failed", "aborted"]), durationMs: z.number().finite().nonnegative(), outputs: StringRecordSchema(JsonValueSchema), failureKind: z.enum(["transport", "http", "script", "assertion", "extraction", "config", "aborted"]).optional() }).strict();
 export const StressWorkerLifecycleSchema = z.object({ role: z.enum(["vuSetup", "vuTeardown"]), result: resultSchema }).strict();
 const phaseSchema = z.object({ phase: StressPhaseSchema, atMs: z.number().finite().nonnegative(), uncertain: z.boolean() }).strict();
+export const StressWorkerProgressSchema = z.object({ requests: StressRequestsSchema, incompleteReasons: z.array(StressCompletenessReasonSchema).max(32), pending: z.boolean() }).strict().refine(value => {
+  const r = value.requests; return r.completed <= r.started && r.eligibleCompleted <= r.completed && r.failed <= r.eligibleCompleted;
+}, "Invalid cumulative request counts");
 
 /** Worker owns VUs and observations; no load curve, iteration allocator, or local request limiter. */
 export function serveLocalStressWorker(channel: StressWorkerChannel, identity: { runId: string; workerId: string },
   prepare: (configuration: unknown, signal: AbortSignal) => Promise<StressWorkerRuntime>, clockDomain?: StressClockDomainBinding): StressWorkerPeer {
   let runtime: StressWorkerRuntime | undefined, metrics: StressAccumulator | undefined, started = false, drained = false, readyMarkers = false, unionDone = false;
-  let delta = 0, runStart: number | undefined, requestSerial = 0, pendingBytes = 0;
+  let delta = 0, runStart: number | undefined, requestSerial = 0, pendingBytes = 0, pendingLimit = STRESS_WORKER_PENDING_BYTES;
   const abort = new AbortController(), reasons = new Set<StressCompletenessReason>();
   let generator: GeneratorMetricsCollector | undefined;
   const vus = new Map<string, { session?: StressVuSession; busy: boolean; closed: boolean; iterationId: string | null; stageId: string | null; phase: StressIterationContext["phase"]; records: z.infer<typeof StressWorkerLifecycleSchema>[] }>();
@@ -34,11 +37,14 @@ export function serveLocalStressWorker(channel: StressWorkerChannel, identity: {
     if (command.type === "stop") { abort.abort(); return { type: "stopping" }; }
     if (command.type === "prepare") {
       if (runtime || abort.signal.aborted) throw new Error("worker-incompatible"); runtime = await prepare(command.configuration, abort.signal);
+      runtime.evidence.configureStressBudget(runtime.metricPlan.evidence);
+      pendingLimit = Math.min(STRESS_WORKER_PENDING_BYTES, Math.floor(runtime.metricPlan.memory.maxNumericBytes / 4));
       generator = runtime.createGeneratorCollector?.() ?? createGeneratorMetricsCollector();
-      metrics = createStressAccumulator(runtime.metricPlan, identity.runId, { sourceId: identity.workerId, scope: "observations", reservedNumericBytes: STRESS_WORKER_PENDING_BYTES });
+      metrics = createStressAccumulator(runtime.metricPlan, identity.runId, { sourceId: identity.workerId, scope: "observations", reservedNumericBytes: pendingLimit });
       return { type: "run-ready", workerNow: runtime.clock.now() };
     }
     if (!runtime || !metrics) throw new Error("worker-incompatible");
+    if (command.type === "progress") { const value = metrics.readProgress(); return { ...value, incompleteReasons: [...new Set([...value.incompleteReasons, ...reasons])], pending: pending.size > 0 }; }
     if (command.type === "clock") {
       const domain = clockDomain?.(runtime.clock, channel);
       return { workerNow: runtime.clock.now(), ...(domain ? { clockDomain: StressClockDomainSchema.parse(domain) } : {}) };
@@ -62,7 +68,7 @@ export function serveLocalStressWorker(channel: StressWorkerChannel, identity: {
       const observation = () => ({ phase: vu.phase, atMs: Math.max(0, runtime!.clock.now() + delta - runStart!) });
       const observe = (event: StressMetricEvent) => {
         const bytes = Buffer.byteLength(JSON.stringify(event));
-        if (event.kind === "iteration" || pending.size >= 2048 || pendingBytes + bytes > STRESS_WORKER_PENDING_BYTES) { failMetrics("metrics-budget-exhausted"); return; }
+        if (event.kind === "iteration" || pending.size >= 2048 || pendingBytes + bytes > pendingLimit) { failMetrics("metrics-budget-exhausted"); return; }
         pendingBytes += bytes;
         let work!: Promise<void>;
         work = peer.request({ type: "phase-at", vuId: command.vuId, iterationId: vu.iterationId, stageId: vu.stageId, atMs: event.atMs }).then((value) => {

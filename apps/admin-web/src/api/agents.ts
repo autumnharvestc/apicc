@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   AgentConfigSchema, AgentConfigPatchSchema, ConfigApplicationStateSchema, ConfigVersionSchema,
   DeploymentConfigSchema, EntityIdSchema, PolicyConfigSchema, PolicyConfigPatchSchema,
-  ProjectExecutionAgentsSchema, RuntimeRegistrationSchema, defaultAgentConfig, defaultPolicyConfig, resolveEffectiveConfig,
+  ProjectExecutionAgentsSchema, RuntimeRegistrationSchema,StressCapacitySchema, defaultAgentConfig, defaultPolicyConfig, resolveEffectiveConfig,
 } from "@apicc/execution/contract";
 import type { AdminClient } from "./client.js";
 
@@ -16,7 +16,7 @@ export const AgentDetailSchema = ConfigApplicationStateSchema.safeExtend({
   deployment: DeploymentConfigSchema,
   agentPolicy: z.object({ version: ConfigVersionSchema, explicit: z.object({ maxQueuedJobs: z.number().optional() }).strict(), maxQueuedJobs: z.number() }).strict(),
   availability: ProjectExecutionAgentsSchema.shape.agents.element.shape.availability,
-  lastSeenAt: z.string().datetime().nullable(), runtime: RuntimeRegistrationSchema.optional(),
+  lastSeenAt: z.string().datetime().nullable(), runtime: RuntimeRegistrationSchema.optional(),stressCapacity:StressCapacitySchema.optional(),
 });
 const PolicyStateSchema = z.object({ configVersion: ConfigVersionSchema, policyVersion: ConfigVersionSchema,
   policy: PolicyConfigSchema, sources: z.record(z.string(), z.string()), restrictions: RestrictionsSchema });
@@ -72,7 +72,7 @@ export function createAgentsApi(client: AdminClient) {
   };
 }
 /** Presentation conversions only. Effective values and inheritance always come from the server. */
-export function fieldUnit(key: string): string { return key.endsWith("Ms") ? "s" : ["bodyPreviewBytes","valuePreviewBytes","caseEvidenceBytes"].includes(key)?"KiB":key.endsWith("Bytes") ? "MiB" : key.endsWith("Days") ? "days" : key.endsWith("Ratio") ? "%" : key.endsWith("MiB") ? "MiB" : "count"; }
+export function fieldUnit(key: string): string { const stressUnits:Record<string,string>={maxConcurrentStressJobs:'jobs',maxStressProcesses:'processes',maxStressVus:'vus',maxStressRequestConcurrency:'requests',maxStressRps:'rps',maxStressWorkers:'workers',stressMetricMemoryBytes:'processMiB',stressEvidenceMaxSamples:'samples'};return stressUnits[key] ?? (key.endsWith("Ms") ? "s" : ["bodyPreviewBytes","valuePreviewBytes","caseEvidenceBytes"].includes(key)?"KiB":key.endsWith("Bytes") ? "MiB" : key.endsWith("Days") ? "days" : key.endsWith("Ratio") ? "%" : key.endsWith("MiB") ? "MiB" : "count"); }
 function unitFactor(key:string){return key.endsWith("Ms")?1000:fieldUnit(key)==="KiB"?1024:key.endsWith("Bytes")?1048576:key.endsWith("Ratio")?0.01:1;}
 export function displayValue(key: string, value: unknown): string | number {
   if (value === null || value === undefined) return "—";

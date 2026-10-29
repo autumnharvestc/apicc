@@ -1,7 +1,7 @@
 import type { ExecutionProfile } from "../contract/index.js";
 import type { BuildIdentity } from "../buildIdentity.js";
 
-export const BUILTIN_EXECUTION_CAPABILITIES = Object.freeze(["protocol:http", "protocol:soap", "protocol:websocket", "script:trusted-core", "task:debug", "task:suite", "task:workflow"]);
+export const BUILTIN_EXECUTION_CAPABILITIES = Object.freeze(["protocol:http", "protocol:soap", "protocol:websocket", "script:trusted-core", "stress:local-workers-v1", "task:debug", "task:stress", "task:suite", "task:workflow"]);
 /** The existing synchronous pm surface; no third-party API compatibility is implied. */
 export const CORE_SCRIPT_API = Object.freeze(["pm.variables.get", "pm.variables.set", "pm.environment.get", "pm.request", "pm.response", "pm.assert"]);
 export function executionCapabilities(profile: ExecutionProfile): readonly string[] {

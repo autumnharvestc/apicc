@@ -73,6 +73,10 @@ export async function bootstrapAgent(deployment: AgentDeployment, signal: AbortS
   };
   const lanes = new AbortController(); const stop = () => lanes.abort(signal.reason); signal.addEventListener("abort", stop, { once: true }); if (signal.aborted) stop();
   try {
+    let stopReady!: () => void;
+    const aborted = new Promise<false>(resolve => { stopReady = () => resolve(false); lanes.signal.addEventListener("abort", stopReady, { once: true }); if (lanes.signal.aborted) stopReady(); });
+    try { if (!await Promise.race([supervisor.ready.then(() => true), aborted]) || lanes.signal.aborted) return; }
+    finally { lanes.signal.removeEventListener("abort", stopReady); }
     await register(); await register();
     await Promise.all([
       runAgentControl({ supervisor, transport, heartbeat: (input, signal) => transport.heartbeat(input, signal), sessionId, beforeExchange: async () => { config = supervisor.currentConfig; await register(); } }, lanes.signal),

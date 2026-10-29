@@ -222,6 +222,16 @@ CREATE TABLE IF NOT EXISTS execution_job_messages (
     agent_id BIGINT NOT NULL, message_id VARCHAR(512) NOT NULL, payload_hash VARCHAR(64) NOT NULL,
     job_id BIGINT NOT NULL, execution_id BIGINT NOT NULL, PRIMARY KEY(agent_id,message_id)
 );
+CREATE TABLE IF NOT EXISTS execution_stress_reservations (
+    job_id BIGINT PRIMARY KEY REFERENCES execution_jobs(id) ON DELETE CASCADE,
+    agent_id BIGINT NOT NULL, jobs BIGINT NOT NULL, processes BIGINT NOT NULL, vus BIGINT NOT NULL,
+    request_concurrency BIGINT NOT NULL, max_rps DOUBLE PRECISION NOT NULL, metric_memory_bytes BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS execution_stress_agent ON execution_stress_reservations(agent_id);
+ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS capacity_wait_reason VARCHAR(64);
+ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS stress_metadata_json CLOB;
+ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS report_kind VARCHAR(32);
+ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS report_verdict VARCHAR(32);
 CREATE TABLE IF NOT EXISTS execution_job_outbox (
     message_id VARCHAR(512) PRIMARY KEY, agent_id BIGINT NOT NULL, job_id BIGINT,
     execution_id BIGINT, kind VARCHAR(32) NOT NULL, payload_json CLOB NOT NULL,

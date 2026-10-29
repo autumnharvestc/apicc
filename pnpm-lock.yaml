@@ -161,6 +161,9 @@ importers:
       '@apicc/core':
         specifier: workspace:*
         version: link:../core
+      '@apicc/execution':
+        specifier: workspace:*
+        version: link:../execution
       '@apicc/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk

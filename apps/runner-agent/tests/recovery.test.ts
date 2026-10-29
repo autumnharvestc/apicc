@@ -2,6 +2,9 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { copyFileSync } from "node:fs";
+import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -15,6 +18,10 @@ import { bootstrapAgent } from "../src/bootstrap.js";
 import { ExecutionLedger } from "../src/ledger.js";
 import { runAgentControl } from "../src/transport/control.js";
 import { ExecutionHttpError } from "@apicc/execution/client";
+import { stressFixture } from "./helpers/stressFixture.js";
+import { alive } from "./helpers/processEvidence.js";
+import { readProcessIdentity, sameProcessIdentity } from "../src/processIdentity.js";
+import * as processIdentity from "../src/processIdentity.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const requests: string[] = [], gates = new Map<string, ServerResponse>();
@@ -56,6 +63,124 @@ function harness(items: Fixture[], dataDirectory: string, overrides: Partial<Age
   const supervisor = new AgentSupervisor(options); return { supervisor, completed, messages, options, setOffline(value: boolean) { offline = value; } };
 }
 const release = (path: string) => { gates.get(path)?.end('{"value":"ok"}'); gates.delete(path); };
+
+it("finishes recovery for a persisted old birth without killing the actual replacement PID owner", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apicc-reused-pid-recovery-")), item = await stressFixture(baseUrl, 972, 2, "/must-not-replay-reused-pid");
+  const scriptPath = fileURLToPath(new URL("../dist/stressWorkerChild.js", import.meta.url));
+  const neighbor = fork(scriptPath, [randomUUID(), "worker-1"], { execPath: process.execPath, execArgv: [], stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const neighborExited = new Promise<void>(resolve => neighbor.once("exit", () => resolve()));
+  let h: ReturnType<typeof harness> | undefined, expected: Awaited<ReturnType<typeof readProcessIdentity>>;
+  const before = requests.length;
+  try {
+    expected = await readProcessIdentity(neighbor.pid!); expect(expected).toBeDefined(); expect(alive(neighbor.pid!)).toBe(true);
+    const ledger = new ExecutionLedger(directory, "https://control.test/api/v1", "7", config()), runId = randomUUID(), workerId = "worker-1", id = `${runId}/${workerId}`;
+    ledger.accept(item.delivery); ledger.mark("972", "uncertain");
+    ledger.recordProcessIntent("972", { id, runId, workerId, role: "worker", scope: item.delivery.task.scope, epoch: ledger.childLease!.epoch, scriptPath });
+    ledger.recordProcess("972", { id, name: "stress worker worker-1", role: "worker", pid: neighbor.pid!, scope: item.delivery.task.scope, epoch: ledger.childLease!.epoch, birth: String(BigInt(expected!.birth) - 1n), exited: false }); ledger.close();
+    h = harness([item], directory); let recovered = false; void h.supervisor.ready.then(() => { recovered = true; }, () => undefined);
+    await vi.waitFor(() => expect(recovered).toBe(true), { timeout: 2000, interval: 20 });
+    expect(alive(neighbor.pid!)).toBe(true); expect(h.supervisor.capacity().availableSlots).toBe(1);
+    expect(h.supervisor["ledger"].intents[0]!.processes).toMatchObject([{ pid: neighbor.pid, exited: true }]);
+    expect(h.supervisor.pendingResults()).toMatchObject([{ executionId: "972", verdict: "interrupted" }]); expect(requests.length).toBe(before);
+  } finally {
+    await h?.supervisor.close();
+    const current = await readProcessIdentity(neighbor.pid!); if (expected && current && sameProcessIdentity(expected, current)) neighbor.kill("SIGKILL"); await neighborExited;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("blocks stress restart recovery until its real pre-lease worker is confirmed exited without replay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apicc-pre-lease-recovery-")), item = await stressFixture(baseUrl, 861, 2, "/must-not-replay-pre-lease");
+  const runId = randomUUID(), workerId = "worker-1", scriptPath = fileURLToPath(new URL("../dist/stressWorkerChild.js", import.meta.url));
+  const ledger = new ExecutionLedger(directory, "https://control.test/api/v1", "7", config());
+  ledger.accept(item.delivery); ledger.mark("861", "uncertain");
+  ledger.recordProcessIntent("861", { id: `${runId}/${workerId}`, runId, workerId, role: "worker", scope: item.delivery.task.scope, epoch: ledger.childLease!.epoch, scriptPath });
+  ledger.close();
+  const child = fork(scriptPath, [runId, workerId], { execPath: process.execPath, execArgv: [], stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+  let h: ReturnType<typeof harness> | undefined; let birth: Awaited<ReturnType<typeof readProcessIdentity>>;
+  const before = requests.length;
+  try {
+    birth = await readProcessIdentity(child.pid!); expect(birth).toBeDefined(); expect(alive(child.pid!)).toBe(true);
+    h = harness([item], directory);
+    console.log("pre-lease-recovery-observation", JSON.stringify({ pid: child.pid, birth: birth!.birth, alive: alive(child.pid!), capacity: h.supervisor.capacity(), reports: h.supervisor.pendingReports().length, messages: h.supervisor["ledger"].messages.map(message => ({ kind: message.kind, executionReleased: message.kind === "completed" ? message.executionReleased : undefined })) }));
+    expect.soft(h.supervisor.capacity().availableSlots).toBe(0);
+    expect.soft(h.supervisor.pendingReports()).toEqual([]);
+    expect(h.supervisor["ledger"].messages.some(message => message.kind === "completed")).toBe(false);
+    await (h.supervisor as unknown as { ready: Promise<void> }).ready;
+    expect(alive(child.pid!)).toBe(false); expect(h.supervisor.capacity().availableSlots).toBe(1);
+    expect(h.supervisor.pendingResults()).toMatchObject([{ executionId: "861", verdict: "interrupted", executionFact: "uncertain" }]);
+    expect(requests.length).toBe(before);
+  } finally {
+    await h?.supervisor.close();
+    if (birth) { const current = await readProcessIdentity(child.pid!); if (current && sameProcessIdentity(birth, current)) child.kill("SIGKILL"); }
+    else child.kill("SIGKILL");
+    await exited; await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("stops bootstrap during unknown stress recovery without releasing its durable intent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apicc-unknown-recovery-stop-")), item = await stressFixture(baseUrl, 862, 2, "/must-not-replay-unknown");
+  const ledger = new ExecutionLedger(directory, "https://control.test/api/v1", "7", config());
+  ledger.accept(item.delivery); const runId = randomUUID();
+  ledger.recordProcessIntent("862", { id: `${runId}/worker-1`, runId, workerId: "worker-1", role: "worker", scope: item.delivery.task.scope, epoch: ledger.childLease!.epoch, scriptPath: fileURLToPath(new URL("../dist/stressWorkerChild.js", import.meta.url)) }); ledger.close();
+  const tokenFile = join(directory, "identity-token"); await writeFile(tokenFile, "controlled-recovery-token");
+  let entered!: () => void; const unavailable = new Promise<void>(resolve => { entered = resolve; });
+  // Only the external OS inspection boundary is unavailable; ledger, supervisor, bootstrap and abort are real.
+  const inspection = vi.spyOn(processIdentity, "findStressWorkerProcesses").mockImplementation(async () => { entered(); throw new Error("OS process inspection unavailable"); });
+  const controller = new AbortController(); let stopped = false;
+  const running = bootstrapAgent({ baseUrl: "https://control.test/api/v1", agentId: "7", tokenFile, dataDirectory: directory, bootstrapConfig: config() }, controller.signal, { fetch: async () => { throw new Error("Recovery must precede control admission"); } }).finally(() => { stopped = true; });
+  try {
+    await unavailable; controller.abort();
+    await vi.waitFor(() => expect(stopped).toBe(true), { timeout: 1000, interval: 20 }); await running;
+    const persisted = new ExecutionLedger(directory, "https://control.test/api/v1", "7", config());
+    try { expect(persisted.intents[0]!.settled).not.toBe(true); expect(persisted.messages.some(message => message.kind === "completed")).toBe(false); }
+    finally { persisted.close(); }
+  } finally { controller.abort(); inspection.mockRestore(); await running.catch(() => undefined); await rm(directory, { recursive: true, force: true }); }
+});
+
+// The original production lost-ACK path must retain the exact stress report bytes without repeating business HTTP.
+it("reuploads identical dual-worker stress report bytes after a lost archive ACK without replay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apicc-stress-recovery-")), item = await stressFixture(baseUrl, 841, 2, "/stress-recovery");
+  const tokenFile = join(directory, "identity-token"); await writeFile(tokenFile, "controlled-stress-control-token");
+  const controller = new AbortController(), commands: AgentCommandV1[] = [], uploads: Uint8Array[] = [], hashes: string[] = []; let delivered = false;
+  const cfg = config({ heartbeatIntervalMs: 40, transferRetryMinMs: 20, transferRetryMaxMs: 30, transferRetryCycleMs: 50 });
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("runner/runtime")) { const body = JSON.parse(String(init?.body)); return Response.json({ registered: true, sessionId: body.sessionId, serverId: "https://control.test/api/v1", configuration: { configVersion: "1", config: cfg } }); }
+    if (url.includes("/inputs?")) return Response.json(item.inputs);
+    if (url.endsWith("/materials")) return Response.json(item.materials);
+    if (url.endsWith("/report?executionId=841")) {
+      const bytes = Buffer.from(init?.body as Uint8Array), digest = hash(bytes.toString("utf8"));
+      expect(new Headers(init?.headers).get("X-Report-Hash")).toBe(digest); uploads.push(bytes); hashes.push(digest);
+      if (uploads.length === 1) throw new Error("Report persisted; ACK deliberately lost");
+      return Response.json({ archived: true, reportHash: digest, reportBytes: bytes.length });
+    }
+    if (url.endsWith("runner/messages")) {
+      const batch = JSON.parse(String(init?.body)) as AgentMessageV1[];
+      for (const message of batch) if (message.kind === "start-request") {
+        expect(message.stressBinding).toEqual(item.inputs.stressBinding);
+        commands.push(permit(message, item));
+      }
+      return Response.json({ acknowledged: batch.map(message => message.messageId) });
+    }
+    if (url.endsWith("runner/poll") || url.endsWith("runner/heartbeat")) { await new Promise(resolve => setTimeout(resolve, 20)); const deliveries = delivered ? [] : [item.delivery]; delivered = true; return Response.json({ deliveries, commands: commands.splice(0) }); }
+    throw new Error("Unexpected controlled endpoint");
+  };
+  let running = bootstrapAgent({ baseUrl: "https://control.test/api/v1", agentId: "7", tokenFile, dataDirectory: directory, bootstrapConfig: cfg }, controller.signal, { fetch: fetcher });
+  try {
+    await vi.waitFor(() => expect(uploads).toHaveLength(2), { timeout: 10000 });
+    const targetRequestsBeforeRecovery = requests.filter(path => path === "/stress-recovery").length;
+    expect(targetRequestsBeforeRecovery).toBe(4); expect(Buffer.compare(Buffer.from(uploads[0]!), Buffer.from(uploads[1]!))).toBe(0); expect(hashes[1]).toBe(hashes[0]);
+    expect(JSON.parse(Buffer.from(uploads[0]!).toString("utf8"))).toMatchObject({ verdict: "passed", output: { kind: "stress", result: { requests: { completed: 4 } } } });
+    controller.abort(); await running;
+    const restored = harness([item], directory);
+    try { restored.supervisor.receive(item.delivery); await restored.supervisor.flushMessages(new AbortController().signal); expect(restored.supervisor.processState()).toEqual({ sharedPid: undefined, dedicatedPids: [] }); }
+    finally { await restored.supervisor.close(); }
+    const targetRequestsAfterRecovery = requests.filter(path => path === "/stress-recovery").length;
+    expect(targetRequestsAfterRecovery).toBe(targetRequestsBeforeRecovery);
+  } finally { controller.abort(); await running; await rm(directory, { recursive: true, force: true }); }
+});
 
 // Break caught: replacing durable execution identities/results by per-process Maps.
 it("recovers projected unconfirmed results and never reexecutes after control loss or host restart", async () => {

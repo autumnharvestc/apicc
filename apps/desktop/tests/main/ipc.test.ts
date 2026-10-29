@@ -16,6 +16,7 @@ import { createStressPreloadApi } from "../../src/preload/stressBridge.js";
 import { IpcChannel } from "../../src/shared/channels.js";
 import type { WorkflowLocator } from "../../src/shared/locations.js";
 import type { NodeCreateInput, NodeCreatedDTO, WfSetStatusResult, WorkflowDetail, WorkflowSummary } from "../../src/shared/types.js";
+import { StressProgressDTOSchema } from "../../src/shared/types.js";
 import { IDS, makeTempRoot, makeWorkspace, persistWorkspace, projectOne, projectTwo, uuid } from "./helpers/contract-assets.js";
 
 function setup() {
@@ -974,7 +975,11 @@ describe("压测 IPC", () => {
       // G-05 permits one immediate final flush after real close/persist; ordinary progress remains throttled.
       expect(times.length).toBeGreaterThanOrEqual(2);
       expect(times.slice(1).every((value, index) => value - times[index]! >= 249)).toBe(true);
-      expect(Object.keys(identity).sort()).toEqual(["activeVus", "atMs", "completedIterations", "droppedIterations", "generation", "invocationId", "phase", "projectLocator", "root", "runId", "sourceRoot", "stageId", "startedIterations", "state", "target"]);
+      expect(Object.keys(identity).sort()).toEqual(["activeVus", "atMs", "completedIterations", "completeness", "droppedIterations", "generation", "invocationId", "phase", "projectLocator", "requests", "root", "runId", "sourceRoot", "stageId", "startedIterations", "state", "target"]);
+      expect(identity.requests).toEqual({ started: 0, completed: 0, eligibleCompleted: 0, failed: 0 });
+      expect(identity.completeness).toEqual({ execution: { complete: true, reasons: [] }, metrics: { complete: true, reasons: [] }, load: { complete: true, reasons: [] } });
+      expect(events.at(-1)!.requests).toEqual({ started: 1, completed: 1, eligibleCompleted: 1, failed: 0 });
+      for (const event of events) expect(() => StressProgressDTOSchema.parse(event)).not.toThrow();
       expect(identity.invocationId).toBe(input.invocationId); expect(identity.target).toEqual(plan.target);
       await expect(deps.handle("stress:run", { sender }, { ...input, projectLocator: { ...project.locator, projectId: uuid(998) } })).rejects.toThrow();
     } finally { release?.(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }

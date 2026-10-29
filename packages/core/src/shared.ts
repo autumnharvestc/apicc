@@ -317,6 +317,7 @@ export { computeReport } from "./stress/aggregate.js";
 export * from "./stress/plan.js";
 export * from "./stress/reportV2.js";
 export * from "./stress/compare.js";
+export type { StressExecutionSummary, StressExecutionComparison, StressExecutionComparisonReason, StressHtmlPresentation } from './stress/presentation.js';
 export { renderStressHtml } from "./stress/html.js";
 export { StressStatisticsSchema, type StressStatistics } from "./stress/model.js";
 export { evaluateStressThresholds } from "./stress/thresholds.js";

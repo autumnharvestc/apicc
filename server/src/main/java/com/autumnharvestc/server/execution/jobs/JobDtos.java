@@ -8,10 +8,16 @@ import java.util.*;
 public final class JobDtos {
     private JobDtos() {}
     public record Scope(String workspaceId,String groupId,String projectId) {}
-    public record RunConfig(Long jobTimeoutMs,Long scriptTimeoutMs,JsonNode requestSettings) {}
+    public record RunConfig(Long jobTimeoutMs,Long scriptTimeoutMs,JsonNode requestSettings,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) JsonNode stress) {
+        public RunConfig {if(stress!=null&&stress.isNull())stress=null;}
+    }
     public record Preparation(Scope scope,String manifestHash,String scriptPlanDigest,String scriptGrantVersion,
         List<PreparedScriptRequirement> scriptRequirements,String executionProfile,String dispatchKind,
-        String requiredCoreBuildId,List<String> requiredCapabilities,String runtimeCompatibilityId) {}
+        String requiredCoreBuildId,List<String> requiredCapabilities,String runtimeCompatibilityId,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) JsonNode stressBinding) {
+        public Preparation {if(stressBinding!=null&&stressBinding.isNull())stressBinding=null;}
+    }
     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     public record Submit(String intentId,String agentId,String snapshotId,JsonNode target,String environmentId,
         String debugSessionId,RunConfig runConfig,MaterialSelection materials,Preparation preparation,JsonNode network) {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RequestSettingsOverrideSchema } from "@apicc/core/schema";
+import { StressRunConfigSchema } from "./stress.js";
 
 export const PositiveIntegerSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 export const MIN_FAULT_REPORT_BYTES = 1024;
@@ -19,6 +20,10 @@ export const defaultDeploymentConfig = Object.freeze(DeploymentConfigSchema.pars
   auditRetentionDays: 90, cleanupIntervalMs: 3600000, cleanupBatchSize: 100, enrollmentTtlMs: 86400000,
 }));
 const AgentConfigObject = z.object({
+  maxConcurrentStressJobs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(1), maxStressProcesses: PositiveIntegerSchema.default(5),
+  maxStressVus: PositiveIntegerSchema.max(1000).default(100), maxStressRequestConcurrency: PositiveIntegerSchema.max(1000).default(100),
+  maxStressRps: z.number().finite().positive().default(1000), maxStressMetricMemoryBytes: PositiveIntegerSchema.default(335544320),
+  stressProgressIntervalMs: z.number().int().min(250).max(60000).default(1000),
   maxConcurrentJobs: PositiveIntegerSchema, sharedDebugMaxInFlight: PositiveIntegerSchema,
   sharedDebugIdleMs: PositiveIntegerSchema, debugSessionIdleMs: PositiveIntegerSchema,
   maxDebugSessions: PositiveIntegerSchema, workerStartupTimeoutMs: timer,
@@ -32,9 +37,18 @@ const AgentConfigObject = z.object({
   inputCacheBytes: PositiveIntegerSchema, pendingResultBytes: PositiveIntegerSchema,
   faultReserveBytes: PositiveIntegerSchema, minFreeDiskBytes: PositiveIntegerSchema,
 }).strict();
-export const AgentConfigPatchSchema = AgentConfigObject.partial().strict();
+export const AgentConfigPatchSchema = AgentConfigObject.partial().extend({
+  maxConcurrentStressJobs: AgentConfigObject.shape.maxConcurrentStressJobs.removeDefault().optional(),
+  maxStressProcesses: AgentConfigObject.shape.maxStressProcesses.removeDefault().optional(),
+  maxStressVus: AgentConfigObject.shape.maxStressVus.removeDefault().optional(),
+  maxStressRequestConcurrency: AgentConfigObject.shape.maxStressRequestConcurrency.removeDefault().optional(),
+  maxStressRps: AgentConfigObject.shape.maxStressRps.removeDefault().optional(),
+  maxStressMetricMemoryBytes: AgentConfigObject.shape.maxStressMetricMemoryBytes.removeDefault().optional(),
+  stressProgressIntervalMs: AgentConfigObject.shape.stressProgressIntervalMs.removeDefault().optional(),
+}).strict();
 export const AgentConfigSchema = AgentConfigObject.superRefine((c, ctx) => {
   const issue = (field: keyof typeof c, message: string) => ctx.addIssue({ code: "custom", path: [field], message });
+  if (c.maxConcurrentStressJobs > c.maxConcurrentJobs) issue("maxConcurrentStressJobs", "stress job capacity exceeds total job capacity");
   if (c.longPollWaitMs + c.pollTimeoutMarginMs > c.controlRequestTimeoutMs) issue("controlRequestTimeoutMs", "control timeout must cover poll wait + margin");
   if (c.heartbeatIntervalMs >= c.offlineAfterMs) issue("offlineAfterMs", "offline deadline must exceed heartbeat interval");
   if (c.workerHeartbeatIntervalMs >= c.workerUnresponsiveAfterMs) issue("workerUnresponsiveAfterMs", "worker supervision deadline must exceed heartbeat interval");
@@ -59,6 +73,9 @@ export const defaultAgentConfig: Readonly<AgentConfig> = Object.freeze(AgentConf
 }));
 export function validateAgentConfig(value: unknown): AgentConfig { return AgentConfigSchema.parse(value); }
 const PolicyConfigObject = z.object({
+  maxStressWorkers: PositiveIntegerSchema.default(4), maxStressVus: PositiveIntegerSchema.max(1000).default(1000),
+  maxStressRequestConcurrency: PositiveIntegerSchema.max(1000).default(1000), maxStressRps: z.number().finite().positive().default(1000),
+  stressMetricMemoryBytes: z.number().int().min(1048576).max(67108864).default(67108864), stressEvidenceMaxSamples: z.number().int().min(1).max(20).default(20),
   maxQueuedJobs: PositiveIntegerSchema, queueTimeoutMs: PositiveIntegerSchema.nullable(),
   defaultJobTimeoutMs: PositiveIntegerSchema, maxJobTimeoutMs: PositiveIntegerSchema,
   cancelGraceMs: timer, scriptTimeoutMs: timer, maxScriptTimeoutMs: timer,
@@ -68,7 +85,14 @@ const PolicyConfigObject = z.object({
   caseEvidenceBytes: PositiveIntegerSchema, reportBytes: PositiveIntegerSchema.min(MIN_FAULT_REPORT_BYTES),
   workflowMetadataBytes: PositiveIntegerSchema, resultRetentionDays: PositiveIntegerSchema,
 }).strict();
-export const PolicyConfigPatchSchema = PolicyConfigObject.partial().strict();
+export const PolicyConfigPatchSchema = PolicyConfigObject.partial().extend({
+  maxStressWorkers: PolicyConfigObject.shape.maxStressWorkers.removeDefault().optional(),
+  maxStressVus: PolicyConfigObject.shape.maxStressVus.removeDefault().optional(),
+  maxStressRequestConcurrency: PolicyConfigObject.shape.maxStressRequestConcurrency.removeDefault().optional(),
+  maxStressRps: PolicyConfigObject.shape.maxStressRps.removeDefault().optional(),
+  stressMetricMemoryBytes: PolicyConfigObject.shape.stressMetricMemoryBytes.removeDefault().optional(),
+  stressEvidenceMaxSamples: PolicyConfigObject.shape.stressEvidenceMaxSamples.removeDefault().optional(),
+}).strict();
 export const PolicyConfigSchema = PolicyConfigObject.superRefine((c, ctx) => {
   const le = (small: keyof typeof c, big: keyof typeof c) => {
     if (c[small]! > c[big]!) ctx.addIssue({ code: "custom", path: [small], message: `${small} exceeds ${big}` });
@@ -92,6 +116,7 @@ export const defaultPolicyConfig: Readonly<PolicyConfig> = Object.freeze(PolicyC
 export const ClientConfigSchema = z.object({ statusRefreshMs: timer }).strict();
 export const defaultClientConfig = Object.freeze(ClientConfigSchema.parse({ statusRefreshMs: 2000 }));
 export const RunConfigSchema = z.object({
+  stress: StressRunConfigSchema.optional(),
   jobTimeoutMs: PositiveIntegerSchema.optional(), scriptTimeoutMs: timer.optional(),
   requestSettings: RequestSettingsOverrideSchema.optional(),
 }).strict();
@@ -105,7 +130,7 @@ export const EffectiveConfigInputSchema = z.object({
 }).strict();
 export type EffectiveConfigInput = z.input<typeof EffectiveConfigInputSchema>;
 export type ConfigSource = "default" | "deployment" | "agent" | "workspace" | "project" | "run" | "client";
-const ceilings = new Set<keyof PolicyConfig>(["maxQueuedJobs", "maxJobTimeoutMs", "maxScriptTimeoutMs", "snapshotBytes", "singleAttachmentBytes", "totalInputBytes", "maxAssetChangeFiles", "bodyPreviewBytes", "valuePreviewBytes", "caseEvidenceBytes", "reportBytes", "workflowMetadataBytes"]);
+const ceilings = new Set<keyof PolicyConfig>(["maxStressWorkers", "maxStressVus", "maxStressRequestConcurrency", "maxStressRps", "stressMetricMemoryBytes", "stressEvidenceMaxSamples", "maxQueuedJobs", "maxJobTimeoutMs", "maxScriptTimeoutMs", "snapshotBytes", "singleAttachmentBytes", "totalInputBytes", "maxAssetChangeFiles", "bodyPreviewBytes", "valuePreviewBytes", "caseEvidenceBytes", "reportBytes", "workflowMetadataBytes"]);
 /** Backend calculation; the caller must authorize the scope of every explicit layer. */
 export function resolveEffectiveConfig(value: unknown = {}) {
   const input = EffectiveConfigInputSchema.parse(value);

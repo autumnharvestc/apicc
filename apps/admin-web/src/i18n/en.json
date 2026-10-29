@@ -1,5 +1,7 @@
 {
+  "stressCapacity":{"title":"Current resource occupancy","draining":"Over-limit draining","drainHint":"Blocks new admission only; active jobs are not terminated.","within":"Within limit","dimension":"Resource","quantity":"Used / Limit","state":"Capacity state","dimensions":{"jobs":"Stress jobs","processes":"Execution processes","vus":"VUs","requestConcurrency":"Request concurrency","maxRps":"Request rate","metricMemoryBytes":"Numeric memory"},"units":{"jobs":"jobs","processes":"execution processes","vus":"VUs","requestConcurrency":"requests","maxRps":"requests/s","metricMemoryBytes":"MiB"}},
   "agents": {
+    "stressBudgetHint": "Zero stress job slots pauses new stress tasks. Numeric memory is not an RSS hard limit; policy memory is per execution process and failure samples are per entire task.",
     "allocationLoading": "Reading current allocation. Editing and saving are disabled until it completes.",
     "allocationFailed": "Allocation could not be read. Reload it successfully before editing.",
     "validation": {"numberMilliseconds":"Enter a finite number of seconds that converts exactly to an integer number of milliseconds.","integer":"The value must be an integer in its base unit.","integerMilliseconds":"The value must be an integer number of milliseconds; seconds cannot contain actual sub-millisecond precision.","greaterThan":"Must be greater than {limit}.","atLeast":"Must be at least {limit}.","atMost":"Must be at most {limit}.","lessThan":"Must be less than {limit}.","number":"Enter a finite number.","invalid":"This value does not match the allowed type or range for this setting."},
@@ -98,6 +100,14 @@
     "saveApproval": "Save approval",
     "revokeApproval": "Revoke all script approvals",
     "units": {
+      "jobs": "jobs",
+      "processes": "execution processes",
+      "vus": "VU",
+      "requests": "requests",
+      "rps": "requests/s",
+      "workers": "workers",
+      "processMiB": "MiB/execution process",
+      "samples": "samples/task",
       "KiB": "KiB",
       "s": "seconds",
       "MiB": "MiB",
@@ -132,6 +142,16 @@
       "trusted-core": "Allow trusted Core scripts (project approval still required)"
     },
     "fields": {
+      "maxConcurrentStressJobs": "Concurrent stress jobs",
+      "maxStressProcesses": "Stress execution processes",
+      "maxStressVus": "Stress VU limit",
+      "maxStressRequestConcurrency": "Stress request concurrency",
+      "maxStressRps": "Stress request RPS limit",
+      "maxStressMetricMemoryBytes": "Stress numeric memory budget",
+      "stressProgressIntervalMs": "Stress progress interval",
+      "maxStressWorkers": "Workers per stress task",
+      "stressMetricMemoryBytes": "Numeric budget per execution process",
+      "stressEvidenceMaxSamples": "Failure samples per entire task",
       "maxConcurrentJobs": "Concurrent jobs",
       "sharedDebugMaxInFlight": "Shared debug calls in flight",
       "sharedDebugIdleMs": "Shared debug idle reclamation",

@@ -13,6 +13,9 @@ import { readBuildIdentity, type BuildIdentity } from "@apicc/execution/buildIde
 import { defaultAgentConfig, defaultPolicyConfig, executionInputsDigestText, runtimeCompatibilityIdForRuntime, declaredNetworkPath, type AgentConfig, type AgentCommandV1, type AgentMessageV1, type ExecutionInputs, type ProjectRunMaterials, type TaskDeliveryV1 } from "@apicc/execution/contract";
 import { AgentSupervisor, type SettledExecution } from "../src/supervisor.js";
 import { createLongPollingTransport } from "../src/transport/longPolling.js";
+import { stressFixture, stressHarness } from "./helpers/stressFixture.js";
+import { alive } from "./helpers/processEvidence.js";
+import { readProcessIdentity, sameProcessIdentity } from "../src/processIdentity.js";
 
 const hash = (text: string | Uint8Array) => createHash("sha256").update(text).digest("hex");
 const workflowId = "10000000-0000-4000-8000-000000000092";
@@ -113,6 +116,33 @@ function session(item: Fixture, debugSessionId: string) {
   item.inputs.debugSession = { debugSessionId, serverId: "https://control.test/api/v1", scope: item.delivery.task.scope, submittedByUserId: "44", agentId: "7", expiresAt: "2099-01-01T00:00:00.000Z", hostSessionId: "host-1" };
   refix(item);
 }
+
+it("retains ownership of the actual coordinator after its post-fork ledger write fails until OS exit", async () => {
+  const item = await stressFixture(baseUrl, 971, 1, "/must-not-run-after-ledger-fault"), h = stressHarness([item]);
+  const ledger = h.supervisor["ledger"], originalRecord = ledger.recordProcess.bind(ledger);
+  let failedPid: number | undefined, injected = false, aliveAtSettlement: boolean | undefined;
+  let creation: ReturnType<typeof readProcessIdentity> | undefined;
+  const persistence = vi.spyOn(ledger, "recordProcess").mockImplementation((executionId, record) => {
+    if (!injected && record.role === "coordinator" && !record.exited) {
+      injected = true; failedPid = record.pid; creation = readProcessIdentity(record.pid);
+      throw new Error("Controlled post-fork durable write failure");
+    }
+    return originalRecord(executionId, record);
+  });
+  const settled = h.supervisor.options.onSettled;
+  h.supervisor.options.onSettled = result => { aliveAtSettlement = failedPid ? alive(failedPid) : undefined; settled?.(result); };
+  const before = seen.length;
+  try {
+    h.supervisor.receive(item.delivery); await vi.waitFor(() => expect(h.completed).toHaveLength(1), { timeout: 10000 });
+    console.log("post-fork-persistence-ownership", JSON.stringify({ injected, failedPid, aliveAtSettlement, aliveNow: failedPid ? alive(failedPid) : undefined, capacity: h.supervisor.capacity(), completed: h.messages.filter(message => message.kind === "completed") }));
+    expect({ injected, aliveAtSettlement }).toEqual({ injected: true, aliveAtSettlement: false });
+    expect(alive(failedPid!)).toBe(false); expect(h.supervisor.capacity().availableSlots).toBe(1); expect(seen.length).toBe(before);
+    expect(h.completed[0]!.verdict).not.toBe("passed");
+  } finally {
+    persistence.mockRestore(); await h.supervisor.close();
+    const expected = await creation; if (failedPid && expected) { const current = await readProcessIdentity(failedPid); if (current && sameProcessIdentity(expected, current)) process.kill(failedPid, "SIGKILL"); await vi.waitFor(() => expect(alive(failedPid!)).toBe(false)); }
+  }
+});
 
 it("retains Core logical failures in the completed message and archive without rewriting physical counts", async () => {
   const debug = await task(301, "/logical-post-failure", "debug", "// trusted inherited operation", false, baseUrl, project => {

@@ -1,17 +1,19 @@
-import { TaskDeliveryV1Schema, AgentCommandV1Schema, EntityIdSchema, OpaqueIdSchema, validateAgentConfig, MIN_FAULT_REPORT_BYTES, type AgentConfig, type AgentControlTransport, type AgentCommandV1, type TaskDeliveryV1, type ExecutionInputs, type ProjectRunMaterials, type PolicyConfig, type AgentMessageV1 } from "@apicc/execution/contract";
+import { TaskDeliveryV1Schema, AgentCommandV1Schema, StressProgressMessageSchema, EntityIdSchema, OpaqueIdSchema, validateAgentConfig, MIN_FAULT_REPORT_BYTES, type AgentConfig, type AgentControlTransport, type AgentCommandV1, type TaskDeliveryV1, type ExecutionInputs, type ProjectRunMaterials, type PolicyConfig, type AgentMessageV1 } from "@apicc/execution/contract";
 import type { BuildIdentity } from "@apicc/execution/buildIdentity";
-import type { InvocationOutput } from "@apicc/execution/host";
+import { assertStressExecutionDeadline, type InvocationOutput } from "@apicc/execution/host";
 import { reportingUnits } from "@apicc/core/report/units";
 import { performance } from "node:perf_hooks";
 import { TaskSlots } from "./slots.js";
 import { selectDispatch } from "./dispatch.js";
 import { withInvocation, validateRuntime, validatePermit, preparationReason, rejectPreparation, type InvocationDTO, type PreparedMetadata, type StartPermit } from "./invocationContext.js";
-import { TaskWorker } from "./debugWorker.js";
+import { TaskWorker, ProcessRecordFailure } from "./debugWorker.js";
 import { DebugSessions } from "./debugSessions.js";
-import type { HttpSession } from "@apicc/core";
-import { ExecutionLedger, type ExecutionFact } from "./ledger.js";
+import type { HttpSession, StressProgress } from "@apicc/core";
+import { ExecutionLedger, type ExecutionFact, type ExecutionProcess, type ExecutionProcessIntent } from "./ledger.js";
+import { confirmStressProcessTreeExited, type OwnedStressProcess } from "./stressProcessTree.js";
 import type { ArchiveReceipt } from "./outbox.js";
-export interface SettledExecution { executionId: string; verdict: string; pid?: number; output?: InvocationOutput; reasonCode?: string; executionFact?: ExecutionFact }
+import type {StressProcessObservation} from '@apicc/execution/contract';
+export interface SettledExecution { executionId: string; verdict: string; pid?: number; output?: InvocationOutput; reasonCode?: string; executionFact?: ExecutionFact;processObservation?:StressProcessObservation }
 export interface SupervisorOptions {
   dataDirectory?: string;
   serverId: string; agentId: string; sessionId: string; runtimeCompatibilityId: string;
@@ -28,10 +30,12 @@ interface ActiveCall {
   session?: { session: HttpSession; release(): void };
   admittedAt: number;
   terminal?: boolean;
+  stressSequence?: number; lastStressProgressAt?: number;
   settled: Promise<void>; resolveSettled(): void;
 }
 /** Admission, process resources and persisted report retention have separate lifetimes. */
 export class AgentSupervisor {
+  readonly ready: Promise<void>;
   private config: AgentConfig;
   private readonly slots: TaskSlots;
   private readonly queue: TaskDeliveryV1[] = [];
@@ -50,22 +54,42 @@ export class AgentSupervisor {
   private readonly controlAbort = new AbortController();
   private readonly messageRetry = new Map<string, { attempts: number; nextAt: number }>();
   private readonly sending = new Map<string, Promise<void>>();
+  private recovering = false;
+  private readonly recoveryAbort = new AbortController();
   constructor(readonly options: SupervisorOptions) {
     this.config = validateAgentConfig(options.config); this.slots = new TaskSlots(this.config); this.version = options.configVersion; this.appliedVersion = options.configVersion; this.sessions = new DebugSessions(options.serverId, options.agentId, options.sessionId);
     this.ledger = new ExecutionLedger(options.dataDirectory, options.serverId, options.agentId, this.config);
-    try { this.ledger.recover(); } catch (error) { this.ledger.close(); throw error; }
+    const pendingStress = this.ledger.intents.filter(intent => !intent.settled && intent.processIntents?.length);
+    if (pendingStress.length) {
+      this.recovering = true; this.ready = this.recoverStressProcesses(pendingStress);
+      // The bootstrap awaits ready; keeping a handled copy also supports direct embedders that close early.
+      void this.ready.catch(() => undefined);
+    } else {
+      try { this.ledger.recover(); this.restoreLedgerState(); } catch (error) { this.ledger.close(); throw error; }
+      this.ready = Promise.resolve();
+    }
+  }
+  private restoreLedgerState(): void {
     for (const intent of this.ledger.intents) { this.seen.set(intent.executionId, intent.deliveryId); if (intent.result) { this.results.set(intent.executionId, intent.result); this.slots.restoreResult(intent.executionId, intent.resultBudget || MIN_FAULT_REPORT_BYTES, !intent.resultBudget); } }
     for (const message of this.ledger.messages) this.messages.set(message.messageId, message);
   }
+  private async recoverStressProcesses(intents: ReadonlyArray<{ executionId: string; processes?: ExecutionProcess[]; processIntents?: ExecutionProcessIntent[] }>): Promise<void> {
+    for (const intent of intents) {
+      const processes = new Map<string, OwnedStressProcess>((intent.processes ?? []).map(value => [value.id, { record: structuredClone(value) }]));
+      await confirmStressProcessTreeExited(intent.processIntents!, processes, value => this.ledger.recordProcess(intent.executionId, value), this.recoveryAbort.signal);
+    }
+    this.recoveryAbort.signal.throwIfAborted();
+    this.ledger.recover(); this.restoreLedgerState(); this.recovering = false; this.pump();
+  }
   receive(raw: TaskDeliveryV1): boolean {
-    const checked = TaskDeliveryV1Schema.safeParse(raw); if (!checked.success || this.closed) return false;
+    const checked = TaskDeliveryV1Schema.safeParse(raw); if (!checked.success || this.closed || this.recovering) return false;
     const delivery = checked.data; const key = delivery.task.executionId;
     if (this.seen.has(key)) return true;
     if (!this.slots.canReserveResult() || !this.ledger.diskAvailable(this.slots.committedInput() + this.slots.committedResult())) return false;
     this.ledger.accept(delivery); this.seen.set(key, delivery.messageId); this.queue.push(delivery); this.pump(); return true;
   }
   rejectMalformedDelivery(raw: unknown): void {
-    if (this.closed || !this.slots.canReserveResult()) return;
+    if (this.closed || this.recovering || !this.slots.canReserveResult()) return;
     if (!raw || typeof raw !== "object" || !("task" in raw) || !("messageId" in raw) || !raw.task || typeof raw.task !== "object" || !("jobId" in raw.task) || !("executionId" in raw.task)) return;
     const executionId = EntityIdSchema.safeParse(raw.task.executionId), jobId = EntityIdSchema.safeParse(raw.task.jobId), messageId = OpaqueIdSchema.safeParse(raw.messageId);
     if (!executionId.success || !jobId.success || !messageId.success || this.seen.has(executionId.data)) return;
@@ -75,7 +99,7 @@ export class AgentSupervisor {
     const saved = this.ledger.settle(executionId.data, result); this.results.set(executionId.data, saved.result); this.slots.restoreResult(executionId.data, MIN_FAULT_REPORT_BYTES, true); this.options.onSettled?.(saved.result); void this.emit(saved.message);
   }
   private pump(): void {
-    if (this.closed) return;
+    if (this.closed || this.recovering) return;
     while (this.queue.length) {
       const delivery = this.queue[0]!; if (!this.ledger.diskAvailable(this.slots.committedInput() + this.slots.committedResult()) || !this.slots.reserve(delivery.task.executionId)) break;
       this.queue.shift();
@@ -103,15 +127,17 @@ export class AgentSupervisor {
       // Preparation/startup is charged to the same deadline; adjusting the known duration
       // retains time spent before the fixed input arrived.
       this.armDeadline(call, duration);
-      const dto: InvocationDTO = { task, inputs, materials, serverId: this.options.serverId, minFreeDiskBytes: this.config.minFreeDiskBytes, runtimeCompatibilityId: this.options.runtimeCompatibilityId };
+      const dto: InvocationDTO = { task, inputs, materials, serverId: this.options.serverId, minFreeDiskBytes: this.config.minFreeDiskBytes, runtimeCompatibilityId: this.options.runtimeCompatibilityId, appliedAgentConfig: { ...this.config }, deadlineAt: Date.now() + Math.max(0, call.admittedAt + duration - performance.now()) };
       call.session = await this.sessions.acquire(task, inputs, this.config);
       if (this.config.workerUnresponsiveAfterMs <= inputs.policy.maxScriptTimeoutMs + this.config.workerHeartbeatIntervalMs) rejectPreparation("policy-mismatch");
       const metadata = await withInvocation(dto, call.controller.signal, async value => value, call.session?.session, this.config.minFreeDiskBytes, bytes => { this.slots.resources(task.executionId, bytes, inputs.policy.reportBytes); this.ledger.reserve(task.executionId, inputs.policy.reportBytes); return this.slots.committedInputExcept(task.executionId); });
       dto.minFreeDiskBytes = this.config.minFreeDiskBytes + this.slots.committedInputExcept(task.executionId);
       const kind = selectDispatch(metadata.project, task, this.config);
+      if (task.target.kind === "stress") assertStressExecutionDeadline(metadata.project.prepared, call.admittedAt + duration - performance.now());
+      if (metadata.project.prepared.stressBinding && !this.slots.reserveStress(task.executionId, metadata.project.prepared.stressBinding.reservation)) rejectPreparation("stress-capacity-exceeded");
       if (!this.slots.dispatch(task.executionId, kind)) rejectPreparation("shared-debug-capacity-exceeded");
       call.dto = dto; call.metadata = metadata;
-      await this.emit({ ...this.messageIdentity(call, "start-request"), kind: "start-request", inputsDigest: inputs.inputsDigest, policyVersion: task.policyVersion, scriptPlanDigest: metadata.project.scriptPlanDigest, scriptRequirements: [...metadata.project.scriptRequirements], executionProfile: task.executionProfile, runtimeCompatibilityId: task.runtimeCompatibilityId, credentialVersions: { ...metadata.credentialVersions }, ...(task.scriptGrantVersion ? { scriptGrantVersion: task.scriptGrantVersion } : {}) });
+      await this.emit({ ...this.messageIdentity(call, "start-request"), kind: "start-request", ...(metadata.project.prepared.stressBinding ? { stressBinding: metadata.project.prepared.stressBinding } : {}), inputsDigest: inputs.inputsDigest, policyVersion: task.policyVersion, scriptPlanDigest: metadata.project.scriptPlanDigest, scriptRequirements: [...metadata.project.scriptRequirements], executionProfile: task.executionProfile, runtimeCompatibilityId: task.runtimeCompatibilityId, credentialVersions: { ...metadata.credentialVersions }, ...(task.scriptGrantVersion ? { scriptGrantVersion: task.scriptGrantVersion } : {}) });
     } catch (error) { await this.finish(call, { executionId: task.executionId, verdict: call.timedOut ? "timed-out" : call.cancelled ? "cancelled" : "rejected", reasonCode: preparationReason(error) }); }
   }
   command(raw: AgentCommandV1): false | void {
@@ -155,17 +181,31 @@ export class AgentSupervisor {
   private async run(call: ActiveCall): Promise<void> {
     const task = call.delivery.task; call.running = true;
     try {
-      const worker = task.dispatchKind === "shared-debug" ? await this.sharedWorker() : new TaskWorker(this.config, false, this.options.identity, this.ledger.childLease);
+      if(task.target.kind==='stress')this.ledger.observeProcesses(task.executionId,call.metadata!.project.prepared.stressBinding!.reservation.processes);
+      const worker = task.dispatchKind === "shared-debug" ? await this.sharedWorker() : new TaskWorker(this.config, false, this.options.identity, this.ledger.childLease, task.target.kind === "stress" ? { task, record: value => this.ledger.recordProcess(task.executionId, value), recordIntent: value => this.ledger.recordProcessIntent(task.executionId, value) } : undefined);
       call.worker = worker; await worker.ready;
       if (call.controller.signal.aborted) { if (!worker.shared) await worker.retire(); throw new Error("Invocation cancelled before execution"); }
       await this.emit({ ...this.messageIdentity(call, "started"), kind: "started", permitId: call.permit!.permitId, startedAt: new Date().toISOString() });
       call.controller.signal.throwIfAborted();
       this.ledger.mark(task.executionId, "uncertain");
-      const result = await worker.run(call.dto!, call.permit!, call.session?.session, call.controller.signal, () => this.ledger.mark(task.executionId, "started"));
-      if (!worker.shared) await worker.exited;
+      const result = await worker.run(call.dto!, call.permit!, call.session?.session, call.controller.signal, () => this.ledger.mark(task.executionId, "started"), progress => this.stressProgress(call, progress));
+      if (!worker.shared) { await worker.exited; worker.throwIfProcessRecordingFailed(); }
+      if (result.output?.kind === "stress-failure" && !result.output.started && this.ledger.intents.find(item => item.executionId === task.executionId)?.fact !== "started") this.ledger.mark(task.executionId, "not-started");
       const verdict = result.interrupted ? call.timedOut ? "timed-out" : "interrupted" : call.timedOut ? "timed-out" : call.cancelled ? "cancelled" : result.output ? outputPassed(result.output) ? "passed" : "failed" : "rejected";
       await this.finish(call, { executionId: task.executionId, verdict, pid: result.pid, output: result.output, ...(result.error ? { reasonCode: result.interrupted ? "worker-exited" : result.reasonCode ?? "worker-rejected" } : {}) });
-    } catch { if (call.worker && !call.worker.shared) await call.worker.retire(); await this.finish(call, { executionId: task.executionId, verdict: call.timedOut ? "timed-out" : call.cancelled ? "cancelled" : "interrupted", pid: call.worker?.pid, reasonCode: "worker-unavailable" }); }
+    } catch (error) { if (call.worker && !call.worker.shared) await call.worker.retire(); await this.finish(call, { executionId: task.executionId, verdict: call.timedOut ? "timed-out" : call.cancelled ? "cancelled" : "interrupted", pid: call.worker?.pid, reasonCode: error instanceof ProcessRecordFailure ? "result-persistence-failed" : "worker-unavailable" }); }
+  }
+  private stressProgress(call: ActiveCall, value: StressProgress): void {
+    if (call.terminal || call.delivery.task.target.kind !== "stress") return;
+    const now = performance.now();
+    if (value.state !== "finished" && call.lastStressProgressAt !== undefined && now - call.lastStressProgressAt < this.config.stressProgressIntervalMs) return;
+    const sequence = (call.stressSequence ?? 0) + 1;
+    // Explicit projection: no worker exception, material, marker or arbitrary property crosses control IPC.
+    const observation=this.ledger.processObservation(call.delivery.task.executionId);
+    const checked = StressProgressMessageSchema.safeParse({ ...this.messageIdentity(call, `stress-progress-${sequence}`), kind: "stress-progress", sequence, observedAt: new Date().toISOString(), runId: value.runId, state: value.state, phase: value.phase, stageId: value.stageId, atMs: value.atMs, activeVus: value.activeVus, startedIterations: value.startedIterations, completedIterations: value.completedIterations, droppedIterations: value.droppedIterations, requests: value.requests, completeness: value.completeness,...(observation?{processObservation:observation}:{}) });
+    if (!checked.success) return;
+    call.stressSequence = sequence; call.lastStressProgressAt = now;
+    void this.emit(checked.data);
   }
   private cancel(call: ActiveCall): void {
     call.controller.abort(new Error(call.timedOut ? "Local job deadline" : "Invocation cancelled"));
@@ -214,7 +254,7 @@ export class AgentSupervisor {
     this.sending.set(message.messageId, operation);
     try { await operation; } finally { this.sending.delete(message.messageId); }
   }
-  async flushMessages(signal: AbortSignal): Promise<void> { for (const message of [...this.messages.values()]) { if (signal.aborted) return; if (!this.sending.has(message.messageId)) await this.sendMessage(message, signal); } }
+  async flushMessages(signal: AbortSignal): Promise<void> { if (this.recovering) return; for (const message of [...this.messages.values()]) { if (signal.aborted) return; if (!this.sending.has(message.messageId)) await this.sendMessage(message, signal); } }
   pendingResults(): readonly SettledExecution[] { return [...this.results.values()]; }
   pendingReports() { return this.ledger.reports; }
   acknowledgeReport(executionId: string, receipt?: ArchiveReceipt): void { if (!receipt || !this.ledger.archive(executionId, receipt)) return; this.results.delete(executionId); this.slots.archiveResult(executionId); this.pump(); }
@@ -222,11 +262,12 @@ export class AgentSupervisor {
   get appliedConfigVersion(): string { return this.configurationState().appliedConfigVersion; }
   configurationState() { const pending = !!this.shared && this.shared.heapMiB !== this.config.childMaxOldSpaceMiB; return { configVersion: this.version, appliedConfigVersion: pending ? this.appliedVersion : this.version, pendingFields: pending ? ["childMaxOldSpaceMiB" as const] : [], restartRequiredFields: [] as (keyof AgentConfig)[], status: pending ? "pending" as const : "applied" as const }; }
   get currentConfig(): AgentConfig { return this.config; }
-  capacity() { return this.closed || !this.ledger.diskAvailable(this.slots.committedInput() + this.slots.committedResult()) ? { availableSlots: 0, availableSharedDebugSlots: 0 } : this.slots.capacity(); }
+  capacity() { return this.closed || this.recovering || !this.ledger.diskAvailable(this.slots.committedInput() + this.slots.committedResult()) ? { availableSlots: 0, availableSharedDebugSlots: 0 } : this.slots.capacity(); }
   processState(): { sharedPid?: number; dedicatedPids: number[] } { return { sharedPid: this.shared?.pid, dedicatedPids: [...new Set([...this.calls.values()].flatMap(call => call.worker && !call.worker.shared && call.worker.pid ? [call.worker.pid] : []))] }; }
   close(): Promise<void> { return this.closing ??= this.shutdown(); }
   private async shutdown(): Promise<void> {
     this.closed = true; clearTimeout(this.idle); this.controlAbort.abort();
+    if (this.recovering) { this.recoveryAbort.abort(new Error("Stress restart recovery stopped")); await this.ready.catch(() => undefined); }
     for (const delivery of this.queue.splice(0)) { const call = this.createCall(delivery); call.cancelled = true; this.calls.set(delivery.task.executionId, call); await this.finish(call, { executionId: delivery.task.executionId, verdict: "cancelled" }); }
     const calls = [...this.calls.values()];
     for (const call of this.calls.values()) { call.cancelled = true; this.cancel(call); }
@@ -236,6 +277,8 @@ export class AgentSupervisor {
   }
 }
 function outputPassed(output: InvocationOutput): boolean {
+  if (output.kind === "stress") return output.result.verdict.passed && output.result.verdict.status === "passed" && Object.values(output.result.completeness).every(part => part.complete);
+  if (output.kind === "stress-failure") return false;
   if (output.kind === "debug") return !output.result.error && !output.result.failureKind && output.result.run.failed === 0;
   if (output.kind === "suite") return !output.result.reportFailure && (output.result.suite ? output.result.suite.verdict === "passed" : reportingUnits(output.result).summary.failed === 0);
   return output.kind === "workflow" && output.result.verdict === "passed";

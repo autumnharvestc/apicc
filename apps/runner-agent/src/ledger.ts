@@ -2,16 +2,19 @@ import { mkdirSync, statfsSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { AgentMessageV1Schema, StartRejectionReasonSchema, MIN_FAULT_REPORT_BYTES, validateAgentConfig, type AgentConfig, type AgentMessageV1, type TaskDeliveryV1 } from "@apicc/execution/contract";
+import { AgentMessageV1Schema, StartRejectionReasonSchema, MIN_FAULT_REPORT_BYTES, validateAgentConfig, type AgentConfig, type AgentMessageV1, type TaskDeliveryV1,type StressProcessObservation } from "@apicc/execution/contract";
 import type { SettledExecution } from "./supervisor.js";
 
 export type ExecutionFact = "not-started" | "started" | "uncertain";
 export interface ChildLease { file: string; epoch: string }
+export interface ExecutionProcess { id: string; name: string; role: "coordinator" | "worker"; pid: number; scope: TaskDeliveryV1["task"]["scope"]; epoch: string; birth?: string; exited: boolean; code?: number | null; signal?: string | null;observationUncertain?:boolean }
+export interface ExecutionProcessIntent { id: string; runId: string; workerId: string; role: "coordinator" | "worker"; scope: TaskDeliveryV1["task"]["scope"]; epoch: string; scriptPath: string }
 export interface PendingReport { executionId: string; jobId: string; text: string; hash: string; bytes: number }
-interface Intent { executionId: string; jobId: string; deliveryId: string; fact: ExecutionFact; resultBudget: number; settled?: boolean; archived?: boolean; report?: PendingReport }
+interface Intent { executionId: string; jobId: string; deliveryId: string; fact: ExecutionFact; resultBudget: number; processBudget?:number;processObservation?:StressProcessObservation;processObservationPartial?:boolean;processIntents?: ExecutionProcessIntent[]; processes?: ExecutionProcess[]; settled?: boolean; archived?: boolean; report?: PendingReport }
 interface State { version: 1; serverId: string; agentId: string; intents: Intent[]; messages: AgentMessageV1[]; commands: Array<{ messageId: string; kind: string; executionId?: string; jobId?: string }> }
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const verdicts = new Set(["passed", "failed", "cancelled", "timed-out", "interrupted", "rejected"]);
+const stressCapacityReason = "stress-capacity-exceeded";
 const reasonCodes = new Set(["runtime-mismatch", "script-admission-denied", "fixed-input-mismatch", "policy-mismatch", "input-capacity-exceeded", "result-capacity-exceeded", "shared-debug-capacity-exceeded", "debug-session-expired", "debug-session-scope-mismatch", "debug-session-capacity-exceeded", "preparation-rejected", "invalid-task-definition", "permit-mismatch", "worker-exited", "worker-rejected", "worker-unavailable", "result-persistence-failed", "agent-restarted-before-start", "agent-restarted-after-start", "execution-start-unconfirmed"]);
 /** Only execution facts and already projected output enter this store. No executable inputs. */
 export class ExecutionLedger {
@@ -77,21 +80,45 @@ export class ExecutionLedger {
   accept(delivery: TaskDeliveryV1): void { if (this.state.intents.some(item => item.executionId === delivery.task.executionId)) return; this.change(state => state.intents.push({ executionId: delivery.task.executionId, jobId: delivery.task.jobId, deliveryId: delivery.messageId, fact: "not-started", resultBudget: 0 })); }
   reserve(executionId: string, resultBudget: number): void { if (!Number.isSafeInteger(resultBudget) || resultBudget < MIN_FAULT_REPORT_BYTES) throw new Error("Fixed report budget cannot hold a complete fault report"); this.change(state => { state.intents.find(item => item.executionId === executionId)!.resultBudget = resultBudget; }); }
   mark(executionId: string, fact: ExecutionFact): void { this.change(state => { const item = state.intents.find(item => item.executionId === executionId)!; if (!item.settled) item.fact = fact; }); }
+  observeProcesses(executionId:string,budget:number):void {if(!Number.isSafeInteger(budget)||budget<1||budget>1001)throw Error('Invalid fixed process budget');this.change(state=>{const item=state.intents.find(item=>item.executionId===executionId)!;if(item.processes?.length||item.processBudget!==undefined)throw Error('Process observation must begin before spawn');item.processBudget=budget;});}
+  processObservation(executionId:string):StressProcessObservation|undefined {const value=this.state.intents.find(item=>item.executionId===executionId)?.processObservation;return value?{...value}:undefined;}
+  recordProcess(executionId: string, record: ExecutionProcess): void {
+    this.change(state => { const intent = state.intents.find(item => item.executionId === executionId)!; if (intent.settled) throw new Error("Execution process registered after settlement");
+      const records = intent.processes ??= []; const existing = records.find(item => item.id === record.id);const wasExited=existing?.exited;
+      if (existing && (existing.pid !== record.pid || existing.epoch !== record.epoch || existing.birth && record.birth && existing.birth !== record.birth)) throw new Error("Execution process identity changed");
+      if(record.observationUncertain&&intent.processObservation?.completeness!=='complete'||!existing&&record.role==='worker'&&records.some(item=>item.role==='coordinator'&&item.exited))intent.processObservationPartial=true;
+      if (existing) Object.assign(existing, record); else records.push(structuredClone(record));
+      if(intent.processBudget!==undefined){
+        const previous=intent.processObservation,started=(previous?.started??0)+(existing?0:1),exited=(previous?.exited??0)+(record.exited&&(!existing||!wasExited)?1:0);
+        const peak=Math.max(previous?.peak??0,records.filter(item=>!item.exited&&!item.observationUncertain).length);
+        const covered=!intent.processObservationPartial&&records.length===intent.processBudget&&records.filter(item=>item.role==='coordinator').length===1&&records.filter(item=>item.role==='worker').length===intent.processBudget-1&&records.every(item=>item.role==='coordinator'||!!item.birth);
+        intent.processObservation={completeness:covered?'complete':'partial',started,exited,peak};
+      }
+    });
+  }
+  recordProcessIntent(executionId: string, intent: ExecutionProcessIntent): void {
+    this.change(state => { const entry = state.intents.find(item => item.executionId === executionId)!; if (entry.settled) throw new Error("Worker intent after settlement");
+      const intents = entry.processIntents ??= []; if (intents.some(item => item.id === intent.id)) throw new Error("Duplicate worker spawn intent"); intents.push(structuredClone(intent));
+    });
+  }
   enqueue(message: AgentMessageV1): void { const previous = this.state.messages.find(item => item.messageId === message.messageId); if (previous) { if (JSON.stringify(previous) !== JSON.stringify(message)) throw new Error("Message identity content conflict"); return; } this.change(state => state.messages.push(AgentMessageV1Schema.parse(message))); }
   command(message: { messageId: string; kind: string; executionId?: string; jobId?: string }): void { const identity = { messageId: message.messageId, kind: message.kind, ...(message.executionId ? { executionId: message.executionId, jobId: message.jobId } : {}) }; if (!this.state.commands.some(item => item.messageId === identity.messageId)) this.change(state => state.commands.push(identity)); }
   acknowledge(ids: readonly string[]): void { if (!ids.some(id => this.state.messages.some(item => item.messageId === id))) return; this.change(state => { state.messages = state.messages.filter(item => !ids.includes(item.messageId)); }, true); }
   settle(executionId: string, raw: SettledExecution): { result: SettledExecution; message: AgentMessageV1 } {
     const current = this.state.intents.find(item => item.executionId === executionId)!;
-    let result: SettledExecution = { executionId: current.executionId, verdict: verdicts.has(raw.verdict) ? raw.verdict : "interrupted", executionFact: current.fact, ...(raw.reasonCode ? { reasonCode: reasonCodes.has(raw.reasonCode) || StartRejectionReasonSchema.safeParse(raw.reasonCode).success ? raw.reasonCode : "preparation-rejected" } : {}), ...(raw.output ? { output: raw.output, ...(Number.isSafeInteger(raw.pid) && raw.pid! > 0 ? { pid: raw.pid } : {}) } : {}) };
+    let result: SettledExecution = { executionId: current.executionId, verdict: verdicts.has(raw.verdict) ? raw.verdict : "interrupted", executionFact: current.fact, ...(raw.reasonCode ? { reasonCode: raw.reasonCode === stressCapacityReason || reasonCodes.has(raw.reasonCode) || StartRejectionReasonSchema.safeParse(raw.reasonCode).success ? raw.reasonCode : "preparation-rejected" } : {}), ...(raw.output ? { output: raw.output, ...(Number.isSafeInteger(raw.pid) && raw.pid! > 0 ? { pid: raw.pid } : {}) } : {}) };
+    if(current.processObservation)result={...result,processObservation:{...current.processObservation}};
     let text = JSON.stringify(result);
     const limit = current.resultBudget || MIN_FAULT_REPORT_BYTES;
     if (limit < MIN_FAULT_REPORT_BYTES) throw new Error("Persisted fixed budget cannot hold a complete fault report");
     if (Buffer.byteLength(text) > limit) result = { executionId: current.executionId, verdict: result.verdict, executionFact: current.fact, reasonCode: "result-capacity-exceeded" };
     let report: PendingReport, message: AgentMessageV1;
     const commit = (fault: boolean) => {
+      if(current.processObservation)result={...result,processObservation:{...current.processObservation}};
       text = JSON.stringify(result); report = { executionId, jobId: current.jobId, text, hash: hash(text), bytes: Buffer.byteLength(text) };
       if (report.bytes > limit) throw new Error("Complete fault report exceeds its fixed budget");
-      message = { messageId: `completed-${executionId}`, jobId: current.jobId, executionId, kind: "completed", verdict: result.verdict as Extract<AgentMessageV1, { kind: "completed" }>["verdict"], finishedAt: new Date().toISOString(), executionReleased: true, evidenceComplete: result.output !== undefined, reportHash: report.hash, reportBytes: report.bytes, ...(result.reasonCode ? { reasonCode: result.reasonCode } : {}) };
+      const evidenceComplete = result.output?.kind === "stress-failure" ? false : result.output?.kind === "stress" ? Object.values(result.output.result.completeness).every(part => part.complete) : result.output !== undefined;
+      message = { messageId: `completed-${executionId}`, jobId: current.jobId, executionId, kind: "completed", verdict: result.verdict as Extract<AgentMessageV1, { kind: "completed" }>["verdict"], finishedAt: new Date().toISOString(), executionReleased: true, evidenceComplete, reportHash: report.hash, reportBytes: report.bytes, ...(result.reasonCode ? { reasonCode: result.reasonCode } : {}),...(result.processObservation?{processObservation:result.processObservation}:{}) };
       this.change(state => { const item = state.intents.find(item => item.executionId === executionId)!; item.report = report; item.settled = true; state.messages.push(message); }, fault);
     };
     try { commit(!result.output); }

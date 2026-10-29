@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { encodeContractProjectFiles, decodeContractProjectFiles, ContractWorkspaceSchema, createProjectSnapshot } from "@apicc/core";
+import { encodeContractProjectFiles, decodeContractProjectFiles, ContractWorkspaceSchema, createProjectSnapshot, StressPlanSchema, WorkflowSchema } from "@apicc/core";
 import { workspaceFixture } from "../../core/tests/helpers/contractFixtures.js";
 import { createHash } from "node:crypto";
 import { prepareProjectFiles, assertPreparedExecution } from "../src/host/prepare.js";
+import { resolveEffectiveConfig } from "../src/contract/index.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 function onlineAssets(project = projectFixture()) {
@@ -27,6 +28,43 @@ function projectFixture() {
 }
 
 describe("project-relative contract files", () => {
+  it("maps lifecycle, subflow, handler and v1-condition scripts to their real frozen sources", async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const collection = project.collections[0]!; const api = collection.apis[0]!;
+    collection.preOperations = []; api.cases[0]!.preOperations = [];
+    const condition = (id: string) => WorkflowSchema.parse({ id, name: id, status: "enabled", nodes: [{ id: "start", kind: "noop" }, { id: "end", kind: "noop" }], edges: [{ id: "condition", from: "start", to: "end", condition: "true" }] });
+    project.workflows = [condition("setup-condition"), condition("handler-condition"), WorkflowSchema.parse({ id: "root", name: "root", status: "enabled", executionVersion: 2,
+      nodes: [{ id: "child", kind: "subflow", workflowId: "setup-condition", policy: { finally: { workflowId: "handler-condition" } } }], edges: [] })];
+    const target = { kind: "stress" as const, plan: StressPlanSchema.parse({ formatVersion: 1, target: { kind: "workflow", workflowId: "root" },
+      load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: 1 }, lifecycle: { setup: { workflowId: "setup-condition" }, vuSetup: { workflowId: "root" }, vuTeardown: { workflowId: "root" }, teardown: { workflowId: "setup-condition" } } }) };
+    const value = await prepareProjectFiles(onlineAssets(project), { target, profile: "trusted-core-script" });
+    expect(value.scriptRequirements.map(item => item.scriptId).sort()).toEqual(["workflow/handler-condition/edge/condition", "workflow/setup-condition/edge/condition"]);
+    expect(value.scriptRequirements.every(item => item.source.filePath === "project.yaml")).toBe(true);
+    await expect(prepareProjectFiles(onlineAssets(project), { target, profile: "no-script" })).rejects.toThrow(/script/i);
+  });
+  it("freezes the real Core request limit instead of the administrative admission upper bound", async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    project.stressPolicy.maxConcurrency = 3; project.stressPolicy.maxRps = 9;
+    const collection = project.collections[0]!; const api = collection.apis[0]!;
+    const target = { kind: "stress" as const, plan: StressPlanSchema.parse({ formatVersion: 1,
+      target: { kind: "case", collectionId: collection.id, apiId: api.contract.id, caseId: api.cases[0]!.id },
+      load: { kind: "constant-vus", vus: 2 }, maxVus: 2, termination: { maxIterations: 2 } }) };
+    const value = await prepareProjectFiles(onlineAssets(project), { target, profile: "trusted-core-script", stressConfig: { configuration: resolveEffectiveConfig(), run: { workerCount: 2 } } });
+    expect(value.prepared.stressBinding).toMatchObject({ stage: "compiled-limits", requested: { maxRequestConcurrency: null, maxRps: null },
+      admissionLimits: { maxRequestConcurrency: 100, maxRps: 1000 }, reservation: { jobs: 1, processes: 3, vus: 2, requestConcurrency: 2, maxRps: 9, metricMemoryBytes: 201326592 } });
+    expect(value.prepared.target).toEqual(target);
+  });
+  it("prepares a real case stress selection from authoritative project files", async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const collection = project.collections[0]!; const api = collection.apis[0]!;
+    const target = { kind: "stress" as const, plan: StressPlanSchema.parse({ formatVersion: 1,
+      target: { kind: "case", collectionId: collection.id, apiId: api.contract.id, caseId: api.cases[0]!.id },
+      load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: 1 } }) };
+    const value = await prepareProjectFiles(onlineAssets(project), { target, profile: "trusted-core-script" });
+    expect(value.prepared.selections).toHaveLength(1);
+    expect(value.prepared.requiredCapabilities).toEqual(["protocol:http", "script:trusted-core", "stress:local-workers-v1", "task:stress"]);
+    expect(value.scriptRequirements).toHaveLength(2);
+  });
   it("round trips requests, separate cases, nested folders, models, environments, suites and workflows without changing identity", async () => {
     const project = projectFixture();
     const { files } = encodeContractProjectFiles(project);

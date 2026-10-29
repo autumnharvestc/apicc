@@ -31,16 +31,18 @@ public class JobService implements AssignedMaterialAuthorizer {
     private final Clock clock;
     private final com.autumnharvestc.server.execution.ExecutionProperties properties;
     private final CoreInputValidator inputValidator;
+    private final StressResourceReservations stressResources;
     public JobService(JobRepo repo, AgentRepo nodes, AgentService agents, ExecutionSnapshotService snapshots,
         ExecutionConfigService configs, ScriptGrantService grants, UserRepo users,
         ProjectCredentialService credentials, AttachmentService attachments, JdbcTemplate jdbc,
         ObjectProvider<RunnerPollWaiters> waiters, ObjectProvider<Clock> clocks,
-        com.autumnharvestc.server.execution.ExecutionProperties properties, CoreInputValidator inputValidator) {
+        com.autumnharvestc.server.execution.ExecutionProperties properties, CoreInputValidator inputValidator,StressResourceReservations stressResources) {
         this.repo=repo; this.nodes=nodes; this.agents=agents; this.snapshots=snapshots;
         this.configs=configs; this.grants=grants; this.users=users; this.credentials=credentials;
         this.attachments=attachments; this.jdbc=jdbc; this.waiters=waiters;
         this.clock=clocks.getIfAvailable(Clock::systemUTC); this.properties=properties;
         this.inputValidator=inputValidator;
+        this.stressResources=stressResources;
     }
     public OffsetDateTime now() { return OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC); }
     public Map<String,Object> submit(UserAccount caller,String ws,String project,JobDtos.Submit request){
@@ -54,6 +56,7 @@ public class JobService implements AssignedMaterialAuthorizer {
         if(!assets.manifestHash().equals(declared.manifestHash()))throw error(CONFLICT,"snapshot_manifest_mismatch","准备声明与固定快照清单不符");
         agents.requireUsable(request.agentId(),ws,project);configs.lockPolicyVersion();
         var effective=configs.effective(agent,w,p,timeouts(request.runConfig()));
+        stressResources.validate(request,effective,agent);
         String grant=grants.authorizePrepared(caller,request.agentId(),snapshot,declared.scriptRequirements(),declared.scriptPlanDigest());
         if(!Objects.equals(grant,declared.scriptGrantVersion()))throw error(CONFLICT,"script_grant_changed","准备声明批准版本已变化");
         long inputBytes=materialBytes(snapshot,request.materials(),policy(effective),request.network());
@@ -64,7 +67,7 @@ public class JobService implements AssignedMaterialAuthorizer {
         if(request.environmentId()!=null)task.put("environmentId",request.environmentId());
         if(request.target().path("kind").asText().equals("debug"))task.put("debugSessionId",debugSession(caller,w,p,agent,request.debugSessionId(),effective));
         task.put("policyVersion",effective.get("policyVersion"));task.put("requiredCoreBuildId",declared.requiredCoreBuildId());task.put("executionProfile",declared.executionProfile());task.put("dispatchKind",declared.dispatchKind());task.put("scriptPlanDigest",declared.scriptPlanDigest());if(grant!=null)task.put("scriptGrantVersion",grant);task.put("requiredCapabilities",declared.requiredCapabilities());task.put("runtimeCompatibilityId",declared.runtimeCompatibilityId());
-        var inputs=new LinkedHashMap<String,Object>();inputs.put("executionId",String.valueOf(execution));inputs.put("snapshot",snapshot);inputs.put("runConfig",runValues(request.runConfig()));inputs.put("materials",request.materials());inputs.put("policy",policy(effective));if(request.network()!=null)inputs.put("network",request.network());String digest=repo.digest(inputs);inputs.put("inputsDigest",digest);
+        var inputs=new LinkedHashMap<String,Object>();inputs.put("executionId",String.valueOf(execution));inputs.put("snapshot",snapshot);inputs.put("runConfig",runValues(request.runConfig()));inputs.put("materials",request.materials());inputs.put("policy",policy(effective));if(declared.stressBinding()!=null){inputs.put("stressBinding",declared.stressBinding());inputs.put("stressExecutor",Map.of("id",String.valueOf(agent),"name",nodes.require(agent,false).name()));}if(request.network()!=null)inputs.put("network",request.network());String digest=repo.executionInputDigest(inputs);inputs.put("inputsDigest",digest);
         var policy=policy(effective);var queueTimeout=policy.get("queueTimeoutMs");OffsetDateTime expires=queueTimeout==null?null:now().plusNanos((((Number)queueTimeout).longValue()%1000)*1000000).plusSeconds(((Number)queueTimeout).longValue()/1000);
         repo.insert(job,execution,w,p,caller.id(),agent,id(snapshot.snapshotId()),request.intentId(),intentHash,request,task,inputs,digest,expires);wake(agent);return view(repo.require(job,false),caller);
     }
@@ -76,6 +79,7 @@ public class JobService implements AssignedMaterialAuthorizer {
         if(p.executionProfile().equals("trusted-core-script")){version(p.scriptGrantVersion());if(p.scriptRequirements().isEmpty())bad("受信脚本档位需要实际脚本声明");}else if(!p.scriptRequirements().isEmpty()||p.scriptGrantVersion()!=null)bad("无脚本档位不能声明脚本或批准");
         String kind=s.target().path("kind").asText();
         inputValidator.requireValid(s.target(), repo.parse(repo.encode(runValues(s.runConfig()))));
+        if(kind.equals("stress"))inputValidator.requireStressBinding(p.stressBinding());
         if(p.dispatchKind().equals("shared-debug")&&(!kind.equals("debug")||!p.executionProfile().equals("no-script")))bad("共享调用只支持无脚本调试");
         if(s.debugSessionId()!=null&&!kind.equals("debug"))bad("仅调试支持会话句柄");if(s.environmentId()!=null)uuid(s.environmentId());
     }
@@ -123,8 +127,14 @@ public class JobService implements AssignedMaterialAuthorizer {
         var fixed=j.permit()==null?configs.effective(j.agent(),j.workspace(),j.project(),timeouts(submission(j).runConfig())):null;
         long limit=j.permit()==null?number(policy(fixed),"reportBytes"):j.permit().path("effectivePolicy").path("reportBytes").asLong();
         if(bytes.length>limit)throw error(BAD_REQUEST,"report_size_limit","报告超过本次固定预算");
+        if(j.task().path("target").path("kind").asText().equals("stress")){
+            var report=stressReportKind(j,bytes);
+            if(report.kind().equals("stress-failure")&&j.summary()!=null&&j.summary().path("verdict").asText().equals("passed"))throw error(CONFLICT,"report_type_mismatch","压测异常报告不能归档为通过");
+            if(!j.reportState().equals("archived"))jdbc.update("UPDATE execution_jobs SET report_kind=?,report_verdict=? WHERE id=?",report.kind(),report.verdict(),j.id());
+        }
         // Both actual bytes and immutable stored hash/length were checked above; no BLOB read on retry.
         if(!j.reportState().equals("archived")) repo.archive(j,hash,bytes,now());
+        stressResources.status(j,null,null,"complete");
         return Map.of("archived",true,"reportHash",hash,"reportBytes",bytes.length);
     }
     public byte[] report(UserAccount caller,String job){
@@ -134,6 +144,48 @@ public class JobService implements AssignedMaterialAuthorizer {
         if(!status.reportState().equals("archived"))throw error(CONFLICT,"report_pending","结果仍待归档");
         return repo.reportContent(status.id());
     }
+    private record StressReportClassification(String kind,String verdict) {}
+    private static void sameProcessObservation(JsonNode completion,JsonNode report){
+        if(!Objects.equals(completion.get("processObservation"),report.get("processObservation")))throw error(CONFLICT,"report_type_mismatch","完成声明与报告进程观测不符");
+    }
+    /** Only a first new completion needs the already archived envelope; receipt retries return before this path. */
+    public void validateArchivedStressCompletion(JobRepo.Job job,JsonNode completion){
+        if(job.task().path("target").path("kind").asText().equals("stress")&&job.reportState().equals("archived"))sameProcessObservation(completion,repo.parse(new String(repo.reportContent(job.id()),StandardCharsets.UTF_8)));
+    }
+    private static final Set<String> STRESS_FAULT_REASONS=Set.of("runtime-mismatch","script-admission-denied","fixed-input-mismatch","policy-mismatch","input-capacity-exceeded","result-capacity-exceeded","stress-capacity-exceeded","shared-debug-capacity-exceeded","debug-session-expired","debug-session-scope-mismatch","debug-session-capacity-exceeded","preparation-rejected","invalid-task-definition","permit-mismatch","worker-exited","worker-rejected","worker-unavailable","result-persistence-failed","agent-restarted-before-start","agent-restarted-after-start","execution-start-unconfirmed","submitter_unavailable","forbidden","project_forbidden","agent_unavailable","agent_not_associated","script_mode_denied","script_grant_missing","script_grant_changed","credential_version_conflict","credential_missing","policy_changed","agent_capacity","shared_capacity","resource_capacity","debug_session_expired");
+    private StressReportClassification stressReportKind(JobRepo.Job job,byte[] bytes){
+        JsonNode report;
+        try{report=repo.parse(new String(bytes,StandardCharsets.UTF_8));}catch(Exception ignored){throw error(BAD_REQUEST,"report_type_mismatch","压测报告正文或类型无效");}
+        if(job.state().equals("ended")&&job.summary()!=null&&job.summary().path("kind").asText().equals("completed"))sameProcessObservation(job.summary(),report);
+        String outerVerdict=null;
+        if(report.has("executionId")||report.has("output")){
+            var fields=new HashSet<String>();report.fieldNames().forEachRemaining(fields::add);
+            outerVerdict=report.path("verdict").asText();String fact=report.path("executionFact").asText();
+            if(!Set.of("executionId","verdict","executionFact","reasonCode","pid","output","processObservation").containsAll(fields)||!report.path("executionId").isTextual()||!report.path("executionId").asText().equals(String.valueOf(job.execution()))
+                ||!report.path("verdict").isTextual()||!report.path("executionFact").isTextual()||!Set.of("passed","failed","cancelled","timed-out","interrupted","rejected").contains(outerVerdict)||!Set.of("not-started","started","uncertain").contains(fact)
+                ||report.has("pid")&&(!reportCount(report.path("pid"))||report.path("pid").longValue()==0)||report.has("reasonCode")&&(!report.path("reasonCode").isTextual()||!STRESS_FAULT_REASONS.contains(report.path("reasonCode").asText())))throw error(BAD_REQUEST,"report_type_mismatch","压测执行报告身份或结论无效");
+            if(report.has("processObservation"))stressResources.validateObservation(job,report.get("processObservation"));
+            if(job.summary()!=null&&!job.summary().path("kind").asText().equals("cancel-confirmed")&&!job.summary().path("verdict").asText().equals(outerVerdict))throw error(CONFLICT,"report_type_mismatch","报告结论与完成摘要不符");
+            if(!report.has("output")){
+                String reason=report.path("reasonCode").asText();
+                if(!STRESS_FAULT_REASONS.contains(reason)||outerVerdict.equals("passed")&&!Set.of("result-capacity-exceeded","result-persistence-failed").contains(reason))throw error(BAD_REQUEST,"report_type_mismatch","压测故障报告原因或结论无效");
+                return new StressReportClassification("stress-fault",outerVerdict);
+            }
+            if(!report.path("output").isObject())throw error(BAD_REQUEST,"report_type_mismatch","压测报告输出类型无效");
+            report=report.path("output");
+            if(report.path("kind").asText().equals("stress-failure")&&(outerVerdict.equals("passed")||report.path("started").asBoolean()&&fact.equals("not-started")))throw error(BAD_REQUEST,"report_type_mismatch","压测异常不能声明通过或未执行");
+            if(report.path("kind").asText().equals("stress")&&outerVerdict.equals("passed")&&!report.path("result").path("verdict").path("passed").asBoolean())throw error(BAD_REQUEST,"report_type_mismatch","压测结果与执行结论不符");
+        }
+        String kind=report.path("kind").asText();boolean valid=false;
+        if(kind.equals("stress"))valid=report.path("result").isObject()&&report.path("result").path("formatVersion").isIntegralNumber()&&report.path("result").path("formatVersion").longValue()==2;
+        if(kind.equals("stress-failure")){
+            var requests=report.path("requests");
+            valid=report.path("started").isBoolean()&&report.path("error").isTextual()&&reportCount(requests.path("started"))&&reportCount(requests.path("completed"))
+                &&requests.path("completed").longValue()<=requests.path("started").longValue()&&(report.path("started").booleanValue()||requests.path("started").longValue()==0);
+        }
+        if(!valid)throw error(BAD_REQUEST,"report_type_mismatch","压测报告正文或类型无效");return new StressReportClassification(kind,outerVerdict);
+    }
+    private static boolean reportCount(JsonNode n){return n.isIntegralNumber()&&n.canConvertToLong()&&n.longValue()>=0&&n.longValue()<=9007199254740991L;}
     public JobDtos.Submit submission(JobRepo.Job j){return repo.decode(j.submission(),JobDtos.Submit.class);}
     public long materialBytes(ExecutionSnapshot fixed,MaterialSelection selection,Map<String,Object> policy){
         return materialBytes(fixed,selection,policy,null);
@@ -168,7 +220,7 @@ public class JobService implements AssignedMaterialAuthorizer {
             var expires=now().plus(Duration.ofMillis(number(policy,"maxJobTimeoutMs"))).plus(Duration.ofMillis(number(node,"debugSessionIdleMs")));
             var authorized=new LinkedHashMap<String,Object>();authorized.put("debugSessionId",handle);authorized.put("serverId",serverId);authorized.put("scope",j.task().get("scope"));authorized.put("submittedByUserId",String.valueOf(j.user()));authorized.put("agentId",String.valueOf(j.agent()));authorized.put("expiresAt",expires.toInstant().toString());authorized.put("hostSessionId",hostSessionId);inputs.put("debugSession",authorized);
         }
-        String digest=repo.digest(inputs);inputs.put("inputsDigest",digest);jdbc.update("UPDATE execution_jobs SET inputs_json=?,inputs_digest=? WHERE id=? AND state='queued'",repo.encode(inputs),digest,j.id());
+        String digest=repo.executionInputDigest(inputs);inputs.put("inputsDigest",digest);jdbc.update("UPDATE execution_jobs SET inputs_json=?,inputs_digest=? WHERE id=? AND state='queued'",repo.encode(inputs),digest,j.id());
     }
     public Map<String,String> credentialVersions(JobRepo.Job j){var versions=new LinkedHashMap<String,String>();for(var selected:submission(j).materials().credentials())versions.put(selected.refId(),selected.version());return versions;}
     private long add(long total,long bytes,long limit){if(bytes<0||bytes>limit-total)throw error(BAD_REQUEST,"total_input_size_limit","固定快照和材料超过合计输入额度");return total+bytes;}
@@ -204,6 +256,9 @@ public class JobService implements AssignedMaterialAuthorizer {
     /** The conditional end is the single release point; receipt retries cannot renew the idle deadline. */
     public void end(JobRepo.Job j,Object summary,String hash,Long bytes,boolean cancelled){
         repo.end(j,summary,hash,bytes,cancelled);
+        var verdict=repo.parse(repo.encode(summary)).path("verdict").asText();
+        String state=cancelled?"cancelled":switch(verdict){case "passed"->"finished";case "timed-out","interrupted"->verdict;default->"failed";};
+        stressResources.status(j,j.permitId()==null?"failed":"ready",state,null);
         if(!j.task().has("debugSessionId"))return;
         String handle=j.task().get("debugSessionId").asText();
         if(repo.activeDebugSessions(j.agent()).contains(handle))return;
@@ -212,8 +267,7 @@ public class JobService implements AssignedMaterialAuthorizer {
             now().plus(Duration.ofMillis(idle)),handle,j.agent());
     }
     private Map<String,Object> view(JobRepo.Job j,UserAccount caller){
-        return view(new JobRepo.Status(j.id(),j.execution(),j.workspace(),j.project(),j.agent(),j.user(),j.state(),
-            j.cancelState(),j.released(),j.reportState(),j.task(),j.progress(),j.summary(),j.permit()),caller);
+        return view(repo.status(j.id()),caller);
     }
     private Map<String,Object> view(JobRepo.Status status,UserAccount caller){
         var result=new LinkedHashMap<String,Object>();
@@ -227,12 +281,16 @@ public class JobService implements AssignedMaterialAuthorizer {
             result.put("scriptTimeoutMs",status.permit().path("effectivePolicy").path("scriptTimeoutMs").longValue());
         if(status.summary()!=null)result.put("summary",status.summary());
         if(status.progress()!=null)result.put("progress",status.progress());
+        if(status.stressMetadata()!=null)result.put("stressMetadata",status.stressMetadata());
+        if(status.waitReason()!=null)result.put("capacityWaitReason",status.waitReason());
+        var capacityWait=stressResources.waitProjection(status);if(capacityWait!=null)result.put("capacityWait",capacityWait);
+        if(status.reportKind()!=null)result.put("reportKind",status.reportKind());
         return result;
     }
     public void wake(long agent){if(TransactionSynchronizationManager.isSynchronizationActive())TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization(){@Override public void afterCommit(){waiters.getObject().wake(agent);}});else waiters.getObject().wake(agent);}
     public static Map<String,Object> identity(JobRepo.Job j,String message,String kind){var result=new LinkedHashMap<String,Object>();result.put("messageId",message);result.put("jobId",String.valueOf(j.id()));result.put("executionId",String.valueOf(j.execution()));result.put("kind",kind);return result;}
     public static Map<String,Object> timeouts(JobDtos.RunConfig run){var result=new LinkedHashMap<String,Object>();if(run!=null){if(run.jobTimeoutMs()!=null)result.put("jobTimeoutMs",run.jobTimeoutMs());if(run.scriptTimeoutMs()!=null)result.put("scriptTimeoutMs",run.scriptTimeoutMs());}return result;}
-    private static Map<String,Object> runValues(JobDtos.RunConfig run){var result=timeouts(run);if(run.requestSettings()!=null)result.put("requestSettings",run.requestSettings());return result;}
+    private static Map<String,Object> runValues(JobDtos.RunConfig run){var result=timeouts(run);if(run.requestSettings()!=null)result.put("requestSettings",run.requestSettings());if(run.stress()!=null){var stress=(com.fasterxml.jackson.databind.node.ObjectNode)run.stress().deepCopy();if(!stress.has("workerCount"))stress.put("workerCount",1);if(!stress.has("confirmedTargetOrigins"))stress.putArray("confirmedTargetOrigins");result.put("stress",stress);}return result;}
     @SuppressWarnings("unchecked") public static Map<String,Object> cast(Object value){return (Map<String,Object>)value;}
     public static Map<String,Object> policy(Map<String,Object> effective){return cast(effective.get("policy"));}
     public static long number(Map<String,Object> values,String key){return ((Number)values.get(key)).longValue();}

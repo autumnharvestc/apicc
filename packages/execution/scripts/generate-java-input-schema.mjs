@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { TaskTargetSchema } from "../dist/contract/task.js";
 import { RunConfigSchema } from "../dist/contract/config.js";
+import { StressCompiledBindingSchema } from "../dist/contract/stress.js";
 
 /** Convert only Core's explicitly declared HTTP-JSON-domain substitutions.
  * Unsupported future checks fail generation rather than silently exporting `any`.
@@ -11,15 +12,15 @@ function jsonWireBoundary(root) {
   function convert(schema, path) {
     if (converted.has(schema)) return converted.get(schema);
     const def = schema._zod.def;
-    if ((def.checks ?? []).some(check => ["custom", "overwrite"].includes(check._zod?.def.check))) {
-      throw new Error(`Unrepresented custom refinement at ${path}`);
-    }
     const explicit = schema.meta()?.apiccJsonWireSchema;
     if (explicit !== undefined) {
       if (!explicit?._zod) throw new Error(`Invalid JSON wire metadata at ${path}`);
       const result = convert(explicit, `${path}.jsonWire`);
       converted.set(schema, result);
       return result;
+    }
+    if ((def.checks ?? []).some(check => ["custom", "overwrite"].includes(check._zod?.def.check))) {
+      throw new Error(`Unrepresented custom refinement at ${path}`);
     }
     if (["custom", "transform", "pipe", "unknown", "any"].includes(def.type)) {
       throw new Error(`Unrepresented ${def.type}/custom check at ${path}`);
@@ -44,7 +45,7 @@ function jsonWireBoundary(root) {
 }
 
 const document = {};
-for (const [name, schema] of Object.entries({ target: TaskTargetSchema, runConfig: RunConfigSchema })) {
+for (const [name, schema] of Object.entries({ target: TaskTargetSchema, runConfig: RunConfigSchema, stressBinding: StressCompiledBindingSchema })) {
   document[name] = z.toJSONSchema(jsonWireBoundary(schema), { target: "draft-2020-12", io: "input", reused: "ref" });
 }
 // This resource can use only local fragments. It cannot instruct Java to retrieve URLs.

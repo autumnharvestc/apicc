@@ -4,6 +4,7 @@ import { ExecutionSnapshotSchema } from "./assets.js";
 import { MaterialSelectionSchema } from "./materials.js";
 import { NetworkConfigurationSchema, NetworkSelectionSchema } from "@apicc/core/schema";
 import { DebugSessionHandleSchema } from "./task.js";
+import { StressCompiledBindingSchema } from "./stress.js";
 import { EntityIdSchema, HashSchema, OpaqueIdSchema, ServerProjectScopeSchema, TaskTargetSchema, ScriptRequirementSchema, ExecutionProfileSchema, DispatchKindSchema, checkScriptGrant } from "./task.js";
 
 /** Fixed data-path metadata. Credential values and attachment/report bytes use dedicated APIs. */
@@ -17,6 +18,7 @@ export const FixedMaterialSelectionSchema = MaterialSelectionSchema.superRefine(
   }
 });
 export const JobPreparationSchema = z.object({
+  stressBinding: StressCompiledBindingSchema.optional(),
   scope: ServerProjectScopeSchema, manifestHash: HashSchema,
   scriptPlanDigest: HashSchema, scriptGrantVersion: ConfigVersionSchema.optional(),
   scriptRequirements: z.array(ScriptRequirementSchema), executionProfile: ExecutionProfileSchema,
@@ -37,13 +39,30 @@ export const SubmitJobSchema = z.object({
   if (value.materials.projectId !== value.preparation.scope.projectId) ctx.addIssue({ code: "custom", path: ["materials"], message: "material scope mismatch" });
   if (value.preparation.dispatchKind === "shared-debug" && (value.target.kind !== "debug" || value.preparation.executionProfile !== "no-script")) ctx.addIssue({ code: "custom", path: ["preparation", "dispatchKind"], message: "shared dispatch requires no-script debug" });
   if (value.debugSessionId && value.target.kind !== "debug") ctx.addIssue({ code: "custom", path: ["debugSessionId"], message: "debug session is only valid for debug targets" });
+  if (value.target.kind !== "stress" && value.runConfig.stress !== undefined) ctx.addIssue({ code: "custom", path: ["runConfig", "stress"], message: "stress run settings require a stress target" });
+  if (value.target.kind === "stress") {
+    if (value.environmentId !== undefined && value.target.plan.environmentId !== undefined && value.environmentId !== value.target.plan.environmentId) ctx.addIssue({ code: "custom", path: ["environmentId"], message: "stress plan environment conflicts with outer environment" });
+    if ((value.runConfig.stress?.workerCount ?? 1) > value.target.plan.maxVus) ctx.addIssue({ code: "custom", path: ["runConfig", "stress", "workerCount"], message: "stress workers exceed plan maxVus" });
+    const b = value.preparation.stressBinding, p = value.target.plan, workers = value.runConfig.stress?.workerCount ?? 1;
+    if (!b) ctx.addIssue({ code: "custom", path: ["preparation", "stressBinding"], message: "stress requires a fixed compiled binding" });
+    else if (b.reservation.vus !== p.maxVus || b.reservation.processes !== (workers === 1 ? 1 : workers + 1)
+      || b.requested.maxRequestConcurrency !== (p.maxRequestConcurrency ?? null) || b.requested.maxRps !== (p.maxRps ?? null)) ctx.addIssue({ code: "custom", path: ["preparation", "stressBinding"], message: "stress binding disagrees with original plan or worker topology" });
+  } else if (value.preparation.stressBinding !== undefined) {
+    ctx.addIssue({ code: "custom", path: ["preparation", "stressBinding"], message: "compiled stress binding requires a stress target" });
+  }
 });
 export const ExecutionInputsSchema = z.object({
+  stressBinding: StressCompiledBindingSchema.optional(),
+  stressExecutor: z.object({ id: EntityIdSchema, name: z.string().max(512) }).strict().optional(),
   executionId: EntityIdSchema, snapshot: ExecutionSnapshotSchema, policy: PolicyConfigSchema,
   runConfig: RunConfigSchema, materials: FixedMaterialSelectionSchema, inputsDigest: HashSchema,
   network: FixedNetworkInputSchema.optional(), debugSession: DebugSessionHandleSchema.extend({ hostSessionId: OpaqueIdSchema }).strict().optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.materials.projectId !== value.snapshot.assets.projectId) ctx.addIssue({ code: "custom", path: ["materials"], message: "fixed input scope mismatch" });
+  const b = value.stressBinding, workers = value.runConfig.stress?.workerCount ?? 1;
+  if (Boolean(b) !== Boolean(value.stressExecutor)) ctx.addIssue({ code: "custom", path: ["stressExecutor"], message: "fixed stress executor and binding must be present together" });
+  if (value.runConfig.stress && !b) ctx.addIssue({ code: "custom", path: ["stressBinding"], message: "fixed stress inputs require a compiled binding" });
+  if (b && b.reservation.processes !== (workers === 1 ? 1 : workers + 1)) ctx.addIssue({ code: "custom", path: ["stressBinding"], message: "fixed stress topology mismatch" });
 });
 export type SubmitJob = z.infer<typeof SubmitJobSchema>;
 export type ExecutionInputs = z.infer<typeof ExecutionInputsSchema>;

@@ -110,7 +110,7 @@ describe("project stress workbench", () => {
     const target = { kind: 'workflow' as const, workflowId: 'workflow' };
     await s.openWorkbench(f.projectLocator, target);
     const first = s.startPlan();
-    const event = (index: number, runId: string, state: StressProgressDTO['state'] = 'preparing'): StressProgressDTO => ({ invocationId: pending[index]!.input.invocationId, target, runId, sourceRoot: f.root, root: 'C:/canonical-workspace', projectLocator: f.projectLocator, generation: index + 1, state, phase: null, stageId: null, atMs: 0, activeVus: 0, startedIterations: 0, completedIterations: 0, droppedIterations: 0 });
+    const event = (index: number, runId: string, state: StressProgressDTO['state'] = 'preparing'): StressProgressDTO => ({ invocationId: pending[index]!.input.invocationId, target, runId, sourceRoot: f.root, root: 'C:/canonical-workspace', projectLocator: f.projectLocator, generation: index + 1, state, phase: null, stageId: null, atMs: 0, activeVus: 0, startedIterations: 0, completedIterations: 0, droppedIterations: 0, requests: { started: 0, completed: 0, eligibleCompleted: 0, failed: 0 }, completeness: { execution: { complete: true, reasons: [] }, metrics: { complete: true, reasons: [] }, load: { complete: true, reasons: [] } } });
     const send = (value: StressProgressDTO) => { for (const listener of listeners) listener(value); };
     const old = event(0, '10000000-0000-4000-8000-000000000001');
     send({ ...old, invocationId: undefined }); expect(s.progress).toBeNull();

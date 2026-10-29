@@ -15,6 +15,7 @@ import { ApiAssetSchema, ComponentAssetSchema, ModelAssetSchema, type ApiAsset, 
 import { StringRecordSchema } from "./schemaNode.js";
 import { MockProjectConfigSchema, type MockProjectConfig } from "../mock/config.js";
 import { DatasetAssetSchema, SuiteAssetSchema, type DatasetAsset, type SuiteAsset } from "../testing/model.js";
+import { SavedStressPlanSchema, type SavedStressPlan } from "../stress/plan.js";
 
 export const ContractEnvironmentSchema = EnvironmentSchema;
 
@@ -50,6 +51,7 @@ export interface ContractProject {
   components: ComponentAsset[];
   datasets?: DatasetAsset[];
   suites?: SuiteAsset[];
+  stressPlans?: SavedStressPlan[];
   mock?: MockProjectConfig;
 }
 
@@ -104,6 +106,7 @@ export const ContractProjectSchema: z.ZodType<ContractProject> = z.object({
   components: z.array(ComponentAssetSchema).default([]),
   datasets: z.array(DatasetAssetSchema).default([]),
   suites: z.array(SuiteAssetSchema).default([]),
+  stressPlans: z.array(SavedStressPlanSchema).refine(plans => new Set(plans.map(plan => plan.id)).size === plans.length, "duplicate stress plan id").optional(),
   mock: MockProjectConfigSchema.optional(),
 }).strict();
 

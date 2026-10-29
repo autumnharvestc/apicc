@@ -8,30 +8,57 @@ import { onlineSessionErrorKey } from '../../i18n/index.js';
 import ResponseViewer from "../ResponseViewer.vue";
 import WfResultDrawer from "../WfResultDrawer.vue";
 import CaseEvidencePanel from "../CaseEvidencePanel.vue";
+import StressReportView from '../StressReportView.vue';
+import { summarizeStressExecution,compareStressExecutions } from '@apicc/execution/client';
+import {renderStressHtml,stressProcessObservationText} from '@apicc/core/stress/html';
+import type {StressReportV2,StressExecutionSummary} from '@apicc/core';
+import StressExecutionSummaryView from '../StressExecutionSummaryView.vue';
 const props = defineProps<{ execution: OnlineExecutionStore }>();
 const { t, te, locale } = useI18n();
 const selected = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' && 'job' in selection ? selection.job : props.execution.jobs.find(job => job.jobId === props.execution.selectedJobId); });
 const local = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' ? null : selection?.kind === 'local' && selection.runId !== props.execution.localResult?.runId ? null : props.execution.localResult; });
 const report = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'local' || selection?.kind === 'agent' && !('job' in selection) || selected.value && selected.value.executionId !== props.execution.report?.executionId ? null : props.execution.report; });
 const output = computed(() => report.value?.output ?? local.value?.output);
+const stressReport=computed(()=>output.value?.kind==='stress'?output.value.result:undefined);
+const stressSummary=computed(()=>summarizeStressExecution({report:stressReport.value,agent:!local.value && props.execution.resultSelection?.kind!=='local'?selected.value?.stressMetadata:undefined,local:local.value?.localStress}));
+const baseline=ref<{report:StressReportV2;execution?:StressExecutionSummary}|null>(null);
+watch(()=>JSON.stringify(props.execution.context),()=>{baseline.value=null;},{flush:'sync'});
+function pinBaseline() {if(stressReport.value)baseline.value=JSON.parse(JSON.stringify({report:stressReport.value,execution:stressSummary.value}));}
+function exportStressHtml() {
+  const safeReport=stressReport.value;if(!safeReport)return;
+  const html=renderStressHtml(safeReport,comparison.value?.core,{execution:stressSummary.value,comparison:comparison.value});
+  const url=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));
+  const link=document.createElement('a');link.href=url;link.download=`stress-${safeReport.runId}.html`;document.body.append(link);
+  try{link.click();}finally{link.remove();URL.revokeObjectURL(url);}
+}
+const comparison=computed(()=>baseline.value?compareStressExecutions(baseline.value,{report:stressReport.value,execution:stressSummary.value}):undefined);
+const coreComparisonReasons=computed(()=>[...(comparison.value?.core?.mismatches??[]),...(comparison.value?.core?.notices??[])]);
+const coreComparisonReason=(code:string)=>code==='environment-definition-not-compared'?t('stressPresentation.environmentNotice'):te(`stressPresentation.coreReasons.${code}`)?t(`stressPresentation.coreReasons.${code}`):code;
+const stressSelected=computed(()=>!local.value && props.execution.resultSelection?.kind!=='local' && selected.value?.task.target.kind==='stress'||output.value?.kind==='stress'||output.value?.kind==='stress-failure');
+const metricName=(key:string)=>t(`stressPresentation.metrics.${key}`);
+const metricValue=(key:string,value:number|null)=>value===null?t('stress.workbench.notComputable'):key==='rps'?`${value.toFixed(2)} ${t('stressPresentation.rpsUnit')}`:key.endsWith('Ms')?`${value.toFixed(2)} ms`:key==='errorRate'?`${(value*100).toFixed(2)}%`:String(value);
 const units = computed(() => output.value?.kind === 'suite' || output.value?.kind === 'failure' ? reportingUnits(output.value.result) : null);
 const recordedScriptTimeout = computed(() => local.value?.scriptTimeoutMs ?? selected.value?.scriptTimeoutMs);
-const recordedRuntime = computed(() => selected.value?.task.runtimeCompatibilityId ?? local.value?.runtimeCompatibilityId);
+const recordedRuntime = computed(() => stressSelected.value ? stressSummary.value?.runtime.runtimeCompatibilityId : selected.value?.task.runtimeCompatibilityId ?? local.value?.runtimeCompatibilityId);
 function shortIdentity(value: string) { return value.length > 64 ? `${value.slice(0, 48)}…${value.slice(-8)}` : value; }
 const agent = computed(() => props.execution.location.kind === "agent" ? props.execution.agents?.agents.find(agent => agent.id === (props.execution.location as { agentId: string }).agentId) : undefined);
 const raw = ref(false);
 const selectionKey = computed(() => JSON.stringify(props.execution.resultSelection ?? [props.execution.selectedJobId, local.value?.runId, report.value?.executionId]));
 watch(selectionKey, () => { raw.value = false; });
-function label(code: string | undefined) { if (!code) return t('onlineExecution.notCollected'); if (code === 'expired') return t('onlineExecution.expiredArchive'); const key = `onlineExecution.states.${code}`; const reason = `onlineExecution.reasons.${code}`; const refusal = `startRejectionLabels.${code}`; return te(key) ? t(key) : te(reason) ? t(reason) : te(refusal) ? t(refusal) : code; }
+function label(code: string | undefined) { if (!code) return t('onlineExecution.notCollected'); if(code==='stress')return t('stress.title');if (code === 'expired') return t('onlineExecution.expiredArchive'); const key = `onlineExecution.states.${code}`; const reason = `onlineExecution.reasons.${code}`; const refusal = `startRejectionLabels.${code}`; return te(key) ? t(key) : te(reason) ? t(reason) : te(refusal) ? t(refusal) : te(`stressFinal.codes.${code}`)?t(`stressFinal.codes.${code}`):code; }
+function capacityReason(reason:string){const key=`stressPresentation.waiting.${reason.startsWith('stress.')?reason.slice(7):''}`;return te(key)?t(key):te(`stressFinal.codes.${reason}`)?t(`stressFinal.codes.${reason}`):reason;}
+function capacityValue(dimension:string,value:number){return dimension==='maxRps'?`${value} ${t('stressPresentation.rpsUnit')}`:dimension==='metricMemoryBytes'?`${Number((value/1048576).toFixed(2))} MiB`:`${value} ${dimension==='processes'?t('stressPresentation.processUnit'):dimension==='requestConcurrency'?t('stressPresentation.requestUnit'):dimension==='jobs'?t('stressPresentation.jobs'):'VU'}`;}
 const logicalVerdict = computed(() => {
   if (report.value) return label(report.value.verdict);
   const value = output.value; if (!value) return label(undefined);
   if (value.kind === 'debug') return label(value.result.error || value.result.failureKind || value.result.run.failed > 0 ? 'failed' : 'passed');
   if (value.kind === 'workflow') return label(value.result.verdict ?? (value.result.failed > 0 ? 'failed' : 'passed'));
+  if (value.kind === 'stress') return label(value.result.verdict.status);
+  if (value.kind === 'stress-failure') return label('failed');
   return label(value.kind === 'failure' || value.result.reportFailure ? 'failed' : value.result.suite?.verdict ?? (units.value!.summary.failed > 0 ? 'failed' : 'passed'));
 });
 function location(event: Event) { const value = (event.target as HTMLSelectElement).value; props.execution.selectLocation(value === "local" ? { kind: "local" } : { kind: "agent", agentId: value }); }
-function date(value: unknown) { if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return t('onlineExecution.notCollected'); return new Intl.DateTimeFormat(locale.value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, timeZoneName: 'longOffset' }).format(new Date(value)); }
+function date(value: unknown) { const epoch=typeof value==='number'?value:typeof value==='string'?Date.parse(value):NaN;if(!Number.isFinite(epoch)||!Number.isFinite(new Date(epoch).getTime()))return t('onlineExecution.notCollected');return new Intl.DateTimeFormat(locale.value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, timeZoneName: 'longOffset' }).format(new Date(epoch)); }
 async function action(operation: () => Promise<unknown>) { const scope = JSON.stringify(props.execution.context); try { await operation(); } catch (error) { if (scope === JSON.stringify(props.execution.context) && props.execution.visible) props.execution.error = error instanceof Error ? error.message : String(error); } }
 const reason = computed(() => {
   const reportCode = props.execution.error.match(/(?:^|Error: )(invalid-core-output|report_expired)(?:['"])?$/)?.[1];
@@ -69,7 +96,7 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
         <thead><tr><th>{{ t('onlineExecution.task') }}</th><th>{{ t('onlineExecution.state') }}</th><th>{{ t('onlineExecution.verdict') }}</th><th>{{ t('onlineExecution.release') }}</th><th>{{ t('onlineExecution.archive') }}</th><th>{{ t('onlineExecution.actions') }}</th></tr></thead>
         <tbody><tr v-for="job in execution.jobs" :key="job.jobId">
           <td><button @click="action(() => execution.inspect(job))">{{ job.jobId }}</button> · {{ label(job.task.target.kind) }}</td>
-          <td>{{ label(job.state) }}<span v-if="job.cancelState !== 'none'"> · {{ label('cancel-' + job.cancelState) }}</span></td>
+          <td>{{ label(job.state) }}<span v-if="job.cancelState !== 'none'"> · {{ label('cancel-' + job.cancelState) }}</span><p v-if="job.capacityWaitReason">{{capacityReason(job.capacityWaitReason)}}</p><p v-if="job.capacityWait">{{t('stressCapacity.used')}} {{capacityValue(job.capacityWait.dimension,job.capacityWait.used)}} · {{t('stressCapacity.requested')}} {{capacityValue(job.capacityWait.dimension,job.capacityWait.requested)}} · {{t('stressCapacity.limit')}} {{capacityValue(job.capacityWait.dimension,job.capacityWait.limit)}}</p><p v-if="job.capacityWait?.draining">{{t('stressCapacity.draining')}}</p></td>
           <td>{{ verdict(job) }}<p v-if="job.summary?.reasonCode">{{ label(String(job.summary.reasonCode)) }}</p></td>
           <td>{{ label(job.executionReleased ? 'released' : 'retained') }}</td><td>{{ label(job.reportState) }}</td>
           <td><button v-if="job.canCancel" :disabled="job.state === 'ended' || job.cancelState === 'requested'" @click="action(() => execution.cancel(job))">{{ t('onlineExecution.cancel') }}</button></td>
@@ -79,6 +106,8 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
     </div>
     <section v-if="execution.resultSelection || selected || local || report" data-testid="online-selected-run">
       <h4>{{ t('onlineExecution.recordedRun') }}</h4>
+      <p v-if="stressSelected && !stressSummary">{{t('stressPresentation.metadataNotCollected')}}</p>
+      <StressExecutionSummaryView v-if="stressSelected && stressSummary && !report && !local" :execution="stressSummary" />
       <dl class="summary">
         <div><dt>{{ t('onlineExecution.location') }}</dt><dd>{{ selected ? t('onlineExecution.agent') + ' · ' + selected.agentId : local || execution.resultSelection?.kind === 'local' ? t('onlineExecution.local') : t('onlineExecution.notCollected') }}</dd></div>
         <div><dt>{{ t('onlineExecution.environment') }}</dt><dd>{{ recordedEnvironment }}</dd></div>
@@ -90,14 +119,20 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
       </dl>
     </section>
     <section v-if="report || local" data-testid="online-execution-report">
-      <p>{{ t('onlineExecution.verdict') }}: {{ logicalVerdict }} · {{ t('onlineExecution.requestFact') }}: {{ label(report?.executionFact) }}</p>
+      <p>{{ t('onlineExecution.verdict') }}: {{ logicalVerdict }} · {{ t('onlineExecution.requestFact') }}: {{ label(report?.executionFact ?? (output?.kind==='stress-failure'?(output.started?'started':'not-started'):undefined)) }}</p>
       <p v-if="report?.reasonCode" role="alert">{{ label(report.reasonCode) }}</p>
       <template v-if="output?.kind === 'failure'"><p role="alert">{{ t('onlineExecution.failureReason') }}: {{ output.error }}</p><ul v-if="output.result.warnings?.length" :aria-label="t('onlineExecution.evidenceWarnings')"><li v-for="(warning, index) in output.result.warnings" :key="index">{{ warning }}</li></ul></template>
-      <p v-if="!output">{{ t('onlineExecution.incompleteReport') }}</p>
-      <template v-if="output">
+      <p v-if="!output">{{ t(stressSelected?'stressPresentation.reportIntegrityUnknown':'onlineExecution.incompleteReport') }}</p>
+      <p v-if="stressSelected && !stressReport">{{t('stressPresentation.unavailable')}} · {{t('stressPresentation.partialFailure')}}</p>
+      <StressExecutionSummaryView v-if="stressSummary && !stressReport" :execution="stressSummary" />
+      <p v-if="report?.processObservation && !stressSummary">{{stressProcessObservationText(report.processObservation,locale)}}</p>
+      <p v-if="output?.kind === 'stress-failure'" role="alert">{{ t('onlineExecution.failureReason') }}: {{ output.error }} · {{ t('onlineExecution.requestTotals', { started: output.requests.started, completed: output.requests.completed, exchanges: '—' }) }}</p>
+      <p v-if="output?.kind === 'stress-failure'">{{t('stressPresentation.measurementPopulation')}} · {{t('stressPresentation.lifecyclePopulation')}}</p>
+      <template v-if="output && output.kind !== 'stress-failure'">
         <p>{{ t('onlineExecution.startedAt') }}: {{ date(output.result.startedAt) }} · {{ t('onlineExecution.finishedAt') }}: {{ date(output.result.finishedAt) }}</p>
         <ResponseViewer v-if="output.kind === 'debug'" :result="output.result" />
         <WfResultDrawer v-else-if="output.kind === 'workflow'" :open="true" :result="output.result" embedded />
+        <StressReportView v-else-if="output.kind === 'stress'" :report="output.result" :execution="stressSummary" />
         <template v-else>
           <p>{{ t('onlineExecution.logicalTotals', units!.summary) }}</p>
           <p>{{ t('onlineExecution.requestTotals', { started: output.result.requestFacts?.requestStarted ?? '—', completed: output.result.requestFacts?.requestCompleted ?? '—', exchanges: output.result.requestFacts?.httpExchanges ?? '—' }) }}</p>
@@ -106,6 +141,9 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
           <ul><li v-for="(row, index) in output.result.cases" :key="index">{{ row.apiName }} / {{ row.caseName }} · {{ label(row.passed ? 'passed' : 'failed') }} · {{ row.durationMs }} ms <span v-if="row.error">{{ row.error }}</span><CaseEvidencePanel v-if="row.evidence" :evidence="row.evidence" /></li></ul>
         </template>
       </template>
+      <button v-if="stressReport" data-testid="online-stress-baseline-pin" @click="pinBaseline">{{t('stressPresentation.pin')}}</button>
+      <button v-if="stressReport" data-testid="online-stress-export" @click="exportStressHtml">{{t('stressPresentation.export')}}</button>
+      <section v-if="baseline" data-testid="online-stress-comparison"><h4>{{t('stressPresentation.baseline')}}</h4><button @click="baseline=null">{{t('stressPresentation.clear')}}</button><p v-if="comparison && !comparison.directlyComparable">{{t('stressPresentation.notComparable')}}</p><ul><li v-for="reason in comparison?.reasons" :key="reason">{{t(`stressPresentation.reasons.${reason}`)}}</li></ul><ul><li v-for="reason in coreComparisonReasons" :key="reason">{{coreComparisonReason(reason)}}</li></ul><div v-if="comparison?.metrics" class="task-scroll"><table><thead><tr><th>{{t('stress.metricName')}}</th><th>{{t('stress.workbench.baseline')}}</th><th>{{t('stress.workbench.report')}}</th><th>Δ</th><th>Δ %</th></tr></thead><tbody><tr v-for="(metric,key) in comparison.metrics" :key="key"><th>{{metricName(key)}}</th><td>{{metricValue(key,metric.base)}}</td><td>{{metricValue(key,metric.candidate)}}</td><td>{{metricValue(key,metric.absolute)}}</td><td>{{metric.relative===null?t('stress.workbench.notComputable'):(metric.relative*100).toFixed(2)+'%'}}</td></tr></tbody></table></div></section>
       <details :key="selectionKey" @toggle="raw = ($event.target as HTMLDetailsElement).open"><summary>{{ t('onlineExecution.raw') }}</summary><textarea v-if="raw" readonly :value="JSON.stringify(report ?? local, null, 2)" /></details>
     </section>
   </section>

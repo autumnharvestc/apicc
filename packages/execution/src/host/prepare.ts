@@ -4,6 +4,8 @@ import { executionCapabilities } from "./capabilities.js";
 import { ProjectAssetsSchema, type ProjectAssets, type ScriptRequirement } from "../contract/index.js";
 import { createHash } from "node:crypto";
 import { decodeContractProjectFiles, createProjectSnapshot, apiCaseFilePath, collectionMetadataFilePath, folderMetadataFilePath, projectDirectoryPath, type ContractFolder } from "@apicc/core";
+import { compileStressPlan, type CompiledStressPlan, type StressCompileOptions } from "@apicc/core";
+import { resolveStressExecutionConfig, StressCompiledBindingSchema, StressRunConfigSchema, type StressAdmissionConfiguration, type StressCompiledBinding, type StressRunConfig } from "../contract/index.js";
 
 export interface PreparedProjectFiles {
   readonly prepared: PreparedExecution;
@@ -65,10 +67,20 @@ export interface PrepareExecutionInput {
   requestSettings?: RequestSettingsOverride; requestSettingsLimits?: RequestSettingsOverride;
   scriptTimeoutMs?: number; maxScriptTimeoutMs?: number; evidenceLimits?: EvidenceLimits;
   debugSessionScope?: DebugSessionScope; requiredCapabilities?: readonly string[];
+  stressCompileOptions?: StressCompileOptions;
+  /** Agent admission uses authoritative fixed policy plus applied node configuration; never the submitted binding. */
+  stressConfig?: { configuration: StressAdmissionConfiguration; run?: unknown };
+  /** Local execution has no agent reservation; only Core/project limits and explicit host budgets apply. */
+  stressRun?: StressRunConfig;
+  expectedStressBinding?: StressCompiledBinding;
 }
 export interface PreparedExecution {
   readonly snapshot: ProjectSnapshot; readonly target: TaskTarget; readonly profile: ExecutionProfile;
   readonly environmentId?: string; readonly debugPlan?: DebugExecutionPlan; readonly suitePlan?: ResolvedSuitePlan; readonly workflowPlan?: CompiledWorkflowPlan;
+  readonly stressPlan?: CompiledStressPlan;
+  /** Agent-only final reservation. admissionLimits are bounds, not the actual compiled load. */
+  readonly stressBinding?: StressCompiledBinding;
+  readonly stressRunConfig?: StressRunConfig;
   readonly selections: readonly CredentialRequestSelection[]; readonly scriptRequirements: readonly CoreScriptRequirement[]; readonly requiredCapabilities: readonly string[];
   readonly requestSettings?: RequestSettingsOverride; readonly scriptTimeoutMs?: number; readonly evidenceLimits?: EvidenceLimits; readonly debugSessionScope?: DebugSessionScope;
 }
@@ -79,20 +91,42 @@ export function assertPreparedExecution(prepared: PreparedExecution): void { if 
 export function prepareExecution(input: PrepareExecutionInput): PreparedExecution {
   const target = freeze(TaskTargetSchema.parse(input.target)); const profile = ExecutionProfileSchema.parse(input.profile);
   let snapshot = input.snapshot; let debugPlan: DebugExecutionPlan | undefined; let suitePlan: ResolvedSuitePlan | undefined; let workflowPlan: CompiledWorkflowPlan | undefined;
+  let stressPlan: CompiledStressPlan | undefined;
+  let stressBinding: StressCompiledBinding | undefined; let stressRunConfig: StressRunConfig | undefined;
   let selections: readonly CredentialRequestSelection[];
   let scriptRequirements: CoreScriptRequirement[];
-  const environmentId = target.kind === "debug" ? target.invocation.environmentId : input.environmentId;
+  const environmentId = target.kind === "debug" ? target.invocation.environmentId : target.kind === "stress" ? target.plan.environmentId ?? input.environmentId : input.environmentId;
   if (target.kind === "debug") {
     debugPlan = prepareDebugExecution(snapshot, target.invocation); snapshot = debugPlan.snapshot; selections = debugPlan.credentialSelections;
     scriptRequirements = collectionScriptRequirements(snapshot, debugPlan.collectionId, { environmentId, caseSelection: debugPlan.caseSelection });
   } else if (target.kind === "suite") {
     suitePlan = resolveSuitePlan(snapshot, target.suiteId, { environmentId, datasetId: target.datasetId, allowDraft: target.allowDraft }); selections = suiteCaseRequests(snapshot, suitePlan);
     scriptRequirements = suitePlan.entries.flatMap(entry => entry.kind === "workflow" ? workflowScriptRequirements(snapshot, entry.workflowId!, suitePlan!.environmentId) : entry.cases.flatMap(({ locator }) => collectionScriptRequirements(snapshot, locator.collectionId, { environmentId: suitePlan!.environmentId, caseSelection: locator })));
+  } else if (target.kind === "stress") {
+    if (input.environmentId && target.plan.environmentId && input.environmentId !== target.plan.environmentId) throw new Error("Stress environment mismatch");
+    stressRunConfig = StressRunConfigSchema.parse(input.stressConfig?.run ?? input.stressRun ?? {});
+    if (stressRunConfig.workerCount > target.plan.maxVus) throw new Error("Stress workers exceed maxVus");
+    let compileOptions: StressCompileOptions = { ...input.stressCompileOptions, evidenceLimits: input.evidenceLimits ?? input.stressCompileOptions?.evidenceLimits };
+    const configured = input.stressConfig;
+    const admission = configured && resolveStressExecutionConfig(target.plan, stressRunConfig, configured.configuration);
+    if (configured && admission) {
+      const { policy, agent } = configured.configuration;
+      compileOptions = { limits: { maxVus: Math.min(policy.maxStressVus, agent.maxStressVus), ...admission.effective }, evidenceMaxSamples: policy.stressEvidenceMaxSamples,
+        numericMemoryBytes: policy.stressMetricMemoryBytes, evidenceLimits: { bodyBytes: policy.bodyPreviewBytes, valueBytes: policy.valuePreviewBytes, caseBytes: policy.caseEvidenceBytes, reportBytes: policy.reportBytes, workflowMetadataBytes: policy.workflowMetadataBytes } };
+    }
+    stressPlan = compileStressPlan(snapshot, { ...target.plan, environmentId }, compileOptions);
+    if (admission) stressBinding = freeze(StressCompiledBindingSchema.parse({ stage: "compiled-limits", admissionLimits: compileOptions.limits, requested: admission.requested, sources: admission.sources,
+      numericMemoryBytes: stressPlan.metricPlan.memory.maxNumericBytes, evidenceMaxSamples: stressPlan.metricPlan.evidence.maxSamples,
+      reservation: { ...admission.reservation, requestConcurrency: stressPlan.schedule.effective.maxRequestConcurrency, maxRps: stressPlan.schedule.effective.maxRps } }));
+    selections = stressPlan.targets.flatMap(value => [...value.requests]);
+    scriptRequirements = stressPlan.targets.flatMap(value => value.workflowId
+      ? workflowScriptRequirements(snapshot, value.workflowId, environmentId)
+      : value.requests.flatMap(selection => collectionScriptRequirements(snapshot, selection.collectionId, { environmentId, caseSelection: selection })));
   } else {
     workflowPlan = compileWorkflowPlan(snapshot, target.workflowId, { environmentId }); selections = workflowPlanRequests(snapshot, workflowPlan);
     scriptRequirements = workflowScriptRequirements(snapshot, target.workflowId, environmentId);
   }
-  const requiredCapabilities = [...new Set([`task:${target.kind}`, ...selectCredentialRequests(snapshot, selections).map(({ request }) => `protocol:${request.protocol}`), ...(scriptRequirements.length ? ["script:trusted-core"] : [])])].sort();
+  const requiredCapabilities = [...new Set([`task:${target.kind}`, ...(target.kind === "stress" ? ["stress:local-workers-v1"] : []), ...selectCredentialRequests(snapshot, selections).map(({ request }) => `protocol:${request.protocol}`), ...(scriptRequirements.length ? ["script:trusted-core"] : [])])].sort();
   const available = executionCapabilities(profile);
   for (const capability of [...requiredCapabilities, ...(input.requiredCapabilities ?? [])]) if (!available.includes(capability)) throw new Error(`Execution profile ${profile} lacks ${capability}${scriptRequirements.length ? `: ${scriptRequirements[0]!.scriptId}` : ""}`);
   const scriptTimeoutMs = input.scriptTimeoutMs ?? 3000; const maximum = input.maxScriptTimeoutMs ?? 10000;
@@ -114,7 +148,15 @@ export function prepareExecution(input: PrepareExecutionInput): PreparedExecutio
     const budget = createEvidenceBudget(evidenceLimits);
     if (budget.bodyBytes > budget.caseBytes || budget.valueBytes > budget.caseBytes || budget.caseBytes > budget.reportBytes || (evidenceLimits.workflowMetadataBytes !== undefined && (!Number.isSafeInteger(evidenceLimits.workflowMetadataBytes) || evidenceLimits.workflowMetadataBytes < 1 || evidenceLimits.workflowMetadataBytes > budget.reportBytes))) throw new Error("Invalid evidence budget hierarchy");
   }
-  const prepared = Object.freeze({ snapshot: Object.freeze(snapshot), target, profile, environmentId: suitePlan?.environmentId ?? environmentId, selections: Object.freeze(selections.map(value => Object.freeze({ ...value }))), scriptRequirements: freeze(mergeScriptRequirements(scriptRequirements)), requiredCapabilities: Object.freeze(requiredCapabilities), debugPlan, suitePlan, workflowPlan,
+  const prepared = Object.freeze({ snapshot: Object.freeze(snapshot), target, profile, environmentId: suitePlan?.environmentId ?? environmentId, selections: Object.freeze(selections.map(value => Object.freeze({ ...value }))), scriptRequirements: freeze(mergeScriptRequirements(scriptRequirements)), requiredCapabilities: Object.freeze(requiredCapabilities), debugPlan, suitePlan, workflowPlan, stressPlan, stressBinding, stressRunConfig: stressRunConfig && freeze(stressRunConfig),
     requestSettings: freeze(requestSettings), scriptTimeoutMs, evidenceLimits, debugSessionScope: input.debugSessionScope && freeze(structuredClone(input.debugSessionScope)) });
-  owners.add(prepared); return prepared;
+  owners.add(prepared);
+  if (input.expectedStressBinding !== undefined) assertStressCompiledBinding(prepared, input.expectedStressBinding);
+  return prepared;
+}
+/** The expected value is a declaration only. Preparation must independently use authoritative node/policy inputs. */
+export function assertStressCompiledBinding(prepared: PreparedExecution, expected: unknown): void {
+  assertPreparedExecution(prepared);
+  const declared = StressCompiledBindingSchema.parse(expected);
+  if (!prepared.stressBinding || JSON.stringify(StressCompiledBindingSchema.parse(prepared.stressBinding)) !== JSON.stringify(declared)) throw new Error("Stress compiled binding mismatch; prepare again with the current authoritative configuration");
 }

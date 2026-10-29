@@ -12,6 +12,7 @@ import { createExecutionEvidenceCollector, createEvidenceBudget, projectExecutio
 import { createCredentialOutputSanitizer } from "../../src/credentials/output.js";
 import type { CaseExecutionResult } from "../../src/runner/caseExecutor.js";
 import { reportEntryEvidence } from "../../src/report/units.js";
+import { computeReport } from "../../src/stress/aggregate.js";
 
 const sample: RunResult = {
   collectionId: "c1", collectionName: "order-api", envName: "dev",
@@ -38,6 +39,29 @@ describe("C1 final evidence boundary", () => {
     response: { status: 200, headers: {}, bodyText: text, timeMs: 1 }, requestTimeMs: 1, scriptTimeMs: 2, iterationTimeMs: 3,
     outcome: { ...sample.cases[1]!, locator: { collectionId: "c1", folderIds: [], apiId: "a1", caseId: "t2", scope: "base" }, error: text, assertions: [{ pass: false, message: text }] },
     assertionOutcomes: [{ id: "assert-1", op: "eq", selector: { target: "bodyText", match: "first" }, code: "MISMATCH", pass: false, message: text, actual: text, expected: text, differencePath: "$.x" }],
+  });
+  it("applies the configured case ceiling to stress samples including their immutable framing", () => {
+    const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, []);
+    collector.configureStressBudget({ maxSamples: 2, bodyBytes: 64, valueBytes: 32, caseBytes: 512, reportBytes: 4096 });
+    collector.observe(execution("failure ".repeat(1000)));
+    const samples = collector.projectSamples();
+    expect(Buffer.byteLength(JSON.stringify(samples[0]))).toBeLessThanOrEqual(512);
+    expect(samples[0]).toMatchObject({ state: "omitted", truncated: true, identity: { projectId: "p", definitionRevision: "r" } });
+  });
+  it("keeps a stricter coordinator budget when retaining already projected worker samples", () => {
+    const worker = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, []);
+    worker.observe(execution("body ".repeat(1000)));
+    const coordinator = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { maxSamples: 1,
+      limits: { bodyBytes: 8, valueBytes: 12, caseBytes: 2048, reportBytes: 16000 } });
+    coordinator.configureStressBudget({ maxSamples: 2, bodyBytes: 64, valueBytes: 32, caseBytes: 4096, reportBytes: 32768 });
+    let report: ReturnType<typeof computeReport> | undefined;
+    expect(() => { report = coordinator.projectStressReport({ ...computeReport([], { concurrency: 1, startedAt: 0, finishedAt: 1 }),
+      failureEvidence: [...worker.projectSamples(), ...worker.projectSamples()] }, true); }).not.toThrow();
+    expect(report!.failureEvidence).toHaveLength(1);
+    expect(report!.failureEvidence![0]!.response!.body.text).toBe("body bod");
+    expect(report!.failureEvidence![0]!.response!.body.truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(report!.failureEvidence![0]))).toBeLessThanOrEqual(2048);
+    expect(Buffer.byteLength(JSON.stringify(report))).toBeLessThanOrEqual(16000);
   });
   it("keeps exact v2 attempt evidence when rows are reordered and final logical success in all reporters", async () => {
     const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "rev" }, [], { mode: "all" });

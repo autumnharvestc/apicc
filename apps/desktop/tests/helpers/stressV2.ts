@@ -12,6 +12,6 @@ export function stressV2Report() {
     verdict: { status: "passed", passed: true, violations: [] }, iterations: { planned: 1, started: 1, completed: 1, passed: 1, failed: 0, aborted: 0, dropped: 0, latency, startDelay: latency },
     caseRows, requests, httpExchanges, phases: [{ phase: "measurement", stageId: "rise", startOffsetMs: 0, endOffsetMs: 1000, durationMs: 1000, rps, latency, caseRows, requests, httpExchanges }], nodes: [], lifecycle: [],
     timeline: { bucketWidthMs: 1000, aligned: true, uncertaintyMs: 0, buckets: [{ startOffsetMs: 0, endOffsetMs: 1000, rps, latency, caseRows, requests, httpExchanges, sources: [{ phase: "measurement", stageId: "rise", caseRows, requests, httpExchanges }] }] },
-    load: { plannedDurationMs: null, measurementDurationMs: 1000, drainDurationMs: 0, policyLimitedMs: 0, saturated: false, maxVus: 1, maxRequestConcurrency: 1 },
+    load: { plannedDurationMs: null, measurementDurationMs: 1000, drainDurationMs: 0, policyLimitedMs: 0, saturated: false, maxVus: 1, maxRequestConcurrency: 1, effectiveMaxRps: null },
     statistics: { method: "exact-nearest-rank", exact: true, relativeError: 0, minValueMs: 0.001, gamma: 1.01, bucketCount: 4608, exactLimit: 256, underflow: 0, overflow: 0 }, completeness: { execution: complete, metrics: complete, load: complete } });
 }

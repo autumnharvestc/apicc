@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DebugInvocationSchema, JsonValueSchema } from "@apicc/core/schema";
+import { DebugInvocationSchema, JsonValueSchema, StressPlanSchema } from "@apicc/core/schema";
 import { ConfigVersionSchema } from "./config.js";
 
 export const EntityIdSchema = z.string().regex(/^[1-9]\d*$/).refine(v => /^[1-9]\d*$/.test(v) && BigInt(v) <= 9223372036854775807n, "ID exceeds BIGINT");
@@ -9,6 +9,7 @@ export const ServerProjectScopeSchema = z.object({ workspaceId: EntityIdSchema, 
 export const ExecutionProfileSchema = z.enum(["no-script", "trusted-core-script"]);
 export const DispatchKindSchema = z.enum(["shared-debug", "dedicated-task"]);
 export const TaskTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("stress"), plan: StressPlanSchema }).strict(),
   z.object({ kind: z.literal("debug"), invocation: DebugInvocationSchema }).strict(),
   z.object({ kind: z.literal("suite"), suiteId: z.string().uuid(), datasetId: z.string().uuid().optional(), allowDraft: z.boolean() }).strict(),
   z.object({ kind: z.literal("workflow"), workflowId: z.string().uuid(), inputs: z.record(z.string(), JsonValueSchema).optional() }).strict(),
@@ -40,6 +41,7 @@ export const TaskEnvelopeV1Schema = z.object({
   requiredCapabilities: z.array(OpaqueIdSchema).refine(c => new Set(c).size === c.length, "duplicate capability"),
 }).strict().superRefine((task, ctx) => {
   checkScriptGrant(task, ctx);
+  if (task.target.kind === "stress" && task.environmentId !== undefined && task.target.plan.environmentId !== undefined && task.environmentId !== task.target.plan.environmentId) ctx.addIssue({ code: "custom", path: ["environmentId"], message: "stress plan environment conflicts with outer environment" });
   if (task.dispatchKind === "shared-debug" && (task.target.kind !== "debug" || task.executionProfile !== "no-script")) ctx.addIssue({ code: "custom", path: ["dispatchKind"], message: "shared dispatch requires no-script debug" });
   if (task.debugSessionId && task.target.kind !== "debug") ctx.addIssue({ code: "custom", path: ["debugSessionId"], message: "debug session is only valid for debug targets" });
 });

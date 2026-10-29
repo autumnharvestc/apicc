@@ -26,6 +26,26 @@ const ctx = (extra: Partial<StressFinishContext> = {}): StressFinishContext => (
 const iteration = (acc: ReturnType<typeof createStressAccumulator>, phase: "measurement" | "warmup" = "measurement") => acc.observe({ kind: "iteration", phase, stageId: null, atMs: 20, started: 1, passed: 1, failed: 0, aborted: 0, dropped: 0, durationMs: 90, startDelayMs: 2 });
 
 describe("bounded numeric stress metrics", () => {
+  it("reads actual cumulative requests without consuming snapshot sequence or counting progress twice", () => {
+    const worker = createStressAccumulator(plan, "progress", { sourceId: "worker", scope: "observations" });
+    worker.observe(event({ ok: false, status: 500, failureKind: "http" }));
+    expect(worker.readProgress()).toEqual({ requests: { started: 1, completed: 1, eligibleCompleted: 1, failed: 1 }, incompleteReasons: [] });
+    const copy = worker.readProgress(); copy.requests.started = 999;
+    expect(worker.readProgress().requests.started).toBe(1);
+    const snapshot = worker.snapshot(); expect(snapshot.sequence).toBe(1);
+    const root = createStressAccumulator(plan, "progress"); root.merge(snapshot);
+    root.readProgress(); root.readProgress(); iteration(root);
+    expect(root.finish(ctx()).requests).toEqual({ started: 1, completed: 1, eligibleCompleted: 1, failed: 1 });
+  });
+  it("accepts a configured numeric ceiling and actually exhausts it without changing histogram identity", () => {
+    const small = { ...plan, memory: { maxNumericBytes: 1048576 } };
+    let accumulator: ReturnType<typeof createStressAccumulator> | undefined;
+    expect(() => { accumulator = createStressAccumulator(small, "small"); }).not.toThrow();
+    expect(() => { for (let i = 0; i < 512; i++) for (let sample = 0; sample < 257; sample++) accumulator!.observe(event({ nodeKey: JSON.stringify(["w", `n${i}`]) })); }).toThrow(/metrics-budget-exhausted/);
+    expect(accumulator!.finish(ctx()).completeness.metrics.reasons).toContain("metrics-budget-exhausted");
+    const worker = createStressAccumulator(small, "merge", { sourceId: "worker", scope: "observations" }); worker.observe(event());
+    expect(() => createStressAccumulator(plan, "merge").merge(worker.snapshot())).toThrow(/snapshot-invalid/);
+  });
   it("keeps exact nearest ranks at 256 and merges one million numbers without retaining them", () => {
     const tiny = new StressHistogram(); for (let i = 1; i <= 256; i++) tiny.add(i);
     expect(tiny.values().p95).toBe(244); expect(tiny.snapshot().exact).toHaveLength(256);

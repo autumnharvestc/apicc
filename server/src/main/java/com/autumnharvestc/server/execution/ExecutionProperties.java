@@ -64,6 +64,8 @@ public class ExecutionProperties {
     public static LinkedHashMap<String,Object> defaultAgent() {
         var values=new LinkedHashMap<String,Object>();
         values.put("maxConcurrentJobs",1); values.put("sharedDebugMaxInFlight",4); values.put("sharedDebugIdleMs",60000);
+        values.put("maxConcurrentStressJobs",1);values.put("maxStressProcesses",5);values.put("maxStressVus",100);
+        values.put("maxStressRequestConcurrency",100);values.put("maxStressRps",1000);values.put("maxStressMetricMemoryBytes",335544320);values.put("stressProgressIntervalMs",1000);
         values.put("debugSessionIdleMs",1800000); values.put("maxDebugSessions",64); values.put("workerStartupTimeoutMs",15000);
         values.put("workerHeartbeatIntervalMs",1000); values.put("workerUnresponsiveAfterMs",15000); values.put("scriptMode","deny");
         values.put("childMaxOldSpaceMiB",256); values.put("longPollWaitMs",30000); values.put("controlRequestTimeoutMs",45000);
@@ -89,6 +91,14 @@ public class ExecutionProperties {
         public Map<String,Object> asMap(){var v=new LinkedHashMap<String,Object>();v.put("maxAgentConcurrentJobs",maxAgentConcurrentJobs);v.put("agentMemoryLimitBytes",agentMemoryLimitBytes);v.put("agentCpuLimit",agentCpuLimit);v.put("auditRetentionDays",auditRetentionDays);v.put("cleanupIntervalMs",cleanupIntervalMs);v.put("cleanupBatchSize",cleanupBatchSize);v.put("enrollmentTtlMs",enrollmentTtlMs);return v;}
     }
     public static class Policy {
+        private long maxStressWorkers=4,maxStressVus=1000,maxStressRequestConcurrency=1000,stressMetricMemoryBytes=67108864,stressEvidenceMaxSamples=20;
+        private double maxStressRps=1000;
+        public long getMaxStressWorkers(){return maxStressWorkers;}public void setMaxStressWorkers(long v){maxStressWorkers=v;}
+        public long getMaxStressVus(){return maxStressVus;}public void setMaxStressVus(long v){maxStressVus=v;}
+        public long getMaxStressRequestConcurrency(){return maxStressRequestConcurrency;}public void setMaxStressRequestConcurrency(long v){maxStressRequestConcurrency=v;}
+        public double getMaxStressRps(){return maxStressRps;}public void setMaxStressRps(double v){maxStressRps=v;}
+        public long getStressMetricMemoryBytes(){return stressMetricMemoryBytes;}public void setStressMetricMemoryBytes(long v){stressMetricMemoryBytes=v;}
+        public long getStressEvidenceMaxSamples(){return stressEvidenceMaxSamples;}public void setStressEvidenceMaxSamples(long v){stressEvidenceMaxSamples=v;}
         @Min(1) private long snapshotBytes = 67108864;
         @Min(1) private int maxAssetChangeFiles = 2000;
         public long getSnapshotBytes() { return snapshotBytes; }
@@ -115,6 +125,6 @@ public class ExecutionProperties {
         public long getReportBytes(){return reportBytes;} public void setReportBytes(long v){reportBytes=v;}
         public long getWorkflowMetadataBytes(){return workflowMetadataBytes;} public void setWorkflowMetadataBytes(long v){workflowMetadataBytes=v;}
         public long getResultRetentionDays(){return resultRetentionDays;} public void setResultRetentionDays(long v){resultRetentionDays=v;}
-        public LinkedHashMap<String,Object> asMap(){var v=new LinkedHashMap<String,Object>();v.put("maxQueuedJobs",maxQueuedJobs);v.put("queueTimeoutMs",queueTimeoutMs);v.put("defaultJobTimeoutMs",defaultJobTimeoutMs);v.put("maxJobTimeoutMs",maxJobTimeoutMs);v.put("cancelGraceMs",cancelGraceMs);v.put("scriptTimeoutMs",scriptTimeoutMs);v.put("maxScriptTimeoutMs",maxScriptTimeoutMs);v.put("snapshotBytes",snapshotBytes);v.put("singleAttachmentBytes",singleAttachmentBytes);v.put("totalInputBytes",totalInputBytes);v.put("maxAssetChangeFiles",maxAssetChangeFiles);v.put("bodyPreviewBytes",bodyPreviewBytes);v.put("valuePreviewBytes",valuePreviewBytes);v.put("caseEvidenceBytes",caseEvidenceBytes);v.put("reportBytes",reportBytes);v.put("workflowMetadataBytes",workflowMetadataBytes);v.put("resultRetentionDays",resultRetentionDays);return v;}
+        public LinkedHashMap<String,Object> asMap(){var v=new LinkedHashMap<String,Object>();v.put("maxQueuedJobs",maxQueuedJobs);v.put("queueTimeoutMs",queueTimeoutMs);v.put("defaultJobTimeoutMs",defaultJobTimeoutMs);v.put("maxJobTimeoutMs",maxJobTimeoutMs);v.put("cancelGraceMs",cancelGraceMs);v.put("scriptTimeoutMs",scriptTimeoutMs);v.put("maxScriptTimeoutMs",maxScriptTimeoutMs);v.put("snapshotBytes",snapshotBytes);v.put("singleAttachmentBytes",singleAttachmentBytes);v.put("totalInputBytes",totalInputBytes);v.put("maxAssetChangeFiles",maxAssetChangeFiles);v.put("bodyPreviewBytes",bodyPreviewBytes);v.put("valuePreviewBytes",valuePreviewBytes);v.put("caseEvidenceBytes",caseEvidenceBytes);v.put("reportBytes",reportBytes);v.put("workflowMetadataBytes",workflowMetadataBytes);v.put("resultRetentionDays",resultRetentionDays);v.put("maxStressWorkers",maxStressWorkers);v.put("maxStressVus",maxStressVus);v.put("maxStressRequestConcurrency",maxStressRequestConcurrency);v.put("maxStressRps",maxStressRps);v.put("stressMetricMemoryBytes",stressMetricMemoryBytes);v.put("stressEvidenceMaxSamples",stressEvidenceMaxSamples);return v;}
     }
 }

@@ -3,7 +3,8 @@ import type { ArrivalPolicy } from "./arrivalPolicy.js";
 import type { ProjectExecutionRun } from "../runner/runner.js";
 import { compileWorkflowPlan, validateWorkflowPlanData, validateWorkflowRunOptions, workflowPlanRequests, type CompiledWorkflowPlan, type WorkflowPlanRequestSelection } from "../workflow/plan.js";
 import type { PreparedCaseSelection } from "../testing/dataModel.js";
-import { StressPlanSchema, type StressLifecycleRole, type StressMetricPlan, type StressPlan, type StressSchedule } from "./plan.js";
+import { StressPlanSchema, StressMetricBudgetsSchema, type StressLifecycleRole, type StressMetricPlan, type StressPlan, type StressSchedule } from "./plan.js";
+import { z } from "zod";
 import { findProjectApi } from "../workflow/references.js";
 import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/executionSelection.js";
 import { getEffectiveCaseRequest } from "../request/effective.js";
@@ -37,9 +38,20 @@ function freeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) { Object.values(value).forEach(freeze); Object.freeze(value); }
   return value;
 }
+export interface StressCompileOptions {
+  limits?: { maxVus: number; maxRequestConcurrency: number; maxRps: number };
+  evidenceLimits?: import("../report/evidence.js").EvidenceLimits;
+  evidenceMaxSamples?: number;
+  numericMemoryBytes?: number;
+}
 /** Pure preflight over a single immutable snapshot; no capture, I/O, clock, or run identity. */
-export function compileStressPlan(snapshot: ProjectSnapshot, input: StressPlan): CompiledStressPlan {
+export function compileStressPlan(snapshot: ProjectSnapshot, input: StressPlan, options: StressCompileOptions = {}): CompiledStressPlan {
   const plan = StressPlanSchema.parse(input);
+  const budgets = StressMetricBudgetsSchema.parse({ memory: { maxNumericBytes: options.numericMemoryBytes ?? 67108864 },
+    evidence: { maxSamples: options.evidenceMaxSamples ?? 20, bodyBytes: 65536, valueBytes: 4096, caseBytes: 262144, reportBytes: 16777216, ...options.evidenceLimits } });
+  const limits = options.limits === undefined ? undefined : z.object({ maxVus: z.number().int().min(1).max(1000),
+    maxRequestConcurrency: z.number().int().min(1).max(1000), maxRps: z.number().finite().positive() }).strict().parse(options.limits);
+  if (limits && (plan.maxVus > limits.maxVus || (plan.maxRequestConcurrency ?? 0) > limits.maxRequestConcurrency || (plan.maxRps ?? 0) > limits.maxRps)) throw new Error("Stress plan exceeds host capacity limits");
   const targets: CompiledStressTarget[] = []; const workflowPlans: CompiledWorkflowPlan[] = [];
   const addWorkflow = (role: CompiledStressTarget["role"], workflowId: string) => {
     const compiled = compileWorkflowPlan(snapshot, workflowId, { environmentId: plan.environmentId });
@@ -114,14 +126,15 @@ export function compileStressPlan(snapshot: ProjectSnapshot, input: StressPlan):
     stableNodeKeys: [...nodes.values()].sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0).slice(0, 512),
     histogram: { minValueMs: 0.001, gamma: 1.01, bucketCount: 4608, exactLimit: 256 },
     timeline: { initialBucketWidthMs: 1000, maxBuckets: 120 }, node: { maxKeys: 512, otherKey: "other" }, error: { maxKeys: 128, otherKey: "other" },
-    evidence: { maxSamples: 20, bodyBytes: 65536, valueBytes: 4096, caseBytes: 262144, reportBytes: 16777216 }, memory: { maxNumericBytes: 67108864 },
+    ...budgets,
   };
   const schedule: StressSchedule = {
     load: plan.load, durationMs: plan.load.kind === "stages" ? plan.load.stages.reduce((sum, stage) => sum + stage.durationMs, 0) : plan.termination.durationMs ?? null,
     maxIterations: plan.termination.maxIterations ?? null, maxVus: plan.maxVus,
     warmupMs: plan.warmupMs, thinkTimeMs: plan.thinkTimeMs, pacingMs: plan.pacingMs, gracefulStopMs: plan.gracefulStopMs, metricPlan,
     requested: { maxRequestConcurrency: plan.maxRequestConcurrency ?? null, maxRps: plan.maxRps ?? null },
-    effective: { maxRequestConcurrency: Math.min(plan.maxRequestConcurrency ?? defaultConcurrency, policy.maxConcurrency ?? 1000), maxRps: plan.maxRps ?? policy.maxRps ?? null },
+    effective: { maxRequestConcurrency: Math.min(plan.maxRequestConcurrency ?? defaultConcurrency, policy.maxConcurrency ?? 1000, limits?.maxRequestConcurrency ?? 1000),
+      maxRps: plan.maxRps ?? (policy.maxRps === undefined ? limits?.maxRps ?? null : Math.min(policy.maxRps, limits?.maxRps ?? Infinity)) },
   };
   const compiled: CompiledStressPlan = freeze({ projectId: snapshot.project.id, definitionRevision: snapshot.definitionRevision, plan, targets, workflowPlans, schedule, metricPlan });
   owners.set(compiled, snapshot); return compiled;
@@ -198,6 +211,8 @@ export interface StressProgress {
   readonly runId: string; readonly state: "preparing" | "ready" | "running" | "stopping" | "finished";
   readonly phase: StressPhase | null; readonly stageId: string | null; readonly atMs: number;
   readonly activeVus: number; readonly startedIterations: number; readonly completedIterations: number; readonly droppedIterations: number;
+  readonly requests: StressReportV2["requests"];
+  readonly completeness: StressCompleteness;
 }
 export interface StressExecutionDeps {
   readonly runId: string;
@@ -288,6 +303,8 @@ export type StressMetricsSummary = DeepReadonly<Pick<StressReportV2,
   "httpExchanges" | "phases" | "timeline" | "nodes" | "load" | "statistics" | "lifecycle" | "completeness">>;
 export interface StressAccumulator {
   observe(event: StressMetricEvent): void;
+  /** Bounded read-only numbers; does not finish or consume final-snapshot sequence. */
+  readProgress(): { requests: { started: number; completed: number; eligibleCompleted: number; failed: number }; incompleteReasons: readonly StressCompletenessReason[] };
   snapshot(): StressAggregateSnapshot;
   merge(snapshot: StressAggregateSnapshot): void;
   finish(context: StressFinishContext): StressMetricsSummary;

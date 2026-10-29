@@ -7,7 +7,69 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-class RunnerControlTest extends JobsFixture {
+class RunnerControlTest extends StressJobsFixture {
+    @Test void grantsAStressPermitOnlyForTheSameFixedCompiledBinding()throws Exception {
+        var f=configured();String job=claimStress(f,"permit-binding");send(f,message(job,"accepted","accept-stress")).andExpect(status().isOk());
+        var fixed=jobRepo.inputs(Long.valueOf(job));assertThat(fixed.get("stressBinding")).isEqualTo(jobRepo.require(Long.valueOf(job),false).submission().path("preparation").path("stressBinding"));
+        send(f,stressStart(job)).andExpect(status().isOk());assertThat(jobRepo.require(Long.valueOf(job),false).permitId()).isNotNull();
+    }
+    @Test void refusesAStressStartWithoutItsCompiledBinding()throws Exception {
+        var f=configured();String job=claimStress(f,"missing-start-binding");send(f,message(job,"accepted","accept-missing-binding")).andExpect(status().isOk());
+        send(f,start(job)).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("prepared_inputs_mismatch"));assertThat(jobRepo.require(Long.valueOf(job),false).permitId()).isNull();
+    }
+    @Test void persistsCumulativeStressProgressAsStatusMetadata()throws Exception {
+        var f=configured();String job=claimStress(f,"stress-progress");
+        send(f,stressProgress(job,1,4)).andExpect(status().isOk());
+        member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.progress.requests.started").value(4)).andExpect(jsonPath("$.progress.startedIterations").value(3));
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"requests","iterations","sequence","runId","clock"})
+    void rejectsRegressingStressProgressAcrossMessages(String regression)throws Exception {
+        var f=configured();String job=claimStress(f,"regress-"+regression);var first=stressProgress(job,1,4);
+        send(f,first).andExpect(status().isOk());send(f,first).andExpect(status().isOk());
+        var next=stressProgress(job,2,5);
+        switch(regression){
+            case "requests"->next.put("requests",Map.of("started",3,"completed",3,"eligibleCompleted",3,"failed",0));
+            case "iterations"->next.put("startedIterations",2);
+            case "sequence"->next.put("sequence",1);
+            case "runId"->next.put("runId","different-run");
+            case "clock"->next.put("atMs",1.0);
+        }
+        send(f,next).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("progress_conflict"));
+        assertThat(jobRepo.require(Long.valueOf(job),false).progress().path("requests").path("started").asLong()).isEqualTo(4);
+    }
+    @Test void stressProgressCannotClaimMoreVusThanTheFixedReservation()throws Exception {
+        var f=configured();String job=claimStress(f,"progress-vu");var m=stressProgress(job,1,4);m.put("activeVus",3);
+        send(f,m).andExpect(status().isBadRequest());
+    }
+    @Test void stressStartRechecksReducedResourceCapacityWithoutReleasingItsReservation()throws Exception {
+        var f=configured();String job=claimStress(f,"capacity-recheck");send(f,message(job,"accepted","accept-capacity")).andExpect(status().isOk());
+        member(f,patch("/api/v1/agents/"+f.agent()),Map.of("expectedVersion","1","config",Map.of("maxStressProcesses",2))).andExpect(status().isOk());
+        assertStartRejected(f,job,stressStart(job),"resource_capacity");
+        assertThat(jdbc.queryForObject("SELECT processes FROM execution_stress_reservations WHERE job_id=?",Long.class,Long.valueOf(job))).isEqualTo(3);
+    }
+    @Test void ordinaryProgressCannotOverwriteCumulativeStressProgress()throws Exception {
+        var f=configured();String job=claimStress(f,"ordinary-progress-bypass");send(f,stressProgress(job,1,4)).andExpect(status().isOk());
+        var ordinary=message(job,"progress","ordinary-progress-bypass");ordinary.putAll(Map.of("sequence",2,"phase","running","observedAt","2030-01-01T00:00:00Z","completedRequests",0,"failedRequests",0));
+        send(f,ordinary).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("progress_conflict"));
+    }
+    @Test void stressProgressValidationNeverEchoesUnknownPrivateFieldNames()throws Exception {
+        var f=configured();String job=claimStress(f,"private-progress-field");var m=stressProgress(job,1,4);m.put("private-marker-sensitive-value","private payload");
+        var response=body(send(f,m).andExpect(status().isBadRequest()));assertThat(response.path("message").asText()).doesNotContain("private-marker-sensitive-value");
+    }
+    @Test void aTypedStressFailureCannotBeCompletedAsPassed()throws Exception {
+        var f=configured();String job=claimStress(f,"failure-cannot-pass");send(f,message(job,"accepted","accept-failure-kind")).andExpect(status().isOk());send(f,stressStart(job)).andExpect(status().isOk());
+        byte[] bytes="{\"kind\":\"stress-failure\",\"started\":false,\"requests\":{\"started\":0,\"completed\":0},\"error\":\"safe failure\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);String hash=Hashes.sha256Hex(bytes);
+        mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",hash).contentType("application/octet-stream").content(bytes)).andExpect(status().isOk());
+        var done=message(job,"completed","false-passed");done.putAll(Map.of("verdict","passed","finishedAt","2030-01-01T00:00:00Z","executionReleased",true,"evidenceComplete",true,"reportHash",hash,"reportBytes",bytes.length));
+        send(f,done).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("report_type_mismatch"));
+    }
+    @Test void aPassedStressSummaryCannotLaterArchiveATypedFailure()throws Exception {
+        var f=configured();String job=claimStress(f,"passed-before-failure");send(f,message(job,"accepted","accept-passed-before-failure")).andExpect(status().isOk());send(f,stressStart(job)).andExpect(status().isOk());
+        byte[] bytes="{\"kind\":\"stress-failure\",\"started\":false,\"requests\":{\"started\":0,\"completed\":0},\"error\":\"safe failure\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);String hash=Hashes.sha256Hex(bytes);
+        var done=message(job,"completed","passed-before-upload");done.putAll(Map.of("verdict","passed","finishedAt","2030-01-01T00:00:00Z","executionReleased",true,"evidenceComplete",true,"reportHash",hash,"reportBytes",bytes.length));send(f,done).andExpect(status().isOk());
+        mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",hash).contentType("application/octet-stream").content(bytes)).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("report_type_mismatch"));
+    }
     void assertStartRejected(F f,String job,Map<String,Object> message,String reason)throws Exception{
         send(f,message).andExpect(status().isOk()).andExpect(jsonPath("$.acknowledged[0]").value(message.get("messageId")));
         var saved=jobRepo.require(Long.parseLong(job),false);assertThat(saved.permitId()).isNull();assertThat(saved.released()).isFalse();assertThat(saved.state()).isEqualTo("preparing");

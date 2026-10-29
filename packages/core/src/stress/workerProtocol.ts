@@ -45,6 +45,7 @@ const request = z.discriminatedUnion("protocol", [z.object({ ...commonRequest, p
 export const StressWorkerCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("prepare"), configuration: z.unknown() }).strict(),
   z.object({ type: z.literal("clock") }).strict(),
+  z.object({ type: z.literal("progress") }).strict(),
   z.object({ type: z.literal("start"), coordinatorNow: n, workerNow: n, uncertaintyMs: n, clockDomain: StressClockDomainSchema.optional() }).strict(),
   z.object({ type: z.literal("create"), vuId: id, inputs, runStart: n }).strict(),
   z.object({ type: z.literal("execute"), vuId: id, iterationId: id, stageId: z.string().nullable(), phase: StressPhaseSchema, scheduledOffsetMs: n }).strict(),

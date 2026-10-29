@@ -27,6 +27,23 @@ function setup(platform = true, initialConfig:AgentPatch={}) {
   return { agents, i18n,patches, wrapper: mount(AgentsView, { attachTo:document.body, props: { agents, platform }, global: { plugins: [i18n] } }) };
 }
 describe("平台节点管理", () => {
+  it('final I3 shows occupied resource quantities and explicit over-limit draining without JSON',async()=>{
+    const {agents,wrapper,i18n}=setup();await flushPromises();
+    agents.node={...agents.node!,stressCapacity:{used:{jobs:1,processes:3,vus:2,requestConcurrency:2,maxRps:1.5,metricMemoryBytes:3145728},limits:{jobs:1,processes:2,vus:100,requestConcurrency:100,maxRps:2,metricMemoryBytes:67108864},drainingDimensions:['processes']}};await flushPromises();
+    expect.soft(wrapper.text()).toContain('当前资源占用');expect.soft(wrapper.text()).toContain('超额排空');expect.soft(wrapper.text()).toContain('3 / 2 执行进程');expect.soft(wrapper.text()).toContain('1.5 / 2 请求/秒');
+    i18n.global.locale.value='en';await flushPromises();expect.soft(wrapper.text()).toContain('Over-limit draining');expect.soft(wrapper.text()).toContain('3 / 2 execution processes');
+  });
+  // Wrong business units or omitted fixed stress fields must be visible before saving.
+  it('T7 shows stress admission units, authoritative sources and saves fractional request RPS', async () => {
+    const {wrapper,i18n,patches}=setup();await flushPromises();
+    const vectors=[['压测任务槽','任务','1'],['压测执行进程总数','执行进程','5'],['压测 VU 上限','VU','100'],['压测请求并发上限','请求','100'],['压测请求速率上限','请求/秒','1000'],['压测数值内存预算','MiB','320'],['压测进度间隔','秒','1']];
+    for(const [label,unit,value] of vectors){const row=wrapper.findAll('tbody tr').find(row=>row.find('th').text().includes(label!));expect.soft(row?.text()).toContain(unit);expect.soft(row?.findAll('td')[0]?.text()).toBe(value);expect.soft(row?.text()).toContain('默认');}
+    const input=wrapper.find('input[aria-label="压测请求速率上限"]');
+    expect(input.exists()).toBe(true);await input.setValue('12.5');await wrapper.get('[data-testid="agent-save"]').trigger('click');await flushPromises();
+    expect(patches.at(-1)?.config.maxStressRps).toBe(12.5);
+    expect(wrapper.get('[data-testid="agent-application"]').text()).toContain('待应用');
+    i18n.global.locale.value='en';await flushPromises();expect(wrapper.text()).toContain('requests/s');expect(wrapper.text()).toContain('execution processes');
+  });
   it("分配读取完成前禁止空写，读入后保持既有选择并拒绝错误工作区写入",async()=>{
     localStorage.setItem('apicc.admin.locale','zh-CN');let finish!: (response:Response)=>void;
     const writes:string[][]=[];

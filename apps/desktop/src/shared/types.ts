@@ -48,7 +48,7 @@ import type {
 import type { LocalTreeNodeDTO } from "./tree-dto.js";
 import type { TestingApi } from "./testing.js";
 import type { KeyValuePair } from "@apicc/core";
-import { CurrentStressReportSchema, StressReportSchema, StressPlanSchema, StressReportV2Schema, SavedStressPlanSchema } from "@apicc/core/schema";
+import { CurrentStressReportSchema, StressReportSchema, StressPlanSchema, StressReportV2Schema, SavedStressPlanSchema, StressRequestsSchema, StressCompletenessSchema } from "@apicc/core/schema";
 import { z } from "zod";
 import type { CredentialMutationResult, CredentialPutInput, CredentialRefInput, CredentialStatusResult } from "./credentials.js";
 import type {
@@ -253,7 +253,7 @@ export type StressProgressDTO = import("@apicc/core").StressProgress & { root: s
 export const StressProgressDTOSchema = z.object({ runId: z.string().uuid(), root: z.string(), sourceRoot: z.string().optional(), projectLocator: z.object({ workspaceId: z.string(), groupId: z.string(), projectId: z.string() }).strict(),
   generation: z.number().int().nonnegative(), invocationId: z.string().uuid().optional(), target: z.discriminatedUnion("kind", [z.object({ kind: z.literal("case"), collectionId: z.string(), apiId: z.string(), caseId: z.string() }).strict(), z.object({ kind: z.literal("workflow"), workflowId: z.string() }).strict()]).optional(), state: z.enum(["preparing", "ready", "running", "stopping", "finished"]),
   phase: z.enum(["setup", "vu-setup", "warmup", "measurement", "drain", "vu-teardown", "teardown"]).nullable(), stageId: z.string().nullable(), atMs: z.number().finite().nonnegative(),
-  activeVus: z.number().int().nonnegative(), startedIterations: z.number().int().nonnegative(), completedIterations: z.number().int().nonnegative(), droppedIterations: z.number().int().nonnegative() }).strict();
+  activeVus: z.number().int().nonnegative(), startedIterations: z.number().int().nonnegative(), completedIterations: z.number().int().nonnegative(), droppedIterations: z.number().int().nonnegative(), requests: StressRequestsSchema, completeness: StressCompletenessSchema }).strict();
 /**
  * stress:run / stress:stop 返回：最终（或中止后的部分）报告 + 落盘文件名。
  * 落盘降级不影响报告返回，与集合运行口径一致（core Runner 落盘失败仅告警仍返回完整结果）：

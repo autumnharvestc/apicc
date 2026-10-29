@@ -1,5 +1,7 @@
 {
+  "stressCapacity":{"title":"当前资源占用","draining":"超额排空","drainHint":"仅阻止新增准入，不终止在途任务。","within":"未超额","dimension":"资源维度","quantity":"已占 / 总额","state":"容量状态","dimensions":{"jobs":"压测任务","processes":"执行进程","vus":"VU","requestConcurrency":"请求并发","maxRps":"请求速率","metricMemoryBytes":"数值内存"},"units":{"jobs":"任务","processes":"执行进程","vus":"VU","requestConcurrency":"请求","maxRps":"请求/秒","metricMemoryBytes":"MiB"}},
   "agents": {
+    "stressBudgetHint": "压测任务槽为 0 暂停新压测。数值内存预算不是 RSS 硬上限；策略预算按每执行进程计算，失败样本上限按整任务计算。",
     "allocationLoading": "正在读取当前分配，完成前不能修改或保存。",
     "allocationFailed": "分配读取失败。请重新读取成功后再编辑。",
     "validation": {"numberMilliseconds":"请输入有限数值，并确保按秒输入的值能精确转换为整数毫秒。","integer":"基础单位必须为整数。","integerMilliseconds":"必须是整数毫秒；按秒输入时不能包含真实亚毫秒精度。","greaterThan":"必须大于 {limit}。","atLeast":"必须不小于 {limit}。","atMost":"必须不大于 {limit}。","lessThan":"必须小于 {limit}。","number":"请输入有限数值。","invalid":"此值不符合该配置项允许的类型或范围。"},
@@ -98,6 +100,14 @@
     "saveApproval": "保存批准",
     "revokeApproval": "撤销全部脚本批准",
     "units": {
+      "jobs": "任务",
+      "processes": "执行进程",
+      "vus": "VU",
+      "requests": "请求",
+      "rps": "请求/秒",
+      "workers": "worker",
+      "processMiB": "MiB/执行进程",
+      "samples": "样本/任务",
       "KiB": "KiB",
       "s": "秒",
       "MiB": "MiB",
@@ -132,6 +142,16 @@
       "trusted-core": "允许受信 Core 脚本（仍需项目批准）"
     },
     "fields": {
+      "maxConcurrentStressJobs": "压测任务槽",
+      "maxStressProcesses": "压测执行进程总数",
+      "maxStressVus": "压测 VU 上限",
+      "maxStressRequestConcurrency": "压测请求并发上限",
+      "maxStressRps": "压测请求速率上限",
+      "maxStressMetricMemoryBytes": "压测数值内存预算",
+      "stressProgressIntervalMs": "压测进度间隔",
+      "maxStressWorkers": "每任务工作进程上限",
+      "stressMetricMemoryBytes": "每执行进程数值预算",
+      "stressEvidenceMaxSamples": "整任务失败样本上限",
       "maxConcurrentJobs": "并发任务数",
       "sharedDebugMaxInFlight": "共享调试在途数",
       "sharedDebugIdleMs": "共享调试空闲回收",

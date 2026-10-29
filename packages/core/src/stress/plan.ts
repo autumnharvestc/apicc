@@ -22,7 +22,7 @@ const lifecycleFields = { workflowId: name, inputs: inputs.optional() };
 const setup = z.object({ ...lifecycleFields, outputs: StringRecordSchema(name).optional() }).strict();
 const teardown = z.object(lifecycleFields).strict();
 export const StressLifecycleSchema = z.object({ setup: setup.optional(), vuSetup: setup.optional(), vuTeardown: teardown.optional(), teardown: teardown.optional() }).strict();
-export const StressPlanSchema = z.object({
+const StressPlanWireSchema = z.object({
   formatVersion: z.literal(1), target: StressTargetSchema, load: StressLoadSchema,
   maxVus: count.max(1000).default(1),
   termination: z.object({ durationMs: duration.optional(), maxIterations: count.optional() }).strict().default({}),
@@ -33,7 +33,8 @@ export const StressPlanSchema = z.object({
   thresholds: z.object({ maxErrorRate: z.number().finite().min(0).max(1).optional(),
     maxAssertionFailureRate: z.number().finite().min(0).max(1).optional(), maxP95Ms: nonnegative.optional(), minRps: nonnegative.optional() }).strict().optional(),
   lifecycle: StressLifecycleSchema.optional(), dataPolicy: z.enum(["vu-round-robin", "node-selection"]).optional(),
-}).strict().superRefine((plan, ctx) => {
+}).strict();
+export const StressPlanSchema = StressPlanWireSchema.superRefine((plan, ctx) => {
   const issue = (path: (string | number)[], message: string) => ctx.addIssue({ code: "custom", path, message });
   const load = plan.load;
   if (load.kind === "stages") {
@@ -58,7 +59,7 @@ export const StressPlanSchema = z.object({
     }
   }
   if (plan.dataPolicy !== undefined && plan.dataPolicy !== (plan.target.kind === "case" ? "vu-round-robin" : "node-selection")) issue(["dataPolicy"], "Data policy must match the target kind");
-});
+}).meta({ apiccJsonWireSchema: StressPlanWireSchema });
 export const SavedStressPlanSchema = z.object({ formatVersion: z.literal(1), id: name, name,
   updatedAt: z.number().finite().nonnegative(), plan: StressPlanSchema }).strict();
 export type StressPlan = z.infer<typeof StressPlanSchema>;
@@ -68,14 +69,23 @@ export type StressLoad = z.infer<typeof StressLoadSchema>;
 export type StressLifecycle = z.infer<typeof StressLifecycleSchema>;
 export type StressPhase = "setup" | "vu-setup" | "warmup" | "measurement" | "drain" | "vu-teardown" | "teardown";
 export type StressLifecycleRole = "setup" | "vuSetup" | "vuTeardown" | "teardown";
+/** Worker-compatible budgets; numeric formats and histogram parameters remain fixed. */
+export const StressMetricBudgetsSchema = z.object({
+  memory: z.object({ maxNumericBytes: z.number().int().min(1048576).max(67108864) }).strict(),
+  evidence: z.object({ maxSamples: z.number().int().min(1).max(20),
+    bodyBytes: count, valueBytes: count, caseBytes: count, reportBytes: count,
+    workflowMetadataBytes: count.optional(),
+  }).strict().refine(value => Math.max(value.bodyBytes, value.valueBytes) <= value.caseBytes && value.caseBytes <= value.reportBytes
+    && (value.workflowMetadataBytes === undefined || value.workflowMetadataBytes <= value.reportBytes), "Invalid stress evidence budget hierarchy"),
+}).strict();
 export interface StressMetricPlan {
   readonly stableNodeKeys: readonly { readonly workflowId: string; readonly nodeId: string; readonly key: string }[];
   readonly histogram: { readonly minValueMs: 0.001; readonly gamma: 1.01; readonly bucketCount: 4608; readonly exactLimit: 256 };
   readonly timeline: { readonly initialBucketWidthMs: 1000; readonly maxBuckets: 120 };
   readonly node: { readonly maxKeys: 512; readonly otherKey: "other" };
   readonly error: { readonly maxKeys: 128; readonly otherKey: "other" };
-  readonly evidence: { readonly maxSamples: 20; readonly bodyBytes: 65536; readonly valueBytes: 4096; readonly caseBytes: 262144; readonly reportBytes: 16777216 };
-  readonly memory: { readonly maxNumericBytes: 67108864 };
+  readonly evidence: { readonly maxSamples: number; readonly bodyBytes: number; readonly valueBytes: number; readonly caseBytes: number; readonly reportBytes: number; readonly workflowMetadataBytes?: number };
+  readonly memory: { readonly maxNumericBytes: number };
 }
 export interface StressSchedule {
   readonly load: DeepReadonly<StressLoad>;

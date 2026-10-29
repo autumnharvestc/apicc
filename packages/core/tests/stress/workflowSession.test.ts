@@ -28,8 +28,30 @@ import { testDataSelectionsForRequests } from "../../src/testing/data.js";
 import { createPluginCatalog } from "../../src/plugin/catalog.js";
 import { installSdkContributions } from "../../src/plugin/sdkAdapter.js";
 import { assertStressTargetAllowed } from "../../src/stress/safety.js";
+import { createPluginRegistry } from "../../src/plugin/registry.js";
 
 const clock: StressClock = { now: () => performance.now(), wallNow: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+
+async function noScriptFixture(workflow = false, lifecycle = false, configure?: (project: ReturnType<typeof createContractExecutionProject>) => void,
+  compileOptions?: import("../../src/stress/execution.js").StressCompileOptions, iterations = 1) {
+  const project = createContractExecutionProject("http://127.0.0.1:18080");
+  const collection = project.collections[0]!, outer = collection.folders[0]!, inner = outer.folders[0]!;
+  for (const container of [collection, outer, inner]) { container.preOperations = []; container.postOperations = []; }
+  const asset = inner.apis[0]!;
+  asset.contract.request.auth = { kind: "none" }; asset.contract.request.path = "/plain";
+  asset.cases[0]!.preOperations = []; asset.cases[0]!.postOperations = [];
+  const flow = (id: string) => WorkflowSchema.parse({ id, name: id, executionVersion: 2, status: "enabled",
+    nodes: [{ id: "http", kind: "request", apiId: ids.contract, caseId: ids.case }] });
+  project.workflows = [flow("plain"), flow("setup"), flow("vuSetup"), flow("vuTeardown"), flow("teardown")];
+  configure?.(project);
+  const snapshot = createProjectSnapshot(project);
+  const compiled = compileStressPlan(snapshot, StressPlanSchema.parse({ formatVersion: 1,
+    target: workflow ? { kind: "workflow", workflowId: "plain" } : { kind: "case", collectionId: ids.collection, apiId: ids.contract, caseId: ids.case },
+    environmentId: ids.environment, load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: iterations },
+    ...(lifecycle ? { lifecycle: Object.fromEntries(["setup", "vuSetup", "vuTeardown", "teardown"].map(role => [role, { workflowId: role }])) } : {}) }), compileOptions);
+  const preparedTestData = await prepareTestData(snapshot, compiled.targets.flatMap(target => [...target.dataSelections]), { workspaceRoot: process.cwd() });
+  return bindPreparedStressExecution(compiled, { snapshot, preparedTestData, credentialBindings: { versions: {}, resolve() { throw new Error("unused"); } } });
+}
 
 async function preparedFixture(baseUrl: string) {
   const project = createContractExecutionProject(baseUrl);
@@ -68,6 +90,70 @@ async function preparedFixture(baseUrl: string) {
 }
 
 describe("stress workflow host wiring", () => {
+  it.each([false, true])("executes a prepared HTTP case (engine-free=%s)", async (engineFree) => {
+    const prepared = await noScriptFixture();
+    const registry = engineFree ? createPluginRegistry() : createDefaultRegistry();
+    if (engineFree) expect(registry.getScriptEngine("javascript")).toBeUndefined();
+    const sent: string[] = [];
+    const evidence = createExecutionEvidenceCollector({ projectId: ids.project, definitionRevision: prepared.compiled.definitionRevision }, []);
+    const host = createPreparedStressHost(prepared, { registry, evidence, createManagedClient: () => ({ name: "http", canHandle: () => true,
+      async execute(request) { sent.push(request.url); return { status: 200, headers: {}, bodyText: "ok", timeMs: 1 }; }, async close() {} }) });
+    const report = await runStressPlan(prepared, { ...host, runId: "plain", clock, evidence, metrics: createStressAccumulator(prepared.compiled.metricPlan, "plain"),
+      signal: new AbortController().signal, gate: createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest() {} }) });
+    expect(report.requests.completed).toBe(1);
+    expect(sent).toEqual(["http://127.0.0.1:18080/plain"]);
+  });
+
+  it.each(["case-post", "inherited-post", "lifecycle-condition"])("rejects the complete scripted closure before any HTTP request: %s", async (kind) => {
+    const prepared = await noScriptFixture(false, true, project => {
+      if (kind === "case-post") project.collections[0]!.folders[0]!.folders[0]!.apis[0]!.cases[0]!.postOperations.push({ id: "script", type: "script", content: "true" });
+      if (kind === "inherited-post") project.collections[0]!.postOperations.push({ id: "script", type: "script", content: "true" });
+      if (kind === "lifecycle-condition") project.workflows[4] = WorkflowSchema.parse({ id: "teardown", name: "teardown", status: "enabled", executionVersion: 1,
+        nodes: [{ id: "http", kind: "request", apiId: ids.contract, caseId: ids.case }, { id: "next", kind: "request", apiId: ids.contract, caseId: ids.case }],
+        edges: [{ id: "condition", from: "http", to: "next", condition: "true" }] });
+    });
+    let requests = 0;
+    const evidence = createExecutionEvidenceCollector({ projectId: ids.project, definitionRevision: prepared.compiled.definitionRevision }, []);
+    expect(() => createPreparedStressHost(prepared, { registry: createPluginRegistry(), evidence, createManagedClient: () => ({ name: "http", canHandle: () => true,
+      async execute() { requests++; return { status: 200, headers: {}, bodyText: "ok", timeMs: 1 }; }, async close() {} }) })).toThrow(/javascript/);
+    expect(requests).toBe(0);
+  });
+
+  it("applies compiled evidence budgets to the real final report with an externally supplied default collector", async () => {
+    const prepared = await noScriptFixture(false, false, undefined, { evidenceMaxSamples: 2,
+      evidenceLimits: { bodyBytes: 64, valueBytes: 32, caseBytes: 2048, reportBytes: 32768 } }, 4);
+    const evidence = createExecutionEvidenceCollector({ projectId: ids.project, definitionRevision: prepared.compiled.definitionRevision }, []);
+    const host = createPreparedStressHost(prepared, { registry: createDefaultRegistry(), evidence, createManagedClient: () => ({ name: "http", canHandle: () => true,
+      async execute() { return { status: 503, headers: { authorization: "private-marker" }, bodyText: `private-marker ${"x".repeat(10000)}`, timeMs: 1 }; }, async close() {} }) });
+    let generatorAtProjection: unknown;
+    const boundedEvidence = { ...evidence, projectStressReport: ((raw, retained) => {
+      generatorAtProjection = raw.generator;
+      return evidence.projectStressReport(raw, retained);
+    }) as typeof evidence.projectStressReport };
+    const report = await runStressPlan(prepared, { ...host, runId: "budget", clock, evidence: boundedEvidence, metrics: createStressAccumulator(prepared.compiled.metricPlan, "budget"),
+      signal: new AbortController().signal, gate: createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest() {} }) });
+    expect(report.requests.failed).toBe(4);
+    expect(report.failureEvidence).toHaveLength(2);
+    expect(report.failureEvidence!.every(sample => Buffer.byteLength(sample.response!.body.text) <= 64 && sample.response!.body.truncated)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(report))).toBeLessThanOrEqual(32768);
+    expect(JSON.stringify(report)).not.toContain("private-marker");
+    expect(generatorAtProjection).toMatchObject({ availability: "available" });
+    expect(report.generator).toEqual(generatorAtProjection);
+  });
+
+  it.each([false, true])("delivers invocation request settings to target and all lifecycle leaf requests (workflow=%s)", async (workflow) => {
+    const prepared = await noScriptFixture(workflow, true);
+    const totals: number[] = [];
+    const evidence = createExecutionEvidenceCollector({ projectId: ids.project, definitionRevision: prepared.compiled.definitionRevision }, []);
+    const host = createPreparedStressHost(prepared, { registry: createDefaultRegistry(), evidence, createManagedClient: () => ({ name: "http", canHandle: () => true,
+      async execute(_request, options) { totals.push(options.totalTimeoutMs); return { status: 200, headers: {}, bodyText: "ok", timeMs: 1 }; }, async close() {} }) },
+    { requestSettings: { totalTimeoutMs: 1234 } });
+    const report = await runStressPlan(prepared, { ...host, runId: "settings", clock, evidence, metrics: createStressAccumulator(prepared.compiled.metricPlan, "settings"),
+      signal: new AbortController().signal, gate: createStressRequestGate({ clock, maxConcurrency: 1, authorizeRequest() {} }) });
+    expect(report.lifecycle.map(step => step.state)).toEqual(["passed", "passed", "passed", "passed"]);
+    expect(report.requests.completed).toBe(1);
+    expect(totals).toEqual([1234, 1234, 1234, 1234, 1234]);
+  });
   it("F7a checks the SDK rewritten workflow first hop through the borrowed transport", async () => {
     let hits = 0, closes = 0;
     const server = createServer((_request, response) => { hits++; response.end("ok"); });

@@ -87,15 +87,28 @@ curl http://localhost:8080/api/v1/ping    # {"status":"ok"}
 docker compose -f deploy/docker-compose.yml up -d --build   # 重建镜像并滚动到新容器
 ```
 
-数据库 schema 为幂等 DDL（`CREATE TABLE IF NOT EXISTS`），启动时自动就位，无独立迁移步骤。
-**未发布阶段（0.x）schema 变更不做迁移**：幂等 DDL 不会重建已存在的旧表，旧库直接起新版
-不一定在启动期报错（如 2026-09 起实体主键由 UUID 字符串改为数字 BIGINT，旧列型下运行期写入
-才会出错）——从旧版本升级一律删数据卷重开，不要沿用：compose 执行
-`docker compose -f deploy/docker-compose.yml down -v`（连同卷删除，随后照常 `up -d --build`
-并重新引导管理员）；k8s 删除 PVC 中的数据或重建 PVC。
+数据库使用幂等 DDL；它不会把任意旧表重建为新结构。历史 UUID 主键等不兼容布局不能仅凭启动
+成功判定升级安全。先停写并备份旧卷和独立密钥，核对来源版本；必须启用新空库时使用新的卷名，
+保留旧卷供回退和旧报告查询，不把删除卷作为日常升级步骤。
+
+F7c 在线压测沿 F7b 控制协议扩展。服务端、客户端及 `Dockerfile.agent` 的代理需使用配套候选，
+准入核对 Core 构建、scriptApi、精确 Node/V8 和能力；旧代理不自动承接新任务，也不热混用。
+升级前先暂停新任务（压测可设 `maxConcurrentStressJobs=0`），等待所有任务 `executionReleased=true`
+且报告已归档，确认代理所有执行后代退出，再停止代理和控制服务并备份控制库、代理账本卷及密钥。
+本阶段新增预留表及列使用 `CREATE/ALTER ... IF NOT EXISTS`，旧任务/报告继续保留；这不构成对任意
+旧版本数据库的自动迁移承诺。回退须恢复匹配的程序、数据备份和密钥，不能让两个代理共用一个账本目录。
+
+容量、进程拓扑、配置默认值、降额排空及停止语义见[代理部署说明](runner-agent.md)。控制服务仍是
+单副本 H2；代理数值预算不等于容器 RSS 硬上限，CPU/内存限制由 Docker/k8s 部署层单独设置。
+正式代理控制链要求 HTTPS，可通过[独立代理 Compose 示例](../deploy/runner-agent/README.md)局部挂载
+私有 CA，并保留 SAN/证书校验；不得关闭 TLS 校验或修改系统信任来使联验通过。
+
+部署验证使用正式 `Dockerfile` 和 `Dockerfile.agent` 构建出的配套镜像，运行
+`node scripts/smoke-runner-agent.mjs`；实际结果、源/产物摘要与限制以本次交付证据为准。
+容器停止后先确认真实退出并保留合成账本/日志，再清理本场拥有的临时资源。
 
 ## 安全提示
 
-- HTTPS/TLS 终结本期未含（明文 HTTP）；公网暴露请置于反代/网关之后（Ingress 支持后置）。
+- 普通管理页面可以使用 HTTP；独立代理要求上述 HTTPS 控制身份。公网管理入口应使用 HTTPS。
 - `allow-registration` 保持关闭可防止陌生人自建账号；首个管理员引导仅在空库时触发，
   环境变量中的口令在部署后可从 `.env` 移除（重启不影响已建账号）。

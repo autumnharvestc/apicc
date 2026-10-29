@@ -31,6 +31,14 @@
       "types": "./dist/report/units.d.ts",
       "default": "./dist/report/units.js"
     },
+    "./stress/html": {
+      "types": "./dist/stress/html.d.ts",
+      "default": "./dist/stress/html.js"
+    },
+    "./stress/compare": {
+      "types": "./dist/stress/compare.d.ts",
+      "default": "./dist/stress/compare.js"
+    },
     "./workflow/adapter": {
       "types": "./dist/workflow/adapter.d.ts",
       "default": "./dist/workflow/adapter.js"

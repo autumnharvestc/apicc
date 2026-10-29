@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createOAuthProfileHost, createProjectSnapshot, createUserPluginHost, fileStorage, ShardFailureSchema, ShardResultSchema, type OAuthProfileRecord, type SecretStore, type Workspace } from "@apicc/core";
+import { createOAuthProfileHost, createProjectSnapshot, createUserPluginHost, fileStorage, ShardFailureSchema, ShardResultSchema, StressComparisonSchema, type OAuthProfileRecord, type SecretStore, type Workspace } from "@apicc/core";
 import { createLocalStressWorkerDeps, runStressSchedule, createStressAccumulator, createStressRequestGate, createExecutionEvidenceCollector, legacyStressMetricPlan, createNetworkProfileHost, prepareTestData } from "@apicc/core";
 import { localStressClock } from "../src/stressPlanCommand.js";
 import { spawnLocalStressWorker } from "../src/stressWorkerTransport.js";
@@ -294,7 +294,26 @@ describe("run-stress 真实子进程多 shard 端到端", () => {
       expect(report.latency).toMatchObject({ availability: "available" });
       expect(report.verdict).toMatchObject({ passed: true });
       const html = readFileSync(htmlFile, "utf8"); expect(html).toContain("Stress report"); expect(html).toContain("passed");
-      if (baselineFile) { expect(result.stdout).toContain("基线比较"); expect(html).toContain("Comparable recorded configuration"); }
+      if (baselineFile) {
+        const comparisonLine = result.stdout.split(/\r?\n/).find(line => line.startsWith("基线比较："));
+        expect(comparisonLine).toBeDefined();
+        const comparison = StressComparisonSchema.parse(JSON.parse(comparisonLine!.slice("基线比较：".length)));
+        expect(comparison.directlyComparable).toBe(true);
+        expect(Object.keys(comparison.metrics).sort()).toEqual(["dropped", "errorRate", "iterationP95Ms", "iterationsCompleted", "p95Ms", "rps"]);
+        expect(comparison.notices).toContain("environment-definition-not-compared");
+        // Core configuration equality does not establish equal execution conditions: this CLI HTML has no execution metadata.
+        const comparisonSection = html.match(/<section id="comparison"[^>]*>([\s\S]*?)<\/section>/)?.[1];
+        expect(comparisonSection).toBeDefined();
+        expect(comparisonSection).toContain('data-en="Not directly comparable"');
+        expect(comparisonSection).toContain('data-en="Execution metadata not collected; not directly comparable"');
+        expect(comparisonSection).not.toContain('data-en="Comparable recorded configuration"');
+        const metricRows = comparisonSection!.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1];
+        expect(metricRows?.match(/<tr>/g)).toHaveLength(6);
+        for (const label of ["Request RPS", "Request p95", "Request error rate", "Completed iterations", "Iteration p95", "Dropped iteration slots"]) {
+          expect(metricRows).toContain(`data-en="${label}"`);
+        }
+        expect(comparisonSection).toContain("Environment definitions not compared; matching IDs do not prove matching definitions");
+      }
       baselineFile = join(dir, readdirSync(dir).find((f) => f.endsWith(".json"))!);
     }
   });

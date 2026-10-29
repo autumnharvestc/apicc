@@ -16,7 +16,8 @@ import java.util.*;
 public class ProjectExecutionView {
     private final AgentService agents; private final AgentRepo repo; private final ExecutionConfigService configs;
     private final JdbcTemplate jdbc; private final PermissionService permissions; private final ScriptGrantRepo grants;
-    public ProjectExecutionView(AgentService agents,AgentRepo repo,ExecutionConfigService configs,JdbcTemplate jdbc,PermissionService permissions,ScriptGrantRepo grants){this.agents=agents;this.repo=repo;this.configs=configs;this.jdbc=jdbc;this.permissions=permissions;this.grants=grants;}
+    private final com.autumnharvestc.server.execution.jobs.StressResourceReservations stressResources;
+    public ProjectExecutionView(AgentService agents,AgentRepo repo,ExecutionConfigService configs,JdbcTemplate jdbc,PermissionService permissions,ScriptGrantRepo grants,com.autumnharvestc.server.execution.jobs.StressResourceReservations stressResources){this.agents=agents;this.repo=repo;this.configs=configs;this.jdbc=jdbc;this.permissions=permissions;this.grants=grants;this.stressResources=stressResources;}
     public Map<String,Object> read(UserAccount caller,String ws,String project){
         var entity=agents.requireProject(caller,ws,project,false);
         var effective=configs.project(caller,ws,project,null);var result=new LinkedHashMap<String,Object>();
@@ -30,6 +31,11 @@ public class ProjectExecutionView {
             row.put("id",id);row.put("name",node.name());row.put("acceptingJobs",node.acceptingJobs());
             var policy=configs.project(caller,ws,project,id);row.put("policy",policy.get("policy"));row.put("policyVersion",policy.get("policyVersion"));
             var values=configs.agentValues(agent);row.put("scriptsAllowed",Objects.equals(values.get("scriptMode"),"trusted-core"));
+            var capacity=new LinkedHashMap<String,Object>();
+            for(String key:List.of("maxConcurrentStressJobs","maxStressProcesses","maxStressVus","maxStressRequestConcurrency","maxStressRps","maxStressMetricMemoryBytes"))capacity.put(key,values.get(key));
+            var source=new LinkedHashMap<String,Object>();var nodeSources=(Map<?,?>)configs.agentState(agent).get("sources");var policySources=(Map<?,?>)policy.get("sources");
+            for(String key:List.of("maxStressRequestConcurrency","maxStressRps")){source.put("agent."+key,nodeSources.get(key));source.put("policy."+key,policySources.get("policy."+key));}
+            row.put("stressConfiguration",Map.of("agent",capacity,"sources",source));
             var saved=repo.config("agent",agent);String status=!saved.restartRequiredFields().isEmpty()?"restart-required":saved.version()==saved.appliedVersion()&&saved.pendingFields().isEmpty()?"applied":"pending";
             row.put("configuration",Map.of("configVersion",String.valueOf(saved.version()),"appliedConfigVersion",String.valueOf(saved.appliedVersion()),"pendingFields",saved.pendingFields(),"restartRequiredFields",saved.restartRequiredFields(),"status",status));
             row.putAll(runtimeFacts(node));
@@ -42,6 +48,7 @@ public class ProjectExecutionView {
     /** Shared projection only; entry points must authorize platform or project scope first. */
     public Map<String,Object> runtimeFacts(AgentRepo.Agent node){
         long agent=node.id();var result=new LinkedHashMap<String,Object>();
+        result.put("stressCapacity",stressResources.capacity(agent,configs.agentValues(agent)));
         var runtime=jdbc.query("SELECT description_json FROM execution_agent_runtime WHERE agent_id=?",(r,n)->repo.decode(r.getString(1),new TypeReference<Map<String,Object>>(){}),agent);
         var control=jdbc.query("SELECT session_id,last_seen FROM execution_agent_control_state WHERE agent_id=?",(r,n)->Map.of("sessionId",r.getString(1),"seen",r.getObject(2,OffsetDateTime.class)),agent);
         OffsetDateTime seen=control.isEmpty()?null:(OffsetDateTime)control.getFirst().get("seen");result.put("lastSeenAt",seen==null?null:seen.toInstant().toString());

@@ -1,4 +1,5 @@
 export * from "./config.js";
+export * from "./stress.js";
 export * from "./task.js";
 export * from "./messages.js";
 export * from "./assets.js";

@@ -1,13 +1,11 @@
-import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { z } from "zod";
 import {
   StressPlanSchema, SavedStressPlanSchema, PreparedTestDataSchema, createProjectSnapshot, compileStressPlan, bindPreparedStressExecution,
-  createExecutionEvidenceCollector, createPreparedStressHost, createStressRequestGate, createStressAccumulator,
-  runStressPlan, runLocalStressWorkers, serveLocalStressWorker, assertStressTargetAllowed,
-  type StressClock, type StressPlan, type PluginRegistry, type PreparedTestData, type StressRequestGate, type StressWorkerChannel,
+  createExecutionEvidenceCollector, createPreparedStressHost, serveLocalStressWorker,
+  type StressPlan, type PluginRegistry, type PreparedTestData, type StressWorkerChannel,
   StressWorkerSpecSchema, type StressWorkerRuntime,
   parseStressReport, compareStressReports, renderStressHtml,
   stressArrivalWindowNotices,
@@ -17,6 +15,7 @@ import { prepareExecutionRunFromSnapshot, type CredentialHostOptions } from "./c
 import { assertWorkspaceUsable, loadWorkspace, locateProject } from "./workspace.js";
 import { localStressClockDomain, processStressWorkerChannel, spawnLocalStressWorker } from "./stressWorkerTransport.js";
 import { localStressClock } from "./nodeStressClock.js";
+import { runNodeStressPlan } from "@apicc/execution/host";
 export { localStressClock } from "./nodeStressClock.js";
 const workerConfigSchema = z.object({ kind: z.literal("plan"), root: z.string(), projectPath: z.string(), plan: StressPlanSchema,
   definitionRevision: z.string(), credentialVersions: StressWorkerSpecSchema.shape.credentialVersions, networkIdentity: z.string(),
@@ -35,18 +34,7 @@ export async function prepareCliStressPlan(registry: PluginRegistry, root: strin
   return { execution, prepared, evidence };
 }
 
-export function createPlanGate(execution: Awaited<ReturnType<typeof prepareCliStressPlan>>["execution"], confirmedTargetOrigins: string[], clock: StressClock): StressRequestGate {
-  const { compiled, run } = execution;
-  let gate: StressRequestGate;
-  gate = createStressRequestGate({ clock, maxConcurrency: compiled.schedule.effective.maxRequestConcurrency, maxRps: compiled.schedule.effective.maxRps ?? undefined,
-    authorizeRequest(request) {
-      const policy = { ...run.snapshot.project.stressPolicy, trustedOrigins: [...(run.snapshot.project.stressPolicy.trustedOrigins ?? [])], deniedOrigins: [...(run.snapshot.project.stressPolicy.deniedOrigins ?? [])] };
-      const decision = assertStressTargetAllowed({ url: request.url, policy, confirmedTargetOrigins, concurrency: compiled.schedule.effective.maxRequestConcurrency, maxRps: compiled.schedule.effective.maxRps ?? undefined });
-      gate.recordTarget?.({ origin: decision.targetOrigin, confirmation: decision.confirmation, loopback: decision.loopback,
-        policy: decision.confirmation === "project-policy" ? "trusted" : decision.appliedPolicy.maxConcurrency !== undefined || decision.appliedPolicy.maxRps !== undefined ? "explicit-limited" : "none", appliedPolicy: decision.appliedPolicy });
-    } });
-  return gate;
-}
+export { createPlanGate } from "@apicc/execution/host";
 
 export interface StressPlanCommandDeps {
   hostVersion: string; pluginSnapshot(): Promise<PluginRuntimeSnapshotV1>;
@@ -86,14 +74,13 @@ export function registerStressPlanCommands(program: Command, deps: StressPlanCom
       try {
         const { execution, evidence, prepared } = await prepareCliStressPlan(deps.registry, root, projectPath, plan, deps.credentials, controller.signal);
         if (baseline?.projectId && baseline.projectId !== execution.compiled.projectId) throw new Error("Cannot compare different projects");
-        const host = createPreparedStressHost(execution, { registry: deps.registry, evidence, workspaceRoot: root }, { confirmedTargetOrigins });
-        const runId = randomUUID(), common = { ...host, runId, clock: localStressClock, gate: createPlanGate(execution, confirmedTargetOrigins, localStressClock),
-          metrics: createStressAccumulator(execution.compiled.metricPlan, runId), evidence, signal: controller.signal };
-        const report = opts.shards === 1 ? await runStressPlan(execution, common) : await runLocalStressWorkers(execution, { ...common, shards: opts.shards, clockDomain: localStressClockDomain,
+        const report = await runNodeStressPlan(execution, { registry: deps.registry, evidence, workspaceRoot: root }, { signal: controller.signal, confirmedTargetOrigins,
+          ...(opts.shards > 1 ? { workers: { count: opts.shards, timeoutMs: timeout, argsFor: deps.workerArgs,
           configuration: { kind: "plan", root, projectPath, plan, definitionRevision: prepared.snapshot.definitionRevision, credentialVersions: prepared.run.credentialBindings.versions,
             networkIdentity: prepared.network!.identity, preparedTestData: prepared.run.preparedTestData, confirmedTargetOrigins,
             pluginRuntimeVersion: 1, pluginRuntimeSnapshot: await deps.pluginSnapshot() },
-          spawnWorker: (identity) => deps.spawnWorker ? deps.spawnWorker(identity, timeout, prepareWorker) : Promise.resolve(spawnLocalStressWorker(deps.workerArgs(identity), timeout)) });
+          spawnWorker: (identity: { runId: string; workerId: string }) => deps.spawnWorker ? deps.spawnWorker(identity, timeout, prepareWorker) : Promise.resolve(spawnLocalStressWorker(deps.workerArgs(identity), timeout)) } } : {}) });
+        const runId = report.runId;
         const dir = opts.runsDir ?? join(root, ".apicc", "runs"); mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, `stress-plan-${runId}.json`), JSON.stringify(report, null, 2));
         const comparison = baseline ? compareStressReports(baseline, report) : undefined;

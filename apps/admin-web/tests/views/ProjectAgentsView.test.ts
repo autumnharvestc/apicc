@@ -5,9 +5,10 @@ import { createAgentsStore } from "../../src/stores/agents.js";
 import { createAdminClient } from "../../src/api/client.js";
 import { createAdminI18n } from "../../src/i18n/index.js";
 import ProjectAgentsView from "../../src/views/ProjectAgentsView.vue";
-import { defaultPolicyConfig } from "@apicc/execution/contract";
+import { defaultPolicyConfig, defaultAgentConfig } from "@apicc/execution/contract";
 import type { ScriptGrant } from "../../src/api/agents.js";
 enableAutoUnmount(afterEach);
+const stressAgent=Object.fromEntries(['maxConcurrentStressJobs','maxStressProcesses','maxStressVus','maxStressRequestConcurrency','maxStressRps','maxStressMetricMemoryBytes'].map(key=>[key,defaultAgentConfig[key as keyof typeof defaultAgentConfig]]));
 async function projectFixture(){
   localStorage.setItem('apicc.admin.locale','zh-CN');
   const grants:Record<string,ScriptGrant>=Object.fromEntries(['1','2'].map(id=>[id,{agentId:id,version:'0',scope:'script-version',scripts:[],grantedByUserId:'7'}]));
@@ -22,7 +23,7 @@ async function projectFixture(){
       if(value){if(value.expectedVersion!==grants[id]!.version)return new Response(JSON.stringify({code:'version_conflict',message:'批准版本已变化'}),{status:409});grants[id]={...grants[id]!,version:String(Number(grants[id]!.version)+1),scope:value.scope,scripts:value.scripts};}
       return new Response(JSON.stringify(grants[id]));
     }
-    const projection={canManageScripts:true,defaultAgentId:'1',policyVersion:'0',policy,agents:candidates.map(n=>({id:n.id,name:n.name,acceptingJobs:true,availability:'runtime-missing',lastSeenAt:null,configuration:{configVersion:'0',appliedConfigVersion:'0',pendingFields:[],restartRequiredFields:[],status:'applied'},policy,policyVersion:'0',scriptsAllowed:true,scriptGrant:{version:grants[n.id]!.version,scope:grants[n.id]!.scope,scripts:grants[n.id]!.scripts}}))};
+    const projection={canManageScripts:true,defaultAgentId:'1',policyVersion:'0',policy,agents:candidates.map(n=>({id:n.id,name:n.name,acceptingJobs:true,availability:'runtime-missing',lastSeenAt:null,configuration:{configVersion:'0',appliedConfigVersion:'0',pendingFields:[],restartRequiredFields:[],status:'applied'},policy,policyVersion:'0',scriptsAllowed:true,stressConfiguration:{agent:stressAgent,sources:{'agent.maxStressRequestConcurrency':'default','agent.maxStressRps':'default','policy.maxStressRequestConcurrency':'default','policy.maxStressRps':'default'}},scriptGrant:{version:grants[n.id]!.version,scope:grants[n.id]!.scope,scripts:grants[n.id]!.scripts}}))};
     return new Response(JSON.stringify(uri.pathname.endsWith('/execution-agents')?projection:uri.pathname.endsWith('/agent-candidates')?candidates:settings));
   }});
   const agents=createAgentsStore({client});const {i18n}=createAdminI18n();
@@ -30,6 +31,22 @@ async function projectFixture(){
   await flushPromises();await flushPromises();return {wrapper,agents,grants};
 }
 describe("项目代理管理", () => {
+  it('final I3 shows project-safe occupied quantities and over-limit draining from the authoritative projection',async()=>{
+    const {agents,wrapper}=await projectFixture();
+    agents.project!.agents[0]!.stressCapacity={used:{jobs:1,processes:3,vus:2,requestConcurrency:2,maxRps:1.5,metricMemoryBytes:3145728},limits:{jobs:1,processes:2,vus:100,requestConcurrency:100,maxRps:2,metricMemoryBytes:67108864},drainingDimensions:['processes']};await flushPromises();
+    expect.soft(wrapper.text()).toContain('当前资源占用');expect.soft(wrapper.text()).toContain('超额排空');expect.soft(wrapper.text()).toContain('3 / 2 执行进程');expect.soft(wrapper.text()).toContain('1.5 / 2 请求/秒');
+  });
+  it('T7 displays policy stress budgets in business units and authoritative inheritance',async()=>{
+    const {wrapper,agents}=await projectFixture();
+    expect(agents.project?.agents).toHaveLength(2);expect(agents.settings).not.toBeNull();
+    // Server settings remain the source of inheritance; these are not recomputed by the view.
+    agents.settings!.sources['policy.maxStressVus']='workspace';
+    agents.settings!.policy.maxStressVus=250;await flushPromises();
+    const vectors=[['每任务工作进程上限','worker','4'],['压测 VU 上限','VU','1000'],['压测请求并发上限','请求','1000'],['压测请求速率上限','请求/秒','1000'],['每执行进程数值预算','MiB/执行进程','64'],['整任务失败样本上限','样本/任务','20']];
+    for(const [label,unit,value] of vectors){const row=wrapper.findAll('tbody tr').find(row=>row.find('th').text().includes(label!));expect.soft(row?.text()).toContain(unit);expect.soft(row?.findAll('td')[0]?.text()).toBe(value);}
+    expect.soft(wrapper.text()).toContain('250');expect.soft(wrapper.text()).toContain('工作区');
+    expect.soft(wrapper.text()).toContain('不是 RSS 硬上限');expect.soft(wrapper.text()).toContain('整任务');
+  });
   it("批准CAS冲突后重新加载同项目可恢复编辑器并读取最新批准版本",async()=>{
     const {wrapper,agents,grants}=await projectFixture();
     expect(wrapper.find('[data-testid="script-save"]').exists()).toBe(true);
@@ -68,7 +85,7 @@ describe("项目代理管理", () => {
         }
         return new Response(JSON.stringify(approved));
       }
-      const projection={canManageScripts:true,defaultAgentId:'1',policyVersion:'0',policy,agents:[{id:'1',name:'受信节点',acceptingJobs:true,availability:'runtime-missing',lastSeenAt:null,configuration:{configVersion:'0',appliedConfigVersion:'0',pendingFields:[],restartRequiredFields:[],status:'applied'},policy,policyVersion:'0',scriptsAllowed:true,scriptGrant:{version:approved.version,scope:approved.scope,scripts:approved.scripts}}]};
+      const projection={canManageScripts:true,defaultAgentId:'1',policyVersion:'0',policy,agents:[{id:'1',name:'受信节点',acceptingJobs:true,availability:'runtime-missing',lastSeenAt:null,configuration:{configVersion:'0',appliedConfigVersion:'0',pendingFields:[],restartRequiredFields:[],status:'applied'},policy,policyVersion:'0',scriptsAllowed:true,stressConfiguration:{agent:stressAgent,sources:{'agent.maxStressRequestConcurrency':'default','agent.maxStressRps':'default','policy.maxStressRequestConcurrency':'default','policy.maxStressRps':'default'}},scriptGrant:{version:approved.version,scope:approved.scope,scripts:approved.scripts}}]};
       return new Response(JSON.stringify(String(url).endsWith('/execution-agents')?projection:String(url).endsWith('/agent-candidates')?[{id:'1',name:'受信节点',acceptingJobs:true,revoked:false}]:settings));
     }});
     const agents=createAgentsStore({client});const {i18n}=createAdminI18n();

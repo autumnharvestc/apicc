@@ -17,7 +17,7 @@ public class ExecutionConfigService {
     private static final long SAFE=9007199254740991L;
     private static final long MIN_FAULT_REPORT_BYTES=1024;
     private static final Set<String> TIMERS=Set.of("workerStartupTimeoutMs","workerHeartbeatIntervalMs","workerUnresponsiveAfterMs","longPollWaitMs","controlRequestTimeoutMs","pollTimeoutMarginMs","heartbeatIntervalMs","reconnectMinMs","reconnectMaxMs","transferTimeoutMs","transferRetryMinMs","transferRetryMaxMs","cancelGraceMs","scriptTimeoutMs","maxScriptTimeoutMs");
-    private static final Set<String> CEILINGS=Set.of("maxQueuedJobs","maxJobTimeoutMs","maxScriptTimeoutMs","snapshotBytes","singleAttachmentBytes","totalInputBytes","maxAssetChangeFiles","bodyPreviewBytes","valuePreviewBytes","caseEvidenceBytes","reportBytes","workflowMetadataBytes");
+    private static final Set<String> CEILINGS=Set.of("maxQueuedJobs","maxJobTimeoutMs","maxScriptTimeoutMs","snapshotBytes","singleAttachmentBytes","totalInputBytes","maxAssetChangeFiles","bodyPreviewBytes","valuePreviewBytes","caseEvidenceBytes","reportBytes","workflowMetadataBytes","maxStressWorkers","maxStressVus","maxStressRequestConcurrency","maxStressRps","stressMetricMemoryBytes","stressEvidenceMaxSamples");
     private final ExecutionProperties properties;
     private final AgentRepo repo;
     private final AgentService agents;
@@ -156,7 +156,8 @@ public class ExecutionConfigService {
     }
     private void validateAgent(Map<String,Object> values,Map<String,Object> policy) {
         strict(values,ExecutionProperties.defaultAgent().keySet());
-        for(var entry:values.entrySet()) {String key=entry.getKey();if(key.equals("scriptMode")){if(!Objects.equals(entry.getValue(),"deny")&&!Objects.equals(entry.getValue(),"trusted-core"))bad("scriptMode 仅支持 deny/trusted-core");}else if(key.equals("reconnectJitterRatio")){if(!(entry.getValue() instanceof Number n)||!Double.isFinite(n.doubleValue())||n.doubleValue()<0||n.doubleValue()>1)bad("重连抖动比例须在 0 至 1");}else {long n=positive(entry.getValue(),key);if(TIMERS.contains(key)&&n>Integer.MAX_VALUE)bad(key+" 超过宿主定时器范围");}}
+        for(var entry:values.entrySet()) {String key=entry.getKey();if(key.equals("scriptMode")){if(!Objects.equals(entry.getValue(),"deny")&&!Objects.equals(entry.getValue(),"trusted-core"))bad("scriptMode 仅支持 deny/trusted-core");}else if(key.equals("maxStressRps")){rate(entry.getValue(),key);}else if(key.equals("maxConcurrentStressJobs")){bounded(entry.getValue(),key,0,number(values,"maxConcurrentJobs"));}else if(key.equals("reconnectJitterRatio")){if(!(entry.getValue() instanceof Number n)||!Double.isFinite(n.doubleValue())||n.doubleValue()<0||n.doubleValue()>1)bad("重连抖动比例须在 0 至 1");}else {long n=positive(entry.getValue(),key);if(TIMERS.contains(key)&&n>Integer.MAX_VALUE)bad(key+" 超过宿主定时器范围");}}
+        bounded(values.get("maxStressVus"),"maxStressVus",1,1000);bounded(values.get("maxStressRequestConcurrency"),"maxStressRequestConcurrency",1,1000);bounded(values.get("stressProgressIntervalMs"),"stressProgressIntervalMs",250,60000);
         if(number(values,"maxConcurrentJobs")>properties.getDeployment().getMaxAgentConcurrentJobs())bad("代理并发超过部署能力上限");
         if(number(values,"longPollWaitMs")+number(values,"pollTimeoutMarginMs")>number(values,"controlRequestTimeoutMs"))bad("控制超时不足轮询等待和余量");
         if(number(values,"heartbeatIntervalMs")>=number(values,"offlineAfterMs"))bad("失联阈值须大于心跳间隔");
@@ -176,17 +177,20 @@ public class ExecutionConfigService {
     /** A delivery payload is not proof of application; T6 transports and later calls acknowledge. */
     public Map<String,Object> configurationForDelivery(long authenticatedAgent){var node=repo.require(authenticatedAgent,false);if(node.revoked())throw error(HttpStatus.UNAUTHORIZED,"unauthorized","代理身份已撤销");var saved=repo.config("agent",authenticatedAgent);return Map.of("configVersion",String.valueOf(saved.version()),"config",agentValues(saved));}
     private static void mergePolicy(Map<String,Object> policy,Map<String,Object> patch,String level,Map<String,String> sources,List<Map<String,Object>> restrictions) {
-        strict(patch,policy.keySet());for(String key:patch.keySet()){if(CEILINGS.contains(key)&&positive(patch.get(key),key)>number(policy,key))bad(level+"."+key+" 超过继承上限");sources.put("policy."+key,level);}policy.putAll(patch);
+        strict(patch,policy.keySet());for(String key:patch.keySet()){if(CEILINGS.contains(key)&&(key.equals("maxStressRps")?rate(patch.get(key),key)>rate(policy.get(key),key):positive(patch.get(key),key)>number(policy,key)))bad(level+"."+key+" 超过继承上限");sources.put("policy."+key,level);}policy.putAll(patch);
         for(var pair:List.of(List.of("defaultJobTimeoutMs","maxJobTimeoutMs"),List.of("scriptTimeoutMs","maxScriptTimeoutMs")))if(number(policy,pair.get(0))>number(policy,pair.get(1))&&!patch.containsKey(pair.get(0))){policy.put(pair.get(0),policy.get(pair.get(1)));restrictions.add(Map.of("field","policy."+pair.get(0),"reason",pair.get(1),"effectiveValue",policy.get(pair.get(1))));}
         validatePolicy(policy);
     }
     private static void validatePolicy(Map<String,Object> values) {
-        for(var e:values.entrySet()){if(e.getKey().equals("queueTimeoutMs")&&e.getValue()==null)continue;long n=positive(e.getValue(),e.getKey());if(TIMERS.contains(e.getKey())&&n>Integer.MAX_VALUE)bad("策略时限超过宿主定时器范围");}
+        for(var e:values.entrySet()){if(e.getKey().equals("queueTimeoutMs")&&e.getValue()==null)continue;if(e.getKey().equals("maxStressRps")){rate(e.getValue(),e.getKey());continue;}long n=positive(e.getValue(),e.getKey());if(TIMERS.contains(e.getKey())&&n>Integer.MAX_VALUE)bad("策略时限超过宿主定时器范围");}
+        bounded(values.get("maxStressVus"),"maxStressVus",1,1000);bounded(values.get("maxStressRequestConcurrency"),"maxStressRequestConcurrency",1,1000);bounded(values.get("stressMetricMemoryBytes"),"stressMetricMemoryBytes",1048576,67108864);bounded(values.get("stressEvidenceMaxSamples"),"stressEvidenceMaxSamples",1,20);
         if(number(values,"reportBytes")<MIN_FAULT_REPORT_BYTES)bad("报告预算不得小于1024 bytes完整故障报告预算");
         for(var p:List.of(List.of("defaultJobTimeoutMs","maxJobTimeoutMs"),List.of("cancelGraceMs","defaultJobTimeoutMs"),List.of("scriptTimeoutMs","maxScriptTimeoutMs"),List.of("snapshotBytes","totalInputBytes"),List.of("singleAttachmentBytes","totalInputBytes"),List.of("bodyPreviewBytes","caseEvidenceBytes"),List.of("valuePreviewBytes","caseEvidenceBytes"),List.of("caseEvidenceBytes","reportBytes"),List.of("workflowMetadataBytes","reportBytes")))if(number(values,p.get(0))>number(values,p.get(1)))bad(p.get(0)+" 不得超过 "+p.get(1));
     }
     public static void strict(Map<String,?> input,Set<String> keys) {if(input==null||!keys.containsAll(input.keySet()))bad("控制配置包含未知字段或缺少配置");}
     private static long positive(Object value,String key) {if(!(value instanceof Number))bad(key+" 必须是正安全整数");var n=(Number)value;double d=n.doubleValue();if(!Double.isFinite(d)||d<=0||d!=Math.rint(d)||d>SAFE)bad(key+" 必须是正安全整数");return n.longValue();}
     private static long number(Map<String,Object> values,String key){return positive(values.get(key),key);}
+    private static double rate(Object value,String key){if(!(value instanceof Number n)||!Double.isFinite(n.doubleValue())||n.doubleValue()<=0)bad(key+" 必须是正有限数");return ((Number)value).doubleValue();}
+    private static void bounded(Object value,String key,long min,long max){if(!(value instanceof Number n)||!Double.isFinite(n.doubleValue())||n.doubleValue()!=Math.rint(n.doubleValue())||n.doubleValue()<min||n.doubleValue()>max)bad(key+" 超出允许整数范围");}
     private static void bad(String message){throw error(HttpStatus.BAD_REQUEST,"validation_failed",message);}
 }

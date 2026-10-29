@@ -299,7 +299,8 @@ export function createStressControllerWithHost(
       }
     }).then(output => { onProgress.finish(); return output; }).finally(() => { onProgress.dispose(); clearActive(controller); });
     active = { controller, finished, runId, root, projectLocator, owner };
-    onProgress({ runId, state: "preparing", phase: null, stageId: null, atMs: 0, activeVus: 0, startedIterations: 0, completedIterations: 0, droppedIterations: 0 });
+    onProgress({ runId, state: "preparing", phase: null, stageId: null, atMs: 0, activeVus: 0, startedIterations: 0, completedIterations: 0, droppedIterations: 0,
+      requests: { started: 0, completed: 0, eligibleCompleted: 0, failed: 0 }, completeness: { execution: { complete: true, reasons: [] }, metrics: { complete: true, reasons: [] }, load: { complete: true, reasons: [] } } });
     return finished;
   }
   function run(input: LegacyStressRunInput, owner?: object): Promise<StressRunOutput>;

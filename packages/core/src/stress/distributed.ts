@@ -8,8 +8,8 @@ import type { PreparedStressExecution, StressAggregateSnapshot, StressExecutionD
 import type { StressSchedule } from "./plan.js";
 import type { StressCompletenessReason, StressReportV2 } from "./reportV2.js";
 import { runStressPlan } from "./plannedRunner.js";
-import { createStressWorkerPeer, mergeStressWorkerMarkers, sameStressClockDomain, StressClockDomainSchema, type StressClockDomainBinding, type StressWorkerChannel, type StressWorkerPeer } from "./workerProtocol.js";
-import { StressWorkerLifecycleSchema } from "./localWorker.js";
+import { createStressWorkerPeer, sameStressClockDomain, StressClockDomainSchema, type StressClockDomainBinding, type StressWorkerChannel, type StressWorkerPeer } from "./workerProtocol.js";
+import { StressWorkerLifecycleSchema, StressWorkerProgressSchema } from "./localWorker.js";
 import type { ExecutableRequest } from "../plugin/types.js";
 
 export interface LocalStressWorkerOptions extends StressExecutionDeps {
@@ -25,10 +25,12 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
   deps: StressExecutionDeps; richOutputComplete(): boolean; generator(coordinator: StressGeneratorMetrics): StressGeneratorMetrics; failureEvidence(): import("../report/types.js").SafeExecutionEvidence[]; distributed(summary: StressMetricsSummary): StressDistributed; close(): Promise<void>;
 }> {
   if (!Number.isSafeInteger(options.shards) || options.shards < 1 || options.shards > schedule.maxVus) throw new Error("shards exceeds VU capacity");
+  options.evidence.configureStressBudget(schedule.metricPlan.evidence);
   const failures = new Set<StressCompletenessReason>();
   const childAbort = new AbortController();
   const signal = AbortSignal.any([options.signal, childAbort.signal]);
-  const states: { id: string; peer: StressWorkerPeer; controller: AbortController; uncertainty: number; vus: Map<string, { host: StressVuHostContext; iteration: string | null; stage: string | null; closed: boolean; notBeforeMs: number }>; leases: Map<string, { vuId: string; requestId: string; release(): void }>; drained: boolean; counts?: { total: number; ok: number; failed: number; eligibleCompleted: number }; generator?: StressGeneratorMetrics }[] = [];
+  const states: { id: string; peer: StressWorkerPeer; controller: AbortController; uncertainty: number; vus: Map<string, { host: StressVuHostContext; iteration: string | null; stage: string | null; closed: boolean; notBeforeMs: number }>; leases: Map<string, { vuId: string; requestId: string; release(): void }>; drained: boolean; counts?: { total: number; ok: number; failed: number; eligibleCompleted: number }; generator?: StressGeneratorMetrics;
+    progress?: { value: z.infer<typeof StressWorkerProgressSchema>; atMs: number }; progressPending?: Promise<void> }[] = [];
   let uncertainty = 0, leaseSerial = 0, privateComplete = false, evidence: import("../report/types.js").SafeExecutionEvidence[] = [];
   let drainPromise: Promise<void> | undefined, closed: Promise<void> | undefined;
   let pluginMismatchShard: string | undefined;
@@ -94,9 +96,11 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
   const drain = () => drainPromise ??= (async () => {
     for (const state of states) {
       try {
+        await state.progressPending;
         const value = z.object({ type: z.literal("drained"), generator: StressGeneratorSchema, snapshot: z.custom<StressAggregateSnapshot>((s) => !!s && typeof s === "object") }).strict().parse(await state.peer.request({ type: "drain" }));
         const s = value.snapshot;
         if (s.runId !== options.runId || s.sourceId !== state.id || s.scope !== "observations" || s.sequence !== 1 || s.iterations !== null) throw new Error("snapshot-invalid");
+        if (state.progress && (["started", "completed", "eligibleCompleted", "failed"] as const).some(key => s.observations.requests[key] < state.progress!.value.requests[key])) throw new Error("snapshot-invalid");
         const counts = { total: s.observations.caseRows.total, ok: s.observations.caseRows.ok, failed: s.observations.caseRows.failed, eligibleCompleted: s.observations.requests.eligibleCompleted };
         options.metrics.merge(s); state.counts = counts; state.generator = value.generator; state.drained = true;
       } catch { failures.add("snapshot-missing"); releaseState(state); }
@@ -104,7 +108,29 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
   })();
   const base = options;
   const deps: StressExecutionDeps = { ...options, signal, timelineUncertaintyMs: () => uncertainty,
-    metrics: { ...options.metrics, finish(context) {
+    onProgress: options.onProgress ? progress => {
+      for (const state of states) if (!state.drained && !state.progressPending) {
+        state.progressPending = state.peer.request({ type: "progress" }).then(value => {
+          const next = StressWorkerProgressSchema.parse(value);
+          if (state.progress && (["started", "completed", "eligibleCompleted", "failed"] as const).some(key => next.requests[key] < state.progress!.value.requests[key])) throw new Error("snapshot-invalid");
+          state.progress = { value: next, atMs: options.clock.now() };
+        }).catch(() => { failures.add("snapshot-invalid"); childAbort.abort(); }).finally(() => { state.progressPending = undefined; });
+      }
+      options.onProgress?.(progress);
+    } : undefined,
+    metrics: { ...options.metrics, readProgress() {
+      const own = options.metrics.readProgress(); const requests = { ...own.requests }; const reasons = new Set<StressCompletenessReason>([...own.incompleteReasons, ...failures]);
+      for (const state of states) if (!state.drained) {
+        const cached = state.progress;
+        if (!cached || cached.value.pending || options.clock.now() - cached.atMs > 500) reasons.add("snapshot-missing");
+        if (cached) { for (const key of ["started", "completed", "eligibleCompleted", "failed"] as const) {
+          const total = requests[key] + cached.value.requests[key];
+          if (!Number.isSafeInteger(total)) { failures.add("snapshot-invalid"); childAbort.abort(); throw new Error("snapshot-invalid"); }
+          requests[key] = total;
+        } cached.value.incompleteReasons.forEach(reason => reasons.add(reason)); }
+      }
+      return { requests, incompleteReasons: [...reasons] };
+    }, finish(context) {
       if (!privateComplete && !options.allowNumericFailure) throw new Error("Private evidence completion incomplete; merged output withheld");
       const completeness = { ...context.completeness, metrics: { complete: context.completeness.metrics.complete && failures.size === 0, reasons: [...new Set([...context.completeness.metrics.reasons, ...failures])] } };
       return options.metrics.finish({ ...context, completeness, timelineUncertaintyMs: uncertainty });
@@ -141,15 +167,14 @@ export async function createLocalStressWorkerDeps(schedule: StressSchedule, opti
         if (options.allowNumericFailure) { await Promise.allSettled(states.map((state) => state.peer.close())); return; }
         throw new Error("Private evidence completion incomplete; merged output withheld");
       }
-      const markers = new Set(base.evidence.markers());
       for (const state of states) {
         const ready = z.object({ type: z.literal("marker-ready"), markers: z.unknown() }).strict().parse(await state.peer.request({ type: "marker-ready" }));
-        mergeStressWorkerMarkers(markers, privateEvidenceMarkers(ready.markers));
+        base.evidence.addMarkers(privateEvidenceMarkers(ready.markers, Math.min(PRIVATE_EVIDENCE_BYTES, schedule.metricPlan.evidence.reportBytes)));
       }
-      const union = privateEvidenceMarkers([...markers]); base.evidence.addMarkers(union);
+      const union = privateEvidenceMarkers(base.evidence.markers(), Math.min(PRIVATE_EVIDENCE_BYTES, schedule.metricPlan.evidence.reportBytes));
       for (const state of states) {
         const rich = z.object({ type: z.literal("evidence"), samples: z.array(SafeExecutionEvidenceSchema).max(20) }).strict().parse(await state.peer.request({ type: "marker-union", markers: union }));
-        evidence.push(...rich.samples.slice(0, Math.max(0, 20 - evidence.length)));
+        evidence.push(...rich.samples.slice(0, Math.max(0, schedule.metricPlan.evidence.maxSamples - evidence.length)));
       }
       try { for (const state of states) await state.peer.shutdown(); }
       catch {
@@ -183,7 +208,7 @@ export async function runLocalStressWorkers(prepared: PreparedStressExecution, o
     const report = await runStressPlan(prepared, local.deps);
     if (report.generator) report.generator = local.generator(report.generator);
     report.distributed = { protocolVersion: 3, workers: options.shards, dataComplete: report.completeness.metrics.complete && report.completeness.execution.complete, timeAligned: report.timeline.aligned };
-    report.failureEvidence = [...(report.failureEvidence ?? []), ...local.failureEvidence()].slice(0, 20);
+    report.failureEvidence = [...(report.failureEvidence ?? []), ...local.failureEvidence()].slice(0, prepared.compiled.metricPlan.evidence.maxSamples);
     return options.evidence.projectStressReport(report, true);
   } finally { await local.close(); }
 }

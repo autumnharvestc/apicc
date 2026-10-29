@@ -29,6 +29,7 @@ import { createProjectAssetContext } from "../assets/context.js";
 import type { LoadProblem } from "../plugin/types.js";
 import { WorkflowSchema } from "../workflow/model.js";
 import { MockProjectConfigSchema } from "../mock/config.js";
+import { SavedStressPlanSchema } from "../stress/plan.js";
 import { DatasetAssetSchema, SuiteAssetSchema } from "../testing/model.js";
 import {
   isSafeCaseFileName,
@@ -137,6 +138,7 @@ const ProjectFileSchema = z.object({
   componentOrder: z.array(ComponentOrderSchema),
   datasetOrder: z.array(IdSchema).default([]),
   suiteOrder: z.array(IdSchema).default([]),
+  stressPlans: z.array(SavedStressPlanSchema).optional(),
   mock: MockProjectConfigSchema.optional(),
 }).strict();
 const CollectionFileSchema = z.object({
@@ -251,6 +253,7 @@ function encodeProject(files: Map<string, string>, groupId: string, project: Con
   const { id, name, variables, globals, environments, workflows, stressPolicy } = project;
   addYamlFile(files, projectMetadataFilePath(groupId, project.id), ProjectFileSchema, {
     id, name, variables, globals, environments, workflows, stressPolicy,
+    ...(project.stressPlans === undefined ? {} : { stressPlans: project.stressPlans }),
     ...(project.mock === undefined ? {} : { mock: project.mock }),
     collectionOrder: project.collections.map((collection) => collection.id),
     modelOrder: project.models.map((model) => model.id),
@@ -1026,6 +1029,7 @@ async function loadProjects(
       collections,
       workflows: data.workflows,
       stressPolicy: data.stressPolicy,
+      ...(data.stressPlans === undefined ? {} : { stressPlans: data.stressPlans }),
       models,
       components,
       datasets: await loadTestingAssets(root, location, "datasets", data.datasetOrder, DatasetAssetSchema, problems, snapshot),

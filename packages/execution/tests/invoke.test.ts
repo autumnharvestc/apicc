@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { createProjectSnapshot, createHttpSession, WorkflowSchema, createBuiltinExecutionRegistry, runDebugExecution, collectionScriptRequirements, type DebugInvocation } from "@apicc/core";
+import { createProjectSnapshot, createHttpSession, WorkflowSchema, StressPlanSchema, createBuiltinExecutionRegistry, runDebugExecution, collectionScriptRequirements, type DebugInvocation } from "@apicc/core";
 import { createContractExecutionProject, contractExecutionIds as ids } from "../../core/tests/helpers/contractExecutionFixtures.js";
 import { prepareExecution, invokeExecution, createExecutionRegistry, type PrepareExecutionInput } from "../src/host/index.js";
+import { resolveEffectiveConfig } from "../src/contract/index.js";
 
 let server: Server; let baseUrl = ""; let hits = 0;
 const seen: Array<{ url: string; cookie?: string; direct?: string; template?: string }> = [];
@@ -19,6 +20,33 @@ afterAll(() => new Promise<void>(resolve => server.close(() => resolve())));
 const credentials = { versions: { [ids.credential]: "1" }, resolve: () => "private-token" };
 const suiteId = "10000000-0000-4000-8000-000000000091";
 const workflowId = "10000000-0000-4000-8000-000000000092";
+it("rejects a fabricated stress prepared handle before material access or requests", async () => {
+  const { project, collection, asset } = fixture(); const before = hits;
+  const prepared = prepareExecution({ snapshot: createProjectSnapshot(project), profile: "no-script", target: { kind: "stress", plan: StressPlanSchema.parse({ formatVersion: 1,
+    target: { kind: "case", collectionId: collection.id, apiId: asset.contract.id, caseId: ids.case }, load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: 1 } }) } });
+  await expect(invokeExecution({ ...prepared }, { credentialBindings: { versions: {}, resolve() { throw new Error("Material access must not occur"); } } })).rejects.toThrow(/Unknown prepared/);
+  expect(hits).toBe(before);
+});
+it("independently recompiles fixed limits and rejects a lower submitted binding before any request", () => {
+  const { project, collection, asset } = fixture(); const before = hits;
+  const plan = StressPlanSchema.parse({ formatVersion: 1, target: { kind: "case", collectionId: collection.id, apiId: asset.contract.id, caseId: ids.case }, load: { kind: "constant-vus", vus: 2 }, maxVus: 2, termination: { maxIterations: 2 } });
+  const input = { snapshot: createProjectSnapshot(project), target: { kind: "stress" as const, plan }, profile: "no-script" as const, stressConfig: { configuration: resolveEffectiveConfig() } };
+  const fixed = prepareExecution(input).stressBinding!;
+  expect(() => prepareExecution({ ...input, expectedStressBinding: fixed })).not.toThrow();
+  const lower = { ...fixed, admissionLimits: { ...fixed.admissionLimits, maxRequestConcurrency: 1 }, reservation: { ...fixed.reservation, requestConcurrency: 1 } };
+  expect(() => prepareExecution({ ...input, expectedStressBinding: lower })).toThrow(/binding|reservation/i);
+  expect(hits).toBe(before);
+});
+it("invokes real stress requests and retains the v2 report and private evidence", async () => {
+  const { project, collection, asset } = fixture(); const before = hits;
+  const plan = StressPlanSchema.parse({ formatVersion: 1, target: { kind: "case", collectionId: collection.id, apiId: asset.contract.id, caseId: ids.case }, load: { kind: "constant-vus", vus: 1 }, termination: { maxIterations: 2 } });
+  const prepared = prepareExecution({ snapshot: createProjectSnapshot(project), target: { kind: "stress", plan }, profile: "no-script" });
+  expect(prepared.requiredCapabilities).toEqual(["protocol:http", "stress:local-workers-v1", "task:stress"]);
+  const value = await invokeExecution(prepared, { credentialBindings: credentials });
+  expect(value).toMatchObject({ kind: "stress", result: { formatVersion: 2, requests: { started: 2, completed: 2, eligibleCompleted: 2 }, iterations: { completed: 2 }, verdict: { passed: true } } });
+  expect(hits - before).toBe(2);
+  expect(JSON.stringify(value)).not.toContain("private-token"); expect(JSON.stringify(value)).not.toContain("private-cookie");
+});
 function fixture() {
   const project = createContractExecutionProject(baseUrl); const collection = project.collections[0]!; const folder = collection.folders[0]!.folders[0]!; const asset = folder.apis[0]!;
   folder.preOperations = []; folder.postOperations = []; asset.cases[0]!.preOperations = [];
@@ -37,6 +65,7 @@ it("runs the three existing Core entries with a genuinely engine-free registry",
   const snapshot = createProjectSnapshot(project);
   for (const target of [{ kind: "debug" as const, invocation }, { kind: "suite" as const, suiteId, allowDraft: false }, { kind: "workflow" as const, workflowId }]) {
     const prepared = prepareExecution({ snapshot, target, profile: "no-script" });
+    expect(prepared.requiredCapabilities).toEqual(["protocol:http", `task:${target.kind}`]);
     const result = await invokeExecution(prepared, { credentialBindings: credentials });
     expect(result.result).toMatchObject(result.kind === "debug" ? { run: { passed: 1 } } : result.kind === "suite" ? { passed: 1 } : { verdict: "passed" });
     expect(JSON.stringify(result)).not.toContain("private-token"); expect(JSON.stringify(result)).not.toContain("private-cookie");

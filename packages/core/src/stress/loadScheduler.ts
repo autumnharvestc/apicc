@@ -50,12 +50,19 @@ export async function runStressSchedule(schedule: StressSchedule, deps: StressEx
     return { atMs, phase: entry.phase === "measurement" && (runStart + atMs >= measurementDeadline || acceptedAbortOffset !== null && atMs >= acceptedAbortOffset) ? "drain" as const : entry.phase };
   };
   let progressState: "preparing" | "ready" | "running" | "stopping" | "finished" = "preparing";
-  const notify = (state: typeof progressState) => {
+  const notify = (state: typeof progressState, terminal?: StressMetricsSummary) => {
     progressState = state;
+    if (!deps.onProgress) return;
     const atMs = offset();
     const stageId = phase === "measurement" && measurementStart !== null && schedule.load.kind === "stages"
       ? (parts.find((part) => atMs - measurementStart! < part.end) ?? parts.at(-1))!.id : null;
-    deps.onProgress?.({ runId: deps.runId, state, phase, stageId, atMs, activeVus: vus.filter((v) => v.busy).length, startedIterations: started, completedIterations: completed, droppedIterations: dropped });
+    const numbers = deps.metrics.readProgress();
+    const source = terminal?.completeness ?? completeness;
+    const status: StressCompleteness = { execution: { complete: source.execution.complete, reasons: [...source.execution.reasons] },
+      metrics: { complete: source.metrics.complete, reasons: [...source.metrics.reasons] }, load: { complete: source.load.complete, reasons: [...source.load.reasons] } };
+    for (const reason of numbers.incompleteReasons) { status.metrics.complete = false; if (!status.metrics.reasons.includes(reason)) status.metrics.reasons.push(reason); }
+    deps.onProgress?.({ runId: deps.runId, state, phase, stageId, atMs, activeVus: vus.filter((v) => v.busy).length, startedIterations: started, completedIterations: completed, droppedIterations: dropped,
+      requests: terminal ? { ...terminal.requests } : numbers.requests, completeness: status });
   };
   const abort = () => { acceptedAbortOffset ??= offset(); stopReason = "root-abort"; mark("execution", "cancelled"); controller.abort(); changed(); };
   deps.signal.addEventListener("abort", abort, { once: true }); if (deps.signal.aborted) abort();
@@ -276,5 +283,5 @@ export async function runStressSchedule(schedule: StressSchedule, deps: StressEx
     load: { plannedDurationMs: schedule.durationMs, measurementDurationMs, drainDurationMs, policyLimitedMs: Math.max(0, policyWaitEnd - policyWaitBase), saturated: completeness.load.reasons.includes("resource-saturated"), maxVus: schedule.maxVus,
       maxRequestConcurrency: schedule.effective.maxRequestConcurrency, requestedMaxRequestConcurrency: schedule.requested.maxRequestConcurrency, requestedMaxRps: schedule.requested.maxRps, effectiveMaxRps: schedule.effective.maxRps,
       ...(arrival ? { targetArrivalRate: { availability: "available" as const, value: schedule.durationMs ? areaAt(parts, schedule.durationMs) / (schedule.durationMs / 1000) : initial }, actualStartRate: measurementDurationMs > 0 ? { availability: "available" as const, value: started * 1000 / measurementDurationMs } : { availability: "unavailable" as const, reason: "no-data" as const } } : {}) } });
-  notify("finished"); return result;
+  notify("finished", result); return result;
 }

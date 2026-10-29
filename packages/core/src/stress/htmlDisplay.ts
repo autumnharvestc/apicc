@@ -1,4 +1,5 @@
 /** Internal display-only HTML helpers. Business values are escaped, never executable. */
+import {stressSafetyCodeLabels} from './presentation.js';
 export const escapeHtml = (value: unknown): string => String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 export const text = (zh: string, en: string): string => `<span data-zh="${escapeHtml(zh)}" data-en="${escapeHtml(en)}">${escapeHtml(zh)}</span>`;
 export const notCollected = () => text("未采集", "Not collected");
@@ -26,6 +27,7 @@ function fingerprint(value: string): string {
   return `<details class="fingerprint"><summary><span class="fingerprint-short">${escapeHtml(value.slice(0, 8))}…${escapeHtml(value.slice(-4))}</span> · ${text("展开完整值", "Show full value")}</summary><code class="fingerprint-full">${escapeHtml(value)}</code></details>`;
 }
 const codes: Record<string, readonly [string, string]> = {
+  pending:['等待中','Pending'], preparing:['准备中','Preparing'], ready:['已准备','Ready'], running:['运行中','Running'], finished:['已完成','Finished'], uploading:['上传中','Uploading'],complete:['已完整上传','Upload complete'],'timed-out':['已超时','Timed out'],interrupted:['已中断','Interrupted'],
   available: ["可用", "Available"], partial: ["部分可用", "Partially available"], unavailable: ["不可用", "Unavailable"],
   passed: ["通过", "Passed"], failed: ["失败", "Failed"], incomplete: ["不完整", "Incomplete"], aborted: ["已中止", "Aborted"], skipped: ["已跳过", "Skipped"],
   "no-data": ["无合格样本，无法计算", "No eligible samples; cannot calculate"], "not-collected": ["未采集", "Not collected"], legacy: ["旧版未采集", "Not collected by the legacy report"],
@@ -49,7 +51,7 @@ const codes: Record<string, readonly [string, string]> = {
   errorRate: ["请求错误率", "Request error rate"], assertionFailureRate: ["断言失败率", "Assertion failure rate"], p95: ["请求 p95", "Request p95"], rps: ["请求吞吐率", "Request RPS"], businessFailures: ["业务失败", "Business failures"], noData: ["无样本", "No samples"],
 };
 export function code(value: string): string {
-  const translated = Object.hasOwn(codes, value) ? codes[value] : undefined;
+  const translated = stressSafetyCodeLabels(value)??(Object.hasOwn(codes, value) ? codes[value] : undefined);
   return translated ? `<span data-code="${escapeHtml(value)}">${text(...translated)}</span>` : escapeHtml(value);
 }
 /** Cells are already escaped text or locally generated HTML, never raw report values. */
@@ -77,7 +79,7 @@ export function fields(value: unknown, path: string[] = []): string[][] {
   const businessStart = path.findIndex(name => name === "inputs" || name === "outputs");
   const metadata = businessStart < 0;
   const label = path.map((name, index) => (businessStart < 0 || index <= businessStart) && Object.hasOwn(fieldNames, name) ? text(...fieldNames[name]!) : escapeHtml(name)).join(" / ");
-  const rendered = value === undefined ? notCollected() : value === null ? text("未提供（null）", "Not supplied (null)")
+  const rendered = value === undefined ? notCollected() : value === null ? metadata && key==='effectiveMaxRps' ? text('未设置请求速率上限','No request RPS limit') : text("未提供（null）", "Not supplied (null)")
     : typeof value === "boolean" ? metadata ? yesNo(value) : String(value) : typeof value === "number" ? !metadata ? escapeHtml(value) : key.endsWith("Ms") ? ms(value) : key.endsWith("Rate") ? percent(value) : number(value)
       : typeof value === "string" ? metadata && key === "definitionRevision" ? fingerprint(value) : metadata && machineFields.has(key) ? code(value) : escapeHtml(value) : text("空列表或空映射", "Empty list or mapping");
   return [[label, rendered]];

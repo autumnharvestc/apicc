@@ -8,6 +8,7 @@ import { JsonValueSchema, StringRecordSchema } from "../contract/schemaNode.js";
 export async function runStressPlan(prepared: PreparedStressExecution, deps: StressExecutionDeps): Promise<StressReportV2> {
   assertPreparedStressExecution(prepared);
   const { compiled, run } = prepared;
+  deps.evidence.configureStressBudget(compiled.metricPlan.evidence);
   const plan = compiled.plan;
   const targetInputs = StringRecordSchema(JsonValueSchema).parse(plan.target.kind === "workflow" ? plan.target.inputs ?? {} : {});
   const validateTargetInputs = (inputs: Parameters<StressExecutionDeps["createVu"]>[1]) => {
@@ -32,6 +33,7 @@ export async function runStressPlan(prepared: PreparedStressExecution, deps: Str
       ...(!audit?.targetOrigins.length ? { unavailableReason: "没有样本携带目标安全采集" } : {}), run: { requestedConcurrency: compiled.schedule.requested.maxRequestConcurrency ?? compiled.schedule.effective.maxRequestConcurrency,
         effectiveConcurrency: compiled.schedule.effective.maxRequestConcurrency, requestedMaxRps: compiled.schedule.requested.maxRps, effectiveMaxRps: compiled.schedule.effective.maxRps, connectionMode: plan.connectionMode } },
     dataIdentity: { digest: run.preparedTestData?.digest ?? null, datasetIds: [...new Set(run.preparedTestData?.selections.flatMap((selection) => selection.datasetId ? [selection.datasetId] : []) ?? [])] } });
+  report.generator = collector.stop();
   report = deps.evidence.projectStressReport(report); return report;
-  } finally { const generator = collector.stop(); if (report) report.generator = generator; }
+  } finally { collector.stop(); }
 }

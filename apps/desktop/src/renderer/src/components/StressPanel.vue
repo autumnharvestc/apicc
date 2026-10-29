@@ -43,7 +43,7 @@ const props = defineProps<{
   savePolicy?: (policy: StressTargetPolicy) => Promise<void>;
   readOnly?: boolean;
 }>();
-const { t } = useI18n();
+const { t,te } = useI18n();
 const pane = ref<'configuration' | 'report'>('configuration');
 const filter = ref('');
 const valid = ref(false);
@@ -51,6 +51,9 @@ const workbench = computed(() => !!props.projectLocator && !!props.stress.planOw
 const history = computed(() => props.stress.history.filter(row => `${row.file} ${row.startedAt}`.toLowerCase().includes(filter.value.toLowerCase())));
 const comparisonRows = computed(() => Object.entries(props.stress.comparison?.metrics ?? {}).map(([key,value]) => ({ key, ...value })));
 const value = (n: number | null) => n === null ? t('stress.workbench.notComputable') : String(Math.round(n * 10000) / 10000);
+const comparisonCode=(code:string)=>code==='environment-definition-not-compared'?t('stressPresentation.environmentNotice'):te(`stressPresentation.coreReasons.${code}`)?t(`stressPresentation.coreReasons.${code}`):code;
+const comparisonMetric=(key:string)=>`${t(`stressPresentation.metrics.${key}`)}${key==='rps'?' ('+t('stressPresentation.rpsUnit')+')':key.endsWith('Ms')?' (ms)':key==='errorRate'?' (%)':''}`;
+const comparisonValue=(key:string,n:number|null)=>value(key==='errorRate'&&n!==null?n*100:n);
 async function perform(action: () => Promise<unknown>) { try { await action(); } catch (e) { props.reportError(e); } }
 function newPlan() {
   if (!props.stress.plan || props.stress.running) return;
@@ -156,7 +159,7 @@ function setThreshold(key: keyof typeof props.stress.form.thresholds, value: num
             <div class="baseline-tools"><label>{{ t('stress.workbench.baseline') }}<select :value="stress.baselineFile ?? ''" data-testid="stress-baseline" @change="perform(() => stress.selectBaseline(($event.target as HTMLSelectElement).value || null))"><option value="">{{ t('stress.workbench.noBaseline') }}</option><option v-for="row in stress.history" :key="row.file" :value="row.file">{{ row.file }}</option></select></label><button :disabled="!stress.baselineFile" data-testid="stress-baseline-clear" @click="perform(() => stress.selectBaseline(null))">{{ t('stress.workbench.clearBaseline') }}</button></div>
             <div class="export-tools"><button :disabled="!stress.planFile" @click="perform(() => stress.exportReport('html'))">{{ t('stress.workbench.exportHtml') }}</button><button :disabled="!stress.planFile" @click="perform(() => stress.exportReport('json'))">{{ t('stress.workbench.exportJson') }}</button></div>
             <p v-if="stress.comparisonError" class="error" data-testid="stress-comparison-error">{{ stress.comparisonError }}</p>
-            <section v-if="stress.comparison" data-testid="stress-comparison"><h4>{{ t('stress.workbench.comparison') }}</h4><p v-if="!stress.comparison.directlyComparable">{{ t('stress.workbench.notComparable') }}</p><p>{{ stress.comparison.mismatches.join(', ') }} {{ stress.comparison.notices.join(', ') }}</p><div class="comparison-scroll"><table><thead><tr><th>{{ t('stress.metricName') }}</th><th>{{ t('stress.workbench.baseline') }}</th><th>{{ t('stress.workbench.report') }}</th><th>Δ</th><th>Δ %</th></tr></thead><tbody><tr v-for="row in comparisonRows" :key="row.key"><td>{{ row.key }}</td><td>{{ value(row.base) }}</td><td>{{ value(row.candidate) }}</td><td>{{ value(row.absolute) }}</td><td>{{ row.relative === null ? t('stress.workbench.notComputable') : `${value(row.relative * 100)}%` }}</td></tr></tbody></table></div></section>
+            <section v-if="stress.comparison" data-testid="stress-comparison"><h4>{{ t('stress.workbench.comparison') }}</h4><p v-if="!stress.comparison.directlyComparable">{{ t('stress.workbench.notComparable') }}</p><p>{{t('stressPresentation.reasons.metadata')}}</p><p>{{ [...stress.comparison.mismatches,...stress.comparison.notices].map(comparisonCode).join(' · ') }}</p><div class="comparison-scroll"><table><thead><tr><th>{{ t('stress.metricName') }}</th><th>{{ t('stress.workbench.baseline') }}</th><th>{{ t('stress.workbench.report') }}</th><th>Δ</th><th>Δ %</th></tr></thead><tbody><tr v-for="row in comparisonRows" :key="row.key" :data-metric="row.key"><td>{{comparisonMetric(row.key)}}</td><td>{{ comparisonValue(row.key,row.base) }}</td><td>{{ comparisonValue(row.key,row.candidate) }}</td><td>{{ comparisonValue(row.key,row.absolute) }}</td><td>{{ row.relative === null ? t('stress.workbench.notComputable') : `${value(row.relative * 100)}%` }}</td></tr></tbody></table></div></section>
             <StressReportView :report="stress.planReport" /><p v-if="!stress.planReport">{{ t('stress.workbench.noReport') }}</p><p v-if="stress.planFile" class="file-line" :title="stress.planFile">{{ stress.planFile }}</p>
           </template>
         </div>

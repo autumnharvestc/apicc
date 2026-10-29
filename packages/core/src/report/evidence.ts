@@ -9,12 +9,13 @@ import type { WorkflowRunResult } from "../workflow/runner.js";
 import type { StressReport, StressSafetyTarget } from "../stress/model.js";
 import { StressReportSchema, STRESS_FAILURE_KINDS } from "../stress/model.js";
 import { StressReportV2Schema, type StressReportV2 } from "../stress/reportV2.js";
+import { StressMetricBudgetsSchema, type StressMetricPlan } from "../stress/plan.js";
 
 export type EvidenceOutputBoundary = CredentialOutputSanitizer & { businessUnavailable?: boolean };
 /** Run-private marker messages share the existing report byte ceiling; never include their values in errors. */
 export const PRIVATE_EVIDENCE_BYTES = 16 * 1024 * 1024;
-export function privateEvidenceMarkers(input: unknown): string[] {
-  if (!Array.isArray(input) || input.some((value) => typeof value !== "string") || Buffer.byteLength(JSON.stringify(input)) > PRIVATE_EVIDENCE_BYTES) throw new Error("Private evidence marker message invalid or exceeds capacity");
+export function privateEvidenceMarkers(input: unknown, maxBytes = PRIVATE_EVIDENCE_BYTES): string[] {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > PRIVATE_EVIDENCE_BYTES || !Array.isArray(input) || input.some((value) => typeof value !== "string") || Buffer.byteLength(JSON.stringify(input)) > maxBytes) throw new Error("Private evidence marker message invalid or exceeds capacity");
   return input;
 }
 export interface EvidenceBudget { bodyBytes: number; valueBytes: number; caseBytes: number; reportBytes: number; remaining: number }
@@ -164,6 +165,34 @@ export function projectExecutionEvidence(input: ExecutionEvidenceInput, boundary
   return result;
 }
 
+/** Rich worker samples are already sanitized by the private union; a coordinator may narrow their previews further. */
+function boundRetainedStressEvidence(input: SafeExecutionEvidence, budget: EvidenceBudget): SafeExecutionEvidence {
+  let safe = structuredClone(input);
+  let remaining = Math.max(0, Math.min(budget.caseBytes, budget.remaining) - 512);
+  const preview = (value: EvidencePreview | undefined, limit = budget.valueBytes): void => {
+    if (!value) return;
+    const allowance = Math.max(0, Math.min(limit, remaining - 128));
+    let text = "", bytes = 0;
+    for (const char of value.text) {
+      const size = Buffer.byteLength(JSON.stringify(char)) - 2;
+      if (bytes + size > allowance) break;
+      text += char; bytes += size;
+    }
+    if (text.length !== value.text.length) { value.truncated = true; safe.truncated = true; }
+    value.text = text; remaining = Math.max(0, remaining - bytes - 128);
+  };
+  if (safe.request) { preview(safe.request.url); preview(safe.request.headers); preview(safe.request.body, budget.bodyBytes); }
+  if (safe.response) { preview(safe.response.headers); preview(safe.response.body, budget.bodyBytes); }
+  for (const assertion of safe.assertions ?? []) for (const [key, value] of Object.entries(assertion)) if (key !== "pass") preview(value as EvidencePreview);
+  for (const extraction of safe.extractions ?? []) for (const [key, value] of Object.entries(extraction)) if (!["status", "published", "sensitive"].includes(key)) preview(value as EvidencePreview);
+  const capacity = Math.min(budget.caseBytes, budget.remaining);
+  if (Buffer.byteLength(JSON.stringify(safe)) > capacity) safe = { identity: safe.identity, state: "omitted", truncated: true, bodyUnavailable: true, scriptDiagnostics: "not-collected" };
+  const bytes = Buffer.byteLength(JSON.stringify(safe));
+  if (bytes > capacity) throw new Error("Execution evidence identity framing exceeds capacity");
+  budget.remaining -= bytes;
+  return safe;
+}
+
 /** Typed execution protocols are copied by origin; only business fields use the generic sanitizer. */
 function redactCaseOutput(raw: CaseOutcome, boundary: EvidenceOutputBoundary): CaseOutcome {
   return { ...workflowIdentityDto(raw), apiId: raw.apiId, caseId: raw.caseId, scope: raw.scope, locator: raw.locator && structuredClone(raw.locator), row: raw.row, nodeId: raw.nodeId, entryId: raw.entryId, suiteRow: raw.suiteRow,
@@ -299,12 +328,14 @@ export function redactExecutionOutput<T>(value: T, boundary: EvidenceOutputBound
 /** Raw observations live only until the host finalizes output. No marker values enter the returned DTO. */
 export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers: readonly string[], options: { mode?: ExecutionEvidenceInput["mode"]; maxSamples?: number; privateMarkers?: boolean; limits?: EvidenceLimits } = {}) {
   const sensitive = new Set<string>(); let markerBytes = 2; let markerFailure: string | undefined; let cookiesUnavailable = false;
+  let stressConfigured = false;
+  const privateLimit = () => Math.min(PRIVATE_EVIDENCE_BYTES, options.limits?.reportBytes ?? PRIVATE_EVIDENCE_BYTES);
   const assertMarkersComplete = () => { if (markerFailure) throw new Error(`Private evidence markers incomplete: ${markerFailure}`); };
   const addMarkers = (values: readonly string[]) => {
     assertMarkersComplete();
     for (const value of values) if (value && !sensitive.has(value)) {
       markerBytes += Buffer.byteLength(JSON.stringify(value)) + 1;
-      if (options.privateMarkers && markerBytes > PRIVATE_EVIDENCE_BYTES) { markerFailure = "capacity exceeded"; sensitive.clear(); assertMarkersComplete(); }
+      if ((options.privateMarkers || stressConfigured) && markerBytes > privateLimit()) { markerFailure = "capacity exceeded"; sensitive.clear(); assertMarkersComplete(); }
       sensitive.add(value);
     }
   };
@@ -312,6 +343,22 @@ export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers
   type Record = { execution: CaseExecutionResult; identity: EvidenceIdentity };
   const records: Record[] = [];
   const byIdentity = new Map<string, Record[]>();
+  /** A host can narrow an externally supplied collector, never relax its existing limits. */
+  const configureStressBudget = (input: StressMetricPlan["evidence"]): void => {
+    const requested = StressMetricBudgetsSchema.shape.evidence.parse(input);
+    const current = createEvidenceBudget(options.limits);
+    const limits = { ...options.limits, ...Object.fromEntries((["bodyBytes", "valueBytes", "caseBytes", "reportBytes"] as const)
+      .map(key => [key, Math.min(current[key], requested[key])])) };
+    const reportBytes = limits.reportBytes!;
+    limits.caseBytes = Math.min(limits.caseBytes!, reportBytes);
+    limits.bodyBytes = Math.min(limits.bodyBytes!, limits.caseBytes);
+    limits.valueBytes = Math.min(limits.valueBytes!, limits.caseBytes);
+    if (requested.workflowMetadataBytes !== undefined) limits.workflowMetadataBytes = Math.min(limits.workflowMetadataBytes ?? Infinity, requested.workflowMetadataBytes, reportBytes);
+    options = { ...options, maxSamples: Math.min(options.maxSamples ?? 20, requested.maxSamples), limits };
+    stressConfigured = true;
+    if (markerBytes > privateLimit()) markerFailure = "capacity exceeded";
+    assertMarkersComplete();
+  };
   const identityFor = (outcome: CaseOutcome, context: Partial<EvidenceIdentity> = {}): EvidenceIdentity => identityDto({ ...base, ...context,
     ...Object.fromEntries(["stressRunId", "vuId", "iterationId", "stageId"].filter((key) => outcome.evidence?.identity && Object.hasOwn(outcome.evidence.identity, key)).map((key) => [key, outcome.evidence!.identity[key as "stressRunId" | "vuId" | "iterationId" | "stageId"]])),
     ...Object.fromEntries(Object.entries(workflowIdentityDto(outcome)).filter(([, value]) => value !== undefined)),
@@ -466,11 +513,21 @@ export function createExecutionEvidenceCollector(base: EvidenceIdentity, markers
   }
   function projectStressReport<T extends StressReport | StressReportV2>(raw: T, retainedEvidence = false): T {
     const budget = createEvidenceBudget(options.limits); const sanitizer = boundary();
-    const failureEvidence = retainedEvidence ? raw.failureEvidence : records.map((record) => projectExecutionEvidence({ ...record, mode: "all" }, sanitizer, budget));
-    if (retainedEvidence) budget.remaining = Math.max(0, budget.remaining - Buffer.byteLength(JSON.stringify(failureEvidence ?? [])));
+    const selected = stressConfigured ? records.filter(record => !record.execution.outcome.passed).slice(0, options.maxSamples) : records;
+    const retained = raw.failureEvidence?.slice(0, options.maxSamples);
+    const failureEvidence = retainedEvidence ? stressConfigured ? retained?.map(sample => boundRetainedStressEvidence(sample, budget)) : retained
+      : selected.map((record) => {
+        const sample = projectExecutionEvidence({ ...record, mode: "all" }, sanitizer, budget);
+        return stressConfigured ? boundRetainedStressEvidence(sample, { ...budget, remaining: budget.caseBytes }) : sample;
+      });
+    if (retainedEvidence && !stressConfigured) budget.remaining = Math.max(0, budget.remaining - Buffer.byteLength(JSON.stringify(failureEvidence ?? [])));
     return redactStressOutput({ ...raw, failureEvidence }, sanitizer, budget, true);
   }
-  return { observe, addMarkers, projectRun, projectRunFailure, projectWorkflow, projectStressReport, boundary,
+  return { observe, addMarkers, configureStressBudget, projectRun, projectRunFailure, projectWorkflow, projectStressReport, boundary,
     markers: () => { assertMarkersComplete(); if (cookiesUnavailable) throw new Error("Evidence marker set unavailable: Set-Cookie boundaries unavailable"); return [...sensitive]; },
-    projectSamples: () => { const budget = createEvidenceBudget(options.limits); const safe = boundary(); return records.map((record) => projectExecutionEvidence({ ...record, mode: "all" }, safe, budget)); } };
+    projectSamples: () => { const budget = createEvidenceBudget(options.limits); const safe = boundary();
+      return (stressConfigured ? records.filter(record => !record.execution.outcome.passed).slice(0, options.maxSamples) : records).map((record) => {
+        const sample = projectExecutionEvidence({ ...record, mode: "all" }, safe, budget);
+        return stressConfigured ? boundRetainedStressEvidence(sample, { ...budget, remaining: budget.caseBytes }) : sample;
+      }); } };
 }

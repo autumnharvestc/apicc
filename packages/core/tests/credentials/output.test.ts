@@ -33,6 +33,14 @@ it("F7b configured evidence previews and shared report budget apply inside the c
   expect(Buffer.byteLength(JSON.stringify(report))).toBeLessThanOrEqual(16000);
 });
 
+it("F7c tightens the private marker ceiling without discarding previously learned secrets", () => {
+  const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, ["known-private"], { privateMarkers: true });
+  collector.configureStressBudget({ maxSamples: 2, bodyBytes: 64, valueBytes: 32, caseBytes: 2048, reportBytes: 4096 });
+  expect(collector.boundary().redactText("known-private")).toBe("[REDACTED]");
+  expect(() => collector.addMarkers(["m".repeat(5000)])).toThrow(/capacity/);
+  expect(() => collector.projectSamples()).toThrow(/incomplete/);
+});
+
 it("R1 I-4 includes truncation markers in tiny diagnostic field budgets", () => {
   const collector = createExecutionEvidenceCollector({ projectId: "p", definitionRevision: "r" }, [], { limits: { valueBytes: 12, bodyBytes: 8, caseBytes: 700, reportBytes: 16000 } });
   const report = collector.projectRun({ collectionId: "col", collectionName: "col", startedAt: "", finishedAt: "", total: 1, passed: 0, failed: 1, cases: [{ apiId: "a", caseId: "c", apiName: "long api name", caseName: "case", passed: false, durationMs: 1, error: "actual failure", assertions: [] }] });

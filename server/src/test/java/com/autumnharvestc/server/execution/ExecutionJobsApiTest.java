@@ -105,7 +105,193 @@ abstract class JobsFixture {
     String state(String job){return jdbc.queryForObject("SELECT state FROM execution_jobs WHERE id=?",String.class,Long.valueOf(job));}
 }
 
-class ExecutionJobsApiTest extends JobsFixture {
+class ExecutionJobsApiTest extends StressJobsFixture {
+    @Test void retriesAnOrdinaryIntentUsingItsPreStressUpgradeHashWithoutCreatingAnotherExecution()throws Exception {
+        var f=fixture();var request=submission(f,"pre-stress-upgrade-intent");
+        var first=body(member(f,post(f.url()+"/jobs"),request).andExpect(status().isCreated()));String job=first.path("jobId").asText();
+        // Old RunConfig had exactly three fields; old Preparation had exactly ten.
+        // Preserve their old null fields, omitting only the two properties that did not exist.
+        var legacy=(com.fasterxml.jackson.databind.node.ObjectNode)json.valueToTree(request);
+        ((com.fasterxml.jackson.databind.node.ObjectNode)legacy.get("runConfig")).putNull("scriptTimeoutMs");
+        ((com.fasterxml.jackson.databind.node.ObjectNode)legacy.get("preparation")).putNull("scriptGrantVersion");
+        assertThat(legacy.path("runConfig")).hasSize(3);assertThat(legacy.path("preparation")).hasSize(10);
+        var current=(com.fasterxml.jackson.databind.node.ObjectNode)json.valueToTree(jobRepo.decode(json.valueToTree(request),JobDtos.Submit.class));
+        ((com.fasterxml.jackson.databind.node.ObjectNode)current.get("runConfig")).remove("stress");
+        ((com.fasterxml.jackson.databind.node.ObjectNode)current.get("preparation")).remove("stressBinding");
+        assertThat(json.readTree(json.writeValueAsString(current))).as("legacy JSON differs only by the two new optional fields").isEqualTo(legacy);
+        String oldHash=jobRepo.digest(legacy);jdbc.update("UPDATE execution_jobs SET intent_hash=? WHERE id=?",oldHash,Long.valueOf(job));
+        var retried=body(member(f,post(f.url()+"/jobs"),request).andExpect(status().isCreated()));
+        assertThat(retried.path("jobId")).isEqualTo(first.path("jobId"));assertThat(retried.path("executionId")).isEqualTo(first.path("executionId"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=?",Long.class,Long.valueOf(f.project()))).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT intent_hash FROM execution_jobs WHERE id=?",String.class,Long.valueOf(job))).isEqualTo(oldHash);
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"[]","\"private-stress-value\"","1.5"})
+    void rejectsNonObjectStressSettingsAtTheHttpBoundary(String invalid)throws Exception {
+        var f=configured();var request=stress(f,"non-object-stress");request.put("runConfig",Map.of("stress",json.readTree(invalid)));
+        var response=body(member(f,post(f.url()+"/jobs"),request).andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("validation_failed")));
+        assertThat(response.path("message").asText()).doesNotContain("private-stress-value");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=?",Long.class,Long.valueOf(f.project()))).isZero();
+    }
+    @Test void ordinarySubmittedOptionalStressNodesStayAbsentAfterDurableDecode()throws Exception {
+        var f=fixture();String job=body(member(f,post(f.url()+"/jobs"),submission(f,"ordinary-null-stress")).andExpect(status().isCreated())).path("jobId").asText();
+        var decoded=jobRepo.decode(jobRepo.require(Long.valueOf(job),false).submission(),JobDtos.Submit.class);
+        org.junit.jupiter.api.Assertions.assertAll(
+            ()->assertThat(decoded.preparation().stressBinding()).as("optional binding must remain absent after persistence").isNull(),
+            ()->assertThat(decoded.runConfig().stress()).as("optional stress run must remain absent after persistence").isNull());
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"1000,1000","1.5,1.5","1e-7,1e-7","1e21,1e+21","4.9e-324,5e-324"})
+    void executionInputDigestMatchesHostVerifiedFiniteRpsFixtures(double rps,String ecmaText) {
+        assertThat(jobRepo.executionInputDigest(Map.of("rps",rps))).isEqualTo(Hashes.sha256HexUtf8("{\"rps\":"+ecmaText+"}"));
+    }
+    @Test void ordinaryFixedInputsUseTheSeparatelyVerifiedHostDigestBoundary()throws Exception {
+        var f=configured();String job=body(member(f,post(f.url()+"/jobs"),submission(f,"ordinary-digest")).andExpect(status().isCreated())).path("jobId").asText();
+        var inputs=jobRepo.inputs(Long.valueOf(job));wire("t4-ordinary-digest-inputs",inputs);var unsigned=jobRepo.map(inputs);String stored=(String)unsigned.remove("inputsDigest");
+        assertThat(stored).isEqualTo(jobRepo.executionInputDigest(unsigned)).isNotEqualTo(jobRepo.digest(unsigned));
+    }
+    @Test void fixedStressRunDefaultsAndDigestUseTheHostCompatibleBoundary()throws Exception {
+        var f=configured();var s=stress(f,"default-run-digest");s.put("runConfig",Map.of("stress",Map.of()));
+        var b=(com.fasterxml.jackson.databind.node.ObjectNode)json.valueToTree(preparation(s).get("stressBinding"));((com.fasterxml.jackson.databind.node.ObjectNode)b.get("reservation")).put("processes",1).put("metricMemoryBytes",1048576);preparation(s).put("stressBinding",b);
+        String job=body(member(f,post(f.url()+"/jobs"),s).andExpect(status().isCreated())).path("jobId").asText();var inputs=jobRepo.inputs(Long.valueOf(job));
+        wire("t4-stress-default-digest-inputs",inputs);
+        assertThat(inputs.path("runConfig").path("stress").path("workerCount").asInt()).isEqualTo(1);
+        assertThat(inputs.path("runConfig").path("stress").path("confirmedTargetOrigins")).isEmpty();
+        var unsigned=jobRepo.map(inputs);String stored=(String)unsigned.remove("inputsDigest");assertThat(stored).isEqualTo(jobRepo.executionInputDigest(unsigned));
+    }
+    @Test void executionInputNumbersMatchTheRfcEcmaScriptSamples() {
+        var samples=List.of(new String[]{"0000000000000000","0"},new String[]{"8000000000000000","0"},new String[]{"0000000000000001","5e-324"},new String[]{"8000000000000001","-5e-324"},
+            new String[]{"7fefffffffffffff","1.7976931348623157e+308"},new String[]{"ffefffffffffffff","-1.7976931348623157e+308"},new String[]{"4340000000000000","9007199254740992"},new String[]{"c340000000000000","-9007199254740992"},
+            new String[]{"4430000000000000","295147905179352830000"},new String[]{"44b52d02c7e14af5","9.999999999999997e+22"},new String[]{"44b52d02c7e14af6","1e+23"},new String[]{"44b52d02c7e14af7","1.0000000000000001e+23"},
+            new String[]{"444b1ae4d6e2ef4e","999999999999999700000"},new String[]{"444b1ae4d6e2ef4f","999999999999999900000"},new String[]{"444b1ae4d6e2ef50","1e+21"},new String[]{"3eb0c6f7a0b5ed8c","9.999999999999997e-7"},new String[]{"3eb0c6f7a0b5ed8d","0.000001"},
+            new String[]{"41b3de4355555553","333333333.3333332"},new String[]{"41b3de4355555554","333333333.33333325"},new String[]{"41b3de4355555555","333333333.3333333"},new String[]{"41b3de4355555556","333333333.3333334"},new String[]{"41b3de4355555557","333333333.33333343"},
+            new String[]{"becbf647612f3696","-0.0000033333333333333333"},new String[]{"43143ff3c1cb0959","1424953923781206.2"});
+        org.assertj.core.api.SoftAssertions.assertSoftly(soft->{for(var sample:samples){double value=Double.longBitsToDouble(Long.parseUnsignedLong(sample[0],16));soft.assertThat(jobRepo.executionInputDigest(Map.of("rps",value))).as(sample[0]+" -> "+sample[1]).isEqualTo(Hashes.sha256HexUtf8("{\"rps\":"+sample[1]+"}"));}});
+    }
+    @Test void fixedInputDigestFollowsHostEnumerationForNumericBusinessKeys()throws Exception {
+        var f=configured();member(f,put(f.url()+"/execution-settings"),Map.of("expectedVersion","2","policy",Map.of("maxStressRps",1.5))).andExpect(status().isOk());
+        var attachment=body(member(f,post(f.url()+"/attachments"),Map.of("refId","input","expectedVersion","0","kind","file","contentBase64","b2s=")).andExpect(status().isCreated()));
+        var ref=Map.of("refId","input","version",attachment.path("version").asText(),"hash",attachment.path("hash").asText());var s=submission(f,"numeric-input-keys");
+        s.put("materials",Map.of("projectId",f.project(),"credentials",List.of(),"attachments",List.of(ref),"attachmentPaths",Map.of("10",ref,"2",ref)));
+        String job=body(member(f,post(f.url()+"/jobs"),s).andExpect(status().isCreated())).path("jobId").asText();var inputs=jobRepo.inputs(Long.valueOf(job));wire("t4-numeric-key-digest-inputs",inputs);
+        assertThat(jobRepo.executionInputDigest(Map.of("10","ten","2","two","a","letters"))).isEqualTo(Hashes.sha256HexUtf8("{\"2\":\"two\",\"10\":\"ten\",\"a\":\"letters\"}"));
+        var unsigned=jobRepo.map(inputs);String stored=(String)unsigned.remove("inputsDigest");assertThat(stored).isEqualTo(jobRepo.executionInputDigest(unsigned));
+    }
+    @Test void projectViewExposesOnlyStressCapacityAndItsAuthoritativeSources()throws Exception {
+        var f=configured();
+        member(f,get(f.url()+"/execution-agents"),Map.of()).andExpect(status().isOk())
+            .andExpect(jsonPath("$.agents[0].stressConfiguration.agent.maxStressProcesses").value(6))
+            .andExpect(jsonPath("$.agents[0].stressConfiguration.agent.inputCacheBytes").doesNotExist())
+            .andExpect(jsonPath("$.agents[0].stressConfiguration.sources['agent.maxStressRps']").value("default"))
+            .andExpect(jsonPath("$.agents[0].stressConfiguration.sources['policy.maxStressRps']").value("default"));
+    }
+    @Test void fixesExecutorAndClaimRuntimeInIndependentStressMetadata()throws Exception {
+        var f=configured();String job=claimStress(f,"fixed-executor");
+        var inputs=jobRepo.inputs(Long.valueOf(job));assertThat(inputs.path("stressExecutor").path("id").asText()).isEqualTo(f.agent());assertThat(inputs.path("stressExecutor").path("name").asText()).isEqualTo("task-six");
+        member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk())
+            .andExpect(jsonPath("$.stressMetadata.executor.id").value(f.agent()))
+            .andExpect(jsonPath("$.stressMetadata.executor.name").value("task-six"))
+            .andExpect(jsonPath("$.stressMetadata.runtime.coreBuildId").value(HASH))
+            .andExpect(jsonPath("$.stressMetadata.processes").value(3))
+            .andExpect(jsonPath("$.stressMetadata.status.preparation").value("preparing"));
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"ready","running","completed","upload"})
+    void stressMetadataTracksExecutionAndUploadIndependently(String transition)throws Exception {
+        var f=configured();String job=claimStress(f,"metadata-"+transition);
+        send(f,message(job,"accepted","accepted-metadata")).andExpect(status().isOk());send(f,stressStart(job)).andExpect(status().isOk());
+        if(transition.equals("ready")){member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.stressMetadata.status.preparation").value("ready"));return;}
+        var started=message(job,"started","started-metadata");started.put("permitId",jobRepo.require(Long.valueOf(job),false).permitId());started.put("startedAt","2030-01-01T00:00:00Z");send(f,started).andExpect(status().isOk());
+        if(transition.equals("running")){member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.stressMetadata.status.execution").value("running"));return;}
+        var ended=message(job,"completed","completed-metadata");ended.putAll(Map.of("verdict","failed","finishedAt","2030-01-01T00:00:00Z","executionReleased",true,"evidenceComplete",true));send(f,ended).andExpect(status().isOk());
+        if(transition.equals("completed")){member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.stressMetadata.status.execution").value("failed")).andExpect(jsonPath("$.stressMetadata.status.upload").value("pending"));return;}
+        byte[] bytes="{\"kind\":\"stress-failure\",\"started\":true,\"requests\":{\"started\":1,\"completed\":0},\"error\":\"safe failure\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",Hashes.sha256Hex(bytes)).contentType("application/octet-stream").content(bytes)).andExpect(status().isOk());
+        member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.stressMetadata.status.execution").value("failed")).andExpect(jsonPath("$.stressMetadata.status.upload").value("complete"));
+        assertThat(jobRepo.reportContent(Long.valueOf(job))).isEqualTo(bytes);
+    }
+    @Test void rejectsAnOrdinaryReportForAStressAssignment()throws Exception {
+        var f=configured();String job=claimStress(f,"wrong-report-kind");byte[] bytes="{\"kind\":\"suite\",\"result\":{\"totals\":{\"failed\":0}}}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",Hashes.sha256Hex(bytes)).contentType("application/octet-stream").content(bytes)).andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("report_type_mismatch"));
+        assertThat(jobRepo.require(Long.valueOf(job),false).reportState()).isEqualTo("pending");
+    }
+    @Test void archivesTheAgentStressEnvelopeWithoutRewritingItsBytes()throws Exception {
+        var f=configured();String job=claimStress(f,"agent-stress-envelope");
+        byte[] bytes=json.writeValueAsBytes(Map.of("executionId",execution(job),"verdict","failed","executionFact","not-started","output",Map.of("kind","stress-failure","started",false,"requests",Map.of("started",0,"completed",0),"error","Safe preparation failure")));
+        String hash=Hashes.sha256Hex(bytes);
+        for(int n=0;n<2;n++)mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",hash).contentType("application/octet-stream").content(bytes)).andExpect(status().isOk()).andExpect(jsonPath("$.reportHash").value(hash)).andExpect(jsonPath("$.reportBytes").value(bytes.length));
+        assertThat(jobRepo.reportContent(Long.valueOf(job))).isEqualTo(bytes);
+        member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.reportKind").value("stress-failure"));
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"ordinary","wrong-execution","passed-failure","unknown-fact"})
+    void refusesAgentStressEnvelopesThatContradictTheAssignment(String invalid)throws Exception {
+        var f=configured();String job=claimStress(f,"invalid-agent-envelope-"+invalid);
+        var body=new LinkedHashMap<String,Object>();body.putAll(Map.of("executionId",execution(job),"verdict","failed","executionFact","not-started","output",Map.of("kind","stress-failure","started",false,"requests",Map.of("started",0,"completed",0),"error","Safe failure")));
+        if(invalid.equals("ordinary"))body.put("output",Map.of("kind","suite","result",Map.of("total",0)));
+        if(invalid.equals("wrong-execution"))body.put("executionId","999999");
+        if(invalid.equals("passed-failure"))body.put("verdict","passed");
+        if(invalid.equals("unknown-fact"))body.put("executionFact","untrusted");
+        byte[] bytes=json.writeValueAsBytes(body);
+        mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",Hashes.sha256Hex(bytes)).contentType("application/octet-stream").content(bytes)).andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("report_type_mismatch"));
+        assertThat(jobRepo.require(Long.valueOf(job),false).reportState()).isEqualTo("pending");
+    }
+    @Test void archivesTheTypedFailureBytesIdempotentlyWithoutRewritingTheReport()throws Exception {
+        var f=configured();String job=claimStress(f,"typed-report");byte[] bytes="{\"kind\":\"stress-failure\", \"started\":false,\"requests\":{\"started\":0,\"completed\":0},\"error\":\"safe failure\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);String hash=Hashes.sha256Hex(bytes);
+        for(int n=0;n<2;n++)mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",hash).contentType("application/octet-stream").content(bytes)).andExpect(status().isOk()).andExpect(jsonPath("$.reportHash").value(hash));
+        assertThat(jobRepo.reportContent(Long.valueOf(job))).isEqualTo(bytes);
+        member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.reportKind").value("stress-failure"));
+        assertThat(jdbc.queryForObject("SELECT processes FROM execution_stress_reservations WHERE job_id=?",Long.class,Long.valueOf(job))).isEqualTo(3);
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"upload-first,passed,result-capacity-exceeded","completed-first,passed,result-persistence-failed","upload-first,failed,worker-exited","completed-first,failed,worker-exited"})
+    void archivesMinimalStressFaultEnvelopesInEitherMessageOrder(String order,String verdict,String reason)throws Exception {
+        var f=configured();String job=claimStress(f,"stress-fault-"+order+"-"+verdict);
+        send(f,message(job,"accepted","fault-accepted")).andExpect(status().isOk());send(f,stressStart(job)).andExpect(status().isOk());
+        byte[] bytes=json.writeValueAsBytes(Map.of("executionId",execution(job),"verdict",verdict,"executionFact","started","reasonCode",reason));String hash=Hashes.sha256Hex(bytes);
+        var completed=message(job,"completed","fault-completed");completed.putAll(Map.of("verdict",verdict,"finishedAt","2030-01-01T00:00:00Z","executionReleased",true,"evidenceComplete",false,"reportHash",hash,"reportBytes",bytes.length));
+        if(order.equals("completed-first"))send(f,completed).andExpect(status().isOk());
+        mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",hash).contentType("application/octet-stream").content(bytes)).andExpect(status().isOk());
+        if(order.equals("upload-first"))send(f,completed).andExpect(status().isOk());
+        member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.reportKind").value("stress-fault")).andExpect(jsonPath("$.summary.verdict").value(verdict));
+        assertThat(jobRepo.reportContent(Long.valueOf(job))).isEqualTo(bytes);
+    }
+    @Test void rejectsACompletedVerdictThatDisagreesWithTheUploadedAgentEnvelope()throws Exception {
+        var f=configured();String job=claimStress(f,"agent-envelope-verdict-conflict");
+        send(f,message(job,"accepted","envelope-accepted")).andExpect(status().isOk());send(f,stressStart(job)).andExpect(status().isOk());
+        byte[] bytes=json.writeValueAsBytes(Map.of("executionId",execution(job),"verdict","failed","executionFact","started","output",Map.of("kind","stress-failure","started",true,"requests",Map.of("started",1,"completed",0),"error","Safe failure")));String hash=Hashes.sha256Hex(bytes);
+        mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",hash).contentType("application/octet-stream").content(bytes)).andExpect(status().isOk());
+        var ended=message(job,"completed","contradicting-envelope-verdict");ended.putAll(Map.of("verdict","interrupted","finishedAt","2030-01-01T00:00:00Z","executionReleased",true,"evidenceComplete",false,"reportHash",hash,"reportBytes",bytes.length));
+        send(f,ended).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("report_type_mismatch"));
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"upload-first","cancel-first"})
+    void preservesCancelConfirmationWhenTheAgentEnvelopeHasAnEarlierVerdict(String order)throws Exception {
+        var f=configured();String job=claimStress(f,"agent-envelope-cancel-"+order);
+        send(f,message(job,"accepted","cancel-envelope-accepted")).andExpect(status().isOk());send(f,stressStart(job)).andExpect(status().isOk());
+        byte[] bytes=json.writeValueAsBytes(Map.of("executionId",execution(job),"verdict","failed","executionFact","started","output",Map.of("kind","stress-failure","started",true,"requests",Map.of("started",1,"completed",0),"error","Safe failure")));String hash=Hashes.sha256Hex(bytes);
+        member(f,post("/api/v1/jobs/"+job+"/cancel"),Map.of()).andExpect(status().isOk());
+        var ended=message(job,"cancel-confirmed","cancel-envelope-confirmed");ended.putAll(Map.of("finishedAt","2030-01-01T00:00:00Z","executionReleased",true,"evidenceComplete",false));
+        if(order.equals("cancel-first"))send(f,ended).andExpect(status().isOk());
+        mvc.perform(put("/api/v1/runner/jobs/"+job+"/report").param("executionId",execution(job)).header("Authorization","Bearer "+f.agentToken()).header("X-Report-Hash",hash).contentType("application/octet-stream").content(bytes)).andExpect(status().isOk());
+        if(order.equals("upload-first"))send(f,ended).andExpect(status().isOk());
+        member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.summary.verdict").value("cancelled"));
+    }
+    @Test void savesStressCapacitySeparatelyFromOrdinaryTaskCapacity() throws Exception {
+        var f=fixture();
+        member(f,patch("/api/v1/agents/"+f.agent()),Map.of("expectedVersion","0","config",Map.of(
+            "maxConcurrentJobs",2,"maxConcurrentStressJobs",1,"maxStressProcesses",3,"maxStressRps",1.5)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.config.maxConcurrentJobs").value(2))
+            .andExpect(jsonPath("$.config.maxStressProcesses").value(3)).andExpect(jsonPath("$.config.maxStressRps").value(1.5));
+    }
+    @Test void stressCapacityPatchPreservesVersionAndRejectsInvalidRelations() throws Exception {
+        var f=fixture();
+        member(f,patch("/api/v1/agents/"+f.agent()),Map.of("expectedVersion","0","config",Map.of("maxConcurrentJobs",2,"maxConcurrentStressJobs",2))).andExpect(status().isOk());
+        member(f,patch("/api/v1/agents/"+f.agent()),Map.of("expectedVersion","0","config",Map.of("maxStressProcesses",4))).andExpect(status().isConflict());
+        for(var patch:List.of(Map.of("maxConcurrentStressJobs",3),Map.of("maxStressVus",1001),Map.of("stressProgressIntervalMs",249),Map.of("maxStressProcesses",1.5),Map.of("maxStressRps",0)))
+            member(f,patch("/api/v1/agents/"+f.agent()),Map.of("expectedVersion","1","config",patch)).andExpect(status().isBadRequest());
+        member(f,patch("/api/v1/agents/"+f.agent()),Map.of("expectedVersion","1","config",Map.of("maxConcurrentStressJobs",0))).andExpect(status().isOk());
+    }
     @Test void stageFinalCancelRequiresTheSubmitterOrCurrentProjectAdministrator()throws Exception{
         var f=fixture();String job=seed(f,"preparing");
         String username="cancel-editor-"+f.project();

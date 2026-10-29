@@ -22,7 +22,7 @@ public class JobRepo {
         long inputBytes,long resultBytes,OffsetDateTime queueExpiresAt) {}
     public record Status(long id, long execution, long workspace, long project, long agent, long user,
         String state, String cancelState, boolean released, String reportState,
-        JsonNode task, JsonNode progress, JsonNode summary, JsonNode permit) {}
+        JsonNode task, JsonNode progress, JsonNode summary, JsonNode permit,JsonNode stressMetadata,String waitReason,String reportKind,String reportVerdict) {}
     private static final String JOB_COLUMNS = """
         id,execution_id,workspace_id,project_id,submitted_by,agent_id,snapshot_id,
         intent_id,intent_hash,submission_json,task_json,inputs_digest,state,accepted,
@@ -32,7 +32,7 @@ public class JobRepo {
         """;
     private static final String STATUS_COLUMNS = """
         id,execution_id,workspace_id,project_id,agent_id,submitted_by,state,cancel_state,
-        execution_released,report_state,task_json,progress_json,summary_json,permit_json
+        execution_released,report_state,task_json,progress_json,summary_json,permit_json,stress_metadata_json,capacity_wait_reason,report_kind,report_verdict
         """;
     private final JdbcTemplate jdbc;private final ObjectMapper json;private final IdGeneration ids;
     public JobRepo(JdbcTemplate jdbc,ObjectMapper json,IdGeneration ids){this.jdbc=jdbc;this.json=json;this.ids=ids;}
@@ -55,7 +55,7 @@ public class JobRepo {
         return new Status(r.getLong("id"), r.getLong("execution_id"), r.getLong("workspace_id"),
             r.getLong("project_id"), r.getLong("agent_id"), r.getLong("submitted_by"), r.getString("state"), r.getString("cancel_state"),
             r.getBoolean("execution_released"), r.getString("report_state"), parse(r.getString("task_json")),
-            parse(r.getString("progress_json")), parse(r.getString("summary_json")), parse(r.getString("permit_json")));
+            parse(r.getString("progress_json")), parse(r.getString("summary_json")), parse(r.getString("permit_json")),parse(r.getString("stress_metadata_json")),r.getString("capacity_wait_reason"),r.getString("report_kind"),r.getString("report_verdict"));
     }
     public Optional<Job> find(long job){return jdbc.query("SELECT "+JOB_COLUMNS+" FROM execution_jobs WHERE id=?",this::row,job).stream().findFirst();}
     public Job require(long job,boolean lock){return jdbc.query("SELECT "+JOB_COLUMNS+" FROM execution_jobs WHERE id=?"+(lock?" FOR UPDATE":""),this::row,job).stream().findFirst().orElseThrow(()->error(NOT_FOUND,"job_not_found","任务不存在"));}
@@ -106,6 +106,7 @@ public class JobRepo {
             """, encode(summary), hash, bytes, transfer, cancelled ? "confirmed" : j.cancelState(),
             heldResultBytes, j.id(), j.execution(), j.agent());
         if (updated != 1) throw error(CONFLICT,"state_conflict","任务已结束，不能覆盖终态");
+        jdbc.update("DELETE FROM execution_stress_reservations WHERE job_id=? AND agent_id=?",j.id(),j.agent());
         jdbc.update("UPDATE execution_job_outbox SET acknowledged=TRUE WHERE job_id=?",j.id());
     }
     public void archive(Job j,String hash,byte[] bytes,OffsetDateTime retainedAt){if(jdbc.update("UPDATE execution_jobs SET report_hash=?,report_bytes=?,report_content=?,report_state='archived',report_retained_at=?,reserved_result_bytes=0 WHERE id=? AND execution_id=? AND agent_id=? AND report_content IS NULL AND report_state<>'expired'",hash,bytes.length,bytes,retainedAt,j.id(),j.execution(),j.agent())!=1)throw error(CONFLICT,"report_conflict","已有不同归档内容");}
@@ -123,5 +124,7 @@ public class JobRepo {
     public <T> T decode(JsonNode value,Class<T> type){return com.autumnharvestc.server.execution.ExecutionDtos.decode(value,type);}
     /** Stable object-key ordering; arrays retain business order. No credentials are included. */
     public String digest(Object value){return Hashes.sha256HexUtf8(encode(canonical(json.valueToTree(value))));}
+    /** Execution-input compatibility boundary. Kept separate from durable intent/message identities. */
+    public String executionInputDigest(Object value){return Hashes.sha256HexUtf8(ExecutionInputDigest.text(json.valueToTree(value)));}
     private JsonNode canonical(JsonNode n){if(n.isObject()){var object=json.createObjectNode();var keys=new TreeSet<String>();n.fieldNames().forEachRemaining(keys::add);for(String key:keys)object.set(key,canonical(n.get(key)));return object;}if(n.isArray()){var array=json.createArrayNode();n.forEach(item->array.add(canonical(item)));return array;}return n;}
 }
