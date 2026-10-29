@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, expect, it, onTestFinished, vi } from "vitest";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {ExecutionLedger} from '../src/ledger.js';
-import { defaultAgentConfig, executionInputsDigestText, resolveEffectiveConfig } from "@apicc/execution/contract";
+import { defaultAgentConfig, executionInputsDigestText, resolveEffectiveConfig, type AgentMessageV1 } from "@apicc/execution/contract";
 import { assertStressExecutionDeadline, prepareProjectFiles, spawnLocalStressWorker } from "@apicc/execution/host";
 import { executeInvocation, withInvocation, type StartPermit } from "../src/invocationContext.js";
 import { TaskSlots } from "../src/slots.js";
@@ -285,13 +285,23 @@ it("keeps a preparation failure distinct from an actual business start", async (
 
 // Break caught: a legal stress delivery reaches start permission without its frozen declaration.
 it("declares the same compiled stress binding at the strict start permission boundary", async () => {
-  const item = await stressFixture(origin, 902, 1), h = stressHarness([item]);
-  try {
-    expect(h.supervisor.receive(item.delivery)).toBe(true);
-    await vi.waitFor(() => expect(h.completed).toHaveLength(1));
-    expect(h.messages.find(message => message.kind === "start-request")).toMatchObject({ stressBinding: item.inputs.stressBinding });
-    expect(h.rejectedDeclarations).toEqual([]);
-  } finally { await h.supervisor.close(); }
+  const item = await stressFixture(origin, 902, 1);
+  let observeStart!: (message: Extract<AgentMessageV1, { kind: "start-request" }>) => void;
+  const startRequested = new Promise<Extract<AgentMessageV1, { kind: "start-request" }>>(resolve => { observeStart = resolve; });
+  // Keep permission pending: a correct declaration must not depend on process startup or completion.
+  const h = stressHarness([item], {}, undefined, {
+    holdStartPermit: true, onStartRequest: observeStart,
+  });
+  // Also close on the runner's timeout if the expected declaration is never emitted.
+  onTestFinished(() => h.supervisor.close());
+  const before = requests.length;
+  expect(h.supervisor.receive(item.delivery)).toBe(true);
+  const declaration = await startRequested;
+  expect(declaration.stressBinding).toEqual(item.inputs.stressBinding);
+  expect(h.rejectedDeclarations).toEqual([]);
+  expect(h.completed).toEqual([]);
+  expect(h.supervisor.processState().dedicatedPids).toEqual([]);
+  expect(requests.length).toBe(before);
 });
 
 it("settles a complete successful Core stress verdict as passed", async () => {

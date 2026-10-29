@@ -43,7 +43,10 @@ export async function debugFixture(origin: string, id = 920) {
   item.inputs.inputsDigest = hash(executionInputsDigestText(item.inputs));
   return item;
 }
-export function stressHarness(items: StressFixture[], overrides: Partial<AgentConfig> = {}, dataDirectory?: string) {
+export function stressHarness(items: StressFixture[], overrides: Partial<AgentConfig> = {}, dataDirectory?: string, control: {
+  holdStartPermit?: boolean;
+  onStartRequest?(message: Extract<AgentMessageV1, { kind: "start-request" }>): void;
+} = {}) {
   const completed: SettledExecution[] = [], messages: AgentMessageV1[] = [], rejectedDeclarations: string[] = [];
   const first = items[0]!;
   const supervisor = new AgentSupervisor({ dataDirectory, serverId: "https://control.test/api/v1", agentId: "7", sessionId: "stress-host", identity: first.identity, runtimeCompatibilityId: first.compatibility, config: { ...first.config, ...overrides }, configVersion: "1",
@@ -56,6 +59,8 @@ export function stressHarness(items: StressFixture[], overrides: Partial<AgentCo
         // The control boundary requires the exact frozen declaration, as T4 does.
         const accepted = AgentMessageV1Schema.safeParse(message).success && JSON.stringify(message.stressBinding) === JSON.stringify(item.inputs.stressBinding);
         if (!accepted) rejectedDeclarations.push(message.executionId);
+        control.onStartRequest?.(message);
+        if (control.holdStartPermit) continue;
         queueMicrotask(() => supervisor.command(accepted ? { kind: "start-permit", messageId: `permit-${message.executionId}`, jobId: message.jobId, executionId: message.executionId, permitId: message.executionId, effectivePolicy: item.inputs.policy, policyVersion: message.policyVersion, scriptPlanDigest: message.scriptPlanDigest, executionProfile: message.executionProfile, runtimeCompatibilityId: message.runtimeCompatibilityId, credentialVersions: message.credentialVersions } : { kind: "start-rejected", messageId: `rejected-${message.executionId}`, jobId: message.jobId, executionId: message.executionId, reasonCode: "policy_changed" }));
       }
       return { acknowledged: batch.map(message => message.messageId) };
