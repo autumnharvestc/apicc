@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { encodeContractProjectFiles, type ContractProject } from "@apicc/core";
 import { acceptanceStress } from "./helpers/acceptanceStress.js";
 import { prepareProjectFiles, type InvocationOutput } from "@apicc/execution/host";
@@ -21,6 +22,7 @@ const name = `apicc-f7b-t11-agent-${process.pid}`, volume = `apicc-f7b-t11-data-
 let containerCreated = false, volumeCreated = false;
 let uiReady = false;
 const image = process.env.APICC_RUNNER_E2E_IMAGE ?? "apicc-f7b-t11-agent:candidate";
+const ledgerProbeSource = readFileSync(new URL("./helpers/ledgerProbe.mjs", import.meta.url), "utf8");
 async function api(method: string, path: string, body?: unknown, auth = token): Promise<any> {
   const response = await server.trustedFetch(`${server.baseUrl}/api/v1/${path}`, { method, headers: { "content-type": "application/json", ...(auth ? { authorization: `Bearer ${auth}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) });
   const text = await response.text(); if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${text}`); return text ? JSON.parse(text) : null;
@@ -68,8 +70,8 @@ async function report(job: { jobId: string }) {
   await until(() => api("GET", `jobs/${job.jobId}`), status => status.state === "ended" && status.executionReleased && status.reportState === "archived");
   return api("GET", `jobs/${job.jobId}/report`);
 }
-function ledgerIntent(executionId: string): any {
-  return JSON.parse(command("docker", ["exec", name, "node", "-e", `const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('/data/execution-ledger.sqlite',{readOnly:true});const state=JSON.parse(db.prepare('select state from ledger where id=1').get().state);console.log(JSON.stringify(state.intents.find(value=>value.executionId===${JSON.stringify(executionId)})??null));db.close();`]));
+async function ledgerIntent(executionId: string): Promise<any> {
+  return JSON.parse(command("docker", ["exec", name, "node", "--input-type=module", "-e", `${ledgerProbeSource}\nconsole.log(JSON.stringify(await readLedgerIntent('/data/execution-ledger.sqlite',${JSON.stringify(executionId)})));`]));
 }
 async function configureStress(config: Record<string, unknown>) {
   const current = await api("GET", `agents/${agentId}`);
@@ -130,7 +132,7 @@ afterAll(async () => {
   let stopped = false, copied = false, removed = false;
   if (containerCreated) {
     await attempt(() => {
-      const closure = command("docker", ["exec", name, "node", "--input-type=module", "-e", "import {DatabaseSync} from 'node:sqlite'; const db=new DatabaseSync('/data/execution-ledger.sqlite',{readOnly:true}); console.log(JSON.stringify({runtime:process.versions,pid:process.pid,uid:process.getuid(),sqlite:db.prepare('select sqlite_version() version').get(),integrity:db.prepare('pragma integrity_check').get()}));db.close();"]);
+      const closure = command("docker", ["exec", name, "node", "--input-type=module", "-e", "import {DatabaseSync} from 'node:sqlite'; const db=new DatabaseSync(':memory:'); try { console.log(JSON.stringify({runtime:process.versions,pid:process.pid,uid:process.getuid(),sqlite:db.prepare('select sqlite_version() version').get()})); } finally { db.close(); }"]);
       writeFileSync(join(server.root, "linux-closure.json"), closure);
     });
     await attempt(() => command("docker", ["stop", "--time", "30", name]));
@@ -146,6 +148,15 @@ afterAll(async () => {
       if (logs.error || logs.status !== 0) throw logs.error ?? new Error(`Owned agent logs failed: ${logs.stderr}`);
     });
     if (stopped) await attempt(() => { command("docker", ["cp", `${name}:/data/execution-ledger.sqlite`, join(server.root, "execution-ledger.sqlite")]); copied = true; });
+    if (stopped && copied) await attempt(() => {
+      // A full integrity scan must not hold a read lock against the live agent's zero-wait writer.
+      const database = new DatabaseSync(join(server.root, "execution-ledger.sqlite"), { readOnly: true });
+      try {
+        const integrity = database.prepare("PRAGMA integrity_check").get();
+        writeFileSync(join(server.root, "ledger-integrity.json"), JSON.stringify(integrity));
+        expect(integrity).toEqual({ integrity_check: "ok" });
+      } finally { database.close(); }
+    });
     if (stopped && copied) await attempt(() => { command("docker", ["rm", name]); removed = true; });
   }
   if (volumeCreated && process.env.APICC_RUNNER_E2E_PRESERVE_VOLUME !== "1") {
@@ -214,7 +225,7 @@ it("mixes total slots, cancellation, session scope, one worker exit, real lost A
   const beforeArchive = server.faults.archives; server.faults.dropMessageAck = 1; server.faults.dropArchiveAck = 1;
   const offline = await submit("hold-offline"); await until(async () => gates.has("/hold-offline"), Boolean);
   server.faults.offline = true; gates.get("/hold-offline")!.end('{"token":"fixed-token"}'); gates.delete("/hold-offline");
-  const ledger = () => JSON.parse(command("docker", ["exec", name, "node", "-e", `const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('/data/execution-ledger.sqlite',{readOnly:true});const state=JSON.parse(db.prepare('select state from ledger where id=1').get().state);console.log(JSON.stringify(state.intents.find(value=>value.executionId===${JSON.stringify(offline.executionId)})));db.close();`]));
+  const ledger = () => ledgerIntent(offline.executionId);
   await until(async () => ledger(), value => value.settled && !!value.report);
   server.faults.offline = false; expect((await report(offline)).verdict).toBe("passed");
   await until(async () => ledger(), value => value.archived && !value.report);
@@ -287,7 +298,7 @@ it("keeps Linux stress reservations through controlled derating, cancellation, w
   await until(async () => seen.slice(start).filter(row => row.path === "/hold-stress-capacity").length, count => count === 2);
   const second = (await electron([run(fixture.target, "agent", config)])).results[0];
   const waiting = await until(() => api("GET", `jobs/${second.jobId}`), value => value.state === "queued" && !!value.capacityWaitReason);
-  expect(ledgerIntent(second.executionId)?.processes ?? []).toEqual([]);
+  expect((await ledgerIntent(second.executionId))?.processes ?? []).toEqual([]);
   const neighborTarget = semanticTarget("debug") as Extract<TaskTarget, { kind: "debug" }>;
   if (neighborTarget.invocation.mode !== "case") throw new Error("Case fixture required");
   neighborTarget.invocation.locator.apiId = "10000000-0000-4000-8000-000000000099";
@@ -296,11 +307,11 @@ it("keeps Linux stress reservations through controlled derating, cancellation, w
   await until(async () => gates.has("/hold-packaged-disconnect"), Boolean);
   await configureStress({ maxConcurrentStressJobs: 0 });
   expect((await api("GET", `jobs/${first.jobId}`)).state).toBe("running");
-  expect(ledgerIntent(second.executionId)?.processes ?? []).toEqual([]);
+  expect((await ledgerIntent(second.executionId))?.processes ?? []).toEqual([]);
   await api("POST", `jobs/${second.jobId}/cancel`, {});
   await api("POST", `jobs/${first.jobId}/cancel`, {});
   await report(first);
-  const released = ledgerIntent(first.executionId);
+  const released = await ledgerIntent(first.executionId);
   expect(released.processes).toHaveLength(3); expect(released.processes.every((row: any) => row.exited)).toBe(true);
   const physical = JSON.parse(command("docker", ["exec", name, "node", "--input-type=module", "-e", `import {readProcessIdentity} from './apps/runner-agent/dist/processIdentity.js';console.log(JSON.stringify(await Promise.all(${JSON.stringify(active.processes.map((row: any) => row.pid))}.map(async pid=>({pid,identity:await readProcessIdentity(pid)??null})))));`]));
   expect(physical.every((row: any) => row.identity === null)).toBe(true);
@@ -314,7 +325,7 @@ it("keeps Linux stress reservations through controlled derating, cancellation, w
   const worker = faultProcesses.processes.find((row: any) => row.role === "worker");
   command("docker", ["exec", name, "node", "--input-type=module", "-e", `import {readProcessIdentity} from './apps/runner-agent/dist/processIdentity.js';const row=await readProcessIdentity(${worker.pid});if(!row||row.birth!==${JSON.stringify(worker.birth)})throw Error('Owned Linux worker identity changed');process.kill(row.pid,'SIGKILL');`]);
   const faultReport = await report(faulted); expect(faultReport.verdict).not.toBe("passed");
-  expect(ledgerIntent(faulted.executionId).processes.every((row: any) => row.exited)).toBe(true);
+  expect((await ledgerIntent(faulted.executionId)).processes.every((row: any) => row.exited)).toBe(true);
   const plain = acceptanceStress(origin, "stress-lost-ack"); await publish(plain.project);
   const before = seen.length, archives = server.faults.archives, drops = server.faults.dropped;
   server.faults.dropMessageAck = 1; server.faults.dropArchiveAck = 1;

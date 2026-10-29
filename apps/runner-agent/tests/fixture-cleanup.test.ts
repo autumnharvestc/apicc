@@ -1,5 +1,7 @@
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, appendFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, appendFileSync, copyFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -55,6 +57,42 @@ async function close(server: Server): Promise<void> {
   if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 }
 
+// Break caught: an integrity scan competes with a running agent's fail-closed SQLite writer.
+it("collects runtime facts live but checks ledger integrity only on the stopped private copy", async () => {
+  const root = mkdtempSync(join(tmpdir(), "apicc-ledger-closure-"));
+  const original = join(root, "original.sqlite");
+  const database = new DatabaseSync(original); database.exec("CREATE TABLE evidence(value TEXT)"); database.close();
+  const target = await listen(), control = await listen();
+  let stopped = false, removed = false;
+  const command = (_file: string, args: string[]) => {
+    if (args[0] === "exec") {
+      // Run the actual observer script, not a fabricated successful JSON response. Only Linux UID is supplied.
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", `process.getuid ??= () => 1000;\n${args.at(-1)}`], { encoding: "utf8", windowsHide: true });
+      if (child.status !== 0) throw new Error(child.stderr);
+      return child.stdout.trim();
+    }
+    if (args[0] === "stop") { stopped = true; return ""; }
+    if (args[0] === "inspect") return JSON.stringify({ Running: !stopped });
+    if (args[0] === "cp") { expect(stopped).toBe(true); copyFileSync(original, args[2]!); return ""; }
+    if (args[0] === "rm") { removed = true; return ""; }
+    if (args[0] === "volume") { expect(stopped && removed).toBe(true); return ""; }
+    throw new Error(`Unexpected fixture operation ${args}`);
+  };
+  const bindings = {
+    gates: new Map(), uiReady: false, containerCreated: true, volumeCreated: true, name: "owned-container", volume: "owned-volume", target,
+    server: { root, close: () => close(control) }, command, DatabaseSync,
+    spawnSync: () => ({ status: 0, stdout: "synthetic log", stderr: "" }),
+    readFileSync, writeFileSync, appendFileSync, join, process: { env: {} }, expect,
+  };
+  try {
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    await new AsyncFunction(...Object.keys(bindings), cleanupBody("e2e"))(...Object.values(bindings));
+    expect(JSON.parse(readFileSync(join(root, "ledger-integrity.json"), "utf8"))).toEqual({ integrity_check: "ok" });
+    expect(JSON.parse(readFileSync(join(root, "linux-closure.json"), "utf8"))).toMatchObject({ uid: expect.any(Number), sqlite: { version: expect.any(String) } });
+    expect(target.listening || control.listening).toBe(false);
+  } finally { await close(target); await close(control); rmSync(root, { recursive: true }); }
+});
+
 // The regression is an early evidence/stop error preventing unrelated owned listeners from closing.
 it.each<Owner>(["e2e", "ui", "server"])("%s teardown closes independent resources after an early failure and preserves unsafe data", async owner => {
   const root = mkdtempSync(join(tmpdir(), "apicc-t11-cleanup-"));
@@ -66,7 +104,7 @@ it.each<Owner>(["e2e", "ui", "server"])("%s teardown closes independent resource
     if (args[0] === "exec") throw failure;
     if (args[0] === "stop") { if (owner === "ui") throw failure; stopped = true; return "stopped"; }
     if (args[0] === "inspect") return JSON.stringify({ Running: !stopped, ExitCode: stopped ? 0 : null });
-    if (args[0] === "cp") { writeFileSync(args[2]!, "copied synthetic ledger"); return ""; }
+    if (args[0] === "cp") { const database = new DatabaseSync(args[2]!); database.exec("CREATE TABLE evidence(value TEXT)"); database.close(); return ""; }
     if (args[0] === "volume" && args[1] === "rm") {
       if (!stopped) throw new Error("Attempted deletion while stop was unconfirmed");
       rmSync(volumeRoot, { recursive: true });
@@ -74,10 +112,10 @@ it.each<Owner>(["e2e", "ui", "server"])("%s teardown closes independent resource
     return "";
   };
   const bindings = {
-    gates: owner === "e2e" ? new Map() : new Set(), containerCreated: true, volumeCreated: true, container: true, volumeMade: true,
+    gates: owner === "e2e" ? new Map() : new Set(), uiReady: false, containerCreated: true, volumeCreated: true, container: true, volumeMade: true,
     name: "owned-container", volume: "owned-volume", target, proxy: target,
     server: { root, close: () => close(control) }, dispatcher: { close: () => close(control) }, stop: async () => { throw failure; }, root, serviceFailure: undefined,
-    command, spawnSync: () => ({ status: 0, stdout: "synthetic log", stderr: "" }),
+    command, DatabaseSync, spawnSync: () => ({ status: 0, stdout: "synthetic log", stderr: "" }),
     readFileSync, writeFileSync, appendFileSync, join, process: { env: {} }, expect,
   };
   let caught: unknown;
