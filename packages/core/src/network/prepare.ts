@@ -77,6 +77,21 @@ interface SecretNeed {
   ref: { id: string; policy: string };
   field: string;
 }
+export interface NetworkDependencies {
+  selection: NetworkSelection; profile?: NetworkProfile; secretNeeds: SecretNeed[];
+  certificatePaths: Array<{path:string;kind:'ca'|'client';field:string;origin?:string}>;
+}
+export function collectNetworkDependencies(input:{configuration:unknown;selection?:NetworkSelection;environmentId?:string}):NetworkDependencies{
+  const configuration=validateConfiguration(input.configuration);
+  const explicit=input.selection===undefined?undefined:NetworkSelectionSchema.safeParse(input.selection);
+  if(explicit&&!explicit.success)throw new NetworkProfileError('NETWORK_CONFIGURATION_INVALID',undefined,'selection');
+  const environmentSelection=input.environmentId===undefined?undefined:configuration.environmentSelections.find(item=>item.environmentId===input.environmentId)?.selection;
+  const selection=explicit?.data??environmentSelection??configuration.projectSelection??{kind:'direct' as const};
+  const profile=selectedProfile(configuration,selection);const certificatePaths:NetworkDependencies['certificatePaths']=[];
+  const collect=(tls:NetworkTLSSettings,field:string,origin?:string)=>{for(const path of tls.caCertificatePaths??[])certificatePaths.push({path,kind:'ca',field,...(origin===undefined?{}:{origin})});for(const path of tls.clientCertificatePaths??[])certificatePaths.push({path,kind:'client',field,...(origin===undefined?{}:{origin})});};
+  if(profile){for(const binding of profile.targetTlsBindings)collect(binding.tls,'targetTlsBindings',binding.origin);if(profile.kind==='proxy'&&profile.proxyUrl.startsWith('https://'))collect(profile.proxyTLS??{},'proxyTLS');}
+  return {selection,...(profile?{profile}:{}),secretNeeds:profile?collectSecretNeeds(profile):[],certificatePaths};
+}
 
 function abortIfNeeded(signal: AbortSignal | undefined, profileId?: string, field?: string): void {
   if (signal?.aborted) throw new NetworkProfileError("NETWORK_PREPARATION_ABORTED", profileId, field);
@@ -340,16 +355,8 @@ export async function prepareNetworkRun(options: PrepareNetworkRunOptions): Prom
   if (typeof loaded?.revision !== "string" || loaded.revision.length === 0) {
     throw new NetworkProfileError("NETWORK_STORAGE_FAILED", undefined, "revision");
   }
-  const configuration = validateConfiguration(loaded.configuration);
-  const explicit = options.selection === undefined
-    ? undefined
-    : NetworkSelectionSchema.safeParse(options.selection);
-  if (explicit && !explicit.success) throw new NetworkProfileError("NETWORK_CONFIGURATION_INVALID", undefined, "selection");
-  const environmentSelection = scope.environmentId === undefined
-    ? undefined
-    : configuration.environmentSelections.find((item) => item.environmentId === scope.environmentId)?.selection;
-  const selection = explicit?.data ?? environmentSelection ?? configuration.projectSelection ?? { kind: "direct" as const };
-  const profile = selectedProfile(configuration, selection);
+  const dependencies=collectNetworkDependencies({configuration:loaded.configuration,selection:options.selection,environmentId:scope.environmentId});
+  const {selection,profile}=dependencies;
   if (!profile) {
     const defaultTLS: PreparedNetworkTLS = Object.freeze({
       verify: true,
@@ -390,7 +397,7 @@ export async function prepareNetworkRun(options: PrepareNetworkRunOptions): Prom
     pendingProxy = await readTLSCertificates(profile.proxyTLS ?? {}, profile.id, "proxyTLS", budget, options.signal);
   }
 
-  const needs = collectSecretNeeds(profile);
+  const needs = dependencies.secretNeeds;
   const uniqueNeeds = new Map<string, SecretNeed>();
   for (const need of needs) {
     if (!uniqueNeeds.has(need.ref.id)) uniqueNeeds.set(need.ref.id, need);

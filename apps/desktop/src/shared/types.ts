@@ -29,6 +29,7 @@ import type {
   DebugHistoryReadResult,
 } from "@apicc/core";
 import type { OnlineExecutionInput, OnlineExecutionResult } from "./online/execution.js";
+import type { OnlineSchedulingInput, OnlineSchedulingResult } from './online/scheduling.js';
 import type { NetworkProfilesResult, NetworkProfilesSaveInput, NetworkProfilesSaveResult, NetworkSecretImportResult, NetworkSecretImportInput } from "./network.js";
 import type {
   ApiLocator,
@@ -528,6 +529,7 @@ export interface ApiccApi extends TestingApi {
   /** 组织分组只读清单（计划 C 任务 2 迁移拉取：groupId → 组名反查）。 */
   onlineGroupsList(workspaceId: string): Promise<OnlineGroup[]>;
   onlineExecution(input: OnlineExecutionInput): Promise<OnlineExecutionResult>;
+  onlineScheduling(input: OnlineSchedulingInput): Promise<OnlineSchedulingResult>;
   // —— AI 频道（M6-C 任务 1 登记 / 任务 2 真链路，规格 §2 D2/D4）——
   /** 保存 AI 配置：baseUrl/model 由渲染层 localStorage 持久化；apiKey 非空时经 main 入安全存储（省略/空串 = 保持既有）。 */
   aiSaveConfig(input: AiSaveConfigInput): Promise<AiKeyStatus>;

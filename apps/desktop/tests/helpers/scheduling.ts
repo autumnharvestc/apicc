@@ -1,0 +1,19 @@
+import { ScheduleViewSchema, ScheduleOptionsSchema, defaultSchedulePolicy, defaultPolicyConfig, defaultAgentConfig, ProjectExecutionAgentsSchema } from '@apicc/execution/contract';
+
+export const scheduleContext = { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } };
+export const workflowId = '00000000-0000-4000-8000-000000000091';
+export function scheduleView() {
+  return ScheduleViewSchema.parse({ id: '9007199254740993', workspaceId: '11', projectId: '33', version: '9007199254740995', revision: '1', enabled: false, subjectUserId: '7', snapshotVersion: '1', manifestHash: 'a'.repeat(64), pausedReasonCode: null, nextPlannedAtUtc: null, cancellationVersion: '0', evaluatedThroughUtc: null, lastAdmittedPlannedAtUtc: null,
+    name: '每日回归'.repeat(25), rule: { kind: 'once', atUtc: '2035-01-01T00:00:00.123456789Z', timeZone: 'Asia/Shanghai' }, policies: { lateToleranceMs: 10000, misfire: 'skip', catchupWindowMs: 300000, overlap: 'skip', queueTimeoutMs: 300000 }, notifications: { inApp: true, eventKinds: ['failed', 'abnormal', 'expired', 'paused'], channelIds: [] },
+    execution: { agentId: '5', snapshotId: '66', target: { kind: 'workflow', workflowId }, runConfig: { jobTimeoutMs: 60000 }, materials: { projectId: '33', credentials: [], attachments: [] }, preparation: { scope: scheduleContext.scope, manifestHash: 'a'.repeat(64), scriptPlanDigest: 'c'.repeat(64), scriptRequirements: [], executionProfile: 'no-script', dispatchKind: 'dedicated-task', requiredCoreBuildId: 'b'.repeat(64), requiredCapabilities: ['task:workflow'], runtimeCompatibilityId: 'compatible' } },
+  });
+}
+export function scheduleOptions(canManageSchedules = true) { return ScheduleOptionsSchema.parse({ canManageSchedules, schedulerAvailable: true, policy: defaultSchedulePolicy, sources: { minIntervalMs: 'workspace' }, policyVersion: { workspace: '0', project: '0' }, channels: [{ id: '8', name: 'Team webhook', kind: 'webhook' }] }); }
+export function schedulePreparation() {
+  return { execution: scheduleView().execution, snapshotVersion: '1', manifestHash: 'a'.repeat(64), snapshotDiff: { previousSnapshotVersion: null, currentSnapshotVersion: '1', areas: (['target', 'environment', 'scripts', 'data', 'materials', 'network', 'runtime'] as const).map(area => ({ area, changed: true, before: null, after: { ids: [area === 'target' ? workflowId : 'saved'], fingerprint: 'a'.repeat(64) } })) } };
+}
+export function scheduleAgents() {
+  const configuration = { configVersion: '0', appliedConfigVersion: '0', pendingFields: [], restartRequiredFields: [], status: 'applied' };
+  const { maxConcurrentStressJobs, maxStressProcesses, maxStressVus, maxStressRequestConcurrency, maxStressRps, maxStressMetricMemoryBytes } = defaultAgentConfig;
+  return ProjectExecutionAgentsSchema.parse({ defaultAgentId: '5', canManageScripts: false, policy: defaultPolicyConfig, policyVersion: '0', agents: [{ id: '5', name: 'Selected agent', availability: 'available', acceptingJobs: true, lastSeenAt: null, configuration, policy: defaultPolicyConfig, policyVersion: '0', scriptsAllowed: false, scriptGrant: { version: '0', scope: 'script-version', scripts: [] }, runtime: { protocolVersion: 1, sessionId: 'current', coreBuildId: 'b'.repeat(64), scriptApiId: 'd'.repeat(64), nodeVersion: '22.19.0', v8Version: '12.4.254.21-node.29', runtimeCompatibilityId: 'compatible', capabilities: ['task:workflow'], configuration }, stressConfiguration: { agent: { maxConcurrentStressJobs, maxStressProcesses, maxStressVus, maxStressRequestConcurrency, maxStressRps, maxStressMetricMemoryBytes }, sources: { 'agent.maxStressRequestConcurrency': 'default', 'agent.maxStressRps': 'default', 'policy.maxStressRequestConcurrency': 'default', 'policy.maxStressRps': 'default' } } }] });
+}

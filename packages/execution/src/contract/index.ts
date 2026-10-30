@@ -7,3 +7,4 @@ export * from "./materials.js";
 export * from "./jobs.js";
 export * from "./runtime.js";
 export * from "./declaredPaths.js";
+export * from "./scheduling.js";

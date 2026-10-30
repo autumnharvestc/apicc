@@ -15,6 +15,11 @@ import static org.springframework.http.HttpStatus.*;
 /** Durable business state. HTTP waiters never own assignments or execution state. */
 @Repository
 public class JobRepo {
+    public record ScheduleOrigin(long occurrenceId,long scheduleId,long revision) {
+        public ScheduleOrigin {if(occurrenceId<=0||scheduleId<=0||revision<=0)throw new IllegalArgumentException("Scheduling source identity must be positive");}
+    }
+    public Optional<ScheduleOrigin> scheduleOrigin(long job){return jdbc.query("SELECT schedule_occurrence_id,schedule_id,schedule_revision FROM execution_jobs WHERE id=? AND schedule_occurrence_id IS NOT NULL",(r,n)->new ScheduleOrigin(r.getLong(1),r.getLong(2),r.getLong(3)),job).stream().findFirst();}
+    void bindScheduleOrigin(long job,ScheduleOrigin origin){if(jdbc.update("UPDATE execution_jobs SET schedule_occurrence_id=?,schedule_id=?,schedule_revision=? WHERE id=? AND schedule_occurrence_id IS NULL AND schedule_id IS NULL AND schedule_revision IS NULL",origin.occurrenceId(),origin.scheduleId(),origin.revision(),job)!=1)throw new IllegalStateException("Job schedule origin is already fixed");}
     public record Job(long id,long execution,long workspace,long project,long user,long agent,long snapshot,
         String intent,String intentHash,JsonNode submission,JsonNode task,String inputsDigest,
         String state,boolean accepted,String cancelState,boolean released,String permitId,JsonNode permit,

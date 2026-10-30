@@ -15,6 +15,8 @@ import type { OnlineFilesBatchInput, OnlineProjectMappingInput, OnlineWorkspaceO
 import type { ApiTestCase, ComponentAsset, DebugFieldState, ModelAsset } from "@apicc/core";
 import { createOnlineSession, type OnlineSession } from "./online/session.js";
 import { createOnlineExecutionHost } from "./online/execution.js";
+import { handleOnlineScheduling } from './online/scheduling.js';
+import { parseOnlineSchedulingResult, type OnlineSchedulingInput } from '../shared/online/scheduling.js';
 import { createSystemSecretStore, defaultCredentialPrivateRoot } from "@apicc/core";
 import { OnlineExecutionResultSchema, type OnlineExecutionInput } from "../shared/online/execution.js";
 import { scanDirFiles, writeFiles } from "./online/migrate.js";
@@ -1113,6 +1115,8 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.OnlineExecution:
         if (!onlineExecution) throw new Error("在线执行未配置");
         return OnlineExecutionResultSchema.parse(await onlineExecution.handle(a[0] as OnlineExecutionInput));
+      case IpcChannel.OnlineScheduling:
+        return parseOnlineSchedulingResult(a[0] as OnlineSchedulingInput, await handleOnlineScheduling({ session: requireOnline(), fetch: options.online?.fetch }, a[0] as OnlineSchedulingInput));
       case IpcChannel.OnlineLogin: {
         return requireOnline().login(a[0] as Parameters<OnlineSession["login"]>[0]);
       }

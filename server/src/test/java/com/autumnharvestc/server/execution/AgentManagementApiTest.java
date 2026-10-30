@@ -230,6 +230,7 @@ class AgentManagementApiTest extends ExecutionManagementFixture {
 @AutoConfigureMockMvc(print=org.springframework.boot.test.autoconfigure.web.servlet.MockMvcPrint.NONE)
 @TestPropertySource(properties={"spring.datasource.url=jdbc:h2:mem:apicc-execution-management-test;DB_CLOSE_DELAY=-1","apicc.server.allow-registration=true","apicc.server.admin-username=admin","apicc.server.admin-password=admin-pass-2026"})
 abstract class ExecutionManagementFixture {
+    @org.springframework.test.context.bean.override.mockito.MockitoBean com.autumnharvestc.server.execution.scheduling.EmbeddedScheduleTimer scheduleTimer;
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;

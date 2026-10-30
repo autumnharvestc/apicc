@@ -76,7 +76,7 @@ server-data/
 
 两点注意：
 
-- 元数据库路径固定按 `jdbc:h2:file:./server-data/metadata`（相对运行目录）解析；需整体挪机时建议停服后连同运行目录一起处理，或同步改 `application.yml` 的 datasource url（或以 `SPRING_DATASOURCE_URL` 环境变量覆盖）。
+- 元数据库路径默认按 `jdbc:h2:file:./server-data/metadata;WRITE_DELAY=0`（相对运行目录）解析；需整体挪机时建议停服后连同运行目录一起处理，或同步改 `application.yml` 的 datasource url（或以 `SPRING_DATASOURCE_URL` 环境变量覆盖）。持久库在首次使用前及每条新物理连接初始化时归一为零延迟写入，增加提交 I/O；自定义非零值不保留。自定义初始化 SQL / INIT、自定义连接检测 SQL（含安全 SELECT，应改用 JDBC isValid）和不受支持的 datasource 会启动失败，详见[部署持久化边界](../docs/deploy.md#元数据持久化边界)。
 - 备份 = 停服快照 `server-data/metadata.mv.db`（H2 建议停服拷贝，避免写入中途取到不一致快照；或直接备份整个 `server-data/` 目录——里面只有这一个文件）。
 
 **未发布阶段（0.x）不做数据迁移**：schema / 数据目录结构变更均不做迁移与兼容——生产化前的破坏性变更都走「删库重开」口径。特别地，2026-09 起实体主键已由 UUID 字符串（VARCHAR(36)）改为数字（BIGINT IDENTITY，对外 JSON 字符串化）：幂等 DDL（`CREATE TABLE IF NOT EXISTS`）**不会重建已存在的旧表**，旧库直接起新版不一定在启动期报错，但运行期写入会因列型不兼容报错或产生混合形态脏数据——从旧版本升级，必须删除 `server-data/`（或换一个全新的运行目录）重开，不要沿用旧库。

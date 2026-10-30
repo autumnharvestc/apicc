@@ -66,7 +66,24 @@ curl http://localhost:8080/api/v1/ping    # {"status":"ok"}
 | `APICC_SERVER_ADMIN_USERNAME` | 空 | 首个管理员用户名（仅用户表为空时生效） |
 | `APICC_SERVER_ADMIN_PASSWORD` | 空 | 首个管理员口令；未设则随机生成并打印日志 |
 | `APICC_SERVER_TOKEN_TTL_DAYS` | `30` | 登录令牌有效期（天） |
-| `SPRING_DATASOURCE_URL` | 容器内已设 `jdbc:h2:file:/data/metadata` | 元数据库地址。镜像内置为卷内绝对路径（源码默认 `./server-data/metadata` 依赖运行目录，容器内不适用） |
+| `SPRING_DATASOURCE_URL` | 容器内已设 `jdbc:h2:file:/data/metadata;WRITE_DELAY=0` | 元数据库地址。镜像内置为卷内绝对路径（源码默认 `./server-data/metadata` 依赖运行目录，容器内不适用） |
+
+### 元数据持久化边界
+
+持久 H2（文件库及 TCP 文件库）在 schema 初始化和后台任务启动前统一使用 `WRITE_DELAY=0`。
+这会增加提交时的磁盘写入 I/O，换取已确认状态在进程突然退出后不依赖默认 500 ms 延迟写入窗口；
+仍需可靠的磁盘、备份和单副本部署，不承诺抵御存储设备故障。
+
+现有 Hikari 自定义 JDBC URL 可以保留路径、其他选项及其转义值，但缺失或非零的 `WRITE_DELAY`
+会明确归一为 `0`，不能继续使用延迟写入覆盖。每条新物理连接还必须成功执行 `SET WRITE_DELAY 0`
+后才能交给应用，旧库保存的设置和后续扩池连接都遵循同一策略。内存 H2 不受此文件持久化策略影响。
+
+持久库自定义非空 `spring.datasource.hikari.connection-init-sql`、`spring.datasource.hikari.connection-test-query`、URL / datasource-properties 的 `INIT`、
+已启动的连接池、非 Hikari 自定义 datasource 或绕过 JDBC URL 的物理来源不受支持，启动时失败关闭；
+请移除自定义初始化 SQL / INIT 和自定义连接检测 SQL（即便是 `SELECT 1` 也需移除），使用 JDBC 原生
+`isValid` 及尚未启动、以 `jdbc-url` 配置的标准 Hikari datasource。检测 SQL 可能在物理连接初始化后重复执行，
+因此不能依靠初始 `SET WRITE_DELAY 0` 使任意后续检测 SQL 安全；内存 H2 的自定义初始化和检测行为不变。
+不要用直连工具以非零 `WRITE_DELAY` 并发连接同一 TCP 库；外部 SQL 管理员仍可改变数据库全局设置。
 
 ## k8s 部署
 

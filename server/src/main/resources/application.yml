@@ -4,7 +4,7 @@ spring:
     name: apicc-server
   datasource:
     # 元数据 H2 文件库，相对运行目录（裁定④）；测试覆写为 jdbc:h2:mem:
-    url: jdbc:h2:file:./server-data/metadata
+    url: jdbc:h2:file:./server-data/metadata;WRITE_DELAY=0
     driver-class-name: org.h2.Driver
     username: sa
     password: ""

@@ -10,4 +10,4 @@ data:
   SERVER_PORT: "8080"
   APICC_SERVER_ALLOW_REGISTRATION: "false"
   # 元数据库固定卷内绝对路径（镜像 ENV 已设，此处显式声明便于审计与覆盖）
-  SPRING_DATASOURCE_URL: "jdbc:h2:file:/data/metadata"
+  SPRING_DATASOURCE_URL: "jdbc:h2:file:/data/metadata;WRITE_DELAY=0"

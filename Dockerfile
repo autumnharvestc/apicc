@@ -43,7 +43,7 @@ ENV SERVER_PORT=8080 \
     APICC_SERVER_CONSOLEDIR=/app/console \
     # 元数据库 url 原为相对运行目录的 ./server-data/metadata（server/README「数据目录」节），
     # 容器内固定为卷内绝对路径，不依赖进程 cwd
-    SPRING_DATASOURCE_URL=jdbc:h2:file:/data/metadata
+    SPRING_DATASOURCE_URL=jdbc:h2:file:/data/metadata;WRITE_DELAY=0
 # H2 文件库 + 工作区内容全在此卷；单容器单副本（D1）
 VOLUME /data
 EXPOSE 8080

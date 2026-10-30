@@ -1,0 +1,23 @@
+{
+  "id" : "14",
+  "workspaceId" : "1",
+  "name" : "材料状态合成渠道",
+  "kind" : "webhook",
+  "version" : "1",
+  "enabled" : false,
+  "origin" : null,
+  "status" : "disabled",
+  "limits" : {
+    "requestTimeoutMs" : 5000,
+    "maxAttempts" : 5,
+    "retryMinMs" : 5000,
+    "retryMaxMs" : 300000,
+    "jitterRatio" : 0.2,
+    "deliveryTtlMs" : 86400000,
+    "maxPayloadBytes" : 16384,
+    "maxResponseBytes" : 8192
+  },
+  "appliesTo" : "new-deliveries",
+  "keyState" : "not-checked",
+  "reasonCodes" : [ "unsupported-origin" ]
+}

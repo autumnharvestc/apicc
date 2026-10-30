@@ -20,8 +20,9 @@ import type { OrgStore } from "../stores/org.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
 import type { AgentsStore } from "../stores/agents.js";
 import ProjectAgentsView from "./ProjectAgentsView.vue";
+import type {SchedulingStore} from '../stores/scheduling.js';
 
-const props = defineProps<{ org: OrgStore; workspaces: WorkspacesStore; agents?: AgentsStore }>();
+const props = defineProps<{ org: OrgStore; workspaces: WorkspacesStore; agents?: AgentsStore;scheduling?:SchedulingStore }>();
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
@@ -311,8 +312,10 @@ async function onProjectDelete(): Promise<void> {
               <span class="avatar" :style="{ background: avatarColor(p.id) }">{{ (p.name || "?").slice(0, 1) }}</span>
               <span class="card-name" :title="p.name">{{ p.name }}</span>
             </div>
-            <div v-if="agents || canManage" class="card-actions">
+            <div v-if="agents || scheduling || canManage" class="card-actions">
               <a-button v-if="agents" size="small" :data-testid="`org-project-execution-${p.id}`" @click="openExecution(p.id)">{{ t('agents.projectTitle') }}</a-button>
+              <a-button v-if="scheduling" size="small" :data-testid="`org-project-schedule-policy-${p.id}`" @click="router.push({name:'project-schedule-policy',params:{id:workspaceId,projectId:p.id}})">{{t('scheduling.projectPolicyTitle')}}</a-button>
+              <a-button v-if="scheduling" size="small" :data-testid="`org-project-schedule-grants-${p.id}`" @click="router.push({name:'project-schedule-grants',params:{id:workspaceId,projectId:p.id}})">{{t('scheduling.grantsTitle')}}</a-button>
               <template v-if="canManage">
                 <a-button size="small" :data-testid="`org-project-rename-${p.id}`" @click="openProjectRename(p)">
                   {{ t("org.renameAction") }}

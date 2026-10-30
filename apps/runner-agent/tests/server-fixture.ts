@@ -31,8 +31,8 @@ export async function until<T>(read: () => Promise<T>, accept: (value: T) => boo
   throw new Error(`Readiness not reached: ${JSON.stringify(last, Object.getOwnPropertyNames(last ?? {}))}`);
 }
 /** Own private Maven output/data/certs/cwd; stop confirmation precedes any optional cleanup. */
-export async function serverFixture(options: { artifactJar?: string } = {}) {
-  const parent = join(repo, "local/f7b-t11"); mkdirSync(parent, { recursive: true });
+export async function serverFixture(options: { artifactJar?: string; evidenceParent?: string; variables?: NodeJS.ProcessEnv; dataDirectory?: string; proxyPort?: number } = {}) {
+  const parent = options.evidenceParent ?? join(repo, "local/f7b-t11"); mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(join(parent, "e2e-"));
   const javaHome = process.env.JAVA_HOME; if (!javaHome) throw new Error("JAVA_HOME must name the JDK21 root");
   const exe = (name: string) => join(javaHome, "bin", `${name}${process.platform === "win32" ? ".exe" : ""}`);
@@ -44,7 +44,7 @@ export async function serverFixture(options: { artifactJar?: string } = {}) {
     const buildArgs = ["-s", join(repo, "server/.mvn/settings.xml"), "-f", join(repo, "server/pom.xml"), `-Dapicc.build.directory=${build}`, "-DskipTests", "package"];
     writeFileSync(join(root, "maven-build.log"), `cwd=${root}\nJDK=${javaHome}\nargs=${JSON.stringify(buildArgs)}\n` + command(join(repo, "server", process.platform === "win32" ? "mvnw.cmd" : "mvnw"), buildArgs, { cwd: root }) + "\nexit=0\n");
     jar = join(build, readdirSync(build).find(name => /^apicc-server-.+\.jar$/.test(name))!);
-  } else writeFileSync(join(root, "maven-build.log"), `Reuse this task's existing private artifact for UI only: ${jar}\n`);
+  } else writeFileSync(join(root, "maven-build.log"), `Reuse the explicitly selected private server artifact: ${jar}\n`);
   const password = "t11-synthetic-store";
   const host = advertisedHost(); const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
   const key = (args: string[]) => command(exe("keytool"), args, { cwd: root });
@@ -56,7 +56,7 @@ export async function serverFixture(options: { artifactJar?: string } = {}) {
   key(["-importcert", "-noprompt", "-alias", "ca", "-keystore", "control.p12", "-storepass", password, "-file", "control-ca.pem"]);
   key(["-importcert", "-alias", "control", "-keystore", "control.p12", "-storepass", password, "-file", "control.pem"]);
   writeFileSync(join(root, "materials-key"), Buffer.alloc(32, 11));
-  const port = await freePort(), proxyPort = await freePort(); const baseUrl = `https://${authorityHost}:${proxyPort}`;
+  const port = await freePort(), proxyPort = options.proxyPort ?? await freePort(); const baseUrl = `https://${authorityHost}:${proxyPort}`;
   const dispatcher = new Agent({ connect: { ca: readFileSync(join(root, "control-ca.pem"), "utf8"), rejectUnauthorized: true } });
   const installedFetch = dispatcherFetch as unknown as typeof fetch;
   const trustedFetch: typeof fetch = (input, init) => installedFetch(input, { ...init, dispatcher } as RequestInit);
@@ -78,7 +78,8 @@ export async function serverFixture(options: { artifactJar?: string } = {}) {
   await new Promise<void>(resolve => proxy.listen(proxyPort, "0.0.0.0", resolve));
   let child: ChildProcess | undefined;
   const start = async (variables: NodeJS.ProcessEnv = {}) => {
-    child = spawn(exe("java"), ["-jar", jar, `--server.port=${port}`, "--server.ssl.enabled=true", `--server.ssl.key-store=${join(root, "control.p12")}`, "--server.ssl.key-store-type=PKCS12", `--server.ssl.key-store-password=${password}`, `--apicc.server.data-dir=${join(root, "data")}`, `--apicc.execution.materials.master-key-file=${join(root, "materials-key")}`, `--apicc.execution.control-base-url=${baseUrl}/api/v1`, "--apicc.server.allow-registration=true", "--apicc.server.admin-username=t11-owner", "--apicc.server.admin-password=t11-password8", `--apicc.server.console-dir=${join(repo, "apps/admin-web/dist")}`], { cwd: root, env: { ...process.env, ...variables }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    appendFileSync(join(root, "process-environment.jsonl"), JSON.stringify({startedAt:new Date().toISOString(),variables,selectedEnvironment:Object.fromEntries(Object.entries({...process.env,...variables}).filter(([key])=>/^(SPRING_|APICC_SCHEDULER|APICC_NOTIFICATION|JAVA_HOME)/i.test(key)))})+"\n");
+    child = spawn(exe("java"), ["-jar", jar, `--server.port=${port}`, "--server.ssl.enabled=true", `--server.ssl.key-store=${join(root, "control.p12")}`, "--server.ssl.key-store-type=PKCS12", `--server.ssl.key-store-password=${password}`, `--apicc.server.data-dir=${options.dataDirectory ?? join(root, "data")}`, `--apicc.execution.materials.master-key-file=${join(root, "materials-key")}`, `--apicc.execution.control-base-url=${baseUrl}/api/v1`, "--apicc.server.allow-registration=true", "--apicc.server.admin-username=t11-owner", "--apicc.server.admin-password=t11-password8", `--apicc.server.console-dir=${join(repo, "apps/admin-web/dist")}`], { cwd: root, env: { ...process.env, ...variables }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     for (const stream of [child.stdout, child.stderr]) stream?.on("data", bytes => appendFileSync(join(root, "server.log"), bytes));
     await until(() => trustedFetch(`${baseUrl}/api/v1/ping`).then(async response => response.ok && (await response.json() as { status: string }).status === "ok"), Boolean, 60000);
   };
@@ -101,7 +102,7 @@ export async function serverFixture(options: { artifactJar?: string } = {}) {
       throw new AggregateError(errors, `Private HTTPS cleanup failed; preserved ${root}: ${errors.map(String).join("; ")}`);
     }
   };
-  try { await start(); }
+  try { await start(options.variables); }
   catch (error) {
     try { await close(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], `Private HTTPS startup and cleanup failed; preserved ${root}: ${String(error)}; ${String(cleanupError)}`); }

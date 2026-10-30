@@ -1,4 +1,5 @@
 import { createPinia, defineStore } from "pinia";
+import { watch } from 'vue';
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 // core 主入口含 native 索引面（better-sqlite3）——渲染层沙箱求值即崩（白屏，2026-09-06 用户报告）。
 // 纯 schema 一律走 ./schema 子路径（依赖闭包仅 zod）。
@@ -12,6 +13,7 @@ import type { TreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { MigrationResult, OnlineServerProfile } from "../../../shared/online/types.js";
 import type { ApiccApi } from "../../../shared/types.js";
 import { createOnlineExecutionStore } from "./onlineExecution.js";
+import { createOnlineSchedulesStore } from './onlineSchedules.js';
 import { OnlineExecutionContextSchema } from "../../../shared/online/execution.js";
 
 /**
@@ -151,6 +153,8 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
   const api = deps.api;
   const storage = deps.storage ?? localStorage;
   const execution = createOnlineExecutionStore(api);
+  const schedules = createOnlineSchedulesStore(api);
+  watch(() => [execution.context, execution.visible] as const, ([context, visible]) => schedules.activate(context, visible), { flush: 'sync' });
   // Renderer results belong to the authentication attempt that selected their target.
   let authenticationGeneration = 0;
   return defineStore("online", {
@@ -191,6 +195,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
     }),
     getters: {
       execution: () => execution,
+      schedules: () => schedules,
       /** 激活档案显示名：昵称为空回退 baseUrl（顶栏/对话框统一出口）。 */
       activeName(state): string {
         const profile = state.profiles.find((p) => p.baseUrl === state.activeBaseUrl);

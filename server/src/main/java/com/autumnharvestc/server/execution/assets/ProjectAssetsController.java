@@ -39,6 +39,8 @@ public class ProjectAssetsController {
     public ExecutionSnapshot snapshot(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller, @PathVariable String ws, @PathVariable String project, @RequestBody JsonNode request) {
         return snapshots.create(caller, ws, project, decode(request, SnapshotRequest.class));
     }
+    @GetMapping("/execution-snapshots/{snapshot}")
+    public ExecutionSnapshot snapshot(@RequestAttribute(AuthFilter.ATTR_USER)UserAccount caller,@PathVariable String ws,@PathVariable String project,@PathVariable String snapshot){return snapshots.loadProjectAuthorized(caller,ws,project,snapshot);}
     private <T> T decode(JsonNode input, Class<T> type) {
         try { return controlJson.treeToValue(input, type); }
         catch (JsonProcessingException e) { throw ProjectAssetsService.error(HttpStatus.BAD_REQUEST, "validation_failed", "控制字段类型错误或包含未知字段"); }

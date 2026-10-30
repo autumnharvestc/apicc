@@ -32,6 +32,8 @@ public class JobService implements AssignedMaterialAuthorizer {
     private final com.autumnharvestc.server.execution.ExecutionProperties properties;
     private final CoreInputValidator inputValidator;
     private final StressResourceReservations stressResources;
+    @org.springframework.beans.factory.annotation.Autowired private com.autumnharvestc.server.execution.scheduling.ScheduleGrantService scheduleGrants;
+    @org.springframework.beans.factory.annotation.Autowired private com.autumnharvestc.server.execution.scheduling.ScheduleTimeSource scheduleTime;
     public JobService(JobRepo repo, AgentRepo nodes, AgentService agents, ExecutionSnapshotService snapshots,
         ExecutionConfigService configs, ScriptGrantService grants, UserRepo users,
         ProjectCredentialService credentials, AttachmentService attachments, JdbcTemplate jdbc,
@@ -46,10 +48,19 @@ public class JobService implements AssignedMaterialAuthorizer {
     }
     public OffsetDateTime now() { return OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC); }
     public Map<String,Object> submit(UserAccount caller,String ws,String project,JobDtos.Submit request){
+        return submit(caller,ws,project,request,null,null);
+    }
+    /** Internal scheduling admission only. No HTTP DTO exposes source identity or the absolute deadline. */
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Map<String,Object> submitScheduled(UserAccount caller,String ws,String project,JobDtos.Submit request,Instant absoluteDeadline,JobRepo.ScheduleOrigin origin){
+        Objects.requireNonNull(absoluteDeadline);Objects.requireNonNull(origin);
+        return submit(caller,ws,project,request,absoluteDeadline,origin);
+    }
+    private Map<String,Object> submit(UserAccount caller,String ws,String project,JobDtos.Submit request,Instant absoluteDeadline,JobRepo.ScheduleOrigin origin){
         agents.requireExecution(caller,ws,project);validate(request);
         long w=id(ws),p=id(project),agent=id(request.agentId());
         String intentHash=repo.digest(request);var prior=repo.intent(caller.id(),p,request.intentId());
-        if(prior.isPresent()){if(!prior.get().intentHash().equals(intentHash))throw error(CONFLICT,"intent_conflict","同一提交意图的固定内容已变化");return view(prior.get(),caller);}
+        if(prior.isPresent()){if(!Objects.equals(repo.scheduleOrigin(prior.get().id()).orElse(null),origin))throw error(CONFLICT,"intent_source_conflict","相同提交意图已绑定不同的运行来源");if(!prior.get().intentHash().equals(intentHash))throw error(CONFLICT,"intent_conflict","同一提交意图的固定内容已变化");return view(prior.get(),caller);}
         var snapshot=snapshots.loadAuthorized(caller,id(request.snapshotId()));var assets=snapshot.assets();
         var declared=request.preparation();
         if(!assets.workspaceId().equals(ws)||!assets.projectId().equals(project)||!declared.scope().equals(new JobDtos.Scope(ws,assets.groupId(),project)))throw error(FORBIDDEN,"snapshot_scope_mismatch","准备声明必须对应受权固定项目快照");
@@ -68,8 +79,9 @@ public class JobService implements AssignedMaterialAuthorizer {
         if(request.target().path("kind").asText().equals("debug"))task.put("debugSessionId",debugSession(caller,w,p,agent,request.debugSessionId(),effective));
         task.put("policyVersion",effective.get("policyVersion"));task.put("requiredCoreBuildId",declared.requiredCoreBuildId());task.put("executionProfile",declared.executionProfile());task.put("dispatchKind",declared.dispatchKind());task.put("scriptPlanDigest",declared.scriptPlanDigest());if(grant!=null)task.put("scriptGrantVersion",grant);task.put("requiredCapabilities",declared.requiredCapabilities());task.put("runtimeCompatibilityId",declared.runtimeCompatibilityId());
         var inputs=new LinkedHashMap<String,Object>();inputs.put("executionId",String.valueOf(execution));inputs.put("snapshot",snapshot);inputs.put("runConfig",runValues(request.runConfig()));inputs.put("materials",request.materials());inputs.put("policy",policy(effective));if(declared.stressBinding()!=null){inputs.put("stressBinding",declared.stressBinding());inputs.put("stressExecutor",Map.of("id",String.valueOf(agent),"name",nodes.require(agent,false).name()));}if(request.network()!=null)inputs.put("network",request.network());String digest=repo.executionInputDigest(inputs);inputs.put("inputsDigest",digest);
-        var policy=policy(effective);var queueTimeout=policy.get("queueTimeoutMs");OffsetDateTime expires=queueTimeout==null?null:now().plusNanos((((Number)queueTimeout).longValue()%1000)*1000000).plusSeconds(((Number)queueTimeout).longValue()/1000);
-        repo.insert(job,execution,w,p,caller.id(),agent,id(snapshot.snapshotId()),request.intentId(),intentHash,request,task,inputs,digest,expires);wake(agent);return view(repo.require(job,false),caller);
+        var policy=policy(effective);var queueTimeout=policy.get("queueTimeoutMs");OffsetDateTime expires=queueTimeout==null?null:(origin==null?now():scheduleTime.now().atOffset(ZoneOffset.UTC)).plusNanos((((Number)queueTimeout).longValue()%1000)*1000000).plusSeconds(((Number)queueTimeout).longValue()/1000);
+        if(absoluteDeadline!=null){var cap=absoluteDeadline.truncatedTo(java.time.temporal.ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);if(expires==null||cap.isBefore(expires))expires=cap;}
+        repo.insert(job,execution,w,p,caller.id(),agent,id(snapshot.snapshotId()),request.intentId(),intentHash,request,task,inputs,digest,expires);if(origin!=null)repo.bindScheduleOrigin(job,origin);wake(agent);return view(repo.require(job,false),caller);
     }
     private void validate(JobDtos.Submit s){
         if(s==null||s.preparation()==null||s.preparation().scope()==null||s.runConfig()==null||s.materials()==null||s.target()==null||!s.target().isObject())bad("固定目标、准备声明、运行设置和材料清单必填");
@@ -113,6 +125,18 @@ public class JobService implements AssignedMaterialAuthorizer {
         j=repo.require(job,true);if(j.agent()!=agent||j.execution()!=execution||j.state().equals("queued"))throw error(FORBIDDEN,"assignment_required","当前分配已变化");return j;
     }
     public UserAccount currentUser(JobRepo.Job j){return users.findById(j.user()).filter(u->!u.disabled()).orElseThrow(()->error(FORBIDDEN,"submitter_unavailable","提交者已停用或不存在"));}
+    /** Scheduling uses the shared DB clock; ordinary member jobs retain their original process Clock. */
+    public boolean queueExpired(JobRepo.Job j){
+        if(j.queueExpiresAt()==null)return false;
+        var current=repo.scheduleOrigin(j.id()).isPresent()?scheduleTime.now():now().toInstant();
+        return !j.queueExpiresAt().toInstant().isAfter(current);
+    }
+    /** Reads immutable Job origin and original submitter only; never locks current schedule/control. */
+    public void requireScheduledStart(JobRepo.Job j){
+        if(repo.scheduleOrigin(j.id()).isEmpty())return;
+        scheduleGrants.requireSubject(j.user(),j.workspace(),j.project());
+        if(queueExpired(j))throw error(CONFLICT,"schedule-queue-expired","定时任务已超过原计划的排队截止时间");
+    }
     @Override public AuthorizedMaterials requireAssigned(long agent,long job,long execution){
         if(repo.find(job).isEmpty())throw error(FORBIDDEN,"assignment_required","任务未分配给当前代理");
         var j=lockAssignment(agent,job,execution,true);if(j.state().equals("ended"))throw error(FORBIDDEN,"assignment_required","已结束执行不能重新取得运行材料");

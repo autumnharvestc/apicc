@@ -141,6 +141,7 @@ export const IpcChannel = {
   OnlineProjectMapping: "online:project-mapping",
   OnlineGroupsList: "online:groups:list",
   OnlineExecution: "online:execution",
+  OnlineScheduling: 'online:scheduling',
   OnlineFilesGet: "online:files:get",
   OnlineFilePut: "online:files:put",
   OnlineFilesBatch: "online:files:batch",

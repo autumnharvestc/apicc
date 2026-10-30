@@ -34,4 +34,9 @@ public class ExecutionSnapshotService {
         assets.authorized(caller, fixed.assets().workspaceId(), fixed.assets().projectId(), true);
         return fixed;
     }
+    public ExecutionSnapshot loadProjectAuthorized(UserAccount caller,String ws,String project,String snapshot){
+        com.autumnharvestc.server.execution.agent.AgentRepo.id(ws);com.autumnharvestc.server.execution.agent.AgentRepo.id(project);
+        var fixed=loadAuthorized(caller,com.autumnharvestc.server.execution.agent.AgentRepo.id(snapshot));
+        if(!fixed.assets().workspaceId().equals(ws)||!fixed.assets().projectId().equals(project))throw error(HttpStatus.FORBIDDEN,"snapshot_scope_mismatch","固定快照不属于地址指定的工作区和项目");return fixed;
+    }
 }

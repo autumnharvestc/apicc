@@ -1479,6 +1479,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     async onlineExecution() {
       throw new Error("online-execution-requires-connected-server");
     },
+    async onlineScheduling() { throw new Error('online-scheduling-requires-connected-server'); },
 
     async onlineLogout(): Promise<void> {
       onlineUser = null;

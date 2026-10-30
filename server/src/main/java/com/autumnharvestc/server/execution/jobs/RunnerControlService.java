@@ -23,7 +23,7 @@ import static org.springframework.http.HttpStatus.*;
 @Service
 @Transactional
 public class RunnerControlService {
-    private static final Set<String> START_REJECTIONS=Set.of("submitter_unavailable","forbidden","project_forbidden","agent_unavailable","agent_not_associated","script_mode_denied","script_grant_missing","script_grant_changed","credential_version_conflict","credential_missing","policy_changed","agent_capacity","shared_capacity","resource_capacity","debug_session_expired");
+    private static final Set<String> START_REJECTIONS=Set.of("submitter_unavailable","forbidden","project_forbidden","agent_unavailable","agent_not_associated","script_mode_denied","script_grant_missing","script_grant_changed","credential_version_conflict","credential_missing","policy_changed","agent_capacity","shared_capacity","resource_capacity","debug_session_expired","schedule-subject-unavailable","schedule-subject-unauthorized","schedule-queue-expired");
     private final JobRepo repo;private final JobService jobs;private final AgentRepo nodes;private final AgentService agents;
     private final ExecutionConfigService configs;private final ExecutionSnapshotService snapshots;private final ScriptGrantService grants;
     private final ProjectCredentialService credentials;private final JdbcTemplate jdbc;
@@ -76,7 +76,7 @@ public class RunnerControlService {
         long remaining=applied?request.availableSlots():0,shared=applied?request.availableSharedDebugSlots():0;
         for(var candidate:repo.queued(agent)){
             // Expiry consumes no business slot, even when all workers are busy or intake stopped.
-            if(candidate.queueExpiresAt()!=null&&!candidate.queueExpiresAt().isAfter(jobs.now())){
+            if(jobs.queueExpired(candidate)){
                 transactions.executeWithoutResult(status->expireQueued(candidate));
                 continue;
             }
@@ -101,15 +101,14 @@ public class RunnerControlService {
         configs.lockPolicyVersion();
         var current=repo.require(candidate.id(),true);
         if(current.state().equals("queued")&&current.agent()==candidate.agent()
-            &&current.execution()==candidate.execution()&&current.queueExpiresAt()!=null
-            &&!current.queueExpiresAt().isAfter(jobs.now())){
+            &&current.execution()==candidate.execution()&&jobs.queueExpired(current)){
             rejectQueued(current,"queue_timeout","排队等待已达到固定期限");
         }
     }
     private int claim(JobRepo.Job candidate,boolean sharedTask){
         var caller=jobs.currentUser(candidate);long agent=candidate.agent();
         agents.requireExecution(caller,String.valueOf(candidate.workspace()),String.valueOf(candidate.project()));agents.requireUsable(String.valueOf(agent),String.valueOf(candidate.workspace()),String.valueOf(candidate.project()));configs.lockPolicyVersion();var j=repo.require(candidate.id(),true);if(!j.state().equals("queued"))return 0;
-        if(j.queueExpiresAt()!=null&&!j.queueExpiresAt().isAfter(jobs.now())){rejectQueued(j,"queue_timeout","排队等待已达到固定期限");return 0;}
+        if(jobs.queueExpired(j)){rejectQueued(j,"queue_timeout","排队等待已达到固定期限");return 0;}
         var effective=configs.effective(agent,j.workspace(),j.project(),timeouts(jobs.submission(j).runConfig()));var node=cast(effective.get("agent"));
         var actual=assertRuntime(j);
         if(!j.task().path("policyVersion").asText().equals(effective.get("policyVersion")))throw error(CONFLICT,"policy_changed","排队任务的固定策略版本已变化，请重新准备");
@@ -196,6 +195,7 @@ public class RunnerControlService {
         validatePreparedStart(j,message);var s=jobs.submission(j);var p=s.preparation();
         if(j.permitId()!=null)return; // Retry recovers the one durable permit; no new business invocation.
         if(!j.state().equals("preparing")||!j.accepted()||!j.cancelState().equals("none"))throw error(CONFLICT,"state_conflict","任务尚未接单、已申请取消或已结束");
+        jobs.requireScheduledStart(j);
         var caller=jobs.currentUser(j);agents.requireExecution(caller,String.valueOf(j.workspace()),String.valueOf(j.project()));agents.requireUsable(String.valueOf(j.agent()),String.valueOf(j.workspace()),String.valueOf(j.project()));
         String revision=configs.lockPolicyVersion();var effective=configs.effective(j.agent(),j.workspace(),j.project(),timeouts(s.runConfig()));var node=cast(effective.get("agent"));
         if(repo.occupied(j.agent())>number(node,"maxConcurrentJobs"))throw error(CONFLICT,"agent_capacity","任务准备后代理总准入额度已下降");

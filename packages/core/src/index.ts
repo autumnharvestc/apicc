@@ -60,7 +60,7 @@ export type { CapturedFile, CapturedRequestFiles, CaptureRequestFilesOptions } f
 // Network profile schemas/types are browser-safe from shared.js; private storage and prepared secret/certificate material stay Node-only.
 export { createFileNetworkProfileStore } from "./network/privateStore.js";
 export type { FileNetworkProfileStoreOptions, NetworkProfileStore } from "./network/privateStore.js";
-export { prepareNetworkRun } from "./network/prepare.js";
+export { prepareNetworkRun, collectNetworkDependencies } from "./network/prepare.js";
 export type {
   PrepareNetworkRunOptions,
   PreparedNetworkTLS,

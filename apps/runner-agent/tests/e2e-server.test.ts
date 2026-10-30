@@ -3,7 +3,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { encodeContractProjectFiles, type ContractProject } from "@apicc/core";
 import { acceptanceStress } from "./helpers/acceptanceStress.js";
@@ -79,7 +79,7 @@ async function configureStress(config: Record<string, unknown>) {
   return until(() => api("GET", `agents/${agentId}`), value => value.status === "applied" && value.runtime.configuration.appliedConfigVersion === value.configVersion);
 }
 beforeAll(async () => {
-  server = await serverFixture();
+  server = await serverFixture({ artifactJar: process.env.APICC_RUNNER_E2E_JAR });
   console.log(`T11 private resources ${JSON.stringify({ root: server.root, baseUrl: server.baseUrl, name, volume, image })}`);
   target = createServer((request, response) => {
     let body = ""; request.on("data", bytes => { body += bytes; }); request.on("end", () => {
@@ -231,8 +231,26 @@ it("mixes total slots, cancellation, session scope, one worker exit, real lost A
   await until(async () => ledger(), value => value.archived && !value.report);
   expect(server.faults.dropped).toBe(2); expect(server.faults.archives - beforeArchive).toBeGreaterThanOrEqual(2);
   expect(seen.filter(row => row.path === "/hold-offline")).toHaveLength(1);
+  // The archive ACK above is the durability boundary, not a graceful shutdown or a new Job.
+  const originalStatus = await api("GET", `jobs/${offline.jobId}`);
+  const originalReport = Buffer.from(JSON.stringify(await api("GET", `jobs/${offline.jobId}/report`)));
+  const ledgerIdentity = (value: any) => ({ jobId: value.jobId, executionId: value.executionId, settled: value.settled, archived: value.archived, reportPresent: !!value.report });
+  const originalLedger = ledgerIdentity(await ledger());
+  const beforeJavaPid = server.serverPid();
+  const reportIdentity = (bytes: Buffer) => ({ sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length });
+  expect(originalStatus).toMatchObject({ jobId: offline.jobId, executionId: offline.executionId, state: "ended", executionReleased: true, reportState: "archived" });
   const beforeRestart = await api("GET", `agents/${agentId}`);
   await server.stop(); await server.start({ APICC_EXECUTION_AGENT_CHILDMAXOLDSPACEMIB: "128" });
+  const recoveredStatus = await api("GET", `jobs/${offline.jobId}`);
+  const recoveredReport = Buffer.from(JSON.stringify(await api("GET", `jobs/${offline.jobId}/report`)));
+  const recoveredLedger = ledgerIdentity(await ledger());
+  writeFileSync(join(server.root, "acked-restart-durability.json"), JSON.stringify({ jobId: offline.jobId, executionId: offline.executionId, beforeJavaPid, afterJavaPid: server.serverPid(), before: { status: originalStatus, report: reportIdentity(originalReport), ledger: originalLedger }, after: { status: recoveredStatus, report: reportIdentity(recoveredReport), ledger: recoveredLedger }, offlineTargetHits: seen.filter(row => row.path === "/hold-offline").length }, null, 2));
+  expect(server.serverPid()).not.toBe(beforeJavaPid);
+  expect(recoveredStatus).toEqual(originalStatus);
+  expect(reportIdentity(recoveredReport)).toEqual(reportIdentity(originalReport));
+  expect(recoveredLedger).toEqual(originalLedger);
+  expect(recoveredLedger).toMatchObject({ jobId: offline.jobId, executionId: offline.executionId, settled: true, archived: true, reportPresent: false });
+  expect(seen.filter(row => row.path === "/hold-offline")).toHaveLength(1);
   const applied = await until(() => api("GET", `agents/${agentId}`), value => value.config.childMaxOldSpaceMiB === 128 && value.configVersion !== beforeRestart.configVersion && value.status === "applied" && value.runtime.configuration.appliedConfigVersion === value.configVersion);
   expect(applied.config.maxConcurrentJobs).toBe(2); expect(applied.sources.childMaxOldSpaceMiB).toBe("deployment");
   appendFileSync(join(server.root, "control-results.json"), JSON.stringify({ sharedWorkerPid: warm.pid, successorPid: firstReport.pid, cancelled: a.jobId, dedicated: b.jobId, interrupted: c.jobId, faults: server.faults, offlineTargetHits: seen.filter(row => row.path === "/hold-offline").length, beforeRestart: beforeRestart.configVersion, afterRestart: applied.configVersion, applied: applied.appliedConfigVersion }, null, 2));

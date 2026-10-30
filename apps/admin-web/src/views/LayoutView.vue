@@ -99,6 +99,9 @@ function onLocaleChange(event: Event): void {
         </a-menu-item>
         <a-menu-item v-if="session.role === 'SUPERADMIN'" key="agents" data-testid="menu-agents" @click="router.push({name:'agents'})">{{ t('agents.title') }}</a-menu-item>
         <a-menu-item v-if="manageVisible" key="workspace-agents" data-testid="menu-workspace-agents" @click="router.push({name:'workspace-agents',params:{id:workspaces.current!.id}})">{{ t('agents.workspaceTitle') }}</a-menu-item>
+        <a-menu-item v-if="manageVisible" key="schedule-policy" data-testid="menu-schedule-policy" @click="router.push(`/workspaces/${encodeURIComponent(workspaces.current!.id)}/schedule-policy`)">{{ t('scheduling.policyTitle') }}</a-menu-item>
+        <a-menu-item v-if="manageVisible" key="notification-channels" data-testid="menu-notification-channels" @click="router.push({name:'workspace-notification-channels',params:{id:workspaces.current!.id}})">{{t('scheduling.channelsTitle')}}</a-menu-item>
+        <a-menu-item v-if="session.role==='SUPERADMIN'" key="scheduler-control" data-testid="menu-scheduler-control" @click="router.push({name:'scheduler-control'})">{{t('scheduling.controlTitle')}}</a-menu-item>
       </a-menu>
     </a-layout-sider>
     <a-layout>

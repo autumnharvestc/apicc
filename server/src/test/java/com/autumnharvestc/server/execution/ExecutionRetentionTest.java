@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.execution;
 
 import com.autumnharvestc.server.core.Hashes;
+import com.autumnharvestc.server.execution.jobs.ExecutionRetentionCleanup;
 import com.autumnharvestc.server.execution.jobs.JobDtos;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -8,7 +9,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.support.ScheduledMethodRunnable;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.util.ReflectionTestUtils;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.ScheduledFuture;
@@ -65,7 +68,11 @@ class ExecutionRetentionTest extends JobsFixture {
         softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=? AND report_state='expired'",Long.class,Long.parseLong(f.project()))).isEqualTo(2);
         softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_management_audit WHERE action='retention-old' AND scope_id=?",Long.class,Long.parseLong(f.project()))).isZero();
         softly.assertAll();
-        assertThat(scheduled.tasks).isNotEmpty().allSatisfy(task->assertThat(task.delay()).isEqualTo(Duration.ofMillis(1234)));
+        var cleanupMethod=ExecutionRetentionCleanup.class.getMethod("cleanup");
+        // Spring 6.2 Task supplies an OutcomeTrackingRunnable; inspect its real method delegate.
+        assertThat(scheduled.tasks).filteredOn(task->ReflectionTestUtils.getField(task.action(),"runnable") instanceof ScheduledMethodRunnable action
+            && action.getTarget() instanceof ExecutionRetentionCleanup && action.getMethod().equals(cleanupMethod))
+            .singleElement().satisfies(task->assertThat(task.delay()).isEqualTo(Duration.ofMillis(1234)));
         scheduled.tick();
         for(String job:old){
             assertThat(jobRepo.reportContent(Long.parseLong(job))).isNull();

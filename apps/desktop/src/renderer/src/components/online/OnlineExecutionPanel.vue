@@ -13,7 +13,7 @@ import { summarizeStressExecution,compareStressExecutions } from '@apicc/executi
 import {renderStressHtml,stressProcessObservationText} from '@apicc/core/stress/html';
 import type {StressReportV2,StressExecutionSummary} from '@apicc/core';
 import StressExecutionSummaryView from '../StressExecutionSummaryView.vue';
-const props = defineProps<{ execution: OnlineExecutionStore }>();
+const props = defineProps<{ execution: OnlineExecutionStore; reportOnly?: boolean }>();
 const { t, te, locale } = useI18n();
 const selected = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' && 'job' in selection ? selection.job : props.execution.jobs.find(job => job.jobId === props.execution.selectedJobId); });
 const local = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' ? null : selection?.kind === 'local' && selection.runId !== props.execution.localResult?.runId ? null : props.execution.localResult; });
@@ -72,7 +72,7 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
 </script>
 <template>
   <section class="execution" data-testid="online-execution-panel">
-    <div class="toolbar">
+    <div v-if="!reportOnly" class="toolbar">
       <label>{{ t('onlineExecution.location') }}<select :value="execution.location.kind === 'local' ? 'local' : execution.location.agentId" :disabled="execution.running" data-testid="online-execution-location" @change="location"><option value="local">{{ t('onlineExecution.local') }}</option><option v-for="item in execution.agents?.agents" :key="item.id" :value="item.id" :disabled="item.availability !== 'available' || item.configuration.status !== 'applied'">{{ item.name }} · {{ label(item.availability) }}</option></select></label>
       <label>{{ t('onlineExecution.environment') }}<select v-model="execution.environmentId" :disabled="execution.running" data-testid="online-execution-environment"><option :value="undefined">{{ t('onlineExecution.baseEnvironment') }}</option><option v-for="env in execution.project?.environments" :key="env.id" :value="env.id">{{ env.name }}</option></select></label>
       <label>{{ t('onlineExecution.refresh') }}<input type="number" min="1" max="2147483647" :value="execution.statusRefreshMs" data-testid="online-refresh-ms" @change="action(async () => execution.setRefreshMs(Number(($event.target as HTMLInputElement).value)))" /> ms</label>
@@ -81,6 +81,7 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
       <button v-if="execution.activeLocalRunId" @click="action(() => execution.cancelLocal())">{{ t('onlineExecution.cancel') }}</button>
     </div>
     <p v-if="reason" role="alert" data-testid="online-execution-error">{{ reason }}</p>
+    <template v-if="!reportOnly">
     <h4>{{ t('onlineExecution.nextRunSettings') }}</h4>
     <dl class="current-summary">
       <div><dt>{{ t('onlineExecution.connection') }}</dt><dd>{{ label(execution.connection) }}</dd></div>
@@ -104,6 +105,7 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
       </table>
       <p v-else>{{ t('onlineExecution.noTasks') }}</p>
     </div>
+    </template>
     <section v-if="execution.resultSelection || selected || local || report" data-testid="online-selected-run">
       <h4>{{ t('onlineExecution.recordedRun') }}</h4>
       <p v-if="stressSelected && !stressSummary">{{t('stressPresentation.metadataNotCollected')}}</p>

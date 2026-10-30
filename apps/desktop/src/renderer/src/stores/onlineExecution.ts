@@ -140,12 +140,14 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       finally { run.pending = false; publishRun(run); }
     },
     async cancelLocal() { if (!store.context || !store.activeLocalRunId) return; await api.onlineExecution({ operation: 'cancel', context: plain(store.context), location: { kind: 'local' }, runId: store.activeLocalRunId }); },
-    async inspect(job: OnlineJob) {
+    async inspect(job: OnlineJob, intentCurrent: () => boolean = () => true) {
       const context = store.context && plain(store.context); if (!context) return;
       const token = generation; store.selectedJobId = job.jobId; store.report = null; store.localResult = null;
       store.resultSelection = { kind: 'agent', job: plain(job) };
       if (job.reportState !== "archived") return;
-      const parsed = OnlineReportSchema.safeParse(await api.onlineExecution({ operation: "report", context, runId: job.jobId, location: { kind: "agent", agentId: job.agentId } }));
+      const raw = await api.onlineExecution({ operation: "report", context, runId: job.jobId, location: { kind: "agent", agentId: job.agentId } });
+      if (!intentCurrent()) return;
+      const parsed = OnlineReportSchema.safeParse(raw);
       if (!parsed.success) throw new Error(parsed.error.issues.some(issue => issue.path.includes('output')) ? 'invalid-core-output' : 'invalid-online-report');
       const report = parsed.data;
       const selected = store.resultSelection;
