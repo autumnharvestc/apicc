@@ -1,14 +1,13 @@
 import type { DeepReadonly, ProjectAssetContextReadView } from "../assets/context.js";
 import type { ApiAsset } from "../contract/model.js";
-import { contractAiView } from "../ai/contractView.js";
-import { redactCommonCredentialText } from "../import/schemaMapping.js";
+import { contractAiView, redactAiText } from "../ai/contractView.js";
 import { renderContractMarkdown as renderContractMarkdownBase } from "./contractMarkdown.js";
 
 /** Render Markdown from the selected immutable asset and the context for the same project snapshot. */
-export function renderDesignMarkdown(asset: DeepReadonly<ApiAsset>, context: ProjectAssetContextReadView): string {
+export function renderDesignMarkdown(asset: DeepReadonly<ApiAsset>, context: ProjectAssetContextReadView, options: { includeBodies?: boolean } = {}): string {
   const contract = context.getContract(asset.contract.id);
   if (!contract) throw new TypeError("The API asset must belong to the supplied project snapshot context.");
-  const view = contractAiView(asset, context);
+  const view = contractAiView(asset, context, options);
   const request = asRecord(view.request);
   const protocol = stringOr(request?.protocol, "unknown");
   const protocolDetails = protocol === "websocket"
@@ -18,10 +17,10 @@ export function renderDesignMarkdown(asset: DeepReadonly<ApiAsset>, context: Pro
       : "";
   const version = stringOr(view.version, "");
   const documentation = asset.documentation
-    ? `## Documentation\n\n${redactCommonCredentialText(asset.documentation)}`
+    ? `## Documentation\n\n${redactAiText(asset.documentation)}`
     : "";
   const caseRows = asset.cases.map((testCase) =>
-    `| ${testCase.name} | ${testCase.scope} | ${testCase.assertions.length} |`,
+    `| ${redactAiText(testCase.name)} | ${redactAiText(testCase.scope)} | ${testCase.assertions.length} |`,
   );
   const cases = [
     "## Test cases",
@@ -31,7 +30,7 @@ export function renderDesignMarkdown(asset: DeepReadonly<ApiAsset>, context: Pro
     ...caseRows,
   ].join("\n");
   return [
-    renderContractMarkdownBase(asset, context),
+    renderContractMarkdownBase(asset, context, options),
     `## Contract metadata\n\n- Version: ${version}\n- Status: ${contract.metadata.status}`,
     protocolDetails ? `## Protocol details\n\n${protocolDetails}` : "",
     documentation,

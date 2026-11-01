@@ -1,22 +1,21 @@
 // M6-C 任务 1（规格 §2 D2 密钥边界）：AI key 安全存储单测——沿用 online tokenStore
-// 先例（safeStorage 形依赖注入、userData 目录、SHA-256 checksum 读回校验、不可用降级
-// 明文 + warn）。差异：AI 配置单端点，文件恒单凭据（无 baseUrl 索引）。
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+// 形依赖注入、SHA-256 checksum 读回校验；T9 不可用时拒绝新持久化，不降级明文。
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAiKeyStore } from "../../../src/main/ai/config.js";
-import type { SafeStorageLike } from "../../../src/main/online/tokenStore.js";
+import { createAiKeyStore, type AiSafeStorageLike } from "../../../src/main/ai/config.js";
 
 /** 可用替身：encryptString 产出 base64 密文（与明文可区分），decryptString 逆向。 */
-const availableStorage: SafeStorageLike = {
+const availableStorage: AiSafeStorageLike = {
   isEncryptionAvailable: () => true,
+  getSelectedStorageBackend: () => "gnome_libsecret",
   encryptString: (plain) => Buffer.from(Buffer.from(plain, "utf8").toString("base64"), "utf8"),
   decryptString: (encrypted) => Buffer.from(encrypted.toString("utf8"), "base64").toString("utf8"),
 };
 
 /** 不可用替身：isEncryptionAvailable 恒 false（encrypt/decrypt 不应被调用）。 */
-const unavailableStorage: SafeStorageLike = {
+const unavailableStorage: AiSafeStorageLike = {
   isEncryptionAvailable: () => false,
   encryptString: () => {
     throw new Error("不应调用 encryptString");
@@ -34,6 +33,42 @@ afterEach(() => {
 });
 
 describe("AiKeyStore（AI key 安全存储，D2）", () => {
+  // Final I7: reuse the unchanged positive mock with explicit Linux intent.
+  it("final I7 positive storage fixture can persist on the Linux production branch", () => {
+    const dir = newDir(), store = createAiKeyStore({ dir, storage: availableStorage, platform: "linux" });
+    try {
+      let failure: unknown;
+      try { store.save("SYNTHETIC_LINUX_POSITIVE_KEY"); } catch (error) { failure = error; }
+      expect(failure).toBeUndefined();
+      expect(store.load()).toBe("SYNTHETIC_LINUX_POSITIVE_KEY");
+      expect(readFileSync(join(dir, FILE), "utf8")).not.toContain("SYNTHETIC_LINUX_POSITIVE_KEY");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("final I7 unknown Linux backend continues to refuse persistent credentials", () => {
+    const dir = newDir(), store = createAiKeyStore({ dir, storage: { ...availableStorage, getSelectedStorageBackend: () => "unknown" }, platform: "linux" });
+    try { expect(() => store.save("SYNTHETIC_UNKNOWN_BACKEND_KEY")).toThrow(/安全存储不可用/); expect(existsSync(join(dir, FILE))).toBe(false); }
+    finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  // Catch a new secret being persisted when encryption is absent or only Linux basic_text.
+  // The OS keyring is the sole external seam; file writes and reads remain real.
+  it.each([
+    { name: "unavailable", storage: unavailableStorage },
+    { name: "Linux basic_text", storage: { ...availableStorage, getSelectedStorageBackend: () => "basic_text" } },
+  ])("T9 $name must not persist a newly supplied key", ({ storage }) => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const dir = newDir();
+    const store = createAiKeyStore({ dir, storage, platform: "linux" });
+    try {
+      let failure: unknown;
+      try { store.save("sk-t9-new-secret"); } catch (error) { failure = error; }
+      expect(existsSync(join(dir, FILE))).toBe(false);
+      expect(failure).toBeInstanceOf(Error);
+      expect(store.load()).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("save/load 往返：加密可用时文件不含明文 key", () => {
     const dir = newDir();
     const store = createAiKeyStore({ dir, storage: availableStorage });
@@ -50,15 +85,11 @@ describe("AiKeyStore（AI key 安全存储，D2）", () => {
     expect(createAiKeyStore({ dir, storage: availableStorage }).load()).toBe("sk-new");
   });
 
-  it("safeStorage 不可用：save 降级明文 + console.warn，load 读回原 key", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it("safeStorage 不可用：save 拒绝，且没有可读的新明文文件", () => {
     const dir = newDir();
     const store = createAiKeyStore({ dir, storage: unavailableStorage });
-    store.save("sk-plain-456");
-    const persisted = JSON.parse(readFileSync(join(dir, FILE), "utf8")) as { encrypted: boolean; token: string };
-    expect(persisted).toMatchObject({ encrypted: false, token: "sk-plain-456" });
-    expect(store.load()).toBe("sk-plain-456");
-    expect(warn).toHaveBeenCalled();
+    expect(() => store.save("sk-plain-456")).toThrow(/安全存储不可用/);
+    expect(existsSync(join(dir, FILE))).toBe(false); expect(store.load()).toBeNull();
   });
 
   it("clear 移除凭据文件；文件缺失时 clear 不抛", () => {

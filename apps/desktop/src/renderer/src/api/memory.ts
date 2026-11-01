@@ -1661,6 +1661,21 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       return { ok: true };
     },
 
+    // This adapter has no native confirmation or trusted credential backend.
+    // Do not simulate successful binding or persist secrets in renderer memory.
+    async aiSettingsRead() { throw new Error("个人 AI 设置需要可信桌面宿主"); },
+    async aiSettingsWrite() { throw new Error("个人 AI 设置需要可信桌面宿主"); },
+    async aiCatalogImport() { throw new Error("个人 AI 设置需要可信桌面宿主"); },
+    async aiCatalogReload() { throw new Error("个人 AI 设置需要可信桌面宿主"); },
+    async aiConnectionTest() { throw new Error("个人 AI 操作需要可信桌面宿主"); },
+    async aiDiscover() { throw new Error("个人 AI 操作需要可信桌面宿主"); },
+    async aiPrepareAssistance() { throw new Error("个人 AI 操作需要可信桌面宿主"); },
+    async aiInspectChoices() { throw new Error('ai-choices-unavailable'); },
+    async aiReadChoicesPage() { throw new Error('ai-choices-unavailable'); },
+    onAiProgress() { return () => {}; },
+    async aiStart() { throw new Error("个人 AI 操作需要可信桌面宿主"); },
+    async aiCancel() { throw new Error("个人 AI 操作需要可信桌面宿主"); },
+
     // 插件频道（M7-B 任务 1）：与主进程 fixture 桩同一数据源（main/plugins/fixture.ts），
     // 出口快照拷贝——替身只做契约同构（混合 loaded/failed 清单 + 导入器枚举），不做加载语义。
     async pluginsList(): Promise<PluginsListResult> {

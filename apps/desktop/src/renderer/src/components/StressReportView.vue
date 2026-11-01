@@ -16,7 +16,16 @@ import {stressSafetyCodeText} from '@apicc/core/stress/html';
  * totalRequests=0 展示「无样本」态。数字格式化 helper 内联（毫秒取整、rps 两位小数），
  * 任何数值路径不产 NaN；面板与运行历史详情（任务 3）复用本组件。
  */
-const props = defineProps<{ report: DesktopStressReport | StressReportV2 | null; execution?: StressExecutionSummary }>();
+const props = defineProps<{ report: DesktopStressReport | StressReportV2 | null; execution?: StressExecutionSummary;
+  ai?: import('../stores/ai.js').AiStore; source?: import('../../../shared/ai/contract.js').AiSourceRef;
+  reportRef?: import('../../../shared/ai/contract.js').AiReportRef; baselineRef?: import('../../../shared/ai/contract.js').AiReportRef }>();
+function analyzeReport() {
+  const displayed = props.report, source = props.source, report = props.reportRef, baseline = props.baselineRef;
+  if (!displayed || !source || !report || !props.ai) return;
+  const key = JSON.stringify([source, report, baseline]);
+  void props.ai.prepareReportAnalysis({ source, report, baseline, displayed,
+    isCurrent: () => props.report === displayed && JSON.stringify([props.source, props.reportRef, props.baselineRef]) === key });
+}
 const { t,te,locale } = useI18n();
 const code=(value:string|undefined)=>value===undefined?t('stressPresentation.notCollected'):te(`stressFinal.codes.${value}`)?t(`stressFinal.codes.${value}`):te(`stressPresentation.codes.${value}`)?t(`stressPresentation.codes.${value}`):te(`stressPresentation.states.${value}`)?t(`stressPresentation.states.${value}`):te(`stress.failure.${value}`)?t(`stress.failure.${value}`):value;
 function time(value:number){return Number.isFinite(new Date(value).getTime())?new Intl.DateTimeFormat(locale.value,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3,timeZoneName:'longOffset'}).format(new Date(value)):t('stressPresentation.timeOutOfRange');}
@@ -93,6 +102,7 @@ const eligibleCompletedAttempts = computed(() => report.value?.eligibleCompleted
 
 <template>
   <section v-if="v2" class="stress-report" data-testid="stress-report">
+    <button v-if="ai && source && reportRef" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
     <div class="verdict" :data-verdict="v2.verdict.status" data-testid="stress-verdict">{{t('stressPresentation.logicalVerdict')}}: {{ t(`stress.workbench.verdict.${v2.verdict.status}`) }}</div>
     <p>{{t('stressPresentation.logicalIterations')}}: {{v2.iterations.passed}} / {{v2.iterations.completed}} · {{t('stressPresentation.failed')}} {{v2.iterations.failed}}</p>
     <p class="identity">{{ t(v2.target.kind==='workflow'?'stress.workbench.workflow':'stress.case') }} · {{ v2.target.kind === 'workflow' ? v2.target.workflowId : v2.target.caseId }} · {{ v2.runId }}</p>
@@ -118,6 +128,7 @@ const eligibleCompletedAttempts = computed(() => report.value?.eligibleCompleted
     <details><summary>{{ t('stress.workbench.evidence') }}</summary><CaseEvidencePanel v-for="(evidence,index) in v2.failureEvidence" :key="index" :evidence="evidence" /></details>
   </section>
   <section v-else-if="report" class="stress-report" data-testid="stress-report">
+    <button v-if="ai && source && reportRef" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
     <p class="legacy-note">{{ t('stress.workbench.legacy') }}</p>
     <details><summary>失败证据（最多 20 个；其余仅聚合）</summary><p v-if="!report.failureEvidence">旧记录未采集</p><CaseEvidencePanel v-for="(evidence,index) in report.failureEvidence" :key="index" :evidence="evidence" /></details>
     <div class="verdict" :data-verdict="verdict" data-testid="stress-verdict">

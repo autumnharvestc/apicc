@@ -32,8 +32,12 @@ import { createStressController } from "./stress.js";
 import type { createSession } from "./session.js";
 import { toTreeNode } from "./tree.js";
 import type { AiKeyStore } from "./ai/config.js";
-import { runAiSuggest, runAiTestConfig, type AiRuntimeDeps } from "./ai/suggest.js";
+import type { DesktopAiPersonal } from "./ai/personal.js";
+import { createDesktopAiRuntime } from "./ai/runtime.js";
+import { createDesktopAiSources } from "./ai/sources.js";
+import type { AiRuntimeDeps } from "./ai/suggest.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput } from "../shared/ai/contract.js";
+import { AiProgressDtoSchema } from '../shared/ai/contract.js';
 import { createPluginsRuntime, type PluginsRuntime, type PluginsRuntimeOptions } from "./plugins/runtime.js";
 import { previewDesignDraft } from "./designPreview.js";
 import { createMockManager } from "./mockManager.js";
@@ -63,6 +67,7 @@ export interface OnlineIpcDeps {
 export interface AiIpcDeps extends AiRuntimeDeps {
   /** AI key 安全存储（生产 = userData 目录 + electron safeStorage）。 */
   keyStore: AiKeyStore;
+  personal?: DesktopAiPersonal;
 }
 
 export interface IpcDepsOptions {
@@ -190,6 +195,16 @@ export function createIpcDeps(options: IpcDepsOptions) {
   }
   // AI 依赖（M6-C 任务 1）：keyStore 注入省略时 ai:* 频道给可读错误（与 requireOnline 同口径）。
   const ai: AiIpcDeps | null = options.ai ?? null;
+  const aiSources = ai?.personal ? createDesktopAiSources({ session, ...(online ? { online } : {}), ...(onlineExecution ? { onlineExecution } : {}), ...(options.debugHistory ? { readDebugHistory: (id: string, key: string) => requireDebugHistory().getOwned(id, key) } : {}) }) : null;
+  const aiRuntime = ai?.personal && aiSources ? createDesktopAiRuntime({ personal: ai.personal, sources: aiSources, fetch: ai.fetch,
+    onProgress(progress, owner) {
+      const parsed = AiProgressDtoSchema.safeParse(progress);
+      const sender = owner as { send?: (channel: string, value: unknown) => void; isDestroyed?: () => boolean };
+      if (parsed.success && sender.send && !sender.isDestroyed?.()) sender.send(IpcEvent.AiProgress, parsed.data);
+    },
+  }) : null;
+  function requireAiRuntime() { if (!aiRuntime) throw new Error("个人 AI 功能未配置"); return aiRuntime; }
+  function requireAiPersonal() { if (!ai?.personal) throw new Error("个人 AI 功能未配置"); return ai.personal; }
   function requireAi(): AiIpcDeps {
     if (!ai) throw new Error("AI 功能未配置");
     return ai;
@@ -225,7 +240,8 @@ export function createIpcDeps(options: IpcDepsOptions) {
     : undefined;
   const debug = createDebugController(session, () => pluginsRuntime.registry(), credentials, debugHistoryAppender);
   const testing = createTestingController(session, () => pluginsRuntime.registry(), credentials);
-  const workflowRuns = createWorkflowController(session, () => pluginsRuntime.registry(), credentials);
+  const workflowRuns = createWorkflowController(session, () => pluginsRuntime.registry(), credentials, undefined,
+    async (owner, context, project, native, dto) => { await aiSources?.rememberReport(owner, context, project, native, dto); });
   const watchedDebugOwners = new WeakSet<object>();
 
   function ownerFromEvent(event: unknown): object | undefined {
@@ -246,6 +262,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
       testing.clearOwner(owner);
       workflowRuns.clearOwner(owner);
       credentials.closeOAuthOwner(owner);
+      aiRuntime?.clearOwner(owner);
     };
     if (typeof sender.once === "function") sender.once("destroyed", cleanup);
     if (typeof sender.on === "function") sender.on("render-process-gone", cleanup);
@@ -361,13 +378,6 @@ export function createIpcDeps(options: IpcDepsOptions) {
     }
   }
 
-  function findApiByLocator(locator: ApiLocator): { api: ApiAsset; context: ReturnType<typeof createProjectSnapshot>["context"] } | undefined {
-    const located = session.locateApi(locator);
-    if (!located) return undefined;
-    const snapshot = createProjectSnapshot(located.project);
-    return { api: structuredClone(located.api), context: snapshot.context };
-  }
-
   async function dispatch(channel: IpcChannelName, rawArgs: unknown[], owner?: object): Promise<unknown> {
     const a = parseIpcArgs(channel, rawArgs) as unknown[];
     switch (channel) {
@@ -382,7 +392,12 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.DatasetImport: return testing.importDataset(a[0] as Parameters<typeof testing.importDataset>[0]);
       case IpcChannel.DatasetExport: return testing.exportDataset(a[0] as Parameters<typeof testing.exportDataset>[0]);
       case IpcChannel.SuitePreview: return testing.previewSuite(a[0] as Parameters<typeof testing.previewSuite>[0]);
-      case IpcChannel.SuiteRun: return testing.runSuite(a[0] as Parameters<typeof testing.runSuite>[0], requireOwner(owner));
+      case IpcChannel.SuiteRun: {
+        const input = a[0] as Parameters<typeof testing.runSuite>[0], context = session.captureDraftWriteContext();
+        const value = await testing.runSuite(input, requireOwner(owner));
+        await aiSources?.rememberReport(owner, context, input.context.project, value.result, value);
+        return value;
+      }
       case IpcChannel.SuiteCancel: return testing.cancelSuite(a[0] as Parameters<typeof testing.cancelSuite>[0], requireOwner(owner));
       case IpcChannel.WsOpen: {
         workflowRuns.abortActive();
@@ -761,7 +776,10 @@ export function createIpcDeps(options: IpcDepsOptions) {
       // runs:list/get 读历史（目录不存在/文件损坏已在 runs.ts 侧降级为 []/null）。
       // registry 注入插件运行时（M7-B 任务 2）：插件协议/认证/断言/脚本在运行频道可选。
       case IpcChannel.RunCollection: {
-        const run = await runCollection(session, a[0] as RunCollectionInput, () => pluginsRuntime.registry(), credentials);
+        const input = a[0] as RunCollectionInput, context = session.captureDraftWriteContext();
+        const run = await runCollection(session, input, () => pluginsRuntime.registry(), credentials);
+        const { workspaceId, groupId, projectId } = input.locator;
+        await aiSources?.rememberReport(owner, context, { workspaceId, groupId, projectId }, run, run);
         return run satisfies RunResult;
       }
       case IpcChannel.RunsList: {
@@ -1183,23 +1201,33 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return requireOnline().projectMapping(a[0] as OnlineProjectMappingInput);
       case IpcChannel.OnlineGroupsList:
         return requireOnline().listGroups((a[0] as { workspaceId: string }).workspaceId);
-      // AI 频道（M6-C 任务 2 真链路，规格 §2 D1/D2/D4）：save/get 只落 key（baseUrl/model
-      // 由渲染层 localStorage 持久化）；出口恒 { hasKey }（key 明文永不回传渲染层，裁定②）；
-      // apiKey 省略/空串 = 保持既有。suggest 委派 main/ai/suggest.ts 真链路（core provider +
-      // suggestCases；key 缺失 → 可读错误指引配置对话框，且不发请求）；test-config 轻量探测。
+      // Personal AI: shared config/CAS, captured sources and actual sender ownership.
+      // Legacy endpoint+unbound-key routes below deliberately fail closed.
+      case IpcChannel.AiSettingsRead: return requireAiPersonal().read();
+      case IpcChannel.AiSettingsWrite: return requireAiPersonal().write(a[0] as import("../shared/ai/contract.js").AiSettingsWriteInput, requireOwner(owner));
+      case IpcChannel.AiCatalogImport: return requireAiPersonal().catalog(a[0] as import("../shared/ai/contract.js").AiCatalogImportInput);
+      case IpcChannel.AiCatalogReload: return requireAiPersonal().catalog();
+      case IpcChannel.AiConnectionTest: return requireAiRuntime().testConnection(a[0] as { operationId: string; modelProfileId: string }, requireOwner(owner));
+      case IpcChannel.AiDiscover: return requireAiRuntime().discover(a[0] as { operationId: string; connectionId: string }, requireOwner(owner));
+      case IpcChannel.AiPrepareAssistance: return requireAiRuntime().prepare(a[0] as import("../shared/ai/contract.js").AiPrepareInput, requireOwner(owner));
+      case IpcChannel.AiInspectChoices: return requireAiRuntime().inspectChoices(a[0] as import("../shared/ai/contract.js").AiChoicesInput, requireOwner(owner));
+      case IpcChannel.AiReadChoicesPage: return requireAiRuntime().readChoicesPage(a[0] as import("../shared/ai/contract.js").AiChoicesPageInput, requireOwner(owner));
+      case IpcChannel.AiStart: return requireAiRuntime().start(a[0] as import("../shared/ai/contract.js").AiStartInput, requireOwner(owner));
+      case IpcChannel.AiCancel: return requireAiRuntime().cancel((a[0] as { operationId: string }).operationId, requireOwner(owner));
       case IpcChannel.AiSaveConfig: {
-        const input = a[0] as AiSaveConfigInput;
-        if (input.apiKey) requireAi().keyStore.save(input.apiKey);
-        return { hasKey: requireAi().keyStore.load() !== null } satisfies AiKeyStatus;
+        requireAi();
+        throw new Error("旧 AI 配置入口已停用，请使用个人 AI 设置并确认原地址迁移");
       }
       case IpcChannel.AiGetConfig:
-        return { hasKey: requireAi().keyStore.load() !== null } satisfies AiKeyStatus;
+        requireAi();
+        return { hasKey: false } satisfies AiKeyStatus;
       case IpcChannel.AiSuggest: {
-        const input = a[0] as AiSuggestInput;
-        return runAiSuggest(requireAi(), input, findApiByLocator);
+        requireAi();
+        throw new Error("旧 AI 建议入口已停用，请重新预览个人 AI 辅助来源");
       }
       case IpcChannel.AiTestConfig:
-        return runAiTestConfig(requireAi(), a[0] as AiTestConfigInput);
+        requireAi();
+        throw new Error("旧 AI 探测入口已停用，请使用绑定连接的个人 AI 设置");
       // 插件频道（M7-B 任务 2 真实现，规格 §2 D3/D5/D8）：main 经 core loadUserPlugins
       // 装载用户级清单（homeDir 注入 / loadPlugins:false 关闭通道），返回混合 loaded/failed
       // 清单 + registry 导入器枚举。出口经 structuredClone 快照化（DataCloneError 防御 +

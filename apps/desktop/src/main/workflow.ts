@@ -9,7 +9,8 @@ import type { WfRunInput, WfCancelInput } from "../shared/types.js";
 
 /** A run remains owned and cancellable until the real runner/session drain has finished. */
 export function createWorkflowController(session: ReturnType<typeof createSession>, registrySource: () => Promise<PluginRegistry>, credentials: DebugCredentialHost,
-  storage?: { persist(path: string, result: import("@apicc/core").RunResult): { warning?: string } }) {
+  storage?: { persist(path: string, result: import("@apicc/core").RunResult): { warning?: string } },
+  onReport?: (owner: object | undefined, context: ReturnType<typeof session.captureDraftWriteContext>, project: import("../shared/locations.js").ProjectLocator, native: import("@apicc/core").RunResult, dto: WorkflowRunResult) => Promise<void>) {
   const defaultOwner = {};
   const active = new Map<string, { owner: object; input: WfRunInput; context: ReturnType<typeof session.captureDraftWriteContext>; abort: AbortController }>();
   async function run(raw: WfRunInput, owner = defaultOwner): Promise<WorkflowRunResult> {
@@ -51,7 +52,13 @@ export function createWorkflowController(session: ReturnType<typeof createSessio
       const path = join(context.root, ".apicc", "runs", `workflow-${result.workflowId}-${randomUUID()}.json`);
       const persisted = storage ? storage.persist(path, result.report!) : persistExecutionJson(path, result.report!, output, () => "工作流安全 JSON 报告保存失败");
       const { report: _report, ...dto } = result;
-      return output.value(persisted.warning ? { ...dto, warnings: [...dto.warnings, persisted.warning] } : dto);
+      const publicResult = output.value(persisted.warning ? { ...dto, warnings: [...dto.warnings, persisted.warning] } : dto);
+      if (onReport) {
+        const { workspaceId, groupId, projectId } = input.locator;
+        try { await onReport(owner === defaultOwner ? undefined : owner, context, { workspaceId, groupId, projectId }, output.value(result.report!), publicResult); }
+        catch { /* AI source availability cannot change a completed execution. */ }
+      }
+      return publicResult;
     } catch (error) {
       if (evidence) throw new Error(evidence.boundary().redactText(error instanceof Error ? error.message : String(error)));
       throw output.error(error);

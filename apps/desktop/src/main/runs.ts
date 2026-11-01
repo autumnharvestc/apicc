@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
@@ -126,11 +126,25 @@ export function writeStressRunScope(root: string, file: string, scope: ProjectLo
   const evidence = scopeEvidenceSchema.parse({ formatVersion: 1, root: actualRoot, scope: parsedScope, sha256: contentHash(content) });
   atomicStressWrite(`${reportPath}.scope`, JSON.stringify(evidence));
 }
-export function readScopedStressRun(root: string, scope: ProjectLocator, file: string): ReadableStressReport {
+/** Trusted optional per-file budget. Read at most maxBytes+1, including a growing file. */
+function readStressFile(path: string, maxBytes?: number): string {
+  if (maxBytes === undefined) return readFileSync(path, "utf8");
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid report read limit");
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes + 1); let size = 0;
+    while (size < buffer.length) {
+      const read = readSync(fd, buffer, size, buffer.length - size, null); if (read === 0) return buffer.toString("utf8", 0, size);
+      size += read; if (size > maxBytes) throw new Error("Report read capacity exceeded");
+    }
+    throw new Error("Report read capacity exceeded");
+  } finally { closeSync(fd); }
+}
+export function readScopedStressRun(root: string, scope: ProjectLocator, file: string, trusted: { maxBytes: number } | undefined = undefined): ReadableStressReport {
   StressReportFileSchema.parse(file); const parsedScope = ProjectLocatorSchema.parse(scope), actualRoot = realpathSync(root);
   const reportPath = join(actualRoot, ".apicc", "runs", file);
   try {
-    const content = readFileSync(reportPath, "utf8"), evidence = scopeEvidenceSchema.parse(JSON.parse(readFileSync(`${reportPath}.scope`, "utf8")));
+    const content = readStressFile(reportPath, trusted?.maxBytes), evidence = scopeEvidenceSchema.parse(JSON.parse(readStressFile(`${reportPath}.scope`, trusted?.maxBytes)));
     if (evidence.root !== actualRoot || evidence.scope.workspaceId !== parsedScope.workspaceId || evidence.scope.groupId !== parsedScope.groupId || evidence.scope.projectId !== parsedScope.projectId || evidence.sha256 !== contentHash(content)) throw new Error("scope mismatch");
     const report = parseCoreStressReport(JSON.parse(content));
     if (report.projectId && report.projectId !== parsedScope.projectId) throw new Error("project mismatch");

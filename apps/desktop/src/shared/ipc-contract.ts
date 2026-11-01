@@ -64,6 +64,7 @@ import {
   OAuthProfilesGetInputSchema,
 } from "./oauth.js";
 import { IpcChannel, type IpcChannelName } from "./channels.js";
+import { AiSettingsWriteSchema, AiCatalogImportSchema, AiPrepareSchema, AiStartSchema, AiCancelSchema, AiProbeSchema, AiDiscoverSchema, AiChoicesInputSchema, AiChoicesPageInputSchema } from "./ai/contract.js";
 import { DesignExportInputSchema, DesignPreviewInputSchema } from "./design.js";
 import {
   MockConfigSaveInputSchema,
@@ -372,6 +373,17 @@ export const IpcArgsSchemas = {
   [IpcChannel.AiGetConfig]: z.tuple([]),
   [IpcChannel.AiSuggest]: z.tuple([AiSuggestSchema]),
   [IpcChannel.AiTestConfig]: z.tuple([AiTestConfigSchema]),
+  [IpcChannel.AiSettingsRead]: z.tuple([]),
+  [IpcChannel.AiSettingsWrite]: z.tuple([AiSettingsWriteSchema]),
+  [IpcChannel.AiCatalogImport]: z.tuple([AiCatalogImportSchema]),
+  [IpcChannel.AiCatalogReload]: z.tuple([]),
+  [IpcChannel.AiConnectionTest]: z.tuple([AiProbeSchema]),
+  [IpcChannel.AiDiscover]: z.tuple([AiDiscoverSchema]),
+  [IpcChannel.AiPrepareAssistance]: z.tuple([AiPrepareSchema]),
+  [IpcChannel.AiInspectChoices]: z.tuple([AiChoicesInputSchema]),
+  [IpcChannel.AiReadChoicesPage]: z.tuple([AiChoicesPageInputSchema]),
+  [IpcChannel.AiStart]: z.tuple([AiStartSchema]),
+  [IpcChannel.AiCancel]: z.tuple([AiCancelSchema]),
   [IpcChannel.PluginsList]: z.tuple([]),
 } satisfies Record<IpcChannelName, z.ZodTypeAny>;
 
@@ -533,6 +545,17 @@ const resultMethodByChannel = {
   [IpcChannel.AiGetConfig]: "aiGetConfig",
   [IpcChannel.AiSuggest]: "aiSuggest",
   [IpcChannel.AiTestConfig]: "aiTestConfig",
+  [IpcChannel.AiSettingsRead]: "aiSettingsRead",
+  [IpcChannel.AiSettingsWrite]: "aiSettingsWrite",
+  [IpcChannel.AiCatalogImport]: "aiCatalogImport",
+  [IpcChannel.AiCatalogReload]: "aiCatalogReload",
+  [IpcChannel.AiConnectionTest]: "aiConnectionTest",
+  [IpcChannel.AiDiscover]: "aiDiscover",
+  [IpcChannel.AiPrepareAssistance]: "aiPrepareAssistance",
+  [IpcChannel.AiInspectChoices]: "aiInspectChoices",
+  [IpcChannel.AiReadChoicesPage]: "aiReadChoicesPage",
+  [IpcChannel.AiStart]: "aiStart",
+  [IpcChannel.AiCancel]: "aiCancel",
   [IpcChannel.PluginsList]: "pluginsList",
 } as const satisfies Record<IpcChannelName, keyof ApiccApi>;
 

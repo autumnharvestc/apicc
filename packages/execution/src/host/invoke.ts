@@ -1,4 +1,4 @@
-import { CollectionRunError, SuiteRunner, WorkflowRunner, runDebugExecution, createHttpSession, prepareTestData, bindPreparedTestData, testDataSelectionsForRequests, collectCredentialMarkersForRequests, selectCredentialRequests, suiteToRunResult, workflowToRunResult, type CredentialBindings, type PreparedTestData, type PreparedNetworkRun, type HttpSession, type DebugResult, type RunResult, type WorkflowRunResult, type CaseOutcome } from "@apicc/core";
+import { CollectionRunError, SuiteRunner, WorkflowRunner, runDebugExecution, createHttpSession, prepareTestData, bindPreparedTestData, testDataSelectionsForRequests, collectCredentialMarkersForRequests, selectCredentialRequests, suiteToRunResult, workflowToRunResult, type CredentialBindings, type PreparedTestData, type PreparedRequestFiles, type PreparedNetworkRun, type HttpSession, type DebugResult, type RunResult, type WorkflowRunResult, type CaseOutcome } from "@apicc/core";
 import { createExecutionRegistry } from "./registry.js";
 import type { ExecutionRegistry } from "./registry.js";
 import { assertPreparedExecution, type PreparedExecution, type DebugSessionScope } from "./prepare.js";
@@ -6,7 +6,7 @@ import { createHostOutput } from "./output.js";
 import { bindPreparedStressExecution, createExecutionEvidenceCollector, type StressReportV2 } from "@apicc/core";
 import { runNodeStressPlan, NodeStressRunError, type NodeStressRunOptions } from "./nodeStressWorker.js";
 
-export interface ExecutionMaterials { credentialBindings: CredentialBindings; preparedTestData?: PreparedTestData; network?: PreparedNetworkRun; workspaceRoot?: string; debugSession?: { scope: DebugSessionScope; session: HttpSession } }
+export interface ExecutionMaterials { credentialBindings: CredentialBindings; preparedTestData?: PreparedTestData; preparedRequestFiles?: PreparedRequestFiles; network?: PreparedNetworkRun; workspaceRoot?: string; debugSession?: { scope: DebugSessionScope; session: HttpSession } }
 export type InvocationOutput = { kind: "debug"; result: DebugResult } | { kind: "suite"; result: RunResult } | { kind: "workflow"; result: WorkflowRunResult } | { kind: "stress"; result: StressReportV2 } | { kind: "stress-failure"; result?: never; error: string; started: boolean; requests: { started: number; completed: number } } | { kind: "failure"; targetKind: PreparedExecution["target"]["kind"]; result: RunResult; error: string };
 function sameSessionScope(left: DebugSessionScope, right: DebugSessionScope): boolean {
   return left.serverId === right.serverId && left.submittedByUserId === right.submittedByUserId && left.debugSessionId === right.debugSessionId
@@ -30,7 +30,7 @@ export async function invokeExecution(prepared: PreparedExecution, materials: Ex
     if (prepared.target.kind === "stress") return { kind: "stress-failure", error: "Stress fixed input materials are unavailable or invalid", started: false, requests: { started: 0, completed: 0 } };
     throw error;
   }
-  const run = { snapshot: prepared.snapshot, credentialBindings, preparedTestData: data, network };
+  const run = { snapshot: prepared.snapshot, credentialBindings, preparedTestData: data, preparedRequestFiles: materials.preparedRequestFiles, network };
   if (prepared.target.kind === "stress") {
     const evidence = createExecutionEvidenceCollector({ projectId: prepared.snapshot.project.id, definitionRevision: prepared.snapshot.definitionRevision, environmentId: prepared.environmentId, dataDigest: data.digest }, markers,
       { privateMarkers: true, maxSamples: prepared.stressPlan!.metricPlan.evidence.maxSamples, limits: prepared.evidenceLimits });

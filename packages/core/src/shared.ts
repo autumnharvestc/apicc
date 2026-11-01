@@ -1,4 +1,7 @@
 export { version } from "./version.js";
+export * from "./ai/config.js";
+export * from "./ai/budgets.js";
+export * from "./ai/catalog.js";
 export {
   NetworkScopeSchema,
   NetworkSelectionSchema,
@@ -352,6 +355,15 @@ export {
   createAiProvider, AiProviderError, type AiProviderDeps, type AiProviderErrorKind,
 } from "./ai/provider.js";
 export { suggestCases, AiSuggestError } from "./ai/suggest.js";
+export { prepareAiContext, sameAiSourceBinding, inspectAiContextChoices } from "./ai/context.js";
+export { projectAiAsset } from "./ai/assetView.js";
+export type { AiAssetSelection, AiAssetProjection } from "./ai/assetView.js";
+export { runAiAssistance, AiAssistanceError } from "./ai/assistance.js";
+export type { AiSourceBinding, AiSourceSummary, AiApiLocator, AiContextInput, AiContextPreview, AiEvidence, AiBusinessRequest, AiReadableReport, AiSafeChoice, AiBodyChoice, AiContextChoices } from "./ai/context.js";
+export { assertAiReportOwnership } from "./ai/analysis.js";
+export type { AiBusinessResult, AiAnalysisResult, AiPurpose, AiResolvedInvocation, AiInvocationHost, AiProgress } from "./ai/types.js";
+export type { AiAssertionCandidate, AiAssertionContext } from "./ai/assertions.js";
+export type { AiCaseExplanation } from "./ai/suggest.js";
 export { AI_SUGGEST_SYSTEM_PROMPT, buildSuggestMessages } from "./ai/prompt.js";
 export {
   DEFAULT_AI_TIMEOUT_MS, DEFAULT_SUGGEST_LIMIT, AiCaseDraftSchema, AiSuggestOutputSchema,

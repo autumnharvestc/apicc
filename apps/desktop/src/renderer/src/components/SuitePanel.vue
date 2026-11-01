@@ -6,8 +6,9 @@ import type { TestingStore } from "../stores/testing.js";
 import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 import type { EvidenceIdentity } from "@apicc/core";
 import { reportEntryEvidence } from "@apicc/core/report/units";
+import { caseEvidenceIdentity } from '../ai/evidenceNavigation.js';
 const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void }>();
-const props = defineProps<{ testing: TestingStore; externalRun?: (allowDraft: boolean) => Promise<void> }>();
+const props = defineProps<{ testing: TestingStore; externalRun?: (allowDraft: boolean) => Promise<void>; ai?: import('../stores/ai.js').AiStore }>();
 const { t } = useI18n(); const allowDraft = ref(false); const error = ref("");
 const suite = computed(() => props.testing.suite);
 const resourceKey = computed(() => JSON.stringify([props.testing.view?.context.root, props.testing.view?.context.project, suite.value?.id]));
@@ -32,6 +33,17 @@ function optional(key: "environmentId" | "datasetId", value: string) { if (props
 const label = (entry: SuiteEntry) => entry.kind === "workflow" ? props.testing.view?.workflows.find(item => item.id === entry.workflowId)?.name ?? entry.workflowId : props.testing.view?.cases.find(item => item.locator.apiId === entry.apiId && item.locator.collectionId === entry.collectionId && JSON.stringify(item.locator.folderIds) === JSON.stringify(entry.folderIds) && item.caseId === entry.caseId)?.name ?? entry.caseId;
 function entryEvidence(entry: NonNullable<NonNullable<import("@apicc/core").RunResult["suite"]>["entries"]>[number]): import("@apicc/core").SafeExecutionEvidence {
   return reportEntryEvidence(props.testing.result!.result, entry);
+}
+function analyzeReport() {
+  const displayed = props.testing.result, context = props.testing.view?.context, key = resourceKey.value;
+  if (!displayed || !context || !props.ai) return;
+  void props.ai.prepareReportAnalysis({ source: { kind: 'local', project: context.project }, displayed,
+    isCurrent: () => props.testing.result === displayed && resourceKey.value === key,
+    canLocateEvidence: (evidence, authorised) => !!caseEvidenceIdentity(evidence, authorised, displayed.result.cases),
+    locateEvidence: (evidence, authorised) => {
+      const identity = caseEvidenceIdentity(evidence, authorised, displayed.result.cases);
+      if (identity) emit('locate-evidence', identity);
+    } });
 }
 </script>
 <template>
@@ -66,6 +78,7 @@ function entryEvidence(entry: NonNullable<NonNullable<import("@apicc/core").RunR
       </div>
       <div class="run-toolbar"><label><input v-model="allowDraft" type="checkbox" :disabled="testing.running" />{{ t('testing.allowDraft') }}</label><button v-if="!externalRun" data-testid="suite-preview" :disabled="testing.dirty || testing.running || !testing.current" @click="attempt(() => testing.previewSuite({allowDraft}))">{{ t('testing.preview') }}</button><button data-testid="suite-run" :disabled="testing.dirty || testing.running || !testing.current" @click="attempt(() => externalRun ? externalRun(allowDraft) : testing.run({allowDraft}))">{{ t('testing.run') }}</button><button v-if="!externalRun" data-testid="suite-cancel" :disabled="!testing.running" @click="attempt(() => testing.cancel())">{{ t('testing.cancel') }}</button></div>
       <div class="result-scroll">
+        <button v-if="ai && testing.result && !externalRun" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
         <template v-for="entry in testing.result?.result.suite?.entries" :key="JSON.stringify([entry.entryId,entry.suiteRow])"><CaseEvidencePanel v-if="entry.status === 'failed' || entry.status === 'aborted'" :evidence="entryEvidence(entry)" :disabled="testing.running || testing.transitioning || testing.dirty" :inspect="testing.inspectEvidence" :rerun="testing.rerunEvidence" @locate="emit('locate-evidence', $event)" /></template>
         <div v-if="testing.result"><p>reporting-units {{ testing.result.result.reportingUnits?.total }} · failed {{ testing.result.result.reportingUnits?.failed }}</p><details v-for="(row,index) in testing.result.result.cases" :key="JSON.stringify([row.locator,row.scope,row.entryId,row.suiteRow,row.row,row.nodeId,index])"><summary>{{ row.apiName }} / {{ row.caseName }} · {{ row.passed ? '通过' : '失败' }} · row={{ row.row === undefined ? '—' : row.row + 1 }} · entry={{ row.entryId }}</summary><CaseEvidencePanel :evidence="row.evidence" :disabled="testing.running || testing.transitioning || testing.dirty" :inspect="testing.inspectEvidence" :rerun="testing.rerunEvidence" @locate="emit('locate-evidence', $event)" /></details></div>
         <div v-if="testing.preview" data-testid="suite-preview-result"><p>{{ t('testing.scale', { entries: testing.preview.plan.entries.length, rows: testing.preview.outerRows, executions: testing.preview.plannedExecutions }) }}</p><div v-for="(entry,index) in testing.preview.plan.entries" :key="entry.id">{{ index + 1 }} · {{ entry.kind }} · {{ testing.preview.entries[index]?.plannedExecutions }}<div v-for="item in entry.cases" :key="JSON.stringify(item.locator)">{{ item.locator.apiId }} / {{ item.locator.caseId }} · scope={{ item.locator.scope }} · {{ item.locator.folderIds.join('/') }}</div></div><p v-for="source in testing.preview.sources" :key="source.label">{{ source.label }} · {{ source.rowCount }} {{ t('testing.rows') }}<span v-if="source.legacyEmptyFallback"> · {{ t('testing.legacyEmpty') }}</span></p></div>

@@ -1,0 +1,16 @@
+{
+  "formatVersion": 1,
+  "providers": [
+    {
+      "id": "openai", "formatVersion": 1, "revision": 1, "name": "OpenAI",
+      "baseUrl": "https://api.openai.com/v1", "protocols": ["openai-chat-completions", "openai-responses"],
+      "defaultProtocol": "openai-responses", "auth": { "kind": "bearer" }, "headers": {}, "modelDiscovery": true
+    },
+    {
+      "id": "anthropic", "formatVersion": 1, "revision": 1, "name": "Anthropic",
+      "baseUrl": "https://api.anthropic.com/v1", "protocols": ["anthropic-messages"],
+      "defaultProtocol": "anthropic-messages", "auth": { "kind": "api-key", "header": "x-api-key" },
+      "headers": { "anthropic-version": "2023-06-01" }, "modelDiscovery": false
+    }
+  ]
+}

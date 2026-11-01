@@ -21,6 +21,7 @@ import { materializeRequest, type MaterializedRequest, type RuntimeAuth } from "
 import { getEffectiveCaseRequest } from "../request/effective.js";
 import { assertRequestSettingsApplicable, resolveRequestSettings, type RequestSettingsOverride } from "../request/settings.js";
 import { captureRequestFiles, type CapturedRequestFiles } from "../http/files.js";
+import type { PreparedRequestFiles } from "../http/preparedRequestFiles.js";
 import type { HttpSession } from "../http/session.js";
 import type { StressRequestGate } from "../stress/execution.js";
 import { createHttpClient } from "../http/client.js";
@@ -59,6 +60,7 @@ export interface CaseExecutionInput {
   credentialBindings: CredentialBindings;
   /** Host-only immutable run context; consumed only by the built-in HTTP client. */
   network?: PreparedNetworkRun;
+  preparedRequestFiles?: PreparedRequestFiles;
   testCase: DeepReadonly<TestCase>;
   locator?: CaseExecutionLocator;
   prepared?: PreparedCaseExecution;
@@ -387,7 +389,7 @@ export async function executeCase(input: CaseExecutionInput, deps: CaseExecution
       throw invalidRequest("所选网络配置仅支持 HTTP 协议请求");
     }
     if (request.protocol === "http") {
-      capturedFiles = await captureRequestFiles(request, {
+      capturedFiles = input.preparedRequestFiles ? await input.preparedRequestFiles.borrow(effectiveRequest, request, resolvedSettings.uploadLimitBytes) : await captureRequestFiles(request, {
         workspaceRoot: deps.workspaceRoot,
         uploadLimitBytes: resolvedSettings.uploadLimitBytes,
       });

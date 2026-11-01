@@ -34,6 +34,14 @@ import ImportWizard from "../../src/renderer/src/components/ImportWizard.vue";
 import StressPanel from "../../src/renderer/src/components/StressPanel.vue";
 import RunView from "../../src/renderer/src/components/RunView.vue";
 import TestView from "../../src/renderer/src/components/TestView.vue";
+import AiSuggestionsDrawer from '../../src/renderer/src/components/AiSuggestionsDrawer.vue';
+import { createAiBusinessFixture } from './fixtures/aiBusiness.js';
+import OnlineLoginDialog from '../../src/renderer/src/components/OnlineLoginDialog.vue';
+import OnlineProjectAssets from '../../src/renderer/src/components/online/OnlineProjectAssets.vue';
+import { workspaceFixture } from '../../../../packages/core/tests/helpers/contractFixtures.js';
+import { ContractWorkspaceSchema } from '@apicc/core/schema';
+import { defaultPolicyConfig } from '@apicc/execution/contract';
+import { onlineTreeToDto } from '../../src/main/online/session.js';
 import type { useWorkspaceStore } from "../../src/renderer/src/stores/workspace.js";
 import type { createTabsStore } from "../../src/renderer/src/stores/tabs.js";
 import type { createRequestTabsStore, RequestTab } from "../../src/renderer/src/stores/requestTabs.js";
@@ -258,6 +266,76 @@ async function openWorkflowDesigner(wrapper: VueWrapper): Promise<ReturnType<typ
 }
 
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
+  // Catches leaf entries receiving no shared AI store from the actual composition root.
+  it('T11 passes the same AI store to actual local case and run report entries', async () => {
+    const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper);
+    const ai = wrapper.findComponent(AiSuggestionsDrawer).props('ai');
+    await wrapper.get('[data-testid="rail-test"]').trigger('click'); await flushPromises();
+    expect(wrapper.findComponent(CasePanel).props('ai') === ai).toBe(true);
+    await wrapper.get('[data-testid="rail-run"]').trigger('click'); await flushPromises();
+    expect(wrapper.findComponent(RunView).props('ai') === ai).toBe(true);
+  });
+
+  // Catches online-shaped fixtures passing unit tests while App still captures its local editor/context.
+  it('T11 prepares the actual App online member editor through the one shared AI store', async () => {
+    const fixture = createAiBusinessFixture(); const names = ['aiSettingsRead', 'aiCatalogReload', 'aiPrepareAssistance', 'aiStart', 'aiCancel', 'onAiProgress', 'aiInspectChoices', 'onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution'] as const;
+    const originals = new Map(names.map(name => [name, failingApi[name]]));
+    for (const name of names.slice(0, 7)) Object.assign(failingApi, { [name]: fixture.api[name] });
+    const projectAsset = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const scope = { workspaceId: '11', groupId: '22', projectId: '33' };
+    const projects = [{ id: '33', groupId: '22', name: projectAsset.name, myRole: 'EDITOR' as const }];
+    const view = { workspaceId: '11', name: 'Typed member fixture', myRole: 'OWNER' as const,
+      projects, tree: onlineTreeToDto({ workspaceId: '11', rootVersion: 1, files: [], projects }, 'Typed member fixture') };
+    failingApi.onlineLogin = async () => ({ expiresAt: '2026-11-01T00:00:00.000Z', user: { id: '7', username: 'alice', displayName: 'Synthetic member' } });
+    failingApi.onlineWorkspaceList = async () => [{ id: '11', name: view.name, myRole: 'OWNER', createdAt: '2026-10-31T00:00:00.000Z' }];
+    failingApi.onlineWorkspaceOpen = async () => view; failingApi.onlineWorkspaceActivate = async () => {}; failingApi.onlineTreeView = async () => view;
+    failingApi.onlineExecution = async input => {
+      if (input.operation === 'assets') return { project: projectAsset, problems: [], assets: { ...scope, format: 'contract-files-v1', contractProjectId: projectAsset.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
+      if (input.operation === 'agents') return { defaultAgentId: null, canManageScripts: false, policy: structuredClone(defaultPolicyConfig), policyVersion: '1', agents: [] };
+      if (input.operation === 'materials') return { credentials: [], attachments: [] };
+      if (input.operation === 'list') return [];
+      throw new Error('unexpected-online-test-action');
+    };
+    const wrapper = await mountApp();
+    try {
+      const online = wrapper.findComponent(OnlineLoginDialog).props('online');
+      online.addProfile('http://127.0.0.1:8080', 'Synthetic member fixture'); await online.login('alice', 'password8'); await online.refreshWorkspaces(); await online.openWorkspace(online.workspaces[0]!);
+      const project = online.projects[0]!; const tabs = wrapper.findComponent(ProjectTabs).props('tabs');
+      await tabs.openProjectTab({ kind: 'online', workspaceId: online.activeWorkspace!.id, name: online.activeWorkspace!.name }, { id: project.id, name: project.name });
+      await flushPromises();
+      expect(online.execution.context).toEqual({ serverId: 'http://127.0.0.1:8080/api/v1', ownerId: '7', scope });
+      await vi.waitFor(() => expect(wrapper.findComponent(OnlineProjectAssets).exists()).toBe(true));
+      await vi.waitFor(() => expect(online.execution.project).not.toBeNull());
+      const adapter = wrapper.findComponent(OnlineProjectAssets).props('adapter');
+      const entry = adapter.apiEntries()[0]!; await adapter.editor.load(entry.locator);
+      const ai = wrapper.findComponent(AiSuggestionsDrawer).props('ai'); await ai.fetchSuggestions();
+      expect(fixture.prepared[0]?.selection.source).toEqual({ kind: 'online', context: JSON.parse(JSON.stringify(online.execution.context)) });
+      expect(fixture.prepared[0]?.selection.business).toMatchObject({ purpose: 'case-suggestion', target: { apiId: entry.locator.apiId } });
+    } finally { wrapper.unmount(); for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
+  });
+  // Catches the composition root leaving its real AI operation/subscription alive after unmount.
+  it('T11 disposes the shared App AI operation on unmount', async () => {
+    const fixture = createAiBusinessFixture();
+    const names = ['aiSettingsRead', 'aiCatalogReload', 'aiPrepareAssistance', 'aiStart', 'aiCancel', 'onAiProgress', 'aiInspectChoices'] as const;
+    const originals = new Map(names.map(name => [name, failingApi[name]]));
+    for (const name of names) Object.assign(failingApi, { [name]: fixture.api[name] });
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const cancelled: string[] = []; let operationId = '', detached = 0;
+    const start = fixture.api.aiStart;
+    failingApi.aiStart = async input => { operationId = input.operationId; const result = await start(input); await gate; return result; };
+    failingApi.onAiProgress = () => () => { detached++; };
+    failingApi.aiCancel = async input => { cancelled.push(input.operationId); return { cancelled: true }; };
+    let pending: Promise<void> | undefined;
+    const wrapper = await mountApp();
+    try {
+      await openLocalDir(wrapper); await clickApiAndWait(wrapper);
+      const ai = wrapper.findComponent(AiSuggestionsDrawer).props('ai');
+      await ai.fetchSuggestions(); pending = ai.confirmAssistance(); await flushPromises();
+      expect(operationId).toMatch(/^[0-9a-f-]{36}$/);
+      wrapper.unmount(); await flushPromises();
+      expect(cancelled).toEqual([operationId]); expect(detached).toBe(1);
+    } finally { release(); await pending; for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
+  });
   it("挂载缺省主页（无打开记录）；顶栏主页入口可见；主页视图不渲染 rail（用户裁定）", async () => {
     const wrapper = await mountApp();
     expect(wrapper.find('[data-testid="app-root"]').exists()).toBe(true);

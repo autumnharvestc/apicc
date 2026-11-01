@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
@@ -15,6 +18,11 @@ import CredentialEditor from "../../../src/renderer/src/components/CredentialEdi
 import DesignPanel from "../../../src/renderer/src/components/DesignPanel.vue";
 import CasePanel from "../../../src/renderer/src/components/CasePanel.vue";
 import { contractAssetEditorFixture } from "../helpers/contract-assets.js";
+import { createAiBusinessFixture } from "../fixtures/aiBusiness.js";
+import { createSession } from "../../../src/main/session.js";
+import { createDesktopAiSources } from "../../../src/main/ai/sources.js";
+import { inspectAiContextChoices, prepareAiContext } from "@apicc/core";
+import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 
 const mountedWrappers: VueWrapper[] = [];
 let root = "";
@@ -702,7 +710,13 @@ describe("Contract asset editor", () => {
   });
 
   it("binds credentials from a shared auth component manager without storing the value in either API", async () => {
-    const current = await contractAssetEditorFixture(undefined, `C:/apicc-task10b-auth-component-${randomUUID()}`);
+    const ownedRoot = mkdtempSync(join(tmpdir(), 'apicc-auth-capture-')), expectedRoot = realpathSync(ownedRoot);
+    onTestFinished(() => {
+      const resolved = realpathSync(ownedRoot);
+      if (resolved !== expectedRoot || dirname(resolved) !== realpathSync(tmpdir()) || !basename(resolved).startsWith('apicc-auth-capture-')) throw new Error('Owned fixture cleanup path changed');
+      rmSync(resolved, { recursive: true, force: true });
+    });
+    const current = await contractAssetEditorFixture(createMemoryApi({ root: ownedRoot }), ownedRoot);
     const editor = await createEditor(current);
     const wrapper = await mountRequestEditor(editor, current);
     await wrapper.get('[data-testid="assets-panel"] summary').trigger("click");
@@ -788,13 +802,39 @@ describe("Contract asset editor", () => {
     expect(JSON.stringify(editor.sessions)).not.toContain(secretValue);
     const storedValues = Array.from({ length: localStorage.length }, (_, index) => localStorage.getItem(localStorage.key(index) ?? "") ?? "");
     expect(storedValues.join("\n")).not.toContain(secretValue);
+    // Keep the same persisted auth project; only the external host DTO/settings boundary uses a fixture.
+    const session = createSession(); await session.open(current.root);
+    const sources = createDesktopAiSources({ session }), host = createAiBusinessFixture(), owner = {};
+    let captured: Awaited<ReturnType<typeof sources.capture>> | undefined, projectedMessages: unknown;
+    const inspect = vi.spyOn(current.api, "aiInspectChoices").mockImplementation(async input => {
+      if (input.operation !== 'capture') throw new Error('Expected actual capture');
+      captured = await sources.capture({ ...input.input, bodySelection: [] }, new AbortController().signal, owner);
+      const catalog = inspectAiContextChoices({ ...captured.business, snapshot: captured.snapshot, context: captured.snapshot.context,
+        source: captured.source, currentDraft: captured.currentDraft, bodySelection: [] });
+      const dto = await host.api.aiInspectChoices(input);
+      const items = catalog.evidence.map(({ id, kind, location, state }) => ({ id, kind, location, state }));
+      return { ...dto, source: catalog.source, evidence: { ...dto.evidence, items, total: items.length, selectable: items.length, returned: items.length, omitted: 0, complete: true } };
+    });
+    const prepare = vi.spyOn(current.api, "aiPrepareAssistance").mockImplementation(async input => {
+      if (!captured) throw new Error('Real capture required before prepare');
+      const projected = prepareAiContext({ ...captured.business, snapshot: captured.snapshot, context: captured.snapshot.context,
+        source: captured.source, currentDraft: captured.currentDraft, bodySelection: input.bodySelection });
+      projectedMessages = projected.messages;
+      const dto = await host.api.aiPrepareAssistance(input);
+      return { ...dto, preview: { ...dto.preview, purpose: projected.purpose, bytes: projected.bytes, source: projected.source,
+        evidence: projected.evidence, included: projected.included, omitted: projected.omitted, redaction: projected.redaction } };
+    });
+    const aiSuggest = vi.spyOn(current.api, "aiSuggest"), start = vi.spyOn(current.api, "aiStart");
     const ai = createAiStore({ api: current.api, editor, storage: localStorage });
-    ai.baseUrl = "https://ai.example.test";
-    ai.model = "test-model";
-    const aiSuggest = vi.spyOn(current.api, "aiSuggest").mockResolvedValue([]);
     await ai.fetchSuggestions();
-    expect(aiSuggest).toHaveBeenCalledWith({ locator: editor.locator, baseUrl: ai.baseUrl, model: ai.model });
-    expect(JSON.stringify(aiSuggest.mock.calls)).not.toContain(secretValue);
+    expect(ai.businessError).toBeNull(); expect(ai.outboundPreview).not.toBeNull();
+    expect(inspect).toHaveBeenCalledWith({ operation: 'capture', input: expect.objectContaining({ currentDraft: expect.objectContaining({ contract: expect.objectContaining({ request: expect.objectContaining({ auth: binding }) }) }) }) });
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ choicesId: expect.any(String), bodySelection: [], selection: expect.objectContaining({ business: expect.objectContaining({ purpose: 'case-suggestion', target: expect.objectContaining({ apiId: current.apiLocator.apiId }) }) }) }));
+    expect(ai.outboundPreview!.preview.source.target?.apiId).toBe(current.apiLocator.apiId);
+    expect(ai.outboundPreview!.preview.evidence.some(item => item.kind === 'contract')).toBe(true);
+    expect(projectedMessages).toBeDefined();
+    for (const value of [inspect.mock.calls, prepare.mock.calls, ai.outboundPreview, projectedMessages, editor.api, editor.sessions]) expect(JSON.stringify(value)).not.toContain(secretValue);
+    expect(aiSuggest).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled();
   });
 
   it("rehydrates design on same-key editor generation rebuild and saves only the current draft", async () => {

@@ -42,6 +42,7 @@ const props = defineProps<{
   policy?: StressTargetPolicy;
   savePolicy?: (policy: StressTargetPolicy) => Promise<void>;
   readOnly?: boolean;
+  ai?: import('../stores/ai.js').AiStore;
 }>();
 const { t,te } = useI18n();
 const pane = ref<'configuration' | 'report'>('configuration');
@@ -160,7 +161,7 @@ function setThreshold(key: keyof typeof props.stress.form.thresholds, value: num
             <div class="export-tools"><button :disabled="!stress.planFile" @click="perform(() => stress.exportReport('html'))">{{ t('stress.workbench.exportHtml') }}</button><button :disabled="!stress.planFile" @click="perform(() => stress.exportReport('json'))">{{ t('stress.workbench.exportJson') }}</button></div>
             <p v-if="stress.comparisonError" class="error" data-testid="stress-comparison-error">{{ stress.comparisonError }}</p>
             <section v-if="stress.comparison" data-testid="stress-comparison"><h4>{{ t('stress.workbench.comparison') }}</h4><p v-if="!stress.comparison.directlyComparable">{{ t('stress.workbench.notComparable') }}</p><p>{{t('stressPresentation.reasons.metadata')}}</p><p>{{ [...stress.comparison.mismatches,...stress.comparison.notices].map(comparisonCode).join(' · ') }}</p><div class="comparison-scroll"><table><thead><tr><th>{{ t('stress.metricName') }}</th><th>{{ t('stress.workbench.baseline') }}</th><th>{{ t('stress.workbench.report') }}</th><th>Δ</th><th>Δ %</th></tr></thead><tbody><tr v-for="row in comparisonRows" :key="row.key" :data-metric="row.key"><td>{{comparisonMetric(row.key)}}</td><td>{{ comparisonValue(row.key,row.base) }}</td><td>{{ comparisonValue(row.key,row.candidate) }}</td><td>{{ comparisonValue(row.key,row.absolute) }}</td><td>{{ row.relative === null ? t('stress.workbench.notComputable') : `${value(row.relative * 100)}%` }}</td></tr></tbody></table></div></section>
-            <StressReportView :report="stress.planReport" /><p v-if="!stress.planReport">{{ t('stress.workbench.noReport') }}</p><p v-if="stress.planFile" class="file-line" :title="stress.planFile">{{ stress.planFile }}</p>
+            <StressReportView :ai="ai" :source="stress.planOwner ? { kind: 'local', project: stress.planOwner.scope } : undefined" :report-ref="stress.planFile ? { kind: 'stress', file: stress.planFile.split(/[\\/]/).at(-1)! } : undefined" :baseline-ref="stress.comparison?.directlyComparable && stress.baselineFile ? { kind: 'stress', file: stress.baselineFile.split(/[\\/]/).at(-1)! } : undefined" :report="stress.planReport" /><p v-if="!stress.planReport">{{ t('stress.workbench.noReport') }}</p><p v-if="stress.planFile" class="file-line" :title="stress.planFile">{{ stress.planFile }}</p>
           </template>
         </div>
         <footer class="run-controls"><div class="actions"><button :disabled="stress.running || !valid" data-testid="stress-plan-start" @click="perform(() => stress.startPlan())">{{ t('stress.start') }}</button><button :disabled="!stress.running || stress.planState === 'stopping'" data-testid="stress-plan-stop" @click="perform(() => stress.stopPlan())">{{ t('stress.stop') }}</button><span>{{ t(`stress.workbench.state.${stress.planState}`) }}</span></div>
@@ -278,7 +279,7 @@ function setThreshold(key: keyof typeof props.stress.form.thresholds, value: num
       </div>
       <div v-if="stress.error" class="error" data-testid="stress-error">{{ stress.error }}</div>
     </div>
-    <StressReportView :report="stress.report" />
+    <StressReportView :ai="ai" :source="projectLocator ? { kind: 'local', project: projectLocator } : undefined" :report-ref="stress.file ? { kind: 'stress', file: stress.file.split(/[\\/]/).at(-1)! } : undefined" :report="stress.report" />
     <div v-if="stress.file" class="file-line" data-testid="stress-file">{{ t("stress.savedTo", { file: stress.file }) }}</div>
   </section>
 </template>

@@ -1,230 +1,184 @@
-// M6-C 任务 2（规格 §2 D1/D2/D4/D7）：AI 真调用链路 IPC 测试——ai:suggest 切真实现
-// （main 以保存的配置构造 core createAiProvider → suggestCases → 深拷贝返回），新增
-// ai:test-config 轻量探测（最小 completions，内容不解析）。零真实网络纪律：fetch 经
-// deps 注入替身（OpenAI 兼容响应形状），CI/测试不发任何真实请求。
-import { mkdtempSync, readFileSync } from "node:fs";
+// T9 migration of the original successful request/parser/locator/error coverage.
+// Legacy methods are closed; successful calls use actual personal bindings and previews.
+import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { TestCaseSchema } from "@apicc/core";
 import { createIpcDeps } from "../../../src/main/ipc.js";
 import { createSession } from "../../../src/main/session.js";
 import { createAiKeyStore } from "../../../src/main/ai/config.js";
-import type { AiSuggestInput } from "../../../src/shared/ai/contract.js";
-import type { SafeStorageLike } from "../../../src/main/online/tokenStore.js";
+import { createDesktopAiPersonal } from "../../../src/main/ai/personal.js";
+import type { AiPrepareInput, AiBusinessResultDto } from "../../../src/shared/ai/contract.js";
+import type { ApiLocator } from "../../../src/shared/locations.js";
+import { parseIpcArgs } from "../../../src/shared/ipc-contract.js";
 import { IDS, makeWorkspace, persistWorkspace, uuid } from "../helpers/contract-assets.js";
-
-const availableStorage: SafeStorageLike = {
-  isEncryptionAvailable: () => true,
-  encryptString: (plain) => Buffer.from(Buffer.from(plain, "utf8").toString("base64"), "utf8"),
-  decryptString: (encrypted) => Buffer.from(encrypted.toString("utf8"), "base64").toString("utf8"),
-};
-
-interface FetchCall { url: string; init: RequestInit }
-
-/** OpenAI 兼容端点替身：记录调用并按 assistant 文本产出 200 JSON（choices[0].message.content）。 */
-function fetchStub(content: string, calls: FetchCall[] = [], status = 200): typeof fetch {
-  return (async (url: string | URL | Request, init: RequestInit = {}) => {
-    calls.push({ url: String(url), init });
-    const body = status === 200
-      ? JSON.stringify({ choices: [{ message: { content } }] })
-      : JSON.stringify({ error: { message: "替身端点故障" } });
-    return new Response(body, { status, headers: { "content-type": "application/json" } });
-  }) as typeof fetch;
+const roots: string[] = [];
+const directory = () => { const root = mkdtempSync(join(tmpdir(), "apicc-t9-ipc-migrated-")); roots.push(root); return root; };
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const storage = { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => "gnome_libsecret", encryptString: (v: string) => Buffer.from(Buffer.from(v).toString("base64")), decryptString: (v: Buffer) => Buffer.from(v.toString(), "base64").toString() };
+const wireAssertion = { target: "status", op: "eq", expected: "200", path: null, headerName: null, cookieName: null, namespaces: null, match: null, optionsJson: null };
+const valid = JSON.stringify({ cases: ["normal 200", "second 200"].map(name => ({ name, scope: "blue", parameters: [], preOperations: [], postOperations: [], assertions: [wireAssertion], reason: "contract", evidenceIds: [`contract:${IDS.sharedApi}`] })) });
+const response = (content = valid, status = 200) => Response.json({ choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }] }, { status });
+function setup(content = valid, status = 200, transport?: typeof fetch) {
+  const privateRoot = directory(), legacyRoot = directory(), workspaceRoot = directory(), session = createSession(), calls: { url: string; init: RequestInit }[] = [];
+  const personal = createDesktopAiPersonal({ privateRoot, storage, platform: "win32" }), keyStore = createAiKeyStore({ dir: legacyRoot, storage });
+  const deps = createIpcDeps({ session, pickDirectory: async () => workspaceRoot, saveFile: async () => "", ai: { personal, keyStore, fetch: transport ?? (async (url, init = {}) => { calls.push({ url: String(url), init }); return response(content, status); }) } });
+  const owner = new EventEmitter(), event = { sender: owner };
+  return { personal, keyStore, deps, owner, event, calls, privateRoot, legacyRoot, workspaceRoot, session };
 }
-
-/** 合法 AI 输出：两条用例（第二条断言缺 id——core 回填本地 ULID，裁定④）。 */
-const VALID_AI_OUTPUT = JSON.stringify({
-  cases: [
-    { name: "AI 生成-正常 200", scope: "base", parameters: {}, assertions: [{ id: "a-1", target: "status", op: "eq", expected: "200" }] },
-    { name: "AI 生成-不存在 404", assertions: [{ target: "status", op: "eq", expected: "404" }] },
-  ],
+it("final I7 actual IPC fixture legacy writer supports its Linux success intent", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { ...descriptor, value: "linux" });
+    const f = setup(); let failure: unknown;
+    try { f.keyStore.save("SYNTHETIC_LINUX_LEGACY_KEY"); } catch (error) { failure = error; }
+    expect(failure).toBeUndefined();
+    expect(f.keyStore.load()).toBe("SYNTHETIC_LINUX_LEGACY_KEY");
+    expect(readFileSync(join(f.legacyRoot, "ai-key.json"), "utf8")).not.toContain("SYNTHETIC_LINUX_LEGACY_KEY");
+  } finally { Object.defineProperty(process, "platform", descriptor); }
 });
-
-const BAD_AI_OUTPUT = JSON.stringify({ cases: [{ name: 123 }] });
-
-function setup(opts: { content?: string; status?: number } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "apicc-ai-ipc-"));
-  const workspaceDir = mkdtempSync(join(tmpdir(), "apicc-ai-workspace-"));
-  const keyStore = createAiKeyStore({ dir, storage: availableStorage });
-  const calls: FetchCall[] = [];
-  const session = createSession();
-  const deps = createIpcDeps({
-    session,
-    pickDirectory: async () => dir,
-    saveFile: async () => "",
-    ai: { keyStore, fetch: fetchStub(opts.content ?? VALID_AI_OUTPUT, calls, opts.status ?? 200) },
-  });
-  return { deps, dir, workspaceDir, keyStore, calls, session };
+async function configure(f: ReturnType<typeof setup>, key = "sk-migrated-synthetic") {
+  await f.deps.handle("ai:settings-write", f.event, { operation: "connection", expectedRevision: 1, connection: { id: "c", revision: 1, name: "Personal", owner: { kind: "personal" }, baseUrl: "https://ai.example.com/v1", auth: { kind: "bearer" }, headers: {}, protocols: ["openai-chat-completions"] } });
+  await f.deps.handle("ai:settings-write", f.event, { operation: "credential", connectionId: "c", expectedRevision: 2, mode: "persistent", value: key });
+  await f.deps.handle("ai:settings-write", f.event, { operation: "preferences", expectedRevision: 3, models: [{ id: "m", revision: 1, connectionId: "c", modelId: "model-x", protocol: "openai-chat-completions", structuredOutput: "json-object", streaming: false, supportedParameters: [], capabilities: { status: "unconfirmed", source: "manual" }, budgets: {}, purposeBudgets: {} }], bindings: [{ purpose: "case-suggestion", modelProfileId: "m", budgets: {} }] });
 }
-
-/** 经 IPC 链路造一个已打开工作区 + 一条接口，返回 apiId。 */
-async function seedApi(deps: ReturnType<typeof createIpcDeps>, dir: string) {
-  const opened = await deps.handle("ws:create", {}, dir, "演示");
-  const groupLocator = { workspaceId: opened.workspace.id };
-  const group = await deps.handle("node:create", {}, { kind: "group", parent: groupLocator, name: "g" });
-  if (group.kind !== "group") throw new Error("Expected the group fixture to be created.");
-  const project = await deps.handle("node:create", {}, { kind: "project", parent: group.locator, name: "p" });
-  if (project.kind !== "project") throw new Error("Expected the project fixture to be created.");
-  const collection = await deps.handle("node:create", {}, { kind: "collection", parent: project.locator, name: "c" });
-  if (collection.kind !== "collection") throw new Error("Expected the collection fixture to be created.");
-  const api = await deps.handle("node:create", {}, { kind: "api", parent: collection.locator, api: { name: "a", method: "GET", baseUrl: "http://127.0.0.1:1", path: "/x" } });
-  if (api.kind !== "api") throw new Error("Expected the API fixture to be created.");
-  return { id: api.id, locator: api.locator };
+const locator: ApiLocator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi };
+function select(target = locator): AiPrepareInput["selection"] { const { workspaceId, groupId, projectId, ...api } = target; return { source: { kind: "local", project: { workspaceId, groupId, projectId } }, editGeneration: 1, business: { purpose: "case-suggestion", target: api } }; }
+// Accepted schema-order deviation: these are post-implementation boundary checks,
+// not historical RED, and do not authorize metadata/owner/cursor business logic.
+const choicesUuid = "10000000-0000-4000-8000-000000000001";
+it.each(["prepare-choices", "bodies-choices", "page-choices", "page-cursor"] as const)("final B accepted schema validates UUID at %s through the formal IPC parser", kind => {
+  const channel = kind === "prepare-choices" ? "ai:prepare-assistance" : kind === "bodies-choices" ? "ai:inspect-choices" : "ai:read-choices-page";
+  const input = (id: unknown) => kind === "prepare-choices" ? { selection: select(), bodySelection: [], choicesId: id }
+    : kind === "bodies-choices" ? { operation: "bodies", choicesId: id, bodySelection: [] }
+    : kind === "page-choices" ? { choicesId: id, section: "evidence" }
+    : { choicesId: choicesUuid, section: "evidence", cursor: id };
+  expect(parseIpcArgs(channel, [input(choicesUuid)])).toEqual([input(choicesUuid)]);
+  for (const id of ["", "not-a-uuid", "10000000-0000-4000-8000-00000000000g", 1, null]) {
+    expect(() => parseIpcArgs(channel, [input(id)])).toThrow(/入参校验失败/);
+  }
+});
+it("final B accepted schema enforces integer page limit 1 through 50 on real owned choices", async () => {
+  const f = setup(); await configure(f); await persistWorkspace(f.workspaceRoot, makeWorkspace()); await f.deps.handle('ws:open', {}, f.workspaceRoot);
+  const choices = await f.deps.handle('ai:inspect-choices', f.event, { operation: 'capture', input: { selection: select() } });
+  const input = { choicesId: choices.choicesId, section: "evidence" as const };
+  expect(parseIpcArgs("ai:read-choices-page", [input])).toEqual([input]); // Default20 belongs to future runtime, not this schema.
+  for (const limit of [1, 50]) {
+    const valid = { ...input, limit };
+    expect(parseIpcArgs("ai:read-choices-page", [valid])).toEqual([valid]);
+    expect(await f.deps.handle("ai:read-choices-page", f.event, valid)).toMatchObject({ choicesId: choices.choicesId, section: 'evidence', total: 1, returned: 1 });
+  }
+  for (const limit of [0, 51, -1, 1.5, NaN, Infinity]) {
+    await expect(f.deps.handle("ai:read-choices-page", f.event, { ...input, limit })).rejects.toThrow(/入参校验失败/);
+  }
+  expect(f.calls).toEqual([]);
+});
+it("final B accepted schema allows zero or 200 body selections and refuses 201 at actual owned IPC", async () => {
+  const f = setup(); await configure(f); await persistWorkspace(f.workspaceRoot, makeWorkspace()); await f.deps.handle('ws:open', {}, f.workspaceRoot);
+  const asset = f.session.locateApi(locator)!.api;
+  if (asset.contract.request.protocol !== 'http') throw new Error('http fixture');
+  asset.contract.request.body = { kind: 'json', content: '{}' }; await f.session.saveApi(locator, asset);
+  const choices = await f.deps.handle('ai:inspect-choices', f.event, { operation: 'capture', input: { selection: select() } });
+  const input = { operation: "bodies" as const, choicesId: choices.choicesId };
+  for (const count of [0, 200]) {
+    const valid = { ...input, bodySelection: Array.from({ length: count }, () => 'contract:request-body') };
+    expect(parseIpcArgs("ai:inspect-choices", [valid])).toEqual([valid]);
+    const updated = await f.deps.handle("ai:inspect-choices", f.event, valid);
+    expect(updated.bodySelection).toEqual(valid.bodySelection); input.choicesId = updated.choicesId;
+  }
+  await expect(f.deps.handle("ai:inspect-choices", f.event, { ...input, bodySelection: Array.from({ length: 201 }, (_, index) => `cases[${index}].evidence.response.body`) })).rejects.toThrow(/入参校验失败/);
+  expect(f.calls).toEqual([]);
+});
+it("final B I4 registered metadata IPC returns choices for a source already accepted by actual prepare", async () => {
+  const f = setup(); await configure(f); await persistWorkspace(f.workspaceRoot, makeWorkspace()); await f.deps.handle("ws:open", {}, f.workspaceRoot);
+  const input = { selection: select(), bodySelection: [] };
+  const existing = await f.deps.handle("ai:prepare-assistance", f.event, input);
+  expect(existing.preview.source.target).toMatchObject({ apiId: IDS.sharedApi });
+  const outcome = await f.deps.handle("ai:inspect-choices", f.event, { operation: "capture", input: { selection: input.selection } }).then(value => ({ value }), error => ({ error }));
+  expect(outcome).toMatchObject({ value: { source: { target: { apiId: IDS.sharedApi } }, bodySelection: [], bodies: { section: "bodies" } } });
+  expect(f.calls).toEqual([]);
+});
+async function suggest(f: ReturnType<typeof setup>, target = locator) {
+  const selection = select(target), prepared = await f.deps.handle("ai:prepare-assistance", f.event, { selection, bodySelection: [] });
+  return f.deps.handle("ai:start", f.event, { selection, previewId: prepared.previewId, operationId: randomUUID() });
 }
-
-describe("AI 频道：配置面（沿用任务 1 契约）", () => {
-  it("ai:save-config 携 apiKey → 密钥入安全存储（文件无明文），返回 { hasKey: true }；不携（省略/空串）→ 保持既有", async () => {
-    const { deps, dir, keyStore } = setup();
-    const out = await deps.handle("ai:save-config", {}, { baseUrl: "https://api.example.com/v1", model: "m-test", apiKey: "sk-ipc-1" });
-    expect(out).toEqual({ hasKey: true });
-    const raw = readFileSync(join(dir, "ai-key.json"), "utf8");
-    expect(raw).not.toContain("sk-ipc-1");
-    await deps.handle("ai:save-config", {}, { baseUrl: "https://b", model: "m2" });
-    expect(keyStore.load()).toBe("sk-ipc-1");
-  });
-
-  it("ai:get-config：未存 key → { hasKey: false }；存后 → { hasKey: true }（key 明文永不回传）", async () => {
-    const { deps } = setup();
-    expect(await deps.handle("ai:get-config", {})).toEqual({ hasKey: false });
-    await deps.handle("ai:save-config", {}, { baseUrl: "https://a", model: "m", apiKey: "sk-x" });
-    expect(await deps.handle("ai:get-config", {})).toEqual({ hasKey: true });
-  });
-
-  it("ai:save-config 入参校验：baseUrl/model 缺失 → 带频道名的可读错误；ai 依赖未配置 → ai:* 抛「AI 功能未配置」", async () => {
-    const { deps } = setup();
-    await expect(deps.handle("ai:save-config", {}, { baseUrl: "", model: "m", apiKey: "k" })).rejects.toThrow(/\[ai:save-config\]/);
-    const bare = createIpcDeps({ session: createSession(), pickDirectory: async () => "", saveFile: async () => "" });
-    await expect(bare.handle("ai:get-config", {})).rejects.toThrow(/AI 功能未配置/);
-    await expect(bare.handle("ai:suggest", {}, { locator: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi }, baseUrl: "https://a", model: "m" })).rejects.toThrow(/AI 功能未配置/);
-    await expect(bare.handle("ai:test-config", {}, { baseUrl: "https://a", model: "m" })).rejects.toThrow(/AI 功能未配置/);
-  });
+// Normal event delivery is the first wiring RED; owner/destroyed assertions remain blocked until it passes.
+it('T11 sends actual runtime progress only to its live owner and skips a destroyed owner', async () => {
+  const f = setup(); await configure(f); await persistWorkspace(f.workspaceRoot, makeWorkspace()); await f.deps.handle('ws:open', {}, f.workspaceRoot);
+  const own: { channel: string; value: unknown }[] = [], other: unknown[] = [];
+  let destroyed = false;
+  Object.assign(f.owner, { send(channel: string, value: unknown) { own.push({ channel, value }); }, isDestroyed: () => destroyed });
+  const unrelated = new EventEmitter();
+  Object.assign(unrelated, { send(_channel: string, value: unknown) { other.push(value); }, isDestroyed: () => false });
+  await f.deps.handle('ai:settings-read', { sender: unrelated });
+  await suggest(f);
+  expect(own.some(message => message.channel === 'ai:progress' && (message.value as { phase?: string }).phase === 'request')).toBe(true);
+  expect(other).toEqual([]);
+  for (const message of own) {
+    expect(message.channel).toBe('ai:progress');
+    expect(message.value).toMatchObject({ operationId: expect.stringMatching(/^[0-9a-f-]{36}$/), attempt: expect.any(Number) });
+    expect(Object.keys(message.value as object).every(key => ['operationId', 'phase', 'attempt', 'receivedBytes'].includes(key))).toBe(true);
+  }
+  own.length = 0; destroyed = true;
+  await suggest(f);
+  expect(own).toEqual([]);
 });
-
-describe("ai:suggest 真链路（core provider + suggestCases，任务 2 步骤 1①）", () => {
-  it("完整链路：保存密钥 + 打开工作区接口 → ai:suggest 返回两条建议（id 齐全唯一、可直接过 TestCase 形状）", async () => {
-    const { deps, dir, workspaceDir, calls, session } = setup();
-    await deps.handle("ai:save-config", {}, { baseUrl: "https://ai.example.com/v1", model: "model-x", apiKey: "sk-real-1" });
-    const seeded = await seedApi(deps, workspaceDir);
-    const projectLocator = {
-      workspaceId: seeded.locator.workspaceId,
-      groupId: seeded.locator.groupId,
-      projectId: seeded.locator.projectId,
-    };
-    const model = await session.createModel(projectLocator, {
-      name: "AI_PROMPT_MODEL_SENTINEL",
-      description: "Only this project's referenced model belongs in the AI prompt.",
-      schema: { kind: "object", properties: { promptSentinel: { kind: "scalar", type: "string" } }, required: ["promptSentinel"], additionalProperties: false },
-    });
-    const parameter = await session.createComponent(projectLocator, {
-      name: "AI_PROMPT_PARAMETER_SENTINEL",
-      description: "Only this project's referenced parameter belongs in the AI prompt.",
-      kind: "parameter",
-      definition: { location: "header", name: "AI_PROMPT_PARAMETER_SENTINEL", schema: { kind: "scalar", type: "string" }, required: true, description: "AI prompt parameter sentinel" },
-    });
-    const api = session.locateApi(seeded.locator)!.api;
-    if (api.contract.request.protocol !== "http") throw new Error("Expected an HTTP API fixture.");
-    api.contract.request.body = { kind: "json", content: "{}", schema: { kind: "modelRef", modelId: model.id } };
-    api.contract.request.headers.push({ kind: "componentRef", id: uuid(9001), componentId: parameter.id, expectedKind: "parameter" });
-    await session.saveApi(seeded.locator, api);
-    const locator = seeded.locator;
-    const out = (await deps.handle("ai:suggest", {}, { locator, baseUrl: "https://ai.example.com/v1", model: "model-x" })) as Array<{ id: string; name: string; assertions: Array<{ id: string }> }>;
-    expect(out).toHaveLength(2);
-    expect(new Set(out.map((c) => c.id)).size).toBe(2);
-    for (const c of out) {
-      expect(c.id).toBeTruthy();
-      expect(c.name).toBeTypeOf("string");
-      for (const a of c.assertions) expect(a.id).toBeTruthy(); // 缺 id 的断言由 core 回填
-    }
-    // 请求面：OpenAI 兼容 chat/completions + Bearer + json_object + model
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("https://ai.example.com/v1/chat/completions");
-    const headers = calls[0]!.init.headers as Record<string, string>;
-    expect(headers.authorization).toBe("Bearer sk-real-1");
-    const payload = JSON.parse(String(calls[0]!.init.body)) as { model: string; response_format: { type: string }; messages: Array<{ role: string; content: string }> };
-    expect(payload.model).toBe("model-x");
-    expect(payload.response_format).toEqual({ type: "json_object" });
-    expect(payload.messages[0]!.role).toBe("system");
-    expect(payload.messages[1]!.content).toContain("AI_PROMPT_MODEL_SENTINEL");
-    expect(payload.messages[1]!.content).toContain(parameter.id);
-    expect(payload.messages[1]!.content).toContain("AI_PROMPT_PARAMETER_SENTINEL");
-    // 产物面：每条建议即合法 TestCase（含 id），可直接提交给契约资产保存链路。
-    expect(out.map((testCase) => TestCaseSchema.parse(testCase))).toHaveLength(2);
-  });
-
-  it("未存密钥 → 可读错误指引配置对话框，且不发起 provider 请求", async () => {
-    const { deps, workspaceDir, calls } = setup();
-    const locator = (await seedApi(deps, workspaceDir)).locator;
-    await expect(deps.handle("ai:suggest", {}, { locator, baseUrl: "https://a", model: "m" })).rejects.toThrow(/尚未配置 AI 密钥/);
-    expect(calls).toHaveLength(0);
-  });
-
-  it("apiId 未命中 → 「未找到接口」可读错误", async () => {
-    const { deps, workspaceDir } = setup();
-    await deps.handle("ai:save-config", {}, { baseUrl: "https://a", model: "m", apiKey: "sk-x" });
-    const seeded = await seedApi(deps, workspaceDir);
-    await expect(deps.handle("ai:suggest", {}, { locator: { ...seeded.locator, apiId: uuid(9999) }, baseUrl: "https://a", model: "m" })).rejects.toThrow(/未找到接口/);
-  });
-
-  it("跨项目重复 API ID 由完整 locator 精确定位目标项目上下文", async () => {
-    const { deps, calls } = setup();
-    await deps.handle("ai:save-config", {}, { baseUrl: "https://a", model: "m", apiKey: "sk-x" });
-    const workspaceDir = mkdtempSync(join(tmpdir(), "apicc-ai-ambiguous-"));
-    await persistWorkspace(workspaceDir, makeWorkspace());
-    await deps.handle("ws:open", {}, workspaceDir);
-    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupTwo, projectId: IDS.projectTwo, collectionId: IDS.collectionTwo, folderIds: [], apiId: IDS.sharedApi };
-    const output = await deps.handle("ai:suggest", {}, { locator, baseUrl: "https://a", model: "m" });
-    expect(output).toHaveLength(2);
-    expect(calls).toHaveLength(1);
-    expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe("Bearer sk-x");
-    const payload = JSON.parse(String(calls[0]!.init.body)) as { messages: Array<{ content: string }> };
-    expect(payload.messages[1]!.content).toContain("project two API");
-    expect(payload.messages[1]!.content).not.toContain("project one API");
-  });
-
-  it("AI 两次输出均非法 → AiSuggestError 冒泡（报错带解析失败原因）", async () => {
-    const { deps, workspaceDir } = setup({ content: BAD_AI_OUTPUT });
-    await deps.handle("ai:save-config", {}, { baseUrl: "https://a", model: "m", apiKey: "sk-x" });
-    const locator = (await seedApi(deps, workspaceDir)).locator;
-    await expect(deps.handle("ai:suggest", {}, { locator, baseUrl: "https://a", model: "m" })).rejects.toThrow(/解析失败/);
-  });
-
-  it("入参校验：baseUrl/model/apiId 缺失 → 带频道名的可读错误", async () => {
-    const { deps } = setup();
-    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne, collectionId: IDS.collectionOne, folderIds: [], apiId: IDS.sharedApi };
-    // Runtime-negative IPC input crosses the static contract only at this explicit unknown boundary.
-    const malformedLocator: unknown = {};
-    await expect(deps.handle("ai:suggest", {}, { locator: malformedLocator as AiSuggestInput["locator"], baseUrl: "https://a", model: "m" })).rejects.toThrow(/\[ai:suggest\]/);
-    await expect(deps.handle("ai:suggest", {}, { locator, baseUrl: "", model: "m" })).rejects.toThrow(/\[ai:suggest\]/);
-    await expect(deps.handle("ai:suggest", {}, { locator, baseUrl: "https://a", model: "" })).rejects.toThrow(/\[ai:suggest\]/);
-  });
+it("personal writes persist encrypted audience credentials, preserve them on metadata edits and never return key/ref", async () => {
+  const f = setup(); await configure(f);
+  const document = await f.personal.repository.read(), ref = document.connections[0]!.credentialRef!;
+  const raw = readFileSync(join(f.privateRoot, "secrets", `${ref.slice("ai-desktop-secret:".length)}.json`), "utf8"); expect(raw).not.toContain("sk-migrated-synthetic");
+  const { credentialRef: _privateRef, ...connection } = document.connections[0]!;
+  await f.deps.handle("ai:settings-write", f.event, { operation: "connection", expectedRevision: 4, connection });
+  const view = await f.deps.handle("ai:settings-read", f.event); expect(view.connections[0]!.credentialState).toBe("available"); expect(JSON.stringify(view)).not.toMatch(/credentialRef|sk-migrated|ai-desktop-secret/);
+  expect((await f.personal.repository.read()).connections[0]!.credentialRef).toBe(ref); expect(f.calls).toHaveLength(0);
 });
-
-describe("ai:test-config 轻量探测（任务 2 步骤 1②）", () => {
-  it("已配置 → 最小 completions 探测成功，返回 { ok: true }；探测消息含 \"JSON\"（适配 json_object 约束，审查修复·重要）", async () => {
-    const { deps, calls } = setup();
-    await deps.handle("ai:save-config", {}, { baseUrl: "https://ai.example.com/v1", model: "model-x", apiKey: "sk-probe" });
-    const out = await deps.handle("ai:test-config", {}, { baseUrl: "https://ai.example.com/v1", model: "model-x" });
-    expect(out).toEqual({ ok: true });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("https://ai.example.com/v1/chat/completions");
-    // provider 恒带 response_format json_object：messages 缺 "JSON" 字样会被严格端点 400
-    const payload = JSON.parse(String(calls[0]!.init.body)) as { messages: Array<{ role: string; content: string }> };
-    expect(payload.messages).toHaveLength(1);
-    expect(payload.messages[0]!.content).toContain("JSON");
-  });
-
-  it("未存密钥 → 可读错误；端点 500 → provider 归一化错误冒泡", async () => {
-    const noKey = setup();
-    await expect(noKey.deps.handle("ai:test-config", {}, { baseUrl: "https://a", model: "m" })).rejects.toThrow(/尚未配置 AI 密钥/);
-    const failing = setup({ status: 500 });
-    await failing.deps.handle("ai:save-config", {}, { baseUrl: "https://a", model: "m", apiKey: "sk-x" });
-    await expect(failing.deps.handle("ai:test-config", {}, { baseUrl: "https://a", model: "m" })).rejects.toThrow(/AI provider 请求失败/);
-  });
-
-  it("入参校验：baseUrl/model 缺失 → [ai:test-config] 可读错误", async () => {
-    const { deps } = setup();
-    await expect(deps.handle("ai:test-config", {}, { baseUrl: "", model: "m" })).rejects.toThrow(/\[ai:test-config\]/);
-    await expect(deps.handle("ai:test-config", {}, { baseUrl: "https://a", model: "" })).rejects.toThrow(/\[ai:test-config\]/);
-  });
+it("legal binding preserves referenced model/component prompt context, request shape and native unique case/assertion ids", async () => {
+  const f = setup(); await configure(f); await persistWorkspace(f.workspaceRoot, makeWorkspace()); await f.deps.handle("ws:open", {}, f.workspaceRoot);
+  const scope = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+  const model = await f.session.createModel(scope, { name: "AI_PROMPT_MODEL_SENTINEL", description: "referenced", schema: { kind: "object", properties: { promptSentinel: { kind: "scalar", type: "string" } }, required: ["promptSentinel"], additionalProperties: false } });
+  const parameter = await f.session.createComponent(scope, { name: "AI_PROMPT_PARAMETER_SENTINEL", description: "referenced", kind: "parameter", definition: { location: "header", name: "AI_PROMPT_PARAMETER_SENTINEL", schema: { kind: "scalar", type: "string" }, required: true, description: "sentinel" } });
+  const api = f.session.locateApi(locator)!.api; if (api.contract.request.protocol !== "http") throw new Error("http fixture");
+  api.contract.request.body = { kind: "json", content: "{}", schema: { kind: "modelRef", modelId: model.id } }; api.contract.request.headers.push({ kind: "componentRef", id: uuid(9001), componentId: parameter.id, expectedKind: "parameter" }); await f.session.saveApi(locator, api);
+  const result: AiBusinessResultDto = await suggest(f); if (result.purpose !== "case-suggestion") throw new Error("purpose");
+  expect(result.cases.map(c => TestCaseSchema.parse(c))).toHaveLength(2); expect(new Set(result.cases.map(c => c.id)).size).toBe(2); expect(new Set(result.cases.flatMap(c => c.assertions.map(a => a.id))).size).toBe(2);
+  expect(f.calls).toHaveLength(1); expect(f.calls[0]!.url).toBe("https://ai.example.com/v1/chat/completions"); expect(new Headers(f.calls[0]!.init.headers).get("authorization")).toBe("Bearer sk-migrated-synthetic");
+  const payload = JSON.parse(String(f.calls[0]!.init.body)); expect(payload.model).toBe("model-x"); expect(payload.response_format).toEqual({ type: "json_object" }); expect(payload.messages[0].role).toBe("system");
+  for (const text of ["AI_PROMPT_MODEL_SENTINEL", parameter.id, "AI_PROMPT_PARAMETER_SENTINEL"]) expect(payload.messages[1].content).toContain(text);
+});
+it("full locator selects the second project and missing API/config fail without provider requests", async () => {
+  const f = setup(); await configure(f); await persistWorkspace(f.workspaceRoot, makeWorkspace()); await f.deps.handle("ws:open", {}, f.workspaceRoot);
+  await suggest(f, { ...locator, groupId: IDS.groupTwo, projectId: IDS.projectTwo, collectionId: IDS.collectionTwo });
+  expect(String(f.calls[0]!.init.body)).toContain("project two API"); expect(String(f.calls[0]!.init.body)).not.toContain("project one API");
+  await expect(suggest(f, { ...locator, apiId: uuid(9999) })).rejects.toThrow(/target/); expect(f.calls).toHaveLength(1);
+  const fresh = setup(); await persistWorkspace(fresh.workspaceRoot, makeWorkspace()); await fresh.deps.handle("ws:open", {}, fresh.workspaceRoot); await expect(suggest(fresh)).rejects.toThrow(); expect(fresh.calls).toHaveLength(0);
+});
+it.each([{ content: "{bad", status: 200, count: 2, error: /business-output-invalid/ }, { content: valid, status: 500, count: 1, error: /http/ }])("keeps parser/repair and normalized HTTP failures on the legal path: $status", async options => {
+  const f = setup(options.content, options.status); await configure(f); await persistWorkspace(f.workspaceRoot, makeWorkspace()); await f.deps.handle("ws:open", {}, f.workspaceRoot);
+  await expect(suggest(f)).rejects.toThrow(options.error); expect(f.calls).toHaveLength(options.count);
+});
+it("probe remains bound and minimal, while new malformed inputs and missing host give readable errors", async () => {
+  const f = setup(); await configure(f); expect(await f.deps.handle("ai:connection-test", f.event, { modelProfileId: "m", operationId: randomUUID() })).toEqual({ ok: true });
+  const body = JSON.parse(String(f.calls[0]!.init.body)); expect(body.messages).toHaveLength(1); expect(body.messages[0].content).toContain("JSON");
+  await expect(f.deps.handle("ai:prepare-assistance", f.event, {} as never)).rejects.toThrow(/ai:prepare-assistance/);
+  await expect(f.deps.handle("ai:connection-test", f.event, {} as never)).rejects.toThrow(/ai:connection-test/);
+  const noHost = createIpcDeps({ session: createSession(), pickDirectory: async () => "", saveFile: async () => "" }); await expect(noHost.handle("ai:settings-read", f.event)).rejects.toThrow(/未配置/);
+});
+it.each(["ai:suggest", "ai:test-config"] as const)("T9 %s cannot send a legacy key to a renderer-selected address or expose it via old reads/writes", async channel => {
+  const f = setup(); f.keyStore.save("sk-unconfirmed-legacy"); expect(await f.deps.handle("ai:get-config", f.event)).toEqual({ hasKey: false });
+  await expect(f.deps.handle("ai:save-config", f.event, { baseUrl: "https://changed.example", model: "x", apiKey: "new" })).rejects.toThrow(/旧/);
+  const input = channel === "ai:suggest" ? { locator, baseUrl: "https://changed.example", model: "x" } : { baseUrl: "https://changed.example", model: "x" }; await expect(f.deps.handle(channel, f.event, input as never)).rejects.toThrow(/旧/); expect(f.calls).toHaveLength(0); expect(f.keyStore.load()).toBe("sk-unconfirmed-legacy");
+});
+it("T9 does not deliver a provider result after actual roots change with identical locators", async () => {
+  let entered!: () => void, release!: (response: Response) => void;
+  const enteredPromise = new Promise<void>(r => { entered = r; }), gate = new Promise<Response>(r => { release = r; });
+  const f = setup(valid, 200, async () => { entered(); return gate; }), rootB = directory();
+  try {
+    await configure(f); await persistWorkspace(f.workspaceRoot, makeWorkspace()); await persistWorkspace(rootB, makeWorkspace()); await f.deps.handle("ws:open", {}, f.workspaceRoot);
+    const generation = f.session.captureDraftWriteContext().generation, pending = suggest(f).catch(e => e); await enteredPromise;
+    await f.deps.handle("ws:open", {}, rootB); expect(f.session.locateApi(locator)).not.toBeNull(); expect(f.session.captureDraftWriteContext().generation).not.toBe(generation);
+    release(response()); expect(await pending).toBeInstanceOf(Error);
+  } finally { release(response("", 500)); }
 });

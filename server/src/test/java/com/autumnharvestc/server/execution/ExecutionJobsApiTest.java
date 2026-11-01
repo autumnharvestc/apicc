@@ -107,6 +107,90 @@ abstract class JobsFixture {
 }
 
 class ExecutionJobsApiTest extends StressJobsFixture {
+    // A read-only reconciliation must survive stale admission inputs and may never create a job.
+    @Test void verifiesAnAcceptedFixedIntentWithoutAdmittingOrLoadingItsSnapshot()throws Exception {
+        var f=fixture();var fixed=submission(f,"readonly-verify");
+        var first=body(member(f,post(f.url()+"/jobs"),fixed).andExpect(status().isCreated()));
+        long count=jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=?",Long.class,Long.valueOf(f.project()));
+        jdbc.update("DELETE FROM execution_snapshots WHERE id=?",Long.valueOf(f.snapshot()));
+        jdbc.update("UPDATE execution_agents SET accepting_jobs=FALSE WHERE id=?",Long.valueOf(f.agent()));
+        member(f,post(f.url()+"/jobs/by-intent/verify"),fixed).andExpect(status().isOk())
+            .andExpect(header().string("Cache-Control","no-store"))
+            .andExpect(jsonPath("$.jobId").value(first.path("jobId").asText()))
+            .andExpect(jsonPath("$.submission").doesNotExist());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=?",Long.class,Long.valueOf(f.project()))).isEqualTo(count);
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"runConfig","materials","network"})
+    void verifyIntentRejectsChangedFixedInputsWithoutCreatingAnExecution(String field)throws Exception {
+        var f=fixture();var fixed=submission(f,"verify-conflict");
+        member(f,post(f.url()+"/jobs"),fixed).andExpect(status().isCreated());
+        switch(field){
+            case "runConfig"->fixed.put(field,Map.of("jobTimeoutMs",59000));
+            case "materials"->fixed.put(field,Map.of("projectId",f.project(),"credentials",List.of(Map.of("refId","different","version","1")),"attachments",List.of()));
+            case "network"->fixed.put(field,Map.of("revision","different","configuration",Map.of("formatVersion",1,"profiles",List.of(),"environmentSelections",List.of())));
+        }
+        long messages=jdbc.queryForObject("SELECT COUNT(*) FROM execution_job_outbox",Long.class);
+        member(f,post(f.url()+"/jobs/by-intent/verify"),fixed).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("intent_conflict"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=?",Long.class,Long.valueOf(f.project()))).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_job_outbox",Long.class)).isEqualTo(messages);
+    }
+    @Test void verifyIntentRejectsAScheduledSourceWithoutChangingTheExistingJob()throws Exception {
+        var f=fixture();var fixed=submission(f,"source-conflict");
+        String job=body(member(f,post(f.url()+"/jobs"),fixed).andExpect(status().isCreated())).path("jobId").asText();
+        jdbc.update("UPDATE execution_jobs SET schedule_occurrence_id=123,schedule_id=456,schedule_revision=1 WHERE id=?",Long.valueOf(job));
+        member(f,post(f.url()+"/jobs/by-intent/verify"),fixed).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("intent_source_conflict"));
+        assertThat(state(job)).isEqualTo("queued");
+    }
+    @Test void intentQueriesKeepReadRightsButRejectRevocationAndDisabledMembers()throws Exception {
+        var f=fixture();var fixed=submission(f,"read-current-rights");member(f,post(f.url()+"/jobs"),fixed).andExpect(status().isCreated());
+        jdbc.update("INSERT INTO project_acl(workspace_id,project_id,user_id,role,updated_at) SELECT ?,?,id,'VIEWER',CURRENT_TIMESTAMP FROM users WHERE username='admin'",Long.valueOf(f.ws()),Long.valueOf(f.project()));
+        member(f,get(f.url()+"/jobs/by-intent").param("intentId","read-current-rights"),Map.of()).andExpect(status().isOk());
+        member(f,post(f.url()+"/jobs/by-intent/verify"),fixed).andExpect(status().isOk());
+        jdbc.update("UPDATE project_acl SET role='NONE' WHERE project_id=?",Long.valueOf(f.project()));
+        member(f,get(f.url()+"/jobs/by-intent").param("intentId","read-current-rights"),Map.of()).andExpect(status().isForbidden());
+        member(f,post(f.url()+"/jobs/by-intent/verify"),fixed).andExpect(status().isForbidden());
+        jdbc.update("UPDATE users SET disabled=TRUE WHERE username='admin'");
+        try {
+            member(f,get(f.url()+"/jobs/by-intent").param("intentId","read-current-rights"),Map.of()).andExpect(status().isUnauthorized());
+            member(f,post(f.url()+"/jobs/by-intent/verify"),fixed).andExpect(status().isUnauthorized());
+        } finally { jdbc.update("UPDATE users SET disabled=FALSE WHERE username='admin'"); }
+    }
+    // Catches lookup by a recent job/list instead of the exact durable caller intent.
+    @Test void findsExactlyTheCallersAcceptedIntentWithoutCaching()throws Exception {
+        var f=fixture();
+        var first=body(member(f,post(f.url()+"/jobs"),submission(f,"exact intent + ?")).andExpect(status().isCreated()));
+        member(f,post(f.url()+"/jobs"),submission(f,"newer-intent")).andExpect(status().isCreated());
+        member(f,get(f.url()+"/jobs/by-intent").param("intentId","exact intent + ?"),Map.of())
+            .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+            .andExpect(jsonPath("$.jobId").value(first.path("jobId").asText()))
+            .andExpect(jsonPath("$.executionId").value(first.path("executionId").asText()));
+    }
+    @Test void intentLookupChecksTheAddressWorkspaceBeforeReturningAnOwnedJob()throws Exception {
+        var f=fixture();member(f,post(f.url()+"/jobs"),submission(f,"workspace-bound")).andExpect(status().isCreated());
+        String otherWorkspace=body(member(f,post("/api/v1/workspaces"),Map.of("name","Other workspace")).andExpect(status().isCreated())).path("id").asText();
+        jdbc.update("DELETE FROM memberships WHERE workspace_id=?",Long.valueOf(otherWorkspace));
+        member(f,get("/api/v1/workspaces/"+otherWorkspace+"/projects/"+f.project()+"/jobs/by-intent").param("intentId","workspace-bound"),Map.of())
+            .andExpect(status().isForbidden());
+    }
+    @Test void intentLookupChecksCurrentProjectRightsEvenForAnAbsentIntent()throws Exception {
+        var f=fixture();
+        jdbc.update("INSERT INTO project_acl(workspace_id,project_id,user_id,role,updated_at) SELECT ?,?,id,'NONE',CURRENT_TIMESTAMP FROM users WHERE username='admin'",Long.valueOf(f.ws()),Long.valueOf(f.project()));
+        member(f,get(f.url()+"/jobs/by-intent").param("intentId","not-accepted"),Map.of())
+            .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("project_forbidden"));
+    }
+    @Test void intentLookupDoesNotExposeAnotherCallerOrProjectAndReturnsNotFound()throws Exception {
+        var f=fixture();member(f,post(f.url()+"/jobs"),submission(f,"private-intent")).andExpect(status().isCreated());
+        String name="intent-reader-"+f.project();
+        var user=body(mvc.perform(post("/api/v1/auth/register").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password","password8","displayName","Reader")))).andExpect(status().isCreated()));
+        String token=body(mvc.perform(post("/api/v1/auth/login").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password","password8")))).andExpect(status().isOk())).path("token").asText();
+        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user.path("id").asText()),Map.of("role","EDITOR")).andExpect(status().isOk());
+        var other=new F(token,f.ws(),f.group(),f.project(),f.snapshot(),f.agent(),f.agentToken(),f.assets());
+        member(other,get(f.url()+"/jobs/by-intent").param("intentId","private-intent"),Map.of()).andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("job_not_found"));
+        var another=fixture();
+        member(f,get(another.url()+"/jobs/by-intent").param("intentId","private-intent"),Map.of()).andExpect(status().isNotFound());
+        member(f,get(f.url()+"/jobs/by-intent").param("intentId","not-accepted"),Map.of()).andExpect(status().isNotFound());
+    }
     @Test void retriesAnOrdinaryIntentUsingItsPreStressUpgradeHashWithoutCreatingAnotherExecution()throws Exception {
         var f=fixture();var request=submission(f,"pre-stress-upgrade-intent");
         var first=body(member(f,post(f.url()+"/jobs"),request).andExpect(status().isCreated()));String job=first.path("jobId").asText();

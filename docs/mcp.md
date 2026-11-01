@@ -1,10 +1,10 @@
 # MCP 服务器（agent 接入）
 
-apicc 内置一个 stdio MCP（Model Context Protocol）服务器：`apicc mcp` 把本地工作区的接口能力暴露为 MCP 工具，供 Claude Desktop、Cursor 等 agent 客户端直接检索接口、读取接口详细设计，以及（显式开启后）执行单个测试用例。
+apicc 内置 stdio MCP（Model Context Protocol）服务器，固定本地工作区或获授权的在线成员来源。F7e 的完整工具、在线 profile、准备/启动/对账、预算与安全边界见 [AI 与 MCP 使用说明](f7e-ai-mcp.md)。下列本地客户端配置仍可使用。
 
 - 传输：stdio（JSON-RPC 由官方 MCP SDK 承接），**stdout 是协议通道**，人类可读日志一律走 stderr
-- 默认只读：`list-apis` / `get-api-design` 两个只读工具始终可用；执行类工具 `run-case` **默认关闭**，仅在 `--allow-run` 启动时注册
-- 安全边界：工具只能访问 `--workspace` 指定的工作区；工具没有任何文件系统路径类参数，路径无法逃逸工作区根；工作区只读加载、零落盘
+- 默认只读：资产/运行/报告工具可用，保留旧本地 `list-apis` / `get-api-design`；`prepare-run` / `start-run` / `cancel-run` 及旧本地 `run-case` 仅在 `--allow-run` 启动时注册
+- 安全边界：工具只能访问固定本地根或在线 profile 的项目 allowlist；不能选择任意文件路径、秘密或自由请求。源工作区不因 AI 候选自动写入；宿主私有运行结果与在线意图 journal 是有界持久数据，不应理解为整个宿主零落盘
 
 ## 构建前提
 
@@ -39,7 +39,7 @@ pnpm -r build
 }
 ```
 
-开启执行类工具（`run-case`）——AI 触发网络请求须显式 opt-in：
+开启保存目标执行工具——AI 触发网络请求须显式 opt-in，建议客户端为 start/cancel 等副作用另启人工确认：
 
 ```json
 {
@@ -66,6 +66,8 @@ pnpm -r build
 
 ## 工具清单
 
+F7e 增加 `list-assets`、`get-asset`、`list-runs`、`get-run`、`get-report`，以及显式开启的 `prepare-run`、`start-run`、`cancel-run`。分页和输出受预算约束；ticket 是原准备的引用，不是人工确认或认证秘密。以下为保留的本地兼容入口：
+
 | 工具 | 参数 | 说明 |
 |---|---|---|
 | `list-apis` | 无 | 列出工作区内全部接口摘要（`id`/`name`/`protocol`/`url`/`apiPath`，含文件夹内接口）；`apiPath` 用于其余两个工具定位接口 |
@@ -80,4 +82,5 @@ pnpm -r build
 ## stdio 与进程生命周期
 
 - 服务器是客户端拉起的子进程：启动、停止、崩溃重启均由 MCP 客户端负责；客户端断开（关闭 stdin）后服务器自动退出
+- 本地拥有的活动执行会取消并收束；在线已接纳的 agent 任务继续，由 `get-run/get-report` 查询，明确 `cancel-run` 才请求取消。提交响应丢失时保留原 ticket/intent 对账，禁止换 intent 自动重发
 - 排查问题时看 stderr：服务器启动行与错误信息都输出到 stderr，stdout 中只应有 MCP 协议帧

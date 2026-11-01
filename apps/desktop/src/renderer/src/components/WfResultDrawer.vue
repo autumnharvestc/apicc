@@ -5,7 +5,8 @@ import { Alert as AAlert, Drawer as ADrawer, Table as ATable, Tag as ATag } from
 import type { CaseOutcome, EvidenceIdentity, NodeResult, NodeState, WorkflowRunResult, WorkflowTraceEvent } from "@apicc/core";
 import type { ProjectLocator } from "../../../shared/locations.js";
 import { reportingUnits } from "@apicc/core/report/units";
-import { workflowToRunResult } from "@apicc/core/workflow/adapter";
+import { workflowCaseRows, workflowToRunResult } from "@apicc/core/workflow/adapter";
+import { caseEvidenceIdentity } from '../ai/evidenceNavigation.js';
 import { stateTagColor } from "../wf/wfCanvas.js";
 import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 
@@ -16,9 +17,21 @@ import CaseEvidencePanel from "./CaseEvidencePanel.vue";
  * Tag（stateTagColor，复用 colorForState 语义）/ 耗时（outcome?.durationMs）/ 错误）。
  * 组件内零 store/工厂调用；耗时无 outcome（noop/skipped）与无 error 以「—」占位。
  */
-const props = withDefaults(defineProps<{ open: boolean; result: WorkflowRunResult | null; projectLocator?: ProjectLocator | null; embedded?: boolean }>(), { embedded: false });
+const props = withDefaults(defineProps<{ open: boolean; result: WorkflowRunResult | null; projectLocator?: ProjectLocator | null; embedded?: boolean; ai?: import('../stores/ai.js').AiStore }>(), { embedded: false });
 const emit = defineEmits<{ close: []; locate: [identity: EvidenceIdentity] }>();
 const { t, te } = useI18n();
+function analyzeReport() {
+  const displayed = props.result, project = props.projectLocator;
+  if (!displayed || !project || !props.ai) return;
+  const key = JSON.stringify(project);
+  void props.ai.prepareReportAnalysis({ source: { kind: 'local', project }, displayed,
+    isCurrent: () => props.result === displayed && props.open && JSON.stringify(props.projectLocator) === key,
+    canLocateEvidence: (evidence, authorised) => !!caseEvidenceIdentity(evidence, authorised, workflowCaseRows(displayed)),
+    locateEvidence: (evidence, authorised) => {
+      const identity = caseEvidenceIdentity(evidence, authorised, workflowCaseRows(displayed));
+      if (identity) emit('locate', identity);
+    } });
+}
 function label(code: string | undefined) { if (!code) return '—'; const key = `executionLabels.${code}`; return te(key) ? t(key) : code; }
 
 const columns = computed(() => [
@@ -99,6 +112,7 @@ function formatMs(ms: number): string {
     @close="emit('close')"
   >
     <template v-if="result">
+      <button v-if="ai && projectLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
       <div v-if="isV2 || embedded" class="wf-invocation">
         <p data-testid="wf-logical-verdict">{{ t('wf.control.logicalVerdict') }}: <strong>{{ label(result.verdict) }}</strong> · {{ t('wf.control.rawRows') }}: {{ facts?.total ?? 0 }} · {{ t('wf.control.rawFailed') }}: {{ facts?.failed ?? 0 }}</p>
         <p>{{ t('wf.control.mode') }}: {{ label(result.reportingMode ?? 'v1') }} · {{ result.workflowName }}</p>

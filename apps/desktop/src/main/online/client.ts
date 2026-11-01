@@ -53,6 +53,7 @@ import {
   type OnlineWorkspaceSummary,
 } from "../../shared/online/contract.js";
 import { z } from "zod";
+import { createMemberExecutionRequest, ExecutionHttpError } from "@apicc/execution/client";
 
 /** 服务端统一错误（HTTP 层）：status=0 且 code=network_error 表示网络层失败（含超时）。 */
 export class OnlineApiError extends Error {
@@ -62,27 +63,27 @@ export class OnlineApiError extends Error {
   }
 }
 
+/** Only known member categories cross the desktop boundary; never upstream text. */
+const memberErrorMessages: Readonly<Record<string, string>> = {
+  forbidden: "权限不足 / Permission denied（forbidden）", unauthorized: "当前登录授权失效，请重新登录 / Authorization expired; sign in again（unauthorized）",
+  script_approval_required: "保存脚本需要批准 / Saved scripts require approval（script_approval_required）", script_permission_denied: "没有保存脚本执行权限 / Saved-script execution permission denied（script_permission_denied）",
+  script_grant_changed: "保存脚本批准版本已改变 / Saved-script approval changed（script_grant_changed）", material_version_conflict: "固定材料版本已变化 / Captured material version changed（material_version_conflict）",
+  credential_version_conflict: "固定凭据版本已变化 / Captured credential version changed（credential_version_conflict）", intent_conflict: "意图与原固定输入冲突，请查询原运行 / Intent conflicts with the captured input; inspect the original run（intent_conflict）",
+  version_conflict: "项目版本冲突，请重新读取 / Project version conflict; reload（version_conflict）", job_not_found: "运行不存在或当前成员无权读取 / Run unavailable or not readable by this member（job_not_found）",
+  report_expired: "报告已到期或已清理 / Report expired or removed（report_expired）", report_not_archived: "报告尚未归档 / Report not archived yet（report_not_archived）",
+};
+export function adaptMemberExecutionError(error: unknown): unknown {
+  if (!(error instanceof ExecutionHttpError)) return error;
+  const code = error.code && Object.hasOwn(memberErrorMessages, error.code) ? error.code : "execution-request-failed";
+  return new OnlineApiError(error.status, code, memberErrorMessages[code] ?? "成员执行请求失败，请检查当前权限与来源 / Member execution request failed; check permissions and source（execution-request-failed）");
+}
+
 /** Execution uses the canonical HTTPS API base; legacy browsing keeps its service-root client. */
 export function createExecutionRequest(binding: { serverId: string; token(): string; assertCurrent(): void }, fetcher: typeof fetch = globalThis.fetch, parentSignal?: AbortSignal) {
-  return async function request<T>(method: string, path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
-    binding.assertCurrent();
-    const controller = new AbortController();
-    const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
-    const timeout = setTimeout(() => controller.abort(new Error("execution-control-timeout")), 120000);
-    try {
-      signal.throwIfAborted();
-      const response = await fetcher(`${binding.serverId}/${path}`, { method, redirect: "error", cache: "no-store", signal, headers: { authorization: `Bearer ${binding.token()}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-      signal.throwIfAborted();
-      binding.assertCurrent();
-      const raw: unknown = response.status === 204 ? undefined : await response.json();
-      signal.throwIfAborted();
-      binding.assertCurrent();
-      if (!response.ok) {
-        const code = typeof raw === "object" && raw !== null && "code" in raw && typeof raw.code === "string" && /^[a-z][a-z0-9_-]{0,95}$/.test(raw.code) ? raw.code : "execution-request-failed";
-        throw new OnlineApiError(response.status, code, code);
-      }
-      return schema.parse(raw);
-    } finally { clearTimeout(timeout); }
+  const request = createMemberExecutionRequest(binding, fetcher, parentSignal);
+  return async <T>(method: string, path: string, body: unknown, schema: z.ZodType<T>): Promise<T> => {
+    try { return await request(method,path,body,schema); }
+    catch(error) { throw adaptMemberExecutionError(error); }
   };
 }
 

@@ -12,6 +12,7 @@ import EmptyState from "./EmptyState.vue";
 import AssertionEditor from "./AssertionEditor.vue";
 import ExtractionEditor from "./ExtractionEditor.vue";
 import type { AssertionOperatorDTO } from "../../../shared/testing.js";
+import type { AiStore } from '../stores/ai.js';
 
 const ATextarea = AInput.TextArea;
 
@@ -35,12 +36,23 @@ const props = defineProps<{
   readOnly?: boolean;
   operators?: AssertionOperatorDTO[];
   datasets?: DatasetAsset[];
+  ai?: AiStore;
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void }>();
 const { t } = useI18n();
 const overrideJson = ref("");
 const overrideError = ref("");
 const assertionError = ref("");
+const assertionBasis = ref<'contract' | 'observation'>('contract');
+const observedBasis = computed(() => {
+  const observation = props.ai?.assertionObservation, locator = props.editor.locator, testCase = selected.value;
+  if (!observation || !locator || !testCase || !observation.isCurrent()) return undefined;
+  const target = observation.target;
+  return target.caseId === testCase.id && target.scope === testCase.scope
+    && target.workspaceId === locator.workspaceId && target.groupId === locator.groupId && target.projectId === locator.projectId
+    && target.collectionId === locator.collectionId && target.apiId === locator.apiId
+    && target.folderIds.length === locator.folderIds.length && target.folderIds.every((id, index) => id === locator.folderIds[index]) ? observation.basis : undefined;
+});
 const extractionError = ref("");
 const requestTab = computed(() => props.debug && props.editor.activeKey
   ? props.debug.requestTabForSession(props.editor.activeKey) : null);
@@ -296,6 +308,16 @@ function removeOp(kind: "pre" | "post", index: number) {
           <span class="note">{{ t("debugLoop.cookiesNotSavedWithCase") }}</span>
         </section>
         <div class="section-title">{{ t("case.assertions") }}</div>
+        <template v-if="ai">
+          <label>{{ t('ai.basis') }}
+            <select v-model="assertionBasis" data-testid="ai-assertion-basis">
+              <option value="contract">{{ t('ai.bases.contract') }}</option>
+              <option value="observation" :disabled="!observedBasis">{{ t('ai.bases.observation') }}</option>
+            </select>
+          </label>
+          <p v-if="ai.assertionObservation">{{ t('ai.selectedObservationRow', { index: ai.assertionObservation.basis.caseIndex + 1 }) }}</p>
+          <a-button :disabled="readOnly || ai.suggestLoading || (assertionBasis === 'observation' && !observedBasis)" data-testid="ai-suggest-assertions" @click="ai.prepareAssertions({ caseId: selected.id, scope: selected.scope }, assertionBasis === 'observation' ? observedBasis : { kind: 'contract' })">{{ t('ai.suggestAssertions') }}</a-button>
+        </template>
         <AssertionEditor :key="`${editor.activeKey}:${selected.id}:${selected.scope}:assertions`" :assertions="selected.assertions" :read-only="readOnly" :operators="operators" @validity="message => assertionError = message" />
         <a-button size="small" data-testid="assert-add" :disabled="readOnly || selected.assertions.length >= 256" @click="addAssertion">{{ t("case.addAssert") }}</a-button>
         <ExtractionEditor :key="`${editor.activeKey}:${selected.id}:${selected.scope}:extractions`" :items="selected.extractors ?? (selected.extractors = [])" :read-only="readOnly" @validity="message => extractionError = message" />

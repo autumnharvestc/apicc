@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Button as AButton, Input as AInput, InputNumber as AInputNumber, Modal as AModal, Select as ASelect, Tag as ATag } from "ant-design-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { DebugHistorySummary } from "@apicc/core";
+import { DebugHistoryOwnerIdentitySchema } from '@apicc/core/schema';
 import type { ProjectLocator } from "../../../shared/locations.js";
 import type { useDebugStore } from "../stores/debug.js";
 import type { useDebugHistoryStore } from "../stores/debugHistory.js";
@@ -17,6 +18,7 @@ const props = defineProps<{
   debug: ReturnType<typeof useDebugStore>;
   editor: ReturnType<typeof useEditorStore>;
   projectLocator?: ProjectLocator | null;
+  ai?: import('../stores/ai.js').AiStore;
   restoreFree?: (input: { historyId: string; exchangeOrder: number; project: ProjectLocator }) => Promise<{ sourceChanged: boolean; sourceAvailable: boolean } | null>;
   replayFree?: (input: { historyId: string; exchangeOrder: number; project: ProjectLocator; draftId: string }) => Promise<void>;
 }>();
@@ -43,6 +45,31 @@ const currentProject = computed(() => props.projectLocator ?? (activeSession.val
 const currentProjectId = computed(() => currentProject.value?.projectId ?? "");
 const currentApiId = computed(() => activeSession.value?.locator.apiId ?? "");
 const record = computed(() => props.history.selected?.record ?? null);
+function analyzeReport() {
+  const selected = record.value, project = currentProject.value;
+  if (!selected || !project || !props.ai) return;
+  const replay = selected.result.replay;
+  const owner = DebugHistoryOwnerIdentitySchema.safeParse(replay.mode === 'free' ? { sourceKind: 'free', project: replay.project, draftId: replay.draftId }
+    : replay.mode === 'case' ? { sourceKind: 'asset' as const, mode: 'case' as const, case: replay.case }
+      : { sourceKind: 'asset' as const, mode: 'request' as const, locator: replay.locator });
+  if (selected.formatVersion !== 2 || !owner.success) {
+    props.ai.businessPurpose = 'report-analysis';
+    props.ai.businessFailure(new Error('ai-report-unattributable')); props.ai.drawerOpen = true; return;
+  }
+  const key = JSON.stringify(project);
+  void props.ai.prepareReportAnalysis({ source: { kind: 'local', project }, displayed: selected.result,
+    report: { kind: 'debug', historyId: selected.historyId, owner: owner.data },
+    isCurrent: () => record.value === selected && props.open && JSON.stringify(currentProject.value) === key,
+    canLocateEvidence: evidence => {
+      const match = /^exchanges\[(\d+)\](?:\.|$)/.exec(evidence.location);
+      return !!match && !!selected.result.exchanges[Number(match[1])];
+    },
+    locateEvidence: evidence => {
+      const match = /^exchanges\[(\d+)\](?:\.|$)/.exec(evidence.location);
+      const exchange = match ? selected.result.exchanges[Number(match[1])] : undefined;
+      if (exchange) selectedExchangeOrder.value = exchange.order;
+    } });
+}
 const exchanges = computed(() => record.value?.result.exchanges ?? []);
 const selectedExchange = computed(() => exchanges.value.find((exchange) => exchange.order === selectedExchangeOrder.value) ?? exchanges.value[0] ?? null);
 const selectedExchangeDisplay = computed(() => {
@@ -329,6 +356,7 @@ async function savePreferences() {
         </section>
         <section class="history-detail" data-testid="debug-history-detail">
           <template v-if="record">
+            <a-button v-if="ai && currentProject" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
             <div class="detail-head">
               <span>{{ selectedSummary ? summaryLabel(selectedSummary) : record.historyId }}</span>
               <a-button size="small" danger :loading="busyAction === 'delete'" data-testid="debug-history-delete" @click="deleteRecord">{{ t("debugLoop.deleteRecord") }}</a-button>

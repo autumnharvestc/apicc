@@ -170,6 +170,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(supports-color@7.1.0)(zod@4.5.4)
+      '@napi-rs/keyring':
+        specifier: 2.1.0
+        version: 2.1.0
       commander:
         specifier: ^15.0.0
         version: 15.0.0

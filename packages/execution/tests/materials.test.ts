@@ -29,6 +29,26 @@ function batch(version = "1", value = "project-secret"): ProjectRunMaterials {
   return { snapshotId: "10", scope: { ...binding.scope }, credentials: [{ refId: ref.id, version, value }], attachments: [] };
 }
 
+it("redacts malformed successful material JSON instead of exposing response fragments", async () => {
+  const client = createMemberMaterialsClient({ baseUrl: binding.serverId, token: () => 'member-token', fetch: async () => new Response('private-material-response-marker', { status: 200 }) });
+  await expect(client.loadLocal('10', { projectId: '3', credentials: [], attachments: [] }, new AbortController().signal)).rejects.toThrow('execution-invalid-response');
+});
+
+it("preserves material HTTP status and safe code when rejecting a server response", async () => {
+  const client = createMemberMaterialsClient({ baseUrl: binding.serverId, token: () => 'member-token', fetch: async () => Response.json({ code: 'material_access_denied', message: 'private-material-marker' }, { status: 403 }) });
+  await expect(client.loadLocal('10', { projectId: '3', credentials: [], attachments: [] }, new AbortController().signal)).rejects.toMatchObject({ status: 403, code: 'material_access_denied' });
+});
+
+it("preserves cancellation while consuming a successful material response body", async () => {
+  const controller = new AbortController(), reason = new Error('material-read-cancelled');
+  let reading!: () => void;
+  const entered = new Promise<void>(resolve => { reading = resolve; });
+  const client = createMemberMaterialsClient({ baseUrl: binding.serverId, token: () => 'member-token', fetch: async (_url, init) => new Response(new ReadableStream({ start(stream) { init!.signal!.addEventListener('abort', () => stream.error(init!.signal!.reason), { once: true }); }, pull() { reading(); } })) });
+  const pending = client.loadLocal('10', { projectId: '3', credentials: [], attachments: [] }, controller.signal);
+  await entered; controller.abort(reason);
+  await expect(pending).rejects.toBe(reason);
+});
+
 it("rejects project A material returned to project B and never contacts a target", async () => {
   const before = hits;
   const wrong = batch(); wrong.scope.projectId = "4";

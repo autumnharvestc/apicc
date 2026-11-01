@@ -82,6 +82,7 @@ const props = defineProps<{
   projectLocator: ProjectLocator | null;
   bindIndex: WfBindIndex | null;
   reportError: (e: unknown) => void;
+  ai?: import('../stores/ai.js').AiStore;
   externalRun?: (workflow: import("@apicc/core").Workflow, inputs?: Readonly<Record<string, JsonValue>>) => Promise<void>;
 }>();
 const { t } = useI18n();
@@ -759,7 +760,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
       </a-layout>
 
       <!-- 运行结果抽屉（任务 7）：纯展示，开关状态在本组件（运行完成自动打开） -->
-      <WfResultDrawer :open="resultOpen" :result="design.runResult" :project-locator="designProjectLocator" @close="resultOpen = false" @locate="locate" />
+      <WfResultDrawer :ai="ai" :open="resultOpen" :result="design.runResult" :project-locator="designProjectLocator" @close="resultOpen = false" @locate="locate" />
     </template>
 
     <!-- 离开确认（返回列表/换项目遇 dirty）：确认丢弃后卸载编辑会话 -->

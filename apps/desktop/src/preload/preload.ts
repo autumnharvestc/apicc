@@ -8,6 +8,7 @@ import type { ApiccApi } from "../shared/types.js";
 import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "../shared/credentials.js";
 import { createStressPreloadApi } from "./stressBridge.js";
 import { EvidenceInvocationSchema } from "../shared/testing.js";
+import { AiProgressDtoSchema } from '../shared/ai/contract.js';
 
 function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcInputArgsMap[Channel]): Promise<IpcResultMap[Channel]> {
   return ipcRenderer.invoke(channel, ...args).then((result: unknown) => result as IpcResultMap[Channel]);
@@ -148,6 +149,25 @@ const api: ApiccApi = {
   aiGetConfig: () => invoke(IpcChannel.AiGetConfig),
   aiSuggest: (input) => invoke(IpcChannel.AiSuggest, input),
   aiTestConfig: (input) => invoke(IpcChannel.AiTestConfig, input),
+  aiSettingsRead: () => invoke(IpcChannel.AiSettingsRead),
+  aiSettingsWrite: (input) => invoke(IpcChannel.AiSettingsWrite, input),
+  aiCatalogImport: (input) => invoke(IpcChannel.AiCatalogImport, input),
+  aiCatalogReload: () => invoke(IpcChannel.AiCatalogReload),
+  aiConnectionTest: (input) => invoke(IpcChannel.AiConnectionTest, input),
+  aiDiscover: (input) => invoke(IpcChannel.AiDiscover, input),
+  aiPrepareAssistance: (input) => invoke(IpcChannel.AiPrepareAssistance, input),
+  aiInspectChoices: (input) => invoke(IpcChannel.AiInspectChoices, input),
+  aiReadChoicesPage: (input) => invoke(IpcChannel.AiReadChoicesPage, input),
+  aiStart: (input) => invoke(IpcChannel.AiStart, input),
+  aiCancel: (input) => invoke(IpcChannel.AiCancel, input),
+  onAiProgress: listener => {
+    const receive = (_event: unknown, value: unknown) => {
+      const parsed = AiProgressDtoSchema.safeParse(value);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(IpcEvent.AiProgress, receive);
+    return () => { ipcRenderer.removeListener(IpcEvent.AiProgress, receive); };
+  },
   pluginsList: () => invoke(IpcChannel.PluginsList),
   onDirtyCheck: (handler) => {
     ipcRenderer.on(IpcEvent.AppDirtyCheck, () => ipcRenderer.send(IpcEvent.AppDirtyCheckReply, handler()));

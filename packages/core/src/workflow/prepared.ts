@@ -17,7 +17,8 @@ export function prepareWorkflowExecution(run: ProjectExecutionRun, workflowId: s
   const preparedTestData = run.preparedTestData === undefined ? undefined : bindPreparedTestData(run.snapshot, run.preparedTestData);
   validateWorkflowPlanData(run.snapshot, plan, preparedTestData);
   const pinned = Object.freeze({ snapshot: run.snapshot, credentialBindings: run.credentialBindings,
-    ...(run.network === undefined ? {} : { network: run.network }), ...(preparedTestData === undefined ? {} : { preparedTestData }) });
+    ...(run.network === undefined ? {} : { network: run.network }), ...(preparedTestData === undefined ? {} : { preparedTestData }),
+    ...(run.preparedRequestFiles === undefined ? {} : { preparedRequestFiles: run.preparedRequestFiles }) });
   const prepared = Object.freeze({ run: pinned, plan });
   preparedOwners.add(prepared);
   return prepared;

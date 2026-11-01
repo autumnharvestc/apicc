@@ -100,6 +100,20 @@ public class JobService implements AssignedMaterialAuthorizer {
         agents.requireProject(caller, String.valueOf(status.workspace()), String.valueOf(status.project()), false);
         return view(status,caller);
     }
+    public Map<String,Object> findIntent(UserAccount caller,String ws,String project,String intentId){
+        agents.requireProject(caller,ws,project,false);
+        opaque(intentId);
+        var job=repo.intent(caller.id(),id(project),intentId).orElseThrow(()->error(NOT_FOUND,"job_not_found","提交意图尚未接纳"));
+        return view(job,caller);
+    }
+    public Map<String,Object> verifyIntent(UserAccount caller,String ws,String project,JobDtos.Submit request){
+        agents.requireProject(caller,ws,project,false);
+        opaque(request.intentId());
+        var job=repo.intent(caller.id(),id(project),request.intentId()).orElseThrow(()->error(NOT_FOUND,"job_not_found","提交意图尚未接纳"));
+        if(repo.scheduleOrigin(job.id()).isPresent())throw error(CONFLICT,"intent_source_conflict","相同提交意图已绑定不同的运行来源");
+        if(!job.intentHash().equals(repo.digest(request)))throw error(CONFLICT,"intent_conflict","同一提交意图的固定内容已变化");
+        return view(job,caller);
+    }
     public List<Map<String,Object>> list(UserAccount caller, String ws, String project, Integer requestedLimit, String beforeJobId) {
         agents.requireProject(caller, ws, project, false);
         var paging = properties.getJobs();

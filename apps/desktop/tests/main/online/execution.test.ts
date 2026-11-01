@@ -70,6 +70,7 @@ async function fixture(extra?: (url: string, init?: RequestInit) => Response | P
     const path = String(url); requests.push({ url: path, method: init?.method ?? "GET", body: init?.body && JSON.parse(String(init.body)) });
     if (path.endsWith("/auth/login")) return Response.json({ token: "member-token", expiresAt: "2027-01-01T00:00:00Z", user: { id: "7", username: "member", displayName: "Member", role: "USER", disabled: false } });
     const custom = await extra?.(path, init); if (custom) return custom;
+    if (path.includes('/jobs/by-intent?')) return Response.json({ code: 'job_not_found' }, { status: 404 });
     if (path.endsWith("/jobs/99")) return Response.json({ jobId: "99", executionId: "100", agentId: "5", state: "ended", cancelState: "none", executionReleased: true, reportState: "pending", task: { protocolVersion: 1, jobId: "99", executionId: "100", scope: context.scope, submittedByUserId: "7", contractProjectId: "00000000-0000-4000-8000-000000000018", snapshotId: "66", manifestHash: "a".repeat(64), target: { kind: "workflow", workflowId: "00000000-0000-4000-8000-000000000091" }, policyVersion: "0", requiredCoreBuildId: "b".repeat(64), scriptPlanDigest: "c".repeat(64), executionProfile: "no-script", runtimeCompatibilityId: "persisted-controlled-runtime", dispatchKind: "dedicated-task", requiredCapabilities: ["task:workflow"] } });
     return Response.json({ code: "unexpected_test_request", message: path }, { status: 400 });
   };
@@ -79,6 +80,91 @@ async function fixture(extra?: (url: string, init?: RequestInit) => Response | P
   return { session, requests, fetcher, host: createOnlineExecutionHost({ session, fetch: fetcher }) };
 }
 describe("online execution main boundary", () => {
+  it.each(['forbidden', 'script_permission_denied'])('final C M3 closed %s denial has an English business explanation and no server body', async code => {
+    const { project } = assetsFixture(), asset = project.collections[0]!.apis[0]!;
+    const locator = { workspaceId: '11', groupId: '22', projectId: project.id, collectionId: project.collections[0]!.id, folderIds: [], apiId: asset.contract.id };
+    const f = await fixture(url => {
+      if (url.endsWith('/execution-agents')) return Response.json({ agents: [], defaultAgentId: null, canManageScripts: false, policyVersion: '0', policy: defaultPolicyConfig });
+      if (url.endsWith('/execution-snapshots')) return Response.json({ code, message: 'FINAL_C_PRIVATE_SERVER_MESSAGE' }, { status: 403 });
+      return undefined;
+    });
+    try {
+      const error = await f.host.handle({ context, operation: 'run', runId: randomUUID(), location: { kind: 'local' },
+        target: { kind: 'debug', invocation: { mode: 'case', locator, case: { ...locator, caseId: asset.cases[0]!.id, scope: 'base' } } }, expectedVersion: '1', runConfig: {},
+        materials: { projectId: '33', credentials: [], attachments: [] }, localOnlyRefIds: [] }).then(() => null, cause => cause as Error);
+      expect(error).toBeInstanceOf(Error); expect(error!.message).toContain(code);
+      // The code itself is not the English explanation. Closed bilingual text needs no locale authority.
+      expect(error!.message.replace(code, '')).toMatch(/permission|denied|not allowed|forbidden/i);
+      expect(`${error?.message}\n${error?.stack}`).not.toContain('FINAL_C_PRIVATE_SERVER_MESSAGE');
+      expect(f.requests.filter(row => row.url.endsWith('/jobs') && row.method === 'POST')).toHaveLength(0);
+    } finally { await f.host.close(); }
+  });
+  // Final M3: the shared member preparation bypasses the old request adapter;
+  // expose only its closed category through the ordinary desktop host failure.
+  it.each(["forbidden", "script_permission_denied"])("final M3 desktop shared prepare retains safe %s remedy", async code => {
+    const { project } = assetsFixture(), asset = project.collections[0]!.apis[0]!;
+    const locator = { workspaceId: "11", groupId: "22", projectId: project.id, collectionId: project.collections[0]!.id, folderIds: [], apiId: asset.contract.id };
+    const f = await fixture(url => {
+      if (url.endsWith("/execution-agents")) return Response.json({ agents: [], defaultAgentId: null, canManageScripts: false, policyVersion: "0", policy: defaultPolicyConfig });
+      if (url.endsWith("/execution-snapshots")) return Response.json({ code, message: "SYNTHETIC_DESKTOP_PRIVATE_SERVER_BODY" }, { status: 403 });
+      return undefined;
+    });
+    try {
+      const error = await f.host.handle({ context, operation: "run", runId: randomUUID(), location: { kind: "local" },
+        target: { kind: "debug", invocation: { mode: "case", locator, case: { ...locator, caseId: asset.cases[0]!.id, scope: "base" } } }, expectedVersion: "1", runConfig: {},
+        materials: { projectId: "33", credentials: [], attachments: [] }, localOnlyRefIds: [] }).then(() => null, cause => cause as Error);
+      expect.soft(error?.message).toContain(code);
+      expect.soft(`${error?.message}\n${error?.stack}`).not.toContain("SYNTHETIC_DESKTOP_PRIVATE_SERVER_BODY");
+      expect(f.requests.filter(row => row.url.endsWith("/execution-snapshots"))).toHaveLength(1);
+      expect(f.requests.filter(row => row.url.endsWith("/jobs") && row.method === "POST")).toHaveLength(0);
+    } finally { await f.host.close(); }
+  });
+  it("final M3 desktop shared start retains the safe denial code without retrying submission", async () => {
+    const { project, assets } = assetsFixture(project => { project.collections[0]!.apis[0]!.contract.request.auth = { kind: "none" }; });
+    const asset = project.collections[0]!.apis[0]!, identity = await readBuildIdentity();
+    const configuration = { configVersion: "0", appliedConfigVersion: "0", pendingFields: [], restartRequiredFields: [], status: "applied" };
+    const locator = { workspaceId: "11", groupId: "22", projectId: project.id, collectionId: project.collections[0]!.id, folderIds: [], apiId: asset.contract.id };
+    const f = await fixture((url, init) => {
+      if (url.endsWith("/execution-agents")) return Response.json({ defaultAgentId: "5", canManageScripts: false, policy: defaultPolicyConfig, policyVersion: "0", agents: [{ id: "5", name: "Fixed agent", acceptingJobs: true, availability: "available", lastSeenAt: "2026-10-26T12:00:00Z", policy: defaultPolicyConfig, policyVersion: "0", scriptsAllowed: false, scriptGrant: { scope: "script-version", version: "0", scripts: [] }, stressConfiguration: stressConfigurationFixture(), configuration,
+        runtime: { protocolVersion: 1, sessionId: "final-start-host", coreBuildId: identity.coreBuildId, scriptApiId: identity.scriptApiId, capabilities: identity.capabilities, nodeVersion: process.versions.node, v8Version: process.versions.v8, runtimeCompatibilityId: runtimeCompatibilityIdForRuntime(process.versions.node, process.versions.v8, identity.scriptApiId), configuration } }] });
+      if (url.endsWith("/execution-snapshots")) return Response.json({ snapshotId: "66", createdByUserId: "7", assets });
+      if (url.endsWith("/local-materials")) return Response.json({ snapshotId: "66", scope: context.scope, credentials: [], attachments: [] });
+      if (url.endsWith("/jobs") && init?.method === "POST") return Response.json({ code: "script_permission_denied", message: "SYNTHETIC_START_PRIVATE_SERVER_BODY" }, { status: 403 });
+      return undefined;
+    });
+    try {
+      const error = await f.host.handle({ context, operation: "run", runId: randomUUID(), location: { kind: "agent", agentId: "5" },
+        target: { kind: "debug", invocation: { mode: "case", locator, case: { ...locator, caseId: asset.cases[0]!.id, scope: "base" } } }, expectedVersion: "1", runConfig: {},
+        materials: { projectId: "33", credentials: [], attachments: [] }, localOnlyRefIds: [] }).then(() => null, cause => cause as Error);
+      expect.soft(error?.message).toContain("script_permission_denied");
+      expect.soft(`${error?.message}\n${error?.stack}`).not.toContain("SYNTHETIC_START_PRIVATE_SERVER_BODY");
+      expect(f.requests.filter(row => row.url.endsWith("/execution-snapshots"))).toHaveLength(1);
+      expect(f.requests.filter(row => row.url.endsWith("/jobs") && row.method === "POST")).toHaveLength(1);
+    } finally { await f.host.close(); }
+  });
+  // Existing saved-target entries must consume the same prepared snapshot through the legacy adapter.
+  it.each(['local-debug','local-suite','local-workflow','agent-debug','agent-suite','agent-workflow','local-free','agent-free'] as const)('keeps the real saved %s entry on the shared member path',async mode=>{
+    let traffic=0;const target=createServer((_request,response)=>{traffic++;response.end('saved-target');});
+    await new Promise<void>(resolve=>target.listen(0,'127.0.0.1',resolve));const address=target.address();if(!address||typeof address==='string')throw new Error('owned target missing');
+    const {project,assets}=assetsFixture(project=>{const request=project.collections[0]!.apis[0]!.contract.request;request.baseUrl=`http://127.0.0.1:${address.port}`;request.path='/saved';request.auth={kind:'none'};if(request.protocol==='http')request.body={kind:'none'};project.suites=[{formatVersion:1,id:'00000000-0000-4000-8000-000000000081',name:'Saved suite',tags:[],selection:{kind:'query',caseTags:[]},failFast:false,reporters:['json']}];});
+    const identity=await readBuildIdentity(),configuration={configVersion:'0',appliedConfigVersion:'0',pendingFields:[],restartRequiredFields:[],status:'applied'};
+    const agent=mode.startsWith('agent');
+    const f=await fixture((url,init)=>{
+      if(url.endsWith('/execution-agents'))return Response.json({defaultAgentId:agent?'5':null,canManageScripts:false,policy:defaultPolicyConfig,policyVersion:'0',agents:agent?[{id:'5',name:'Fixed agent',acceptingJobs:true,availability:'available',lastSeenAt:'2026-10-26T12:00:00Z',policy:defaultPolicyConfig,policyVersion:'0',scriptsAllowed:false,scriptGrant:{scope:'script-version',version:'0',scripts:[]},stressConfiguration:stressConfigurationFixture(),configuration,runtime:{protocolVersion:1,sessionId:'existing-host',coreBuildId:identity.coreBuildId,scriptApiId:identity.scriptApiId,capabilities:identity.capabilities,nodeVersion:process.versions.node,v8Version:process.versions.v8,runtimeCompatibilityId:runtimeCompatibilityIdForRuntime(process.versions.node,process.versions.v8,identity.scriptApiId),configuration}}]:[]});
+      if(url.endsWith('/execution-snapshots'))return Response.json({snapshotId:'66',createdByUserId:'7',assets});
+      if(url.endsWith('/local-materials'))return Response.json({snapshotId:'66',scope:context.scope,credentials:[],attachments:[]});
+      if(url.endsWith('/jobs')&&init?.method==='POST'){const body=JSON.parse(String(init.body));const{scriptRequirements:_requirements,...preparation}=body.preparation;return Response.json({jobId:'99',executionId:'100',agentId:'5',state:'queued',cancelState:'none',executionReleased:false,reportState:'none',task:{protocolVersion:1,jobId:'99',executionId:'100',scope:context.scope,submittedByUserId:'7',contractProjectId:project.id,snapshotId:body.snapshotId,manifestHash:body.preparation.manifestHash,target:body.target,policyVersion:'0',...preparation}});}
+      return undefined;
+    });
+    const asset=project.collections[0]!.apis[0]!,locator={workspaceId:'11',groupId:'22',projectId:project.id,collectionId:project.collections[0]!.id,folderIds:[],apiId:asset.contract.id};
+    const selection=mode.split('-')[1],kind=selection==='free'?'debug':selection;
+    const selected=selection==='free'?{kind:'debug' as const,invocation:{mode:'free' as const,project:{workspaceId:'11',groupId:'22',projectId:project.id},draftId:randomUUID(),request:asset.contract.request,parameters:{},fields:[]}}:kind==='debug'?{kind:'debug' as const,invocation:{mode:'case' as const,locator,case:{...locator,caseId:asset.cases[0]!.id,scope:'base'}}}:kind==='suite'?{kind:'suite' as const,suiteId:project.suites![0]!.id,allowDraft:false}:{kind:'workflow' as const,workflowId:project.workflows[0]!.id};
+    try{
+      const result=await f.host.handle({context,operation:'run',runId:randomUUID(),location:agent?{kind:'agent',agentId:'5'}:{kind:'local'},target:selected,expectedVersion:'1',runConfig:{},materials:{projectId:'33',credentials:[],attachments:[]},localOnlyRefIds:[]});
+      expect(result).toMatchObject(agent?{jobId:'99',task:{snapshotId:'66',manifestHash:assets.manifestHash,target:{kind}}}:{snapshotId:'66',manifestHash:assets.manifestHash,output:{kind}});
+      expect(f.requests.filter(row=>row.url.endsWith('/execution-snapshots'))).toHaveLength(1);expect(traffic).toBe(agent||kind==='workflow'?0:1);
+    }finally{await f.host.close();target.closeAllConnections();await new Promise<void>(resolve=>target.close(()=>resolve()));}
+  });
   // Added after implementation: a disclosed sequence exception, not historical RED evidence.
   it('bounds local worker count by the real project policy before allocating children', async () => {
     const plan = StressPlanSchema.parse({ formatVersion: 1, target: { kind: 'workflow', workflowId: '00000000-0000-4000-8000-000000000091' }, load: { kind: 'constant-vus', vus: 2 }, maxVus: 2, termination: { maxIterations: 2 } });
@@ -439,6 +525,8 @@ describe("online execution main boundary", () => {
       const asset = project.collections[0]!.apis[0]!;
       const result = await host.handle({ context, operation: 'run', runId: '00000000-0000-4000-8000-000000000097', location: { kind: 'local' }, expectedVersion: '1', target: { kind: 'debug', invocation: { mode: 'request', locator: { workspaceId: '11', groupId: '22', projectId: project.id, collectionId: project.collections[0]!.id, folderIds: [], apiId: asset.contract.id }, request: asset.contract.request, parameters: {}, fields: [] } }, runConfig: {}, materials: { projectId: '33', credentials: [], attachments: [] }, localOnlyRefIds: [] });
       const output = OnlineLocalResultSchema.parse(result).output;
+      expect(OnlineLocalResultSchema.parse(result)).toMatchObject({ snapshotId: '66', manifestHash: assets.manifestHash });
+      expect(f.requests.filter(row => row.url.endsWith('/execution-snapshots'))).toHaveLength(1);
       expect(output.kind).toBe('debug');
       if (output.kind !== 'debug') throw new Error('debug output expected');
       expect(output.result.exchanges[0]?.response?.body).toMatchObject({ text: 'registered-online-plugin' });
@@ -467,7 +555,9 @@ describe("online execution main boundary", () => {
       return undefined;
     });
     const asset = project.collections[0]!.apis[0]!;
-    await f.host.handle({ context, operation: 'run', runId: '00000000-0000-4000-8000-000000000098', location: { kind: 'agent', agentId: '5' }, expectedVersion: '1', target: { kind: 'debug', invocation: { mode: 'request', locator: { workspaceId: '11', groupId: '22', projectId: project.id, collectionId: project.collections[0]!.id, folderIds: [], apiId: asset.contract.id }, request: asset.contract.request, parameters: {}, fields: [] } }, runConfig: {}, materials: { projectId: '33', credentials: [], attachments: [] }, localOnlyRefIds: [] });
+    const started = await f.host.handle({ context, operation: 'run', runId: '00000000-0000-4000-8000-000000000098', location: { kind: 'agent', agentId: '5' }, expectedVersion: '1', target: { kind: 'debug', invocation: { mode: 'request', locator: { workspaceId: '11', groupId: '22', projectId: project.id, collectionId: project.collections[0]!.id, folderIds: [], apiId: asset.contract.id }, request: asset.contract.request, parameters: {}, fields: [] } }, runConfig: {}, materials: { projectId: '33', credentials: [], attachments: [] }, localOnlyRefIds: [] });
+    expect(started).toMatchObject({ jobId: '99', task: { snapshotId: '66', manifestHash: assets.manifestHash } });
+    expect(f.requests.filter(row => row.url.endsWith('/execution-snapshots'))).toHaveLength(1);
     expect(f.requests.find(row => row.url.endsWith('/jobs'))?.body).toMatchObject({ materials: { credentials: [{ refId: 'service-token', version: '1' }] }, preparation: { runtimeCompatibilityId } });
   });
   it("writes a project credential only through the explicitly scoped material action and returns no secret value", async () => {

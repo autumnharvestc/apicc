@@ -127,6 +127,7 @@ export interface ProjectGlobalSettings {
 }
 import type { AiSuggestedCase } from "@apicc/core";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput, AiTestConfigResult } from "./ai/contract.js";
+import type * as PersonalAi from "./ai/contract.js";
 import type { PluginsListResult } from "./plugins/contract.js";
 import type {
   OnlineBatchResult,
@@ -539,6 +540,18 @@ export interface ApiccApi extends TestingApi {
   aiSuggest(input: AiSuggestInput): Promise<AiSuggestedCase[]>;
   /** 连接轻量探测（任务 2）：最小 completions（内容不解析）；resolve 即可用，失败抛 provider 归一化可读错误。 */
   aiTestConfig(input: AiTestConfigInput): Promise<AiTestConfigResult>;
+  aiSettingsRead(): Promise<PersonalAi.AiSettingsView>;
+  aiSettingsWrite(input: PersonalAi.AiSettingsWriteInput): Promise<PersonalAi.AiSettingsView | PersonalAi.AiMigrationResultDto>;
+  aiCatalogImport(input: PersonalAi.AiCatalogImportInput): Promise<PersonalAi.AiCatalogDto>;
+  aiCatalogReload(): Promise<PersonalAi.AiCatalogDto>;
+  aiConnectionTest(input: { operationId: string; modelProfileId: string }): Promise<{ ok: true }>;
+  aiDiscover(input: { operationId: string; connectionId: string }): Promise<PersonalAi.AiDiscoverResultDto>;
+  aiPrepareAssistance(input: PersonalAi.AiPrepareInput): Promise<{ previewId: string; preview: PersonalAi.AiContextPreviewDto }>;
+  aiInspectChoices(input: PersonalAi.AiChoicesInput): Promise<PersonalAi.AiChoicesDto>;
+  aiReadChoicesPage(input: PersonalAi.AiChoicesPageInput): Promise<PersonalAi.AiChoicesPageDto>;
+  aiStart(input: PersonalAi.AiStartInput): Promise<PersonalAi.AiBusinessResultDto>;
+  aiCancel(input: { operationId: string }): Promise<{ cancelled: boolean }>;
+  onAiProgress(listener: (progress: PersonalAi.AiProgressDto) => void): () => void;
   // —— 插件频道（M7-B 任务 1 登记 / 任务 2 真加载器，规格 §2 D3/D5）——
   /**
    * 插件加载摘要：plugins 为 loaded/failed 混合清单（D3 诊断可见面），importers 为

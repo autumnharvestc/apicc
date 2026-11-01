@@ -1,6 +1,6 @@
 /**
  * AI key 安全存储（M6-C 任务 1，规格 §2 D2 密钥边界）：Electron safeStorage 加密存取
- * AI API key，不可用时降级明文 + console.warn（沿用 online tokenStore 先例，D9 原文裁定）。
+ * AI API key；不可用时拒绝新持久化，绝不降级明文。旧明文仅由已确认迁移读取。
  * safeStorage 为形依赖——生产组合根（main.ts）传 `import { safeStorage } from "electron"`
  * 的真身，测试注入替身；本模块不直接 import electron，保证 vitest（node 环境）可加载。
  *
@@ -16,17 +16,30 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SafeStorageLike } from "../online/tokenStore.js";
 
+export interface AiSafeStorageLike extends SafeStorageLike {
+  getSelectedStorageBackend?(): string;
+}
+export function aiEncryptionAvailable(storage: AiSafeStorageLike, platform = process.platform): boolean {
+  try {
+    if (!storage.isEncryptionAvailable()) return false;
+    if (platform !== "linux") return true;
+    const backend = storage.getSelectedStorageBackend?.();
+    return backend !== undefined && ["gnome_libsecret", "kwallet", "kwallet5", "kwallet6"].includes(backend);
+  } catch { return false; }
+}
+
 export interface AiKeyStoreDeps {
   /** 存储目录（生产 = app.getPath("userData")，测试 = 临时目录）。 */
   dir: string;
   /** safeStorage 实现（生产 = electron safeStorage，测试 = 替身）。 */
-  storage: SafeStorageLike;
+  storage: AiSafeStorageLike;
   /** 文件名（默认 ai-key.json）。 */
   fileName?: string;
+  platform?: NodeJS.Platform;
 }
 
 export interface AiKeyStore {
-  /** 保存 key（safeStorage 可用 → 密文；不可用 → 明文 + console.warn 降级）；重复保存覆盖。 */
+  /** 保存 key（可靠 safeStorage 可用 → 密文；否则拒绝）；重复保存覆盖。 */
   save(key: string): void;
   /** 读回 key；文件缺失/损坏/形状不符/校验不符 → null（引导重新配置，不抛）。 */
   load(): string | null;
@@ -82,11 +95,10 @@ export function createAiKeyStore(deps: AiKeyStoreDeps): AiKeyStore {
     save(key: string): void {
       const checksum = sha256(key);
       let persisted: PersistedKey;
-      if (deps.storage.isEncryptionAvailable()) {
+      if (aiEncryptionAvailable(deps.storage, deps.platform)) {
         persisted = { encrypted: true, token: deps.storage.encryptString(key).toString("base64"), checksum };
       } else {
-        console.warn("safeStorage 不可用，AI 密钥将以明文存储（建议检查系统钥匙串/密钥环环境）");
-        persisted = { encrypted: false, token: key, checksum };
+        throw new Error("AI 安全存储不可用；请使用显式仅本次会话凭据");
       }
       writeFileSync(file, JSON.stringify(persisted, null, 2), "utf8");
     },

@@ -61,6 +61,7 @@ function lazyMemoryApi(): ApiccApi {
   };
   return new Proxy({} as ApiccApi, {
     get(_target, prop: string) {
+      if (prop === "onAiProgress") return (_listener: Parameters<ApiccApi['onAiProgress']>[0]) => () => {};
       if (prop === "onStressProgress") return (listener: Parameters<ApiccApi["onStressProgress"]>[0]) => {
         let disposed = false, unsubscribe: (() => void) | undefined;
         void load().then((api) => { if (!disposed) unsubscribe = api.onStressProgress(listener); }).catch(() => {});

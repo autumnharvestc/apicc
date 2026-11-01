@@ -14,6 +14,7 @@
     "test": "pnpm -C ../plugin-sdk build && pnpm -C ../core build && pnpm -C ../execution build && pnpm build && vitest run"
   },
   "dependencies": {
+    "@napi-rs/keyring": "2.1.0",
     "@apicc/core": "workspace:*",
     "@apicc/execution": "workspace:*",
     "@apicc/plugin-sdk": "workspace:*",

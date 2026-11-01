@@ -23,6 +23,7 @@ import { executeCase, prepareCaseExecution, type CaseExecutionResult, type CaseE
 import { createExtractionRuntimeState, type ExtractionRuntimeState } from "../testing/extraction.js";
 import { bindPreparedTestData, readPreparedCaseData } from "../testing/data.js";
 import type { PreparedTestData } from "../testing/dataModel.js";
+import type { PreparedRequestFiles } from "../http/preparedRequestFiles.js";
 import { assertScriptRequirements, collectionScriptRequirements } from "./scriptRequirements.js";
 
 /** Container-level failure that preserves all case rows completed before the throw. */
@@ -87,6 +88,8 @@ export interface ProjectExecutionRun {
   readonly network?: PreparedNetworkRun;
   /** Serializable, immutable source rows captured before dispatch. */
   readonly preparedTestData?: PreparedTestData;
+  /** Borrowed runtime bindings; the surrounding execution owns the captured handles. */
+  readonly preparedRequestFiles?: PreparedRequestFiles;
 }
 
 /** Pin one caller-selected run wrapper so later wrapper replacement cannot mix revisions. */
@@ -102,6 +105,7 @@ export function captureProjectExecutionRun(run: ProjectExecutionRun): ProjectExe
     credentialBindings: run.credentialBindings,
     ...(run.network === undefined ? {} : { network: run.network }),
     ...(run.preparedTestData === undefined ? {} : { preparedTestData: bindPreparedTestData(snapshot, run.preparedTestData) }),
+    ...(run.preparedRequestFiles === undefined ? {} : { preparedRequestFiles: run.preparedRequestFiles }),
   });
 }
 
@@ -227,6 +231,7 @@ export class CollectionRunner {
             asset, assetContext: selectedRun.snapshot.context, credentialBindings: selectedRun.credentialBindings,
           ...(selectedRun.network === undefined ? {} : { network: selectedRun.network }),
             testCase: tc, prepared, extractionState,
+            preparedRequestFiles: selectedRun.preparedRequestFiles,
             locator,
             row: rows[rowIndex], rowIndex, isDataDriven,
             resolver: caseResolver, envVars, envBaseUrl: baseUrl, globals: mutableGlobals(globals), persisted, persistedSnapshot,

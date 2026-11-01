@@ -26,6 +26,14 @@ public class JobController {
         return jobs.list(caller,ws,project,limit,beforeJobId);
     }
     @GetMapping("/jobs/{job}") public Map<String,Object> detail(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,@PathVariable String job){return jobs.detail(caller,job);}
+    @GetMapping("/workspaces/{ws}/projects/{project}/jobs/by-intent")
+    public ResponseEntity<Map<String,Object>> findIntent(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,@PathVariable String ws,@PathVariable String project,@RequestParam String intentId){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(jobs.findIntent(caller,ws,project,intentId));
+    }
+    @PostMapping("/workspaces/{ws}/projects/{project}/jobs/by-intent/verify")
+    public ResponseEntity<Map<String,Object>> verifyIntent(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,@PathVariable String ws,@PathVariable String project,@RequestBody JsonNode body){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(jobs.verifyIntent(caller,ws,project,decode(body,JobDtos.Submit.class)));
+    }
     @PostMapping("/jobs/{job}/cancel") public Map<String,Object> cancel(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,@PathVariable String job){return jobs.cancel(caller,job);}
     @GetMapping("/jobs/{job}/report") public ResponseEntity<byte[]> report(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,@PathVariable String job){return ResponseEntity.ok().cacheControl(CacheControl.noStore()).contentType(MediaType.APPLICATION_JSON).body(jobs.report(caller,job));}
 }

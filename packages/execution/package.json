@@ -6,6 +6,8 @@
     "./host": { "types": "./dist/host/index.d.ts", "default": "./dist/host/index.js" },
     "./contract": { "types": "./dist/contract/index.d.ts", "default": "./dist/contract/index.js" },
     "./client": { "types": "./dist/client/index.d.ts", "default": "./dist/client/index.js" },
+    "./client/memberTypes": { "types": "./dist/client/memberTypes.d.ts", "default": "./dist/client/memberTypes.js" },
+    "./client/stressComparison": { "types": "./dist/client/stressComparison.d.ts", "default": "./dist/client/stressComparison.js" },
     "./buildIdentity": { "types": "./dist/buildIdentity.d.ts", "default": "./dist/buildIdentity.js" }
   },
   "engines": { "node": ">=22.19.0" },

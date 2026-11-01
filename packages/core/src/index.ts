@@ -2,6 +2,16 @@ import { createSystemSecretStore as createInternalSystemSecretStore } from "./cr
 import type { SecretStore as SecretStoreContract } from "./credentials/types.js";
 
 export * from "./shared.js";
+export { contractAiView, safeAiValue, redactAiText } from "./ai/contractView.js";
+export { createAiInvocationHost } from "./ai/invocation.js";
+export type { AiInvocationDependencies } from "./ai/invocation.js";
+export { AiInvocationError } from "./ai/types.js";
+export type { AiOperationInput, AiAttemptInput, AiCallResult, AiUsage, AiProgress, AiOperationSession, AiInvocationHost, AiResolvedCredentials, AiCredentialResolver } from "./ai/types.js";
+// Trusted Node-only personal AI configuration and credential host seams.
+export * from "./ai/host/repository.js";
+export type { AiSecretMode, AiSecretState, AiSecretBackend } from "./ai/host/secrets.js";
+export * from "./ai/host/personal.js";
+export * from "./ai/host/migration.js";
 export * from "./plugin/executionRegistry.js";
 export * from "./runner/scriptRequirements.js";
 export { createJsScriptEngine } from "./sandbox/jsEngine.js";
@@ -55,12 +65,14 @@ export { createDebugReplayInvocation, restoreDebugHistoryExchange } from "./debu
 export { createHttpSession } from "./http/session.js";
 export type { HttpSession, HttpCookieSummary } from "./http/session.js";
 export { captureRequestFiles, HttpFileError } from "./http/files.js";
-export type { CapturedFile, CapturedRequestFiles, CaptureRequestFilesOptions } from "./http/files.js";
+export type { CapturedFile, CapturedRequestFiles, CapturedRequestFileOwner, RequestFileSource, CaptureRequestFilesOptions } from "./http/files.js";
+export { prepareRequestFiles } from "./http/preparedRequestFiles.js";
+export type { PreparedRequestFiles } from "./http/preparedRequestFiles.js";
 
 // Network profile schemas/types are browser-safe from shared.js; private storage and prepared secret/certificate material stay Node-only.
 export { createFileNetworkProfileStore } from "./network/privateStore.js";
 export type { FileNetworkProfileStoreOptions, NetworkProfileStore } from "./network/privateStore.js";
-export { prepareNetworkRun, collectNetworkDependencies } from "./network/prepare.js";
+export { prepareNetworkRun, collectNetworkDependencies, readNetworkCertificateFile } from "./network/prepare.js";
 export type {
   PrepareNetworkRunOptions,
   PreparedNetworkTLS,

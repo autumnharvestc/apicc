@@ -3,8 +3,8 @@ import type { ApiAsset } from "../contract/model.js";
 import { contractAiView } from "../ai/contractView.js";
 
 /** Render the same read-only design projection consumed by AI into Markdown. */
-export function renderContractMarkdown(asset: DeepReadonly<ApiAsset>, context: ProjectAssetContextReadView): string {
-  const view = contractAiView(asset, context);
+export function renderContractMarkdown(asset: DeepReadonly<ApiAsset>, context: ProjectAssetContextReadView, options: { includeBodies?: boolean } = {}): string {
+  const view = contractAiView(asset, context, options);
   const request = view.request;
   const requestRecord = asRecord(request);
   const auth = asRecord(requestRecord?.auth);

@@ -31,6 +31,7 @@ const props = defineProps<{
   testing?: TestingStore;
   reportError: (e: unknown) => void;
   readOnly?: boolean;
+  ai?: import('../stores/ai.js').AiStore;
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void; (e: "locate-evidence", identity: import("@apicc/core").EvidenceIdentity): void }>();
 const { t } = useI18n();
@@ -46,12 +47,12 @@ const error = computed(() => requestTabState.value ? requestTabState.value.error
 <template>
   <section class="test-view" data-testid="test-view">
     <DatasetPanel v-if="pane === 'datasets' && testing?.current" :testing="testing" />
-    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :testing="testing" @locate-evidence="emit('locate-evidence', $event)" />
+    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :testing="testing" @locate-evidence="emit('locate-evidence', $event)" />
     <!-- 单接口用例：用例面板 + 运行结果内嵌上屏 -->
     <template v-else-if="pane === 'api-cases'">
       <EmptyState v-if="!editor.api" :text="t('test.pickApi')" />
       <template v-else>
-        <CasePanel :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" @stress="(caseId: string) => emit('stress', caseId)">
+        <CasePanel :ai="ai" :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" @stress="(caseId: string) => emit('stress', caseId)">
           <template #after-cases>
             <div v-if="result" class="result" data-testid="test-result">
               <ResponseViewer :result="result" :sending="sending" :error="error" :tab-state="requestTabState" />

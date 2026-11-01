@@ -5,7 +5,7 @@ import type { PluginRegistry } from "../plugin/registry.js";
 import type { AssertOperator, AssertResult, ExecutionResponse } from "../plugin/types.js";
 import { NormalizedAssertionSchema, ResponseSelectorSchema, type NormalizedAssertion, type ResponseSelector } from "../testing/model.js";
 import type { VariableResolver } from "../variables/resolver.js";
-import { AssertionValueError, selectResponseValue, validateResponseSelector } from "./selection.js";
+import { AssertionValueError, normalizeSavedAssertionPath, selectResponseValue, validateResponseSelector } from "./selection.js";
 import { compileRegex, type CompiledRegex } from "./regex.js";
 import { prepareValueSchema, selectContractResponseSchema } from "./schemaValue.js";
 import { parseExpected } from "./operators.js";
@@ -27,7 +27,6 @@ export interface CompiledCaseAssertions {
   owner?: { contractId: string };
 }
 const builtins = new Set(["eq", "neq", "contains", "lt", "gt", "lte", "gte", "xpath", "exists", "notExists", "regex", "length", "in", "notIn", "deepEqual", "schema"]);
-const legacyJsonOperators = new Set(["eq", "neq", "contains", "lt", "gt", "lte", "gte"]);
 function diagnostic(error: unknown): AssertResult {
   return error instanceof AssertionValueError ? { pass: false, message: error.message, kind: error.kind, code: error.code }
     : { pass: false, message: String(error), kind: "config", code: "ASSERTION_CONFIG" };
@@ -51,11 +50,7 @@ export function compileCaseAssertions(testCase: TestCase, context: ProjectAssetC
   const compiled: CompiledCaseAssertions = { assertions: [], diagnostics: [], context, ...(owner ? { owner: { ...owner } } : {}) };
   const assertions = testCase.assertions;
   for (const input of assertions.slice(0, 256)) {
-    // The old seven assertion operators accepted rootless property/index paths. Adapt only
-    // that legacy assertion boundary; standalone/new selectors retain strict JSONPath syntax.
-    const path = input.target === "bodyJson" && legacyJsonOperators.has(input.op) && (input.match ?? "first") === "first"
-      && input.options === undefined && input.path !== undefined && /^[A-Za-z_][\w$-]*(?:\.[A-Za-z_$][\w$-]*|\[(?:0|[1-9]\d*)\])*$/.test(input.path)
-      ? `$.${input.path}` : input.path;
+    const path = normalizeSavedAssertionPath(input);
     const fallback = { target: input.target, match: input.match ?? "first", ...(path !== undefined ? { path } : {}), ...(input.headerName !== undefined ? { headerName: input.headerName } : {}), ...(input.cookieName !== undefined ? { cookieName: input.cookieName } : {}), ...(input.namespaces !== undefined ? { namespaces: input.namespaces } : {}) } as ResponseSelector;
     const entry: CompiledAssertion = { assertion: { ...input, match: input.match ?? "first" }, selector: fallback };
     try {

@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AiProviderError, createAiProvider } from "../../src/ai/provider.js";
 import { DEFAULT_AI_TIMEOUT_MS, type AiChatMessage } from "../../src/ai/types.js";
+import { payload } from "./invocation.fixture.js";
 
 const messages: AiChatMessage[] = [{ role: "user", content: "请给出一些建议" }];
 
 /** 捕获请求并返回 OpenAI 兼容 chat completions 形状的替身（零真实网络）。 */
-function captureFetch(status = 200, body = JSON.stringify({ choices: [{ message: { content: "{}" } }] })) {
+function captureFetch(status = 200, body = JSON.stringify(payload("openai-chat-completions", "{}"))) {
   const captured: Array<{ url: string; init: RequestInit }> = [];
   const impl: typeof fetch = async (input, init) => {
     captured.push({ url: String(input), init: init ?? {} });
@@ -16,6 +17,43 @@ function captureFetch(status = 200, body = JSON.stringify({ choices: [{ message:
 }
 
 describe("createAiProvider（D1 provider 抽象）", () => {
+  // Catch missing redirect:error and accidental propagation of a redirect response body.
+  // Only the external HTTP transport is replaced; provider request/error handling stays real.
+  it("redirect_is_rejected_and_error_body_not_echoed", async () => {
+    const secret = "redirect-body-private-prompt-and-sk-secret";
+    const { impl, captured } = captureFetch(302, secret);
+    const provider = createAiProvider(
+      { baseUrl: "https://ai.example.com/v1", apiKey: "sk-secret", model: "test-model" },
+      { fetch: impl },
+    );
+
+    const error = await provider(messages).catch((value: unknown) => value);
+
+    expect(captured[0]!.init.redirect).toBe("error");
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).not.toContain(secret);
+    expect(JSON.stringify(error)).not.toContain(secret);
+  });
+
+  // Catch error-body disclosure independently, so the redirect assertion cannot hide it.
+  it.each([
+    { status: 401, body: '{"error":{"message":"private-prompt sk-secret-401"}}', secret: "private-prompt sk-secret-401" },
+    { status: 500, body: "<html>private-prompt sk-secret-500</html>", secret: "private-prompt sk-secret-500" },
+  ])("HTTP $status exposes status without echoing the upstream body", async ({ status, body, secret }) => {
+    const { impl } = captureFetch(status, body);
+    const provider = createAiProvider(
+      { baseUrl: "https://ai.example.com/v1", apiKey: "sk-secret", model: "test-model" },
+      { fetch: impl },
+    );
+
+    const error = await provider(messages).catch((value: unknown) => value);
+
+    expect(error).toBeInstanceOf(AiProviderError);
+    expect(error).toMatchObject({ kind: "http", status });
+    expect(String(error)).not.toContain(secret);
+    expect(JSON.stringify(error)).not.toContain(secret);
+  });
+
   it("请求拼装：URL = baseUrl + /chat/completions、Bearer 头、model、messages、response_format json_object、超时 AbortSignal", async () => {
     const { impl, captured } = captureFetch();
     const provider = createAiProvider(
@@ -76,7 +114,7 @@ describe("createAiProvider（D1 provider 抽象）", () => {
     expect(err.message).toMatch(/超时/);
   });
 
-  it("非 200 → 归一化错误含状态码与响应片段", async () => {
+  it("非 200 → 归一化错误保留状态码且隐藏响应正文", async () => {
     const { impl } = captureFetch(401, '{"error":{"message":"Invalid API key"}}');
     const provider = createAiProvider({ baseUrl: "https://ai.example.com", apiKey: "bad", model: "m" }, { fetch: impl });
     const err = await provider(messages).then(
@@ -87,10 +125,10 @@ describe("createAiProvider（D1 provider 抽象）", () => {
     expect(err.kind).toBe("http");
     expect(err.status).toBe(401);
     expect(err.message).toMatch(/401/);
-    expect(err.message).toMatch(/Invalid API key/);
+    expect(err.message).not.toMatch(/Invalid API key/);
   });
 
-  it("非 200 且响应体非 JSON 时仍携带响应片段", async () => {
+  it("非 200 且响应体非 JSON 时保留状态码且隐藏响应正文", async () => {
     const { impl } = captureFetch(500, "Internal Server Error");
     const provider = createAiProvider({ baseUrl: "https://ai.example.com", apiKey: "k", model: "m" }, { fetch: impl });
     const err = await provider(messages).then(
@@ -99,7 +137,7 @@ describe("createAiProvider（D1 provider 抽象）", () => {
     );
     expect(err.kind).toBe("http");
     expect(err.message).toMatch(/500/);
-    expect(err.message).toMatch(/Internal Server Error/);
+    expect(err.message).not.toMatch(/Internal Server Error/);
   });
 
   it("网络错误归一化（携带分类 kind 与原始消息）", async () => {
@@ -168,9 +206,45 @@ describe("createAiProvider（D1 provider 抽象）", () => {
   });
 
   it("成功时返回 choices[0].message.content 字符串", async () => {
-    const { impl } = captureFetch(200, JSON.stringify({ choices: [{ message: { content: '{"cases":[]}' } }] }));
+    const { impl } = captureFetch(200, JSON.stringify(payload("openai-chat-completions", '{"cases":[]}')));
     const provider = createAiProvider({ baseUrl: "https://ai.example.com", apiKey: "k", model: "m" }, { fetch: impl });
     await expect(provider(messages)).resolves.toBe('{"cases":[]}');
+  });
+});
+
+describe("legacy provider uses the bounded invocation host", () => {
+  it("complete-looking content without a success terminal is rejected", async () => {
+    const { impl } = captureFetch(200, JSON.stringify({ choices: [{ index: 0, message: { role: "assistant", content: '{"cases":[]}' } }] }));
+    const provider = createAiProvider({ baseUrl: "https://ai.example.com/v1", apiKey: "test", model: "m" }, { fetch: impl });
+    await expect(provider(messages)).rejects.toMatchObject({ kind: "response" });
+  });
+  it("malformed JSON never exposes response text or a parse cause", async () => {
+    const { impl } = captureFetch(200, "private-prompt-secret");
+    const provider = createAiProvider({ baseUrl: "https://ai.example.com/v1", apiKey: "test", model: "m" }, { fetch: impl });
+    const error = await provider(messages).catch((e: unknown) => e) as Error;
+    expect(String(error)).not.toContain("private-prompt-secret"); expect(error.cause).toBeUndefined();
+  });
+  it("network classification does not expose the original message or cause", async () => {
+    const provider = createAiProvider({ baseUrl: "https://ai.example.com/v1", apiKey: "test", model: "m" }, { fetch: async () => { throw Object.assign(new Error("private-secret ECONNREFUSED"), { code: "ECONNREFUSED", cause: new Error("private-prompt") }); } });
+    const error = await provider(messages).catch((e: unknown) => e) as Error;
+    expect(error).toMatchObject({ kind: "refused" }); expect(String(error)).not.toContain("private-secret"); expect(error.cause).toBeUndefined();
+  });
+  it("legacy output cannot exceed the same 4 MiB business-text limit", async () => {
+    const { impl } = captureFetch(200, JSON.stringify(payload("openai-chat-completions", "x".repeat(4 * 1024 * 1024 + 1))));
+    const provider = createAiProvider({ baseUrl: "https://ai.example.com/v1", apiKey: "test", model: "m" }, { fetch: impl });
+    const error = await provider(messages).then(() => ({ kind: "unexpected-success" }), (e: unknown) => e);
+    expect(error).toMatchObject({ kind: "response" });
+  });
+  it("legacy 25ms timeout interrupts body reading as well as fetch", async () => {
+    vi.useFakeTimers();
+    try {
+      let cancelled = false;
+      const provider = createAiProvider({ baseUrl: "https://ai.example.com/v1", apiKey: "test", model: "m", timeoutMs: 25 }, { fetch: async () => new Response(new ReadableStream({ cancel() { cancelled = true; } })) });
+      const operation = provider(messages).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(25);
+      const outcome = await Promise.race([operation, Promise.resolve({ kind: "still-reading" })]);
+      expect(outcome).toMatchObject({ kind: "timeout" }); expect(cancelled).toBe(true);
+    } finally { vi.useRealTimers(); }
   });
 });
 

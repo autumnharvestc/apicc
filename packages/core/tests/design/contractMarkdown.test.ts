@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
 import { contractAiView } from "../../src/ai/contractView.js";
 import { renderContractMarkdown } from "../../src/design/contractMarkdown.js";
+import { renderContractMarkdown as renderPublicContractMarkdown } from "../../src/design/export.js";
 import { parseContractCollection21 } from "../../src/import/contractCollection21.js";
 import { parseContractOpenapi } from "../../src/import/contractOpenapi.js";
 import { designDocumentIds, projectionProject } from "../helpers/designDocumentFixture.js";
@@ -10,6 +11,29 @@ import { designDocumentIds, projectionProject } from "../helpers/designDocumentF
 const { contract: contractId, model: modelId, parameterComponent: parameterComponentId } = designDocumentIds;
 
 describe("contract-derived views", () => {
+  it("I1 redacts saved-case names through the existing public Markdown renderer without mutating source", () => {
+    const project = projectionProject();
+    const caseName = "https://case-user:CASE_PRIVATE@example.test/items?password=CASE_QUERY_PRIVATE&visible=yes";
+    project.collections[0]!.apis[0]!.cases.push({ id: "presentation-case", name: caseName, scope: "base", parameters: {}, preOperations: [], postOperations: [], assertions: [] });
+    const snapshot = createProjectSnapshot(project); const asset = snapshot.project.collections[0]!.apis[0]!;
+    const output = renderPublicContractMarkdown(asset, snapshot.context, { includeBodies: false });
+    expect(output).not.toContain("CASE_PRIVATE"); expect(output).not.toContain("CASE_QUERY_PRIVATE"); expect(output).not.toContain("case-user");
+    expect(output).toContain("visible=yes"); expect(asset.cases[0]!.name).toBe(caseName);
+  });
+  it.each(["userinfo", "safe-query"] as const)("protects a documentation URL through the public renderer: %s", behavior => {
+    const project = projectionProject(); project.collections[0]!.apis[0]!.documentation = "https://doc-user:doc-private@example.test/items?password=doc-query-private&visible=yes";
+    const snapshot = createProjectSnapshot(project); const asset = snapshot.project.collections[0]!.apis[0]!;
+    const output = renderPublicContractMarkdown(asset, snapshot.context, { includeBodies: false });
+    if (behavior === "userinfo") { expect(output).not.toContain("doc-user"); expect(output).not.toContain("doc-private"); }
+    else expect(output).toContain("visible=yes");
+  });
+  // The MCP consumer needs the existing renderer to omit bodies without changing ordinary document defaults.
+  it.each([["base", renderContractMarkdown], ["public", renderPublicContractMarkdown]] as const)("omits body content only when the consumer selects includeBodies false: %s", (_name, render) => {
+    const project = projectionProject(); const snapshot = createProjectSnapshot(project);
+    const asset = snapshot.project.collections[0]!.apis[0]!;
+    expect(render(asset, snapshot.context, { includeBodies: false })).not.toContain("visible");
+    expect(render(asset, snapshot.context)).toContain("visible");
+  });
   it("renders a read-only snapshot with reference IDs and masks common credential fields in Markdown and AI output", () => {
     const project = projectionProject();
     const snapshot = createProjectSnapshot(project);
@@ -27,7 +51,7 @@ describe("contract-derived views", () => {
     expect(combined).not.toContain("synthetic-import-token");
     expect(aiView).toMatchObject({
       contractId,
-      request: { auth: { kind: "bearer", placeholder: "****" } },
+      request: { auth: { kind: "bearer", placeholder: "[REDACTED]" } },
     });
     expect(JSON.stringify(aiView)).toContain("related");
     expect(JSON.stringify(aiView)).toContain("modelId");
@@ -51,8 +75,8 @@ describe("contract-derived views", () => {
 
     const aiView = contractAiView(asset, snapshot.context);
     const markdown = renderContractMarkdown(asset, snapshot.context);
-    expect(aiView.request.auth).toEqual({ kind: "apikey", placeholder: "****" });
-    expect(markdown).toContain("Authentication: apikey (****)");
+    expect(aiView.request.auth).toEqual({ kind: "apikey", placeholder: "[REDACTED]" });
+    expect(markdown).toContain("Authentication: apikey ([REDACTED])");
     expect(JSON.stringify(aiView)).not.toContain("subscription-key");
     expect(JSON.stringify(aiView)).not.toContain("SecretRef");
     const authComponent = imported.project.components.find((component) => component.kind === "auth");
@@ -80,8 +104,8 @@ describe("contract-derived views", () => {
     const aiView = contractAiView(asset, snapshot.context);
     const markdown = renderContractMarkdown(asset, snapshot.context);
     const serialized = `${JSON.stringify(aiView)}${markdown}`;
-    expect(aiView.request.auth).toEqual({ kind: "apikey", placeholder: "****" });
-    expect(markdown).toContain("Authentication: apikey (****)");
+    expect(aiView.request.auth).toEqual({ kind: "apikey", placeholder: "[REDACTED]" });
+    expect(markdown).toContain("Authentication: apikey ([REDACTED])");
     expect(serialized).not.toContain("x-review-key-name");
     expect(serialized).not.toContain("placement");
     expect(serialized).not.toContain("SecretRef");
@@ -109,8 +133,8 @@ describe("contract-derived views", () => {
     const markdown = renderContractMarkdown(asset, snapshot.context);
     const serialized = `${JSON.stringify(imported)}${JSON.stringify(aiView)}${markdown}`;
     expect(serialized).not.toContain("review-text-secret");
-    expect(aiView).toMatchObject({ request: { body: { kind: "text", content: "Authorization: Bearer ****" } } });
-    expect(markdown).toContain("Authorization: Bearer ****");
+    expect(aiView).toMatchObject({ request: { body: { kind: "text", content: "Authorization: Bearer [REDACTED]" } } });
+    expect(markdown).toContain("Authorization: Bearer [REDACTED]");
     expect(imported.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "AUTH_VALUE_REMOVED", ownerId: asset.contract.id, path: expect.stringContaining("request.body.raw") }),
     ]));
@@ -135,8 +159,8 @@ describe("contract-derived views", () => {
     const snapshotRequest = snapshot.project.collections[0]?.apis[0]?.contract.request;
     expect(JSON.stringify(aiView)).not.toContain("review-view-secret");
     expect(markdown).not.toContain("review-view-secret");
-    expect(aiView).toMatchObject({ request: { body: { kind: "text", content: "Authorization: Bearer ****" } } });
-    expect(markdown).toContain("Authorization: Bearer ****");
+    expect(aiView).toMatchObject({ request: { body: { kind: "text", content: "Authorization: Bearer [REDACTED]" } } });
+    expect(markdown).toContain("Authorization: Bearer [REDACTED]");
     expect(snapshotRequest?.protocol).toBe("http");
     if (snapshotRequest?.protocol !== "http") throw new Error("Expected the snapshot HTTP request.");
     expect(snapshotRequest.body).toEqual({ kind: "text", content: "Authorization: Bearer review-view-secret" });
@@ -158,8 +182,8 @@ describe("contract-derived views", () => {
     const serialized = `${JSON.stringify(aiView)}${markdown}`;
     expect(serialized).not.toContain("review-user");
     expect(serialized).not.toContain("review-url-secret");
-    expect(aiView.request).toMatchObject({ baseUrl: "https://****@example.test:8443/v1" });
-    expect(markdown).toContain("https://****@example.test:8443/v1");
+    expect(aiView.request).toMatchObject({ baseUrl: "https://[REDACTED]@example.test:8443/v1" });
+    expect(markdown).toContain("https://[REDACTED]@example.test:8443/v1");
     expect(snapshot.project.collections[0]?.apis[0]?.contract.request.baseUrl).toBe("https://review-user:review-url-secret@example.test:8443/v1");
   });
 });

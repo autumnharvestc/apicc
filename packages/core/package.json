@@ -11,6 +11,14 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./ai/config": {
+      "types": "./dist/ai/config.d.ts",
+      "default": "./dist/ai/config.js"
+    },
+    "./ai/catalog": {
+      "types": "./dist/ai/catalog.d.ts",
+      "default": "./dist/ai/catalog.js"
+    },
     "./assets/context": {
       "types": "./dist/assets/context.d.ts",
       "default": "./dist/assets/context.js"

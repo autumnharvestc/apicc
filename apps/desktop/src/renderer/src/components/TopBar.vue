@@ -35,6 +35,7 @@ const props = defineProps<{
   plugins: ReturnType<typeof createPluginsStore>;
   tabs: ReturnType<typeof createTabsStore>;
   reportError: (e: unknown) => void;
+  ai?: import("../stores/ai.js").AiStore;
 }>();
 const { t } = useI18n();
 
@@ -164,6 +165,7 @@ function onExitCancel() {
       :width="560"
       data-testid="settings-drawer"
     >
+      <a-button v-if="ai" block data-testid="settings-ai" @click="settingsOpen = false; ai.configDialogOpen = true">{{ t("aiSettings.title") }}</a-button>
       <PluginsView :plugins="plugins" />
       <NetworkSettings
         v-if="activeLocalProjectTab"

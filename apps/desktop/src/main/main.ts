@@ -7,6 +7,9 @@ import { createSession } from "./session.js";
 import { createOnlineClient } from "./online/client.js";
 import { createTokenStore } from "./online/tokenStore.js";
 import { createAiKeyStore } from "./ai/config.js";
+import { createDesktopAiPersonal, createLegacyAiConfirmation } from "./ai/personal.js";
+import { existsSync } from "node:fs";
+import type { WebContents } from "electron";
 import { createDesktopDebugHistoryStore } from "./debugHistory.js";
 import { attachQuitGuard } from "./quitGuard.js";
 import { atomicWriteFile } from "./atomicFile.js";
@@ -141,10 +144,25 @@ app.whenReady().then(() => {
       createOnlineClient({ baseUrl, fetch: globalThis.fetch, timeoutMs: 15_000, onUnauthorized: hooks.onUnauthorized }),
     tokenStore: createTokenStore({ dir: app.getPath("userData"), storage: safeStorage }),
   };
-  // AI 依赖（M6-C 任务 1，规格 §2 D2）：key 存 userData（safeStorage 加密，不可用降级
-  // 明文 + warn）；baseUrl/model 由渲染层 localStorage 持久化（非敏感配置）。
+  // Personal to this desktop device. CLI uses its own root/backend; no ref sharing.
+  const legacyAiRoot = isolatedRoot ? join(isolatedRoot, "legacy-ai") : app.getPath("userData");
+  const legacyAi = createAiKeyStore({ dir: legacyAiRoot, storage: safeStorage });
+  const confirmLegacy = createLegacyAiConfirmation({
+    isAlive: owner => { const sender = owner as WebContents; return typeof sender.isDestroyed === "function" && !sender.isDestroyed(); },
+    readConfiguration: async owner => (owner as WebContents).executeJavaScript(`(() => { try { const c = JSON.parse(localStorage.getItem('apicc.ai.config') || 'null'); return c && typeof c.baseUrl === 'string' && typeof c.model === 'string' ? {baseUrl:c.baseUrl,model:c.model} : null; } catch { return null; } })()`),
+    confirmAddress: async (owner, originalAddress) => {
+      const parent = BrowserWindow.fromWebContents(owner as WebContents);
+      if (!parent) return { confirmed: false, insecureLocalTest: false };
+      const result = await dialog.showMessageBox(parent, { type: "warning", title: "迁移旧 AI 配置 / Migrate legacy AI settings", message: "请核对：这个完整地址确实是旧 AI 密钥原先使用的地址吗？\nVerify that this complete address is the original address used with your legacy AI key.", detail: originalAddress,
+        buttons: ["取消 / Cancel", "确认原地址并迁移 / Confirm original address and migrate"], defaultId: 0, cancelId: 0, noLink: true,
+        checkboxLabel: "本次明确允许回环 HTTP 测试 / Allow insecure loopback HTTP testing this time (localhost / 127.0.0.1 / ::1)", checkboxChecked: false });
+      return { confirmed: result.response === 1, insecureLocalTest: result.checkboxChecked === true };
+    },
+  });
   const ai = {
-    keyStore: createAiKeyStore({ dir: app.getPath("userData"), storage: safeStorage }),
+    keyStore: legacyAi,
+    personal: createDesktopAiPersonal({ privateRoot: isolatedRoot ? join(isolatedRoot, "ai") : join(app.getPath("userData"), "ai"), storage: safeStorage,
+      legacyKeyStore: legacyAi, legacyAvailable: () => existsSync(join(legacyAiRoot, "ai-key.json")), confirmLegacy }),
   };
   // 插件依赖（M7-B 任务 2，规格 §2 D4/D8）：main 进程建 registry 时装载用户级清单
   // （~/.apicc/plugins.json，D4）；关闭通道 = IpcDepsOptions.plugins.loadPlugins:false

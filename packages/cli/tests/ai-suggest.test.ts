@@ -41,6 +41,10 @@ const suggestionCases = [
   { name: "缺 sku 应 400", scope: "base", parameters: {}, assertions: [] },
   { name: "qty 为负数应 400", scope: "base", parameters: {}, assertions: [] },
 ];
+const wireCases = suggestionCases.map(c => ({ ...c, parameters: Object.entries(c.parameters).map(([name, value]) => ({ name, value })),
+  preOperations: [], postOperations: [], reason: "覆盖已选契约的边界", evidenceIds: [],
+  assertions: c.assertions.map(a => ({ ...a, path: null, headerName: null, cookieName: null, namespaces: null, match: null, optionsJson: null })),
+}));
 
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -49,7 +53,7 @@ beforeAll(async () => {
     req.on("end", () => {
       capturedRequests.push({ url: req.url ?? "", authorization: req.headers.authorization, body: JSON.parse(body || "{}") });
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ choices: [{ message: { content: replyContent } }] }));
+      res.end(JSON.stringify({ choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: replyContent } }] }));
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -106,7 +110,7 @@ afterAll(() => {
 });
 
 const run = (argv: string[], logs: string[], deps: Parameters<typeof runCli>[3] = {}) =>
-  runCli(argv, createDefaultRegistry(), (l) => logs.push(l), deps);
+  runCli([...argv, "--confirm-send", "--insecure-local-test"], createDefaultRegistry(), (l) => logs.push(l), deps);
 
 describe("AI 配置解析（裁定⑤：env 三件套优先 → ~/.apicc/ai.json）", () => {
   it("env 三件套齐全时优先于用户级文件", () => {
@@ -123,9 +127,9 @@ describe("AI 配置解析（裁定⑤：env 三件套优先 → ~/.apicc/ai.json
     expect(cfg.model).toBe("test-model");
   });
 
-  it("env 三件套不完整 → 视为未配置 env，回落文件", () => {
-    const cfg = resolveAiConfig({ env: { APICC_AI_BASE_URL: envTrio.APICC_AI_BASE_URL }, homeDir: fileHome });
-    expect(cfg.apiKey).toBe(API_KEY); // 来自文件而非残缺 env
+  it("env 三件套不完整时即使有效文件存在也拒绝混用", () => {
+    expect(() => resolveAiConfig({ env: { APICC_AI_BASE_URL: envTrio.APICC_AI_BASE_URL }, homeDir: fileHome }))
+      .toThrow(/不完整/);
   });
 
   it("env 三件套不完整且无文件 → 可读报错（而非静默忽略残缺 env）", () => {
@@ -156,8 +160,41 @@ describe("AI 配置解析（裁定⑤：env 三件套优先 → ~/.apicc/ai.json
 });
 
 describe("ai suggest-cases 端到端（替身 OpenAI 兼容端点，零真实网络）", () => {
+  it("未明确确认外发时展示预览并拒绝，端点不收到请求", async () => {
+    replyContent = JSON.stringify({ cases: wireCases });
+    const before = capturedRequests.length;
+    const logs: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => originalFetch(String(input).replace("https://fixture.example", serverBase), init);
+    try {
+      await expect(runCli(["ai", "suggest-cases", apiPath], createDefaultRegistry(), l => logs.push(l), {
+        aiEnv: { ...envTrio, APICC_AI_BASE_URL: "https://fixture.example/v1" }, aiHomeDir: emptyHome,
+      })).rejects.toThrow(/确认/);
+    } finally { globalThis.fetch = originalFetch; }
+    expect(capturedRequests.length).toBe(before);
+    expect(logs.join("\n")).toContain("外发范围");
+    expect(logs.join("\n")).not.toContain(API_KEY);
+  }, 20000);
+
+  it("已存在 --out 未显式 --overwrite 时拒绝且原文件字节不变", async () => {
+    replyContent = JSON.stringify({ cases: wireCases });
+    const outFile = join(fileHome, "existing-candidates.yaml");
+    const original = Buffer.from("original-candidate\r\n保留\0", "utf8");
+    writeFileSync(outFile, original);
+    // Legacy adapter requires HTTPS. Route its real fetch to our local endpoint,
+    // so transport policy cannot hide the output collision branch under test.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => originalFetch(String(input).replace("https://fixture.example", serverBase), init);
+    try {
+      await expect(run(["ai", "suggest-cases", apiPath, "--out", outFile], [], {
+        aiEnv: { ...envTrio, APICC_AI_BASE_URL: "https://fixture.example/v1" }, aiHomeDir: emptyHome,
+      })).rejects.toThrow(/已存在/);
+    } finally { globalThis.fetch = originalFetch; }
+    expect(readFileSync(outFile)).toEqual(original);
+  }, 20000);
+
   it("缺省打 stdout：YAML 候选用例经 TestCaseSchema 校验回读；Bearer 密钥到端点且不进日志", async () => {
-    replyContent = JSON.stringify({ cases: suggestionCases });
+    replyContent = JSON.stringify({ cases: wireCases });
     const logs: string[] = [];
     const code = await run(["ai", "suggest-cases", apiPath, "--instruction", "补充边界用例"], logs, {
       aiEnv: envTrio, aiHomeDir: emptyHome,
@@ -187,20 +224,21 @@ describe("ai suggest-cases 端到端（替身 OpenAI 兼容端点，零真实网
     expect(logs.join("\n")).not.toContain(API_KEY);
   }, 20000);
 
-  it("--limit 1 截断（替身返回 3 条，只输出 1 条）", async () => {
-    replyContent = JSON.stringify({ cases: suggestionCases });
+  it("--limit 1 时超量结果拒绝，不截断为成功", async () => {
+    replyContent = JSON.stringify({ cases: wireCases });
     const logs: string[] = [];
-    const code = await run(["ai", "suggest-cases", apiPath, "--limit", "1"], logs, {
-      aiEnv: envTrio, aiHomeDir: emptyHome,
-    });
-    expect(code).toBe(0);
-    const doc = parseYaml(logs.at(-1)!) as { cases: unknown[] };
-    expect(doc.cases).toHaveLength(1);
-    expect((doc.cases[0] as { name: string }).name).toBe(suggestionCases[0]!.name);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => originalFetch(String(input).replace("https://fixture.example", serverBase), init);
+    try {
+      await expect(run(["ai", "suggest-cases", apiPath, "--limit", "1"], logs, {
+        aiEnv: { ...envTrio, APICC_AI_BASE_URL: "https://fixture.example/v1" }, aiHomeDir: emptyHome,
+      })).rejects.toThrow(/business-output-invalid/);
+    } finally { globalThis.fetch = originalFetch; }
+    expect(logs.join("\n")).not.toContain("cases:");
   }, 20000);
 
   it("--out 写 YAML 文件且 stdout 不含 YAML 块；缺省（无 --out）打 stdout", async () => {
-    replyContent = JSON.stringify({ cases: suggestionCases });
+    replyContent = JSON.stringify({ cases: wireCases });
     const outFile = join(fileHome, "ai-suggest-out.yaml");
     const logs: string[] = [];
     const code = await run(["ai", "suggest-cases", apiPath, "--out", outFile], logs, {
@@ -216,7 +254,7 @@ describe("ai suggest-cases 端到端（替身 OpenAI 兼容端点，零真实网
   }, 20000);
 
   it("用户级文件配置（ai.json）走通命令全流程", async () => {
-    replyContent = JSON.stringify({ cases: suggestionCases });
+    replyContent = JSON.stringify({ cases: wireCases });
     const logs: string[] = [];
     const code = await run(["ai", "suggest-cases", apiPath], logs, { aiEnv: {}, aiHomeDir: fileHome });
     expect(code).toBe(0);

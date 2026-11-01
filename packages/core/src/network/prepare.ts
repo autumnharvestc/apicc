@@ -172,6 +172,8 @@ async function readCertificateFile(
   }
 }
 
+export { readCertificateFile as readNetworkCertificateFile };
+
 async function readTLSCertificates(
   settings: NetworkTLSSettings,
   profileId: string,

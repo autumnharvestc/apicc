@@ -60,7 +60,8 @@ export async function serverFixture(options: { artifactJar?: string; evidencePar
   const dispatcher = new Agent({ connect: { ca: readFileSync(join(root, "control-ca.pem"), "utf8"), rejectUnauthorized: true } });
   const installedFetch = dispatcherFetch as unknown as typeof fetch;
   const trustedFetch: typeof fetch = (input, init) => installedFetch(input, { ...init, dispatcher } as RequestInit);
-  const faults = { offline: false, dropMessageAck: 0, dropArchiveAck: 0, messages: 0, archives: 0, dropped: 0 };
+  const faults = { offline: false, dropMessageAck: 0, dropArchiveAck: 0, dropMemberSubmitResponse: 0, messages: 0, archives: 0, dropped: 0,
+    memberSubmissions: [] as Array<{ path: string; status: number; intentId: string; jobId: string; responseDropped: boolean }> };
   const proxy = createHttpsServer({ pfx: readFileSync(join(root, "control.p12")), passphrase: password }, async (request, response) => {
     try {
       const path = request.url!;
@@ -70,6 +71,17 @@ export async function serverFixture(options: { artifactJar?: string; evidencePar
       for (const [key, value] of Object.entries(request.headers)) if (value !== undefined && !["host", "connection", "content-length", "transfer-encoding"].includes(key)) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
       const upstream = await trustedFetch(`https://localhost:${port}${path}`, { method: request.method, headers, ...(bytes.length ? { body: bytes } : {}), redirect: "error" });
       const body = Buffer.from(await upstream.arrayBuffer());
+      // Test-side fault only, after the real Java member POST has returned success.
+      // Runner message/report acknowledgement faults cannot stand in for this path.
+      if (request.method === "POST" && /^\/api\/v1\/workspaces\/[^/]+\/projects\/[^/]+\/jobs$/.test(path) && upstream.ok) {
+        const submitted = JSON.parse(bytes.toString()) as { intentId: string };
+        const accepted = JSON.parse(body.toString()) as { jobId: string };
+        const responseDropped = faults.dropMemberSubmitResponse > 0;
+        const receipt = { path, status: upstream.status, intentId: submitted.intentId, jobId: accepted.jobId, responseDropped };
+        faults.memberSubmissions.push(receipt);
+        appendFileSync(join(root, "member-submissions.jsonl"), JSON.stringify(receipt) + "\n");
+        if (responseDropped) { faults.dropMemberSubmitResponse--; response.destroy(); return; }
+      }
       if (path.endsWith("/runner/messages")) { faults.messages++; if (faults.dropMessageAck > 0) { faults.dropMessageAck--; faults.dropped++; response.destroy(); return; } }
       if (/\/runner\/jobs\/[^/]+\/report\?/.test(path)) { faults.archives++; if (faults.dropArchiveAck > 0) { faults.dropArchiveAck--; faults.dropped++; response.destroy(); return; } }
       response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" }); response.end(body);

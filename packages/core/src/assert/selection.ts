@@ -2,7 +2,7 @@ import { DOMParser } from "@xmldom/xmldom";
 import xpath from "xpath";
 import type { JsonValue } from "../contract/schemaNode.js";
 import type { ExecutionResponse } from "../plugin/types.js";
-import { ResponseSelectorSchema, type ResponseSelector } from "../testing/model.js";
+import { ResponseSelectorSchema, type Assertion, type ResponseSelector } from "../testing/model.js";
 
 export class AssertionValueError extends Error {
   constructor(public readonly code: string, message: string, public readonly kind: "config" | "assertion" = "config") {
@@ -13,6 +13,7 @@ export class AssertionValueError extends Error {
 export interface SelectedResponseValue { found: boolean; value?: JsonValue; sourcePath?: string }
 type JsonStep = { recursive: boolean; key: string | number | null };
 const hitLimit = 1000;
+const legacyJsonOperators = new Set(["eq", "neq", "contains", "lt", "gt", "lte", "gte"]);
 export function assertPathBound(path: string): void {
   if (new TextEncoder().encode(path).length > 2048) throw new AssertionValueError("SELECTOR_LIMIT", "Selector path exceeds 2 KiB");
 }
@@ -43,6 +44,16 @@ function jsonSteps(path: string): JsonStep[] {
     rest = rest.slice((bracket ?? dot)![0].length);
   }
   return steps;
+}
+/** Adapt only the saved legacy assertion boundary; standalone selectors stay strict. */
+export function normalizeSavedAssertionPath(input: Readonly<Pick<Assertion, "target" | "op" | "match" | "path">> & { readonly options?: unknown }): string | undefined {
+  return input.target === "bodyJson" && legacyJsonOperators.has(input.op) && (input.match ?? "first") === "first"
+    && input.options === undefined && input.path !== undefined && /^[A-Za-z_][\w$-]*(?:\.[A-Za-z_$][\w$-]*|\[(?:0|[1-9]\d*)\])*$/.test(input.path)
+    ? `$.${input.path}` : input.path;
+}
+/** Decoded field semantics shared with safe projections; does not evaluate the selector. */
+export function jsonPathFieldNames(path: string): readonly string[] {
+  return jsonSteps(path).flatMap(step => typeof step.key === "string" ? [step.key] : []);
 }
 export function validateResponseSelector(selector: ResponseSelector): void {
   if (selector.target === "header" && !selector.headerName?.trim()) throw new AssertionValueError("SELECTOR_CONFIG", "Header name is required");

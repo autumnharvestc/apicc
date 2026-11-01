@@ -5,7 +5,7 @@
 // M8 布局层级改造：九平铺视图收敛为「图标导航栏（ModuleRail）→ 树面板（带模块标题
 // 与搜索）→ 内容区」；接口模块（api）内含子视图页签（调试/设计/用例），调试子视图
 // 保持 main-split 上下结构（editor-pane / 可拖拽分割条 / viewer-pane）。
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ConfigProvider,
@@ -184,7 +184,17 @@ const online = createOnlineStore({ api: apicc });
 const onlineProjectAdapter = createOnlineProjectAdapter(online.execution, apicc, () => !online.execution.context || !online.canEdit(`${online.execution.context.scope.projectId}/project.yaml`), () => window.confirm(t('testing.discardConfirm')));
 // —— AI store（M6-C 任务 1 装配）：同一组合根一次性创建；挂载后读持久化配置与 key
 // 状态（init 全程不抛）。对话框/抽屉本体在组合根渲染，接口头部入口按钮只置显隐/拉取。 ——
-const ai = createAiStore({ api: apicc, editor, getContext: localContext });
+const ai = createAiStore({ api: apicc, editor,
+  getEditor: () => onlineMode.value ? onlineProjectAdapter.editor : editor,
+  getContext: () => onlineMode.value ? { root: onlineProjectAdapter.editorRoot(), readOnly: onlineProjectAdapter.workspace.readOnly } : localContext(),
+  getSource: () => {
+    if (onlineMode.value) return online.execution.context ? { kind: 'online', context: online.execution.context } : null;
+    const locator = editor.locator;
+    return locator ? { kind: 'local', project: { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId } } : null;
+  },
+  getSourceVersion: () => onlineMode.value ? online.execution.view?.assets.version ?? null : null,
+});
+onBeforeUnmount(() => ai.dispose());
 // —— 插件 store（M7-B 任务 1 装配）：同一组合根一次性创建；挂载后拉取 plugins:list
 // （fixture 桩）——插件视图清单 + 导入向导的导入格式动态枚举共用此份状态。 ——
 const plugins = createPluginsStore({ api: apicc });
@@ -1153,7 +1163,7 @@ function onDividerDblClick() {
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :report-error="reportError" />
+      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :ai="ai" :report-error="reportError" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
@@ -1251,7 +1261,7 @@ function onDividerDblClick() {
             :active-online-project-id="homeActiveOnlineProjectId"
           />
           <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
-          <OnlineProjectAssets v-else-if="onlineMode && online.execution.context" class="panel-view" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects" @published="openOnlineProjectFromHome"><OnlineApiEditor :online="online" /></OnlineProjectAssets>
+          <OnlineProjectAssets v-else-if="onlineMode && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects" @published="openOnlineProjectFromHome"><OnlineApiEditor :online="online" /></OnlineProjectAssets>
           <OnlineApiEditor v-else-if="onlineMode" class="panel-view" :online="online" />
           <!-- 接口模块（M8）：头部（子视图页签 + AI 入口）+ 调试/设计/用例子视图 -->
           <template v-else-if="view === 'api'">
@@ -1283,8 +1293,8 @@ function onDividerDblClick() {
                 >
                   {{ t("ai.suggestBtn") }}
                 </a-button>
-                <a-button size="small" data-testid="ai-config-btn" @click="ai.configDialogOpen = true">
-                  {{ t("ai.configBtn") }}
+                <a-button size="small" data-testid="ai-manage-models" @click="ai.configDialogOpen = true">
+                  {{ t("aiSettings.manageModels") }}
                 </a-button>
               </a-space>
             </div>
@@ -1346,6 +1356,7 @@ function onDividerDblClick() {
             :report-error="reportError"
           />
           <RunView
+            :ai="ai"
             v-else-if="view === 'run'"
             class="panel-view"
             :run="run"
@@ -1362,6 +1373,7 @@ function onDividerDblClick() {
                 <a-tag color="orange">{{ t("test.stressContext") }}</a-tag>
               </div>
               <StressPanel
+                :ai="ai"
                 class="panel-view"
                 :stress="stress"
                 :api-locator="editor.locator"
@@ -1377,6 +1389,7 @@ function onDividerDblClick() {
               />
             </template>
             <TestView
+              :ai="ai"
               v-else
               class="panel-view"
               :editor="editor"
@@ -1393,6 +1406,7 @@ function onDividerDblClick() {
             />
           </template>
           <WfDesigner
+            :ai="ai"
             v-else
             class="wf-view"
             :workflow-design="workflowDesign"
@@ -1439,7 +1453,7 @@ function onDividerDblClick() {
     <!-- AI 配置对话框与建议抽屉（M6-C 任务 1）：接口头部入口按钮置显隐/拉取 -->
     <AiConfigDialog :ai="ai" />
     <AiSuggestionsDrawer :ai="ai" />
-    <DebugHistory :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" :project-locator="selectedProjectLocator" :restore-free="restoreFreeHistory" :replay-free="replayFreeHistory" @close="historyOpen = false" />
+    <DebugHistory :ai="ai" :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" :project-locator="selectedProjectLocator" :restore-free="restoreFreeHistory" :replay-free="replayFreeHistory" @close="historyOpen = false" />
   </a-layout>
   </ConfigProvider>
 </template>

@@ -25,7 +25,11 @@ function dataRequest(options: HttpClientOptions) {
         try { const error = await response.json(); if (typeof error?.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(error.code)) code = error.code; } catch { /* HTTP status still explains the failure. */ }
         throw new ExecutionHttpError(response.status, code);
       }
-      return schema.parse(response.status === 204 ? undefined : await response.json());
+      let raw: unknown;
+      try { raw = response.status === 204 ? undefined : await response.json(); }
+      catch { controller.signal.throwIfAborted(); throw new Error('execution-invalid-response'); }
+      controller.signal.throwIfAborted();
+      return schema.parse(raw);
     } finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); }
   };
 }

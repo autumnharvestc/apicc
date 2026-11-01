@@ -1,4 +1,8 @@
 /** Side-effect-light schema entry point for renderer/preload runtime validation. */
+export * from "./ai/config.js";
+export { AiCaseWireOutputSchema, AiAssertionWireOutputSchema, AiWireAssertionSchema, AiWireStringEntriesSchema } from "./ai/types.js";
+export { AiAssertionOutputSchema } from "./ai/assertions.js";
+export { AiAnalysisOutputSchema } from "./ai/analysis.js";
 export {
   OAuthProfileSchema,
   OAuthProfileStatusSchema,

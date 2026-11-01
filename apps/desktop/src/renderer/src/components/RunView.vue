@@ -11,6 +11,9 @@ import RunsHistory from "./RunsHistory.vue";
 import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 import type { EvidenceIdentity } from "@apicc/core";
 import { reportingUnits, reportEntryEvidence } from "@apicc/core/report/units";
+import type { AiStore } from '../stores/ai.js';
+import { caseEvidenceIdentity } from '../ai/evidenceNavigation.js';
+import { aiReportDigest } from '../../../shared/ai/reportDigest.js';
 const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void }>();
 
 /**
@@ -27,6 +30,7 @@ const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
   selectedCollectionLocator: CollectionLocator | null;
   reportError: (e: unknown) => void;
+  ai?: AiStore;
 }>();
 const { t } = useI18n();
 
@@ -85,6 +89,7 @@ const columns = computed(() => [
   { key: "row", title: t("run.row"), dataIndex: "row" },
   { key: "passed", title: t("run.result"), dataIndex: "passed" },
   { key: "durationMs", title: t("run.duration"), dataIndex: "durationMs" },
+  ...(props.ai ? [{ key: 'observation', title: t('ai.basis') }] : []),
 ]);
 
 type OutcomeState = "passed" | "failed" | "skipped";
@@ -100,6 +105,30 @@ function rowKey(record: CaseOutcome): string {
 
 function formatMs(ms: number): string {
   return `${Math.round(ms)}ms`;
+}
+function analyzeReport() {
+  const displayed = props.run.result, locator = selectedCollectionLocator.value, root = props.workspace.root;
+  if (!displayed || !locator || !props.ai) return;
+  const key = collectionValue(locator);
+  void props.ai.prepareReportAnalysis({ source: { kind: 'local', project: projectLocator(locator) }, displayed,
+    isCurrent: () => props.run.result === displayed && props.workspace.root === root && collectionValue(selectedCollectionLocator.value) === key,
+    canLocateEvidence: (evidence, authorised) => !!caseEvidenceIdentity(evidence, authorised, displayed.cases),
+    locateEvidence: (evidence, authorised) => {
+      const identity = caseEvidenceIdentity(evidence, authorised, displayed.cases);
+      if (identity) emit('locate-evidence', identity);
+    } });
+}
+const observationLocator = (record: Record<string, any>) => {
+  const proof: CaseOutcome['locator'] = record.locator ?? record.evidence?.identity.locator;
+  return proof && ['collectionId', 'apiId', 'caseId', 'scope'].every(key => typeof proof[key as keyof typeof proof] === 'string') && Array.isArray(proof.folderIds) ? proof : undefined;
+};
+async function selectObservation(record: Record<string, any>) {
+  const displayed = props.run.result!, collection = selectedCollectionLocator.value!, root = props.workspace.root;
+  const proof = observationLocator(record)!;
+  const expectedReportDigest = await aiReportDigest(displayed);
+  props.ai!.selectAssertionObservation({ target: { ...projectLocator(collection), ...proof, folderIds: [...proof.folderIds] },
+    basis: { kind: 'observation', report: { kind: 'current', expectedReportDigest }, caseIndex: displayed.cases.indexOf(record as CaseOutcome) },
+    isCurrent: () => props.run.result === displayed && props.workspace.root === root });
 }
 </script>
 
@@ -129,6 +158,7 @@ function formatMs(ms: number): string {
         <a-button data-testid="runs-history-btn" @click="run.historyOpen = true">{{ t("run.history") }}</a-button>
       </div>
       <div v-if="run.result" class="summary" data-testid="run-summary">
+        <a-button v-if="ai && selectedCollectionLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
         <p v-if="run.result.reportingMode" data-testid="run-logical-summary">{{ t('wf.control.mode') }}: {{ run.result.reportingMode }} · {{ t('wf.control.logicalVerdict') }}: {{ run.result.suite?.verdict ?? run.result.workflowUnits?.[0]?.verdict ?? '—' }} · {{ t('wf.control.logicalUnits') }}: {{ reportingUnits(run.result).summary.total }} · {{ t('wf.control.rawRows') }}: {{ run.result.total }} · {{ t('wf.control.rawFailed') }}: {{ run.result.failed }}</p>
         <span v-else>{{ t("run.summary", { total: run.result.total, passed: run.result.passed, failed: run.result.failed, skipped: run.result.skipped ?? 0 }) }}</span>
         <p v-if="run.result.suite">条目 {{ run.result.suite.total }} · 失败 {{ run.result.suite.failed }} · 跳过 {{ run.result.suite.skipped }} · {{ run.result.suite.verdict }}</p>
@@ -162,6 +192,10 @@ function formatMs(ms: number): string {
             </a-tag>
           </template>
           <template v-else-if="column.key === 'durationMs'">{{ formatMs(record.durationMs) }}</template>
+          <template v-else-if="column.key === 'observation'">
+            <button type="button" data-testid="ai-select-observation" :disabled="!observationLocator(record)" @click="selectObservation(record)">{{ t('ai.selectObservation') }}</button>
+            <span v-if="!observationLocator(record)">{{ t('ai.observationLocatorMissing') }}</span>
+          </template>
         </template>
         <template #expandedRowRender="{ record }">
           <div class="case-detail" data-testid="run-detail">

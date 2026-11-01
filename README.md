@@ -93,7 +93,7 @@ pnpm -C apps/desktop dist:dir   # 打包为本地目录（免安装运行）
 
 ## MCP 服务器（agent 接入）
 
-`apicc mcp --workspace <工作区根>` 启动 stdio MCP 服务器，把工作区能力暴露为 MCP 工具，供第三方 agent 客户端消费：`list-apis`（接口摘要）与 `get-api-design`（接口详细设计 Markdown）默认可用，执行类工具 `run-case` 需显式加 `--allow-run`（执行类工具默认关闭）。构建、客户端 JSON 配置示例与安全边界见 [docs/mcp.md](docs/mcp.md)。
+`apicc mcp --workspace <工作区根>` 或 `apicc mcp --online-profile <成员来源>` 启动固定来源 stdio MCP，默认只读资产和报告。`--allow-run` 才开放已保存 case/suite/workflow 的 `prepare-run`、`start-run`、`cancel-run`；旧本地 `list-apis`、`get-api-design` 和显式开启的 `run-case` 保留兼容。个人 AI 设置、三协议、在线登录、预算、人工确认及不确定提交处置见 [AI 与 MCP 使用说明](docs/f7e-ai-mcp.md)，客户端 JSON 配置见 [MCP 接入](docs/mcp.md)。F7e 开发与验收已完成，门禁、目录包及验证限制见[阶段最终回执](docs/superpowers/plans/2026-10-30-apicc-f7e-ai-mcp.md#阶段最终回执2026-11-01)；尚未提交、合并或推送。
 
 ```bash
 apicc mcp --workspace /path/to/your-workspace [--allow-run]

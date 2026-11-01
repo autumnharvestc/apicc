@@ -115,6 +115,27 @@ describe("snapshot-based AI candidate contract", () => {
 });
 
 describe("suggestCases 解析成功路径", () => {
+  // Must catch trusting a model-supplied new asset identity in each formal asset branch.
+  it.each(["assertion", "preOperation", "postOperation"] as const)("model_ids_are_not_trusted_for_assertions_and_operations: %s", async (target) => {
+    const modelDraft = {
+      ...validCase,
+      preOperations: [{ id: "model-pre", type: "script", content: "console.log('before')" }],
+    };
+    const beforeAsset = JSON.stringify(api);
+    const beforeDraft = JSON.stringify(modelDraft);
+    const { fn } = scriptedProvider(content([modelDraft]));
+    const cases = await suggestCases(api, { provider: fn });
+    const candidate = cases[0]!;
+    const selected = target === "assertion" ? candidate.assertions[0]!
+      : target === "preOperation" ? candidate.preOperations[0]! : candidate.postOperations[0]!;
+
+    expect(selected.id).toMatch(ULID_RE);
+    expect(new Set([candidate.id, ...candidate.assertions.map(a => a.id), ...candidate.preOperations.map(o => o.id), ...candidate.postOperations.map(o => o.id)]).size).toBe(5);
+    expect(JSON.stringify(api)).toBe(beforeAsset);
+    expect(JSON.stringify(modelDraft)).toBe(beforeDraft);
+    expect(TestCaseSchema.safeParse(candidate).success).toBe(true);
+  });
+
   it("字符串化 JSON 信封 → AiSuggestedCase[]：本地补 ULID、字段同构且过 TestCaseSchema", async () => {
     const { fn, calls } = scriptedProvider(content([validCase, { name: "仅含名称的最小用例" }]));
     const cases = await suggestCases(api, { provider: fn, instruction: "补充边界用例" });
@@ -186,6 +207,16 @@ describe("suggestCases 解析成功路径", () => {
 });
 
 describe("suggestCases 顺修（任务 1 审查）", () => {
+  it("limit_51_rejects_before_provider", async () => {
+    const { fn, calls } = scriptedProvider(content([validCase]));
+    await expect(suggestCases(api, { provider: fn, limit: 51 })).rejects.toThrow(/1.*50/);
+    expect(calls).toHaveLength(0);
+  });
+  it("rejects output exceeding 50 candidates instead of accepting and slicing it", async () => {
+    const oversized = content(Array.from({ length: 51 }, () => validCase));
+    const { fn } = scriptedProvider(oversized, oversized);
+    await expect(suggestCases(api, { provider: fn })).rejects.toBeInstanceOf(AiSuggestError);
+  });
   it("顺修①：输出带一层 markdown code fence（```json … ```）→ 剥围栏后正常解析，不触发重试", async () => {
     const fenced = "```json\n" + content([{ name: "围栏内的用例" }]) + "\n```";
     const { fn, calls } = scriptedProvider(fenced);
@@ -201,7 +232,7 @@ describe("suggestCases 顺修（任务 1 审查）", () => {
     expect(cases.map((c) => c.name)).toEqual(["裸围栏用例"]);
   });
 
-  it("顺修②：assertion 缺 id → 本地 ULID 回填，产出仍过 TestCaseSchema；AI 已给 id 原样保留", async () => {
+  it("顺修②：assertion 缺 id 与 AI 给定 id 均使用本地 ULID，产出仍过 TestCaseSchema", async () => {
     const withMissingId = content([
       {
         name: "无 id 断言用例",
@@ -217,7 +248,7 @@ describe("suggestCases 顺修（任务 1 审查）", () => {
     expect(cases).toHaveLength(1);
     const assertions = cases[0]!.assertions;
     expect(assertions[0]!.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/); // 本地回填 ULID（裁定④精神）
-    expect(assertions[1]!.id).toBe("AI 给的"); // 已有 id 不覆盖
+    expect(assertions[1]!.id).toMatch(ULID_RE); // T3: 新资产身份始终本地生成
     expect(() => TestCaseSchema.parse(cases[0])).not.toThrow();
   });
 

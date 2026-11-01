@@ -27,6 +27,11 @@ import {
 import type { LocalRootTreeNodeDTO } from "../../../src/shared/tree-dto.js";
 import type { ProjectLocator, WorkflowLocator } from "../../../src/shared/locations.js";
 import type { EditorSession } from "../../../src/renderer/src/stores/editor.js";
+import { defineComponent, h } from "vue";
+import { createAiStore } from "../../../src/renderer/src/stores/ai.js";
+import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import AiConfigDialog from "../../../src/renderer/src/components/AiConfigDialog.vue";
+import { createSafeAiSettingsFixture } from "../fixtures/aiSettings.js";
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -221,6 +226,57 @@ describe("TopBar network settings scope", () => {
     await fixture.tabs.activateTab(onlineTab.tabId);
     await flushPromises();
     expect(bodyFind("network-settings")).toBeNull();
+  });
+});
+
+describe("F7e T10 application AI settings", () => {
+  // Catches accidentally gating personal settings on a local project, or opening a second AI store/dialog.
+  it.each(["Home", "local", "online", "more"] as const)("%s opens the shared AI management dialog from application settings", async (location) => {
+    const fixture = makeFixture();
+    await seedTabs(fixture);
+    if (location === "Home" || location === "more") await fixture.tabs.activateHome();
+    else {
+      const tab = fixture.tabs.tabs.find((value) => value.workspaceRef.kind === location);
+      if (!tab) throw new Error(`Missing ${location} fixture tab`);
+      await fixture.tabs.activateTab(tab.tabId);
+    }
+    const { api } = createSafeAiSettingsFixture();
+    const editor = useEditorStore(api, () => ({ root: "", readOnly: false }));
+    const ai = createAiStore({ api, editor, storage: memStorage(), getContext: () => ({ root: "", readOnly: false }) });
+    await ai.init();
+    const plugins = createPluginsStore({ api });
+    const { i18n } = createI18nInstance();
+    const harness = defineComponent({ setup: () => () => [
+      h(TopBar, {
+        workspace: fixture.workspace as unknown as ReturnType<typeof useWorkspaceStore>,
+        tree: fixture.tree as unknown as ReturnType<typeof useTreeStore>,
+        api, online: fixture.topbarOnline, plugins, tabs: fixture.tabs, reportError: vi.fn(), ai,
+      }),
+      h(AiConfigDialog, { ai }),
+    ] });
+    const wrapper = mount(harness, { global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(ai.configDialogOpen).toBe(false);
+    if (location === "more") {
+      await wrapper.get('[data-testid="topbar-more"]').trigger("click");
+      await flushPromises();
+      await expectBody("more-settings").trigger("click");
+    } else await wrapper.get('[data-testid="settings-toggle"]').trigger("click");
+    await flushPromises();
+    const drawer = new DOMWrapper(document.body).find(".ant-drawer-body");
+    expect(drawer.exists(), "application settings drawer must be mounted before checking its actions").toBe(true);
+    expect(drawer.text()).toContain("AI 与模型");
+    const entry = drawer.findAll("button").find((button) => button.text().includes("AI 与模型"));
+    expect(entry, "settings must offer a visible AI management action").toBeDefined();
+    await entry!.trigger("click");
+    await flushPromises();
+    expect(ai.configDialogOpen).toBe(true);
+    expect(document.body.querySelectorAll('[data-testid="ai-config-body"]')).toHaveLength(1);
+    expect(expectBody("ai-config-body").text()).toContain("个人主连接");
+    await expectBody("ai-config-close").trigger("click");
+    await flushPromises();
+    expect(ai.configDialogOpen).toBe(false);
+    expect(bodyFind("ai-config-body")).toBeNull();
   });
 });
 

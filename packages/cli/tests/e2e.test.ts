@@ -307,9 +307,9 @@ describe("CLI 端到端", () => {
         "          description: ok",
       ].join("\n"));
       // Import has its own workspace and child-process cwd: a timed-out import cannot hold the shared workflow fixture read-only.
-      const base = await fileStorage.load(root);
       const empty = await fileStorage.load(importRoot);
-      await fileStorage.save(importRoot, base.workspace, { expectedRevision: empty.revision, deletions: [] });
+      const importWorkspace: Workspace = { formatVersion: 1, id: "00000000-0000-4000-8000-000000000001", name: "import-only", variables: {}, groups: [] };
+      await fileStorage.save(importRoot, importWorkspace, { expectedRevision: empty.revision, deletions: [] });
 
       const firstImport = await runCliProcess(["import", sample, "--group", "imported", "--yes"], { cwd: importRoot });
       expect(firstImport.code).toBe(0);

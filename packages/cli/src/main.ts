@@ -7,6 +7,11 @@ import { fileURLToPath } from "node:url";
 import { generatePluginPackage } from "./create-plugin.js";
 import { createPrivateStressWorkerFactory, createWorkerEvidenceFinalizer } from "./stressWorkerTransport.js";
 import { registerStressPlanCommands } from "./stressPlanCommand.js";
+import { registerAiCommands } from "./ai/commands.js";
+import type { CliAiConfigDeps } from "./ai/config.js";
+import type { McpProfileDeps } from "./mcp/profiles.js";
+import { registerMcpProfileCommands } from "./mcp/profiles.js";
+export { resolveAiConfig } from "./ai/config.js";
 import { localStressClockDomain, spawnLocalStressWorker } from "./stressWorkerTransport.js";
 import { localStressClock } from "./nodeStressClock.js";
 import {
@@ -16,7 +21,6 @@ import {
   CredentialError,
   CurrentStressReportSchema,
   CollectionRunError,
-  createAiProvider,
   createProjectSnapshot,
   compileWorkflowPlan,
   workflowPlanRequests,
@@ -54,7 +58,6 @@ import {
   createUserPluginHost,
   type UserPluginHost,
   findProjectApi,
-  type AiProviderConfig,
   type ApiAsset,
   type Collection,
   type Environment,
@@ -245,41 +248,6 @@ export function findWorkspaceRoot(start: string): string | null {
   }
 }
 
-/**
- * AI 配置解析（M6 D2，裁定⑤）：env 三件套 APICC_AI_BASE_URL/API_KEY/MODEL 齐全时优先，
- * 否则回落用户级 ~/.apicc/ai.json（{"baseUrl","apiKey","model"}）；两者皆缺 → 可读错误指引两种方式。
- * core 只认显式传入的 config；密钥只进 config，永不进日志（裁定⑦，测试断言）。
- */
-export function resolveAiConfig(input: { env?: Record<string, string | undefined>; homeDir?: string }): AiProviderConfig {
-  const env = input.env ?? process.env;
-  const baseUrl = env.APICC_AI_BASE_URL;
-  const apiKey = env.APICC_AI_API_KEY;
-  const model = env.APICC_AI_MODEL;
-  if (baseUrl && apiKey && model) return { baseUrl, apiKey, model };
-
-  const file = join(input.homeDir ?? homedir(), ".apicc", "ai.json");
-  if (existsSync(file)) {
-    let raw: { baseUrl?: unknown; apiKey?: unknown; model?: unknown };
-    try {
-      raw = JSON.parse(readFileSync(file, "utf8")) as { baseUrl?: unknown; apiKey?: unknown; model?: unknown };
-    } catch {
-      throw new Error(`AI 配置文件不是合法 JSON: ${file}`);
-    }
-    if (typeof raw.baseUrl === "string" && raw.baseUrl && typeof raw.apiKey === "string" && raw.apiKey
-      && typeof raw.model === "string" && raw.model) {
-      return { baseUrl: raw.baseUrl, apiKey: raw.apiKey, model: raw.model };
-    }
-    throw new Error(`AI 配置文件不完整: ${file}（须含 baseUrl/apiKey/model 字符串字段）`);
-  }
-  if (baseUrl || apiKey || model) {
-    throw new Error("AI 配置不完整：env 三件套须同时设置 APICC_AI_BASE_URL、APICC_AI_API_KEY、APICC_AI_MODEL");
-  }
-  throw new Error(
-    "未找到 AI 配置：可设置环境变量 APICC_AI_BASE_URL、APICC_AI_API_KEY、APICC_AI_MODEL，"
-    + '或在 ~/.apicc/ai.json 写入 {"baseUrl":"...","apiKey":"...","model":"..."}',
-  );
-}
-
 /** Load once, preserve storage diagnostics, and locate solely within the returned UUID tree. */
 async function locateApiTarget(registry: PluginRegistry, root: string, apiPath: string) {
   const state = await loadWorkspace(registry, root);
@@ -288,7 +256,7 @@ async function locateApiTarget(registry: PluginRegistry, root: string, apiPath: 
 }
 
 /** runCli 可注入依赖：worker 协议/日志通道与默认 SpawnWorker 工厂（测试注入替身即可进程内闭环）。 */
-export interface RunCliDeps {
+export interface RunCliDeps extends CliAiConfigDeps, McpProfileDeps {
   /** @deprecated Library-only v2 adapter. The executable never supplies this registration function. */
   legacyStressWorkerAdapter?: typeof registerLegacyStressWorkerAdapter;
   spawnLocalStressWorker?: (identity: { runId: string; workerId: string }, timeoutMs: number, prepare: (configuration: unknown, signal?: AbortSignal) => Promise<import("@apicc/core").StressWorkerRuntime>) => Promise<import("@apicc/core").StressWorkerChannel>;
@@ -1843,59 +1811,62 @@ export async function runCli(
   // run-case 执行类工具默认不注册，--allow-run 显式开启（裁定⑥）。连接前 fail-fast 校验工作区。
   program
     .command("mcp")
-    .description("启动 stdio MCP 服务器（list-apis/get-api-design 只读 + run-case 需 --allow-run）")
-    .requiredOption("--workspace <root>", "工作区根目录")
-    .option("--allow-run", "注册执行类工具 run-case（默认只读）", false)
-    .action(async (opts: { workspace: string; allowRun: boolean }) => {
-      if (!existsSync(join(opts.workspace, "apicc.workspace.yaml"))) {
+    .description("启动固定来源 stdio MCP（默认只读；保存目标执行需 --allow-run）")
+    .option("--workspace <root>", "固定的本地工作区根目录（与 --online-profile 互斥）")
+    .option("--online-profile <id>", "固定的在线成员来源 profile；须事先独立登录")
+    .option("--max-output-bytes <n>", "单次输出预算，默认 131072，范围 4096–1048576 bytes", Number)
+    .option("--allow-run", "注册 prepare-run/start-run/cancel-run；本地兼容 run-case（默认只读）", false)
+    .addOption(new Option("--local-profile <profile>", "仅本地来源执行档位；不是模型参数").choices(["no-script", "trusted-core-script"]).default("no-script"))
+    .option("--ticket-ttl-ms <n>", "未使用票据TTL，默认300000，范围30000–900000 ms", Number)
+    .option("--max-tickets <n>", "未使用票据数量，默认32，范围1–32", Number)
+    .option("--active-local-runs <n>", "活动/不确定本机运行数量，默认1，范围1–4", Number)
+    .option("--terminal-local-runs <n>", "完整本机终态结果数量，默认20，范围1–100", Number)
+    .option("--terminal-local-bytes <n>", "完整本机终态结果总量，默认33554432，范围1048576–134217728 bytes", Number)
+    .option("--journal-receipt-bytes <n>", "单项防重元数据上限，默认16384，范围4096–1048576 bytes", Number)
+    .option("--journal-max-records <n>", "防重元数据数量（本机内存/在线私有journal），默认1000，范围1–10000", Number)
+    .option("--journal-total-bytes <n>", "防重元数据总量，默认8388608，范围1048576–134217728 bytes", Number)
+    .action(async (opts: { workspace?: string; onlineProfile?: string; allowRun: boolean; maxOutputBytes?: number;
+      localProfile: "no-script" | "trusted-core-script"; ticketTtlMs?: number; maxTickets?: number;
+      activeLocalRuns?: number; terminalLocalRuns?: number; terminalLocalBytes?: number;
+      journalReceiptBytes?: number; journalMaxRecords?: number; journalTotalBytes?: number }) => {
+      if (!opts.workspace && !opts.onlineProfile) program.error("必须指定 --workspace 或 --online-profile 固定来源");
+      if (opts.workspace && !existsSync(join(opts.workspace, "apicc.workspace.yaml"))) {
         throw new Error(`未找到 apicc.workspace.yaml: ${opts.workspace}`);
       }
-      const { createMcpServer } = await import("./mcp/server.js");
+      const { createScopedMcpServer } = await import("./mcp/server.js");
+      const { createMcpSource } = await import("./mcp/source.js");
       const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
-      const server = createMcpServer(opts.workspace, { allowRun: opts.allowRun });
+      const source = await createMcpSource({ ...deps, registry, workspace: opts.workspace, onlineProfile: opts.onlineProfile } as import("./mcp/source.js").McpSourceOptions);
+      let server: ReturnType<typeof createScopedMcpServer>;
+      try { server = createScopedMcpServer(source, { ...credentialHostOptions(deps), allowRun: opts.allowRun, registry,
+        maxOutputBytes: opts.maxOutputBytes, localProfile: opts.localProfile,
+        privateRoot: join(deps.mcpHomeDir ?? homedir(), ".apicc", "mcp", "execution"),
+        limits: { ticketTtlMs: opts.ticketTtlMs, maxTickets: opts.maxTickets, activeLocalRuns: opts.activeLocalRuns,
+          terminalLocalRuns: opts.terminalLocalRuns, terminalLocalBytes: opts.terminalLocalBytes,
+          journalReceiptBytes: opts.journalReceiptBytes, journalMaxRecords: opts.journalMaxRecords, journalTotalBytes: opts.journalTotalBytes },
+      }); } catch (error) { await source.close(); throw error; }
       const transport = new StdioServerTransport();
+      let closing: Promise<void> | undefined;
+      const close = () => closing ??= server.close();
+      let disconnected!: () => void;
+      const stopped = new Promise<void>(resolve => { disconnected = resolve; });
+      const eof = () => { void close().finally(disconnected).catch(() => {}); };
+      process.stdin.once("end", eof);
+      try {
       await server.connect(transport);
       // 挂起至客户端断开：包装 SDK 的 onclose——先保留其内部清理，再放行命令返回（退出码 0）。
-      await new Promise<void>((resolve) => {
         const priorOnClose = transport.onclose?.bind(transport);
         transport.onclose = () => {
           priorOnClose?.();
-          resolve();
+          disconnected();
         };
-      });
+      if (process.stdin.readableEnded) eof();
+      await stopped;
+      } finally { process.stdin.removeListener("end", eof); await close(); }
     });
 
-  // AI 用例建议（M6-A D8）：基于接口定义经用户自备的 OpenAI 兼容端点生成候选用例，
-  // YAML 输出供人工审阅后并入——绝不自动写回接口（D2 人审采用硬边界）；密钥只进 config 不进日志。
-  const ai = program.command("ai").description("AI 能力命令组");
-  ai
-    .command("suggest-cases")
-    .argument("<apiPath>", "接口完整 UUID 路径（直接使用工作区存储树路径）")
-    .option("--instruction <text>", "用户补充指令（如「补充边界用例」）")
-    .option("--limit <n>", "候选用例条数上限", Number)
-    .option("--out <file>", "候选用例 YAML 输出文件（缺省打印 stdout）")
-    .action(async (apiPath: string, opts: { instruction?: string; limit?: number; out?: string }) => {
-      const root = findWorkspaceRoot(process.cwd());
-      if (!root) throw new Error("未找到 apicc.workspace.yaml——请在工作区内执行");
-      // 裁定⑥：--limit 传给 core 前 clamp（正整数门，可读报错）。
-      if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) {
-        throw new Error(`limit 必须为正整数，收到 ${opts.limit}`);
-      }
-      const { api, project } = await locateApiTarget(registry, root, apiPath);
-      const provider = createAiProvider(resolveAiConfig({ env: deps.aiEnv, homeDir: deps.aiHomeDir }));
-      const { suggestCases } = await import("@apicc/core");
-      const snapshot = createProjectSnapshot(project);
-      const cases = await suggestCases(api, snapshot.context, { provider, instruction: opts.instruction, limit: opts.limit });
-      const { stringify: stringifyYaml } = await import("yaml");
-      const yamlText = stringifyYaml({ cases });
-      if (opts.out) {
-        writeFileSync(opts.out, yamlText);
-        log(`已生成 ${cases.length} 条 AI 候选用例（未写入接口，供人工审阅采用）→ ${opts.out}`);
-      } else {
-        log(`已生成 ${cases.length} 条 AI 候选用例（未写入接口，供人工审阅采用）：`);
-        log(yamlText);
-      }
-    });
+  registerAiCommands(program, { ...deps, registry, log, workspaceRoot: () => findWorkspaceRoot(process.cwd()) });
+  registerMcpProfileCommands(program, deps, log);
 
   // Import: preview by default; project creation and explicit single-module merge share the Core plan.
   program

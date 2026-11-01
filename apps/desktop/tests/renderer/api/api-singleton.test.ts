@@ -32,6 +32,15 @@ type SeededApi = ApiccApi & { seedWorkspace(): Promise<void> };
 const seed = () => (getApi() as SeededApi).seedWorkspace();
 
 describe("api/index 生产包隔离单例（memory 回退）", () => {
+  // Catches an async generic proxy returning Promise<unsubscribe> instead of a synchronous disposer.
+  it('T11 returns an immediate disposer for lazy AI progress without inventing events', () => {
+    const fallback = getApi() as ApiccApi & { onAiProgress?: (listener: (progress: unknown) => void) => unknown };
+    const received: unknown[] = [];
+    const unsubscribe = fallback.onAiProgress?.(progress => received.push(progress));
+    expect(typeof unsubscribe).toBe('function');
+    if (typeof unsubscribe === 'function') unsubscribe();
+    expect(received).toEqual([]);
+  });
   it("无 window.apicc 时回退内存替身：方法经动态 import + Proxy 转发可 resolve", async () => {
     expect(window.apicc).toBeUndefined(); // 前置：jsdom 无 preload，走回退分支
     await seed();

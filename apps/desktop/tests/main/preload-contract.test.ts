@@ -10,16 +10,35 @@ import { IDS, makeApi, makeWorkspace, projectOne, uuid } from "./helpers/contrac
 const electron = vi.hoisted(() => ({
   invoke: vi.fn(async () => undefined as unknown),
   on: vi.fn(),
+  removeListener: vi.fn(),
   send: vi.fn(),
   expose: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
-  ipcRenderer: { invoke: electron.invoke, on: electron.on, send: electron.send },
+  ipcRenderer: { invoke: electron.invoke, on: electron.on, send: electron.send, removeListener: electron.removeListener },
   contextBridge: { exposeInMainWorld: electron.expose },
 }));
 
 describe("typed preload contract", () => {
+  // First assertion is a wiring RED until the public subscription exists; later guards must be rerun after wiring.
+  it('T11 delivers typed AI progress, rejects malformed/extra payloads and detaches the exact listener', async () => {
+    const api = await exposedApi() as ApiccApi & { onAiProgress?: (listener: (progress: unknown) => void) => () => void };
+    const received: unknown[] = [];
+    const unsubscribe = api.onAiProgress?.(progress => received.push(progress));
+    const listener = electron.on.mock.calls.find(call => call[0] === 'ai:progress')?.[1] as ((_event: unknown, value: unknown) => void) | undefined;
+    const progress = { operationId: '00000000-0000-4000-8000-000000000011', phase: 'request', attempt: 1 };
+    listener?.({ sender: 'must-not-leak' }, progress);
+    expect(received).toEqual([progress]);
+    for (const invalid of [{ ...progress, secret: 'must-not-pass' }, { ...progress, operationId: '../bad' },
+      { ...progress, phase: 'fake-50-percent' }, { ...progress, attempt: -1 }, { ...progress, receivedBytes: -1 },
+      { ...progress, attempt: 1.5 }, { ...progress, receivedBytes: Infinity }, null]) {
+      listener?.({}, invalid);
+      expect(received).toEqual([progress]);
+    }
+    unsubscribe?.();
+    expect(electron.removeListener.mock.calls).toEqual([['ai:progress', listener]]);
+  });
   it('validates scoped stress history inputs and outputs across the preload boundary', async () => {
     const scope = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
     const report = stressV2Report();
@@ -41,6 +60,7 @@ describe("typed preload contract", () => {
     electron.invoke.mockReset();
     electron.invoke.mockResolvedValue(undefined);
     electron.on.mockReset();
+    electron.removeListener.mockReset();
     electron.send.mockReset();
     electron.expose.mockReset();
   });
@@ -52,6 +72,17 @@ describe("typed preload contract", () => {
     expect(exposed?.[0]).toBe("apicc");
     return exposed?.[1] as ApiccApi;
   }
+
+  it("forwards all nine AI methods to exact channels without inventing a renderer owner, host or signal", async () => {
+    const api = await exposedApi();
+    const methods = [["aiSettingsRead", "ai:settings-read"], ["aiSettingsWrite", "ai:settings-write"], ["aiCatalogImport", "ai:catalog-import"], ["aiCatalogReload", "ai:catalog-reload"], ["aiConnectionTest", "ai:connection-test"], ["aiDiscover", "ai:discover"], ["aiPrepareAssistance", "ai:prepare-assistance"], ["aiStart", "ai:start"], ["aiCancel", "ai:cancel"]] as const;
+    for (const [method, channel] of methods) {
+      const value = { sentinel: method }, response = { fixture: method }; electron.invoke.mockResolvedValueOnce(response);
+      const noArgs = method === "aiSettingsRead" || method === "aiCatalogReload";
+      expect(await (api[method] as (...args: unknown[]) => Promise<unknown>)(...(noArgs ? [] : [value]))).toBe(response);
+      expect(electron.invoke).toHaveBeenLastCalledWith(channel, ...(noArgs ? [] : [value]));
+    }
+  });
 
   it("passes full locators and complete result payloads through unchanged", async () => {
     const api = await exposedApi();

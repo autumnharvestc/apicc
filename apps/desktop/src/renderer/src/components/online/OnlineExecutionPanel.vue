@@ -9,11 +9,11 @@ import ResponseViewer from "../ResponseViewer.vue";
 import WfResultDrawer from "../WfResultDrawer.vue";
 import CaseEvidencePanel from "../CaseEvidencePanel.vue";
 import StressReportView from '../StressReportView.vue';
-import { summarizeStressExecution,compareStressExecutions } from '@apicc/execution/client';
+import { summarizeStressExecution,compareStressExecutions } from '@apicc/execution/client/stressComparison';
 import {renderStressHtml,stressProcessObservationText} from '@apicc/core/stress/html';
 import type {StressReportV2,StressExecutionSummary} from '@apicc/core';
 import StressExecutionSummaryView from '../StressExecutionSummaryView.vue';
-const props = defineProps<{ execution: OnlineExecutionStore; reportOnly?: boolean }>();
+const props = defineProps<{ execution: OnlineExecutionStore; reportOnly?: boolean; ai?: import('../../stores/ai.js').AiStore }>();
 const { t, te, locale } = useI18n();
 const selected = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' && 'job' in selection ? selection.job : props.execution.jobs.find(job => job.jobId === props.execution.selectedJobId); });
 const local = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' ? null : selection?.kind === 'local' && selection.runId !== props.execution.localResult?.runId ? null : props.execution.localResult; });
@@ -44,6 +44,15 @@ function shortIdentity(value: string) { return value.length > 64 ? `${value.slic
 const agent = computed(() => props.execution.location.kind === "agent" ? props.execution.agents?.agents.find(agent => agent.id === (props.execution.location as { agentId: string }).agentId) : undefined);
 const raw = ref(false);
 const selectionKey = computed(() => JSON.stringify(props.execution.resultSelection ?? [props.execution.selectedJobId, local.value?.runId, report.value?.executionId]));
+function analyzeReport() {
+  const context = props.execution.context, displayed = local.value ?? report.value, key = selectionKey.value;
+  const runId = local.value?.runId ?? selected.value?.jobId;
+  const location = local.value ? { kind: 'local' as const } : selected.value ? { kind: 'agent' as const, agentId: selected.value.agentId } : null;
+  if (!context || !displayed || !runId || !location || !props.ai) return;
+  const sourceKey = JSON.stringify(context);
+  void props.ai.prepareReportAnalysis({ source: { kind: 'online', context }, report: { kind: 'online', runId, location }, displayed,
+    isCurrent: () => selectionKey.value === key && (local.value ?? report.value) === displayed && JSON.stringify(props.execution.context) === sourceKey });
+}
 watch(selectionKey, () => { raw.value = false; });
 function label(code: string | undefined) { if (!code) return t('onlineExecution.notCollected'); if(code==='stress')return t('stress.title');if (code === 'expired') return t('onlineExecution.expiredArchive'); const key = `onlineExecution.states.${code}`; const reason = `onlineExecution.reasons.${code}`; const refusal = `startRejectionLabels.${code}`; return te(key) ? t(key) : te(reason) ? t(reason) : te(refusal) ? t(refusal) : te(`stressFinal.codes.${code}`)?t(`stressFinal.codes.${code}`):code; }
 function capacityReason(reason:string){const key=`stressPresentation.waiting.${reason.startsWith('stress.')?reason.slice(7):''}`;return te(key)?t(key):te(`stressFinal.codes.${reason}`)?t(`stressFinal.codes.${reason}`):reason;}
@@ -107,6 +116,7 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
     </div>
     </template>
     <section v-if="execution.resultSelection || selected || local || report" data-testid="online-selected-run">
+      <button v-if="ai && execution.context && (local || report)" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
       <h4>{{ t('onlineExecution.recordedRun') }}</h4>
       <p v-if="stressSelected && !stressSummary">{{t('stressPresentation.metadataNotCollected')}}</p>
       <StressExecutionSummaryView v-if="stressSelected && stressSummary && !report && !local" :execution="stressSummary" />
