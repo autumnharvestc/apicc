@@ -1,9 +1,12 @@
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { expect, it, vi } from "vitest";
 import { boundedJson } from "../src/mcp/pagination.js";
 import { createMcpExecutionHost } from "../src/mcp/execution.js";
 import { createMcpLocalExecutionHost } from "../src/mcp/localExecution.js";
 import { executionCapabilityFor } from "../src/mcp/executionCapabilities.js";
+import { createScopedMcpServer } from "../src/mcp/server.js";
 import { executionFixture, localCaseExecutionFixture, onlineLocalCaseExecutionFixture, outcome, signal } from "./mcp-execution.fixture.js";
 
 // Each path keeps the real Core promise. Reading/paging is only through the original source API.
@@ -55,7 +58,9 @@ it("r55_agent_returned_job_id_is_an_exact_read_alias_and_not_a_second_listed_job
 });
 
 it("r55_known_preinvoke_attachment_failure_is_readable_without_a_fabricated_native_report_or_retry", async () => {
+  const privatePaths = { windowsPath: String.raw`C:\CI85_WINDOWS_PRIVATE\material.bin`, posixPath: "/CI85_POSIX_PRIVATE/material.bin" };
   const f = await localCaseExecutionFixture({ configureProject(project, { driverPath }) {
+    project.variables = { ...privatePaths };
     const request = project.collections[0]!.apis[0]!.contract.request;
     if (request.protocol !== "http") throw new Error("actual HTTP fixture required");
     request.body = { kind: "binary", file: { path: driverPath }, contentType: "application/octet-stream" };
@@ -63,7 +68,10 @@ it("r55_known_preinvoke_attachment_failure_is_readable_without_a_fabricated_nati
   f.writeDriver("fixed-file-before-start");
   const adapter = createMcpLocalExecutionHost({ networkPrivateRoot: join(f.privateRoot, "network") });
   const started = vi.spyOn(adapter, "start"), host = createMcpExecutionHost({ source: f.source, privateRoot: f.privateRoot, localHost: adapter });
+  const server = createScopedMcpServer(f.source);
+  const client = new Client({ name: "preinvoke-failure-boundary", version: "1" }), [a, b] = InMemoryTransport.createLinkedPair();
   try {
+    await Promise.all([client.connect(a), server.connect(b)]);
     const ticket = await host.prepare(f.input, signal()); f.writeDriver("changed-file-with-different-length-after-prepare");
     const run = await host.start({ ticketId: ticket.ticketId, intentId: "known-preinvoke" }, signal());
     expect((await outcome(() => started.mock.results[0]!.value)).error).toMatch(/FILE_SOURCE_CHANGED|changed/i);
@@ -71,10 +79,27 @@ it("r55_known_preinvoke_attachment_failure_is_readable_without_a_fabricated_nati
     expect.soft(report.error).toBeNull(); expect.soft(report.value).toMatchObject({ failure: { reasonCode: "FILE_SOURCE_CHANGED", executionFact: "not-started" } });
     expect.soft(await f.source.getRun(run.runId, signal())).toMatchObject({ state: "ended", reportState: "none" });
     expect.soft(report.value ?? {}).not.toHaveProperty("report"); expect.soft(report.value ?? {}).not.toHaveProperty("requestFacts");
-    expect(JSON.stringify(report.value) ?? "").not.toContain(f.materialPath);
+    // Internal source reads retain the private snapshot for ownership/context;
+    // only the actual MCP tool response is the externally exposed safety boundary.
+    expect.soft(report.value?.project.snapshot.project.variables).toEqual(privatePaths);
+    expect.soft(report.value?.project.snapshot.project.collections[0]!.apis[0]!.contract.request).toMatchObject({ body: { kind: "binary", file: { path: f.materialPath } } });
+    const exposed = await client.callTool({ name: "get-report", arguments: { runId: run.runId } });
+    expect.soft(exposed.isError).not.toBe(true);
+    expect.soft(exposed.structuredContent).toMatchObject({
+      data: { reportId: run.runId, reportRevision: report.value?.revision, failure: { reasonCode: "FILE_SOURCE_CHANGED", executionFact: "not-started" } },
+      completeness: { complete: false, evidenceComplete: false },
+      limitations: expect.arrayContaining(["no-native-report", "request-facts-not-collected", "execution-will-not-be-resubmitted"]),
+    });
+    expect.soft(Object.keys((exposed.structuredContent as { data: Record<string, unknown> }).data).sort()).toEqual(["failure", "reportId", "reportRevision"]);
+    expect.soft(JSON.stringify(exposed.content)).toMatch(/执行未开始/);
+    // Path-independent ASCII directory markers also catch paths inside encoded
+    // text, where JSON escaping otherwise hides native Windows backslashes.
+    for (const marker of [basename(dirname(f.materialPath)), "CI85_WINDOWS_PRIVATE", "CI85_POSIX_PRIVATE"]) {
+      expect.soft(JSON.stringify(exposed)).not.toContain(marker);
+    }
     expect(await host.start({ ticketId: ticket.ticketId, intentId: "known-preinvoke" }, signal())).toMatchObject({ runId: run.runId });
     expect(started).toHaveBeenCalledTimes(1); expect(f.requests).toEqual([]);
-  } finally { await host.close(); await f.close(); }
+  } finally { await host.close(); await client.close(); await server.close(); await f.close(); }
 });
 
 it("r55_unknown_adapter_failure_is_generic_uncertain_and_still_protects_its_slot", async () => {
