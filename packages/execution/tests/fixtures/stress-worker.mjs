@@ -7,6 +7,8 @@ const peer = serveLocalStressWorker(processStressWorkerChannel(), identity, asyn
   const credentialBindings = { versions: configuration.credentialVersions, resolve: () => configuration.token };
   const execution = bindPreparedStressExecution(prepared.stressPlan, { snapshot: prepared.snapshot, credentialBindings, preparedTestData: configuration.data });
   const registry = createExecutionRegistry({ profile: prepared.profile });
+  if (configuration.traceVu) registry.getSdkProtocol = () => ({ name: "test-vu-observer", sdkProtocol: true, canHandle: request => request.protocol === "http",
+    execute(request, options) { return options.runtime.pluginTransport.execute({ ...request, headers: { ...request.headers, "x-test-vu": options.runtime.pluginVuId } }, options); } });
   const markers = collectCredentialMarkersForRequests(prepared.snapshot.project, selectCredentialRequests(prepared.snapshot, prepared.selections), credentialBindings);
   const evidence = createExecutionEvidenceCollector({ projectId: prepared.snapshot.project.id, definitionRevision: prepared.snapshot.definitionRevision, dataDigest: configuration.data.digest }, markers, { privateMarkers: true });
   const host = createPreparedStressHost(execution, { registry, evidence, requestSettings: prepared.requestSettings });

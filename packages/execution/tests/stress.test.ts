@@ -1,17 +1,28 @@
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, onTestFinished } from "vitest";
 import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { createProjectSnapshot, StressPlanSchema, prepareTestData, testDataSelectionsForRequests, WorkflowSchema } from "@apicc/core";
 import { createContractExecutionProject, contractExecutionIds as ids } from "../../core/tests/helpers/contractExecutionFixtures.js";
-import { prepareExecution, invokeExecution } from "../src/host/index.js";
+import { prepareExecution, invokeExecution, createExecutionRegistry } from "../src/host/index.js";
 
 let server: Server; let baseUrl = "";
-const seen: { row: string; cookie?: string }[] = [];
+const seen: { row: string; cookie?: string; vuId?: string }[] = [];
 const unionPorts = new Map<number, string>();
+let finishHeldVu: (() => void) | undefined; let fastVuRequests = 0;
 beforeAll(async () => {
   server = createServer((request, response) => {
     const path = new URL(request.url!, baseUrl).pathname; const row = path.split("/").at(-1)!;
-    seen.push({ row, cookie: request.headers.cookie });
+    const vuId = request.headers["x-test-vu"] as string | undefined;
+    seen.push({ row, cookie: request.headers.cookie, ...(vuId ? { vuId } : {}) });
+    if (path.startsWith("/isolation/")) {
+      response.setHeader("content-type", "text/plain"); response.setHeader("set-cookie", `session=cookie-private-${vuId}-${row}; Path=/`);
+      const end = () => response.end(`other cookie-private-${vuId === "1" ? "2" : "1"}-a`);
+      if (path.startsWith("/isolation/asymmetric/")) {
+        if (vuId === "2" && fastVuRequests < 3) { finishHeldVu = end; return; }
+        if (vuId === "1" && ++fastVuRequests === 3) { finishHeldVu?.(); finishHeldVu = undefined; }
+      }
+      end(); return;
+    }
     if (path === "/fail-vu-setup") {
       response.statusCode = 503; response.setHeader("content-type", "text/plain"); response.end("VU setup unavailable"); return;
     }
@@ -28,10 +39,10 @@ beforeAll(async () => {
 });
 afterAll(() => new Promise<void>(resolve => server.close(() => resolve())));
 
-function fixture(workerCount = 1, workflow = false, slow = false) {
+function fixture(workerCount = 1, workflow = false, slow = false, isolation?: "natural" | "asymmetric") {
   const project = createContractExecutionProject(baseUrl); const collection = project.collections[0]!; const folder = collection.folders[0]!.folders[0]!; const api = folder.apis[0]!;
   folder.preOperations = []; folder.postOperations = []; api.cases[0]!.preOperations = [];
-  api.contract.request.baseUrl = baseUrl; api.contract.request.path = slow ? "/slow/{{row}}" : "/data/{{row}}";
+  api.contract.request.baseUrl = baseUrl; api.contract.request.path = slow ? "/slow/{{row}}" : isolation ? `/isolation/${isolation}/{{row}}` : "/data/{{row}}";
   api.cases[0]!.dataDriver = { kind: "dataset", datasetId: "10000000-0000-4000-8000-000000000080" };
   project.datasets = [{ formatVersion: 1, id: "10000000-0000-4000-8000-000000000080", name: "rows", columns: ["row"], rows: [{ row: "a" }, { row: "b" }] }];
   const target = workflow ? { kind: "workflow" as const, workflowId: ids.workflow } : { kind: "case" as const, collectionId: collection.id, apiId: api.contract.id, caseId: ids.case };
@@ -41,23 +52,63 @@ function fixture(workerCount = 1, workflow = false, slow = false) {
   return { project, plan, prepared };
 }
 const credentialBindings = { versions: { [ids.credential]: "1" }, resolve: () => "credential-private" };
-async function callWorkers(workerCount: number, workflow = false, slow = false) {
-  const { project, plan, prepared } = fixture(workerCount, workflow, slow);
+async function callWorkers(workerCount: number, workflow = false, slow = false, asymmetric = false, signal?: AbortSignal) {
+  const traceVu = !workflow && !slow;
+  const { project, plan, prepared } = fixture(workerCount, workflow, slow, traceVu ? asymmetric ? "asymmetric" : "natural" : undefined);
   const data = await prepareTestData(prepared.snapshot, testDataSelectionsForRequests(prepared.snapshot, prepared.selections, prepared.environmentId), { workspaceRoot: process.cwd() });
-  const value = await invokeExecution(prepared, { credentialBindings, preparedTestData: data }, { stress: workerCount > 1 ? { workers: { count: workerCount, timeoutMs: 15000,
-    configuration: { project, plan, data, token: "credential-private", credentialVersions: credentialBindings.versions, requestSettings: prepared.requestSettings },
+  const value = await invokeExecution(prepared, { credentialBindings, preparedTestData: data }, { signal, registryFactory(options) {
+    const registry = createExecutionRegistry(options);
+    // Observe the real host VU identity while retaining its managed HTTP transport.
+    if (traceVu) registry.getSdkProtocol = () => ({ name: "test-vu-observer", sdkProtocol: true, canHandle: request => request.protocol === "http",
+      execute(request, options) { return options.runtime!.pluginTransport!.execute({ ...request, headers: { ...request.headers, "x-test-vu": options.runtime!.pluginVuId! } }, options); } });
+    return registry;
+  }, stress: workerCount > 1 ? { workers: { count: workerCount, timeoutMs: 15000,
+    configuration: { project, plan, data, token: "credential-private", credentialVersions: credentialBindings.versions, requestSettings: prepared.requestSettings, traceVu },
     argsFor: identity => [fileURLToPath(new URL("./fixtures/stress-worker.mjs", import.meta.url)), identity.runId, identity.workerId] } } : {} });
   return value;
+}
+
+function expectIsolatedVuRequests(requests: typeof seen) {
+  expect(requests).toHaveLength(4);
+  expect([...new Set(requests.map(request => request.vuId))].sort()).toEqual(["1", "2"]);
+  // Each VU owns its cursor/Cookie state; the shared iteration budget need not
+  // divide evenly. A valid 3:1 allocation is a,b,a for one VU and a for the other.
+  for (const vuId of ["1", "2"]) {
+    const actual = requests.filter(request => request.vuId === vuId).map(({ row, cookie }) => ({ row, cookie }));
+    expect(actual).toEqual([
+      { row: "a", cookie: undefined },
+      { row: "b", cookie: `session=cookie-private-${vuId}-a` },
+      { row: "a", cookie: `session=cookie-private-${vuId}-b` },
+    ].slice(0, actual.length));
+  }
 }
 
 it.each([1, 2])("runs real case/data/Cookie isolation with %i workers and reprojects the private marker union", async workerCount => {
   const before = seen.length; const value = await callWorkers(workerCount);
   expect(value).toMatchObject({ kind: "stress", result: { formatVersion: 2, iterations: { completed: 4 }, requests: { started: 4, completed: 4 }, verdict: { passed: true } } });
   const requests = seen.slice(before);
-  expect(requests.map(row => row.row).sort()).toEqual(["a", "a", "b", "b"]);
-  expect(requests.filter(row => row.row === "a").map(row => row.cookie)).toEqual([undefined, undefined]);
-  expect(requests.filter(row => row.row === "b").map(row => row.cookie)).toEqual(["session=cookie-private-a", "session=cookie-private-a"]);
-  expect(JSON.stringify(value)).not.toMatch(/credential-private|cookie-private-a|cookie-private-b/);
+  expectIsolatedVuRequests(requests);
+  expect(JSON.stringify(value)).not.toMatch(/credential-private|cookie-private-/);
+});
+
+it.each([1, 2])("keeps case/data/Cookie isolation with asymmetric VU completion in %i workers", async workerCount => {
+  const before = seen.length; fastVuRequests = 0;
+  const controller = new AbortController(); let running: ReturnType<typeof callWorkers> | undefined;
+  const cleanup = async () => {
+    controller.abort(); finishHeldVu?.(); finishHeldVu = undefined;
+    await running?.catch(() => {}); fastVuRequests = 0;
+  };
+  // Vitest timeout does not enter an unresolved test body's finally immediately.
+  onTestFinished(cleanup);
+  try {
+    const value = await (running = callWorkers(workerCount, false, false, true, controller.signal));
+    expect(value).toMatchObject({ kind: "stress", result: { formatVersion: 2, iterations: { completed: 4 }, requests: { started: 4, completed: 4 }, verdict: { passed: true } } });
+    const requests = seen.slice(before);
+    expect(requests.filter(request => request.vuId === "1")).toHaveLength(3);
+    expect(requests.filter(request => request.vuId === "2")).toHaveLength(1);
+    expectIsolatedVuRequests(requests);
+    expect(JSON.stringify(value)).not.toMatch(/credential-private|cookie-private-/);
+  } finally { await cleanup(); }
 });
 
 it.each([1, 2])("applies the fixed request override to real workflow/lifecycle leaves with %i workers", async workerCount => {
