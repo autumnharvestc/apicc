@@ -20,15 +20,18 @@ import { Alert as AAlert, AutoComplete as AAutoComplete, Button as AButton, Inpu
 import type { AdminAclRole } from "../api/contract.js";
 import { createUserPicker } from "../composables/userPicker.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
+import CollaborationAccessTable from '../components/CollaborationAccessTable.vue';
+import type {CapabilityMode,AccessMember} from '../api/collaboration.js';
 
 const props = defineProps<{ workspaces: WorkspacesStore }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
+const overrideLabel = (value: string) => te(`collaboration.overrideStates.${value}`) ? t(`collaboration.overrideStates.${value}`) : value;
 const route = useRoute();
 
 /** 路由参数工作区 id（ACL 页数据寻址）。 */
 const workspaceId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
 
-const projects = computed(() => props.workspaces.tree?.projects ?? []);
+const projects = computed(() => props.workspaces.managementProjects);
 const selectedProjectId = ref<string | null>(null);
 const selectedProject = computed(() => projects.value.find((p) => p.id === selectedProjectId.value) ?? null);
 
@@ -38,6 +41,13 @@ const selectedProject = computed(() => projects.value.find((p) => p.id === selec
 const { username: addUserName, options: userOptions, onSearch: onSearchUser, resolveId, reset: resetPicker } = createUserPicker(props.workspaces, workspaceId);
 const addRole = ref<AdminAclRole>("VIEWER");
 const addError = ref("");
+const addSubject=ref<AccessMember|null>(null);const addReading=ref(false);let addReadSequence=0;
+async function readAddSubject(){const sequence=++addReadSequence,userId=resolveId(),id=workspaceId.value,projectId=selectedProjectId.value;addSubject.value=null;addReading.value=!!userId&&!!projectId;if(!userId||!projectId)return;try{const value=await props.workspaces.readAccessMember({workspaceId:id,projectId},userId,true);if(sequence===addReadSequence)addSubject.value=value;}catch(e){if(sequence===addReadSequence)addError.value=e instanceof Error?e.message:String(e);}finally{if(sequence===addReadSequence)addReading.value=false;}}
+watch(()=>`${workspaceId.value}/${selectedProjectId.value??''}/${resolveId()??''}`,()=>{void readAddSubject();},{flush:'sync'});
+const confirmationRoles=ref<Record<string,AdminAclRole>>({});
+const capabilityTarget=ref<string|null>(null);const capabilityDraft=ref<Record<string,CapabilityMode>>({});
+let capabilityEditGeneration=0;watch(capabilityDraft,()=>{capabilityEditGeneration++;},{deep:true,flush:'sync'});
+async function saveCapabilities(){const generation=capabilityEditGeneration;if(await props.workspaces.changeCapabilities({workspaceId:workspaceId.value,projectId:selectedProjectId.value!},capabilityTarget.value!,{...capabilityDraft.value})&&generation===capabilityEditGeneration)capabilityDraft.value={};}
 
 // 路由参数驱动：进页/切工作区 → 拉树（项目清单）+ 拉成员清单（添加行下拉选项源，任务 4 审查
 // 备案 4 口径：依赖选中工作区的数据随路由参数变化重拉）；添加行输入随切换复位（终审顺手⑦，
@@ -52,6 +62,7 @@ watch(
     addRole.value = "VIEWER";
     addError.value = "";
     void props.workspaces.loadTree(id);
+    void props.workspaces.loadManagementProjects(id);
     void props.workspaces.loadMembers(id);
   },
   { immediate: true },
@@ -59,16 +70,16 @@ watch(
 
 // 树到达后默认选第一个项目；已选项目不在树中（被滤/工作区切换）→ 回退第一个。
 watch(
-  () => props.workspaces.tree,
-  (tree) => {
-    if (!tree) return;
-    if (!selectedProjectId.value || !tree.projects.some((p) => p.id === selectedProjectId.value)) {
-      selectedProjectId.value = tree.projects[0]?.id ?? null;
+  () => props.workspaces.managementProjects,
+  (items) => {
+    if (!selectedProjectId.value || !items.some((p) => p.id === selectedProjectId.value)) {
+      selectedProjectId.value = items[0]?.id ?? null;
     }
   },
 );
 
 watch(selectedProjectId, (projectId) => {
+  confirmationRoles.value={};capabilityTarget.value=null;capabilityDraft.value={};
   resetPicker();
   props.workspaces.clearCandidates();
   addRole.value = "VIEWER";
@@ -78,8 +89,9 @@ watch(selectedProjectId, (projectId) => {
 
 const projectOptions = computed(() =>
   // path 实体化后服务端不再回目录路径——回退展示内容前缀 `<projectId>/`（定位口径同步）
-  projects.value.map((p) => ({ value: p.id, label: `${p.name}（${p.path ?? `${p.id}/`}）· ${t("acl.myRoleLabel")}: ${p.myRole}` })),
+  projects.value.map((p) => ({ value: p.id, label: `${p.name} · ${t(p.contentReadable?'collaboration.contentReadable':'collaboration.contentUnreadable')}` })),
 );
+function accessMember(userId:string){return props.workspaces.accessMembers[`${workspaceId.value}/${selectedProjectId.value}/${userId}`];}
 
 /** ACL 角色域（§3.3）：NONE 标签文案显式（裁定 B）；域内无 OWNER。 */
 const ACL_ROLE_OPTIONS = computed(() => [
@@ -99,7 +111,7 @@ function roleLabel(role: AdminAclRole): string {
 const columns = computed(() => [
   { title: t("acl.colUserId"), dataIndex: "userId", key: "userId" },
   { title: t("acl.colRole"), dataIndex: "role", key: "role" },
-  { title: t("acl.colActions"), key: "actions" },
+  { title: t("acl.colActions"), key: "actions",width:900 },
 ]);
 
 async function onRoleChange(userId: string, role: AdminAclRole): Promise<void> {
@@ -129,7 +141,8 @@ async function onAdd(): Promise<void> {
     return;
   }
   if (!workspaceId.value || !selectedProjectId.value) return;
-  const ok = await props.workspaces.addAclEntry(workspaceId.value, selectedProjectId.value, { userId, role: addRole.value });
+  if(addReading.value||addSubject.value?.userId!==userId)return;
+  const ok = await props.workspaces.addAclEntry(workspaceId.value, selectedProjectId.value, { userId, role: addRole.value,expectedRevision:addSubject.value.revision });
   if (ok) {
     resetPicker();
     props.workspaces.clearCandidates();
@@ -164,7 +177,7 @@ async function onAdd(): Promise<void> {
         @update:value="(v) => (selectedProjectId = v as string)"
       />
       <span v-if="selectedProject" class="project-myrole" data-testid="acl-project-myrole">
-        {{ t("acl.myRoleLabel") }}: {{ selectedProject.myRole }}
+        {{ t(selectedProject.contentReadable?'collaboration.contentReadable':'collaboration.contentUnreadable') }}
       </span>
     </div>
 
@@ -172,6 +185,7 @@ async function onAdd(): Promise<void> {
     <p class="none-hint" data-testid="acl-none-hint">{{ t("acl.noneHint") }}</p>
 
     <a-table
+      :scroll="{x:1300}"
       :columns="columns"
       :data-source="workspaces.aclEntries"
       row-key="userId"
@@ -182,11 +196,21 @@ async function onAdd(): Promise<void> {
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
           <a-tag :color="ROLE_COLORS[record.role as AdminAclRole]">{{ roleLabel(record.role as AdminAclRole) }}</a-tag>
+          <span v-if="accessMember(record.userId)?.overrideState==='pending-confirmation'">{{t('collaboration.pending')}}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <div class="row-actions">
+            <button :data-testid="`acl-capabilities-${record.userId}`" @click="capabilityTarget=record.userId;capabilityDraft={}">{{t('collaboration.capability')}}</button>
+            <button :data-testid="`acl-reload-${record.userId}`" @click="workspaces.refreshAccessMember({workspaceId,projectId:selectedProjectId!},record.userId)">{{t('collaboration.reload')}}</button>
+            <span v-if="accessMember(record.userId)">{{t('collaboration.currentRevision')}}: {{accessMember(record.userId)?.revision}} · {{t('collaboration.currentRole')}}: {{accessMember(record.userId)?.projectOverride??t('collaboration.inherit')}}</span>
+            <template v-if="accessMember(record.userId)?.overrideState==='pending-confirmation'">
+              <select v-model="confirmationRoles[record.userId]" :data-testid="`acl-new-role-${record.userId}`" :aria-label="t('collaboration.confirmOverride')"><option disabled value="">—</option><option v-for="role in ACL_ROLE_OPTIONS" :key="role.value" :value="role.value">{{role.label}}</option></select>
+              <button :disabled="!confirmationRoles[record.userId]" :data-testid="`acl-confirm-override-${record.userId}`" @click="workspaces.confirmAccess(workspaceId,selectedProjectId!,record.userId,'confirm-override',confirmationRoles[record.userId])">{{t('collaboration.confirmOverride')}}</button>
+              <button :data-testid="`acl-confirm-inheritance-${record.userId}`" @click="workspaces.confirmAccess(workspaceId,selectedProjectId!,record.userId,'confirm-inheritance')">{{t('collaboration.confirmInheritance')}}</button>
+            </template>
             <a-select
-              :value="record.role"
+              v-else
+              :value="workspaces.aclDrafts[`${workspaceId}/${selectedProjectId}/${record.userId}`]??record.role"
               :loading="workspaces.aclBusyUserId === record.userId"
               size="small"
               class="role-select"
@@ -213,6 +237,7 @@ async function onAdd(): Promise<void> {
       </template>
     </a-table>
 
+    <section v-if="capabilityTarget&&accessMember(capabilityTarget)" data-testid="acl-capability-editor"><h3>{{t('collaboration.capability')}} · {{capabilityTarget}}</h3><p>{{t('collaboration.currentRevision')}}: {{accessMember(capabilityTarget)?.revision}}</p><CollaborationAccessTable :rows="accessMember(capabilityTarget)!.capabilities" :draft="capabilityDraft" @save="saveCapabilities"/><button @click="workspaces.refreshAccessMember({workspaceId,projectId:selectedProjectId!},capabilityTarget)">{{t('collaboration.reload')}}</button></section>
     <!-- 添加 ACL 行（userPicker 用户名搜索下拉——成员+候选合并，选中解析为内部 id） -->
     <div class="add-row" data-testid="acl-add">
       <a-auto-complete
@@ -229,10 +254,12 @@ async function onAdd(): Promise<void> {
         data-testid="acl-add-role"
         :options="ACL_ROLE_OPTIONS"
       />
-      <a-button type="primary" :loading="workspaces.aclSubmitting" data-testid="acl-add-submit" @click="onAdd">
+      <a-button type="primary" :disabled="!!resolveId()&&!addSubject||addReading" :loading="workspaces.aclSubmitting" data-testid="acl-add-submit" @click="onAdd">
         {{ t("acl.addSubmit") }}
       </a-button>
     </div>
+    <p v-if="addSubject" data-testid="acl-add-scope">{{t('collaboration.currentRevision')}}: {{addSubject.revision}} · {{addSubject.member?addSubject.workspaceRole:t('collaboration.noMembership')}} · {{addSubject.projectOverride??t('collaboration.inherit')}} · {{overrideLabel(addSubject.overrideState)}}</p>
+    <button v-if="resolveId()" data-testid="acl-add-reload" @click="readAddSubject">{{t('collaboration.reload')}}</button>
     <div v-if="addError" class="form-error" data-testid="acl-add-error">{{ addError }}</div>
     <!-- 候选搜索失败就地上屏（双通道：与顶部 aclError 分通道，MembersView members-candidates-error 同构——终审 Important 1） -->
     <div v-if="workspaces.candidatesError" class="form-error" data-testid="acl-candidates-error">{{ workspaces.candidatesError }}</div>
@@ -271,7 +298,12 @@ async function onAdd(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 880px;
+  flex-wrap: nowrap;
 }
+.acl-view{min-width:0;max-width:100%}
+.acl-view :deep(.ant-table-wrapper){max-width:100%;min-width:0}
+.acl-view :deep(th){white-space:nowrap}
 .role-select {
   width: 150px;
 }

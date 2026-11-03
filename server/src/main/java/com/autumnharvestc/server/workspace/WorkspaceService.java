@@ -44,6 +44,8 @@ public class WorkspaceService {
     private final GroupRepo groups;
     private final ProjectRepo projects;
     private final WorkspaceGuard guard;
+    private final com.autumnharvestc.server.access.AccessRepo accessRecords;
+    private final com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage;
 
     public WorkspaceService(WorkspaceRepo workspaces,
                             MembershipRepo memberships,
@@ -51,7 +53,7 @@ public class WorkspaceService {
                             FileVersionRepo fileVersions,
                             GroupRepo groups,
                             ProjectRepo projects,
-                            WorkspaceGuard guard) {
+                            WorkspaceGuard guard,com.autumnharvestc.server.access.AccessRepo accessRecords,com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage) {
         this.workspaces = workspaces;
         this.memberships = memberships;
         this.acl = acl;
@@ -59,6 +61,8 @@ public class WorkspaceService {
         this.groups = groups;
         this.projects = projects;
         this.guard = guard;
+        this.accessRecords=accessRecords;
+        this.collaborationStorage=collaborationStorage;
     }
 
     /**
@@ -104,14 +108,21 @@ public class WorkspaceService {
     @Transactional
     public void delete(UserAccount caller, String workspaceId) {
         long wsId = EntityIds.parse(workspaceId);
+        collaborationStorage.beforeProjectDelete();
+        accessRecords.lockGate();
         guard.requireOwner(wsId, caller);
+        accessRecords.lockScope(wsId,null,null,false);
+        var collaborationPolicy=collaborationStorage.workspaceDeletionPolicy();
+        var collaborationScopes=collaborationStorage.lockWorkspaceAccounts(wsId,projects.listByWorkspace(wsId).stream().map(com.autumnharvestc.server.store.ProjectRecord::id).toList());
         fileVersions.lockWorkspaceProjects(wsId);
         memberships.deleteByWorkspace(wsId);
         acl.deleteByWorkspace(wsId);
+        accessRecords.deleteByWorkspace(wsId);
         fileVersions.deleteByWorkspace(wsId);
         // groups/projects 一并清理（审查修复）：projects 先于 groups——fk_projects_group 引用顺序
         projects.deleteByWorkspace(wsId);
         groups.deleteByWorkspace(wsId);
         workspaces.delete(wsId);
+        collaborationStorage.workspaceDeleted(caller.id(),wsId,collaborationScopes,collaborationPolicy);
     }
 }

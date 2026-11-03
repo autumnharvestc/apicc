@@ -80,6 +80,11 @@ async function fixture(extra?: (url: string, init?: RequestInit) => Response | P
   return { session, requests, fetcher, host: createOnlineExecutionHost({ session, fetch: fetcher }) };
 }
 describe("online execution main boundary", () => {
+  it('F7f desktop status consumes exact minimum DTO and server scope without inventing task',async()=>{
+    const minimum={jobId:'99',executionId:'100',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:true,view:'active-status',scope:context.scope};
+    const f=await fixture(url=>url.endsWith('/jobs/99')?Response.json(minimum):undefined);
+    try{expect(await f.host.handle({context,operation:'status',runId:'99',location:{kind:'agent',agentId:'5'}})).toEqual(minimum);}finally{await f.host.close();}
+  });
   it.each(['forbidden', 'script_permission_denied'])('final C M3 closed %s denial has an English business explanation and no server body', async code => {
     const { project } = assetsFixture(), asset = project.collections[0]!.apis[0]!;
     const locator = { workspaceId: '11', groupId: '22', projectId: project.id, collectionId: project.collections[0]!.id, folderIds: [], apiId: asset.contract.id };
@@ -301,7 +306,7 @@ describe("online execution main boundary", () => {
     finally { await f.host.close(); }
   });
   // Admission bounds cannot substitute for compiled load or omit the fixed stress declaration.
-  it('submits the selected agent stress inputs with the authoritative compiled binding and exact worker confirmation', async () => {
+  it.each([false,true])('F7f submits selected agent stress with authoritative binding and minimum=%s', async minimum => {
     const { project, assets } = assetsFixture(project => { project.stressPlans = [{ formatVersion: 1, id: 'saved-agent', name: 'Agent scenario', updatedAt: 0, plan: StressPlanSchema.parse({ formatVersion: 1, target: { kind: 'workflow', workflowId: project.workflows[0]!.id }, load: { kind: 'constant-vus', vus: 2 }, maxVus: 2, gracefulStopMs: 0, termination: { maxIterations: 4 } }) }]; });
     const identity = await readBuildIdentity(); const runtimeCompatibilityId = runtimeCompatibilityIdForRuntime(process.versions.node, process.versions.v8, identity.scriptApiId);
     const configuration = { configVersion: '0', appliedConfigVersion: '0', pendingFields: [], restartRequiredFields: [], status: 'applied' };
@@ -311,7 +316,7 @@ describe("online execution main boundary", () => {
       if (url.endsWith('/execution-agents')) return Response.json({ defaultAgentId: '5', canManageScripts: false, policy: defaultPolicyConfig, policyVersion: '0', agents: [{ id: '5', name: 'Stress agent', acceptingJobs: true, availability: 'available', lastSeenAt: '2026-10-26T12:00:00Z', policy: defaultPolicyConfig, policyVersion: '0', scriptsAllowed: false, scriptGrant: { scope: 'script-version', version: '0', scripts: [] }, stressConfiguration, configuration, runtime: { protocolVersion: 1, sessionId: 'actual-agent-host', ...identity, sourceFiles: undefined, algorithm: undefined, nodeVersion: process.versions.node, v8Version: process.versions.v8, runtimeCompatibilityId, configuration } }] });
       if (url.endsWith('/execution-snapshots')) return Response.json({ snapshotId: '66', createdByUserId: '7', assets });
       if (url.endsWith('/local-materials')) return Response.json({ snapshotId: '66', scope: context.scope, credentials: [], attachments: [] });
-      if (url.endsWith('/jobs') && init?.method === 'POST') { const body = JSON.parse(String(init.body)); const { stressBinding: _binding, scriptRequirements: _requirements, ...preparation } = body.preparation; return Response.json({ jobId: '99', executionId: '100', agentId: '5', state: 'queued', cancelState: 'none', executionReleased: false, reportState: 'none', task: { protocolVersion: 1, jobId: '99', executionId: '100', scope: context.scope, submittedByUserId: '7', contractProjectId: project.id, snapshotId: '66', manifestHash: assets.manifestHash, target: body.target, policyVersion: '0', ...preparation } }); }
+      if (url.endsWith('/jobs') && init?.method === 'POST') { if(minimum)return Response.json({jobId:'99',executionId:'100',agentId:'5',state:'queued',cancelState:'none',executionReleased:false,canCancel:true,view:'active-status',scope:context.scope}); const body = JSON.parse(String(init.body)); const { stressBinding: _binding, scriptRequirements: _requirements, ...preparation } = body.preparation; return Response.json({ jobId: '99', executionId: '100', agentId: '5', state: 'queued', cancelState: 'none', executionReleased: false, reportState: 'none', task: { protocolVersion: 1, jobId: '99', executionId: '100', scope: context.scope, submittedByUserId: '7', contractProjectId: project.id, snapshotId: '66', manifestHash: assets.manifestHash, target: body.target, policyVersion: '0', ...preparation } }); }
       return undefined;
     });
     try {

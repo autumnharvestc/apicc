@@ -44,6 +44,9 @@ class OrgApiTest {
     private MockMvc mockMvc;
 
     @Autowired
+    private com.autumnharvestc.server.access.AccessFixtureRevisions versions;
+
+    @Autowired
     private FileVersionRepo fileVersions;
 
     // ---- 测试脚手架（夹具按简报脚注实现）----
@@ -89,8 +92,8 @@ class OrgApiTest {
         mockMvc.perform(put("/api/v1/admin/users/" + userId(superadminToken, username) + "/workspace-role")
                         .header("Authorization", "Bearer " + superadminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"workspaceId\":\"" + defaultWorkspaceId(superadminToken)
-                                + "\",\"role\":\"" + role + "\"}"))
+                        .content(versions.adminRoleBody(defaultWorkspaceId(superadminToken),
+                                userId(superadminToken, username), role)))
                 .andExpect(status().isNoContent());
     }
 

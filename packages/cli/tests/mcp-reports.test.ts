@@ -11,6 +11,33 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createScopedMcpServer } from "../src/mcp/server.js";
 
 const roots: string[] = [];
+it.each(['status','report403'])('F7f real MCP %s after minimum status has no fabricated history metadata',async route=>{
+  const f=await onlineFixture();roots.push(f.home);const source=await createMcpSource({onlineProfile:'online-member',...f.deps});const signal=new AbortController().signal;
+  try{
+    const page=await source.listRuns('3',{},signal);expect(page.items[0]).toMatchObject({reportState:'archived'});
+    const minimum={jobId:'99',executionId:'100',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:true,view:'active-status',scope:{workspaceId:'1',groupId:'2',projectId:'3'}};
+    f.jobViews(minimum);f.reportStatus(403);
+    if(route==='status'){
+      const run=await source.getRun(page.items[0]!.runId,signal);expect.soft(run.state).toBe('running');expect(run).not.toHaveProperty('reportState');
+    }else{
+      const error=await source.getReport(page.items[0]!.runId,{},signal).then(()=>null,cause=>cause);
+      expect.soft(error).toMatchObject({status:403,code:'forbidden'});expect(f.requests.filter(request=>request.url.endsWith('/report'))).toHaveLength(1);
+    }
+    expect(f.requests.filter(request=>!request.url.endsWith('/auth/login')).every(request=>request.method==='GET')).toBe(true);
+  }finally{await source.close();}
+});
+it('F7f minimum MCP report200 refuses unavailable original task binding after real member proof',async()=>{
+  const f=await onlineFixture();roots.push(f.home);const source=await createMcpSource({onlineProfile:'online-member',...f.deps});const signal=new AbortController().signal;
+  try{
+    const page=await source.listRuns('3',{},signal);expect(page.items[0]).toMatchObject({reportState:'archived'});
+    const minimum={jobId:'99',executionId:'100',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:true,view:'active-status',scope:{workspaceId:'1',groupId:'2',projectId:'3'}};
+    f.jobViews(minimum,minimum,f.job);
+    const error=await source.getReport(page.items[0]!.runId,{},signal).then(()=>null,cause=>cause);
+    expect.soft(error).toMatchObject({message:'MCP report-binding-unavailable；请刷新后重新读取报告，不会重跑'});
+    expect.soft(f.requests.filter(request=>request.url.endsWith('/report'))).toHaveLength(1);
+    expect(f.requests.filter(request=>request.url.endsWith('/jobs/99'))).toHaveLength(3);
+  }finally{await source.close();}
+});
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const pid = "00000000-0000-4000-8000-000000000003";
 async function fixture() {

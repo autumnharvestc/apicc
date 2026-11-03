@@ -24,6 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
     ,"apicc.execution.policy.max-asset-change-files=3", "apicc.execution.policy.snapshot-bytes=128"
 })
 class ProjectAssetsApiTest {
+    @Autowired com.autumnharvestc.server.access.AccessFixtureRevisions versions;
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired com.autumnharvestc.server.execution.assets.ExecutionSnapshotRepo snapshots;
@@ -239,10 +240,10 @@ class ProjectAssetsApiTest {
         String token = body(mvc.perform(post("/api/v1/auth/login").contentType("application/json")
             .content(json.writeValueAsString(Map.of("username",username,"password","password123")))).andExpect(status().isOk())).get("token").asText();
         mvc.perform(put("/api/v1/workspaces/"+ws+"/members/"+userId).header("Authorization","Bearer "+f.token()).contentType("application/json")
-            .content("{\"role\":\"EDITOR\"}")).andExpect(status().isOk());
+            .content(versions.memberBody(f.ws(),userId,"EDITOR"))).andExpect(status().isOk());
         // Retained ACL deliberately cannot substitute for live workspace membership after revocation.
         mvc.perform(put(f.url()+"/acl").header("Authorization","Bearer "+f.token()).contentType("application/json")
-            .content(json.writeValueAsString(Map.of("userId",userId,"role","ADMIN")))).andExpect(status().isOk());
+            .content(versions.aclBody(f.ws(),f.project(),userId,"ADMIN"))).andExpect(status().isOk());
         long before = jdbc.queryForObject("SELECT COUNT(*) FROM execution_snapshots WHERE workspace_id=? AND project_id=?",Long.class,ws,project);
         var prechecked = new java.util.concurrent.CountDownLatch(1);
         // Observe the real DB-backed role result; do not replace authorization with a mock answer.
@@ -258,14 +259,14 @@ class ProjectAssetsApiTest {
                 try {
                     assertThat(prechecked.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
                     var revoke = new org.springframework.transaction.support.TransactionTemplate(transactions);
-                    revoke.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
                     revoke.executeWithoutResult(revoking -> {
-                        try { mvc.perform(delete("/api/v1/workspaces/"+ws+"/members/"+userId).header("Authorization","Bearer "+f.token())).andExpect(status().isNoContent()); }
+                        try { mvc.perform(delete("/api/v1/workspaces/"+ws+"/members/"+userId).param("expectedRevision",Long.toString(versions.member(f.ws(),userId))).header("Authorization","Bearer "+f.token())).andExpect(status().isNoContent()); }
                         catch (Exception error) { throw new IllegalStateException(error); }
-                    }); // Revocation commits while the outer transaction still holds the project lock.
+                    }); // REQUIRED joins the holder: revocation commits with project-barrier release.
                     assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM memberships WHERE workspace_id=? AND user_id=?",Integer.class,ws,Long.valueOf(userId))).isZero();
                 } catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new IllegalStateException(error); }
             });
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM memberships WHERE workspace_id=? AND user_id=?",Integer.class,ws,Long.valueOf(userId))).as("real revocation committed when holder released the project lock").isZero();
             assertThat(waiting.get().get(5,java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(403);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_snapshots WHERE workspace_id=? AND project_id=?",Long.class,ws,project)).isEqualTo(before);
             mvc.perform(get(f.url()+"/assets").header("Authorization","Bearer "+f.token())).andExpect(status().isOk())

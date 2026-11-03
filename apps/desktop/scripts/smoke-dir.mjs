@@ -6,7 +6,7 @@
 // （wsOpen/treeGet E2E IPC）依赖 CDP 长连接驱动，属一次性深检，不入库；
 // 本脚本覆盖打包产物「能起、无致命错、renderer 加载成功」三道底线，日常回归够用。
 // 前置：先执行 `pnpm -C apps/desktop dist:dir` 产出 release/win-unpacked/。
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
@@ -68,6 +68,16 @@ if (process.platform !== "win32" || !existsSync(exePath)) {
   process.exit(1);
 }
 
+// Load actual packaged pure subpaths in Electron's Node host; never the source tree's node_modules.
+const resources = join(dirname(exePath), 'resources');
+for (const name of ['index.html','viewer.js','viewer.css']) {
+  if (!existsSync(join(resources, 'share-viewer', name))) { console.error(`独立公开 viewer 缺少 ${name}`); process.exit(1); }
+}
+const pureProbe = `const assert=require('node:assert/strict');const {createRequire}=require('node:module');const path=require('node:path');const local=createRequire(path.join(${JSON.stringify(resources)},'app.asar','package.json'));assert.equal(local('./dist-electron/shared/channels.js').IpcChannel.OnlineCollaboration,'online:collaboration');const safe=local('@apicc/core/collaboration/shared');const view=local('@apicc/core/collaboration/presentation');const client=local('@apicc/execution/client/collaboration');assert.equal(typeof safe.PublicArtifactDtoSchema.parse,'function');assert.equal(typeof view.renderPublicArtifactHtml,'function');assert.equal(typeof client.createMemberCollaborationClient,'function');console.log('PACKAGED_COLLABORATION_PURE_EXPORTS_READY');`;
+const pure = spawnSync(exePath, ['-e', pureProbe], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+if (pure.status !== 0 || !pure.stdout.includes('PACKAGED_COLLABORATION_PURE_EXPORTS_READY')) { console.error(`打包协作纯入口加载失败（exit ${pure.status}）：${pure.stderr}`); process.exit(1); }
+ok('实际包的协作 IPC/Core 纯子路径及独立 viewer 资源可加载');
+
 const temporaryRoot = mkdtempSync(join(tmpdir(), "apicc-smoke-dir-"));
 const privateRoots = ["profile", "workspace", "history", "credentials", "user-home"].map((name) => join(temporaryRoot, name));
 for (const root of privateRoots) mkdirSync(root, { recursive: true });
@@ -120,7 +130,8 @@ try {
       return Math.min(5000, remaining);
     };
     const documentExpression = `({ url: location.href, readyState: document.readyState,
-      title: document.title, children: document.querySelector('#app')?.children.length ?? -1 })`;
+      title: document.title, children: document.querySelector('#app')?.children.length ?? -1,
+      collaboration: typeof window.apicc?.onlineCollaboration })`;
       // —— 4. 挂载非空：title 只证 index.html，渲染层模块求值崩溃（如 native 面误入渲染
       // bundle）会让 #app 空白而 title 照常——本检查由 2026-09-06 用户白屏报告引入。
       try {
@@ -142,6 +153,7 @@ try {
           });
         await waitForRendererReady({
           deadline,
+          requireCollaboration: true,
           isAlive: () => child.exitCode === null && child.signalCode === null,
           observe: async (budget) => {
             if (!targets) {

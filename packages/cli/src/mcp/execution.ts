@@ -1,6 +1,6 @@
 import type { ProjectSnapshot, DebugInvocation, NetworkSelection } from "@apicc/core";
 import type { ExecutionLocation, MemberRunInput, MemberPreparationSummary, PreparedMemberRun } from "@apicc/execution/client";
-import { ExecutionHttpError } from "@apicc/execution/client";
+import { ExecutionHttpError, isFullOnlineJob } from "@apicc/execution/client";
 import type { PreparedExecution, InvocationOutput } from "@apicc/execution/host";
 import type { ExecutionProfile } from "@apicc/execution/contract";
 import { resolveEffectiveConfig } from "@apicc/execution/contract";
@@ -251,6 +251,7 @@ export function createMcpExecutionHost(options: McpExecutionHostOptions): McpExe
           || receipt.profileGeneration !== capability.generation || receipt.workspaceId !== context.scope.workspaceId || receipt.groupId !== context.scope.groupId) throw new Error("mcp-receipt-source-changed");
         const prior = await capability.member.findIntent(context, input.intentId, signal);
         if (!prior) throw new Error("execution-outcome-uncertain");
+        if (!isFullOnlineJob(prior)) throw new Error("mcp-receipt-binding-unavailable；固定输入绑定不可核对；查询原intent，勿重新提交");
         if (prior.agentId !== (receipt.location.kind === "agent" ? receipt.location.agentId : undefined)
           || prior.task.snapshotId !== receipt.snapshotId || prior.task.manifestHash !== receipt.manifestHash
           || prior.task.contractProjectId !== receipt.contractProjectId || prior.task.target.kind !== receipt.targetKind

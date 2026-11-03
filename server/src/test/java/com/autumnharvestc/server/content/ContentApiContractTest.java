@@ -54,6 +54,9 @@ class ContentApiContractTest {
     private MockMvc mockMvc;
 
     @Autowired
+    private com.autumnharvestc.server.access.AccessFixtureRevisions versions;
+
+    @Autowired
     private JdbcTemplate jdbc;
 
     // ---- 测试脚手架 ----
@@ -115,7 +118,7 @@ class ContentApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + targetUserId)
                         .header("Authorization", "Bearer " + callerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"" + role + "\"}"))
+                        .content(versions.memberBody(wsId, targetUserId, role)))
                 .andExpect(status().isOk());
     }
 
@@ -124,7 +127,7 @@ class ContentApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + callerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + userId + "\",\"role\":\"" + role + "\"}"))
+                        .content(versions.aclBody(wsId, projectId, userId, role)))
                 .andExpect(status().isOk());
     }
 

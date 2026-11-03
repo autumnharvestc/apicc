@@ -201,7 +201,7 @@ async function orgJson(method: string, path: string, token: string | null, body?
 }
 
 /** 场景内解析夹具：登录取 token → 建区种子默认分组下建两项目 → 内容路径常量赋值（步骤 2b 调用）。 */
-async function seedOrgProjects(wsId: string, ownerCredentials: { username: string; password: string }): Promise<void> {
+async function seedOrgProjects(wsId: string, ownerCredentials: { username: string; password: string }): Promise<string> {
   const login = await orgJson("POST", "/api/v1/auth/login", null, ownerCredentials);
   const tokenA = String(login.token);
   const groups = (await orgJson("GET", `/api/v1/workspaces/${wsId}/groups`, tokenA)) as unknown as Array<Record<string, unknown>>;
@@ -212,6 +212,7 @@ async function seedOrgProjects(wsId: string, ownerCredentials: { username: strin
   P1_FILE_B = `${P1_ID}/collections/订单/apis/查询/api.yaml`;
   P2_FILE = `${P2_ID}/collections/入库/apis/入库单/api.yaml`;
   FILE_F = `${P1_ID}/collections/订单/apis/作废/api.yaml`;
+  return tokenA;
 }
 
 let serverBase = "";
@@ -255,11 +256,13 @@ describe("在线模式真服务端端到端（onlineClient × spawn jar）", () 
     expect(ws.myRole).toBe("OWNER");
 
     // 步骤 2b：组织实体夹具——建区已种子默认分组，其下建两项目；内容 path 首段=项目实体 UUID
-    await seedOrgProjects(ws.id, USER_A);
+    const tokenA = await seedOrgProjects(ws.id, USER_A);
     expect(P1_ID).not.toEqual(P2_ID);
 
     // 步骤 3：B 加入 EDITOR（成员管理契约面）+ B 工作区列表可见其角色
-    await clientA.manageMembers(ws.id, { userId: b.id, role: "EDITOR" });
+    const memberView = await orgJson('GET', `/api/v1/workspaces/${ws.id}/access-members/${b.id}`, tokenA);
+    expect(typeof memberView.revision).toBe('number');
+    await clientA.manageMembers(ws.id, { userId: b.id, role: "EDITOR", expectedRevision: memberView.revision as number });
     const bList = await clientB.listWorkspaces();
     expect(bList.find((w) => w.id === ws.id)?.myRole).toBe("EDITOR");
 
@@ -300,7 +303,9 @@ describe("在线模式真服务端端到端（onlineClient × spawn jar）", () 
     expect(dtoB1.children!.find((c) => c.kind === "project" && c.id === P2_ID)).toBeDefined();
 
     // 步骤 6：A 将 P2 对 B 设 NONE → B tree 过滤 + 读 P2 路径 missing（不泄露存在性）
-    await clientA.manageAcl(ws.id, P2_ID, { userId: b.id, role: "NONE" });
+    const overrideView = await orgJson('GET', `/api/v1/workspaces/${ws.id}/projects/${P2_ID}/access-members/${b.id}`, tokenA);
+    expect(typeof overrideView.revision).toBe('number');
+    await clientA.manageAcl(ws.id, P2_ID, { userId: b.id, role: "NONE", expectedRevision: overrideView.revision as number });
     const aclRows = await clientA.manageAcl(ws.id, P2_ID);
     expect(aclRows).toContainEqual({ userId: b.id, role: "NONE" });
     const treeB2 = await clientB.getTree(ws.id);

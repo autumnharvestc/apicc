@@ -25,6 +25,24 @@ server:
   port: 8080
 
 apicc:
+  collaboration:
+    public-access:
+      enabled: ${APICC_COLLABORATION_PUBLIC_ENABLED:false}
+      bind-address: ${APICC_COLLABORATION_PUBLIC_BIND_ADDRESS:127.0.0.1}
+      port: ${APICC_COLLABORATION_PUBLIC_PORT:0}
+      base-url: ${APICC_COLLABORATION_PUBLIC_BASE_URL:}
+      # HTTPS proxy deployments explicitly declare their separate management origin.
+      management-base-url: ${APICC_COLLABORATION_MANAGEMENT_BASE_URL:}
+      # 独立只读前端：将 apps/share-viewer/dist 内容复制到此目录，不与 console-dir 混放。
+      viewer-dir: ${APICC_SHARE_VIEWER_DIR:./share-viewer}
+    runtime:
+      enabled: ${APICC_COLLABORATION_RUNTIME_ENABLED:false}
+      base-url: ${APICC_COLLABORATION_RUNTIME_BASE_URL:}
+      secret-file: ${APICC_COLLABORATION_RUNTIME_SECRET_FILE:}
+      connect-timeout-ms: 3000
+      call-timeout-ms: 10000
+      mock-timeout-ms: 35000
+      max-wire-bytes: 33554432
   server:
     # 管理后台静态产物目录（规格 m4 §2 D2：默认与运行目录同级；pnpm -C apps/admin-web build 的 dist 内容放入此处）
     console-dir: ./console

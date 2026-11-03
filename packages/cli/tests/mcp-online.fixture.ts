@@ -17,17 +17,17 @@ export async function onlineFixture() {
   const definitionRevision = createProjectSnapshot(project).definitionRevision;
   const report = { executionId: "100", verdict: "passed", output: { kind: "suite", result: { projectId: project.id, definitionRevision, executionIdentity: { projectId: project.id, definitionRevision }, collectionId: oid(4), collectionName: "online report", startedAt: "2026-10-30T00:00:00.000Z", finishedAt: "2026-10-30T00:00:01.000Z", total: 0, passed: 0, failed: 0, cases: [] } } };
   const vault = new Map<string, string>(); const requests: Array<{ url: string; method: string; authorization: string | null }> = [];
-  let meStatus = 200; let reportStatus = 200; let emptyReport = false;
+  let meStatus = 200; let reportStatus = 200; let emptyReport = false;let statusViews:unknown[]=[];
   const deps: McpProfileDeps = { mcpHomeDir: home, mcpEnv: {}, mcpKeyringEntry: (_service, account) => ({ async getPassword() { return vault.get(account); }, async setPassword(value) { vault.set(account, value); }, async deleteCredential() { return vault.delete(account); } }), mcpFetch: async (url, init) => {
     const address = String(url); requests.push({ url: address, method: init?.method ?? "GET", authorization: new Headers(init?.headers).get("authorization") });
     if (address.endsWith("/auth/login")) return Response.json({ token: "ONLINE_SYNTHETIC_MEMBER", expiresAt: "2099-01-01T00:00:00Z", user: { id: "7", username: "member", displayName: "member", role: "USER" } });
     if (address.endsWith("/me")) return Response.json(meStatus === 200 ? { id: "7", username: "member", displayName: "member", role: "USER" } : { code: "unauthorized" }, { status: meStatus });
     if (address.endsWith("/assets")) return Response.json(assets);
     if (address.includes("/projects/3/jobs?")) return Response.json([job]);
-    if (address.endsWith("/jobs/99")) return Response.json(job);
-    if (address.endsWith("/jobs/99/report")) return emptyReport ? new Response(null) : Response.json(reportStatus === 200 ? report : { code: "report_expired" }, { status: reportStatus });
+    if (address.endsWith("/jobs/99")) return Response.json(statusViews.length?statusViews.length>1?statusViews.shift():statusViews[0]:job);
+    if (address.endsWith("/jobs/99/report")) return emptyReport ? new Response(null) : Response.json(reportStatus === 200 ? report : { code: reportStatus===403?'forbidden':"report_expired" }, { status: reportStatus });
     return Response.json({ code: "not_found" }, { status: 404 });
   } };
   await loginMcpProfile({ id: "online-member", server: "https://service.example", username: "member", password: "ONLINE_SYNTHETIC_PASSWORD", scopes: [scope] }, deps);
-  return { home, deps, project, assets, job, report, requests, meStatus(value: number) { meStatus = value; }, reportStatus(value: number) { reportStatus = value; }, emptyReport() { emptyReport = true; } };
+  return { home, deps, project, assets, job, report, requests, jobViews(...values:unknown[]){statusViews=values;}, meStatus(value: number) { meStatus = value; }, reportStatus(value: number) { reportStatus = value; }, emptyReport() { emptyReport = true; } };
 }

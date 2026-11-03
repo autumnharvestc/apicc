@@ -70,7 +70,7 @@ class ExecutionRetentionTest extends JobsFixture {
         softly.assertAll();
         var cleanupMethod=ExecutionRetentionCleanup.class.getMethod("cleanup");
         // Spring 6.2 Task supplies an OutcomeTrackingRunnable; inspect its real method delegate.
-        assertThat(scheduled.tasks).filteredOn(task->ReflectionTestUtils.getField(task.action(),"runnable") instanceof ScheduledMethodRunnable action
+        assertThat(scheduled.tasks).filteredOn(task->org.springframework.util.ReflectionUtils.findField(task.action().getClass(),"runnable")!=null && ReflectionTestUtils.getField(task.action(),"runnable") instanceof ScheduledMethodRunnable action
             && action.getTarget() instanceof ExecutionRetentionCleanup && action.getMethod().equals(cleanupMethod))
             .singleElement().satisfies(task->assertThat(task.delay()).isEqualTo(Duration.ofMillis(1234)));
         scheduled.tick();

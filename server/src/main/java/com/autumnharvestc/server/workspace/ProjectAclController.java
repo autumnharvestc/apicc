@@ -43,7 +43,7 @@ public class ProjectAclController {
     public AclEntryView put(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                             @PathVariable String id,
                             @PathVariable String projectId,
-                            @Valid @RequestBody SetAclRequest request) {
+                            @RequestBody com.fasterxml.jackson.databind.JsonNode request) {
         return acl.put(caller, id, projectId, request);
     }
 
@@ -52,8 +52,9 @@ public class ProjectAclController {
     public ResponseEntity<Void> delete(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                                        @PathVariable String id,
                                        @PathVariable String projectId,
-                                       @RequestParam String userId) {
-        acl.delete(caller, id, projectId, userId);
+                                       @RequestParam String userId,
+                                       @RequestParam(required = false) String expectedRevision) {
+        acl.delete(caller, id, projectId, userId, expectedRevision);
         return ResponseEntity.noContent().build();
     }
 }

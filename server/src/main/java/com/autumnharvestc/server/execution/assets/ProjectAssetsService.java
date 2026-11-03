@@ -20,14 +20,60 @@ public class ProjectAssetsService {
     private final ProjectRepo projects;
     private final FileVersionRepo files;
     private final com.autumnharvestc.server.execution.config.ExecutionConfigService configs;
-    public ProjectAssetsService(JdbcTemplate jdbc, WorkspaceGuard guard, PermissionService permissions, ProjectRepo projects, FileVersionRepo files,com.autumnharvestc.server.execution.config.ExecutionConfigService configs) {
+    private final com.autumnharvestc.server.access.AssetMutationGuard mutations;
+    private final org.springframework.transaction.support.TransactionTemplate transactions;
+    public ProjectAssetsService(JdbcTemplate jdbc, WorkspaceGuard guard, PermissionService permissions, ProjectRepo projects, FileVersionRepo files,com.autumnharvestc.server.execution.config.ExecutionConfigService configs,com.autumnharvestc.server.access.AssetMutationGuard mutations,org.springframework.transaction.PlatformTransactionManager transactions) {
         this.jdbc = jdbc; this.guard = guard; this.permissions = permissions; this.projects = projects; this.files = files;
         this.configs=configs;
+        this.mutations=mutations;this.transactions=new org.springframework.transaction.support.TransactionTemplate(transactions);
     }
     public ProjectAssets get(UserAccount caller, String ws, String project) {
         return readLocked(authorized(caller, ws, project, false));
     }
+    /** Trusted publication acquisition: current authorization and the original project lock are mandatory. */
+    public ProjectAssets readPublicationSource(UserAccount caller,String ws,String project,String revision,String digest,long maxBytes) {
+        var entity=authorized(caller,ws,project,false);
+        var metadata=jdbc.queryForMap("SELECT asset_format, contract_project_id, asset_version FROM projects WHERE id = ?",entity.id());
+        String actualRevision=String.valueOf(metadata.get("asset_version"));
+        if(!actualRevision.equals(revision))throw error(HttpStatus.CONFLICT,"source_revision_conflict","来源版本已变化，请重新预览");
+        String prefix=entity.id()+"/";
+        var budget=new com.autumnharvestc.server.collaboration.artifacts.SourceByteBudget(maxBytes);
+        var entries=jdbc.query("""
+            SELECT path,version,content_hash,content FROM file_versions
+            WHERE workspace_id=? AND path LIKE ? ORDER BY path
+            """,(row,index)->{
+                String path=row.getString("path");var input=row.getCharacterStream("content");
+                if(input==null)throw error(HttpStatus.CONFLICT,"asset_content_missing","文件正文缺失: "+path);
+                long before=budget.used();String content;
+                try{content=budget.readText(input);}catch(java.io.IOException problem){throw new java.sql.SQLException("Cannot read fixed publication source",problem);}
+                String hash=Hashes.sha256HexUtf8(content);
+                if(!hash.equals(row.getString("content_hash")))throw error(HttpStatus.CONFLICT,"asset_hash_mismatch","文件摘要不匹配: "+path);
+                return new AssetFile(path.substring(prefix.length()),content,String.valueOf(row.getLong("version")),hash,budget.used()-before);
+            },entity.workspaceId(),prefix+"%");
+        String manifest=manifestHash(entries);
+        if(!manifest.equals(digest))throw error(HttpStatus.CONFLICT,"source_digest_mismatch","来源清单摘要已变化，请重新预览");
+        return new ProjectAssets(String.valueOf(entity.workspaceId()),String.valueOf(entity.groupId()),String.valueOf(entity.id()),
+            (String)metadata.get("asset_format"),(String)metadata.get("contract_project_id"),actualRevision,manifest,entries);
+    }
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public ProjectAssets put(UserAccount caller, String ws, String project, AssetDelta delta) {
+        // Both the fixed read and final commit own short transactions; no project lock survives the RPC.
+        var fixed=transactions.execute(tx->prepare(caller,ws,project,delta));
+        var classification=mutations.classify(caller,fixed.entity().workspaceId(),fixed.entity().id(),mutations.wireFiles(fixed.current().files()),fixed.after(),fixed.paths());
+        return transactions.execute(tx->{
+            var current=prepare(caller,ws,project,delta);var entity=current.entity();long expected=version(delta.expectedVersion());
+            mutations.requireCommit(caller,entity.workspaceId(),entity.id(),classification);
+            for (var change : delta.changes()) files.applyProjectAssetFile(entity.workspaceId(), entity.id()+"/"+change.path(), change.content(), Hashes.sha256HexUtf8(change.content()), caller.id());
+            for (String deleted : delta.deletes()) files.deleteProjectAssetFile(entity.workspaceId(), entity.id()+"/"+deleted);
+            if (expected == Long.MAX_VALUE) throw error(HttpStatus.CONFLICT, "version_exhausted", "项目版本已达到上限");
+            jdbc.update("UPDATE projects SET asset_format = ?, contract_project_id = ?, asset_version = asset_version + 1 WHERE id = ?",delta.format(),delta.contractProjectId(),entity.id());
+            var after=readLocked(entity);
+            mutations.audit(caller,entity.id(),Long.parseLong(after.version()),classification,current.current().manifestHash(),after.manifestHash());
+            return after;
+        });
+    }
+    private record Candidate(ProjectRecord entity,ProjectAssets current,com.fasterxml.jackson.databind.JsonNode after,List<String> paths) {}
+    private Candidate prepare(UserAccount caller, String ws, String project, AssetDelta delta) {
         var entity = authorized(caller, ws, project, true);
         var current = readLocked(entity);
         if (delta == null || !"contract-files-v1".equals(delta.format()) || delta.changes() == null || delta.deletes() == null
@@ -52,12 +98,8 @@ public class ProjectAssetsService {
             path(entity.id(), deleted);
             if (!paths.add(deleted)) throw error(HttpStatus.BAD_REQUEST, "validation_failed", "变更与删除路径不能重复");
         }
-        for (var change : delta.changes()) files.applyProjectAssetFile(entity.workspaceId(), entity.id()+"/"+change.path(), change.content(), Hashes.sha256HexUtf8(change.content()), caller.id());
-        for (String deleted : delta.deletes()) files.deleteProjectAssetFile(entity.workspaceId(), entity.id()+"/"+deleted);
-        if (expected == Long.MAX_VALUE) throw error(HttpStatus.CONFLICT, "version_exhausted", "项目版本已达到上限");
-        jdbc.update("UPDATE projects SET asset_format = ?, contract_project_id = ?, asset_version = asset_version + 1 WHERE id = ?",
-                delta.format(), delta.contractProjectId(), entity.id());
-        return readLocked(entity);
+        var changes=new TreeMap<String,String>();delta.changes().forEach(change->changes.put(change.path(),change.content()));
+        return new Candidate(entity,current,mutations.changedFiles(mutations.wireFiles(current.files()),changes,delta.deletes()),paths.stream().sorted().toList());
     }
     ProjectRecord authorized(UserAccount caller, String ws, String project, boolean write) {
         long workspaceId = EntityIds.parse(ws); long projectId = EntityIds.parse(project);

@@ -17,6 +17,7 @@ import { createUsersStore } from "../../src/stores/users.js";
 import { createOrgStore } from "../../src/stores/org.js";
 import { createAppRouter } from "../../src/router/index.js";
 import App from "../../src/App.vue";
+import {member} from '../helpers/collaboration.js';
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 type FetchHandler = (req: CapturedRequest) => Response | Promise<Response>;
@@ -103,12 +104,12 @@ function antdSelect(wrapper: VueWrapper, testid: string) {
 }
 
 /** 直达 URL 装配：replaceState 到成员路径 → mount（initialize + 初始导航即成员页）。 */
-async function mountMembers(handler: FetchHandler) {
+async function mountMembers(handler: FetchHandler,scopeRead?:(req:CapturedRequest)=>Response|Promise<Response>) {
   localStorage.clear();
   localStorage.setItem(TOKEN_KEY, "tok-abc123");
   localStorage.setItem("apicc.admin.locale", "zh-CN"); // 钉住 zh 文案断言（jsdom navigator 为 en-US）
   window.history.replaceState(null, "", "/workspaces/ws-1/members");
-  const stub = fetchStub((req) => (req.url === `${BASE}/me` ? json(200, USER) : handler(req)));
+  const stub = fetchStub((req) => req.url === `${BASE}/me` ? json(200, USER) : req.method==='GET'&&req.url.includes('/access-members/')?scopeRead?.(req)??json(200,member(req.url.split('/').at(-1),{revision:1})):handler(req));
   const client = createAdminClient({ baseUrl: BASE, fetch: stub.impl });
   const session = createSessionStore({ client, storage: localStorage });
   const workspaces = createWorkspacesStore({ client });
@@ -130,13 +131,14 @@ function memberHandler(opts?: { onPut?: (req: CapturedRequest) => Response | Pro
   const members = [...MEMBERS];
   return (req) => {
     const { method, url } = req;
+    if(method==='GET'&&url.includes('/access-members/'))return json(200,member(url.split('/').at(-1),{revision:1}));
     if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, members);
     if (url === `${BASE}/workspaces/ws-1/members/u-2` && method === "PUT") {
       if (opts?.onPut) return opts.onPut(req);
       transferred = true;
       return noContent();
     }
-    if (url === `${BASE}/workspaces/ws-1/members/u-3` && method === "DELETE") {
+    if (url.split('?')[0] === `${BASE}/workspaces/ws-1/members/u-3` && method === "DELETE") {
       if (opts?.onDelete) return opts.onDelete(req);
       members.splice(members.findIndex((m) => m.userId === "u-3"), 1);
       return noContent();
@@ -146,11 +148,74 @@ function memberHandler(opts?: { onPut?: (req: CapturedRequest) => Response | Pro
   };
 }
 
+describe('T10 member recovery editing',()=>{
+  it.each([['inherited','继承工作区角色'],['explicit-none','显式无项目权限'],['future-state','future-state']])('T12 candidate status %s is readable and unknown values are retained',async(state,label)=>{
+    const {wrapper,workspaces}=await mountMembers(memberHandler(),req=>json(200,member(req.url.split('/').at(-1),{overrideState:state})));
+    workspaces.candidates=[{id:'u-9',username:'dave',displayName:'Dave'}];await wrapper.get('[data-testid=members-add-user] input').setValue('dave');await flushPromises();
+    expect(wrapper.get('[data-testid=members-add-scope]').text()).toContain(label);
+  });
+  it.each(['new-target','new-edit'] as const)('I2 old capability save preserves a %s draft',async(mode)=>{
+    let release!:(response:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});const {wrapper,calls}=await mountMembers(req=>req.method==='PUT'&&req.url.includes('/access-members/')?gate:memberHandler()(req));
+    expect(wrapper.text()).toContain('Bob');await wrapper.get('[data-testid=members-capabilities-u-2]').trigger('click');await flushPromises();
+    await wrapper.get('[data-testid="capability-input-script.edit"]').setValue('deny');await wrapper.get('[data-testid=capability-save]').trigger('click');await flushPromises();expect(calls.find(call=>call.method==='PUT')?.body).toEqual({expectedRevision:1,capabilities:{'script.edit':'deny'}});
+    if(mode==='new-target'){await wrapper.get('[data-testid=members-capabilities-u-3]').trigger('click');await flushPromises();}
+    await wrapper.get('[data-testid="capability-input-task.execute"]').setValue('deny');release(json(200,member('u-2',{revision:2})));await flushPromises();
+    expect((wrapper.get('[data-testid="capability-input-task.execute"]').element as HTMLSelectElement).value).toBe('deny');
+  });
+  it('T10 candidate read must finish before the add button admits a write',async()=>{
+    let release!:(response:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});const {wrapper,calls,workspaces}=await mountMembers(memberHandler(),req=>req.url.endsWith('/u-9')?gate:json(200,member(req.url.split('/').at(-1))));
+    expect(wrapper.text()).toContain('Bob');workspaces.candidates=[{id:'u-9',username:'dave',displayName:'Dave'}];await wrapper.get('[data-testid=members-add-user] input').setValue('dave');await flushPromises();
+    expect.soft((wrapper.get('[data-testid=members-add-submit]').element as HTMLButtonElement).disabled).toBe(true);await wrapper.get('[data-testid=members-add-submit]').trigger('click');await flushPromises();
+    release(json(200,member('u-9',{revision:17,member:false,workspaceRole:null})));await flushPromises();expect(calls.filter(c=>c.method==='PUT')).toHaveLength(0);
+  });
+  it('T10 candidate scope is displayed before add and remains the submitted CAS base',async()=>{
+    let revision=17;const {wrapper,calls,workspaces}=await mountMembers(req=>req.method==='PUT'?json(409,{code:'access_revision_conflict',message:'changed'}):memberHandler()(req),req=>json(200,member(req.url.split('/').at(-1),{revision,...(req.url.endsWith('/u-9')?{member:false,workspaceRole:null}:{})})));
+    expect(wrapper.text()).toContain('Bob');workspaces.candidates=[{id:'u-9',username:'dave',displayName:'Dave'}];await wrapper.get('[data-testid=members-add-user] input').setValue('dave');await flushPromises();
+    expect.soft(calls.some(c=>c.url.endsWith('/access-members/u-9'))).toBe(true);expect.soft(wrapper.text()).toContain('当前修订: 17');expect.soft(wrapper.text()).toContain('已移除成员');
+    revision=18;const before=calls.length;await wrapper.get('[data-testid=members-add-submit]').trigger('click');await flushPromises();
+    expect.soft(calls.slice(before).filter(c=>c.method==='GET')).toHaveLength(0);expect(calls.find(c=>c.method==='PUT')?.body).toEqual({role:'VIEWER',expectedRevision:17});
+  });
+  it('workspace selection clears the previous capability editor and preserves a local table scroll structure',async()=>{
+    const {wrapper,router}=await mountMembers(req=>req.url===`${BASE}/workspaces/ws-2/members`?json(200,MEMBERS):req.url===`${BASE}/workspaces/ws-2`?json(200,{...DETAIL_OWNER,id:'ws-2'}):memberHandler()(req));
+    expect(wrapper.text()).toContain('Bob');await wrapper.get('[data-testid=members-capabilities-u-2]').trigger('click');await flushPromises();
+    await wrapper.get('[data-testid="capability-input-script.edit"]').setValue('deny');
+    await router.push('/workspaces/ws-2/members');await flushPromises();expect(wrapper.text()).toContain('Bob');
+    expect.soft(wrapper.find('[data-testid=member-capability-editor]').exists()).toBe(false);
+    expect.soft(wrapper.get('[data-testid=members-table] .ant-table-content').attributes('style')).toContain('overflow-x: auto');
+  });
+  it('edits a member capability with the displayed member-scope revision and no role confirmation',async()=>{
+    const {wrapper,calls}=await mountMembers(req=>req.method==='PUT'&&req.url.includes('/access-members/')?json(200,member('u-2',{revision:9})):memberHandler()(req));
+    expect(wrapper.text()).toContain('Bob');await wrapper.get('[data-testid=members-capabilities-u-2]').trigger('click');await flushPromises();
+    const editor=wrapper.get('[data-testid=member-capability-editor]');expect(editor.text()).toContain('角色下限');
+    await editor.get('[data-testid="capability-input-script.edit"]').setValue('deny');await editor.get('[data-testid=capability-save]').trigger('click');await flushPromises();
+    expect(calls.filter(c=>c.method==='PUT').map(c=>({url:c.url,body:c.body}))).toEqual([{url:`${BASE}/workspaces/ws-1/access-members/u-2`,body:{expectedRevision:1,capabilities:{'script.edit':'deny'}}}]);
+  });
+  it('preserves failed role draft and explicitly reads a current comparison without replay',async()=>{
+    let revision=8;
+    const {wrapper,calls}=await mountMembers(memberHandler({onPut:()=>json(409,{code:'access_revision_conflict',message:'revision conflict'})}),req=>json(200,member(req.url.split('/').at(-1),{revision,workspaceRole:revision===8?'EDITOR':'VIEWER'})));
+    expect(wrapper.text()).toContain('Bob');
+    antdSelect(wrapper,'members-role-u-2').vm.$emit('change','ADMIN');await flushPromises();
+    expect(calls.find(c=>c.method==='PUT')?.body).toEqual({role:'ADMIN',expectedRevision:8});
+    expect.soft(wrapper.get('[data-testid=members-role-u-2]').text()).toContain('ADMIN');
+    revision=9;const before=calls.length;
+    await wrapper.get('[data-testid=members-reload-u-2]').trigger('click');await flushPromises();
+    expect.soft(calls.slice(before).map(c=>({method:c.method,url:c.url}))).toEqual([{method:'GET',url:`${BASE}/workspaces/ws-1/access-members/u-2`}]);
+    expect.soft(wrapper.text()).toContain('当前修订: 9');expect.soft(wrapper.text()).toContain('当前角色: VIEWER');
+    expect(calls.filter(c=>c.method==='PUT')).toHaveLength(1);
+  });
+  it('removal confirmation explains stale overrides and external links cannot revive',async()=>{
+    const {wrapper,calls}=await mountMembers(memberHandler());expect(wrapper.text()).toContain('Carol');
+    await wrapper.get('[data-testid=members-remove-u-3]').trigger('click');await waitForBody('members-remove-confirm');
+    expect.soft(document.body.textContent).toContain('重入需重新确认');expect.soft(document.body.textContent).toContain('旧链接不会复活');
+    expect(calls.filter(c=>c.method==='DELETE')).toHaveLength(0);
+  });
+});
+
 describe("MembersView 清单与权限化操作（裁定 A/D6）", () => {
   it("清单渲染：displayName/username/role；OWNER 行改角色与移除均禁用，非 OWNER 行可用", async () => {
     const { wrapper } = await mountMembers(memberHandler());
     expect(wrapper.find("[data-testid=members-view]").exists()).toBe(true);
-    const rows = wrapper.findAll("tbody tr");
+    const rows = wrapper.findAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(3);
     expect(rows[0]!.text()).toContain("Alice");
     expect(rows[0]!.text()).toContain("alice");
@@ -174,12 +239,12 @@ describe("MembersView 清单与权限化操作（裁定 A/D6）", () => {
       if (url === `${BASE}/workspaces/ws-2` && method === "GET") return json(200, { id: "ws-2", name: "另一空间", myRole: "OWNER", memberCount: 1 });
       return json(404, { code: "not_found", message: "x" });
     });
-    expect(wrapper.findAll("tbody tr")[0]!.text()).toContain("Alice"); // ws-1 清单
+    expect(wrapper.findAll("tbody tr[data-row-key]")[0]!.text()).toContain("Alice"); // ws-1 清单
     await router.push("/workspaces/ws-2/members");
     await flushPromises();
     await flushPromises();
     expect(calls.some((c) => c.method === "GET" && c.url === `${BASE}/workspaces/ws-2/members`)).toBe(true);
-    const rows = wrapper.findAll("tbody tr");
+    const rows = wrapper.findAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text()).toContain("Zoe"); // 显示切换为 ws-2 成员
   });
@@ -190,7 +255,7 @@ describe("MembersView 清单与权限化操作（裁定 A/D6）", () => {
     await flushPromises();
     await flushPromises();
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-2`);
-    expect(put!.body).toEqual({ role: "ADMIN" });
+    expect(put!.body).toEqual({ role: "ADMIN",expectedRevision:1 });
     expect(workspaces.memberBusyId).toBeNull();
     // 刷新后清单仍在（GET members 再次发生）
     expect(calls.filter((c) => c.method === "GET" && c.url === `${BASE}/workspaces/ws-1/members`).length).toBeGreaterThanOrEqual(2);
@@ -215,7 +280,7 @@ describe("MembersView 清单与权限化操作（裁定 A/D6）", () => {
     await flushPromises();
     await flushPromises();
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-2`);
-    expect(put!.body).toEqual({ role: "OWNER" });
+    expect(put!.body).toEqual({ role: "OWNER",expectedRevision:1,expectedActorRevision:1 });
     expect(bodyFind("members-transfer-name")).toBeNull(); // 成功关闭
     // 自身 myRole 联动：current 重选为 ADMIN（Layout 显隐随之）
     expect(workspaces.current?.myRole).toBe("ADMIN");
@@ -228,8 +293,8 @@ describe("MembersView 清单与权限化操作（裁定 A/D6）", () => {
     await expectBody("members-remove-confirm").trigger("click");
     await flushPromises();
     await flushPromises();
-    expect(calls.some((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1/members/u-3`)).toBe(true);
-    expect(wrapper.findAll("tbody tr")).toHaveLength(2);
+    expect(calls.some((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1/members/u-3?expectedRevision=1`)).toBe(true);
+    expect(wrapper.findAll("tbody tr[data-row-key]")).toHaveLength(2);
   });
 });
 
@@ -253,13 +318,14 @@ describe("添加成员：用户名搜索下拉（规格 2026-09-09，id 不再�
     await until(() => calls.some((c) => c.url.includes("member-candidates")));
     await flushPromises();
     await input.setValue("dave"); // 模拟从下拉选中（v-model=username）
+    await flushPromises(); // 候选 scope 已读取并展示，随后明确提交
     await wrapper.find('[data-testid="members-add-submit"]').trigger("click");
     await flushPromises();
     await flushPromises();
     const put = calls.find((c) => c.method === "PUT" && c.url.includes("/members/u-9"));
     expect(put).toBeDefined();
-    expect(put!.body).toEqual({ role: "VIEWER" });
-    expect(wrapper.findAll("tbody tr")).toHaveLength(4); // 添加成功刷新清单
+    expect(put!.body).toEqual({ role: "VIEWER",expectedRevision:1 });
+    expect(wrapper.findAll("tbody tr[data-row-key]")).toHaveLength(4); // 添加成功刷新清单
     const after = wrapper.find('[data-testid="members-add-user"] input');
     expect((after.element as HTMLInputElement).value).toBe(""); // 成功后输入复位
   });
@@ -332,7 +398,7 @@ describe("添加成员：用户名搜索下拉（规格 2026-09-09，id 不再�
     await flushPromises();
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-2`);
     expect(put).toBeDefined();
-    expect(put!.body).toEqual({ role: "VIEWER" });
+    expect(put!.body).toEqual({ role: "VIEWER",expectedRevision:1 });
     expect((wrapper.find('[data-testid="members-add-user"] input').element as HTMLInputElement).value).toBe(""); // 成功后复位
   });
 });
@@ -358,7 +424,7 @@ describe("MembersView 错误面（裁定 C）", () => {
     await flushPromises();
     expect(workspaces.membersError).toBe("不能变更 OWNER 的角色");
     expect(wrapper.find("[data-testid=members-error]").text()).toContain("不能变更 OWNER 的角色");
-    expect(wrapper.findAll("tbody tr")).toHaveLength(3); // 清单不动
+    expect(wrapper.findAll("tbody tr[data-row-key]")).toHaveLength(3); // 清单不动
   });
 });
 

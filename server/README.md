@@ -111,3 +111,7 @@ server-data/
 ## 与桌面端对接
 
 桌面端在线模式的「服务器地址」填 `http://<主机>:<端口>`（本机默认即 `http://127.0.0.1:8080`，末尾斜杠可省略）。注册账号 → 登录 → 创建工作区或以成员身份加入 → 即可在桌面端推送 / 拉取工作区文件。跨机部署时放行服务端端口即可，客户端无需额外配置。
+
+## 可选项目协作
+
+Java-only启动保持原状；外链listener和有限Node宿主均默认关闭。部署/本机示例、配置默认与范围、独立 `APICC_SHARE_VIEWER_DIR`（默认 `./share-viewer`，禁止与console-dir混放）、RPC私网/秘密、真实资源限制、成员生命周期A、CAS/回包对账及完整备份恢复见[项目协作说明](../docs/f7f-collaboration.md)。viewer由独立构建/交付复制，不由Maven下载或classpath回退。完整Java测试中的真实Node组合夹具必须先构建Core/runtime/viewer并显式提供支持的Node，CI和根门禁已声明这些前提；单独Java产品启动不依赖它们。

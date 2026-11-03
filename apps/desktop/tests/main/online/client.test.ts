@@ -163,13 +163,13 @@ describe("onlineClient 请求拼装", () => {
   it("manageMembers：role → PUT；remove → DELETE", async () => {
     const { calls, impl } = fetchStub(() => new Response(null, { status: 204 }));
     const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
-    await client.manageMembers("ws-1", { userId: "u-2", role: "EDITOR" });
+    await client.manageMembers("ws-1", { userId: "u-2", role: "EDITOR", expectedRevision: 4 });
     expect(calls[0]!.method).toBe("PUT");
     expect(calls[0]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/members/u-2`);
-    expect(calls[0]!.body).toEqual({ role: "EDITOR" });
-    await client.manageMembers("ws-1", { userId: "u-2", op: "remove" });
+    expect(calls[0]!.body).toEqual({ role: "EDITOR", expectedRevision: 4 });
+    await client.manageMembers("ws-1", { userId: "u-2", op: "remove", expectedRevision: 5 });
     expect(calls[1]!.method).toBe("DELETE");
-    expect(calls[1]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/members/u-2`);
+    expect(calls[1]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/members/u-2?expectedRevision=5`);
   });
 
   it("manageAcl：无 body → GET；带 { userId, role } → PUT；{ userId, op: 'remove' } → DELETE ?userId=（契约修订：删 ACL 行=恢复工作区角色继承）", async () => {
@@ -178,13 +178,53 @@ describe("onlineClient 请求拼装", () => {
     const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
     expect(await client.manageAcl("ws-1", "p-1")).toEqual(entries);
     expect(calls[0]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/projects/p-1/acl`);
-    await client.manageAcl("ws-1", "p-1", { userId: "u-2", role: "NONE" });
+    await client.manageAcl("ws-1", "p-1", { userId: "u-2", role: "NONE", expectedRevision: 6 });
     expect(calls[1]!.method).toBe("PUT");
-    expect(calls[1]!.body).toEqual({ userId: "u-2", role: "NONE" });
-    await client.manageAcl("ws-1", "p-1", { userId: "u-2", op: "remove" });
+    expect(calls[1]!.body).toEqual({ userId: "u-2", role: "NONE", expectedRevision: 6 });
+    await client.manageAcl("ws-1", "p-1", { userId: "u-2", op: "remove", expectedRevision: 7 });
     expect(calls[2]!.method).toBe("DELETE");
-    expect(calls[2]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/projects/p-1/acl?userId=u-2`);
-    expect(await client.manageAcl("ws-1", "p-1", { userId: "u-2", op: "remove" })).toBeUndefined(); // 204 归一为 void
+    expect(calls[2]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/projects/p-1/acl?userId=u-2&expectedRevision=7`);
+    expect(await client.manageAcl("ws-1", "p-1", { userId: "u-2", op: "remove", expectedRevision: 7 })).toBeUndefined(); // 204 归一为 void
+  });
+
+  // Catches silently replaying a stale access write, or issuing an unversioned legacy write.
+  it.each(['member', 'acl'])('preserves %s input on conflict without reading or replaying', async kind => {
+    const { calls, impl } = fetchStub(() => json(409, { code: 'access_revision_conflict', message: 'revision changed' }));
+    const client = createOnlineClient({ baseUrl: BASE, fetch: impl, token: 'tok-1' });
+    const draft = { userId: 'u-2', role: 'EDITOR' as const, expectedRevision: 4 };
+    await expect(kind === 'member' ? client.manageMembers('ws-1', draft) : client.manageAcl('ws-1', 'p-1', draft)).rejects.toMatchObject({ status: 409, code: 'access_revision_conflict' });
+    expect(draft).toEqual({ userId: 'u-2', role: 'EDITOR', expectedRevision: 4 }); expect(calls).toHaveLength(1);
+  });
+  it.each(['member', 'acl'])('refuses old unversioned %s mutation with an upgrade reason', async kind => {
+    const { calls, impl } = fetchStub(() => new Response(null, { status: 204 }));
+    const client = createOnlineClient({ baseUrl: BASE, fetch: impl });
+    const draft = { userId: 'u-2', role: 'EDITOR' as const };
+    await expect(kind === 'member' ? client.manageMembers('ws-1', draft as any) : client.manageAcl('ws-1', 'p-1', draft as any)).rejects.toMatchObject({ code: 'access_upgrade_required' });
+    expect(calls).toHaveLength(0);
+  });
+  it('sends both actual revisions for explicit workspace owner transfer', async () => {
+    const { calls, impl } = fetchStub(() => new Response(null, { status: 204 }));
+    const client = createOnlineClient({ baseUrl: BASE, fetch: impl });
+    await client.manageMembers('ws-1', { userId: 'u-2', role: 'OWNER', expectedRevision: 4, expectedActorRevision: 9 });
+    expect(calls[0]!.body).toEqual({ role: 'OWNER', expectedRevision: 4, expectedActorRevision: 9 });
+  });
+  it('member removal uses the selected actual revision as DELETE query', async () => {
+    const { calls, impl } = fetchStub(() => new Response(null, { status: 204 }));
+    await createOnlineClient({ baseUrl: BASE, fetch: impl }).manageMembers('ws-1', { userId: 'u-2', op: 'remove', expectedRevision: 5 });
+    expect(calls[0]!.url).toBe(`${BASE}/api/v1/workspaces/ws-1/members/u-2?expectedRevision=5`);
+  });
+  it.each(['member', 'acl'])('rejects unknown %s mutation fields without a write', async kind => {
+    const { calls, impl } = fetchStub(() => new Response(null, { status: 204 }));
+    const client = createOnlineClient({ baseUrl: BASE, fetch: impl });
+    const input = { userId: 'u-2', role: 'EDITOR', expectedRevision: 4, url: 'https://other.invalid' } as any;
+    await expect(kind === 'member' ? client.manageMembers('ws-1', input) : client.manageAcl('ws-1', 'p-1', input)).rejects.toThrow(); expect(calls).toHaveLength(0);
+  });
+  it.each([-1, 1.5, '4', 9007199254740992])('refuses invalid expectedRevision %s for access mutations', async expectedRevision => {
+    const { calls, impl } = fetchStub(() => new Response(null, { status: 204 }));
+    const client = createOnlineClient({ baseUrl: BASE, fetch: impl });
+    const input = { userId: 'u-2', role: 'EDITOR', expectedRevision } as any;
+    const result = await Promise.allSettled([client.manageMembers('ws-1', input), client.manageAcl('ws-1', 'p-1', input)]);
+    expect(result.map(item => item.status)).toEqual(['rejected', 'rejected']); expect(calls).toHaveLength(0);
   });
 });
 

@@ -12,14 +12,46 @@ services:
     image: apicc-server:local
     container_name: apicc-server
     ports:
-      - "8080:8080"
+      - "${APICC_SERVER_BIND_ADDRESS:-0.0.0.0}:${APICC_SERVER_PORT:-8080}:8080"
     volumes:
       - apicc-data:/data
     # .env 不存在时 compose 仍可启动（引导器走随机口令，docker logs 取初始密码）
     env_file:
-      - path: .env
+      - path: ${APICC_SERVER_ENV_FILE:-.env}
         required: false
     restart: unless-stopped
+
+  # opt-in: use docker-compose.collaboration.yml as documented; RPC has no host ports.
+  collaboration:
+    profiles: [collaboration]
+    build:
+      context: ..
+      dockerfile: Dockerfile.collaboration
+    image: apicc-collaboration:local
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "${APICC_COLLABORATION_CPU_VCPU:-1}"
+    mem_limit: "${APICC_COLLABORATION_MEMORY_BYTES:-805306368}"
+    environment:
+      APICC_COLLABORATION_RUNTIME_HEAP_BYTES: "${APICC_COLLABORATION_HEAP_BYTES:-402653184}"
+      APICC_COLLABORATION_RUNTIME_CACHE_BYTES: "${APICC_COLLABORATION_CACHE_BYTES:-67108864}"
+      APICC_COLLABORATION_RUNTIME_MAX_WIRE_BYTES: "${APICC_COLLABORATION_MAX_WIRE_BYTES:-33554432}"
+    secrets:
+      - source: collaboration-rpc
+        target: collaboration-rpc
+    networks: [collaboration-private]
+    restart: unless-stopped
+
+secrets:
+  collaboration-rpc:
+    file: "${APICC_COLLABORATION_SECRET_FILE:-./secrets/collaboration-rpc}"
+
+networks:
+  collaboration-private:
+    internal: true
 
 volumes:
   apicc-data:

@@ -66,7 +66,7 @@ function redactTraceOutput(raw: RunResult["trace"], boundary: EvidenceOutputBoun
   }
   return safe;
 }
-function expandMarkers(values: readonly string[]): string[] {
+export function expandMarkers(values: readonly string[]): string[] {
   return values.flatMap((value) => { let encoded = value; try { encoded = encodeURIComponent(value); } catch { /* retain the complete original marker */ }
     return [value, encoded, Buffer.from(value).toString("base64"), JSON.stringify(value).slice(1, -1)]; });
 }

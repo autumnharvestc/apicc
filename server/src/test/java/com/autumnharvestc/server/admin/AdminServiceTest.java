@@ -1,21 +1,27 @@
 package com.autumnharvestc.server.admin;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.core.Role;
 import com.autumnharvestc.server.store.MembershipRepo;
 import com.autumnharvestc.server.store.PlatformRole;
 import com.autumnharvestc.server.store.TokenRepo;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.store.UserRepo;
 import com.autumnharvestc.server.store.WorkspaceRepo;
+import com.autumnharvestc.server.store.WorkspaceRecord;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 
 import java.time.Instant;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -35,7 +41,13 @@ class AdminServiceTest {
     private final TokenRepo tokens = mock(TokenRepo.class);
     private final MembershipRepo memberships = mock(MembershipRepo.class);
     private final WorkspaceRepo workspaces = mock(WorkspaceRepo.class);
-    private final AdminService service = new AdminService(users, tokens, memberships, workspaces);
+    private final AdminService service = new AdminService(users, tokens, memberships, workspaces,
+            mock(com.autumnharvestc.server.access.AccessMutationService.class),mock(com.autumnharvestc.server.access.AccessRepo.class));
+
+    @org.junit.jupiter.api.BeforeEach
+    void persistedAdminIdentity() {
+        org.mockito.Mockito.lenient().when(users.findById(1L)).thenReturn(Optional.of(caller(PlatformRole.SUPERADMIN)));
+    }
 
     private UserAccount caller(PlatformRole role) {
         // 2026-09-09 BIGINT 化口径：直构实体 id 用小整数（1L）
@@ -90,5 +102,26 @@ class AdminServiceTest {
         assertThat(captor.getValue().id()).as("insert 前待生成（null）").isNull();
         assertThat(created.id()).isEqualTo(7L);
         verify(tokens, never()).revokeAllByUser(any());
+    }
+
+    /** 真实服务必须在写仓储前拒绝现任 OWNER 降级；三个允许的载荷角色均受保护。 */
+    @ParameterizedTest
+    @ValueSource(strings = {"ADMIN", "EDITOR", "VIEWER"})
+    void workspaceRoleCannotWriteOverCurrentOwner(String role) {
+        UserAccount owner = new UserAccount(7L, "owner", "hash", "所有者",
+                PlatformRole.USER, false, Instant.now());
+        when(users.findById(7L)).thenReturn(Optional.of(owner));
+        when(workspaces.findById(9L)).thenReturn(Optional.of(
+                new WorkspaceRecord(9L, "独立测试工作区", 7L, Instant.now())));
+        when(memberships.findRole(9L, 7L)).thenReturn(Optional.of(Role.OWNER));
+
+        assertAll("OWNER -> " + role + " must never write membership",
+                () -> assertThatThrownBy(() -> service.setWorkspaceRole(
+                                caller(PlatformRole.SUPERADMIN), "7", "9", role,1))
+                        .isInstanceOfSatisfying(ApiException.class, ex -> {
+                            assertThat(ex.getStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+                            assertThat(ex.getCode()).isEqualTo("owner_immutable");
+                        }),
+                () -> verify(memberships, never()).upsert(any(), any(), any()));
     }
 }

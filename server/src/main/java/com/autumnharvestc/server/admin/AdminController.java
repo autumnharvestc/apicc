@@ -33,21 +33,22 @@ public class AdminController {
 
     /** 账号安全视图：只投影 id/username/displayName/role/disabled/createdAt，password_hash 不出服务层。
      * id 保持 String：对外 JSON 字符串化数字（规格 2026-09-09 BIGINT 化，全局不变量 1）。 */
-    public record AdminUserView(String id, String username, String displayName, String role, boolean disabled, String createdAt) {
-        public static AdminUserView of(UserAccount u) {
-            return new AdminUserView(String.valueOf(u.id()), u.username(), u.displayName(), u.role().name(), u.disabled(), u.createdAt().toString());
+    public record AdminUserView(String id, String username, String displayName, String role, boolean disabled, String createdAt,long revision) {
+        public static AdminUserView of(UserAccount u,long revision) {
+            return new AdminUserView(String.valueOf(u.id()), u.username(), u.displayName(), u.role().name(), u.disabled(), u.createdAt().toString(),revision);
         }
     }
 
     @GetMapping
     public List<AdminUserView> list(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller) {
-        return admin.list(caller).stream().map(AdminUserView::of).toList();
+        return admin.list(caller).stream().map(u->AdminUserView.of(u,admin.accountRevision(u.id()))).toList();
     }
 
     @PostMapping
     public ResponseEntity<AdminUserView> create(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                                                 @Valid @RequestBody AdminRequests.CreateUserRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(AdminUserView.of(admin.create(caller, request)));
+        UserAccount created=admin.create(caller,request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(AdminUserView.of(created,admin.accountRevision(created.id())));
     }
 
     @PostMapping("/{id}/password-reset")
@@ -59,22 +60,31 @@ public class AdminController {
     }
 
     @PostMapping("/{id}/disable")
-    public ResponseEntity<Void> disable(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller, @PathVariable String id) {
-        admin.setDisabled(caller, id, true);
+    public ResponseEntity<Void> disable(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller, @PathVariable String id,
+                                         @RequestBody(required=false) com.fasterxml.jackson.databind.JsonNode body) {
+        admin.setDisabled(caller, id, true,body);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{id}/enable")
-    public ResponseEntity<Void> enable(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller, @PathVariable String id) {
-        admin.setDisabled(caller, id, false);
+    public ResponseEntity<Void> enable(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller, @PathVariable String id,
+                                        @RequestBody(required=false) com.fasterxml.jackson.databind.JsonNode body) {
+        admin.setDisabled(caller, id, false,body);
         return ResponseEntity.noContent().build();
     }
 
     @PutMapping("/{id}/workspace-role")
     public ResponseEntity<Void> setWorkspaceRole(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                                                  @PathVariable String id,
-                                                 @Valid @RequestBody AdminRequests.SetWorkspaceRoleRequest request) {
-        admin.setWorkspaceRole(caller, id, request.workspaceId(), request.role());
+                                                 @RequestBody com.fasterxml.jackson.databind.JsonNode request) {
+        admin.setWorkspaceRole(caller, id, request);
         return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/{id}/workspace-role")
+    public java.util.Map<String,Object> getWorkspaceRole(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
+                                                         @PathVariable String id,
+                                                         @org.springframework.web.bind.annotation.RequestParam String workspaceId) {
+        return admin.workspaceRoleView(caller,id,workspaceId);
     }
 }

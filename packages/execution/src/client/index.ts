@@ -5,3 +5,4 @@ export * from './scheduling.js';
 export * from './member.js';
 export * from './memberTypes.js';
 export { createMemberExecutionRequest } from './memberHttp.js';
+export * from './collaboration.js';

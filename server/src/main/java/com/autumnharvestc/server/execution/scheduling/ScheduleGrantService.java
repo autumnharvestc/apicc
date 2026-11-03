@@ -20,9 +20,13 @@ public class ScheduleGrantService {
         if(caller==null||caller.disabled()||users.findById(caller.id()).filter(u->!u.disabled()).isEmpty())throw error(FORBIDDEN,"schedule-subject-unavailable","调度成员已停用或不存在");
         agents.requireProject(caller,ws,project,false);
     }
+    public void requireHistory(UserAccount caller,String ws,String project){
+        requireRead(caller,ws,project);
+        agents.requireCapability(caller,ws,project,com.autumnharvestc.server.access.Capability.HISTORY_READ);
+    }
     public boolean canManage(UserAccount caller,String ws,String project){
         requireRead(caller,ws,project);var role=permissions.effectiveRole(id(ws),caller.id(),id(project)).orElseThrow();
-        return permissions.isAdmin(role)||role==Role.EDITOR&&selected(id(ws),id(project)).contains(String.valueOf(caller.id()));
+        return agents.hasCapability(caller,ws,project,com.autumnharvestc.server.access.Capability.TASK_EXECUTE)&&(permissions.isAdmin(role)||role==Role.EDITOR&&selected(id(ws),id(project)).contains(String.valueOf(caller.id())));
     }
     public void requireManage(UserAccount caller,String ws,String project){if(!canManage(caller,ws,project))throw error(FORBIDDEN,"schedule-manage-required","需要本项目定时任务管理授权及执行权限");agents.requireExecution(caller,ws,project);}
     public UserAccount requireSubject(long subject,long ws,long project){
@@ -36,12 +40,12 @@ public class ScheduleGrantService {
         requireRead(caller,ws,project);agents.requireProject(caller,ws,project,true);
         var rows=jdbc.query("SELECT user_id FROM memberships WHERE workspace_id=? ORDER BY created_at,user_id",(r,n)->r.getLong(1),id(ws)).stream().map(userId->{
             var user=users.findById(userId).orElseThrow();var role=permissions.effectiveRole(id(ws),userId,id(project)).orElse(null);
-            String reason=user.disabled()?"account-disabled":role==null?"project-access-denied":role!=Role.EDITOR?"editor-required":null;
+            String reason=user.disabled()?"account-disabled":role==null?"project-access-denied":role!=Role.EDITOR?"editor-required":!agents.hasCapability(user,ws,project,com.autumnharvestc.server.access.Capability.TASK_EXECUTE)?"task-execute-required":null;
             var row=new LinkedHashMap<String,Object>();row.put("userId",String.valueOf(userId));row.put("username",user.username());row.put("displayName",user.displayName());row.put("effectiveRole",role==null?null:role.name());row.put("eligible",reason==null);row.put("reasonCode",reason);return row;
         }).toList();return Map.of("items",rows);
     }
     public Map<String,Object> projection(long ws,long project){
-        var effective=selected(ws,project).stream().filter(value->users.findById(id(value)).filter(u->!u.disabled()).isPresent()&&jdbc.queryForObject("SELECT COUNT(*) FROM memberships WHERE workspace_id=? AND user_id=?",Long.class,ws,id(value))>0&&permissions.effectiveRole(ws,id(value),project).orElse(null)==Role.EDITOR).toList();
+        var effective=selected(ws,project).stream().filter(value->users.findById(id(value)).filter(u->!u.disabled()).filter(u->agents.hasCapability(u,String.valueOf(ws),String.valueOf(project),com.autumnharvestc.server.access.Capability.TASK_EXECUTE)).isPresent()&&permissions.effectiveRole(ws,id(value),project).orElse(null)==Role.EDITOR).toList();
         return Map.of("version",String.valueOf(current(ws,project)),"userIds",effective);
     }
     public Map<String,Object> save(UserAccount caller,String ws,String project,ScheduleDtos.GrantUpdate update){

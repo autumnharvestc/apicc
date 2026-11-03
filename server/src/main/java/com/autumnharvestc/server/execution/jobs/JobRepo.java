@@ -78,6 +78,28 @@ public class JobRepo {
     public List<Job> queued(long agent){return jdbc.query("SELECT "+JOB_COLUMNS+" FROM execution_jobs WHERE agent_id=? AND state='queued' ORDER BY id",this::row,agent);}
     public JsonNode inputs(long job) { return parse(jdbc.queryForObject("SELECT inputs_json FROM execution_jobs WHERE id=?", String.class, job)); }
     public byte[] reportContent(long job) { return jdbc.queryForObject("SELECT report_content FROM execution_jobs WHERE id=?", byte[].class, job); }
+    /** One actual row image for the new fixed-source path; the old report API remains separate. */
+    public record FixedReport(long id,long workspace,long project,long execution,long agent,long creator,long snapshot,
+                              String state,String reportState,String hash,Long length,byte[] body,
+                              String reportKind,OffsetDateTime retainedAt) {}
+    public record FixedReportMetadata(long workspace,long project,String state,String reportState) {}
+    public FixedReport fixedReport(long job,long maxBytes,java.util.function.Consumer<FixedReportMetadata> verifyMetadata) {
+        return jdbc.query("""
+            SELECT id,workspace_id,project_id,execution_id,agent_id,submitted_by,snapshot_id,
+                   state,report_state,report_hash,report_bytes,report_content,
+                   report_kind,report_retained_at FROM execution_jobs WHERE id=?
+            """,(r,n)->{
+                verifyMetadata.accept(new FixedReportMetadata(r.getLong("workspace_id"),r.getLong("project_id"),r.getString("state"),r.getString("report_state")));
+                byte[] body;
+                try{body=com.autumnharvestc.server.collaboration.artifacts.SourceByteBudget.readBinary(r.getBinaryStream("report_content"),maxBytes);}
+                catch(java.io.IOException problem){throw new SQLException("Cannot read fixed report source",problem);}
+                return new FixedReport(r.getLong("id"),r.getLong("workspace_id"),r.getLong("project_id"),
+                r.getLong("execution_id"),r.getLong("agent_id"),r.getLong("submitted_by"),r.getLong("snapshot_id"),
+                r.getString("state"),r.getString("report_state"),r.getString("report_hash"),(Long)r.getObject("report_bytes"),
+                body,
+                r.getString("report_kind"),r.getObject("report_retained_at",OffsetDateTime.class));},job)
+            .stream().findFirst().orElseThrow(()->error(NOT_FOUND,"job_not_found","任务不存在"));
+    }
     /** Authoritative active references, derived from jobs rather than a second ref-count ledger. */
     public Set<String> activeDebugSessions(long agent) {
         var handles = new HashSet<String>();
@@ -100,15 +122,18 @@ public class JobRepo {
     public void progress(Job j,long sequence,Object payload){jdbc.update("UPDATE execution_jobs SET progress_sequence=?,progress_json=? WHERE id=? AND execution_id=? AND agent_id=? AND state IN ('preparing','running') AND progress_sequence<?",sequence,encode(payload),j.id(),j.execution(),j.agent(),sequence);}
     public void requestCancel(Job j){jdbc.update("UPDATE execution_jobs SET cancel_state='requested' WHERE id=? AND state IN ('preparing','running') AND cancel_state='none'",j.id());}
     public void end(Job j,Object summary,String hash,Long bytes,boolean cancelled){
+        // Server-generated finite terminal metadata, not a projection of an uploaded report or today's agent.
+        String verdict=json.valueToTree(summary).path("verdict").asText();
+        String conclusion=Set.of("passed","failed","cancelled","timed-out","interrupted","rejected","unknown").contains(verdict)?verdict:"unknown";
         String transfer = j.reportState().equals("archived") ? "archived"
             : !j.state().equals("queued") || hash != null ? "pending" : "none";
         long heldResultBytes = transfer.equals("pending") ? j.resultBytes() : 0;
         int updated = jdbc.update("""
-            UPDATE execution_jobs SET state='ended',execution_released=TRUE,summary_json=?,
+            UPDATE execution_jobs SET state='ended',execution_released=TRUE,summary_json=?,terminal_conclusion=?,
                 report_hash=?,report_bytes=?,report_state=?,cancel_state=?,
                 reserved_input_bytes=0,reserved_result_bytes=?
             WHERE id=? AND execution_id=? AND agent_id=? AND state IN ('queued','preparing','running')
-            """, encode(summary), hash, bytes, transfer, cancelled ? "confirmed" : j.cancelState(),
+            """, encode(summary), conclusion, hash, bytes, transfer, cancelled ? "confirmed" : j.cancelState(),
             heldResultBytes, j.id(), j.execution(), j.agent());
         if (updated != 1) throw error(CONFLICT,"state_conflict","任务已结束，不能覆盖终态");
         jdbc.update("DELETE FROM execution_stress_reservations WHERE job_id=? AND agent_id=?",j.id(),j.agent());

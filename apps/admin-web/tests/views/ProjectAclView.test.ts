@@ -16,6 +16,7 @@ import { createUsersStore } from "../../src/stores/users.js";
 import { createOrgStore } from "../../src/stores/org.js";
 import { createAppRouter } from "../../src/router/index.js";
 import App from "../../src/App.vue";
+import { member } from '../helpers/collaboration.js';
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 type FetchHandler = (req: CapturedRequest) => Response | Promise<Response>;
@@ -117,6 +118,8 @@ function aclHandler(opts?: {
   const aclByProject: Record<string, Array<{ userId: string; role: string }>> = { "p-1": [], "p-2": [{ userId: "u-2", role: "VIEWER" }] };
   return (req) => {
     const { method, url } = req;
+    if(method==='GET'&&url.includes('/access-members/'))return json(200,member(url.split('/').at(-1),{revision:1}));
+    if(method==='GET'&&url.endsWith('/access-projects'))return json(200,[{id:'p-1',name:'订单',contentReadable:true},{id:'p-2',name:'库存',contentReadable:!p2Denied}]);
     if (url === `${BASE}/me`) return json(200, USER);
     if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, { id: "ws-1", name: "团队空间", myRole: "OWNER", memberCount: 2 });
     if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, MEMBERS);
@@ -183,6 +186,94 @@ async function mountAcl(handler: FetchHandler = aclHandler()) {
 }
 
 describe("ProjectAclView 项目选择（裁定 A/C）", () => {
+  it('I8 pending ACL actions remain in a local scroll table with full long-name access',async()=>{
+    const name='非常长的项目名称 / Long project name '.repeat(12);const handler=pendingHandler();const {wrapper}=await mountAcl(req=>req.url.endsWith('/access-projects')?json(200,[{id:'p-1',name,contentReadable:false}]):handler(req));
+    expect(wrapper.text()).toContain('待重新确认');expect(wrapper.get('[data-testid=acl-confirm-inheritance-u-2]').text()).toContain('确认恢复继承');
+    expect.soft(wrapper.get('[data-testid=acl-table] .ant-table-content').attributes('style')??'').toContain('overflow-x: auto');
+    expect.soft(wrapper.get('[data-testid=acl-project-select] .ant-select-selection-item').attributes('title')).toContain(name);
+    expect.soft(wrapper.findAll('[data-testid=acl-table] colgroup col').some(col=>(col.attributes('style')??'').includes('900px'))).toBe(true);
+  });
+  it.each(['new-project','new-edit'] as const)('I2 old project capability save preserves a %s draft',async(mode)=>{
+    let release!:(response:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});const handler=aclHandler();const {wrapper,calls}=await mountAcl(req=>req.method==='PUT'&&req.url.includes('/access-members/')?gate:handler(req));
+    antdSelect(wrapper,'acl-project-select').vm.$emit('update:value','p-2');await flushPromises();expect(wrapper.text()).toContain('u-2');await wrapper.get('[data-testid=acl-capabilities-u-2]').trigger('click');await flushPromises();
+    await wrapper.get('[data-testid="capability-input-script.edit"]').setValue('deny');await wrapper.get('[data-testid=capability-save]').trigger('click');await flushPromises();expect(calls.find(call=>call.method==='PUT')?.body).toEqual({expectedRevision:1,capabilities:{'script.edit':'deny'}});
+    if(mode==='new-project'){antdSelect(wrapper,'acl-project-select').vm.$emit('update:value','p-1');await flushPromises();antdSelect(wrapper,'acl-project-select').vm.$emit('update:value','p-2');await flushPromises();await wrapper.get('[data-testid=acl-capabilities-u-2]').trigger('click');await flushPromises();}
+    await wrapper.get('[data-testid="capability-input-task.execute"]').setValue('deny');release(json(200,member('u-2',{revision:2})));await flushPromises();
+    expect((wrapper.get('[data-testid="capability-input-task.execute"]').element as HTMLSelectElement).value).toBe('deny');
+  });
+  it('T10 project member capability edit never confirms a pending role',async()=>{
+    const {wrapper,calls}=await mountAcl(pendingHandler());expect(wrapper.text()).toContain('待重新确认');
+    await wrapper.get('[data-testid=acl-capabilities-u-2]').trigger('click');await flushPromises();const editor=wrapper.get('[data-testid=acl-capability-editor]');
+    await editor.get('[data-testid="capability-input-history.read"]').setValue('deny');await editor.get('[data-testid=capability-save]').trigger('click');await flushPromises();
+    expect(calls.filter(c=>c.method==='PUT').map(c=>({url:c.url,body:c.body}))).toEqual([{url:`${BASE}/workspaces/ws-1/projects/p-1/access-members/u-2`,body:{expectedRevision:8,capabilities:{'history.read':'deny'}}}]);
+  });
+  it('T10 a new project requires its own new override choice',async()=>{
+    const pending=pendingHandler();const {wrapper,calls}=await mountAcl(req=>req.url.endsWith('/access-projects')?json(200,[{id:'p-1',name:'订单',contentReadable:false},{id:'p-2',name:'库存',contentReadable:false}]):pending(req));
+    expect(wrapper.text()).toContain('待重新确认');await wrapper.get('[data-testid=acl-new-role-u-2]').setValue('VIEWER');expect(wrapper.get('[data-testid=acl-confirm-override-u-2]').attributes('disabled')).toBeUndefined();
+    antdSelect(wrapper,'acl-project-select').vm.$emit('update:value','p-2');await flushPromises();expect(wrapper.text()).toContain('待重新确认');
+    expect(wrapper.get('[data-testid=acl-confirm-override-u-2]').attributes('disabled')).toBeDefined();expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
+  });
+  it('T10 ACL conflict preserves a chosen role, reloads the actual scope and keeps NONE explicit',async()=>{
+    let revision=8;const legacy=aclHandler();
+    const {wrapper,calls}=await mountAcl(req=>{
+      if(req.url.endsWith('/access-projects'))return json(200,[{id:'p-1',name:'订单',contentReadable:false}]);
+      if(req.url.endsWith('/projects/p-1/access-members/u-2'))return json(200,member('u-2',{revision,projectOverride:'NONE',overrideState:'explicit-none',effectiveRole:null}));
+      if(req.method==='GET'&&req.url.endsWith('/acl'))return json(200,[{userId:'u-2',role:'NONE'}]);
+      if(req.method==='PUT')return json(409,{code:'access_revision_conflict',message:'revision conflict'});
+      return legacy(req);
+    });
+    expect(wrapper.text()).toContain('拒绝访问（NONE）');
+    antdSelect(wrapper,'acl-role-u-2').vm.$emit('change','VIEWER');await flushPromises();
+    expect(calls.find(c=>c.method==='PUT')?.body).toEqual({userId:'u-2',role:'VIEWER',expectedRevision:8});
+    expect.soft(wrapper.get('[data-testid=acl-role-u-2]').text()).toContain('VIEWER');
+    const count=calls.length;revision=9;
+    await wrapper.get('[data-testid=acl-reload-u-2]').trigger('click');await flushPromises();
+    expect.soft(calls.slice(count).map(c=>({method:c.method,url:c.url}))).toEqual([{method:'GET',url:`${BASE}/workspaces/ws-1/projects/p-1/access-members/u-2`}]);
+    expect.soft(wrapper.text()).toContain('当前修订: 9');
+    expect.soft(wrapper.text()).toContain('当前角色: NONE');expect(calls.filter(c=>c.method==='PUT')).toHaveLength(1);
+  });
+  function pendingHandler():FetchHandler {
+    const legacy=aclHandler();
+    return req=>{
+      if(req.url.endsWith('/access-projects'))return json(200,[{id:'p-1',name:'订单',contentReadable:false}]);
+      if(req.url.includes('/access-members/'))return json(200,member('u-2',{projectOverride:'EDITOR',overrideState:'pending-confirmation',effectiveRole:null}));
+      if(req.url.endsWith('/acl')&&req.method==='GET')return json(200,[{userId:'u-2',role:'EDITOR'}]);
+      return legacy(req);
+    };
+  }
+  it('T10 pending override requires a newly chosen role before the explicit command',async()=>{
+    const {wrapper,calls}=await mountAcl(pendingHandler());
+    expect(wrapper.text()).toContain('待重新确认');
+    expect(wrapper.get('[data-testid=acl-confirm-override-u-2]').attributes('disabled')).toBeDefined();
+    expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
+  });
+  it('T10 inheritance has its own explicit versioned command',async()=>{
+    const {wrapper,calls}=await mountAcl(pendingHandler());
+    expect(wrapper.text()).toContain('待重新确认');
+    await wrapper.get('[data-testid=acl-confirm-inheritance-u-2]').trigger('click');await flushPromises();
+    expect(calls.filter(c=>c.method==='PUT').map(c=>c.body)).toEqual([{expectedRevision:8,action:'confirm-inheritance'}]);
+  });
+  it('T10 explicit override sends the newly selected role rather than the stored stale role',async()=>{
+    const {wrapper,calls}=await mountAcl(pendingHandler());expect(wrapper.text()).toContain('待重新确认');
+    await wrapper.get('[data-testid=acl-new-role-u-2]').setValue('VIEWER');
+    expect(wrapper.get('[data-testid=acl-confirm-override-u-2]').attributes('disabled')).toBeUndefined();
+    await wrapper.get('[data-testid=acl-confirm-override-u-2]').trigger('click');await flushPromises();
+    expect(calls.filter(c=>c.method==='PUT').map(c=>c.body)).toEqual([{expectedRevision:8,action:'confirm-override',role:'VIEWER'}]);
+  });
+  it('T10 management directory keeps a NONE project recoverable and pending recovery explicit',async()=>{
+    const {wrapper,calls}=await mountAcl(req=>{
+      if(req.url.endsWith('/access-projects'))return json(200,[{id:'p-1',name:'订单',contentReadable:false}]);
+      if(req.url.includes('/access-members/'))return json(200,member('u-2',{projectOverride:'EDITOR',overrideState:'pending-confirmation',effectiveRole:null}));
+      if(req.url.endsWith('/acl')&&req.method==='GET')return json(200,[{userId:'u-2',role:'EDITOR'}]);
+      return aclHandler()(req);
+    });
+    expect(wrapper.find('[data-testid=acl-view]').exists()).toBe(true);
+    expect.soft(wrapper.text()).toContain('不可读内容');
+    expect.soft(wrapper.text()).toContain('待重新确认');
+    expect.soft(wrapper.text()).toContain('确认恢复继承');
+    expect.soft(wrapper.text()).toContain('确认新覆盖');
+    expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
+  });
   it("项目下拉来自 tree.projects：默认选第一个项目，选项含 name/path/myRole；ACL 行表渲染", async () => {
     const { wrapper, workspaces, calls } = await mountAcl();
     expect(wrapper.find("[data-testid=acl-view]").exists()).toBe(true);
@@ -190,8 +281,7 @@ describe("ProjectAclView 项目选择（裁定 A/C）", () => {
     const options = antdSelect(wrapper, "acl-project-select").props("options") as Array<{ value: string; label: string }>;
     expect(options.map((o) => o.value)).toEqual(["p-1", "p-2"]);
     expect(options[0]!.label).toContain("订单");
-    expect(options[0]!.label).toContain("groups/后端/projects/订单"); // path 必显（契约修订 2026-09-03）
-    expect(options[0]!.label).toContain("OWNER"); // myRole 展示（裁定 C）
+    expect(options[0]!.label).toContain("内容可读"); // directory is not a content tree
     // 默认选中第一个项目 → GET acl → 行渲染
     expect(calls.some((c) => c.method === "GET" && c.url === `${BASE}/workspaces/ws-1/projects/p-1/acl`)).toBe(true);
     // p-1 无 ACL 行 → 空表：antd 渲染「暂无数据」行（zh locale），无数据行
@@ -206,7 +296,7 @@ describe("ProjectAclView 项目选择（裁定 A/C）", () => {
     await flushPromises();
     await flushPromises();
     expect((wrapper.find("[data-testid=acl-add-userid] input").element as HTMLInputElement).value).toBe(""); // 复位
-    const rows = wrapper.findAll("tbody tr");
+    const rows = wrapper.findAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text()).toContain("u-2");
     expect(rows[0]!.text()).toContain("VIEWER");
@@ -223,13 +313,13 @@ describe("ProjectAclView NONE 与删行语义（裁定 B：显式区分）", () 
     await flushPromises();
     await flushPromises();
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/projects/p-2/acl`);
-    expect(put!.body).toEqual({ userId: "u-2", role: "NONE" });
+    expect(put!.body).toEqual({ userId: "u-2", role: "NONE", expectedRevision:1 });
     // 行仍在（NONE 是明确拒绝，非删除）且文案显式
-    const rows = wrapper.findAll("tbody tr");
+    const rows = wrapper.findAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text()).toContain("拒绝访问（NONE）");
     // 项目 myRole 联动更新（tree 重载后 NONE）
-    expect(wrapper.find("[data-testid=acl-project-myrole]").text()).toContain("NONE");
+    expect(wrapper.find("[data-testid=acl-project-myrole]").text()).toContain("不可读内容");
   });
 
   it("删行（popconfirm 确认）→ DELETE ?userId= → 行消失（恢复继承）", async () => {
@@ -243,7 +333,7 @@ describe("ProjectAclView NONE 与删行语义（裁定 B：显式区分）", () 
     await flushPromises();
     await flushPromises();
     const del = calls.find((c) => c.method === "DELETE" && c.url.startsWith(`${BASE}/workspaces/ws-1/projects/p-2/acl`));
-    expect(del!.url).toBe(`${BASE}/workspaces/ws-1/projects/p-2/acl?userId=u-2`);
+    expect(del!.url).toBe(`${BASE}/workspaces/ws-1/projects/p-2/acl?userId=u-2&expectedRevision=1`);
     expect(workspaces.aclEntries).toHaveLength(0); // 行消失 = 恢复工作区角色继承
     expect(wrapper.text()).toContain("暂无数据");
   });
@@ -258,6 +348,23 @@ describe("ProjectAclView NONE 与删行语义（裁定 B：显式区分）", () 
 });
 
 describe("ProjectAclView 添加行（任务 6：userPicker 搜索下拉，id 不再手输）", () => {
+  it('T10 ACL candidate read must finish before add admits a write',async()=>{
+    let release!:(response:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});const handler=aclHandler();const {wrapper,calls}=await mountAcl(req=>req.method==='GET'&&req.url.endsWith('/projects/p-1/access-members/u-2')?gate:handler(req));
+    expect(wrapper.text()).toContain('订单');await wrapper.get('[data-testid=acl-add-userid] input').setValue('bob');await flushPromises();
+    expect.soft((wrapper.get('[data-testid=acl-add-submit]').element as HTMLButtonElement).disabled).toBe(true);await wrapper.get('[data-testid=acl-add-submit]').trigger('click');await flushPromises();release(json(200,member('u-2',{revision:17})));await flushPromises();expect(calls.filter(c=>c.method==='PUT')).toHaveLength(0);
+  });
+  it('T10 chosen ACL candidate displays retained NONE and revision before explicit add',async()=>{
+    let revision=17;const handler=aclHandler();const {wrapper,calls}=await mountAcl(req=>req.method==='GET'&&req.url.includes('/projects/p-1/access-members/')?json(200,member('u-2',{revision,projectOverride:'NONE',overrideState:'confirmed'})):req.method==='PUT'?json(409,{code:'access_revision_conflict',message:'changed'}):handler(req));
+    expect(wrapper.text()).toContain('订单');await wrapper.get('[data-testid=acl-add-userid] input').setValue('bob');await flushPromises();
+    expect.soft(calls.some(c=>c.url.endsWith('/projects/p-1/access-members/u-2'))).toBe(true);expect.soft(wrapper.text()).toContain('当前修订: 17');expect.soft(wrapper.text()).toContain('NONE');
+    revision=18;const before=calls.length;await wrapper.get('[data-testid=acl-add-submit]').trigger('click');await flushPromises();
+    expect.soft(calls.slice(before).filter(c=>c.method==='GET')).toHaveLength(0);expect(calls.find(c=>c.method==='PUT')?.body).toEqual({userId:'u-2',role:'VIEWER',expectedRevision:17});
+  });
+  it.each([['inherited','继承工作区角色'],['explicit-none','显式无项目权限'],['future-state','future-state']])('T12 ACL candidate status %s is readable and unknown values are retained',async(state,label)=>{
+    const handler=aclHandler();const {wrapper}=await mountAcl(req=>req.method==='GET'&&req.url.includes('/projects/p-1/access-members/')?json(200,member('u-2',{overrideState:state})):handler(req));
+    await wrapper.get('[data-testid=acl-add-userid] input').setValue('bob');await flushPromises();
+    expect(wrapper.get('[data-testid=acl-add-scope]').text()).toContain(label);
+  });
   it("下拉选中现有成员（username 作键）→ PUT 携解析后的 userId → 行出现", async () => {
     const { wrapper, calls } = await mountAcl();
     antdSelect(wrapper, "acl-project-select").vm.$emit("update:value", "p-1"); // p-1 无行
@@ -265,12 +372,13 @@ describe("ProjectAclView 添加行（任务 6：userPicker 搜索下拉，id 不
     await flushPromises();
     await wrapper.find("[data-testid=acl-add-userid] input").setValue("bob"); // 成员选项 value=username
     antdSelect(wrapper, "acl-add-role").vm.$emit("update:value", "EDITOR"); // v-model:value 绑定（emit change 不改模型）
+    await flushPromises(); // 等待所选 scope 展示，再由原按钮明确写
     await wrapper.find("[data-testid=acl-add-submit]").trigger("click");
     await flushPromises();
     await flushPromises();
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/projects/p-1/acl`);
-    expect(put!.body).toEqual({ userId: "u-2", role: "EDITOR" }); // username=bob 解析回内部 id
-    const rows = wrapper.findAll("tbody tr");
+    expect(put!.body).toEqual({ userId: "u-2", role: "EDITOR", expectedRevision:1 }); // username=bob 解析回内部 id
+    const rows = wrapper.findAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text()).toContain("u-2");
   });
@@ -285,13 +393,14 @@ describe("ProjectAclView 添加行（任务 6：userPicker 搜索下拉，id 不
     await until(() => calls.some((c) => c.url.includes("member-candidates")));
     await flushPromises();
     await input.setValue("dave"); // 模拟从下拉选中（v-model=username）
+    await flushPromises();
     await wrapper.find('[data-testid="acl-add-submit"]').trigger("click");
     await flushPromises();
     await flushPromises();
     expect(
       calls.some((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/projects/p-1/acl` && JSON.stringify(c.body ?? {}).includes("u-9")),
     ).toBe(true);
-    const rows = wrapper.findAll("tbody tr");
+    const rows = wrapper.findAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text()).toContain("u-9");
   });

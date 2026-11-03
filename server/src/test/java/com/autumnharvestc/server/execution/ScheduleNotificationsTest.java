@@ -10,11 +10,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @org.springframework.test.context.TestPropertySource(properties="spring.datasource.url=jdbc:h2:mem:apicc-t5-events;DB_CLOSE_DELAY=-1")
 class ScheduleNotificationsTest extends OccurrenceFixture {
+    @Autowired com.autumnharvestc.server.access.AccessFixtureRevisions eventVersions;
     @Autowired ScheduledJobSubmission submission;
     @Autowired com.autumnharvestc.server.execution.notifications.NotificationEventService notificationEvents;
     @Autowired com.autumnharvestc.server.execution.notifications.NotificationTimer notificationTimer;
     @Autowired com.autumnharvestc.server.execution.scheduling.NotificationProperties outbound;
-    @Autowired com.autumnharvestc.server.execution.notifications.NotificationEventRepo notificationRepo;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.autumnharvestc.server.execution.notifications.NotificationEventRepo notificationRepo;
+    @Autowired org.springframework.transaction.PlatformTransactionManager notificationTransactions;
     @org.junit.jupiter.api.BeforeEach void isolateNotificationSources(){
         jdbc.update("UPDATE execution_notification_outbox SET state='failed',reason_code='fixture-finished',lease_until_utc=NULL WHERE state IN ('pending','sending')");
         jdbc.update("DELETE FROM execution_notification_events");jdbc.update("UPDATE execution_schedule_occurrences SET notification_processed_version=1");
@@ -22,6 +24,85 @@ class ScheduleNotificationsTest extends OccurrenceFixture {
     }
     String url(F f){return "/api/v1/workspaces/"+f.ws()+"/notifications";}
     void expired(F f)throws Exception{once(f);now(origin.plusSeconds(60));occurrences.scan("expiry");now(origin.plusSeconds(361));occurrences.scan("expiry-finished");}
+    void denyHistory(F f) throws Exception {
+        String user=String.valueOf(scheduleUsers.findByUsername("admin").orElseThrow().id());String endpoint=f.url()+"/access-members/"+user;
+        // An active positive ACL keeps the old SQL NONE-only shortcut from preempting the history target.
+        member(f,put(f.url()+"/acl"),Map.of("userId",user,"role","ADMIN","expectedRevision",eventVersions.acl(f.ws(),f.project(),user))).andExpect(status().isOk());
+        var visible=body(member(f,get(url(f)),Map.of()).andExpect(status().isOk())).path("items");
+        assertThat(visible).anySatisfy(event->assertThat(event.path("projectId").asText()).isEqualTo(f.project()));
+        long revision=body(member(f,get(endpoint),Map.of()).andExpect(status().isOk())).path("revision").asLong();
+        member(f,put(endpoint),Map.of("expectedRevision",revision,"capabilities",Map.of("history.read","deny"))).andExpect(status().isOk());
+    }
+    @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"page","read","notification-history","schedule-history"})
+    void historyWithdrawalHidesActualResultSurfaces(String route) throws Exception {
+        var f=fixture();expired(f);var event=body(member(f,get(url(f)),Map.of()).andExpect(status().isOk())).path("items").get(0);
+        String id=event.path("id").asText(),schedule=f.url()+"/schedules/"+event.path("scheduleId").asText();
+        member(f,post(url(f)+"/"+id+"/read"),Map.of()).andExpect(status().isOk());
+        member(f,get(schedule+"/notification-history"),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items[0].eventKind").value("expired"));
+        member(f,get(schedule+"/history"),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items[0].state").value("expired"));
+        String readId=id;if(route.equals("read")){expired(f);readId=body(member(f,get(url(f)),Map.of()).andExpect(status().isOk())).path("items").get(0).path("id").asText();}
+        String unreadId=readId;
+        denyHistory(f);
+        if(route.equals("page"))member(f,get(url(f)),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items").isEmpty());
+        else if(route.equals("read")){var response=member(f,post(url(f)+"/"+unreadId+"/read"),Map.of());org.junit.jupiter.api.Assertions.assertAll(()->response.andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("forbidden")),()->assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_notification_reads WHERE event_id=?",Long.class,Long.valueOf(unreadId))).isZero());}
+        else member(f,get(schedule+(route.equals("notification-history")?"/notification-history":"/history")),Map.of()).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("forbidden"));
+        // Configuration/contract metadata is independent of reading actual historical results.
+        member(f,get(schedule),Map.of()).andExpect(status().isOk());
+    }
+    @Test void historyFilteringPrecedesNotificationPageLimit() throws Exception {
+        var visible=fixture();expired(visible);var hidden=fixture();expired(hidden);expired(hidden);expired(hidden);
+        member(hidden,get(url(hidden)).param("limit","1"),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items[0].projectId").value(hidden.project()));
+        denyHistory(hidden);
+        member(visible,get(url(visible)).param("limit","1"),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items[0].projectId").value(visible.project())).andExpect(jsonPath("$.nextBeforeId").isEmpty());
+    }
+    @Test void pendingMembershipCannotLeakNotificationResults() throws Exception {
+        var f=fixture();expired(f);String name="pending-notif-"+f.project();
+        String user=body(mvc.perform(post("/api/v1/auth/register").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password","password123","displayName","Pending notification")))).andExpect(status().isCreated())).path("id").asText();
+        String token=body(mvc.perform(post("/api/v1/auth/login").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password","password123")))).andExpect(status().isOk())).path("token").asText();
+        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user),eventVersions.memberFields(f.ws(),user,"EDITOR")).andExpect(status().isOk());
+        member(f,put(f.url()+"/acl"),Map.of("userId",user,"role","ADMIN","expectedRevision",eventVersions.acl(f.ws(),f.project(),user))).andExpect(status().isOk());
+        var target=new F(token,f.ws(),f.group(),f.project(),f.snapshot(),f.agent(),f.agentToken(),f.assets());
+        member(target,get(url(f)),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(1));
+        member(f,delete("/api/v1/workspaces/"+f.ws()+"/members/"+user).param("expectedRevision",String.valueOf(eventVersions.member(f.ws(),user))),Map.of()).andExpect(status().isNoContent());
+        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user),eventVersions.memberFields(f.ws(),user,"EDITOR")).andExpect(status().isOk());
+        member(target,get(f.url()+"/access"),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.overrideState").value("pending-confirmation"));
+        member(target,get(url(f)),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items").isEmpty());
+    }
+    @Test void ordinaryCapabilityRecordDoesNotHideReadableNotifications() throws Exception {
+        var f=fixture();expired(f);member(f,get(url(f)),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(1));
+        String user=String.valueOf(scheduleUsers.findByUsername("admin").orElseThrow().id());
+        member(f,put(f.url()+"/access-members/"+user),Map.of("expectedRevision",0,"capabilities",Map.of("script.edit","deny"))).andExpect(status().isOk());
+        var access=body(member(f,get(f.url()+"/access"),Map.of()).andExpect(status().isOk()));
+        assertThat(access.path("capabilities")).anySatisfy(value->assertThat(value.asText()).isEqualTo("history.read"));
+        assertThat(access.path("overrideState").asText()).isEqualTo("inherited");
+        member(f,get(url(f)),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(1));
+    }
+    @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"disabled","removed"})
+    void notificationPageRechecksQualificationAfterObservationWait(String loss) throws Exception {
+        var f=fixture();expired(f);String name="notif-wait-"+java.util.UUID.randomUUID().toString().substring(0,12);
+        String user=body(mvc.perform(post("/api/v1/auth/register").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password","password123","displayName","Notification reader")))).andExpect(status().isCreated())).path("id").asText();
+        String token=body(mvc.perform(post("/api/v1/auth/login").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password","password123")))).andExpect(status().isOk())).path("token").asText();
+        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user),eventVersions.memberFields(f.ws(),user,"VIEWER")).andExpect(status().isOk());
+        var target=new F(token,f.ws(),f.group(),f.project(),f.snapshot(),f.agent(),f.agentToken(),f.assets());
+        member(target,get(url(f)),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(1));
+        var held=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);var entered=new java.util.concurrent.CountDownLatch(1);
+        var holderSession=new java.util.concurrent.atomic.AtomicLong();var readerSession=new java.util.concurrent.atomic.AtomicLong();
+        org.mockito.Mockito.doAnswer(invocation->{if(Thread.currentThread().getName().equals("task5-notification-reader")){readerSession.set(jdbc.queryForObject("SELECT SESSION_ID()",Long.class));entered.countDown();}return invocation.callRealMethod();}).when(notificationRepo).gate();
+        try(var pool=java.util.concurrent.Executors.newFixedThreadPool(3)) {
+            var holder=pool.submit(()->new org.springframework.transaction.support.TransactionTemplate(notificationTransactions).executeWithoutResult(tx->{notificationRepo.gate();holderSession.set(jdbc.queryForObject("SELECT SESSION_ID()",Long.class));held.countDown();try{if(!release.await(10,java.util.concurrent.TimeUnit.SECONDS))throw new IllegalStateException("notification holder release timed out");}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException(e);}}));
+            java.util.concurrent.Future<org.springframework.test.web.servlet.ResultActions> pending=null;
+            try {
+                assertThat(held.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                pending=pool.submit(()->{Thread.currentThread().setName("task5-notification-reader");return member(target,get(url(f)),Map.of());});
+                assertThat(entered.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                long until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);boolean blocked=false;
+                while(System.nanoTime()<until){if(jdbc.queryForObject("SELECT COUNT(*) FROM INFORMATION_SCHEMA.SESSIONS WHERE SESSION_ID=? AND BLOCKER_ID=?",Long.class,readerSession.get(),holderSession.get())>0){blocked=true;break;}java.util.concurrent.TimeUnit.MILLISECONDS.sleep(10);}
+                assertThat(blocked).as("actual notification HTTP reader waits at observation DB gate").isTrue();
+                pool.submit(()->{if(loss.equals("disabled"))member(f,post("/api/v1/admin/users/"+user+"/disable"),Map.of("expectedRevision",1)).andExpect(status().isNoContent());else member(f,delete("/api/v1/workspaces/"+f.ws()+"/members/"+user).param("expectedRevision",String.valueOf(eventVersions.member(f.ws(),user))),Map.of()).andExpect(status().isNoContent());return true;}).get(3,java.util.concurrent.TimeUnit.SECONDS);
+            } finally {release.countDown();}
+            holder.get(5,java.util.concurrent.TimeUnit.SECONDS);pending.get(5,java.util.concurrent.TimeUnit.SECONDS).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("forbidden"));
+        }
+    }
     @Test void realExpiredOccurrenceProducesOneSafeDurableEvent() throws Exception {
         var f=fixture();once(f);now(origin.plusSeconds(60));occurrences.scan("notification-source");
         now(origin.plusSeconds(361));occurrences.scan("notification-expiry");

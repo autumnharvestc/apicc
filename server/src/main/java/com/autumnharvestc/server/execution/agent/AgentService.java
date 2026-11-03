@@ -8,6 +8,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.*;
+import com.autumnharvestc.server.access.Capability;
+import com.autumnharvestc.server.access.ProjectAccessService;
 import static com.autumnharvestc.server.execution.agent.AgentRepo.*;
 
 @Service
@@ -20,7 +22,8 @@ public class AgentService {
     private final ProjectRepo projects;
     private final com.autumnharvestc.server.auth.TokenService tokens;
     private final com.autumnharvestc.server.execution.ExecutionProperties properties;
-    public AgentService(AgentRepo repo,JdbcTemplate jdbc,WorkspaceGuard guard,PermissionService permissions,ProjectRepo projects,com.autumnharvestc.server.auth.TokenService tokens,com.autumnharvestc.server.execution.ExecutionProperties properties) { this.repo=repo;this.jdbc=jdbc;this.guard=guard;this.permissions=permissions;this.projects=projects;this.tokens=tokens;this.properties=properties; }
+    private final ProjectAccessService access;
+    public AgentService(AgentRepo repo,JdbcTemplate jdbc,WorkspaceGuard guard,PermissionService permissions,ProjectRepo projects,com.autumnharvestc.server.auth.TokenService tokens,com.autumnharvestc.server.execution.ExecutionProperties properties,ProjectAccessService access) { this.repo=repo;this.jdbc=jdbc;this.guard=guard;this.permissions=permissions;this.projects=projects;this.tokens=tokens;this.properties=properties;this.access=access; }
     public static void requirePlatform(UserAccount caller) { if(caller==null || caller.disabled() || caller.role()!=PlatformRole.SUPERADMIN) throw error(HttpStatus.FORBIDDEN,"forbidden","需要平台超管权限"); }
     public ProjectRecord requireProject(UserAccount caller,String workspaceId,String projectId,boolean admin) {
         long ws=id(workspaceId), project=id(projectId);
@@ -32,14 +35,19 @@ public class AgentService {
         return projects.find(project).filter(p->p.workspaceId()==ws).orElseThrow(()->error(HttpStatus.NOT_FOUND,"project_not_found","项目不存在"));
     }
     public void requireExecution(UserAccount caller,String ws,String project) {
-        var entity=requireProject(caller,ws,project,false);
-        var role=permissions.effectiveRole(entity.workspaceId(),caller.id(),entity.id()).orElseThrow();
-        if(!permissions.canWrite(role)) throw error(HttpStatus.FORBIDDEN,"forbidden","需要 EDITOR 及以上执行权限");
+        requireCapability(caller,ws,project,Capability.TASK_EXECUTE);
+    }
+    public boolean hasCapability(UserAccount caller,String ws,String project,Capability capability) {
+        return access.resolve(caller.id(),id(ws),id(project)).capabilities().contains(capability);
+    }
+    public void requireCapability(UserAccount caller,String ws,String project,Capability capability) {
+        requireProject(caller,ws,project,false);
+        if(!hasCapability(caller,ws,project,capability))throw error(HttpStatus.FORBIDDEN,"forbidden","需要业务权限："+capability.code());
     }
     public boolean canCancel(UserAccount caller,String ws,String project,long submittedBy) {
         var entity=requireProject(caller,ws,project,false);
         var role=permissions.effectiveRole(entity.workspaceId(),caller.id(),entity.id()).orElseThrow();
-        return permissions.canWrite(role)&&(caller.id()==submittedBy||permissions.isAdmin(role));
+        return hasCapability(caller,ws,project,Capability.TASK_EXECUTE)&&(caller.id()==submittedBy||permissions.isAdmin(role));
     }
     public List<AgentRepo.Agent> list(UserAccount caller) { requirePlatform(caller);return repo.list(); }
     public List<Map<String,Object>> workspaceDirectory(UserAccount caller) {

@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAdminClient } from "../../src/api/client.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
+import { member } from '../helpers/collaboration.js';
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 type FetchHandler = (req: CapturedRequest) => Response | Promise<Response>;
@@ -37,12 +38,171 @@ const MEMBERS = [
   { userId: "u-2", username: "bob", displayName: "Bob", role: "EDITOR" },
 ];
 
-function setup(handler: FetchHandler) {
+function setupExact(handler: FetchHandler) {
   const stub = fetchStub(handler);
   const client = createAdminClient({ baseUrl: BASE, fetch: stub.impl });
   const store = createWorkspacesStore({ client });
-  return { calls: stub.calls, store };
+  return { calls: stub.calls, store, client };
 }
+function setup(handler:FetchHandler){return setupExact(req=>{
+  if(req.method==='GET'&&req.url.includes('/access-members/')){const id=req.url.split('/').at(-1)!;return json(200,member(id,{revision:1,workspaceRole:id==='u-1'?'OWNER':'EDITOR'}));}
+  return handler(req);
+});}
+
+describe('T10 authoritative scope reads before legacy writes',()=>{
+  const legacyCas=(store:ReturnType<typeof createWorkspacesStore>,command:string)=>command==='role'?store.changeRole('ws-1','u-2','VIEWER'):command==='add-member'?store.addMember('ws-1','u-2','VIEWER'):command==='remove-member'?store.removeMember('ws-1','u-2'):command==='acl'?store.setAclEntry('ws-1','p-1',{userId:'u-2',role:'NONE'}):command==='add-acl'?store.addAclEntry('ws-1','p-1',{userId:'u-2',role:'NONE'}):store.removeAclEntry('ws-1','p-1','u-2');
+  it.each(['role','add-member','remove-member','acl','add-acl','remove-acl'])('final I03 cached %s cannot write through a replacement session',async command=>{
+    const {store,client,calls}=setupExact(req=>req.url.includes('/access-members/')?json(200,member('u-2',{revision:8})):req.method==='GET'?json(200,[]):noContent());
+    client.setToken('original-session');
+    await store.readAccessMember({workspaceId:'ws-1'},'u-2');await store.readAccessMember({workspaceId:'ws-1',projectId:'p-1'},'u-2');
+    expect(store.accessMembers['ws-1//u-2']?.revision).toBe(8);expect(store.accessMembers['ws-1/p-1/u-2']?.revision).toBe(8);
+    const pending=legacyCas(store,command);store.reset();client.setToken('replacement-session');
+    store.memberBusyId='new-owner';store.aclBusyUserId='new-owner';store.memberSubmitting=true;store.aclSubmitting=true;
+    expect.soft(await pending).toBe(false);expect.soft(calls.filter(call=>call.method!=='GET')).toEqual([]);
+    expect.soft(store.accessMembers).toEqual({});expect.soft(store.memberBusyId).toBe('new-owner');expect.soft(store.aclBusyUserId).toBe('new-owner');
+    expect.soft(store.memberSubmitting).toBe(true);expect(store.aclSubmitting).toBe(true);
+  });
+  it.each(['role-success','role-error','acl-success','acl-error'])('final I03 admitted %s cannot settle state or refresh through replacement session',async command=>{
+    let release!:(response:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});
+    const {store,client,calls}=setupExact(req=>req.method==='PUT'?gate:req.url.includes('/access-members/')?json(200,member('u-2',{revision:8})):json(200,[]));
+    client.setToken('original-session');await store.readAccessMember({workspaceId:'ws-1',...(command.startsWith('acl')?{projectId:'p-1'}:{})},'u-2');
+    const pending=legacyCas(store,command.startsWith('acl')?'acl':'role');
+    await vi.waitFor(()=>expect(calls.filter(call=>call.method==='PUT')).toHaveLength(1));
+    expect(Object.values(calls.find(call=>call.method==='PUT')!.headers)).toContain('Bearer original-session');
+    store.reset();client.setToken('replacement-session');const before=calls.length;
+    store.memberBusyId='new-owner';store.aclBusyUserId='new-owner';store.membersError='new error';store.aclError='new error';
+    release(command.endsWith('error')?json(409,{code:'access_revision_conflict',message:'old conflict'}):noContent());
+    expect.soft(await pending).toBe(false);expect.soft(calls.slice(before)).toEqual([]);expect.soft(store.membersError).toBe('new error');expect.soft(store.aclError).toBe('new error');
+    expect.soft(store.memberBusyId).toBe('new-owner');expect(store.aclBusyUserId).toBe('new-owner');
+  });
+  it.each(['role','acl'])('final I03 %s refresh already in flight cannot restore old rows or read new credentials',async command=>{
+    let release!:(response:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});
+    const {store,client,calls}=setupExact(req=>req.url.includes('/access-members/')?json(200,member('u-2',{revision:8})):req.method==='PUT'?noContent():gate);
+    client.setToken('original-session');await store.readAccessMember({workspaceId:'ws-1',...(command==='acl'?{projectId:'p-1'}:{})},'u-2');
+    const pending=legacyCas(store,command);await vi.waitFor(()=>expect(calls.some(call=>call.method==='GET'&&!call.url.includes('/access-members/'))).toBe(true));
+    store.reset();client.setToken('replacement-session');const before=calls.length;
+    release(json(200,command==='role'?MEMBERS:[{userId:'u-2',role:'NONE'}]));expect.soft(await pending).toBe(false);
+    expect.soft(calls.slice(before)).toEqual([]);expect.soft(store.members).toEqual([]);expect.soft(store.aclEntries).toEqual([]);expect(store.accessMembers).toEqual({});
+  });
+  it.each(['role','acl'])('final I03 %s final detail refresh cannot restore old selected scope',async command=>{
+    const tree={workspaceId:'ws-1',rootVersion:1,files:[],projects:[]};
+    let release!:(response:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});
+    const finalUrl=`${BASE}/workspaces/ws-1${command==='acl'?'/tree':''}`;
+    const {store,client,calls}=setupExact(req=>req.url===finalUrl?gate:req.url.includes('/access-members/')?json(200,member('u-2',{revision:8})):req.method==='PUT'?noContent():json(200,req.url.endsWith('/members')?MEMBERS:[]));
+    client.setToken('original-session');store.current={...DETAIL_1,myRole:'OWNER'};store.tree=tree;
+    await store.readAccessMember({workspaceId:'ws-1',...(command==='acl'?{projectId:'p-1'}:{})},'u-2');
+    const pending=legacyCas(store,command);await vi.waitFor(()=>expect(calls.some(call=>call.url===finalUrl)).toBe(true));
+    store.reset();client.setToken('replacement-session');release(json(200,command==='role'?DETAIL_1:tree));
+    expect.soft(await pending).toBe(false);expect.soft(store.current).toBeNull();expect(store.tree).toBeNull();
+  });
+  it.each(['capabilities','confirmation'] as const)('I1 cached %s prerequisite cannot admit a write after reset',async(command)=>{
+    const {store,calls}=setupExact(()=>json(200,member('u-2',{revision:17})));
+    await store.readAccessMember({workspaceId:'ws-1',projectId:'p-1'},'u-2');expect(store.accessMembers['ws-1/p-1/u-2']?.revision).toBe(17);
+    const pending=command==='capabilities'?store.changeCapabilities({workspaceId:'ws-1',projectId:'p-1'},'u-2',{'history.read':'deny'}):store.confirmAccess('ws-1','p-1','u-2','confirm-inheritance');
+    store.reset();expect(await pending).toBe(false);expect(calls.filter(call=>call.method==='PUT')).toHaveLength(0);
+  });
+  it('T10 explicit refresh cannot restore a prior-session error after reset',async()=>{
+    let release!:(value:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});let delayed=false;
+    const {store}=setupExact(()=>delayed?gate:json(200,member('u-2')));await store.readAccessMember({workspaceId:'ws-1'},'u-2');expect(Object.keys(store.accessMembers)).toHaveLength(1);
+    delayed=true;const pending=store.refreshAccessMember({workspaceId:'ws-1'},'u-2');store.reset();release(json(200,member('u-2')));await pending;
+    expect.soft(store.accessMembers).toEqual({});expect(store.membersError).toBeNull();
+  });
+  it.each(['member','acl'] as const)('T10 failed %s role drafts belong to the edited scope',async(kind)=>{
+    const {store}=setupExact(req=>req.url.includes('/access-members/')?json(200,member('u-2')):req.method==='PUT'?json(409,{code:'access_revision_conflict',message:'changed'}):json(200,[]));
+    const scope={workspaceId:'ws-1',...(kind==='acl'?{projectId:'p-1'}:{})};await store.readAccessMember(scope,'u-2');
+    await(kind==='member'?store.changeRole('ws-1','u-2','ADMIN'):store.setAclEntry('ws-1','p-1',{userId:'u-2',role:'NONE'}));
+    const drafts=kind==='member'?store.memberDrafts:store.aclDrafts;
+    expect.soft(drafts[`${scope.workspaceId}/${scope.projectId??''}/u-2`]).toBe(kind==='member'?'ADMIN':'NONE');expect(drafts['u-2']).toBeUndefined();
+  });
+  it.each(['confirm','capabilities'] as const)('T10 reset discards an admitted %s reply without restoring state',async(kind)=>{
+    let release!:(value:Response)=>void;const gate=new Promise<Response>(resolve=>{release=resolve;});
+    const {store,calls}=setupExact(req=>req.method==='PUT'?gate:req.url.includes('/access-members/')?json(200,member('u-2')):json(200,[]));
+    const scope={workspaceId:'ws-1',projectId:'p-1'};await store.readAccessMember(scope,'u-2');expect(Object.keys(store.accessMembers)).toHaveLength(1);
+    const pending=kind==='confirm'?store.confirmAccess('ws-1','p-1','u-2','confirm-inheritance'):store.changeCapabilities(scope,'u-2',{'history.read':'deny'});
+    await vi.waitFor(()=>expect(calls.filter(c=>c.method==='PUT')).toHaveLength(1));const before=calls.length;store.reset();
+    release(json(200,member('u-2',{revision:9})));await pending;
+    expect.soft(store.accessMembers).toEqual({});expect.soft(store.aclError).toBeNull();expect(calls.slice(before)).toEqual([]);
+  });
+  it.each(['success','error'] as const)('T10 new management directory drops old-workspace late %s',async(kind)=>{
+    let release!:(value:Response)=>void;let delay=false;const wait=new Promise<Response>(resolve=>{release=resolve;});
+    const {store}=setupExact(req=>req.url.includes('/ws-1/')?delay?wait:json(200,[{id:'1',name:'A project',contentReadable:false}]):json(200,[{id:'2',name:'B project',contentReadable:true}]));
+    await store.loadManagementProjects('ws-1');expect(store.managementProjects[0]?.name).toBe('A project');
+    delay=true;const old=store.loadManagementProjects('ws-1');
+    const latest=store.loadManagementProjects('ws-2');expect.soft(store.managementProjects).toEqual([]);
+    await latest;expect(store.managementProjects[0]?.name).toBe('B project');
+    release(kind==='success'?json(200,[{id:'1',name:'A old late project',contentReadable:false}]):json(500,{code:'old_error',message:'A old error'}));await old;
+    expect.soft(store.managementProjects[0]?.name).toBe('B project');expect(store.aclError).toBeNull();
+  });
+  it.each(['member-read','directory-read','before-write'] as const)('T10 session reset discards a late %s',async(kind)=>{
+    let release!:(value:Response)=>void;const pendingResponse=new Promise<Response>(resolve=>{release=resolve;});
+    let delayed=false;
+    const {store,calls}=setupExact(req=>{
+      if(delayed&&req.method==='GET')return pendingResponse;
+      if(req.url.endsWith('/access-projects'))return json(200,[{id:'2',name:'Former account project',contentReadable:false}]);
+      if(req.url.includes('/access-members/'))return json(200,member('u-2'));
+      if(req.method!=='GET')return noContent();return json(200,[]);
+    });
+    if(kind==='directory-read'){await store.loadManagementProjects('ws-1');expect(store.managementProjects).toHaveLength(1);}
+    else {await store.readAccessMember({workspaceId:'ws-1'},'u-2');expect(Object.keys(store.accessMembers)).toHaveLength(1);}
+    store.reset();delayed=true;
+    const pending=kind==='directory-read'?store.loadManagementProjects('ws-1'):kind==='member-read'?store.readAccessMember({workspaceId:'ws-1'},'u-2'):store.changeRole('ws-1','u-2','ADMIN');
+    store.reset();delayed=false;release(json(200,kind==='directory-read'?[{id:'2',name:'Former account project',contentReadable:false}]:member('u-2')));
+    await pending.catch(()=>undefined);
+    expect.soft(store.managementProjects).toEqual([]);expect.soft(store.accessMembers).toEqual({});expect(calls.filter(c=>c.method==='PUT')).toHaveLength(0);
+  });
+  it('T10 displayed member revision remains the edit base after another administrator writes',async()=>{
+    let revision=17;
+    const {store,calls}=setupExact(req=>req.url.includes('/access-members/')?json(200,member(req.url.split('/').at(-1),{revision})):req.method==='GET'?json(200,MEMBERS):noContent());
+    await store.loadMembers('ws-1');expect(store.members[1]?.role).toBe('EDITOR');
+    expect.soft(calls.some(c=>c.url.endsWith('/access-members/u-2'))).toBe(true);
+    revision=18;
+    await store.changeRole('ws-1','u-2','ADMIN');
+    expect(calls.find(c=>c.method==='PUT')?.body).toEqual({role:'ADMIN',expectedRevision:17});
+  });
+  it('owner transfer sends the current caller revision as well as target revision',async()=>{
+    const {store,calls}=setupExact(req=>req.url.includes('/access-members/u-1')?json(200,member('u-1',{revision:6})):req.url.includes('/access-members/u-2')?json(200,member('u-2',{revision:17})):req.method!=='GET'?noContent():json(200,MEMBERS));
+    await store.loadMembers('ws-1');expect(store.members[0]?.role).toBe('OWNER');
+    expect(await store.changeRole('ws-1','u-2','OWNER')).toBe(true);
+    expect(calls.find(c=>c.method==='PUT')?.body).toEqual({role:'OWNER',expectedRevision:17,expectedActorRevision:6});
+  });
+  it.each(['change','add','remove','acl-set','acl-add','acl-remove'] as const)('%s reads the retained subject revision before one write',async(action)=>{
+    const {store,calls}=setupExact(req=>{
+      if(req.url.includes('/access-members/'))return json(200,member('u-2',{revision:17}));
+      if(req.method!=='GET')return noContent();
+      if(req.url.endsWith('/members'))return json(200,MEMBERS);
+      if(req.url.endsWith('/acl'))return json(200,[{userId:'u-2',role:'NONE'}]);
+      if(req.url.endsWith('/tree'))return json(200,{workspaceId:'ws-1',rootVersion:1,files:[],projects:[]});
+      return json(200,DETAIL_1);
+    });
+    await store.loadMembers('ws-1');
+    expect(store.members).toHaveLength(2); // real legacy rows with no revision
+    let ok=false;
+    if(action==='change')ok=await store.changeRole('ws-1','u-2','ADMIN');
+    if(action==='add')ok=await store.addMember('ws-1','u-2','EDITOR');
+    if(action==='remove')ok=await store.removeMember('ws-1','u-2');
+    if(action==='acl-set')ok=await store.setAclEntry('ws-1','p-2',{userId:'u-2',role:'NONE'});
+    if(action==='acl-add')ok=await store.addAclEntry('ws-1','p-2',{userId:'u-2',role:'VIEWER'});
+    if(action==='acl-remove')ok=await store.removeAclEntry('ws-1','p-2','u-2');
+    expect(ok).toBe(true);
+    const writes=calls.filter(c=>c.method!=='GET');
+    expect(writes).toHaveLength(1);
+    expect.soft(calls.some(c=>c.url.endsWith('/access-members/u-2'))).toBe(true);
+    if(writes[0]!.method==='DELETE')expect(writes[0]!.url).toContain('expectedRevision=17');
+    else expect(writes[0]!.body).toMatchObject({expectedRevision:17});
+  });
+  it('CAS refusal keeps user role draft without a read or write replay',async()=>{
+    const {store,calls}=setupExact(req=>{
+      if(req.url.includes('/access-members/'))return json(200,member('u-2',{revision:17}));
+      if(req.method==='PUT')return json(409,{code:'access_revision_conflict',message:'revision changed'});
+      return json(200,MEMBERS);
+    });
+    await store.loadMembers('ws-1');expect(store.members[1]?.role).toBe('EDITOR');
+    expect(await store.changeRole('ws-1','u-2','ADMIN')).toBe(false);
+    expect.soft(store.memberDrafts?.['ws-1//u-2']).toBe('ADMIN');
+    expect(calls.filter(c=>c.method==='PUT')).toHaveLength(1);
+    expect(calls.at(-1)?.method).toBe('PUT');
+  });
+});
 
 describe("workspacesStore 工厂隔离", () => {
   it("两实例清单互不可见", async () => {
@@ -232,7 +392,7 @@ describe("members（任务 4，裁定 D：清单/改角色/移除/添加）", ()
     const ok = await store.changeRole("ws-1", "u-2", "ADMIN");
     expect(ok).toBe(true);
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-2`);
-    expect(put!.body).toEqual({ role: "ADMIN" });
+    expect(put!.body).toEqual({ role: "ADMIN",expectedRevision:1 });
     expect(store.members).toEqual(MEMBERS); // 清单已刷新
     expect(store.current).toEqual(DETAIL_1_AFTER_TRANSFER); // current 重选，myRole 联动
     expect(store.memberBusyId).toBeNull();
@@ -271,7 +431,7 @@ describe("members（任务 4，裁定 D：清单/改角色/移除/添加）", ()
     const ok = await store.addMember("ws-1", "u-2", "EDITOR");
     expect(ok).toBe(true);
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/members/u-2`);
-    expect(put!.body).toEqual({ role: "EDITOR" });
+    expect(put!.body).toEqual({ role: "EDITOR",expectedRevision:1 });
     expect(store.members).toHaveLength(2);
     expect(store.current).toEqual(DETAIL_1);
     expect(store.memberSubmitting).toBe(false);
@@ -288,7 +448,7 @@ describe("members（任务 4，裁定 D：清单/改角色/移除/添加）", ()
     const members = [...MEMBERS];
     const { calls, store } = setup((req) => {
       if (req.url === `${BASE}/workspaces/ws-1/members` && req.method === "GET") return json(200, members);
-      if (req.url === `${BASE}/workspaces/ws-1/members/u-2` && req.method === "DELETE") {
+      if (req.url.split('?')[0] === `${BASE}/workspaces/ws-1/members/u-2` && req.method === "DELETE") {
         members.splice(members.findIndex((m) => m.userId === "u-2"), 1);
         return noContent();
       }
@@ -298,13 +458,13 @@ describe("members（任务 4，裁定 D：清单/改角色/移除/添加）", ()
     await store.select("ws-1");
     const ok = await store.removeMember("ws-1", "u-2");
     expect(ok).toBe(true);
-    expect(calls.some((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1/members/u-2`)).toBe(true);
+    expect(calls.some((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1/members/u-2?expectedRevision=1`)).toBe(true);
     expect(store.members).toHaveLength(1);
     expect(store.current).toEqual(DETAIL_1);
   });
 
   it("removeMember 失败（403）：false + membersError，清单不动", async () => {
-    const { store } = setup((req) => (req.url === `${BASE}/workspaces/ws-1/members/u-1` && req.method === "DELETE" ? json(403, { code: "forbidden", message: "不能移除 OWNER" }) : json(200, MEMBERS)));
+    const { store } = setup((req) => (req.url.split('?')[0] === `${BASE}/workspaces/ws-1/members/u-1` && req.method === "DELETE" ? json(403, { code: "forbidden", message: "不能移除 OWNER" }) : json(200, MEMBERS)));
     await store.loadMembers("ws-1");
     const ok = await store.removeMember("ws-1", "u-1");
     expect(ok).toBe(false);
@@ -431,7 +591,7 @@ describe("acl（任务 5，裁定 A/B：tree/acl/setAclEntry/removeAclEntry）",
     const ok = await store.setAclEntry("ws-1", "p-2", { userId: "u-2", role: "NONE" });
     expect(ok).toBe(true);
     const put = calls.find((c) => c.method === "PUT" && c.url === `${BASE}/workspaces/ws-1/projects/p-2/acl`);
-    expect(put!.body).toEqual({ userId: "u-2", role: "NONE" });
+    expect(put!.body).toEqual({ userId: "u-2", role: "NONE",expectedRevision:1 });
     expect(store.aclEntries).toEqual([{ userId: "u-2", role: "NONE" }]); // 行仍在，显示 NONE
     expect(store.tree!.projects.find((p) => p.id === "p-2")!.myRole).toBe("NONE"); // tree 重载联动
   });
@@ -463,8 +623,8 @@ describe("acl（任务 5，裁定 A/B：tree/acl/setAclEntry/removeAclEntry）",
     await store.loadAcl("ws-1", "p-2");
     const ok = await store.removeAclEntry("ws-1", "p-2", "u-2");
     expect(ok).toBe(true);
-    const del = calls.find((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1/projects/p-2/acl?userId=u-2`);
-    expect(del!.url).toBe(`${BASE}/workspaces/ws-1/projects/p-2/acl?userId=u-2`);
+    const del = calls.find((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1/projects/p-2/acl?userId=u-2&expectedRevision=1`);
+    expect(del!.url).toBe(`${BASE}/workspaces/ws-1/projects/p-2/acl?userId=u-2&expectedRevision=1`);
     expect(store.aclEntries).toEqual([]); // 行消失（删行=恢复工作区角色继承）
     expect(store.tree!.projects.find((p) => p.id === "p-2")!.myRole).toBe("EDITOR");
   });

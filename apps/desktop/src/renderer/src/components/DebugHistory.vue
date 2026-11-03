@@ -22,7 +22,7 @@ const props = defineProps<{
   restoreFree?: (input: { historyId: string; exchangeOrder: number; project: ProjectLocator }) => Promise<{ sourceChanged: boolean; sourceAvailable: boolean } | null>;
   replayFree?: (input: { historyId: string; exchangeOrder: number; project: ProjectLocator; draftId: string }) => Promise<void>;
 }>();
-const emit = defineEmits<{ (event: "close"): void }>();
+const emit = defineEmits<{ (event: "close"): void; (event: 'collaboration', source: import('zod').z.infer<typeof import('../../../shared/online/collaboration.js').CollaborationLocalSourceSchema>): void }>();
 const { t } = useI18n();
 const selectedExchangeOrder = ref<number | null>(null);
 const restoreResult = ref<{ sourceChanged: boolean; sourceAvailable: boolean } | null>(null);
@@ -45,6 +45,11 @@ const currentProject = computed(() => props.projectLocator ?? (activeSession.val
 const currentProjectId = computed(() => currentProject.value?.projectId ?? "");
 const currentApiId = computed(() => activeSession.value?.locator.apiId ?? "");
 const record = computed(() => props.history.selected?.record ?? null);
+function shareRecord() {
+  const selected = record.value!, replay = selected.result.replay;
+  const owner = DebugHistoryOwnerIdentitySchema.parse(replay.mode === 'free' ? { sourceKind: 'free', project: replay.project, draftId: replay.draftId } : replay.mode === 'case' ? { sourceKind: 'asset', mode: 'case', case: replay.case } : { sourceKind: 'asset', mode: 'request', locator: replay.locator });
+  emit('collaboration', { kind: 'debug', historyId: selected.historyId, owner, project: currentProject.value! });
+}
 function analyzeReport() {
   const selected = record.value, project = currentProject.value;
   if (!selected || !project || !props.ai) return;
@@ -356,6 +361,7 @@ async function savePreferences() {
         </section>
         <section class="history-detail" data-testid="debug-history-detail">
           <template v-if="record">
+            <a-button v-if="currentProject" data-testid="collaboration-publish-debug" @click="shareRecord">{{ t('collaboration.publishToProject') }}</a-button>
             <a-button v-if="ai && currentProject" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
             <div class="detail-head">
               <span>{{ selectedSummary ? summaryLabel(selectedSummary) : record.historyId }}</span>

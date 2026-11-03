@@ -312,7 +312,8 @@ async function onProjectDelete(): Promise<void> {
               <span class="avatar" :style="{ background: avatarColor(p.id) }">{{ (p.name || "?").slice(0, 1) }}</span>
               <span class="card-name" :title="p.name">{{ p.name }}</span>
             </div>
-            <div v-if="agents || scheduling || canManage" class="card-actions">
+            <div class="card-actions">
+              <a-button v-for="section in ['policy','sharing','mock','audit']" :key="section" size="small" :data-testid="`org-project-collaboration-${p.id}-${section}`" @click="router.push({name:'project-collaboration',params:{id:workspaceId,projectId:p.id},hash:'#'+section})">{{t('collaboration.sections.'+section)}}</a-button>
               <a-button v-if="agents" size="small" :data-testid="`org-project-execution-${p.id}`" @click="openExecution(p.id)">{{ t('agents.projectTitle') }}</a-button>
               <a-button v-if="scheduling" size="small" :data-testid="`org-project-schedule-policy-${p.id}`" @click="router.push({name:'project-schedule-policy',params:{id:workspaceId,projectId:p.id}})">{{t('scheduling.projectPolicyTitle')}}</a-button>
               <a-button v-if="scheduling" size="small" :data-testid="`org-project-schedule-grants-${p.id}`" @click="router.push({name:'project-schedule-grants',params:{id:workspaceId,projectId:p.id}})">{{t('scheduling.grantsTitle')}}</a-button>

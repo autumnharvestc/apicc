@@ -107,6 +107,7 @@ abstract class JobsFixture {
 }
 
 class ExecutionJobsApiTest extends StressJobsFixture {
+    @Autowired com.autumnharvestc.server.access.AccessFixtureRevisions versions;
     // A read-only reconciliation must survive stale admission inputs and may never create a job.
     @Test void verifiesAnAcceptedFixedIntentWithoutAdmittingOrLoadingItsSnapshot()throws Exception {
         var f=fixture();var fixed=submission(f,"readonly-verify");
@@ -184,7 +185,7 @@ class ExecutionJobsApiTest extends StressJobsFixture {
         String name="intent-reader-"+f.project();
         var user=body(mvc.perform(post("/api/v1/auth/register").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password","password8","displayName","Reader")))).andExpect(status().isCreated()));
         String token=body(mvc.perform(post("/api/v1/auth/login").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password","password8")))).andExpect(status().isOk())).path("token").asText();
-        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user.path("id").asText()),Map.of("role","EDITOR")).andExpect(status().isOk());
+        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user.path("id").asText()),versions.memberFields(f.ws(),user.path("id").asText(),"EDITOR")).andExpect(status().isOk());
         var other=new F(token,f.ws(),f.group(),f.project(),f.snapshot(),f.agent(),f.agentToken(),f.assets());
         member(other,get(f.url()+"/jobs/by-intent").param("intentId","private-intent"),Map.of()).andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("job_not_found"));
         var another=fixture();
@@ -383,7 +384,7 @@ class ExecutionJobsApiTest extends StressJobsFixture {
         var registered=body(mvc.perform(post("/api/v1/auth/register").contentType("application/json").content(json.writeValueAsString(Map.of("username",username,"password","password8","displayName","Other editor")))).andExpect(status().isCreated()));
         String user=registered.path("id").asText();
         String token=body(mvc.perform(post("/api/v1/auth/login").contentType("application/json").content(json.writeValueAsString(Map.of("username",username,"password","password8")))).andExpect(status().isOk())).path("token").asText();
-        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user),Map.of("role","EDITOR")).andExpect(status().isOk());
+        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user),versions.memberFields(f.ws(),user,"EDITOR")).andExpect(status().isOk());
         var editor=new F(token,f.ws(),f.group(),f.project(),f.snapshot(),f.agent(),f.agentToken(),f.assets());
         member(editor,post("/api/v1/jobs/"+job+"/cancel"),Map.of()).andExpect(status().isForbidden());
         assertThat(jdbc.queryForObject("SELECT cancel_state FROM execution_jobs WHERE id=?",String.class,Long.valueOf(job))).isEqualTo("none");
@@ -391,9 +392,9 @@ class ExecutionJobsApiTest extends StressJobsFixture {
         member(f,get("/api/v1/jobs/"+job),Map.of()).andExpect(status().isOk()).andExpect(jsonPath("$.canCancel").value(true));
         String own=body(member(editor,post(f.url()+"/jobs"),submission(f,"editor-own-job")).andExpect(status().isCreated())).path("jobId").asText();
         member(editor,post("/api/v1/jobs/"+own+"/cancel"),Map.of()).andExpect(status().isOk());
-        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user),Map.of("role","ADMIN")).andExpect(status().isOk());
+        member(f,put("/api/v1/workspaces/"+f.ws()+"/members/"+user),versions.memberFields(f.ws(),user,"ADMIN")).andExpect(status().isOk());
         member(editor,post("/api/v1/jobs/"+job+"/cancel"),Map.of()).andExpect(status().isOk());
-        member(f,delete("/api/v1/workspaces/"+f.ws()+"/members/"+user),Map.of()).andExpect(status().isNoContent());
+        member(f,delete("/api/v1/workspaces/"+f.ws()+"/members/"+user).param("expectedRevision",Long.toString(versions.member(f.ws(),user))),Map.of()).andExpect(status().isNoContent());
         jdbc.update("UPDATE users SET role='SUPERADMIN' WHERE id=?",Long.valueOf(user));
         jdbc.update("INSERT INTO project_acl(workspace_id,project_id,user_id,role,updated_at) VALUES(?,?,?,'ADMIN',CURRENT_TIMESTAMP)",Long.valueOf(f.ws()),Long.valueOf(f.project()),Long.valueOf(user));
         member(editor,post("/api/v1/jobs/"+job+"/cancel"),Map.of()).andExpect(status().isForbidden());

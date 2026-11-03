@@ -25,6 +25,13 @@ files:
       - "*.d.ts"
 asarUnpack:
   - "**/*.node"
+extraResources:
+  - from: ../share-viewer/dist
+    to: share-viewer
+    filter:
+      - index.html
+      - viewer.js
+      - viewer.css
 extraMetadata:
   main: dist-electron/main/main.js
 # better-sqlite3 v13 自带全平台预编译绑定（prebuilds/，经 node-gyp-build 运行时加载），

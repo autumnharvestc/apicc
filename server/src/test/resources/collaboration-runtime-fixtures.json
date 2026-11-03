@@ -1,0 +1,3312 @@
+[
+  {
+    "name": "stress-valid",
+    "wireValid": true,
+    "coreValid": true,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "9c4674e65a159c8ce447cd2350d62c0e4dbbe9f6f47070a607653c5002482f8d",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "statistics": {
+                "method": "exact-nearest-rank",
+                "exact": true,
+                "relativeError": 0,
+                "minValueMs": 0.001,
+                "gamma": 1.01,
+                "bucketCount": 4608,
+                "exactLimit": 256,
+                "underflow": 0,
+                "overflow": 0
+              },
+              "projectId": "project",
+              "definitionRevision": "rev1",
+              "concurrency": 1,
+              "totalRequests": 2,
+              "ok": 1,
+              "failed": 1,
+              "durationMs": 1000,
+              "statusDist": {
+                "200": 1
+              },
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "eligibleCompletedAttempts": 1,
+              "measurementWindow": {
+                "startWallMs": 0,
+                "endWallMs": 1000,
+                "monotonicDurationMs": 1000,
+                "eligibleCompletedAttempts": 1
+              },
+              "failures": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "eligibleFailureCounts": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "incomplete": false,
+              "formatVersion": 2,
+              "runId": "run",
+              "plan": {
+                "formatVersion": 1,
+                "target": {
+                  "kind": "workflow",
+                  "workflowId": "flow<script>alert(1)</script>"
+                },
+                "load": {
+                  "kind": "constant-vus",
+                  "vus": 1
+                },
+                "maxVus": 1,
+                "termination": {
+                  "maxIterations": 1
+                },
+                "warmupMs": 0,
+                "thinkTimeMs": 0,
+                "pacingMs": 0,
+                "gracefulStopMs": 30000,
+                "connectionMode": "pooled"
+              },
+              "target": {
+                "kind": "workflow",
+                "workflowId": "flow<script>alert(1)</script>"
+              },
+              "environmentId": null,
+              "dataIdentity": {
+                "digest": "data",
+                "datasetIds": []
+              },
+              "rps": {
+                "availability": "available",
+                "value": 1
+              },
+              "latency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "scriptLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "iterationLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "verdict": {
+                "passed": true,
+                "violations": [],
+                "status": "passed"
+              },
+              "iterations": {
+                "planned": 1,
+                "started": 1,
+                "completed": 1,
+                "passed": 1,
+                "failed": 0,
+                "aborted": 0,
+                "dropped": 0,
+                "latency": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                },
+                "startDelay": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                }
+              },
+              "caseRows": {
+                "total": 2,
+                "ok": 1,
+                "failed": 1,
+                "failures": {
+                  "transport": 1,
+                  "http": 0,
+                  "script": 0,
+                  "assertion": 0,
+                  "config": 0,
+                  "aborted": 0,
+                  "extraction": 0
+                }
+              },
+              "requests": {
+                "started": 2,
+                "completed": 2,
+                "eligibleCompleted": 2,
+                "failed": 1
+              },
+              "httpExchanges": {
+                "started": 2,
+                "completed": 2
+              },
+              "phases": [
+                {
+                  "phase": "measurement",
+                  "stageId": "private-stage",
+                  "startOffsetMs": 0,
+                  "endOffsetMs": 1000,
+                  "durationMs": 1000,
+                  "rps": {
+                    "availability": "available",
+                    "value": 1
+                  },
+                  "latency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "caseRows": {
+                    "total": 2,
+                    "ok": 1,
+                    "failed": 1,
+                    "failures": {
+                      "transport": 1,
+                      "http": 0,
+                      "script": 0,
+                      "assertion": 0,
+                      "config": 0,
+                      "aborted": 0,
+                      "extraction": 0
+                    }
+                  },
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "httpExchanges": {
+                    "started": 2,
+                    "completed": 2
+                  }
+                }
+              ],
+              "timeline": {
+                "bucketWidthMs": 1000,
+                "aligned": true,
+                "uncertaintyMs": 0,
+                "buckets": [
+                  {
+                    "startOffsetMs": 0,
+                    "endOffsetMs": 1000,
+                    "rps": {
+                      "availability": "available",
+                      "value": 1
+                    },
+                    "latency": {
+                      "availability": "available",
+                      "value": {
+                        "min": 10,
+                        "avg": 10,
+                        "max": 10,
+                        "p50": 10,
+                        "p90": 10,
+                        "p95": 10,
+                        "p99": 10
+                      }
+                    },
+                    "caseRows": {
+                      "total": 2,
+                      "ok": 1,
+                      "failed": 1,
+                      "failures": {
+                        "transport": 1,
+                        "http": 0,
+                        "script": 0,
+                        "assertion": 0,
+                        "config": 0,
+                        "aborted": 0,
+                        "extraction": 0
+                      }
+                    },
+                    "requests": {
+                      "started": 2,
+                      "completed": 2,
+                      "eligibleCompleted": 2,
+                      "failed": 1
+                    },
+                    "httpExchanges": {
+                      "started": 2,
+                      "completed": 2
+                    },
+                    "sources": [
+                      {
+                        "phase": "measurement",
+                        "stageId": "private-stage",
+                        "caseRows": {
+                          "total": 2,
+                          "ok": 1,
+                          "failed": 1,
+                          "failures": {
+                            "transport": 1,
+                            "http": 0,
+                            "script": 0,
+                            "assertion": 0,
+                            "config": 0,
+                            "aborted": 0,
+                            "extraction": 0
+                          }
+                        },
+                        "requests": {
+                          "started": 2,
+                          "completed": 2,
+                          "eligibleCompleted": 2,
+                          "failed": 1
+                        },
+                        "httpExchanges": {
+                          "started": 2,
+                          "completed": 2
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "nodes": [
+                {
+                  "key": "private-key",
+                  "workflowId": "private-flow",
+                  "nodeId": "private-node",
+                  "other": false,
+                  "visits": 1,
+                  "passed": 1,
+                  "failed": 0,
+                  "aborted": 0,
+                  "skipped": 0,
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "requestLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "nodeLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  }
+                }
+              ],
+              "load": {
+                "plannedDurationMs": null,
+                "measurementDurationMs": 1000,
+                "drainDurationMs": 0,
+                "policyLimitedMs": 0,
+                "saturated": false,
+                "maxVus": 1,
+                "maxRequestConcurrency": 1,
+                "effectiveMaxRps": null
+              },
+              "lifecycle": [
+                {
+                  "role": "setup",
+                  "vuId": "private-vu",
+                  "state": "passed",
+                  "durationMs": 5
+                }
+              ],
+              "completeness": {
+                "execution": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "metrics": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "load": {
+                  "complete": true,
+                  "reasons": []
+                }
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ]
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "privateField"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "stress-structure-invalid",
+    "wireValid": false,
+    "coreValid": false,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "2acfbac91c695696bda524e0ebe1837d6c644965e064426e3bfc415ff3951083",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "statistics": {
+                "method": "exact-nearest-rank",
+                "exact": true,
+                "relativeError": 0,
+                "minValueMs": 0.001,
+                "gamma": 1.01,
+                "bucketCount": 4608,
+                "exactLimit": 256,
+                "underflow": 0,
+                "overflow": 0
+              },
+              "projectId": "project",
+              "definitionRevision": "rev1",
+              "concurrency": 1,
+              "totalRequests": 2,
+              "ok": 1,
+              "failed": 1,
+              "durationMs": 1000,
+              "statusDist": {
+                "200": 1
+              },
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "eligibleCompletedAttempts": 1,
+              "measurementWindow": {
+                "startWallMs": 0,
+                "endWallMs": 1000,
+                "monotonicDurationMs": 1000,
+                "eligibleCompletedAttempts": 1
+              },
+              "failures": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "eligibleFailureCounts": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "incomplete": false,
+              "formatVersion": 2,
+              "runId": "run",
+              "plan": {
+                "formatVersion": 1,
+                "target": {
+                  "kind": "workflow",
+                  "workflowId": "flow<script>alert(1)</script>"
+                },
+                "load": {
+                  "kind": "constant-vus",
+                  "vus": 1
+                },
+                "maxVus": 1,
+                "termination": {
+                  "maxIterations": 1
+                },
+                "warmupMs": 0,
+                "thinkTimeMs": 0,
+                "pacingMs": 0,
+                "gracefulStopMs": 30000,
+                "connectionMode": "pooled"
+              },
+              "target": {
+                "kind": "workflow",
+                "workflowId": "flow<script>alert(1)</script>"
+              },
+              "environmentId": null,
+              "dataIdentity": {
+                "digest": "data",
+                "datasetIds": []
+              },
+              "rps": {
+                "availability": "available",
+                "value": 1
+              },
+              "latency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "scriptLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "iterationLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "verdict": {
+                "passed": true,
+                "violations": [],
+                "status": "passed"
+              },
+              "iterations": {
+                "planned": 1,
+                "started": 1,
+                "completed": 1,
+                "passed": 1,
+                "failed": 0,
+                "aborted": 0,
+                "dropped": 0,
+                "latency": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                },
+                "startDelay": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                }
+              },
+              "caseRows": {
+                "total": 2,
+                "ok": 1,
+                "failed": 1,
+                "failures": {
+                  "transport": 1,
+                  "http": 0,
+                  "script": 0,
+                  "assertion": 0,
+                  "config": 0,
+                  "aborted": 0,
+                  "extraction": 0
+                }
+              },
+              "requests": {
+                "started": 2,
+                "completed": 2,
+                "eligibleCompleted": 2,
+                "failed": 1
+              },
+              "httpExchanges": {
+                "started": 2,
+                "completed": 2
+              },
+              "phases": [
+                {
+                  "phase": "measurement",
+                  "stageId": "private-stage",
+                  "startOffsetMs": 0,
+                  "endOffsetMs": 1000,
+                  "durationMs": 1000,
+                  "rps": {
+                    "availability": "available",
+                    "value": 1
+                  },
+                  "latency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "caseRows": {
+                    "total": 2,
+                    "ok": 1,
+                    "failed": 1,
+                    "failures": {
+                      "transport": 1,
+                      "http": 0,
+                      "script": 0,
+                      "assertion": 0,
+                      "config": 0,
+                      "aborted": 0,
+                      "extraction": 0
+                    }
+                  },
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "httpExchanges": {
+                    "started": 2,
+                    "completed": 2
+                  }
+                }
+              ],
+              "timeline": {
+                "bucketWidthMs": 1000,
+                "aligned": true,
+                "uncertaintyMs": 0,
+                "buckets": [
+                  {
+                    "startOffsetMs": 0,
+                    "endOffsetMs": 1000,
+                    "rps": {
+                      "availability": "available",
+                      "value": 1
+                    },
+                    "latency": {
+                      "availability": "available",
+                      "value": {
+                        "min": 10,
+                        "avg": 10,
+                        "max": 10,
+                        "p50": 10,
+                        "p90": 10,
+                        "p95": 10,
+                        "p99": 10
+                      }
+                    },
+                    "caseRows": {
+                      "total": 2,
+                      "ok": 1,
+                      "failed": 1,
+                      "failures": {
+                        "transport": 1,
+                        "http": 0,
+                        "script": 0,
+                        "assertion": 0,
+                        "config": 0,
+                        "aborted": 0,
+                        "extraction": 0
+                      }
+                    },
+                    "requests": {
+                      "started": 2,
+                      "completed": 2,
+                      "eligibleCompleted": 2,
+                      "failed": 1
+                    },
+                    "httpExchanges": {
+                      "started": 2,
+                      "completed": 2
+                    },
+                    "sources": [
+                      {
+                        "phase": "measurement",
+                        "stageId": "private-stage",
+                        "caseRows": {
+                          "total": 2,
+                          "ok": 1,
+                          "failed": 1,
+                          "failures": {
+                            "transport": 1,
+                            "http": 0,
+                            "script": 0,
+                            "assertion": 0,
+                            "config": 0,
+                            "aborted": 0,
+                            "extraction": 0
+                          }
+                        },
+                        "requests": {
+                          "started": 2,
+                          "completed": 2,
+                          "eligibleCompleted": 2,
+                          "failed": 1
+                        },
+                        "httpExchanges": {
+                          "started": 2,
+                          "completed": 2
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "nodes": [
+                {
+                  "key": "private-key",
+                  "workflowId": "private-flow",
+                  "nodeId": "private-node",
+                  "other": false,
+                  "visits": 1,
+                  "passed": 1,
+                  "failed": 0,
+                  "aborted": 0,
+                  "skipped": 0,
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "requestLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "nodeLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  }
+                }
+              ],
+              "load": {
+                "plannedDurationMs": null,
+                "measurementDurationMs": 1000,
+                "drainDurationMs": 0,
+                "policyLimitedMs": 0,
+                "saturated": false,
+                "maxVus": 1,
+                "maxRequestConcurrency": 1,
+                "effectiveMaxRps": null
+              },
+              "lifecycle": [
+                {
+                  "role": "setup",
+                  "vuId": "private-vu",
+                  "state": "passed",
+                  "durationMs": 5
+                }
+              ],
+              "completeness": {
+                "execution": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "metrics": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "load": {
+                  "complete": true,
+                  "reasons": []
+                }
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ],
+          "rawProject": "forbidden"
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "privateField"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "stress-semantic-invalid",
+    "wireValid": true,
+    "coreValid": false,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "9f198331df1d0e66612e80d3e6151e91100e4154098e4ef64780ce8e13b55be4",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "statistics": {
+                "method": "exact-nearest-rank",
+                "exact": true,
+                "relativeError": 0,
+                "minValueMs": 0.001,
+                "gamma": 1.01,
+                "bucketCount": 4608,
+                "exactLimit": 256,
+                "underflow": 0,
+                "overflow": 0
+              },
+              "projectId": "project",
+              "definitionRevision": "rev1",
+              "concurrency": 1,
+              "totalRequests": 2,
+              "ok": 1,
+              "failed": 1,
+              "durationMs": 1000,
+              "statusDist": {
+                "200": 1
+              },
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "eligibleCompletedAttempts": 1,
+              "measurementWindow": {
+                "startWallMs": 0,
+                "endWallMs": 1000,
+                "monotonicDurationMs": 1000,
+                "eligibleCompletedAttempts": 1
+              },
+              "failures": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "eligibleFailureCounts": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "incomplete": false,
+              "formatVersion": 2,
+              "runId": "run",
+              "plan": {
+                "formatVersion": 1,
+                "target": {
+                  "kind": "workflow",
+                  "workflowId": "flow<script>alert(1)</script>"
+                },
+                "load": {
+                  "kind": "constant-vus",
+                  "vus": 1
+                },
+                "maxVus": 1,
+                "termination": {
+                  "maxIterations": 1
+                },
+                "warmupMs": 0,
+                "thinkTimeMs": 0,
+                "pacingMs": 0,
+                "gracefulStopMs": 30000,
+                "connectionMode": "pooled"
+              },
+              "target": {
+                "kind": "workflow",
+                "workflowId": "flow<script>alert(1)</script>"
+              },
+              "environmentId": null,
+              "dataIdentity": {
+                "digest": "data",
+                "datasetIds": []
+              },
+              "rps": {
+                "availability": "available",
+                "value": 1
+              },
+              "latency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "scriptLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "iterationLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "verdict": {
+                "passed": true,
+                "violations": [],
+                "status": "passed"
+              },
+              "iterations": {
+                "planned": 1,
+                "started": 1,
+                "completed": 1,
+                "passed": 1,
+                "failed": 0,
+                "aborted": 0,
+                "dropped": 0,
+                "latency": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                },
+                "startDelay": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                }
+              },
+              "caseRows": {
+                "total": 2,
+                "ok": 1,
+                "failed": 1,
+                "failures": {
+                  "transport": 1,
+                  "http": 0,
+                  "script": 0,
+                  "assertion": 0,
+                  "config": 0,
+                  "aborted": 0,
+                  "extraction": 0
+                }
+              },
+              "requests": {
+                "started": 2,
+                "completed": 3,
+                "eligibleCompleted": 2,
+                "failed": 1
+              },
+              "httpExchanges": {
+                "started": 2,
+                "completed": 2
+              },
+              "phases": [
+                {
+                  "phase": "measurement",
+                  "stageId": "private-stage",
+                  "startOffsetMs": 0,
+                  "endOffsetMs": 1000,
+                  "durationMs": 1000,
+                  "rps": {
+                    "availability": "available",
+                    "value": 1
+                  },
+                  "latency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "caseRows": {
+                    "total": 2,
+                    "ok": 1,
+                    "failed": 1,
+                    "failures": {
+                      "transport": 1,
+                      "http": 0,
+                      "script": 0,
+                      "assertion": 0,
+                      "config": 0,
+                      "aborted": 0,
+                      "extraction": 0
+                    }
+                  },
+                  "requests": {
+                    "started": 2,
+                    "completed": 3,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "httpExchanges": {
+                    "started": 2,
+                    "completed": 2
+                  }
+                }
+              ],
+              "timeline": {
+                "bucketWidthMs": 1000,
+                "aligned": true,
+                "uncertaintyMs": 0,
+                "buckets": [
+                  {
+                    "startOffsetMs": 0,
+                    "endOffsetMs": 1000,
+                    "rps": {
+                      "availability": "available",
+                      "value": 1
+                    },
+                    "latency": {
+                      "availability": "available",
+                      "value": {
+                        "min": 10,
+                        "avg": 10,
+                        "max": 10,
+                        "p50": 10,
+                        "p90": 10,
+                        "p95": 10,
+                        "p99": 10
+                      }
+                    },
+                    "caseRows": {
+                      "total": 2,
+                      "ok": 1,
+                      "failed": 1,
+                      "failures": {
+                        "transport": 1,
+                        "http": 0,
+                        "script": 0,
+                        "assertion": 0,
+                        "config": 0,
+                        "aborted": 0,
+                        "extraction": 0
+                      }
+                    },
+                    "requests": {
+                      "started": 2,
+                      "completed": 3,
+                      "eligibleCompleted": 2,
+                      "failed": 1
+                    },
+                    "httpExchanges": {
+                      "started": 2,
+                      "completed": 2
+                    },
+                    "sources": [
+                      {
+                        "phase": "measurement",
+                        "stageId": "private-stage",
+                        "caseRows": {
+                          "total": 2,
+                          "ok": 1,
+                          "failed": 1,
+                          "failures": {
+                            "transport": 1,
+                            "http": 0,
+                            "script": 0,
+                            "assertion": 0,
+                            "config": 0,
+                            "aborted": 0,
+                            "extraction": 0
+                          }
+                        },
+                        "requests": {
+                          "started": 2,
+                          "completed": 3,
+                          "eligibleCompleted": 2,
+                          "failed": 1
+                        },
+                        "httpExchanges": {
+                          "started": 2,
+                          "completed": 2
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "nodes": [
+                {
+                  "key": "private-key",
+                  "workflowId": "private-flow",
+                  "nodeId": "private-node",
+                  "other": false,
+                  "visits": 1,
+                  "passed": 1,
+                  "failed": 0,
+                  "aborted": 0,
+                  "skipped": 0,
+                  "requests": {
+                    "started": 2,
+                    "completed": 3,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "requestLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "nodeLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  }
+                }
+              ],
+              "load": {
+                "plannedDurationMs": null,
+                "measurementDurationMs": 1000,
+                "drainDurationMs": 0,
+                "policyLimitedMs": 0,
+                "saturated": false,
+                "maxVus": 1,
+                "maxRequestConcurrency": 1,
+                "effectiveMaxRps": null
+              },
+              "lifecycle": [
+                {
+                  "role": "setup",
+                  "vuId": "private-vu",
+                  "state": "passed",
+                  "durationMs": 5
+                }
+              ],
+              "completeness": {
+                "execution": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "metrics": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "load": {
+                  "complete": true,
+                  "reasons": []
+                }
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ]
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "privateField"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "nonBMP-256",
+    "wireValid": true,
+    "coreValid": true,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "ac12d3bce57215e09bd9a2563ded961b06c69fcfbd76186f19d7ea419111d577",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "statistics": {
+                "method": "exact-nearest-rank",
+                "exact": true,
+                "relativeError": 0,
+                "minValueMs": 0.001,
+                "gamma": 1.01,
+                "bucketCount": 4608,
+                "exactLimit": 256,
+                "underflow": 0,
+                "overflow": 0
+              },
+              "projectId": "project",
+              "definitionRevision": "rev1",
+              "concurrency": 1,
+              "totalRequests": 2,
+              "ok": 1,
+              "failed": 1,
+              "durationMs": 1000,
+              "statusDist": {
+                "200": 1
+              },
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "eligibleCompletedAttempts": 1,
+              "measurementWindow": {
+                "startWallMs": 0,
+                "endWallMs": 1000,
+                "monotonicDurationMs": 1000,
+                "eligibleCompletedAttempts": 1
+              },
+              "failures": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "eligibleFailureCounts": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "incomplete": false,
+              "formatVersion": 2,
+              "runId": "run",
+              "plan": {
+                "formatVersion": 1,
+                "target": {
+                  "kind": "workflow",
+                  "workflowId": "flow<script>alert(1)</script>"
+                },
+                "load": {
+                  "kind": "constant-vus",
+                  "vus": 1
+                },
+                "maxVus": 1,
+                "termination": {
+                  "maxIterations": 1
+                },
+                "warmupMs": 0,
+                "thinkTimeMs": 0,
+                "pacingMs": 0,
+                "gracefulStopMs": 30000,
+                "connectionMode": "pooled"
+              },
+              "target": {
+                "kind": "workflow",
+                "workflowId": "flow<script>alert(1)</script>"
+              },
+              "environmentId": null,
+              "dataIdentity": {
+                "digest": "data",
+                "datasetIds": []
+              },
+              "rps": {
+                "availability": "available",
+                "value": 1
+              },
+              "latency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "scriptLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "iterationLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "verdict": {
+                "passed": true,
+                "violations": [],
+                "status": "passed"
+              },
+              "iterations": {
+                "planned": 1,
+                "started": 1,
+                "completed": 1,
+                "passed": 1,
+                "failed": 0,
+                "aborted": 0,
+                "dropped": 0,
+                "latency": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                },
+                "startDelay": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                }
+              },
+              "caseRows": {
+                "total": 2,
+                "ok": 1,
+                "failed": 1,
+                "failures": {
+                  "transport": 1,
+                  "http": 0,
+                  "script": 0,
+                  "assertion": 0,
+                  "config": 0,
+                  "aborted": 0,
+                  "extraction": 0
+                }
+              },
+              "requests": {
+                "started": 2,
+                "completed": 2,
+                "eligibleCompleted": 2,
+                "failed": 1
+              },
+              "httpExchanges": {
+                "started": 2,
+                "completed": 2
+              },
+              "phases": [
+                {
+                  "phase": "measurement",
+                  "stageId": "private-stage",
+                  "startOffsetMs": 0,
+                  "endOffsetMs": 1000,
+                  "durationMs": 1000,
+                  "rps": {
+                    "availability": "available",
+                    "value": 1
+                  },
+                  "latency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "caseRows": {
+                    "total": 2,
+                    "ok": 1,
+                    "failed": 1,
+                    "failures": {
+                      "transport": 1,
+                      "http": 0,
+                      "script": 0,
+                      "assertion": 0,
+                      "config": 0,
+                      "aborted": 0,
+                      "extraction": 0
+                    }
+                  },
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "httpExchanges": {
+                    "started": 2,
+                    "completed": 2
+                  }
+                }
+              ],
+              "timeline": {
+                "bucketWidthMs": 1000,
+                "aligned": true,
+                "uncertaintyMs": 0,
+                "buckets": [
+                  {
+                    "startOffsetMs": 0,
+                    "endOffsetMs": 1000,
+                    "rps": {
+                      "availability": "available",
+                      "value": 1
+                    },
+                    "latency": {
+                      "availability": "available",
+                      "value": {
+                        "min": 10,
+                        "avg": 10,
+                        "max": 10,
+                        "p50": 10,
+                        "p90": 10,
+                        "p95": 10,
+                        "p99": 10
+                      }
+                    },
+                    "caseRows": {
+                      "total": 2,
+                      "ok": 1,
+                      "failed": 1,
+                      "failures": {
+                        "transport": 1,
+                        "http": 0,
+                        "script": 0,
+                        "assertion": 0,
+                        "config": 0,
+                        "aborted": 0,
+                        "extraction": 0
+                      }
+                    },
+                    "requests": {
+                      "started": 2,
+                      "completed": 2,
+                      "eligibleCompleted": 2,
+                      "failed": 1
+                    },
+                    "httpExchanges": {
+                      "started": 2,
+                      "completed": 2
+                    },
+                    "sources": [
+                      {
+                        "phase": "measurement",
+                        "stageId": "private-stage",
+                        "caseRows": {
+                          "total": 2,
+                          "ok": 1,
+                          "failed": 1,
+                          "failures": {
+                            "transport": 1,
+                            "http": 0,
+                            "script": 0,
+                            "assertion": 0,
+                            "config": 0,
+                            "aborted": 0,
+                            "extraction": 0
+                          }
+                        },
+                        "requests": {
+                          "started": 2,
+                          "completed": 2,
+                          "eligibleCompleted": 2,
+                          "failed": 1
+                        },
+                        "httpExchanges": {
+                          "started": 2,
+                          "completed": 2
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "nodes": [
+                {
+                  "key": "private-key",
+                  "workflowId": "private-flow",
+                  "nodeId": "private-node",
+                  "other": false,
+                  "visits": 1,
+                  "passed": 1,
+                  "failed": 0,
+                  "aborted": 0,
+                  "skipped": 0,
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "requestLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "nodeLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  }
+                }
+              ],
+              "load": {
+                "plannedDurationMs": null,
+                "measurementDurationMs": 1000,
+                "drainDurationMs": 0,
+                "policyLimitedMs": 0,
+                "saturated": false,
+                "maxVus": 1,
+                "maxRequestConcurrency": 1,
+                "effectiveMaxRps": null
+              },
+              "lifecycle": [
+                {
+                  "role": "setup",
+                  "vuId": "private-vu",
+                  "state": "passed",
+                  "durationMs": 5
+                }
+              ],
+              "completeness": {
+                "execution": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "metrics": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "load": {
+                  "complete": true,
+                  "reasons": []
+                }
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ]
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "nonBMP-257",
+    "wireValid": false,
+    "coreValid": false,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "abeb521af3a562471596b74407f05ae9160175c558a250253f54a5500e1cdcb1",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "statistics": {
+                "method": "exact-nearest-rank",
+                "exact": true,
+                "relativeError": 0,
+                "minValueMs": 0.001,
+                "gamma": 1.01,
+                "bucketCount": 4608,
+                "exactLimit": 256,
+                "underflow": 0,
+                "overflow": 0
+              },
+              "projectId": "project",
+              "definitionRevision": "rev1",
+              "concurrency": 1,
+              "totalRequests": 2,
+              "ok": 1,
+              "failed": 1,
+              "durationMs": 1000,
+              "statusDist": {
+                "200": 1
+              },
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "eligibleCompletedAttempts": 1,
+              "measurementWindow": {
+                "startWallMs": 0,
+                "endWallMs": 1000,
+                "monotonicDurationMs": 1000,
+                "eligibleCompletedAttempts": 1
+              },
+              "failures": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "eligibleFailureCounts": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "incomplete": false,
+              "formatVersion": 2,
+              "runId": "run",
+              "plan": {
+                "formatVersion": 1,
+                "target": {
+                  "kind": "workflow",
+                  "workflowId": "flow<script>alert(1)</script>"
+                },
+                "load": {
+                  "kind": "constant-vus",
+                  "vus": 1
+                },
+                "maxVus": 1,
+                "termination": {
+                  "maxIterations": 1
+                },
+                "warmupMs": 0,
+                "thinkTimeMs": 0,
+                "pacingMs": 0,
+                "gracefulStopMs": 30000,
+                "connectionMode": "pooled"
+              },
+              "target": {
+                "kind": "workflow",
+                "workflowId": "flow<script>alert(1)</script>"
+              },
+              "environmentId": null,
+              "dataIdentity": {
+                "digest": "data",
+                "datasetIds": []
+              },
+              "rps": {
+                "availability": "available",
+                "value": 1
+              },
+              "latency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "scriptLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "iterationLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "verdict": {
+                "passed": true,
+                "violations": [],
+                "status": "passed"
+              },
+              "iterations": {
+                "planned": 1,
+                "started": 1,
+                "completed": 1,
+                "passed": 1,
+                "failed": 0,
+                "aborted": 0,
+                "dropped": 0,
+                "latency": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                },
+                "startDelay": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                }
+              },
+              "caseRows": {
+                "total": 2,
+                "ok": 1,
+                "failed": 1,
+                "failures": {
+                  "transport": 1,
+                  "http": 0,
+                  "script": 0,
+                  "assertion": 0,
+                  "config": 0,
+                  "aborted": 0,
+                  "extraction": 0
+                }
+              },
+              "requests": {
+                "started": 2,
+                "completed": 2,
+                "eligibleCompleted": 2,
+                "failed": 1
+              },
+              "httpExchanges": {
+                "started": 2,
+                "completed": 2
+              },
+              "phases": [
+                {
+                  "phase": "measurement",
+                  "stageId": "private-stage",
+                  "startOffsetMs": 0,
+                  "endOffsetMs": 1000,
+                  "durationMs": 1000,
+                  "rps": {
+                    "availability": "available",
+                    "value": 1
+                  },
+                  "latency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "caseRows": {
+                    "total": 2,
+                    "ok": 1,
+                    "failed": 1,
+                    "failures": {
+                      "transport": 1,
+                      "http": 0,
+                      "script": 0,
+                      "assertion": 0,
+                      "config": 0,
+                      "aborted": 0,
+                      "extraction": 0
+                    }
+                  },
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "httpExchanges": {
+                    "started": 2,
+                    "completed": 2
+                  }
+                }
+              ],
+              "timeline": {
+                "bucketWidthMs": 1000,
+                "aligned": true,
+                "uncertaintyMs": 0,
+                "buckets": [
+                  {
+                    "startOffsetMs": 0,
+                    "endOffsetMs": 1000,
+                    "rps": {
+                      "availability": "available",
+                      "value": 1
+                    },
+                    "latency": {
+                      "availability": "available",
+                      "value": {
+                        "min": 10,
+                        "avg": 10,
+                        "max": 10,
+                        "p50": 10,
+                        "p90": 10,
+                        "p95": 10,
+                        "p99": 10
+                      }
+                    },
+                    "caseRows": {
+                      "total": 2,
+                      "ok": 1,
+                      "failed": 1,
+                      "failures": {
+                        "transport": 1,
+                        "http": 0,
+                        "script": 0,
+                        "assertion": 0,
+                        "config": 0,
+                        "aborted": 0,
+                        "extraction": 0
+                      }
+                    },
+                    "requests": {
+                      "started": 2,
+                      "completed": 2,
+                      "eligibleCompleted": 2,
+                      "failed": 1
+                    },
+                    "httpExchanges": {
+                      "started": 2,
+                      "completed": 2
+                    },
+                    "sources": [
+                      {
+                        "phase": "measurement",
+                        "stageId": "private-stage",
+                        "caseRows": {
+                          "total": 2,
+                          "ok": 1,
+                          "failed": 1,
+                          "failures": {
+                            "transport": 1,
+                            "http": 0,
+                            "script": 0,
+                            "assertion": 0,
+                            "config": 0,
+                            "aborted": 0,
+                            "extraction": 0
+                          }
+                        },
+                        "requests": {
+                          "started": 2,
+                          "completed": 2,
+                          "eligibleCompleted": 2,
+                          "failed": 1
+                        },
+                        "httpExchanges": {
+                          "started": 2,
+                          "completed": 2
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "nodes": [
+                {
+                  "key": "private-key",
+                  "workflowId": "private-flow",
+                  "nodeId": "private-node",
+                  "other": false,
+                  "visits": 1,
+                  "passed": 1,
+                  "failed": 0,
+                  "aborted": 0,
+                  "skipped": 0,
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "requestLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "nodeLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  }
+                }
+              ],
+              "load": {
+                "plannedDurationMs": null,
+                "measurementDurationMs": 1000,
+                "drainDurationMs": 0,
+                "policyLimitedMs": 0,
+                "saturated": false,
+                "maxVus": 1,
+                "maxRequestConcurrency": 1,
+                "effectiveMaxRps": null
+              },
+              "lifecycle": [
+                {
+                  "role": "setup",
+                  "vuId": "private-vu",
+                  "state": "passed",
+                  "durationMs": 5
+                }
+              ],
+              "completeness": {
+                "execution": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "metrics": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "load": {
+                  "complete": true,
+                  "reasons": []
+                }
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ]
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "legacy-body-valid",
+    "wireValid": true,
+    "coreValid": true,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "b19a04199059c927059312114817fff037ea10e589aa25eb5a20f327ec329f82",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "concurrency": 1,
+              "totalRequests": 0,
+              "ok": 0,
+              "failed": 0,
+              "durationMs": 1000,
+              "rps": 0,
+              "latency": {
+                "min": 0,
+                "avg": 0,
+                "max": 0,
+                "p50": 0,
+                "p90": 0,
+                "p95": 0,
+                "p99": 0
+              },
+              "statusDist": {},
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "distributed": {
+                "protocolVersion": 2,
+                "dataComplete": false,
+                "shards": 1,
+                "perShard": [],
+                "shardErrors": [
+                  {
+                    "shardId": "shard-1",
+                    "error": "synthetic worker unavailable"
+                  }
+                ]
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ]
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "privateField"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "legacy-body-extra",
+    "wireValid": false,
+    "coreValid": false,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "95641d9bb49a4326b0ed5ed0662cd0647248a7e98bb101665b4731e7cee8be96",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "concurrency": 1,
+              "totalRequests": 0,
+              "ok": 0,
+              "failed": 0,
+              "durationMs": 1000,
+              "rps": 0,
+              "latency": {
+                "min": 0,
+                "avg": 0,
+                "max": 0,
+                "p50": 0,
+                "p90": 0,
+                "p95": 0,
+                "p99": 0
+              },
+              "statusDist": {},
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "distributed": {
+                "protocolVersion": 2,
+                "dataComplete": false,
+                "shards": 1,
+                "perShard": [],
+                "shardErrors": [
+                  {
+                    "shardId": "shard-1",
+                    "error": "synthetic worker unavailable",
+                    "unrecognizedPrivate": {
+                      "source": "synthetic"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ]
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "privateField"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "legacy-baseline-valid",
+    "wireValid": true,
+    "coreValid": true,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "9c70e50438487e3f09e7e9c7eca8e060fc0aa5a8b8ad5cf48c76ca26d42b25ed",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "statistics": {
+                "method": "exact-nearest-rank",
+                "exact": true,
+                "relativeError": 0,
+                "minValueMs": 0.001,
+                "gamma": 1.01,
+                "bucketCount": 4608,
+                "exactLimit": 256,
+                "underflow": 0,
+                "overflow": 0
+              },
+              "projectId": "project",
+              "definitionRevision": "rev1",
+              "concurrency": 1,
+              "totalRequests": 2,
+              "ok": 1,
+              "failed": 1,
+              "durationMs": 1000,
+              "statusDist": {
+                "200": 1
+              },
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "eligibleCompletedAttempts": 1,
+              "measurementWindow": {
+                "startWallMs": 0,
+                "endWallMs": 1000,
+                "monotonicDurationMs": 1000,
+                "eligibleCompletedAttempts": 1
+              },
+              "failures": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "eligibleFailureCounts": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "incomplete": false,
+              "formatVersion": 2,
+              "runId": "run",
+              "plan": {
+                "formatVersion": 1,
+                "target": {
+                  "kind": "workflow",
+                  "workflowId": "flow<script>alert(1)</script>"
+                },
+                "load": {
+                  "kind": "constant-vus",
+                  "vus": 1
+                },
+                "maxVus": 1,
+                "termination": {
+                  "maxIterations": 1
+                },
+                "warmupMs": 0,
+                "thinkTimeMs": 0,
+                "pacingMs": 0,
+                "gracefulStopMs": 30000,
+                "connectionMode": "pooled"
+              },
+              "target": {
+                "kind": "workflow",
+                "workflowId": "flow<script>alert(1)</script>"
+              },
+              "environmentId": null,
+              "dataIdentity": {
+                "digest": "data",
+                "datasetIds": []
+              },
+              "rps": {
+                "availability": "available",
+                "value": 1
+              },
+              "latency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "scriptLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "iterationLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "verdict": {
+                "passed": true,
+                "violations": [],
+                "status": "passed"
+              },
+              "iterations": {
+                "planned": 1,
+                "started": 1,
+                "completed": 1,
+                "passed": 1,
+                "failed": 0,
+                "aborted": 0,
+                "dropped": 0,
+                "latency": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                },
+                "startDelay": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                }
+              },
+              "caseRows": {
+                "total": 2,
+                "ok": 1,
+                "failed": 1,
+                "failures": {
+                  "transport": 1,
+                  "http": 0,
+                  "script": 0,
+                  "assertion": 0,
+                  "config": 0,
+                  "aborted": 0,
+                  "extraction": 0
+                }
+              },
+              "requests": {
+                "started": 2,
+                "completed": 2,
+                "eligibleCompleted": 2,
+                "failed": 1
+              },
+              "httpExchanges": {
+                "started": 2,
+                "completed": 2
+              },
+              "phases": [
+                {
+                  "phase": "measurement",
+                  "stageId": "private-stage",
+                  "startOffsetMs": 0,
+                  "endOffsetMs": 1000,
+                  "durationMs": 1000,
+                  "rps": {
+                    "availability": "available",
+                    "value": 1
+                  },
+                  "latency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "caseRows": {
+                    "total": 2,
+                    "ok": 1,
+                    "failed": 1,
+                    "failures": {
+                      "transport": 1,
+                      "http": 0,
+                      "script": 0,
+                      "assertion": 0,
+                      "config": 0,
+                      "aborted": 0,
+                      "extraction": 0
+                    }
+                  },
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "httpExchanges": {
+                    "started": 2,
+                    "completed": 2
+                  }
+                }
+              ],
+              "timeline": {
+                "bucketWidthMs": 1000,
+                "aligned": true,
+                "uncertaintyMs": 0,
+                "buckets": [
+                  {
+                    "startOffsetMs": 0,
+                    "endOffsetMs": 1000,
+                    "rps": {
+                      "availability": "available",
+                      "value": 1
+                    },
+                    "latency": {
+                      "availability": "available",
+                      "value": {
+                        "min": 10,
+                        "avg": 10,
+                        "max": 10,
+                        "p50": 10,
+                        "p90": 10,
+                        "p95": 10,
+                        "p99": 10
+                      }
+                    },
+                    "caseRows": {
+                      "total": 2,
+                      "ok": 1,
+                      "failed": 1,
+                      "failures": {
+                        "transport": 1,
+                        "http": 0,
+                        "script": 0,
+                        "assertion": 0,
+                        "config": 0,
+                        "aborted": 0,
+                        "extraction": 0
+                      }
+                    },
+                    "requests": {
+                      "started": 2,
+                      "completed": 2,
+                      "eligibleCompleted": 2,
+                      "failed": 1
+                    },
+                    "httpExchanges": {
+                      "started": 2,
+                      "completed": 2
+                    },
+                    "sources": [
+                      {
+                        "phase": "measurement",
+                        "stageId": "private-stage",
+                        "caseRows": {
+                          "total": 2,
+                          "ok": 1,
+                          "failed": 1,
+                          "failures": {
+                            "transport": 1,
+                            "http": 0,
+                            "script": 0,
+                            "assertion": 0,
+                            "config": 0,
+                            "aborted": 0,
+                            "extraction": 0
+                          }
+                        },
+                        "requests": {
+                          "started": 2,
+                          "completed": 2,
+                          "eligibleCompleted": 2,
+                          "failed": 1
+                        },
+                        "httpExchanges": {
+                          "started": 2,
+                          "completed": 2
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "nodes": [
+                {
+                  "key": "private-key",
+                  "workflowId": "private-flow",
+                  "nodeId": "private-node",
+                  "other": false,
+                  "visits": 1,
+                  "passed": 1,
+                  "failed": 0,
+                  "aborted": 0,
+                  "skipped": 0,
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "requestLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "nodeLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  }
+                }
+              ],
+              "load": {
+                "plannedDurationMs": null,
+                "measurementDurationMs": 1000,
+                "drainDurationMs": 0,
+                "policyLimitedMs": 0,
+                "saturated": false,
+                "maxVus": 1,
+                "maxRequestConcurrency": 1,
+                "effectiveMaxRps": null
+              },
+              "lifecycle": [
+                {
+                  "role": "setup",
+                  "vuId": "private-vu",
+                  "state": "passed",
+                  "durationMs": 5
+                }
+              ],
+              "completeness": {
+                "execution": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "metrics": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "load": {
+                  "complete": true,
+                  "reasons": []
+                }
+              }
+            },
+            "baseline": {
+              "concurrency": 1,
+              "totalRequests": 0,
+              "ok": 0,
+              "failed": 0,
+              "durationMs": 1000,
+              "rps": 0,
+              "latency": {
+                "min": 0,
+                "avg": 0,
+                "max": 0,
+                "p50": 0,
+                "p90": 0,
+                "p95": 0,
+                "p99": 0
+              },
+              "statusDist": {},
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "distributed": {
+                "protocolVersion": 2,
+                "dataComplete": false,
+                "shards": 1,
+                "perShard": [],
+                "shardErrors": [
+                  {
+                    "shardId": "shard-1",
+                    "error": "synthetic worker unavailable"
+                  }
+                ]
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ]
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "privateField"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "legacy-baseline-extra",
+    "wireValid": false,
+    "coreValid": false,
+    "request": {
+      "protocolVersion": 1,
+      "operation": "project-report",
+      "requestId": "parity",
+      "inputDigest": "7ce2663bb31cd8ae930a0d3f1c3d9e477faf480eceb77b81e5068da8140628cb",
+      "deadlineEpochMs": 4000000000000,
+      "outputBudgetBytes": 1048576,
+      "payload": {
+        "input": {
+          "sourceKind": "server-archive",
+          "title": "接口协作文档——中文长名称与特殊字符 <img onerror=alert(1)>",
+          "source": {
+            "revision": "fixed-run-r1",
+            "digest": "fixed-run-digest"
+          },
+          "report": {
+            "format": "stress",
+            "body": {
+              "statistics": {
+                "method": "exact-nearest-rank",
+                "exact": true,
+                "relativeError": 0,
+                "minValueMs": 0.001,
+                "gamma": 1.01,
+                "bucketCount": 4608,
+                "exactLimit": 256,
+                "underflow": 0,
+                "overflow": 0
+              },
+              "projectId": "project",
+              "definitionRevision": "rev1",
+              "concurrency": 1,
+              "totalRequests": 2,
+              "ok": 1,
+              "failed": 1,
+              "durationMs": 1000,
+              "statusDist": {
+                "200": 1
+              },
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "eligibleCompletedAttempts": 1,
+              "measurementWindow": {
+                "startWallMs": 0,
+                "endWallMs": 1000,
+                "monotonicDurationMs": 1000,
+                "eligibleCompletedAttempts": 1
+              },
+              "failures": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "eligibleFailureCounts": {
+                "transport": 0,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              },
+              "incomplete": false,
+              "formatVersion": 2,
+              "runId": "run",
+              "plan": {
+                "formatVersion": 1,
+                "target": {
+                  "kind": "workflow",
+                  "workflowId": "flow<script>alert(1)</script>"
+                },
+                "load": {
+                  "kind": "constant-vus",
+                  "vus": 1
+                },
+                "maxVus": 1,
+                "termination": {
+                  "maxIterations": 1
+                },
+                "warmupMs": 0,
+                "thinkTimeMs": 0,
+                "pacingMs": 0,
+                "gracefulStopMs": 30000,
+                "connectionMode": "pooled"
+              },
+              "target": {
+                "kind": "workflow",
+                "workflowId": "flow<script>alert(1)</script>"
+              },
+              "environmentId": null,
+              "dataIdentity": {
+                "digest": "data",
+                "datasetIds": []
+              },
+              "rps": {
+                "availability": "available",
+                "value": 1
+              },
+              "latency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "scriptLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "iterationLatency": {
+                "availability": "available",
+                "value": {
+                  "min": 10,
+                  "avg": 10,
+                  "max": 10,
+                  "p50": 10,
+                  "p90": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              },
+              "verdict": {
+                "passed": true,
+                "violations": [],
+                "status": "passed"
+              },
+              "iterations": {
+                "planned": 1,
+                "started": 1,
+                "completed": 1,
+                "passed": 1,
+                "failed": 0,
+                "aborted": 0,
+                "dropped": 0,
+                "latency": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                },
+                "startDelay": {
+                  "availability": "available",
+                  "value": {
+                    "min": 10,
+                    "avg": 10,
+                    "max": 10,
+                    "p50": 10,
+                    "p90": 10,
+                    "p95": 10,
+                    "p99": 10
+                  }
+                }
+              },
+              "caseRows": {
+                "total": 2,
+                "ok": 1,
+                "failed": 1,
+                "failures": {
+                  "transport": 1,
+                  "http": 0,
+                  "script": 0,
+                  "assertion": 0,
+                  "config": 0,
+                  "aborted": 0,
+                  "extraction": 0
+                }
+              },
+              "requests": {
+                "started": 2,
+                "completed": 2,
+                "eligibleCompleted": 2,
+                "failed": 1
+              },
+              "httpExchanges": {
+                "started": 2,
+                "completed": 2
+              },
+              "phases": [
+                {
+                  "phase": "measurement",
+                  "stageId": "private-stage",
+                  "startOffsetMs": 0,
+                  "endOffsetMs": 1000,
+                  "durationMs": 1000,
+                  "rps": {
+                    "availability": "available",
+                    "value": 1
+                  },
+                  "latency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "caseRows": {
+                    "total": 2,
+                    "ok": 1,
+                    "failed": 1,
+                    "failures": {
+                      "transport": 1,
+                      "http": 0,
+                      "script": 0,
+                      "assertion": 0,
+                      "config": 0,
+                      "aborted": 0,
+                      "extraction": 0
+                    }
+                  },
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "httpExchanges": {
+                    "started": 2,
+                    "completed": 2
+                  }
+                }
+              ],
+              "timeline": {
+                "bucketWidthMs": 1000,
+                "aligned": true,
+                "uncertaintyMs": 0,
+                "buckets": [
+                  {
+                    "startOffsetMs": 0,
+                    "endOffsetMs": 1000,
+                    "rps": {
+                      "availability": "available",
+                      "value": 1
+                    },
+                    "latency": {
+                      "availability": "available",
+                      "value": {
+                        "min": 10,
+                        "avg": 10,
+                        "max": 10,
+                        "p50": 10,
+                        "p90": 10,
+                        "p95": 10,
+                        "p99": 10
+                      }
+                    },
+                    "caseRows": {
+                      "total": 2,
+                      "ok": 1,
+                      "failed": 1,
+                      "failures": {
+                        "transport": 1,
+                        "http": 0,
+                        "script": 0,
+                        "assertion": 0,
+                        "config": 0,
+                        "aborted": 0,
+                        "extraction": 0
+                      }
+                    },
+                    "requests": {
+                      "started": 2,
+                      "completed": 2,
+                      "eligibleCompleted": 2,
+                      "failed": 1
+                    },
+                    "httpExchanges": {
+                      "started": 2,
+                      "completed": 2
+                    },
+                    "sources": [
+                      {
+                        "phase": "measurement",
+                        "stageId": "private-stage",
+                        "caseRows": {
+                          "total": 2,
+                          "ok": 1,
+                          "failed": 1,
+                          "failures": {
+                            "transport": 1,
+                            "http": 0,
+                            "script": 0,
+                            "assertion": 0,
+                            "config": 0,
+                            "aborted": 0,
+                            "extraction": 0
+                          }
+                        },
+                        "requests": {
+                          "started": 2,
+                          "completed": 2,
+                          "eligibleCompleted": 2,
+                          "failed": 1
+                        },
+                        "httpExchanges": {
+                          "started": 2,
+                          "completed": 2
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "nodes": [
+                {
+                  "key": "private-key",
+                  "workflowId": "private-flow",
+                  "nodeId": "private-node",
+                  "other": false,
+                  "visits": 1,
+                  "passed": 1,
+                  "failed": 0,
+                  "aborted": 0,
+                  "skipped": 0,
+                  "requests": {
+                    "started": 2,
+                    "completed": 2,
+                    "eligibleCompleted": 2,
+                    "failed": 1
+                  },
+                  "requestLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  },
+                  "nodeLatency": {
+                    "availability": "available",
+                    "value": {
+                      "min": 10,
+                      "avg": 10,
+                      "max": 10,
+                      "p50": 10,
+                      "p90": 10,
+                      "p95": 10,
+                      "p99": 10
+                    }
+                  }
+                }
+              ],
+              "load": {
+                "plannedDurationMs": null,
+                "measurementDurationMs": 1000,
+                "drainDurationMs": 0,
+                "policyLimitedMs": 0,
+                "saturated": false,
+                "maxVus": 1,
+                "maxRequestConcurrency": 1,
+                "effectiveMaxRps": null
+              },
+              "lifecycle": [
+                {
+                  "role": "setup",
+                  "vuId": "private-vu",
+                  "state": "passed",
+                  "durationMs": 5
+                }
+              ],
+              "completeness": {
+                "execution": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "metrics": {
+                  "complete": true,
+                  "reasons": []
+                },
+                "load": {
+                  "complete": true,
+                  "reasons": []
+                }
+              }
+            },
+            "baseline": {
+              "concurrency": 1,
+              "totalRequests": 0,
+              "ok": 0,
+              "failed": 0,
+              "durationMs": 1000,
+              "rps": 0,
+              "latency": {
+                "min": 0,
+                "avg": 0,
+                "max": 0,
+                "p50": 0,
+                "p90": 0,
+                "p95": 0,
+                "p99": 0
+              },
+              "statusDist": {},
+              "errorKinds": {},
+              "startedAt": 0,
+              "finishedAt": 1000,
+              "distributed": {
+                "protocolVersion": 2,
+                "dataComplete": false,
+                "shards": 1,
+                "perShard": [],
+                "shardErrors": [
+                  {
+                    "shardId": "shard-1",
+                    "error": "synthetic worker unavailable",
+                    "unrecognizedPrivate": {
+                      "source": "synthetic"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "redaction": "verified",
+          "privateMarkers": [
+            "KNOWN-RUN-MARKER"
+          ]
+        },
+        "policy": {
+          "revision": 1,
+          "includeEvidence": false,
+          "maxFieldBytes": 8192,
+          "maxEvidenceBytes": 1048576,
+          "maxArtifactBytes": 8388608,
+          "extraSensitiveHeaders": [
+            "X-Private"
+          ],
+          "extraSensitiveQuery": [
+            "access"
+          ],
+          "extraSensitiveFields": [
+            "privateField"
+          ],
+          "extraSensitivePointers": [
+            "/nested/secret"
+          ]
+        }
+      }
+    }
+  }
+]

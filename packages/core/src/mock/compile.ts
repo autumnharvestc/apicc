@@ -37,6 +37,8 @@ export interface CompiledMockRule {
   headers: Readonly<Record<string, string>>;
   body: readonly number[];
   delayMs: number;
+  /** Names only: preserve source controls filtered by the local transport. */
+  excludedResponseHeaders?: readonly string[];
 }
 
 export interface CompiledMockRoute {
@@ -67,12 +69,18 @@ interface CompiledPath {
   parameterNames: Set<string>;
 }
 
-export function compileProjectMock(snapshot: ProjectSnapshot): CompileProjectMockResult {
+export function compileProjectMock(snapshot: ProjectSnapshot, options?: { maxResponseBytes?: number }): CompileProjectMockResult {
   const config = snapshot.project.mock as MockProjectConfig | undefined;
   const diagnostics: MockDiagnostic[] = [];
   const addDiagnostic = (code: string, path: string, message: string, ownerId?: string): void => {
     diagnostics.push({ severity: "error", code, path, message, lossy: false, ...(ownerId ? { ownerId } : {}) });
   };
+
+  const maxResponseBytes = options?.maxResponseBytes === undefined ? MAX_RESPONSE_BYTES : options.maxResponseBytes;
+  if (!Number.isInteger(maxResponseBytes) || maxResponseBytes < 1024 || maxResponseBytes > 8_388_608) {
+    addDiagnostic("MOCK_RESPONSE_LIMIT_INVALID", "options.maxResponseBytes", "The response byte limit must be an integer from 1 KiB through 8 MiB.");
+    return failure(diagnostics);
+  }
 
   if (!config) {
     addDiagnostic("MOCK_NOT_CONFIGURED", "mock", "The project has no saved Mock configuration.", snapshot.project.id);
@@ -119,7 +127,7 @@ export function compileProjectMock(snapshot: ProjectSnapshot): CompileProjectMoc
     validateDefaultOrdering(contractRules, contractId, addDiagnostic);
     const compiledRules: CompiledMockRule[] = [];
     for (const { rule, index } of contractRules) {
-      const compiledRule = compileRule(snapshot, entry, rule, index, compiledPath.parameterNames, request.method, request.protocol === "soap", addDiagnostic);
+      const compiledRule = compileRule(snapshot, entry, rule, index, compiledPath.parameterNames, request.method, request.protocol === "soap", maxResponseBytes, addDiagnostic);
       if (compiledRule) compiledRules.push(compiledRule);
     }
 
@@ -156,6 +164,7 @@ function compileRule(
   pathParameterNames: Set<string>,
   httpMethod: string,
   soapTransport: boolean,
+  maxResponseBytes: number,
   addDiagnostic: (code: string, path: string, message: string, ownerId?: string) => void,
 ): CompiledMockRule | undefined {
   const root = `mock.rules[${ruleIndex}]`;
@@ -203,8 +212,8 @@ function compileRule(
   let body: number[] = [];
   if (bodyValue.ok) {
     const bytes = Buffer.from(bodyValue.text, "utf8");
-    if (bytes.byteLength > MAX_RESPONSE_BYTES) {
-      addDiagnostic("MOCK_RESPONSE_TOO_LARGE", `${root}.source`, "A compiled response must not exceed 1 MiB.", rule.id);
+    if (bytes.byteLength > maxResponseBytes) {
+      addDiagnostic("MOCK_RESPONSE_TOO_LARGE", `${root}.source`, `A compiled response must not exceed ${maxResponseBytes} bytes.`, rule.id);
       valid = false;
     } else if (status !== undefined && httpMethod !== "HEAD" && status !== 204 && status !== 304) {
       body = Array.from(bytes.values());
@@ -222,7 +231,16 @@ function compileRule(
     headers,
     body,
     delayMs: rule.delayMs,
+    ...(excludedResponseHeaders(response).length ? { excludedResponseHeaders: excludedResponseHeaders(response) } : {}),
   };
+}
+
+function excludedResponseHeaders(response: DeepReadonly<ResponseDefinition>): string[] {
+  const connectionTokens = new Set<string>();
+  for (const [name, value] of Object.entries(response.headers)) {
+    if (name.toLowerCase() === "connection") for (const token of value.split(",")) connectionTokens.add(token.trim().toLowerCase());
+  }
+  return Object.keys(response.headers).filter((name) => HOP_BY_HOP_HEADERS.has(name.toLowerCase()) || connectionTokens.has(name.toLowerCase()));
 }
 
 function resolveBodyValue(

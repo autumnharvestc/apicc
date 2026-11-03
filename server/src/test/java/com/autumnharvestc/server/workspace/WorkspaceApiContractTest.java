@@ -49,6 +49,9 @@ class WorkspaceApiContractTest {
     private MockMvc mockMvc;
 
     @Autowired
+    private com.autumnharvestc.server.access.AccessFixtureRevisions versions;
+
+    @Autowired
     private GroupRepo groupRepo;
 
     @Autowired
@@ -99,7 +102,7 @@ class WorkspaceApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + targetUserId)
                         .header("Authorization", "Bearer " + callerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"" + role + "\"}"))
+                        .content(versions.memberBody(wsId, targetUserId, role)))
                 .andExpect(status().isOk());
     }
 

@@ -13,9 +13,11 @@ public class ExecutionSnapshotService {
     private final ProjectAssetsService assets;
     private final ExecutionSnapshotRepo snapshots;
     private final com.autumnharvestc.server.execution.config.ExecutionConfigService configs;
-    public ExecutionSnapshotService(ProjectAssetsService assets, ExecutionSnapshotRepo snapshots,com.autumnharvestc.server.execution.config.ExecutionConfigService configs) { this.assets = assets; this.snapshots = snapshots;this.configs=configs; }
+    private final com.autumnharvestc.server.execution.agent.AgentService agents;
+    public ExecutionSnapshotService(ProjectAssetsService assets, ExecutionSnapshotRepo snapshots,com.autumnharvestc.server.execution.config.ExecutionConfigService configs,com.autumnharvestc.server.execution.agent.AgentService agents) { this.assets = assets; this.snapshots = snapshots;this.configs=configs;this.agents=agents; }
     public ExecutionSnapshot create(UserAccount caller, String ws, String project, SnapshotRequest request) {
         var entity = assets.authorized(caller, ws, project, true);
+        agents.requireExecution(caller,ws,project);
         var fixed = assets.readLocked(entity);
         if (request == null) throw error(HttpStatus.BAD_REQUEST, "validation_failed", "expectedVersion 必填");
         long expected = ProjectAssetsService.version(request.expectedVersion());
@@ -32,6 +34,7 @@ public class ExecutionSnapshotService {
     public ExecutionSnapshot loadAuthorized(UserAccount caller, long id) {
         var fixed = snapshots.find(id).orElseThrow(() -> error(HttpStatus.NOT_FOUND, "snapshot_not_found", "执行快照不存在"));
         assets.authorized(caller, fixed.assets().workspaceId(), fixed.assets().projectId(), true);
+        agents.requireExecution(caller,fixed.assets().workspaceId(),fixed.assets().projectId());
         return fixed;
     }
     public ExecutionSnapshot loadProjectAuthorized(UserAccount caller,String ws,String project,String snapshot){

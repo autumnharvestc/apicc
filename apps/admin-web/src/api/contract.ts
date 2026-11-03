@@ -76,6 +76,7 @@ export const AdminAccountSchema = AdminUserSchema.extend({
   role: AdminPlatformRoleSchema,
   disabled: z.boolean(),
   createdAt: z.string(),
+  revision: z.number().int().nonnegative().safe(),
 });
 
 // —— 组织管理（规格 2026-09-08 §4，计划 B 任务 2 端点/任务 6 消费面）——

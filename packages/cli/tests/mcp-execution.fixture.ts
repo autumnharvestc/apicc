@@ -15,6 +15,7 @@ import { loginMcpProfile } from "../src/mcp/profiles.js";
 import type { McpPrepareInput, McpLocalExecutionHost } from "../src/mcp/execution.js";
 import { executionCapabilityFor } from "../src/mcp/executionCapabilities.js";
 import { onlineFixture, oid } from "./mcp-online.fixture.js";
+import { FullOnlineJobSchema } from '@apicc/execution/client';
 
 export const signal = () => new AbortController().signal;
 export async function outcome<T>(action: () => Promise<T>) {
@@ -139,6 +140,12 @@ export async function executionFixture(kind: "local" | "online" = "online", opti
   const configuration = { configVersion: "0", appliedConfigVersion: "0", pendingFields: [], restartRequiredFields: [], status: "applied" };
   const accepted = new Map<string, { submission: unknown; job: unknown }>();
   let intentVisible = true;
+  let minimumViews = false;
+  const memberJob = (value: unknown) => {
+    if (!minimumViews) return value;
+    const job = FullOnlineJobSchema.parse(value);
+    return { jobId:job.jobId, executionId:job.executionId, agentId:job.agentId, state:job.state, cancelState:job.cancelState, executionReleased:job.executionReleased, canCancel:true, view:'active-status', scope:job.task.scope };
+  };
   const counts = { submissions: 0, verifications: 0, business: 0 };
   const controlRequests: Array<{ url: string; method: string; authorization: string | null }> = [];
   const cancellations: Array<{ url: string; method: string; body: unknown }> = [];
@@ -161,13 +168,13 @@ export async function executionFixture(kind: "local" | "online" = "online", opti
     if (address.endsWith("/local-materials")) { if (init?.signal) materialSignals.push(init.signal); return Response.json({ snapshotId: "66", scope, credentials: [], attachments: [] }); }
     if (address.includes("/jobs/by-intent?")) {
       const prior = intentVisible ? accepted.get(new URL(address).searchParams.get("intentId")!) : undefined;
-      return prior ? Response.json(prior.job) : Response.json({ code: "job_not_found" }, { status: 404 });
+      return prior ? Response.json(memberJob(prior.job)) : Response.json({ code: "job_not_found" }, { status: 404 });
     }
     if (address.endsWith("/jobs/by-intent/verify")) {
       counts.verifications++;
       const body = JSON.parse(String(init?.body));
       const prior = accepted.get(body.intentId);
-      return prior && isDeepStrictEqual(body, prior.submission) ? Response.json(prior.job) : Response.json({ code: "intent_conflict" }, { status: 409 });
+      return prior && isDeepStrictEqual(body, prior.submission) ? Response.json(memberJob(prior.job)) : Response.json({ code: "intent_conflict" }, { status: 409 });
     }
     if (address.includes("/projects/3/jobs?")) {
       const query = new URL(address).searchParams, before = query.get("beforeJobId"), limit = Number(query.get("limit"));
@@ -195,7 +202,7 @@ export async function executionFixture(kind: "local" | "online" = "online", opti
       const job = { jobId, executionId, agentId: "5", state: "queued", cancelState: "none", executionReleased: false, reportState: "none", task: { protocolVersion: 1, jobId, executionId, scope, submittedByUserId: "7", contractProjectId: f.project.id, snapshotId: body.snapshotId, target: body.target, ...(body.environmentId ? { environmentId: body.environmentId } : {}), policyVersion: "0", ...preparation } };
       accepted.set(body.intentId, { submission: body, job });
       if (options.loseSubmitResponse) throw new Error("synthetic-submit-response-lost");
-      return Response.json(job);
+      return Response.json(memberJob(job));
     }
     return fallback(url, init);
   };
@@ -211,7 +218,7 @@ export async function executionFixture(kind: "local" | "online" = "online", opti
     meStatus: f.meStatus,
     relogin: () => loginMcpProfile({ id: "online-member", server: "https://service.example", username: "member", password: "ONLINE_SYNTHETIC_PASSWORD", scopes: [scope] }, f.deps),
     reopen: () => createMcpSource({ onlineProfile: "online-member", ...f.deps }),
-    setIntentVisible(value: boolean) { intentVisible = value; }, async close() {
+    setMinimumViews(value: boolean) { minimumViews = value; }, setIntentVisible(value: boolean) { intentVisible = value; }, async close() {
     await source.close();
     for (const root of [f.home, privateRoot, workspaceRoot]) rmSync(root, { recursive: true, force: true });
   } };

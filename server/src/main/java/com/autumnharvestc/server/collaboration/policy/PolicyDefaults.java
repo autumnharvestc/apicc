@@ -1,0 +1,64 @@
+package com.autumnharvestc.server.collaboration.policy;
+
+import java.math.BigDecimal;
+import java.util.List;
+import static com.autumnharvestc.server.collaboration.policy.PolicyReadView.*;
+import static com.autumnharvestc.server.collaboration.policy.PolicyReadView.Code.*;
+import static com.autumnharvestc.server.collaboration.policy.PolicyReadView.Unit.*;
+import static com.autumnharvestc.server.collaboration.policy.PolicyReadView.Effect.*;
+
+/** Builtin collaboration defaults and readable constraints from the design's policy table. */
+final class PolicyDefaults {
+    private PolicyDefaults() {}
+    private static BooleanSetting bool(Code code,boolean value,Effect effect) {
+        return new BooleanSetting(code,value,null,value,Source.BUILTIN,BOOLEAN,effect);
+    }
+    private static IntegerSetting number(Code code,long value,Unit unit,Effect effect,long minimum,long maximum) {
+        return new IntegerSetting(code,value,null,value,Source.BUILTIN,unit,effect,minimum,maximum);
+    }
+    private static StringListSetting strings(Code code,int items,int itemSize,Effect effect) {
+        return new StringListSetting(code,List.of(),null,List.of(),Source.BUILTIN,ITEMS,effect,items,itemSize);
+    }
+    static List<Setting> settings() {
+        return List.of(
+            bool(EXTERNAL_SHARING_ALLOWED,false,CURRENT_ACCESS_AND_NEW_GRANTS),
+            bool(HISTORY_PUBLISHING_ALLOWED,true,NEW_PUBLICATIONS),bool(SHARED_MOCK_ALLOWED,false,NEW_PUBLICATIONS),
+            number(DEFAULT_SHARE_DURATION_MS,604_800_000L,MILLISECONDS,NEW_GRANTS,60_000L,31_536_000_000L),
+            number(MAX_SHARE_DURATION_MS,7_776_000_000L,MILLISECONDS,CURRENT_ACCESS_AND_NEW_GRANTS,60_000L,31_536_000_000L),
+            bool(EXTERNAL_DOWNLOAD_ALLOWED,false,EACH_DOWNLOAD),
+            number(PREVIEW_TTL_MS,600_000,MILLISECONDS,NEW_PREVIEWS,60_000,3_600_000),
+            number(MAX_PREVIEWS_PER_PERSON,5,COUNT,NEW_PREVIEWS,1,1000),number(MAX_PREVIEWS_PER_PROJECT,20,COUNT,NEW_PREVIEWS,1,1000),number(MAX_PREVIEWS_GLOBAL,100,COUNT,NEW_PREVIEWS,1,1000),
+            number(PUBLICATION_OPERATION_TIMEOUT_MS,60_000,MILLISECONDS,NEW_OPERATIONS,5000,300_000),
+            number(MAX_SOURCE_BYTES,16_777_216,BYTES,NEW_PUBLICATIONS,1_048_576,67_108_864),number(MAX_ARTIFACT_BYTES,8_388_608,BYTES,NEW_PUBLICATIONS,65_536,33_554_432),
+            bool(EVIDENCE_ALLOWED,false,NEW_PROJECTIONS_AND_EXISTING_GRANT_COMPLIANCE),
+            number(MAX_FIELD_BYTES,8192,BYTES,NEW_PROJECTIONS,256,65_536),number(MAX_EVIDENCE_BYTES,1_048_576,BYTES,NEW_PROJECTIONS,4096,8_388_608),
+            number(MAX_PROJECT_VERSIONS,1000,COUNT,NEW_STORAGE_WRITES,1,100_000),number(MAX_PROJECT_STORAGE_BYTES,268_435_456,BYTES,NEW_STORAGE_WRITES,8_388_608,10_737_418_240L),
+            number(MAX_PROJECT_ACTIVE_GRANTS,100,COUNT,NEW_OR_ROTATED_GRANTS,1,10_000),
+            number(INACTIVE_ARTIFACT_RETENTION_MS,2_592_000_000L,MILLISECONDS,ELIGIBLE_CLEANUP,86_400_000,31_536_000_000L),
+            number(MEMBER_UPLOAD_RETENTION_MS,2_592_000_000L,MILLISECONDS,NEW_UPLOADS_AND_RETENTION,86_400_000,31_536_000_000L),number(MAX_MEMBER_UPLOAD_RECORDS,1000,COUNT,NEW_UPLOADS_AND_RETENTION,1,100_000),
+            number(DEFAULT_PAGE_SIZE,50,COUNT,EACH_LIST_READ,1,200),number(MAX_PAGE_SIZE,200,COUNT,EACH_LIST_READ,1,200),
+            number(PUBLIC_READ_RPS,10,REQUESTS_PER_SECOND,EACH_ADMISSION,1,1000),number(PUBLIC_READ_IN_FLIGHT,8,COUNT,EACH_ADMISSION,1,256),
+            number(MOCK_RPS,20,REQUESTS_PER_SECOND,EACH_ADMISSION,1,1000),number(MOCK_IN_FLIGHT,16,COUNT,EACH_ADMISSION,1,256),
+            number(MAX_MOCK_REQUEST_BYTES,1_048_576,BYTES,EACH_MOCK_CALL,1024,8_388_608),number(MAX_MOCK_RESPONSE_BYTES,1_048_576,BYTES,EACH_MOCK_CALL,1024,8_388_608),
+            number(MAX_MOCK_DELAY_MS,30_000,MILLISECONDS,NEW_PLANS_AND_CURRENT_CALLS,0,30_000),number(MOCK_CALL_TIMEOUT_MS,35_000,MILLISECONDS,NEW_PLANS_AND_CURRENT_CALLS,1000,120_000),
+            number(MOCK_LOG_MAX_ENTRIES,200,COUNT,NEW_LOG_ENTRIES_AND_CLEANUP,0,10_000),number(MOCK_LOG_RETENTION_MS,86_400_000,MILLISECONDS,NEW_LOG_ENTRIES_AND_CLEANUP,3_600_000,2_592_000_000L),
+            strings(EXTRA_SENSITIVE_HEADERS,200,256,NEW_PROJECTIONS_AND_EXISTING_GRANT_COMPLIANCE),strings(EXTRA_SENSITIVE_QUERY,200,256,NEW_PROJECTIONS_AND_EXISTING_GRANT_COMPLIANCE),
+            strings(EXTRA_SENSITIVE_FIELDS,200,256,NEW_PROJECTIONS_AND_EXISTING_GRANT_COMPLIANCE),strings(EXTRA_SENSITIVE_POINTERS,200,256,NEW_PROJECTIONS_AND_EXISTING_GRANT_COMPLIANCE),strings(CORS_ALLOWED_ORIGINS,50,512,EACH_BROWSER_CALL),
+            number(MANAGEMENT_AUDIT_RETENTION_MS,7_776_000_000L,MILLISECONDS,AUDIT_CLEANUP,604_800_000,315_360_000_000L),number(ACCESS_AUDIT_RETENTION_MS,604_800_000,MILLISECONDS,NEW_ACCESS_RECORDS_AND_CLEANUP,0,7_776_000_000L),
+            number(CLEANUP_BATCH_SIZE,100,COUNT,NEXT_CLEANUP_CYCLE,1,1000),number(CLEANUP_INTERVAL_MS,3_600_000,MILLISECONDS,NEXT_CLEANUP_CYCLE,60_000,86_400_000),
+            number(RPC_CONNECT_TIMEOUT_MS,3000,MILLISECONDS,NEW_RPC_CALLS,100,30_000),number(RPC_CALL_TIMEOUT_MS,10_000,MILLISECONDS,NEW_RPC_CALLS,1000,300_000),
+            number(DEPLOYMENT_MAX_STORAGE_BYTES,1_073_741_824,BYTES,NEW_STORAGE_WRITES,67_108_864,107_374_182_400L),
+            number(DEPLOYMENT_PUBLIC_READ_RPS,100,REQUESTS_PER_SECOND,EACH_ADMISSION,1,10_000),number(DEPLOYMENT_PUBLIC_READ_IN_FLIGHT,64,COUNT,EACH_ADMISSION,1,1024),
+            number(DEPLOYMENT_MOCK_RPS,100,REQUESTS_PER_SECOND,EACH_ADMISSION,1,10_000),number(DEPLOYMENT_MOCK_IN_FLIGHT,64,COUNT,EACH_ADMISSION,1,1024),number(DEPLOYMENT_MAX_ACTIVE_GRANTS,1000,COUNT,NEW_OR_ROTATED_GRANTS,1,100_000),
+            number(NODE_CACHE_BYTES,67_108_864,BYTES,RUNTIME_STARTUP,8_388_608,1_073_741_824),number(RPC_MAX_MESSAGE_BYTES,33_554_432,BYTES,RUNTIME_STARTUP,1_048_576,134_217_728)
+        );
+    }
+    static Resources resources() {
+        return new Resources(new Recommendations(
+            new RecommendedDecimal(new BigDecimal("1"),new BigDecimal("0.25"),new BigDecimal("8"),VCPU),
+            new RecommendedBytes(805_306_368L,268_435_456L,8_589_934_592L,BYTES),
+            new RecommendedBytes(402_653_184L,134_217_728L,4_294_967_296L,BYTES)),
+            new ExternalLimits(new ConfiguredDecimal(null,ConfigurationStatus.UNCONFIGURED,VCPU),new ConfiguredBytes(null,ConfigurationStatus.UNCONFIGURED,BYTES)),
+            new ApplicationSettings(new ConfiguredBytes(null,ConfigurationStatus.UNCONFIGURED,BYTES),new ConfiguredBytes(null,ConfigurationStatus.UNCONFIGURED,BYTES),new ConfiguredBytes(null,ConfigurationStatus.UNCONFIGURED,BYTES)));
+    }
+}

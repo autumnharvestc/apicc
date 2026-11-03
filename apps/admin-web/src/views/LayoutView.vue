@@ -102,6 +102,8 @@ function onLocaleChange(event: Event): void {
         <a-menu-item v-if="manageVisible" key="schedule-policy" data-testid="menu-schedule-policy" @click="router.push(`/workspaces/${encodeURIComponent(workspaces.current!.id)}/schedule-policy`)">{{ t('scheduling.policyTitle') }}</a-menu-item>
         <a-menu-item v-if="manageVisible" key="notification-channels" data-testid="menu-notification-channels" @click="router.push({name:'workspace-notification-channels',params:{id:workspaces.current!.id}})">{{t('scheduling.channelsTitle')}}</a-menu-item>
         <a-menu-item v-if="session.role==='SUPERADMIN'" key="scheduler-control" data-testid="menu-scheduler-control" @click="router.push({name:'scheduler-control'})">{{t('scheduling.controlTitle')}}</a-menu-item>
+        <a-menu-item v-if="manageVisible" key="collaboration-workspace" data-testid="menu-collaboration-workspace" @click="router.push({name:'workspace-collaboration',params:{id:workspaces.current!.id}})">{{t('collaboration.policyTitle')}}</a-menu-item>
+        <a-menu-item v-if="session.role==='SUPERADMIN'" key="collaboration-platform" data-testid="menu-collaboration-platform" @click="router.push({name:'platform-collaboration'})">{{t('collaboration.deploymentTitle')}}</a-menu-item>
       </a-menu>
     </a-layout-sider>
     <a-layout>
@@ -113,7 +115,7 @@ function onLocaleChange(event: Event): void {
             <option value="en">{{ t("nav.languageEnglish") }}</option>
           </select>
         </label>
-        <span class="user" data-testid="layout-user">{{ session.user?.displayName }}</span>
+        <span class="user" data-testid="layout-user" :title="session.user?.displayName">{{ session.user?.displayName }}</span>
         <a-button data-testid="layout-logout" @click="onLogout">{{ t("nav.logout") }}</a-button>
       </a-layout-header>
       <a-layout-content class="content">
@@ -126,7 +128,9 @@ function onLocaleChange(event: Event): void {
 <style scoped>
 .layout {
   min-height: 100vh;
+  min-width: 0;
 }
+.layout > :deep(.ant-layout){min-width:0}
 .sider {
   background: #fff;
 }
@@ -145,6 +149,11 @@ function onLocaleChange(event: Event): void {
 }
 .user {
   font-size: 13px;
+  min-width:0;
+  max-width:40vw;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
 }
 .locale-control {
   display: inline-flex;
@@ -162,5 +171,7 @@ function onLocaleChange(event: Event): void {
 }
 .content {
   padding: 24px;
+  min-width:0;
+  overflow:hidden;
 }
 </style>

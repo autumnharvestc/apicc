@@ -10,6 +10,7 @@ import { ExecutionHttpError } from "./http.js";
 import { readBuildIdentity } from "@apicc/execution/buildIdentity";
 import { OnlineJobSchema, OnlineLocalResultSchema, OnlineReportSchema, MemberRunInputSchema, type MemberRunInput, type MemberExecutionContext, type MemberExecutionDependencies, type MemberExecutionClient, type PreparedMemberRun, type MemberStartedRun, type ExecutionLocation, type OnlineLocalResult, type OnlineReport, type OnlineJob } from "./memberTypes.js";
 import { createBoundedMemberFetch, createMemberExecutionRequest } from "./memberHttp.js";
+import { onlineJobScope, isFullOnlineJob } from './memberTypes.js';
 import { createMemberLocalCredentialStore, memberLocalScope } from "./memberLocal.js";
 
 type LocalRun = { context: string; abort: AbortController; completion: Promise<OnlineLocalResult>; result?: OnlineLocalResult; failure?: OnlineReport; started: boolean; settled: boolean };
@@ -24,7 +25,8 @@ function assertAssetsScope(assets: ProjectAssets, context: MemberExecutionContex
   if (assets.workspaceId !== context.scope.workspaceId || assets.groupId !== context.scope.groupId || assets.projectId !== context.scope.projectId) throw new Error('online-project-scope-mismatch');
 }
 function assertJob(job: OnlineJob, context: MemberExecutionContext, location?: ExecutionLocation) {
-  if (job.task.scope.workspaceId !== context.scope.workspaceId || job.task.scope.groupId !== context.scope.groupId || job.task.scope.projectId !== context.scope.projectId || location?.kind === 'agent' && job.agentId !== location.agentId) throw new Error('online-project-scope-mismatch');
+  const scope = onlineJobScope(job);
+  if (scope.workspaceId !== context.scope.workspaceId || scope.groupId !== context.scope.groupId || scope.projectId !== context.scope.projectId || location?.kind === 'agent' && job.agentId !== location.agentId) throw new Error('online-project-scope-mismatch');
   return job;
 }
 type PreparedRecord = { input: MemberRunInput; abort: AbortController; ticket?: PreparedMemberRun; localRun?: LocalRun; discarded?: boolean; intentId?: string; attempted?: boolean; submission?: (intent:string)=>z.infer<typeof SubmitJobSchema>; release(intent: string): void; admitted: Promise<void>; completion: Promise<OnlineLocalResult | OnlineJob> };
@@ -269,7 +271,7 @@ export function createMemberExecutionClient(deps: MemberExecutionDependencies): 
         const prior=await client.findIntent(record.input.context,intentId,signal);
         if(prior){
           const job=assertJob(await requestFor(record.input.context,signal)('POST',`${pathFor(record.input.context)}/jobs/by-intent/verify`,record.submission!(intentId),OnlineJobSchema),record.input.context,record.input.location);
-          return {runId:job.jobId,location:record.input.location,snapshotId:job.task.snapshotId,manifestHash:job.task.manifestHash,state:job.state,job};
+          return {runId:job.jobId,location:record.input.location,snapshotId:isFullOnlineJob(job)?job.task.snapshotId:prepared.summary.snapshotId,manifestHash:isFullOnlineJob(job)?job.task.manifestHash:prepared.summary.manifestHash,state:job.state,job};
         }
         if(record.attempted)throw new Error('execution-outcome-uncertain');
         const detach=begin();
@@ -296,8 +298,13 @@ export function createMemberExecutionClient(deps: MemberExecutionDependencies): 
     async report(context, location, runId, signal) {
       signal.throwIfAborted();
       if (location.kind === 'local') { const run = localRun(context,runId); return withCallSignal(signal,Promise.resolve(run.result ?? run.failure ?? run.completion.catch(() => run.failure!))); }
-      const job = await client.status(context,location,runId,signal) as OnlineJob;
+      let job = await client.status(context,location,runId,signal) as OnlineJob;
       const report = await requestFor(context,signal)('GET',`jobs/${runId}/report`,undefined,OnlineReportSchema).catch(error => { if (error instanceof z.ZodError && error.issues.some(issue => issue.path[0] === 'output')) throw new Error('invalid-core-output'); throw error; });
+      if (!isFullOnlineJob(job)) {
+        const current = assertJob(await requestFor(context,signal)('GET',`jobs/${runId}`,undefined,OnlineJobSchema),context,location);
+        if (!isFullOnlineJob(current) || current.jobId !== job.jobId || current.executionId !== job.executionId) throw new Error('fixed-input-mismatch');
+        job = current;
+      }
       if (report.executionId !== job.executionId) throw new Error('fixed-input-mismatch');
       if(report.processObservation&&job.task.target.kind!=='stress')throw new Error('fixed-input-mismatch');
       if(report.output&&(job.task.target.kind==='stress')!==(report.output.kind==='stress'||report.output.kind==='stress-failure'))throw new Error('fixed-input-mismatch');

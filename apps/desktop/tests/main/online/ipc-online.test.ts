@@ -6,6 +6,17 @@ import { createSession } from "../../../src/main/session.js";
 import { createOnlineClient } from "../../../src/main/online/client.js";
 import type { OnlineClient } from "../../../src/main/online/client.js";
 import type { TokenStore } from "../../../src/main/online/tokenStore.js";
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { IDS, makeWorkspace, persistWorkspace } from '../helpers/contract-assets.js';
+import { aiReportDigest } from '../../../src/shared/ai/reportDigest.js';
+import { ContractWorkspaceSchema, encodeContractProjectFiles } from '@apicc/core';
+import { workspaceFixture } from '../../../../../packages/core/tests/helpers/contractFixtures.js';
+import { projectAssetsManifestHash } from '@apicc/execution/host';
+import { defaultPolicyConfig } from '@apicc/execution/contract';
+import { createHash } from 'node:crypto';
 
 const json = (status: number, payload: unknown): Response => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
 const USER = { id: "u-1", username: "alice", displayName: "Alice" };
@@ -37,20 +48,80 @@ function setup(handler: (req: CapturedRequest) => Response) {
       savedTokens.delete(baseUrl);
     },
   };
+  const session = createSession();
   const deps = createIpcDeps({
-    session: createSession(),
+    session,
     pickDirectory: async () => "",
     saveFile: async () => "",
     online: {
+      fetch: impl,
       createClient: (baseUrl, hooks): OnlineClient =>
         createOnlineClient({ baseUrl, fetch: impl, timeoutMs: 5_000, onUnauthorized: hooks.onUnauthorized }),
       tokenStore,
     },
   });
-  return { deps, calls, savedTokens, tokenStore, getCleared: () => cleared };
+  return { deps, session, calls, savedTokens, tokenStore, getCleared: () => cleared };
 }
 
 describe("online:* 频道接线", () => {
+  it.each(['current', 'relogin', 'other-window', 'relogin-report', 'other-window-report'])('previews the actual online local execution in its owning window without a filesystem root: %s', async change => {
+    const context = { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } }, owner = {}, runId = randomUUID();
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    project.workflows = [{ id: '00000000-0000-4000-8000-000000000091', name: 'No target traffic', status: 'enabled', nodes: [{ id: 'only', kind: 'noop' }], edges: [] }];
+    const files = [...encodeContractProjectFiles(project).files].map(([path, content]) => ({ path, content, version: '1', hash: createHash('sha256').update(content).digest('hex'), size: Buffer.byteLength(content) }));
+    const assets = { ...context.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: projectAssetsManifestHash(files), files };
+    const f = setup(req => {
+      if (req.url.endsWith('/auth/login')) return json(200, { token: 'tok', expiresAt: '2099-01-01T00:00:00Z', user: { ...USER, id: '7' } });
+      if (req.url.endsWith('/tree')) return json(200, { workspaceId: '11', rootVersion: 1, files: [], projects: [] });
+      if (req.url.endsWith('/groups')) return json(200, []);
+      if (req.url.endsWith('/execution-agents')) return json(200, { agents: [], defaultAgentId: null, canManageScripts: false, policyVersion: '0', policy: defaultPolicyConfig });
+      if (req.url.endsWith('/execution-snapshots')) return json(200, { snapshotId: '66', createdByUserId: '7', assets });
+      if (req.url.includes('/local-materials')) return json(200, { snapshotId: '66', scope: context.scope, credentials: [], attachments: [] });
+      return json(400, { code: 'unexpected_test_request' });
+    });
+    try {
+      await f.deps.handle('online:login', {}, { baseUrl: 'https://control.test', username: 'alice', password: 'password8' }); await f.deps.handle('online:workspace:open', {}, { workspaceId: '11', name: 'Workspace', myRole: 'EDITOR' });
+      const result = await f.deps.handle('online:execution', { sender: owner }, { operation: 'run', context, runId, location: { kind: 'local' }, target: { kind: 'workflow', workflowId: project.workflows[0]!.id }, expectedVersion: '1', runConfig: {}, materials: { projectId: '33', credentials: [], attachments: [] }, localOnlyRefIds: [] });
+      expect(result).toMatchObject({ location: { kind: 'local' }, runId }); expect(f.session.root).toBeNull(); const count = f.calls.length;
+      const preview = await f.deps.handle('online:collaboration', { sender: owner }, { operation: 'preview-local', context, title: 'Online local result', source: { kind: 'online-local', runId } });
+      expect(preview).toMatchObject({ stage: 'local', artifact: { source: { trust: 'member-claim' } } }); expect(f.calls).toHaveLength(count);
+      if (change.startsWith('relogin')) { await f.deps.handle('online:login', {}, { baseUrl: 'https://control.test', username: 'alice', password: 'password8' }); await f.deps.handle('online:workspace:open', {}, { workspaceId: '11', name: 'Workspace', myRole: 'EDITOR' }); }
+      const reader = change.startsWith('other-window') ? {} : owner;
+      if (change.endsWith('-report')) { const read = await f.deps.handle('online:execution', { sender: reader }, { operation: 'report', context, runId, location: { kind: 'local' } }); expect(read).toMatchObject({ location: { kind: 'local' }, runId }); }
+      if (change !== 'current') { const after = f.calls.length; await expect(f.deps.handle('online:collaboration', { sender: reader }, { operation: 'preview-local', context, title: 'Old online result', source: { kind: 'online-local', runId } })).rejects.toThrow('collaboration-source-unavailable'); expect(f.calls).toHaveLength(after); }
+    } finally { await f.deps.stopOnlineExecutions(); }
+  });
+  it.each(['collection', 'suite', 'workflow'])('registers the actual native %s return as a window-owned collaboration source without AI', async kind => {
+    const root = mkdtempSync(join(tmpdir(), 'apicc-collab-ipc-')), owner = {};
+    const member = { ...USER, id: '7' };
+    const f = setup(req => req.url.endsWith('/auth/login') ? json(200, { token: 'tok-1', expiresAt: '2099-01-01T00:00:00Z', user: member }) : req.url.endsWith('/tree') ? json(200, { workspaceId: '11', rootVersion: 1, files: [], projects: [] }) : json(200, []));
+    try {
+      const workspace = makeWorkspace(), project = workspace.groups[0]!.projects[0]!, workflowId = randomUUID(), suiteId = randomUUID();
+      project.collections[0]!.apis = []; project.collections[0]!.folders = [];
+      project.workflows = [{ id: workflowId, name: 'no external execution', status: 'enabled', nodes: [{ id: 'noop', kind: 'noop' }], edges: [] }];
+      project.suites = [{ formatVersion: 1, id: suiteId, name: 'selected noop', tags: [], selection: { kind: 'explicit', entries: [{ id: randomUUID(), kind: 'workflow', workflowId }] }, failFast: false, reporters: ['json'] }];
+      await persistWorkspace(root, workspace); await f.session.open(root);
+      await f.deps.handle('online:login', {}, { baseUrl: 'https://control.test', username: 'alice', password: 'password8' }); await f.deps.handle('online:workspace:open', {}, { workspaceId: '11', name: 'Workspace', myRole: 'EDITOR' });
+      const projectRef = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne }, event = { sender: owner };
+      const displayed = kind === 'collection' ? await f.deps.handle('run:collection', event, { locator: { ...projectRef, collectionId: IDS.collectionOne } }) : kind === 'suite' ? await f.deps.handle('testing:suite:run', event, { invocationId: randomUUID(), context: { root, revision: f.session.revision!, project: projectRef }, locator: { ...projectRef, suiteId } }) : await f.deps.handle('wf:run', event, { locator: { ...projectRef, workflowId }, invocationId: randomUUID(), root });
+      expect(displayed).toBeTruthy(); const count = f.calls.length;
+      const result = await f.deps.handle('online:collaboration', event, { operation: 'preview-local', context: { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } }, title: 'Selected native result', source: { kind: 'current', project: projectRef, expectedReportDigest: await aiReportDigest(displayed) } });
+      expect(result).toMatchObject({ stage: 'local', artifact: { kind: 'report', source: { trust: 'member-claim' } } }); expect(f.calls).toHaveLength(count);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('routes the collaboration member read through the actual IPC sender and bound session', async () => {
+    const member = { ...USER, id: '7' };
+    const access = { accountEnabled: true, member: true, workspaceRole: 'EDITOR', projectOverride: null, overrideState: 'inherited', effectiveRole: 'EDITOR', capabilities: ['history.read'], accessRevision: 2, membershipEpoch: 3, responsibilityEpoch: 4, reasonCode: null };
+    const f = setup(req => req.url.endsWith('/auth/login') ? json(200, { token: 'tok-1', expiresAt: '2099-01-01T00:00:00Z', user: member }) : req.url.includes('/tree') ? json(200, { workspaceId: '11', rootVersion: 1, files: [], projects: [] }) : req.url.endsWith('/groups') ? json(200, []) : json(200, access));
+    await f.deps.handle('online:login', {}, { baseUrl: 'https://control.test', username: 'alice', password: 'password8' });
+    await f.deps.handle('online:workspace:open', {}, { workspaceId: '11', name: 'Workspace', myRole: 'EDITOR' });
+    const input = { operation: 'access', context: { serverId: 'https://control.test/api/v1', ownerId: member.id, scope: { workspaceId: '11', groupId: '22', projectId: '33' } }, input: {} };
+    expect(await f.deps.handle('online:collaboration' as any, { sender: {} }, input)).toEqual({ stage: 'access', access });
+    expect(f.calls.at(-1)!.url).toBe('https://control.test/api/v1/workspaces/11/projects/33/access');
+    const count = f.calls.length;
+    await expect(f.deps.handle('online:collaboration', {}, input as any)).rejects.toThrow('collaboration-candidate-unavailable');
+    await expect(f.deps.handle('online:collaboration', { sender: {} }, { ...input, path: 'C:\\private' } as any)).rejects.toThrow('入参校验失败'); expect(f.calls).toHaveLength(count);
+  });
   it("online:login → 请求拼装正确、token 入库、返回不含 token（token 不出 main 进程）；后续 me 自动带头", async () => {
     const { deps, calls, savedTokens } = setup((req) =>
       req.url.endsWith("/auth/login") ? json(200, { token: "tok-1", expiresAt: "2026-10-03T00:00:00Z", user: USER }) : json(200, USER),

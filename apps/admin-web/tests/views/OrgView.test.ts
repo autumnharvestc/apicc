@@ -65,6 +65,12 @@ beforeAll(() => {
 
 enableAutoUnmount(afterEach);
 
+it('T10 project collaboration entries remain discoverable for a workspace VIEWER without member management',async()=>{
+  const {wrapper}=await mountOrg(orgHandler({detail:DETAIL_VIEWER}));
+  expect(wrapper.text()).toContain('订单');expect(wrapper.find('[data-testid=menu-members]').exists()).toBe(false);
+  expect.soft(wrapper.findAll('[data-testid^=org-project-collaboration-p1-]').map(row=>row.text().replace('审 计','审计'))).toEqual(['协作权限与策略','发布与分享','共享 Mock','审计']);
+});
+
 function bodyFind(testid: string): DOMWrapper<Element> | null {
   const el = document.body.querySelector(`[data-testid="${testid}"]`);
   return el ? new DOMWrapper(el) : null;

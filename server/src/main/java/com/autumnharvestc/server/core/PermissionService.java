@@ -38,6 +38,9 @@ public class PermissionService {
         if (projectId == null) {
             return workspaceRole;
         }
+        if (acl.findState(workspaceId, projectId, userId).filter("pending-confirmation"::equals).isPresent()) {
+            return Optional.empty();
+        }
         // D5：ACL 行存在即生效；NONE 显式拒读 → empty（不回退到工作区角色）
         Optional<AclRole> override = acl.findRole(workspaceId, projectId, userId);
         return override.isPresent() ? toWorkspaceRole(override.get()) : workspaceRole;

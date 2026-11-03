@@ -1,6 +1,6 @@
 // Target discovery and actual document readiness share the caller's original deadline.
 export async function waitForRendererReady({ deadline, observe, isAlive, now = Date.now,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), requireCollaboration = false }) {
   let last = null;
   let lastError = "";
   while (now() < deadline) {
@@ -14,6 +14,7 @@ export async function waitForRendererReady({ deadline, observe, isAlive, now = D
         && /^file:.*\/app\.asar\/dist-renderer\/index\.html(?:[?#]|$)/i.test(state.url)
         && ["interactive", "complete"].includes(state.readyState)
         && typeof state.title === "string" && state.title.toLowerCase().includes("apicc")
+        && (!requireCollaboration || state.collaboration === 'function')
         && typeof state.children === "number" && state.children > 0) return state;
     } catch (error) {
       if (error?.code === "ERR_CDP_PROTOCOL") throw error;

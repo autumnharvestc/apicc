@@ -38,8 +38,14 @@ import AiSuggestionsDrawer from '../../src/renderer/src/components/AiSuggestions
 import { createAiBusinessFixture } from './fixtures/aiBusiness.js';
 import OnlineLoginDialog from '../../src/renderer/src/components/OnlineLoginDialog.vue';
 import OnlineProjectAssets from '../../src/renderer/src/components/online/OnlineProjectAssets.vue';
+import CollaborationPanel from '../../src/renderer/src/components/online/CollaborationPanel.vue';
+import { port as collaborationPort } from './components/collaboration-fixtures.js';
+import { useDebugHistoryStore } from '../../src/renderer/src/stores/debugHistory.js';
+import { useDebugStore } from '../../src/renderer/src/stores/debug.js';
+import { useEditorStore } from '../../src/renderer/src/stores/editor.js';
+import { debugHistory as collaborationDebugFixture, runReport as collaborationRunFixture } from '../../../../packages/core/tests/collaboration/fixtures.js';
 import { workspaceFixture } from '../../../../packages/core/tests/helpers/contractFixtures.js';
-import { ContractWorkspaceSchema } from '@apicc/core/schema';
+import { ContractWorkspaceSchema, DebugHistoryRecordSchema } from '@apicc/core/schema';
 import { defaultPolicyConfig } from '@apicc/execution/contract';
 import { onlineTreeToDto } from '../../src/main/online/session.js';
 import type { useWorkspaceStore } from "../../src/renderer/src/stores/workspace.js";
@@ -48,9 +54,7 @@ import type { createRequestTabsStore, RequestTab } from "../../src/renderer/src/
 import type { useTreeStore } from "../../src/renderer/src/stores/tree.js";
 import type { useWorkflowDesignStore } from "../../src/renderer/src/stores/workflowDesign.js";
 import type { useWfListStore } from "../../src/renderer/src/stores/wfList.js";
-import type { useDebugStore } from "../../src/renderer/src/stores/debug.js";
 import type { useEnvsStore } from "../../src/renderer/src/stores/envs.js";
-import type { useEditorStore } from "../../src/renderer/src/stores/editor.js";
 import { useModuleMemoryStore } from "../../src/renderer/src/stores/moduleMemory.js";
 import type { WfBindIndex } from "../../src/renderer/src/wf/wfBindings.js";
 import type { ProjectLocator } from "../../src/shared/locations.js";
@@ -277,6 +281,50 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
   });
 
   // Catches online-shaped fixtures passing unit tests while App still captures its local editor/context.
+  it('T9 shortcut from the local request editor opens selected-history sharing without requiring online state or blocking Send', async () => {
+    const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper); expect(wrapper.get('[data-testid="send-btn"]').attributes('disabled')).toBeUndefined();
+    await wrapper.get('[data-testid="collaboration-open-history"]').trigger('click'); await flushPromises(); expect(wrapper.findComponent(DebugHistory).props('open')).toBe(true); expect(wrapper.get('[data-testid="send-btn"]').attributes('disabled')).toBeUndefined();
+  });
+  it('T9 shortcut selects one attributable private debug history descriptor without any renderer artifact', async () => {
+    const api = createMemoryApi(), project = { workspaceId: '00000000-0000-4000-8000-000000000001', groupId: '00000000-0000-4000-8000-000000000002', projectId: '00000000-0000-4000-8000-000000000003' }, editor = useEditorStore(api, () => ({ root: 'memory-root', readOnly: false })), debug = useDebugStore(api, editor), history = useDebugHistoryStore(api);
+    const record = DebugHistoryRecordSchema.options[1].parse(collaborationDebugFixture()); record.result.replay = { mode: 'free', sourceKind: 'free', project, draftId: '40000000-0000-4000-8000-000000000009', request: { protocol: 'http', method: 'GET', baseUrl: 'https://example.test', path: '/', pathParams: [], headers: [], query: [], cookies: [], body: { kind: 'none' }, auth: { kind: 'none' } }, parameters: {}, fields: [], available: true }; Object.assign(history, { selected: { record, diagnostics: [] } });
+    const wrapper = mount(DebugHistory, { props: { open: true, api, history, debug, editor, projectLocator: project }, global: { plugins: [initI18n().i18n] } }); await flushPromises(); expect(document.body.textContent).toContain(record.historyId);
+    await expectBody('collaboration-publish-debug').trigger('click'); expect(wrapper.emitted('collaboration')?.[0]?.[0]).toEqual({ kind: 'debug', historyId: record.historyId, owner: { sourceKind: 'free', project, draftId: '40000000-0000-4000-8000-000000000009' }, project });
+  });
+  it('T9 local report shortcut asks for an online target without affecting offline execution or sending anything', async () => {
+    const original = failingApi.onlineCollaboration, calls: unknown[] = []; failingApi.onlineCollaboration = async input => { calls.push(input); return { stage: 'idle' }; };
+    const wrapper = await mountApp();
+    try { await openLocalDir(wrapper); await clickApiAndWait(wrapper); await wrapper.get('[data-testid="rail-run"]').trigger('click'); await flushPromises(); const reportView = wrapper.findComponent(RunView), run = reportView.props('run'); expect(reportView.props('selectedCollectionLocator')).toBeTruthy();
+      run.result = collaborationRunFixture(); await flushPromises(); expect(wrapper.text()).toContain('用例1'); await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises();
+      expect(wrapper.find('[data-testid="collaboration-target-picker"]').exists()).toBe(true); expect(calls).toEqual([]); expect(wrapper.get('[data-testid="run-btn"]').attributes('disabled')).toBeUndefined();
+    } finally { wrapper.unmount(); failingApi.onlineCollaboration = original; }
+  });
+  it.each(['entry', 'online-local', 'session-change', 'navigation', 'local-target'] as const)('T9 opens the actual App collaboration panel and binds its %s flow to the selected online project', async flow => {
+    const names = ['onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution', 'onlineCollaboration'] as const, originals = new Map(names.map(name => [name, failingApi[name]]));
+    const projectAsset = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!, scope = { workspaceId: '11', groupId: '22', projectId: '33' }, api = collaborationPort();
+    const projects = [{ id: '33', groupId: '22', name: projectAsset.name, myRole: 'EDITOR' as const }], view = { workspaceId: '11', name: 'Member fixture', myRole: 'OWNER' as const, projects, tree: onlineTreeToDto({ workspaceId: '11', rootVersion: 1, files: [], projects }, 'Member fixture') };
+    failingApi.onlineLogin = async () => ({ expiresAt: '2099-01-01T00:00:00Z', user: { id: '7', username: 'alice', displayName: 'Member' } }); failingApi.onlineWorkspaceList = async () => [{ id: '11', name: view.name, myRole: 'OWNER', createdAt: '2026-11-01T00:00:00Z' }];
+    failingApi.onlineWorkspaceOpen = async () => view; failingApi.onlineWorkspaceActivate = async () => {}; failingApi.onlineTreeView = async () => view; failingApi.onlineCollaboration = api.onlineCollaboration;
+    failingApi.onlineExecution = async input => input.operation === 'assets' ? { project: projectAsset, problems: [], assets: { ...scope, format: 'contract-files-v1', contractProjectId: projectAsset.id, version: '12', manifestHash: 'c'.repeat(64), files: [] } } : input.operation === 'agents' ? { defaultAgentId: null, canManageScripts: false, policy: structuredClone(defaultPolicyConfig), policyVersion: '1', agents: [] } : input.operation === 'materials' ? { credentials: [], attachments: [] } : [];
+    const wrapper = await mountApp();
+    try {
+      const online = wrapper.findComponent(OnlineLoginDialog).props('online'); online.addProfile('http://127.0.0.1:8080', 'Member'); await online.login('alice', 'password8'); await online.refreshWorkspaces(); await online.openWorkspace(online.workspaces[0]!);
+      await wrapper.findComponent(ProjectTabs).props('tabs').openProjectTab({ kind: 'online', workspaceId: '11', name: view.name }, { id: '33', name: projectAsset.name }); await flushPromises();
+      await vi.waitFor(() => expect(wrapper.findComponent(OnlineProjectAssets).exists()).toBe(true)); await wrapper.get('[data-testid="collaboration-entry"]').trigger('click'); await flushPromises();
+      expect(wrapper.findComponent(CollaborationPanel).exists()).toBe(true); expect(api.calls.map(call => call.operation)).toEqual(['activate', 'access', 'history', 'publications']);
+      expect(wrapper.findComponent(CollaborationPanel).text()).toContain('40');
+      if (flow === 'session-change') { online.clearLoginState(); await flushPromises(); expect(wrapper.findComponent(CollaborationPanel).exists()).toBe(false); expect(api.calls.at(-1)?.operation).toBe('cancel-preview'); }
+      if (flow === 'navigation') { await wrapper.get('[data-testid="topbar-home"]').trigger('click'); await flushPromises(); expect(wrapper.findComponent(CollaborationPanel).exists()).toBe(false); expect(api.calls.at(-1)?.operation).toBe('cancel-preview'); }
+      if (flow === 'online-local') {
+        await wrapper.findComponent(CollaborationPanel).props('collaboration').close(); online.execution.localResult = { location: { kind: 'local' }, runId: '40000000-0000-4000-8000-000000000019', snapshotId: '66', manifestHash: 'a'.repeat(64), runtimeCompatibilityId: 'recorded', scriptTimeoutMs: 3000, output: { kind: 'suite', result: collaborationRunFixture() } }; await flushPromises();
+        const count = api.calls.length; await wrapper.get('[data-testid="collaboration-publish-result"]').trigger('click'); await flushPromises(); expect(api.calls.slice(count)).toEqual([{ operation: 'preview-local', context: { serverId: 'http://127.0.0.1:8080/api/v1', ownerId: '7', scope }, source: { kind: 'online-local', runId: '40000000-0000-4000-8000-000000000019' }, title: '本机执行报告' }]); expect(wrapper.findComponent(CollaborationPanel).text()).toContain('Selected safe report');
+      }
+      if (flow === 'local-target') {
+        await openLocalDir(wrapper); await clickApiAndWait(wrapper); await wrapper.get('[data-testid="rail-run"]').trigger('click'); await flushPromises(); const run = wrapper.findComponent(RunView).props('run'); run.result = collaborationRunFixture(); await flushPromises(); await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises(); const count = api.calls.length;
+        await vi.waitFor(() => expect(wrapper.find('[data-testid="collaboration-target-picker"]').exists()).toBe(true)); await wrapper.get('[data-testid="collaboration-target"]').setValue('33'); await wrapper.get('[data-testid="collaboration-prepare-local"]').trigger('click'); await flushPromises(); expect(api.calls.slice(count)).toHaveLength(1); expect(api.calls.at(-1)).toMatchObject({ operation: 'preview-local', context: { scope }, source: { kind: 'current', expectedReportDigest: expect.stringMatching(/^[a-f0-9]{64}$/) } }); expect((api.calls.at(-1) as any).source.project.projectId).not.toBe('33');
+      }
+    } finally { wrapper.unmount(); for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
+  });
   it('T11 prepares the actual App online member editor through the one shared AI store', async () => {
     const fixture = createAiBusinessFixture(); const names = ['aiSettingsRead', 'aiCatalogReload', 'aiPrepareAssistance', 'aiStart', 'aiCancel', 'onAiProgress', 'aiInspectChoices', 'onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution'] as const;
     const originals = new Map(names.map(name => [name, failingApi[name]]));

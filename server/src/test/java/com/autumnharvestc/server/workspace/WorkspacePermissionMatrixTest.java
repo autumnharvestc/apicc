@@ -35,6 +35,9 @@ class WorkspacePermissionMatrixTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private com.autumnharvestc.server.access.AccessFixtureRevisions versions;
+
     // ---- 测试脚手架 ----
 
     /** 注册并登录，返回 [userId, token]。 */
@@ -67,7 +70,7 @@ class WorkspacePermissionMatrixTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + targetUserId)
                         .header("Authorization", "Bearer " + callerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"" + role + "\"}"))
+                        .content(versions.memberBody(wsId, targetUserId, role)))
                 .andExpect(status().isOk());
     }
 
@@ -120,27 +123,29 @@ class WorkspacePermissionMatrixTest {
             mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + scratch[0])
                             .header("Authorization", "Bearer " + token)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"role\":\"EDITOR\"}"))
+                            .content(versions.memberBody(wsId, scratch[0], "EDITOR")))
                     .andExpect(status().isForbidden());
         }
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + scratch[0])
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"EDITOR\"}"))
+                        .content(versions.memberBody(wsId, scratch[0], "EDITOR")))
                 .andExpect(status().isOk());
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + scratch[0])
                         .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"EDITOR\"}"))
+                        .content(versions.memberBody(wsId, scratch[0], "EDITOR")))
                 .andExpect(status().isOk());
 
         // ---- 移除 DELETE members：EDITOR/VIEWER/非成员 403，ADMIN/OWNER 204（被移除者访问即失）----
         for (String token : new String[]{editorToken, viewerToken, outsiderToken}) {
             mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + scratch[0])
+                            .param("expectedRevision", Long.toString(versions.member(wsId, scratch[0])))
                             .header("Authorization", "Bearer " + token))
                     .andExpect(status().isForbidden());
         }
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + scratch[0])
+                        .param("expectedRevision", Long.toString(versions.member(wsId, scratch[0])))
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isNoContent());
         mockMvc.perform(get("/api/v1/workspaces/" + wsId).header("Authorization", "Bearer " + scratch[1]))
@@ -179,18 +184,18 @@ class WorkspacePermissionMatrixTest {
             mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                             .header("Authorization", "Bearer " + token)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"NONE\"}"))
+                            .content(versions.aclBody(wsId, projectId, viewer[0], "NONE")))
                     .andExpect(status().isForbidden());
         }
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"NONE\"}"))
+                        .content(versions.aclBody(wsId, projectId, viewer[0], "NONE")))
                 .andExpect(status().isOk());
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"EDITOR\"}"))
+                        .content(versions.aclBody(wsId, projectId, viewer[0], "EDITOR")))
                 .andExpect(status().isOk());
 
         // ---- 删区 DELETE workspace：仅 OWNER 204，其余（含 ADMIN）403 ----

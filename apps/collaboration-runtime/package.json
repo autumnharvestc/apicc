@@ -1,0 +1,7 @@
+{
+  "name": "@apicc/collaboration-runtime", "version": "0.1.0", "private": true, "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": { "build": "tsc -p tsconfig.build.json", "typecheck": "tsc --noEmit", "test": "vitest run", "start": "node dist/main.js" },
+  "dependencies": { "@apicc/core": "workspace:*", "zod": "^4.5.4" },
+  "devDependencies": { "@types/node": "^26.4.0", "typescript": "^5.9.2", "vitest": "^4.1.11" }
+}

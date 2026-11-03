@@ -15,10 +15,12 @@ import type { OnlineFilesBatchInput, OnlineProjectMappingInput, OnlineWorkspaceO
 import type { ApiTestCase, ComponentAsset, DebugFieldState, ModelAsset } from "@apicc/core";
 import { createOnlineSession, type OnlineSession } from "./online/session.js";
 import { createOnlineExecutionHost } from "./online/execution.js";
+import { createCollaborationHost } from './online/collaboration.js';
+import { CollaborationResultSchema, type CollaborationInput } from '../shared/online/collaboration.js';
 import { handleOnlineScheduling } from './online/scheduling.js';
 import { parseOnlineSchedulingResult, type OnlineSchedulingInput } from '../shared/online/scheduling.js';
 import { createSystemSecretStore, defaultCredentialPrivateRoot } from "@apicc/core";
-import { OnlineExecutionResultSchema, type OnlineExecutionInput } from "../shared/online/execution.js";
+import { OnlineExecutionResultSchema, OnlineLocalResultSchema, type OnlineExecutionInput, type OnlineExecutionContext, type OnlineLocalResult } from "../shared/online/execution.js";
 import { scanDirFiles, writeFiles } from "./online/migrate.js";
 import type { OnlineClient } from "./online/client.js";
 import type { TokenStore } from "./online/tokenStore.js";
@@ -38,6 +40,7 @@ import { createDesktopAiSources } from "./ai/sources.js";
 import type { AiRuntimeDeps } from "./ai/suggest.js";
 import type { AiKeyStatus, AiSaveConfigInput, AiSuggestInput, AiTestConfigInput } from "../shared/ai/contract.js";
 import { AiProgressDtoSchema } from '../shared/ai/contract.js';
+import { aiReportDigest } from '../shared/ai/reportDigest.js';
 import { createPluginsRuntime, type PluginsRuntime, type PluginsRuntimeOptions } from "./plugins/runtime.js";
 import { previewDesignDraft } from "./designPreview.js";
 import { createMockManager } from "./mockManager.js";
@@ -189,6 +192,19 @@ export function createIpcDeps(options: IpcDepsOptions) {
   const onlineExecution = online ? createOnlineExecutionHost({ session: online, plugins: pluginsRuntime, fetch: options.online?.fetch,
     localStore: () => options.credentials?.secretStore ?? createSystemSecretStore({ privateRoot: options.credentials?.credentialPrivateRoot ?? defaultCredentialPrivateRoot() }),
   }) : null;
+  const collaborationReports = new WeakMap<object, { context: ReturnType<Session['captureDraftWriteContext']>; project: ProjectLocator; report: RunResult; digest: string }>();
+  const collaborationOnlineResults = new WeakMap<object, { context: OnlineExecutionContext; result: OnlineLocalResult; binding: ReturnType<OnlineSession['captureExecution']> }>();
+  async function rememberCollaborationReport(owner: object | undefined, context: ReturnType<Session['captureDraftWriteContext']>, project: ProjectLocator, report: RunResult, displayed: unknown) {
+    if (!owner) return;
+    try { const digest = await aiReportDigest(displayed); session.assertDraftWriteContext(context); collaborationReports.set(owner, { context: { ...context }, project: structuredClone(project), report: structuredClone(report), digest }); }
+    catch { /* Sharing availability never changes an already-completed local execution. */ }
+  }
+  const onlineCollaboration = online ? createCollaborationHost({ session: online, localSession: session, fetch: options.online?.fetch,
+    readDebugHistory: (id, key) => requireDebugHistory().getOwned(id, key),
+    readCurrentReport: owner => collaborationReports.get(owner),
+    readOnlineResult: owner => { const value = collaborationOnlineResults.get(owner); if (!value) return; try { value.binding.assertCurrent(); return value; } catch { return; } },
+    writeClipboard: async text => { const { clipboard } = await import('electron'); clipboard.writeText(text); },
+  }) : null;
   function requireOnline(): OnlineSession {
     if (!online) throw new Error("在线功能未配置");
     return online;
@@ -241,7 +257,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
   const debug = createDebugController(session, () => pluginsRuntime.registry(), credentials, debugHistoryAppender);
   const testing = createTestingController(session, () => pluginsRuntime.registry(), credentials);
   const workflowRuns = createWorkflowController(session, () => pluginsRuntime.registry(), credentials, undefined,
-    async (owner, context, project, native, dto) => { await aiSources?.rememberReport(owner, context, project, native, dto); });
+    async (owner, context, project, native, dto) => { await aiSources?.rememberReport(owner, context, project, native, dto); await rememberCollaborationReport(owner, context, project, native, dto); });
   const watchedDebugOwners = new WeakSet<object>();
 
   function ownerFromEvent(event: unknown): object | undefined {
@@ -263,6 +279,9 @@ export function createIpcDeps(options: IpcDepsOptions) {
       workflowRuns.clearOwner(owner);
       credentials.closeOAuthOwner(owner);
       aiRuntime?.clearOwner(owner);
+      onlineCollaboration?.clearOwner(owner);
+      collaborationReports.delete(owner);
+      collaborationOnlineResults.delete(owner);
     };
     if (typeof sender.once === "function") sender.once("destroyed", cleanup);
     if (typeof sender.on === "function") sender.on("render-process-gone", cleanup);
@@ -396,6 +415,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const input = a[0] as Parameters<typeof testing.runSuite>[0], context = session.captureDraftWriteContext();
         const value = await testing.runSuite(input, requireOwner(owner));
         await aiSources?.rememberReport(owner, context, input.context.project, value.result, value);
+        await rememberCollaborationReport(owner, context, input.context.project, value.result, value);
         return value;
       }
       case IpcChannel.SuiteCancel: return testing.cancelSuite(a[0] as Parameters<typeof testing.cancelSuite>[0], requireOwner(owner));
@@ -780,6 +800,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const run = await runCollection(session, input, () => pluginsRuntime.registry(), credentials);
         const { workspaceId, groupId, projectId } = input.locator;
         await aiSources?.rememberReport(owner, context, { workspaceId, groupId, projectId }, run, run);
+        await rememberCollaborationReport(owner, context, { workspaceId, groupId, projectId }, run, run);
         return run satisfies RunResult;
       }
       case IpcChannel.RunsList: {
@@ -1130,9 +1151,17 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.OnlineRegister: {
         return requireOnline().register(a[0] as Parameters<OnlineSession["register"]>[0]);
       }
-      case IpcChannel.OnlineExecution:
+      case IpcChannel.OnlineExecution: {
         if (!onlineExecution) throw new Error("在线执行未配置");
-        return OnlineExecutionResultSchema.parse(await onlineExecution.handle(a[0] as OnlineExecutionInput));
+        const input = a[0] as OnlineExecutionInput;
+        const result = OnlineExecutionResultSchema.parse(await onlineExecution.handle(input));
+        const local = OnlineLocalResultSchema.safeParse(result);
+        if (owner && input.operation === 'run' && local.success) collaborationOnlineResults.set(owner, { context: structuredClone(input.context), result: local.data, binding: requireOnline().captureExecution(input.context) });
+        return result;
+      }
+      case IpcChannel.OnlineCollaboration:
+        if (!onlineCollaboration) throw new Error('online-collaboration-requires-connected-server');
+        return CollaborationResultSchema.parse(await onlineCollaboration.handle(a[0] as CollaborationInput, owner));
       case IpcChannel.OnlineScheduling:
         return parseOnlineSchedulingResult(a[0] as OnlineSchedulingInput, await handleOnlineScheduling({ session: requireOnline(), fetch: options.online?.fetch }, a[0] as OnlineSchedulingInput));
       case IpcChannel.OnlineLogin: {

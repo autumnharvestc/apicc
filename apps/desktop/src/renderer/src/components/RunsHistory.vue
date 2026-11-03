@@ -20,7 +20,9 @@ import StressReportView from "./StressReportView.vue";
 const props = defineProps<{
   run: ReturnType<typeof useRunStore>;
   reportError: (e: unknown) => void;
+  project?: import('../../../shared/locations.js').ProjectLocator;
 }>();
+const emit = defineEmits<{ collaboration: [source: import('zod').z.infer<typeof import('../../../shared/online/collaboration.js').CollaborationLocalSourceSchema>] }>();
 const { t } = useI18n();
 
 type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
@@ -122,6 +124,7 @@ function onBack() {
           >{{ kindLabel(s) }}</a-tag>
           <span v-if="rowName(s)">{{ rowName(s) }}</span>
           <small>{{ s.projectId ?? '旧记录：项目身份未采集' }}</small>
+          <a-button v-if="s.kind === 'stress' && project" data-testid="collaboration-publish-stress" @click.stop="emit('collaboration', {kind:'stress',file:s.file,project})">{{ t('collaboration.publishToProject') }}</a-button>
         </div>
         <div class="row-meta">
           <span>{{ s.startedAt }}</span>

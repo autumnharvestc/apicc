@@ -4,8 +4,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { performance } from "node:perf_hooks";
 
-import type { CompiledMockPlan, CompiledMockRoute, CompiledMockRule } from "./compile.js";
-import type { MockCondition, MockDiagnostic } from "./config.js";
+import type { CompiledMockPlan, CompiledMockRule } from "./compile.js";
+import type { MockDiagnostic } from "./config.js";
+import { evaluateMockWithHeaderValues } from "./evaluate.js";
 
 const HOST = "127.0.0.1";
 const MAX_REQUEST_BYTES = 1_048_576;
@@ -64,8 +65,6 @@ export class MockServerError extends Error {
 }
 
 type BodyReadResult = { ok: true; bytes: Buffer } | { ok: false; reason: "REQUEST_TOO_LARGE" };
-type DecodedTarget = { pathSegments: string[]; query: URLSearchParams } | { error: "MALFORMED_REQUEST_TARGET" | "MALFORMED_PATH_ENCODING" };
-type PathMatch = Record<string, string> | undefined;
 
 export async function startMockServer(plan: CompiledMockPlan, options: StartMockServerOptions = {}): Promise<MockServerHandle> {
   const port = options.port ?? 0;
@@ -129,7 +128,6 @@ export async function startMockServer(plan: CompiledMockPlan, options: StartMock
     const requestPlan = currentPlan;
     const revision = requestPlan.sourceProjectRevision;
     const method = request.method ?? "GET";
-    let route: CompiledMockRoute | undefined;
     let routeTemplate: string | undefined;
     let contractId: string | undefined;
     let rule: CompiledMockRule | undefined;
@@ -208,50 +206,22 @@ export async function startMockServer(plan: CompiledMockPlan, options: StartMock
         return;
       }
 
-      const target = decodeTarget(request.url ?? "");
-      if ("error" in target) {
-        await sendAndFinish(400, target.error, () => sendStatus(response, method, 400));
+      const evaluated = evaluateMockWithHeaderValues(requestPlan, {
+        method, target: request.url ?? "", headers: {}, body: bodyResult.bytes,
+      }, (name) => requestHeaderValues(request, name));
+      routeTemplate = evaluated.routeTemplate;
+      contractId = evaluated.contractId;
+      responseBindingId = evaluated.responseBindingId;
+      if (evaluated.reason !== "MATCHED") {
+        await sendAndFinish(evaluated.status, evaluated.reason, () => sendStatus(response, method, evaluated.status));
         return;
       }
+      // Resolve only the already-selected rule for the local transport's existing
+      // invalid-plan cap and log identity. No condition is evaluated a second time.
+      rule = requestPlan.routes.find((candidate) => candidate.contractId === evaluated.contractId && candidate.pathTemplate === evaluated.routeTemplate)!
+        .rules.find((candidate) => candidate.id === evaluated.ruleId)!;
 
-      const pathParameters = findRoute(requestPlan.routes, method, target.pathSegments, (matchedRoute) => {
-        route = matchedRoute;
-        routeTemplate = matchedRoute.pathTemplate;
-        contractId = matchedRoute.contractId;
-      });
-      if (!pathParameters || !route) {
-        await sendAndFinish(404, "NO_ROUTE", () => sendStatus(response, method, 404));
-        return;
-      }
-
-      let parsedBody: unknown;
-      let bodyIsParsed = false;
-      let bodyParseFailed = false;
-      const parseBody = (): boolean => {
-        if (bodyIsParsed) return !bodyParseFailed;
-        bodyIsParsed = true;
-        try {
-          parsedBody = JSON.parse(bodyResult.bytes.toString("utf8")) as unknown;
-          return true;
-        } catch {
-          bodyParseFailed = true;
-          return false;
-        }
-      };
-
-      const headerValues = (name: string): string[] => requestHeaderValues(request, name);
-      const queryValues = (name: string): string[] => target.query.getAll(name);
-      rule = route.rules.find((candidate) => candidate.conditions.every((condition) => {
-        if (condition.source === "body" && !parseBody()) return false;
-        return matchesCondition(condition, pathParameters, queryValues, headerValues, parsedBody);
-      }));
-      if (!rule) {
-        await sendAndFinish(501, "NO_RULE_MATCH", () => sendStatus(response, method, 501));
-        return;
-      }
-      responseBindingId = rule.responseBindingId;
-
-      if (!await waitForDelay(rule.delayMs, requestController.signal)) {
+      if (!await waitForDelay(evaluated.delayMs, requestController.signal)) {
         await cancelAndFinish();
         return;
       }
@@ -264,10 +234,10 @@ export async function startMockServer(plan: CompiledMockPlan, options: StartMock
         await sendAndFinish(500, "INVALID_PLAN_RESPONSE_TOO_LARGE", () => sendStatus(response, method, 500));
         return;
       }
-      const body = method === "HEAD" || rule.status === 204 || rule.status === 304 ? Buffer.alloc(0) : Buffer.from(rule.body);
+      const body = Buffer.from(evaluated.body);
       const responseCompletion = waitForResponseCompletion(response);
       try {
-        sendCompiledResponse(response, rule, body);
+        sendCompiledResponse(response, evaluated, body);
       } catch {
         if (!response.headersSent && !response.destroyed) {
           try {
@@ -434,48 +404,6 @@ function readRequestBody(request: IncomingMessage): Promise<BodyReadResult> {
   });
 }
 
-function decodeTarget(target: string): DecodedTarget {
-  if (!target.startsWith("/")) return { error: "MALFORMED_REQUEST_TARGET" };
-  const queryIndex = target.indexOf("?");
-  const rawPath = queryIndex < 0 ? target : target.slice(0, queryIndex);
-  const rawSegments = rawPath.split("/");
-  let pathSegments: string[];
-  try {
-    pathSegments = rawSegments.map((segment) => decodeURIComponent(segment));
-  } catch {
-    return { error: "MALFORMED_PATH_ENCODING" };
-  }
-  return { pathSegments, query: new URLSearchParams(queryIndex < 0 ? "" : target.slice(queryIndex + 1)) };
-}
-
-function findRoute(
-  routes: readonly CompiledMockRoute[],
-  method: string,
-  pathSegments: readonly string[],
-  onMatch: (route: CompiledMockRoute) => void,
-): PathMatch {
-  for (const route of routes) {
-    if (route.method !== method || route.segments.length !== pathSegments.length) continue;
-    const parameters: Record<string, string> = Object.create(null) as Record<string, string>;
-    let matches = true;
-    for (let index = 0; index < route.segments.length; index += 1) {
-      const segment = route.segments[index]!;
-      const value = pathSegments[index]!;
-      if (segment.kind === "literal") {
-        if (segment.value !== value) {
-          matches = false;
-          break;
-        }
-      } else parameters[segment.name] = value;
-    }
-    if (matches) {
-      onMatch(route);
-      return parameters;
-    }
-  }
-  return undefined;
-}
-
 function requestHeaderValues(request: IncomingMessage, name: string): string[] {
   const values: string[] = [];
   for (let index = 0; index < request.rawHeaders.length; index += 2) {
@@ -484,45 +412,7 @@ function requestHeaderValues(request: IncomingMessage, name: string): string[] {
   return values;
 }
 
-function matchesCondition(
-  condition: MockCondition,
-  pathParameters: Record<string, string>,
-  queryValues: (name: string) => string[],
-  headerValues: (name: string) => string[],
-  body: unknown,
-): boolean {
-  if (condition.source === "body") {
-    const pointer = resolveJsonPointer(body, condition.pointer);
-    if (condition.op === "exists") return pointer.found;
-    return pointer.found && pointer.value === condition.value;
-  }
-  let values: string[];
-  if (condition.source === "path") values = Object.hasOwn(pathParameters, condition.name) ? [pathParameters[condition.name]!] : [];
-  else if (condition.source === "query") values = queryValues(condition.name);
-  else values = headerValues(condition.name);
-  if (condition.op === "exists") return values.length > 0;
-  return values.some((value) => value === condition.value);
-}
-
-function resolveJsonPointer(root: unknown, pointer: string): { found: boolean; value?: unknown } {
-  const tokens = pointer === "" ? [] : pointer.slice(1).split("/").map((token) => token.replace(/~1/g, "/").replace(/~0/g, "~"));
-  let value = root;
-  for (const token of tokens) {
-    if (typeof value !== "object" || value === null) return { found: false };
-    if (Array.isArray(value)) {
-      if (!/^(0|[1-9][0-9]*)$/.test(token)) return { found: false };
-      const index = Number(token);
-      if (index >= value.length) return { found: false };
-      value = value[index];
-      continue;
-    }
-    if (!Object.hasOwn(value, token)) return { found: false };
-    value = (value as Record<string, unknown>)[token];
-  }
-  return { found: true, value };
-}
-
-function sendCompiledResponse(response: ServerResponse, rule: CompiledMockRule, body: Buffer): void {
+function sendCompiledResponse(response: ServerResponse, rule: Pick<CompiledMockRule, "headers" | "status" | "mediaType">, body: Buffer): void {
   const connectionTokens = new Set<string>();
   for (const [name, value] of Object.entries(rule.headers)) {
     if (name.toLowerCase() === "connection") {

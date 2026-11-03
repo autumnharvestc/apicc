@@ -9,7 +9,7 @@ export const ExecutionLocationSchema = z.discriminatedUnion("kind", [z.object({ 
 export type ExecutionLocation = z.infer<typeof ExecutionLocationSchema>;
 export const OnlineProjectViewSchema = z.object({ assets: ProjectAssetsSchema, project: ContractProjectSchema.nullable(), problems: z.array(z.string()) }).strict();
 export type OnlineProjectView = z.infer<typeof OnlineProjectViewSchema>;
-export const OnlineJobSchema = z.object({ jobId: EntityIdSchema, executionId: EntityIdSchema, agentId: EntityIdSchema,
+export const FullOnlineJobSchema = z.object({ jobId: EntityIdSchema, executionId: EntityIdSchema, agentId: EntityIdSchema,
   state: z.enum(["queued", "preparing", "running", "ended"]), cancelState: z.enum(["none", "requested", "confirmed"]),
   executionReleased: z.boolean(), reportState: z.enum(["none", "pending", "archived", "expired"]), task: TaskEnvelopeV1Schema,
   reportKind: z.enum(['stress', 'stress-failure', 'stress-fault']).optional(),
@@ -17,7 +17,16 @@ export const OnlineJobSchema = z.object({ jobId: EntityIdSchema, executionId: En
   canCancel: z.boolean().optional(), scriptTimeoutMs: z.number().int().positive().safe().optional(),
   summary: z.record(z.string(), JsonValueSchema).optional(), progress: z.record(z.string(), JsonValueSchema).optional(),
 }).strict();
+export type FullOnlineJob = z.infer<typeof FullOnlineJobSchema>;
+export const MinimalOnlineJobSchema = z.object({
+  jobId: EntityIdSchema, executionId: EntityIdSchema, agentId: EntityIdSchema,
+  state: z.enum(["queued", "preparing", "running", "ended"]), cancelState: z.enum(["none", "requested", "confirmed"]),
+  executionReleased: z.boolean(), canCancel: z.boolean(), view: z.literal('active-status'), scope: ServerProjectScopeSchema,
+}).strict();
+export const OnlineJobSchema = z.union([FullOnlineJobSchema, MinimalOnlineJobSchema]);
 export type OnlineJob = z.infer<typeof OnlineJobSchema>;
+export function isFullOnlineJob(job: OnlineJob): job is FullOnlineJob { return 'task' in job; }
+export function onlineJobScope(job: OnlineJob) { return isFullOnlineJob(job) ? job.task.scope : job.scope; }
 // Validate the structures consumed by the viewers, without reproducing Core execution logic.
 // Unknown JSON metadata remains intact for compatible historical results.
 const count = z.number().int().nonnegative().safe();

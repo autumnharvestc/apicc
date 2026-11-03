@@ -36,6 +36,9 @@ class ProjectAclApiContractTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private com.autumnharvestc.server.access.AccessFixtureRevisions versions;
+
     // ---- 测试脚手架 ----
 
     /** 注册并登录，返回 [userId, token]。 */
@@ -68,7 +71,7 @@ class ProjectAclApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + targetUserId)
                         .header("Authorization", "Bearer " + callerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"" + role + "\"}"))
+                        .content(versions.memberBody(wsId, targetUserId, role)))
                 .andExpect(status().isOk());
     }
 
@@ -105,7 +108,7 @@ class ProjectAclApiContractTest {
         return mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + callerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + targetUserId + "\",\"role\":\"" + role + "\"}"))
+                        .content(versions.aclBody(wsId, projectId, targetUserId, role)))
                 .andReturn();
     }
 
@@ -124,7 +127,7 @@ class ProjectAclApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + admin[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"NONE\"}"))
+                        .content(versions.aclBody(wsId, projectId, viewer[0], "NONE")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.userId").value(viewer[0]))
                 .andExpect(jsonPath("$.role").value("NONE"));
@@ -132,7 +135,7 @@ class ProjectAclApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"EDITOR\"}"))
+                        .content(versions.aclBody(wsId, projectId, viewer[0], "EDITOR")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("EDITOR"));
     }
@@ -153,7 +156,7 @@ class ProjectAclApiContractTest {
             mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                             .header("Authorization", "Bearer " + token)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"NONE\"}"))
+                            .content(versions.aclBody(wsId, projectId, viewer[0], "NONE")))
                     .andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.code").value("forbidden"));
         }
@@ -170,7 +173,7 @@ class ProjectAclApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"999999\",\"role\":\"VIEWER\"}"))
+                        .content(versions.aclBody(wsId, projectId, "999999", "VIEWER")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("user_not_found"));
 
@@ -178,14 +181,14 @@ class ProjectAclApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"not-a-number\",\"role\":\"VIEWER\"}"))
+                        .content("{\"userId\":\"not-a-number\",\"role\":\"VIEWER\",\"expectedRevision\":0}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("validation_failed"));
 
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + owner[0] + "\",\"role\":\"SUPERUSER\"}"))
+                        .content(versions.aclBody(wsId, projectId, owner[0], "SUPERUSER")))
                 .andExpect(status().isBadRequest());
     }
 
@@ -202,7 +205,7 @@ class ProjectAclApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/projects/" + missingProjectId + "/acl")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"" + viewer[0] + "\",\"role\":\"VIEWER\"}"))
+                        .content(versions.aclBody(wsId, missingProjectId, viewer[0], "VIEWER")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("project_not_found"));
 
@@ -213,6 +216,7 @@ class ProjectAclApiContractTest {
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + missingProjectId
                         + "/acl?userId=" + viewer[0])
+                        .param("expectedRevision", Long.toString(versions.acl(wsId, missingProjectId, viewer[0])))
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("project_not_found"));
@@ -281,6 +285,7 @@ class ProjectAclApiContractTest {
         putAcl(owner[1], wsId, projectId, viewer[0], "NONE");
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl?userId=" + viewer[0])
+                        .param("expectedRevision", Long.toString(versions.acl(wsId, projectId, viewer[0])))
                         .header("Authorization", "Bearer " + admin[1]))
                 .andExpect(status().isNoContent());
 
@@ -290,6 +295,7 @@ class ProjectAclApiContractTest {
 
         // 幂等
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl?userId=" + viewer[0])
+                        .param("expectedRevision", Long.toString(versions.acl(wsId, projectId, viewer[0])))
                         .header("Authorization", "Bearer " + admin[1]))
                 .andExpect(status().isNoContent());
     }
@@ -306,6 +312,7 @@ class ProjectAclApiContractTest {
         putAcl(owner[1], wsId, projectId, viewer[0], "NONE");
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/projects/" + projectId + "/acl?userId=" + viewer[0])
+                        .param("expectedRevision", Long.toString(versions.acl(wsId, projectId, viewer[0])))
                         .header("Authorization", "Bearer " + editor[1]))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("forbidden"));

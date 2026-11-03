@@ -37,6 +37,10 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import OnlineLoginDialog from "./components/OnlineLoginDialog.vue";
 import OnlineApiEditor from "./components/OnlineApiEditor.vue";
 import OnlineProjectAssets from "./components/online/OnlineProjectAssets.vue";
+import CollaborationPanel from './components/online/CollaborationPanel.vue';
+import { createCollaborationStore } from './stores/collaboration.js';
+import type { CollaborationLocalSource } from '../../shared/online/collaboration.js';
+import type { OnlineExecutionContext } from '../../shared/online/execution.js';
 import { createOnlineProjectAdapter } from "./stores/onlineProjectAdapter.js";
 import OnlineConflictDialog from "./components/OnlineConflictDialog.vue";
 import OnlineMigrateDialog from "./components/OnlineMigrateDialog.vue";
@@ -181,6 +185,11 @@ const stress = createStressStore({
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
 // TopBar 的在线入口按钮只置 online.dialogOpen。 ——
 const online = createOnlineStore({ api: apicc });
+const collaboration = createCollaborationStore(apicc);
+const pendingCollaborationSource = ref<CollaborationLocalSource | null>(null), collaborationTargetId = ref('');
+function chooseCollaborationTarget(source: CollaborationLocalSource) { pendingCollaborationSource.value = source; collaborationTargetId.value = ''; }
+async function prepareLocalCollaboration() { const source = pendingCollaborationSource.value!; const context = online.executionContext(collaborationTargetId.value)!; pendingCollaborationSource.value = null; collaboration.visible = true; await collaboration.selectLocal(context, source, t('collaboration.localReport')); }
+async function shareOnlineLocal(value: { context: OnlineExecutionContext; source: CollaborationLocalSource }) { collaboration.visible = true; await collaboration.selectLocal(value.context, value.source, t('collaboration.localReport')); }
 const onlineProjectAdapter = createOnlineProjectAdapter(online.execution, apicc, () => !online.execution.context || !online.canEdit(`${online.execution.context.scope.projectId}/project.yaml`), () => window.confirm(t('testing.discardConfirm')));
 // —— AI store（M6-C 任务 1 装配）：同一组合根一次性创建；挂载后读持久化配置与 key
 // 状态（init 全程不抛）。对话框/抽屉本体在组合根渲染，接口头部入口按钮只置显隐/拉取。 ——
@@ -701,6 +710,10 @@ const selectedProjectContext = computed(() => {
   return locator ? { root: workspace.root, locator } : null;
 });
 const selectedProjectLocator = computed(() => selectedProjectContext.value?.locator ?? null);
+watch([() => online.activeBaseUrl, () => online.user, () => online.loggedIn, () => isHome.value, () => workspace.root, () => JSON.stringify(selectedProjectLocator.value), () => JSON.stringify(online.execution.context)], () => {
+  pendingCollaborationSource.value = null;
+  if (collaboration.visible) void collaboration.close().catch(reportError);
+}, { flush: 'sync' });
 const activeProjectLocator = computed(() => selectedProjectLocator.value ? { ...selectedProjectLocator.value } : null);
 watch(() => JSON.stringify([isHome.value, onlineMode.value, selectedProjectContext.value]), () => {
   const context = selectedProjectContext.value;
@@ -1261,7 +1274,7 @@ function onDividerDblClick() {
             :active-online-project-id="homeActiveOnlineProjectId"
           />
           <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
-          <OnlineProjectAssets v-else-if="onlineMode && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects" @published="openOnlineProjectFromHome"><OnlineApiEditor :online="online" /></OnlineProjectAssets>
+          <OnlineProjectAssets v-else-if="onlineMode && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects" @collaboration="context => collaboration.activate(context).catch(reportError)" @collaboration-result="value => shareOnlineLocal(value).catch(reportError)" @published="openOnlineProjectFromHome"><OnlineApiEditor :online="online" /></OnlineProjectAssets>
           <OnlineApiEditor v-else-if="onlineMode" class="panel-view" :online="online" />
           <!-- 接口模块（M8）：头部（子视图页签 + AI 入口）+ 调试/设计/用例子视图 -->
           <template v-else-if="view === 'api'">
@@ -1325,6 +1338,7 @@ function onDividerDblClick() {
                   :create-free-module="createFreeRequestModule"
                   :save-free-request="saveFreeRequestAsApi"
                   @new-free-request="openFreeRequestTab"
+                  @collaboration-history="historyOpen = true"
                 />
               </div>
               <div
@@ -1364,6 +1378,7 @@ function onDividerDblClick() {
             :selected-collection-locator="selectedCollectionLocator"
             :report-error="reportError"
             @locate-evidence="locateExecutionEvidence"
+            @collaboration="chooseCollaborationTarget"
           />
           <!-- 测试模块（M11）：侧栏导航 + 主区用例面板/压测上下文 -->
           <template v-else-if="view === 'test'">
@@ -1453,12 +1468,15 @@ function onDividerDblClick() {
     <!-- AI 配置对话框与建议抽屉（M6-C 任务 1）：接口头部入口按钮置显隐/拉取 -->
     <AiConfigDialog :ai="ai" />
     <AiSuggestionsDrawer :ai="ai" />
-    <DebugHistory :ai="ai" :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" :project-locator="selectedProjectLocator" :restore-free="restoreFreeHistory" :replay-free="replayFreeHistory" @close="historyOpen = false" />
+    <DebugHistory :ai="ai" :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" :project-locator="selectedProjectLocator" :restore-free="restoreFreeHistory" :replay-free="replayFreeHistory" @collaboration="chooseCollaborationTarget" @close="historyOpen = false" />
+    <aside v-if="pendingCollaborationSource" class="collaboration-drawer" role="dialog" data-testid="collaboration-target-picker"><h2>{{ t('collaboration.chooseTarget') }}</h2><p>{{ t('collaboration.localNoNetwork') }}</p><p v-if="!online.loggedIn || !online.projects.length">{{ t('collaboration.connectTarget') }}</p><select v-model="collaborationTargetId" data-testid="collaboration-target"><option value="">{{ t('collaboration.chooseTarget') }}</option><option v-for="project in online.projects" :key="project.id" :value="project.id">{{ online.activeName }} · {{ online.activeWorkspace?.name }} / {{ project.name }}</option></select><button :disabled="!online.executionContext(collaborationTargetId)" data-testid="collaboration-prepare-local" @click="prepareLocalCollaboration().catch(reportError)">{{ t('collaboration.prepareLocal') }}</button><button @click="pendingCollaborationSource = null">{{ t('collaboration.close') }}</button></aside>
+    <aside v-if="collaboration.visible" class="collaboration-drawer" role="dialog" :aria-label="t('collaboration.title')"><button @click="collaboration.close().catch(reportError)">{{ t('collaboration.close') }}</button><CollaborationPanel :collaboration="collaboration" :saved="online.execution.view ? { revision: online.execution.view.assets.version, manifestHash: online.execution.view.assets.manifestHash } : undefined" :dirty="online.editorDirty || onlineProjectAdapter.editor.dirty || onlineProjectAdapter.testing.dirty || onlineProjectAdapter.workflowDesign.dirty" /></aside>
   </a-layout>
   </ConfigProvider>
 </template>
 
 <style>
+.collaboration-drawer{position:fixed;inset:24px 24px 24px max(24px,20vw);z-index:1050;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;padding:16px;overflow:auto;min-width:0}
 html, body, #app { height: 100%; margin: 0; }
 .app { height: 100%; min-height: 0; overflow: hidden; background: var(--bg); color: var(--text); }
 .body { flex: 1; display: flex; min-height: 0; overflow: hidden; }

@@ -1,6 +1,6 @@
 import type { McpSource, McpProjectRead, McpRun } from "./source.js";
 import { openMcpProfile, type McpProfileDeps } from "./profiles.js";
-import { createMemberExecutionClient, createMemberExecutionRequest, OnlineJobSchema, type OnlineJob } from "@apicc/execution/client";
+import { createMemberExecutionClient, createMemberExecutionRequest, FullOnlineJobSchema, isFullOnlineJob, type OnlineJob } from "@apicc/execution/client";
 import { aiPersonalProjectKey, createProjectSnapshot, assertAiReportOwnership, type AiReadableReport } from "@apicc/core";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -34,7 +34,7 @@ export async function createOnlineSource(profileId: string, deps: McpProfileDeps
       for (const [alias, id] of aliases) if (id === oldest) aliases.delete(alias);
     }
     references.set(runId, { projectId, jobId: job.jobId, executionId: job.executionId, agentId: job.agentId });
-    return { runId, projectId, state: job.state, reportState: job.reportState };
+    return { runId, projectId, state: job.state, ...(isFullOnlineJob(job) ? { reportState: job.reportState } : { view: job.view }) };
   };
   const resolve = async (runId: string, signal: AbortSignal) => {
     await authenticate(signal);
@@ -42,7 +42,7 @@ export async function createOnlineSource(profileId: string, deps: McpProfileDeps
     if (!reference) throw new Error("MCP report unavailable；请先 list-runs 选择 opaque ID");
     const context = contextFor(reference.projectId);
     const job = await member.status(context, { kind: "agent", agentId: reference.agentId }, reference.jobId, signal) as OnlineJob;
-    if (job.jobId !== reference.jobId || job.executionId !== reference.executionId || job.task.jobId !== reference.jobId || job.task.executionId !== reference.executionId) throw new Error("MCP report-execution-binding-mismatch；来源已改变");
+    if (job.jobId !== reference.jobId || job.executionId !== reference.executionId || isFullOnlineJob(job) && (job.task.jobId !== reference.jobId || job.task.executionId !== reference.executionId)) throw new Error("MCP report-execution-binding-mismatch；来源已改变");
     return { reference, context, job };
   };
   const source: McpSource = {
@@ -79,7 +79,7 @@ export async function createOnlineSource(profileId: string, deps: McpProfileDeps
       }
       const remaining = limit - result.items.length;
       const request = createMemberExecutionRequest(opened.session.captureExecution(context), opened.fetch, signal);
-      const jobs = await request("GET", `workspaces/${context.scope.workspaceId}/projects/${projectId}/jobs?limit=${remaining}${cursor?.before ? `&beforeJobId=${cursor.before}` : ""}`, undefined, z.array(OnlineJobSchema).max(remaining));
+      const jobs = await request("GET", `workspaces/${context.scope.workspaceId}/projects/${projectId}/jobs?limit=${remaining}${cursor?.before ? `&beforeJobId=${cursor.before}` : ""}`, undefined, z.array(FullOnlineJobSchema).max(remaining));
       if (jobs.some(job => job.task.scope.workspaceId !== context.scope.workspaceId || job.task.scope.groupId !== context.scope.groupId || job.task.scope.projectId !== context.scope.projectId)) throw new Error("MCP online-job-scope-mismatch");
       result.items.push(...jobs.map(job => runView(job, projectId)));
       if (jobs.length === remaining) next({ phase: "remote", before: jobs.at(-1)!.jobId });
@@ -96,8 +96,9 @@ export async function createOnlineSource(profileId: string, deps: McpProfileDeps
         const run = reader.get(runId); if (run) return reader.report(runId, await source.readProject(run.projectId, signal), signal);
       }
       const { reference, context, job } = await resolve(runId, signal);
-      if (job.reportState !== "archived") throw new Error(job.reportState === "expired" ? "MCP report-expired：报告已到期/清理" : "MCP report-not-archived：报告尚未归档");
+      if (isFullOnlineJob(job) && job.reportState !== "archived") throw new Error(job.reportState === "expired" ? "MCP report-expired：报告已到期/清理" : "MCP report-not-archived：报告尚未归档");
       const result = await member.report(context, { kind: "agent", agentId: reference.agentId }, reference.jobId, signal);
+      if (!isFullOnlineJob(job)) throw new Error("MCP report-binding-unavailable；请刷新后重新读取报告，不会重跑");
       const output = result.output;
       if (!output || output.kind === "stress-failure") throw new Error("MCP report-unreadable：没有可读的归档报告；不会重跑");
       const project = await source.readProject(reference.projectId, signal);

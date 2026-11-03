@@ -41,6 +41,8 @@ public class ProjectService {
     private final AclRepo acl;
     private final WorkspaceRepo workspaces;
     private final WorkspaceGuard guard;
+    private final com.autumnharvestc.server.access.AccessRepo accessRecords;
+    private final com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage;
 
     /** 项目视图（{id, groupId, name, createdAt}）。id/groupId 保持 String：对外字符串化数字
      * （规格 2026-09-09 BIGINT 化，全局不变量 1）。 */
@@ -57,13 +59,15 @@ public class ProjectService {
                           FileVersionRepo fileVersions,
                           AclRepo acl,
                           WorkspaceRepo workspaces,
-                          WorkspaceGuard guard) {
+                          WorkspaceGuard guard,com.autumnharvestc.server.access.AccessRepo accessRecords,com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage) {
         this.projects = projects;
         this.groups = groups;
         this.fileVersions = fileVersions;
         this.acl = acl;
         this.workspaces = workspaces;
         this.guard = guard;
+        this.accessRecords=accessRecords;
+        this.collaborationStorage=collaborationStorage;
     }
 
     /** 项目清单（成员可读），按创建时间稳定排序（repo 保证）。 */
@@ -115,15 +119,21 @@ public class ProjectService {
     @Transactional
     public void delete(UserAccount caller, String workspaceId, String projectId) {
         long wsId = EntityIds.parse(workspaceId);
+        collaborationStorage.beforeProjectDelete();
+        accessRecords.lockGate();
         guard.requireAdmin(wsId, caller);
         long pid = EntityIds.parse(projectId);
+        accessRecords.lockScope(wsId,pid,null,false);
         findInWorkspace(wsId, pid);
+        collaborationStorage.lockScope(wsId,pid);
         if (!fileVersions.lockProject(wsId, pid)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "project_not_found", "项目已删除");
         }
         fileVersions.deleteByProjectPrefix(wsId, pid);
         acl.deleteByProject(wsId, pid);
+        accessRecords.deleteByProject(wsId,pid);
         projects.delete(pid);
+        collaborationStorage.projectDeleted(caller.id(),wsId,pid);
     }
 
     /**

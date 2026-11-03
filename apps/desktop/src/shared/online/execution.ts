@@ -1,5 +1,6 @@
 import { OnlineExecutionContextSchema, ExecutionLocationSchema, OnlineProjectViewSchema, OnlineJobSchema, OnlineReportSchema, OnlineLocalResultSchema } from "@apicc/execution/client/memberTypes";
 export { OnlineExecutionContextSchema, ExecutionLocationSchema, OnlineProjectViewSchema, OnlineJobSchema, InvocationOutputSchema, OnlineReportSchema, OnlineLocalStressSchema, OnlineLocalResultSchema, type OnlineExecutionContext, type ExecutionLocation, type OnlineProjectView, type OnlineJob, type OnlineReport, type OnlineLocalResult } from "@apicc/execution/client/memberTypes";
+export { FullOnlineJobSchema, MinimalOnlineJobSchema, isFullOnlineJob, onlineJobScope, type FullOnlineJob } from '@apicc/execution/client/memberTypes';
 import { z } from "zod";
 import { ContractProjectSchema, JsonValueSchema, SecretRefSchema } from "@apicc/core/schema";
 import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "../credentials.js";

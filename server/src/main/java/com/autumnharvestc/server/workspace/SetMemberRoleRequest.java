@@ -9,5 +9,7 @@ import jakarta.validation.constraints.NotNull;
  */
 public record SetMemberRoleRequest(
         @NotNull(message = "不能为空")
-        Role role) {
+        Role role,
+        Long expectedRevision,
+        com.fasterxml.jackson.databind.JsonNode expectedActorRevision) {
 }

@@ -14,6 +14,7 @@ import { createOnlineLocalCredentialStore } from "./projectCredentials.js";
 import type { PluginsRuntime } from "../plugins/runtime.js";
 import { importDatasetContent, exportDatasetContent } from "../datasetExchange.js";
 import { runDesktopStress, type DesktopStressConfiguration } from './stressProcess.js';
+import { FullOnlineJobSchema, onlineJobScope } from '../../shared/online/execution.js';
 
 type LocalRun = { context: string; abort: AbortController; completion: Promise<OnlineLocalResult>; result?: OnlineLocalResult; failure?: OnlineReport; started: boolean; settled: boolean };
 export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?: typeof fetch; localStore?: () => SecretStore; plugins?: PluginsRuntime }) {
@@ -41,7 +42,8 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
     const binding = deps.session.captureExecution(input.context);
     const path = `workspaces/${input.context.scope.workspaceId}/projects/${input.context.scope.projectId}`;
     const assertJob = (job: z.infer<typeof OnlineJobSchema>) => {
-      if(job.task.scope.workspaceId!==input.context.scope.workspaceId||job.task.scope.groupId!==input.context.scope.groupId||job.task.scope.projectId!==input.context.scope.projectId||input.location.kind==='agent'&&job.agentId!==input.location.agentId)throw new Error('online-project-scope-mismatch');
+      const scope=onlineJobScope(job);
+      if(scope.workspaceId!==input.context.scope.workspaceId||scope.groupId!==input.context.scope.groupId||scope.projectId!==input.context.scope.projectId||input.location.kind==='agent'&&job.agentId!==input.location.agentId)throw new Error('online-project-scope-mismatch');
       return job;
     };
           const admittedAt = performance.now();
@@ -179,7 +181,7 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
       const path = `workspaces/${input.context.scope.workspaceId}/projects/${input.context.scope.projectId}`;
       const projectAgents = () => request("GET", `${path}/execution-agents`, undefined, ProjectExecutionAgentsSchema);
       const memberMaterials = () => createMemberMaterialsClient({ baseUrl: binding.serverId, token: binding.token, fetch: deps.fetch ?? globalThis.fetch });
-      const assertJob = (job: z.infer<typeof OnlineJobSchema>) => {
+      const assertJob = (job: z.infer<typeof FullOnlineJobSchema>) => {
         if (job.task.scope.workspaceId !== input.context.scope.workspaceId || job.task.scope.groupId !== input.context.scope.groupId || job.task.scope.projectId !== input.context.scope.projectId || ("location" in input && input.location.kind === "agent" && job.agentId !== input.location.agentId)) throw new Error("online-project-scope-mismatch");
         return job;
       };
@@ -249,7 +251,7 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
           }
           binding.assertCurrent(); return { ok: true };
         }
-        case "list": return (await request("GET", `${path}/jobs?limit=${input.limit}${input.beforeJobId ? `&beforeJobId=${input.beforeJobId}` : ""}`, undefined, z.array(OnlineJobSchema))).map(assertJob);
+        case "list": return (await request("GET", `${path}/jobs?limit=${input.limit}${input.beforeJobId ? `&beforeJobId=${input.beforeJobId}` : ""}`, undefined, z.array(FullOnlineJobSchema))).map(assertJob);
         case "status": case "cancel": case "report": {
           const signal = trusted.signal ?? new AbortController().signal;
           if(input.location.kind==='local'&&localRuns.has(input.runId)) {

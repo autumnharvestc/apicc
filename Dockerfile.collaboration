@@ -1,0 +1,33 @@
+# Optional finite Core host. No control/agent identity or user project volume.
+FROM node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90 AS build
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
+ENV npm_config_verify_deps_before_run=false
+COPY pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY packages/ packages/
+COPY apps/ apps/
+COPY server/src/main/resources/collaboration-runtime-boundary.json server/src/main/resources/collaboration-runtime-boundary.json
+RUN --mount=type=cache,id=apicc-pnpm11,target=/root/.local/share/pnpm/store pnpm --config.verify-deps-before-run=false --filter @apicc/collaboration-runtime... install --frozen-lockfile \
+ && pnpm -C packages/plugin-sdk build \
+ && pnpm -C packages/core build \
+ && pnpm -C apps/collaboration-runtime build \
+ && node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check
+
+FROM node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/packages/core ./packages/core
+COPY --from=build /app/packages/plugin-sdk ./packages/plugin-sdk
+COPY --from=build /app/apps/collaboration-runtime ./apps/collaboration-runtime
+USER node
+ENV APICC_COLLABORATION_RUNTIME_ENABLED=true \
+    APICC_COLLABORATION_RUNTIME_HOST=0.0.0.0 \
+    APICC_COLLABORATION_RUNTIME_PORT=3210 \
+    APICC_COLLABORATION_RUNTIME_SECRET_FILE=/run/secrets/collaboration-rpc \
+    APICC_COLLABORATION_RUNTIME_CACHE_BYTES=67108864 \
+    APICC_COLLABORATION_RUNTIME_MAX_WIRE_BYTES=33554432 \
+    APICC_COLLABORATION_RUNTIME_HEAP_BYTES=402653184
+# No published port; deployment supplies an internal network and CPU/RSS hard limits.
+EXPOSE 3210
+# Node's option is old-space MiB, rounded down from the existing byte setting (not total V8 heap/RSS).
+ENTRYPOINT ["/bin/sh", "-c", "case \"$APICC_COLLABORATION_RUNTIME_HEAP_BYTES\" in ''|*[!0-9]*) echo RPC_CONFIGURATION_INVALID >&2; exit 1;; esac; exec node --max-old-space-size=$((APICC_COLLABORATION_RUNTIME_HEAP_BYTES / 1048576)) apps/collaboration-runtime/dist/main.js"]

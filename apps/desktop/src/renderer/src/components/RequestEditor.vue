@@ -21,7 +21,7 @@ import ProjectAssetsPanel from "./ProjectAssetsPanel.vue";
 import MockPanel from "./MockPanel.vue";
 import DebugSettings from "./DebugSettings.vue";
 
-const emit = defineEmits<{ "new-free-request": [] }>();
+const emit = defineEmits<{ "new-free-request": []; 'collaboration-history': [] }>();
 
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
@@ -589,6 +589,7 @@ async function onSaveRequest() {
       <a-button type="primary" data-testid="send-btn" :disabled="(tabDebugState?.sending ?? debug.sending) || pendingRestoreFields.length > 0" @click="onSend">{{ (tabDebugState?.sending ?? debug.sending) ? t('editor.sending') : t('editor.send') }}</a-button>
       <a-button v-if="(tabDebugState?.sending ?? debug.sending) && (tabDebugState?.activeRunId ?? debug.activeRunId)" data-testid="debug-cancel" @click="onCancel">{{ t('debugLoop.cancelRun') }}</a-button>
       <a-button data-testid="debug-settings-open" @click="settingsOpen = true">{{ t('debugLoop.settings') }}</a-button>
+      <a-button data-testid="collaboration-open-history" @click="emit('collaboration-history')">{{ t('collaboration.chooseDebugHistory') }}</a-button>
       <template v-if="!isFreeRequest">
         <a-button data-testid="save-request-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSaveRequest">{{ t('debugLoop.saveRequest') }}</a-button>
         <a-button data-testid="save-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSave">{{ t('editor.save') }}</a-button>

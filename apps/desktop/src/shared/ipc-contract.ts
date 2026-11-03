@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { OnlineExecutionInputSchema } from "./online/execution.js";
+import { CollaborationInputSchema } from './online/collaboration.js';
 import { OnlineSchedulingInputSchema } from './online/scheduling.js';
 import { StressPlanSaveInputSchema, StressCompareInputSchema, StressExportInputSchema, StressReportFileSchema } from "./types.js";
 import { StressPlanSchema } from "@apicc/core/schema";
@@ -368,6 +369,7 @@ export const IpcArgsSchemas = {
   [IpcChannel.OnlineProjectMapping]: z.tuple([OnlineProjectMappingSchema]),
   [IpcChannel.OnlineGroupsList]: z.tuple([OnlineWorkspaceIdSchema]),
   [IpcChannel.OnlineExecution]: z.tuple([OnlineExecutionInputSchema]),
+  [IpcChannel.OnlineCollaboration]: z.tuple([CollaborationInputSchema]),
   [IpcChannel.OnlineScheduling]: z.tuple([OnlineSchedulingInputSchema]),
   [IpcChannel.AiSaveConfig]: z.tuple([AiSaveConfigSchema]),
   [IpcChannel.AiGetConfig]: z.tuple([]),
@@ -540,6 +542,7 @@ const resultMethodByChannel = {
   [IpcChannel.OnlineProjectMapping]: "onlineProjectMapping",
   [IpcChannel.OnlineGroupsList]: "onlineGroupsList",
   [IpcChannel.OnlineExecution]: "onlineExecution",
+  [IpcChannel.OnlineCollaboration]: 'onlineCollaboration',
   [IpcChannel.OnlineScheduling]: 'onlineScheduling',
   [IpcChannel.AiSaveConfig]: "aiSaveConfig",
   [IpcChannel.AiGetConfig]: "aiGetConfig",

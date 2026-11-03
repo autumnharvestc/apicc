@@ -5,12 +5,13 @@ import type { CaseOutcome } from "../report/types.js";
 import type { SafeExecutionEvidence } from "../report/types.js";
 
 const evidencePreviewSchema = z.object({ text: z.string(), truncated: z.boolean(), omitted: z.boolean().optional() }).strict();
-export const SafeExecutionEvidenceSchema: z.ZodType<SafeExecutionEvidence> = z.object({
-  identity: z.object({ projectId: z.string(), definitionRevision: z.string(), locator: z.object({ collectionId: z.string(), folderIds: z.array(z.string()), apiId: z.string(), caseId: z.string(), scope: z.string() }).strict().optional(),
+export const EvidenceIdentitySchema = z.object({ projectId: z.string(), definitionRevision: z.string(), locator: z.object({ collectionId: z.string(), folderIds: z.array(z.string()), apiId: z.string(), caseId: z.string(), scope: z.string() }).strict().optional(),
     invocationId: z.string().optional(), parentInvocationId: z.string().optional(), nodeVisitId: z.string().optional(), attempt: z.number().int().min(1).max(5).optional(),
     stressRunId: z.string().optional(), vuId: z.string().optional(), iterationId: z.string().optional(), stageId: z.string().nullable().optional(),
     invocationPath: z.array(z.object({ workflowId: z.string(), nodeId: z.string().optional(), branchId: z.string().optional(), iteration: z.number().int().nonnegative().optional(), handler: z.enum(["onError", "finally"]).optional() }).strict()).optional(),
-    suiteRunId: z.string().optional(), entryId: z.string().optional(), suiteRow: z.number().optional(), rowIndex: z.number().optional(), nodeId: z.string().optional(), workflowId: z.string().optional(), environmentId: z.string().optional(), dataDigest: z.string().optional(), datasetId: z.string().optional() }).strict(),
+    suiteRunId: z.string().optional(), entryId: z.string().optional(), suiteRow: z.number().optional(), rowIndex: z.number().optional(), nodeId: z.string().optional(), workflowId: z.string().optional(), environmentId: z.string().optional(), dataDigest: z.string().optional(), datasetId: z.string().optional() }).strict();
+export const SafeExecutionEvidenceSchema: z.ZodType<SafeExecutionEvidence> = z.object({
+  identity: EvidenceIdentitySchema,
   state: z.enum(["collected", "not-collected", "omitted"]), truncated: z.boolean(), scriptDiagnostics: z.enum(["existing-assertions-only", "not-collected"]),
   timings: z.object({ requestMs: z.number(), scriptMs: z.number(), iterationMs: z.number() }).strict().optional(),
   request: z.object({ protocol: z.string(), method: z.string().optional(), url: evidencePreviewSchema, headers: evidencePreviewSchema, body: evidencePreviewSchema }).strict().optional(),
@@ -187,14 +188,15 @@ const generatorLimitsSchema = z.object({
 }).strict();
 
 /** Legacy numeric generator objects remain readable; unavailable is explicit and has no fake metrics. */
-export const StressGeneratorSchema = z.object({
+export const StressGeneratorWireSchema = z.object({
   availability: z.enum(["available", "partial", "unavailable"]).optional(), unavailableReason: z.string().optional(),
   cpuUserMs: z.number().finite().nonnegative().optional(), cpuSystemMs: z.number().finite().nonnegative().optional(), cpuPercent: z.number().finite().nonnegative().optional(),
   rssStartBytes: z.number().finite().nonnegative().optional(), rssPeakBytes: z.number().finite().nonnegative().optional(), eventLoopDelayP95Ms: z.number().finite().nonnegative().optional(),
   schedulerBacklogMax: z.number().finite().int().nonnegative().optional(), saturated: z.boolean().optional(),
   reasons: z.array(z.enum(["cpu", "event-loop-delay", "scheduler-backlog"])).optional(),
   limits: generatorLimitsSchema.optional(),
-}).strict().superRefine((generator, ctx) => {
+}).strict();
+export const StressGeneratorSchema = StressGeneratorWireSchema.superRefine((generator, ctx) => {
   if (generator.availability === "unavailable") {
     for (const key of ["cpuUserMs", "cpuSystemMs", "cpuPercent", "rssStartBytes", "rssPeakBytes", "eventLoopDelayP95Ms", "schedulerBacklogMax", "saturated", "reasons", "limits"] as const) {
       if (generator[key] !== undefined) ctx.addIssue({ code: "custom", path: [key], message: "unavailable generator cannot fabricate metrics" });
@@ -206,10 +208,11 @@ export const StressGeneratorSchema = z.object({
   }
 });
 
-export const StressMeasurementWindowSchema = z.object({
+export const StressMeasurementWindowWireSchema = z.object({
   startWallMs: z.number().finite(), endWallMs: z.number().finite(),
   monotonicDurationMs: z.number().finite().nonnegative(), eligibleCompletedAttempts: z.number().int().nonnegative(),
-}).strict().superRefine((window, ctx) => {
+}).strict();
+export const StressMeasurementWindowSchema = StressMeasurementWindowWireSchema.superRefine((window, ctx) => {
   if (window.endWallMs < window.startWallMs && window.monotonicDurationMs === 0) {
     ctx.addIssue({ code: "custom", path: ["endWallMs"], message: "measurement window wall clock reversed without monotonic duration" });
   }
@@ -291,6 +294,16 @@ export const StressReportSchema = z.object({
   safety: StressSafetySchema.optional(),
   connectionMode: z.enum(["pooled", "fresh"]).optional(),
 }).strict();
+/** Structural wire validation only; parseStressReport retains all Core semantic checks. */
+export const StressReportWireSchema = StressReportSchema.extend({
+  generator: StressGeneratorWireSchema.optional(), measurementWindow: StressMeasurementWindowWireSchema.optional(),
+  distributed: StressDistributedSchema.extend({
+    shardErrors: z.array(StressDistributedSchema.shape.shardErrors.unwrap().element.strict()).optional(),
+    perShard: z.array(StressDistributedSchema.shape.perShard.element.extend({
+      generator: StressGeneratorWireSchema, measurementWindow: StressMeasurementWindowWireSchema,
+    })),
+  }).optional(),
+});
 /**
  * Contract for reports produced by a current stress run.  StressReportSchema
  * intentionally remains permissive so historical JSON can still be read; all

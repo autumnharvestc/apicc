@@ -3,6 +3,9 @@ import java.util.*;
 import com.autumnharvestc.server.store.UserAccount;
 import com.autumnharvestc.server.workspace.WorkspaceGuard;
 import com.autumnharvestc.server.execution.scheduling.*;
+import com.autumnharvestc.server.access.Capability;
+import com.autumnharvestc.server.access.ProjectAccessService;
+import com.autumnharvestc.server.store.ProjectRepo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -10,10 +13,10 @@ import static com.autumnharvestc.server.execution.agent.AgentRepo.*;
 @Service
 @Transactional
 public class NotificationEventService {
-    private final NotificationEventRepo repo;private final WorkspaceGuard guard;private final ScheduleTimeSource time;private final ObjectMapper json;private final com.autumnharvestc.server.core.PermissionService permissions;
+    private final NotificationEventRepo repo;private final WorkspaceGuard guard;private final ScheduleTimeSource time;private final ObjectMapper json;private final ProjectAccessService access;private final ProjectRepo projects;
     @org.springframework.beans.factory.annotation.Autowired private NotificationOutboxService outbox;
     @org.springframework.beans.factory.annotation.Autowired private ScheduleGrantService grants;
-    public NotificationEventService(NotificationEventRepo repo,WorkspaceGuard guard,ScheduleTimeSource time,ObjectMapper json,com.autumnharvestc.server.core.PermissionService permissions){this.repo=repo;this.guard=guard;this.time=time;this.json=json;this.permissions=permissions;}
+    public NotificationEventService(NotificationEventRepo repo,WorkspaceGuard guard,ScheduleTimeSource time,ObjectMapper json,ProjectAccessService access,ProjectRepo projects){this.repo=repo;this.guard=guard;this.time=time;this.json=json;this.access=access;this.projects=projects;}
     public void observe(long ws){
         repo.gate();
         for(long id:repo.occurrenceCandidates(ws,50))repo.occurrence(id).ifPresent(s->{
@@ -44,13 +47,15 @@ public class NotificationEventService {
     }
     public NotificationDtos.Page list(UserAccount caller,String ws,Integer requested,String before){
         long workspace=id(ws);guard.requireMember(workspace,caller);observe(workspace);
-        int limit=limit(requested);var rows=repo.memberPage(workspace,caller.id(),limit+1,before==null?null:id(before));boolean more=rows.size()>limit;rows=rows.subList(0,Math.min(limit,rows.size()));var items=rows.stream().map(row->project(row,caller.id())).toList();return new NotificationDtos.Page(items,more?items.getLast().id():null);
+        if(access.resolve(caller.id(),workspace,null).effectiveRole().isEmpty())throw error(org.springframework.http.HttpStatus.FORBIDDEN,"forbidden","当前账号不是有效工作区成员");
+        var readable=projects.listByWorkspace(workspace).stream().filter(p->access.resolve(caller.id(),workspace,p.id()).capabilities().contains(Capability.HISTORY_READ)).map(p->p.id()).toList();
+        int limit=limit(requested);var rows=repo.memberPage(workspace,readable,limit+1,before==null?null:id(before));boolean more=rows.size()>limit;rows=rows.subList(0,Math.min(limit,rows.size()));var items=rows.stream().map(row->project(row,caller.id())).toList();return new NotificationDtos.Page(items,more?items.getLast().id():null);
     }
     private NotificationDtos.Event project(Map<String,Object> row,long user){try{long event=id((String)row.get("id"));var value=json.readValue((String)row.get("body"),new com.fasterxml.jackson.core.type.TypeReference<LinkedHashMap<String,Object>>(){});value.put("read",repo.read(event,user));value.put("notificationState",outbox.state(event));value.put("deliveries",outbox.views(event));return json.convertValue(value,NotificationDtos.Event.class);}catch(Exception e){throw new IllegalStateException("Cannot decode safe event");}}
     private static int limit(Integer requested){int limit=requested==null?25:requested;if(limit<1||limit>100)throw error(org.springframework.http.HttpStatus.BAD_REQUEST,"validation_failed","通知分页大小必须为1至100");return limit;}
-    public NotificationDtos.HistoryPage history(UserAccount caller,String ws,String project,String schedule,Integer requested,String before,String sourceBefore){grants.requireRead(caller,ws,project);long w=id(ws),p=id(project),s=id(schedule);if(!repo.scheduleExists(w,p,s))throw error(org.springframework.http.HttpStatus.NOT_FOUND,"schedule_not_found","定时任务不存在");int limit=limit(requested);var heads=repo.history(w,p,s,limit+1,before==null?null:id(before));boolean more=heads.size()>limit;heads=heads.subList(0,Math.min(limit,heads.size()));var items=heads.stream().map(h->{var deliveries=outbox.views(h.id());var reasons=deliveries.stream().map(NotificationOutboxRepo.DeliveryView::reasonCode).filter(Objects::nonNull).distinct().toList();return new NotificationDtos.HistoryEvent(String.valueOf(h.id()),h.source(),h.version(),h.kind(),h.created(),h.detailState(),h.inApp(),deliveries.isEmpty()&&!h.inApp()?"not-requested":outbox.state(h.id()),reasons.isEmpty()?List.of(h.reason()):reasons,deliveries);}).toList();var observed=repo.observations(w,p,s,limit+1,sourceBefore==null?null:id(sourceBefore));boolean moreSources=observed.size()>limit;observed=observed.subList(0,Math.min(limit,observed.size()));return new NotificationDtos.HistoryPage(ws,project,schedule,items,more?items.getLast().eventId():null,observed.stream().map(NotificationEventRepo.ObservationRow::view).toList(),moreSources?String.valueOf(observed.getLast().id()):null,repo.pauseObservation(w,p,s));}
+    public NotificationDtos.HistoryPage history(UserAccount caller,String ws,String project,String schedule,Integer requested,String before,String sourceBefore){grants.requireHistory(caller,ws,project);long w=id(ws),p=id(project),s=id(schedule);if(!repo.scheduleExists(w,p,s))throw error(org.springframework.http.HttpStatus.NOT_FOUND,"schedule_not_found","定时任务不存在");int limit=limit(requested);var heads=repo.history(w,p,s,limit+1,before==null?null:id(before));boolean more=heads.size()>limit;heads=heads.subList(0,Math.min(limit,heads.size()));var items=heads.stream().map(h->{var deliveries=outbox.views(h.id());var reasons=deliveries.stream().map(NotificationOutboxRepo.DeliveryView::reasonCode).filter(Objects::nonNull).distinct().toList();return new NotificationDtos.HistoryEvent(String.valueOf(h.id()),h.source(),h.version(),h.kind(),h.created(),h.detailState(),h.inApp(),deliveries.isEmpty()&&!h.inApp()?"not-requested":outbox.state(h.id()),reasons.isEmpty()?List.of(h.reason()):reasons,deliveries);}).toList();var observed=repo.observations(w,p,s,limit+1,sourceBefore==null?null:id(sourceBefore));boolean moreSources=observed.size()>limit;observed=observed.subList(0,Math.min(limit,observed.size()));return new NotificationDtos.HistoryPage(ws,project,schedule,items,more?items.getLast().eventId():null,observed.stream().map(NotificationEventRepo.ObservationRow::view).toList(),moreSources?String.valueOf(observed.getLast().id()):null,repo.pauseObservation(w,p,s));}
     public Map<String,Object> read(UserAccount caller,String ws,String event){
         long workspace=id(ws);guard.requireMember(workspace,caller);var row=repo.readable(workspace,id(event)).orElseThrow(()->error(org.springframework.http.HttpStatus.NOT_FOUND,"notification_not_found","通知不存在"));
-        if(permissions.effectiveRole(workspace,caller.id(),(Long)row.get("project")).isEmpty())throw error(org.springframework.http.HttpStatus.FORBIDDEN,"project_forbidden","该项目不可见");repo.markRead(id(event),caller.id());return Map.of("id",event,"read",true);
+        grants.requireHistory(caller,ws,String.valueOf(row.get("project")));repo.markRead(id(event),caller.id());return Map.of("id",event,"read",true);
     }
 }

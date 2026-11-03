@@ -13,6 +13,25 @@ function localResult(runId: string): OnlineLocalResult { return { location: { ki
 function activateRun(store: ReturnType<typeof createOnlineExecutionStore>) { store.activate(context); store.setVisible(true); store.view = { project: null, problems: [], assets: { ...context.scope, format: 'contract-files-v1', contractProjectId: '00000000-0000-4000-8000-000000000018', version: '1', manifestHash: 'a'.repeat(64), files: [] } }; }
 function job(jobId: string, executionId: string): OnlineJob { return { jobId, executionId, agentId: '5', state: 'ended', cancelState: 'none', executionReleased: true, reportState: 'archived', task: { protocolVersion: 1, jobId, executionId, scope: context.scope, submittedByUserId: '7', contractProjectId: '00000000-0000-4000-8000-000000000018', snapshotId: '66', manifestHash: 'a'.repeat(64), target: { kind: 'workflow', workflowId }, policyVersion: '0', requiredCoreBuildId: 'b'.repeat(64), scriptPlanDigest: 'c'.repeat(64), executionProfile: 'no-script', runtimeCompatibilityId: 'recorded-agent-runtime', dispatchKind: 'dedicated-task', requiredCapabilities: ['task:workflow'] } }; }
 describe("online execution renderer state", () => {
+  it.each(['refresh','cancel'])('F7f minimum %s replaces selected full job and never requests historical report',async operation=>{
+    const calls:OnlineExecutionInput[]=[];
+    const minimum={jobId:'99',executionId:'100',agentId:'5',state:operation==='cancel'?'ended':'running',cancelState:operation==='cancel'?'confirmed':'none',executionReleased:operation==='cancel',canCancel:operation!=='cancel',view:'active-status',scope:context.scope};
+    const previous={...job('99','100'),state:'running' as const,reportState:'none' as const};
+    const store=createOnlineExecutionStore({onlineExecution:async input=>{calls.push(input);return input.operation==='run'?previous:minimum;}});
+    activateRun(store);store.selectLocation({kind:'agent',agentId:'5'});await store.run({kind:'workflow',workflowId});
+    expect(store.jobs[0]).toEqual(previous);store.report={executionId:'100',verdict:'passed'};
+    try{
+      const error=await (operation==='refresh'?store.refreshActive():store.cancel(previous)).then(()=>null,cause=>cause);
+      expect.soft(error).toBeNull();
+      expect.soft(store.jobs[0]).toEqual(minimum);
+      expect.soft(store.resultSelection).toEqual({kind:'agent',job:minimum});
+      expect.soft(store.connection).not.toBe('disconnected');
+      expect.soft(store.report).toBeNull();
+      store.setVisible(false);store.setVisible(true);
+      expect.soft(store.jobs[0]).toEqual(minimum);expect.soft(store.resultSelection).toEqual({kind:'agent',job:minimum});expect.soft(store.report).toBeNull();
+      expect(calls.some(call=>call.operation==='report')).toBe(false);
+    }finally{store.setVisible(false);}
+  });
   // Parsing a failed replacement must not leave the previously confirmed A authorized.
   it('revokes the previous stress consent when a replacement confirmation is invalid', async () => {
     const calls: OnlineExecutionInput[] = [];

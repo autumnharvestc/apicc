@@ -199,7 +199,7 @@ export function registerAiCommands(program: Command, deps: AiCommandDeps): void 
     deps.log(`既有报告：${reports.length} 份（只读；通过 --report 选择 ID）`);
     deps.log("仅列出归属可靠且格式可读的当前项目报告；旧归属未知报告不可选择");
     if (diagnostics.size) deps.log(`受控归档来源级省略：不可读 ${diagnostics.get("unreadable") ?? 0} 份；归属不明 ${diagnostics.get("unattributable") ?? 0} 份（不归入当前项目；不展示文件名或路径）。`);
-    for (const item of reports) deps.log(`${item.runId}；${item.startedAt ?? "开始时间未采集"} → ${item.finishedAt ?? "结束时间未采集"}；归档状态 ${({ archived: "已归档", expired: "已到期", none: "未归档", pending: "归档中" } as Record<string, string>)[item.reportState] ?? item.reportState}；定义 ${item.definitionRevision ?? "未知"}`);
+    for (const item of reports) deps.log(`${item.runId}；${item.startedAt ?? "开始时间未采集"} → ${item.finishedAt ?? "结束时间未采集"}；归档状态 ${({ archived: "已归档", expired: "已到期", none: "未归档", pending: "归档中" } as Record<string, string>)[String(item.reportState)] ?? item.reportState}；定义 ${item.definitionRevision ?? "未知"}`);
     if (cursor) deps.log("已达到 CLI 1000 份枚举上限，仍有报告未列出；请使用固定 MCP 连接分页读取，不能跨连接复用游标。");
     } finally { await source.close(); }
   });

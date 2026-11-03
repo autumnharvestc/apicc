@@ -12,6 +12,7 @@ import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js
 import { useRunStore } from "../../../src/renderer/src/stores/run.js";
 import RunView from "../../../src/renderer/src/components/RunView.vue";
 import CaseEvidencePanel from "../../../src/renderer/src/components/CaseEvidencePanel.vue";
+import { runReport } from '../../../../../packages/core/tests/collaboration/fixtures.js';
 
 const jsdomComputedStyle = window.getComputedStyle;
 beforeAll(() => {
@@ -75,6 +76,16 @@ async function mountRunView(props: Record<string, unknown> = {}) {
 }
 
 describe("RunView", () => {
+  it('T9 offers the selected current report as a digest descriptor without putting its raw result in the event', async () => {
+    const { wrapper, run, collectionNode } = await mountRunView(); await wrapper.setProps({ selectedCollectionLocator: collectionNode.locator }); await flushPromises(); run.result = runReport(); await flushPromises(); expect(wrapper.text()).toContain('2');
+    await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises(); const source = wrapper.emitted('collaboration')?.[0]?.[0] as any;
+    expect(source).toEqual({ kind: 'current', project: { workspaceId: collectionNode.locator.workspaceId, groupId: collectionNode.locator.groupId, projectId: collectionNode.locator.projectId }, expectedReportDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }); expect(source.report).toBeUndefined();
+  });
+  it('T9 chooses exactly the selected stress file without opening another history body', async () => {
+    const { wrapper, api, run, collectionNode } = await mountRunView(); await wrapper.setProps({ selectedCollectionLocator: collectionNode.locator }); const summary = { kind: 'stress' as const, projectId: collectionNode.locator.projectId, file: 'selected-stress.json', startedAt: '2026-11-01T00:00:00Z', totalRequests: 2, ok: 1, failed: 1, rps: 1 }; api.runsList = async () => [summary]; const read = vi.spyOn(api, 'runsGet');
+    run.historyOpen = true; await flushPromises(); expect(bodyFind('history-row')?.text()).toContain(collectionNode.locator.projectId);
+    await bodyFind('collaboration-publish-stress')!.trigger('click'); await flushPromises(); expect(wrapper.emitted('collaboration')?.[0]?.[0]).toEqual({ kind: 'stress', file: 'selected-stress.json', project: { workspaceId: collectionNode.locator.workspaceId, groupId: collectionNode.locator.groupId, projectId: collectionNode.locator.projectId } }); expect(read).not.toHaveBeenCalled();
+  });
   it("C1 Fix1 reserves rerun preparation synchronously and navigation awaits the captured cleanup", async () => {
     const { api, run, workspace, project, collectionNode } = await mountRunView();
     run.setTarget(workspace.root, collectionNode.locator);

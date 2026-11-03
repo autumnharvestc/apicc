@@ -85,12 +85,18 @@ jobs:
           pnpm -C packages/execution check:java-input-schema
       - name: 构建消费者及 src/tests 类型门
         run: |
+          pnpm -C apps/collaboration-runtime build
+          pnpm -C apps/collaboration-runtime typecheck
+          node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check
+          pnpm -C apps/share-viewer build
+          pnpm -C apps/share-viewer typecheck
           pnpm -C apps/runner-agent build
           pnpm -C apps/runner-agent typecheck
           pnpm -C apps/desktop build
           pnpm -C apps/admin-web build
           pnpm -C packages/cli build
           pnpm -C packages/cli typecheck
+          node --test scripts/tests/f7f-acceptance.test.mjs
       - name: 全部包测试
         # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 SDK/core build，序列自洽
         # 与 scripts/test-all.ps1 保持一致：不让 admin pretest/build 与 Core 争用 CPU，
@@ -111,10 +117,20 @@ jobs:
           if-no-files-found: warn
 
   server-test:
-    name: 服务端测试（JDK 21）
+    name: 服务端测试（JDK 21 + 显式 Node 组合前提）
     runs-on: ubuntu-latest
+    env:
+      npm_config_verify_deps_before_run: "false"
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v5 # v5
+      - uses: pnpm/action-setup@v4 # v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4 # v4
+        with:
+          node-version: 22.19.0
+          cache: pnpm
       - uses: actions/setup-java@v4 # v4
         with:
           distribution: temurin
@@ -128,12 +144,24 @@ jobs:
           key: m2-${{ runner.os }}-${{ hashFiles('server/pom.xml') }}
           restore-keys: |
             m2-${{ runner.os }}-
+      - name: Java 组合夹具的真实 Node 与外置 viewer 前提
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm -C packages/plugin-sdk build
+          pnpm -C packages/core build
+          pnpm -C packages/execution build
+          pnpm -C packages/execution check:java-input-schema
+          pnpm -C apps/collaboration-runtime build
+          pnpm -C apps/collaboration-runtime typecheck
+          node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check
+          pnpm -C apps/share-viewer build
+          pnpm -C apps/share-viewer typecheck
       - name: 服务端测试
         # 与本地同口径：统一 -s server/.mvn/settings.xml（central 走 Aliyun public 镜像，
         # 规格 m3 §2 D3）。JAVA_HOME/java 已由 setup-java 配好，无需手工 env；
         # ubuntu runner 预装 mvn，无需 wrapper。surefire 的 Mockito/byte-buddy 动态
         # agent JDK 告警暂不处理，观察首轮 CI 输出后再定（计划清单⑥备案项）。
-        run: mvn -s server/.mvn/settings.xml -f server/pom.xml test
+        run: APICC_TEST_NODE="$(command -v node)" mvn -s server/.mvn/settings.xml -f server/pom.xml test
 
   brand-gate:
     name: 品牌中立门禁
@@ -216,7 +244,18 @@ jobs:
         # SDK 已在前一步构建；desktop 由下方 dist:dir 自建（三段构建含 typecheck），避免重复。
         # 注：否定 filter 会打印一行 `No projects matched the filters "…apps\desktop"` 告警，
         # 是 pnpm 对被排除包的例行输出（exit 0），非失败，勿误读。
-        run: pnpm --filter "!@apicc/desktop" --filter "!@apicc/plugin-sdk" -r build
+        run: |
+          pnpm -C packages/core build
+          pnpm -C packages/execution build
+          pnpm -C packages/execution check:java-input-schema
+          pnpm -C apps/collaboration-runtime build
+          pnpm -C apps/collaboration-runtime typecheck
+          node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check
+          pnpm -C apps/share-viewer build
+          pnpm -C apps/share-viewer typecheck
+          pnpm -C apps/runner-agent build
+          pnpm -C apps/admin-web build
+          pnpm -C packages/cli build
       - name: 生成应用图标
         run: pnpm -C apps/desktop gen:icon
       - name: 打包（dir 模式，含三段构建）
@@ -241,13 +280,21 @@ jobs:
       - name: 构建同候选控制与代理镜像
         run: |
           docker build -t apicc-server:local .
+          docker build -f Dockerfile.collaboration -t apicc-collaboration:local .
           docker build -f Dockerfile.agent -t apicc-runner-agent:local .
       - name: HTTP 与私有 CA HTTPS 健康检查和 Linux 原生闭包
         run: node scripts/smoke-runner-agent.mjs
+      - name: 可选协作私网与真实资源、不可用边界
+        env:
+          APICC_F7F_SERVER_IMAGE: apicc-server:local
+          APICC_F7F_RUNTIME_IMAGE: apicc-collaboration:local
+        run: node scripts/smoke-collaboration.mjs
       - name: 归档部署冒烟身份与生命周期
         if: always()
         uses: actions/upload-artifact@v4 # v4
         with:
           name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}
-          path: local/f7b-t11/apicc-runner-smoke-*.json
+          path: |
+            local/f7b-t11/apicc-runner-smoke-*.json
+            local/f7f-acceptance/containers-*/containers.json
           if-no-files-found: warn

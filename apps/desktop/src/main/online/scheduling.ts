@@ -11,7 +11,7 @@ import {assertAssetsScope} from './projectAssets.js';
 import type {OnlineSession} from './session.js';
 import type { OnlineSchedulingInput } from '../../shared/online/scheduling.js';
 import { createSchedulingClient, ExecutionHttpError } from '@apicc/execution/client';
-import { OnlineJobSchema } from '../../shared/online/execution.js';
+import { OnlineJobSchema, onlineJobScope, isFullOnlineJob } from '../../shared/online/execution.js';
 
 export async function handleOnlineScheduling(deps: { session: OnlineSession; fetch?: typeof fetch }, input: OnlineSchedulingInput) {
   if (input.operation === 'prepare') return prepareOnlineSchedule(deps, { ...input.input, context: input.context });
@@ -22,9 +22,9 @@ export async function handleOnlineScheduling(deps: { session: OnlineSession; fet
   switch (input.operation) {
     case 'originalJob': {
       const job = await createExecutionRequest(binding, deps.fetch)('GET', `jobs/${input.jobId}`, undefined, OnlineJobSchema);
-      const actual = job.task.scope;
+      const actual = onlineJobScope(job);
       if (actual.workspaceId !== scope.workspaceId || actual.groupId !== scope.groupId || actual.projectId !== scope.projectId) throw new Error('online-project-scope-mismatch');
-      if (job.jobId !== input.jobId || job.executionId !== input.executionId || job.task.jobId !== input.jobId || job.task.executionId !== input.executionId) throw new Error('fixed-input-mismatch');
+      if (job.jobId !== input.jobId || job.executionId !== input.executionId || isFullOnlineJob(job) && (job.task.jobId !== input.jobId || job.task.executionId !== input.executionId)) throw new Error('fixed-input-mismatch');
       return { jobId: job.jobId, executionId: job.executionId, agentId: job.agentId };
     }
     case 'options': return client.options(scope, signal);

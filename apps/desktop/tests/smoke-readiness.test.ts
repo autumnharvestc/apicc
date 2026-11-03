@@ -102,3 +102,11 @@ test("CDP protocol error is terminal even if the next document observation would
   });
   assert.equal(time, 0);
 });
+test('collaboration package readiness refuses a mounted page without the new IPC bridge', async () => {
+  let time=0;
+  await assert.rejects(waitForRendererReady({deadline:1000,now:()=>time,sleep:async(ms:number)=>{time+=ms;},isAlive:()=>true,requireCollaboration:true,observe:async()=>({...ready,collaboration:'undefined'})}), /就绪超时/);
+});
+test('the actual collaboration bridge completes package readiness', async () => {
+  const state={...ready,collaboration:'function'};
+  assert.equal(await waitForRendererReady({deadline:1000,now:()=>0,isAlive:()=>true,requireCollaboration:true,observe:async()=>state}), state);
+});

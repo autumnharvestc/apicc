@@ -41,6 +41,9 @@ class MemberApiContractTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private com.autumnharvestc.server.access.AccessFixtureRevisions versions;
+
     // ---- 测试脚手架 ----
 
     /** 注册并登录，返回 [userId, token]。 */
@@ -73,7 +76,7 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + targetUserId)
                         .header("Authorization", "Bearer " + callerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"" + role + "\"}"))
+                        .content(versions.memberBody(wsId, targetUserId, role)))
                 .andExpect(status().isOk());
     }
 
@@ -130,7 +133,7 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + candidate[0])
                         .header("Authorization", "Bearer " + admin[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"EDITOR\"}"))
+                        .content(versions.memberBody(wsId, candidate[0], "EDITOR")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.userId").value(candidate[0]))
                 .andExpect(jsonPath("$.username").value("m-frank"))
@@ -154,14 +157,14 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + member[0])
                         .header("Authorization", "Bearer " + admin[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"ADMIN\"}"))
+                        .content(versions.memberBody(wsId, member[0], "ADMIN")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("ADMIN"));
 
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + member[0])
                         .header("Authorization", "Bearer " + admin[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"VIEWER\"}"))
+                        .content(versions.memberBody(wsId, member[0], "VIEWER")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("VIEWER"));
     }
@@ -179,7 +182,7 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + member[0])
                         .header("Authorization", "Bearer " + admin[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"OWNER\"}"))
+                        .content(versions.memberBody(wsId, member[0], "OWNER")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("requires_owner"));
     }
@@ -195,14 +198,14 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + owner[0])
                         .header("Authorization", "Bearer " + admin[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"VIEWER\"}"))
+                        .content(versions.memberBody(wsId, owner[0], "VIEWER")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("owner_immutable"));
 
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + owner[0])
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"VIEWER\"}"))
+                        .content(versions.memberBody(wsId, owner[0], "VIEWER")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("owner_immutable"));
     }
@@ -218,7 +221,7 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + member[0])
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"OWNER\"}"))
+                        .content(versions.memberBody(wsId, member[0], "OWNER")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.userId").value(member[0]))
                 .andExpect(jsonPath("$.role").value("OWNER"));
@@ -244,7 +247,7 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + outsider[0])
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"OWNER\"}"))
+                        .content(versions.memberBody(wsId, outsider[0], "OWNER")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("OWNER"));
 
@@ -266,7 +269,7 @@ class MemberApiContractTest {
             mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + owner[0])
                             .header("Authorization", "Bearer " + token)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"role\":\"VIEWER\"}"))
+                            .content(versions.memberBody(wsId, owner[0], "VIEWER")))
                     .andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.code").value("forbidden"));
         }
@@ -274,7 +277,7 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + "999999")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"VIEWER\"}"))
+                        .content(versions.memberBody(wsId, "999999", "VIEWER")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("user_not_found"));
 
@@ -282,14 +285,14 @@ class MemberApiContractTest {
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/not-a-number")
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"VIEWER\"}"))
+                        .content("{\"role\":\"VIEWER\",\"expectedRevision\":0}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("validation_failed"));
 
         mockMvc.perform(put("/api/v1/workspaces/" + wsId + "/members/" + editor[0])
                         .header("Authorization", "Bearer " + owner[1])
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"SUPREME\"}"))
+                        .content(versions.memberBody(wsId, editor[0], "SUPREME")))
                 .andExpect(status().isBadRequest());
     }
 
@@ -306,6 +309,7 @@ class MemberApiContractTest {
         putMember(owner[1], wsId, member[0], "VIEWER");
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + member[0])
+                        .param("expectedRevision", Long.toString(versions.member(wsId, member[0])))
                         .header("Authorization", "Bearer " + admin[1]))
                 .andExpect(status().isNoContent());
 
@@ -327,11 +331,13 @@ class MemberApiContractTest {
         putMember(owner[1], wsId, admin[0], "ADMIN");
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + owner[0])
+                        .param("expectedRevision", Long.toString(versions.member(wsId, owner[0])))
                         .header("Authorization", "Bearer " + admin[1]))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("owner_immutable"));
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + owner[0])
+                        .param("expectedRevision", Long.toString(versions.member(wsId, owner[0])))
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("owner_immutable"));
@@ -349,16 +355,19 @@ class MemberApiContractTest {
         putMember(owner[1], wsId, viewer[0], "VIEWER");
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + viewer[0])
+                        .param("expectedRevision", Long.toString(versions.member(wsId, viewer[0])))
                         .header("Authorization", "Bearer " + editor[1]))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("forbidden"));
 
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + viewer[0])
+                        .param("expectedRevision", Long.toString(versions.member(wsId, viewer[0])))
                         .header("Authorization", "Bearer " + outsider[1]))
                 .andExpect(status().isForbidden());
 
         // 注册但非成员的 userId → 404 member_not_found（id 为字符串化数字，经 EntityIds.parse）
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + outsider[0])
+                        .param("expectedRevision", Long.toString(versions.member(wsId, outsider[0])))
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("member_not_found"));
@@ -366,6 +375,7 @@ class MemberApiContractTest {
         // ADMIN 移除 EDITOR 成功（ADMIN 及以下皆可移）
         putMember(owner[1], wsId, editor[0], "ADMIN");
         mockMvc.perform(delete("/api/v1/workspaces/" + wsId + "/members/" + editor[0])
+                        .param("expectedRevision", Long.toString(versions.member(wsId, editor[0])))
                         .header("Authorization", "Bearer " + owner[1]))
                 .andExpect(status().isNoContent());
     }

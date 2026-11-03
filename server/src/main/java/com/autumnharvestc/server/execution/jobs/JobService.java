@@ -13,6 +13,7 @@ import com.autumnharvestc.server.execution.config.ExecutionConfigService;
 import com.autumnharvestc.server.execution.policy.ScriptGrantService;
 import com.autumnharvestc.server.execution.materials.*;
 import com.autumnharvestc.server.core.Hashes;
+import com.autumnharvestc.server.access.Capability;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.nio.charset.StandardCharsets;
 import java.time.*;
@@ -60,7 +61,7 @@ public class JobService implements AssignedMaterialAuthorizer {
         agents.requireExecution(caller,ws,project);validate(request);
         long w=id(ws),p=id(project),agent=id(request.agentId());
         String intentHash=repo.digest(request);var prior=repo.intent(caller.id(),p,request.intentId());
-        if(prior.isPresent()){if(!Objects.equals(repo.scheduleOrigin(prior.get().id()).orElse(null),origin))throw error(CONFLICT,"intent_source_conflict","相同提交意图已绑定不同的运行来源");if(!prior.get().intentHash().equals(intentHash))throw error(CONFLICT,"intent_conflict","同一提交意图的固定内容已变化");return view(prior.get(),caller);}
+        if(prior.isPresent()){if(!Objects.equals(repo.scheduleOrigin(prior.get().id()).orElse(null),origin))throw error(CONFLICT,"intent_source_conflict","相同提交意图已绑定不同的运行来源");if(!prior.get().intentHash().equals(intentHash))throw error(CONFLICT,"intent_conflict","同一提交意图的固定内容已变化");return view(repo.status(prior.get().id()),caller,true);}
         var snapshot=snapshots.loadAuthorized(caller,id(request.snapshotId()));var assets=snapshot.assets();
         var declared=request.preparation();
         if(!assets.workspaceId().equals(ws)||!assets.projectId().equals(project)||!declared.scope().equals(new JobDtos.Scope(ws,assets.groupId(),project)))throw error(FORBIDDEN,"snapshot_scope_mismatch","准备声明必须对应受权固定项目快照");
@@ -81,7 +82,7 @@ public class JobService implements AssignedMaterialAuthorizer {
         var inputs=new LinkedHashMap<String,Object>();inputs.put("executionId",String.valueOf(execution));inputs.put("snapshot",snapshot);inputs.put("runConfig",runValues(request.runConfig()));inputs.put("materials",request.materials());inputs.put("policy",policy(effective));if(declared.stressBinding()!=null){inputs.put("stressBinding",declared.stressBinding());inputs.put("stressExecutor",Map.of("id",String.valueOf(agent),"name",nodes.require(agent,false).name()));}if(request.network()!=null)inputs.put("network",request.network());String digest=repo.executionInputDigest(inputs);inputs.put("inputsDigest",digest);
         var policy=policy(effective);var queueTimeout=policy.get("queueTimeoutMs");OffsetDateTime expires=queueTimeout==null?null:(origin==null?now():scheduleTime.now().atOffset(ZoneOffset.UTC)).plusNanos((((Number)queueTimeout).longValue()%1000)*1000000).plusSeconds(((Number)queueTimeout).longValue()/1000);
         if(absoluteDeadline!=null){var cap=absoluteDeadline.truncatedTo(java.time.temporal.ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);if(expires==null||cap.isBefore(expires))expires=cap;}
-        repo.insert(job,execution,w,p,caller.id(),agent,id(snapshot.snapshotId()),request.intentId(),intentHash,request,task,inputs,digest,expires);if(origin!=null)repo.bindScheduleOrigin(job,origin);wake(agent);return view(repo.require(job,false),caller);
+        repo.insert(job,execution,w,p,caller.id(),agent,id(snapshot.snapshotId()),request.intentId(),intentHash,request,task,inputs,digest,expires);if(origin!=null)repo.bindScheduleOrigin(job,origin);wake(agent);return view(repo.status(job),caller,true);
     }
     private void validate(JobDtos.Submit s){
         if(s==null||s.preparation()==null||s.preparation().scope()==null||s.runConfig()==null||s.materials()==null||s.target()==null||!s.target().isObject())bad("固定目标、准备声明、运行设置和材料清单必填");
@@ -115,7 +116,7 @@ public class JobService implements AssignedMaterialAuthorizer {
         return view(job,caller);
     }
     public List<Map<String,Object>> list(UserAccount caller, String ws, String project, Integer requestedLimit, String beforeJobId) {
-        agents.requireProject(caller, ws, project, false);
+        agents.requireCapability(caller, ws, project, Capability.HISTORY_READ);
         var paging = properties.getJobs();
         int limit = requestedLimit == null ? Math.min(paging.getDefaultPageSize(), paging.getMaxPageSize()) : requestedLimit;
         if (limit < 1 || limit > paging.getMaxPageSize()) bad("任务分页大小必须在 1 至配置上限之间");
@@ -124,7 +125,7 @@ public class JobService implements AssignedMaterialAuthorizer {
     }
     public Map<String,Object> cancel(UserAccount caller,String job){var j=repo.require(id(job),false);agents.requireExecution(caller,String.valueOf(j.workspace()),String.valueOf(j.project()));nodes.require(j.agent(),true);j=repo.require(j.id(),true);
         if(!agents.canCancel(caller,String.valueOf(j.workspace()),String.valueOf(j.project()),j.user()))throw error(FORBIDDEN,"forbidden","仅提交者本人或有效项目 OWNER/ADMIN 可取消任务");
-        if(j.state().equals("queued")){end(j,Map.of("verdict","cancelled","executionReleased",true,"evidenceComplete",true,"reasonCode","cancelled-before-assignment"),null,null,true);}else if(!j.state().equals("ended")){repo.requestCancel(j);var command=identity(j,"cancel-"+j.execution(),"cancel");command.put("reason","用户已申请取消");repo.outbox(j.agent(),j.id(),j.execution(),"cancel",(String)command.get("messageId"),command);}wake(j.agent());return view(repo.require(j.id(),false),caller);}
+        if(j.state().equals("queued")){end(j,Map.of("verdict","cancelled","executionReleased",true,"evidenceComplete",true,"reasonCode","cancelled-before-assignment"),null,null,true);}else if(!j.state().equals("ended")){repo.requestCancel(j);var command=identity(j,"cancel-"+j.execution(),"cancel");command.put("reason","用户已申请取消");repo.outbox(j.agent(),j.id(),j.execution(),"cancel",(String)command.get("messageId"),command);}wake(j.agent());return view(repo.status(j.id()),caller,true);}
     /** Data authority for snapshots/materials. Stopping intake does not revoke an existing assignment. */
     public JobRepo.Job lockAssignment(long agent,long job,long execution,boolean currentExecutionRights){
         return lockAssignment(agent,job,execution,currentExecutionRights,false);
@@ -177,7 +178,7 @@ public class JobService implements AssignedMaterialAuthorizer {
     }
     public byte[] report(UserAccount caller,String job){
         var status=repo.status(id(job));
-        agents.requireProject(caller,String.valueOf(status.workspace()),String.valueOf(status.project()),false);
+        agents.requireCapability(caller,String.valueOf(status.workspace()),String.valueOf(status.project()),Capability.HISTORY_READ);
         if(status.reportState().equals("expired"))throw error(GONE,"report_expired","报告保留期已结束；执行身份与归档确认仍保留");
         if(!status.reportState().equals("archived"))throw error(CONFLICT,"report_pending","结果仍待归档");
         return repo.reportContent(status.id());
@@ -308,6 +309,21 @@ public class JobService implements AssignedMaterialAuthorizer {
         return view(repo.status(j.id()),caller);
     }
     private Map<String,Object> view(JobRepo.Status status,UserAccount caller){
+        return view(status,caller,false);
+    }
+    private Map<String,Object> view(JobRepo.Status status,UserAccount caller,boolean commandReceipt){
+        String ws=String.valueOf(status.workspace()),project=String.valueOf(status.project());
+        if(!agents.hasCapability(caller,ws,project,Capability.HISTORY_READ)) {
+            if(!commandReceipt&&(status.user()!=caller.id()||status.state().equals("ended")||!agents.hasCapability(caller,ws,project,Capability.TASK_EXECUTE)))
+                throw error(FORBIDDEN,"forbidden","需要业务权限：history.read；当前执行者只能查看本人未结束任务的最小状态");
+            var minimal=new LinkedHashMap<String,Object>();
+            minimal.put("jobId",String.valueOf(status.id()));minimal.put("executionId",String.valueOf(status.execution()));
+            minimal.put("agentId",String.valueOf(status.agent()));minimal.put("state",status.state());minimal.put("cancelState",status.cancelState());
+            minimal.put("executionReleased",status.released());minimal.put("canCancel",!status.state().equals("ended")&&status.cancelState().equals("none")&&agents.canCancel(caller,ws,project,status.user()));
+            var scope=status.task().path("scope");
+            minimal.put("scope",Map.of("workspaceId",scope.path("workspaceId").asText(),"groupId",scope.path("groupId").asText(),"projectId",scope.path("projectId").asText()));
+            minimal.put("view","active-status");return minimal;
+        }
         var result=new LinkedHashMap<String,Object>();
         result.put("jobId",String.valueOf(status.id()));result.put("executionId",String.valueOf(status.execution()));
         result.put("agentId",String.valueOf(status.agent()));result.put("state",status.state());

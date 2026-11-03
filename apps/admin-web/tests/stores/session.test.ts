@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdminClient } from "../../src/api/client.js";
 import { createSessionStore, TOKEN_KEY } from "../../src/stores/session.js";
 import { createWorkspacesStore } from "../../src/stores/workspaces.js";
+import { member } from "../helpers/collaboration.js";
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 type FetchHandler = (req: CapturedRequest) => Response | Promise<Response>;
@@ -282,6 +283,7 @@ describe("会话销毁装配接线（终审 Important 2）", () => {
       if (url.startsWith(`${BASE}/auth/logout`)) return noContent();
       if (url === `${BASE}/workspaces/ws-1` && method === "GET") return json(200, { id: "ws-1", name: "团队空间", myRole: "OWNER", memberCount: 2 });
       if (url === `${BASE}/workspaces/ws-1/members` && method === "GET") return json(200, [{ userId: "u-2", username: "bob", displayName: "Bob", role: "EDITOR" }]);
+      if (url === `${BASE}/workspaces/ws-1/access-members/u-2` && method === "GET") return json(200, member("u-2", { workspaceRole: "EDITOR" }));
       if (url === `${BASE}/workspaces/ws-1/tree` && method === "GET") {
         return json(200, { workspaceId: "ws-1", rootVersion: 1, files: [], projects: [{ id: "p-1", name: "订单", path: "groups/后端/projects/订单", myRole: "OWNER" }] });
       }
@@ -296,6 +298,7 @@ describe("会话销毁装配接线（终审 Important 2）", () => {
     await workspaces.select("ws-1");
     await workspaces.loadMembers("ws-1");
     await workspaces.loadTree("ws-1");
+    expect(stub.calls.filter(req => req.method === "GET" && req.url === `${BASE}/workspaces/ws-1/access-members/u-2`)).toHaveLength(1);
     expect(workspaces.current).not.toBeNull();
     expect(workspaces.members.length).toBeGreaterThan(0);
     expect(workspaces.tree).not.toBeNull();

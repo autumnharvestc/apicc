@@ -36,19 +36,20 @@ function fixture(configure?: (project: ContractProject) => void, options?: { loc
   const input: MemberRunInput = { context, runId: randomUUID(), location: { kind: 'local' as const }, target: { kind: 'workflow' as const, workflowId: project.workflows[0]!.id }, expectedVersion: '1', runConfig: {}, materials: { projectId: '33', credentials: [], attachments: [] }, localOnlyRefIds: [] };
   return { client, input, project, assets, requests };
 }
-async function agentFixture(uncertain=false, policy=defaultPolicyConfig, configure?: (project:ContractProject)=>void) {
+async function agentFixture(uncertain=false, policy=defaultPolicyConfig, configure?: (project:ContractProject)=>void, minimum=false) {
   const identity=await readBuildIdentity(),configuration={configVersion:'0',appliedConfigVersion:'0',pendingFields:[],restartRequiredFields:[],status:'applied'};
   let accepted:any,fixedSubmission:any;let visible=true;let submissions=0,verifications=0;
+  const responseJob=()=>minimum?{jobId:accepted.jobId,executionId:accepted.executionId,agentId:accepted.agentId,state:accepted.state,cancelState:accepted.cancelState,executionReleased:accepted.executionReleased,canCancel:true,view:'active-status',scope:accepted.task.scope}:accepted;
   const f=fixture(configure,{response:(url,init)=>{
     if(url.endsWith('/execution-agents'))return Response.json({defaultAgentId:'5',canManageScripts:false,policy,policyVersion:'0',agents:[{id:'5',name:'Fixed agent',acceptingJobs:true,availability:'available',lastSeenAt:'2026-10-26T12:00:00Z',policy,policyVersion:'0',scriptsAllowed:false,scriptGrant:{scope:'script-version',version:'0',scripts:[]},stressConfiguration:{agent:{maxConcurrentStressJobs:defaultAgentConfig.maxConcurrentStressJobs,maxStressProcesses:defaultAgentConfig.maxStressProcesses,maxStressVus:defaultAgentConfig.maxStressVus,maxStressRequestConcurrency:defaultAgentConfig.maxStressRequestConcurrency,maxStressRps:defaultAgentConfig.maxStressRps,maxStressMetricMemoryBytes:defaultAgentConfig.maxStressMetricMemoryBytes},sources:{'agent.maxStressRequestConcurrency':'default','agent.maxStressRps':'default','policy.maxStressRequestConcurrency':'default','policy.maxStressRps':'default'}},configuration,runtime:{protocolVersion:1,sessionId:'registered-host',coreBuildId:identity.coreBuildId,scriptApiId:identity.scriptApiId,capabilities:identity.capabilities,nodeVersion:process.versions.node,v8Version:process.versions.v8,runtimeCompatibilityId:runtimeCompatibilityIdForRuntime(process.versions.node,process.versions.v8,identity.scriptApiId),configuration}}]});
-    if(url.includes('/jobs/by-intent?'))return accepted&&visible?Response.json(accepted):Response.json({code:'job_not_found'},{status:404});
-    if(url.endsWith('/jobs/by-intent/verify')){verifications++;return JSON.stringify(JSON.parse(String(init?.body)))===JSON.stringify(fixedSubmission)?Response.json(accepted):Response.json({code:'intent_conflict'},{status:409});}
+    if(url.includes('/jobs/by-intent?'))return accepted&&visible?Response.json(responseJob()):Response.json({code:'job_not_found'},{status:404});
+    if(url.endsWith('/jobs/by-intent/verify')){verifications++;return JSON.stringify(JSON.parse(String(init?.body)))===JSON.stringify(fixedSubmission)?Response.json(responseJob()):Response.json({code:'intent_conflict'},{status:409});}
     if(url.endsWith('/jobs')&&init?.method==='POST'){
       submissions++;const body=JSON.parse(String(init.body));const {scriptRequirements:_requirements,...preparation}=body.preparation;
       if(accepted)return JSON.stringify(body)===JSON.stringify(fixedSubmission)?Response.json(accepted):Response.json({code:'intent_conflict'},{status:409});
       fixedSubmission=body;
       accepted={jobId:'99',executionId:'100',agentId:'5',state:'queued',cancelState:'none',executionReleased:false,reportState:'none',task:{protocolVersion:1,jobId:'99',executionId:'100',scope:context.scope,submittedByUserId:'7',contractProjectId:'00000000-0000-4000-8000-000000000018',snapshotId:body.snapshotId,manifestHash:body.preparation.manifestHash,target:body.target,policyVersion:'0',...preparation}};
-      if(uncertain)throw new Error('owned-response-lost');return Response.json(accepted);
+      if(uncertain)throw new Error('owned-response-lost');return Response.json(responseJob());
     }
     return undefined;
   }});
@@ -79,6 +80,17 @@ async function cleanupResult(action:()=>Promise<void>){
   try{return {value:await action(),error:null};}catch(error){return {value:undefined,error:error instanceof Error?error.message:String(error)};}
 }
 describe('member execution client', () => {
+  it.each([false,true])('F7f minimum agent receipt/reconciliation retains trusted preparation without task (lost=%s)',async lost=>{
+    const f=await agentFixture(lost,defaultPolicyConfig,undefined,true);
+    try{
+      const prepared=await f.client.prepare(f.input,signal());
+      if(lost)await expect(f.client.start(prepared,'minimum-intent',signal())).rejects.toThrow('owned-response-lost');
+      const started=await f.client.start(prepared,'minimum-intent',signal());
+      expect(started).toMatchObject({runId:'99',snapshotId:prepared.summary.snapshotId,manifestHash:prepared.summary.manifestHash,job:{view:'active-status'}});
+      expect(started.job).not.toHaveProperty('task');
+      expect(f.counts()).toEqual({submissions:1,verifications:lost?1:0});
+    }finally{await f.client.close();}
+  });
   it('r50_owned_cleanup_stops_only_the_exact_active_local_after_session_generation_changes',async()=>{
     const target=await ownedCleanupTarget();let replaced=false;
     const f=fixture(project=>setCleanupTarget(project,target.baseUrl),{assertCurrent(){if(replaced)throw new Error('fixture-session-generation-changed');}});

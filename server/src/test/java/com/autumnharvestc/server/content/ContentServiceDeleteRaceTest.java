@@ -64,7 +64,11 @@ class ContentServiceDeleteRaceTest {
         ProjectRepo projects = mock(ProjectRepo.class);
         when(projects.find(PROJECT_ID)).thenReturn(Optional.of(
                 new ProjectRecord(PROJECT_ID, WS, 1L, "p", Instant.EPOCH)));
-        service = new ContentService(guard, permissions(), projects, fileVersions);
+        // This focused old CAS unit fixture executes the mutation callback; real guards are covered by HTTP tests.
+        var mutations=mock(com.autumnharvestc.server.access.AssetMutationGuard.class);
+        org.mockito.Mockito.doAnswer(invocation->((java.util.function.Supplier<?>)invocation.getArgument(6)).get()).when(mutations)
+                .legacy(any(),eq(WS),eq(PROJECT_ID),any(String.class),org.mockito.ArgumentMatchers.isNull(),org.mockito.ArgumentMatchers.anyLong(),any());
+        service = new ContentService(guard, permissions(), projects, fileVersions,mutations);
     }
 
     private PermissionService permissions() {

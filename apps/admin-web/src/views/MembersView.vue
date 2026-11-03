@@ -24,11 +24,17 @@ import { Alert as AAlert, AutoComplete as AAutoComplete, Button as AButton, Inpu
 import type { AdminMember, AdminRole } from "../api/contract.js";
 import { createUserPicker } from "../composables/userPicker.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
+import CollaborationAccessTable from '../components/CollaborationAccessTable.vue';
+import type {CapabilityMode,AccessMember} from '../api/collaboration.js';
 
 const props = defineProps<{ workspaces: WorkspacesStore }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
+const overrideLabel = (value: string) => te(`collaboration.overrideStates.${value}`) ? t(`collaboration.overrideStates.${value}`) : value;
 const route = useRoute();
 const router = useRouter();
+const capabilityTarget=ref<string|null>(null);const capabilityDraft=ref<Record<string,CapabilityMode>>({});
+let capabilityEditGeneration=0;watch(capabilityDraft,()=>{capabilityEditGeneration++;},{deep:true,flush:'sync'});
+async function saveCapabilities(){const generation=capabilityEditGeneration;if(await props.workspaces.changeCapabilities({workspaceId:workspaceId.value},capabilityTarget.value!,{...capabilityDraft.value})&&generation===capabilityEditGeneration)capabilityDraft.value={};}
 
 /** 路由参数工作区 id（成员页数据寻址）。 */
 const workspaceId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
@@ -48,6 +54,7 @@ watch(
   workspaceId,
   async (id) => {
     if (!id) return;
+    capabilityTarget.value=null;capabilityDraft.value={};
     resetPicker();
     props.workspaces.clearCandidates();
     const res = await props.workspaces.loadMembers(id);
@@ -112,6 +119,9 @@ async function onRemove(userId: string): Promise<void> {
 
 const addRole = ref<AdminRole>("VIEWER");
 const addError = ref("");
+const addSubject=ref<AccessMember|null>(null);const addReading=ref(false);let addReadSequence=0;
+async function readAddSubject(){const sequence=++addReadSequence,userId=resolveId(),id=workspaceId.value;addSubject.value=null;addReading.value=!!userId;if(!userId)return;try{const value=await props.workspaces.readAccessMember({workspaceId:id},userId,true);if(sequence===addReadSequence)addSubject.value=value;}catch(e){if(sequence===addReadSequence)addError.value=e instanceof Error?e.message:String(e);}finally{if(sequence===addReadSequence)addReading.value=false;}}
+watch(()=>`${workspaceId.value}/${resolveId()??''}`,()=>{void readAddSubject();},{flush:'sync'});
 
 /** 移除气泡受控 open（antd-vue 气泡在 jsdom 惰性渲染不展开，受控模式可测且交互确定）。 */
 const removeTargetUserId = ref<string | null>(null);
@@ -125,7 +135,8 @@ async function onAdd(): Promise<void> {
     addError.value = t("members.selectUserRequired");
     return;
   }
-  const ok = await props.workspaces.addMember(workspaceId.value, userId, addRole.value);
+  if(addReading.value||addSubject.value?.userId!==userId)return;
+  const ok = await props.workspaces.addMember(workspaceId.value, userId, addRole.value,addSubject.value.revision);
   if (ok) {
     resetPicker();
     props.workspaces.clearCandidates();
@@ -169,15 +180,18 @@ async function onAdd(): Promise<void> {
         data-testid="members-add-role"
         :options="ADD_ROLE_OPTIONS.map((r) => ({ value: r, label: r }))"
       />
-      <a-button type="primary" :loading="workspaces.memberSubmitting" data-testid="members-add-submit" @click="onAdd">
+      <a-button type="primary" :disabled="!!resolveId()&&!addSubject||addReading" :loading="workspaces.memberSubmitting" data-testid="members-add-submit" @click="onAdd">
         {{ t("members.addSubmit") }}
       </a-button>
     </div>
+    <p v-if="addSubject" data-testid="members-add-scope">{{t('collaboration.currentRevision')}}: {{addSubject.revision}} · {{addSubject.member?addSubject.workspaceRole:t('collaboration.noMembership')}} · {{addSubject.projectOverride??t('collaboration.inherit')}} · {{overrideLabel(addSubject.overrideState)}}</p>
+    <button v-if="resolveId()" data-testid="members-add-reload" @click="readAddSubject">{{t('collaboration.reload')}}</button>
     <div v-if="addError" class="form-error" data-testid="members-add-error">{{ addError }}</div>
     <!-- 候选搜索失败就地上屏（与顶部 membersError 分通道，互不覆盖） -->
     <div v-if="workspaces.candidatesError" class="form-error" data-testid="members-candidates-error">{{ workspaces.candidatesError }}</div>
 
     <a-table
+      :scroll="{x:1200}"
       :columns="columns"
       :data-source="workspaces.members"
       row-key="userId"
@@ -191,8 +205,11 @@ async function onAdd(): Promise<void> {
         </template>
         <template v-else-if="column.key === 'actions'">
           <div class="row-actions">
+            <button :data-testid="`members-capabilities-${record.userId}`" @click="capabilityTarget=record.userId;capabilityDraft={}">{{t('collaboration.capability')}}</button>
+            <button :data-testid="`members-reload-${record.userId}`" @click="workspaces.refreshAccessMember({workspaceId},record.userId)">{{t('collaboration.reload')}}</button>
+            <span v-if="workspaces.accessMembers[`${workspaceId}//${record.userId}`]">{{t('collaboration.currentRevision')}}: {{workspaces.accessMembers[`${workspaceId}//${record.userId}`]?.revision}} · {{t('collaboration.currentRole')}}: {{workspaces.accessMembers[`${workspaceId}//${record.userId}`]?.workspaceRole??t('collaboration.noMembership')}}</span>
             <a-select
-              :value="record.role"
+              :value="workspaces.memberDrafts[`${workspaceId}//${record.userId}`]??record.role"
               :disabled="isOwnerRow(record as AdminMember)"
               :loading="workspaces.memberBusyId === record.userId"
               size="small"
@@ -226,6 +243,7 @@ async function onAdd(): Promise<void> {
       </template>
     </a-table>
 
+    <section v-if="capabilityTarget&&workspaces.accessMembers[`${workspaceId}//${capabilityTarget}`]" data-testid="member-capability-editor"><h3>{{t('collaboration.capability')}} · {{capabilityTarget}}</h3><p>{{t('collaboration.currentRevision')}}: {{workspaces.accessMembers[`${workspaceId}//${capabilityTarget}`]?.revision}}</p><CollaborationAccessTable :rows="workspaces.accessMembers[`${workspaceId}//${capabilityTarget}`]!.capabilities" :draft="capabilityDraft" @save="saveCapabilities"/><button @click="workspaces.refreshAccessMember({workspaceId},capabilityTarget)">{{t('collaboration.reload')}}</button></section>
     <!-- OWNER 转让受控确认（裁定 B）：输入工作区名，明示自身降为 ADMIN 且不可逆 -->
     <a-modal v-if="transferTarget !== null" :open="true" :title="t('members.transferTitle')" @cancel="cancelTransfer">
       <p class="transfer-hint" data-testid="members-transfer-hint">

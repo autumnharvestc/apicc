@@ -18,6 +18,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAdminClient, type AdminClient } from "../../src/api/client.js";
+import {createCollaborationApi} from '../../src/api/collaboration.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // e2e → tests → admin-web → apps → 仓库根：四层向上
@@ -302,7 +303,9 @@ describe("管理链路真服务端冒烟（adminClient × spawn jar，裁定 D�
     // 步骤 2：A 建工作区（创建者自动 OWNER）+ B 加入 EDITOR（§3.2 PUT 对非成员即创建）
     const ws = await clientA.createWorkspace({ name: "管理控制台联调空间" });
     expect(ws.myRole).toBe("OWNER");
-    await clientA.setMemberRole(ws.id, b.id, "EDITOR");
+    const management=createCollaborationApi(clientA);
+    const memberScope=await management.member({workspaceId:ws.id},b.id);
+    await clientA.setMemberRole(ws.id, b.id, "EDITOR",memberScope.revision);
     const members = await clientA.listMembers(ws.id);
     expect(members.find((m) => m.userId === b.id)?.role).toBe("EDITOR");
 
@@ -324,14 +327,16 @@ describe("管理链路真服务端冒烟（adminClient × spawn jar，裁定 D�
     expect(treeB1.files.map((f) => f.path).sort()).toEqual([P1_FILE, P2_FILE].sort());
 
     // 步骤 5：A 将 P2 对 B 设 NONE → ACL 行在（NONE=明确拒绝）+ B tree 不含 P2
-    await clientA.setAclEntry(ws.id, P2_ID, { userId: b.id, role: "NONE" });
+    const beforeAcl=await management.member({workspaceId:ws.id,projectId:P2_ID},b.id);
+    await clientA.setAclEntry(ws.id, P2_ID, { userId: b.id, role: "NONE",expectedRevision:beforeAcl.revision });
     const aclRows = await clientA.listAcl(ws.id, P2_ID);
     expect(aclRows).toContainEqual({ userId: b.id, role: "NONE" });
     const treeB2 = await clientB.getTree(ws.id);
     expect(treeB2.projects.map((p) => p.id)).toEqual([P1_ID]); // P2 被过滤（不泄露存在性）
 
     // 步骤 6：A 删 ACL 行（DELETE ?userId=，契约修订 2026-09-04：删行=恢复继承）→ B tree 复见 P2
-    await clientA.deleteAclEntry(ws.id, P2_ID, b.id);
+    const beforeInheritance=await management.member({workspaceId:ws.id,projectId:P2_ID},b.id);
+    await clientA.deleteAclEntry(ws.id, P2_ID, b.id,beforeInheritance.revision);
     expect(await clientA.listAcl(ws.id, P2_ID)).toEqual([]); // 行已消失
     const treeB3 = await clientB.getTree(ws.id);
     expect(treeB3.projects.find((p) => p.id === P2_ID)).toEqual({ id: P2_ID, name: "库存", groupId, myRole: "EDITOR" });

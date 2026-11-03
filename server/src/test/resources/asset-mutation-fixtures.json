@@ -1,0 +1,385 @@
+{
+  "source": "createContractExecutionProject + real classifyAssetMutation; no execution/target request",
+  "beforeFiles": [
+    {
+      "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+      "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000003\napiOrder: []\n"
+    },
+    {
+      "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folder.yaml",
+      "content": "id: 10000000-0000-4000-8000-000000000003\nname: outer\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000004\napiOrder: []\n"
+    },
+    {
+      "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/api.yaml",
+      "content": "formatVersion: 1\nid: 10000000-0000-4000-8000-000000000005\nmetadata:\n  name: snapshot-request\n  description: \"\"\n  tags: []\n  version: \"1\"\n  status: draft\nrequest:\n  protocol: http\n  method: POST\n  baseUrl: \"{{baseUrl}}\"\n  path: /{{folderPath}}/items\n  pathParams: []\n  query:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000006\n      name: region\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: ordinary value binding\n      value: \"{{region}}\"\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000007\n      name: baseUrl\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL binding\n      value: \"{{baseUrl}}\"\n  headers:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000008\n      name: X-Base-Template\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL header\n      value: \"{{baseUrl}}\"\n  cookies: []\n  auth:\n    kind: bearer\n    token:\n      id: credential-ref-1\n      policy: test-auto\n  body:\n    kind: json\n    content: '{\"region\":\"{{region}}\",\"ancestor\":\"{{ancestorValue}}\",\"baseUrl\":\"{{baseUrl}}\"}'\nresponses: []\n"
+    },
+    {
+      "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/636173652d31.62617365.yaml",
+      "content": "id: case-1\nname: snapshot-case\nscope: base\nparameters: {}\npreOperations:\n  - id: case-pre\n    type: script\n    content: pm.request.headers[\"X-Case\"] = pm.variables.get(\"ancestorValue\") ??\n      \"missing\"; pm.request.headers[\"X-Base-Variable\"] =\n      pm.variables.get(\"baseUrl\") ?? \"missing\";\n      pm.request.headers[\"X-Base-Environment\"] = pm.environment.get(\"baseUrl\")\n      ?? \"missing\";\npostOperations: []\nassertions: []\ntags: []\nextractors: []\n"
+    },
+    {
+      "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/index.yaml",
+      "content": "formatVersion: 1\ncases:\n  - id: case-1\n    scope: base\n"
+    },
+    {
+      "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/design.md",
+      "content": ""
+    },
+    {
+      "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/folder.yaml",
+      "content": "id: 10000000-0000-4000-8000-000000000004\nname: inner\npreOperations:\n  - id: folder-pre\n    type: script\n    content: pm.variables.set(\"ancestorValue\", \"folder\");\n      pm.variables.set(\"folderPath\", \"nested\");\npostOperations:\n  - id: folder-post\n    type: script\n    content: pm.variables.set(\"folderClosed\", \"true\");\nfolderOrder: []\napiOrder:\n  - 10000000-0000-4000-8000-000000000005\n"
+    },
+    {
+      "path": "project.yaml",
+      "content": "id: 10000000-0000-4000-8000-000000000001\nname: snapshot-project\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: \"child-a\\nline\\\\tail\\rend\"\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder:\n  - 10000000-0000-4000-8000-000000000002\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+    }
+  ],
+  "beforeDigest": "69988ab069a4a0fcf2f098e6983e6abdb03ab3433f33a9b0bae46129ffa25c04",
+  "beforeManifest": "f0b8b5f81cad2ecbf740cf1b245ce8d31f3e599736425042e96cf99087d2506d",
+  "cases": [
+    {
+      "name": "collection-script",
+      "afterFiles": [
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations:\n  - id: new-script\n    type: script\n    content: pm.test('changed',()=>true)\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000003\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000003\nname: outer\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000004\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/api.yaml",
+          "content": "formatVersion: 1\nid: 10000000-0000-4000-8000-000000000005\nmetadata:\n  name: snapshot-request\n  description: \"\"\n  tags: []\n  version: \"1\"\n  status: draft\nrequest:\n  protocol: http\n  method: POST\n  baseUrl: \"{{baseUrl}}\"\n  path: /{{folderPath}}/items\n  pathParams: []\n  query:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000006\n      name: region\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: ordinary value binding\n      value: \"{{region}}\"\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000007\n      name: baseUrl\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL binding\n      value: \"{{baseUrl}}\"\n  headers:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000008\n      name: X-Base-Template\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL header\n      value: \"{{baseUrl}}\"\n  cookies: []\n  auth:\n    kind: bearer\n    token:\n      id: credential-ref-1\n      policy: test-auto\n  body:\n    kind: json\n    content: '{\"region\":\"{{region}}\",\"ancestor\":\"{{ancestorValue}}\",\"baseUrl\":\"{{baseUrl}}\"}'\nresponses: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/636173652d31.62617365.yaml",
+          "content": "id: case-1\nname: snapshot-case\nscope: base\nparameters: {}\npreOperations:\n  - id: case-pre\n    type: script\n    content: pm.request.headers[\"X-Case\"] = pm.variables.get(\"ancestorValue\") ??\n      \"missing\"; pm.request.headers[\"X-Base-Variable\"] =\n      pm.variables.get(\"baseUrl\") ?? \"missing\";\n      pm.request.headers[\"X-Base-Environment\"] = pm.environment.get(\"baseUrl\")\n      ?? \"missing\";\npostOperations: []\nassertions: []\ntags: []\nextractors: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/index.yaml",
+          "content": "formatVersion: 1\ncases:\n  - id: case-1\n    scope: base\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/design.md",
+          "content": ""
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000004\nname: inner\npreOperations:\n  - id: folder-pre\n    type: script\n    content: pm.variables.set(\"ancestorValue\", \"folder\");\n      pm.variables.set(\"folderPath\", \"nested\");\npostOperations:\n  - id: folder-post\n    type: script\n    content: pm.variables.set(\"folderClosed\", \"true\");\nfolderOrder: []\napiOrder:\n  - 10000000-0000-4000-8000-000000000005\n"
+        },
+        {
+          "path": "project.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000001\nname: snapshot-project\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: \"child-a\\nline\\\\tail\\rend\"\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder:\n  - 10000000-0000-4000-8000-000000000002\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+        }
+      ],
+      "afterDigest": "d2c8c06505be3d66f824a97a522b3eac506f3d7d77de9e3c3506fba081bed925",
+      "afterManifest": "cadb750aa86ca862b1b6fb918c00028c511ceff357a6f5fb1d2281f7746fd1b8",
+      "result": {
+        "scriptChanged": true,
+        "locations": [
+          "collections[10000000-0000-4000-8000-000000000002].preOperations"
+        ]
+      }
+    },
+    {
+      "name": "ancestor-script",
+      "afterFiles": [
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000003\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000003\nname: outer\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000004\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/api.yaml",
+          "content": "formatVersion: 1\nid: 10000000-0000-4000-8000-000000000005\nmetadata:\n  name: snapshot-request\n  description: \"\"\n  tags: []\n  version: \"1\"\n  status: draft\nrequest:\n  protocol: http\n  method: POST\n  baseUrl: \"{{baseUrl}}\"\n  path: /{{folderPath}}/items\n  pathParams: []\n  query:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000006\n      name: region\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: ordinary value binding\n      value: \"{{region}}\"\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000007\n      name: baseUrl\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL binding\n      value: \"{{baseUrl}}\"\n  headers:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000008\n      name: X-Base-Template\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL header\n      value: \"{{baseUrl}}\"\n  cookies: []\n  auth:\n    kind: bearer\n    token:\n      id: credential-ref-1\n      policy: test-auto\n  body:\n    kind: json\n    content: '{\"region\":\"{{region}}\",\"ancestor\":\"{{ancestorValue}}\",\"baseUrl\":\"{{baseUrl}}\"}'\nresponses: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/636173652d31.62617365.yaml",
+          "content": "id: case-1\nname: snapshot-case\nscope: base\nparameters: {}\npreOperations:\n  - id: case-pre\n    type: script\n    content: pm.request.headers[\"X-Case\"] = pm.variables.get(\"ancestorValue\") ??\n      \"missing\"; pm.request.headers[\"X-Base-Variable\"] =\n      pm.variables.get(\"baseUrl\") ?? \"missing\";\n      pm.request.headers[\"X-Base-Environment\"] = pm.environment.get(\"baseUrl\")\n      ?? \"missing\";\npostOperations: []\nassertions: []\ntags: []\nextractors: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/index.yaml",
+          "content": "formatVersion: 1\ncases:\n  - id: case-1\n    scope: base\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/design.md",
+          "content": ""
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000004\nname: inner\npreOperations:\n  - id: folder-pre\n    type: script\n    content: >-\n      pm.variables.set(\"ancestorValue\", \"folder\");\n      pm.variables.set(\"folderPath\", \"nested\");\n\n      pm.test('changed',()=>true)\npostOperations:\n  - id: folder-post\n    type: script\n    content: pm.variables.set(\"folderClosed\", \"true\");\nfolderOrder: []\napiOrder:\n  - 10000000-0000-4000-8000-000000000005\n"
+        },
+        {
+          "path": "project.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000001\nname: snapshot-project\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: \"child-a\\nline\\\\tail\\rend\"\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder:\n  - 10000000-0000-4000-8000-000000000002\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+        }
+      ],
+      "afterDigest": "82727682cc191cd1180440aac94778577f46761f5652d56d168ca71902db2783",
+      "afterManifest": "b63d7e71e9d458f040b0708d901e83e72ba5b4427c2d00947ec30233d8d4a459",
+      "result": {
+        "scriptChanged": true,
+        "locations": [
+          "collections[10000000-0000-4000-8000-000000000002].folders[10000000-0000-4000-8000-000000000003].folders[10000000-0000-4000-8000-000000000004].preOperations"
+        ]
+      }
+    },
+    {
+      "name": "case-script",
+      "afterFiles": [
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000003\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000003\nname: outer\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000004\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/api.yaml",
+          "content": "formatVersion: 1\nid: 10000000-0000-4000-8000-000000000005\nmetadata:\n  name: snapshot-request\n  description: \"\"\n  tags: []\n  version: \"1\"\n  status: draft\nrequest:\n  protocol: http\n  method: POST\n  baseUrl: \"{{baseUrl}}\"\n  path: /{{folderPath}}/items\n  pathParams: []\n  query:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000006\n      name: region\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: ordinary value binding\n      value: \"{{region}}\"\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000007\n      name: baseUrl\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL binding\n      value: \"{{baseUrl}}\"\n  headers:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000008\n      name: X-Base-Template\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL header\n      value: \"{{baseUrl}}\"\n  cookies: []\n  auth:\n    kind: bearer\n    token:\n      id: credential-ref-1\n      policy: test-auto\n  body:\n    kind: json\n    content: '{\"region\":\"{{region}}\",\"ancestor\":\"{{ancestorValue}}\",\"baseUrl\":\"{{baseUrl}}\"}'\nresponses: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/636173652d31.62617365.yaml",
+          "content": "id: case-1\nname: snapshot-case\nscope: base\nparameters: {}\npreOperations:\n  - id: case-pre\n    type: script\n    content: pm.request.headers[\"X-Case\"] = pm.variables.get(\"ancestorValue\") ??\n      \"missing\"; pm.request.headers[\"X-Base-Variable\"] =\n      pm.variables.get(\"baseUrl\") ?? \"missing\";\n      pm.request.headers[\"X-Base-Environment\"] = pm.environment.get(\"baseUrl\")\n      ?? \"missing\";\npostOperations:\n  - id: case-hook\n    type: script\n    content: pm.test('changed',()=>true)\nassertions: []\ntags: []\nextractors: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/index.yaml",
+          "content": "formatVersion: 1\ncases:\n  - id: case-1\n    scope: base\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/design.md",
+          "content": ""
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000004\nname: inner\npreOperations:\n  - id: folder-pre\n    type: script\n    content: pm.variables.set(\"ancestorValue\", \"folder\");\n      pm.variables.set(\"folderPath\", \"nested\");\npostOperations:\n  - id: folder-post\n    type: script\n    content: pm.variables.set(\"folderClosed\", \"true\");\nfolderOrder: []\napiOrder:\n  - 10000000-0000-4000-8000-000000000005\n"
+        },
+        {
+          "path": "project.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000001\nname: snapshot-project\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: \"child-a\\nline\\\\tail\\rend\"\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder:\n  - 10000000-0000-4000-8000-000000000002\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+        }
+      ],
+      "afterDigest": "62778b1a6ec85d0b37439481c9bd32767c42cc222841f0f251b6dd33639ba3a6",
+      "afterManifest": "4e612ba6d4c0f10bd9bb1cf4086db92c4f5263632f62859622c05a757d405e8a",
+      "result": {
+        "scriptChanged": true,
+        "locations": [
+          "collections[10000000-0000-4000-8000-000000000002].folders[10000000-0000-4000-8000-000000000003].folders[10000000-0000-4000-8000-000000000004].apis[10000000-0000-4000-8000-000000000005].cases[case-1].postOperations"
+        ]
+      }
+    },
+    {
+      "name": "child-condition",
+      "afterFiles": [
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000003\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000003\nname: outer\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000004\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/api.yaml",
+          "content": "formatVersion: 1\nid: 10000000-0000-4000-8000-000000000005\nmetadata:\n  name: snapshot-request\n  description: \"\"\n  tags: []\n  version: \"1\"\n  status: draft\nrequest:\n  protocol: http\n  method: POST\n  baseUrl: \"{{baseUrl}}\"\n  path: /{{folderPath}}/items\n  pathParams: []\n  query:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000006\n      name: region\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: ordinary value binding\n      value: \"{{region}}\"\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000007\n      name: baseUrl\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL binding\n      value: \"{{baseUrl}}\"\n  headers:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000008\n      name: X-Base-Template\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL header\n      value: \"{{baseUrl}}\"\n  cookies: []\n  auth:\n    kind: bearer\n    token:\n      id: credential-ref-1\n      policy: test-auto\n  body:\n    kind: json\n    content: '{\"region\":\"{{region}}\",\"ancestor\":\"{{ancestorValue}}\",\"baseUrl\":\"{{baseUrl}}\"}'\nresponses: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/636173652d31.62617365.yaml",
+          "content": "id: case-1\nname: snapshot-case\nscope: base\nparameters: {}\npreOperations:\n  - id: case-pre\n    type: script\n    content: pm.request.headers[\"X-Case\"] = pm.variables.get(\"ancestorValue\") ??\n      \"missing\"; pm.request.headers[\"X-Base-Variable\"] =\n      pm.variables.get(\"baseUrl\") ?? \"missing\";\n      pm.request.headers[\"X-Base-Environment\"] = pm.environment.get(\"baseUrl\")\n      ?? \"missing\";\npostOperations: []\nassertions: []\ntags: []\nextractors: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/index.yaml",
+          "content": "formatVersion: 1\ncases:\n  - id: case-1\n    scope: base\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/design.md",
+          "content": ""
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000004\nname: inner\npreOperations:\n  - id: folder-pre\n    type: script\n    content: pm.variables.set(\"ancestorValue\", \"folder\");\n      pm.variables.set(\"folderPath\", \"nested\");\npostOperations:\n  - id: folder-post\n    type: script\n    content: pm.variables.set(\"folderClosed\", \"true\");\nfolderOrder: []\napiOrder:\n  - 10000000-0000-4000-8000-000000000005\n"
+        },
+        {
+          "path": "project.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000001\nname: snapshot-project\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: \"child-a\\nline\\\\tail\\rend\"\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"false\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder:\n  - 10000000-0000-4000-8000-000000000002\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+        }
+      ],
+      "afterDigest": "177cc7b40f929e1fcdc71ad410ec210f560aaa3a3f427a454b576572c4d6ee5f",
+      "afterManifest": "8a352793bbb9efad8f8dbbd0d3c44d191f7fcc240408979b2054aa4cfafdd510",
+      "result": {
+        "scriptChanged": true,
+        "locations": [
+          "workflows[child-a\nline\\tail\rend].edges[condition].condition"
+        ]
+      }
+    },
+    {
+      "name": "delete-ancestor",
+      "afterFiles": [
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations: []\npostOperations: []\nfolderOrder: []\napiOrder: []\n"
+        },
+        {
+          "path": "project.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000001\nname: snapshot-project\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: \"child-a\\nline\\\\tail\\rend\"\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder:\n  - 10000000-0000-4000-8000-000000000002\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+        }
+      ],
+      "afterDigest": "f427076d6c63ffa33b6b10790f9ba8b5df20297b157059dd18bebd900b00bbda",
+      "afterManifest": "4c9658742f14afec5a63dbe9d4603a8f092fbac07c05b37f3d3e7685bbcd9b26",
+      "result": {
+        "scriptChanged": true,
+        "locations": [
+          "collections[10000000-0000-4000-8000-000000000002].folders[10000000-0000-4000-8000-000000000003].folders[10000000-0000-4000-8000-000000000004].apis[10000000-0000-4000-8000-000000000005].cases[case-1].preOperations",
+          "collections[10000000-0000-4000-8000-000000000002].folders[10000000-0000-4000-8000-000000000003].folders[10000000-0000-4000-8000-000000000004].postOperations",
+          "collections[10000000-0000-4000-8000-000000000002].folders[10000000-0000-4000-8000-000000000003].folders[10000000-0000-4000-8000-000000000004].preOperations"
+        ]
+      }
+    },
+    {
+      "name": "delete-collection",
+      "afterFiles": [
+        {
+          "path": "project.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000001\nname: snapshot-project\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: \"child-a\\nline\\\\tail\\rend\"\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder: []\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+        }
+      ],
+      "afterDigest": "2dd83ad425f7e125fde4754c04020c1734654090ba7d729c19c1cf195b44970d",
+      "afterManifest": "a082b40abe7f91d034ac2fc61ff919977cbcce945ef3353ce84ef169edee005e",
+      "result": {
+        "scriptChanged": true,
+        "locations": [
+          "collections[10000000-0000-4000-8000-000000000002].folders[10000000-0000-4000-8000-000000000003].folders[10000000-0000-4000-8000-000000000004].apis[10000000-0000-4000-8000-000000000005].cases[case-1].preOperations",
+          "collections[10000000-0000-4000-8000-000000000002].folders[10000000-0000-4000-8000-000000000003].folders[10000000-0000-4000-8000-000000000004].postOperations",
+          "collections[10000000-0000-4000-8000-000000000002].folders[10000000-0000-4000-8000-000000000003].folders[10000000-0000-4000-8000-000000000004].preOperations"
+        ]
+      }
+    },
+    {
+      "name": "metadata",
+      "afterFiles": [
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000003\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000003\nname: outer\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000004\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/api.yaml",
+          "content": "formatVersion: 1\nid: 10000000-0000-4000-8000-000000000005\nmetadata:\n  name: snapshot-request\n  description: \"\"\n  tags: []\n  version: \"1\"\n  status: draft\nrequest:\n  protocol: http\n  method: POST\n  baseUrl: \"{{baseUrl}}\"\n  path: /{{folderPath}}/items\n  pathParams: []\n  query:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000006\n      name: region\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: ordinary value binding\n      value: \"{{region}}\"\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000007\n      name: baseUrl\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL binding\n      value: \"{{baseUrl}}\"\n  headers:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000008\n      name: X-Base-Template\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL header\n      value: \"{{baseUrl}}\"\n  cookies: []\n  auth:\n    kind: bearer\n    token:\n      id: credential-ref-1\n      policy: test-auto\n  body:\n    kind: json\n    content: '{\"region\":\"{{region}}\",\"ancestor\":\"{{ancestorValue}}\",\"baseUrl\":\"{{baseUrl}}\"}'\nresponses: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/636173652d31.62617365.yaml",
+          "content": "id: case-1\nname: snapshot-case\nscope: base\nparameters: {}\npreOperations:\n  - id: case-pre\n    type: script\n    content: pm.request.headers[\"X-Case\"] = pm.variables.get(\"ancestorValue\") ??\n      \"missing\"; pm.request.headers[\"X-Base-Variable\"] =\n      pm.variables.get(\"baseUrl\") ?? \"missing\";\n      pm.request.headers[\"X-Base-Environment\"] = pm.environment.get(\"baseUrl\")\n      ?? \"missing\";\npostOperations: []\nassertions: []\ntags: []\nextractors: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/index.yaml",
+          "content": "formatVersion: 1\ncases:\n  - id: case-1\n    scope: base\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/design.md",
+          "content": ""
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000004\nname: inner\npreOperations:\n  - id: folder-pre\n    type: script\n    content: pm.variables.set(\"ancestorValue\", \"folder\");\n      pm.variables.set(\"folderPath\", \"nested\");\npostOperations:\n  - id: folder-post\n    type: script\n    content: pm.variables.set(\"folderClosed\", \"true\");\nfolderOrder: []\napiOrder:\n  - 10000000-0000-4000-8000-000000000005\n"
+        },
+        {
+          "path": "project.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000001\nname: script is ordinary metadata\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: \"child-a\\nline\\\\tail\\rend\"\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder:\n  - 10000000-0000-4000-8000-000000000002\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+        }
+      ],
+      "afterDigest": "520860749f2915f9c23b6ab0b19df2ec86b8090f6ad21557af1b082176ce9a23",
+      "afterManifest": "bb8d5d38d3cc8830428b4ae131f9708cb96cc524db6b65fcc6fc0e464bf4d1a3",
+      "result": {
+        "scriptChanged": false,
+        "locations": []
+      }
+    },
+    {
+      "name": "subflow-reference",
+      "afterFiles": [
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000003\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000003\nname: outer\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000004\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/api.yaml",
+          "content": "formatVersion: 1\nid: 10000000-0000-4000-8000-000000000005\nmetadata:\n  name: snapshot-request\n  description: \"\"\n  tags: []\n  version: \"1\"\n  status: draft\nrequest:\n  protocol: http\n  method: POST\n  baseUrl: \"{{baseUrl}}\"\n  path: /{{folderPath}}/items\n  pathParams: []\n  query:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000006\n      name: region\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: ordinary value binding\n      value: \"{{region}}\"\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000007\n      name: baseUrl\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL binding\n      value: \"{{baseUrl}}\"\n  headers:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000008\n      name: X-Base-Template\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL header\n      value: \"{{baseUrl}}\"\n  cookies: []\n  auth:\n    kind: bearer\n    token:\n      id: credential-ref-1\n      policy: test-auto\n  body:\n    kind: json\n    content: '{\"region\":\"{{region}}\",\"ancestor\":\"{{ancestorValue}}\",\"baseUrl\":\"{{baseUrl}}\"}'\nresponses: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/636173652d31.62617365.yaml",
+          "content": "id: case-1\nname: snapshot-case\nscope: base\nparameters: {}\npreOperations:\n  - id: case-pre\n    type: script\n    content: pm.request.headers[\"X-Case\"] = pm.variables.get(\"ancestorValue\") ??\n      \"missing\"; pm.request.headers[\"X-Base-Variable\"] =\n      pm.variables.get(\"baseUrl\") ?? \"missing\";\n      pm.request.headers[\"X-Base-Environment\"] = pm.environment.get(\"baseUrl\")\n      ?? \"missing\";\npostOperations: []\nassertions: []\ntags: []\nextractors: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/index.yaml",
+          "content": "formatVersion: 1\ncases:\n  - id: case-1\n    scope: base\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/design.md",
+          "content": ""
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000004\nname: inner\npreOperations:\n  - id: folder-pre\n    type: script\n    content: pm.variables.set(\"ancestorValue\", \"folder\");\n      pm.variables.set(\"folderPath\", \"nested\");\npostOperations:\n  - id: folder-post\n    type: script\n    content: pm.variables.set(\"folderClosed\", \"true\");\nfolderOrder: []\napiOrder:\n  - 10000000-0000-4000-8000-000000000005\n"
+        },
+        {
+          "path": "project.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000001\nname: snapshot-project\nvariables:\n  region: project\n  baseUrl: http://project-stale.example\nglobals:\n  query:\n    - key: global\n      value: global-value\n      enabled: true\n  headers:\n    - key: X-Global\n      value: global-header\n      enabled: true\n  cookies: []\n  body: []\nenvironments:\n  - id: env-local\n    name: local\n    variables:\n      region: environment\n      baseUrl: http://stale.example\n    baseUrls:\n      10000000-0000-4000-8000-000000000002: https://synthetic.invalid\nworkflows:\n  - id: root\n    name: root\n    status: enabled\n    executionVersion: 2\n    nodes:\n      - id: call\n        kind: subflow\n        workflowId: child-b\n        inputs: {}\n        outputs: {}\n    edges: []\n    inputs: {}\n    outputs: {}\n    limits:\n      maxConcurrency: 4\n      timeoutMs: 300000\n  - id: \"child-a\\nline\\\\tail\\rend\"\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\n  - id: child-b\n    name: child\n    status: enabled\n    nodes:\n      - id: a\n        kind: noop\n      - id: b\n        kind: noop\n    edges:\n      - id: condition\n        from: a\n        to: b\n        condition: \"true\"\nstressPolicy:\n  trustedOrigins:\n    - https://synthetic.invalid\n  deniedOrigins: []\n  maxConcurrency: 2\ncollectionOrder:\n  - 10000000-0000-4000-8000-000000000002\nmodelOrder: []\ncomponentOrder: []\ndatasetOrder: []\nsuiteOrder: []\n"
+        }
+      ],
+      "afterDigest": "21006e2bcb632eedeaa81ca5d4e8d3cd5a140c92d3f3c48215dce685a1f908c7",
+      "afterManifest": "186682b9bef9be86debf5e4afbcd69f1f7468ac9a68382b58a37b89af0e778a5",
+      "result": {
+        "scriptChanged": false,
+        "locations": []
+      }
+    }
+  ],
+  "invalidCases": [
+    {
+      "name": "missing-project",
+      "afterFiles": [
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/collection.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000002\nname: snapshot-collection\nvariables:\n  region: module\n  baseUrl: http://module-stale.example\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000003\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000003\nname: outer\npreOperations: []\npostOperations: []\nfolderOrder:\n  - 10000000-0000-4000-8000-000000000004\napiOrder: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/api.yaml",
+          "content": "formatVersion: 1\nid: 10000000-0000-4000-8000-000000000005\nmetadata:\n  name: snapshot-request\n  description: \"\"\n  tags: []\n  version: \"1\"\n  status: draft\nrequest:\n  protocol: http\n  method: POST\n  baseUrl: \"{{baseUrl}}\"\n  path: /{{folderPath}}/items\n  pathParams: []\n  query:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000006\n      name: region\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: ordinary value binding\n      value: \"{{region}}\"\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000007\n      name: baseUrl\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL binding\n      value: \"{{baseUrl}}\"\n  headers:\n    - kind: inline\n      id: 10000000-0000-4000-8000-000000000008\n      name: X-Base-Template\n      schema:\n        kind: scalar\n        type: string\n      required: false\n      enabled: true\n      description: selected module base URL header\n      value: \"{{baseUrl}}\"\n  cookies: []\n  auth:\n    kind: bearer\n    token:\n      id: credential-ref-1\n      policy: test-auto\n  body:\n    kind: json\n    content: '{\"region\":\"{{region}}\",\"ancestor\":\"{{ancestorValue}}\",\"baseUrl\":\"{{baseUrl}}\"}'\nresponses: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/636173652d31.62617365.yaml",
+          "content": "id: case-1\nname: snapshot-case\nscope: base\nparameters: {}\npreOperations:\n  - id: case-pre\n    type: script\n    content: pm.request.headers[\"X-Case\"] = pm.variables.get(\"ancestorValue\") ??\n      \"missing\"; pm.request.headers[\"X-Base-Variable\"] =\n      pm.variables.get(\"baseUrl\") ?? \"missing\";\n      pm.request.headers[\"X-Base-Environment\"] = pm.environment.get(\"baseUrl\")\n      ?? \"missing\";\npostOperations: []\nassertions: []\ntags: []\nextractors: []\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/cases/index.yaml",
+          "content": "formatVersion: 1\ncases:\n  - id: case-1\n    scope: base\n"
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/apis/10000000-0000-4000-8000-000000000005/design.md",
+          "content": ""
+        },
+        {
+          "path": "collections/10000000-0000-4000-8000-000000000002/folders/10000000-0000-4000-8000-000000000003/folders/10000000-0000-4000-8000-000000000004/folder.yaml",
+          "content": "id: 10000000-0000-4000-8000-000000000004\nname: inner\npreOperations:\n  - id: folder-pre\n    type: script\n    content: pm.variables.set(\"ancestorValue\", \"folder\");\n      pm.variables.set(\"folderPath\", \"nested\");\npostOperations:\n  - id: folder-post\n    type: script\n    content: pm.variables.set(\"folderClosed\", \"true\");\nfolderOrder: []\napiOrder:\n  - 10000000-0000-4000-8000-000000000005\n"
+        }
+      ],
+      "failure": "PUBLICATION_SOURCE_INVALID"
+    }
+  ]
+}

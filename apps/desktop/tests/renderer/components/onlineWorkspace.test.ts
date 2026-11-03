@@ -24,6 +24,7 @@ import HomeView from "../../../src/renderer/src/components/HomeView.vue";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import OnlineApiEditor from "../../../src/renderer/src/components/OnlineApiEditor.vue";
 import OnlineExecutionPanel from "../../../src/renderer/src/components/online/OnlineExecutionPanel.vue";
+import OnlineStressPanel from "../../../src/renderer/src/components/online/OnlineStressPanel.vue";
 import OnlineProjectAssets from "../../../src/renderer/src/components/online/OnlineProjectAssets.vue";
 import { createOnlineProjectAdapter } from "../../../src/renderer/src/stores/onlineProjectAdapter.js";
 import { ContractWorkspaceSchema } from "@apicc/core/schema";
@@ -52,6 +53,28 @@ function flowLayoutFixture() {
 }
 
 describe('online execution readable projection', () => {
+  it('T9 offers an online local result by its main-owned run ID rather than renderer report content', async () => {
+    const execution = createOnlineExecutionStore({ onlineExecution: async () => [] }), { i18n } = createI18nInstance(); execution.activate(EXECUTION_CONTEXT); const result = failureResult('00000000-0000-4000-8000-000000000075'); execution.localResult = result;
+    const wrapper = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } }); expect(wrapper.text()).toContain('Safe failure: missing declared material');
+    await wrapper.get('[data-testid="collaboration-publish-result"]').trigger('click'); expect(wrapper.emitted('collaboration')).toEqual([[{ context: EXECUTION_CONTEXT, source: { kind: 'online-local', runId: result.runId } }]]); wrapper.unmount(); execution.setVisible(false);
+  });
+  it.each(['zh-CN','en'] as const)('F7f minimum status has readable %s history limit, no fake report or private task',language=>{
+    // Raw server-contract fixture deliberately bypasses the old parser so this reaches actual UI rendering.
+    const minimum={jobId:'99',executionId:'100',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:true,view:'active-status',scope:EXECUTION_CONTEXT.scope} as unknown as OnlineJob;
+    const execution=createOnlineExecutionStore({onlineExecution:async()=>[]});execution.jobs=[minimum];execution.resultSelection={kind:'agent',job:minimum};execution.selectedJobId='99';
+    const {i18n}=createI18nInstance();i18n.global.locale.value=language;
+    const wrapper=mount(OnlineExecutionPanel,{props:{execution},global:{plugins:[i18n]}});
+    expect(wrapper.text()).toContain(language==='zh-CN'?'仅任务状态；未获历史读取权限':'Task status only; history access unavailable');
+    expect(wrapper.get('[data-testid="online-jobs"]').text()).toContain('99');
+    expect(wrapper.find('[data-testid="online-execution-report"]').exists()).toBe(false);
+    expect(wrapper.find('pre').exists()).toBe(false);expect(wrapper.text()).not.toContain('"active-status"');wrapper.unmount();
+  });
+  it('F7f stress consumer accepts minimum selection without treating it as a known stress target',()=>{
+    const minimum={jobId:'99',executionId:'100',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:true,view:'active-status',scope:EXECUTION_CONTEXT.scope} as unknown as OnlineJob;
+    const execution=createOnlineExecutionStore({onlineExecution:async()=>[]});execution.resultSelection={kind:'agent',job:minimum};execution.jobs=[minimum];
+    const {i18n}=createI18nInstance();const wrapper=mount(OnlineStressPanel,{props:{execution},global:{plugins:[i18n]}});
+    expect(wrapper.text()).not.toContain('"active-status"');wrapper.unmount();
+  });
   it('shows Core logical failure and entry diagnostics separately from successful or absent physical requests', () => {
     const debug: OnlineLocalResult = { ...failureResult('00000000-0000-4000-8000-000000000075'), output: { kind: 'debug', result: {
       runId: 'debug-post', source: { sourceKind: 'unavailable' }, sourceProjectRevision: 'revision', executionSnapshotRevision: 'snapshot', mode: 'case',

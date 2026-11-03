@@ -1,0 +1,16 @@
+{
+  "name": "@apicc/share-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": { "@apicc/core": "workspace:*", "vue": "^3.5.42" },
+  "devDependencies": {
+    "@types/node": "^26.4.0", "@vitejs/plugin-vue": "^6.0.8", "@vue/test-utils": "^2.5.0",
+    "jsdom": "^30.0.1", "typescript": "^5.9.2", "vite": "^8.2.2", "vitest": "^4.1.11", "vue-tsc": "^3.3.11"
+  }
+}

@@ -90,7 +90,8 @@ export function createUsersStore(deps: UsersStoreDeps) {
         this.busyId = userId;
         this.error = null;
         try {
-          await client.adminSetDisabled(userId, disabled);
+          const account=this.items.find(item=>item.id===userId)!;
+          await client.adminSetDisabled(userId, disabled,account.revision);
           await this.refresh();
           return true;
         } catch (e) {

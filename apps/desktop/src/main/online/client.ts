@@ -14,6 +14,8 @@
  */
 import {
   OnlineAclEntrySchema,
+  OnlineMemberMutationSchema,
+  OnlineAclMutationSchema,
   OnlineAuthConfigSchema,
   OnlineBatchInputSchema,
   OnlineBatchResultSchema,
@@ -144,13 +146,13 @@ export interface OnlineClient {
   /** 组织分组只读清单（§4 GET groups，成员可读；迁移拉取 groupId → 组名反查数据源）。 */
   listGroups(workspaceId: string): Promise<OnlineGroup[]>;
   /** 成员管理：role → PUT 变更角色；op=remove → DELETE 移除（§3.2，M3-B UI 不消费，契约面保留）。 */
-  manageMembers(workspaceId: string, input: { userId: string; role: OnlineRole } | { userId: string; op: "remove" }): Promise<void>;
+  manageMembers(workspaceId: string, input: z.input<typeof OnlineMemberMutationSchema>): Promise<void>;
   /**
    * 项目 ACL（§3.3）：无 input → GET 清单；{ userId, role } → PUT 设角色（NONE=拒之门外）；
    * { userId, op: "remove" } → DELETE ?userId=（契约修订 2026-09-03，删 ACL 行=恢复工作区
    * 角色继承）。M3-B UI 不消费，契约面保留。
    */
-  manageAcl(workspaceId: string, projectId: string, input?: { userId: string; role: OnlineAclRole } | { userId: string; op: "remove" }): Promise<OnlineAclEntry[] | void>;
+  manageAcl(workspaceId: string, projectId: string, input?: z.input<typeof OnlineAclMutationSchema>): Promise<OnlineAclEntry[] | void>;
 }
 
 /** 默认超时 15s（计划任务 1 裁定）。 */
@@ -351,22 +353,28 @@ export function createOnlineClient(deps: OnlineClientDeps): OnlineClient {
       });
     },
 
-    async manageMembers(workspaceId, input) {
+    async manageMembers(workspaceId, raw) {
+      const parsed = OnlineMemberMutationSchema.safeParse(raw);
+      if (!parsed.success) throw new OnlineApiError(0, 'access_upgrade_required', '访问协议需要实际期望修订，请同步升级并刷新后保留草稿重试 / Upgrade the access client and refresh the actual revision; keep your draft.');
+      const input = parsed.data;
       if ("role" in input) {
-        await request({ method: "PUT", path: `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(input.userId)}`, body: { role: input.role } });
+        await request({ method: "PUT", path: `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(input.userId)}`, body: { role: input.role, expectedRevision: input.expectedRevision, ...(input.expectedActorRevision === undefined ? {} : { expectedActorRevision: input.expectedActorRevision }) } });
         return;
       }
-      await request({ method: "DELETE", path: `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(input.userId)}` });
+      await request({ method: "DELETE", path: `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(input.userId)}`, query: { expectedRevision: String(input.expectedRevision) } });
     },
 
-    async manageAcl(workspaceId, projectId, input) {
+    async manageAcl(workspaceId, projectId, raw) {
       const path = `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectId)}/acl`;
-      if (input === undefined) {
+      if (raw === undefined) {
         return (await request({ method: "GET", path, schema: z.array(OnlineAclEntrySchema) })) as OnlineAclEntry[];
       }
+      const parsed = OnlineAclMutationSchema.safeParse(raw);
+      if (!parsed.success) throw new OnlineApiError(0, 'access_upgrade_required', '访问协议需要实际期望修订，请同步升级并刷新后保留草稿重试 / Upgrade the access client and refresh the actual revision; keep your draft.');
+      const input = parsed.data;
       if ("op" in input) {
         // DELETE 行 = 恢复工作区角色继承（契约修订 2026-09-03）；与 manageMembers 的 remove 同构
-        await request({ method: "DELETE", path, query: { userId: input.userId } });
+        await request({ method: "DELETE", path, query: { userId: input.userId, expectedRevision: String(input.expectedRevision) } });
         return;
       }
       await request({ method: "PUT", path, body: input });

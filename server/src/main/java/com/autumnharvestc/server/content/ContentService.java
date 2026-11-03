@@ -36,9 +36,8 @@ import java.util.Set;
  * 内容与版本同表同语句，不存在「库旧盘新」撕裂——磁盘回滚补偿面随之退役（落盘失败注入面消失，
  * 并发条件化语义由 deleteIfVersion 的条件 DELETE 与既有竞态测试承担）。</p>
  *
- * <p>权限面口径（裁定 C② 留痕）：「移除成员不级联清 project_acl」——内容面按 ACL 行判定，为任务 4 起的
- * 既定模型（D5 自洽）：工作区守卫 requireMember 先挡非成员，project_acl 行只对仍具成员关系者细分读/写；
- * 成员被移除后保留的 ACL 行不清理，其重新加入工作区即自动恢复效力。</p>
+ * <p>权限面沿用成员与项目角色主干；T2 移除成员后旧正向 ACL 进入 pending-confirmation，
+ * 重新加入不会自动恢复旧覆盖或 allow，须管理员按当前修订明确确认。</p>
  *
  * <p>读面过滤：NONE 项目（有效角色为空）——tree 的 projects（实体表产出）与 files 两面整体不出现，
  * 在 files 批量取中进 missing（不 403、不泄露存在性）。</p>
@@ -53,15 +52,17 @@ public class ContentService {
     private final PermissionService permissions;
     private final ProjectRepo projects;
     private final FileVersionRepo fileVersions;
+    private final com.autumnharvestc.server.access.AssetMutationGuard mutations;
 
     public ContentService(WorkspaceGuard guard,
                           PermissionService permissions,
                           ProjectRepo projects,
-                          FileVersionRepo fileVersions) {
+                          FileVersionRepo fileVersions,com.autumnharvestc.server.access.AssetMutationGuard mutations) {
         this.guard = guard;
         this.permissions = permissions;
         this.projects = projects;
         this.fileVersions = fileVersions;
+        this.mutations=mutations;
     }
 
     // ---- GET tree ----
@@ -172,17 +173,24 @@ public class ContentService {
             }
         }
 
-        // 版本推进与内容写入同一条 SQL（§5 内容入库）：条件语句决出胜者，无撕裂亦无回滚补偿面
+        var project=ContentPaths.parseProject(path).flatMap(ContentPaths::parseProjectId);
+        if(project.isPresent())return mutations.legacy(caller,workspaceId,project.get(),path.substring(String.valueOf(project.get()).length()+1),request.content(),current==null?1:current.version()+1,
+                ()->writeVersion(caller,workspaceId,path,request.content(),newHash,baseVersion,current));
+        return writeVersion(caller,workspaceId,path,request.content(),newHash,baseVersion,current);
+    }
+
+    private PutOutcome writeVersion(UserAccount caller,long workspaceId,String path,String content,String newHash,long baseVersion,FileVersionRecord current) {
+        // 条件 SQL 和同事务资产审计在真正项目提交锁内完成。
         if (current == null) {
             try {
-                fileVersions.insertNew(workspaceId, path, request.content(), newHash, caller.id());
+                fileVersions.insertNew(workspaceId, path, content, newHash, caller.id());
             } catch (DuplicateKeyException ex) {
                 // 并发首写落败：以库内现状转冲突
                 FileVersionRecord winner = fileVersions.find(workspaceId, path)
                         .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "version_conflict", "并发写入冲突"));
                 throw new VersionConflictException(winner.version(), winner.contentHash());
             }
-        } else if (!fileVersions.bumpVersion(workspaceId, path, baseVersion, request.content(), newHash, caller.id())) {
+        } else if (!fileVersions.bumpVersion(workspaceId, path, baseVersion, content, newHash, caller.id())) {
             FileVersionRecord winner = fileVersions.find(workspaceId, path)
                     .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "version_conflict", "并发写入冲突"));
             throw new VersionConflictException(winner.version(), winner.contentHash());
@@ -207,6 +215,13 @@ public class ContentService {
         if (current.version() != baseVersion) {
             throw new VersionConflictException(current.version(), current.contentHash());
         }
+        var project=ContentPaths.parseProject(path).flatMap(ContentPaths::parseProjectId);
+        if(project.isPresent()) {
+            mutations.legacy(caller,wsId,project.get(),path.substring(String.valueOf(project.get()).length()+1),null,current.version(),()->{deleteVersion(wsId,path,baseVersion);return null;});
+        } else deleteVersion(wsId,path,baseVersion);
+    }
+
+    private void deleteVersion(long wsId,String path,long baseVersion) {
         if (!fileVersions.deleteIfVersion(wsId, path, baseVersion)) {
             // 条件删除落空：并发 PUT 已推进行 → 409 带现状；并发 DELETE 已删行 → 404（与顺序双 DELETE 同口径）
             FileVersionRecord winner = fileVersions.find(wsId, path)

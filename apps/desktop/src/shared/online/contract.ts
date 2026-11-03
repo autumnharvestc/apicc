@@ -25,6 +25,16 @@ export const OnlineVersionConflictSchema = z.object({
 export const OnlineRoleSchema = z.enum(["OWNER", "ADMIN", "EDITOR", "VIEWER"]);
 /** 项目 ACL 角色：NONE / VIEWER / EDITOR / ADMIN（无行 = 按工作区角色继承）。 */
 export const OnlineAclRoleSchema = z.enum(["NONE", "VIEWER", "EDITOR", "ADMIN"]);
+/** T2 access CAS identity is a numeric safe integer, separate from content version. */
+export const OnlineAccessRevisionSchema = z.number().int().nonnegative().safe();
+export const OnlineMemberMutationSchema = z.union([
+  z.object({ userId: z.string(), role: OnlineRoleSchema, expectedRevision: OnlineAccessRevisionSchema, expectedActorRevision: OnlineAccessRevisionSchema.optional() }).strict(),
+  z.object({ userId: z.string(), op: z.literal('remove'), expectedRevision: OnlineAccessRevisionSchema }).strict(),
+]);
+export const OnlineAclMutationSchema = z.union([
+  z.object({ userId: z.string(), role: OnlineAclRoleSchema, expectedRevision: OnlineAccessRevisionSchema }).strict(),
+  z.object({ userId: z.string(), op: z.literal('remove'), expectedRevision: OnlineAccessRevisionSchema }).strict(),
+]);
 /**
  * 项目级有效角色（§3.4 tree.projects[].myRole）：无 ACL 行时继承工作区角色（可为 OWNER），
  * 有 ACL 行时取覆盖值（理论可为 NONE，但无读权项目子树整体不出现）。规格未钉死取值域，

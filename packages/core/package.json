@@ -50,6 +50,22 @@
     "./workflow/adapter": {
       "types": "./dist/workflow/adapter.d.ts",
       "default": "./dist/workflow/adapter.js"
+    },
+    "./collaboration": {
+      "browser": {
+        "types": "./dist/collaboration/shared.d.ts",
+        "default": "./dist/collaboration/shared.js"
+      },
+      "types": "./dist/collaboration/index.d.ts",
+      "default": "./dist/collaboration/index.js"
+    },
+    "./collaboration/presentation": {
+      "types": "./dist/collaboration/presentation.d.ts",
+      "default": "./dist/collaboration/presentation.js"
+    },
+    "./collaboration/shared": {
+      "types": "./dist/collaboration/shared.d.ts",
+      "default": "./dist/collaboration/shared.js"
     }
   },
   "engines": {

@@ -31,3 +31,5 @@ apps/desktop/build/*
 !apps/desktop/build/icon.ico
 .apicc/
 coverage/
+# Independent generated public viewer installation (source remains apps/share-viewer).
+/share-viewer/

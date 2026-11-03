@@ -32,7 +32,12 @@ public class NotificationEventRepo {
     }
     public void body(long id,String body){jdbc.update("UPDATE execution_notification_events SET body_json=? WHERE id=?",body,id);}
     public List<Map<String,Object>> list(long workspace){return jdbc.query("SELECT id,project_id,body_json FROM execution_notification_events WHERE workspace_id=? AND in_app=TRUE AND body_json IS NOT NULL ORDER BY id DESC LIMIT 100",(r,n)->Map.of("id",r.getString(1),"project",r.getLong(2),"body",r.getString(3)),workspace);}
-    public List<Map<String,Object>> memberPage(long ws,long user,int limit,Long before){var args=new ArrayList<Object>(List.of(ws,user,user));if(before!=null)args.add(before);args.add(limit);return jdbc.query("SELECT e.id,e.project_id,e.body_json FROM execution_notification_events e WHERE e.workspace_id=? AND e.in_app=TRUE AND e.body_json IS NOT NULL AND EXISTS(SELECT 1 FROM memberships m WHERE m.workspace_id=e.workspace_id AND m.user_id=?) AND NOT EXISTS(SELECT 1 FROM project_acl a WHERE a.workspace_id=e.workspace_id AND a.project_id=e.project_id AND a.user_id=? AND a.role='NONE')"+(before==null?"":" AND e.id<?")+" ORDER BY e.id DESC LIMIT ?",(r,n)->Map.of("id",r.getString(1),"project",r.getLong(2),"body",r.getString(3)),args.toArray());}
+    public List<Map<String,Object>> memberPage(long ws,List<Long> readableProjects,int limit,Long before){
+        if(readableProjects.isEmpty())return List.of();
+        var args=new ArrayList<Object>();args.add(ws);args.addAll(readableProjects);if(before!=null)args.add(before);args.add(limit);
+        String placeholders=String.join(",",Collections.nCopies(readableProjects.size(),"?"));
+        return jdbc.query("SELECT e.id,e.project_id,e.body_json FROM execution_notification_events e WHERE e.workspace_id=? AND e.in_app=TRUE AND e.body_json IS NOT NULL AND e.project_id IN ("+placeholders+")"+(before==null?"":" AND e.id<?")+" ORDER BY e.id DESC LIMIT ?",(r,n)->Map.of("id",r.getString(1),"project",r.getLong(2),"body",r.getString(3)),args.toArray());
+    }
     public Optional<Map<String,Object>> readable(long ws,long id){return jdbc.query("SELECT id,project_id,body_json FROM execution_notification_events WHERE workspace_id=? AND id=? AND in_app=TRUE AND body_json IS NOT NULL",(r,n)->Map.<String,Object>of("id",r.getString(1),"project",r.getLong(2),"body",r.getString(3)),ws,id).stream().findFirst();}
     public record Head(long id,String source,String version,String kind,String reason,String created,String detailState,boolean inApp){}
     public boolean scheduleExists(long ws,long project,long schedule){return jdbc.queryForObject("SELECT COUNT(*) FROM execution_schedules WHERE workspace_id=? AND project_id=? AND id=?",Long.class,ws,project,schedule)==1;}

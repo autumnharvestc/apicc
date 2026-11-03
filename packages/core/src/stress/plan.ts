@@ -22,7 +22,7 @@ const lifecycleFields = { workflowId: name, inputs: inputs.optional() };
 const setup = z.object({ ...lifecycleFields, outputs: StringRecordSchema(name).optional() }).strict();
 const teardown = z.object(lifecycleFields).strict();
 export const StressLifecycleSchema = z.object({ setup: setup.optional(), vuSetup: setup.optional(), vuTeardown: teardown.optional(), teardown: teardown.optional() }).strict();
-const StressPlanWireSchema = z.object({
+export const StressPlanWireSchema = z.object({
   formatVersion: z.literal(1), target: StressTargetSchema, load: StressLoadSchema,
   maxVus: count.max(1000).default(1),
   termination: z.object({ durationMs: duration.optional(), maxIterations: count.optional() }).strict().default({}),

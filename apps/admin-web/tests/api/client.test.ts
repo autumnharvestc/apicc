@@ -103,13 +103,13 @@ describe("adminClient 请求拼装", () => {
     const client = createAdminClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
     expect(await client.listMembers("ws-1")).toEqual(members);
     expect(calls[0]!.url).toBe(`${BASE}/workspaces/ws-1/members`);
-    await client.setMemberRole("ws-1", "u-2", "ADMIN");
+    await client.setMemberRole("ws-1", "u-2", "ADMIN",1);
     expect(calls[1]!.method).toBe("PUT");
     expect(calls[1]!.url).toBe(`${BASE}/workspaces/ws-1/members/u-2`);
-    expect(calls[1]!.body).toEqual({ role: "ADMIN" });
-    await client.removeMember("ws-1", "u-2");
+    expect(calls[1]!.body).toEqual({ role: "ADMIN",expectedRevision:1 });
+    await client.removeMember("ws-1", "u-2",1);
     expect(calls[2]!.method).toBe("DELETE");
-    expect(calls[2]!.url).toBe(`${BASE}/workspaces/ws-1/members/u-2`);
+    expect(calls[2]!.url).toBe(`${BASE}/workspaces/ws-1/members/u-2?expectedRevision=1`);
   });
 
   it("searchUserCandidates：GET member-candidates 携 q/limit 并解析数组", async () => {
@@ -134,12 +134,12 @@ describe("adminClient 请求拼装", () => {
     const client = createAdminClient({ baseUrl: BASE, fetch: impl, token: "tok-1" });
     expect(await client.listAcl("ws-1", "p-1")).toEqual(entries);
     expect(calls[0]!.url).toBe(`${BASE}/workspaces/ws-1/projects/p-1/acl`);
-    await client.setAclEntry("ws-1", "p-1", { userId: "u-3", role: "NONE" });
+    await client.setAclEntry("ws-1", "p-1", { userId: "u-3", role: "NONE",expectedRevision:1 });
     expect(calls[1]!.method).toBe("PUT");
-    expect(calls[1]!.body).toEqual({ userId: "u-3", role: "NONE" });
-    await client.deleteAclEntry("ws-1", "p-1", "u-3");
+    expect(calls[1]!.body).toEqual({ userId: "u-3", role: "NONE",expectedRevision:1 });
+    await client.deleteAclEntry("ws-1", "p-1", "u-3",1);
     expect(calls[2]!.method).toBe("DELETE");
-    expect(calls[2]!.url).toBe(`${BASE}/workspaces/ws-1/projects/p-1/acl?userId=u-3`);
+    expect(calls[2]!.url).toBe(`${BASE}/workspaces/ws-1/projects/p-1/acl?userId=u-3&expectedRevision=1`);
   });
 
   it("setToken/clearToken：注入与清除会话令牌", async () => {

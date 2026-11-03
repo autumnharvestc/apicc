@@ -20,10 +20,11 @@ public class ProjectCredentialService {
     private final ProjectCredentialStore store;
     private final AgentService agents;
     private final ExecutionProperties properties;
+    private final com.autumnharvestc.server.execution.agent.AgentRepo audit;
     private final SecureRandom random=new SecureRandom();
-    public ProjectCredentialService(ProjectCredentialStore store,AgentService agents,ExecutionProperties properties){this.store=store;this.agents=agents;this.properties=properties;}
+    public ProjectCredentialService(ProjectCredentialStore store,AgentService agents,ExecutionProperties properties,com.autumnharvestc.server.execution.agent.AgentRepo audit){this.store=store;this.agents=agents;this.properties=properties;this.audit=audit;}
     public CredentialMetadata put(UserAccount caller,String ws,String project,String ref,CredentialWrite request){
-        agents.requireExecution(caller,ws,project); validRef(ref);
+        agents.requireCapability(caller,ws,project,com.autumnharvestc.server.access.Capability.CREDENTIAL_MANAGE); validRef(ref);
         if(request==null||request.value()==null)throw error(HttpStatus.BAD_REQUEST,"validation_failed","凭据值必填");
         long w=id(ws),p=id(project); var current=store.find(w,p,ref).orElse(null); long version=current==null?0:current.version();
         if(version(request.expectedVersion())!=version)throw conflict();
@@ -33,6 +34,7 @@ public class ProjectCredentialService {
         try {encrypted=crypt(Cipher.ENCRYPT_MODE,w,p,ref,next,properties.getMaterials().getKeyId(),nonce,plain);}
         finally {Arrays.fill(plain,(byte)0);}
         store.save(new ProjectCredentialStore.Envelope(w,p,ref,next,properties.getMaterials().getKeyId(),nonce,encrypted));
+        audit.audit(caller.id(),"credential.put","project",p,next);
         return new CredentialMetadata(ref,String.valueOf(next),"available");
     }
     public List<CredentialMetadata> list(UserAccount caller,String ws,String project){
@@ -62,9 +64,10 @@ public class ProjectCredentialService {
         return new RegisteredSelection(new CredentialSelection(ref,String.valueOf(row.version())),row.ciphertext().length-16L);
     }
     public void remove(UserAccount caller,String ws,String project,String ref,String expected){
-        agents.requireExecution(caller,ws,project);validRef(ref);var row=store.find(id(ws),id(project),ref).orElseThrow(()->missing());
+        agents.requireCapability(caller,ws,project,com.autumnharvestc.server.access.Capability.CREDENTIAL_MANAGE);validRef(ref);var row=store.find(id(ws),id(project),ref).orElseThrow(()->missing());
         if(version(expected)!=row.version())throw conflict();
         store.save(new ProjectCredentialStore.Envelope(row.workspaceId(),row.projectId(),ref,next(row.version()),null,null,null));
+        audit.audit(caller.id(),"credential.remove","project",row.projectId(),next(row.version()));
     }
     /** Internal material seam: caller must hold a currently authorized real project/task lock. */
     public CredentialValue resolveAuthorized(long ws,long project,CredentialSelection selected){

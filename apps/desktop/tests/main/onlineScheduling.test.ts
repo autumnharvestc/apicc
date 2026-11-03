@@ -16,6 +16,7 @@ import { createSession } from '../../src/main/session.js';
 import { readFileSync } from 'node:fs';
 import { scheduleView, scheduleOptions } from '../helpers/scheduling.js';
 import { OnlineJobSchema } from '../../src/shared/online/execution.js';
+import { FullOnlineJobSchema, MinimalOnlineJobSchema } from '../../src/shared/online/execution.js';
 const context={serverId:'https://control.test/api/v1',ownerId:'7',scope:{workspaceId:'11',groupId:'22',projectId:'33'}};
 const workflowId='10000000-0000-4000-8000-000000000091',suiteId='10000000-0000-4000-8000-000000000092';
 async function fixture(origin='http://127.0.0.1:1'){
@@ -149,7 +150,7 @@ async function routingFixture() {
   await deps.handle('online:login', {}, { baseUrl: 'https://control.test', username: 'member', password: 'password' });
   await deps.handle('online:workspace:open', {}, { workspaceId: '11', name: 'Workspace', myRole: 'EDITOR' });
   const invoke = (input: unknown) => Reflect.apply(deps.handle, undefined, ['online:scheduling', {}, input]) as Promise<any>;
-  return { ...f, row, deps, requests, invoke, originalJob() { return OnlineJobSchema.parse(originalJob); }, setOriginalJob(value: unknown) { originalJob = value; }, delayJob(value: Promise<Response>) { jobGate = value; }, setDelay(promise: Promise<Response>) { delayOptions = promise; }, failUpdate() { updateFailure = true; } };
+  return { ...f, row, deps, requests, invoke, originalJob() { return FullOnlineJobSchema.parse(originalJob); }, setOriginalJob(value: unknown) { originalJob = value; }, delayJob(value: Promise<Response>) { jobGate = value; }, setDelay(promise: Promise<Response>) { delayOptions = promise; }, failUpdate() { updateFailure = true; } };
 }
 
 // Break caught: the real main IPC dispatch has no bounded scheduling route.
@@ -198,6 +199,19 @@ it.each(['workspace', 'group', 'project', 'job', 'execution', 'task-job', 'task-
 });
 
 // Existing captured request/current checks are baseline, including failures, not a new missing-route RED.
+it.each(['minimum','workspace','group','project','job','execution'])('F7f scheduling originalJob %s retains minimum scope and identity proof',async route=>{
+  const f=await routingFixture();
+  try{
+    expect(await f.invoke({operation:'originalJob',context,jobId:'78',executionId:'79'})).toEqual({jobId:'78',executionId:'79',agentId:'5'});
+    const minimum={jobId:'78',executionId:'79',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:true,view:'active-status',scope:{...context.scope}};
+    if(route==='workspace')minimum.scope.workspaceId='44';if(route==='group')minimum.scope.groupId='44';if(route==='project')minimum.scope.projectId='44';
+    if(route==='job')minimum.jobId='80';if(route==='execution')minimum.executionId='81';
+    f.setOriginalJob(MinimalOnlineJobSchema.parse(minimum));
+    const result=f.invoke({operation:'originalJob',context,jobId:'78',executionId:'79'});
+    if(route==='minimum')await expect(result).resolves.toEqual({jobId:'78',executionId:'79',agentId:'5'});
+    else await expect(result).rejects.toThrow(['workspace','group','project'].includes(route)?'online-project-scope-mismatch':'fixed-input-mismatch');
+  }finally{await f.deps.stopOnlineExecutions();}
+});
 it.each(['success', 'error'] as const)('round1 originalJob retains captured session rejection for a late %s', async result => {
   const f = await routingFixture(); let release!: (response: Response) => void;
   f.delayJob(new Promise<Response>(done => { release = done; }));

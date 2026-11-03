@@ -13,5 +13,6 @@ public record SetAclRequest(
         String userId,
 
         @NotNull(message = "不能为空")
-        AclRole role) {
+        AclRole role,
+        Long expectedRevision) {
 }

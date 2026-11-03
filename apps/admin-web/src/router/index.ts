@@ -27,6 +27,8 @@ import { createSchedulingStore, type SchedulingStore } from '../stores/schedulin
 import SchedulePolicyView from '../views/SchedulePolicyView.vue';
 import NotificationChannelsView from '../views/NotificationChannelsView.vue';
 import ProjectScheduleGrantsView from '../views/ProjectScheduleGrantsView.vue';
+import CollaborationView from '../views/CollaborationView.vue';
+import {createCollaborationApi} from '../api/collaboration.js';
 
 export interface AppRouterDeps {
   session: SessionStore;
@@ -50,6 +52,7 @@ export interface AppRouterDeps {
 export function createAppRoutes(deps: AppRouterDeps): RouteRecordRaw[] {
   const agents=deps.agents??createAgentsStore({client:deps.client});
   const scheduling=deps.scheduling??createSchedulingStore({client:deps.client});
+  const collaboration=createCollaborationApi(deps.client);
   return [
     { path: "/login", name: "login", component: LoginView, props: { session: deps.session, client: deps.client } },
     {
@@ -62,6 +65,9 @@ export function createAppRoutes(deps: AppRouterDeps): RouteRecordRaw[] {
       children: [
         { path: "", redirect: { name: "workspaces" } },
         { path: "workspaces", name: "workspaces", component: WorkspacesView, props: { workspaces: deps.workspaces } },
+        {path:'collaboration',name:'platform-collaboration',component:CollaborationView,props:{api:collaboration,scope:{}},meta:{requiresSuperadmin:true}},
+        {path:'workspaces/:id/collaboration',name:'workspace-collaboration',component:CollaborationView,props:route=>({api:collaboration,scope:{workspaceId:String(route.params.id)}})},
+        {path:'workspaces/:id/projects/:projectId/collaboration',name:'project-collaboration',component:CollaborationView,props:route=>({api:collaboration,scope:{workspaceId:String(route.params.id),projectId:String(route.params.projectId)}})},
         // 成员/项目 ACL（任务 4/5 渐次填充）：真实视图均注入 workspaces 实例
         { path: "workspaces/:id/members", name: "workspace-members", component: MembersView, props: { workspaces: deps.workspaces } },
         { path: "workspaces/:id/acl", name: "workspace-acl", component: ProjectAclView, props: { workspaces: deps.workspaces } },

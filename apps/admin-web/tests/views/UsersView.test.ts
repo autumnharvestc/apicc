@@ -38,8 +38,8 @@ const BASE = "http://127.0.0.1:8080/api/v1";
 const ME_SUPER = { id: "ad", username: "admin", displayName: "管理员", role: "SUPERADMIN" };
 const ME_USER = { id: "u1", username: "alice", displayName: "Alice", role: "USER" };
 const USERS = [
-  { id: "u1", username: "alice", displayName: "Alice", role: "USER", disabled: false, createdAt: "2026-09-01T00:00:00Z" },
-  { id: "ad", username: "admin", displayName: "管理员", role: "SUPERADMIN", disabled: false, createdAt: "2026-08-01T00:00:00Z" },
+  { id: "u1", username: "alice", displayName: "Alice", role: "USER", disabled: false, createdAt: "2026-09-01T00:00:00Z",revision:1 },
+  { id: "ad", username: "admin", displayName: "管理员", role: "SUPERADMIN", disabled: false, createdAt: "2026-08-01T00:00:00Z",revision:1 },
 ];
 
 beforeAll(() => {
@@ -84,7 +84,7 @@ function usersHandler(opts?: {
     if (url === `${BASE}/admin/users` && method === "POST") {
       if (opts?.onCreate) return opts.onCreate(req);
       const body = req.body as { username: string; displayName: string };
-      list.push({ id: body.username, username: body.username, displayName: body.displayName, role: "USER", disabled: false, createdAt: "2026-09-06T00:00:00Z" });
+      list.push({ id: body.username, username: body.username, displayName: body.displayName, role: "USER", disabled: false, createdAt: "2026-09-06T00:00:00Z",revision:1 });
       return json(201, { ...list[list.length - 1] });
     }
     if (url === `${BASE}/admin/users/u1/disable` && method === "POST") {
@@ -163,7 +163,7 @@ describe("UsersView 清单与行内动作（任务 5）", () => {
       if (req.url === `${BASE}/admin/users` && req.method === "GET") return json(200, list);
       if (req.url === `${BASE}/admin/users` && req.method === "POST") {
         posted = req.body;
-        const created = { id: "u2", username: "bob", displayName: "Bob", role: "USER", disabled: false, createdAt: "2026-09-06T00:00:00Z" };
+        const created = { id: "u2", username: "bob", displayName: "Bob", role: "USER", disabled: false, createdAt: "2026-09-06T00:00:00Z",revision:1 };
         list.push(created);
         return json(201, created);
       }

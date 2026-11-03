@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { StressFailureCountsSchema, StressReportSchema, StressStatisticsSchema } from "./model.js";
-import { StressPlanSchema, StressTargetSchema } from "./plan.js";
+import { StressFailureCountsSchema, StressReportSchema, StressReportWireSchema, StressStatisticsSchema } from "./model.js";
+import { StressPlanSchema, StressPlanWireSchema, StressTargetSchema } from "./plan.js";
 
 const count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const ms = z.number().finite().nonnegative();
@@ -23,13 +23,16 @@ export const StressHttpExchangesSchema = z.object({ started: count, completed: c
 export const StressCaseRowsSchema = z.object({ total: count, ok: count, failed: count, failures: StressFailureCountsSchema }).strict();
 export const StressIterationsSchema = z.object({ planned: count, started: count, completed: count, passed: count, failed: count, aborted: count, dropped: count,
   latency: StressLatencyMetricSchema, startDelay: StressLatencyMetricSchema }).strict();
-const completenessPart = z.object({ complete: z.boolean(), reasons: z.array(StressCompletenessReasonSchema).max(32) }).strict().superRefine((part, ctx) => {
+export const StressCompletenessPartWireSchema = z.object({ complete: z.boolean(), reasons: z.array(StressCompletenessReasonSchema).max(32) }).strict();
+const completenessPart = StressCompletenessPartWireSchema.superRefine((part, ctx) => {
   if (part.complete === (part.reasons.length > 0)) ctx.addIssue({ code: "custom", message: "Complete components have no reasons; incomplete components require a reason" });
 });
 export const StressCompletenessSchema = z.object({ execution: completenessPart, metrics: completenessPart, load: completenessPart }).strict();
+export const StressCompletenessWireSchema = z.object({ execution: StressCompletenessPartWireSchema, metrics: StressCompletenessPartWireSchema, load: StressCompletenessPartWireSchema }).strict();
 const observationSummary = { caseRows: StressCaseRowsSchema, requests: StressRequestsSchema, httpExchanges: StressHttpExchangesSchema, latency: StressLatencyMetricSchema };
-export const StressPhaseSummarySchema = z.object({ phase: StressPhaseSchema, stageId: z.string().nullable(), startOffsetMs: ms.nullable(), endOffsetMs: ms.nullable(),
-  durationMs: ms.nullable(), rps: StressNumericMetricSchema, ...observationSummary }).strict().superRefine((phase, ctx) => {
+export const StressPhaseSummaryWireSchema = z.object({ phase: StressPhaseSchema, stageId: z.string().nullable(), startOffsetMs: ms.nullable(), endOffsetMs: ms.nullable(),
+  durationMs: ms.nullable(), rps: StressNumericMetricSchema, ...observationSummary }).strict();
+export const StressPhaseSummarySchema = StressPhaseSummaryWireSchema.superRefine((phase, ctx) => {
   const known = phase.startOffsetMs !== null && phase.endOffsetMs !== null && phase.durationMs !== null;
   const unknown = phase.startOffsetMs === null && phase.endOffsetMs === null && phase.durationMs === null;
   if ((!known && !unknown) || (known && (phase.endOffsetMs! < phase.startOffsetMs! || phase.durationMs !== phase.endOffsetMs! - phase.startOffsetMs!)) || (unknown && (phase.rps.availability !== "unavailable" || phase.rps.reason !== "not-collected"))) ctx.addIssue({ code: "custom", message: "Phase coverage must be complete or explicitly not collected" });
@@ -84,6 +87,12 @@ export const StressReportV2Schema = StressReportSchema.omit({ latency: true, rps
   if (report.verdict.passed && (incomplete || lifecycleFailed || failedCase || iterations.failed > 0 || iterations.aborted > 0 || iterations.dropped > 0 || report.requests.eligibleCompleted === 0 || report.incomplete || report.verdict.violations.length > 0 || report.distributed?.dataComplete === false || distributedUnaligned || report.latency.availability !== "available" || report.rps.availability !== "available" || !report.timeline.aligned)) issue(["verdict"], "Incomplete, failed, dropped, aborted, or no-data runs cannot pass");
 });
 export type StressReportV2 = z.infer<typeof StressReportV2Schema>;
+/** Intentionally structural: callers must still invoke parseStressReport for semantics. */
+export const StressReportV2WireSchema = StressReportWireSchema.omit({ latency: true, rps: true, scriptLatency: true, iterationLatency: true, verdict: true, distributed: true }).extend({
+  ...StressReportV2Schema.shape,
+  generator: StressReportWireSchema.shape.generator, measurementWindow: StressReportWireSchema.shape.measurementWindow,
+  plan: StressPlanWireSchema, phases: z.array(StressPhaseSummaryWireSchema).max(69), completeness: StressCompletenessWireSchema,
+}).strict();
 export type StressNumericMetric = z.infer<typeof StressNumericMetricSchema>;
 export type StressLatencyMetric = z.infer<typeof StressLatencyMetricSchema>;
 export type StressCompleteness = z.infer<typeof StressCompletenessSchema>;

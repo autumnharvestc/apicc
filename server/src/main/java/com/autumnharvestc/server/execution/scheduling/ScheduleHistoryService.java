@@ -16,7 +16,7 @@ public class ScheduleHistoryService {
     @org.springframework.beans.factory.annotation.Autowired private com.autumnharvestc.server.execution.jobs.JobRepo jobs;
     public ScheduleHistoryService(JdbcTemplate jdbc,ScheduleGrantService grants,ScheduleRepo plans){this.jdbc=jdbc;this.grants=grants;this.plans=plans;}
     public ScheduleHistoryDtos.Page history(UserAccount caller,String ws,String project,String schedule,Integer requested,String before,String missedBefore){
-        grants.requireRead(caller,ws,project);long w=id(ws),p=id(project),s=id(schedule);int limit=requested==null?25:requested;
+        grants.requireHistory(caller,ws,project);long w=id(ws),p=id(project),s=id(schedule);int limit=requested==null?25:requested;
         if(limit<1||limit>100)throw error(org.springframework.http.HttpStatus.BAD_REQUEST,"validation_failed","历史分页大小必须为1至100");
         var summaries=jdbc.query("SELECT * FROM execution_schedules WHERE workspace_id=? AND project_id=? AND id=?",(r,n)->new Summary(r.getBoolean("deleted")?"deleted":!r.getBoolean("enabled")?"paused":r.getObject("next_planned_at_utc")==null?"finished":"active",r.getString("paused_reason_code"),instant(r,"evaluated_through_utc"),instant(r,"last_admitted_planned_at_utc")),w,p,s);
         var summary=summaries.stream().findFirst().orElseThrow(()->error(org.springframework.http.HttpStatus.NOT_FOUND,"schedule_not_found","定时任务不存在"));

@@ -1,6 +1,7 @@
 package com.autumnharvestc.server.workspace;
 
 import com.autumnharvestc.server.core.ApiException;
+import com.autumnharvestc.server.access.AccessMutationService;
 import com.autumnharvestc.server.core.EntityIds;
 import com.autumnharvestc.server.store.AclRepo;
 import com.autumnharvestc.server.store.ProjectRepo;
@@ -18,7 +19,7 @@ import java.util.List;
  * 口径同 {@link ProjectService#findInWorkspace}）——历史「任意 id 可预设」是为支持先设 ACL 后推内容；
  * 实体化后项目必先经管理面创建，语义收紧（不存在「空 ACL 的不存在项目」，list 对缺失项目同样 404）。
  * NONE 行=显式拒之门外；DELETE 行=恢复继承（幂等）。
- * 目标用户须存在（404 user_not_found），但无需是工作区成员（ACL 可向非成员授予项目级访问，D5）。
+ * 目标用户须存在（404 user_not_found）；可保存非成员预设，但完整准入仍须当前成员资格，加入时旧正向覆盖待确认。
  */
 @Service
 public class ProjectAclService {
@@ -27,12 +28,14 @@ public class ProjectAclService {
     private final UserRepo users;
     private final ProjectRepo projects;
     private final WorkspaceGuard guard;
+    private final AccessMutationService mutations;
 
-    public ProjectAclService(AclRepo acl, UserRepo users, ProjectRepo projects, WorkspaceGuard guard) {
+    public ProjectAclService(AclRepo acl, UserRepo users, ProjectRepo projects, WorkspaceGuard guard, AccessMutationService mutations) {
         this.acl = acl;
         this.users = users;
         this.projects = projects;
         this.guard = guard;
+        this.mutations = mutations;
     }
 
     /** ACL 清单（规格 §3.3：[{userId, role}]）。先鉴权后 parse（BIGINT 化口径 5）。 */
@@ -46,28 +49,31 @@ public class ProjectAclService {
                 .toList();
     }
 
-    /** 置/覆盖 ACL 行（规格 §3.3：PUT {userId, role}）。请求体 userId 为字符串化数字；
+    /** 置/确认 ACL 行（PUT {userId, role, expectedRevision}）。请求体 userId 为字符串化数字；
      * 先鉴权后 parse（与 AdminService 口径一致——无权调用者 403，非数字 id 不泄露解析层）。 */
-    public AclEntryView put(UserAccount caller, String workspaceId, String projectId, SetAclRequest request) {
+    public AclEntryView put(UserAccount caller, String workspaceId, String projectId, com.fasterxml.jackson.databind.JsonNode body) {
         long wsId = EntityIds.parse(workspaceId);
         guard.requireAdmin(wsId, caller);
         long pid = EntityIds.parse(projectId);
         requireProjectInWorkspace(wsId, pid);
+        SetAclRequest request = com.autumnharvestc.server.access.AccessRequests.acl(body);
+        long revision = request.expectedRevision();
         long targetUserId = EntityIds.parse(request.userId());
         UserAccount target = users.findById(targetUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "user_not_found", "目标用户不存在"));
-        acl.upsert(wsId, pid, targetUserId, request.role());
+        mutations.putAcl(caller,wsId, pid, targetUserId, request.role(), revision);
         return new AclEntryView(String.valueOf(target.id()), request.role());
     }
 
     /** 删 ACL 行=恢复工作区角色继承（规格 §3.3 括注；DELETE 同路径 ?userId=；幂等 204）。先鉴权后 parse。 */
-    public void delete(UserAccount caller, String workspaceId, String projectId, String targetUserId) {
+    public void delete(UserAccount caller, String workspaceId, String projectId, String targetUserId, String expectedRevision) {
         long wsId = EntityIds.parse(workspaceId);
         guard.requireAdmin(wsId, caller);
         long pid = EntityIds.parse(projectId);
         requireProjectInWorkspace(wsId, pid);
+        long revision = com.autumnharvestc.server.access.AccessRequests.queryRevision(expectedRevision);
         long targetId = EntityIds.parse(targetUserId);
-        acl.delete(wsId, pid, targetId);
+        mutations.deleteAcl(caller,wsId, pid, targetId, revision);
     }
 
     /** 项目须存在于该工作区（跨工作区项目 id 按 404 project_not_found 处理，口径同 ProjectService）。 */

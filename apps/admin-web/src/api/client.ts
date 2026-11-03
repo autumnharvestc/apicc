@@ -105,14 +105,14 @@ export interface AdminClient {
   listMembers(workspaceId: string): Promise<AdminMember[]>;
   /** GET /workspaces/{id}/member-candidates?q=&limit=：非成员候选（ADMIN+；400/403 由服务端裁决）。 */
   searchUserCandidates(workspaceId: string, q: string, limit?: number): Promise<AdminUserCandidate[]>;
-  setMemberRole(workspaceId: string, userId: string, role: AdminRole): Promise<void>;
-  removeMember(workspaceId: string, userId: string): Promise<void>;
+  setMemberRole(workspaceId: string, userId: string, role: AdminRole, expectedRevision: number, expectedActorRevision?: number): Promise<void>;
+  removeMember(workspaceId: string, userId: string, expectedRevision: number): Promise<void>;
   getTree(workspaceId: string): Promise<AdminTree>;
   listAcl(workspaceId: string, projectId: string): Promise<AdminAclEntry[]>;
   /** PUT ACL 行：NONE=拒之门外（§3.3）。 */
-  setAclEntry(workspaceId: string, projectId: string, input: { userId: string; role: AdminAclRole }): Promise<void>;
+  setAclEntry(workspaceId: string, projectId: string, input: { userId: string; role: AdminAclRole; expectedRevision: number }): Promise<void>;
   /** DELETE ACL 行 ?userId=：删行=恢复工作区角色继承（契约修订 2026-09-04）。 */
-  deleteAclEntry(workspaceId: string, projectId: string, userId: string): Promise<void>;
+  deleteAclEntry(workspaceId: string, projectId: string, userId: string, expectedRevision: number): Promise<void>;
   // —— 平台账号管理（规格 2026-09-08 §2，超管专属；403/401 由服务端裁决）——
   /** GET /admin/users：账号清单（不含 password）。 */
   adminListUsers(): Promise<AdminAccount[]>;
@@ -121,9 +121,9 @@ export interface AdminClient {
   /** POST /admin/users/{id}/password-reset { newPassword }：重置并踢下线（204）。 */
   adminResetPassword(userId: string, newPassword: string): Promise<void>;
   /** POST /admin/users/{id}/disable | /enable：停用/启用（204；停用同时吊销全部令牌）。 */
-  adminSetDisabled(userId: string, disabled: boolean): Promise<void>;
+  adminSetDisabled(userId: string, disabled: boolean, expectedRevision: number): Promise<void>;
   /** PUT /admin/users/{id}/workspace-role { workspaceId, role }：入区定角色（204）。 */
-  adminSetWorkspaceRole(userId: string, workspaceId: string, role: AdminRole): Promise<void>;
+  adminSetWorkspaceRole(userId: string, workspaceId: string, role: AdminRole, expectedRevision: number): Promise<void>;
   // —— 组织管理（规格 2026-09-08 §4，计划 B 任务 2 端点逐字对齐；清单成员可读，写动作 ADMIN+，
   // 403/400/404/409 由服务端裁决，错误形状 {code,message}）——
   /** GET /workspaces/{id}/groups：分组清单。 */
@@ -324,12 +324,12 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
       })) as AdminUserCandidate[];
     },
 
-    async setMemberRole(workspaceId, userId, role) {
-      await request({ method: "PUT", path: workspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`), body: { role } });
+    async setMemberRole(workspaceId, userId, role, expectedRevision, expectedActorRevision) {
+      await request({ method: "PUT", path: workspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`), body: { role, expectedRevision, ...(expectedActorRevision === undefined ? {} : {expectedActorRevision}) } });
     },
 
-    async removeMember(workspaceId, userId) {
-      await request({ method: "DELETE", path: workspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`) });
+    async removeMember(workspaceId, userId, expectedRevision) {
+      await request({ method: "DELETE", path: workspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`), query: {expectedRevision:String(expectedRevision)} });
     },
 
     async getTree(workspaceId) {
@@ -344,8 +344,8 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
       await request({ method: "PUT", path: aclPath(workspaceId, projectId), body: input });
     },
 
-    async deleteAclEntry(workspaceId, projectId, userId) {
-      await request({ method: "DELETE", path: aclPath(workspaceId, projectId), query: { userId } });
+    async deleteAclEntry(workspaceId, projectId, userId, expectedRevision) {
+      await request({ method: "DELETE", path: aclPath(workspaceId, projectId), query: { userId, expectedRevision:String(expectedRevision) } });
     },
 
     // —— 平台账号管理（规格 2026-09-08 §2）——
@@ -362,12 +362,12 @@ export function createAdminClient(deps: AdminClientDeps = {}): AdminClient {
       await request({ method: "POST", path: adminUserPath(userId, "/password-reset"), body: { newPassword } });
     },
 
-    async adminSetDisabled(userId, disabled) {
-      await request({ method: "POST", path: adminUserPath(userId, disabled ? "/disable" : "/enable") });
+    async adminSetDisabled(userId, disabled, expectedRevision) {
+      await request({ method: "POST", path: adminUserPath(userId, disabled ? "/disable" : "/enable"), body:{expectedRevision} });
     },
 
-    async adminSetWorkspaceRole(userId, workspaceId, role) {
-      await request({ method: "PUT", path: adminUserPath(userId, "/workspace-role"), body: { workspaceId, role } });
+    async adminSetWorkspaceRole(userId, workspaceId, role, expectedRevision) {
+      await request({ method: "PUT", path: adminUserPath(userId, "/workspace-role"), body: { workspaceId, role, expectedRevision } });
     },
 
     // —— 组织管理（规格 2026-09-08 §4，端点逐字对齐计划 B 任务 2）——

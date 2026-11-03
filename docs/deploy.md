@@ -126,6 +126,8 @@ F7c 在线压测沿 F7b 控制协议扩展。服务端、客户端及 `Dockerfil
 
 ## 安全提示
 
+项目历史/外链/共享Mock的可选组合、独立viewer目录、精确默认/范围、RPC秘密、实际CPU/RSS/old-space预算、双origin、生命周期A及备份恢复见[协作部署与使用](f7f-collaboration.md)。默认Compose仍Java-only；仅在明确配置既有在途/余量后叠加 `deploy/docker-compose.collaboration.yml --profile collaboration`，不自动开放public端口。
+
 - 普通管理页面可以使用 HTTP；独立代理要求上述 HTTPS 控制身份。公网管理入口应使用 HTTPS。
 - `allow-registration` 保持关闭可防止陌生人自建账号；首个管理员引导仅在空库时触发，
   环境变量中的口令在部署后可从 `.env` 移除（重启不影响已建账号）。

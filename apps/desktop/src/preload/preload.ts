@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { OnlineExecutionResultSchema } from "../shared/online/execution.js";
+import { CollaborationInputSchema, CollaborationResultSchema } from '../shared/online/collaboration.js';
 import { OnlineSchedulingInputSchema, parseOnlineSchedulingResult } from '../shared/online/scheduling.js';
 import { IpcChannel, IpcEvent } from "../shared/channels.js";
 import type { IpcChannelName } from "../shared/channels.js";
@@ -18,6 +19,7 @@ const stressApi = createStressPreloadApi(ipcRenderer);
 
 const api: ApiccApi = {
   onlineExecution: async (input) => OnlineExecutionResultSchema.parse(await invoke(IpcChannel.OnlineExecution, input)),
+  onlineCollaboration: async input => CollaborationResultSchema.parse(await invoke(IpcChannel.OnlineCollaboration, CollaborationInputSchema.parse(input))),
   onlineScheduling: async input => parseOnlineSchedulingResult(input, await invoke(IpcChannel.OnlineScheduling, OnlineSchedulingInputSchema.parse(input))),
   inspectEvidence: (input) => invoke(IpcChannel.EvidenceInspect, EvidenceInvocationSchema.parse(input)),
   rerunEvidence: (input) => invoke(IpcChannel.EvidenceRerun, EvidenceInvocationSchema.parse(input)),

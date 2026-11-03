@@ -73,6 +73,19 @@ describe("typed preload contract", () => {
     return exposed?.[1] as ApiccApi;
   }
 
+  it('validates collaboration input before invoking and keeps the opaque candidate boundary', async () => {
+    const api = await exposedApi(), context = { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } };
+    electron.invoke.mockResolvedValue({ stage: 'idle' });
+    expect(await api.onlineCollaboration({ operation: 'activate', context })).toEqual({ stage: 'idle' });
+    expect(electron.invoke).toHaveBeenLastCalledWith('online:collaboration', { operation: 'activate', context }); const count = electron.invoke.mock.calls.length;
+    await expect(api.onlineCollaboration({ operation: 'activate', context, path: 'C:\\private' } as any)).rejects.toThrow(); expect(electron.invoke.mock.calls).toHaveLength(count);
+  });
+  it.each([{ stage: 'idle', key: 'secret' }, { stage: 'grant', grant: { id: '42', publicationId: '41', version: 1, purpose: 'view', audience: 'external', responsibleId: '7', responsibilityEpoch: 2, generation: 1, expiresAt: 2000000000000, downloadAllowed: false, revision: 1, state: 'active', operationIntent: 'intent', publicId: 'a'.repeat(22), publicUrl: 'https://public.test/s/' + 'a'.repeat(22), key: 'secret' }, keyAvailable: true }, { stage: 'pending' }])('refuses nonfinite collaboration output %j after a valid idle response', async invalid => {
+    const api = await exposedApi(), input = { operation: 'activate' as const, context: { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } } };
+    electron.invoke.mockResolvedValueOnce({ stage: 'idle' }); expect(await api.onlineCollaboration(input)).toEqual({ stage: 'idle' });
+    electron.invoke.mockResolvedValueOnce(invalid); await expect(api.onlineCollaboration(input)).rejects.toThrow();
+  });
+
   it("forwards all nine AI methods to exact channels without inventing a renderer owner, host or signal", async () => {
     const api = await exposedApi();
     const methods = [["aiSettingsRead", "ai:settings-read"], ["aiSettingsWrite", "ai:settings-write"], ["aiCatalogImport", "ai:catalog-import"], ["aiCatalogReload", "ai:catalog-reload"], ["aiConnectionTest", "ai:connection-test"], ["aiDiscover", "ai:discover"], ["aiPrepareAssistance", "ai:prepare-assistance"], ["aiStart", "ai:start"], ["aiCancel", "ai:cancel"]] as const;

@@ -5,6 +5,8 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -16,6 +18,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -41,6 +44,9 @@ class AdminUsersApiTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private com.autumnharvestc.server.access.AccessFixtureRevisions versions;
 
     // ---- 测试脚手架 ----
 
@@ -105,7 +111,9 @@ class AdminUsersApiTest {
                             .content("{\"newPassword\":\"password123\"}"))
                     .andExpect(status().isNoContent());
             mockMvc.perform(post("/api/v1/admin/users/" + bobId + "/enable")
-                            .header("Authorization", "Bearer " + admin))
+                            .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versions.accountBody(bobId)))
                     .andExpect(status().isNoContent());
         }
         return bobId;
@@ -116,7 +124,7 @@ class AdminUsersApiTest {
         MvcResult result = mockMvc.perform(post("/api/v1/workspaces")
                         .header("Authorization", "Bearer " + superadminToken())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"管理端分配区\"}"))
+                        .content("{\"name\":\"管理端分配区-" + java.util.UUID.randomUUID() + "\"}"))
                 .andExpect(status().isCreated())
                 .andReturn();
         return JsonPath.read(result.getResponse().getContentAsString(), "$.id");
@@ -171,17 +179,23 @@ class AdminUsersApiTest {
         String admin = superadminToken();
         String bobId = createBobAndGetId();
         // 停用：登录 403 + 不能停用自己
-        mockMvc.perform(post("/api/v1/admin/users/" + bobId + "/disable").header("Authorization", "Bearer " + admin))
+        mockMvc.perform(post("/api/v1/admin/users/" + bobId + "/disable").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versions.accountBody(bobId)))
                 .andExpect(status().isNoContent());
         mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
                         .content(loginBody("bob", "password123")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("account_disabled"));
-        mockMvc.perform(post("/api/v1/admin/users/" + adminId() + "/disable").header("Authorization", "Bearer " + admin))
+        mockMvc.perform(post("/api/v1/admin/users/" + adminId() + "/disable").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versions.accountBody(adminId())))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("cannot_disable_self"));
         // 启用：恢复登录
-        mockMvc.perform(post("/api/v1/admin/users/" + bobId + "/enable").header("Authorization", "Bearer " + admin))
+        mockMvc.perform(post("/api/v1/admin/users/" + bobId + "/enable").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versions.accountBody(bobId)))
                 .andExpect(status().isNoContent());
         mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
                         .content(loginBody("bob", "password123")))
@@ -191,7 +205,7 @@ class AdminUsersApiTest {
         mockMvc.perform(put("/api/v1/admin/users/" + bobId + "/workspace-role")
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"workspaceId\":\"" + wsId + "\",\"role\":\"ADMIN\"}"))
+                        .content(versions.adminRoleBody(wsId, bobId, "ADMIN")))
                 .andExpect(status().isNoContent());
         mockMvc.perform(get("/api/v1/workspaces/" + wsId + "/members").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
@@ -214,7 +228,7 @@ class AdminUsersApiTest {
         mockMvc.perform(put("/api/v1/admin/users/" + bobId + "/workspace-role")
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"workspaceId\":\"whatever\",\"role\":\"OWNER\"}"))
+                        .content("{\"workspaceId\":\"whatever\",\"role\":\"OWNER\",\"expectedRevision\":0}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("validation_failed"));
         // workspaceId 不存在 → 404 workspace_not_found（对齐 user 侧与工作区面口径；
@@ -222,9 +236,61 @@ class AdminUsersApiTest {
         mockMvc.perform(put("/api/v1/admin/users/" + bobId + "/workspace-role")
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"workspaceId\":\"999999\",\"role\":\"ADMIN\"}"))
+                        .content("{\"workspaceId\":\"999999\",\"role\":\"ADMIN\",\"expectedRevision\":0}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("workspace_not_found"));
+    }
+
+    /** 超管备用入口也必须保护现任 OWNER；每个角色实例都新建工作区，不依赖其他用例。 */
+    @ParameterizedTest
+    @ValueSource(strings = {"ADMIN", "EDITOR", "VIEWER"})
+    void workspaceRoleCannotDemoteCurrentOwner(String role) throws Exception {
+        String ws = createWorkspaceAsAdmin();
+        String ownerId = adminId();
+        String token = superadminToken();
+        MvcResult before = mockMvc.perform(get("/api/v1/workspaces/" + ws + "/members")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andReturn();
+        List<String> ownersBefore = JsonPath.read(before.getResponse().getContentAsString(),
+                "$[?(@.role=='OWNER')].userId");
+        assertThat(ownersBefore).containsExactly(ownerId);
+
+        MvcResult change = mockMvc.perform(put("/api/v1/admin/users/" + ownerId + "/workspace-role")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versions.adminRoleBody(ws, ownerId, role)))
+                .andReturn();
+        MvcResult after = mockMvc.perform(get("/api/v1/workspaces/" + ws + "/members")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andReturn();
+        List<String> ownersAfter = JsonPath.read(after.getResponse().getContentAsString(),
+                "$[?(@.role=='OWNER')].userId");
+        assertAll("OWNER -> " + role + " must be rejected without losing the unique owner",
+                () -> status().isForbidden().match(change),
+                () -> assertThat(ownersAfter).as("OWNER remains unchanged (before: %s)", ownersBefore)
+                        .containsExactly(ownerId));
+    }
+
+    /** 保护 OWNER 不得一并封禁合法的非 OWNER 入区及角色调整。 */
+    @ParameterizedTest
+    @ValueSource(strings = {"ADMIN", "EDITOR", "VIEWER"})
+    void workspaceRoleAllowsNonOwnerAssignments(String role) throws Exception {
+        String ws = createWorkspaceAsAdmin();
+        String token = superadminToken();
+        String bobId = createBobAndGetId();
+        String ownerId = adminId();
+        for (String assigned : new String[]{"VIEWER", role}) {
+            mockMvc.perform(put("/api/v1/admin/users/" + bobId + "/workspace-role")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(versions.adminRoleBody(ws, bobId, assigned)))
+                    .andExpect(status().isNoContent());
+            mockMvc.perform(get("/api/v1/workspaces/" + ws + "/members")
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$[?(@.userId=='" + bobId + "')].role").value(assigned))
+                    .andExpect(jsonPath("$[?(@.role=='OWNER')].userId").value(ownerId));
+        }
     }
 
     // ---- 停用→令牌失效（审查修复：全程经真实 API，不手工经 repo 吊销）----
@@ -245,7 +311,9 @@ class AdminUsersApiTest {
                 .andExpect(status().isOk());
         // 经 API 停用（不手工吊销）：204
         mockMvc.perform(post("/api/v1/admin/users/" + bobId + "/disable")
-                        .header("Authorization", "Bearer " + admin))
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versions.accountBody(bobId)))
                 .andExpect(status().isNoContent());
         // 腿 1：旧令牌立即失效 → 401
         mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + bobToken))

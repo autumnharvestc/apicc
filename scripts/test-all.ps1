@@ -47,6 +47,7 @@ if ($LASTEXITCODE -ne 0) { throw "node --version 失败（exit $LASTEXITCODE）"
 $nodeMatch = [regex]::Match($nodeVersion, '^v(\d+)\.(\d+)\.(\d+)')
 if ($nodeVersion -ne 'v22.19.0') { throw "最终候选门禁要求固定 Node22.19.0，实际：$nodeVersion" }
 Write-Host "[GATE] $nodeVersion OK"
+Invoke-Checked 'node' @('--test', 'scripts/tests/test-node-path.test.mjs')
 Invoke-Pnpm @('--version')
 $nestedPnpmVersion = (& pnpm --config.verify-deps-before-run=false --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $nestedPnpmVersion -ne '11.21.0') { throw "脚本内嵌 pnpm 也必须由 PATH 解析为11.21.0，实际：$nestedPnpmVersion；请在当前子进程PATH前置同版本shim。" }
@@ -59,22 +60,31 @@ foreach ($package in @('packages/plugin-sdk', 'packages/core', 'packages/executi
   Invoke-Pnpm @('-C', $package, 'typecheck')
 }
 Invoke-Pnpm @('-C', 'packages/execution', 'check:java-input-schema')
+foreach ($package in @('apps/collaboration-runtime', 'apps/share-viewer')) {
+  Invoke-Pnpm @('-C', $package, 'build')
+  Invoke-Pnpm @('-C', $package, 'typecheck')
+}
+Invoke-Checked 'node' @('apps/collaboration-runtime/scripts/generate-java-boundary.mjs', '--check')
+Invoke-Checked 'node' @('--test', 'scripts/tests/f7f-acceptance.test.mjs')
 foreach ($package in @('apps/runner-agent', 'apps/desktop', 'apps/admin-web', 'packages/cli')) {
   Invoke-Pnpm @('-C', $package, 'build')
   # desktop/admin build already include their src+tests type checks.
   if ($package -in @('apps/runner-agent', 'packages/cli')) { Invoke-Pnpm @('-C', $package, 'typecheck') }
 }
+Invoke-Checked 'docker' @('build', '-f', 'Dockerfile.agent', '-t', 'apicc-f7b-t11-agent:candidate', '.')
 Invoke-Pnpm @('-r', '--workspace-concurrency=1', 'test', '--maxWorkers=2')
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("apicc-maven-gate-" + [guid]::NewGuid().ToString('N'))
+$tempRoot = Join-Path $repoRoot ("local/full-gate/" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
 try {
   $mvn = Join-Path $repoRoot 'server/mvnw.cmd'
   if (-not (Test-Path -LiteralPath $mvn -PathType Leaf)) { throw "缺少 Maven wrapper：$mvn" }
+  # The real Java->Node cases explicitly require the exact Node plus built Core/runtime/viewer above.
+  $env:APICC_TEST_NODE = (Get-Command node -CommandType Application | Select-Object -First 1).Source
   Invoke-Checked $mvn @('-s', 'server/.mvn/settings.xml', '-f', 'server/pom.xml', "-Dapicc.build.directory=$tempRoot", 'test')
 } finally {
-  if ([IO.Path]::GetFullPath($tempRoot).StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) {
-    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
-  }
+  # This invocation owns this unique output. Retain fresh XML even when Maven fails;
+  # final counts must never depend on old server/target reports or disappear on cleanup.
+  Write-Host "[EVIDENCE] Fresh Maven output retained: $tempRoot"
 }
 Write-Host '[DONE] Windows full gate passed.'

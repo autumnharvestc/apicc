@@ -13,6 +13,7 @@ import { createUsersStore } from "../../src/stores/users.js";
 import { createOrgStore } from "../../src/stores/org.js";
 import { createAppRouter } from "../../src/router/index.js";
 import App from "../../src/App.vue";
+import {policy,capabilities,deployment} from '../helpers/collaboration.js';
 
 interface CapturedRequest { url: string; method: string; headers: Record<string, string>; body?: unknown }
 type FetchHandler = (req: CapturedRequest) => Response | Promise<Response>;
@@ -98,6 +99,20 @@ async function mountLayout(handler: FetchHandler = defaultHandler, resetStorage 
 }
 
 describe("LayoutView 布局壳（裁定 A）", () => {
+  it('T10 preserves a full long user name in a bounded header element',async()=>{
+    const name='非常长的管理账号名称'.repeat(20);const {wrapper}=await mountLayout(req=>req.url.endsWith('/me')?json(200,{...USER,displayName:name}):defaultHandler(req));
+    expect(wrapper.get('[data-testid=layout-user]').text()).toBe(name);expect(wrapper.get('[data-testid=layout-user]').attributes('title')).toBe(name);
+  });
+  it('T10 exposes existing platform/workspace collaboration entries and persists English policy labels',async()=>{
+    const handler=(req:CapturedRequest)=>req.url.endsWith('/me')?json(200,{...USER,role:'SUPERADMIN'}):req.url.endsWith('/deployment')?json(200,deployment):req.url.endsWith('/collaboration/policy')?json(200,policy):req.url.endsWith('/access-policy')?json(200,{revision:3,defaults:{},capabilities}):defaultHandler(req);
+    const {wrapper,router}=await mountLayout(handler);await router.push('/workspaces/ws-1/org');await flushPromises();
+    expect(wrapper.get('[data-testid=layout-user]').text()).toBe('Alice');
+    expect.soft(wrapper.find('[data-testid=menu-collaboration-platform]').exists()).toBe(true);expect.soft(wrapper.find('[data-testid=menu-collaboration-workspace]').exists()).toBe(true);
+    await router.push('/workspaces/ws-1/collaboration');await flushPromises();
+    expect.soft(wrapper.find('[data-testid=collaboration-view]').exists()).toBe(true);expect.soft(wrapper.text()).toContain('Default share duration');
+    await wrapper.get('[data-testid=layout-locale]').setValue('zh-CN');await flushPromises();expect.soft(wrapper.text()).toContain('默认分享期限');
+    await router.push('/collaboration');await flushPromises();expect.soft(wrapper.text()).toContain('本端期望协议');expect(localStorage.getItem('apicc.admin.locale')).toBe('zh-CN');
+  });
   it("lets a signed-in user switch the whole console language and remembers it on reopening", async () => {
     const emptyWorkspaces = (request: CapturedRequest) => request.url === `${BASE}/workspaces` && request.method === "GET" ? json(200, []) : defaultHandler(request);
     const first = await mountLayout(emptyWorkspaces);

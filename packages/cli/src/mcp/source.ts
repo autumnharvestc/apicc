@@ -8,7 +8,7 @@ export interface McpReportDiagnostic { code: "unreadable" | "unattributable"; co
 export interface McpPageResult<T> { items: T[]; nextCursor?: string; diagnostics?: McpReportDiagnostic[] }
 export interface McpProjectRead { snapshot: ProjectSnapshot; binding: AiSourceBinding; revision: string; preferenceKey: string; workspaceId: string; groupId: string; projectId: string }
 export interface McpProjectRef { projectId: string; name: string; workspaceId: string; groupId: string }
-export interface McpRun { runId: string; projectId: string; state: string; reportState: string; startedAt?: string | number; finishedAt?: string | number; definitionRevision?: string }
+export interface McpRun { runId: string; projectId: string; state: string; reportState?: string; view?: 'active-status'; startedAt?: string | number; finishedAt?: string | number; definitionRevision?: string }
 export interface McpReportSelection { bodySelection?: readonly string[] }
 export interface McpRunFailure { reasonCode: string; executionFact: "not-started" | "uncertain" }
 export type McpReport = { reportId: string; revision: string; project: McpProjectRead } &

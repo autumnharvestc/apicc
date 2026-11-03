@@ -12,6 +12,7 @@
 import { createPinia, defineStore } from "pinia";
 import { AdminApiError, type AdminClient } from "../api/client.js";
 import type { AdminAclEntry, AdminAclRole, AdminMember, AdminRole, AdminTree, AdminUserCandidate, AdminWorkspaceDetail, AdminWorkspaceSummary } from "../api/contract.js";
+import { createCollaborationApi, type AccessMember, type AccessScope, type ManagementProject, type CapabilityMode } from '../api/collaboration.js';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -23,6 +24,9 @@ export interface WorkspacesStoreDeps {
 
 export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
   const client = deps.client;
+  const collaboration=createCollaborationApi(client);
+  let accessGeneration=0;
+  let directorySequence=0;
   /** 选中请求序号：竞态防护（任务 3 审查次要 1 顺修）——仅最新请求可落地结果。 */
   let selectSeq = 0;
   /** 树请求序号（收口顺修）：工作区切换乱序完成时丢弃旧结果，与 aclSeq/selectSeq 同口径。 */
@@ -83,10 +87,50 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
       aclBusyUserId: null as string | null,
       /** 添加 ACL 行提交在途。 */
       aclSubmitting: false,
+      managementProjects: [] as ManagementProject[],
+      managementWorkspaceId:null as string|null,
+      accessMembers: {} as Record<string,AccessMember>,
+      memberDrafts: {} as Record<string,AdminRole>,
+      aclDrafts: {} as Record<string,AdminAclRole>,
     }),
     actions: {
+      async changeCapabilities(scope:AccessScope,userId:string,capabilities:Record<string,CapabilityMode>):Promise<boolean>{
+        const generation=accessGeneration;
+        try{const subject=await this.readAccessMember(scope,userId);if(generation!==accessGeneration)return false;const value=await collaboration.putMember(scope,userId,{expectedRevision:subject.revision,capabilities});if(generation!==accessGeneration)return false;this.accessMembers[`${scope.workspaceId}/${scope.projectId??''}/${userId}`]=value;return true;}
+        catch(e){if(generation===accessGeneration){if(scope.projectId)this.aclError=errorMessage(e);else this.membersError=errorMessage(e);}return false;}
+      },
+      async refreshAccessMember(scope:AccessScope,userId:string):Promise<void>{
+        const generation=accessGeneration;
+        try{await this.readAccessMember(scope,userId,true);}catch(e){if(generation===accessGeneration){if(scope.projectId)this.aclError=errorMessage(e);else this.membersError=errorMessage(e);}}
+      },
+      async confirmAccess(workspaceId:string,projectId:string,userId:string,action:'confirm-inheritance'|'confirm-override',role?:AdminAclRole):Promise<boolean>{
+        const generation=accessGeneration;
+        this.aclBusyUserId=userId;this.aclError=null;
+        try{
+          const subject=await this.readAccessMember({workspaceId,projectId},userId);
+          if(generation!==accessGeneration)return false;
+          const value=await collaboration.putMember({workspaceId,projectId},userId,{expectedRevision:subject.revision,action,...(role===undefined?{}:{role})});
+          if(generation!==accessGeneration)return false;this.accessMembers[`${workspaceId}/${projectId}/${userId}`]=value;
+          await this.loadAcl(workspaceId,projectId);return true;
+        }catch(e){if(generation===accessGeneration)this.aclError=errorMessage(e);return false;}finally{if(generation===accessGeneration)this.aclBusyUserId=null;}
+      },
+      async loadManagementProjects(workspaceId:string):Promise<void>{
+        const generation=accessGeneration,sequence=++directorySequence;
+        if(this.managementWorkspaceId!==workspaceId)this.managementProjects=[];
+        this.managementWorkspaceId=workspaceId;this.aclError=null;
+        try{const rows=await collaboration.directory(workspaceId);if(generation===accessGeneration&&sequence===directorySequence)this.managementProjects=rows;}catch(e){if(generation===accessGeneration&&sequence===directorySequence)this.aclError=errorMessage(e);}
+      },
+      async readAccessMember(scope:AccessScope,userId:string,refresh=false):Promise<AccessMember>{
+        const generation=accessGeneration;
+        const key=`${scope.workspaceId}/${scope.projectId??''}/${userId}`;
+        if(!refresh&&this.accessMembers[key])return this.accessMembers[key]!;
+        const value=await collaboration.member(scope,userId);
+        if(generation!==accessGeneration)throw new AdminApiError(0,'admin_session_changed','管理会话已变化，请重新读取当前权限');
+        this.accessMembers[key]=value;return value;
+      },
       /** 会话销毁后的状态重置（终审 Important 2）：装配层在登出/会话失效时调用，防换账号残留上一账号的选中/成员/树/ACL 上下文。 */
       reset(): void {
+        accessGeneration+=1;
         this.$reset();
       },
       /** 清单拉取：失败 → error 上屏且不清旧清单（desktop 错误语义）。 */
@@ -107,18 +151,19 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
        * （防闪烁隐藏入口）+ error 上屏。竞态防护：仅最新请求落地（顺修 1）。
        */
       async select(workspaceId: string): Promise<void> {
+        const generation = accessGeneration;
         const seq = ++selectSeq;
         this.currentLoading = true;
         try {
           const detail = await client.getWorkspace(workspaceId);
-          if (seq !== selectSeq) return; // 乱序完成：已有更新的选中请求，丢弃本次结果
+          if (generation !== accessGeneration || seq !== selectSeq) return;
           this.current = detail;
         } catch (e) {
-          if (seq !== selectSeq) return;
+          if (generation !== accessGeneration || seq !== selectSeq) return;
           this.current = null;
           this.error = errorMessage(e);
         } finally {
-          if (seq === selectSeq) this.currentLoading = false;
+          if (generation === accessGeneration && seq === selectSeq) this.currentLoading = false;
         }
       },
 
@@ -163,57 +208,79 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
        * 避免与列表刷新清空 error 的时序耦合）。
        */
       async loadMembers(workspaceId: string): Promise<{ ok: boolean; forbidden: boolean }> {
+        const generation = accessGeneration;
         this.membersLoading = true;
         this.membersError = null;
         try {
-          this.members = await client.listMembers(workspaceId);
+          const entries=await client.listMembers(workspaceId);
+          if (generation !== accessGeneration) return { ok: false, forbidden: false };
+          await Promise.all(entries.map(entry=>this.readAccessMember({workspaceId},entry.userId,true)));
+          if (generation !== accessGeneration) return { ok: false, forbidden: false };
+          this.members = entries;
           return { ok: true, forbidden: false };
         } catch (e) {
+          if (generation !== accessGeneration) return { ok: false, forbidden: false };
           const forbidden = e instanceof AdminApiError && e.status === 403;
           this.membersError = errorMessage(e);
           return { ok: false, forbidden };
         } finally {
-          this.membersLoading = false;
+          if (generation === accessGeneration) this.membersLoading = false;
         }
       },
 
       /** 成员变更成功后的统一收口：刷新清单 + 重选 current（myRole/memberCount 变化联动）。 */
       async refreshMembersAndCurrent(workspaceId: string): Promise<void> {
+        const generation = accessGeneration;
         await this.loadMembers(workspaceId);
+        if (generation !== accessGeneration) return;
         if (this.current?.id === workspaceId) await this.select(workspaceId);
       },
 
       /** 改角色（行级 busy 防重复提交）；OWNER 行由 UI 禁用（D6 体验层，后端 403 为准）。 */
       async changeRole(workspaceId: string, userId: string, role: AdminRole): Promise<boolean> {
+        const generation = accessGeneration;
         if (this.memberBusyId !== null) return false;
         this.memberBusyId = userId;
         this.membersError = null;
+        this.memberDrafts[`${workspaceId}//${userId}`]=role;
         try {
-          await client.setMemberRole(workspaceId, userId, role);
+          const subject=await this.readAccessMember({workspaceId},userId);
+          if (generation !== accessGeneration) return false;
+          const actor=role==='OWNER'?await this.readAccessMember({workspaceId},this.members.find(m=>m.role==='OWNER')!.userId):undefined;
+          if (generation !== accessGeneration) return false;
+          await client.setMemberRole(workspaceId, userId, role,subject.revision,actor?.revision);
+          if (generation !== accessGeneration) return false;
+          delete this.accessMembers[`${workspaceId}//${userId}`];
+          delete this.memberDrafts[`${workspaceId}//${userId}`];
           await this.refreshMembersAndCurrent(workspaceId);
-          return true;
+          return generation === accessGeneration;
         } catch (e) {
-          this.membersError = errorMessage(e);
+          if (generation === accessGeneration) this.membersError = errorMessage(e);
           return false;
         } finally {
-          this.memberBusyId = null;
+          if (generation === accessGeneration) this.memberBusyId = null;
         }
       },
 
       /** 添加成员（§3.2 PUT 对非成员即创建行）。 */
-      async addMember(workspaceId: string, userId: string, role: AdminRole): Promise<boolean> {
+      async addMember(workspaceId: string, userId: string, role: AdminRole,expectedRevision?:number): Promise<boolean> {
+        const generation = accessGeneration;
         if (this.memberSubmitting) return false;
         this.memberSubmitting = true;
         this.membersError = null;
         try {
-          await client.setMemberRole(workspaceId, userId, role);
+          const revision=expectedRevision??(await this.readAccessMember({workspaceId},userId)).revision;
+          if (generation !== accessGeneration) return false;
+          await client.setMemberRole(workspaceId, userId, role,revision);
+          if (generation !== accessGeneration) return false;
+          delete this.accessMembers[`${workspaceId}//${userId}`];
           await this.refreshMembersAndCurrent(workspaceId);
-          return true;
+          return generation === accessGeneration;
         } catch (e) {
-          this.membersError = errorMessage(e);
+          if (generation === accessGeneration) this.membersError = errorMessage(e);
           return false;
         } finally {
-          this.memberSubmitting = false;
+          if (generation === accessGeneration) this.memberSubmitting = false;
         }
       },
 
@@ -254,18 +321,23 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
 
       /** 移除成员（行级 busy；OWNER 行由 UI 禁用）。 */
       async removeMember(workspaceId: string, userId: string): Promise<boolean> {
+        const generation = accessGeneration;
         if (this.memberBusyId !== null) return false;
         this.memberBusyId = userId;
         this.membersError = null;
         try {
-          await client.removeMember(workspaceId, userId);
+          const subject=await this.readAccessMember({workspaceId},userId);
+          if (generation !== accessGeneration) return false;
+          await client.removeMember(workspaceId, userId,subject.revision);
+          if (generation !== accessGeneration) return false;
+          delete this.accessMembers[`${workspaceId}//${userId}`];
           await this.refreshMembersAndCurrent(workspaceId);
-          return true;
+          return generation === accessGeneration;
         } catch (e) {
-          this.membersError = errorMessage(e);
+          if (generation === accessGeneration) this.membersError = errorMessage(e);
           return false;
         } finally {
-          this.memberBusyId = null;
+          if (generation === accessGeneration) this.memberBusyId = null;
         }
       },
 
@@ -275,17 +347,18 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
        * 请求为准，与 aclSeq/selectSeq 同口径。
        */
       async loadTree(workspaceId: string): Promise<void> {
+        const generation = accessGeneration;
         const seq = ++treeSeq;
         this.treeLoading = true;
         try {
           const tree = await client.getTree(workspaceId);
-          if (seq !== treeSeq) return; // 乱序完成：已有更新的工作区切换，丢弃本次结果
+          if (generation !== accessGeneration || seq !== treeSeq) return;
           this.tree = tree;
         } catch (e) {
-          if (seq !== treeSeq) return;
+          if (generation !== accessGeneration || seq !== treeSeq) return;
           this.aclError = errorMessage(e);
         } finally {
-          if (seq === treeSeq) this.treeLoading = false;
+          if (generation === accessGeneration && seq === treeSeq) this.treeLoading = false;
         }
       },
 
@@ -294,25 +367,32 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
        * （select 同款序号口径，任务 4 审查备案 4）。
        */
       async loadAcl(workspaceId: string, projectId: string): Promise<void> {
+        const generation = accessGeneration;
         const seq = ++aclSeq;
         this.aclLoading = true;
         try {
           const entries = await client.listAcl(workspaceId, projectId);
-          if (seq !== aclSeq) return; // 乱序完成：已有更新的项目切换，丢弃本次结果
+          if (generation !== accessGeneration || seq !== aclSeq) return;
+          await Promise.all(entries.map(entry=>this.readAccessMember({workspaceId,projectId},entry.userId)));
+          if (generation !== accessGeneration || seq !== aclSeq) return;
           this.aclEntries = entries;
           this.aclProjectId = projectId;
         } catch (e) {
-          if (seq !== aclSeq) return;
+          if (generation !== accessGeneration || seq !== aclSeq) return;
           this.aclError = errorMessage(e);
         } finally {
-          if (seq === aclSeq) this.aclLoading = false;
+          if (generation === accessGeneration && seq === aclSeq) this.aclLoading = false;
         }
       },
 
       /** ACL 变更成功后的统一收口：重载当前项目 ACL 行 + 重载树（myRole 变化联动，裁定 B/C）。
        * 树重载以 tree.workspaceId 归属判定（防跨工作区覆写），不依赖选中详情 current。 */
       async refreshAclAndTree(workspaceId: string, projectId: string): Promise<void> {
+        const generation = accessGeneration;
         await this.loadAcl(workspaceId, projectId);
+        if (generation !== accessGeneration) return;
+        await this.loadManagementProjects(workspaceId);
+        if (generation !== accessGeneration) return;
         if (this.tree?.workspaceId === workspaceId) await this.loadTree(workspaceId);
       },
 
@@ -320,18 +400,25 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
        * 设置 ACL 行（PUT；NONE=拒之门外，任务 5 裁定 B——行仍在显示 NONE）。行级 busy 防重复提交。
        */
       async setAclEntry(workspaceId: string, projectId: string, input: { userId: string; role: AdminAclRole }): Promise<boolean> {
+        const generation = accessGeneration;
         if (this.aclBusyUserId !== null) return false;
         this.aclBusyUserId = input.userId;
         this.aclError = null;
+        this.aclDrafts[`${workspaceId}/${projectId}/${input.userId}`]=input.role;
         try {
-          await client.setAclEntry(workspaceId, projectId, input);
+          const subject=await this.readAccessMember({workspaceId,projectId},input.userId);
+          if (generation !== accessGeneration) return false;
+          await client.setAclEntry(workspaceId, projectId, {...input,expectedRevision:subject.revision});
+          if (generation !== accessGeneration) return false;
+          delete this.accessMembers[`${workspaceId}/${projectId}/${input.userId}`];
+          delete this.aclDrafts[`${workspaceId}/${projectId}/${input.userId}`];
           await this.refreshAclAndTree(workspaceId, projectId);
-          return true;
+          return generation === accessGeneration;
         } catch (e) {
-          this.aclError = errorMessage(e);
+          if (generation === accessGeneration) this.aclError = errorMessage(e);
           return false;
         } finally {
-          this.aclBusyUserId = null;
+          if (generation === accessGeneration) this.aclBusyUserId = null;
         }
       },
 
@@ -339,19 +426,24 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
        * 添加 ACL 行（收口顺修：对齐 members addMember 先例——aclSubmitting 在途/防重复提交，
        * 添加按钮 loading 生效；与行级 aclBusyUserId 通道分离）。
        */
-      async addAclEntry(workspaceId: string, projectId: string, input: { userId: string; role: AdminAclRole }): Promise<boolean> {
+      async addAclEntry(workspaceId: string, projectId: string, input: { userId: string; role: AdminAclRole;expectedRevision?:number }): Promise<boolean> {
+        const generation = accessGeneration;
         if (this.aclSubmitting) return false;
         this.aclSubmitting = true;
         this.aclError = null;
         try {
-          await client.setAclEntry(workspaceId, projectId, input);
+          const revision=input.expectedRevision??(await this.readAccessMember({workspaceId,projectId},input.userId)).revision;
+          if (generation !== accessGeneration) return false;
+          await client.setAclEntry(workspaceId, projectId, {...input,expectedRevision:revision});
+          if (generation !== accessGeneration) return false;
+          delete this.accessMembers[`${workspaceId}/${projectId}/${input.userId}`];
           await this.refreshAclAndTree(workspaceId, projectId);
-          return true;
+          return generation === accessGeneration;
         } catch (e) {
-          this.aclError = errorMessage(e);
+          if (generation === accessGeneration) this.aclError = errorMessage(e);
           return false;
         } finally {
-          this.aclSubmitting = false;
+          if (generation === accessGeneration) this.aclSubmitting = false;
         }
       },
 
@@ -359,18 +451,23 @@ export function createWorkspacesStore(deps: WorkspacesStoreDeps) {
        * 删除 ACL 行（DELETE ?userId=，契约修订 2026-09-04：删行=恢复工作区角色继承——行消失）。
        */
       async removeAclEntry(workspaceId: string, projectId: string, userId: string): Promise<boolean> {
+        const generation = accessGeneration;
         if (this.aclBusyUserId !== null) return false;
         this.aclBusyUserId = userId;
         this.aclError = null;
         try {
-          await client.deleteAclEntry(workspaceId, projectId, userId);
+          const subject=await this.readAccessMember({workspaceId,projectId},userId);
+          if (generation !== accessGeneration) return false;
+          await client.deleteAclEntry(workspaceId, projectId, userId,subject.revision);
+          if (generation !== accessGeneration) return false;
+          delete this.accessMembers[`${workspaceId}/${projectId}/${userId}`];
           await this.refreshAclAndTree(workspaceId, projectId);
-          return true;
+          return generation === accessGeneration;
         } catch (e) {
-          this.aclError = errorMessage(e);
+          if (generation === accessGeneration) this.aclError = errorMessage(e);
           return false;
         } finally {
-          this.aclBusyUserId = null;
+          if (generation === accessGeneration) this.aclBusyUserId = null;
         }
       },
     },

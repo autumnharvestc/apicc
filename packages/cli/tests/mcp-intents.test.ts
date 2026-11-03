@@ -5,6 +5,30 @@ import { randomUUID } from "node:crypto";
 import { createMcpExecutionHost } from "../src/mcp/execution.js";
 import { executionFixture, outcome, signal } from "./mcp-execution.fixture.js";
 
+it.each(['same-host','reopened'])('F7f minimum %s receipt recovery refuses unavailable fixed binding without resubmitting',async route=>{
+  const f=await executionFixture();const first=createMcpExecutionHost({source:f.source,privateRoot:f.privateRoot});
+  let reopened:Awaited<ReturnType<typeof f.reopen>>|undefined,second:ReturnType<typeof createMcpExecutionHost>|undefined;
+  try{
+    const ticket=await first.prepare(f.input,signal());
+    expect(await first.start({ticketId:ticket.ticketId,intentId:'minimum-recovery'},signal())).toMatchObject({runId:'99'});
+    f.setMinimumViews(true);
+    if(route==='reopened'){reopened=await f.reopen();second=createMcpExecutionHost({source:reopened,privateRoot:f.privateRoot});}
+    const host=second??first;
+    const failure=await host.start({ticketId:ticket.ticketId,intentId:'minimum-recovery'},signal()).then(()=>null,cause=>cause);
+    expect.soft(failure).toMatchObject({message:expect.stringContaining('mcp-receipt-binding-unavailable')});
+    expect.soft(failure?.message).toContain('固定输入绑定不可核对；查询原intent，勿重新提交');
+    expect.soft(f.counts.submissions).toBe(1);expect.soft(f.counts.business).toBe(0);
+    f.setMinimumViews(false);
+    expect(await host.start({ticketId:ticket.ticketId,intentId:'minimum-recovery'},signal())).toMatchObject({runId:'99'});
+    expect(f.counts.submissions).toBe(1);
+  }finally{await second?.close();await reopened?.close();await first.close();await f.close();}
+});
+it('F7f a fresh MCP ticket accepts actual minimum command receipt without granting report authority',async()=>{
+  const f=await executionFixture();f.setMinimumViews(true);const host=createMcpExecutionHost({source:f.source,privateRoot:f.privateRoot});
+  try{const ticket=await host.prepare(f.input,signal());expect(await host.start({ticketId:ticket.ticketId,intentId:'minimum-new'},signal())).toMatchObject({runId:'99',state:'queued'});expect(f.counts.submissions).toBe(1);}
+  finally{await host.close();await f.close();}
+});
+
 // Catch releasing the same prepared continuation twice or replacing its original job handle.
 it("same_ticket_intent_returns_prior_run", async () => {
   const f = await executionFixture();

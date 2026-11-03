@@ -14,7 +14,7 @@ import { reportingUnits, reportEntryEvidence } from "@apicc/core/report/units";
 import type { AiStore } from '../stores/ai.js';
 import { caseEvidenceIdentity } from '../ai/evidenceNavigation.js';
 import { aiReportDigest } from '../../../shared/ai/reportDigest.js';
-const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void }>();
+const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void; (event: 'collaboration', source: import('../../../shared/online/collaboration.js').CollaborationLocalSource): void }>();
 
 /**
  * 运行视图（任务 6）：集合/环境 a-select（集合选项来自树 DTO；环境选项 = 选中集合
@@ -38,6 +38,7 @@ const { t } = useI18n();
 function projectLocator(locator: CollectionLocator): ProjectLocator {
   return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
 }
+async function shareReport() { emit('collaboration', { kind: 'current', project: projectLocator(selectedCollectionLocator.value!), expectedReportDigest: await aiReportDigest(props.run.result) }); }
 
 const collectionEntries = computed(() => {
   const result: Array<{ label: string; locator: CollectionLocator }> = [];
@@ -159,6 +160,7 @@ async function selectObservation(record: Record<string, any>) {
       </div>
       <div v-if="run.result" class="summary" data-testid="run-summary">
         <a-button v-if="ai && selectedCollectionLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
+        <a-button v-if="selectedCollectionLocator" data-testid="collaboration-publish-current" @click="shareReport">{{ t('collaboration.publishToProject') }}</a-button>
         <p v-if="run.result.reportingMode" data-testid="run-logical-summary">{{ t('wf.control.mode') }}: {{ run.result.reportingMode }} · {{ t('wf.control.logicalVerdict') }}: {{ run.result.suite?.verdict ?? run.result.workflowUnits?.[0]?.verdict ?? '—' }} · {{ t('wf.control.logicalUnits') }}: {{ reportingUnits(run.result).summary.total }} · {{ t('wf.control.rawRows') }}: {{ run.result.total }} · {{ t('wf.control.rawFailed') }}: {{ run.result.failed }}</p>
         <span v-else>{{ t("run.summary", { total: run.result.total, passed: run.result.passed, failed: run.result.failed, skipped: run.result.skipped ?? 0 }) }}</span>
         <p v-if="run.result.suite">条目 {{ run.result.suite.total }} · 失败 {{ run.result.suite.failed }} · 跳过 {{ run.result.suite.skipped }} · {{ run.result.suite.verdict }}</p>
@@ -215,7 +217,7 @@ async function selectObservation(record: Record<string, any>) {
         </template>
       </a-table>
     </template>
-    <RunsHistory :run="run" :report-error="reportError" />
+    <RunsHistory :run="run" :project="selectedCollectionLocator ? projectLocator(selectedCollectionLocator) : undefined" :report-error="reportError" @collaboration="source => emit('collaboration', source)" />
   </section>
 </template>
 

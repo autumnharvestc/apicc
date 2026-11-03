@@ -11,6 +11,8 @@ COPY packages/cli/package.json packages/cli/package.json
 COPY apps/desktop/package.json apps/desktop/package.json
 COPY apps/admin-web/package.json apps/admin-web/package.json
 COPY apps/runner-agent/package.json apps/runner-agent/package.json
+COPY apps/collaboration-runtime/package.json apps/collaboration-runtime/package.json
+COPY apps/share-viewer/package.json apps/share-viewer/package.json
 RUN --mount=type=cache,id=apicc-pnpm11-store,target=/root/.local/share/pnpm/store pnpm --config.verify-deps-before-run=false --filter @apicc/runner-agent... install --frozen-lockfile
 COPY packages/ packages/
 COPY apps/ apps/

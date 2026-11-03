@@ -98,6 +98,17 @@ public class UserRepo {
         jdbc.update("UPDATE users SET disabled = ? WHERE id = ?", disabled, id);
     }
 
+    public long stateRevision(Long id) {
+        return jdbc.queryForObject("SELECT state_revision FROM users WHERE id=?",Long.class,id);
+    }
+    public int compareAndSetDisabled(Long id,boolean disabled,long expectedRevision) {
+        return jdbc.update("UPDATE users SET disabled=?,state_revision=state_revision+1 WHERE id=? AND state_revision=?",disabled,id,expectedRevision);
+    }
+    public Optional<UserAccount> lockById(Long id) {
+        var rows=jdbc.query("SELECT id,username,password_hash,display_name,role,disabled,created_at FROM users WHERE id=? FOR UPDATE",MAPPER,id);
+        return rows.stream().findFirst();
+    }
+
     public void updatePassword(Long id, String passwordHash) {
         jdbc.update("UPDATE users SET password_hash = ? WHERE id = ?", passwordHash, id);
     }

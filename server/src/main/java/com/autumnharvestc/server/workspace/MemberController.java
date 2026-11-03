@@ -40,7 +40,7 @@ public class MemberController {
     public MemberView put(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                           @PathVariable String id,
                           @PathVariable String userId,
-                          @Valid @RequestBody SetMemberRoleRequest request) {
+                          @RequestBody com.fasterxml.jackson.databind.JsonNode request) {
         return members.put(caller, id, userId, request);
     }
 
@@ -48,8 +48,9 @@ public class MemberController {
     @DeleteMapping("/api/v1/workspaces/{id}/members/{userId}")
     public ResponseEntity<Void> delete(@RequestAttribute(AuthFilter.ATTR_USER) UserAccount caller,
                                        @PathVariable String id,
-                                       @PathVariable String userId) {
-        members.delete(caller, id, userId);
+                                       @PathVariable String userId,
+                                       @RequestParam(required = false) String expectedRevision) {
+        members.delete(caller, id, userId, expectedRevision);
         return ResponseEntity.noContent().build();
     }
 

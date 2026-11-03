@@ -12,13 +12,17 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/ apps/
 COPY packages/ packages/
 COPY server/src/main/resources/execution-input-boundary.json server/src/main/resources/execution-input-boundary.json
+COPY server/src/main/resources/collaboration-runtime-boundary.json server/src/main/resources/collaboration-runtime-boundary.json
 ENV npm_config_verify_deps_before_run=false
 ARG APICC_NPM_REGISTRY=https://registry.npmjs.org
-RUN --mount=type=cache,id=apicc-pnpm11,target=/root/.local/share/pnpm/store pnpm --config.verify-deps-before-run=false --filter @apicc/admin-web... install --frozen-lockfile --registry="$APICC_NPM_REGISTRY" \
+RUN --mount=type=cache,id=apicc-pnpm11,target=/root/.local/share/pnpm/store pnpm --config.verify-deps-before-run=false --filter @apicc/admin-web... --filter @apicc/share-viewer... --filter @apicc/collaboration-runtime... install --frozen-lockfile --registry="$APICC_NPM_REGISTRY" \
  && pnpm --config.verify-deps-before-run=false -C packages/plugin-sdk build \
  && pnpm --config.verify-deps-before-run=false -C packages/core build \
  && pnpm --config.verify-deps-before-run=false -C packages/execution build \
  && pnpm --config.verify-deps-before-run=false -C packages/execution check:java-input-schema \
+ && pnpm --config.verify-deps-before-run=false -C apps/collaboration-runtime build \
+ && node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check \
+ && pnpm --config.verify-deps-before-run=false -C apps/share-viewer build \
  && pnpm --config.verify-deps-before-run=false -C apps/admin-web build
 
 # —— 阶段 2：服务端 fat jar（settings.xml 为阿里云镜像——Maven Central 不可达环境约束）——
@@ -28,19 +32,22 @@ COPY server/pom.xml ./
 COPY server/.mvn/ .mvn/
 RUN mvn -s .mvn/settings.xml -B -q dependency:go-offline
 COPY server/src ./src
+COPY --from=console /build/apps/share-viewer/dist/ /build/share-viewer/
 RUN mvn -s .mvn/settings.xml -B -q package -DskipTests
 
 # —— 阶段 3：运行镜像（固定 uid/gid 10001，k8s securityContext/fsGroup 对齐）——
 FROM eclipse-temurin:21-jre-alpine
 RUN addgroup -S -g 10001 apicc && adduser -S -u 10001 -G apicc apicc \
  && apk add --no-cache curl ca-certificates \
- && mkdir -p /data /app/console && chown -R apicc:apicc /data /app
+ && mkdir -p /data /app/console /app/share-viewer && chown -R apicc:apicc /data /app
 COPY --from=server /build/target/apicc-server-*.jar /app/app.jar
 COPY --from=console /build/apps/admin-web/dist/ /app/console/
+COPY --from=console /build/apps/share-viewer/dist/ /app/share-viewer/
 USER apicc
 ENV SERVER_PORT=8080 \
     APICC_SERVER_DATADIR=/data \
     APICC_SERVER_CONSOLEDIR=/app/console \
+    APICC_SHARE_VIEWER_DIR=/app/share-viewer \
     # 元数据库 url 原为相对运行目录的 ./server-data/metadata（server/README「数据目录」节），
     # 容器内固定为卷内绝对路径，不依赖进程 cwd
     SPRING_DATASOURCE_URL=jdbc:h2:file:/data/metadata;WRITE_DELAY=0

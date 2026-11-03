@@ -69,6 +69,11 @@ public class AgentRepo {
     public void audit(long actor,String action,String type,long scope,Long version) {
         audit(actor,action,type,scope,version,null);
     }
+    /** Typed asset facts only; no contract/script body, credential value or transport error. */
+    public void auditAssets(long actor,long project,long version,String summary,String locations,String before,String after) {
+        if(ids.appAssigned())jdbc.update("INSERT INTO execution_management_audit(id,actor_id,action,scope_type,scope_id,version,asset_summary,asset_locations_json,asset_before_revision,asset_after_revision) VALUES (?,?,'asset.change','project',?,?,?,?,?,?)",ids.nextId(),actor,project,version,summary,locations,before,after);
+        else jdbc.update("INSERT INTO execution_management_audit(actor_id,action,scope_type,scope_id,version,asset_summary,asset_locations_json,asset_before_revision,asset_after_revision) VALUES (?,'asset.change','project',?,?,?,?,?,?)",actor,project,version,summary,locations,before,after);
+    }
     public void auditScriptGrant(long actor,String action,long project,long agent,long version) {
         audit(actor,action,"project",project,version,agent);
     }
