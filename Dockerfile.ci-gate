@@ -10,7 +10,7 @@ ENV JAVA_HOME=/opt/java/openjdk \
     ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
     npm_config_verify_deps_before_run=false
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git curl ca-certificates docker.io \
+ && apt-get install -y --no-install-recommends git curl ca-certificates docker.io unzip procps \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /usr/local/lib/docker/cli-plugins \
  && arch="$(uname -m)" \
@@ -23,5 +23,7 @@ RUN apt-get update \
  && pnpm --version \
  && java -version \
  && mvn -version \
+ && unzip -v \
+ && ps --version \
  && docker compose version
 WORKDIR /candidate
