@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-java@v4 # v4
         with:
           distribution: temurin
-          java-version: '21.0.13+9'
+          java-version: '21.0.13'
       - uses: actions/cache@v4 # v4
         with:
           path: ~/.m2/repository
@@ -72,7 +72,7 @@ jobs:
       - uses: actions/setup-java@v4 # v4
         with:
           distribution: temurin
-          java-version: '21.0.13+9'
+          java-version: '21.0.13'
       - uses: actions/cache@v4 # v4
         with:
           path: ~/.m2/repository
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/setup-java@v4 # v4
         with:
           distribution: temurin
-          java-version: '21.0.13+9'
+          java-version: '21.0.13'
       - name: 新镜像、HTTP、私有 CA 与协作冒烟
         run: node scripts/ci-stage.mjs deployment
       - name: 归档部署冒烟身份与生命周期
