@@ -94,7 +94,9 @@ describe("credential index address", () => {
   it("keeps ordinary UUID ref lock paths below the Windows limit without case folding", async () => {
     const { credentialIndexPath } = await loadCredentialAddressModule();
     const { credentialEntryAddress } = await loadCredentialEntryAddressModule();
-    const privateRoot = resolve(tmpdir(), "apicc-credential-address-test");
+    // This only constructs addresses. A representative absolute store root keeps
+    // the Windows path budget independent of an arbitrarily long global TMPDIR.
+    const privateRoot = resolve("/", "Users", "representative-user", "AppData", "Local", "apicc-credential-address-test");
     const lowerRef = "abcdefab-cdef-4abc-8def-abcdefabcdef";
     const upperRef = lowerRef.toUpperCase();
     const lowerLockPath = `${credentialIndexPath(privateRoot, scope, lowerRef)}.lock.sqlite`;
