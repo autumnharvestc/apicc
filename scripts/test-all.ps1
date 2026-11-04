@@ -48,6 +48,7 @@ $nodeMatch = [regex]::Match($nodeVersion, '^v(\d+)\.(\d+)\.(\d+)')
 if ($nodeVersion -ne 'v22.19.0') { throw "最终候选门禁要求固定 Node22.19.0，实际：$nodeVersion" }
 Write-Host "[GATE] $nodeVersion OK"
 Invoke-Checked 'node' @('--test', 'scripts/tests/test-node-path.test.mjs')
+Invoke-Checked 'node' @('--test', 'scripts/tests/pre-push-ci.test.mjs')
 Invoke-Pnpm @('--version')
 $nestedPnpmVersion = (& pnpm --config.verify-deps-before-run=false --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $nestedPnpmVersion -ne '11.21.0') { throw "脚本内嵌 pnpm 也必须由 PATH 解析为11.21.0，实际：$nestedPnpmVersion；请在当前子进程PATH前置同版本shim。" }

@@ -1,0 +1,27 @@
+# Test tools only. Candidate source arrives as a git bundle at run time.
+FROM maven:3.9.11-eclipse-temurin-21 AS maven
+FROM eclipse-temurin:21.0.13_9-jdk AS jdk
+FROM node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
+COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
+COPY --from=maven /usr/share/maven /usr/share/maven
+ENV JAVA_HOME=/opt/java/openjdk \
+    MAVEN_HOME=/usr/share/maven \
+    PATH=/opt/java/openjdk/bin:/usr/share/maven/bin:$PATH \
+    ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
+    npm_config_verify_deps_before_run=false
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git curl ca-certificates docker.io \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /usr/local/lib/docker/cli-plugins \
+ && arch="$(uname -m)" \
+ && case "$arch" in x86_64|aarch64) ;; *) echo "Unsupported compose architecture: $arch" >&2; exit 1;; esac \
+ && curl --fail --location --silent --show-error "https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-${arch}" -o /usr/local/lib/docker/cli-plugins/docker-compose \
+ && chmod 755 /usr/local/lib/docker/cli-plugins/docker-compose \
+ && corepack enable \
+ && corepack prepare pnpm@11.21.0 --activate \
+ && node --version \
+ && pnpm --version \
+ && java -version \
+ && mvn -version \
+ && docker compose version
+WORKDIR /candidate

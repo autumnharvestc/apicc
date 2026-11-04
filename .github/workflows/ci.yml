@@ -1,28 +1,13 @@
-# CI 四 job 工作流（M2-D 规格决策 D7；M3-C 任务 2 增 server-test）：
-#   test          — SDK 与各包 build + test，SDK/core 另行 typecheck（覆盖测试文件类型；
-#                   build 的 tsc 只编译 src，vitest 转译不查类型）（ubuntu，跳过 Electron 二进制下载）
-#   server-test   — 服务端 mvn test（ubuntu，JDK 21，统一 settings.xml 镜像，Maven 仓库缓存）
-#   brand-gate    — 品牌中立门禁：脚本词表自检 + git 跟踪文件全树扫描
-#   package-smoke — Windows 打包冒烟（仅 main push；electron / electron-builder 双缓存）
-# 版本策略：action 锁 major tag（每个 uses 行尾注释显式 major）；SHA 锁定列为后续加固项。
 name: CI
 
-# 触发：main 与 feature/**、fix/** 的推送 + 全部 PR（裁定：feature 分支推送即出报告，不等 PR；
-# fix/** 同权——2026-09-06 修复分支 fix/ipc-plain-args 不触发 CI 的漏配补齐）
 on:
   push:
-    branches:
-      - main
-      - "feature/**"
-      - "fix/**"
-      - "codex/**"
+    branches: [main, "feature/**", "fix/**", "codex/**"]
   pull_request:
 
-# 最小权限：门禁只需读源码与拉 action，不持有写权限
 permissions:
   contents: read
 
-# 同引用新推送取消还在跑的旧 run，省 runner 时间
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -32,78 +17,29 @@ jobs:
     name: SDK 与各包 build + test
     runs-on: ubuntu-latest
     env:
-      npm_config_verify_deps_before_run: "false"
-      # 单测与构建不启动 Electron，跳过其运行时二进制下载省 ~100MB 与数分钟；
-      # 打包冒烟（package-smoke job）需要真实二进制，故该变量只在此 job 设置。
-      # 仓库 .npmrc 的镜像只影响二进制下载源，跳过后无谓，不必再设镜像变量。
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       APICC_STRESS_DIAGNOSTICS_DIR: ${{ github.workspace }}/local/ci-stress-diagnostics
     steps:
       - uses: actions/checkout@v5 # v5
       - uses: pnpm/action-setup@v4 # v4
         with:
-          # 与 lockfile v9 兼容；与本地开发版本一致，避免装出不同解析树
           version: 11.21.0
       - uses: actions/setup-node@v4 # v4
         with:
           node-version: 22.19.0
           cache: pnpm
-      # desktop 的 e2e-server 集成测试会构建并启动 Java 服务端，需要 JDK 21 的
-      # JAVA_HOME（setup-java 就地提供；runner 自带 maven 供其构建 jar）。
       - uses: actions/setup-java@v4 # v4
         with:
           distribution: temurin
-          java-version: 21
-      # 与 server-test job 共用同一 Maven 仓库缓存 key：谁先跑谁落盘，后续互益
-      - name: 缓存 Maven 本地仓库
-        uses: actions/cache@v4 # v4
+          java-version: '21.0.13+9'
+      - uses: actions/cache@v4 # v4
         with:
           path: ~/.m2/repository
           key: m2-${{ runner.os }}-${{ hashFiles('server/pom.xml') }}
           restore-keys: |
             m2-${{ runner.os }}-
-      - name: 安装依赖
-        run: pnpm install --frozen-lockfile
-      - name: 构建 SDK（Core 的前置产物）
-        run: pnpm -C packages/plugin-sdk build
-      - name: SDK 类型检查（含测试文件）
-        run: pnpm -C packages/plugin-sdk typecheck
-      - name: 构建 core（包入口类型检查的前置产物）
-        # Core 的包入口测试消费 exports 指向的 dist 声明，干净检出须先生成；
-        # build 自身检查 src 类型，随后 typecheck 补充覆盖 tests。
-        run: pnpm -C packages/core build
-      - name: core 类型检查（含测试文件）
-        # core 的 build 用 tsconfig.build.json 只编译 src（include: ["src"]），
-        # vitest 走 esbuild 转译不查类型——core 测试文件的类型错误只有
-        # `tsc --noEmit`（tsconfig.json include src+tests）能拦，故单列一步。
-        # desktop 的 typecheck/typecheck:vue 已含在其 build 首两段，无需单列。
-        run: pnpm -C packages/core typecheck
-      - name: 构建 execution 并校验生成契约漂移
-        run: |
-          pnpm -C packages/execution build
-          pnpm -C packages/execution typecheck
-          pnpm -C packages/execution check:java-input-schema
-      - name: 构建消费者及 src/tests 类型门
-        run: |
-          pnpm -C apps/collaboration-runtime build
-          pnpm -C apps/collaboration-runtime typecheck
-          node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check
-          pnpm -C apps/share-viewer build
-          pnpm -C apps/share-viewer typecheck
-          pnpm -C apps/runner-agent build
-          pnpm -C apps/runner-agent typecheck
-          pnpm -C apps/desktop build
-          pnpm -C apps/admin-web build
-          pnpm -C packages/cli build
-          pnpm -C packages/cli typecheck
-          node --test scripts/tests/f7f-acceptance.test.mjs
-      - name: 全部包测试
-        # pnpm 递归按依赖拓扑序执行；cli 的 test 自带前置 SDK/core build，序列自洽
-        # 与 scripts/test-all.ps1 保持一致：不让 admin pretest/build 与 Core 争用 CPU，
-        # 并将 worker 上限作为 test 脚本参数传给各包，而非 pnpm 自身参数。
-        run: |
-          docker build -f Dockerfile.agent -t apicc-f7b-t11-agent:candidate .
-          pnpm -r --workspace-concurrency=1 test --maxWorkers=2
+      - name: Linux 构建、类型与包测试
+        run: node scripts/ci-stage.mjs linux-test
       - name: 归档失败压测的合成诊断
         if: failure()
         uses: actions/upload-artifact@v4 # v4
@@ -113,14 +49,16 @@ jobs:
             local/ci-stress-diagnostics/normal-eight-*/summary.json
             local/ci-stress-diagnostics/normal-eight-*/diagnostics.json
             local/ci-stress-diagnostics/normal-eight-*/capture.json
+            local/f7f-acceptance/composition-*/facts.json
+            local/f7f-acceptance/composition-*/cleanup.json
+            local/f7f-acceptance/composition-*/result.json
           retention-days: 7
           if-no-files-found: warn
 
   server-test:
-    name: 服务端测试（JDK 21 + 显式 Node 组合前提）
+    name: 服务端测试
     runs-on: ubuntu-latest
     env:
-      npm_config_verify_deps_before_run: "false"
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v5 # v5
@@ -134,61 +72,30 @@ jobs:
       - uses: actions/setup-java@v4 # v4
         with:
           distribution: temurin
-          java-version: 21
-      # 服务端依赖缓存：key 绑 server/pom.xml 哈希（pom 变更即换新 key 全量重拉），
-      # restore-keys 兜底命中旧缓存做增量（缺失构件仍会按 settings.xml 回源下载）。
-      - name: 缓存 Maven 本地仓库
-        uses: actions/cache@v4 # v4
+          java-version: '21.0.13+9'
+      - uses: actions/cache@v4 # v4
         with:
           path: ~/.m2/repository
           key: m2-${{ runner.os }}-${{ hashFiles('server/pom.xml') }}
           restore-keys: |
             m2-${{ runner.os }}-
-      - name: Java 组合夹具的真实 Node 与外置 viewer 前提
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm -C packages/plugin-sdk build
-          pnpm -C packages/core build
-          pnpm -C packages/execution build
-          pnpm -C packages/execution check:java-input-schema
-          pnpm -C apps/collaboration-runtime build
-          pnpm -C apps/collaboration-runtime typecheck
-          node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check
-          pnpm -C apps/share-viewer build
-          pnpm -C apps/share-viewer typecheck
-      - name: 服务端测试
-        # 与本地同口径：统一 -s server/.mvn/settings.xml（central 走 Aliyun public 镜像，
-        # 规格 m3 §2 D3）。JAVA_HOME/java 已由 setup-java 配好，无需手工 env；
-        # ubuntu runner 预装 mvn，无需 wrapper。surefire 的 Mockito/byte-buddy 动态
-        # agent JDK 告警暂不处理，观察首轮 CI 输出后再定（计划清单⑥备案项）。
-        run: APICC_TEST_NODE="$(command -v node)" mvn -s server/.mvn/settings.xml -f server/pom.xml test
+      - name: Java 组合前提与 Maven 测试
+        run: node scripts/ci-stage.mjs linux-server
 
   brand-gate:
     name: 品牌中立门禁
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5 # v5
-        with:
-          # 脚本扫 git ls-files（索引内容），浅克隆足够，不取历史
-          fetch-depth: 1
       - uses: actions/setup-node@v4 # v4
         with:
-          # 仅跑零依赖 mjs 脚本，不装依赖、不配 pnpm 缓存
           node-version: 22.19.0
-      - name: 词表自检
-        run: node scripts/check-brand-neutral.mjs --self-check
-      - name: 全树扫描
-        run: |
-          node --test scripts/tests/check-brand-neutral.test.mjs
-          node scripts/check-brand-neutral.mjs --include-untracked
+      - name: 词表与全树扫描
+        run: node scripts/ci-stage.mjs brand
 
   package-smoke:
     name: Windows 打包冒烟
     runs-on: windows-latest
-    env:
-      npm_config_verify_deps_before_run: "false"
-    # 打包冒烟分钟级耗时且依赖 electron-builder，仅对 main push 生效：
-    # PR 阶段由 test job 把关，合入 main 后才验证真实打包产物能起、能加载。
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - uses: actions/checkout@v5 # v5
@@ -199,70 +106,20 @@ jobs:
         with:
           node-version: 22.19.0
           cache: pnpm
-      # 此 job 不设 ELECTRON_SKIP_BINARY_DOWNLOAD：electron-builder 打包需要
-      # 真实 Electron dist。二进制走缓存 + 仓库 .npmrc 的 npmmirror 镜像
-      # （GitHub runner 可达）；若未来镜像不可达，改设
-      # ELECTRON_MIRROR=https://github.com/electron/electron/releases/ 官方源。
-      # 缓存恢复必须先于 pnpm install：electron 的 postinstall 在 install 期间
-      # 下载运行时二进制，缓存放在 install 之后将永远免不了首次下载。
-      - name: 缓存 Electron 运行时二进制
-        uses: actions/cache@v4 # v4
+      - uses: actions/cache@v4 # v4
         with:
           path: ~\AppData\Local\electron\Cache
           key: electron-cache-${{ runner.os }}-v1
           restore-keys: |
             electron-cache-${{ runner.os }}-
-      - name: 缓存 electron-builder 构建缓存
-        uses: actions/cache@v4 # v4
+      - uses: actions/cache@v4 # v4
         with:
           path: ~\AppData\Local\electron-builder\Cache
           key: electron-builder-cache-${{ runner.os }}-v1
           restore-keys: |
             electron-builder-cache-${{ runner.os }}-
-      - name: 安装依赖
-        run: pnpm install --frozen-lockfile
-      - name: 下载 Electron 运行时二进制
-        # pnpm 11 对依赖构建脚本的 allowBuilds 放行实测不生效（工作区配置仅作
-        # 忽略登记），postinstall 被静默跳过——electron-builder 需要 electronDist，
-        # 故显式执行 install.js。@electron/get 按 {mirror}/{version}/{filename} 拼接，
-        # 官方源须带 /download/ 段（2026-09-05 二轮实测：缺段 404）。产物落入上方
-        # 已恢复的 electron 缓存目录，后续运行秒级命中。
-        working-directory: apps/desktop
-        env:
-          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
-        run: node node_modules/electron/install.js
-      - name: 构建 SDK（Core 的前置产物）
-        run: pnpm -C packages/plugin-sdk build
-      - name: SDK 类型检查（含测试文件）
-        run: pnpm -C packages/plugin-sdk typecheck
-      - name: 构建 core 与 cli（desktop 构建的前置类型依赖）
-        # @apicc/core 的 types 指向构建产物 dist/index.d.ts（desktop 无 paths 映射），
-        # fresh runner 上 core/dist 缺失时 desktop 的 typecheck（dist:dir 首段）会以
-        # `Cannot find module '@apicc/core'` 崩溃并连锁 implicit any——首次 CI 红的根因。
-        # filter 按 package.json 的 name 匹配（pnpm filter 不认目录路径：目录形式
-        # "!apps/desktop" 匹配不到任何包，pnpm 11 实测退化为全量构建），故用包名否定，
-        # SDK 已在前一步构建；desktop 由下方 dist:dir 自建（三段构建含 typecheck），避免重复。
-        # 注：否定 filter 会打印一行 `No projects matched the filters "…apps\desktop"` 告警，
-        # 是 pnpm 对被排除包的例行输出（exit 0），非失败，勿误读。
-        run: |
-          pnpm -C packages/core build
-          pnpm -C packages/execution build
-          pnpm -C packages/execution check:java-input-schema
-          pnpm -C apps/collaboration-runtime build
-          pnpm -C apps/collaboration-runtime typecheck
-          node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check
-          pnpm -C apps/share-viewer build
-          pnpm -C apps/share-viewer typecheck
-          pnpm -C apps/runner-agent build
-          pnpm -C apps/admin-web build
-          pnpm -C packages/cli build
-      - name: 生成应用图标
-        run: pnpm -C apps/desktop gen:icon
-      - name: 打包（dir 模式，含三段构建）
-        run: pnpm -C apps/desktop dist:dir
-      - name: 打包产物冒烟
-        # smoke:dir 对 release/win-unpacked/apicc.exe 做存活/致命错/加载三检
-        run: pnpm -C apps/desktop smoke:dir
+      - name: Windows 构建、dir 打包与冒烟
+        run: node scripts/ci-stage.mjs windows-package
 
   deployment-smoke:
     name: Linux 新镜像与局部 CA 部署冒烟
@@ -276,19 +133,9 @@ jobs:
       - uses: actions/setup-java@v4 # v4
         with:
           distribution: temurin
-          java-version: 21
-      - name: 构建同候选控制与代理镜像
-        run: |
-          docker build -t apicc-server:local .
-          docker build -f Dockerfile.collaboration -t apicc-collaboration:local .
-          docker build -f Dockerfile.agent -t apicc-runner-agent:local .
-      - name: HTTP 与私有 CA HTTPS 健康检查和 Linux 原生闭包
-        run: node scripts/smoke-runner-agent.mjs
-      - name: 可选协作私网与真实资源、不可用边界
-        env:
-          APICC_F7F_SERVER_IMAGE: apicc-server:local
-          APICC_F7F_RUNTIME_IMAGE: apicc-collaboration:local
-        run: node scripts/smoke-collaboration.mjs
+          java-version: '21.0.13+9'
+      - name: 新镜像、HTTP、私有 CA 与协作冒烟
+        run: node scripts/ci-stage.mjs deployment
       - name: 归档部署冒烟身份与生命周期
         if: always()
         uses: actions/upload-artifact@v4 # v4

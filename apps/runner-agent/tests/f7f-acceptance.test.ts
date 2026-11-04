@@ -15,6 +15,7 @@ import { compileProjectMock } from '../../../packages/core/src/mock/compile.js';
 import { createProjectSnapshot } from '../../../packages/core/src/assets/snapshot.js';
 import { DebugResultSchema } from '../../../packages/core/src/debug/model.js';
 import { semanticTarget } from './runtime-semantics.mjs';
+import { waitForPublicReadiness } from './helpers/publicReadiness.js';
 
 it('F7f same candidate: real agent archive, fixed publications, independent Mock and restart authority', async () => {
   const parent = resolve(process.env.APICC_F7F_EVIDENCE_ROOT ?? join(repo, 'local/f7f-acceptance'));
@@ -166,15 +167,9 @@ it('F7f same candidate: real agent archive, fixed publications, independent Mock
     expect((await publicRead()).status).toBe(410);
     const expiry = mockGrant.expiresAt;
     await server.stop(); await server.start(variables);
-    const restartRead=await until(async()=>{
-      const startedAt=new Date().toISOString();
-      let observed:{status:number;code:string|null};
-      try {const response=await publicRead(),body=await response.json();observed={status:response.status,code:typeof body.code==='string'?body.code:null};}
-      catch {observed={status:0,code:'transport-error'};}
-      fact('restart-public-read',{startedAt,endedAt:new Date().toISOString(),...observed});
-      return observed;
-    },observed=>observed.status!==503||observed.code!=='public_origin_unavailable');
+    const restartRead=await waitForPublicReadiness(()=>publicRead(),observed=>fact('restart-public-read',observed));
     expect(restartRead.status).toBe(410);
+    expect(restartRead.code).toBe('share_inactive');
     const savedGrant = await api('GET', `${collab}/grants/${mockGrant.id}`); expect(savedGrant.expiresAt).toBe(expiry);
     fact('restart', { revokedStatus: 410, originalExpiresAt: expiry, restoredExpiresAt: savedGrant.expiresAt });
     record('result', { passed: true, limitations: ['No visible native/browser/CSP proof; shared fixture carries synthetic sources only.'] });
