@@ -47,6 +47,7 @@ import { debugHistory as collaborationDebugFixture, runReport as collaborationRu
 import { workspaceFixture } from '../../../../packages/core/tests/helpers/contractFixtures.js';
 import { ContractWorkspaceSchema, DebugHistoryRecordSchema } from '@apicc/core/schema';
 import { defaultPolicyConfig } from '@apicc/execution/contract';
+import { holdRealReportDigest } from '../helpers/realReportDigest.js';
 import { onlineTreeToDto } from '../../src/main/online/session.js';
 import type { useWorkspaceStore } from "../../src/renderer/src/stores/workspace.js";
 import type { createTabsStore } from "../../src/renderer/src/stores/tabs.js";
@@ -294,10 +295,13 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
   it('T9 local report shortcut asks for an online target without affecting offline execution or sending anything', async () => {
     const original = failingApi.onlineCollaboration, calls: unknown[] = []; failingApi.onlineCollaboration = async input => { calls.push(input); return { stage: 'idle' }; };
     const wrapper = await mountApp();
+    let digest: ReturnType<typeof holdRealReportDigest> | undefined;
     try { await openLocalDir(wrapper); await clickApiAndWait(wrapper); await wrapper.get('[data-testid="rail-run"]').trigger('click'); await flushPromises(); const reportView = wrapper.findComponent(RunView), run = reportView.props('run'); expect(reportView.props('selectedCollectionLocator')).toBeTruthy();
-      run.result = collaborationRunFixture(); await flushPromises(); expect(wrapper.text()).toContain('用例1'); await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises();
+      run.result = collaborationRunFixture(); await flushPromises(); expect(wrapper.text()).toContain('用例1'); digest = holdRealReportDigest(); await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises(); expect(digest.spy).toHaveBeenCalledTimes(1);
+      expect(wrapper.find('[data-testid="collaboration-target-picker"]').exists()).toBe(false); expect(calls).toEqual([]); expect(wrapper.get('[data-testid="run-btn"]').attributes('disabled')).toBeUndefined();
+      await digest.settle(); await flushPromises();
       expect(wrapper.find('[data-testid="collaboration-target-picker"]').exists()).toBe(true); expect(calls).toEqual([]); expect(wrapper.get('[data-testid="run-btn"]').attributes('disabled')).toBeUndefined();
-    } finally { wrapper.unmount(); failingApi.onlineCollaboration = original; }
+    } finally { try { await digest?.settle(); await flushPromises(); } finally { digest?.restore(); wrapper.unmount(); failingApi.onlineCollaboration = original; } }
   });
   it.each(['entry', 'online-local', 'session-change', 'navigation', 'local-target'] as const)('T9 opens the actual App collaboration panel and binds its %s flow to the selected online project', async flow => {
     const names = ['onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution', 'onlineCollaboration'] as const, originals = new Map(names.map(name => [name, failingApi[name]]));

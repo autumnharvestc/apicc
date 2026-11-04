@@ -13,6 +13,7 @@ import { useRunStore } from "../../../src/renderer/src/stores/run.js";
 import RunView from "../../../src/renderer/src/components/RunView.vue";
 import CaseEvidencePanel from "../../../src/renderer/src/components/CaseEvidencePanel.vue";
 import { runReport } from '../../../../../packages/core/tests/collaboration/fixtures.js';
+import { holdRealReportDigest } from '../../helpers/realReportDigest.js';
 
 const jsdomComputedStyle = window.getComputedStyle;
 beforeAll(() => {
@@ -78,8 +79,12 @@ async function mountRunView(props: Record<string, unknown> = {}) {
 describe("RunView", () => {
   it('T9 offers the selected current report as a digest descriptor without putting its raw result in the event', async () => {
     const { wrapper, run, collectionNode } = await mountRunView(); await wrapper.setProps({ selectedCollectionLocator: collectionNode.locator }); await flushPromises(); run.result = runReport(); await flushPromises(); expect(wrapper.text()).toContain('2');
-    await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises(); const source = wrapper.emitted('collaboration')?.[0]?.[0] as any;
-    expect(source).toEqual({ kind: 'current', project: { workspaceId: collectionNode.locator.workspaceId, groupId: collectionNode.locator.groupId, projectId: collectionNode.locator.projectId }, expectedReportDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }); expect(source.report).toBeUndefined();
+    const digest = holdRealReportDigest();
+    try {
+      await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises(); expect(digest.spy).toHaveBeenCalledTimes(1); expect(wrapper.emitted('collaboration')).toBeUndefined();
+      await digest.settle(); await flushPromises(); const source = wrapper.emitted('collaboration')?.[0]?.[0] as any;
+      expect(source).toEqual({ kind: 'current', project: { workspaceId: collectionNode.locator.workspaceId, groupId: collectionNode.locator.groupId, projectId: collectionNode.locator.projectId }, expectedReportDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }); expect(source.report).toBeUndefined();
+    } finally { try { await digest.settle(); await flushPromises(); } finally { digest.restore(); } }
   });
   it('T9 chooses exactly the selected stress file without opening another history body', async () => {
     const { wrapper, api, run, collectionNode } = await mountRunView(); await wrapper.setProps({ selectedCollectionLocator: collectionNode.locator }); const summary = { kind: 'stress' as const, projectId: collectionNode.locator.projectId, file: 'selected-stress.json', startedAt: '2026-11-01T00:00:00Z', totalRequests: 2, ok: 1, failed: 1, rps: 1 }; api.runsList = async () => [summary]; const read = vi.spyOn(api, 'runsGet');
