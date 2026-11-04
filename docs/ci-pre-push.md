@@ -1,8 +1,10 @@
-# 推送前 CI 覆盖门禁
+# 完整本地 CI 覆盖门禁（按需执行）
 
-全量是最后的验证步骤。开发与排障期间先运行受影响用例及必要回归，集中处理同类问题与环境前提，完成审核、确认基本收敛并冻结候选，再运行本入口。失败后先回到定向诊断与验证，不在每次小修后重跑全量。
+日常默认采用本地定向验证、必要回归和 GitHub CI。本入口是按需执行的重量级完整本地门禁，不是每次推送的默认前置步骤；运行前必须取得用户对本次全量的明确确认，并说明范围、必要性和预计耗时。`scripts/test-all.ps1`、全工作区测试、Java 全套及等效拆分执行的全量也遵循此规则。提交、合并、推送或此前某次全量的授权，不自动授权本次全量或重跑。
 
-在 **已提交且干净** 的 Windows 工作区运行：
+获得本次确认后，先集中处理同类问题与环境前提，完成审核、确认基本收敛并冻结候选，再运行本入口。失败后先回到定向诊断与验证；再次执行全量需要用户重新确认。
+
+在 **已取得本次确认、已提交且干净** 的 Windows 工作区运行：
 
 ```powershell
 pwsh -NoProfile -File scripts/pre-push-ci.ps1
@@ -10,7 +12,7 @@ pwsh -NoProfile -File scripts/pre-push-ci.ps1
 
 前提：Node 22.19.0、pnpm 11.21.0、`JAVA_HOME` 指向 JDK 21；Docker Desktop 的 Linux engine 与 `docker compose` 可用。缺任一前提、命令非零退出或证据缺失均视为失败。
 
-入口先校验工具版本、执行 `pnpm install --frozen-lockfile`，随后运行现有 `test-all.ps1` 和 Windows `dist:dir` / `smoke:dir`。Linux 阶段用当前已提交 HEAD 创建 git bundle，在独占 Docker volume 中分别干净检出，依次运行与 `.github/workflows/ci.yml` 同一 `scripts/ci-stage.mjs` 入口：包构建与测试、Java 组合测试、品牌门禁。Docker daemon 与测试容器共用 volume 的真实绝对挂载路径，供嵌套代理容器读取同一份本地夹具和临时夹具。随后 Windows 宿主用同一共享阶段入口构建三款 Linux 镜像并运行部署冒烟；部署脚本访问 Docker 发布在宿主 `127.0.0.1` 的端口。CI 中的 Windows 打包 job 保持仅 `main` 推送触发，本地推送前入口每次都覆盖它。
+入口先校验工具版本、执行 `pnpm install --frozen-lockfile`，随后运行现有 `test-all.ps1` 和 Windows `dist:dir` / `smoke:dir`。Linux 阶段用当前已提交 HEAD 创建 git bundle，在独占 Docker volume 中分别干净检出，依次运行与 `.github/workflows/ci.yml` 同一 `scripts/ci-stage.mjs` 入口：包构建与测试、Java 组合测试、品牌门禁。Docker daemon 与测试容器共用 volume 的真实绝对挂载路径，供嵌套代理容器读取同一份本地夹具和临时夹具。随后 Windows 宿主用同一共享阶段入口构建三款 Linux 镜像并运行部署冒烟；部署脚本访问 Docker 发布在宿主 `127.0.0.1` 的端口。CI 中的 Windows 打包 job 保持仅 `main` 推送触发；该本地入口每次运行时都覆盖它。
 
 每次运行在 `local/ci88-fix/pre-push-*/` 留下候选 bundle、每阶段完整日志、结构化 `receipt.json`，以及白名单复制的 Linux Maven XML、F7f 组合结果和压测诊断。部署 JSON 从宿主 `local/` 中按冒烟前后的路径差集辨认，只有本次新生成且 `passed=true` 的文件计入 receipt。即使阶段失败也先收集现有证据，再清理本次独占容器和 volume。最终只有所有阶段、必要证据、清理和再次核对的同一干净 HEAD 均成立，receipt 才标记通过。Windows 全量的鲜 Maven XML 由 `test-all.ps1` 留在其输出的 `local/full-gate/` 路径。
 
