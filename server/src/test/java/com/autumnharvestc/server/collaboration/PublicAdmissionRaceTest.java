@@ -46,11 +46,20 @@ class PublicAdmissionRaceTest extends GrantHttpFixture {
         assertAll(()->result(rejected,429,"share_capacity_exceeded"),()->assertThat(recovered.statusCode()).isEqualTo(200));
     }
     @Test void inFlightLeaseCoversResponseAndReleasesOnce()throws Exception {
-        var f=fixture();var publication=fixedDocument(f);policy(f,false,Map.of("publicReadInFlight",1));var grant=createGrant(f,publication,grantCommand("view","external"));readable(grant);
-        var admission=grants.admit(grant.path("publicId").asText(),grant.path("key").asText(),"view",false,null);
-        assertThat(json.readTree(admission.body()).path("kind").asText()).isEqualTo("document");
-        var rejected=read(grant,grant.path("key").asText());admission.close();admission.close();var recovered=read(grant,grant.path("key").asText());
-        assertAll(()->result(rejected,429,"share_capacity_exceeded"),()->assertThat(recovered.statusCode()).isEqualTo(200));
+        var f=fixture();var publication=fixedDocument(f);policy(f,false,Map.of("publicReadInFlight",1));var grant=createGrant(f,publication,grantCommand("view","external"));
+        // A client receiving a warm-up response does not mean its server handler has released
+        // the lease: access observation may still be running. Own the first lease directly.
+        try(var admission=grants.admit(grant.path("publicId").asText(),grant.path("key").asText(),"view",false,null)){
+            assertThat(json.readTree(admission.body()).path("kind").asText()).isEqualTo("document");
+            result(read(grant,grant.path("key").asText()),429,"share_capacity_exceeded");
+            admission.close();admission.close();
+            try(var next=grants.admit(grant.path("publicId").asText(),grant.path("key").asText(),"view",false,null)){
+                assertThat(next.body()).isEqualTo(admission.body());
+                // Duplicate close must not create a spare slot while the new lease is held.
+                result(read(grant,grant.path("key").asText()),429,"share_capacity_exceeded");
+            }
+        }
+        readable(grant);
     }
     @Test void deploymentAppliedAcrossRestartCannotReviveSecretWhenOriginalDigestReturns()throws Exception {
         var f=fixture();var publication=fixedDocument(f);var grant=createGrant(f,publication,grantCommand("view","external"));readable(grant);
