@@ -16,6 +16,33 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
     "apicc.collaboration.public-access.enabled=true", "apicc.collaboration.public-access.port=0",
     "apicc.collaboration.public-access.base-url=http://127.0.0.1:18793"})
 class GrantLifecycleTest extends GrantHttpFixture {
+    public static class HeldAccessAudit implements org.h2.api.Trigger {
+        static volatile java.util.concurrent.CountDownLatch entered=new java.util.concurrent.CountDownLatch(0);
+        static volatile java.util.concurrent.CountDownLatch release=new java.util.concurrent.CountDownLatch(0);
+        @Override public void fire(java.sql.Connection connection,Object[] oldRow,Object[] newRow)throws java.sql.SQLException {
+            if(!Arrays.asList(newRow).contains("access"))return;
+            entered.countDown();
+            try{if(!release.await(10,java.util.concurrent.TimeUnit.SECONDS))throw new java.sql.SQLException("Synthetic access audit barrier timed out");}
+            catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new java.sql.SQLException("Synthetic access audit barrier interrupted",interrupted);}
+        }
+    }
+    @Test void publicReadFixtureWaitsForItsServerAuditAfterBodyArrives()throws Exception {
+        var f=fixture();var publication=fixedDocument(f);var grant=createGrant(f,publication,grantCommand("view","external"));
+        HeldAccessAudit.entered=new java.util.concurrent.CountDownLatch(1);HeldAccessAudit.release=new java.util.concurrent.CountDownLatch(1);
+        var bodyReceived=new java.util.concurrent.CountDownLatch(1);
+        jdbc.execute("CREATE TRIGGER held_access_audit BEFORE INSERT ON collaboration_management_audit FOR EACH ROW CALL '"+HeldAccessAudit.class.getName()+"'");
+        try(var workers=java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()){
+            try{
+                var read=workers.submit(()->read(grant,grant.path("key").asText(),bodyReceived::countDown));
+                assertThat(HeldAccessAudit.entered.await(5,java.util.concurrent.TimeUnit.SECONDS)).as("real server access audit entered its SQL insert").isTrue();
+                assertThat(bodyReceived.await(5,java.util.concurrent.TimeUnit.SECONDS)).as("real client already received the complete response body").isTrue();
+                org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.TimeoutException.class,()->read.get(200,java.util.concurrent.TimeUnit.MILLISECONDS));
+                HeldAccessAudit.release.countDown();
+                assertThat(read.get(5,java.util.concurrent.TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM collaboration_management_audit WHERE workspace_id=? AND project_id=? AND retention_class='access'",Long.class,Long.parseLong(f.workspace()),Long.parseLong(f.project()))).isEqualTo(1);
+            }finally{HeldAccessAudit.release.countDown();}
+        }finally{HeldAccessAudit.release.countDown();jdbc.execute("DROP TRIGGER IF EXISTS held_access_audit");}
+    }
     @Test void finalAccessFailureKeepsAuthorizedReadAndReportsMissingObservations()throws Exception{
         var f=fixture();var publication=fixedDocument(f);var grant=createGrant(f,publication,grantCommand("view","external"));
         ArtifactRetentionTest.AuditFault.attempts.set(0);jdbc.execute("CREATE TRIGGER final_access_fault BEFORE INSERT ON collaboration_management_audit FOR EACH ROW CALL '"+ArtifactRetentionTest.AuditFault.class.getName()+"'");
