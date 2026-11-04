@@ -40,6 +40,24 @@ class PublicAdmissionRaceTest extends GrantHttpFixture {
             "--apicc.collaboration.public-access.enabled="+publicEnabled,"--apicc.collaboration.public-access.port="+publicPort,
             "--apicc.collaboration.public-access.base-url=http://127.0.0.1:"+publicPort);
     }
+    @Test void publicListenerRebindsTheSamePortAfterACompletedConnection()throws Exception {
+        int port=freePort();
+        for(int cycle=0;cycle<2;cycle++){
+            try(var running=org.junit.jupiter.api.Assertions.assertDoesNotThrow(()->restart(true,true,port))){
+                assertThat(running.getBean(PublicListener.class).boundPort()).isEqualTo(port);
+                if(cycle==0){
+                    var conflict=org.junit.jupiter.api.Assertions.assertThrows(Exception.class,()->restart(true,true,port));
+                    assertThat(conflict).hasRootCauseInstanceOf(java.net.BindException.class);
+                }
+                try(var socket=new Socket("127.0.0.1",port)){
+                    socket.setSoTimeout(5000);
+                    socket.getOutputStream().write("GET /restart-probe HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                    socket.getOutputStream().flush();
+                    assertThat(new String(socket.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.US_ASCII)).startsWith("HTTP/1.1 404");
+                }
+            }
+        }
+    }
     @Test void perGrantReadRateHasNoAccumulatedBurstAndRecoversByClock()throws Exception {
         var f=fixture();var publication=fixedDocument(f);policy(f,false,Map.of("publicReadRps",1));var grant=createGrant(f,publication,grantCommand("view","external"));readable(grant);
         var rejected=read(grant,grant.path("key").asText());artifactTime.advance(1000);var recovered=read(grant,grant.path("key").asText());

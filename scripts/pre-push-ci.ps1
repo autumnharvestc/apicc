@@ -101,7 +101,7 @@ try {
   if ($LASTEXITCODE -ne 0 -or $mountpoint -notmatch '^/[A-Za-z0-9_./-]+$') { throw "Docker volume 挂载路径无效：$mountpoint" }
   Write-Host "[MOUNTPOINT] $mountpoint"
   $receipt.tools.mountpoint = $mountpoint
-  Invoke-Logged 'suite-start' 'docker' @('run', '-d', '--name', $container, '--mount', "type=volume,source=$volume,target=$mountpoint", '-v', '/var/run/docker.sock:/var/run/docker.sock', '-e', "TMPDIR=$mountpoint/tmp", 'apicc-ci-gate:ci88', 'sleep', 'infinity')
+  Invoke-Logged 'suite-start' 'docker' @('run', '-d', '--init', '--name', $container, '--mount', "type=volume,source=$volume,target=$mountpoint", '-v', '/var/run/docker.sock:/var/run/docker.sock', '-e', "TMPDIR=$mountpoint/tmp", 'apicc-ci-gate:ci88', 'sleep', 'infinity')
   $containerCreated = $true
   Invoke-Logged 'suite-tmp' 'docker' @('exec', $container, 'mkdir', '-p', "$mountpoint/tmp")
   Invoke-Logged 'bundle-copy' 'docker' @('cp', $bundle, "${container}:${mountpoint}/candidate.bundle")

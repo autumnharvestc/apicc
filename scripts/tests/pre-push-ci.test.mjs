@@ -26,6 +26,7 @@ $assignments = @($ast.FindAll({ param($item) $item -is [System.Management.Automa
 $commands = @($ast.FindAll({ param($item) $item -is [System.Management.Automation.Language.CommandAst] -and $item.GetCommandName() -eq 'Invoke-Logged' }, $true))
 $stageCommand = @($commands | Where-Object { $_.CommandElements[1].Extent.Text -eq '$stage' })
 $copyCommand = @($commands | Where-Object { $_.CommandElements[1].Value -eq 'evidence-select' })
+$suiteCommand = @($commands | Where-Object { $_.CommandElements[1].Value -eq 'suite-start' })
 if ($stageCommand.Count -ne 1 -or $copyCommand.Count -ne 1) { throw 'Missing real Bash boundary' }
 function Invoke-Logged([string]$Name, [string]$FilePath, [string[]]$Arguments) {
   [pscustomobject]@{ name=$Name; file=$FilePath; arguments=$Arguments } | ConvertTo-Json -Compress -Depth 5
@@ -33,6 +34,8 @@ function Invoke-Logged([string]$Name, [string]$FilePath, [string[]]$Arguments) {
 $mountpoint = '/var/lib/docker/volumes/apicc-ci88-synthetic/_data'
 $candidateSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 $container = 'apicc-ci88-synthetic'
+$volume = 'apicc-ci88-volume'
+Invoke-Expression $suiteCommand[0].Extent.Text
 foreach ($stage in @('linux-test','linux-server','brand')) {
   foreach ($assignment in $assignments | Where-Object { $_.Left.VariablePath.UserPath -eq 'stageScript' }) { Invoke-Expression $assignment.Extent.Text }
   Invoke-Expression $stageCommand[0].Extent.Text
@@ -49,8 +52,10 @@ Invoke-Expression $copyCommand[0].Extent.Text
       });
       assert.equal(result.status, 0, result.stderr);
       const commands = result.stdout.trim().split(/\r?\n/).map(line => JSON.parse(line));
-      assert.deepEqual(commands.map(command => command.name), ['linux-test','linux-server','brand','evidence-select']);
-      for (const command of commands) {
+      assert.deepEqual(commands.map(command => command.name), ['suite-start','linux-test','linux-server','brand','evidence-select']);
+      assert.equal(commands[0].file, 'docker');
+      assert.ok(commands[0].arguments.includes('--init'), 'Linux suite must reap orphaned children as the hosted runner does');
+      for (const command of commands.slice(1)) {
         assert.equal(command.file, 'docker');
         assert.deepEqual(command.arguments.slice(0, 7), ['exec','apicc-ci88-synthetic','bash','-o','pipefail','-c',command.arguments.at(-1)]);
         assert.match(command.arguments.at(-1), /^set -euo pipefail\n/);

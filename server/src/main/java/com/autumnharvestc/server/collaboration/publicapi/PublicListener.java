@@ -34,7 +34,7 @@ public class PublicListener implements ApplicationRunner {
     @Override public void run(ApplicationArguments arguments)throws Exception {
         if(!properties.isEnabled()||!grants.publicOriginConfigured())return;
         server=org.apache.hc.core5.http.impl.bootstrap.AsyncServerBootstrap.bootstrap()
-            .setIOReactorConfig(org.apache.hc.core5.reactor.IOReactorConfig.custom().setIoThreadCount(1).build())
+            .setIOReactorConfig(org.apache.hc.core5.reactor.IOReactorConfig.custom().setIoThreadCount(1).setSoReuseAddress(true).build())
             // HttpCore disconnects the original delegate, not the connected callback's decorator.
             .setIOSessionDecorator(session->{sessions.put(session.getId(),session);return new DisconnectSession(session);})
             .setIOSessionListener(new org.apache.hc.core5.reactor.IOSessionListener(){
