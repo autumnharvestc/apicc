@@ -13,6 +13,57 @@ function git(repo, ...args) {
   assert.equal(result.status, 0, result.stderr);
 }
 
+test('Linux stage and evidence commands use Unix newlines from either Windows checkout format', { skip: process.platform !== 'win32' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'apicc-ci88-bash-'));
+  try {
+    const harness = join(root, 'capture.ps1');
+    await writeFile(harness, `
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:CI88_SOURCE, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw 'Invalid source fixture' }
+$assignments = @($ast.FindAll({ param($item) $item -is [System.Management.Automation.Language.AssignmentStatementAst] -and $item.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and $item.Left.VariablePath.UserPath -in @('stageScript', 'copyScript') }, $true))
+$commands = @($ast.FindAll({ param($item) $item -is [System.Management.Automation.Language.CommandAst] -and $item.GetCommandName() -eq 'Invoke-Logged' }, $true))
+$stageCommand = @($commands | Where-Object { $_.CommandElements[1].Extent.Text -eq '$stage' })
+$copyCommand = @($commands | Where-Object { $_.CommandElements[1].Value -eq 'evidence-select' })
+if ($stageCommand.Count -ne 1 -or $copyCommand.Count -ne 1) { throw 'Missing real Bash boundary' }
+function Invoke-Logged([string]$Name, [string]$FilePath, [string[]]$Arguments) {
+  [pscustomobject]@{ name=$Name; file=$FilePath; arguments=$Arguments } | ConvertTo-Json -Compress -Depth 5
+}
+$mountpoint = '/var/lib/docker/volumes/apicc-ci88-synthetic/_data'
+$candidateSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+$container = 'apicc-ci88-synthetic'
+foreach ($stage in @('linux-test','linux-server','brand')) {
+  foreach ($assignment in $assignments | Where-Object { $_.Left.VariablePath.UserPath -eq 'stageScript' }) { Invoke-Expression $assignment.Extent.Text }
+  Invoke-Expression $stageCommand[0].Extent.Text
+}
+foreach ($assignment in $assignments | Where-Object { $_.Left.VariablePath.UserPath -eq 'copyScript' }) { Invoke-Expression $assignment.Extent.Text }
+Invoke-Expression $copyCommand[0].Extent.Text
+`);
+    const source = await readFile(original, 'utf8');
+    for (const ending of ['\n', '\r\n']) {
+      const candidate = join(root, ending === '\n' ? 'lf.ps1' : 'crlf.ps1');
+      await writeFile(candidate, source.replace(/\r?\n/g, ending));
+      const result = spawnSync(pwsh, ['-NoProfile', '-File', harness], {
+        env: { ...process.env, CI88_SOURCE: candidate }, encoding: 'utf8', windowsHide: true,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const commands = result.stdout.trim().split(/\r?\n/).map(line => JSON.parse(line));
+      assert.deepEqual(commands.map(command => command.name), ['linux-test','linux-server','brand','evidence-select']);
+      for (const command of commands) {
+        assert.equal(command.file, 'docker');
+        assert.deepEqual(command.arguments.slice(0, 7), ['exec','apicc-ci88-synthetic','bash','-o','pipefail','-c',command.arguments.at(-1)]);
+        assert.match(command.arguments.at(-1), /^set -euo pipefail\n/);
+        assert.doesNotMatch(command.arguments.at(-1), /\r/, command.name + ' must reach Bash with LF lines');
+      }
+    }
+  } finally {
+    const resolved = resolve(root);
+    assert.ok(resolved.startsWith(resolve(tmpdir()) + sep));
+    await rm(resolved, { recursive: true, force: true });
+  }
+});
+
 test('pre-push rejects dirty candidates and failed external commands before later stages', { skip: process.platform !== 'win32' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'apicc-ci88-prepush-'));
   const repo = join(root, 'repo'), bin = join(root, 'bin'), log = join(root, 'commands.log');

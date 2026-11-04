@@ -121,7 +121,8 @@ export APICC_RUNNER_E2E_HOST="$(hostname -i | cut -d ' ' -f 1)"
 export APICC_STRESS_DIAGNOSTICS_DIR="$repo/local/ci-stress-diagnostics"
 node scripts/ci-stage.mjs "$stage"
 '@
-    $stageScript = $stageScript.Replace('{MOUNT}', $mountpoint).Replace('{SHA}', $candidateSha).Replace('{STAGE}', $stage)
+    # Native Bash receives the here-string bytes, including checkout CRLF.
+    $stageScript = $stageScript.Replace("`r`n", "`n").Replace('{MOUNT}', $mountpoint).Replace('{SHA}', $candidateSha).Replace('{STAGE}', $stage)
     Invoke-Logged $stage 'docker' @('exec', $container, 'bash', '-o', 'pipefail', '-c', $stageScript)
   }
 } catch {
@@ -144,7 +145,7 @@ for stage in linux-test linux-server brand; do
   done
 done
 '@
-      $copyScript = $copyScript.Replace('{MOUNT}', $mountpoint)
+      $copyScript = $copyScript.Replace("`r`n", "`n").Replace('{MOUNT}', $mountpoint)
       Invoke-Logged 'evidence-select' 'docker' @('exec', $container, 'bash', '-o', 'pipefail', '-c', $copyScript)
       $linuxEvidence = Join-Path $localEvidence 'linux'
       New-Item -ItemType Directory -Path $linuxEvidence -Force | Out-Null
