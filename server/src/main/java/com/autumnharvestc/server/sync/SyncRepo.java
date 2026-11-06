@@ -11,9 +11,9 @@ import java.util.*;
 public class SyncRepo {
     private final SyncStorage accounting;private final JdbcTemplate jdbc;
     private final ObjectMapper json;
-    private final com.autumnharvestc.server.execution.scheduling.DatabaseScheduleTimeSource time;
+    private final com.autumnharvestc.server.store.DatabaseUtcClock time;
     private final org.springframework.beans.factory.ObjectProvider<SyncCheckWorker> workers;
-    public SyncRepo(JdbcTemplate jdbc,ObjectMapper json,org.springframework.beans.factory.ObjectProvider<SyncCheckWorker> workers,SyncStorage accounting,com.autumnharvestc.server.execution.scheduling.DatabaseScheduleTimeSource time){this.accounting=accounting;this.jdbc=jdbc;this.json=json;this.workers=workers;this.time=time;}
+    public SyncRepo(JdbcTemplate jdbc,ObjectMapper json,org.springframework.beans.factory.ObjectProvider<SyncCheckWorker> workers,SyncStorage accounting,com.autumnharvestc.server.store.DatabaseUtcClock time){this.accounting=accounting;this.jdbc=jdbc;this.json=json;this.workers=workers;this.time=time;}
     public List<JsonNode> sources(long ws,long project){return jdbc.query("SELECT source_json FROM sync_sources WHERE workspace_id=? AND project_id=? AND deleted=FALSE ORDER BY id",(row,index)->decode(row.getString(1)),ws,project);}
     public Optional<JsonNode> source(long ws,long project,String id){return jdbc.query("SELECT source_json FROM sync_sources WHERE workspace_id=? AND project_id=? AND id=? AND deleted=FALSE",(row,index)->decode(row.getString(1)),ws,project,id).stream().findFirst();}
     public void saveSource(long ws,long project,JsonNode source){

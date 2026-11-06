@@ -4,7 +4,7 @@ import { prepareNetworkRun, type NetworkConfiguration, type NetworkTLSSettings, 
 import type { SyncCandidate, SyncPlanInput, SourceMaterialLease } from "@apicc/core/sync";
 import type { SyncReadPayload, SyncReadOutput } from "./protocol.js";
 export type { SyncReadPayload, SyncReadOutput, SyncPlanPayload } from "./protocol.js";
-import { mkdtemp, rm, chmod, lstat, mkdir, readdir, writeFile, realpath, stat } from "node:fs/promises";
+import { mkdtemp, rm, chmod, lstat, mkdir, readdir, writeFile, realpath, stat, open, type FileHandle } from "node:fs/promises";
 import { resolve, join, isAbsolute, relative } from "node:path";
 import { BlockList, isIP } from "node:net";
 import { execFile } from "node:child_process";
@@ -59,7 +59,7 @@ export function preflightSourceTLS(bindings: readonly SyncNetworkTLS[]): void {
 
 interface Occupancy { project: string; provider: symbol; retained: boolean; controller: AbortController; owner?: PrivateReadOwner }
 interface Generation { revision: string; authorization: string; bytes: number }
-interface RootCoordinator { providers: number; slots: Map<string, Occupancy>; generations: Map<string, Generation>; generationBytes: number }
+interface RootCoordinator { rootHandle: FileHandle; providers: number; slots: Map<string, Occupancy>; generations: Map<string, Generation>; generationBytes: number }
 const coordinators = new Map<string, RootCoordinator>();
 const compareRevision = (left: string, right: string) => left.length - right.length || (left < right ? -1 : left > right ? 1 : 0);
 
@@ -143,21 +143,29 @@ export async function createRuntimeSourceHost(options: RuntimeSourceOptions) {
   const root = await realpath(options.privateRoot), physicalRoot = await stat(root, { bigint: true });
   const rootKey = hash([physicalRoot.dev.toString(), physicalRoot.ino.toString()]);
   const currentApproval = approval(options), markers = join(root, ".apicc-sync-owners");
-  let coordinator = coordinators.get(rootKey);
-  if (!coordinator) {
-    let hasMarkers = false;
-    try { hasMarkers = (await readdir(markers)).length > 0; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    // Another initializer may have published while the real directory scan ran.
-    // Acquiring the final state and its provider reference has no intervening await.
-    coordinator = coordinators.get(rootKey);
+  let candidateRoot: FileHandle | undefined = await open(root, "r"), state: RootCoordinator;
+  try {
+    const heldRoot = await candidateRoot.stat({ bigint: true });
+    if (!heldRoot.isDirectory() || heldRoot.dev !== physicalRoot.dev || heldRoot.ino !== physicalRoot.ino) throw failure("SYNC_HOST_CONFIG_INVALID");
+    let coordinator = coordinators.get(rootKey);
     if (!coordinator) {
-      if (hasMarkers) throw failure("SYNC_PROCESS_UNCOLLECTED");
-      coordinator = { providers: 0, slots: new Map(), generations: new Map(), generationBytes: 0 }; coordinators.set(rootKey, coordinator);
+      let hasMarkers = false;
+      try { hasMarkers = (await readdir(markers)).length > 0; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      // Another initializer may have published while the real directory scan ran.
+      // Acquiring the final state and its provider reference has no intervening await.
+      coordinator = coordinators.get(rootKey);
+      if (!coordinator) {
+        if (hasMarkers) throw failure("SYNC_PROCESS_UNCOLLECTED");
+        // Pin the physical directory while its ownership is known. External removal
+        // must not let a new directory reuse this retained coordinator's dev+ino.
+        coordinator = { rootHandle: candidateRoot, providers: 0, slots: new Map(), generations: new Map(), generationBytes: 0 }; coordinators.set(rootKey, coordinator);
+        candidateRoot = undefined;
+      }
     }
-  }
-  if ([...coordinator.slots.values()].some(slot => slot.retained)) throw failure("SYNC_PROCESS_UNCOLLECTED");
-  const state = coordinator; state.providers++;
+    if ([...coordinator.slots.values()].some(slot => slot.retained)) throw failure("SYNC_PROCESS_UNCOLLECTED");
+    state = coordinator; state.providers++;
+  } finally { await candidateRoot?.close(); }
   const maxConcurrency = options.maxConcurrency ?? 4, maxProjectConcurrency = options.maxProjectConcurrency ?? 1;
   const maxTrackedSources = options.maxTrackedSources ?? 4096, maxGenerationBytes = options.maxGenerationBytes ?? 2 * 1048576;
   const cache = new Map<string, { entry: SourceCacheEntry; bytes: number }>(); let cacheBytes = 0;
@@ -168,7 +176,7 @@ export async function createRuntimeSourceHost(options: RuntimeSourceOptions) {
       for (const slot of state.slots.values()) if (slot.provider === provider) slot.controller.abort();
       if (!closed) { closed = true; state.providers--; }
       if ([...state.slots.values()].some(slot => slot.provider === provider)) throw failure("SYNC_PROCESS_UNCOLLECTED");
-      if (!state.providers && !state.slots.size && coordinators.get(rootKey) === state) coordinators.delete(rootKey);
+      if (!state.providers && !state.slots.size && coordinators.get(rootKey) === state) { coordinators.delete(rootKey); await state.rootHandle.close(); }
       cache.clear(); cacheBytes = 0;
     }, async readSource(payload: SyncReadPayload, signal?: AbortSignal): Promise<SyncReadOutput> {
     if (payload.context.sourceRevision !== payload.input.source.revision) throw failure("SYNC_CONTEXT_STALE");
