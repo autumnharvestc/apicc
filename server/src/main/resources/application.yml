@@ -61,6 +61,11 @@ apicc:
   # RPC max-wire-bytes remains the collaboration runtime's authoritative wire limit.
   sync:
     envelope-reserve-bytes: 1048576
+    # Internal per-check DB ownership. Lease must cover at least three monitor intervals.
+    check-worker:
+      monitor-interval-ms: 250
+      lease-ms: 10000
+      recovery-batch-size: 25
     # Optional ceilings use the exact SyncPolicy field names; never supplied by clients.
     # Example: ceilings: { maxNormalizeDepth: 64, maxNormalizeNodes: 50000 }
     ceilings: {}

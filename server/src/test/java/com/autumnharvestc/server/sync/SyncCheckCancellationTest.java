@@ -10,6 +10,17 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 class SyncCheckCancellationTest extends SyncCheckHttpFixture {
     @org.springframework.beans.factory.annotation.Autowired SyncCheckWorker worker;
+    @Test void independentHttpTestContextsCannotSeeEachOthersSynchronizationSources() throws Exception {
+        var source=createUrlSource("/fast");
+        var peerContext=new org.springframework.test.context.TestContextManager(SyncOperationReceiptsTest.class).getTestContext().getApplicationContext();
+        var peerJdbc=peerContext.getBean(org.springframework.jdbc.core.JdbcTemplate.class);
+        try(var currentConnection=jdbc.getDataSource().getConnection();var peerConnection=peerJdbc.getDataSource().getConnection()){
+            System.out.println("T9_CONTEXT_ISOLATION current="+currentConnection.getMetaData().getURL()+" peer="+peerConnection.getMetaData().getURL()+" sameWorker="+(worker==peerContext.getBean(SyncCheckWorker.class)));
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM sync_sources WHERE workspace_id=? AND project_id=? AND id=?",Integer.class,Long.parseLong(f.workspace()),Long.parseLong(f.project()),source.path("id").asText())).isEqualTo(1);
+        assertThat(peerJdbc.queryForObject("SELECT COUNT(*) FROM sync_sources WHERE workspace_id=? AND project_id=? AND id=?",Integer.class,Long.parseLong(f.workspace()),Long.parseLong(f.project()),source.path("id").asText()))
+            .as("An independently cached HTTP context must not see another context's synchronization queue scope").isZero();
+    }
     @ParameterizedTest @ValueSource(strings={"foreign-actor","foreign-scope","deny","source-edited"})
     void cancellationKeepsCurrentAuthorityScopeAndStableCheckIdentity(String variant) throws Exception {
         checkToCandidate(createUrlSource("/fast"));String barrier=UUID.randomUUID().toString();var source=createUrlSource("/blocked/"+barrier);var actor=variant.equals("foreign-actor")?f.owner():editor();var accepted=body(sourceRequest("POST","/sources/"+source.path("id").asText()+"/checks",actor,checkBody()).andExpect(status().isAccepted()));String id=accepted.path("checkId").asText();awaitNode("received-"+barrier);
@@ -33,12 +44,12 @@ class SyncCheckCancellationTest extends SyncCheckHttpFixture {
     @Test void cancelBodyIsStrictOnAnOtherwiseLegalCompletedCheck() throws Exception {
         var source=createUrlSource("/fast");var accepted=submit(source,checkBody());assertThat(awaitCheck(accepted.path("checkId").asText()).path("state").asText()).isEqualTo("succeeded");sourceRequest("POST","/checks/"+accepted.path("checkId").asText()+"/cancel",editor(),json.createObjectNode().put("url","not-a-field")).andExpect(status().isBadRequest());
     }
-    @Test void freshBackendStartupRetainsUnknownNodeOwnershipAndFencesTheOldWorker() throws Exception {
+    @Test void freshBackendStartupPreservesLiveNodeOwnershipAndItsExistingWorker() throws Exception {
         checkToCandidate(createUrlSource("/fast"));String barrier=UUID.randomUUID().toString();var source=createUrlSource("/blocked/"+barrier);var first=submit(source,checkBody());awaitNode("received-"+barrier);int starts=sourceHostCalls();
         var settings=new java.util.LinkedHashMap<String,Object>();settings.put("spring.datasource.url",DATABASE_URL);settings.put("server.port",0);settings.put("apicc.server.allow-registration",true);settings.put("apicc.collaboration.runtime.enabled",true);settings.put("apicc.collaboration.runtime.base-url",node.info.path("url").asText());settings.put("apicc.collaboration.runtime.secret-file",node.info.path("secretFile").asText());settings.put("apicc.execution.materials.master-key-file",key.toString());
         try(var restarted=new org.springframework.boot.builder.SpringApplicationBuilder(com.autumnharvestc.server.ApiccServerApplication.class).run(settings.entrySet().stream().map(entry->"--"+entry.getKey()+"="+entry.getValue()).toArray(String[]::new))){
-            int port=((org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext)restarted).getWebServer().getPort();var response=java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+port+f.projectUrl()+"/sync/checks/"+first.path("checkId").asText())).header("Authorization","Bearer "+editor().token()).GET().build(),java.net.http.HttpResponse.BodyHandlers.ofString());assertThat(response.statusCode()).isEqualTo(200);var recovered=json.readTree(response.body());assertThat(recovered.path("state").asText()).isEqualTo("lost");assertThat(recovered.path("reasonCode").asText()).isEqualTo("server-restarted");assertThat(sourceHostCalls()).isEqualTo(starts);
-            var second=submit(source,checkBody());assertThat(awaitWaitingOrTerminal(second.path("checkId").asText()).path("state").asText()).isEqualTo("waiting");release(barrier);awaitNode("collected-"+barrier);awaitStarts(starts+1);release(barrier);assertThat(awaitCheck(second.path("checkId").asText()).path("state").asText()).isEqualTo("succeeded");assertThat(awaitCheck(first.path("checkId").asText()).path("candidateId").isNull()).isTrue();
+            int port=((org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext)restarted).getWebServer().getPort();var response=java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+port+f.projectUrl()+"/sync/checks/"+first.path("checkId").asText())).header("Authorization","Bearer "+editor().token()).GET().build(),java.net.http.HttpResponse.BodyHandlers.ofString());assertThat(response.statusCode()).isEqualTo(200);var current=json.readTree(response.body());assertThat(current.path("state").asText()).isEqualTo("running");assertThat(current.path("reasonCode").isNull()).isTrue();assertThat(sourceHostCalls()).isEqualTo(starts);
+            var second=submit(source,checkBody());assertThat(awaitWaitingOrTerminal(second.path("checkId").asText()).path("state").asText()).isEqualTo("waiting");release(barrier);awaitNode("collected-"+barrier);awaitStarts(starts+1);release(barrier);assertThat(awaitCheck(second.path("checkId").asText()).path("state").asText()).isEqualTo("succeeded");assertThat(awaitCheck(first.path("checkId").asText()).path("state").asText()).isEqualTo("succeeded");assertThat(awaitCheck(first.path("checkId").asText()).path("candidateId").isTextual()).isTrue();
         }finally{release(barrier);}
     }
     @Test void cancellingAnActualReadCollectsItsSocketBeforeTheNextReadSucceeds() throws Exception {

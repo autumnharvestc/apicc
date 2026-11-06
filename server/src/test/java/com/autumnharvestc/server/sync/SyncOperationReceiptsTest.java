@@ -1,12 +1,26 @@
 package com.autumnharvestc.server.sync;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.MapPropertySource;
 import static org.assertj.core.api.Assertions.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Import(SyncOperationReceiptsTest.ReceiptDatabaseConfiguration.class)
 class SyncOperationReceiptsTest extends SyncApplicationHttpFixture {
+    @TestConfiguration(proxyBeanMethods=false) static class ReceiptDatabaseConfiguration {
+        // The random-port context has its own workers and must not consume the mock context's queue.
+        // Apply before web-server refresh can initialize the authentication filter's DataSource.
+        @Bean static BeanFactoryPostProcessor receiptDatabase(ConfigurableEnvironment environment){
+            return beans->environment.getPropertySources().addFirst(new MapPropertySource("receipt-test-database",java.util.Map.of("spring.datasource.url","jdbc:h2:mem:apicc-sync-operation-receipts;DB_CLOSE_DELAY=-1")));
+        }
+    }
     @LocalServerPort int port;
     @Test void sameIntentReplaysExactlyOnceAndDifferentActorBodyCannotReuseIt() throws Exception {
         var request=application(checkToCandidate(createUrlSource("/fast")));var first=body(sourceRequest("POST","/applications",editor(),request).andExpect(status().isOk()));assertThat(body(sourceRequest("POST","/applications",editor(),request).andExpect(status().isOk()))).isEqualTo(first);assertThat(applicationMutationCount(request.path("intentId").asText())).isEqualTo(1);

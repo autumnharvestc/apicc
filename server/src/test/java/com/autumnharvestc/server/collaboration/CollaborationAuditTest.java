@@ -69,6 +69,54 @@ class CollaborationAuditTest extends SharedMockFixture {
         try{var response=call(grant,"/items/item-8");assertThat(response.statusCode()).isEqualTo(200);assertThat(response.body()).isEqualTo("{\"id\":\"item-7\"}");waitFor(()->AuditFault.attempts.get()>0);var logs=body(mvc.perform(get(logs(f,publication)).header("Authorization","Bearer "+f.owner().token())).andExpect(status().isOk()));assertThat(logs.path("state").asText()).isEqualTo("observations-missing");assertThat(logs.path("integrityLabel").asText()).contains("观测缺失");}finally{jdbc.execute("DROP TRIGGER t8_mock_log_fault");}
     }
     public static class AuditFault implements org.h2.api.Trigger {static final java.util.concurrent.atomic.AtomicInteger attempts=new java.util.concurrent.atomic.AtomicInteger();@Override public void fire(java.sql.Connection connection,Object[] before,Object[] after)throws java.sql.SQLException{attempts.incrementAndGet();throw new java.sql.SQLException("Synthetic finite log storage failure");}}
+    public static class HeldMockLog implements org.h2.api.Trigger {
+        static volatile java.util.concurrent.CountDownLatch entered=new java.util.concurrent.CountDownLatch(0),release=new java.util.concurrent.CountDownLatch(0);
+        @Override public void fire(java.sql.Connection connection,Object[] before,Object[] after)throws java.sql.SQLException {
+            entered.countDown();
+            try{if(!release.await(10,java.util.concurrent.TimeUnit.SECONDS))throw new java.sql.SQLException("Synthetic Mock retention barrier timed out");}
+            catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new java.sql.SQLException("Synthetic Mock retention barrier interrupted",interrupted);}
+        }
+    }
+    @Override java.net.http.HttpResponse<String> call(com.fasterxml.jackson.databind.JsonNode grant,String target)throws Exception {
+        return observedCall(grant,target,()->{});
+    }
+    java.net.http.HttpResponse<String> observedCall(com.fasterxml.jackson.databind.JsonNode grant,String target,Runnable bodyReceived)throws Exception {
+        String marker=UUID.randomUUID().toString();
+        var response=http.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(grant.path("baseUrl").asText()+target))
+            .timeout(java.time.Duration.ofSeconds(4)).header("X-Apicc-Mock-Key",grant.path("key").asText())
+            .header("X-Business","present").header("X-Apicc-Test-Mock",marker).GET().build(),java.net.http.HttpResponse.BodyHandlers.ofString());
+        bodyReceived.run();
+        // The response body precedes the gateway's finite log transaction and admission close.
+        // Collect this request, including failed/disabled retention, without waiting for unrelated calls.
+        Object field=org.springframework.test.util.ReflectionTestUtils.getField(listener,"active");
+        assertThat(field).isInstanceOf(Set.class);var active=(Set<?>)field;
+        java.util.function.BooleanSupplier pending=()->active.stream().map(com.sun.net.httpserver.HttpExchange.class::cast)
+            .anyMatch(exchange->marker.equals(exchange.getRequestHeaders().getFirst("X-Apicc-Test-Mock")));
+        long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while(pending.getAsBoolean()&&System.nanoTime()<deadline)Thread.sleep(10);
+        assertThat(pending.getAsBoolean()).as("Mock server handler collected its finite log and admission").isFalse();
+        return response;
+    }
+    @Test void realMockCallFixtureWaitsForServerRetentionAfterBodyArrives()throws Exception {
+        var f=fixture();var publication=mock(f);var grant=grant(f,publication);
+        HeldMockLog.entered=new java.util.concurrent.CountDownLatch(1);HeldMockLog.release=new java.util.concurrent.CountDownLatch(1);
+        var bodyReceived=new java.util.concurrent.CountDownLatch(1);
+        jdbc.execute("CREATE TRIGGER held_mock_log BEFORE INSERT ON collaboration_mock_logs FOR EACH ROW CALL '"+HeldMockLog.class.getName()+"'");
+        try(var workers=java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()){
+            var pending=workers.submit(()->observedCall(grant,"/items/item-7",bodyReceived::countDown));
+            try{
+                assertThat(HeldMockLog.entered.await(5,java.util.concurrent.TimeUnit.SECONDS)).as("real server Mock log reached its SQL insert").isTrue();
+                assertThat(bodyReceived.await(5,java.util.concurrent.TimeUnit.SECONDS)).as("real client received the complete response body").isTrue();
+                assertThat(logCount(f)).as("held real log insert has not committed").isZero();
+                org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.TimeoutException.class,()->pending.get(200,java.util.concurrent.TimeUnit.MILLISECONDS));
+            }finally{
+                HeldMockLog.release.countDown();
+                assertThat(pending.get(5,java.util.concurrent.TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+                assertThat(logCount(f)).isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM collaboration_storage_objects WHERE workspace_id=? AND project_id=? AND kind='LOG'",Long.class,Long.parseLong(f.workspace()),Long.parseLong(f.project()))).isEqualTo(1);
+            }
+        }finally{HeldMockLog.release.countDown();jdbc.execute("DROP TRIGGER held_mock_log");}
+    }
     @Test void successfulRealHitHasOnlyChargedFiniteMetadataAndBoundedRetention()throws Exception {
         var f=fixture();var publication=mock(f);var grant=grant(f,publication);policy(f,false,Map.of("mockLogMaxEntries",1));
         assertThat(call(grant,"/items/item-7?q=synthetic-query-secret").statusCode()).isEqualTo(200);

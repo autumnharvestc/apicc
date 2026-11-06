@@ -284,10 +284,16 @@ describe('collaboration readable policy table',()=>{
     await wrapper.get('[data-testid=capability-save]').trigger('click');await flushPromises();
     expect(calls.filter(c=>c.method==='PUT').map(c=>({path:c.path,body:c.body}))).toEqual([{path:'/api/v1/workspaces/1/projects/2/access-policy',body:{expectedRevision:3,defaults:{'history.publish':'allow'}}}]);
   });
-  it('renders finite capability meanings, local default, current effective source and role floor',async()=>{
-    const {wrapper}=await harness();expect(wrapper.findAll('[data-testid^=capability-]').length).toBeGreaterThan(9);
-    expect.soft(wrapper.text()).toContain('历史发布');expect.soft(wrapper.text()).toContain('角色下限');expect.soft(wrapper.text()).toContain('拒绝');expect.soft(wrapper.text()).toContain('内置角色');
-    expect.soft(wrapper.text()).toContain('权限原因');expect(wrapper.text()).toContain('EDITOR');
+  it.each([
+    ['zh-CN',['协作权限点','本层覆盖','生效值','来源','角色下限','权限原因','待保存修改'],['历史发布','拒绝','允许','内置角色','编辑者','内置角色'],['历史读取','继承','允许','内置角色','只读成员','内置角色']],
+    ['en',['Collaboration capability','Local override','Effective','Source','Role floor','Permission reason','Unsaved changes'],['Publish history','Deny','Allow','Built-in role','Editor','Built-in role'],['Read history','Inherit','Allow','Built-in role','Viewer','Built-in role']],
+  ] as const)('renders finite capability meanings, local default, current effective source and role floor in %s',async(locale,headers,publish,read)=>{
+    const {wrapper}=await harness(undefined,locale);const table=wrapper.get('.access-table table');
+    // This controlled fixture supplies nine capabilities; count rows, not draft controls.
+    expect(table.findAll('tbody tr')).toHaveLength(9);
+    expect.soft(table.findAll('thead th').map(cell=>cell.text())).toEqual(headers);
+    expect.soft(table.get('[data-testid="capability-history.publish"]').findAll('th,td').slice(0,6).map(cell=>cell.text())).toEqual(publish);
+    expect(table.get('[data-testid="capability-history.read"]').findAll('th,td').slice(0,6).map(cell=>cell.text())).toEqual(read);
   });
   it.each(['','9007199254740992'])('does not turn invalid numeric draft %s into an inheritance command',async(raw)=>{
     const {wrapper,calls}=await harness();expect(wrapper.findAll('[data-testid^=collaboration-setting-]')).toHaveLength(5);

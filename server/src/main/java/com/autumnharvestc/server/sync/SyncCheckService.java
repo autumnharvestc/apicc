@@ -19,8 +19,10 @@ public class SyncCheckService {
     private final AgentService agents;private final AccessRepo authority;private final ProjectAssetsService assets;
     private final UserRepo users;private final ObjectMapper json;private final RuntimeProtocol protocol;
     private final TransactionTemplate tx;private final SyncCheckWorker worker;private final SyncDtos dtos;private final SyncCheckMaterials materialService;
+    private final com.autumnharvestc.server.execution.scheduling.DatabaseScheduleTimeSource time;
+    private final SyncCheckProperties ownership;
     @org.springframework.beans.factory.annotation.Autowired private org.springframework.beans.factory.ObjectProvider<SyncScheduleService> schedules;
-    public SyncCheckService(SyncRepo repo,SyncSourceService sources,SyncPolicyService policies,AgentService agents,AccessRepo authority,ProjectAssetsService assets,UserRepo users,ObjectMapper json,RuntimeProtocol protocol,PlatformTransactionManager transactions,SyncCheckWorker worker,SyncDtos dtos,SyncCheckMaterials materialService,SyncStorage accounting){this.accounting=accounting;this.repo=repo;this.sources=sources;this.policies=policies;this.agents=agents;this.authority=authority;this.assets=assets;this.users=users;this.json=json;this.protocol=protocol;this.tx=new TransactionTemplate(transactions);this.worker=worker;this.dtos=dtos;this.materialService=materialService;}
+    public SyncCheckService(SyncRepo repo,SyncSourceService sources,SyncPolicyService policies,AgentService agents,AccessRepo authority,ProjectAssetsService assets,UserRepo users,ObjectMapper json,RuntimeProtocol protocol,PlatformTransactionManager transactions,SyncCheckWorker worker,SyncDtos dtos,SyncCheckMaterials materialService,SyncStorage accounting,com.autumnharvestc.server.execution.scheduling.DatabaseScheduleTimeSource time,SyncCheckProperties ownership){this.accounting=accounting;this.repo=repo;this.sources=sources;this.policies=policies;this.authority=authority;this.agents=agents;this.assets=assets;this.users=users;this.json=json;this.protocol=protocol;this.tx=new TransactionTemplate(transactions);this.worker=worker;this.dtos=dtos;this.materialService=materialService;this.time=time;this.ownership=ownership;}
     private record Started(JsonNode response,boolean execute) {}
     public JsonNode start(UserAccount actor,String ws,String project,String sourceId,JsonNode input){
         String id=UUID.randomUUID().toString();
@@ -47,16 +49,16 @@ public class SyncCheckService {
             if(check.actor()!=actor.id())agents.requireProject(actor,ws,project,true);
             if(!terminal(check.state())){var details=(ObjectNode)check.details().deepCopy();boolean notStarted=Set.of("queued","waiting").contains(check.state());String state=notStarted?"cancelled":"cancelling";details.put("reasonCode",notStarted?"cancelled":"cancel-requested");details.remove("snapshot");if(notStarted){details.remove("snapshot");details.put("completedAtMs",System.currentTimeMillis());}repo.updateCheck(Long.parseLong(ws),Long.parseLong(project),id,state,details);return view(new SyncRepo.Check(check.id(),check.source(),check.actor(),state,details,check.createdAt()));}return view(check);
         });
-        if(response.path("state").asText().equals("cancelling")&&!worker.cancel(ws,project,id))finish(ws,project,id,"runtime-uncertain",true,null);return response;
+        if(response.path("state").asText().equals("cancelling"))worker.cancel(ws,project,id);return response;
     }
     public record Snapshot(long ws,long project,String checkId,long actor,JsonNode source,JsonNode effective,JsonNode readPayload,JsonNode planPayload,long deadlineAtMs,String manifestHash,Map<String,com.autumnharvestc.server.execution.ExecutionDtos.CredentialSelection> materials) {}
     static final class Invalidated extends RuntimeException {final String reason;Invalidated(String reason){super(reason);this.reason=reason;}}
-    Snapshot prepare(String ws,String project,String id){return tx.execute(status->{
-        long w=Long.parseLong(ws),p=Long.parseLong(project);accounting.lock(w,p);authority.lockGate();repo.lockWorkspace(w);var check=repo.check(w,p,id).orElseThrow(()->SyncRepo.missing("sync_check_not_found"));
+    Snapshot prepare(SyncRepo.Dispatch claim){return tx.execute(status->{
+        String ws=claim.workspace(),project=claim.project(),id=claim.check();long w=Long.parseLong(ws),p=Long.parseLong(project);accounting.globalGate();authority.lockGate();requireOwnership(claim,false);accounting.lock(w,p);repo.lockWorkspace(w);requireOwnership(claim,true);var check=repo.check(w,p,id).orElseThrow(()->SyncRepo.missing("sync_check_not_found"));
         if(check.state().equals("cancelling"))throw new Invalidated("cancelled");
         if(terminal(check.state()))throw new Invalidated("runtime-uncertain");
         schedules.getObject().requireCheckCurrent(w,p,check);
-        if(check.details().has("snapshot")){var fixed=json.convertValue(check.details().path("snapshot"),Snapshot.class);requireCurrent(fixed);return fixed;}
+        if(check.details().has("snapshot")){var fixed=json.convertValue(check.details().path("snapshot"),Snapshot.class);requireCurrent(fixed,claim);return fixed;}
         var actor=users.findById(check.actor()).orElseThrow(SyncDtos::denied);agents.requireCapability(actor,ws,project,Capability.SYNC_CHECK);
         var state=repo.sourceState(w,p,check.source());var source=state.source();var effective=policies.requireEffective(w,p);var policy=effective.path("policy");var current=assets.get(actor,ws,project);
         var selected=materialService.capture(w,p,source,effective.path("deploymentLimits").path("maxWireBytes").asLong()-effective.path("deploymentLimits").path("envelopeReserveBytes").asLong());
@@ -74,8 +76,8 @@ public class SyncCheckService {
         var compareBudget=json.createObjectNode();for(String field:List.of("maxSourceBytes","maxCompareInputBytes","maxCompareOutputBytes","maxNormalizeDepth","maxNormalizeNodes"))compareBudget.set(field,policy.path(field));plan.set("budget",compareBudget);
         var snapshot=new Snapshot(w,p,id,check.actor(),source,effective,read,plan,deadline,current.manifestHash(),selected);var details=(ObjectNode)check.details().deepCopy();details.set("snapshot",json.valueToTree(snapshot));repo.updateCheck(w,p,id,"running",details);return snapshot;
     });}
-    private SyncRepo.Check requireCurrent(Snapshot snapshot){
-        accounting.lock(snapshot.ws(),snapshot.project());authority.lockGate();repo.lockWorkspace(snapshot.ws());String ws=String.valueOf(snapshot.ws()),project=String.valueOf(snapshot.project());
+    private SyncRepo.Check requireCurrent(Snapshot snapshot,SyncRepo.Dispatch claim){
+        accounting.globalGate();authority.lockGate();requireOwnership(claim,false);accounting.lock(snapshot.ws(),snapshot.project());repo.lockWorkspace(snapshot.ws());requireOwnership(claim,true);String ws=String.valueOf(snapshot.ws()),project=String.valueOf(snapshot.project());
         var check=repo.check(snapshot.ws(),snapshot.project(),snapshot.checkId()).orElseThrow(()->SyncRepo.missing("sync_check_not_found"));
         if(check.state().equals("cancelling")||check.state().equals("cancelled"))throw new Invalidated("cancelled");
         if(terminal(check.state()))throw new Invalidated("runtime-uncertain");
@@ -92,16 +94,38 @@ public class SyncCheckService {
         if(!RuntimeProtocol.digestJson(policies.requireEffective(snapshot.ws(),snapshot.project())).equals(RuntimeProtocol.digestJson(snapshot.effective())))throw new Invalidated("policy-changed");
         return check;
     }
-    void validate(Snapshot snapshot){tx.executeWithoutResult(status->requireCurrent(snapshot));}
-    void waiting(Snapshot snapshot){tx.executeWithoutResult(status->{var check=requireCurrent(snapshot);var details=(ObjectNode)check.details().deepCopy();details.put("reasonCode","source-busy");repo.updateCheck(snapshot.ws(),snapshot.project(),snapshot.checkId(),"waiting",details);repo.defer(snapshot.ws(),snapshot.project(),snapshot.checkId());});}
-    void complete(Snapshot snapshot,JsonNode output){tx.executeWithoutResult(status->{
-        var check=requireCurrent(snapshot);
+    void validate(Snapshot snapshot,SyncRepo.Dispatch claim){tx.executeWithoutResult(status->requireCurrent(snapshot,claim));}
+    void waiting(Snapshot snapshot,SyncRepo.Dispatch claim){tx.executeWithoutResult(status->{var check=requireCurrent(snapshot,claim);var details=(ObjectNode)check.details().deepCopy();details.put("reasonCode","source-busy");details.remove("snapshot");repo.updateCheck(snapshot.ws(),snapshot.project(),snapshot.checkId(),"waiting",details);repo.defer(snapshot.ws(),snapshot.project(),snapshot.checkId());});}
+    void complete(Snapshot snapshot,JsonNode output,SyncRepo.Dispatch claim){tx.executeWithoutResult(status->{
+        var check=requireCurrent(snapshot,claim);
         repo.candidate(snapshot.ws(),snapshot.project(),check.source(),output,System.currentTimeMillis()+snapshot.effective().path("policy").path("candidateTtlMs").asLong());
         var details=(ObjectNode)check.details().deepCopy();details.remove("snapshot");details.put("candidateId",output.path("candidate").path("id").asText());details.putNull("reasonCode");details.put("completedAtMs",System.currentTimeMillis());repo.updateCheck(snapshot.ws(),snapshot.project(),snapshot.checkId(),"succeeded",details);
     });}
     static boolean terminal(String state){return Set.of("succeeded","failed","cancelled","lost").contains(state);}
-    void finish(String ws,String project,String id,String reason,boolean uncertain,String detail){tx.executeWithoutResult(status->{accounting.lock(Long.parseLong(ws),Long.parseLong(project));authority.lockGate();repo.check(Long.parseLong(ws),Long.parseLong(project),id).ifPresent(check->{if(terminal(check.state()))return;var details=(ObjectNode)check.details().deepCopy();details.remove("snapshot");boolean cancelled=check.state().equals("cancelling")||reason.equals("cancelled");String terminalReason=cancelled?"cancelled":reason;details.put("reasonCode",terminalReason);details.put("detailCode",detail);details.put("completedAtMs",System.currentTimeMillis());repo.updateCheck(Long.parseLong(ws),Long.parseLong(project),id,cancelled?"cancelled":uncertain?"lost":"failed",details);schedules.getObject().pauseAfterFailure(Long.parseLong(ws),Long.parseLong(project),check,terminalReason);});});}
-    Optional<SyncRepo.Dispatch> claim(){return tx.execute(status->{accounting.globalGate();authority.lockGate();return repo.claim();});}
-    void recover(){tx.executeWithoutResult(status->{accounting.globalGate();authority.lockGate();repo.recoverActive();});}
+    void finish(SyncRepo.Dispatch claim,String reason,boolean uncertain,String detail){tx.executeWithoutResult(status->{
+        long w=Long.parseLong(claim.workspace()),p=Long.parseLong(claim.project());accounting.globalGate();authority.lockGate();var current=repo.ownership(w,p,claim.check());if(current.isEmpty()||!owns(current.get(),claim,time.now()))return;
+        accounting.lock(w,p);repo.lockWorkspace(w);var locked=repo.ownership(w,p,claim.check(),true);if(locked.isEmpty()||!owns(locked.get(),claim,time.now()))return;repo.check(w,p,claim.check()).ifPresent(check->{if(terminal(check.state()))return;var details=(ObjectNode)check.details().deepCopy();details.remove("snapshot");boolean cancelled=check.state().equals("cancelling")||reason.equals("cancelled");String terminalReason=cancelled?"cancelled":reason;details.put("reasonCode",terminalReason);details.put("detailCode",detail);details.put("completedAtMs",time.now().toEpochMilli());repo.updateCheck(w,p,claim.check(),cancelled?"cancelled":uncertain?"lost":"failed",details);schedules.getObject().pauseAfterFailure(w,p,check,terminalReason);});
+    });}
+    Optional<SyncRepo.Dispatch> claim(){return tx.execute(status->{accounting.globalGate();authority.lockGate();return repo.claim(worker.ownerId(),ownership.getLeaseMs());});}
+    enum Observation { RUNNING,CANCELLING,LOST }
+    private boolean owns(SyncRepo.Ownership row,SyncRepo.Dispatch claim,java.time.Instant now){return claim.owner()!=null&&claim.token()!=null&&claim.owner().equals(row.owner())&&claim.token().equals(row.token())&&row.until()!=null&&now.isBefore(row.until());}
+    private void requireOwnership(SyncRepo.Dispatch claim,boolean lock){var current=repo.ownership(Long.parseLong(claim.workspace()),Long.parseLong(claim.project()),claim.check(),lock);if(current.isEmpty()||!owns(current.get(),claim,time.now()))throw new Invalidated("runtime-uncertain");if(current.get().state().equals("cancelling"))throw new Invalidated("cancelled");if(!current.get().state().equals("running"))throw new Invalidated("runtime-uncertain");}
+    private Observation observation(Optional<SyncRepo.Ownership> current,SyncRepo.Dispatch claim){if(current.isEmpty()||!owns(current.get(),claim,time.now()))return Observation.LOST;return current.get().state().equals("running")?Observation.RUNNING:current.get().state().equals("cancelling")?Observation.CANCELLING:Observation.LOST;}
+    Observation refreshOwnership(SyncRepo.Dispatch claim){
+        long w=Long.parseLong(claim.workspace()),p=Long.parseLong(claim.project());
+        // Missing/deleted scope is an immediate cancellation observation, with no policy/workspace lookup.
+        var seen=observation(repo.ownership(w,p,claim.check()),claim);if(seen!=Observation.RUNNING)return seen;
+        return tx.execute(status->{accounting.globalGate();authority.lockGate();var current=observation(repo.ownership(w,p,claim.check()),claim);if(current!=Observation.RUNNING)return current;accounting.lock(w,p);repo.lockWorkspace(w);current=observation(repo.ownership(w,p,claim.check(),true),claim);if(current!=Observation.RUNNING)return current;var now=time.now();return repo.renew(claim,now,now.plusMillis(ownership.getLeaseMs()))?Observation.RUNNING:Observation.LOST;});
+    }
+    void recover(){
+        for(var claim:repo.expiredOwnership(time.now(),ownership.getRecoveryBatchSize()))tx.executeWithoutResult(status->{
+            long w=Long.parseLong(claim.workspace()),p=Long.parseLong(claim.project());accounting.globalGate();authority.lockGate();var current=repo.ownership(w,p,claim.check());var now=time.now();
+            if(current.isEmpty()||!Set.of("running","cancelling").contains(current.get().state())||(current.get().until()!=null&&now.isBefore(current.get().until())))return;
+            accounting.lock(w,p);repo.lockWorkspace(w);current=repo.ownership(w,p,claim.check(),true);now=time.now();if(current.isEmpty()||!Set.of("running","cancelling").contains(current.get().state())||(current.get().until()!=null&&now.isBefore(current.get().until())))return;var check=repo.check(w,p,claim.check()).orElseThrow();
+            // A legacy row cannot prove that an older backend died. Preserve its original finite read horizon.
+            long horizon=check.details().path("deadlineAtMs").asLong();if(current.get().owner()==null&&horizon>now.toEpochMilli()){repo.legacyHorizon(w,p,check.id(),java.time.Instant.ofEpochMilli(horizon));return;}
+            var details=(ObjectNode)check.details().deepCopy();details.remove("snapshot");boolean cancelled=check.state().equals("cancelling");details.put("reasonCode",cancelled?"cancelled":"server-restarted");details.put("completedAtMs",now.toEpochMilli());repo.updateCheck(w,p,check.id(),cancelled?"cancelled":"lost",details);
+        });
+    }
     JsonNode resolveMaterials(Snapshot snapshot){return materialService.resolve(users.findById(snapshot.actor()).orElseThrow(SyncDtos::denied),snapshot);}
 }

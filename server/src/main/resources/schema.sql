@@ -546,7 +546,11 @@ CREATE TABLE IF NOT EXISTS sync_checks (
     PRIMARY KEY(workspace_id,project_id,id)
 );
 ALTER TABLE sync_checks ADD COLUMN IF NOT EXISTS admission_after TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE sync_checks ADD COLUMN IF NOT EXISTS owner_id VARCHAR(36);
+ALTER TABLE sync_checks ADD COLUMN IF NOT EXISTS ownership_token VARCHAR(36);
+ALTER TABLE sync_checks ADD COLUMN IF NOT EXISTS lease_until_utc TIMESTAMP(9) WITH TIME ZONE;
 CREATE INDEX IF NOT EXISTS sync_check_dispatch ON sync_checks(state,admission_after,created_at);
+CREATE INDEX IF NOT EXISTS sync_check_expired_ownership ON sync_checks(state,lease_until_utc);
 CREATE INDEX IF NOT EXISTS sync_check_source_status ON sync_checks(workspace_id,project_id,source_id,state,created_at);
 CREATE TABLE IF NOT EXISTS sync_candidates (
     workspace_id BIGINT NOT NULL,project_id BIGINT NOT NULL,id VARCHAR(36) NOT NULL,source_id VARCHAR(36) NOT NULL,

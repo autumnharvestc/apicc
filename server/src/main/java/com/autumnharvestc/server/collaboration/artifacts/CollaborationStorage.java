@@ -90,11 +90,12 @@ public class CollaborationStorage {
         for(String table:List.of("sync_sources","sync_checks","sync_candidates","sync_history","sync_operations","sync_policies","sync_occurrences")) {
             var total=jdbc.query("SELECT * FROM "+table+" WHERE workspace_id=? AND project_id=?",rs->{long bytes=0,rows=0;var columns=rs.getMetaData();while(rs.next()){rows++;for(int column=1;column<=columns.getColumnCount();column++){String value=rs.getString(column);if(value!=null)bytes=Math.addExact(bytes,value.getBytes(StandardCharsets.UTF_8).length);}}return new long[]{bytes,rows};},ws,project);body=Math.addExact(body,total[0]);counts.put(table,total[1]);
         }
-        long reserved=jdbc.query("SELECT state,admission_after,details_json FROM sync_checks WHERE workspace_id=? AND project_id=? AND state IN ('queued','running','waiting','cancelling')",rs->{
+        long reserved=jdbc.query("SELECT state,admission_after,details_json,owner_id,ownership_token,lease_until_utc FROM sync_checks WHERE workspace_id=? AND project_id=? AND state IN ('queued','running','waiting','cancelling')",rs->{
             long remaining=0;while(rs.next()){
                 com.fasterxml.jackson.databind.JsonNode details;try{details=json.readTree(rs.getString(3));}catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw new IllegalStateException("Invalid synchronization progress metadata",invalid);}
                 var footer=json.createObjectNode();for(String field:List.of("reasonCode","detailCode","completedAtMs","candidateId"))if(details.has(field))footer.set(field,details.get(field));
                 long consumed=(long)rs.getString(1).getBytes(StandardCharsets.UTF_8).length+rs.getString(2).getBytes(StandardCharsets.UTF_8).length+encode(footer).getBytes(StandardCharsets.UTF_8).length;
+                for(int column=4;column<=6;column++){String ownership=rs.getString(column);if(ownership!=null)consumed=Math.addExact(consumed,ownership.getBytes(StandardCharsets.UTF_8).length);}
                 remaining=Math.addExact(remaining,Math.max(0L,512-consumed));
             }return remaining;
         },ws,project);
@@ -105,7 +106,7 @@ public class CollaborationStorage {
         }return remaining;},ws,project));
         // A separate 256-byte grant progress frame covers only finite enabled/reason/UTC cursor fields.
         // Source/grant bodies, credential registrations and occurrences are fully charged, never credited here.
-        // The finite 512-byte progress frame includes state/admission time and bounded footer fields already charged above.
+        // The finite 512-byte progress frame includes state/admission time, UUID owner/token, lease time and bounded footer fields already charged above.
         // Only its unconsumed credit remains reserved. Request, snapshot and candidate content never consume this credit.
         String metadata=encode(Map.of("formatVersion",1,"accounting","sync-utf8-column-values-v1","workspaceId",ws,"projectId",project,"rows",counts));
         put(ws,project,Kind.SYNC_STATE,0,body,metadata,0,reserved);
