@@ -47,7 +47,13 @@ interface ReferenceIndex {
   byPointer: Map<string, string>;
 }
 
+export interface ContractImportIdentity {
+  readonly projectId: string;
+  allocate(kind: "module" | "api" | "model" | "component" | "parameter" | "response" | "example" | "schema-property", key: string, ownerId?: string, hints?: string[]): string;
+}
+
 interface ImportState {
+  identity?: ContractImportIdentity;
   projectId: string;
   diagnostics: ContractImportDiagnostic[];
   models: ModelAsset[];
@@ -70,16 +76,16 @@ const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head",
 const EMPTY_GLOBALS = { query: [], headers: [], cookies: [], body: [] };
 
 /** Import an OpenAPI 2.0 or 3.x document into the contract project model without fetching references or executing source content. */
-export function parseContractOpenapi(input: unknown): ContractImportResult {
+export function parseContractOpenapi(input: unknown, identity?: ContractImportIdentity): ContractImportResult {
   const root = asRecord(input);
   if (!root) throw new TypeError("An OpenAPI document object is required.");
 
   const openApi2 = typeof root.swagger === "string" && root.swagger.startsWith("2.");
   const info = asRecord(root.info) ?? {};
-  const projectId = randomUUID();
+  const projectId = identity?.projectId ?? randomUUID();
   const projectName = sanitizeNodeName(stringOr(info.title, "Imported OpenAPI"));
   const collection: ContractCollection = {
-    id: randomUUID(),
+    id: identity?.allocate("module", "/module") ?? randomUUID(),
     name: projectName,
     variables: {},
     preOperations: [],
@@ -94,15 +100,16 @@ export function parseContractOpenapi(input: unknown): ContractImportResult {
   const exampleSources = asRecord(components.examples) ?? {};
   const authSources = asRecord(openApi2 ? root.securityDefinitions : components.securitySchemes) ?? {};
   const state: ImportState = {
+    identity,
     projectId,
     diagnostics: [],
     models: [],
     components: [],
     modelIds: new Map(),
-    parameterRefs: indexReferences(parameterSources, openApi2 ? ["#/parameters/"] : ["#/components/parameters/"]),
-    authRefs: indexReferences(authSources, openApi2 ? ["#/securityDefinitions/"] : ["#/components/securitySchemes/"]),
-    responseRefs: indexReferences(responseSources, openApi2 ? ["#/responses/"] : ["#/components/responses/"]),
-    exampleRefs: indexReferences(exampleSources, ["#/components/examples/"]),
+    parameterRefs: indexReferences(parameterSources, openApi2 ? ["#/parameters/"] : ["#/components/parameters/"], identity, "parameter"),
+    authRefs: indexReferences(authSources, openApi2 ? ["#/securityDefinitions/"] : ["#/components/securitySchemes/"], identity, "auth"),
+    responseRefs: indexReferences(responseSources, openApi2 ? ["#/responses/"] : ["#/components/responses/"], identity, "response"),
+    exampleRefs: indexReferences(exampleSources, ["#/components/examples/"], identity, "example"),
     parameterById: new Map(),
     responseSources: new Map(),
     exampleSources: new Map(),
@@ -113,7 +120,7 @@ export function parseContractOpenapi(input: unknown): ContractImportResult {
   };
 
   const schemaPrefix = openApi2 ? "#/definitions/" : "#/components/schemas/";
-  for (const name of Object.keys(schemaSources)) state.modelIds.set(`${schemaPrefix}${escapePointer(name)}`, randomUUID());
+  for (const name of Object.keys(schemaSources)) state.modelIds.set(`${schemaPrefix}${escapePointer(name)}`, identity?.allocate("model", `/models/${escapePointer(name)}`) ?? randomUUID());
   importModels(schemaSources, state);
   importComponents(parameterSources, responseSources, exampleSources, authSources, state);
   importPaths(asRecord(root.paths) ?? {}, state);
@@ -421,7 +428,7 @@ function importPaths(paths: Record<string, unknown>, state: ImportState): void {
         addDiagnostic(state, "OPENAPI_OPERATION_UNSUPPORTED", state.projectId, `paths.${path}/${methodName}`, "The operation is not an object and was omitted.");
         continue;
       }
-      const contractId = randomUUID();
+      const contractId = state.identity?.allocate("api", `/apis/${method}/${escapePointer(path)}`, state.collection.id, typeof operation.operationId === "string" ? [`operationId:${operation.operationId}`] : []) ?? randomUUID();
       const parameters = mergeParameters(pathItem.parameters, operation.parameters);
       const importedParameters = importOperationParameters(parameters, `paths.${path}/${methodName}/parameters`, contractId, state);
       const requestServer = resolveServer(pathItem, operation, state.sourceRoot, contractId, state);
@@ -462,7 +469,7 @@ function importPaths(paths: Record<string, unknown>, state: ImportState): void {
         if (selectedAuth) {
           addDiagnostic(state, "AUTH_BINDING_CONFLICT", contractId, `${requestServer.userInfo.sourcePath}/userinfo`, "Server URL userinfo was omitted because another authentication binding is selected; choose the intended binding in the editor.");
         } else {
-          request.auth = { kind: "basic", username: requestServer.userInfo.usernameTemplate ?? "", password: newSecretRef() };
+          request.auth = { kind: "basic", username: requestServer.userInfo.usernameTemplate ?? "", password: newSecretRef(state, contractId, "/secret/server-password") };
         }
       }
       if (operation.callbacks !== undefined) addDiagnostic(state, "OPENAPI_CALLBACKS_UNSUPPORTED", contractId, `paths.${path}/${methodName}/callbacks`, "OpenAPI callbacks are not represented by the contract model.");
@@ -514,7 +521,7 @@ function importOperationParameters(values: unknown[], sourcePath: string, ownerI
     if (parameter.componentId) {
       output.bindings[location].push({
         kind: "componentRef",
-        id: randomUUID(),
+        id: childId(state, "parameter", ownerId, `/parameters/${escapePointer(location)}/${escapePointer(name)}`),
         componentId: parameter.componentId,
         expectedKind: "parameter",
         enabled: true,
@@ -522,7 +529,7 @@ function importOperationParameters(values: unknown[], sourcePath: string, ownerI
     } else {
       const binding: InlineParameter = {
         kind: "inline",
-        id: randomUUID(),
+        id: childId(state, "parameter", ownerId, `/parameters/${escapePointer(location)}/${escapePointer(name)}`),
         name,
         schema: mapParameterSchema(raw, name, parameter.sourcePath, ownerId, state),
         required: parameter.required ?? (parameterIn === "path"),
@@ -639,7 +646,7 @@ function makeFormBody(
       fields: fields.map((field) => {
         if (isCredentialFieldName(field.name)) addDiagnostic(state, "AUTH_VALUE_REMOVED", ownerId, `${sourcePath}/${field.name}`, "A common credential field value was left empty; fill it again in the local credential entry.");
         if (field.required) addDiagnostic(state, "FORM_REQUIRED_UNREPRESENTED", ownerId, `${sourcePath}/${field.name}/required`, "Required form field metadata is not represented by the request body model.");
-        return { id: randomUUID(), name: field.name, value: "", enabled: true };
+        return { id: childId(state, "parameter", ownerId, `/form/${escapePointer(field.name)}`), name: field.name, value: "", enabled: true };
       }),
     };
   }
@@ -648,11 +655,11 @@ function makeFormBody(
     entries: fields.map((field) => {
       if (field.schema.type === "file" || field.schema.format === "binary") {
         addDiagnostic(state, "REQUEST_FILE_NOT_BOUND", ownerId, `${sourcePath}/${field.name}`, "The imported file field has no local file binding and must be selected again.");
-        return { kind: "file" as const, id: randomUUID(), name: field.name, file: { path: "" }, enabled: true };
+        return { kind: "file" as const, id: childId(state, "parameter", ownerId, `/form/${escapePointer(field.name)}`), name: field.name, file: { path: "" }, enabled: true };
       }
       if (isCredentialFieldName(field.name)) addDiagnostic(state, "AUTH_VALUE_REMOVED", ownerId, `${sourcePath}/${field.name}`, "A common credential field value was left empty; fill it again in the local credential entry.");
       if (field.required) addDiagnostic(state, "FORM_REQUIRED_UNREPRESENTED", ownerId, `${sourcePath}/${field.name}/required`, "Required form field metadata is not represented by the request body model.");
-      return { kind: "text" as const, id: randomUUID(), name: field.name, value: "", enabled: true };
+      return { kind: "text" as const, id: childId(state, "parameter", ownerId, `/form/${escapePointer(field.name)}`), name: field.name, value: "", enabled: true };
     }),
   };
 }
@@ -662,18 +669,19 @@ function importOperationResponses(responses: Record<string, unknown>, ownerId: s
   for (const [statusValue, responseValue] of Object.entries(responses)) {
     const status = normalizeStatus(statusValue, ownerId, `${sourcePath}/${statusValue}`, state);
     const response = asRecord(responseValue) ?? {};
+    const responseId = childId(state, "response", ownerId, `/responses/${escapePointer(statusValue)}`);
     if (typeof response.$ref === "string") {
       const componentId = state.responseRefs.byPointer.get(response.$ref);
       if (componentId) {
         addDiagnostic(state, "RESPONSE_REFERENCE_STATUS_UNREPRESENTED", ownerId, `${sourcePath}/${statusValue}`, "Response references do not carry an operation status; the source status key is not represented on this binding.");
-        output.push({ kind: "componentRef", id: randomUUID(), componentId, expectedKind: "response" });
+        output.push({ kind: "componentRef", id: responseId, componentId, expectedKind: "response" });
       } else {
         addDiagnostic(state, response.$ref.startsWith("#/") ? "RESPONSE_REFERENCE_UNRESOLVED" : "RESPONSE_EXTERNAL_REFERENCE_UNSUPPORTED", ownerId, `${sourcePath}/${statusValue}/$ref`, "The response reference was not resolved or fetched.");
-        output.push({ kind: "inline", id: randomUUID(), ...emptyResponseDefinition(status, "") });
+        output.push({ kind: "inline", id: responseId, ...emptyResponseDefinition(status, "") });
       }
       continue;
     }
-    output.push({ kind: "inline", id: randomUUID(), ...mapResponseDefinition(responseValue, statusValue, `${sourcePath}/${statusValue}`, ownerId, status, state) });
+    output.push({ kind: "inline", id: responseId, ...mapResponseDefinition(responseValue, statusValue, `${sourcePath}/${statusValue}`, ownerId, status, state, responseId) });
   }
   return output;
 }
@@ -685,6 +693,7 @@ function mapResponseDefinition(
   ownerId: string,
   status: string,
   state: ImportState,
+  identityOwnerId = ownerId,
 ): ResponseDefinition {
   const source = asRecord(value) ?? {};
   if (typeof source.$ref === "string") addDiagnostic(state, "RESPONSE_COMPONENT_ALIAS_UNSUPPORTED", ownerId, `${sourcePath}/$ref`, "Response component aliases are not expanded.");
@@ -704,9 +713,9 @@ function mapResponseDefinition(
       const media = asRecord(mediaValue) ?? {};
       const item: ResponseContent = { examples: [] };
       if (media.schema !== undefined) item.schema = mapContractSchema(media.schema, schemaContext(state, ownerId, `${sourcePath}/content/${mediaType}/schema`));
-      item.examples = mapExamples(media.examples, `${sourcePath}/content/${mediaType}/examples`, ownerId, state);
+      item.examples = mapExamples(media.examples, `${sourcePath}/content/${mediaType}/examples`, ownerId, state, identityOwnerId, `/content/${escapePointer(mediaType)}/examples`);
       if (media.example !== undefined) {
-        const example = makeInlineExample("example", media.example, ownerId, `${sourcePath}/content/${mediaType}/example`, state);
+        const example = makeInlineExample("example", media.example, ownerId, `${sourcePath}/content/${mediaType}/example`, state, "example", identityOwnerId, `/content/${escapePointer(mediaType)}/example`);
         if (example) item.examples.push(example);
       }
       Object.defineProperty(content, mediaType, { value: item, enumerable: true, configurable: true, writable: true });
@@ -720,7 +729,7 @@ function mapResponseDefinition(
   if (state.openApi2 && source.examples !== undefined) {
     const examples = asRecord(source.examples) ?? {};
     for (const [mediaType, exampleValue] of Object.entries(examples)) {
-      const inline = makeInlineExample(mediaType, exampleValue, ownerId, `${sourcePath}/examples/${mediaType}`, state);
+      const inline = makeInlineExample(mediaType, exampleValue, ownerId, `${sourcePath}/examples/${mediaType}`, state, mediaType, identityOwnerId, `/examples/${escapePointer(mediaType)}`);
       const current = content[mediaType] ?? { examples: [] };
       if (inline) current.examples.push(inline);
       content[mediaType] = current;
@@ -735,7 +744,7 @@ function mapResponseDefinition(
   };
 }
 
-function mapExamples(value: unknown, sourcePath: string, ownerId: string, state: ImportState): ExampleBinding[] {
+function mapExamples(value: unknown, sourcePath: string, ownerId: string, state: ImportState, identityOwnerId: string, identityPrefix: string): ExampleBinding[] {
   const source = asRecord(value);
   if (!source) return [];
   const output: ExampleBinding[] = [];
@@ -743,11 +752,11 @@ function mapExamples(value: unknown, sourcePath: string, ownerId: string, state:
     const exampleRecord = asRecord(exampleValue) ?? {};
     if (typeof exampleRecord.$ref === "string") {
       const componentId = state.exampleRefs.byPointer.get(exampleRecord.$ref);
-      if (componentId) output.push({ kind: "componentRef", id: randomUUID(), componentId, expectedKind: "example" });
+      if (componentId) output.push({ kind: "componentRef", id: childId(state, "example", identityOwnerId, `${identityPrefix}/${escapePointer(name)}`), componentId, expectedKind: "example" });
       else addDiagnostic(state, exampleRecord.$ref.startsWith("#/") ? "EXAMPLE_REFERENCE_UNRESOLVED" : "EXAMPLE_EXTERNAL_REFERENCE_UNSUPPORTED", ownerId, `${sourcePath}/${name}/$ref`, "The example reference was not resolved or fetched.");
       continue;
     }
-    const inline = makeInlineExample(name, exampleRecord.value ?? exampleValue, ownerId, `${sourcePath}/${name}`, state, stringOr(exampleRecord.summary, name));
+    const inline = makeInlineExample(name, exampleRecord.value ?? exampleValue, ownerId, `${sourcePath}/${name}`, state, stringOr(exampleRecord.summary, name), identityOwnerId, `${identityPrefix}/${escapePointer(name)}`);
     if (inline) output.push(inline);
   }
   return output;
@@ -760,6 +769,8 @@ function makeInlineExample(
   sourcePath: string,
   state: ImportState,
   displayName = name,
+  identityOwnerId: string,
+  identityKey: string,
 ): InlineExampleBinding | undefined {
   const json = toJsonValue(value);
   if (json === undefined) {
@@ -768,20 +779,20 @@ function makeInlineExample(
   }
   const stripped = stripCredentialValues(json);
   for (const path of stripped.removedPaths) addDiagnostic(state, "AUTH_VALUE_REMOVED", ownerId, `${sourcePath}/${path}`, "A common credential field value was removed from the example.");
-  return { kind: "inline", id: randomUUID(), name: sanitizeNodeName(displayName), value: stripped.value };
+  return { kind: "inline", id: childId(state, "example", identityOwnerId, identityKey), name: sanitizeNodeName(displayName), value: stripped.value };
 }
 
 function mapAuthScheme(source: Record<string, unknown>, ownerId: string, sourcePath: string, state: ImportState): InlineAuthBinding {
   const type = stringOr(source.type, "");
   if (type === "http" && stringOr(source.scheme, "").toLowerCase() === "bearer") {
-    return { kind: "bearer", token: newSecretRef() };
+    return { kind: "bearer", token: newSecretRef(state, ownerId, "/secret/token") };
   }
   if (type === "http" && stringOr(source.scheme, "").toLowerCase() === "basic") {
-    return { kind: "basic", username: "", password: newSecretRef() };
+    return { kind: "basic", username: "", password: newSecretRef(state, ownerId, "/secret/password") };
   }
   if (type === "apiKey") {
     const placement = source.in === "query" ? "query" : source.in === "header" ? "header" : undefined;
-    if (placement) return { kind: "apikey", name: stringOr(source.name, "apiKey"), placement, value: newSecretRef() };
+    if (placement) return { kind: "apikey", name: stringOr(source.name, "apiKey"), placement, value: newSecretRef(state, ownerId, "/secret/value") };
     addDiagnostic(state, "AUTH_LOCATION_UNSUPPORTED", ownerId, `${sourcePath}/in`, "This authentication location is not represented by the auth binding model.");
   }
   addDiagnostic(state, "AUTH_SCHEME_UNSUPPORTED", ownerId, sourcePath, "This security scheme is represented by an unconfigured auth placeholder.");
@@ -921,11 +932,11 @@ function joinPath(prefix: string, path: string): string {
   return `${prefix.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
 }
 
-function indexReferences(sources: Record<string, unknown>, prefixes: string[]): ReferenceIndex {
+function indexReferences(sources: Record<string, unknown>, prefixes: string[], identity: ContractImportIdentity | undefined, kind: string): ReferenceIndex {
   const byName = new Map<string, string>();
   const byPointer = new Map<string, string>();
   for (const name of Object.keys(sources)) {
-    const id = randomUUID();
+    const id = identity?.allocate("component", `/components/${kind}/${escapePointer(name)}`) ?? randomUUID();
     byName.set(name, id);
     for (const prefix of prefixes) byPointer.set(`${prefix}${escapePointer(name)}`, id);
   }
@@ -1071,6 +1082,9 @@ function toJsonValue(value: unknown, ancestors = new Set<object>()): JsonValue |
   return output;
 }
 
-function newSecretRef(): SecretRef {
-  return { id: randomUUID(), policy: "test-auto" };
+function childId(state: ImportState, kind: "parameter" | "response" | "example" | "schema-property", ownerId: string, key: string): string {
+  return state.identity?.allocate(kind, key, ownerId) ?? randomUUID();
+}
+function newSecretRef(state: ImportState, ownerId: string, key: string): SecretRef {
+  return { id: childId(state, "schema-property", ownerId, key), policy: "test-auto" };
 }

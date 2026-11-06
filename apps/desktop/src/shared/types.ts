@@ -1,3 +1,4 @@
+import type { SynchronizationInput, SynchronizationResult } from './synchronization.js';
 import type {
   ApiAsset,
   ApiRequest,
@@ -532,6 +533,7 @@ export interface ApiccApi extends TestingApi {
   onlineGroupsList(workspaceId: string): Promise<OnlineGroup[]>;
   onlineExecution(input: OnlineExecutionInput): Promise<OnlineExecutionResult>;
   onlineCollaboration(input: CollaborationInput): Promise<CollaborationResult>;
+  synchronization(input: SynchronizationInput): Promise<SynchronizationResult>;
   onlineScheduling(input: OnlineSchedulingInput): Promise<OnlineSchedulingResult>;
   // —— AI 频道（M6-C 任务 1 登记 / 任务 2 真链路，规格 §2 D2/D4）——
   /** 保存 AI 配置：baseUrl/model 由渲染层 localStorage 持久化；apiKey 非空时经 main 入安全存储（省略/空串 = 保持既有）。 */

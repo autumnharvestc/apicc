@@ -312,6 +312,12 @@ export function createDesktopCredentialHost(session: Session, options: DesktopCr
   }
 
   return Object.assign(credentialHost, {
+    /** Main-only seam for synchronization: reuse the same lazy provider and
+     * original workspace/group/project network context. Never exposed over IPC. */
+    async sourceAccess(locator: ProjectLocator) {
+      const context = await networkHost(locator);
+      return { host: context.host, secretStore: getStore(), scope: context.host.scope.project };
+    },
     networkProfilesGet,
     networkProfilesSave,
     networkSecretImportFromFile,

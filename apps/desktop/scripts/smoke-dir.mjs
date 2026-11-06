@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { waitForRendererReady } from "./smoke-readiness.mjs";
+import { packagedSourceHostProbe } from './source-host-package-probe.mjs';
 
 const desktopDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -81,6 +82,12 @@ ok('实际包的协作 IPC/Core 纯子路径及独立 viewer 资源可加载');
 const temporaryRoot = mkdtempSync(join(tmpdir(), "apicc-smoke-dir-"));
 const privateRoots = ["profile", "workspace", "history", "credentials", "user-home"].map((name) => join(temporaryRoot, name));
 for (const root of privateRoots) mkdirSync(root, { recursive: true });
+const sourceHost = spawnSync(exePath, ['-e', packagedSourceHostProbe(resources, privateRoots[3])], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+if (sourceHost.status !== 0 || !sourceHost.stdout.includes('PACKAGED_SOURCE_HOST_READY')) {
+  console.error(`实际打包 source-host/helper 执行失败（exit ${sourceHost.status}）：${sourceHost.stdout}\n${sourceHost.stderr}`); process.exit(1);
+}
+console.log(sourceHost.stdout.trim());
+ok('实际包 source-host 物理 helper 已收集真实后代，缺工具诊断有限可读');
 const safeTempRoot = realpathSync(temporaryRoot);
 const systemTempRoot = realpathSync(tmpdir());
 if (dirname(safeTempRoot) !== systemTempRoot || !/^apicc-smoke-dir-[a-z0-9-]+$/i.test(safeTempRoot.slice(systemTempRoot.length + 1))) {

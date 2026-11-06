@@ -96,7 +96,6 @@ jobs:
   package-smoke:
     name: Windows 打包冒烟
     runs-on: windows-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - uses: actions/checkout@v5 # v5
       - uses: pnpm/action-setup@v4 # v4
@@ -144,4 +143,5 @@ jobs:
           path: |
             local/f7b-t11/apicc-runner-smoke-*.json
             local/f7f-acceptance/containers-*/containers.json
+            local/f7g-acceptance/containers-*/synchronization.json
           if-no-files-found: warn

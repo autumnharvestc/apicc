@@ -7,17 +7,25 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/ packages/
 COPY apps/ apps/
 COPY server/src/main/resources/collaboration-runtime-boundary.json server/src/main/resources/collaboration-runtime-boundary.json
+COPY server/src/main/resources/sync-input-boundary.json server/src/main/resources/sync-input-boundary.json
 RUN --mount=type=cache,id=apicc-pnpm11,target=/root/.local/share/pnpm/store pnpm --config.verify-deps-before-run=false --filter @apicc/collaboration-runtime... install --frozen-lockfile \
  && pnpm -C packages/plugin-sdk build \
  && pnpm -C packages/core build \
+ && pnpm -C packages/execution build \
+ && pnpm -C packages/execution check:java-sync-schema \
  && pnpm -C apps/collaboration-runtime build \
  && node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check
 
 FROM node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && git --version && ssh -V
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/core ./packages/core
 COPY --from=build /app/packages/plugin-sdk ./packages/plugin-sdk
+COPY --from=build /app/packages/execution ./packages/execution
 COPY --from=build /app/apps/collaboration-runtime ./apps/collaboration-runtime
 USER node
 ENV APICC_COLLABORATION_RUNTIME_ENABLED=true \

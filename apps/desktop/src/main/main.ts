@@ -177,11 +177,19 @@ app.whenReady().then(() => {
       oauthPrivateRoot: isolatedRoot ? join(isolatedRoot, "oauth") : defaultOAuthPrivateRoot(),
       openExternal: (url) => shell.openExternal(url),
     },
+    synchronization: {
+      privateRoot: join(isolatedRoot ?? app.getPath('userData'), 'synchronization'),
+      confirmDestination: async (origin, addresses, locale) => {
+        const result = await dialog.showMessageBox({ type: 'question', title: locale === 'en' ? 'Approve this sync connection' : '批准本次同步连接', message: origin, detail: `${locale === 'en' ? 'Only this host, port and addresses are approved for this check. Other origins are rejected.' : '本次仅批准此主机、端口与地址；跨来源重定向将拒绝。'}\n${addresses.join('\n')}`, buttons: locale === 'en' ? ['Cancel', 'Allow this check'] : ['取消', '仅本次允许'], defaultId: 0, cancelId: 0, noLink: true });
+        return result.response === 1;
+      },
+      pickTool: async (tool, locale) => { const result = await dialog.showOpenDialog({ title: locale === 'en' ? (tool === 'git' ? 'Select installed Git' : 'Select installed OpenSSH') : (tool === 'git' ? '选择已安装的 Git' : '选择已安装的 OpenSSH'), properties: ['openFile'] }); return result.canceled ? null : result.filePaths[0] ?? null; },
+    },
     debugHistory: () => isolatedRoot
       ? createDesktopDebugHistoryStore({ privateRoot: join(isolatedRoot, "history") })
       : createDesktopDebugHistoryStore({ appDataDirectory: app.getPath("appData") }),
   });
-  stopDesktopMocks = async () => { await Promise.allSettled([deps.stopMocks(), deps.stopOnlineExecutions()]); };
+  stopDesktopMocks = async () => { await Promise.allSettled([deps.stopMocks(), deps.stopOnlineExecutions(), deps.stopSynchronization()]); };
   for (const channel of Object.values(IpcChannel)) {
     // Preserve Electron's actual sender object through this boundary: the debugger binds
     // start/wait/cancel and renderer teardown to event.sender, never a renderer-supplied id.

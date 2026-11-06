@@ -114,6 +114,15 @@ public class AccessRepo {
         var rows=jdbc.queryForList("SELECT responsibility_epoch FROM access_project_epochs WHERE workspace_id=? AND project_id=? AND user_id=?",Long.class,ws,project,userId);
         return rows.isEmpty()?0:rows.getFirst();
     }
+    /** Separate fixed background-sync responsibility; publication/mock epochs retain their original meaning. */
+    public long syncCheckEpoch(Long ws,Long project,Long userId) {
+        var rows=jdbc.queryForList("SELECT sync_check_epoch FROM access_project_epochs WHERE workspace_id=? AND project_id=? AND user_id=?",Long.class,ws,project,userId);
+        return rows.isEmpty()?0:rows.getFirst();
+    }
+    public void advanceSyncCheckEpoch(Long ws,Long project,Long userId) {
+        if(jdbc.update("UPDATE access_project_epochs SET sync_check_epoch=sync_check_epoch+1 WHERE workspace_id=? AND project_id=? AND user_id=?",ws,project,userId)==0)
+            jdbc.update("INSERT INTO access_project_epochs(workspace_id,project_id,user_id,sync_check_epoch) VALUES(?,?,?,1)",ws,project,userId);
+    }
     public void advanceResponsibilityEpoch(Long ws,Long project,Long userId) {
         if(jdbc.update("UPDATE access_project_epochs SET responsibility_epoch=responsibility_epoch+1 WHERE workspace_id=? AND project_id=? AND user_id=?",ws,project,userId)==0)
             jdbc.update("INSERT INTO access_project_epochs(workspace_id,project_id,user_id,responsibility_epoch) VALUES(?,?,?,1)",ws,project,userId);

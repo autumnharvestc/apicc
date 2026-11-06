@@ -29,6 +29,8 @@ import NotificationChannelsView from '../views/NotificationChannelsView.vue';
 import ProjectScheduleGrantsView from '../views/ProjectScheduleGrantsView.vue';
 import CollaborationView from '../views/CollaborationView.vue';
 import {createCollaborationApi} from '../api/collaboration.js';
+import SyncPolicyView from '../views/SyncPolicyView.vue';
+import ProjectSyncAccessView from '../views/ProjectSyncAccessView.vue';
 
 export interface AppRouterDeps {
   session: SessionStore;
@@ -68,6 +70,10 @@ export function createAppRoutes(deps: AppRouterDeps): RouteRecordRaw[] {
         {path:'collaboration',name:'platform-collaboration',component:CollaborationView,props:{api:collaboration,scope:{}},meta:{requiresSuperadmin:true}},
         {path:'workspaces/:id/collaboration',name:'workspace-collaboration',component:CollaborationView,props:route=>({api:collaboration,scope:{workspaceId:String(route.params.id)}})},
         {path:'workspaces/:id/projects/:projectId/collaboration',name:'project-collaboration',component:CollaborationView,props:route=>({api:collaboration,scope:{workspaceId:String(route.params.id),projectId:String(route.params.projectId)}})},
+        {path:'workspaces/:id/sync-policy',name:'workspace-sync-policy',component:SyncPolicyView,props:route=>({client:deps.client,workspaceId:String(route.params.id)})},
+        {path:'workspaces/:id/projects/:projectId/sync-policy',name:'project-sync-policy',component:SyncPolicyView,props:route=>({client:deps.client,workspaceId:String(route.params.id),projectId:String(route.params.projectId)})},
+        {path:'workspaces/:id/sync-access',name:'workspace-sync-access',component:ProjectSyncAccessView,props:route=>({client:deps.client,workspaceId:String(route.params.id)})},
+        {path:'workspaces/:id/projects/:projectId/sync-access',name:'project-sync-access',component:ProjectSyncAccessView,props:route=>({client:deps.client,workspaceId:String(route.params.id),projectId:String(route.params.projectId)})},
         // 成员/项目 ACL（任务 4/5 渐次填充）：真实视图均注入 workspaces 实例
         { path: "workspaces/:id/members", name: "workspace-members", component: MembersView, props: { workspaces: deps.workspaces } },
         { path: "workspaces/:id/acl", name: "workspace-acl", component: ProjectAclView, props: { workspaces: deps.workspaces } },

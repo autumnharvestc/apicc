@@ -143,6 +143,7 @@ export const IpcChannel = {
   OnlineExecution: "online:execution",
   OnlineCollaboration: "online:collaboration",
   OnlineScheduling: 'online:scheduling',
+  Synchronization: 'synchronization:handle',
   OnlineFilesGet: "online:files:get",
   OnlineFilePut: "online:files:put",
   OnlineFilesBatch: "online:files:batch",

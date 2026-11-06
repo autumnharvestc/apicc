@@ -1,3 +1,4 @@
+import { SynchronizationInputSchema } from './synchronization.js';
 import { z } from "zod";
 import { OnlineExecutionInputSchema } from "./online/execution.js";
 import { CollaborationInputSchema } from './online/collaboration.js';
@@ -370,6 +371,7 @@ export const IpcArgsSchemas = {
   [IpcChannel.OnlineGroupsList]: z.tuple([OnlineWorkspaceIdSchema]),
   [IpcChannel.OnlineExecution]: z.tuple([OnlineExecutionInputSchema]),
   [IpcChannel.OnlineCollaboration]: z.tuple([CollaborationInputSchema]),
+  [IpcChannel.Synchronization]: z.tuple([SynchronizationInputSchema]),
   [IpcChannel.OnlineScheduling]: z.tuple([OnlineSchedulingInputSchema]),
   [IpcChannel.AiSaveConfig]: z.tuple([AiSaveConfigSchema]),
   [IpcChannel.AiGetConfig]: z.tuple([]),
@@ -544,6 +546,7 @@ const resultMethodByChannel = {
   [IpcChannel.OnlineExecution]: "onlineExecution",
   [IpcChannel.OnlineCollaboration]: 'onlineCollaboration',
   [IpcChannel.OnlineScheduling]: 'onlineScheduling',
+  [IpcChannel.Synchronization]: 'synchronization',
   [IpcChannel.AiSaveConfig]: "aiSaveConfig",
   [IpcChannel.AiGetConfig]: "aiGetConfig",
   [IpcChannel.AiSuggest]: "aiSuggest",

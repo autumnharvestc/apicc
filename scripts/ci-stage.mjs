@@ -14,6 +14,7 @@ const shared = [
   build('packages/core'), typecheck('packages/core'),
   build('packages/execution'), typecheck('packages/execution'),
   pnpm('-C', 'packages/execution', 'check:java-input-schema'),
+  pnpm('-C', 'packages/execution', 'check:java-sync-schema'),
   build('apps/collaboration-runtime'), typecheck('apps/collaboration-runtime'),
   node('apps/collaboration-runtime/scripts/generate-java-boundary.mjs', '--check'),
   build('apps/share-viewer'), typecheck('apps/share-viewer'),
@@ -21,6 +22,7 @@ const shared = [
 const serverPrerequisites = [
   build('packages/plugin-sdk'), build('packages/core'), build('packages/execution'),
   pnpm('-C', 'packages/execution', 'check:java-input-schema'),
+  pnpm('-C', 'packages/execution', 'check:java-sync-schema'),
   build('apps/collaboration-runtime'), typecheck('apps/collaboration-runtime'),
   node('apps/collaboration-runtime/scripts/generate-java-boundary.mjs', '--check'),
   build('apps/share-viewer'), typecheck('apps/share-viewer'),
@@ -33,11 +35,14 @@ const stages = {
     build('packages/cli'), typecheck('packages/cli'),
     node('--test', 'scripts/tests/f7f-acceptance.test.mjs'),
     node('--test', 'scripts/tests/ci-stage.test.mjs'),
+    node('--test', 'scripts/tests/f7g-acceptance.test.mjs'),
+    node('scripts/prepare-git-fixture.mjs'),
     docker('build', '--pull', '-f', 'Dockerfile.agent', '-t', 'apicc-f7b-t11-agent:candidate', '.'),
     pnpm('-r', '--workspace-concurrency=1', 'test', '--maxWorkers=2'),
   ],
   'linux-server': [
     pnpm('install', '--frozen-lockfile'), ...serverPrerequisites,
+    node('scripts/prepare-git-fixture.mjs'),
     { ...command('mvn', '-s', 'server/.mvn/settings.xml', '-f', 'server/pom.xml', 'test'), env: { APICC_TEST_NODE: process.execPath } },
   ],
   brand: [
@@ -52,6 +57,7 @@ const stages = {
     build('packages/plugin-sdk'), typecheck('packages/plugin-sdk'),
     build('packages/core'), build('packages/execution'),
     pnpm('-C', 'packages/execution', 'check:java-input-schema'),
+    pnpm('-C', 'packages/execution', 'check:java-sync-schema'),
     build('apps/collaboration-runtime'), typecheck('apps/collaboration-runtime'),
     node('apps/collaboration-runtime/scripts/generate-java-boundary.mjs', '--check'),
     build('apps/share-viewer'), typecheck('apps/share-viewer'),
@@ -66,6 +72,8 @@ const stages = {
     docker('build', '--pull', '-f', 'Dockerfile.agent', '-t', 'apicc-runner-agent:local', '.'),
     node('scripts/smoke-runner-agent.mjs'),
     { ...node('scripts/smoke-collaboration.mjs'), env: { APICC_F7F_SERVER_IMAGE: 'apicc-server:local', APICC_F7F_RUNTIME_IMAGE: 'apicc-collaboration:local' } },
+    node('scripts/prepare-git-fixture.mjs'),
+    node('scripts/smoke-synchronization.mjs'),
   ],
 };
 

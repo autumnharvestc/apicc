@@ -25,6 +25,8 @@ files:
       - "*.d.ts"
 asarUnpack:
   - "**/*.node"
+  - "**/@apicc/execution/dist/source-host/owned-process.exe"
+  - "**/@apicc/execution/dist/source-host/owned-process.resource.json"
 extraResources:
   - from: ../share-viewer/dist
     to: share-viewer

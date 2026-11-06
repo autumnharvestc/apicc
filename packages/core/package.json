@@ -63,6 +63,13 @@
       "types": "./dist/collaboration/presentation.d.ts",
       "default": "./dist/collaboration/presentation.js"
     },
+    "./sync": {
+      "browser": { "types": "./dist/sync/shared.d.ts", "default": "./dist/sync/shared.js" },
+      "types": "./dist/sync/index.d.ts", "default": "./dist/sync/index.js"
+    },
+    "./sync/shared": {
+      "types": "./dist/sync/shared.d.ts", "default": "./dist/sync/shared.js"
+    },
     "./collaboration/shared": {
       "types": "./dist/collaboration/shared.d.ts",
       "default": "./dist/collaboration/shared.js"

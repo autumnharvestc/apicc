@@ -5,7 +5,7 @@ public enum Capability {
     HISTORY_READ("history.read"), HISTORY_PUBLISH("history.publish"), SCRIPT_EDIT("script.edit"),
     CREDENTIAL_MANAGE("credential.manage"), TASK_EXECUTE("task.execute"),
     PUBLICATION_MANAGE("publication.manage"), MOCK_MANAGE("mock.manage"),
-    MOCK_LOGS_READ("mock.logs.read"), AUDIT_READ("audit.read");
+    MOCK_LOGS_READ("mock.logs.read"), AUDIT_READ("audit.read"), SYNC_MANAGE("sync.manage"), SYNC_CHECK("sync.check"), SYNC_APPLY("sync.apply");
 
     private final String code;
     Capability(String code) { this.code = code; }

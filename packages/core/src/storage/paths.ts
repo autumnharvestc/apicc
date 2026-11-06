@@ -85,6 +85,15 @@ export function projectMetadataFilePath(groupId: string, projectId: string): str
   return `${projectDirectoryPath(groupId, projectId)}/project.yaml`;
 }
 
+export function synchronizationFilePath(location: ProjectFileLocation): string {
+  return `${projectBase(location)}/synchronization.yaml`;
+}
+
+export function synchronizationContentFilePath(location: ProjectFileLocation, digest: string): string {
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new TypeError("Synchronization content name must be a SHA-256 digest");
+  return `${projectBase(location)}/synchronization/content/${digest}.json`;
+}
+
 export function collectionDirectoryPath(location: CollectionFileLocation): string {
   return `${projectBase(location)}/collections/${requireUuid(location.collectionId, "collectionId")}`;
 }

@@ -1,0 +1,570 @@
+{
+  "workspaceHigh": {
+    "saved": {
+      "formatVersion": 1,
+      "revision": "0",
+      "scope": "workspace"
+    },
+    "units": {
+      "gitDeadlineMs": "milliseconds",
+      "maxNormalizeNodes": "count",
+      "historyMaxEntries": "count",
+      "hostConcurrency": "count",
+      "maxNormalizeDepth": "count",
+      "gitDiskThresholdBytes": "bytes",
+      "maxCompareInputBytes": "bytes",
+      "connectTimeoutMs": "milliseconds",
+      "historyRetentionDays": "days",
+      "urlDeadlineMs": "milliseconds",
+      "maxAttempts": "count",
+      "maxCompareOutputBytes": "bytes",
+      "projectConcurrency": "count",
+      "maxSourceBytes": "bytes",
+      "candidateTtlMs": "milliseconds"
+    },
+    "workspaceRevision": "0",
+    "inherited": null,
+    "deploymentLimits": {
+      "maxWireBytes": 33554432,
+      "envelopeReserveBytes": 1048576
+    },
+    "deploymentCeilings": {
+      "urlDeadlineMs": 1800000,
+      "gitDeadlineMs": 1800000
+    },
+    "effective": {
+      "savedRevision": "0",
+      "appliesTo": "next-check",
+      "policy": {
+        "connectTimeoutMs": 10000,
+        "urlDeadlineMs": 60000,
+        "gitDeadlineMs": 120000,
+        "maxAttempts": 1,
+        "maxSourceBytes": 5242880,
+        "maxCompareInputBytes": 16777216,
+        "maxCompareOutputBytes": 8388608,
+        "maxNormalizeDepth": 128,
+        "maxNormalizeNodes": 100000,
+        "gitDiskThresholdBytes": 268435456,
+        "projectConcurrency": 1,
+        "hostConcurrency": 4,
+        "candidateTtlMs": 86400000,
+        "historyRetentionDays": 30,
+        "historyMaxEntries": 100
+      },
+      "sources": {
+        "connectTimeoutMs": "default",
+        "urlDeadlineMs": "default",
+        "gitDeadlineMs": "default",
+        "maxAttempts": "default",
+        "maxSourceBytes": "default",
+        "maxCompareInputBytes": "default",
+        "maxCompareOutputBytes": "default",
+        "maxNormalizeDepth": "default",
+        "maxNormalizeNodes": "default",
+        "gitDiskThresholdBytes": "default",
+        "projectConcurrency": "default",
+        "hostConcurrency": "default",
+        "candidateTtlMs": "default",
+        "historyRetentionDays": "default",
+        "historyMaxEntries": "default"
+      },
+      "deploymentLimits": {
+        "maxWireBytes": 33554432,
+        "envelopeReserveBytes": 1048576
+      }
+    },
+    "status": "valid",
+    "reasonCode": null
+  },
+  "workspaceSaved": {
+    "saved": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "workspace",
+      "gitDeadlineMs": 60000
+    },
+    "units": {
+      "gitDeadlineMs": "milliseconds",
+      "maxNormalizeNodes": "count",
+      "historyMaxEntries": "count",
+      "hostConcurrency": "count",
+      "maxNormalizeDepth": "count",
+      "gitDiskThresholdBytes": "bytes",
+      "maxCompareInputBytes": "bytes",
+      "connectTimeoutMs": "milliseconds",
+      "historyRetentionDays": "days",
+      "urlDeadlineMs": "milliseconds",
+      "maxAttempts": "count",
+      "maxCompareOutputBytes": "bytes",
+      "projectConcurrency": "count",
+      "maxSourceBytes": "bytes",
+      "candidateTtlMs": "milliseconds"
+    },
+    "workspaceRevision": "1",
+    "inherited": null,
+    "deploymentLimits": {
+      "maxWireBytes": 33554432,
+      "envelopeReserveBytes": 1048576
+    },
+    "deploymentCeilings": {
+      "urlDeadlineMs": 1800000,
+      "gitDeadlineMs": 1800000
+    },
+    "effective": {
+      "savedRevision": "1",
+      "appliesTo": "next-check",
+      "policy": {
+        "connectTimeoutMs": 10000,
+        "urlDeadlineMs": 60000,
+        "gitDeadlineMs": 60000,
+        "maxAttempts": 1,
+        "maxSourceBytes": 5242880,
+        "maxCompareInputBytes": 16777216,
+        "maxCompareOutputBytes": 8388608,
+        "maxNormalizeDepth": 128,
+        "maxNormalizeNodes": 100000,
+        "gitDiskThresholdBytes": 268435456,
+        "projectConcurrency": 1,
+        "hostConcurrency": 4,
+        "candidateTtlMs": 86400000,
+        "historyRetentionDays": 30,
+        "historyMaxEntries": 100
+      },
+      "sources": {
+        "connectTimeoutMs": "default",
+        "urlDeadlineMs": "default",
+        "gitDeadlineMs": "workspace",
+        "maxAttempts": "default",
+        "maxSourceBytes": "default",
+        "maxCompareInputBytes": "default",
+        "maxCompareOutputBytes": "default",
+        "maxNormalizeDepth": "default",
+        "maxNormalizeNodes": "default",
+        "gitDiskThresholdBytes": "default",
+        "projectConcurrency": "default",
+        "hostConcurrency": "default",
+        "candidateTtlMs": "default",
+        "historyRetentionDays": "default",
+        "historyMaxEntries": "default"
+      },
+      "deploymentLimits": {
+        "maxWireBytes": 33554432,
+        "envelopeReserveBytes": 1048576
+      }
+    },
+    "status": "valid",
+    "reasonCode": null
+  },
+  "projectHigh": {
+    "saved": {
+      "formatVersion": 1,
+      "revision": "0",
+      "scope": "project"
+    },
+    "units": {
+      "gitDeadlineMs": "milliseconds",
+      "maxNormalizeNodes": "count",
+      "historyMaxEntries": "count",
+      "hostConcurrency": "count",
+      "maxNormalizeDepth": "count",
+      "gitDiskThresholdBytes": "bytes",
+      "maxCompareInputBytes": "bytes",
+      "connectTimeoutMs": "milliseconds",
+      "historyRetentionDays": "days",
+      "urlDeadlineMs": "milliseconds",
+      "maxAttempts": "count",
+      "maxCompareOutputBytes": "bytes",
+      "projectConcurrency": "count",
+      "maxSourceBytes": "bytes",
+      "candidateTtlMs": "milliseconds"
+    },
+    "workspaceRevision": "1",
+    "inherited": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "workspace",
+      "gitDeadlineMs": 60000
+    },
+    "deploymentLimits": {
+      "maxWireBytes": 33554432,
+      "envelopeReserveBytes": 1048576
+    },
+    "deploymentCeilings": {
+      "urlDeadlineMs": 1800000,
+      "gitDeadlineMs": 1800000
+    },
+    "effective": {
+      "savedRevision": "0",
+      "appliesTo": "next-check",
+      "policy": {
+        "connectTimeoutMs": 10000,
+        "urlDeadlineMs": 60000,
+        "gitDeadlineMs": 60000,
+        "maxAttempts": 1,
+        "maxSourceBytes": 5242880,
+        "maxCompareInputBytes": 16777216,
+        "maxCompareOutputBytes": 8388608,
+        "maxNormalizeDepth": 128,
+        "maxNormalizeNodes": 100000,
+        "gitDiskThresholdBytes": 268435456,
+        "projectConcurrency": 1,
+        "hostConcurrency": 4,
+        "candidateTtlMs": 86400000,
+        "historyRetentionDays": 30,
+        "historyMaxEntries": 100
+      },
+      "sources": {
+        "connectTimeoutMs": "default",
+        "urlDeadlineMs": "default",
+        "gitDeadlineMs": "workspace",
+        "maxAttempts": "default",
+        "maxSourceBytes": "default",
+        "maxCompareInputBytes": "default",
+        "maxCompareOutputBytes": "default",
+        "maxNormalizeDepth": "default",
+        "maxNormalizeNodes": "default",
+        "gitDiskThresholdBytes": "default",
+        "projectConcurrency": "default",
+        "hostConcurrency": "default",
+        "candidateTtlMs": "default",
+        "historyRetentionDays": "default",
+        "historyMaxEntries": "default"
+      },
+      "deploymentLimits": {
+        "maxWireBytes": 33554432,
+        "envelopeReserveBytes": 1048576
+      }
+    },
+    "status": "valid",
+    "reasonCode": null
+  },
+  "projectSaved": {
+    "saved": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "project",
+      "gitDeadlineMs": 60000
+    },
+    "units": {
+      "gitDeadlineMs": "milliseconds",
+      "maxNormalizeNodes": "count",
+      "historyMaxEntries": "count",
+      "hostConcurrency": "count",
+      "maxNormalizeDepth": "count",
+      "gitDiskThresholdBytes": "bytes",
+      "maxCompareInputBytes": "bytes",
+      "connectTimeoutMs": "milliseconds",
+      "historyRetentionDays": "days",
+      "urlDeadlineMs": "milliseconds",
+      "maxAttempts": "count",
+      "maxCompareOutputBytes": "bytes",
+      "projectConcurrency": "count",
+      "maxSourceBytes": "bytes",
+      "candidateTtlMs": "milliseconds"
+    },
+    "workspaceRevision": "1",
+    "inherited": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "workspace",
+      "gitDeadlineMs": 60000
+    },
+    "deploymentLimits": {
+      "maxWireBytes": 33554432,
+      "envelopeReserveBytes": 1048576
+    },
+    "deploymentCeilings": {
+      "urlDeadlineMs": 1800000,
+      "gitDeadlineMs": 1800000
+    },
+    "effective": {
+      "savedRevision": "1",
+      "appliesTo": "next-check",
+      "policy": {
+        "connectTimeoutMs": 10000,
+        "urlDeadlineMs": 60000,
+        "gitDeadlineMs": 60000,
+        "maxAttempts": 1,
+        "maxSourceBytes": 5242880,
+        "maxCompareInputBytes": 16777216,
+        "maxCompareOutputBytes": 8388608,
+        "maxNormalizeDepth": 128,
+        "maxNormalizeNodes": 100000,
+        "gitDiskThresholdBytes": 268435456,
+        "projectConcurrency": 1,
+        "hostConcurrency": 4,
+        "candidateTtlMs": 86400000,
+        "historyRetentionDays": 30,
+        "historyMaxEntries": 100
+      },
+      "sources": {
+        "connectTimeoutMs": "default",
+        "urlDeadlineMs": "default",
+        "gitDeadlineMs": "project",
+        "maxAttempts": "default",
+        "maxSourceBytes": "default",
+        "maxCompareInputBytes": "default",
+        "maxCompareOutputBytes": "default",
+        "maxNormalizeDepth": "default",
+        "maxNormalizeNodes": "default",
+        "gitDiskThresholdBytes": "default",
+        "projectConcurrency": "default",
+        "hostConcurrency": "default",
+        "candidateTtlMs": "default",
+        "historyRetentionDays": "default",
+        "historyMaxEntries": "default"
+      },
+      "deploymentLimits": {
+        "maxWireBytes": 33554432,
+        "envelopeReserveBytes": 1048576
+      }
+    },
+    "status": "valid",
+    "reasonCode": null
+  },
+  "workspaceMid": {
+    "saved": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "workspace",
+      "gitDeadlineMs": 60000
+    },
+    "units": {
+      "gitDeadlineMs": "milliseconds",
+      "maxNormalizeNodes": "count",
+      "historyMaxEntries": "count",
+      "hostConcurrency": "count",
+      "maxNormalizeDepth": "count",
+      "gitDiskThresholdBytes": "bytes",
+      "maxCompareInputBytes": "bytes",
+      "connectTimeoutMs": "milliseconds",
+      "historyRetentionDays": "days",
+      "urlDeadlineMs": "milliseconds",
+      "maxAttempts": "count",
+      "maxCompareOutputBytes": "bytes",
+      "projectConcurrency": "count",
+      "maxSourceBytes": "bytes",
+      "candidateTtlMs": "milliseconds"
+    },
+    "workspaceRevision": "1",
+    "inherited": null,
+    "deploymentLimits": {
+      "maxWireBytes": 33554432,
+      "envelopeReserveBytes": 1048576
+    },
+    "deploymentCeilings": {
+      "urlDeadlineMs": 300000,
+      "gitDeadlineMs": 300000
+    },
+    "effective": {
+      "savedRevision": "1",
+      "appliesTo": "next-check",
+      "policy": {
+        "connectTimeoutMs": 10000,
+        "urlDeadlineMs": 60000,
+        "gitDeadlineMs": 60000,
+        "maxAttempts": 1,
+        "maxSourceBytes": 5242880,
+        "maxCompareInputBytes": 16777216,
+        "maxCompareOutputBytes": 8388608,
+        "maxNormalizeDepth": 128,
+        "maxNormalizeNodes": 100000,
+        "gitDiskThresholdBytes": 268435456,
+        "projectConcurrency": 1,
+        "hostConcurrency": 4,
+        "candidateTtlMs": 86400000,
+        "historyRetentionDays": 30,
+        "historyMaxEntries": 100
+      },
+      "sources": {
+        "connectTimeoutMs": "default",
+        "urlDeadlineMs": "default",
+        "gitDeadlineMs": "workspace",
+        "maxAttempts": "default",
+        "maxSourceBytes": "default",
+        "maxCompareInputBytes": "default",
+        "maxCompareOutputBytes": "default",
+        "maxNormalizeDepth": "default",
+        "maxNormalizeNodes": "default",
+        "gitDiskThresholdBytes": "default",
+        "projectConcurrency": "default",
+        "hostConcurrency": "default",
+        "candidateTtlMs": "default",
+        "historyRetentionDays": "default",
+        "historyMaxEntries": "default"
+      },
+      "deploymentLimits": {
+        "maxWireBytes": 33554432,
+        "envelopeReserveBytes": 1048576
+      }
+    },
+    "status": "valid",
+    "reasonCode": null
+  },
+  "projectMid": {
+    "saved": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "project",
+      "gitDeadlineMs": 60000
+    },
+    "units": {
+      "gitDeadlineMs": "milliseconds",
+      "maxNormalizeNodes": "count",
+      "historyMaxEntries": "count",
+      "hostConcurrency": "count",
+      "maxNormalizeDepth": "count",
+      "gitDiskThresholdBytes": "bytes",
+      "maxCompareInputBytes": "bytes",
+      "connectTimeoutMs": "milliseconds",
+      "historyRetentionDays": "days",
+      "urlDeadlineMs": "milliseconds",
+      "maxAttempts": "count",
+      "maxCompareOutputBytes": "bytes",
+      "projectConcurrency": "count",
+      "maxSourceBytes": "bytes",
+      "candidateTtlMs": "milliseconds"
+    },
+    "workspaceRevision": "1",
+    "inherited": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "workspace",
+      "gitDeadlineMs": 60000
+    },
+    "deploymentLimits": {
+      "maxWireBytes": 33554432,
+      "envelopeReserveBytes": 1048576
+    },
+    "deploymentCeilings": {
+      "urlDeadlineMs": 300000,
+      "gitDeadlineMs": 300000
+    },
+    "effective": {
+      "savedRevision": "1",
+      "appliesTo": "next-check",
+      "policy": {
+        "connectTimeoutMs": 10000,
+        "urlDeadlineMs": 60000,
+        "gitDeadlineMs": 60000,
+        "maxAttempts": 1,
+        "maxSourceBytes": 5242880,
+        "maxCompareInputBytes": 16777216,
+        "maxCompareOutputBytes": 8388608,
+        "maxNormalizeDepth": 128,
+        "maxNormalizeNodes": 100000,
+        "gitDiskThresholdBytes": 268435456,
+        "projectConcurrency": 1,
+        "hostConcurrency": 4,
+        "candidateTtlMs": 86400000,
+        "historyRetentionDays": 30,
+        "historyMaxEntries": 100
+      },
+      "sources": {
+        "connectTimeoutMs": "default",
+        "urlDeadlineMs": "default",
+        "gitDeadlineMs": "project",
+        "maxAttempts": "default",
+        "maxSourceBytes": "default",
+        "maxCompareInputBytes": "default",
+        "maxCompareOutputBytes": "default",
+        "maxNormalizeDepth": "default",
+        "maxNormalizeNodes": "default",
+        "gitDiskThresholdBytes": "default",
+        "projectConcurrency": "default",
+        "hostConcurrency": "default",
+        "candidateTtlMs": "default",
+        "historyRetentionDays": "default",
+        "historyMaxEntries": "default"
+      },
+      "deploymentLimits": {
+        "maxWireBytes": 33554432,
+        "envelopeReserveBytes": 1048576
+      }
+    },
+    "status": "valid",
+    "reasonCode": null
+  },
+  "workspaceLow": {
+    "saved": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "workspace",
+      "gitDeadlineMs": 60000
+    },
+    "units": {
+      "gitDeadlineMs": "milliseconds",
+      "maxNormalizeNodes": "count",
+      "historyMaxEntries": "count",
+      "hostConcurrency": "count",
+      "maxNormalizeDepth": "count",
+      "gitDiskThresholdBytes": "bytes",
+      "maxCompareInputBytes": "bytes",
+      "connectTimeoutMs": "milliseconds",
+      "historyRetentionDays": "days",
+      "urlDeadlineMs": "milliseconds",
+      "maxAttempts": "count",
+      "maxCompareOutputBytes": "bytes",
+      "projectConcurrency": "count",
+      "maxSourceBytes": "bytes",
+      "candidateTtlMs": "milliseconds"
+    },
+    "workspaceRevision": "1",
+    "inherited": null,
+    "deploymentLimits": {
+      "maxWireBytes": 33554432,
+      "envelopeReserveBytes": 1048576
+    },
+    "deploymentCeilings": {
+      "urlDeadlineMs": 1000,
+      "gitDeadlineMs": 1000
+    },
+    "effective": null,
+    "status": "invalid",
+    "reasonCode": "SYNC_POLICY_INVALID"
+  },
+  "projectLow": {
+    "saved": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "project",
+      "gitDeadlineMs": 60000
+    },
+    "units": {
+      "gitDeadlineMs": "milliseconds",
+      "maxNormalizeNodes": "count",
+      "historyMaxEntries": "count",
+      "hostConcurrency": "count",
+      "maxNormalizeDepth": "count",
+      "gitDiskThresholdBytes": "bytes",
+      "maxCompareInputBytes": "bytes",
+      "connectTimeoutMs": "milliseconds",
+      "historyRetentionDays": "days",
+      "urlDeadlineMs": "milliseconds",
+      "maxAttempts": "count",
+      "maxCompareOutputBytes": "bytes",
+      "projectConcurrency": "count",
+      "maxSourceBytes": "bytes",
+      "candidateTtlMs": "milliseconds"
+    },
+    "workspaceRevision": "1",
+    "inherited": {
+      "formatVersion": 1,
+      "revision": "1",
+      "scope": "workspace",
+      "gitDeadlineMs": 60000
+    },
+    "deploymentLimits": {
+      "maxWireBytes": 33554432,
+      "envelopeReserveBytes": 1048576
+    },
+    "deploymentCeilings": {
+      "urlDeadlineMs": 1000,
+      "gitDeadlineMs": 1000
+    },
+    "effective": null,
+    "status": "invalid",
+    "reasonCode": "SYNC_POLICY_INVALID"
+  }
+}

@@ -21,6 +21,9 @@ import {
 import zhCN from "ant-design-vue/es/locale/zh_CN";
 import enUS from "ant-design-vue/es/locale/en_US";
 import { apicc } from "./api";
+import SyncPanel from './components/sync/SyncPanel.vue';
+import { createSynchronizationStore } from './stores/synchronization.js';
+import type { SyncScope } from '../../shared/synchronization.js';
 import type { ApiRequest, DebugFieldState } from "@apicc/core";
 import type { OnlineTreeNodeDTO, TreeNodeDTO } from "../../shared/tree-dto.js";
 import type { LocalTreeNodeDTO } from "../../shared/tree-dto.js";
@@ -710,6 +713,21 @@ const selectedProjectContext = computed(() => {
   return locator ? { root: workspace.root, locator } : null;
 });
 const selectedProjectLocator = computed(() => selectedProjectContext.value?.locator ?? null);
+const syncOpen = ref(false);
+const syncScope = computed<SyncScope | null>(() => {
+  if (isHome.value) return null;
+  if (onlineMode.value) return online.execution.context ? { kind: 'online', context: online.execution.context } : null;
+  const project = selectedProjectContext.value; return project?.root ? { kind: 'local', root: project.root, locator: project.locator } : null;
+});
+const synchronization = createSynchronizationStore(apicc, async () => {
+  if (syncScope.value?.kind === 'online') { await online.execution.load(); if (online.execution.error) throw Error(online.execution.error); }
+  else await workspace.refresh();
+});
+const syncModules = computed(() => syncScope.value?.kind === 'online' ? (online.execution.project?.collections ?? []).map(collection => ({ id: collection.id, name: collection.name })) : syncScope.value?.kind === 'local' ? (workspace.findProject(syncScope.value.locator)?.children ?? []).flatMap(node => node.kind === 'collection' ? [{ id: node.locator.collectionId, name: node.label }] : []) : []);
+watch(() => JSON.stringify(syncScope.value), () => { synchronization.activate(syncScope.value); if (!syncScope.value) syncOpen.value = false; }, { immediate: true, flush: 'sync' });
+watch(() => online.execution.view?.assets.version, version => { synchronization.assetVersion = version ?? '0'; }, { immediate: true });
+onBeforeUnmount(() => { synchronization.setVisible(false); synchronization.activate(null); });
+
 watch([() => online.activeBaseUrl, () => online.user, () => online.loggedIn, () => isHome.value, () => workspace.root, () => JSON.stringify(selectedProjectLocator.value), () => JSON.stringify(online.execution.context)], () => {
   pendingCollaborationSource.value = null;
   if (collaboration.visible) void collaboration.close().catch(reportError);
@@ -1181,6 +1199,8 @@ function onDividerDblClick() {
         <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
       </a-alert>
+      <div v-if="syncScope" class="sync-project-entry"><button data-testid="sync-entry" @click="syncOpen = true">{{ t('sync.title') }}</button></div>
+      <div v-if="syncOpen && syncScope" class="sync-workbench"><SyncPanel :store="synchronization" :modules="syncModules" :api="apicc" :contract-project-id="syncScope.kind === 'online' ? online.execution.project?.id : syncScope.locator.projectId" :read-only="syncScope.kind === 'local' && workspace.readOnly" @close="syncOpen = false" /></div>
       <div class="body">
         <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；主页不显示；
              在线模式全禁用 -->
@@ -1476,6 +1496,9 @@ function onDividerDblClick() {
 </template>
 
 <style>
+.sync-project-entry{flex:none;padding:4px 14px;border-bottom:1px solid var(--border)}
+.sync-project-entry button{padding:4px 12px;background:transparent;color:inherit;border:1px solid var(--border);border-radius:4px;cursor:pointer}
+.sync-workbench{position:fixed;inset:65px 20px 20px max(20px,12vw);z-index:1040;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;min-width:0;overflow:hidden}
 .collaboration-drawer{position:fixed;inset:24px 24px 24px max(24px,20vw);z-index:1050;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;padding:16px;overflow:auto;min-width:0}
 html, body, #app { height: 100%; margin: 0; }
 .app { height: 100%; min-height: 0; overflow: hidden; background: var(--bg); color: var(--text); }

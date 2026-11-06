@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { startCollaborationRuntime } from "./server.js";
+import { SourceDeploymentSchema } from "./sourceHost.js";
 
 export interface RuntimeLimits {
   cacheBytes?: number; maxWireBytes?: number;
@@ -22,7 +23,7 @@ export function runtimeLimits(input: RuntimeLimits = {}) {
     && BigInt(resources.heapBytes) + BigInt(cacheBytes) + BigInt(resources.inFlightBytes) + BigInt(resources.headroomBytes) > BigInt(resources.totalMemoryBytes)) throw new Error('RPC_CONFIGURATION_INVALID');
   return { cacheBytes, maxWireBytes, ...resources };
 }
-export async function runtimeFromDeployment(input: RuntimeLimits & { enabled?: boolean; secretFile?: string; host?: string; port?: number }) {
+export async function runtimeFromDeployment(input: RuntimeLimits & { enabled?: boolean; secretFile?: string; sourceConfigFile?: string; host?: string; port?: number }) {
   if (!input.enabled) return { enabled: false as const };
   let secret: string;
   try {
@@ -30,5 +31,10 @@ export async function runtimeFromDeployment(input: RuntimeLimits & { enabled?: b
     if (secret.length < 32 || !/^[\x20-\x7e]+$/.test(secret)) throw new Error();
   } catch { throw new Error("RPC_SECRET_FILE_INVALID"); }
   const limits = runtimeLimits(input);
-  return { enabled: true as const, ...await startCollaborationRuntime({ secret, host: input.host, port: input.port, ...limits }) };
+  let source;
+  if (input.sourceConfigFile !== undefined) {
+    try { source = SourceDeploymentSchema.parse(JSON.parse(await readFile(input.sourceConfigFile, "utf8"))); }
+    catch { throw new Error("SYNC_HOST_CONFIG_INVALID"); }
+  }
+  return { enabled: true as const, ...await startCollaborationRuntime({ secret, host: input.host, port: input.port, source, ...limits }) };
 }

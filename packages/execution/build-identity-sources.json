@@ -9,7 +9,8 @@
     "packages/core/package.json", "packages/core/tsconfig.json", "packages/core/tsconfig.build.json",
     "packages/plugin-sdk/package.json", "packages/plugin-sdk/tsconfig.json", "packages/plugin-sdk/tsconfig.build.json",
     "packages/execution/package.json", "packages/execution/tsconfig.json", "packages/execution/tsconfig.build.json",
-    "packages/execution/build-identity-sources.json", "packages/execution/scripts/build-identity.mjs"
+    "packages/execution/build-identity-sources.json", "packages/execution/scripts/build-identity.mjs",
+    "packages/execution/src/source-host/owned-process.cs", "packages/execution/scripts/build-source-host-resources.mjs"
   ],
   "scriptApiFiles": ["packages/core/src/sandbox/jsEngine.ts", "packages/core/src/plugin/types.ts", "packages/plugin-sdk/src/index.ts"],
   "capabilities": ["protocol:http", "protocol:soap", "protocol:websocket", "script:trusted-core", "stress:local-workers-v1", "task:debug", "task:stress", "task:suite", "task:workflow"]

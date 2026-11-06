@@ -46,6 +46,7 @@ public class WorkspaceService {
     private final WorkspaceGuard guard;
     private final com.autumnharvestc.server.access.AccessRepo accessRecords;
     private final com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage;
+    private final com.autumnharvestc.server.sync.SyncRepo synchronization;
 
     public WorkspaceService(WorkspaceRepo workspaces,
                             MembershipRepo memberships,
@@ -53,7 +54,7 @@ public class WorkspaceService {
                             FileVersionRepo fileVersions,
                             GroupRepo groups,
                             ProjectRepo projects,
-                            WorkspaceGuard guard,com.autumnharvestc.server.access.AccessRepo accessRecords,com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage) {
+                            WorkspaceGuard guard,com.autumnharvestc.server.access.AccessRepo accessRecords,com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage,com.autumnharvestc.server.sync.SyncRepo synchronization) {
         this.workspaces = workspaces;
         this.memberships = memberships;
         this.acl = acl;
@@ -63,6 +64,7 @@ public class WorkspaceService {
         this.guard = guard;
         this.accessRecords=accessRecords;
         this.collaborationStorage=collaborationStorage;
+        this.synchronization=synchronization;
     }
 
     /**
@@ -119,6 +121,7 @@ public class WorkspaceService {
         acl.deleteByWorkspace(wsId);
         accessRecords.deleteByWorkspace(wsId);
         fileVersions.deleteByWorkspace(wsId);
+        synchronization.deleteByWorkspace(wsId);
         // groups/projects 一并清理（审查修复）：projects 先于 groups——fk_projects_group 引用顺序
         projects.deleteByWorkspace(wsId);
         groups.deleteByWorkspace(wsId);

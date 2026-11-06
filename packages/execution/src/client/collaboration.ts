@@ -8,7 +8,7 @@ const revision = z.number().int().nonnegative().safe();
 const textOrNull = z.string().nullable();
 const cursor = textOrNull;
 const noInput = z.object({}).strict();
-export const CollaborationCapabilitySchema = z.enum(['script.edit', 'credential.manage', 'task.execute', 'history.read', 'history.publish', 'publication.manage', 'mock.manage', 'audit.read', 'mock.logs.read']);
+export const CollaborationCapabilitySchema = z.enum(['script.edit', 'credential.manage', 'task.execute', 'history.read', 'history.publish', 'publication.manage', 'mock.manage', 'audit.read', 'mock.logs.read', 'sync.manage', 'sync.check', 'sync.apply']);
 const role = z.enum(['OWNER', 'ADMIN', 'EDITOR', 'VIEWER']);
 export const ProjectCollaborationAccessSchema = z.object({ accountEnabled: z.boolean(), member: z.boolean(), workspaceRole: role.nullable(), projectOverride: z.enum(['NONE', 'ADMIN', 'EDITOR', 'VIEWER']).nullable(), overrideState: z.string(), effectiveRole: role.nullable(), capabilities: z.array(CollaborationCapabilitySchema), accessRevision: revision, membershipEpoch: revision, responsibilityEpoch: revision, reasonCode: textOrNull }).strict();
 

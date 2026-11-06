@@ -1,3 +1,4 @@
+import { SynchronizationInputSchema, parseSynchronizationResult } from '../shared/synchronization.js';
 import { contextBridge, ipcRenderer } from "electron";
 import { OnlineExecutionResultSchema } from "../shared/online/execution.js";
 import { CollaborationInputSchema, CollaborationResultSchema } from '../shared/online/collaboration.js';
@@ -20,6 +21,7 @@ const stressApi = createStressPreloadApi(ipcRenderer);
 const api: ApiccApi = {
   onlineExecution: async (input) => OnlineExecutionResultSchema.parse(await invoke(IpcChannel.OnlineExecution, input)),
   onlineCollaboration: async input => CollaborationResultSchema.parse(await invoke(IpcChannel.OnlineCollaboration, CollaborationInputSchema.parse(input))),
+  synchronization: async input => parseSynchronizationResult(input, await invoke(IpcChannel.Synchronization, SynchronizationInputSchema.parse(input))),
   onlineScheduling: async input => parseOnlineSchedulingResult(input, await invoke(IpcChannel.OnlineScheduling, OnlineSchedulingInputSchema.parse(input))),
   inspectEvidence: (input) => invoke(IpcChannel.EvidenceInspect, EvidenceInvocationSchema.parse(input)),
   rerunEvidence: (input) => invoke(IpcChannel.EvidenceRerun, EvidenceInvocationSchema.parse(input)),

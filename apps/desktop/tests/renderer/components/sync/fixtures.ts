@@ -1,0 +1,46 @@
+import { SyncCandidateViewSchema, SyncReceiptSchema, SyncSourceSchema, defaultSyncPolicyValues } from '@apicc/core/sync/shared';
+import type { SyncScope } from '../../../../src/shared/synchronization.js';
+import { SyncScheduleViewSchema } from '../../../../src/shared/synchronization.js';
+export const id = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
+export function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: Error) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
+export const source = SyncSourceSchema.parse({ formatVersion: 1, id: id(2), revision: '1', moduleId: id(3), kind: 'url', authRef: 'owned-auth', url: 'https://source.test/openapi.json', schedule: { enabled: false, rule: { kind: 'cron', expression: '0 0 * * * *', timeZone: 'UTC', dstOverlap: 'first' } } });
+export const localScope = (projectId = id(1)): SyncScope => ({ kind: 'local', root: 'C:/owned-fixture', locator: { workspaceId: id(4), groupId: id(5), projectId } });
+export const onlineScope: SyncScope = { kind: 'online', context: { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } } };
+export function candidateView() { return SyncCandidateViewSchema.parse({ candidate: { formatVersion: 1, id: id(6), sourceId: source.id, stamp: { formatVersion: 1, kind: 'local', projectId: id(1), definitionRevision: 'a'.repeat(64), sourceRevision: '1', mappingRevision: '0', baselineRevision: '0', authorizationGeneration: '1', coreBuildId: 'b'.repeat(64) }, upstream: { kind: 'git', objectFormat: 'sha256', commitOid: 'c'.repeat(64), blobOid: 'd'.repeat(64), rawSha256: 'e'.repeat(64) }, candidateDigest: 'f'.repeat(64), summary: { added: 0, updated: 1, removed: 0, conflicts: 1 }, changes: [{ changeId: '1'.repeat(64), entityKind: 'api', externalKey: 'get:/pets', entityId: id(7), layer: 'documentation', operation: 'update', path: 'collections/pets/api.yaml', fieldPath: '/metadata/description', label: 'Pet description', beforeDigest: '2'.repeat(64), afterDigest: '3'.repeat(64), summaries: { baseline: { kind: 'scalar', value: 'Baseline pets', truncated: false }, current: { kind: 'scalar', value: 'Local pets', truncated: false }, source: { kind: 'scalar', value: 'Upstream pets', truncated: false } } }], conflicts: [{ changeId: '1'.repeat(64), reasonCode: 'both-modified', message: 'Both edited description', currentSummary: 'Local pets', sourceSummary: 'Upstream pets' }], referenceImpacts: [], diagnostics: [] }, applicable: true, reasonCode: null }); }
+export function receipt(intentId = id(8)) { return SyncReceiptSchema.parse({ formatVersion: 1, operationId: id(9), intentId, kind: 'apply', status: 'committed', historyId: id(10), sourceId: source.id, projectId: id(1), afterStamp: candidateView().candidate.stamp, actor: { id: '7', name: 'Member' }, completedAtMs: 1793980800123, integritySha256: '4'.repeat(64) }); }
+
+// The requested panel fixture mounts the real store and component. Transport
+// data is strict T1/T3; no filesystem or SecretStore is imported by the renderer.
+export async function mountSyncPanel(language: 'zh-CN' | 'en' = 'zh-CN', options?: { transport?: (input: import('../../../../src/shared/synchronization.js').SynchronizationInput) => Promise<unknown> | undefined; api?: import('../../../../src/shared/types.js').ApiccApi }) {
+  const [{ mount, flushPromises }, { createI18n }, { default: Panel }, { createSynchronizationStore }, zh, en] = await Promise.all([
+    import('@vue/test-utils'), import('vue-i18n'), import('../../../../src/renderer/src/components/sync/SyncPanel.vue'), import('../../../../src/renderer/src/stores/synchronization.js'), import('../../../../src/renderer/src/i18n/zh-CN.json'), import('../../../../src/renderer/src/i18n/en.json'),
+  ]);
+  const applications: unknown[] = [], savedSources: unknown[] = [], scheduleWrites: unknown[] = []; let gate: ReturnType<typeof deferred<unknown>> | undefined;
+  const store = createSynchronizationStore({ synchronization: async input => {
+    const overridden = options?.transport?.(input); if (overridden !== undefined) return overridden;
+    if (input.operation === 'saveSource') { savedSources.push(input); return input.source; }
+    if (input.operation === 'checks') return { formatVersion: 1, sourceId: source.id, current: null, latestAttempt: null, latestSuccess: null };
+    if (input.operation === 'schedule') return scheduleView();
+    if (input.operation === 'saveSchedule') { scheduleWrites.push(input); return { ...scheduleView(), generation: '1', sourceRevision: '2', enabled: input.enabled, subjectUserId: '7', rule: input.rule }; }
+    if (input.operation === 'policy') return policyView();
+    if (input.operation === 'access') return { accountEnabled: true, member: true, workspaceRole: 'EDITOR', projectOverride: null, overrideState: 'inherited', effectiveRole: 'EDITOR', capabilities: ['sync.manage','sync.check','sync.apply','credential.manage'], accessRevision: 1, membershipEpoch: 1, responsibilityEpoch: 1, reasonCode: null };
+    if (input.operation === 'sources') return [source]; if (input.operation === 'check') return gate ? gate.promise : candidateView();
+    if (input.operation === 'apply') { applications.push(input); return receipt(input.intentId); }
+    if (input.operation === 'activate') return null; if (input.operation === 'history') return []; if (input.operation === 'materials') return [{ refId: 'owned-auth', kind: 'credential', status: 'unavailable', version: '2' }];
+    if (input.operation === 'settings') return { maxRedirects: 5, policy: (await import('@apicc/core/sync/shared')).defaultSyncPolicyValues, git: 'missing', ssh: 'missing' };
+    return null;
+  } }, undefined, null);
+  const wrapper = mount(Panel, { props: { store, modules: [{ id: source.moduleId, name: 'Pets' }], api: options?.api, contractProjectId: id(1) }, attachTo: document.body, global: { plugins: [createI18n({ legacy: false, locale: language, messages: { 'zh-CN': zh.default, en: en.default } })] } });
+  return { wrapper, store, async showCandidate(_project: string) { store.activate(localScope()); await store.load(); store.selectSource(source.id); await store.check(); await flushPromises(); },
+    async switchProject(_project: string) { store.activate(localScope(id(99))); await flushPromises(); },
+    visibleCandidate() { return wrapper.find('[data-testid="sync-candidate"]').exists() ? store.candidate : null; },
+    async completeOldRequest() { gate?.resolve(candidateView()); await flushPromises(); }, applicationCalls: () => applications, savedSources: () => savedSources, scheduleWrites: () => scheduleWrites,
+    async startOldRequest() { gate = deferred<unknown>(); void store.check(); await flushPromises(); }, unmount: () => wrapper.unmount(), flush: flushPromises,
+  };
+}
+
+export function policyView() {
+  const units = Object.fromEntries(Object.keys(defaultSyncPolicyValues).map(field => [field, field.endsWith('Ms') ? 'milliseconds' : field.endsWith('Bytes') ? 'bytes' : field === 'historyRetentionDays' ? 'days' : 'count']));
+  return { saved: { formatVersion: 1, revision: '0', scope: 'project' }, inherited: { formatVersion: 1, revision: '0', scope: 'workspace' }, workspaceRevision: '0', units, deploymentLimits: { maxWireBytes: 67108864, envelopeReserveBytes: 1024 }, deploymentCeilings: {}, status: 'valid', reasonCode: null, effective: { policy: { ...defaultSyncPolicyValues }, savedRevision: '0', deploymentLimits: { maxWireBytes: 67108864, envelopeReserveBytes: 1024 }, sources: Object.fromEntries(Object.keys(defaultSyncPolicyValues).map(field => [field, 'default'])), appliesTo: 'next-check' } };
+}
+export function scheduleView() { return SyncScheduleViewSchema.parse({ formatVersion: 1, sourceId: source.id, sourceRevision: '1', generation: '0', enabled: false, subjectUserId: null, pausedReasonCode: 'material-changed', rule: source.schedule.rule, nextPlannedAtUtc: null, nextPlannedState: 'not-calculated', lastOccurrence: { occurrenceId: id(70), plannedAtUtc: '2026-11-06T16:00:00.123Z', checkId: id(71), state: 'waiting', associationState: 'coalesced', checkState: 'waiting', coalesced: true, coalescedDueCount: 2, missedBeforeWindow: true, evaluatedAfterUtc: '2026-11-05T16:00:00.123Z', evaluatedThroughUtc: '2026-11-06T16:00:00.123Z', requestedSubjectUserId: '7', executedSubjectUserId: '8' } }); }

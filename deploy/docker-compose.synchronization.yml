@@ -1,0 +1,23 @@
+# Explicit source-host opt-in, layered after docker-compose.collaboration.yml.
+# The application partition remains APICC_COLLABORATION_MEMORY_BYTES. tmpfs is
+# charged to the larger cgroup limit, not to a fictitious extra disk budget.
+services:
+  collaboration:
+    mem_limit: "${APICC_SYNC_RUNTIME_MEMORY_BYTES:?Set application partition plus private tmpfs memory explicitly}"
+    tmpfs:
+      # exec is needed only for the fixed application-owned ssh-bridge/askpass.
+      - "/var/lib/apicc-sources:size=${APICC_SYNC_PRIVATE_TMPFS_BYTES:?Set bounded private source storage explicitly},uid=1000,gid=1000,mode=0700,nosuid,nodev,exec"
+    environment:
+      APICC_COLLABORATION_RUNTIME_SOURCE_CONFIG_FILE: /run/configs/collaboration-sources.json
+    configs:
+      - source: collaboration-sources
+        target: /run/configs/collaboration-sources.json
+    networks: [collaboration-private, collaboration-source-egress]
+configs:
+  collaboration-sources:
+    file: "${APICC_COLLABORATION_SOURCE_CONFIG_FILE:-./collaboration-source.example.json}"
+networks:
+  # This dedicated bridge provides transport egress. Application approval still
+  # requires BOTH the configured exact origin and destination CIDR.
+  collaboration-source-egress:
+    internal: false

@@ -28,6 +28,8 @@ public class RuntimeProtocol {
     public boolean validRequest(JsonNode value){return value!=null&&request.validate(value).isEmpty();}
     public boolean validResponse(JsonNode value){return value!=null&&response.validate(value).isEmpty();}
     public boolean validError(JsonNode value){return value!=null&&error.validate(value).isEmpty();}
+    /** Public detail is drawn only from the generated finite private boundary. */
+    public String syncDetailCode(String code){var value=com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode().put("code",code).put("requestId","").put("retryable",false);return code!=null&&code.startsWith("SYNC_")&&validError(value)?code:null;}
     private static void requireLocalReferences(JsonNode value) {
         if(value.isObject())for(String key:new String[]{"$ref","$dynamicRef","$recursiveRef"})if(value.has(key)&&(!value.get(key).isTextual()||!value.get(key).asText().startsWith("#")))throw new IllegalStateException("Nonlocal generated reference");
         if(value.isContainerNode())value.forEach(RuntimeProtocol::requireLocalReferences);

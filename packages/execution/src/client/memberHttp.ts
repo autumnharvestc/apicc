@@ -36,10 +36,11 @@ export function createBoundedMemberFetch(fetcher: typeof fetch = globalThis.fetc
   };
 }
 /** Canonical member control requests; never retries an uncertain operation. */
-export function createMemberExecutionRequest(binding: Pick<MemberBinding,'serverId'|'token'|'assertCurrent'>, fetcher: typeof fetch = globalThis.fetch, parentSignal?: AbortSignal) {
+export function createMemberExecutionRequest(binding: Pick<MemberBinding,'serverId'|'token'|'assertCurrent'>, fetcher: typeof fetch = globalThis.fetch, parentSignal?: AbortSignal, options?: { errorCodes: readonly string[] }) {
   const base=new URL(binding.serverId);
   if(base.protocol!=='https:'||base.username||base.password||base.search||base.hash)throw new Error('execution-requires-https');
   const boundedFetch=createBoundedMemberFetch(fetcher);
+  const finiteErrorCodes = new Set(options?.errorCodes);
   return async function request<T>(method: string, path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
     binding.assertCurrent();
     const controller = new AbortController();
@@ -58,7 +59,7 @@ export function createMemberExecutionRequest(binding: Pick<MemberBinding,'server
       try{raw=response.status===204?undefined:await response.json();}catch{throw new Error('execution-invalid-response');}
       signal.throwIfAborted(); if (!authenticationDenied) binding.assertCurrent();
       if (!response.ok) {
-        const code = typeof raw === 'object' && raw !== null && 'code' in raw && typeof raw.code === 'string' && /^[a-z][a-z0-9_-]{0,95}$/.test(raw.code) ? raw.code : 'execution-request-failed';
+        const code = typeof raw === 'object' && raw !== null && 'code' in raw && typeof raw.code === 'string' && (/^[a-z][a-z0-9_-]{0,95}$/.test(raw.code) || (!authenticationDenied && finiteErrorCodes.has(raw.code))) ? raw.code : 'execution-request-failed';
         throw new ExecutionHttpError(response.status, code);
       }
       return schema.parse(raw);

@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { setTimeout as waitDelay } from "node:timers/promises";
-import { digestJson, RequestSchema, outputSchemas, type Operation } from "./protocol.js";
+import { digestJson, RequestSchema, outputSchemas, runtimeErrorCodes, type Operation } from "./protocol.js";
 import { handleOperation } from "./handlers.js";
 import { PlanCache } from "./cache.js";
 import { runtimeLimits, type RuntimeLimits } from "./limits.js";
 import { coreBuildIdentity } from "./core-identity.js";
+import { createRuntimeSourceHost, type RuntimeSourceOptions } from "./sourceHost.js";
 
 function readBody(request: IncomingMessage, maxWireBytes: number, controller: AbortController): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -22,13 +23,13 @@ function readBody(request: IncomingMessage, maxWireBytes: number, controller: Ab
     request.on("data", data); request.on("end", end); request.on("error", error); request.on("aborted", aborted);
   });
 }
-const stableCodes = new Set(["RPC_INVALID_REQUEST", "RPC_INPUT_DIGEST_MISMATCH", "RPC_MESSAGE_TOO_LARGE", "RPC_DEADLINE_EXCEEDED", "RPC_CANCELLED", "RPC_INVALID_OUTPUT", "RPC_DUPLICATE_PATH", "RPC_POLICY_MISMATCH", "RPC_PLAN_UNAVAILABLE", "RPC_PLAN_DIGEST_MISMATCH", "RPC_PLAN_UNSAFE", "PUBLICATION_SOURCE_INVALID", "PUBLICATION_INPUT_INVALID", "PUBLICATION_SCOPE_INVALID", "PUBLICATION_POLICY_INVALID", "PUBLICATION_ARTIFACT_TOO_LARGE"]);
 export async function startCollaborationRuntime(options: RuntimeLimits & {
-  secret: string; host?: string; port?: number; maxInFlight?: number;
+  secret: string; host?: string; port?: number; maxInFlight?: number; source?: RuntimeSourceOptions;
   handler?: (input: unknown, signal: AbortSignal) => Promise<unknown>;
 }) {
   const { cacheBytes, maxWireBytes, inFlightBytes } = runtimeLimits(options);
   const identity = await coreBuildIdentity(); const cache = new PlanCache(cacheBytes, identity);
+  const sourceHost = options.source ? await createRuntimeSourceHost(options.source) : undefined;
   const secretHash = createHash("sha256").update(options.secret).digest();
   let active = 0, reservedBytes = 0;
   // Conservative reservation for both bounded wire buffers. This is not exact JS heap/RSS measurement.
@@ -72,7 +73,7 @@ export async function startCollaborationRuntime(options: RuntimeLimits & {
         controller.abort(new Error("RPC_DEADLINE_EXCEEDED")); sendError(408, "RPC_DEADLINE_EXCEEDED");
       };
       expire();
-      const output = options.handler ? await options.handler(input, controller.signal) : await handleOperation(input.operation, input.payload, { cache });
+      const output = options.handler ? await options.handler(input, controller.signal) : await handleOperation(input.operation, input.payload, { cache, sourceHost, signal: controller.signal, deadlineEpochMs: input.deadlineEpochMs });
       if (controller.signal.aborted || input.deadlineEpochMs <= Date.now()) throw new Error("RPC_DEADLINE_EXCEEDED");
       const checked = outputSchemas[input.operation as Operation].safeParse(output);
       if (!checked.success) throw new Error("RPC_INVALID_OUTPUT");
@@ -90,8 +91,9 @@ export async function startCollaborationRuntime(options: RuntimeLimits & {
       if (Buffer.byteLength(text) > maxWireBytes || Buffer.byteLength(text) > input.outputBudgetBytes) throw new Error("RPC_MESSAGE_TOO_LARGE");
       if (!response.destroyed && !response.writableEnded) { response.writeHead(200, { "Content-Type": "application/json" }); response.end(text); }
     } catch (error) {
-      const code = error instanceof Error && stableCodes.has(error.message) ? error.message : "RPC_INTERNAL_ERROR";
-      const status = code === "RPC_DEADLINE_EXCEEDED" ? 408 : code === "RPC_MESSAGE_TOO_LARGE" ? 413 : code === "RPC_PLAN_UNAVAILABLE" ? 503 : code === "RPC_INTERNAL_ERROR" || code === "RPC_INVALID_OUTPUT" ? 500 : 400;
+      const reported = (error as { code?: unknown })?.code ?? (error instanceof Error ? error.message : undefined);
+      const code = typeof reported === "string" && runtimeErrorCodes.has(reported) ? reported : "RPC_INTERNAL_ERROR";
+      const status = code === "RPC_DEADLINE_EXCEEDED" ? 408 : code === "RPC_MESSAGE_TOO_LARGE" ? 413 : code === "SYNC_BUSY" ? 429 : code === "RPC_PLAN_UNAVAILABLE" || code === "SYNC_HOST_UNAVAILABLE" ? 503 : code === "RPC_INTERNAL_ERROR" || code === "RPC_INVALID_OUTPUT" ? 500 : 400;
       sendError(status, code);
     } finally {
       // Both execution/read settlement and actual response finish/close own the reservation.
@@ -100,17 +102,18 @@ export async function startCollaborationRuntime(options: RuntimeLimits & {
       if(active===0){for(const done of drained)done();drained.clear();}
     }
   });
-  await new Promise<void>((resolve, reject) => {
+  try { await new Promise<void>((resolve, reject) => {
     const failed = (error: Error) => reject(error);
     server.once("error", failed);
     server.listen(options.port ?? 0, options.host ?? "127.0.0.1", () => { server.off("error", failed); resolve(); });
-  });
+  }); } catch (error) { await sourceHost?.close(); throw error; }
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("listen failed");
-  return { url: `http://127.0.0.1:${address.port}`, close: () => stopping ??= (async()=>{
+  return { url: `http://127.0.0.1:${address.port}`, sourceCapacity: () => sourceHost?.capacity() ?? { held: 0, retained: 0 }, close: () => stopping ??= (async()=>{
     const settled=active===0?Promise.resolve():new Promise<void>(resolve=>drained.add(resolve));
     for(const controller of controllers)controller.abort(new Error("RPC_CANCELLED"));
     const closed=new Promise<void>((resolve,reject)=>{server.close(error=>error?reject(error):resolve());server.closeAllConnections();});
     await Promise.all([closed,settled]);
+    await sourceHost?.close();
   })() };
 }

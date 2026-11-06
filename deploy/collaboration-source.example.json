@@ -1,0 +1,7 @@
+{
+  "privateRoot": "/var/lib/apicc-sources",
+  "tools": { "gitPath": "/usr/bin/git", "sshPath": "/usr/bin/ssh" },
+  "allowedOrigins": [],
+  "allowedCidrs": [],
+  "maxRedirects": 0
+}

@@ -1,3 +1,7 @@
+import { handleOnlineSynchronization } from './online/synchronization.js';
+import { createDesktopSyncProviders, type SyncProviderOptions } from './sync/providers.js';
+import { createSynchronizationHost } from './sync/ipc.js';
+import type { SynchronizationInput } from '../shared/synchronization.js';
 import { createHash, randomUUID } from "node:crypto";
 import { createTestingController } from "./testing.js";
 import { createWorkflowController } from "./workflow.js";
@@ -107,6 +111,7 @@ export interface IpcDepsOptions {
   credentials?: DesktopCredentialHostOptions;
   /** Lazy factory prevents unrelated IPC/debug tests from reading or creating app-data history. */
   debugHistory?: () => ReturnType<typeof createDesktopDebugHistoryStore>;
+  synchronization?: Pick<SyncProviderOptions, 'privateRoot' | 'confirmDestination' | 'pickTool'>;
 }
 
 export function createIpcDeps(options: IpcDepsOptions) {
@@ -228,6 +233,15 @@ export function createIpcDeps(options: IpcDepsOptions) {
   // 压测控制器（M2-D3 任务 1）：状态挂 deps 闭包（进程内单例），ws:open/ws:create 切换
   // 工作区时先 abort 活动 run（清理点；session 无 close 钩子，既有清理先例即 ipc 分支层）。
   const credentials = createDesktopCredentialHost(session, options.credentials);
+  let synchronization: ReturnType<typeof createSynchronizationHost> | undefined;
+  const requireSynchronization = () => {
+    if (!synchronization) {
+      if (!options.synchronization) throw Error('SYNC_HOST_UNAVAILABLE');
+      const providers = createDesktopSyncProviders({ ...options.synchronization, session, credentials });
+      synchronization = createSynchronizationHost({ session, providers, local: (_root, locator, locale) => providers.open(locator, locale), online: input => handleOnlineSynchronization({ session: requireOnline(), fetch: options.online?.fetch }, input) });
+    }
+    return synchronization;
+  };
   const stress = createStressController(session, { registry: () => pluginsRuntime.registry(), onProgress(progress, owner) {
     const sender = owner as { send?: (channel: string, value: unknown) => void; isDestroyed?: () => boolean } | undefined;
     if (sender?.send && !sender.isDestroyed?.()) sender.send(IpcEvent.StressProgress, progress);
@@ -1162,6 +1176,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.OnlineCollaboration:
         if (!onlineCollaboration) throw new Error('online-collaboration-requires-connected-server');
         return CollaborationResultSchema.parse(await onlineCollaboration.handle(a[0] as CollaborationInput, owner));
+      case IpcChannel.Synchronization: return requireSynchronization().handle(a[0] as SynchronizationInput, owner);
       case IpcChannel.OnlineScheduling:
         return parseOnlineSchedulingResult(a[0] as OnlineSchedulingInput, await handleOnlineScheduling({ session: requireOnline(), fetch: options.online?.fetch }, a[0] as OnlineSchedulingInput));
       case IpcChannel.OnlineLogin: {
@@ -1278,5 +1293,5 @@ export function createIpcDeps(options: IpcDepsOptions) {
     return await dispatch(channel, args, owner) as IpcResultMap[Channel];
   }
 
-  return { handle, pluginsRuntime, stopMocks: () => mockManager.stopAll(), stopOnlineExecutions: () => onlineExecution?.close() ?? Promise.resolve() };
+  return { handle, pluginsRuntime, stopMocks: () => mockManager.stopAll(), stopSynchronization: () => synchronization?.close() ?? Promise.resolve(), stopOnlineExecutions: () => onlineExecution?.close() ?? Promise.resolve() };
 }

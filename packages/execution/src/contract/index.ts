@@ -8,3 +8,4 @@ export * from "./jobs.js";
 export * from "./runtime.js";
 export * from "./declaredPaths.js";
 export * from "./scheduling.js";
+export * from "./synchronization.js";

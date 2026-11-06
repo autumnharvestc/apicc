@@ -88,7 +88,7 @@ public class ProjectAccessService {
         return switch (role) {
             case VIEWER -> Set.of(Capability.HISTORY_READ);
             case EDITOR -> Set.of(Capability.HISTORY_READ, Capability.HISTORY_PUBLISH, Capability.SCRIPT_EDIT,
-                    Capability.CREDENTIAL_MANAGE, Capability.TASK_EXECUTE);
+                    Capability.CREDENTIAL_MANAGE, Capability.TASK_EXECUTE, Capability.SYNC_CHECK, Capability.SYNC_APPLY);
             case ADMIN, OWNER -> Set.of(Capability.values());
         };
     }

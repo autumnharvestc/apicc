@@ -159,6 +159,11 @@ it('reads current capability authority independently from assets and policy', as
   const { client, requests } = setup(access()); expect(await client.readAccess(context, {})).toEqual(access());
   expect(requests[0]!.url).toBe('https://control.test/api/v1/workspaces/11/projects/33/access');
 });
+it('accepts the finite sync capabilities in an actual current-access response', async () => {
+  const response = { ...access(), effectiveRole: 'ADMIN', capabilities: ['history.read', 'sync.manage', 'sync.check', 'sync.apply'] };
+  const { client } = setup(response);
+  expect(await client.readAccess(context, {})).toEqual(response);
+});
 it('refuses unknown capability authority fields', async () => {
   const { client } = setup({ ...access(), privatePolicy: true }); await expect(client.readAccess(context, {})).rejects.toThrow();
 });

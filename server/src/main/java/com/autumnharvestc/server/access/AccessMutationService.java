@@ -57,10 +57,12 @@ public class AccessMutationService {
         if(project!=null&&projects.find(project).filter(p->p.workspaceId().equals(ws)).isEmpty())
             throw new ApiException(HttpStatus.NOT_FOUND,"project_not_found","项目不存在");
     }
-    private Map<AccessRepo.SubjectProject,Integer> before(Long ws,Long project,Long userId) {
+    private record AuthoritySnapshot(Map<AccessRepo.SubjectProject,Integer> ordinary,Map<AccessRepo.SubjectProject,Boolean> sync) {}
+    private AuthoritySnapshot before(Long ws,Long project,Long userId) {
         var result=new LinkedHashMap<AccessRepo.SubjectProject,Integer>();
-        for(var subject:records.affected(ws,project,userId))result.put(subject,qualification(subject));
-        return result;
+        var sync=new LinkedHashMap<AccessRepo.SubjectProject,Boolean>();
+        for(var subject:records.affected(ws,project,userId)){result.put(subject,qualification(subject));sync.put(subject,access.resolve(subject.userId(),subject.workspaceId(),subject.projectId()).capabilities().contains(Capability.SYNC_CHECK));}
+        return new AuthoritySnapshot(result,sync);
     }
     private int qualification(AccessRepo.SubjectProject subject) {
         var view=access.resolve(subject.userId(),subject.workspaceId(),subject.projectId());
@@ -70,13 +72,14 @@ public class AccessMutationService {
         if(view.capabilities().contains(Capability.MOCK_MANAGE))mask|=8;
         return mask;
     }
-    private void finish(UserAccount caller,Map<AccessRepo.SubjectProject,Integer> before,Long ws,Long project,Long userId,boolean forceInvalidation) {
-        var affected=new LinkedHashSet<>(before.keySet());affected.addAll(records.affected(ws,project,userId));
+    private void finish(UserAccount caller,AuthoritySnapshot before,Long ws,Long project,Long userId,boolean forceInvalidation) {
+        var affected=new LinkedHashSet<>(before.ordinary().keySet());affected.addAll(records.affected(ws,project,userId));
         var generations=new LinkedHashSet<List<Long>>();
         var lost=new ArrayList<AccessRepo.SubjectProject>();
         for(var subject:affected){
-            int old=before.getOrDefault(subject,0),now=qualification(subject);
+            int old=before.ordinary().getOrDefault(subject,0),now=qualification(subject);
             if(forceInvalidation||(old&~now)!=0){records.advanceResponsibilityEpoch(subject.workspaceId(),subject.projectId(),subject.userId());lost.add(subject);}
+            if(forceInvalidation||(before.sync().getOrDefault(subject,false)&&!access.resolve(subject.userId(),subject.workspaceId(),subject.projectId()).capabilities().contains(Capability.SYNC_CHECK)))records.advanceSyncCheckEpoch(subject.workspaceId(),subject.projectId(),subject.userId());
             generations.add(List.of(subject.workspaceId(),subject.projectId()));
         }
         for(var generation:generations)records.advanceProjectRevision(generation.get(0),generation.get(1));

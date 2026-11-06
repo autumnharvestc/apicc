@@ -21,9 +21,12 @@ public class ProjectCredentialService {
     private final AgentService agents;
     private final ExecutionProperties properties;
     private final com.autumnharvestc.server.execution.agent.AgentRepo audit;
+    private final com.autumnharvestc.server.access.AccessRepo authority;
     private final SecureRandom random=new SecureRandom();
-    public ProjectCredentialService(ProjectCredentialStore store,AgentService agents,ExecutionProperties properties,com.autumnharvestc.server.execution.agent.AgentRepo audit){this.store=store;this.agents=agents;this.properties=properties;this.audit=audit;}
+    public ProjectCredentialService(ProjectCredentialStore store,AgentService agents,ExecutionProperties properties,com.autumnharvestc.server.execution.agent.AgentRepo audit,com.autumnharvestc.server.access.AccessRepo authority){this.store=store;this.agents=agents;this.properties=properties;this.audit=audit;this.authority=authority;}
     public CredentialMetadata put(UserAccount caller,String ws,String project,String ref,CredentialWrite request){
+        // Scope deletion and ACL writes use gate→project. Acquire before requireCapability's project lock.
+        authority.lockGate();
         agents.requireCapability(caller,ws,project,com.autumnharvestc.server.access.Capability.CREDENTIAL_MANAGE); validRef(ref);
         if(request==null||request.value()==null)throw error(HttpStatus.BAD_REQUEST,"validation_failed","凭据值必填");
         long w=id(ws),p=id(project); var current=store.find(w,p,ref).orElse(null); long version=current==null?0:current.version();
@@ -34,6 +37,7 @@ public class ProjectCredentialService {
         try {encrypted=crypt(Cipher.ENCRYPT_MODE,w,p,ref,next,properties.getMaterials().getKeyId(),nonce,plain);}
         finally {Arrays.fill(plain,(byte)0);}
         store.save(new ProjectCredentialStore.Envelope(w,p,ref,next,properties.getMaterials().getKeyId(),nonce,encrypted));
+        authority.advanceProjectRevision(w,p);
         audit.audit(caller.id(),"credential.put","project",p,next);
         return new CredentialMetadata(ref,String.valueOf(next),"available");
     }
@@ -63,10 +67,17 @@ public class ProjectCredentialService {
         }catch(Exception ignored){throw error(HttpStatus.SERVICE_UNAVAILABLE,"credential_unavailable","项目凭据部署密钥或密文元数据不可用");}
         return new RegisteredSelection(new CredentialSelection(ref,String.valueOf(row.version())),row.ciphertext().length-16L);
     }
+    /** Expected fixed-registration loss is a value, so a caller's pause transaction stays committable. */
+    public boolean registrationCurrentAuthorized(long ws,long project,CredentialSelection selected){
+        try{requireRegistrationAuthorized(ws,project,selected.refId(),selected.version());return true;}
+        catch(com.autumnharvestc.server.core.ApiException error){if(Set.of("credential_missing","credential_version_conflict","credential_unavailable").contains(error.getCode()))return false;throw error;}
+    }
     public void remove(UserAccount caller,String ws,String project,String ref,String expected){
+        authority.lockGate();
         agents.requireCapability(caller,ws,project,com.autumnharvestc.server.access.Capability.CREDENTIAL_MANAGE);validRef(ref);var row=store.find(id(ws),id(project),ref).orElseThrow(()->missing());
         if(version(expected)!=row.version())throw conflict();
         store.save(new ProjectCredentialStore.Envelope(row.workspaceId(),row.projectId(),ref,next(row.version()),null,null,null));
+        authority.advanceProjectRevision(row.workspaceId(),row.projectId());
         audit.audit(caller.id(),"credential.remove","project",row.projectId(),next(row.version()));
     }
     /** Internal material seam: caller must hold a currently authorized real project/task lock. */

@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS access_project_epochs (
     responsibility_epoch BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY(workspace_id,project_id,user_id)
 );
+ALTER TABLE access_project_epochs ADD COLUMN IF NOT EXISTS sync_check_epoch BIGINT NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS access_mutation_gate(id BIGINT PRIMARY KEY);
 -- Authorization generations must not contend with long-lived project content locks.
 CREATE TABLE IF NOT EXISTS access_project_generations (
@@ -528,3 +529,57 @@ CREATE INDEX IF NOT EXISTS execution_result_retention ON execution_jobs(report_s
 UPDATE execution_jobs SET report_state='archived' WHERE report_content IS NOT NULL AND report_state<>'archived';
 UPDATE execution_jobs SET report_state='pending' WHERE report_content IS NULL AND report_state='none'
     AND (state IN ('preparing','running') OR report_hash IS NOT NULL);
+
+-- F7g synchronization side tables. CREATE IF NOT EXISTS is additive and preserves old projects/ACL/assets.
+-- Sync revisions are canonical decimal text (unbounded by Java long); asset versions keep their existing BIGINT contract.
+CREATE TABLE IF NOT EXISTS sync_sources (
+    workspace_id BIGINT NOT NULL,project_id BIGINT NOT NULL,id VARCHAR(36) NOT NULL,
+    source_revision CLOB NOT NULL,source_json CLOB NOT NULL,deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    mapping_revision CLOB DEFAULT '0' NOT NULL,baseline_revision CLOB DEFAULT '0' NOT NULL,
+    mapping_json CLOB,baseline_json CLOB,baseline_bytes BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY(workspace_id,project_id,id)
+);
+CREATE TABLE IF NOT EXISTS sync_checks (
+    workspace_id BIGINT NOT NULL,project_id BIGINT NOT NULL,id VARCHAR(36) NOT NULL,source_id VARCHAR(36) NOT NULL,
+    source_revision CLOB NOT NULL,subject_user_id BIGINT NOT NULL,state VARCHAR(32) NOT NULL,
+    details_json CLOB,created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(workspace_id,project_id,id)
+);
+ALTER TABLE sync_checks ADD COLUMN IF NOT EXISTS admission_after TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP;
+CREATE INDEX IF NOT EXISTS sync_check_dispatch ON sync_checks(state,admission_after,created_at);
+CREATE INDEX IF NOT EXISTS sync_check_source_status ON sync_checks(workspace_id,project_id,source_id,state,created_at);
+CREATE TABLE IF NOT EXISTS sync_candidates (
+    workspace_id BIGINT NOT NULL,project_id BIGINT NOT NULL,id VARCHAR(36) NOT NULL,source_id VARCHAR(36) NOT NULL,
+    fixed_json CLOB NOT NULL,content_bytes BIGINT NOT NULL DEFAULT 0,reference_count BIGINT NOT NULL DEFAULT 1,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    PRIMARY KEY(workspace_id,project_id,id)
+);
+CREATE TABLE IF NOT EXISTS sync_history (
+    workspace_id BIGINT NOT NULL,project_id BIGINT NOT NULL,id VARCHAR(36) NOT NULL,source_id VARCHAR(36) NOT NULL,
+    history_json CLOB NOT NULL,before_content CLOB NOT NULL,after_content CLOB NOT NULL,
+    content_bytes BIGINT NOT NULL DEFAULT 0,reference_count BIGINT NOT NULL DEFAULT 1,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(workspace_id,project_id,id)
+);
+CREATE TABLE IF NOT EXISTS sync_operations (
+    workspace_id BIGINT NOT NULL,project_id BIGINT NOT NULL,intent_id VARCHAR(36) NOT NULL,
+    actor_id BIGINT NOT NULL,kind VARCHAR(32) NOT NULL,request_hash VARCHAR(64) NOT NULL,response_json CLOB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(workspace_id,project_id,intent_id)
+);
+CREATE TABLE IF NOT EXISTS sync_policies (
+    workspace_id BIGINT NOT NULL,project_id BIGINT NOT NULL,revision CLOB NOT NULL,policy_json CLOB NOT NULL,
+    PRIMARY KEY(workspace_id,project_id)
+);
+
+-- Online retention owners are host metadata; public T1 history/receipt bytes stay immutable.
+ALTER TABLE sync_sources ADD COLUMN IF NOT EXISTS current_history_id VARCHAR(36);
+ALTER TABLE sync_history ADD COLUMN IF NOT EXISTS active_owners_json CLOB DEFAULT '[]' NOT NULL;
+ALTER TABLE sync_sources ADD COLUMN IF NOT EXISTS baseline_ref_json CLOB;
+ALTER TABLE sync_sources ADD COLUMN IF NOT EXISTS schedule_json CLOB;
+CREATE TABLE IF NOT EXISTS sync_occurrences (
+    workspace_id BIGINT NOT NULL,project_id BIGINT NOT NULL,id VARCHAR(36) NOT NULL,source_id VARCHAR(36) NOT NULL,
+    generation CLOB NOT NULL,planned_at_utc VARCHAR(40) NOT NULL,trigger_key VARCHAR(64) NOT NULL,state VARCHAR(32) NOT NULL,check_id VARCHAR(36),details_json CLOB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(workspace_id,project_id,id),UNIQUE(workspace_id,project_id,trigger_key)
+);

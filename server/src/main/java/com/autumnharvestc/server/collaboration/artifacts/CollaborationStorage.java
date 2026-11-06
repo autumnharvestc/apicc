@@ -21,11 +21,11 @@ import static com.autumnharvestc.server.collaboration.policy.PolicyReadView.Code
  * project/source, stable object/ref, audit. Remote RPC never runs here. */
 @Service
 public class CollaborationStorage {
-    private final JdbcTemplate jdbc;private final ObjectMapper json;private final CollaborationTime time;private final IdGeneration ids;
+    private final ObjectProvider<com.autumnharvestc.server.sync.SyncRetentionService> syncRetention;private final JdbcTemplate jdbc;private final ObjectMapper json;private final CollaborationTime time;private final IdGeneration ids;
     private final TransactionTemplate transactions;private final CollaborationPolicyRepo policyLocks;private final ObjectProvider<CollaborationPolicyService> policies;
     private final ObjectProvider<com.autumnharvestc.server.collaboration.grants.GrantService> grants;
     public CollaborationStorage(JdbcTemplate jdbc,ObjectMapper json,CollaborationTime time,IdGeneration ids,PlatformTransactionManager transactions,
-            CollaborationPolicyRepo policyLocks,ObjectProvider<CollaborationPolicyService> policies,ObjectProvider<com.autumnharvestc.server.collaboration.grants.GrantService> grants){this.jdbc=jdbc;this.json=json;this.time=time;this.ids=ids;this.transactions=new TransactionTemplate(transactions);this.policyLocks=policyLocks;this.policies=policies;this.grants=grants;}
+            CollaborationPolicyRepo policyLocks,ObjectProvider<CollaborationPolicyService> policies,ObjectProvider<com.autumnharvestc.server.collaboration.grants.GrantService> grants,ObjectProvider<com.autumnharvestc.server.sync.SyncRetentionService> syncRetention){this.syncRetention=syncRetention;this.jdbc=jdbc;this.json=json;this.time=time;this.ids=ids;this.transactions=new TransactionTemplate(transactions);this.policyLocks=policyLocks;this.policies=policies;this.grants=grants;}
     private record StoredMetadata(long workspace,long project,long objectId,Kind kind,long actorId,String state,String sourceJson,String accessJson,String policyJson,String digest,
             long createdAtEpochMs,Long expiresAtEpochMs,Long operationDeadline,Long previewId,Long version,String publicationIntentId,String trust,Integer formatVersion) {}
     private record Receipt(long workspace,long project,long objectId,long actorId,String digest,String kind,String state,long retireAtEpochMs) {}
@@ -55,6 +55,7 @@ public class CollaborationStorage {
             long previous=jdbc.queryForObject("SELECT last_cleanup_epoch_ms FROM collaboration_storage_accounts WHERE workspace_id=? AND project_id=?",Long.class,workspace,project);
             if(previous!=0 && now-previous<number(policy,CLEANUP_INTERVAL_MS))return;
             cleanup(workspace,project);
+            syncRetention.getObject().cleanupLocked(workspace,project,policy);
             jdbc.update("UPDATE collaboration_storage_accounts SET last_cleanup_epoch_ms=? WHERE workspace_id=? AND project_id=?",now,workspace,project);
         });
     }
@@ -83,6 +84,34 @@ public class CollaborationStorage {
         jdbc.queryForList("SELECT actual_bytes,reserved_bytes FROM collaboration_storage_accounts WHERE workspace_id=? AND project_id=? FOR UPDATE",ws,project);
     }
     private void capacity(long ws,long project,PolicyReadView policy){if(usage(0,0).occupiedBytes()>number(policy,DEPLOYMENT_MAX_STORAGE_BYTES)||(project>0&&usage(ws,project).occupiedBytes()>number(policy,MAX_PROJECT_STORAGE_BYTES)))throw failure("collaboration_storage_limit");}
+    /** Synchronization owns seven typed tables including occurrences; charge actual logical UTF-8 values under the existing gates. */
+    public void synchronizationChanged(long ws,long project,PolicyReadView policy) {
+        var previous=charge(ws,project,Kind.SYNC_STATE,0);long body=0;var counts=new TreeMap<String,Long>();
+        for(String table:List.of("sync_sources","sync_checks","sync_candidates","sync_history","sync_operations","sync_policies","sync_occurrences")) {
+            var total=jdbc.query("SELECT * FROM "+table+" WHERE workspace_id=? AND project_id=?",rs->{long bytes=0,rows=0;var columns=rs.getMetaData();while(rs.next()){rows++;for(int column=1;column<=columns.getColumnCount();column++){String value=rs.getString(column);if(value!=null)bytes=Math.addExact(bytes,value.getBytes(StandardCharsets.UTF_8).length);}}return new long[]{bytes,rows};},ws,project);body=Math.addExact(body,total[0]);counts.put(table,total[1]);
+        }
+        long reserved=jdbc.query("SELECT state,admission_after,details_json FROM sync_checks WHERE workspace_id=? AND project_id=? AND state IN ('queued','running','waiting','cancelling')",rs->{
+            long remaining=0;while(rs.next()){
+                com.fasterxml.jackson.databind.JsonNode details;try{details=json.readTree(rs.getString(3));}catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw new IllegalStateException("Invalid synchronization progress metadata",invalid);}
+                var footer=json.createObjectNode();for(String field:List.of("reasonCode","detailCode","completedAtMs","candidateId"))if(details.has(field))footer.set(field,details.get(field));
+                long consumed=(long)rs.getString(1).getBytes(StandardCharsets.UTF_8).length+rs.getString(2).getBytes(StandardCharsets.UTF_8).length+encode(footer).getBytes(StandardCharsets.UTF_8).length;
+                remaining=Math.addExact(remaining,Math.max(0L,512-consumed));
+            }return remaining;
+        },ws,project);
+        reserved=Math.addExact(reserved,jdbc.query("SELECT schedule_json FROM sync_sources WHERE workspace_id=? AND project_id=? AND schedule_json IS NOT NULL",rs->{long remaining=0;while(rs.next()){
+            com.fasterxml.jackson.databind.JsonNode grant;try{grant=json.readTree(rs.getString(1));}catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw new IllegalStateException("Invalid synchronization schedule metadata",invalid);}
+            if(!grant.path("enabled").asBoolean())continue;var progress=json.createObjectNode();for(String field:List.of("enabled","pausedReasonCode","evaluatedThroughUtc","lastPlannedAtUtc"))if(grant.has(field))progress.set(field,grant.get(field));
+            remaining=Math.addExact(remaining,Math.max(0L,256-encode(progress).getBytes(StandardCharsets.UTF_8).length));
+        }return remaining;},ws,project));
+        // A separate 256-byte grant progress frame covers only finite enabled/reason/UTC cursor fields.
+        // Source/grant bodies, credential registrations and occurrences are fully charged, never credited here.
+        // The finite 512-byte progress frame includes state/admission time and bounded footer fields already charged above.
+        // Only its unconsumed credit remains reserved. Request, snapshot and candidate content never consume this credit.
+        String metadata=encode(Map.of("formatVersion",1,"accounting","sync-utf8-column-values-v1","workspaceId",ws,"projectId",project,"rows",counts));
+        put(ws,project,Kind.SYNC_STATE,0,body,metadata,0,reserved);
+        // A release/terminal settlement remains possible after deployment ceilings shrink.
+        if(body+metadata.getBytes(StandardCharsets.UTF_8).length+reserved>previous.actual()+previous.reserved())capacity(ws,project,policy);
+    }
     public void previewAdmission(long actor,long ws,long project,PolicyReadView policy){
         long now=time.now().toEpochMilli();
         if(pending("",new Object[]{},now)>=number(policy,MAX_PREVIEWS_GLOBAL)||pending(" AND workspace_id=? AND project_id=?",new Object[]{ws,project},now)>=number(policy,MAX_PREVIEWS_PER_PROJECT)||pending(" AND workspace_id=? AND project_id=? AND actor_id=?",new Object[]{ws,project,actor},now)>=number(policy,MAX_PREVIEWS_PER_PERSON))throw failure("collaboration_preview_limit");

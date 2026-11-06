@@ -616,6 +616,24 @@ export function createSession(options: SessionOptions = {}) {
     return Object.freeze({ root: current.root, revision: current.revision, generation: activeContextGeneration });
   }
 
+  /** Main-only sync seam: serialize with ordinary mutations, fence the captured
+   * root/generation, then refresh the real active session after durable writes.
+   * The callback owns its Core journal transaction; a failed refresh never
+   * changes or erases its already-persisted receipt. Storage CAS is read fresh. */
+  function runSyncContext<T>(
+    context: Pick<DraftWriteContext, "root" | "generation">,
+    operation: (view: SessionView) => Promise<T>,
+  ): Promise<T> {
+    return enqueue(async () => {
+      const current = requireActive();
+      if (current.root !== context.root || activeContextGeneration !== context.generation) throw new Error("SYNC_CONTEXT_CHANGED");
+      const result = await operation(publicView(current));
+      const loaded = await storage.load(current.root);
+      active = { ...current, workspace: ContractWorkspaceSchema.parse(loaded.workspace), revision: loaded.revision, problems: clone(loaded.problems), readOnly: loaded.readOnly };
+      return result;
+    });
+  }
+
   function assertDraftWriteContext(context: DraftWriteContext, current = active): void {
     if (!current || current.root !== context.root || current.revision !== context.revision
       || activeContextGeneration !== context.generation) {
@@ -1979,6 +1997,7 @@ function setContainerOperations(
     get readOnly(): boolean { return active?.readOnly ?? false; },
     get revision(): string | null { return active?.revision ?? null; },
     captureDraftWriteContext,
+    runSyncContext,
     assertDraftWriteContext,
     open,
     create,

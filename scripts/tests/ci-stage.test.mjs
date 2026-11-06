@@ -59,3 +59,18 @@ test('CI stage plans execute their required observable checks', async () => {
 test('unknown stage cannot pass', async () => {
   await assert.rejects(runStage('unknown'), /Unknown CI stage/);
 });
+
+test('fresh Linux consumers each prepare owned Git prerequisites and check the synchronization wire', async () => {
+  for (const stage of ['linux-test', 'linux-server']) {
+    const seen = [];
+    await runStage(stage, { run: async (file, args) => { seen.push([file, ...args].join(' ')); } });
+    const wire = seen.indexOf('pnpm -C packages/execution check:java-sync-schema');
+    const fixture = seen.indexOf('node scripts/prepare-git-fixture.mjs');
+    const tests = seen.findIndex(line => line === 'pnpm -r --workspace-concurrency=1 test --maxWorkers=2' || line.startsWith('mvn '));
+    assert.ok(wire >= 0 && wire < tests, `${stage}: synchronization wire must precede tests`);
+    assert.ok(fixture >= 0 && fixture < tests, `${stage}: owned fixture preparation must precede tests`);
+  }
+  const seen = [];
+  await runStage('deployment', { run: async (file, args) => { seen.push([file, ...args].join(' ')); } });
+  assert.ok(seen.includes('node scripts/smoke-synchronization.mjs'));
+});

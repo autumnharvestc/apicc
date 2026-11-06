@@ -446,6 +446,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
   }
 
   return {
+    async synchronization() { throw new Error('SYNC_HOST_UNAVAILABLE'); },
     ...testing,
     setImportPreviewCandidate(token: string, project: ContractProject): void {
       const preview = memoryPreviews.get(token);

@@ -313,6 +313,7 @@ async function onProjectDelete(): Promise<void> {
               <span class="card-name" :title="p.name">{{ p.name }}</span>
             </div>
             <div class="card-actions">
+              <a-button size="small" :data-testid="`org-project-sync-${p.id}`" @click="router.push({name:'project-sync-access',params:{id:workspaceId,projectId:p.id}})">{{t('sync.accessTitle')}}</a-button>
               <a-button v-for="section in ['policy','sharing','mock','audit']" :key="section" size="small" :data-testid="`org-project-collaboration-${p.id}-${section}`" @click="router.push({name:'project-collaboration',params:{id:workspaceId,projectId:p.id},hash:'#'+section})">{{t('collaboration.sections.'+section)}}</a-button>
               <a-button v-if="agents" size="small" :data-testid="`org-project-execution-${p.id}`" @click="openExecution(p.id)">{{ t('agents.projectTitle') }}</a-button>
               <a-button v-if="scheduling" size="small" :data-testid="`org-project-schedule-policy-${p.id}`" @click="router.push({name:'project-schedule-policy',params:{id:workspaceId,projectId:p.id}})">{{t('scheduling.projectPolicyTitle')}}</a-button>

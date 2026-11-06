@@ -271,6 +271,14 @@ async function openWorkflowDesigner(wrapper: VueWrapper): Promise<ReturnType<typ
 }
 
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
+  it('T12 opens the one synchronization entry for the selected local project and clears it on home', async () => {
+    const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper);
+    expect(wrapper.find('[data-testid="sync-entry"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="sync-entry"]').trigger('click'); await flushPromises();
+    expect(wrapper.get('[data-testid="sync-panel"]').text()).toContain('当前电脑');
+    await wrapper.get('[data-testid="topbar-home"]').trigger('click'); await flushPromises(); expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(false);
+  });
+
   // Catches leaf entries receiving no shared AI store from the actual composition root.
   it('T11 passes the same AI store to actual local case and run report entries', async () => {
     const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper);

@@ -20,22 +20,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "apicc.server.allow-registration=true",
         "spring.datasource.url=jdbc:h2:mem:apicc-access-t2;DB_CLOSE_DELAY=-1"
 })
-abstract class AccessHttpFixture {
-    @Autowired MockMvc mvc;
-    @Autowired ObjectMapper json;
-    @Autowired ProjectAccessService access;
+public abstract class AccessHttpFixture {
+    @Autowired protected MockMvc mvc;
+    @Autowired protected ObjectMapper json;
+    @Autowired protected ProjectAccessService access;
 
-    record Actor(String id, String token) {}
-    record Scope(Actor owner, Actor target, String workspace, String project) {
-        String workspaceUrl() { return "/api/v1/workspaces/" + workspace; }
-        String projectUrl() { return workspaceUrl() + "/projects/" + project; }
+    public record Actor(String id, String token) {}
+    public record Scope(Actor owner, Actor target, String workspace, String project) {
+        public String workspaceUrl() { return "/api/v1/workspaces/" + workspace; }
+        public String projectUrl() { return workspaceUrl() + "/projects/" + project; }
     }
 
-    JsonNode body(ResultActions response) throws Exception {
+    protected JsonNode body(ResultActions response) throws Exception {
         return json.readTree(response.andReturn().getResponse().getContentAsString());
     }
 
-    Actor newActor() throws Exception {
+    protected Actor newActor() throws Exception {
         String name = "t2-" + UUID.randomUUID().toString().substring(0, 16);
         String id = body(mvc.perform(post("/api/v1/auth/register").contentType("application/json")
                 .content(json.writeValueAsString(Map.of("username", name, "password", "password123", "displayName", name))))
@@ -46,7 +46,7 @@ abstract class AccessHttpFixture {
         return new Actor(id, token);
     }
 
-    Scope scope() throws Exception {
+    protected Scope scope() throws Exception {
         Actor owner = newActor();
         Actor target = newActor();
         String ws = body(mvc.perform(post("/api/v1/workspaces").header("Authorization", "Bearer " + owner.token())
@@ -62,19 +62,19 @@ abstract class AccessHttpFixture {
         return new Scope(owner, target, ws, project);
     }
 
-    ResultActions member(Scope f, String role, long revision) throws Exception {
+    protected ResultActions member(Scope f, String role, long revision) throws Exception {
         return mvc.perform(put(f.workspaceUrl() + "/members/" + f.target().id())
                 .header("Authorization", "Bearer " + f.owner().token()).contentType("application/json")
                 .content(json.writeValueAsString(Map.of("role", role, "expectedRevision", revision))));
     }
 
-    ResultActions acl(Scope f, String role, long revision) throws Exception {
+    protected ResultActions acl(Scope f, String role, long revision) throws Exception {
         return mvc.perform(put(f.projectUrl() + "/acl")
                 .header("Authorization", "Bearer " + f.owner().token()).contentType("application/json")
                 .content(json.writeValueAsString(Map.of("userId", f.target().id(), "role", role, "expectedRevision", revision))));
     }
 
-    ResultActions assets(Scope f) throws Exception {
+    protected ResultActions assets(Scope f) throws Exception {
         return mvc.perform(get(f.projectUrl() + "/assets").header("Authorization", "Bearer " + f.target().token()));
     }
 }

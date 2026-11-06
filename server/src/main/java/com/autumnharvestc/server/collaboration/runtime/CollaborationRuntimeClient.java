@@ -11,7 +11,7 @@ import java.time.Duration;
 import java.io.ByteArrayOutputStream;
 import org.springframework.stereotype.Component;
 
-/** Private pure-Core RPC only. No DB access/transaction, authority or target proxy. */
+/** Private Core/source RPC only. No DB transaction or caller-selected runtime origin. */
 @Component
 public class CollaborationRuntimeClient {
     private final RuntimeProtocol protocol;
@@ -20,7 +20,7 @@ public class CollaborationRuntimeClient {
     private final boolean enabled;
     private final URI endpoint;
     private final HttpClient http;
-    private final int maxWireBytes,callTimeoutMs,mockTimeoutMs;
+    private final int maxWireBytes,callTimeoutMs,mockTimeoutMs,sourceReadTimeoutMaxMs;
     private static final java.util.concurrent.ScheduledThreadPoolExecutor DEADLINES=new java.util.concurrent.ScheduledThreadPoolExecutor(1,Thread.ofPlatform().daemon().name("apicc-collaboration-deadline").factory());
     static { DEADLINES.setRemoveOnCancelPolicy(true); }
     public static final class Failure extends RuntimeException {
@@ -29,7 +29,7 @@ public class CollaborationRuntimeClient {
     }
     public CollaborationRuntimeClient(RuntimeProperties properties, RuntimeProtocol protocol, ObjectMapper json) {
         properties.requireValid();this.protocol=protocol;this.json=json;enabled=properties.isEnabled();
-        maxWireBytes=properties.getMaxWireBytes();callTimeoutMs=properties.getCallTimeoutMs();mockTimeoutMs=properties.getMockTimeoutMs();
+        maxWireBytes=properties.getMaxWireBytes();callTimeoutMs=properties.getCallTimeoutMs();mockTimeoutMs=properties.getMockTimeoutMs();sourceReadTimeoutMaxMs=properties.getSourceReadTimeoutMaxMs();
         if(!enabled){secret="";endpoint=null;http=null;return;}
         try{
             var origin=URI.create(properties.getBaseUrl());
@@ -45,13 +45,16 @@ public class CollaborationRuntimeClient {
     public JsonNode call(String operation,JsonNode payload,long deadlineEpochMs,int outputBudgetBytes) {
         if(!enabled)throw new Failure("RPC_UNAVAILABLE");
         long now=System.currentTimeMillis();
-        long deadline=Math.min(deadlineEpochMs,now+(operation.equals("respond-mock")?mockTimeoutMs:callTimeoutMs));
-        if(deadline<=now)throw new Failure("RPC_DEADLINE_EXCEEDED");
+        long admissionDeadline=Math.min(deadlineEpochMs,now+(operation.equals("sync-read")?sourceReadTimeoutMaxMs:operation.equals("respond-mock")?mockTimeoutMs:callTimeoutMs));
+        if(admissionDeadline<=now)throw new Failure("RPC_DEADLINE_EXCEEDED");
         try {
             var request=json.createObjectNode().put("protocolVersion",1).put("operation",operation).put("requestId",UUID.randomUUID().toString())
-                .put("inputDigest",RuntimeProtocol.digestJson(payload)).put("deadlineEpochMs",deadline).put("outputBudgetBytes",outputBudgetBytes);
+                .put("inputDigest",RuntimeProtocol.digestJson(payload)).put("deadlineEpochMs",admissionDeadline).put("outputBudgetBytes",outputBudgetBytes);
             request.set("payload",payload);
             if(!protocol.validRequest(request))throw new Failure("RPC_INVALID_REQUEST");
+            // Read the deadline only after the generated finite payload schema accepts it.
+            final long deadline=operation.equals("sync-read")?Math.min(admissionDeadline,payload.path("input").path("deadlineAtMs").asLong()):admissionDeadline;
+            if(deadline<=now)throw new Failure("RPC_DEADLINE_EXCEEDED");request.put("deadlineEpochMs",deadline);
             byte[] requestBytes=json.writeValueAsBytes(request);
             if(requestBytes.length>maxWireBytes)throw new Failure("RPC_MESSAGE_TOO_LARGE");
             long remaining=deadline-System.currentTimeMillis();if(remaining<=0)throw new Failure("RPC_DEADLINE_EXCEEDED");
@@ -72,7 +75,11 @@ public class CollaborationRuntimeClient {
             try{value=json.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(bytes);}
             catch(Exception problem){throw new Failure("RPC_RESPONSE_INVALID");}
             if(response.statusCode()==429&&value.path("code").asText().equals("RPC_BUSY")&&value.path("retryable").isBoolean()&&!value.path("retryable").asBoolean()&&value.path("requestId").asText().isEmpty())throw new Failure("RPC_BUSY");
-            if(response.statusCode()!=200)throw new Failure("RPC_RESPONSE_INVALID");
+            if(response.statusCode()!=200){
+                if(java.util.Set.of("sync-read","sync-plan","sync-resolve","sync-rollback").contains(operation)&&protocol.validError(value)
+                    &&request.path("requestId").equals(value.path("requestId")))throw new Failure(value.path("code").asText());
+                throw new Failure("RPC_RESPONSE_INVALID");
+            }
             if(!protocol.validResponse(value)||!value.path("coreBuildIdentity").asText().equals(protocol.coreBuildIdentity())
                 ||value.path("wireBytes").asLong()!=bytes.length||value.path("outputBytes").asLong()!=RuntimeProtocol.payloadWireBytes(json,bytes)
                 ||!value.path("outputDigest").asText().equals(RuntimeProtocol.digestJson(value.path("payload"))))throw new Failure("RPC_RESPONSE_INVALID");

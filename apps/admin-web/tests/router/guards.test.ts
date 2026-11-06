@@ -60,6 +60,14 @@ function setup() {
 }
 
 describe("路由守卫（裁定 C：requiresAuth + redirect 回跳）", () => {
+  it.each([
+    ['/workspaces/1/sync-policy','workspace-sync-policy'],
+    ['/workspaces/1/sync-access','workspace-sync-access'],
+    ['/workspaces/1/projects/2/sync-policy','project-sync-policy'],
+    ['/workspaces/1/projects/2/sync-access','project-sync-access'],
+  ])('sync route %s inherits authentication and preserves its named scope',async(path,name)=>{
+    const {session,router}=setup();await router.push(path+'?from=sync');expect(router.currentRoute.value.name).toBe('login');expect(router.currentRoute.value.query.redirect).toBe(path+'?from=sync');await session.login({username:'alice',password:'password8'});await router.push(path);expect(router.currentRoute.value.name).toBe(name);expect(router.currentRoute.value.params.id).toBe('1');if(path.includes('/projects/'))expect(router.currentRoute.value.params.projectId).toBe('2');
+  });
   it("未登录访问受保护路由 / → 重定向 /login 且 query.redirect 携带原目标", async () => {
     const { router } = setup();
     await router.push("/");

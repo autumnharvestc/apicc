@@ -26,7 +26,7 @@ import java.util.List;
  * 分组全局存在，「项目须挂同工作区分组」是业务规则（404 group_not_found，外键不保证，留痕）。
  * 删除级联（F7b 一致性例外：同项目锁及单事务，失败全部回滚）：先内容版本行
  * （file_versions 按 {@code <projectId>/%} 前缀删，数字 id 无 SQL 通配字符，LIKE 安全），
- * 再项目 ACL 行，最后实体行。
+ * 再项目 ACL 与同步旁表行，最后实体行。
  * connect：取唯一工作区（空库 404 workspace_not_found）→ 成员守卫（非成员 403 forbidden）
  * → {workspaceId, workspaceName, myRole}。
  * id 口径（规格 2026-09-09 BIGINT 化）：路径/请求体 id 字符串接参、守卫先行后再 parse
@@ -43,6 +43,7 @@ public class ProjectService {
     private final WorkspaceGuard guard;
     private final com.autumnharvestc.server.access.AccessRepo accessRecords;
     private final com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage;
+    private final com.autumnharvestc.server.sync.SyncRepo synchronization;
 
     /** 项目视图（{id, groupId, name, createdAt}）。id/groupId 保持 String：对外字符串化数字
      * （规格 2026-09-09 BIGINT 化，全局不变量 1）。 */
@@ -59,7 +60,7 @@ public class ProjectService {
                           FileVersionRepo fileVersions,
                           AclRepo acl,
                           WorkspaceRepo workspaces,
-                          WorkspaceGuard guard,com.autumnharvestc.server.access.AccessRepo accessRecords,com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage) {
+                          WorkspaceGuard guard,com.autumnharvestc.server.access.AccessRepo accessRecords,com.autumnharvestc.server.collaboration.artifacts.CollaborationStorage collaborationStorage,com.autumnharvestc.server.sync.SyncRepo synchronization) {
         this.projects = projects;
         this.groups = groups;
         this.fileVersions = fileVersions;
@@ -68,6 +69,7 @@ public class ProjectService {
         this.guard = guard;
         this.accessRecords=accessRecords;
         this.collaborationStorage=collaborationStorage;
+        this.synchronization=synchronization;
     }
 
     /** 项目清单（成员可读），按创建时间稳定排序（repo 保证）。 */
@@ -132,6 +134,7 @@ public class ProjectService {
         fileVersions.deleteByProjectPrefix(wsId, pid);
         acl.deleteByProject(wsId, pid);
         accessRecords.deleteByProject(wsId,pid);
+        synchronization.deleteByProject(wsId,pid);
         projects.delete(pid);
         collaborationStorage.projectDeleted(caller.id(),wsId,pid);
     }

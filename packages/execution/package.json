@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
+    "./source-host": { "types": "./dist/source-host/index.d.ts", "default": "./dist/source-host/index.js" },
     "./host": { "types": "./dist/host/index.d.ts", "default": "./dist/host/index.js" },
     "./contract": { "types": "./dist/contract/index.d.ts", "default": "./dist/contract/index.js" },
     "./client": { "types": "./dist/client/index.d.ts", "default": "./dist/client/index.js" },
@@ -13,10 +14,12 @@
   },
   "engines": { "node": ">=22.19.0" },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/build-identity.mjs",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-source-host-resources.mjs && node scripts/build-identity.mjs",
     "typecheck": "tsc --noEmit",
     "generate:java-input-schema": "node scripts/generate-java-input-schema.mjs",
     "check:java-input-schema": "node scripts/generate-java-input-schema.mjs --check",
+    "generate:java-sync-schema": "node scripts/generate-java-sync-schema.mjs",
+    "check:java-sync-schema": "node scripts/generate-java-sync-schema.mjs --check",
     "test": "vitest run"
   },
   "dependencies": { "@apicc/core": "workspace:*", "zod": "^4.5.4" },

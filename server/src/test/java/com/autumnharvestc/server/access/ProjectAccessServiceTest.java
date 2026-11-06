@@ -66,8 +66,8 @@ class ProjectAccessServiceTest extends AccessHttpFixture {
     @ParameterizedTest
     @CsvSource(delimiter = '|', value = {
             "VIEWER|VIEWER|history.read",
-            "EDITOR|EDITOR|history.read,history.publish,script.edit,credential.manage,task.execute",
-            "VIEWER|ADMIN|history.read,history.publish,script.edit,credential.manage,task.execute,publication.manage,mock.manage,mock.logs.read,audit.read",
+            "EDITOR|EDITOR|history.read,history.publish,script.edit,credential.manage,task.execute,sync.check,sync.apply",
+            "VIEWER|ADMIN|history.read,history.publish,script.edit,credential.manage,task.execute,publication.manage,mock.manage,mock.logs.read,audit.read,sync.manage,sync.check,sync.apply",
             "ADMIN|VIEWER|history.read"
     })
     void effectiveProjectRoleControlsDefaults(String workspaceRole, String projectRole, String expectedCodes) throws Exception {

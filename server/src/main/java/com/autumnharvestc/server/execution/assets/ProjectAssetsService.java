@@ -58,19 +58,31 @@ public class ProjectAssetsService {
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public ProjectAssets put(UserAccount caller, String ws, String project, AssetDelta delta) {
         // Both the fixed read and final commit own short transactions; no project lock survives the RPC.
-        var fixed=transactions.execute(tx->prepare(caller,ws,project,delta));
-        var classification=mutations.classify(caller,fixed.entity().workspaceId(),fixed.entity().id(),mutations.wireFiles(fixed.current().files()),fixed.after(),fixed.paths());
-        return transactions.execute(tx->{
-            var current=prepare(caller,ws,project,delta);var entity=current.entity();long expected=version(delta.expectedVersion());
-            mutations.requireCommit(caller,entity.workspaceId(),entity.id(),classification);
-            for (var change : delta.changes()) files.applyProjectAssetFile(entity.workspaceId(), entity.id()+"/"+change.path(), change.content(), Hashes.sha256HexUtf8(change.content()), caller.id());
-            for (String deleted : delta.deletes()) files.deleteProjectAssetFile(entity.workspaceId(), entity.id()+"/"+deleted);
-            if (expected == Long.MAX_VALUE) throw error(HttpStatus.CONFLICT, "version_exhausted", "项目版本已达到上限");
-            jdbc.update("UPDATE projects SET asset_format = ?, contract_project_id = ?, asset_version = asset_version + 1 WHERE id = ?",delta.format(),delta.contractProjectId(),entity.id());
-            var after=readLocked(entity);
-            mutations.audit(caller,entity.id(),Long.parseLong(after.version()),classification,current.current().manifestHash(),after.manifestHash());
-            return after;
-        });
+        var fixed=transactions.execute(tx->prepareAtomic(caller,ws,project,delta));
+        var classification=classifyAtomic(caller,fixed);
+        return transactions.execute(tx->commitAtomic(caller,ws,project,delta,classification));
+    }
+    /** Trusted composition seam: caller owns a short transaction; all existing validation is shared. */
+    public AtomicAssetWrite prepareAtomic(UserAccount caller,String ws,String project,AssetDelta delta) {
+        var fixed=prepare(caller,ws,project,delta);
+        return new AtomicAssetWrite(fixed.entity().workspaceId(),fixed.entity().id(),mutations.wireFiles(fixed.current().files()),fixed.after(),fixed.paths());
+    }
+    public record AtomicAssetWrite(long workspace,long project,com.fasterxml.jackson.databind.JsonNode before,com.fasterxml.jackson.databind.JsonNode after,List<String> paths) {}
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    public com.autumnharvestc.server.access.AssetMutationGuard.Classification classifyAtomic(UserAccount caller,AtomicAssetWrite fixed) {
+        return mutations.classify(caller,fixed.workspace(),fixed.project(),fixed.before(),fixed.after(),fixed.paths());
+    }
+    /** Joins the owning short transaction; never performs classification or any RPC. */
+    public ProjectAssets commitAtomic(UserAccount caller,String ws,String project,AssetDelta delta,com.autumnharvestc.server.access.AssetMutationGuard.Classification classification) {
+        var current=prepare(caller,ws,project,delta);var entity=current.entity();long expected=version(delta.expectedVersion());
+        mutations.requireCommit(caller,entity.workspaceId(),entity.id(),classification);
+        for (var change : delta.changes()) files.applyProjectAssetFile(entity.workspaceId(), entity.id()+"/"+change.path(), change.content(), Hashes.sha256HexUtf8(change.content()), caller.id());
+        for (String deleted : delta.deletes()) files.deleteProjectAssetFile(entity.workspaceId(), entity.id()+"/"+deleted);
+        if (expected == Long.MAX_VALUE) throw error(HttpStatus.CONFLICT, "version_exhausted", "项目版本已达到上限");
+        jdbc.update("UPDATE projects SET asset_format = ?, contract_project_id = ?, asset_version = asset_version + 1 WHERE id = ?",delta.format(),delta.contractProjectId(),entity.id());
+        var after=readLocked(entity);
+        mutations.audit(caller,entity.id(),Long.parseLong(after.version()),classification,current.current().manifestHash(),after.manifestHash());
+        return after;
     }
     private record Candidate(ProjectRecord entity,ProjectAssets current,com.fasterxml.jackson.databind.JsonNode after,List<String> paths) {}
     private Candidate prepare(UserAccount caller, String ws, String project, AssetDelta delta) {

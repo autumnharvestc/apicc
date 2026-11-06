@@ -126,6 +126,8 @@ F7c 在线压测沿 F7b 控制协议扩展。服务端、客户端及 `Dockerfil
 
 ## 安全提示
 
+外部规范同步复用可选私有运行层，来源工具、受控出网、私有有界临时空间以及应用预算 / tmpfs / cgroup 内存分区见 [F7g 部署与使用](f7g-external-sync.md)。来源功能使用独立 opt-in overlay；默认 Java-only 与既有协作默认容量不变。
+
 项目历史/外链/共享Mock的可选组合、独立viewer目录、精确默认/范围、RPC秘密、实际CPU/RSS/old-space预算、双origin、生命周期A及备份恢复见[协作部署与使用](f7f-collaboration.md)。默认Compose仍Java-only；仅在明确配置既有在途/余量后叠加 `deploy/docker-compose.collaboration.yml --profile collaboration`，不自动开放public端口。
 
 - 普通管理页面可以使用 HTTP；独立代理要求上述 HTTPS 控制身份。公网管理入口应使用 HTTPS。

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { parse, stringify } from "yaml";
@@ -57,6 +57,8 @@ import {
   type ProjectFileLocation,
 } from "./paths.js";
 import { calculateWorkspaceRevision, recoverPendingWriteJournal, type LoadFaultInjector } from "./writeJournal.js";
+import { decodeSyncState, defaultSyncStorageLimits, encodeSyncContent, loadSyncState } from "../sync/storage.js";
+import { syncContentReferences } from "../sync/state.js";
 
 export interface WorkspaceWritePlan {
   files: Map<string, string>;
@@ -992,6 +994,40 @@ async function loadComponents(
   return orderedComponents(expectedOrder, components, base, problems);
 }
 
+async function validateSynchronization(
+  root: string, location: ProjectFileLocation, problems: LoadProblem[], snapshot?: ContractFileSnapshot,
+): Promise<void> {
+  const base = projectDirectoryPath(location.groupId, location.projectId), path = `${base}/synchronization.yaml`;
+  const contentBase = `${base}/synchronization/content`;
+  try {
+    const raw = snapshot?.get(path);
+    const state = snapshot ? (raw ? decodeSyncState(new TextDecoder("utf-8", { fatal: true }).decode(raw), location.projectId) : null) : await loadSyncState(root, location);
+    await validateContainerEntries(root, `${base}/synchronization`, [], ["content"], problems, snapshot);
+    const entries = await listFiles(root, contentBase, problems, snapshot);
+    for (const entry of entries) {
+      validateManagedWorkspaceFilePath(`${contentBase}/${entry.name}`);
+      if (!entry.isFile || entry.isSymbolicLink) throw new Error("SYNC_STORAGE_UNSAFE_PATH");
+    }
+    if (!state && entries.length) throw new Error("SYNC_STATE_MISSING");
+    if (!state) return;
+    for (const reference of syncContentReferences(state)) {
+      const contentPath = `${contentBase}/${reference.digest}.json`;
+      let size: number;
+      if (snapshot) {
+        const content = snapshot.get(contentPath);
+        if (!content) throw new Error("SYNC_CONTENT_MISSING");
+        size = content.byteLength;
+      } else {
+        try { size = (await lstat(nativePath(root, contentPath))).size; } catch { throw new Error("SYNC_CONTENT_MISSING"); }
+      }
+      if (size !== reference.bytes) throw new Error("SYNC_CONTENT_BYTES_MISMATCH");
+    }
+  } catch (error) {
+    const message = error instanceof Error && /^SYNC_[A-Z_]+$/.test(error.message) ? error.message : "SYNC_STATE_INVALID";
+    problems.push({ file: path, message });
+  }
+}
+
 async function loadProjects(
   root: string,
   groupId: string,
@@ -1009,7 +1045,7 @@ async function loadProjects(
       continue;
     }
     const path = projectMetadataFilePath(groupId, projectId);
-    await validateContainerEntries(root, projectDirectoryPath(groupId, projectId), ["project.yaml"], ["collections", "models", "components", "datasets", "suites"], problems, snapshot);
+    await validateContainerEntries(root, projectDirectoryPath(groupId, projectId), ["project.yaml", "synchronization.yaml"], ["collections", "models", "components", "datasets", "suites", "synchronization"], problems, snapshot);
     const data = await parseMetadata(root, path, ProjectFileSchema, problems, snapshot);
     if (!data) continue;
     if (data.id !== projectId) {
@@ -1017,6 +1053,7 @@ async function loadProjects(
       continue;
     }
     const location: ProjectFileLocation = { groupId, projectId };
+    await validateSynchronization(root, location, problems, snapshot);
     const collections = await loadCollections(root, groupId, projectId, data.collectionOrder, problems, snapshot);
     const models = await loadModels(root, location, data.modelOrder, problems, snapshot);
     const components = await loadComponents(root, location, data.componentOrder, problems, snapshot);
@@ -1162,6 +1199,8 @@ export function validateManagedWorkspaceFilePath(path: string): string {
     throw new TypeError(`Invalid contract file path: ${safePath}`);
   }
   if (parts.length === 5 && parts[4] === "project.yaml") return safePath;
+  if (parts.length === 5 && parts[4] === "synchronization.yaml") return safePath;
+  if (parts.length === 7 && parts[4] === "synchronization" && parts[5] === "content" && /^[a-f0-9]{64}\.json$/.test(parts[6]!)) return safePath;
   const assetFile = (name: string | undefined): boolean => Boolean(name?.endsWith(".yaml") && validUuidFolder(name.slice(0, -5)));
   if (["models", "datasets", "suites"].includes(parts[4] ?? "") && parts.length === 6 && assetFile(parts[5])) return safePath;
   if (parts[4] === "components" && parts.length === 7
@@ -1194,6 +1233,19 @@ export function validateManagedWorkspaceFilePath(path: string): string {
 export function validateSerializedWorkspaceFile(path: string, content: string): void {
   const safePath = validateManagedWorkspaceFilePath(path);
   if (isApiFilePath(safePath, ["design.md"])) return;
+  const syncParts = safePath.split("/");
+  if (syncParts[4] === "synchronization.yaml") {
+    decodeSyncState(content, syncParts[3]!);
+    return;
+  }
+  if (syncParts[4] === "synchronization") {
+    // Only new replacements enter this validator. Old referenced history is
+    // checked lazily by the loader/selected reader, never expanded here.
+    if (Buffer.byteLength(content, "utf8") > defaultSyncStorageLimits.maxContentBytes
+      || createHash("sha256").update(content, "utf8").digest("hex") !== syncParts[6]!.slice(0, -5)) throw new TypeError("SYNC_CONTENT_DIGEST_MISMATCH");
+    if (encodeSyncContent(JSON.parse(content)).text !== content) throw new TypeError("SYNC_CONTENT_NONCANONICAL");
+    return;
+  }
   let input: unknown;
   try {
     input = parse(content);
