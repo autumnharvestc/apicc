@@ -219,9 +219,27 @@ class AccessPolicyApiTest extends AccessHttpFixture {
 
     @Test void managementViewIncludesCurrentRoleAndReadableCapabilityRows() throws Exception {
         Scope f = scope(); member(f, "VIEWER", 0).andExpect(status().isOk());
-        mvc.perform(get(f.projectUrl() + "/access-members/" + f.target().id()).header("Authorization", "Bearer " + f.owner().token()))
+        var view = body(mvc.perform(get(f.projectUrl() + "/access-members/" + f.target().id()).header("Authorization", "Bearer " + f.owner().token()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.workspaceRole").value("VIEWER"))
-                .andExpect(jsonPath("$.capabilities.length()").value(9)).andExpect(jsonPath("$.membershipEpoch").isNumber());
+                .andExpect(jsonPath("$.membershipEpoch").isNumber()));
+        assertThat(view.path("capabilities").isArray()).isTrue();
+        var rows = new java.util.ArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        view.path("capabilities").forEach(rows::add);
+        assertThat(rows).extracting(row -> row.path("code").asText()).doesNotHaveDuplicates()
+                .containsExactlyInAnyOrder("history.read", "history.publish", "script.edit", "credential.manage",
+                        "task.execute", "publication.manage", "mock.manage", "mock.logs.read", "audit.read",
+                        "sync.manage", "sync.check", "sync.apply");
+        assertThat(rows).allSatisfy(row -> {
+            String code = row.path("code").asText();
+            boolean viewerFloor = java.util.Set.of("history.read", "mock.logs.read", "audit.read").contains(code);
+            String source = viewerFloor ? "builtin-role" : "role-floor";
+            assertThat(row.path("mode").asText()).isEqualTo("inherit");
+            assertThat(row.path("effective").isBoolean()).isTrue();
+            assertThat(row.path("effective").booleanValue()).isEqualTo(code.equals("history.read"));
+            assertThat(row.path("roleFloor").asText()).isEqualTo(viewerFloor ? "VIEWER" : "EDITOR");
+            assertThat(row.path("source").asText()).isEqualTo(source);
+            assertThat(row.path("reason").asText()).isEqualTo(source);
+        });
     }
 
     @Test void directoryIncludesNoneWithoutGrantingContent() throws Exception {

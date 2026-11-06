@@ -6,11 +6,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuildIdentity } from "../src/buildIdentity.js";
 import { runtimeCompatibilityIdForRuntime } from "../src/contract/runtime.js";
+import { syncWireSchemas } from "../src/contract/synchronization.js";
+import type { z } from "zod";
+
+const generatorUrl = new URL("../scripts/generate-java-sync-schema.mjs", import.meta.url).href;
+const { buildSyncBoundary, checkSyncBoundaryBytes }: {
+  buildSyncBoundary: (schemas: Record<string, z.ZodType>) => Record<string, z.core.JSONSchema.JSONSchema>;
+  checkSyncBoundaryBytes: (actual: string, expected: string) => void;
+} = await import(generatorUrl);
 
 const repository = fileURLToPath(new URL("../../../", import.meta.url));
 const identityScript = "packages/execution/scripts/build-identity.mjs";
 const scriptSource = "packages/core/src/sandbox/jsEngine.ts";
 const javaBoundary = "server/src/main/resources/execution-input-boundary.json";
+const syncBoundary = "server/src/main/resources/sync-input-boundary.json";
 let temporary: string;
 let windowsCheckout: string;
 let lfCheckout: string;
@@ -25,7 +34,7 @@ beforeAll(() => {
   const seed = join(temporary, "seed");
   mkdirSync(seed);
   const sourceFiles = identity(repository).sourceFiles;
-  for (const path of [...sourceFiles, javaBoundary, ...(existsSync(join(repository, ".gitattributes")) ? [".gitattributes"] : [])]) {
+  for (const path of [...sourceFiles, javaBoundary, syncBoundary, ...(existsSync(join(repository, ".gitattributes")) ? [".gitattributes"] : [])]) {
     const destination = join(seed, path);
     mkdirSync(dirname(destination), { recursive: true });
     // Seed one canonical committed tree; only Git's checkout settings differ below.
@@ -58,6 +67,19 @@ describe("source identity across real Git checkouts", () => {
     const canonical = readFileSync(join(repository, javaBoundary), "utf8").replaceAll("\r\n", "\n");
     expect(readFileSync(join(windowsCheckout, javaBoundary), "utf8")).toBe(canonical);
     expect(readFileSync(join(lfCheckout, javaBoundary), "utf8")).toBe(canonical);
+  });
+
+  it("passes the strict sync boundary byte check after Windows and LF Git checkouts", () => {
+    const generated = JSON.stringify({
+      formatVersion: 1,
+      effectivePolicyValidation: "resolveSyncPolicy",
+      ...buildSyncBoundary(syncWireSchemas),
+    }, null, 2) + "\n";
+    for (const checkout of [lfCheckout, windowsCheckout]) {
+      expect(() => checkSyncBoundaryBytes(readFileSync(join(checkout, syncBoundary), "utf8"), generated)).not.toThrow();
+    }
+    // The comparison must remain byte-sensitive even when schema semantics match.
+    expect(() => checkSyncBoundaryBytes(generated.replaceAll("\n", "\r\n"), generated)).toThrow(/SYNC_SCHEMA_DRIFT/);
   });
 
   it("keeps every fingerprint input and generated identity identical with Windows and LF checkout settings", () => {

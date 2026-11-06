@@ -12,6 +12,9 @@
 /packages/execution/src/**/*.ts text eol=lf
 /packages/execution/src/**/*.json text eol=lf
 /packages/execution/scripts/build-identity.mjs text eol=lf
+/packages/execution/scripts/build-source-host-resources.mjs text eol=lf
+/packages/execution/src/source-host/owned-process.cs text eol=lf
 # The schema generator's drift check compares this checked-in output byte-for-byte.
 /server/src/main/resources/execution-input-boundary.json text eol=lf
 /server/src/main/resources/collaboration-runtime-boundary.json text eol=lf
+/server/src/main/resources/sync-input-boundary.json text eol=lf
