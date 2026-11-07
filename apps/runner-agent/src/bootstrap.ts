@@ -4,7 +4,7 @@ import { Agent, fetch as controlFetch } from "undici";
 import { readBuildIdentity } from "@apicc/execution/buildIdentity";
 import { ExecutionInputsSchema, RuntimeRegistrationSchema, RuntimeRegistrationResultSchema, runtimeCompatibilityIdForRuntime, type AgentConfig, type TaskEnvelopeV1 } from "@apicc/execution/contract";
 import { createAgentMaterialsClient, ExecutionHttpError } from "@apicc/execution/client";
-import { initialAgentConfig, canonicalControlBaseUrl, type AgentDeployment } from "./config.js";
+import { initialAgentConfig, initialLedgerCompaction, canonicalControlBaseUrl, type AgentDeployment } from "./config.js";
 import { AgentSupervisor, type SettledExecution } from "./supervisor.js";
 import { createLongPollingTransport } from "./transport/longPolling.js";
 import { runAgentControl } from "./transport/control.js";
@@ -54,7 +54,7 @@ export async function bootstrapAgent(deployment: AgentDeployment, signal: AbortS
   let supervisor: AgentSupervisor;
   const transport = createLongPollingTransport({ baseUrl: deployment.baseUrl, token, fetch: fetcher, config: () => config, onInvalidEntry: (kind, _index, entry) => { if (kind === "delivery") supervisor.rejectMalformedDelivery(entry); } });
   const data = createAgentDataClient({ baseUrl: deployment.baseUrl, token, fetch: fetcher, config: () => config });
-  supervisor = new AgentSupervisor({ dataDirectory: deployment.dataDirectory, serverId: deployment.baseUrl, agentId: deployment.agentId, sessionId, runtimeCompatibilityId: compatibility, identity, config, configVersion: "0", transport,
+  supervisor = new AgentSupervisor({ dataDirectory: deployment.dataDirectory, ledgerCompaction: initialLedgerCompaction(deployment), serverId: deployment.baseUrl, agentId: deployment.agentId, sessionId, runtimeCompatibilityId: compatibility, identity, config, configVersion: "0", transport,
     loadInputs: (task, signal) => data.inputs(task, signal),
     loadMaterials: (task, signal) => createAgentMaterialsClient({ baseUrl: deployment.baseUrl, token, fetch: fetcher, timeoutMs: config.transferTimeoutMs }).loadAssigned(task.jobId, task.executionId, signal),
     onSettled: hooks.onSettled,

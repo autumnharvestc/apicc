@@ -2,8 +2,10 @@ import { mkdirSync, statfsSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { AgentMessageV1Schema, StartRejectionReasonSchema, MIN_FAULT_REPORT_BYTES, validateAgentConfig, type AgentConfig, type AgentMessageV1, type TaskDeliveryV1,type StressProcessObservation } from "@apicc/execution/contract";
+import { z } from "zod";
+import { AgentMessageV1Schema, StartRejectionReasonSchema, MIN_FAULT_REPORT_BYTES, ServerProjectScopeSchema, StressProcessObservationSchema, processObservationFitsBudget, validateAgentConfig, type AgentConfig, type AgentMessageV1, type TaskDeliveryV1,type StressProcessObservation } from "@apicc/execution/contract";
 import type { SettledExecution } from "./supervisor.js";
+import { LedgerCompactionSchema, type LedgerCompactionOptions } from "./config.js";
 
 export type ExecutionFact = "not-started" | "started" | "uncertain";
 export interface ChildLease { file: string; epoch: string }
@@ -16,6 +18,28 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const verdicts = new Set(["passed", "failed", "cancelled", "timed-out", "interrupted", "rejected"]);
 const stressCapacityReason = "stress-capacity-exceeded";
 const reasonCodes = new Set(["runtime-mismatch", "script-admission-denied", "fixed-input-mismatch", "policy-mismatch", "input-capacity-exceeded", "result-capacity-exceeded", "shared-debug-capacity-exceeded", "debug-session-expired", "debug-session-scope-mismatch", "debug-session-capacity-exceeded", "preparation-rejected", "invalid-task-definition", "permit-mismatch", "worker-exited", "worker-rejected", "worker-unavailable", "result-persistence-failed", "agent-restarted-before-start", "agent-restarted-after-start", "execution-start-unconfirmed"]);
+const processIdentity = { id: z.string().min(1), role: z.enum(["coordinator", "worker"]), scope: ServerProjectScopeSchema, epoch: z.string().min(1) };
+const exitedProcessSchema = z.object({ ...processIdentity, name: z.string().min(1), pid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), birth: z.string().regex(/^[1-9]\d*$/).optional(), exited: z.literal(true), code: z.number().int().nullable().optional(), signal: z.string().min(1).nullable().optional(), observationUncertain: z.literal(false).optional() }).strict();
+const spawnIntentSchema = z.object({ ...processIdentity, runId: z.string().uuid(), workerId: z.string().min(1), scriptPath: z.string().min(1) }).strict().refine(value => value.id === `${value.runId}/${value.workerId}` && (value.role === "coordinator" ? value.workerId === "coordinator" : /^worker-[1-9]\d*$/.test(value.workerId)));
+interface CompactionPlan { indices: number[]; cursor: number }
+
+function compactable(item: Intent, state: State, pending: ReadonlySet<string>): boolean {
+  if (item.settled !== true || item.archived !== true || item.report !== undefined || typeof item.deliveryId !== "string" || !item.deliveryId || pending.has(`execution:${item.executionId}`) || pending.has(`job:${item.jobId}`)) return false;
+  if (state.intents.some(other => other !== item && other.executionId === item.executionId)) return false;
+  const processes = item.processes, intents = item.processIntents;
+  // Empty arrays, missing registrations and unknown legacy shapes do not prove exit.
+  if (!Array.isArray(processes) || !processes.length || !Array.isArray(intents) || intents.length !== processes.length) return false;
+  if (processes.some(record => !exitedProcessSchema.safeParse(record).success) || intents.some(intent => !spawnIntentSchema.safeParse(intent).success)) return false;
+  if (item.processBudget !== undefined && (!Number.isSafeInteger(item.processBudget) || item.processBudget < processes.length || item.processBudget > 1001)) return false;
+  if (item.processObservationPartial !== undefined && typeof item.processObservationPartial !== "boolean") return false;
+  if (item.processObservation !== undefined && (!StressProcessObservationSchema.safeParse(item.processObservation).success || item.processObservation.started !== processes.length || item.processObservation.exited !== processes.length || item.processBudget !== undefined && !processObservationFitsBudget(item.processObservation, item.processBudget))) return false;
+  const byId = new Map(processes.map(record => [record.id, record]));
+  if (byId.size !== processes.length || new Set(intents.map(intent => intent.id)).size !== intents.length) return false;
+  return intents.every(intent => {
+    const record = byId.get(intent.id);
+    return record && record.role === intent.role && record.epoch === intent.epoch && record.scope.workspaceId === intent.scope.workspaceId && record.scope.groupId === intent.scope.groupId && record.scope.projectId === intent.scope.projectId;
+  });
+}
 /** Only execution facts and already projected output enter this store. No executable inputs. */
 export class ExecutionLedger {
   private state: State;
@@ -24,8 +48,12 @@ export class ExecutionLedger {
   private owner?: DatabaseSync;
   readonly childLease?: ChildLease;
   private failed = false;
-  constructor(directory: string | undefined, serverId: string, agentId: string, private config: AgentConfig) {
+  private closed = false;
+  private compactionCursor = 0;
+  private readonly compaction: LedgerCompactionOptions;
+  constructor(directory: string | undefined, serverId: string, agentId: string, private config: AgentConfig, compaction?: LedgerCompactionOptions) {
     this.config = validateAgentConfig(config);
+    this.compaction = LedgerCompactionSchema.parse(compaction ?? {});
     this.state = { version: 1, serverId, agentId, intents: [], messages: [], commands: [] };
     if (!directory) return;
     mkdirSync(directory, { recursive: true, mode: 0o700 }); this.file = join(directory, "execution-ledger.sqlite");
@@ -77,6 +105,31 @@ export class ExecutionLedger {
     }
     this.state = next;
   }
+  private compactionPlan(state: State, preferred: readonly string[] = []): CompactionPlan {
+    const plan: CompactionPlan = { indices: [], cursor: this.compactionCursor };
+    if (!this.compaction.enabled || this.closed || this.failed || !state.intents.length) return plan;
+    const pending = new Set(state.messages.flatMap(message => [`execution:${message.executionId}`, `job:${message.jobId}`]));
+    const examined = new Set<number>(), limit = Math.min(this.compaction.batchSize, state.intents.length);
+    const examine = (index: number) => {
+      if (index < 0 || examined.has(index) || examined.size === limit) return;
+      examined.add(index); if (compactable(state.intents[index]!, state, pending)) plan.indices.push(index);
+    };
+    for (const id of preferred) { if (examined.size === limit) break; examine(state.intents.findIndex(item => item.executionId === id)); }
+    let traversed = 0;
+    while (examined.size < limit && traversed++ < state.intents.length) {
+      const index = plan.cursor % state.intents.length; plan.cursor = (index + 1) % state.intents.length; examine(index);
+    }
+    return plan;
+  }
+  private applyCompaction(state: State, plan: CompactionPlan): void {
+    for (const index of plan.indices) { delete state.intents[index]!.processes; delete state.intents[index]!.processIntents; }
+  }
+  /** One progressive batch; State cloning, indexing and SQLite JSON rewriting still scale with total ledger bytes. */
+  compact(): number {
+    const plan = this.compactionPlan(this.state);
+    if (plan.indices.length) this.change(state => this.applyCompaction(state, plan), true);
+    this.compactionCursor = plan.cursor; return plan.indices.length;
+  }
   accept(delivery: TaskDeliveryV1): void { if (this.state.intents.some(item => item.executionId === delivery.task.executionId)) return; this.change(state => state.intents.push({ executionId: delivery.task.executionId, jobId: delivery.task.jobId, deliveryId: delivery.messageId, fact: "not-started", resultBudget: 0 })); }
   reserve(executionId: string, resultBudget: number): void { if (!Number.isSafeInteger(resultBudget) || resultBudget < MIN_FAULT_REPORT_BYTES) throw new Error("Fixed report budget cannot hold a complete fault report"); this.change(state => { state.intents.find(item => item.executionId === executionId)!.resultBudget = resultBudget; }); }
   mark(executionId: string, fact: ExecutionFact): void { this.change(state => { const item = state.intents.find(item => item.executionId === executionId)!; if (!item.settled) item.fact = fact; }); }
@@ -103,7 +156,16 @@ export class ExecutionLedger {
   }
   enqueue(message: AgentMessageV1): void { const previous = this.state.messages.find(item => item.messageId === message.messageId); if (previous) { if (JSON.stringify(previous) !== JSON.stringify(message)) throw new Error("Message identity content conflict"); return; } this.change(state => state.messages.push(AgentMessageV1Schema.parse(message))); }
   command(message: { messageId: string; kind: string; executionId?: string; jobId?: string }): void { const identity = { messageId: message.messageId, kind: message.kind, ...(message.executionId ? { executionId: message.executionId, jobId: message.jobId } : {}) }; if (!this.state.commands.some(item => item.messageId === identity.messageId)) this.change(state => state.commands.push(identity)); }
-  acknowledge(ids: readonly string[]): void { if (!ids.some(id => this.state.messages.some(item => item.messageId === id))) return; this.change(state => { state.messages = state.messages.filter(item => !ids.includes(item.messageId)); }, true); }
+  acknowledge(ids: readonly string[]): void {
+    const acknowledged = new Set(ids), removed = this.state.messages.filter(item => acknowledged.has(item.messageId));
+    if (!removed.length) return;
+    let plan!: CompactionPlan;
+    this.change(state => {
+      state.messages = state.messages.filter(item => !acknowledged.has(item.messageId));
+      plan = this.compactionPlan(state, [...new Set(removed.map(item => item.executionId))]); this.applyCompaction(state, plan);
+    }, true);
+    this.compactionCursor = plan.cursor;
+  }
   settle(executionId: string, raw: SettledExecution): { result: SettledExecution; message: AgentMessageV1 } {
     const current = this.state.intents.find(item => item.executionId === executionId)!;
     let result: SettledExecution = { executionId: current.executionId, verdict: verdicts.has(raw.verdict) ? raw.verdict : "interrupted", executionFact: current.fact, ...(raw.reasonCode ? { reasonCode: raw.reasonCode === stressCapacityReason || reasonCodes.has(raw.reasonCode) || StartRejectionReasonSchema.safeParse(raw.reasonCode).success ? raw.reasonCode : "preparation-rejected" } : {}), ...(raw.output ? { output: raw.output, ...(Number.isSafeInteger(raw.pid) && raw.pid! > 0 ? { pid: raw.pid } : {}) } : {}) };
@@ -131,7 +193,9 @@ export class ExecutionLedger {
   archive(executionId: string, receipt: { archived: boolean; reportHash: string; reportBytes: number }): boolean {
     const item = this.state.intents.find(item => item.executionId === executionId), report = item?.report;
     if (!report || !receipt.archived || receipt.reportHash !== report.hash || receipt.reportBytes !== report.bytes) return false;
-    this.change(state => { const entry = state.intents.find(item => item.executionId === executionId)!; entry.archived = true; delete entry.report; }, true); return true;
+    let plan!: CompactionPlan;
+    this.change(state => { const entry = state.intents.find(item => item.executionId === executionId)!; entry.archived = true; delete entry.report; plan = this.compactionPlan(state, [executionId]); this.applyCompaction(state, plan); }, true);
+    this.compactionCursor = plan.cursor; return true;
   }
-  close(): void { this.database?.close(); this.database = undefined; this.owner?.close(); this.owner = undefined; }
+  close(): void { this.closed = true; this.database?.close(); this.database = undefined; this.owner?.close(); this.owner = undefined; }
 }

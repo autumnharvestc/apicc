@@ -14,6 +14,7 @@ import ThemeLanguageToggle from "./ThemeLanguageToggle.vue";
 import ProjectTabs from "./ProjectTabs.vue";
 import PluginsView from "./PluginsView.vue";
 import NetworkSettings from "./NetworkSettings.vue";
+import OnlineExecutionCacheSettings from "./OnlineExecutionCacheSettings.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
 const ATypographyText = ATypography.Text;
@@ -173,6 +174,7 @@ function onExitCancel() {
     >
       <a-button v-if="ai" block data-testid="settings-ai" @click="settingsOpen = false; ai.configDialogOpen = true">{{ t("aiSettings.title") }}</a-button>
       <PluginsView :plugins="plugins" />
+      <OnlineExecutionCacheSettings v-if="online.execution" :execution="online.execution" :open="settingsOpen" />
       <NetworkSettings
         v-if="activeLocalProjectTab"
         :key="`${activeLocalProjectTab.workspaceRef.dir}:${activeLocalProjectTab.projectLocator.workspaceId}:${activeLocalProjectTab.projectLocator.groupId}:${activeLocalProjectTab.projectLocator.projectId}`"

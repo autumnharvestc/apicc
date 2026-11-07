@@ -152,7 +152,7 @@ function activeBufferOf(state: { sessions: Record<string, OnlineSession>; active
 export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
   const api = deps.api;
   const storage = deps.storage ?? localStorage;
-  const execution = createOnlineExecutionStore(api);
+  const execution = createOnlineExecutionStore(api, { storage });
   const schedules = createOnlineSchedulesStore(api);
   watch(() => [execution.context, execution.visible] as const, ([context, visible]) => schedules.activate(context, visible), { flush: 'sync' });
   // Renderer results belong to the authentication attempt that selected their target.

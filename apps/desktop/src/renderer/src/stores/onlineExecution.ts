@@ -6,15 +6,27 @@ import { OnlineProjectViewSchema, OnlineJobSchema, OnlineLocalResultSchema, Onli
 import type { AttachmentWriteSchema } from "@apicc/execution/contract";
 import { z } from "zod";
 import { isFullOnlineJob } from '../../../shared/online/execution.js';
+import { defaultExecutionCacheStorage, readExecutionCachePreferences, OnlineExecutionCachePreferencesSchema, ONLINE_EXECUTION_CACHE_SETTINGS_KEY,
+  type ExecutionCacheStorage, type OnlineExecutionCachePreferences } from './onlineExecutionCachePreferences.js';
 type ResultSelection = { kind: 'local'; runId: string; environmentId?: string } | { kind: 'agent'; runId: string } | { kind: 'agent'; job: OnlineJob };
-type RunRecord = { context: OnlineExecutionContext; runId: string; target: TaskTarget; location: ExecutionLocation; environmentId?: string; pending: boolean; result?: OnlineLocalResult; job?: OnlineJob; error: string };
-export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsList?(): Promise<PluginsListResult> }) {
+type RunRecord = { context: OnlineExecutionContext; runId: string; target: Pick<TaskTarget, 'kind'>; location: ExecutionLocation; environmentId?: string; pending: boolean; result?: OnlineLocalResult; job?: OnlineJob; error: string };
+type CachedContext = { context: OnlineExecutionContext; lastUsed: number; payloadBytes?: number; debugKeys: Set<string>;
+  pending: Set<string>; uncertain: Set<string>; jobs: Map<string, { jobId: string; executionId: string; agentId: string }>; jobCursor: number };
+export interface OnlineExecutionCacheOptions { storage?: ExecutionCacheStorage | null; now?: () => number; preferences?: OnlineExecutionCachePreferences }
+export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsList?(): Promise<PluginsListResult> }, options: OnlineExecutionCacheOptions = {}) {
   let generation = 0; let timer: ReturnType<typeof setTimeout> | undefined;
   const stressConfirmation = ref('');
   const selections = new Map<string, { location: ExecutionLocation; environmentId?: string }>();
   const debugSessions = new Map<string, string>();
   const runs = new Map<string, RunRecord>();
-  const key = (context: OnlineExecutionContext | null) => JSON.stringify(context);
+  const contexts = new Map<string, CachedContext>();
+  const statusPageSize = 20;
+  const storage = options.storage === undefined ? defaultExecutionCacheStorage() : options.storage;
+  const initial = readExecutionCachePreferences(storage);
+  const initialPreferences = options.preferences ? OnlineExecutionCachePreferencesSchema.parse(options.preferences) : initial.preferences;
+  const now = options.now ?? (() => performance.now());
+  const key = (context: OnlineExecutionContext | null) => context ? JSON.stringify([context.serverId, context.ownerId,
+    context.scope.workspaceId, context.scope.groupId, context.scope.projectId]) : "null";
   const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
   const editableProject = (value: ContractProject | null): ContractProject | null => value ? reactive(plain(value) as object) as ContractProject : null;
   const stressIntent = (plan: import('@apicc/core').StressPlan) => JSON.stringify([store.context, store.view?.assets.version, store.location, plan, store.environmentId, store.stressWorkerCount, store.stressConfirmedOrigins]);
@@ -22,7 +34,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
   const stop = () => { if (timer) clearTimeout(timer); timer = undefined; };
   const schedule = () => {
     stop();
-    if (store.visible && store.context && store.jobs.some(job => job.state !== "ended" || !job.executionReleased || isFullOnlineJob(job) && job.reportState === "pending")) timer = setTimeout(() => { void store.refreshActive(); }, store.statusRefreshMs);
+    if (store.visible && store.context && (store.jobs.some(job => job.state !== "ended" || !job.executionReleased || isFullOnlineJob(job) && job.reportState === "pending") || contexts.get(key(store.context))?.jobs.size)) timer = setTimeout(() => { void store.refreshActive(); }, store.statusRefreshMs);
   };
   const store = shallowReactive({
     context: null as OnlineExecutionContext | null, location: { kind: "local" } as ExecutionLocation,
@@ -32,6 +44,8 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     localResult: null as OnlineLocalResult | null, report: null as OnlineReport | null, selectedJobId: "",
     resultSelection: null as ResultSelection | null,
     localPlugins: null as PluginsListResult | null, activeLocalRunId: "",
+    cachePreferences: Object.freeze(initialPreferences), cachePreferenceDiagnostic: initial.diagnostic as string | null,
+    cacheUsage: { currentContexts: 0, protectedContexts: 0, inactiveContexts: 0, inactivePayloadBytes: 0, overLimit: false },
     stressConfirmedOrigins: [] as string[], stressWorkerCount: 1,
     materialMetadata: null as z.infer<typeof OnlineMaterialsMetadataSchema> | null,
     localOnlyRefIds: [] as string[], materials: { credentials: [] as Array<{ refId: string; version: string }>, attachments: [] as Array<{ refId: string; version: string; hash: string }>, attachmentPaths: {} as Record<string, { refId: string; version: string; hash: string }> },
@@ -39,10 +53,16 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     get activeStressLocalRunId(): string { const run = runs.get(key(store.context)); return store.activeLocalRunId && run?.target.kind === 'stress' && run.runId === store.activeLocalRunId ? run.runId : ''; },
     activate(context: OnlineExecutionContext | null) {
       if (key(context) === key(store.context)) return;
-      if (store.context) selections.set(key(store.context), { location: plain(store.location), environmentId: store.environmentId });
+      prune();
+      if (store.context) {
+        selections.set(key(store.context), { location: plain(store.location), environmentId: store.environmentId });
+        const previous = retain(store.context); previous.lastUsed = now(); previous.payloadBytes = undefined;
+      }
       generation++; stop(); store.context = context ? plain(context) : null; store.jobs = []; store.view = null; store.project = null; store.agents = null; store.saved = ""; store.error = ""; store.localResult = null; store.report = null; store.busy = false; store.running = false; store.connection = "unknown"; store.localOnlyRefIds = []; store.materials = { credentials: [], attachments: [], attachmentPaths: {} };
       stressConfirmation.value = ''; store.stressConfirmedOrigins = []; store.stressWorkerCount = 1;
       store.materialMetadata = null; store.activeLocalRunId = ''; store.selectedJobId = ''; store.resultSelection = null;
+      if (context) retain(context).lastUsed = now();
+      prune();
       const selection = selections.get(key(context)); store.location = selection?.location ?? { kind: "local" }; store.environmentId = selection?.environmentId;
       const run = runs.get(key(context)); if (run) { chooseRun(run); publishRun(run); }
     },
@@ -76,9 +96,11 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       const context = store.context && plain(store.context); if (!context || !store.visible) return;
       const token = generation;
       try {
-        const jobs = await api.onlineExecution({ operation: "list", context, limit: 20 });
+        const jobs = await api.onlineExecution({ operation: "list", context, limit: statusPageSize });
         if (!current(token, context)) return;
         store.jobs = reactive(OnlineJobSchema.array().parse(jobs) as object) as OnlineJob[]; store.connection = "connected";
+        for (const job of store.jobs) observeJob(context, job);
+        prune();
       } catch (error) { if (current(token, context)) { store.error = error instanceof Error ? error.message : String(error); store.connection = "disconnected"; } }
       finally { if (current(token, context)) schedule(); }
     },
@@ -86,12 +108,26 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       const context = store.context && plain(store.context); if (!context || !store.visible) return;
       const token = generation;
       try {
-        for (const existing of [...store.jobs].filter(job => job.state !== "ended" || !job.executionReleased || isFullOnlineJob(job) && job.reportState === "pending")) {
-          const raw = await api.onlineExecution({ operation: "status", context, runId: existing.jobId, location: { kind: "agent", agentId: existing.agentId } });
-          if (!current(token, context)) return;
-          updateJob(OnlineJobSchema.parse(raw));
+        const cached = retain(context);
+        const known = new Map([...cached.jobs]);
+        for (const job of store.jobs.filter(job => job.state !== 'ended' || !job.executionReleased || isFullOnlineJob(job) && job.reportState === 'pending')) known.set(JSON.stringify([job.agentId, job.jobId, job.executionId]), job);
+        const pendingJobs = [...known.values()], limit = Math.min(statusPageSize, pendingJobs.length);
+        const cursor = cached.jobCursor; let statusError = '';
+        for (let offset = 0; offset < limit; offset++) {
+          const existing = pendingJobs[(cursor + offset) % pendingJobs.length]!;
+          try {
+            const raw = await api.onlineExecution({ operation: "status", context, runId: existing.jobId, location: { kind: "agent", agentId: existing.agentId } });
+            if (!current(token, context)) return;
+            updateJob(OnlineJobSchema.parse(raw));
+          } catch (error) {
+            if (!current(token, context)) return;
+            statusError ||= error instanceof Error ? error.message : String(error);
+          } finally {
+            if (current(token, context)) cached.jobCursor = (cursor + offset + 1) % pendingJobs.length;
+          }
         }
-        store.connection = "connected";
+        if (!pendingJobs.length) cached.jobCursor = 0;
+        store.connection = statusError ? 'disconnected' : 'connected'; store.error = statusError;
       } catch (error) { if (current(token, context)) { store.error = error instanceof Error ? error.message : String(error); store.connection = "disconnected"; } }
       finally { if (current(token, context)) schedule(); }
     },
@@ -104,6 +140,13 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       store.materials = { ...store.materials, attachments: [...store.materials.attachments.filter(item => item.refId !== refId), selected], attachmentPaths: { ...store.materials.attachmentPaths, [path]: selected } };
     },
     setRefreshMs(value: number) { ClientConfigSchema.shape.statusRefreshMs.max(2147483647).parse(value); store.statusRefreshMs = value; schedule(); },
+    setCachePreferences(value: unknown) {
+      const parsed = OnlineExecutionCachePreferencesSchema.safeParse(value);
+      if (!parsed.success) throw new Error('online-cache-settings-invalid');
+      try { if (!storage) throw new Error('Storage unavailable'); storage.setItem(ONLINE_EXECUTION_CACHE_SETTINGS_KEY, JSON.stringify(parsed.data)); }
+      catch { store.cachePreferenceDiagnostic = 'online-cache-settings-save-failed'; throw new Error('online-cache-settings-save-failed'); }
+      store.cachePreferences = Object.freeze(parsed.data); store.cachePreferenceDiagnostic = null; prune();
+    },
     async save(delta: AssetDelta) {
       const context = store.context && plain(store.context); if (!context) return;
       const token = generation; const view = OnlineProjectViewSchema.parse(await api.onlineExecution({ operation: "save", context, delta: plain(delta) }));
@@ -131,18 +174,20 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       const stress = target.kind === 'stress' ? StressRunConfigSchema.parse({ workerCount: store.stressWorkerCount, confirmedTargetOrigins: [...store.stressConfirmedOrigins] }) : undefined;
       if (stress) store.invalidateStressConfirmation();
       const runId = crypto.randomUUID(); const location = plain(store.location); const sessionKey = JSON.stringify([context, location]);
-      const run: RunRecord = { context, runId, target: plain(target), location, environmentId: store.environmentId, pending: true, error: '' };
+      const run: RunRecord = { context, runId, target: { kind: target.kind }, location, environmentId: store.environmentId, pending: true, error: '' };
+      const cached = retain(context); cached.pending.add(runId); cached.payloadBytes = undefined;
       runs.set(key(context), run); chooseRun(run); store.error = ''; publishRun(run);
       try {
         const raw = await api.onlineExecution({ operation: "run", context, runId, location, target: plain(target), expectedVersion: store.view.assets.version, environmentId: run.environmentId, ...(target.kind === 'debug' && debugSessions.has(sessionKey) ? { debugSessionId: debugSessions.get(sessionKey) } : {}), runConfig: stress ? { stress } : {}, materials: { projectId: context.scope.projectId, ...plain(store.materials) }, localOnlyRefIds: [...store.localOnlyRefIds] });
-        if (location.kind === 'local') { const result = OnlineLocalResultSchema.parse(raw); if (result.runId !== runId) throw new Error('fixed-input-mismatch'); run.result = result; if (result.debugSessionId) debugSessions.set(sessionKey, result.debugSessionId); }
-        else { run.job = OnlineJobSchema.parse(raw); if (isFullOnlineJob(run.job) && run.job.task.debugSessionId) debugSessions.set(sessionKey, run.job.task.debugSessionId); }
+        if (location.kind === 'local') { const result = OnlineLocalResultSchema.parse(raw); if (result.runId !== runId) throw new Error('fixed-input-mismatch'); run.result = result; if (result.debugSessionId) { debugSessions.set(sessionKey, result.debugSessionId); cached.debugKeys.add(sessionKey); } }
+        else { run.job = OnlineJobSchema.parse(raw); observeJob(context, run.job); if (isFullOnlineJob(run.job) && run.job.task.debugSessionId) { debugSessions.set(sessionKey, run.job.task.debugSessionId); cached.debugKeys.add(sessionKey); } }
       } catch (error) { const failure = error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('output')) ? new Error('invalid-core-output') : error; run.error = failure instanceof Error ? failure.message : String(failure); throw failure; }
-      finally { run.pending = false; publishRun(run); }
+      finally { run.pending = false; cached.pending.delete(runId); if (!run.result && !run.job) cached.uncertain.add(runId); cached.payloadBytes = undefined; publishRun(run); prune(); }
     },
     async cancelLocal() { if (!store.context || !store.activeLocalRunId) return; await api.onlineExecution({ operation: 'cancel', context: plain(store.context), location: { kind: 'local' }, runId: store.activeLocalRunId }); },
     async inspect(job: OnlineJob, intentCurrent: () => boolean = () => true) {
       const context = store.context && plain(store.context); if (!context) return;
+      observeJob(context, job); prune();
       const token = generation; store.selectedJobId = job.jobId; store.report = null; store.localResult = null;
       store.resultSelection = { kind: 'agent', job: plain(job) };
       if (!isFullOnlineJob(job) || job.reportState !== "archived") return;
@@ -165,6 +210,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     },
   });
   function updateJob(job: OnlineJob) {
+    if (store.context) observeJob(store.context, job);
     const index = store.jobs.findIndex(row => row.jobId === job.jobId);
     if (index >= 0) store.jobs[index] = job;
     const same = (previous: OnlineJob) => previous.jobId === job.jobId && previous.executionId === job.executionId;
@@ -175,6 +221,42 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       store.resultSelection = { kind: 'agent', job };
       if (!isFullOnlineJob(job)) store.report = null;
     }
+    prune();
+  }
+  function retain(context: OnlineExecutionContext): CachedContext {
+    const id = key(context); let entry = contexts.get(id);
+    if (!entry) { entry = { context: plain(context), lastUsed: now(), debugKeys: new Set(), pending: new Set(), uncertain: new Set(), jobs: new Map(), jobCursor: 0 }; contexts.set(id, entry); }
+    return entry;
+  }
+  function observeJob(context: OnlineExecutionContext, job: OnlineJob) {
+    const entry = retain(context); const id = JSON.stringify([job.agentId, job.jobId, job.executionId]);
+    const released = job.state === 'ended' && job.executionReleased && isFullOnlineJob(job) && ['archived', 'expired'].includes(job.reportState);
+    if (released) entry.jobs.delete(id); else entry.jobs.set(id, { jobId: job.jobId, executionId: job.executionId, agentId: job.agentId });
+    entry.payloadBytes = undefined;
+  }
+  function protectedContext(entry: CachedContext) { return entry.pending.size > 0 || entry.uncertain.size > 0 || entry.jobs.size > 0; }
+  function payloadBytes(id: string, entry: CachedContext) {
+    return entry.payloadBytes ??= new TextEncoder().encode(JSON.stringify({ selection: selections.get(id), run: runs.get(id),
+      debugSessions: [...entry.debugKeys].map(debugKey => debugSessions.get(debugKey)) })).byteLength;
+  }
+  function drop(id: string, entry: CachedContext) {
+    selections.delete(id); runs.delete(id); for (const debugKey of entry.debugKeys) debugSessions.delete(debugKey); contexts.delete(id);
+  }
+  function prune() {
+    const active = key(store.context), instant = now(), preferences = store.cachePreferences;
+    const inactive = [...contexts].filter(([id, entry]) => id !== active && !protectedContext(entry)).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    for (let index = inactive.length - 1; index >= 0; index--) {
+      const [id, entry] = inactive[index]!;
+      if (instant - entry.lastUsed >= preferences.inactiveTtlMinutes * 60_000) { drop(id, entry); inactive.splice(index, 1); }
+    }
+    let bytes = inactive.reduce((sum, [id, entry]) => sum + payloadBytes(id, entry), 0);
+    while (inactive.length > preferences.maxInactiveContexts || bytes > preferences.maxInactivePayloadMiB * 1024 * 1024) {
+      const [id, entry] = inactive.shift()!; bytes -= payloadBytes(id, entry); drop(id, entry);
+    }
+    const protectedEntries = [...contexts].filter(([id, entry]) => id !== active && protectedContext(entry));
+    const protectedBytes = protectedEntries.reduce((sum, [id, entry]) => sum + payloadBytes(id, entry), 0);
+    store.cacheUsage = { currentContexts: store.context ? 1 : 0, protectedContexts: protectedEntries.length, inactiveContexts: inactive.length,
+      inactivePayloadBytes: bytes, overLimit: protectedEntries.length > preferences.maxInactiveContexts || protectedBytes > preferences.maxInactivePayloadMiB * 1024 * 1024 };
   }
   function chooseRun(run: RunRecord) {
     store.report = null; store.localResult = null; store.selectedJobId = '';

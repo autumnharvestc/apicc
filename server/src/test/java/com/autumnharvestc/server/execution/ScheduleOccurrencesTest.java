@@ -49,7 +49,10 @@ abstract class OccurrenceFixture extends ScheduleFixture {
     }
 }
 
+@org.springframework.test.context.TestPropertySource(properties="spring.datasource.url=jdbc:h2:mem:apicc-f8-occurrence-authority;DB_CLOSE_DELAY=-1")
 class ScheduleOccurrencesTest extends OccurrenceFixture {
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean ScheduleOccurrenceRepo observedOccurrenceRepo;
+    @org.springframework.beans.factory.annotation.Autowired com.autumnharvestc.server.execution.notifications.NotificationOutboxService notificationOutbox;
     @Test void databaseTimeSourceCanObserveAnElapsedLeaseWithinOneRealTransaction(){
         var databaseTime=new DatabaseScheduleTimeSource(jdbc);var tx=new org.springframework.transaction.support.TransactionTemplate(transactionManager);
         tx.executeWithoutResult(status->{
@@ -231,24 +234,50 @@ class ScheduleOccurrencesTest extends OccurrenceFixture {
     @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"reauthorize","control","disable","watermark","delete"})
     void rolledBackOldRejectionCannotPauseANewerAuthority(String mutation)throws Exception {
         var f=fixture();String id=once(f);jdbc.update("UPDATE execution_schedules SET subject_user_id=9223372036854775807 WHERE id=?",Long.valueOf(id));
+        var targetScope=new ScheduleOccurrenceRepo.Scope(Long.parseLong(f.ws()),Long.parseLong(f.project()),Long.parseLong(id));
+        var actualScope=new ThreadLocal<ScheduleOccurrenceRepo.Scope>();var scanThread=Thread.currentThread();
+        org.mockito.Mockito.doAnswer(call->{Object result=call.callRealMethod();actualScope.set(call.getArgument(0));return result;})
+            .when(observedOccurrenceRepo).lockSchedule(org.mockito.ArgumentMatchers.any(ScheduleOccurrenceRepo.Scope.class));
         var armed=new java.util.concurrent.atomic.AtomicBoolean();
+        var originalCompletion=new java.util.concurrent.atomic.AtomicInteger(-1);var mutationCompletion=new java.util.concurrent.atomic.AtomicInteger(-1);
+        var mutationExecuted=new java.util.concurrent.atomic.AtomicBoolean();var mutationUsedNewTransaction=new java.util.concurrent.atomic.AtomicBoolean();
+        var mutationFailure=new java.util.concurrent.atomic.AtomicReference<Throwable>();
         org.mockito.Mockito.when(scheduleClock.now()).thenAnswer(call->{
-            if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()&&armed.compareAndSet(false,true)){
+            var scope=actualScope.get();
+            // The shared clock also runs in committed notification transactions. Only this plan's real admission may own the hook.
+            boolean targetAdmission=Thread.currentThread()==scanThread&&targetScope.equals(scope)
+                &&StackWalker.getInstance().walk(frames->frames.anyMatch(frame->frame.getClassName().equals(ScheduleOccurrenceService.class.getName())&&frame.getMethodName().equals("admit")));
+            if(targetAdmission&&org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()&&armed.compareAndSet(false,true)){
                 org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
-                    @Override public void afterCompletion(int status){if(status!=STATUS_ROLLED_BACK)return;
-                        var tx=new org.springframework.transaction.support.TransactionTemplate(transactionManager);tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-                        tx.executeWithoutResult(s->{
-                            if(mutation.equals("control"))jdbc.update("UPDATE execution_scheduler_control SET generation=generation+1,version=version+1 WHERE id=1");
-                            else if(mutation.equals("watermark"))jdbc.update("UPDATE execution_schedules SET evaluated_through_utc=TIMESTAMP WITH TIME ZONE '2035-01-01 00:01:00+00' WHERE id=?",Long.valueOf(id));
-                            else if(mutation.equals("delete"))schedules.delete(scheduleUsers.findByUsername("admin").orElseThrow(),f.ws(),f.project(),id,"2");
-                            else schedules.update(scheduleUsers.findByUsername("admin").orElseThrow(),f.ws(),f.project(),id,new ScheduleDtos.Update("2",null,null,null,null,null,mutation.equals("disable")?false:null,mutation.equals("reauthorize")?true:null,null));
-                        });
+                    @Override public void afterCompletion(int status){originalCompletion.set(status);if(status!=STATUS_ROLLED_BACK)return;
+                        try{
+                            var tx=new org.springframework.transaction.support.TransactionTemplate(transactionManager);tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+                            tx.executeWithoutResult(s->{
+                                mutationUsedNewTransaction.set(s.isNewTransaction());
+                                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                                    @Override public void afterCompletion(int completion){mutationCompletion.set(completion);}
+                                });
+                                if(mutation.equals("control"))jdbc.update("UPDATE execution_scheduler_control SET generation=generation+1,version=version+1 WHERE id=1");
+                                else if(mutation.equals("watermark"))jdbc.update("UPDATE execution_schedules SET evaluated_through_utc=TIMESTAMP WITH TIME ZONE '2035-01-01 00:01:00+00' WHERE id=?",Long.valueOf(id));
+                                else if(mutation.equals("delete"))schedules.delete(scheduleUsers.findByUsername("admin").orElseThrow(),f.ws(),f.project(),id,"2");
+                                else schedules.update(scheduleUsers.findByUsername("admin").orElseThrow(),f.ws(),f.project(),id,new ScheduleDtos.Update("2",null,null,null,null,null,mutation.equals("disable")?false:null,mutation.equals("reauthorize")?true:null,null));
+                                mutationExecuted.set(true);
+                            });
+                        }catch(Throwable failure){mutationFailure.set(failure);}
                     }
                 });
             }
             return origin.plusSeconds(60);
         });
+        assertThat(notificationOutbox.deliverOne()).as("a real unrelated notification transaction precedes the target admission").isFalse();
+        assertThat(armed).as("an unrelated committed notification transaction cannot consume the rollback hook").isFalse();
         assertThatCode(()->occurrences.scan("rejected-old-authority")).doesNotThrowAnyException();
+        assertThat(armed).as("the target admission transaction owns the rollback hook").isTrue();
+        assertThat(originalCompletion.get()).as("the original admission actually rolled back").isEqualTo(org.springframework.transaction.support.TransactionSynchronization.STATUS_ROLLED_BACK);
+        assertThat(mutationFailure.get()).as("afterCompletion must not hide a failed authority mutation").isNull();
+        assertThat(mutationExecuted).as("the specified authority mutation ran").isTrue();
+        assertThat(mutationUsedNewTransaction).as("the authority mutation used a new transaction").isTrue();
+        assertThat(mutationCompletion.get()).as("the authority mutation committed before rejection recording").isEqualTo(org.springframework.transaction.support.TransactionSynchronization.STATUS_COMMITTED);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_schedule_occurrences WHERE schedule_id=?",Long.class,Long.valueOf(id))).isZero();
         assertThat(jdbc.queryForObject("SELECT paused_reason_code FROM execution_schedules WHERE id=?",String.class,Long.valueOf(id))).isNotEqualTo("schedule-subject-unavailable");
     }

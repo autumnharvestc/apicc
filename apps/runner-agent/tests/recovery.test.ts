@@ -22,6 +22,7 @@ import { stressFixture } from "./helpers/stressFixture.js";
 import { alive } from "./helpers/processEvidence.js";
 import { readProcessIdentity, sameProcessIdentity } from "../src/processIdentity.js";
 import * as processIdentity from "../src/processIdentity.js";
+import type { LedgerCompactionOptions } from "../src/config.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const requests: string[] = [], gates = new Map<string, ServerResponse>();
@@ -52,9 +53,9 @@ async function fixture(id: number, path: string, dedicated = false) {
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 function permit(message: Extract<AgentMessageV1, { kind: "start-request" }>, item: Fixture): AgentCommandV1 { return AgentCommandV1Schema.parse({ kind: "start-permit", messageId: `permit-${message.executionId}`, jobId: message.jobId, executionId: message.executionId, permitId: message.executionId, effectivePolicy: item.inputs.policy, policyVersion: message.policyVersion, scriptPlanDigest: message.scriptPlanDigest, executionProfile: message.executionProfile, runtimeCompatibilityId: message.runtimeCompatibilityId, credentialVersions: message.credentialVersions }); }
-function harness(items: Fixture[], dataDirectory: string, overrides: Partial<AgentConfig> = {}) {
+function harness(items: Fixture[], dataDirectory: string, overrides: Partial<AgentConfig> = {}, ledgerCompaction?: LedgerCompactionOptions) {
   const completed: SettledExecution[] = [], messages: AgentMessageV1[] = []; let offline = false;
-  const options = { dataDirectory, serverId: "https://control.test/api/v1", agentId: "7", sessionId: "recovery-host", runtimeCompatibilityId: compatibility, identity, config: config(overrides), configVersion: "1",
+  const options = { dataDirectory, ledgerCompaction, serverId: "https://control.test/api/v1", agentId: "7", sessionId: "recovery-host", runtimeCompatibilityId: compatibility, identity, config: config(overrides), configVersion: "1",
     loadInputs: async (task: TaskDeliveryV1["task"]) => items.find(item => item.delivery.task.executionId === task.executionId)!.inputs,
     loadMaterials: async (task: TaskDeliveryV1["task"]) => items.find(item => item.delivery.task.executionId === task.executionId)!.materials,
     transport: { exchange: async () => ({ deliveries: [], commands: [] }), send: async (batch: readonly AgentMessageV1[]) => { if (offline) throw new Error("Controlled control disconnection"); messages.push(...batch); for (const message of batch) if (message.kind === "start-request") queueMicrotask(() => supervisor.command(permit(message, items.find(item => item.delivery.task.executionId === message.executionId)!))); return { acknowledged: batch.map(message => message.messageId) }; } },
@@ -63,6 +64,42 @@ function harness(items: Fixture[], dataDirectory: string, overrides: Partial<Age
   const supervisor = new AgentSupervisor(options); return { supervisor, completed, messages, options, setOffline(value: boolean) { offline = value; } };
 }
 const release = (path: string) => { gates.get(path)?.end('{"value":"ok"}'); gates.delete(path); };
+
+it.each([true, false])("restores seen and pending messages before one startup compaction batch without replay (enabled: %s)", async enabled => {
+  const directory = await mkdtemp(join(tmpdir(), "apicc-startup-compaction-"));
+  const items = await Promise.all([fixture(841, "/must-not-replay-compacted"), fixture(842, "/must-not-replay-second-history"), fixture(843, "/must-not-replay-pending")]);
+  let seed: ExecutionLedger | undefined = new ExecutionLedger(directory, "https://control.test/api/v1", "7", config(), { enabled: false, batchSize: 1 });
+  let recovered: ReturnType<typeof harness> | undefined;
+  const before = requests.length;
+  try {
+    for (const item of items.slice(0, 2)) {
+      const task = item.delivery.task, runId = randomUUID(), id = `${runId}/coordinator`, epoch = seed.childLease!.epoch;
+      seed.accept(item.delivery); seed.mark(task.executionId, "started"); seed.observeProcesses(task.executionId, 1);
+      seed.recordProcessIntent(task.executionId, { id, runId, workerId: "coordinator", role: "coordinator", scope: task.scope, epoch, scriptPath: fileURLToPath(new URL("../dist/taskChild.js", import.meta.url)) });
+      seed.recordProcess(task.executionId, { id, name: "confirmed coordinator", role: "coordinator", scope: task.scope, epoch, pid: 50000 + Number(task.executionId), exited: true, code: 0, signal: null });
+      seed.command({ messageId: `history-cancel-${task.executionId}`, kind: "cancel", executionId: task.executionId, jobId: task.jobId });
+      seed.settle(task.executionId, { executionId: task.executionId, verdict: "interrupted" });
+      const report = seed.reports.find(report => report.executionId === task.executionId)!;
+      seed.acknowledge(seed.messages.map(message => message.messageId)); seed.archive(task.executionId, { archived: true, reportHash: report.hash, reportBytes: report.bytes });
+    }
+    const pending = items[2]!; seed.accept(pending.delivery); seed.settle(pending.delivery.task.executionId, { executionId: pending.delivery.task.executionId, verdict: "interrupted" });
+    seed.close(); seed = undefined;
+    recovered = harness(items, directory, {}, { enabled, batchSize: 1 }); await recovered.supervisor.ready;
+    const loads = vi.spyOn(recovered.options, "loadInputs");
+    expect(recovered.supervisor["ledger"].intents.filter(intent => intent.processes)).toHaveLength(enabled ? 1 : 2);
+    expect(recovered.supervisor.pendingReports().map(report => report.executionId)).toEqual(["843"]);
+    expect(recovered.supervisor.pendingResults().map(result => result.executionId)).toEqual(["843"]);
+    expect(recovered.supervisor["ledger"].messages.map(message => message.executionId)).toEqual(["843"]);
+    for (const item of items) expect(recovered.supervisor.receive(item.delivery)).toBe(true);
+    recovered.supervisor.command({ kind: "cancel", messageId: "history-cancel-841", executionId: "841", jobId: "941", reason: "redelivered historical command" });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(loads).not.toHaveBeenCalled(); expect(recovered.completed).toEqual([]); expect(requests.length).toBe(before);
+    expect(recovered.supervisor.processState()).toEqual({ sharedPid: undefined, dedicatedPids: [] });
+    await recovered.supervisor.close();
+    seed = new ExecutionLedger(directory, "https://control.test/api/v1", "7", config());
+    expect(seed.intents).toHaveLength(3); expect(seed.intents.filter(intent => intent.processes)).toHaveLength(enabled ? 1 : 2);
+  } finally { seed?.close(); await recovered?.supervisor.close(); await rm(directory, { recursive: true, force: true }); }
+});
 
 it("finishes recovery for a persisted old birth without killing the actual replacement PID owner", async () => {
   const directory = await mkdtemp(join(tmpdir(), "apicc-reused-pid-recovery-")), item = await stressFixture(baseUrl, 972, 2, "/must-not-replay-reused-pid");

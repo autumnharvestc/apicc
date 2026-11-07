@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createOnlineExecutionStore } from "../../../src/renderer/src/stores/onlineExecution.js";
-import type { OnlineExecutionContext, OnlineJob, OnlineLocalResult } from "../../../src/shared/online/execution.js";
-import { ContractWorkspaceSchema, StressPlanSchema } from '@apicc/core/schema';
+import { ONLINE_EXECUTION_CACHE_SETTINGS_KEY } from '../../../src/renderer/src/stores/onlineExecutionCachePreferences.js';
+import type { OnlineExecutionContext, OnlineJob, OnlineLocalResult, FullOnlineJob } from "../../../src/shared/online/execution.js";
+import { ApiRequestSchema, DebugInvocationSchema, ContractWorkspaceSchema, StressPlanSchema } from '@apicc/core/schema';
 import { workspaceFixture } from '../../../../../packages/core/tests/helpers/contractFixtures.js';
 import { defaultPolicyConfig } from '@apicc/execution/contract';
 import { OnlineLocalResultSchema, type OnlineExecutionInput } from '../../../src/shared/online/execution.js';
@@ -11,7 +12,174 @@ const workflowId = '00000000-0000-4000-8000-000000000091';
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 function localResult(runId: string): OnlineLocalResult { return { location: { kind: 'local' }, runId, snapshotId: '66', manifestHash: 'a'.repeat(64), runtimeCompatibilityId: 'recorded-local-runtime', scriptTimeoutMs: 3000, output: { kind: 'failure', targetKind: 'workflow', error: 'Safe preparation failure', result: { collectionId: '', collectionName: 'workflow', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', total: 0, passed: 0, failed: 1, cases: [] } } }; }
 function activateRun(store: ReturnType<typeof createOnlineExecutionStore>) { store.activate(context); store.setVisible(true); store.view = { project: null, problems: [], assets: { ...context.scope, format: 'contract-files-v1', contractProjectId: '00000000-0000-4000-8000-000000000018', version: '1', manifestHash: 'a'.repeat(64), files: [] } }; }
-function job(jobId: string, executionId: string): OnlineJob { return { jobId, executionId, agentId: '5', state: 'ended', cancelState: 'none', executionReleased: true, reportState: 'archived', task: { protocolVersion: 1, jobId, executionId, scope: context.scope, submittedByUserId: '7', contractProjectId: '00000000-0000-4000-8000-000000000018', snapshotId: '66', manifestHash: 'a'.repeat(64), target: { kind: 'workflow', workflowId }, policyVersion: '0', requiredCoreBuildId: 'b'.repeat(64), scriptPlanDigest: 'c'.repeat(64), executionProfile: 'no-script', runtimeCompatibilityId: 'recorded-agent-runtime', dispatchKind: 'dedicated-task', requiredCapabilities: ['task:workflow'] } }; }
+function job(jobId: string, executionId: string): FullOnlineJob { return { jobId, executionId, agentId: '5', state: 'ended', cancelState: 'none', executionReleased: true, reportState: 'archived', task: { protocolVersion: 1, jobId, executionId, scope: context.scope, submittedByUserId: '7', contractProjectId: '00000000-0000-4000-8000-000000000018', snapshotId: '66', manifestHash: 'a'.repeat(64), target: { kind: 'workflow', workflowId }, policyVersion: '0', requiredCoreBuildId: 'b'.repeat(64), scriptPlanDigest: 'c'.repeat(64), executionProfile: 'no-script', runtimeCompatibilityId: 'recorded-agent-runtime', dispatchKind: 'dedicated-task', requiredCapabilities: ['task:workflow'] } }; }
+describe("F8 inactive execution cache", () => {
+  const at = (id: number): OnlineExecutionContext => ({ ...context, scope: { ...context.scope, projectId: String(id) } });
+  function activateAt(store: ReturnType<typeof createOnlineExecutionStore>, selected: OnlineExecutionContext) {
+    store.activate(selected); store.setVisible(true);
+    store.view = { project: null, problems: [], assets: { ...selected.scope, format: 'contract-files-v1', contractProjectId: '00000000-0000-4000-8000-000000000018', version: '1', manifestHash: 'a'.repeat(64), files: [] } };
+  }
+  it("F8 evicts the oldest safe context after the default twenty inactive contexts", () => {
+    const store = createOnlineExecutionStore({ onlineExecution: async () => { throw new Error('No requests expected'); } });
+    for (let id = 1; id <= 22; id++) { store.activate(at(id)); store.selectLocation({ kind: 'agent', agentId: '5' }); }
+    store.activate(at(1));
+    expect(store.location).toEqual({ kind: 'local' });
+    store.activate(at(21));
+    expect(store.location).toEqual({ kind: 'agent', agentId: '5' });
+  });
+  it("F8 expires idle selections before revisiting them using the monotonic clock", () => {
+    let now = 0;
+    const store = createOnlineExecutionStore({ onlineExecution: async () => [] }, { now: () => now });
+    store.activate(at(1)); store.selectLocation({ kind: 'agent', agentId: '5' }); store.environmentId = '00000000-0000-4000-8000-000000000019';
+    store.activate(at(2)); now = 31 * 60_000;
+    store.activate(at(1));
+    expect(store.location).toEqual({ kind: 'local' }); expect(store.environmentId).toBeUndefined();
+  });
+  it("F8 releases a safe inactive result above the configured serialized payload budget", async () => {
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation !== 'run') throw new Error('Unexpected operation');
+      const result = localResult(input.runId); if (result.output.kind === 'failure') result.output.result.warnings = ['x'.repeat(1_100_000)];
+      return result;
+    } }, { preferences: { maxInactiveContexts: 20, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 1 }, storage: null });
+    try {
+      activateAt(store, at(1)); await store.run({ kind: 'workflow', workflowId });
+      expect(store.localResult).not.toBeNull(); store.activate(at(2)); store.activate(at(1));
+      expect(store.localResult).toBeNull(); expect(store.resultSelection).toBeNull();
+    } finally { store.setVisible(false); }
+  });
+  it("F8 protects a local RPC across switches and permits eviction only after real settlement", async () => {
+    const response = deferred<unknown>(); let runId = '';
+    const store = createOnlineExecutionStore({ onlineExecution: async input => { if (input.operation !== 'run') throw new Error('Unexpected operation'); runId = input.runId; return response.promise; } },
+      { preferences: { maxInactiveContexts: 0, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 1 }, storage: null });
+    activateAt(store, at(1)); const running = store.run({ kind: 'workflow', workflowId });
+    store.activate(at(2)); store.activate(at(1)); expect(store.running).toBe(true); expect(store.activeLocalRunId).toBe(runId);
+    store.activate(at(2)); response.resolve(localResult(runId)); await running; store.activate(at(1));
+    expect(store.running).toBe(false); expect(store.localResult).toBeNull(); store.setVisible(false);
+  });
+  it("F8 keeps every known unarchived job protected even when a later run replaces the latest result", async () => {
+    const active = { ...job('101', '201'), state: 'running' as const, executionReleased: false, reportState: 'none' as const };
+    active.task.scope = at(1).scope;
+    const archived = job('102', '202'); archived.task.scope = at(1).scope;
+    let calls = 0;
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation === 'list') return [archived];
+      if (input.operation !== 'run') throw new Error('Unexpected operation'); return ++calls === 1 ? active : archived;
+    } },
+      { preferences: { maxInactiveContexts: 0, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 1 }, storage: null });
+    try {
+      activateAt(store, at(1)); store.selectLocation({ kind: 'agent', agentId: '5' });
+      await store.run({ kind: 'workflow', workflowId }); await store.run({ kind: 'workflow', workflowId });
+      await store.refresh();
+      store.activate(at(2)); store.activate(at(1)); expect(store.selectedJobId).toBe('102');
+      expect(store.location).toEqual({ kind: 'agent', agentId: '5' }); expect(calls).toBe(2);
+      expect(store.cacheUsage.protectedContexts).toBe(0);
+      store.activate(at(2)); expect(store.cacheUsage.protectedContexts).toBe(1); expect(store.cacheUsage.overLimit).toBe(true);
+      store.activate(at(1));
+      await store.inspect({ ...active, state: 'ended', executionReleased: true, reportState: 'expired' });
+      store.activate(at(2)); store.activate(at(1)); expect(store.resultSelection).toBeNull(); expect(calls).toBe(2);
+    } finally { store.setVisible(false); }
+  });
+  it("F8 retains an uncertain submitted RPC instead of treating its rejection as physical release", async () => {
+    let calls = 0;
+    const store = createOnlineExecutionStore({ onlineExecution: async () => { calls++; throw new Error('connection-lost-after-submit'); } },
+      { preferences: { maxInactiveContexts: 0, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 1 }, storage: null });
+    try {
+      activateAt(store, at(1)); store.selectLocation({ kind: 'agent', agentId: '5' });
+      await expect(store.run({ kind: 'workflow', workflowId })).rejects.toThrow('connection-lost-after-submit');
+      store.activate(at(2)); store.activate(at(1)); expect(store.error).toBe('connection-lost-after-submit');
+      expect(store.location).toEqual({ kind: 'agent', agentId: '5' }); expect(calls).toBe(1);
+    } finally { store.setVisible(false); }
+  });
+  it("F8 retains only the target kind after submission instead of an extra copy of debug request contents", async () => {
+    const request = ApiRequestSchema.parse({ protocol: 'http', method: 'POST', baseUrl: 'https://synthetic.test', path: '/debug', pathParams: [], cookies: [], headers: [], query: [], auth: { kind: 'none' }, body: { kind: 'json', content: JSON.stringify({ synthetic: 'x'.repeat(20_000) }) } });
+    const invocation = DebugInvocationSchema.parse({ mode: 'request', locator: { workspaceId: 'ws', groupId: 'group', projectId: 'project', collectionId: 'collection', folderIds: [], apiId: 'api' }, request, parameters: {}, fields: [] });
+    let sentBytes = 0;
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation !== 'run') throw new Error('Unexpected operation'); sentBytes = JSON.stringify(input.target).length;
+      const result = localResult(input.runId); if (result.output.kind === 'failure') result.output.targetKind = 'debug'; return result;
+    } }, { storage: null });
+    try {
+      activateAt(store, at(1)); await store.run({ kind: 'debug', invocation }); expect(sentBytes).toBeGreaterThan(20_000);
+      store.activate(at(2)); expect(store.cacheUsage.inactivePayloadBytes).toBeLessThan(5_000);
+      store.activate(at(1)); expect(store.localResult).not.toBeNull();
+    } finally { store.setVisible(false); }
+  });
+  it("F8 refreshes retained job identities absent from the latest page before releasing protection", async () => {
+    const active = { ...job('101', '201'), state: 'running' as const, executionReleased: false, reportState: 'none' as const };
+    active.task.scope = at(1).scope;
+    const recent = job('102', '202'); recent.task.scope = at(1).scope;
+    const queried: string[] = []; let runs = 0;
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation === 'run') return ++runs === 1 ? active : recent;
+      if (input.operation === 'list') return [recent];
+      if (input.operation === 'status') { queried.push(input.runId); return { ...active, state: 'ended', executionReleased: true, reportState: 'archived' }; }
+      throw new Error('Unexpected operation');
+    } }, { preferences: { maxInactiveContexts: 0, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 1 }, storage: null });
+    try {
+      activateAt(store, at(1)); store.selectLocation({ kind: 'agent', agentId: '5' });
+      await store.run({ kind: 'workflow', workflowId }); await store.run({ kind: 'workflow', workflowId }); await store.refresh();
+      expect(store.jobs.map(item => item.jobId)).toEqual(['102']);
+      await store.refreshActive(); expect(queried).toEqual(['101']);
+      store.activate(at(2)); store.activate(at(1)); expect(store.resultSelection).toBeNull(); expect(runs).toBe(2);
+    } finally { store.setVisible(false); }
+  });
+  it.each([2, 21])("F8 a failed status read does not starve later known refs across bounded pages (%s jobs)", async count => {
+    const active = Array.from({ length: count }, (_value, index) => {
+      const row = { ...job(String(101 + index), String(201 + index)), state: 'running' as const, executionReleased: false, reportState: 'none' as const };
+      row.task.scope = at(1).scope; return row;
+    });
+    let submitted = 0; let recoverFirst = false; const queried: string[] = [];
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation === 'run') return active[submitted++]!;
+      if (input.operation === 'status') {
+        queried.push(input.runId); if (input.runId === '101' && !recoverFirst) throw new Error('history-read-forbidden');
+        const previous = active.find(row => row.jobId === input.runId)!;
+        return { ...previous, state: 'ended', executionReleased: true, reportState: 'archived' };
+      }
+      throw new Error('Unexpected operation');
+    } }, { preferences: { maxInactiveContexts: 0, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 1 }, storage: null });
+    try {
+      activateAt(store, at(1)); store.selectLocation({ kind: 'agent', agentId: '5' });
+      for (const _row of active) await store.run({ kind: 'workflow', workflowId });
+      await store.refreshActive(); expect(queried).toHaveLength(Math.min(20, count));
+      if (count > 20) await store.refreshActive();
+      expect(queried).toContain(String(100 + count)); expect(store.error).toBe('history-read-forbidden');
+      store.activate(at(2)); expect(store.cacheUsage.protectedContexts).toBe(1);
+      store.activate(at(1)); recoverFirst = true; queried.length = 0; await store.refreshActive(); expect(queried).toEqual(['101']);
+      store.activate(at(2)); store.activate(at(1)); expect(store.resultSelection).toBeNull();
+    } finally { store.setVisible(false); }
+  });
+  it("F8 keeps cache identities separate for servers, users, workspaces, groups and projects", () => {
+    const store = createOnlineExecutionStore({ onlineExecution: async () => [] }, { storage: null });
+    const variants = [context, { ...context, serverId: 'https://other.test/api/v1' }, { ...context, ownerId: '8' },
+      { ...context, scope: { ...context.scope, workspaceId: '12' } }, { ...context, scope: { ...context.scope, groupId: '23' } }, at(34)];
+    for (const [index, selected] of variants.entries()) { store.activate(selected); store.selectLocation({ kind: 'agent', agentId: String(50 + index) }); }
+    for (const [index, selected] of variants.entries()) { store.activate(selected); expect(store.location).toEqual({ kind: 'agent', agentId: String(50 + index) }); }
+    store.activate(context);
+    store.activate({ scope: { projectId: '33', groupId: '22', workspaceId: '11' }, ownerId: '7', serverId: context.serverId });
+    expect(store.location).toEqual({ kind: 'agent', agentId: '50' });
+  });
+  it("F8 persists only validated local preferences and applies limits after a successful save", () => {
+    const values = new Map<string, string>();
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+    const store = createOnlineExecutionStore({ onlineExecution: async () => [] }, { storage });
+    store.activate(at(1)); store.selectLocation({ kind: 'agent', agentId: '5' }); store.activate(at(2));
+    const preferences = { maxInactiveContexts: 0, inactiveTtlMinutes: 1, maxInactivePayloadMiB: 1 };
+    expect(() => store.setCachePreferences({ ...preferences, maxInactiveContexts: -1 })).toThrow('online-cache-settings-invalid');
+    expect(values.size).toBe(0); expect(store.cacheUsage.inactiveContexts).toBe(1);
+    store.setCachePreferences(preferences);
+    expect(store.cacheUsage.inactiveContexts).toBe(0); expect(JSON.parse(values.get(ONLINE_EXECUTION_CACHE_SETTINGS_KEY)!)).toEqual(preferences);
+    const reopened = createOnlineExecutionStore({ onlineExecution: async () => [] }, { storage });
+    expect(reopened.cachePreferences).toEqual(preferences);
+    expect(reopened.cachePreferenceDiagnostic).toBeNull();
+    storage.setItem = () => { throw new Error('local storage unavailable'); };
+    expect(() => store.setCachePreferences({ ...preferences, maxInactiveContexts: 10 })).toThrow('online-cache-settings-save-failed');
+    expect(store.cachePreferences).toEqual(preferences);
+    values.set(ONLINE_EXECUTION_CACHE_SETTINGS_KEY, '{invalid');
+    const damaged = createOnlineExecutionStore({ onlineExecution: async () => [] }, { storage });
+    expect(damaged.cachePreferences.maxInactiveContexts).toBe(20); expect(damaged.cachePreferenceDiagnostic).toBe('online-cache-settings-corrupt');
+  });
+});
 describe("online execution renderer state", () => {
   it.each(['refresh','cancel'])('F7f minimum %s replaces selected full job and never requests historical report',async operation=>{
     const calls:OnlineExecutionInput[]=[];

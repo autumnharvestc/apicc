@@ -13,9 +13,11 @@ import { ExecutionLedger, type ExecutionFact, type ExecutionProcess, type Execut
 import { confirmStressProcessTreeExited, type OwnedStressProcess } from "./stressProcessTree.js";
 import type { ArchiveReceipt } from "./outbox.js";
 import type {StressProcessObservation} from '@apicc/execution/contract';
+import type { LedgerCompactionOptions } from "./config.js";
 export interface SettledExecution { executionId: string; verdict: string; pid?: number; output?: InvocationOutput; reasonCode?: string; executionFact?: ExecutionFact;processObservation?:StressProcessObservation }
 export interface SupervisorOptions {
   dataDirectory?: string;
+  ledgerCompaction?: LedgerCompactionOptions;
   serverId: string; agentId: string; sessionId: string; runtimeCompatibilityId: string;
   identity: BuildIdentity; config: AgentConfig; configVersion: string;
   transport: AgentControlTransport;
@@ -58,14 +60,14 @@ export class AgentSupervisor {
   private readonly recoveryAbort = new AbortController();
   constructor(readonly options: SupervisorOptions) {
     this.config = validateAgentConfig(options.config); this.slots = new TaskSlots(this.config); this.version = options.configVersion; this.appliedVersion = options.configVersion; this.sessions = new DebugSessions(options.serverId, options.agentId, options.sessionId);
-    this.ledger = new ExecutionLedger(options.dataDirectory, options.serverId, options.agentId, this.config);
+    this.ledger = new ExecutionLedger(options.dataDirectory, options.serverId, options.agentId, this.config, options.ledgerCompaction);
     const pendingStress = this.ledger.intents.filter(intent => !intent.settled && intent.processIntents?.length);
     if (pendingStress.length) {
       this.recovering = true; this.ready = this.recoverStressProcesses(pendingStress);
       // The bootstrap awaits ready; keeping a handled copy also supports direct embedders that close early.
       void this.ready.catch(() => undefined);
     } else {
-      try { this.ledger.recover(); this.restoreLedgerState(); } catch (error) { this.ledger.close(); throw error; }
+      try { this.ledger.recover(); this.restoreLedgerState(); this.ledger.compact(); } catch (error) { this.ledger.close(); throw error; }
       this.ready = Promise.resolve();
     }
   }
@@ -79,7 +81,7 @@ export class AgentSupervisor {
       await confirmStressProcessTreeExited(intent.processIntents!, processes, value => this.ledger.recordProcess(intent.executionId, value), this.recoveryAbort.signal);
     }
     this.recoveryAbort.signal.throwIfAborted();
-    this.ledger.recover(); this.restoreLedgerState(); this.recovering = false; this.pump();
+    this.ledger.recover(); this.restoreLedgerState(); this.ledger.compact(); this.recovering = false; this.pump();
   }
   receive(raw: TaskDeliveryV1): boolean {
     const checked = TaskDeliveryV1Schema.safeParse(raw); if (!checked.success || this.closed || this.recovering) return false;

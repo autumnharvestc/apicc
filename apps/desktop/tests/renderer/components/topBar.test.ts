@@ -195,6 +195,30 @@ async function seedTabs(fixture: ReturnType<typeof makeFixture>) {
 }
 
 describe("TopBar network settings scope", () => {
+  it("opens execution cache settings from Home while signed out and shows the local cache limits", async () => {
+    const fixture = makeFixture();
+    Object.assign(fixture.online, { loggedIn: false, activeWorkspace: null, execution: {
+      cachePreferences: { maxInactiveContexts: 20, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 64 },
+      cacheUsage: { currentContexts: 0, protectedContexts: 2, inactiveContexts: 3, inactivePayloadBytes: 1572864, overLimit: true },
+      cachePreferenceDiagnostic: null, setCachePreferences: vi.fn(),
+    } });
+    fixture.workspace.opened = false; await fixture.tabs.activateHome();
+    const wrapper = await mountTopBar(fixture);
+    await wrapper.get('[data-testid="settings-toggle"]').trigger("click"); await flushPromises();
+    const drawer = new DOMWrapper(document.body).find('.ant-drawer-body');
+    expect(drawer.exists()).toBe(true);
+    expect(drawer.text()).toContain("在线执行缓存");
+    const settings = expectBody("execution-cache-settings");
+    expect(settings.text()).toContain("非活动上下文上限");
+    expect(settings.text()).toContain("空闲保留期");
+    expect(settings.text()).toContain("非活动结果载荷预算");
+    expect(settings.text()).toContain("只释放可安全清理的非活动内存");
+    expect((expectBody("execution-cache-max-contexts").element as HTMLInputElement).value).toBe("20");
+    expect((expectBody("execution-cache-ttl").element as HTMLInputElement).value).toBe("30");
+    expect((expectBody("execution-cache-max-payload").element as HTMLInputElement).value).toBe("64");
+    expect(settings.find('pre').exists()).toBe(false);
+    expect(bodyFind("network-settings")).toBeNull();
+  });
   it("shows network settings only for the active local project tab, not Home or an online tab", async () => {
     const fixture = makeFixture();
     await seedTabs(fixture);

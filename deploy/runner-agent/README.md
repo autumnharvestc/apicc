@@ -16,11 +16,14 @@
   "agentId": "REPLACE_WITH_ENTITY_ID",
   "tokenFile": "/run/apicc/agent-token",
   "dataDirectory": "/data",
-  "trustedCaFile": "/run/apicc/control-ca.pem"
+  "trustedCaFile": "/run/apicc/control-ca.pem",
+  "ledgerCompaction": { "enabled": true, "batchSize": 50 }
 }
 ```
 
 `baseUrl` 必须与控制服务 `APICC_EXECUTION_CONTROL_BASE_URL` 完全一致；Compose 内可把服务别名配置为证书 SAN 内域名。示例端口只绑定 loopback；向团队开放时按部署网络要求设置监听和访问控制。
+
+`ledgerCompaction` 是本地部署选项，修改后重启生效；省略时默认启用，每批检查至多 50 条历史记录。`enabled` 为布尔，`batchSize` 为 1–1000 的整数。启动恢复完成后及报告归档、消息 ACK 时渐进压缩：仅删除已结算、已确认归档、消息全部 ACK 且每条启动意图均有匹配确认退出记录的逐进程详情。执行/投递防重身份、命令和总体观测永久保留，未知或不一致记录不压缩。此配置不传入服务端执行策略；批次条数不限制整份 JSON 的扫描、克隆和 SQLite 重写成本，也不保证代理总存储有界、静置期间清完历史或 SQLite 文件立即缩小。
 
 从本目录运行 `docker compose --project-name apicc-runner --env-file /absolute/private/agent.env up -d`。默认普通 HTTP 旧部署继续可用；本例单独覆盖 SSL 与健康检查配置。代理使用 `init:true`、独立数据卷与可写临时目录，不能复用另一个代理的账本卷。直接运行镜像时加 `--init`，由 PID 1 转发退出信号并回收子进程。
 
