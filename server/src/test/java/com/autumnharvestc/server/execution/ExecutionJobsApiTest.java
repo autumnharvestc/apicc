@@ -136,13 +136,6 @@ class ExecutionJobsApiTest extends StressJobsFixture {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=?",Long.class,Long.valueOf(f.project()))).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_job_outbox",Long.class)).isEqualTo(messages);
     }
-    @Test void verifyIntentRejectsAScheduledSourceWithoutChangingTheExistingJob()throws Exception {
-        var f=fixture();var fixed=submission(f,"source-conflict");
-        String job=body(member(f,post(f.url()+"/jobs"),fixed).andExpect(status().isCreated())).path("jobId").asText();
-        jdbc.update("UPDATE execution_jobs SET schedule_occurrence_id=123,schedule_id=456,schedule_revision=1 WHERE id=?",Long.valueOf(job));
-        member(f,post(f.url()+"/jobs/by-intent/verify"),fixed).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("intent_source_conflict"));
-        assertThat(state(job)).isEqualTo("queued");
-    }
     @Test void intentQueriesKeepReadRightsButRejectRevocationAndDisabledMembers()throws Exception {
         var f=fixture();var fixed=submission(f,"read-current-rights");member(f,post(f.url()+"/jobs"),fixed).andExpect(status().isCreated());
         jdbc.update("INSERT INTO project_acl(workspace_id,project_id,user_id,role,updated_at) SELECT ?,?,id,'VIEWER',CURRENT_TIMESTAMP FROM users WHERE username='admin'",Long.valueOf(f.ws()),Long.valueOf(f.project()));

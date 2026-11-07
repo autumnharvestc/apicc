@@ -35,6 +35,22 @@ class ScheduledJobsTest extends OccurrenceFixture {
         var f=fixture();String id=once(f);now(origin.plusSeconds(60));var claim=occurrences.scan("scheduled-first").getFirst();scheduledSubmission.submit(claim).orElseThrow();
         assertThatThrownBy(()->originalJobs.submit(scheduleUsers.findByUsername("admin").orElseThrow(),f.ws(),f.project(),fixedRequest(id,claim))).isInstanceOfSatisfying(com.autumnharvestc.server.core.ApiException.class,e->assertThat(e.getCode()).isEqualTo("intent_source_conflict"));
     }
+    @Test void verifyIntentRejectsAScheduledSourceWithoutChangingTheExistingJob()throws Exception {
+        var f=fixture();String schedule=once(f);now(origin.plusSeconds(60));var claim=occurrences.scan("verify-scheduled-source").getFirst();
+        var fixed=fixedRequest(schedule,claim);String job=scheduledSubmission.submit(claim).orElseThrow().jobId();
+        var source=new com.autumnharvestc.server.execution.jobs.JobRepo.ScheduleOrigin(Long.valueOf(claim.id()),Long.valueOf(schedule),Long.valueOf(claim.revision()));
+        String sourceLink="SELECT COUNT(*) FROM execution_jobs j JOIN execution_schedule_occurrences o ON o.id=j.schedule_occurrence_id AND o.schedule_id=j.schedule_id AND o.revision=j.schedule_revision AND o.workspace_id=j.workspace_id AND o.project_id=j.project_id AND o.subject_user_id=j.submitted_by AND o.job_id=j.id AND o.execution_id=j.execution_id WHERE j.id=?";
+        assertThat(jdbc.queryForObject(sourceLink,Long.class,Long.valueOf(job)))
+            .as("scheduled origin must identify the real occurrence linked to this scoped job/execution").isEqualTo(1);
+        assertThat(jobRepo.scheduleOrigin(Long.valueOf(job))).contains(source);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=?",Long.class,Long.valueOf(f.project()))).isEqualTo(1);
+        long messages=jdbc.queryForObject("SELECT COUNT(*) FROM execution_job_outbox",Long.class);
+        member(f,post(f.url()+"/jobs/by-intent/verify"),fixed).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("intent_source_conflict"));
+        assertThat(state(job)).isEqualTo("queued");assertThat(jobRepo.scheduleOrigin(Long.valueOf(job))).contains(source);
+        assertThat(jdbc.queryForObject(sourceLink,Long.class,Long.valueOf(job))).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_jobs WHERE project_id=?",Long.class,Long.valueOf(f.project()))).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM execution_job_outbox",Long.class)).isEqualTo(messages);
+    }
     @Test void scheduleAbsoluteDeadlineCapsTheExistingJobQueue()throws Exception {
         var f=fixture();String id=once(f);
         member(f,put(f.url()+"/schedules/"+id),Map.of("expectedVersion","2","policies",Map.of("lateToleranceMs",10000,"misfire","skip","catchupWindowMs",300000,"overlap","skip","queueTimeoutMs",1000))).andExpect(status().isOk());
