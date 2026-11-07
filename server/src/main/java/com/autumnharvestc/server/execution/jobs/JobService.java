@@ -179,9 +179,10 @@ public class JobService implements AssignedMaterialAuthorizer {
     public byte[] report(UserAccount caller,String job){
         var status=repo.status(id(job));
         agents.requireCapability(caller,String.valueOf(status.workspace()),String.valueOf(status.project()),Capability.HISTORY_READ);
-        if(status.reportState().equals("expired"))throw error(GONE,"report_expired","报告保留期已结束；执行身份与归档确认仍保留");
-        if(!status.reportState().equals("archived"))throw error(CONFLICT,"report_pending","结果仍待归档");
-        return repo.reportContent(status.id());
+        var payload=repo.reportPayload(status.id());
+        if(payload.state().equals("expired"))throw error(GONE,"report_expired","报告保留期已结束；执行身份与归档确认仍保留");
+        if(!payload.state().equals("archived"))throw error(CONFLICT,"report_pending","结果仍待归档");
+        return payload.content();
     }
     private record StressReportClassification(String kind,String verdict) {}
     private static void sameProcessObservation(JsonNode completion,JsonNode report){

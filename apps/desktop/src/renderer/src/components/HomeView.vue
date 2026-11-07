@@ -102,6 +102,7 @@ function selectServer(baseUrl: string) {
 function selectConnections() {
   selection.value = { kind: "connections" };
 }
+defineExpose({ selectConnections });
 
 // —— 命名对话框（M10 澄清①）：创建分组 / 重命名分组 / 删除分组 / 新建项目 / 重命名项目 / 删除项目 共用 ——
 type DialogKind =

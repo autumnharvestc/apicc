@@ -61,7 +61,7 @@ async function mountDesignPanel(
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, editor, design };
+  return { wrapper, api, editor, design, i18n };
 }
 
 async function clickTeleported(testId: string): Promise<void> {
@@ -147,6 +147,49 @@ describe("DesignPanel", () => {
     await flushPromises();
     expect(errors).toHaveLength(1);
     expect(wrapper.find('[data-testid="design-saved"]').exists()).toBe(false);
+  });
+
+  it("does not claim new raw schema input was saved when it was entered during an in-flight save", async () => {
+    const { wrapper, api, editor, design } = await mountDesignPanel();
+    const request = editor.api!.contract.request;
+    if (request.protocol !== "http") throw new Error("HTTP fixture required");
+    request.body = { kind: "json", content: "{}", schema: { kind: "scalar", type: "string" } };
+    await wrapper.get('[data-testid="design-contract-tab"]').trigger("click");
+    const save = api.apiSave.bind(api); let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    api.apiSave = async (...args) => { await gate; return save(...args); };
+    const saving = vi.spyOn(design, "save");
+    await wrapper.get('[data-testid="design-save"]').trigger("click");
+    const input = wrapper.get('[data-testid="schema-default"]');
+    (input.element as HTMLTextAreaElement).value = '"unsaved raw default"';
+    await input.trigger("input");
+    expect(design.dirty).toBe(true);
+    release(); await saving.mock.results[0]!.value; await flushPromises();
+    expect(design.dirty).toBe(true);
+    expect((input.element as HTMLTextAreaElement).value).toBe('"unsaved raw default"');
+    expect(wrapper.find('[data-testid="design-saved"]').exists()).toBe(false);
+    const persisted = await api.apiGet(editor.locator!);
+    expect(persisted.api.contract.request).toMatchObject({ body: { schema: { kind: "scalar", type: "string" } } });
+    expect(JSON.stringify(persisted.api.contract)).not.toContain("unsaved raw default");
+  });
+
+  it("localizes invalid raw preview input and preserves the save error code for its shared boundary", async () => {
+    const errors: unknown[] = [];
+    const { wrapper, api, editor, design, i18n } = await mountDesignPanel({ reportError: (error: unknown) => errors.push(error) });
+    const request = editor.api!.contract.request;
+    if (request.protocol !== "http") throw new Error("HTTP fixture required");
+    request.body = { kind: "json", content: "{}", schema: { kind: "scalar", type: "string" } };
+    const save = vi.spyOn(api, "apiSave");
+    await wrapper.get('[data-testid="design-contract-tab"]').trigger("click");
+    await wrapper.get('[data-testid="schema-default"]').setValue("invalid-json");
+    i18n.global.locale.value = "en";
+    await wrapper.get('[data-testid="design-document-tab"]').trigger("click"); await flushPromises();
+    expect(design.previewStatus).toBe("invalid");
+    expect.soft(wrapper.get('[data-testid="design-document-preview"]').text()).toContain("Fix the invalid JSON input before previewing or saving.");
+    await wrapper.get('[data-testid="design-save"]').trigger("click"); await flushPromises();
+    expect(errors).toHaveLength(1);
+    expect.soft((errors[0] as Error).message).toBe("design-invalid-json");
+    expect(save).not.toHaveBeenCalled();
   });
 
   it("契约视图编辑当前接口并通过原保存链路持久化，不发送调试请求", async () => {

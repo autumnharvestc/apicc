@@ -78,6 +78,13 @@ public class JobRepo {
     public List<Job> queued(long agent){return jdbc.query("SELECT "+JOB_COLUMNS+" FROM execution_jobs WHERE agent_id=? AND state='queued' ORDER BY id",this::row,agent);}
     public JsonNode inputs(long job) { return parse(jdbc.queryForObject("SELECT inputs_json FROM execution_jobs WHERE id=?", String.class, job)); }
     public byte[] reportContent(long job) { return jdbc.queryForObject("SELECT report_content FROM execution_jobs WHERE id=?", byte[].class, job); }
+    public record ReportPayload(String state,byte[] content) {}
+    /** Retention changes lifecycle and body together; downloads must observe the same row image. */
+    public ReportPayload reportPayload(long job) {
+        return jdbc.query("SELECT report_state,report_content FROM execution_jobs WHERE id=?",
+            (r,n)->new ReportPayload(r.getString("report_state"),r.getBytes("report_content")),job)
+            .stream().findFirst().orElseThrow(()->error(NOT_FOUND,"job_not_found","任务不存在"));
+    }
     /** One actual row image for the new fixed-source path; the old report API remains separate. */
     public record FixedReport(long id,long workspace,long project,long execution,long agent,long creator,long snapshot,
                               String state,String reportState,String hash,Long length,byte[] body,

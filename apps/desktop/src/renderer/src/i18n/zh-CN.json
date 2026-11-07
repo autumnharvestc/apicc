@@ -1,4 +1,39 @@
 {
+  "caseEvidence": {
+    "collection": "证据采集",
+    "modeNone": "不采集正文（仅定位）",
+    "modeFailures": "失败时采集（默认）",
+    "modeAll": "全部采集",
+    "legacyNotCollected": "旧记录未采集",
+    "notCollected": "此记录未采集正文（none / failures 策略）",
+    "definitionRevision": "定义修订",
+    "scope": "作用域",
+    "entry": "条目",
+    "node": "节点",
+    "changed": "资源定义已变化；定位和重跑使用当前资源与当前凭据",
+    "truncated": "证据已截断或预算耗尽；执行结论未改变",
+    "request": "安全请求",
+    "response": "安全响应",
+    "unavailable": "未采集或不可用",
+    "responseUnavailable": "响应正文不可用",
+    "selector": "选择器",
+    "actual": "实际值",
+    "expected": "期望值",
+    "differencePath": "差异路径",
+    "schemaPath": "Schema 路径",
+    "extraction": "提取阶段",
+    "published": "已发布",
+    "unpublished": "未发布",
+    "scripts": "脚本诊断",
+    "scriptNotCollected": "未采集",
+    "scriptAssertionsOnly": "仅已有断言消息；完整控制台未采集",
+    "timings": "请求 {request} ms · 脚本 {script} ms · 迭代 {iteration} ms",
+    "locate": "定位当前资源",
+    "rerunWorkflow": "重跑整个工作流条目",
+    "rerunCase": "重跑当前精确用例行",
+    "copy": "复制安全证据",
+    "copyFailed": "复制失败"
+  },
   "stressCapacity":{"workerIntersection":"当前总容量与策略交集：最多 {count} worker；不会自动改变本次选择。","used":"已占","requested":"本次需求","limit":"总额","draining":"超额排空；仅阻止新增准入，不终止在途任务。"},
   "stressFinal": {"codes":{"incomplete":"不完整","budget-exhausted":"预算耗尽","overflow":"超出统计范围","unaligned":"时间轴未对齐","not-collected":"未采集","legacy":"旧版未采集","confirmed":"已确认","allowed":"允许","denied":"拒绝","not-required":"无需确认","stress-local-budget-exceeded":"本机压测预算不足","stress-worker-policy-exceeded":"压测工作进程数超出策略上限","stress-capacity-exceeded":"代理压测容量不足","cache":{"input":"等待输入缓存容量","result":"等待报告缓存容量"}}},
   "stressPresentation": {"logicalVerdict":"逻辑结论","logicalIterations":"逻辑迭代通过","planned":"计划","started":"已启动","completed":"已完成","passed":"通过","failed":"失败","aborted":"已中止","dropped":"已丢弃","eligible":"合格完成","caseRows":"用例行","httpHops":"HTTP 交换","drain":"排空窗口","policyWait":"策略等待","noRpsLimit":"未设置请求速率上限","requestUnit":"请求","rpsUnit":"请求/秒","iterationUnit":"迭代/秒","processUnit":"执行进程","jobs":"任务","processBudget":"执行进程预算","observedProcesses":"未采集实际进程数；预算不是已启动进程数","location":"执行位置","executor":"执行器","workers":"工作进程数","runtime":"运行身份","recordedSources":"本次限制来源未采集；当前准入上界不代表本次 Core 最终来源。","budgetHint":"拓扑与预留是预算，不是实际观测；数值内存预算不是 RSS 硬上限。","requested":"本次声明预留","effective":"生效预留","memory":"数值内存","preparation":"准备","execution":"执行","upload":"上传","notCollected":"未采集","none":"无","unavailable":"报告不可用，无法比较","partialFailure":"部分数据未保留，不能补全或重算正式请求总数。","measurementPopulation":"正式测量/排空请求总体","lifecyclePopulation":"生命周期另列；正式请求为零不代表没有发送生命周期 HTTP。","pin":"设为基线","clear":"清除基线","baseline":"本页基线","export":"导出 HTML","currentAdmission":"当前准入上界","admissionHint":"当前配置仅用于后续准入；不是所选历史任务的实际 Core 最终限制。","source":"来源","field":"项目","bound":"准入上界","agent":"节点配置","workspace":"工作区","project":"项目","default":"默认","deployment":"部署","savedVersion":"保存版本","appliedVersion":"已应用版本","requestConcurrency":"请求并发","rps":"请求速率上限","vu":"VU 上限","unknownClock":"时序未对齐或不确定，按实际记录保守展示。","zeroBuckets":"没有时间桶，未采集趋势数据。","singleBucket":"仅1个时间桶；单点不能说明上升或下降趋势。","startedAt":"开始时间","finishedAt":"结束时间","fingerprint":"定义指纹","full":"展开完整值","notApplicable":"不适用","exact":"精确","backlog":"最大调度积压","eventLoop":"事件循环 p95","visits":"访问 / 失败 / 中止 / 跳过","runLevel":"运行级","reasons":{"location":"执行位置不同","executor":"执行器不同","workers":"工作进程或拓扑预算不同","runtime":"运行身份不同","resources":"资源限制/预留不同或未采集","metadata":"执行元数据未采集，不能直接比较","report-unavailable":"报告不可用，无法比较"},"states":{"pending":"等待中","preparing":"准备中","ready":"已准备","failed":"失败","running":"运行中","finished":"已完成","cancelled":"已取消","timed-out":"已超时","interrupted":"已中断","uploading":"上传中","complete":"已完整上传","passed":"通过"},"metrics":{"rps":"请求吞吐率","p95Ms":"请求 p95","errorRate":"请求错误率","iterationsCompleted":"已完成逻辑迭代","iterationP95Ms":"迭代 p95","dropped":"丢弃迭代槽"},"environmentNotice":"未比较环境定义；相同 ID 不证明定义一致。","reportIntegrityUnknown":"完整 Core 输出不可用；报告完整性不可确认，保留上列已知业务结论。","notComparable":"不可直接比较，请结合数值差异和原因解读。","codes":{"setup":"运行准备","vu-setup":"VU 准备","warmup":"预热","measurement":"正式测量","drain":"排空在途执行","vu-teardown":"VU 收尾","teardown":"运行收尾","worker-missing":"缺少工作进程","worker-failed":"工作进程失败","worker-incompatible":"工作进程不兼容","timeline-unaligned":"时间轴未对齐","phase-window-missing":"缺少阶段覆盖窗口","metrics-budget-exhausted":"指标预算耗尽","histogram-overflow":"直方图溢出","snapshot-missing":"缺少最终快照","snapshot-duplicate":"重复快照","snapshot-invalid":"快照无效","dropped":"已丢弃迭代槽","no-data":"无合格样本","cancelled":"用户取消","drain-timeout":"排空超时","warmup-drain-timeout":"预热排空超时","setup-failed":"运行准备失败","vu-setup-failed":"VU 准备失败","teardown-failed":"运行收尾失败","vu-teardown-failed":"VU 收尾失败","policy-limited":"策略限流","resource-saturated":"资源饱和","execution-failed":"执行失败","available":"可用","partial":"部分可用","unavailable":"不可用","exact-nearest-rank":"精确最近秩","log-histogram":"对数直方图","vuSetup":"VU 准备","vuTeardown":"VU 收尾"},"scriptApi":"脚本 API","compatibility":"兼容身份","samples":"样本","timeOutOfRange":"时间超出可读范围；原始时间戳可查","coreReasons":{"project-identity":"项目身份缺失或不同","target":"执行目标不同","environment":"环境不同","load":"负载配置不同","connection":"连接模式不同","data":"数据身份不同","statistics":"统计配置不同","report-version":"报告版本不同","revision-changed":"定义版本已变化","legacy-metadata-unavailable":"旧版元数据缺失","incomplete-run":"包含不完整运行"},"waiting":{"jobs":"等待压测任务槽容量","processes":"等待压测执行进程容量","vus":"等待压测 VU 容量","requestConcurrency":"等待压测请求并发容量","maxRps":"等待压测请求速率容量","metricMemoryBytes":"等待压测数值内存容量"},"metadataNotCollected":"执行元数据未采集；不能从当前配置补造本次预算或实际运行版本。"},
@@ -342,6 +377,8 @@
     "postOperations": "后置操作"
   },
   "run": {
+    "legacyProject": "旧记录：项目身份未采集",
+    "reportingUnits": "逻辑报告单位 {total}（失败 {failed}）· 非请求诊断 {diagnostics}",
     "empty": "打开工作区后选择集合并运行",
     "collectionPlaceholder": "选择集合",
     "envPlaceholder": "环境",
@@ -434,6 +471,8 @@
     ,"failure": {"transport": "传输", "http": "HTTP", "script": "脚本", "assertion": "断言", "extraction": "提取", "config": "配置", "aborted": "中止"}
   },
   "import": {
+    "undoTitle": "导入已撤销",
+    "undoText": "已恢复本次导入前的内容。",
     "title": "导入接口",
     "stepFile": "选择文件",
     "stepPreview": "预览确认",
@@ -477,6 +516,7 @@
     "lossyMarker": " · 语义损失"
   },
   "design": {
+    "fixInvalidJson": "请先修正无效的 JSON 输入，再预览或保存。",
     "empty": "在左侧选择一个接口后编辑详细设计",
     "save": "保存设计",
     "saved": "设计已保存",
@@ -1071,6 +1111,8 @@
     "phases": { "queued": "正在排队", "request": "正在请求", "receiving": "正在接收", "retrying": "正在重试", "completed": "接收完成" }, "waitingForProgress": "请求已提交，等待宿主状态", "attempt": "尝试", "received": "已接收", "cancelOperation": "取消 AI 操作"
   },
   "online": {
+    "loginTarget": "登录目标",
+    "chooseConnection": "请先在管理连接中新增或选择一个连接，再登录。",
     "title": "在线模式",
     "serverSection": "服务器",
     "savedServers": "已存档案",
@@ -1114,7 +1156,8 @@
     "readonlyBadge": "只读",
     "editorEmpty": "在左侧选择一个接口查看/编辑其定义",
     "pullGuide": "有效项目（contract-files-v1）支持在本机或已授权代理上调试接口、运行套件和工作流，请先选择项目及执行位置。旧格式内容仍可浏览或迁移拉取，不能直接执行。",
-    "sessionErrors": { "online-not-signed-in":"请先登录在线服务器。", "online-workspace-not-open":"请先打开此在线工作区。", "online-session-changed":"在线会话已变化，请重新打开项目后再试。" },
+    "sessionErrors": {
+    "online-workspace-session-missing": "在线工作区会话不存在（可能已退出登录），项目签已标记离线。请重新登录后重试。", "online-not-signed-in":"请先登录在线服务器。", "online-workspace-not-open":"请先打开此在线工作区。", "online-session-changed":"在线会话已变化，请重新打开项目后再试。" },
     "problemsTitle": "接口定义校验失败（仅展示原文，禁止推送）",
     "baseUrl": "基础 URL",
     "path": "路径",

@@ -194,6 +194,11 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       migrateDialogOpen: false,
     }),
     getters: {
+      hasActiveProfile(state): boolean {
+        return state.activeBaseUrl !== null
+          && OnlineBaseUrlSchema.safeParse(state.activeBaseUrl).success
+          && state.profiles.some(profile => profile.baseUrl === state.activeBaseUrl);
+      },
       execution: () => execution,
       schedules: () => schedules,
       /** 激活档案显示名：昵称为空回退 baseUrl（顶栏/对话框统一出口）。 */
@@ -290,6 +295,15 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         this.user = null;
         this.expiresAt = "";
         this.loggedIn = false;
+        this.workspaces = [];
+      },
+
+      /** Dismissing authentication abandons renderer results, never moves or revokes saved tokens. */
+      dismissAuthentication(): void {
+        authenticationGeneration++;
+        this.submitting = false;
+        this.restoring = false;
+        this.error = null;
       },
 
       /**
@@ -386,6 +400,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           this.restoring = false;
           this.submitting = false;
           this.activeBaseUrl = null;
+          this.error = null;
           if (this.loggedIn) {
             api.onlineLogout().catch(() => undefined);
           }
@@ -407,7 +422,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       /** 登录（目标 = 激活档案）：成功 → 登录态上屏；失败 → error 且不清旧态。 */
       async login(username: string, password: string): Promise<void> {
         const baseUrl = this.activeBaseUrl;
-        if (!baseUrl || this.submitting) return;
+        if (!baseUrl || !this.hasActiveProfile || this.submitting) return;
         const generation = ++authenticationGeneration;
         this.submitting = true;
         this.restoring = false;
@@ -429,17 +444,20 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       /** 注册（不建立登录态）：成功返回 true（组件提示后引导登录）；失败返回 false + error。 */
       async register(input: { username: string; password: string; displayName: string }): Promise<boolean> {
         const baseUrl = this.activeBaseUrl;
-        if (!baseUrl || this.submitting) return false;
+        if (!baseUrl || !this.hasActiveProfile || this.submitting) return false;
+        const generation = ++authenticationGeneration;
         this.submitting = true;
+        this.restoring = false;
         this.error = null;
         try {
           await api.onlineRegister({ baseUrl, ...input });
-          return true;
+          return generation === authenticationGeneration && this.activeBaseUrl === baseUrl;
         } catch (e) {
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return false;
           this.error = e instanceof Error ? e.message : String(e);
           return false;
         } finally {
-          this.submitting = false;
+          if (generation === authenticationGeneration) this.submitting = false;
         }
       },
 
@@ -468,10 +486,15 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
 
       /** 在线工作区列表拉取：失败经 error 通道呈现（列表 UI 保留旧清单）。 */
       async refreshWorkspaces(): Promise<void> {
+        const generation = authenticationGeneration;
+        const baseUrl = this.activeBaseUrl;
         try {
-          this.workspaces = await api.onlineWorkspaceList();
+          const workspaces = await api.onlineWorkspaceList();
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
+          this.workspaces = workspaces;
           this.error = null;
         } catch (e) {
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           this.error = e instanceof Error ? e.message : String(e);
         }
       },

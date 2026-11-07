@@ -5,7 +5,7 @@
 // M8 布局层级改造：九平铺视图收敛为「图标导航栏（ModuleRail）→ 树面板（带模块标题
 // 与搜索）→ 内容区」；接口模块（api）内含子视图页签（调试/设计/用例），调试子视图
 // 保持 main-split 上下结构（editor-pane / 可拖拽分割条 / viewer-pane）。
-import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ConfigProvider,
@@ -188,6 +188,13 @@ const stress = createStressStore({
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
 // TopBar 的在线入口按钮只置 online.dialogOpen。 ——
 const online = createOnlineStore({ api: apicc });
+const homeView = ref<InstanceType<typeof HomeView> | null>(null);
+async function manageConnections() {
+  online.dialogOpen = false;
+  await tabs.activateHome();
+  await nextTick();
+  homeView.value?.selectConnections();
+}
 const collaboration = createCollaborationStore(apicc);
 const pendingCollaborationSource = ref<CollaborationLocalSource | null>(null), collaborationTargetId = ref('');
 function chooseCollaborationTarget(source: CollaborationLocalSource) { pendingCollaborationSource.value = source; collaborationTargetId.value = ''; }
@@ -468,6 +475,11 @@ watch(
 // 保留 data-testid="app-error-close"，点击冒泡到 a-alert 关闭处理器 → @close →
 // 走原 reportError 通道反向清空（errorMessage 置空后 v-if 卸载整条 alert）。
 const errorMessage = ref("");
+const presentedError = computed(() => {
+  if (errorMessage.value === "design-invalid-json") return t("design.fixInvalidJson");
+  if (errorMessage.value === "online-workspace-session-missing") return t("online.sessionErrors.online-workspace-session-missing");
+  return errorMessage.value;
+});
 
 function reportError(e: unknown) {
   errorMessage.value = e instanceof Error ? e.message : String(e);
@@ -1194,9 +1206,9 @@ function onDividerDblClick() {
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :ai="ai" :report-error="reportError" />
+      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :ai="ai" :report-error="reportError" @manage-connections="manageConnections" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
-        <template #message>{{ t("app.error") }}: {{ errorMessage }}</template>
+        <template #message>{{ t("app.error") }}: {{ presentedError }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
       </a-alert>
       <div v-if="syncScope" class="sync-project-entry"><button data-testid="sync-entry" @click="syncOpen = true">{{ t('sync.title') }}</button></div>
@@ -1279,6 +1291,7 @@ function onDividerDblClick() {
           <!-- 主页（M9-C；轨三左右栏）：落点选择/项目卡片/连接管理，恒可用 -->
           <HomeView
             v-if="isHome"
+            ref="homeView"
             class="panel-view"
             :api="apicc"
             :workspace="workspace"
@@ -1480,7 +1493,7 @@ function onDividerDblClick() {
          显隐由 online store 的 dialogOpen 驱动（TopBar 入口 / 对话框关闭双向读写）。
          计划 C 任务 2：打开在线工作区不再关本地（并存驻留），无需 workspace 注入。
          终审 Important 2：登出前草稿确认需要签表（受影响签聚合 + 逐工作区关签），注入 tabs -->
-    <OnlineLoginDialog :online="online" :apicc="apicc" :tabs="tabs" />
+    <OnlineLoginDialog :online="online" :apicc="apicc" :tabs="tabs" @manage-connections="manageConnections" />
     <!-- 在线推送冲突对话框（任务 3 裁定 C）：online.conflict 驱动 -->
     <OnlineConflictDialog :online="online" />
     <!-- 在线工作区迁移向导（任务 3 裁定 D）：TopBar 迁移入口置 migrateDialogOpen -->

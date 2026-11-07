@@ -2404,6 +2404,20 @@ async function clickBody(testid: string): Promise<void> {
 }
 
 describe("RunsHistory kind 区分（M2-D3 任务 3，裁定 B）", () => {
+  it("localizes logical report metadata and legacy identity while preserving the recorded collection name", async () => {
+    const { api, run, setLocale } = await mountHistory();
+    api.runsList = async () => [{ ...collectionRow, collectionName: "User collection", reportingMode: "mixed-suite-v2", logicalVerdict: "passed", reportingUnits: { total: 2, passed: 2, failed: 0, skipped: 0, entryDiagnostics: 1 } }];
+    run.historyOpen = true; await flushPromises();
+    const row = bodyRows()[0]!;
+    expect.soft(row.textContent).toContain("混合套件调用报告");
+    expect.soft(row.textContent).toContain("最终逻辑结论: 通过");
+    setLocale("en"); await flushPromises();
+    expect.soft(row.textContent).toContain("Legacy record: project identity was not collected");
+    expect(row.textContent).toContain("Mixed suite invocation report");
+    expect(row.textContent).toContain("Final logical verdict: Passed");
+    expect(row.textContent).toContain("User collection");
+    setLocale("zh-CN");
+  });
   it("混合 kind：集合行渲染既有列 + 集合标签；压测行 totalRequests/failed/rps 摘要 + 压测标签（i18n 收口）", async () => {
     const { api, run } = await mountHistory();
     // 打开抽屉自动 loadHistory：经 runsList 替身注入混合 kind 行（同真实链路）

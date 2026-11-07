@@ -53,6 +53,7 @@ export function useImportWizardStore(api: ApiccApi, workspace?: {
       previewContext: null as ImportContextToken | null,
       plan: shallowRef<ImportPlanResult | null>(null),
       applyResult: null as ImportApplyResult | null,
+      undone: false,
       planTargetKey: "",
       refreshError: "",
       applying: false,
@@ -69,6 +70,7 @@ export function useImportWizardStore(api: ApiccApi, workspace?: {
         this.previewContext = null;
         this.plan = null;
         this.applyResult = null;
+        this.undone = false;
         this.planTargetKey = "";
         this.refreshError = "";
         return { generation, ...currentContext() };
@@ -82,6 +84,7 @@ export function useImportWizardStore(api: ApiccApi, workspace?: {
         this.previewContext = context;
         this.plan = null;
         this.applyResult = null;
+        this.undone = false;
         this.planTargetKey = "";
         return preview;
       },
@@ -148,6 +151,8 @@ export function useImportWizardStore(api: ApiccApi, workspace?: {
         if (!this.applyResult?.undoToken) throw new Error("没有可用的本次会话撤销句柄。");
         await api.importUndo({ undoToken: this.applyResult.undoToken });
         this.applyResult = { committed: false, summary: this.applyResult.summary };
+        this.undone = true;
+        this.refreshError = "";
         if (workspace) await workspace.refresh();
       },
       // 取消向导：清空预览，组件回到第一步。
@@ -158,6 +163,7 @@ export function useImportWizardStore(api: ApiccApi, workspace?: {
         this.previewContext = null;
         this.plan = null;
         this.applyResult = null;
+        this.undone = false;
         this.planTargetKey = "";
         this.refreshError = "";
         this.applying = false;

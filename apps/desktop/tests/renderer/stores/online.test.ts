@@ -40,6 +40,17 @@ function setup() {
 }
 
 describe("onlineStore 工厂隔离", () => {
+  it("LOGIN-001 refuses login and registration for an address that is not a saved connection", async () => {
+    const { store, api } = setup();
+    let calls = 0;
+    api.onlineLogin = async () => { calls++; throw new Error("unexpected login"); };
+    api.onlineRegister = async () => { calls++; throw new Error("unexpected registration"); };
+    store.activeBaseUrl = SERVER_A;
+    await store.login("alice", "password8");
+    await store.register({ username: "alice", password: "password8", displayName: "Alice" });
+    expect(calls).toBe(0);
+    expect(store.loggedIn).toBe(false);
+  });
   it("两实例（各自 storage/api）档案与登录态互不可见", async () => {
     const a = setup();
     const b = setup();
@@ -234,6 +245,24 @@ describe("登录 / 登出 / 注册（plan 任务 2 步骤 1③④）", () => {
 });
 
 describe("init / resume / setActive（裁定 A 渲染侧恢复链路）", () => {
+  it.each(["success", "failure"] as const)("LOGIN-001 ignores late workspace %s from the previous target", async (outcome) => {
+    const { store, api } = setup();
+    store.addProfile(SERVER_A, "A");
+    await flush();
+    let resolve!: (value: Awaited<ReturnType<typeof api.onlineWorkspaceList>>) => void;
+    let reject!: (reason: Error) => void;
+    api.onlineWorkspaceList = () => new Promise((done, fail) => { resolve = done; reject = fail; });
+    const oldRead = store.refreshWorkspaces();
+    store.addProfile(SERVER_B, "B");
+    await flush();
+    const current = [{ id: "new", name: "New workspace", myRole: "OWNER" as const, createdAt: "2026-11-07T00:00:00Z" }];
+    store.workspaces = current;
+    if (outcome === "success") resolve([{ ...current[0]!, id: "old", name: "Old workspace" }]);
+    else reject(new Error("old workspace failure"));
+    await oldRead;
+    expect(store.workspaces).toEqual(current);
+    expect(store.error).toBeNull();
+  });
   it("stale authentication cannot replace the user or error of the newly active address", async () => {
     const { api, store } = setup();
     store.addProfile(SERVER_A, "甲");

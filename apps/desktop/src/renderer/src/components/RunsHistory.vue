@@ -23,7 +23,8 @@ const props = defineProps<{
   project?: import('../../../shared/locations.js').ProjectLocator;
 }>();
 const emit = defineEmits<{ collaboration: [source: import('zod').z.infer<typeof import('../../../shared/online/collaboration.js').CollaborationLocalSourceSchema>] }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
+function label(code: string | undefined) { if (!code) return '—'; const key = `executionLabels.${code}`; return te(key) ? t(key) : code; }
 
 type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
@@ -38,10 +39,10 @@ function rowName(s: RunSummary): string {
 }
 function rowMeta(s: RunSummary): string {
   if (s.kind !== 'stress' && s.reportingMode) {
-    return `${t('wf.control.mode')}: ${s.reportingMode} · ${t('wf.control.logicalVerdict')}: ${s.logicalVerdict ?? '—'} · ${t('wf.control.logicalUnits')}: ${s.reportingUnits?.total ?? '—'} (${s.reportingUnits?.failed ?? '—'} failed) · ${t('wf.control.rawRows')}: ${s.total} · ${t('wf.control.rawFailed')}: ${s.failed}`;
+    return `${t('wf.control.mode')}: ${label(s.reportingMode)} · ${t('wf.control.logicalVerdict')}: ${label(s.logicalVerdict)} · ${t('run.reportingUnits', { total: s.reportingUnits?.total ?? '—', failed: s.reportingUnits?.failed ?? '—', diagnostics: s.reportingUnits?.entryDiagnostics ?? '—' })} · ${t('wf.control.rawRows')}: ${s.total} · ${t('wf.control.rawFailed')}: ${s.failed}`;
   }
   return s.kind !== "stress"
-    ? t("run.summary", { total: s.total, passed: s.passed, failed: s.failed, skipped: s.skipped ?? 0 }) + (s.reportingUnits ? ` · reporting-units ${s.reportingUnits.total} (failed ${s.reportingUnits.failed}) · NON-HTTP ${s.reportingUnits.entryDiagnostics}` : "")
+    ? t("run.summary", { total: s.total, passed: s.passed, failed: s.failed, skipped: s.skipped ?? 0 }) + (s.reportingUnits ? ` · ${t('run.reportingUnits', { total: s.reportingUnits.total, failed: s.reportingUnits.failed, diagnostics: s.reportingUnits.entryDiagnostics })}` : "")
     : t("run.stressSummary", { total: s.totalRequests, failed: s.failed, rps: fmtRps(s.rps) });
 }
 function rowFailed(s: RunSummary): number {
@@ -123,7 +124,7 @@ function onBack() {
             data-testid="history-kind"
           >{{ kindLabel(s) }}</a-tag>
           <span v-if="rowName(s)">{{ rowName(s) }}</span>
-          <small>{{ s.projectId ?? '旧记录：项目身份未采集' }}</small>
+          <small>{{ s.projectId ?? t('run.legacyProject') }}</small>
           <a-button v-if="s.kind === 'stress' && project" data-testid="collaboration-publish-stress" @click.stop="emit('collaboration', {kind:'stress',file:s.file,project})">{{ t('collaboration.publishToProject') }}</a-button>
         </div>
         <div class="row-meta">

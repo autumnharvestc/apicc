@@ -197,6 +197,31 @@ async function selectNode(wrapper: ReturnType<typeof mount>, index: number) {
 }
 
 describe("WfDesigner 装配", () => {
+  it("keeps nested report mode and successful AND branches accurate without changing OR winner facts", async () => {
+    const child: WorkflowRunResult = { workflowId: "child", workflowName: "User child", status: "enabled", invocationId: "child-call", parentInvocationId: "root-call", invocationPath: [{ workflowId: "root" }, { workflowId: "child" }], verdict: "passed", nodeResults: [], total: 0, passed: 0, failed: 0, skipped: 0, warnings: [], startedAt: "start", finishedAt: "end" };
+    const branch = (id: string) => ({ workflowId: id, invocationId: id, invocationPath: [{ workflowId: id }], branchId: id, state: "passed" as const, winner: false });
+    const result: WorkflowRunResult = { ...child, workflowId: "root", workflowName: "User root", invocationId: "root-call", parentInvocationId: undefined, reportingMode: "workflow-invocation-v2", nodeResults: [
+      { nodeId: "and", label: "User AND", kind: "parallel", state: "passed", branches: [branch("left"), branch("right")], childInvocations: [child] },
+      { nodeId: "or", label: "User OR", kind: "parallel", state: "passed", branches: [{ ...branch("winner"), winner: true }, { ...branch("other"), state: "cancelled", cause: "or-superseded" }] },
+    ] };
+    const original = JSON.stringify(result);
+    for (const locale of ["zh-CN", "en"] as const) {
+      const { i18n } = createI18nInstance(); i18n.global.locale.value = locale;
+      const panel = mount(WfResultDrawer, { props: { open: true, result, embedded: true }, global: { plugins: [i18n] } });
+      const nested = panel.get('[data-testid="wf-invocation-child-call"]');
+      expect.soft(nested.text()).toContain(locale === "zh-CN" ? "调用级工作流报告" : "Workflow invocation report");
+      expect.soft(nested.text()).not.toContain(locale === "zh-CN" ? "旧版报告" : "Legacy report");
+      const and = panel.findAll('.wf-call-node').find(node => node.get('summary').text().startsWith("User AND"))!;
+      expect.soft(and.text()).not.toContain(locale === "zh-CN" ? "落败" : "Loser");
+      const or = panel.findAll('.wf-call-node').find(node => node.get('summary').text().startsWith("User OR"))!;
+      expect.soft(or.text()).toContain(locale === "zh-CN" ? "实际胜出" : "Recorded winner");
+      expect(or.text()).toContain(locale === "zh-CN" ? "落败" : "Loser");
+      expect(panel.text()).toContain("User child"); panel.unmount();
+      const legacy = mount(WfResultDrawer, { props: { open: true, result: child, embedded: true }, global: { plugins: [i18n] } });
+      expect(legacy.text()).toContain(locale === "zh-CN" ? "旧版报告" : "Legacy report"); legacy.unmount();
+    }
+    expect(JSON.stringify(result)).toBe(original);
+  });
   it("localizes recorded workflow verdicts and trace codes without changing user-defined labels", async () => {
     const result: WorkflowRunResult = { workflowId: 'flow', workflowName: 'User-defined workflow', status: 'enabled', reportingMode: 'workflow-invocation-v2', verdict: 'passed', invocationId: 'call', invocationPath: [{ workflowId: 'flow' }], total: 1, passed: 1, failed: 0, skipped: 0, warnings: [], startedAt: '2026-10-27T00:00:00.000Z', finishedAt: '2026-10-27T00:00:00.001Z', nodeResults: [{ nodeId: 'assert', label: 'User-defined assertion', kind: 'assert', state: 'passed', policyEvents: [{ type: 'attempt-start', attempt: 1 }, { type: 'attempt-end', attempt: 1, state: 'passed' }] }], trace: { totalEvents: 2, truncated: false, events: [{ type: 'attempt-start', nodeId: 'assert' }, { type: 'attempt-end', nodeId: 'assert', state: 'passed' }] } };
     for (const language of ['zh-CN', 'en'] as const) {
@@ -349,7 +374,7 @@ describe("WfDesigner 装配", () => {
     mount(RunsHistory, { props: { run: history, reportError: () => {} }, global: { plugins: [i18n] } });
     await flushPromises();
     const newHistory = document.body.querySelector('[data-file="new.json"]')!;
-    expect(newHistory.textContent).toContain("最终逻辑结论: passed");
+    expect(newHistory.textContent).toContain("最终逻辑结论: 通过");
     expect(newHistory.textContent).toContain("原始失败行: 1");
     expect(newHistory.querySelector('.fail')).toBeNull();
     expect(document.body.querySelector('[data-file="old.json"] .fail')).not.toBeNull();

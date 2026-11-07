@@ -252,7 +252,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
         const ref = tab.workspaceRef;
         if (ref.kind === "online") {
           if (!deps.online.sessions[ref.workspaceId]) {
-            this.markOffline(tab.tabId, `在线工作区会话不存在（可能已退出登录），签已标记离线: ${ref.name}`);
+            this.markOffline(tab.tabId, "online-workspace-session-missing");
             return false;
           }
           if (deps.online.activeWorkspaceId !== ref.workspaceId) {

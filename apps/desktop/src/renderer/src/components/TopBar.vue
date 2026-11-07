@@ -37,7 +37,13 @@ const props = defineProps<{
   reportError: (e: unknown) => void;
   ai?: import("../stores/ai.js").AiStore;
 }>();
+const emit = defineEmits<{ (event: "manage-connections"): void }>();
 const { t } = useI18n();
+
+function openOnline() {
+  if (props.online.hasActiveProfile) props.online.dialogOpen = true;
+  else emit("manage-connections");
+}
 
 const settingsOpen = ref(false);
 const activeLocalProjectTab = computed(() => {
@@ -131,7 +137,7 @@ function onExitCancel() {
         {{ t("online.exitOnline") }}
       </a-button>
       <!-- 在线模式入口：对话框本体由组合根渲染，按钮只置 online.dialogOpen -->
-      <a-button size="small" class="online-toggle" data-testid="online-toggle" :title="online.loggedIn ? t('online.loggedInAs', { name: online.user?.displayName ?? '', server: online.activeName }) : t('online.title')" @click="props.online.dialogOpen = true">
+      <a-button size="small" class="online-toggle" data-testid="online-toggle" :title="online.loggedIn ? t('online.loggedInAs', { name: online.user?.displayName ?? '', server: online.activeName }) : t('online.title')" @click="openOnline">
         <span class="online-icon" aria-hidden="true">◉</span>
         <span v-if="online.loggedIn" class="online-label" data-testid="online-status">
           {{ t("online.loggedInAs", { name: online.user?.displayName ?? "", server: online.activeName }) }}
@@ -150,7 +156,7 @@ function onExitCancel() {
         <template #overlay>
           <div class="topbar-more-menu" role="menu">
             <button type="button" role="menuitem" data-testid="more-projects" @click="tabs.activateHome()">{{ t("topbar.projectPlaceholder") }}</button>
-            <button type="button" role="menuitem" data-testid="more-online-toggle" @click="online.dialogOpen = true">{{ t("online.title") }}</button>
+            <button type="button" role="menuitem" data-testid="more-online-toggle" @click="openOnline">{{ t("online.title") }}</button>
             <button type="button" role="menuitem" data-testid="more-settings" @click="openSettings">{{ t("settings.title") }}</button>
             <button v-if="online.activeWorkspace" type="button" role="menuitem" data-testid="more-online-migrate" @click="online.migrateDialogOpen = true">{{ t("online.migrate") }}</button>
             <button v-if="online.activeWorkspace" type="button" role="menuitem" data-testid="more-online-exit" @click="requestExitOnline">{{ t("online.exitOnline") }}</button>

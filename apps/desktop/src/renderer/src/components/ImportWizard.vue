@@ -318,9 +318,9 @@ function closeWizard() {
     <div v-else class="step-body">
       <div data-testid="import-done">
         <a-alert
-          :type="importW.applyResult?.committed ? 'success' : 'info'"
-          :message="importW.applyResult?.committed ? t('import.doneTitle') : t('import.noChangesWritten')"
-          :description="importW.applyResult?.committed ? t('import.doneText', { name: importW.preview?.summary.projectName ?? '' }) : t('import.planCancelled')"
+          :type="importW.applyResult?.committed || importW.undone ? 'success' : 'info'"
+          :message="importW.undone ? t('import.undoTitle') : importW.applyResult?.committed ? t('import.doneTitle') : t('import.noChangesWritten')"
+          :description="importW.undone ? t('import.undoText') : importW.applyResult?.committed ? t('import.doneText', { name: importW.preview?.summary.projectName ?? '' }) : t('import.planCancelled')"
           show-icon
         />
       </div>

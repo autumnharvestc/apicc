@@ -182,7 +182,7 @@ export function useDesignStore(api: ApiccApi, editor: Editor) {
         this.previewError = "";
         if (Object.values(this.controlDrafts[identity] ?? {}).some((draft) => !!draft.error)) {
           this.previewStatus = "invalid";
-          this.previewError = "请先修正无效的 JSON 输入";
+          this.previewError = "design-invalid-json";
           return;
         }
         const current = () => editor.activeKey === key
@@ -275,7 +275,7 @@ export function useDesignStore(api: ApiccApi, editor: Editor) {
   editor.registerFullAssetSaveGuard((session) => {
     const identity = sessionIdentity(session);
     const invalid = Object.values(store.controlDrafts[identity] ?? {}).some((draft) => !!draft.error);
-    if (invalid) throw new Error("存在无效的 JSON 输入，请修正后再保存");
+    if (invalid) throw new Error("design-invalid-json");
   });
 
   // Invalidate synchronously on every visit boundary (including A→B→A), not just when

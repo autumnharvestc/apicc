@@ -1079,6 +1079,28 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
 });
 
 describe("App 错误反馈通道（宽审查 I1）", () => {
+  it("F8 design save errors from invalid raw input follow language changes in the App alert", async () => {
+    const locale = initI18n(); locale.setLocale("zh-CN");
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper); await clickApiAndWait(wrapper);
+    const editor = wrapper.findComponent(RequestEditor).props("editor") as ReturnType<typeof useEditorStore>;
+    const request = editor.api!.contract.request;
+    if (request.protocol !== "http") throw new Error("HTTP fixture required");
+    request.body = { kind: "json", content: "{}", schema: { kind: "scalar", type: "string" } };
+    await subRadio(wrapper, "design").setValue(true); await flushPromises();
+    await wrapper.get('[data-testid="design-contract-tab"]').trigger("click");
+    await wrapper.get('[data-testid="schema-default"]').setValue("invalid-raw-value");
+    const writes = vi.spyOn(failingApi, "apiSave");
+    try {
+      await wrapper.get('[data-testid="design-save"]').trigger("click"); await flushPromises();
+      expect(wrapper.get('[data-testid="app-error"]').text()).toContain("请先修正无效的 JSON 输入");
+      locale.setLocale("en"); await flushPromises();
+      expect.soft(wrapper.get('[data-testid="app-error"]').text()).toContain("Fix the invalid JSON input before previewing or saving.");
+      expect.soft(wrapper.get('[data-testid="app-error"]').text()).not.toContain("请先修正");
+      expect(wrapper.get('[data-testid="app-error"]').text()).not.toContain("design-invalid-json");
+      expect(writes).not.toHaveBeenCalled();
+    } finally { writes.mockRestore(); locale.setLocale("zh-CN"); }
+  });
   it("对话框 run 拒绝时 app-error 展示错误并可手动关闭", async () => {
     const wrapper = await mountApp();
     // 打开工作区：memory 替身 wsOpen 对非工作区目录回退内存态（已 seed）
@@ -1675,6 +1697,37 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
       // 清理：本用例写入的档案持久化不污染同文件后续用例
       localStorage.removeItem("apicc.onlineServers");
     }
+  });
+
+  it("LOGIN-001 topbar with no connection opens Home connection management without credential inputs", async () => {
+    localStorage.removeItem("apicc.onlineServers");
+    const wrapper = await mountApp();
+    await wrapper.find('[data-testid="online-toggle"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="connections-panel"]').exists()).toBe(true);
+    expect(bodyFind("online-username")).toBeNull();
+    expect(bodyFind("online-password")).toBeNull();
+  });
+
+  it.each([
+    ["design-invalid-json", "请先修正无效的 JSON 输入", "Fix the invalid JSON input"],
+    ["online-workspace-session-missing", "项目签已标记离线", "The project tab is offline"],
+  ])("F8 registered error %s uses readable labels and follows language changes", async (code, zh, en) => {
+    const wrapper = await mountApp();
+    const locale = initI18n();
+    try {
+      locale.setLocale("zh-CN");
+      wrapper.findComponent(TopBar).props("reportError")(new Error(code));
+      await flushPromises();
+      expect(wrapper.get('[data-testid="app-error"]').text()).toContain(zh);
+      locale.setLocale("en");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="app-error"]').text()).toContain(en);
+      expect(wrapper.get('[data-testid="app-error"]').text()).not.toContain(code);
+      wrapper.findComponent(TopBar).props("reportError")(new Error("unknown-business-reason"));
+      await flushPromises();
+      expect(wrapper.get('[data-testid="app-error"]').text()).toContain("unknown-business-reason");
+    } finally { locale.setLocale("zh-CN"); }
   });
 
   it("App 挂载即尝试恢复登录态（init→resume）：替身已登录时入口直接显示身份", async () => {

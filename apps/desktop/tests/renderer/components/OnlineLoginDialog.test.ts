@@ -112,6 +112,151 @@ async function mountDialog({ open = true, logins = 0 }: { open?: boolean; logins
 }
 
 describe("OnlineLoginDialog", () => {
+  it.each(["reopen", "switch"] as const)("LOGIN-001 clears credentials and errors on %s", async (change) => {
+    const { online } = await mountDialog();
+    await expectBody("online-username").setValue("private-alice");
+    await expectBody("online-password").setValue("private-password8");
+    online.error = "old target error";
+    if (change === "reopen") {
+      await expectBody("online-close").trigger("click");
+      await flushPromises();
+      online.dialogOpen = true;
+    } else online.addProfile(SERVER_B, "Second connection");
+    await flushPromises();
+    expect((expectBody("online-username").element as HTMLInputElement).value).toBe("");
+    expect((expectBody("online-password").element as HTMLInputElement).value).toBe("");
+    expect(bodyHas("online-error")).toBe(false);
+    expect(expectBody("online-target").text()).toContain(change === "switch" ? "Second connection" : "团队服务器");
+    expect(expectBody("online-target").text()).toContain(change === "switch" ? SERVER_B : SERVER_A);
+    expect(JSON.stringify(online.$state)).not.toContain("private-password8");
+  });
+
+  it("LOGIN-001 deleting the target removes credential inputs and offers connection management", async () => {
+    const { online } = await mountDialog();
+    await expectBody("online-username").setValue("private-alice");
+    await expectBody("online-password").setValue("private-password8");
+    online.error = "old target error";
+    online.removeProfile(SERVER_A);
+    await flushPromises();
+    expect(bodyHas("online-login-form")).toBe(false);
+    expect(bodyHas("online-register-form")).toBe(false);
+    expect(bodyHas("online-manage-connections")).toBe(true);
+    expect(JSON.stringify(online.$state)).not.toContain("private-password8");
+    expect(bodyHas("online-error")).toBe(false);
+  });
+
+  it("LOGIN-001 switching a signed-in target never refreshes workspaces using its old session", async () => {
+    const { online, api } = await mountDialog({ logins: 1 });
+    let oldSessionReads = 0;
+    api.onlineWorkspaceList = async () => { oldSessionReads++; return []; };
+    api.onlineResume = async () => ({ outcome: "signed-out" });
+    online.addProfile(SERVER_B, "Second connection");
+    await flushPromises();
+    expect(oldSessionReads).toBe(0);
+    expect(online.loggedIn).toBe(false);
+    expect(bodyHas("online-login-form")).toBe(true);
+  });
+
+  it.each(["login", "resume"] as const)("LOGIN-001 loads current workspaces when %s completes after the dialog opened", async (operation) => {
+    const { online, api } = await mountDialog({ open: false });
+    api.onlineWorkspaceList = async () => [{ id: "current-ws", name: "Current target workspace", myRole: "OWNER", createdAt: "2026-11-07T00:00:00Z" }];
+    let restore!: (value: Awaited<ReturnType<ApiccApi["onlineResume"]>>) => void;
+    if (operation === "resume") api.onlineResume = () => new Promise(resolve => { restore = resolve; });
+    online.dialogOpen = true;
+    await flushPromises();
+    if (operation === "login") {
+      await expectBody("online-username").setValue("alice");
+      await expectBody("online-password").setValue("password8");
+      await expectBody("online-login-submit").trigger("click");
+    } else restore({ outcome: "restored", user: { id: "1", username: "alice", displayName: "Alice" } });
+    await flushPromises();
+    expect(expectBody("online-ws-list").text()).toContain("Current target workspace");
+  });
+
+  it.each(["login", "register", "resume"] as const)("LOGIN-001 ignores a late %s failure after closing and reopening the same target", async (operation) => {
+    const { online, api } = await mountDialog();
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<never>((_resolve, fail) => { reject = fail; });
+    let action: Promise<unknown>;
+    if (operation === "login") {
+      api.onlineLogin = () => pending;
+      action = online.login("old-user", "old-password8");
+    } else if (operation === "register") {
+      api.onlineRegister = () => pending;
+      action = online.register({ username: "old-user", password: "old-password8", displayName: "Old" });
+    } else {
+      api.onlineResume = () => pending;
+      action = online.resume(SERVER_A);
+    }
+    await expectBody("online-close").trigger("click");
+    await flushPromises();
+    api.onlineResume = async () => ({ outcome: "signed-out" });
+    online.dialogOpen = true;
+    await flushPromises();
+    await expectBody("online-username").setValue("new-user");
+    await expectBody("online-password").setValue("new-password8");
+    reject(new Error("late-old-target-error"));
+    await action;
+    await flushPromises();
+    expect(online.error).toBeNull();
+    expect(online.submitting).toBe(false);
+    expect(online.restoring).toBe(false);
+    expect((expectBody("online-username").element as HTMLInputElement).value).toBe("new-user");
+    expect((expectBody("online-password").element as HTMLInputElement).value).toBe("new-password8");
+  });
+
+  it.each(["login", "resume"] as const)("LOGIN-001 late %s success cannot replace the reopened target session", async (operation) => {
+    const { online, api } = await mountDialog();
+    const oldUser = { id: "old", username: "old-user", displayName: "Old user" };
+    let complete!: (value: any) => void;
+    const pending = new Promise<any>(resolve => { complete = resolve; });
+    let action: Promise<unknown>;
+    if (operation === "login") { api.onlineLogin = () => pending; action = online.login("old-user", "password8"); }
+    else { api.onlineResume = () => pending; action = online.resume(SERVER_A); }
+    await expectBody("online-close").trigger("click");
+    await flushPromises();
+    api.onlineResume = async () => ({ outcome: "restored", user: { id: "new", username: "current-user", displayName: "Current user" } });
+    online.dialogOpen = true;
+    await flushPromises();
+    complete(operation === "login" ? { user: oldUser, expiresAt: "2099-01-01T00:00:00Z" } : { outcome: "restored", user: oldUser });
+    await action;
+    await flushPromises();
+    expect(online.user?.username).toBe("current-user");
+    expect(expectBody("online-user").text()).toContain("Current user");
+    expect(expectBody("online-user").text()).not.toContain("Old user");
+    expect(online.submitting).toBe(false);
+    expect(online.restoring).toBe(false);
+  });
+
+  it("LOGIN-001 does not show late registration success in another connection", async () => {
+    const { online, api } = await mountDialog();
+    let complete!: (value: Awaited<ReturnType<ApiccApi["onlineRegister"]>>) => void;
+    api.onlineRegister = () => new Promise(resolve => { complete = resolve; });
+    await expectBody("online-tab-register").trigger("click");
+    await flushPromises();
+    await expectBody("online-reg-username").setValue("old-user");
+    await expectBody("online-reg-password").setValue("old-password8");
+    await expectBody("online-display-name").setValue("Old name");
+    await expectBody("online-register-submit").trigger("click");
+    online.addProfile(SERVER_B, "Second connection");
+    await flushPromises();
+    complete({ id: "99", username: "old-user", displayName: "Old name" });
+    await flushPromises();
+    expect(bodyHas("online-register-ok")).toBe(false);
+    expect(online.submitting).toBe(false);
+    expect((expectBody("online-username").element as HTMLInputElement).value).toBe("");
+  });
+
+  it("LOGIN-001 without a saved target offers connection management, never authentication", async () => {
+    const { online, wrapper, api } = await mountDialog();
+    online.removeProfile(SERVER_A);
+    await flushPromises();
+    expect(bodyHas("online-login-form")).toBe(false);
+    expect(bodyHas("online-register-form")).toBe(false);
+    await expectBody("online-manage-connections").trigger("click");
+    expect(wrapper.emitted("manage-connections")).toHaveLength(1);
+  });
+
   it("dialogOpen=false 不渲染；true 经传送门渲染（登录页签默认；档案区已收口至主页管理连接）", async () => {
     const { online } = await mountDialog({ open: false });
     // a-modal 不透传 data-testid（components.test.ts 既有备案），挂载判据用对话框内层 online-body

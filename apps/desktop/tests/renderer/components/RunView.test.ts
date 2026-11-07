@@ -134,18 +134,38 @@ describe("RunView", () => {
     await Promise.all([executing, leaving]);
     expect(run.running).toBe(false); expect(run.result).toBeNull();
   });
-  it("C1 shows historical not-collected and copies only the rendered safe evidence DTO", async () => {
+  it("C1 localizes historical evidence labels and copies the unchanged safe evidence DTO", async () => {
     const writeText = vi.fn(async (_value: string) => {}); Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    const panel = mount(CaseEvidencePanel, { props: {} });
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = "zh-CN";
+    const panel = mount(CaseEvidencePanel, { props: {}, global: { plugins: [i18n] } });
     expect(panel.text()).toContain("旧记录未采集");
     await panel.setProps({ evidence: { identity: { projectId: "p", definitionRevision: "r" }, state: "omitted", scriptDiagnostics: "not-collected", truncated: true } });
     expect(panel.text()).toContain("预算耗尽");
     await panel.find('[data-testid="evidence-copy"]').trigger("click");
     expect(JSON.parse(writeText.mock.calls[0]![0]!)).toMatchObject({ state: "omitted", identity: { projectId: "p" } });
     await panel.setProps({ evidence: { identity: { projectId: "p", definitionRevision: "r", rowIndex: 0 }, state: "collected", scriptDiagnostics: "not-collected", truncated: false, response: { status: 200, headers: { text: "content-type: binary", truncated: false }, body: { text: "unavailable", truncated: false, omitted: true } } } });
-    expect(panel.text()).toContain("row=1"); expect(panel.text()).toContain("unavailable/omitted"); expect(panel.text()).toContain("content-type: binary");
+    expect.soft(panel.text()).toContain("数据行=1"); expect.soft(panel.text()).toContain("未采集或不可用"); expect(panel.text()).toContain("content-type: binary");
     await panel.setProps({ evidence: { identity: { projectId: "p", definitionRevision: "r" }, state: "not-collected", scriptDiagnostics: "not-collected", truncated: false } });
-    expect(panel.text()).toContain("row=—");
+    expect.soft(panel.text()).toContain("数据行=—");
+    i18n.global.locale.value = "en"; await flushPromises();
+    expect.soft(panel.text()).toContain("Bodies were not collected for this record");
+    expect.soft(panel.text()).toContain("Script diagnostics");
+    expect.soft(panel.text()).toContain("Response body unavailable");
+    expect(panel.text()).toContain("Copy safe evidence");
+    expect(panel.text()).not.toContain("未采集");
+    const preview = (text: string) => ({ text, truncated: false });
+    const content = { identity: { projectId: "p", definitionRevision: "r" }, state: "collected" as const, scriptDiagnostics: "existing-assertions-only" as const, truncated: false,
+      response: { status: 200, headers: preview("content-type: text/plain"), body: preview("用户正文") },
+      extractions: ["failed", "custom-status-v9"].map(status => ({ id: preview("id"), name: preview("用户提取名"), selector: preview("$.userKey"), status, code: preview("custom-code-v9"), published: false, sensitive: false, message: preview("用户诊断原文") })) };
+    await panel.setProps({ evidence: content });
+    for (const locale of ["zh-CN", "en"] as const) {
+      i18n.global.locale.value = locale; await flushPromises();
+      expect(panel.text()).toContain(locale === "zh-CN" ? "失败" : "Failed");
+      expect(panel.text()).toContain("用户正文"); expect(panel.text()).toContain("用户提取名");
+      expect(panel.text()).toContain("custom-status-v9"); expect(panel.text()).toContain("custom-code-v9");
+    }
+    await panel.find('[data-testid="evidence-copy"]').trigger("click");
+    expect(JSON.parse(writeText.mock.calls.at(-1)![0]!)).toEqual(panel.props("evidence"));
     panel.unmount();
   });
   it("未选集合时运行钮禁用；选择集合并运行后表格与汇总出现", async () => {
@@ -241,7 +261,7 @@ describe("RunView", () => {
     const row = bodyFind("history-row");
     expect(row).not.toBeNull();
     expect(row!.text()).toContain("示例集合");
-    expect(row!.text()).toContain("reporting-units 1"); expect(row!.text()).toContain("NON-HTTP 0");
+    expect(row!.text()).toContain("逻辑报告单位 1"); expect(row!.text()).toContain("非请求诊断 0");
     await row!.trigger("click");
     await flushPromises();
     expect(run.historyOpen).toBe(false);

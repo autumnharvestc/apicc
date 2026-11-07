@@ -67,7 +67,7 @@ async function mountWizard(props: Record<string, unknown> = {}, apiOverride?: Re
     global: { plugins: [i18n] },
   });
   await flushPromises();
-  return { wrapper, api, workspace, importW, plugins, errors };
+  return { wrapper, api, workspace, importW, plugins, errors, i18n };
 }
 
 /** 文件选择适配：jsdom 无法真正弹文件对话框，直接向 input[type=file] 注入 File 并派发 change。 */
@@ -80,6 +80,31 @@ async function pickFile(wrapper: Awaited<ReturnType<typeof mountWizard>>["wrappe
 }
 
 describe("ImportWizard", () => {
+  it("reports successful undo as restored content instead of claiming nothing was written", async () => {
+    const { wrapper, importW, workspace, i18n, errors } = await mountWizard({ groups: [{ label: "User group" }], defaultGroupId: "default" });
+    const projects = () => workspace.tree!.children.flatMap(group => group.kind === "group" ? group.children.filter(node => node.kind === "project").map(node => [node.id, node.label]) : []);
+    const before = projects();
+    await pickFile(wrapper, "sample.yaml", "openapi: 3.0.0");
+    await wrapper.get('[data-testid="import-build-plan"]').trigger("click"); await flushPromises();
+    const apply = importW.apply.bind(importW); let applying: Promise<ImportApplyResult> | undefined;
+    importW.apply = (...args) => (applying = apply(...args));
+    await wrapper.get('[data-testid="import-apply"]').trigger("click"); await applying; await flushPromises();
+    expect(importW.applyResult?.committed).toBe(true);
+    expect(projects()).not.toEqual(before);
+    const undo = importW.undo.bind(importW); let undoing: Promise<void> | undefined;
+    importW.undo = () => (undoing = undo());
+    await wrapper.get('[data-testid="import-undo"]').trigger("click"); await undoing; await flushPromises();
+    expect(errors).toEqual([]);
+    expect(projects()).toEqual(before);
+    const done = wrapper.get('[data-testid="import-done"]');
+    expect.soft(done.text()).toContain("导入已撤销");
+    expect.soft(done.text()).not.toContain("未写入任何更改");
+    i18n.global.locale.value = "en"; await flushPromises();
+    expect(done.text()).toContain("Import undone");
+    expect(done.text()).not.toContain("No changes were written");
+    expect(wrapper.find('[data-testid="import-undo"]').exists()).toBe(false);
+    importW.reset();
+  });
   it("粘贴 cURL 沿现有预览和项目落点进入向导", async () => {
     const api = createMemoryApi();
     const originalPreview = api.importPreview.bind(api);

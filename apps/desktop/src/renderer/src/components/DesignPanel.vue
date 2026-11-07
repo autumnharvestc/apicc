@@ -44,7 +44,8 @@ const selectedTags = ref<string[]>([]);
 let exportIdentity = "";
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
 let lastPreviewSessionIdentity: string | null | undefined;
-const saved = computed(() => savedVersion.value !== null && savedVersion.value === props.design.committedContentVersion);
+const saved = computed(() => savedVersion.value !== null && !props.design.dirty && savedVersion.value === props.design.committedContentVersion);
+const previewError = computed(() => props.design.previewError === 'design-invalid-json' ? t('design.fixInvalidJson') : props.design.previewError);
 
 const projectTree = computed(() => {
   const locator = props.editor.locator;
@@ -270,7 +271,7 @@ function treeOptions(root: LocalTreeNodeDTO | null, kind: "collection" | "api"):
             @update:value="setContent($event as string)"
           />
           <pre class="preview-text">{{ design.content || t("design.previewEmpty") }}</pre>
-          <DocumentPreview :status="design.previewStatus" :result="design.previewResult" :error="design.previewError" />
+          <DocumentPreview :status="design.previewStatus" :result="design.previewResult" :error="previewError" />
         </div>
       </div>
     </template>

@@ -20,7 +20,7 @@ async function testingCenter(stressClient?: NonNullable<Parameters<typeof create
   const store = createTestingStore(api, { confirmDiscard });
   await store.activate(root, fixture.projectLocator);
   const { i18n } = createI18nInstance();
-  return { ...fixture, store, confirmDiscard, mountDataset: () => mount(DatasetPanel, { props: { testing: store }, global: { plugins: [i18n] } }), mountSuite: () => mount(SuitePanel, { props: { testing: store }, global: { plugins: [i18n] } }) };
+  return { ...fixture, store, confirmDiscard, i18n, mountDataset: () => mount(DatasetPanel, { props: { testing: store }, global: { plugins: [i18n] } }), mountSuite: () => mount(SuitePanel, { props: { testing: store }, global: { plugins: [i18n] } }) };
 }
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -28,6 +28,59 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe("current project testing center", () => {
+  it("localizes nonempty suite result rows and reporting units without translating business evidence or unknown codes", async () => {
+    const { store, api, apiLocator } = await testingCenter({ name: "suite-result-language", canHandle: () => true, close: async () => {},
+      execute: async () => ({ status: 200, headers: { "content-type": "text/plain" }, bodyText: "业务正文 User original", timeMs: 1 }) });
+    const detail = await api.apiGet(apiLocator);
+    detail.api.contract.metadata.name = "业务接口 User API";
+    const passing = detail.api.cases[0]!;
+    passing.name = "成功用例 User passed case"; passing.assertions = [];
+    detail.api.cases.push({ ...structuredClone(passing), id: crypto.randomUUID(), name: "失败用例 User failed case", assertions: [{ id: crypto.randomUUID(), target: "status", op: "eq", expected: "201" }] });
+    await api.apiSave(apiLocator, detail.api, detail.sourceApiRevision); await store.refresh();
+    await store.newSuite("业务套件 User suite"); store.suite!.selection = { kind: "query" }; store.evidenceMode = "all";
+    await store.save(); await store.run();
+    const result = store.result!.result;
+    expect(result.cases).toHaveLength(2); expect(result.reportingUnits).toMatchObject({ total: 2, failed: 1, entryDiagnostics: 0 });
+    expect(result.cases.map(row => row.passed)).toEqual([true, false]);
+    expect(result.cases[0]!.evidence?.response?.body.text).toBe("业务正文 User original");
+    result.warnings = ["custom-result-warning-v9：用户原文"];
+    const before = JSON.stringify(result);
+    for (const locale of ["zh-CN", "en"] as const) {
+      const { i18n } = createI18nInstance(); i18n.global.locale.value = locale;
+      const panel = mount(SuitePanel, { props: { testing: store }, global: { plugins: [i18n] } });
+      const units = panel.get('.result-scroll > div > p').text();
+      expect.soft(units).toContain(locale === "zh-CN" ? "逻辑报告单位 2（失败 1）" : "Logical reporting units 2 (1 failed)");
+      expect.soft(units).toContain(locale === "zh-CN" ? "非请求诊断 0" : "Non-request diagnostics 0");
+      const summaries = panel.findAll('.result-scroll > div > details > summary');
+      expect(summaries).toHaveLength(2);
+      expect.soft(summaries[0]!.text()).toContain(locale === "zh-CN" ? "· 通过 · 数据行=— · 条目=" : "· Passed · Data row=— · Entry=");
+      expect.soft(summaries[1]!.text()).toContain(locale === "zh-CN" ? "· 失败 · 数据行=— · 条目=" : "· Failed · Data row=— · Entry=");
+      expect(summaries[0]!.text()).toContain("业务接口 User API / 成功用例 User passed case");
+      expect(summaries[1]!.text()).toContain("业务接口 User API / 失败用例 User failed case");
+      expect(summaries[0]!.text()).toContain(result.cases[0]!.entryId!);
+      expect(panel.text()).toContain("custom-result-warning-v9：用户原文"); expect(panel.text()).toContain("业务正文 User original");
+      expect(JSON.stringify(result)).toBe(before); panel.unmount();
+    }
+  });
+  it("localizes suite terminal states while preserving aborted case facts and business errors", async () => {
+    const { store } = await testingCenter();
+    await store.newSuite("User suite");
+    store.result = { context: store.view!.context, invocationId: "run", result: {
+      collectionId: store.suite!.id, collectionName: "User suite", startedAt: "start", finishedAt: "end", total: 1, passed: 0, failed: 1,
+      cases: [{ apiId: "api", apiName: "User aborted API", caseId: "case", caseName: "User aborted case", entryId: "User aborted entry", passed: false, durationMs: 0, assertions: [], failureKind: "aborted", error: "Untranslated user error" }],
+      suite: { suiteRunId: "run", projectId: store.view!.context.project.projectId, definitionRevision: "revision", verdict: "aborted", total: 2, passed: 0, failed: 1, skipped: 1,
+        entries: [{ entryId: "User aborted entry", kind: "case", status: "aborted", error: "Untranslated user error" }, { entryId: "User skipped entry", kind: "case", status: "skipped", skipReason: "aborted" }] },
+    } };
+    for (const locale of ["zh-CN", "en"] as const) {
+      const { i18n } = createI18nInstance(); i18n.global.locale.value = locale;
+      const panel = mount(SuitePanel, { props: { testing: store }, global: { plugins: [i18n] } });
+      const summary = panel.get('[data-testid="suite-result"]').text();
+      expect(summary).toContain(locale === "zh-CN" ? "中止" : "Aborted");
+      expect(summary).toContain(locale === "zh-CN" ? "跳过" : "Skipped");
+      expect(summary).toContain("User skipped entry"); expect(summary).toContain("Untranslated user error");
+      panel.unmount();
+    }
+  });
   it("G binds exported bytes to their actual format after the selection changes", async () => {
     const { store, mountDataset } = await testingCenter();
     await store.newDataset("exported"); store.dataset!.columns = ["value"]; store.dataset!.rows = [{ value: 1 }]; await store.save();
@@ -42,7 +95,8 @@ describe("current project testing center", () => {
     finally { click.mockRestore(); if (createDescriptor) Object.defineProperty(URL, "createObjectURL", createDescriptor); else Reflect.deleteProperty(URL, "createObjectURL"); if (revokeDescriptor) Object.defineProperty(URL, "revokeObjectURL", revokeDescriptor); else Reflect.deleteProperty(URL, "revokeObjectURL"); }
   });
   it("G creates and clears optional query dimensions consistently through save, preview and run", async () => {
-    const { store, mountSuite, api, collection, apiLocator } = await testingCenter();
+    const { store, mountSuite, api, collection, apiLocator, i18n } = await testingCenter();
+    i18n.global.locale.value = "zh-CN";
     const detail = await api.apiGet(apiLocator); detail.api.cases[0]!.tags = ["smoke"];
     await api.apiSave(apiLocator, detail.api, detail.sourceApiRevision); await store.refresh();
     await store.newSuite("query"); const panel = mountSuite();
@@ -60,7 +114,7 @@ describe("current project testing center", () => {
     await api.containerSave({ kind: "collection", locator: collection.locator, operations: { variables: {}, preOperations: [], postOperations: [{ id: crypto.randomUUID(), type: "script", content: 'throw new Error("container diagnostic");' }] } });
     await store.refresh(); await store.run();
     expect((await api.runsList())[0]).toMatchObject({ total: 1, passed: 1, failed: 0, reportingUnits: { total: 2, failed: 1, entryDiagnostics: 1 } });
-    expect(panel.text()).toContain("row=—");
+    expect(panel.text()).toContain("数据行=—");
     await tagInput.setValue(""); expect(store.suite!.selection).toEqual({ kind: "query" });
   });
   it.each(["dataset", "suite"] as const)("preserves %s edits made while refresh awaits its saved response", async kind => {

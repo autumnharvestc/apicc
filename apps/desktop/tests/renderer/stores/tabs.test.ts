@@ -385,7 +385,7 @@ describe("激活编排（activateTab）", () => {
     expect(tabs.tabs).toHaveLength(1); // 签保留（离线禁用态可再激活）
     expect(tabs.offlineTabIds).toEqual(["tab-1"]);
     expect(tabs.activeTabId).toBeNull(); // 不切换
-    expect(tabs.error).toContain("离线");
+    expect(tabs.error).toBe("online-workspace-session-missing");
     expect(online.activeWorkspaceId).toBeNull();
     // 成签即落盘：首激活失败的签也驻留持久层（activeIndex null），重启可恢复后再激活
     expect(JSON.parse(storage.getItem(STORAGE_KEY)!)).toEqual({

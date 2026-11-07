@@ -17,7 +17,7 @@ import CaseEvidencePanel from "./CaseEvidencePanel.vue";
  * Tag（stateTagColor，复用 colorForState 语义）/ 耗时（outcome?.durationMs）/ 错误）。
  * 组件内零 store/工厂调用；耗时无 outcome（noop/skipped）与无 error 以「—」占位。
  */
-const props = withDefaults(defineProps<{ open: boolean; result: WorkflowRunResult | null; projectLocator?: ProjectLocator | null; embedded?: boolean; ai?: import('../stores/ai.js').AiStore }>(), { embedded: false });
+const props = withDefaults(defineProps<{ open: boolean; result: WorkflowRunResult | null; projectLocator?: ProjectLocator | null; embedded?: boolean; inheritedReportingMode?: WorkflowRunResult['reportingMode']; ai?: import('../stores/ai.js').AiStore }>(), { embedded: false });
 const emit = defineEmits<{ close: []; locate: [identity: EvidenceIdentity] }>();
 const { t, te } = useI18n();
 function analyzeReport() {
@@ -33,6 +33,11 @@ function analyzeReport() {
     } });
 }
 function label(code: string | undefined) { if (!code) return '—'; const key = `executionLabels.${code}`; return te(key) ? t(key) : code; }
+const displayReportingMode = computed(() => props.result?.reportingMode ?? props.inheritedReportingMode);
+function branchRole(node: NodeResult, branch: NonNullable<NodeResult['branches']>[number]) {
+  if (branch.winner) return t('wf.control.winner');
+  return branch.cause === 'or-superseded' || node.branches?.some(item => item.winner) ? t('wf.control.loser') : null;
+}
 
 const columns = computed(() => [
   { key: "label", title: t("wf.colNode"), dataIndex: "label" },
@@ -115,7 +120,7 @@ function formatMs(ms: number): string {
       <button v-if="ai && projectLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
       <div v-if="isV2 || embedded" class="wf-invocation">
         <p data-testid="wf-logical-verdict">{{ t('wf.control.logicalVerdict') }}: <strong>{{ label(result.verdict) }}</strong> · {{ t('wf.control.rawRows') }}: {{ facts?.total ?? 0 }} · {{ t('wf.control.rawFailed') }}: {{ facts?.failed ?? 0 }}</p>
-        <p>{{ t('wf.control.mode') }}: {{ label(result.reportingMode ?? 'v1') }} · {{ result.workflowName }}</p>
+        <p>{{ t('wf.control.mode') }}: {{ label(displayReportingMode ?? 'v1') }} · {{ result.workflowName }}</p>
         <p class="wf-identity">{{ t('wf.control.invocation') }}: {{ result.invocationId }} · {{ summary }}</p>
         <p v-if="result.requestFacts">{{ t('wf.control.requestFacts', { started: result.requestFacts.requestStarted, completed: result.requestFacts.requestCompleted, http: result.requestFacts.httpExchanges }) }}</p>
         <p class="wf-identity">{{ t('wf.control.currentAssetHint') }}</p>
@@ -125,10 +130,10 @@ function formatMs(ms: number): string {
           <p v-if="node.recoveredError" data-testid="wf-recovered">{{ t('wf.control.recovered') }}: {{ node.recoveredError.code }} · {{ node.recoveredError.message }}</p>
           <p v-for="(error, index) in node.secondaryErrors" :key="index">{{ t('wf.control.secondary') }}: {{ error.code }} · {{ error.message }}</p>
           <p v-for="attempt in node.attempts" :key="attempt.attempt">{{ t('wf.control.attempt', { n: attempt.attempt }) }} · {{ label(attempt.state) }} · {{ attempt.error?.message }}</p>
-          <p v-for="branch in node.branches" :key="branch.invocationId">{{ branch.branchId }} · {{ label(branch.state) }} · {{ t(branch.winner ? 'wf.control.winner' : 'wf.control.loser') }} · {{ label(branch.cause) }} <span v-if="branch.cleanupFailed">{{ t('wf.control.cleanupFailed') }}</span></p>
+          <p v-for="branch in node.branches" :key="branch.invocationId">{{ branch.branchId }} · {{ label(branch.state) }}<template v-if="branchRole(node, branch)"> · {{ branchRole(node, branch) }}</template> · {{ label(branch.cause) }} <span v-if="branch.cleanupFailed">{{ t('wf.control.cleanupFailed') }}</span></p>
           <p v-for="(event, index) in node.policyEvents" :key="index">{{ label(event.type) }}<template v-if="'cause' in event"> · {{ label(event.cause) }}</template></p>
-          <details v-for="child in node.childInvocations" :key="child.invocationId" open><summary>{{ t('wf.control.invocation') }} · {{ child.workflowName }} · {{ label(child.verdict) }}</summary><WfResultDrawer embedded :open="true" :result="child" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
-          <details v-for="child in node.policyInvocations" :key="`${child.role}:${child.result.invocationId}`" open><summary>{{ t(`wf.control.${child.role}`) }} · {{ label(child.result.verdict) }}</summary><WfResultDrawer embedded :open="true" :result="child.result" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
+          <details v-for="child in node.childInvocations" :key="child.invocationId" open><summary>{{ t('wf.control.invocation') }} · {{ child.workflowName }} · {{ label(child.verdict) }}</summary><WfResultDrawer embedded :open="true" :result="child" :inherited-reporting-mode="displayReportingMode" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
+          <details v-for="child in node.policyInvocations" :key="`${child.role}:${child.result.invocationId}`" open><summary>{{ t(`wf.control.${child.role}`) }} · {{ label(child.result.verdict) }}</summary><WfResultDrawer embedded :open="true" :result="child.result" :inherited-reporting-mode="displayReportingMode" :project-locator="projectLocator" @locate="emit('locate', $event)" /></details>
         </details>
       </div>
       <!-- warnings 置顶（结构性告警如悬空边——不阻断运行但必须可见，core runner 折进 warnings） -->

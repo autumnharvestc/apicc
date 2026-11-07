@@ -1,4 +1,39 @@
 {
+  "caseEvidence": {
+    "collection": "Evidence collection",
+    "modeNone": "No bodies (location only)",
+    "modeFailures": "Failures only (default)",
+    "modeAll": "All executions",
+    "legacyNotCollected": "Not collected for this legacy record",
+    "notCollected": "Bodies were not collected for this record (none / failures policy)",
+    "definitionRevision": "Definition revision",
+    "scope": "Scope",
+    "entry": "Entry",
+    "node": "Node",
+    "changed": "The asset definition changed. Locate and rerun use the current asset and credentials.",
+    "truncated": "Evidence was truncated or omitted because its budget was exhausted; the execution verdict is unchanged.",
+    "request": "Safe request",
+    "response": "Safe response",
+    "unavailable": "Not collected or unavailable",
+    "responseUnavailable": "Response body unavailable",
+    "selector": "Selector",
+    "actual": "Actual",
+    "expected": "Expected",
+    "differencePath": "Difference path",
+    "schemaPath": "Schema path",
+    "extraction": "Extraction",
+    "published": "Published",
+    "unpublished": "Unpublished",
+    "scripts": "Script diagnostics",
+    "scriptNotCollected": "Not collected",
+    "scriptAssertionsOnly": "Only existing assertion messages are available; the full console was not collected.",
+    "timings": "Request {request} ms · Script {script} ms · Iteration {iteration} ms",
+    "locate": "Locate current asset",
+    "rerunWorkflow": "Rerun the whole workflow entry",
+    "rerunCase": "Rerun this exact case row",
+    "copy": "Copy safe evidence",
+    "copyFailed": "Copy failed"
+  },
   "stressCapacity":{"workerIntersection":"Current total-capacity/policy intersection: up to {count} workers; the selected run is not changed automatically.","used":"Used","requested":"Requested","limit":"Limit","draining":"Over-limit draining; new admission is blocked, active jobs are not terminated."},
   "stressFinal": {"codes":{"incomplete":"Incomplete","budget-exhausted":"Budget exhausted","overflow":"Outside statistics range","unaligned":"Timeline unaligned","not-collected":"Not collected","legacy":"Legacy: not collected","confirmed":"Confirmed","allowed":"Allowed","denied":"Denied","not-required":"Confirmation not required","stress-local-budget-exceeded":"Local stress budget exceeded","stress-worker-policy-exceeded":"Stress worker policy exceeded","stress-capacity-exceeded":"Agent stress capacity exceeded","cache":{"input":"Waiting for input cache capacity","result":"Waiting for report cache capacity"}}},
   "stressPresentation": {"logicalVerdict":"Logical verdict","logicalIterations":"Passed logical iterations","planned":"Planned","started":"Started","completed":"Completed","passed":"Passed","failed":"Failed","aborted":"Aborted","dropped":"Dropped","eligible":"Eligible completed","caseRows":"Case rows","httpHops":"HTTP exchanges","drain":"Drain window","policyWait":"Policy waiting","noRpsLimit":"No request RPS limit","requestUnit":"requests","rpsUnit":"requests/s","iterationUnit":"iterations/s","processUnit":"execution processes","jobs":"jobs","processBudget":"Execution process budget","observedProcesses":"Observed process count not collected; budget is not a spawned-process count","location":"Execution location","executor":"Executor","workers":"Workers","runtime":"Runtime identity","recordedSources":"Recorded limit sources not collected; current admission bounds do not prove recorded Core limit sources.","budgetHint":"Topology and reservations are budgets, not observations; numeric memory is not an RSS hard limit.","requested":"Requested reservation","effective":"Effective reservation","memory":"Numeric memory","preparation":"Preparation","execution":"Execution","upload":"Upload","notCollected":"Not collected","none":"None","unavailable":"Report unavailable; cannot compare","partialFailure":"Some data was not retained; formal request totals cannot be reconstructed.","measurementPopulation":"Measurement/drain request population","lifecyclePopulation":"Lifecycle is separate; zero formal requests does not imply no lifecycle HTTP.","pin":"Use as baseline","clear":"Clear baseline","baseline":"Baseline in this view","export":"Export HTML","currentAdmission":"Current admission bounds","admissionHint":"Current configuration applies to future admission; it is not the recorded run’s final Core limits.","source":"Source","field":"Field","bound":"Admission bound","agent":"Agent configuration","workspace":"Workspace","project":"Project","default":"Default","deployment":"Deployment","savedVersion":"Saved version","appliedVersion":"Applied version","requestConcurrency":"Request concurrency","rps":"Request RPS limit","vu":"VU limit","unknownClock":"Timeline unaligned or uncertain; showing the recorded observations.","zeroBuckets":"No time buckets; timeline data not collected.","singleBucket":"Only one time bucket; a single point cannot establish a rising or falling trend.","startedAt":"Start time","finishedAt":"End time","fingerprint":"Definition fingerprint","full":"Show full value","notApplicable":"Not applicable","exact":"Exact","backlog":"Maximum scheduler backlog","eventLoop":"Event loop p95","visits":"Visits / failed / aborted / skipped","runLevel":"Run level","reasons":{"location":"Different execution location","executor":"Different executor","workers":"Different workers or process budget","runtime":"Different runtime identity","resources":"Resource limits/reservations differ or were not collected","metadata":"Execution metadata not collected; not directly comparable","report-unavailable":"Report unavailable; cannot compare"},"states":{"pending":"Pending","preparing":"Preparing","ready":"Ready","failed":"Failed","running":"Running","finished":"Finished","cancelled":"Cancelled","timed-out":"Timed out","interrupted":"Interrupted","uploading":"Uploading","complete":"Upload complete","passed":"Passed"},"metrics":{"rps":"Request RPS","p95Ms":"Request p95","errorRate":"Request error rate","iterationsCompleted":"Completed iterations","iterationP95Ms":"Iteration p95","dropped":"Dropped iteration slots"},"environmentNotice":"Environment definitions were not compared; matching IDs do not prove matching definitions.","reportIntegrityUnknown":"Complete Core output is unavailable; report integrity cannot be confirmed. The known business verdict above is retained.","notComparable":"Not directly comparable; interpret numeric changes with the recorded reasons.","codes":{"setup":"Run setup","vu-setup":"VU setup","warmup":"Warmup","measurement":"Measurement","drain":"Drain in-flight execution","vu-teardown":"VU teardown","teardown":"Run teardown","worker-missing":"Worker missing","worker-failed":"Worker failed","worker-incompatible":"Worker incompatible","timeline-unaligned":"Timeline unaligned","phase-window-missing":"Phase coverage window missing","metrics-budget-exhausted":"Metric budget exhausted","histogram-overflow":"Histogram overflow","snapshot-missing":"Final snapshot missing","snapshot-duplicate":"Duplicate snapshot","snapshot-invalid":"Invalid snapshot","dropped":"Dropped iteration slots","no-data":"No eligible samples","cancelled":"Cancelled","drain-timeout":"Drain timeout","warmup-drain-timeout":"Warmup drain timeout","setup-failed":"Run setup failed","vu-setup-failed":"VU setup failed","teardown-failed":"Run teardown failed","vu-teardown-failed":"VU teardown failed","policy-limited":"Policy limited","resource-saturated":"Resource saturated","execution-failed":"Execution failed","available":"Available","partial":"Partially available","unavailable":"Unavailable","exact-nearest-rank":"Exact nearest rank","log-histogram":"Log histogram","vuSetup":"VU setup","vuTeardown":"VU teardown"},"scriptApi":"Script API","compatibility":"Compatibility identity","samples":"samples","timeOutOfRange":"Time outside the readable range; original timestamp is available","coreReasons":{"project-identity":"Project identity missing or different","target":"Different target","environment":"Different environment","load":"Different load configuration","connection":"Different connection mode","data":"Different data identity","statistics":"Different statistics configuration","report-version":"Different report version","revision-changed":"Definition revision changed","legacy-metadata-unavailable":"Legacy metadata unavailable","incomplete-run":"Includes an incomplete run"},"waiting":{"jobs":"Waiting for stress job capacity","processes":"Waiting for stress execution process capacity","vus":"Waiting for stress VU capacity","requestConcurrency":"Waiting for stress request concurrency capacity","maxRps":"Waiting for stress request RPS capacity","metricMemoryBytes":"Waiting for stress numeric memory capacity"},"metadataNotCollected":"Execution metadata not collected; current configuration cannot reconstruct this run’s budget or actual runtime."},
@@ -342,6 +377,8 @@
     "postOperations": "Post-operations"
   },
   "run": {
+    "legacyProject": "Legacy record: project identity was not collected",
+    "reportingUnits": "Logical reporting units {total} ({failed} failed) · Non-request diagnostics {diagnostics}",
     "empty": "Open a workspace, then select a collection and run",
     "collectionPlaceholder": "Select collection",
     "envPlaceholder": "Environment",
@@ -434,6 +471,8 @@
     "failure": { "transport": "Transport", "http": "HTTP", "script": "Script", "assertion": "Assertion", "extraction": "Extraction", "config": "Configuration", "aborted": "Aborted" }
   },
   "import": {
+    "undoTitle": "Import undone",
+    "undoText": "The content from before this import was restored.",
     "title": "Import APIs",
     "stepFile": "Select file",
     "stepPreview": "Preview",
@@ -477,6 +516,7 @@
     "lossyMarker": " · semantic loss"
   },
   "design": {
+    "fixInvalidJson": "Fix the invalid JSON input before previewing or saving.",
     "empty": "Select an API on the left to edit the design",
     "save": "Save design",
     "saved": "Design saved",
@@ -1071,6 +1111,8 @@
     "phases": { "queued": "Queued", "request": "Requesting", "receiving": "Receiving", "retrying": "Retrying", "completed": "Reception completed" }, "waitingForProgress": "Submitted; waiting for host status", "attempt": "Attempt", "received": "Received", "cancelOperation": "Cancel AI operation"
   },
   "online": {
+    "loginTarget": "Sign-in target",
+    "chooseConnection": "Add or select a saved connection in connection management before signing in.",
     "title": "Online",
     "serverSection": "Server",
     "savedServers": "Saved profiles",
@@ -1114,7 +1156,8 @@
     "readonlyBadge": "Read-only",
     "editorEmpty": "Select an API on the left to view/edit its definition",
     "pullGuide": "Valid contract-files-v1 projects support debugging, suites and workflows on this computer or an authorized agent. Select a project and execution location. Legacy-format content remains available for browsing and migration (pull); it cannot execute directly.",
-    "sessionErrors": { "online-not-signed-in":"Sign in to the online server first.", "online-workspace-not-open":"Open this online workspace first.", "online-session-changed":"The online session changed. Reopen the project and try again." },
+    "sessionErrors": {
+    "online-workspace-session-missing": "The online workspace session is unavailable (you may have signed out). The project tab is offline. Sign in again and retry.", "online-not-signed-in":"Sign in to the online server first.", "online-workspace-not-open":"Open this online workspace first.", "online-session-changed":"The online session changed. Reopen the project and try again." },
     "problemsTitle": "API definition failed schema validation (raw text shown; pushing is disabled)",
     "baseUrl": "Base URL",
     "path": "Path",

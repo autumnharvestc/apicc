@@ -44,6 +44,7 @@ const props = defineProps<{
   /** 签 store（终审 Important 2）：在线签草稿聚合 + 登出前逐工作区关签同步签表。 */
   tabs: ReturnType<typeof createTabsStore>;
 }>();
+const emit = defineEmits<{ (event: "manage-connections"): void }>();
 const { t } = useI18n();
 const apiError = computed(() => { const key = onlineSessionErrorKey(props.online.error); return key ? t(key) : props.online.error; });
 
@@ -57,7 +58,7 @@ watch(
     const generation = ++authConfigGeneration;
     let current = true;
     onCleanup(() => { current = false; });
-    if (!open || !baseUrl) {
+    if (!open || !baseUrl || !props.online.hasActiveProfile) {
       allowRegistration.value = false;
       mode.value = "login";
       return;
@@ -82,21 +83,35 @@ const password = ref("");
 const displayName = ref("");
 const formError = ref("");
 const registerOk = ref(false);
+let formGeneration = 0;
 
 // 每次打开对话框重置本地表单（store 状态保留）；目标服务器 = 当前激活档案
 // （档案管理唯一入口在主页「管理连接」面板——轨三收口）。
 // 已登录时顺带刷新工作区列表（打开在线工作区的入口数据）。
 watch(
-  () => props.online.dialogOpen,
-  (open) => {
-    if (!open) return;
+  () => [props.online.dialogOpen, props.online.activeBaseUrl] as const,
+  ([open], previous) => {
+    formGeneration++;
+    username.value = "";
+    password.value = "";
+    displayName.value = "";
     formError.value = "";
     registerOk.value = false;
     mode.value = "login";
-    if (props.online.loggedIn) void props.online.refreshWorkspaces();
+    props.online.error = null;
+    if (!open) {
+      if (previous?.[0]) props.online.dismissAuthentication();
+      return;
+    }
   },
-  { immediate: true },
+  { immediate: true, flush: "sync" },
 );
+// Run session reads only after store target transitions finish; the synchronous watcher clears fields only.
+watch(() => [props.online.dialogOpen, props.online.loggedIn, props.online.activeBaseUrl] as const, ([open]) => {
+  if (!open || !props.online.hasActiveProfile) return;
+  if (props.online.loggedIn) void props.online.refreshWorkspaces();
+  else if (!props.online.restoring) void props.online.resume(props.online.activeBaseUrl!);
+}, { immediate: true });
 
 async function onLogin() {
   formError.value = "";
@@ -113,9 +128,10 @@ async function onLogin() {
     formError.value = t("online.passwordRequired");
     return;
   }
+  const generation = formGeneration;
   await props.online.login(username.value.trim(), password.value);
   // 登录成功（对话框切已登录区）：清密码输入，不在表单残留凭据；失败保留便于改密重试
-  if (props.online.loggedIn) password.value = "";
+  if (generation === formGeneration && props.online.loggedIn) password.value = "";
 }
 
 async function onRegister() {
@@ -138,8 +154,9 @@ async function onRegister() {
     formError.value = t("online.displayNameRequired");
     return;
   }
+  const generation = formGeneration;
   const ok = await props.online.register({ username: name, password: password.value, displayName: displayName.value.trim() });
-  if (ok) {
+  if (ok && generation === formGeneration) {
     // 注册不建立登录态（契约语义）：提示后回登录页签，用户名保留可直接登录
     registerOk.value = true;
     mode.value = "login";
@@ -214,6 +231,11 @@ function onLogoutCancel() {
     @cancel="online.dialogOpen = false"
   >
     <div class="online-body" data-testid="online-body">
+      <div v-if="online.hasActiveProfile" class="login-target" data-testid="online-target">
+        <span>{{ t("online.loginTarget") }}</span>
+        <strong>{{ online.activeName }}</strong>
+        <span class="target-address">{{ online.activeBaseUrl }}</span>
+      </div>
       <!-- 服务器档案区已收口至主页「管理连接」面板（轨三）：目标服务器 = 当前激活档案 -->
       <!-- 已登录：用户 + 退出登录 + 工作区列表（任务 3 打开在线工作区入口） -->
       <div v-if="online.loggedIn" class="section" data-testid="online-signed-in">
@@ -244,7 +266,7 @@ function onLogoutCancel() {
       </div>
 
       <!-- 未登录：登录 / 注册双模式 -->
-      <div v-else class="section">
+      <div v-else-if="online.hasActiveProfile" class="section">
         <a-tabs v-model:active-key="mode">
           <a-tab-pane key="login">
             <template #tab><span data-testid="online-tab-login">{{ t("online.loginTab") }}</span></template>
@@ -296,6 +318,10 @@ function onLogoutCancel() {
         </a-tabs>
         <div v-if="registerOk" class="notice" data-testid="online-register-ok">{{ t("online.registerOk") }}</div>
       </div>
+      <div v-else class="section" data-testid="online-no-target">
+        <p>{{ t("online.chooseConnection") }}</p>
+        <a-button type="primary" data-testid="online-manage-connections" @click="emit('manage-connections')">{{ t("home.connections") }}</a-button>
+      </div>
 
       <!-- 错误上屏：本地表单校验（form-error）与 api 失败（store.error）分开呈现 -->
       <div v-if="formError" class="error" data-testid="online-form-error">{{ formError }}</div>
@@ -339,6 +365,16 @@ function onLogoutCancel() {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+.login-target {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.target-address {
+  overflow-wrap: anywhere;
+  color: var(--text-muted, #666);
 }
 .section {
   display: flex;
