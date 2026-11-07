@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class SyncCheckWorker {
     private record Key(String workspace,String project,String check) {}
-    private static final class Work {final SyncRepo.Dispatch claim;volatile Thread thread;volatile boolean cancelled,ownershipLost;volatile long localUntil;boolean finishing;Work(SyncRepo.Dispatch claim,long until){this.claim=claim;localUntil=until;}}
+    private static final class Work {final SyncRepo.Dispatch claim;volatile Thread thread;volatile SyncCheckService.Prepared prepared;volatile String invalidation;volatile boolean cancelled,ownershipLost;volatile long localUntil;boolean finishing;Work(SyncRepo.Dispatch claim,long until){this.claim=claim;localUntil=until;}}
     private final ObjectProvider<SyncCheckService> service;
     private final CollaborationRuntimeClient runtime;
     private final RuntimeProtocol protocol;
@@ -53,18 +53,19 @@ public class SyncCheckWorker {
         try{
             if(closed)return;
             for(var owned:work.values()){
-                synchronized(owned){if(owned.finishing||owned.cancelled||owned.ownershipLost)continue;}
+                synchronized(owned){if(owned.finishing||owned.cancelled||owned.ownershipLost||owned.invalidation!=null)continue;}
                 long requested=System.nanoTime();
                 try{
-                    var observed=service.getObject().refreshOwnership(owned.claim);
+                    var observed=service.getObject().refreshOwnership(owned.claim,owned.prepared);
                     if(observed!=SyncCheckService.Observation.RUNNING){cancelOwned(owned,observed==SyncCheckService.Observation.LOST);continue;}
                     // Publish each ACK before unrelated recovery; a late ACK can never revive a stopped/expired Work.
                     synchronized(owned){
-                        if(owned.finishing||owned.cancelled||owned.ownershipLost)continue;
+                        if(owned.finishing||owned.cancelled||owned.ownershipLost||owned.invalidation!=null)continue;
                         long now=System.nanoTime(),until=requested+java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(properties.getLeaseMs());
                         if(now-owned.localUntil>=0||now-until>=0)cancelOwned(owned,true);else owned.localUntil=until;
                     }
-                }catch(RuntimeException unavailable){/* No ACK: the independent monotonic deadline remains in force. */}
+                }catch(SyncCheckService.Invalidated invalid){if(invalid.reason.equals("runtime-uncertain"))cancelOwned(owned,true);else invalidateOwned(owned,invalid.reason);}
+                catch(RuntimeException unavailable){/* No ACK: the independent monotonic deadline remains in force. */}
             }
             if(!closed)try{service.getObject().recover();}catch(RuntimeException unavailable){/* Bounded next pulse retries observation, never the external read. */}
         }finally{pulseActive.set(false);}
@@ -72,11 +73,12 @@ public class SyncCheckWorker {
     private void requireLocal(Work owned) throws InterruptedException {
         if(System.nanoTime()-owned.localUntil>=0)cancelOwned(owned,true);
         if(owned.ownershipLost)throw new SyncCheckService.Invalidated("runtime-uncertain");if(owned.cancelled)throw new InterruptedException();
+        if(owned.invalidation!=null)throw new SyncCheckService.Invalidated(owned.invalidation);
     }
     private void run(Key key,Work owned){
-        String reason=null,detail=null;boolean uncertain=false;boolean planning=false;
+        String reason=null,detail=null,failureCode=null;boolean uncertain=false;boolean planning=false;
         try{
-            requireLocal(owned);var checks=service.getObject();var snapshot=checks.prepare(owned.claim);
+            requireLocal(owned);var checks=service.getObject();var prepared=checks.prepare(owned.claim);owned.prepared=prepared;var snapshot=prepared.snapshot();
             int output=Math.toIntExact(snapshot.effective().path("deploymentLimits").path("maxWireBytes").asLong()-snapshot.effective().path("deploymentLimits").path("envelopeReserveBytes").asLong());
             var payload=checks.resolveMaterials(snapshot);JsonNode read;
             requireLocal(owned);checks.validate(snapshot,owned.claim);requireLocal(owned);
@@ -91,6 +93,7 @@ public class SyncCheckWorker {
         }catch(InterruptedException failure){reason=owned.ownershipLost?"runtime-uncertain":"cancelled";uncertain=owned.ownershipLost;}
         catch(SyncCheckService.Invalidated failure){reason=failure.reason;uncertain=reason.equals("runtime-uncertain");}
         catch(CollaborationRuntimeClient.Failure failure){
+            failureCode=failure.code();
             detail=protocol.syncDetailCode(failure.code());
             if(owned.ownershipLost){reason="runtime-uncertain";uncertain=true;}
             else if(owned.cancelled)reason="cancelled";
@@ -100,13 +103,19 @@ public class SyncCheckWorker {
         }catch(ApiException failure){reason=failure.getCode().equals("collaboration_storage_limit")?"storage-limit":failure.getStatus().value()==403?"authorization-changed":"material-changed";}
         catch(Exception failure){reason="comparison-failed";}
         finally{
-            synchronized(owned){owned.finishing=true;}
+            synchronized(owned){
+                owned.finishing=true;
+                if(owned.ownershipLost){reason="runtime-uncertain";uncertain=true;}
+                else if(owned.cancelled){reason="cancelled";uncertain=false;}
+                else if(owned.invalidation!=null&&(!uncertain||"RPC_CANCELLED".equals(failureCode))){reason=owned.invalidation;uncertain=false;detail=null;}
+            }
             Thread.interrupted(); // HttpClient preserves interruption; the short DB status transaction is independent.
             try{if(reason!=null)service.getObject().finish(owned.claim,reason,uncertain,detail);}
             finally{work.remove(key,owned);}
         }
     }
     private void cancelOwned(Work owned,boolean lost){synchronized(owned){if(owned.finishing)return;if(lost)owned.ownershipLost=true;else owned.cancelled=true;owned.thread.interrupt();}}
+    private void invalidateOwned(Work owned,String reason){synchronized(owned){if(owned.finishing||owned.cancelled||owned.ownershipLost)return;owned.invalidation=reason;owned.thread.interrupt();}}
     public boolean cancel(String ws,String project,String id){var owned=work.get(new Key(ws,project,id));if(owned==null)return false;cancelOwned(owned,false);return true;}
     void cancelScope(long ws,Long project){for(var entry:work.entrySet())if(entry.getKey().workspace().equals(String.valueOf(ws))&&(project==null||entry.getKey().project().equals(String.valueOf(project))))cancelOwned(entry.getValue(),false);}
     @jakarta.annotation.PreDestroy public void close(){closed=true;var clock=monitor;if(clock!=null)clock.shutdownNow();var pulse=pulseThread;if(pulse!=null)pulse.interrupt();for(var owned:work.values())cancelOwned(owned,false);for(var thread:dispatchers)thread.interrupt();wake();}

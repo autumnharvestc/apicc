@@ -10,8 +10,10 @@ await mkdir(privateRoot,{recursive:true});
 const project=ContractProjectSchema.parse({id:'00000000-0000-4000-8000-000000000070',name:'T9',globals:{},collections:[{id:'00000000-0000-4000-8000-000000000071',name:'Target',apis:[],folders:[]},{id:'00000000-0000-4000-8000-000000000072',name:'Second',apis:[],folders:[]}],models:[],components:[]});
 const files=[...encodeContractProjectFiles(project).files].map(([path,content])=>({path,content}));
 const rawText=JSON.stringify({openapi:'3.0.3',info:{title:'Target',version:'1.0.0'},paths:{'/pets':{get:{operationId:'listPets',responses:{200:{description:'OK'}}}}}});
-let calls=0,cache304=0,dropNextRead=false,lostResponse,holdResolve=false,releaseResolve,failClassify=false;const blocked=new Map();
+const changedText=JSON.stringify({openapi:'3.0.3',info:{title:'Target',version:'1.0.0'},paths:{'/pets':{get:{operationId:'listPets',summary:'Changed upstream operation',responses:{200:{description:'OK'}}}}}});
+let calls=0,cache304=0,dropNextRead=false,lostResponse,holdResolve=false,releaseResolve,failClassify=false;const blocked=new Map(),revisions=new Map();
 const source=createServer((req,res)=>{
+  if(req.url.startsWith('/set-revision/')){const [, ,id,revision]=req.url.split('/');revisions.set(id,revision);res.end('set');return;}
   if(req.url==='/fail-classify'){failClassify=true;res.end('armed');return;}
   if(req.url==='/hold-resolve'){holdResolve=true;res.end('armed');return;}
   if(req.url==='/release-resolve'){releaseResolve?.();releaseResolve=undefined;res.end('released');return;}
@@ -23,7 +25,7 @@ const source=createServer((req,res)=>{
   if(req.url.startsWith('/auth')&&req.headers.authorization!=='Bearer synthetic-t9'){res.writeHead(401);res.end('credential required');return;}
   if(req.url.startsWith('/blocked/')||req.url.startsWith('/auth/blocked/')) {const id=req.url.split('/').at(-1);res.writeHead(200,{'content-type':'application/json'});blocked.set(id,res);void writeFile(join(directory,'received-'+id),'received');req.socket.once('close',()=>{void writeFile(join(directory,'collected-'+id),'closed');blocked.delete(id);});return;}
   if(req.url.startsWith('/cache')&&req.headers['if-none-match']==='"v1"'){cache304++;res.writeHead(304);res.end();return;}
-  res.writeHead(200,{'content-type':'application/json',etag:'"v1"'});res.end(rawText);
+  res.writeHead(200,{'content-type':'application/json',etag:'"v1"'});res.end(req.url.startsWith('/changing/')&&revisions.get(req.url.slice('/changing/'.length))==='B'?changedText:rawText);
 });
 await new Promise(done=>source.listen(0,'127.0.0.1',done));
 const origin=`http://127.0.0.1:${source.address().port}`,secretFile=join(directory,'rpc-key'),sourceConfigFile=join(directory,'source.json');

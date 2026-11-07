@@ -5,13 +5,15 @@ import { ProjectCollaborationAccessSchema } from '@apicc/execution/client/collab
 import { SyncSourceSchema, SyncSourceSaveInputSchema, SyncCandidateViewSchema, SyncFixedDetailSchema, SyncReceiptSchema, SyncHistoryEntrySchema, SyncApplicationInputSchema, SyncRollbackRequestSchema, SyncCheckRequestSchema, SyncCheckAcceptedSchema, SyncCheckStatusSchema, SyncCheckLookupSchema, CredentialMetadataSchema, SchedulePreviewSchema, syncErrorCodeValues } from '@apicc/execution/contract';
 import { SynchronizationInputSchema, SyncScheduleViewSchema, SyncPolicyViewSchema, type SynchronizationInput } from '../../shared/synchronization.js';
 import type { OnlineSession } from './session.js';
+import { onlineWriteRefusalCodes } from '../sync/writeRefusals.js';
 const detailErrorCodes = new Set<string>(syncErrorCodeValues);
 
 /** Remote materials and source reads never fall back to the current computer. */
 export async function handleOnlineSynchronization(deps: { session: OnlineSession; fetch?: typeof fetch }, raw: SynchronizationInput): Promise<unknown> {
   const input = SynchronizationInputSchema.parse(raw); if (input.scope.kind !== 'online') throw Error('SYNC_CONTEXT_CHANGED');
   const binding = deps.session.captureExecution(input.scope.context), scope = input.scope.context.scope;
-  const request = createMemberExecutionRequest(binding, deps.fetch, undefined, input.operation === 'detail' ? { errorCodes: syncErrorCodeValues } : undefined), project = `workspaces/${scope.workspaceId}/projects/${scope.projectId}`, path = `${project}/sync`;
+  const errorCodes = input.operation === 'detail' ? syncErrorCodeValues : input.operation === 'apply' || input.operation === 'rollback' ? onlineWriteRefusalCodes : undefined;
+  const request = createMemberExecutionRequest(binding, deps.fetch, undefined, errorCodes ? { errorCodes } : undefined), project = `workspaces/${scope.workspaceId}/projects/${scope.projectId}`, path = `${project}/sync`;
   const expected = 'intentId' in input && 'expectedSourceRevision' in input ? { formatVersion: 1 as const, intentId: input.intentId, expectedSourceRevision: input.expectedSourceRevision, expectedAssetVersion: input.expectedAssetVersion } : undefined;
   try {
     switch (input.operation) {

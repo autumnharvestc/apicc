@@ -57,6 +57,29 @@ describe("owned process boundary", () => {
   it.each([{ script: "process.stdout.write('x'.repeat(4096))", monitor: undefined, code: "SYNC_PROCESS_OUTPUT_LIMIT" }, { script: "setTimeout(()=>{},300)", monitor: async () => { throw Error("owned sampler failure"); }, code: "SYNC_DISK_MONITOR_FAILED" }])("fails and collects on $code", async ({ script, monitor, code }) => fixture(async directory => {
     await expect(runOwnedProcess(base(directory, script, { monitor }))).rejects.toMatchObject({ code });
   }));
+  // Breakage caught: a monitor rejection after native close arms a dead helper's
+  // cancellation timer and keeps the real host alive after its Promise settles.
+  it.runIf(process.platform === "win32")("does not keep the host alive when an in-flight monitor fails after native close", async () => fixture(async directory => {
+    const runner = fileURLToPath(new URL("./fixtures/lateMonitorHost.mjs", import.meta.url));
+    const result = await exec(process.execPath, [runner, applicationDirectory, directory], { windowsHide: true, timeout: 25000 });
+    const observation = JSON.parse(result.stdout);
+    expect(observation).toMatchObject({ nativeClosed: true, nativeExitCode: 0, errorCode: "SYNC_DISK_MONITOR_FAILED" });
+    expect(observation.exitAfterSettlementMs).toBeLessThan(2000);
+  }), 30000);
+  // Breakage caught: killing the helper between native creation and assignment
+  // leaves its suspended root alive even though no user script has resumed.
+  it.runIf(process.platform === "win32" && process.arch === "x64")("owns the suspended root atomically when the helper dies at native CreateProcess return", async () => fixture(async directory => {
+    const source = fileURLToPath(new URL("./fixtures/startupWindow.cs", import.meta.url));
+    const executable = join(directory, "startup-window-probe.exe"), report = join(directory, "startup-window.json");
+    const bootstrap = '$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";Add-Type -Path $env:APICC_TEST_WINDOW_SOURCE -OutputAssembly $env:APICC_TEST_WINDOW_EXE -OutputType ConsoleApplication -ReferencedAssemblies System.Web.Extensions,System,System.Core';
+    await exec(powershellPath, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64")], {
+      windowsHide: true, timeout: 15000, env: { SystemRoot: process.env.SystemRoot, PROGRAMDATA: process.env.PROGRAMDATA, TEMP: directory, TMP: directory, APICC_TEST_WINDOW_SOURCE: source, APICC_TEST_WINDOW_EXE: executable },
+    });
+    await exec(executable, [join(applicationDirectory, "owned-process.exe"), process.execPath, directory, report], { windowsHide: true, timeout: 20000, env: { SystemRoot: process.env.SystemRoot, PROGRAMDATA: process.env.PROGRAMDATA } });
+    const observation = JSON.parse(await readFile(report, "utf8"));
+    expect(observation).toMatchObject({ injectedAtCreateReturn: true, helperExited: true, rootExecuted: false, fixtureToolCollected: true, fixtureJobEmpty: true, failure: null });
+    expect(observation.toolStillActiveAfterHelperExit).toBe(false);
+  }), 30000);
   it("passes literal arguments and never invokes a shell", async () => fixture(async directory => {
     const result = await runOwnedProcess({ ...base(directory, "process.stdout.write(process.argv[1])"), args: ["-e", "process.stdout.write(process.argv[1])", "literal $() & | ; value"] });
     expect(result.stdout.toString()).toBe("literal $() & | ; value"); expect(result.exitCode).toBe(0);

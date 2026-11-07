@@ -5,8 +5,10 @@ import type { LocalSync } from './types.js';
 import type { ProjectLocator } from '../../shared/locations.js';
 import type { createSession } from '../session.js';
 import type { createDesktopSyncProviders } from './providers.js';
+import { onlineWriteRefusalCodes } from './writeRefusals.js';
 
 const sourceOwners = new Set<string>();
+const onlineRefusals = new Set<string>(onlineWriteRefusalCodes);
 // These local codes are thrown by Core/coordinator preconditions before its
 // atomic commit. Context fences, refresh errors and arbitrary HTTP failures are
 // deliberately excluded: an original write may already be durable.
@@ -16,7 +18,7 @@ function writeFailure(error: unknown, local: boolean): Error {
   if (local && localRefusals.has(code)) return Error('SYNC_REJECTED:' + code);
   // AuthFilter / requireCapability rejects these finite server business codes
   // before a commit; a status alone is not sufficient evidence.
-  if (!local && error instanceof ExecutionHttpError && ((error.status === 403 && error.code === 'forbidden') || (error.status === 401 && error.code === 'unauthorized'))) return Error('SYNC_REJECTED:' + error.code);
+  if (!local && error instanceof ExecutionHttpError && ((error.status === 403 && error.code === 'forbidden') || (error.status === 401 && error.code === 'unauthorized') || (error.status === 409 && onlineRefusals.has(error.code ?? '')))) return Error('SYNC_REJECTED:' + error.code);
   return Error('SYNC_UNCERTAIN:SYNC_OPERATION_UNKNOWN');
 }
 export function createSynchronizationHost(deps: {

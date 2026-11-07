@@ -18,6 +18,7 @@ public static class ApiccOwnedProcess
         public int x, y, width, height, countX, countY, fill, flags; public short show, reservedSize;
         public IntPtr reservedPointer, input, output, error;
     }
+    [StructLayout(LayoutKind.Sequential)] struct STARTUPINFOEX { public STARTUPINFO startup; public IntPtr attributes; }
     [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr process, thread; public uint processId, threadId; }
     [StructLayout(LayoutKind.Sequential)] struct BASIC_LIMIT {
         public long processTime, jobTime; public uint flags; public UIntPtr minimum, maximum;
@@ -29,14 +30,16 @@ public static class ApiccOwnedProcess
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int kind, ref EXTENDED_LIMIT value, uint size);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool QueryInformationJobObject(IntPtr job, int kind, out ACCOUNTING value, uint size, IntPtr returned);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SECURITY_ATTRIBUTES attributes, uint size);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateFileW(string name, uint access, uint share, ref SECURITY_ATTRIBUTES attributes, uint disposition, uint flags, IntPtr template);
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessW(string app, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string cwd, ref STARTUPINFO startup, out PROCESS_INFORMATION process);
+    [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateOwnedProcessW(string app, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string cwd, ref STARTUPINFOEX startup, out PROCESS_INFORMATION process);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool InitializeProcThreadAttributeList(IntPtr attributes, int count, uint flags, ref UIntPtr bytes);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool UpdateProcThreadAttribute(IntPtr attributes, uint flags, IntPtr kind, IntPtr value, UIntPtr bytes, IntPtr previous, IntPtr returned);
+    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr attributes);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr handle, out uint code);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int kind);
@@ -91,7 +94,8 @@ public static class ApiccOwnedProcess
         if (keys.Count == 0) block.Append('\0');
         IntPtr environment = Marshal.StringToHGlobalUni(block.ToString());
         IntPtr job = IntPtr.Zero, stdoutRead = IntPtr.Zero, stdoutWrite = IntPtr.Zero, stderrRead = IntPtr.Zero, stderrWrite = IntPtr.Zero, stdinNull = IntPtr.Zero;
-        PROCESS_INFORMATION child = new PROCESS_INFORMATION(); bool assigned = false; bool launched = false;
+        IntPtr attributes = IntPtr.Zero, jobList = IntPtr.Zero; bool attributesInitialized = false;
+        PROCESS_INFORMATION child = new PROCESS_INFORMATION(); bool created = false;
         try {
             job = CreateJobObjectW(IntPtr.Zero, null); if (job == IntPtr.Zero) throw new Exception();
             EXTENDED_LIMIT limits = new EXTENDED_LIMIT(); limits.basic.flags = 0x2000; // KILL_ON_JOB_CLOSE; no breakaway permission.
@@ -102,11 +106,18 @@ public static class ApiccOwnedProcess
             // The child must never inherit the supervisor's control/proof pipes.
             for (int kind = -10; kind >= -12; kind--) { IntPtr handle = GetStdHandle(kind); if (handle != IntPtr.Zero && handle != new IntPtr(-1)) SetHandleInformation(handle, 1, 0); }
             stdinNull = CreateFileW("NUL", 0x80000000, 3, ref sa, 3, 0, IntPtr.Zero); if (stdinNull == new IntPtr(-1)) throw new Exception();
-            STARTUPINFO startup = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)), flags = 0x100, input = stdinNull, output = stdoutWrite, error = stderrWrite };
-            // CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW
-            if (!CreateProcessW(tool, command, IntPtr.Zero, IntPtr.Zero, true, 0x08000404, environment, cwd, ref startup, out child)) throw new Exception();
-            launched = true;
-            if (!AssignProcessToJobObject(job, child.process)) throw new Exception(); assigned = true;
+            // JOB_LIST makes ownership part of creation while the root is still
+            // suspended, with no later assignment window in the helper.
+            UIntPtr attributeBytes = UIntPtr.Zero;
+            if (InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeBytes) || Marshal.GetLastWin32Error() != 122) throw new Exception();
+            attributes = Marshal.AllocHGlobal(checked((int)attributeBytes.ToUInt64()));
+            if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref attributeBytes)) throw new Exception(); attributesInitialized = true;
+            jobList = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobList, job);
+            if (!UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x2000D), jobList, new UIntPtr((uint)IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new Exception();
+            STARTUPINFOEX startup = new STARTUPINFOEX { startup = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFOEX)), flags = 0x100, input = stdinNull, output = stdoutWrite, error = stderrWrite }, attributes = attributes };
+            // CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT
+            if (!CreateOwnedProcessW(tool, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080404, environment, cwd, ref startup, out child)) throw new Exception();
+            created = true;
             Close(ref stdoutWrite); Close(ref stderrWrite); Close(ref stdinNull);
             MemoryStream stdout = new MemoryStream(), stderr = new MemoryStream();
             IntPtr outHandle = stdoutRead, errHandle = stderrRead; stdoutRead = IntPtr.Zero; stderrRead = IntPtr.Zero;
@@ -128,13 +139,11 @@ public static class ApiccOwnedProcess
             Frame(new { kind = "collected", activeProcesses = 0, exitCode = unchecked((int)exitCode), errorCode = failure, stdout = Convert.ToBase64String(stdout.ToArray()), stderr = Convert.ToBase64String(stderr.ToArray()) });
             return 0;
         } catch {
-            if (!assigned) {
-                bool collected = !launched;
-                if (launched) { TerminateProcess(child.process, 1); collected = WaitForSingleObject(child.process, 5000) == 0; }
-                if (collected) { Frame(new { kind = "collected", activeProcesses = 0, exitCode = -1, errorCode = "SYNC_PROCESS_START_FAILED", stdout = "", stderr = "" }); return 0; }
-            }
+            if (!created) { Frame(new { kind = "collected", activeProcesses = 0, exitCode = -1, errorCode = "SYNC_PROCESS_START_FAILED", stdout = "", stderr = "" }); return 0; }
             Frame(new { kind = "uncollected" }); return 1;
         } finally {
+            if (attributesInitialized) DeleteProcThreadAttributeList(attributes);
+            if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes); if (jobList != IntPtr.Zero) Marshal.FreeHGlobal(jobList);
             Close(ref child.thread); Close(ref child.process); Close(ref stdoutRead); Close(ref stdoutWrite); Close(ref stderrRead); Close(ref stderrWrite); Close(ref stdinNull); Close(ref job); Marshal.FreeHGlobal(environment);
         }
     }

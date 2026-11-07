@@ -78,7 +78,13 @@ class SyncScheduleLifecycleTest extends SyncScheduleHttpFixture {
     }
     @Test void aLinkedManualCheckKeepsItsOwnCancellationAuthorityWhenThePlanPauses() throws Exception {
         checkToCandidate(createUrlSource("/fast"));String barrier=java.util.UUID.randomUUID().toString();var source=createUrlSource("/blocked/"+barrier);authorize(source,"0",f.owner());source=readSourceAsAdmin(source.path("id").asText());var manual=submit(source,checkBody().put("expectedSourceRevision","2"));awaitNode("received-"+barrier);
-        try{at("2026-11-05T01:00:00Z");driver.tick();assertThat(jdbc.queryForObject("SELECT check_id FROM sync_occurrences WHERE project_id=?",String.class,Long.parseLong(f.project()))).isEqualTo(manual.path("checkId").asText());sourceRequest("PUT",scheduleRoute(source),f.owner(),scheduleBody(source,"1",false)).andExpect(status().isOk());
+        try{at("2026-11-05T01:00:00Z");driver.tick();assertThat(jdbc.queryForObject("SELECT check_id FROM sync_occurrences WHERE project_id=?",String.class,Long.parseLong(f.project()))).isEqualTo(manual.path("checkId").asText());
+            sourceRequest("PUT",scheduleRoute(source),f.owner(),scheduleBody(source,"1",false)).andExpect(status().isOk());
+            var before=jdbc.queryForObject("SELECT lease_until_utc FROM sync_checks WHERE project_id=? AND id=?",java.time.OffsetDateTime.class,Long.parseLong(f.project()),manual.path("checkId").asText());
+            boolean renewed=false;long until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+            while(System.nanoTime()<until){var current=jdbc.queryForObject("SELECT lease_until_utc FROM sync_checks WHERE project_id=? AND id=?",java.time.OffsetDateTime.class,Long.parseLong(f.project()),manual.path("checkId").asText());if(current!=null&&before!=null&&current.isAfter(before)){renewed=true;break;}if(java.nio.file.Files.exists(node.directory.resolve("collected-"+barrier)))break;Thread.sleep(10);}
+            System.out.println("SYNC_MANUAL_PLAN_PAUSE check="+manual.path("checkId").asText()+" renewedAfterPause="+renewed+" collectedBeforeRelease="+java.nio.file.Files.exists(node.directory.resolve("collected-"+barrier)));
+            assertThat(renewed).as("A manual source read remains healthy across an ownership pulse after only its linked plan pauses").isTrue();
             sourceRequest("GET","/checks/"+manual.path("checkId").asText(),f.owner(),null).andExpect(status().isOk()).andExpect(jsonPath("$.state").value("running"));assertThat(java.nio.file.Files.exists(node.directory.resolve("collected-"+barrier))).isFalse();
         }finally{release(barrier);awaitCheckAs(manual.path("checkId").asText(),f.owner());}
     }

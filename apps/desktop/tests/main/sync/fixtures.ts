@@ -9,6 +9,7 @@ import { buildSyncCandidate, canonical, commitWritePlan, decodeContractWorkspace
 import { createSession } from "../../../src/main/session.js";
 import { createLocalSyncAdmission, openLocalSync } from "../../../src/main/sync/local.js";
 import type { LocalSyncDependencies } from "../../../src/main/sync/types.js";
+import { createMemorySecretStore } from "../helpers/secret-store.js";
 
 export const id = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 export function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; }
@@ -24,11 +25,12 @@ async function fixture(register: (dispose: () => Promise<void>) => void, descrip
   const location = { groupId: id(820), projectId: id(821) }, sourceId = id(822), moduleId = id(823);
   let clock = Date.now(), authorizationGeneration = "1", coreBuildId = "a".repeat(64), failRefresh = false, releaseFailure = false, readOnlyMode = false;
   let releaseGate: ReturnType<typeof deferred> | undefined, releaseStarted = deferred(), released = 0;
-  const requests: { conditional: boolean; status: number }[] = [];
+  const secrets = createMemorySecretStore();
+  const requests: { conditional: boolean; status: number; authorization?: string }[] = [];
   const doc = (description: string) => ({ openapi: "3.1.0", info: { title: "Owned fixture", version: "1" }, paths: { "/pets": { get: { operationId: "pets", description, responses: { "200": { description: "OK" } } } } } });
   let rawText = JSON.stringify(doc(descriptions?.source ?? "upstream"));
   const server = createServer((request, response) => {
-    const conditional = request.headers["if-none-match"] === '"owned-v1"'; requests.push({ conditional, status: conditional ? 304 : 200 });
+    const conditional = request.headers["if-none-match"] === '"owned-v1"'; requests.push({ conditional, status: conditional ? 304 : 200, ...(request.headers.authorization ? { authorization: request.headers.authorization } : {}) });
     response.writeHead(conditional ? 304 : 200, { etag: '"owned-v1"' }); response.end(conditional ? undefined : rawText);
   });
   register(async () => { releaseGate?.resolve(); server.closeAllConnections(); if (server.listening) await new Promise<void>(r => server.close(() => r())); });
@@ -69,7 +71,7 @@ async function fixture(register: (dispose: () => Promise<void>) => void, descrip
   const unrelatedPath = join(root, `groups/${location.groupId}/projects/${location.projectId}/collections/${id(824)}/collection.yaml`);
   const originalUnrelatedAssetBytes = readFileSync(unrelatedPath);
   const f = {
-    root, workspaceContainer, privateRoot, otherRoot, location, source, preparedCandidate, originalUnrelatedAssetBytes, deps, requests,
+    root, workspaceContainer, privateRoot, otherRoot, location, source, preparedCandidate, originalUnrelatedAssetBytes, deps, requests, secrets,
     get session() { return session; }, get client() { return client; }, decisions, state, mutateState, readProject,
     newIntent: randomUUID, storageRevision: () => session.revision!, unrelatedAssetBytes: () => readFileSync(unrelatedPath),
     check: (signal?: AbortSignal) => client.check(location, sourceId, signal),

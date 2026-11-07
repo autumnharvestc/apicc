@@ -1606,6 +1606,7 @@
       "SYNC_CANDIDATE_REQUIRED": "Check and select a fixed candidate first",
       "SYNC_CANDIDATE_STALE": "Candidate is stale; check again",
       "candidate-expired": "Candidate expired; check again",
+      "SYNC_CANDIDATE_SUPERSEDED": "A newer check result is available; this candidate has been superseded. Its fixed content and decisions are unchanged. Use Refresh above to review the new result.",
       "project-assets-changed": "Project assets changed; check again",
       "source-revision-changed": "Source configuration changed; check again",
       "mapping-revision-changed": "Identity mapping changed; check again",

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { it, expect, vi } from 'vitest';
 import { createSynchronizationStore } from '../../../src/renderer/src/stores/synchronization.js';
-import { candidateView, source, receipt, localScope, onlineScope, scheduleView, id, deferred } from '../components/sync/fixtures.js';
+import { candidateView, source, receipt, localScope, onlineScope, scheduleView, policyView, id, deferred } from '../components/sync/fixtures.js';
 import type { SynchronizationInput } from '../../../src/shared/synchronization.js';
 import { defaultSyncPolicyValues, SyncCheckStatusSchema, SyncCheckLookupSchema } from '@apicc/execution/contract';
 function fixture(action: (input: SynchronizationInput) => Promise<unknown>, refresh?: () => Promise<void>) {
@@ -12,22 +12,80 @@ function fixture(action: (input: SynchronizationInput) => Promise<unknown>, refr
 const wrappedReadError = (code: string, channel = 'synchronization:handle') => `Error invoking remote method '${channel}': Error: ${code}`;
 function onlineCheckFixture() {
   let phase: 'running' | 'succeeded' | 'failed' = 'running', started = false, rejectStart = false;
-  let lookupFailure = false, statusReads = 0;
+  let lookupFailure = false, statusReads = 0, resultCandidateId = id(82), currentCheckId = id(81), checkCreatedAtMs = 1793956009510;
   let heldLookup: (ReturnType<typeof deferred<unknown>> & { entered: ReturnType<typeof deferred<void>> }) | undefined;
+  let heldDetail: (ReturnType<typeof deferred<void>> & { entered: ReturnType<typeof deferred<void>> }) | undefined;
   const oldSuccess = SyncCheckStatusSchema.parse({ formatVersion: 1, checkId: id(80), sourceId: source.id, state: 'succeeded', candidateId: id(6), createdAtMs: 1793955900000, completedAtMs: 1793955900100, reasonCode: null });
-  const status = () => SyncCheckStatusSchema.parse({ formatVersion: 1, checkId: id(81), sourceId: source.id, state: phase, candidateId: phase === 'succeeded' ? id(82) : null, createdAtMs: 1793956009510, completedAtMs: phase === 'running' ? null : 1793956009759, reasonCode: phase === 'failed' ? 'source-read-failed' : null, detailCode: phase === 'failed' ? 'SYNC_TLS_FAILED' : null });
+  const status = () => SyncCheckStatusSchema.parse({ formatVersion: 1, checkId: currentCheckId, sourceId: source.id, state: phase, candidateId: phase === 'succeeded' ? resultCandidateId : null, createdAtMs: checkCreatedAtMs, completedAtMs: phase === 'running' ? null : checkCreatedAtMs + 249, reasonCode: phase === 'failed' ? 'source-read-failed' : null, detailCode: phase === 'failed' ? 'SYNC_TLS_FAILED' : null });
   const lookup = () => SyncCheckLookupSchema.parse({ formatVersion: 1, sourceId: source.id, current: started && phase === 'running' ? status() : null, latestAttempt: started ? status() : oldSuccess, latestSuccess: started && phase === 'succeeded' ? status() : oldSuccess });
+  const view = (candidateId: string) => { const value = candidateView(); value.candidate = { ...value.candidate, id: candidateId, stamp: { ...value.candidate.stamp, kind: 'online', assetVersion: '0' } }; if (candidateId === id(82)) { value.candidate.candidateDigest = '5'.repeat(64); value.candidate.changes[0]!.changeId = '6'.repeat(64); value.candidate.changes[0]!.summaries.source = { kind: 'scalar', value: 'New upstream pets', truncated: false }; value.candidate.conflicts[0]!.changeId = '6'.repeat(64); } return value; };
   const f = fixture(async input => {
-    if (input.operation === 'checks') { if (started && lookupFailure) throw Error('SYNC_NETWORK_FAILED'); if (started && heldLookup) { heldLookup.entered.resolve(); return heldLookup.promise; } return lookup(); }
+    if (input.operation === 'checks') { if (started && lookupFailure) throw Error('SYNC_NETWORK_FAILED'); if (started && heldLookup) { const held = heldLookup; heldLookup = undefined; held.entered.resolve(); return held.promise; } return lookup(); }
     if (input.operation === 'schedule') return scheduleView();
-    if (input.operation === 'check') { if (rejectStart) throw Error('SYNC_BUSY'); started = true; return { formatVersion: 1, checkId: id(81) }; }
+    if (input.operation === 'check') { if (rejectStart) throw Error('SYNC_BUSY'); started = true; return { formatVersion: 1, checkId: currentCheckId }; }
     if (input.operation === 'checkStatus') { statusReads++; return status(); }
-    if (input.operation === 'candidate') { const view = candidateView(); return { ...view, candidate: { ...view.candidate, id: input.candidateId, stamp: { ...view.candidate.stamp, kind: 'online', assetVersion: '0' } } }; }
+    if (input.operation === 'candidate') return view(input.candidateId);
+    if (input.operation === 'detail') { if (heldDetail) { heldDetail.entered.resolve(); await heldDetail.promise; } const candidate = view(input.request.candidateId).candidate, change = candidate.changes[0]!; return { ...input.request, entityKind: change.entityKind, entityId: change.entityId, assetPath: change.path, fieldPath: change.fieldPath, kind: 'absent' }; }
+    if (input.operation === 'policy') return policyView();
+    if (input.operation === 'access') return { accountEnabled: true, member: true, workspaceRole: 'EDITOR', projectOverride: null, overrideState: 'inherited', effectiveRole: 'EDITOR', capabilities: ['sync.check','sync.apply'], accessRevision: 1, membershipEpoch: 1, responsibilityEpoch: 1, reasonCode: null };
     return [];
   });
   f.store.activate(onlineScope); f.store.sources = [source]; f.store.selectSource(source.id);
-  return { ...f, status, lookup, setPhase(value: typeof phase) { phase = value; }, rejectStart() { rejectStart = true; }, holdLookup() { heldLookup = { ...deferred<unknown>(), entered: deferred<void>() }; return heldLookup; }, failLookup() { lookupFailure = true; }, statusReads: () => statusReads };
+  return { ...f, status, lookup, background(sameCandidate = false, checkId = id(81), createdAtMs = 1793956009510) { started = true; resultCandidateId = sameCandidate ? id(6) : id(82); currentCheckId = checkId; checkCreatedAtMs = createdAtMs; }, setPhase(value: typeof phase) { phase = value; }, rejectStart() { rejectStart = true; }, holdLookup() { heldLookup = { ...deferred<unknown>(), entered: deferred<void>() }; return heldLookup; }, holdDetail() { heldDetail = { ...deferred<void>(), entered: deferred<void>() }; return heldDetail; }, failLookup() { lookupFailure = true; }, statusReads: () => statusReads };
 }
+it.each(['poll', 'load', 'loadSource'] as const)('A-P2-01 preserves the fixed preview decisions and details when a background result arrives through %s', async entry => {
+  vi.useFakeTimers(); const f = onlineCheckFixture(); f.background();
+  try {
+    await f.store.loadSource(); f.store.capabilities = ['sync.apply']; f.store.decide({ changeId: '1'.repeat(64), decision: 'keep-current' }); f.store.keepConfirmed = true;
+    await f.store.loadDetail('1'.repeat(64), 'current'); const fixed = structuredClone(f.store.candidate), decisions = [...f.store.decisions], details = { ...f.store.fixedDetails };
+    expect(f.store.blockReason).toBe(''); f.setPhase('succeeded');
+    if (entry === 'poll') { f.store.setVisible(true); await vi.advanceTimersByTimeAsync(1000); } else await f.store[entry]();
+    expect(f.store.candidate).toEqual(fixed); expect(f.store.decisions).toEqual(decisions); expect(f.store.keepConfirmed).toBe(true); expect(f.store.fixedDetails).toEqual(details);
+    expect(f.store.lookup?.latestSuccess?.candidateId).toBe(id(82)); expect(f.store.blockReason).toBe('SYNC_CANDIDATE_SUPERSEDED'); expect(f.applications).toEqual([]);
+  } finally { f.store.setVisible(false); vi.useRealTimers(); }
+});
+it('A-P2-01 keeps decisions usable when a background check repeats the same fixed candidate', async () => {
+  const f = onlineCheckFixture(); f.background(true); await f.store.loadSource(); f.store.capabilities = ['sync.apply']; f.store.decide({ changeId: '1'.repeat(64), decision: 'take-source' });
+  await f.store.loadDetail('1'.repeat(64), 'source'); const fixed = structuredClone(f.store.candidate), details = { ...f.store.fixedDetails };
+  f.setPhase('succeeded'); await f.store.readCheck();
+  expect(f.store.candidate).toEqual(fixed); expect(f.store.fixedDetails).toEqual(details); expect(f.store.decisions).toEqual([{ changeId: '1'.repeat(64), decision: 'take-source' }]); expect(f.store.blockReason).toBe('');
+});
+it('A-P2-01 retains known supersession when a later authoritative lookup fails', async () => {
+  const f = onlineCheckFixture(); f.background(); await f.store.loadSource(); f.store.capabilities = ['sync.apply']; f.store.decide({ changeId: '1'.repeat(64), decision: 'take-source' });
+  f.setPhase('succeeded'); await f.store.readCheck(); expect(f.store.blockReason).toBe('SYNC_CANDIDATE_SUPERSEDED');
+  f.failLookup(); await f.store.readCheck();
+  expect(f.store.lookup).toBeNull(); expect(f.store.error).toBe('SYNC_NETWORK_FAILED'); expect(f.store.candidate?.candidate.id).toBe(id(6)); expect(f.store.blockReason).toBe('SYNC_CANDIDATE_SUPERSEDED');
+});
+it.each(['readCheck', 'loadSource'] as const)('A-P2-01 ignores an old same-preview lookup from %s after a newer result supersedes A', async entry => {
+  const f = onlineCheckFixture(); f.background(); await f.store.loadSource(); f.store.capabilities = ['sync.apply']; f.store.decide({ changeId: '1'.repeat(64), decision: 'keep-current' }); f.store.keepConfirmed = true;
+  await f.store.loadDetail('1'.repeat(64), 'current'); const fixed = structuredClone(f.store.candidate), decisions = [...f.store.decisions], details = { ...f.store.fixedDetails };
+  const oldLookup = f.lookup(), gate = f.holdLookup(), pending = f.store[entry](); await gate.entered.promise;
+  try {
+    f.setPhase('succeeded'); await f.store.readCheck(); expect(f.store.blockReason).toBe('SYNC_CANDIDATE_SUPERSEDED');
+  } finally { gate.resolve(oldLookup); await pending; }
+  expect(f.store.blockReason).toBe('SYNC_CANDIDATE_SUPERSEDED'); expect(f.store.lookup?.latestSuccess?.candidateId).toBe(id(82));
+  expect(f.store.candidate).toEqual(fixed); expect(f.store.decisions).toEqual(decisions); expect(f.store.keepConfirmed).toBe(true); expect(f.store.fixedDetails).toEqual(details);
+  await expect(f.store.apply()).rejects.toThrow('SYNC_CANDIDATE_SUPERSEDED'); expect(f.applications).toEqual([]);
+});
+it('A-P2-01 unlocks the fixed candidate after a genuinely newer same-ID success', async () => {
+  const f = onlineCheckFixture(); f.background(); await f.store.loadSource(); f.store.capabilities = ['sync.apply']; f.store.decide({ changeId: '1'.repeat(64), decision: 'take-source' });
+  const fixed = structuredClone(f.store.candidate), decisions = [...f.store.decisions]; f.setPhase('succeeded'); await f.store.readCheck(); expect(f.store.blockReason).toBe('SYNC_CANDIDATE_SUPERSEDED');
+  f.background(true, id(83), 1793956010510); await f.store.readCheck(id(83));
+  expect(f.store.lookup?.latestSuccess?.checkId).toBe(id(83)); expect(f.store.lookup?.latestSuccess?.candidateId).toBe(id(6));
+  expect(f.store.candidate).toEqual(fixed); expect(f.store.decisions).toEqual(decisions); expect(f.store.blockReason).toBe('');
+});
+it('A-P2-01 an automatic reload cannot refill a pending manual preview with an earlier success', async () => {
+  const f = onlineCheckFixture(); await f.store.loadSource(); await f.store.check(); await f.store.load();
+  expect(f.store.candidate).toBeNull(); expect(f.store.decisions).toEqual([]);
+  f.setPhase('succeeded'); await f.store.readCheck(); expect(f.store.candidate?.candidate.id).toBe(id(82));
+});
+it('A-P2-01 a late fixed detail cannot enter the candidate chosen by explicit Refresh', async () => {
+  const f = onlineCheckFixture(); f.background(); await f.store.loadSource(); const gate = f.holdDetail();
+  const pending = f.store.loadDetail('1'.repeat(64), 'current'); await gate.entered.promise;
+  try { f.setPhase('succeeded'); await f.store.refresh(); expect(f.store.candidate?.candidate.id).toBe(id(82)); }
+  finally { gate.resolve(); await pending; }
+  expect(f.store.fixedDetails).toEqual({}); expect(f.store.detailBusy).toEqual([]); expect(f.store.detailChangeId).toBe('');
+});
 it('I4 keeps active check polling and a visible read error if authoritative lookup refresh fails', async () => {
   vi.useFakeTimers(); const f = onlineCheckFixture();
   try {

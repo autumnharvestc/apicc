@@ -69,4 +69,23 @@ class SyncCheckSharedBackendTest {
             assertThat(fixture.control("/control").path("calls").asInt()).as("Recovery never replays the uncertain source read").isEqualTo(starts);assertThat(fixture.candidates(scope)).isZero();
         }finally{fixture.release(scope);}
     }
+
+    @Test @Order(3) void foreignCapabilityRevocationCollectsTheActualOwnerReadBeforeRelease() throws Exception {
+        var scope=fixture.blocked(first);var owner=fixture.owner(scope);var peer=fixture.peer(owner);
+        fixture.freshLeaseConfirmation(scope,owner);
+        fixture.facts("before-foreign-capability-revoke",scope,owner);
+        var actor=fixture.request(peer,"GET","/api/v1/me",null,200).path("id").asText();
+        String member=scope.projectUrl()+"/access-members/"+actor;
+        long revision=fixture.request(peer,"GET",member,null,200).path("revision").asLong();
+        var update=fixture.json.createObjectNode().put("expectedRevision",revision);update.putObject("capabilities").put("sync.check","deny");
+        int calls=fixture.control("/control").path("calls").asInt();
+        try{
+            fixture.request(peer,"PUT",member,update,200);
+            boolean collected=fixture.collected(scope);fixture.facts("foreign-capability-revoked-before-release",scope,owner);
+            assertThat(collected).as("A non-owner backend's committed capability revocation collects the actual source within six seconds").isTrue();
+            assertThat(fixture.waitUntil(()->fixture.check(peer,scope).path("state").asText().equals("failed"),6)).isTrue();
+            assertThat(fixture.check(peer,scope).path("reasonCode").asText()).isEqualTo("authorization-changed");
+            assertThat(fixture.candidates(scope)).isZero();assertThat(fixture.control("/control").path("calls").asInt()).isEqualTo(calls);
+        }finally{fixture.release(scope);}
+    }
 }

@@ -1606,6 +1606,7 @@
       "SYNC_CANDIDATE_REQUIRED": "请先检查并选择固定候选",
       "SYNC_CANDIDATE_STALE": "候选已失效，请重新检查",
       "candidate-expired": "候选已过期，请重新检查",
+      "SYNC_CANDIDATE_SUPERSEDED": "新检查结果已就绪，此候选已被替代；当前固定内容和决策保留。请点击顶部“刷新”读取新结果并重新决策。",
       "project-assets-changed": "项目资产已变化，请重新检查",
       "source-revision-changed": "来源配置已变化，请重新检查",
       "mapping-revision-changed": "身份映射已变化，请重新检查",

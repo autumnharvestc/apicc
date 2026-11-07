@@ -54,8 +54,8 @@ async function runWindows(input: OwnedProcessInput, descriptor: string): Promise
   return new Promise((resolve, reject) => {
     const child = spawn(helper, [], { cwd: input.cwd, env: { SystemRoot: process.env.SystemRoot, PROGRAMDATA: process.env.PROGRAMDATA }, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     let output = ""; let proof: { kind: string; activeProcesses?: number; exitCode: number; errorCode?: string; stdout: string; stderr: string } | undefined;
-    let invalid = false; let failure: string | undefined; let timer: ReturnType<typeof setTimeout> | undefined; let started = false;
-    const interrupt = (code: string) => { failure ??= code; if (!child.stdin.destroyed) child.stdin.write("cancel\n"); timer ??= setTimeout(() => { invalid = true; child.kill(); }, 9000); };
+    let invalid = false; let failure: string | undefined; let timer: ReturnType<typeof setTimeout> | undefined; let started = false; let closed = false;
+    const interrupt = (code: string) => { failure ??= code; if (closed) return; if (!child.stdin.destroyed) child.stdin.write("cancel\n"); timer ??= setTimeout(() => { invalid = true; child.kill(); }, 9000); };
     child.stdin.on("error", () => undefined);
     child.stdin.write(descriptor + "\n");
     const stopMonitoring = monitor(input, interrupt);
@@ -77,6 +77,7 @@ async function runWindows(input: OwnedProcessInput, descriptor: string): Promise
     child.stderr.resume();
     child.on("error", () => { invalid = true; });
     child.on("close", async code => {
+      closed = true;
       if (timer) clearTimeout(timer); await stopMonitoring();
       if (invalid || code !== 0 || !proof || proof.activeProcesses !== 0 || output.trim()) { reject(new SourceHostError("SYNC_PROCESS_UNCOLLECTED")); return; }
       let stdout: Buffer, stderr: Buffer;

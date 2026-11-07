@@ -13,7 +13,7 @@ describe('fix1 A real composition and awaited provider boundaries', () => {
   it('I1 dispatches a legal project through actual createIpcDeps and isolates trusted senders', async () => {
     await withLocalSync(async f => {
       let gate = deferred(), asked = deferred();
-      const deps = createIpcDeps({ session: f.session, pickDirectory: async () => '', saveFile: async () => '', credentials: { credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' }, synchronization: { privateRoot: f.privateRoot + '/sync', pickTool: async () => null, confirmDestination: async () => { asked.resolve(); await gate.promise; return true; } } });
+      const deps = createIpcDeps({ session: f.session, pickDirectory: async () => '', saveFile: async () => '', credentials: { secretStore: f.secrets.store, credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' }, synchronization: { privateRoot: f.privateRoot + '/sync', pickTool: async () => null, confirmDestination: async () => { asked.resolve(); await gate.promise; return true; } } });
       const scope = { kind: 'local' as const, root: f.root, locator: { workspaceId: id(825), ...f.location } }, a = { sender: {} }, b = { sender: {} };
       try {
         await expect(deps.handle(IpcChannel.Synchronization, a, { scope, operation: 'activate' })).resolves.toBeNull();
@@ -95,7 +95,7 @@ describe('synchronization main trusted invocation', () => {
   });
   it('saves legal host settings through the real IPC envelope and fences an older candidate', async () => {
     await withLocalSync(async f => {
-      const credentials = createDesktopCredentialHost(f.session, { credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
+      const credentials = createDesktopCredentialHost(f.session, { secretStore: f.secrets.store, credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
       const providers = createDesktopSyncProviders({ session: f.session, credentials, privateRoot: f.privateRoot + '/sync', confirmDestination: async () => true, pickTool: async () => null });
       const locator = { workspaceId: id(825), ...f.location }, scope = { kind: 'local' as const, root: f.root, locator };
       const host = createSynchronizationHost({ session: f.session, providers, local: (_root, value) => providers.open(value) });
@@ -132,7 +132,7 @@ describe('synchronization main trusted invocation', () => {
   it.each(['cancel', 'project'])('rejects a late native approval after %s without source traffic', async kind => {
     await withLocalSync(async f => {
       const gate = deferred(), asked = deferred(), abort = new AbortController();
-      const credentials = createDesktopCredentialHost(f.session, { credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
+      const credentials = createDesktopCredentialHost(f.session, { secretStore: f.secrets.store, credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
       const provider = createDesktopSyncProviders({ session: f.session, credentials, privateRoot: f.privateRoot + '/sync', confirmDestination: async () => { asked.resolve(); await gate.promise; return true; }, pickTool: async () => null });
       const deps = await provider.dependencies({ workspaceId: id(825), ...f.location });
       const pending = deps.acquireMaterial(f.source, abort.signal);
@@ -144,7 +144,7 @@ describe('synchronization main trusted invocation', () => {
   });
   it('uses the actual built host identity and denies unapproved destinations before source traffic', async () => {
     await withLocalSync(async f => {
-      const credentials = createDesktopCredentialHost(f.session, { credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
+      const credentials = createDesktopCredentialHost(f.session, { secretStore: f.secrets.store, credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
       let asked = 0;
       const provider = createDesktopSyncProviders({ session: f.session, credentials, privateRoot: f.privateRoot + '/sync', confirmDestination: async () => { asked++; return false; }, pickTool: async () => null });
       const deps = await provider.dependencies({ workspaceId: id(825), ...f.location });
@@ -155,20 +155,36 @@ describe('synchronization main trusted invocation', () => {
   });
   it('binds the actual built host identity', async () => {
     await withLocalSync(async f => {
-      const credentials = createDesktopCredentialHost(f.session, { credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
+      const credentials = createDesktopCredentialHost(f.session, { secretStore: f.secrets.store, credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
       const provider = createDesktopSyncProviders({ session: f.session, credentials, privateRoot: f.privateRoot + '/sync', confirmDestination: async () => true, pickTool: async () => null });
       expect(await (await provider.dependencies({ workspaceId: id(825), ...f.location })).readCoreBuildId()).toBe((await readBuildIdentity()).coreBuildId);
     });
   });
-  it('acquires real project SecretStore header material without sending plaintext through IPC', async () => {
+  it('uses project SecretStore header material while keeping plaintext out of synchronization IPC', async () => {
     await withLocalSync(async f => {
-      const credentials = createDesktopCredentialHost(f.session, { credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' });
+      const credentialOptions = { secretStore: f.secrets.store, credentialPrivateRoot: f.privateRoot + '/credentials', networkPrivateRoot: f.privateRoot + '/network', oauthPrivateRoot: f.privateRoot + '/oauth' };
+      const credentials = createDesktopCredentialHost(f.session, credentialOptions);
       const locator = { workspaceId: id(825), ...f.location };
-      expect(await credentials.put({ locator, ref: { id: 'source-auth', policy: 'test-auto' }, value: '{"formatVersion":1,"kind":"http-headers","headers":[{"name":"Authorization","value":"Bearer owned-fixture"}]}' })).toEqual({ ok: true });
+      const ref = { id: 'source-auth', policy: 'test-auto' }, token = 'Bearer owned-fixture';
+      expect(await credentials.put({ locator, ref, value: JSON.stringify({ formatVersion: 1, kind: 'http-headers', headers: [{ name: 'Authorization', value: token }] }) })).toEqual({ ok: true });
       const provider = createDesktopSyncProviders({ session: f.session, credentials, privateRoot: f.privateRoot + '/sync', confirmDestination: async () => true, pickTool: async () => null });
       const deps = await provider.dependencies(locator);
       const lease = await deps.acquireMaterial({ ...f.source, authRef: 'source-auth' }, new AbortController().signal);
-      try { expect(lease.httpHeaders).toEqual([{ name: 'Authorization', value: 'Bearer owned-fixture' }]); } finally { await lease.release(); }
+      try { expect(lease.httpHeaders).toEqual([{ name: 'Authorization', value: token }]); } finally { await lease.release(); }
+      await f.mutateState(state => { state.sources[0]!.source = { ...f.source, authRef: ref.id }; });
+      const ipc = createIpcDeps({ session: f.session, pickDirectory: async () => '', saveFile: async () => '', credentials: credentialOptions, synchronization: { privateRoot: f.privateRoot + '/sync', confirmDestination: async () => true, pickTool: async () => null } });
+      const event = { sender: {} }, scope = { kind: 'local' as const, root: f.root, locator };
+      try {
+        const materials = await ipc.handle(IpcChannel.Synchronization, event, { scope, operation: 'materials' });
+        expect(materials).toEqual([{ refId: ref.id, kind: 'credential', status: 'available', version: expect.any(String) }]);
+        const result = await ipc.handle(IpcChannel.Synchronization, event, { scope, operation: 'check', sourceId: f.source.id, expectedSourceRevision: '1', expectedAssetVersion: '0', intentId: f.newIntent() });
+        expect(result).toMatchObject({ applicable: true });
+        expect(f.requests).toEqual([{ conditional: false, status: 200, authorization: token }]);
+        expect(JSON.stringify([materials, result])).not.toContain(token);
+        const materialReads = f.secrets.calls.filter(call => call.method === 'version' || call.method === 'resolve');
+        expect(materialReads.length).toBeGreaterThan(0);
+        for (const call of materialReads) expect(call).toMatchObject({ scope: locator, ref });
+      } finally { await ipc.stopSynchronization(); }
     });
   });
   it('invokes the actual local source host through the active main session', async () => {

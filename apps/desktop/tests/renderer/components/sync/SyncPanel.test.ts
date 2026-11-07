@@ -1,12 +1,44 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
-import { mountSyncPanel, candidateView, onlineScope, policyView, deferred, source } from './fixtures.js';
+import { mountSyncPanel, candidateView, onlineScope, policyView, deferred, source, id } from './fixtures.js';
 import { SyncNetworkCredentialSchema, SyncCheckStatusSchema } from '@apicc/execution/contract';
 import type { ApiccApi } from '../../../../src/shared/types.js';
 import { withLocalSync } from '../../../main/sync/fixtures.js';
 import { onlineDetailFailure } from '../../../main/sync/detail-error-fixture.js';
 
 describe('readable synchronization panel', () => {
+  it.each([{ same: false, language: 'en' as const }, { same: true, language: 'zh-CN' as const }])('A-P2-01 adopts the latest candidate only on top Refresh and clears old decisions/details ($same, $language)', async ({ same, language }) => {
+    let completed = false;
+    const original = candidateView(), next = candidateView();
+    original.candidate.stamp = { ...original.candidate.stamp, kind: 'online', assetVersion: '0' }; next.candidate.stamp = { ...next.candidate.stamp, kind: 'online', assetVersion: '0' };
+    if (!same) { next.candidate.id = id(82); next.candidate.candidateDigest = '5'.repeat(64); next.candidate.changes[0]!.changeId = '6'.repeat(64); next.candidate.conflicts[0]!.changeId = '6'.repeat(64); next.candidate.changes[0]!.summaries.source = { kind: 'scalar', value: 'New upstream pets', truncated: false }; }
+    const previous = { formatVersion: 1, checkId: id(80), sourceId: source.id, state: 'succeeded', candidateId: original.candidate.id, createdAtMs: 1793955900000, completedAtMs: 1793955900100, reasonCode: null };
+    const status = () => ({ ...previous, checkId: id(81), state: completed ? 'succeeded' : 'running', candidateId: completed ? next.candidate.id : null, createdAtMs: 1793956009510, completedAtMs: completed ? 1793956009759 : null });
+    const f = await mountSyncPanel(language, { transport: input => {
+      if (input.operation === 'checks') return Promise.resolve({ formatVersion: 1, sourceId: source.id, current: completed ? null : status(), latestAttempt: status(), latestSuccess: completed ? status() : previous });
+      if (input.operation === 'checkStatus') return Promise.resolve(status());
+      if (input.operation === 'candidate') return Promise.resolve(input.candidateId === next.candidate.id && completed ? next : original);
+      if (input.operation === 'detail') { const change = original.candidate.changes[0]!; return Promise.resolve({ ...input.request, entityKind: change.entityKind, entityId: change.entityId, assetPath: change.path, fieldPath: change.fieldPath, kind: 'absent' }); }
+      return undefined;
+    } });
+    try {
+      f.store.activate(onlineScope); await f.store.load(); await f.flush();
+      await f.wrapper.get(`[data-change="${'1'.repeat(64)}"]`).setValue('keep-current'); await f.wrapper.get('[data-testid="sync-keep-confirm"]').setValue(true);
+      await f.store.loadDetail('1'.repeat(64), 'current'); await f.flush(); expect(f.store.blockReason).toBe(''); expect(Object.keys(f.store.fixedDetails)).toHaveLength(1);
+      completed = true;
+      if (!same) {
+        await f.store.readCheck(); await f.flush();
+        expect(f.wrapper.get('[data-testid="sync-candidate"]').text()).toContain('Upstream pets');
+        expect(f.wrapper.get('[data-testid="sync-candidate"]').text()).not.toContain('New upstream pets');
+        expect(f.wrapper.get('[data-testid="sync-apply-reason"]').text()).toContain('A newer check result is available');
+        expect(f.wrapper.get('[data-testid="sync-apply"]').attributes('disabled')).toBeDefined();
+      }
+      const refresh = f.wrapper.findAll('.sync-toolbar button').find(button => button.text() === (language === 'en' ? 'Refresh' : '刷新'))!;
+      await refresh.trigger('click'); await f.flush();
+      expect(f.store.candidate?.candidate.id).toBe(next.candidate.id); expect(f.store.decisions).toEqual([]); expect(f.store.keepConfirmed).toBe(false); expect(f.store.fixedDetails).toEqual({}); expect(f.store.detailChangeId).toBe('');
+      expect(f.wrapper.get('[data-testid="sync-apply"]').attributes('disabled')).toBeDefined(); expect(f.wrapper.text()).not.toContain('A newer check result is available');
+    } finally { f.unmount(); }
+  });
   it.each(['running', 'succeeded', 'failed'] as const)('I4 keeps the loaded online schedule form visible after a manual check becomes %s', async phase => {
     let started = false;
     const status = SyncCheckStatusSchema.parse({ formatVersion: 1, checkId: '00000000-0000-4000-8000-000000000051', sourceId: source.id, state: phase, candidateId: phase === 'succeeded' ? candidateView().candidate.id : null, createdAtMs: 1793956009510, completedAtMs: phase === 'running' ? null : 1793956009759, reasonCode: phase === 'failed' ? 'source-read-failed' : null, detailCode: phase === 'failed' ? 'SYNC_TLS_FAILED' : null });

@@ -19,7 +19,9 @@ const message = (error: unknown) => error && typeof error === 'object' && 'code'
 type PreviewOwner = { token: number; preview: number; sourceId: string; candidateId: string | null };
 type Intent = { owner?: PreviewOwner; scope: SyncScope; sourceId: string; intentId: string; identity: string; receipt: SyncReceipt | null; pending: boolean };
 export function createSynchronizationStore(api: SynchronizationPort, refresh: () => Promise<void> = async () => undefined, storage: Storage | null = typeof localStorage === 'undefined' ? null : localStorage) {
-  let generation = 0, previewGeneration = 0, detailGeneration = 0, detailOwner: symbol | undefined, activation: Promise<unknown> = Promise.resolve(), timer: ReturnType<typeof setTimeout> | undefined;
+  let generation = 0, previewGeneration = 0, lookupGeneration = 0, detailGeneration = 0, detailOwner: symbol | undefined, activation: Promise<unknown> = Promise.resolve(), timer: ReturnType<typeof setTimeout> | undefined;
+  // Undefined follows latest success only until a preview is selected; null owns pending manual admission.
+  let previewCheck: string | null | undefined;
   const intents = new Map<string, Intent>();
   const persistenceKey = 'apicc.sync.pending-intents.v1';
   try { const pending = JSON.parse(storage?.getItem(persistenceKey) ?? '[]'); if (Array.isArray(pending)) for (const entry of pending.slice(0, 32)) { const scope = entry.scope as SyncScope; if (scope && typeof entry.intentId === 'string' && typeof entry.sourceId === 'string' && typeof entry.identity === 'string') intents.set(key(scope), { ...entry, receipt: null, pending: false }); } } catch { /* Memory ownership remains authoritative for this window. */ }
@@ -39,7 +41,8 @@ export function createSynchronizationStore(api: SynchronizationPort, refresh: ()
       throw error;
     }
   };
-  const clearPreview = () => { previewGeneration++; detailGeneration++; stop(); store.candidate = null; store.decisions = []; store.keepConfirmed = false; store.error = ''; store.busy = false; store.checkStatus = null; store.lookup = null; store.schedule = null; store.preview = null; store.scheduleError = ''; store.scheduleBusy = false; store.fixedDetails = {}; store.detailErrors = {}; store.detailChangeId = ''; };
+  const clearPreview = () => { previewGeneration++; detailGeneration++; previewCheck = undefined; stop(); store.candidate = null; store.replacementCandidateId = ''; store.decisions = []; store.keepConfirmed = false; store.error = ''; store.busy = false; store.checkStatus = null; store.lookup = null; store.schedule = null; store.preview = null; store.scheduleError = ''; store.scheduleBusy = false; store.fixedDetails = {}; store.detailErrors = {}; store.detailChangeId = ''; };
+  const observeLookup = (lookup: SyncCheckLookup) => { store.lookup = lookup; const latest = lookup.sourceId === store.sourceId ? lookup.latestSuccess?.candidateId : null; if (store.candidate && latest) store.replacementCandidateId = latest === store.candidate.candidate.id ? '' : latest; };
   async function publish(intent: Intent) {
     if (key(store.scope) !== key(intent.scope)) return;
     store.receipt = intent.receipt; store.intentId = intent.intentId; store.intentSourceId = intent.sourceId; store.applying = intent.pending;
@@ -77,11 +80,13 @@ export function createSynchronizationStore(api: SynchronizationPort, refresh: ()
     history: [] as SyncHistoryEntry[], decisions: [] as SyncDecisions['entries'], keepConfirmed: false, receipt: null as SyncReceipt | null,
     error: '', refreshError: '', persistenceError: '', busy: false, applying: false, visible: false, assetVersion: '0', intentId: '', intentSourceId: '',
     settings: null as SyncHostSettings | null, policy: null as SyncPolicyView | null, materials: [] as SyncMaterialStatus[], capabilities: null as string[] | null,
-    checkStatus: null as SyncCheckStatus | null, lookup: null as SyncCheckLookup | null, schedule: null as SyncScheduleView | null,
+    checkStatus: null as SyncCheckStatus | null, lookup: null as SyncCheckLookup | null, replacementCandidateId: '', schedule: null as SyncScheduleView | null,
     preview: null as z.infer<typeof SchedulePreviewSchema> | null, scheduleError: '', scheduleBusy: false,
     get selectedSource(): SyncSource | null { return store.sources.find(s => s.id === store.sourceId) ?? null; },
+    get candidateSuperseded(): boolean { return !!store.candidate && !!store.replacementCandidateId && store.replacementCandidateId !== store.candidate.candidate.id; },
     get blockReason(): string {
       if (store.applying) return 'SYNC_OPERATION_PENDING'; if (!store.candidate) return 'SYNC_CANDIDATE_REQUIRED';
+      if (store.candidateSuperseded) return 'SYNC_CANDIDATE_SUPERSEDED';
       if (!store.candidate.applicable) return store.candidate.reasonCode ?? 'SYNC_CANDIDATE_STALE';
       if (store.candidate.candidate.diagnostics.some(d => d.severity === 'error')) return 'SYNC_DIAGNOSTICS_BLOCKED';
       if (store.candidate.candidate.changes.some(c => !store.decisions.some(d => d.changeId === c.changeId))) return 'SYNC_DECISION_REQUIRED';
@@ -113,21 +118,23 @@ export function createSynchronizationStore(api: SynchronizationPort, refresh: ()
       finally { if (current(token, scope)) store.busy = false; }
     },
     async loadHistory() { if (!store.scope) return; const scope = copy(store.scope), token = generation; const result = SyncHistoryEntrySchema.array().parse(await request({ scope, operation: 'history' })); if (current(token, scope)) store.history = result; },
+    async refresh() { if (!store.scope) return; clearPreview(); await store.load(); },
     async loadSource() {
-      if (store.scope?.kind !== 'online' || !store.sourceId) return; const scope = copy(store.scope), token = generation, preview = previewGeneration, sourceId = store.sourceId;
-      try { const lookup = SyncCheckLookupSchema.parse(await request({ scope, operation: 'checks', sourceId })); if (!previewCurrent(token, preview, scope, sourceId)) return; store.lookup = lookup; store.checkStatus = lookup.current ?? lookup.latestAttempt;
-        const schedule = SyncScheduleViewSchema.parse(await request({ scope, operation: 'schedule', sourceId })); if (!previewCurrent(token, preview, scope, sourceId)) return; store.schedule = schedule;
-        const candidateId = lookup.latestSuccess?.candidateId; if (candidateId) { const candidate = SyncCandidateViewSchema.parse(await request({ scope, operation: 'candidate', candidateId })); if (previewCurrent(token, preview, scope, sourceId)) store.candidate = candidate; }
-        schedulePoll();
-      } catch (error) { if (previewCurrent(token, preview, scope, sourceId)) store.error = message(error); }
+      if (store.scope?.kind !== 'online' || !store.sourceId) return; const scope = copy(store.scope), token = generation, preview = previewGeneration, sourceId = store.sourceId, lookupRequest = ++lookupGeneration;
+      const owns = () => previewCurrent(token, preview, scope, sourceId) && lookupRequest === lookupGeneration;
+      try { const lookup = SyncCheckLookupSchema.parse(await request({ scope, operation: 'checks', sourceId })); if (!owns()) return; observeLookup(lookup); store.checkStatus = lookup.current ?? lookup.latestAttempt;
+        const schedule = SyncScheduleViewSchema.parse(await request({ scope, operation: 'schedule', sourceId })); if (!owns()) return; store.schedule = schedule;
+        const candidateId = !store.candidate && previewCheck === undefined ? lookup.latestSuccess?.candidateId : null; if (candidateId) { const candidate = SyncCandidateViewSchema.parse(await request({ scope, operation: 'candidate', candidateId })); if (owns() && !store.candidate && previewCheck === undefined) store.candidate = candidate; }
+        if (owns()) schedulePoll();
+      } catch (error) { if (owns()) store.error = message(error); }
     },
     async check() {
       if (!store.scope || !store.sourceId) return; const scope = copy(store.scope), sourceId = store.sourceId, token = generation;
       const schedule = scope.kind === 'online' && store.schedule?.sourceId === sourceId ? store.schedule : null;
-      clearPreview(); store.schedule = schedule; const preview = previewGeneration; store.busy = true;
+      clearPreview(); previewCheck = null; store.schedule = schedule; const preview = previewGeneration; store.busy = true;
       const intentId = crypto.randomUUID(); store.localCheckId = scope.kind === 'local' ? intentId : '';
       try { const result = await request({ scope, operation: 'check', sourceId, expectedSourceRevision: store.selectedSource?.revision ?? '0', expectedAssetVersion: store.assetVersion, intentId }); if (!previewCurrent(token, preview, scope, sourceId)) return;
-        if (scope.kind === 'local') store.candidate = SyncCandidateViewSchema.parse(result); else { const accepted = SyncCheckAcceptedSchema.parse(result); await store.readCheck(accepted.checkId); }
+        if (scope.kind === 'local') store.candidate = SyncCandidateViewSchema.parse(result); else { const accepted = SyncCheckAcceptedSchema.parse(result); previewCheck = accepted.checkId; await store.readCheck(accepted.checkId); }
       } catch (error) { if (previewCurrent(token, preview, scope, sourceId)) store.error = message(error); }
       finally { if (previewCurrent(token, preview, scope, sourceId)) { store.busy = false; store.localCheckId = ''; } }
     },
@@ -135,10 +142,11 @@ export function createSynchronizationStore(api: SynchronizationPort, refresh: ()
     async readCheck(checkId = store.checkStatus?.checkId) {
       if (!checkId || store.scope?.kind !== 'online') return; const scope = copy(store.scope), token = generation, preview = previewGeneration, sourceId = store.sourceId;
       try { const status = SyncCheckStatusSchema.parse(await request({ scope, operation: 'checkStatus', checkId })); if (!previewCurrent(token, preview, scope, sourceId)) return; store.checkStatus = status;
-        if (status.candidateId) { const candidate = SyncCandidateViewSchema.parse(await request({ scope, operation: 'candidate', candidateId: status.candidateId })); if (previewCurrent(token, preview, scope, sourceId)) store.candidate = candidate; }
+        if (status.candidateId && !store.candidate && (previewCheck === undefined || previewCheck === checkId)) { const candidate = SyncCandidateViewSchema.parse(await request({ scope, operation: 'candidate', candidateId: status.candidateId })); if (previewCurrent(token, preview, scope, sourceId) && !store.candidate && (previewCheck === undefined || previewCheck === checkId)) store.candidate = candidate; }
+        const lookupRequest = ++lookupGeneration;
         try {
-          const lookup = SyncCheckLookupSchema.parse(await request({ scope, operation: 'checks', sourceId })); if (!previewCurrent(token, preview, scope, sourceId)) return; store.lookup = lookup;
-        } catch (error) { if (!previewCurrent(token, preview, scope, sourceId)) return; store.lookup = null; store.error = message(error); }
+          const lookup = SyncCheckLookupSchema.parse(await request({ scope, operation: 'checks', sourceId })); if (!previewCurrent(token, preview, scope, sourceId) || lookupRequest !== lookupGeneration) return; observeLookup(lookup);
+        } catch (error) { if (!previewCurrent(token, preview, scope, sourceId) || lookupRequest !== lookupGeneration) return; store.lookup = null; store.error = message(error); }
         schedulePoll();
       } catch (error) { if (previewCurrent(token, preview, scope, sourceId)) store.error = message(error); }
     },

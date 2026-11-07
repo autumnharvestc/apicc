@@ -6,9 +6,13 @@ import java.time.*;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.TestContextManager;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import static org.assertj.core.api.Assertions.*;
@@ -21,11 +25,30 @@ class SyncCheckDatabaseClockTest extends SyncCheckHttpFixture {
     @MockitoBean ScheduleTimeSource businessTime;
     @Autowired SyncCheckProperties ownership;
     @TestConfiguration static class ControlledTimers {
+        // This disabled deployment owns its worker queue; override the inherited runtime URL before DataSource binding.
+        @Bean static BeanFactoryPostProcessor clockDatabase(ConfigurableEnvironment environment){
+            return beans->environment.getPropertySources().addFirst(new MapPropertySource("clock-test-database",java.util.Map.of("spring.datasource.url","jdbc:h2:mem:apicc-sync-database-clock;DB_CLOSE_DELAY=-1")));
+        }
         @Bean org.springframework.scheduling.TaskScheduler taskScheduler(){return mock(org.springframework.scheduling.TaskScheduler.class,call->{
             if(call.getMethod().getName().equals("getClock"))return Clock.systemUTC();
             if(call.getMethod().getName().startsWith("schedule"))return mock(java.util.concurrent.ScheduledFuture.class);
             return org.mockito.Answers.RETURNS_DEFAULTS.answer(call);
         });}
+    }
+    @Test void clockContextKeepsItsSchedulerControlAndSourcesSeparateFromTheNormalContext() throws Exception {
+        var source=createUrlSource("/fast");
+        var normal=new TestContextManager(SyncChecksTest.class).getTestContext().getApplicationContext();
+        var normalJdbc=normal.getBean(org.springframework.jdbc.core.JdbcTemplate.class);
+        try(var clockConnection=jdbc.getDataSource().getConnection();var normalConnection=normalJdbc.getDataSource().getConnection()){
+            String clockUrl=clockConnection.getMetaData().getURL(),normalUrl=normalConnection.getMetaData().getURL();
+            assertThat(clockUrl).as("Independent clock and normal workers must have separate metadata authorities").isNotEqualTo(normalUrl);
+            System.out.println("DB_CLOCK_CONTEXT_ISOLATION clock="+clockUrl+" normal="+normalUrl);
+        }
+        assertThat(jdbc.queryForObject("SELECT mode FROM execution_scheduler_control WHERE id=1",String.class)).isEqualTo("disabled");
+        assertThat(normalJdbc.queryForObject("SELECT mode FROM execution_scheduler_control WHERE id=1",String.class)).isEqualTo("embedded");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM sync_sources WHERE workspace_id=? AND project_id=? AND id=?",Integer.class,Long.parseLong(f.workspace()),Long.parseLong(f.project()),source.path("id").asText())).isEqualTo(1);
+        assertThat(normalJdbc.queryForObject("SELECT COUNT(*) FROM sync_sources WHERE workspace_id=? AND project_id=? AND id=?",Integer.class,Long.parseLong(f.workspace()),Long.parseLong(f.project()),source.path("id").asText()))
+            .as("The normal worker must not see the clock context's source or check scope").isZero();
     }
     @Test void interfaceMockBusinessClockJumpsCannotMoveTheActualSyncReadLease() throws Exception {
         when(businessTime.now()).thenReturn(Instant.parse("2035-01-01T00:00:00Z"));

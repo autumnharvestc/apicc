@@ -11,7 +11,7 @@ import type { SyncSource } from '@apicc/core/sync';
 
 type LocalFixture = Parameters<Parameters<typeof withLocalSync>[0]>[0];
 function native(f: LocalFixture) {
-  const credentials = createDesktopCredentialHost(f.session, { credentialPrivateRoot: join(f.privateRoot, 'credentials'), networkPrivateRoot: join(f.privateRoot, 'network'), oauthPrivateRoot: join(f.privateRoot, 'oauth') });
+  const credentials = createDesktopCredentialHost(f.session, { secretStore: f.secrets.store, credentialPrivateRoot: join(f.privateRoot, 'credentials'), networkPrivateRoot: join(f.privateRoot, 'network'), oauthPrivateRoot: join(f.privateRoot, 'oauth') });
   const locator = { workspaceId: id(825), ...f.location };
   const provider = createDesktopSyncProviders({ session: f.session, credentials, privateRoot: join(f.privateRoot, 'sync'), confirmDestination: async () => true,
     pickTool: async tool => process.platform === 'win32' ? tool === 'git' ? 'D:/env/Git/cmd/git.exe' : 'C:/Windows/System32/OpenSSH/ssh.exe' : `/usr/bin/${tool}` });
