@@ -158,3 +158,19 @@ it('pages current member notifications without losing an already-read event', as
     expect(f.online.schedules.notifications!.items).toHaveLength(1); expect(f.view.text()).toContain('站内已读');
   } finally { f.execution.setVisible(false); }
 });
+
+it.each(['zh-CN', 'en'] as const)('P3f distinguishes loaded empty notifications from unavailable results in %s', async locale => {
+  const f = fixture();
+  try {
+    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    f.i18n.global.locale.value = locale;
+    f.online.schedules.notifications = { items: [], nextBeforeId: '6' }; await flushPromises();
+    const empty = locale === 'en' ? 'No notifications in the loaded results.' : '已加载的结果中暂无通知。';
+    expect(f.view.get('.notifications').text()).toContain(empty);
+    expect(f.view.find('[data-testid="notification-more"]').exists()).toBe(true);
+    f.online.schedules.error = 'network-error'; await flushPromises();
+    expect(f.view.get('.notifications').text()).not.toContain(empty);
+    f.online.schedules.error = ''; f.online.schedules.notifications = null; await flushPromises();
+    expect(f.view.get('.notifications').text()).not.toContain(empty);
+  } finally { f.execution.setVisible(false); }
+});

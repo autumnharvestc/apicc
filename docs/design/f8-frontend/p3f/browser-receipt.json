@@ -1,0 +1,123 @@
+{
+  "clear": {
+    "draft": "未保存的计划名称 / Unsaved draft",
+    "filter": "paused",
+    "focus": "schedule-search",
+    "root": [
+      560,
+      560
+    ],
+    "search": "",
+    "toolbar": {
+      "bottom": 130.92857360839844,
+      "height": 53.21428680419922,
+      "left": 0,
+      "right": 560,
+      "top": 77.71428680419922,
+      "width": 560,
+      "x": 0,
+      "y": 77.71428680419922
+    }
+  },
+  "history": {
+    "history": [
+      524,
+      1304
+    ],
+    "root": [
+      560,
+      560
+    ],
+    "toolbar": {
+      "bottom": 170.92857360839844,
+      "height": 93.21428680419922,
+      "left": 0,
+      "right": 560,
+      "top": 77.71428680419922,
+      "width": 560,
+      "x": 0,
+      "y": 77.71428680419922
+    }
+  },
+  "historyFinal": {
+    "deleteDisabled": true,
+    "enableDisabled": true,
+    "history": [
+      524,
+      1304
+    ],
+    "root": [
+      560,
+      560
+    ],
+    "toolbar": {
+      "bottom": 130.92857360839844,
+      "height": 53.21428680419922,
+      "left": 0,
+      "right": 560,
+      "top": 77.71428680419922,
+      "width": 560,
+      "x": 0,
+      "y": 77.71428680419922
+    },
+    "viewport": [
+      560,
+      820
+    ]
+  },
+  "whitespace": "当前筛选无匹配计划",
+  "grant": {
+    "body": [
+      545,
+      545
+    ],
+    "downloadDisabled": true,
+    "history": [
+      491,
+      1250
+    ],
+    "raw": 0,
+    "root": [
+      560,
+      560
+    ]
+  },
+  "notificationAfterRefresh": {
+    "readButtonCount": 0,
+    "text": "Notification center\n\nOnly notifications from projects accessible to the current member are shown. Read state belongs to this member.\n\nRefresh notificationsMore notifications\n每日回归 · Payment regression with a long readable name\n\n合成支付服务 / Synthetic payment service · #6\n\nExecution verdict: Not collected\n\nPlanned time\n01/01/2035, 00:01:00.000 UTC\nActual execution / start time\nNot collected\nRelease / report archive\nNo archive yet\nSafe reason\nQueue exceeded its absolute deadline\n\nIn-app read\n\nNotifications · Delivery failed\n\nWebhook #2 · Schedule version 1 · Delivery failed (rejected)\n\nNotification pending-delivery capacity is full\n\n0 attempts\n\nDelivery identity and deadline"
+  },
+  "short": {
+    "detailHeight": 122,
+    "root": [
+      600,
+      600
+    ],
+    "toolbar": {
+      "bottom": 130.92857360839844,
+      "height": 53.21428680419922,
+      "left": 0,
+      "right": 600,
+      "top": 77.71428680419922,
+      "width": 600,
+      "x": 0,
+      "y": 77.71428680419922
+    },
+    "viewport": [
+      600,
+      360
+    ]
+  },
+  "errors": [],
+  "scope": "Actual Vue components with synthetic in-memory ports; no server/IPC execution, publication or grant mutation",
+  "snapshotDiff": {
+    "diff": [
+      484,
+      520
+    ],
+    "root": [
+      560,
+      560
+    ]
+  },
+  "fixtureNotes": "Initial fixture had ready instead of connected and an unnormalized stress plan; corrected fixture only, final seed project validated by ContractProjectSchema and StressPlanSchema. Short-height observation preceded the extra synthetic snapshot-diff button; product unchanged."
+}

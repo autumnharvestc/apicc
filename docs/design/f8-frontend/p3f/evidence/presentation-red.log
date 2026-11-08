@@ -1,0 +1,90 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/OnlineNotificationsPanel.test.ts (30 tests | 2 failed | 28 skipped) 110ms
+   × P3f distinguishes loaded empty notifications from unavailable results in zh-CN 89ms
+   × P3f distinguishes loaded empty notifications from unavailable results in en 20ms
+ ❯ tests/renderer/components/OnlineSchedulesPanel.test.ts (114 tests | 2 failed | 112 skipped) 226ms
+   × P3f clears only schedule search and preserves the selected draft in zh-CN 150ms
+   × P3f clears only schedule search and preserves the selected draft in en 74ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/OnlineNotificationsPanel.test.ts > P3f distinguishes loaded empty notifications from unavailable results in zh-CN
+AssertionError: expected '仅显示当前成员有权项目的通知；已读状态属于当前成员。刷新通知更多通知' to contain '已加载的结果中暂无通知。'
+
+Expected: "已加载的结果中暂无通知。"
+Received: "仅显示当前成员有权项目的通知；已读状态属于当前成员。刷新通知更多通知"
+
+ ❯ tests/renderer/components/OnlineNotificationsPanel.test.ts:169:49
+    167|     f.online.schedules.notifications = { items: [], nextBeforeId: '6' …
+    168|     const empty = locale === 'en' ? 'No notifications in the loaded re…
+    169|     expect(f.view.get('.notifications').text()).toContain(empty);
+       |                                                 ^
+    170|     expect(f.view.find('[data-testid="notification-more"]').exists()).…
+    171|     f.online.schedules.error = 'network-error'; await flushPromises();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  tests/renderer/components/OnlineNotificationsPanel.test.ts > P3f distinguishes loaded empty notifications from unavailable results in en
+AssertionError: expected 'Only notifications from projects acce…' to contain 'No notifications in the loaded result…'
+
+Expected: "No notifications in the loaded results."
+Received: "Only notifications from projects accessible to the current member are shown. Read state belongs to this member.Refresh notificationsMore notifications"
+
+ ❯ tests/renderer/components/OnlineNotificationsPanel.test.ts:169:49
+    167|     f.online.schedules.notifications = { items: [], nextBeforeId: '6' …
+    168|     const empty = locale === 'en' ? 'No notifications in the loaded re…
+    169|     expect(f.view.get('.notifications').text()).toContain(empty);
+       |                                                 ^
+    170|     expect(f.view.find('[data-testid="notification-more"]').exists()).…
+    171|     f.online.schedules.error = 'network-error'; await flushPromises();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  tests/renderer/components/OnlineSchedulesPanel.test.ts > P3f clears only schedule search and preserves the selected draft in zh-CN
+AssertionError: expected '当前条件下没有计划' to contain '当前筛选无匹配计划'
+
+Expected: "当前筛选无匹配计划"
+Received: "当前条件下没有计划"
+
+ ❯ tests/renderer/components/OnlineSchedulesPanel.test.ts:675:49
+    673|     await f.view.get('[data-testid="schedule-filter"]').setValue(selec…
+    674|     await f.view.get('[data-testid="schedule-search"]').setValue('no-m…
+    675|     expect(f.view.get('.schedule-list').text()).toContain(locale === '…
+       |                                                 ^
+    676|     await f.view.get('[data-testid="schedule-clear-search"]').trigger(…
+    677|     expect(document.activeElement).toBe(f.view.get('[data-testid="sche…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  tests/renderer/components/OnlineSchedulesPanel.test.ts > P3f clears only schedule search and preserves the selected draft in en
+AssertionError: expected <body>…(1)</body> to be <input data-v-593f1882 …(3)></input> // Object.is equality
+
+ Test Files  2 failed (2)
+      Tests  4 failed | 140 skipped (144)
+   Start at  23:33:21
+   Duration  7.65s (transform 4.59s, setup 0ms, import 11.40s, tests 336ms, environment 2.99s)
+
+
+- Expected
++ Received
+
+- <input
+-   aria-label="Search schedules on this page"
+-   data-testid="schedule-search"
+-   data-v-593f1882=""
+-   placeholder="Search schedules on this page"
+- />
++ <body />
+
+ ❯ tests/renderer/components/OnlineSchedulesPanel.test.ts:677:36
+    675|     expect(f.view.get('.schedule-list').text()).toContain(locale === '…
+    676|     await f.view.get('[data-testid="schedule-clear-search"]').trigger(…
+    677|     expect(document.activeElement).toBe(f.view.get('[data-testid="sche…
+       |                                    ^
+    678|     expect(f.view.get('[data-testid="schedule-filter"]').element.value…
+    679|     expect(f.view.get('[data-testid="schedule-name"]').element.value).…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+

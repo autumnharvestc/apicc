@@ -1,0 +1,257 @@
+{
+  "base": "4eea7875",
+  "scope": "F8 P3f actual component presentation only; no full gate, package, merge or push",
+  "hashPolicy": "Working-copy bytes; excludes this manifest and independently authored review receipt",
+  "files": [
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/CollaborationArtifact.vue",
+      "bytes": 4301,
+      "sha256": "77ac992c52bb784adaa19e66c48e9c4ed6022b711ac6d61c135725c8cc483f7d"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/CollaborationPanel.vue",
+      "bytes": 9764,
+      "sha256": "830e4887e7070b736ff5d626fc7011fc4330e2d8d1fcb3de388b8bd583ea4644"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/OnlineDeliveryList.vue",
+      "bytes": 1616,
+      "sha256": "3bab9f27feff407858f5fca4751d9d1310ba54ba3517c8bf373620bbc34daa73"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/OnlineExecutionPanel.vue",
+      "bytes": 24895,
+      "sha256": "87563009ba9c01f211ce8bda9bb702405d950d7223a7aa66ed0c45a2bf3c73ab"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/OnlineNotificationsPanel.vue",
+      "bytes": 4434,
+      "sha256": "ecb93b2568608a81ea6b6127be66ff1278e73f3b95ef38e1cf9f8f63149b68a7"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/OnlineSchedulesPanel.vue",
+      "bytes": 33281,
+      "sha256": "9e195a578fb1d29930de1c783cfc7f72a927437d810218e9da46496c67d194db"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/OnlineStressPanel.vue",
+      "bytes": 15529,
+      "sha256": "c53a18ada4aa3173ba113067b9d5744bb3362d8460e26a40e36feb7b726246a9"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/PublicationPreview.vue",
+      "bytes": 7233,
+      "sha256": "128059b7b8d56b15a12aa68a896ff674805db65999ab4cb0f333044931458357"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/online/SharedHistoryPanel.vue",
+      "bytes": 5257,
+      "sha256": "6e1256f6fc675d2809787466437d56e2e41d5e95326abd638cfc0b19222c5cd5"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/i18n/en.json",
+      "bytes": 155527,
+      "sha256": "c9f948697dd67d3a9152e11a881bcfe2dc7aa5a6eb98350d966f936c80304c88"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/i18n/zh-CN.json",
+      "bytes": 145287,
+      "sha256": "9fc616670d133ff78cffd0cbe360e2290bf4a15415c5d7d9057fdb31c23717a0"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/styles/online-controls.css",
+      "bytes": 2387,
+      "sha256": "7718035ae73e8b037b1a0066a3f3f5e5cf47800930d1ccbb0f3e018e6b8e5469"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/OnlineNotificationsPanel.test.ts",
+      "bytes": 14203,
+      "sha256": "095528ca523cbdceac7019cfdb8a51a687c471618f0cafe84014f32c6af9c72d"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/OnlineSchedulesPanel.test.ts",
+      "bytes": 57658,
+      "sha256": "89f53207c60b56c68b522c6ef1e86d698c0f16fa5636bcdb4ec50e16b391efeb"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/browser-receipt.json",
+      "bytes": 3141,
+      "sha256": "49f5a5f3c6ac8f6388e73701b7c7cb25ebc62456ac57d40ec79d41fc7c5d4f83"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/collaboration-en-dark-wide.png",
+      "bytes": 88944,
+      "sha256": "8ea1c726b9b79db5d3aefb94d48dfaf460b1eac0ad2571e19fa3e5f0c8ca97cb"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/components.log",
+      "bytes": 271,
+      "sha256": "7dfa2fc2559fd3a6ae37e5add41f4e9f16671669711d3fed64c43ccaec9d5e80"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/execution.log",
+      "bytes": 281,
+      "sha256": "1a9ccf847b917d17ab0bf49a2271acbfdccfe6e315c992cd068654620cc38b82"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/fixture-entry.ts",
+      "bytes": 4955,
+      "sha256": "5f389005ae48f9a7c2d1ebba15381cd3acd9b8f945491d63e17859b6365fb0e8"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/fixture-index.html",
+      "bytes": 273,
+      "sha256": "7c5ab029b6a962384be1eba3bc3c21c2a72588ec36a2e52a75981422316a1f29"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/fixture-seed.json",
+      "bytes": 23778,
+      "sha256": "f489bf75e23c0910307965feaa7d13df3abd7e2daecb162070f882dc294b0e20"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/fixture-serve.mjs",
+      "bytes": 4292,
+      "sha256": "01dab344c0b7a8c3531e3a83c82ffa7ba65628e088f5be507beda6c0a583e787"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/presentation-red.log",
+      "bytes": 5187,
+      "sha256": "2137e58a478ecd61b16890b3001b900bdecf284e569c9c2edcf05bf50408c3bb"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/renderer-build-final.log",
+      "bytes": 775,
+      "sha256": "e7727c2d2beaf25f7649306d51a78bb4e9b7841de9f8650574135f1a6c06edee"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/renderer-build.log",
+      "bytes": 775,
+      "sha256": "648ea05f2d9845bf453fb3b733d43a3f1119dc68a32a2c0304f613eb461ceb25"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/review-fix-green.log",
+      "bytes": 283,
+      "sha256": "0351fba6370638b6fee792d651f4469dd2fc5374ba5180b5967440f07b90e909"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/vue-typecheck-final.log",
+      "bytes": 37,
+      "sha256": "e9f4d20594b78d2a8a6d8041839f863e8da18f5302fe5e1c6ae9dbbbd97c3e38"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/vue-typecheck.log",
+      "bytes": 362,
+      "sha256": "81813206443da28df3e587fa017cdfa0570b14acadda154ce27e7fe77c13e412"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/whitespace-red-effective.log",
+      "bytes": 2522,
+      "sha256": "38a002b399a46825e9cf66fd49ec865697212d7700a5adbee7c70cfbc03d510f"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/evidence/whitespace-red.log",
+      "bytes": 281,
+      "sha256": "784d45b515f1853807831af4b324967a9cb5584ae7c78a8d7f67b8eb569977fa"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/execution-zh-light-wide.png",
+      "bytes": 68754,
+      "sha256": "1e980ea2c2640efc0ee5667b547ddc6c5924279bfe9c7cf0d3356946acb6bcc2"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/grants-en-dark-wide.png",
+      "bytes": 75875,
+      "sha256": "8a725a15a2f0fff60a093ec4442a362506c4853f15ef7c807a1c4c1253a026d0"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/grants-zh-light-narrow.png",
+      "bytes": 52600,
+      "sha256": "756b89a993b9f5f50f286d4036a10b21a213e5122000ce6a59ea3ad251ef9330"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/notifications-en-dark-narrow.png",
+      "bytes": 49200,
+      "sha256": "c11dfcc4843e5c7dba15a9df518e181820e54ff3f22a9e6795c2e5e875e5925b"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/notifications-en-empty.png",
+      "bytes": 22749,
+      "sha256": "5bf44c3a28c93a7af92da6825e57a97dc13546d9d18916671cb6af09f07097dc"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/schedule-diff-zh-narrow.png",
+      "bytes": 49266,
+      "sha256": "a03c162d346f25062f5facd85f25cf054a47b9d82f1250660b08dbd22eb6e2bf"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/schedules-en-dark-narrow.png",
+      "bytes": 56703,
+      "sha256": "cdc41851d43a43726108b8326ec2140d67e87b713d286ad640cb06e8cd2ea3be"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/schedules-en-history-narrow.png",
+      "bytes": 54118,
+      "sha256": "34867cb1e51e2613939e89769c472c9082e6c26cf165d2a800f76d90f3e5ccf2"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/schedules-zh-history-narrow-table.png",
+      "bytes": 55003,
+      "sha256": "b876c8cb48d1a8e6c310015e30a03f796e81d8282ebaf927312896b37e390ea1"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/schedules-zh-light-wide.png",
+      "bytes": 74598,
+      "sha256": "7a6b7aeea5929e0fa4bd43c94a0837470e62e93243c9090f70cf51b36f2f416a"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/schedules-zh-narrow-empty.png",
+      "bytes": 54763,
+      "sha256": "d6ff26f1d9a5ec4b42691418b9dcec86100810b33aff60e77376b7cabe375670"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/schedules-zh-short.png",
+      "bytes": 30508,
+      "sha256": "1aa1d11425855def23d3af49bfb54495ba547bd07f5ae3a554645278326494f3"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/shared-history-en-dark-wide.png",
+      "bytes": 92438,
+      "sha256": "8c56f07168ec5157456f3ebbec13e479633faee27b2c826c80e3b733bf135c48"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/stress-zh-light-narrow-editor.png",
+      "bytes": 44961,
+      "sha256": "31c71030139464790da6871430160b820f1b31f3901f7f27b037ce16654c811c"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3f/stress-zh-light-wide.png",
+      "bytes": 74717,
+      "sha256": "1829770f98b40099674d46cb40f3f77842fee68ae2bedd74c62563daaf74a700"
+    },
+    {
+      "path": "docs/f8-frontend-polish-acceptance.md",
+      "bytes": 8379,
+      "sha256": "ffddf5b89ac93c36efc6ddf79a09f939736902f413435e2e59a7871588268733"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3-inventory.md",
+      "bytes": 9166,
+      "sha256": "f3fc38f5e5638a6511634ffeede4e48973fc472c76a55d411cc509dd3dee4d5a"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3f-design.md",
+      "bytes": 2198,
+      "sha256": "2faa4c3bea17bffb8d7451c75110cec72b7f3fe87aacc6e05b876beef04c9d73"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3f-validation.md",
+      "bytes": 7896,
+      "sha256": "b363c69004dfc8bda0230b9b71d4a9540ef3327c04861649c951e8bf22eb60c5"
+    },
+    {
+      "path": "docs/f8-frontend-polish-worklog.md",
+      "bytes": 14824,
+      "sha256": "82e761e43efccb0a51971f60a4c74797a6a1485d9dc8cef7672c35ff94bde747"
+    }
+  ]
+}

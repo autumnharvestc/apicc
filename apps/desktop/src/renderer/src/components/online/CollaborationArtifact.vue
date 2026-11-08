@@ -19,4 +19,9 @@ const label = (code: string) => te(`collaboration.contentCodes.${code}`) ? t(`co
     <div class="table-scroll"><table><thead><tr><th>{{ t('collaboration.node') }}</th><th>{{ t('collaboration.state') }}</th><th>{{ t('collaboration.originalFailure') }}</th></tr></thead><tbody><tr v-for="row in artifact.report.nodes" :key="row.id"><td>{{ row.name }}</td><td>{{ label(row.state) }}</td><td>{{ row.message ?? t('collaboration.notCollected') }}</td></tr></tbody></table></div>
   </section>
 </template>
-<style scoped>.table-scroll{overflow:auto;max-height:24rem}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:7px;border-bottom:1px solid var(--border);overflow-wrap:anywhere}th{white-space:nowrap}</style>
+<style scoped src="../../styles/online-controls.css"></style>
+<style scoped>
+
+section{min-width:0}article{border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;background:var(--subtle)}h5{font-size:13px;margin:0;overflow-wrap:anywhere}.table-scroll{max-height:24rem;margin:12px 0}table{min-width:360px}td{overflow-wrap:anywhere}ul,ol{padding-left:24px}li{overflow-wrap:anywhere;margin:8px 0;line-height:1.6}.report-facts>ol{border-left:2px solid var(--border);margin-left:8px;padding-left:24px}.report-facts>ol>li{background:var(--subtle);padding:8px 12px;border-radius:6px}.limitations:empty{display:none}.limitations{color:var(--text-muted)}dl{display:grid;grid-template-columns:minmax(80px,.4fr) minmax(0,1fr);gap:8px 12px}dd{margin:0}
+
+</style>

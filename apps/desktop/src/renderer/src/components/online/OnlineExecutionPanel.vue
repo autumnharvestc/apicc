@@ -83,12 +83,12 @@ function verdict(job: OnlineJob) { return isFullOnlineJob(job) ? label(typeof jo
 const recordedEnvironment = computed(() => { const selection = props.execution.resultSelection; if (fullSelected.value) return fullSelected.value.task.environmentId ?? t('onlineExecution.baseEnvironment'); if (selection?.kind === 'local') return selection.environmentId ?? t('onlineExecution.baseEnvironment'); return t('onlineExecution.notCollected'); });
 </script>
 <template>
-  <section class="execution" data-testid="online-execution-panel">
+  <section class="execution online-surface" data-testid="online-execution-panel">
     <button v-if="local" data-testid="collaboration-publish-result" @click="emit('collaboration', {context: execution.context!, source:{kind:'online-local',runId:local.runId}})">{{ t('collaboration.publishToProject') }}</button>
     <div v-if="!reportOnly" class="toolbar">
       <label>{{ t('onlineExecution.location') }}<select :value="execution.location.kind === 'local' ? 'local' : execution.location.agentId" :disabled="execution.running" data-testid="online-execution-location" @change="location"><option value="local">{{ t('onlineExecution.local') }}</option><option v-for="item in execution.agents?.agents" :key="item.id" :value="item.id" :disabled="item.availability !== 'available' || item.configuration.status !== 'applied'">{{ item.name }} · {{ label(item.availability) }}</option></select></label>
       <label>{{ t('onlineExecution.environment') }}<select v-model="execution.environmentId" :disabled="execution.running" data-testid="online-execution-environment"><option :value="undefined">{{ t('onlineExecution.baseEnvironment') }}</option><option v-for="env in execution.project?.environments" :key="env.id" :value="env.id">{{ env.name }}</option></select></label>
-      <label>{{ t('onlineExecution.refresh') }}<input type="number" min="1" max="2147483647" :value="execution.statusRefreshMs" data-testid="online-refresh-ms" @change="action(async () => execution.setRefreshMs(Number(($event.target as HTMLInputElement).value)))" /> ms</label>
+      <label>{{ t('onlineExecution.refresh') }}<span class="refresh-value"><input type="number" min="1" max="2147483647" :value="execution.statusRefreshMs" data-testid="online-refresh-ms" @change="action(async () => execution.setRefreshMs(Number(($event.target as HTMLInputElement).value)))" /> ms</span></label>
       <button @click="action(() => execution.refresh())">{{ t('onlineExecution.refreshNow') }}</button>
       <button :disabled="execution.running" @click="execution.newDebugSession()">{{ t('onlineExecution.newSession') }}</button>
       <button v-if="execution.activeLocalRunId" @click="action(() => execution.cancelLocal())">{{ t('onlineExecution.cancel') }}</button>
@@ -165,6 +165,11 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
     </section>
   </section>
 </template>
+<style scoped src="../../styles/online-controls.css"></style>
 <style scoped>
-.execution{min-width:0;border-bottom:1px solid var(--border);padding:10px}.toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.toolbar label{display:flex;gap:6px;align-items:center}.toolbar input{width:95px}.summary,.current-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}.summary div,.current-summary div{min-width:0}.summary dt,.current-summary dt{color:var(--text-muted)}.summary dd,.current-summary dd{margin:2px 0;overflow-wrap:anywhere}.task-scroll{overflow:auto;max-height:230px}table{border-collapse:collapse;width:100%;white-space:nowrap}th,td{text-align:left;padding:5px 10px;border-bottom:1px solid var(--border)}.hint{color:var(--text-muted)}textarea{width:100%;height:220px}p[role=alert]{color:var(--fail,#cf1322);overflow-wrap:anywhere}
+
+.execution{min-width:0;border-bottom:1px solid var(--border);padding:16px;background:var(--bg)}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:end;padding:0 0 14px}.toolbar label{display:flex;flex-direction:column;gap:6px;min-width:0;color:var(--text-muted)}.toolbar select{max-width:320px}.toolbar input{width:110px}.refresh-value{display:flex;align-items:center;gap:6px}
+.summary,.current-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:10px}.summary div,.current-summary div{min-width:0;background:var(--subtle);border:1px solid var(--border);border-radius:8px;padding:10px 12px}.summary dt,.current-summary dt{color:var(--text-muted)}.summary dd,.current-summary dd{margin:5px 0 0;overflow-wrap:anywhere;font-weight:500}
+.task-scroll{overflow:auto;max-height:260px;border:1px solid var(--border);border-radius:8px;margin:12px 0}table{white-space:nowrap}.hint{color:var(--text-muted)}textarea{width:100%;height:220px;resize:vertical}section>button{margin:6px 8px 6px 0}section>h4{margin-top:18px}section>details{border-top:1px solid var(--border);margin-top:12px;padding-top:6px}
+
 </style>

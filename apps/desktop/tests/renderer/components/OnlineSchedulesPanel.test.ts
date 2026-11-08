@@ -661,3 +661,32 @@ it.each([
   try { await openSchedules(f); f.online.schedules.error = reason; await flushPromises(); expect(f.view.get('[role="alert"]').text()).toContain(zh); f.i18n.global.locale.value = 'en'; await flushPromises(); expect(f.view.get('[role="alert"]').text()).toContain(en); f.online.schedules.error = 'future-safe-reason'; await flushPromises(); expect(f.view.get('[role="alert"]').text()).toBe('future-safe-reason'); }
   finally { f.execution.setVisible(false); }
 });
+
+it.each(['zh-CN', 'en'] as const)('P3f clears only schedule search and preserves the selected draft in %s', async locale => {
+  const f = projectFixture(true);
+  document.body.appendChild(f.view.element);
+  try {
+    await inspectSaved(f);
+    f.i18n.global.locale.value = locale; await flushPromises();
+    const selected = f.online.schedules.selected;
+    await f.view.get('[data-testid="schedule-name"]').setValue('Unsaved schedule name');
+    await f.view.get('[data-testid="schedule-filter"]').setValue(selected!.enabled ? 'enabled' : 'paused');
+    await f.view.get('[data-testid="schedule-search"]').setValue('no-matching-schedule');
+    expect(f.view.get('.schedule-list').text()).toContain(locale === 'en' ? 'No schedules match these filters' : '当前筛选无匹配计划');
+    await f.view.get('[data-testid="schedule-filter"]').setValue('all');
+    await f.view.get('[data-testid="schedule-search"]').setValue('   ');
+    expect(f.view.get('.schedule-list').text()).toContain(locale === 'en' ? 'No schedules match these filters' : '当前筛选无匹配计划');
+    await f.view.get('[data-testid="schedule-filter"]').setValue(selected!.enabled ? 'enabled' : 'paused');
+    await f.view.get('[data-testid="schedule-clear-search"]').trigger('click');
+    expect(document.activeElement).toBe(f.view.get('[data-testid="schedule-search"]').element);
+    expect((f.view.get('[data-testid="schedule-filter"]').element as HTMLSelectElement).value).toBe(selected!.enabled ? 'enabled' : 'paused');
+    expect((f.view.get('[data-testid="schedule-name"]').element as HTMLInputElement).value).toBe('Unsaved schedule name');
+    expect(f.online.schedules.selected).toBe(selected);
+    expect(f.view.find('[data-testid="schedule-open"]').exists()).toBe(true);
+    const mode = f.view.get('[data-testid="schedule-rule-mode"]');
+    expect(mode.attributes('aria-label')).toBe(locale === 'en' ? 'Time rule' : '时间规则');
+    await mode.setValue('weekly');
+    expect(f.view.get('[data-testid="schedule-weekday"]').attributes('aria-label')).toBe(locale === 'en' ? 'Day of week' : '星期');
+    expect(f.calls.some(call => ['save','update','prepare','remove'].includes(call.operation))).toBe(false);
+  } finally { f.execution.setVisible(false); f.view.element.remove(); }
+});

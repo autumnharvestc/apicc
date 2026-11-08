@@ -63,3 +63,7 @@ AI 配置/出站预览/候选/独立断言/报告分析已按[P3d设计](f8-fron
 ## P3e 更新（2026-11-08）
 
 SyncPanel / SyncSourceForm / SyncDiffView / SyncHistory 已按 [P3e对照](f8-frontend-polish-p3e-validation.md) 完成呈现与受影响验证。SourceForm沿用现有模板/处理，仅受限域CSS影响。覆盖同一面板里的同步定时/策略；不覆盖在线执行页、通用定时/通知或管理台。余下P3继续在线执行/定时/通知/协作及工作流/单接口。
+
+## P3f 更新（2026-11-08）
+
+在线执行／压测入口、定时、通知／投递、协作／预览／共享历史／安全内容共9组件完成本组展示与受影响验证，见[P3f对照](f8-frontend-polish-p3f-validation.md)。OnlineProjectAssets与App外层生命周期未改；原生完整入口留P5。下一组是工作流、单接口与剩余桌面入口；之后管理台、公共／离线查看、整体复核与新包，共4块。

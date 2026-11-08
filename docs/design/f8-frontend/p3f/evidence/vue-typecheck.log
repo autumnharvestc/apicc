@@ -1,0 +1,4 @@
+$ vue-tsc --noEmit -p tsconfig.json
+tests/renderer/components/OnlineSchedulesPanel.test.ts(678,66): error TS2339: Property 'value' does not exist on type 'VueNode<Element>'.
+tests/renderer/components/OnlineSchedulesPanel.test.ts(679,64): error TS2339: Property 'value' does not exist on type 'VueNode<Element>'.
+[ELIFECYCLE] Command failed with exit code 2.

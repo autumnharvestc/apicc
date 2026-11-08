@@ -85,7 +85,7 @@ async function stop() { const target = stopTarget.value; if (target?.kind === 'l
 async function run() { if (plan.value && canRun.value) await props.execution.run({ kind: 'stress', plan: clone(plan.value) }); }
 </script>
 <template>
-  <section class="online-stress" data-testid="online-stress-panel">
+  <section class="online-stress online-surface" data-testid="online-stress-panel">
     <button data-testid="online-stress-new" :disabled="readOnly || execution.running" @click="newPlan">{{ t('stress.workbench.new') }}</button>
     <label>{{ t('stress.workbench.plans') }}<select :value="selected" :disabled="execution.running" data-testid="online-stress-plan" @change="pick(($event.target as HTMLSelectElement).value)"><option value="">{{ t('stress.workbench.plans') }}</option><option v-if="plan && !saved" :value="selected">{{ name }} · {{ t('onlineStressDraft.unsaved') }}</option><option v-for="item in plans" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
     <label>{{ t('onlineExecution.location') }}<select :value="execution.location.kind === 'local' ? 'local' : execution.location.agentId" :disabled="execution.running" data-testid="online-stress-location" @change="execution.selectLocation(($event.target as HTMLSelectElement).value === 'local' ? { kind: 'local' } : { kind: 'agent', agentId: ($event.target as HTMLSelectElement).value })"><option value="local">{{ t('onlineExecution.local') }}</option><option v-for="agent in execution.agents?.agents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
@@ -117,4 +117,9 @@ async function run() { if (plan.value && canRun.value) await props.execution.run
     <button :disabled="!canStop" data-testid="online-stress-stop" @click="action(stop)">{{ t('stress.stop') }}</button>
   </section>
 </template>
-<style scoped>.online-stress{padding:12px;min-width:0}.online-stress label{display:inline-flex;gap:6px;margin:4px;align-items:center}.online-stress select{max-width:350px}p{overflow-wrap:anywhere}.table-scroll{overflow:auto;max-height:240px}table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--border,#ddd)}</style>
+<style scoped src="../../styles/online-controls.css"></style>
+<style scoped>
+
+.online-stress{padding:16px;min-width:0;background:var(--bg)}.online-stress>label{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0}.online-stress>label>input,.online-stress>label>select{flex:1 1 200px;max-width:500px}.online-stress>button{margin:6px 8px 6px 0}.online-stress>p{color:var(--text-muted)}.online-stress>p[role=alert]{color:var(--fail)}.admission{background:var(--subtle);border:1px solid var(--border);border-radius:10px;padding:14px;margin:16px 0}.admission h4{margin-top:0}.table-scroll{max-height:260px}table{white-space:nowrap}
+
+</style>

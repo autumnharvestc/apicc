@@ -1,0 +1,25 @@
+/* Imported with <style scoped>: controls belong to the importing component,
+   not to nested editors, report viewers or Ant Design components. */
+button, input, select, textarea { font: inherit; color: var(--text); box-sizing: border-box; }
+button { border: 1px solid var(--border); background: var(--bg); border-radius: var(--control-radius); padding: 6px 12px; min-height: 32px; cursor: pointer; line-height: 1.4; max-width: 100%; }
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--active-weak); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+input:not([type=checkbox]):not([type=radio]), select, textarea { min-width: 0; max-width: 100%; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg); padding: 6px 9px; line-height: 1.5; }
+input[type=checkbox], input[type=radio] { accent-color: var(--accent); flex: none; }
+input:disabled, select:disabled, textarea:disabled { color: var(--text-muted); background: var(--panel); }
+fieldset { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin: 14px 0; }
+legend { font-weight: 600; padding: 0 6px; }
+summary { cursor: pointer; color: var(--accent); padding: 6px 0; overflow-wrap: anywhere; }
+h2, h3, h4 { color: var(--text); line-height: 1.45; overflow-wrap: anywhere; }
+h2 { font-size: 19px; margin: 0 0 14px; } h3 { font-size: 15px; margin: 0 0 12px; } h4 { font-size: 14px; margin: 12px 0 8px; }
+p { line-height: 1.65; overflow-wrap: anywhere; }
+dt { color: var(--text-muted); }
+dd, code { overflow-wrap: anywhere; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { background: var(--subtle); font-weight: 600; white-space: nowrap; overflow-wrap: normal; }
+tbody tr:hover { background: var(--hover); }
+[role=alert] { color: var(--fail); border-left: 3px solid var(--fail); padding: 8px 12px; background: var(--subtle); }
+.table-scroll { max-width: 100%; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.online-surface { color: var(--text); font-size: 13px; box-sizing: border-box; }
+.empty-state { padding: 24px 16px; color: var(--text-muted); text-align: center; background: var(--subtle); border: 1px dashed var(--border); border-radius: 8px; }

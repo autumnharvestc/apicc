@@ -21,7 +21,7 @@ const serverContentBytes = computed(() => selected.value?.stage === 'server' ? n
 </script>
 <template>
   <section v-if="collaboration.error" role="alert"><template v-if="producerError"><p>{{ t('collaboration.producerErrors.' + producerError + '.reason') }}</p><p>{{ t('collaboration.producerErrors.' + producerError + '.nextStep') }}</p></template><template v-else><p>{{ t(errorKey) }}</p><p v-if="!errorKey.endsWith('collaboration-key-unavailable')">{{ t('collaboration.reselectHint') }}</p></template></section>
-  <section v-if="selected" class="publication-preview" data-testid="publication-preview">
+  <section v-if="selected" class="publication-preview online-surface" data-testid="publication-preview">
     <h3>{{ artifact?.title ?? t('collaboration.mockPlan') }}</h3>
     <dl><dt>{{ t('collaboration.target') }}</dt><dd>{{ collaboration.context?.serverId }} · {{ collaboration.context?.scope.workspaceId }} / {{ collaboration.context?.scope.projectId }}</dd><dt>{{ t('collaboration.account') }}</dt><dd>{{ collaboration.context?.ownerId }}</dd><dt>{{ t('collaboration.trust') }}</dt><dd>{{ t('collaboration.codes.' + (artifact?.source.trust ?? 'saved-contract')) }}</dd><dt>{{ t('collaboration.sourceRevision') }}</dt><dd>{{ source?.revision }}</dd><dt>{{ t('collaboration.previewExpires') }}</dt><dd>{{ time(selected.stage === 'local' ? selected.expiresAt : selected.preview.expiresAt, locale) }}</dd></dl>
     <details v-if="selected.stage === 'server'"><summary>{{ t('collaboration.fingerprint') }}: {{ selected.preview.candidateDigest.slice(0,12) }}…</summary><code>{{ selected.preview.candidateDigest }}</code></details>
@@ -41,4 +41,9 @@ const serverContentBytes = computed(() => selected.value?.stage === 'server' ? n
     <button data-testid="cancel-preview" @click="action(() => collaboration.cancelPreview())">{{ t('collaboration.cancelPreview') }}</button>
   </section>
 </template>
-<style scoped>.publication-preview{padding:16px;min-width:0;overflow:auto}dl{display:grid;grid-template-columns:minmax(9rem,15rem) minmax(0,1fr);gap:8px}dt{font-weight:600}dd{margin:0;overflow-wrap:anywhere}.table-scroll{overflow:auto}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:7px;border-bottom:1px solid var(--border)}button{margin:8px 8px 8px 0}</style>
+<style scoped src="../../styles/online-controls.css"></style>
+<style scoped>
+
+.publication-preview{padding:16px;min-width:0;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;background:var(--bg);box-shadow:var(--panel-shadow)}dl{display:grid;grid-template-columns:minmax(90px,.4fr) minmax(0,1fr);gap:8px 16px}dd{margin:0;overflow-wrap:anywhere}.table-scroll{max-height:360px}table{min-width:480px}td{overflow-wrap:anywhere}button{margin:8px 8px 8px 0}.publication-preview>details{padding:8px 12px;background:var(--subtle);border-radius:8px}.publication-preview h3{margin-top:0}
+
+</style>

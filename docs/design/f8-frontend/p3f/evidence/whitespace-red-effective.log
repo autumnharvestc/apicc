@@ -1,0 +1,47 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/OnlineSchedulesPanel.test.ts (114 tests | 2 failed | 112 skipped) 237ms
+   × P3f clears only schedule search and preserves the selected draft in zh-CN 168ms
+   × P3f clears only schedule search and preserves the selected draft in en 66ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/OnlineSchedulesPanel.test.ts > P3f clears only schedule search and preserves the selected draft in zh-CN
+AssertionError: expected '当前页暂无计划' to contain '当前筛选无匹配计划'
+
+Expected: "当前筛选无匹配计划"
+Received: "当前页暂无计划"
+
+ ❯ tests/renderer/components/OnlineSchedulesPanel.test.ts:678:49
+    676|     await f.view.get('[data-testid="schedule-filter"]').setValue('all'…
+    677|     await f.view.get('[data-testid="schedule-search"]').setValue('   '…
+    678|     expect(f.view.get('.schedule-list').text()).toContain(locale === '…
+       |                                                 ^
+    679|     await f.view.get('[data-testid="schedule-filter"]').setValue(selec…
+    680|     await f.view.get('[data-testid="schedule-clear-search"]').trigger(…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/renderer/components/OnlineSchedulesPanel.test.ts > P3f clears only schedule search and preserves the selected draft in en
+AssertionError: expected 'No schedules on this page' to contain 'No schedules match these filters'
+
+Expected: "No schedules match these filters"
+Received: "No schedules on this page"
+
+ ❯ tests/renderer/components/OnlineSchedulesPanel.test.ts:678:49
+    676|     await f.view.get('[data-testid="schedule-filter"]').setValue('all'…
+    677|     await f.view.get('[data-testid="schedule-search"]').setValue('   '…
+    678|     expect(f.view.get('.schedule-list').text()).toContain(locale === '…
+       |                                                 ^
+    679|     await f.view.get('[data-testid="schedule-filter"]').setValue(selec…
+    680|     await f.view.get('[data-testid="schedule-clear-search"]').trigger(…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 112 skipped (114)
+   Start at  23:42:45
+   Duration  7.15s (transform 2.51s, setup 0ms, import 5.62s, tests 237ms, environment 1.08s)
+
