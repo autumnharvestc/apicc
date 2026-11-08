@@ -14,6 +14,27 @@ async function seeded() {
 }
 
 describe("importW store", () => {
+  it.each(['undo-rejected', 'refresh-rejected', 'preview', 'reset'] as const)("G10 undo outcome and success reset remain distinct: %s", async scenario => {
+    const { api, ws } = await seeded(); const value = useImportWizardStore(api, ws);
+    await value.previewFile('synthetic.yaml', 'x');
+    const group = ws.tree!.children.find(node => node.kind === 'group');
+    if (!group || group.kind !== 'group') throw new Error('Expected the legal target group');
+    const target = { mode: 'project' as const, target: group.locator, name: 'G10 synthetic import' };
+    await value.makePlan(target); await value.apply(target); expect(value.applyResult?.committed).toBe(true);
+    if (scenario === 'undo-rejected') {
+      api.importUndo = async () => { throw new Error('Synthetic undo rejection'); };
+      await expect(value.undo()).rejects.toThrow('Synthetic undo rejection');
+      expect(value.undone).toBe(false); expect(value.applyResult?.committed).toBe(true);
+    } else if (scenario === 'refresh-rejected') {
+      ws.refresh = async () => { throw new Error('Synthetic refresh failure after successful undo'); };
+      await expect(value.undo()).rejects.toThrow('Synthetic refresh failure after successful undo');
+      expect(value.undone).toBe(true); expect(value.applyResult?.committed).toBe(false);
+    } else {
+      await value.undo(); expect(value.undone).toBe(true);
+      if (scenario === 'preview') await value.previewFile('next-synthetic.yaml', 'x'); else value.reset();
+      expect(value.undone).toBe(false); expect(value.applyResult).toBeNull();
+    }
+  });
   it("初始状态 preview=null、applying=false", () => {
     const importW = useImportWizardStore(createMemoryApi());
     expect(importW.preview).toBeNull();

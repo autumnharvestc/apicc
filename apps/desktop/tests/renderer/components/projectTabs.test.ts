@@ -393,7 +393,7 @@ describe("ProjectTabs 离线签（禁用态可再激活）", () => {
     await tab.trigger("click"); // 重试激活
     await flushPromises();
     expect(tabs.activeTabId).toBeNull(); // 重试失败：不切换
-    expect(tabs.error).toContain("离线");
+    expect(tabs.error).toBe("online-workspace-session-missing");
     // 离线签无草稿 → × 直关（会话表空，无缓冲可逐）
     await wrapper.find('[data-testid="tab-close-0"]').trigger("click");
     await flushPromises();

@@ -1946,14 +1946,18 @@ describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至�
   });
 
   // —— M3-B 任务 2：顶栏在线模式入口 ——
-  it("在线入口：未登录显示「在线模式」，点击置 dialogOpen=true；已登录显示登录身份", async () => {
+  it("在线入口：零连接进入管理；保存连接后打开登录；已登录显示登录身份", async () => {
     const { wrapper, online } = await mountWith(TopBar, {});
     expect(wrapper.find('[data-testid="online-toggle"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="online-status"]').text()).toBe("在线模式");
     await wrapper.find('[data-testid="online-toggle"]').trigger("click");
-    expect(online.dialogOpen).toBe(true);
+    expect(online.dialogOpen).toBe(false);
+    expect(wrapper.emitted("manage-connections")).toEqual([[]]);
     // 已登录态（经 store login）→ 按钮文案切登录身份（用户 + 档案名）
     online.addProfile("http://127.0.0.1:8080", "团队服务器");
+    await wrapper.find('[data-testid="online-toggle"]').trigger("click");
+    expect(online.dialogOpen).toBe(true);
+    expect(wrapper.emitted("manage-connections")).toHaveLength(1);
     await online.login("alice", "password8");
     await flushPromises();
     expect(wrapper.find('[data-testid="online-status"]').text()).toContain("示例用户");

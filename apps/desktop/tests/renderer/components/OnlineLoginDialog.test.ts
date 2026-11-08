@@ -112,6 +112,25 @@ async function mountDialog({ open = true, logins = 0 }: { open?: boolean; logins
 }
 
 describe("OnlineLoginDialog", () => {
+  it.each([
+    ['reopen', false], ['switch', false], ['reopen', true], ['switch', true],
+  ] as const)("G10 registration fields and prior local notice clear on %s (success: %s)", async (change, succeeded) => {
+    const { online } = await mountDialog();
+    await expectBody('online-tab-register').trigger('click'); await flushPromises();
+    await expectBody('online-reg-username').setValue('synthetic-registration');
+    await expectBody('online-reg-password').setValue(succeeded ? 'synthetic-password8' : 'short');
+    await expectBody('online-display-name').setValue('Synthetic private display name');
+    await expectBody('online-register-submit').trigger('click'); await flushPromises();
+    expect(bodyHas(succeeded ? 'online-register-ok' : 'online-form-error')).toBe(true);
+    if (change === 'reopen') { await expectBody('online-close').trigger('click'); await flushPromises(); online.dialogOpen = true; }
+    else online.addProfile(SERVER_B, 'Second synthetic connection');
+    await flushPromises();
+    expect(bodyHas('online-register-ok')).toBe(false); expect(bodyHas('online-form-error')).toBe(false);
+    expect((expectBody('online-username').element as HTMLInputElement).value).toBe('');
+    expect((expectBody('online-password').element as HTMLInputElement).value).toBe('');
+    await expectBody('online-tab-register').trigger('click'); await flushPromises();
+    for (const id of ['online-reg-username', 'online-reg-password', 'online-display-name']) expect((expectBody(id).element as HTMLInputElement).value).toBe('');
+  });
   it.each(["reopen", "switch"] as const)("LOGIN-001 clears credentials and errors on %s", async (change) => {
     const { online } = await mountDialog();
     await expectBody("online-username").setValue("private-alice");

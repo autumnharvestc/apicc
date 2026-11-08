@@ -617,7 +617,7 @@ describe("关签（closeTab，不变量 3：关签=项目关闭，dirty 确认�
     expect(tabs.activeTabId).toBe("tab-1");
     await tabs.closeTab("tab-1"); // 关活跃首签 → 相邻 tab-2 激活失败（分歧）→ 活跃落 null
     expect(tabs.activeTabId).toBeNull();
-    expect(tabs.error).toContain("离线");
+    expect(tabs.error).toBe("online-workspace-session-missing");
     expect(tabs.tabs.map((t) => t.tabId)).toEqual(["tab-2"]); // 离线签保留（禁用态可再激活）
     expect(evictions).toEqual([{ workspaceRef: { kind: "online", workspaceId: "ws-1", name: "在线一" }, projectId: "p-1" }]);
   });

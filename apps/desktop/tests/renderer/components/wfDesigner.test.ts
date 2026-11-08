@@ -197,6 +197,19 @@ async function selectNode(wrapper: ReturnType<typeof mount>, index: number) {
 }
 
 describe("WfDesigner 装配", () => {
+  it("G10 an explicit nested invocation mode wins when its parent has no recorded mode", () => {
+    // The current contract has only the explicit v2 value; legacy is absence, not another enum.
+    const child: WorkflowRunResult = { workflowId: 'child', workflowName: 'Explicit child', status: 'enabled', invocationId: 'explicit-child', parentInvocationId: 'root', invocationPath: [{ workflowId: 'root' }, { workflowId: 'child' }], reportingMode: 'workflow-invocation-v2', verdict: 'passed', nodeResults: [], total: 0, passed: 0, failed: 0, skipped: 0, warnings: [], startedAt: 'start', finishedAt: 'end' };
+    const result: WorkflowRunResult = { ...child, workflowId: 'root', workflowName: 'Legacy parent', invocationId: 'root', parentInvocationId: undefined, reportingMode: undefined, nodeResults: [{ nodeId: 'call', label: 'Nested call', kind: 'subflow', state: 'passed', childInvocations: [child] }] };
+    const original = JSON.stringify(result);
+    for (const locale of ['zh-CN', 'en'] as const) {
+      const { i18n } = createI18nInstance(); i18n.global.locale.value = locale;
+      const panel = mount(WfResultDrawer, { props: { open: true, result, embedded: true }, global: { plugins: [i18n] } });
+      expect(panel.get('[data-testid="wf-invocation-explicit-child"]').text()).toContain(locale === 'zh-CN' ? '调用级工作流报告' : 'Workflow invocation report');
+      expect(panel.text()).toContain(locale === 'zh-CN' ? '旧版报告' : 'Legacy report'); panel.unmount();
+    }
+    expect(JSON.stringify(result)).toBe(original);
+  });
   it("keeps nested report mode and successful AND branches accurate without changing OR winner facts", async () => {
     const child: WorkflowRunResult = { workflowId: "child", workflowName: "User child", status: "enabled", invocationId: "child-call", parentInvocationId: "root-call", invocationPath: [{ workflowId: "root" }, { workflowId: "child" }], verdict: "passed", nodeResults: [], total: 0, passed: 0, failed: 0, skipped: 0, warnings: [], startedAt: "start", finishedAt: "end" };
     const branch = (id: string) => ({ workflowId: id, invocationId: id, invocationPath: [{ workflowId: id }], branchId: id, state: "passed" as const, winner: false });

@@ -441,6 +441,9 @@ watch(
   (message) => {
     if (message) reportError(new Error(message));
   },
+  // 重试会在同一 tick 清空再写回同一个原因；同步观察保留这次新失败，
+  // 使用户关闭提示后再次点击离线签仍能看到错误。
+  { flush: "sync" },
 );
 
 // —— 树面板头（M8）：模块标题 + 前端搜索（SideTree 按 label 过滤）——

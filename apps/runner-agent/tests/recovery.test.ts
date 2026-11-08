@@ -65,6 +65,45 @@ function harness(items: Fixture[], dataDirectory: string, overrides: Partial<Age
 }
 const release = (path: string) => { gates.get(path)?.end('{"value":"ok"}'); gates.delete(path); };
 
+it("G08 real stress worker tree exits before archive compaction and its delivery never replays after restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'apicc-g08-lifecycle-'));
+  // Only stress tasks record per-process recovery details in production. Ordinary
+  // dedicated workflows have no such details to compact, so use the real stress fixture.
+  const item = await stressFixture(baseUrl, 863, 2, '/g08-real-stress-lifecycle');
+  let first: ReturnType<typeof harness> | undefined, second: ReturnType<typeof harness> | undefined;
+  try {
+    first = harness([item], directory, {}, { enabled: true, batchSize: 50 }); await first.supervisor.ready;
+    expect(first.supervisor.receive(item.delivery)).toBe(true);
+    await wait(() => expect(requests.some(path => path === '/g08-real-stress-lifecycle')).toBe(true));
+    await wait(() => expect(first!.completed).toHaveLength(1));
+    const ledger = first.supervisor['ledger'];
+    await wait(() => {
+      const entry = ledger.intents[0]!;
+      expect(entry.processes!.length).toBeGreaterThan(0); expect(entry.processIntents!.length).toBeGreaterThan(0);
+      expect(entry.processes!.every(process => process.exited === true && !process.observationUncertain)).toBe(true);
+    });
+    expect(first.supervisor.processState().dedicatedPids).toEqual([]);
+    const report = first.supervisor.pendingReports()[0]!; expect(report).toBeDefined();
+    const before = structuredClone(ledger.intents[0]!);
+    first.supervisor.command({ kind: 'cancel', messageId: 'g08-historical-cancel', executionId: item.delivery.task.executionId, jobId: item.delivery.task.jobId, reason: 'Synthetic terminal command' });
+    await first.supervisor.flushMessages(new AbortController().signal);
+    expect(ledger.messages).toEqual([]);
+    first.supervisor.acknowledgeReport(item.delivery.task.executionId, { archived: true, reportHash: report.hash, reportBytes: report.bytes });
+    expect(ledger.intents[0]!.processes).toBeUndefined(); expect(ledger.intents[0]!.processIntents).toBeUndefined();
+    expect(ledger.intents[0]).toMatchObject({ executionId: before.executionId, jobId: before.jobId, deliveryId: before.deliveryId, fact: before.fact, settled: true, archived: true, processObservation: before.processObservation });
+    await first.supervisor.close(); first = undefined;
+    const requestCount = requests.filter(path => path === '/g08-real-stress-lifecycle').length; expect(requestCount).toBeGreaterThan(0);
+    second = harness([item], directory, {}, { enabled: true, batchSize: 50 }); await second.supervisor.ready;
+    const loads = vi.spyOn(second.options, 'loadInputs');
+    expect(second.supervisor.receive(item.delivery)).toBe(true);
+    second.supervisor.command({ kind: 'cancel', messageId: 'g08-historical-cancel', executionId: item.delivery.task.executionId, jobId: item.delivery.task.jobId, reason: 'Synthetic repeated command' });
+    await second.supervisor.flushMessages(new AbortController().signal); await new Promise<void>(resolve => setImmediate(resolve));
+    expect(loads).not.toHaveBeenCalled(); expect(second.completed).toEqual([]); expect(requests.filter(path => path === '/g08-real-stress-lifecycle')).toHaveLength(requestCount);
+    expect(second.supervisor['ledger'].intents).toHaveLength(1); expect(second.supervisor['ledger'].intents[0]!.processes).toBeUndefined();
+    expect(second.supervisor.processState()).toEqual({ sharedPid: undefined, dedicatedPids: [] });
+  } finally { await first?.supervisor.close(); await second?.supervisor.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 it.each([true, false])("restores seen and pending messages before one startup compaction batch without replay (enabled: %s)", async enabled => {
   const directory = await mkdtemp(join(tmpdir(), "apicc-startup-compaction-"));
   const items = await Promise.all([fixture(841, "/must-not-replay-compacted"), fixture(842, "/must-not-replay-second-history"), fixture(843, "/must-not-replay-pending")]);

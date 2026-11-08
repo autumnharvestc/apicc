@@ -1,0 +1,1671 @@
+{
+  "ci96": "failed; original logs retained",
+  "localFullRun": false,
+  "nativeStatus": {
+    "date": "2026-11-08T06:49:56.8621102Z",
+    "status": "completed within the named native scope",
+    "baseUrl": "http://127.0.0.1:56664",
+    "userHandoff": {
+      "closedAndReopenedCredentialsEmpty": true,
+      "loginSucceeded": true,
+      "source": "User reply: 已登录，重开后账号密码均为空"
+    },
+    "verified": {
+      "zeroProfileTopBarRoutesManagement": true,
+      "targetAndIdentityVisible": true,
+      "defaults": "20 contexts / 30 minutes / 64 MiB",
+      "saved": "0 contexts / 31 minutes / 8 MiB",
+      "drawerReopenRestoresSavedValues": true,
+      "chineseAndEnglishReadable": true,
+      "processRestartRestoresPreferencesAndEnglish": true,
+      "processRestartRestoresIdentityThroughServerMe": true,
+      "realElectronTokenFileEncrypted": true,
+      "literalSyntheticTokenAbsent": true
+    },
+    "isolation": {
+      "privateRoot": "local/f8-coverage-ci96/native-private",
+      "initialPid": 8572,
+      "restartPid": 29676,
+      "helperPid": 7492,
+      "asarSha256": "289d6a021a6d50cc0e8a19c7318bd657b784b14551bf65b370858049dfd05bc1"
+    },
+    "limits": [
+      "Synthetic HTTP protocol server, not Java accounts or deployment validation",
+      "Native caches empty: populated-cache eviction is covered by scoped real-store tests, not this native session",
+      "Repeated offline alert and language update covered by App component integration, not native project navigation",
+      "Encrypted token file and successful restart observed; no OS keychain failure, cross-account or adversarial coverage claimed"
+    ],
+    "cleanup": {
+      "normalUiExit": true,
+      "originalProcessGone": true,
+      "restartedProcessGone": true,
+      "helperGone": true,
+      "portClosed": true,
+      "privateFilesRetained": true
+    },
+    "artifacts": [
+      {
+        "path": "local/f8-coverage-ci96/native-connection-ready-ax.txt",
+        "sha256": "7781ceac4350af033884bf2ccd4c9b31714f817a11fe075409871d58a62966e6"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-connection-ready.png",
+        "sha256": "1ee792670830de55ec0686e93b98f14865344e4d287f1b1bf66a97742bf1e490"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-login-success-ax.txt",
+        "sha256": "94f02c9e4c9ef5ef477d9ba59553b7b7caf947cdf38d2d237256675b3d3a3b9b"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-settings-zh-ax.txt",
+        "sha256": "6015229d4c81c569462bba140b1870e378885dd92b160d458ef85d427c1b5cf8"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-settings-zh.png",
+        "sha256": "2828cb4c5db995c8481523d1f3515d89c82f5a3b1dded9cbd805fc7dcba60e1e"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-settings-en-ax.txt",
+        "sha256": "f131cdbc31e4ecab96dbeac4da636038f848b2a668470ccb9efd25e259aad5ad"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-settings-en.png",
+        "sha256": "1daa92c751a1bac3107705148887055f058bd1e8494f15c834208141eb528813"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-restart-identity-ax.txt",
+        "sha256": "fd4a18d3fe282c864cd0005a23401d35e1413d0c856a592c7d1fa4bbc33fb27b"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-settings-restart-ax.txt",
+        "sha256": "fa3427e5ae424209f4c85e6042a087d1cf2d1966ca65edfd3797cf455c95ae56"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-settings-restart.png",
+        "sha256": "75295e60961c79e0fbd9227e5d822d5b521282ec722753cd673fdb485ef891f7"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-requests.jsonl",
+        "sha256": "ee9875372780d3348c383e7a1d04323d7b933706a8fbbad8be40b2b65e4f7166"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-window.json",
+        "sha256": "1bf3bbe8902717382dfb085f354ad6cb4ffb30cd2064e57e2e845c940b5e9778"
+      },
+      {
+        "path": "local/f8-coverage-ci96/native-restart.json",
+        "sha256": "69c30a62ec6238049e2950480087b211a218b67d89ecd02c331e4362871091bb"
+      }
+    ]
+  },
+  "date": "2026-11-08",
+  "scope": "CI96 and the named first/second batch verification gaps; no local full test run",
+  "fixtureFailures": [
+    "g08-first: path did not use the fixture hold gate",
+    "g08-corrected-fixture: ordinary workflow has no stress process detail",
+    "g09 config preflight: no business test executed"
+  ],
+  "sourceFiles": [
+    {
+      "sha256": "c6d4c5b479d22ce1f355c491dcbcb3aa56fa5a0057b08340b94500b377a8f934",
+      "path": "apps/desktop/src/renderer/src/App.vue",
+      "gitBlob": "2086d8a5402709d3958536ce1d3f3cd5012d8d9b"
+    },
+    {
+      "sha256": "54dbb3964eb5e46e4581abcdcd94f74891bba9418f90d852dadaeae9727a00c5",
+      "path": "apps/desktop/tests/main/online/auth-window-lifecycle.test.ts",
+      "gitBlob": "9010fe5b6fb32b6e14024088127afd0fd2bb9874"
+    },
+    {
+      "sha256": "57ce005f5c0204f149fdbb4daed623d55a58d1aae2af61955609255c8b90fd08",
+      "path": "apps/desktop/tests/renderer/App.test.ts",
+      "gitBlob": "3c9a65aa2b239e6570f4bdeafd33531bcb95c4ae"
+    },
+    {
+      "sha256": "2fe0cc53128c9b13b4536fc94d2be5b5a5cb6a164709f742e9e0377c8bdfc77d",
+      "path": "apps/desktop/tests/renderer/components/components.test.ts",
+      "gitBlob": "5efbb33d60461c746e5fceec759e86c874950698"
+    },
+    {
+      "sha256": "bf162ae684c1b183ab29145f6ba868f88d0efb8ac5e0d6e170f224263dbe7688",
+      "path": "apps/desktop/tests/renderer/components/OnlineLoginDialog.test.ts",
+      "gitBlob": "d9ea7b43addc29fc4dcd6827335b852678731a3f"
+    },
+    {
+      "sha256": "d9f06ffc37aec69c7843469ec3ea072f79f5cff60acbd11144f11bc11ef3b664",
+      "path": "apps/desktop/tests/renderer/components/projectTabs.test.ts",
+      "gitBlob": "263507a5493143a01afb5b0eaaf1409a54b9732d"
+    },
+    {
+      "sha256": "fbbb98e0c8de5a4fae7eba292fb1d5fa2ec555a2d212b30e287f8f0f411d44de",
+      "path": "apps/desktop/tests/renderer/components/wfDesigner.test.ts",
+      "gitBlob": "3dbbde9e5c67086d4c117ac8b92deb56d6896f2b"
+    },
+    {
+      "sha256": "9b78d5f537794dc1a9b312720cc29002b9b64744737db9bce9345400d7570fe4",
+      "path": "apps/desktop/tests/renderer/stores/importW.test.ts",
+      "gitBlob": "c95b63d1ca82a6a8aeb9d52f3222ffbfb6d85725"
+    },
+    {
+      "sha256": "c322879ff142f236b511809c326efca7a9b316bc786b83ca49d6d19bb0d6a163",
+      "path": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+      "gitBlob": "84630a0e9e8e10b0e8f9ede3362b4aa64868f25b"
+    },
+    {
+      "sha256": "0522e2362fa24efe6839aba351db990890f2234dedad21ceac77b353a5831367",
+      "path": "apps/desktop/tests/renderer/stores/tabs.test.ts",
+      "gitBlob": "bae781c4bc82228880f9b7f2de765aa5f75d912d"
+    },
+    {
+      "sha256": "b67eecbdd1afd92f82c0d4024d0fa67feb3dc3d5f1e90e2ce7bbf1e29a93561e",
+      "path": "apps/runner-agent/tests/recovery.test.ts",
+      "gitBlob": "be03411c7cd3d673443fd778a932cf8afb32df55"
+    }
+  ],
+  "runs": [
+    {
+      "evidence": "local/f8-coverage-ci96/ci96-three-cases-red.json",
+      "success": false,
+      "cases": [
+        {
+          "test": "HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页） 在线入口：未登录显示「在线模式」，点击置 dialogOpen=true；已登录显示登录身份",
+          "status": "failed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ProjectTabs 离线签（禁用态可再激活） 离线签渲染禁用态；点按重试激活（仍失败不切换）；× 直关离线签",
+          "status": "failed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "关签（closeTab，不变量 3：关签=项目关闭，dirty 确认由调用方负责） 关活跃签且相邻激活失败 → activeTabId 置 null（回主页）+ error 上屏，离线相邻签保留",
+          "status": "failed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        }
+      ],
+      "sha256": "f719720c105553ea65509c75d81cb900cba906a5b191816f3076a9dfba7c81eb",
+      "passed": 0,
+      "unselected": 123,
+      "failed": 3
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g02-app-retry-red.json",
+      "success": false,
+      "cases": [
+        {
+          "test": "App 在线模式装配（M3-B 任务 2） CI96 real offline tab retry shows its readable error again after dismissal and follows language changes",
+          "status": "failed",
+          "file": "apps/desktop/tests/renderer/App.test.ts"
+        }
+      ],
+      "sha256": "4e1d2451af809c8db5fa780c6f74de337e445fef082aeb008c9ac26110c2986e",
+      "passed": 0,
+      "unselected": 57,
+      "failed": 1
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g01-g02-focused-green.json",
+      "success": true,
+      "cases": [
+        {
+          "test": "App 在线模式装配（M3-B 任务 2） LOGIN-001 topbar with no connection opens Home connection management without credential inputs",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/App.test.ts"
+        },
+        {
+          "test": "App 在线模式装配（M3-B 任务 2） CI96 real offline tab retry shows its readable error again after dismissal and follows language changes",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/App.test.ts"
+        },
+        {
+          "test": "App 在线模式装配（M3-B 任务 2） F8 registered error design-invalid-json uses readable labels and follows language changes",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/App.test.ts"
+        },
+        {
+          "test": "App 在线模式装配（M3-B 任务 2） F8 registered error online-workspace-session-missing uses readable labels and follows language changes",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/App.test.ts"
+        },
+        {
+          "test": "HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页） 在线入口：零连接进入管理；保存连接后打开登录；已登录显示登录身份",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ProjectTabs 离线签（禁用态可再激活） 离线签渲染禁用态；点按重试激活（仍失败不切换）；× 直关离线签",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "关签（closeTab，不变量 3：关签=项目关闭，dirty 确认由调用方负责） 关活跃签且相邻激活失败 → activeTabId 置 null（回主页）+ error 上屏，离线相邻签保留",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        }
+      ],
+      "sha256": "41e11b049b7d388ecf17ac4f2c1d186324dfbc4d26be5185d736dd42f51604e7",
+      "passed": 7,
+      "unselected": 177,
+      "failed": 0
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/ci96-owning-files-green.json",
+      "success": true,
+      "cases": [
+        {
+          "test": "SideTree api 行固定图标操作具有可访问名称与 tooltip，模块/目录操作收纳于更多菜单",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree module 行固定图标操作具有可访问名称与 tooltip，模块/目录操作收纳于更多菜单",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree folder 行固定图标操作具有可访问名称与 tooltip，模块/目录操作收纳于更多菜单",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 渲染工作区树并支持选中接口",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 新建接口：集合动作钮经对话框输入后创建并选中",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 对话框 run 拒绝时经 reportError 上报（宽审查 I1，不再静默吞没）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 删除接口：确认对话框放行后节点消失",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 删除被引用接口：显示引用方，确认后拒绝并保留 API（Task9 引用保护）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 删除未被引用接口：无影响清单（无额外弹窗），确认后直接删除",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 删除被引用接口：取消影响清单对话框则不删除",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 删除接口：wfImpact 反查拒绝时经 reportError 上报并中止（不开框、不删除）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 根层新建分组：空工作区也能从根创建顶层节点",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 工作区未打开时渲染空态",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree project children 尾部渲染工作流节点：label + 状态徽标色点（draft 灰/published 蓝/enabled 绿）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 点击工作流节点 emit select(\"workflow\", id)",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 工作流重命名：对话框输入后经 wfRename 改名并刷新树",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "SideTree 工作流删除：确认对话框放行后经 wfDelete 删除并从树移除",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor OAuth 状态只显示安全摘要；显式授权可取消，刷新部分失败可见，解绑不删除 Bearer 凭据",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor free OAuth 管理按真实 tab owner/environment/Bearer 隔离，旧 owner 迟到快照不能覆盖新签",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor 编辑 URL 触发 update 且显示发送按钮",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor 点击发送走默认 apicc.debugSend 并产生结果",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor 认证 tab：选择类型生成对应 auth 字段",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor 请求体 tab：选择 form 类型后可添加行",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor 调试选择器：发送使用 request invocation 和 environmentId，不自动应用选中用例",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor 悬空用例选择显示回退：切接口后失效 id 不再显示，回退 cases[0]（显示与 send 一致）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor 悬空环境选择显示回退：删环境后失效名不再显示，回退「无环境」（显示与 send 一致）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor M5-B 协议选择：正式契约明确 HTTP 默认值，三协议选项文案走 i18n",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor M5-B HTTP↔WebSocket↔SOAP 多轮编辑/草稿保留/合法保存载荷（旧三协议与保存标题合并）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor M5-B 预修①：WS 消息页签下切另一接口 → 页签回落新接口首签，编辑区可编辑",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RequestEditor M5-B 预修②：同协议页签集内常规互切（http params↔headers、WS message↔headers）不受重置干扰",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer 无结果时显示空态",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer 有结果时显示状态徽标与断言明细（M8：断言收编为第三页签，点击后可见）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer 无 response 时 body/headers tab 显示占位「—」（DebugOutput.response 缺失不得臆造）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer 带 response 时 body 展示真实响应体（JSON pretty），headers 展示响应头表格",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer 带 response 时头部展示状态码与请求耗时；无 response 时不展示（宽审查修复 2）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer error 属性非空时显示错误徽标",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer shows failed and aborted DebugResult terminals with their host cause instead of a green zero-count run",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer marks truncated/redacted response projection in view and projected download",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer renders rejected projected-download errors through registered Alert",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer renders a P3 exchange projection as inert text and leaves absent byte counters unknown",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer shows captured and effective upload filenames separately from upload byte counters",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer M5-B D3 契约 fixture：WS 响应（status=101 握手 + bodyText=首帧）按既有渲染零分支呈现",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ResponseViewer pretty-prints well-formed XML as inert text while Raw preserves exact original body",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "DebugHistory filters keeps formal case history replayable when captured request availability is stale",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "DebugHistory filters shows the selected history delete action in the active locale",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "DebugHistory filters applies the current API and a valid date range, resets pagination, and can return to all scope",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "DebugHistory filters rejects a reversed date range and disables scopes without current context",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "DebugHistory filters filters Free sources, shows project and draft identity, and restores only into the matching project",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "DebugHistory filters keeps valid v1/v2 case replay enabled when captured request intent is unavailable or needs input",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "EmptyState 渲染传入文本",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ConfirmDialog 带输入框时确认回传输入值",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ConfirmDialog 无输入框时确认回传 null，取消触发 cancel",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ConfirmDialog open=false 不渲染",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页） 打开本地目录：经 wsPickDirectory+wsOpen 后显示工作区名",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页） 新建本地目录先弹名称输入对话框，可取消",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页） 打开本地目录失败时经 reportError 上报（宽审查 I1）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页） 在线入口：零连接进入管理；保存连接后打开登录；已登录显示登录身份",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "stressStore 工厂隔离：两实例 state（form/report）互不可见",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "stressStore 运行中 clear（切接口）→ 旧 run 完成/拒绝均不上屏不外抛、running 复位（代际令牌防错挂）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressPanel 挂载：用例/环境下拉列出用例与环境，模式单选可切换，并发默认 1",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressPanel 点「开始」：stressRun 以表单值调用（载荷按 mode 组装），运行中开始禁用+停止可用，resolve 后报告与 file 行上屏",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressPanel start reject：reportError 收到消息、旧报告与 file 保留（debug 错误语义）、错误上屏且 running 复位",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressPanel 点「停止」：stressStop 调用且返回的部分报告上屏",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressPanel 数字输入清空产生 null：归一为表单默认值（并发 1 / 迭代 10 / 时长秒 10）（裁定 C①）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressPanel cases 为空：「无用例」空态提示，开始禁用（裁定 C②）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressPanel 实际点击仅本次确认与信任项目：显示风险文案并走精确 origin",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressReportView 纯展示：摘要/分位/状态分布/错误分布区块可断言，毫秒取整禁 NaN；空报告显无样本；null 整块不渲染",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "StressReportView 显示 verdict、中文 violation、安全目标和 generator 饱和警告；旧报告不臆判",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RunsHistory kind 区分（M2-D3 任务 3，裁定 B） localizes logical report metadata and legacy identity while preserving the recorded collection name",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RunsHistory kind 区分（M2-D3 任务 3，裁定 B） 混合 kind：集合行渲染既有列 + 集合标签；压测行 totalRequests/failed/rps 摘要 + 压测标签（i18n 收口）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RunsHistory kind 区分（M2-D3 任务 3，裁定 B） 英文集合历史摘要仍包含 skipped，旧字段缺失回退 0",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RunsHistory kind 区分（M2-D3 任务 3，裁定 B） 点击压测行：runsGet 联合分支 → 内嵌 StressReportView 展示、返回复位；点击集合行仍回填结果并收起抽屉",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "RunsHistory kind 区分（M2-D3 任务 3，裁定 B） runsGet 未命中（null）：保持列表视图并经 reportError 提示，不切出空白报告区（终审 Minor）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/components.test.ts"
+        },
+        {
+          "test": "ProjectTabs 渲染与激活（计划 C 任务 5） 零项目时主页仍为固定首签；成签后逐签渲染项目名与关闭钮",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 渲染与激活（计划 C 任务 5） 主页与项目共享唯一选择；在主页点关闭钮不激活被关闭签",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 渲染与激活（计划 C 任务 5） 激活高亮：活跃签 active 类 + data-active；点另一签走 activateTab 编排（本地项目选中）并迁移高亮",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 关签（dirty 确认两分支，不变量 3） 无草稿：点 × 直关不弹确认，签出表且驱逐钩子按 (workspaceRef, projectId) 被调",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 关签（dirty 确认两分支，不变量 3） 非活跃槽脏也拦截：活跃编辑槽干净、同项目非活跃槽脏 → 弹「未保存的修改将丢弃」；取消保留、确认后关签驱逐",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 关签（dirty 确认两分支，不变量 3） workflowDesign 草稿归属过滤：活跃工作流属于该项目才拦截；不属于则直关",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 关签（dirty 确认两分支，不变量 3） 同 projectId 不同 group 的脏槽不串扰：关闭另一定位的签不触发确认",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 关签（dirty 确认两分支，不变量 3） 在线签：`<projectId>/` 前缀缓冲槽任一 dirty 拦截（其他前缀不牵连）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 离线签（禁用态可再激活） 离线签渲染禁用态；点按重试激活（仍失败不切换）；× 直关离线签",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "ProjectTabs 溢出滚动箭头（仅溢出时显示） 不溢出无箭头；桩化 scrollWidth/clientWidth 后出现两侧低对比箭头，点箭头横向滚动",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/projectTabs.test.ts"
+        },
+        {
+          "test": "local project tabs use full project locators keeps same project id in different groups distinct and persists each complete locator",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "local project tabs use full project locators I08: explicit B reactivation and closing pending non-active A both converge backend, workspace, and tabs",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "成签注册表（openProjectTab，不变量 1：项目选中即成签） 新项目成签置活跃：tab-<自增> 运行期唯一；本地项目选中走 tree.select（App.vue:367-370 先例）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "成签注册表（openProjectTab，不变量 1：项目选中即成签） 同 workspaceRef+projectId 重复成签去重：仅激活既有签（已活跃时不重跑选中——草稿零扰动，不变量 2）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "成签注册表（openProjectTab，不变量 1：项目选中即成签） 同项目不同 ref 各成一签（本地与在线并存，去重键 = workspaceRef+projectId）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "激活编排（activateTab） 并发激活按最新意图收敛，较早确认迟到不能重新选择旧签",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "激活编排（activateTab） 在线签且工作区未活跃：先 activateWorkspace 再 selectNode 项目节点（顺序钉住）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "激活编排（activateTab） 在线签且工作区已活跃：不重复 activate，仅项目选中",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "激活编排（activateTab） 分歧防御（任务 2 审查裁定接线点）：渲染层会话表无此工作区 → 不调 activate、标记离线、error 上屏、不切换",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "激活编排（activateTab） activateWorkspace 失败（token 验证失败）→ 标记离线、error 上屏、不切换",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "激活编排（activateTab） 离线签可再激活：会话表补上后 activateTab 成功 → 移出 offlineTabIds 并置活跃",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "激活编排（activateTab） 本地签：单例已打开同目录 → 不重开（驻留，不变量 4）；未打开 → workspace.open 兜底",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "激活编排（activateTab） 本地签 open 失败（目录失效）→ 标记离线、不切换",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "主页与项目页签导航（selectedPage + retained context） 回主页保留项目上下文和页签；重新点同签恢复项目页且不重开工作区",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "主页与项目页签导航（selectedPage + retained context） 关闭主页上的后台签（含保留上下文签）不离开主页",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "主页与项目页签导航（selectedPage + retained context） 主页关闭后台签时，待完成的另一签激活完成后仍停留主页",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "主页与项目页签导航（selectedPage + retained context） 主页意图使迟到的项目激活失效",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签（closeTab，不变量 3：关签=项目关闭，dirty 确认由调用方负责） 驱逐钩子按 (workspaceRef, projectId) 被调；签出表并跟随持久化；非活跃签关闭不动活跃",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签（closeTab，不变量 3：关签=项目关闭，dirty 确认由调用方负责） 关非活跃签不动活跃；关活跃尾签回左邻（Math.min 尾分支）；签全关 → null（回主页）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签（closeTab，不变量 3：关签=项目关闭，dirty 确认由调用方负责） 关活跃首签 → 右邻接任（Math.min 右邻分支，closeTab JSDoc 承诺的相邻切换主路径）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签（closeTab，不变量 3：关签=项目关闭，dirty 确认由调用方负责） 关活跃签且相邻激活失败 → activeTabId 置 null（回主页）+ error 上屏，离线相邻签保留",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签（closeTab，不变量 3：关签=项目关闭，dirty 确认由调用方负责） 相邻激活切走工作区上下文：活跃在线签关闭后本地相邻签接任（本地项目选中被重跑）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "持久化与恢复（localStorage apicc.projectTabs） persist：本地保存完整 projectLocator、在线保存 projectId（只记签结构，草稿/离线态不落盘）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "持久化与恢复（localStorage apicc.projectTabs） 恢复往返：新 store restore 重建签结构（tabId 重生成）+ 活跃位跟随 + 活跃签走完整编排（钩子只对活跃签）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "持久化与恢复（localStorage apicc.projectTabs） 恢复重建失败→离线态：本地 open 失败与在线 activate 失败各自标记离线；活跃位落空 → null（回主页）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "持久化与恢复（localStorage apicc.projectTabs） 形状守卫：损坏 JSON 降级空签表（不抛）；空存储 restore no-op",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "持久化与恢复（localStorage apicc.projectTabs） 形状守卫：字段缺失/类型不符逐条过滤、重复签去重、activeIndex 越界复位 null",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessions） 本地 ref：按完整 ProjectLocator 驱逐一个项目；其他项目会话驻留、活跃不受牵连",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessions） 本地项目关闭等待精确 root+locator 的 Mock 停止；不因切活跃项目而触发",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessions） 在线 ref：路由到 online.evictProjectBuffers(workspaceId, projectId)",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessions） I06: close evicts only the workflow session owned by the closed root and project",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签驱逐真实实现（计划 C 任务 4：createEvictProjectSessions） 防护口径：相同 projectId 的错误 group locator 不会别名驱逐；钩子实现内部不抛",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签判定与驱逐的元数据语义（任务 5 审查重要 1：跨目录本地签） 跨目录本地签：目录 A 项目 PA 有草稿 → 开目录 B（当前树已不含 PA）→ projectHasDrafts(tab-PA) 仍为 true，确认驱逐后 PA 会话消失",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "关签判定与驱逐的元数据语义（任务 5 审查重要 1：跨目录本地签） 不同 group 的同 projectId locator 不会把别处草稿算入或驱逐",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "工作区级关闭（closeWorkspaceTabs，任务 6，不变量 4） 关该工作区全部签并逐签驱逐；其他工作区与本地签保留；签级无 dirty 确认入口（工作区级已确认）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "工作区级关闭（closeWorkspaceTabs，任务 6，不变量 4） 关的是活跃签所在工作区：活跃迁移到相邻驻留签；全部签随工作区清空时回主页",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "工作区级关闭（closeWorkspaceTabs，任务 6，不变量 4） 空签工作区 no-op 不抛",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "切签工作流草稿确认（任务 6，规格勘误口径：workflowDesign 单会话） 离开签的工作流 dirty 且归属当前项目 → 确认钩子被调；false 取消不切换（项目选中未发生）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "切签工作流草稿确认（任务 6，规格勘误口径：workflowDesign 单会话） 确认放行（true）→ 切换完成；切回持有草稿的项目签不拦截（工作流仍归属活跃项目）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "切签工作流草稿确认（任务 6，规格勘误口径：workflowDesign 单会话） 活跃工作流不属于离开签项目（树摘要归属过滤）→ 不牵连直切",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "切签工作流草稿确认（任务 6，规格勘误口径：workflowDesign 单会话） 相同完整locator的复制工作区不共享workflow dirty归属",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "切签工作流草稿确认（任务 6，规格勘误口径：workflowDesign 单会话） workflowDesign 不 dirty → 不确认；确认钩子未注入 → 跳过该草稿源直切（store 单测省略面）",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        },
+        {
+          "test": "异步项目签关闭的身份定位（Task2 I-6） B 的驱逐等待期间先关闭 A，B 返回后仍只移除 B 而不误删 C",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/tabs.test.ts"
+        }
+      ],
+      "sha256": "9174b8916cf0a5e3f912b87baabfdecd608befbbc1d7c0cd11db7e71955b75ed",
+      "passed": 126,
+      "unselected": 0,
+      "failed": 0
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g04-g07-first.json",
+      "success": true,
+      "cases": [
+        {
+          "test": "G04 idle deadline offset -1 preserves only a not-yet-expired selection",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G04 idle deadline offset 0 preserves only a not-yet-expired selection",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G04 active time does not consume the next inactive retention interval",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G04 UTF-8 serialized payload at budget plus 0 bytes uses an inclusive boundary",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G04 UTF-8 serialized payload at budget plus 1 bytes uses an inclusive boundary",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G04 accumulated small payloads evict the oldest result and preserve the newer result",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 zero-cache protection: ended but unreleased",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 zero-cache protection: released but pending archive",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 zero-cache protection: released with no archive",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 zero-cache protection: running",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 zero-cache protection: minimum released status",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 zero-cache protection: complete archive",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 zero-cache protection: expired archive",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 hiding stops retained-job polling and showing resumes only the current context",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G05 a late retained status cannot overwrite another context or release the old protection by inference",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G06 retained debug sessions are reused without resetting another context",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G06 safe eviction removes debug sessions, selections and results while the surviving context still resumes",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G06 an uncertain context keeps its earlier debug session even with zero inactive retention",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactiveContexts accepts boundary 0 and persists only local preferences",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactiveContexts accepts boundary 200 and persists only local preferences",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactiveContexts rejects -1 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactiveContexts rejects 201 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactiveContexts rejects 0.5 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 inactiveTtlMinutes accepts boundary 1 and persists only local preferences",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 inactiveTtlMinutes accepts boundary 1440 and persists only local preferences",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 inactiveTtlMinutes rejects 0 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 inactiveTtlMinutes rejects 1441 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 inactiveTtlMinutes rejects 1.5 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactivePayloadMiB accepts boundary 1 and persists only local preferences",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactivePayloadMiB accepts boundary 512 and persists only local preferences",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactivePayloadMiB rejects 0 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactivePayloadMiB rejects 513 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 maxInactivePayloadMiB rejects 1.5 before persistence or policy change",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 a real storage read failure falls back to defaults with an unavailable diagnostic",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 a throwing localStorage getter is contained and its original descriptor is restored",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 valid JSON with an invalid schema falls back without rewriting it: undefined",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 valid JSON with an invalid schema falls back without rewriting it: {}",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 valid JSON with an invalid schema falls back without rewriting it: {\"maxInactiveContexts\":\"20\",\"inactiveTtlMinutes\":30,\"maxInactivePayloadMiB\":64}",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        },
+        {
+          "test": "G07 valid JSON with an invalid schema falls back without rewriting it: {\"maxInactiveContexts\":20,\"inactiveTtlMinutes\":30,\"maxInactivePayloadMiB\":64,\"extra\":true}",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts"
+        }
+      ],
+      "sha256": "fe755b9177ff44212af72b04cefcf1d1e3be72b04d7f28fca67a03a7ace5b624",
+      "passed": 39,
+      "unselected": 0,
+      "failed": 0
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g10-first.json",
+      "success": true,
+      "cases": [
+        {
+          "test": "OnlineLoginDialog G10 registration fields and prior local notice clear on reopen (success: false)",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/OnlineLoginDialog.test.ts"
+        },
+        {
+          "test": "OnlineLoginDialog G10 registration fields and prior local notice clear on switch (success: false)",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/OnlineLoginDialog.test.ts"
+        },
+        {
+          "test": "OnlineLoginDialog G10 registration fields and prior local notice clear on reopen (success: true)",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/OnlineLoginDialog.test.ts"
+        },
+        {
+          "test": "OnlineLoginDialog G10 registration fields and prior local notice clear on switch (success: true)",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/OnlineLoginDialog.test.ts"
+        },
+        {
+          "test": "WfDesigner 装配 G10 an explicit nested invocation mode wins when its parent has no recorded mode",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/components/wfDesigner.test.ts"
+        },
+        {
+          "test": "importW store G10 undo outcome and success reset remain distinct: undo-rejected",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/importW.test.ts"
+        },
+        {
+          "test": "importW store G10 undo outcome and success reset remain distinct: refresh-rejected",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/importW.test.ts"
+        },
+        {
+          "test": "importW store G10 undo outcome and success reset remain distinct: preview",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/importW.test.ts"
+        },
+        {
+          "test": "importW store G10 undo outcome and success reset remain distinct: reset",
+          "status": "passed",
+          "file": "apps/desktop/tests/renderer/stores/importW.test.ts"
+        }
+      ],
+      "sha256": "def4964113d5450d5ff8363befa69a3daf63864dfe575a80e97c04634afbd122",
+      "passed": 9,
+      "unselected": 79,
+      "failed": 0
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g03-first.json",
+      "success": true,
+      "cases": [
+        {
+          "test": "G03 renderer dismissal with real IPC, HTTP and token files: old login finishes before-resume",
+          "status": "passed",
+          "file": "apps/desktop/tests/main/online/auth-window-lifecycle.test.ts"
+        },
+        {
+          "test": "G03 renderer dismissal with real IPC, HTTP and token files: old login finishes after-resume",
+          "status": "passed",
+          "file": "apps/desktop/tests/main/online/auth-window-lifecycle.test.ts"
+        }
+      ],
+      "sha256": "115a2520435517dbf2e2fa4cb7b428abd01f9cce2079a0248a35564d08bec097",
+      "passed": 2,
+      "unselected": 0,
+      "failed": 0
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g08-first.json",
+      "success": false,
+      "cases": [
+        {
+          "test": "G08 real dedicated worker exits before archive compaction and its delivery never replays after restart",
+          "status": "failed",
+          "file": "apps/runner-agent/tests/recovery.test.ts"
+        }
+      ],
+      "sha256": "4c07331f65c304e871aa771c67c43fce124cc293e1f9be8ea08b772f361e5b4c",
+      "passed": 0,
+      "unselected": 10,
+      "failed": 1
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g08-corrected-fixture.json",
+      "success": false,
+      "cases": [
+        {
+          "test": "G08 real dedicated worker exits before archive compaction and its delivery never replays after restart",
+          "status": "failed",
+          "file": "apps/runner-agent/tests/recovery.test.ts"
+        }
+      ],
+      "sha256": "3a7e571267ed918aab466bda3490678fa39f7758574e3279a5d35f0c67c13629",
+      "passed": 0,
+      "unselected": 10,
+      "failed": 1
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g08-stress-chain.json",
+      "success": true,
+      "cases": [
+        {
+          "test": "G08 real stress worker tree exits before archive compaction and its delivery never replays after restart",
+          "status": "passed",
+          "file": "apps/runner-agent/tests/recovery.test.ts"
+        }
+      ],
+      "sha256": "788643adcb17bfd0d02511e091c468d1849c17f8e8e76056d74d4760f4382485",
+      "passed": 1,
+      "unselected": 10,
+      "failed": 0
+    },
+    {
+      "evidence": "local/f8-coverage-ci96/g09/observed-result.json",
+      "success": true,
+      "cases": [
+        {
+          "test": "reuses a real worker without crossing invocation variables, credential markers or cancellation",
+          "status": "passed",
+          "file": "apps/runner-agent/tests/supervisor.test.ts"
+        }
+      ],
+      "sha256": "ed69574004b7e516a425a384eab38bdf220dac695f48c591dc13176647acd86a",
+      "passed": 1,
+      "unselected": 12,
+      "failed": 0
+    },
+    {
+      "passed": 7,
+      "cases": [
+        {
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "status": "passed",
+          "test": "G04 idle deadline offset -1 preserves only a not-yet-expired selection"
+        },
+        {
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "status": "passed",
+          "test": "G04 idle deadline offset 0 preserves only a not-yet-expired selection"
+        },
+        {
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "status": "passed",
+          "test": "G04 active time does not consume the next inactive retention interval"
+        },
+        {
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "status": "passed",
+          "test": "G04 equal-length ASCII and multibyte payloads have an independently known UTF-8 byte difference"
+        },
+        {
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "status": "passed",
+          "test": "G04 UTF-8 serialized payload at budget plus 0 bytes uses an inclusive boundary"
+        },
+        {
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "status": "passed",
+          "test": "G04 UTF-8 serialized payload at budget plus 1 bytes uses an inclusive boundary"
+        },
+        {
+          "file": "apps/desktop/tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "status": "passed",
+          "test": "G04 accumulated small payloads evict the oldest result and preserve the newer result"
+        }
+      ],
+      "success": true,
+      "failed": 0,
+      "unselected": 33,
+      "evidence": "local/f8-coverage-ci96/g04-review-delta-green.json",
+      "sha256": "d4baff1c213cb6786539313f3a17366ceaaaaffd35d2e07edd989effca3afba8"
+    }
+  ],
+  "baseCommit": "49e06023040f287760c9780cf518e467726dec05",
+  "knownRisk": "KR-F7F-01 remains unresolved; observed passes do not prove the historical cause",
+  "preReviewSourceManifest": "local/f8-coverage-ci96/review-source-manifest.json",
+  "preReviewSourceManifestSha256": "1dc2ff3de8ce740a2ec08b838e1af0122e4410619c2b307cfadc6d55f67ba59f",
+  "sourceRevisionNote": "The current source list identifies the delivery candidate. Original 39-case cache run predates the one-test UTF-8 review addition; seven G04 cases were then run, with 33 not selected. Earlier failing runs identify the baseline/prior candidate, not a successful run of one final HEAD.",
+  "commandJournal": {
+    "extraResourceBuild": {
+      "note": "Shell explicitly checked LASTEXITCODE and would throw before packaging on nonzero; a separate exit output was not printed, so no independent numeric exit is claimed here.",
+      "exitCode": null,
+      "argv": [
+        "-C",
+        "apps/share-viewer",
+        "build"
+      ],
+      "log": "local/f8-coverage-ci96/share-viewer-build.log"
+    },
+    "fullRun": false,
+    "toolchainSha256": "9152e17301c7ea40a61100ba1dbcb00e8ec8e2afea3960f0c6cea17cc2f3a71d",
+    "builds": [
+      {
+        "id": "desktop-build",
+        "exitCode": 0,
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "build"
+        ],
+        "log": "desktop-build-first.log",
+        "exitEvidence": "Root tool stdout: Desktop scoped build exit=0"
+      },
+      {
+        "id": "agent-typecheck",
+        "exitCode": 0,
+        "argv": [
+          "-C",
+          "apps/runner-agent",
+          "typecheck"
+        ],
+        "log": "agent-typecheck.log",
+        "exitEvidence": "Root tool stdout: Runner-agent affected typecheck exit=0"
+      },
+      {
+        "id": "final-desktop-types",
+        "exitCode": 0,
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "typecheck"
+        ],
+        "log": "final-desktop-typecheck.log",
+        "exitEvidence": "Root tool stdout: Final desktop typecheck after review test delta exit=0"
+      },
+      {
+        "id": "package-initial-environment-failure",
+        "exitCode": 1,
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "electron-builder",
+          "--dir",
+          "--config.directories.output=../../local/f8-coverage-ci96/package"
+        ],
+        "log": "desktop-package.log",
+        "exitEvidence": "Root tool stdout: Scoped package exit=1"
+      },
+      {
+        "id": "package-with-missing-extra-resource",
+        "exitCode": 0,
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "electron-builder",
+          "--dir",
+          "--config.directories.output=../../local/f8-coverage-ci96/package",
+          "--config.electronDist=C:/Users/imini/.codex/worktrees/f7g-external-sync/apicc/apps/desktop/node_modules/electron/dist"
+        ],
+        "log": "desktop-package-final.log",
+        "exitEvidence": "Root tool stdout captured exit0; share-viewer missing resource warning means this is not the final complete resource package"
+      },
+      {
+        "id": "complete-resources-package",
+        "exitCode": 0,
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "electron-builder",
+          "--dir",
+          "--config.directories.output=../../local/f8-coverage-ci96/package-complete",
+          "--config.electronDist=C:/Users/imini/.codex/worktrees/f7g-external-sync/apicc/apps/desktop/node_modules/electron/dist"
+        ],
+        "log": "desktop-package-complete.log",
+        "exitEvidence": "Root tool stdout: Complete resources package exit=0"
+      }
+    ],
+    "provenance": "Retrospective transcription of exact root tool invocations and captured shell exit outputs in this conversation; not parsed or inferred from Vitest success. The application logs do not themselves contain the shell status, and raw tool trace is not exported to Git.",
+    "runs": [
+      {
+        "exitEvidence": "Command receipt JSON captured exit1; root tool stdout also captured 3 failed/0 passed.",
+        "result": "local/f8-coverage-ci96/ci96-three-cases-red.json",
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "vitest",
+          "run",
+          "tests/renderer/components/components.test.ts",
+          "tests/renderer/components/projectTabs.test.ts",
+          "tests/renderer/stores/tabs.test.ts",
+          "-t",
+          "在线入口：未登录显示|离线签渲染禁用态|关活跃签且相邻激活失败",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/ci96-three-cases-red.json"
+        ],
+        "id": "N1",
+        "exitCode": 1,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/ci96-three-cases-red.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: App retry RED exit=1",
+        "result": "local/f8-coverage-ci96/g02-app-retry-red.json",
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "vitest",
+          "run",
+          "tests/renderer/App.test.ts",
+          "-t",
+          "CI96 real offline tab retry",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g02-app-retry-red.json"
+        ],
+        "id": "App-real-RED",
+        "exitCode": 1,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g02-app-retry-red.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G01/G02 focused exit=0",
+        "result": "local/f8-coverage-ci96/g01-g02-focused-green.json",
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "vitest",
+          "run",
+          "tests/renderer/components/components.test.ts",
+          "tests/renderer/components/projectTabs.test.ts",
+          "tests/renderer/stores/tabs.test.ts",
+          "tests/renderer/App.test.ts",
+          "-t",
+          "在线入口：零连接|离线签渲染禁用态|关活跃签且相邻激活失败|CI96 real offline tab retry|F8 registered error|LOGIN-001 topbar",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g01-g02-focused-green.json"
+        ],
+        "id": "N2-focused",
+        "exitCode": 0,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g01-g02-focused-green.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: Three CI96 owning files exit=0",
+        "result": "local/f8-coverage-ci96/ci96-owning-files-green.json",
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "vitest",
+          "run",
+          "tests/renderer/components/components.test.ts",
+          "tests/renderer/components/projectTabs.test.ts",
+          "tests/renderer/stores/tabs.test.ts",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/ci96-owning-files-green.json"
+        ],
+        "id": "N2-owning",
+        "exitCode": 0,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/ci96-owning-files-green.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G04–G07 first exit=0",
+        "result": "local/f8-coverage-ci96/g04-g07-first.json",
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "vitest",
+          "run",
+          "tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g04-g07-first.json"
+        ],
+        "id": "N3-original",
+        "exitCode": 0,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g04-g07-first.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G04 review delta exit=0",
+        "result": "local/f8-coverage-ci96/g04-review-delta-green.json",
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "vitest",
+          "run",
+          "tests/renderer/stores/onlineExecutionCacheBoundaries.test.ts",
+          "-t",
+          "G04 ",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g04-review-delta-green.json"
+        ],
+        "id": "N3-review-delta",
+        "exitCode": 0,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g04-review-delta-green.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G10 first exit=0",
+        "result": "local/f8-coverage-ci96/g10-first.json",
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "vitest",
+          "run",
+          "tests/renderer/components/OnlineLoginDialog.test.ts",
+          "tests/renderer/components/wfDesigner.test.ts",
+          "tests/renderer/stores/importW.test.ts",
+          "-t",
+          "G10 ",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g10-first.json"
+        ],
+        "id": "N4",
+        "exitCode": 0,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g10-first.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G03 first exit=0",
+        "result": "local/f8-coverage-ci96/g03-first.json",
+        "argv": [
+          "-C",
+          "apps/desktop",
+          "exec",
+          "vitest",
+          "run",
+          "tests/main/online/auth-window-lifecycle.test.ts",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g03-first.json"
+        ],
+        "id": "N5",
+        "exitCode": 0,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g03-first.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G08 first exit=1",
+        "result": "local/f8-coverage-ci96/g08-first.json",
+        "argv": [
+          "-C",
+          "apps/runner-agent",
+          "exec",
+          "vitest",
+          "run",
+          "tests/recovery.test.ts",
+          "-t",
+          "G08 real dedicated worker",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g08-first.json"
+        ],
+        "id": "N6-fixture-1",
+        "exitCode": 1,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g08-first.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G08 corrected fixture exit=1",
+        "result": "local/f8-coverage-ci96/g08-corrected-fixture.json",
+        "argv": [
+          "-C",
+          "apps/runner-agent",
+          "exec",
+          "vitest",
+          "run",
+          "tests/recovery.test.ts",
+          "-t",
+          "G08 real dedicated worker",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g08-corrected-fixture.json"
+        ],
+        "id": "N6-fixture-2",
+        "exitCode": 1,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g08-corrected-fixture.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G08 stress chain exit=0",
+        "result": "local/f8-coverage-ci96/g08-stress-chain.json",
+        "argv": [
+          "-C",
+          "apps/runner-agent",
+          "exec",
+          "vitest",
+          "run",
+          "tests/recovery.test.ts",
+          "-t",
+          "G08 real stress worker tree",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g08-stress-chain.json"
+        ],
+        "id": "N6",
+        "exitCode": 0,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g08-stress-chain.log"
+      },
+      {
+        "exitEvidence": "Root execution tool stdout: G09 actual bounded observation exit=0",
+        "result": "local/f8-coverage-ci96/g09/observed-result.json",
+        "argv": [
+          "-C",
+          "apps/runner-agent",
+          "exec",
+          "vitest",
+          "run",
+          "--config",
+          "../../local/f8-coverage-ci96/g09/trace.config.ts",
+          "tests/supervisor.test.ts",
+          "-t",
+          "reuses a real worker without crossing invocation variables, credential markers or cancellation",
+          "--maxWorkers=2",
+          "--reporter=json",
+          "--outputFile=../../local/f8-coverage-ci96/g09/observed-result.json"
+        ],
+        "id": "N7",
+        "exitCode": 0,
+        "recordedRetrospectively": true,
+        "cwd": "repository root",
+        "program": "pinned Node 22.19.0 invoking pnpm 11.21.0",
+        "exitNotInferredFromVitestSuccess": true,
+        "stdoutAndStderr": "local/f8-coverage-ci96/g09/observed-result.log"
+      }
+    ]
+  }
+}

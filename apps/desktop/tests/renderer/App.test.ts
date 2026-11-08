@@ -1709,6 +1709,32 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
     expect(bodyFind("online-password")).toBeNull();
   });
 
+  it("CI96 real offline tab retry shows its readable error again after dismissal and follows language changes", async () => {
+    const wrapper = await mountApp();
+    const locale = initI18n();
+    const tabs = wrapper.findComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+    try {
+      locale.setLocale("zh-CN");
+      await tabs.openProjectTab({ kind: "online", workspaceId: "ci96-missing-session", name: "Synthetic offline workspace" }, { id: "ci96-project", name: "Synthetic offline project" });
+      await flushPromises();
+      expect(tabs.activeTabId).toBeNull();
+      expect(tabs.offlineTabIds).toHaveLength(1);
+      expect(wrapper.get('[data-testid="app-error"]').text()).toContain("项目签已标记离线");
+      await wrapper.get('[data-testid="app-error-close"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="app-error"]').exists()).toBe(false);
+      await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
+      await flushPromises();
+      expect(tabs.error).toBe("online-workspace-session-missing");
+      expect(tabs.activeTabId).toBeNull();
+      expect(tabs.tabs).toHaveLength(1);
+      expect(wrapper.get('[data-testid="app-error"]').text()).toContain("项目签已标记离线");
+      locale.setLocale("en"); await flushPromises();
+      expect(wrapper.get('[data-testid="app-error"]').text()).toContain("The project tab is offline");
+      expect(wrapper.get('[data-testid="app-error"]').text()).not.toContain("online-workspace-session-missing");
+    } finally { locale.setLocale("zh-CN"); }
+  });
+
   it.each([
     ["design-invalid-json", "请先修正无效的 JSON 输入", "Fix the invalid JSON input"],
     ["online-workspace-session-missing", "项目签已标记离线", "The project tab is offline"],
