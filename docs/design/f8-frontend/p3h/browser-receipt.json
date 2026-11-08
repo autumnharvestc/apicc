@@ -1,0 +1,154 @@
+{
+  "date": "2026-11-09",
+  "url": "http://127.0.0.1:63577/",
+  "surface": "Actual Vue components; synthetic memory ports; not Electron or live IPC",
+  "images": [
+    {
+      "file": "01-mock-zh-light.png",
+      "width": 1280,
+      "height": 720,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "02-mock-en-dark-narrow.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "03-network-en-dark.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "04-network-invalid-collapsed.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "05-environment-en-dark-narrow.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "06-environment-zh-light.png",
+      "width": 1280,
+      "height": 830,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "07-contract-zh-light.png",
+      "width": 1280,
+      "height": 830,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "08-response-zh-light-narrow.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "09-assets-zh-light-narrow.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "10-plugins-en-dark.png",
+      "width": 1280,
+      "height": 830,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "11-cache-en-dark.png",
+      "width": 1280,
+      "height": 830,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "12-auth-en-dark-narrow.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "13-container-en-dark-narrow.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "14-debug-en-dark-narrow.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "15-debug-cookies-en-dark.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "16-import-en-dark-narrow.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "17-import-plan-zh-dark.png",
+      "width": 640,
+      "height": 800,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "18-container-short.png",
+      "width": 640,
+      "height": 400,
+      "encoding": "JPEG"
+    },
+    {
+      "file": "19-debug-short.png",
+      "width": 640,
+      "height": 400,
+      "encoding": "JPEG"
+    }
+  ],
+  "observations": [
+    "Mock zh/light and en/dark: current draft rules readable, false value retained, literal body and advanced JSON closed; table local width 535/740 at viewport 640.",
+    "Network invalid draft: summary hidden, error outside closed advanced details; TLS verify=false warning visible. No save or security change applied.",
+    "Environment readonly: three inputs and Save disabled; long name title retained; final title/actions wrap fixed in 06.",
+    "Contract metadata responsive columns; response add/header/schema controls readable at 640; response content width 601/601. No real save/export.",
+    "Assets fixture uses actual object/scalar schema model; nested editor visible. Plugins loaded/failed states, cache defaults/units/protection text, credentials missing state and OAuth form visible.",
+    "Container actual portal: pre-operation 1 moved down, IDs/content preserved by behavior tests; browser did not save. At 640x400 modal y33..367; body 220/303 and footer visible.",
+    "Debug timeout changed 10000 to 12000 then closed/reopened without reload; memory value retained. Cookie metadata only after refresh; local horizontal scrolling. At 640x400 modal y55..345; body 220/909.",
+    "Import preview and project plan displayed; plan contains 1 addition, Import enabled but not clicked; Memory saves 0. Populated conflict decisions covered in existing tests, not browser.",
+    "Design document fixture initially returned root-mismatch due fake ws root versus seeded session root; regenerated using matching temporary root, status ready and real document view observed. Shared DocumentPreview hash/status presentation deferred to P4."
+  ],
+  "fixtureOrToolFailures": [
+    "Initial container RED used teleport stub which rendered object text; no valid behavioral prerequisite. Replaced with actual portal and observed valid accessible-button RED before product edits.",
+    "Browser fixture initially omitted designPreview and used wrong schema model kind / incomplete credential status. Corrected only fixture; no product bypass.",
+    "Initial fixture generation used default Windows encoding; rerun Python with -X utf8.",
+    "One radio check locator timed out; inspected state then clicked actual Dark label. Not counted as a product defect.",
+    "Document preview root-mismatch was a fixture error; final same-root seed yields ready. Earlier screenshots retain original synthetic IDs; final seed records regenerated IDs.",
+    "Final fixture SSR logs dynamic import analysis warning from existing Core plugin loader; no product modification. Final browser captured error list empty; not a claim of zero warnings in all logs.",
+    "Vite server tail recovered on shutdown contains three transient ResizeObserver loop completed with undelivered notifications at 00:37:16, 00:37:33 and 00:42:54 during interactive resizing/reloads. No visible blank/blocked controls observed. Final tab error list empty is only a snapshot; it does not negate this tail. Product root cause not established; carry into P5 native checks. See browser-server-tail.log (tail only, HMR paths abbreviated).",
+    "Receipt initially interpreted screenshot bytes as PNG headers and wrote invalid dimensions. Independent review caught the metadata error; System.Drawing image decoder now supplies actual dimensions and encoding. Image bytes unchanged; filenames retain .png for existing references. PIL was unavailable; no dependency installed."
+  ],
+  "limits": [
+    "No real network execution/listener, credential authorization/save, import apply, persistent container save or OS clipboard validation.",
+    "No native 287px window, OS scaling, actual drag/drop or complete online/local IPC chain.",
+    "Browser fixture ConfigProvider does not pass Ant Design locale, so framework empty No data in Chinese is not accepted as an app localization verdict; verify native shell in P5.",
+    "Shared DocumentPreview still shows long fingerprints and lifecycle draft; explicitly queued with P4 shared/public/HTML presentation, not claimed complete by P3h."
+  ],
+  "shortViewportReceipt": "short-viewport.json",
+  "cleanup": {
+    "tabClosed": true,
+    "viewportReset": true,
+    "port63577Listening": false
+  }
+}

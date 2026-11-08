@@ -71,3 +71,9 @@ SyncPanel / SyncSourceForm / SyncDiffView / SyncHistory 已按 [P3e对照](f8-fr
 ## P3g 更新（2026-11-09）
 
 WfDesigner／WfNode／属性与控制字段／结果抽屉、CasePanel／AssertionEditor／ExtractionEditor、TestSidebar／TestView主体已接入，见[P3g对照](f8-frontend-polish-p3g-validation.md)。保留本机／在线共用事件、完整定位和只读语义；原生拖动／缩放／完整链留P5。下一子组P3h盘点设置、环境、契约、Mock等桌面余项后接入；未完成本第1工作块。后续管理台、公共／离线页、整体原生与新包，共仍4块。
+
+## P3h 更新（2026-11-09）
+
+MockPanel、NetworkSettings、EnvPanel、ContainerManageDialog、ContractDesigner／SchemaEditor／ResponseEditor／ProjectAssetsPanel／DesignPanel、ImportWizard、PluginsView、OnlineExecutionCacheSettings、DebugSettings、OAuthManager／CredentialEditor、TopBar设置宽度完成本组接入；[逐点证据](f8-frontend-polish-p3h-validation.md)与唯一独审封存。桌面专属入口清单完成接入，不表示全部功能或原生验收完成。
+
+共享DocumentPreview（文档预览／公共／离线共用）观察到长指纹和生命周期draft，归入P4公开／文档呈现处理，尚未改产品；浏览器fixture中文Antd No data需P5核实真实App locale，不预断为产品缺陷。原生287px／系统缩放／真实拖动和完整IPC仍留P5。前端剩管理台、公共／离线页面、原生集中验收与新包3块，之后发布收口。

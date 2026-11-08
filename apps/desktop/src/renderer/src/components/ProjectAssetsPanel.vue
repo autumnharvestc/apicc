@@ -161,7 +161,7 @@ async function deleteComponent() {
     <div class="asset-columns">
       <section>
         <header><h3>{{ t('contract.models') }}</h3><button type="button" data-testid="asset-model-add" :disabled="readOnly" @click="addModel">{{ t('contract.modelAdd') }}</button></header>
-        <button v-for="item in assets.models" :key="item.id" type="button" class="asset-choice" :aria-pressed="selectedModelId === item.id" @click="selectedModelId = item.id">{{ item.name }}</button>
+        <button v-for="item in assets.models" :key="item.id" type="button" class="asset-choice" :title="item.name" :aria-pressed="selectedModelId === item.id" @click="selectedModelId = item.id">{{ item.name }}</button>
         <div v-if="model" class="asset-detail">
           <input v-model="model.name" data-testid="asset-model-name" :disabled="readOnly" :placeholder="t('contract.metadataName')" />
           <input v-model="model.description" :disabled="readOnly" :placeholder="t('contract.metadataDescription')" />
@@ -178,9 +178,9 @@ async function deleteComponent() {
           </select>
           <button type="button" data-testid="asset-component-add" :disabled="readOnly" @click="addComponent">{{ t('contract.componentAdd') }}</button>
         </div>
-        <button v-for="item in assets.components" :key="`${item.kind}:${item.id}`" type="button" class="asset-choice" :data-testid="`asset-component-select-${item.kind}-${item.id}`" :aria-pressed="selectedComponentKey === `${item.kind}:${item.id}`" @click="selectComponent(item)">{{ t(`contract.componentKind.${item.kind}`) }} · {{ item.name }}</button>
+        <button v-for="item in assets.components" :key="`${item.kind}:${item.id}`" type="button" class="asset-choice" :title="item.name" :data-testid="`asset-component-select-${item.kind}-${item.id}`" :aria-pressed="selectedComponentKey === `${item.kind}:${item.id}`" @click="selectComponent(item)">{{ t(`contract.componentKind.${item.kind}`) }} · {{ item.name }}</button>
         <div v-if="component" class="asset-detail">
-          <textarea v-model="componentDraft" data-testid="asset-component-definition" :disabled="readOnly" rows="12" spellcheck="false" />
+          <textarea :aria-label="t('desktopPresentation.rawComponent')" v-model="componentDraft" data-testid="asset-component-definition" :disabled="readOnly" rows="12" spellcheck="false" />
           <CredentialEditor v-if="api && assets.projectLocator && authComponent" :api="api" :locator="assets.projectLocator" :auth="authComponent.definition" :context-key="`${credentialContextKey ?? ''}:auth-component:${authComponent.id}`" :read-only="readOnly" />
           <button type="button" data-testid="asset-component-save" :disabled="readOnly" @click="saveComponent">{{ t('contract.assetSave') }}</button>
           <button type="button" data-testid="asset-component-delete" :disabled="readOnly" @click="deleteComponent">{{ t('contract.assetDelete') }}</button>
@@ -192,6 +192,7 @@ async function deleteComponent() {
   </details>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .assets-panel { border-top: 1px solid var(--border, #d9d9d9); padding: 8px; }
 .asset-columns { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.4fr); gap: 12px; }
@@ -200,4 +201,7 @@ header, .row { display: flex; gap: 8px; align-items: center; justify-content: sp
 h3 { margin: 4px 0; }
 .asset-choice { text-align: left; }
 textarea { font-family: ui-monospace, monospace; }
+
+.assets-panel { min-width: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; } .asset-columns { grid-template-columns: repeat(auto-fit,minmax(min(100%,300px),1fr)); margin-top: 12px; } section,.asset-detail { min-width: 0; } header,.row { flex-wrap: wrap; } .asset-choice { overflow-wrap: anywhere; } .asset-choice[aria-pressed=true] { border-color: var(--accent); background: var(--active-weak); } textarea { width: 100%; min-height: 100px; }
+
 </style>

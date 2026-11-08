@@ -293,6 +293,7 @@ function selectDeleteTarget() {
           :key="e.id"
           type="button"
           class="side-item"
+          :title="e.name"
           :class="{ active: pane === e.id }"
           :data-testid="`env-item-${e.id}`"
           @click="pane = e.id; envs.select(e.locator)"
@@ -317,7 +318,7 @@ function selectDeleteTarget() {
         <!-- 全局变量 -->
         <div v-if="pane === 'gvars'" data-testid="env-pane-globals-vars">
           <div class="pane-title">{{ t("env.globalVars") }}</div>
-          <a-table
+          <a-table :scroll="{ x: 520 }"
             :data-source="gvarRows"
             :columns="[{ key: 'key', title: t('env.varName'), dataIndex: 'key' }, { key: 'value', title: t('env.varValue'), dataIndex: 'value' }, { key: 'actions', title: '' }]"
             row-key="id"
@@ -349,7 +350,7 @@ function selectDeleteTarget() {
           <div class="pane-title">{{ t("env.globalParams") }}</div>
           <div class="param-block">
             <div class="block-title">{{ t("env.queryParams") }}</div>
-            <a-table
+            <a-table :scroll="{ x: 520 }"
               :data-source="gqueryRows"
               :columns="[{ key: 'enabled', title: '' }, { key: 'key', title: t('env.varName'), dataIndex: 'key' }, { key: 'value', title: t('env.varValue'), dataIndex: 'value' }, { key: 'actions', title: '' }]"
               row-key="id"
@@ -376,7 +377,7 @@ function selectDeleteTarget() {
           </div>
           <div class="param-block">
             <div class="block-title">{{ t("env.headerParams") }}</div>
-            <a-table
+            <a-table :scroll="{ x: 520 }"
               :data-source="gheaderRows"
               :columns="[{ key: 'enabled', title: '' }, { key: 'key', title: t('env.varName'), dataIndex: 'key' }, { key: 'value', title: t('env.varValue'), dataIndex: 'value' }, { key: 'actions', title: '' }]"
               row-key="id"
@@ -428,7 +429,7 @@ function selectDeleteTarget() {
             </div>
             <div class="param-block">
               <div class="block-title">{{ t("env.envVars") }}</div>
-              <a-table
+              <a-table :scroll="{ x: 520 }"
                 :data-source="varRows"
                 :columns="[{ key: 'key', title: t('env.varName'), dataIndex: 'key' }, { key: 'value', title: t('env.varValue'), dataIndex: 'value' }, { key: 'actions', title: '' }]"
                 row-key="id"
@@ -527,6 +528,8 @@ function selectDeleteTarget() {
 }
 .side-envs { margin-top: 8px; }
 .side-actions { display: inline-flex; gap: 2px; }
+.side-title { flex-wrap: wrap; gap: 6px; }
+.side-actions { flex-wrap: wrap; }
 .side-item {
   text-align: left;
   border: none;
@@ -563,4 +566,8 @@ function selectDeleteTarget() {
 }
 .saved { color: var(--pass, #389e0d); }
 .parent-select { margin-top: 8px; width: 100%; }
+
+.env-panel { padding: 12px; min-width: 0; background: var(--panel); container-type: inline-size; } .readonly-fieldset { height: 100%; min-height: 0; } .layout { gap: 12px; } .side { box-sizing: border-box; width: 190px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); } .side-item { padding: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 34px; flex-shrink: 0; } .detail { padding: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; } .pane-title { overflow-wrap: anywhere; } .pane-actions { flex-wrap: wrap; margin-top: 12px; } .baseurl-row { flex-wrap: wrap; } .baseurl-row :deep(.ant-input) { flex: 1 1 180px; min-width: 0; } .param-block { min-width: 0; } .detail :deep(th) { white-space: nowrap; }
+@container (max-width: 620px) { .layout { flex-direction: column; } .side { width: 100%; max-height: 190px; flex: none; } .detail { min-height: 160px; } }
+
 </style>

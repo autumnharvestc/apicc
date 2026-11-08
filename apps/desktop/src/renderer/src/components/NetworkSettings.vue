@@ -54,6 +54,11 @@ const profiles = computed(() => {
   }
 });
 
+const profileSummary = computed(() => {
+  try { const parsed = NetworkProfileSchema.array().safeParse(JSON.parse(profilesText.value)); return parsed.success ? parsed.data : undefined; }
+  catch { return undefined; }
+});
+
 const verificationWarning = computed(() => {
   try {
     const value = JSON.parse(profilesText.value) as Array<{ proxyTLS?: { verify?: boolean }; targetTlsBindings?: Array<{ tls?: { verify?: boolean } }> }>;
@@ -300,6 +305,16 @@ onMounted(() => { void load(); });
         <option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }} ({{ profile.kind ?? t("networkSettings.profile") }})</option>
       </select>
     </label>
+    <section v-if="profileSummary" class="profile-summary" data-testid="network-profile-summary">
+      <h4>{{ t('desktopPresentation.draftSummary') }}</h4><p v-if="!profileSummary.length">{{ t('desktopPresentation.empty') }}</p>
+      <article v-for="profile in profileSummary" :key="profile.id" class="profile-card"><h4>{{ profile.name }} · {{ t(profile.kind === 'direct' ? 'networkSettings.directKind' : 'networkSettings.proxyKind') }}</h4><small>{{ profile.id }}</small>
+        <dl v-if="profile.kind === 'proxy'"><dt>{{ t('networkSettings.proxyUrl') }}</dt><dd>{{ profile.proxyUrl }}</dd><dt>{{ t('networkSettings.proxyUsername') }}</dt><dd>{{ profile.username || '—' }}</dd><dt>{{ t('networkSettings.proxyPasswordRef') }}</dt><dd>{{ profile.passwordRef?.id || '—' }}</dd><dt>{{ t('desktopPresentation.proxyTls') }}</dt><dd>{{ t(profile.proxyTLS?.verify === false ? 'desktopPresentation.disabled' : 'desktopPresentation.enabled') }}</dd></dl>
+        <p v-if="!profile.targetTlsBindings.length">{{ t('desktopPresentation.defaultTls') }}</p>
+        <div v-for="binding in profile.targetTlsBindings" :key="binding.origin" class="tls-binding"><strong>{{ t('desktopPresentation.targetTls') }} · {{ binding.origin }}</strong><p>{{ t('desktopPresentation.tls') }}: {{ t(binding.tls.verify === false ? 'desktopPresentation.disabled' : 'desktopPresentation.enabled') }}</p>
+          <details><summary>{{ t('desktopPresentation.tlsDetails') }}</summary><dl><dt>{{ t('networkSettings.caPaths') }}</dt><dd>{{ binding.tls.caCertificatePaths?.join(' · ') || t('desktopPresentation.noPaths') }}</dd><dt>{{ t('networkSettings.clientCertificatePaths') }}</dt><dd>{{ binding.tls.clientCertificatePaths?.join(' · ') || t('desktopPresentation.noPaths') }}</dd><dt>{{ t('networkSettings.privateKeyRef') }}</dt><dd>{{ binding.tls.clientPrivateKeyRef?.id || '—' }}</dd><dt>{{ t('networkSettings.passphraseRef') }}</dt><dd>{{ binding.tls.clientKeyPassphraseRef?.id || '—' }}</dd></dl></details>
+        </div>
+      </article>
+    </section>
     <fieldset class="profile-form">
       <legend>{{ t("networkSettings.profileFormTitle") }}</legend>
       <label>
@@ -374,10 +389,13 @@ onMounted(() => { void load(); });
       <p role="status" data-testid="network-profile-result">{{ profileMessage }}</p>
       <p role="status" data-testid="network-form-secret-result">{{ formSecretMessage }}</p>
     </fieldset>
+    <details data-testid="network-advanced"><summary>{{ t('desktopPresentation.advanced') }}</summary>
     <label>
       {{ t("networkSettings.profilesAdvanced") }}
       <textarea v-model="profilesText" rows="9" spellcheck="false" data-testid="network-profiles-json" />
     </label>
+    </details>
+    <p v-if="profileSummary === undefined" role="alert" class="error" data-testid="network-profile-invalid">{{ t('desktopPresentation.invalidProfiles') }}</p>
     <p v-if="verificationWarning" class="warning" role="alert" data-testid="network-verification-warning">
       {{ t("networkSettings.verificationWarning") }}
     </p>
@@ -406,6 +424,7 @@ onMounted(() => { void load(); });
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .network-settings { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
 .network-settings label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
@@ -419,4 +438,9 @@ onMounted(() => { void load(); });
 .network-settings .warning { color: #b45309; margin: 0; }
 .network-settings fieldset { display: flex; flex-direction: column; gap: 8px; }
 .network-settings fieldset ul { margin: 0; padding-inline-start: 20px; }
+
+.network-settings { color: var(--text); min-width: 0; } .network-settings .note { color: var(--text-muted); } .network-settings .warning { color: var(--fail); padding: 10px; border: 1px solid var(--fail); border-radius: 6px; }
+.profile-summary { min-width: 0; } .profile-summary h4 { margin: 0 0 8px; } .profile-card { background: var(--subtle); border: 1px solid var(--border); padding: 12px; border-radius: 8px; margin: 8px 0; overflow-wrap: anywhere; }
+.profile-card small { color: var(--text-muted); } .tls-binding { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; } dl { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.5fr); gap: 6px 12px; } dt { color: var(--text-muted); } dd { margin: 0; } .error { color: var(--fail); }
+
 </style>

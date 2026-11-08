@@ -350,6 +350,7 @@ function exampleAddTestId(index: number, media: string): string {
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .responses { border-top: 1px solid var(--border, #d9d9d9); padding: 8px; display: grid; gap: 8px; }
 .response, .media { border: 1px solid var(--border, #d9d9d9); padding: 8px; display: grid; gap: 8px; }
@@ -357,4 +358,7 @@ header, .row, .example { display: flex; gap: 8px; align-items: center; }
 header > strong { flex: 1; }
 .row > input, .example > input, textarea { flex: 1; }
 textarea { min-height: 50px; font-family: ui-monospace, monospace; }
+
+.responses,.response,.media { min-width: 0; border-radius: 8px; } .response { background: var(--subtle); padding: 12px; } .media { background: var(--bg); } header,.row,.example { flex-wrap: wrap; min-width: 0; } header > strong { overflow-wrap: anywhere; } .row > input,.example > input,textarea { min-width: 0; flex: 1 1 150px; } textarea { flex-basis: 100%; } .row > .schema-editor { flex-basis: 100%; }
+
 </style>

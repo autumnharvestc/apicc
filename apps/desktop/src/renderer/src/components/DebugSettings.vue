@@ -100,7 +100,7 @@ watch(() => [props.open, props.editor.activeKey, props.requestTab?.tabId, enviro
 </script>
 
 <template>
-  <a-modal :open="open" :title="t('debugLoop.settingsTitle')" :footer="null" width="760px" @cancel="emit('close')">
+  <a-modal :open="open" :title="t('debugLoop.settingsTitle')" :footer="null" width="min(760px, calc(100vw - 24px))" centered :body-style="{ maxHeight: 'calc(100dvh - 180px)', overflow: 'auto' }" @cancel="emit('close')">
     <div class="settings" data-testid="debug-settings">
       <p class="note">{{ t("debugLoop.settingsNote") }}</p>
       <div class="setting-grid">
@@ -129,7 +129,7 @@ watch(() => [props.open, props.editor.activeKey, props.requestTab?.tabId, enviro
         </div>
         <p class="note">{{ t("debugLoop.cookiesNote") }}</p>
         <a-alert v-if="cookieError" type="error" show-icon :message="cookieError" data-testid="debug-cookies-error" />
-        <a-table size="small" :pagination="false" :columns="cookieColumns" :data-source="cookies" row-key="name" data-testid="debug-cookies">
+        <a-table :scroll="{ x: 650 }" size="small" :pagination="false" :columns="cookieColumns" :data-source="cookies" row-key="name" data-testid="debug-cookies">
           <template #bodyCell="{ column, record }">
             <span v-if="column.key === 'flags'">{{ [record.secure ? 'Secure' : '', record.httpOnly ? 'HttpOnly' : '', record.sameSite].filter(Boolean).join(' · ') || '—' }}</span>
             <span v-else>{{ cookieCell(record, column.dataIndex) }}</span>
@@ -149,4 +149,7 @@ watch(() => [props.open, props.editor.activeKey, props.requestTab?.tabId, enviro
 .cookies { border-top: 1px solid var(--border); padding-top: 10px; }
 .cookie-head { display: flex; align-items: center; gap: 8px; }
 .cookie-head h3 { flex: 1; margin: 0; font-size: 14px; }
+
+.settings { min-width: 0; } .setting-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); padding: 12px; border: 1px solid var(--border); background: var(--subtle); border-radius: 8px; } .setting-grid label { flex-wrap: wrap; align-items: start; } .setting-grid :deep(.ant-input-number) { width: 100%; } .cookie-head { flex-wrap: wrap; } .cookies :deep(th) { white-space: nowrap; }
+
 </style>

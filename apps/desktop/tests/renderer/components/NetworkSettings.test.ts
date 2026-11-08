@@ -124,3 +124,20 @@ describe("NetworkSettings", () => {
     expect(wrapper.get('[data-testid="network-secret-result"]').text()).toContain("status could not be refreshed");
   });
 });
+
+it.each(['zh-CN', 'en'] as const)('P3h projects network drafts without hiding invalid configuration in %s', async locale => {
+  const fixture = await contractAssetFixture(); const { i18n } = createI18nInstance(); i18n.global.locale.value = locale;
+  const wrapper = mount(NetworkSettings, { props: { api: fixture.api, locator: fixture.projectLocator, readOnly: false }, global: { plugins: [i18n] } });
+  await flushPromises();
+  const profiles = [{ id: 'direct-1', name: 'Long synthetic profile', kind: 'direct', targetTlsBindings: [{ origin: 'https://api.example.test', tls: { verify: false, caCertificatePaths: [], clientCertificatePaths: [] } }] }];
+  await wrapper.get('[data-testid="network-profiles-json"]').setValue(JSON.stringify(profiles));
+  expect(wrapper.get('[data-testid="network-profile-summary"]').text()).toContain('Long synthetic profile');
+  expect(wrapper.get('[data-testid="network-profile-summary"]').text()).toContain('https://api.example.test');
+  expect(wrapper.get('[data-testid="network-profile-summary"]').text()).toContain(locale === 'en' ? 'Disabled' : '已关闭');
+  expect(wrapper.get('[data-testid="network-advanced"]').attributes('open')).toBeUndefined();
+  expect(wrapper.get('[data-testid="network-verification-warning"]').element.closest('details')).toBeNull();
+  await wrapper.get('[data-testid="network-profiles-json"]').setValue('{');
+  expect(wrapper.find('[data-testid="network-profile-summary"]').exists()).toBe(false);
+  expect(wrapper.get('[data-testid="network-profile-invalid"]').element.closest('details')).toBeNull();
+  expect((await fixture.api.networkProfilesGet(fixture.projectLocator)).configuration.profiles).toEqual([]);
+});

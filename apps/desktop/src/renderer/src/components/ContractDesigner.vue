@@ -209,7 +209,7 @@ function authComponents() {
       <label>{{ t('design.description') }}<textarea v-model="asset.contract.metadata.description" :disabled="readOnly" data-testid="design-api-description" /></label>
       <label>{{ t('design.version') }}<input v-model="asset.contract.metadata.version" :disabled="readOnly" data-testid="design-api-version" /></label>
       <label>{{ t('design.tags') }}<input :value="asset.contract.metadata.tags.join(', ')" :disabled="readOnly" data-testid="design-api-tags" @change="asset.contract.metadata.tags = ($event.target as HTMLInputElement).value.split(',').map((tag) => tag.trim()).filter(Boolean)" /></label>
-      <label>{{ t('design.status') }}<select v-model="asset.contract.metadata.status" :disabled="readOnly" data-testid="design-api-status"><option value="draft">draft</option><option value="published">published</option><option value="deprecated">deprecated</option></select></label>
+      <label>{{ t('design.status') }}<select v-model="asset.contract.metadata.status" :disabled="readOnly" data-testid="design-api-status"><option value="draft">{{ t('desktopPresentation.status.draft') }}</option><option value="published">{{ t('desktopPresentation.status.published') }}</option><option value="deprecated">{{ t('desktopPresentation.status.deprecated') }}</option></select></label>
     </fieldset>
 
     <fieldset :disabled="readOnly" class="request">
@@ -246,7 +246,7 @@ function authComponents() {
 
       <section class="auth">
         <h3>{{ t('editor.auth') }}</h3>
-        <label>{{ t('design.authKind') }}<select :value="request.auth.kind" data-testid="design-auth-kind" @change="setAuthKind(($event.target as HTMLSelectElement).value)"><option value="none">none</option><option value="bearer">bearer</option><option value="basic">basic</option><option value="apikey">apikey</option><option value="componentRef">componentRef</option></select></label>
+        <label>{{ t('design.authKind') }}<select :value="request.auth.kind" data-testid="design-auth-kind" @change="setAuthKind(($event.target as HTMLSelectElement).value)"><option value="none">{{ t('desktopPresentation.auth.none') }}</option><option value="bearer">{{ t('desktopPresentation.auth.bearer') }}</option><option value="basic">{{ t('desktopPresentation.auth.basic') }}</option><option value="apikey">{{ t('desktopPresentation.auth.apikey') }}</option><option value="componentRef">{{ t('desktopPresentation.auth.componentRef') }}</option></select></label>
         <template v-if="request.auth.kind === 'bearer'"><label>{{ t('design.secretReference') }}<input v-model="request.auth.token.id" data-testid="design-auth-secret-ref" /></label><label>{{ t('design.secretPolicy') }}<input v-model="request.auth.token.policy" /></label></template>
         <template v-else-if="request.auth.kind === 'basic'"><label>{{ t('design.username') }}<input v-model="request.auth.username" /></label><label>{{ t('design.secretReference') }}<input v-model="request.auth.password.id" data-testid="design-auth-secret-ref" /></label><label>{{ t('design.secretPolicy') }}<input v-model="request.auth.password.policy" /></label></template>
         <template v-else-if="request.auth.kind === 'apikey'"><label>{{ t('design.apiKeyName') }}<input v-model="request.auth.name" /></label><label>{{ t('design.apiKeyPlacement') }}<select v-model="request.auth.placement"><option value="header">header</option><option value="query">query</option></select></label><label>{{ t('design.secretReference') }}<input v-model="request.auth.value.id" data-testid="design-auth-secret-ref" /></label><label>{{ t('design.secretPolicy') }}<input v-model="request.auth.value.policy" /></label></template>
@@ -283,6 +283,7 @@ function authComponents() {
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .contract-designer { display: grid; gap: 10px; min-width: 0; padding-bottom: 12px; }
 fieldset { min-width: 0; border: 1px solid var(--border, #d9d9d9); border-radius: 4px; padding: 10px; display: grid; gap: 10px; }
@@ -297,4 +298,11 @@ textarea { min-height: 54px; font-family: ui-monospace, monospace; }
 .parameter-row > input { flex: 1; }
 .enabled-field { display: flex; align-items: center; white-space: nowrap; }
 h3 { margin: 0; font-size: 13px; }
+
+.contract-designer { font-size: 13px; color: var(--text); gap: 16px; } fieldset { background: var(--bg); border-radius: 8px; padding: 14px; margin: 0; } .request-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%,180px),1fr)); gap: 12px; }
+.metadata { grid-template-columns: repeat(auto-fit,minmax(min(100%,240px),1fr)); }
+.metadata > label:nth-of-type(1), .metadata > label:nth-of-type(2) { grid-column: 1 / -1; }
+.parameter-row, .parameter-group header { flex-wrap: wrap; } .parameter-row { padding: 10px; background: var(--subtle); border-radius: 8px; border: 1px solid var(--border); align-items: start; }
+.parameter-row > input { flex: 1 1 140px; } .parameter-row > .schema-editor { flex-basis: 100%; width: 100%; box-sizing: border-box; } label { color: var(--text); } .parameter-group header strong { min-width: 0; overflow-wrap: anywhere; }
+
 </style>

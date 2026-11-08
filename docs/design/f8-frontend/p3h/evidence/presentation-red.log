@@ -1,0 +1,197 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/MockPanel.test.ts (11 tests | 2 failed | 9 skipped) 64ms
+   × P3h exposes readable Mock rules and preserves saved execution semantics in zh-CN 53ms
+   × P3h exposes readable Mock rules and preserves saved execution semantics in en 10ms
+ ❯ tests/renderer/components/NetworkSettings.test.ts (3 tests | 2 failed | 1 skipped) 1274ms
+   × P3h projects network drafts without hiding invalid configuration in zh-CN 712ms
+   × P3h projects network drafts without hiding invalid configuration in en 561ms
+ ❯ tests/renderer/components/P3hPresentation.test.ts (4 tests | 4 failed) 5817ms
+   × P3h names container script controls and retains save identity in zh-CN 161ms
+   × P3h names container script controls and retains save identity in en 13ms
+   × P3h localizes contract enums without changing protocol values in zh-CN 2940ms
+   × P3h localizes contract enums without changing protocol values in en 2700ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/MockPanel.test.ts > P3h exposes readable Mock rules and preserves saved execution semantics in zh-CN
+Error: Unable to get [data-testid="mock-config-summary"] within: <section data-v-e34704df="" class="mock-panel" data-testid="mock-panel">
+  <header data-v-e34704df="">
+    <h3 data-v-e34704df="">项目 Mock</h3><span data-v-e34704df="" data-testid="mock-simulated">当前为内存仿真状态；此处不会启动 HTTP 服务。</span>
+  </header><label data-v-e34704df="" class="mock-label" for="mock-config">Mock 配置草稿（JSON）</label>
+  <!--v-if-->
+  <p data-v-e34704df="" class="mock-note" data-testid="mock-start-saved-note">启动和重载使用已保存项目快照，不会使用此编辑框中的草稿。</p>
+  <!--v-if--><textarea data-v-e34704df="" id="mock-config" data-testid="mock-config" rows="8" spellcheck="false"></textarea>
+  <!--v-if-->
+  <!--v-if-->
+  <div data-v-e34704df="" class="mock-controls"><button data-v-e34704df="" type="button" data-testid="mock-save">保存配置</button>
+    <!--v-if--><button data-v-e34704df="" type="button" data-testid="mock-refresh">刷新状态和日志</button><label data-v-e34704df="">端口（0 = 自动选择） <input data-v-e34704df="" data-testid="mock-port" type="number" min="0" max="65535"></label><button data-v-e34704df="" type="button" data-testid="mock-start">启动 Mock</button><button data-v-e34704df="" type="button" data-testid="mock-stop" disabled="">停止 Mock</button><button data-v-e34704df="" type="button" data-testid="mock-reload" disabled="">重新加载已保存项目</button><button data-v-e34704df="" type="button" data-testid="mock-new-free-request">创建自由请求</button>
+  </div>
+  <p data-v-e34704df="" class="mock-status" data-testid="mock-status"><strong data-v-e34704df="">状态:</strong> stopped · 修订号 rev-1</p>
+  <!--v-if-->
+  <!--v-if-->
+  <!--v-if-->
+  <!--v-if-->
+  <section data-v-e34704df="" class="mock-logs">
+    <h4 data-v-e34704df="">近期请求元数据</h4>
+    <ul data-v-e34704df="">
+      <li data-v-e34704df="" data-testid="mock-log-row-unknown"><span data-v-e34704df="">GET </span><span data-v-e34704df="">状态 404 · 修订号 rev-1 · 原因 constructor</span></li>
+    </ul>
+  </section>
+</section>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/MockPanel.test.ts:54:18
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  tests/renderer/components/MockPanel.test.ts > P3h exposes readable Mock rules and preserves saved execution semantics in en
+Error: Unable to get [data-testid="mock-config-summary"] within: <section data-v-e34704df="" class="mock-panel" data-testid="mock-panel">
+  <header data-v-e34704df="">
+    <h3 data-v-e34704df="">Project Mock</h3><span data-v-e34704df="" data-testid="mock-simulated">Simulated in-memory state; no HTTP server is started here.</span>
+  </header><label data-v-e34704df="" class="mock-label" for="mock-config">Mock configuration draft (JSON)</label>
+  <!--v-if-->
+  <p data-v-e34704df="" class="mock-note" data-testid="mock-start-saved-note">Start and reload use the saved project snapshot, not edits in this box.</p>
+  <!--v-if--><textarea data-v-e34704df="" id="mock-config" data-testid="mock-config" rows="8" spellcheck="false"></textarea>
+  <!--v-if-->
+  <!--v-if-->
+  <div data-v-e34704df="" class="mock-controls"><button data-v-e34704df="" type="button" data-testid="mock-save">Save configuration</button>
+    <!--v-if--><button data-v-e34704df="" type="button" data-testid="mock-refresh">Refresh status and logs</button><label data-v-e34704df="">Port (0 = choose automatically) <input data-v-e34704df="" data-testid="mock-port" type="number" min="0" max="65535"></label><button data-v-e34704df="" type="button" data-testid="mock-start">Start Mock</button><button data-v-e34704df="" type="button" data-testid="mock-stop" disabled="">Stop Mock</button><button data-v-e34704df="" type="button" data-testid="mock-reload" disabled="">Reload saved project</button><button data-v-e34704df="" type="button" data-testid="mock-new-free-request">Create free request</button>
+  </div>
+  <p data-v-e34704df="" class="mock-status" data-testid="mock-status"><strong data-v-e34704df="">Status:</strong> stopped · Revision rev-1</p>
+  <!--v-if-->
+  <!--v-if-->
+  <!--v-if-->
+  <!--v-if-->
+  <section data-v-e34704df="" class="mock-logs">
+    <h4 data-v-e34704df="">Recent request metadata</h4>
+    <ul data-v-e34704df="">
+      <li data-v-e34704df="" data-testid="mock-log-row-unknown"><span data-v-e34704df="">GET </span><span data-v-e34704df="">Status 404 · Revision rev-1 · Reason constructor</span></li>
+    </ul>
+  </section>
+</section>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/MockPanel.test.ts:54:18
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  tests/renderer/components/NetworkSettings.test.ts > P3h projects network drafts without hiding invalid configuration in zh-CN
+Error: Unable to get [data-testid="network-profile-summary"] within: <section data-v-9eec1408="" class="network-settings" data-testid="network-settings">
+  <h3 data-v-9eec1408="">网络配置</h3>
+  <p data-v-9eec1408="" class="note">配置保存在本机并仅用于当前项目的新运行任务；运行中的任务继续使用启动时捕获的配置。</p><label data-v-9eec1408="">将选择应用到 <select data-v-9eec1408="" data-testid="network-scope">
+      <option data-v-9eec1408="" value="">项目默认值</option>
+    </select></label><label data-v-9eec1408="">连接选择 <select data-v-9eec1408="" data-testid="network-selection">
+      <!--v-if-->
+      <option data-v-9eec1408="" value="direct">直接连接</option>
+      <option data-v-9eec1408="" value="profile">使用配置</option>
+    </select></label>
+  <!--v-if-->
+  <fieldset data-v-9eec1408="" class="profile-form">
+    <legend data-v-9eec1408="">新建配置</legend><label data-v-9eec1408="">配置名称 <input data-v-9eec1408="" autocomplete="off" data-testid="network-profile-name"></label><label data-v-9eec1408="">连接类型 <select data-v-9eec1408="" data-testid="network-profile-kind">
+        <option data-v-9eec1408="" value="direct">直接连接</option>
+        <option data-v-9eec1408="" value="proxy">HTTP/HTTPS 代理</option>
+      </select></label><label data-v-9eec1408="">代理 URL（例如 http://127.0.0.1:8080） <input data-v-9eec1408="" autocomplete="url" data-testid="network-proxy-url"></label><label data-v-9eec1408="">代理用户名 <input data-v-9eec1408="" autocomplete="username" data-testid="network-proxy-username"></label><label data-v-9eec1408="">代理密码引用 ID <input data-v-9eec1408="" autocomplete="off" data-testid="network-proxy-password-ref"></label><label data-v-9eec1408="">代理密码 <input data-v-9eec1408="" type="password" autocomplete="new-password" data-testid="network-proxy-password"></label><button data-v-9eec1408="" type="button" disabled="" data-testid="network-proxy-password-save">将代理密码保存到本机</button><label data-v-9eec1408="">目标 HTTPS/WSS 源站（可选） <input data-v-9eec1408="" autocomplete="url" data-testid="network-target-origin" placeholder="https://api.example.com"></label><label data-v-9eec1408="">目标 CA 证书路径（每行一个绝对路径） <textarea data-v-9eec1408="" rows="2" data-testid="network-ca-paths"></textarea></label><label data-v-9eec1408="">客户端证书路径（每行一个绝对路径） <textarea data-v-9eec1408="" rows="2" data-testid="network-client-cert-paths"></textarea></label><label data-v-9eec1408="">客户端私钥引用 ID <input data-v-9eec1408="" autocomplete="off" data-testid="network-client-key-ref"></label>
+    <!--v-if--><label data-v-9eec1408="">客户端私钥口令引用 ID <input data-v-9eec1408="" autocomplete="off" data-testid="network-client-passphrase-ref"></label><label data-v-9eec1408="">客户端私钥口令 <input data-v-9eec1408="" type="password" autocomplete="new-password" data-testid="network-client-passphrase"></label><button data-v-9eec1408="" type="button" disabled="" data-testid="network-passphrase-save">将口令保存到本机</button><label data-v-9eec1408="" class="verify-setting"><input data-v-9eec1408="" type="checkbox" data-testid="network-target-verify"> 验证目标 TLS 证书</label><button data-v-9eec1408="" type="button" disabled="" data-testid="network-profile-add">添加配置到编辑器</button>
+    <p data-v-9eec1408="" role="status" data-testid="network-profile-result"></p>
+    <p data-v-9eec1408="" role="status" data-testid="network-form-secret-result"></p>
+  </fieldset><label data-v-9eec1408="">配置（高级 JSON） <textarea data-v-9eec1408="" rows="9" spellcheck="false" data-testid="network-profiles-json"></textarea></label>
+  <p data-v-9eec1408="" class="warning" role="alert" data-testid="network-verification-warning">至少一个配置绑定已关闭 TLS 证书验证。</p><button data-v-9eec1408="" type="button" data-testid="network-save">保存网络配置</button>
+  <p data-v-9eec1408="" role="status" data-testid="network-config-result">配置已加载。</p>
+  <fieldset data-v-9eec1408="">
+    <legend data-v-9eec1408="">秘密引用</legend>
+    <ul data-v-9eec1408="">
+      <li data-v-9eec1408="">尚未配置网络秘密。</li>
+    </ul><label data-v-9eec1408="">秘密引用 ID <input data-v-9eec1408="" autocomplete="off" data-testid="network-secret-ref"></label><button data-v-9eec1408="" type="button" disabled="" data-testid="network-secret-import">选择秘密文件并保存到本机</button>
+    <p data-v-9eec1408="" role="status" data-testid="network-secret-result"></p>
+  </fieldset>
+</section>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/NetworkSettings.test.ts:134:18
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  tests/renderer/components/NetworkSettings.test.ts > P3h projects network drafts without hiding invalid configuration in en
+Error: Unable to get [data-testid="network-profile-summary"] within: <section data-v-9eec1408="" class="network-settings" data-testid="network-settings">
+  <h3 data-v-9eec1408="">Network profiles</h3>
+  <p data-v-9eec1408="" class="note">Stored locally for this project and applied to future runs. Running jobs keep their captured settings.</p><label data-v-9eec1408="">Apply selection to <select data-v-9eec1408="" data-testid="network-scope">
+      <option data-v-9eec1408="" value="">Project default</option>
+    </select></label><label data-v-9eec1408="">Selection <select data-v-9eec1408="" data-testid="network-selection">
+      <!--v-if-->
+      <option data-v-9eec1408="" value="direct">Direct connection</option>
+      <option data-v-9eec1408="" value="profile">Use a profile</option>
+    </select></label>
+  <!--v-if-->
+  <fieldset data-v-9eec1408="" class="profile-form">
+    <legend data-v-9eec1408="">Create a profile</legend><label data-v-9eec1408="">Profile name <input data-v-9eec1408="" autocomplete="off" data-testid="network-profile-name"></label><label data-v-9eec1408="">Connection type <select data-v-9eec1408="" data-testid="network-profile-kind">
+        <option data-v-9eec1408="" value="direct">Direct</option>
+        <option data-v-9eec1408="" value="proxy">HTTP/HTTPS proxy</option>
+      </select></label><label data-v-9eec1408="">Proxy URL (for example, http://127.0.0.1:8080) <input data-v-9eec1408="" autocomplete="url" data-testid="network-proxy-url"></label><label data-v-9eec1408="">Proxy username <input data-v-9eec1408="" autocomplete="username" data-testid="network-proxy-username"></label><label data-v-9eec1408="">Proxy password reference ID <input data-v-9eec1408="" autocomplete="off" data-testid="network-proxy-password-ref"></label><label data-v-9eec1408="">Proxy password <input data-v-9eec1408="" type="password" autocomplete="new-password" data-testid="network-proxy-password"></label><button data-v-9eec1408="" type="button" disabled="" data-testid="network-proxy-password-save">Save proxy password locally</button><label data-v-9eec1408="">Target HTTPS/WSS origin (optional) <input data-v-9eec1408="" autocomplete="url" data-testid="network-target-origin" placeholder="https://api.example.com"></label><label data-v-9eec1408="">Target CA certificate paths (one absolute path per line) <textarea data-v-9eec1408="" rows="2" data-testid="network-ca-paths"></textarea></label><label data-v-9eec1408="">Client certificate paths (one absolute path per line) <textarea data-v-9eec1408="" rows="2" data-testid="network-client-cert-paths"></textarea></label><label data-v-9eec1408="">Client private-key reference ID <input data-v-9eec1408="" autocomplete="off" data-testid="network-client-key-ref"></label>
+    <!--v-if--><label data-v-9eec1408="">Client-key passphrase reference ID <input data-v-9eec1408="" autocomplete="off" data-testid="network-client-passphrase-ref"></label><label data-v-9eec1408="">Client-key passphrase <input data-v-9eec1408="" type="password" autocomplete="new-password" data-testid="network-client-passphrase"></label><button data-v-9eec1408="" type="button" disabled="" data-testid="network-passphrase-save">Save passphrase locally</button><label data-v-9eec1408="" class="verify-setting"><input data-v-9eec1408="" type="checkbox" data-testid="network-target-verify"> Verify target TLS certificates</label><button data-v-9eec1408="" type="button" disabled="" data-testid="network-profile-add">Add profile to editor</button>
+    <p data-v-9eec1408="" role="status" data-testid="network-profile-result"></p>
+    <p data-v-9eec1408="" role="status" data-testid="network-form-secret-result"></p>
+  </fieldset><label data-v-9eec1408="">Profiles (advanced JSON) <textarea data-v-9eec1408="" rows="9" spellcheck="false" data-testid="network-profiles-json"></textarea></label>
+  <p data-v-9eec1408="" class="warning" role="alert" data-testid="network-verification-warning">TLS verification is disabled for at least one profile binding.</p><button data-v-9eec1408="" type="button" data-testid="network-save">Save network configuration</button>
+  <p data-v-9eec1408="" role="status" data-testid="network-config-result">Configuration loaded.</p>
+  <fieldset data-v-9eec1408="">
+    <legend data-v-9eec1408="">Secret references</legend>
+    <ul data-v-9eec1408="">
+      <li data-v-9eec1408="">No configured network secrets.</li>
+    </ul><label data-v-9eec1408="">Secret reference ID <input data-v-9eec1408="" autocomplete="off" data-testid="network-secret-ref"></label><button data-v-9eec1408="" type="button" disabled="" data-testid="network-secret-import">Choose secret file and save locally</button>
+    <p data-v-9eec1408="" role="status" data-testid="network-secret-result"></p>
+  </fieldset>
+</section>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/NetworkSettings.test.ts:134:18
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  tests/renderer/components/P3hPresentation.test.ts > P3h names container script controls and retains save identity in zh-CN
+ FAIL  tests/renderer/components/P3hPresentation.test.ts > P3h names container script controls and retains save identity in en
+TypeError: Cannot read properties of undefined (reading 'trigger')
+ ❯ tests/renderer/components/P3hPresentation.test.ts:20:110
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  tests/renderer/components/P3hPresentation.test.ts > P3h localizes contract enums without changing protocol values in zh-CN
+AssertionError: expected 'draft' to be '草稿' // Object.is equality
+
+Expected: "草稿"
+Received: "draft"
+
+ ❯ tests/renderer/components/P3hPresentation.test.ts:30:89
+     28|   const { i18n } = createI18nInstance(); i18n.global.locale.value = lo…
+     29|   const wrapper = mount(ContractDesigner, { props: { editor, draftScop…
+     30|   expect(wrapper.get('[data-testid="design-api-status"] option[value="…
+       |                                                                                         ^
+     31|   expect(wrapper.get('[data-testid="design-auth-kind"] option[value="n…
+     32|   await wrapper.get('[data-testid="design-api-status"]').setValue('pub…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  tests/renderer/components/P3hPresentation.test.ts > P3h localizes contract enums without changing protocol values in en
+AssertionError: expected 'draft' to be 'Draft' // Object.is equality
+
+Expected: "Draft"
+Received: "draft"
+
+ ❯ tests/renderer/components/P3hPresentation.test.ts:30:89
+     28|   const { i18n } = createI18nInstance(); i18n.global.locale.value = lo…
+     29|   const wrapper = mount(ContractDesigner, { props: { editor, draftScop…
+     30|   expect(wrapper.get('[data-testid="design-api-status"] option[value="…
+       |                                                                                         ^
+     31|   expect(wrapper.get('[data-testid="design-auth-kind"] option[value="n…
+     32|   await wrapper.get('[data-testid="design-api-status"]').setValue('pub…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+
+ Test Files  3 failed (3)
+      Tests  8 failed | 10 skipped (18)
+   Start at  00:21:50
+   Duration  11.23s (transform 3.77s, setup 0ms, import 8.88s, tests 7.15s, environment 3.39s)
+

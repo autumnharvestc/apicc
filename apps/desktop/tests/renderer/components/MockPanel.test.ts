@@ -31,7 +31,7 @@ function status(overrides: Partial<MockStatus> = {}): MockStatus {
   };
 }
 
-function mountPanel(options: { readOnly?: boolean; initial?: MockStatus; getStatus?: () => Promise<MockStatus> } = {}) {
+function mountPanel(options: { locale?: "zh-CN" | "en"; readOnly?: boolean; initial?: MockStatus; getStatus?: () => Promise<MockStatus> } = {}) {
   let current = options.initial ?? status();
   const api = {
     mockGet: vi.fn(options.getStatus ?? (async () => current)),
@@ -41,9 +41,33 @@ function mountPanel(options: { readOnly?: boolean; initial?: MockStatus; getStat
     mockReload: vi.fn(async () => current),
   } as unknown as ApiccApi;
   const { i18n } = createI18nInstance();
+  i18n.global.locale.value = options.locale ?? "zh-CN";
   const wrapper = mount(MockPanel, { props: { api, locator, readOnly: options.readOnly }, global: { plugins: [i18n] } });
   return { wrapper, api: api as unknown as Record<string, ReturnType<typeof vi.fn>> };
 }
+
+it.each(['zh-CN', 'en'] as const)('P3h exposes readable Mock rules and preserves saved execution semantics in %s', async locale => {
+  const rule = { id: '20000000-0000-4000-8000-000000000001', enabled: true, contractId: '20000000-0000-4000-8000-000000000002', responseBindingId: '20000000-0000-4000-8000-000000000003', conditions: [{ source: 'body', op: 'equals', pointer: '/ready', value: false }], mediaType: 'application/json', source: { kind: 'literal', text: '{"ok":true}' }, delayMs: 25 };
+  const initialConfig = MockProjectConfigSchema.parse({ ...config, enabledContractIds: [rule.contractId], rules: [rule] });
+  const { wrapper, api } = mountPanel({ locale, initial: status({ config: initialConfig, logs: [{ requestId: 'unknown', time: '2026-11-09T00:00:00.000Z', method: 'GET', status: 404, durationMs: 2, revision: 'rev-1', reason: 'constructor' }] }) });
+  await flushPromises();
+  expect(wrapper.get('[data-testid="mock-config-summary"]').text()).toContain('saved-seed');
+  expect(wrapper.get('[data-testid="mock-rule-table"]').text()).toContain('/ready');
+  expect(wrapper.get('[data-testid="mock-rule-table"]').text()).toContain('false');
+  expect(wrapper.get('[data-testid="mock-rule-table"]').text()).toContain(locale === 'en' ? 'Inherit response' : '继承响应');
+  expect(wrapper.get('[data-testid="mock-advanced"]').attributes('open')).toBeUndefined();
+  expect(wrapper.get('[data-testid="mock-log-row-unknown"]').text()).toContain('constructor');
+  expect(wrapper.get('[data-testid="mock-status"]').text()).toContain(locale === 'en' ? 'Stopped' : '已停止');
+  await wrapper.get('[data-testid="mock-config"]').setValue(JSON.stringify({ ...initialConfig, seed: 'unsaved-seed' }));
+  expect(wrapper.get('[data-testid="mock-config-summary"]').text()).toContain('unsaved-seed');
+  await wrapper.get('[data-testid="mock-start"]').trigger('click'); await flushPromises();
+  expect(api.mockStart).toHaveBeenCalledWith({ locator, sourceProjectRevision: 'rev-1', port: 0 });
+  expect(api.mockConfigSave).not.toHaveBeenCalled();
+  await wrapper.get('[data-testid="mock-config"]').setValue('{');
+  expect(wrapper.find('[data-testid="mock-config-summary"]').exists()).toBe(false);
+  expect(wrapper.get('[data-testid="mock-config-error"]').element.closest('details')).toBeNull();
+  expect(wrapper.get('[data-testid="mock-save"]').attributes('disabled')).toBeDefined();
+});
 
 describe("project Mock panel", () => {
   it("loads the current project, saves config without starting a server, and only emits the existing free-request action", async () => {
@@ -101,7 +125,7 @@ describe("project Mock panel", () => {
     expect(address.attributes("href")).toBeUndefined();
     await address.trigger("click");
     expect(window.location.href).toBe(locationBefore);
-    expect(wrapper.get('[data-testid="mock-status"]').text()).toContain("running");
+    expect(wrapper.get('[data-testid="mock-status"]').text()).toContain("运行中");
   });
 
   it("allows manual refresh after the initial status request fails", async () => {
@@ -151,6 +175,7 @@ describe("project Mock panel", () => {
       mockConfigSave: vi.fn(), mockStart: vi.fn(), mockStop: vi.fn(), mockReload: vi.fn(),
     } as unknown as ApiccApi;
     const { i18n } = createI18nInstance();
+  i18n.global.locale.value = "zh-CN";
     const wrapper = mount(MockPanel, { props: { api, locator, root: "C:/workspace-a" }, global: { plugins: [i18n] } });
     await wrapper.setProps({ root: "C:/workspace-b" });
     await flushPromises();
@@ -173,6 +198,7 @@ describe("project Mock panel", () => {
       mockReload: vi.fn(),
     } as unknown as ApiccApi;
     const { i18n } = createI18nInstance();
+  i18n.global.locale.value = "zh-CN";
     const wrapper = mount(MockPanel, { props: { api, locator, root: "C:/workspace-a" }, global: { plugins: [i18n] } });
     await flushPromises();
     await wrapper.get('[data-testid="mock-start"]').trigger("click");
@@ -205,6 +231,7 @@ describe("project Mock panel", () => {
       mockReload: vi.fn(async () => polledStatus),
     } as unknown as ApiccApi;
     const { i18n } = createI18nInstance();
+  i18n.global.locale.value = "zh-CN";
     const wrapper = mount(MockPanel, { props: { api, locator, root: "C:/workspace" }, global: { plugins: [i18n] } });
     await flushPromises();
     const draftText = JSON.stringify({ ...config, seed: "not-saved" }, null, 2);

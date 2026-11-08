@@ -92,7 +92,7 @@ async function save() {
     :title="`${t('container.manage')} — ${name}`"
     :ok-text="t('container.save')"
     :cancel-text="t('common.close')"
-    :width="680"
+    width="min(680px, calc(100vw - 24px))" centered :body-style="{ maxHeight: 'calc(100dvh - 180px)', overflow: 'auto' }"
     data-testid="container-dialog"
     :ok-button-props="{ disabled: readOnly }"
     @ok="save"
@@ -104,9 +104,9 @@ async function save() {
       <a-tab-pane v-if="target.kind === 'collection'" key="variables">
         <template #tab>{{ t("container.variables") }}</template>
         <div v-for="(row, index) in variables" :key="row.id" class="kv-row">
-          <a-input v-model:value="row.key" data-testid="container-var-key" placeholder="key" />
-          <a-input v-model:value="row.value" data-testid="container-var-value" placeholder="value" />
-          <a-button size="small" danger type="text" data-testid="container-var-delete" @click="variables.splice(index, 1)">×</a-button>
+          <a-input v-model:value="row.key" data-testid="container-var-key" :placeholder="t('env.varName')" :aria-label="t('env.varName')" />
+          <a-input v-model:value="row.value" data-testid="container-var-value" :placeholder="t('env.varValue')" :aria-label="t('env.varValue')" />
+          <a-button size="small" danger type="text" data-testid="container-var-delete" :aria-label="t('desktopPresentation.deleteVariable', { index: index + 1 })" :title="t('desktopPresentation.deleteVariable', { index: index + 1 })" @click="variables.splice(index, 1)">×</a-button>
         </div>
         <a-button size="small" data-testid="container-var-add" @click="addVar">{{ t("env.addVar") }}</a-button>
       </a-tab-pane>
@@ -116,11 +116,11 @@ async function save() {
         <template #tab>{{ t("container.preOperations") }}</template>
         <div v-for="(op, index) in preOps" :key="op.id" class="op-row" data-testid="container-op-row">
           <div class="op-btns">
-            <a-button size="small" type="text" :disabled="index === 0" @click="move(preOps, index, -1)">↑</a-button>
-            <a-button size="small" type="text" :disabled="index === preOps.length - 1" @click="move(preOps, index, 1)">↓</a-button>
-            <a-button size="small" danger type="text" @click="preOps.splice(index, 1)">×</a-button>
+            <a-button size="small" type="text" :disabled="index === 0" :aria-label="t('testPresentation.operationUp', { index: index + 1 })" :title="t('testPresentation.operationUp', { index: index + 1 })" @click="move(preOps, index, -1)">↑</a-button>
+            <a-button size="small" type="text" :disabled="index === preOps.length - 1" :aria-label="t('testPresentation.operationDown', { index: index + 1 })" :title="t('testPresentation.operationDown', { index: index + 1 })" @click="move(preOps, index, 1)">↓</a-button>
+            <a-button size="small" danger type="text" :aria-label="t('testPresentation.operationDelete', { index: index + 1 })" :title="t('testPresentation.operationDelete', { index: index + 1 })" @click="preOps.splice(index, 1)">×</a-button>
           </div>
-          <a-textarea v-model:value="op.content" :rows="3" class="op-text" data-testid="container-op-content" />
+          <a-textarea v-model:value="op.content" :rows="3" class="op-text" data-testid="container-op-content" :aria-label="t('testPresentation.operationContent', { index: index + 1 })" />
         </div>
         <a-button size="small" data-testid="container-pre-add" @click="addOp(preOps)">{{ t("container.addOperation") }}</a-button>
       </a-tab-pane>
@@ -130,11 +130,11 @@ async function save() {
         <template #tab>{{ t("container.postOperations") }}</template>
         <div v-for="(op, index) in postOps" :key="op.id" class="op-row" data-testid="container-op-row">
           <div class="op-btns">
-            <a-button size="small" type="text" :disabled="index === 0" @click="move(postOps, index, -1)">↑</a-button>
-            <a-button size="small" type="text" :disabled="index === postOps.length - 1" @click="move(postOps, index, 1)">↓</a-button>
-            <a-button size="small" danger type="text" @click="postOps.splice(index, 1)">×</a-button>
+            <a-button size="small" type="text" :disabled="index === 0" :aria-label="t('testPresentation.operationUp', { index: index + 1 })" :title="t('testPresentation.operationUp', { index: index + 1 })" @click="move(postOps, index, -1)">↑</a-button>
+            <a-button size="small" type="text" :disabled="index === postOps.length - 1" :aria-label="t('testPresentation.operationDown', { index: index + 1 })" :title="t('testPresentation.operationDown', { index: index + 1 })" @click="move(postOps, index, 1)">↓</a-button>
+            <a-button size="small" danger type="text" :aria-label="t('testPresentation.operationDelete', { index: index + 1 })" :title="t('testPresentation.operationDelete', { index: index + 1 })" @click="postOps.splice(index, 1)">×</a-button>
           </div>
-          <a-textarea v-model:value="op.content" :rows="3" class="op-text" data-testid="container-op-content" />
+          <a-textarea v-model:value="op.content" :rows="3" class="op-text" data-testid="container-op-content" :aria-label="t('testPresentation.operationContent', { index: index + 1 })" />
         </div>
         <a-button size="small" data-testid="container-post-add" @click="addOp(postOps)">{{ t("container.addOperation") }}</a-button>
       </a-tab-pane>
@@ -154,4 +154,7 @@ async function save() {
 .dialog-error { margin: 8px 0 0; color: var(--fail, #dc2626); font-size: 12px; }
 .saved { margin: 8px 0 0; color: var(--pass, #16a34a); font-size: 12px; }
 .readonly-fieldset { border: 0; margin: 0; min-width: 0; padding: 0; }
+
+.op-row { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--subtle); gap: 10px; } .op-text { min-width: 0; } .op-btns { flex: none; gap: 4px; } .kv-row :deep(.ant-input) { min-width: 0; }
+
 </style>

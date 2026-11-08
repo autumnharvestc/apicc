@@ -84,6 +84,10 @@ function save() {
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .execution-cache-settings{margin:16px 0;padding-top:12px;border-top:1px solid var(--border);font-size:13px;min-width:0;overflow-wrap:anywhere}h3,h4{margin:0 0 8px}p{margin:6px 0}.cache-field{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;margin:12px 0}.cache-field small{grid-column:1/-1;color:var(--text-muted)}.cache-value{display:flex;align-items:center;gap:6px;white-space:nowrap}input{box-sizing:border-box;width:90px;max-width:100%;padding:4px;background:var(--bg);color:var(--text);border:1px solid var(--border)}.save-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.save-row button{padding:5px 10px}.save-row span,.hint{color:var(--text-muted)}dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;margin:8px 0}dt,dd{margin:0}dd{font-variant-numeric:tabular-nums}.warning{color:var(--warning,#ad6800)}.error{color:var(--fail,#cf1322)}.cache-notes{margin:10px 0;padding-left:20px}.cache-notes li{margin:6px 0;line-height:1.5}
+
+.execution-cache-settings { padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--subtle); } .warning { color: var(--text); border-left: 3px solid var(--accent); padding-left: 8px; } .cache-field { grid-template-columns: minmax(0,1fr) minmax(100px,auto); } .cache-value { flex-wrap: wrap; }
+
 </style>

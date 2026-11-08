@@ -54,6 +54,7 @@ const reasonDetail = (p: PluginLoadEntry): string => {
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .plugins-view { padding: 10px; min-width: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
 .head { display: flex; justify-content: space-between; align-items: center; }
@@ -65,4 +66,7 @@ tr[data-failed=true] { background: rgba(255, 77, 79, .06); } .error-text { color
 .reason-detail { max-height: 160px; overflow: auto; }
 li { overflow-wrap: anywhere; } details span { display: block; max-height: 160px; overflow: auto; } summary { cursor: pointer; }
 .raw pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.plugins-view { padding: 16px; background: var(--bg); color: var(--text); gap: 12px; } .head { gap: 8px; flex-wrap: wrap; } .muted { color: var(--text-muted); } .error-text { color: var(--fail); } .table-scroll { border: 1px solid var(--border); border-radius: 8px; } th,td { border-color: var(--border); padding: 12px; } th { background: var(--subtle); } .raw pre { background: var(--subtle); padding: 12px; border-radius: 6px; }
+
 </style>

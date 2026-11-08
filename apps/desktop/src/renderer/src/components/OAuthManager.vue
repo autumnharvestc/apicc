@@ -514,6 +514,7 @@ onBeforeUnmount(() => {
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .oauth-manager { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; }
 .oauth-heading, .oauth-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
@@ -522,4 +523,7 @@ onBeforeUnmount(() => {
 .oauth-form label, .oauth-manager > label { display: grid; gap: 4px; }
 .oauth-refs { grid-column: 1 / -1; margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
 .oauth-form button { justify-self: start; }
+
+.oauth-manager { background: var(--subtle); border-radius: 8px; min-width: 0; font-size: 13px; } .oauth-form { grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); gap: 12px; } .oauth-form label { min-width: 0; } .oauth-form input { width: 100%; }
+
 </style>

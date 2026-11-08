@@ -332,6 +332,7 @@ function closeWizard() {
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .import-wizard {
   padding: 8px 10px;
@@ -385,4 +386,11 @@ function closeWizard() {
   display: flex;
   gap: 8px;
 }
+.merge-plan { width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.merge-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid var(--border); margin-top: 8px; }
+.merge-entry > span { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+.merge-entry :deep(.ant-select) { min-width: 160px; max-width: 100%; }
+
+.import-wizard { padding: 16px; min-width: 0; background: var(--panel); } .step-body { padding: 16px; min-width: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; } .step-body > * { max-width: 100%; box-sizing: border-box; } .group-row,.actions { flex-wrap: wrap; } .group-row { min-width: 0; } .group-row .ant-input,.group-row input,.group-select { flex: 1 1 180px; min-width: 0; } .step-body :deep(.ant-tree) { width: 100%; max-height: 360px; overflow: auto; } .step-body :deep(.ant-alert) { width: 100%; } .step-body :deep(.ant-tree-title) { overflow-wrap: anywhere; } .actions { padding-top: 8px; }
+
 </style>

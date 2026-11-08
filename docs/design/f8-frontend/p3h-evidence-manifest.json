@@ -1,0 +1,327 @@
+{
+  "base": "faa08cf9",
+  "scope": "F8 P3h desktop settings/environment/contracts and ancillary presentation; no full gate, package, merge or push",
+  "hashPolicy": "Working-copy bytes; excludes manifest and independently authored review receipt",
+  "files": [
+    {
+      "path": "apps/desktop/src/renderer/src/components/ContainerManageDialog.vue",
+      "bytes": 9175,
+      "sha256": "dc4230359ae2fc847b904a5debbaa6d095970ee1945a17da1321fc1cc7d63b1e"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/ContractDesigner.vue",
+      "bytes": 24209,
+      "sha256": "7722fddad36260a55d48fabcdd897e32962aaa4437cba235b086b9b30e9f9521"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/CredentialEditor.vue",
+      "bytes": 6537,
+      "sha256": "28c66e5fbb0b519db81d461ba84c5befdd0ab8d2900fa87facafb13c4a5740a5"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/DebugSettings.vue",
+      "bytes": 8475,
+      "sha256": "f7865ff97136a9d0cbc43db23ac8b3c87fbb2d8da5ce65131ea7d4ae42af1fb0"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/DesignPanel.vue",
+      "bytes": 15208,
+      "sha256": "80537dc6e4bfc66cb41ae99fbdbe1622f0eb525a509a9d65b443c5d078738b72"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/EnvPanel.vue",
+      "bytes": 25640,
+      "sha256": "e9184397119097b0777f9af582145d889715ed34ce445aafa6cc4a46cd6a9eda"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/ImportWizard.vue",
+      "bytes": 20449,
+      "sha256": "a5ea3907a10de23a8b1428422cea010f2e19c7727bca3e0d29ad17f251ca58f4"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/MockPanel.vue",
+      "bytes": 15740,
+      "sha256": "a653ace2eb854d360198bd1b7e90f0d0fdb634939f5abc4236bec0f7866feb19"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/NetworkSettings.vue",
+      "bytes": 23642,
+      "sha256": "979c5e4964dc4e999f506cc4ed200372e20f771546d52160cf8a1d6f44eec940"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/OAuthManager.vue",
+      "bytes": 25812,
+      "sha256": "62ac67eb2dbb159cdb694a5493b165e739a3b7ef6f1a9187bffe689338423cd9"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/OnlineExecutionCacheSettings.vue",
+      "bytes": 7908,
+      "sha256": "bd6ea6b126b1c898c4488f6978f49c92a7eedfa9ac506ffda5faa8446fa14704"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/PluginsView.vue",
+      "bytes": 6776,
+      "sha256": "35424492cb7a7ee8608d9cab0cad79799efcf98733fa3b957308db6946175e60"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/ProjectAssetsPanel.vue",
+      "bytes": 11964,
+      "sha256": "17e7ecb955c542d90dc41d87c244ccbdfec04dc13b24f841b68cd582e41f9529"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/ResponseEditor.vue",
+      "bytes": 20856,
+      "sha256": "03c61e0b81d2509cc384cfcaa41eae5505c8b2381c0146f1e14d3f64469292f9"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/SchemaEditor.vue",
+      "bytes": 17968,
+      "sha256": "9411a01b23802e17b0fab6f74d101c6eeb6377d3e5a667c9172470f9b3251afe"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/TopBar.vue",
+      "bytes": 12958,
+      "sha256": "ddd1ab2f6151628cef3f360f65a704d2dcb35ec73ed8972750b16e839e6bf862"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/i18n/en.json",
+      "bytes": 157968,
+      "sha256": "6342e9a8f551a27d4b086bb46d08834154f455cfeebe40480f385af769237201"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/i18n/zh-CN.json",
+      "bytes": 147594,
+      "sha256": "a7a029f5cee4550ee9704acf43a9e03948f86765984666d4be271151d494e1e7"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/MockPanel.test.ts",
+      "bytes": 15566,
+      "sha256": "36eec89664a2fdde7046264e4135eeb95682b2c123717d3b1629241cc1377141"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/NetworkSettings.test.ts",
+      "bytes": 8648,
+      "sha256": "93f4c73e10c72dcc154e1e327a560db4bbacdef7acb26500dd4efec8f36106bd"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/P3hPresentation.test.ts",
+      "bytes": 3570,
+      "sha256": "69b2fa2989c4f7c5f8c6413672d204396e30c0abc8508d5757d041dcdb62426b"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/01-mock-zh-light.png",
+      "bytes": 65681,
+      "sha256": "6c38f17984e4871d772ad95bdb636f3ce53790d28e64a2147ffa9c66aeb737ae"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/02-mock-en-dark-narrow.png",
+      "bytes": 61577,
+      "sha256": "97ab357283c35bc889abde8cea68b10f5324cc1026e3daf02857a78d9a5ee45d"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/03-network-en-dark.png",
+      "bytes": 47484,
+      "sha256": "6d829fd4ae4b4fc25057542cade266983ab7eccb59e65dee644a71ed07c2309c"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/04-network-invalid-collapsed.png",
+      "bytes": 44745,
+      "sha256": "6d623ba13d85d9fdbc7907ed3aa9d979cddeb54f965fb4086678c78bad10a223"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/05-environment-en-dark-narrow.png",
+      "bytes": 34020,
+      "sha256": "85c4e7abb8f98bb8c2c2443f6d1afeda05eb824e766dbe968832f7862948042a"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/06-environment-zh-light.png",
+      "bytes": 44135,
+      "sha256": "61cf122906ab792bdf7b90c8dd65b048d6e12380806aaa9fba8a0b78118c96de"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/07-contract-zh-light.png",
+      "bytes": 59420,
+      "sha256": "e39381ce9c48e225e2d11c21907110d0500a941703325121825c824327bb8f03"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/08-response-zh-light-narrow.png",
+      "bytes": 40430,
+      "sha256": "48984ed4f14029f131cdcaa5ed0c81cf50114fce4336410ebc9badc632a7e783"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/09-assets-zh-light-narrow.png",
+      "bytes": 44459,
+      "sha256": "fa22d402306f3ef246735b3e298be3b43eb8aeb327bfeee16aa4d99d92285600"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/10-plugins-en-dark.png",
+      "bytes": 56816,
+      "sha256": "7c0c0692e0f105d9ca2f786b147d2c57d17cc66ac9cb7a7b61372e1e47ed4044"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/11-cache-en-dark.png",
+      "bytes": 80837,
+      "sha256": "c5cc9679e4728836b4dbea3f735ce1c511138d473a650cdc450e3453f28fe7e2"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/12-auth-en-dark-narrow.png",
+      "bytes": 59995,
+      "sha256": "25b664c65df824a7bf983b40c20731b12072ee047d0f556e5a0812d6ef8dbd1e"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/13-container-en-dark-narrow.png",
+      "bytes": 46982,
+      "sha256": "a0083292548176806f9e58440f9a9e7c23ec10dfaaf19d6ae44b403e22a263c3"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/14-debug-en-dark-narrow.png",
+      "bytes": 42595,
+      "sha256": "ff647536e7202a332b26ec20d5e0db1608923f09ce4276ab6a139c53ec8b3717"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/15-debug-cookies-en-dark.png",
+      "bytes": 48003,
+      "sha256": "baf3c46a91c0fd936d993b5006a1cf5f817a2120596bd1108075f80eca2d5614"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/16-import-en-dark-narrow.png",
+      "bytes": 35243,
+      "sha256": "b40058a77002adf1feae7ea96736bf27a2ecf02a02caba202cf84761689121c0"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/17-import-plan-zh-dark.png",
+      "bytes": 33977,
+      "sha256": "ab7d0b3f6e4c6ff3b106deb7d0cc37202c19d4f0b9a95453bbcf5c405f1b8505"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/18-container-short.png",
+      "bytes": 20949,
+      "sha256": "b665e354ae2e317a3af3245789f36d668e7b9a51d7f84e18a6bbdec0dfe318d1"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/19-debug-short.png",
+      "bytes": 21470,
+      "sha256": "0a1d559d80669fd33795806401f798e079a7c692ad127f52f25ad905dd5a04ac"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/README.md",
+      "bytes": 936,
+      "sha256": "6252831ad9aae20a40fb4c6afa368dd1bb83154aacc168a85345a98b57a75cf0"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/browser-receipt.json",
+      "bytes": 6882,
+      "sha256": "39c80a21202d165f4460eb2673706bb9115b07399e2fc42d24975ee4a4d57c01"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/browser-server-tail.log",
+      "bytes": 1328,
+      "sha256": "2c2eaa12a3f5c5cb52df3c8323893895f4c2084ec591fe6f12bebd33d5ea31b0"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/build-final.log",
+      "bytes": 775,
+      "sha256": "3f6f3a409f4061857acae9930955645038ea46cbf10ef0848278062024857ce2"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/build.log",
+      "bytes": 775,
+      "sha256": "80828153d723bae96c4459963ddf53ccb13a7f2f97a7ec3719f6d43d20457619"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/callers.log",
+      "bytes": 281,
+      "sha256": "3134568b9aca7e994fcb82fedc1e1d107f5525a77ea0540f1f267c782c8eb9d1"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/container-fixture.log",
+      "bytes": 2047,
+      "sha256": "3d15828e7c61d4151969886fabc81f4add302bdfffbcc3f825ac5bb9fe57fd98"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/container-red.log",
+      "bytes": 1486,
+      "sha256": "2822f1b006b4b7c8f90523294549e894842fb16732994d2fa70453ca4ba62b59"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/fixture-seed-final.log",
+      "bytes": 951,
+      "sha256": "32ec6c4537173b3ef3562155c77ecfc094566144239cac5b07499848adcebfde"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/presentation-red.log",
+      "bytes": 19279,
+      "sha256": "65fc12b05be7abf4f7ecc498c1f98152cd117b5984f531dc4ba08df9da8e2263"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/targeted.log",
+      "bytes": 1548,
+      "sha256": "f69168658df2659b5b4e26d0327a1ba4ef0c9f37868a94bf2c4f2860649fc3ca"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/vue-final.log",
+      "bytes": 37,
+      "sha256": "e9f4d20594b78d2a8a6d8041839f863e8da18f5302fe5e1c6ae9dbbbd97c3e38"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/evidence/vue.log",
+      "bytes": 37,
+      "sha256": "e9f4d20594b78d2a8a6d8041839f863e8da18f5302fe5e1c6ae9dbbbd97c3e38"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/fixture-entry.ts",
+      "bytes": 9193,
+      "sha256": "fa7080c304331ddcb476e0205f5b914597550ba8e5861f435e1d5a766872a4b3"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/fixture-index.html",
+      "bytes": 166,
+      "sha256": "b2698ad754a3483cc6bbf5c723fb76990315fd956a8382d3ea0d7292348ecc6f"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/fixture-seed.json",
+      "bytes": 8893,
+      "sha256": "69b065451425c90f96eb1c465287d90578a0cf705acfe14b82f50282efca99c7"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/fixture-seed.mjs",
+      "bytes": 3317,
+      "sha256": "d472eccfc34bdaa5c9de2be4ae7987428029503eb913264f9c95b7618b1c9960"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/fixture-serve.mjs",
+      "bytes": 3337,
+      "sha256": "713cb0a40e04f76e348261f08ee65dbc16fe3b2dae219bc53ec4c2c26208442b"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3h/short-viewport.json",
+      "bytes": 1691,
+      "sha256": "a0f22e6240003737217d7fb0559cc51b8d4097d9dfc01c12bce0ca9570f1e02f"
+    },
+    {
+      "path": "docs/f8-frontend-polish-acceptance.md",
+      "bytes": 9449,
+      "sha256": "61efe7daaef84b1ee9451bbbdc5325be34e74bcd9966ea9520af9ec105b0f170"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3-inventory.md",
+      "bytes": 10682,
+      "sha256": "9ecd0b67ace601bbaa842c57834bbf9f38bb05e1146a2394163afcc149952878"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3h-design.md",
+      "bytes": 2443,
+      "sha256": "c530b7abff3bac65abc2edd466b2ba99ac09ea62f4586a92d27a29f7707e5bb4"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3h-validation.md",
+      "bytes": 7452,
+      "sha256": "f3121b3d304e477e0f73f7ce4e77cdbcf126a3420e6238fee42501dd2e934756"
+    },
+    {
+      "path": "docs/f8-frontend-polish-worklog.md",
+      "bytes": 16495,
+      "sha256": "51ccc3c7ace37a6084e34b48f09f748337c4449c4cfc1802e163dce2cffc87c8"
+    }
+  ]
+}

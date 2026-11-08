@@ -318,4 +318,7 @@ function treeOptions(root: LocalTreeNodeDTO | null, kind: "collection" | "api"):
   font-family: inherit;
   font-size: 12px;
 }
+
+.design-panel { padding: 12px; gap: 12px; min-width: 0; background: var(--panel); } .toolbar { flex-wrap: wrap; padding: 8px; border: 1px solid var(--border); border-radius: 8px; top: 0; } .content-view,.document-view { padding: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-sizing: border-box; }
+
 </style>

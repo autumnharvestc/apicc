@@ -304,6 +304,7 @@ function parseAnnotation(key: AnnotationField, value: string) {
   </fieldset>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .schema-editor { border: 1px solid var(--border, #d9d9d9); min-width: 0; padding: 8px; display: grid; gap: 6px; }
 .nested { display: grid; gap: 6px; margin-left: 12px; }
@@ -311,4 +312,7 @@ function parseAnnotation(key: AnnotationField, value: string) {
 .row { display: flex; align-items: center; gap: 8px; }
 .row > label, .row > input, .row > textarea, .row > select { flex: 1; }
 textarea { min-height: 42px; font-family: ui-monospace, monospace; }
+
+.schema-editor { border-radius: 6px; background: var(--subtle); box-sizing: border-box; font-size: 12px; } .row { flex-wrap: wrap; min-width: 0; } .row > label,.row > input,.row > textarea,.row > select { flex: 1 1 130px; min-width: 0; } .nested { min-width: 0; margin-left: 6px; } .property { min-width: 0; } label { overflow-wrap: anywhere; }
+
 </style>

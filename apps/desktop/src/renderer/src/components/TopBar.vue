@@ -169,7 +169,7 @@ function onExitCancel() {
     <a-drawer
       v-model:open="settingsOpen"
       :title="t('settings.title')"
-      :width="560"
+      width="min(560px, 100vw)"
       data-testid="settings-drawer"
     >
       <a-button v-if="ai" block data-testid="settings-ai" @click="settingsOpen = false; ai.configDialogOpen = true">{{ t("aiSettings.title") }}</a-button>

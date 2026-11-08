@@ -1,0 +1,19 @@
+Source: final write_stdin output for Vite exec session 11316 on Ctrl+C. Tail only; not a complete lifetime log.
+00:33:45 [vite] (client) page reload entry.ts
+00:34:15 [vite] (client) hmr update EnvPanel.vue style
+00:35:54 [vite] (client) page reload entry.ts
+00:35:54 [vite] (client) hmr update ContractDesigner.vue style
+00:36:43 [vite] (client) page reload entry.ts
+00:36:46 [vite] (client) page reload seed.json
+00:37:16 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+ > ../../../../../../../../../@vite/client:539:50
+00:37:33 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+ > ../../../../../../../../../@vite/client:539:50
+00:38:05 [vite] (client) hmr update ImportWizard.vue style
+00:38:05 [vite] (client) page reload entry.ts
+00:38:08 [vite] (client) page reload seed.json
+00:42:05 [vite] (client) page reload seed.json
+00:42:54 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+ > ../../../../../../../../../@vite/client:539:50
+Session exited on Ctrl+C; subsequent Get-NetTCPConnection found no listener at 63577.
+Note: HMR paths abbreviated to component names; error text and timestamps copied verbatim. No product root cause inferred.

@@ -1,0 +1,28 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/P3hPresentation.test.ts (4 tests | 2 failed | 2 skipped) 293ms
+   × P3h names container script controls and retains save identity in zh-CN 241ms
+   × P3h names container script controls and retains save identity in en 49ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/P3hPresentation.test.ts > P3h names container script controls and retains save identity in zh-CN
+ FAIL  tests/renderer/components/P3hPresentation.test.ts > P3h names container script controls and retains save identity in en
+AssertionError: expected undefined to be defined
+ ❯ tests/renderer/components/P3hPresentation.test.ts:23:16
+     21|   await body.findAll('[role="tab"]').find(x => x.text() === (locale ==…
+     22|   const down = body.findAll('button').find(x => x.attributes('aria-lab…
+     23|   expect(down).toBeDefined(); await down!.trigger('click');
+       |                ^
+     24|   wrapper.findComponent(Modal).vm.$emit('ok'); await flushPromises();
+     25|   expect(api.containerSave).toHaveBeenCalledWith({ ...target, operatio…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 skipped (4)
+   Start at  00:25:29
+   Duration  7.84s (transform 3.00s, setup 0ms, import 6.37s, tests 293ms, environment 982ms)
+

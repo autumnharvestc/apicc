@@ -1,0 +1,82 @@
+{
+  "container": {
+    "dialog": [
+      {
+        "body": [
+          {
+            "height": 220,
+            "scrollHeight": 303
+          }
+        ],
+        "bounds": {
+          "bottom": 367,
+          "height": 334,
+          "left": 16,
+          "right": 624,
+          "top": 33,
+          "width": 608,
+          "x": 16,
+          "y": 33
+        },
+        "buttons": [
+          {
+            "rect": {
+              "bottom": 347,
+              "height": 32,
+              "left": 470.58929443359375,
+              "right": 531.2946548461914,
+              "top": 315,
+              "width": 60.705360412597656,
+              "x": 470.58929443359375,
+              "y": 315
+            },
+            "text": "关 闭"
+          },
+          {
+            "rect": {
+              "bottom": 347,
+              "height": 32,
+              "left": 539.294677734375,
+              "right": 600.0000381469727,
+              "top": 315,
+              "width": 60.705360412597656,
+              "x": 539.294677734375,
+              "y": 315
+            },
+            "text": "保 存"
+          }
+        ]
+      }
+    ],
+    "viewport": {
+      "height": 400,
+      "width": 640
+    }
+  },
+  "debug": {
+    "dialogs": [
+      {
+        "body": [
+          {
+            "height": 220,
+            "scrollHeight": 909
+          }
+        ],
+        "bounds": {
+          "bottom": 345.00000381469727,
+          "height": 290,
+          "left": 16,
+          "right": 624,
+          "top": 55.000003814697266,
+          "width": 608,
+          "x": 16,
+          "y": 55.000003814697266
+        }
+      }
+    ],
+    "viewport": {
+      "height": 400,
+      "width": 640
+    }
+  }
+}

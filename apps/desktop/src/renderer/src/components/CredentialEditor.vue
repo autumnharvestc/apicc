@@ -146,8 +146,12 @@ async function removeCredential() {
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .credentials { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .credential-warning { flex-basis: 100%; margin: 0; padding: 8px 10px; border: 1px solid #d89614; background: #fffbe6; color: #614700; font-weight: 600; }
 label { display: flex; gap: 6px; align-items: center; }
+
+.credentials { font-size: 13px; min-width: 0; } .credential-warning { border-color: var(--accent); background: var(--active-weak); color: var(--text); border-radius: 6px; line-height: 1.6; } label { flex-wrap: wrap; min-width: 0; } input { min-width: 0; }
+
 </style>
