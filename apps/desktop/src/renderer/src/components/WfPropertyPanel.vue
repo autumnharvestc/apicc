@@ -132,16 +132,7 @@ function onKindToggle(checked: unknown) {
   </div>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-.panel-empty, .panel-node, .panel-edge { padding: 12px; }
-.hint { color: var(--text-muted); font-size: 12px; }
-.missing-alert { margin-bottom: 12px; }
-.panel-form { margin-bottom: 12px; }
-.edge-hints {
-  font-size: 12px;
-  color: var(--text-muted);
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
-}
-.edge-hints p { margin: 4px 0; }
+.panel-empty, .panel-node, .panel-edge { padding: 16px; min-width: 0; }.hint { color: var(--text-muted); font-size: 12px; line-height: 1.6; }.missing-alert { margin-bottom: 16px; }.panel-form { margin-bottom: 16px; }.panel-form label { display: flex; flex-direction: column; gap: 6px; }.edge-hints { font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 12px; }.edge-hints p { margin: 6px 0; line-height: 1.6; }
 </style>

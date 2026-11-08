@@ -16,12 +16,11 @@ import {
   Alert as AAlert,
   Button as AButton,
   Input as AInput,
-  Layout as ALayout,
-  LayoutSider as ALayoutSider,
   Select as ASelect,
   Space as ASpace,
   Tag as ATag,
 } from "ant-design-vue";
+import { DeleteOutlined } from "@ant-design/icons-vue";
 import type { EvidenceIdentity, JsonValue, NodeState, WorkflowNode, WorkflowStatus, WorkflowV2 } from "@apicc/core";
 import { JsonValueSchema } from "@apicc/core/schema";
 import type { WorkflowSummary } from "../../../shared/types.js";
@@ -586,13 +585,13 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
       <ul class="wf-items">
         <!-- 行内悬停动作钮（审查 I3 删除）：li 承载 hover 显隐，按钮不嵌套在打开列表项内 -->
         <li v-for="item in wfList.items" :key="item.id" class="wf-item-row">
-          <button class="wf-item" data-testid="wf-list-item" :data-id="item.id" @click="selectWorkflow(item.locator)">
-            <span>{{ item.name }}</span>
+          <button class="wf-item" data-testid="wf-list-item" :data-id="item.id" :title="item.name" @click="selectWorkflow(item.locator)">
+            <span class="wf-item-name">{{ item.name }}</span>
             <a-tag :color="statusColors[item.status]" class="wf-item-status">{{ t(`wf.status.${item.status}`) }}</a-tag>
           </button>
           <span class="wf-item-actions">
-            <button class="wf-item-act danger" data-testid="wf-item-delete" :data-id="item.id" :disabled="workspace.readOnly" @click="askDelete(item)">
-              {{ t("wf.delete") }}
+            <button class="wf-item-act danger" data-testid="wf-item-delete" :data-id="item.id" :title="`${t('wf.delete')} ${item.name}`" :aria-label="`${t('wf.delete')} ${item.name}`" :disabled="workspace.readOnly" @click="askDelete(item)">
+              <DeleteOutlined aria-hidden="true" />
             </button>
           </span>
         </li>
@@ -603,7 +602,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
     <template v-else>
       <!-- 顶栏：名称 + 状态 + dirty 圆点 + 返回列表 + 节点操作 + 保存 + 生命周期 + 运行门控 -->
       <div class="wf-topbar" data-testid="wf-topbar">
-        <span class="wf-title" data-testid="wf-title">{{ wf.name }}</span>
+        <span class="wf-title" data-testid="wf-title" :title="wf.name">{{ wf.name }}</span>
         <a-tag :color="statusColors[wf.status]" data-testid="wf-status">{{ t(`wf.status.${wf.status}`) }}</a-tag>
         <span v-if="design.dirty" class="wf-dirty" data-testid="wf-dirty" :title="t('wf.unsaved')">●</span>
         <a-button size="small" data-testid="wf-back-to-list" @click="backToList">{{ t("wf.backToList") }}</a-button>
@@ -702,7 +701,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         <template #closeText><span data-testid="wf-errors-close">{{ t("common.close") }}</span></template>
       </a-alert>
 
-      <a-layout class="wf-body" style="background: transparent; color: inherit">
+      <div class="wf-body">
         <!-- 中央画布（受控）：数据层唯一来源为 store 缓冲 -->
         <div class="wf-canvas-wrap" data-testid="wf-canvas">
           <VueFlow
@@ -739,7 +738,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         </div>
 
         <!-- 右侧属性面板（280px） -->
-        <a-layout-sider :width="280" theme="light" class="wf-panel" data-testid="wf-panel">
+        <aside class="wf-panel" data-testid="wf-panel">
           <div class="wf-property-interaction" :inert="workspace.readOnly" :aria-disabled="workspace.readOnly">
             <WfPropertyPanel
               :node-data="selectedNodeData"
@@ -756,8 +755,8 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
             />
           </div>
           <div v-if="workspace.readOnly && selectedReferences.length" class="wf-readonly-references"><button v-for="(id, index) in selectedReferences" :key="index" type="button" @click="openReference(id)">{{ t('wf.control.openReference') }} · {{ workflowOptions.find(item => item.id === id)?.name ?? id }}</button></div>
-        </a-layout-sider>
-      </a-layout>
+        </aside>
+      </div>
 
       <!-- 运行结果抽屉（任务 7）：纯展示，开关状态在本组件（运行完成自动打开） -->
       <WfResultDrawer :ai="ai" :open="resultOpen" :result="design.runResult" :project-locator="designProjectLocator" @close="resultOpen = false" @locate="locate" />
@@ -776,80 +775,13 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
   </div>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-.wf-designer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.wf-inflight { flex-shrink: 0; display: flex; gap: 8px; padding: 6px 12px; font-size: 12px; overflow-wrap: anywhere; }
-.wf-empty { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: auto; }
-.wf-create { display: flex; gap: 8px; max-width: 420px; }
-.wf-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-/* 行内悬停动作区（审查 I3 删除钮）：默认隐藏，行悬停显示（先例同 SideTree .actions） */
-.wf-item-row { display: flex; align-items: center; gap: 4px; max-width: 420px; }
-.wf-item-row .wf-item { flex: 1; }
-.wf-item-actions { display: none; flex: none; }
-.wf-item-row:hover .wf-item-actions { display: inline-flex; }
-.wf-item-act {
-  border: none;
-  background: none;
-  color: var(--text);
-  cursor: pointer;
-  font-size: 11px;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.wf-item-act.danger { color: var(--fail); }
-.wf-item-act:hover { background: var(--border); }
-.wf-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--text);
-  border-radius: 4px;
-  padding: 4px 10px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.wf-item:hover { border-color: var(--accent); }
-.wf-item-status { margin-right: 0; }
-.wf-list-empty { color: var(--text-muted); font-size: 12px; }
-.wf-topbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  max-height: 36vh;
-  overflow: auto;
-}
-.wf-title { font-weight: 600; }
-.wf-dirty { color: var(--accent); }
-.wf-actions { margin-left: auto; flex-wrap: wrap; }
-.wf-run-inputs { max-height: 18vh; overflow: auto; padding: 4px 12px; flex-shrink: 0; }
-.wf-run-inputs label { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0; }
-.wf-version-hint { margin: 4px 12px; font-size: 12px; color: var(--text-muted); }
-.wf-draft-findings { max-height: 16vh; overflow: auto; flex-shrink: 0; padding: 4px 12px; font-size: 12px; overflow-wrap: anywhere; }
-.wf-readonly-references { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
-.wf-run-env { width: 120px; }
-.wf-errors { margin: 8px 12px 0; }
-.wf-errors-title { font-weight: 600; }
-.wf-error-list { margin: 4px 0 0; padding-left: 18px; }
-.wf-error-list li { word-break: break-all; }
-.wf-body { display: flex; flex: 1; min-height: 0; }
-.wf-canvas-wrap { position: relative; flex: 1; min-width: 0; }
-.wf-canvas-wrap :deep(.vue-flow) { width: 100%; height: 100%; }
-.wf-canvas-empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-size: 13px;
-  pointer-events: none;
-}
-.wf-panel { border-left: 1px solid var(--border); overflow: auto; }
-.wf-property-interaction { width: 100%; }
+.wf-designer { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; container-type: inline-size; background: var(--bg); color: var(--text); font-size: 13px; }
+.wf-inflight { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: var(--active-weak); overflow-wrap: anywhere; }
+.wf-empty { display: flex; flex-direction: column; gap: 16px; padding: 20px; overflow: auto; }.wf-create { display: flex; flex-wrap: wrap; gap: 8px; max-width: 720px; }.wf-new-name { flex: 1 1 180px; min-width: 0; }.wf-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }.wf-item-row { display: flex; align-items: center; gap: 8px; max-width: 720px; min-width: 0; }.wf-item-row .wf-item { flex: 1; min-width: 0; }.wf-item-actions { display: inline-flex; flex: none; opacity: 0; }.wf-item-row:hover .wf-item-actions, .wf-item-row:focus-within .wf-item-actions { opacity: 1; }.wf-item-act.danger { color: var(--fail); }.wf-item-act { width: 34px; padding: 6px; }.wf-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; box-shadow: var(--panel-shadow); }.wf-item-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }.wf-item-status { margin-right: 0; flex: none; }.wf-list-empty { color: var(--text-muted); }
+.wf-topbar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; max-height: 36vh; overflow: auto; box-sizing: border-box; }.wf-title { font-weight: 600; font-size: 15px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.wf-dirty { color: var(--accent); }.wf-actions { margin-left: auto; flex-wrap: wrap; min-width: 0; max-width: 100%; }.wf-actions :deep(.ant-space-item) { max-width: 100%; }.wf-run-inputs { max-height: 18vh; overflow: auto; padding: 4px 16px; flex-shrink: 0; background: var(--subtle); }.wf-run-inputs label { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }.wf-version-hint { margin: 6px 16px; font-size: 12px; color: var(--text-muted); }.wf-draft-findings { max-height: 16vh; overflow: auto; flex-shrink: 0; padding: 4px 16px; font-size: 12px; overflow-wrap: anywhere; }.wf-readonly-references { display: flex; flex-direction: column; gap: 8px; padding: 12px; }.wf-run-env { width: 140px; }.wf-errors { margin: 8px 16px 0; max-height: 20vh; overflow: auto; flex: none; }.wf-errors-title { font-weight: 600; }.wf-error-list { margin: 4px 0 0; padding-left: 18px; }.wf-error-list li { overflow-wrap: anywhere; }
+.wf-body { display: flex; flex: 1; min-height: 0; min-width: 0; }.wf-canvas-wrap { position: relative; flex: 1; min-width: 0; background-color: var(--panel); background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 20px 20px; }.wf-canvas-wrap :deep(.vue-flow) { width: 100%; height: 100%; }.wf-canvas-wrap :deep(.vue-flow__edge-textbg) { fill: var(--bg); }.wf-canvas-wrap :deep(.vue-flow__edge-text) { fill: var(--text); }.wf-canvas-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-muted); padding: 16px; pointer-events: none; }.wf-panel { width: 310px; flex: 0 0 310px; min-width: 0; border-left: 1px solid var(--border); overflow: auto; background: var(--bg); }.wf-property-interaction { width: 100%; }
+@container (max-width: 760px) { .wf-body { flex-direction: column; overflow: auto; }.wf-canvas-wrap { flex: 1 0 240px; min-height: 240px; }.wf-panel { width: auto; flex: 0 0 auto; overflow: visible; border-left: 0; border-top: 1px solid var(--border); }.wf-actions { margin-left: 0; } }
+@media (hover: none) { .wf-item-actions { opacity: 1; } }
 </style>

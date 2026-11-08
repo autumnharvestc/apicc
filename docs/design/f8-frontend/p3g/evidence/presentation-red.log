@@ -1,0 +1,167 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/CasePanel.test.ts (13 tests | 2 failed | 11 skipped) 1691ms
+     × P3g names operation controls and preserves reorder/remove identity in zh-CN 958ms
+     × P3g names operation controls and preserves reorder/remove identity in en 731ms
+ ❯ tests/renderer/components/TestSidebar.test.ts (2 tests | 2 failed) 1263ms
+   × P3g clears only navigation search and restores full locator in zh-CN 676ms
+   × P3g clears only navigation search and restores full locator in en 584ms
+ ❯ tests/renderer/components/wfDesigner.test.ts (48 tests | 1 failed | 47 skipped) 1074ms
+     × P3g names list deletion without changing open or confirmation actions 1072ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/CasePanel.test.ts > CasePanel > P3g names operation controls and preserves reorder/remove identity in zh-CN
+Error: Unable to get button[aria-label="下移操作 1"] within: <div data-v-b622e2f1="" class="ops-list" data-testid="case-pre-ops">
+  <div data-v-b622e2f1="" class="op-row">
+    <div data-v-b622e2f1="" class="op-btns"><button data-v-b622e2f1="" disabled="" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>↑</span>
+      </button><button data-v-b622e2f1="" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>↓</span>
+      </button><button data-v-b622e2f1="" data-testid="case-op-delete" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm ant-btn-dangerous" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>×</span>
+      </button></div><textarea data-v-b622e2f1="" class="ant-input script-text css-dev-only-do-not-override-1p3hq3p" rows="3" data-testid="case-op-content" value="first()"></textarea>
+  </div>
+  <div data-v-b622e2f1="" class="op-row">
+    <div data-v-b622e2f1="" class="op-btns"><button data-v-b622e2f1="" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>↑</span>
+      </button><button data-v-b622e2f1="" disabled="" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>↓</span>
+      </button><button data-v-b622e2f1="" data-testid="case-op-delete" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm ant-btn-dangerous" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>×</span>
+      </button></div><textarea data-v-b622e2f1="" class="ant-input script-text css-dev-only-do-not-override-1p3hq3p" rows="3" data-testid="case-op-content" value="second()"></textarea>
+  </div><button data-v-b622e2f1="" data-testid="case-pre-op-add" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-default ant-btn-sm" type="button">
+    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+      <!---->
+    </transition-stub><span>添加脚本操作</span>
+  </button>
+</div>
+ ❯ DOMWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/CasePanel.test.ts:84:24
+     82|       const down = locale === 'en' ? 'Move operation 1 down' : '下移操作 1…
+     83|       const remove = locale === 'en' ? 'Delete operation 1' : '删除操作 1';
+     84|       await operations.get(`button[aria-label="${down}"]`).trigger('cl…
+       |                        ^
+     85|       expect(current.preOperations.map(item => item.id)).toEqual(['sec…
+     86|       await operations.get(`button[aria-label="${remove}"]`).trigger('…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  tests/renderer/components/CasePanel.test.ts > CasePanel > P3g names operation controls and preserves reorder/remove identity in en
+Error: Unable to get button[aria-label="Move operation 1 down"] within: <div data-v-b622e2f1="" class="ops-list" data-testid="case-pre-ops">
+  <div data-v-b622e2f1="" class="op-row">
+    <div data-v-b622e2f1="" class="op-btns"><button data-v-b622e2f1="" disabled="" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>↑</span>
+      </button><button data-v-b622e2f1="" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>↓</span>
+      </button><button data-v-b622e2f1="" data-testid="case-op-delete" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm ant-btn-dangerous" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>×</span>
+      </button></div><textarea data-v-b622e2f1="" class="ant-input script-text css-dev-only-do-not-override-1p3hq3p" rows="3" data-testid="case-op-content" value="first()"></textarea>
+  </div>
+  <div data-v-b622e2f1="" class="op-row">
+    <div data-v-b622e2f1="" class="op-btns"><button data-v-b622e2f1="" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>↑</span>
+      </button><button data-v-b622e2f1="" disabled="" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>↓</span>
+      </button><button data-v-b622e2f1="" data-testid="case-op-delete" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-text ant-btn-sm ant-btn-dangerous" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>×</span>
+      </button></div><textarea data-v-b622e2f1="" class="ant-input script-text css-dev-only-do-not-override-1p3hq3p" rows="3" data-testid="case-op-content" value="second()"></textarea>
+  </div><button data-v-b622e2f1="" data-testid="case-pre-op-add" class="css-dev-only-do-not-override-1p3hq3p ant-btn ant-btn-default ant-btn-sm" type="button">
+    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+      <!---->
+    </transition-stub><span>Add script operation</span>
+  </button>
+</div>
+ ❯ DOMWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/CasePanel.test.ts:84:24
+     82|       const down = locale === 'en' ? 'Move operation 1 down' : '下移操作 1…
+     83|       const remove = locale === 'en' ? 'Delete operation 1' : '删除操作 1';
+     84|       await operations.get(`button[aria-label="${down}"]`).trigger('cl…
+       |                        ^
+     85|       expect(current.preOperations.map(item => item.id)).toEqual(['sec…
+     86|       await operations.get(`button[aria-label="${remove}"]`).trigger('…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  tests/renderer/components/TestSidebar.test.ts > P3g clears only navigation search and restores full locator in zh-CN
+AssertionError: expected '测试单接口用例场景用例测试套件数据集当前项目暂无接口' to contain '没有匹配项'
+
+Expected: "没有匹配项"
+Received: "测试单接口用例场景用例测试套件数据集当前项目暂无接口"
+
+ ❯ tests/renderer/components/TestSidebar.test.ts:23:26
+     21|   const search = wrapper.get('input');
+     22|   await search.setValue('not-present');
+     23|   expect(wrapper.text()).toContain(locale === 'en' ? 'No matching item…
+       |                          ^
+     24|   await wrapper.get('button[data-testid="test-search-clear"]').trigger…
+     25|   expect(search.element.value).toBe(''); expect(document.activeElement…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  tests/renderer/components/TestSidebar.test.ts > P3g clears only navigation search and restores full locator in en
+AssertionError: expected 'TestAPI CasesScenariosTest suitesData…' to contain 'No matching items'
+
+Expected: "No matching items"
+Received: "TestAPI CasesScenariosTest suitesDatasetsNo APIs in this project"
+
+ ❯ tests/renderer/components/TestSidebar.test.ts:23:26
+     21|   const search = wrapper.get('input');
+     22|   await search.setValue('not-present');
+     23|   expect(wrapper.text()).toContain(locale === 'en' ? 'No matching item…
+       |                          ^
+     24|   await wrapper.get('button[data-testid="test-search-clear"]').trigger…
+     25|   expect(search.element.value).toBe(''); expect(document.activeElement…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  tests/renderer/components/wfDesigner.test.ts > WfDesigner 装配 > P3g names list deletion without changing open or confirmation actions
+AssertionError: expected undefined to be '长工作流名称 / preserve-complete-workflow-t…' // Object.is equality
+
+- Expected:
+"长工作流名称 / preserve-complete-workflow-title"
+
++ Received:
+undefined
+
+ ❯ tests/renderer/components/wfDesigner.test.ts:206:38
+
+    204|     await flushPromises();
+    205|     const item = ctx.wrapper.findAll('[data-testid="wf-list-item"]').f…
+    206|     expect(item.attributes('title')).toBe(name);
+       |                                      ^
+    207|     const remove = ctx.wrapper.findAll('[data-testid="wf-item-delete"]…
+    208|     expect(remove.attributes('aria-label')).toBe(`删除 ${name}`);
+ Test Files  3 failed (3)
+      Tests  5 failed | 58 skipped (63)
+   Start at  23:57:54
+   Duration  9.48s (transform 5.65s, setup 0ms, import 17.77s, tests 4.03s, environment 3.86s)
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+

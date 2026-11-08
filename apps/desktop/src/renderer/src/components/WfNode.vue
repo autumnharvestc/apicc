@@ -20,8 +20,8 @@ const { t } = useI18n();
     data-testid="wf-node"
   >
     <Handle type="target" :position="Position.Top" class="wf-handle" />
-    <div class="wf-node-label">{{ data.node.label || t("wf.untitled") }}</div>
-    <div class="wf-node-ref" data-testid="wf-node-ref">
+    <div class="wf-node-label" :title="data.node.label || t('wf.untitled')">{{ data.node.label || t("wf.untitled") }}</div>
+    <div class="wf-node-ref" data-testid="wf-node-ref" :title="data.node.kind === 'request' ? [data.apiName || t('wf.unbound'), data.caseName].filter(Boolean).join(' · ') : undefined">
       <template v-if="data.node.kind === 'request'">
         {{ data.apiName || t("wf.unbound") }}<template v-if="data.caseName"> · {{ data.caseName }}</template>
       </template>
@@ -34,22 +34,5 @@ const { t } = useI18n();
 </template>
 
 <style scoped>
-.wf-node {
-  min-width: 150px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  font-size: 12px;
-}
-.wf-node-label { font-weight: 600; color: var(--text); }
-.wf-node-ref { margin-top: 2px; color: var(--text-muted); }
-.wf-node-noop-kind { border-style: dashed; }
-.wf-node-missing { border: 2px solid var(--fail); }
-.wf-node-passed { border-color: var(--pass); box-shadow: 0 0 0 1px var(--pass); }
-.wf-node-failed { border-color: var(--fail); box-shadow: 0 0 0 1px var(--fail); }
-.wf-node-skipped { opacity: 0.55; }
-/* 运行 noop 状态描边（colorForState("noop") = "wf-node-noop"；与占位虚线 wf-node-noop-kind 叠加） */
-.wf-node-noop { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.wf-handle { width: 7px; height: 7px; background: var(--accent); }
+.wf-node { min-width: 170px; max-width: 280px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); font-size: 12px; box-shadow: var(--panel-shadow); }.wf-node-label { font-weight: 600; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.wf-node-ref { margin-top: 6px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.wf-ports { display: block; margin-top: 6px; color: var(--text-muted); }.wf-node-noop-kind { border-style: dashed; }.wf-node-missing { border: 2px solid var(--fail); }.wf-node-passed { border-color: var(--pass); box-shadow: 0 0 0 1px var(--pass); }.wf-node-failed { border-color: var(--fail); box-shadow: 0 0 0 1px var(--fail); }.wf-node-skipped { opacity: .55; }.wf-node-noop { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }.wf-handle { width: 8px; height: 8px; background: var(--accent); }
 </style>

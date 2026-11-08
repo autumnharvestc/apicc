@@ -1,0 +1,227 @@
+{
+  "base": "c1d1b69a",
+  "scope": "F8 P3g workflow and case presentation; no full gate, package, merge or push",
+  "hashPolicy": "Working-copy bytes; excludes manifest and independently authored review receipt",
+  "files": [
+    {
+      "path": "apps/desktop/src/renderer/src/components/AssertionEditor.vue",
+      "bytes": 8325,
+      "sha256": "45619ffb23714d40ef272a86109baf18b79405684d93c0b93ea1638910ade843"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/CasePanel.vue",
+      "bytes": 24099,
+      "sha256": "8e47e4ee2e1059d5a9643dc481ee3f58fb44a982d1f57bc4119908eb79ef3ee4"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/ExtractionEditor.vue",
+      "bytes": 8526,
+      "sha256": "b54aef07260617f6ad8472fed8e843b538c5b59efc4df7592015424138e320a3"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/TestSidebar.vue",
+      "bytes": 9833,
+      "sha256": "00b1e49da20bfb1da0eb07f07b752117490911ede5e82f7daf9c54398df622b1"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/TestView.vue",
+      "bytes": 4025,
+      "sha256": "9afce84319ddf6007ed77ca82a557475090c6b6621997c858176461c6130858f"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/WfControlFields.vue",
+      "bytes": 21821,
+      "sha256": "25eef7cdb6b3fd5642afb8f1ef19b154cdece3f8b47fbe3e00ffcfea055e11e0"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/WfDesigner.vue",
+      "bytes": 42542,
+      "sha256": "60363a22a1ca2f108dae6ca71b4d2a8e8ff6dfac542b0aa87d83a9b8ae174f5d"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/WfNode.vue",
+      "bytes": 3363,
+      "sha256": "0e7d402ebb99353a668ba65d89119293a4bf1469d81e2625e5f56a736f98713d"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/WfPropertyPanel.vue",
+      "bytes": 6269,
+      "sha256": "c6f766f5b1588122cf3d2898d475e18e1cf4812924378dd9fe664fef13bc2f36"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/WfResultDrawer.vue",
+      "bytes": 15981,
+      "sha256": "364000b2e981a9f2e2bd2ccb6b492dece843e37ac5609279dd6dde600b848cb6"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/i18n/en.json",
+      "bytes": 156252,
+      "sha256": "3b0c8650a07445e0d65879cf3c5e86ee95047f9570b391fd335aacf6023b371a"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/i18n/zh-CN.json",
+      "bytes": 145984,
+      "sha256": "0765877102dacc67dcbe42b57cd4bb13e7609c57e49a237219c3f5db4abbf83c"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/styles/editor-controls.css",
+      "bytes": 1282,
+      "sha256": "f8f186a4f2c8cfd343990c979176ed344b497824fe12a99a5f7e10c4e0c94b2d"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/CasePanel.test.ts",
+      "bytes": 26728,
+      "sha256": "ccec4867d7e2662b65982d752e998983b8baef34664bc3fba1b38df68cd0418e"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/TestSidebar.test.ts",
+      "bytes": 2963,
+      "sha256": "07ada08019daf7cacc5a8f2e4333b6c2bfe3fb090504a44473a14f27ecd03671"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/wfDesigner.test.ts",
+      "bytes": 78764,
+      "sha256": "d6b2bc096298e57e235f28e034bf3df18f0df0b0d2e7f12348a4f97e17b613eb"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/browser-receipt.json",
+      "bytes": 2698,
+      "sha256": "5aae66fee007bd53a19e6fd30fb69c016bd304c4c4bec65afa53805859539503"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/cases-en-dark-narrow-error.png",
+      "bytes": 47934,
+      "sha256": "9bcaa4a743328d1f5490f229a03b26d55e009d79bb383c7924a1950d88b87bf6"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/cases-fixture-missing-port.png",
+      "bytes": 72089,
+      "sha256": "60422fa54a9db5c1fcc9ab61c115754e3e848072ed506f62e2d27e3faf97be1f"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/cases-scripts-narrow.png",
+      "bytes": 49923,
+      "sha256": "71b17b0c51982cd90bdbe61147a3ee154701282dca306345f76ac1d383736718"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/cases-search-empty.png",
+      "bytes": 47295,
+      "sha256": "4c2b8ad9d1724165262d6f194ae88a8c225538149a8fcbfc14d268eec1b8becf"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/cases-zh-light-wide.png",
+      "bytes": 69965,
+      "sha256": "75eb2870c3dd2fb9cbcdecb7f4cf42ef606460b66b85eb0942569622bb6c9178"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/evidence/browser-server.log",
+      "bytes": 1039,
+      "sha256": "844ccaad791b2c2d9b41f485555db6e46c25e59ff6abbfee1a072881f2145550"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/evidence/callers.log",
+      "bytes": 508,
+      "sha256": "24133d5872cf2830c1c0f88ff481681760da9a0255194e9a15a2e9f3d40be953"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/evidence/choices-red.log",
+      "bytes": 2033,
+      "sha256": "79af060e5b7a4abaeb635696cba9d358aa55f718b8ec93c760251d7adfcb74de"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/evidence/components.log",
+      "bytes": 3788,
+      "sha256": "77657179809186f2d1e136254f623b3ab82a2b4b2e90b61786bfe3cee0410dec"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/evidence/presentation-red.log",
+      "bytes": 11481,
+      "sha256": "67d6361ff7889dd29c1a8624756337b60c866f996a4e3c6f906b73764cb02f65"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/evidence/renderer-build.log",
+      "bytes": 775,
+      "sha256": "39dc6df365777f13f84f5dcbfe22b4886ff3b25d3d67871f2e39366151dff969"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/evidence/vue-typecheck.log",
+      "bytes": 37,
+      "sha256": "e9f4d20594b78d2a8a6d8041839f863e8da18f5302fe5e1c6ae9dbbbd97c3e38"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/fixture-entry.ts",
+      "bytes": 6225,
+      "sha256": "08059552e422f4d47fbdb9317f4ebf10fcccbc6899612d73aebe5102d72b52f9"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/fixture-index.html",
+      "bytes": 192,
+      "sha256": "4a7b7c9ff44b90fb2354604bc0b08671b9273bf8c2908602854a921037fbe750"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/fixture-seed.json",
+      "bytes": 8942,
+      "sha256": "bb1bf2978f8ca24ff60e92d94b7525a3f07e0b8ff6ef98661416c1890a85adc4"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/fixture-serve.mjs",
+      "bytes": 3616,
+      "sha256": "3245dae874205f391391edcedc7319ca706e3b55b2ca7ae8ac79f782eea70a87"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/results-en-dark-narrow.png",
+      "bytes": 56152,
+      "sha256": "04ba7316b1dd92914286a0391804f4287582446353fc615000ded1fd50cb54c0"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/results-zh-light-wide.png",
+      "bytes": 63269,
+      "sha256": "f15f21e52cc3a40e3c56e6fd67107edb12f94c5e835d41e49aa1388b2ba13884"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/workflow-en-dark-narrow.png",
+      "bytes": 51635,
+      "sha256": "a9daeff175372c789ecea8cd39056b6a4efe67ded7b0b86892c600196b77189c"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/workflow-list-focus.png",
+      "bytes": 28443,
+      "sha256": "0a0a467160d10f48f1a748b976164d54b4b8c71ffb7a8459d63f5236fbaf1b97"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/workflow-readonly-short.png",
+      "bytes": 36023,
+      "sha256": "d284a9520a87b4dfd712375ac0e73986606d1b00b996db5594cb0f70c0ffbd93"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3g/workflow-zh-light-wide.png",
+      "bytes": 73432,
+      "sha256": "618cacdc2179a934a4811876e59277f779ffe5ecdbdafba667a2d6c72eb3a616"
+    },
+    {
+      "path": "docs/f8-frontend-polish-acceptance.md",
+      "bytes": 8902,
+      "sha256": "35983657994619d2fdcf88d3110dd91740f7dbb733a3214b731e8f4243ddf9dc"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3-inventory.md",
+      "bytes": 9766,
+      "sha256": "ef82fdc24284cdaaf5c41555e4f211c73cb9c10c20164cff2bb981a5f4a79804"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3g-design.md",
+      "bytes": 2528,
+      "sha256": "c9a29fe2bf6a7a83cdd403746962793696f80fdcbd0d5b688ab4afd4c5a1d496"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p3g-validation.md",
+      "bytes": 8241,
+      "sha256": "b70dd9c30403256b15314256be4d5813259c244350c0590843c85eb96b9c9f73"
+    },
+    {
+      "path": "docs/f8-frontend-polish-worklog.md",
+      "bytes": 15642,
+      "sha256": "bbe3f86c5d7e893d3335ebc3b57afc29b85103b65691ec608633056dea10537a"
+    }
+  ]
+}

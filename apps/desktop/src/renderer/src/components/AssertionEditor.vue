@@ -70,26 +70,29 @@ function remove(index: number) {
   <div class="assertion-editor" data-testid="assert-table">
     <div v-for="(row, index) in assertions" :key="row.id" class="assertion-row">
       <div class="fields">
-        <label>{{ t('case.target') }}<a-select :value="row.target" :disabled="readOnly" :options="[...new Set([...(descriptor(row)?.targets ?? targets),row.target])].map(value => ({ label: value, value }))" data-testid="assert-target" @update:value="value => target(row, value as Assertion['target'])" /></label>
+        <label>{{ t('case.target') }}<a-select :value="row.target" :disabled="readOnly" :options="[...new Set([...(descriptor(row)?.targets ?? targets),row.target])].map(value => ({ label: targets.includes(value) ? t(`testPresentation.targets.${value}`) : value, value }))" data-testid="assert-target" @update:value="value => target(row, value as Assertion['target'])" /></label>
         <label>{{ t('case.op') }}<a-select :value="row.op" :disabled="readOnly" :options="[...operators, ...(!known(row) ? [{ op: row.op }] : [])].map(item => ({ label: item.op, value: item.op }))" data-testid="assert-op" @update:value="value => set(row, 'op', value)" /></label>
         <label v-if="descriptor(row)?.expectedFormat !== 'none'">{{ t('case.expected') }}<a-input :value="row.expected" :disabled="readOnly" :placeholder="descriptor(row)?.expectedFormat ?? 'text'" data-testid="assert-expected" @update:value="value => set(row, 'expected', value)" /></label>
         <label v-if="row.target === 'header'">{{ t('case.headerName') }}<a-input :value="row.headerName" :disabled="readOnly" data-testid="assert-header-name" @update:value="value => set(row, 'headerName', value)" /></label>
         <label v-if="row.target === 'cookie'">{{ t('testing.cookieName') }}<a-input :value="row.cookieName" :disabled="readOnly" @update:value="value => set(row, 'cookieName', value)" /></label>
         <label v-if="['bodyJson','bodyXml'].includes(row.target)">{{ t('case.path') }}<a-input :value="row.path" :disabled="readOnly" data-testid="assert-path" @update:value="value => set(row, 'path', value)" /></label>
-        <label>{{ t('testing.match') }}<select :value="row.match ?? 'first'" :disabled="readOnly" @change="set(row, 'match', ($event.target as HTMLSelectElement).value)"><option>first</option><option>all</option></select></label>
-        <a-button size="small" danger type="text" data-testid="assert-delete" :disabled="readOnly" @click="remove(index)">×</a-button>
+        <label>{{ t('testing.match') }}<select :value="row.match ?? 'first'" :disabled="readOnly" @change="set(row, 'match', ($event.target as HTMLSelectElement).value)"><option value="first">{{ t('testPresentation.first') }}</option><option value="all">{{ t('testPresentation.all') }}</option></select></label>
+        <a-button size="small" danger type="text" data-testid="assert-delete" :title="t('testPresentation.assertionDelete', { index: index + 1 })" :aria-label="t('testPresentation.assertionDelete', { index: index + 1 })" :disabled="readOnly" @click="remove(index)">×</a-button>
       </div>
       <p v-if="!known(row)" role="alert" data-testid="assertion-unknown">{{ t('testing.unknownOperator', { op: row.op }) }}</p>
       <p v-else-if="!descriptor(row)">{{ t('testing.manualOperator') }}</p>
       <p v-if="descriptor(row)?.targets && !descriptor(row)!.targets!.includes(row.target)" role="alert">{{ t('testing.targetUnsupported') }}</p>
       <p v-if="row.op === 'regex'" class="hint">{{ t('testing.regexHint') }}</p>
+      <details class="advanced-options"><summary>{{ t('testPresentation.advanced') }}</summary>
       <label>{{ t('testing.options') }}<a-input :value="row.options ? JSON.stringify(row.options) : ''" :disabled="readOnly" data-testid="assert-options" @update:value="value => json(row, 'options', value ?? '')" /></label>
       <label v-if="row.target === 'bodyXml'">{{ t('testing.namespaces') }}<a-input :value="JSON.stringify(row.namespaces ?? {})" :disabled="readOnly" @update:value="value => json(row, 'namespaces', value ?? '')" /></label>
+      </details>
       <p v-if="errors[row.id]" role="alert">{{ errors[row.id] }}</p>
       <p v-if="parseErrors[`${row.id}:options`] || parseErrors[`${row.id}:namespaces`]" role="alert">{{ parseErrors[`${row.id}:options`] || parseErrors[`${row.id}:namespaces`] }}</p>
     </div>
   </div>
 </template>
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-.assertion-editor{display:flex;flex-direction:column;gap:8px;min-width:0}.assertion-row{padding:8px;border:1px solid var(--border);border-radius:6px}.fields{display:flex;flex-wrap:wrap;gap:8px;align-items:end}label{display:flex;flex-direction:column;gap:4px;min-width:100px;flex:1}label :deep(.ant-select){min-width:120px}p{margin:5px 0;font-size:12px}p[role=alert]{color:var(--fail,#cf1322)}.hint{color:var(--text-muted)}
+.assertion-editor { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin-bottom: 12px; }.assertion-row { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--subtle); }.fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }label { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1 1 140px; }label :deep(.ant-select) { width: 100%; }.advanced-options { margin-top: 10px; }.advanced-options label { margin: 8px 0; }p { margin: 8px 0; font-size: 12px; line-height: 1.6; }p[role=alert] { color: var(--fail); }.hint { color: var(--text-muted); }
 </style>

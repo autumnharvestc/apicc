@@ -71,6 +71,43 @@ function deferred<T>() {
 }
 
 describe("CasePanel", () => {
+  it.each(['zh-CN', 'en'] as const)('P3g translates extraction choices while retaining protocol values in %s', async locale => {
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = locale;
+    const items: import('@apicc/core').ExtractionDefinition[] = [{ id: 'e', name: 'business-value', selector: { target: 'bodyJson', path: '$', match: 'first' }, method: 'value', required: true, sensitive: false }];
+    const panel = mount(ExtractionEditor, { props: { items }, global: { plugins: [i18n] } });
+    const selects = panel.findAll('select');
+    expect(selects[0]!.get('option[value="bodyJson"]').text()).toBe(locale === 'en' ? 'JSON body' : 'JSON 正文');
+    expect(selects[1]!.get('option[value="all"]').text()).toBe(locale === 'en' ? 'All matches' : '全部匹配');
+    await selects[1]!.setValue('all');
+    expect(items[0]!.selector).toEqual({ target: 'bodyJson', path: '$', match: 'all' });
+    expect(items[0]!.name).toBe('business-value');
+    const row: Assertion = { id: 'custom', target: 'bodyJson', path: '$', op: 'plugin.custom', expected: 'unchanged' };
+    const assertions = mount(AssertionEditor, { props: { assertions: [row] }, global: { plugins: [i18n] } });
+    expect(assertions.get('[data-testid="assertion-unknown"]').text()).toContain('plugin.custom');
+    expect(assertions.get('details').attributes('open')).toBeUndefined();
+    expect(row.expected).toBe('unchanged');
+    const name = locale === 'en' ? 'Delete assertion 1' : '删除断言 1';
+    expect(assertions.get('[data-testid="assert-delete"]').attributes('aria-label')).toBe(name);
+  });
+  it.each(['zh-CN', 'en'] as const)('P3g names operation controls and preserves reorder/remove identity in %s', async locale => {
+    localStorage.setItem('apicc.locale', locale);
+    try {
+      const { wrapper, editor } = await mountCasePanel();
+      const current = editor.api!.cases[0]!;
+      current.preOperations = [{ id: 'first', type: 'script', content: 'first()' }, { id: 'second', type: 'script', content: 'second()' }];
+      await flushPromises();
+      const operations = wrapper.get('[data-testid="case-pre-ops"]');
+      const down = locale === 'en' ? 'Move operation 1 down' : '下移操作 1';
+      const remove = locale === 'en' ? 'Delete operation 1' : '删除操作 1';
+      await operations.get(`button[aria-label="${down}"]`).trigger('click');
+      expect(current.preOperations.map(item => item.id)).toEqual(['second', 'first']);
+      await operations.get(`button[aria-label="${remove}"]`).trigger('click');
+      expect(current.preOperations).toEqual([{ id: 'first', type: 'script', content: 'first()' }]);
+      await wrapper.setProps({ readOnly: true });
+      expect(operations.get(`button[aria-label="${remove}"]`).attributes('disabled')).toBeDefined();
+      expect(operations.findAll('textarea')[0]!.element.value).toBe('first()');
+    } finally { localStorage.setItem('apicc.locale', 'zh-CN'); }
+  });
   it("G validates typed constants and clears only hidden XML namespace parse errors", async () => {
     const row: Assertion = { id: "typed", target: "bodyText", op: "length", expected: "0" };
     const { i18n } = createI18nInstance(); const panel = mount(AssertionEditor, { props: { assertions: [row] }, global: { plugins: [i18n] } });

@@ -1,0 +1,15 @@
+00:05:49 [vite] (ssr) warning: 
+C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/packages/core/dist/plugins/loader.js
+8  |  import { PluginLoadError } from "./compatibility.js";
+9  |  import { canonicalJson, normalizeManifest, readJson, readStaticPlugin } from "./manifest.js";
+10 |  const dynamicImport = (specifier) => import(specifier);
+   |                                              ^^^^^^^^^
+11 |  export const emptyBindings = () => ({ protocols: {}, auths: {} });
+12 |  export function normalizeBindings(input) {
+The above dynamic import cannot be analyzed by Vite.
+See https://vite.dev/guide/features#dynamic-import for supported dynamic import formats. If this is intended to be left as-is, you can use the /* @vite-ignore */ comment inside the import() call to suppress this warning.
+
+  Plugin: vite:import-analysis
+  File: C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/packages/core/dist/plugins/loader.js
+  ➜  Local:   http://127.0.0.1:63576/
+00:11:05 [vite] (client) page reload entry.ts

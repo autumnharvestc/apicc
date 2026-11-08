@@ -1,0 +1,101 @@
+{
+  "reopened": {
+    "binding": "示例集合 / 示例接口 / 正常订单 / Order success — 长用例名称保留",
+    "dirty": false,
+    "label": "创建订单 / Saved synthetic label",
+    "saveCount": "P3g · 实际组件 / 合成内存端口workflowcasesresultsRead only中文自动亮色暗色Memory saves 1"
+  },
+  "narrowWorkflow": {
+    "canvasBottom": 473.42860412597656,
+    "canvasHeight": 240,
+    "page": [
+      640,
+      640
+    ],
+    "panelTop": 473.4285888671875,
+    "viewport": [
+      640,
+      780
+    ]
+  },
+  "readOnly": {
+    "page": [
+      640,
+      640
+    ],
+    "referenceVisible": true,
+    "saveDisabled": true,
+    "scrollArea": {
+      "content": 1419,
+      "height": 167
+    }
+  },
+  "cases": {
+    "advancedOpen": false,
+    "page": [
+      1280,
+      1280
+    ],
+    "saveCount": "P3g · 实际组件 / 合成内存端口workflowcasesresultsRead only中文自动亮色暗色Memory saves 1TypeError: api.caseDraftSave is not a function"
+  },
+  "advancedError": {
+    "closed": true,
+    "saveDisabled": false,
+    "visibleAlerts": [
+      {
+        "height": 19.196430206298828,
+        "text": "Expected property name or '}' in JSON at position 1 (line 1 column 2)"
+      }
+    ]
+  },
+  "searchClear": {
+    "apiVisible": true,
+    "expected": "200",
+    "focus": "Search current project",
+    "page": [
+      640,
+      640
+    ],
+    "value": ""
+  },
+  "caseReadOnly": {
+    "assertionDisabled": true,
+    "saveDisabled": true,
+    "scripts": [
+      {
+        "disabled": true,
+        "readOnly": false
+      },
+      {
+        "disabled": true,
+        "readOnly": false
+      },
+      {
+        "disabled": true,
+        "readOnly": false
+      }
+    ]
+  },
+  "results": {
+    "notice": "Synthetic locate captured",
+    "page": [
+      640,
+      640
+    ],
+    "summary": "Final logical verdict: Passed · Actual execution rows: 2 · Raw failed rows: 1",
+    "table": [
+      593,
+      720
+    ]
+  },
+  "finalCaseSave": {
+    "description": "After fixture hot reload, add status assertion 200 and save to in-memory caseDraftSave",
+    "banner": "P3g · 实际组件 / 合成内存端口\nworkflow\ncases\nresults\nRead only\n中文\n自动\n亮色\n暗色\nMemory saves 1\nSynthetic locate captured"
+  },
+  "consoleErrors": [],
+  "notes": [
+    "Fixture-only save failure retained in cases and cases-fixture-missing-port.png; corrected fixture caseDraftSave and final memory save succeeded.",
+    "Browser records prove presentation and in-memory callbacks, not native IPC, disk persistence or actual requests.",
+    "Workflow short-height readonly subtree disappears from AX; save/add disabled and reference button remains reachable."
+  ]
+}

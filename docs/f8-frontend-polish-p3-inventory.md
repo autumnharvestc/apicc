@@ -67,3 +67,7 @@ SyncPanel / SyncSourceForm / SyncDiffView / SyncHistory 已按 [P3e对照](f8-fr
 ## P3f 更新（2026-11-08）
 
 在线执行／压测入口、定时、通知／投递、协作／预览／共享历史／安全内容共9组件完成本组展示与受影响验证，见[P3f对照](f8-frontend-polish-p3f-validation.md)。OnlineProjectAssets与App外层生命周期未改；原生完整入口留P5。下一组是工作流、单接口与剩余桌面入口；之后管理台、公共／离线查看、整体复核与新包，共4块。
+
+## P3g 更新（2026-11-09）
+
+WfDesigner／WfNode／属性与控制字段／结果抽屉、CasePanel／AssertionEditor／ExtractionEditor、TestSidebar／TestView主体已接入，见[P3g对照](f8-frontend-polish-p3g-validation.md)。保留本机／在线共用事件、完整定位和只读语义；原生拖动／缩放／完整链留P5。下一子组P3h盘点设置、环境、契约、Mock等桌面余项后接入；未完成本第1工作块。后续管理台、公共／离线页、整体原生与新包，共仍4块。

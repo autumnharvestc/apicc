@@ -264,8 +264,8 @@ function removeOp(kind: "pre" | "post", index: number) {
           data-testid="case-row"
           @click="selectCase(c.id, c.scope)"
         >
-          <a-input :value="c.name" :disabled="readOnly" class="case-name" data-testid="case-name" :placeholder="t('tree.namePlaceholder')" @update:value="(value) => setCaseName(c, value as string)" />
-          <a-select :value="c.scope" :disabled="readOnly" class="scope-select" :options="scopeOptions" data-testid="case-scope" @update:value="(value) => updateScope(c, value as string)" />
+          <a-input :value="c.name" :title="c.name" :aria-label="t('tree.namePlaceholder')" :disabled="readOnly" class="case-name" data-testid="case-name" :placeholder="t('tree.namePlaceholder')" @update:value="(value) => setCaseName(c, value as string)" />
+          <a-select :value="c.scope" :aria-label="t('case.scope')" :disabled="readOnly" class="scope-select" :options="scopeOptions" data-testid="case-scope" @update:value="(value) => updateScope(c, value as string)" />
           <span class="assert-count" :title="t('case.assertions')">{{ c.assertions.length }}</span>
           <a-button
             v-if="debug"
@@ -292,10 +292,12 @@ function removeOp(kind: "pre" | "post", index: number) {
 
       <!-- 选中用例的断言表 + 前置/后置脚本 -->
       <template v-if="selected">
+        <section class="case-card case-data"><h3>{{ t('testPresentation.caseSettings') }}</h3>
         <label>{{ t('testing.tags') }}<a-input :value="selected.tags?.join(', ')" :disabled="readOnly" @update:value="value => setTags(value ?? '')" /></label>
         <label>{{ t('testing.caseData') }}<select :value="!selected.dataDriver ? 'none' : selectedDatasetId ?? 'file'" :disabled="readOnly" @change="dataDriver(($event.target as HTMLSelectElement).value)"><option value="none">{{ t('testing.none') }}</option><option value="file">{{ t('testing.externalFile') }}</option><option v-for="dataset in datasets" :key="dataset.id" :value="dataset.id">{{ dataset.name }}</option><option v-if="selectedDatasetId && !datasets?.some(item => item.id === selectedDatasetId)" :value="selectedDatasetId">{{ selectedDatasetId }}</option></select></label>
         <div v-if="selected.dataDriver && !('kind' in selected.dataDriver)"><input :value="selected.dataDriver.sourcePath" :disabled="readOnly" :aria-label="t('testing.externalFile')" @input="fileDriver('sourcePath',($event.target as HTMLInputElement).value)" /><select :value="selected.dataDriver.format" :disabled="readOnly" @change="fileDriver('format',($event.target as HTMLSelectElement).value)"><option>csv</option><option>json</option></select><p class="note">{{ t('testing.externalFileHint') }}</p></div>
-        <section class="case-request-override" data-testid="case-request-override">
+        </section>
+        <section class="case-card case-request-override" data-testid="case-request-override">
           <div class="section-title">{{ t("debugLoop.caseRequest") }}</div>
           <div class="override-toolbar">
             <span data-testid="case-request-mode">{{ selected.requestOverride ? t("debugLoop.requestOverride") : t("debugLoop.inheritRequest") }}</span>
@@ -307,7 +309,7 @@ function removeOp(kind: "pre" | "post", index: number) {
           <span v-if="overrideError" class="override-error" data-testid="case-request-override-error">{{ overrideError }}</span>
           <span class="note">{{ t("debugLoop.cookiesNotSavedWithCase") }}</span>
         </section>
-        <div class="section-title">{{ t("case.assertions") }}</div>
+        <section class="case-card"><h3 class="section-title">{{ t("case.assertions") }}</h3>
         <template v-if="ai">
           <label>{{ t('ai.basis') }}
             <select v-model="assertionBasis" data-testid="ai-assertion-basis">
@@ -320,39 +322,43 @@ function removeOp(kind: "pre" | "post", index: number) {
         </template>
         <AssertionEditor :key="`${editor.activeKey}:${selected.id}:${selected.scope}:assertions`" :assertions="selected.assertions" :read-only="readOnly" :operators="operators" @validity="message => assertionError = message" />
         <a-button size="small" data-testid="assert-add" :disabled="readOnly || selected.assertions.length >= 256" @click="addAssertion">{{ t("case.addAssert") }}</a-button>
+        </section>
+        <section class="case-card">
         <ExtractionEditor :key="`${editor.activeKey}:${selected.id}:${selected.scope}:extractions`" :items="selected.extractors ?? (selected.extractors = [])" :read-only="readOnly" @validity="message => extractionError = message" />
         <p v-if="assertionError || extractionError" class="override-error" role="alert">{{ assertionError || extractionError }}</p>
 
+        </section>
+
         <!-- M10：前置/后置操作（有序脚本操作列表；legacy preScript/postScript 保留只读迁移提示） -->
         <div class="scripts">
-          <div class="script-row">
-            <label>{{ t("container.preOperations") }}</label>
+          <section class="case-card script-row">
+            <h3>{{ t("container.preOperations") }}</h3>
             <div class="ops-list" data-testid="case-pre-ops">
               <div v-for="(op, index) in selected.preOperations ?? []" :key="op.id" class="op-row">
                 <div class="op-btns">
-                  <a-button size="small" type="text" :disabled="readOnly || index === 0" @click="moveOp('pre', index, -1)">↑</a-button>
-                  <a-button size="small" type="text" :disabled="readOnly || index === (selected!.preOperations?.length ?? 0) - 1" @click="moveOp('pre', index, 1)">↓</a-button>
-                  <a-button size="small" danger type="text" data-testid="case-op-delete" :disabled="readOnly" @click="removeOp('pre', index)">×</a-button>
+                  <a-button size="small" type="text" :disabled="readOnly || index === 0" @click="moveOp('pre', index, -1)" :title="t('testPresentation.operationUp', { index: index + 1 })" :aria-label="t('testPresentation.operationUp', { index: index + 1 })">↑</a-button>
+                  <a-button size="small" type="text" :disabled="readOnly || index === (selected!.preOperations?.length ?? 0) - 1" @click="moveOp('pre', index, 1)" :title="t('testPresentation.operationDown', { index: index + 1 })" :aria-label="t('testPresentation.operationDown', { index: index + 1 })">↓</a-button>
+                  <a-button size="small" danger type="text" data-testid="case-op-delete" :disabled="readOnly" @click="removeOp('pre', index)" :title="t('testPresentation.operationDelete', { index: index + 1 })" :aria-label="t('testPresentation.operationDelete', { index: index + 1 })">×</a-button>
                 </div>
-                <a-textarea :value="op.content" :disabled="readOnly" :rows="3" class="script-text" data-testid="case-op-content" @update:value="(v) => setOperationContent(op, v as string)" />
+                <a-textarea :value="op.content" :aria-label="t('testPresentation.operationContent', { index: index + 1 })" :disabled="readOnly" :rows="3" class="script-text" data-testid="case-op-content" @update:value="(v) => setOperationContent(op, v as string)" />
               </div>
               <a-button size="small" data-testid="case-pre-op-add" :disabled="readOnly" @click="addOp('pre')">{{ t("container.addOperation") }}</a-button>
             </div>
-          </div>
-          <div class="script-row">
-            <label>{{ t("container.postOperations") }}</label>
+          </section>
+          <section class="case-card script-row">
+            <h3>{{ t("container.postOperations") }}</h3>
             <div class="ops-list" data-testid="case-post-ops">
               <div v-for="(op, index) in selected.postOperations ?? []" :key="op.id" class="op-row">
                 <div class="op-btns">
-                  <a-button size="small" type="text" :disabled="readOnly || index === 0" @click="moveOp('post', index, -1)">↑</a-button>
-                  <a-button size="small" type="text" :disabled="readOnly || index === (selected!.postOperations?.length ?? 0) - 1" @click="moveOp('post', index, 1)">↓</a-button>
-                  <a-button size="small" danger type="text" data-testid="case-op-delete" :disabled="readOnly" @click="removeOp('post', index)">×</a-button>
+                  <a-button size="small" type="text" :disabled="readOnly || index === 0" @click="moveOp('post', index, -1)" :title="t('testPresentation.operationUp', { index: index + 1 })" :aria-label="t('testPresentation.operationUp', { index: index + 1 })">↑</a-button>
+                  <a-button size="small" type="text" :disabled="readOnly || index === (selected!.postOperations?.length ?? 0) - 1" @click="moveOp('post', index, 1)" :title="t('testPresentation.operationDown', { index: index + 1 })" :aria-label="t('testPresentation.operationDown', { index: index + 1 })">↓</a-button>
+                  <a-button size="small" danger type="text" data-testid="case-op-delete" :disabled="readOnly" @click="removeOp('post', index)" :title="t('testPresentation.operationDelete', { index: index + 1 })" :aria-label="t('testPresentation.operationDelete', { index: index + 1 })">×</a-button>
                 </div>
-                <a-textarea :value="op.content" :disabled="readOnly" :rows="3" class="script-text" data-testid="case-op-content" @update:value="(v) => setOperationContent(op, v as string)" />
+                <a-textarea :value="op.content" :aria-label="t('testPresentation.operationContent', { index: index + 1 })" :disabled="readOnly" :rows="3" class="script-text" data-testid="case-op-content" @update:value="(v) => setOperationContent(op, v as string)" />
               </div>
               <a-button size="small" data-testid="case-post-op-add" :disabled="readOnly" @click="addOp('post')">{{ t("container.addOperation") }}</a-button>
             </div>
-          </div>
+          </section>
         </div>
       </template>
       <slot name="after-cases" />
@@ -360,80 +366,17 @@ function removeOp(kind: "pre" | "post", index: number) {
   </section>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-.case-panel {
-  padding: 8px 10px;
-  font-size: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.toolbar {
-  position: sticky;
-  top: 8px;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--bg);
-}
-.case-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.case-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.case-row.active {
-  background: var(--accent-bg, rgba(22, 119, 255, 0.08));
-}
-.case-name {
-  flex: 1;
-}
-.scope-select {
-  width: 120px;
-}
-.assert-count {
-  min-width: 20px;
-  text-align: center;
-  color: var(--text-muted, #888);
-}
-.section-title {
-  font-weight: 600;
-  margin-top: 4px;
-}
-.na {
-  color: var(--text-muted, #bbb);
-}
-.case-request-override { display: flex; flex-direction: column; gap: 6px; }
-.override-toolbar { display: flex; align-items: center; gap: 8px; }
-.override-toolbar span { flex: 1; }
-.override-error { color: var(--fail, #cf1322); }
-.note { color: var(--text-muted, #888); font-size: 12px; }
-.script-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 6px;
-}
-.script-row label {
-  width: 80px;
-  color: var(--text-muted, #888);
-  font-size: 12px;
-  padding-top: 4px;
-}
-.script-text {
-  flex: 1;
-  font-family: ui-monospace, monospace;
-  resize: vertical;
-}
-.ops-list { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-.op-row { display: flex; gap: 6px; align-items: flex-start; }
-.op-btns { display: flex; flex-direction: column; }
+.case-panel { padding: 16px; font-size: 13px; display: flex; flex-direction: column; gap: 16px; min-width: 0; box-sizing: border-box; }
+.toolbar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+.case-list { display: flex; flex-direction: column; gap: 6px; }
+.case-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.case-row.active { border-color: var(--accent); background: var(--active-weak); }
+.case-name { flex: 1 1 180px; min-width: 0; }.scope-select { width: 140px; max-width: 100%; }.assert-count { min-width: 24px; text-align: center; color: var(--text-muted); }
+.case-card { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); box-shadow: var(--panel-shadow); }
+h3, .section-title { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+.case-data { display: flex; flex-wrap: wrap; gap: 12px; }.case-data h3 { flex-basis: 100%; margin-bottom: 0; }.case-data label { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }.case-data > div { flex-basis: 100%; }
+.case-request-override { display: flex; flex-direction: column; gap: 8px; }.override-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }.override-toolbar span { flex: 1 1 180px; }.override-error { display: block; color: var(--fail); overflow-wrap: anywhere; }.note { color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.scripts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; }.ops-list { display: flex; flex-direction: column; gap: 12px; min-width: 0; }.op-row { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }.op-btns { display: flex; flex-direction: column; flex: none; }.script-text { flex: 1; min-width: 0; font-family: ui-monospace, monospace; resize: vertical; }
 </style>

@@ -1,4 +1,5 @@
 {
+  "testPresentation": {"clearSearch":"清除搜索","noMatches": "没有匹配项", "emptyAssets": "当前列表暂无条目", "operationUp": "上移操作 {index}", "operationDown": "下移操作 {index}", "operationDelete": "删除操作 {index}", "operationContent": "操作 {index} 脚本", "assertionDelete": "删除断言 {index}", "advanced": "高级选项", "caseSettings": "用例数据", "targets": {"status": "状态码", "responseTime": "响应时间（ms）", "header": "响应头", "bodyText": "文本正文", "bodyJson": "JSON 正文", "bodyXml": "XML 正文", "cookie": "Cookie"}, "first": "首个匹配", "all": "全部匹配", "value": "选中值", "regex": "正则表达式"},
   "stressReportUi": {
     "visits": "访问次数",
     "skipped": "跳过",

@@ -110,6 +110,7 @@ function formatMs(ms: number): string {
 <template>
   <component
     :is="embedded ? 'section' : ADrawer"
+    class="wf-result"
     :open="open"
     :title="t('wf.resultTitle')"
     :width="'min(840px, 95vw)'"
@@ -152,6 +153,7 @@ function formatMs(ms: number): string {
         </template>
       </a-alert>
       <a-table
+        :scroll="{ x: 720 }"
         :data-source="rows"
         :columns="columns"
         :row-key="rowKey"
@@ -201,15 +203,7 @@ function formatMs(ms: number): string {
   </component>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-/* 长文本防溢出（2B T7③）：warnings 告警整体 break-all（word-break 可继承，覆盖
- * message/列表全部子文本，li 上的显式规则保留兜底）；错误列单元格单独断行。 */
-.wf-result-warnings { margin-bottom: 12px; word-break: break-all; }
-.wf-result-warning-list { margin: 4px 0 0; padding-left: 18px; }
-.wf-result-warning-list li { word-break: break-all; }
-.wf-result-error { word-break: break-all; }
-.wf-invocation, .wf-call-node, .wf-trace { overflow-wrap: anywhere; min-width: 0; }
-.wf-identity { display: block; font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
-.wf-call-node { margin: 8px 0; padding-left: 8px; border-left: 2px solid var(--border); }
-.wf-trace { max-height: 45vh; overflow: auto; }
+.wf-result { min-width: 0; color: var(--text); font-size: 13px; }.wf-result-warnings { margin-bottom: 16px; overflow-wrap: anywhere; }.wf-result-warning-list { margin: 6px 0 0; padding-left: 18px; }.wf-result-warning-list li, .wf-result-error { overflow-wrap: anywhere; }.wf-invocation, .wf-call-node, .wf-trace { overflow-wrap: anywhere; min-width: 0; }.wf-invocation > p:first-child { padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--active-weak); line-height: 1.8; }.wf-identity { display: block; font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }.wf-call-node { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--subtle); }.wf-call-node > summary { font-weight: 600; }.wf-call-node p { line-height: 1.65; }.wf-trace { max-height: 45vh; overflow: auto; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; margin-top: 16px; }.wf-trace ol { padding-left: 22px; }.wf-trace li { padding: 8px 0; border-bottom: 1px solid var(--border); }.wf-result :deep(.ant-table-thead th) { white-space: nowrap; }
 </style>

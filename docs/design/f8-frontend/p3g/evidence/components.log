@@ -1,0 +1,63 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/renderer/components/wfDesigner.test.ts (48 tests | 2 failed) 45237ms
+     × P3g names list deletion without changing open or confirmation actions 1064ms
+     × renders v2 logical verdict separately from raw failure and locates nested attempts with full identity 728ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/wfDesigner.test.ts > WfDesigner 装配 > P3g names list deletion without changing open or confirmation actions
+AssertionError: expected '长工作流名称 - preserve-complete-workflow-t…' to be '长工作流名称 / preserve-complete-workflow-t…' // Object.is equality
+
+Expected: "长工作流名称 / preserve-complete-workflow-title"
+Received: "长工作流名称 - preserve-complete-workflow-title"
+
+ ❯ tests/renderer/components/wfDesigner.test.ts:206:38
+    204|     await flushPromises();
+    205|     const item = ctx.wrapper.findAll('[data-testid="wf-list-item"]').f…
+    206|     expect(item.attributes('title')).toBe(name);
+       |                                      ^
+    207|     const remove = ctx.wrapper.findAll('[data-testid="wf-item-delete"]…
+    208|     expect(remove.attributes('aria-label')).toBe(`删除 ${name}`);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/renderer/components/wfDesigner.test.ts > WfDesigner 装配 > renders v2 logical verdict separately from raw failure and locates nested attempts with full identity
+AssertionError: expected '逻辑报告单位1共 1 条 · 通过 1 · 失败 0 · 跳过 0非请求诊…' to contain '最终逻辑结论: passed'
+
+Expected: "最终逻辑结论: passed"
+Received: "逻辑报告单位1共 1 条 · 通过 1 · 失败 0 · 跳过 0非请求诊断 0 条"
+
+ ❯ tests/renderer/components/wfDesigner.test.ts:418:71
+    416|     run.result = workflowToRunResult(result);
+    417|     await nextTick();
+    418|     expect(runView.get('[data-testid="run-logical-summary"]').text()).…
+       |                                                                       ^
+    419|     expect(runView.get('[data-testid="run-logical-summary"]').text()).…
+    420|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 2 passed (3)
+      Tests  2 failed | 63 passed (65)
+   Start at  00:02:00
+   Duration  53.65s (transform 5.76s, setup 0ms, import 17.89s, tests 55.22s, environment 3.24s)
+

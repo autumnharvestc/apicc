@@ -1,4 +1,5 @@
 {
+  "testPresentation": {"clearSearch":"Clear search","noMatches": "No matching items", "emptyAssets": "No items in this list", "operationUp": "Move operation {index} up", "operationDown": "Move operation {index} down", "operationDelete": "Delete operation {index}", "operationContent": "Operation {index} script", "assertionDelete": "Delete assertion {index}", "advanced": "Advanced options", "caseSettings": "Case data", "targets": {"status": "Status code", "responseTime": "Response time (ms)", "header": "Response header", "bodyText": "Text body", "bodyJson": "JSON body", "bodyXml": "XML body", "cookie": "Cookie"}, "first": "First match", "all": "All matches", "value": "Selected value", "regex": "Regular expression"},
   "stressReportUi": {
     "visits": "Visits",
     "skipped": "Skipped",

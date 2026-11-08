@@ -31,6 +31,9 @@ const emit = defineEmits<{
 }>();
 const { t } = useI18n();
 const search = ref("");
+const searchInput = ref<HTMLInputElement | null>(null);
+function clearSearch() { search.value = ""; searchInput.value?.focus(); }
+const visibleScenarios = computed(() => props.scenarios.filter(item => matches(item.name)));
 const matches = (name: string) => name.toLocaleLowerCase().includes(search.value.toLocaleLowerCase());
 const testingCurrent = computed(() => {
   const actual = props.testing?.view?.context.project; const selected = props.activeProjectLocator;
@@ -86,7 +89,7 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
       <button type="button" class="anchor-item" :class="{active: pane === 'suites'}" data-testid="test-tab-suites" @click="emit('update:pane','suites')">{{ t('testing.suites') }}</button>
       <button type="button" class="anchor-item" :class="{active: pane === 'datasets'}" data-testid="test-tab-datasets" @click="emit('update:pane','datasets')">{{ t('testing.datasets') }}</button>
     </div>
-    <div class="fixed-actions"><input v-model="search" :placeholder="t('testing.search')" :aria-label="t('testing.search')" /><button v-if="pane === 'datasets'" :disabled="!testingCurrent || testing?.readOnly" @click="editAsset(() => testing?.newDataset(t('testing.newDataset')))">{{ t('testing.newDataset') }}</button><button v-if="pane === 'suites'" :disabled="!testingCurrent || testing?.readOnly" @click="editAsset(() => testing?.newSuite(t('testing.newSuite')))">{{ t('testing.newSuite') }}</button></div>
+    <div class="fixed-actions"><div class="search-field"><input ref="searchInput" v-model="search" :placeholder="t('testing.search')" :aria-label="t('testing.search')" /><button type="button" class="search-clear" data-testid="test-search-clear" :style="{ visibility: search ? 'visible' : 'hidden' }" :aria-label="t('testPresentation.clearSearch')" :title="t('testPresentation.clearSearch')" @click="clearSearch">×</button></div><button v-if="pane === 'datasets'" :disabled="!testingCurrent || testing?.readOnly" @click="editAsset(() => testing?.newDataset(t('testing.newDataset')))">{{ t('testing.newDataset') }}</button><button v-if="pane === 'suites'" :disabled="!testingCurrent || testing?.readOnly" @click="editAsset(() => testing?.newSuite(t('testing.newSuite')))">{{ t('testing.newSuite') }}</button></div>
 
     <div class="test-list" data-testid="test-navigation-list">
       <template v-if="pane === 'api-cases'">
@@ -94,7 +97,7 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
           <div class="group-name">{{ m }}</div>
           <button
             v-for="a in apis.filter((x) => x.collection === m)"
-            :key="a.key"
+            :key="a.key" :title="a.label"
             type="button"
             class="api-item"
             :class="{ active: sameApi(activeApiLocator, a.locator) }"
@@ -104,12 +107,12 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
             {{ a.label }}
           </button>
         </div>
-        <span v-if="apis.length === 0" class="muted" data-testid="test-no-apis">{{ t("test.noApis") }}</span>
+        <span v-if="apis.length === 0" class="muted" data-testid="test-no-apis">{{ search ? t('testPresentation.noMatches') : t("test.noApis") }}</span>
       </template>
 
       <template v-else-if="pane === 'scenario'">
-        <div v-for="w in scenarios.filter(item => matches(item.name))" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
-          <span class="scenario-name">{{ w.name }}</span>
+        <div v-for="w in visibleScenarios" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
+          <span class="scenario-name" :title="w.name">{{ w.name }}</span>
           <a-tooltip :title="t('stress.workbench.title')">
             <a-button size="small" type="text" data-testid="test-scenario-stress" @click.stop="emit('stress-workflow', w.locator)">{{ t("case.stress") }}</a-button>
           </a-tooltip>
@@ -117,64 +120,17 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
             {{ t("case.run") }}
           </a-button>
         </div>
-        <span v-if="scenarios.length === 0" class="muted" data-testid="test-no-scenarios">{{ t("test.noScenarios") }}</span>
+        <span v-if="visibleScenarios.length === 0" class="muted" data-testid="test-no-scenarios">{{ search ? t('testPresentation.noMatches') : t("test.noScenarios") }}</span>
       </template>
       <template v-else-if="testingCurrent && testing">
-        <button v-for="item in (pane === 'datasets' ? testing.view?.datasets : testing.view?.suites)?.filter(item => matches(item.name))" :key="item.id" type="button" class="api-item" :class="{active: testing.dataset?.id === item.id || testing.suite?.id === item.id}" @click="editAsset(() => testing!.select(pane === 'datasets' ? 'dataset' : 'suite',item.id))">{{ item.name }}</button>
+        <button v-for="item in (pane === 'datasets' ? testing.view?.datasets : testing.view?.suites)?.filter(item => matches(item.name))" :key="item.id" :title="item.name" type="button" class="api-item" :class="{active: testing.dataset?.id === item.id || testing.suite?.id === item.id}" @click="editAsset(() => testing!.select(pane === 'datasets' ? 'dataset' : 'suite',item.id))">{{ item.name }}</button>
+        <span v-if="!(pane === 'datasets' ? testing.view?.datasets : testing.view?.suites)?.some(item => matches(item.name))" class="muted">{{ t(search ? 'testPresentation.noMatches' : 'testPresentation.emptyAssets') }}</span>
       </template>
     </div>
   </aside>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-.test-side {
-  width: 240px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  border-right: 1px solid var(--border);
-  background: var(--bg);
-  overflow: hidden;
-}
-.side-head { flex: none; padding: 8px 10px 0; }
-.side-title { font-weight: 600; font-size: 13px; }
-.anchors { flex: none; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 4px; }
-.fixed-actions{flex:none;display:flex;flex-direction:column;gap:5px;padding:4px 10px 8px}.fixed-actions input{width:100%;box-sizing:border-box;padding:5px;border:1px solid var(--border);background:var(--bg);color:var(--text)}
-.test-list { flex: 1; min-height: 0; overflow-y: auto; }
-.anchor-item {
-  text-align: left;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  padding: 5px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.anchor-item:hover { background: var(--hover); }
-.anchor-item.active { background: var(--active-weak); color: var(--accent); }
-.group-block { margin-top: 6px; }
-.group-name { font-weight: 600; color: var(--text-muted); padding: 2px 10px; font-size: 12px; }
-.api-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  padding: 4px 10px 4px 18px;
-  cursor: pointer;
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.api-item:hover { background: var(--hover); }
-.api-item.active { background: var(--active-weak); color: var(--accent); }
-.scenario-row { display: flex; align-items: center; gap: 2px; padding: 2px 8px; border-radius: 6px; }
-.scenario-row:hover { background: var(--hover); }
-.scenario-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.muted { color: var(--text-muted); font-size: 12px; padding: 4px 10px; }
+.test-side { width: 240px; min-width: 0; display: flex; flex-direction: column; flex: 1; min-height: 0; border-right: 1px solid var(--border); background: var(--bg); overflow: hidden; }.side-head { flex: none; padding: 14px 14px 0; }.side-title { font-weight: 600; font-size: 13px; }.anchors { flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 12px; }.anchor-item { text-align: left; font-size: 12px; }.anchor-item.active, .api-item.active { background: var(--active-weak); color: var(--accent); border-color: var(--accent); }.fixed-actions { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; border-bottom: 1px solid var(--border); }.search-field { position: relative; }.search-field input { width: 100%; padding-right: 32px; }.search-clear { position: absolute; right: 1px; top: 1px; bottom: 1px; padding: 0 8px; min-height: 0; border: 0; background: transparent; }.test-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; }.group-block { margin: 6px 0; }.group-name { font-weight: 600; color: var(--text-muted); padding: 8px; font-size: 12px; overflow-wrap: anywhere; }.api-item { display: block; width: 100%; text-align: left; border-color: transparent; padding: 8px 10px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.scenario-row { display: flex; align-items: center; gap: 4px; padding: 6px; border-radius: 6px; }.scenario-row:hover { background: var(--hover); }.scenario-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }.muted { display: block; color: var(--text-muted); font-size: 12px; padding: 20px 8px; text-align: center; }
 </style>

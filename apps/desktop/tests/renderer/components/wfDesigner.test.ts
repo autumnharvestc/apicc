@@ -197,6 +197,24 @@ async function selectNode(wrapper: ReturnType<typeof mount>, index: number) {
 }
 
 describe("WfDesigner 装配", () => {
+  it('P3g names list deletion without changing open or confirmation actions', async () => {
+    const ctx = await mountDesigner();
+    const name = '长工作流名称 / preserve-complete-workflow-title';
+    const created = await ctx.wfList.create(name, ctx.projectLocator);
+    await flushPromises();
+    const item = ctx.wrapper.findAll('[data-testid="wf-list-item"]').find(item => item.attributes('data-id') === created.id)!;
+    expect(item.attributes('title')).toBe(created.name);
+    const remove = ctx.wrapper.findAll('[data-testid="wf-item-delete"]').find(item => item.attributes('data-id') === created.id)!;
+    expect(remove.attributes('aria-label')).toBe(`删除 ${created.name}`);
+    await remove.trigger('click');
+    expect(ctx.design.workflow).toBeNull();
+    expect(ctx.getLastWfDelete()).toBeNull();
+    const dialogs = ctx.wrapper.findAllComponents({ name: 'ConfirmDialog' });
+    dialogs.find(dialog => dialog.props('open'))!.vm.$emit('cancel');
+    await flushPromises();
+    expect(ctx.getLastWfDelete()).toBeNull();
+    expect(ctx.wfList.items.some(item => item.id === created.id)).toBe(true);
+  });
   it("G10 an explicit nested invocation mode wins when its parent has no recorded mode", () => {
     // The current contract has only the explicit v2 value; legacy is absence, not another enum.
     const child: WorkflowRunResult = { workflowId: 'child', workflowName: 'Explicit child', status: 'enabled', invocationId: 'explicit-child', parentInvocationId: 'root', invocationPath: [{ workflowId: 'root' }, { workflowId: 'child' }], reportingMode: 'workflow-invocation-v2', verdict: 'passed', nodeResults: [], total: 0, passed: 0, failed: 0, skipped: 0, warnings: [], startedAt: 'start', finishedAt: 'end' };
@@ -397,8 +415,9 @@ describe("WfDesigner 装配", () => {
     const runView = mount(RunView, { props: { run, workspace, selectedCollectionLocator: null, reportError: () => {} }, global: { plugins: [i18n] } });
     run.result = workflowToRunResult(result);
     await nextTick();
-    expect(runView.get('[data-testid="run-logical-summary"]').text()).toContain("最终逻辑结论: passed");
-    expect(runView.get('[data-testid="run-logical-summary"]').text()).toContain("原始失败行: 1");
+    expect(runView.get('[data-testid="run-logical-summary"]').text()).toContain("共 1 条 · 通过 1 · 失败 0 · 跳过 0");
+    expect(runView.get('[data-testid="run-raw-summary"]').text()).toContain("共 1 条 · 通过 0 · 失败 1 · 跳过 0");
+    expect(runView.get('.entry-section').text()).toContain("结果: 通过");
   });
   it("creates v2 from the real UI and edits parallel loop and subflow payloads through save/reopen", async () => {
     const ctx = await mountDesigner();

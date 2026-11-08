@@ -1,0 +1,37 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/CasePanel.test.ts (15 tests | 2 failed | 13 skipped) 43ms
+     × P3g translates extraction choices while retaining protocol values in zh-CN 34ms
+     × P3g translates extraction choices while retaining protocol values in en 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/CasePanel.test.ts > CasePanel > P3g translates extraction choices while retaining protocol values in zh-CN
+ FAIL  tests/renderer/components/CasePanel.test.ts > CasePanel > P3g translates extraction choices while retaining protocol values in en
+Error: Unable to get option[value="bodyJson"] within: <select data-v-b34194e2="" value="bodyJson">
+  <option data-v-b34194e2="">status</option>
+  <option data-v-b34194e2="">responseTime</option>
+  <option data-v-b34194e2="">header</option>
+  <option data-v-b34194e2="">bodyText</option>
+  <option data-v-b34194e2="">bodyJson</option>
+  <option data-v-b34194e2="">bodyXml</option>
+  <option data-v-b34194e2="">cookie</option>
+</select>
+ ❯ DOMWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/CasePanel.test.ts:79:24
+     77|     const panel = mount(ExtractionEditor, { props: { items }, global: …
+     78|     const selects = panel.findAll('select');
+     79|     expect(selects[0]!.get('option[value="bodyJson"]').text()).toBe(lo…
+       |                        ^
+     80|     expect(selects[1]!.get('option[value="all"]').text()).toBe(locale …
+     81|     await selects[1]!.setValue('all');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 13 skipped (15)
+   Start at  23:58:39
+   Duration  7.46s (transform 2.85s, setup 0ms, import 6.25s, tests 43ms, environment 958ms)
+

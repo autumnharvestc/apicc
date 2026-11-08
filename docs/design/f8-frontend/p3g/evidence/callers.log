@@ -1,0 +1,12 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+
+ Test Files  4 passed (4)
+      Tests  8 passed | 136 skipped (144)
+   Start at  00:04:05
+   Duration  12.82s (transform 9.96s, setup 0ms, import 26.41s, tests 7.14s, environment 4.61s)
+

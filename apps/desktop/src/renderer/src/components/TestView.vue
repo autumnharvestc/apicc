@@ -70,6 +70,6 @@ const error = computed(() => requestTabState.value ? requestTabState.value.error
 </template>
 
 <style scoped>
-.test-view { height: 100%; min-height: 0; box-sizing: border-box; overflow: auto; }
-.result { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 6px; }
+.test-view { height: 100%; min-height: 0; min-width: 0; box-sizing: border-box; overflow: auto; background: var(--bg); }
+.result { min-width: 0; margin-top: 4px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--subtle); }
 </style>

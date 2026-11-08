@@ -184,13 +184,7 @@ function setLoopMax(value: number) { if (props.node?.kind !== 'loop') return; if
   </div>
 </template>
 
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-.wf-controls { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-label { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; }
-label > input:not([type=checkbox]), select { width: 100%; min-width: 0; color: var(--text); background: var(--panel); border: 1px solid var(--border); padding: 4px; border-radius: 3px; }
-input[type=checkbox] { width: auto; }
-fieldset { min-width: 0; border: 1px solid var(--border); padding: 8px; margin: 4px 0; }
-button { color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 4px 8px; cursor: pointer; }
-button:disabled { opacity: .5; cursor: default; }
-h4 { margin: 8px 0 2px; } .hint { font-size: 12px; color: var(--text-muted); margin: 4px 0; } .field-error { color: var(--fail); overflow-wrap: anywhere; }
+.wf-controls { display: flex; flex-direction: column; gap: 10px; min-width: 0; }label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; overflow-wrap: anywhere; }label > input:not([type=checkbox]), select { width: 100%; }input[type=checkbox] { width: auto; }fieldset { background: var(--subtle); }h4 { margin: 12px 0 2px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 13px; }.hint { font-size: 12px; color: var(--text-muted); margin: 4px 0; line-height: 1.65; }.field-error { color: var(--fail); overflow-wrap: anywhere; }
 </style>

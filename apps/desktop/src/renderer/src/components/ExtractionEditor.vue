@@ -57,17 +57,17 @@ function remove(index: number) { if (!props.readOnly) { delete errors[props.item
     <h4>{{ t('testing.extractions') }}</h4>
     <div v-for="(row,index) in items" :key="row.id" class="extraction-row">
       <label>{{ t('testing.variableName') }}<input :value="row.name" :disabled="readOnly" data-testid="extraction-name" @input="change(row, 'name', ($event.target as HTMLInputElement).value)" /></label>
-      <label>{{ t('case.target') }}<select :value="row.selector.target" :disabled="readOnly" @change="selector(row,'target',($event.target as HTMLSelectElement).value)"><option v-for="value in targets" :key="value">{{ value }}</option></select></label>
+      <label>{{ t('case.target') }}<select :value="row.selector.target" :disabled="readOnly" @change="selector(row,'target',($event.target as HTMLSelectElement).value)"><option v-for="value in targets" :key="value" :value="value">{{ t(`testPresentation.targets.${value}`) }}</option></select></label>
       <label v-if="row.selector.target === 'header'">{{ t('case.headerName') }}<input :value="row.selector.headerName" :disabled="readOnly" @input="selector(row,'headerName',($event.target as HTMLInputElement).value)" /></label>
       <label v-if="row.selector.target === 'cookie'">{{ t('testing.cookieName') }}<input :value="row.selector.cookieName" :disabled="readOnly" @input="selector(row,'cookieName',($event.target as HTMLInputElement).value)" /></label>
       <label v-if="['bodyJson','bodyXml'].includes(row.selector.target)">{{ t('case.path') }}<input :value="row.selector.path" :disabled="readOnly" @input="selector(row,'path',($event.target as HTMLInputElement).value)" /></label>
-      <label>{{ t('testing.match') }}<select :value="row.selector.match ?? 'first'" :disabled="readOnly || row.method === 'regex'" @change="selector(row,'match',($event.target as HTMLSelectElement).value)"><option>first</option><option>all</option></select></label>
-      <label>{{ t('testing.method') }}<select :value="row.method" :disabled="readOnly" @change="method(row,($event.target as HTMLSelectElement).value)"><option>value</option><option>regex</option></select></label>
+      <label>{{ t('testing.match') }}<select :value="row.selector.match ?? 'first'" :disabled="readOnly || row.method === 'regex'" @change="selector(row,'match',($event.target as HTMLSelectElement).value)"><option value="first">{{ t('testPresentation.first') }}</option><option value="all">{{ t('testPresentation.all') }}</option></select></label>
+      <label>{{ t('testing.method') }}<select :value="row.method" :disabled="readOnly" @change="method(row,($event.target as HTMLSelectElement).value)"><option value="value">{{ t('testPresentation.value') }}</option><option value="regex">{{ t('testPresentation.regex') }}</option></select></label>
       <template v-if="row.method === 'regex'">
         <label>{{ t('testing.pattern') }}<input :value="row.pattern" :disabled="readOnly" @input="regex(row,'pattern',($event.target as HTMLInputElement).value)" /></label>
         <label>{{ t('testing.flags') }}<input :value="row.flags" :disabled="readOnly" @input="regex(row,'flags',($event.target as HTMLInputElement).value)" /></label>
         <label>{{ t('testing.group') }}<input type="number" min="0" :value="row.group ?? 0" :disabled="readOnly" @input="change(row,'group',Number(($event.target as HTMLInputElement).value))" /></label>
-        <label>{{ t('testing.regexMatch') }}<select :value="row.regexMatch ?? 'first'" :disabled="readOnly" @change="change(row,'regexMatch',($event.target as HTMLSelectElement).value)"><option>first</option><option>all</option></select></label>
+        <label>{{ t('testing.regexMatch') }}<select :value="row.regexMatch ?? 'first'" :disabled="readOnly" @change="change(row,'regexMatch',($event.target as HTMLSelectElement).value)"><option value="first">{{ t('testPresentation.first') }}</option><option value="all">{{ t('testPresentation.all') }}</option></select></label>
         <p class="hint">{{ t('testing.regexHint') }}</p>
       </template>
       <label v-if="row.selector.target === 'bodyXml'">{{ t('testing.namespaces') }}<input :value="JSON.stringify(row.selector.namespaces ?? {})" :disabled="readOnly" @change="json(row,'namespaces',($event.target as HTMLInputElement).value)" /></label>
@@ -81,6 +81,7 @@ function remove(index: number) { if (!props.readOnly) { delete errors[props.item
     <button type="button" data-testid="extraction-add" :disabled="readOnly || items.length >= 64" @click="add">{{ t('testing.addExtraction') }}</button>
   </div>
 </template>
+<style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-.extraction-editor{display:flex;flex-direction:column;gap:8px}.extraction-row{display:flex;flex-wrap:wrap;gap:8px;border:1px solid var(--border);padding:8px;border-radius:6px}label{display:flex;align-items:center;gap:4px;font-size:12px}input,select{max-width:240px;color:var(--text);background:var(--bg);border:1px solid var(--border);padding:4px}.hint{color:var(--text-muted);font-size:12px;margin:0}p[role=alert]{color:var(--fail,#cf1322)}h4{margin:4px 0}
+.extraction-editor { display: flex; flex-direction: column; gap: 12px; min-width: 0; }.extraction-row { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; border: 1px solid var(--border); padding: 12px; border-radius: 8px; background: var(--subtle); }label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; flex: 1 1 150px; min-width: 0; }label:has(input[type=checkbox]) { flex-direction: row; flex: 0 1 auto; align-items: center; padding: 8px 0; }input, select { width: 100%; }input[type=checkbox] { width: auto; }.hint { color: var(--text-muted); font-size: 12px; margin: 0; line-height: 1.6; }p[role=alert] { color: var(--fail); flex-basis: 100%; }h4 { margin: 0; font-size: 14px; }
 </style>
