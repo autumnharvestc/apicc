@@ -107,3 +107,7 @@
 ## 9. P3a 报告与共享证据
 
 第一子组按 [P3盘点中的设计边界](f8-frontend-polish-p3-inventory.md) 完成：逻辑/原始统计分区、节点和套件表、证据字段/指纹/断言卡、逐条Console。统计继续由Core推导，业务环境名仅base保留值本地化，其他原样；复制与执行门控保持。32项定向验证、实际组件截图及唯一独审已封存，详见 [验证](f8-frontend-polish-p3a-validation.md) 和 [独审](f8-frontend-polish-p3a-review.md)。剩余压测与复杂页面按盘点队列推进，不把P3a完成当作整阶段完成。
+
+## 10. P3b 压测报告
+
+沿用 [P3b具体设计](f8-frontend-polish-p3b-design.md)，完成逻辑/原始摘要分组、节点/生命周期独立列、旧安全策略与证据本地化、趋势主题。Core计算、身份、基线与执行均不改。26项定向测试、Vue/renderer和7张实际组件截图见 [逐点验证](f8-frontend-polish-p3b-validation.md)；后续测试中心/AI/同步/在线与工作流继续排队，原生完整交互留P5。

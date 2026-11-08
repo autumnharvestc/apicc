@@ -1,0 +1,20 @@
+{
+  "date": "2026-11-08",
+  "url": "http://127.0.0.1:63571/",
+  "mode": "Actual Vue components with synthetic props; no backend or IPC",
+  "checks": [
+    "Chinese light summary: logical 4/4 passed and raw request failures 6 of 10 remain separate",
+    "Chinese light node counts: explicit columns and original long business IDs",
+    "English dark at 900x720: readable summary, local node horizontal scrollbar, lifecycle table with original VU IDs, 0 ms and missing values",
+    "English dark at 640x720: document 640/640 and main 625/625, node scroll width 931/client 544; headers nowrap, no page horizontal overflow",
+    "English legacy at 1100x850: Confirmed legacy alias, custom-business-policy literal, policy/requested/effective columns, RSS MiB and request/s units",
+    "Evidence disclosure opens to retained sample limitation and explicit no retained evidence text",
+    "Actual single bucket chart with axes and single-point limitation; no fabricated extra points"
+  ],
+  "consoleErrors": [],
+  "limitations": [
+    "Not native Electron or actual backend execution",
+    "No clipboard or export side effect tested here",
+    "Native 287px height/zoom/drag remain P5"
+  ]
+}

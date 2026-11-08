@@ -1,0 +1,145 @@
+{
+  "testsPassed": 26,
+  "date": "2026-11-08T22:04:37.7866729+08:00",
+  "files": [
+    {
+      "path": "apps/desktop/src/renderer/src/components/StressReportView.vue",
+      "sha256": "6b859f4d8b5d9d80586ac43b55894406484fa2c766d5a90899d5971b0ba77894"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/StressTrendView.vue",
+      "sha256": "c812c3391bae8a6d0efa93742c46b4f49776090dedff994e0675a7cec6920aee"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/i18n/en.json",
+      "sha256": "a1a9b289f63da60f50181efec31c449ab976ab60477e195c2de250e3939911a3"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/i18n/zh-CN.json",
+      "sha256": "17f091feed55fa3eb806ec4d485a366824261104d834363f8dc8926567e105f3"
+    },
+    {
+      "path": "apps/desktop/tests/renderer/components/stressPresentation.test.ts",
+      "sha256": "f704514225b229f0d9ab090655b9a6b29d4dd94c210f5173932ff4fee6e8c235"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3b/browser-receipt.json",
+      "sha256": "d0b06ed0f7281a761dfeec37bbb1cf80b374ea83c6643684f804c75affe6db6d"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3b/legacy-en-dark.png",
+      "sha256": "df2b02da4fccff80eb4d312acc03f3f1d61ac691d8b29d50100528241a8aac2e"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3b/narrow-en-dark.png",
+      "sha256": "6985cc2004b319e11921e32740c19d0c9d5f9d9799ccc25cc40687a403c2ef36"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3b/nodes-lifecycle-en-dark.png",
+      "sha256": "c4af7798c7e629ebca274d23c7c8c76cfdf18c2279d09d65f4f02fdf406eca60"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3b/nodes-zh-light.png",
+      "sha256": "461c62c9c88da72a25d2f3dbf9f0883ce89201b57338d83906ef4751d2a3383c"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3b/summary-en-dark.png",
+      "sha256": "aa8db72c1c76770b3c1fc9db99e292d742fee1ada11b7acb7990f9e428ff9e02"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3b/summary-zh-light.png",
+      "sha256": "37e5ad5b19f25e79e187ff54a2e77b53a2370865d143ede07293edcfcf803c10"
+    },
+    {
+      "path": "docs/design/f8-frontend/p3b/trend-zh-light.png",
+      "sha256": "a726efcc81d3ab7eef5b880aeafd9dbf26b040aed1bd2286b50de637c9feabeb"
+    },
+    {
+      "path": "local/f8-frontend-p3b/browser/entry.ts",
+      "sha256": "d916fdaa54003d3ec762c85cc31c5f8171e1fdcd7fcfc818abaeaa9c5cd13c5e"
+    },
+    {
+      "path": "local/f8-frontend-p3b/browser/generate-fixture.mjs",
+      "sha256": "4e0643e877f2a804624543dc763520e7ad298480337b3758dcf688cbef710f32"
+    },
+    {
+      "path": "local/f8-frontend-p3b/browser/index.html",
+      "sha256": "6fccd981014c435881261e5797252b235af938a519a1ab849a28e72fc0bbbfec"
+    },
+    {
+      "path": "local/f8-frontend-p3b/browser/reports.json",
+      "sha256": "d529ab8830a4bf967cab781b4b173f6f036eb3d0dce016bf04a33fd65024299e"
+    },
+    {
+      "path": "local/f8-frontend-p3b/browser/serve.mjs",
+      "sha256": "75ad0280425398ac4c74f2c09feae3bde39a4b6fd5e92518f0fc7e6e49fcb3b2"
+    },
+    {
+      "path": "local/f8-frontend-p3b/legacy-consumers.log",
+      "sha256": "f25c0266522db4c74f4dd84fc8a63b7b26c8fa9cdab38d40281fad2893ef1695"
+    },
+    {
+      "path": "local/f8-frontend-p3b/presentation-final.log",
+      "sha256": "6070e98d432c33d93988c135613fd66dce784bcab99594fb2770e80eb6958d37"
+    },
+    {
+      "path": "local/f8-frontend-p3b/presentation-green.log",
+      "sha256": "64cf1acd66d18da1832aa537fd82f7a5ffcf6f5e3741b92647360eaf6c9071bb"
+    },
+    {
+      "path": "local/f8-frontend-p3b/presentation-red-valid.log",
+      "sha256": "2a9d5d542fa9063d83a8687e577db6174cf9b26b4425b0634a21dcf041fe0a69"
+    },
+    {
+      "path": "local/f8-frontend-p3b/presentation-red.log",
+      "sha256": "f64c87f01229855fbc6fe4e2fe196649f7a626f02bea2930d9f34d82e0d89531"
+    },
+    {
+      "path": "local/f8-frontend-p3b/renderer-build.log",
+      "sha256": "7061d225128882f900ab28d03cd9e7effb204b6e2d0b81edc7b564ecbf05f1de"
+    },
+    {
+      "path": "local/f8-frontend-p3b/renderer-final.log",
+      "sha256": "717e0156707c1f78e105b92e4863074c2f296efbe92a612c8e1de0a762cc5f77"
+    },
+    {
+      "path": "local/f8-frontend-p3b/renderer-frozen.log",
+      "sha256": "2e4d1137f012b22a47518bc42676c2a07bff63f5885b79d90a1d715089796db5"
+    },
+    {
+      "path": "local/f8-frontend-p3b/review-final.log",
+      "sha256": "154585937a1a8198f7a95761210aa9cd8c9b0edb6c5282e39aafa8b1e81842dc"
+    },
+    {
+      "path": "local/f8-frontend-p3b/review-green.log",
+      "sha256": "ed6765a546922cb914802b5635f9b5d0abc49cacb1a530c60d2e88adbe276bfb"
+    },
+    {
+      "path": "local/f8-frontend-p3b/review-red.log",
+      "sha256": "a70995de4d1399721af18932e55a904f24fef5f5dbc51837f8771000d484a65f"
+    },
+    {
+      "path": "local/f8-frontend-p3b/targeted-green.log",
+      "sha256": "28607de6e155f239c9eb60674d59437704cd02634d170bea8c880c03c446676f"
+    },
+    {
+      "path": "local/f8-frontend-p3b/unknown-exact-final.log",
+      "sha256": "b70e1e55fdc10119543abb7615379207d9a9bbaf441c0cf79c463d3cbb318cd9"
+    },
+    {
+      "path": "local/f8-frontend-p3b/vue-final.log",
+      "sha256": "e9f4d20594b78d2a8a6d8041839f863e8da18f5302fe5e1c6ae9dbbbd97c3e38"
+    },
+    {
+      "path": "local/f8-frontend-p3b/vue-frozen.log",
+      "sha256": "e9f4d20594b78d2a8a6d8041839f863e8da18f5302fe5e1c6ae9dbbbd97c3e38"
+    },
+    {
+      "path": "local/f8-frontend-p3b/vue-typecheck.log",
+      "sha256": "e9f4d20594b78d2a8a6d8041839f863e8da18f5302fe5e1c6ae9dbbbd97c3e38"
+    }
+  ],
+  "fullGate": "not run",
+  "baseCommit": "ac800736e51d22537579659ea7edeedb1a95b9ee",
+  "stage": "F8 frontend P3b"
+}
