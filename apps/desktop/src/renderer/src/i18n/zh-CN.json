@@ -1568,6 +1568,10 @@
     "codes": { "member-claim": "成员上传／本机执行声明", "saved-contract": "已保存契约", "server-archive": "服务端可信归档", "server-report": "服务端归档", "member-history": "成员上传历史", "local-current": "当前窗口已完成结果", "local-debug": "私有本机调试历史", "local-stress": "已证明归属的本机压测报告", "online-local": "在线项目的本机执行结果", "legacy-unindexed": "旧结果未建立终态索引", "not-ended": "任务尚未结束", "terminal-index": "服务端终态索引", "passed": "通过", "failed": "失败", "unknown": "未知", "ended": "已结束", "unavailable": "未采集", "transport": "传输失败", "active": "有效", "revoked": "已撤销", "expired": "已到期" }
   },
   "sync": {
+    "sectionNavigation": "同步页面导航",
+    "noMatchingSources": "没有匹配的来源。清除搜索可查看全部来源。",
+    "noMatchingChanges": "没有匹配的变更，已有决策仍保留。",
+    "noMatchingHistory": "没有匹配的历史。清除搜索可查看全部记录。",
     "title": "外部规范同步",
     "close": "关闭",
     "location": "检查位置",

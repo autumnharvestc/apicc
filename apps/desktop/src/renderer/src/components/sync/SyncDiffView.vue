@@ -19,9 +19,10 @@ const conflictLabel = (reason: string) => t('sync.' + ({ 'both-modified': 'bothM
 <template>
   <section data-testid="sync-candidate" aria-live="polite">
     <h3>{{ presentation.title }}</h3><p data-testid="sync-candidate-status">{{ presentation.status }}</p>
-    <dl class="sync-summary"><template v-for="item in presentation.summary" :key="item.label"><dt>{{ item.label }}</dt><dd>{{ item.value }}</dd></template></dl>
+    <dl class="sync-summary"><div v-for="item in presentation.summary" :key="item.label"><dt>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl>
     <p>{{ t('sync.fixedSummary') }}</p>
     <ul v-if="presentation.diagnostics.length" aria-label="diagnostics"><li v-for="diagnostic in presentation.diagnostics" :key="diagnostic.code + diagnostic.path">{{ diagnostic.severity }} — {{ diagnostic.message }} <span>{{ diagnostic.path }}</span></li></ul>
+    <p v-if="view.candidate.changes.length && !matches.length" data-testid="sync-change-empty" class="sync-empty" role="status">{{ t('sync.noMatchingChanges') }}</p>
     <article v-for="{ change, display } in matches" :key="change.changeId" class="sync-change">
       <h4>{{ display.name }} — {{ display.operation }} · {{ display.layer }} · {{ display.field }}</h4>
       <p v-for="conflict in view.candidate.conflicts.filter(c => c.changeId === change.changeId)" :key="conflict.reasonCode" class="sync-reason">{{ conflictLabel(conflict.reasonCode) }}</p>

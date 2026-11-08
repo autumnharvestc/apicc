@@ -1,0 +1,113 @@
+{
+  "desktop": {
+    "focus": "sync-settings",
+    "policy": [
+      1172,
+      1172,
+      420,
+      745
+    ],
+    "root": [
+      1280,
+      900,
+      0
+    ],
+    "viewport": [
+      1280,
+      900
+    ]
+  },
+  "narrow": {
+    "body": 405,
+    "close": {
+      "bottom": 123.14286041259766,
+      "height": 32,
+      "left": 403.7232360839844,
+      "right": 460.0000228881836,
+      "top": 91.14286041259766,
+      "width": 56.27678680419922,
+      "x": 403.7232360839844,
+      "y": 91.14286041259766
+    },
+    "root": [
+      480,
+      720,
+      0
+    ],
+    "search": {
+      "bottom": 228.69644165039065,
+      "height": 35.9375,
+      "left": 12.000000953674316,
+      "right": 273.7500009536743,
+      "top": 192.75894165039065,
+      "width": 261.75,
+      "x": 12.000000953674316,
+      "y": 192.75894165039065
+    },
+    "viewport": [
+      480,
+      720
+    ]
+  },
+  "short": {
+    "body": 93,
+    "close": {
+      "bottom": 123.14286041259766,
+      "height": 32,
+      "left": 523.7232666015625,
+      "right": 580.0000534057617,
+      "top": 91.14286041259766,
+      "width": 56.27678680419922,
+      "x": 523.7232666015625,
+      "y": 91.14286041259766
+    },
+    "context": [
+      42,
+      54
+    ],
+    "root": [
+      600,
+      360,
+      0
+    ],
+    "search": {
+      "bottom": 217.10714721679688,
+      "height": 35.9375,
+      "left": 12.000000953674316,
+      "right": 393.7500314712525,
+      "top": 181.16964721679688,
+      "width": 381.7500305175781,
+      "x": 12.000000953674316,
+      "y": 181.16964721679688
+    },
+    "viewport": [
+      600,
+      360
+    ]
+  },
+  "readonly": {
+    "checkDisabled": true,
+    "editDisabled": true,
+    "applyDisabled": true,
+    "rollbackDisabled": true,
+    "rollbackPresent": 1
+  },
+  "scheduleText": "Next occurrence: not calculated; use preview.",
+  "console": [],
+  "scope": "Actual SyncPanel, SyncSourceForm, SyncDiffView and SyncHistory with real store and strict synthetic DTO transport; no backend/IPC/external source/credentials.",
+  "rawDocument": {
+    "bytes": 1435,
+    "clientWidth": 1129,
+    "scrollWidth": 7542,
+    "rootHeight": 900,
+    "rootScrollHeight": 900,
+    "rootScrollTop": 0
+  },
+  "layoutCorrection": "Initial visually hidden policy labels lacked a positioned local container and extended the root scroll range. Final label position:relative and span top/left:0 kept root at viewport height. Short header explanation scrolls separately; search, navigation and close stay visible.",
+  "manual": [
+    "Chinese light: sources, SSH semantic form (unsaved only), three-way summary and explicit fixed-document loading",
+    "History opens confirmation; cancelled without rollback. Filter not-present displayed no matching history; clear restored records.",
+    "English dark online: paused/material-rotated reason, next occurrence not calculated, inherited policy, units, limits.",
+    "480x720: two-column summary cards, no horizontal root overflow. 600x360: search/navigation/close visible and main region scrollable."
+  ]
+}

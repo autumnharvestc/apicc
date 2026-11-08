@@ -1,0 +1,1187 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/sync/anchor-navigation.test.ts (1 test | 1 failed) 727ms
+   × section navigation stays in the panel scroller without fragment-navigation of its ancestors 726ms
+ ❯ tests/renderer/components/sync/presentation-interactions.test.ts (2 tests | 2 failed) 795ms
+   × distinguishes filtered sources/changes from missing data and restores decisions and drafts in zh-CN 713ms
+   × distinguishes filtered sources/changes from missing data and restores decisions and drafts in en 81ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/sync/anchor-navigation.test.ts > section navigation stays in the panel scroller without fragment-navigation of its ancestors
+AssertionError: expected <body><div data-v-app></div>
+…(1)</body> to be <section id="sync-settings">…(12)</section> // Object.is equality
+
+- Expected
++ Received
+
+- <section
+-   id="sync-settings"
+- >
+-   <h3>
+-     Settings and limits
+-   </h3>
+-   <p>
+-     Changes apply to the next check; active checks keep their captured configuration.
+-   </p>
+-   <p>
+-     The Git disk value is a sampled threshold, not a zero-overrun operating-system quota.
+-   </p>
+-   <p>
+-     Total content bytes remain bounded per project and host, not per source.
+-   </p>
+-   <!--v-if-->
+-   
+-   <p>
+-     Git is not installed; select an installed supported tool.
+-   </p>
+-   <p>
+-     OpenSSH is not installed; select an installed supported tool.
+-   </p>
+-   <button>
+-     Select installed Git
+-   </button>
+-   <button>
+-     Select installed OpenSSH
+-   </button>
+-   <label>
+-     Redirect limit per attempt (0–20)
+-     <input
+-       max="20"
+-       min="0"
+-       type="number"
+-     />
+-   </label>
+-   <p>
+-     Saved revision: 0
+-   </p>
+-   
+-   <!--v-if-->
+-   <div
+-     class="sync-table-scroll"
+-   >
+-     <table>
+-       <thead>
+-         <tr>
+-           <th>
+-             Settings and limits
+-           </th>
+-           <th>
+-             Default
+-           </th>
+-           <th>
+-             Saved value
+-           </th>
+-           <th>
+-             Effective value
+-           </th>
+-           <th>
+-             Value source
+-           </th>
+-           <th>
+-             Current ceiling or range
+-           </th>
+-         </tr>
+-       </thead>
+-       <tbody>
+-         
+-         <tr>
+-           <th>
+-             Connection timeout
+-           </th>
+-           <td>
+-             10,000 ms
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Connection timeout · ms
+-               </span>
+-               <input
+-                 max="60000"
+-                 min="1000"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             10,000 ms
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             1,000 ms – 60,000 ms
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             URL total deadline
+-           </th>
+-           <td>
+-             60,000 ms
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 URL total deadline · ms
+-               </span>
+-               <input
+-                 max="600000"
+-                 min="5000"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             60,000 ms
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             5,000 ms – 600,000 ms
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Git total deadline
+-           </th>
+-           <td>
+-             120,000 ms
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Git total deadline · ms
+-               </span>
+-               <input
+-                 max="1800000"
+-                 min="10000"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             120,000 ms
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             10,000 ms – 1,800,000 ms
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Total attempts
+-           </th>
+-           <td>
+-             1 count
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Total attempts · count
+-               </span>
+-               <input
+-                 max="3"
+-                 min="1"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             1 count
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             1 count – 3 count
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Source byte limit
+-           </th>
+-           <td>
+-             5,242,880 bytes (5 MiB)
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Source byte limit · bytes
+-               </span>
+-               <input
+-                 max="16777216"
+-                 min="65536"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             5,242,880 bytes (5 MiB)
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             65,536 bytes (0.063 MiB) – 16,777,216 bytes (16 MiB)
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Comparison input limit
+-           </th>
+-           <td>
+-             16,777,216 bytes (16 MiB)
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Comparison input limit · bytes
+-               </span>
+-               <input
+-                 max="67108864"
+-                 min="1048576"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             16,777,216 bytes (16 MiB)
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             1,048,576 bytes (1 MiB) – 67,108,864 bytes (64 MiB)
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Comparison output limit
+-           </th>
+-           <td>
+-             8,388,608 bytes (8 MiB)
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Comparison output limit · bytes
+-               </span>
+-               <input
+-                 max="33554432"
+-                 min="262144"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             8,388,608 bytes (8 MiB)
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             262,144 bytes (0.25 MiB) – 33,554,432 bytes (32 MiB)
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Normalization depth budget
+-           </th>
+-           <td>
+-             128 levels
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Normalization depth budget · levels
+-               </span>
+-               <input
+-                 max="256"
+-                 min="16"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             128 levels
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             16 levels – 256 levels
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Normalization node budget
+-           </th>
+-           <td>
+-             100,000 count
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Normalization node budget · count
+-               </span>
+-               <input
+-                 max="1000000"
+-                 min="1000"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             100,000 count
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             1,000 count – 1,000,000 count
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Git temporary-material sampling threshold
+-           </th>
+-           <td>
+-             268,435,456 bytes (256 MiB)
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Git temporary-material sampling threshold · bytes
+-               </span>
+-               <input
+-                 max="2147483648"
+-                 min="33554432"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             268,435,456 bytes (256 MiB)
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             33,554,432 bytes (32 MiB) – 2,147,483,648 bytes (2048 MiB)
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Concurrent project checks
+-           </th>
+-           <td>
+-             1 count
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Concurrent project checks · count
+-               </span>
+-               <input
+-                 max="4"
+-                 min="1"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             1 count
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             1 count – 4 count
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Concurrent host checks
+-           </th>
+-           <td>
+-             4 count
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Concurrent host checks · count
+-               </span>
+-               <input
+-                 max="16"
+-                 min="1"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             4 count
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             1 count – 16 count
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Candidate lifetime
+-           </th>
+-           <td>
+-             86,400,000 ms
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Candidate lifetime · ms
+-               </span>
+-               <input
+-                 max="604800000"
+-                 min="300000"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             86,400,000 ms
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             300,000 ms – 604,800,000 ms
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             History retention days per source
+-           </th>
+-           <td>
+-             30 days
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 History retention days per source · days
+-               </span>
+-               <input
+-                 max="365"
+-                 min="1"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             30 days
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             1 days – 365 days
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         <tr>
+-           <th>
+-             Maximum history entries per source
+-           </th>
+-           <td>
+-             100 entries/source
+-           </td>
+-           <td>
+-             <label>
+-               <span
+-                 class="sync-sr-only"
+-               >
+-                 Maximum history entries per source · entries/source
+-               </span>
+-               <input
+-                 max="1000"
+-                 min="1"
+-                 step="1"
+-                 type="number"
+-               />
+-             </label>
+-           </td>
+-           <td>
+-             100 entries/source
+-           </td>
+-           <td>
+-             Default
+-           </td>
+-           <td>
+-             1 entries/source – 1,000 entries/source
+-             <!--v-if-->
+-           </td>
+-         </tr>
+-         
+-       </tbody>
+-     </table>
+-   </div>
+-   <button>
+-     Save local sync settings
+-   </button>
+- </section>
++ <body />
+
+ ❯ tests/renderer/components/sync/anchor-navigation.test.ts:25:36
+     23|     expect(requests).toHaveLength(1); expect(requests[0]!.owner).toBe(…
+     24|     expect(requests[0]!.behavior).toBe('smooth'); expect(Number.isFini…
+     25|     expect(document.activeElement).toBe(f.wrapper.get('#sync-settings'…
+       |                                    ^
+     26|     expect(f.wrapper.get<HTMLInputElement>('input[type="url"]').elemen…
+     27|     expect(f.savedSources()).toHaveLength(0); expect(f.applicationCall…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  tests/renderer/components/sync/presentation-interactions.test.ts > distinguishes filtered sources/changes from missing data and restores decisions and drafts in zh-CN
+Error: Unable to get [data-testid="sync-source-empty"] within: <section class="sync-panel" data-testid="sync-panel" role="region" aria-label="外部规范同步">
+  <header class="sync-fixed">
+    <div class="sync-heading">
+      <h2>外部规范同步</h2><button>关闭</button>
+    </div>
+    <p><strong>检查位置: 当前电脑</strong></p>
+    <p>关闭客户端后，本地检查不继续运行。</p>
+    <p>每次检查仅批准当前主机、端口与 IP 地址；跨来源重定向将拒绝。</p>
+    <div class="sync-toolbar"><input data-testid="sync-search" aria-label="搜索来源、变更或历史" placeholder="搜索来源、变更或历史"><button data-testid="sync-clear">清除搜索</button><button data-testid="sync-refresh">刷新</button></div>
+    <nav><a href="#sync-sources">来源</a><a href="#sync-diff">固定差异</a><a href="#sync-history">历史与回滚</a><a href="#sync-settings">配置与限制</a></nav>
+    <!--v-if-->
+    <!--v-if-->
+  </header>
+  <div class="sync-scroll" style="overflow-y: auto;">
+    <section id="sync-sources">
+      <h3>来源</h3><button>添加来源</button>
+      <!--v-if-->
+      <ul class="sync-source-list"></ul>
+      <p>来源标识: 00000000-0000-4000-8000-000000000002</p><button data-testid="sync-edit-source">编辑来源</button><button data-testid="sync-check">检查来源</button>
+      <!--v-if-->
+      <!--v-if-->
+      <section class="sync-source-form">
+        <h3>编辑来源</h3>
+        <p>来源仅保存引用。密钥与本机工具路径由主进程保管。</p>
+        <!--v-if-->
+        <form>
+          <fieldset><label>来源类型<select>
+                <option value="url">URL</option>
+                <option value="git-https">Git HTTPS</option>
+                <option value="git-ssh">Git SSH</option>
+              </select></label><label>目标模块<select disabled="">
+                <option value="00000000-0000-4000-8000-000000000003">Pets</option>
+              </select></label><label>规范地址<input type="url" required=""></label><label>网络配置引用<input placeholder="使用项目网络选择"></label>
+            <!--v-if--><label>认证材料引用<input></label>
+            <p>不可用 · 保存修订 2</p><button type="submit">保存来源</button>
+          </fieldset>
+        </form>
+        <!--v-if-->
+        <!--v-if-->
+      </section>
+      <!--v-if-->
+      <!--v-if-->
+    </section>
+    <section id="sync-diff">
+      <h3>固定差异</h3>
+      <!--v-if-->
+      <section data-testid="sync-candidate" aria-live="polite">
+        <h3>外部规范同步候选</h3>
+        <p data-testid="sync-candidate-status">待确认全部变更</p>
+        <dl class="sync-summary">
+          <dt>新增</dt>
+          <dd>0</dd>
+          <dt>更新</dt>
+          <dd>1</dd>
+          <dt>删除</dt>
+          <dd>0</dd>
+          <dt>冲突</dt>
+          <dd>1</dd>
+        </dl>
+        <p>以下是固定候选的有界业务摘要；原文不会因预览截断而改变。</p>
+        <!--v-if-->
+        <!--v-if-->
+        <details>
+          <summary>完整身份与高级详情 · ffffffffffff…</summary>
+          <dl>
+            <dt>候选标识</dt>
+            <dd>00000000-0000-4000-8000-000000000006</dd>
+            <dt>候选指纹</dt>
+            <dd>ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff</dd>
+            <dt>项目资产指纹</dt>
+            <dd>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</dd>
+            <dt>Core 构建身份</dt>
+            <dd>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</dd>
+            <dt>原文字节指纹</dt>
+            <dd>eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee</dd>
+            <dt>固定提交</dt>
+            <dd>cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc</dd>
+            <dt>固定文件对象</dt>
+            <dd>dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd</dd>
+          </dl>
+        </details>
+        <p>固定提交: cccccccccccc… · 固定文件对象: dddddddddddd…</p>
+      </section><label class="sync-confirm"><input type="checkbox" data-testid="sync-keep-confirm">我确认保留当前内容，并将本次固定来源确认为新基线。</label>
+      <!--v-if--><button data-testid="sync-apply">确认并应用</button>
+    </section>
+    <!--v-if-->
+    <div id="sync-history">
+      <section>
+        <h3>历史与回滚</h3>
+        <p>尚无持久应用或回滚记录。</p>
+        <ol class="sync-history"></ol>
+      </section>
+    </div>
+    <section>
+      <h3>在线定时检查</h3>
+      <p>后台只检查并生成候选，应用仍须人工确认。</p>
+      <p>本地来源仅手动检查；后台计划由在线服务管理。</p>
+    </section>
+    <section id="sync-settings">
+      <h3>配置与限制</h3>
+      <p>配置修改从下一轮检查生效；在途检查保留原配置。</p>
+      <p>Git 磁盘值为采样监测阈值，不是操作系统零超量硬配额。</p>
+      <p>内容总字节额度仍按项目与宿主计算，不按来源拆分。</p>
+      <!--v-if-->
+      <p>未找到 Git，请选择已安装的受支持工具。</p>
+      <p>未找到 OpenSSH，请选择已安装的受支持工具。</p><button>选择已安装的 Git</button><button>选择已安装的 OpenSSH</button><label>单次尝试重定向上限 (0–20)<input type="number" min="0" max="20"></label>
+      <p>保存修订: 0</p>
+      <!--v-if-->
+      <div class="sync-table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>配置与限制</th>
+              <th>默认值</th>
+              <th>已保存值</th>
+              <th>有效值</th>
+              <th>值的来源</th>
+              <th>当前上限／范围</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>连接超时</th>
+              <td>10,000 毫秒</td>
+              <td><label><span class="sync-sr-only">连接超时 · 毫秒</span><input type="number" min="1000" max="60000" step="1"></label></td>
+              <td>10,000 毫秒</td>
+              <td>默认值</td>
+              <td>1,000 毫秒 – 60,000 毫秒
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>URL 总期限</th>
+              <td>60,000 毫秒</td>
+              <td><label><span class="sync-sr-only">URL 总期限 · 毫秒</span><input type="number" min="5000" max="600000" step="1"></label></td>
+              <td>60,000 毫秒</td>
+              <td>默认值</td>
+              <td>5,000 毫秒 – 600,000 毫秒
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Git 总期限</th>
+              <td>120,000 毫秒</td>
+              <td><label><span class="sync-sr-only">Git 总期限 · 毫秒</span><input type="number" min="10000" max="1800000" step="1"></label></td>
+              <td>120,000 毫秒</td>
+              <td>默认值</td>
+              <td>10,000 毫秒 – 1,800,000 毫秒
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>总尝试次数</th>
+              <td>1 个</td>
+              <td><label><span class="sync-sr-only">总尝试次数 · 个</span><input type="number" min="1" max="3" step="1"></label></td>
+              <td>1 个</td>
+              <td>默认值</td>
+              <td>1 个 – 3 个
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>原文上限</th>
+              <td>5,242,880 字节 (5 MiB)</td>
+              <td><label><span class="sync-sr-only">原文上限 · 字节</span><input type="number" min="65536" max="16777216" step="1"></label></td>
+              <td>5,242,880 字节 (5 MiB)</td>
+              <td>默认值</td>
+              <td>65,536 字节 (0.063 MiB) – 16,777,216 字节 (16 MiB)
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>比较输入上限</th>
+              <td>16,777,216 字节 (16 MiB)</td>
+              <td><label><span class="sync-sr-only">比较输入上限 · 字节</span><input type="number" min="1048576" max="67108864" step="1"></label></td>
+              <td>16,777,216 字节 (16 MiB)</td>
+              <td>默认值</td>
+              <td>1,048,576 字节 (1 MiB) – 67,108,864 字节 (64 MiB)
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>比较输出上限</th>
+              <td>8,388,608 字节 (8 MiB)</td>
+              <td><label><span class="sync-sr-only">比较输出上限 · 字节</span><input type="number" min="262144" max="33554432" step="1"></label></td>
+              <td>8,388,608 字节 (8 MiB)</td>
+              <td>默认值</td>
+              <td>262,144 字节 (0.25 MiB) – 33,554,432 字节 (32 MiB)
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>规范化深度预算</th>
+              <td>128 层</td>
+              <td><label><span class="sync-sr-only">规范化深度预算 · 层</span><input type="number" min="16" max="256" step="1"></label></td>
+              <td>128 层</td>
+              <td>默认值</td>
+              <td>16 层 – 256 层
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>规范化节点预算</th>
+              <td>100,000 个</td>
+              <td><label><span class="sync-sr-only">规范化节点预算 · 个</span><input type="number" min="1000" max="1000000" step="1"></label></td>
+              <td>100,000 个</td>
+              <td>默认值</td>
+              <td>1,000 个 – 1,000,000 个
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Git 临时材料采样阈值</th>
+              <td>268,435,456 字节 (256 MiB)</td>
+              <td><label><span class="sync-sr-only">Git 临时材料采样阈值 · 字节</span><input type="number" min="33554432" max="2147483648" step="1"></label></td>
+              <td>268,435,456 字节 (256 MiB)</td>
+              <td>默认值</td>
+              <td>33,554,432 字节 (32 MiB) – 2,147,483,648 字节 (2048 MiB)
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>项目并发检查数</th>
+              <td>1 个</td>
+              <td><label><span class="sync-sr-only">项目并发检查数 · 个</span><input type="number" min="1" max="4" step="1"></label></td>
+              <td>1 个</td>
+              <td>默认值</td>
+              <td>1 个 – 4 个
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>宿主并发检查数</th>
+              <td>4 个</td>
+              <td><label><span class="sync-sr-only">宿主并发检查数 · 个</span><input type="number" min="1" max="16" step="1"></label></td>
+              <td>4 个</td>
+              <td>默认值</td>
+              <td>1 个 – 16 个
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>候选有效期</th>
+              <td>86,400,000 毫秒</td>
+              <td><label><span class="sync-sr-only">候选有效期 · 毫秒</span><input type="number" min="300000" max="604800000" step="1"></label></td>
+              <td>86,400,000 毫秒</td>
+              <td>默认值</td>
+              <td>300,000 毫秒 – 604,800,000 毫秒
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>每来源历史保留天数</th>
+              <td>30 天</td>
+              <td><label><span class="sync-sr-only">每来源历史保留天数 · 天</span><input type="number" min="1" max="365" step="1"></label></td>
+              <td>30 天</td>
+              <td>默认值</td>
+              <td>1 天 – 365 天
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>每来源历史条数上限</th>
+              <td>100 条／来源</td>
+              <td><label><span class="sync-sr-only">每来源历史条数上限 · 条／来源</span><input type="number" min="1" max="1000" step="1"></label></td>
+              <td>100 条／来源</td>
+              <td>默认值</td>
+              <td>1 条／来源 – 1,000 条／来源
+                <!--v-if-->
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div><button>保存本机同步配置</button>
+    </section>
+  </div>
+</section>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/sync/presentation-interactions.test.ts:15:22
+     13|     const candidate = f.store.candidate, sourceId = f.store.sourceId, …
+     14|     await f.wrapper.get('[data-testid="sync-search"]').setValue('not-p…
+     15|     expect(f.wrapper.get('[data-testid="sync-source-empty"]').text()).…
+       |                      ^
+     16|     expect(f.wrapper.get('[data-testid="sync-change-empty"]').text()).…
+     17|     expect(f.wrapper.find('.sync-change').exists()).toBe(false);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  tests/renderer/components/sync/presentation-interactions.test.ts > distinguishes filtered sources/changes from missing data and restores decisions and drafts in en
+Error: Unable to get [data-testid="sync-source-empty"] within: <section class="sync-panel" data-testid="sync-panel" role="region" aria-label="External specification synchronization">
+  <header class="sync-fixed">
+    <div class="sync-heading">
+      <h2>External specification synchronization</h2><button>Close</button>
+    </div>
+    <p><strong>Check location: This computer</strong></p>
+    <p>Local checks stop when the client closes.</p>
+    <p>Only the approved host, port and IP addresses are allowed for this check; other origins are rejected.</p>
+    <div class="sync-toolbar"><input data-testid="sync-search" aria-label="Search sources, changes or history" placeholder="Search sources, changes or history"><button data-testid="sync-clear">Clear search</button><button data-testid="sync-refresh">Refresh</button></div>
+    <nav><a href="#sync-sources">Sources</a><a href="#sync-diff">Fixed differences</a><a href="#sync-history">History and rollback</a><a href="#sync-settings">Settings and limits</a></nav>
+    <!--v-if-->
+    <!--v-if-->
+  </header>
+  <div class="sync-scroll" style="overflow-y: auto;">
+    <section id="sync-sources">
+      <h3>Sources</h3><button>Add source</button>
+      <!--v-if-->
+      <ul class="sync-source-list"></ul>
+      <p>Source ID: 00000000-0000-4000-8000-000000000002</p><button data-testid="sync-edit-source">Edit source</button><button data-testid="sync-check">Check source</button>
+      <!--v-if-->
+      <!--v-if-->
+      <section class="sync-source-form">
+        <h3>Edit source</h3>
+        <p>Sources store references only. Keys and native tool paths stay in main.</p>
+        <!--v-if-->
+        <form>
+          <fieldset><label>Source type<select>
+                <option value="url">URL</option>
+                <option value="git-https">Git HTTPS</option>
+                <option value="git-ssh">Git SSH</option>
+              </select></label><label>Target module<select disabled="">
+                <option value="00000000-0000-4000-8000-000000000003">Pets</option>
+              </select></label><label>Specification URL<input type="url" required=""></label><label>Network profile reference<input placeholder="Use project network selection"></label>
+            <!--v-if--><label>Authentication material reference<input></label>
+            <p>Unavailable · Saved revision 2</p><button type="submit">Save source</button>
+          </fieldset>
+        </form>
+        <!--v-if-->
+        <!--v-if-->
+      </section>
+      <!--v-if-->
+      <!--v-if-->
+    </section>
+    <section id="sync-diff">
+      <h3>Fixed differences</h3>
+      <!--v-if-->
+      <section data-testid="sync-candidate" aria-live="polite">
+        <h3>External specification sync candidate</h3>
+        <p data-testid="sync-candidate-status">Review every change</p>
+        <dl class="sync-summary">
+          <dt>Added</dt>
+          <dd>0</dd>
+          <dt>Updated</dt>
+          <dd>1</dd>
+          <dt>Removed</dt>
+          <dd>0</dd>
+          <dt>Conflicts</dt>
+          <dd>1</dd>
+        </dl>
+        <p>These bounded summaries describe a fixed candidate; preview truncation does not alter source bytes.</p>
+        <!--v-if-->
+        <!--v-if-->
+        <details>
+          <summary>Full identities and advanced details · ffffffffffff…</summary>
+          <dl>
+            <dt>Candidate ID</dt>
+            <dd>00000000-0000-4000-8000-000000000006</dd>
+            <dt>Candidate fingerprint</dt>
+            <dd>ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff</dd>
+            <dt>Project asset fingerprint</dt>
+            <dd>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</dd>
+            <dt>Core build identity</dt>
+            <dd>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</dd>
+            <dt>Source byte fingerprint</dt>
+            <dd>eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee</dd>
+            <dt>Fixed commit</dt>
+            <dd>cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc</dd>
+            <dt>Fixed blob</dt>
+            <dd>dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd</dd>
+          </dl>
+        </details>
+        <p>Fixed commit: cccccccccccc… · Fixed blob: dddddddddddd…</p>
+      </section><label class="sync-confirm"><input type="checkbox" data-testid="sync-keep-confirm">I confirm keeping current content and acknowledging this fixed source as the new baseline.</label>
+      <!--v-if--><button data-testid="sync-apply">Confirm and apply</button>
+    </section>
+    <!--v-if-->
+    <div id="sync-history">
+      <section>
+        <h3>History and rollback</h3>
+        <p>No durable applications or rollbacks yet.</p>
+        <ol class="sync-history"></ol>
+      </section>
+    </div>
+    <section>
+      <h3>Online scheduled checks</h3>
+      <p>Background work only checks and creates candidates; application requires confirmation.</p>
+      <p>Local sources are checked manually; online services manage background schedules.</p>
+    </section>
+    <section id="sync-settings">
+      <h3>Settings and limits</h3>
+      <p>Changes apply to the next check; active checks keep their captured configuration.</p>
+      <p>The Git disk value is a sampled threshold, not a zero-overrun operating-system quota.</p>
+      <p>Total content bytes remain bounded per project and host, not per source.</p>
+      <!--v-if-->
+      <p>Git is not installed; select an installed supported tool.</p>
+      <p>OpenSSH is not installed; select an installed supported tool.</p><button>Select installed Git</button><button>Select installed OpenSSH</button><label>Redirect limit per attempt (0–20)<input type="number" min="0" max="20"></label>
+      <p>Saved revision: 0</p>
+      <!--v-if-->
+      <div class="sync-table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Settings and limits</th>
+              <th>Default</th>
+              <th>Saved value</th>
+              <th>Effective value</th>
+              <th>Value source</th>
+              <th>Current ceiling or range</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Connection timeout</th>
+              <td>10,000 ms</td>
+              <td><label><span class="sync-sr-only">Connection timeout · ms</span><input type="number" min="1000" max="60000" step="1"></label></td>
+              <td>10,000 ms</td>
+              <td>Default</td>
+              <td>1,000 ms – 60,000 ms
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>URL total deadline</th>
+              <td>60,000 ms</td>
+              <td><label><span class="sync-sr-only">URL total deadline · ms</span><input type="number" min="5000" max="600000" step="1"></label></td>
+              <td>60,000 ms</td>
+              <td>Default</td>
+              <td>5,000 ms – 600,000 ms
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Git total deadline</th>
+              <td>120,000 ms</td>
+              <td><label><span class="sync-sr-only">Git total deadline · ms</span><input type="number" min="10000" max="1800000" step="1"></label></td>
+              <td>120,000 ms</td>
+              <td>Default</td>
+              <td>10,000 ms – 1,800,000 ms
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Total attempts</th>
+              <td>1 count</td>
+              <td><label><span class="sync-sr-only">Total attempts · count</span><input type="number" min="1" max="3" step="1"></label></td>
+              <td>1 count</td>
+              <td>Default</td>
+              <td>1 count – 3 count
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Source byte limit</th>
+              <td>5,242,880 bytes (5 MiB)</td>
+              <td><label><span class="sync-sr-only">Source byte limit · bytes</span><input type="number" min="65536" max="16777216" step="1"></label></td>
+              <td>5,242,880 bytes (5 MiB)</td>
+              <td>Default</td>
+              <td>65,536 bytes (0.063 MiB) – 16,777,216 bytes (16 MiB)
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Comparison input limit</th>
+              <td>16,777,216 bytes (16 MiB)</td>
+              <td><label><span class="sync-sr-only">Comparison input limit · bytes</span><input type="number" min="1048576" max="67108864" step="1"></label></td>
+              <td>16,777,216 bytes (16 MiB)</td>
+              <td>Default</td>
+              <td>1,048,576 bytes (1 MiB) – 67,108,864 bytes (64 MiB)
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Comparison output limit</th>
+              <td>8,388,608 bytes (8 MiB)</td>
+              <td><label><span class="sync-sr-only">Comparison output limit · bytes</span><input type="number" min="262144" max="33554432" step="1"></label></td>
+              <td>8,388,608 bytes (8 MiB)</td>
+              <td>Default</td>
+              <td>262,144 bytes (0.25 MiB) – 33,554,432 bytes (32 MiB)
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Normalization depth budget</th>
+              <td>128 levels</td>
+              <td><label><span class="sync-sr-only">Normalization depth budget · levels</span><input type="number" min="16" max="256" step="1"></label></td>
+              <td>128 levels</td>
+              <td>Default</td>
+              <td>16 levels – 256 levels
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Normalization node budget</th>
+              <td>100,000 count</td>
+              <td><label><span class="sync-sr-only">Normalization node budget · count</span><input type="number" min="1000" max="1000000" step="1"></label></td>
+              <td>100,000 count</td>
+              <td>Default</td>
+              <td>1,000 count – 1,000,000 count
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Git temporary-material sampling threshold</th>
+              <td>268,435,456 bytes (256 MiB)</td>
+              <td><label><span class="sync-sr-only">Git temporary-material sampling threshold · bytes</span><input type="number" min="33554432" max="2147483648" step="1"></label></td>
+              <td>268,435,456 bytes (256 MiB)</td>
+              <td>Default</td>
+              <td>33,554,432 bytes (32 MiB) – 2,147,483,648 bytes (2048 MiB)
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Concurrent project checks</th>
+              <td>1 count</td>
+              <td><label><span class="sync-sr-only">Concurrent project checks · count</span><input type="number" min="1" max="4" step="1"></label></td>
+              <td>1 count</td>
+              <td>Default</td>
+              <td>1 count – 4 count
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Concurrent host checks</th>
+              <td>4 count</td>
+              <td><label><span class="sync-sr-only">Concurrent host checks · count</span><input type="number" min="1" max="16" step="1"></label></td>
+              <td>4 count</td>
+              <td>Default</td>
+              <td>1 count – 16 count
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Candidate lifetime</th>
+              <td>86,400,000 ms</td>
+              <td><label><span class="sync-sr-only">Candidate lifetime · ms</span><input type="number" min="300000" max="604800000" step="1"></label></td>
+              <td>86,400,000 ms</td>
+              <td>Default</td>
+              <td>300,000 ms – 604,800,000 ms
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>History retention days per source</th>
+              <td>30 days</td>
+              <td><label><span class="sync-sr-only">History retention days per source · days</span><input type="number" min="1" max="365" step="1"></label></td>
+              <td>30 days</td>
+              <td>Default</td>
+              <td>1 days – 365 days
+                <!--v-if-->
+              </td>
+            </tr>
+            <tr>
+              <th>Maximum history entries per source</th>
+              <td>100 entries/source</td>
+              <td><label><span class="sync-sr-only">Maximum history entries per source · entries/source</span><input type="number" min="1" max="1000" step="1"></label></td>
+              <td>100 entries/source</td>
+              <td>Default</td>
+              <td>1 entries/source – 1,000 entries/source
+                <!--v-if-->
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div><button>Save local sync settings</button>
+    </section>
+  </div>
+</section>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/sync/presentation-interactions.test.ts:15:22
+     13|     const candidate = f.store.candidate, sourceId = f.store.sourceId, …
+     14|     await f.wrapper.get('[data-testid="sync-search"]').setValue('not-p…
+     15|     expect(f.wrapper.get('[data-testid="sync-source-empty"]').text()).…
+       |                      ^
+     16|     expect(f.wrapper.get('[data-testid="sync-change-empty"]').text()).…
+     17|     expect(f.wrapper.find('.sync-change').exists()).toBe(false);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  3 failed (3)
+   Start at  23:10:10
+   Duration  3.49s (transform 4.76s, setup 0ms, import 2.61s, tests 1.52s, environment 2.33s)
+

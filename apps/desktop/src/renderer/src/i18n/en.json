@@ -1568,6 +1568,10 @@
     "codes": { "member-claim": "Member upload / local execution claim", "saved-contract": "Saved contract", "server-archive": "Trusted server archive", "server-report": "Server archive", "member-history": "Member upload history", "local-current": "Completed result in this window", "local-debug": "Private local debug history", "local-stress": "Proven local stress report", "online-local": "Local execution of an online project", "legacy-unindexed": "Legacy result has no terminal index", "not-ended": "Task has not ended", "terminal-index": "Server terminal index", "passed": "Passed", "failed": "Failed", "unknown": "Unknown", "ended": "Ended", "unavailable": "Not collected", "transport": "Transport failure", "active": "Active", "revoked": "Revoked", "expired": "Expired" }
   },
   "sync": {
+    "sectionNavigation": "Synchronization sections",
+    "noMatchingSources": "No matching sources. Clear the search to show all sources.",
+    "noMatchingChanges": "No matching changes. Existing decisions are retained.",
+    "noMatchingHistory": "No matching history. Clear the search to show all records.",
     "title": "External specification synchronization",
     "close": "Close",
     "location": "Check location",

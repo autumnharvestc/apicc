@@ -59,3 +59,7 @@ P2 新包先封存后，开始第一子组：RunView、共享 CaseEvidencePanel�
 ## P3d 执行记录
 
 AI 配置/出站预览/候选/独立断言/报告分析已按[P3d设计](f8-frontend-polish-p3d-design.md)实施，100项去重定向行为、宽窄主题/语言与短高组件布局见[P3d验证](f8-frontend-polish-p3d-validation.md)。宿主和三协议不改，原生全链留P5；接下来为同步来源/差异/历史，不提前混入P4管理台。
+
+## P3e 更新（2026-11-08）
+
+SyncPanel / SyncSourceForm / SyncDiffView / SyncHistory 已按 [P3e对照](f8-frontend-polish-p3e-validation.md) 完成呈现与受影响验证。SourceForm沿用现有模板/处理，仅受限域CSS影响。覆盖同一面板里的同步定时/策略；不覆盖在线执行页、通用定时/通知或管理台。余下P3继续在线执行/定时/通知/协作及工作流/单接口。
