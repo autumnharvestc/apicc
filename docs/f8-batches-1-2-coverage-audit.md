@@ -242,3 +242,7 @@ N9 / G11：用户已完成同一隔离窗口“填入→关闭→重开检查账
 原生证据见 `native-verification.json`、`native-*-ax.txt`、中文/英文/重启 PNG 与仅含方法/路径的 `native-requests.jsonl`，文件 SHA256 已写入机器索引。验收使用空工作区：真实缓存释放由 N3 的 store 行为覆盖，重复离线提示由 N2 的 App 集成覆盖，未冒称原生项目点击覆盖；合成 HTTP 服务不等于 Java 账号库或部署验收。仅观察本机安全存储加密标志及正常恢复，不扩大为 OS 密钥环所有失败场景均已覆盖。两次客户端均正常退出、合成 helper 和监听端口已关闭，私有证据保留。
 
 G12：64 点基线、19 个部分/失败/风险点的更新、12 次具名测试运行及构建/打包命令和退出码已索引。退出码来源为本轮实际工具 stdout 的追记，原始工具 trace 未导出入 Git，不能把原始 Vitest success 字段当 shell exit 证明。全部原始 local 文件保持 ignored；Git 保存可移植摘要和源码/原始产物哈希，不称全部原始证据已归档进 Git。最终清单在 `local/f8-coverage-ci96/final-candidate-manifest.json`，仅对这些冻结文件做最终独审封存核对，未重新宽审或追加全量。
+
+## CI97 后续核对
+
+`bfe133e7` 已提交、合并并推送。CI97 的 desktop 2312 通过/2 跳过，确认此前三个桌面回归及新增相邻链路通过；Java 2197、Windows 包和品牌门禁亦通过。但 runner Docker 联验在读取归档后的进程明细时失败，同案还有一个 worker-exit 读取受影响。这是 B2-30/B2-35 所需的相邻消费点漏查，不能用 N6 的新链路通过替代旧联验契约核对。原失败和后续修正详见 [CI97 归档观测修正](f8-ci97-archive-observation.md)；新一轮部署仍未通过，KR-F7F-01 的未定因状态不变。

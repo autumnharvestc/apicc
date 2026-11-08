@@ -306,6 +306,18 @@ it("keeps Linux stress reservations through controlled derating, cancellation, w
     writeFileSync(join(server.root, `stress-owned-processes-${intent.executionId}.json`), JSON.stringify(actual, null, 2));
     return actual;
   };
+  const archivedTree = async (job: { executionId: string }, active: any, archivedReport: any) => {
+    const count = active.processes.length;
+    expect(archivedReport).toMatchObject({ executionFact: "started", processObservation: { completeness: "complete", started: count, exited: count } });
+    // Default maintenance removes ACKed, archived, confirmed-exited details. Keep
+    // the live ownership snapshot for the independent physical-exit check.
+    const intent = await until(() => ledgerIntent(job.executionId), value => value?.archived && !value.report && value.processes === undefined && value.processIntents === undefined);
+    expect(intent).toMatchObject({ executionId: active.executionId, jobId: active.jobId, deliveryId: active.deliveryId, fact: archivedReport.executionFact, settled: true, archived: true });
+    expect(intent.processObservation).toEqual(archivedReport.processObservation);
+    const physical = JSON.parse(command("docker", ["exec", name, "node", "--input-type=module", "-e", `import {readProcessIdentity} from './apps/runner-agent/dist/processIdentity.js';console.log(JSON.stringify(await Promise.all(${JSON.stringify(active.processes.map((row: any) => row.pid))}.map(async pid=>({pid,identity:await readProcessIdentity(pid)??null})))));`]));
+    expect(physical).toHaveLength(count); expect(physical.every((row: any) => row.identity === null)).toBe(true);
+    return { intent, physical };
+  };
   const fixture = acceptanceStress(origin, "hold-stress-capacity", true);
   await publish(fixture.project);
   const config = { runConfig: { jobTimeoutMs: 30000, stress: { workerCount: 2, confirmedTargetOrigins: [origin] } } };
@@ -328,22 +340,23 @@ it("keeps Linux stress reservations through controlled derating, cancellation, w
   expect((await ledgerIntent(second.executionId))?.processes ?? []).toEqual([]);
   await api("POST", `jobs/${second.jobId}/cancel`, {});
   await api("POST", `jobs/${first.jobId}/cancel`, {});
-  await report(first);
-  const released = await ledgerIntent(first.executionId);
-  expect(released.processes).toHaveLength(3); expect(released.processes.every((row: any) => row.exited)).toBe(true);
-  const physical = JSON.parse(command("docker", ["exec", name, "node", "--input-type=module", "-e", `import {readProcessIdentity} from './apps/runner-agent/dist/processIdentity.js';console.log(JSON.stringify(await Promise.all(${JSON.stringify(active.processes.map((row: any) => row.pid))}.map(async pid=>({pid,identity:await readProcessIdentity(pid)??null})))));`]));
-  expect(physical.every((row: any) => row.identity === null)).toBe(true);
+  const firstReport = await report(first);
+  const { intent: released, physical } = await archivedTree(first, active, firstReport);
   expect((await api("GET", `jobs/${neighbor.jobId}`)).state).toBe("running");
   gates.get("/hold-packaged-disconnect")!.end('{"token":"fixed-token"}'); gates.delete("/hold-packaged-disconnect");
   expect((await report(neighbor)).verdict).toBe("passed");
   await configureStress({ maxConcurrentStressJobs: 1 });
+  const faultStart = seen.length;
   const faulted = (await electron([run(fixture.target, "agent", config)])).results[0];
-  const faultProcesses = await until(async () => ledgerIntent(faulted.executionId), treeRecorded);
+  // A registered tree does not yet prove business execution has started. Inject
+  // the worker fault only after this invocation has started both requests.
+  const faultProcesses = await until(async () => ledgerIntent(faulted.executionId), value => treeRecorded(value) && value.fact === "started");
+  await until(async () => seen.slice(faultStart).filter(row => row.path === "/hold-stress-capacity").length, count => count === 2);
   const faultIdentities = captureOwnedTree(faultProcesses);
   const worker = faultProcesses.processes.find((row: any) => row.role === "worker");
   command("docker", ["exec", name, "node", "--input-type=module", "-e", `import {readProcessIdentity} from './apps/runner-agent/dist/processIdentity.js';const row=await readProcessIdentity(${worker.pid});if(!row||row.birth!==${JSON.stringify(worker.birth)})throw Error('Owned Linux worker identity changed');process.kill(row.pid,'SIGKILL');`]);
   const faultReport = await report(faulted); expect(faultReport.verdict).not.toBe("passed");
-  expect((await ledgerIntent(faulted.executionId)).processes.every((row: any) => row.exited)).toBe(true);
+  const faultReleased = await archivedTree(faulted, faultProcesses, faultReport);
   const plain = acceptanceStress(origin, "stress-lost-ack"); await publish(plain.project);
   const before = seen.length, archives = server.faults.archives, drops = server.faults.dropped;
   server.faults.dropMessageAck = 1; server.faults.dropArchiveAck = 1;
@@ -352,7 +365,7 @@ it("keeps Linux stress reservations through controlled derating, cancellation, w
   await until(async () => ledgerIntent(retry.executionId), value => value.archived && !value.report);
   expect(seen.slice(before).filter(row => row.path === "/stress-lost-ack")).toHaveLength(4);
   expect(server.faults.dropped - drops).toBe(2); expect(server.faults.archives - archives).toBeGreaterThanOrEqual(2);
-  writeFileSync(join(server.root, "stress-control-results.json"), JSON.stringify({ first, second, neighbor, waiting, active, activeIdentities, released, physical, faulted, faultProcesses, faultIdentities, faultReport, retry, faults: server.faults, requests: seen.slice(start).map(({ authorization: _auth, ...row }) => row) }, null, 2));
+  writeFileSync(join(server.root, "stress-control-results.json"), JSON.stringify({ first, firstReport, second, neighbor, waiting, active, activeIdentities, released, physical, faulted, faultProcesses, faultIdentities, faultReport, faultReleased, retry, faults: server.faults, requests: seen.slice(start).map(({ authorization: _auth, ...row }) => row) }, null, 2));
 }, 120000);
 
 it.runIf(process.platform === "win32" && !!process.env.APICC_RUNNER_E2E_PACKAGED_EXE)("uses actual asar packaged Electron Node-mode workers and cleans children on main IPC disconnect", async () => {
