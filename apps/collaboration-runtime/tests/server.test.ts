@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { request } from "node:http";
+import { connect } from "node:net";
+import { once } from "node:events";
 import { startCollaborationRuntime } from "../src/server.js";
 import { AssetMutationResultSchema } from "@apicc/core/collaboration/shared";
 import { digestJson } from "../src/protocol.js";
@@ -27,6 +29,25 @@ async function rpc(url: string, body: unknown, key = secret, path = "/rpc", meth
   return fetch(new URL(path, url), { method, headers: { "X-Apicc-Collaboration-Key": key }, ...(method === "GET" ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) });
 }
 describe("real loopback RPC admission", () => {
+  it('a partial authenticated upload can disconnect without entering the handler or poisoning the next RPC', async () => {
+    const { runtime, entered } = await setup();
+    const socket = connect(Number(new URL(runtime.url).port), '127.0.0.1');
+    socket.on('error', () => {}); // A reset is an allowed outcome for the cancelled caller.
+    try {
+      await once(socket, 'connect');
+      const continued = once(socket, 'data');
+      socket.write(`POST /rpc HTTP/1.1\r\nHost: localhost\r\nX-Apicc-Collaboration-Key: ${secret}\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n`);
+      expect((await continued)[0].toString()).toBe('HTTP/1.1 100 Continue\r\n\r\n');
+      const closed = new Promise<void>(done => socket.once('close', () => done()));
+      socket.end('100\r\n{');
+      await closed;
+      expect(entered()).toBe(0);
+      const response = await rpc(runtime.url, health());
+      expect(response.status).toBe(200);
+      expect((await response.json()).payload).toEqual({ ready: true });
+      expect(entered()).toBe(1);
+    } finally { socket.destroy(); }
+  });
   it('configured bytes reserve both bounded wire directions before an admitted body and release after completion', async () => {
     const started=barrier(), release=barrier(); let entered=0;
     const runtime=await startCollaborationRuntime({secret,port:0,maxWireBytes:1048576,inFlightBytes:2097152,handler:async()=>{entered++;if(entered===1){started.resolve();await release.promise;}return {ready:true};}});open.push(runtime);

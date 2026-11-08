@@ -34,11 +34,37 @@ await writeFile(sourceConfigFile,JSON.stringify({privateRoot,allowedOrigins:[ori
 const runtime=await runtimeFromDeployment({enabled:true,secretFile,sourceConfigFile,port:0});
 if(!runtime.enabled)throw Error('Actual runtime prerequisite');
 // A real transport-loss proxy deliberately leaves its already-forwarded private read alive.
-const proxy=createServer(async(req,res)=>{const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=Buffer.concat(chunks);const preserve=dropNextRead&&JSON.parse(body.toString()).operation==='sync-read';if(preserve){dropNextRead=false;lostResponse=res;}
-  const parsed=JSON.parse(body.toString()),operation=parsed.operation;await appendFile(join(directory,'rpc-trace.jsonl'),JSON.stringify({phase:'received',operation,requestId:parsed.requestId,bytes:body.length})+'\n');if(failClassify&&operation==='classify-asset-mutation'){failClassify=false;res.writeHead(503);res.end('synthetic classifier unavailable');return;}
+const proxy=createServer((req,res)=>{void forward(req,res).catch(failFixture);});
+async function forward(req,res){
+  const chunks=[];
+  try {for await(const chunk of req)chunks.push(chunk);}
+  catch(error){
+    // Java cancellation can arrive while the proxy is still reading a body.
+    // Only that request ends; it must not terminate every fixture consumer.
+    if(req.aborted||error.code==='ECONNRESET'||error.code==='ERR_STREAM_PREMATURE_CLOSE'){res.destroy();return;}
+    throw error;
+  }
+  const body=Buffer.concat(chunks);let parsed;
+  try {parsed=JSON.parse(body.toString());}
+  catch(error){if(!(error instanceof SyntaxError))throw error;res.writeHead(400);res.end('Invalid JSON');return;}
+  const operation=parsed?.operation,requestId=parsed?.requestId;
+  const preserve=dropNextRead&&operation==='sync-read';if(preserve){dropNextRead=false;lostResponse=res;}
+  await appendFile(join(directory,'rpc-trace.jsonl'),JSON.stringify({phase:'received',operation,requestId,bytes:body.length})+'\n');if(failClassify&&operation==='classify-asset-mutation'){failClassify=false;res.writeHead(503);res.end('synthetic classifier unavailable');return;}
   const pause=holdResolve&&(operation==='sync-resolve'||operation==='sync-rollback');if(pause){holdResolve=false;await writeFile(join(directory,'resolve-held'),'held');await new Promise(done=>{releaseResolve=done;});}
-  const upstream=request(new URL(req.url,runtime.url),{method:req.method,headers:req.headers},reply=>{void appendFile(join(directory,'rpc-trace.jsonl'),JSON.stringify({phase:'reply',operation,requestId:parsed.requestId,status:reply.statusCode})+'\n');if(res.destroyed)reply.resume();else{res.writeHead(reply.statusCode,reply.headers);reply.pipe(res);}});res.once('close',()=>{if(!preserve&&!res.writableEnded)upstream.destroy();});upstream.on('error',error=>{void appendFile(join(directory,'rpc-trace.jsonl'),JSON.stringify({phase:'error',operation,requestId:parsed.requestId,code:error.code})+'\n');if(!res.destroyed)res.destroy();});upstream.end(body);
-});
+  if(res.destroyed&&!preserve)return;
+  const transportError=error=>{void appendFile(join(directory,'rpc-trace.jsonl'),JSON.stringify({phase:'error',operation,requestId,code:error.code})+'\n').catch(failFixture);if(!res.destroyed)res.destroy();};
+  const upstream=request(new URL(req.url,runtime.url),{method:req.method,headers:req.headers},reply=>{
+    reply.on('error',transportError);
+    void appendFile(join(directory,'rpc-trace.jsonl'),JSON.stringify({phase:'reply',operation,requestId,status:reply.statusCode})+'\n').catch(failFixture);
+    if(res.destroyed)reply.resume();else{res.writeHead(reply.statusCode,reply.headers);reply.pipe(res);}
+  });
+  res.once('close',()=>{if(!preserve&&!res.writableEnded)upstream.destroy();});upstream.on('error',transportError);upstream.end(body);
+}
+let fatalError;
+function failFixture(error){
+  if(fatalError)return;fatalError=error;console.error('Shared sync fixture failed:',error);process.exitCode=1;
+  void stop().catch(shutdownError=>{console.error('Shared sync fixture shutdown failed:',shutdownError);process.exit(1);});
+}
 await new Promise(done=>proxy.listen(0,'127.0.0.1',done));
 console.log(JSON.stringify({url:`http://127.0.0.1:${proxy.address().port}`,origin,secretFile,rawText,files,definitionRevision:createProjectSnapshot(project).definitionRevision}));
 let stopping;const stop=()=>stopping??=(async()=>{await runtime.close();proxy.closeAllConnections();await new Promise(done=>proxy.close(done));source.closeAllConnections();await new Promise(done=>source.close(done));process.stdin.destroy();})();

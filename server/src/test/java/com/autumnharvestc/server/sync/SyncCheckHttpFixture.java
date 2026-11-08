@@ -20,14 +20,30 @@ abstract class SyncCheckHttpFixture extends SyncHttpFixture {
     static final String DATABASE_URL="jdbc:h2:mem:apicc-sync-runtime;DB_CLOSE_DELAY=-1";
     static final class Node implements AutoCloseable {
         final Path directory;final Process process;final JsonNode info;
-        Node(){try{
+        Node(){Process launched=null;try{
             directory=Files.createTempDirectory("apicc-t9-java-");var current=Path.of("").toAbsolutePath();var root=Files.isDirectory(current.resolve("apps"))?current:current.getParent();
             process=new ProcessBuilder(System.getenv().getOrDefault("APICC_TEST_NODE","node"),root.resolve("server/src/test/resources/sync-check-process.mjs").toString(),directory.toString()).directory(root.toFile()).redirectError(directory.resolve("node-stderr.log").toFile()).start();
+            launched=process;
             var line=CompletableFuture.supplyAsync(()->{try{return process.inputReader().readLine();}catch(Exception e){throw new RuntimeException(e);}}).get(15,TimeUnit.SECONDS);
             if(line==null)throw new IllegalStateException("Node prerequisite: "+Files.readString(directory.resolve("node-stderr.log")));
-            info=new ObjectMapper().readTree(line);Runtime.getRuntime().addShutdownHook(new Thread(()->{try{close();}catch(Exception ignored){process.destroyForcibly();}}));
-        }catch(Exception error){throw new ExceptionInInitializerError(error);}}
-        public void close() throws Exception {if(!process.isAlive())return;process.getOutputStream().write(1);process.getOutputStream().flush();if(!process.waitFor(10,TimeUnit.SECONDS))process.destroyForcibly().waitFor();}
+            info=new ObjectMapper().readTree(line);
+            process.onExit().thenRun(()->{if(process.exitValue()!=0)System.err.println(diagnostic());});
+            Runtime.getRuntime().addShutdownHook(new Thread(()->{try{close();}catch(Exception error){System.err.println(error);process.destroyForcibly();}}));
+        }catch(Exception error){if(launched!=null){launched.destroyForcibly();try{launched.waitFor(5,TimeUnit.SECONDS);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}}throw new ExceptionInInitializerError(error);}}
+        String diagnostic(){
+            String stderr;try{stderr=Files.readString(directory.resolve("node-stderr.log"));}catch(Exception error){stderr="stderr unavailable: "+error.getClass().getSimpleName();}
+            if(stderr.length()>8192)stderr=stderr.substring(stderr.length()-8192);
+            return "SYNC_FIXTURE_EXIT pid="+process.pid()+" exit="+(process.isAlive()?"alive":process.exitValue())+" directory="+directory+"\n"+stderr;
+        }
+        void requireAlive(){if(!process.isAlive())throw new AssertionError(diagnostic());}
+        public void close() throws Exception {
+            if(process.isAlive()){
+                try{process.getOutputStream().write(1);process.getOutputStream().flush();}
+                catch(java.io.IOException error){if(process.isAlive())throw error;}
+                if(!process.waitFor(10,TimeUnit.SECONDS)){process.destroyForcibly().waitFor();throw new IllegalStateException("Owned sync fixture required forced shutdown: "+diagnostic());}
+            }
+            if(process.exitValue()!=0)throw new IllegalStateException(diagnostic());
+        }
     }
     static final Node node=new Node();
     static final Path key;
@@ -39,9 +55,11 @@ abstract class SyncCheckHttpFixture extends SyncHttpFixture {
     @Autowired UserRepo users;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @BeforeEach void canonicalAssets() throws Exception {
+        node.requireAlive();
         var delta=json.createObjectNode().put("format","contract-files-v1").put("contractProjectId","00000000-0000-4000-8000-000000000070").put("expectedVersion","1");delta.set("changes",node.info.path("files"));delta.set("deletes",json.createArrayNode());
         mvc.perform(put(f.projectUrl()+"/assets").header("Authorization","Bearer "+f.owner().token()).contentType("application/json").content(delta.toString())).andExpect(status().isOk()).andExpect(jsonPath("$.version").value("2"));
     }
+    @org.junit.jupiter.api.AfterEach void sharedRuntimeSurvived(){node.requireAlive();}
     JsonNode createUrlSource(String path) throws Exception {var source=sourceBody("url").put("url",node.info.path("origin").asText()+path);return body(sourceRequest("POST","/sources",f.owner(),write(source).put("expectedAssetVersion","2")).andExpect(status().isCreated()));}
     ObjectNode checkBody(){return json.createObjectNode().put("formatVersion",1).put("intentId",UUID.randomUUID().toString()).put("expectedSourceRevision","1").put("expectedAssetVersion","2");}
     ObjectNode planning(JsonNode source,JsonNode read,boolean complete){

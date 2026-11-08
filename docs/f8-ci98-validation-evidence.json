@@ -1,0 +1,414 @@
+{
+  "date": "2026-11-08",
+  "linux": {
+    "productionRpc": {
+      "unselected": 35,
+      "passed": 1,
+      "failed": 0
+    },
+    "exitCode": 1,
+    "initial": {
+      "reason": "backend readiness; classes and jars on Windows bind mount; startup 23.619s above original 18s budget",
+      "passed": 173,
+      "failed": 1
+    },
+    "invalidNativeCommand": {
+      "exitCode": 1,
+      "reason": "Unquoted dotted PowerShell Maven property; stale copied XML is not new test evidence",
+      "testsExecuted": 0
+    },
+    "suites": [
+      {
+        "name": "com.autumnharvestc.server.sync.SyncApplyTest",
+        "tests": 20,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 36.367,
+        "sha256": "837e980fc1a5ebb040032c3eb8d1592d480e39c6f664d1cc8722d03c9010d1e5"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCandidateDetailTest",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 0.978,
+        "sha256": "9f38f885dfdb9a1f610babf2cff3577bdd476d1b0107c5b1f544f37a87714fb9"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCandidatesTest",
+        "tests": 21,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 6.755,
+        "sha256": "2f9652ffb3aa8ff0d128e61a70af77a61e4e3ae6d3a4639ae1af36d7573c3c72"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCheckCancellationTest",
+        "tests": 14,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 25.264,
+        "sha256": "e42a7e22abf3096c326be86e0ec2ad910edc1e3f614917186aec2897c25c5af3"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCheckDatabaseClockTest",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 13.256,
+        "sha256": "93f5d39032c7bf837d5c73c54a86f2b8c2f722184784915346187b9dc8f3a526"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCheckFixtureTransportTest",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 1.318,
+        "sha256": "2f55c4b99fc77ae4168359511a8fb0742e17bd5d97954669d745546af426be8b"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCheckOwnershipBoundaryTest",
+        "tests": 13,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 126.319,
+        "sha256": "2244e0d3b1969c146f8f3589516b737bf696aea67c2ebe95beff1fada2468a37"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncChecksTest",
+        "tests": 12,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 3.404,
+        "sha256": "e23d2ffce55538434801c8ac12b4ba8f093bcd4e418826165fcd9f5ac0df961c"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncOperationReceiptsTest",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 1.147,
+        "sha256": "02de638d61c0ee0a9afe9007aa476a0f52466353ccdc7714f6c2f8783f8977b2"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncRetentionTest",
+        "tests": 12,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 21.427,
+        "sha256": "7c36ffeb5c3f3882d42a4d58c02af83f0ed4f181007fb01613b1dcce66a7fcf3"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncReviewBoundariesTest",
+        "tests": 9,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 4.911,
+        "sha256": "cedb5f669f843c374e32bfc7c09256f387491b31e885d73d330a24512f6044d4"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncRollbackTest",
+        "tests": 16,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 14.242,
+        "sha256": "10e9367cfd3d525c4112f7afa6de2fe07e84d3391390ec3a637ed8192d141993"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncScheduleLifecycleTest",
+        "tests": 21,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 43.959,
+        "sha256": "7228742fa986ae32f264e0c8078dbc1421ee3f6411b7599d0ecb3fa0828bed39"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncScheduleOccurrencesTest",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 2.788,
+        "sha256": "146bd010fead9aae4145569991d2d74de78348251818afd26e2bb393ee903a28"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncScheduleRulesTest",
+        "tests": 18,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 5.061,
+        "sha256": "b9487e8f24a7bbf42243e4d8ca8a61f15c2fdb8321f20203556ad9bb215dccaf"
+      }
+    ],
+    "nativeRerun": {
+      "tests": 1,
+      "failed": 0,
+      "productAndBudgetChanges": false,
+      "backendStartupSeconds": [
+        4.44,
+        4.008
+      ],
+      "exitCode": 0,
+      "case": "realBackendProcessesRestartWithoutADesktopAndRetainTheUtcOccurrence"
+    },
+    "java": "Temurin 21.0.13+9",
+    "scope": "15 named sync fixture/consumer classes, not Java full suite",
+    "node": "22.19.0"
+  },
+  "baseCommit": "6576b07640774275cbef165fc3b4cf49b6ba0840",
+  "rawEvidence": [
+    {
+      "sha256": "8023604da2b86b282e25fce3c1cb2991dde9737e66a00b99ac7691bce04d1271",
+      "path": "local/f8-ci98/ci-input-hashes.json"
+    },
+    {
+      "sha256": "dfb07138be171b4de51fe02a2d68d16cce90b86c45c0c61a47fb254a4cb7915b",
+      "path": "local/f8-ci98/probe-abort.mjs"
+    },
+    {
+      "sha256": "fba091767445c7220e273793479a9b908e6346ceab7cdf358c95e42887ee90ec",
+      "path": "local/f8-ci98/probe-abort-result.json"
+    },
+    {
+      "sha256": "324852e57131a2456dc5a2e6297a14400b50dc66df7241af363a356a7917517c",
+      "path": "local/f8-ci98/java-red.log"
+    },
+    {
+      "sha256": "24017a3612d309bb4b3886ab49a412d041c6d10a8b01d32c6d4853c1daa54fb7",
+      "path": "local/f8-ci98/java-red-exit.json"
+    },
+    {
+      "sha256": "6cf2d6d7d13af5a68b2b9c833c323a7827b2c019af67dcb19227a91de40e3bd9",
+      "path": "local/f8-ci98/transport-red.log"
+    },
+    {
+      "sha256": "c34bc644b4dfc96082e294ccb49ac40bdf34a3c659c956ffef43981ed30b2234",
+      "path": "local/f8-ci98/transport-red-exit.json"
+    },
+    {
+      "sha256": "002d41680f70acf81351762895853f55fbec5de44691a4b33c06c9c852adc514",
+      "path": "local/f8-ci98/transport-red-stderr.json"
+    },
+    {
+      "sha256": "9412aa19c322ef97842ca3b4620d029580082df33ce2b3ae0bdb8a5fb6f1d516",
+      "path": "local/f8-ci98/red-reports/transport.xml"
+    },
+    {
+      "sha256": "02ef846d0fed6f4bd6ff7907b096be92f4baf835b8b48d22df0bdb33b4082544",
+      "path": "local/f8-ci98/java-candidate.log"
+    },
+    {
+      "sha256": "5f958f3b49c8dfd2081ae53a71f6184561b0c0fb7a28cb97c86755c3f59df0ec",
+      "path": "local/f8-ci98/java-candidate-exit.json"
+    },
+    {
+      "sha256": "e714deafc34b985197f2fe32ab28f04770a6fe01797bd99bafa84dca2edac605",
+      "path": "local/f8-ci98/runtime-partial.log"
+    },
+    {
+      "sha256": "0029a3a3b6df07658b8a2028fb85c507870278e71e8332f8e64c66162deb1bb4",
+      "path": "local/f8-ci98/runtime-partial.json"
+    },
+    {
+      "sha256": "ea61d7736f0b7ecb9b35158f03de77013db6b100cf1d36c957e78e6c8817c5b6",
+      "path": "local/f8-ci98/runtime-partial-exit.json"
+    },
+    {
+      "sha256": "a701a547ed29ede8dd2f1b44f481040f022e5cfc890813180ee475c7503bedc8",
+      "path": "local/f8-ci98/linux-targeted.sh"
+    },
+    {
+      "sha256": "97e147fe9c52c8b5c7caf0c05c3a2fe65f96a5db05d07e765e9edc660f039b01",
+      "path": "local/f8-ci98/linux-targeted.log"
+    },
+    {
+      "sha256": "839348050677ecfaf5831949a49aac6e1202f07e0983eb46044eb418dfc6aa9c",
+      "path": "local/f8-ci98/linux-targeted-exit.json"
+    },
+    {
+      "sha256": "3fd4f69171869c25fabcf9c61cd321eb4f8757ff79ffc8f335cb04537ca4d9a5",
+      "path": "local/f8-ci98/linux-runtime-partial.json"
+    },
+    {
+      "sha256": "98999fd9da1acd80dcfd3d524255a42cb0cd971e141defbb84ec3dfea6e4b81f",
+      "path": "local/f8-ci98/linux-tools.log"
+    },
+    {
+      "sha256": "f9038e5203c3676048309a7c8499987465156080a80c084edeed0f5c3a806921",
+      "path": "local/f8-ci98/linux-source-sha256.txt"
+    },
+    {
+      "sha256": "f9442b28105cfbe9f09314821e009618d34fcb5d84412aaaab84221a30c7246a",
+      "path": "local/f8-ci98/source-manifest.json"
+    },
+    {
+      "sha256": "5ad28b8be4bc52ae7cfb0920bd47f192851d3458c3290e88e9dea3e3d4c48f3b",
+      "path": "local/f8-ci98/linux-native-readiness.log"
+    },
+    {
+      "sha256": "9bccac9104141e2282806cee4bcfa957e32a8ff92ea0cfd60e1ce7fa497067d0",
+      "path": "local/f8-ci98/linux-native-readiness-exit.json"
+    },
+    {
+      "sha256": "0a11db90223062b8524ae2df4e72adf267bfd0e548d53e3c59fb2d5011027ee1",
+      "path": "local/f8-ci98/linux-native-final.log"
+    },
+    {
+      "sha256": "ddf27106211db73cfcdcb3f32b4368255552d6d27307cddf98934f3c1a6ac057",
+      "path": "local/f8-ci98/linux-native-final-exit.json"
+    },
+    {
+      "sha256": "ca85f99391383254d3b284a1602634f64af01937c0d8613e5b15ddf360db5987",
+      "path": "local/f8-ci98/linux-native-final.xml"
+    },
+    {
+      "sha256": "33c950166c1fbaa8806e50dd9d61b02cf011f3126625abb63080435896d6d716",
+      "path": "local/f8-ci98/linux-readiness-failure/backend-1.log"
+    },
+    {
+      "sha256": "a259d1673e5bb0c59335f73c9e9d86ced15446b541dcaa2def7373aab1873c28",
+      "path": "local/f8-ci98/linux-native-backends/backend-1.log"
+    },
+    {
+      "sha256": "9c4dfd9da9263cd4838d537c1360f0e8c68f3767b21ec1d4964948c9fbbdfa50",
+      "path": "local/f8-ci98/linux-native-backends/backend-2.log"
+    },
+    {
+      "sha256": "3a88e191a7f60c0f8d6190c9a1220479806f1fb575851c62f0e2939a94d6cefa",
+      "path": "local/f8-ci98/linux-native-backends/facts.json"
+    },
+    {
+      "sha256": "c6e400071ec6ac98d201428167f606f5ffb3aea33193925adcce45a8ab2b473c",
+      "path": "local/f8-ci98/linux-process-closure.log"
+    }
+  ],
+  "windowsProductionRpc": {
+    "exitCode": 0,
+    "unselected": 35,
+    "passed": 1,
+    "failed": 0
+  },
+  "source": [
+    {
+      "blob": "f22286da33d6ea41e46660285f3839f6e7ebdfe3",
+      "sha256": "8568ccb8150d37be14291a2ea92385d5104de8bcc651c03db45e98813b1aa162",
+      "path": "apps/collaboration-runtime/tests/server.test.ts"
+    },
+    {
+      "blob": "87ad8827c5df4485af34ab4a899f52a548135dd6",
+      "sha256": "b9052e74e885fbe3734c20843c7d1dbe3a478dd21ab78356138e64eaf977478c",
+      "path": "server/src/test/java/com/autumnharvestc/server/sync/SyncCheckHttpFixture.java"
+    },
+    {
+      "blob": "b4b181e87ce94c1c45f5c5347d774de9bf2e3730",
+      "sha256": "dfea816cea0ee7e355ca98cb3e3683a6d6b7ce4fec0ec059dff37ff2cade77e2",
+      "path": "server/src/test/java/com/autumnharvestc/server/sync/SyncCheckFixtureTransportTest.java"
+    },
+    {
+      "blob": "818c1d43daeddb780196fd06d5223b0cea919146",
+      "sha256": "887e76d79286abcd20bfc842ec7688b17169db6c9b05524b42f55a0b5e7e3897",
+      "path": "server/src/test/resources/sync-check-process.mjs"
+    }
+  ],
+  "naturalBaseline": {
+    "exitCode": 0,
+    "tests": 51,
+    "failed": 0,
+    "interpretation": "did-not-naturally-reproduce-original-CI"
+  },
+  "knownRisk": "KR-F7F-01 remains unresolved",
+  "localFullGateRun": false,
+  "windows": {
+    "suites": [
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCheckCancellationTest",
+        "tests": 14,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 20.936,
+        "sha256": "ef7c4aa60312469cab4ea1cba257f8826df2ab783a89308ae101768780d4fa42"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCheckFixtureTransportTest",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 2.276,
+        "sha256": "2f75ec42d6f360f25d40db1086a2e17ae8992b09edc16305187a3e54023fa629"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncCheckOwnershipBoundaryTest",
+        "tests": 13,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 9.471,
+        "sha256": "ca8b883785367f94a476bd141d1d5e25c3221d2ae7ac3a6402eb45618f65f630"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncReviewBoundariesTest",
+        "tests": 9,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 6.279,
+        "sha256": "7d975337f6eecbc366331b75f80b3a861f0c84f5bca6dccfc8061b8e8e7964e1"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncScheduleLifecycleTest",
+        "tests": 21,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 31.822,
+        "sha256": "15ce8a2eebd23a980feaacb07d5a5919c7e1a02b472b318fcd6421eb07c28e29"
+      },
+      {
+        "name": "com.autumnharvestc.server.sync.SyncScheduleOccurrencesTest",
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "timeSeconds": 4.684,
+        "sha256": "e0d6c3f796515852303c266003cac950f9d3429cfe149fa292d8b6dbbd97a497"
+      }
+    ],
+    "exitCode": 0
+  },
+  "formatVersion": 1,
+  "transportRegressionBeforeFix": {
+    "exitCode": 1,
+    "errors": 2,
+    "tests": 2,
+    "failures": 0
+  },
+  "originalCi": {
+    "java": {
+      "errors": 9,
+      "tests": 2197,
+      "failures": 125
+    },
+    "deployment": "not-verified",
+    "brand": "passed",
+    "linuxPackages": "passed",
+    "windowsPackage": "passed",
+    "firstNodeExitCause": "missing-original-stderr"
+  },
+  "productCodeChanged": false
+}
