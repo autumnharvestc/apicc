@@ -215,13 +215,14 @@ function onExitCancel() {
   gap: 8px;
   width: 100%;
   min-width: 0;
-  height: 44px;
+  height: 48px;
   flex: none;
   box-sizing: border-box;
   overflow: hidden;
-  padding: 4px 8px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--bg);
+  box-shadow: var(--panel-shadow);
 }
 .workspace-name {
   flex: none;
@@ -260,6 +261,7 @@ function onExitCancel() {
   cursor: pointer;
 }
 .topbar-more-menu > button:hover { background: var(--active-weak); }
+.topbar-more-menu > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .more-theme { padding: 6px 8px; border-top: 1px solid var(--border); }
 .more-theme :deep(.toggles) { flex-wrap: wrap; }
 /* 退出在线确认的受影响签清单（ConfirmDialog 默认插槽内容） */

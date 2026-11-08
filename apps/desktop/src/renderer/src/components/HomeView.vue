@@ -382,7 +382,7 @@ async function onCreateWsConfirm(name: string | null) {
             data-testid="home-side-group"
             @click="selectGroup(g.locator)"
           >
-            <span class="side-name">{{ g.name }}</span>
+            <span class="side-name" :title="g.name">{{ g.name }}</span>
             <span class="side-actions" @click.stop>
               <a-button size="small" type="text" data-testid="home-rename-group" :disabled="workspace.readOnly" @click="openRenameGroup(g)">{{ t("tree.rename") }}</a-button>
               <a-button
@@ -428,7 +428,7 @@ async function onCreateWsConfirm(name: string | null) {
           :data-testid="`home-side-server-${s.baseUrl}`"
           @click="selectServer(s.baseUrl)"
         >
-          <span class="side-name">{{ s.name || s.baseUrl }}</span>
+          <span class="side-name" :title="s.name || s.baseUrl">{{ s.name || s.baseUrl }}</span>
           <a-tag v-if="online.loggedIn && online.activeBaseUrl === s.baseUrl" color="blue" class="side-tag">{{ t("home.active") }}</a-tag>
         </div>
         <div v-if="remoteProfiles.length === 0" class="side-empty" data-testid="home-servers-empty">{{ t("home.noServers") }}</div>
@@ -643,7 +643,8 @@ async function onCreateWsConfirm(name: string | null) {
 
 <style scoped>
 .home-view {
-  padding: 12px;
+  padding: 16px;
+  background: var(--panel);
   overflow: hidden;
   height: 100%;
   box-sizing: border-box;
@@ -656,7 +657,7 @@ async function onCreateWsConfirm(name: string | null) {
   flex: none;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--subtle);
   padding: 10px 8px;
   display: flex;
   flex-direction: column;
@@ -678,11 +679,13 @@ async function onCreateWsConfirm(name: string | null) {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
+  padding: 7px 8px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
-  flex-wrap: wrap;
+  min-height: 32px;
+  box-sizing: border-box;
+  flex: none;
 }
 .side-item:hover {
   background: var(--active-weak);
@@ -700,6 +703,7 @@ async function onCreateWsConfirm(name: string | null) {
 }
 .side-item.action {
   cursor: default;
+  flex-wrap: wrap;
 }
 .side-name {
   flex: 1;
@@ -714,12 +718,17 @@ async function onCreateWsConfirm(name: string | null) {
   color: var(--text-muted);
 }
 .side-actions {
-  display: none;
+  display: inline-flex;
+  flex: none;
+  opacity: 0;
+  pointer-events: none;
   gap: 0;
 }
-.side-item:hover .side-actions {
-  display: inline-flex;
+.side-item:hover .side-actions, .side-item:focus-within .side-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
+@media (hover: none) { .side-actions { opacity: 1; pointer-events: auto; } }
 .side-tag {
   margin: 0;
 }
@@ -739,8 +748,8 @@ async function onCreateWsConfirm(name: string | null) {
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--panel);
-  padding: 12px 14px;
+  background: var(--bg);
+  padding: 20px;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -750,10 +759,14 @@ async function onCreateWsConfirm(name: string | null) {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
 }
 .content-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 18px;
+  overflow-wrap: anywhere;
 }
 .content-toolbar {
   display: flex;
@@ -766,7 +779,7 @@ async function onCreateWsConfirm(name: string | null) {
 .project-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 12px;
   align-content: flex-start;
 }
 .ws-list {

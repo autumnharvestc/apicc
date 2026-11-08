@@ -1,0 +1,47 @@
+[
+  {
+    "file": "01-workspace-zh-light.jpg",
+    "bytes": 68726,
+    "sha256": "712b0da6ca401aa4bcf8a8f60d1abeb16f2f44276a0d37fae3d029f244053066"
+  },
+  {
+    "file": "02-workspace-en-dark.jpg",
+    "bytes": 69928,
+    "sha256": "4dabc641fe2022c907cf1d1f17f5f088e88648b1969f2822533b00be6f4ab9ee"
+  },
+  {
+    "file": "03-report-zh-light.jpg",
+    "bytes": 74783,
+    "sha256": "f817183a03274fd30f7349213a561c4420227da6d94ce3d60e058af1c935c4ab"
+  },
+  {
+    "file": "04-report-filter-details.jpg",
+    "bytes": 72568,
+    "sha256": "adc547af41c3ddb27a451c69ce69905bb95ca325f73340faa9323623c78ae5b8"
+  },
+  {
+    "file": "05-admin-zh-light.jpg",
+    "bytes": 63129,
+    "sha256": "2d403c0f669cedc120a74e926060d219058f706f0f4a5205f6b318817a0651d3"
+  },
+  {
+    "file": "06-admin-en-1024.jpg",
+    "bytes": 63270,
+    "sha256": "4492ed71f32e1b7305b361f1840ee30335e22e249dedbf8e88882b998adbc2ea"
+  },
+  {
+    "file": "07-short-window-1280x287.jpg",
+    "bytes": 34708,
+    "sha256": "cd10994e5b67b2382b476b40431941449d0026905c06dad37fbcdfe990b54b09"
+  },
+  {
+    "file": "08-admin-en-dark-pending.jpg",
+    "bytes": 72856,
+    "sha256": "cad4a1f5c1277f223e83352b8159f9bb1a4eab374e505de881f044f224631d07"
+  },
+  {
+    "file": "09-report-en-dark-details.jpg",
+    "bytes": 80868,
+    "sha256": "7d321833e10d5a21d0c65c3fcc1a467ccdde33ece45aa95b9c6b263efea13f5c"
+  }
+]

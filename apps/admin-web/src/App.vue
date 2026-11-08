@@ -12,10 +12,25 @@ import enUS from "ant-design-vue/es/locale/en_US";
 
 const { locale } = useI18n();
 const antdLocale = computed(() => (locale.value === "zh-CN" ? zhCN : enUS));
+const antdTheme = {
+  token: {
+    colorPrimary: "#315fe9",
+    colorText: "#192538",
+    colorTextSecondary: "#617089",
+    colorBorder: "#e1e7ef",
+    colorBgLayout: "#f4f6f9",
+    borderRadius: 6,
+    controlHeight: 32,
+    fontSize: 13,
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
+  },
+};
 </script>
 
 <template>
-  <a-config-provider :locale="antdLocale">
+  <a-config-provider :locale="antdLocale" :theme="antdTheme">
     <router-view />
   </a-config-provider>
 </template>
+
+<style src="./styles/theme.css"></style>

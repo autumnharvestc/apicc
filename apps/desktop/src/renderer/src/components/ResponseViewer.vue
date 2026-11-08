@@ -330,17 +330,36 @@ function prettyXml(source: string): string | null {
       </a-tab-pane>
       <a-tab-pane key="console">
         <template #tab><span data-testid="response-tab-console">{{ t("debugLoop.console") }}</span></template>
-        <pre class="payload" data-testid="response-console">{{ debugResult?.console.length ? JSON.stringify(debugResult.console, null, 2) : t("debugLoop.consoleUnavailable") }}</pre>
+        <div class="console" data-testid="response-console">
+          <ol v-if="debugResult?.console.length" class="console-entries" :aria-label="t('debugLoop.console')">
+            <li v-for="(entry, index) in debugResult.console" :key="index" class="console-entry" data-testid="console-entry">
+              <span class="console-level" :class="{ 'console-error': entry.level === 'error' }">{{ t(`reportPresentation.consoleLevels.${entry.level}`) }}</span>
+              <span class="console-message">{{ entry.message }}</span>
+            </li>
+          </ol>
+          <p v-else class="notes">{{ t('debugLoop.consoleUnavailable') }}</p>
+        </div>
       </a-tab-pane>
     </a-tabs>
   </section>
 </template>
 
 <style scoped>
-.viewer { display: flex; flex-direction: column; gap: 8px; padding: 10px; height: 100%; min-height: 0; box-sizing: border-box; overflow: auto; }
+.console { overflow: auto; max-height: 60vh; border: 1px solid var(--border); border-radius: 8px; background: var(--subtle); }
+.console-entries { list-style: none; padding: 0; margin: 0; }
+.console-entry { display: grid; grid-template-columns: 72px minmax(0,1fr); gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.console-entry:last-child { border-bottom: 0; }.console-level { font-size: 12px; font-weight: 600; color: var(--text-muted); }.console-error { color: var(--fail); }
+.console-message { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace,Consolas,monospace; font-size: 12px; }.console > .notes { padding: 12px; }
+.viewer { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; height: 100%; min-height: 0; box-sizing: border-box; overflow: auto; background: var(--bg); }
 .resp-tabs { flex: 1; min-height: 0; }
+.resp-tabs :deep(.ant-tabs-nav) { flex-wrap: wrap; gap: 8px; }
+.resp-tabs :deep(.ant-tabs-nav-wrap) { min-width: 0; }
+.resp-tabs :deep(.ant-tabs-extra-content) { max-width: 100%; }
 .meta,.body-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.body-tools :deep(.ant-input) { width: 180px; }
+.meta { font-variant-numeric: tabular-nums; }
+.meta :deep(.ant-tag) { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
+.body-tools { position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 8px 0; border-bottom: 1px solid var(--border); }
+.body-tools :deep(.ant-input-affix-wrapper) { flex: 1 1 180px; max-width: 360px; }
 .body-tools :deep(.ant-select) { width: 100px; }
 .assertions,.exchange-list { display: flex; flex-direction: column; gap: 6px; }
 .exchange-list button { padding: 6px 8px; text-align: left; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
@@ -348,5 +367,5 @@ function prettyXml(source: string): string | null {
 .counts { display: flex; gap: 12px; flex-wrap: wrap; color: var(--text-muted); font-size: 12px; }
 .message,.header-name { word-break: break-all; overflow-wrap: anywhere; }
 .header-name { font-weight: 600; }
-.payload { margin: 0; padding: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); min-height: 40px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.payload { margin: 0; padding: 12px; background: var(--subtle); border: 1px solid var(--border); border-radius: 6px; color: var(--text); min-height: 40px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 ui-monospace, Consolas, monospace; }
 </style>

@@ -9,6 +9,7 @@ import type { useWorkspaceStore } from "../stores/workspace.js";
 import EmptyState from "./EmptyState.vue";
 import RunsHistory from "./RunsHistory.vue";
 import CaseEvidencePanel from "./CaseEvidencePanel.vue";
+import RunSummaryView from "./RunSummaryView.vue";
 import type { EvidenceIdentity } from "@apicc/core";
 import { reportingUnits, reportEntryEvidence } from "@apicc/core/report/units";
 import type { AiStore } from '../stores/ai.js';
@@ -161,13 +162,7 @@ async function selectObservation(record: Record<string, any>) {
       <div v-if="run.result" class="summary" data-testid="run-summary">
         <a-button v-if="ai && selectedCollectionLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
         <a-button v-if="selectedCollectionLocator" data-testid="collaboration-publish-current" @click="shareReport">{{ t('collaboration.publishToProject') }}</a-button>
-        <p v-if="run.result.reportingMode" data-testid="run-logical-summary">{{ t('wf.control.mode') }}: {{ run.result.reportingMode }} · {{ t('wf.control.logicalVerdict') }}: {{ run.result.suite?.verdict ?? run.result.workflowUnits?.[0]?.verdict ?? '—' }} · {{ t('wf.control.logicalUnits') }}: {{ reportingUnits(run.result).summary.total }} · {{ t('wf.control.rawRows') }}: {{ run.result.total }} · {{ t('wf.control.rawFailed') }}: {{ run.result.failed }}</p>
-        <span v-else>{{ t("run.summary", { total: run.result.total, passed: run.result.passed, failed: run.result.failed, skipped: run.result.skipped ?? 0 }) }}</span>
-        <p v-if="run.result.suite">条目 {{ run.result.suite.total }} · 失败 {{ run.result.suite.failed }} · 跳过 {{ run.result.suite.skipped }} · {{ run.result.suite.verdict }}</p>
-        <p v-if="run.result.reportingUnits">reporting-units {{ run.result.reportingUnits.total }} · failed {{ run.result.reportingUnits.failed }}</p>
-        <details v-if="run.result.workflow"><summary>工作流节点统计及状态</summary><pre>{{ JSON.stringify(run.result.workflow, null, 2) }}</pre></details>
-        <p v-for="entry in run.result.suite?.entries" :key="JSON.stringify([entry.entryId,entry.suiteRow])">{{ entry.entryId }} · {{ entry.suiteRow === undefined ? "—" : entry.suiteRow + 1 }} · {{ entry.status }} · {{ entry.error }}</p>
-        <p v-for="warning in run.result.warnings" :key="warning">{{ warning }}</p>
+        <RunSummaryView :result="run.result" />
         <CaseEvidencePanel v-for="entry in reportingUnits(run.result).diagnostics" :key="JSON.stringify([entry.entryId,entry.suiteRow])" :evidence="reportEntryEvidence(run.result, entry)" :disabled="run.running" :inspect="run.inspectEvidence" :rerun="run.rerunEvidence" @locate="emit('locate-evidence', $event)" />
       </div>
       <a-table
@@ -176,6 +171,7 @@ async function selectObservation(record: Record<string, any>) {
         :columns="columns"
         :row-key="rowKey"
         :pagination="false"
+        :scroll="{ x: 680 }"
         size="small"
         data-testid="run-table"
       >
@@ -223,26 +219,36 @@ async function selectObservation(record: Record<string, any>) {
 
 <style scoped>
 .run-view {
-  padding: 8px 10px;
+  padding: 16px;
+  min-width: 0;
   font-size: 13px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
 }
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .collection-select {
   min-width: 180px;
+  flex: 1 1 240px;
+  max-width: 420px;
 }
 .env-select {
   min-width: 140px;
+  flex: 1 1 160px;
+  max-width: 280px;
 }
 .summary {
-  color: var(--text-muted);
+  color: var(--text);
 }
+.summary > .ant-btn { margin: 0 8px 12px 0; }
+.case-detail { min-width: 0; }
+.run-view :deep(.ant-table-cell) { overflow-wrap: anywhere; }
+.run-view :deep(th.ant-table-cell) { white-space: nowrap; }
 .detail-error {
   color: var(--fail);
   margin-bottom: 4px;

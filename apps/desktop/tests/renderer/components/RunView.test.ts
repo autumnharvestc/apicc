@@ -144,9 +144,9 @@ describe("RunView", () => {
     await panel.find('[data-testid="evidence-copy"]').trigger("click");
     expect(JSON.parse(writeText.mock.calls[0]![0]!)).toMatchObject({ state: "omitted", identity: { projectId: "p" } });
     await panel.setProps({ evidence: { identity: { projectId: "p", definitionRevision: "r", rowIndex: 0 }, state: "collected", scriptDiagnostics: "not-collected", truncated: false, response: { status: 200, headers: { text: "content-type: binary", truncated: false }, body: { text: "unavailable", truncated: false, omitted: true } } } });
-    expect.soft(panel.text()).toContain("数据行=1"); expect.soft(panel.text()).toContain("未采集或不可用"); expect(panel.text()).toContain("content-type: binary");
+    expect(panel.get('[data-testid="evidence-row"] dt').text()).toBe("数据行"); expect(panel.get('[data-testid="evidence-row"] dd').text()).toBe("1"); expect.soft(panel.text()).toContain("未采集或不可用"); expect(panel.text()).toContain("content-type: binary");
     await panel.setProps({ evidence: { identity: { projectId: "p", definitionRevision: "r" }, state: "not-collected", scriptDiagnostics: "not-collected", truncated: false } });
-    expect.soft(panel.text()).toContain("数据行=—");
+    expect(panel.get('[data-testid="evidence-row"] dd').text()).toBe("—");
     i18n.global.locale.value = "en"; await flushPromises();
     expect.soft(panel.text()).toContain("Bodies were not collected for this record");
     expect.soft(panel.text()).toContain("Script diagnostics");
@@ -240,10 +240,12 @@ describe("RunView", () => {
     expect(wrapper.text()).toContain("upstream-failed");
     expect(wrapper.text()).toContain("config");
     expect(wrapper.findAll('[data-testid="run-table"] .ant-table-row').map(row => row.findAll('td')[3]!.text())).toEqual(["1", "2", "—"]);
-    const summary = wrapper.get('[data-testid="run-summary"]').text();
-    expect(summary).toContain("first-round · 1 · passed");
-    expect(summary).toContain("second-round · 2 · skipped");
-    expect(summary).toContain("no-round · — · failed");
+    const entries = wrapper.findAll('[data-testid="run-suite-entries"] tbody tr').map(row => row.findAll('td').map(cell => cell.text()));
+    expect(entries).toEqual([
+      ['first-round', '1', '用例', '通过', '—'],
+      ['second-round', '2', '用例', '跳过', '—'],
+      ['no-round', '—', '用例', '失败', '—'],
+    ]);
     expect(mixed.cases.map(row => row.row)).toEqual([0, 1, undefined]);
     expect(mixed.suite!.entries!.map(entry => entry.suiteRow)).toEqual([0, 1, undefined]);
   });

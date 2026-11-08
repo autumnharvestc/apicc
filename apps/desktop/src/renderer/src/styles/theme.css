@@ -1,11 +1,27 @@
 :root {
-  --bg: #ffffff; --panel: #f5f6f8; --border: #d9dce1; --text: #1f2329;
-  --accent: #2563eb; --text-muted: #6b7280; --pass: #16a34a; --fail: #dc2626;
-  --hover: rgba(31, 35, 41, 0.06); --active-weak: rgba(37, 99, 235, 0.1);
+  --bg: #ffffff; --panel: #f4f6f9; --border: #e1e7ef; --text: #192538;
+  --accent: #315fe9; --text-muted: #617089; --pass: #137c58; --fail: #ba3d46;
+  --hover: rgba(25, 37, 56, 0.05); --active-weak: #edf2ff;
+  --subtle: #f8fafc; --rail-bg: #162337; --rail-text: #b5c4db;
+  --rail-hover: #253853; --rail-active: #304c7a; --rail-selected: #ecf3ff;
+  --control-radius: 6px; --panel-shadow: 0 2px 5px rgb(31 53 85 / 3%);
+  --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 html[data-theme="dark"] {
-  --bg: #16181d; --panel: #1f2329; --border: #343a44; --text: #e6e8eb;
-  --accent: #4c8dff; --text-muted: #9aa1ab; --pass: #4ade80; --fail: #f87171;
-  --hover: rgba(230, 232, 235, 0.08); --active-weak: rgba(76, 141, 255, 0.16);
+  --bg: #1c2636; --panel: #141b27; --border: #334359; --text: #e6edf8;
+  --accent: #9ab8ff; --text-muted: #a4b3ca; --pass: #7adbb0; --fail: #ff9ea6;
+  --hover: rgba(230, 237, 248, 0.07); --active-weak: #2a3c62;
+  --subtle: #202c3d; --rail-bg: #101926; --panel-shadow: none;
 }
-html[data-theme] body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
+html[data-theme] body { background: var(--bg); color: var(--text); font-family: var(--ui-font); }
+/* Selected text needs a lighter foreground on dark panels. Keep filled controls
+   and disabled states on their own Ant Design colors. The same foreground also
+   applies while the selected tab or outlined radio is hovered/pressed. */
+html[data-theme="dark"] .ant-tabs-tab.ant-tabs-tab-active:not(.ant-tabs-tab-disabled) .ant-tabs-tab-btn,
+html[data-theme="dark"] .ant-radio-group:not(.ant-radio-group-solid) .ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled) {
+  color: var(--accent);
+}
+:where(button, input, select, textarea, summary, a[href]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

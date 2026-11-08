@@ -756,17 +756,19 @@ async function onSaveRequest() {
 </template>
 
 <style scoped>
-.editor { display: flex; flex: 1; flex-direction: column; gap: 8px; min-height: 0; padding: 10px; box-sizing: border-box; overflow: hidden; }
-.editor-header { flex: none; display: flex; flex-direction: column; gap: 8px; }
+.editor { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; padding: 14px; box-sizing: border-box; overflow: hidden; background: var(--bg); }
+.editor-header { flex: none; display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .editor-content { flex: 1; min-height: 0; overflow: auto; }
-.metadata { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 6px; align-items: center; }
+.metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--subtle); }
 .top-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .url { flex: 1; min-width: 120px; }
-.panel { display: flex; flex-direction: column; gap: 6px; overflow: visible; }
-.kv-row { display: flex; gap: 6px; align-items: center; }
-.kv-row > * { flex: 1; }
+.panel { display: flex; flex-direction: column; gap: 10px; overflow: visible; }
+.kv-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.kv-row > * { flex: 1 1 140px; min-width: 0; }
+.kv-row > :deep(.ant-checkbox-wrapper), .kv-row > :deep(.ant-btn) { flex: none; }
+.kv-row > [data-testid^="parameter-schema-"] { flex-basis: 100%; }
 .dirty { color: var(--accent); }
 .body-text { font-family: ui-monospace, monospace; resize: vertical; }
 .body-schema { display: grid; gap: 8px; }
-.examples { display: flex; gap: 8px; align-items: center; }
+.examples { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 </style>

@@ -1,4 +1,14 @@
 {
+  "reportPresentation": {
+    "overview": "Run overview", "logical": "Logical reporting units", "raw": "Raw execution rows", "diagnostics": "{count} non-request diagnostics",
+    "populationHint": "Includes actual executions such as retries. A logical pass does not erase raw request failures.",
+    "requestFacts": "Requests started {requestStarted} · Requests completed {requestCompleted} · HTTP exchanges {httpExchanges}",
+    "incomplete": "Report details are incomplete or omitted. Captured totals are retained; the visible details may not cover every execution.",
+    "workflow": "Workflow nodes", "suite": "Suite entries", "workflowKind": "Workflow", "kind": "Type", "reason": "Reason / details", "noDetails": "No entry details are available.",
+    "fingerprint": "Definition fingerprint", "diagnosticCode": "Diagnostic code", "extractedValue": "Extracted value",
+    "scopes": { "base": "Base" },
+    "consoleLevels": { "log": "Log", "info": "Info", "warn": "Warning", "error": "Error" }
+  },
   "executionCacheSettings": {
     "title": "Online execution cache",
     "localOnly": "Saved on this device only. Saving applies to inactive caches that are safe to release.",

@@ -1,4 +1,14 @@
 {
+  "reportPresentation": {
+    "overview": "运行摘要", "logical": "逻辑报告单位", "raw": "原始执行行", "diagnostics": "非请求诊断 {count} 条",
+    "populationHint": "保留重试等实际执行记录；逻辑通过不代表原始请求没有失败。",
+    "requestFacts": "已开始请求 {requestStarted} · 已完成请求 {requestCompleted} · HTTP 交换 {httpExchanges}",
+    "incomplete": "报告详情不完整或已省略；统计保留采集时的总数，当前明细不一定覆盖全部执行。",
+    "workflow": "工作流节点", "suite": "套件条目", "workflowKind": "工作流", "kind": "类型", "reason": "原因 / 说明", "noDetails": "没有可用的条目明细。",
+    "fingerprint": "定义指纹", "diagnosticCode": "诊断码", "extractedValue": "提取值",
+    "scopes": { "base": "基础" },
+    "consoleLevels": { "log": "日志", "info": "信息", "warn": "警告", "error": "错误" }
+  },
   "executionCacheSettings": {
     "title": "在线执行缓存",
     "localOnly": "仅保存在本机，保存后对可安全清理的非活动缓存生效。",

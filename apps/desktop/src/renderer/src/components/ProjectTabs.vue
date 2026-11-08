@@ -209,9 +209,9 @@ function onCloseCancel() {
   align-items: center;
   gap: 6px;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--control-radius, 6px);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
@@ -270,11 +270,11 @@ function onCloseCancel() {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 20px;
-  height: 24px;
+  width: 26px;
+  height: 28px;
   margin-inline-end: 4px;
   font-size: 10px;
-  opacity: 0.5;
+  opacity: 0.7;
   border: 0;
   border-radius: 3px;
   background: transparent;
@@ -284,6 +284,13 @@ function onCloseCancel() {
 .tab-close:hover {
   opacity: 1;
   background: var(--active-weak);
+}
+.home-tab:focus-visible,
+.tab-item:focus-visible,
+.tab-close:focus-visible,
+.tabs-arrow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 /* 两侧滚动箭头：低对比辅助控件（仅溢出时出现） */
 .tabs-arrow {

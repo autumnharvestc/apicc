@@ -55,6 +55,7 @@ async function close(tabId: string) {
           :class="{ active: tabs.activeId === tabId }"
           :aria-selected="tabs.activeId === tabId ? 'true' : 'false'"
           :data-testid="`request-tab-${tabId}`"
+          :title="title(tabId)"
           @click="activate(tabId)"
         >
           <span class="request-tab-kind">{{ tabs.tabs[tabId]?.source.kind === "free" ? t("requestTabs.freeShort") : t("requestTabs.assetShort") }}</span>
@@ -68,14 +69,16 @@ async function close(tabId: string) {
 </template>
 
 <style scoped>
-.request-tabs { display: flex; align-items: center; gap: 8px; min-width: 0; height: 38px; padding: 0 8px; border-bottom: 1px solid var(--border); background: var(--bg); }
+.request-tabs { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 40px; flex: none; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--subtle); }
 .request-tab-list { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; }
-.request-tab-entry { display: inline-flex; align-items: center; min-width: 0; max-width: 220px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+.request-tab-entry { display: inline-flex; align-items: center; flex: none; min-width: 0; max-width: 220px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
 .request-tab-entry.active { border-color: var(--accent); background: var(--active-weak); }
-.request-tab { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border: 0; background: transparent; color: var(--text); cursor: pointer; font: inherit; font-size: 12px; }
-.request-tab-kind { color: var(--text-muted); font-size: 10px; text-transform: uppercase; }
+.request-tab { display: flex; align-items: center; gap: 6px; min-width: 0; height: 30px; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text); cursor: pointer; font: inherit; font-size: 12px; }
+.request-tab-kind { color: var(--text-muted); font-size: 10px; text-transform: uppercase; white-space: nowrap; }
 .request-tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.request-tab-close { flex: none; width: 22px; height: 24px; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; }
+.request-tab-close { flex: none; width: 26px; height: 28px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.request-tab-close:hover, .request-tab-new:hover:not(:disabled) { background: var(--active-weak); }
+.request-tab:focus-visible, .request-tab-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .request-tab-new { flex: none; border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 12px; }
 .request-tab-new:disabled { opacity: .5; cursor: not-allowed; }
 </style>

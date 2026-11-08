@@ -110,6 +110,13 @@ const ARadioButton = ARadio.Button;
 // locale 源 = bridge 单例当前语言；algorithm 源 = theme.ts 响应式偏好 + 系统偏好解析。
 const antdLocale = computed(() => (currentLocale() === "zh-CN" ? zhCN : enUS));
 const antdThemeConfig = computed(() => ({
+  token: {
+    colorPrimary: "#315fe9",
+    borderRadius: 6,
+    controlHeight: 32,
+    fontSize: 13,
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
+  },
   algorithm:
     resolveTheme(themePreference.value, window.matchMedia("(prefers-color-scheme: dark)").matches) === "dark"
       ? antdTheme.darkAlgorithm
@@ -1528,11 +1535,11 @@ html, body, #app { height: 100%; margin: 0; }
   min-height: 0;
   overflow: hidden;
   border-right: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--subtle);
 }
-.sider-head { padding: 8px 10px 0; }
+.sider-head { padding: 14px 12px 0; }
 .sider-title { font-weight: 600; font-size: 13px; }
-.sider-search { padding: 6px 10px; }
+.sider-search { padding: 8px 12px; }
 .side-col { flex: 1; min-height: 0; }
 .right-col-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; flex: 1; }
 .right-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; flex: 1; }
@@ -1548,7 +1555,7 @@ html, body, #app { height: 100%; margin: 0; }
 .split-divider:hover { background: var(--active-weak); }
 .viewer-pane { flex: none; min-height: 0; overflow: hidden; border-top: 1px solid var(--border); box-sizing: border-box; }
 /* 接口模块头部（M8）：子视图页签 + 右侧 AI 入口 */
-.api-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; }
+.api-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .api-head .head-spacer { flex: 1; }
 .panel-view { flex: 1; min-height: 0; overflow: auto; }
 /* 设计器视图：三区布局占满内容区（画布需要确定高度的容器，否则 Vue Flow 视口失真） */

@@ -1,0 +1,29 @@
+{
+  "date": "2026-11-08",
+  "url": "http://127.0.0.1:63570/",
+  "source": "local/f8-frontend-p3/browser",
+  "kind": "actual Vue components with synthetic in-memory props; no native IPC/backend",
+  "checked": [
+    "1440x900 Chinese light report: logical 1 pass, raw 3 rows / 1 failure, readable 3 workflow nodes",
+    "Evidence Chinese light: metadata, failed/passed assertions, actual/expected and business HTML as text",
+    "Definition fingerprint keyboard Enter expands full 64 characters, second Enter collapses",
+    "Locate and rerun each update the synthetic event counter once",
+    "English dark 900x720: labels switch, business strings preserved, cards and console fit",
+    "Console Info/Log/Warning/Error ordered; long text wraps; literal HTML produces no img/script",
+    "640x720 report: document width 640; table viewport 592 vs content 640; headers nowrap, keyboard horizontal scroll observed 40px",
+    "Final scope correction: both Chinese/light and English/dark evidence retain user environment name project; two evidence screenshots recaptured. Hot reload initially reset language; capture corrected after explicit language check."
+  ],
+  "consoleGeometry": {
+    "consoleWidth": 872.0000610351562,
+    "documentWidth": 900,
+    "rows": 4,
+    "unsafeElements": 0,
+    "viewport": 900
+  },
+  "limitations": [
+    "Browser copy click executed but clipboard tool returned empty; byte equality is covered by component test, not claimed as browser clipboard acceptance",
+    "Summary is a native details control; initial role=button locator failed, then verified via summary locator",
+    "Native extreme-height/zoom/full IPC is pending P5",
+    "No full tests or CI run"
+  ]
+}

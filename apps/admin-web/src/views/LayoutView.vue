@@ -134,15 +134,34 @@ function onLocaleChange(event: Event): void {
 }
 .layout > :deep(.ant-layout){min-width:0}
 .sider {
-  background: #fff;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  overflow-y: auto;
 }
 .brand {
-  padding: 16px;
-  font-weight: 600;
-  font-size: 15px;
+  display: flex;
+  align-items: center;
+  min-height: 56px;
+  box-sizing: border-box;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--text);
 }
+.sider :deep(.ant-menu) { padding: 10px 6px; border-inline-end: 0; }
+.sider :deep(.ant-menu-item) { height: auto; min-height: 40px; line-height: 20px; padding-block: 10px; }
+.sider :deep(.ant-menu-title-content) { white-space: normal; overflow-wrap: anywhere; }
+.sider :deep(.ant-menu-item:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
 .header {
-  background: #fff;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  height: 56px;
+  line-height: normal;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -165,10 +184,10 @@ function onLocaleChange(event: Event): void {
 }
 .locale-control select {
   height: 32px;
-  border: 1px solid #d9d9d9;
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0 8px;
-  background: #fff;
+  background: var(--bg);
   color: inherit;
 }
 .content {

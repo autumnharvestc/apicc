@@ -46,8 +46,8 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
     <div class="card-top">
       <span class="avatar" :style="{ background: avatarColor }">{{ avatarChar }}</span>
       <span v-if="!plain" class="card-actions" @click.stop>
-        <a-dropdown>
-          <a-button size="small" type="text" data-testid="project-card-more">
+        <a-dropdown :trigger="['click']">
+          <a-button size="small" type="text" data-testid="project-card-more" :aria-label="t('tree.moreActions')" :title="t('tree.moreActions')">
             <EllipsisOutlined />
           </a-button>
           <template #overlay>
@@ -69,7 +69,7 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
         </a-dropdown>
       </span>
     </div>
-    <div class="card-name" :title="projectName">{{ projectName }}</div>
+    <button type="button" class="card-name" :title="projectName" @click.stop="emit('open')">{{ projectName }}</button>
     <!-- 标签插槽位（轨三澄清④：标签后置，仅留扩展点） -->
     <div class="card-tags">
       <slot name="tags" />
@@ -81,18 +81,21 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
 .project-card {
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--panel);
-  padding: 12px;
-  width: 168px;
-  min-height: 96px;
+  background: var(--bg);
+  padding: 16px;
+  width: 200px;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: 116px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 8px;
   text-align: left;
 }
-.project-card:hover {
+.project-card:hover, .project-card:focus-within {
   border-color: var(--accent);
+  box-shadow: var(--panel-shadow);
 }
 .project-card.active {
   border-color: var(--accent);
@@ -116,6 +119,15 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
   justify-content: center;
 }
 .card-name {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 2px 0;
+  width: 100%;
+  border-radius: 3px;
   font-weight: 600;
   font-size: 13px;
   overflow: hidden;
@@ -124,11 +136,11 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
 }
 .card-actions {
   opacity: 0;
-  transition: opacity 0.12s;
 }
-.project-card:hover .card-actions {
+.project-card:hover .card-actions, .project-card:focus-within .card-actions {
   opacity: 1;
 }
+@media (hover: none) { .card-actions { opacity: 1; } }
 .card-tags {
   min-height: 4px;
   display: flex;

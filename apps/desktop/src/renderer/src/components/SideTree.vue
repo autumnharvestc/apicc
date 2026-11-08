@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Tree as ATree, Tooltip as ATooltip } from "ant-design-vue";
+import { Button as AButton, Tree as ATree, Tooltip as ATooltip } from "ant-design-vue";
 import { AppstoreOutlined, DeleteOutlined, EditOutlined, FolderOutlined, MoreOutlined, ProjectOutlined } from "@ant-design/icons-vue";
 import type { WorkflowImpactEntryDTO } from "../../../shared/types.js";
 import type { ApiccApi, ContainerTarget, NodeCreateInput, NodeCreatedDTO } from "../../../shared/types.js";
@@ -564,8 +564,10 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 3px 6px;
+  min-height: 30px;
+  box-sizing: border-box;
+  border-radius: 6px;
 }
 .node:hover { background: var(--panel); }
 .toggle {
@@ -596,10 +598,12 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 .kind-icon.mod { color: var(--accent); }
 .actions {
   margin-left: auto;
-  display: none;
+  display: inline-flex;
+  opacity: 0;
+  pointer-events: none;
   gap: 2px;
 }
-.node:hover .actions { display: inline-flex; }
+.node:hover .actions, .node:focus-within .actions { opacity: 1; pointer-events: auto; }
 .legacy-actions { flex: 0 0 auto; }
 .api-row { min-width: 0; }
 .api-row:hover, .api-row:focus-within { background: var(--panel); }
@@ -630,7 +634,6 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 100ms ease;
 }
 .node:hover .action-rail .icon-action,
 .node:focus-within .action-rail .icon-action,
@@ -638,6 +641,7 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 .api-row:focus-within .action-rail .icon-action { opacity: 1; pointer-events: auto; }
 .icon-action:hover, .icon-action:focus-visible { background: var(--border); outline: 2px solid var(--accent); outline-offset: 1px; }
 .icon-action.danger { color: var(--fail); }
+@media (hover: none) { .actions, .icon-action { opacity: 1; pointer-events: auto; } }
 .more-menu {
   position: absolute;
   top: calc(100% + 2px);
@@ -662,6 +666,7 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
   padding: 1px 4px;
   border-radius: 3px;
 }
+.act { white-space: nowrap; }
 .act.danger { color: var(--fail); }
 .act:hover { background: var(--border); }
 .api-btn {

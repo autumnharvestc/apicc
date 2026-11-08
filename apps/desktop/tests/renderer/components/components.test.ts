@@ -313,6 +313,20 @@ async function seedTreeWorkflow(
 }
 
 describe("SideTree", () => {
+  it("新建分组提供原生可聚焦按钮并打开输入对话框，只读不显示入口", async () => {
+    const { wrapper } = await mountWith(SideTree);
+    const create = wrapper.get('[data-testid="new-group"]');
+    expect(create.element.tagName).toBe("BUTTON");
+    expect(create.attributes("type")).toBe("button");
+    expect(create.text()).toBe("新建分组");
+    await create.trigger("click");
+    expect(bodyHas("dialog-input")).toBe(true);
+    await expectBody("dialog-cancel").trigger("click");
+
+    const readonly = await mountWith(SideTree, { readonly: true });
+    expect(readonly.wrapper.find('[data-testid="new-group"]').exists()).toBe(false);
+  });
+
   it.each(["api", "module", "folder"] as const)("%s 行固定图标操作具有可访问名称与 tooltip，模块/目录操作收纳于更多菜单", async (kind) => {
     const { wrapper, api, workspace } = await mountWith(SideTree);
     const { collection } = seededProjectAndApi(workspace);

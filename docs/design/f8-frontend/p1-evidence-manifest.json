@@ -1,0 +1,94 @@
+{
+  "date": "2026-11-08",
+  "base": "569f7bf257b8387b51879b17512a44b080f89278",
+  "branch": "codex/f8-frontend-polish",
+  "testsPassed": 54,
+  "appTestsNotSelected": 49,
+  "fullGateRun": false,
+  "product": [
+    {
+      "path": "apps/admin-web/src/App.vue",
+      "sha256": "113416d719c459d2797ac5f55a3f5d3e3192234f8a994b7bf938c7e451e6249c"
+    },
+    {
+      "path": "apps/admin-web/src/views/LayoutView.vue",
+      "sha256": "cc19948c77e7822b517eb31b7880353ff31ebacc27e7a736ae902c37bcb9f64c"
+    },
+    {
+      "path": "apps/admin-web/src/styles/theme.css",
+      "sha256": "a6504fda34e99fc002b46d30865a8cd6e6c6535cddb431f7f478a9aa3d687a20"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/App.vue",
+      "sha256": "6178702108d1163efa44c0ab41af02ba6b3ba479c5c4c10123812f033830b26e"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/styles/theme.css",
+      "sha256": "5cc2153a38b3b6d9e9db527d81a1c74e51f46dbc785b12f4cd9d61e75e4d1755"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/ModuleRail.vue",
+      "sha256": "cef53748d42b9cf95fab3d90bc461aaeb6fbf6a62985cf55f2926919585fe9ff"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/ProjectTabs.vue",
+      "sha256": "4407abf0995ceffdfea9fbaf5dd2aa4da8f7ff772a8806f5d2dd72a0b9ff05c8"
+    },
+    {
+      "path": "apps/desktop/src/renderer/src/components/TopBar.vue",
+      "sha256": "e5747254dc9b84e6bba402de371ca3dabcc57df536f6043c435975ad0bb02aa8"
+    }
+  ],
+  "localLogs": [
+    {
+      "path": "local/f8-frontend-p1/desktop-components.log",
+      "sha256": "4bf60dd529fbaf1759ab4d51d588e5de22762c7a3004c6afa9388138b5ded978"
+    },
+    {
+      "path": "local/f8-frontend-p1/desktop-app-selected.log",
+      "sha256": "3188864d54ef6a337dce0fa72cb773744ad59fcb0e1a38cfddedb762f718778d"
+    },
+    {
+      "path": "local/f8-frontend-p1/admin-components.log",
+      "sha256": "ee0ac1a52832f808892e1dfea118fdc78b3d8c51212031a1f88ac5fc60741627"
+    },
+    {
+      "path": "local/f8-frontend-p1/desktop-typecheck.log",
+      "sha256": "d66548006c5c7c54f315f252a8864713f539323f6c6187c23bb7db83274361fa"
+    },
+    {
+      "path": "local/f8-frontend-p1/desktop-typecheck-vue.log",
+      "sha256": "e9f4d20594b78d2a8a6d8041839f863e8da18f5302fe5e1c6ae9dbbbd97c3e38"
+    },
+    {
+      "path": "local/f8-frontend-p1/desktop-build-renderer.log",
+      "sha256": "2dbbdefa37a7807b7b7897570cbaa2906517a9f73d88783cd394083b4e554dc8"
+    },
+    {
+      "path": "local/f8-frontend-p1/admin-build.log",
+      "sha256": "aa7e7d2f63b904675c2a331fbeacf8bd96745b3343be9f5130132fa0b610f3b1"
+    }
+  ],
+  "screenshots": [
+    {
+      "path": "docs/design/f8-frontend/p1-evidence/admin-english.jpg",
+      "sha256": "ef3ab93c2dbcb624fe57106daf5317d451ea39ac2724ec14617728698d335b5e"
+    },
+    {
+      "path": "docs/design/f8-frontend/p1-evidence/admin-short-focus.jpg",
+      "sha256": "e7f96d8cba1cb46094c8b22c1275056c9857de3397c05afe8aea07a62c6b5768"
+    },
+    {
+      "path": "docs/design/f8-frontend/p1-evidence/desktop-dark-short.jpg",
+      "sha256": "6e40f3b29788d5a490e05f720bc56e4bb9eb382b2b746cea83b2d9289835fd12"
+    },
+    {
+      "path": "docs/design/f8-frontend/p1-evidence/desktop-light-tabs.jpg",
+      "sha256": "7bca5c919a61b8cdf2b1cf48835e686dd6c3a29d2bacf824d960688feeb93f76"
+    },
+    {
+      "path": "docs/design/f8-frontend/p1-evidence/prototype-home-restored.jpg",
+      "sha256": "f8c0162a01118a2c48ae9b3f2e87a492e5cfb38bfa98f03fc5e8b0b9789b698f"
+    }
+  ]
+}

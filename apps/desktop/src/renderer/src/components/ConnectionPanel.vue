@@ -133,12 +133,14 @@ function browseConnection(baseUrl: string) {
     <div class="conn-list">
       <div v-for="p in online.profiles" :key="p.baseUrl" class="conn-row" :data-testid="`connection-${p.baseUrl}`">
         <span class="avatar" :style="{ background: avatarColor(p.baseUrl) }">{{ (p.name || p.baseUrl).slice(0, 1).toUpperCase() }}</span>
-        <span class="conn-name">{{ p.name || p.baseUrl }}</span>
+        <div class="conn-info">
+        <span class="conn-name" :title="p.name || p.baseUrl">{{ p.name || p.baseUrl }}</span>
         <span class="conn-url">{{ p.baseUrl }}</span>
         <a-tag v-if="online.loggedIn && online.activeBaseUrl === p.baseUrl" color="blue" data-testid="connection-logged-in">
           {{ t("home.loggedInAs") }}{{ online.user ? ` · ${online.user.displayName}` : "" }}
         </a-tag>
-        <span class="spacer"></span>
+        </div>
+        <div class="conn-actions">
         <a-button size="small" type="text" data-testid="connection-login" @click="loginConnection(p.baseUrl)">
           {{ online.loggedIn && online.activeBaseUrl === p.baseUrl ? t("home.connectionAccount") : t("home.connectionLogin") }}
         </a-button>
@@ -151,6 +153,7 @@ function browseConnection(baseUrl: string) {
         <a-button size="small" type="text" danger data-testid="connection-delete" @click="removeConnection(p.baseUrl)">
           {{ t("home.connectionDelete") }}
         </a-button>
+        </div>
       </div>
     </div>
 
@@ -176,15 +179,20 @@ function browseConnection(baseUrl: string) {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
 }
 .panel-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 18px;
 }
 .conn-form {
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 16px;
+  background: var(--subtle);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -193,7 +201,9 @@ function browseConnection(baseUrl: string) {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
+.field :deep(.ant-input) { flex: 1 1 200px; min-width: 0; }
 .field-label {
   min-width: 72px;
   color: var(--text-muted);
@@ -215,10 +225,11 @@ function browseConnection(baseUrl: string) {
 .conn-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  flex-wrap: wrap;
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 14px 16px;
   background: var(--bg);
 }
 .avatar {
@@ -235,14 +246,15 @@ function browseConnection(baseUrl: string) {
 }
 .conn-name {
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
+.conn-info { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; flex: 1 1 180px; min-width: 0; }
+.conn-actions { display: flex; flex: 0 1 auto; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+.conn-info :deep(.ant-tag) { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .conn-url {
   color: var(--text-muted);
   font-size: 12px;
   word-break: break-all;
-}
-.spacer {
-  flex: 1;
 }
 .empty {
   color: var(--text-muted);

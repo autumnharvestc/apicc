@@ -60,21 +60,22 @@ function disabled(v: SwitchView): boolean {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: 6px;
   width: 64px;
-  padding: 8px 4px;
+  padding: 12px 6px;
   box-sizing: border-box;
-  border-right: 1px solid var(--border);
-  background: var(--panel);
+  border-right: 1px solid var(--rail-bg);
+  background: var(--rail-bg);
   overflow-y: auto;
   flex-shrink: 0;
 }
 .logo {
+  flex: none;
   width: 32px;
   height: 32px;
   margin: 0 auto 8px;
   border-radius: 8px;
-  background: var(--accent);
+  background: #315fe9;
   color: #fff;
   font-weight: 700;
   font-size: 18px;
@@ -83,6 +84,8 @@ function disabled(v: SwitchView): boolean {
   user-select: none;
 }
 .rail-item {
+  flex: none;
+  min-height: 48px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -92,11 +95,12 @@ function disabled(v: SwitchView): boolean {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--rail-text);
   cursor: pointer;
 }
-.rail-item:hover:not(:disabled) { background: var(--hover); color: var(--text); }
-.rail-item.active { color: var(--accent); background: var(--active-weak); }
+.rail-item:hover:not(:disabled) { background: var(--rail-hover); color: var(--rail-selected); }
+.rail-item.active { color: var(--rail-selected); background: var(--rail-active); }
+.rail-item:focus-visible { outline: 2px solid var(--rail-selected); outline-offset: -2px; }
 .rail-item.active::before {
   content: "";
   position: absolute;
@@ -106,7 +110,7 @@ function disabled(v: SwitchView): boolean {
   width: 3px;
   height: 18px;
   border-radius: 2px;
-  background: var(--accent);
+  background: var(--rail-selected);
 }
 .rail-item:disabled { opacity: 0.4; cursor: not-allowed; }
 .rail-icon { font-size: 17px; }
