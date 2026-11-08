@@ -55,3 +55,7 @@ P2 新包先封存后，开始第一子组：RunView、共享 CaseEvidencePanel�
 - 复用testingCenter现有：导出字节与格式绑定、查询维度清空/保存、保存响应期间新编辑、切换/创建/激活/释放之前取消收束、导入/分页/重开、只读与迟到响应、套件真实预览和执行。此处只是定位，没有执行或声称通过。
 
 后续执行证据见[P3c验证](f8-frontend-polish-p3c-validation.md)；原准备中的待办措辞描述当时盘点。共享两组件已接入，外层TestSidebar导航未改，不扩大为所有测试中心入口验收。
+
+## P3d 执行记录
+
+AI 配置/出站预览/候选/独立断言/报告分析已按[P3d设计](f8-frontend-polish-p3d-design.md)实施，100项去重定向行为、宽窄主题/语言与短高组件布局见[P3d验证](f8-frontend-polish-p3d-validation.md)。宿主和三协议不改，原生全链留P5；接下来为同步来源/差异/历史，不提前混入P4管理台。

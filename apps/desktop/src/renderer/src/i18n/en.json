@@ -922,6 +922,7 @@
     "confirm": "Confirm",
     "close": "Close"
   },
+  "aiUi": { "settingsSections": "AI settings sections" },
   "aiSettings": {
     "migration": {
       "migrated": "Legacy settings migrated; review connections and models",

@@ -71,6 +71,29 @@ function memStorage(): Storage {
 
 
 describe("AiConfigDialog safe settings contract (migrated existing coverage)", () => {
+  it('P3d jumps to configuration sections without replacing drafts, saving or making network calls', async () => {
+    const { ai, read, networkActions } = await mountSafeDialog();
+    const before = read(), hash = location.hash;
+    await expectBody('connection-name').setValue('尚未保存的连接名称');
+    await expectBody('connection-key').setValue('synthetic-unsaved-key');
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    const scrolled: Element[] = [];
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {configurable:true, value:function(this:HTMLElement){scrolled.push(this);}});
+    try {
+      for (const section of ['models','budgets','connections']) {
+        await expectBody(`ai-jump-${section}`).trigger('click');
+        expect(document.activeElement?.id).toBe(`ai-${section}-title`);
+        expect(scrolled.at(-1)).toBe(document.activeElement);
+      }
+      expect((expectBody('connection-name').element as HTMLInputElement).value).toBe('尚未保存的连接名称');
+      expect((expectBody('connection-key').element as HTMLInputElement).value).toBe('synthetic-unsaved-key');
+      expect(read()).toEqual(before); expect(networkActions).toEqual([]); expect(location.hash).toBe(hash);
+      expect(ai.configDialogOpen).toBe(true);
+    } finally {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', descriptor);
+      else Reflect.deleteProperty(HTMLElement.prototype,'scrollIntoView');
+    }
+  });
   it("configDialogOpen=false does not render; opening shows connection/model fields and a password input", async () => {
     const { ai } = await mountSafeDialog({ open: false });
     expect(bodyHas("ai-config-body")).toBe(false);

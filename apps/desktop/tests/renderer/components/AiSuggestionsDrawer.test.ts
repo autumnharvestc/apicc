@@ -110,6 +110,16 @@ async function mountDrawer({ suggestions = false, open = true }: { suggestions?:
 }
 
 describe("AiSuggestionsDrawer", () => {
+  it('P3d identifies each candidate checkbox by its business name without adopting on selection', async () => {
+    const { ai, editor, api } = await mountDrawer({suggestions:true});
+    const original = JSON.stringify(editor.api), save = vi.spyOn(api,'apiSave');
+    const checks = bodyFindAll('ai-suggest-check');
+    expect(checks.map(check=>check.attributes('aria-label'))).toEqual(ai.suggestions!.map(row=>'选择此候选: '+row.name));
+    await checks[1]!.setValue(true);
+    expect(ai.selectedIds).toEqual([ai.suggestions![1]!.id]);
+    expect(JSON.stringify(editor.api)).toBe(original); expect(save).not.toHaveBeenCalled();
+    save.mockRestore();
+  });
   it.each(['preview', 'prepare-failure', 'start-success'] as const)('final C I6 prior real settings failure cannot override a new business %s', async outcome => {
     const { api, ai } = await seedAiBusinessFixture(), ui = createI18nInstance(); ui.setLocale('en');
     api.aiConnectionTest = async () => { throw new Error('AI 请求失败（network）'); };

@@ -24,5 +24,6 @@ function optionRows(value: unknown, path = ''): Array<{ key: string; value: stri
 </template>
 <style scoped>
 dl { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 3fr); gap: 6px 12px; }
+.assertion-details { padding: 12px; border-radius: 6px; background: var(--subtle); }
 dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; } dt { color: var(--text-muted, #666); }
 </style>

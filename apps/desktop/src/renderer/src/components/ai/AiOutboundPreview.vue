@@ -22,7 +22,7 @@ const unit = (field: string) => t(`aiSettings.units.${itemUnits[field] ?? (field
 
 <template>
   <section data-testid="ai-outbound-preview" class="outbound-preview">
-    <p>{{ t('ai.previewPrepared') }}</p>
+    <p class="preview-notice">{{ t('ai.previewPrepared') }}</p>
     <dl>
       <dt>{{ t('ai.baseUrl') }}</dt><dd>{{ preview.destination.baseUrl }}</dd>
       <dt>{{ t('ai.connectionIdentity') }}</dt><dd>{{ connection ? `${connection.name} (${connection.id}, ${t('ai.revision')} ${connection.revision})` : t('ai.notCollected') }}<span v-if="connection?.providerId"> · {{ connection.providerId }}</span></dd>
@@ -53,12 +53,14 @@ const unit = (field: string) => t(`aiSettings.units.${itemUnits[field] ?? (field
 </template>
 
 <style scoped>
-dl { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 8px 12px; }
+dl { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 8px 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
 dt { color: var(--text-muted, #666); }
 dd { margin: 0; overflow-wrap: anywhere; }
 .outbound-preview { max-width: 100%; overflow: auto; }
-.budget-scroll { max-width: 100%; overflow: auto; }
-table { border-collapse: collapse; min-width: 400px; width: 100%; }
-th, td { padding: 6px 8px; text-align: start; border-bottom: 1px solid var(--border); }
-th { white-space: nowrap; }
+.budget-scroll { max-width: 100%; max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+table { border-collapse: separate; border-spacing: 0; min-width: 440px; width: 100%; }
+th, td { padding: 10px 12px; text-align: start; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { white-space: nowrap; position: sticky; top: 0; background: var(--subtle); color: var(--text-muted); }
+.preview-notice, [role=note] { padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--active-weak); }
+ul { padding-left: 20px; } li { margin: 6px 0; overflow-wrap: anywhere; }
 </style>

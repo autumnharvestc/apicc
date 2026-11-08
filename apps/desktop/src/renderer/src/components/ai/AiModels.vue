@@ -32,7 +32,7 @@ async function save() {
 }
 </script>
 <template>
-  <section aria-labelledby="ai-models-title"><h3 id="ai-models-title">{{ t('aiSettings.models') }}</h3>
+  <section aria-labelledby="ai-models-title"><h3 id="ai-models-title" tabindex="-1">{{ t('aiSettings.models') }}</h3>
     <div class="ai-scroll"><table><thead><tr><th>{{ t('ai.model') }}</th><th>{{ t('aiSettings.capabilities') }}</th><th>{{ t('aiSettings.finalUrl') }}</th><th>{{ t('aiSettings.action') }}</th></tr></thead>
       <tbody><tr v-for="model in ai.settings?.models" :key="model.id"><td class="ai-long">{{ model.modelId }}</td><td><p>{{ t(`aiSettings.confirmation.${model.capabilities.status}`) }}</p><p>{{ t('aiSettings.fields.contextWindowTokens') }}: {{ model.capabilities.contextWindowTokens ?? t('aiSettings.unknown') }} Token</p><p>{{ t('aiSettings.capabilityLabels.maxInputTokens') }}: {{ model.capabilities.maxInputTokens ?? t('aiSettings.unknown') }} Token</p><p>{{ t('aiSettings.capabilityLabels.maxOutputTokens') }}: {{ model.capabilities.maxOutputTokens ?? t('aiSettings.unknown') }} Token</p></td><td class="ai-long">{{ ai.settings?.connections.find(c => c.id === model.connectionId)?.baseUrl }}/{{ route(model.protocol) }}</td><td><button :data-testid="`model-edit-${model.id}`" @click="edit(model.id)">{{ t('aiSettings.edit') }}</button></td></tr></tbody>
     </table></div>

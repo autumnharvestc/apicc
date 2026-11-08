@@ -1,0 +1,47 @@
+/* Limited to the AI dialog / assistance body; no application-wide control reset. */
+.ai-settings, .ai-assistance { color: var(--text); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ai-settings { max-height: min(72vh, calc(100dvh - 160px)); overflow: auto; padding: 0 4px; scroll-padding-top: 60px; }
+.ai-intro { padding: 12px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--subtle); }
+.ai-intro p { color: var(--text-muted); margin: 6px 0 0; }
+.ai-section-nav { display: flex; flex-wrap: wrap; gap: 8px; position: sticky; top: 0; z-index: 3; padding: 10px 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+.ai-settings .ai-section-nav button { margin: 0; color: var(--accent); background: var(--active-weak); }
+.ai-config-sections { display: flex; flex-direction: column; gap: 16px; margin-top: 12px; }
+.ai-config-sections > section { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); box-shadow: var(--panel-shadow); }
+.ai-settings h3 { font-size: 16px; margin: 0 0 16px; scroll-margin-top: 8px; }
+.ai-settings h4 { font-size: 13px; margin: 16px 0 8px; }
+.ai-settings .ai-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 12px 16px; margin: 12px 0; }
+.ai-settings label { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 6px 0; }
+.ai-settings label:has(input[type=checkbox]) { flex-direction: row; align-items: center; }
+.ai-settings input, .ai-settings select, .ai-settings textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--control-radius); color: var(--text); background: var(--bg); font: inherit; }
+.ai-settings input[type=checkbox] { width: auto; flex: none; accent-color: var(--accent); }
+.ai-settings button, .ai-assistance button:not(.ant-btn) { max-width: 100%; margin: 6px 8px 6px 0; padding: 6px 12px; min-height: 32px; border: 1px solid var(--border); border-radius: var(--control-radius); color: var(--text); background: var(--bg); cursor: pointer; font: inherit; overflow-wrap: anywhere; }
+.ai-settings button:hover:not(:disabled), .ai-assistance button:not(.ant-btn):hover:not(:disabled) { border-color: var(--accent); background: var(--active-weak); }
+.ai-settings button:disabled, .ai-assistance button:disabled { opacity: .55; cursor: default; }
+.ai-settings [data-testid$="-save"], .ai-assistance [data-testid="ai-confirm-send"], .ai-assistance [data-testid="ai-repreview-content"] { background: var(--active-weak); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.ai-settings table { border-collapse: separate; border-spacing: 0; min-width: 620px; width: 100%; }
+.ai-settings th { white-space: nowrap; text-align: start; background: var(--subtle); position: sticky; top: 0; z-index: 1; color: var(--text-muted); }
+.ai-settings th, .ai-settings td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ai-settings td p { margin: 4px 0; }
+.ai-settings .ai-scroll { max-width: 100%; max-height: 400px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; }
+.ai-settings .ai-long { max-width: 360px; overflow-wrap: anywhere; }
+.ai-settings [role=alert], .ai-assistance [role=alert] { color: var(--fail); padding: 10px 12px; border: 1px solid var(--fail); border-radius: 6px; }
+.ai-settings [role=status] { padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--subtle); }
+.ai-settings .ai-hint { color: var(--text-muted); font-size: 12px; }
+.ai-settings .ai-catalog-diff { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 8px; }
+.ai-settings .ai-catalog-diff dl { margin: 0; padding: 8px 12px; background: var(--subtle); border-radius: 6px; }
+.ai-settings .ai-catalog-diff dt { color: var(--text-muted); }
+.ai-settings .ai-catalog-diff dd { margin: 4px 0 0; }
+.ai-settings .ai-catalog-diff ul { padding-left: 18px; margin: 0; }
+.ai-assistance .content-choices, .ai-assistance .ai-progress { background: var(--subtle); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.ai-assistance h3 { font-size: 15px; margin: 18px 0 10px; }
+.ai-assistance h4 { font-size: 13px; margin: 12px 0 8px; }
+.ai-assistance summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
+.ai-assistance input[type=checkbox] { accent-color: var(--accent); }
+.ai-assistance .row { padding: 14px; border-radius: 10px; box-shadow: var(--panel-shadow); }
+.ai-assistance .candidate-details { margin-top: 8px; border-top: 1px solid var(--border); }
+@media (max-width: 600px) {
+  .ai-config-sections > section { padding: 12px; }
+  .ai-settings .ai-grid { grid-template-columns: minmax(0, 1fr); }
+  .ai-settings .ai-section-nav { gap: 6px; }
+  .ai-settings .ai-section-nav button { padding: 6px 9px; }
+}

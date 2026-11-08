@@ -922,6 +922,7 @@
     "confirm": "确定",
     "close": "关闭"
   },
+  "aiUi": { "settingsSections": "AI 配置区块导航" },
   "aiSettings": {
     "migration": {
       "migrated": "旧配置已迁移，请核对连接与模型设置",

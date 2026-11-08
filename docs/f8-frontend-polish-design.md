@@ -115,3 +115,7 @@
 ## 11. P3c 数据集与套件
 
 [具体设计](f8-frontend-polish-p3c-design.md)覆盖共享DatasetPanel/SuitePanel的分区、类型化导入预览、具名分页/排序按钮、套件预览与结果表；不改TestingStore或在线适配器。列名自身字段判断纳入同组修复。逐点行为、21项去重验证和7图见[验证记录](f8-frontend-polish-p3c-validation.md)。后续为AI、同步/在线与工作流，再到P4/P5。
+
+## 12. P3d AI 配置与辅助结果
+
+按[具体设计](f8-frontend-polish-p3d-design.md)完成三段配置导航、主题表单/预算表、出站预览与候选/断言/报告卡片。导航只滚动聚焦，发送/采用仍为原显式流程；抽屉使用视口有界宽度，短高配置页保留关闭入口。100项去重定向测试及实际组件证据见[逐点记录](f8-frontend-polish-p3d-validation.md)。本批不改AI store、宿主、协议或预算解析，原生完整链留P5。后续接入同步页面，再推进在线与工作流队列。

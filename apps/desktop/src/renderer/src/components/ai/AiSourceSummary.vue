@@ -15,5 +15,6 @@ const sections = computed(() => aiSourceSections(props.source, t));
 <style scoped>
 dl { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 6px 12px; }
 dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; } dt { color: var(--text-muted, #666); }
-.source-summary { overflow: auto; max-width: 100%; }
+.source-summary { overflow: auto; max-width: 100%; padding: 12px 14px; margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; }
+.source-summary h4 { margin-top: 0; } dl { margin-bottom: 0; }
 </style>

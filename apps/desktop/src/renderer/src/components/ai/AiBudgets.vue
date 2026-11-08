@@ -52,7 +52,7 @@ async function saveProtection() {
 }
 </script>
 <template>
-  <section><h3>{{ t('aiSettings.budgets') }}</h3>
+  <section aria-labelledby="ai-budgets-title"><h3 id="ai-budgets-title" tabindex="-1">{{ t('aiSettings.budgets') }}</h3>
     <div class="ai-grid">
       <label>{{ t('ai.model') }}<select v-model="modelId" data-testid="budget-model"><option v-for="model in ai.settings?.models" :key="model.id" :value="model.id">{{ model.modelId }}</option></select></label>
       <label>{{ t('aiSettings.purpose') }}<select v-model="purpose" data-testid="budget-purpose"><option v-for="value in AiPurposeSchema.options" :key="value" :value="value">{{ t(`aiSettings.purposes.${value}`) }}</option></select></label>

@@ -73,7 +73,7 @@ async function bind() {
 </script>
 <template>
   <section aria-labelledby="ai-connections-title">
-    <h3 id="ai-connections-title">{{ t('aiSettings.connections') }}</h3>
+    <h3 id="ai-connections-title" tabindex="-1">{{ t('aiSettings.connections') }}</h3>
     <h4>{{ t('aiSettings.templates') }}</h4>
     <label>{{ t('aiSettings.templates') }}<select v-model="templateId" data-testid="connection-template"><option value="">{{ t('aiSettings.manual') }}</option><option v-for="template in ai.catalog?.catalog" :key="template.id" :value="template.id">{{ template.name }}</option></select></label>
     <button data-testid="catalog-reload" @click="ai.reloadCatalog()">{{ t('aiSettings.reloadCatalog') }}</button>
@@ -81,7 +81,7 @@ async function bind() {
     <label>{{ t('aiSettings.importFile') }}<input type="file" accept=".json,application/json" data-testid="catalog-import-file" @change="importFile"></label>
     <div v-if="ai.catalogPreview || ai.catalog">
       <h4>{{ t('aiSettings.catalogDiff') }}</h4>
-      <dl v-for="kind in ['added', 'updated', 'removed'] as const" :key="kind"><dt>{{ t(`aiSettings.${kind}`) }}</dt><dd><span v-if="!(ai.catalogPreview ?? ai.catalog)?.diff[kind].length">{{ t('aiSettings.noDiff') }}</span><ul v-else><li v-for="id in (ai.catalogPreview ?? ai.catalog)?.diff[kind]" :key="id">{{ id }}</li></ul></dd></dl>
+      <div class="ai-catalog-diff"><dl v-for="kind in ['added', 'updated', 'removed'] as const" :key="kind"><dt>{{ t(`aiSettings.${kind}`) }}</dt><dd><span v-if="!(ai.catalogPreview ?? ai.catalog)?.diff[kind].length">{{ t('aiSettings.noDiff') }}</span><ul v-else><li v-for="id in (ai.catalogPreview ?? ai.catalog)?.diff[kind]" :key="id">{{ id }}</li></ul></dd></dl></div>
       <ul v-if="(ai.catalogPreview ?? ai.catalog)?.errors.length"><li v-for="(error, index) in (ai.catalogPreview ?? ai.catalog)?.errors" :key="index">{{ error.file }} · {{ error.field }} · {{ t('aiSettings.errorCodes.invalid-catalog') }}</li></ul>
       <template v-if="ai.catalogImportInput"><label>{{ t('aiSettings.confirmConflicts') }}<input v-model="confirmConflicts" type="checkbox" data-testid="catalog-confirm-conflicts"></label><button data-testid="catalog-import-apply" @click="ai.applyCatalog(confirmConflicts)">{{ t('aiSettings.applyImport') }}</button></template>
     </div>

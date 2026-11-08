@@ -8,6 +8,7 @@ import AiReportAnalysis from './ai/AiReportAnalysis.vue';
 import AiAssertionDetails from './ai/AiAssertionDetails.vue';
 import { computed } from 'vue';
 import { aiFactTitle } from '../ai/presentation.js';
+import '../styles/ai-presentation.css';
 
 /**
  * AI 建议抽屉（M6-C 任务 1 组件 / 任务 2 真链路产物，规格 §2 D4，纯展示组件）：props 只收
@@ -36,10 +37,11 @@ function downloadAnalysis() {
   <a-drawer
     :open="ai.drawerOpen"
     :title="t(`ai.drawerTitles.${ai.businessPurpose}`)"
-    :width="480"
+    width="min(680px, 100vw)"
     data-testid="ai-suggestions-drawer"
     @close="ai.dismissSuggestions()"
   >
+    <div class="ai-assistance">
     <!-- 来源标注恒在（裁定④）：列表内容为 AI 生成，采用前必须可见 -->
     <a-tag color="purple" class="source-tag" data-testid="ai-source-tag">{{ t("ai.sourceTag") }}</a-tag>
     <p v-if="errorMessage" role="alert">{{ errorMessage }}</p>
@@ -67,7 +69,7 @@ function downloadAnalysis() {
       </section>
       <button type="button" data-testid="ai-repreview-content" :disabled="ai.suggestLoading" @click="ai.repreviewContent()">{{ t('ai.repreview') }}</button>
     </section>
-    <section v-if="ai.businessOperationId" role="status">
+    <section v-if="ai.businessOperationId" role="status" class="ai-progress">
       <p>{{ ai.businessProgress ? t(`ai.phases.${ai.businessProgress.phase}`) : t('ai.waitingForProgress') }}</p>
       <p>{{ t('ai.localElapsed') }}: {{ ai.businessElapsedMs }} ms</p>
       <p v-if="ai.businessProgress">{{ t('ai.attempt') }}: {{ ai.businessProgress.attempt }}<span v-if="ai.businessProgress.receivedBytes !== undefined"> · {{ t('ai.received') }}: {{ ai.businessProgress.receivedBytes }} {{ t('ai.bytes') }}</span></p>
@@ -89,6 +91,7 @@ function downloadAnalysis() {
         <a-checkbox
           :checked="ai.selectedIds.includes(row.id)"
           data-testid="ai-suggest-check"
+          :aria-label="`${t('ai.selectCandidate')}: ${row.name}`"
           @update:checked="() => ai.toggleSelect(row.id)"
         />
         <div class="row-main">
@@ -124,6 +127,7 @@ function downloadAnalysis() {
           </details>
         </div>
       </div>
+    </div>
     </div>
     <template #footer>
       <a-button
@@ -175,7 +179,7 @@ function downloadAnalysis() {
 .row-name {
   font-weight: 600;
   font-size: 13px;
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 .row-meta {
   display: flex;
@@ -190,7 +194,7 @@ function downloadAnalysis() {
 .fields dt { color: var(--text-muted, #666); }
 .fields dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .condition { border-bottom: 1px solid var(--border, #e5e5e5); padding-bottom: 8px; }
-.script-warning { color: var(--warning-color, #9b6500); }
-.script-source { max-height: 240px; max-width: 100%; overflow: auto; padding: 8px; background: var(--surface-muted, #f5f5f5); white-space: pre; }
+.script-warning { color: var(--text); padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--active-weak); }
+.script-source { max-height: 240px; max-width: 100%; overflow: auto; padding: 12px; border:1px solid var(--border); border-radius:6px; background: var(--subtle); color:var(--text); white-space: pre; }
 .operation { margin-bottom: 8px; }
 </style>

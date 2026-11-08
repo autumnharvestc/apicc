@@ -1,0 +1,66 @@
+{
+  "scope": "Actual Vue components with synthetic public settings/results; no backend, IPC or model request",
+  "views": [
+    "1280x720 zh light configuration, models, budgets",
+    "600x520 en dark configuration",
+    "480x600 en dark assertion drawer",
+    "600x360 zh light configuration",
+    "1280x720 en dark outbound preview and long script",
+    "1280x720 zh light report and limits"
+  ],
+  "checks": {
+    "navigation": {
+      "focusedIds": [
+        "ai-models-title",
+        "ai-budgets-title",
+        "ai-connections-title"
+      ],
+      "draftAfterRoundTrip": "未保存的合成连接 / Draft",
+      "hash": ""
+    },
+    "narrowDrawer": {
+      "viewportWidth": 480,
+      "left": 0,
+      "width": 480.0000305175781,
+      "documentWidth": 480
+    },
+    "script": {
+      "clientWidth": 573,
+      "scrollWidth": 1877,
+      "color": "rgb(230, 237, 248)",
+      "background": "rgb(32, 44, 61)"
+    },
+    "shortConfiguration": {
+      "viewportHeight": 360,
+      "closeBottom": 317,
+      "headingTop": 140.8125,
+      "navBottom": 127.50893020629884
+    },
+    "report": "Logical total 1/passed 1/failed 0; request facts not collected; native transport failure, possible-only hypothesis and limits remain visible; evidence not navigable"
+  },
+  "notes": [
+    "Initial fixture catalog omitted diff and produced a render error; fixed fixture DTO, no product error handling change.",
+    "480px drawer clipped before max viewport width fix; before/after screenshots retained.",
+    "Antd radio setChecked action timed out; clicked visible Dark label and verified checked state."
+  ],
+  "logs": [
+    {
+      "level": "warn",
+      "message": "[Vue warn]: Unhandled error during execution of render function \n  at <AiConnections ai= Object > \n  at <BaseTransition onBeforeEnter=fn<onBeforeEnter> onAfterEnter=fn<onAfterEnter> onAfterLeave=fn<onAfterLeave>  ... > \n  at <Transition name=\"ant-zoom\" appear=true enterFromClass=\"ant-zoom-enter ant-zoom-enter-prepare ant-zoom-enter-start\"  ... > \n  at <DialogContent title=\"AI 与模型\" width=1000 mousePosition= Object  ... > \n  at <VcDialog title=\"AI 与模型\" width=1000 mousePosition= Object  ... > \n  at <Portal getContainer=fn<getContainer> ref=Ref< [object] > didUpdate=undefined > \n  at <PortalWrapper autoLock=true visible=true forceRender=undefined  ... > \n  at <DialogWrap title=\"AI 与模型\" onCancel=fn confirmLoading=false  ... > \n  at <AModal key=0 open=true title=\"AI 与模型\"  ... > \n  at <AiConfigDialog ai= Object > \n  at <Anonymous value= Object > \n  at <ALocaleProvider locale=undefined ANT_MARK__=\"internalMark\" > \n  at <LocaleReceiver children=fn<children> > \n  at <AConfigProvider theme= Object > \n  at <App>",
+      "timestamp": "2026-11-08T14:47:10.398Z",
+      "url": "http://127.0.0.1:63573/@vite/client"
+    },
+    {
+      "level": "warn",
+      "message": "[Vue warn]: Unhandled error during execution of component update \n  at <AiConfigDialog ai= Object > \n  at <Anonymous value= Object > \n  at <ALocaleProvider locale=undefined ANT_MARK__=\"internalMark\" > \n  at <LocaleReceiver children=fn<children> > \n  at <AConfigProvider theme= Object > \n  at <App>",
+      "timestamp": "2026-11-08T14:47:10.398Z",
+      "url": "http://127.0.0.1:63573/@vite/client"
+    },
+    {
+      "level": "error",
+      "message": "TypeError: Cannot read properties of undefined (reading 'added')\n    at http://127.0.0.1:63573/@fs/C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop/src/renderer/src/components/ai/AiConnections.vue:343:96\n    at renderList (http://127.0.0.1:63573/.vite/deps/vue.esm-bundler-imL_UXyX.js?v=730549cf:4025:59)\n    at Proxy._sfc_render (http://127.0.0.1:63573/@fs/C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop/src/renderer/src/components/ai/AiConnections.vue:332:5)\n    at renderComponentRoot (http://127.0.0.1:63573/.vite/deps/vue.esm-bundler-imL_UXyX.js?v=730549cf:4927:35)\n    at ReactiveEffect.componentUpdateFn [as fn] (http://127.0.0.1:63573/.vite/deps/vue.esm-bundler-imL_UXyX.js?v=730549cf:5791:41)\n    at ReactiveEffect.run (http://127.0.0.1:63573/.vite/deps/vue.esm-bundler-imL_UXyX.js?v=730549cf:522:16)\n    at setupRenderEffect (http://127.0.0.1:63573/.vite/deps/vue.esm-bundler-imL_UXyX.js?v=730549cf:5862:3)\n    at mountComponent (http://127.0.0.1:63573/.vite/deps/vue.esm-bundler-imL_UXyX.js?v=730549cf:5745:10)\n    at processComponent (http://127.0.0.1:63573/.vite/deps/vue.esm-bundler-imL_UXyX.js?v=730549cf:5725:9)\n    at patch (http://127.0.0.1:63573/.vite/deps/vue.esm-bundler-imL_UXyX.js?v=730549cf:5515:28)",
+      "timestamp": "2026-11-08T14:47:10.403Z",
+      "url": "http://127.0.0.1:63573/@fs/C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop/src/renderer/src/components/ai/AiConnections.vue"
+    }
+  ]
+}

@@ -20,7 +20,9 @@ const { t } = useI18n();
   </section>
 </template>
 <style scoped>
-article { border-bottom: 1px solid var(--border, #ddd); padding: 12px 0; }
+article { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin: 12px 0; }
+article > label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+[role=note] { border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--active-weak); }
 dl { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 3fr); gap: 6px 12px; }
 dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; } dt { color: var(--text-muted, #666); }
 ul { margin: 0; padding-left: 18px; } .assertions { overflow: auto; }
