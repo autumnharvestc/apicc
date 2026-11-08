@@ -28,6 +28,76 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe("current project testing center", () => {
+  it("P3c treats inherited property names as missing cells in real JSON imports", async () => {
+    const { store, mountDataset, i18n } = await testingCenter(); i18n.global.locale.value = 'en';
+    await store.newDataset('prototype columns');
+    const source = '[{"toString":0,"constructor":false},{}]';
+    await store.previewImport('json', source);
+    const panel = mountDataset();
+    expect(panel.get('[data-testid="dataset-import-table"]').findAll('tbody tr').map(row => row.findAll('td').map(cell => cell.text()))).toEqual([['0','false'],['Missing','Missing']]);
+    await panel.get('[data-testid="dataset-import-apply"]').trigger('click');
+    expect(store.dataset!.rows).toEqual(JSON.parse(source));
+    expect(panel.get('input[aria-label="Row 2 · toString"]').element).toHaveProperty('value','');
+    expect(panel.get('input[aria-label="Row 2 · constructor"]').element).toHaveProperty('value','');
+  });
+  it("P3c renders typed import cells without losing missing, null, false, zero or business JSON", async () => {
+    const { store, mountDataset, i18n } = await testingCenter();
+    await store.newDataset("typed");
+    const source = [{ value: 0, extra: null }, { value: false }, { value: "", extra: { label: "passed" } }];
+    await store.previewImport("json", JSON.stringify(source));
+    const panel = mountDataset();
+    for (const locale of ["zh-CN", "en"] as const) {
+      i18n.global.locale.value = locale; await flushPromises();
+      const table = panel.get('[data-testid="dataset-import-table"]');
+      expect(table.findAll('tbody tr').map(row => row.findAll('td').map(cell => cell.text()))).toEqual([
+        ['0', 'null'], ['false', locale === 'zh-CN' ? '缺字段' : 'Missing'], ['""', '{"label":"passed"}'],
+      ]);
+      expect(store.dataset!.rows).toEqual([]);
+    }
+    await panel.get('[data-testid="dataset-import-apply"]').trigger('click');
+    expect(store.dataset!.rows).toEqual(source);
+  });
+  it("P3c names page and row controls and deletes only the chosen second-page row", async () => {
+    const { store, mountDataset, i18n } = await testingCenter(); i18n.global.locale.value = 'en';
+    await store.newDataset('pages'); store.dataset!.columns = ['value']; store.dataset!.rows = Array.from({length: 101}, (_, value) => ({value}));
+    const panel = mountDataset();
+    await panel.get('button[aria-label="Next page"]').trigger('click');
+    expect(panel.get('input[aria-label="Row 101 · value"]').element).toHaveProperty('value', '100');
+    await panel.get('button[aria-label="Delete row 101"]').trigger('click');
+    expect(store.dataset!.rows).toHaveLength(100); expect(store.dataset!.rows[99]).toEqual({value:99});
+    expect(panel.find('button[aria-label="Delete row 101"]').exists()).toBe(false);
+    store.view!.readOnly = true; await flushPromises();
+    expect(panel.get('button[aria-label="Delete row 1"]').attributes('disabled')).toBeDefined();
+  });
+  it("P3c presents suite preview facts and moves named entries without translating business names", async () => {
+    const { store, mountSuite, i18n } = await testingCenter(); i18n.global.locale.value = 'en';
+    await store.newSuite('ordered');
+    const item = store.view!.cases[0]!;
+    store.view!.workflows.push({id:'workflow', name:'passed', status:'draft'});
+    store.suite!.selection = {kind:'explicit', entries:[{id:'case-entry',kind:'case',collectionId:item.locator.collectionId,folderIds:item.locator.folderIds,apiId:item.locator.apiId,caseId:item.caseId},{id:'workflow-entry',kind:'workflow',workflowId:'workflow'}]};
+    const panel = mountSuite();
+    expect(panel.get('.choices').text()).toContain('passed · Draft');
+    await panel.get('button[aria-label="Move up: passed"]').trigger('click');
+    expect(store.suite!.selection.entries.map(entry => entry.id)).toEqual(['workflow-entry','case-entry']);
+    // Use the actual resolved preview for a valid persisted query suite.
+    store.suite!.selection = {kind:'query'}; await store.save(); await store.previewSuite(); await flushPromises();
+    const table = panel.get('[data-testid="suite-preview-table"]');
+    expect(table.findAll('tbody tr')).toHaveLength(store.preview!.plan.entries.length);
+    expect(table.get('tbody tr').text()).toContain('Case'); expect(table.text()).toContain(item.caseId); expect(table.text()).toContain('base');
+    expect(table.get('tbody tr').findAll('td')[1]!.text()).toBe(String(store.preview!.entries[0]!.plannedExecutions));
+    i18n.global.locale.value = 'zh-CN'; await flushPromises(); expect(table.text()).toContain('用例');
+  });
+  it("P3c preserves the external suite run boundary and forwards the draft choice", async () => {
+    const { store, i18n } = await testingCenter(); await store.newSuite('external'); await store.save();
+    const externalRun = vi.fn(async () => {}), localRun = vi.spyOn(store, 'run');
+    const panel = mount(SuitePanel, {props:{testing:store, externalRun},global:{plugins:[i18n]}});
+    expect(panel.find('[data-testid="suite-preview"]').exists()).toBe(false); expect(panel.find('[data-testid="suite-cancel"]').exists()).toBe(false);
+    await panel.get('.run-toolbar input[type="checkbox"]').setValue(true);
+    await panel.get('[data-testid="suite-run"]').trigger('click'); await flushPromises();
+    expect(externalRun).toHaveBeenCalledExactlyOnceWith(true); expect(localRun).not.toHaveBeenCalled();
+    store.suite!.name = 'dirty'; await flushPromises(); expect(panel.get('[data-testid="suite-run"]').attributes('disabled')).toBeDefined();
+    store.discard(); store.running = true; await flushPromises(); expect(panel.get('[data-testid="suite-run"]').attributes('disabled')).toBeDefined();
+  });
   it("localizes nonempty suite result rows and reporting units without translating business evidence or unknown codes", async () => {
     const { store, api, apiLocator } = await testingCenter({ name: "suite-result-language", canHandle: () => true, close: async () => {},
       execute: async () => ({ status: 200, headers: { "content-type": "text/plain" }, bodyText: "业务正文 User original", timeMs: 1 }) });
@@ -78,6 +148,9 @@ describe("current project testing center", () => {
       expect(summary).toContain(locale === "zh-CN" ? "中止" : "Aborted");
       expect(summary).toContain(locale === "zh-CN" ? "跳过" : "Skipped");
       expect(summary).toContain("User skipped entry"); expect(summary).toContain("Untranslated user error");
+      const entries = panel.get('[data-testid="suite-result-table"]').findAll('tbody tr');
+      expect(entries.map(row => row.get('th').text())).toEqual(['User aborted entry', 'User skipped entry']);
+      expect(entries[0]!.findAll('td').map(cell => cell.text())).toEqual(['—', locale === 'zh-CN' ? '中止' : 'Aborted', 'Untranslated user error']);
       panel.unmount();
     }
   });

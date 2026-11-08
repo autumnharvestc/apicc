@@ -1,0 +1,69 @@
+{
+  "actualComponents": [
+    "DatasetPanel",
+    "SuitePanel"
+  ],
+  "syntheticOnly": true,
+  "backend": false,
+  "ipc": false,
+  "suiteNarrow": {
+    "document": [
+      640,
+      640
+    ],
+    "stateColumn": "nowrap",
+    "tables": [
+      {
+        "client": 587,
+        "headers": [
+          "nowrap",
+          "nowrap",
+          "nowrap",
+          "nowrap"
+        ],
+        "scroll": 587
+      },
+      {
+        "client": 587,
+        "headers": [
+          "nowrap",
+          "nowrap",
+          "nowrap"
+        ],
+        "scroll": 587
+      },
+      {
+        "client": 587,
+        "headers": [
+          "nowrap",
+          "nowrap",
+          "nowrap",
+          "nowrap"
+        ],
+        "scroll": 587
+      }
+    ],
+    "typeColumn": "nowrap",
+    "viewport": [
+      640,
+      760
+    ]
+  },
+  "datasetNarrow": {
+    "document": [
+      640,
+      640
+    ],
+    "tables": [
+      {
+        "client": 575,
+        "scroll": 832
+      },
+      {
+        "client": 575,
+        "scroll": 575
+      }
+    ]
+  },
+  "consoleErrors": []
+}

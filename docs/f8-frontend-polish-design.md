@@ -111,3 +111,7 @@
 ## 10. P3b 压测报告
 
 沿用 [P3b具体设计](f8-frontend-polish-p3b-design.md)，完成逻辑/原始摘要分组、节点/生命周期独立列、旧安全策略与证据本地化、趋势主题。Core计算、身份、基线与执行均不改。26项定向测试、Vue/renderer和7张实际组件截图见 [逐点验证](f8-frontend-polish-p3b-validation.md)；后续测试中心/AI/同步/在线与工作流继续排队，原生完整交互留P5。
+
+## 11. P3c 数据集与套件
+
+[具体设计](f8-frontend-polish-p3c-design.md)覆盖共享DatasetPanel/SuitePanel的分区、类型化导入预览、具名分页/排序按钮、套件预览与结果表；不改TestingStore或在线适配器。列名自身字段判断纳入同组修复。逐点行为、21项去重验证和7图见[验证记录](f8-frontend-polish-p3c-validation.md)。后续为AI、同步/在线与工作流，再到P4/P5。
