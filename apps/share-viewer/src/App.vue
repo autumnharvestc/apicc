@@ -16,6 +16,8 @@ const copyFailed=ref(false);
 let generation=0;
 const language=ref<PublicLanguage>('zh-CN');
 const search=ref('');
+const searchInput=ref<HTMLInputElement>();
+function clearSearch(){search.value='';searchInput.value?.focus();}
 const visit=readFragment(location.hash);
 const sections=computed(()=>artifact.value?publicSections(artifact.value,language.value):[]);
 const hits=computed(()=>sections.value.filter(s=>[s.title,...s.blocks.map(b=>b.kind==='text'?b.text:b.kind==='code'?b.title+' '+b.text:b.headers.join(' ')+' '+b.rows.flat().join(' '))].join(' ').toLocaleLowerCase().includes(search.value.toLocaleLowerCase())));
@@ -49,7 +51,7 @@ onMounted(()=>{if(!props.artifact)void reload();});
 <template>
   <div class="reader">
     <aside>
-      <div class="tools"><strong>{{ language==='en'?'Read-only publication':'只读发布内容' }}</strong><div class="languages"><button data-language="zh-CN" @click="language='zh-CN'">中文</button><button data-language="en" @click="language='en'">English</button></div><label>{{ language==='en'?'Search':'搜索' }}<input v-model="search" type="search" :placeholder="language==='en'?'Search publication':'搜索发布内容'"></label></div>
+      <div class="tools"><strong>{{ language==='en'?'Read-only publication':'只读发布内容' }}</strong><div class="languages"><button :aria-pressed="language==='zh-CN'" data-language="zh-CN" @click="language='zh-CN'">中文</button><button :aria-pressed="language==='en'" data-language="en" @click="language='en'">English</button></div><label for="publication-search">{{ language==='en'?'Search':'搜索' }}</label><span class="search-field"><input id="publication-search" ref="searchInput" v-model="search" type="search" :placeholder="language==='en'?'Search publication':'搜索发布内容'"><button v-if="search" type="button" data-action="clear-search" :aria-label="language==='en'?'Clear search':'清除搜索'" @click="clearSearch">×</button></span></div>
       <nav :aria-label="language==='en'?'Contents':'目录'"><a v-for="section in hits" :key="section.id" href="#" @click.prevent="navigate(section.id)">{{section.title}}</a></nav>
     </aside>
     <main>
@@ -62,7 +64,8 @@ onMounted(()=>{if(!props.artifact)void reload();});
         <h1>{{artifact.title}}</h1><p v-if="version">{{language==='en'?'Publication version':'发布版本'}}: {{version}}</p>
         <p>{{language==='en'?'Content fingerprint':'内容指纹'}}: <code>{{artifact.source.digest.slice(0,12)}}</code></p>
         <details><summary>{{language==='en'?'Full fingerprint':'完整指纹'}}</summary><code>{{artifact.source.digest}}</code></details>
-        <p v-if="search">{{language==='en'?'Matching sections':'命中章节'}}: {{hits.length}}</p>
+        <p v-if="search" role="status">{{language==='en'?'Matching sections':'命中章节'}}: {{hits.length}}</p>
+        <p v-if="search && !hits.length" data-testid="search-empty" class="empty-state">{{language==='en'?'No matching sections. Clear the search or try another keyword.':'没有匹配章节。请清除搜索或更换关键词。'}}</p>
         <section v-for="section in hits" :id="section.id" :key="section.id">
           <h2>{{section.title}}</h2>
           <template v-for="(block,index) in section.blocks" :key="index">
@@ -78,4 +81,6 @@ onMounted(()=>{if(!props.artifact)void reload();});
 </template>
 <style>
 :root{font-family:system-ui,"Microsoft YaHei",sans-serif;color:#172b42;background:#f4f7fb;font-synthesis:none}*{box-sizing:border-box}body{margin:0}button,input{font:inherit}button{border:1px solid #adc1d7;background:white;border-radius:6px;padding:7px 12px;cursor:pointer}button:hover{background:#edf4fd}button:disabled{cursor:wait;opacity:.65}.reader{display:grid;grid-template-columns:280px minmax(0,1fr);height:100dvh}aside{display:flex;flex-direction:column;min-height:0;border-right:1px solid #cad6e5;background:#fff}.tools{padding:22px 18px;flex:none;border-bottom:1px solid #dae3ef}.languages{display:flex;gap:8px;margin:14px 0}label{display:grid;gap:8px}input{width:100%;min-width:0;border:1px solid #a7bbd1;padding:9px;border-radius:6px}nav{overflow:auto;min-height:0;padding:12px}nav a{display:block;padding:10px 8px;color:#205e9e;text-decoration:none;overflow-wrap:anywhere;border-radius:6px}nav a:hover{background:#edf4fd}main{overflow:auto;padding:28px clamp(18px,4vw,64px);min-width:0}h1{font-size:26px;line-height:1.5;overflow-wrap:anywhere}h2{font-size:20px}h3{font-size:16px}p{line-height:1.7;overflow-wrap:anywhere;white-space:pre-wrap}section{background:white;padding:20px;margin:18px 0;border:1px solid #d6e0ec;border-radius:9px;scroll-margin-top:20px}.table-scroll{overflow:auto;max-height:28rem;margin:12px 0}table{border-collapse:collapse;width:100%}th,td{padding:10px;border-bottom:1px solid #dce4ef;text-align:left;min-width:7rem;max-width:34rem;overflow-wrap:anywhere}th{white-space:nowrap;background:#f1f5fb;position:sticky;top:0}pre{overflow:auto;max-height:26rem;white-space:pre;line-height:1.5;background:#f0f4f9;padding:14px}details{margin:14px 0;overflow-wrap:anywhere}summary{cursor:pointer}code{overflow-wrap:anywhere}@media(max-width:700px){.reader{grid-template-columns:210px minmax(0,1fr)}main{padding:16px}section{padding:12px}}
+
+:root{font-size:14px;line-height:1.6}button[aria-pressed=true]{color:#175bb8;border-color:#7da6e1;background:#eaf2ff}.actions{display:flex;gap:8px;flex-wrap:wrap}.search-field{position:relative;display:block}.search-field input{padding-right:32px}.search-field input::-webkit-search-cancel-button{display:none}.search-field button{position:absolute;right:2px;top:50%;transform:translateY(-50%);padding:2px 6px;border:0;background:transparent}.empty-state,[role=alert]{border:1px solid #d6e0ec;border-radius:8px;padding:16px;background:white}section{box-shadow:0 2px 8px #20345405}th,td{font-variant-numeric:tabular-nums}:focus-visible{outline:2px solid #2875db;outline-offset:3px}@media(max-width:600px){.reader{grid-template-columns:160px minmax(0,1fr)}.tools{padding:12px}.languages{gap:4px}.languages button{padding:6px}.tools strong{font-size:13px}}@media(max-height:400px){.tools{padding:8px 12px}.languages{margin:6px 0}.tools label{gap:2px}nav{padding:4px 10px}}
 </style>

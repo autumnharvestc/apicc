@@ -1,0 +1,70 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/share-viewer
+
+ ❯ tests/offline-readers.test.ts (7 tests | 2 failed | 5 skipped) 184ms
+   × keeps user-named environments even when their names collide with fixed document labels 139ms
+   × uses readable Chinese labels for the existing workflow node types 43ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/offline-readers.test.ts > keeps user-named environments even when their names collide with fixed document labels
+AssertionError: expected [ '基础', '环境', '请求', '草稿' ] to deeply equal [ '基础', 'env', 'Request', 'draft' ]
+
+- Expected
++ Received
+
+  [
+    "基础",
+-   "env",
+-   "Request",
+-   "draft",
++   "环境",
++   "请求",
++   "草稿",
+  ]
+
+ ❯ tests/offline-readers.test.ts:81:20
+     79|   const w=open(renderDocumentHtml(buildDocumentProjection(createProjec…
+     80|   const scopes=()=>[...w.document.querySelectorAll('tbody tr')].filter…
+     81|   expect(scopes()).toEqual(['基础','env','Request','draft']);
+       |                    ^
+     82|   input(w,'reader-language','en','change');expect(scopes()).toEqual(['…
+     83| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/offline-readers.test.ts > uses readable Chinese labels for the existing workflow node types
+AssertionError: expected [ 'noop', 'assign', 'delay', …(2) ] to deeply equal [ '占位', '赋值', '延时', '断言', '子流程' ]
+
+- Expected
++ Received
+
+  [
+-   "占位",
+-   "赋值",
+-   "延时",
+-   "断言",
+-   "子流程",
++   "noop",
++   "assign",
++   "delay",
++   "assert",
++   "subflow",
+  ]
+
+ ❯ tests/offline-readers.test.ts:90:20
+     88|   const w=open(readFileSync(await htmlReporter.render(result,out),'utf…
+     89|   const values=()=>[...w.document.querySelectorAll('#workflow-nodes tb…
+     90|   expect(values()).toEqual(['占位','赋值','延时','断言','子流程']);
+       |                    ^
+     91|   input(w,'reader-language','en','change');expect(values()).toEqual(ki…
+     92| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 5 skipped (7)
+   Start at  11:55:33
+   Duration  1.74s (transform 387ms, setup 0ms, import 548ms, tests 184ms, environment 837ms)
+

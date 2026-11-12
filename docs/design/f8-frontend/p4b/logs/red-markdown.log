@@ -1,0 +1,129 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/packages/core
+
+ ❯ tests/design/document.test.ts (7 tests | 1 failed | 6 skipped) 33ms
+   × preserves Markdown component definitions while HTML exposes them as folded contract details 31ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/design/document.test.ts > preserves Markdown component definitions while HTML exposes them as folded contract details
+AssertionError: expected '# Projection fixture\n\n<a id="api-10…' not to contain '[object Object]'
+
+- Expected
++ Received
+
+- [object Object]
++ # Projection fixture
++
++ <a id="api-10000000-0000-4000-8000-000000000002"></a>
++ ## Get user
++
++ Read a user
++
++ | Field | Value |
++ | --- | --- |
++ | Collection | Users |
++ | Folders | — |
++ | Version | 1.0.0 |
++ | Lifecycle | draft |
++ | Tags | — |
++ | Protocol | HTTP |
++ | Method | GET |
++ | Base URL | https://api.example.test/v1 |
++ | Path | /users/{id} |
++
++ ### Request
++
++ Authentication: Bearer (token placeholder)
++
++ #### Path parameters
++ | Name | Value | Required | Enabled | Description | Schema |
++ | --- | --- | --- | --- | --- | --- |
++ | id | — | Yes | Yes | User ID | {"kind":"scalar","type":"integer"} |
++
++ #### Query parameters
++ | Name | Value | Required | Enabled | Description | Schema |
++ | --- | --- | --- | --- | --- | --- |
++ | access_token | **** | No | Yes |  | {"kind":"scalar","type":"string"} |
++
++ #### Headers
++ | Name | Value | Required | Enabled | Description | Schema |
++ | --- | --- | --- | --- | --- | --- |
++ | Authorization | **** | No | Yes |  | {"kind":"scalar","type":"string"} |
++
++ #### Body
++ ```json
++ {"password":"****","profile":"visible"}
++ ```
++
++ Schema
++
++ ```json
++ {
++   "kind": "modelRef",
++   "modelId": "10000000-0000-4000-8000-000000000006"
++ }
++ ```
++
++ Models: [User](#model-10000000-0000-4000-8000-000000000002-10000000-0000-4000-8000-000000000006)
++
++ ### Responses
++
++ #### 200
++ ok
++
++ **application/json**
++
++ | Example | Value |
++ | --- | --- |
++ | sample | {"refresh_token":"****","status":"ok"} |
++
++ ### Models
++
++ <a id="model-10000000-0000-4000-8000-000000000002-10000000-0000-4000-8000-000000000006"></a>
++ #### User
++ Recursive user model
++
++ References: [User](#model-10000000-0000-4000-8000-000000000002-10000000-0000-4000-8000-000000000006)
++
++ ```json
++ {
++   "kind": "object",
++   "properties": {
++     "password": {
++       "default": "****",
++       "kind": "scalar",
++       "type": "string"
++     },
++     "related": {
++       "kind": "modelRef",
++       "modelId": "10000000-0000-4000-8000-000000000006"
++     }
++   },
++   "required": [],
++   "additionalProperties": false
++ }
++ ```
++
++ ### Reusable components
++
++ | Name | Kind | Description | Definition |
++ | --- | --- | --- | --- |
++ | Shared ID | parameter | Reusable parameter | [object Object] |
+
+ ❯ tests/design/document.test.ts:233:24
+    231|   const projection=buildDocumentProjection(createProjectSnapshot(proje…
+    232|   const markdown=document.renderDocumentMarkdown(projection);
+    233|   expect(markdown).not.toContain('[object Object]');
+       |                        ^
+    234|   for(const component of projection.apis[0]!.components) expect(markdo…
+    235|   const html=document.renderDocumentHtml(projection);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 skipped (7)
+   Start at  11:58:48
+   Duration  604ms (transform 259ms, setup 0ms, import 388ms, tests 33ms, environment 0ms)
+

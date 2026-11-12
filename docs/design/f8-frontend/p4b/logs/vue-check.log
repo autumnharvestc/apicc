@@ -1,0 +1,3 @@
+$ vue-tsc --noEmit -p tsconfig.json
+tests/renderer/components/DesignPanel.test.ts(808,86): error TS2531: Object is possibly 'null'.
+[ELIFECYCLE] Command failed with exit code 2.

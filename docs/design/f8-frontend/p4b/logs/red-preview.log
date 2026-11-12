@@ -1,0 +1,41 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/DesignPanel.test.ts (22 tests | 2 failed | 20 skipped) 1431ms
+   × shortens preview fingerprints without losing identity and localizes lifecycle in zh-CN 839ms
+   × shortens preview fingerprints without losing identity and localizes lifecycle in en 590ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/DesignPanel.test.ts > shortens preview fingerprints without losing identity and localizes lifecycle in zh-CN
+Error: Unable to get summary within: <dd data-v-ae4b5c8a="" data-testid="design-saved-revision">a0d29da61803e3d3c12358e1e4bf3cbaa94ffe2a6932d7ceb154757712c9bef1</dd>
+ ❯ DOMWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/DesignPanel.test.ts:803:19
+
+    801|   const full=design.previewResult?.status==='ready'?design.previewResu…
+    802|   expect(full.length).toBeGreaterThan(12);
+    803|   expect(revision.get('summary').text()).toContain(full.slice(0,12));
+       |                   ^
+    804|   expect(revision.get('details').attributes('open')).toBeUndefined();
+    805|   expect(revision.get('code').text()).toBe(full);
+ Test Files  1 failed (1)
+      Tests  2 failed | 20 skipped (22)
+   Start at  11:46:43
+   Duration  8.56s (transform 2.95s, setup 0ms, import 6.08s, tests 1.43s, environment 869ms)
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/renderer/components/DesignPanel.test.ts > shortens preview fingerprints without losing identity and localizes lifecycle in en
+Error: Unable to get summary within: <dd data-v-ae4b5c8a="" data-testid="design-saved-revision">17e9f6efa91fb0ad7e5cc1f7782f896c0897dfc7931e43bf1a5323fe7e00f306</dd>
+ ❯ DOMWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/renderer/components/DesignPanel.test.ts:803:19
+    801|   const full=design.previewResult?.status==='ready'?design.previewResu…
+    802|   expect(full.length).toBeGreaterThan(12);
+    803|   expect(revision.get('summary').text()).toContain(full.slice(0,12));
+       |                   ^
+    804|   expect(revision.get('details').attributes('open')).toBeUndefined();
+    805|   expect(revision.get('code').text()).toBe(full);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+

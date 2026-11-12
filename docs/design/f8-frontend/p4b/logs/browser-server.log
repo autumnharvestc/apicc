@@ -1,0 +1,10 @@
+12:10:30 [vite] (client) page reload offline/document.html
+12:10:30 [vite] (client) page reload offline/document-dark.html
+12:10:30 [vite] (client) page reload offline/public.html
+12:10:30 [vite] (client) page reload offline/stress.html
+12:10:30 [vite] (client) page reload offline/run.html
+12:10:30 [vite] (client) page reload offline/diagnostics.html
+12:10:30 [vite] (client) page reload offline/report-01M76Z6D1TAKTCM85047X7NRMP.html
+12:10:30 [vite] (client) page reload offline/report-01M76Z6D1XXHYT8CAATTG2Z43T.html
+  ➜  Local:   http://127.0.0.1:63579/
+12:11:39 [vite] (client) hmr update /@fs/C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop/src/renderer/src/components/DocumentPreview.vue?vue&type=style&index=0&scoped=06dd0587&lang.css

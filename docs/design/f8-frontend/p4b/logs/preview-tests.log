@@ -1,0 +1,28 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/renderer/components/DesignPanel.test.ts (22 tests | 2 failed) 14175ms
+   × shortens preview fingerprints without losing identity and localizes lifecycle in zh-CN 494ms
+   × shortens preview fingerprints without losing identity and localizes lifecycle in en 506ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/renderer/components/DesignPanel.test.ts > shortens preview fingerprints without losing identity and localizes lifecycle in zh-CN
+ FAIL  tests/renderer/components/DesignPanel.test.ts > shortens preview fingerprints without losing identity and localizes lifecycle in en
+AssertionError: expected 0 to be greater than 0
+ ❯ tests/renderer/components/DesignPanel.test.ts:807:57
+    805|   expect(revision.get('code').text()).toBe(full);
+    806|   expect(wrapper.get('[data-testid="document-lifecycle"]').text()).toM…
+    807|   expect(wrapper.findAll('pre.definition-code').length).toBeGreaterTha…
+       |                                                         ^
+    808| });
+    809|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 20 passed (22)
+   Start at  11:51:32
+   Duration  21.51s (transform 2.98s, setup 0ms, import 6.09s, tests 14.18s, environment 1.03s)
+

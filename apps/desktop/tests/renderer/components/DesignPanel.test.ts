@@ -791,3 +791,21 @@ describe("DesignPanel", () => {
     expect((errors[0] as Error).message).toBe("导出失败（测试注入）");
   });
 });
+
+it.each(['zh-CN','en'] as const)('shortens preview fingerprints without losing identity and localizes lifecycle in %s',async(locale)=>{
+  const {wrapper,design,i18n}=await mountDesignPanel();
+  i18n.global.locale.value=locale;
+  await wrapper.get('[data-testid="design-document-tab"]').trigger('click');await flushPromises();
+  expect(design.previewStatus).toBe('ready');
+  const revision=wrapper.get('[data-testid="design-saved-revision"]');
+  const full=design.previewResult?.status==='ready'?design.previewResult.sourceProjectRevision:'';
+  expect(full.length).toBeGreaterThan(12);
+  expect(revision.get('summary').text()).toContain(full.slice(0,12));
+  expect(revision.get('details').attributes('open')).toBeUndefined();
+  expect(revision.get('code').text()).toBe(full);
+  expect(wrapper.get('[data-testid="document-lifecycle"]').text()).toMatch(locale==='en'?/Draft|Published|Deprecated/:/草稿|已发布|已弃用/);
+  if(design.previewResult?.status!=='ready')throw new Error('Expected ready projection');
+  design.previewResult.projection.apis[0]!.metadata.status='future-status' as never;
+  await flushPromises();
+  expect(wrapper.get('[data-testid="document-lifecycle"]').text()).toBe('future-status');
+});

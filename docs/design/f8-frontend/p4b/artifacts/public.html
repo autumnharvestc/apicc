@@ -1,0 +1,411 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>订单工作流报告 / Order workflow · synthetic only</title><style>body{font:16px system-ui;max-width:1100px;margin:auto;padding:24px;line-height:1.6;overflow-wrap:anywhere}h1{font-size:26px}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:8px;border-bottom:1px solid #ccd2da;min-width:7rem}th{white-space:nowrap}.scroll,pre{overflow:auto;max-height:28rem}pre{white-space:pre;max-width:100%;padding:12px;background:#f0f3f7}.en{display:none}#en:checked~.en{display:block}#en:checked~.zh{display:none}label{padding:12px;cursor:pointer}details{margin-top:20px}
+*{box-sizing:border-box}body{font-size:14px;color:#23324b;background:#f4f6fa;max-width:1500px;padding:24px}.zh,.en{grid-template-columns:230px minmax(0,1fr);gap:24px;align-items:start;margin-top:24px}.zh{display:grid}#en:checked~.en{display:grid}nav{position:sticky;top:16px;max-height:calc(100dvh - 32px);overflow:auto;padding:16px;border:1px solid #d7e1ed;background:white;border-radius:10px}nav h2{font-size:16px;margin-top:0}nav a{display:block;padding:8px;color:#245fba;text-decoration:none;border-radius:6px}nav a:hover{background:#edf3fc}main{min-width:0}section{background:white;border:1px solid #d7e1ed;border-radius:10px;padding:20px;margin-bottom:16px;scroll-margin-top:16px;box-shadow:0 2px 8px #20345405}section h2{font-size:20px;margin-top:0}th{position:sticky;top:0;background:#edf2f9}td{max-width:34rem;overflow-wrap:anywhere}table{font-variant-numeric:tabular-nums}summary{cursor:pointer}:focus-visible{outline:2px solid #2875db;outline-offset:3px}@media(max-width:700px){body{padding:12px}.zh,.en{grid-template-columns:150px minmax(0,1fr);gap:12px}nav,section{padding:12px}}
+</style></head><body><h1>订单工作流报告 / Order workflow · synthetic only</h1><p>内容指纹 / Content fingerprint: <code>abcdef012345</code></p><input id="zh" type="radio" name="language" checked><label for="zh">中文</label><input id="en" type="radio" name="language"><label for="en">English</label><div class="zh"><nav aria-label="目录"><h2>目录</h2><a href="#zh-conclusion">结论</a><a href="#zh-populations">统计总体</a><a href="#zh-requests">真实请求</a><a href="#zh-failures">失败类别</a><a href="#zh-completeness">完整性与限制</a><a href="#zh-limitations">完整性与限制</a><a href="#zh-summary">摘要与来源</a><a href="#zh-nodes">节点轨迹</a><a href="#zh-events">运行时间线</a><a href="#zh-evidence">证据状态</a><a href="#zh-metrics">性能与统计口径</a><a href="#zh-trends">观测趋势</a><a href="#zh-phases">阶段</a><a href="#zh-lifecycle">生命周期</a><a href="#zh-comparison">比较结论</a></nav><main><section id="zh-conclusion"><h2>结论</h2><p>通过</p><p>逻辑通过不代表真实请求没有失败；各总体按发布原值保留。</p><div class="scroll"><table><thead><tr><th>名称</th><th>时间（UTC 时区）</th></tr></thead><tbody><tr><td>开始时间</td><td>2026-11-03T01:02:03.123Z (UTC)</td></tr><tr><td>结束时间</td><td>2026-11-03T01:02:04.456Z (UTC)</td></tr></tbody></table></div></section><section id="zh-populations"><h2>统计总体</h2><div class="scroll"><table><thead><tr><th>名称</th><th>总数</th><th>通过</th><th>失败</th><th>跳过</th></tr></thead><tbody><tr><td>逻辑单元</td><td>4</td><td>4</td><td>0</td><td>未采集</td></tr><tr><td>用例行（保留原始失败）</td><td>10</td><td>4</td><td>6</td><td>未采集</td></tr><tr><td>真实请求：已完成</td><td>10</td><td>未采集</td><td>未采集</td><td>未采集</td></tr></tbody></table></div></section><section id="zh-requests"><h2>真实请求</h2><div class="scroll"><table><thead><tr><th>状态</th><th>总数</th></tr></thead><tbody><tr><td>真实请求：已开始</td><td>10</td></tr><tr><td>真实请求：已完成</td><td>10</td></tr><tr><td>符合统计条件的已完成请求</td><td>10</td></tr><tr><td>失败</td><td>6</td></tr></tbody></table></div><p>逻辑通过不代表真实请求没有失败；各总体按发布原值保留。</p></section><section id="zh-failures"><h2>失败类别</h2><div class="scroll"><table><thead><tr><th>失败类别</th><th>总数</th></tr></thead><tbody><tr><td>传输失败</td><td>6</td></tr></tbody></table></div></section><section id="zh-completeness"><h2>完整性与限制</h2><div class="scroll"><table><thead><tr><th>名称</th><th>状态</th><th>说明</th></tr></thead><tbody><tr><td>执行完整性</td><td>完整</td><td></td></tr><tr><td>指标完整性</td><td>不完整</td><td>指标预算耗尽</td></tr><tr><td>负载完整性</td><td>完整</td><td></td></tr></tbody></table></div></section><section id="zh-limitations"><h2>完整性与限制</h2><p>证据未采集</p><p>future-unknown-reason</p></section><section id="zh-summary"><h2>摘要与来源</h2><div class="scroll"><table><thead><tr><th>名称</th><th>值</th></tr></thead><tbody><tr><td>来源</td><td>成员上传声明</td></tr><tr><td>源修订</td><td>r1</td></tr><tr><td>接口数</td><td>1</td></tr></tbody></table></div></section><section id="zh-nodes"><h2>节点轨迹</h2><div class="scroll"><table><thead><tr><th>节点</th><th>状态</th><th>时长</th><th>失败类别</th><th>说明</th></tr></thead><tbody><tr><td>很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称</td><td>通过</td><td>12.346 毫秒</td><td>无</td><td>重试后通过 &lt;script&gt;globalThis.pwned=1&lt;/script&gt;&lt;img src=&quot;https://remote.invalid/x&quot; onerror=&quot;alert(1)&quot;&gt;</td></tr></tbody></table></div></section><section id="zh-events"><h2>运行时间线</h2><div class="scroll"><table><thead><tr><th>节点</th><th>状态</th><th>尝试次数</th><th>等待</th><th>说明</th></tr></thead><tbody><tr><td>node-1</td><td>重试后恢复</td><td>2</td><td>2.346 毫秒</td><td>保留最初失败</td></tr></tbody></table></div></section><section id="zh-evidence"><h2>证据状态</h2><div class="scroll"><table><thead><tr><th>节点</th><th>状态</th></tr></thead><tbody><tr><td>node-1</td><td>未采集</td></tr></tbody></table></div></section><section id="zh-metrics"><h2>性能与统计口径</h2><div class="scroll"><table><thead><tr><th>名称</th><th>值</th></tr></thead><tbody><tr><td>请求速率</td><td>1 次/秒</td></tr><tr><td>精度</td><td>精确最近秩 · 精确统计</td></tr><tr><td>相对误差</td><td>0 %</td></tr><tr><td>下溢样本</td><td>0</td></tr><tr><td>上溢样本</td><td>0</td></tr></tbody></table></div><div class="scroll"><table><thead><tr><th>名称</th><th>时长</th></tr></thead><tbody><tr><td>最小值</td><td>10 毫秒</td></tr><tr><td>平均值</td><td>10 毫秒</td></tr><tr><td>最大值</td><td>10 毫秒</td></tr><tr><td>p50</td><td>10 毫秒</td></tr><tr><td>p90</td><td>10 毫秒</td></tr><tr><td>p95</td><td>10 毫秒</td></tr><tr><td>p99</td><td>10 毫秒</td></tr></tbody></table></div></section><section id="zh-trends"><h2>观测趋势</h2><p>单个观测桶，无法判断连续趋势。</p><p>观测桶宽度: 1,000 毫秒 · 时间对齐: 是 · 时间不确定度: 0 毫秒</p><div class="scroll"><table><thead><tr><th>相对开始时间</th><th>请求速率</th><th>真实请求</th><th>失败</th></tr></thead><tbody><tr><td>0 毫秒 – 1,000 毫秒</td><td>10.123 次/秒</td><td>10</td><td>6</td></tr></tbody></table></div></section><section id="zh-phases"><h2>阶段</h2><div class="scroll"><table><thead><tr><th>名称</th><th>时长</th><th>请求速率</th><th>真实请求</th><th>失败</th></tr></thead><tbody><tr><td>测量阶段 · private-stage</td><td>1,000 毫秒</td><td>1 次/秒</td><td>2</td><td>1</td></tr></tbody></table></div></section><section id="zh-lifecycle"><h2>生命周期</h2><div class="scroll"><table><thead><tr><th>名称</th><th>节点</th><th>状态</th><th>时长</th><th>失败类别</th></tr></thead><tbody><tr><td>初始化</td><td>private-vu</td><td>通过</td><td>5 毫秒</td><td>无</td></tr></tbody></table></div></section><section id="zh-comparison"><h2>比较结论</h2><p>可直接比较</p><p></p><div class="scroll"><table><thead><tr><th>名称</th><th>基线</th><th>当前</th><th>绝对变化</th><th>相对变化</th></tr></thead><tbody><tr><td>请求速率</td><td>1 次/秒</td><td>1 次/秒</td><td>0 次/秒</td><td>0 %</td></tr><tr><td>请求延迟 p95</td><td>1 毫秒</td><td>1 毫秒</td><td>0 毫秒</td><td>0 %</td></tr><tr><td>请求失败率</td><td>100 %</td><td>100 %</td><td>0 %</td><td>0 %</td></tr><tr><td>已完成迭代</td><td>1</td><td>1</td><td>0</td><td>0 %</td></tr><tr><td>迭代延迟 p95</td><td>1 毫秒</td><td>1 毫秒</td><td>0 毫秒</td><td>0 %</td></tr><tr><td>未启动迭代</td><td>1</td><td>1</td><td>0</td><td>0 %</td></tr></tbody></table></div></section></main></div><div class="en" lang="en"><nav aria-label="Contents"><h2>Contents</h2><a href="#en-conclusion">Conclusion</a><a href="#en-populations">Statistical populations</a><a href="#en-requests">Real requests</a><a href="#en-failures">Failure categories</a><a href="#en-completeness">Completeness and limits</a><a href="#en-limitations">Completeness and limits</a><a href="#en-summary">Summary and source</a><a href="#en-nodes">Node trace</a><a href="#en-events">Execution timeline</a><a href="#en-evidence">Evidence status</a><a href="#en-metrics">Performance and statistics</a><a href="#en-trends">Observed trend</a><a href="#en-phases">Phases</a><a href="#en-lifecycle">Lifecycle</a><a href="#en-comparison">Comparison</a></nav><main><section id="en-conclusion"><h2>Conclusion</h2><p>Passed</p><p>Logical success does not imply failure-free real requests; each population retains published facts.</p><div class="scroll"><table><thead><tr><th>Name</th><th>Time (UTC timezone)</th></tr></thead><tbody><tr><td>Started</td><td>2026-11-03T01:02:03.123Z (UTC)</td></tr><tr><td>Finished</td><td>2026-11-03T01:02:04.456Z (UTC)</td></tr></tbody></table></div></section><section id="en-populations"><h2>Statistical populations</h2><div class="scroll"><table><thead><tr><th>Name</th><th>Total</th><th>Passed</th><th>Failed</th><th>Skipped</th></tr></thead><tbody><tr><td>Logical units</td><td>4</td><td>4</td><td>0</td><td>Not collected</td></tr><tr><td>Case rows (original failures retained)</td><td>10</td><td>4</td><td>6</td><td>Not collected</td></tr><tr><td>Real requests: completed</td><td>10</td><td>Not collected</td><td>Not collected</td><td>Not collected</td></tr></tbody></table></div></section><section id="en-requests"><h2>Real requests</h2><div class="scroll"><table><thead><tr><th>State</th><th>Total</th></tr></thead><tbody><tr><td>Real requests: started</td><td>10</td></tr><tr><td>Real requests: completed</td><td>10</td></tr><tr><td>Eligible completed requests</td><td>10</td></tr><tr><td>Failed</td><td>6</td></tr></tbody></table></div><p>Logical success does not imply failure-free real requests; each population retains published facts.</p></section><section id="en-failures"><h2>Failure categories</h2><div class="scroll"><table><thead><tr><th>Failure categories</th><th>Total</th></tr></thead><tbody><tr><td>Transport failure</td><td>6</td></tr></tbody></table></div></section><section id="en-completeness"><h2>Completeness and limits</h2><div class="scroll"><table><thead><tr><th>Name</th><th>State</th><th>Description</th></tr></thead><tbody><tr><td>Execution completeness</td><td>Complete</td><td></td></tr><tr><td>Metrics completeness</td><td>Incomplete</td><td>Metrics budget exhausted</td></tr><tr><td>Load completeness</td><td>Complete</td><td></td></tr></tbody></table></div></section><section id="en-limitations"><h2>Completeness and limits</h2><p>Evidence not collected</p><p>future-unknown-reason</p></section><section id="en-summary"><h2>Summary and source</h2><div class="scroll"><table><thead><tr><th>Name</th><th>Value</th></tr></thead><tbody><tr><td>Source</td><td>Member supplied claim</td></tr><tr><td>Source revision</td><td>r1</td></tr><tr><td>API count</td><td>1</td></tr></tbody></table></div></section><section id="en-nodes"><h2>Node trace</h2><div class="scroll"><table><thead><tr><th>Node</th><th>State</th><th>Duration</th><th>Failure categories</th><th>Message</th></tr></thead><tbody><tr><td>很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称</td><td>Passed</td><td>12.346 ms</td><td>None</td><td>重试后通过 &lt;script&gt;globalThis.pwned=1&lt;/script&gt;&lt;img src=&quot;https://remote.invalid/x&quot; onerror=&quot;alert(1)&quot;&gt;</td></tr></tbody></table></div></section><section id="en-events"><h2>Execution timeline</h2><div class="scroll"><table><thead><tr><th>Node</th><th>State</th><th>Attempt</th><th>Delay</th><th>Message</th></tr></thead><tbody><tr><td>node-1</td><td>Recovered after retry</td><td>2</td><td>2.346 ms</td><td>保留最初失败</td></tr></tbody></table></div></section><section id="en-evidence"><h2>Evidence status</h2><div class="scroll"><table><thead><tr><th>Node</th><th>State</th></tr></thead><tbody><tr><td>node-1</td><td>Not collected</td></tr></tbody></table></div></section><section id="en-metrics"><h2>Performance and statistics</h2><div class="scroll"><table><thead><tr><th>Name</th><th>Value</th></tr></thead><tbody><tr><td>Request rate</td><td>1 requests/s</td></tr><tr><td>Precision</td><td>Exact nearest rank · Exact statistics</td></tr><tr><td>Relative error</td><td>0 %</td></tr><tr><td>Underflow samples</td><td>0</td></tr><tr><td>Overflow samples</td><td>0</td></tr></tbody></table></div><div class="scroll"><table><thead><tr><th>Name</th><th>Duration</th></tr></thead><tbody><tr><td>Minimum</td><td>10 ms</td></tr><tr><td>Average</td><td>10 ms</td></tr><tr><td>Maximum</td><td>10 ms</td></tr><tr><td>p50</td><td>10 ms</td></tr><tr><td>p90</td><td>10 ms</td></tr><tr><td>p95</td><td>10 ms</td></tr><tr><td>p99</td><td>10 ms</td></tr></tbody></table></div></section><section id="en-trends"><h2>Observed trend</h2><p>A single observation bucket cannot establish a continuous trend.</p><p>Bucket width: 1,000 ms · Time aligned: Yes · Uncertainty: 0 ms</p><div class="scroll"><table><thead><tr><th>Offset from start</th><th>Request rate</th><th>Real requests</th><th>Failed</th></tr></thead><tbody><tr><td>0 ms – 1,000 ms</td><td>10.123 requests/s</td><td>10</td><td>6</td></tr></tbody></table></div></section><section id="en-phases"><h2>Phases</h2><div class="scroll"><table><thead><tr><th>Name</th><th>Duration</th><th>Request rate</th><th>Real requests</th><th>Failed</th></tr></thead><tbody><tr><td>Measurement · private-stage</td><td>1,000 ms</td><td>1 requests/s</td><td>2</td><td>1</td></tr></tbody></table></div></section><section id="en-lifecycle"><h2>Lifecycle</h2><div class="scroll"><table><thead><tr><th>Name</th><th>Node</th><th>State</th><th>Duration</th><th>Failure categories</th></tr></thead><tbody><tr><td>Setup</td><td>private-vu</td><td>Passed</td><td>5 ms</td><td>None</td></tr></tbody></table></div></section><section id="en-comparison"><h2>Comparison</h2><p>Directly comparable</p><p></p><div class="scroll"><table><thead><tr><th>Name</th><th>Baseline</th><th>Candidate</th><th>Absolute change</th><th>Relative change</th></tr></thead><tbody><tr><td>Request rate</td><td>1 requests/s</td><td>1 requests/s</td><td>0 requests/s</td><td>0 %</td></tr><tr><td>Request latency p95</td><td>1 ms</td><td>1 ms</td><td>0 ms</td><td>0 %</td></tr><tr><td>Request failure rate</td><td>100 %</td><td>100 %</td><td>0 %</td><td>0 %</td></tr><tr><td>Completed iterations</td><td>1</td><td>1</td><td>0</td><td>0 %</td></tr><tr><td>Iteration latency p95</td><td>1 ms</td><td>1 ms</td><td>0 ms</td><td>0 %</td></tr><tr><td>Dropped iterations</td><td>1</td><td>1</td><td>0</td><td>0 %</td></tr></tbody></table></div></section></main></div><details><summary>完整指纹 / Full fingerprint</summary><p>abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789</p></details><details><summary>原始安全数据 / Raw safe data</summary><pre>{
+  &quot;formatVersion&quot;: 1,
+  &quot;title&quot;: &quot;订单工作流报告 / Order workflow · synthetic only&quot;,
+  &quot;summary&quot;: [
+    {
+      &quot;labelCode&quot;: &quot;document.apiCount&quot;,
+      &quot;value&quot;: 1
+    }
+  ],
+  &quot;limitations&quot;: [
+    {
+      &quot;code&quot;: &quot;evidence-not-collected&quot;
+    },
+    {
+      &quot;code&quot;: &quot;future-unknown-reason&quot;
+    }
+  ],
+  &quot;source&quot;: {
+    &quot;trust&quot;: &quot;member-claim&quot;,
+    &quot;revision&quot;: &quot;r1&quot;,
+    &quot;digest&quot;: &quot;abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789&quot;
+  },
+  &quot;kind&quot;: &quot;report&quot;,
+  &quot;report&quot;: {
+    &quot;sourceCategory&quot;: &quot;stress&quot;,
+    &quot;startedAt&quot;: &quot;2026-11-03T01:02:03.123Z&quot;,
+    &quot;finishedAt&quot;: &quot;2026-11-03T01:02:04.456Z&quot;,
+    &quot;verdict&quot;: &quot;passed&quot;,
+    &quot;counts&quot;: [
+      {
+        &quot;labelCode&quot;: &quot;logical.units&quot;,
+        &quot;total&quot;: 4,
+        &quot;passed&quot;: 4,
+        &quot;failed&quot;: 0
+      },
+      {
+        &quot;labelCode&quot;: &quot;case.rows&quot;,
+        &quot;total&quot;: 10,
+        &quot;passed&quot;: 4,
+        &quot;failed&quot;: 6
+      },
+      {
+        &quot;labelCode&quot;: &quot;request.completed&quot;,
+        &quot;total&quot;: 10
+      }
+    ],
+    &quot;failures&quot;: [
+      {
+        &quot;category&quot;: &quot;transport&quot;,
+        &quot;count&quot;: 6
+      }
+    ],
+    &quot;nodes&quot;: [
+      {
+        &quot;id&quot;: &quot;node-1&quot;,
+        &quot;name&quot;: &quot;很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称&quot;,
+        &quot;state&quot;: &quot;passed&quot;,
+        &quot;durationMs&quot;: 12.3456789,
+        &quot;message&quot;: &quot;重试后通过 &lt;script&gt;globalThis.pwned=1&lt;/script&gt;&lt;img src=\&quot;https://remote.invalid/x\&quot; onerror=\&quot;alert(1)\&quot;&gt;&quot;
+      }
+    ],
+    &quot;trace&quot;: [
+      {
+        &quot;nodeId&quot;: &quot;node-1&quot;,
+        &quot;type&quot;: &quot;recovered&quot;,
+        &quot;message&quot;: &quot;保留最初失败&quot;,
+        &quot;delayMs&quot;: 2.3456,
+        &quot;attempt&quot;: 2
+      }
+    ],
+    &quot;evidence&quot;: [
+      {
+        &quot;nodeId&quot;: &quot;node-1&quot;,
+        &quot;status&quot;: &quot;not-collected&quot;
+      }
+    ],
+    &quot;stress&quot;: {
+      &quot;iterations&quot;: {
+        &quot;planned&quot;: 1,
+        &quot;started&quot;: 1,
+        &quot;completed&quot;: 1,
+        &quot;passed&quot;: 1,
+        &quot;failed&quot;: 0,
+        &quot;aborted&quot;: 0,
+        &quot;dropped&quot;: 0,
+        &quot;latency&quot;: {
+          &quot;availability&quot;: &quot;available&quot;,
+          &quot;value&quot;: {
+            &quot;min&quot;: 10,
+            &quot;avg&quot;: 10,
+            &quot;max&quot;: 10,
+            &quot;p50&quot;: 10,
+            &quot;p90&quot;: 10,
+            &quot;p95&quot;: 10,
+            &quot;p99&quot;: 10
+          }
+        },
+        &quot;startDelay&quot;: {
+          &quot;availability&quot;: &quot;available&quot;,
+          &quot;value&quot;: {
+            &quot;min&quot;: 10,
+            &quot;avg&quot;: 10,
+            &quot;max&quot;: 10,
+            &quot;p50&quot;: 10,
+            &quot;p90&quot;: 10,
+            &quot;p95&quot;: 10,
+            &quot;p99&quot;: 10
+          }
+        }
+      },
+      &quot;requests&quot;: {
+        &quot;started&quot;: 10,
+        &quot;completed&quot;: 10,
+        &quot;eligibleCompleted&quot;: 10,
+        &quot;failed&quot;: 6
+      },
+      &quot;httpExchanges&quot;: {
+        &quot;started&quot;: 2,
+        &quot;completed&quot;: 2
+      },
+      &quot;caseRows&quot;: {
+        &quot;total&quot;: 2,
+        &quot;ok&quot;: 1,
+        &quot;failed&quot;: 1,
+        &quot;failures&quot;: {
+          &quot;transport&quot;: 1,
+          &quot;http&quot;: 0,
+          &quot;script&quot;: 0,
+          &quot;assertion&quot;: 0,
+          &quot;config&quot;: 0,
+          &quot;aborted&quot;: 0,
+          &quot;extraction&quot;: 0
+        }
+      },
+      &quot;timeline&quot;: {
+        &quot;bucketWidthMs&quot;: 1000,
+        &quot;aligned&quot;: true,
+        &quot;uncertaintyMs&quot;: 0,
+        &quot;buckets&quot;: [
+          {
+            &quot;startOffsetMs&quot;: 0,
+            &quot;endOffsetMs&quot;: 1000,
+            &quot;rps&quot;: {
+              &quot;availability&quot;: &quot;available&quot;,
+              &quot;value&quot;: 10.123456
+            },
+            &quot;caseRows&quot;: {
+              &quot;total&quot;: 2,
+              &quot;ok&quot;: 1,
+              &quot;failed&quot;: 1,
+              &quot;failures&quot;: {
+                &quot;transport&quot;: 1,
+                &quot;http&quot;: 0,
+                &quot;script&quot;: 0,
+                &quot;assertion&quot;: 0,
+                &quot;config&quot;: 0,
+                &quot;aborted&quot;: 0,
+                &quot;extraction&quot;: 0
+              }
+            },
+            &quot;requests&quot;: {
+              &quot;started&quot;: 10,
+              &quot;completed&quot;: 10,
+              &quot;eligibleCompleted&quot;: 10,
+              &quot;failed&quot;: 6
+            },
+            &quot;httpExchanges&quot;: {
+              &quot;started&quot;: 2,
+              &quot;completed&quot;: 2
+            },
+            &quot;latency&quot;: {
+              &quot;availability&quot;: &quot;available&quot;,
+              &quot;value&quot;: {
+                &quot;min&quot;: 10,
+                &quot;avg&quot;: 10,
+                &quot;max&quot;: 10,
+                &quot;p50&quot;: 10,
+                &quot;p90&quot;: 10,
+                &quot;p95&quot;: 10,
+                &quot;p99&quot;: 10
+              }
+            },
+            &quot;sources&quot;: []
+          }
+        ]
+      },
+      &quot;nodes&quot;: [
+        {
+          &quot;key&quot;: &quot;private-key&quot;,
+          &quot;workflowId&quot;: &quot;private-flow&quot;,
+          &quot;nodeId&quot;: &quot;private-node&quot;,
+          &quot;other&quot;: false,
+          &quot;visits&quot;: 1,
+          &quot;passed&quot;: 1,
+          &quot;failed&quot;: 0,
+          &quot;aborted&quot;: 0,
+          &quot;skipped&quot;: 0,
+          &quot;requests&quot;: {
+            &quot;started&quot;: 2,
+            &quot;completed&quot;: 2,
+            &quot;eligibleCompleted&quot;: 2,
+            &quot;failed&quot;: 1
+          },
+          &quot;requestLatency&quot;: {
+            &quot;availability&quot;: &quot;available&quot;,
+            &quot;value&quot;: {
+              &quot;min&quot;: 10,
+              &quot;avg&quot;: 10,
+              &quot;max&quot;: 10,
+              &quot;p50&quot;: 10,
+              &quot;p90&quot;: 10,
+              &quot;p95&quot;: 10,
+              &quot;p99&quot;: 10
+            }
+          },
+          &quot;nodeLatency&quot;: {
+            &quot;availability&quot;: &quot;available&quot;,
+            &quot;value&quot;: {
+              &quot;min&quot;: 10,
+              &quot;avg&quot;: 10,
+              &quot;max&quot;: 10,
+              &quot;p50&quot;: 10,
+              &quot;p90&quot;: 10,
+              &quot;p95&quot;: 10,
+              &quot;p99&quot;: 10
+            }
+          }
+        }
+      ],
+      &quot;lifecycle&quot;: [
+        {
+          &quot;role&quot;: &quot;setup&quot;,
+          &quot;vuId&quot;: &quot;private-vu&quot;,
+          &quot;state&quot;: &quot;passed&quot;,
+          &quot;durationMs&quot;: 5
+        }
+      ],
+      &quot;load&quot;: {
+        &quot;plannedDurationMs&quot;: null,
+        &quot;measurementDurationMs&quot;: 1000,
+        &quot;drainDurationMs&quot;: 0,
+        &quot;policyLimitedMs&quot;: 0,
+        &quot;saturated&quot;: false,
+        &quot;maxVus&quot;: 1,
+        &quot;maxRequestConcurrency&quot;: 1,
+        &quot;effectiveMaxRps&quot;: null
+      },
+      &quot;statistics&quot;: {
+        &quot;method&quot;: &quot;exact-nearest-rank&quot;,
+        &quot;exact&quot;: true,
+        &quot;relativeError&quot;: 0,
+        &quot;minValueMs&quot;: 0.001,
+        &quot;gamma&quot;: 1.01,
+        &quot;bucketCount&quot;: 4608,
+        &quot;exactLimit&quot;: 256,
+        &quot;underflow&quot;: 0,
+        &quot;overflow&quot;: 0
+      },
+      &quot;rps&quot;: {
+        &quot;availability&quot;: &quot;available&quot;,
+        &quot;value&quot;: 1
+      },
+      &quot;latency&quot;: {
+        &quot;availability&quot;: &quot;available&quot;,
+        &quot;value&quot;: {
+          &quot;min&quot;: 10,
+          &quot;avg&quot;: 10,
+          &quot;max&quot;: 10,
+          &quot;p50&quot;: 10,
+          &quot;p90&quot;: 10,
+          &quot;p95&quot;: 10,
+          &quot;p99&quot;: 10
+        }
+      },
+      &quot;scriptLatency&quot;: {
+        &quot;availability&quot;: &quot;available&quot;,
+        &quot;value&quot;: {
+          &quot;min&quot;: 10,
+          &quot;avg&quot;: 10,
+          &quot;max&quot;: 10,
+          &quot;p50&quot;: 10,
+          &quot;p90&quot;: 10,
+          &quot;p95&quot;: 10,
+          &quot;p99&quot;: 10
+        }
+      },
+      &quot;iterationLatency&quot;: {
+        &quot;availability&quot;: &quot;available&quot;,
+        &quot;value&quot;: {
+          &quot;min&quot;: 10,
+          &quot;avg&quot;: 10,
+          &quot;max&quot;: 10,
+          &quot;p50&quot;: 10,
+          &quot;p90&quot;: 10,
+          &quot;p95&quot;: 10,
+          &quot;p99&quot;: 10
+        }
+      },
+      &quot;phases&quot;: [
+        {
+          &quot;phase&quot;: &quot;measurement&quot;,
+          &quot;stageId&quot;: &quot;private-stage&quot;,
+          &quot;startOffsetMs&quot;: 0,
+          &quot;endOffsetMs&quot;: 1000,
+          &quot;durationMs&quot;: 1000,
+          &quot;rps&quot;: {
+            &quot;availability&quot;: &quot;available&quot;,
+            &quot;value&quot;: 1
+          },
+          &quot;caseRows&quot;: {
+            &quot;total&quot;: 2,
+            &quot;ok&quot;: 1,
+            &quot;failed&quot;: 1,
+            &quot;failures&quot;: {
+              &quot;transport&quot;: 1,
+              &quot;http&quot;: 0,
+              &quot;script&quot;: 0,
+              &quot;assertion&quot;: 0,
+              &quot;config&quot;: 0,
+              &quot;aborted&quot;: 0,
+              &quot;extraction&quot;: 0
+            }
+          },
+          &quot;requests&quot;: {
+            &quot;started&quot;: 2,
+            &quot;completed&quot;: 2,
+            &quot;eligibleCompleted&quot;: 2,
+            &quot;failed&quot;: 1
+          },
+          &quot;httpExchanges&quot;: {
+            &quot;started&quot;: 2,
+            &quot;completed&quot;: 2
+          },
+          &quot;latency&quot;: {
+            &quot;availability&quot;: &quot;available&quot;,
+            &quot;value&quot;: {
+              &quot;min&quot;: 10,
+              &quot;avg&quot;: 10,
+              &quot;max&quot;: 10,
+              &quot;p50&quot;: 10,
+              &quot;p90&quot;: 10,
+              &quot;p95&quot;: 10,
+              &quot;p99&quot;: 10
+            }
+          }
+        }
+      ],
+      &quot;completeness&quot;: {
+        &quot;execution&quot;: {
+          &quot;complete&quot;: true,
+          &quot;reasons&quot;: []
+        },
+        &quot;metrics&quot;: {
+          &quot;complete&quot;: false,
+          &quot;reasons&quot;: [
+            &quot;metrics-budget-exhausted&quot;
+          ]
+        },
+        &quot;load&quot;: {
+          &quot;complete&quot;: true,
+          &quot;reasons&quot;: []
+        }
+      }
+    },
+    &quot;comparison&quot;: {
+      &quot;directlyComparable&quot;: true,
+      &quot;mismatches&quot;: [],
+      &quot;notices&quot;: [],
+      &quot;metrics&quot;: {
+        &quot;rps&quot;: {
+          &quot;base&quot;: 1,
+          &quot;candidate&quot;: 1,
+          &quot;absolute&quot;: 0,
+          &quot;relative&quot;: 0
+        },
+        &quot;p95Ms&quot;: {
+          &quot;base&quot;: 1,
+          &quot;candidate&quot;: 1,
+          &quot;absolute&quot;: 0,
+          &quot;relative&quot;: 0
+        },
+        &quot;errorRate&quot;: {
+          &quot;base&quot;: 1,
+          &quot;candidate&quot;: 1,
+          &quot;absolute&quot;: 0,
+          &quot;relative&quot;: 0
+        },
+        &quot;iterationsCompleted&quot;: {
+          &quot;base&quot;: 1,
+          &quot;candidate&quot;: 1,
+          &quot;absolute&quot;: 0,
+          &quot;relative&quot;: 0
+        },
+        &quot;iterationP95Ms&quot;: {
+          &quot;base&quot;: 1,
+          &quot;candidate&quot;: 1,
+          &quot;absolute&quot;: 0,
+          &quot;relative&quot;: 0
+        },
+        &quot;dropped&quot;: {
+          &quot;base&quot;: 1,
+          &quot;candidate&quot;: 1,
+          &quot;absolute&quot;: 0,
+          &quot;relative&quot;: 0
+        }
+      }
+    }
+  }
+}</pre></details></body></html>

@@ -60,7 +60,7 @@ describe("document export", () => {
 
     expect(projectedApi.caseSummaries).toEqual([{ name: "token=****", scope: "base", assertionCount: 1 }]);
     expect(markdown).toContain("| token=**** | base | 1 |");
-    expect(html).toContain("<td>token=****</td><td>base</td><td>1</td>");
+    expect(html).toContain('<td>token=****</td><td><span data-reader-zh="基础" data-reader-en="base">基础</span></td><td>1</td>');
     for (const output of [JSON.stringify(projection), markdown, html]) {
       expect(output).toContain("token=****");
       expect(output).not.toContain("case-name-secret");
@@ -132,7 +132,7 @@ describe("document export", () => {
     const html = document.renderDocumentHtml(multiApiProjection());
     const sidebar = html.match(/<aside\b[^>]*>([\s\S]*?)<\/aside>/)?.[1];
     const controls = sidebar?.match(/<div class="document-controls">([\s\S]*?)<\/div>/)?.[1];
-    const navigation = html.match(/<nav id="document-contents" aria-label="Contents">([\s\S]*?)<\/nav>/)?.[1];
+    const navigation = html.match(/<nav id="document-contents" aria-label="目录"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
     const main = html.match(/<main>([\s\S]*?)<\/main>/)?.[1];
 
     expect(controls).toBeDefined();
@@ -215,7 +215,7 @@ describe("document export", () => {
       input();
       expect(sections.filter((section) => !section.hidden).map((section) => section.id)).toEqual(expected);
       expect(entries.filter((entry) => !entry.hidden).map((entry) => entry.id)).toEqual(expected);
-      expect(summary.textContent).toBe(`Showing ${expected.length} of 2 APIs`);
+      expect(summary.textContent).toBe(`显示 ${expected.length} / 2 个接口`);
       expect(scrollTop).toBe(0);
       expect(contents.scrollTop).toBe(0);
     }
@@ -226,4 +226,12 @@ describe("document export", () => {
     expect(expanded).toBe("false");
     expect(classes.has("is-open")).toBe(false);
   });
+});
+it('preserves Markdown component definitions while HTML exposes them as folded contract details',()=>{
+  const projection=buildDocumentProjection(createProjectSnapshot(projectionProject()),{kind:'project'});
+  const markdown=document.renderDocumentMarkdown(projection);
+  expect(markdown).not.toContain('[object Object]');
+  for(const component of projection.apis[0]!.components) expect(markdown).toContain(JSON.stringify(component.definition));
+  const html=document.renderDocumentHtml(projection);
+  expect(html).toContain('<details><summary><span data-reader-zh="查看组件契约"');
 });

@@ -1,0 +1,30 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/share-viewer
+
+ ❯ tests/offline-readers.test.ts (3 tests | 1 failed) 321ms
+   × localizes document labels and dynamic counts without translating or replacing request payloads 187ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/offline-readers.test.ts > localizes document labels and dynamic counts without translating or replacing request payloads
+AssertionError: expected 'Copy' to be 'Copied' // Object.is equality
+
+Expected: "Copied"
+Received: "Copy"
+
+ ❯ tests/offline-readers.test.ts:39:28
+     37|   Object.defineProperty(w.navigator,'clipboard',{value:{writeText}});
+     38|   const copy=d.querySelector<HTMLButtonElement>('[data-copy-button]')!…
+     39|   expect(copy.textContent).toBe('Copied'); input(w,'reader-language','…
+       |                            ^
+     40| });
+     41| it('keeps stress section navigation and empty results consistent, and …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 2 passed (3)
+      Tests  1 failed | 26 passed (27)
+   Start at  11:51:32
+   Duration  4.17s (transform 1.54s, setup 0ms, import 2.15s, tests 2.09s, environment 3.10s)
+

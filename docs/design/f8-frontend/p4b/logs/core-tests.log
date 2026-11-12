@@ -1,0 +1,232 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/packages/core
+
+ ❯ tests/report/reporters.test.ts (21 tests | 3 failed) 152ms
+     × keeps exact v2 attempt evidence when rows are reordered and final logical success in all reporters 17ms
+     × retains real row counts and adds one labeled reporting unit only for unrepresented entry failures 7ms
+     × labels mixed logical units separately from raw execution and leaves absent request facts uncollected 3ms
+ ❯ tests/design/document.test.ts (6 tests | 3 failed) 83ms
+     × exports only a redacted test-case summary in Markdown and HTML 45ms
+     × keeps one labeled search and count outside collapsed navigation and connects real API targets 4ms
+     × runs generated search to filter directory and APIs together, restore counts and reset deep scroll 7ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/design/document.test.ts > document export > exports only a redacted test-case summary in Markdown and HTML
+AssertionError: expected '<!doctype html>\n<html lang="zh-CN">\…' to contain '<td>token=****</td><td>base</td><td>1…'
+
+- Expected
++ Received
+
+- <td>token=****</td><td>base</td><td>1</td>
++ <!doctype html>
++ <html lang="zh-CN">
++ <head>
++ <meta charset="utf-8">
++ <meta name="viewport" content="width=device-width,initial-scale=1">
++ <title>Projection fixture · API 文档</title>
++ <style>
++ :root{color-scheme:light dark;font:16px/1.55 system-ui,sans-serif;--line:#8885;--panel:#8881;--link:#3984d6}*{box-sizing:border-box}body{max-width:1500px;margin:0 auto;padding:24px;overflow-wrap:anywhere;display:grid;grid-template-columns:280px minmax(0,1fr);gap:24px}a{color:var(--link)}header{border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:24px}nav,section.api,section.diagnostics{border:1px solid var(--line);border-radius:8px;padding:16px;margin:18px 0}nav ul{padding-left:22px}nav li{margin:4px 0}nav li span{opacity:.75;display:block}input[type=search]{width:min(100%,520px);padding:9px 12px;font:inherit}table{border-collapse:collapse;width:100%;margin:10px 0 18px}th,td{text-align:left;vertical-align:top;border:1px solid var(--line);padding:7px 9px}th{background:var(--panel)}.plain-text{white-space:pre-wrap;margin:8px 0 14px}.code-sample{position:relative;margin:12px 0 18px}.code-sample button{float:right}.code-sample pre{clear:both;overflow:auto;background:var(--panel);padding:12px;border-radius:5px;white-space:pre}.api-heading{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.api-heading .route{font-family:ui-monospace,monospace;opacity:.8}.muted{opacity:.75}.model{border-top:1px solid var(--line);padding-top:8px;margin-top:14px}pre{overflow:auto} [hidden]{display:none!important}
++ .document-sidebar{min-width:0;position:sticky;top:24px;align-self:start;display:flex;flex-direction:column;gap:12px;max-height:calc(100vh - 48px);max-height:calc(100dvh - 48px);background:Canvas}.document-controls{flex:none}.document-controls label{display:block}.document-controls input{display:block;margin-top:8px}#search-summary{margin:8px 0 0}main{min-width:0}#document-contents{min-height:0;margin:0;overflow:auto;overflow-wrap:anywhere}#document-contents h2{margin-top:0}#contents-toggle{display:none;font:inherit;padding:9px 12px;max-width:100%;white-space:normal;overflow-wrap:anywhere}
++ @media(max-width:800px){html{scroll-padding-top:calc(var(--document-sidebar-height,14rem) + 16px)}body{display:block;padding:16px}.document-sidebar{top:0;z-index:1;padding:12px 0;margin-bottom:16px;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px)}#contents-toggle{display:inline-block;margin-top:12px}#document-contents{display:none;max-height:min(30vh,16rem);max-height:min(30dvh,16rem)}#document-contents.is-open{display:block}}
++
++ :root{font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;color:#23324b;background:#f4f6fa;font-synthesis:none}*{box-sizing:border-box}body{margin:0}h1{font-size:26px;line-height:1.4}h2{font-size:20px}h3{font-size:16px}a{color:#245fba}button,input,select{font:inherit}button,select,input:not([type=checkbox]):not([type=radio]){border:1px solid #b8c7d9;border-radius:6px;background:#fff;color:#23324b;padding:7px 10px}button{cursor:pointer}button:hover{background:#edf3fc}:focus-visible{outline:2px solid #2875db;outline-offset:3px}table{font-variant-numeric:tabular-nums}th{white-space:nowrap}summary{cursor:pointer}pre{max-height:28rem;overflow:auto}section{scroll-margin-top:16px}[hidden]{display:none!important}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
++
++ :root{color-scheme:light;--line:#d7e1ed;--panel:#edf2f9}body{max-width:1600px;gap:24px}.document-sidebar{padding:16px;border:1px solid var(--line);border-radius:10px;background:white}.document-controls select{display:block;margin:4px 0 12px}#document-contents{border:0;padding:8px 0}#document-contents ul{list-style:none;padding:0;margin:0}#document-contents a{display:block;padding:8px;border-radius:6px;text-decoration:none}#document-contents a:hover{background:#edf3fc}#document-contents h2{font-size:16px}header{padding:8px 0 16px;margin-bottom:16px}section.api,section.diagnostics{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px #20345405}section.api{scroll-margin-top:16px}section.api h2{margin:0}.table-scroll{overflow:auto;max-height:28rem;margin:10px 0 18px}table{margin:0}th,td{min-width:7rem;max-width:34rem;overflow-wrap:anywhere}th{position:sticky;top:0;z-index:1}pre{max-height:28rem}label{font-weight:600}#search-summary{font-size:13px;color:#52647c}@media(max-width:800px){.document-sidebar{border-radius:8px;padding:10px 12px}.document-controls select{display:inline-block;margin:0 8px 6px}section.api,section.diagnostics{padding:14px}}
++ </style>
++ </head>
++ <body>
++ <aside id="document-sidebar" class="document-sidebar"><div class="document-controls"><label for="reader-language"><span data-reader-zh="显示语言" data-reader-en="Language">显示语言</span></label><select id="reader-language"><option value="zh-CN">简体中文</option><option value="en">English</option></select><label for="document-search"><span data-reader-zh="搜索接口名、方法、路径或标签" data-reader-en="Search API name, method, path or tag">搜索接口名、方法、路径或标签</span></label><input id="document-search" type="search" autocomplete="off"><p id="search-summary" aria-live="polite">显示 1 / 1 个接口</p><button id="contents-toggle" type="button" aria-controls="document-contents" aria-expanded="false"><span data-reader-zh="目录" data-reader-en="Contents">目录</span></button></div><nav id="document-contents" aria-label="目录" data-reader-aria-zh="目录" data-reader-aria-en="Contents"><h2><span data-reader-zh="目录" data-reader-en="Contents">目录</span></h2><ul><li data-api-target="api-10000000-0000-4000-8000-000000000002"><a href="#api-10000000-0000-4000-8000-000000000002">Get user <span>GET /users/{id}</span></a></li></ul></nav></aside>
++ <main>
++ <header><h1>Projection fixture</h1><p class="muted"><span data-reader-zh="离线 API 文档" data-reader-en="Offline API documentation">离线 API 文档</span></p></header>
++ <section class="api" id="api-10000000-0000-4000-8000-000000000002" data-search="Get user GET /users/{id}"><div class="api-heading"><h2>Get user</h2><span class="route">GET /users/{id}</span></div><h3><span data-reader-zh="说明" data-reader-en="Description">说明</span></h3><div class="plain-text">Read a user</div><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="字段" data-reader-en="Field">字段</span></th><th scope="col"><span data-reader-zh="值" data-reader-en="Value">值</span></th></tr></thead><tbody><tr><td><span data-reader-zh="模块" data-reader-en="Collection">模块</span></td><td>Users</td></tr><tr><td><span data-reader-zh="目录" data-reader-en="Folders">目录</span></td><td>—</td></tr><tr><td><span data-reader-zh="版本" data-reader-en="Version">版本</span></td><td>1.0.0</td></tr><tr><td><span data-reader-zh="生命周期" data-reader-en="Lifecycle">生命周期</span></td><td><span data-reader-zh="草稿" data-reader-en="draft">草稿</span></td></tr><tr><td><span data-reader-zh="标签" data-reader-en="Tags">标签</span></td><td>—</td></tr><tr><td><span data-reader-zh="协议" data-reader-en="Protocol">协议</span></td><td>HTTP</td></tr><tr><td><span data-reader-zh="基础地址" data-reader-en="Base URL">基础地址</span></td><td>https://api.example.test/v1</td></tr><tr><td><span data-reader-zh="路径" data-reader-en="Path">路径</span></td><td>/users/{id}</td></tr></tbody></table></div><h3><span data-reader-zh="请求" data-reader-en="Request">请求</span></h3><p><strong><span data-reader-zh="认证" data-reader-en="Authentication">认证</span>:</strong> <span data-reader-zh="Bearer（令牌占位符）" data-reader-en="Bearer (token placeholder)">Bearer（令牌占位符）</span></p><h4><span data-reader-zh="路径参数" data-reader-en="Path parameters">路径参数</span></h4><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="名称" data-reader-en="Name">名称</span></th><th scope="col"><span data-reader-zh="值" data-reader-en="Value">值</span></th><th scope="col"><span data-reader-zh="必填" data-reader-en="Required">必填</span></th><th scope="col"><span data-reader-zh="启用" data-reader-en="Enabled">启用</span></th><th scope="col"><span data-reader-zh="说明" data-reader-en="Description">说明</span></th></tr></thead><tbody><tr><td>id</td><td>—</td><td><span data-reader-zh="是" data-reader-en="Yes">是</span></td><td><span data-reader-zh="是" data-reader-en="Yes">是</span></td><td>User ID</td></tr></tbody></table></div><details><summary>id <span data-reader-zh="数据结构" data-reader-en="Schema">数据结构</span></summary><div class="code-sample"><strong><span data-reader-zh="JSON 数据结构" data-reader-en="JSON schema">JSON 数据结构</span></strong><pre><code>{
++   &quot;kind&quot;: &quot;scalar&quot;,
++   &quot;type&quot;: &quot;integer&quot;
++ }</code></pre></div></details><h4><span data-reader-zh="查询参数" data-reader-en="Query parameters">查询参数</span></h4><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="名称" data-reader-en="Name">名称</span></th><th scope="col"><span data-reader-zh="值" data-reader-en="Value">值</span></th><th scope="col"><span data-reader-zh="必填" data-reader-en="Required">必填</span></th><th scope="col"><span data-reader-zh="启用" data-reader-en="Enabled">启用</span></th><th scope="col"><span data-reader-zh="说明" data-reader-en="Description">说明</span></th></tr></thead><tbody><tr><td>access_token</td><td>****</td><td><span data-reader-zh="否" data-reader-en="No">否</span></td><td><span data-reader-zh="是" data-reader-en="Yes">是</span></td><td></td></tr></tbody></table></div><details><summary>access_token <span data-reader-zh="数据结构" data-reader-en="Schema">数据结构</span></summary><div class="code-sample"><strong><span data-reader-zh="JSON 数据结构" data-reader-en="JSON schema">JSON 数据结构</span></strong><pre><code>{
++   &quot;kind&quot;: &quot;scalar&quot;,
++   &quot;type&quot;: &quot;string&quot;
++ }</code></pre></div></details><h4><span data-reader-zh="请求头" data-reader-en="Headers">请求头</span></h4><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="名称" data-reader-en="Name">名称</span></th><th scope="col"><span data-reader-zh="值" data-reader-en="Value">值</span></th><th scope="col"><span data-reader-zh="必填" data-reader-en="Required">必填</span></th><th scope="col"><span data-reader-zh="启用" data-reader-en="Enabled">启用</span></th><th scope="col"><span data-reader-zh="说明" data-reader-en="Description">说明</span></th></tr></thead><tbody><tr><td>Authorization</td><td>****</td><td><span data-reader-zh="否" data-reader-en="No">否</span></td><td><span data-reader-zh="是" data-reader-en="Yes">是</span></td><td></td></tr></tbody></table></div><details><summary>Authorization <span data-reader-zh="数据结构" data-reader-en="Schema">数据结构</span></summary><div class="code-sample"><strong><span data-reader-zh="JSON 数据结构" data-reader-en="JSON schema">JSON 数据结构</span></strong><pre><code>{
++   &quot;kind&quot;: &quot;scalar&quot;,
++   &quot;type&quot;: &quot;string&quot;
++ }</code></pre></div></details><h4><span data-reader-zh="正文" data-reader-en="Body">正文</span></h4><div class="code-sample"><strong>JSON</strong><pre><code>{&quot;password&quot;:&quot;****&quot;,&quot;profile&quot;:&quot;visible&quot;}</code></pre></div><div class="code-sample"><strong><span data-reader-zh="正文数据结构" data-reader-en="Body schema">正文数据结构</span></strong><pre><code>{
++   &quot;kind&quot;: &quot;modelRef&quot;,
++   &quot;modelId&quot;: &quot;10000000-0000-4000-8000-000000000006&quot;
++ }</code></pre></div><div class="code-sample"><strong>cURL (POSIX shell)</strong><button type="button" data-copy-button data-reader-zh="复制" data-reader-en="Copy">复制</button><pre><code>curl --globoff --request &#39;GET&#39; --url &#39;https://api.example.test/v1/users/{{ID}}?access_token=%7B%7BACCESS_TOKEN%7D%7D&#39; \
++   --header &#39;Authorization: {{AUTHORIZATION}}&#39; \
++   --header &#39;Authorization: Bearer {{BEARER_TOKEN}}&#39; \
++   --header &#39;Content-Type: application/json&#39; \
++   --data-raw &#39;{&quot;password&quot;:&quot;****&quot;,&quot;profile&quot;:&quot;visible&quot;}&#39;</code></pre></div><h4>PowerShell 7</h4><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="级别" data-reader-en="Severity">级别</span></th><th scope="col"><span data-reader-zh="路径" data-reader-en="Path">路径</span></th><th scope="col"><span data-reader-zh="问题" data-reader-en="Issue">问题</span></th></tr></thead><tbody><tr><td><span data-reader-zh="警告" data-reader-en="warning">警告</span></td><td>request.pathParams.id</td><td>Replace the id path placeholder before sending.</td></tr><tr><td><span data-reader-zh="警告" data-reader-en="warning">警告</span></td><td>request.query</td><td>Replace the access_token placeholder before sending.</td></tr><tr><td><span data-reader-zh="警告" data-reader-en="warning">警告</span></td><td>request.headers</td><td>Replace the Authorization placeholder before sending.</td></tr><tr><td><span data-reader-zh="错误" data-reader-en="error">错误</span></td><td>request.headers</td><td>PowerShell header hashtables cannot preserve duplicate header names (case-insensitively).</td></tr></tbody></table></div><h4>JavaScript fetch</h4><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="级别" data-reader-en="Severity">级别</span></th><th scope="col"><span data-reader-zh="路径" data-reader-en="Path">路径</span></th><th scope="col"><span data-reader-zh="问题" data-reader-en="Issue">问题</span></th></tr></thead><tbody><tr><td><span data-reader-zh="警告" data-reader-en="warning">警告</span></td><td>request.pathParams.id</td><td>Replace the id path placeholder before sending.</td></tr><tr><td><span data-reader-zh="警告" data-reader-en="warning">警告</span></td><td>request.query</td><td>Replace the access_token placeholder before sending.</td></tr><tr><td><span data-reader-zh="警告" data-reader-en="warning">警告</span></td><td>request.headers</td><td>Replace the Authorization placeholder before sending.</td></tr><tr><td><span data-reader-zh="错误" data-reader-en="error">错误</span></td><td>request.body</td><td>Fetch cannot send a GET request body.</td></tr></tbody></table></div><h3><span data-reader-zh="响应" data-reader-en="Responses">响应</span></h3><h4>200</h4><div class="plain-text">ok</div><h5>application/json</h5><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="示例" data-reader-en="Example">示例</span></th><th scope="col"><span data-reader-zh="值" data-reader-en="Value">值</span></th></tr></thead><tbody><tr><td>sample</td><td>{&quot;refresh_token&quot;:&quot;****&quot;,&quot;status&quot;:&quot;ok&quot;}</td></tr></tbody></table></div><h3><span data-reader-zh="模型" data-reader-en="Models">模型</span></h3><section class="model" id="model-10000000-0000-4000-8000-000000000002-10000000-0000-4000-8000-000000000006"><h4>User</h4><div class="plain-text">Recursive user model</div><p><span data-reader-zh="引用" data-reader-en="References">引用</span>: <a href="#model-10000000-0000-4000-8000-000000000002-10000000-0000-4000-8000-000000000006">User</a></p><div class="code-sample"><strong><span data-reader-zh="模型数据结构" data-reader-en="Model schema">模型数据结构</span></strong><pre><code>{
++   &quot;kind&quot;: &quot;object&quot;,
++   &quot;properties&quot;: {
++     &quot;password&quot;: {
++       &quot;default&quot;: &quot;****&quot;,
++       &quot;kind&quot;: &quot;scalar&quot;,
++       &quot;type&quot;: &quot;string&quot;
++     },
++     &quot;related&quot;: {
++       &quot;kind&quot;: &quot;modelRef&quot;,
++       &quot;modelId&quot;: &quot;10000000-0000-4000-8000-000000000006&quot;
++     }
++   },
++   &quot;required&quot;: [],
++   &quot;additionalProperties&quot;: false
++ }</code></pre></div></section><h3><span data-reader-zh="可复用组件" data-reader-en="Reusable components">可复用组件</span></h3><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="名称" data-reader-en="Name">名称</span></th><th scope="col"><span data-reader-zh="类型" data-reader-en="Kind">类型</span></th><th scope="col"><span data-reader-zh="说明" data-reader-en="Description">说明</span></th><th scope="col"><span data-reader-zh="定义" data-reader-en="Definition">定义</span></th></tr></thead><tbody><tr><td>Shared ID</td><td><span data-reader-zh="参数" data-reader-en="parameter">参数</span></td><td>Reusable parameter</td><td>{&quot;location&quot;:&quot;path&quot;,&quot;name&quot;:&quot;id&quot;,&quot;schema&quot;:{&quot;kind&quot;:&quot;scalar&quot;,&quot;type&quot;:&quot;integer&quot;},&quot;required&quot;:true,&quot;description&quot;:&quot;User ID&quot;}</td></tr></tbody></table></div><h3><span data-reader-zh="测试用例" data-reader-en="Test cases">测试用例</span></h3><div class="table-scroll" tabindex="0"><table><thead><tr><th scope="col"><span data-reader-zh="名称" data-reader-en="Name">名称</span></th><th scope="col"><span data-reader-zh="范围" data-reader-en="Scope">范围</span></th><th scope="col"><span data-reader-zh="断言数" data-reader-en="Assertions">断言数</span></th></tr></thead><tbody><tr><td>token=****</td><td><span data-reader-zh="基础" data-reader-en="base">基础</span></td><td>1</td></tr></tbody></table></div></section>
++
++ </main>
++ <script>
++ (() => {
++   const search = document.getElementById("document-search");
++   const summary = document.getElementById("search-summary");
++   const apiSections = Array.from(document.querySelectorAll("[data-search]"));
++   const contents = document.getElementById("document-contents");
++   const contentsToggle = document.getElementById("contents-toggle");
++   const contentsEntries = Array.from(document.querySelectorAll("[data-api-target]"));
++   const sidebar = document.getElementById("document-sidebar");
++   const updateSidebarHeight = () => document.documentElement.style.setProperty("--document-sidebar-height", sidebar.getBoundingClientRect().height + "px");
++   contentsToggle.addEventListener("click", () => {
++     const expanded = contentsToggle.getAttribute("aria-expanded") !== "true";
++     contentsToggle.setAttribute("aria-expanded", String(expanded));
++     contents.classList.toggle("is-open", expanded);
++     updateSidebarHeight();
++   });
++   const filter = (resetScroll = true) => {
++     const query = search.value.trim().toLocaleLowerCase();
++     let visible = 0;
++     for (const section of apiSections) {
++       const match = query === "" || section.dataset.search.toLocaleLowerCase().includes(query);
++       section.hidden = !match;
++       if (match) visible += 1;
++     }
++     for (const entry of contentsEntries) entry.hidden = document.getElementById(entry.dataset.apiTarget).hidden;
++     summary.textContent = document.documentElement.lang === "en" ? "Showing " + visible + " of " + apiSections.length + " APIs" : "显示 " + visible + " / " + apiSections.length + " 个接口";
++     contents.scrollTop = 0;
++     updateSidebarHeight();
++     if (resetScroll) window.scrollTo({ top: 0, behavior: "instant" });
++   };
++   search.addEventListener("input", () => filter());
++   window.addEventListener("reader-language-change", () => filter(false));
++   document.addEventListener("click", async (event) => {
++     const button = event.target.closest("[data-copy-button]");
++     if (!button) return;
++     const code = button.closest(".code-sample").querySelector("code").textContent;
++     try {
++       if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(code);
++       else {
++         const area = document.createElement("textarea");
++         area.value = code;
++         area.setAttribute("readonly", "");
++         area.style.position = "fixed";
++         area.style.opacity = "0";
++         document.body.append(area);
++         area.select();
++         document.execCommand("copy");
++         area.remove();
++       }
++       button.dataset.readerZh = "已复制"; button.dataset.readerEn = "Copied";
++       button.textContent = document.documentElement.lang === "en" ? "Copied" : "已复制";
++     } catch {
++       button.dataset.readerZh = "复制失败"; button.dataset.readerEn = "Copy failed";
++       button.textContent = document.documentElement.lang === "en" ? "Copy failed" : "复制失败";
++     }
++   });
++   updateSidebarHeight();
++   window.addEventListener("resize", updateSidebarHeight);
++   if (typeof ResizeObserver !== "undefined") new ResizeObserver(updateSidebarHeight).observe(sidebar);
++ })();
++ </script>
++ <script>(()=>{const control=document.getElementById('reader-language');control.addEventListener('change',()=>{const en=control.value==='en';document.documentElement.lang=en?'en':'zh-CN';document.querySelectorAll('[data-reader-zh][data-reader-en]').forEach(el=>{el.textContent=en?el.dataset.readerEn:el.dataset.readerZh});document.querySelectorAll('[data-reader-aria-zh]').forEach(el=>{el.setAttribute('aria-label',en?el.dataset.readerAriaEn:el.dataset.readerAriaZh);if(el.hasAttribute('title'))el.title=el.getAttribute('aria-label')});window.dispatchEvent(new Event('reader-language-change'))})})()</script>
++ </body>
++ </html>
+
+ ❯ tests/design/document.test.ts:63:18
+     61|     expect(projectedApi.caseSummaries).toEqual([{ name: "token=****", …
+     62|     expect(markdown).toContain("| token=**** | base | 1 |");
+     63|     expect(html).toContain("<td>token=****</td><td>base</td><td>1</td>…
+       |                  ^
+     64|     for (const output of [JSON.stringify(projection), markdown, html])…
+     65|       expect(output).toContain("token=****");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  tests/design/document.test.ts > document export > keeps one labeled search and count outside collapsed navigation and connects real API targets
+AssertionError: expected undefined to be defined
+ ❯ tests/design/document.test.ts:146:24
+    144|     expect(html.match(/id="search-summary"/g)).toHaveLength(1);
+    145|     expect(html).toContain('<button id="contents-toggle" type="button"…
+    146|     expect(navigation).toBeDefined();
+       |                        ^
+    147|     expect(navigation).not.toContain('id="document-search"');
+    148|     expect(navigation).not.toContain('id="search-summary"');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  tests/design/document.test.ts > document export > runs generated search to filter directory and APIs together, restore counts and reset deep scroll
+AssertionError: expected '显示 1 / 2 个接口' to be 'Showing 1 of 2 APIs' // Object.is equality
+
+Expected: "Showing 1 of 2 APIs"
+Received: "显示 1 / 2 个接口"
+
+ ❯ tests/design/document.test.ts:218:35
+    216|       expect(sections.filter((section) => !section.hidden).map((sectio…
+    217|       expect(entries.filter((entry) => !entry.hidden).map((entry) => e…
+    218|       expect(summary.textContent).toBe(`Showing ${expected.length} of …
+       |                                   ^
+    219|       expect(scrollTop).toBe(0);
+    220|       expect(contents.scrollTop).toBe(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  tests/report/reporters.test.ts > C1 final evidence boundary > keeps exact v2 attempt evidence when rows are reordered and final logical success in all reporters
+AssertionError: expected '<span data-reader-zh="最终逻辑调用" data-re…' to be '最终逻辑调用 · 总计 1 · 通过 1 · 失败 0 · 跳过 0' // Object.is equality
+
+Expected: "最终逻辑调用 · 总计 1 · 通过 1 · 失败 0 · 跳过 0"
+Received: "<span data-reader-zh="最终逻辑调用" data-reader-en="Final logical invocations">最终逻辑调用</span> · <span data-reader-zh="总计 1 · 通过 1 · 失败 0 · 跳过 0" data-reader-en="Total 1 · Passed 1 · Failed 0 · Skipped 0">总计 1 · 通过 1 · 失败 0 · 跳过 0</span>"
+
+ ❯ tests/report/reporters.test.ts:98:58
+     96|     const html = readFileSync(await htmlReporter.render(report, out), …
+
+     97|     expect(html).toContain("workflow-invocation-v2"); expect(html).toC…
+     98|     expect(html.match(/<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1]).toBe("最终逻辑调用 …
+       |                                                          ^
+     99|     const facts = /<section id="execution-facts">([\s\S]*?)<\/section>…
+    100|     expect(facts).toContain("真实执行行 2"); expect(facts).toContain("原始失败行…
+ Test Files  2 failed | 2 passed (4)
+      Tests  6 failed | 37 passed (43)
+   Start at  11:51:32
+   Duration  2.46s (transform 749ms, setup 0ms, import 1.42s, tests 1.48s, environment 0ms)
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  tests/report/reporters.test.ts > C1 final evidence boundary > retains real row counts and adds one labeled reporting unit only for unrepresented entry failures
+AssertionError: expected '<h2><span data-reader-zh="套件条目状态及错误" …' to contain '<th>条目</th>'
+
+Expected: "<th>条目</th>"
+Received: "<h2><span data-reader-zh="套件条目状态及错误" data-reader-en="Suite entries and errors">套件条目状态及错误</span></h2><p><span data-reader-zh="条目" data-reader-en="Entry">条目</span> <span data-reader-zh="总计 2 · 通过 0 · 失败 1 · 跳过 1" data-reader-en="Total 2 · Passed 0 · Failed 1 · Skipped 1">总计 2 · 通过 0 · 失败 1 · 跳过 1</span> · <span data-reader-zh="最终状态" data-reader-en="Final status">最终状态</span> <span class="status-fail"><span data-reader-zh="失败（failed）" data-reader-en="failed">失败（failed）</span></span></p><div class="table-scroll " tabindex="0"><table><thead><tr><th><span data-reader-zh="条目" data-reader-en="Entry">条目</span></th><th><span data-reader-zh="类型" data-reader-en="Type">类型</span></th><th><span data-reader-zh="数据行" data-reader-en="Data row">数据行</span></th><th><span data-reader-zh="状态" data-reader-en="Status">状态</span></th><th><span data-reader-zh="原因" data-reader-en="Reason">原因</span></th><th><span data-reader-zh="详情" data-reader-en="Details">详情</span></th></tr></thead><tbody><tr><td>e</td><td><span data-reader-zh="工作流" data-reader-en="workflow">工作流</span></td><td>3</td><td><span class="status-fail"><span data-reader-zh="失败（failed）" data-reader-en="failed">失败（failed）</span></span></td><td>container &lt;failed&gt;</td><td></td></tr><tr><td>skip</td><td><span data-reader-zh="用例" data-reader-en="case">用例</span></td><td>-</td><td><span class="status-other"><span data-reader-zh="跳过（skipped）" data-reader-en="skipped">跳过（skipped）</span></span></td><td>-</td><td></td></tr></tbody></table></div>"
+
+ ❯ tests/report/reporters.test.ts:189:21
+    187|     expect(suiteSection, "suite entries need a readable table, not onl…
+    188|     const entries = suiteSection![1]!.replace(/<details>[\s\S]*?<\/det…
+    189|     expect(entries).toContain("<th>条目</th>"); expect(entries).toContai…
+       |                     ^
+    190|     expect(entries).toContain("跳过（skipped）"); expect(entries).toContai…
+    191|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  tests/report/reporters.test.ts > C1 final evidence boundary > labels mixed logical units separately from raw execution and leaves absent request facts uncollected
+AssertionError: expected '<span data-reader-zh="混合逻辑报告单位" data-…' to be '混合逻辑报告单位 · 总计 2 · 通过 2 · 失败 0 · 跳过 0' // Object.is equality
+
+Expected: "混合逻辑报告单位 · 总计 2 · 通过 2 · 失败 0 · 跳过 0"
+Received: "<span data-reader-zh="混合逻辑报告单位" data-reader-en="Mixed logical reporting units">混合逻辑报告单位</span> · <span data-reader-zh="总计 2 · 通过 2 · 失败 0 · 跳过 0" data-reader-en="Total 2 · Passed 2 · Failed 0 · Skipped 0">总计 2 · 通过 2 · 失败 0 · 跳过 0</span>"
+
+ ❯ tests/report/reporters.test.ts:197:58
+    195|       cases: [{ ...sample.cases[1]!, entryId: "flow" }, { ...sample.ca…
+    196|     const html = readFileSync(await htmlReporter.render(result, mkdtem…
+    197|     expect(html.match(/<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1]).toBe("混合逻辑报告单…
+       |                                                          ^
+    198|     const facts = /<section id="execution-facts">([\s\S]*?)<\/section>…
+    199|     expect(facts).toContain("真实执行行 3"); expect(facts).toContain("原始失败行…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+

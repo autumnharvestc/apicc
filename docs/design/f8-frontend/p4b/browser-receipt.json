@@ -1,0 +1,17 @@
+{
+  "phase": "F8 P4b",
+  "date": "2026-11-12",
+  "base": "6a8ea89e",
+  "fixture": "loopback 127.0.0.1:63579; real components and production HTML with synthetic data",
+  "observations": {
+    "public": { "clearFocus": "publication-search", "queryAfterClear": "", "shortViewport": [640, 400], "bodyWidth": 640, "searchTop": 102.3214, "navHeight": 248, "navScrollHeight": 711, "mainScrollTop": 3805.1428 },
+    "publicOffline": { "language": "en", "hash": "#en-comparison", "scripts": 0, "sectionsInLanguage": 15, "navigationTop": 16 },
+    "document": { "query": "/orders/22", "matched": 1, "total": 22, "copyFeedback": "Copied", "shortViewport": [640, 400], "bodyWidth": 625, "sidebarHeight": 168.2053, "sidebarTop": 0, "sidebarZIndex": 5, "tableHeaderZIndex": 1 },
+    "run": { "logical": { "total": 1, "passed": 1, "failed": 0 }, "executionRows": 12, "rawFailures": 2, "afterClearApi": { "api": "", "row": "1", "onlyFailed": true, "visibleRows": 1, "focus": "api" } },
+    "diagnostics": { "logicalFailures": 1, "executionRows": 0, "requestsStarted": 0, "requestsCompleted": 0, "httpExchanges": 0, "errorVisibleWithoutExpandingRaw": true },
+    "stress": { "initialNavigationAndSections": [10, 10], "unmatchedNavigationAndSections": [0, 0], "afterClearNavigationAndSections": [10, 10], "focusAfterClear": "filter", "shortViewport": [640, 400], "bodyWidth": 640, "searchTop": 103.4286, "navHeight": 257, "navScrollHeight": 349, "mainScrollTop": 3690.8572 },
+    "preview": { "theme": "dark", "englishLifecycle": "Draft", "fullRevisionExpanded": true, "componentKind": { "zh": "参数", "en": "Parameter" }, "componentRawOpenInitially": false, "darkLinkColor": "rgb(154, 184, 255)" }
+  },
+  "limits": ["No native IPC or real authentication", "Document dark media branch forced in fixture only; no OS preference transition", "No real target request or clipboard read", "No whole-session zero-console-error claim", "Viewport overrides differ from recorded screenshot pixel sizes"],
+  "cleanup": { "temporaryTabClosed": true, "viewportReset": true, "fixtureProcessStopped": true, "port63579Listening": false }
+}

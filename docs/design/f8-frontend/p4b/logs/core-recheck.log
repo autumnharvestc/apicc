@@ -1,0 +1,41 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/packages/core
+
+ ❯ tests/report/reporters.test.ts (21 tests | 1 failed) 179ms
+     × keeps exact v2 attempt evidence when rows are reordered and final logical success in all reporters 20ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/report/reporters.test.ts > C1 final evidence boundary > keeps exact v2 attempt evidence when rows are reordered and final logical success in all reporters
+AssertionError: expected '<h2><span data-reader-zh="工作流节点统计及状态"…' to contain '<th>节点</th>'
+
+- Expected
++ Received
+
+- <th>节点</th>
++ <h2><span data-reader-zh="工作流节点统计及状态" data-reader-en="Workflow nodes and status">工作流节点统计及状态</span></h2><p><span data-reader-zh="总计 1 · 通过 1 · 失败 0 · 跳过 0" data-reader-en="Total 1 · Passed 1 · Failed 0 · Skipped 0">总计 1 · 通过 1 · 失败 0 · 跳过 0</span> · <span data-reader-zh="最终状态" data-reader-en="Final status">最终状态</span> <span class="status-pass"><span data-reader-zh="通过（passed）" data-reader-en="passed">通过（passed）</span></span></p><div class="table-scroll " tabindex="0"><table><thead><tr><th><span data-reader-zh="节点" data-reader-en="Node">节点</span></th><th><span data-reader-zh="类型" data-reader-en="Type">类型</span></th><th><span data-reader-zh="状态" data-reader-en="Status">状态</span></th><th><span data-reader-zh="原因" data-reader-en="Reason">原因</span></th><th><span data-reader-zh="详情" data-reader-en="Details">详情</span></th></tr></thead><tbody><tr><td>request &lt;node&gt;（n）</td><td><span data-reader-zh="请求" data-reader-en="request">请求</span></td><td><span class="status-pass"><span data-reader-zh="通过（passed）" data-reader-en="passed">通过（passed）</span></span></td><td>-</td><td><details><summary><span data-reader-zh="原始详情 / 完整身份" data-reader-en="Raw details / Full identity">原始详情 / 完整身份</span></summary><pre>{
++   "entryId": "n",
++   "kind": "workflow",
++   "workflowId": "wf",
++   "nodeKind": "request",
++   "label": "request &lt;node&gt;",
++   "state": "passed",
++   "status": "passed"
++ }</pre></details></td></tr></tbody></table></div>
+
+ ❯ tests/report/reporters.test.ts:103:19
+    101|     expect(facts).toContain("requestStarted 1"); expect(facts).toConta…
+    102|     const nodes = /<section id="workflow-nodes">([\s\S]*?)<\/section>/…
+    103|     expect(nodes).toContain("<th>节点</th>"); expect(nodes).toContain("<…
+       |                   ^
+    104|     expect(nodes).toContain("request &lt;node&gt;"); expect(nodes).toC…
+    105|     const trace = /<section id="trace">([\s\S]*?)<\/section>/.exec(htm…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 26 passed (27)
+   Start at  11:53:26
+   Duration  774ms (transform 513ms, setup 0ms, import 808ms, tests 254ms, environment 0ms)
+

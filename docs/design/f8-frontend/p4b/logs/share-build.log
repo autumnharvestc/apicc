@@ -1,0 +1,5 @@
+$ vue-tsc --noEmit && vite build
+tests/offline-readers.test.ts(2,23): error TS7016: Could not find a declaration file for module 'jsdom'. 'C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/node_modules/.pnpm/jsdom@30.0.1_@noble+hashes@2.4.0/node_modules/jsdom/lib/api.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/jsdom` if it exists or add a new declaration (.d.ts) file containing `declare module 'jsdom';`
+tests/offline-readers.test.ts(18,71): error TS7006: Parameter 'w' implicitly has an 'any' type.
+[ELIFECYCLE] Command failed with exit code 2.

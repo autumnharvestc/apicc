@@ -1,0 +1,30 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/packages/core
+
+ ❯ tests/report/reporters.test.ts (21 tests | 1 failed) 162ms
+     × keeps exact v2 attempt evidence when rows are reordered and final logical success in all reporters 20ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/report/reporters.test.ts > C1 final evidence boundary > keeps exact v2 attempt evidence when rows are reordered and final logical success in all reporters
+AssertionError: expected '<h2><span data-reader-zh="调用轨迹（含恢复、OR…' to contain '等待 7 ms'
+
+Expected: "等待 7 ms"
+Received: "<h2><span data-reader-zh="调用轨迹（含恢复、OR winner、取消和 cleanup）" data-reader-en="Invocation trace (recovery, OR winner, cancellation and cleanup)">调用轨迹（含恢复、OR winner、取消和 cleanup）</span></h2><p><span data-reader-zh="显示 6 / 6 个事件" data-reader-en="Showing 6 / 6 events">显示 6 / 6 个事件</span></p><div class="table-scroll trace-scroll" tabindex="0"><table><thead><tr><th><span data-reader-zh="序号" data-reader-en="Index">序号</span></th><th><span data-reader-zh="事件" data-reader-en="Event">事件</span></th><th><span data-reader-zh="节点" data-reader-en="Node">节点</span></th><th><span data-reader-zh="分支 / 循环 / attempt" data-reader-en="Branch / iteration / attempt">分支 / 循环 / attempt</span></th><th><span data-reader-zh="状态 / 原因" data-reader-en="Status / reason">状态 / 原因</span></th><th><span data-reader-zh="详情" data-reader-en="Details">详情</span></th></tr></thead><tbody><tr><td>1</td><td><span data-reader-zh="节点结束（node-end）" data-reader-en="node-end">节点结束（node-end）</span></td><td>n</td><td><span data-reader-zh="分支 branch · 循环 1 · 处理器 finally" data-reader-en="Branch branch · Iteration 1 · Handler finally">分支 branch · 循环 1 · 处理器 finally</span></td><td><span class="status-pass"><span data-reader-zh="通过（passed）" data-reader-en="passed">通过（passed）</span></span> · early [REDACTED]</td><td></td></tr><tr><td>2</td><td><span data-reader-zh="分支胜出（branch-winner）" data-reader-en="branch-winner">分支胜出（branch-winner）</span></td><td>n</td><td><span data-reader-zh="分支 branch · 循环 1 · 处理器 finally / 分支 winner&lt;&amp;" data-reader-en="Branch branch · Iteration 1 · Handler finally / Branch winner&lt;&amp;">分支 branch · 循环 1 · 处理器 finally / 分支 winner&lt;&amp;</span></td><td>-</td><td></td></tr><tr><td>3</td><td><span data-reader-zh="重试等待（retry-wait）" data-reader-en="retry-wait">重试等待（retry-wait）</span></td><td>n</td><td><span data-reader-zh="分支 branch · 循环 1 · 处理器 finally / attempt 1" data-reader-en="Branch branch · Iteration 1 · Handler finally / attempt 1">分支 branch · 循环 1 · 处理器 finally / attempt 1</span></td><td>- · 7 ms</td><td></td></tr><tr><td>4</td><td><span data-reader-zh="错误已恢复（recovered）" data-reader-en="recovered">错误已恢复（recovered）</span></td><td>n</td><td><span data-reader-zh="分支 branch · 循环 1 · 处理器 finally" data-reader-en="Branch branch · Iteration 1 · Handler finally">分支 branch · 循环 1 · 处理器 finally</span></td><td>-</td><td></td></tr><tr><td>5</td><td><span data-reader-zh="循环迭代（loop-iteration）" data-reader-en="loop-iteration">循环迭代（loop-iteration）</span></td><td>n</td><td><span data-reader-zh="分支 branch · 循环 1 · 处理器 finally / 循环 1" data-reader-en="Branch branch · Iteration 1 · Handler finally / Iteration 1">分支 branch · 循环 1 · 处理器 finally / 循环 1</span></td><td>-</td><td></td></tr><tr><td>6</td><td><span data-reader-zh="清理结束（cleanup-end）" data-reader-en="cleanup-end">清理结束（cleanup-end）</span></td><td>n</td><td><span data-reader-zh="分支 branch · 循环 1 · 处理器 finally" data-reader-en="Branch branch · Iteration 1 · Handler finally">分支 branch · 循环 1 · 处理器 finally</span></td><td><span class="status-pass"><span data-reader-zh="通过（passed）" data-reader-en="passed">通过（passed）</span></span></td><td></td></tr></tbody></table></div>"
+
+ ❯ tests/report/reporters.test.ts:110:73
+    108|     expect(readableTrace).toContain("错误已恢复（recovered）"); expect(readab…
+    109|     expect(readableTrace).toContain("winner&lt;&amp;"); expect(readabl…
+    110|     expect(readableTrace).toContain("attempt 1"); expect(readableTrace…
+       |                                                                         ^
+    111|     expect(readableTrace.indexOf("node-end")).toBeLessThan(readableTra…
+    112|     expect(readableTrace.indexOf("recovered")).toBeLessThan(readableTr…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 26 passed (27)
+   Start at  11:57:21
+   Duration  760ms (transform 503ms, setup 0ms, import 800ms, tests 235ms, environment 0ms)
+

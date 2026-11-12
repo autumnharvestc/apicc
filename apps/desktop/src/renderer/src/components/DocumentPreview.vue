@@ -10,7 +10,8 @@ const props = defineProps<{
   result: DesignPreviewResult | null;
   error?: string;
 }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
+const enumLabel = (prefix: string, value: string) => te(`${prefix}.${value}`) ? t(`${prefix}.${value}`) : value;
 const ready = computed(() => props.result?.status === "ready" ? props.result : null);
 
 type Parameter = DocumentApi["request"]["pathParams"][number];
@@ -73,9 +74,9 @@ function pretty(value: unknown): string { return JSON.stringify(value, null, 2);
     <template v-if="ready">
       <dl class="provenance" data-testid="design-preview-provenance">
         <dt>{{ t('design.previewSource') }}</dt><dd>{{ t('design.previewSourceDraft') }}</dd>
-        <dt>{{ t('design.savedRevision') }}</dt><dd data-testid="design-saved-revision">{{ ready.sourceProjectRevision }}</dd>
-        <dt>{{ t('design.projectionRevision') }}</dt><dd>{{ ready.projection.sourceProjectRevision }}</dd>
-        <dt>{{ t('design.apiRevision') }}</dt><dd>{{ ready.sourceApiRevision }}</dd>
+        <dt>{{ t('design.savedRevision') }}</dt><dd data-testid="design-saved-revision"><details class="fingerprint"><summary :title="ready.sourceProjectRevision">{{ ready.sourceProjectRevision?.slice(0, 12) }} · {{ t('scheduleOriginal.fingerprint') }}</summary><code>{{ ready.sourceProjectRevision }}</code></details></dd>
+        <dt>{{ t('design.projectionRevision') }}</dt><dd><details class="fingerprint"><summary :title="ready.projection.sourceProjectRevision">{{ ready.projection.sourceProjectRevision?.slice(0, 12) }} · {{ t('scheduleOriginal.fingerprint') }}</summary><code>{{ ready.projection.sourceProjectRevision }}</code></details></dd>
+        <dt>{{ t('design.apiRevision') }}</dt><dd><details class="fingerprint"><summary :title="ready.sourceApiRevision">{{ ready.sourceApiRevision?.slice(0, 12) }} · {{ t('scheduleOriginal.fingerprint') }}</summary><code>{{ ready.sourceApiRevision }}</code></details></dd>
       </dl>
 
       <article v-for="api in ready.projection.apis" :key="api.contractId" class="document-api" data-testid="design-readable-document">
@@ -88,7 +89,7 @@ function pretty(value: unknown): string { return JSON.stringify(value, null, 2);
             <dt>{{ t('design.apiName') }}</dt><dd>{{ api.metadata.name }}</dd>
             <dt>{{ t('design.description') }}</dt><dd>{{ api.metadata.description || '—' }}</dd>
             <dt>{{ t('design.version') }}</dt><dd>{{ api.metadata.version || '—' }}</dd>
-            <dt>{{ t('design.lifecycle') }}</dt><dd>{{ api.metadata.status }}</dd>
+            <dt>{{ t('design.lifecycle') }}</dt><dd data-testid="document-lifecycle">{{ enumLabel('desktopPresentation.status', api.metadata.status) }}</dd>
             <dt>{{ t('design.tags') }}</dt><dd>{{ api.metadata.tags.join(', ') || '—' }}</dd>
             <dt>{{ t('design.collection') }}</dt><dd>{{ api.collection.name }}</dd>
             <dt>{{ t('design.folders') }}</dt><dd>{{ api.folders.map((folder) => folder.name).join(' / ') || '—' }}</dd>
@@ -202,7 +203,7 @@ function pretty(value: unknown): string { return JSON.stringify(value, null, 2);
         <section v-if="api.components.length" class="document-section">
           <h4>{{ t('design.componentSection') }}</h4>
           <div class="table-scroll"><table><thead><tr><th>{{ t('design.parameter.name') }}</th><th>{{ t('design.kind') }}</th><th>{{ t('design.description') }}</th><th>{{ t('design.definition') }}</th></tr></thead>
-            <tbody><tr v-for="component in api.components" :key="component.id"><td>{{ component.name }}</td><td>{{ component.kind }}</td><td>{{ component.description || '—' }}</td><td class="preserve-whitespace">{{ pretty(component.definition) }}</td></tr></tbody>
+            <tbody><tr v-for="component in api.components" :key="component.id"><td>{{ component.name }}</td><td>{{ enumLabel('contract.componentKind', component.kind) }}</td><td>{{ component.description || '—' }}</td><td><details><summary>{{ t('desktopPresentation.rawComponent') }}</summary><pre class="definition-code">{{ pretty(component.definition) }}</pre></details></td></tr></tbody>
           </table></div>
         </section>
         <section v-if="api.documentation" class="document-section"><h4>{{ t('design.documentationSection') }}</h4><p class="documentation">{{ api.documentation }}</p></section>
@@ -222,7 +223,7 @@ function pretty(value: unknown): string { return JSON.stringify(value, null, 2);
     </template>
     <template v-else-if="result?.status === 'conflict'">
       <p class="error" data-testid="design-preview-conflict">{{ t(`design.conflict.${result.code}`) }}</p>
-      <dl class="provenance"><dt>{{ t('design.savedRevision') }}</dt><dd>{{ result.sourceProjectRevision }}</dd><dt v-if="result.currentSourceProjectRevision">{{ t('design.currentRevision') }}</dt><dd v-if="result.currentSourceProjectRevision">{{ result.currentSourceProjectRevision }}</dd></dl>
+      <dl class="provenance"><dt>{{ t('design.savedRevision') }}</dt><dd><details class="fingerprint"><summary :title="result.sourceProjectRevision">{{ result.sourceProjectRevision?.slice(0, 12) }} · {{ t('scheduleOriginal.fingerprint') }}</summary><code>{{ result.sourceProjectRevision }}</code></details></dd><dt v-if="result.currentSourceProjectRevision">{{ t('design.currentRevision') }}</dt><dd v-if="result.currentSourceProjectRevision"><details class="fingerprint"><summary :title="result.currentSourceProjectRevision">{{ result.currentSourceProjectRevision?.slice(0, 12) }} · {{ t('scheduleOriginal.fingerprint') }}</summary><code>{{ result.currentSourceProjectRevision }}</code></details></dd></dl>
       <ul v-if="result.diagnostics.length" class="diagnostics"><li v-for="(diagnostic, index) in result.diagnostics" :key="`${diagnostic.code}:${index}`">{{ diagnostic.message }}</li></ul>
     </template>
   </section>
@@ -258,8 +259,11 @@ th, td { border: 1px solid var(--border, #e8e8e8); text-align: left; padding: 4p
 .response-card h5 span { font-weight: normal; }
 .response-content { margin: 8px 0; }
 .response-content h6 { margin: 6px 0; }
+.document-preview a { color: var(--accent); }
 .model-references a { margin-left: 8px; }
 .documentation { white-space: pre-wrap; overflow-wrap: anywhere; }
 .diagnostics { padding-left: 20px; font-size: 12px; }
 .diagnostic-error, .error { color: var(--fail, #cf1322); }
+
+.document-preview{padding-top:16px}.preview-heading{flex-wrap:wrap;font-size:14px}.provenance,.metadata-grid{gap:8px 16px;font-size:13px;grid-template-columns:minmax(110px,160px) minmax(0,1fr)}.provenance{padding:12px;background:var(--panel);border-radius:8px}.document-api{padding:16px;border-radius:10px;background:var(--panel-elevated,var(--panel));box-shadow:0 2px 8px #00000005}.document-section{padding-top:12px;margin-top:16px}.table-scroll{overflow:auto;max-height:28rem;border:1px solid var(--border);border-radius:6px}table{font-size:13px}th,td{padding:8px 10px;min-width:6rem;max-width:30rem;overflow-wrap:anywhere}th{white-space:nowrap;position:sticky;top:0;background:var(--panel);z-index:1}.fingerprint summary{cursor:pointer;font-size:12px}.fingerprint code{display:block;padding:8px 0;overflow-wrap:anywhere}.fingerprint summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>

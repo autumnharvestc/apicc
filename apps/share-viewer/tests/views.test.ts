@@ -133,3 +133,26 @@ it('releases the object URL and retains fresh facts when browser export fails',a
   await wrapper.find('button[data-action="download"]').trigger('click');await flushPromises();
   expect.soft(revoke).toHaveBeenCalledWith('blob:failed-export');expect.soft(wrapper.text()).toContain('离线文件无法生成');expect.soft(wrapper.find('h1').exists()).toBe(true);
 });
+it('offers an explicit bilingual empty state and clears only publication search with focus',async()=>{
+  const wrapper=mount(App,{props:{artifact:reportFixture()},attachTo:document.body});
+  await wrapper.get('input[type="search"]').setValue('not-present');
+  expect(wrapper.findAll('main section')).toHaveLength(0);
+  expect(wrapper.get('[data-testid="search-empty"]').text()).toContain('没有匹配章节');
+  await wrapper.get('[data-language="en"]').trigger('click');
+  expect(wrapper.get('[data-language="en"]').attributes('aria-pressed')).toBe('true');
+  expect(wrapper.get('[data-testid="search-empty"]').text()).toContain('No matching sections');
+  await wrapper.get('[data-action="clear-search"]').trigger('click');
+  expect(wrapper.findAll('main section').length).toBeGreaterThan(0);
+  expect(document.activeElement).toBe(wrapper.get('input[type="search"]').element);
+  wrapper.unmount();
+});
+it('exports language-specific offline navigation without scripts or duplicate anchor identities',()=>{
+  const offline=new DOMParser().parseFromString(renderPublicArtifactHtml(reportFixture()),'text/html');
+  for(const lang of ['zh','en']){
+    const scope=offline.querySelector('.'+lang)!;
+    const links=[...scope.querySelectorAll<HTMLAnchorElement>('nav a')];expect(links.length).toBeGreaterThan(5);
+    for(const link of links) expect(scope.querySelector(link.getAttribute('href')!)).not.toBeNull();
+  }
+  const ids=[...offline.querySelectorAll('[id]')].map(x=>x.id);expect(new Set(ids).size).toBe(ids.length);
+  expect(offline.querySelector('script,img,iframe')).toBeNull();
+});

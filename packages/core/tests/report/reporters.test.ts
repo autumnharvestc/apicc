@@ -95,12 +95,12 @@ describe("C1 final evidence boundary", () => {
     expect(xml).toContain('tests="1" failures="0"'); expect(xml).not.toContain("<failure"); expect(xml).toContain("failed-attempts");
     const html = readFileSync(await htmlReporter.render(report, out), "utf8");
     expect(html).toContain("workflow-invocation-v2"); expect(html).toContain("passed"); expect(html).toContain("early");
-    expect(html.match(/<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1]).toBe("最终逻辑调用 · 总计 1 · 通过 1 · 失败 0 · 跳过 0");
+    expect(html.match(/<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1]?.replace(/<[^>]*>/g, "")).toBe("最终逻辑调用 · 总计 1 · 通过 1 · 失败 0 · 跳过 0");
     const facts = /<section id="execution-facts">([\s\S]*?)<\/section>/.exec(html)![1]!;
     expect(facts).toContain("真实执行行 2"); expect(facts).toContain("原始失败行 1");
     expect(facts).toContain("requestStarted 1"); expect(facts).toContain("requestCompleted 1"); expect(facts).toContain("httpExchanges 1");
     const nodes = /<section id="workflow-nodes">([\s\S]*?)<\/section>/.exec(html)![1]!;
-    expect(nodes).toContain("<th>节点</th>"); expect(nodes).toContain("<th>类型</th>"); expect(nodes).toContain("<th>状态</th>");
+    expect([...nodes.matchAll(/<th>([\s\S]*?)<\/th>/g)].map(match => match[1]!.replace(/<[^>]*>/g, ""))).toEqual(["节点", "类型", "状态", "原因", "详情"]);
     expect(nodes).toContain("request &lt;node&gt;"); expect(nodes).toContain("通过（passed）");
     const trace = /<section id="trace">([\s\S]*?)<\/section>/.exec(html)![1]!;
     const readableTrace = trace.replace(/<details>[\s\S]*?<\/details>/g, "");
@@ -186,7 +186,7 @@ describe("C1 final evidence boundary", () => {
     const suiteSection = /<section id="suite-entries">([\s\S]*?)<\/section>/.exec(html);
     expect(suiteSection, "suite entries need a readable table, not only raw JSON").not.toBeNull();
     const entries = suiteSection![1]!.replace(/<details>[\s\S]*?<\/details>/g, "");
-    expect(entries).toContain("<th>条目</th>"); expect(entries).toContain("<th>状态</th>"); expect(entries).toContain("container &lt;failed&gt;");
+    expect([...entries.matchAll(/<th>([\s\S]*?)<\/th>/g)].map(match => match[1]!.replace(/<[^>]*>/g, ""))).toEqual(["条目", "类型", "数据行", "状态", "原因", "详情"]); expect(entries).toContain("container &lt;failed&gt;");
     expect(entries).toContain("跳过（skipped）"); expect(entries).toContain("<td>3</td>");
   });
   it("labels mixed logical units separately from raw execution and leaves absent request facts uncollected", async () => {
@@ -194,7 +194,7 @@ describe("C1 final evidence boundary", () => {
       workflowUnits: [{ entryId: "flow", workflowId: "wf", invocationId: "inv", verdict: "passed" }],
       cases: [{ ...sample.cases[1]!, entryId: "flow" }, { ...sample.cases[0]!, entryId: "flow" }, { ...sample.cases[0]!, entryId: "case" }] };
     const html = readFileSync(await htmlReporter.render(result, mkdtempSync(join(tmpdir(), "apicc-mixed-readable-"))), "utf8");
-    expect(html.match(/<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1]).toBe("混合逻辑报告单位 · 总计 2 · 通过 2 · 失败 0 · 跳过 0");
+    expect(html.match(/<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1]?.replace(/<[^>]*>/g, "")).toBe("混合逻辑报告单位 · 总计 2 · 通过 2 · 失败 0 · 跳过 0");
     const facts = /<section id="execution-facts">([\s\S]*?)<\/section>/.exec(html)![1]!;
     expect(facts).toContain("真实执行行 3"); expect(facts).toContain("原始失败行 1");
     for (const key of ["requestStarted", "requestCompleted", "httpExchanges"]) {

@@ -1,0 +1,525 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/share-viewer
+
+ ❯ tests/offline-readers.test.ts (3 tests | 3 failed) 241ms
+   × localizes document labels and dynamic counts without translating or replacing request payloads 121ms
+   × keeps stress section navigation and empty results consistent, and clear restores focus in either language 88ms
+   × renders non-HTTP diagnostics as readable fields and switches run report labels while preserving filters and facts 31ms
+ ❯ tests/views.test.ts (18 tests | 2 failed | 16 skipped) 152ms
+   × offers an explicit bilingual empty state and clears only publication search with focus 98ms
+   × exports language-specific offline navigation without scripts or duplicate anchor identities 53ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/offline-readers.test.ts > localizes document labels and dynamic counts without translating or replacing request payloads
+AssertionError: expected 'en' to be 'zh-CN' // Object.is equality
+
+Expected: "zh-CN"
+Received: "en"
+
+ ❯ tests/offline-readers.test.ts:28:34
+     26|   const w=open(renderDocumentHtml(buildDocumentProjection(createProjec…
+     27|   const d=w.document, original=d.querySelector('code')?.textContent;
+     28|   expect(d.documentElement.lang).toBe('zh-CN'); expect(d.querySelector…
+       |                                  ^
+     29|   expect(d.querySelector('label[for="document-search"]')?.textContent)…
+     30|   input(w,'document-search','not-present'); expect(d.querySelectorAll(…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  tests/offline-readers.test.ts > keeps stress section navigation and empty results consistent, and clear restores focus in either language
+AssertionError: expected undefined to be false // Object.is equality
+
+- Expected:
+false
+
++ Received:
+undefined
+
+ ❯ tests/offline-readers.test.ts:45:52
+     43|   input(w,'filter','not-present'); expect(d.querySelectorAll('main sec…
+     44|   expect(d.querySelectorAll('aside nav a:not([hidden])')).toHaveLength…
+     45|   expect(d.getElementById('filter-empty')?.hidden).toBe(false);
+       |                                                    ^
+     46|   input(w,'language','en','change'); expect(d.getElementById('filter-e…
+     47|   d.getElementById('filter-clear')!.click(); expect(d.activeElement?.i…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  tests/offline-readers.test.ts > renders non-HTTP diagnostics as readable fields and switches run report labels while preserving filters and facts
+AssertionError: expected null not to be null
+ ❯ tests/offline-readers.test.ts:56:27
+     54|   const w=open(readFileSync(await htmlReporter.render(result,out),'utf…
+     55|   const diagnostics=d.querySelector('#entry-diagnostics')!;
+     56|   expect(diagnostics).not.toBeNull(); expect(diagnostics.querySelector…
+       |                           ^
+     57|   expect(diagnostics.textContent).toContain('missing-definition'); exp…
+     58|   input(w,'api','alpha'); input(w,'reader-language','en','change');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  tests/views.test.ts > offers an explicit bilingual empty state and clears only publication search with focus
+Error: Unable to get [data-testid="search-empty"] within: <div class="reader">
+  <aside>
+    <div class="tools"><strong>只读发布内容</strong>
+      <div class="languages"><button data-language="zh-CN">中文</button><button data-language="en">English</button></div><label>搜索<input type="search" placeholder="搜索发布内容"></label>
+    </div>
+    <nav aria-label="目录"></nav>
+  </aside>
+  <main>
+    <div class="actions"><button data-action="refresh">刷新</button>
+      <!--v-if-->
+    </div>
+    <!--v-if-->
+    <!--v-if-->
+    <!--v-if-->
+    <!--v-if-->
+    <h1>公开结果 &lt;script&gt;globalThis.pwned=1&lt;/script&gt;&lt;img src="https://remote.invalid/x" onerror="alert(1)"&gt;</h1>
+    <!--v-if-->
+    <p>内容指纹: <code>abcdef012345</code></p>
+    <details>
+      <summary>完整指纹</summary><code>abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789</code>
+    </details>
+    <p>命中章节: 0</p>
+    <details>
+      <summary>原始安全数据</summary><pre>{
+  "formatVersion": 1,
+  "title": "公开结果 &lt;script&gt;globalThis.pwned=1&lt;/script&gt;&lt;img src=\"https://remote.invalid/x\" onerror=\"alert(1)\"&gt;",
+  "summary": [
+    {
+      "labelCode": "document.apiCount",
+      "value": 1
+    }
+  ],
+  "limitations": [
+    {
+      "code": "evidence-not-collected"
+    },
+    {
+      "code": "future-unknown-reason"
+    }
+  ],
+  "source": {
+    "trust": "member-claim",
+    "revision": "r1",
+    "digest": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  },
+  "kind": "report",
+  "report": {
+    "sourceCategory": "stress",
+    "startedAt": "2026-11-03T01:02:03.123Z",
+    "finishedAt": "2026-11-03T01:02:04.456Z",
+    "verdict": "passed",
+    "counts": [
+      {
+        "labelCode": "logical.units",
+        "total": 4,
+        "passed": 4,
+        "failed": 0
+      },
+      {
+        "labelCode": "case.rows",
+        "total": 10,
+        "passed": 4,
+        "failed": 6
+      },
+      {
+        "labelCode": "request.completed",
+        "total": 10
+      }
+    ],
+    "failures": [
+      {
+        "category": "transport",
+        "count": 6
+      }
+    ],
+    "nodes": [
+      {
+        "id": "node-1",
+        "name": "很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称很长的节点名称",
+        "state": "passed",
+        "durationMs": 12.3456789,
+        "message": "重试后通过 &lt;script&gt;globalThis.pwned=1&lt;/script&gt;&lt;img src=\"https://remote.invalid/x\" onerror=\"alert(1)\"&gt;"
+      }
+    ],
+    "trace": [
+      {
+        "nodeId": "node-1",
+        "type": "recovered",
+        "message": "保留最初失败",
+        "delayMs": 2.3456,
+        "attempt": 2
+      }
+    ],
+    "evidence": [
+      {
+        "nodeId": "node-1",
+        "status": "not-collected"
+      }
+    ],
+    "stress": {
+      "iterations": {
+        "planned": 1,
+        "started": 1,
+        "completed": 1,
+        "passed": 1,
+        "failed": 0,
+        "aborted": 0,
+        "dropped": 0,
+        "latency": {
+          "availability": "available",
+          "value": {
+            "min": 10,
+            "avg": 10,
+            "max": 10,
+            "p50": 10,
+            "p90": 10,
+            "p95": 10,
+            "p99": 10
+          }
+        },
+        "startDelay": {
+          "availability": "available",
+          "value": {
+            "min": 10,
+            "avg": 10,
+            "max": 10,
+            "p50": 10,
+            "p90": 10,
+            "p95": 10,
+            "p99": 10
+          }
+        }
+      },
+      "requests": {
+        "started": 10,
+        "completed": 10,
+        "eligibleCompleted": 10,
+        "failed": 6
+      },
+      "httpExchanges": {
+        "started": 2,
+        "completed": 2
+      },
+      "caseRows": {
+        "total": 2,
+        "ok": 1,
+        "failed": 1,
+        "failures": {
+          "transport": 1,
+          "http": 0,
+          "script": 0,
+          "assertion": 0,
+          "config": 0,
+          "aborted": 0,
+          "extraction": 0
+        }
+      },
+      "timeline": {
+        "bucketWidthMs": 1000,
+        "aligned": true,
+        "uncertaintyMs": 0,
+        "buckets": [
+          {
+            "startOffsetMs": 0,
+            "endOffsetMs": 1000,
+            "rps": {
+              "availability": "available",
+              "value": 10.123456
+            },
+            "caseRows": {
+              "total": 2,
+              "ok": 1,
+              "failed": 1,
+              "failures": {
+                "transport": 1,
+                "http": 0,
+                "script": 0,
+                "assertion": 0,
+                "config": 0,
+                "aborted": 0,
+                "extraction": 0
+              }
+            },
+            "requests": {
+              "started": 10,
+              "completed": 10,
+              "eligibleCompleted": 10,
+              "failed": 6
+            },
+            "httpExchanges": {
+              "started": 2,
+              "completed": 2
+            },
+            "latency": {
+              "availability": "available",
+              "value": {
+                "min": 10,
+                "avg": 10,
+                "max": 10,
+                "p50": 10,
+                "p90": 10,
+                "p95": 10,
+                "p99": 10
+              }
+            },
+            "sources": []
+          }
+        ]
+      },
+      "nodes": [
+        {
+          "key": "private-key",
+          "workflowId": "private-flow",
+          "nodeId": "private-node",
+          "other": false,
+          "visits": 1,
+          "passed": 1,
+          "failed": 0,
+          "aborted": 0,
+          "skipped": 0,
+          "requests": {
+            "started": 2,
+            "completed": 2,
+            "eligibleCompleted": 2,
+            "failed": 1
+          },
+          "requestLatency": {
+            "availability": "available",
+            "value": {
+              "min": 10,
+              "avg": 10,
+              "max": 10,
+              "p50": 10,
+              "p90": 10,
+              "p95": 10,
+              "p99": 10
+            }
+          },
+          "nodeLatency": {
+            "availability": "available",
+            "value": {
+              "min": 10,
+              "avg": 10,
+              "max": 10,
+              "p50": 10,
+              "p90": 10,
+              "p95": 10,
+              "p99": 10
+            }
+          }
+        }
+      ],
+      "lifecycle": [
+        {
+          "role": "setup",
+          "vuId": "private-vu",
+          "state": "passed",
+          "durationMs": 5
+        }
+      ],
+      "load": {
+        "plannedDurationMs": null,
+        "measurementDurationMs": 1000,
+        "drainDurationMs": 0,
+        "policyLimitedMs": 0,
+        "saturated": false,
+        "maxVus": 1,
+        "maxRequestConcurrency": 1,
+        "effectiveMaxRps": null
+      },
+      "statistics": {
+        "method": "exact-nearest-rank",
+        "exact": true,
+        "relativeError": 0,
+        "minValueMs": 0.001,
+        "gamma": 1.01,
+        "bucketCount": 4608,
+        "exactLimit": 256,
+        "underflow": 0,
+        "overflow": 0
+      },
+      "rps": {
+        "availability": "available",
+        "value": 1
+      },
+      "latency": {
+        "availability": "available",
+        "value": {
+          "min": 10,
+          "avg": 10,
+          "max": 10,
+          "p50": 10,
+          "p90": 10,
+          "p95": 10,
+          "p99": 10
+        }
+      },
+      "scriptLatency": {
+        "availability": "available",
+        "value": {
+          "min": 10,
+          "avg": 10,
+          "max": 10,
+          "p50": 10,
+          "p90": 10,
+          "p95": 10,
+          "p99": 10
+        }
+      },
+      "iterationLatency": {
+        "availability": "available",
+        "value": {
+          "min": 10,
+          "avg": 10,
+          "max": 10,
+          "p50": 10,
+          "p90": 10,
+          "p95": 10,
+          "p99": 10
+        }
+      },
+      "phases": [
+        {
+          "phase": "measurement",
+          "stageId": "private-stage",
+          "startOffsetMs": 0,
+          "endOffsetMs": 1000,
+          "durationMs": 1000,
+          "rps": {
+            "availability": "available",
+            "value": 1
+          },
+          "caseRows": {
+            "total": 2,
+            "ok": 1,
+            "failed": 1,
+            "failures": {
+              "transport": 1,
+              "http": 0,
+              "script": 0,
+              "assertion": 0,
+              "config": 0,
+              "aborted": 0,
+              "extraction": 0
+            }
+          },
+          "requests": {
+            "started": 2,
+            "completed": 2,
+            "eligibleCompleted": 2,
+            "failed": 1
+          },
+          "httpExchanges": {
+            "started": 2,
+            "completed": 2
+          },
+          "latency": {
+            "availability": "available",
+            "value": {
+              "min": 10,
+              "avg": 10,
+              "max": 10,
+              "p50": 10,
+              "p90": 10,
+              "p95": 10,
+              "p99": 10
+            }
+          }
+        }
+      ],
+      "completeness": {
+        "execution": {
+          "complete": true,
+          "reasons": []
+        },
+        "metrics": {
+          "complete": false,
+          "reasons": [
+            "metrics-budget-exhausted"
+          ]
+        },
+        "load": {
+          "complete": true,
+          "reasons": []
+        }
+      }
+    },
+    "comparison": {
+      "directlyComparable": true,
+      "mismatches": [],
+      "notices": [],
+      "metrics": {
+        "rps": {
+          "base": 1,
+          "candidate": 1,
+          "absolute": 0,
+          "relative": 0
+        },
+        "p95Ms": {
+          "base": 1,
+          "candidate": 1,
+          "absolute": 0,
+          "relative": 0
+        },
+        "errorRate": {
+          "base": 1,
+          "candidate": 1,
+          "absolute": 0,
+          "relative": 0
+        },
+        "iterationsCompleted": {
+          "base": 1,
+          "candidate": 1,
+          "absolute": 0,
+          "relative": 0
+        },
+        "iterationP95Ms": {
+          "base": 1,
+          "candidate": 1,
+          "absolute": 0,
+          "relative": 0
+        },
+        "dropped": {
+          "base": 1,
+          "candidate": 1,
+          "absolute": 0,
+          "relative": 0
+        }
+      }
+    }
+  }
+}</pre>
+    </details>
+  </main>
+</div>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/views.test.ts:140:18
+    138|   await wrapper.get('input[type="search"]').setValue('not-present');
+    139|   expect(wrapper.findAll('main section')).toHaveLength(0);
+    140|   expect(wrapper.get('[data-testid="search-empty"]').text()).toContain…
+       |                  ^
+    141|   await wrapper.get('[data-language="en"]').trigger('click');
+    142|   expect(wrapper.get('[data-language="en"]').attributes('aria-pressed'…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  tests/views.test.ts > exports language-specific offline navigation without scripts or duplicate anchor identities
+AssertionError: expected 0 to be greater than 5
+ ❯ tests/views.test.ts:153:94
+    151|   for(const lang of ['zh','en']){
+    152|     const scope=offline.querySelector('.'+lang)!;
+    153|     const links=[...scope.querySelectorAll<HTMLAnchorElement>('nav a')…
+       |                                                                                              ^
+    154|     for(const link of links) expect(scope.querySelector(link.getAttrib…
+    155|   }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  5 failed | 16 skipped (21)
+   Start at  11:46:31
+   Duration  2.44s (transform 1.21s, setup 0ms, import 2.03s, tests 393ms, environment 1.93s)
+

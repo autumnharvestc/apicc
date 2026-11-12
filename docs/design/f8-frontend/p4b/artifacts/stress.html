@@ -1,0 +1,235 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><title>压测报告</title><style>
+*{box-sizing:border-box}html,body{height:100%;margin:0;overflow:hidden;font:14px system-ui,sans-serif;color:#172033;background:#f4f6fa}body{display:grid;grid-template-columns:230px minmax(0,1fr)}aside{height:100%;overflow:auto;padding:20px;background:#16213b;color:white}aside a{display:block;padding:9px 0;color:#dce7ff;text-decoration:none}aside h1{font-size:22px}input,select{display:block;width:100%;padding:9px;margin:6px 0 14px}main{min-height:0;min-width:0;overflow:auto;padding:24px;scroll-behavior:smooth}section{background:white;padding:22px;margin-bottom:18px;border-radius:8px;min-width:0}h1,h2{margin-top:0}h3{margin:20px 0 10px;font-size:15px}.verdict{font-size:24px;font-weight:700}.note{color:#53627a;line-height:1.7}pre{white-space:pre-wrap;word-break:normal;overflow-wrap:break-word;max-height:360px;overflow:auto;background:#eef2f8;padding:12px}.payload{min-width:100px;margin:4px 0;font:12px ui-monospace,monospace}.table-scroll{overflow:auto;max-height:480px;border:1px solid #e0e6ef;border-radius:5px;margin:10px 0}table{border-collapse:collapse;width:max-content;min-width:100%;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #e0e6ef;vertical-align:top;white-space:nowrap}th{position:sticky;top:0;background:#eef2f8;z-index:1}td{max-width:520px}td:first-child{max-width:420px}td:has(.payload){white-space:normal;min-width:180px}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(400px,100%),1fr));gap:16px}.chart{margin:12px 0;min-width:0}figcaption{line-height:1.6;color:#53627a}svg{display:block;width:100%;height:auto;max-height:280px;background:#f8faff}svg text{font:12px system-ui,sans-serif;fill:#52627c}details{margin:12px 0;border:1px solid #dce3ef;border-radius:6px;padding:12px}summary{cursor:pointer;font-weight:600}section[hidden]{display:none}@media(max-width:680px){body{grid-template-columns:160px minmax(0,1fr)}aside,main{padding:10px}section{padding:14px}}
+aside{display:flex;flex-direction:column;overflow:hidden;padding:0}.reader-tools{flex:none;padding:20px 20px 8px;border-bottom:1px solid #ffffff24}aside nav{min-height:0;overflow:auto;padding:10px 14px}aside nav a{padding:8px;border-radius:6px}aside nav a:hover{background:#ffffff12}.search-field{position:relative}.search-field input{padding-right:58px}.search-field input::-webkit-search-cancel-button{display:none}.search-field button{position:absolute;right:4px;top:50%;transform:translateY(-50%);border:0;border-radius:4px;padding:4px 6px;font:inherit;background:#edf3fc;color:#234c87;cursor:pointer}input,select{font:inherit;border:1px solid #bac8da;border-radius:6px;background:white;color:#23324b}section{border:1px solid #d7e1ed;box-shadow:0 2px 8px #20345405}nav a[hidden],[hidden]{display:none!important}:focus-visible{outline:2px solid #65a7ff;outline-offset:3px}#filter-empty{padding:18px;border:1px solid #d7e1ed;border-radius:8px;background:white}@media(max-width:680px){aside{padding:0}.reader-tools{padding:12px}aside nav{padding:6px}}@media(max-height:400px){.reader-tools{padding:8px 12px}.reader-tools h1{font-size:16px;margin-bottom:4px}.reader-tools input,.reader-tools select{padding:4px;margin:2px 0 4px}}@media(prefers-reduced-motion:reduce){main{scroll-behavior:auto}}
+</style></head><body><aside><div class="reader-tools"><h1><span data-zh="压测报告" data-en="Stress report">压测报告</span></h1><label for="language"><span data-zh="显示语言" data-en="Language">显示语言</span></label><select id="language"><option value="zh-CN">简体中文</option><option value="en">English</option></select><label for="filter"><span data-zh="搜索报告章节" data-en="Filter sections">搜索报告章节</span></label><div class="search-field"><input id="filter" type="search"><button id="filter-clear" type="button" hidden><span data-zh="清除" data-en="Clear">清除</span></button></div></div><nav><a href="#summary"><span data-zh="运行摘要" data-en="Summary">运行摘要</span></a><a href="#configuration"><span data-zh="配置与负载" data-en="Configuration">配置与负载</span></a><a href="#comparison"><span data-zh="基线比较" data-en="Comparison">基线比较</span></a><a href="#statistics"><span data-zh="统计与时延" data-en="Statistics">统计与时延</span></a><a href="#timeline"><span data-zh="时间趋势" data-en="Timeline">时间趋势</span></a><a href="#phases"><span data-zh="阶段覆盖" data-en="Phases">阶段覆盖</span></a><a href="#nodes"><span data-zh="节点统计" data-en="Nodes">节点统计</span></a><a href="#lifecycle"><span data-zh="生命周期结果" data-en="Lifecycle">生命周期结果</span></a><a href="#failures"><span data-zh="失败分类与证据" data-en="Failure evidence">失败分类与证据</span></a><a href="#raw"><span data-zh="原始数据" data-en="Raw data">原始数据</span></a></nav></aside><main><p id="filter-empty" role="status" hidden><span data-zh="没有匹配章节，请清除搜索或更换关键词。" data-en="No matching sections. Clear the search or try another keyword.">没有匹配章节，请清除搜索或更换关键词。</span></p><section id="summary" data-section="summary"><h2><span data-zh="运行摘要" data-en="Summary">运行摘要</span></h2><p class="verdict" data-status="passed"><span data-code="passed"><span data-zh="通过" data-en="Passed">通过</span></span></p><p><span data-zh="完整性" data-en="Integrity">完整性</span>: <span data-zh="完整" data-en="Complete">完整</span></p><div class="table-scroll"><table><thead><tr><th><span data-zh="项目" data-en="Field">项目</span></th><th><span data-zh="记录值" data-en="Recorded value">记录值</span></th></tr></thead><tbody><tr><td><span data-zh="请求吞吐率" data-en="Request RPS">请求吞吐率</span></td><td>1 <span data-zh="请求/秒" data-en="requests/s">请求/秒</span></td></tr><tr><td><span data-zh="请求错误率" data-en="Request error rate">请求错误率</span></td><td>0%</td></tr><tr><td><span data-zh="报告统计时长" data-en="Report duration">报告统计时长</span></td><td>1000 ms</td></tr><tr><td><span data-zh="开始时间（导出端时区）" data-en="Start time (export time zone)">开始时间（导出端时区）</span></td><td><time class="wall-time" datetime="1970-01-01T00:00:00.000Z" title="0">1970-01-01 08:00:00.000 UTC+08:00</time></td></tr><tr><td><span data-zh="结束时间（导出端时区）" data-en="End time (export time zone)">结束时间（导出端时区）</span></td><td><time class="wall-time" datetime="1970-01-01T00:00:01.000Z" title="1000">1970-01-01 08:00:01.000 UTC+08:00</time></td></tr></tbody></table></div>
+  <p class="note"><span data-zh="逻辑迭代、用例行、协议请求和 HTTP hop 是不同总体。已恢复失败仍计入请求失败；正式顶层仅统计 measurement/drain。" data-en="Iterations, case rows, protocol requests and HTTP hops are different populations. Recovered failures remain request failures. Formal top-level metrics cover measurement/drain only.">逻辑迭代、用例行、协议请求和 HTTP hop 是不同总体。已恢复失败仍计入请求失败；正式顶层仅统计 measurement/drain。</span></p><div class="table-scroll"><table><thead><tr><th><span data-zh="统计总体" data-en="Population">统计总体</span></th><th><span data-zh="总数/启动" data-en="Total / started">总数/启动</span></th><th><span data-zh="已完成" data-en="Completed">已完成</span></th><th><span data-zh="通过/合格" data-en="Passed / eligible">通过/合格</span></th><th><span data-zh="失败" data-en="Failed">失败</span></th><th><span data-zh="中止" data-en="Aborted">中止</span></th><th><span data-zh="丢弃" data-en="Dropped">丢弃</span></th></tr></thead><tbody><tr><td><span data-zh="逻辑迭代" data-en="Iterations">逻辑迭代</span></td><td>1</td><td>1</td><td>1</td><td>0</td><td>0</td><td>0</td></tr><tr><td><span data-zh="用例行" data-en="Case rows">用例行</span></td><td>1</td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td><td>1</td><td>0</td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td></tr><tr><td><span data-zh="协议请求" data-en="Requests">协议请求</span></td><td>1</td><td>1</td><td>1</td><td>0</td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td></tr><tr><td><span data-zh="HTTP 交换（hop）" data-en="HTTP exchanges (hops)">HTTP 交换（hop）</span></td><td>1</td><td>1</td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td></tr></tbody></table></div><div class="table-scroll"><table><thead><tr><th><span data-zh="完整性维度" data-en="Integrity component">完整性维度</span></th><th><span data-zh="完整" data-en="Complete">完整</span></th><th><span data-zh="原因" data-en="Reasons">原因</span></th></tr></thead><tbody><tr><td><span data-code="execution"><span data-zh="执行" data-en="Execution">执行</span></span></td><td><span data-zh="是" data-en="Yes">是</span></td><td><span data-zh="无" data-en="None">无</span></td></tr><tr><td><span data-code="metrics"><span data-zh="指标" data-en="Metrics">指标</span></span></td><td><span data-zh="是" data-en="Yes">是</span></td><td><span data-zh="无" data-en="None">无</span></td></tr><tr><td><span data-code="load"><span data-zh="负载" data-en="Load">负载</span></span></td><td><span data-zh="是" data-en="Yes">是</span></td><td><span data-zh="无" data-en="None">无</span></td></tr></tbody></table></div>
+  </section><section id="configuration" data-section="configuration"><h2><span data-zh="配置与负载" data-en="Configuration">配置与负载</span></h2><div class="table-scroll"><table><thead><tr><th><span data-zh="项目" data-en="Field">项目</span></th><th><span data-zh="记录值" data-en="Recorded value">记录值</span></th></tr></thead><tbody><tr><td><span data-zh="项目 ID" data-en="Project ID">项目 ID</span></td><td>project</td></tr><tr><td><span data-zh="定义指纹" data-en="Definition fingerprint">定义指纹</span></td><td>rev1</td></tr><tr><td><span data-zh="运行 ID" data-en="Run ID">运行 ID</span></td><td>run</td></tr><tr><td><span data-zh="目标" data-en="Target">目标</span> / <span data-zh="类型" data-en="Kind">类型</span></td><td><span data-code="workflow"><span data-zh="工作流" data-en="Workflow">工作流</span></span></td></tr><tr><td><span data-zh="目标" data-en="Target">目标</span> / <span data-zh="工作流 ID" data-en="Workflow ID">工作流 ID</span></td><td>flow&lt;script&gt;alert(1)&lt;/script&gt;</td></tr></tbody></table></div><p><span data-zh="环境" data-en="Environment">环境</span>: <span data-zh="未选择环境（不适用）" data-en="No environment selected (not applicable)">未选择环境（不适用）</span></p><div class="table-scroll"><table><thead><tr><th><span data-zh="项目" data-en="Field">项目</span></th><th><span data-zh="记录值" data-en="Recorded value">记录值</span></th></tr></thead><tbody><tr><td><span data-zh="数据身份" data-en="Data identity">数据身份</span> / <span data-zh="数据摘要" data-en="Data digest">数据摘要</span></td><td>data</td></tr><tr><td><span data-zh="数据身份" data-en="Data identity">数据身份</span> / <span data-zh="数据集 ID" data-en="Dataset IDs">数据集 ID</span></td><td><span data-zh="空列表或空映射" data-en="Empty list or mapping">空列表或空映射</span></td></tr><tr><td><span data-zh="负载模型" data-en="Load model">负载模型</span> / <span data-zh="类型" data-en="Kind">类型</span></td><td><span data-code="constant-vus"><span data-zh="固定 VU" data-en="Constant VUs">固定 VU</span></span></td></tr><tr><td><span data-zh="负载模型" data-en="Load model">负载模型</span> / <span data-zh="VU 数" data-en="VUs">VU 数</span></td><td>1</td></tr><tr><td><span data-zh="VU 容量" data-en="VU capacity">VU 容量</span></td><td>1</td></tr><tr><td><span data-zh="终止条件" data-en="Termination">终止条件</span> / <span data-zh="最大逻辑迭代" data-en="Maximum logical iterations">最大逻辑迭代</span></td><td>1</td></tr><tr><td><span data-zh="预热" data-en="Warmup">预热</span></td><td>0 ms</td></tr><tr><td><span data-zh="思考时间" data-en="Think time">思考时间</span></td><td>0 ms</td></tr><tr><td><span data-zh="节奏间隔" data-en="Pacing">节奏间隔</span></td><td>0 ms</td></tr><tr><td><span data-zh="排空宽限" data-en="Graceful stop">排空宽限</span></td><td>30000 ms</td></tr><tr><td><span data-zh="请求并发限制" data-en="Request concurrency limit">请求并发限制</span></td><td><span data-zh="未采集" data-en="Not collected">未采集</span></td></tr><tr><td><span data-zh="请求速率上限" data-en="Request rate limit">请求速率上限</span></td><td><span data-zh="未采集" data-en="Not collected">未采集</span></td></tr><tr><td><span data-zh="连接模式" data-en="Connection mode">连接模式</span></td><td><span data-code="pooled"><span data-zh="连接池" data-en="Pooled connections">连接池</span></span></td></tr><tr><td><span data-zh="数据选择策略" data-en="Data policy">数据选择策略</span></td><td><span data-zh="未采集" data-en="Not collected">未采集</span></td></tr></tbody></table></div>
+  <h3><span data-zh="实际负载与限制" data-en="Actual load and limits">实际负载与限制</span></h3><div class="table-scroll"><table><thead><tr><th><span data-zh="项目" data-en="Field">项目</span></th><th><span data-zh="记录值" data-en="Recorded value">记录值</span></th></tr></thead><tbody><tr><td><span data-zh="正式测量窗口" data-en="Measurement window">正式测量窗口</span></td><td>1000 ms</td></tr><tr><td><span data-zh="排空窗口" data-en="Drain window">排空窗口</span></td><td>0 ms</td></tr><tr><td><span data-zh="策略等待" data-en="Policy waiting">策略等待</span></td><td>0 ms</td></tr><tr><td><span data-zh="资源饱和" data-en="Resource saturated">资源饱和</span></td><td><span data-zh="否" data-en="No">否</span></td></tr><tr><td><span data-zh="实际请求并发上限" data-en="Effective request concurrency">实际请求并发上限</span></td><td>1</td></tr><tr><td><span data-zh="计划窗口" data-en="Planned window">计划窗口</span></td><td><span data-zh="无固定时长（迭代预算）" data-en="No fixed duration (iteration budget)">无固定时长（迭代预算）</span></td></tr><tr><td><span data-zh="目标迭代启动率" data-en="Target iteration start rate">目标迭代启动率</span></td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td></tr><tr><td><span data-zh="实际迭代启动率" data-en="Actual iteration start rate">实际迭代启动率</span></td><td><span data-zh="不适用" data-en="Not applicable">不适用</span></td></tr></tbody></table></div><div class="table-scroll"><table><thead><tr><th><span data-zh="项目" data-en="Field">项目</span></th><th><span data-zh="记录值" data-en="Recorded value">记录值</span></th></tr></thead><tbody><tr><td><span data-zh="请求的并发限制" data-en="Requested concurrency limit">请求的并发限制</span></td><td><span data-zh="未采集" data-en="Not collected">未采集</span></td></tr><tr><td><span data-zh="请求的速率上限" data-en="Requested rate limit">请求的速率上限</span></td><td><span data-zh="未采集" data-en="Not collected">未采集</span></td></tr><tr><td><span data-zh="实际速率上限" data-en="Effective rate limit">实际速率上限</span></td><td><span data-zh="未设置请求速率上限" data-en="No request RPS limit">未设置请求速率上限</span></td></tr></tbody></table></div>
+  <h3><span data-zh="生命周期配置" data-en="Lifecycle configuration">生命周期配置</span></h3><p><span data-zh="未配置生命周期步骤" data-en="No lifecycle steps configured">未配置生命周期步骤</span></p><h3><span data-zh="阈值" data-en="Thresholds">阈值</span></h3><p><span data-zh="未配置显式阈值" data-en="No explicit thresholds configured">未配置显式阈值</span></p></section><section id="comparison" data-section="comparison"><h2><span data-zh="基线比较" data-en="Comparison">基线比较</span></h2><p><span data-zh="未选择基线" data-en="No baseline selected.">未选择基线</span></p></section><section id="statistics" data-section="statistics"><h2><span data-zh="统计与时延" data-en="Statistics">统计与时延</span></h2><p class="note"><span data-zh="精度说明保守覆盖全部分布。上下溢出数是单条统计序列的最大值，不是请求总数。" data-en="Precision applies conservatively across all distributions. Underflow/overflow are the maximum count in any single statistical series, not request counts.">精度说明保守覆盖全部分布。上下溢出数是单条统计序列的最大值，不是请求总数。</span></p><div class="table-scroll"><table><thead><tr><th><span data-zh="方法" data-en="Method">方法</span></th><th><span data-zh="精确标记" data-en="Exact flag">精确标记</span></th><th><span data-zh="相对误差参数" data-en="Relative error parameter">相对误差参数</span></th><th><span data-zh="最小分辨率" data-en="Minimum resolution">最小分辨率</span></th><th><span data-zh="最大序列下溢" data-en="Maximum series underflow">最大序列下溢</span></th><th><span data-zh="最大序列上溢" data-en="Maximum series overflow">最大序列上溢</span></th></tr></thead><tbody><tr><td><span data-code="exact-nearest-rank"><span data-zh="精确最近秩" data-en="Exact nearest rank">精确最近秩</span></span></td><td><span data-zh="是" data-en="Yes">是</span></td><td>0%</td><td>0.001 ms</td><td>0</td><td>0</td></tr></tbody></table></div>
+  <div class="table-scroll"><table><thead><tr><th><span data-zh="时延分布" data-en="Latency distribution">时延分布</span></th><th><span data-zh="最小值（ms）" data-en="Minimum (ms)">最小值（ms）</span></th><th><span data-zh="平均值（ms）" data-en="Average (ms)">平均值（ms）</span></th><th>p50 (ms)</th><th>p90 (ms)</th><th>p95 (ms)</th><th>p99 (ms)</th><th><span data-zh="最大值（ms）" data-en="Maximum (ms)">最大值（ms）</span></th></tr></thead><tbody><tr><td><span data-zh="请求时延" data-en="Request latency">请求时延</span></td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td></tr><tr><td><span data-zh="逻辑迭代时延" data-en="Iteration latency">逻辑迭代时延</span></td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td></tr><tr><td><span data-zh="脚本时延" data-en="Script latency">脚本时延</span></td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td></tr><tr><td><span data-zh="迭代启动延迟" data-en="Iteration start delay">迭代启动延迟</span></td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td><td>10 ms</td></tr></tbody></table></div></section><section id="timeline" data-section="timeline"><h2><span data-zh="时间趋势" data-en="Timeline">时间趋势</span></h2><p><span data-zh="时间桶分辨率" data-en="Bucket resolution">时间桶分辨率</span>: 1000 ms · <span data-zh="已对齐" data-en="Aligned">已对齐</span>: <span data-zh="是" data-en="Yes">是</span> · <span data-zh="时钟不确定度" data-en="Clock uncertainty">时钟不确定度</span>: 0 ms</p><p class="note"><span data-zh="时间轴从运行开始计时；桶可含准备/预热/收尾等来源。桶内 RPS 按桶覆盖时长计算，不等于正式顶层 RPS。p95 直接使用已有桶统计。" data-en="Time is since run start; buckets may include setup/warmup/teardown. Bucket RPS uses bucket coverage, not the formal top-level denominator. p95 uses recorded bucket statistics.">时间轴从运行开始计时；桶可含准备/预热/收尾等来源。桶内 RPS 按桶覆盖时长计算，不等于正式顶层 RPS。p95 直接使用已有桶统计。</span></p><p class="note"><span data-zh="没有时间桶，未采集趋势数据。" data-en="No time buckets; timeline data not collected.">没有时间桶，未采集趋势数据。</span></p>
+  <div class="charts"><div class="chart"><h3><span data-zh="请求吞吐率（请求/秒）" data-en="Request throughput (requests/s)">请求吞吐率（请求/秒）</span></h3><p><span data-zh="没有可用的时间桶数据" data-en="No available time-bucket data">没有可用的时间桶数据</span></p></div><div class="chart"><h3><span data-zh="请求 p95（ms）" data-en="Request p95 (ms)">请求 p95（ms）</span></h3><p><span data-zh="没有可用的时间桶数据" data-en="No available time-bucket data">没有可用的时间桶数据</span></p></div></div><p><span data-zh="没有记录" data-en="No records">没有记录</span></p>
+  <h3><span data-zh="时间桶来源明细" data-en="Time-bucket source details">时间桶来源明细</span></h3><p><span data-zh="没有记录" data-en="No records">没有记录</span></p></section><section id="phases" data-section="phases"><h2><span data-zh="阶段覆盖" data-en="Phases">阶段覆盖</span></h2><p><span data-zh="没有记录" data-en="No records">没有记录</span></p></section><section id="nodes" data-section="nodes"><h2><span data-zh="节点统计" data-en="Nodes">节点统计</span></h2><p class="note"><span data-zh="other 汇总未单列节点；时延取实际分布，不再以 JSON 代替数值。" data-en="Other aggregates nodes not listed individually; latencies use recorded distributions.">other 汇总未单列节点；时延取实际分布，不再以 JSON 代替数值。</span></p><p><span data-zh="没有记录" data-en="No records">没有记录</span></p></section><section id="lifecycle" data-section="lifecycle"><h2><span data-zh="生命周期结果" data-en="Lifecycle">生命周期结果</span></h2><p><span data-zh="没有记录" data-en="No records">没有记录</span></p></section><section id="failures" data-section="failures"><h2><span data-zh="失败分类与证据" data-en="Failure evidence">失败分类与证据</span></h2><p class="note"><span data-zh="分类保留已恢复请求的原失败。无证据样本不证明没有失败；JSON 正文保留原预览。" data-en="Categories retain failures of recovered requests. No evidence sample does not prove no failures; JSON bodies retain their original previews.">分类保留已恢复请求的原失败。无证据样本不证明没有失败；JSON 正文保留原预览。</span></p><h3><span data-zh="用例失败分类" data-en="Case failure categories">用例失败分类</span></h3><div class="table-scroll"><table><thead><tr><th><span data-zh="分类" data-en="Kind">分类</span></th><th><span data-zh="次数" data-en="Count">次数</span></th></tr></thead><tbody><tr><td><span data-code="transport"><span data-zh="传输失败" data-en="Transport failure">传输失败</span></span></td><td>0</td></tr><tr><td><span data-code="http"><span data-zh="HTTP 失败" data-en="HTTP failure">HTTP 失败</span></span></td><td>0</td></tr><tr><td><span data-code="script"><span data-zh="脚本失败" data-en="Script failure">脚本失败</span></span></td><td>0</td></tr><tr><td><span data-code="assertion"><span data-zh="断言失败" data-en="Assertion failure">断言失败</span></span></td><td>0</td></tr><tr><td><span data-code="config"><span data-zh="配置失败" data-en="Configuration failure">配置失败</span></span></td><td>0</td></tr><tr><td><span data-code="aborted"><span data-zh="已中止" data-en="Aborted">已中止</span></span></td><td>0</td></tr><tr><td><span data-code="extraction"><span data-zh="提取失败" data-en="Extraction failure">提取失败</span></span></td><td>0</td></tr></tbody></table></div><h3><span data-zh="合格请求失败分类" data-en="Eligible request failure categories">合格请求失败分类</span></h3><div class="table-scroll"><table><thead><tr><th><span data-zh="分类" data-en="Kind">分类</span></th><th><span data-zh="次数" data-en="Count">次数</span></th></tr></thead><tbody><tr><td><span data-code="transport"><span data-zh="传输失败" data-en="Transport failure">传输失败</span></span></td><td>0</td></tr><tr><td><span data-code="http"><span data-zh="HTTP 失败" data-en="HTTP failure">HTTP 失败</span></span></td><td>0</td></tr><tr><td><span data-code="script"><span data-zh="脚本失败" data-en="Script failure">脚本失败</span></span></td><td>0</td></tr><tr><td><span data-code="assertion"><span data-zh="断言失败" data-en="Assertion failure">断言失败</span></span></td><td>0</td></tr><tr><td><span data-code="config"><span data-zh="配置失败" data-en="Configuration failure">配置失败</span></span></td><td>0</td></tr><tr><td><span data-code="aborted"><span data-zh="已中止" data-en="Aborted">已中止</span></span></td><td>0</td></tr><tr><td><span data-code="extraction"><span data-zh="提取失败" data-en="Extraction failure">提取失败</span></span></td><td>0</td></tr></tbody></table></div><h3><span data-zh="状态码与错误码" data-en="Status and error distributions">状态码与错误码</span></h3><div class="table-scroll"><table><thead><tr><th><span data-zh="状态码" data-en="Status">状态码</span></th><th><span data-zh="次数" data-en="Count">次数</span></th></tr></thead><tbody><tr><td>200</td><td>1</td></tr></tbody></table></div><p><span data-zh="没有记录" data-en="No records">没有记录</span></p><h3><span data-zh="失败证据样本" data-en="Failure evidence samples">失败证据样本</span></h3><p><span data-zh="未采集" data-en="Not collected">未采集</span></p></section><section id="raw" data-section="raw"><h2><span data-zh="原始数据" data-en="Raw data">原始数据</span></h2><details class="raw-data"><summary><span data-zh="原始数据（JSON，默认折叠）" data-en="Raw data (JSON, collapsed by default)">原始数据（JSON，默认折叠）</span></summary><pre>{
+  &quot;report&quot;: {
+    &quot;statistics&quot;: {
+      &quot;method&quot;: &quot;exact-nearest-rank&quot;,
+      &quot;exact&quot;: true,
+      &quot;relativeError&quot;: 0,
+      &quot;minValueMs&quot;: 0.001,
+      &quot;gamma&quot;: 1.01,
+      &quot;bucketCount&quot;: 4608,
+      &quot;exactLimit&quot;: 256,
+      &quot;underflow&quot;: 0,
+      &quot;overflow&quot;: 0
+    },
+    &quot;projectId&quot;: &quot;project&quot;,
+    &quot;definitionRevision&quot;: &quot;rev1&quot;,
+    &quot;concurrency&quot;: 1,
+    &quot;totalRequests&quot;: 1,
+    &quot;ok&quot;: 1,
+    &quot;failed&quot;: 0,
+    &quot;durationMs&quot;: 1000,
+    &quot;statusDist&quot;: {
+      &quot;200&quot;: 1
+    },
+    &quot;errorKinds&quot;: {},
+    &quot;startedAt&quot;: 0,
+    &quot;finishedAt&quot;: 1000,
+    &quot;eligibleCompletedAttempts&quot;: 1,
+    &quot;measurementWindow&quot;: {
+      &quot;startWallMs&quot;: 0,
+      &quot;endWallMs&quot;: 1000,
+      &quot;monotonicDurationMs&quot;: 1000,
+      &quot;eligibleCompletedAttempts&quot;: 1
+    },
+    &quot;failures&quot;: {
+      &quot;transport&quot;: 0,
+      &quot;http&quot;: 0,
+      &quot;script&quot;: 0,
+      &quot;assertion&quot;: 0,
+      &quot;config&quot;: 0,
+      &quot;aborted&quot;: 0,
+      &quot;extraction&quot;: 0
+    },
+    &quot;eligibleFailureCounts&quot;: {
+      &quot;transport&quot;: 0,
+      &quot;http&quot;: 0,
+      &quot;script&quot;: 0,
+      &quot;assertion&quot;: 0,
+      &quot;config&quot;: 0,
+      &quot;aborted&quot;: 0,
+      &quot;extraction&quot;: 0
+    },
+    &quot;incomplete&quot;: false,
+    &quot;formatVersion&quot;: 2,
+    &quot;runId&quot;: &quot;run&quot;,
+    &quot;plan&quot;: {
+      &quot;formatVersion&quot;: 1,
+      &quot;target&quot;: {
+        &quot;kind&quot;: &quot;workflow&quot;,
+        &quot;workflowId&quot;: &quot;flow&lt;script&gt;alert(1)&lt;/script&gt;&quot;
+      },
+      &quot;load&quot;: {
+        &quot;kind&quot;: &quot;constant-vus&quot;,
+        &quot;vus&quot;: 1
+      },
+      &quot;maxVus&quot;: 1,
+      &quot;termination&quot;: {
+        &quot;maxIterations&quot;: 1
+      },
+      &quot;warmupMs&quot;: 0,
+      &quot;thinkTimeMs&quot;: 0,
+      &quot;pacingMs&quot;: 0,
+      &quot;gracefulStopMs&quot;: 30000,
+      &quot;connectionMode&quot;: &quot;pooled&quot;
+    },
+    &quot;target&quot;: {
+      &quot;kind&quot;: &quot;workflow&quot;,
+      &quot;workflowId&quot;: &quot;flow&lt;script&gt;alert(1)&lt;/script&gt;&quot;
+    },
+    &quot;environmentId&quot;: null,
+    &quot;dataIdentity&quot;: {
+      &quot;digest&quot;: &quot;data&quot;,
+      &quot;datasetIds&quot;: []
+    },
+    &quot;rps&quot;: {
+      &quot;availability&quot;: &quot;available&quot;,
+      &quot;value&quot;: 1
+    },
+    &quot;latency&quot;: {
+      &quot;availability&quot;: &quot;available&quot;,
+      &quot;value&quot;: {
+        &quot;min&quot;: 10,
+        &quot;avg&quot;: 10,
+        &quot;max&quot;: 10,
+        &quot;p50&quot;: 10,
+        &quot;p90&quot;: 10,
+        &quot;p95&quot;: 10,
+        &quot;p99&quot;: 10
+      }
+    },
+    &quot;scriptLatency&quot;: {
+      &quot;availability&quot;: &quot;available&quot;,
+      &quot;value&quot;: {
+        &quot;min&quot;: 10,
+        &quot;avg&quot;: 10,
+        &quot;max&quot;: 10,
+        &quot;p50&quot;: 10,
+        &quot;p90&quot;: 10,
+        &quot;p95&quot;: 10,
+        &quot;p99&quot;: 10
+      }
+    },
+    &quot;iterationLatency&quot;: {
+      &quot;availability&quot;: &quot;available&quot;,
+      &quot;value&quot;: {
+        &quot;min&quot;: 10,
+        &quot;avg&quot;: 10,
+        &quot;max&quot;: 10,
+        &quot;p50&quot;: 10,
+        &quot;p90&quot;: 10,
+        &quot;p95&quot;: 10,
+        &quot;p99&quot;: 10
+      }
+    },
+    &quot;verdict&quot;: {
+      &quot;passed&quot;: true,
+      &quot;violations&quot;: [],
+      &quot;status&quot;: &quot;passed&quot;
+    },
+    &quot;iterations&quot;: {
+      &quot;planned&quot;: 1,
+      &quot;started&quot;: 1,
+      &quot;completed&quot;: 1,
+      &quot;passed&quot;: 1,
+      &quot;failed&quot;: 0,
+      &quot;aborted&quot;: 0,
+      &quot;dropped&quot;: 0,
+      &quot;latency&quot;: {
+        &quot;availability&quot;: &quot;available&quot;,
+        &quot;value&quot;: {
+          &quot;min&quot;: 10,
+          &quot;avg&quot;: 10,
+          &quot;max&quot;: 10,
+          &quot;p50&quot;: 10,
+          &quot;p90&quot;: 10,
+          &quot;p95&quot;: 10,
+          &quot;p99&quot;: 10
+        }
+      },
+      &quot;startDelay&quot;: {
+        &quot;availability&quot;: &quot;available&quot;,
+        &quot;value&quot;: {
+          &quot;min&quot;: 10,
+          &quot;avg&quot;: 10,
+          &quot;max&quot;: 10,
+          &quot;p50&quot;: 10,
+          &quot;p90&quot;: 10,
+          &quot;p95&quot;: 10,
+          &quot;p99&quot;: 10
+        }
+      }
+    },
+    &quot;caseRows&quot;: {
+      &quot;total&quot;: 1,
+      &quot;ok&quot;: 1,
+      &quot;failed&quot;: 0,
+      &quot;failures&quot;: {
+        &quot;transport&quot;: 0,
+        &quot;http&quot;: 0,
+        &quot;script&quot;: 0,
+        &quot;assertion&quot;: 0,
+        &quot;config&quot;: 0,
+        &quot;aborted&quot;: 0,
+        &quot;extraction&quot;: 0
+      }
+    },
+    &quot;requests&quot;: {
+      &quot;started&quot;: 1,
+      &quot;completed&quot;: 1,
+      &quot;eligibleCompleted&quot;: 1,
+      &quot;failed&quot;: 0
+    },
+    &quot;httpExchanges&quot;: {
+      &quot;started&quot;: 1,
+      &quot;completed&quot;: 1
+    },
+    &quot;phases&quot;: [],
+    &quot;timeline&quot;: {
+      &quot;bucketWidthMs&quot;: 1000,
+      &quot;aligned&quot;: true,
+      &quot;uncertaintyMs&quot;: 0,
+      &quot;buckets&quot;: []
+    },
+    &quot;nodes&quot;: [],
+    &quot;load&quot;: {
+      &quot;plannedDurationMs&quot;: null,
+      &quot;measurementDurationMs&quot;: 1000,
+      &quot;drainDurationMs&quot;: 0,
+      &quot;policyLimitedMs&quot;: 0,
+      &quot;saturated&quot;: false,
+      &quot;maxVus&quot;: 1,
+      &quot;maxRequestConcurrency&quot;: 1,
+      &quot;effectiveMaxRps&quot;: null
+    },
+    &quot;lifecycle&quot;: [],
+    &quot;completeness&quot;: {
+      &quot;execution&quot;: {
+        &quot;complete&quot;: true,
+        &quot;reasons&quot;: []
+      },
+      &quot;metrics&quot;: {
+        &quot;complete&quot;: true,
+        &quot;reasons&quot;: []
+      },
+      &quot;load&quot;: {
+        &quot;complete&quot;: true,
+        &quot;reasons&quot;: []
+      }
+    }
+  }
+}</pre></details></section></main><script>
+function filterSections(){const q=document.getElementById('filter').value.toLowerCase();let count=0;document.querySelectorAll('main section').forEach(function(s){s.hidden=!s.textContent.toLowerCase().includes(q);if(!s.hidden)count++});document.querySelectorAll('aside nav a').forEach(function(a){a.hidden=document.getElementById(a.getAttribute('href').slice(1)).hidden});document.getElementById('filter-empty').hidden=count>0;document.getElementById('filter-clear').hidden=q===''}
+document.getElementById('filter').addEventListener('input',filterSections);
+document.getElementById('filter-clear').addEventListener('click',function(){const input=document.getElementById('filter');input.value='';filterSections();input.focus()});
+document.getElementById('language').addEventListener('change',function(){const en=this.value==='en';document.documentElement.lang=en?'en':'zh-CN';document.title=en?'Stress report':'压测报告';document.querySelectorAll('[data-zh][data-en]').forEach(function(el){el.textContent=en?el.dataset.en:el.dataset.zh});filterSections()});
+</script></body></html>

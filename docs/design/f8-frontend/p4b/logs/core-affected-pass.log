@@ -1,0 +1,9 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/packages/core
+
+
+ Test Files  2 passed (2)
+      Tests  28 passed (28)
+   Start at  12:00:01
+   Duration  1.19s (transform 593ms, setup 0ms, import 954ms, tests 487ms, environment 5ms)
+

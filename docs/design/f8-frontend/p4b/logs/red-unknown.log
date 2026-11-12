@@ -1,0 +1,29 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/share-viewer
+
+ ❯ tests/offline-readers.test.ts (5 tests | 2 failed | 3 skipped) 9ms
+   × preserves unknown workflow kind and state constructor without inherited-object lookup 7ms
+   × preserves unknown workflow kind and state __proto__ without inherited-object lookup 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/offline-readers.test.ts > preserves unknown workflow kind and state constructor without inherited-object lookup
+ FAIL  tests/offline-readers.test.ts > preserves unknown workflow kind and state __proto__ without inherited-object lookup
+TypeError: value.replace is not a function
+ ❯ escape ../../packages/core/src/report/readerPresentation.ts:2:41
+
+ ❯ readerText ../../packages/core/src/report/readerPresentation.ts:3:119
+ ❯ label ../../packages/core/src/report/html.ts:15:35
+ ❯ ../../packages/core/src/report/html.ts:74:85
+ ❯ workflowSection ../../packages/core/src/report/html.ts:73:50
+ ❯ Object.render ../../packages/core/src/report/html.ts:119:3
+ ❯ tests/offline-readers.test.ts:71:48
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 3 skipped (5)
+   Start at  11:54:19
+   Duration  1.60s (transform 379ms, setup 0ms, import 538ms, tests 9ms, environment 874ms)
+
